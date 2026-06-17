@@ -75,7 +75,7 @@ func TestAttachEvidenceRejectsMissingKey(t *testing.T) {
 	projectID := mustProject(t, projects)
 
 	_, err := bb.AttachEvidence(blackboard.AttachEvidenceRequest{
-		ProjectID: projectID,
+		ProjectID:    projectID,
 		AttachToType: blackboard.EvidenceAttachFact,
 	})
 	if !errors.Is(err, blackboard.ErrMissingEvidenceKey) {

@@ -197,10 +197,10 @@ func TestUpsertFactRelationCannotConnectFindings(t *testing.T) {
 
 	// Connecting two real facts succeeds.
 	if _, err := bb.UpsertFactRelation(blackboard.UpsertFactRelationRequest{
-		ProjectID:      projectID,
-		SourceFactKey:  "src",
-		TargetFactKey:  "dst",
-		Relation:       "leads-to",
+		ProjectID:     projectID,
+		SourceFactKey: "src",
+		TargetFactKey: "dst",
+		Relation:      "leads-to",
 	}); err != nil {
 		t.Fatalf("relation between facts should succeed: %v", err)
 	}

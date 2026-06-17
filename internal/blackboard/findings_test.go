@@ -132,8 +132,8 @@ func TestSeverityDerivedFromCVSSVector(t *testing.T) {
 	// Two high-impact metrics -> critical.
 	critical, err := bb.UpsertFinding(blackboard.UpsertFindingRequest{
 		ProjectID: projectID, FindingKey: "k1", Title: "t",
-		Status:     blackboard.FindingStatusConfirmed,
-		Target:     "x", Proof: "p", Impact: "i", Recommendation: "r",
+		Status: blackboard.FindingStatusConfirmed,
+		Target: "x", Proof: "p", Impact: "i", Recommendation: "r",
 		CVSSVector: "CVSS:4.0/AV:N/VC:H/VI:H",
 	})
 	if err != nil {
@@ -146,8 +146,8 @@ func TestSeverityDerivedFromCVSSVector(t *testing.T) {
 	// One high-impact metric -> high.
 	high, err := bb.UpsertFinding(blackboard.UpsertFindingRequest{
 		ProjectID: projectID, FindingKey: "k2", Title: "t",
-		Status:     blackboard.FindingStatusConfirmed,
-		Target:     "x", Proof: "p", Impact: "i", Recommendation: "r",
+		Status: blackboard.FindingStatusConfirmed,
+		Target: "x", Proof: "p", Impact: "i", Recommendation: "r",
 		CVSSVector: "CVSS:4.0/AV:N/VC:H",
 	})
 	if err != nil {

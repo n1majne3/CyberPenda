@@ -120,6 +120,56 @@ func (s *Service) CountEvidence(projectID string) (int, error) {
 	return count, nil
 }
 
+// ListEvidence returns all evidence artifacts for a project. Used by the report
+// generator to assemble evidence references from stored state.
+func (s *Service) ListEvidence(projectID string) ([]EvidenceArtifact, error) {
+	rows, err := s.db.Query(
+		`SELECT id, project_id, evidence_key, attach_to_type, attach_to_key, artifact_type, source_path, managed_path, sha256, summary, created_at, updated_at
+		 FROM evidence_artifacts WHERE project_id = ? ORDER BY evidence_key ASC`,
+		projectID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list evidence artifacts: %w", err)
+	}
+	defer rows.Close()
+
+	var artifacts []EvidenceArtifact
+	for rows.Next() {
+		artifact, err := scanEvidenceRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		artifacts = append(artifacts, artifact)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list evidence artifacts: %w", err)
+	}
+	return artifacts, nil
+}
+
+func scanEvidenceRow(scanner factVersionScanner) (EvidenceArtifact, error) {
+	var artifact EvidenceArtifact
+	var attachToType string
+	var createdAt string
+	var updatedAt string
+	err := scanner.Scan(
+		&artifact.ID, &artifact.ProjectID, &artifact.EvidenceKey, &attachToType, &artifact.AttachToKey,
+		&artifact.ArtifactType, &artifact.SourcePath, &artifact.ManagedPath, &artifact.SHA256, &artifact.Summary,
+		&createdAt, &updatedAt,
+	)
+	if err != nil {
+		return EvidenceArtifact{}, fmt.Errorf("scan evidence artifact: %w", err)
+	}
+	artifact.AttachToType = EvidenceAttachType(attachToType)
+	if artifact.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt); err != nil {
+		return EvidenceArtifact{}, fmt.Errorf("parse created_at: %w", err)
+	}
+	if artifact.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt); err != nil {
+		return EvidenceArtifact{}, fmt.Errorf("parse updated_at: %w", err)
+	}
+	return artifact, nil
+}
+
 func (s *Service) validateEvidenceTarget(projectID string, attachToType EvidenceAttachType, attachToKey string) error {
 	switch attachToType {
 	case EvidenceAttachFact:

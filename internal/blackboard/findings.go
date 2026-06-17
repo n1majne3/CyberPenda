@@ -184,6 +184,61 @@ func (s *Service) CountFindings(projectID string) (int, error) {
 	return count, nil
 }
 
+// ListFindings returns all current findings for a project ordered by key. Used
+// by the report generator to assemble confirmed/unconfirmed sections from
+// stored state.
+func (s *Service) ListFindings(projectID string) ([]Finding, error) {
+	rows, err := s.db.Query(
+		`SELECT id, project_id, finding_key, version, title, description, status, target, proof, impact, recommendation, cvss_version, cvss_vector, cvss_pending, severity, created_at, updated_at
+		 FROM findings WHERE project_id = ? ORDER BY finding_key ASC`,
+		projectID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list findings: %w", err)
+	}
+	defer rows.Close()
+
+	var findings []Finding
+	for rows.Next() {
+		finding, err := scanFindingRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		findings = append(findings, finding)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list findings: %w", err)
+	}
+	return findings, nil
+}
+
+// scanFindingRow scans a full Finding from a row scanner (shared by getFinding
+// and ListFindings).
+func scanFindingRow(scanner factVersionScanner) (Finding, error) {
+	var finding Finding
+	var status string
+	var cvssPending int
+	var createdAt string
+	var updatedAt string
+	err := scanner.Scan(
+		&finding.ID, &finding.ProjectID, &finding.FindingKey, &finding.Version, &finding.Title, &finding.Description,
+		&status, &finding.Target, &finding.Proof, &finding.Impact, &finding.Recommendation, &finding.CVSSVersion,
+		&finding.CVSSVector, &cvssPending, &finding.Severity, &createdAt, &updatedAt,
+	)
+	if err != nil {
+		return Finding{}, fmt.Errorf("scan finding: %w", err)
+	}
+	finding.Status = FindingStatus(status)
+	finding.CVSSPending = cvssPending != 0
+	if finding.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt); err != nil {
+		return Finding{}, fmt.Errorf("parse created_at: %w", err)
+	}
+	if finding.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt); err != nil {
+		return Finding{}, fmt.Errorf("parse updated_at: %w", err)
+	}
+	return finding, nil
+}
+
 func (s *Service) getFinding(projectID, findingKey string) (Finding, error) {
 	var finding Finding
 	var status string

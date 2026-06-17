@@ -367,6 +367,30 @@ func (server *Server) handleReportTrigger(response http.ResponseWriter, request 
 		return
 	}
 
+	// A request may name a task to anchor runner and scope context. With a
+	// task id we render the full report derived from stored state; without one
+	// we fall back to the inventory stub.
+	var input struct {
+		TaskID string `json:"task_id"`
+	}
+	if request.ContentLength > 0 {
+		if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+			writeError(response, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+	}
+
+	if input.TaskID != "" {
+		generator := report.NewGenerator(server.facts, server.tasks)
+		out, err := generator.Generate(report.Request{ProjectID: projectID, TaskID: input.TaskID})
+		if err != nil {
+			writeError(response, http.StatusInternalServerError, "generate report")
+			return
+		}
+		writeJSON(response, http.StatusOK, out)
+		return
+	}
+
 	factCount, err := server.facts.CountFacts(projectID)
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "count facts")
