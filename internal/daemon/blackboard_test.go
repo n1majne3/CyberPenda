@@ -162,6 +162,96 @@ func TestProjectFactVersionsArePreservedAcrossUpserts(t *testing.T) {
 	}
 }
 
+func TestProjectFactRelationsConnectExistingFacts(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	upsertFact(t, server, projectID, "target:example.com", `{
+		"category":"target",
+		"summary":"example.com is in scope",
+		"confidence":"confirmed"
+	}`)
+	upsertFact(t, server, projectID, "service:https:example.com", `{
+		"category":"service",
+		"summary":"HTTPS responds on example.com",
+		"confidence":"confirmed"
+	}`)
+
+	body := []byte(`{
+		"target_fact_key":"service:https:example.com",
+		"relation":"supports",
+		"summary":"The HTTPS service supports the target domain fact."
+	}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/projects/"+projectID+"/facts/target:example.com/relations", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected relation status 200, got %d with body %s", resp.Code, resp.Body.String())
+	}
+
+	var created struct {
+		SourceFactKey string `json:"source_fact_key"`
+		TargetFactKey string `json:"target_fact_key"`
+		Relation      string `json:"relation"`
+		Summary       string `json:"summary"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode relation: %v", err)
+	}
+	if created.SourceFactKey != "target:example.com" || created.TargetFactKey != "service:https:example.com" {
+		t.Fatalf("expected source/target fact keys, got %#v", created)
+	}
+	if created.Relation != "supports" {
+		t.Fatalf("expected relation supports, got %q", created.Relation)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/facts/target:example.com/relations", nil)
+	resp = httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected list relations status 200, got %d with body %s", resp.Code, resp.Body.String())
+	}
+	var listed struct {
+		Relations []struct {
+			TargetFactKey string `json:"target_fact_key"`
+			Relation      string `json:"relation"`
+		} `json:"relations"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode relations: %v", err)
+	}
+	if len(listed.Relations) != 1 {
+		t.Fatalf("expected 1 relation, got %d", len(listed.Relations))
+	}
+	if listed.Relations[0].TargetFactKey != "service:https:example.com" {
+		t.Fatalf("expected target fact key, got %#v", listed.Relations[0])
+	}
+}
+
+func TestProjectFactRelationRejectsMissingTargetFact(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	upsertFact(t, server, projectID, "target:example.com", `{
+		"category":"target",
+		"summary":"example.com is in scope",
+		"confidence":"confirmed"
+	}`)
+
+	body := []byte(`{
+		"target_fact_key":"service:https:example.com",
+		"relation":"supports",
+		"summary":"Missing target should fail."
+	}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/projects/"+projectID+"/facts/target:example.com/relations", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("expected relation status 404, got %d with body %s", resp.Code, resp.Body.String())
+	}
+}
+
 func upsertFact(t *testing.T, server interface {
 	ServeHTTP(http.ResponseWriter, *http.Request)
 }, projectID, factKey, body string) {

@@ -65,6 +65,17 @@ type FactVersion struct {
 	CreatedAt   time.Time   `json:"created_at"`
 }
 
+type FactRelation struct {
+	ID            string    `json:"id"`
+	ProjectID     string    `json:"project_id"`
+	SourceFactKey string    `json:"source_fact_key"`
+	TargetFactKey string    `json:"target_fact_key"`
+	Relation      string    `json:"relation"`
+	Summary       string    `json:"summary"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
 type UpsertFactRequest struct {
 	ProjectID   string
 	FactKey     string
@@ -75,9 +86,19 @@ type UpsertFactRequest struct {
 	ScopeStatus ScopeStatus
 }
 
+type UpsertFactRelationRequest struct {
+	ProjectID     string
+	SourceFactKey string
+	TargetFactKey string
+	Relation      string
+	Summary       string
+}
+
 var ErrMissingFactKey = errors.New("fact key is required")
 var ErrMissingSummary = errors.New("fact summary is required")
 var ErrNotFound = errors.New("project fact not found")
+var ErrMissingTargetFactKey = errors.New("target fact key is required")
+var ErrMissingRelation = errors.New("fact relation is required")
 
 type Service struct {
 	db *store.DB
@@ -231,6 +252,100 @@ func (s *Service) FactVersions(projectID, factKey string) ([]FactVersion, error)
 	return versions, nil
 }
 
+func (s *Service) UpsertFactRelation(req UpsertFactRelationRequest) (FactRelation, error) {
+	req.SourceFactKey = strings.TrimSpace(req.SourceFactKey)
+	req.TargetFactKey = strings.TrimSpace(req.TargetFactKey)
+	req.Relation = strings.TrimSpace(req.Relation)
+	if req.SourceFactKey == "" {
+		return FactRelation{}, ErrMissingFactKey
+	}
+	if req.TargetFactKey == "" {
+		return FactRelation{}, ErrMissingTargetFactKey
+	}
+	if req.Relation == "" {
+		return FactRelation{}, ErrMissingRelation
+	}
+	if _, err := s.getByKey(req.ProjectID, req.SourceFactKey); err != nil {
+		return FactRelation{}, err
+	}
+	if _, err := s.getByKey(req.ProjectID, req.TargetFactKey); err != nil {
+		return FactRelation{}, err
+	}
+
+	existing, err := s.getRelation(req.ProjectID, req.SourceFactKey, req.TargetFactKey, req.Relation)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return FactRelation{}, err
+	}
+
+	now := time.Now().UTC()
+	if errors.Is(err, ErrNotFound) {
+		created := FactRelation{
+			ID:            newID(),
+			ProjectID:     req.ProjectID,
+			SourceFactKey: req.SourceFactKey,
+			TargetFactKey: req.TargetFactKey,
+			Relation:      req.Relation,
+			Summary:       req.Summary,
+			CreatedAt:     now,
+			UpdatedAt:     now,
+		}
+		_, err := s.db.Exec(
+			`INSERT INTO project_fact_relations (id, project_id, source_fact_key, target_fact_key, relation, summary, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			created.ID, created.ProjectID, created.SourceFactKey, created.TargetFactKey, created.Relation, created.Summary,
+			created.CreatedAt.Format(time.RFC3339Nano), created.UpdatedAt.Format(time.RFC3339Nano),
+		)
+		if err != nil {
+			return FactRelation{}, fmt.Errorf("store fact relation: %w", err)
+		}
+		return created, nil
+	}
+
+	existing.Summary = req.Summary
+	existing.UpdatedAt = now
+	_, err = s.db.Exec(
+		`UPDATE project_fact_relations SET summary = ?, updated_at = ?
+		 WHERE project_id = ? AND source_fact_key = ? AND target_fact_key = ? AND relation = ?`,
+		existing.Summary, existing.UpdatedAt.Format(time.RFC3339Nano), existing.ProjectID,
+		existing.SourceFactKey, existing.TargetFactKey, existing.Relation,
+	)
+	if err != nil {
+		return FactRelation{}, fmt.Errorf("update fact relation: %w", err)
+	}
+	return existing, nil
+}
+
+func (s *Service) FactRelations(projectID, sourceFactKey string) ([]FactRelation, error) {
+	if _, err := s.getByKey(projectID, sourceFactKey); err != nil {
+		return nil, err
+	}
+
+	rows, err := s.db.Query(
+		`SELECT id, project_id, source_fact_key, target_fact_key, relation, summary, created_at, updated_at
+		 FROM project_fact_relations
+		 WHERE project_id = ? AND source_fact_key = ?
+		 ORDER BY created_at ASC`,
+		projectID, sourceFactKey,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list fact relations: %w", err)
+	}
+	defer rows.Close()
+
+	var relations []FactRelation
+	for rows.Next() {
+		relation, err := scanFactRelation(rows)
+		if err != nil {
+			return nil, err
+		}
+		relations = append(relations, relation)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list fact relations: %w", err)
+	}
+	return relations, nil
+}
+
 func (s *Service) getByKey(projectID, factKey string) (Fact, error) {
 	var fact Fact
 	var confidence string
@@ -260,6 +375,15 @@ func (s *Service) getByKey(projectID, factKey string) (Fact, error) {
 		return Fact{}, err
 	}
 	return fact, nil
+}
+
+func (s *Service) getRelation(projectID, sourceFactKey, targetFactKey, relation string) (FactRelation, error) {
+	return scanFactRelation(s.db.QueryRow(
+		`SELECT id, project_id, source_fact_key, target_fact_key, relation, summary, created_at, updated_at
+		 FROM project_fact_relations
+		 WHERE project_id = ? AND source_fact_key = ? AND target_fact_key = ? AND relation = ?`,
+		projectID, sourceFactKey, targetFactKey, relation,
+	))
 }
 
 func (s *Service) appendVersion(fact Fact) (FactVersion, error) {
@@ -317,6 +441,29 @@ func scanFactVersion(scanner factVersionScanner) (FactVersion, error) {
 		return FactVersion{}, fmt.Errorf("parse created_at: %w", err)
 	}
 	return version, nil
+}
+
+func scanFactRelation(scanner factVersionScanner) (FactRelation, error) {
+	var relation FactRelation
+	var createdAt string
+	var updatedAt string
+	err := scanner.Scan(
+		&relation.ID, &relation.ProjectID, &relation.SourceFactKey, &relation.TargetFactKey,
+		&relation.Relation, &relation.Summary, &createdAt, &updatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return FactRelation{}, ErrNotFound
+	}
+	if err != nil {
+		return FactRelation{}, fmt.Errorf("scan fact relation: %w", err)
+	}
+	if relation.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt); err != nil {
+		return FactRelation{}, fmt.Errorf("parse created_at: %w", err)
+	}
+	if relation.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt); err != nil {
+		return FactRelation{}, fmt.Errorf("parse updated_at: %w", err)
+	}
+	return relation, nil
 }
 
 func newID() string {
