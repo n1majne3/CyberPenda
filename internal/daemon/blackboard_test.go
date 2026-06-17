@@ -445,6 +445,59 @@ func TestEvidenceAttachRejectsMissingTarget(t *testing.T) {
 	}
 }
 
+func TestReportTriggerReturnsStableMarkdownStubFromProjectState(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	upsertFact(t, server, projectID, "target:example.com", `{
+		"category":"target",
+		"summary":"example.com is in scope",
+		"confidence":"confirmed"
+	}`)
+	upsertFinding(t, server, projectID, "web-admin-exposed", `{
+		"title":"Exposed admin panel",
+		"target":"https://example.com/admin",
+		"impact":"Potential administrative access if authentication is weak.",
+		"status":"unconfirmed"
+	}`)
+	attachEvidence(t, server, projectID, `{
+		"evidence_key":"admin-login-screenshot",
+		"attach_to_type":"fact",
+		"attach_to_key":"target:example.com",
+		"artifact_type":"screenshot",
+		"source_path":"task-123/artifacts/screenshot.png",
+		"summary":"Screenshot of the exposed admin login."
+	}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/report", nil)
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected report status 200, got %d with body %s", resp.Code, resp.Body.String())
+	}
+	var report struct {
+		Status string `json:"status"`
+		Format string `json:"format"`
+		Counts struct {
+			Facts    int `json:"facts"`
+			Findings int `json:"findings"`
+			Evidence int `json:"evidence"`
+		} `json:"counts"`
+		Markdown string `json:"markdown"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&report); err != nil {
+		t.Fatalf("decode report: %v", err)
+	}
+	if report.Status != "generated_stub" || report.Format != "markdown" {
+		t.Fatalf("expected markdown stub, got %#v", report)
+	}
+	if report.Counts.Facts != 1 || report.Counts.Findings != 1 || report.Counts.Evidence != 1 {
+		t.Fatalf("expected counts 1/1/1, got %#v", report.Counts)
+	}
+	if report.Markdown == "" {
+		t.Fatal("expected markdown body")
+	}
+}
+
 func upsertFact(t *testing.T, server interface {
 	ServeHTTP(http.ResponseWriter, *http.Request)
 }, projectID, factKey, body string) {
@@ -456,5 +509,33 @@ func upsertFact(t *testing.T, server interface {
 	server.ServeHTTP(resp, req)
 	if resp.Code != http.StatusOK {
 		t.Fatalf("expected upsert status 200, got %d with body %s", resp.Code, resp.Body.String())
+	}
+}
+
+func upsertFinding(t *testing.T, server interface {
+	ServeHTTP(http.ResponseWriter, *http.Request)
+}, projectID, findingKey, body string) {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodPut, "/api/projects/"+projectID+"/findings/"+findingKey, bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected finding upsert status 200, got %d with body %s", resp.Code, resp.Body.String())
+	}
+}
+
+func attachEvidence(t *testing.T, server interface {
+	ServeHTTP(http.ResponseWriter, *http.Request)
+}, projectID, body string) {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/evidence", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected evidence attach status 200, got %d with body %s", resp.Code, resp.Body.String())
 	}
 }

@@ -176,6 +176,14 @@ func (s *Service) FindingVersions(projectID, findingKey string) ([]FindingVersio
 	return versions, nil
 }
 
+func (s *Service) CountFindings(projectID string) (int, error) {
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM findings WHERE project_id = ?`, projectID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count findings: %w", err)
+	}
+	return count, nil
+}
+
 func (s *Service) getFinding(projectID, findingKey string) (Finding, error) {
 	var finding Finding
 	var status string

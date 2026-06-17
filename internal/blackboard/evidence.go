@@ -112,6 +112,14 @@ func (s *Service) AttachEvidence(req AttachEvidenceRequest) (EvidenceArtifact, e
 	return artifact, nil
 }
 
+func (s *Service) CountEvidence(projectID string) (int, error) {
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM evidence_artifacts WHERE project_id = ?`, projectID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count evidence artifacts: %w", err)
+	}
+	return count, nil
+}
+
 func (s *Service) validateEvidenceTarget(projectID string, attachToType EvidenceAttachType, attachToKey string) error {
 	switch attachToType {
 	case EvidenceAttachFact:

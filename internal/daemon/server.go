@@ -104,6 +104,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("PUT /api/projects/{id}/findings/{finding_key}", server.handleUpsertFinding)
 	server.mux.HandleFunc("GET /api/projects/{id}/findings/{finding_key}/versions", server.handleFindingVersions)
 	server.mux.HandleFunc("POST /api/projects/{id}/evidence", server.handleAttachEvidence)
+	server.mux.HandleFunc("POST /api/projects/{id}/report", server.handleReportTrigger)
 }
 
 func (server *Server) handleHealth(response http.ResponseWriter, request *http.Request) {
@@ -577,8 +578,20 @@ func (server *Server) handleDashboard(response http.ResponseWriter, request *htt
 		writeError(response, http.StatusInternalServerError, "count facts")
 		return
 	}
+	findingCount, err := server.facts.CountFindings(found.ID)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "count findings")
+		return
+	}
+	evidenceCount, err := server.facts.CountEvidence(found.ID)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "count evidence")
+		return
+	}
 	summary.Counts.Tasks = len(tasks)
 	summary.Counts.Facts = factCount
+	summary.Counts.Findings = findingCount
+	summary.Counts.Evidence = evidenceCount
 
 	writeJSON(response, http.StatusOK, summary)
 }
