@@ -86,6 +86,13 @@ type UpsertFactRequest struct {
 	ScopeStatus ScopeStatus
 }
 
+// FactIndexOptions tunes FactIndex. By default deprecated facts are excluded
+// from Current Truth; callers that need to inspect historical/deprecated facts
+// (e.g. a "show deprecated" toggle in the blackboard view) opt in explicitly.
+type FactIndexOptions struct {
+	IncludeDeprecated bool
+}
+
 type UpsertFactRelationRequest struct {
 	ProjectID     string
 	SourceFactKey string
@@ -182,14 +189,18 @@ func (s *Service) UpsertFact(req UpsertFactRequest) (Fact, error) {
 	return updated, nil
 }
 
-func (s *Service) FactIndex(projectID string) ([]FactIndexEntry, error) {
-	rows, err := s.db.Query(
-		`SELECT fact_key, category, summary, confidence, scope_status
+func (s *Service) FactIndex(projectID string, opts FactIndexOptions) ([]FactIndexEntry, error) {
+	query := `SELECT fact_key, category, summary, confidence, scope_status
 		 FROM project_facts
-		 WHERE project_id = ? AND confidence != ?
-		 ORDER BY updated_at ASC`,
-		projectID, string(ConfidenceDeprecated),
-	)
+		 WHERE project_id = ?`
+	args := []any{projectID}
+	if !opts.IncludeDeprecated {
+		query += ` AND confidence != ?`
+		args = append(args, string(ConfidenceDeprecated))
+	}
+	query += ` ORDER BY updated_at ASC`
+
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list fact index: %w", err)
 	}

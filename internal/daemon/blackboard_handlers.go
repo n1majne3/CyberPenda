@@ -63,7 +63,11 @@ func (server *Server) handleFactIndex(response http.ResponseWriter, request *htt
 		return
 	}
 
-	facts, err := server.facts.FactIndex(projectID)
+	// ?include_deprecated=1 surfaces deprecated facts alongside Current Truth.
+	// Default omits them, matching the dashboard counts and runtime context.
+	opts := blackboard.FactIndexOptions{IncludeDeprecated: request.URL.Query().Get("include_deprecated") == "1"}
+
+	facts, err := server.facts.FactIndex(projectID, opts)
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "list fact index")
 		return

@@ -57,7 +57,7 @@ func GenerateStub(found project.Project, counts Counts) Stub {
 // service, and stays testable.
 type Reader interface {
 	ListFindings(projectID string) ([]blackboard.Finding, error)
-	FactIndex(projectID string) ([]blackboard.FactIndexEntry, error)
+	FactIndex(projectID string, opts blackboard.FactIndexOptions) ([]blackboard.FactIndexEntry, error)
 	ListEvidence(projectID string) ([]blackboard.EvidenceArtifact, error)
 }
 
@@ -98,7 +98,7 @@ func (g *Generator) Generate(req Request) (Report, error) {
 	if err != nil {
 		return Report{}, fmt.Errorf("list findings: %w", err)
 	}
-	facts, err := g.reader.FactIndex(req.ProjectID)
+	facts, err := g.reader.FactIndex(req.ProjectID, blackboard.FactIndexOptions{})
 	if err != nil {
 		return Report{}, fmt.Errorf("list facts: %w", err)
 	}

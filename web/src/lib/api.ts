@@ -151,6 +151,63 @@ export interface Fact extends FactIndexEntry {
   updated_at: string;
 }
 
+export interface FactVersion {
+  id: string;
+  project_id: string;
+  fact_key: string;
+  version: number;
+  category: string;
+  summary: string;
+  body: string;
+  confidence: string;
+  scope_status?: string;
+  created_at: string;
+}
+
+export interface FactRelation {
+  id: string;
+  project_id: string;
+  source_fact_key: string;
+  target_fact_key: string;
+  relation: string;
+  summary: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FindingVersion {
+  id: string;
+  project_id: string;
+  finding_key: string;
+  version: number;
+  title: string;
+  description: string;
+  status: string;
+  target: string;
+  proof: string;
+  impact: string;
+  recommendation: string;
+  cvss_version: string;
+  cvss_vector: string;
+  cvss_pending: boolean;
+  severity: string;
+  created_at: string;
+}
+
+export interface TaskSummaryVersion {
+  id: string;
+  task_id: string;
+  version: number;
+  summary: string;
+  submitted_by?: string;
+  created_at: string;
+}
+
+export interface TaskSummaryResponse {
+  summary?: TaskSummaryVersion;
+  versions: TaskSummaryVersion[];
+}
+
 export interface Finding {
   id: string;
   project_id: string;

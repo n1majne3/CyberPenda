@@ -143,7 +143,7 @@ func TestFactIndexOmitsFullBodies(t *testing.T) {
 		t.Fatalf("upsert: %v", err)
 	}
 
-	index, err := bb.FactIndex(projectID)
+	index, err := bb.FactIndex(projectID, blackboard.FactIndexOptions{})
 	if err != nil {
 		t.Fatalf("index: %v", err)
 	}
@@ -156,6 +156,75 @@ func TestFactIndexOmitsFullBodies(t *testing.T) {
 	// FactIndexEntry must not have a Body field; verify by struct shape.
 	// (If Body existed, this test would compile but the field would be empty;
 	// the index query explicitly selects no body column.)
+}
+
+// TestFactIndexExcludesDeprecatedByDefault proves the Current Truth contract:
+// the default fact index omits deprecated facts so dashboards, runtimes, and
+// reports never treat them as current.
+func TestFactIndexExcludesDeprecatedByDefault(t *testing.T) {
+	bb, projects := newServices(t)
+	projectID := mustProject(t, projects)
+
+	if _, err := bb.UpsertFact(blackboard.UpsertFactRequest{
+		ProjectID: projectID, FactKey: "active", Summary: "current fact",
+	}); err != nil {
+		t.Fatalf("upsert active: %v", err)
+	}
+	if _, err := bb.UpsertFact(blackboard.UpsertFactRequest{
+		ProjectID: projectID, FactKey: "old", Summary: "deprecated fact",
+		Confidence: blackboard.ConfidenceDeprecated,
+	}); err != nil {
+		t.Fatalf("upsert old: %v", err)
+	}
+
+	index, err := bb.FactIndex(projectID, blackboard.FactIndexOptions{})
+	if err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	if len(index) != 1 {
+		t.Fatalf("expected 1 (deprecated excluded), got %d", len(index))
+	}
+	if index[0].FactKey != "active" {
+		t.Fatalf("expected only the active fact, got %q", index[0].FactKey)
+	}
+}
+
+// TestFactIndexIncludesDeprecatedWhenRequested proves the blackboard "show
+// deprecated" toggle can surface historical facts alongside Current Truth.
+func TestFactIndexIncludesDeprecatedWhenRequested(t *testing.T) {
+	bb, projects := newServices(t)
+	projectID := mustProject(t, projects)
+
+	if _, err := bb.UpsertFact(blackboard.UpsertFactRequest{
+		ProjectID: projectID, FactKey: "active", Summary: "current fact",
+	}); err != nil {
+		t.Fatalf("upsert active: %v", err)
+	}
+	if _, err := bb.UpsertFact(blackboard.UpsertFactRequest{
+		ProjectID: projectID, FactKey: "old", Summary: "deprecated fact",
+		Confidence: blackboard.ConfidenceDeprecated,
+	}); err != nil {
+		t.Fatalf("upsert old: %v", err)
+	}
+
+	index, err := bb.FactIndex(projectID, blackboard.FactIndexOptions{IncludeDeprecated: true})
+	if err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	if len(index) != 2 {
+		t.Fatalf("expected 2 (deprecated included), got %d", len(index))
+	}
+	// The deprecated fact keeps its real confidence so the UI can badge it.
+	keys := map[string]blackboard.Confidence{}
+	for _, e := range index {
+		keys[e.FactKey] = e.Confidence
+	}
+	if keys["old"] != blackboard.ConfidenceDeprecated {
+		t.Fatalf("expected deprecated confidence preserved, got %q", keys["old"])
+	}
+	if keys["active"] == blackboard.ConfidenceDeprecated {
+		t.Fatalf("active fact must not be marked deprecated")
+	}
 }
 
 func TestGetFactReturnsFullBody(t *testing.T) {

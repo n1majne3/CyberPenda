@@ -376,6 +376,27 @@ checks is covered by an existing test or React view:
 The only remaining out-of-band work is real-runtime smoke validation (running
 the actual Codex/Claude/Pi binaries against the adapter logic).
 
+Slice 6/7 UI wiring note: the blackboard and findings React views originally
+exposed the fact index and finding cards but left several declared features
+stubbed while the backing HTTP endpoints already existed. Those are now wired:
+
+- Fact detail now expands to show the full body, fact versions
+  (`GET .../facts/{key}/versions`), and fact relations
+  (`GET .../facts/{key}/relations`).
+- The "show deprecated" toggle now works end to end: `FactIndex` takes an
+  `IncludeDeprecated` option and `GET .../facts/index?include_deprecated=1`
+  surfaces deprecated facts (badged, struck through) alongside Current Truth.
+  The default still excludes them so dashboards, reports, and runtime context
+  are unaffected.
+- The blackboard view surfaces a task summary panel
+  (`GET .../tasks/{id}/summary`), since task summaries are project memory.
+- The findings view shows per-finding version history
+  (`GET .../findings/{key}/versions`).
+
+Each behavior is covered by `blackboard_test.go` (deprecated default vs
+include) and the React build. Fact/finding merge and alias UI remain out of
+scope here (the underlying merge logic is not yet implemented).
+
 ## Implementation Notes
 
 - Keep business behavior in daemon services shared by HTTP, MCP, and CLI.
