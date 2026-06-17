@@ -8,11 +8,13 @@ import {
   Eye,
   EyeOff,
   GitBranch,
+  GitMerge,
   History,
   ScrollText,
 } from "lucide-react";
 import {
   apiGet,
+  apiPost,
   type FactIndexEntry,
   type Fact,
   type FactVersion,
@@ -88,7 +90,9 @@ export function FactsPage() {
                 projectId={projectId!}
                 base={base}
                 open={openKey === f.fact_key}
+                allFactKeys={facts.map((x) => x.fact_key).filter((k) => k !== f.fact_key)}
                 onToggle={() => openFact(f.fact_key)}
+                onMerged={() => loadIndex(showDeprecated)}
               />
             ))}
           </div>
@@ -104,17 +108,25 @@ function FactRow({
   projectId,
   base,
   open,
+  allFactKeys,
   onToggle,
+  onMerged,
 }: {
   entry: FactIndexEntry;
   projectId: string;
   base: string;
   open: boolean;
+  allFactKeys: string[];
   onToggle: () => void;
+  onMerged: () => void;
 }) {
   const [full, setFull] = useState<Fact | null>(null);
   const [versions, setVersions] = useState<FactVersion[] | null>(null);
   const [relations, setRelations] = useState<FactRelation[] | null>(null);
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const [mergeTarget, setMergeTarget] = useState("");
+  const [mergeError, setMergeError] = useState<string | null>(null);
+  const [mergeBusy, setMergeBusy] = useState(false);
 
   // Fetch body + versions + relations lazily when expanded.
   useEffect(() => {
@@ -146,6 +158,25 @@ function FactRow({
   }, [open, base, entry.fact_key]);
 
   const deprecated = entry.confidence === "deprecated";
+
+  async function confirmMerge() {
+    if (!mergeTarget) return;
+    setMergeBusy(true);
+    setMergeError(null);
+    try {
+      await apiPost(`${base}/facts/merge`, {
+        source_fact_key: entry.fact_key,
+        canonical_fact_key: mergeTarget,
+      });
+      setMergeOpen(false);
+      setMergeTarget("");
+      onMerged();
+    } catch (e) {
+      setMergeError((e as Error).message);
+    } finally {
+      setMergeBusy(false);
+    }
+  }
 
   return (
     <div>
@@ -224,6 +255,52 @@ function FactRow({
               </ul>
             )}
           </div>
+
+          {/* Merge — consolidate this fact key into a canonical key (governed cleanup). */}
+          {!deprecated && allFactKeys.length > 0 && (
+            <div className="border-t border-border pt-3">
+              {!mergeOpen ? (
+                <Button size="sm" variant="outline" onClick={() => setMergeOpen(true)}>
+                  <GitMerge className="h-3.5 w-3.5 mr-1" /> Merge into…
+                </Button>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-xs text-muted-foreground">
+                    Merge <code>{entry.fact_key}</code> into the canonical fact. The old key becomes an alias; history is preserved.
+                  </p>
+                  <select
+                    className="flex h-9 w-full max-w-md rounded-md border border-input bg-background px-3 text-xs"
+                    value={mergeTarget}
+                    onChange={(e) => setMergeTarget(e.target.value)}
+                  >
+                    <option value="">Choose canonical fact key</option>
+                    {allFactKeys.map((k) => (
+                      <option key={k} value={k}>
+                        {k}
+                      </option>
+                    ))}
+                  </select>
+                  {mergeError && <p className="text-xs text-destructive">{mergeError}</p>}
+                  <div className="flex gap-2">
+                    <Button size="sm" onClick={confirmMerge} disabled={!mergeTarget || mergeBusy}>
+                      Confirm merge
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => {
+                        setMergeOpen(false);
+                        setMergeTarget("");
+                        setMergeError(null);
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </Card>
       )}
     </div>
