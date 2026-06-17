@@ -72,6 +72,36 @@ func migrate(db *sql.DB) error {
 			updated_at TEXT NOT NULL,
 			UNIQUE (credential_ref, scope, scope_id)
 		);`,
+		`CREATE TABLE IF NOT EXISTS tasks (
+			id TEXT PRIMARY KEY,
+			project_id TEXT NOT NULL,
+			goal TEXT NOT NULL,
+			status TEXT NOT NULL,
+			runner TEXT NOT NULL,
+			runtime_profile_id TEXT NOT NULL,
+			run_controls_json TEXT NOT NULL,
+			scope_snapshot_json TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS task_runtime_config_versions (
+			id TEXT PRIMARY KEY,
+			task_id TEXT NOT NULL,
+			version INTEGER NOT NULL,
+			runtime_profile_id TEXT NOT NULL,
+			config_json TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			UNIQUE (task_id, version)
+		);`,
+		`CREATE TABLE IF NOT EXISTS task_events (
+			id TEXT PRIMARY KEY,
+			task_id TEXT NOT NULL,
+			seq INTEGER NOT NULL,
+			kind TEXT NOT NULL,
+			payload_json TEXT NOT NULL DEFAULT '{}',
+			created_at TEXT NOT NULL,
+			UNIQUE (task_id, seq)
+		);`,
 	}
 
 	for _, statement := range statements {
