@@ -445,6 +445,31 @@ func TestEvidenceAttachRejectsMissingTarget(t *testing.T) {
 	}
 }
 
+// TestListFindingsAndEvidenceRejectUnknownProject closes the last two
+// project-scoped list routes that returned 200 with an empty body for an
+// unknown project id instead of 404, matching every other project-scoped route.
+func TestListFindingsAndEvidenceRejectUnknownProject(t *testing.T) {
+	server := newDaemon(t)
+	const bogus = "does-not-exist"
+
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{"list findings", "/api/projects/" + bogus + "/findings"},
+		{"list evidence", "/api/projects/" + bogus + "/evidence"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			resp := httptest.NewRecorder()
+			server.ServeHTTP(resp, req)
+			if resp.Code != http.StatusNotFound {
+				t.Fatalf("expected 404 for %s on unknown project, got %d with body %s", tc.name, resp.Code, resp.Body.String())
+			}
+		})
+	}
+}
+
 func TestReportTriggerReturnsStableMarkdownStubFromProjectState(t *testing.T) {
 	server := newDaemon(t)
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)

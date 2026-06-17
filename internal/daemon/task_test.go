@@ -257,6 +257,52 @@ func TestTaskContinuationReturnsSummaryOrMechanicalHandoff(t *testing.T) {
 	}
 }
 
+// TestTaskRoutesRejectUnknownProject pins the cross-cutting invariant that
+// every project-scoped task route returns 404 for a project that does not
+// exist, the same way the blackboard / credential / dashboard routes do.
+// Without an explicit project-exists check the list route returns 200 with an
+// empty body and the {task_id} routes only guard against cross-project access
+// to a *real* task, never against a bogus project id.
+func TestTaskRoutesRejectUnknownProject(t *testing.T) {
+	server := newDaemon(t)
+	const bogus = "does-not-exist"
+
+	cases := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{"list tasks", http.MethodGet, "/api/projects/" + bogus + "/tasks", ""},
+		{"create task", http.MethodPost, "/api/projects/" + bogus + "/tasks", `{"goal":"x","runner":"sandbox"}`},
+		{"get task", http.MethodGet, "/api/projects/" + bogus + "/tasks/anything", ""},
+		{"task events", http.MethodGet, "/api/projects/" + bogus + "/tasks/anything/events", ""},
+		{"stop task", http.MethodPost, "/api/projects/" + bogus + "/tasks/anything/stop", ""},
+		{"steer task", http.MethodPost, "/api/projects/" + bogus + "/tasks/anything/steer", `{"directive":"focus"}`},
+		{"task continuation", http.MethodGet, "/api/projects/" + bogus + "/tasks/anything/continuation", ""},
+		{"put task summary", http.MethodPut, "/api/projects/" + bogus + "/tasks/anything/summary", `{"summary":"s"}`},
+		{"get task summary", http.MethodGet, "/api/projects/" + bogus + "/tasks/anything/summary", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var body *bytes.Reader
+			if tc.body == "" {
+				body = bytes.NewReader(nil)
+			} else {
+				body = bytes.NewReader([]byte(tc.body))
+			}
+			req := httptest.NewRequest(tc.method, tc.path, body)
+			req.Header.Set("Content-Type", "application/json")
+			resp := httptest.NewRecorder()
+			server.ServeHTTP(resp, req)
+
+			if resp.Code != http.StatusNotFound {
+				t.Fatalf("expected 404 for %s on unknown project, got %d with body %s", tc.name, resp.Code, resp.Body.String())
+			}
+		})
+	}
+}
+
 // getTaskEvents reads the task timeline as a list of generic maps.
 func getTaskEvents(t *testing.T, server interface {
 	ServeHTTP(http.ResponseWriter, *http.Request)

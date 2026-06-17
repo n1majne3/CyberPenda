@@ -13,8 +13,7 @@ import (
 
 func (server *Server) handleCreateTask(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
-	if projectID == "" {
-		writeError(response, http.StatusNotFound, "project not found")
+	if !server.requireProject(response, projectID) {
 		return
 	}
 
@@ -79,8 +78,7 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 
 func (server *Server) handleListTasks(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
-	if projectID == "" {
-		writeError(response, http.StatusNotFound, "project not found")
+	if !server.requireProject(response, projectID) {
 		return
 	}
 
@@ -102,7 +100,10 @@ func (server *Server) handleListTasks(response http.ResponseWriter, request *htt
 func (server *Server) handleGetTask(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
 	taskID := request.PathValue("task_id")
-	if projectID == "" || taskID == "" {
+	if !server.requireProject(response, projectID) {
+		return
+	}
+	if taskID == "" {
 		writeError(response, http.StatusNotFound, "task not found")
 		return
 	}
@@ -122,7 +123,10 @@ func (server *Server) handleGetTask(response http.ResponseWriter, request *http.
 func (server *Server) handleTaskEvents(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
 	taskID := request.PathValue("task_id")
-	if projectID == "" || taskID == "" {
+	if !server.requireProject(response, projectID) {
+		return
+	}
+	if taskID == "" {
 		writeError(response, http.StatusNotFound, "task not found")
 		return
 	}
@@ -155,7 +159,10 @@ func (server *Server) handleTaskEvents(response http.ResponseWriter, request *ht
 func (server *Server) handleStopTask(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
 	taskID := request.PathValue("task_id")
-	if projectID == "" || taskID == "" {
+	if !server.requireProject(response, projectID) {
+		return
+	}
+	if taskID == "" {
 		writeError(response, http.StatusNotFound, "task not found")
 		return
 	}
@@ -182,7 +189,10 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 func (server *Server) handleSteerTask(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
 	taskID := request.PathValue("task_id")
-	if projectID == "" || taskID == "" {
+	if !server.requireProject(response, projectID) {
+		return
+	}
+	if taskID == "" {
 		writeError(response, http.StatusNotFound, "task not found")
 		return
 	}
@@ -257,7 +267,10 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 func (server *Server) handleTaskContinuation(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
 	taskID := request.PathValue("task_id")
-	if projectID == "" || taskID == "" {
+	if !server.requireProject(response, projectID) {
+		return
+	}
+	if taskID == "" {
 		writeError(response, http.StatusNotFound, "task not found")
 		return
 	}
@@ -337,7 +350,10 @@ func (server *Server) handleTaskContinuation(response http.ResponseWriter, reque
 func (server *Server) handlePutTaskSummary(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
 	taskID := request.PathValue("task_id")
-	if projectID == "" || taskID == "" {
+	if !server.requireProject(response, projectID) {
+		return
+	}
+	if taskID == "" {
 		writeError(response, http.StatusNotFound, "task not found")
 		return
 	}
@@ -370,7 +386,10 @@ func (server *Server) handlePutTaskSummary(response http.ResponseWriter, request
 func (server *Server) handleGetTaskSummary(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
 	taskID := request.PathValue("task_id")
-	if projectID == "" || taskID == "" {
+	if !server.requireProject(response, projectID) {
+		return
+	}
+	if taskID == "" {
 		writeError(response, http.StatusNotFound, "task not found")
 		return
 	}
@@ -403,6 +422,22 @@ func (server *Server) handleGetTaskSummary(response http.ResponseWriter, request
 		Summary:  latest,
 		Versions: versions,
 	})
+}
+
+// requireProject centralizes the project-exists check that every project-scoped
+// task route must perform before doing any work: it returns false (and writes the
+// response) when the project is unknown or unreadable, matching the check the
+// blackboard / credential / dashboard routes already apply.
+func (server *Server) requireProject(response http.ResponseWriter, projectID string) bool {
+	if _, err := server.projects.Get(projectID); err != nil {
+		if errors.Is(err, project.ErrNotFound) {
+			writeError(response, http.StatusNotFound, err.Error())
+		} else {
+			writeError(response, http.StatusInternalServerError, "load project")
+		}
+		return false
+	}
+	return true
 }
 
 func writeTaskError(response http.ResponseWriter, err error) {

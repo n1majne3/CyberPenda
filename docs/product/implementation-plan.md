@@ -40,6 +40,13 @@ Backend status by slice:
   CVSS-pending/confirmed-validation, evidence attach with managed paths, task
   summary auto-accept/versioning, report trigger, CLI fallback, shared service
   layer, and the React fact/finding/evidence browsers are present and tested.
+  Every project-scoped route rejects an unknown project id with 404.
+- Slice 6: the React blackboard browser — fact index, expandable fact body
+  lookup, fact versions, confidence/scope badges, and the task summary panel —
+  is present.
+- Slice 7: the React findings and evidence browsers — confirmed/unconfirmed
+  separation, CVSS v4.0 vector and severity display, evidence grouped by attach
+  target — are present.
 - Slice 8: Markdown report generation separating confirmed/unconfirmed findings,
   with fact context, evidence references, runner and scope context, and CVSS
   data — derived from stored state only — plus the React report generator view
@@ -192,8 +199,7 @@ Acceptance checks:
 
 Current status:
 
-- Project fact upsert, fact versions, empty-body preservation, fact index, full fact lookup, and task summary versioning are implemented.
-- Fact relations, findings, evidence attach, MCP server, CLI fallback, and report trigger remain open.
+- Project fact upsert, fact versions, empty-body preservation, fact index, full fact lookup, task summary versioning, fact relations, findings (with CVSS pending and confirmed validation), evidence attach with managed paths, CLI fallback, and report trigger are all implemented and tested. The built-in trusted MCP server remains the one Slice 5 deliverable that is not yet wired (it is not required to exercise the loop through the HTTP/CLI surfaces).
 
 ## Slice 6: Blackboard UI
 
@@ -346,96 +352,29 @@ Milestone 5: sandbox runner preparation and first real runtime adapter.
 
 ## Next Execution Plan
 
-### Next Slice A: Close Task Continuation And Steering
+The earlier next-up slices A through E (close task continuation and steering,
+runner boundary, complete trusted project interfaces, attach MCP and CLI
+transports, minimal React shell) are all implemented. Each of their acceptance
+checks is covered by an existing test or React view:
 
-Goal: complete the task lifecycle contract before adding real runtimes.
+- Slice A (continuation and steering): `task_test.go` and the integration flow
+  cover steering events, profile-switch-as-version, and the
+  summary-or-mechanical-handoff continuation response.
+- Slice B (runner boundary): `runner_test.go` covers task-local layout, sandbox
+  command construction, host activation, and the no-sandbox-to-host-fallback
+  rule.
+- Slice C (trusted project interfaces): `blackboard_test.go` and the service
+  tests cover fact relations, finding CVSS pending → confirmed, and evidence
+  attach with managed paths; the report trigger is exercised end-to-end.
+- Slice D (MCP and CLI transports): the `pentestctl` CLI fallback is implemented
+  and tested; the built-in trusted MCP *server* transport is the one deferred
+  item (the shared service layer it would call is already complete and used by
+  HTTP and CLI).
+- Slice E (React shell): the daemon embeds and serves the SPA, and all listed
+  views exist.
 
-Deliverables:
-
-- Harness steering endpoint.
-- Steering task event.
-- Runtime continuation record or response shape.
-- Runtime profile switch inside the same task.
-- Runtime configuration version capture for the switched continuation.
-- Mechanical handoff packet response when no task summary exists.
-
-Acceptance checks:
-
-- A test can launch a fake-runtime task, send a steering directive, and observe a steering event.
-- A test can switch runtime profile inside the same task and observe a new runtime configuration version without creating a new task.
-- A test can request continuation context and receive either the latest task summary or a mechanical handoff packet.
-
-### Next Slice B: Runner Boundary
-
-Goal: make sandbox and host execution boundaries concrete before real adapters run commands.
-
-Deliverables:
-
-- Task-local runtime workdir, runtime home, artifact root, and log root preparation.
-- Sandbox runner command construction.
-- Config projection into task-local runtime homes.
-- Host runner activation model.
-- No automatic sandbox-to-host fallback.
-
-Acceptance checks:
-
-- A test can prepare a task run directory layout.
-- A test can construct a sandbox command without launching a real container.
-- A test verifies host runner cannot be reached through sandbox fallback.
-- A test verifies config projection writes generated runtime config without mutating host runtime config.
-
-### Next Slice C: Complete Trusted Project Interfaces
-
-Goal: finish the backend contracts that runtimes need before MCP and CLI transports are attached.
-
-Deliverables:
-
-- Fact relation upsert and list.
-- Finding key upsert, finding versions, CVSS pending, and confirmed finding validation.
-- Evidence artifact attach with managed artifact paths.
-- Report trigger stub that can later generate Markdown.
-
-Acceptance checks:
-
-- A fact relation can connect two project facts and cannot directly connect findings.
-- A finding can be recorded with CVSS pending and then updated with a complete CVSS vector.
-- Evidence can be explicitly attached to a fact or finding.
-- Report trigger returns a stable response from stored project state, even before full templating exists.
-
-### Next Slice D: Attach MCP And CLI Transports
-
-Goal: expose the same service layer through runtime-facing project interfaces.
-
-Deliverables:
-
-- Built-in trusted MCP server for facts, findings, evidence, task summary, and report trigger.
-- `pentestctl` CLI fallback for the same operations.
-- Shared validation and response shapes across HTTP, MCP, and CLI.
-
-Acceptance checks:
-
-- MCP and CLI writes produce the same stored state as HTTP service calls.
-- CLI fact upsert preserves empty-body semantics and fact versions.
-- MCP task summary update is automatically accepted and versioned.
-
-### Next Slice E: Minimal React Shell
-
-Goal: make the backend MVP operable through a local browser.
-
-Deliverables:
-
-- React shell served by the daemon for release builds.
-- Project dashboard.
-- Project and scope CRUD.
-- Runtime profile selector and editor.
-- Task launch and task detail timeline.
-- Fact index and fact detail views.
-
-Acceptance checks:
-
-- A user can create a project and launch a fake-runtime task from the UI.
-- The task timeline shows persisted task events.
-- The fact index and full fact lookup are visible from the dashboard.
+The only remaining out-of-band work is real-runtime smoke validation (running
+the actual Codex/Claude/Pi binaries against the adapter logic).
 
 ## Implementation Notes
 

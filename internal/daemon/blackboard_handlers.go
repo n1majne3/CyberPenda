@@ -13,16 +13,11 @@ import (
 func (server *Server) handleUpsertProjectFact(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
 	factKey := request.PathValue("fact_key")
-	if projectID == "" || factKey == "" {
-		writeError(response, http.StatusNotFound, "project fact not found")
+	if !server.requireProject(response, projectID) {
 		return
 	}
-	if _, err := server.projects.Get(projectID); err != nil {
-		if errors.Is(err, project.ErrNotFound) {
-			writeError(response, http.StatusNotFound, err.Error())
-			return
-		}
-		writeError(response, http.StatusInternalServerError, "load project")
+	if factKey == "" {
+		writeError(response, http.StatusNotFound, "project fact not found")
 		return
 	}
 
@@ -64,16 +59,7 @@ func (server *Server) handleUpsertProjectFact(response http.ResponseWriter, requ
 
 func (server *Server) handleFactIndex(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
-	if projectID == "" {
-		writeError(response, http.StatusNotFound, "project not found")
-		return
-	}
-	if _, err := server.projects.Get(projectID); err != nil {
-		if errors.Is(err, project.ErrNotFound) {
-			writeError(response, http.StatusNotFound, err.Error())
-			return
-		}
-		writeError(response, http.StatusInternalServerError, "load project")
+	if !server.requireProject(response, projectID) {
 		return
 	}
 
@@ -95,16 +81,11 @@ func (server *Server) handleFactIndex(response http.ResponseWriter, request *htt
 func (server *Server) handleGetProjectFact(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
 	factKey := request.PathValue("fact_key")
-	if projectID == "" || factKey == "" {
-		writeError(response, http.StatusNotFound, "project fact not found")
+	if !server.requireProject(response, projectID) {
 		return
 	}
-	if _, err := server.projects.Get(projectID); err != nil {
-		if errors.Is(err, project.ErrNotFound) {
-			writeError(response, http.StatusNotFound, err.Error())
-			return
-		}
-		writeError(response, http.StatusInternalServerError, "load project")
+	if factKey == "" {
+		writeError(response, http.StatusNotFound, "project fact not found")
 		return
 	}
 
@@ -123,16 +104,11 @@ func (server *Server) handleGetProjectFact(response http.ResponseWriter, request
 func (server *Server) handleProjectFactVersions(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
 	factKey := request.PathValue("fact_key")
-	if projectID == "" || factKey == "" {
-		writeError(response, http.StatusNotFound, "project fact not found")
+	if !server.requireProject(response, projectID) {
 		return
 	}
-	if _, err := server.projects.Get(projectID); err != nil {
-		if errors.Is(err, project.ErrNotFound) {
-			writeError(response, http.StatusNotFound, err.Error())
-			return
-		}
-		writeError(response, http.StatusInternalServerError, "load project")
+	if factKey == "" {
+		writeError(response, http.StatusNotFound, "project fact not found")
 		return
 	}
 
@@ -154,16 +130,11 @@ func (server *Server) handleProjectFactVersions(response http.ResponseWriter, re
 func (server *Server) handleUpsertFactRelation(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
 	factKey := request.PathValue("fact_key")
-	if projectID == "" || factKey == "" {
-		writeError(response, http.StatusNotFound, "project fact not found")
+	if !server.requireProject(response, projectID) {
 		return
 	}
-	if _, err := server.projects.Get(projectID); err != nil {
-		if errors.Is(err, project.ErrNotFound) {
-			writeError(response, http.StatusNotFound, err.Error())
-			return
-		}
-		writeError(response, http.StatusInternalServerError, "load project")
+	if factKey == "" {
+		writeError(response, http.StatusNotFound, "project fact not found")
 		return
 	}
 
@@ -194,16 +165,11 @@ func (server *Server) handleUpsertFactRelation(response http.ResponseWriter, req
 func (server *Server) handleFactRelations(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
 	factKey := request.PathValue("fact_key")
-	if projectID == "" || factKey == "" {
-		writeError(response, http.StatusNotFound, "project fact not found")
+	if !server.requireProject(response, projectID) {
 		return
 	}
-	if _, err := server.projects.Get(projectID); err != nil {
-		if errors.Is(err, project.ErrNotFound) {
-			writeError(response, http.StatusNotFound, err.Error())
-			return
-		}
-		writeError(response, http.StatusInternalServerError, "load project")
+	if factKey == "" {
+		writeError(response, http.StatusNotFound, "project fact not found")
 		return
 	}
 
@@ -225,16 +191,11 @@ func (server *Server) handleFactRelations(response http.ResponseWriter, request 
 func (server *Server) handleUpsertFinding(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
 	findingKey := request.PathValue("finding_key")
-	if projectID == "" || findingKey == "" {
-		writeError(response, http.StatusNotFound, "finding not found")
+	if !server.requireProject(response, projectID) {
 		return
 	}
-	if _, err := server.projects.Get(projectID); err != nil {
-		if errors.Is(err, project.ErrNotFound) {
-			writeError(response, http.StatusNotFound, err.Error())
-			return
-		}
-		writeError(response, http.StatusInternalServerError, "load project")
+	if findingKey == "" {
+		writeError(response, http.StatusNotFound, "finding not found")
 		return
 	}
 
@@ -276,8 +237,7 @@ func (server *Server) handleUpsertFinding(response http.ResponseWriter, request 
 
 func (server *Server) handleListFindings(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
-	if projectID == "" {
-		writeError(response, http.StatusNotFound, "project not found")
+	if !server.requireProject(response, projectID) {
 		return
 	}
 	findings, err := server.facts.ListFindings(projectID)
@@ -298,16 +258,11 @@ func (server *Server) handleListFindings(response http.ResponseWriter, request *
 func (server *Server) handleFindingVersions(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
 	findingKey := request.PathValue("finding_key")
-	if projectID == "" || findingKey == "" {
-		writeError(response, http.StatusNotFound, "finding not found")
+	if !server.requireProject(response, projectID) {
 		return
 	}
-	if _, err := server.projects.Get(projectID); err != nil {
-		if errors.Is(err, project.ErrNotFound) {
-			writeError(response, http.StatusNotFound, err.Error())
-			return
-		}
-		writeError(response, http.StatusInternalServerError, "load project")
+	if findingKey == "" {
+		writeError(response, http.StatusNotFound, "finding not found")
 		return
 	}
 
@@ -328,8 +283,7 @@ func (server *Server) handleFindingVersions(response http.ResponseWriter, reques
 
 func (server *Server) handleListEvidence(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
-	if projectID == "" {
-		writeError(response, http.StatusNotFound, "project not found")
+	if !server.requireProject(response, projectID) {
 		return
 	}
 	evidence, err := server.facts.ListEvidence(projectID)
@@ -349,16 +303,7 @@ func (server *Server) handleListEvidence(response http.ResponseWriter, request *
 
 func (server *Server) handleAttachEvidence(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
-	if projectID == "" {
-		writeError(response, http.StatusNotFound, "project not found")
-		return
-	}
-	if _, err := server.projects.Get(projectID); err != nil {
-		if errors.Is(err, project.ErrNotFound) {
-			writeError(response, http.StatusNotFound, err.Error())
-			return
-		}
-		writeError(response, http.StatusInternalServerError, "load project")
+	if !server.requireProject(response, projectID) {
 		return
 	}
 
