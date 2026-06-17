@@ -191,6 +191,245 @@ func TestProjectsCanBeListedForDashboard(t *testing.T) {
 	}
 }
 
+func TestCreateProjectPersistsDefaults(t *testing.T) {
+	server, err := daemon.NewServer(daemon.Config{
+		Version: "test-version",
+		DBPath:  filepath.Join(t.TempDir(), "pentest.db"),
+	})
+	if err != nil {
+		t.Fatalf("NewServer returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := server.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	id := createProject(t, server, `{
+		"name": "Acme",
+		"defaults": {"runner": "sandbox", "runtime_profile": "codex-default"}
+	}`)
+
+	var fetched struct {
+		Defaults struct {
+			Runner         string `json:"runner"`
+			RuntimeProfile string `json:"runtime_profile"`
+		} `json:"defaults"`
+	}
+	getProject(t, server, id, &fetched)
+
+	if fetched.Defaults.Runner != "sandbox" {
+		t.Fatalf("expected default runner sandbox, got %q", fetched.Defaults.Runner)
+	}
+	if fetched.Defaults.RuntimeProfile != "codex-default" {
+		t.Fatalf("expected default runtime profile codex-default, got %q", fetched.Defaults.RuntimeProfile)
+	}
+}
+
+func TestPatchProjectUpdatesNameAndScope(t *testing.T) {
+	server, err := daemon.NewServer(daemon.Config{
+		Version: "test-version",
+		DBPath:  filepath.Join(t.TempDir(), "pentest.db"),
+	})
+	if err != nil {
+		t.Fatalf("NewServer returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := server.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	id := createProject(t, server, `{"name":"Original","scope":{"domains":["example.com"],"notes":"original"}}`)
+
+	patchBody := []byte(`{
+		"name": "Renamed",
+		"scope": {"domains": ["acme.example"], "testing_limits": ["business hours"]}
+	}`)
+	patchRequest := httptest.NewRequest(http.MethodPatch, "/api/projects/"+id, bytes.NewReader(patchBody))
+	patchRequest.Header.Set("Content-Type", "application/json")
+	patchResponse := httptest.NewRecorder()
+	server.ServeHTTP(patchResponse, patchRequest)
+
+	if patchResponse.Code != http.StatusOK {
+		t.Fatalf("expected patch status 200, got %d with body %s", patchResponse.Code, patchResponse.Body.String())
+	}
+
+	var patched struct {
+		Name  string `json:"name"`
+		Scope struct {
+			Domains       []string `json:"domains"`
+			Notes         string   `json:"notes"`
+			TestingLimits []string `json:"testing_limits"`
+		} `json:"scope"`
+	}
+	if err := json.NewDecoder(patchResponse.Body).Decode(&patched); err != nil {
+		t.Fatalf("decode patch response: %v", err)
+	}
+	if patched.Name != "Renamed" {
+		t.Fatalf("expected renamed project, got %q", patched.Name)
+	}
+	if got := patched.Scope.Domains; len(got) != 1 || got[0] != "acme.example" {
+		t.Fatalf("expected scope domains overwritten, got %#v", got)
+	}
+	if patched.Scope.Notes != "" {
+		t.Fatalf("expected scope notes cleared by full-scope overwrite, got %q", patched.Scope.Notes)
+	}
+	if got := patched.Scope.TestingLimits; len(got) != 1 || got[0] != "business hours" {
+		t.Fatalf("expected new testing limits, got %#v", got)
+	}
+
+	// The update must persist across reloads.
+	var fetched struct {
+		Name  string `json:"name"`
+		Scope struct {
+			Domains []string `json:"domains"`
+		} `json:"scope"`
+	}
+	getProject(t, server, id, &fetched)
+	if fetched.Name != "Renamed" {
+		t.Fatalf("expected persisted rename, got %q", fetched.Name)
+	}
+	if got := fetched.Scope.Domains; len(got) != 1 || got[0] != "acme.example" {
+		t.Fatalf("expected persisted scope, got %#v", got)
+	}
+}
+
+func TestPatchProjectPreservesUntouchedScope(t *testing.T) {
+	server, err := daemon.NewServer(daemon.Config{
+		Version: "test-version",
+		DBPath:  filepath.Join(t.TempDir(), "pentest.db"),
+	})
+	if err != nil {
+		t.Fatalf("NewServer returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := server.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	id := createProject(t, server, `{"name":"Original","scope":{"domains":["example.com"],"notes":"keep me"}}`)
+
+	patchBody := []byte(`{"description":"only description changes"}`)
+	patchRequest := httptest.NewRequest(http.MethodPatch, "/api/projects/"+id, bytes.NewReader(patchBody))
+	patchRequest.Header.Set("Content-Type", "application/json")
+	patchResponse := httptest.NewRecorder()
+	server.ServeHTTP(patchResponse, patchRequest)
+
+	if patchResponse.Code != http.StatusOK {
+		t.Fatalf("expected patch status 200, got %d with body %s", patchResponse.Code, patchResponse.Body.String())
+	}
+
+	var fetched struct {
+		Scope struct {
+			Domains []string `json:"domains"`
+			Notes   string   `json:"notes"`
+		} `json:"scope"`
+	}
+	getProject(t, server, id, &fetched)
+	if got := fetched.Scope.Domains; len(got) != 1 || got[0] != "example.com" {
+		t.Fatalf("expected untouched scope preserved, got %#v", got)
+	}
+	if fetched.Scope.Notes != "keep me" {
+		t.Fatalf("expected untouched notes preserved, got %q", fetched.Scope.Notes)
+	}
+}
+
+func TestPatchProjectRejectsBlankName(t *testing.T) {
+	server, err := daemon.NewServer(daemon.Config{
+		Version: "test-version",
+		DBPath:  filepath.Join(t.TempDir(), "pentest.db"),
+	})
+	if err != nil {
+		t.Fatalf("NewServer returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := server.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	id := createProject(t, server, `{"name":"Original"}`)
+
+	patchBody := []byte(`{"name":"   "}`)
+	patchRequest := httptest.NewRequest(http.MethodPatch, "/api/projects/"+id, bytes.NewReader(patchBody))
+	patchRequest.Header.Set("Content-Type", "application/json")
+	patchResponse := httptest.NewRecorder()
+	server.ServeHTTP(patchResponse, patchRequest)
+
+	if patchResponse.Code != http.StatusBadRequest {
+		t.Fatalf("expected blank-name patch to fail with 400, got %d with body %s", patchResponse.Code, patchResponse.Body.String())
+	}
+}
+
+func TestPatchProjectReturnsNotFoundForUnknownId(t *testing.T) {
+	server, err := daemon.NewServer(daemon.Config{
+		Version: "test-version",
+		DBPath:  ":memory:",
+	})
+	if err != nil {
+		t.Fatalf("NewServer returned error: %v", err)
+	}
+
+	patchBody := []byte(`{"name":"Anything"}`)
+	patchRequest := httptest.NewRequest(http.MethodPatch, "/api/projects/missing", bytes.NewReader(patchBody))
+	patchRequest.Header.Set("Content-Type", "application/json")
+	patchResponse := httptest.NewRecorder()
+	server.ServeHTTP(patchResponse, patchRequest)
+
+	if patchResponse.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown id, got %d with body %s", patchResponse.Code, patchResponse.Body.String())
+	}
+}
+
+func TestListProjectsReturnsArrayShape(t *testing.T) {
+	server, err := daemon.NewServer(daemon.Config{
+		Version: "test-version",
+		DBPath:  ":memory:",
+	})
+	if err != nil {
+		t.Fatalf("NewServer returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := server.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "/api/projects", nil)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected list status 200, got %d", response.Code)
+	}
+	var body struct {
+		Projects []struct {
+			ID string `json:"id"`
+		} `json:"projects"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode empty list response: %v", err)
+	}
+	if body.Projects == nil {
+		t.Fatal("expected projects array, got null")
+	}
+}
+
+func getProject(t *testing.T, server *daemon.Server, id string, target any) {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, "/api/projects/"+id, nil)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected get status 200, got %d with body %s", response.Code, response.Body.String())
+	}
+	if err := json.NewDecoder(response.Body).Decode(target); err != nil {
+		t.Fatalf("decode get response: %v", err)
+	}
+}
+
 func createProject(t *testing.T, server *daemon.Server, body string) string {
 	t.Helper()
 

@@ -1,16 +1,12 @@
 package daemon
 
 import (
-	"crypto/rand"
-	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
-	"time"
 
-	_ "modernc.org/sqlite"
+	"pentest/internal/project"
+	"pentest/internal/store"
 )
 
 type Config struct {
@@ -19,34 +15,23 @@ type Config struct {
 }
 
 type Server struct {
-	mux     *http.ServeMux
-	version string
-	db      *sql.DB
+	mux      *http.ServeMux
+	version  string
+	db       *store.DB
+	projects *project.Service
 }
 
 func NewServer(config Config) (*Server, error) {
-	dbPath := config.DBPath
-	if dbPath == "" {
-		dbPath = ":memory:"
-	}
-
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := store.Open(config.DBPath)
 	if err != nil {
-		return nil, err
-	}
-	if err := db.Ping(); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if err := migrate(db); err != nil {
-		_ = db.Close()
 		return nil, err
 	}
 
 	server := &Server{
-		mux:     http.NewServeMux(),
-		version: config.Version,
-		db:      db,
+		mux:      http.NewServeMux(),
+		version:  config.Version,
+		db:       db,
+		projects: project.NewService(db),
 	}
 	server.routes()
 
@@ -65,7 +50,8 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /health", server.handleHealth)
 	server.mux.HandleFunc("GET /api/projects", server.handleListProjects)
 	server.mux.HandleFunc("POST /api/projects", server.handleCreateProject)
-	server.mux.HandleFunc("GET /api/projects/", server.handleGetProject)
+	server.mux.HandleFunc("GET /api/projects/{id}", server.handleGetProject)
+	server.mux.HandleFunc("PATCH /api/projects/{id}", server.handleUpdateProject)
 }
 
 func (server *Server) handleHealth(response http.ResponseWriter, request *http.Request) {
@@ -79,71 +65,27 @@ func (server *Server) handleHealth(response http.ResponseWriter, request *http.R
 	}
 	payload.Database.Status = "ok"
 
-	response.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(response).Encode(payload)
-}
-
-type project struct {
-	ID          string       `json:"id"`
-	Name        string       `json:"name"`
-	Description string       `json:"description"`
-	Scope       projectScope `json:"scope"`
-	CreatedAt   time.Time    `json:"created_at"`
-	UpdatedAt   time.Time    `json:"updated_at"`
-}
-
-type projectScope struct {
-	Domains       []string `json:"domains,omitempty"`
-	IPs           []string `json:"ips,omitempty"`
-	CIDRs         []string `json:"cidrs,omitempty"`
-	URLs          []string `json:"urls,omitempty"`
-	Ports         []string `json:"ports,omitempty"`
-	Excluded      []string `json:"excluded,omitempty"`
-	TestingLimits []string `json:"testing_limits,omitempty"`
-	Notes         string   `json:"notes,omitempty"`
+	writeJSON(response, http.StatusOK, payload)
 }
 
 func (server *Server) handleCreateProject(response http.ResponseWriter, request *http.Request) {
 	var input struct {
-		Name        string       `json:"name"`
-		Description string       `json:"description"`
-		Scope       projectScope `json:"scope"`
+		Name        string           `json:"name"`
+		Description string           `json:"description"`
+		Scope       project.Scope    `json:"scope"`
+		Defaults    project.Defaults `json:"defaults"`
 	}
 	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
 		writeError(response, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if strings.TrimSpace(input.Name) == "" {
-		writeError(response, http.StatusBadRequest, "project name is required")
-		return
-	}
 
-	now := time.Now().UTC()
-	created := project{
-		ID:          newID(),
-		Name:        input.Name,
-		Description: input.Description,
-		Scope:       input.Scope,
-		CreatedAt:   now,
-		UpdatedAt:   now,
-	}
-
-	scopeJSON, err := json.Marshal(created.Scope)
+	created, err := server.projects.Create(input.Name, input.Description, input.Scope, input.Defaults)
 	if err != nil {
-		writeError(response, http.StatusInternalServerError, "encode scope")
-		return
-	}
-
-	_, err = server.db.Exec(
-		`INSERT INTO projects (id, name, description, scope_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		created.ID,
-		created.Name,
-		created.Description,
-		string(scopeJSON),
-		created.CreatedAt.Format(time.RFC3339Nano),
-		created.UpdatedAt.Format(time.RFC3339Nano),
-	)
-	if err != nil {
+		if errors.Is(err, project.ErrMissingName) {
+			writeError(response, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeError(response, http.StatusInternalServerError, "store project")
 		return
 	}
@@ -152,46 +94,31 @@ func (server *Server) handleCreateProject(response http.ResponseWriter, request 
 }
 
 func (server *Server) handleListProjects(response http.ResponseWriter, request *http.Request) {
-	rows, err := server.db.Query(
-		`SELECT id, name, description, scope_json, created_at, updated_at FROM projects ORDER BY created_at ASC`,
-	)
+	projects, err := server.projects.List()
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "list projects")
 		return
 	}
-	defer rows.Close()
-
-	var projects []project
-	for rows.Next() {
-		found, err := scanProject(rows)
-		if err != nil {
-			writeError(response, http.StatusInternalServerError, "scan project")
-			return
-		}
-		projects = append(projects, found)
+	if projects == nil {
+		projects = []project.Project{}
 	}
-	if err := rows.Err(); err != nil {
-		writeError(response, http.StatusInternalServerError, "list projects")
-		return
-	}
-
 	writeJSON(response, http.StatusOK, struct {
-		Projects []project `json:"projects"`
+		Projects []project.Project `json:"projects"`
 	}{
 		Projects: projects,
 	})
 }
 
 func (server *Server) handleGetProject(response http.ResponseWriter, request *http.Request) {
-	id := strings.TrimPrefix(request.URL.Path, "/api/projects/")
-	if id == "" || strings.Contains(id, "/") {
+	id := request.PathValue("id")
+	if id == "" {
 		writeError(response, http.StatusNotFound, "project not found")
 		return
 	}
 
-	found, err := server.loadProject(id)
-	if errors.Is(err, sql.ErrNoRows) {
-		writeError(response, http.StatusNotFound, "project not found")
+	found, err := server.projects.Get(id)
+	if errors.Is(err, project.ErrNotFound) {
+		writeError(response, http.StatusNotFound, err.Error())
 		return
 	}
 	if err != nil {
@@ -202,53 +129,73 @@ func (server *Server) handleGetProject(response http.ResponseWriter, request *ht
 	writeJSON(response, http.StatusOK, found)
 }
 
-func (server *Server) loadProject(id string) (project, error) {
-	return scanProject(server.db.QueryRow(
-		`SELECT id, name, description, scope_json, created_at, updated_at FROM projects WHERE id = ?`,
-		id,
-	))
-}
+func (server *Server) handleUpdateProject(response http.ResponseWriter, request *http.Request) {
+	id := request.PathValue("id")
+	if id == "" {
+		writeError(response, http.StatusNotFound, "project not found")
+		return
+	}
 
-type projectScanner interface {
-	Scan(dest ...any) error
-}
+	var input struct {
+		Name        *string           `json:"name"`
+		Description *string           `json:"description"`
+		Scope       *project.Scope    `json:"scope"`
+		Defaults    *project.Defaults `json:"defaults"`
+	}
+	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
 
-func scanProject(scanner projectScanner) (project, error) {
-	var found project
-	var scopeJSON string
-	var createdAt string
-	var updatedAt string
-	err := scanner.Scan(&found.ID, &found.Name, &found.Description, &scopeJSON, &createdAt, &updatedAt)
+	name := ""
+	description := ""
+	var scope project.Scope
+	var defaults project.Defaults
+	scopeTouched := false
+	defaultsTouched := false
+
+	if input.Name != nil {
+		name = *input.Name
+	} else {
+		// Preserve existing name when the field is omitted.
+		existing, err := server.projects.Get(id)
+		if err != nil {
+			if errors.Is(err, project.ErrNotFound) {
+				writeError(response, http.StatusNotFound, err.Error())
+				return
+			}
+			writeError(response, http.StatusInternalServerError, "load project")
+			return
+		}
+		name = existing.Name
+	}
+	if input.Description != nil {
+		description = *input.Description
+	}
+	if input.Scope != nil {
+		scope = *input.Scope
+		scopeTouched = true
+	}
+	if input.Defaults != nil {
+		defaults = *input.Defaults
+		defaultsTouched = true
+	}
+
+	updated, err := server.projects.Update(id, name, description, scope, scopeTouched, defaults, defaultsTouched)
 	if err != nil {
-		return project{}, err
-	}
-	if err := json.Unmarshal([]byte(scopeJSON), &found.Scope); err != nil {
-		return project{}, err
-	}
-	found.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
-	if err != nil {
-		return project{}, err
-	}
-	found.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
-	if err != nil {
-		return project{}, err
+		if errors.Is(err, project.ErrNotFound) {
+			writeError(response, http.StatusNotFound, err.Error())
+			return
+		}
+		if errors.Is(err, project.ErrMissingName) {
+			writeError(response, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(response, http.StatusInternalServerError, "store project update")
+		return
 	}
 
-	return found, nil
-}
-
-func migrate(db *sql.DB) error {
-	_, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS projects (
-			id TEXT PRIMARY KEY,
-			name TEXT NOT NULL,
-			description TEXT NOT NULL DEFAULT '',
-			scope_json TEXT NOT NULL,
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
-		);
-	`)
-	return err
+	writeJSON(response, http.StatusOK, updated)
 }
 
 func writeJSON(response http.ResponseWriter, status int, payload any) {
@@ -263,12 +210,4 @@ func writeError(response http.ResponseWriter, status int, message string) {
 	}{
 		Error: message,
 	})
-}
-
-func newID() string {
-	var bytes [16]byte
-	if _, err := rand.Read(bytes[:]); err != nil {
-		return hex.EncodeToString([]byte(time.Now().UTC().Format(time.RFC3339Nano)))
-	}
-	return hex.EncodeToString(bytes[:])
 }
