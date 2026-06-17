@@ -112,6 +112,45 @@ func TestDashboardScopeNotReadyForEmptyScope(t *testing.T) {
 	}
 }
 
+func TestDashboardCountsTasksAndFacts(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+
+	createTask(t, server, projectID, `{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":"fake-profile",
+		"runner":"sandbox"
+	}`)
+	upsertFact(t, server, projectID, "target:example.com", `{
+		"category":"target",
+		"summary":"example.com is in scope",
+		"confidence":"confirmed"
+	}`)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/dashboard", nil)
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected dashboard status 200, got %d with body %s", resp.Code, resp.Body.String())
+	}
+	var body struct {
+		Counts struct {
+			Tasks int `json:"tasks"`
+			Facts int `json:"facts"`
+		} `json:"counts"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Counts.Tasks != 1 {
+		t.Fatalf("expected 1 task, got %d", body.Counts.Tasks)
+	}
+	if body.Counts.Facts != 1 {
+		t.Fatalf("expected 1 fact, got %d", body.Counts.Facts)
+	}
+}
+
 func TestDashboardMissingProjectReturnsNotFound(t *testing.T) {
 	server := newDaemon(t)
 

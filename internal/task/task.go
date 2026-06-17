@@ -88,6 +88,15 @@ type RuntimeConfigVersion struct {
 	CreatedAt        time.Time      `json:"created_at"`
 }
 
+type SummaryVersion struct {
+	ID          string    `json:"id"`
+	TaskID      string    `json:"task_id"`
+	Version     int       `json:"version"`
+	Summary     string    `json:"summary"`
+	SubmittedBy string    `json:"submitted_by,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
 // Task is a single user-goal-driven run within a project.
 type Task struct {
 	ID               string        `json:"id"`
@@ -123,6 +132,8 @@ var ErrProjectNotFound = errors.New("project not found")
 
 // ErrUnsupportedRunner is returned when the runner is neither sandbox nor host.
 var ErrUnsupportedRunner = errors.New("runner must be sandbox or host")
+
+var ErrMissingSummary = errors.New("task summary is required")
 
 // Service implements task business rules against SQLite. It depends on the
 // project service only to read the scope at launch; it does not mutate projects.
@@ -444,6 +455,80 @@ func (s *Service) RuntimeConfigVersions(taskID string) ([]RuntimeConfigVersion, 
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list config versions: %w", err)
+	}
+	return versions, nil
+}
+
+func (s *Service) PutSummary(taskID, summary, submittedBy string) (SummaryVersion, error) {
+	if _, err := s.Get(taskID); err != nil {
+		return SummaryVersion{}, err
+	}
+	if summary == "" {
+		return SummaryVersion{}, ErrMissingSummary
+	}
+
+	now := time.Now().UTC()
+	version := SummaryVersion{
+		ID:          newID(),
+		TaskID:      taskID,
+		Summary:     summary,
+		SubmittedBy: submittedBy,
+		CreatedAt:   now,
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return SummaryVersion{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var maxVersion sql.NullInt64
+	if err := tx.QueryRow(`SELECT MAX(version) FROM task_summary_versions WHERE task_id = ?`, taskID).Scan(&maxVersion); err != nil {
+		return SummaryVersion{}, fmt.Errorf("read max summary version: %w", err)
+	}
+	version.Version = int(maxVersion.Int64) + 1
+
+	if _, err := tx.Exec(
+		`INSERT INTO task_summary_versions (id, task_id, version, summary, submitted_by, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		version.ID, version.TaskID, version.Version, version.Summary, version.SubmittedBy, version.CreatedAt.Format(time.RFC3339Nano),
+	); err != nil {
+		return SummaryVersion{}, fmt.Errorf("store task summary: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return SummaryVersion{}, fmt.Errorf("commit task summary: %w", err)
+	}
+	return version, nil
+}
+
+func (s *Service) SummaryVersions(taskID string) ([]SummaryVersion, error) {
+	if _, err := s.Get(taskID); err != nil {
+		return nil, err
+	}
+
+	rows, err := s.db.Query(
+		`SELECT id, task_id, version, summary, submitted_by, created_at
+		 FROM task_summary_versions WHERE task_id = ? ORDER BY version ASC`,
+		taskID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list task summaries: %w", err)
+	}
+	defer rows.Close()
+
+	var versions []SummaryVersion
+	for rows.Next() {
+		var version SummaryVersion
+		var createdAt string
+		if err := rows.Scan(&version.ID, &version.TaskID, &version.Version, &version.Summary, &version.SubmittedBy, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan task summary: %w", err)
+		}
+		if version.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt); err != nil {
+			return nil, fmt.Errorf("parse created_at: %w", err)
+		}
+		versions = append(versions, version)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list task summaries: %w", err)
 	}
 	return versions, nil
 }

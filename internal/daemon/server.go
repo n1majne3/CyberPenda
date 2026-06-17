@@ -5,11 +5,14 @@ import (
 	"errors"
 	"net/http"
 
+	"pentest/internal/blackboard"
 	"pentest/internal/credential"
 	"pentest/internal/preflight"
 	"pentest/internal/project"
+	"pentest/internal/runtime"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/store"
+	"pentest/internal/task"
 )
 
 type Config struct {
@@ -25,6 +28,9 @@ type Server struct {
 	profiles  *runtimeprofile.Service
 	creds     *credential.Service
 	preflight *preflight.Service
+	tasks     *task.Service
+	harness   *runtime.Harness
+	facts     *blackboard.Service
 }
 
 func NewServer(config Config) (*Server, error) {
@@ -35,6 +41,7 @@ func NewServer(config Config) (*Server, error) {
 
 	profiles := runtimeprofile.NewService(db)
 	creds := credential.NewService(db)
+	tasks := task.NewService(db, nil)
 	server := &Server{
 		mux:       http.NewServeMux(),
 		version:   config.Version,
@@ -43,7 +50,11 @@ func NewServer(config Config) (*Server, error) {
 		profiles:  profiles,
 		creds:     creds,
 		preflight: preflight.NewService(profiles, creds),
+		tasks:     tasks,
+		harness:   runtime.NewHarness(tasks),
+		facts:     blackboard.NewService(db),
 	}
+	server.tasks.SetProjectService(server.projects)
 	server.routes()
 
 	return server, nil
@@ -75,6 +86,17 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/projects/{id}/dashboard", server.handleDashboard)
 	server.mux.HandleFunc("PUT /api/projects/{id}/credential-bindings", server.handleUpsertProjectCredentialBinding)
 	server.mux.HandleFunc("GET /api/projects/{id}/credential-bindings", server.handleListProjectCredentialBindings)
+	server.mux.HandleFunc("POST /api/projects/{id}/tasks", server.handleCreateTask)
+	server.mux.HandleFunc("GET /api/projects/{id}/tasks", server.handleListTasks)
+	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}", server.handleGetTask)
+	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/events", server.handleTaskEvents)
+	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/stop", server.handleStopTask)
+	server.mux.HandleFunc("PUT /api/projects/{id}/tasks/{task_id}/summary", server.handlePutTaskSummary)
+	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/summary", server.handleGetTaskSummary)
+	server.mux.HandleFunc("PUT /api/projects/{id}/facts/{fact_key}", server.handleUpsertProjectFact)
+	server.mux.HandleFunc("GET /api/projects/{id}/facts/{fact_key}/versions", server.handleProjectFactVersions)
+	server.mux.HandleFunc("GET /api/projects/{id}/facts/{fact_key}", server.handleGetProjectFact)
+	server.mux.HandleFunc("GET /api/projects/{id}/facts/index", server.handleFactIndex)
 }
 
 func (server *Server) handleHealth(response http.ResponseWriter, request *http.Request) {
@@ -537,8 +559,19 @@ func (server *Server) handleDashboard(response http.ResponseWriter, request *htt
 	summary.Scope.HasTestingLimits = len(scope.TestingLimits) > 0
 	summary.Scope.HasNotes = scope.Notes != ""
 	summary.Scope.Ready = namedAssets > 0
-	// task/fact/finding/evidence counts are placeholders until the task and
-	// blackboard domains land; the interface shape is fixed now.
+
+	tasks, err := server.tasks.ListForProject(found.ID)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "count tasks")
+		return
+	}
+	factCount, err := server.facts.CountFacts(found.ID)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "count facts")
+		return
+	}
+	summary.Counts.Tasks = len(tasks)
+	summary.Counts.Facts = factCount
 
 	writeJSON(response, http.StatusOK, summary)
 }
