@@ -12,6 +12,20 @@ Build the daemon, storage model, runtime harness, project interfaces, and React 
 
 The key implementation rule is that every slice must move one user-visible workflow forward. Avoid building deep infrastructure without a path to project dashboard, task run, blackboard write, or report output.
 
+## Current Build Position
+
+The repository has advanced past the initial daemon skeleton. Backend contracts are available for projects, scope, project defaults, runtime profiles, credential bindings, preflight, dashboard summary, task launch, task events, task summaries, and project facts.
+
+Treat these slices as backend-complete but UI-incomplete:
+
+- Slice 0: daemon backend skeleton and tests are present; React shell is not present.
+- Slice 1: project, scope, project defaults, and backend dashboard summary are present; React dashboard is not present.
+- Slice 2: runtime profiles, credential bindings, and preflight backend contracts are present; React profile and credential UI are not present.
+- Slice 3: task domain, fake runtime harness, task events, task summaries, and HTTP task lifecycle are present; explicit steering endpoint, UI controls, and real event streaming are not complete.
+- Slice 5: project fact upsert, fact versions, compact fact index, full fact lookup, and task summaries are present; fact relations, findings, evidence, MCP, CLI, and report trigger are not complete.
+
+The next implementation work should close the backend gaps that real runtimes and the UI depend on before building broad UI screens.
+
 ## Slice 0: Repository Skeleton
 
 Goal: establish a runnable local app skeleton.
@@ -149,6 +163,11 @@ Acceptance checks:
 - Fact index omits full bodies.
 - Finding upsert by finding key overwrites current finding and preserves finding version.
 - Task summary update is automatically accepted and versioned.
+
+Current status:
+
+- Project fact upsert, fact versions, empty-body preservation, fact index, full fact lookup, and task summary versioning are implemented.
+- Fact relations, findings, evidence attach, MCP server, CLI fallback, and report trigger remain open.
 
 ## Slice 6: Blackboard UI
 
@@ -298,6 +317,99 @@ Milestone 3: trusted project interfaces with blackboard facts, findings, evidenc
 Milestone 4: report generation from stored project state.
 
 Milestone 5: sandbox runner preparation and first real runtime adapter.
+
+## Next Execution Plan
+
+### Next Slice A: Close Task Continuation And Steering
+
+Goal: complete the task lifecycle contract before adding real runtimes.
+
+Deliverables:
+
+- Harness steering endpoint.
+- Steering task event.
+- Runtime continuation record or response shape.
+- Runtime profile switch inside the same task.
+- Runtime configuration version capture for the switched continuation.
+- Mechanical handoff packet response when no task summary exists.
+
+Acceptance checks:
+
+- A test can launch a fake-runtime task, send a steering directive, and observe a steering event.
+- A test can switch runtime profile inside the same task and observe a new runtime configuration version without creating a new task.
+- A test can request continuation context and receive either the latest task summary or a mechanical handoff packet.
+
+### Next Slice B: Runner Boundary
+
+Goal: make sandbox and host execution boundaries concrete before real adapters run commands.
+
+Deliverables:
+
+- Task-local runtime workdir, runtime home, artifact root, and log root preparation.
+- Sandbox runner command construction.
+- Config projection into task-local runtime homes.
+- Host runner activation model.
+- No automatic sandbox-to-host fallback.
+
+Acceptance checks:
+
+- A test can prepare a task run directory layout.
+- A test can construct a sandbox command without launching a real container.
+- A test verifies host runner cannot be reached through sandbox fallback.
+- A test verifies config projection writes generated runtime config without mutating host runtime config.
+
+### Next Slice C: Complete Trusted Project Interfaces
+
+Goal: finish the backend contracts that runtimes need before MCP and CLI transports are attached.
+
+Deliverables:
+
+- Fact relation upsert and list.
+- Finding key upsert, finding versions, CVSS pending, and confirmed finding validation.
+- Evidence artifact attach with managed artifact paths.
+- Report trigger stub that can later generate Markdown.
+
+Acceptance checks:
+
+- A fact relation can connect two project facts and cannot directly connect findings.
+- A finding can be recorded with CVSS pending and then updated with a complete CVSS vector.
+- Evidence can be explicitly attached to a fact or finding.
+- Report trigger returns a stable response from stored project state, even before full templating exists.
+
+### Next Slice D: Attach MCP And CLI Transports
+
+Goal: expose the same service layer through runtime-facing project interfaces.
+
+Deliverables:
+
+- Built-in trusted MCP server for facts, findings, evidence, task summary, and report trigger.
+- `pentestctl` CLI fallback for the same operations.
+- Shared validation and response shapes across HTTP, MCP, and CLI.
+
+Acceptance checks:
+
+- MCP and CLI writes produce the same stored state as HTTP service calls.
+- CLI fact upsert preserves empty-body semantics and fact versions.
+- MCP task summary update is automatically accepted and versioned.
+
+### Next Slice E: Minimal React Shell
+
+Goal: make the backend MVP operable through a local browser.
+
+Deliverables:
+
+- React shell served by the daemon for release builds.
+- Project dashboard.
+- Project and scope CRUD.
+- Runtime profile selector and editor.
+- Task launch and task detail timeline.
+- Fact index and fact detail views.
+
+Acceptance checks:
+
+- A user can create a project and launch a fake-runtime task from the UI.
+- The task timeline shows persisted task events.
+- The fact index and full fact lookup are visible from the dashboard.
 
 ## Implementation Notes
 

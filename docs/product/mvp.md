@@ -20,6 +20,36 @@ The MVP is a local-first pentest agent that proves the full project loop:
 
 The MVP may use a fake runtime adapter before real Codex, Claude Code, and Pi adapters are complete. The fake adapter must still exercise the same task, harness, blackboard, evidence, and report paths.
 
+## Current Build Status
+
+The current codebase is a backend-first MVP skeleton. It has enough daemon and storage behavior to keep building vertical slices with tests, but it is not yet a user-facing MVP.
+
+Completed backend contracts:
+
+- Local daemon entrypoint, health endpoint, SQLite store, and migrations.
+- Project CRUD, structured scope, project defaults, and dashboard summary.
+- Runtime profile CRUD with structured fields and generated config preview.
+- Credential references, global credential bindings, project overrides, disabled bindings, and preflight validation.
+- Task domain with task goal, run controls, scope snapshot, task events, runtime configuration versions, and fake runtime harness.
+- HTTP task lifecycle for create, list, get, events, stop, task summaries, and summary versions.
+- Project facts with fact key upsert, automatic overwrite, fact versions, compact fact index, full fact lookup, and empty-body preservation.
+- Dashboard counts for tasks and project facts.
+
+Partially complete contracts:
+
+- Task events are persisted and readable over HTTP, but live UI streaming is not complete.
+- Runtime harness launch and stop are implemented with a fake adapter, but explicit steering endpoints and restart/resume continuation behavior still need to be completed.
+- Blackboard facts are implemented, but fact relations, findings, evidence artifacts, and report generation are not complete.
+
+Not yet started for MVP:
+
+- React UI.
+- Sandbox runner command construction and task-local runtime directory preparation.
+- Built-in trusted MCP server.
+- `pentestctl` CLI fallback.
+- Finding, CVSS, evidence, and Markdown report generation.
+- Real Codex, Claude Code, and Pi adapters.
+
 ## In Scope
 
 ### Local Daemon
@@ -140,7 +170,7 @@ The MVP may use a fake runtime adapter before real Codex, Claude Code, and Pi ad
 
 ## First Implementation Slice
 
-The first slice should prove the loop with a fake runtime:
+The first slice is now partly complete. It should be considered done only when the fake runtime proves the full loop:
 
 1. Daemon starts with SQLite.
 2. React shell connects to daemon.
@@ -153,7 +183,9 @@ The first slice should prove the loop with a fake runtime:
 9. Fact index and full fact lookup work.
 10. Markdown report generation works.
 
-This slice does not need to run real pentest tools. It must prove the contracts real adapters will use.
+Completed from this list: daemon startup, backend project and scope CRUD, backend runtime profile CRUD, fake-runtime task launch, persisted task events, task summaries, fact upsert, fact index, and full fact lookup.
+
+Still missing from this list: React shell, live UI event streaming, explicit harness steering, findings, evidence artifacts, and Markdown report generation.
 
 ## MVP Acceptance Criteria
 
