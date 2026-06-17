@@ -129,6 +129,134 @@ func TestTaskSummaryUpdatesAreAcceptedAndVersioned(t *testing.T) {
 	}
 }
 
+func TestSteerTaskRecordsDirectiveAndRuntimeProfileSwitch(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	taskID := createTask(t, server, projectID, `{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":"fake-profile-a",
+		"runner":"sandbox"
+	}`)
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/steer", bytes.NewReader([]byte(`{
+		"directive":"focus on http services before dns brute force",
+		"runtime_profile_id":"fake-profile-b",
+		"submitted_by":"operator"
+	}`)))
+	req.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected steer status 200, got %d with body %s", resp.Code, resp.Body.String())
+	}
+
+	var steered struct {
+		Event struct {
+			Kind    string         `json:"kind"`
+			Payload map[string]any `json:"payload"`
+		} `json:"event"`
+		RuntimeConfigVersion struct {
+			Version          int    `json:"version"`
+			RuntimeProfileID string `json:"runtime_profile_id"`
+		} `json:"runtime_config_version"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&steered); err != nil {
+		t.Fatalf("decode steer response: %v", err)
+	}
+	if steered.Event.Kind != "steering" {
+		t.Fatalf("expected steering event, got %q", steered.Event.Kind)
+	}
+	if steered.Event.Payload["directive"] != "focus on http services before dns brute force" {
+		t.Fatalf("expected directive payload, got %#v", steered.Event.Payload)
+	}
+	if steered.RuntimeConfigVersion.Version != 2 {
+		t.Fatalf("expected second runtime config version, got %d", steered.RuntimeConfigVersion.Version)
+	}
+	if steered.RuntimeConfigVersion.RuntimeProfileID != "fake-profile-b" {
+		t.Fatalf("expected switched profile, got %q", steered.RuntimeConfigVersion.RuntimeProfileID)
+	}
+
+	events := getTaskEvents(t, server, projectID, taskID)
+	last := events[len(events)-1]
+	if last["kind"] != "steering" {
+		t.Fatalf("expected last event steering, got %#v", last)
+	}
+}
+
+func TestTaskContinuationReturnsSummaryOrMechanicalHandoff(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{
+		"name":"Acme",
+		"scope":{"domains":["example.com"],"notes":"approved only"}
+	}`)
+	taskID := createTask(t, server, projectID, `{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":"fake-profile",
+		"runner":"sandbox"
+	}`)
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID+"/continuation", nil)
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected continuation status 200, got %d with body %s", resp.Code, resp.Body.String())
+	}
+	var handoff struct {
+		Mode    string `json:"mode"`
+		Summary *struct {
+			Summary string `json:"summary"`
+		} `json:"summary"`
+		Handoff struct {
+			Goal             string   `json:"goal"`
+			RuntimeProfileID string   `json:"runtime_profile_id"`
+			ScopeDomains     []string `json:"scope_domains"`
+		} `json:"handoff"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&handoff); err != nil {
+		t.Fatalf("decode handoff: %v", err)
+	}
+	if handoff.Mode != "mechanical_handoff" {
+		t.Fatalf("expected mechanical handoff, got %q", handoff.Mode)
+	}
+	if handoff.Summary != nil {
+		t.Fatalf("expected no summary, got %#v", handoff.Summary)
+	}
+	if handoff.Handoff.Goal != "enumerate example.com" {
+		t.Fatalf("expected task goal in handoff, got %q", handoff.Handoff.Goal)
+	}
+	if got := handoff.Handoff.ScopeDomains; len(got) != 1 || got[0] != "example.com" {
+		t.Fatalf("expected scope domains in handoff, got %#v", got)
+	}
+
+	putTaskSummary(t, server, projectID, taskID, `{
+		"summary":"Enumerated example.com and found one web service.",
+		"submitted_by":"fake"
+	}`)
+
+	resp = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID+"/continuation", nil)
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected continuation with summary status 200, got %d with body %s", resp.Code, resp.Body.String())
+	}
+	var summarized struct {
+		Mode    string `json:"mode"`
+		Summary struct {
+			Summary string `json:"summary"`
+		} `json:"summary"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&summarized); err != nil {
+		t.Fatalf("decode summarized continuation: %v", err)
+	}
+	if summarized.Mode != "summary" {
+		t.Fatalf("expected summary mode, got %q", summarized.Mode)
+	}
+	if summarized.Summary.Summary != "Enumerated example.com and found one web service." {
+		t.Fatalf("expected latest summary, got %q", summarized.Summary.Summary)
+	}
+}
+
 // getTaskEvents reads the task timeline as a list of generic maps.
 func getTaskEvents(t *testing.T, server interface {
 	ServeHTTP(http.ResponseWriter, *http.Request)

@@ -91,6 +91,8 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}", server.handleGetTask)
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/events", server.handleTaskEvents)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/stop", server.handleStopTask)
+	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/steer", server.handleSteerTask)
+	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/continuation", server.handleTaskContinuation)
 	server.mux.HandleFunc("PUT /api/projects/{id}/tasks/{task_id}/summary", server.handlePutTaskSummary)
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/summary", server.handleGetTaskSummary)
 	server.mux.HandleFunc("PUT /api/projects/{id}/facts/{fact_key}", server.handleUpsertProjectFact)

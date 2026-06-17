@@ -179,6 +179,161 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 	writeJSON(response, http.StatusOK, stopped)
 }
 
+func (server *Server) handleSteerTask(response http.ResponseWriter, request *http.Request) {
+	projectID := request.PathValue("id")
+	taskID := request.PathValue("task_id")
+	if projectID == "" || taskID == "" {
+		writeError(response, http.StatusNotFound, "task not found")
+		return
+	}
+
+	found, err := server.tasks.Get(taskID)
+	if err != nil {
+		writeTaskError(response, err)
+		return
+	}
+	if found.ProjectID != projectID {
+		writeError(response, http.StatusNotFound, "task not found")
+		return
+	}
+
+	var input struct {
+		Directive        string         `json:"directive"`
+		RuntimeProfileID string         `json:"runtime_profile_id"`
+		SubmittedBy      string         `json:"submitted_by"`
+		Config           map[string]any `json:"config"`
+	}
+	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if input.Directive == "" {
+		writeError(response, http.StatusBadRequest, "steering directive is required")
+		return
+	}
+
+	payload := task.EventPayload{
+		"directive": input.Directive,
+	}
+	if input.SubmittedBy != "" {
+		payload["submitted_by"] = input.SubmittedBy
+	}
+	if input.RuntimeProfileID != "" {
+		payload["runtime_profile_id"] = input.RuntimeProfileID
+	}
+
+	event, err := server.tasks.AppendEvent(taskID, task.EventKindSteering, payload)
+	if err != nil {
+		writeTaskError(response, err)
+		return
+	}
+
+	var configVersion *task.RuntimeConfigVersion
+	if input.RuntimeProfileID != "" {
+		config := input.Config
+		if config == nil {
+			config = map[string]any{}
+		}
+		config["runtime_profile_id"] = input.RuntimeProfileID
+		config["runner"] = found.Runner
+		config["steering_event_id"] = event.ID
+		recorded, err := server.tasks.RecordRuntimeConfig(taskID, input.RuntimeProfileID, config)
+		if err != nil {
+			writeTaskError(response, err)
+			return
+		}
+		configVersion = &recorded
+	}
+
+	writeJSON(response, http.StatusOK, struct {
+		Event                task.Event                 `json:"event"`
+		RuntimeConfigVersion *task.RuntimeConfigVersion `json:"runtime_config_version,omitempty"`
+	}{
+		Event:                event,
+		RuntimeConfigVersion: configVersion,
+	})
+}
+
+func (server *Server) handleTaskContinuation(response http.ResponseWriter, request *http.Request) {
+	projectID := request.PathValue("id")
+	taskID := request.PathValue("task_id")
+	if projectID == "" || taskID == "" {
+		writeError(response, http.StatusNotFound, "task not found")
+		return
+	}
+
+	found, err := server.tasks.Get(taskID)
+	if err != nil {
+		writeTaskError(response, err)
+		return
+	}
+	if found.ProjectID != projectID {
+		writeError(response, http.StatusNotFound, "task not found")
+		return
+	}
+
+	versions, err := server.tasks.SummaryVersions(taskID)
+	if err != nil {
+		writeTaskError(response, err)
+		return
+	}
+	if len(versions) > 0 {
+		writeJSON(response, http.StatusOK, struct {
+			Mode    string              `json:"mode"`
+			Summary task.SummaryVersion `json:"summary"`
+		}{
+			Mode:    "summary",
+			Summary: versions[len(versions)-1],
+		})
+		return
+	}
+
+	configVersions, err := server.tasks.RuntimeConfigVersions(taskID)
+	if err != nil {
+		writeTaskError(response, err)
+		return
+	}
+	events, err := server.tasks.Events(taskID)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "list task events")
+		return
+	}
+
+	type handoffPayload struct {
+		TaskID           string           `json:"task_id"`
+		ProjectID        string           `json:"project_id"`
+		Goal             string           `json:"goal"`
+		RuntimeProfileID string           `json:"runtime_profile_id"`
+		Runner           task.Runner      `json:"runner"`
+		ScopeDomains     []string         `json:"scope_domains"`
+		ScopeNotes       string           `json:"scope_notes"`
+		RunControls      task.RunControls `json:"run_controls"`
+		EventCount       int              `json:"event_count"`
+		ConfigVersions   int              `json:"config_versions"`
+	}
+
+	writeJSON(response, http.StatusOK, struct {
+		Mode    string               `json:"mode"`
+		Summary *task.SummaryVersion `json:"summary"`
+		Handoff handoffPayload       `json:"handoff"`
+	}{
+		Mode:    "mechanical_handoff",
+		Summary: nil,
+		Handoff: handoffPayload{
+			TaskID:           found.ID,
+			ProjectID:        found.ProjectID,
+			Goal:             found.Goal,
+			RuntimeProfileID: found.RuntimeProfileID,
+			Runner:           found.Runner,
+			ScopeDomains:     found.ScopeSnapshot.Domains,
+			ScopeNotes:       found.ScopeSnapshot.Notes,
+			RunControls:      found.RunControls,
+			EventCount:       len(events),
+			ConfigVersions:   len(configVersions),
+		},
+	})
+}
+
 func (server *Server) handlePutTaskSummary(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
 	taskID := request.PathValue("task_id")
