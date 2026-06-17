@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"pentest/internal/credential"
 	"pentest/internal/project"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/store"
@@ -21,6 +22,7 @@ type Server struct {
 	db       *store.DB
 	projects *project.Service
 	profiles *runtimeprofile.Service
+	creds    *credential.Service
 }
 
 func NewServer(config Config) (*Server, error) {
@@ -35,6 +37,7 @@ func NewServer(config Config) (*Server, error) {
 		db:       db,
 		projects: project.NewService(db),
 		profiles: runtimeprofile.NewService(db),
+		creds:    credential.NewService(db),
 	}
 	server.routes()
 
@@ -60,6 +63,11 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/runtime-profiles/{id}", server.handleGetRuntimeProfile)
 	server.mux.HandleFunc("PATCH /api/runtime-profiles/{id}", server.handleUpdateRuntimeProfile)
 	server.mux.HandleFunc("DELETE /api/runtime-profiles/{id}", server.handleDeleteRuntimeProfile)
+	server.mux.HandleFunc("PUT /api/credential-bindings", server.handleUpsertGlobalCredentialBinding)
+	server.mux.HandleFunc("GET /api/credential-bindings", server.handleListGlobalCredentialBindings)
+	server.mux.HandleFunc("DELETE /api/credential-bindings/{binding_id}", server.handleDeleteCredentialBinding)
+	server.mux.HandleFunc("PUT /api/projects/{id}/credential-bindings", server.handleUpsertProjectCredentialBinding)
+	server.mux.HandleFunc("GET /api/projects/{id}/credential-bindings", server.handleListProjectCredentialBindings)
 }
 
 func (server *Server) handleHealth(response http.ResponseWriter, request *http.Request) {
@@ -335,6 +343,115 @@ func (server *Server) handleDeleteRuntimeProfile(response http.ResponseWriter, r
 	}
 
 	response.WriteHeader(http.StatusNoContent)
+}
+
+func (server *Server) handleUpsertGlobalCredentialBinding(response http.ResponseWriter, request *http.Request) {
+	var input credentialBindingInput
+	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	binding, err := server.creds.Upsert(input.CredentialRef, credential.ScopeGlobal, "", input.Source, input.Disabled)
+	if err != nil {
+		writeCredentialError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, binding)
+}
+
+func (server *Server) handleListGlobalCredentialBindings(response http.ResponseWriter, request *http.Request) {
+	bindings, err := server.creds.ListGlobal()
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "list credential bindings")
+		return
+	}
+	if bindings == nil {
+		bindings = []credential.Binding{}
+	}
+	writeJSON(response, http.StatusOK, struct {
+		Bindings []credential.Binding `json:"bindings"`
+	}{
+		Bindings: bindings,
+	})
+}
+
+func (server *Server) handleUpsertProjectCredentialBinding(response http.ResponseWriter, request *http.Request) {
+	projectID := request.PathValue("id")
+	if projectID == "" {
+		writeError(response, http.StatusNotFound, "project not found")
+		return
+	}
+
+	var input credentialBindingInput
+	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	binding, err := server.creds.Upsert(input.CredentialRef, credential.ScopeProject, projectID, input.Source, input.Disabled)
+	if err != nil {
+		writeCredentialError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, binding)
+}
+
+func (server *Server) handleListProjectCredentialBindings(response http.ResponseWriter, request *http.Request) {
+	projectID := request.PathValue("id")
+	if projectID == "" {
+		writeError(response, http.StatusNotFound, "project not found")
+		return
+	}
+
+	bindings, err := server.creds.ListForProject(projectID)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "list credential bindings")
+		return
+	}
+	if bindings == nil {
+		bindings = []credential.Binding{}
+	}
+	writeJSON(response, http.StatusOK, struct {
+		Bindings []credential.Binding `json:"bindings"`
+	}{
+		Bindings: bindings,
+	})
+}
+
+func (server *Server) handleDeleteCredentialBinding(response http.ResponseWriter, request *http.Request) {
+	bindingID := request.PathValue("binding_id")
+	if bindingID == "" {
+		writeError(response, http.StatusNotFound, "credential binding not found")
+		return
+	}
+
+	err := server.creds.Delete(bindingID)
+	if errors.Is(err, credential.ErrNotFound) {
+		writeError(response, http.StatusNotFound, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "delete credential binding")
+		return
+	}
+	response.WriteHeader(http.StatusNoContent)
+}
+
+// credentialBindingInput decodes the shared shape used by both global and
+// project-scoped PUT handlers.
+type credentialBindingInput struct {
+	CredentialRef string            `json:"credential_ref"`
+	Source        credential.Source `json:"source"`
+	Disabled      bool              `json:"disabled"`
+}
+
+// writeCredentialError maps credential service errors to HTTP statuses. Today
+// every documented service error is a client/validation problem, so all map to
+// 400. The helper exists so later non-validation errors can be distinguished
+// without touching every handler.
+func writeCredentialError(response http.ResponseWriter, err error) {
+	writeError(response, http.StatusBadRequest, err.Error())
 }
 
 func writeJSON(response http.ResponseWriter, status int, payload any) {
