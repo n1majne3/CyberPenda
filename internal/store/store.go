@@ -148,6 +148,45 @@ func migrate(db *sql.DB) error {
 			updated_at TEXT NOT NULL,
 			UNIQUE (project_id, source_fact_key, target_fact_key, relation)
 		);`,
+		`CREATE TABLE IF NOT EXISTS findings (
+			id TEXT PRIMARY KEY,
+			project_id TEXT NOT NULL,
+			finding_key TEXT NOT NULL,
+			version INTEGER NOT NULL,
+			title TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL,
+			target TEXT NOT NULL DEFAULT '',
+			proof TEXT NOT NULL DEFAULT '',
+			impact TEXT NOT NULL DEFAULT '',
+			recommendation TEXT NOT NULL DEFAULT '',
+			cvss_version TEXT NOT NULL DEFAULT '',
+			cvss_vector TEXT NOT NULL DEFAULT '',
+			cvss_pending INTEGER NOT NULL DEFAULT 1,
+			severity TEXT NOT NULL DEFAULT 'pending',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			UNIQUE (project_id, finding_key)
+		);`,
+		`CREATE TABLE IF NOT EXISTS finding_versions (
+			id TEXT PRIMARY KEY,
+			project_id TEXT NOT NULL,
+			finding_key TEXT NOT NULL,
+			version INTEGER NOT NULL,
+			title TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL,
+			target TEXT NOT NULL DEFAULT '',
+			proof TEXT NOT NULL DEFAULT '',
+			impact TEXT NOT NULL DEFAULT '',
+			recommendation TEXT NOT NULL DEFAULT '',
+			cvss_version TEXT NOT NULL DEFAULT '',
+			cvss_vector TEXT NOT NULL DEFAULT '',
+			cvss_pending INTEGER NOT NULL DEFAULT 1,
+			severity TEXT NOT NULL DEFAULT 'pending',
+			created_at TEXT NOT NULL,
+			UNIQUE (project_id, finding_key, version)
+		);`,
 	}
 
 	for _, statement := range statements {

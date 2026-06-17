@@ -252,6 +252,130 @@ func TestProjectFactRelationRejectsMissingTargetFact(t *testing.T) {
 	}
 }
 
+func TestProjectFindingCanMoveFromCVSSPendingToConfirmed(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+
+	body := []byte(`{
+		"title":"Exposed admin panel",
+		"description":"The admin panel is reachable without network filtering.",
+		"target":"https://example.com/admin",
+		"impact":"Potential administrative access if authentication is weak.",
+		"status":"unconfirmed"
+	}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/projects/"+projectID+"/findings/web-admin-exposed", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected pending finding status 200, got %d with body %s", resp.Code, resp.Body.String())
+	}
+	var pending struct {
+		FindingKey  string `json:"finding_key"`
+		Status      string `json:"status"`
+		CVSSPending bool   `json:"cvss_pending"`
+		Severity    string `json:"severity"`
+		Version     int    `json:"version"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&pending); err != nil {
+		t.Fatalf("decode pending finding: %v", err)
+	}
+	if pending.FindingKey != "web-admin-exposed" {
+		t.Fatalf("expected finding key, got %q", pending.FindingKey)
+	}
+	if !pending.CVSSPending {
+		t.Fatal("expected CVSS pending")
+	}
+	if pending.Severity != "pending" {
+		t.Fatalf("expected pending severity, got %q", pending.Severity)
+	}
+	if pending.Version != 1 {
+		t.Fatalf("expected version 1, got %d", pending.Version)
+	}
+
+	body = []byte(`{
+		"title":"Exposed admin panel",
+		"description":"The admin panel is reachable without network filtering.",
+		"target":"https://example.com/admin",
+		"proof":"GET /admin returns the login panel from the public internet.",
+		"impact":"Attackers can target administrative authentication directly.",
+		"recommendation":"Restrict /admin to VPN or trusted source networks.",
+		"status":"confirmed",
+		"cvss_version":"4.0",
+		"cvss_vector":"CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+	}`)
+	req = httptest.NewRequest(http.MethodPut, "/api/projects/"+projectID+"/findings/web-admin-exposed", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp = httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected confirmed finding status 200, got %d with body %s", resp.Code, resp.Body.String())
+	}
+	var confirmed struct {
+		Status      string `json:"status"`
+		CVSSPending bool   `json:"cvss_pending"`
+		Severity    string `json:"severity"`
+		Version     int    `json:"version"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&confirmed); err != nil {
+		t.Fatalf("decode confirmed finding: %v", err)
+	}
+	if confirmed.Status != "confirmed" {
+		t.Fatalf("expected confirmed status, got %q", confirmed.Status)
+	}
+	if confirmed.CVSSPending {
+		t.Fatal("expected CVSS complete")
+	}
+	if confirmed.Severity != "critical" {
+		t.Fatalf("expected derived critical severity, got %q", confirmed.Severity)
+	}
+	if confirmed.Version != 2 {
+		t.Fatalf("expected version 2, got %d", confirmed.Version)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/findings/web-admin-exposed/versions", nil)
+	resp = httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected finding versions status 200, got %d with body %s", resp.Code, resp.Body.String())
+	}
+	var versions struct {
+		Versions []struct {
+			Version     int    `json:"version"`
+			Severity    string `json:"severity"`
+			CVSSPending bool   `json:"cvss_pending"`
+		} `json:"versions"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&versions); err != nil {
+		t.Fatalf("decode finding versions: %v", err)
+	}
+	if len(versions.Versions) != 2 {
+		t.Fatalf("expected 2 finding versions, got %d", len(versions.Versions))
+	}
+	if versions.Versions[0].Severity != "pending" || versions.Versions[1].Severity != "critical" {
+		t.Fatalf("expected pending then critical versions, got %#v", versions.Versions)
+	}
+}
+
+func TestConfirmedFindingRequiresCVSSAndCoreFields(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+
+	body := []byte(`{
+		"title":"Exposed admin panel",
+		"target":"https://example.com/admin",
+		"status":"confirmed"
+	}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/projects/"+projectID+"/findings/web-admin-exposed", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected confirmed validation status 400, got %d with body %s", resp.Code, resp.Body.String())
+	}
+}
+
 func upsertFact(t *testing.T, server interface {
 	ServeHTTP(http.ResponseWriter, *http.Request)
 }, projectID, factKey, body string) {

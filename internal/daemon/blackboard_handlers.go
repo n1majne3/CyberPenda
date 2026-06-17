@@ -221,9 +221,92 @@ func (server *Server) handleFactRelations(response http.ResponseWriter, request 
 	})
 }
 
+func (server *Server) handleUpsertFinding(response http.ResponseWriter, request *http.Request) {
+	projectID := request.PathValue("id")
+	findingKey := request.PathValue("finding_key")
+	if projectID == "" || findingKey == "" {
+		writeError(response, http.StatusNotFound, "finding not found")
+		return
+	}
+	if _, err := server.projects.Get(projectID); err != nil {
+		if errors.Is(err, project.ErrNotFound) {
+			writeError(response, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(response, http.StatusInternalServerError, "load project")
+		return
+	}
+
+	var input struct {
+		Title          string                   `json:"title"`
+		Description    string                   `json:"description"`
+		Status         blackboard.FindingStatus `json:"status"`
+		Target         string                   `json:"target"`
+		Proof          string                   `json:"proof"`
+		Impact         string                   `json:"impact"`
+		Recommendation string                   `json:"recommendation"`
+		CVSSVersion    string                   `json:"cvss_version"`
+		CVSSVector     string                   `json:"cvss_vector"`
+	}
+	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	finding, err := server.facts.UpsertFinding(blackboard.UpsertFindingRequest{
+		ProjectID:      projectID,
+		FindingKey:     findingKey,
+		Title:          input.Title,
+		Description:    input.Description,
+		Status:         input.Status,
+		Target:         input.Target,
+		Proof:          input.Proof,
+		Impact:         input.Impact,
+		Recommendation: input.Recommendation,
+		CVSSVersion:    input.CVSSVersion,
+		CVSSVector:     input.CVSSVector,
+	})
+	if err != nil {
+		writeFactError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, finding)
+}
+
+func (server *Server) handleFindingVersions(response http.ResponseWriter, request *http.Request) {
+	projectID := request.PathValue("id")
+	findingKey := request.PathValue("finding_key")
+	if projectID == "" || findingKey == "" {
+		writeError(response, http.StatusNotFound, "finding not found")
+		return
+	}
+	if _, err := server.projects.Get(projectID); err != nil {
+		if errors.Is(err, project.ErrNotFound) {
+			writeError(response, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(response, http.StatusInternalServerError, "load project")
+		return
+	}
+
+	versions, err := server.facts.FindingVersions(projectID, findingKey)
+	if err != nil {
+		writeFactError(response, err)
+		return
+	}
+	if versions == nil {
+		versions = []blackboard.FindingVersion{}
+	}
+	writeJSON(response, http.StatusOK, struct {
+		Versions []blackboard.FindingVersion `json:"versions"`
+	}{
+		Versions: versions,
+	})
+}
+
 func writeFactError(response http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, blackboard.ErrMissingFactKey), errors.Is(err, blackboard.ErrMissingSummary), errors.Is(err, blackboard.ErrMissingTargetFactKey), errors.Is(err, blackboard.ErrMissingRelation):
+	case errors.Is(err, blackboard.ErrMissingFactKey), errors.Is(err, blackboard.ErrMissingSummary), errors.Is(err, blackboard.ErrMissingTargetFactKey), errors.Is(err, blackboard.ErrMissingRelation), errors.Is(err, blackboard.ErrMissingFindingKey), errors.Is(err, blackboard.ErrMissingFindingTitle), errors.Is(err, blackboard.ErrConfirmedFindingIncomplete):
 		writeError(response, http.StatusBadRequest, err.Error())
 	case errors.Is(err, blackboard.ErrNotFound):
 		writeError(response, http.StatusNotFound, err.Error())
