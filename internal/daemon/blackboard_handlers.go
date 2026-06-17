@@ -105,6 +105,44 @@ func (server *Server) handleGetProjectFact(response http.ResponseWriter, request
 	writeJSON(response, http.StatusOK, fact)
 }
 
+// handleMergeFacts governs a Fact Merge: the source fact key is consolidated
+// into the canonical key and becomes an alias of it (CONTEXT.md). The route is
+// project-scoped like every other blackboard route.
+func (server *Server) handleMergeFacts(response http.ResponseWriter, request *http.Request) {
+	projectID := request.PathValue("id")
+	if !server.requireProject(response, projectID) {
+		return
+	}
+
+	var input struct {
+		SourceFactKey    string `json:"source_fact_key"`
+		CanonicalFactKey string `json:"canonical_fact_key"`
+	}
+	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	if err := server.facts.MergeFacts(blackboard.MergeFactsRequest{
+		ProjectID:        projectID,
+		SourceFactKey:    input.SourceFactKey,
+		CanonicalFactKey: input.CanonicalFactKey,
+	}); err != nil {
+		switch {
+		case errors.Is(err, blackboard.ErrSelfMerge), errors.Is(err, blackboard.ErrMissingFactKey):
+			writeError(response, http.StatusBadRequest, err.Error())
+		case errors.Is(err, blackboard.ErrNotFound):
+			writeError(response, http.StatusNotFound, err.Error())
+		default:
+			writeError(response, http.StatusInternalServerError, "merge facts")
+		}
+		return
+	}
+	writeJSON(response, http.StatusOK, struct {
+		Merged bool `json:"merged"`
+	}{Merged: true})
+}
+
 func (server *Server) handleProjectFactVersions(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
 	factKey := request.PathValue("fact_key")

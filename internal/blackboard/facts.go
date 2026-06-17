@@ -101,11 +101,31 @@ type UpsertFactRelationRequest struct {
 	Summary       string
 }
 
+// FactKeyAlias is a historical Fact Key that redirects to the canonical Fact Key
+// it was merged into. Reads or writes through an alias resolve to the canonical
+// key, so an alias never produces separate Current Truth (CONTEXT.md).
+type FactKeyAlias struct {
+	ID            string    `json:"id"`
+	ProjectID     string    `json:"project_id"`
+	AliasFactKey  string    `json:"alias_fact_key"`
+	CanonFactKey  string    `json:"canon_fact_key"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+// MergeFactsRequest governs a Fact Merge: the SourceFactKey is consolidated
+// into the CanonicalFactKey and becomes an alias of it.
+type MergeFactsRequest struct {
+	ProjectID        string
+	SourceFactKey    string
+	CanonicalFactKey string
+}
+
 var ErrMissingFactKey = errors.New("fact key is required")
 var ErrMissingSummary = errors.New("fact summary is required")
 var ErrNotFound = errors.New("project fact not found")
 var ErrMissingTargetFactKey = errors.New("target fact key is required")
 var ErrMissingRelation = errors.New("fact relation is required")
+var ErrSelfMerge = errors.New("source and canonical fact keys must differ")
 
 type Service struct {
 	db *store.DB
@@ -357,7 +377,179 @@ func (s *Service) FactRelations(projectID, sourceFactKey string) ([]FactRelation
 	return relations, nil
 }
 
+// MergeFacts consolidates SourceFactKey into CanonicalFactKey. It preserves the
+// source's version history (copied under the canonical key), redirects the
+// source's fact relations to the canonical key, removes the source fact so it
+// stops producing separate Current Truth, and records the old key as an alias
+// that redirects future reads and writes to the canonical key (CONTEXT.md).
+func (s *Service) MergeFacts(req MergeFactsRequest) error {
+	req.SourceFactKey = strings.TrimSpace(req.SourceFactKey)
+	req.CanonicalFactKey = strings.TrimSpace(req.CanonicalFactKey)
+	if req.SourceFactKey == req.CanonicalFactKey {
+		return ErrSelfMerge
+	}
+	if req.SourceFactKey == "" || req.CanonicalFactKey == "" {
+		return ErrMissingFactKey
+	}
+
+	source, err := s.getByKeyRaw(req.ProjectID, req.SourceFactKey)
+	if err != nil {
+		return err
+	}
+	canon, err := s.getByKeyRaw(req.ProjectID, req.CanonicalFactKey)
+	if err != nil {
+		return err
+	}
+
+	// Preserve the source's version history under the canonical key: re-version
+	// each source row into the canonical's version sequence.
+	srcVersions, err := s.FactVersions(req.ProjectID, req.SourceFactKey)
+	if err != nil {
+		return fmt.Errorf("read source versions: %w", err)
+	}
+	nextVersion, err := s.maxFactVersion(req.ProjectID, req.CanonicalFactKey)
+	if err != nil {
+		return err
+	}
+	for _, v := range srcVersions {
+		nextVersion++
+		if err := s.insertFactVersionRow(req.ProjectID, req.CanonicalFactKey, nextVersion, v); err != nil {
+			return err
+		}
+	}
+
+	// Redirect the source's relations onto the canonical key. A relation that
+	// pointed source -> X becomes canon -> X; a relation Y -> source becomes
+	// Y -> canon.
+	if _, err := s.db.Exec(
+		`UPDATE project_fact_relations SET source_fact_key = ? WHERE project_id = ? AND source_fact_key = ?`,
+		canon.FactKey, req.ProjectID, source.FactKey,
+	); err != nil {
+		return fmt.Errorf("redirect source relations: %w", err)
+	}
+	if _, err := s.db.Exec(
+		`UPDATE project_fact_relations SET target_fact_key = ? WHERE project_id = ? AND target_fact_key = ?`,
+		canon.FactKey, req.ProjectID, source.FactKey,
+	); err != nil {
+		return fmt.Errorf("redirect target relations: %w", err)
+	}
+
+	// Remove the source fact row so it stops producing separate Current Truth.
+	// Its history lives on under the canonical key above; the alias below keeps
+	// the old key addressable.
+	if _, err := s.db.Exec(
+		`DELETE FROM project_facts WHERE project_id = ? AND fact_key = ?`,
+		req.ProjectID, source.FactKey,
+	); err != nil {
+		return fmt.Errorf("delete merged source fact: %w", err)
+	}
+
+	// Record the alias so future reads/writes through the old key resolve to the
+	// canonical key.
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := s.db.Exec(
+		`INSERT OR REPLACE INTO fact_key_aliases (id, project_id, alias_fact_key, canon_fact_key, created_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		newID(), req.ProjectID, source.FactKey, canon.FactKey, now,
+	); err != nil {
+		return fmt.Errorf("store fact key alias: %w", err)
+	}
+	return nil
+}
+
+// maxFactVersion returns the highest version number recorded for a fact key, or
+// 0 when the key has no versions yet.
+func (s *Service) maxFactVersion(projectID, factKey string) (int, error) {
+	var maxVersion sql.NullInt64
+	if err := s.db.QueryRow(
+		`SELECT MAX(version) FROM project_fact_versions WHERE project_id = ? AND fact_key = ?`,
+		projectID, factKey,
+	).Scan(&maxVersion); err != nil {
+		return 0, fmt.Errorf("read max fact version: %w", err)
+	}
+	return int(maxVersion.Int64), nil
+}
+
+// insertFactVersionRow writes one historical version row under (projectID,
+// factKey, version), rebadging an existing version's content.
+func (s *Service) insertFactVersionRow(projectID, factKey string, version int, v FactVersion) error {
+	_, err := s.db.Exec(
+		`INSERT INTO project_fact_versions (id, project_id, fact_key, version, category, summary, body, confidence, scope_status, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		newID(), projectID, factKey, version, v.Category, v.Summary, v.Body,
+		string(v.Confidence), string(v.ScopeStatus), v.CreatedAt.Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		return fmt.Errorf("store fact version: %w", err)
+	}
+	return nil
+}
+
 func (s *Service) getByKey(projectID, factKey string) (Fact, error) {
+	// A fact key may be an alias of a canonical key after a Fact Merge. Resolve
+	// through the alias before reading so reads "through an alias resolve to the
+	// canonical Fact Key" (CONTEXT.md).
+	resolved, err := s.resolveCanonicalKey(projectID, factKey)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return Fact{}, err
+	}
+	if resolved != "" {
+		factKey = resolved
+	}
+
+	var fact Fact
+	var confidence string
+	var scopeStatus string
+	var createdAt string
+	var updatedAt string
+	err = s.db.QueryRow(
+		`SELECT id, project_id, fact_key, category, summary, body, confidence, scope_status, created_at, updated_at
+		 FROM project_facts WHERE project_id = ? AND fact_key = ?`,
+		projectID, factKey,
+	).Scan(
+		&fact.ID, &fact.ProjectID, &fact.FactKey, &fact.Category, &fact.Summary, &fact.Body,
+		&confidence, &scopeStatus, &createdAt, &updatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Fact{}, ErrNotFound
+	}
+	if err != nil {
+		return Fact{}, err
+	}
+	fact.Confidence = Confidence(confidence)
+	fact.ScopeStatus = ScopeStatus(scopeStatus)
+	if fact.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt); err != nil {
+		return Fact{}, err
+	}
+	if fact.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt); err != nil {
+		return Fact{}, err
+	}
+	return fact, nil
+}
+
+// resolveCanonicalKey returns the canonical fact key for the given key if it is
+// an alias, or "" when it is not an alias (including when the key does not
+// exist as a fact or alias at all). A returned "" lets callers proceed with the
+// original key; an error only surfaces on store trouble.
+func (s *Service) resolveCanonicalKey(projectID, factKey string) (string, error) {
+	var canon string
+	err := s.db.QueryRow(
+		`SELECT canon_fact_key FROM fact_key_aliases WHERE project_id = ? AND alias_fact_key = ?`,
+		projectID, factKey,
+	).Scan(&canon)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return canon, nil
+}
+
+// getByKeyRaw reads a fact row without alias resolution. It is used by Fact
+// Merge, which needs the literal row for the keys being merged rather than
+// following an existing alias chain.
+func (s *Service) getByKeyRaw(projectID, factKey string) (Fact, error) {
 	var fact Fact
 	var confidence string
 	var scopeStatus string

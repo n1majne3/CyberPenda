@@ -148,6 +148,17 @@ func migrate(db *sql.DB) error {
 			updated_at TEXT NOT NULL,
 			UNIQUE (project_id, source_fact_key, target_fact_key, relation)
 		);`,
+		`CREATE TABLE IF NOT EXISTS fact_key_aliases (
+			-- A fact_key_alias maps a historical Fact Key to the canonical Fact Key
+			-- it was merged into. Reads/writes through an alias resolve to the
+			-- canonical key, so an alias never produces separate Current Truth.
+			id TEXT PRIMARY KEY,
+			project_id TEXT NOT NULL,
+			alias_fact_key TEXT NOT NULL,
+			canon_fact_key TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			UNIQUE (project_id, alias_fact_key)
+		);`,
 		`CREATE TABLE IF NOT EXISTS findings (
 			id TEXT PRIMARY KEY,
 			project_id TEXT NOT NULL,

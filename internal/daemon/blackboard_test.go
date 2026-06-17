@@ -523,6 +523,72 @@ func TestReportTriggerReturnsStableMarkdownStubFromProjectState(t *testing.T) {
 	}
 }
 
+// TestProjectFactMergeRedirectsThroughAlias proves the Fact Merge HTTP surface:
+// merging two facts makes the source an alias, the index keeps only the
+// canonical fact, and a read through the old key resolves to the canonical one.
+func TestProjectFactMergeRedirectsThroughAlias(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	upsertFact(t, server, projectID, "dns:example.com", `{"category":"dns","summary":"example.com -> 1.2.3.4"}`)
+	upsertFact(t, server, projectID, "dns:example-dot-com", `{"category":"dns","summary":"example.com -> 1.2.3.4 (dup)"}`)
+
+	mergeBody := []byte(`{"source_fact_key":"dns:example-dot-com","canonical_fact_key":"dns:example.com"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/facts/merge", bytes.NewReader(mergeBody))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected merge status 200, got %d with body %s", resp.Code, resp.Body.String())
+	}
+
+	// The fact index keeps only the canonical fact (no separate current truth
+	// for the merged alias).
+	idxReq := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/facts/index", nil)
+	idxResp := httptest.NewRecorder()
+	server.ServeHTTP(idxResp, idxReq)
+	var idx struct {
+		Facts []struct {
+			FactKey string `json:"fact_key"`
+		} `json:"facts"`
+	}
+	if err := json.NewDecoder(idxResp.Body).Decode(&idx); err != nil {
+		t.Fatalf("decode index: %v", err)
+	}
+	if len(idx.Facts) != 1 || idx.Facts[0].FactKey != "dns:example.com" {
+		t.Fatalf("index must contain only the canonical fact, got %#v", idx.Facts)
+	}
+
+	// Reading the old (alias) key resolves to the canonical fact.
+	getReq := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/facts/dns:example-dot-com", nil)
+	getResp := httptest.NewRecorder()
+	server.ServeHTTP(getResp, getReq)
+	if getResp.Code != http.StatusOK {
+		t.Fatalf("expected alias read status 200, got %d with body %s", getResp.Code, getResp.Body.String())
+	}
+	var resolved struct {
+		FactKey string `json:"fact_key"`
+	}
+	if err := json.NewDecoder(getResp.Body).Decode(&resolved); err != nil {
+		t.Fatalf("decode alias read: %v", err)
+	}
+	if resolved.FactKey != "dns:example.com" {
+		t.Fatalf("alias must resolve to canonical key, got %q", resolved.FactKey)
+	}
+}
+
+// TestProjectFactMergeRejectsUnknownProject proves the merge route is
+// project-scoped like every other blackboard route.
+func TestProjectFactMergeRejectsUnknownProject(t *testing.T) {
+	server := newDaemon(t)
+	body := []byte(`{"source_fact_key":"a","canonical_fact_key":"b"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/does-not-exist/facts/merge", bytes.NewReader(body))
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown project, got %d", resp.Code)
+	}
+}
+
 func upsertFact(t *testing.T, server interface {
 	ServeHTTP(http.ResponseWriter, *http.Request)
 }, projectID, factKey, body string) {

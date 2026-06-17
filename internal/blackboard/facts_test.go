@@ -286,3 +286,116 @@ func TestUpsertFactRelationCannotConnectFindings(t *testing.T) {
 		t.Fatal("expected relation to non-fact target to fail")
 	}
 }
+
+// TestMergeFactsConsolidatesAndAliases proves the Fact Merge contract
+// (CONTEXT.md): merging two fact keys preserves history, moves the source key to
+// an alias of the canonical (target) key, and subsequent reads/writes through
+// the alias resolve to the canonical key.
+func TestMergeFactsConsolidatesAndAliases(t *testing.T) {
+	bb, projects := newServices(t)
+	projectID := mustProject(t, projects)
+
+	// Two duplicate facts to merge.
+	if _, err := bb.UpsertFact(blackboard.UpsertFactRequest{
+		ProjectID: projectID, FactKey: "dns:example.com", Category: "dns",
+		Summary: "example.com -> 1.2.3.4", Body: "full dns detail",
+	}); err != nil {
+		t.Fatalf("upsert canonical: %v", err)
+	}
+	if _, err := bb.UpsertFact(blackboard.UpsertFactRequest{
+		ProjectID: projectID, FactKey: "dns:example-dot-com", Category: "dns",
+		Summary: "example.com -> 1.2.3.4 (dup)", Body: "dup detail",
+	}); err != nil {
+		t.Fatalf("upsert dup: %v", err)
+	}
+	// The source fact carries its own history and a relation.
+	if _, err := bb.UpsertFactRelation(blackboard.UpsertFactRelationRequest{
+		ProjectID: projectID, SourceFactKey: "dns:example-dot-com",
+		TargetFactKey: "dns:example.com", Relation: "duplicates",
+	}); err != nil {
+		t.Fatalf("relation: %v", err)
+	}
+
+	// Merge the duplicate INTO the canonical key. Canonical wins as the target.
+	if err := bb.MergeFacts(blackboard.MergeFactsRequest{
+		ProjectID: projectID, SourceFactKey: "dns:example-dot-com", CanonicalFactKey: "dns:example.com",
+	}); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+
+	// The alias must redirect reads through the old key to the canonical key.
+	resolved, err := bb.GetFact(projectID, "dns:example-dot-com")
+	if err != nil {
+		t.Fatalf("get via alias: %v", err)
+	}
+	if resolved.FactKey != "dns:example.com" {
+		t.Fatalf("alias must resolve to canonical key, got %q", resolved.FactKey)
+	}
+
+	// An upsert through the old alias key must update the canonical fact, not
+	// create a separate current truth.
+	if _, err := bb.UpsertFact(blackboard.UpsertFactRequest{
+		ProjectID: projectID, FactKey: "dns:example-dot-com",
+		Summary: "updated via alias", Body: "alias write body",
+	}); err != nil {
+		t.Fatalf("upsert via alias: %v", err)
+	}
+	canon, err := bb.GetFact(projectID, "dns:example.com")
+	if err != nil {
+		t.Fatalf("get canonical: %v", err)
+	}
+	if canon.Summary != "updated via alias" {
+		t.Fatalf("alias write must update canonical, got %q", canon.Summary)
+	}
+
+	// The fact index must list the canonical fact once (no separate entry for
+	// the alias), keeping current truth free of duplicates.
+	index, err := bb.FactIndex(projectID, blackboard.FactIndexOptions{})
+	if err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	if len(index) != 1 || index[0].FactKey != "dns:example.com" {
+		t.Fatalf("index must contain only the canonical fact, got %#v", index)
+	}
+
+	// The merged (source) fact's version history is preserved.
+	canonVersions, err := bb.FactVersions(projectID, "dns:example.com")
+	if err != nil {
+		t.Fatalf("canon versions: %v", err)
+	}
+	if len(canonVersions) < 2 {
+		t.Fatalf("canonical must keep its history across the merge, got %d versions", len(canonVersions))
+	}
+}
+
+// TestMergeFactsRejectsMissingKeys proves merge is governed: both keys must
+// exist, and a self-merge (source == canonical) is a no-op error.
+func TestMergeFactsRejectsMissingKeys(t *testing.T) {
+	bb, projects := newServices(t)
+	projectID := mustProject(t, projects)
+
+	if _, err := bb.UpsertFact(blackboard.UpsertFactRequest{
+		ProjectID: projectID, FactKey: "only", Summary: "the only fact",
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	// Source key does not exist.
+	if err := bb.MergeFacts(blackboard.MergeFactsRequest{
+		ProjectID: projectID, SourceFactKey: "missing", CanonicalFactKey: "only",
+	}); !errors.Is(err, blackboard.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for missing source, got %v", err)
+	}
+	// Canonical key does not exist.
+	if err := bb.MergeFacts(blackboard.MergeFactsRequest{
+		ProjectID: projectID, SourceFactKey: "only", CanonicalFactKey: "missing",
+	}); !errors.Is(err, blackboard.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for missing canonical, got %v", err)
+	}
+	// Self-merge is rejected.
+	if err := bb.MergeFacts(blackboard.MergeFactsRequest{
+		ProjectID: projectID, SourceFactKey: "only", CanonicalFactKey: "only",
+	}); !errors.Is(err, blackboard.ErrSelfMerge) {
+		t.Fatalf("expected ErrSelfMerge, got %v", err)
+	}
+}
