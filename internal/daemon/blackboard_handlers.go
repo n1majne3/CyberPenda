@@ -4,11 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strconv"
-	"strings"
 
 	"pentest/internal/blackboard"
 	"pentest/internal/project"
+	"pentest/internal/report"
 )
 
 func (server *Server) handleUpsertProjectFact(response http.ResponseWriter, request *http.Request) {
@@ -384,43 +383,11 @@ func (server *Server) handleReportTrigger(response http.ResponseWriter, request 
 		return
 	}
 
-	var markdown strings.Builder
-	markdown.WriteString("# ")
-	markdown.WriteString(found.Name)
-	markdown.WriteString("\n\n")
-	markdown.WriteString("Status: generated stub\n\n")
-	markdown.WriteString("## Inventory\n\n")
-	markdown.WriteString("- Facts: ")
-	markdown.WriteString(intString(factCount))
-	markdown.WriteString("\n- Findings: ")
-	markdown.WriteString(intString(findingCount))
-	markdown.WriteString("\n- Evidence: ")
-	markdown.WriteString(intString(evidenceCount))
-	markdown.WriteString("\n")
-
-	writeJSON(response, http.StatusOK, struct {
-		Status string `json:"status"`
-		Format string `json:"format"`
-		Counts struct {
-			Facts    int `json:"facts"`
-			Findings int `json:"findings"`
-			Evidence int `json:"evidence"`
-		} `json:"counts"`
-		Markdown string `json:"markdown"`
-	}{
-		Status: "generated_stub",
-		Format: "markdown",
-		Counts: struct {
-			Facts    int `json:"facts"`
-			Findings int `json:"findings"`
-			Evidence int `json:"evidence"`
-		}{
-			Facts:    factCount,
-			Findings: findingCount,
-			Evidence: evidenceCount,
-		},
-		Markdown: markdown.String(),
-	})
+	writeJSON(response, http.StatusOK, report.GenerateStub(found, report.Counts{
+		Facts:    factCount,
+		Findings: findingCount,
+		Evidence: evidenceCount,
+	}))
 }
 
 func writeFactError(response http.ResponseWriter, err error) {
@@ -432,8 +399,4 @@ func writeFactError(response http.ResponseWriter, err error) {
 	default:
 		writeError(response, http.StatusInternalServerError, "fact operation failed")
 	}
-}
-
-func intString(value int) string {
-	return strconv.Itoa(value)
 }
