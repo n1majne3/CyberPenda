@@ -72,6 +72,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/credential-bindings", server.handleListGlobalCredentialBindings)
 	server.mux.HandleFunc("DELETE /api/credential-bindings/{binding_id}", server.handleDeleteCredentialBinding)
 	server.mux.HandleFunc("POST /api/projects/{id}/preflight", server.handlePreflight)
+	server.mux.HandleFunc("GET /api/projects/{id}/dashboard", server.handleDashboard)
 	server.mux.HandleFunc("PUT /api/projects/{id}/credential-bindings", server.handleUpsertProjectCredentialBinding)
 	server.mux.HandleFunc("GET /api/projects/{id}/credential-bindings", server.handleListProjectCredentialBindings)
 }
@@ -470,6 +471,66 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 
 	// A preflight result is always 200: the body reports pass/fail per check.
 	writeJSON(response, http.StatusOK, result)
+}
+
+func (server *Server) handleDashboard(response http.ResponseWriter, request *http.Request) {
+	projectID := request.PathValue("id")
+	if projectID == "" {
+		writeError(response, http.StatusNotFound, "project not found")
+		return
+	}
+
+	found, err := server.projects.Get(projectID)
+	if errors.Is(err, project.ErrNotFound) {
+		writeError(response, http.StatusNotFound, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "load project")
+		return
+	}
+
+	scope := found.Scope
+	// ready means the scope declares at least one named target asset, so
+	// meaningful testing can proceed.
+	namedAssets := len(scope.Domains) + len(scope.IPs) + len(scope.CIDRs) + len(scope.URLs) + len(scope.Ports)
+	summary := struct {
+		ProjectID string `json:"project_id"`
+		Name      string `json:"name"`
+		Scope     struct {
+			Domains          int  `json:"domains"`
+			IPs              int  `json:"ips"`
+			CIDRs            int  `json:"cidrs"`
+			URLs             int  `json:"urls"`
+			Ports            int  `json:"ports"`
+			Excluded         int  `json:"excluded"`
+			HasTestingLimits bool `json:"has_testing_limits"`
+			HasNotes         bool `json:"has_notes"`
+			Ready            bool `json:"ready"`
+		} `json:"scope"`
+		Counts struct {
+			Tasks    int `json:"tasks"`
+			Facts    int `json:"facts"`
+			Findings int `json:"findings"`
+			Evidence int `json:"evidence"`
+		} `json:"counts"`
+	}{
+		ProjectID: found.ID,
+		Name:      found.Name,
+	}
+	summary.Scope.Domains = len(scope.Domains)
+	summary.Scope.IPs = len(scope.IPs)
+	summary.Scope.CIDRs = len(scope.CIDRs)
+	summary.Scope.URLs = len(scope.URLs)
+	summary.Scope.Ports = len(scope.Ports)
+	summary.Scope.Excluded = len(scope.Excluded)
+	summary.Scope.HasTestingLimits = len(scope.TestingLimits) > 0
+	summary.Scope.HasNotes = scope.Notes != ""
+	summary.Scope.Ready = namedAssets > 0
+	// task/fact/finding/evidence counts are placeholders until the task and
+	// blackboard domains land; the interface shape is fixed now.
+
+	writeJSON(response, http.StatusOK, summary)
 }
 
 // credentialBindingInput decodes the shared shape used by both global and
