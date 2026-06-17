@@ -80,14 +80,15 @@ func putBindingRaw(t *testing.T, server *daemon.Server, path, body string) *http
 // does not leak into the global list.
 func TestProjectNestedCredentialBindingOverrideIsScoped(t *testing.T) {
 	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"P1"}`)
 
-	putBinding(t, server, "/api/projects/p1/credential-bindings", `{
+	putBinding(t, server, "/api/projects/"+projectID+"/credential-bindings", `{
 		"credential_ref": "codex-api-key",
 		"source": {"kind": "file", "value": "/secrets/p1"}
 	}`)
 
 	// Project-scoped list shows the override.
-	listReq := httptest.NewRequest(http.MethodGet, "/api/projects/p1/credential-bindings", nil)
+	listReq := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/credential-bindings", nil)
 	listResp := httptest.NewRecorder()
 	server.ServeHTTP(listResp, listReq)
 	if listResp.Code != http.StatusOK {
@@ -136,13 +137,14 @@ func TestProjectNestedCredentialBindingOverrideIsScoped(t *testing.T) {
 // credential reference without supplying a source.
 func TestProjectNestedCredentialBindingCanDisable(t *testing.T) {
 	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"P1"}`)
 
-	putBinding(t, server, "/api/projects/p1/credential-bindings", `{
+	putBinding(t, server, "/api/projects/"+projectID+"/credential-bindings", `{
 		"credential_ref": "codex-api-key",
 		"disabled": true
 	}`)
 
-	listReq := httptest.NewRequest(http.MethodGet, "/api/projects/p1/credential-bindings", nil)
+	listReq := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/credential-bindings", nil)
 	listResp := httptest.NewRecorder()
 	server.ServeHTTP(listResp, listReq)
 
@@ -212,5 +214,21 @@ func TestDeleteCredentialBindingMissingReturnsNotFound(t *testing.T) {
 	server.ServeHTTP(resp, req)
 	if resp.Code != http.StatusNotFound {
 		t.Fatalf("expected delete missing to 404, got %d with body %s", resp.Code, resp.Body.String())
+	}
+}
+
+// TestProjectNestedBindingRejectsUnknownProject proves a binding cannot be
+// created for a project that does not exist.
+func TestProjectNestedBindingRejectsUnknownProject(t *testing.T) {
+	server := newDaemon(t)
+
+	body := []byte(`{"credential_ref":"codex-api-key","source":{"kind":"env","value":"X"}}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/projects/does-not-exist/credential-bindings", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("expected put binding for unknown project to 404, got %d with body %s", resp.Code, resp.Body.String())
 	}
 }

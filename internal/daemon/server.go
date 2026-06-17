@@ -390,6 +390,16 @@ func (server *Server) handleUpsertProjectCredentialBinding(response http.Respons
 		return
 	}
 
+	// A project-scoped binding must reference a real project.
+	if _, err := server.projects.Get(projectID); err != nil {
+		if errors.Is(err, project.ErrNotFound) {
+			writeError(response, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(response, http.StatusInternalServerError, "load project")
+		return
+	}
+
 	var input credentialBindingInput
 	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
 		writeError(response, http.StatusBadRequest, "invalid JSON body")
