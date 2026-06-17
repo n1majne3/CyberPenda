@@ -187,6 +187,21 @@ func migrate(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			UNIQUE (project_id, finding_key, version)
 		);`,
+		`CREATE TABLE IF NOT EXISTS evidence_artifacts (
+			id TEXT PRIMARY KEY,
+			project_id TEXT NOT NULL,
+			evidence_key TEXT NOT NULL,
+			attach_to_type TEXT NOT NULL,
+			attach_to_key TEXT NOT NULL,
+			artifact_type TEXT NOT NULL,
+			source_path TEXT NOT NULL DEFAULT '',
+			managed_path TEXT NOT NULL,
+			sha256 TEXT NOT NULL DEFAULT '',
+			summary TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			UNIQUE (project_id, evidence_key)
+		);`,
 	}
 
 	for _, statement := range statements {

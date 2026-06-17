@@ -376,6 +376,75 @@ func TestConfirmedFindingRequiresCVSSAndCoreFields(t *testing.T) {
 	}
 }
 
+func TestEvidenceAttachReferencesManagedArtifactPath(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	upsertFact(t, server, projectID, "target:example.com", `{
+		"category":"target",
+		"summary":"example.com is in scope",
+		"confidence":"confirmed"
+	}`)
+
+	body := []byte(`{
+		"evidence_key":"admin-login-screenshot",
+		"attach_to_type":"fact",
+		"attach_to_key":"target:example.com",
+		"artifact_type":"screenshot",
+		"source_path":"task-123/artifacts/screenshot.png",
+		"sha256":"abc123",
+		"summary":"Screenshot of the exposed admin login."
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/evidence", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected evidence attach status 200, got %d with body %s", resp.Code, resp.Body.String())
+	}
+
+	var evidence struct {
+		EvidenceKey  string `json:"evidence_key"`
+		AttachToType string `json:"attach_to_type"`
+		AttachToKey  string `json:"attach_to_key"`
+		ManagedPath  string `json:"managed_path"`
+		ArtifactType string `json:"artifact_type"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&evidence); err != nil {
+		t.Fatalf("decode evidence: %v", err)
+	}
+	if evidence.EvidenceKey != "admin-login-screenshot" {
+		t.Fatalf("expected evidence key, got %q", evidence.EvidenceKey)
+	}
+	if evidence.AttachToType != "fact" || evidence.AttachToKey != "target:example.com" {
+		t.Fatalf("expected fact attachment, got %#v", evidence)
+	}
+	if evidence.ManagedPath != "artifacts/admin-login-screenshot/screenshot.png" {
+		t.Fatalf("expected managed artifact path, got %q", evidence.ManagedPath)
+	}
+}
+
+func TestEvidenceAttachRejectsMissingTarget(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+
+	body := []byte(`{
+		"evidence_key":"missing-target-proof",
+		"attach_to_type":"fact",
+		"attach_to_key":"target:example.com",
+		"artifact_type":"log",
+		"source_path":"task-123/artifacts/output.log",
+		"summary":"Should not attach without a target fact."
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/evidence", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("expected evidence target status 404, got %d with body %s", resp.Code, resp.Body.String())
+	}
+}
+
 func upsertFact(t *testing.T, server interface {
 	ServeHTTP(http.ResponseWriter, *http.Request)
 }, projectID, factKey, body string) {

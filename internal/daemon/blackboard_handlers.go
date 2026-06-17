@@ -304,9 +304,55 @@ func (server *Server) handleFindingVersions(response http.ResponseWriter, reques
 	})
 }
 
+func (server *Server) handleAttachEvidence(response http.ResponseWriter, request *http.Request) {
+	projectID := request.PathValue("id")
+	if projectID == "" {
+		writeError(response, http.StatusNotFound, "project not found")
+		return
+	}
+	if _, err := server.projects.Get(projectID); err != nil {
+		if errors.Is(err, project.ErrNotFound) {
+			writeError(response, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(response, http.StatusInternalServerError, "load project")
+		return
+	}
+
+	var input struct {
+		EvidenceKey  string                        `json:"evidence_key"`
+		AttachToType blackboard.EvidenceAttachType `json:"attach_to_type"`
+		AttachToKey  string                        `json:"attach_to_key"`
+		ArtifactType string                        `json:"artifact_type"`
+		SourcePath   string                        `json:"source_path"`
+		SHA256       string                        `json:"sha256"`
+		Summary      string                        `json:"summary"`
+	}
+	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	artifact, err := server.facts.AttachEvidence(blackboard.AttachEvidenceRequest{
+		ProjectID:    projectID,
+		EvidenceKey:  input.EvidenceKey,
+		AttachToType: input.AttachToType,
+		AttachToKey:  input.AttachToKey,
+		ArtifactType: input.ArtifactType,
+		SourcePath:   input.SourcePath,
+		SHA256:       input.SHA256,
+		Summary:      input.Summary,
+	})
+	if err != nil {
+		writeFactError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, artifact)
+}
+
 func writeFactError(response http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, blackboard.ErrMissingFactKey), errors.Is(err, blackboard.ErrMissingSummary), errors.Is(err, blackboard.ErrMissingTargetFactKey), errors.Is(err, blackboard.ErrMissingRelation), errors.Is(err, blackboard.ErrMissingFindingKey), errors.Is(err, blackboard.ErrMissingFindingTitle), errors.Is(err, blackboard.ErrConfirmedFindingIncomplete):
+	case errors.Is(err, blackboard.ErrMissingFactKey), errors.Is(err, blackboard.ErrMissingSummary), errors.Is(err, blackboard.ErrMissingTargetFactKey), errors.Is(err, blackboard.ErrMissingRelation), errors.Is(err, blackboard.ErrMissingFindingKey), errors.Is(err, blackboard.ErrMissingFindingTitle), errors.Is(err, blackboard.ErrConfirmedFindingIncomplete), errors.Is(err, blackboard.ErrMissingEvidenceKey), errors.Is(err, blackboard.ErrMissingEvidenceTarget), errors.Is(err, blackboard.ErrMissingArtifactType), errors.Is(err, blackboard.ErrUnsupportedEvidenceTarget):
 		writeError(response, http.StatusBadRequest, err.Error())
 	case errors.Is(err, blackboard.ErrNotFound):
 		writeError(response, http.StatusNotFound, err.Error())

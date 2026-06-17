@@ -103,6 +103,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/projects/{id}/facts/index", server.handleFactIndex)
 	server.mux.HandleFunc("PUT /api/projects/{id}/findings/{finding_key}", server.handleUpsertFinding)
 	server.mux.HandleFunc("GET /api/projects/{id}/findings/{finding_key}/versions", server.handleFindingVersions)
+	server.mux.HandleFunc("POST /api/projects/{id}/evidence", server.handleAttachEvidence)
 }
 
 func (server *Server) handleHealth(response http.ResponseWriter, request *http.Request) {
