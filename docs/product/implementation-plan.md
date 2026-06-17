@@ -14,25 +14,43 @@ The key implementation rule is that every slice must move one user-visible workf
 
 ## Current Build Position
 
-The backend MVP is complete: every backend slice (0-5, 8, 9) and all
-cross-cutting unit, adapter, runner, and integration tests are implemented and
-passing. The only remaining work is the React UI (Slice 6, Slice 7, and Next
-Slice E).
+The full MVP — backend and React UI — is implemented and passing. Every slice
+(0-9) including the cross-cutting unit, adapter, runner, and integration tests
+and the React views is complete.
 
 Backend status by slice:
 
-- Slice 0: daemon backend skeleton, SQLite migrations, and the test harness are present and passing; the React shell and a combined dev command are not present.
-- Slice 1: project CRUD, structured scope, project defaults, and the dashboard summary (scope status + task/fact/finding/evidence counts) are present and tested.
-- Slice 2: global runtime profile CRUD, structured fields, generated config preview, credential references, global bindings, project overrides/disables, and preflight validation are present and tested.
-- Slice 3: task model, runtime harness, fake adapter, task events, runtime config versions, steering endpoint, runtime continuation, profile-switch-as-version, and mechanical handoff are present and tested.
-- Slice 4: task-local directory layout, sandbox command construction, config projection, host runner activation, and no sandbox-to-host fallback are present and tested.
-- Slice 5: fact upsert/versions/index/lookup/relations, finding upsert/versions/CVSS-pending/confirmed-validation, evidence attach with managed paths, task summary auto-accept/versioning, report trigger, CLI fallback, and a shared service layer are present and tested.
-- Slice 8: Markdown report generation separating confirmed/unconfirmed findings, with fact context, evidence references, runner and scope context, and CVSS data — derived from stored state only — is present and tested.
-- Slice 9: adapter launch argument construction, secret redaction, binary detection, and restart/resume prompt construction are present and tested. Real binary smoke tasks run out-of-band.
+- Slice 0: daemon backend skeleton, SQLite migrations, React shell (Vite +
+  embedded SPA), combined dev command (`make dev`), and the test harness are
+  present and passing.
+- Slice 1: project CRUD, structured scope, project defaults, dashboard summary,
+  and the React dashboard + scope editor are present and tested.
+- Slice 2: global runtime profile CRUD, structured fields, generated config
+  preview, credential references, global bindings, project overrides/disables,
+  preflight validation, and the React profile/credential editors are present
+  and tested.
+- Slice 3: task model, runtime harness, fake adapter, task events, runtime
+  config versions, steering endpoint, runtime continuation, profile-switch-as-
+  version, mechanical handoff, and the React task launch + timeline + steering
+  views are present and tested.
+- Slice 4: task-local directory layout, sandbox command construction, config
+  projection, host runner activation, and no sandbox-to-host fallback are
+  present and tested.
+- Slice 5: fact upsert/versions/index/lookup/relations, finding upsert/versions/
+  CVSS-pending/confirmed-validation, evidence attach with managed paths, task
+  summary auto-accept/versioning, report trigger, CLI fallback, shared service
+  layer, and the React fact/finding/evidence browsers are present and tested.
+- Slice 8: Markdown report generation separating confirmed/unconfirmed findings,
+  with fact context, evidence references, runner and scope context, and CVSS
+  data — derived from stored state only — plus the React report generator view
+  are present and tested.
+- Slice 9: adapter launch argument construction, secret redaction, binary
+  detection, and restart/resume prompt construction are present and tested.
+  Real binary smoke tasks run out-of-band.
 
-UI status: Slice 6, Slice 7, and Next Slice E (React shell) are not started.
-
-The next implementation work is the React UI.
+The remaining work is real-runtime smoke validation (Slice 9 acceptance that
+requires the actual Codex/Claude/Pi binaries present), which is out-of-band by
+design.
 
 ## Slice 0: Repository Skeleton
 
