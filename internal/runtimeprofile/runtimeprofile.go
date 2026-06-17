@@ -1,0 +1,336 @@
+// Package runtimeprofile owns the global runtime profile domain. A runtime
+// profile is a global, user-editable configuration that chooses how a runtime
+// should run for a task without storing secret values. Structured fields are the
+// source of truth; generated config preview is derived, never edited directly.
+package runtimeprofile
+
+import (
+	"crypto/rand"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"pentest/internal/store"
+)
+
+// Provider names the runtime CLI or assistant process family.
+type Provider string
+
+const (
+	// ProviderFake is the fake runtime used to exercise the harness and project
+	// interfaces before real adapters exist.
+	ProviderFake Provider = "fake"
+	// ProviderCodex is the Codex runtime.
+	ProviderCodex Provider = "codex"
+	// ProviderClaudeCode is the Claude Code runtime.
+	ProviderClaudeCode Provider = "claude_code"
+	// ProviderPi is the Pi runtime.
+	ProviderPi Provider = "pi"
+)
+
+// providers is the set of providers the product knows about.
+var providers = map[Provider]bool{
+	ProviderFake:       true,
+	ProviderCodex:      true,
+	ProviderClaudeCode: true,
+	ProviderPi:         true,
+}
+
+// MCPServerMode marks an MCP server as trusted (a project interface) or
+// external (available to the runtime but not trusted for project writes).
+type MCPServerMode string
+
+const (
+	MCPServerTrusted MCPServerMode = "trusted"
+	MCPServerExternal MCPServerMode = "external"
+)
+
+// MCPServer is one structured MCP configuration entry. It is managed as a
+// structured field, not a raw JSON blob.
+type MCPServer struct {
+	Name    string        `json:"name,omitempty"`
+	Mode    MCPServerMode `json:"mode,omitempty"`
+	Command string        `json:"command,omitempty"`
+	URL     string        `json:"url,omitempty"`
+	Args    []string      `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+}
+
+// Fields are the structured runtime profile fields. They are the source of
+// truth for the generated config preview. They must never hold secret values;
+// credentials enter via CredentialRefs and resolve through credential bindings.
+type Fields struct {
+	BinaryPath      string            `json:"binary_path,omitempty"`
+	Model           string            `json:"model,omitempty"`
+	Endpoint        string            `json:"endpoint,omitempty"`
+	CustomArgs      []string          `json:"custom_args,omitempty"`
+	Env             map[string]string `json:"env,omitempty"`
+	CredentialRefs  []string          `json:"credential_refs,omitempty"`
+	MCPServers      []MCPServer       `json:"mcp_servers,omitempty"`
+	DefaultRunner   string            `json:"default_runner,omitempty"`
+}
+
+// Profile is a global runtime profile reusable across projects.
+type Profile struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Provider  Provider  `json:"provider"`
+	Fields    Fields    `json:"fields"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ErrNotFound is returned when no profile matches the requested id.
+var ErrNotFound = errors.New("runtime profile not found")
+
+// Sentinel validation errors.
+var (
+	ErrMissingName     = errors.New("runtime profile name is required")
+	ErrMissingProvider = errors.New("runtime profile provider is required")
+	ErrUnknownProvider = errors.New("runtime profile provider is not supported")
+)
+
+// Service implements runtime profile business rules against SQLite.
+type Service struct {
+	db *store.DB
+}
+
+// NewService returns a Service backed by the given database.
+func NewService(db *store.DB) *Service {
+	return &Service{db: db}
+}
+
+// Create stores a new runtime profile and returns it.
+func (s *Service) Create(name string, provider Provider, fields Fields) (Profile, error) {
+	if err := validate(name, provider); err != nil {
+		return Profile{}, err
+	}
+
+	now := time.Now().UTC()
+	created := Profile{
+		ID:        newID(),
+		Name:      strings.TrimSpace(name),
+		Provider:  provider,
+		Fields:    fields,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	fieldsJSON, err := json.Marshal(created.Fields)
+	if err != nil {
+		return Profile{}, fmt.Errorf("encode fields: %w", err)
+	}
+
+	_, err = s.db.Exec(
+		`INSERT INTO runtime_profiles (id, name, provider, fields_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		created.ID, created.Name, string(created.Provider), string(fieldsJSON),
+		created.CreatedAt.Format(time.RFC3339Nano), created.UpdatedAt.Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		return Profile{}, fmt.Errorf("store runtime profile: %w", err)
+	}
+	return created, nil
+}
+
+// Get loads a single profile by id.
+func (s *Service) Get(id string) (Profile, error) {
+	return scanProfile(s.db.QueryRow(
+		`SELECT id, name, provider, fields_json, created_at, updated_at FROM runtime_profiles WHERE id = ?`,
+		id,
+	))
+}
+
+// List returns all profiles ordered by creation time.
+func (s *Service) List() ([]Profile, error) {
+	rows, err := s.db.Query(
+		`SELECT id, name, provider, fields_json, created_at, updated_at FROM runtime_profiles ORDER BY created_at ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list runtime profiles: %w", err)
+	}
+	defer rows.Close()
+
+	var profiles []Profile
+	for rows.Next() {
+		found, err := scanProfile(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan runtime profile: %w", err)
+		}
+		profiles = append(profiles, found)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list runtime profiles: %w", err)
+	}
+	return profiles, nil
+}
+
+// Update applies non-empty fields to an existing profile. An empty provider is
+// rejected; omitted structured fields preserve the existing values so partial
+// edits do not erase a working configuration.
+func (s *Service) Update(id, name string, provider Provider, fields Fields, fieldsTouched bool) (Profile, error) {
+	existing, err := s.Get(id)
+	if err != nil {
+		return Profile{}, err
+	}
+
+	// Name: empty string means "leave unchanged".
+	if strings.TrimSpace(name) != "" {
+		existing.Name = strings.TrimSpace(name)
+	}
+	// Provider: must always be valid; empty means keep current.
+	if provider != "" {
+		if err := validate(existing.Name, provider); err != nil {
+			return Profile{}, err
+		}
+		existing.Provider = provider
+	} else if err := validate(existing.Name, existing.Provider); err != nil {
+		// Should not happen for a stored profile, but guard anyway.
+		return Profile{}, err
+	}
+	if fieldsTouched {
+		existing.Fields = fields
+	}
+	existing.UpdatedAt = time.Now().UTC()
+
+	fieldsJSON, err := json.Marshal(existing.Fields)
+	if err != nil {
+		return Profile{}, fmt.Errorf("encode fields: %w", err)
+	}
+	_, err = s.db.Exec(
+		`UPDATE runtime_profiles SET name = ?, provider = ?, fields_json = ?, updated_at = ? WHERE id = ?`,
+		existing.Name, string(existing.Provider), string(fieldsJSON),
+		existing.UpdatedAt.Format(time.RFC3339Nano), existing.ID,
+	)
+	if err != nil {
+		return Profile{}, fmt.Errorf("store runtime profile update: %w", err)
+	}
+	return existing, nil
+}
+
+// Delete removes a profile. It does not cascade into tasks; tasks capture their
+// own runtime configuration at launch.
+func (s *Service) Delete(id string) error {
+	result, err := s.db.Exec(`DELETE FROM runtime_profiles WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete runtime profile: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete runtime profile: %w", err)
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// GeneratedConfig returns a previewable generated runtime config derived from
+// the structured fields. It is never the source of truth. It never contains
+// secret values; credentials enter through bindings at config projection time.
+func GeneratedConfig(profile Profile) map[string]any {
+	cfg := map[string]any{
+		"provider": string(profile.Provider),
+	}
+	if profile.Fields.BinaryPath != "" {
+		cfg["binary"] = profile.Fields.BinaryPath
+	}
+	if profile.Fields.Model != "" {
+		cfg["model"] = profile.Fields.Model
+	}
+	if profile.Fields.Endpoint != "" {
+		cfg["endpoint"] = profile.Fields.Endpoint
+	}
+	if len(profile.Fields.CustomArgs) > 0 {
+		cfg["custom_args"] = profile.Fields.CustomArgs
+	}
+	if len(profile.Fields.Env) > 0 {
+		cfg["env"] = profile.Fields.Env
+	}
+	if len(profile.Fields.CredentialRefs) > 0 {
+		// Emit references, never resolved values.
+		cfg["credential_refs"] = profile.Fields.CredentialRefs
+	}
+	if len(profile.Fields.MCPServers) > 0 {
+		servers := make([]map[string]any, 0, len(profile.Fields.MCPServers))
+		for _, server := range profile.Fields.MCPServers {
+			entry := map[string]any{
+				"name": server.Name,
+				"mode": string(server.Mode),
+			}
+			if server.Command != "" {
+				entry["command"] = server.Command
+			}
+			if server.URL != "" {
+				entry["url"] = server.URL
+			}
+			if len(server.Args) > 0 {
+				entry["args"] = server.Args
+			}
+			if len(server.Env) > 0 {
+				entry["env"] = server.Env
+			}
+			servers = append(servers, entry)
+		}
+		cfg["mcp_servers"] = servers
+	}
+	if profile.Fields.DefaultRunner != "" {
+		cfg["default_runner"] = profile.Fields.DefaultRunner
+	}
+	return cfg
+}
+
+func validate(name string, provider Provider) error {
+	if strings.TrimSpace(name) == "" {
+		return ErrMissingName
+	}
+	if provider == "" {
+		return ErrMissingProvider
+	}
+	if !providers[provider] {
+		return fmt.Errorf("%w: %q", ErrUnknownProvider, provider)
+	}
+	return nil
+}
+
+type scanner interface {
+	Scan(dest ...any) error
+}
+
+func scanProfile(row scanner) (Profile, error) {
+	var found Profile
+	var fieldsJSON string
+	var provider string
+	var createdAt string
+	var updatedAt string
+
+	err := row.Scan(&found.ID, &found.Name, &provider, &fieldsJSON, &createdAt, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Profile{}, ErrNotFound
+	}
+	if err != nil {
+		return Profile{}, err
+	}
+	found.Provider = Provider(provider)
+	if err := json.Unmarshal([]byte(fieldsJSON), &found.Fields); err != nil {
+		return Profile{}, fmt.Errorf("decode fields: %w", err)
+	}
+	if found.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt); err != nil {
+		return Profile{}, fmt.Errorf("parse created_at: %w", err)
+	}
+	if found.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt); err != nil {
+		return Profile{}, fmt.Errorf("parse updated_at: %w", err)
+	}
+	return found, nil
+}
+
+func newID() string {
+	var bytes [16]byte
+	if _, err := rand.Read(bytes[:]); err != nil {
+		return hex.EncodeToString([]byte(time.Now().UTC().Format(time.RFC3339Nano)))
+	}
+	return hex.EncodeToString(bytes[:])
+}

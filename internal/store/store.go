@@ -53,6 +53,25 @@ func migrate(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS runtime_profiles (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			provider TEXT NOT NULL,
+			fields_json TEXT NOT NULL DEFAULT '{}',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS credential_bindings (
+			id TEXT PRIMARY KEY,
+			credential_ref TEXT NOT NULL,
+			scope TEXT NOT NULL,
+			scope_id TEXT NOT NULL DEFAULT '',
+			source_json TEXT NOT NULL,
+			disabled INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			UNIQUE (credential_ref, scope, scope_id)
+		);`,
 	}
 
 	for _, statement := range statements {
