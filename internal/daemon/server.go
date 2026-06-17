@@ -3,7 +3,10 @@ package daemon
 import (
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"net/http"
+	"path"
+	"strings"
 
 	"pentest/internal/blackboard"
 	"pentest/internal/credential"
@@ -13,6 +16,8 @@ import (
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/store"
 	"pentest/internal/task"
+
+	"pentest/internal/daemon/webfs"
 )
 
 type Config struct {
@@ -107,6 +112,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /api/projects/{id}/evidence", server.handleAttachEvidence)
 	server.mux.HandleFunc("GET /api/projects/{id}/evidence", server.handleListEvidence)
 	server.mux.HandleFunc("POST /api/projects/{id}/report", server.handleReportTrigger)
+	server.registerSPA()
 }
 
 func (server *Server) handleHealth(response http.ResponseWriter, request *http.Request) {
@@ -612,6 +618,36 @@ type credentialBindingInput struct {
 // without touching every handler.
 func writeCredentialError(response http.ResponseWriter, err error) {
 	writeError(response, http.StatusBadRequest, err.Error())
+}
+
+// registerSPA serves the embedded React build for any non-API, non-health path.
+// During development (Vite), the embedded dist is still present but unused; the
+// proxy in vite.config.ts routes /api to the daemon instead.
+func (server *Server) registerSPA() {
+	assets, err := fs.Sub(webfs.Dist, "dist")
+	if err != nil {
+		// Should not happen: dist is embedded.
+		return
+	}
+	fileServer := http.FileServer(http.FS(assets))
+	server.mux.HandleFunc("/", func(response http.ResponseWriter, request *http.Request) {
+		// Serve static assets directly; everything else falls back to
+		// index.html so client-side routing works on refresh.
+		clean := path.Clean(request.URL.Path)
+		if strings.HasPrefix(clean, "/assets/") {
+			fileServer.ServeHTTP(response, request)
+			return
+		}
+		// Check if the path maps to a real file (favicon, icons, etc.).
+		if f, err := assets.Open(strings.TrimPrefix(clean, "/")); err == nil {
+			f.Close()
+			fileServer.ServeHTTP(response, request)
+			return
+		}
+		// SPA fallback.
+		request.URL.Path = "/"
+		fileServer.ServeHTTP(response, request)
+	})
 }
 
 func writeJSON(response http.ResponseWriter, status int, payload any) {

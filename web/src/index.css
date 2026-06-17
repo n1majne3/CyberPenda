@@ -1,0 +1,51 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Dark-first theme (security tooling default). */
+    --background: 222 14% 10%;
+    --foreground: 210 20% 92%;
+
+    --card: 222 14% 13%;
+    --card-foreground: 210 20% 92%;
+
+    --primary: 263 70% 60%;
+    --primary-foreground: 210 20% 98%;
+
+    --secondary: 222 14% 18%;
+    --secondary-foreground: 210 20% 92%;
+
+    --muted: 222 14% 18%;
+    --muted-foreground: 215 14% 60%;
+
+    --accent: 222 14% 20%;
+    --accent-foreground: 210 20% 92%;
+
+    --destructive: 0 72% 52%;
+    --destructive-foreground: 210 20% 98%;
+
+    /* Warning: used for YOLO mode, host runner, unconfirmed findings,
+       out-of-scope facts, and CVSS pending — must be visually loud. */
+    --warning: 38 92% 50%;
+    --warning-foreground: 28 100% 12%;
+
+    --border: 222 14% 22%;
+    --input: 222 14% 22%;
+    --ring: 263 70% 60%;
+
+    --radius: 0.5rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+}
