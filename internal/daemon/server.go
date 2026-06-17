@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"pentest/internal/credential"
+	"pentest/internal/preflight"
 	"pentest/internal/project"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/store"
@@ -17,12 +18,13 @@ type Config struct {
 }
 
 type Server struct {
-	mux      *http.ServeMux
-	version  string
-	db       *store.DB
-	projects *project.Service
-	profiles *runtimeprofile.Service
-	creds    *credential.Service
+	mux       *http.ServeMux
+	version   string
+	db        *store.DB
+	projects  *project.Service
+	profiles  *runtimeprofile.Service
+	creds     *credential.Service
+	preflight *preflight.Service
 }
 
 func NewServer(config Config) (*Server, error) {
@@ -31,13 +33,16 @@ func NewServer(config Config) (*Server, error) {
 		return nil, err
 	}
 
+	profiles := runtimeprofile.NewService(db)
+	creds := credential.NewService(db)
 	server := &Server{
-		mux:      http.NewServeMux(),
-		version:  config.Version,
-		db:       db,
-		projects: project.NewService(db),
-		profiles: runtimeprofile.NewService(db),
-		creds:    credential.NewService(db),
+		mux:       http.NewServeMux(),
+		version:   config.Version,
+		db:        db,
+		projects:  project.NewService(db),
+		profiles:  profiles,
+		creds:     creds,
+		preflight: preflight.NewService(profiles, creds),
 	}
 	server.routes()
 
@@ -66,6 +71,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("PUT /api/credential-bindings", server.handleUpsertGlobalCredentialBinding)
 	server.mux.HandleFunc("GET /api/credential-bindings", server.handleListGlobalCredentialBindings)
 	server.mux.HandleFunc("DELETE /api/credential-bindings/{binding_id}", server.handleDeleteCredentialBinding)
+	server.mux.HandleFunc("POST /api/projects/{id}/preflight", server.handlePreflight)
 	server.mux.HandleFunc("PUT /api/projects/{id}/credential-bindings", server.handleUpsertProjectCredentialBinding)
 	server.mux.HandleFunc("GET /api/projects/{id}/credential-bindings", server.handleListProjectCredentialBindings)
 }
@@ -436,6 +442,34 @@ func (server *Server) handleDeleteCredentialBinding(response http.ResponseWriter
 		return
 	}
 	response.WriteHeader(http.StatusNoContent)
+}
+
+func (server *Server) handlePreflight(response http.ResponseWriter, request *http.Request) {
+	projectID := request.PathValue("id")
+	if projectID == "" {
+		writeError(response, http.StatusNotFound, "project not found")
+		return
+	}
+
+	var input struct {
+		RuntimeProfileID        string   `json:"runtime_profile_id"`
+		Runner                  string   `json:"runner"`
+		CredentialRefsToResolve []string `json:"credential_refs"`
+	}
+	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	result := server.preflight.Run(request.Context(), preflight.Request{
+		RuntimeProfileID:        input.RuntimeProfileID,
+		ProjectID:               projectID,
+		CredentialRefsToResolve: input.CredentialRefsToResolve,
+		Runner:                  input.Runner,
+	})
+
+	// A preflight result is always 200: the body reports pass/fail per check.
+	writeJSON(response, http.StatusOK, result)
 }
 
 // credentialBindingInput decodes the shared shape used by both global and
