@@ -274,6 +274,27 @@ func (server *Server) handleUpsertFinding(response http.ResponseWriter, request 
 	writeJSON(response, http.StatusOK, finding)
 }
 
+func (server *Server) handleListFindings(response http.ResponseWriter, request *http.Request) {
+	projectID := request.PathValue("id")
+	if projectID == "" {
+		writeError(response, http.StatusNotFound, "project not found")
+		return
+	}
+	findings, err := server.facts.ListFindings(projectID)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "list findings")
+		return
+	}
+	if findings == nil {
+		findings = []blackboard.Finding{}
+	}
+	writeJSON(response, http.StatusOK, struct {
+		Findings []blackboard.Finding `json:"findings"`
+	}{
+		Findings: findings,
+	})
+}
+
 func (server *Server) handleFindingVersions(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
 	findingKey := request.PathValue("finding_key")
@@ -302,6 +323,27 @@ func (server *Server) handleFindingVersions(response http.ResponseWriter, reques
 		Versions []blackboard.FindingVersion `json:"versions"`
 	}{
 		Versions: versions,
+	})
+}
+
+func (server *Server) handleListEvidence(response http.ResponseWriter, request *http.Request) {
+	projectID := request.PathValue("id")
+	if projectID == "" {
+		writeError(response, http.StatusNotFound, "project not found")
+		return
+	}
+	evidence, err := server.facts.ListEvidence(projectID)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "list evidence")
+		return
+	}
+	if evidence == nil {
+		evidence = []blackboard.EvidenceArtifact{}
+	}
+	writeJSON(response, http.StatusOK, struct {
+		Evidence []blackboard.EvidenceArtifact `json:"evidence"`
+	}{
+		Evidence: evidence,
 	})
 }
 
