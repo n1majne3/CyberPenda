@@ -14,17 +14,25 @@ The key implementation rule is that every slice must move one user-visible workf
 
 ## Current Build Position
 
-The repository has advanced past the initial daemon skeleton. Backend contracts are available for projects, scope, project defaults, runtime profiles, credential bindings, preflight, dashboard summary, task launch, task events, task summaries, and project facts.
+The backend MVP is complete: every backend slice (0-5, 8, 9) and all
+cross-cutting unit, adapter, runner, and integration tests are implemented and
+passing. The only remaining work is the React UI (Slice 6, Slice 7, and Next
+Slice E).
 
-Treat these slices as backend-complete but UI-incomplete:
+Backend status by slice:
 
-- Slice 0: daemon backend skeleton and tests are present; React shell is not present.
-- Slice 1: project, scope, project defaults, and backend dashboard summary are present; React dashboard is not present.
-- Slice 2: runtime profiles, credential bindings, and preflight backend contracts are present; React profile and credential UI are not present.
-- Slice 3: task domain, fake runtime harness, task events, task summaries, and HTTP task lifecycle are present; explicit steering endpoint, UI controls, and real event streaming are not complete.
-- Slice 5: project fact upsert, fact versions, compact fact index, full fact lookup, and task summaries are present; fact relations, findings, evidence, MCP, CLI, and report trigger are not complete.
+- Slice 0: daemon backend skeleton, SQLite migrations, and the test harness are present and passing; the React shell and a combined dev command are not present.
+- Slice 1: project CRUD, structured scope, project defaults, and the dashboard summary (scope status + task/fact/finding/evidence counts) are present and tested.
+- Slice 2: global runtime profile CRUD, structured fields, generated config preview, credential references, global bindings, project overrides/disables, and preflight validation are present and tested.
+- Slice 3: task model, runtime harness, fake adapter, task events, runtime config versions, steering endpoint, runtime continuation, profile-switch-as-version, and mechanical handoff are present and tested.
+- Slice 4: task-local directory layout, sandbox command construction, config projection, host runner activation, and no sandbox-to-host fallback are present and tested.
+- Slice 5: fact upsert/versions/index/lookup/relations, finding upsert/versions/CVSS-pending/confirmed-validation, evidence attach with managed paths, task summary auto-accept/versioning, report trigger, CLI fallback, and a shared service layer are present and tested.
+- Slice 8: Markdown report generation separating confirmed/unconfirmed findings, with fact context, evidence references, runner and scope context, and CVSS data — derived from stored state only — is present and tested.
+- Slice 9: adapter launch argument construction, secret redaction, binary detection, and restart/resume prompt construction are present and tested. Real binary smoke tasks run out-of-band.
 
-The next implementation work should close the backend gaps that real runtimes and the UI depend on before building broad UI screens.
+UI status: Slice 6, Slice 7, and Next Slice E (React shell) are not started.
+
+The next implementation work is the React UI.
 
 ## Slice 0: Repository Skeleton
 
