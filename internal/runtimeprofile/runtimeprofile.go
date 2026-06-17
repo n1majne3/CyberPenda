@@ -45,18 +45,18 @@ var providers = map[Provider]bool{
 type MCPServerMode string
 
 const (
-	MCPServerTrusted MCPServerMode = "trusted"
+	MCPServerTrusted  MCPServerMode = "trusted"
 	MCPServerExternal MCPServerMode = "external"
 )
 
 // MCPServer is one structured MCP configuration entry. It is managed as a
 // structured field, not a raw JSON blob.
 type MCPServer struct {
-	Name    string        `json:"name,omitempty"`
-	Mode    MCPServerMode `json:"mode,omitempty"`
-	Command string        `json:"command,omitempty"`
-	URL     string        `json:"url,omitempty"`
-	Args    []string      `json:"args,omitempty"`
+	Name    string            `json:"name,omitempty"`
+	Mode    MCPServerMode     `json:"mode,omitempty"`
+	Command string            `json:"command,omitempty"`
+	URL     string            `json:"url,omitempty"`
+	Args    []string          `json:"args,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
 }
 
@@ -64,14 +64,14 @@ type MCPServer struct {
 // truth for the generated config preview. They must never hold secret values;
 // credentials enter via CredentialRefs and resolve through credential bindings.
 type Fields struct {
-	BinaryPath      string            `json:"binary_path,omitempty"`
-	Model           string            `json:"model,omitempty"`
-	Endpoint        string            `json:"endpoint,omitempty"`
-	CustomArgs      []string          `json:"custom_args,omitempty"`
-	Env             map[string]string `json:"env,omitempty"`
-	CredentialRefs  []string          `json:"credential_refs,omitempty"`
-	MCPServers      []MCPServer       `json:"mcp_servers,omitempty"`
-	DefaultRunner   string            `json:"default_runner,omitempty"`
+	BinaryPath     string            `json:"binary_path,omitempty"`
+	Model          string            `json:"model,omitempty"`
+	Endpoint       string            `json:"endpoint,omitempty"`
+	CustomArgs     []string          `json:"custom_args,omitempty"`
+	Env            map[string]string `json:"env,omitempty"`
+	CredentialRefs []string          `json:"credential_refs,omitempty"`
+	MCPServers     []MCPServer       `json:"mcp_servers,omitempty"`
+	DefaultRunner  string            `json:"default_runner,omitempty"`
 }
 
 // Profile is a global runtime profile reusable across projects.

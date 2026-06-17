@@ -25,15 +25,15 @@ const (
 
 // Check is one named preflight result.
 type Check struct {
-	Name   string     `json:"name"`
+	Name   string      `json:"name"`
 	Status CheckStatus `json:"status"`
-	Detail string     `json:"detail,omitempty"`
+	Detail string      `json:"detail,omitempty"`
 }
 
 // Result is the full preflight outcome for a task launch.
 type Result struct {
-	Pass    bool    `json:"pass"`
-	Checks  []Check `json:"checks"`
+	Pass   bool    `json:"pass"`
+	Checks []Check `json:"checks"`
 }
 
 // Request describes what to validate for a task launch.

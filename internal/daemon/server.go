@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"pentest/internal/project"
+	"pentest/internal/runtimeprofile"
 	"pentest/internal/store"
 )
 
@@ -19,6 +20,7 @@ type Server struct {
 	version  string
 	db       *store.DB
 	projects *project.Service
+	profiles *runtimeprofile.Service
 }
 
 func NewServer(config Config) (*Server, error) {
@@ -32,6 +34,7 @@ func NewServer(config Config) (*Server, error) {
 		version:  config.Version,
 		db:       db,
 		projects: project.NewService(db),
+		profiles: runtimeprofile.NewService(db),
 	}
 	server.routes()
 
@@ -52,6 +55,11 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /api/projects", server.handleCreateProject)
 	server.mux.HandleFunc("GET /api/projects/{id}", server.handleGetProject)
 	server.mux.HandleFunc("PATCH /api/projects/{id}", server.handleUpdateProject)
+	server.mux.HandleFunc("POST /api/runtime-profiles", server.handleCreateRuntimeProfile)
+	server.mux.HandleFunc("GET /api/runtime-profiles", server.handleListRuntimeProfiles)
+	server.mux.HandleFunc("GET /api/runtime-profiles/{id}", server.handleGetRuntimeProfile)
+	server.mux.HandleFunc("PATCH /api/runtime-profiles/{id}", server.handleUpdateRuntimeProfile)
+	server.mux.HandleFunc("DELETE /api/runtime-profiles/{id}", server.handleDeleteRuntimeProfile)
 }
 
 func (server *Server) handleHealth(response http.ResponseWriter, request *http.Request) {
@@ -196,6 +204,137 @@ func (server *Server) handleUpdateProject(response http.ResponseWriter, request 
 	}
 
 	writeJSON(response, http.StatusOK, updated)
+}
+
+func (server *Server) handleListRuntimeProfiles(response http.ResponseWriter, request *http.Request) {
+	profiles, err := server.profiles.List()
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "list runtime profiles")
+		return
+	}
+	if profiles == nil {
+		profiles = []runtimeprofile.Profile{}
+	}
+	writeJSON(response, http.StatusOK, struct {
+		Profiles []runtimeprofile.Profile `json:"profiles"`
+	}{
+		Profiles: profiles,
+	})
+}
+
+func (server *Server) handleCreateRuntimeProfile(response http.ResponseWriter, request *http.Request) {
+	var input struct {
+		Name     string                  `json:"name"`
+		Provider runtimeprofile.Provider `json:"provider"`
+		Fields   runtimeprofile.Fields   `json:"fields"`
+	}
+	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	created, err := server.profiles.Create(input.Name, input.Provider, input.Fields)
+	if err != nil {
+		switch {
+		case errors.Is(err, runtimeprofile.ErrMissingName),
+			errors.Is(err, runtimeprofile.ErrMissingProvider),
+			errors.Is(err, runtimeprofile.ErrUnknownProvider):
+			writeError(response, http.StatusBadRequest, err.Error())
+		default:
+			writeError(response, http.StatusInternalServerError, "store runtime profile")
+		}
+		return
+	}
+
+	writeJSON(response, http.StatusCreated, created)
+}
+
+func (server *Server) handleGetRuntimeProfile(response http.ResponseWriter, request *http.Request) {
+	id := request.PathValue("id")
+	if id == "" {
+		writeError(response, http.StatusNotFound, "runtime profile not found")
+		return
+	}
+
+	found, err := server.profiles.Get(id)
+	if errors.Is(err, runtimeprofile.ErrNotFound) {
+		writeError(response, http.StatusNotFound, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "load runtime profile")
+		return
+	}
+
+	writeJSON(response, http.StatusOK, found)
+}
+
+func (server *Server) handleUpdateRuntimeProfile(response http.ResponseWriter, request *http.Request) {
+	id := request.PathValue("id")
+	if id == "" {
+		writeError(response, http.StatusNotFound, "runtime profile not found")
+		return
+	}
+
+	var input struct {
+		Name     *string                  `json:"name"`
+		Provider *runtimeprofile.Provider `json:"provider"`
+		Fields   *runtimeprofile.Fields   `json:"fields"`
+	}
+	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	name := ""
+	if input.Name != nil {
+		name = *input.Name
+	}
+	provider := runtimeprofile.Provider("")
+	if input.Provider != nil {
+		provider = *input.Provider
+	}
+	var fields runtimeprofile.Fields
+	fieldsTouched := false
+	if input.Fields != nil {
+		fields = *input.Fields
+		fieldsTouched = true
+	}
+
+	updated, err := server.profiles.Update(id, name, provider, fields, fieldsTouched)
+	if err != nil {
+		switch {
+		case errors.Is(err, runtimeprofile.ErrNotFound):
+			writeError(response, http.StatusNotFound, err.Error())
+		case errors.Is(err, runtimeprofile.ErrUnknownProvider):
+			writeError(response, http.StatusBadRequest, err.Error())
+		default:
+			writeError(response, http.StatusInternalServerError, "store runtime profile update")
+		}
+		return
+	}
+
+	writeJSON(response, http.StatusOK, updated)
+}
+
+func (server *Server) handleDeleteRuntimeProfile(response http.ResponseWriter, request *http.Request) {
+	id := request.PathValue("id")
+	if id == "" {
+		writeError(response, http.StatusNotFound, "runtime profile not found")
+		return
+	}
+
+	err := server.profiles.Delete(id)
+	if errors.Is(err, runtimeprofile.ErrNotFound) {
+		writeError(response, http.StatusNotFound, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "delete runtime profile")
+		return
+	}
+
+	response.WriteHeader(http.StatusNoContent)
 }
 
 func writeJSON(response http.ResponseWriter, status int, payload any) {

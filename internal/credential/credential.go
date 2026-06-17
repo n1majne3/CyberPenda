@@ -40,7 +40,7 @@ type Source struct {
 //   - env:      Value is the environment variable name (e.g. "OPENAI_API_KEY").
 //   - file:     Value is a path to a file containing the secret.
 //   - command:  Value is a command whose stdout is the secret (e.g. an agent of a
-//               password store). Used sparingly.
+//     password store). Used sparingly.
 const (
 	SourceEnv     = "env"
 	SourceFile    = "file"
@@ -67,7 +67,7 @@ type Binding struct {
 
 // Resolution is the result of resolving a credential reference for a project.
 type Resolution struct {
-	CredentialRef string  `json:"credential_ref"`
+	CredentialRef string   `json:"credential_ref"`
 	Binding       *Binding `json:"binding,omitempty"`
 	Source        *Source  `json:"source,omitempty"`
 	// Disabled is true when a project explicitly disabled the binding, which
