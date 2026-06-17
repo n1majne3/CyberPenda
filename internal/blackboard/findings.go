@@ -68,6 +68,13 @@ type UpsertFindingRequest struct {
 	CVSSVector     string
 }
 
+// MergeFindingsRequest governs a Finding Merge (CONTEXT.md).
+type MergeFindingsRequest struct {
+	ProjectID           string
+	SourceFindingKey    string
+	CanonicalFindingKey string
+}
+
 var ErrMissingFindingKey = errors.New("finding key is required")
 var ErrMissingFindingTitle = errors.New("finding title is required")
 var ErrConfirmedFindingIncomplete = errors.New("confirmed finding requires CVSS vector, target, proof, impact, and recommendation")
@@ -77,6 +84,11 @@ func (s *Service) UpsertFinding(req UpsertFindingRequest) (Finding, error) {
 	req.Title = strings.TrimSpace(req.Title)
 	if req.FindingKey == "" {
 		return Finding{}, ErrMissingFindingKey
+	}
+	if canon, err := s.resolveCanonicalFindingKey(req.ProjectID, req.FindingKey); err != nil {
+		return Finding{}, err
+	} else if canon != "" {
+		req.FindingKey = canon
 	}
 
 	existing, err := s.getFinding(req.ProjectID, req.FindingKey)
@@ -149,7 +161,17 @@ func (s *Service) UpsertFinding(req UpsertFindingRequest) (Finding, error) {
 	return finding, nil
 }
 
+// GetFinding returns the current finding, resolving finding key aliases from merge.
+func (s *Service) GetFinding(projectID, findingKey string) (Finding, error) {
+	return s.getFinding(projectID, findingKey)
+}
+
 func (s *Service) FindingVersions(projectID, findingKey string) ([]FindingVersion, error) {
+	if canon, err := s.resolveCanonicalFindingKey(projectID, findingKey); err != nil {
+		return nil, err
+	} else if canon != "" {
+		findingKey = canon
+	}
 	rows, err := s.db.Query(
 		`SELECT id, project_id, finding_key, version, title, description, status, target, proof, impact, recommendation, cvss_version, cvss_vector, cvss_pending, severity, created_at
 		 FROM finding_versions
@@ -239,7 +261,138 @@ func scanFindingRow(scanner factVersionScanner) (Finding, error) {
 	return finding, nil
 }
 
+// MergeFindings consolidates SourceFindingKey into CanonicalFindingKey, preserves
+// version history, redirects evidence attachments, and records a finding key alias.
+func (s *Service) MergeFindings(req MergeFindingsRequest) error {
+	req.SourceFindingKey = strings.TrimSpace(req.SourceFindingKey)
+	req.CanonicalFindingKey = strings.TrimSpace(req.CanonicalFindingKey)
+	if req.SourceFindingKey == req.CanonicalFindingKey {
+		return ErrSelfMerge
+	}
+	if req.SourceFindingKey == "" || req.CanonicalFindingKey == "" {
+		return ErrMissingFindingKey
+	}
+
+	source, err := s.getFindingRaw(req.ProjectID, req.SourceFindingKey)
+	if err != nil {
+		return err
+	}
+	canon, err := s.getFindingRaw(req.ProjectID, req.CanonicalFindingKey)
+	if err != nil {
+		return err
+	}
+
+	srcVersions, err := s.FindingVersions(req.ProjectID, req.SourceFindingKey)
+	if err != nil {
+		return fmt.Errorf("read source versions: %w", err)
+	}
+	nextVersion, err := s.maxFindingVersion(req.ProjectID, req.CanonicalFindingKey)
+	if err != nil {
+		return err
+	}
+	for _, v := range srcVersions {
+		nextVersion++
+		if err := s.insertFindingVersionRow(req.ProjectID, req.CanonicalFindingKey, nextVersion, v); err != nil {
+			return err
+		}
+	}
+	if nextVersion > canon.Version {
+		if _, err := s.db.Exec(
+			`UPDATE findings SET version = ? WHERE project_id = ? AND finding_key = ?`,
+			nextVersion, req.ProjectID, canon.FindingKey,
+		); err != nil {
+			return fmt.Errorf("sync canonical finding version: %w", err)
+		}
+	}
+
+	if _, err := s.db.Exec(
+		`UPDATE evidence_artifacts SET attach_to_key = ? WHERE project_id = ? AND attach_to_type = ? AND attach_to_key = ?`,
+		canon.FindingKey, req.ProjectID, string(EvidenceAttachFinding), source.FindingKey,
+	); err != nil {
+		return fmt.Errorf("redirect evidence: %w", err)
+	}
+
+	if _, err := s.db.Exec(
+		`DELETE FROM findings WHERE project_id = ? AND finding_key = ?`,
+		req.ProjectID, source.FindingKey,
+	); err != nil {
+		return fmt.Errorf("delete merged source finding: %w", err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := s.db.Exec(
+		`INSERT OR REPLACE INTO finding_key_aliases (id, project_id, alias_finding_key, canon_finding_key, created_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		newID(), req.ProjectID, source.FindingKey, canon.FindingKey, now,
+	); err != nil {
+		return fmt.Errorf("store finding key alias: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) maxFindingVersion(projectID, findingKey string) (int, error) {
+	var maxVersion sql.NullInt64
+	if err := s.db.QueryRow(
+		`SELECT MAX(version) FROM finding_versions WHERE project_id = ? AND finding_key = ?`,
+		projectID, findingKey,
+	).Scan(&maxVersion); err != nil {
+		return 0, fmt.Errorf("read max finding version: %w", err)
+	}
+	return int(maxVersion.Int64), nil
+}
+
+func (s *Service) insertFindingVersionRow(projectID, findingKey string, version int, v FindingVersion) error {
+	_, err := s.db.Exec(
+		`INSERT INTO finding_versions (id, project_id, finding_key, version, title, description, status, target, proof, impact, recommendation, cvss_version, cvss_vector, cvss_pending, severity, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		newID(), projectID, findingKey, version, v.Title, v.Description, string(v.Status),
+		v.Target, v.Proof, v.Impact, v.Recommendation, v.CVSSVersion, v.CVSSVector,
+		boolInt(v.CVSSPending), v.Severity, v.CreatedAt.Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		return fmt.Errorf("store finding version: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) resolveCanonicalFindingKey(projectID, findingKey string) (string, error) {
+	var canon string
+	err := s.db.QueryRow(
+		`SELECT canon_finding_key FROM finding_key_aliases WHERE project_id = ? AND alias_finding_key = ?`,
+		projectID, findingKey,
+	).Scan(&canon)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return canon, nil
+}
+
+func (s *Service) getFindingRaw(projectID, findingKey string) (Finding, error) {
+	row := s.db.QueryRow(
+		`SELECT id, project_id, finding_key, version, title, description, status, target, proof, impact, recommendation, cvss_version, cvss_vector, cvss_pending, severity, created_at, updated_at
+		 FROM findings WHERE project_id = ? AND finding_key = ?`,
+		projectID, findingKey,
+	)
+	finding, err := scanFindingRow(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Finding{}, ErrNotFound
+	}
+	if err != nil {
+		return Finding{}, err
+	}
+	return finding, nil
+}
+
 func (s *Service) getFinding(projectID, findingKey string) (Finding, error) {
+	if canon, err := s.resolveCanonicalFindingKey(projectID, findingKey); err != nil {
+		return Finding{}, err
+	} else if canon != "" {
+		findingKey = canon
+	}
+
 	var finding Finding
 	var status string
 	var cvssPending int

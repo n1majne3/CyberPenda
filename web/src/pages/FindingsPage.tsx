@@ -1,28 +1,32 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { ArrowLeft, AlertTriangle, FlaskConical, History, ChevronDown, ChevronRight } from "lucide-react";
-import { apiGet, type Finding, type FindingVersion } from "@/lib/api";
-import { Card, CardTitle, CardHeader, Badge } from "@/components/ui";
+import { ArrowLeft, AlertTriangle, FlaskConical, History, ChevronDown, ChevronRight, GitMerge } from "lucide-react";
+import { apiGet, apiPost, type Finding, type FindingVersion } from "@/lib/api";
+import { Card, CardTitle, CardHeader, Badge, Button } from "@/components/ui";
 
 export function FindingsPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const [findings, setFindings] = useState<Finding[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  async function loadFindings() {
+    try {
+      const d = await apiGet<{ findings: Finding[] }>(`/api/projects/${projectId}/findings`);
+      setFindings(d.findings ?? []);
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
   useEffect(() => {
-    (async () => {
-      try {
-        const d = await apiGet<{ findings: Finding[] }>(`/api/projects/${projectId}/findings`);
-        setFindings(d.findings ?? []);
-        setError(null);
-      } catch (e) {
-        setError((e as Error).message);
-      }
-    })();
+    loadFindings();
   }, [projectId]);
 
   const confirmed = findings.filter((f) => f.status === "confirmed");
   const unconfirmed = findings.filter((f) => f.status !== "confirmed");
+  const allFindingKeys = findings.map((f) => f.finding_key);
+  const base = `/api/projects/${projectId}`;
 
   return (
     <div className="p-8 max-w-4xl">
@@ -33,8 +37,8 @@ export function FindingsPage() {
 
       {error && <p className="text-sm text-destructive mb-4">{error}</p>}
 
-      <Section title="Confirmed" projectId={projectId!} items={confirmed} />
-      <Section title="Unconfirmed" projectId={projectId!} items={unconfirmed} muted />
+      <Section title="Confirmed" base={base} items={confirmed} allFindingKeys={allFindingKeys} onMerged={loadFindings} />
+      <Section title="Unconfirmed" base={base} items={unconfirmed} allFindingKeys={allFindingKeys} onMerged={loadFindings} muted />
       {findings.length === 0 && !error && <p className="text-sm text-muted-foreground">No findings recorded yet.</p>}
     </div>
   );
@@ -42,13 +46,17 @@ export function FindingsPage() {
 
 function Section({
   title,
-  projectId,
+  base,
   items,
+  allFindingKeys,
+  onMerged,
   muted = false,
 }: {
   title: string;
-  projectId: string;
+  base: string;
   items: Finding[];
+  allFindingKeys: string[];
+  onMerged: () => void;
   muted?: boolean;
 }) {
   return (
@@ -56,16 +64,36 @@ function Section({
       <h3 className={`text-sm font-medium mb-2 ${muted ? "text-muted-foreground" : ""}`}>{title} ({items.length})</h3>
       <div className="space-y-2">
         {items.map((f) => (
-          <FindingCard key={f.id} projectId={projectId} finding={f} />
+          <FindingCard
+            key={f.id}
+            base={base}
+            finding={f}
+            allFindingKeys={allFindingKeys.filter((k) => k !== f.finding_key)}
+            onMerged={onMerged}
+          />
         ))}
       </div>
     </div>
   );
 }
 
-function FindingCard({ projectId, finding }: { projectId: string; finding: Finding }) {
+function FindingCard({
+  base,
+  finding,
+  allFindingKeys,
+  onMerged,
+}: {
+  base: string;
+  finding: Finding;
+  allFindingKeys: string[];
+  onMerged: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const [versions, setVersions] = useState<FindingVersion[] | null>(null);
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const [mergeTarget, setMergeTarget] = useState("");
+  const [mergeError, setMergeError] = useState<string | null>(null);
+  const [mergeBusy, setMergeBusy] = useState(false);
 
   useEffect(() => {
     if (!open) {
@@ -73,13 +101,32 @@ function FindingCard({ projectId, finding }: { projectId: string; finding: Findi
       return;
     }
     let cancelled = false;
-    apiGet<{ versions: FindingVersion[] }>(`/api/projects/${projectId}/findings/${encodeURIComponent(finding.finding_key)}/versions`)
+    apiGet<{ versions: FindingVersion[] }>(`${base}/findings/${encodeURIComponent(finding.finding_key)}/versions`)
       .then((d) => !cancelled && setVersions(d.versions ?? []))
       .catch(() => !cancelled && setVersions([]));
     return () => {
       cancelled = true;
     };
-  }, [open, projectId, finding.finding_key]);
+  }, [open, base, finding.finding_key]);
+
+  async function confirmMerge() {
+    if (!mergeTarget) return;
+    setMergeBusy(true);
+    setMergeError(null);
+    try {
+      await apiPost(`${base}/findings/merge`, {
+        source_finding_key: finding.finding_key,
+        canonical_finding_key: mergeTarget,
+      });
+      setMergeOpen(false);
+      setMergeTarget("");
+      onMerged();
+    } catch (e) {
+      setMergeError((e as Error).message);
+    } finally {
+      setMergeBusy(false);
+    }
+  }
 
   return (
     <Card>
@@ -95,6 +142,7 @@ function FindingCard({ projectId, finding }: { projectId: string; finding: Findi
         </div>
       </CardHeader>
       <div className="text-xs text-muted-foreground space-y-1">
+        <p><span className="text-foreground">Key:</span> <code>{finding.finding_key}</code></p>
         {finding.target && <p><span className="text-foreground">Target:</span> {finding.target}</p>}
         {finding.cvss_vector && <p><span className="text-foreground">CVSS {finding.cvss_version}:</span> <code>{finding.cvss_vector}</code></p>}
         {finding.impact && <p><span className="text-foreground">Impact:</span> {finding.impact}</p>}
@@ -128,6 +176,51 @@ function FindingCard({ projectId, finding }: { projectId: string; finding: Findi
                 </li>
               ))}
             </ol>
+          )}
+        </div>
+      )}
+
+      {allFindingKeys.length > 0 && (
+        <div className="mt-3 border-t border-border pt-3">
+          {!mergeOpen ? (
+            <Button size="sm" variant="outline" onClick={() => setMergeOpen(true)}>
+              <GitMerge className="h-3.5 w-3.5 mr-1" /> Merge into…
+            </Button>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground">
+                Merge <code>{finding.finding_key}</code> into the canonical finding. The old key becomes an alias; history is preserved.
+              </p>
+              <select
+                className="flex h-9 w-full max-w-md rounded-md border border-input bg-background px-3 text-xs"
+                value={mergeTarget}
+                onChange={(e) => setMergeTarget(e.target.value)}
+              >
+                <option value="">Choose canonical finding key</option>
+                {allFindingKeys.map((k) => (
+                  <option key={k} value={k}>
+                    {k}
+                  </option>
+                ))}
+              </select>
+              {mergeError && <p className="text-xs text-destructive">{mergeError}</p>}
+              <div className="flex gap-2">
+                <Button size="sm" onClick={confirmMerge} disabled={!mergeTarget || mergeBusy}>
+                  Confirm merge
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setMergeOpen(false);
+                    setMergeTarget("");
+                    setMergeError(null);
+                  }}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
           )}
         </div>
       )}

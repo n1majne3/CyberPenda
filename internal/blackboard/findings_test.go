@@ -157,3 +157,81 @@ func TestSeverityDerivedFromCVSSVector(t *testing.T) {
 		t.Fatalf("expected severity high for one high, got %q", high.Severity)
 	}
 }
+
+func TestMergeFindingsConsolidatesAndAliases(t *testing.T) {
+	bb, projects := newServices(t)
+	projectID := mustProject(t, projects)
+
+	if _, err := bb.UpsertFinding(blackboard.UpsertFindingRequest{
+		ProjectID: projectID, FindingKey: "sqli-login", Title: "SQLi on login",
+	}); err != nil {
+		t.Fatalf("upsert canonical: %v", err)
+	}
+	if _, err := bb.UpsertFinding(blackboard.UpsertFindingRequest{
+		ProjectID: projectID, FindingKey: "sqli-login-form", Title: "SQLi on login (dup)",
+	}); err != nil {
+		t.Fatalf("upsert dup: %v", err)
+	}
+
+	if err := bb.MergeFindings(blackboard.MergeFindingsRequest{
+		ProjectID: projectID, SourceFindingKey: "sqli-login-form", CanonicalFindingKey: "sqli-login",
+	}); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+
+	resolved, err := bb.GetFinding(projectID, "sqli-login-form")
+	if err != nil {
+		t.Fatalf("get via alias: %v", err)
+	}
+	if resolved.FindingKey != "sqli-login" {
+		t.Fatalf("alias must resolve to canonical key, got %q", resolved.FindingKey)
+	}
+
+	if _, err := bb.UpsertFinding(blackboard.UpsertFindingRequest{
+		ProjectID: projectID, FindingKey: "sqli-login-form", Title: "updated via alias",
+	}); err != nil {
+		t.Fatalf("upsert via alias: %v", err)
+	}
+	canon, err := bb.GetFinding(projectID, "sqli-login")
+	if err != nil {
+		t.Fatalf("get canonical: %v", err)
+	}
+	if canon.Title != "updated via alias" {
+		t.Fatalf("alias write must update canonical, got %q", canon.Title)
+	}
+
+	list, err := bb.ListFindings(projectID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 1 || list[0].FindingKey != "sqli-login" {
+		t.Fatalf("list must contain only canonical finding, got %#v", list)
+	}
+}
+
+func TestMergeFindingsRejectsInvalidKeys(t *testing.T) {
+	bb, projects := newServices(t)
+	projectID := mustProject(t, projects)
+
+	if _, err := bb.UpsertFinding(blackboard.UpsertFindingRequest{
+		ProjectID: projectID, FindingKey: "only", Title: "only",
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	if err := bb.MergeFindings(blackboard.MergeFindingsRequest{
+		ProjectID: projectID, SourceFindingKey: "missing", CanonicalFindingKey: "only",
+	}); !errors.Is(err, blackboard.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for missing source, got %v", err)
+	}
+	if err := bb.MergeFindings(blackboard.MergeFindingsRequest{
+		ProjectID: projectID, SourceFindingKey: "only", CanonicalFindingKey: "missing",
+	}); !errors.Is(err, blackboard.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for missing canonical, got %v", err)
+	}
+	if err := bb.MergeFindings(blackboard.MergeFindingsRequest{
+		ProjectID: projectID, SourceFindingKey: "only", CanonicalFindingKey: "only",
+	}); !errors.Is(err, blackboard.ErrSelfMerge) {
+		t.Fatalf("expected ErrSelfMerge, got %v", err)
+	}
+}

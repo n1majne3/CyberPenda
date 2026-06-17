@@ -159,6 +159,14 @@ func migrate(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			UNIQUE (project_id, alias_fact_key)
 		);`,
+		`CREATE TABLE IF NOT EXISTS finding_key_aliases (
+			id TEXT PRIMARY KEY,
+			project_id TEXT NOT NULL,
+			alias_finding_key TEXT NOT NULL,
+			canon_finding_key TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			UNIQUE (project_id, alias_finding_key)
+		);`,
 		`CREATE TABLE IF NOT EXISTS findings (
 			id TEXT PRIMARY KEY,
 			project_id TEXT NOT NULL,

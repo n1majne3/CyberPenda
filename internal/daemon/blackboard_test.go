@@ -589,6 +589,71 @@ func TestProjectFactMergeRejectsUnknownProject(t *testing.T) {
 	}
 }
 
+func TestProjectFindingMergeRedirectsThroughAlias(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	upsertFinding(t, server, projectID, "sqli-login", `{"title":"SQLi on login"}`)
+	upsertFinding(t, server, projectID, "sqli-login-form", `{"title":"SQLi on login (dup)"}`)
+
+	mergeBody := []byte(`{"source_finding_key":"sqli-login-form","canonical_finding_key":"sqli-login"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/findings/merge", bytes.NewReader(mergeBody))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected merge status 200, got %d with body %s", resp.Code, resp.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/findings", nil)
+	listResp := httptest.NewRecorder()
+	server.ServeHTTP(listResp, listReq)
+	var list struct {
+		Findings []struct {
+			FindingKey string `json:"finding_key"`
+		} `json:"findings"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list.Findings) != 1 || list.Findings[0].FindingKey != "sqli-login" {
+		t.Fatalf("list must contain only the canonical finding, got %#v", list.Findings)
+	}
+
+	verReq := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/findings/sqli-login-form/versions", nil)
+	verResp := httptest.NewRecorder()
+	server.ServeHTTP(verResp, verReq)
+	if verResp.Code != http.StatusOK {
+		t.Fatalf("expected alias versions status 200, got %d with body %s", verResp.Code, verResp.Body.String())
+	}
+	var ver struct {
+		Versions []struct {
+			FindingKey string `json:"finding_key"`
+		} `json:"versions"`
+	}
+	if err := json.NewDecoder(verResp.Body).Decode(&ver); err != nil {
+		t.Fatalf("decode versions: %v", err)
+	}
+	if len(ver.Versions) == 0 {
+		t.Fatal("expected version history under alias read")
+	}
+	for _, v := range ver.Versions {
+		if v.FindingKey != "sqli-login" {
+			t.Fatalf("alias versions must resolve to canonical key, got %q", v.FindingKey)
+		}
+	}
+}
+
+func TestProjectFindingMergeRejectsUnknownProject(t *testing.T) {
+	server := newDaemon(t)
+	body := []byte(`{"source_finding_key":"a","canonical_finding_key":"b"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/does-not-exist/findings/merge", bytes.NewReader(body))
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown project, got %d", resp.Code)
+	}
+}
+
 func upsertFact(t *testing.T, server interface {
 	ServeHTTP(http.ResponseWriter, *http.Request)
 }, projectID, factKey, body string) {

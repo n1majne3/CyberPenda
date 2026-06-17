@@ -143,6 +143,43 @@ func (server *Server) handleMergeFacts(response http.ResponseWriter, request *ht
 	}{Merged: true})
 }
 
+// handleMergeFindings governs a Finding Merge: the source finding key is
+// consolidated into the canonical key and becomes an alias of it (CONTEXT.md).
+func (server *Server) handleMergeFindings(response http.ResponseWriter, request *http.Request) {
+	projectID := request.PathValue("id")
+	if !server.requireProject(response, projectID) {
+		return
+	}
+
+	var input struct {
+		SourceFindingKey    string `json:"source_finding_key"`
+		CanonicalFindingKey string `json:"canonical_finding_key"`
+	}
+	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	if err := server.facts.MergeFindings(blackboard.MergeFindingsRequest{
+		ProjectID:           projectID,
+		SourceFindingKey:    input.SourceFindingKey,
+		CanonicalFindingKey: input.CanonicalFindingKey,
+	}); err != nil {
+		switch {
+		case errors.Is(err, blackboard.ErrSelfMerge), errors.Is(err, blackboard.ErrMissingFindingKey):
+			writeError(response, http.StatusBadRequest, err.Error())
+		case errors.Is(err, blackboard.ErrNotFound):
+			writeError(response, http.StatusNotFound, err.Error())
+		default:
+			writeError(response, http.StatusInternalServerError, "merge findings")
+		}
+		return
+	}
+	writeJSON(response, http.StatusOK, struct {
+		Merged bool `json:"merged"`
+	}{Merged: true})
+}
+
 func (server *Server) handleProjectFactVersions(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
 	factKey := request.PathValue("fact_key")

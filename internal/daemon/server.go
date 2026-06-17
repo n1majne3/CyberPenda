@@ -109,6 +109,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /api/projects/{id}/facts/merge", server.handleMergeFacts)
 	server.mux.HandleFunc("PUT /api/projects/{id}/findings/{finding_key}", server.handleUpsertFinding)
 	server.mux.HandleFunc("GET /api/projects/{id}/findings", server.handleListFindings)
+	server.mux.HandleFunc("POST /api/projects/{id}/findings/merge", server.handleMergeFindings)
 	server.mux.HandleFunc("GET /api/projects/{id}/findings/{finding_key}/versions", server.handleFindingVersions)
 	server.mux.HandleFunc("POST /api/projects/{id}/evidence", server.handleAttachEvidence)
 	server.mux.HandleFunc("GET /api/projects/{id}/evidence", server.handleListEvidence)
