@@ -27,9 +27,21 @@ func Open(path string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	if err := db.Ping(); err != nil {
 		_ = db.Close()
 		return nil, err
+	}
+	if _, err := db.Exec(`PRAGMA busy_timeout = 5000`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("configure sqlite busy timeout: %w", err)
+	}
+	if path != ":memory:" {
+		if _, err := db.Exec(`PRAGMA journal_mode = WAL`); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("configure sqlite journal mode: %w", err)
+		}
 	}
 
 	if err := migrate(db); err != nil {

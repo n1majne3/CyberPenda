@@ -87,14 +87,7 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		return
 	}
 
-	if err := server.harness.Launch(context.Background(), runtime.LaunchRequest{
-		TaskID:  created.ID,
-		Goal:    created.Goal,
-		Adapter: adapter,
-	}); err != nil {
-		writeError(response, http.StatusInternalServerError, "launch task")
-		return
-	}
+	server.launchTaskInBackground(created, adapter)
 
 	launched, err := server.tasks.Get(created.ID)
 	if err != nil {
@@ -102,6 +95,16 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		return
 	}
 	writeJSON(response, http.StatusCreated, launched)
+}
+
+func (server *Server) launchTaskInBackground(created task.Task, adapter runtime.Adapter) {
+	go func() {
+		_ = server.harness.Launch(context.Background(), runtime.LaunchRequest{
+			TaskID:  created.ID,
+			Goal:    created.Goal,
+			Adapter: adapter,
+		})
+	}()
 }
 
 type taskLaunchDefaults struct {

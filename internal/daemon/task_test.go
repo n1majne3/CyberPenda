@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"pentest/internal/daemon"
 )
@@ -74,7 +75,8 @@ func TestLaunchTaskRunsFakeRuntimeAndStreamsEvents(t *testing.T) {
 		t.Fatalf("expected scope snapshot notes, got %q", created.ScopeSnapshot.Notes)
 	}
 
-	// The fake runtime runs synchronously at launch, so events are present.
+	// The runtime runs in the background, so poll until its output is visible.
+	waitForEventText(t, server, projectID, created.ID, "enumerating in-scope assets")
 	events := getTaskEvents(t, server, projectID, created.ID)
 	kinds := map[string]bool{}
 	for _, e := range events {
@@ -162,6 +164,7 @@ func TestLaunchTaskUsesProjectDefaultsWhenRuntimeControlsAreOmitted(t *testing.T
 		t.Fatalf("expected create task status 201, got %d with body %s", resp.Code, resp.Body.String())
 	}
 	var created struct {
+		ID               string `json:"id"`
 		RuntimeProfileID string `json:"runtime_profile_id"`
 		Runner           string `json:"runner"`
 		Status           string `json:"status"`
@@ -175,9 +178,7 @@ func TestLaunchTaskUsesProjectDefaultsWhenRuntimeControlsAreOmitted(t *testing.T
 	if created.Runner != "sandbox" {
 		t.Fatalf("expected default runner sandbox, got %q", created.Runner)
 	}
-	if created.Status != "completed" {
-		t.Fatalf("expected fake task completed, got %q", created.Status)
-	}
+	waitForTaskStatus(t, server, projectID, created.ID, "completed")
 }
 
 func TestLaunchTaskUsesRuntimeProfileProviderAdapter(t *testing.T) {
@@ -207,6 +208,7 @@ func TestLaunchTaskUsesRuntimeProfileProviderAdapter(t *testing.T) {
 		"runner":"host"
 	}`)
 
+	waitForEventText(t, server, projectID, taskID, "codex-provider:run")
 	events := getTaskEvents(t, server, projectID, taskID)
 	var sawCodexLifecycle bool
 	var sawProviderOutput bool
@@ -231,6 +233,41 @@ func TestLaunchTaskUsesRuntimeProfileProviderAdapter(t *testing.T) {
 	}
 	if !sawProviderOutput {
 		t.Fatalf("expected provider stdout in task events, got %#v", events)
+	}
+}
+
+func TestLaunchTaskReturnsBeforeRuntimeProcessCompletes(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+
+	binary := filepath.Join(t.TempDir(), "slow-codex")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\necho slow-provider-started\nsleep 2\necho slow-provider-completed\n"), 0o700); err != nil {
+		t.Fatalf("write slow provider binary: %v", err)
+	}
+	profileID := createRuntimeProfile(t, server, `{
+		"name":"Slow Codex",
+		"provider":"codex",
+		"fields":{"binary_path":`+quoteJSON(binary)+`}
+	}`)
+
+	start := time.Now()
+	taskID := createTask(t, server, projectID, `{
+		"goal":"run slow provider",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
+		"runner":"host"
+	}`)
+	elapsed := time.Since(start)
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("task launch blocked on runtime process for %s", elapsed)
+	}
+
+	waitForEventText(t, server, projectID, taskID, "slow-provider-started")
+
+	stopResp := httptest.NewRecorder()
+	stopReq := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/stop", nil)
+	server.ServeHTTP(stopResp, stopReq)
+	if stopResp.Code != http.StatusOK {
+		t.Fatalf("expected stop status 200, got %d with body %s", stopResp.Code, stopResp.Body.String())
 	}
 }
 
@@ -268,6 +305,7 @@ func TestLaunchTaskWrapsProviderCommandInSandboxRunner(t *testing.T) {
 		"runner":"sandbox"
 	}`)
 
+	waitForEventText(t, server, projectID, taskID, "sandbox-command:run --rm -i")
 	events := getTaskEvents(t, server, projectID, taskID)
 	var sawSandboxCommand bool
 	for _, event := range events {
@@ -389,9 +427,15 @@ func TestSteerTaskRecordsDirectiveAndRuntimeProfileSwitch(t *testing.T) {
 	}
 
 	events := getTaskEvents(t, server, projectID, taskID)
-	last := events[len(events)-1]
-	if last["kind"] != "steering" {
-		t.Fatalf("expected last event steering, got %#v", last)
+	sawSteering := false
+	for _, event := range events {
+		if event["kind"] == "steering" {
+			sawSteering = true
+			break
+		}
+	}
+	if !sawSteering {
+		t.Fatalf("expected steering event, got %#v", events)
 	}
 }
 
@@ -534,6 +578,51 @@ func getTaskEvents(t *testing.T, server interface {
 		t.Fatalf("decode events: %v", err)
 	}
 	return body.Events
+}
+
+func waitForEventText(t *testing.T, server interface {
+	ServeHTTP(http.ResponseWriter, *http.Request)
+}, projectID, taskID, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		events := getTaskEvents(t, server, projectID, taskID)
+		for _, event := range events {
+			payload, _ := event["payload"].(map[string]any)
+			text, _ := payload["text"].(string)
+			if strings.Contains(text, want) {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for event text %q", want)
+}
+
+func waitForTaskStatus(t *testing.T, server interface {
+	ServeHTTP(http.ResponseWriter, *http.Request)
+}, projectID, taskID, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resp := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID, nil)
+		server.ServeHTTP(resp, req)
+		if resp.Code != http.StatusOK {
+			t.Fatalf("expected get task status 200, got %d with body %s", resp.Code, resp.Body.String())
+		}
+		var found struct {
+			Status string `json:"status"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&found); err != nil {
+			t.Fatalf("decode task: %v", err)
+		}
+		if found.Status == want {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for task status %q", want)
 }
 
 func createTask(t *testing.T, server interface {
