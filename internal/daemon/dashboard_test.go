@@ -115,10 +115,11 @@ func TestDashboardScopeNotReadyForEmptyScope(t *testing.T) {
 func TestDashboardCountsTasksAndFacts(t *testing.T) {
 	server := newDaemon(t)
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 
 	createTask(t, server, projectID, `{
 		"goal":"enumerate example.com",
-		"runtime_profile_id":"fake-profile",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"sandbox"
 	}`)
 	upsertFact(t, server, projectID, "target:example.com", `{

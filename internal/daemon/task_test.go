@@ -23,10 +23,11 @@ func TestLaunchTaskRunsFakeRuntimeAndStreamsEvents(t *testing.T) {
 		"name":"Acme",
 		"scope":{"domains":["example.com"],"notes":"in scope"}
 	}`)
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 
 	body := []byte(`{
 		"goal":"enumerate example.com",
-		"runtime_profile_id":"fake-profile",
+		"runtime_profile_id":` + quoteJSON(profileID) + `,
 		"runner":"sandbox"
 	}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks", bytes.NewReader(body))
@@ -62,7 +63,7 @@ func TestLaunchTaskRunsFakeRuntimeAndStreamsEvents(t *testing.T) {
 	if created.Runner != "sandbox" {
 		t.Fatalf("expected sandbox runner, got %q", created.Runner)
 	}
-	if created.RuntimeProfileID != "fake-profile" {
+	if created.RuntimeProfileID != profileID {
 		t.Fatalf("expected runtime profile id, got %q", created.RuntimeProfileID)
 	}
 	// Scope snapshot is captured at launch.
@@ -81,6 +82,63 @@ func TestLaunchTaskRunsFakeRuntimeAndStreamsEvents(t *testing.T) {
 	}
 	if !kinds["lifecycle"] || !kinds["runtime_output"] {
 		t.Fatalf("expected lifecycle and runtime_output events, got %#v", kinds)
+	}
+}
+
+func TestLaunchTaskFailsPreflightWhenRuntimeProfileMissing(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks", bytes.NewReader([]byte(`{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":"missing-profile",
+		"runner":"sandbox"
+	}`)))
+	req.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected task launch preflight failure status 400, got %d with body %s", resp.Code, resp.Body.String())
+	}
+	var body struct {
+		Error     string `json:"error"`
+		Preflight struct {
+			Pass   bool `json:"pass"`
+			Checks []struct {
+				Name   string `json:"name"`
+				Status string `json:"status"`
+				Detail string `json:"detail"`
+			} `json:"checks"`
+		} `json:"preflight"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode preflight launch failure: %v", err)
+	}
+	if body.Error != "preflight failed" {
+		t.Fatalf("expected preflight failed error, got %q", body.Error)
+	}
+	if body.Preflight.Pass {
+		t.Fatalf("expected preflight pass=false, got %#v", body.Preflight)
+	}
+	if !checkNamed(body.Preflight.Checks, "runtime_profile", "fail") {
+		t.Fatalf("expected runtime_profile check to fail, got %#v", body.Preflight.Checks)
+	}
+
+	listResp := httptest.NewRecorder()
+	listReq := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks", nil)
+	server.ServeHTTP(listResp, listReq)
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("expected list tasks status 200, got %d with body %s", listResp.Code, listResp.Body.String())
+	}
+	var listed struct {
+		Tasks []map[string]any `json:"tasks"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode tasks list: %v", err)
+	}
+	if len(listed.Tasks) != 0 {
+		t.Fatalf("preflight failure must not create a task, got %#v", listed.Tasks)
 	}
 }
 
@@ -194,9 +252,10 @@ func TestLaunchTaskWrapsProviderCommandInSandboxRunner(t *testing.T) {
 func TestTaskSummaryUpdatesAreAcceptedAndVersioned(t *testing.T) {
 	server := newDaemon(t)
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 	taskID := createTask(t, server, projectID, `{
 		"goal":"enumerate example.com",
-		"runtime_profile_id":"fake-profile",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"sandbox"
 	}`)
 
@@ -244,16 +303,18 @@ func TestTaskSummaryUpdatesAreAcceptedAndVersioned(t *testing.T) {
 func TestSteerTaskRecordsDirectiveAndRuntimeProfileSwitch(t *testing.T) {
 	server := newDaemon(t)
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	profileA := createRuntimeProfile(t, server, `{"name":"Fake A","provider":"fake"}`)
+	profileB := createRuntimeProfile(t, server, `{"name":"Fake B","provider":"fake"}`)
 	taskID := createTask(t, server, projectID, `{
 		"goal":"enumerate example.com",
-		"runtime_profile_id":"fake-profile-a",
+		"runtime_profile_id":`+quoteJSON(profileA)+`,
 		"runner":"sandbox"
 	}`)
 
 	resp := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/steer", bytes.NewReader([]byte(`{
 		"directive":"focus on http services before dns brute force",
-		"runtime_profile_id":"fake-profile-b",
+		"runtime_profile_id":`+quoteJSON(profileB)+`,
 		"submitted_by":"operator"
 	}`)))
 	req.Header.Set("Content-Type", "application/json")
@@ -285,7 +346,7 @@ func TestSteerTaskRecordsDirectiveAndRuntimeProfileSwitch(t *testing.T) {
 	if steered.RuntimeConfigVersion.Version != 2 {
 		t.Fatalf("expected second runtime config version, got %d", steered.RuntimeConfigVersion.Version)
 	}
-	if steered.RuntimeConfigVersion.RuntimeProfileID != "fake-profile-b" {
+	if steered.RuntimeConfigVersion.RuntimeProfileID != profileB {
 		t.Fatalf("expected switched profile, got %q", steered.RuntimeConfigVersion.RuntimeProfileID)
 	}
 
@@ -302,9 +363,10 @@ func TestTaskContinuationReturnsSummaryOrMechanicalHandoff(t *testing.T) {
 		"name":"Acme",
 		"scope":{"domains":["example.com"],"notes":"approved only"}
 	}`)
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 	taskID := createTask(t, server, projectID, `{
 		"goal":"enumerate example.com",
-		"runtime_profile_id":"fake-profile",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"sandbox"
 	}`)
 

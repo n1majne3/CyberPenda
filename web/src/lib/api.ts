@@ -3,6 +3,18 @@
 
 const base = "";
 
+export class ApiError extends Error {
+  status: number;
+  body: unknown;
+
+  constructor(message: string, status: number, body: unknown) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(base + path, {
     ...init,
@@ -10,13 +22,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     let message = `${res.status} ${res.statusText}`;
+    let body: unknown;
     try {
-      const body = await res.json();
-      if (body.error) message = body.error;
+      body = await res.json();
+      if (isErrorBody(body)) message = body.error;
     } catch {
       // non-JSON error; keep status text
     }
-    throw new Error(message);
+    throw new ApiError(message, res.status, body);
   }
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
@@ -135,6 +148,17 @@ export interface TaskEvent {
   created_at: string;
 }
 
+export interface PreflightCheck {
+  name: string;
+  status: "pass" | "fail";
+  detail?: string;
+}
+
+export interface PreflightResult {
+  pass: boolean;
+  checks: PreflightCheck[];
+}
+
 export interface FactIndexEntry {
   fact_key: string;
   category: string;
@@ -248,4 +272,8 @@ export interface EvidenceArtifact {
 export interface Health {
   version: string;
   database: { status: string };
+}
+
+function isErrorBody(body: unknown): body is { error: string } {
+  return typeof body === "object" && body !== null && "error" in body && typeof (body as { error?: unknown }).error === "string";
 }

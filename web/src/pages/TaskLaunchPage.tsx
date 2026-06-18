@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
-import { ArrowLeft, Rocket, AlertTriangle } from "lucide-react";
-import { apiGet, apiPost, type RuntimeProfile } from "@/lib/api";
+import { ArrowLeft, Rocket, AlertTriangle, CheckCircle2, XCircle } from "lucide-react";
+import { apiGet, apiPost, type PreflightResult, type RuntimeProfile } from "@/lib/api";
 import { Button, Card, Label, Textarea, Badge } from "@/components/ui";
 
 export function TaskLaunchPage() {
@@ -14,6 +14,7 @@ export function TaskLaunchPage() {
   const [runner, setRunner] = useState("sandbox");
   const [yolo, setYolo] = useState(false);
   const [launching, setLaunching] = useState(false);
+  const [preflight, setPreflight] = useState<PreflightResult | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -30,7 +31,17 @@ export function TaskLaunchPage() {
   async function launch() {
     if (!projectId) return;
     setLaunching(true);
+    setError(null);
     try {
+      const checked = await apiPost<PreflightResult>(`/api/projects/${projectId}/preflight`, {
+        runtime_profile_id: profileId,
+        runner,
+      });
+      setPreflight(checked);
+      if (!checked.pass) {
+        setError("preflight failed");
+        return;
+      }
       const created = await apiPost<{ id: string }>(`/api/projects/${projectId}/tasks`, {
         goal,
         runtime_profile_id: profileId,
@@ -93,6 +104,26 @@ export function TaskLaunchPage() {
               <span className="text-sm font-medium">
                 {runner === "host" && yolo ? "HOST runner + YOLO mode" : runner === "host" ? "HOST runner — runs on your machine" : "YOLO mode — approvals bypassed"}
               </span>
+            </div>
+          </Card>
+        )}
+
+        {preflight && (
+          <Card className={preflight.pass ? "border-emerald-500/40 bg-emerald-500/5 p-3" : "border-destructive/40 bg-destructive/5 p-3"}>
+            <div className="space-y-2">
+              {preflight.checks.map((check) => (
+                <div key={check.name} className="flex items-start gap-2 text-sm">
+                  {check.status === "pass" ? (
+                    <CheckCircle2 className="mt-0.5 h-4 w-4 text-emerald-400" />
+                  ) : (
+                    <XCircle className="mt-0.5 h-4 w-4 text-destructive" />
+                  )}
+                  <div>
+                    <span className="font-medium">{check.name}</span>
+                    {check.detail && <span className="text-muted-foreground">: {check.detail}</span>}
+                  </div>
+                </div>
+              ))}
             </div>
           </Card>
         )}

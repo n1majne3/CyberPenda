@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"pentest/internal/adapters"
+	"pentest/internal/preflight"
 	"pentest/internal/project"
 	"pentest/internal/runner"
 	"pentest/internal/runtime"
@@ -40,6 +41,22 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 	}
 	if input.YOLO {
 		input.RunControls.YOLO = true
+	}
+
+	preflightResult := server.preflight.Run(request.Context(), preflight.Request{
+		RuntimeProfileID: input.RuntimeProfileID,
+		ProjectID:        projectID,
+		Runner:           string(input.Runner),
+	})
+	if !preflightResult.Pass {
+		writeJSON(response, http.StatusBadRequest, struct {
+			Error     string           `json:"error"`
+			Preflight preflight.Result `json:"preflight"`
+		}{
+			Error:     "preflight failed",
+			Preflight: preflightResult,
+		})
+		return
 	}
 
 	created, err := server.tasks.Create(task.CreateRequest{
@@ -90,11 +107,6 @@ func (server *Server) buildTaskAdapter(created task.Task) (runtime.Adapter, map[
 
 	profile, err := server.profiles.Get(created.RuntimeProfileID)
 	if err != nil {
-		if errors.Is(err, runtimeprofile.ErrNotFound) {
-			runtimeConfig["provider"] = string(runtimeprofile.ProviderFake)
-			runtimeConfig["fallback"] = "runtime profile not found; using fake adapter"
-			return runtime.NewFakeAdapter(), runtimeConfig, nil
-		}
 		return nil, nil, err
 	}
 	if profile.Provider == runtimeprofile.ProviderFake {

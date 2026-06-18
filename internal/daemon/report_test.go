@@ -17,6 +17,7 @@ func TestReportTriggerWithTaskReturnsFullMarkdown(t *testing.T) {
 		"name":"Acme",
 		"scope":{"domains":["example.com"],"testing_limits":["business hours only"]}
 	}`)
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 
 	// A confirmed finding via the finding upsert endpoint (PUT with key in path).
 	postJSON(t, server, http.MethodPut, "/api/projects/"+projectID+"/findings/sqli-login", `{
@@ -42,7 +43,7 @@ func TestReportTriggerWithTaskReturnsFullMarkdown(t *testing.T) {
 	// A fake-runtime task to anchor runner/scope.
 	taskID := launchTask(t, server, projectID, `{
 		"goal":"enumerate example.com",
-		"runtime_profile_id":"fake",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"sandbox"
 	}`)
 
@@ -99,18 +100,19 @@ func TestReportTriggerWithoutTaskUsesLatestTaskWhenPresent(t *testing.T) {
 		"name":"Acme",
 		"scope":{"domains":["example.com"]}
 	}`)
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 	postJSON(t, server, http.MethodPut, "/api/projects/"+projectID+"/findings/info-leak", `{
 		"title":"Verbose errors"
 	}`)
 	first := launchTask(t, server, projectID, `{
 		"goal":"first task",
-		"runtime_profile_id":"fake",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"sandbox"
 	}`)
 	_ = first
 	second := launchTask(t, server, projectID, `{
 		"goal":"second task",
-		"runtime_profile_id":"fake",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"sandbox"
 	}`)
 
