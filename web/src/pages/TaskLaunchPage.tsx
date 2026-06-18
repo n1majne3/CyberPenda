@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import { ArrowLeft, Rocket, AlertTriangle, CheckCircle2, XCircle } from "lucide-react";
-import { apiGet, apiPost, type PreflightResult, type RuntimeProfile } from "@/lib/api";
+import { apiGet, apiPost, type PreflightResult, type Project, type RuntimeProfile } from "@/lib/api";
 import { Button, Card, Label, Textarea, Badge } from "@/components/ui";
 
 export function TaskLaunchPage() {
@@ -19,14 +19,22 @@ export function TaskLaunchPage() {
   useEffect(() => {
     (async () => {
       try {
-        const d = await apiGet<{ profiles: RuntimeProfile[] }>("/api/runtime-profiles");
-        setProfiles(d.profiles ?? []);
-        if (d.profiles && d.profiles.length > 0) setProfileId(d.profiles[0].id);
+        if (!projectId) return;
+        const [profileData, project] = await Promise.all([
+          apiGet<{ profiles: RuntimeProfile[] }>("/api/runtime-profiles"),
+          apiGet<Project>(`/api/projects/${projectId}`),
+        ]);
+        const loadedProfiles = profileData.profiles ?? [];
+        setProfiles(loadedProfiles);
+        const defaultProfileID = project.defaults.runtime_profile || loadedProfiles[0]?.id || "";
+        setProfileId(defaultProfileID);
+        const selectedProfile = loadedProfiles.find((p) => p.id === defaultProfileID);
+        setRunner(project.defaults.runner || selectedProfile?.fields.default_runner || "sandbox");
       } catch (e) {
         setError((e as Error).message);
       }
     })();
-  }, []);
+  }, [projectId]);
 
   async function launch() {
     if (!projectId) return;
@@ -76,7 +84,13 @@ export function TaskLaunchPage() {
             <select
               className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
               value={profileId}
-              onChange={(e) => setProfileId(e.target.value)}
+              onChange={(e) => {
+                const nextProfileID = e.target.value;
+                setProfileId(nextProfileID);
+                setPreflight(null);
+                const nextProfile = profiles.find((p) => p.id === nextProfileID);
+                if (nextProfile?.fields.default_runner) setRunner(nextProfile.fields.default_runner);
+              }}
             >
               {profiles.map((p) => (
                 <option key={p.id} value={p.id}>{p.name} ({p.provider})</option>
@@ -88,7 +102,10 @@ export function TaskLaunchPage() {
             <select
               className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
               value={runner}
-              onChange={(e) => setRunner(e.target.value)}
+              onChange={(e) => {
+                setRunner(e.target.value);
+                setPreflight(null);
+              }}
             >
               <option value="sandbox">sandbox</option>
               <option value="host">host</option>

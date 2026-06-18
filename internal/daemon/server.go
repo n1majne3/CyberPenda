@@ -535,12 +535,21 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 		writeError(response, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
+	defaulted, err := server.applyTaskLaunchDefaults(projectID, input.RuntimeProfileID, task.Runner(input.Runner))
+	if err != nil {
+		if errors.Is(err, project.ErrNotFound) {
+			writeError(response, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(response, http.StatusInternalServerError, "load project defaults")
+		return
+	}
 
 	result := server.preflight.Run(request.Context(), preflight.Request{
-		RuntimeProfileID:        input.RuntimeProfileID,
+		RuntimeProfileID:        defaulted.runtimeProfileID,
 		ProjectID:               projectID,
 		CredentialRefsToResolve: input.CredentialRefsToResolve,
-		Runner:                  input.Runner,
+		Runner:                  string(defaulted.runner),
 	})
 
 	// A preflight result is always 200: the body reports pass/fail per check.

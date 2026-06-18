@@ -33,15 +33,20 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		writeError(response, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if input.Runner == "" {
-		input.Runner = task.RunnerSandbox
-	}
 	if input.RunControls.Extras == nil && input.Extras != nil {
 		input.RunControls.Extras = input.Extras
 	}
 	if input.YOLO {
 		input.RunControls.YOLO = true
 	}
+
+	defaulted, err := server.applyTaskLaunchDefaults(projectID, input.RuntimeProfileID, input.Runner)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "load project defaults")
+		return
+	}
+	input.RuntimeProfileID = defaulted.runtimeProfileID
+	input.Runner = defaulted.runner
 
 	preflightResult := server.preflight.Run(request.Context(), preflight.Request{
 		RuntimeProfileID: input.RuntimeProfileID,
@@ -97,6 +102,33 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		return
 	}
 	writeJSON(response, http.StatusCreated, launched)
+}
+
+type taskLaunchDefaults struct {
+	runtimeProfileID string
+	runner           task.Runner
+}
+
+func (server *Server) applyTaskLaunchDefaults(projectID, requestedProfileID string, requestedRunner task.Runner) (taskLaunchDefaults, error) {
+	found, err := server.projects.Get(projectID)
+	if err != nil {
+		return taskLaunchDefaults{}, err
+	}
+
+	resolved := taskLaunchDefaults{
+		runtimeProfileID: requestedProfileID,
+		runner:           requestedRunner,
+	}
+	if resolved.runtimeProfileID == "" {
+		resolved.runtimeProfileID = found.Defaults.RuntimeProfile
+	}
+	if resolved.runner == "" {
+		resolved.runner = task.Runner(found.Defaults.Runner)
+	}
+	if resolved.runner == "" {
+		resolved.runner = task.RunnerSandbox
+	}
+	return resolved, nil
 }
 
 func (server *Server) buildTaskAdapter(created task.Task) (runtime.Adapter, map[string]any, error) {

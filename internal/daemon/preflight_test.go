@@ -23,6 +23,7 @@ func checkNamed(checks []struct {
 
 func TestPreflightPassesWhenCredentialsResolveGlobally(t *testing.T) {
 	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
 
 	// Profile declares a credential ref; a global binding resolves it.
 	profileID := createRuntimeProfile(t, server, `{
@@ -36,7 +37,7 @@ func TestPreflightPassesWhenCredentialsResolveGlobally(t *testing.T) {
 	}`)
 
 	body := []byte(`{"runtime_profile_id":"` + profileID + `"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/p1/preflight", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/preflight", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp := httptest.NewRecorder()
 	server.ServeHTTP(resp, req)
@@ -65,9 +66,10 @@ func TestPreflightPassesWhenCredentialsResolveGlobally(t *testing.T) {
 
 func TestPreflightFailsWhenRuntimeProfileMissing(t *testing.T) {
 	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
 
 	body := []byte(`{"runtime_profile_id":"missing"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/p1/preflight", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/preflight", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp := httptest.NewRecorder()
 	server.ServeHTTP(resp, req)
@@ -92,5 +94,41 @@ func TestPreflightFailsWhenRuntimeProfileMissing(t *testing.T) {
 	}
 	if !checkNamed(result.Checks, "runtime_profile", "fail") {
 		t.Fatalf("expected runtime_profile check to fail, got %#v", result.Checks)
+	}
+}
+
+func TestPreflightUsesProjectDefaultsWhenLaunchOmitsRuntimeControls(t *testing.T) {
+	server := newDaemon(t)
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
+	projectID := createProject(t, server, `{
+		"name":"Acme",
+		"scope":{"domains":["example.com"]},
+		"defaults":{"runtime_profile":`+quoteJSON(profileID)+`,"runner":"sandbox"}
+	}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/preflight", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected preflight status 200, got %d with body %s", resp.Code, resp.Body.String())
+	}
+	var result struct {
+		Pass   bool `json:"pass"`
+		Checks []struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+			Detail string `json:"detail"`
+		} `json:"checks"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode preflight response: %v", err)
+	}
+	if !result.Pass {
+		t.Fatalf("expected preflight to pass using project defaults, got %#v", result.Checks)
+	}
+	if !checkNamed(result.Checks, "runtime_profile", "pass") {
+		t.Fatalf("expected runtime_profile check to pass, got %#v", result.Checks)
 	}
 }

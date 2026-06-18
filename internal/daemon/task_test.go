@@ -142,6 +142,44 @@ func TestLaunchTaskFailsPreflightWhenRuntimeProfileMissing(t *testing.T) {
 	}
 }
 
+func TestLaunchTaskUsesProjectDefaultsWhenRuntimeControlsAreOmitted(t *testing.T) {
+	server := newDaemon(t)
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
+	projectID := createProject(t, server, `{
+		"name":"Acme",
+		"scope":{"domains":["example.com"]},
+		"defaults":{"runtime_profile":`+quoteJSON(profileID)+`,"runner":"sandbox"}
+	}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks", bytes.NewReader([]byte(`{
+		"goal":"enumerate example.com"
+	}`)))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("expected create task status 201, got %d with body %s", resp.Code, resp.Body.String())
+	}
+	var created struct {
+		RuntimeProfileID string `json:"runtime_profile_id"`
+		Runner           string `json:"runner"`
+		Status           string `json:"status"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode task response: %v", err)
+	}
+	if created.RuntimeProfileID != profileID {
+		t.Fatalf("expected default runtime profile %q, got %q", profileID, created.RuntimeProfileID)
+	}
+	if created.Runner != "sandbox" {
+		t.Fatalf("expected default runner sandbox, got %q", created.Runner)
+	}
+	if created.Status != "completed" {
+		t.Fatalf("expected fake task completed, got %q", created.Status)
+	}
+}
+
 func TestLaunchTaskUsesRuntimeProfileProviderAdapter(t *testing.T) {
 	server := newDaemon(t)
 	projectID := createProject(t, server, `{
