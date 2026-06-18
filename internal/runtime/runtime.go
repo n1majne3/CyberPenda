@@ -5,10 +5,15 @@
 package runtime
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
+	"os"
+	"os/exec"
 	"sync"
 
+	"pentest/internal/adapters"
 	"pentest/internal/task"
 )
 
@@ -143,4 +148,101 @@ func (f *fakeAdapter) Run(ctx context.Context, goal string, emit func(task.Event
 	}
 	emit(task.EventKindRuntimeOutput, task.EventPayload{"text": "enumerating in-scope assets"})
 	return nil
+}
+
+// CommandAdapterConfig describes a provider process launch. Program and Args
+// are already runner-adjusted by the caller: host launches point at the provider
+// binary directly; sandbox launches point at the container CLI with provider
+// args appended after the image.
+type CommandAdapterConfig struct {
+	Name    string
+	Program string
+	Args    []string
+	Workdir string
+	Env     map[string]string
+}
+
+type commandAdapter struct {
+	config CommandAdapterConfig
+}
+
+// NewCommandAdapter returns a runtime adapter backed by a real local process.
+// It is provider-agnostic: provider-specific argv construction belongs to the
+// adapters package and runner-specific wrapping belongs to the runner package.
+func NewCommandAdapter(config CommandAdapterConfig) Adapter {
+	return &commandAdapter{config: config}
+}
+
+func (a *commandAdapter) Name() string {
+	if a.config.Name != "" {
+		return a.config.Name
+	}
+	return a.config.Program
+}
+
+func (a *commandAdapter) Run(ctx context.Context, goal string, emit func(task.EventKind, task.EventPayload)) error {
+	if a.config.Program == "" {
+		return fmt.Errorf("runtime command program is required")
+	}
+	var emitMu sync.Mutex
+	safeEmit := func(kind task.EventKind, payload task.EventPayload) {
+		emitMu.Lock()
+		defer emitMu.Unlock()
+		emit(kind, payload)
+	}
+
+	cmd := exec.CommandContext(ctx, a.config.Program, a.config.Args...)
+	cmd.Dir = a.config.Workdir
+	cmd.Env = os.Environ()
+	for key, value := range a.config.Env {
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("open stdout: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("open stderr: %w", err)
+	}
+
+	safeEmit(task.EventKindLifecycle, adapters.Redact(task.EventPayload{
+		"phase":   "process_started",
+		"adapter": a.Name(),
+		"program": a.config.Program,
+		"args":    a.config.Args,
+	}))
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start runtime process: %w", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go scanOutput(&wg, stdout, "stdout", safeEmit)
+	go scanOutput(&wg, stderr, "stderr", safeEmit)
+	wg.Wait()
+
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("runtime process failed: %w", err)
+	}
+	return nil
+}
+
+func scanOutput(wg *sync.WaitGroup, reader io.Reader, stream string, emit func(task.EventKind, task.EventPayload)) {
+	defer wg.Done()
+	scanner := bufio.NewScanner(reader)
+	for scanner.Scan() {
+		emit(task.EventKindRuntimeOutput, adapters.Redact(task.EventPayload{
+			"stream": stream,
+			"text":   scanner.Text(),
+		}))
+	}
+	if err := scanner.Err(); err != nil {
+		emit(task.EventKindRuntimeOutput, adapters.Redact(task.EventPayload{
+			"stream": stream,
+			"text":   fmt.Sprintf("read %s: %v", stream, err),
+		}))
+	}
 }

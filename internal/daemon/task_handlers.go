@@ -6,8 +6,11 @@ import (
 	"errors"
 	"net/http"
 
+	"pentest/internal/adapters"
 	"pentest/internal/project"
+	"pentest/internal/runner"
 	"pentest/internal/runtime"
+	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
 )
 
@@ -51,10 +54,13 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		return
 	}
 
-	if _, err := server.tasks.RecordRuntimeConfig(created.ID, created.RuntimeProfileID, map[string]any{
-		"runtime_profile_id": created.RuntimeProfileID,
-		"runner":             created.Runner,
-	}); err != nil {
+	adapter, runtimeConfig, err := server.buildTaskAdapter(created)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "prepare runtime adapter")
+		return
+	}
+
+	if _, err := server.tasks.RecordRuntimeConfig(created.ID, created.RuntimeProfileID, runtimeConfig); err != nil {
 		writeError(response, http.StatusInternalServerError, "record task runtime configuration")
 		return
 	}
@@ -62,7 +68,7 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 	if err := server.harness.Launch(context.Background(), runtime.LaunchRequest{
 		TaskID:  created.ID,
 		Goal:    created.Goal,
-		Adapter: runtime.NewFakeAdapter(),
+		Adapter: adapter,
 	}); err != nil {
 		writeError(response, http.StatusInternalServerError, "launch task")
 		return
@@ -74,6 +80,81 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		return
 	}
 	writeJSON(response, http.StatusCreated, launched)
+}
+
+func (server *Server) buildTaskAdapter(created task.Task) (runtime.Adapter, map[string]any, error) {
+	runtimeConfig := map[string]any{
+		"runtime_profile_id": created.RuntimeProfileID,
+		"runner":             created.Runner,
+	}
+
+	profile, err := server.profiles.Get(created.RuntimeProfileID)
+	if err != nil {
+		if errors.Is(err, runtimeprofile.ErrNotFound) {
+			runtimeConfig["provider"] = string(runtimeprofile.ProviderFake)
+			runtimeConfig["fallback"] = "runtime profile not found; using fake adapter"
+			return runtime.NewFakeAdapter(), runtimeConfig, nil
+		}
+		return nil, nil, err
+	}
+	if profile.Provider == runtimeprofile.ProviderFake {
+		runtimeConfig["provider"] = string(runtimeprofile.ProviderFake)
+		runtimeConfig["generated_config"] = runtimeprofile.GeneratedConfig(profile)
+		return runtime.NewFakeAdapter(), runtimeConfig, nil
+	}
+
+	layout, err := runner.PrepareTaskLayout(server.runtimeRoot, created.ID, profile.Provider)
+	if err != nil {
+		return nil, nil, err
+	}
+	projection, err := runner.ProjectRuntimeConfig(layout, profile)
+	if err != nil {
+		return nil, nil, err
+	}
+	providerCommand, err := adapters.BuildLaunchArgs(adapters.LaunchArgsRequest{
+		Provider:   profile.Provider,
+		Profile:    profile,
+		Goal:       created.Goal,
+		ConfigPath: projection.ConfigPath,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	commandProgram := providerCommand[0]
+	commandArgs := providerCommand[1:]
+	workdir := layout.Workdir
+	if created.Runner == task.RunnerSandbox {
+		command, err := runner.BuildSandboxCommand(runner.SandboxCommandRequest{
+			Layout:         layout,
+			Provider:       profile.Provider,
+			Image:          server.sandboxImage,
+			ContainerCLI:   server.containerCLI,
+			RuntimeCommand: providerCommand,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		commandProgram = command.Program
+		commandArgs = command.Args
+		workdir = ""
+	}
+
+	runtimeConfig["provider"] = string(profile.Provider)
+	runtimeConfig["generated_config"] = projection.Config
+	runtimeConfig["layout"] = layout
+	runtimeConfig["launch_command"] = adapters.Redact(map[string]any{
+		"program": commandProgram,
+		"args":    commandArgs,
+	})
+
+	return runtime.NewCommandAdapter(runtime.CommandAdapterConfig{
+		Name:    string(profile.Provider),
+		Program: commandProgram,
+		Args:    commandArgs,
+		Workdir: workdir,
+		Env:     profile.Fields.Env,
+	}), runtimeConfig, nil
 }
 
 func (server *Server) handleListTasks(response http.ResponseWriter, request *http.Request) {

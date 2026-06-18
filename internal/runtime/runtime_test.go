@@ -2,7 +2,9 @@ package runtime_test
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,6 +66,66 @@ func TestFakeRuntimeEmitsNormalizedEvents(t *testing.T) {
 	}
 	if !kinds[task.EventKindRuntimeOutput] {
 		t.Fatalf("expected a runtime_output event, got %#v", kinds)
+	}
+}
+
+func TestCommandRuntimeAdapterExecutesProviderProcessAndStreamsOutput(t *testing.T) {
+	harness, tasks, projects := newServices(t)
+	proj, _ := projects.Create("P", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
+	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "enumerate example.com", RuntimeProfileID: "codex", Runner: task.RunnerHost})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	binary := filepath.Join(t.TempDir(), "codex-test")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\necho provider-ready:$*\necho provider-warning >&2\n"), 0o700); err != nil {
+		t.Fatalf("write provider binary: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := harness.Launch(ctx, runtime.LaunchRequest{
+		TaskID: created.ID,
+		Goal:   created.Goal,
+		Adapter: runtime.NewCommandAdapter(runtime.CommandAdapterConfig{
+			Name:    "codex",
+			Program: binary,
+			Args:    []string{"run", "--", created.Goal},
+		}),
+	}); err != nil {
+		t.Fatalf("launch provider adapter: %v", err)
+	}
+
+	events, err := tasks.Events(created.ID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	var sawAdapter bool
+	var sawStdout bool
+	var sawStderr bool
+	for _, event := range events {
+		if event.Kind == task.EventKindLifecycle && event.Payload["adapter"] == "codex" {
+			sawAdapter = true
+		}
+		if event.Kind == task.EventKindRuntimeOutput {
+			text, _ := event.Payload["text"].(string)
+			stream, _ := event.Payload["stream"].(string)
+			if stream == "stdout" && strings.Contains(text, "provider-ready:run -- enumerate example.com") {
+				sawStdout = true
+			}
+			if stream == "stderr" && strings.Contains(text, "provider-warning") {
+				sawStderr = true
+			}
+		}
+	}
+	if !sawAdapter {
+		t.Fatalf("expected lifecycle adapter codex, got %#v", events)
+	}
+	if !sawStdout {
+		t.Fatalf("expected stdout event from provider, got %#v", events)
+	}
+	if !sawStderr {
+		t.Fatalf("expected stderr event from provider, got %#v", events)
 	}
 }
 

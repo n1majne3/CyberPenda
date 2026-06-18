@@ -203,6 +203,18 @@ func redactValue(v any) any {
 			out[i] = redactValue(item)
 		}
 		return out
+	case []string:
+		out := make([]string, len(val))
+		for i, item := range val {
+			out[i] = redactString(item)
+		}
+		return out
+	case map[string]string:
+		out := make(map[string]string, len(val))
+		for k, item := range val {
+			out[k] = redactString(item)
+		}
+		return out
 	default:
 		return v
 	}

@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"net/http"
 	"path"
+	"path/filepath"
 	"strings"
 
 	"pentest/internal/approval"
@@ -22,22 +23,28 @@ import (
 )
 
 type Config struct {
-	Version string
-	DBPath  string
+	Version      string
+	DBPath       string
+	RuntimeRoot  string
+	SandboxImage string
+	ContainerCLI string
 }
 
 type Server struct {
-	mux       *http.ServeMux
-	version   string
-	db        *store.DB
-	projects  *project.Service
-	profiles  *runtimeprofile.Service
-	creds     *credential.Service
-	preflight *preflight.Service
-	tasks     *task.Service
-	harness   *runtime.Harness
-	facts     *blackboard.Service
-	approvals *approval.Service
+	mux          *http.ServeMux
+	version      string
+	db           *store.DB
+	projects     *project.Service
+	profiles     *runtimeprofile.Service
+	creds        *credential.Service
+	preflight    *preflight.Service
+	tasks        *task.Service
+	harness      *runtime.Harness
+	facts        *blackboard.Service
+	approvals    *approval.Service
+	runtimeRoot  string
+	sandboxImage string
+	containerCLI string
 }
 
 func NewServer(config Config) (*Server, error) {
@@ -49,18 +56,25 @@ func NewServer(config Config) (*Server, error) {
 	profiles := runtimeprofile.NewService(db)
 	creds := credential.NewService(db)
 	tasks := task.NewService(db, nil)
+	runtimeRoot := config.RuntimeRoot
+	if runtimeRoot == "" {
+		runtimeRoot = filepath.Join(filepath.Dir(config.DBPath), "runs")
+	}
 	server := &Server{
-		mux:       http.NewServeMux(),
-		version:   config.Version,
-		db:        db,
-		projects:  project.NewService(db),
-		profiles:  profiles,
-		creds:     creds,
-		preflight: preflight.NewService(profiles, creds),
-		tasks:     tasks,
-		harness:   runtime.NewHarness(tasks),
-		facts:     blackboard.NewService(db),
-		approvals: approval.NewService(db),
+		mux:          http.NewServeMux(),
+		version:      config.Version,
+		db:           db,
+		projects:     project.NewService(db),
+		profiles:     profiles,
+		creds:        creds,
+		preflight:    preflight.NewService(profiles, creds),
+		tasks:        tasks,
+		harness:      runtime.NewHarness(tasks),
+		facts:        blackboard.NewService(db),
+		approvals:    approval.NewService(db),
+		runtimeRoot:  runtimeRoot,
+		sandboxImage: config.SandboxImage,
+		containerCLI: config.ContainerCLI,
 	}
 	server.tasks.SetProjectService(server.projects)
 	server.routes()

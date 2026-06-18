@@ -5,7 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+
+	"pentest/internal/daemon"
 )
 
 // TestLaunchTaskRunsFakeRuntimeAndStreamsEvents proves the Slice 3 tracer bullet
@@ -76,6 +81,113 @@ func TestLaunchTaskRunsFakeRuntimeAndStreamsEvents(t *testing.T) {
 	}
 	if !kinds["lifecycle"] || !kinds["runtime_output"] {
 		t.Fatalf("expected lifecycle and runtime_output events, got %#v", kinds)
+	}
+}
+
+func TestLaunchTaskUsesRuntimeProfileProviderAdapter(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{
+		"name":"Acme",
+		"scope":{"domains":["example.com"]}
+	}`)
+
+	binary := filepath.Join(t.TempDir(), "codex-test")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\necho codex-provider:$*\n"), 0o700); err != nil {
+		t.Fatalf("write provider binary: %v", err)
+	}
+
+	profileID := createRuntimeProfile(t, server, `{
+		"name":"Codex Test",
+		"provider":"codex",
+		"fields":{
+			"binary_path":`+quoteJSON(binary)+`,
+			"model":"gpt-test"
+		}
+	}`)
+
+	taskID := createTask(t, server, projectID, `{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
+		"runner":"host"
+	}`)
+
+	events := getTaskEvents(t, server, projectID, taskID)
+	var sawCodexLifecycle bool
+	var sawProviderOutput bool
+	for _, event := range events {
+		if event["kind"] == "lifecycle" {
+			payload := event["payload"].(map[string]any)
+			if payload["adapter"] == "codex" {
+				sawCodexLifecycle = true
+			}
+		}
+		if event["kind"] == "runtime_output" {
+			payload := event["payload"].(map[string]any)
+			text, _ := payload["text"].(string)
+			if strings.Contains(text, "codex-provider:run --model gpt-test --config") &&
+				strings.Contains(text, "enumerate example.com") {
+				sawProviderOutput = true
+			}
+		}
+	}
+	if !sawCodexLifecycle {
+		t.Fatalf("expected codex lifecycle adapter, got %#v", events)
+	}
+	if !sawProviderOutput {
+		t.Fatalf("expected provider stdout in task events, got %#v", events)
+	}
+}
+
+func TestLaunchTaskWrapsProviderCommandInSandboxRunner(t *testing.T) {
+	containerCLI := filepath.Join(t.TempDir(), "fake-docker")
+	if err := os.WriteFile(containerCLI, []byte("#!/bin/sh\necho sandbox-command:$*\n"), 0o700); err != nil {
+		t.Fatalf("write fake container cli: %v", err)
+	}
+	server, err := daemon.NewServer(daemon.Config{
+		Version:      "test-version",
+		DBPath:       filepath.Join(t.TempDir(), "pentest.db"),
+		RuntimeRoot:  t.TempDir(),
+		SandboxImage: "pentest-kali:test",
+		ContainerCLI: containerCLI,
+	})
+	if err != nil {
+		t.Fatalf("NewServer returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := server.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	profileID := createRuntimeProfile(t, server, `{
+		"name":"Codex Sandbox",
+		"provider":"codex",
+		"fields":{"model":"gpt-test"}
+	}`)
+
+	taskID := createTask(t, server, projectID, `{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
+		"runner":"sandbox"
+	}`)
+
+	events := getTaskEvents(t, server, projectID, taskID)
+	var sawSandboxCommand bool
+	for _, event := range events {
+		if event["kind"] != "runtime_output" {
+			continue
+		}
+		payload := event["payload"].(map[string]any)
+		text, _ := payload["text"].(string)
+		if strings.Contains(text, "sandbox-command:run --rm -i") &&
+			strings.Contains(text, "pentest-kali:test codex run --model gpt-test") &&
+			strings.Contains(text, "enumerate example.com") {
+			sawSandboxCommand = true
+		}
+	}
+	if !sawSandboxCommand {
+		t.Fatalf("expected sandbox-wrapped provider command, got %#v", events)
 	}
 }
 
@@ -344,6 +456,14 @@ func createTask(t *testing.T, server interface {
 		t.Fatalf("decode task: %v", err)
 	}
 	return created.ID
+}
+
+func quoteJSON(value string) string {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
 }
 
 func putTaskSummary(t *testing.T, server interface {

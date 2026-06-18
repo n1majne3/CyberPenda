@@ -99,6 +99,8 @@ func TestRedactSecretsFromEventPayload(t *testing.T) {
 		"text":  "using key sk-1234567890abcdef for OPENAI_API_KEY",
 		"token": "Bearer abcDEFghiJKL",
 		"safe":  "model gpt-5",
+		"args":  []string{"--api-key", "sk-1234567890abcdef"},
+		"env":   map[string]string{"OPENAI_API_KEY": "sk-1234567890abcdef"},
 	}
 
 	redacted := adapters.Redact(payload)
@@ -117,6 +119,14 @@ func TestRedactSecretsFromEventPayload(t *testing.T) {
 	safe, _ := redacted["safe"].(string)
 	if safe != "model gpt-5" {
 		t.Fatalf("expected safe content untouched, got %q", safe)
+	}
+	args, _ := redacted["args"].([]string)
+	if len(args) != 2 || strings.Contains(args[1], "sk-1234567890abcdef") {
+		t.Fatalf("expected string slice secret redacted, got %#v", args)
+	}
+	env, _ := redacted["env"].(map[string]string)
+	if strings.Contains(env["OPENAI_API_KEY"], "sk-1234567890abcdef") {
+		t.Fatalf("expected env map secret redacted, got %#v", env)
 	}
 }
 
