@@ -8,6 +8,7 @@ import (
 	"path"
 	"strings"
 
+	"pentest/internal/approval"
 	"pentest/internal/blackboard"
 	"pentest/internal/credential"
 	"pentest/internal/preflight"
@@ -36,6 +37,7 @@ type Server struct {
 	tasks     *task.Service
 	harness   *runtime.Harness
 	facts     *blackboard.Service
+	approvals *approval.Service
 }
 
 func NewServer(config Config) (*Server, error) {
@@ -58,6 +60,7 @@ func NewServer(config Config) (*Server, error) {
 		tasks:     tasks,
 		harness:   runtime.NewHarness(tasks),
 		facts:     blackboard.NewService(db),
+		approvals: approval.NewService(db),
 	}
 	server.tasks.SetProjectService(server.projects)
 	server.routes()
@@ -114,6 +117,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /api/projects/{id}/evidence", server.handleAttachEvidence)
 	server.mux.HandleFunc("GET /api/projects/{id}/evidence", server.handleListEvidence)
 	server.mux.HandleFunc("POST /api/projects/{id}/report", server.handleReportTrigger)
+	server.registerMCP()
 	server.registerSPA()
 }
 
@@ -123,10 +127,16 @@ func (server *Server) handleHealth(response http.ResponseWriter, request *http.R
 		Database struct {
 			Status string `json:"status"`
 		} `json:"database"`
+		MCP struct {
+			Status string `json:"status"`
+			Path   string `json:"path"`
+		} `json:"mcp"`
 	}{
 		Version: server.version,
 	}
 	payload.Database.Status = "ok"
+	payload.MCP.Status = "ok"
+	payload.MCP.Path = "/mcp"
 
 	writeJSON(response, http.StatusOK, payload)
 }

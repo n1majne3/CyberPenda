@@ -446,9 +446,20 @@ func (server *Server) handleReportTrigger(response http.ResponseWriter, request 
 		}
 	}
 
-	if input.TaskID != "" {
+	taskID := input.TaskID
+	if taskID == "" {
+		tasks, err := server.tasks.ListForProject(projectID)
+		if err != nil {
+			writeError(response, http.StatusInternalServerError, "list tasks")
+			return
+		}
+		if len(tasks) > 0 {
+			taskID = tasks[len(tasks)-1].ID
+		}
+	}
+	if taskID != "" {
 		generator := report.NewGenerator(server.facts, server.tasks)
-		out, err := generator.Generate(report.Request{ProjectID: projectID, TaskID: input.TaskID})
+		out, err := generator.Generate(report.Request{ProjectID: projectID, TaskID: taskID})
 		if err != nil {
 			writeError(response, http.StatusInternalServerError, "generate report")
 			return

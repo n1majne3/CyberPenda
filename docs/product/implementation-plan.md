@@ -199,7 +199,7 @@ Acceptance checks:
 
 Current status:
 
-- Project fact upsert, fact versions, empty-body preservation, fact index, full fact lookup, task summary versioning, fact relations, findings (with CVSS pending and confirmed validation), evidence attach with managed paths, CLI fallback, and report trigger are all implemented and tested. The built-in trusted MCP server remains the one Slice 5 deliverable that is not yet wired (it is not required to exercise the loop through the HTTP/CLI surfaces).
+- Project fact upsert, fact versions, empty-body preservation, fact index, full fact lookup, task summary versioning, fact relations, findings (with CVSS pending and confirmed validation), evidence attach with managed paths, CLI fallback, report trigger, and the built-in trusted MCP server are all implemented and tested.
 
 ## Slice 6: Blackboard UI
 
@@ -366,12 +366,17 @@ checks is covered by an existing test or React view:
 - Slice C (trusted project interfaces): `blackboard_test.go` and the service
   tests cover fact relations, finding CVSS pending → confirmed, and evidence
   attach with managed paths; the report trigger is exercised end-to-end.
-- Slice D (MCP and CLI transports): the `pentestctl` CLI fallback is implemented
-  and tested; the built-in trusted MCP *server* transport is the one deferred
-  item (the shared service layer it would call is already complete and used by
-  HTTP and CLI).
+- Slice D (MCP and CLI transports): both the `pentestctl` CLI fallback and the
+  built-in trusted MCP server at `/mcp` are implemented and tested against the
+  shared service layer.
 - Slice E (React shell): the daemon embeds and serves the SPA, and all listed
   views exist.
+
+Slice 5 MCP transport is now wired: the daemon serves a built-in trusted MCP
+server at `/mcp` with all MVP tools (`upsert_project_fact` through
+`request_scope_expansion`). MCP and CLI writes still call the same domain
+services. Approval and scope-expansion requests persist as pending approvals
+with audit-log entries.
 
 The only remaining out-of-band work is real-runtime smoke validation (running
 the actual Codex/Claude/Pi binaries against the adapter logic).
@@ -394,8 +399,8 @@ stubbed while the backing HTTP endpoints already existed. Those are now wired:
   (`GET .../findings/{key}/versions`).
 
 Each behavior is covered by `blackboard_test.go` (deprecated default vs
-include) and the React build. Fact/finding merge and alias UI remain out of
-scope here (the underlying merge logic is not yet implemented).
+include) and the React build. Fact and finding merge UI are wired to the
+existing merge endpoints.
 
 ## Implementation Notes
 

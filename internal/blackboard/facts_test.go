@@ -399,3 +399,57 @@ func TestMergeFactsRejectsMissingKeys(t *testing.T) {
 		t.Fatalf("expected ErrSelfMerge, got %v", err)
 	}
 }
+
+func TestSearchFactsMatchesKeySummaryOrBody(t *testing.T) {
+	bb, projects := newServices(t)
+	projectID := mustProject(t, projects)
+	if _, err := bb.UpsertFact(blackboard.UpsertFactRequest{
+		ProjectID: projectID, FactKey: "dns:example.com", Summary: "example.com resolves",
+		Body: "1.2.3.4",
+	}); err != nil {
+		t.Fatalf("upsert dns: %v", err)
+	}
+	if _, err := bb.UpsertFact(blackboard.UpsertFactRequest{
+		ProjectID: projectID, FactKey: "target:other.com", Summary: "other target",
+	}); err != nil {
+		t.Fatalf("upsert other: %v", err)
+	}
+
+	matches, err := bb.SearchFacts(projectID, "example", false)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(matches) != 1 || matches[0].FactKey != "dns:example.com" {
+		t.Fatalf("expected one match for example, got %#v", matches)
+	}
+}
+
+func TestDeprecateFactPreservesBodyAndExcludesFromDefaultIndex(t *testing.T) {
+	bb, projects := newServices(t)
+	projectID := mustProject(t, projects)
+	if _, err := bb.UpsertFact(blackboard.UpsertFactRequest{
+		ProjectID: projectID, FactKey: "old", Summary: "stale note", Body: "details",
+		Confidence: blackboard.ConfidenceConfirmed,
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	deprecated, err := bb.DeprecateFact(projectID, "old")
+	if err != nil {
+		t.Fatalf("deprecate: %v", err)
+	}
+	if deprecated.Confidence != blackboard.ConfidenceDeprecated {
+		t.Fatalf("expected deprecated confidence, got %q", deprecated.Confidence)
+	}
+	if deprecated.Body != "details" {
+		t.Fatalf("expected body preserved, got %q", deprecated.Body)
+	}
+
+	index, err := bb.FactIndex(projectID, blackboard.FactIndexOptions{})
+	if err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	if len(index) != 0 {
+		t.Fatalf("expected deprecated fact excluded from default index, got %#v", index)
+	}
+}

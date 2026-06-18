@@ -6,3 +6,7 @@ web/node_modules/
 web/dist/
 # Keep the embedded dist in-tree for release builds (committed), so the daemon
 # embeds the latest UI. Regenerate with: make build-ui
+
+# Local daemon/runtime artifacts
+pentest.db
+pentestd

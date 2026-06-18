@@ -22,33 +22,31 @@ The MVP may use a fake runtime adapter before real Codex, Claude Code, and Pi ad
 
 ## Current Build Status
 
-The current codebase is a backend-first MVP skeleton. It has enough daemon and storage behavior to keep building vertical slices with tests, but it is not yet a user-facing MVP.
+The MVP is implemented and release-ready for local use. Backend, React UI, MCP
+server, CLI fallback, blackboard, findings, evidence, and Markdown report
+generation are complete and covered by tests.
 
-Completed backend contracts:
+Completed contracts:
 
-- Local daemon entrypoint, health endpoint, SQLite store, and migrations.
+- Local daemon entrypoint, health endpoint (including MCP status), SQLite store, and migrations.
 - Project CRUD, structured scope, project defaults, and dashboard summary.
 - Runtime profile CRUD with structured fields and generated config preview.
 - Credential references, global credential bindings, project overrides, disabled bindings, and preflight validation.
-- Task domain with task goal, run controls, scope snapshot, task events, runtime configuration versions, and fake runtime harness.
-- HTTP task lifecycle for create, list, get, events, stop, task summaries, and summary versions.
-- Project facts with fact key upsert, automatic overwrite, fact versions, compact fact index, full fact lookup, and empty-body preservation.
-- Dashboard counts for tasks and project facts.
+- Task domain with task goal, run controls, scope snapshot, task events, runtime configuration versions, fake runtime harness, steering, and continuation.
+- HTTP task lifecycle for create, list, get, events, stop, steer, continuation, task summaries, and summary versions.
+- Project facts with fact key upsert, merge/aliases, fact versions, compact fact index, search, deprecate, full fact lookup, fact relations, and empty-body preservation.
+- Findings with finding key upsert, merge/aliases, CVSS pending/confirmed validation, and versions.
+- Evidence artifacts with managed paths and explicit attach.
+- Markdown report generation from stored state.
+- Built-in trusted MCP server at `/mcp` with all MVP tools.
+- `pentestctl` CLI fallback for fact, finding, evidence, task summary, and report commands.
+- React UI for dashboard, scope, profiles, credentials, tasks, blackboard, findings, evidence, and reports.
+- Sandbox runner command construction, task-local layout, config projection, and host-runner boundary.
+- Real runtime adapter logic (launch args, secret redaction, resume prompts).
 
-Partially complete contracts:
+Out of band for local release:
 
-- Task events are persisted and readable over HTTP, but live UI streaming is not complete.
-- Runtime harness launch and stop are implemented with a fake adapter, but explicit steering endpoints and restart/resume continuation behavior still need to be completed.
-- Blackboard facts are implemented, but fact relations, findings, evidence artifacts, and report generation are not complete.
-
-Not yet started for MVP:
-
-- React UI.
-- Sandbox runner command construction and task-local runtime directory preparation.
-- Built-in trusted MCP server.
-- `pentestctl` CLI fallback.
-- Finding, CVSS, evidence, and Markdown report generation.
-- Real Codex, Claude Code, and Pi adapters.
+- Real Codex, Claude Code, and Pi binary smoke validation.
 
 ## In Scope
 

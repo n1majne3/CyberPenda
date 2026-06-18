@@ -105,11 +105,11 @@ type UpsertFactRelationRequest struct {
 // it was merged into. Reads or writes through an alias resolve to the canonical
 // key, so an alias never produces separate Current Truth (CONTEXT.md).
 type FactKeyAlias struct {
-	ID            string    `json:"id"`
-	ProjectID     string    `json:"project_id"`
-	AliasFactKey  string    `json:"alias_fact_key"`
-	CanonFactKey  string    `json:"canon_fact_key"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID           string    `json:"id"`
+	ProjectID    string    `json:"project_id"`
+	AliasFactKey string    `json:"alias_fact_key"`
+	CanonFactKey string    `json:"canon_fact_key"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // MergeFactsRequest governs a Fact Merge: the SourceFactKey is consolidated
@@ -254,6 +254,65 @@ func (s *Service) CountFacts(projectID string) (int, error) {
 
 func (s *Service) GetFact(projectID, factKey string) (Fact, error) {
 	return s.getByKey(projectID, factKey)
+}
+
+// SearchFacts returns compact fact index entries whose key, summary, or body
+// match the query. Deprecated facts are excluded unless include_deprecated is set.
+func (s *Service) SearchFacts(projectID, query string, includeDeprecated bool) ([]FactIndexEntry, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return s.FactIndex(projectID, FactIndexOptions{IncludeDeprecated: includeDeprecated})
+	}
+	like := "%" + query + "%"
+	sqlQuery := `SELECT fact_key, category, summary, confidence, scope_status
+		 FROM project_facts
+		 WHERE project_id = ?
+		   AND (fact_key LIKE ? OR summary LIKE ? OR body LIKE ?)`
+	args := []any{projectID, like, like, like}
+	if !includeDeprecated {
+		sqlQuery += ` AND confidence != ?`
+		args = append(args, string(ConfidenceDeprecated))
+	}
+	sqlQuery += ` ORDER BY updated_at ASC`
+
+	rows, err := s.db.Query(sqlQuery, args...)
+	if err != nil {
+		return nil, fmt.Errorf("search facts: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []FactIndexEntry
+	for rows.Next() {
+		var entry FactIndexEntry
+		var confidence string
+		var scopeStatus string
+		if err := rows.Scan(&entry.FactKey, &entry.Category, &entry.Summary, &confidence, &scopeStatus); err != nil {
+			return nil, fmt.Errorf("scan search result: %w", err)
+		}
+		entry.Confidence = Confidence(confidence)
+		entry.ScopeStatus = ScopeStatus(scopeStatus)
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("search facts: %w", err)
+	}
+	return entries, nil
+}
+
+// DeprecateFact marks a fact as deprecated while preserving its body and history.
+func (s *Service) DeprecateFact(projectID, factKey string) (Fact, error) {
+	existing, err := s.getByKey(projectID, factKey)
+	if err != nil {
+		return Fact{}, err
+	}
+	return s.UpsertFact(UpsertFactRequest{
+		ProjectID:   projectID,
+		FactKey:     existing.FactKey,
+		Category:    existing.Category,
+		Summary:     existing.Summary,
+		Confidence:  ConfidenceDeprecated,
+		ScopeStatus: existing.ScopeStatus,
+	})
 }
 
 func (s *Service) FactVersions(projectID, factKey string) ([]FactVersion, error) {
