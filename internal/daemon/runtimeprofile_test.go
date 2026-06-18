@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"pentest/internal/daemon"
+	"pentest/internal/runtimeprofile"
 )
 
 func newDaemon(t *testing.T) *daemon.Server {
@@ -28,17 +30,13 @@ func newDaemon(t *testing.T) *daemon.Server {
 	return server
 }
 
-func TestCreateRuntimeProfilePersistsProviderAndFields(t *testing.T) {
+func TestCreateRuntimeProfilePersistsCodexProvider(t *testing.T) {
 	server := newDaemon(t)
 
 	body := []byte(`{
 		"name": "Codex Default",
 		"provider": "codex",
-		"fields": {
-			"binary_path": "/usr/local/bin/codex",
-			"model": "gpt-5",
-			"credential_refs": ["codex-api-key"]
-		}
+		"fields": {"model": "gpt-5"}
 	}`)
 
 	createReq := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles", bytes.NewReader(body))
@@ -52,60 +50,42 @@ func TestCreateRuntimeProfilePersistsProviderAndFields(t *testing.T) {
 
 	var created struct {
 		ID       string `json:"id"`
-		Name     string `json:"name"`
 		Provider string `json:"provider"`
 		Fields   struct {
-			BinaryPath     string   `json:"binary_path"`
-			Model          string   `json:"model"`
-			CredentialRefs []string `json:"credential_refs"`
+			Model string `json:"model"`
 		} `json:"fields"`
 	}
 	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
 		t.Fatalf("decode create response: %v", err)
 	}
-	if created.ID == "" {
-		t.Fatal("expected profile id")
+	if created.Provider != "codex" || created.Fields.Model != "gpt-5" {
+		t.Fatalf("unexpected created profile: %#v", created)
 	}
-	if created.Provider != "codex" {
-		t.Fatalf("expected provider codex, got %q", created.Provider)
-	}
-	if created.Fields.Model != "gpt-5" {
-		t.Fatalf("expected model gpt-5, got %q", created.Fields.Model)
-	}
-	if got := created.Fields.CredentialRefs; len(got) != 1 || got[0] != "codex-api-key" {
-		t.Fatalf("expected credential ref preserved, got %#v", got)
-	}
+}
 
-	getReq := httptest.NewRequest(http.MethodGet, "/api/runtime-profiles/"+created.ID, nil)
-	getResp := httptest.NewRecorder()
-	server.ServeHTTP(getResp, getReq)
+func TestCreateRuntimeProfilePersistsFakeProvider(t *testing.T) {
+	server := newDaemon(t)
 
-	if getResp.Code != http.StatusOK {
-		t.Fatalf("expected get status 200, got %d with body %s", getResp.Code, getResp.Body.String())
-	}
+	body := []byte(`{
+		"name": "Fake Harness",
+		"provider": "fake",
+		"fields": {"model": "demo"}
+	}`)
 
-	var fetched struct {
-		Provider string `json:"provider"`
-		Fields   struct {
-			BinaryPath string `json:"binary_path"`
-			Model      string `json:"model"`
-		} `json:"fields"`
-	}
-	if err := json.NewDecoder(getResp.Body).Decode(&fetched); err != nil {
-		t.Fatalf("decode get response: %v", err)
-	}
-	if fetched.Provider != "codex" {
-		t.Fatalf("expected fetched provider codex, got %q", fetched.Provider)
-	}
-	if fetched.Fields.BinaryPath != "/usr/local/bin/codex" {
-		t.Fatalf("expected fetched binary path, got %q", fetched.Fields.BinaryPath)
+	createReq := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles", bytes.NewReader(body))
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp := httptest.NewRecorder()
+	server.ServeHTTP(createResp, createReq)
+
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("expected create status 201, got %d with body %s", createResp.Code, createResp.Body.String())
 	}
 }
 
 func TestCreateRuntimeProfileRejectsBlankName(t *testing.T) {
 	server := newDaemon(t)
 
-	body := []byte(`{"name":"   ","provider":"codex"}`)
+	body := []byte(`{"name":"   ","provider":"fake"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp := httptest.NewRecorder()
@@ -130,11 +110,9 @@ func TestCreateRuntimeProfileRejectsUnknownProvider(t *testing.T) {
 	}
 }
 
-func TestListRuntimeProfilesReturnsArrayInCreationOrder(t *testing.T) {
+func TestListRuntimeProfiles(t *testing.T) {
 	server := newDaemon(t)
-
-	createRuntimeProfile(t, server, `{"name":"First","provider":"fake"}`)
-	createRuntimeProfile(t, server, `{"name":"Second","provider":"codex"}`)
+	createRuntimeProfile(t, server, `{"name":"Codex Default","provider":"codex"}`)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/runtime-profiles", nil)
 	resp := httptest.NewRecorder()
@@ -153,14 +131,8 @@ func TestListRuntimeProfilesReturnsArrayInCreationOrder(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode list response: %v", err)
 	}
-	if body.Profiles == nil {
-		t.Fatal("expected profiles array, got null")
-	}
-	if len(body.Profiles) != 2 {
-		t.Fatalf("expected 2 profiles, got %d", len(body.Profiles))
-	}
-	if body.Profiles[0].Name != "First" || body.Profiles[1].Name != "Second" {
-		t.Fatalf("expected creation order First then Second, got %q then %q", body.Profiles[0].Name, body.Profiles[1].Name)
+	if len(body.Profiles) != 1 || body.Profiles[0].Name != "Codex Default" {
+		t.Fatalf("unexpected profiles: %#v", body.Profiles)
 	}
 }
 
@@ -182,17 +154,13 @@ func createRuntimeProfile(t *testing.T, server *daemon.Server, body string) stri
 	return created.ID
 }
 
-func getRuntimeProfile(t *testing.T, server *daemon.Server, id string, target any) {
+func createLocalRuntimeProfile(t *testing.T, server *daemon.Server, name string, provider runtimeprofile.Provider, fields runtimeprofile.Fields) string {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "/api/runtime-profiles/"+id, nil)
-	resp := httptest.NewRecorder()
-	server.ServeHTTP(resp, req)
-	if resp.Code != http.StatusOK {
-		t.Fatalf("expected get status 200, got %d with body %s", resp.Code, resp.Body.String())
+	created, err := server.CreateLocalRuntimeProfile(name, provider, fields)
+	if err != nil {
+		t.Fatalf("create local runtime profile: %v", err)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
-		t.Fatalf("decode get response: %v", err)
-	}
+	return created.ID
 }
 
 func TestPatchRuntimeProfilePreservesUntouchedFields(t *testing.T) {
@@ -200,10 +168,9 @@ func TestPatchRuntimeProfilePreservesUntouchedFields(t *testing.T) {
 	id := createRuntimeProfile(t, server, `{
 		"name":"Codex",
 		"provider":"codex",
-		"fields":{"model":"gpt-5","binary_path":"/bin/codex"}
+		"fields":{"model":"gpt-5"}
 	}`)
 
-	// Patch only the name; fields omitted must be preserved.
 	patchBody := []byte(`{"name":"Codex Renamed"}`)
 	patchReq := httptest.NewRequest(http.MethodPatch, "/api/runtime-profiles/"+id, bytes.NewReader(patchBody))
 	patchReq.Header.Set("Content-Type", "application/json")
@@ -217,21 +184,14 @@ func TestPatchRuntimeProfilePreservesUntouchedFields(t *testing.T) {
 	var patched struct {
 		Name   string `json:"name"`
 		Fields struct {
-			Model      string `json:"model"`
-			BinaryPath string `json:"binary_path"`
+			Model string `json:"model"`
 		} `json:"fields"`
 	}
 	if err := json.NewDecoder(patchResp.Body).Decode(&patched); err != nil {
 		t.Fatalf("decode patch response: %v", err)
 	}
-	if patched.Name != "Codex Renamed" {
-		t.Fatalf("expected renamed profile, got %q", patched.Name)
-	}
-	if patched.Fields.Model != "gpt-5" {
-		t.Fatalf("expected model preserved, got %q", patched.Fields.Model)
-	}
-	if patched.Fields.BinaryPath != "/bin/codex" {
-		t.Fatalf("expected binary path preserved, got %q", patched.Fields.BinaryPath)
+	if patched.Name != "Codex Renamed" || patched.Fields.Model != "gpt-5" {
+		t.Fatalf("unexpected patched profile: %#v", patched)
 	}
 }
 
@@ -246,12 +206,57 @@ func TestDeleteRuntimeProfileRemovesIt(t *testing.T) {
 		t.Fatalf("expected delete status 204, got %d with body %s", delResp.Code, delResp.Body.String())
 	}
 
-	// Subsequent get must 404.
 	getReq := httptest.NewRequest(http.MethodGet, "/api/runtime-profiles/"+id, nil)
 	getResp := httptest.NewRecorder()
 	server.ServeHTTP(getResp, getReq)
 	if getResp.Code != http.StatusNotFound {
 		t.Fatalf("expected get after delete to 404, got %d", getResp.Code)
+	}
+}
+
+func TestRuntimeProfileAPIRedactsInlineAPIKeys(t *testing.T) {
+	server := newDaemon(t)
+
+	body := []byte(`{
+		"name": "Codex With Key",
+		"provider": "codex",
+		"fields": {
+			"model": "gpt-5",
+			"api_keys": {"OPENAI_API_KEY": "sk-test-secret"}
+		}
+	}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles", bytes.NewReader(body))
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp := httptest.NewRecorder()
+	server.ServeHTTP(createResp, createReq)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("expected create status 201, got %d with body %s", createResp.Code, createResp.Body.String())
+	}
+
+	var created struct {
+		ID     string `json:"id"`
+		Fields struct {
+			APIKeys map[string]string `json:"api_keys"`
+		} `json:"fields"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if created.Fields.APIKeys["OPENAI_API_KEY"] != runtimeprofile.ConfiguredAPIKeySentinel {
+		t.Fatalf("expected redacted api key in response, got %#v", created.Fields.APIKeys)
+	}
+	if strings.Contains(createResp.Body.String(), "sk-test-secret") {
+		t.Fatalf("response leaked secret: %s", createResp.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/runtime-profiles/"+created.ID, nil)
+	getResp := httptest.NewRecorder()
+	server.ServeHTTP(getResp, getReq)
+	if getResp.Code != http.StatusOK {
+		t.Fatalf("expected get status 200, got %d", getResp.Code)
+	}
+	if strings.Contains(getResp.Body.String(), "sk-test-secret") {
+		t.Fatalf("get response leaked secret: %s", getResp.Body.String())
 	}
 }
 

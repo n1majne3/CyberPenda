@@ -4,7 +4,6 @@
 package runner
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -62,6 +61,7 @@ type SandboxCommandRequest struct {
 	Image          string
 	ContainerCLI   string
 	RuntimeCommand []string
+	ProcessEnv     map[string]string
 }
 
 type ActivationRequest struct {
@@ -107,28 +107,6 @@ func PrepareTaskLayout(rootDir, taskID string, provider runtimeprofile.Provider)
 	return layout, nil
 }
 
-// ProjectRuntimeConfig writes generated runtime profile config into the
-// task-local provider home. It never writes back to host runtime config.
-func ProjectRuntimeConfig(layout Layout, profile runtimeprofile.Profile) (ConfigProjection, error) {
-	if strings.TrimSpace(layout.ProviderHome) == "" {
-		return ConfigProjection{}, fmt.Errorf("provider home is required")
-	}
-	if err := os.MkdirAll(layout.ProviderHome, 0o700); err != nil {
-		return ConfigProjection{}, fmt.Errorf("prepare provider home: %w", err)
-	}
-
-	config := runtimeprofile.GeneratedConfig(profile)
-	configPath := filepath.Join(layout.ProviderHome, "config.json")
-	raw, err := json.MarshalIndent(config, "", "  ")
-	if err != nil {
-		return ConfigProjection{}, fmt.Errorf("encode runtime config: %w", err)
-	}
-	if err := os.WriteFile(configPath, raw, 0o600); err != nil {
-		return ConfigProjection{}, fmt.Errorf("write runtime config: %w", err)
-	}
-	return ConfigProjection{ConfigPath: configPath, Config: config}, nil
-}
-
 // BuildSandboxCommand constructs a container launch command for a task-local
 // runtime. It does not execute the command.
 func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
@@ -155,18 +133,32 @@ func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 		"run",
 		"--rm",
 		"-i",
+		"--add-host=host.docker.internal:host-gateway",
 		"-v",
 		request.Layout.TaskRoot + ":/task",
 		"-w",
 		"/task/workdir",
 		"-e",
-		providerHomeEnv(request.Provider) + "=/task/runtime-home/" + providerDir,
-		"-e",
 		"PENTEST_TASK_ROOT=/task",
-		image,
 	}
+	for key, value := range request.ProcessEnv {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		args = append(args, "-e", key+"="+value)
+	}
+	envName, envPath := sandboxProviderEnv(request.Provider, providerDir)
+	args = append(args, "-e", envName+"="+envPath)
+	args = append(args, image)
 	args = append(args, request.RuntimeCommand...)
 	return Command{Program: program, Args: args}, nil
+}
+
+func sandboxProviderEnv(provider runtimeprofile.Provider, providerDir string) (string, string) {
+	if provider == runtimeprofile.ProviderPi {
+		return "PI_CODING_AGENT_DIR", "/task/runtime-home/" + providerDir + "/agent"
+	}
+	return providerHomeEnv(provider), "/task/runtime-home/" + providerDir
 }
 
 func ValidateActivation(request ActivationRequest) error {
@@ -199,7 +191,7 @@ func providerHomeEnv(provider runtimeprofile.Provider) string {
 	case runtimeprofile.ProviderClaudeCode:
 		return "CLAUDE_HOME"
 	case runtimeprofile.ProviderPi:
-		return "PI_HOME"
+		return "PI_CODING_AGENT_DIR"
 	default:
 		return "RUNTIME_HOME"
 	}

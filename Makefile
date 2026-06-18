@@ -1,11 +1,24 @@
-.PHONY: dev build build-ui test test-backend clean
+.PHONY: dev build build-ui build-sandbox-image test test-backend clean
 
 # Run the daemon and the Vite dev server together for local development.
 # The Vite proxy forwards /api and /health to the daemon on :8787.
+SANDBOX_IMAGE ?= pentest-sandbox:latest
+
 dev:
 	@trap 'kill 0' EXIT; \
-	go run ./cmd/pentestd -addr 127.0.0.1:8787 -db pentest.db & \
+	go run ./cmd/pentestd -addr 127.0.0.1:8787 -db pentest.db -sandbox-image $(SANDBOX_IMAGE) & \
 	cd web && npm run dev
+
+# Build the pentest sandbox image (requires gemini_kali-gemini-kali:latest base).
+build-sandbox-image:
+	docker build -t $(SANDBOX_IMAGE) -f docker/pentest-sandbox/Dockerfile .
+
+# Prove the configured sandbox image can reach daemon MCP and write a fact.
+smoke-sandbox-mcp:
+	@bash scripts/smoke-sandbox-mcp-live.sh
+
+smoke-runtime-tasks:
+	@python3 scripts/smoke-runtime-tasks-live.py
 
 # Build the React UI and copy it into the embed location.
 build-ui:

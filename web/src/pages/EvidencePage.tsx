@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, FolderLock } from "lucide-react";
 import { apiGet, type EvidenceArtifact } from "@/lib/api";
+import { ProjectNav } from "@/components/ProjectNav";
 import { Card, Badge } from "@/components/ui";
 
 export function EvidencePage() {
@@ -32,6 +33,7 @@ export function EvidencePage() {
       <Link to={`/projects/${projectId}`} className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground mb-4">
         <ArrowLeft className="h-4 w-4 mr-1" /> Back to dashboard
       </Link>
+      <ProjectNav />
       <h2 className="text-xl font-semibold mb-6">Evidence</h2>
 
       {error && <p className="text-sm text-destructive mb-4">{error}</p>}

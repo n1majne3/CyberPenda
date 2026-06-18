@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import { ArrowLeft, Save } from "lucide-react";
-import { apiGet, apiPatch, type Project, type Scope } from "@/lib/api";
+import { apiGet, apiPatch, type Project, type RuntimeProfile, type Scope } from "@/lib/api";
+import { ProjectNav } from "@/components/ProjectNav";
 import { Button, Card, CardTitle, CardHeader, Label, Textarea, Badge } from "@/components/ui";
 
 // Each list field is edited as newline-separated text.
@@ -53,6 +54,9 @@ export function ScopeEditorPage() {
   const navigate = useNavigate();
   const [project, setProject] = useState<Project | null>(null);
   const [draft, setDraft] = useState<ScopeDraft | null>(null);
+  const [profiles, setProfiles] = useState<RuntimeProfile[]>([]);
+  const [defaultProfile, setDefaultProfile] = useState("");
+  const [defaultRunner, setDefaultRunner] = useState("sandbox");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -60,9 +64,15 @@ export function ScopeEditorPage() {
     if (!projectId) return;
     (async () => {
       try {
-        const p = await apiGet<Project>(`/api/projects/${projectId}`);
+        const [p, profileData] = await Promise.all([
+          apiGet<Project>(`/api/projects/${projectId}`),
+          apiGet<{ profiles: RuntimeProfile[] }>("/api/runtime-profiles"),
+        ]);
         setProject(p);
         setDraft(toDraft(p.scope));
+        setProfiles(profileData.profiles ?? []);
+        setDefaultProfile(p.defaults.runtime_profile ?? "");
+        setDefaultRunner(p.defaults.runner || "sandbox");
         setError(null);
       } catch (e) {
         setError((e as Error).message);
@@ -74,7 +84,13 @@ export function ScopeEditorPage() {
     if (!draft || !projectId) return;
     setSaving(true);
     try {
-      await apiPatch(`/api/projects/${projectId}`, { scope: fromDraft(draft) });
+      await apiPatch(`/api/projects/${projectId}`, {
+        scope: fromDraft(draft),
+        defaults: {
+          runtime_profile: defaultProfile || undefined,
+          runner: defaultRunner || undefined,
+        },
+      });
       setError(null);
       navigate(`/projects/${projectId}`);
     } catch (e) {
@@ -106,12 +122,47 @@ export function ScopeEditorPage() {
       <Link to={`/projects/${projectId}`} className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground mb-4">
         <ArrowLeft className="h-4 w-4 mr-1" /> Back to dashboard
       </Link>
+      <ProjectNav />
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-xl font-semibold">Scope — {project.name}</h2>
+        <h2 className="text-xl font-semibold">Scope & defaults — {project.name}</h2>
         <Button size="sm" onClick={save} disabled={saving}>
           <Save className="h-4 w-4 mr-1" /> {saving ? "Saving…" : "Save"}
         </Button>
       </div>
+
+      <Card className="mb-6">
+        <CardHeader>
+          <CardTitle>Project defaults</CardTitle>
+        </CardHeader>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <Label>Default runtime profile</Label>
+            <select
+              className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+              value={defaultProfile}
+              onChange={(e) => setDefaultProfile(e.target.value)}
+            >
+              <option value="">(none)</option>
+              {profiles.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} ({p.provider})
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <Label>Default runner</Label>
+            <select
+              className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+              value={defaultRunner}
+              onChange={(e) => setDefaultRunner(e.target.value)}
+            >
+              <option value="sandbox">sandbox</option>
+              <option value="host">host</option>
+            </select>
+          </div>
+        </div>
+      </Card>
 
       <div className="space-y-4">
         {field("domains", "Domains", "example.com\napi.example.com")}

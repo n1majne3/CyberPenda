@@ -18,6 +18,9 @@ func (server *Server) registerMCP() {
 	}, &sdkmcp.StreamableHTTPOptions{
 		Stateless:    true,
 		JSONResponse: true,
+		// Sandbox runtimes reach the daemon via host.docker.internal; the default
+		// loopback Host-header check would reject those requests with 403.
+		DisableLocalhostProtection: true,
 	})
 	server.mux.Handle("/mcp", handler)
 }

@@ -51,14 +51,19 @@ type Request struct {
 	Runner string
 }
 
+// ProfileGetter loads runtime profiles for preflight checks.
+type ProfileGetter interface {
+	Get(id string) (runtimeprofile.Profile, error)
+}
+
 // Service runs preflight against the runtime profile and credential services.
 type Service struct {
-	profiles *runtimeprofile.Service
+	profiles ProfileGetter
 	creds    *credential.Service
 }
 
 // NewService returns a preflight Service.
-func NewService(profiles *runtimeprofile.Service, creds *credential.Service) *Service {
+func NewService(profiles ProfileGetter, creds *credential.Service) *Service {
 	return &Service{profiles: profiles, creds: creds}
 }
 
@@ -95,7 +100,11 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 		result.add(Check{Name: "runner", Status: CheckPass})
 	}
 
-	// Check 3: every credential reference resolves for this project.
+	// Check 3: inline profile API keys or every credential reference resolves.
+	if runtimeprofile.HasInlineAPIKeys(profile) {
+		result.add(Check{Name: "credentials", Status: CheckPass, Detail: "inline profile API keys configured"})
+		return result
+	}
 	refs := collectRefs(profile, request)
 	if len(refs) == 0 {
 		result.add(Check{Name: "credentials", Status: CheckPass, Detail: "no credential references"})

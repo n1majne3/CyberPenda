@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"pentest/internal/adapters"
+	"pentest/internal/approval"
+
 	"pentest/internal/preflight"
 	"pentest/internal/project"
 	"pentest/internal/runner"
@@ -89,6 +92,22 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 
 	server.launchTaskInBackground(created, adapter)
 
+	if _, err := server.approvals.RecordAudit(approval.AuditEntry{
+		ProjectID: projectID,
+		TaskID:    created.ID,
+		Kind:      "task_created",
+		Summary:   "task launched: " + created.Goal,
+		Payload: map[string]any{
+			"task_id":            created.ID,
+			"runner":             created.Runner,
+			"runtime_profile_id": created.RuntimeProfileID,
+			"yolo":               created.RunControls.YOLO,
+		},
+	}); err != nil {
+		writeError(response, http.StatusInternalServerError, "record task audit")
+		return
+	}
+
 	launched, err := server.tasks.Get(created.ID)
 	if err != nil {
 		writeTaskError(response, err)
@@ -154,30 +173,74 @@ func (server *Server) buildTaskAdapter(created task.Task) (runtime.Adapter, map[
 	if err != nil {
 		return nil, nil, err
 	}
-	projection, err := runner.ProjectRuntimeConfig(layout, profile)
+
+	sandbox := created.Runner == task.RunnerSandbox
+	mcpURL := runner.MCPEndpointURL(server.listenAddr, sandbox)
+	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		ProjectID:   created.ProjectID,
+		TaskID:      created.ID,
+		Credentials: server.creds,
+		DaemonAddr:  server.listenAddr,
+		Sandbox:     sandbox,
+	})
 	if err != nil {
 		return nil, nil, err
 	}
+	configPath := runner.LaunchConfigPath(layout, profile.Provider, projection.ConfigPath, sandbox)
+	mcpConfigPath := runner.LaunchMCPConfigPath(layout, profile.Provider, sandbox, projection)
 	providerCommand, err := adapters.BuildLaunchArgs(adapters.LaunchArgsRequest{
-		Provider:   profile.Provider,
-		Profile:    profile,
-		Goal:       created.Goal,
-		ConfigPath: projection.ConfigPath,
+		Provider:      profile.Provider,
+		Profile:       profile,
+		Goal:          created.Goal,
+		ConfigPath:    configPath,
+		MCPConfigPath: mcpConfigPath,
 	})
 	if err != nil {
 		return nil, nil, err
 	}
 
-	commandProgram := providerCommand[0]
-	commandArgs := providerCommand[1:]
+	runtimeCommand := append([]string{}, providerCommand...)
+	commandProgram := runtimeCommand[0]
+	commandArgs := runtimeCommand[1:]
 	workdir := layout.Workdir
-	if created.Runner == task.RunnerSandbox {
+	launchCtx := runner.TaskContext{
+		ProjectID: created.ProjectID,
+		TaskID:    created.ID,
+		MCPURL:    mcpURL,
+	}
+	processEnv := runner.LaunchProcessEnv(layout, profile, sandbox, launchCtx)
+	if profile.Provider == runtimeprofile.ProviderClaudeCode {
+		claudeEnv, err := runner.ClaudeProcessEnv(profile, runner.ProjectionRequest{
+			ProjectID:   created.ProjectID,
+			Credentials: server.creds,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		for key, value := range claudeEnv {
+			processEnv[key] = value
+		}
+	}
+	if sandbox {
+		sandboxImage := strings.TrimSpace(profile.Fields.SandboxImage)
+		if sandboxImage == "" {
+			sandboxImage = server.sandboxImage
+		}
+		sandboxRuntime := runtimeCommand
+		if profile.Provider == runtimeprofile.ProviderPi {
+			wrapped, err := runner.WrapSandboxPiCommand(runtimeCommand, profile.Fields.Env)
+			if err != nil {
+				return nil, nil, err
+			}
+			sandboxRuntime = wrapped
+		}
 		command, err := runner.BuildSandboxCommand(runner.SandboxCommandRequest{
 			Layout:         layout,
 			Provider:       profile.Provider,
-			Image:          server.sandboxImage,
+			Image:          sandboxImage,
 			ContainerCLI:   server.containerCLI,
-			RuntimeCommand: providerCommand,
+			RuntimeCommand: sandboxRuntime,
+			ProcessEnv:     processEnv,
 		})
 		if err != nil {
 			return nil, nil, err
@@ -200,7 +263,7 @@ func (server *Server) buildTaskAdapter(created task.Task) (runtime.Adapter, map[
 		Program: commandProgram,
 		Args:    commandArgs,
 		Workdir: workdir,
-		Env:     profile.Fields.Env,
+		Env:     processEnv,
 	}), runtimeConfig, nil
 }
 

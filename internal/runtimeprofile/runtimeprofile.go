@@ -61,17 +61,22 @@ type MCPServer struct {
 }
 
 // Fields are the structured runtime profile fields. They are the source of
-// truth for the generated config preview. They must never hold secret values;
-// credentials enter via CredentialRefs and resolve through credential bindings.
+// truth for the generated config preview. Inline APIKeys are stored per profile
+// and redacted in API responses; legacy CredentialRefs still resolve through
+// global credential bindings when present.
 type Fields struct {
 	BinaryPath     string            `json:"binary_path,omitempty"`
 	Model          string            `json:"model,omitempty"`
 	Endpoint       string            `json:"endpoint,omitempty"`
 	CustomArgs     []string          `json:"custom_args,omitempty"`
 	Env            map[string]string `json:"env,omitempty"`
+	APIKeys        map[string]string `json:"api_keys,omitempty"`
 	CredentialRefs []string          `json:"credential_refs,omitempty"`
 	MCPServers     []MCPServer       `json:"mcp_servers,omitempty"`
 	DefaultRunner  string            `json:"default_runner,omitempty"`
+	// SandboxImage overrides the daemon default sandbox image for tasks using
+	// this profile. Leave empty to use the daemon-wide setting.
+	SandboxImage string `json:"sandbox_image,omitempty"`
 }
 
 // Profile is a global runtime profile reusable across projects.
@@ -192,7 +197,9 @@ func (s *Service) Update(id, name string, provider Provider, fields Fields, fiel
 		return Profile{}, err
 	}
 	if fieldsTouched {
+		mergedAPIKeys := MergeAPIKeys(existing.Fields.APIKeys, fields.APIKeys)
 		existing.Fields = fields
+		existing.Fields.APIKeys = mergedAPIKeys
 	}
 	existing.UpdatedAt = time.Now().UTC()
 
@@ -250,6 +257,9 @@ func GeneratedConfig(profile Profile) map[string]any {
 	if len(profile.Fields.Env) > 0 {
 		cfg["env"] = profile.Fields.Env
 	}
+	if len(profile.Fields.APIKeys) > 0 {
+		cfg["api_keys"] = SanitizeAPIKeys(profile.Fields.APIKeys)
+	}
 	if len(profile.Fields.CredentialRefs) > 0 {
 		// Emit references, never resolved values.
 		cfg["credential_refs"] = profile.Fields.CredentialRefs
@@ -279,6 +289,9 @@ func GeneratedConfig(profile Profile) map[string]any {
 	}
 	if profile.Fields.DefaultRunner != "" {
 		cfg["default_runner"] = profile.Fields.DefaultRunner
+	}
+	if profile.Fields.SandboxImage != "" {
+		cfg["sandbox_image"] = profile.Fields.SandboxImage
 	}
 	return cfg
 }

@@ -30,6 +30,21 @@ func TestHealthReportsMCPEndpoint(t *testing.T) {
 	}
 }
 
+func TestMCPEndpointAcceptsDockerInternalHostHeader(t *testing.T) {
+	server := newDaemon(t)
+
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0.0"}}}`)
+	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+	req.Host = "host.docker.internal:8787"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("initialize with docker host expected 200, got %d: %s", resp.Code, resp.Body.String())
+	}
+}
+
 func TestMCPEndpointInitializesAndListsTools(t *testing.T) {
 	server := newDaemon(t)
 

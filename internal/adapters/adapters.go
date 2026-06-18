@@ -23,10 +23,11 @@ import (
 
 // LaunchArgsRequest is the input to BuildLaunchArgs.
 type LaunchArgsRequest struct {
-	Provider   runtimeprofile.Provider
-	Profile    runtimeprofile.Profile
-	Goal       string
-	ConfigPath string
+	Provider      runtimeprofile.Provider
+	Profile       runtimeprofile.Profile
+	Goal          string
+	ConfigPath    string
+	MCPConfigPath string
 }
 
 // BuildLaunchArgs constructs the command-line arguments a real runtime would
@@ -42,35 +43,57 @@ func BuildLaunchArgs(req LaunchArgsRequest) ([]string, error) {
 		return nil, fmt.Errorf("no binary path configured for provider %q", req.Provider)
 	}
 
+	extra := req.Profile.Fields.CustomArgs
 	args := []string{binary}
 	switch req.Provider {
 	case runtimeprofile.ProviderCodex:
-		args = append(args, "run")
+		// Codex reads config.toml and auth.json from CODEX_HOME; --config is for
+		// one-off TOML key overrides, not a config file path.
+		subcommand := "run"
+		if mode := strings.TrimSpace(req.Profile.Fields.Env["PENTEST_CODEX_SUBCOMMAND"]); mode != "" {
+			subcommand = mode
+		}
+		args = append(args, subcommand)
 		if model := strings.TrimSpace(req.Profile.Fields.Model); model != "" {
 			args = append(args, "--model", model)
 		}
-		if req.ConfigPath != "" {
-			args = append(args, "--config", req.ConfigPath)
+		if len(extra) > 0 {
+			args = append(args, extra...)
 		}
 		if req.Goal != "" {
-			args = append(args, "--", req.Goal)
+			if subcommand == "exec" {
+				args = append(args, req.Goal)
+			} else {
+				args = append(args, "--", req.Goal)
+			}
 		}
 	case runtimeprofile.ProviderClaudeCode:
 		if model := strings.TrimSpace(req.Profile.Fields.Model); model != "" {
 			args = append(args, "--model", model)
 		}
 		if req.ConfigPath != "" {
-			args = append(args, "--config", req.ConfigPath)
+			args = append(args, "--settings", req.ConfigPath)
+		}
+		if mcpConfig := strings.TrimSpace(req.MCPConfigPath); mcpConfig != "" {
+			args = append(args, "--strict-mcp-config", "--mcp-config", mcpConfig)
+		}
+		if len(extra) > 0 {
+			args = append(args, extra...)
 		}
 		if req.Goal != "" {
-			args = append(args, "--prompt", req.Goal)
+			if strings.TrimSpace(req.MCPConfigPath) != "" {
+				args = append(args, "--", req.Goal)
+			} else {
+				args = append(args, req.Goal)
+			}
 		}
 	case runtimeprofile.ProviderPi:
+		// Pi discovers agent/models.json and agent/auth.json from PI_CODING_AGENT_DIR.
 		if model := strings.TrimSpace(req.Profile.Fields.Model); model != "" {
-			args = append(args, "-m", model)
+			args = append(args, "--model", model)
 		}
-		if req.ConfigPath != "" {
-			args = append(args, "-c", req.ConfigPath)
+		if len(extra) > 0 {
+			args = append(args, extra...)
 		}
 		if req.Goal != "" {
 			args = append(args, req.Goal)
@@ -79,9 +102,6 @@ func BuildLaunchArgs(req LaunchArgsRequest) ([]string, error) {
 		return nil, fmt.Errorf("unsupported provider %q", req.Provider)
 	}
 
-	if extra := req.Profile.Fields.CustomArgs; len(extra) > 0 {
-		args = append(args, extra...)
-	}
 	return args, nil
 }
 

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, AlertTriangle, FlaskConical, History, ChevronDown, ChevronRight, GitMerge } from "lucide-react";
 import { apiGet, apiPost, type Finding, type FindingVersion } from "@/lib/api";
+import { ProjectNav } from "@/components/ProjectNav";
 import { Card, CardTitle, CardHeader, Badge, Button } from "@/components/ui";
 
 export function FindingsPage() {
@@ -33,6 +34,7 @@ export function FindingsPage() {
       <Link to={`/projects/${projectId}`} className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground mb-4">
         <ArrowLeft className="h-4 w-4 mr-1" /> Back to dashboard
       </Link>
+      <ProjectNav />
       <h2 className="text-xl font-semibold mb-6">Findings</h2>
 
       {error && <p className="text-sm text-destructive mb-4">{error}</p>}

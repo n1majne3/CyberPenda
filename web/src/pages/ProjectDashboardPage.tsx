@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { AlertTriangle, Target, ListChecks, FileText, FlaskConical, FolderLock, ClipboardList } from "lucide-react";
+import { AlertTriangle, Target, ListChecks, FileText, FlaskConical, FolderLock, ClipboardList, ShieldAlert } from "lucide-react";
 import { apiGet, type Dashboard, type Project } from "@/lib/api";
+import { ProjectNav } from "@/components/ProjectNav";
 import { Card, CardTitle, CardHeader, Badge, Button } from "@/components/ui";
 
 export function ProjectDashboardPage() {
@@ -34,6 +35,7 @@ export function ProjectDashboardPage() {
 
   return (
     <div className="p-8">
+      <ProjectNav />
       <div className="flex items-center justify-between mb-6">
         <div>
           <h2 className="text-xl font-semibold">{project.name}</h2>
@@ -73,17 +75,27 @@ export function ProjectDashboardPage() {
 
       {/* Count cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-        <CountCard icon={<ListChecks className="h-4 w-4" />} label="Tasks" n={dash.counts.tasks} to={`${base}/tasks/new`} />
+        <CountCard icon={<ListChecks className="h-4 w-4" />} label="Tasks" n={dash.counts.tasks} to={`${base}/tasks`} />
         <CountCard icon={<FileText className="h-4 w-4" />} label="Facts" n={dash.counts.facts} to={`${base}/facts`} />
         <CountCard icon={<FlaskConical className="h-4 w-4" />} label="Findings" n={dash.counts.findings} to={`${base}/findings`} />
         <CountCard icon={<FolderLock className="h-4 w-4" />} label="Evidence" n={dash.counts.evidence} to={`${base}/evidence`} />
       </div>
 
-      <Link to={`${base}/report`}>
-        <Button variant="secondary" size="sm">
-          <ClipboardList className="h-4 w-4 mr-1" /> Generate report
-        </Button>
-      </Link>
+      <div className="flex flex-wrap gap-2">
+        {dash.counts.pending_approvals > 0 && (
+          <Link to={`${base}/approvals`}>
+            <Button variant="warning" size="sm">
+              <ShieldAlert className="h-4 w-4 mr-1" />
+              {dash.counts.pending_approvals} pending approval{dash.counts.pending_approvals === 1 ? "" : "s"}
+            </Button>
+          </Link>
+        )}
+        <Link to={`${base}/report`}>
+          <Button variant="secondary" size="sm">
+            <ClipboardList className="h-4 w-4 mr-1" /> Generate report
+          </Button>
+        </Link>
+      </div>
     </div>
   );
 }

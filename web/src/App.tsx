@@ -12,6 +12,9 @@ import { FactsPage } from "@/pages/FactsPage";
 import { FindingsPage } from "@/pages/FindingsPage";
 import { EvidencePage } from "@/pages/EvidencePage";
 import { ReportPage } from "@/pages/ReportPage";
+import { TasksPage } from "@/pages/TasksPage";
+import { ApprovalsPage } from "@/pages/ApprovalsPage";
+import { AuditLogPage } from "@/pages/AuditLogPage";
 
 function ErrorBoundary() {
   const err = useRouteError() as Error;
@@ -74,7 +77,10 @@ const router = createBrowserRouter([
       { path: "/credentials", element: <CredentialBindingsPage /> },
       { path: "/projects/:projectId", element: <ProjectDashboardPage /> },
       { path: "/projects/:projectId/scope", element: <ScopeEditorPage /> },
+      { path: "/projects/:projectId/tasks", element: <TasksPage /> },
       { path: "/projects/:projectId/tasks/new", element: <TaskLaunchPage /> },
+      { path: "/projects/:projectId/approvals", element: <ApprovalsPage /> },
+      { path: "/projects/:projectId/audit", element: <AuditLogPage /> },
       { path: "/projects/:projectId/tasks/:taskId", element: <TaskDetailPage /> },
       { path: "/projects/:projectId/facts", element: <FactsPage /> },
       { path: "/projects/:projectId/findings", element: <FindingsPage /> },

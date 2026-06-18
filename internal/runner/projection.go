@@ -1,0 +1,600 @@
+package runner
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+
+	"pentest/internal/credential"
+	"pentest/internal/runtimeprofile"
+)
+
+var secretEnvKeyPattern = regexp.MustCompile(`(?i)(token|api[_-]?key|secret|password|auth)`)
+
+// ProjectionRequest supplies task and daemon context for launch projection.
+type ProjectionRequest struct {
+	ProjectID   string
+	TaskID      string
+	Credentials *credential.Service
+	DaemonAddr  string
+	Sandbox     bool
+}
+
+// ProjectRuntimeConfig writes provider-specific runtime files into the task-local
+// provider home. It never writes back to host runtime config.
+func ProjectRuntimeConfig(layout Layout, profile runtimeprofile.Profile, req ProjectionRequest) (ConfigProjection, error) {
+	if strings.TrimSpace(layout.ProviderHome) == "" {
+		return ConfigProjection{}, fmt.Errorf("provider home is required")
+	}
+	if err := os.MkdirAll(layout.ProviderHome, 0o700); err != nil {
+		return ConfigProjection{}, fmt.Errorf("prepare provider home: %w", err)
+	}
+
+	switch profile.Provider {
+	case runtimeprofile.ProviderClaudeCode:
+		return projectClaudeSettings(layout, profile, req)
+	case runtimeprofile.ProviderCodex:
+		return projectCodexConfig(layout, profile, req)
+	case runtimeprofile.ProviderPi:
+		return projectPiConfig(layout, profile, req)
+	default:
+		return projectGenericConfig(layout, profile)
+	}
+}
+
+func projectGenericConfig(layout Layout, profile runtimeprofile.Profile) (ConfigProjection, error) {
+	config := runtimeprofile.GeneratedConfig(profile)
+	configPath := filepath.Join(layout.ProviderHome, "config.json")
+	raw, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return ConfigProjection{}, fmt.Errorf("encode runtime config: %w", err)
+	}
+	if err := os.WriteFile(configPath, raw, 0o600); err != nil {
+		return ConfigProjection{}, fmt.Errorf("write runtime config: %w", err)
+	}
+	return ConfigProjection{ConfigPath: configPath, Config: config}, nil
+}
+
+func projectClaudeSettings(layout Layout, profile runtimeprofile.Profile, req ProjectionRequest) (ConfigProjection, error) {
+	env, err := buildClaudeEnv(profile, req)
+	if err != nil {
+		return ConfigProjection{}, err
+	}
+
+	mcpServers := collectMCPServers(profile, req)
+	mcpURL := MCPEndpointURL(req.DaemonAddr, req.Sandbox)
+	if err := writeTaskContextFiles(layout, TaskContext{
+		ProjectID: req.ProjectID,
+		TaskID:    req.TaskID,
+		MCPURL:    mcpURL,
+	}); err != nil {
+		return ConfigProjection{}, err
+	}
+	if len(mcpServers) > 0 {
+		if err := writeClaudeMCPConfig(layout.Workdir, mcpServers); err != nil {
+			return ConfigProjection{}, err
+		}
+	}
+
+	settings := map[string]any{"env": env}
+	settingsPath := filepath.Join(layout.ProviderHome, "settings.json")
+	raw, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return ConfigProjection{}, fmt.Errorf("encode claude settings: %w", err)
+	}
+	if err := os.WriteFile(settingsPath, raw, 0o600); err != nil {
+		return ConfigProjection{}, fmt.Errorf("write claude settings: %w", err)
+	}
+
+	preview := map[string]any{
+		"provider":      string(profile.Provider),
+		"settings_path": settingsPath,
+		"env":           redactEnvMap(env),
+	}
+	if profile.Fields.Model != "" {
+		preview["model"] = profile.Fields.Model
+	}
+	if profile.Fields.Endpoint != "" {
+		preview["endpoint"] = profile.Fields.Endpoint
+	}
+	if len(profile.Fields.CredentialRefs) > 0 {
+		preview["credential_refs"] = profile.Fields.CredentialRefs
+	}
+	if profile.Fields.DefaultRunner != "" {
+		preview["default_runner"] = profile.Fields.DefaultRunner
+	}
+	if servers := mcpPreview(mcpServers); len(servers) > 0 {
+		preview["mcp_servers"] = servers
+		preview["mcp_config_path"] = filepath.Join(layout.Workdir, ".mcp.json")
+	}
+
+	return ConfigProjection{ConfigPath: settingsPath, Config: preview}, nil
+}
+
+func projectCodexConfig(layout Layout, profile runtimeprofile.Profile, req ProjectionRequest) (ConfigProjection, error) {
+	materialized, err := resolveMaterializedCredentials(profile, req)
+	if err != nil {
+		return ConfigProjection{}, err
+	}
+
+	mcpServers := collectMCPServers(profile, req)
+	mcpURL := MCPEndpointURL(req.DaemonAddr, req.Sandbox)
+	if err := writeTaskContextFiles(layout, TaskContext{
+		ProjectID: req.ProjectID,
+		TaskID:    req.TaskID,
+		MCPURL:    mcpURL,
+	}); err != nil {
+		return ConfigProjection{}, err
+	}
+
+	configPath := filepath.Join(layout.ProviderHome, "config.toml")
+	configTOML := buildCodexConfigTOML(profile, mcpServers)
+	if err := os.WriteFile(configPath, []byte(configTOML), 0o600); err != nil {
+		return ConfigProjection{}, fmt.Errorf("write codex config: %w", err)
+	}
+
+	authPath := ""
+	var authPreview map[string]any
+	if len(materialized) > 0 {
+		authPath = filepath.Join(layout.ProviderHome, "auth.json")
+		authDoc := buildCodexAuth(materialized)
+		raw, err := json.MarshalIndent(authDoc, "", "  ")
+		if err != nil {
+			return ConfigProjection{}, fmt.Errorf("encode codex auth: %w", err)
+		}
+		if err := os.WriteFile(authPath, raw, 0o600); err != nil {
+			return ConfigProjection{}, fmt.Errorf("write codex auth: %w", err)
+		}
+		authPreview = redactCodexAuth(authDoc)
+	} else if copied, err := copyHostCodexAuth(layout.ProviderHome); err != nil {
+		return ConfigProjection{}, err
+	} else if copied {
+		authPath = filepath.Join(layout.ProviderHome, "auth.json")
+		previewAuth := map[string]any{"source": "host_codex_auth"}
+		authPreview = previewAuth
+	}
+
+	preview := map[string]any{
+		"provider":    string(profile.Provider),
+		"config_path": configPath,
+		"config_toml": configTOML,
+	}
+	if authPath != "" {
+		preview["auth_path"] = authPath
+		preview["auth_json"] = authPreview
+	}
+	if profile.Fields.Model != "" {
+		preview["model"] = profile.Fields.Model
+	}
+	if profile.Fields.Endpoint != "" {
+		preview["endpoint"] = profile.Fields.Endpoint
+	}
+	if len(profile.Fields.CredentialRefs) > 0 {
+		preview["credential_refs"] = profile.Fields.CredentialRefs
+	}
+	if profile.Fields.DefaultRunner != "" {
+		preview["default_runner"] = profile.Fields.DefaultRunner
+	}
+	if servers := mcpPreview(mcpServers); len(servers) > 0 {
+		preview["mcp_servers"] = servers
+	}
+
+	return ConfigProjection{ConfigPath: configPath, Config: preview}, nil
+}
+
+func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req ProjectionRequest) (ConfigProjection, error) {
+	materialized, err := resolveMaterializedCredentials(profile, req)
+	if err != nil {
+		return ConfigProjection{}, err
+	}
+
+	mcpServers := collectMCPServers(profile, req)
+	mcpURL := MCPEndpointURL(req.DaemonAddr, req.Sandbox)
+
+	agentDir := filepath.Join(layout.ProviderHome, "agent")
+	if err := os.MkdirAll(agentDir, 0o700); err != nil {
+		return ConfigProjection{}, fmt.Errorf("prepare pi agent dir: %w", err)
+	}
+	if err := writeTaskContextFiles(layout, TaskContext{
+		ProjectID: req.ProjectID,
+		TaskID:    req.TaskID,
+		MCPURL:    mcpURL,
+	}); err != nil {
+		return ConfigProjection{}, err
+	}
+	if len(mcpServers) > 0 {
+		if err := writePiMCPConfig(agentDir, mcpServers); err != nil {
+			return ConfigProjection{}, err
+		}
+	}
+
+	modelsDoc := buildPiModels(profile, materialized)
+	modelsPath := filepath.Join(agentDir, "models.json")
+	if copiedModels, err := copyHostPiModels(agentDir); err != nil {
+		return ConfigProjection{}, err
+	} else if !copiedModels {
+		modelsRaw, err := json.MarshalIndent(modelsDoc, "", "  ")
+		if err != nil {
+			return ConfigProjection{}, fmt.Errorf("encode pi models: %w", err)
+		}
+		if err := os.WriteFile(modelsPath, modelsRaw, 0o600); err != nil {
+			return ConfigProjection{}, fmt.Errorf("write pi models: %w", err)
+		}
+	}
+
+	authPath := ""
+	var authPreview map[string]any
+	if len(materialized) > 0 {
+		authPath = filepath.Join(agentDir, "auth.json")
+		authDoc := buildPiAuth(materialized)
+		authRaw, err := json.MarshalIndent(authDoc, "", "  ")
+		if err != nil {
+			return ConfigProjection{}, fmt.Errorf("encode pi auth: %w", err)
+		}
+		if err := os.WriteFile(authPath, authRaw, 0o600); err != nil {
+			return ConfigProjection{}, fmt.Errorf("write pi auth: %w", err)
+		}
+		authPreview = redactPiAuth(authDoc)
+	} else if copied, err := copyHostPiAuth(agentDir); err != nil {
+		return ConfigProjection{}, err
+	} else if copied {
+		authPath = filepath.Join(agentDir, "auth.json")
+		authPreview = map[string]any{"source": "host_pi_auth"}
+	}
+
+	preview := map[string]any{
+		"provider":     string(profile.Provider),
+		"models_path":  modelsPath,
+		"models_json":  modelsDoc,
+	}
+	if authPath != "" {
+		preview["auth_path"] = authPath
+		preview["auth_json"] = authPreview
+	}
+	if profile.Fields.Model != "" {
+		preview["model"] = profile.Fields.Model
+	}
+	if profile.Fields.Endpoint != "" {
+		preview["endpoint"] = profile.Fields.Endpoint
+	}
+	if len(profile.Fields.CredentialRefs) > 0 {
+		preview["credential_refs"] = profile.Fields.CredentialRefs
+	}
+	if profile.Fields.DefaultRunner != "" {
+		preview["default_runner"] = profile.Fields.DefaultRunner
+	}
+	if servers := mcpPreview(mcpServers); len(servers) > 0 {
+		preview["mcp_servers"] = servers
+		preview["mcp_config_path"] = filepath.Join(agentDir, "mcp.json")
+	}
+
+	return ConfigProjection{ConfigPath: modelsPath, Config: preview}, nil
+}
+
+func resolveMaterializedCredentials(profile runtimeprofile.Profile, req ProjectionRequest) (map[string]string, error) {
+	inline := runtimeprofile.MaterializedAPIKeys(profile)
+	if len(inline) > 0 {
+		return inline, nil
+	}
+	if req.Credentials == nil || req.ProjectID == "" || len(profile.Fields.CredentialRefs) == 0 {
+		return nil, nil
+	}
+	return req.Credentials.ResolveMaterializedEnv(req.ProjectID, profile.Fields.CredentialRefs)
+}
+
+func buildCodexConfigTOML(profile runtimeprofile.Profile, mcpServers []runtimeprofile.MCPServer) string {
+	var b strings.Builder
+	if profile.Fields.Model != "" {
+		fmt.Fprintf(&b, "model = %q\n", profile.Fields.Model)
+	}
+
+	endpoint := strings.TrimSpace(profile.Fields.Endpoint)
+	openaiBase := strings.TrimSpace(profile.Fields.Env["OPENAI_BASE_URL"])
+	if endpoint == "" && openaiBase != "" {
+		endpoint = openaiBase
+	}
+
+	if endpoint != "" {
+		providerID := strings.TrimSpace(profile.Fields.Env["CODEX_MODEL_PROVIDER"])
+		if providerID == "" {
+			providerID = "custom"
+		}
+		wireAPI := strings.TrimSpace(profile.Fields.Env["CODEX_WIRE_API"])
+		if wireAPI == "" {
+			wireAPI = "responses"
+		}
+		providerName := strings.TrimSpace(profile.Fields.Env["CODEX_PROVIDER_NAME"])
+		if providerName == "" {
+			providerName = "Custom"
+		}
+
+		fmt.Fprintf(&b, "model_provider = %q\n", providerID)
+		fmt.Fprintf(&b, "cli_auth_credentials_store = %q\n", "file")
+		fmt.Fprintf(&b, "\n[model_providers.%s]\n", providerID)
+		fmt.Fprintf(&b, "name = %q\n", providerName)
+		fmt.Fprintf(&b, "base_url = %q\n", strings.TrimRight(endpoint, "/"))
+		fmt.Fprintf(&b, "wire_api = %q\n", wireAPI)
+		fmt.Fprintf(&b, "requires_openai_auth = true\n")
+	}
+	appendCodexMCPTOML(&b, mcpServers)
+	return b.String()
+}
+
+func buildCodexAuth(materialized map[string]string) map[string]string {
+	auth := make(map[string]string, len(materialized))
+	for key, value := range materialized {
+		switch strings.ToUpper(key) {
+		case "OPENAI_API_KEY":
+			auth["OPENAI_API_KEY"] = value
+		default:
+			auth[key] = value
+		}
+	}
+	return auth
+}
+
+func redactCodexAuth(auth map[string]string) map[string]any {
+	out := make(map[string]any, len(auth))
+	for key, value := range auth {
+		if secretEnvKeyPattern.MatchString(key) || strings.EqualFold(key, "OPENAI_API_KEY") {
+			out[key] = "[REDACTED]"
+			continue
+		}
+		out[key] = value
+	}
+	return out
+}
+
+func buildPiModels(profile runtimeprofile.Profile, materialized map[string]string) map[string]any {
+	providerID := strings.TrimSpace(profile.Fields.Env["PI_PROVIDER_ID"])
+	if providerID == "" {
+		providerID = "custom"
+	}
+
+	provider := map[string]any{}
+	if endpoint := strings.TrimSpace(profile.Fields.Endpoint); endpoint != "" {
+		provider["baseUrl"] = strings.TrimRight(endpoint, "/")
+	}
+	if api := inferPiAPI(profile); api != "" {
+		provider["api"] = api
+	}
+	if apiKeyRef := piAPIKeyRef(materialized); apiKeyRef != "" {
+		provider["apiKey"] = apiKeyRef
+	}
+	if profile.Fields.Model != "" {
+		provider["models"] = []map[string]any{{"id": profile.Fields.Model}}
+	}
+
+	return map[string]any{
+		"providers": map[string]any{
+			providerID: provider,
+		},
+	}
+}
+
+func buildPiAuth(materialized map[string]string) map[string]map[string]string {
+	auth := make(map[string]map[string]string, len(materialized))
+	for envKey, value := range materialized {
+		providerKey := mapEnvKeyToPiAuthProvider(envKey)
+		auth[providerKey] = map[string]string{
+			"type": "api_key",
+			"key":  value,
+		}
+	}
+	return auth
+}
+
+func redactPiAuth(auth map[string]map[string]string) map[string]any {
+	out := make(map[string]any, len(auth))
+	for providerKey, entry := range auth {
+		redacted := make(map[string]any, len(entry))
+		for key, value := range entry {
+			if key == "key" || secretEnvKeyPattern.MatchString(key) {
+				redacted[key] = "[REDACTED]"
+				continue
+			}
+			redacted[key] = value
+		}
+		out[providerKey] = redacted
+	}
+	return out
+}
+
+func inferPiAPI(profile runtimeprofile.Profile) string {
+	if api := strings.TrimSpace(profile.Fields.Env["PI_API"]); api != "" {
+		return api
+	}
+	endpoint := strings.ToLower(profile.Fields.Endpoint)
+	switch {
+	case strings.Contains(endpoint, "anthropic"):
+		return "anthropic-messages"
+	case strings.Contains(endpoint, "generativelanguage") || strings.Contains(endpoint, "googleapis"):
+		return "google-generative-ai"
+	default:
+		return "openai-completions"
+	}
+}
+
+func piAPIKeyRef(materialized map[string]string) string {
+	for key := range materialized {
+		return "$" + key
+	}
+	return ""
+}
+
+func mapEnvKeyToPiAuthProvider(envKey string) string {
+	switch strings.ToUpper(envKey) {
+	case "OPENAI_API_KEY":
+		return "openai"
+	case "ANTHROPIC_API_KEY":
+		return "anthropic"
+	case "GEMINI_API_KEY":
+		return "google"
+	case "OPENROUTER_API_KEY":
+		return "openrouter"
+	case "AI_GATEWAY_API_KEY":
+		return "vercel-ai-gateway"
+	case "GROQ_API_KEY":
+		return "groq"
+	case "MISTRAL_API_KEY":
+		return "mistral"
+	case "DEEPSEEK_API_KEY":
+		return "deepseek"
+	case "XAI_API_KEY":
+		return "xai"
+	default:
+		return strings.ToLower(strings.ReplaceAll(envKey, "_", "-"))
+	}
+}
+
+func copyHostCodexAuth(providerHome string) (bool, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false, nil
+	}
+	src := filepath.Join(home, ".codex", "auth.json")
+	raw, err := os.ReadFile(src)
+	if err != nil {
+		return false, nil
+	}
+	dst := filepath.Join(providerHome, "auth.json")
+	if err := os.WriteFile(dst, raw, 0o600); err != nil {
+		return false, fmt.Errorf("copy host codex auth: %w", err)
+	}
+	return true, nil
+}
+
+func copyHostPiModels(agentDir string) (bool, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false, nil
+	}
+	src := filepath.Join(home, ".pi", "agent", "models.json")
+	raw, err := os.ReadFile(src)
+	if err != nil {
+		return false, nil
+	}
+	dst := filepath.Join(agentDir, "models.json")
+	if err := os.WriteFile(dst, raw, 0o600); err != nil {
+		return false, fmt.Errorf("copy host pi models: %w", err)
+	}
+	return true, nil
+}
+
+func copyHostPiAuth(agentDir string) (bool, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false, nil
+	}
+	src := filepath.Join(home, ".pi", "agent", "auth.json")
+	raw, err := os.ReadFile(src)
+	if err != nil {
+		return false, nil
+	}
+	dst := filepath.Join(agentDir, "auth.json")
+	if err := os.WriteFile(dst, raw, 0o600); err != nil {
+		return false, fmt.Errorf("copy host pi auth: %w", err)
+	}
+	return true, nil
+}
+
+// ClaudeProcessEnv returns env vars that must be present on the Claude process.
+// settings.json alone is not enough for sandbox login detection.
+func ClaudeProcessEnv(profile runtimeprofile.Profile, req ProjectionRequest) (map[string]string, error) {
+	return buildClaudeEnv(profile, req)
+}
+
+func buildClaudeEnv(profile runtimeprofile.Profile, req ProjectionRequest) (map[string]string, error) {
+	env := map[string]string{}
+	for key, value := range profile.Fields.Env {
+		env[key] = value
+	}
+	if profile.Fields.Endpoint != "" && env["ANTHROPIC_BASE_URL"] == "" {
+		env["ANTHROPIC_BASE_URL"] = profile.Fields.Endpoint
+	}
+	if profile.Fields.Model != "" && env["ANTHROPIC_MODEL"] == "" {
+		env["ANTHROPIC_MODEL"] = profile.Fields.Model
+	}
+
+	materialized, err := resolveMaterializedCredentials(profile, req)
+	if err != nil {
+		return nil, err
+	}
+	for key, value := range materialized {
+		env[key] = value
+	}
+	return env, nil
+}
+
+func redactEnvMap(env map[string]string) map[string]any {
+	out := make(map[string]any, len(env))
+	for key, value := range env {
+		if secretEnvKeyPattern.MatchString(key) {
+			out[key] = "[REDACTED]"
+			continue
+		}
+		out[key] = value
+	}
+	return out
+}
+
+// LaunchConfigPath returns the config path passed to the runtime CLI. Sandbox
+// launches use container paths under /task.
+func LaunchConfigPath(layout Layout, provider runtimeprofile.Provider, hostConfigPath string, sandbox bool) string {
+	if !sandbox {
+		return hostConfigPath
+	}
+	rel, err := filepath.Rel(layout.TaskRoot, hostConfigPath)
+	if err != nil {
+		return hostConfigPath
+	}
+	return "/task/" + filepath.ToSlash(rel)
+}
+
+// LaunchProcessEnv returns process environment variables for the launch adapter.
+// Claude Code reads settings from CLAUDE_HOME; profile env lives in settings.json.
+func LaunchProcessEnv(layout Layout, profile runtimeprofile.Profile, sandbox bool, ctx TaskContext) map[string]string {
+	env := map[string]string{}
+	if sandbox {
+		// Claude Code allows --dangerously-skip-permissions in sandboxed containers
+		// when IS_SANDBOX=1, even if the process runs as root inside Docker.
+		env["IS_SANDBOX"] = "1"
+	}
+	if ctx.ProjectID != "" {
+		env["PENTEST_PROJECT_ID"] = ctx.ProjectID
+	}
+	if ctx.TaskID != "" {
+		env["PENTEST_TASK_ID"] = ctx.TaskID
+	}
+	if ctx.MCPURL != "" {
+		env["PENTEST_MCP_URL"] = ctx.MCPURL
+	}
+	switch profile.Provider {
+	case runtimeprofile.ProviderClaudeCode:
+		home := layout.ProviderHome
+		if sandbox {
+			home = "/task/runtime-home/" + providerHomeDir(profile.Provider)
+		}
+		env["CLAUDE_HOME"] = home
+	case runtimeprofile.ProviderCodex:
+		home := layout.ProviderHome
+		if sandbox {
+			home = "/task/runtime-home/" + providerHomeDir(profile.Provider)
+		}
+		env["CODEX_HOME"] = home
+	case runtimeprofile.ProviderPi:
+		agentDir := filepath.Join(layout.ProviderHome, "agent")
+		if sandbox {
+			agentDir = "/task/runtime-home/" + providerHomeDir(profile.Provider) + "/agent"
+		}
+		env["PI_CODING_AGENT_DIR"] = agentDir
+	default:
+		for key, value := range profile.Fields.Env {
+			env[key] = value
+		}
+	}
+	return env
+}

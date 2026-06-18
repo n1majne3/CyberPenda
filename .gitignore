@@ -9,4 +9,9 @@ web/dist/
 
 # Local daemon/runtime artifacts
 pentest.db
+pentest.db-shm
+pentest.db-wal
 pentestd
+runs/
+__pycache__/
+*.pyc

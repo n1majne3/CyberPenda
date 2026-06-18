@@ -24,10 +24,9 @@ func TestBuildCodexLaunchArgsFromRuntimeConfig(t *testing.T) {
 	}
 
 	args, err := adapters.BuildLaunchArgs(adapters.LaunchArgsRequest{
-		Provider:   runtimeprofile.ProviderCodex,
-		Profile:    profile,
-		Goal:       "enumerate example.com",
-		ConfigPath: "/task/runtime-home/codex/config.json",
+		Provider: runtimeprofile.ProviderCodex,
+		Profile:  profile,
+		Goal:     "enumerate example.com",
 	})
 	if err != nil {
 		t.Fatalf("build args: %v", err)
@@ -42,9 +41,9 @@ func TestBuildCodexLaunchArgsFromRuntimeConfig(t *testing.T) {
 	if !strings.Contains(joined, "gpt-5") {
 		t.Fatalf("expected model in args, got %q", joined)
 	}
-	// Config path is projected.
-	if !strings.Contains(joined, "/task/runtime-home/codex/config.json") {
-		t.Fatalf("expected config path in args, got %q", joined)
+	// Codex discovers config from CODEX_HOME; argv must not carry a config file path.
+	if strings.Contains(joined, "--config") {
+		t.Fatalf("codex launch args must not include --config file path, got %q", joined)
 	}
 	// Goal is supplied.
 	if !strings.Contains(joined, "enumerate example.com") {
@@ -89,6 +88,37 @@ func TestBuildClaudeCodeLaunchArgs(t *testing.T) {
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "claude-sonnet-4") {
 		t.Fatalf("expected model in args, got %q", joined)
+	}
+	if !strings.Contains(joined, "--settings /task/runtime-home/claude/config.json") {
+		t.Fatalf("expected --settings path in args, got %q", joined)
+	}
+}
+
+func TestBuildClaudeCodeLaunchArgsUsesStrictMCPConfig(t *testing.T) {
+	args, err := adapters.BuildLaunchArgs(adapters.LaunchArgsRequest{
+		Provider: runtimeprofile.ProviderClaudeCode,
+		Profile: runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderClaudeCode,
+			Fields: runtimeprofile.Fields{
+				Model: "glm-5.2",
+			},
+		},
+		Goal:          "call trusted mcp",
+		ConfigPath:    "/task/runtime-home/claude/settings.json",
+		MCPConfigPath: "/task/workdir/.mcp.json",
+	})
+	if err != nil {
+		t.Fatalf("build args: %v", err)
+	}
+	joined := strings.Join(args, " ")
+	for _, want := range []string{
+		"--strict-mcp-config",
+		"--mcp-config /task/workdir/.mcp.json",
+		"-- call trusted mcp",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected %q in args, got %q", want, joined)
+		}
 	}
 }
 

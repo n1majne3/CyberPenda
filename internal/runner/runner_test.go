@@ -1,11 +1,11 @@
 package runner_test
 
 import (
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"pentest/internal/runner"
@@ -70,27 +70,28 @@ func TestProjectRuntimeConfigWritesGeneratedConfigWithoutMutatingHostConfig(t *t
 		},
 	}
 
-	projection, err := runner.ProjectRuntimeConfig(layout, profile)
+	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{})
 	if err != nil {
 		t.Fatalf("project config: %v", err)
 	}
-	if projection.ConfigPath != filepath.Join(layout.ProviderHome, "config.json") {
-		t.Fatalf("expected provider-local config path, got %q", projection.ConfigPath)
+	configPath := filepath.Join(layout.ProviderHome, "config.toml")
+	if projection.ConfigPath != configPath {
+		t.Fatalf("expected provider-local config.toml path, got %q", projection.ConfigPath)
 	}
 
-	raw, err := os.ReadFile(projection.ConfigPath)
+	raw, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatalf("read projected config: %v", err)
 	}
-	var projected map[string]any
-	if err := json.Unmarshal(raw, &projected); err != nil {
-		t.Fatalf("decode projected config: %v", err)
+	config := string(raw)
+	if !strings.Contains(config, `model = "gpt-5"`) {
+		t.Fatalf("expected model in config.toml, got %s", config)
 	}
-	if projected["provider"] != "codex" {
-		t.Fatalf("expected provider codex, got %#v", projected)
+	if !strings.Contains(config, `base_url = "https://api.example.test/v1"`) {
+		t.Fatalf("expected endpoint in config.toml, got %s", config)
 	}
-	if projected["model"] != "gpt-5" {
-		t.Fatalf("expected model projected, got %#v", projected)
+	if projection.Config["provider"] != "codex" {
+		t.Fatalf("expected provider codex in preview, got %#v", projection.Config["provider"])
 	}
 
 	hostRaw, err := os.ReadFile(hostConfig)
@@ -126,14 +127,15 @@ func TestBuildSandboxCommandConstructsContainerLaunchWithoutExecution(t *testing
 		"run",
 		"--rm",
 		"-i",
+		"--add-host=host.docker.internal:host-gateway",
 		"-v",
 		layout.TaskRoot + ":/task",
 		"-w",
 		"/task/workdir",
 		"-e",
-		"CODEX_HOME=/task/runtime-home/codex",
-		"-e",
 		"PENTEST_TASK_ROOT=/task",
+		"-e",
+		"CODEX_HOME=/task/runtime-home/codex",
 		"pentest-kali:local",
 		"codex",
 		"run",

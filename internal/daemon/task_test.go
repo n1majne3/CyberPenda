@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"pentest/internal/daemon"
+	"pentest/internal/runtimeprofile"
 )
 
 // TestLaunchTaskRunsFakeRuntimeAndStreamsEvents proves the Slice 3 tracer bullet
@@ -193,14 +194,10 @@ func TestLaunchTaskUsesRuntimeProfileProviderAdapter(t *testing.T) {
 		t.Fatalf("write provider binary: %v", err)
 	}
 
-	profileID := createRuntimeProfile(t, server, `{
-		"name":"Codex Test",
-		"provider":"codex",
-		"fields":{
-			"binary_path":`+quoteJSON(binary)+`,
-			"model":"gpt-test"
-		}
-	}`)
+	profileID := createLocalRuntimeProfile(t, server, "Codex Test", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		BinaryPath: binary,
+		Model:      "gpt-test",
+	})
 
 	taskID := createTask(t, server, projectID, `{
 		"goal":"enumerate example.com",
@@ -222,7 +219,7 @@ func TestLaunchTaskUsesRuntimeProfileProviderAdapter(t *testing.T) {
 		if event["kind"] == "runtime_output" {
 			payload := event["payload"].(map[string]any)
 			text, _ := payload["text"].(string)
-			if strings.Contains(text, "codex-provider:run --model gpt-test --config") &&
+			if strings.Contains(text, "codex-provider:run --model gpt-test") &&
 				strings.Contains(text, "enumerate example.com") {
 				sawProviderOutput = true
 			}
@@ -244,11 +241,9 @@ func TestLaunchTaskReturnsBeforeRuntimeProcessCompletes(t *testing.T) {
 	if err := os.WriteFile(binary, []byte("#!/bin/sh\necho slow-provider-started\nsleep 2\necho slow-provider-completed\n"), 0o700); err != nil {
 		t.Fatalf("write slow provider binary: %v", err)
 	}
-	profileID := createRuntimeProfile(t, server, `{
-		"name":"Slow Codex",
-		"provider":"codex",
-		"fields":{"binary_path":`+quoteJSON(binary)+`}
-	}`)
+	profileID := createLocalRuntimeProfile(t, server, "Slow Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		BinaryPath: binary,
+	})
 
 	start := time.Now()
 	taskID := createTask(t, server, projectID, `{
@@ -293,11 +288,9 @@ func TestLaunchTaskWrapsProviderCommandInSandboxRunner(t *testing.T) {
 	})
 
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
-	profileID := createRuntimeProfile(t, server, `{
-		"name":"Codex Sandbox",
-		"provider":"codex",
-		"fields":{"model":"gpt-test"}
-	}`)
+	profileID := createLocalRuntimeProfile(t, server, "Codex Sandbox", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		Model: "gpt-test",
+	})
 
 	taskID := createTask(t, server, projectID, `{
 		"goal":"enumerate example.com",

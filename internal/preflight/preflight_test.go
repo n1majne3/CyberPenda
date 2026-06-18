@@ -73,6 +73,35 @@ func TestRunPassesWhenProfileHasNoCredentials(t *testing.T) {
 	}
 }
 
+func TestRunPassesWithInlineProfileAPIKeys(t *testing.T) {
+	svc := newTestServices(t)
+	profile, err := svc.profiles.Create(
+		"codex-inline",
+		runtimeprofile.ProviderCodex,
+		runtimeprofile.Fields{
+			Model: "gpt-5",
+			APIKeys: map[string]string{
+				"OPENAI_API_KEY": "sk-inline",
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+	})
+
+	if !result.Pass {
+		t.Fatalf("expected preflight to pass with inline api keys, got %#v", result.Checks)
+	}
+	if !checkPassed(result, "credentials") {
+		t.Fatalf("expected credentials check to pass, got %#v", result.Checks)
+	}
+}
+
 func TestRunFailsWhenCredentialReferenceUnresolved(t *testing.T) {
 	svc := newTestServices(t)
 	profile, err := svc.profiles.Create(

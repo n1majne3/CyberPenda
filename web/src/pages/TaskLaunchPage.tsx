@@ -93,7 +93,9 @@ export function TaskLaunchPage() {
               }}
             >
               {profiles.map((p) => (
-                <option key={p.id} value={p.id}>{p.name} ({p.provider})</option>
+                <option key={p.id} value={p.id}>
+                  {p.name} ({p.provider})
+                </option>
               ))}
             </select>
           </div>

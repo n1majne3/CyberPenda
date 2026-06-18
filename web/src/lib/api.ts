@@ -94,7 +94,39 @@ export interface Dashboard {
     has_notes: boolean;
     ready: boolean;
   };
-  counts: { tasks: number; facts: number; findings: number; evidence: number };
+  counts: {
+    tasks: number;
+    facts: number;
+    findings: number;
+    evidence: number;
+    pending_approvals: number;
+  };
+}
+
+export interface Approval {
+  id: string;
+  project_id: string;
+  task_id?: string;
+  kind: string;
+  status: string;
+  requester?: string;
+  requested_action: string;
+  rationale?: string;
+  payload?: unknown;
+  reviewer?: string;
+  decision?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AuditEntry {
+  id: string;
+  project_id: string;
+  task_id?: string;
+  kind: string;
+  summary: string;
+  payload?: unknown;
+  created_at: string;
 }
 
 export interface RuntimeProfile {
@@ -107,9 +139,11 @@ export interface RuntimeProfile {
     endpoint?: string;
     custom_args?: string[];
     env?: Record<string, string>;
+    api_keys?: Record<string, string>;
     credential_refs?: string[];
     mcp_servers?: { name?: string; mode?: string; command?: string; url?: string; args?: string[]; env?: Record<string, string> }[];
     default_runner?: string;
+    sandbox_image?: string;
   };
   created_at: string;
   updated_at: string;

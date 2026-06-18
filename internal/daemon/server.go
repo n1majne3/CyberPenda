@@ -23,11 +23,12 @@ import (
 )
 
 type Config struct {
-	Version      string
-	DBPath       string
-	RuntimeRoot  string
-	SandboxImage string
-	ContainerCLI string
+	Version          string
+	DBPath           string
+	RuntimeRoot      string
+	SandboxImage     string
+	ContainerCLI     string
+	ListenAddr       string
 }
 
 type Server struct {
@@ -45,6 +46,7 @@ type Server struct {
 	runtimeRoot  string
 	sandboxImage string
 	containerCLI string
+	listenAddr   string
 }
 
 func NewServer(config Config) (*Server, error) {
@@ -59,6 +61,10 @@ func NewServer(config Config) (*Server, error) {
 	runtimeRoot := config.RuntimeRoot
 	if runtimeRoot == "" {
 		runtimeRoot = filepath.Join(filepath.Dir(config.DBPath), "runs")
+	}
+	listenAddr := strings.TrimSpace(config.ListenAddr)
+	if listenAddr == "" {
+		listenAddr = "127.0.0.1:8787"
 	}
 	server := &Server{
 		mux:          http.NewServeMux(),
@@ -75,6 +81,7 @@ func NewServer(config Config) (*Server, error) {
 		runtimeRoot:  runtimeRoot,
 		sandboxImage: config.SandboxImage,
 		containerCLI: config.ContainerCLI,
+		listenAddr:   listenAddr,
 	}
 	server.tasks.SetProjectService(server.projects)
 	server.routes()
@@ -131,6 +138,9 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /api/projects/{id}/evidence", server.handleAttachEvidence)
 	server.mux.HandleFunc("GET /api/projects/{id}/evidence", server.handleListEvidence)
 	server.mux.HandleFunc("POST /api/projects/{id}/report", server.handleReportTrigger)
+	server.mux.HandleFunc("GET /api/projects/{id}/approvals", server.handleListApprovals)
+	server.mux.HandleFunc("POST /api/projects/{id}/approvals/{approval_id}/decide", server.handleDecideApproval)
+	server.mux.HandleFunc("GET /api/projects/{id}/audit-log", server.handleListAuditLog)
 	server.registerMCP()
 	server.registerSPA()
 }
@@ -145,12 +155,23 @@ func (server *Server) handleHealth(response http.ResponseWriter, request *http.R
 			Status string `json:"status"`
 			Path   string `json:"path"`
 		} `json:"mcp"`
+		Runner struct {
+			RuntimeRoot  string `json:"runtime_root"`
+			SandboxImage string `json:"sandbox_image"`
+			ContainerCLI string `json:"container_cli"`
+		} `json:"runner"`
 	}{
 		Version: server.version,
 	}
 	payload.Database.Status = "ok"
 	payload.MCP.Status = "ok"
 	payload.MCP.Path = "/mcp"
+	payload.Runner.RuntimeRoot = server.runtimeRoot
+	payload.Runner.SandboxImage = server.sandboxImage
+	payload.Runner.ContainerCLI = server.containerCLI
+	if payload.Runner.ContainerCLI == "" {
+		payload.Runner.ContainerCLI = "docker"
+	}
 
 	writeJSON(response, http.StatusOK, payload)
 }
@@ -294,10 +315,14 @@ func (server *Server) handleListRuntimeProfiles(response http.ResponseWriter, re
 	if profiles == nil {
 		profiles = []runtimeprofile.Profile{}
 	}
+	sanitized := make([]runtimeprofile.Profile, len(profiles))
+	for i, profile := range profiles {
+		sanitized[i] = runtimeprofile.SanitizeProfile(profile)
+	}
 	writeJSON(response, http.StatusOK, struct {
 		Profiles []runtimeprofile.Profile `json:"profiles"`
 	}{
-		Profiles: profiles,
+		Profiles: sanitized,
 	})
 }
 
@@ -325,7 +350,7 @@ func (server *Server) handleCreateRuntimeProfile(response http.ResponseWriter, r
 		return
 	}
 
-	writeJSON(response, http.StatusCreated, created)
+	writeJSON(response, http.StatusCreated, runtimeprofile.SanitizeProfile(created))
 }
 
 func (server *Server) handleGetRuntimeProfile(response http.ResponseWriter, request *http.Request) {
@@ -345,7 +370,7 @@ func (server *Server) handleGetRuntimeProfile(response http.ResponseWriter, requ
 		return
 	}
 
-	writeJSON(response, http.StatusOK, found)
+	writeJSON(response, http.StatusOK, runtimeprofile.SanitizeProfile(found))
 }
 
 func (server *Server) handleUpdateRuntimeProfile(response http.ResponseWriter, request *http.Request) {
@@ -393,7 +418,7 @@ func (server *Server) handleUpdateRuntimeProfile(response http.ResponseWriter, r
 		return
 	}
 
-	writeJSON(response, http.StatusOK, updated)
+	writeJSON(response, http.StatusOK, runtimeprofile.SanitizeProfile(updated))
 }
 
 func (server *Server) handleDeleteRuntimeProfile(response http.ResponseWriter, request *http.Request) {
@@ -592,10 +617,11 @@ func (server *Server) handleDashboard(response http.ResponseWriter, request *htt
 			Ready            bool `json:"ready"`
 		} `json:"scope"`
 		Counts struct {
-			Tasks    int `json:"tasks"`
-			Facts    int `json:"facts"`
-			Findings int `json:"findings"`
-			Evidence int `json:"evidence"`
+			Tasks             int `json:"tasks"`
+			Facts             int `json:"facts"`
+			Findings          int `json:"findings"`
+			Evidence          int `json:"evidence"`
+			PendingApprovals  int `json:"pending_approvals"`
 		} `json:"counts"`
 	}{
 		ProjectID: found.ID,
@@ -631,10 +657,16 @@ func (server *Server) handleDashboard(response http.ResponseWriter, request *htt
 		writeError(response, http.StatusInternalServerError, "count evidence")
 		return
 	}
+	pendingApprovals, err := server.approvals.CountPending(found.ID)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "count pending approvals")
+		return
+	}
 	summary.Counts.Tasks = len(tasks)
 	summary.Counts.Facts = factCount
 	summary.Counts.Findings = findingCount
 	summary.Counts.Evidence = evidenceCount
+	summary.Counts.PendingApprovals = pendingApprovals
 
 	writeJSON(response, http.StatusOK, summary)
 }
