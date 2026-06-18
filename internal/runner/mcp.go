@@ -18,6 +18,7 @@ type TaskContext struct {
 	ProjectID string
 	TaskID    string
 	MCPURL    string
+	Sandbox   bool
 }
 
 // MCPEndpointURL returns the MCP HTTP endpoint reachable from the runtime process.
@@ -125,6 +126,11 @@ func writeRuntimeSmokeInstructions(workdir string, ctx TaskContext) error {
 		fmt.Fprintf(&b, "- mcp_url: `%s`\n", ctx.MCPURL)
 	}
 	b.WriteString("\nRead `.pentest/context.json` or env vars `PENTEST_PROJECT_ID`, `PENTEST_TASK_ID`, `PENTEST_MCP_URL` if needed.\n")
+	if ctx.Sandbox {
+		b.WriteString("\n## Sandbox skills and browser\n\n")
+		b.WriteString("Preinstalled agent skills are linked at `.agents/skills/` (image path `/opt/pentest/skills`).\n")
+		b.WriteString("For web testing, read the `agent-browser` skill and use the `agent-browser` CLI.\n")
+	}
 	path := filepath.Join(workdir, "AGENTS.md")
 	return os.WriteFile(path, []byte(b.String()), 0o600)
 }

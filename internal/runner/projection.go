@@ -32,6 +32,11 @@ func ProjectRuntimeConfig(layout Layout, profile runtimeprofile.Profile, req Pro
 	if err := os.MkdirAll(layout.ProviderHome, 0o700); err != nil {
 		return ConfigProjection{}, fmt.Errorf("prepare provider home: %w", err)
 	}
+	if req.Sandbox {
+		if err := PrepareSandboxSkills(layout, profile.Provider); err != nil {
+			return ConfigProjection{}, err
+		}
+	}
 
 	switch profile.Provider {
 	case runtimeprofile.ProviderClaudeCode:
@@ -70,6 +75,7 @@ func projectClaudeSettings(layout Layout, profile runtimeprofile.Profile, req Pr
 		ProjectID: req.ProjectID,
 		TaskID:    req.TaskID,
 		MCPURL:    mcpURL,
+		Sandbox:   req.Sandbox,
 	}); err != nil {
 		return ConfigProjection{}, err
 	}
@@ -126,6 +132,7 @@ func projectCodexConfig(layout Layout, profile runtimeprofile.Profile, req Proje
 		ProjectID: req.ProjectID,
 		TaskID:    req.TaskID,
 		MCPURL:    mcpURL,
+		Sandbox:   req.Sandbox,
 	}); err != nil {
 		return ConfigProjection{}, err
 	}
@@ -202,6 +209,7 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 		ProjectID: req.ProjectID,
 		TaskID:    req.TaskID,
 		MCPURL:    mcpURL,
+		Sandbox:   req.Sandbox,
 	}); err != nil {
 		return ConfigProjection{}, err
 	}
@@ -562,6 +570,7 @@ func LaunchProcessEnv(layout Layout, profile runtimeprofile.Profile, sandbox boo
 		// Claude Code allows --dangerously-skip-permissions in sandboxed containers
 		// when IS_SANDBOX=1, even if the process runs as root inside Docker.
 		env["IS_SANDBOX"] = "1"
+		env["PENTEST_SKILLS_DIR"] = sandboxSkillsImagePath
 	}
 	if ctx.ProjectID != "" {
 		env["PENTEST_PROJECT_ID"] = ctx.ProjectID
