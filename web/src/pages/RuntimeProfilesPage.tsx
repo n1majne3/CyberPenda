@@ -434,6 +434,16 @@ function ProfileEditor({
               </option>
             ))}
           </select>
+          {plugin && (
+            <div className="mt-2 flex flex-wrap gap-1">
+              <Badge variant="outline">{plugin.id}</Badge>
+              <Badge variant="outline">{plugin.config_projection.primitive}</Badge>
+              <Badge variant="outline">{plugin.transcript.parser}</Badge>
+              {plugin.capabilities.sandbox && <Badge variant="primary">sandbox</Badge>}
+              {plugin.capabilities.host && <Badge variant="default">host</Badge>}
+              {plugin.capabilities.mcp_config && <Badge variant="outline">mcp</Badge>}
+            </div>
+          )}
         </div>
         {has("binary_path") && <div>
           <Label>Binary path</Label>
