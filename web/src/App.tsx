@@ -36,7 +36,7 @@ function Layout() {
         <div className="p-4 border-b border-border">
           <h1 className="text-base font-semibold flex items-center gap-2">
             <ShieldAlert className="h-5 w-5 text-primary" />
-            pentest
+            CyberPenda
           </h1>
         </div>
         <nav className="flex-1 p-2 space-y-0.5 overflow-y-auto">

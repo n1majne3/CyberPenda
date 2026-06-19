@@ -1,6 +1,6 @@
-# Pentest Agent Docs
+# CyberPenda Docs
 
-These documents define the local-first pentest agent from product intent through MVP execution.
+These documents define CyberPenda, a local-first pentest agent, from product intent through MVP execution.
 
 ## Start Here
 
