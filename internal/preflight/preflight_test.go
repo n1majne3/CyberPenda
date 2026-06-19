@@ -209,11 +209,15 @@ func TestRunAcceptsSandboxAndHostRunners(t *testing.T) {
 	}
 
 	for _, runner := range []string{"sandbox", "host", ""} {
-		result := svc.preflight.Run(context.Background(), preflight.Request{
+		req := preflight.Request{
 			RuntimeProfileID: profile.ID,
 			ProjectID:        "p1",
 			Runner:           runner,
-		})
+		}
+		if runner == "host" {
+			req.HostActivated = true
+		}
+		result := svc.preflight.Run(context.Background(), req)
 		if !result.Pass {
 			t.Fatalf("expected preflight to pass for runner %q, got %#v", runner, result.Checks)
 		}

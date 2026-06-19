@@ -202,7 +202,8 @@ func TestLaunchTaskUsesRuntimeProfileProviderAdapter(t *testing.T) {
 	taskID := createTask(t, server, projectID, `{
 		"goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
-		"runner":"host"
+		"runner":"host",
+		"run_controls":{"host_activated":true}
 	}`)
 
 	waitForEventText(t, server, projectID, taskID, "codex-provider:run")
@@ -249,7 +250,8 @@ func TestLaunchTaskReturnsBeforeRuntimeProcessCompletes(t *testing.T) {
 	taskID := createTask(t, server, projectID, `{
 		"goal":"run slow provider",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
-		"runner":"host"
+		"runner":"host",
+		"run_controls":{"host_activated":true}
 	}`)
 	elapsed := time.Since(start)
 	if elapsed > 500*time.Millisecond {

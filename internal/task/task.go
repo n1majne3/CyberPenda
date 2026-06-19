@@ -41,9 +41,10 @@ const (
 // RunControls are the structured task launch settings: runner is stored
 // separately because it gates execution boundary visibility.
 type RunControls struct {
-	YOLO   bool              `json:"yolo,omitempty"`
-	Notes  string            `json:"notes,omitempty"`
-	Extras map[string]string `json:"extras,omitempty"`
+	YOLO            bool              `json:"yolo,omitempty"`
+	HostActivated   bool              `json:"host_activated,omitempty"`
+	Notes           string            `json:"notes,omitempty"`
+	Extras          map[string]string `json:"extras,omitempty"`
 }
 
 // ScopeSnapshot is an immutable copy of the project scope captured when a task

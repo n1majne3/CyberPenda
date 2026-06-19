@@ -9,6 +9,7 @@ import (
 
 	"pentest/internal/adapters"
 	"pentest/internal/approval"
+	"pentest/internal/blackboard"
 
 	"pentest/internal/preflight"
 	"pentest/internal/project"
@@ -55,6 +56,8 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		RuntimeProfileID: input.RuntimeProfileID,
 		ProjectID:        projectID,
 		Runner:           string(input.Runner),
+		HostActivated:    input.RunControls.HostActivated,
+		YOLO:             input.RunControls.YOLO,
 	})
 	if !preflightResult.Pass {
 		writeJSON(response, http.StatusBadRequest, struct {
@@ -64,6 +67,14 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 			Error:     "preflight failed",
 			Preflight: preflightResult,
 		})
+		return
+	}
+	if err := runner.ValidateActivation(runner.ActivationRequest{
+		Runner:        runner.Runner(input.Runner),
+		HostActivated: input.RunControls.HostActivated,
+		YOLO:          input.RunControls.YOLO,
+	}); err != nil {
+		writeError(response, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -102,6 +113,7 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 			"runner":             created.Runner,
 			"runtime_profile_id": created.RuntimeProfileID,
 			"yolo":               created.RunControls.YOLO,
+			"host_activated":     created.RunControls.HostActivated,
 		},
 	}); err != nil {
 		writeError(response, http.StatusInternalServerError, "record task audit")
@@ -154,6 +166,10 @@ func (server *Server) applyTaskLaunchDefaults(projectID, requestedProfileID stri
 }
 
 func (server *Server) buildTaskAdapter(created task.Task) (runtime.Adapter, map[string]any, error) {
+	return server.buildTaskAdapterForGoal(created, created.Goal)
+}
+
+func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string) (runtime.Adapter, map[string]any, error) {
 	runtimeConfig := map[string]any{
 		"runtime_profile_id": created.RuntimeProfileID,
 		"runner":             created.Runner,
@@ -191,7 +207,7 @@ func (server *Server) buildTaskAdapter(created task.Task) (runtime.Adapter, map[
 	providerCommand, err := adapters.BuildLaunchArgs(adapters.LaunchArgsRequest{
 		Provider:      profile.Provider,
 		Profile:       profile,
-		Goal:          created.Goal,
+		Goal:          goal,
 		ConfigPath:    configPath,
 		MCPConfigPath: mcpConfigPath,
 	})
@@ -207,6 +223,7 @@ func (server *Server) buildTaskAdapter(created task.Task) (runtime.Adapter, map[
 		ProjectID: created.ProjectID,
 		TaskID:    created.ID,
 		MCPURL:    mcpURL,
+		Sandbox:   sandbox,
 	}
 	processEnv := runner.LaunchProcessEnv(layout, profile, sandbox, launchCtx)
 	if profile.Provider == runtimeprofile.ProviderClaudeCode {
@@ -375,6 +392,108 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 		return
 	}
 	writeJSON(response, http.StatusOK, stopped)
+}
+
+func (server *Server) handleResumeTask(response http.ResponseWriter, request *http.Request) {
+	projectID := request.PathValue("id")
+	taskID := request.PathValue("task_id")
+	if !server.requireProject(response, projectID) {
+		return
+	}
+	if taskID == "" {
+		writeError(response, http.StatusNotFound, "task not found")
+		return
+	}
+
+	found, err := server.tasks.Get(taskID)
+	if err != nil {
+		writeTaskError(response, err)
+		return
+	}
+	if found.ProjectID != projectID {
+		writeError(response, http.StatusNotFound, "task not found")
+		return
+	}
+	if server.harness.IsActive(taskID) || found.Status == task.StatusRunning {
+		writeError(response, http.StatusConflict, "task is already running")
+		return
+	}
+
+	factIndex, err := server.facts.FactIndex(projectID, blackboard.FactIndexOptions{})
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "load fact index")
+		return
+	}
+	factLines := make([]string, 0, len(factIndex))
+	for _, entry := range factIndex {
+		factLines = append(factLines, entry.FactKey+": "+entry.Summary)
+	}
+
+	taskSummary := ""
+	summaries, err := server.tasks.SummaryVersions(taskID)
+	if err != nil {
+		writeTaskError(response, err)
+		return
+	}
+	if len(summaries) > 0 {
+		taskSummary = summaries[len(summaries)-1].Summary
+	}
+
+	steeringDirective := ""
+	events, err := server.tasks.Events(taskID)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "list task events")
+		return
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != task.EventKindSteering {
+			continue
+		}
+		if directive, ok := events[i].Payload["directive"].(string); ok {
+			steeringDirective = directive
+			break
+		}
+	}
+
+	resumeGoal := adapters.BuildResumePrompt(adapters.ResumeRequest{
+		Goal:              found.Goal,
+		TaskSummary:       taskSummary,
+		FactIndex:         factLines,
+		SteeringDirective: steeringDirective,
+	})
+
+	adapter, runtimeConfig, err := server.buildTaskAdapterForGoal(found, resumeGoal)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "prepare runtime adapter")
+		return
+	}
+	if _, err := server.tasks.RecordRuntimeConfig(found.ID, found.RuntimeProfileID, runtimeConfig); err != nil {
+		writeError(response, http.StatusInternalServerError, "record task runtime configuration")
+		return
+	}
+
+	server.launchTaskInBackground(found, adapter)
+
+	if _, err := server.approvals.RecordAudit(approval.AuditEntry{
+		ProjectID: projectID,
+		TaskID:    found.ID,
+		Kind:      "task_resumed",
+		Summary:   "task resumed with mechanical handoff",
+		Payload: map[string]any{
+			"task_id": found.ID,
+			"runner":  found.Runner,
+		},
+	}); err != nil {
+		writeError(response, http.StatusInternalServerError, "record task audit")
+		return
+	}
+
+	updated, err := server.tasks.Get(found.ID)
+	if err != nil {
+		writeTaskError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusAccepted, updated)
 }
 
 func (server *Server) handleSteerTask(response http.ResponseWriter, request *http.Request) {

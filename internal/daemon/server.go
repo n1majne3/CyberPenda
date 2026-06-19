@@ -120,6 +120,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}", server.handleGetTask)
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/events", server.handleTaskEvents)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/stop", server.handleStopTask)
+	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/resume", server.handleResumeTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/steer", server.handleSteerTask)
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/continuation", server.handleTaskContinuation)
 	server.mux.HandleFunc("PUT /api/projects/{id}/tasks/{task_id}/summary", server.handlePutTaskSummary)
@@ -552,9 +553,12 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 	}
 
 	var input struct {
-		RuntimeProfileID        string   `json:"runtime_profile_id"`
-		Runner                  string   `json:"runner"`
-		CredentialRefsToResolve []string `json:"credential_refs"`
+		RuntimeProfileID        string           `json:"runtime_profile_id"`
+		Runner                  string           `json:"runner"`
+		RunControls             task.RunControls `json:"run_controls"`
+		CredentialRefsToResolve []string         `json:"credential_refs"`
+		YOLO                    bool             `json:"yolo"`
+		HostActivated           bool             `json:"host_activated"`
 	}
 	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
 		writeError(response, http.StatusBadRequest, "invalid JSON body")
@@ -570,11 +574,15 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 		return
 	}
 
+	hostActivated := input.RunControls.HostActivated || input.HostActivated
+	yolo := input.RunControls.YOLO || input.YOLO
 	result := server.preflight.Run(request.Context(), preflight.Request{
 		RuntimeProfileID:        defaulted.runtimeProfileID,
 		ProjectID:               projectID,
 		CredentialRefsToResolve: input.CredentialRefsToResolve,
 		Runner:                  string(defaulted.runner),
+		HostActivated:           hostActivated,
+		YOLO:                    yolo,
 	})
 
 	// A preflight result is always 200: the body reports pass/fail per check.

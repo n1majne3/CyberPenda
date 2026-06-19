@@ -49,6 +49,10 @@ type Request struct {
 	CredentialRefsToResolve []string
 	// Runner is the selected runner. An empty runner defaults to sandbox.
 	Runner string
+	// HostActivated is true when the operator explicitly confirmed host runner.
+	HostActivated bool
+	// YOLO skips per-action approvals (smoke / trusted operator path).
+	YOLO bool
 }
 
 // ProfileGetter loads runtime profiles for preflight checks.
@@ -98,6 +102,16 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 		})
 	} else {
 		result.add(Check{Name: "runner", Status: CheckPass})
+	}
+
+	if runner == "host" && !request.HostActivated && !request.YOLO {
+		result.add(Check{
+			Name:   "host_activation",
+			Status: CheckFail,
+			Detail: "host runner requires explicit activation or YOLO mode",
+		})
+	} else if runner == "host" {
+		result.add(Check{Name: "host_activation", Status: CheckPass})
 	}
 
 	// Check 3: inline profile API keys or every credential reference resolves.
