@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { apiGet, apiPost, apiPatch, apiDelete, type RuntimeExtension, type RuntimeExtensionCatalogItem, type RuntimePlugin, type RuntimeProfile } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { Button, Card, Input, Label, Badge, Textarea } from "@/components/ui";
+import { Button, Card, Input, Label, Badge, Textarea, Select } from "@/components/ui";
+import { PageContainer } from "@/components/shared";
 
 const FALLBACK_PROVIDER_IDS = ["codex", "claude_code", "pi", "fake"] as const;
 // HIDDEN_PROVIDER_IDS are real, registered providers that should not be
@@ -197,7 +198,7 @@ export function RuntimeProfilesPage() {
     : "";
 
   return (
-    <div className="p-8 max-w-6xl">
+    <PageContainer className="max-w-6xl">
       <div className="mb-6">
         <h2 className="text-xl font-semibold">Runtime profiles</h2>
         <p className="text-sm text-muted-foreground mt-1">
@@ -314,7 +315,7 @@ export function RuntimeProfilesPage() {
           )}
         </Card>
       </div>
-    </div>
+    </PageContainer>
   );
 }
 
@@ -553,8 +554,7 @@ function ProfileEditor({
         </div>
         <div>
           <Label>Provider</Label>
-          <select
-            className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+          <Select
             value={form.provider}
             onChange={(e) => {
               const provider = e.target.value;
@@ -571,7 +571,7 @@ function ProfileEditor({
                 {p.name || p.id}
               </option>
             ))}
-          </select>
+          </Select>
           {plugin && (
             <div className="mt-2 flex flex-wrap gap-1">
               <Badge variant="outline">{plugin.id}</Badge>
@@ -605,8 +605,7 @@ function ProfileEditor({
         </div>}
         {has("default_runner") && <div>
           <Label>Default runner</Label>
-          <select
-            className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+          <Select
             value={form.default_runner}
             onChange={(e) => onChange({ ...form, default_runner: e.target.value })}
           >
@@ -615,7 +614,7 @@ function ProfileEditor({
                 {r}
               </option>
             ))}
-          </select>
+          </Select>
         </div>}
       </div>
       <div className="grid grid-cols-2 gap-3">
@@ -687,8 +686,7 @@ function ProfileEditor({
         {has("runtime_extensions") && <div className="col-span-2">
           <Label>Runtime extensions</Label>
           <div className="mt-1 flex gap-2">
-            <select
-              className="flex h-9 flex-1 rounded-md border border-input bg-background px-3 text-sm"
+            <Select className="flex-1"
               value={selectedExtensionID}
               onChange={(e) => setExtensionToAdd(e.target.value)}
               disabled={availableExtensions.length === 0}
@@ -702,15 +700,14 @@ function ProfileEditor({
                   </option>
                 ))
               )}
-            </select>
+            </Select>
             <Button type="button" size="sm" variant="outline" onClick={addRuntimeExtension} disabled={!selectedExtensionID}>
               <Plus className="h-4 w-4" />
               Add
             </Button>
           </div>
           <div className="mt-2 flex gap-2">
-            <select
-              className="flex h-9 flex-1 rounded-md border border-input bg-background px-3 text-sm"
+            <Select className="flex-1"
               value={selectedCatalogItemID}
               onChange={(e) => setCatalogItemToAdd(e.target.value)}
               disabled={availableCatalogItems.length === 0}
@@ -724,7 +721,7 @@ function ProfileEditor({
                   </option>
                 ))
               )}
-            </select>
+            </Select>
             <Button type="button" size="sm" variant="outline" onClick={addCatalogRuntimeExtension} disabled={!selectedCatalogItemID}>
               <Plus className="h-4 w-4" />
               Add package

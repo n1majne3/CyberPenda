@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, ScrollText } from "lucide-react";
+import { useParams } from "react-router-dom";
+import { ScrollText } from "lucide-react";
 import { apiGet, type AuditEntry } from "@/lib/api";
 import { ProjectNav } from "@/components/ProjectNav";
+import { BackLink, PageContainer } from "@/components/shared";
 import { Badge, Card } from "@/components/ui";
 
 export function AuditLogPage() {
@@ -21,10 +22,8 @@ export function AuditLogPage() {
   }, [projectId]);
 
   return (
-    <div className="p-8 max-w-4xl">
-      <Link to="/" className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground mb-4">
-        <ArrowLeft className="h-4 w-4 mr-1" /> All projects
-      </Link>
+    <PageContainer className="max-w-4xl">
+      <BackLink to="/">All projects</BackLink>
       <ProjectNav />
 
       <h2 className="text-xl font-semibold flex items-center gap-2 mb-4">
@@ -55,6 +54,6 @@ export function AuditLogPage() {
           </Card>
         ))}
       </div>
-    </div>
+    </PageContainer>
   );
 }

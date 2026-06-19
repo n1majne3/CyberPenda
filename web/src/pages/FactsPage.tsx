@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import {
-  ArrowLeft,
   ChevronDown,
   ChevronRight,
   FileText,
@@ -23,7 +22,8 @@ import {
   type TaskSummaryResponse,
 } from "@/lib/api";
 import { ProjectNav } from "@/components/ProjectNav";
-import { Card, Badge, Button } from "@/components/ui";
+import { BackLink, PageContainer } from "@/components/shared";
+import { Card, Badge, Button, Select } from "@/components/ui";
 
 export function FactsPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -63,10 +63,8 @@ export function FactsPage() {
   }, {});
 
   return (
-    <div className="p-8 max-w-4xl">
-      <Link to={`/projects/${projectId}`} className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground mb-4">
-        <ArrowLeft className="h-4 w-4 mr-1" /> Back to dashboard
-      </Link>
+    <PageContainer className="max-w-4xl">
+      <BackLink to={`/projects/${projectId}`}>Back to dashboard</BackLink>
       <ProjectNav />
       <h2 className="text-xl font-semibold mb-2">Blackboard</h2>
 
@@ -104,7 +102,7 @@ export function FactsPage() {
         </div>
       ))}
       {facts.length === 0 && !error && <p className="text-sm text-muted-foreground">No facts recorded yet.</p>}
-    </div>
+    </PageContainer>
   );
 }
 
@@ -277,8 +275,7 @@ function FactRow({
                   <p className="text-xs text-muted-foreground">
                     Merge <code>{entry.fact_key}</code> into the canonical fact. The old key becomes an alias; history is preserved.
                   </p>
-                  <select
-                    className="flex h-9 w-full max-w-md rounded-md border border-input bg-background px-3 text-xs"
+                  <Select className="max-w-md text-xs"
                     value={mergeTarget}
                     onChange={(e) => setMergeTarget(e.target.value)}
                   >
@@ -288,7 +285,7 @@ function FactRow({
                         {k}
                       </option>
                     ))}
-                  </select>
+                  </Select>
                   {mergeError && <p className="text-xs text-destructive">{mergeError}</p>}
                   <div className="flex gap-2">
                     <Button size="sm" onClick={confirmMerge} disabled={!mergeTarget || mergeBusy}>

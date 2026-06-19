@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { apiGet, apiPut, apiDelete, type CredentialBinding, type RuntimeProfile } from "@/lib/api";
-import { Button, Card, Input, Label, Badge } from "@/components/ui";
+import { Button, Card, Input, Label, Badge, Select } from "@/components/ui";
+import { PageContainer } from "@/components/shared";
 import { Trash2, Plus, Ban } from "lucide-react";
 
 export function CredentialBindingsPage() {
@@ -60,7 +61,7 @@ export function CredentialBindingsPage() {
   }
 
   return (
-    <div className="p-8 max-w-4xl">
+    <PageContainer className="max-w-4xl">
       <div className="flex items-center justify-between mb-6">
         <div>
           <h2 className="text-xl font-semibold">Credential bindings</h2>
@@ -80,15 +81,14 @@ export function CredentialBindingsPage() {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label>Source kind</Label>
-              <select
-                className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+              <Select
                 value={form.kind}
                 onChange={(e) => setForm({ ...form, kind: e.target.value })}
               >
                 <option value="env">env</option>
                 <option value="file">file</option>
                 <option value="command">command</option>
-              </select>
+              </Select>
             </div>
             <div>
               <Label>Value (env var name / path / command)</Label>
@@ -127,6 +127,6 @@ export function CredentialBindingsPage() {
           <p className="text-sm text-muted-foreground">No global bindings yet.</p>
         )}
       </div>
-    </div>
+    </PageContainer>
   );
 }

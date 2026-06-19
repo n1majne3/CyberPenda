@@ -1,8 +1,9 @@
 import { useEffect, useState, useRef, type RefObject } from "react";
 import { useParams, Link } from "react-router-dom";
-import { ArrowLeft, Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, FileText, Shield, ChevronRight, Wrench, User, Bot, ArrowDown, ArrowUp } from "lucide-react";
+import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, FileText, Shield, ChevronRight, Wrench, User, Bot, ArrowDown, ArrowUp } from "lucide-react";
 import { apiGet, apiPost, type Task, type TaskEvent, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
-import { Button, Card, Input, Badge } from "@/components/ui";
+import { Button, Card, Input, Badge, Select } from "@/components/ui";
+import { BackLink, PageContainer } from "@/components/shared";
 
 const ACTIVE = new Set(["running", "paused"]);
 
@@ -132,31 +133,29 @@ export function TaskDetailPage() {
     }
   }
 
-  if (error) return <div className="p-8 text-destructive">{error}</div>;
-  if (!task) return <div className="p-8 text-muted-foreground">Loading…</div>;
+  if (error) return <PageContainer className="text-destructive">{error}</PageContainer>;
+  if (!task) return <PageContainer className="text-muted-foreground">Loading…</PageContainer>;
 
   return (
-    <div ref={pageRef} className="p-8 max-w-4xl">
-      <Link to={`/projects/${projectId}`} className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground mb-4">
-        <ArrowLeft className="h-4 w-4 mr-1" /> Back to dashboard
-      </Link>
+    <PageContainer ref={pageRef} className="max-w-4xl">
+      <BackLink to={`/projects/${projectId}`}>Back to dashboard</BackLink>
 
-      <div className="flex items-center justify-between mb-2">
-        <h2 className="text-xl font-semibold">{task.goal}</h2>
+      <div className="mb-2 flex items-center justify-between">
+        <h2 className="text-xl font-semibold tracking-tight">{task.goal}</h2>
         <div className="flex gap-2">
           {!ACTIVE.has(task.status) && (
             <Button size="sm" variant="outline" onClick={resume}>
-              <Play className="h-4 w-4 mr-1" /> Resume
+              <Play className="h-4 w-4" /> Resume
             </Button>
           )}
           {ACTIVE.has(task.status) && (
             <Button size="sm" variant="destructive" onClick={stop}>
-              <Square className="h-4 w-4 mr-1" /> Stop
+              <Square className="h-4 w-4" /> Stop
             </Button>
           )}
         </div>
       </div>
-      <div className="flex gap-2 mb-6">
+      <div className="mb-6 flex gap-2">
         <StatusBadge status={task.status} />
         <Badge variant={task.runner === "host" ? "destructive" : "outline"}>
           runner: {task.runner}
@@ -164,7 +163,7 @@ export function TaskDetailPage() {
         {task.run_controls.yolo && <Badge variant="warning">YOLO</Badge>}
       </div>
 
-      <div className="flex flex-wrap gap-2 mb-6 text-sm">
+      <div className="mb-6 flex flex-wrap gap-2 text-sm">
         <Link to={`/projects/${projectId}/facts`} className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground">
           <FileText className="h-4 w-4" /> Facts
         </Link>
@@ -186,8 +185,8 @@ export function TaskDetailPage() {
         </div>
         <Input value={steering} onChange={(e) => setSteering(e.target.value)} placeholder="Focus on admin.example.com next" />
         <div className="flex gap-2 items-center">
-          <select
-            className="flex h-9 rounded-md border border-input bg-background px-3 text-sm"
+          <Select
+            className="max-w-xs"
             value={steerProfile}
             onChange={(e) => setSteerProfile(e.target.value)}
           >
@@ -195,7 +194,7 @@ export function TaskDetailPage() {
             {profiles.map((p) => (
               <option key={p.id} value={p.id}>Switch to {p.name}</option>
             ))}
-          </select>
+          </Select>
           <Button size="sm" onClick={steer} disabled={!steering.trim()}>
             <Send className="h-4 w-4 mr-1" /> Steer
           </Button>
@@ -218,7 +217,7 @@ export function TaskDetailPage() {
       )}
 
       <FloatingScrollControls autoFollow={autoFollow} onTop={scrollToTop} onBottom={scrollToLatest} />
-    </div>
+    </PageContainer>
   );
 }
 

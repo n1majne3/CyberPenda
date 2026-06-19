@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { useParams, Link } from "react-router-dom";
-import { ArrowLeft, ClipboardList, Download } from "lucide-react";
+import { useParams } from "react-router-dom";
+import { ClipboardList, Download } from "lucide-react";
 import { apiGet, apiPost, type Task } from "@/lib/api";
 import { ProjectNav } from "@/components/ProjectNav";
-import { Button, Card } from "@/components/ui";
+import { BackLink, PageContainer } from "@/components/shared";
+import { Button, Card, Label, Select } from "@/components/ui";
 
 export function ReportPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -52,25 +53,22 @@ export function ReportPage() {
   }
 
   return (
-    <div className="p-8 max-w-3xl">
-      <Link to={`/projects/${projectId}`} className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground mb-4">
-        <ArrowLeft className="h-4 w-4 mr-1" /> Back to dashboard
-      </Link>
+    <PageContainer className="max-w-3xl">
+      <BackLink to={`/projects/${projectId}`}>Back to dashboard</BackLink>
       <ProjectNav />
       <h2 className="text-xl font-semibold mb-6">Generate report</h2>
 
       <Card className="mb-4 space-y-3">
         <div>
-          <label className="text-sm font-medium text-muted-foreground">Task (for runner and scope context)</label>
-          <select
-            className="flex h-9 w-full mt-1 rounded-md border border-input bg-background px-3 text-sm"
+          <Label>Task (for runner and scope context)</Label>
+          <Select className="mt-1"
             value={taskId}
             onChange={(e) => setTaskId(e.target.value)}
           >
             {tasks.map((t) => (
               <option key={t.id} value={t.id}>{t.goal.slice(0, 60)} ({t.runner})</option>
             ))}
-          </select>
+          </Select>
         </div>
         <div className="flex gap-2">
           <Button size="sm" onClick={generate} disabled={generating}>
@@ -91,6 +89,6 @@ export function ReportPage() {
           <pre className="text-xs whitespace-pre-wrap font-mono overflow-x-auto">{markdown}</pre>
         </Card>
       )}
-    </div>
+    </PageContainer>
   );
 }

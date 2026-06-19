@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams, Link } from "react-router-dom";
-import { ArrowLeft, Save } from "lucide-react";
+import { useNavigate, useParams } from "react-router-dom";
+import { Save } from "lucide-react";
 import { apiGet, apiPatch, type Project, type RuntimeProfile, type Scope } from "@/lib/api";
 import { ProjectNav } from "@/components/ProjectNav";
-import { Button, Card, CardTitle, CardHeader, Label, Textarea, Badge } from "@/components/ui";
+import { BackLink, PageContainer } from "@/components/shared";
+import { Button, Card, CardTitle, CardHeader, Label, Textarea, Badge, Select } from "@/components/ui";
 
 // Each list field is edited as newline-separated text.
 type ScopeDraft = {
@@ -100,8 +101,8 @@ export function ScopeEditorPage() {
     }
   }
 
-  if (error) return <div className="p-8 text-destructive">{error}</div>;
-  if (!project || !draft) return <div className="p-8 text-muted-foreground">Loading…</div>;
+  if (error) return <PageContainer className="text-destructive">{error}</PageContainer>;
+  if (!project || !draft) return <PageContainer className="text-muted-foreground">Loading…</PageContainer>;
 
   const field = (key: keyof ScopeDraft, label: string, placeholder: string, warning = false) => (
     <div>
@@ -118,10 +119,8 @@ export function ScopeEditorPage() {
   );
 
   return (
-    <div className="p-8 max-w-3xl">
-      <Link to={`/projects/${projectId}`} className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground mb-4">
-        <ArrowLeft className="h-4 w-4 mr-1" /> Back to dashboard
-      </Link>
+    <PageContainer className="max-w-3xl">
+      <BackLink to={`/projects/${projectId}`}>Back to dashboard</BackLink>
       <ProjectNav />
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-xl font-semibold">Scope & defaults — {project.name}</h2>
@@ -137,8 +136,7 @@ export function ScopeEditorPage() {
         <div className="grid grid-cols-2 gap-3">
           <div>
             <Label>Default runtime profile</Label>
-            <select
-              className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+            <Select
               value={defaultProfile}
               onChange={(e) => setDefaultProfile(e.target.value)}
             >
@@ -148,18 +146,17 @@ export function ScopeEditorPage() {
                   {p.name} ({p.provider})
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
           <div>
             <Label>Default runner</Label>
-            <select
-              className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+            <Select
               value={defaultRunner}
               onChange={(e) => setDefaultRunner(e.target.value)}
             >
               <option value="sandbox">sandbox</option>
               <option value="host">host</option>
-            </select>
+            </Select>
           </div>
         </div>
       </Card>
@@ -191,6 +188,6 @@ export function ScopeEditorPage() {
           />
         </div>
       </div>
-    </div>
+    </PageContainer>
   );
 }

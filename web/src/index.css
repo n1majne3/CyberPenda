@@ -2,40 +2,124 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Design system — ported from multica's token palette (zinc neutrals + blue
+ * brand hue 255), expressed as HSL CSS variables consumed by Tailwind.
+ *
+ * System theme: :root is light, .dark overrides. The ThemeProvider toggles the
+ * .dark class on <html>. Tokens are HSL triplets ("H S% L%") so Tailwind's
+ * hsl(var(--token)) wrappers and alpha modifiers (bg-token/50) work.
+ */
+
 @layer base {
   :root {
-    /* Dark-first theme (security tooling default). */
-    --background: 222 14% 10%;
-    --foreground: 210 20% 92%;
+    /* Light theme — clean, near-white surfaces on zinc neutrals. */
+    --background: 0 0% 100%;
+    --foreground: 240 10% 12%;
 
-    --card: 222 14% 13%;
-    --card-foreground: 210 20% 92%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 12%;
 
-    --primary: 263 70% 60%;
-    --primary-foreground: 210 20% 98%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 12%;
 
-    --secondary: 222 14% 18%;
-    --secondary-foreground: 210 20% 92%;
+    /* Primary is the blue brand (multica hue 255 → ~225 HSL). */
+    --primary: 225 85% 55%;
+    --primary-foreground: 0 0% 100%;
 
-    --muted: 222 14% 18%;
-    --muted-foreground: 215 14% 60%;
+    --secondary: 240 5% 96%;
+    --secondary-foreground: 240 10% 12%;
 
-    --accent: 222 14% 20%;
-    --accent-foreground: 210 20% 92%;
+    --muted: 240 5% 96%;
+    --muted-foreground: 240 4% 46%;
 
-    --destructive: 0 72% 52%;
-    --destructive-foreground: 210 20% 98%;
+    --accent: 240 5% 96%;
+    --accent-foreground: 240 10% 12%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    /* Brand and semantic colors — multica's saturated palette. */
+    --brand: 225 85% 55%;
+    --brand-foreground: 0 0% 100%;
+    --success: 142 65% 42%;
+    --success-foreground: 0 0% 100%;
+    --info: 215 90% 58%;
+    --info-foreground: 0 0% 100%;
 
     /* Warning: used for YOLO mode, host runner, unconfirmed findings,
        out-of-scope facts, and CVSS pending — must be visually loud. */
     --warning: 38 92% 50%;
     --warning-foreground: 28 100% 12%;
 
-    --border: 222 14% 22%;
-    --input: 222 14% 22%;
-    --ring: 263 70% 60%;
+    --border: 240 6% 90%;
+    --input: 240 6% 90%;
+    --ring: 240 5% 64%;
 
-    --radius: 0.5rem;
+    /* Sidebar — slightly off-white, distinct from the main surface. */
+    --sidebar: 0 0% 99%;
+    --sidebar-foreground: 240 10% 12%;
+    --sidebar-accent: 240 5% 95%;
+    --sidebar-accent-foreground: 240 10% 12%;
+    --sidebar-border: 240 6% 90%;
+    --sidebar-ring: 240 5% 64%;
+
+    /* Radius scale — multica base 0.625rem (10px). */
+    --radius: 0.625rem;
+
+    /* Font families — set by @fontsource imports in main.tsx. */
+    --font-inter: "Inter Variable";
+    --font-mono: "Geist Mono";
+  }
+
+  .dark {
+    /* Dark theme — dark zinc surfaces with translucent-white borders. */
+    --background: 222 18% 10%;
+    --foreground: 210 20% 96%;
+
+    --card: 222 16% 14%;
+    --card-foreground: 210 20% 96%;
+
+    --popover: 222 16% 14%;
+    --popover-foreground: 210 20% 96%;
+
+    /* Brand primary brightens on dark. */
+    --primary: 225 80% 64%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 222 14% 20%;
+    --secondary-foreground: 210 20% 96%;
+
+    --muted: 222 14% 20%;
+    --muted-foreground: 215 14% 62%;
+
+    --accent: 222 14% 22%;
+    --accent-foreground: 210 20% 96%;
+
+    --destructive: 0 70% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --brand: 225 80% 64%;
+    --brand-foreground: 0 0% 100%;
+    --success: 142 55% 52%;
+    --success-foreground: 0 0% 100%;
+    --info: 215 90% 66%;
+    --info-foreground: 0 0% 100%;
+
+    --warning: 38 92% 54%;
+    --warning-foreground: 28 100% 12%;
+
+    /* Translucent-white base; alpha is applied at the border utility below. */
+    --border: 0 0% 100%;
+    --input: 0 0% 100%;
+    --ring: 215 14% 60%;
+
+    --sidebar: 222 16% 14%;
+    --sidebar-foreground: 210 20% 96%;
+    --sidebar-accent: 222 14% 22%;
+    --sidebar-accent-foreground: 210 20% 96%;
+    --sidebar-border: 0 0% 100%;
+    --sidebar-ring: 215 14% 60%;
   }
 }
 
@@ -43,9 +127,76 @@
   * {
     @apply border-border;
   }
+
+  /* Translucent-white hairlines in dark mode (multica treatment). */
+  .dark * {
+    border-color: hsl(var(--border) / 0.1);
+  }
+
+  html {
+    /* Set a sensible background immediately to limit flash of wrong theme. */
+    background: hsl(var(--background));
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+
   body {
     @apply bg-background text-foreground;
-    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-family: var(--font-inter), -apple-system, BlinkMacSystemFont, "Segoe UI",
+      "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  code,
+  pre,
+  kbd,
+  samp {
+    font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, Consolas,
+      monospace;
+  }
+
+  /* Thin rounded scrollbar — multica style. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--foreground) / 0.18) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: hsl(var(--foreground) / 0.18);
+    border-radius: 3px;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--foreground) / 0.28);
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer utilities {
+  /* One-time 360° spin used by the logo on first mount (multica entrance). */
+  @keyframes logo-spin {
+    from {
+      transform: rotate(0deg);
+    }
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  .logo-entrance-spin {
+    animation: logo-spin 0.6s ease-out;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .logo-entrance-spin {
+      animation: none;
+    }
   }
 }

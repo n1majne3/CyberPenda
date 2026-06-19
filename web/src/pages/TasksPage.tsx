@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, ListChecks, Plus } from "lucide-react";
+import { ListChecks, Plus } from "lucide-react";
 import { apiGet, type Task } from "@/lib/api";
 import { ProjectNav } from "@/components/ProjectNav";
 import { Badge, Button, Card } from "@/components/ui";
+import { BackLink, PageContainer } from "@/components/shared";
 
 const STATUS_VARIANT: Record<string, "primary" | "success" | "warning" | "destructive" | "outline"> = {
   running: "primary",
@@ -33,41 +34,42 @@ export function TasksPage() {
   const base = `/projects/${projectId}`;
 
   return (
-    <div className="p-8 max-w-4xl">
-      <Link to="/" className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground mb-4">
-        <ArrowLeft className="h-4 w-4 mr-1" /> All projects
-      </Link>
+    <PageContainer className="max-w-4xl">
+      <BackLink to="/">All projects</BackLink>
       <ProjectNav />
 
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-xl font-semibold flex items-center gap-2">
-          <ListChecks className="h-5 w-5" /> Tasks
+      <div className="mb-4 flex items-center justify-between">
+        <h2 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
+          <ListChecks className="h-5 w-5 text-primary" /> Tasks
         </h2>
         <Link to={`${base}/tasks/new`}>
           <Button size="sm">
-            <Plus className="h-4 w-4 mr-1" /> Launch task
+            <Plus className="h-4 w-4" /> Launch task
           </Button>
         </Link>
       </div>
 
-      {error && <p className="text-sm text-destructive mb-4">{error}</p>}
+      {error && <p className="mb-4 text-sm text-destructive">{error}</p>}
 
       {tasks.length === 0 && !error && (
-        <p className="text-sm text-muted-foreground">No tasks yet. Launch one to start testing.</p>
+        <Card className="items-center justify-center !py-12 text-center">
+          <p className="text-sm font-medium">No tasks yet</p>
+          <p className="text-sm text-muted-foreground">Launch one to start testing.</p>
+        </Card>
       )}
 
       <div className="space-y-2">
         {tasks.map((task) => (
-          <Link key={task.id} to={`${base}/tasks/${task.id}`}>
-            <Card className="hover:bg-accent/50 transition-colors">
-              <div className="flex items-start justify-between gap-3">
+          <Link key={task.id} to={`${base}/tasks/${task.id}`} className="group">
+            <Card className="transition-all hover:bg-accent/40 hover:ring-foreground/20">
+              <div className="flex items-start justify-between gap-3 px-4">
                 <div className="min-w-0 flex-1">
-                  <p className="font-medium truncate">{task.goal || "(no goal)"}</p>
-                  <p className="text-xs text-muted-foreground mt-1">
+                  <p className="truncate font-medium group-hover:text-foreground">{task.goal || "(no goal)"}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
                     {new Date(task.created_at).toLocaleString()} · runner {task.runner}
                   </p>
                 </div>
-                <div className="flex gap-1 shrink-0">
+                <div className="flex shrink-0 gap-1">
                   {task.run_controls?.yolo && <Badge variant="warning">YOLO</Badge>}
                   <Badge variant={STATUS_VARIANT[task.status] ?? "outline"}>{task.status}</Badge>
                 </div>
@@ -76,6 +78,6 @@ export function TasksPage() {
           </Link>
         ))}
       </div>
-    </div>
+    </PageContainer>
   );
 }

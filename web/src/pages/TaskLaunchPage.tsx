@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams, Link } from "react-router-dom";
-import { ArrowLeft, Rocket, AlertTriangle, CheckCircle2, XCircle } from "lucide-react";
+import { useNavigate, useParams } from "react-router-dom";
+import { Rocket, AlertTriangle, CheckCircle2, XCircle } from "lucide-react";
 import { apiGet, apiPost, type PreflightResult, type Project, type RuntimeProfile } from "@/lib/api";
-import { Button, Card, Label, Textarea, Badge } from "@/components/ui";
+import { Button, Card, Label, Textarea, Badge, Select } from "@/components/ui";
+import { BackLink, PageContainer } from "@/components/shared";
 
 export function TaskLaunchPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -71,10 +72,8 @@ export function TaskLaunchPage() {
   const hostBlocked = hostRunner && !hostActivated && !yolo;
 
   return (
-    <div className="p-8 max-w-2xl">
-      <Link to={`/projects/${projectId}`} className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground mb-4">
-        <ArrowLeft className="h-4 w-4 mr-1" /> Back to dashboard
-      </Link>
+    <PageContainer className="max-w-2xl">
+      <BackLink to={`/projects/${projectId}`}>Back to dashboard</BackLink>
       <h2 className="text-xl font-semibold mb-6">Launch task</h2>
 
       <div className="space-y-4">
@@ -85,8 +84,7 @@ export function TaskLaunchPage() {
         <div className="grid grid-cols-2 gap-3">
           <div>
             <Label>Runtime profile</Label>
-            <select
-              className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+            <Select
               value={profileId}
               onChange={(e) => {
                 const nextProfileID = e.target.value;
@@ -101,12 +99,11 @@ export function TaskLaunchPage() {
                   {p.name} ({p.provider})
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
           <div>
             <Label>Runner</Label>
-            <select
-              className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+            <Select
               value={runner}
               onChange={(e) => {
                 setRunner(e.target.value);
@@ -115,7 +112,7 @@ export function TaskLaunchPage() {
             >
               <option value="sandbox">sandbox</option>
               <option value="host">host</option>
-            </select>
+            </Select>
           </div>
         </div>
 
@@ -184,6 +181,6 @@ export function TaskLaunchPage() {
           <Rocket className="h-4 w-4 mr-1" /> {launching ? "Launching…" : "Launch"}
         </Button>
       </div>
-    </div>
+    </PageContainer>
   );
 }

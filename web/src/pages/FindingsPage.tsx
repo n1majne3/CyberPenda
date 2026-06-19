@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { useParams, Link } from "react-router-dom";
-import { ArrowLeft, AlertTriangle, FlaskConical, History, ChevronDown, ChevronRight, GitMerge } from "lucide-react";
+import { useParams } from "react-router-dom";
+import { AlertTriangle, FlaskConical, History, ChevronDown, ChevronRight, GitMerge } from "lucide-react";
 import { apiGet, apiPost, type Finding, type FindingVersion } from "@/lib/api";
 import { ProjectNav } from "@/components/ProjectNav";
-import { Card, CardTitle, CardHeader, Badge, Button } from "@/components/ui";
+import { BackLink, PageContainer } from "@/components/shared";
+import { Card, CardTitle, CardHeader, Badge, Button, Select } from "@/components/ui";
 
 export function FindingsPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -33,10 +34,8 @@ export function FindingsPage() {
   const base = `/api/projects/${projectId}`;
 
   return (
-    <div className="p-8 max-w-4xl">
-      <Link to={`/projects/${projectId}`} className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground mb-4">
-        <ArrowLeft className="h-4 w-4 mr-1" /> Back to dashboard
-      </Link>
+    <PageContainer className="max-w-4xl">
+      <BackLink to={`/projects/${projectId}`}>Back to dashboard</BackLink>
       <ProjectNav />
       <h2 className="text-xl font-semibold mb-6">Findings</h2>
 
@@ -45,7 +44,7 @@ export function FindingsPage() {
       <Section title="Confirmed" base={base} items={confirmed} allFindingKeys={allFindingKeys} onMerged={loadFindings} />
       <Section title="Unconfirmed" base={base} items={unconfirmed} allFindingKeys={allFindingKeys} onMerged={loadFindings} muted />
       {findings.length === 0 && !error && <p className="text-sm text-muted-foreground">No findings recorded yet.</p>}
-    </div>
+    </PageContainer>
   );
 }
 
@@ -201,8 +200,7 @@ function FindingCard({
               <p className="text-xs text-muted-foreground">
                 Merge <code>{finding.finding_key}</code> into the canonical finding. The old key becomes an alias; history is preserved.
               </p>
-              <select
-                className="flex h-9 w-full max-w-md rounded-md border border-input bg-background px-3 text-xs"
+              <Select className="max-w-md text-xs"
                 value={mergeTarget}
                 onChange={(e) => setMergeTarget(e.target.value)}
               >
@@ -212,7 +210,7 @@ function FindingCard({
                     {k}
                   </option>
                 ))}
-              </select>
+              </Select>
               {mergeError && <p className="text-xs text-destructive">{mergeError}</p>}
               <div className="flex gap-2">
                 <Button size="sm" onClick={confirmMerge} disabled={!mergeTarget || mergeBusy}>

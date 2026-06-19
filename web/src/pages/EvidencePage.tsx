@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { useParams, Link } from "react-router-dom";
-import { ArrowLeft, FolderLock } from "lucide-react";
+import { useParams } from "react-router-dom";
+import { FolderLock } from "lucide-react";
 import { apiGet, type EvidenceArtifact } from "@/lib/api";
 import { ProjectNav } from "@/components/ProjectNav";
+import { BackLink, PageContainer } from "@/components/shared";
 import { Card, Badge } from "@/components/ui";
 
 export function EvidencePage() {
@@ -29,10 +30,8 @@ export function EvidencePage() {
   }, {});
 
   return (
-    <div className="p-8 max-w-4xl">
-      <Link to={`/projects/${projectId}`} className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground mb-4">
-        <ArrowLeft className="h-4 w-4 mr-1" /> Back to dashboard
-      </Link>
+    <PageContainer className="max-w-4xl">
+      <BackLink to={`/projects/${projectId}`}>Back to dashboard</BackLink>
       <ProjectNav />
       <h2 className="text-xl font-semibold mb-6">Evidence</h2>
 
@@ -60,6 +59,6 @@ export function EvidencePage() {
       {evidence.length === 0 && !error && (
         <p className="text-sm text-muted-foreground">No evidence attached. Runtime workdir files require explicit attach or retain.</p>
       )}
-    </div>
+    </PageContainer>
   );
 }

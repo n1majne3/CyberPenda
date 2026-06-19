@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Plus, FolderOpen } from "lucide-react";
+import { Plus, FolderOpen, Globe, Server } from "lucide-react";
 import { apiGet, apiPost, type Project } from "@/lib/api";
 import { Button, Card, Input, Label, Badge } from "@/components/ui";
+import { PageContainer } from "@/components/shared";
 
 export function ProjectListPage() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -41,19 +42,30 @@ export function ProjectListPage() {
   }
 
   return (
-    <div className="p-8 max-w-5xl">
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-xl font-semibold">Projects</h2>
+    <PageContainer className="mx-auto max-w-5xl">
+      <div className="mb-6 flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-semibold tracking-tight">Projects</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Bounded security-testing engagements, each with its own scope, tasks, and memory.
+          </p>
+        </div>
         <Button size="sm" onClick={() => setCreating((v) => !v)}>
-          <Plus className="h-4 w-4 mr-1" /> New project
+          <Plus className="h-4 w-4" /> New project
         </Button>
       </div>
 
       {creating && (
-        <Card className="mb-4 flex items-end gap-3">
+        <Card className="mb-4 flex flex-row items-end gap-3 !py-3">
           <div className="flex-1">
             <Label htmlFor="proj-name">Project name</Label>
-            <Input id="proj-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Acme External" />
+            <Input
+              id="proj-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Acme External"
+              className="mt-1"
+            />
           </div>
           <Button size="sm" onClick={create} disabled={!name.trim()}>
             Create
@@ -64,29 +76,50 @@ export function ProjectListPage() {
         </Card>
       )}
 
-      {error && <p className="text-sm text-destructive mb-4">{error}</p>}
+      {error && <p className="mb-4 text-sm text-destructive">{error}</p>}
 
-      {projects.length === 0 && !error && (
-        <p className="text-sm text-muted-foreground">No projects yet. Create one to get started.</p>
+      {projects.length === 0 && !error && !creating && (
+        <Card className="flex flex-col items-center justify-center gap-3 !py-16 text-center">
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-muted">
+            <FolderOpen className="h-6 w-6 text-muted-foreground" />
+          </div>
+          <div>
+            <p className="text-sm font-medium">No projects yet</p>
+            <p className="mt-1 text-sm text-muted-foreground">Create one to get started.</p>
+          </div>
+          <Button size="sm" onClick={() => setCreating(true)}>
+            <Plus className="h-4 w-4" /> New project
+          </Button>
+        </Card>
       )}
 
       <div className="grid gap-3 sm:grid-cols-2">
         {projects.map((p) => (
-          <Link key={p.id} to={`/projects/${p.id}`}>
-            <Card className="hover:bg-accent/50 transition-colors cursor-pointer">
-              <div className="flex items-center gap-2 mb-1">
+          <Link key={p.id} to={`/projects/${p.id}`} className="group">
+            <Card className="h-full transition-all hover:bg-accent/40 hover:ring-foreground/20">
+              <div className="flex items-center gap-2 px-4">
                 <FolderOpen className="h-4 w-4 text-primary" />
-                <span className="font-medium">{p.name}</span>
+                <span className="font-medium group-hover:text-foreground">{p.name}</span>
               </div>
-              {p.description && <p className="text-xs text-muted-foreground">{p.description}</p>}
-              <div className="flex gap-1 mt-2">
-                {(p.scope.domains?.length ?? 0) > 0 && <Badge variant="primary">{p.scope.domains!.length} domains</Badge>}
-                {(p.scope.ips?.length ?? 0) > 0 && <Badge variant="primary">{p.scope.ips!.length} IPs</Badge>}
+              {p.description && <p className="px-4 text-sm text-muted-foreground">{p.description}</p>}
+              <div className="flex flex-wrap gap-1 px-4">
+                {(p.scope.domains?.length ?? 0) > 0 && (
+                  <Badge variant="outline">
+                    <Globe className="h-3 w-3" />
+                    {p.scope.domains!.length} domains
+                  </Badge>
+                )}
+                {(p.scope.ips?.length ?? 0) > 0 && (
+                  <Badge variant="outline">
+                    <Server className="h-3 w-3" />
+                    {p.scope.ips!.length} IPs
+                  </Badge>
+                )}
               </div>
             </Card>
           </Link>
         ))}
       </div>
-    </div>
+    </PageContainer>
   );
 }
