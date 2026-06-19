@@ -17,6 +17,7 @@ export function TaskDetailPage() {
   const [steering, setSteering] = useState("");
   const [steerProfile, setSteerProfile] = useState("");
   const [profiles, setProfiles] = useState<{ id: string; name: string }[]>([]);
+  const pageRef = useRef<HTMLDivElement>(null);
   const timelineEnd = useRef<HTMLDivElement>(null);
   const autoFollowRef = useRef(true);
 
@@ -45,17 +46,19 @@ export function TaskDetailPage() {
   }, [projectId, taskId]);
 
   useEffect(() => {
+    const container = findScrollContainer(pageRef.current);
+
     function updateAutoFollow() {
-      const pinned = isNearPageBottom();
+      const pinned = isNearScrollBottom(container);
       autoFollowRef.current = pinned;
       setAutoFollow((current) => current === pinned ? current : pinned);
     }
 
     updateAutoFollow();
-    window.addEventListener("scroll", updateAutoFollow, { passive: true });
+    container.addEventListener("scroll", updateAutoFollow, { passive: true });
     window.addEventListener("resize", updateAutoFollow);
     return () => {
-      window.removeEventListener("scroll", updateAutoFollow);
+      container.removeEventListener("scroll", updateAutoFollow);
       window.removeEventListener("resize", updateAutoFollow);
     };
   }, []);
@@ -111,7 +114,7 @@ export function TaskDetailPage() {
   if (!task) return <div className="p-8 text-muted-foreground">Loading…</div>;
 
   return (
-    <div className="p-8 max-w-4xl">
+    <div ref={pageRef} className="p-8 max-w-4xl">
       <Link to={`/projects/${projectId}`} className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground mb-4">
         <ArrowLeft className="h-4 w-4 mr-1" /> Back to dashboard
       </Link>
@@ -209,11 +212,20 @@ function tabClass(active: boolean) {
   ].join(" ");
 }
 
-function isNearPageBottom(threshold = 160) {
-  const doc = document.documentElement;
-  const body = document.body;
-  const scrollHeight = Math.max(doc.scrollHeight, body?.scrollHeight ?? 0);
-  return scrollHeight - (window.scrollY + window.innerHeight) <= threshold;
+function findScrollContainer(element: HTMLElement | null): HTMLElement {
+  let current = element?.parentElement ?? null;
+  while (current) {
+    const overflowY = window.getComputedStyle(current).overflowY;
+    if (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") {
+      return current;
+    }
+    current = current.parentElement;
+  }
+  return document.documentElement;
+}
+
+function isNearScrollBottom(container: HTMLElement, threshold = 160) {
+  return container.scrollHeight - (container.scrollTop + container.clientHeight) <= threshold;
 }
 
 function StatusBadge({ status }: { status: string }) {
