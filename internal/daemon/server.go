@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"log"
 	"net/http"
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"pentest/internal/approval"
 	"pentest/internal/blackboard"
@@ -31,6 +33,10 @@ type Config struct {
 	SandboxImage string
 	ContainerCLI string
 	ListenAddr   string
+	// Logger receives request and task-lifecycle log lines. When nil the daemon
+	// uses the standard library default logger, so output appears under
+	// `make dev` alongside the startup lines.
+	Logger *log.Logger
 	// RuntimePluginDirs are trusted local directories containing runtime plugin
 	// manifest JSON files. Empty means built-ins only.
 	RuntimePluginDirs []string
@@ -42,6 +48,7 @@ type Config struct {
 type Server struct {
 	mux               *http.ServeMux
 	version           string
+	logger            *log.Logger
 	db                *store.DB
 	projects          *project.Service
 	runtimePlugins    *runtimeplugin.Registry
@@ -87,6 +94,7 @@ func NewServer(config Config) (*Server, error) {
 	server := &Server{
 		mux:               http.NewServeMux(),
 		version:           config.Version,
+		logger:            config.Logger,
 		db:                db,
 		projects:          project.NewService(db),
 		runtimePlugins:    runtimePlugins,
@@ -102,6 +110,9 @@ func NewServer(config Config) (*Server, error) {
 		sandboxImage:      config.SandboxImage,
 		containerCLI:      config.ContainerCLI,
 		listenAddr:        listenAddr,
+	}
+	if server.logger == nil {
+		server.logger = log.Default()
 	}
 	server.tasks.SetProjectService(server.projects)
 	server.routes()
@@ -147,7 +158,10 @@ func runtimeProfileProviders(registry *runtimeplugin.Registry) []runtimeprofile.
 }
 
 func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) {
-	server.mux.ServeHTTP(response, request)
+	start := time.Now()
+	recorder := newStatusRecorder(response)
+	server.mux.ServeHTTP(recorder, request)
+	server.logRequest(start, request.Method, request.URL.Path, recorder.status)
 }
 
 func (server *Server) Close() error {

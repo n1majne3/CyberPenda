@@ -4,10 +4,26 @@
 # The Vite proxy forwards /api and /health to the daemon on :8787.
 SANDBOX_IMAGE ?= pentest-sandbox:latest
 
+# macOS /bin/sh (bash 3.2) has no `wait -n`, so poll: if either child dies,
+# surface the failure instead of silently running the other alone (which hid
+# backend bind errors behind the foreground Vite output).
 dev:
-	@trap 'kill 0' EXIT; \
+	@set -e; \
+	trap 'kill 0' EXIT INT TERM; \
 	go run ./cmd/pentestd -addr 127.0.0.1:8787 -db pentest.db -sandbox-image $(SANDBOX_IMAGE) & \
-	cd web && npm run dev
+	backend_pid=$$!; \
+	( cd web && npm run dev ) & \
+	frontend_pid=$$!; \
+	echo "dev: backend pid=$$backend_pid, frontend pid=$$frontend_pid"; \
+	while kill -0 $$backend_pid 2>/dev/null && kill -0 $$frontend_pid 2>/dev/null; do \
+		sleep 0.5; \
+	done; \
+	if ! kill -0 $$backend_pid 2>/dev/null; then \
+		echo "dev: backend exited — see errors above"; \
+	else \
+		echo "dev: frontend exited"; \
+	fi; \
+	exit 1
 
 # Build the pentest sandbox image (requires gemini_kali-gemini-kali:latest base).
 build-sandbox-image:

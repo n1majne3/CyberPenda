@@ -132,12 +132,21 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 }
 
 func (server *Server) launchTaskInBackground(created task.Task, adapter runtime.Adapter) {
+	server.logTask(created, "launched", "")
 	go func() {
-		_ = server.harness.Launch(context.Background(), runtime.LaunchRequest{
+		err := server.harness.Launch(context.Background(), runtime.LaunchRequest{
 			TaskID:  created.ID,
 			Goal:    created.Goal,
 			Adapter: adapter,
 		})
+		switch {
+		case err == nil:
+			server.logTask(created, "completed", "")
+		case errors.Is(err, context.Canceled):
+			server.logTask(created, "stopped", "")
+		default:
+			server.logTask(created, "failed", err.Error())
+		}
 	}()
 }
 
