@@ -376,6 +376,7 @@ _Avoid_: transcript, export, source of truth
 - A **Runtime Extension** belongs to a selected **Runtime Plugin** and does not define a new runtime provider identifier.
 - A **Runtime Extension Manifest** may declare compatibility, source paths, projection targets, and non-secret defaults but must not contain credential values.
 - A **Runtime Profile** manages **Runtime Extensions** through structured controls rather than raw manifest JSON.
+- The local dev daemon loads trusted **Runtime Extension Manifests** from `runtime-extensions/` by default.
 - **Runtime Extension Projection** happens during **Config Projection** and must not mutate host runtime plugin directories.
 - A **Credential Reference** resolves first through **Credential Bindings**, then through **Global Credential Bindings**.
 - A **Project** may define **Credential Bindings** that override **Global Credential Bindings** for **Credential References** used by global **Runtime Profiles**.
