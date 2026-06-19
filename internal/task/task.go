@@ -30,12 +30,13 @@ const (
 type Status string
 
 const (
-	StatusPending   Status = "pending"
-	StatusRunning   Status = "running"
-	StatusPaused    Status = "paused"
-	StatusCompleted Status = "completed"
-	StatusFailed    Status = "failed"
-	StatusStopped   Status = "stopped"
+	StatusPending    Status = "pending"
+	StatusRunning    Status = "running"
+	StatusPaused     Status = "paused"
+	StatusCompleted  Status = "completed"
+	StatusFailed     Status = "failed"
+	StatusStopped    Status = "stopped"
+	StatusInterrupted Status = "interrupted"
 )
 
 // RunControls are the structured task launch settings: runner is stored
@@ -551,6 +552,43 @@ func (s *Service) UpdateStatus(taskID string, status Status) (Task, error) {
 		return Task{}, fmt.Errorf("update status: %w", err)
 	}
 	return found, nil
+}
+
+// ReconcileInterruptedStatuses marks every task in an active state (running,
+// created, paused) as interrupted. It is intended to run at daemon startup:
+// those tasks belonged to a previous daemon instance whose in-memory harness
+// state is gone, so nothing is actually running them. It returns the tasks it
+// changed so the caller can log and emit lifecycle events.
+func (s *Service) ReconcileInterruptedStatuses() ([]Task, error) {
+	rows, err := s.db.Query(
+		`SELECT id, project_id, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at
+		 FROM tasks WHERE status IN (?, ?, ?)`,
+		string(StatusRunning), string(StatusPending), string(StatusPaused))
+	if err != nil {
+		return nil, fmt.Errorf("query active tasks: %w", err)
+	}
+	defer rows.Close()
+	var active []Task
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan active task: %w", err)
+		}
+		active = append(active, task)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate active tasks: %w", err)
+	}
+
+	var changed []Task
+	for _, t := range active {
+		updated, err := s.UpdateStatus(t.ID, StatusInterrupted)
+		if err != nil {
+			return changed, fmt.Errorf("interrupt task %s: %w", t.ID, err)
+		}
+		changed = append(changed, updated)
+	}
+	return changed, nil
 }
 
 func newID() string {

@@ -12,6 +12,7 @@ const STATUS_VARIANT: Record<string, "primary" | "success" | "warning" | "destru
   paused: "warning",
   failed: "destructive",
   stopped: "outline",
+  interrupted: "warning",
 };
 
 export function TasksPage() {

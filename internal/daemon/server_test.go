@@ -430,6 +430,63 @@ func getProject(t *testing.T, server *daemon.Server, id string, target any) {
 	}
 }
 
+// TestNewServerReconcilesGhostTasksOnRestart proves that a task left running
+// by a previous daemon instance is marked interrupted when a new daemon opens
+// the same database, with a lifecycle event recording why.
+func TestNewServerReconcilesGhostTasksOnRestart(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "pentest.db")
+
+	// First instance: create a project + profile + task, leave it running.
+	first, err := daemon.NewServer(daemon.Config{Version: "v", DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("first NewServer: %v", err)
+	}
+	projectID := createProject(t, first, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	profileID := createRuntimeProfile(t, first, `{"name":"Fake","provider":"fake"}`)
+	taskID := createTask(t, first, projectID, `{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
+		"runner":"sandbox"
+	}`)
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first: %v", err)
+	}
+
+	// Second instance reopens the same DB; reconcile should interrupt the task.
+	second, err := daemon.NewServer(daemon.Config{Version: "v", DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("second NewServer: %v", err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+
+	resp := httptest.NewRecorder()
+	second.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID, nil))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("get task: %d %s", resp.Code, resp.Body.String())
+	}
+	var got struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode task: %v", err)
+	}
+	if got.Status != "interrupted" {
+		t.Fatalf("expected ghost task interrupted, got %q", got.Status)
+	}
+
+	events := getTaskEvents(t, second, projectID, taskID)
+	found := false
+	for _, e := range events {
+		if payload, _ := e["payload"].(map[string]any); payload["phase"] == "interrupted" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected an interrupted lifecycle event, got %#v", events)
+	}
+}
+
 func createProject(t *testing.T, server *daemon.Server, body string) string {
 	t.Helper()
 

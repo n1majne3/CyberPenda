@@ -116,8 +116,32 @@ func NewServer(config Config) (*Server, error) {
 	}
 	server.tasks.SetProjectService(server.projects)
 	server.routes()
+	server.reconcileInterruptedTasks()
 
 	return server, nil
+}
+
+// reconcileInterruptedTasks clears ghost tasks left running by a previous
+// daemon instance. The harness tracks active runs in memory, so after a
+// restart no task can actually be executing; mark them interrupted and emit a
+// lifecycle event so the timeline and logs explain the gap. Failures are
+// logged but never block startup.
+func (server *Server) reconcileInterruptedTasks() {
+	changed, err := server.tasks.ReconcileInterruptedStatuses()
+	if err != nil {
+		server.logger.Printf("task reconcile: failed to interrupt stale tasks: %v", err)
+		return
+	}
+	for _, t := range changed {
+		_, _ = server.tasks.AppendEvent(t.ID, task.EventKindLifecycle, task.EventPayload{
+			"phase":  "interrupted",
+			"reason": "daemon_restart",
+		})
+		server.logTask(t, "interrupted", "daemon restart orphaned this task")
+	}
+	if len(changed) > 0 {
+		server.logger.Printf("task reconcile: %d task(s) interrupted on daemon restart", len(changed))
+	}
 }
 
 func runtimePluginRegistry(dirs []string) (*runtimeplugin.Registry, error) {

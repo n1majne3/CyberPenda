@@ -268,3 +268,65 @@ func TestRuntimeConfigVersionsIncrementOnProfileSwitch(t *testing.T) {
 		t.Fatalf("task original profile must be unchanged; profile switch affects next continuation, got %q", fetched.RuntimeProfileID)
 	}
 }
+
+// TestReconcileInterruptedStatusesMarksActiveTasksInterrupted proves the daemon
+// startup reconcile: tasks left running/paused/pending by a previous daemon
+// instance become interrupted, while already-terminal tasks are untouched.
+func TestReconcileInterruptedStatusesMarksActiveTasksInterrupted(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+
+	proj, err := projects.Create("Acme", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	createTaskWithStatus := func(goal string) task.Task {
+		created, err := svc.Create(task.CreateRequest{
+			ProjectID:        proj.ID,
+			Goal:             goal,
+			RuntimeProfileID: "profile-1",
+			Runner:           task.RunnerSandbox,
+		})
+		if err != nil {
+			t.Fatalf("create task: %v", err)
+		}
+		return created
+	}
+
+	running := createTaskWithStatus("running ghost")
+	paused := createTaskWithStatus("paused ghost")
+	completed := createTaskWithStatus("done task")
+	if _, err := svc.UpdateStatus(running.ID, task.StatusRunning); err != nil {
+		t.Fatalf("set running: %v", err)
+	}
+	if _, err := svc.UpdateStatus(paused.ID, task.StatusPaused); err != nil {
+		t.Fatalf("set paused: %v", err)
+	}
+	if _, err := svc.UpdateStatus(completed.ID, task.StatusCompleted); err != nil {
+		t.Fatalf("set completed: %v", err)
+	}
+
+	changed, err := svc.ReconcileInterruptedStatuses()
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(changed) != 2 {
+		t.Fatalf("expected 2 interrupted tasks, got %d", len(changed))
+	}
+
+	runningGot, _ := svc.Get(running.ID)
+	pausedGot, _ := svc.Get(paused.ID)
+	completedGot, _ := svc.Get(completed.ID)
+	if runningGot.Status != task.StatusInterrupted {
+		t.Fatalf("expected running task -> interrupted, got %q", runningGot.Status)
+	}
+	if pausedGot.Status != task.StatusInterrupted {
+		t.Fatalf("expected paused task -> interrupted, got %q", pausedGot.Status)
+	}
+	if completedGot.Status != task.StatusCompleted {
+		t.Fatalf("expected completed task untouched, got %q", completedGot.Status)
+	}
+}
+

@@ -271,7 +271,8 @@ function StatusBadge({ status }: { status: string }) {
     status === "completed" ? "success" :
     status === "running" ? "primary" :
     status === "failed" ? "destructive" :
-    status === "stopped" ? "warning" : "outline";
+    status === "stopped" ? "warning" :
+    status === "interrupted" ? "warning" : "outline";
   return <Badge variant={variant}>{status}</Badge>;
 }
 
