@@ -86,6 +86,14 @@ def upsert_profile(name: str, provider: str, fields: dict) -> str:
     return created["id"]
 
 
+def score_board_fact(facts: list) -> dict | None:
+    for fact in facts:
+        key = (fact.get("fact_key") or "").lower()
+        if "score-board" in key or key.endswith(":score-board"):
+            return fact
+    return None
+
+
 def wait_for_outcome(project_id: str, task_id: str) -> tuple[bool, str]:
     start = time.time()
     last_status = ""
@@ -95,17 +103,22 @@ def wait_for_outcome(project_id: str, task_id: str) -> tuple[bool, str]:
         if status != last_status:
             print(f"  task status: {status}")
             last_status = status
+
+        facts = request("GET", f"/api/projects/{project_id}/facts/index").get("facts", [])
+        hit = score_board_fact(facts)
+        if hit:
+            return True, f"score-board fact: {hit.get('fact_key')}"
+
         if status in ("completed", "failed", "stopped"):
-            facts = request("GET", f"/api/projects/{project_id}/facts/index").get("facts", [])
-            for fact in facts:
-                key = (fact.get("fact_key") or "").lower()
-                if "score" in key or "score-board" in key:
-                    return True, f"score-board fact: {fact.get('fact_key')}"
             findings = request("GET", f"/api/projects/{project_id}/findings").get("findings", [])
             if findings:
                 return True, f"task {status} with {len(findings)} finding(s)"
             return status == "completed", f"task {status}, facts={len(facts)}"
         time.sleep(POLL_SEC)
+    facts = request("GET", f"/api/projects/{project_id}/facts/index").get("facts", [])
+    hit = score_board_fact(facts)
+    if hit:
+        return True, f"score-board fact (after timeout): {hit.get('fact_key')}"
     return False, "timeout"
 
 
