@@ -702,6 +702,15 @@ function buildLaunchPreview(
     if (hasMCP) {
       args.push("--strict-mcp-config", "--mcp-config", sandbox ? "/task/workdir/.mcp.json" : "workdir/.mcp.json");
     }
+    if (!hasCLIOption(fields.custom_args, "-p") && !hasCLIOption(fields.custom_args, "--print")) {
+      args.push("-p");
+    }
+    if (!hasCLIOption(fields.custom_args, "--output-format")) {
+      args.push("--output-format", "stream-json");
+    }
+    if (!hasCLIOption(fields.custom_args, "--verbose")) {
+      args.push("--verbose");
+    }
     for (const arg of fields.custom_args ?? []) args.push(arg);
     if (hasMCP) args.push("--", "<goal>");
     else args.push("<goal>");

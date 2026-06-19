@@ -92,6 +92,38 @@ func TestBuildClaudeCodeLaunchArgs(t *testing.T) {
 	if !strings.Contains(joined, "--settings /task/runtime-home/claude/config.json") {
 		t.Fatalf("expected --settings path in args, got %q", joined)
 	}
+	for _, want := range []string{"-p", "--output-format stream-json", "--verbose"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected Claude transcript arg %q in args, got %q", want, joined)
+		}
+	}
+}
+
+func TestBuildClaudeCodeLaunchArgsKeepsExplicitOutputFormat(t *testing.T) {
+	args, err := adapters.BuildLaunchArgs(adapters.LaunchArgsRequest{
+		Provider: runtimeprofile.ProviderClaudeCode,
+		Profile: runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderClaudeCode,
+			Fields: runtimeprofile.Fields{
+				Model:      "claude-sonnet-4",
+				CustomArgs: []string{"--print", "--output-format", "text", "--verbose"},
+			},
+		},
+		Goal: "find vulns",
+	})
+	if err != nil {
+		t.Fatalf("build args: %v", err)
+	}
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "stream-json") {
+		t.Fatalf("explicit output format should not be replaced, got %q", joined)
+	}
+	if strings.Count(joined, "--output-format") != 1 {
+		t.Fatalf("expected one output format option, got %q", joined)
+	}
+	if !strings.Contains(joined, "--print --output-format text --verbose") {
+		t.Fatalf("expected explicit Claude args to pass through, got %q", joined)
+	}
 }
 
 func TestBuildClaudeCodeLaunchArgsUsesStrictMCPConfig(t *testing.T) {

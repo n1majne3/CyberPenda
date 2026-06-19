@@ -77,6 +77,15 @@ func BuildLaunchArgs(req LaunchArgsRequest) ([]string, error) {
 		if mcpConfig := strings.TrimSpace(req.MCPConfigPath); mcpConfig != "" {
 			args = append(args, "--strict-mcp-config", "--mcp-config", mcpConfig)
 		}
+		if !hasCLIOption(extra, "-p") && !hasCLIOption(extra, "--print") {
+			args = append(args, "-p")
+		}
+		if !hasCLIOption(extra, "--output-format") {
+			args = append(args, "--output-format", "stream-json")
+		}
+		if !hasCLIOption(extra, "--verbose") {
+			args = append(args, "--verbose")
+		}
 		if len(extra) > 0 {
 			args = append(args, extra...)
 		}
