@@ -25,7 +25,7 @@ dev:
 	fi; \
 	exit 1
 
-# Build the pentest sandbox image (requires gemini_kali-gemini-kali:latest base).
+# Build the self-contained pentest sandbox image (no external base-image dependency).
 build-sandbox-image:
 	docker build -t $(SANDBOX_IMAGE) -f docker/pentest-sandbox/Dockerfile .
 
