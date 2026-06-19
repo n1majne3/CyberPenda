@@ -1,18 +1,23 @@
 import { useEffect, useState } from "react";
-import { apiGet, apiPut, apiDelete, type CredentialBinding } from "@/lib/api";
+import { apiGet, apiPut, apiDelete, type CredentialBinding, type RuntimeProfile } from "@/lib/api";
 import { Button, Card, Input, Label, Badge } from "@/components/ui";
 import { Trash2, Plus, Ban } from "lucide-react";
 
 export function CredentialBindingsPage() {
   const [bindings, setBindings] = useState<CredentialBinding[]>([]);
+  const [profiles, setProfiles] = useState<RuntimeProfile[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState({ credential_ref: "", kind: "env", value: "" });
 
   async function load() {
     try {
-      const d = await apiGet<{ bindings: CredentialBinding[] }>("/api/credential-bindings");
+      const [d, p] = await Promise.all([
+        apiGet<{ bindings: CredentialBinding[] }>("/api/credential-bindings"),
+        apiGet<{ profiles: RuntimeProfile[] }>("/api/runtime-profiles"),
+      ]);
       setBindings(d.bindings ?? []);
+      setProfiles(p.profiles ?? []);
       setError(null);
     } catch (e) {
       setError((e as Error).message);
@@ -43,6 +48,12 @@ export function CredentialBindingsPage() {
     } catch (e) {
       setError((e as Error).message);
     }
+  }
+
+  function profilesUsingRef(ref: string): string[] {
+    return profiles
+      .filter((p) => (p.fields.credential_refs ?? []).includes(ref))
+      .map((p) => p.name);
   }
 
   return (
@@ -97,6 +108,11 @@ export function CredentialBindingsPage() {
                 <Badge variant="destructive"><Ban className="h-3 w-3 mr-1" />disabled</Badge>
               ) : (
                 <Badge variant="outline">{b.source.kind}: {b.source.value}</Badge>
+              )}
+              {profilesUsingRef(b.credential_ref).length > 0 && (
+                <span className="text-xs text-muted-foreground">
+                  profiles: {profilesUsingRef(b.credential_ref).join(", ")}
+                </span>
               )}
             </div>
             <Button size="icon" variant="ghost" onClick={() => remove(b.id)}>

@@ -167,7 +167,7 @@ export interface Task {
   status: string;
   runner: string;
   runtime_profile_id: string;
-  run_controls: { yolo?: boolean; notes?: string; extras?: Record<string, string> };
+  run_controls: { yolo?: boolean; host_activated?: boolean; notes?: string; extras?: Record<string, string> };
   scope_snapshot: Scope;
   created_at: string;
   updated_at: string;

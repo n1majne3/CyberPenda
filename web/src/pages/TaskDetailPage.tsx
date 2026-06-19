@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { useParams, Link } from "react-router-dom";
-import { ArrowLeft, Square, Send, Terminal, Activity, GitBranch, MessageSquare } from "lucide-react";
+import { ArrowLeft, Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, FileText, Shield } from "lucide-react";
 import { apiGet, apiPost, type Task, type TaskEvent } from "@/lib/api";
 import { Button, Card, Input, Badge } from "@/components/ui";
 
@@ -58,6 +58,15 @@ export function TaskDetailPage() {
     }
   }
 
+  async function resume() {
+    try {
+      await apiPost(`${base}/resume`, {});
+      loadAll();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
   async function steer() {
     try {
       await apiPost(`${base}/steer`, { directive: steering, runtime_profile_id: steerProfile || undefined });
@@ -79,11 +88,18 @@ export function TaskDetailPage() {
 
       <div className="flex items-center justify-between mb-2">
         <h2 className="text-xl font-semibold">{task.goal}</h2>
-        {ACTIVE.has(task.status) && (
-          <Button size="sm" variant="destructive" onClick={stop}>
-            <Square className="h-4 w-4 mr-1" /> Stop
-          </Button>
-        )}
+        <div className="flex gap-2">
+          {!ACTIVE.has(task.status) && (
+            <Button size="sm" variant="outline" onClick={resume}>
+              <Play className="h-4 w-4 mr-1" /> Resume
+            </Button>
+          )}
+          {ACTIVE.has(task.status) && (
+            <Button size="sm" variant="destructive" onClick={stop}>
+              <Square className="h-4 w-4 mr-1" /> Stop
+            </Button>
+          )}
+        </div>
       </div>
       <div className="flex gap-2 mb-6">
         <StatusBadge status={task.status} />
@@ -91,6 +107,21 @@ export function TaskDetailPage() {
           runner: {task.runner}
         </Badge>
         {task.run_controls.yolo && <Badge variant="warning">YOLO</Badge>}
+      </div>
+
+      <div className="flex flex-wrap gap-2 mb-6 text-sm">
+        <Link to={`/projects/${projectId}/facts`} className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground">
+          <FileText className="h-4 w-4" /> Facts
+        </Link>
+        <Link to={`/projects/${projectId}/findings`} className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground">
+          <Shield className="h-4 w-4" /> Findings
+        </Link>
+        <Link to={`/projects/${projectId}/evidence`} className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground">
+          <Terminal className="h-4 w-4" /> Evidence
+        </Link>
+        <Link to={`/projects/${projectId}/report`} className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground">
+          <FileText className="h-4 w-4" /> Report
+        </Link>
       </div>
 
       {/* Steering */}

@@ -37,6 +37,7 @@ type ProfileForm = {
   mcp_servers: string;
   default_runner: string;
   sandbox_image: string;
+  credential_refs: string;
 };
 
 const emptyForm: ProfileForm = {
@@ -52,6 +53,7 @@ const emptyForm: ProfileForm = {
   mcp_servers: "",
   default_runner: "sandbox",
   sandbox_image: "",
+  credential_refs: "",
 };
 
 export function RuntimeProfilesPage() {
@@ -148,7 +150,8 @@ export function RuntimeProfilesPage() {
     ? JSON.stringify(
         buildGeneratedConfigPreview(
           draft?.provider ?? selected.provider,
-          buildFields(draft ?? profileToForm(selected))
+          buildFields(draft ?? profileToForm(selected)),
+          draft ?? profileToForm(selected)
         ),
         null,
         2
@@ -258,7 +261,7 @@ export function RuntimeProfilesPage() {
               <ProfileEditor form={draft} onChange={setDraft} hideActions />
               <div>
                 <Label>Generated config preview</Label>
-                <pre className="mt-1 rounded-md border border-border bg-muted/30 p-3 text-xs overflow-x-auto">
+                <pre className="mt-1 rounded-md border border-border bg-muted/30 p-3 text-xs overflow-x-auto max-h-96">
                   {previewConfig}
                 </pre>
               </div>
@@ -404,7 +407,32 @@ function ProfileEditor({
             Override the daemon sandbox image for tasks using this profile.
           </p>
         </div>
+        <div className="col-span-2">
+          <Label>Credential refs</Label>
+          <Textarea
+            value={form.credential_refs}
+            onChange={(e) => onChange({ ...form, credential_refs: e.target.value })}
+            placeholder="codex-api-key"
+            rows={2}
+          />
+          <p className="text-[11px] text-muted-foreground mt-1">
+            Resolved via global or project credential bindings at preflight.
+          </p>
+        </div>
       </div>
+      {form.provider === "claude_code" && form.endpoint.includes("bigmodel.cn") && (
+        <Card className="border-muted bg-muted/20 p-3 text-xs text-muted-foreground space-y-1">
+          <p className="font-medium text-foreground">智谱 GLM runtime notes</p>
+          <p>Endpoint: use <code className="text-[11px]">https://open.bigmodel.cn/api/anthropic</code> (not Minimax).</p>
+          <p>Launch adds <code className="text-[11px]">--strict-mcp-config --mcp-config workdir/.mcp.json</code>; smoke may need <code className="text-[11px]">--permission-mode bypassPermissions</code> in custom args.</p>
+          <p>Third-party APIs may not expose local MCP tools in the model tool list — allow JSON-RPC fallback to PENTEST_MCP_URL.</p>
+        </Card>
+      )}
+      {form.provider === "pi" && form.default_runner === "sandbox" && (
+        <p className="text-[11px] text-muted-foreground">
+          Pi sandbox sets <code>PI_CODING_AGENT_DIR=/task/runtime-home/pi/agent</code>; pi is preinstalled in <code>pentest-sandbox:latest</code>.
+        </p>
+      )}
       {!hideActions && (
         <div className="flex gap-2">
           <Button size="sm" onClick={onSave} disabled={saveDisabled}>
@@ -437,6 +465,7 @@ function profileToForm(profile: RuntimeProfile): ProfileForm {
     mcp_servers: formatMCPServers(profile.fields.mcp_servers),
     default_runner: profile.fields.default_runner ?? "sandbox",
     sandbox_image: profile.fields.sandbox_image ?? "",
+    credential_refs: (profile.fields.credential_refs ?? []).join("\n"),
   };
 }
 
@@ -466,6 +495,8 @@ function buildFields(form: ProfileForm): RuntimeProfileFields {
   if (mcpServers && mcpServers.length > 0) fields.mcp_servers = mcpServers;
   if (defaultRunner) fields.default_runner = defaultRunner;
   if (sandboxImage) fields.sandbox_image = sandboxImage;
+  const credentialRefs = splitLines(form.credential_refs);
+  if (credentialRefs.length > 0) fields.credential_refs = credentialRefs;
   return fields;
 }
 
@@ -527,9 +558,14 @@ function formatEnv(env?: Record<string, string>): string {
     .join("\n");
 }
 
-function buildGeneratedConfigPreview(provider: string, fields: RuntimeProfileFields): Record<string, unknown> {
+function buildGeneratedConfigPreview(
+  provider: string,
+  fields: RuntimeProfileFields,
+  form?: ProfileForm
+): Record<string, unknown> {
   const mcpServers = buildPreviewMCPServers(fields);
   const mcpPreview = formatMCPServerPreview(mcpServers);
+  const launchPreview = buildLaunchPreview(provider, fields, form, (mcpServers?.length ?? 0) > 0);
 
   if (provider === "claude_code") {
     const env: Record<string, string> = { ...(fields.env ?? {}) };
@@ -545,6 +581,7 @@ function buildGeneratedConfigPreview(provider: string, fields: RuntimeProfileFie
         : {}),
       ...(fields.default_runner ? { default_runner: fields.default_runner } : {}),
       task_context_path: "workdir/.pentest/context.json",
+      launch_preview: launchPreview,
     };
   }
 
@@ -582,6 +619,7 @@ function buildGeneratedConfigPreview(provider: string, fields: RuntimeProfileFie
         : {}),
       ...(fields.default_runner ? { default_runner: fields.default_runner } : {}),
       task_context_path: "workdir/.pentest/context.json",
+      launch_preview: launchPreview,
     };
   }
 
@@ -622,6 +660,7 @@ function buildGeneratedConfigPreview(provider: string, fields: RuntimeProfileFie
         : {}),
       ...(fields.default_runner ? { default_runner: fields.default_runner } : {}),
       task_context_path: "workdir/.pentest/context.json",
+      launch_preview: launchPreview,
     };
   }
 
@@ -639,6 +678,52 @@ function buildGeneratedConfigPreview(provider: string, fields: RuntimeProfileFie
   if (mcpPreview) cfg.mcp_servers = mcpPreview;
   if (fields.default_runner) cfg.default_runner = fields.default_runner;
   return cfg;
+}
+
+function buildLaunchPreview(
+  provider: string,
+  fields: RuntimeProfileFields,
+  form: ProfileForm | undefined,
+  hasMCP: boolean
+): Record<string, unknown> {
+  const sandbox = fields.default_runner === "sandbox";
+  const binary = fields.binary_path?.trim() || (provider === "codex" ? "codex" : provider === "claude_code" ? "claude" : provider === "pi" ? "pi" : "");
+  const args: string[] = [binary];
+  const processEnv: Record<string, string> = {};
+
+  if (provider === "codex") {
+    const sub = fields.env?.PENTEST_CODEX_SUBCOMMAND?.trim() || "run";
+    args.push(sub);
+    if (fields.model) args.push("--model", fields.model);
+    for (const arg of fields.custom_args ?? []) args.push(arg);
+    args.push("<goal>");
+    processEnv.CODEX_HOME = sandbox ? "/task/runtime-home/codex" : "runtime-home/codex";
+  } else if (provider === "claude_code") {
+    if (fields.model) args.push("--model", fields.model);
+    args.push("--settings", sandbox ? "/task/runtime-home/claude/settings.json" : "runtime-home/claude/settings.json");
+    if (hasMCP) {
+      args.push("--strict-mcp-config", "--mcp-config", sandbox ? "/task/workdir/.mcp.json" : "workdir/.mcp.json");
+    }
+    for (const arg of fields.custom_args ?? []) args.push(arg);
+    if (hasMCP) args.push("--", "<goal>");
+    else args.push("<goal>");
+    processEnv.CLAUDE_HOME = sandbox ? "/task/runtime-home/claude" : "runtime-home/claude";
+    if (sandbox) processEnv.IS_SANDBOX = "1";
+  } else if (provider === "pi") {
+    if (fields.model) args.push("--model", fields.model);
+    for (const arg of fields.custom_args ?? []) args.push(arg);
+    args.push("<goal>");
+    processEnv.PI_CODING_AGENT_DIR = sandbox ? "/task/runtime-home/pi/agent" : "runtime-home/pi/agent";
+  }
+
+  if (sandbox) {
+    processEnv.PENTEST_SKILLS_DIR = "/opt/pentest/skills";
+    if (form?.endpoint?.includes("bigmodel.cn") || fields.endpoint?.includes("bigmodel.cn")) {
+      processEnv.ANTHROPIC_BASE_URL = fields.endpoint ?? form?.endpoint ?? "";
+    }
+  }
+
+  return { argv: args, process_env: processEnv, runner: fields.default_runner ?? "sandbox" };
 }
 
 function trustedMCPDisabled(env?: Record<string, string>): boolean {

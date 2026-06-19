@@ -13,6 +13,7 @@ export function TaskLaunchPage() {
   const [profileId, setProfileId] = useState("");
   const [runner, setRunner] = useState("sandbox");
   const [yolo, setYolo] = useState(false);
+  const [hostActivated, setHostActivated] = useState(false);
   const [launching, setLaunching] = useState(false);
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
 
@@ -44,6 +45,7 @@ export function TaskLaunchPage() {
       const checked = await apiPost<PreflightResult>(`/api/projects/${projectId}/preflight`, {
         runtime_profile_id: profileId,
         runner,
+        run_controls: { yolo, host_activated: hostActivated },
       });
       setPreflight(checked);
       if (!checked.pass) {
@@ -54,7 +56,7 @@ export function TaskLaunchPage() {
         goal,
         runtime_profile_id: profileId,
         runner,
-        run_controls: { yolo },
+        run_controls: { yolo, host_activated: hostActivated },
       });
       navigate(`/projects/${projectId}/tasks/${created.id}`);
     } catch (e) {
@@ -64,7 +66,9 @@ export function TaskLaunchPage() {
     }
   }
 
-  const hostWithYolo = runner === "host" || yolo;
+  const hostRunner = runner === "host";
+  const hostWithYolo = hostRunner || yolo;
+  const hostBlocked = hostRunner && !hostActivated && !yolo;
 
   return (
     <div className="p-8 max-w-2xl">
@@ -117,13 +121,29 @@ export function TaskLaunchPage() {
 
         {/* Safety states must be visually loud (prd.md:183). */}
         {hostWithYolo && (
-          <Card className="border-warning bg-warning/10 p-3">
+          <Card className="border-warning bg-warning/10 p-3 space-y-2">
             <div className="flex items-center gap-2 text-warning">
               <AlertTriangle className="h-4 w-4" />
               <span className="text-sm font-medium">
-                {runner === "host" && yolo ? "HOST runner + YOLO mode" : runner === "host" ? "HOST runner — runs on your machine" : "YOLO mode — approvals bypassed"}
+                {hostRunner && yolo ? "HOST runner + YOLO mode" : hostRunner ? "HOST runner — runs on your machine" : "YOLO mode — approvals bypassed"}
               </span>
             </div>
+            {hostRunner && !yolo && (
+              <label className="flex items-start gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={hostActivated}
+                  onChange={(e) => {
+                    setHostActivated(e.target.checked);
+                    setPreflight(null);
+                  }}
+                  className="mt-0.5 h-4 w-4 accent-warning"
+                />
+                <span>
+                  I explicitly activate the host runner for this task. Commands execute on this machine outside the sandbox.
+                </span>
+              </label>
+            )}
           </Card>
         )}
 
@@ -160,7 +180,7 @@ export function TaskLaunchPage() {
 
         {error && <p className="text-sm text-destructive">{error}</p>}
 
-        <Button onClick={launch} disabled={!goal.trim() || !profileId || launching}>
+        <Button onClick={launch} disabled={!goal.trim() || !profileId || launching || hostBlocked}>
           <Rocket className="h-4 w-4 mr-1" /> {launching ? "Launching…" : "Launch"}
         </Button>
       </div>
