@@ -28,6 +28,18 @@ const DEFAULT_API_KEY_ENV: Record<string, string> = {
 const API_KEY_CONFIGURED = "[configured]";
 const DEFAULT_DAEMON_MCP_PORT = "8787";
 
+let runtimeExtensionCatalogRequest: Promise<{ items: RuntimeExtensionCatalogItem[] }> | null = null;
+
+function loadRuntimeExtensionCatalog() {
+  if (!runtimeExtensionCatalogRequest) {
+    runtimeExtensionCatalogRequest = apiGet<{ items: RuntimeExtensionCatalogItem[] }>("/api/runtime-extension-catalog").catch((error) => {
+      runtimeExtensionCatalogRequest = null;
+      throw error;
+    });
+  }
+  return runtimeExtensionCatalogRequest;
+}
+
 type RuntimeProfileFields = RuntimeProfile["fields"];
 type RuntimeExtensionFormRef = {
   id: string;
@@ -104,22 +116,23 @@ export function RuntimeProfilesPage() {
 
   async function load() {
     try {
-      const [profileData, pluginData, extensionData, catalogData] = await Promise.all([
+      const [profileData, pluginData, extensionData] = await Promise.all([
         apiGet<{ profiles: RuntimeProfile[] }>("/api/runtime-profiles"),
         apiGet<{ plugins: RuntimePlugin[] }>("/api/runtime-plugins"),
         apiGet<{ extensions: RuntimeExtension[] }>("/api/runtime-extensions"),
-        apiGet<{ items: RuntimeExtensionCatalogItem[] }>("/api/runtime-extension-catalog").catch(() => ({ items: [] })),
       ]);
       const loaded = profileData.profiles ?? [];
       setPlugins(pluginData.plugins ?? []);
       setExtensions(extensionData.extensions ?? []);
-      setExtensionCatalog(catalogData.items ?? []);
       setProfiles(loaded);
       setSelectedId((current) => {
         if (current && loaded.some((p) => p.id === current)) return current;
         return loaded[0]?.id ?? null;
       });
       setError(null);
+      void loadRuntimeExtensionCatalog()
+        .then((catalogData) => setExtensionCatalog(catalogData.items ?? []))
+        .catch(() => setExtensionCatalog([]));
     } catch (e) {
       setError((e as Error).message);
     }
@@ -209,7 +222,7 @@ export function RuntimeProfilesPage() {
 
       {error && <p className="text-sm text-destructive mb-4">{error}</p>}
 
-      <div className="grid grid-cols-1 lg:grid-cols-[240px_1fr] gap-4 min-h-[520px]">
+      <div className="grid grid-cols-1 lg:grid-cols-[240px_minmax(0,1fr)] gap-4 min-h-[520px]">
         <Card className="p-3 flex flex-col gap-3">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Profiles</span>
@@ -267,7 +280,7 @@ export function RuntimeProfilesPage() {
           </div>
         </Card>
 
-        <Card className="p-4">
+        <Card className="min-w-0 p-4">
           {creating ? (
             <ProfileEditor
               title="New profile"
@@ -282,7 +295,7 @@ export function RuntimeProfilesPage() {
               extensionCatalog={extensionCatalog}
             />
           ) : selected && draft ? (
-            <div className="space-y-4">
+            <div className="min-w-0 space-y-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="flex items-center gap-2 mb-1">
@@ -301,9 +314,9 @@ export function RuntimeProfilesPage() {
                 </div>
               </div>
               <ProfileEditor form={draft} onChange={setDraft} hideActions plugins={effectivePlugins} extensions={extensions} extensionCatalog={extensionCatalog} />
-              <div>
+              <div className="min-w-0">
                 <Label>Generated config preview</Label>
-                <pre className="mt-1 rounded-md border border-border bg-muted/30 p-3 text-xs overflow-x-auto max-h-96">
+                <pre className="mt-1 w-full max-w-full rounded-md border border-border bg-muted/30 p-3 text-xs overflow-x-auto max-h-96">
                   {previewConfig}
                 </pre>
               </div>
