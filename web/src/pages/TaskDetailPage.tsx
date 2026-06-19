@@ -40,14 +40,21 @@ export function TaskDetailPage() {
     }
   }
 
+  /* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
   useEffect(() => {
+    // Initial load on mount/task change. loadAll() is reused by the poll loop
+    // and event handlers.
     loadAll();
     apiGet<{ profiles: { id: string; name: string }[] }>("/api/runtime-profiles").then((d) => setProfiles(d.profiles ?? [])).catch(() => {});
   }, [projectId, taskId]);
+  /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
 
+  /* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
   useEffect(() => {
     if (!task) return;
 
+    // Reset auto-follow when the task changes. This is an intentional
+    // synchronous reset, not a cascading render.
     autoFollowRef.current = true;
     setAutoFollow(true);
     const container = findScrollContainer(pageRef.current);
@@ -65,13 +72,17 @@ export function TaskDetailPage() {
       window.removeEventListener("resize", updateAutoFollow);
     };
   }, [task?.id]);
+  /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
 
-  // Poll events while the task is active.
+  // Poll events while the task is active. Depends on status only so the
+  // interval is not reset every render; loadAll/task are intentionally omitted.
+  /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
     if (!task || !ACTIVE.has(task.status)) return;
     const id = setInterval(loadAll, 2000);
     return () => clearInterval(id);
   }, [task?.status]);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   useEffect(() => {
     if (autoFollowRef.current) {

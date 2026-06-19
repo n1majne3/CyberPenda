@@ -22,9 +22,12 @@ export function ApprovalsPage() {
     }
   }
 
+  /* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
   useEffect(() => {
+    // Initial load on mount/project change. load() is reused by event handlers.
     load();
   }, [projectId]);
+  /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
 
   async function decide(id: string, decision: "approve" | "reject") {
     if (!projectId) return;

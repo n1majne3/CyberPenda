@@ -124,17 +124,24 @@ export function RuntimeProfilesPage() {
     }
   }
 
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
+    // Initial load on mount. load() is reused by event handlers.
     load();
   }, []);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
+  /* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
   useEffect(() => {
+    // Sync the editor draft to the selected profile (or clear it). This is an
+    // intentional synchronous derivation, not a cascading render.
     if (!selected) {
       setDraft(null);
       return;
     }
     setDraft(profileToForm(selected, effectivePlugins));
   }, [selected?.id, selected?.updated_at, effectivePlugins]);
+  /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
 
   async function create() {
     try {

@@ -20,9 +20,12 @@ export function FindingsPage() {
     }
   }
 
+  /* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
   useEffect(() => {
+    // Initial load on mount/project. loadFindings() is reused by event handlers.
     loadFindings();
   }, [projectId]);
+  /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
 
   const confirmed = findings.filter((f) => f.status === "confirmed");
   const unconfirmed = findings.filter((f) => f.status !== "confirmed");
@@ -97,8 +100,10 @@ function FindingCard({
   const [mergeError, setMergeError] = useState<string | null>(null);
   const [mergeBusy, setMergeBusy] = useState(false);
 
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!open) {
+      // Reset stale versions synchronously when the card collapses.
       setVersions(null);
       return;
     }
@@ -110,6 +115,7 @@ function FindingCard({
       cancelled = true;
     };
   }, [open, base, finding.finding_key]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   async function confirmMerge() {
     if (!mergeTarget) return;

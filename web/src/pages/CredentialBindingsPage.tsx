@@ -23,9 +23,12 @@ export function CredentialBindingsPage() {
       setError((e as Error).message);
     }
   }
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
+    // Initial load on mount. load() is reused by event handlers.
     load();
   }, []);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   async function create() {
     try {

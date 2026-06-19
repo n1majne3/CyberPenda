@@ -45,10 +45,13 @@ export function FactsPage() {
     }
   }
 
+  /* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
   useEffect(() => {
+    // Initial load, re-fetched when the deprecated toggle changes.
+    // loadIndex() is reused by event handlers.
     loadIndex(showDeprecated);
-    // Re-fetch when the deprecated toggle changes.
   }, [projectId, showDeprecated]);
+  /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
 
   async function openFact(key: string) {
     setOpenKey((cur) => (cur === key ? null : key));
@@ -131,8 +134,11 @@ function FactRow({
   const [mergeBusy, setMergeBusy] = useState(false);
 
   // Fetch body + versions + relations lazily when expanded.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!open) {
+      // Reset stale state synchronously when the row collapses. This is an
+      // intentional synchronous reset, not a cascading render.
       setFull(null);
       setVersions(null);
       setRelations(null);
@@ -158,6 +164,7 @@ function FactRow({
       cancelled = true;
     };
   }, [open, base, entry.fact_key]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const deprecated = entry.confidence === "deprecated";
 

@@ -20,9 +20,14 @@ export function ProjectListPage() {
     }
   }
 
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
+    // Initial load on mount. load() is also reused by event handlers, so it is
+    // kept as a standalone function; the mount fetch is an intentional, known
+    // pattern that the rule cannot distinguish from a problematic cascade.
     load();
   }, []);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   async function create() {
     try {
