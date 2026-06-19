@@ -65,3 +65,70 @@ func TestProjectRuntimeConfigProjectsRuntimeExtensions(t *testing.T) {
 		t.Fatalf("expected runtime_extensions preview, got %#v", projection.Config["runtime_extensions"])
 	}
 }
+
+func TestProjectRuntimeConfigKeepsCatalogRuntimeExtensionRefs(t *testing.T) {
+	root := t.TempDir()
+	profile := runtimeprofile.Profile{
+		Provider: runtimeprofile.ProviderPi,
+		Fields: runtimeprofile.Fields{
+			Model: "test-model",
+			RuntimeExtensions: []runtimeprofile.RuntimeExtensionRef{{
+				ID: "npm:pi-mcp-adapter",
+				Config: map[string]string{
+					"registry":    "pi.dev/packages",
+					"install_ref": "npm:pi-mcp-adapter",
+				},
+			}},
+		},
+	}
+	layout, err := runner.PrepareTaskLayout(root, "task-1", profile.Provider)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+	registry, err := runtimeextension.NewRegistry(nil)
+	if err != nil {
+		t.Fatalf("extension registry: %v", err)
+	}
+
+	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		RuntimeExtensions: registry,
+	})
+	if err != nil {
+		t.Fatalf("project runtime config: %v", err)
+	}
+
+	extensions, ok := projection.Config["runtime_extensions"].([]map[string]any)
+	if !ok || len(extensions) != 1 {
+		t.Fatalf("expected runtime_extensions preview, got %#v", projection.Config["runtime_extensions"])
+	}
+	if extensions[0]["id"] != "npm:pi-mcp-adapter" || extensions[0]["install_ref"] != "npm:pi-mcp-adapter" {
+		t.Fatalf("expected catalog extension preview, got %#v", extensions[0])
+	}
+}
+
+func TestProjectRuntimeConfigRejectsUnknownLocalRuntimeExtensionRefs(t *testing.T) {
+	root := t.TempDir()
+	profile := runtimeprofile.Profile{
+		Provider: runtimeprofile.ProviderCodex,
+		Fields: runtimeprofile.Fields{
+			Model: "gpt-5",
+			RuntimeExtensions: []runtimeprofile.RuntimeExtensionRef{{
+				ID: "missing_extension",
+			}},
+		},
+	}
+	layout, err := runner.PrepareTaskLayout(root, "task-1", profile.Provider)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+	registry, err := runtimeextension.NewRegistry(nil)
+	if err != nil {
+		t.Fatalf("extension registry: %v", err)
+	}
+
+	if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		RuntimeExtensions: registry,
+	}); err == nil {
+		t.Fatal("expected unknown local runtime extension to fail")
+	}
+}

@@ -82,6 +82,10 @@ func projectRuntimeExtensions(layout Layout, profile runtimeprofile.Profile, req
 		}
 		extension, ok := req.RuntimeExtensions.Get(ref.ID)
 		if !ok {
+			if preview, ok := runtimeExtensionCatalogPreview(ref); ok {
+				previews = append(previews, preview)
+				continue
+			}
 			return fmt.Errorf("runtime extension %q not found", ref.ID)
 		}
 		if !runtimeextension.CompatibleWith(extension, string(profile.Provider)) {
@@ -113,6 +117,31 @@ func projectRuntimeExtensions(layout Layout, profile runtimeprofile.Profile, req
 	}
 	projection.Config["runtime_extensions"] = previews
 	return nil
+}
+
+func runtimeExtensionCatalogPreview(ref runtimeprofile.RuntimeExtensionRef) (map[string]any, bool) {
+	registry := strings.TrimSpace(ref.Config["registry"])
+	installRef := strings.TrimSpace(ref.Config["install_ref"])
+	if registry == "" && installRef == "" {
+		return nil, false
+	}
+	preview := map[string]any{
+		"id":     ref.ID,
+		"source": "catalog",
+	}
+	if registry != "" {
+		preview["registry"] = registry
+	}
+	if installRef != "" {
+		preview["install_ref"] = installRef
+	}
+	if sourceURL := strings.TrimSpace(ref.Config["source_url"]); sourceURL != "" {
+		preview["source_url"] = sourceURL
+	}
+	if len(ref.Config) > 0 {
+		preview["config"] = ref.Config
+	}
+	return preview, true
 }
 
 func runtimeExtensionRefEnabled(ref runtimeprofile.RuntimeExtensionRef) bool {
