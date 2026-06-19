@@ -3,11 +3,10 @@
 # Run the daemon and the Vite dev server together for local development.
 # The Vite proxy forwards /api and /health to the daemon on :8787.
 SANDBOX_IMAGE ?= pentest-sandbox:latest
-RUNTIME_EXTENSION_DIRS ?= runtime-extensions
 
 dev:
 	@trap 'kill 0' EXIT; \
-	go run ./cmd/pentestd -addr 127.0.0.1:8787 -db pentest.db -sandbox-image $(SANDBOX_IMAGE) -runtime-extension-dirs $(RUNTIME_EXTENSION_DIRS) & \
+	go run ./cmd/pentestd -addr 127.0.0.1:8787 -db pentest.db -sandbox-image $(SANDBOX_IMAGE) & \
 	cd web && npm run dev
 
 # Build the pentest sandbox image (requires gemini_kali-gemini-kali:latest base).

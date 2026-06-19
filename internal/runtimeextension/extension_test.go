@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"pentest/internal/runtimeextension"
@@ -51,40 +50,5 @@ func TestLoadDirectoryReadsTrustedRuntimeExtensionManifests(t *testing.T) {
 	}
 	if runtimeextension.CompatibleWith(found, "claude_code") {
 		t.Fatalf("extension should not be compatible with claude_code: %#v", found)
-	}
-}
-
-func TestRepositoryRuntimeExtensionManifestsLoad(t *testing.T) {
-	_, filename, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller failed")
-	}
-	dir := filepath.Join(filepath.Dir(filename), "..", "..", "runtime-extensions")
-
-	loaded, errs := runtimeextension.LoadDirectory(dir)
-	if len(errs) > 0 {
-		t.Fatalf("load errors: %v", errs)
-	}
-	registry, err := runtimeextension.NewRegistry(loaded)
-	if err != nil {
-		t.Fatalf("registry: %v", err)
-	}
-	assertCompatibleExtension(t, registry, "pi_pentest_pack", "pi")
-	assertCompatibleExtension(t, registry, "claude_code_pentest_pack", "claude_code")
-}
-
-func assertCompatibleExtension(
-	t *testing.T,
-	registry *runtimeextension.Registry,
-	id string,
-	provider string,
-) {
-	t.Helper()
-	extension, ok := registry.Get(id)
-	if !ok {
-		t.Fatalf("expected extension %q in registry", id)
-	}
-	if !runtimeextension.CompatibleWith(extension, provider) {
-		t.Fatalf("expected extension %q to be compatible with %q: %#v", id, provider, extension)
 	}
 }

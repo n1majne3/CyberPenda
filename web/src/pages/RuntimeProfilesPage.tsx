@@ -406,6 +406,7 @@ function ProfileEditor({
   extensions: RuntimeExtension[];
 }) {
   const [extensionToAdd, setExtensionToAdd] = useState("");
+  const [manualExtensionID, setManualExtensionID] = useState("");
   const plugin = pluginFor(plugins, form.provider);
   const providerOptions = plugin
     ? plugins
@@ -435,6 +436,14 @@ function ProfileEditor({
   const selectedExtensionID = availableExtensions.some((extension) => extension.id === extensionToAdd)
     ? extensionToAdd
     : availableExtensions[0]?.id || "";
+  const trimmedManualExtensionID = manualExtensionID.trim();
+  const manualRegistryExtension = extensionByID.get(trimmedManualExtensionID);
+  const manualExtensionIncompatible = Boolean(
+    manualRegistryExtension && !manualRegistryExtension.compatible_runtime_plugins.includes(form.provider)
+  );
+  const manualExtensionDuplicate = form.runtime_extensions.some((ref) => ref.id === trimmedManualExtensionID);
+  const canAddManualExtension =
+    trimmedManualExtensionID !== "" && !manualExtensionDuplicate && !manualExtensionIncompatible;
   const addRuntimeExtension = () => {
     const extension = availableExtensions.find((item) => item.id === selectedExtensionID);
     if (!extension) return;
@@ -446,6 +455,21 @@ function ProfileEditor({
       ],
     });
     setExtensionToAdd("");
+  };
+  const addManualRuntimeExtension = () => {
+    if (!canAddManualExtension) return;
+    onChange({
+      ...form,
+      runtime_extensions: [
+        ...form.runtime_extensions,
+        {
+          id: trimmedManualExtensionID,
+          enabled: true,
+          config: manualRegistryExtension ? formatEnv(manualRegistryExtension.config) : "",
+        },
+      ],
+    });
+    setManualExtensionID("");
   };
   const updateRuntimeExtension = (index: number, patch: Partial<RuntimeExtensionFormRef>) => {
     onChange({
@@ -613,7 +637,7 @@ function ProfileEditor({
               disabled={availableExtensions.length === 0}
             >
               {availableExtensions.length === 0 ? (
-                <option value="">No compatible extensions available</option>
+                <option value="">No compatible registry extensions</option>
               ) : (
                 availableExtensions.map((extension) => (
                   <option key={extension.id} value={extension.id}>
@@ -627,6 +651,27 @@ function ProfileEditor({
               Add
             </Button>
           </div>
+          <div className="mt-2 flex gap-2">
+            <Input
+              value={manualExtensionID}
+              onChange={(e) => setManualExtensionID(e.target.value)}
+              placeholder="manual_extension_id"
+            />
+            <Button type="button" size="sm" variant="outline" onClick={addManualRuntimeExtension} disabled={!canAddManualExtension}>
+              <Plus className="h-4 w-4" />
+              Add manual
+            </Button>
+          </div>
+          {extensions.length === 0 && (
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              No registry extensions loaded. Manual refs can be saved, but launch requires the daemon registry to resolve them.
+            </p>
+          )}
+          {manualExtensionIncompatible && (
+            <p className="mt-1 text-[11px] text-destructive">
+              Registry extension is not compatible with this provider.
+            </p>
+          )}
           <div className="mt-2 space-y-2">
             {form.runtime_extensions.length === 0 && (
               <p className="text-[11px] text-muted-foreground">No runtime extensions enabled for this profile.</p>
@@ -634,7 +679,7 @@ function ProfileEditor({
             {form.runtime_extensions.map((ref, index) => {
               const extension = extensionByID.get(ref.id);
               return (
-                <div key={ref.id} className="rounded-md border border-border p-3 space-y-2">
+                <div key={`${ref.id}-${index}`} className="rounded-md border border-border p-3 space-y-2">
                   <div className="flex items-start justify-between gap-3">
                     <label className="flex items-start gap-2 text-sm">
                       <input
@@ -647,6 +692,7 @@ function ProfileEditor({
                         <span className="flex flex-wrap items-center gap-1.5">
                           <span className="font-medium">{extension?.name || ref.id}</span>
                           <Badge variant="outline">{ref.id}</Badge>
+                          {!extension && <Badge variant="outline">manual</Badge>}
                           {!ref.enabled && <Badge variant="default">disabled</Badge>}
                         </span>
                         {extension?.description && (
