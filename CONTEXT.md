@@ -92,6 +92,22 @@ _Avoid_: live thought editing, new task
 A global user-editable configuration that chooses how a **Runtime** should run for a task without storing secret values.
 _Avoid_: preset, account, credential bundle, secret store
 
+**Runtime Plugin**:
+A declarative provider definition that describes how a **Runtime Profile** launches, projects config, validates startup, and selects transcript parsing for a runtime family.
+_Avoid_: executable extension, marketplace package, project-local runtime profile
+
+**Runtime Plugin Manifest**:
+The JSON configuration document that defines one **Runtime Plugin**.
+_Avoid_: secret config, arbitrary code, shell script
+
+**Runtime Plugin Registry**:
+The daemon-owned catalog of built-in and explicitly trusted **Runtime Plugin Manifests**.
+_Avoid_: remote plugin store, package manager
+
+**Runtime Plugin Primitive**:
+A built-in daemon implementation named by a **Runtime Plugin Manifest**, such as a config projection primitive or transcript parser.
+_Avoid_: manifest code, user-provided hook
+
 **Profile Selector**:
 A user-facing control for choosing or quickly switching the **Runtime Profile** used by a **Task**.
 _Avoid_: raw config picker, provider switch only
@@ -340,7 +356,11 @@ _Avoid_: transcript, export, source of truth
 - A **Project** may define **Project Defaults** for new **Tasks**.
 - A **Project Dashboard** is the primary UI entry point for a **Project**.
 - **Runtime Profiles** are global and reusable across **Projects**.
+- A **Runtime Profile** selects one **Runtime Plugin** by plugin identifier.
 - A **Runtime Profile** may include **Credential References** but not credential values.
+- A **Runtime Plugin Manifest** may declare credential environment names but must not contain credential values.
+- A **Runtime Plugin Manifest** is declarative and may reference only known **Runtime Plugin Primitives**.
+- A **Runtime Plugin Registry** is the source of supported runtime provider identifiers.
 - A **Credential Reference** resolves first through **Credential Bindings**, then through **Global Credential Bindings**.
 - A **Project** may define **Credential Bindings** that override **Global Credential Bindings** for **Credential References** used by global **Runtime Profiles**.
 - **Credential Binding Mode** defaults to using **Global Credential Bindings** unless the user explicitly chooses a project override.
@@ -348,6 +368,7 @@ _Avoid_: transcript, export, source of truth
 - A **Runtime Profile** may define a default **Runner** for new **Tasks**.
 - A **Profile Selector** chooses a **Runtime Profile** while detailed edits happen through structured profile fields.
 - A **Runtime Profile** uses structured fields as source of truth for **Generated Runtime Config**.
+- A **Runtime Plugin** describes which structured fields a **Runtime Profile** exposes.
 - A **Runtime Profile** manages **MCP Configuration** as structured entries with raw preview or import as compatibility support.
 - **MCP Configuration** may include **Trusted MCP Servers** and **External MCP Servers**.
 - An **External MCP Server** does not receive project write authority by default.
@@ -359,6 +380,7 @@ _Avoid_: transcript, export, source of truth
 - A **Task** chooses one **Runtime Profile** and one **Runner**.
 - A **Task** has one **Runtime Harness** that controls runtime lifecycle for that task.
 - A **Task** launches from its **Task Runtime Configuration**, not a live mutable **Runtime Profile**.
+- A **Task Runtime Configuration** captures the selected **Runtime Plugin** identifier.
 - A **Task Runtime Configuration** may include **Credential References** but not credential values.
 - Editing a **Runtime Profile** does not change existing **Task Runtime Configurations**.
 - A runtime-profile switch inside a **Task** creates a new **Task Runtime Configuration Version** for the next **Runtime Continuation**.
@@ -558,6 +580,9 @@ _Avoid_: transcript, export, source of truth
 - **Disabled Credential Binding** is not a missing credential; resolved: it is an explicit project decision that prevents global fallback.
 - **Credential Reference** resolution failure is not runtime-discoverable; resolved: fail **Preflight** only when neither project nor global binding can resolve it.
 - **Config Projection** is not host configuration management; resolved: it prepares task-local runtime configuration and does not edit host runtime configuration.
+- **Runtime Plugin** is not arbitrary code; resolved: v0 runtime plugins are declarative manifests that reference built-in daemon primitives.
+- **Runtime Plugin Manifest** is not secret storage; resolved: manifests declare credential names and requirements while credential values resolve through bindings.
+- **Runtime Plugin Registry** is not a remote marketplace; resolved: built-ins load first, and external manifests require explicit local trust.
 - **Config Projection** failure is not automatically **Runtime Profile** invalidity; resolved: treat it as a **Task** startup failure unless validation proves the profile itself is invalid.
 - **Preflight** failure is not **Runtime** failure; resolved: startup checks fail before the runtime performs task work.
 - **CLI Fallback** is not a bypass; resolved: CLI writes carry the same validation, provenance, audit, and blackboard semantics as other project interfaces.
