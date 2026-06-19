@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, type RefObject } from "react";
 import { useParams, Link } from "react-router-dom";
-import { ArrowLeft, Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, FileText, Shield, ChevronRight, Wrench, User, Bot, ArrowDown } from "lucide-react";
+import { ArrowLeft, Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, FileText, Shield, ChevronRight, Wrench, User, Bot, ArrowDown, ArrowUp } from "lucide-react";
 import { apiGet, apiPost, type Task, type TaskEvent, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Card, Input, Badge } from "@/components/ui";
 
@@ -80,9 +80,17 @@ export function TaskDetailPage() {
   }, [events, transcript]);
 
   function scrollToLatest() {
+    const container = findScrollContainer(pageRef.current);
     autoFollowRef.current = true;
     setAutoFollow(true);
-    timelineEnd.current?.scrollIntoView({ behavior: "smooth" });
+    container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
+  }
+
+  function scrollToTop() {
+    const container = findScrollContainer(pageRef.current);
+    autoFollowRef.current = false;
+    setAutoFollow(false);
+    container.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   async function stop() {
@@ -183,7 +191,7 @@ export function TaskDetailPage() {
         </div>
       </Card>
 
-      <div className="flex items-center justify-between gap-3 border-b border-border mb-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border mb-3">
         <div className="flex items-center gap-1">
           <button className={tabClass(activeView === "conversation")} onClick={() => setActiveView("conversation")}>
             <MessageSquare className="h-4 w-4" /> Conversation
@@ -192,11 +200,14 @@ export function TaskDetailPage() {
             <Activity className="h-4 w-4" /> Timeline
           </button>
         </div>
-        {!autoFollow && (
-          <Button size="sm" variant="outline" onClick={scrollToLatest}>
-            <ArrowDown className="h-4 w-4 mr-1" /> Latest
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={scrollToTop}>
+            <ArrowUp className="h-4 w-4 mr-1" /> Top
           </Button>
-        )}
+          <Button size="sm" variant={autoFollow ? "secondary" : "outline"} onClick={scrollToLatest}>
+            <ArrowDown className="h-4 w-4 mr-1" /> Bottom
+          </Button>
+        </div>
       </div>
 
       {activeView === "conversation" ? (
