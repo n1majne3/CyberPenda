@@ -149,6 +149,51 @@ export interface RuntimeProfile {
   updated_at: string;
 }
 
+export interface RuntimePluginCapabilities {
+  sandbox: boolean;
+  host: boolean;
+  mcp_config: boolean;
+  streaming_transcript: boolean;
+  resume: boolean;
+}
+
+export interface RuntimePluginProfileField {
+  name: string;
+  type: string;
+  label: string;
+}
+
+export interface RuntimePluginProfileSchema {
+  fields: RuntimePluginProfileField[];
+}
+
+export interface RuntimePlugin {
+  schema_version: number;
+  id: string;
+  name: string;
+  description?: string;
+  binary: {
+    default: string;
+    profile_field?: string;
+  };
+  capabilities: RuntimePluginCapabilities;
+  profile_schema: RuntimePluginProfileSchema;
+  config_projection: {
+    primitive: string;
+    config_path?: string;
+    mcp_config_path?: string;
+  };
+  launch: {
+    args: string[];
+    singleton_options?: { options: string[]; arity: number }[];
+  };
+  process_env?: Record<string, string>;
+  credential_env?: string[];
+  transcript: {
+    parser: string;
+  };
+}
+
 export interface CredentialBinding {
   id: string;
   credential_ref: string;

@@ -101,17 +101,22 @@ var (
 
 // Service implements runtime profile business rules against SQLite.
 type Service struct {
-	db *store.DB
+	db        *store.DB
+	providers map[Provider]bool
 }
 
 // NewService returns a Service backed by the given database.
-func NewService(db *store.DB) *Service {
-	return &Service{db: db}
+func NewService(db *store.DB, supportedProviders ...[]Provider) *Service {
+	svc := &Service{db: db, providers: defaultProviderSet()}
+	if len(supportedProviders) > 0 {
+		svc.providers = providerSet(supportedProviders[0])
+	}
+	return svc
 }
 
 // Create stores a new runtime profile and returns it.
 func (s *Service) Create(name string, provider Provider, fields Fields) (Profile, error) {
-	if err := validate(name, provider); err != nil {
+	if err := s.validate(name, provider); err != nil {
 		return Profile{}, err
 	}
 
@@ -188,11 +193,11 @@ func (s *Service) Update(id, name string, provider Provider, fields Fields, fiel
 	}
 	// Provider: must always be valid; empty means keep current.
 	if provider != "" {
-		if err := validate(existing.Name, provider); err != nil {
+		if err := s.validate(existing.Name, provider); err != nil {
 			return Profile{}, err
 		}
 		existing.Provider = provider
-	} else if err := validate(existing.Name, existing.Provider); err != nil {
+	} else if err := s.validate(existing.Name, existing.Provider); err != nil {
 		// Should not happen for a stored profile, but guard anyway.
 		return Profile{}, err
 	}
@@ -296,17 +301,31 @@ func GeneratedConfig(profile Profile) map[string]any {
 	return cfg
 }
 
-func validate(name string, provider Provider) error {
+func (s *Service) validate(name string, provider Provider) error {
 	if strings.TrimSpace(name) == "" {
 		return ErrMissingName
 	}
 	if provider == "" {
 		return ErrMissingProvider
 	}
-	if !providers[provider] {
+	if !s.providers[provider] {
 		return fmt.Errorf("%w: %q", ErrUnknownProvider, provider)
 	}
 	return nil
+}
+
+func defaultProviderSet() map[Provider]bool {
+	return providerSet([]Provider{ProviderFake, ProviderCodex, ProviderClaudeCode, ProviderPi})
+}
+
+func providerSet(providerList []Provider) map[Provider]bool {
+	out := map[Provider]bool{}
+	for _, provider := range providerList {
+		if provider != "" {
+			out[provider] = true
+		}
+	}
+	return out
 }
 
 type scanner interface {

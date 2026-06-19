@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
-import { apiGet, apiPost, apiPatch, apiDelete, type RuntimeProfile } from "@/lib/api";
+import { apiGet, apiPost, apiPatch, apiDelete, type RuntimePlugin, type RuntimeProfile } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button, Card, Input, Label, Badge, Textarea } from "@/components/ui";
 
-const PROVIDERS = ["codex", "claude_code", "pi", "fake"] as const;
+const FALLBACK_PROVIDER_IDS = ["codex", "claude_code", "pi", "fake"] as const;
 const RUNNERS = ["sandbox", "host"] as const;
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -58,6 +58,7 @@ const emptyForm: ProfileForm = {
 
 export function RuntimeProfilesPage() {
   const [profiles, setProfiles] = useState<RuntimeProfile[]>([]);
+  const [plugins, setPlugins] = useState<RuntimePlugin[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -65,24 +66,35 @@ export function RuntimeProfilesPage() {
   const [draft, setDraft] = useState<ProfileForm | null>(null);
 
   const selected = profiles.find((p) => p.id === selectedId) ?? null;
+  const fallbackPlugins = useMemo(() => fallbackRuntimePlugins(), []);
+  const effectivePlugins = plugins.length > 0 ? plugins : fallbackPlugins;
+  const providerIds = useMemo(() => {
+    const ids = pluginIDs(effectivePlugins);
+    if (profiles.some((profile) => !ids.includes(profile.provider))) ids.push("other");
+    return ids;
+  }, [effectivePlugins, profiles]);
 
   const grouped = useMemo(() => {
     const buckets = new Map<string, RuntimeProfile[]>();
-    for (const provider of PROVIDERS) buckets.set(provider, []);
+    for (const provider of providerIds) buckets.set(provider, []);
     for (const profile of profiles) {
-      const key = PROVIDERS.includes(profile.provider as (typeof PROVIDERS)[number])
+      const key = providerIds.includes(profile.provider)
         ? profile.provider
         : "other";
       if (!buckets.has(key)) buckets.set(key, []);
       buckets.get(key)!.push(profile);
     }
     return buckets;
-  }, [profiles]);
+  }, [profiles, providerIds]);
 
   async function load() {
     try {
-      const d = await apiGet<{ profiles: RuntimeProfile[] }>("/api/runtime-profiles");
-      const loaded = d.profiles ?? [];
+      const [profileData, pluginData] = await Promise.all([
+        apiGet<{ profiles: RuntimeProfile[] }>("/api/runtime-profiles"),
+        apiGet<{ plugins: RuntimePlugin[] }>("/api/runtime-plugins"),
+      ]);
+      const loaded = profileData.profiles ?? [];
+      setPlugins(pluginData.plugins ?? []);
       setProfiles(loaded);
       setSelectedId((current) => {
         if (current && loaded.some((p) => p.id === current)) return current;
@@ -103,15 +115,15 @@ export function RuntimeProfilesPage() {
       setDraft(null);
       return;
     }
-    setDraft(profileToForm(selected));
-  }, [selected?.id, selected?.updated_at]);
+    setDraft(profileToForm(selected, effectivePlugins));
+  }, [selected?.id, selected?.updated_at, effectivePlugins]);
 
   async function create() {
     try {
       const created = await apiPost<RuntimeProfile>("/api/runtime-profiles", {
         name: form.name,
         provider: form.provider,
-        fields: buildFields(form),
+        fields: buildFields(form, effectivePlugins),
       });
       setForm(emptyForm);
       setCreating(false);
@@ -138,7 +150,7 @@ export function RuntimeProfilesPage() {
       await apiPatch(`/api/runtime-profiles/${selected.id}`, {
         name: draft.name,
         provider: draft.provider,
-        fields: buildFields(draft),
+        fields: buildFields(draft, effectivePlugins),
       });
       await load();
     } catch (e) {
@@ -150,8 +162,9 @@ export function RuntimeProfilesPage() {
     ? JSON.stringify(
         buildGeneratedConfigPreview(
           draft?.provider ?? selected.provider,
-          buildFields(draft ?? profileToForm(selected)),
-          draft ?? profileToForm(selected)
+          buildFields(draft ?? profileToForm(selected, effectivePlugins), effectivePlugins),
+          draft ?? profileToForm(selected, effectivePlugins),
+          pluginFor(effectivePlugins, draft?.provider ?? selected.provider)
         ),
         null,
         2
@@ -180,7 +193,7 @@ export function RuntimeProfilesPage() {
               onClick={() => {
                 setCreating(true);
                 setSelectedId(null);
-                setForm({ ...emptyForm, provider: "codex" });
+                setForm({ ...emptyForm, provider: effectivePlugins[0]?.id ?? "codex" });
               }}
             >
               <Plus className="h-4 w-4" />
@@ -188,13 +201,13 @@ export function RuntimeProfilesPage() {
           </div>
 
           <div className="flex-1 overflow-y-auto space-y-4">
-            {PROVIDERS.map((provider) => {
+            {providerIds.map((provider) => {
               const items = grouped.get(provider) ?? [];
               if (items.length === 0) return null;
               return (
                 <div key={provider}>
                   <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide mb-1.5 px-1">
-                    {PROVIDER_LABELS[provider] ?? provider}
+                    {pluginLabel(effectivePlugins, provider)}
                   </p>
                   <div className="space-y-1">
                     {items.map((p) => (
@@ -238,6 +251,7 @@ export function RuntimeProfilesPage() {
               onCancel={() => setCreating(false)}
               saveLabel="Create"
               saveDisabled={!form.name.trim()}
+              plugins={effectivePlugins}
             />
           ) : selected && draft ? (
             <div className="space-y-4">
@@ -245,7 +259,7 @@ export function RuntimeProfilesPage() {
                 <div>
                   <div className="flex items-center gap-2 mb-1">
                     <h3 className="font-medium">{selected.name}</h3>
-                    <Badge variant="primary">{PROVIDER_LABELS[selected.provider] ?? selected.provider}</Badge>
+                    <Badge variant="primary">{pluginLabel(effectivePlugins, selected.provider)}</Badge>
                   </div>
                   <p className="text-xs text-muted-foreground font-mono truncate">{selected.id}</p>
                 </div>
@@ -258,7 +272,7 @@ export function RuntimeProfilesPage() {
                   </Button>
                 </div>
               </div>
-              <ProfileEditor form={draft} onChange={setDraft} hideActions />
+              <ProfileEditor form={draft} onChange={setDraft} hideActions plugins={effectivePlugins} />
               <div>
                 <Label>Generated config preview</Label>
                 <pre className="mt-1 rounded-md border border-border bg-muted/30 p-3 text-xs overflow-x-auto max-h-96">
@@ -277,6 +291,84 @@ export function RuntimeProfilesPage() {
   );
 }
 
+function fallbackRuntimePlugins(): RuntimePlugin[] {
+  return FALLBACK_PROVIDER_IDS.map((id) => ({
+    schema_version: 1,
+    id,
+    name: PROVIDER_LABELS[id] ?? id,
+    binary: { default: id === "claude_code" ? "claude" : id === "fake" ? "fake" : id },
+    capabilities: {
+      sandbox: true,
+      host: true,
+      mcp_config: id !== "fake",
+      streaming_transcript: id !== "fake",
+      resume: true,
+    },
+    profile_schema: {
+      fields: [
+        "binary_path",
+        "model",
+        "endpoint",
+        "custom_args",
+        "env",
+        "api_keys",
+        "credential_refs",
+        "mcp_servers",
+        "default_runner",
+        "sandbox_image",
+      ].map((name) => ({ name, type: "string", label: name })),
+    },
+    config_projection:
+      id === "claude_code"
+        ? { primitive: "claude_settings", config_path: "runtime-home/claude/settings.json", mcp_config_path: "workdir/.mcp.json" }
+        : id === "codex"
+          ? { primitive: "codex_home", config_path: "runtime-home/codex/config.toml" }
+          : id === "pi"
+            ? { primitive: "pi_agent", config_path: "runtime-home/pi/agent/models.json", mcp_config_path: "runtime-home/pi/agent/mcp.json" }
+            : { primitive: "none" },
+    launch: { args: [] },
+    process_env: fallbackProcessEnv(id),
+    credential_env: DEFAULT_API_KEY_ENV[id] ? [DEFAULT_API_KEY_ENV[id]] : [],
+    transcript: { parser: fallbackTranscriptParser(id) },
+  }));
+}
+
+function fallbackProcessEnv(provider: string): Record<string, string> | undefined {
+  if (provider === "claude_code") return { CLAUDE_HOME: "{{runtime_home}}/claude" };
+  if (provider === "codex") return { CODEX_HOME: "{{runtime_home}}/codex" };
+  if (provider === "pi") return { PI_CODING_AGENT_DIR: "{{runtime_home}}/pi/agent" };
+  return undefined;
+}
+
+function fallbackTranscriptParser(provider: string): string {
+  if (provider === "claude_code") return "claude_stream_json";
+  if (provider === "codex") return "codex_json";
+  if (provider === "pi") return "pi_json_session";
+  return "plain_runtime_output";
+}
+
+function pluginIDs(plugins: RuntimePlugin[]): string[] {
+  const ids = plugins.map((plugin) => plugin.id);
+  return ids.length > 0 ? ids : [...FALLBACK_PROVIDER_IDS];
+}
+
+function pluginFor(plugins: RuntimePlugin[], provider: string): RuntimePlugin | undefined {
+  return plugins.find((plugin) => plugin.id === provider);
+}
+
+function pluginLabel(plugins: RuntimePlugin[], provider: string): string {
+  return pluginFor(plugins, provider)?.name || PROVIDER_LABELS[provider] || provider;
+}
+
+function pluginHasField(plugin: RuntimePlugin | undefined, field: string): boolean {
+  if (!plugin) return true;
+  return plugin.profile_schema.fields.some((item) => item.name === field);
+}
+
+function defaultAPIKeyEnv(provider: string, plugins: RuntimePlugin[]): string | undefined {
+  return pluginFor(plugins, provider)?.credential_env?.[0] || DEFAULT_API_KEY_ENV[provider];
+}
+
 function ProfileEditor({
   title,
   form,
@@ -286,6 +378,7 @@ function ProfileEditor({
   saveLabel = "Save",
   saveDisabled,
   hideActions,
+  plugins,
 }: {
   title?: string;
   form: ProfileForm;
@@ -295,7 +388,28 @@ function ProfileEditor({
   saveLabel?: string;
   saveDisabled?: boolean;
   hideActions?: boolean;
+  plugins: RuntimePlugin[];
 }) {
+  const plugin = pluginFor(plugins, form.provider);
+  const providerOptions = plugin
+    ? plugins
+    : [
+        ...plugins,
+        {
+          schema_version: 1,
+          id: form.provider,
+          name: form.provider,
+          binary: { default: form.provider },
+          capabilities: { sandbox: true, host: true, mcp_config: false, streaming_transcript: false, resume: false },
+          profile_schema: { fields: [] },
+          config_projection: { primitive: "generic_config" },
+          launch: { args: ["{{binary}}", "{{goal}}"] },
+          transcript: { parser: "plain_runtime_output" },
+        },
+      ];
+  const has = (field: string) => pluginHasField(plugin, field);
+  const apiKeyPlaceholder = defaultAPIKeyEnv(form.provider, plugins) ?? "API_KEY";
+
   return (
     <div className="space-y-3">
       {title && <h3 className="font-medium">{title}</h3>}
@@ -309,36 +423,39 @@ function ProfileEditor({
           <select
             className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
             value={form.provider}
-            onChange={(e) => onChange({ ...form, provider: e.target.value })}
+            onChange={(e) => {
+              const provider = e.target.value;
+              onChange({ ...form, provider, api_key_env: form.api_key_env || defaultAPIKeyEnv(provider, plugins) || "" });
+            }}
           >
-            {PROVIDERS.map((p) => (
-              <option key={p} value={p}>
-                {PROVIDER_LABELS[p] ?? p}
+            {providerOptions.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name || p.id}
               </option>
             ))}
           </select>
         </div>
-        <div>
+        {has("binary_path") && <div>
           <Label>Binary path</Label>
           <Input
             value={form.binary_path}
             onChange={(e) => onChange({ ...form, binary_path: e.target.value })}
-            placeholder="/usr/local/bin/codex"
+            placeholder={plugin?.binary.default ? "/usr/local/bin/" + plugin.binary.default : "/usr/local/bin/codex"}
           />
-        </div>
-        <div>
+        </div>}
+        {has("model") && <div>
           <Label>Model</Label>
           <Input value={form.model} onChange={(e) => onChange({ ...form, model: e.target.value })} placeholder="gpt-5" />
-        </div>
-        <div>
+        </div>}
+        {has("endpoint") && <div>
           <Label>Endpoint</Label>
           <Input
             value={form.endpoint}
             onChange={(e) => onChange({ ...form, endpoint: e.target.value })}
             placeholder="https://api.example.test/v1"
           />
-        </div>
-        <div>
+        </div>}
+        {has("default_runner") && <div>
           <Label>Default runner</Label>
           <select
             className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
@@ -351,14 +468,14 @@ function ProfileEditor({
               </option>
             ))}
           </select>
-        </div>
+        </div>}
       </div>
       <div className="grid grid-cols-2 gap-3">
-        <div>
+        {has("custom_args") && <div>
           <Label>Custom args</Label>
           <Textarea value={form.custom_args} onChange={(e) => onChange({ ...form, custom_args: e.target.value })} placeholder="--json" />
-        </div>
-        <div>
+        </div>}
+        {has("env") && <div>
           <Label>Environment</Label>
           <p className="text-[11px] text-muted-foreground mb-1">KEY=VALUE lines or a JSON object</p>
           <Textarea
@@ -366,16 +483,16 @@ function ProfileEditor({
             onChange={(e) => onChange({ ...form, env: e.target.value })}
             placeholder={'ANTHROPIC_BASE_URL=https://api.example.test\nANTHROPIC_MODEL=claude-sonnet'}
           />
-        </div>
-        <div>
+        </div>}
+        {has("api_keys") && <div>
           <Label>API key env</Label>
           <Input
             value={form.api_key_env}
             onChange={(e) => onChange({ ...form, api_key_env: e.target.value })}
-            placeholder={DEFAULT_API_KEY_ENV[form.provider] ?? "API_KEY"}
+            placeholder={apiKeyPlaceholder}
           />
-        </div>
-        <div>
+        </div>}
+        {has("api_keys") && <div>
           <Label>API key</Label>
           <Input
             type="password"
@@ -387,16 +504,16 @@ function ProfileEditor({
           <p className="text-[11px] text-muted-foreground mt-1">
             Stored on this profile only. Leave as [configured] to keep the existing key.
           </p>
-        </div>
-        <div>
+        </div>}
+        {has("mcp_servers") && <div>
           <Label>MCP servers JSON</Label>
           <Textarea
             value={form.mcp_servers}
             onChange={(e) => onChange({ ...form, mcp_servers: e.target.value })}
             placeholder='[{"name":"project","mode":"trusted","url":"http://127.0.0.1:8787/mcp"}]'
           />
-        </div>
-        <div>
+        </div>}
+        {has("sandbox_image") && <div>
           <Label>Sandbox image</Label>
           <Input
             value={form.sandbox_image}
@@ -406,8 +523,8 @@ function ProfileEditor({
           <p className="text-[11px] text-muted-foreground mt-1">
             Override the daemon sandbox image for tasks using this profile.
           </p>
-        </div>
-        <div className="col-span-2">
+        </div>}
+        {has("credential_refs") && <div className="col-span-2">
           <Label>Credential refs</Label>
           <Textarea
             value={form.credential_refs}
@@ -418,7 +535,7 @@ function ProfileEditor({
           <p className="text-[11px] text-muted-foreground mt-1">
             Resolved via global or project credential bindings at preflight.
           </p>
-        </div>
+        </div>}
       </div>
       {form.provider === "claude_code" && form.endpoint.includes("bigmodel.cn") && (
         <Card className="border-muted bg-muted/20 p-3 text-xs text-muted-foreground space-y-1">
@@ -449,7 +566,7 @@ function ProfileEditor({
   );
 }
 
-function profileToForm(profile: RuntimeProfile): ProfileForm {
+function profileToForm(profile: RuntimeProfile, plugins: RuntimePlugin[]): ProfileForm {
   const apiKeyEntries = Object.entries(profile.fields.api_keys ?? {});
   const [apiKeyEnv = "", apiKeyValue = ""] = apiKeyEntries[0] ?? [];
   return {
@@ -460,7 +577,7 @@ function profileToForm(profile: RuntimeProfile): ProfileForm {
     endpoint: profile.fields.endpoint ?? "",
     custom_args: (profile.fields.custom_args ?? []).join("\n"),
     env: formatEnv(profile.fields.env),
-    api_key_env: apiKeyEnv || DEFAULT_API_KEY_ENV[profile.provider] || "",
+    api_key_env: apiKeyEnv || defaultAPIKeyEnv(profile.provider, plugins) || "",
     api_key: apiKeyValue,
     mcp_servers: formatMCPServers(profile.fields.mcp_servers),
     default_runner: profile.fields.default_runner ?? "sandbox",
@@ -469,7 +586,7 @@ function profileToForm(profile: RuntimeProfile): ProfileForm {
   };
 }
 
-function buildFields(form: ProfileForm): RuntimeProfileFields {
+function buildFields(form: ProfileForm, plugins: RuntimePlugin[]): RuntimeProfileFields {
   const fields: RuntimeProfileFields = {};
   const binaryPath = emptyToUndefined(form.binary_path);
   const model = emptyToUndefined(form.model);
@@ -479,7 +596,7 @@ function buildFields(form: ProfileForm): RuntimeProfileFields {
   const mcpServers = parseMCPServers(form.mcp_servers);
   const defaultRunner = emptyToUndefined(form.default_runner);
   const sandboxImage = emptyToUndefined(form.sandbox_image);
-  const apiKeyEnv = emptyToUndefined(form.api_key_env) ?? DEFAULT_API_KEY_ENV[form.provider];
+  const apiKeyEnv = emptyToUndefined(form.api_key_env) ?? defaultAPIKeyEnv(form.provider, plugins);
   const apiKey = form.api_key.trim();
 
   if (binaryPath) fields.binary_path = binaryPath;
@@ -561,11 +678,14 @@ function formatEnv(env?: Record<string, string>): string {
 function buildGeneratedConfigPreview(
   provider: string,
   fields: RuntimeProfileFields,
-  form?: ProfileForm
+  form?: ProfileForm,
+  plugin?: RuntimePlugin
 ): Record<string, unknown> {
   const mcpServers = buildPreviewMCPServers(fields);
   const mcpPreview = formatMCPServerPreview(mcpServers);
-  const launchPreview = buildLaunchPreview(provider, fields, form, (mcpServers?.length ?? 0) > 0);
+  const launchPreview = buildLaunchPreview(provider, fields, form, (mcpServers?.length ?? 0) > 0, plugin);
+  const configPath = plugin?.config_projection.config_path;
+  const mcpConfigPath = plugin?.config_projection.mcp_config_path;
 
   if (provider === "claude_code") {
     const env: Record<string, string> = { ...(fields.env ?? {}) };
@@ -573,9 +693,9 @@ function buildGeneratedConfigPreview(
     if (fields.model && !env.ANTHROPIC_MODEL) env.ANTHROPIC_MODEL = fields.model;
     return {
       provider,
-      settings_path: "runtime-home/claude/settings.json",
+      settings_path: configPath ?? "runtime-home/claude/settings.json",
       env,
-      ...(mcpPreview ? { mcp_servers: mcpPreview, mcp_config_path: "workdir/.mcp.json" } : {}),
+      ...(mcpPreview ? { mcp_servers: mcpPreview, mcp_config_path: mcpConfigPath ?? "workdir/.mcp.json" } : {}),
       ...(fields.api_keys && Object.keys(fields.api_keys).length > 0
         ? { api_keys: redactedAPIKeyPreview(fields) }
         : {}),
@@ -607,7 +727,7 @@ function buildGeneratedConfigPreview(
 
     return {
       provider,
-      config_path: "runtime-home/codex/config.toml",
+      config_path: configPath ?? "runtime-home/codex/config.toml",
       config_toml: configToml,
       ...(mcpPreview ? { mcp_servers: mcpPreview } : {}),
       ...(fields.api_keys && Object.keys(fields.api_keys).length > 0
@@ -648,9 +768,9 @@ function buildGeneratedConfigPreview(
 
     return {
       provider,
-      models_path: "runtime-home/pi/agent/models.json",
+      models_path: configPath ?? "runtime-home/pi/agent/models.json",
       models_json: modelsJson,
-      ...(mcpPreview ? { mcp_servers: mcpPreview, mcp_config_path: "runtime-home/pi/agent/mcp.json" } : {}),
+      ...(mcpPreview ? { mcp_servers: mcpPreview, mcp_config_path: mcpConfigPath ?? "runtime-home/pi/agent/mcp.json" } : {}),
       ...(fields.api_keys && Object.keys(fields.api_keys).length > 0
         ? {
             auth_path: "runtime-home/pi/agent/auth.json",
@@ -682,50 +802,52 @@ function buildLaunchPreview(
   provider: string,
   fields: RuntimeProfileFields,
   form: ProfileForm | undefined,
-  hasMCP: boolean
+  hasMCP: boolean,
+  plugin?: RuntimePlugin
 ): Record<string, unknown> {
   const sandbox = fields.default_runner === "sandbox";
-  const binary = fields.binary_path?.trim() || (provider === "codex" ? "codex" : provider === "claude_code" ? "claude" : provider === "pi" ? "pi" : "");
-  const args: string[] = [binary];
-  const processEnv: Record<string, string> = {};
-
-  if (provider === "codex") {
-    const sub = fields.env?.PENTEST_CODEX_SUBCOMMAND?.trim() || "run";
-    args.push(sub);
-    if (fields.model) args.push("--model", fields.model);
-    for (const arg of fields.custom_args ?? []) args.push(arg);
-    args.push("<goal>");
-    processEnv.CODEX_HOME = sandbox ? "/task/runtime-home/codex" : "runtime-home/codex";
-  } else if (provider === "claude_code") {
-    if (fields.model) args.push("--model", fields.model);
-    args.push("--settings", sandbox ? "/task/runtime-home/claude/settings.json" : "runtime-home/claude/settings.json");
-    if (hasMCP) {
-      args.push("--strict-mcp-config", "--mcp-config", sandbox ? "/task/workdir/.mcp.json" : "workdir/.mcp.json");
-    }
-    if (!hasCLIOption(fields.custom_args, "-p") && !hasCLIOption(fields.custom_args, "--print")) {
-      args.push("-p");
-    }
-    if (!hasCLIOption(fields.custom_args, "--output-format")) {
-      args.push("--output-format", "stream-json");
-    }
-    if (!hasCLIOption(fields.custom_args, "--verbose")) {
-      args.push("--verbose");
-    }
-    for (const arg of fields.custom_args ?? []) args.push(arg);
-    if (hasMCP) args.push("--", "<goal>");
-    else args.push("<goal>");
-    processEnv.CLAUDE_HOME = sandbox ? "/task/runtime-home/claude" : "runtime-home/claude";
-    if (sandbox) processEnv.IS_SANDBOX = "1";
-  } else if (provider === "pi") {
-    if (!hasCLIOption(fields.custom_args, "--provider")) {
-      const providerId = fields.env?.PI_PROVIDER_ID?.trim() || (fields.endpoint?.trim() ? "custom" : "");
-      if (providerId) args.push("--provider", providerId);
-    }
-    if (fields.model) args.push("--model", fields.model);
-    for (const arg of fields.custom_args ?? []) args.push(arg);
-    args.push("<goal>");
-    processEnv.PI_CODING_AGENT_DIR = sandbox ? "/task/runtime-home/pi/agent" : "runtime-home/pi/agent";
+  const runtimeHome = sandbox ? "/task/runtime-home" : "runtime-home";
+  const workdir = sandbox ? "/task/workdir" : "workdir";
+  const binary = fields.binary_path?.trim() || plugin?.binary.default || fallbackBinary(provider);
+  const subcommand = fields.env?.PENTEST_CODEX_SUBCOMMAND?.trim() || "run";
+  const configPath = previewRuntimePath(defaultConfigPath(provider, plugin), sandbox);
+  const mcpConfigPath = previewRuntimePath(defaultMCPConfigPath(provider, plugin), sandbox);
+  const customArgs = fields.custom_args ?? [];
+  const lists: Record<string, string[]> = {
+    custom_args: customArgs,
+  };
+  if (hasMCP && mcpConfigPath) {
+    lists.mcp_args = ["--strict-mcp-config", "--mcp-config", mcpConfigPath];
   }
+  if (subcommand !== "exec") {
+    lists.codex_goal_prefix = ["--"];
+  }
+  if (hasMCP) {
+    lists.claude_goal_prefix = ["--"];
+  }
+  if (!hasCLIOption(customArgs, "--provider")) {
+    const providerId = fields.env?.PI_PROVIDER_ID?.trim() || (fields.endpoint?.trim() ? "custom" : "");
+    if (providerId) lists.pi_provider_args = ["--provider", providerId];
+  }
+  const scalars: Record<string, string> = {
+    binary,
+    model: fields.model ?? "",
+    endpoint: fields.endpoint ?? "",
+    config_path: configPath,
+    mcp_config_path: mcpConfigPath,
+    goal: "<goal>",
+    codex_subcommand: subcommand,
+    runtime_home: runtimeHome,
+    workdir,
+  };
+
+  const args = plugin?.launch.args?.length
+    ? renderLaunchTemplate(plugin.launch, scalars, lists)
+    : renderCompatibilityLaunch(provider, fields, hasMCP, configPath, mcpConfigPath, binary);
+  const processEnv: Record<string, string> = renderProcessEnvTemplate(plugin?.process_env, {
+    ...scalars,
+    provider_home: runtimeHome + "/" + providerHomeDir(provider),
+  });
 
   for (const [key, value] of Object.entries(fields.env ?? {})) {
     processEnv[key] = value;
@@ -735,6 +857,7 @@ function buildLaunchPreview(
   }
 
   if (sandbox) {
+    processEnv.IS_SANDBOX = "1";
     processEnv.PENTEST_SKILLS_DIR = "/opt/pentest/skills";
     if (form?.endpoint?.includes("bigmodel.cn") || fields.endpoint?.includes("bigmodel.cn")) {
       processEnv.ANTHROPIC_BASE_URL = fields.endpoint ?? form?.endpoint ?? "";
@@ -742,6 +865,162 @@ function buildLaunchPreview(
   }
 
   return { argv: args, process_env: processEnv, runner: fields.default_runner ?? "sandbox" };
+}
+
+function renderCompatibilityLaunch(
+  provider: string,
+  fields: RuntimeProfileFields,
+  hasMCP: boolean,
+  configPath: string,
+  mcpConfigPath: string,
+  binary: string
+): string[] {
+  const args = [binary];
+  const customArgs = fields.custom_args ?? [];
+  if (provider === "codex") {
+    const subcommand = fields.env?.PENTEST_CODEX_SUBCOMMAND?.trim() || "run";
+    args.push(subcommand);
+    if (fields.model) args.push("--model", fields.model);
+    args.push(...customArgs);
+    if (subcommand !== "exec") args.push("--");
+    args.push("<goal>");
+    return args;
+  }
+  if (provider === "claude_code") {
+    if (fields.model) args.push("--model", fields.model);
+    if (configPath) args.push("--settings", configPath);
+    if (hasMCP && mcpConfigPath) args.push("--strict-mcp-config", "--mcp-config", mcpConfigPath);
+    if (!hasCLIOption(customArgs, "-p") && !hasCLIOption(customArgs, "--print")) args.push("-p");
+    if (!hasCLIOption(customArgs, "--output-format")) args.push("--output-format", "stream-json");
+    if (!hasCLIOption(customArgs, "--verbose")) args.push("--verbose");
+    args.push(...customArgs);
+    if (hasMCP) args.push("--");
+    args.push("<goal>");
+    return args;
+  }
+  if (provider === "pi") {
+    if (!hasCLIOption(customArgs, "--provider")) {
+      const providerId = fields.env?.PI_PROVIDER_ID?.trim() || (fields.endpoint?.trim() ? "custom" : "");
+      if (providerId) args.push("--provider", providerId);
+    }
+    if (fields.model) args.push("--model", fields.model);
+    args.push(...customArgs, "<goal>");
+  }
+  return args.filter(Boolean);
+}
+
+function renderLaunchTemplate(
+  launch: RuntimePlugin["launch"],
+  scalars: Record<string, string>,
+  lists: Record<string, string[]>
+): string[] {
+  const templateArgs = suppressSingletonDefaults(launch.args, launch.singleton_options ?? [], lists.custom_args ?? []);
+  const out: string[] = [];
+  for (let i = 0; i < templateArgs.length; i += 1) {
+    const arg = templateArgs[i];
+    const nextPlaceholder = placeholderName(templateArgs[i + 1]);
+    if (
+      nextPlaceholder &&
+      arg.startsWith("-") &&
+      !Object.prototype.hasOwnProperty.call(lists, nextPlaceholder) &&
+      placeholderEmpty(nextPlaceholder, scalars, lists)
+    ) {
+      i += 1;
+      continue;
+    }
+    const placeholder = placeholderName(arg);
+    if (placeholder) {
+      if (Object.prototype.hasOwnProperty.call(lists, placeholder)) {
+        out.push(...nonEmptyStrings(lists[placeholder]));
+        continue;
+      }
+      const value = (scalars[placeholder] ?? "").trim();
+      if (value) out.push(value);
+      continue;
+    }
+    const rendered = renderScalarFragments(arg, scalars).trim();
+    if (rendered) out.push(rendered);
+  }
+  return out;
+}
+
+function renderProcessEnvTemplate(
+  processEnv: Record<string, string> | undefined,
+  scalars: Record<string, string>
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(processEnv ?? {})) {
+    const rendered = renderScalarFragments(value, scalars).trim();
+    if (rendered) out[key] = rendered;
+  }
+  return out;
+}
+
+function suppressSingletonDefaults(
+  args: string[],
+  groups: { options: string[]; arity: number }[],
+  customArgs: string[]
+): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const group = groups.find((item) => item.options.includes(args[i]) && item.options.some((option) => hasCLIOption(customArgs, option)));
+    if (group) {
+      i += group.arity;
+      continue;
+    }
+    out.push(args[i]);
+  }
+  return out;
+}
+
+function placeholderName(value: string | undefined): string | null {
+  if (!value?.startsWith("{{") || !value.endsWith("}}")) return null;
+  const name = value.slice(2, -2).trim();
+  return name || null;
+}
+
+function placeholderEmpty(name: string, scalars: Record<string, string>, lists: Record<string, string[]>): boolean {
+  if (Object.prototype.hasOwnProperty.call(lists, name)) return nonEmptyStrings(lists[name]).length === 0;
+  return !(scalars[name] ?? "").trim();
+}
+
+function nonEmptyStrings(values: string[] | undefined): string[] {
+  return (values ?? []).map((value) => value.trim()).filter(Boolean);
+}
+
+function renderScalarFragments(value: string, scalars: Record<string, string>): string {
+  return value.replace(/{{\s*([^}]+)\s*}}/g, (_, name: string) => scalars[name.trim()] ?? "");
+}
+
+function fallbackBinary(provider: string): string {
+  if (provider === "claude_code") return "claude";
+  if (provider === "codex" || provider === "pi" || provider === "fake") return provider;
+  return provider;
+}
+
+function providerHomeDir(provider: string): string {
+  return provider === "claude_code" ? "claude" : provider;
+}
+
+function defaultConfigPath(provider: string, plugin?: RuntimePlugin): string {
+  if (plugin?.config_projection.config_path) return plugin.config_projection.config_path;
+  if (provider === "claude_code") return "runtime-home/claude/settings.json";
+  if (provider === "codex") return "runtime-home/codex/config.toml";
+  if (provider === "pi") return "runtime-home/pi/agent/models.json";
+  return "";
+}
+
+function defaultMCPConfigPath(provider: string, plugin?: RuntimePlugin): string {
+  if (plugin?.config_projection.mcp_config_path) return plugin.config_projection.mcp_config_path;
+  if (provider === "claude_code") return "workdir/.mcp.json";
+  if (provider === "pi") return "runtime-home/pi/agent/mcp.json";
+  return "";
+}
+
+function previewRuntimePath(path: string, sandbox: boolean): string {
+  if (!path) return "";
+  if (!sandbox || path.startsWith("/")) return path;
+  return "/task/" + path;
 }
 
 function hasCLIOption(args: string[] | undefined, option: string): boolean {

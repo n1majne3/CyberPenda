@@ -41,6 +41,32 @@ func TestCreateRejectsUnknownProvider(t *testing.T) {
 	}
 }
 
+func TestCreateAcceptsInjectedProviderIDs(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+	service := runtimeprofile.NewService(db, []runtimeprofile.Provider{"custom_runtime"})
+
+	created, err := service.Create("Custom", "custom_runtime", runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create injected provider: %v", err)
+	}
+	if created.Provider != "custom_runtime" {
+		t.Fatalf("expected custom_runtime, got %q", created.Provider)
+	}
+
+	_, err = service.Create("Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{})
+	if !errors.Is(err, runtimeprofile.ErrUnknownProvider) {
+		t.Fatalf("expected default provider to be rejected by injected set, got %v", err)
+	}
+}
+
 func TestCreateAcceptsEverySupportedProvider(t *testing.T) {
 	providers := []runtimeprofile.Provider{
 		runtimeprofile.ProviderFake,

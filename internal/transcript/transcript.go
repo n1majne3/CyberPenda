@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"pentest/internal/runtimeplugin"
 	"pentest/internal/task"
 )
 
@@ -179,21 +180,39 @@ func entriesForEvent(event task.Event, continuation int, adapter string) []Entry
 }
 
 func parseRuntimeOutput(event task.Event, continuation int, adapter, text string) []Entry {
+	parser := ParserForAdapter(adapter, nil)
+	if parser == "plain_runtime_output" {
+		return nil
+	}
 	var record map[string]any
 	if err := json.Unmarshal([]byte(text), &record); err != nil {
 		return nil
 	}
-	entries := parseRecord(event, continuation, adapter, record, "")
+	entries := parseRecord(event, continuation, adapter, parser, record, "")
 	if len(entries) == 0 {
 		return nil
 	}
 	return entries
 }
 
-func parseRecord(event task.Event, continuation int, adapter string, record map[string]any, suffix string) []Entry {
+// ParserForAdapter returns the manifest-selected transcript parser for a runtime
+// adapter. Unknown adapters intentionally fall back to plain runtime output.
+func ParserForAdapter(adapter string, registry *runtimeplugin.Registry) string {
+	if registry == nil {
+		registry = runtimeplugin.MustBuiltinRegistry()
+	}
+	plugin, ok := registry.Get(adapter)
+	if !ok || strings.TrimSpace(plugin.Transcript.Parser) == "" {
+		return "plain_runtime_output"
+	}
+	return plugin.Transcript.Parser
+}
+
+func parseRecord(event task.Event, continuation int, adapter, parser string, record map[string]any, suffix string) []Entry {
 	_ = adapter
+	_ = parser
 	if item, ok := mapValue(record, "item"); ok {
-		if entries := parseRecord(event, continuation, adapter, item, suffix); len(entries) > 0 {
+		if entries := parseRecord(event, continuation, adapter, parser, item, suffix); len(entries) > 0 {
 			return entries
 		}
 	}

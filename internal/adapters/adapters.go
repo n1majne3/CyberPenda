@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"strings"
 
+	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
 )
 
@@ -35,113 +36,76 @@ type LaunchArgsRequest struct {
 // embeds resolved secret values — credential references are resolved by the
 // runtime through bindings at execution time, not baked into argv.
 func BuildLaunchArgs(req LaunchArgsRequest) ([]string, error) {
+	registry := runtimeplugin.MustBuiltinRegistry()
+	plugin, ok := registry.Get(string(req.Provider))
+	if !ok {
+		return nil, fmt.Errorf("unsupported provider %q", req.Provider)
+	}
+
 	binary := strings.TrimSpace(req.Profile.Fields.BinaryPath)
 	if binary == "" {
-		binary = defaultBinary(req.Provider)
+		binary = strings.TrimSpace(plugin.Binary.Default)
 	}
 	if binary == "" {
 		return nil, fmt.Errorf("no binary path configured for provider %q", req.Provider)
 	}
 
-	extra := req.Profile.Fields.CustomArgs
-	args := []string{binary}
-	switch req.Provider {
-	case runtimeprofile.ProviderCodex:
-		// Codex reads config.toml and auth.json from CODEX_HOME; --config is for
-		// one-off TOML key overrides, not a config file path.
-		subcommand := "run"
-		if mode := strings.TrimSpace(req.Profile.Fields.Env["PENTEST_CODEX_SUBCOMMAND"]); mode != "" {
-			subcommand = mode
-		}
-		args = append(args, subcommand)
-		if model := strings.TrimSpace(req.Profile.Fields.Model); model != "" {
-			args = append(args, "--model", model)
-		}
-		if len(extra) > 0 {
-			args = append(args, extra...)
-		}
-		if req.Goal != "" {
-			if subcommand == "exec" {
-				args = append(args, req.Goal)
-			} else {
-				args = append(args, "--", req.Goal)
-			}
-		}
-	case runtimeprofile.ProviderClaudeCode:
-		if model := strings.TrimSpace(req.Profile.Fields.Model); model != "" {
-			args = append(args, "--model", model)
-		}
-		if req.ConfigPath != "" {
-			args = append(args, "--settings", req.ConfigPath)
-		}
-		if mcpConfig := strings.TrimSpace(req.MCPConfigPath); mcpConfig != "" {
-			args = append(args, "--strict-mcp-config", "--mcp-config", mcpConfig)
-		}
-		if !hasCLIOption(extra, "-p") && !hasCLIOption(extra, "--print") {
-			args = append(args, "-p")
-		}
-		if !hasCLIOption(extra, "--output-format") {
-			args = append(args, "--output-format", "stream-json")
-		}
-		if !hasCLIOption(extra, "--verbose") {
-			args = append(args, "--verbose")
-		}
-		if len(extra) > 0 {
-			args = append(args, extra...)
-		}
-		if req.Goal != "" {
-			if strings.TrimSpace(req.MCPConfigPath) != "" {
-				args = append(args, "--", req.Goal)
-			} else {
-				args = append(args, req.Goal)
-			}
-		}
-	case runtimeprofile.ProviderPi:
-		// Pi discovers agent/models.json and agent/auth.json from PI_CODING_AGENT_DIR.
-		if !hasCLIOption(extra, "--provider") {
-			providerID := strings.TrimSpace(req.Profile.Fields.Env["PI_PROVIDER_ID"])
-			if providerID == "" && strings.TrimSpace(req.Profile.Fields.Endpoint) != "" {
-				providerID = "custom"
-			}
-			if providerID != "" {
-				args = append(args, "--provider", providerID)
-			}
-		}
-		if model := strings.TrimSpace(req.Profile.Fields.Model); model != "" {
-			args = append(args, "--model", model)
-		}
-		if len(extra) > 0 {
-			args = append(args, extra...)
-		}
-		if req.Goal != "" {
-			args = append(args, req.Goal)
-		}
-	default:
-		return nil, fmt.Errorf("unsupported provider %q", req.Provider)
-	}
-
-	return args, nil
+	return runtimeplugin.RenderLaunch(plugin.Launch, launchRenderContext(req, binary))
 }
 
 func hasCLIOption(args []string, option string) bool {
-	for _, arg := range args {
-		if arg == option || strings.HasPrefix(arg, option+"=") {
-			return true
-		}
-	}
-	return false
+	return runtimeplugin.HasCLIOption(args, option)
 }
 
 func defaultBinary(provider runtimeprofile.Provider) string {
-	switch provider {
-	case runtimeprofile.ProviderCodex:
-		return "codex"
-	case runtimeprofile.ProviderClaudeCode:
-		return "claude"
-	case runtimeprofile.ProviderPi:
-		return "pi"
-	default:
+	registry := runtimeplugin.MustBuiltinRegistry()
+	plugin, ok := registry.Get(string(provider))
+	if !ok {
 		return ""
+	}
+	return plugin.Binary.Default
+}
+
+func launchRenderContext(req LaunchArgsRequest, binary string) runtimeplugin.RenderContext {
+	extra := req.Profile.Fields.CustomArgs
+	subcommand := strings.TrimSpace(req.Profile.Fields.Env["PENTEST_CODEX_SUBCOMMAND"])
+	if subcommand == "" {
+		subcommand = "run"
+	}
+
+	lists := map[string][]string{
+		"custom_args": extra,
+	}
+	if req.Goal != "" && subcommand != "exec" {
+		lists["codex_goal_prefix"] = []string{"--"}
+	}
+	if req.Goal != "" && strings.TrimSpace(req.MCPConfigPath) != "" {
+		lists["claude_goal_prefix"] = []string{"--"}
+	}
+	if mcpConfig := strings.TrimSpace(req.MCPConfigPath); mcpConfig != "" {
+		lists["mcp_args"] = []string{"--strict-mcp-config", "--mcp-config", mcpConfig}
+	}
+	if !hasCLIOption(extra, "--provider") {
+		providerID := strings.TrimSpace(req.Profile.Fields.Env["PI_PROVIDER_ID"])
+		if providerID == "" && strings.TrimSpace(req.Profile.Fields.Endpoint) != "" {
+			providerID = "custom"
+		}
+		if providerID != "" {
+			lists["pi_provider_args"] = []string{"--provider", providerID}
+		}
+	}
+
+	return runtimeplugin.RenderContext{
+		Scalars: map[string]string{
+			"binary":           binary,
+			"model":            strings.TrimSpace(req.Profile.Fields.Model),
+			"endpoint":         strings.TrimSpace(req.Profile.Fields.Endpoint),
+			"config_path":      strings.TrimSpace(req.ConfigPath),
+			"mcp_config_path":  strings.TrimSpace(req.MCPConfigPath),
+			"goal":             req.Goal,
+			"codex_subcommand": subcommand,
+		},
+		Lists: lists,
 	}
 }
 

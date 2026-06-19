@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"pentest/internal/credential"
+	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
 )
 
@@ -17,11 +18,12 @@ var secretEnvKeyPattern = regexp.MustCompile(`(?i)(token|api[_-]?key|secret|pass
 
 // ProjectionRequest supplies task and daemon context for launch projection.
 type ProjectionRequest struct {
-	ProjectID   string
-	TaskID      string
-	Credentials *credential.Service
-	DaemonAddr  string
-	Sandbox     bool
+	ProjectID      string
+	TaskID         string
+	Credentials    *credential.Service
+	DaemonAddr     string
+	Sandbox        bool
+	RuntimePlugins *runtimeplugin.Registry
 }
 
 // ProjectRuntimeConfig writes provider-specific runtime files into the task-local
@@ -39,16 +41,30 @@ func ProjectRuntimeConfig(layout Layout, profile runtimeprofile.Profile, req Pro
 		}
 	}
 
-	switch profile.Provider {
-	case runtimeprofile.ProviderClaudeCode:
+	plugin, ok := runtimePluginForProvider(profile.Provider, req.RuntimePlugins)
+	if !ok {
+		return projectGenericConfig(layout, profile)
+	}
+
+	switch plugin.ConfigProjection.Primitive {
+	case "claude_settings":
 		return projectClaudeSettings(layout, profile, req)
-	case runtimeprofile.ProviderCodex:
+	case "codex_home":
 		return projectCodexConfig(layout, profile, req)
-	case runtimeprofile.ProviderPi:
+	case "pi_agent":
 		return projectPiConfig(layout, profile, req)
+	case "none":
+		return ConfigProjection{Config: runtimeprofile.GeneratedConfig(profile)}, nil
 	default:
 		return projectGenericConfig(layout, profile)
 	}
+}
+
+func runtimePluginForProvider(provider runtimeprofile.Provider, registry *runtimeplugin.Registry) (runtimeplugin.Plugin, bool) {
+	if registry != nil {
+		return registry.Get(string(provider))
+	}
+	return runtimeplugin.MustBuiltinRegistry().Get(string(provider))
 }
 
 func projectGenericConfig(layout Layout, profile runtimeprofile.Profile) (ConfigProjection, error) {
@@ -560,6 +576,10 @@ func LaunchConfigPath(layout Layout, provider runtimeprofile.Provider, hostConfi
 // LaunchProcessEnv returns process environment variables for the launch adapter.
 // Claude Code reads settings from CLAUDE_HOME; profile env lives in settings.json.
 func LaunchProcessEnv(layout Layout, profile runtimeprofile.Profile, sandbox bool, ctx TaskContext) map[string]string {
+	return launchProcessEnv(layout, profile, sandbox, ctx, nil)
+}
+
+func launchProcessEnv(layout Layout, profile runtimeprofile.Profile, sandbox bool, ctx TaskContext, registry *runtimeplugin.Registry) map[string]string {
 	env := map[string]string{}
 	if sandbox {
 		// Claude Code allows --dangerously-skip-permissions in sandboxed containers
@@ -576,26 +596,17 @@ func LaunchProcessEnv(layout Layout, profile runtimeprofile.Profile, sandbox boo
 	if ctx.MCPURL != "" {
 		env["PENTEST_MCP_URL"] = ctx.MCPURL
 	}
-	switch profile.Provider {
-	case runtimeprofile.ProviderClaudeCode:
-		home := layout.ProviderHome
-		if sandbox {
-			home = "/task/runtime-home/" + providerHomeDir(profile.Provider)
+	manifestEnvRendered := false
+	if plugin, ok := runtimePluginForProvider(profile.Provider, registry); ok {
+		rendered, err := runtimeplugin.RenderEnv(plugin.ProcessEnv, processEnvRenderContext(layout, profile, sandbox))
+		if err == nil {
+			for key, value := range rendered {
+				env[key] = value
+			}
+			manifestEnvRendered = len(rendered) > 0
 		}
-		env["CLAUDE_HOME"] = home
-	case runtimeprofile.ProviderCodex:
-		home := layout.ProviderHome
-		if sandbox {
-			home = "/task/runtime-home/" + providerHomeDir(profile.Provider)
-		}
-		env["CODEX_HOME"] = home
-	case runtimeprofile.ProviderPi:
-		agentDir := filepath.Join(layout.ProviderHome, "agent")
-		if sandbox {
-			agentDir = "/task/runtime-home/" + providerHomeDir(profile.Provider) + "/agent"
-		}
-		env["PI_CODING_AGENT_DIR"] = agentDir
-	default:
+	}
+	if !manifestEnvRendered {
 		for key, value := range profile.Fields.Env {
 			env[key] = value
 		}
@@ -603,11 +614,27 @@ func LaunchProcessEnv(layout Layout, profile runtimeprofile.Profile, sandbox boo
 	return env
 }
 
+func processEnvRenderContext(layout Layout, profile runtimeprofile.Profile, sandbox bool) runtimeplugin.RenderContext {
+	runtimeHome := layout.RuntimeHome
+	workdir := layout.Workdir
+	if sandbox {
+		runtimeHome = "/task/runtime-home"
+		workdir = "/task/workdir"
+	}
+	return runtimeplugin.RenderContext{
+		Scalars: map[string]string{
+			"runtime_home":  runtimeHome,
+			"workdir":       workdir,
+			"provider_home": filepath.Join(runtimeHome, providerHomeDir(profile.Provider)),
+		},
+	}
+}
+
 // LaunchProcessEnvWithCredentials returns process environment variables for a
 // runtime launch, including profile env and resolved API key material needed by
 // runtimes that interpolate env references from their generated config.
 func LaunchProcessEnvWithCredentials(layout Layout, profile runtimeprofile.Profile, sandbox bool, ctx TaskContext, req ProjectionRequest) (map[string]string, error) {
-	env := LaunchProcessEnv(layout, profile, sandbox, ctx)
+	env := launchProcessEnv(layout, profile, sandbox, ctx, req.RuntimePlugins)
 	for key, value := range profile.Fields.Env {
 		env[key] = value
 	}

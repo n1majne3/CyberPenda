@@ -194,11 +194,12 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string) (r
 	sandbox := created.Runner == task.RunnerSandbox
 	mcpURL := runner.MCPEndpointURL(server.listenAddr, sandbox)
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
-		ProjectID:   created.ProjectID,
-		TaskID:      created.ID,
-		Credentials: server.creds,
-		DaemonAddr:  server.listenAddr,
-		Sandbox:     sandbox,
+		ProjectID:      created.ProjectID,
+		TaskID:         created.ID,
+		Credentials:    server.creds,
+		DaemonAddr:     server.listenAddr,
+		Sandbox:        sandbox,
+		RuntimePlugins: server.runtimePlugins,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -227,11 +228,12 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string) (r
 		Sandbox:   sandbox,
 	}
 	processEnv, err := runner.LaunchProcessEnvWithCredentials(layout, profile, sandbox, launchCtx, runner.ProjectionRequest{
-		ProjectID:   created.ProjectID,
-		TaskID:      created.ID,
-		Credentials: server.creds,
-		DaemonAddr:  server.listenAddr,
-		Sandbox:     sandbox,
+		ProjectID:      created.ProjectID,
+		TaskID:         created.ID,
+		Credentials:    server.creds,
+		DaemonAddr:     server.listenAddr,
+		Sandbox:        sandbox,
+		RuntimePlugins: server.runtimePlugins,
 	})
 	if err != nil {
 		return nil, nil, err

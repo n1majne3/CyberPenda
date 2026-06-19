@@ -15,6 +15,7 @@ import (
 	"pentest/internal/preflight"
 	"pentest/internal/project"
 	"pentest/internal/runtime"
+	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/store"
 	"pentest/internal/task"
@@ -29,24 +30,28 @@ type Config struct {
 	SandboxImage string
 	ContainerCLI string
 	ListenAddr   string
+	// RuntimePluginDirs are trusted local directories containing runtime plugin
+	// manifest JSON files. Empty means built-ins only.
+	RuntimePluginDirs []string
 }
 
 type Server struct {
-	mux          *http.ServeMux
-	version      string
-	db           *store.DB
-	projects     *project.Service
-	profiles     *runtimeprofile.Service
-	creds        *credential.Service
-	preflight    *preflight.Service
-	tasks        *task.Service
-	harness      *runtime.Harness
-	facts        *blackboard.Service
-	approvals    *approval.Service
-	runtimeRoot  string
-	sandboxImage string
-	containerCLI string
-	listenAddr   string
+	mux            *http.ServeMux
+	version        string
+	db             *store.DB
+	projects       *project.Service
+	runtimePlugins *runtimeplugin.Registry
+	profiles       *runtimeprofile.Service
+	creds          *credential.Service
+	preflight      *preflight.Service
+	tasks          *task.Service
+	harness        *runtime.Harness
+	facts          *blackboard.Service
+	approvals      *approval.Service
+	runtimeRoot    string
+	sandboxImage   string
+	containerCLI   string
+	listenAddr     string
 }
 
 func NewServer(config Config) (*Server, error) {
@@ -55,7 +60,11 @@ func NewServer(config Config) (*Server, error) {
 		return nil, err
 	}
 
-	profiles := runtimeprofile.NewService(db)
+	runtimePlugins, err := runtimePluginRegistry(config.RuntimePluginDirs)
+	if err != nil {
+		return nil, err
+	}
+	profiles := runtimeprofile.NewService(db, runtimeProfileProviders(runtimePlugins))
 	creds := credential.NewService(db)
 	tasks := task.NewService(db, nil)
 	runtimeRoot := config.RuntimeRoot
@@ -67,26 +76,50 @@ func NewServer(config Config) (*Server, error) {
 		listenAddr = "127.0.0.1:8787"
 	}
 	server := &Server{
-		mux:          http.NewServeMux(),
-		version:      config.Version,
-		db:           db,
-		projects:     project.NewService(db),
-		profiles:     profiles,
-		creds:        creds,
-		preflight:    preflight.NewService(profiles, creds),
-		tasks:        tasks,
-		harness:      runtime.NewHarness(tasks),
-		facts:        blackboard.NewService(db),
-		approvals:    approval.NewService(db),
-		runtimeRoot:  runtimeRoot,
-		sandboxImage: config.SandboxImage,
-		containerCLI: config.ContainerCLI,
-		listenAddr:   listenAddr,
+		mux:            http.NewServeMux(),
+		version:        config.Version,
+		db:             db,
+		projects:       project.NewService(db),
+		runtimePlugins: runtimePlugins,
+		profiles:       profiles,
+		creds:          creds,
+		preflight:      preflight.NewService(profiles, creds),
+		tasks:          tasks,
+		harness:        runtime.NewHarness(tasks),
+		facts:          blackboard.NewService(db),
+		approvals:      approval.NewService(db),
+		runtimeRoot:    runtimeRoot,
+		sandboxImage:   config.SandboxImage,
+		containerCLI:   config.ContainerCLI,
+		listenAddr:     listenAddr,
 	}
 	server.tasks.SetProjectService(server.projects)
 	server.routes()
 
 	return server, nil
+}
+
+func runtimePluginRegistry(dirs []string) (*runtimeplugin.Registry, error) {
+	plugins := runtimeplugin.BuiltinPlugins()
+	var errs []error
+	for _, dir := range dirs {
+		loaded, loadErrs := runtimeplugin.LoadDirectory(dir)
+		plugins = append(plugins, loaded...)
+		errs = append(errs, loadErrs...)
+	}
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+	return runtimeplugin.NewRegistry(plugins)
+}
+
+func runtimeProfileProviders(registry *runtimeplugin.Registry) []runtimeprofile.Provider {
+	ids := registry.IDs()
+	providers := make([]runtimeprofile.Provider, 0, len(ids))
+	for _, id := range ids {
+		providers = append(providers, runtimeprofile.Provider(id))
+	}
+	return providers
 }
 
 func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -108,6 +141,8 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/runtime-profiles/{id}", server.handleGetRuntimeProfile)
 	server.mux.HandleFunc("PATCH /api/runtime-profiles/{id}", server.handleUpdateRuntimeProfile)
 	server.mux.HandleFunc("DELETE /api/runtime-profiles/{id}", server.handleDeleteRuntimeProfile)
+	server.mux.HandleFunc("GET /api/runtime-plugins", server.handleListRuntimePlugins)
+	server.mux.HandleFunc("GET /api/runtime-plugins/{plugin_id}", server.handleGetRuntimePlugin)
 	server.mux.HandleFunc("PUT /api/credential-bindings", server.handleUpsertGlobalCredentialBinding)
 	server.mux.HandleFunc("GET /api/credential-bindings", server.handleListGlobalCredentialBindings)
 	server.mux.HandleFunc("DELETE /api/credential-bindings/{binding_id}", server.handleDeleteCredentialBinding)

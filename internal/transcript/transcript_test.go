@@ -8,6 +8,23 @@ import (
 	"pentest/internal/transcript"
 )
 
+func TestParserForAdapterUsesRuntimePluginMetadata(t *testing.T) {
+	cases := map[string]string{
+		"claude_code": "claude_stream_json",
+		"codex":       "codex_json",
+		"pi":          "pi_json_session",
+		"fake":        "plain_runtime_output",
+		"missing":     "plain_runtime_output",
+	}
+	for adapter, want := range cases {
+		t.Run(adapter, func(t *testing.T) {
+			if got := transcript.ParserForAdapter(adapter, nil); got != want {
+				t.Fatalf("parser = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestBuildIncludesGoalContinuationsSteeringAndFallback(t *testing.T) {
 	createdAt := time.Date(2026, 6, 19, 12, 0, 0, 0, time.UTC)
 	subject := task.Task{ID: "task-1", Goal: "Recon Juice Shop", CreatedAt: createdAt}
