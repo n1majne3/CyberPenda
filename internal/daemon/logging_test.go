@@ -111,3 +111,42 @@ func TestTaskLifecycleLogsLaunchAndCompletion(t *testing.T) {
 	}
 }
 
+// TestRequestLogSuppressesNoisyPolls proves that successful GETs to frequently
+// polled endpoints (task events/transcript/detail) do not emit a per-request
+// log line, so high-frequency UI polling does not drown out signal. A real
+// create (POST) is still logged.
+func TestRequestLogSuppressesNoisyPolls(t *testing.T) {
+	var captured bytes.Buffer
+	logger := log.New(&captured, "", 0)
+
+	server, err := daemon.NewServer(daemon.Config{
+		Version: "test-version",
+		DBPath:  ":memory:",
+		Logger:  logger,
+	})
+	if err != nil {
+		t.Fatalf("NewServer returned error: %v", err)
+	}
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
+	taskID := createTask(t, server, projectID, `{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
+		"runner":"sandbox"
+	}`)
+	captured.Reset()
+
+	for _, suffix := range []string{"", "/events", "/transcript"} {
+		req := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID+suffix, nil)
+		server.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	output := captured.String()
+	if strings.Contains(output, "/events") || strings.Contains(output, "/transcript") {
+		t.Fatalf("poll endpoints should not be logged, got:\n%s", output)
+	}
+	if strings.Contains(output, "/tasks/"+taskID+" ") {
+		t.Fatalf("task detail GET should not be logged, got:\n%s", output)
+	}
+}
+

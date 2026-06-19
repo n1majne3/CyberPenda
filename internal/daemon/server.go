@@ -161,7 +161,7 @@ func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Requ
 	start := time.Now()
 	recorder := newStatusRecorder(response)
 	server.mux.ServeHTTP(recorder, request)
-	server.logRequest(start, request.Method, request.URL.Path, recorder.status)
+	server.logRequest(start, request, recorder.status)
 }
 
 func (server *Server) Close() error {
