@@ -89,6 +89,15 @@ func BuildLaunchArgs(req LaunchArgsRequest) ([]string, error) {
 		}
 	case runtimeprofile.ProviderPi:
 		// Pi discovers agent/models.json and agent/auth.json from PI_CODING_AGENT_DIR.
+		if !hasCLIOption(extra, "--provider") {
+			providerID := strings.TrimSpace(req.Profile.Fields.Env["PI_PROVIDER_ID"])
+			if providerID == "" && strings.TrimSpace(req.Profile.Fields.Endpoint) != "" {
+				providerID = "custom"
+			}
+			if providerID != "" {
+				args = append(args, "--provider", providerID)
+			}
+		}
 		if model := strings.TrimSpace(req.Profile.Fields.Model); model != "" {
 			args = append(args, "--model", model)
 		}
@@ -103,6 +112,15 @@ func BuildLaunchArgs(req LaunchArgsRequest) ([]string, error) {
 	}
 
 	return args, nil
+}
+
+func hasCLIOption(args []string, option string) bool {
+	for _, arg := range args {
+		if arg == option || strings.HasPrefix(arg, option+"=") {
+			return true
+		}
+	}
+	return false
 }
 
 func defaultBinary(provider runtimeprofile.Provider) string {

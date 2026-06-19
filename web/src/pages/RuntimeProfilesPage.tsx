@@ -577,7 +577,7 @@ function buildGeneratedConfigPreview(
       env,
       ...(mcpPreview ? { mcp_servers: mcpPreview, mcp_config_path: "workdir/.mcp.json" } : {}),
       ...(fields.api_keys && Object.keys(fields.api_keys).length > 0
-        ? { api_keys: { "<env>": "[REDACTED at launch]" } }
+        ? { api_keys: redactedAPIKeyPreview(fields) }
         : {}),
       ...(fields.default_runner ? { default_runner: fields.default_runner } : {}),
       task_context_path: "workdir/.pentest/context.json",
@@ -613,8 +613,8 @@ function buildGeneratedConfigPreview(
       ...(fields.api_keys && Object.keys(fields.api_keys).length > 0
         ? {
             auth_path: "runtime-home/codex/auth.json",
-            auth_json: { OPENAI_API_KEY: "[REDACTED at launch]" },
-            api_keys: { "<env>": "[REDACTED at launch]" },
+            auth_json: redactedAPIKeyPreview(fields),
+            api_keys: redactedAPIKeyPreview(fields),
           }
         : {}),
       ...(fields.default_runner ? { default_runner: fields.default_runner } : {}),
@@ -654,8 +654,8 @@ function buildGeneratedConfigPreview(
       ...(fields.api_keys && Object.keys(fields.api_keys).length > 0
         ? {
             auth_path: "runtime-home/pi/agent/auth.json",
-            auth_json: { "<provider>": { type: "api_key", key: "[REDACTED at launch]" } },
-            api_keys: { "<env>": "[REDACTED at launch]" },
+            auth_json: buildPiAuthPreview(fields),
+            api_keys: redactedAPIKeyPreview(fields),
           }
         : {}),
       ...(fields.default_runner ? { default_runner: fields.default_runner } : {}),
@@ -671,9 +671,7 @@ function buildGeneratedConfigPreview(
   if (fields.custom_args?.length) cfg.custom_args = fields.custom_args;
   if (fields.env && Object.keys(fields.env).length > 0) cfg.env = fields.env;
   if (fields.api_keys && Object.keys(fields.api_keys).length > 0) {
-    cfg.api_keys = Object.fromEntries(
-      Object.keys(fields.api_keys).map((key) => [key, "[REDACTED at launch]"])
-    );
+    cfg.api_keys = redactedAPIKeyPreview(fields);
   }
   if (mcpPreview) cfg.mcp_servers = mcpPreview;
   if (fields.default_runner) cfg.default_runner = fields.default_runner;
@@ -710,10 +708,21 @@ function buildLaunchPreview(
     processEnv.CLAUDE_HOME = sandbox ? "/task/runtime-home/claude" : "runtime-home/claude";
     if (sandbox) processEnv.IS_SANDBOX = "1";
   } else if (provider === "pi") {
+    if (!hasCLIOption(fields.custom_args, "--provider")) {
+      const providerId = fields.env?.PI_PROVIDER_ID?.trim() || (fields.endpoint?.trim() ? "custom" : "");
+      if (providerId) args.push("--provider", providerId);
+    }
     if (fields.model) args.push("--model", fields.model);
     for (const arg of fields.custom_args ?? []) args.push(arg);
     args.push("<goal>");
     processEnv.PI_CODING_AGENT_DIR = sandbox ? "/task/runtime-home/pi/agent" : "runtime-home/pi/agent";
+  }
+
+  for (const [key, value] of Object.entries(fields.env ?? {})) {
+    processEnv[key] = value;
+  }
+  for (const key of Object.keys(fields.api_keys ?? {})) {
+    processEnv[key] = "[REDACTED at launch]";
   }
 
   if (sandbox) {
@@ -724,6 +733,29 @@ function buildLaunchPreview(
   }
 
   return { argv: args, process_env: processEnv, runner: fields.default_runner ?? "sandbox" };
+}
+
+function hasCLIOption(args: string[] | undefined, option: string): boolean {
+  return (args ?? []).some((arg) => arg === option || arg.startsWith(`${option}=`));
+}
+
+function redactedAPIKeyPreview(fields: RuntimeProfileFields): Record<string, string> {
+  return Object.fromEntries(
+    Object.keys(fields.api_keys ?? {})
+      .filter((key) => key.trim())
+      .map((key) => [key, "[REDACTED at launch]"])
+  );
+}
+
+function buildPiAuthPreview(fields: RuntimeProfileFields): Record<string, { type: string; key: string }> {
+  const apiKeyEnv = Object.keys(fields.api_keys ?? {})
+    .filter((key) => key.trim())
+    .sort()[0];
+  if (!apiKeyEnv) return {};
+  const providerId = fields.env?.PI_PROVIDER_ID?.trim() || "custom";
+  return {
+    [providerId]: { type: "api_key", key: "[REDACTED at launch]" },
+  };
 }
 
 function trustedMCPDisabled(env?: Record<string, string>): boolean {

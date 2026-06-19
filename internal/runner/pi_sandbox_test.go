@@ -1,11 +1,14 @@
 package runner_test
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"pentest/internal/credential"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
+	"pentest/internal/store"
 )
 
 func TestWrapSandboxPiCommandInstallsPiWhenMissing(t *testing.T) {
@@ -61,6 +64,82 @@ func TestLaunchProcessEnvSetsPiCodingAgentDirInSandbox(t *testing.T) {
 	}
 	if env["PI_HOME"] != "" {
 		t.Fatalf("expected PI_HOME to be unset, got %#v", env["PI_HOME"])
+	}
+}
+
+func TestLaunchProcessEnvWithCredentialsInjectsPiInlineAPIKey(t *testing.T) {
+	root := t.TempDir()
+	layout, err := runner.PrepareTaskLayout(root, "task-pi-inline", runtimeprofile.ProviderPi)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+
+	profile := runtimeprofile.Profile{
+		Provider: runtimeprofile.ProviderPi,
+		Fields: runtimeprofile.Fields{
+			Env: map[string]string{
+				"PI_PROVIDER_ID": "custom",
+			},
+			APIKeys: map[string]string{
+				"ANTHROPIC_API_KEY": "sk-ant-inline",
+			},
+		},
+	}
+
+	env, err := runner.LaunchProcessEnvWithCredentials(layout, profile, true, runner.TaskContext{}, runner.ProjectionRequest{})
+	if err != nil {
+		t.Fatalf("launch env: %v", err)
+	}
+	if env["ANTHROPIC_API_KEY"] != "sk-ant-inline" {
+		t.Fatalf("expected inline Pi API key in process env, got %#v", env["ANTHROPIC_API_KEY"])
+	}
+	if env["PI_PROVIDER_ID"] != "custom" {
+		t.Fatalf("expected profile env in process env, got %#v", env["PI_PROVIDER_ID"])
+	}
+}
+
+func TestLaunchProcessEnvWithCredentialsInjectsPiCredentialRefAPIKey(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-bound")
+
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	creds := credential.NewService(db)
+	if _, err := creds.Upsert("anthropic-key", credential.ScopeGlobal, "", credential.Source{
+		Kind:  credential.SourceEnv,
+		Value: "ANTHROPIC_API_KEY",
+	}, false); err != nil {
+		t.Fatalf("upsert binding: %v", err)
+	}
+
+	root := t.TempDir()
+	layout, err := runner.PrepareTaskLayout(root, "task-pi-ref", runtimeprofile.ProviderPi)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+
+	env, err := runner.LaunchProcessEnvWithCredentials(
+		layout,
+		runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderPi,
+			Fields: runtimeprofile.Fields{
+				CredentialRefs: []string{"anthropic-key"},
+			},
+		},
+		true,
+		runner.TaskContext{},
+		runner.ProjectionRequest{
+			ProjectID:   "project-1",
+			Credentials: creds,
+		},
+	)
+	if err != nil {
+		t.Fatalf("launch env: %v", err)
+	}
+	if env["ANTHROPIC_API_KEY"] != "sk-ant-bound" {
+		t.Fatalf("expected bound Pi API key in process env, got %#v", env["ANTHROPIC_API_KEY"])
 	}
 }
 

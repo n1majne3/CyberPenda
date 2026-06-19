@@ -122,6 +122,58 @@ func TestBuildClaudeCodeLaunchArgsUsesStrictMCPConfig(t *testing.T) {
 	}
 }
 
+func TestBuildPiLaunchArgsSelectsGeneratedCustomProvider(t *testing.T) {
+	args, err := adapters.BuildLaunchArgs(adapters.LaunchArgsRequest{
+		Provider: runtimeprofile.ProviderPi,
+		Profile: runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderPi,
+			Fields: runtimeprofile.Fields{
+				Model:    "DeepSeek-V4-Pro",
+				Endpoint: "https://api.edgefn.net/v1",
+			},
+		},
+		Goal: "test authorized target",
+	})
+	if err != nil {
+		t.Fatalf("build args: %v", err)
+	}
+
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--provider custom") {
+		t.Fatalf("expected generated custom provider selection, got %q", joined)
+	}
+	if !strings.Contains(joined, "--model DeepSeek-V4-Pro") {
+		t.Fatalf("expected configured model, got %q", joined)
+	}
+}
+
+func TestBuildPiLaunchArgsPreservesExplicitProviderArg(t *testing.T) {
+	args, err := adapters.BuildLaunchArgs(adapters.LaunchArgsRequest{
+		Provider: runtimeprofile.ProviderPi,
+		Profile: runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderPi,
+			Fields: runtimeprofile.Fields{
+				Model:      "mimo-v2.5-pro",
+				Endpoint:   "https://api.example.test/v1",
+				CustomArgs: []string{"--provider", "xiaomi-token-plan-cn"},
+				Env:        map[string]string{"PI_PROVIDER_ID": "custom"},
+			},
+		},
+		Goal: "test authorized target",
+	})
+	if err != nil {
+		t.Fatalf("build args: %v", err)
+	}
+
+	joined := strings.Join(args, " ")
+	if strings.Count(joined, "--provider") != 1 {
+		t.Fatalf("expected one explicit provider argument, got %q", joined)
+	}
+	if !strings.Contains(joined, "--provider xiaomi-token-plan-cn") {
+		t.Fatalf("expected explicit provider to win, got %q", joined)
+	}
+}
+
 // TestRedactSecretsFromEventPayload proves adapters redact resolved secret
 // values before they reach task events.
 func TestRedactSecretsFromEventPayload(t *testing.T) {

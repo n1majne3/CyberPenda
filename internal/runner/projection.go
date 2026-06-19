@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"pentest/internal/credential"
@@ -237,7 +238,7 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 	var authPreview map[string]any
 	if len(materialized) > 0 {
 		authPath = filepath.Join(agentDir, "auth.json")
-		authDoc := buildPiAuth(materialized)
+		authDoc := buildPiAuth(profile, materialized)
 		authRaw, err := json.MarshalIndent(authDoc, "", "  ")
 		if err != nil {
 			return ConfigProjection{}, fmt.Errorf("encode pi auth: %w", err)
@@ -254,9 +255,9 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 	}
 
 	preview := map[string]any{
-		"provider":     string(profile.Provider),
-		"models_path":  modelsPath,
-		"models_json":  modelsDoc,
+		"provider":    string(profile.Provider),
+		"models_path": modelsPath,
+		"models_json": modelsDoc,
 	}
 	if authPath != "" {
 		preview["auth_path"] = authPath
@@ -357,10 +358,7 @@ func redactCodexAuth(auth map[string]string) map[string]any {
 }
 
 func buildPiModels(profile runtimeprofile.Profile, materialized map[string]string) map[string]any {
-	providerID := strings.TrimSpace(profile.Fields.Env["PI_PROVIDER_ID"])
-	if providerID == "" {
-		providerID = "custom"
-	}
+	providerID := piProviderID(profile)
 
 	provider := map[string]any{}
 	if endpoint := strings.TrimSpace(profile.Fields.Endpoint); endpoint != "" {
@@ -383,16 +381,17 @@ func buildPiModels(profile runtimeprofile.Profile, materialized map[string]strin
 	}
 }
 
-func buildPiAuth(materialized map[string]string) map[string]map[string]string {
-	auth := make(map[string]map[string]string, len(materialized))
-	for envKey, value := range materialized {
-		providerKey := mapEnvKeyToPiAuthProvider(envKey)
-		auth[providerKey] = map[string]string{
-			"type": "api_key",
-			"key":  value,
-		}
+func buildPiAuth(profile runtimeprofile.Profile, materialized map[string]string) map[string]map[string]string {
+	envKey := piAPIKeyEnv(materialized)
+	if envKey == "" {
+		return nil
 	}
-	return auth
+	return map[string]map[string]string{
+		piProviderID(profile): {
+			"type": "api_key",
+			"key":  materialized[envKey],
+		},
+	}
 }
 
 func redactPiAuth(auth map[string]map[string]string) map[string]any {
@@ -427,35 +426,31 @@ func inferPiAPI(profile runtimeprofile.Profile) string {
 }
 
 func piAPIKeyRef(materialized map[string]string) string {
-	for key := range materialized {
+	if key := piAPIKeyEnv(materialized); key != "" {
 		return "$" + key
 	}
 	return ""
 }
 
-func mapEnvKeyToPiAuthProvider(envKey string) string {
-	switch strings.ToUpper(envKey) {
-	case "OPENAI_API_KEY":
-		return "openai"
-	case "ANTHROPIC_API_KEY":
-		return "anthropic"
-	case "GEMINI_API_KEY":
-		return "google"
-	case "OPENROUTER_API_KEY":
-		return "openrouter"
-	case "AI_GATEWAY_API_KEY":
-		return "vercel-ai-gateway"
-	case "GROQ_API_KEY":
-		return "groq"
-	case "MISTRAL_API_KEY":
-		return "mistral"
-	case "DEEPSEEK_API_KEY":
-		return "deepseek"
-	case "XAI_API_KEY":
-		return "xai"
-	default:
-		return strings.ToLower(strings.ReplaceAll(envKey, "_", "-"))
+func piProviderID(profile runtimeprofile.Profile) string {
+	if providerID := strings.TrimSpace(profile.Fields.Env["PI_PROVIDER_ID"]); providerID != "" {
+		return providerID
 	}
+	return "custom"
+}
+
+func piAPIKeyEnv(materialized map[string]string) string {
+	keys := make([]string, 0, len(materialized))
+	for key := range materialized {
+		if strings.TrimSpace(key) != "" {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	if len(keys) == 0 {
+		return ""
+	}
+	return keys[0]
 }
 
 func copyHostCodexAuth(providerHome string) (bool, error) {
@@ -606,4 +601,34 @@ func LaunchProcessEnv(layout Layout, profile runtimeprofile.Profile, sandbox boo
 		}
 	}
 	return env
+}
+
+// LaunchProcessEnvWithCredentials returns process environment variables for a
+// runtime launch, including profile env and resolved API key material needed by
+// runtimes that interpolate env references from their generated config.
+func LaunchProcessEnvWithCredentials(layout Layout, profile runtimeprofile.Profile, sandbox bool, ctx TaskContext, req ProjectionRequest) (map[string]string, error) {
+	env := LaunchProcessEnv(layout, profile, sandbox, ctx)
+	for key, value := range profile.Fields.Env {
+		env[key] = value
+	}
+
+	if profile.Provider == runtimeprofile.ProviderClaudeCode {
+		claudeEnv, err := buildClaudeEnv(profile, req)
+		if err != nil {
+			return nil, err
+		}
+		for key, value := range claudeEnv {
+			env[key] = value
+		}
+		return env, nil
+	}
+
+	materialized, err := resolveMaterializedCredentials(profile, req)
+	if err != nil {
+		return nil, err
+	}
+	for key, value := range materialized {
+		env[key] = value
+	}
+	return env, nil
 }

@@ -146,6 +146,39 @@ func TestBuildSandboxCommandConstructsContainerLaunchWithoutExecution(t *testing
 	}
 }
 
+func TestBuildSandboxCommandUsesAbsoluteBindMountForRelativeTaskRoot(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	layout, err := runner.PrepareTaskLayout("runs", "task-relative", runtimeprofile.ProviderPi)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+	command, err := runner.BuildSandboxCommand(runner.SandboxCommandRequest{
+		Layout:         layout,
+		Provider:       runtimeprofile.ProviderPi,
+		Image:          "pentest-kali:local",
+		RuntimeCommand: []string{"pi", "goal"},
+	})
+	if err != nil {
+		t.Fatalf("build command: %v", err)
+	}
+
+	absoluteTaskRoot, err := filepath.Abs(layout.TaskRoot)
+	if err != nil {
+		t.Fatalf("absolute task root: %v", err)
+	}
+	wantMount := absoluteTaskRoot + ":/task"
+	for i, arg := range command.Args {
+		if arg == "-v" && i+1 < len(command.Args) {
+			if command.Args[i+1] != wantMount {
+				t.Fatalf("expected absolute bind mount %q, got %q", wantMount, command.Args[i+1])
+			}
+			return
+		}
+	}
+	t.Fatalf("expected volume mount in docker args: %#v", command.Args)
+}
+
 func TestHostRunnerRequiresExplicitActivationOrYOLO(t *testing.T) {
 	err := runner.ValidateActivation(runner.ActivationRequest{Runner: runner.RunnerHost})
 	if !errors.Is(err, runner.ErrHostRunnerRequiresActivation) {

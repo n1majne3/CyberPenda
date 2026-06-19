@@ -129,13 +129,17 @@ func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 	if image == "" {
 		image = "kalilinux/kali-rolling"
 	}
+	taskRoot, err := filepath.Abs(request.Layout.TaskRoot)
+	if err != nil {
+		return Command{}, fmt.Errorf("resolve task root: %w", err)
+	}
 	args := []string{
 		"run",
 		"--rm",
 		"-i",
 		"--add-host=host.docker.internal:host-gateway",
 		"-v",
-		request.Layout.TaskRoot + ":/task",
+		taskRoot + ":/task",
 		"-w",
 		"/task/workdir",
 		"-e",

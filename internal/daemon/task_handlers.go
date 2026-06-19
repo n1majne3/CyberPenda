@@ -225,18 +225,15 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string) (r
 		MCPURL:    mcpURL,
 		Sandbox:   sandbox,
 	}
-	processEnv := runner.LaunchProcessEnv(layout, profile, sandbox, launchCtx)
-	if profile.Provider == runtimeprofile.ProviderClaudeCode {
-		claudeEnv, err := runner.ClaudeProcessEnv(profile, runner.ProjectionRequest{
-			ProjectID:   created.ProjectID,
-			Credentials: server.creds,
-		})
-		if err != nil {
-			return nil, nil, err
-		}
-		for key, value := range claudeEnv {
-			processEnv[key] = value
-		}
+	processEnv, err := runner.LaunchProcessEnvWithCredentials(layout, profile, sandbox, launchCtx, runner.ProjectionRequest{
+		ProjectID:   created.ProjectID,
+		TaskID:      created.ID,
+		Credentials: server.creds,
+		DaemonAddr:  server.listenAddr,
+		Sandbox:     sandbox,
+	})
+	if err != nil {
+		return nil, nil, err
 	}
 	if sandbox {
 		sandboxImage := strings.TrimSpace(profile.Fields.SandboxImage)

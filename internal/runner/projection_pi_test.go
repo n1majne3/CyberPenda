@@ -103,23 +103,23 @@ func TestProjectPiConfigWritesModelsAndAuth(t *testing.T) {
 	if err := json.Unmarshal(authRaw, &auth); err != nil {
 		t.Fatalf("decode auth.json: %v", err)
 	}
-	entry, ok := auth["anthropic"]
+	entry, ok := auth["custom"]
 	if !ok {
-		t.Fatalf("expected anthropic auth entry, got %#v", auth)
+		t.Fatalf("expected custom provider auth entry, got %#v", auth)
 	}
 	if entry.Type != "api_key" || entry.Key != "sk-ant-test-key" {
-		t.Fatalf("unexpected anthropic auth: %#v", entry)
+		t.Fatalf("unexpected custom provider auth: %#v", entry)
 	}
 
 	authPreview, ok := projection.Config["auth_json"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected auth_json preview, got %#v", projection.Config["auth_json"])
 	}
-	anthropicPreview, ok := authPreview["anthropic"].(map[string]any)
+	customPreview, ok := authPreview["custom"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected anthropic preview entry, got %#v", authPreview["anthropic"])
+		t.Fatalf("expected custom provider preview entry, got %#v", authPreview["custom"])
 	}
-	if anthropicPreview["key"] != "[REDACTED]" {
-		t.Fatalf("expected redacted key preview, got %#v", anthropicPreview["key"])
+	if customPreview["key"] != "[REDACTED]" {
+		t.Fatalf("expected redacted key preview, got %#v", customPreview["key"])
 	}
 }
