@@ -5,6 +5,10 @@ import { cn } from "@/lib/utils";
 import { Button, Card, Input, Label, Badge, Textarea } from "@/components/ui";
 
 const FALLBACK_PROVIDER_IDS = ["codex", "claude_code", "pi", "fake"] as const;
+// HIDDEN_PROVIDER_IDS are real, registered providers that should not be
+// selectable when creating a profile (e.g. the in-process fake harness used
+// for tests). Profiles already using one are still displayed and editable.
+const HIDDEN_PROVIDER_IDS = new Set(["fake"]);
 const RUNNERS = ["sandbox", "host"] as const;
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -207,7 +211,7 @@ export function RuntimeProfilesPage() {
               onClick={() => {
                 setCreating(true);
                 setSelectedId(null);
-                setForm({ ...emptyForm, provider: effectivePlugins[0]?.id ?? "codex" });
+                setForm({ ...emptyForm, provider: defaultProvider(effectivePlugins) });
               }}
             >
               <Plus className="h-4 w-4" />
@@ -373,6 +377,14 @@ function pluginFor(plugins: RuntimePlugin[], provider: string): RuntimePlugin | 
   return plugins.find((plugin) => plugin.id === provider);
 }
 
+// defaultProvider returns the first selectable (non-hidden) plugin id, so that
+// creating a new profile never defaults to a hidden provider like the fake
+// harness. Falls back to the first plugin or "codex" when none qualify.
+function defaultProvider(plugins: RuntimePlugin[]): string {
+  const first = plugins.find((plugin) => !HIDDEN_PROVIDER_IDS.has(plugin.id));
+  return first?.id ?? plugins[0]?.id ?? "codex";
+}
+
 function pluginLabel(plugins: RuntimePlugin[], provider: string): string {
   return pluginFor(plugins, provider)?.name || PROVIDER_LABELS[provider] || provider;
 }
@@ -415,7 +427,7 @@ function ProfileEditor({
   const [catalogItemToAdd, setCatalogItemToAdd] = useState("");
   const [manualExtensionID, setManualExtensionID] = useState("");
   const plugin = pluginFor(plugins, form.provider);
-  const providerOptions = plugin
+  const providerOptions = (plugin
     ? plugins
     : [
         ...plugins,
@@ -430,7 +442,8 @@ function ProfileEditor({
           launch: { args: ["{{binary}}", "{{goal}}"] },
           transcript: { parser: "plain_runtime_output" },
         },
-      ];
+      ]
+  ).filter((p) => p.id === form.provider || !HIDDEN_PROVIDER_IDS.has(p.id));
   const has = (field: string) => pluginHasField(plugin, field);
   const apiKeyPlaceholder = defaultAPIKeyEnv(form.provider, plugins) ?? "API_KEY";
   const compatibleExtensions = extensions.filter((extension) =>
