@@ -191,23 +191,13 @@ export function TaskDetailPage() {
         </div>
       </Card>
 
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border mb-3">
-        <div className="flex items-center gap-1">
-          <button className={tabClass(activeView === "conversation")} onClick={() => setActiveView("conversation")}>
-            <MessageSquare className="h-4 w-4" /> Conversation
-          </button>
-          <button className={tabClass(activeView === "timeline")} onClick={() => setActiveView("timeline")}>
-            <Activity className="h-4 w-4" /> Timeline
-          </button>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={scrollToTop}>
-            <ArrowUp className="h-4 w-4 mr-1" /> Top
-          </Button>
-          <Button size="sm" variant={autoFollow ? "secondary" : "outline"} onClick={scrollToLatest}>
-            <ArrowDown className="h-4 w-4 mr-1" /> Bottom
-          </Button>
-        </div>
+      <div className="flex items-center gap-1 border-b border-border mb-3">
+        <button className={tabClass(activeView === "conversation")} onClick={() => setActiveView("conversation")}>
+          <MessageSquare className="h-4 w-4" /> Conversation
+        </button>
+        <button className={tabClass(activeView === "timeline")} onClick={() => setActiveView("timeline")}>
+          <Activity className="h-4 w-4" /> Timeline
+        </button>
       </div>
 
       {activeView === "conversation" ? (
@@ -215,6 +205,8 @@ export function TaskDetailPage() {
       ) : (
         <TimelineList events={events} endRef={timelineEnd} />
       )}
+
+      <FloatingScrollControls autoFollow={autoFollow} onTop={scrollToTop} onBottom={scrollToLatest} />
     </div>
   );
 }
@@ -240,6 +232,27 @@ function findScrollContainer(element: HTMLElement | null): HTMLElement {
 
 function isNearScrollBottom(container: HTMLElement, threshold = 160) {
   return container.scrollHeight - (container.scrollTop + container.clientHeight) <= threshold;
+}
+
+function FloatingScrollControls({
+  autoFollow,
+  onTop,
+  onBottom,
+}: {
+  autoFollow: boolean;
+  onTop: () => void;
+  onBottom: () => void;
+}) {
+  return (
+    <div className="fixed bottom-5 right-5 z-30 flex flex-col gap-2">
+      <Button size="sm" variant="outline" className="h-9 w-9 p-0 shadow-md" onClick={onTop} aria-label="Scroll to top" title="Top">
+        <ArrowUp className="h-4 w-4" />
+      </Button>
+      <Button size="sm" variant={autoFollow ? "secondary" : "outline"} className="h-9 w-9 p-0 shadow-md" onClick={onBottom} aria-label="Scroll to bottom" title="Bottom">
+        <ArrowDown className="h-4 w-4" />
+      </Button>
+    </div>
+  );
 }
 
 function StatusBadge({ status }: { status: string }) {
