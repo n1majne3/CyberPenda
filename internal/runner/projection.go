@@ -416,6 +416,22 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 		authPreview = map[string]any{"source": "host_pi_auth"}
 	}
 
+	// Catalog-sourced runtime extensions (npm: install refs) are installed by
+	// pi on launch when listed in settings.json packages. Project them so a
+	// profile's enabled catalog extensions actually take effect.
+	packages := piExtensionPackages(profile)
+	if len(packages) > 0 {
+		settings := map[string]any{"packages": packages}
+		settingsPath := filepath.Join(agentDir, "settings.json")
+		settingsRaw, err := json.MarshalIndent(settings, "", "  ")
+		if err != nil {
+			return ConfigProjection{}, fmt.Errorf("encode pi settings: %w", err)
+		}
+		if err := os.WriteFile(settingsPath, settingsRaw, 0o600); err != nil {
+			return ConfigProjection{}, fmt.Errorf("write pi settings: %w", err)
+		}
+	}
+
 	preview := map[string]any{
 		"provider":    string(profile.Provider),
 		"models_path": modelsPath,
@@ -441,8 +457,31 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 		preview["mcp_servers"] = servers
 		preview["mcp_config_path"] = filepath.Join(agentDir, "mcp.json")
 	}
+	if len(packages) > 0 {
+		preview["packages"] = packages
+	}
 
 	return ConfigProjection{ConfigPath: modelsPath, Config: preview}, nil
+}
+
+// piExtensionPackages collects the install_ref of each enabled runtime
+// extension whose config carries an npm-style install ref. These are the
+// catalog-sourced extensions pi installs itself on launch via settings.json
+// packages. Local-registry extensions (copied as files) carry no install_ref
+// and are intentionally excluded.
+func piExtensionPackages(profile runtimeprofile.Profile) []string {
+	var packages []string
+	for _, ref := range profile.Fields.RuntimeExtensions {
+		if !runtimeExtensionRefEnabled(ref) {
+			continue
+		}
+		installRef := strings.TrimSpace(ref.Config["install_ref"])
+		if installRef == "" {
+			continue
+		}
+		packages = append(packages, installRef)
+	}
+	return packages
 }
 
 func resolveMaterializedCredentials(profile runtimeprofile.Profile, req ProjectionRequest) (map[string]string, error) {

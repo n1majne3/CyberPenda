@@ -123,3 +123,82 @@ func TestProjectPiConfigWritesModelsAndAuth(t *testing.T) {
 		t.Fatalf("expected redacted key preview, got %#v", customPreview["key"])
 	}
 }
+
+// TestProjectPiConfigWritesCatalogExtensionPackages proves that catalog-sourced
+// runtime extensions (npm: install refs selected from the catalog) are written
+// into the pi agent settings.json packages field, so pi installs them on launch.
+func TestProjectPiConfigWritesCatalogExtensionPackages(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	root := t.TempDir()
+	layout, err := runner.PrepareTaskLayout(root, "task-pi-ext", runtimeprofile.ProviderPi)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+
+	enabled := true
+	profile := runtimeprofile.Profile{
+		Provider: runtimeprofile.ProviderPi,
+		Fields: runtimeprofile.Fields{
+			Model: "DeepSeek-V4-Pro",
+			RuntimeExtensions: []runtimeprofile.RuntimeExtensionRef{
+				{
+					ID:      "npm:pi-mcp-adapter",
+					Enabled: &enabled,
+					Config: map[string]string{
+						"install_ref": "npm:pi-mcp-adapter",
+						"registry":    "pi.dev/packages",
+						"source_url":  "https://pi.dev/packages/pi-mcp-adapter",
+					},
+				},
+				{
+					ID:      "npm:pi-subagents",
+					Enabled: &enabled,
+					Config: map[string]string{
+						"install_ref": "npm:pi-subagents",
+						"registry":    "pi.dev/packages",
+					},
+				},
+			},
+		},
+	}
+
+	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		ProjectID: "project-1",
+	})
+	if err != nil {
+		t.Fatalf("project config: %v", err)
+	}
+
+	settingsPath := filepath.Join(layout.ProviderHome, "agent", "settings.json")
+	raw, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings.json: %v", err)
+	}
+	var settings struct {
+		Packages []string `json:"packages"`
+	}
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		t.Fatalf("decode settings.json: %v", err)
+	}
+	want := map[string]bool{"npm:pi-mcp-adapter": true, "npm:pi-subagents": true}
+	got := map[string]bool{}
+	for _, p := range settings.Packages {
+		got[p] = true
+	}
+	for ref := range want {
+		if !got[ref] {
+			t.Fatalf("expected packages to contain %q, got %#v", ref, settings.Packages)
+		}
+	}
+	if preview, ok := projection.Config["packages"].([]string); !ok || len(preview) != 2 {
+		t.Fatalf("expected packages preview with 2 entries, got %#v", projection.Config["packages"])
+	}
+}
+
