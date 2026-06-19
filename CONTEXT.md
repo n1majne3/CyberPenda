@@ -108,6 +108,18 @@ _Avoid_: remote plugin store, package manager
 A built-in daemon implementation named by a **Runtime Plugin Manifest**, such as a config projection primitive or transcript parser.
 _Avoid_: manifest code, user-provided hook
 
+**Runtime Extension**:
+A runtime-native plugin, skill, package, or configuration bundle that a selected **Runtime** consumes after **Config Projection** prepares it for a **Task**.
+_Avoid_: runtime provider, daemon plugin, arbitrary host hook
+
+**Runtime Extension Manifest**:
+The declarative document that identifies a **Runtime Extension**, its compatible **Runtime Plugins**, source location, task-local projection target, and non-secret configuration.
+_Avoid_: executable installer, credential file, remote marketplace listing
+
+**Runtime Extension Projection**:
+The task-local materialization of enabled **Runtime Extensions** into the selected **Runtime**'s home, config, skill, plugin, or MCP-compatible directories.
+_Avoid_: host runtime mutation, global plugin install, profile edit side effect
+
 **Profile Selector**:
 A user-facing control for choosing or quickly switching the **Runtime Profile** used by a **Task**.
 _Avoid_: raw config picker, provider switch only
@@ -361,6 +373,9 @@ _Avoid_: transcript, export, source of truth
 - A **Runtime Plugin Manifest** may declare credential environment names but must not contain credential values.
 - A **Runtime Plugin Manifest** is declarative and may reference only known **Runtime Plugin Primitives**.
 - A **Runtime Plugin Registry** is the source of supported runtime provider identifiers.
+- A **Runtime Extension** belongs to a selected **Runtime Plugin** and does not define a new runtime provider identifier.
+- A **Runtime Extension Manifest** may declare compatibility, source paths, projection targets, and non-secret defaults but must not contain credential values.
+- **Runtime Extension Projection** happens during **Config Projection** and must not mutate host runtime plugin directories.
 - A **Credential Reference** resolves first through **Credential Bindings**, then through **Global Credential Bindings**.
 - A **Project** may define **Credential Bindings** that override **Global Credential Bindings** for **Credential References** used by global **Runtime Profiles**.
 - **Credential Binding Mode** defaults to using **Global Credential Bindings** unless the user explicitly chooses a project override.
@@ -583,6 +598,8 @@ _Avoid_: transcript, export, source of truth
 - **Runtime Plugin** is not arbitrary code; resolved: v0 runtime plugins are declarative manifests that reference built-in daemon primitives.
 - **Runtime Plugin Manifest** is not secret storage; resolved: manifests declare credential names and requirements while credential values resolve through bindings.
 - **Runtime Plugin Registry** is not a remote marketplace; resolved: built-ins load first, and external manifests require explicit local trust.
+- **Runtime Extension** is not a **Runtime Plugin**; resolved: extensions are consumed by a runtime selected through a runtime plugin, while runtime plugins define the provider family itself.
+- **Runtime Extension Projection** is not a global install; resolved: enabled extensions are materialized into the task-local runtime boundary.
 - **Config Projection** failure is not automatically **Runtime Profile** invalidity; resolved: treat it as a **Task** startup failure unless validation proves the profile itself is invalid.
 - **Preflight** failure is not **Runtime** failure; resolved: startup checks fail before the runtime performs task work.
 - **CLI Fallback** is not a bypass; resolved: CLI writes carry the same validation, provenance, audit, and blackboard semantics as other project interfaces.
