@@ -716,6 +716,84 @@ func quoteJSON(value string) string {
 	return string(raw)
 }
 
+// findTargetRewriteEvent returns the lifecycle target_rewrite event for a task,
+// or nil when none was recorded.
+func findTargetRewriteEvent(events []map[string]any) map[string]any {
+	for _, event := range events {
+		if event["kind"] != "lifecycle" {
+			continue
+		}
+		payload, _ := event["payload"].(map[string]any)
+		if payload["phase"] == "target_rewrite" {
+			return payload
+		}
+	}
+	return nil
+}
+
+// TestCreateTaskRecordsLoopbackRewriteEvent proves that launching a sandbox
+// task whose goal contains a loopback target records a lifecycle
+// target_rewrite event, while host-runner tasks and loopback-free goals do not.
+func TestCreateTaskRecordsLoopbackRewriteEvent(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
+
+	taskID := createTask(t, server, projectID, `{
+		"goal":"recon http://127.0.0.1:3000 and find the score board",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
+		"runner":"sandbox"
+	}`)
+
+	events := getTaskEvents(t, server, projectID, taskID)
+	payload := findTargetRewriteEvent(events)
+	if payload == nil {
+		t.Fatalf("expected a target_rewrite event, got events: %#v", events)
+	}
+	if from, _ := payload["from"].(string); !strings.Contains(from, "127.0.0.1:3000") {
+		t.Fatalf("expected from to contain the loopback goal, got %q", from)
+	}
+	to, _ := payload["to"].(string)
+	if !strings.Contains(to, "host.docker.internal:3000") || strings.Contains(to, "127.0.0.1") {
+		t.Fatalf("expected to to be rewritten to host.docker.internal, got %q", to)
+	}
+}
+
+func TestCreateTaskOmitsRewriteEventForHostRunner(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
+
+	taskID := createTask(t, server, projectID, `{
+		"goal":"recon http://127.0.0.1:3000",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
+		"runner":"host",
+		"run_controls":{"host_activated":true}
+	}`)
+
+	events := getTaskEvents(t, server, projectID, taskID)
+	if findTargetRewriteEvent(events) != nil {
+		t.Fatalf("expected no target_rewrite event for host runner, got events: %#v", events)
+	}
+}
+
+func TestCreateTaskOmitsRewriteEventWhenGoalHasNoLoopback(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
+
+	taskID := createTask(t, server, projectID, `{
+		"goal":"enumerate example.com only",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
+		"runner":"sandbox"
+	}`)
+
+	events := getTaskEvents(t, server, projectID, taskID)
+	if findTargetRewriteEvent(events) != nil {
+		t.Fatalf("expected no target_rewrite event for loopback-free goal, got events: %#v", events)
+	}
+}
+
 func putTaskSummary(t *testing.T, server interface {
 	ServeHTTP(http.ResponseWriter, *http.Request)
 }, projectID, taskID, body string) {

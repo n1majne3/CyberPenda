@@ -102,6 +102,8 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		return
 	}
 
+	server.recordLoopbackRewriteEvent(created)
+
 	server.launchTaskInBackground(created, adapter)
 
 	if _, err := server.approvals.RecordAudit(approval.AuditEntry{
@@ -166,6 +168,27 @@ func (server *Server) applyTaskLaunchDefaults(projectID, requestedProfileID stri
 	return resolved, nil
 }
 
+// recordLoopbackRewriteEvent records a task event when a sandbox task's goal
+// loopback targets were rewritten to host.docker.internal. It is a best-effort
+// record: failures are ignored so they cannot block task launch. Host-runner
+// tasks and goals without loopback targets produce no event.
+func (server *Server) recordLoopbackRewriteEvent(created task.Task) {
+	sandbox := created.Runner == task.RunnerSandbox
+	if !sandbox {
+		return
+	}
+	rewritten := runner.RewriteLoopbackTargets(created.Goal, sandbox)
+	if rewritten == created.Goal {
+		return
+	}
+	_, _ = server.tasks.AppendEvent(created.ID, task.EventKindLifecycle, task.EventPayload{
+		"phase": "target_rewrite",
+		"from":  created.Goal,
+		"to":    rewritten,
+		"note":  "loopback targets rewritten to host.docker.internal for sandbox runtime",
+	})
+}
+
 func (server *Server) buildTaskAdapter(created task.Task) (runtime.Adapter, map[string]any, error) {
 	return server.buildTaskAdapterForGoal(created, created.Goal)
 }
@@ -192,6 +215,7 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string) (r
 	}
 
 	sandbox := created.Runner == task.RunnerSandbox
+	goal = runner.RewriteLoopbackTargets(goal, sandbox)
 	mcpURL := runner.MCPEndpointURL(server.listenAddr, sandbox)
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
 		ProjectID:         created.ProjectID,

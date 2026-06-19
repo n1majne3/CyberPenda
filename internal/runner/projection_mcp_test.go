@@ -271,6 +271,61 @@ func TestLaunchProcessEnvSetsPentestContext(t *testing.T) {
 	}
 }
 
+func TestAGENTSMDDocumentsLoopbackRewriteInSandbox(t *testing.T) {
+	root := t.TempDir()
+	layout, err := runner.PrepareTaskLayout(root, "task-agents", runtimeprofile.ProviderClaudeCode)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+
+	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderClaudeCode}
+	if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		ProjectID:  "project-1",
+		TaskID:     "task-agents",
+		DaemonAddr: "127.0.0.1:8787",
+		Sandbox:    true,
+	}); err != nil {
+		t.Fatalf("project config: %v", err)
+	}
+
+	agents, err := os.ReadFile(filepath.Join(layout.Workdir, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("read AGENTS.md: %v", err)
+	}
+	if !strings.Contains(string(agents), "host.docker.internal") {
+		t.Fatalf("expected sandbox AGENTS.md to document the loopback rewrite, got:\n%s", agents)
+	}
+	if !strings.Contains(string(agents), "do not try to reinstall") {
+		t.Fatalf("expected sandbox AGENTS.md to warn against reinstalling the target, got:\n%s", agents)
+	}
+}
+
+func TestAGENTSMDOmitsLoopbackRewriteForHostRunner(t *testing.T) {
+	root := t.TempDir()
+	layout, err := runner.PrepareTaskLayout(root, "task-host", runtimeprofile.ProviderClaudeCode)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+
+	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderClaudeCode}
+	if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		ProjectID:  "project-1",
+		TaskID:     "task-host",
+		DaemonAddr: "127.0.0.1:8787",
+		Sandbox:    false,
+	}); err != nil {
+		t.Fatalf("project config: %v", err)
+	}
+
+	agents, err := os.ReadFile(filepath.Join(layout.Workdir, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("read AGENTS.md: %v", err)
+	}
+	if strings.Contains(string(agents), "Host-reachable targets") {
+		t.Fatalf("expected host-runner AGENTS.md to omit the rewrite section, got:\n%s", agents)
+	}
+}
+
 func TestBuildSandboxCommandPassesProcessEnv(t *testing.T) {
 	root := t.TempDir()
 	layout, err := runner.PrepareTaskLayout(root, "task-123", runtimeprofile.ProviderCodex)
