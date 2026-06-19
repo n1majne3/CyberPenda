@@ -110,6 +110,72 @@ func TestClaudeProcessEnvMaterializesInlineAPIKeys(t *testing.T) {
 	}
 }
 
+// TestProjectClaudeSettingsWritesCatalogExtensionPlugins proves that
+// catalog-sourced runtime extensions (plugin install refs from the
+// claude-plugins-official catalog) are written into the claude settings.json
+// enabledPlugins field, so Claude Code installs and enables them on launch.
+func TestProjectClaudeSettingsWritesCatalogExtensionPlugins(t *testing.T) {
+	root := t.TempDir()
+	layout, err := runner.PrepareTaskLayout(root, "task-claude-ext", runtimeprofile.ProviderClaudeCode)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+
+	enabled := true
+	profile := runtimeprofile.Profile{
+		Provider: runtimeprofile.ProviderClaudeCode,
+		Fields: runtimeprofile.Fields{
+			Model:    "glm-5.2",
+			Endpoint: "https://open.bigmodel.cn/api/anthropic",
+			RuntimeExtensions: []runtimeprofile.RuntimeExtensionRef{
+				{
+					ID:      "frontend-design@claude-plugins-official",
+					Enabled: &enabled,
+					Config: map[string]string{
+						"install_ref": "frontend-design@claude-plugins-official",
+						"registry":    "anthropics/claude-plugins-official",
+					},
+				},
+				{
+					ID:      "security-guidance@claude-plugins-official",
+					Enabled: &enabled,
+					Config: map[string]string{
+						"install_ref": "security-guidance@claude-plugins-official",
+						"registry":    "anthropics/claude-plugins-official",
+					},
+				},
+			},
+		},
+	}
+
+	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		ProjectID: "project-1",
+	})
+	if err != nil {
+		t.Fatalf("project config: %v", err)
+	}
+
+	settingsPath := filepath.Join(layout.ProviderHome, "settings.json")
+	raw, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings.json: %v", err)
+	}
+	var settings struct {
+		EnabledPlugins map[string]bool `json:"enabledPlugins"`
+	}
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		t.Fatalf("decode settings.json: %v", err)
+	}
+	for _, ref := range []string{"frontend-design@claude-plugins-official", "security-guidance@claude-plugins-official"} {
+		if !settings.EnabledPlugins[ref] {
+			t.Fatalf("expected enabledPlugins to contain %q=true, got %#v", ref, settings.EnabledPlugins)
+		}
+	}
+	if preview, ok := projection.Config["enabled_plugins"].([]string); !ok || len(preview) != 2 {
+		t.Fatalf("expected enabled_plugins preview with 2 entries, got %#v", projection.Config["enabled_plugins"])
+	}
+}
+
 func TestLaunchConfigPathUsesContainerPathInSandbox(t *testing.T) {
 	root := t.TempDir()
 	layout, err := runner.PrepareTaskLayout(root, "task-1", runtimeprofile.ProviderClaudeCode)

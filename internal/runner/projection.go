@@ -249,6 +249,16 @@ func projectClaudeSettings(layout Layout, profile runtimeprofile.Profile, req Pr
 	}
 
 	settings := map[string]any{"env": env}
+	// Catalog-sourced plugins (install refs from claude-plugins-official) are
+	// installed and enabled by Claude Code when listed under enabledPlugins.
+	installRefs := enabledExtensionInstallRefs(profile)
+	if len(installRefs) > 0 {
+		enabled := make(map[string]bool, len(installRefs))
+		for _, ref := range installRefs {
+			enabled[ref] = true
+		}
+		settings["enabledPlugins"] = enabled
+	}
 	settingsPath := filepath.Join(layout.ProviderHome, "settings.json")
 	raw, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
@@ -278,6 +288,9 @@ func projectClaudeSettings(layout Layout, profile runtimeprofile.Profile, req Pr
 	if servers := mcpPreview(mcpServers); len(servers) > 0 {
 		preview["mcp_servers"] = servers
 		preview["mcp_config_path"] = filepath.Join(layout.Workdir, ".mcp.json")
+	}
+	if len(installRefs) > 0 {
+		preview["enabled_plugins"] = installRefs
 	}
 
 	return ConfigProjection{ConfigPath: settingsPath, Config: preview}, nil
@@ -419,7 +432,7 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 	// Catalog-sourced runtime extensions (npm: install refs) are installed by
 	// pi on launch when listed in settings.json packages. Project them so a
 	// profile's enabled catalog extensions actually take effect.
-	packages := piExtensionPackages(profile)
+	packages := enabledExtensionInstallRefs(profile)
 	if len(packages) > 0 {
 		settings := map[string]any{"packages": packages}
 		settingsPath := filepath.Join(agentDir, "settings.json")
@@ -464,13 +477,14 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 	return ConfigProjection{ConfigPath: modelsPath, Config: preview}, nil
 }
 
-// piExtensionPackages collects the install_ref of each enabled runtime
-// extension whose config carries an npm-style install ref. These are the
-// catalog-sourced extensions pi installs itself on launch via settings.json
-// packages. Local-registry extensions (copied as files) carry no install_ref
-// and are intentionally excluded.
-func piExtensionPackages(profile runtimeprofile.Profile) []string {
-	var packages []string
+// enabledExtensionInstallRefs collects the install_ref of each enabled runtime
+// extension whose config carries an install ref. Catalog-sourced extensions
+// (selected from a package/plugin catalog) carry an install_ref that the
+// runtime consumes on launch: pi lists them in settings.json packages, Claude
+// Code lists them in settings.json enabledPlugins. Local-registry extensions
+// (copied as files) carry no install_ref and are intentionally excluded.
+func enabledExtensionInstallRefs(profile runtimeprofile.Profile) []string {
+	var refs []string
 	for _, ref := range profile.Fields.RuntimeExtensions {
 		if !runtimeExtensionRefEnabled(ref) {
 			continue
@@ -479,9 +493,9 @@ func piExtensionPackages(profile runtimeprofile.Profile) []string {
 		if installRef == "" {
 			continue
 		}
-		packages = append(packages, installRef)
+		refs = append(refs, installRef)
 	}
-	return packages
+	return refs
 }
 
 func resolveMaterializedCredentials(profile runtimeprofile.Profile, req ProjectionRequest) (map[string]string, error) {
