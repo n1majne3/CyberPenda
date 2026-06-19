@@ -212,6 +212,17 @@ export interface RuntimeExtension {
   config?: Record<string, string>;
 }
 
+export interface RuntimeExtensionCatalogItem {
+  id: string;
+  name: string;
+  description?: string;
+  provider: string;
+  registry: string;
+  registry_url: string;
+  install_ref?: string;
+  source_url?: string;
+}
+
 export interface CredentialBinding {
   id: string;
   credential_ref: string;

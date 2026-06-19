@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
-import { apiGet, apiPost, apiPatch, apiDelete, type RuntimeExtension, type RuntimePlugin, type RuntimeProfile } from "@/lib/api";
+import { apiGet, apiPost, apiPatch, apiDelete, type RuntimeExtension, type RuntimeExtensionCatalogItem, type RuntimePlugin, type RuntimeProfile } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button, Card, Input, Label, Badge, Textarea } from "@/components/ui";
 
@@ -68,6 +68,7 @@ export function RuntimeProfilesPage() {
   const [profiles, setProfiles] = useState<RuntimeProfile[]>([]);
   const [plugins, setPlugins] = useState<RuntimePlugin[]>([]);
   const [extensions, setExtensions] = useState<RuntimeExtension[]>([]);
+  const [extensionCatalog, setExtensionCatalog] = useState<RuntimeExtensionCatalogItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -98,14 +99,16 @@ export function RuntimeProfilesPage() {
 
   async function load() {
     try {
-      const [profileData, pluginData, extensionData] = await Promise.all([
+      const [profileData, pluginData, extensionData, catalogData] = await Promise.all([
         apiGet<{ profiles: RuntimeProfile[] }>("/api/runtime-profiles"),
         apiGet<{ plugins: RuntimePlugin[] }>("/api/runtime-plugins"),
         apiGet<{ extensions: RuntimeExtension[] }>("/api/runtime-extensions"),
+        apiGet<{ items: RuntimeExtensionCatalogItem[] }>("/api/runtime-extension-catalog").catch(() => ({ items: [] })),
       ]);
       const loaded = profileData.profiles ?? [];
       setPlugins(pluginData.plugins ?? []);
       setExtensions(extensionData.extensions ?? []);
+      setExtensionCatalog(catalogData.items ?? []);
       setProfiles(loaded);
       setSelectedId((current) => {
         if (current && loaded.some((p) => p.id === current)) return current;
@@ -264,6 +267,7 @@ export function RuntimeProfilesPage() {
               saveDisabled={!form.name.trim()}
               plugins={effectivePlugins}
               extensions={extensions}
+              extensionCatalog={extensionCatalog}
             />
           ) : selected && draft ? (
             <div className="space-y-4">
@@ -284,7 +288,7 @@ export function RuntimeProfilesPage() {
                   </Button>
                 </div>
               </div>
-              <ProfileEditor form={draft} onChange={setDraft} hideActions plugins={effectivePlugins} extensions={extensions} />
+              <ProfileEditor form={draft} onChange={setDraft} hideActions plugins={effectivePlugins} extensions={extensions} extensionCatalog={extensionCatalog} />
               <div>
                 <Label>Generated config preview</Label>
                 <pre className="mt-1 rounded-md border border-border bg-muted/30 p-3 text-xs overflow-x-auto max-h-96">
@@ -393,6 +397,7 @@ function ProfileEditor({
   hideActions,
   plugins,
   extensions,
+  extensionCatalog,
 }: {
   title?: string;
   form: ProfileForm;
@@ -404,8 +409,10 @@ function ProfileEditor({
   hideActions?: boolean;
   plugins: RuntimePlugin[];
   extensions: RuntimeExtension[];
+  extensionCatalog: RuntimeExtensionCatalogItem[];
 }) {
   const [extensionToAdd, setExtensionToAdd] = useState("");
+  const [catalogItemToAdd, setCatalogItemToAdd] = useState("");
   const [manualExtensionID, setManualExtensionID] = useState("");
   const plugin = pluginFor(plugins, form.provider);
   const providerOptions = plugin
@@ -433,9 +440,22 @@ function ProfileEditor({
   const availableExtensions = compatibleExtensions.filter(
     (extension) => !form.runtime_extensions.some((ref) => ref.id === extension.id)
   );
+  const compatibleCatalogItems = extensionCatalog.filter((item) => item.provider === form.provider);
+  const catalogItemID = (item: RuntimeExtensionCatalogItem) => item.install_ref || item.id;
+  const catalogByRefID = new Map<string, RuntimeExtensionCatalogItem>();
+  for (const item of extensionCatalog) {
+    catalogByRefID.set(item.id, item);
+    if (item.install_ref) catalogByRefID.set(item.install_ref, item);
+  }
+  const availableCatalogItems = compatibleCatalogItems.filter(
+    (item) => !form.runtime_extensions.some((ref) => ref.id === catalogItemID(item))
+  );
   const selectedExtensionID = availableExtensions.some((extension) => extension.id === extensionToAdd)
     ? extensionToAdd
     : availableExtensions[0]?.id || "";
+  const selectedCatalogItemID = availableCatalogItems.some((item) => catalogItemID(item) === catalogItemToAdd)
+    ? catalogItemToAdd
+    : availableCatalogItems[0] ? catalogItemID(availableCatalogItems[0]) : "";
   const trimmedManualExtensionID = manualExtensionID.trim();
   const manualRegistryExtension = extensionByID.get(trimmedManualExtensionID);
   const manualExtensionIncompatible = Boolean(
@@ -455,6 +475,23 @@ function ProfileEditor({
       ],
     });
     setExtensionToAdd("");
+  };
+  const addCatalogRuntimeExtension = () => {
+    const item = availableCatalogItems.find((candidate) => catalogItemID(candidate) === selectedCatalogItemID);
+    if (!item) return;
+    const config = {
+      registry: item.registry,
+      ...(item.install_ref ? { install_ref: item.install_ref } : {}),
+      ...(item.source_url ? { source_url: item.source_url } : {}),
+    };
+    onChange({
+      ...form,
+      runtime_extensions: [
+        ...form.runtime_extensions,
+        { id: catalogItemID(item), enabled: true, config: formatEnv(config) },
+      ],
+    });
+    setCatalogItemToAdd("");
   };
   const addManualRuntimeExtension = () => {
     if (!canAddManualExtension) return;
@@ -652,6 +689,28 @@ function ProfileEditor({
             </Button>
           </div>
           <div className="mt-2 flex gap-2">
+            <select
+              className="flex h-9 flex-1 rounded-md border border-input bg-background px-3 text-sm"
+              value={selectedCatalogItemID}
+              onChange={(e) => setCatalogItemToAdd(e.target.value)}
+              disabled={availableCatalogItems.length === 0}
+            >
+              {availableCatalogItems.length === 0 ? (
+                <option value="">No catalog packages available</option>
+              ) : (
+                availableCatalogItems.map((item) => (
+                  <option key={`${item.registry}:${catalogItemID(item)}`} value={catalogItemID(item)}>
+                    {item.name || catalogItemID(item)}
+                  </option>
+                ))
+              )}
+            </select>
+            <Button type="button" size="sm" variant="outline" onClick={addCatalogRuntimeExtension} disabled={!selectedCatalogItemID}>
+              <Plus className="h-4 w-4" />
+              Add package
+            </Button>
+          </div>
+          <div className="mt-2 flex gap-2">
             <Input
               value={manualExtensionID}
               onChange={(e) => setManualExtensionID(e.target.value)}
@@ -678,6 +737,7 @@ function ProfileEditor({
             )}
             {form.runtime_extensions.map((ref, index) => {
               const extension = extensionByID.get(ref.id);
+              const catalogItem = catalogByRefID.get(ref.id);
               return (
                 <div key={`${ref.id}-${index}`} className="rounded-md border border-border p-3 space-y-2">
                   <div className="flex items-start justify-between gap-3">
@@ -690,13 +750,17 @@ function ProfileEditor({
                       />
                       <span>
                         <span className="flex flex-wrap items-center gap-1.5">
-                          <span className="font-medium">{extension?.name || ref.id}</span>
+                          <span className="font-medium">{extension?.name || catalogItem?.name || ref.id}</span>
                           <Badge variant="outline">{ref.id}</Badge>
-                          {!extension && <Badge variant="outline">manual</Badge>}
+                          {catalogItem && <Badge variant="outline">{catalogItem.registry}</Badge>}
+                          {!extension && !catalogItem && <Badge variant="outline">manual</Badge>}
                           {!ref.enabled && <Badge variant="default">disabled</Badge>}
                         </span>
                         {extension?.description && (
                           <span className="mt-1 block text-xs text-muted-foreground">{extension.description}</span>
+                        )}
+                        {!extension && catalogItem?.description && (
+                          <span className="mt-1 block text-xs text-muted-foreground">{catalogItem.description}</span>
                         )}
                         {extension?.projection && (
                           <span className="mt-1 block text-[11px] text-muted-foreground">

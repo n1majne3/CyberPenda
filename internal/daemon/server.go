@@ -168,6 +168,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/runtime-plugins", server.handleListRuntimePlugins)
 	server.mux.HandleFunc("GET /api/runtime-plugins/{plugin_id}", server.handleGetRuntimePlugin)
 	server.mux.HandleFunc("GET /api/runtime-extensions", server.handleListRuntimeExtensions)
+	server.mux.HandleFunc("GET /api/runtime-extension-catalog", server.handleListRuntimeExtensionCatalog)
 	server.mux.HandleFunc("GET /api/runtime-extensions/{extension_id}", server.handleGetRuntimeExtension)
 	server.mux.HandleFunc("PUT /api/credential-bindings", server.handleUpsertGlobalCredentialBinding)
 	server.mux.HandleFunc("GET /api/credential-bindings", server.handleListGlobalCredentialBindings)

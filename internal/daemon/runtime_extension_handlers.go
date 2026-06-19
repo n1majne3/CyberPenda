@@ -18,6 +18,23 @@ func (server *Server) handleListRuntimeExtensions(response http.ResponseWriter, 
 	})
 }
 
+func (server *Server) handleListRuntimeExtensionCatalog(response http.ResponseWriter, request *http.Request) {
+	items, errs := runtimeextension.FetchDefaultCatalog(request.Context())
+	if items == nil {
+		items = []runtimeextension.CatalogItem{}
+	}
+	if errs == nil {
+		errs = []runtimeextension.CatalogSourceError{}
+	}
+	writeJSON(response, http.StatusOK, struct {
+		Items  []runtimeextension.CatalogItem        `json:"items"`
+		Errors []runtimeextension.CatalogSourceError `json:"errors,omitempty"`
+	}{
+		Items:  items,
+		Errors: errs,
+	})
+}
+
 func (server *Server) handleGetRuntimeExtension(response http.ResponseWriter, request *http.Request) {
 	id := request.PathValue("extension_id")
 	if id == "" {
