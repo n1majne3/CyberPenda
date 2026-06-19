@@ -24,6 +24,12 @@ const API_KEY_CONFIGURED = "[configured]";
 const DEFAULT_DAEMON_MCP_PORT = "8787";
 
 type RuntimeProfileFields = RuntimeProfile["fields"];
+type RuntimeExtensionFormRef = {
+  id: string;
+  enabled: boolean;
+  config: string;
+};
+
 type ProfileForm = {
   name: string;
   provider: string;
@@ -34,7 +40,7 @@ type ProfileForm = {
   env: string;
   api_key_env: string;
   api_key: string;
-  runtime_extensions: string;
+  runtime_extensions: RuntimeExtensionFormRef[];
   mcp_servers: string;
   default_runner: string;
   sandbox_image: string;
@@ -51,7 +57,7 @@ const emptyForm: ProfileForm = {
   env: "",
   api_key_env: "",
   api_key: "",
-  runtime_extensions: "",
+  runtime_extensions: [],
   mcp_servers: "",
   default_runner: "sandbox",
   sandbox_image: "",
@@ -319,6 +325,7 @@ function fallbackRuntimePlugins(): RuntimePlugin[] {
         "env",
         "api_keys",
         "credential_refs",
+        "runtime_extensions",
         "mcp_servers",
         "default_runner",
         "sandbox_image",
@@ -398,6 +405,7 @@ function ProfileEditor({
   plugins: RuntimePlugin[];
   extensions: RuntimeExtension[];
 }) {
+  const [extensionToAdd, setExtensionToAdd] = useState("");
   const plugin = pluginFor(plugins, form.provider);
   const providerOptions = plugin
     ? plugins
@@ -420,6 +428,39 @@ function ProfileEditor({
   const compatibleExtensions = extensions.filter((extension) =>
     extension.compatible_runtime_plugins.includes(form.provider)
   );
+  const extensionByID = new Map(extensions.map((extension) => [extension.id, extension]));
+  const availableExtensions = compatibleExtensions.filter(
+    (extension) => !form.runtime_extensions.some((ref) => ref.id === extension.id)
+  );
+  const selectedExtensionID = availableExtensions.some((extension) => extension.id === extensionToAdd)
+    ? extensionToAdd
+    : availableExtensions[0]?.id || "";
+  const addRuntimeExtension = () => {
+    const extension = availableExtensions.find((item) => item.id === selectedExtensionID);
+    if (!extension) return;
+    onChange({
+      ...form,
+      runtime_extensions: [
+        ...form.runtime_extensions,
+        { id: extension.id, enabled: true, config: formatEnv(extension.config) },
+      ],
+    });
+    setExtensionToAdd("");
+  };
+  const updateRuntimeExtension = (index: number, patch: Partial<RuntimeExtensionFormRef>) => {
+    onChange({
+      ...form,
+      runtime_extensions: form.runtime_extensions.map((ref, i) =>
+        i === index ? { ...ref, ...patch } : ref
+      ),
+    });
+  };
+  const removeRuntimeExtension = (index: number) => {
+    onChange({
+      ...form,
+      runtime_extensions: form.runtime_extensions.filter((_, i) => i !== index),
+    });
+  };
 
   return (
     <div className="space-y-3">
@@ -436,7 +477,12 @@ function ProfileEditor({
             value={form.provider}
             onChange={(e) => {
               const provider = e.target.value;
-              onChange({ ...form, provider, api_key_env: form.api_key_env || defaultAPIKeyEnv(provider, plugins) || "" });
+              onChange({
+                ...form,
+                provider,
+                api_key_env: form.api_key_env || defaultAPIKeyEnv(provider, plugins) || "",
+                runtime_extensions: compatibleRuntimeExtensionRefs(form.runtime_extensions, provider, extensions),
+              });
             }}
           >
             {providerOptions.map((p) => (
@@ -558,13 +604,78 @@ function ProfileEditor({
           </p>
         </div>}
         {has("runtime_extensions") && <div className="col-span-2">
-          <Label>Runtime extensions JSON</Label>
-          <Textarea
-            value={form.runtime_extensions}
-            onChange={(e) => onChange({ ...form, runtime_extensions: e.target.value })}
-            placeholder='[{"id":"pi_browser_tools","enabled":true,"config":{"mode":"readonly"}}]'
-            rows={3}
-          />
+          <Label>Runtime extensions</Label>
+          <div className="mt-1 flex gap-2">
+            <select
+              className="flex h-9 flex-1 rounded-md border border-input bg-background px-3 text-sm"
+              value={selectedExtensionID}
+              onChange={(e) => setExtensionToAdd(e.target.value)}
+              disabled={availableExtensions.length === 0}
+            >
+              {availableExtensions.length === 0 ? (
+                <option value="">No compatible extensions available</option>
+              ) : (
+                availableExtensions.map((extension) => (
+                  <option key={extension.id} value={extension.id}>
+                    {extension.name || extension.id}
+                  </option>
+                ))
+              )}
+            </select>
+            <Button type="button" size="sm" variant="outline" onClick={addRuntimeExtension} disabled={!selectedExtensionID}>
+              <Plus className="h-4 w-4" />
+              Add
+            </Button>
+          </div>
+          <div className="mt-2 space-y-2">
+            {form.runtime_extensions.length === 0 && (
+              <p className="text-[11px] text-muted-foreground">No runtime extensions enabled for this profile.</p>
+            )}
+            {form.runtime_extensions.map((ref, index) => {
+              const extension = extensionByID.get(ref.id);
+              return (
+                <div key={ref.id} className="rounded-md border border-border p-3 space-y-2">
+                  <div className="flex items-start justify-between gap-3">
+                    <label className="flex items-start gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        className="mt-1 h-4 w-4 accent-primary"
+                        checked={ref.enabled}
+                        onChange={(e) => updateRuntimeExtension(index, { enabled: e.target.checked })}
+                      />
+                      <span>
+                        <span className="flex flex-wrap items-center gap-1.5">
+                          <span className="font-medium">{extension?.name || ref.id}</span>
+                          <Badge variant="outline">{ref.id}</Badge>
+                          {!ref.enabled && <Badge variant="default">disabled</Badge>}
+                        </span>
+                        {extension?.description && (
+                          <span className="mt-1 block text-xs text-muted-foreground">{extension.description}</span>
+                        )}
+                        {extension?.projection && (
+                          <span className="mt-1 block text-[11px] text-muted-foreground">
+                            {extension.projection.location}: <code>{extension.projection.path}</code>
+                          </span>
+                        )}
+                      </span>
+                    </label>
+                    <Button type="button" size="icon" variant="ghost" onClick={() => removeRuntimeExtension(index)}>
+                      <Trash2 className="h-4 w-4 text-destructive" />
+                    </Button>
+                  </div>
+                  <div>
+                    <Label>Config</Label>
+                    <Textarea
+                      value={ref.config}
+                      onChange={(e) => updateRuntimeExtension(index, { config: e.target.value })}
+                      placeholder="KEY=value"
+                      rows={2}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
           {compatibleExtensions.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1">
               {compatibleExtensions.map((extension) => (
@@ -616,7 +727,11 @@ function profileToForm(profile: RuntimeProfile, plugins: RuntimePlugin[]): Profi
     env: formatEnv(profile.fields.env),
     api_key_env: apiKeyEnv || defaultAPIKeyEnv(profile.provider, plugins) || "",
     api_key: apiKeyValue,
-    runtime_extensions: formatRuntimeExtensions(profile.fields.runtime_extensions),
+    runtime_extensions: (profile.fields.runtime_extensions ?? []).map((ref) => ({
+      id: ref.id,
+      enabled: ref.enabled ?? true,
+      config: formatEnv(ref.config),
+    })),
     mcp_servers: formatMCPServers(profile.fields.mcp_servers),
     default_runner: profile.fields.default_runner ?? "sandbox",
     sandbox_image: profile.fields.sandbox_image ?? "",
@@ -631,7 +746,7 @@ function buildFields(form: ProfileForm, plugins: RuntimePlugin[]): RuntimeProfil
   const endpoint = emptyToUndefined(form.endpoint);
   const customArgs = splitLines(form.custom_args);
   const env = parseEnv(form.env);
-  const runtimeExtensions = parseRuntimeExtensions(form.runtime_extensions);
+  const runtimeExtensions = buildRuntimeExtensionRefs(form.runtime_extensions);
   const mcpServers = parseMCPServers(form.mcp_servers);
   const defaultRunner = emptyToUndefined(form.default_runner);
   const sandboxImage = emptyToUndefined(form.sandbox_image);
@@ -655,6 +770,33 @@ function buildFields(form: ProfileForm, plugins: RuntimePlugin[]): RuntimeProfil
   const credentialRefs = splitLines(form.credential_refs);
   if (credentialRefs.length > 0) fields.credential_refs = credentialRefs;
   return fields;
+}
+
+function compatibleRuntimeExtensionRefs(
+  refs: RuntimeExtensionFormRef[],
+  provider: string,
+  extensions: RuntimeExtension[]
+): RuntimeExtensionFormRef[] {
+  return refs.filter((ref) => {
+    const extension = extensions.find((item) => item.id === ref.id);
+    if (!extension) return true;
+    return extension.compatible_runtime_plugins.includes(provider);
+  });
+}
+
+function buildRuntimeExtensionRefs(refs: RuntimeExtensionFormRef[]): RuntimeProfileFields["runtime_extensions"] {
+  return refs
+    .map((ref) => {
+      const id = ref.id.trim();
+      if (!id) return null;
+      const config = parseEnv(ref.config);
+      return {
+        id,
+        enabled: ref.enabled,
+        ...(Object.keys(config).length > 0 ? { config } : {}),
+      };
+    })
+    .filter((ref): ref is NonNullable<typeof ref> => ref != null);
 }
 
 function splitLines(value: string): string[] {
@@ -1153,18 +1295,6 @@ function parseMCPServers(value: string): RuntimeProfileFields["mcp_servers"] {
   if (!trimmed) return [];
   const parsed = JSON.parse(trimmed);
   return Array.isArray(parsed) ? parsed : [];
-}
-
-function parseRuntimeExtensions(value: string): RuntimeProfileFields["runtime_extensions"] {
-  const trimmed = value.trim();
-  if (!trimmed) return [];
-  const parsed = JSON.parse(trimmed);
-  return Array.isArray(parsed) ? parsed : [];
-}
-
-function formatRuntimeExtensions(extensions?: RuntimeProfileFields["runtime_extensions"]): string {
-  if (!extensions || extensions.length === 0) return "";
-  return JSON.stringify(extensions, null, 2);
 }
 
 function formatMCPServers(servers?: RuntimeProfileFields["mcp_servers"]): string {
