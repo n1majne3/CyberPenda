@@ -309,7 +309,7 @@ function TranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
         <Icon className="h-4 w-4" />
       </span>
       <div className="flex-1 min-w-0">
-        <div className="text-xs text-muted-foreground mb-1">#{entry.seq} {entry.role}</div>
+        <div className="text-xs text-muted-foreground mb-1">#{entry.seq} {entry.role}{entry.created_at && ` · ${new Date(entry.created_at).toLocaleString()}`}</div>
         <div className="whitespace-pre-wrap break-words leading-6">{entry.text}</div>
       </div>
     </div>
@@ -325,6 +325,7 @@ function CollapsedTranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
         <Icon className="h-4 w-4 text-muted-foreground" />
         <span className="text-xs text-muted-foreground shrink-0">#{entry.seq}</span>
         <span className="truncate">{collapsedTitle(entry)}</span>
+        {entry.created_at && <span className="text-xs text-muted-foreground ml-auto shrink-0">{new Date(entry.created_at).toLocaleString()}</span>}
       </summary>
       <div className="border-t border-border px-3 py-2">
         <pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">{collapsedBody(entry)}</pre>
@@ -374,7 +375,7 @@ function EventRow({ ev }: { ev: TaskEvent }) {
     <div className="flex gap-2 text-sm">
       <span className="text-muted-foreground shrink-0 mt-0.5">{icon}</span>
       <div className="flex-1 min-w-0">
-        <span className="text-xs text-muted-foreground mr-2">#{ev.seq} {ev.kind}</span>
+        <span className="text-xs text-muted-foreground mr-2">#{ev.seq} {ev.kind}{ev.created_at && ` · ${new Date(ev.created_at).toLocaleString()}`}</span>
         <span className="whitespace-pre-wrap break-words">{text}</span>
       </div>
     </div>

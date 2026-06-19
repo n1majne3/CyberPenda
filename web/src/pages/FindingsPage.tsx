@@ -149,6 +149,7 @@ function FindingCard({
         {finding.cvss_vector && <p><span className="text-foreground">CVSS {finding.cvss_version}:</span> <code>{finding.cvss_vector}</code></p>}
         {finding.impact && <p><span className="text-foreground">Impact:</span> {finding.impact}</p>}
         {finding.recommendation && <p><span className="text-foreground">Recommendation:</span> {finding.recommendation}</p>}
+        {finding.updated_at && <p><span className="text-foreground">Updated:</span> {new Date(finding.updated_at).toLocaleString()}</p>}
       </div>
 
       {/* Versions — historical revisions of this finding key. */}
@@ -175,6 +176,7 @@ function FindingCard({
                   <Badge variant={v.status === "confirmed" ? "success" : "outline"}>{v.status}</Badge>
                   {v.cvss_vector && <code className="text-muted-foreground">{v.cvss_vector}</code>}
                   <span className="text-muted-foreground">{v.title}</span>
+                  {v.created_at && <span className="text-muted-foreground">{new Date(v.created_at).toLocaleString()}</span>}
                 </li>
               ))}
             </ol>
