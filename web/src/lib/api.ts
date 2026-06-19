@@ -182,6 +182,26 @@ export interface TaskEvent {
   created_at: string;
 }
 
+export interface TaskTranscriptEntry {
+  id: string;
+  seq: number;
+  continuation: number;
+  kind: "message" | "tool_call" | "tool_result" | "runtime_output" | "continuation" | string;
+  role: "user" | "assistant" | "system" | "runtime" | "tool" | string;
+  text?: string;
+  tool_call_id?: string;
+  tool_name?: string;
+  details?: Record<string, unknown>;
+  stream?: string;
+  status?: string;
+  created_at: string;
+}
+
+export interface TaskTranscript {
+  task_id: string;
+  entries: TaskTranscriptEntry[];
+}
+
 export interface PreflightCheck {
   name: string;
   status: "pass" | "fail";

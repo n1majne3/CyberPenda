@@ -23,12 +23,12 @@ import (
 )
 
 type Config struct {
-	Version          string
-	DBPath           string
-	RuntimeRoot      string
-	SandboxImage     string
-	ContainerCLI     string
-	ListenAddr       string
+	Version      string
+	DBPath       string
+	RuntimeRoot  string
+	SandboxImage string
+	ContainerCLI string
+	ListenAddr   string
 }
 
 type Server struct {
@@ -119,6 +119,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks", server.handleListTasks)
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}", server.handleGetTask)
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/events", server.handleTaskEvents)
+	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/transcript", server.handleTaskTranscript)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/stop", server.handleStopTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/resume", server.handleResumeTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/steer", server.handleSteerTask)
@@ -625,11 +626,11 @@ func (server *Server) handleDashboard(response http.ResponseWriter, request *htt
 			Ready            bool `json:"ready"`
 		} `json:"scope"`
 		Counts struct {
-			Tasks             int `json:"tasks"`
-			Facts             int `json:"facts"`
-			Findings          int `json:"findings"`
-			Evidence          int `json:"evidence"`
-			PendingApprovals  int `json:"pending_approvals"`
+			Tasks            int `json:"tasks"`
+			Facts            int `json:"facts"`
+			Findings         int `json:"findings"`
+			Evidence         int `json:"evidence"`
+			PendingApprovals int `json:"pending_approvals"`
 		} `json:"counts"`
 	}{
 		ProjectID: found.ID,

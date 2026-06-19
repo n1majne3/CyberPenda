@@ -17,6 +17,7 @@ import (
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
+	"pentest/internal/transcript"
 )
 
 func (server *Server) handleCreateTask(response http.ResponseWriter, request *http.Request) {
@@ -303,50 +304,43 @@ func (server *Server) handleListTasks(response http.ResponseWriter, request *htt
 }
 
 func (server *Server) handleGetTask(response http.ResponseWriter, request *http.Request) {
-	projectID := request.PathValue("id")
-	taskID := request.PathValue("task_id")
-	if !server.requireProject(response, projectID) {
-		return
-	}
-	if taskID == "" {
-		writeError(response, http.StatusNotFound, "task not found")
-		return
-	}
-
-	found, err := server.tasks.Get(taskID)
-	if err != nil {
-		writeTaskError(response, err)
-		return
-	}
-	if found.ProjectID != projectID {
-		writeError(response, http.StatusNotFound, "task not found")
+	found, ok := server.requireProjectTask(response, request)
+	if !ok {
 		return
 	}
 	writeJSON(response, http.StatusOK, found)
 }
 
-func (server *Server) handleTaskEvents(response http.ResponseWriter, request *http.Request) {
+func (server *Server) requireProjectTask(response http.ResponseWriter, request *http.Request) (task.Task, bool) {
 	projectID := request.PathValue("id")
 	taskID := request.PathValue("task_id")
 	if !server.requireProject(response, projectID) {
-		return
+		return task.Task{}, false
 	}
 	if taskID == "" {
 		writeError(response, http.StatusNotFound, "task not found")
-		return
+		return task.Task{}, false
 	}
 
 	found, err := server.tasks.Get(taskID)
 	if err != nil {
 		writeTaskError(response, err)
-		return
+		return task.Task{}, false
 	}
 	if found.ProjectID != projectID {
 		writeError(response, http.StatusNotFound, "task not found")
+		return task.Task{}, false
+	}
+	return found, true
+}
+
+func (server *Server) handleTaskEvents(response http.ResponseWriter, request *http.Request) {
+	found, ok := server.requireProjectTask(response, request)
+	if !ok {
 		return
 	}
 
-	events, err := server.tasks.Events(taskID)
+	events, err := server.tasks.Events(found.ID)
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "list task events")
 		return
@@ -358,6 +352,30 @@ func (server *Server) handleTaskEvents(response http.ResponseWriter, request *ht
 		Events []task.Event `json:"events"`
 	}{
 		Events: events,
+	})
+}
+
+func (server *Server) handleTaskTranscript(response http.ResponseWriter, request *http.Request) {
+	found, ok := server.requireProjectTask(response, request)
+	if !ok {
+		return
+	}
+
+	events, err := server.tasks.Events(found.ID)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "list task events")
+		return
+	}
+	entries := transcript.Build(found, events)
+	if entries == nil {
+		entries = []transcript.Entry{}
+	}
+	writeJSON(response, http.StatusOK, struct {
+		TaskID  string             `json:"task_id"`
+		Entries []transcript.Entry `json:"entries"`
+	}{
+		TaskID:  found.ID,
+		Entries: entries,
 	})
 }
 

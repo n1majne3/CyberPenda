@@ -1,7 +1,7 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, type RefObject } from "react";
 import { useParams, Link } from "react-router-dom";
-import { ArrowLeft, Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, FileText, Shield } from "lucide-react";
-import { apiGet, apiPost, type Task, type TaskEvent } from "@/lib/api";
+import { ArrowLeft, Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, FileText, Shield, ChevronRight, Wrench, User, Bot } from "lucide-react";
+import { apiGet, apiPost, type Task, type TaskEvent, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Card, Input, Badge } from "@/components/ui";
 
 const ACTIVE = new Set(["running", "paused"]);
@@ -10,6 +10,8 @@ export function TaskDetailPage() {
   const { projectId, taskId } = useParams<{ projectId: string; taskId: string }>();
   const [task, setTask] = useState<Task | null>(null);
   const [events, setEvents] = useState<TaskEvent[]>([]);
+  const [transcript, setTranscript] = useState<TaskTranscriptEntry[]>([]);
+  const [activeView, setActiveView] = useState<"conversation" | "timeline">("conversation");
   const [error, setError] = useState<string | null>(null);
   const [steering, setSteering] = useState("");
   const [steerProfile, setSteerProfile] = useState("");
@@ -21,12 +23,14 @@ export function TaskDetailPage() {
   async function loadAll() {
     if (!projectId || !taskId) return;
     try {
-      const [t, ev] = await Promise.all([
+      const [t, ev, tr] = await Promise.all([
         apiGet<Task>(`${base}`),
         apiGet<{ events: TaskEvent[] }>(`${base}/events`),
+        apiGet<TaskTranscript>(`${base}/transcript`),
       ]);
       setTask(t);
       setEvents(ev.events ?? []);
+      setTranscript(tr.entries ?? []);
       setError(null);
     } catch (e) {
       setError((e as Error).message);
@@ -47,7 +51,7 @@ export function TaskDetailPage() {
 
   useEffect(() => {
     timelineEnd.current?.scrollIntoView({ behavior: "smooth" });
-  }, [events]);
+  }, [events, transcript, activeView]);
 
   async function stop() {
     try {
@@ -81,7 +85,7 @@ export function TaskDetailPage() {
   if (!task) return <div className="p-8 text-muted-foreground">Loading…</div>;
 
   return (
-    <div className="p-8 max-w-3xl">
+    <div className="p-8 max-w-4xl">
       <Link to={`/projects/${projectId}`} className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground mb-4">
         <ArrowLeft className="h-4 w-4 mr-1" /> Back to dashboard
       </Link>
@@ -147,19 +151,29 @@ export function TaskDetailPage() {
         </div>
       </Card>
 
-      {/* Timeline — structured events, not raw output (prd.md:205). */}
-      <h3 className="text-sm font-medium text-muted-foreground mb-2 flex items-center gap-1">
-        <Activity className="h-4 w-4" /> Timeline
-      </h3>
-      <div className="space-y-2">
-        {events.map((ev) => (
-          <EventRow key={ev.id} ev={ev} />
-        ))}
-        {events.length === 0 && <p className="text-sm text-muted-foreground">No events yet.</p>}
-        <div ref={timelineEnd} />
+      <div className="flex items-center gap-1 border-b border-border mb-3">
+        <button className={tabClass(activeView === "conversation")} onClick={() => setActiveView("conversation")}>
+          <MessageSquare className="h-4 w-4" /> Conversation
+        </button>
+        <button className={tabClass(activeView === "timeline")} onClick={() => setActiveView("timeline")}>
+          <Activity className="h-4 w-4" /> Timeline
+        </button>
       </div>
+
+      {activeView === "conversation" ? (
+        <TranscriptList entries={transcript} endRef={timelineEnd} />
+      ) : (
+        <TimelineList events={events} endRef={timelineEnd} />
+      )}
     </div>
   );
+}
+
+function tabClass(active: boolean) {
+  return [
+    "inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm",
+    active ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
+  ].join(" ");
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -169,6 +183,105 @@ function StatusBadge({ status }: { status: string }) {
     status === "failed" ? "destructive" :
     status === "stopped" ? "warning" : "outline";
   return <Badge variant={variant}>{status}</Badge>;
+}
+
+function TranscriptList({ entries, endRef }: { entries: TaskTranscriptEntry[]; endRef: RefObject<HTMLDivElement | null> }) {
+  return (
+    <div className="space-y-3">
+      {entries.map((entry) => (
+        <TranscriptRow key={entry.id} entry={entry} />
+      ))}
+      {entries.length === 0 && <p className="text-sm text-muted-foreground">No transcript yet.</p>}
+      <div ref={endRef} />
+    </div>
+  );
+}
+
+function TimelineList({ events, endRef }: { events: TaskEvent[]; endRef: RefObject<HTMLDivElement | null> }) {
+  return (
+    <div className="space-y-2">
+      {events.map((ev) => (
+        <EventRow key={ev.id} ev={ev} />
+      ))}
+      {events.length === 0 && <p className="text-sm text-muted-foreground">No events yet.</p>}
+      <div ref={endRef} />
+    </div>
+  );
+}
+
+function TranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
+  if (entry.kind === "continuation") {
+    return (
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <GitBranch className="h-3.5 w-3.5" />
+        <span>#{entry.seq} {entry.text}</span>
+      </div>
+    );
+  }
+
+  if (isCollapsedTranscriptEntry(entry)) {
+    return <CollapsedTranscriptRow entry={entry} />;
+  }
+
+  const Icon = entry.role === "user" ? User : entry.role === "assistant" ? Bot : MessageSquare;
+  return (
+    <div className="flex gap-3 text-sm">
+      <span className="text-muted-foreground shrink-0 mt-0.5">
+        <Icon className="h-4 w-4" />
+      </span>
+      <div className="flex-1 min-w-0">
+        <div className="text-xs text-muted-foreground mb-1">#{entry.seq} {entry.role}</div>
+        <div className="whitespace-pre-wrap break-words leading-6">{entry.text}</div>
+      </div>
+    </div>
+  );
+}
+
+function CollapsedTranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
+  const Icon = entry.kind === "runtime_output" ? Terminal : Wrench;
+  return (
+    <details className="group rounded-md border border-border bg-card/60">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm [&::-webkit-details-marker]:hidden">
+        <ChevronRight className="h-3.5 w-3.5 text-muted-foreground transition-transform group-open:rotate-90" />
+        <Icon className="h-4 w-4 text-muted-foreground" />
+        <span className="text-xs text-muted-foreground shrink-0">#{entry.seq}</span>
+        <span className="truncate">{collapsedTitle(entry)}</span>
+      </summary>
+      <div className="border-t border-border px-3 py-2">
+        <pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">{collapsedBody(entry)}</pre>
+      </div>
+    </details>
+  );
+}
+
+function isCollapsedTranscriptEntry(entry: TaskTranscriptEntry) {
+  return entry.kind === "tool_call" || entry.kind === "tool_result" || entry.kind === "runtime_output";
+}
+
+function collapsedTitle(entry: TaskTranscriptEntry) {
+  if (entry.kind === "tool_call") {
+    return entry.tool_name ? `Tool call: ${entry.tool_name}` : "Tool call";
+  }
+  if (entry.kind === "tool_result") {
+    return entry.tool_call_id ? `Tool result: ${entry.tool_call_id}` : "Tool result";
+  }
+  const prefix = entry.stream ? `Runtime output (${entry.stream})` : "Runtime output";
+  return entry.text ? `${prefix}: ${firstLine(entry.text)}` : prefix;
+}
+
+function collapsedBody(entry: TaskTranscriptEntry) {
+  const parts: string[] = [];
+  if (entry.text) parts.push(entry.text);
+  if (entry.tool_call_id) parts.push(`tool_call_id: ${entry.tool_call_id}`);
+  if (entry.tool_name) parts.push(`tool_name: ${entry.tool_name}`);
+  if (entry.details && Object.keys(entry.details).length > 0) {
+    parts.push(JSON.stringify(entry.details, null, 2));
+  }
+  return parts.join("\n\n") || "(empty)";
+}
+
+function firstLine(value: string) {
+  return value.split(/\r?\n/, 1)[0];
 }
 
 function EventRow({ ev }: { ev: TaskEvent }) {

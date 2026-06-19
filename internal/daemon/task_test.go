@@ -88,6 +88,63 @@ func TestLaunchTaskRunsFakeRuntimeAndStreamsEvents(t *testing.T) {
 	}
 }
 
+func TestTaskTranscriptEndpointProjectsRetainedEvents(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
+	taskID := createTask(t, server, projectID, `{
+		"goal":"map app",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
+		"runner":"sandbox"
+	}`)
+
+	waitForEventText(t, server, projectID, taskID, "enumerating in-scope assets")
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID+"/transcript", nil)
+	server.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected transcript status 200, got %d with body %s", resp.Code, resp.Body.String())
+	}
+	var body struct {
+		TaskID  string           `json:"task_id"`
+		Entries []map[string]any `json:"entries"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode transcript: %v", err)
+	}
+	if body.TaskID != taskID {
+		t.Fatalf("expected task id %q, got %q", taskID, body.TaskID)
+	}
+	if !hasTranscriptEntry(body.Entries, "message", "user", "map app") {
+		t.Fatalf("expected goal message in transcript, got %#v", body.Entries)
+	}
+	if !hasTranscriptEntry(body.Entries, "runtime_output", "runtime", "enumerating in-scope assets") {
+		t.Fatalf("expected retained runtime output in transcript, got %#v", body.Entries)
+	}
+}
+
+func TestTaskTranscriptEndpointRejectsCrossProjectTask(t *testing.T) {
+	server := newDaemon(t)
+	projectA := createProject(t, server, `{"name":"A","scope":{"domains":["a.example"]}}`)
+	projectB := createProject(t, server, `{"name":"B","scope":{"domains":["b.example"]}}`)
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
+	taskID := createTask(t, server, projectA, `{
+		"goal":"map app",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
+		"runner":"sandbox"
+	}`)
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectB+"/tasks/"+taskID+"/transcript", nil)
+	server.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("expected transcript cross-project status 404, got %d with body %s", resp.Code, resp.Body.String())
+	}
+}
+
 func TestLaunchTaskFailsPreflightWhenRuntimeProfileMissing(t *testing.T) {
 	server := newDaemon(t)
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
@@ -592,6 +649,15 @@ func waitForEventText(t *testing.T, server interface {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for event text %q", want)
+}
+
+func hasTranscriptEntry(entries []map[string]any, kind, role, text string) bool {
+	for _, entry := range entries {
+		if entry["kind"] == kind && entry["role"] == role && entry["text"] == text {
+			return true
+		}
+	}
+	return false
 }
 
 func waitForTaskStatus(t *testing.T, server interface {
