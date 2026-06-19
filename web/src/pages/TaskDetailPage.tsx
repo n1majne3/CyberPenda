@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, type RefObject } from "react";
 import { useParams, Link } from "react-router-dom";
-import { ArrowLeft, Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, FileText, Shield, ChevronRight, Wrench, User, Bot } from "lucide-react";
+import { ArrowLeft, Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, FileText, Shield, ChevronRight, Wrench, User, Bot, ArrowDown } from "lucide-react";
 import { apiGet, apiPost, type Task, type TaskEvent, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Card, Input, Badge } from "@/components/ui";
 
@@ -12,11 +12,13 @@ export function TaskDetailPage() {
   const [events, setEvents] = useState<TaskEvent[]>([]);
   const [transcript, setTranscript] = useState<TaskTranscriptEntry[]>([]);
   const [activeView, setActiveView] = useState<"conversation" | "timeline">("conversation");
+  const [autoFollow, setAutoFollow] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [steering, setSteering] = useState("");
   const [steerProfile, setSteerProfile] = useState("");
   const [profiles, setProfiles] = useState<{ id: string; name: string }[]>([]);
   const timelineEnd = useRef<HTMLDivElement>(null);
+  const autoFollowRef = useRef(true);
 
   const base = `/api/projects/${projectId}/tasks/${taskId}`;
 
@@ -42,6 +44,22 @@ export function TaskDetailPage() {
     apiGet<{ profiles: { id: string; name: string }[] }>("/api/runtime-profiles").then((d) => setProfiles(d.profiles ?? [])).catch(() => {});
   }, [projectId, taskId]);
 
+  useEffect(() => {
+    function updateAutoFollow() {
+      const pinned = isNearPageBottom();
+      autoFollowRef.current = pinned;
+      setAutoFollow((current) => current === pinned ? current : pinned);
+    }
+
+    updateAutoFollow();
+    window.addEventListener("scroll", updateAutoFollow, { passive: true });
+    window.addEventListener("resize", updateAutoFollow);
+    return () => {
+      window.removeEventListener("scroll", updateAutoFollow);
+      window.removeEventListener("resize", updateAutoFollow);
+    };
+  }, []);
+
   // Poll events while the task is active.
   useEffect(() => {
     if (!task || !ACTIVE.has(task.status)) return;
@@ -50,8 +68,16 @@ export function TaskDetailPage() {
   }, [task?.status]);
 
   useEffect(() => {
+    if (autoFollowRef.current) {
+      timelineEnd.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [events, transcript]);
+
+  function scrollToLatest() {
+    autoFollowRef.current = true;
+    setAutoFollow(true);
     timelineEnd.current?.scrollIntoView({ behavior: "smooth" });
-  }, [events, transcript, activeView]);
+  }
 
   async function stop() {
     try {
@@ -151,13 +177,20 @@ export function TaskDetailPage() {
         </div>
       </Card>
 
-      <div className="flex items-center gap-1 border-b border-border mb-3">
-        <button className={tabClass(activeView === "conversation")} onClick={() => setActiveView("conversation")}>
-          <MessageSquare className="h-4 w-4" /> Conversation
-        </button>
-        <button className={tabClass(activeView === "timeline")} onClick={() => setActiveView("timeline")}>
-          <Activity className="h-4 w-4" /> Timeline
-        </button>
+      <div className="flex items-center justify-between gap-3 border-b border-border mb-3">
+        <div className="flex items-center gap-1">
+          <button className={tabClass(activeView === "conversation")} onClick={() => setActiveView("conversation")}>
+            <MessageSquare className="h-4 w-4" /> Conversation
+          </button>
+          <button className={tabClass(activeView === "timeline")} onClick={() => setActiveView("timeline")}>
+            <Activity className="h-4 w-4" /> Timeline
+          </button>
+        </div>
+        {!autoFollow && (
+          <Button size="sm" variant="outline" onClick={scrollToLatest}>
+            <ArrowDown className="h-4 w-4 mr-1" /> Latest
+          </Button>
+        )}
       </div>
 
       {activeView === "conversation" ? (
@@ -174,6 +207,13 @@ function tabClass(active: boolean) {
     "inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm",
     active ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
   ].join(" ");
+}
+
+function isNearPageBottom(threshold = 160) {
+  const doc = document.documentElement;
+  const body = document.body;
+  const scrollHeight = Math.max(doc.scrollHeight, body?.scrollHeight ?? 0);
+  return scrollHeight - (window.scrollY + window.innerHeight) <= threshold;
 }
 
 function StatusBadge({ status }: { status: string }) {
