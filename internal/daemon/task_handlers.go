@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"pentest/internal/adapters"
@@ -310,13 +311,24 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string) (r
 		"args":    commandArgs,
 	})
 
-	return runtime.NewCommandAdapter(runtime.CommandAdapterConfig{
+	adapter := runtime.NewCommandAdapter(runtime.CommandAdapterConfig{
 		Name:    string(profile.Provider),
 		Program: commandProgram,
 		Args:    commandArgs,
 		Workdir: workdir,
 		Env:     processEnv,
-	}), runtimeConfig, nil
+	})
+
+	// Pi writes its real-time progress to a session jsonl file instead of
+	// stdout, so a sandboxed Pi task's timeline is empty until it exits. Wrap
+	// the adapter with a session-file tailer that re-emits appended lines as
+	// runtime_output events the transcript parser already understands.
+	if sandbox && profile.Provider == runtimeprofile.ProviderPi {
+		sessionDir := filepath.Join(layout.ProviderHome, "agent", "sessions", "--task-workdir--")
+		adapter = runtime.NewPiSessionTailAdapter(adapter, sessionDir)
+	}
+
+	return adapter, runtimeConfig, nil
 }
 
 func (server *Server) handleListTasks(response http.ResponseWriter, request *http.Request) {

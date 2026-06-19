@@ -188,7 +188,13 @@ func parseRuntimeOutput(event task.Event, continuation int, adapter, text string
 	if err := json.Unmarshal([]byte(text), &record); err != nil {
 		return nil
 	}
-	entries := parseRecord(event, continuation, adapter, parser, record, "")
+	base := Entry{
+		ID:           event.ID,
+		Seq:          event.Seq,
+		Continuation: continuation,
+		CreatedAt:    event.CreatedAt,
+	}
+	entries := ParseRecord(record, base)
 	if len(entries) == 0 {
 		return nil
 	}
@@ -208,38 +214,31 @@ func ParserForAdapter(adapter string, registry *runtimeplugin.Registry) string {
 	return plugin.Transcript.Parser
 }
 
-func parseRecord(event task.Event, continuation int, adapter, parser string, record map[string]any, suffix string) []Entry {
-	_ = adapter
-	_ = parser
+// ParseRecord projects a single normalized provider record (one JSON object,
+// e.g. one line of a pi session jsonl or one stdout JSON line) into transcript
+// entries. base supplies the ID prefix, Seq, Continuation, and CreatedAt that
+// derived entries inherit. It is exported so runtime tails can reuse the same
+// parsing as the post-hoc transcript builder.
+func ParseRecord(record map[string]any, base Entry) []Entry {
 	if item, ok := mapValue(record, "item"); ok {
-		if entries := parseRecord(event, continuation, adapter, parser, item, suffix); len(entries) > 0 {
+		if entries := ParseRecord(item, base); len(entries) > 0 {
 			return entries
 		}
 	}
 	if delta, ok := mapValue(record, "delta"); ok {
 		if text := firstText(delta, "text", "content"); text != "" {
-			return []Entry{messageEntry(event, continuation, event.ID+indexedSuffix("-message", suffix), RoleAssistant, text)}
+			return []Entry{messageEntry(base, indexedID(base.ID, "-message", ""), RoleAssistant, text)}
 		}
 	}
 
 	recordType := stringValue(record, "type")
 	switch recordType {
-	case "assistant", "user", "system":
-		return parseMessageRecord(event, continuation, record, roleFromType(recordType))
-	case "message", "assistant_message", "agent_message", "response.output_text", "output_text", "message_delta", "content_block_delta":
-		role := stringValue(record, "role")
-		if role == "" {
-			role = RoleAssistant
-		}
-		text := firstText(record, "text", "content", "message", "delta", "output")
-		if text == "" {
-			return nil
-		}
-		return []Entry{messageEntry(event, continuation, event.ID+indexedSuffix("-message", suffix), role, text)}
+	case "assistant", "user", "system", "message", "assistant_message", "agent_message", "response.output_text", "output_text", "message_delta", "content_block_delta":
+		return parseMessageRecord(record, base, roleFromType(recordType))
 	case "tool_call", "function_call", "tool_use":
-		return []Entry{toolCallEntry(event, continuation, record, event.ID+indexedSuffix("-tool-call", suffix))}
+		return []Entry{toolCallEntry(record, base, indexedID(base.ID, "-tool-call", ""))}
 	case "tool_result", "function_call_output":
-		return []Entry{toolResultEntry(event, continuation, record, event.ID+indexedSuffix("-tool-result", suffix))}
+		return []Entry{toolResultEntry(record, base, indexedID(base.ID, "-tool-result", ""))}
 	default:
 		if recordType == "" && stringValue(record, "role") != "" {
 			text := firstText(record, "text", "content", "message", "output")
@@ -247,52 +246,59 @@ func parseRecord(event task.Event, continuation int, adapter, parser string, rec
 				return nil
 			}
 			role := stringValue(record, "role")
-			return []Entry{messageEntry(event, continuation, event.ID+indexedSuffix("-message", suffix), role, text)}
+			return []Entry{messageEntry(base, indexedID(base.ID, "-message", ""), role, text)}
 		}
 		return nil
 	}
 }
 
-func parseMessageRecord(event task.Event, continuation int, record map[string]any, role string) []Entry {
+func parseMessageRecord(record map[string]any, base Entry, role string) []Entry {
 	if message, ok := mapValue(record, "message"); ok {
+		// pi uses toolResult as a role on the message itself; surface it as a
+		// tool result entry so it renders like other provider tool results.
+		if mr := stringValue(message, "role"); mr == "toolResult" || mr == "tool" {
+			if res := toolResultEntry(message, base, indexedID(base.ID, "-tool-result", "")); res.Text != "" || res.ToolCallID != "" {
+				return []Entry{res}
+			}
+		}
 		if content, ok := sliceValue(message, "content"); ok {
-			return parseContentBlocks(event, continuation, role, content)
+			return parseContentBlocks(content, base, role)
 		}
 		if text := firstText(message, "text", "content", "message"); text != "" {
-			return []Entry{messageEntry(event, continuation, event.ID+"-message", role, text)}
+			return []Entry{messageEntry(base, base.ID+"-message", role, text)}
 		}
 	}
 	if content, ok := sliceValue(record, "content"); ok {
-		return parseContentBlocks(event, continuation, role, content)
+		return parseContentBlocks(content, base, role)
 	}
 	if text := firstText(record, "text", "content", "message"); text != "" {
-		return []Entry{messageEntry(event, continuation, event.ID+"-message", role, text)}
+		return []Entry{messageEntry(base, base.ID+"-message", role, text)}
 	}
 	return nil
 }
 
-func parseContentBlocks(event task.Event, continuation int, role string, content []any) []Entry {
+func parseContentBlocks(content []any, base Entry, role string) []Entry {
 	entries := make([]Entry, 0, len(content))
 	for index, block := range content {
 		switch value := block.(type) {
 		case string:
 			if value != "" {
-				entries = append(entries, messageEntry(event, continuation, fmt.Sprintf("%s-message-%d", event.ID, index), role, value))
+				entries = append(entries, messageEntry(base, fmt.Sprintf("%s-message-%d", base.ID, index), role, value))
 			}
 		case map[string]any:
 			blockType := stringValue(value, "type")
-			switch blockType {
+			switch strings.ToLower(blockType) {
 			case "text":
 				if text := firstText(value, "text", "content"); text != "" {
-					entries = append(entries, messageEntry(event, continuation, fmt.Sprintf("%s-message-%d", event.ID, index), role, text))
+					entries = append(entries, messageEntry(base, fmt.Sprintf("%s-message-%d", base.ID, index), role, text))
 				}
-			case "tool_use", "tool_call", "function_call":
-				entries = append(entries, toolCallEntry(event, continuation, value, fmt.Sprintf("%s-tool-call-%d", event.ID, index)))
-			case "tool_result", "function_call_output":
-				entries = append(entries, toolResultEntry(event, continuation, value, fmt.Sprintf("%s-tool-result-%d", event.ID, index)))
+			case "tool_use", "tool_call", "toolcall", "function_call":
+				entries = append(entries, toolCallEntry(value, base, fmt.Sprintf("%s-tool-call-%d", base.ID, index)))
+			case "tool_result", "toolresult", "function_call_output":
+				entries = append(entries, toolResultEntry(value, base, fmt.Sprintf("%s-tool-result-%d", base.ID, index)))
 			default:
 				if text := firstText(value, "text", "content", "message", "output"); text != "" {
-					entries = append(entries, messageEntry(event, continuation, fmt.Sprintf("%s-message-%d", event.ID, index), role, text))
+					entries = append(entries, messageEntry(base, fmt.Sprintf("%s-message-%d", base.ID, index), role, text))
 				}
 			}
 		}
@@ -300,19 +306,19 @@ func parseContentBlocks(event task.Event, continuation int, role string, content
 	return entries
 }
 
-func messageEntry(event task.Event, continuation int, id, role, text string) Entry {
+func messageEntry(base Entry, id, role, text string) Entry {
 	return Entry{
 		ID:           id,
-		Seq:          event.Seq,
-		Continuation: continuation,
+		Seq:          base.Seq,
+		Continuation: base.Continuation,
 		Kind:         KindMessage,
 		Role:         role,
 		Text:         text,
-		CreatedAt:    event.CreatedAt,
+		CreatedAt:    base.CreatedAt,
 	}
 }
 
-func toolCallEntry(event task.Event, continuation int, record map[string]any, id string) Entry {
+func toolCallEntry(record map[string]any, base Entry, id string) Entry {
 	details := map[string]any{}
 	for _, key := range []string{"arguments", "input", "parameters"} {
 		if value, ok := record[key]; ok {
@@ -321,36 +327,37 @@ func toolCallEntry(event task.Event, continuation int, record map[string]any, id
 	}
 	return Entry{
 		ID:           id,
-		Seq:          event.Seq,
-		Continuation: continuation,
+		Seq:          base.Seq,
+		Continuation: base.Continuation,
 		Kind:         KindToolCall,
 		Role:         RoleAssistant,
 		ToolCallID:   firstText(record, "tool_call_id", "tool_use_id", "call_id", "id"),
 		ToolName:     toolName(record),
 		Details:      nilIfEmpty(details),
 		Status:       StatusCollapsed,
-		CreatedAt:    event.CreatedAt,
+		CreatedAt:    base.CreatedAt,
 	}
 }
 
-func toolResultEntry(event task.Event, continuation int, record map[string]any, id string) Entry {
+func toolResultEntry(record map[string]any, base Entry, id string) Entry {
 	details := map[string]any{}
-	for _, key := range []string{"is_error", "error"} {
+	for _, key := range []string{"is_error", "isError", "error"} {
 		if value, ok := record[key]; ok {
 			details[key] = value
 		}
 	}
 	return Entry{
 		ID:           id,
-		Seq:          event.Seq,
-		Continuation: continuation,
+		Seq:          base.Seq,
+		Continuation: base.Continuation,
 		Kind:         KindToolResult,
 		Role:         RoleTool,
 		Text:         firstText(record, "output", "content", "result", "text"),
-		ToolCallID:   firstText(record, "tool_call_id", "tool_use_id", "call_id", "id"),
+		ToolCallID:   firstText(record, "tool_call_id", "tool_use_id", "call_id", "toolCallId", "id"),
+		ToolName:     firstText(record, "tool_name", "toolName", "name"),
 		Details:      nilIfEmpty(details),
 		Status:       StatusCollapsed,
-		CreatedAt:    event.CreatedAt,
+		CreatedAt:    base.CreatedAt,
 	}
 }
 
@@ -481,9 +488,9 @@ func nilIfEmpty(values map[string]any) map[string]any {
 	return values
 }
 
-func indexedSuffix(base, suffix string) string {
-	if suffix == "" {
-		return base
+func indexedID(base, suffix, index string) string {
+	if index == "" {
+		return base + suffix
 	}
-	return base + "-" + suffix
+	return base + suffix + "-" + index
 }

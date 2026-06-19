@@ -105,6 +105,97 @@ func TestBuildFallsBackForUnknownJSONRuntimeOutput(t *testing.T) {
 	}
 }
 
+func TestParseRecordPiSessionLines(t *testing.T) {
+	base := time.Date(2026, 6, 19, 12, 11, 46, 0, time.UTC)
+
+	cases := []struct {
+		name   string
+		record map[string]any
+		check  func(t *testing.T, entries []transcript.Entry)
+	}{
+		{
+			name: "assistant message with text and tool call",
+			record: map[string]any{
+				"type":      "message",
+				"timestamp": "2026-06-19T12:12:01.077Z",
+				"message": map[string]any{
+					"role": "assistant",
+					"content": []any{
+						map[string]any{"type": "text", "text": "Let me open the app."},
+						map[string]any{"type": "toolCall", "id": "call_00_abc", "name": "bash", "arguments": map[string]any{"command": "agent-browser open http://x"}},
+					},
+				},
+			},
+			check: func(t *testing.T, entries []transcript.Entry) {
+				msg := findEntryByKindRole(t, entries, "message", "assistant")
+				if msg.Text != "Let me open the app." {
+					t.Fatalf("assistant text = %q", msg.Text)
+				}
+				call := findEntryByKind(t, entries, "tool_call")
+				if call.ToolCallID != "call_00_abc" || call.ToolName != "bash" {
+					t.Fatalf("tool call = %#v", call)
+				}
+			},
+		},
+		{
+			name: "tool result message",
+			record: map[string]any{
+				"type": "message",
+				"message": map[string]any{
+					"role":       "toolResult",
+					"toolCallId": "call_00_abc",
+					"toolName":   "bash",
+					"content":    []any{map[string]any{"type": "text", "text": "✓ Done"}},
+				},
+			},
+			check: func(t *testing.T, entries []transcript.Entry) {
+				res := findEntryByKind(t, entries, "tool_result")
+				if res.Text != "✓ Done" || res.ToolCallID != "call_00_abc" {
+					t.Fatalf("tool result = %#v", res)
+				}
+			},
+		},
+		{
+			name:   "session metadata line yields no entries",
+			record: map[string]any{"type": "session", "version": 3, "cwd": "/task/workdir"},
+			check: func(t *testing.T, entries []transcript.Entry) {
+				if len(entries) != 0 {
+					t.Fatalf("expected no entries for session line, got %#v", entries)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			entries := transcript.ParseRecord(tc.record, transcript.Entry{CreatedAt: base})
+			tc.check(t, entries)
+		})
+	}
+}
+
+func findEntryByKind(t *testing.T, entries []transcript.Entry, kind string) transcript.Entry {
+	t.Helper()
+	for _, e := range entries {
+		if e.Kind == kind {
+			return e
+		}
+	}
+	t.Fatalf("missing entry of kind %q in %#v", kind, entries)
+	return transcript.Entry{}
+}
+
+func findEntryByKindRole(t *testing.T, entries []transcript.Entry, kind, role string) transcript.Entry {
+	t.Helper()
+	for _, e := range entries {
+		if e.Kind == kind && e.Role == role {
+			return e
+		}
+	}
+	t.Fatalf("missing entry kind=%q role=%q in %#v", kind, role, entries)
+	return transcript.Entry{}
+}
+
 func requireEntry(t *testing.T, entries []transcript.Entry, id, kind, role, text string) transcript.Entry {
 	t.Helper()
 	for _, entry := range entries {
