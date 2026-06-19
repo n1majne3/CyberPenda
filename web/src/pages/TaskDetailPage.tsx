@@ -46,6 +46,10 @@ export function TaskDetailPage() {
   }, [projectId, taskId]);
 
   useEffect(() => {
+    if (!task) return;
+
+    autoFollowRef.current = true;
+    setAutoFollow(true);
     const container = findScrollContainer(pageRef.current);
 
     function updateAutoFollow() {
@@ -54,14 +58,13 @@ export function TaskDetailPage() {
       setAutoFollow((current) => current === pinned ? current : pinned);
     }
 
-    updateAutoFollow();
     container.addEventListener("scroll", updateAutoFollow, { passive: true });
     window.addEventListener("resize", updateAutoFollow);
     return () => {
       container.removeEventListener("scroll", updateAutoFollow);
       window.removeEventListener("resize", updateAutoFollow);
     };
-  }, []);
+  }, [task?.id]);
 
   // Poll events while the task is active.
   useEffect(() => {
