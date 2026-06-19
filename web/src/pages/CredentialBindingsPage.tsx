@@ -103,7 +103,7 @@ export function CredentialBindingsPage() {
 
       <div className="space-y-2">
         {bindings.map((b) => (
-          <Card key={b.id} className="flex items-center justify-between">
+          <Card key={b.id} className="flex-row items-center justify-between">
             <div className="flex items-center gap-2">
               <Badge variant={b.disabled ? "destructive" : "primary"}>{b.scope}</Badge>
               <span className="font-medium font-mono text-sm">{b.credential_ref}</span>

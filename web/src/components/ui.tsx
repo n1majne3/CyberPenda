@@ -21,7 +21,7 @@ export function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return (
     <div
       className={cn(
-        "flex flex-col gap-4 rounded-xl bg-card py-4 text-card-foreground ring-1 ring-foreground/10",
+        "flex flex-col gap-4 rounded-xl bg-card px-4 py-4 text-card-foreground ring-1 ring-foreground/10",
         className,
       )}
       {...props}
@@ -29,7 +29,7 @@ export function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   );
 }
 export function CardHeader({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("flex flex-col px-4", className)} {...props} />;
+  return <div className={cn("flex flex-col", className)} {...props} />;
 }
 export function CardTitle({ className, ...props }: HTMLAttributes<HTMLHeadingElement>) {
   return <h3 className={cn("text-base font-medium leading-snug", className)} {...props} />;
@@ -38,12 +38,12 @@ export function CardDescription({ className, ...props }: HTMLAttributes<HTMLPara
   return <p className={cn("text-sm text-muted-foreground", className)} {...props} />;
 }
 export function CardContent({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("px-4", className)} {...props} />;
+  return <div className={className} {...props} />;
 }
 export function CardFooter({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return (
     <div
-      className={cn("mt-auto flex items-center rounded-b-xl border-t bg-muted/50 px-4 py-3", className)}
+      className={cn("-mx-4 -mb-4 mt-auto flex items-center rounded-b-xl border-t bg-muted/50 px-4 py-3", className)}
       {...props}
     />
   );

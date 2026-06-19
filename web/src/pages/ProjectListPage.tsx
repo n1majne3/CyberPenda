@@ -97,12 +97,12 @@ export function ProjectListPage() {
         {projects.map((p) => (
           <Link key={p.id} to={`/projects/${p.id}`} className="group">
             <Card className="h-full transition-all hover:bg-accent/40 hover:ring-foreground/20">
-              <div className="flex items-center gap-2 px-4">
+              <div className="flex items-center gap-2">
                 <FolderOpen className="h-4 w-4 text-primary" />
                 <span className="font-medium group-hover:text-foreground">{p.name}</span>
               </div>
-              {p.description && <p className="px-4 text-sm text-muted-foreground">{p.description}</p>}
-              <div className="flex flex-wrap gap-1 px-4">
+              {p.description && <p className="text-sm text-muted-foreground">{p.description}</p>}
+              <div className="flex flex-wrap gap-1">
                 {(p.scope.domains?.length ?? 0) > 0 && (
                   <Badge variant="outline">
                     <Globe className="h-3 w-3" />

@@ -61,7 +61,7 @@ export function ProjectDashboardPage() {
             </Badge>
           )}
         </CardHeader>
-        <div className="flex flex-wrap gap-2 px-4 text-xs">
+        <div className="flex flex-wrap gap-2 text-xs">
           <ScopeChip label="Domains" n={dash.scope.domains} />
           <ScopeChip label="IPs" n={dash.scope.ips} />
           <ScopeChip label="CIDRs" n={dash.scope.cidrs} />
@@ -71,7 +71,7 @@ export function ProjectDashboardPage() {
           {dash.scope.has_testing_limits && <Badge variant="warning">Testing limits set</Badge>}
           {dash.scope.has_notes && <Badge variant="outline">Scope notes</Badge>}
         </div>
-        <div className="px-4">
+        <div>
           <Link to={`${base}/scope`}>
             <Button size="sm" variant="outline">Edit scope</Button>
           </Link>
@@ -113,10 +113,10 @@ function CountCard({ icon, label, n, to }: { icon: React.ReactNode; label: strin
   return (
     <Link to={to} className="group">
       <Card className="transition-all hover:bg-accent/40 hover:ring-foreground/20">
-        <CardTitle className="flex items-center gap-1.5 px-4 text-sm text-muted-foreground group-hover:text-foreground">
+        <CardTitle className="flex items-center gap-1.5 text-sm text-muted-foreground group-hover:text-foreground">
           {icon}{label}
         </CardTitle>
-        <p className="px-4 text-3xl font-semibold tracking-tight">{n}</p>
+        <p className="text-3xl font-semibold tracking-tight">{n}</p>
       </Card>
     </Link>
   );

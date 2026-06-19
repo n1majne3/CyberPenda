@@ -42,7 +42,7 @@ export function EvidencePage() {
           <h3 className="text-sm font-medium text-muted-foreground mb-2">{target}</h3>
           <div className="space-y-2">
             {items.map((e) => (
-              <Card key={e.id} className="flex items-center gap-3">
+              <Card key={e.id} className="flex-row items-center gap-3">
                 <FolderLock className="h-4 w-4 text-primary shrink-0" />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm">{e.summary || e.evidence_key}</p>

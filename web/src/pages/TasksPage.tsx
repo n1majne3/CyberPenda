@@ -62,7 +62,7 @@ export function TasksPage() {
         {tasks.map((task) => (
           <Link key={task.id} to={`${base}/tasks/${task.id}`} className="group">
             <Card className="transition-all hover:bg-accent/40 hover:ring-foreground/20">
-              <div className="flex items-start justify-between gap-3 px-4">
+              <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-medium group-hover:text-foreground">{task.goal || "(no goal)"}</p>
                   <p className="mt-1 text-xs text-muted-foreground">

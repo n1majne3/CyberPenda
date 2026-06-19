@@ -30,6 +30,17 @@ describe("Card", () => {
     expect(container.firstChild).toHaveClass("rounded-xl", "bg-card");
   });
 
+  it("provides default horizontal padding for direct card children", () => {
+    const { container } = render(<Card>x</Card>);
+    expect(container.firstChild).toHaveClass("px-4");
+  });
+
+  it("lets row cards override the default column direction", () => {
+    const { container } = render(<Card className="flex-row items-center">x</Card>);
+    expect(container.firstChild).toHaveClass("flex-row", "items-center");
+    expect(container.firstChild).not.toHaveClass("flex-col");
+  });
+
   it("supports header/title/description/content/footer sub-parts", () => {
     const { getByText } = render(
       <Card>
