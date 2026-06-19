@@ -141,6 +141,7 @@ export interface RuntimeProfile {
     env?: Record<string, string>;
     api_keys?: Record<string, string>;
     credential_refs?: string[];
+    runtime_extensions?: { id: string; enabled?: boolean; config?: Record<string, string> }[];
     mcp_servers?: { name?: string; mode?: string; command?: string; url?: string; args?: string[]; env?: Record<string, string> }[];
     default_runner?: string;
     sandbox_image?: string;
@@ -192,6 +193,23 @@ export interface RuntimePlugin {
   transcript: {
     parser: string;
   };
+}
+
+export interface RuntimeExtension {
+  schema_version: number;
+  id: string;
+  name: string;
+  description?: string;
+  compatible_runtime_plugins: string[];
+  source: {
+    type: "local_dir" | "local_file" | string;
+    path: string;
+  };
+  projection: {
+    location: "provider_home" | "runtime_home" | "workdir" | string;
+    path: string;
+  };
+  config?: Record<string, string>;
 }
 
 export interface CredentialBinding {

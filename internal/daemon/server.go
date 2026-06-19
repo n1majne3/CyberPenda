@@ -15,6 +15,7 @@ import (
 	"pentest/internal/preflight"
 	"pentest/internal/project"
 	"pentest/internal/runtime"
+	"pentest/internal/runtimeextension"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/store"
@@ -33,25 +34,29 @@ type Config struct {
 	// RuntimePluginDirs are trusted local directories containing runtime plugin
 	// manifest JSON files. Empty means built-ins only.
 	RuntimePluginDirs []string
+	// RuntimeExtensionDirs are trusted local directories containing runtime
+	// extension manifest JSON files. Empty means no external extensions.
+	RuntimeExtensionDirs []string
 }
 
 type Server struct {
-	mux            *http.ServeMux
-	version        string
-	db             *store.DB
-	projects       *project.Service
-	runtimePlugins *runtimeplugin.Registry
-	profiles       *runtimeprofile.Service
-	creds          *credential.Service
-	preflight      *preflight.Service
-	tasks          *task.Service
-	harness        *runtime.Harness
-	facts          *blackboard.Service
-	approvals      *approval.Service
-	runtimeRoot    string
-	sandboxImage   string
-	containerCLI   string
-	listenAddr     string
+	mux               *http.ServeMux
+	version           string
+	db                *store.DB
+	projects          *project.Service
+	runtimePlugins    *runtimeplugin.Registry
+	runtimeExtensions *runtimeextension.Registry
+	profiles          *runtimeprofile.Service
+	creds             *credential.Service
+	preflight         *preflight.Service
+	tasks             *task.Service
+	harness           *runtime.Harness
+	facts             *blackboard.Service
+	approvals         *approval.Service
+	runtimeRoot       string
+	sandboxImage      string
+	containerCLI      string
+	listenAddr        string
 }
 
 func NewServer(config Config) (*Server, error) {
@@ -61,6 +66,10 @@ func NewServer(config Config) (*Server, error) {
 	}
 
 	runtimePlugins, err := runtimePluginRegistry(config.RuntimePluginDirs)
+	if err != nil {
+		return nil, err
+	}
+	runtimeExtensions, err := runtimeExtensionRegistry(config.RuntimeExtensionDirs)
 	if err != nil {
 		return nil, err
 	}
@@ -76,22 +85,23 @@ func NewServer(config Config) (*Server, error) {
 		listenAddr = "127.0.0.1:8787"
 	}
 	server := &Server{
-		mux:            http.NewServeMux(),
-		version:        config.Version,
-		db:             db,
-		projects:       project.NewService(db),
-		runtimePlugins: runtimePlugins,
-		profiles:       profiles,
-		creds:          creds,
-		preflight:      preflight.NewService(profiles, creds),
-		tasks:          tasks,
-		harness:        runtime.NewHarness(tasks),
-		facts:          blackboard.NewService(db),
-		approvals:      approval.NewService(db),
-		runtimeRoot:    runtimeRoot,
-		sandboxImage:   config.SandboxImage,
-		containerCLI:   config.ContainerCLI,
-		listenAddr:     listenAddr,
+		mux:               http.NewServeMux(),
+		version:           config.Version,
+		db:                db,
+		projects:          project.NewService(db),
+		runtimePlugins:    runtimePlugins,
+		runtimeExtensions: runtimeExtensions,
+		profiles:          profiles,
+		creds:             creds,
+		preflight:         preflight.NewService(profiles, creds),
+		tasks:             tasks,
+		harness:           runtime.NewHarness(tasks),
+		facts:             blackboard.NewService(db),
+		approvals:         approval.NewService(db),
+		runtimeRoot:       runtimeRoot,
+		sandboxImage:      config.SandboxImage,
+		containerCLI:      config.ContainerCLI,
+		listenAddr:        listenAddr,
 	}
 	server.tasks.SetProjectService(server.projects)
 	server.routes()
@@ -111,6 +121,20 @@ func runtimePluginRegistry(dirs []string) (*runtimeplugin.Registry, error) {
 		return nil, errors.Join(errs...)
 	}
 	return runtimeplugin.NewRegistry(plugins)
+}
+
+func runtimeExtensionRegistry(dirs []string) (*runtimeextension.Registry, error) {
+	var extensions []runtimeextension.Extension
+	var errs []error
+	for _, dir := range dirs {
+		loaded, loadErrs := runtimeextension.LoadDirectory(dir)
+		extensions = append(extensions, loaded...)
+		errs = append(errs, loadErrs...)
+	}
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+	return runtimeextension.NewRegistry(extensions)
 }
 
 func runtimeProfileProviders(registry *runtimeplugin.Registry) []runtimeprofile.Provider {
@@ -143,6 +167,8 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("DELETE /api/runtime-profiles/{id}", server.handleDeleteRuntimeProfile)
 	server.mux.HandleFunc("GET /api/runtime-plugins", server.handleListRuntimePlugins)
 	server.mux.HandleFunc("GET /api/runtime-plugins/{plugin_id}", server.handleGetRuntimePlugin)
+	server.mux.HandleFunc("GET /api/runtime-extensions", server.handleListRuntimeExtensions)
+	server.mux.HandleFunc("GET /api/runtime-extensions/{extension_id}", server.handleGetRuntimeExtension)
 	server.mux.HandleFunc("PUT /api/credential-bindings", server.handleUpsertGlobalCredentialBinding)
 	server.mux.HandleFunc("GET /api/credential-bindings", server.handleListGlobalCredentialBindings)
 	server.mux.HandleFunc("DELETE /api/credential-bindings/{binding_id}", server.handleDeleteCredentialBinding)

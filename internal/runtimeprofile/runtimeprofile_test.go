@@ -88,6 +88,7 @@ func TestCreateAcceptsEverySupportedProvider(t *testing.T) {
 
 func TestCreatePersistsStructuredFieldsWithoutSecrets(t *testing.T) {
 	service := newTestService(t)
+	enabled := true
 
 	created, err := service.Create(
 		"Codex Default",
@@ -97,6 +98,11 @@ func TestCreatePersistsStructuredFieldsWithoutSecrets(t *testing.T) {
 			Model:          "gpt-5",
 			CustomArgs:     []string{"--strict"},
 			CredentialRefs: []string{"codex-api-key"},
+			RuntimeExtensions: []runtimeprofile.RuntimeExtensionRef{{
+				ID:      "codex_review_pack",
+				Enabled: &enabled,
+				Config:  map[string]string{"mode": "readonly"},
+			}},
 			MCPServers: []runtimeprofile.MCPServer{{
 				Name: "project",
 				Mode: runtimeprofile.MCPServerTrusted,
@@ -121,6 +127,9 @@ func TestCreatePersistsStructuredFieldsWithoutSecrets(t *testing.T) {
 	}
 	if len(fetched.Fields.MCPServers) != 1 || fetched.Fields.MCPServers[0].Name != "project" {
 		t.Fatalf("expected mcp server preserved, got %#v", fetched.Fields.MCPServers)
+	}
+	if len(fetched.Fields.RuntimeExtensions) != 1 || fetched.Fields.RuntimeExtensions[0].ID != "codex_review_pack" {
+		t.Fatalf("expected runtime extension ref preserved, got %#v", fetched.Fields.RuntimeExtensions)
 	}
 }
 
@@ -239,11 +248,17 @@ func TestDeleteMissingReturnsNotFound(t *testing.T) {
 }
 
 func TestGeneratedConfigNeverLeaksSecrets(t *testing.T) {
+	enabled := true
 	profile := runtimeprofile.Profile{
 		Provider: runtimeprofile.ProviderCodex,
 		Fields: runtimeprofile.Fields{
 			Model:          "gpt-5",
 			CredentialRefs: []string{"codex-api-key"},
+			RuntimeExtensions: []runtimeprofile.RuntimeExtensionRef{{
+				ID:      "codex_review_pack",
+				Enabled: &enabled,
+				Config:  map[string]string{"mode": "readonly"},
+			}},
 		},
 	}
 
@@ -255,6 +270,10 @@ func TestGeneratedConfigNeverLeaksSecrets(t *testing.T) {
 	refs, ok := cfg["credential_refs"].([]string)
 	if !ok || len(refs) != 1 || refs[0] != "codex-api-key" {
 		t.Fatalf("expected credential_refs as references, got %#v", cfg["credential_refs"])
+	}
+	extensions, ok := cfg["runtime_extensions"].([]map[string]any)
+	if !ok || len(extensions) != 1 || extensions[0]["id"] != "codex_review_pack" {
+		t.Fatalf("expected runtime extension refs in config, got %#v", cfg["runtime_extensions"])
 	}
 	// The generated config must never contain a raw secret value.
 	for key := range cfg {

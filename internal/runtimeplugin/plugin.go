@@ -75,13 +75,14 @@ type Transcript struct {
 }
 
 var profileFieldTypes = map[string]bool{
-	"string":         true,
-	"url":            true,
-	"string_list":    true,
-	"env_map":        true,
-	"secret_env_map": true,
-	"mcp_servers":    true,
-	"runner":         true,
+	"string":             true,
+	"url":                true,
+	"string_list":        true,
+	"env_map":            true,
+	"secret_env_map":     true,
+	"mcp_servers":        true,
+	"runtime_extensions": true,
+	"runner":             true,
 }
 
 var projectionPrimitives = map[string]bool{

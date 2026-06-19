@@ -60,20 +60,29 @@ type MCPServer struct {
 	Env     map[string]string `json:"env,omitempty"`
 }
 
+// RuntimeExtensionRef enables a runtime-native extension for profiles using a
+// compatible runtime plugin. Config is non-secret per-profile extension input.
+type RuntimeExtensionRef struct {
+	ID      string            `json:"id"`
+	Enabled *bool             `json:"enabled,omitempty"`
+	Config  map[string]string `json:"config,omitempty"`
+}
+
 // Fields are the structured runtime profile fields. They are the source of
 // truth for the generated config preview. Inline APIKeys are stored per profile
 // and redacted in API responses; legacy CredentialRefs still resolve through
 // global credential bindings when present.
 type Fields struct {
-	BinaryPath     string            `json:"binary_path,omitempty"`
-	Model          string            `json:"model,omitempty"`
-	Endpoint       string            `json:"endpoint,omitempty"`
-	CustomArgs     []string          `json:"custom_args,omitempty"`
-	Env            map[string]string `json:"env,omitempty"`
-	APIKeys        map[string]string `json:"api_keys,omitempty"`
-	CredentialRefs []string          `json:"credential_refs,omitempty"`
-	MCPServers     []MCPServer       `json:"mcp_servers,omitempty"`
-	DefaultRunner  string            `json:"default_runner,omitempty"`
+	BinaryPath        string                `json:"binary_path,omitempty"`
+	Model             string                `json:"model,omitempty"`
+	Endpoint          string                `json:"endpoint,omitempty"`
+	CustomArgs        []string              `json:"custom_args,omitempty"`
+	Env               map[string]string     `json:"env,omitempty"`
+	APIKeys           map[string]string     `json:"api_keys,omitempty"`
+	CredentialRefs    []string              `json:"credential_refs,omitempty"`
+	RuntimeExtensions []RuntimeExtensionRef `json:"runtime_extensions,omitempty"`
+	MCPServers        []MCPServer           `json:"mcp_servers,omitempty"`
+	DefaultRunner     string                `json:"default_runner,omitempty"`
 	// SandboxImage overrides the daemon default sandbox image for tasks using
 	// this profile. Leave empty to use the daemon-wide setting.
 	SandboxImage string `json:"sandbox_image,omitempty"`
@@ -268,6 +277,20 @@ func GeneratedConfig(profile Profile) map[string]any {
 	if len(profile.Fields.CredentialRefs) > 0 {
 		// Emit references, never resolved values.
 		cfg["credential_refs"] = profile.Fields.CredentialRefs
+	}
+	if len(profile.Fields.RuntimeExtensions) > 0 {
+		extensions := make([]map[string]any, 0, len(profile.Fields.RuntimeExtensions))
+		for _, extension := range profile.Fields.RuntimeExtensions {
+			entry := map[string]any{"id": extension.ID}
+			if extension.Enabled != nil {
+				entry["enabled"] = *extension.Enabled
+			}
+			if len(extension.Config) > 0 {
+				entry["config"] = extension.Config
+			}
+			extensions = append(extensions, entry)
+		}
+		cfg["runtime_extensions"] = extensions
 	}
 	if len(profile.Fields.MCPServers) > 0 {
 		servers := make([]map[string]any, 0, len(profile.Fields.MCPServers))

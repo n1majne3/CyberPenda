@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
-import { apiGet, apiPost, apiPatch, apiDelete, type RuntimePlugin, type RuntimeProfile } from "@/lib/api";
+import { apiGet, apiPost, apiPatch, apiDelete, type RuntimeExtension, type RuntimePlugin, type RuntimeProfile } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button, Card, Input, Label, Badge, Textarea } from "@/components/ui";
 
@@ -34,6 +34,7 @@ type ProfileForm = {
   env: string;
   api_key_env: string;
   api_key: string;
+  runtime_extensions: string;
   mcp_servers: string;
   default_runner: string;
   sandbox_image: string;
@@ -50,6 +51,7 @@ const emptyForm: ProfileForm = {
   env: "",
   api_key_env: "",
   api_key: "",
+  runtime_extensions: "",
   mcp_servers: "",
   default_runner: "sandbox",
   sandbox_image: "",
@@ -59,6 +61,7 @@ const emptyForm: ProfileForm = {
 export function RuntimeProfilesPage() {
   const [profiles, setProfiles] = useState<RuntimeProfile[]>([]);
   const [plugins, setPlugins] = useState<RuntimePlugin[]>([]);
+  const [extensions, setExtensions] = useState<RuntimeExtension[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -89,12 +92,14 @@ export function RuntimeProfilesPage() {
 
   async function load() {
     try {
-      const [profileData, pluginData] = await Promise.all([
+      const [profileData, pluginData, extensionData] = await Promise.all([
         apiGet<{ profiles: RuntimeProfile[] }>("/api/runtime-profiles"),
         apiGet<{ plugins: RuntimePlugin[] }>("/api/runtime-plugins"),
+        apiGet<{ extensions: RuntimeExtension[] }>("/api/runtime-extensions"),
       ]);
       const loaded = profileData.profiles ?? [];
       setPlugins(pluginData.plugins ?? []);
+      setExtensions(extensionData.extensions ?? []);
       setProfiles(loaded);
       setSelectedId((current) => {
         if (current && loaded.some((p) => p.id === current)) return current;
@@ -252,6 +257,7 @@ export function RuntimeProfilesPage() {
               saveLabel="Create"
               saveDisabled={!form.name.trim()}
               plugins={effectivePlugins}
+              extensions={extensions}
             />
           ) : selected && draft ? (
             <div className="space-y-4">
@@ -272,7 +278,7 @@ export function RuntimeProfilesPage() {
                   </Button>
                 </div>
               </div>
-              <ProfileEditor form={draft} onChange={setDraft} hideActions plugins={effectivePlugins} />
+              <ProfileEditor form={draft} onChange={setDraft} hideActions plugins={effectivePlugins} extensions={extensions} />
               <div>
                 <Label>Generated config preview</Label>
                 <pre className="mt-1 rounded-md border border-border bg-muted/30 p-3 text-xs overflow-x-auto max-h-96">
@@ -379,6 +385,7 @@ function ProfileEditor({
   saveDisabled,
   hideActions,
   plugins,
+  extensions,
 }: {
   title?: string;
   form: ProfileForm;
@@ -389,6 +396,7 @@ function ProfileEditor({
   saveDisabled?: boolean;
   hideActions?: boolean;
   plugins: RuntimePlugin[];
+  extensions: RuntimeExtension[];
 }) {
   const plugin = pluginFor(plugins, form.provider);
   const providerOptions = plugin
@@ -409,6 +417,9 @@ function ProfileEditor({
       ];
   const has = (field: string) => pluginHasField(plugin, field);
   const apiKeyPlaceholder = defaultAPIKeyEnv(form.provider, plugins) ?? "API_KEY";
+  const compatibleExtensions = extensions.filter((extension) =>
+    extension.compatible_runtime_plugins.includes(form.provider)
+  );
 
   return (
     <div className="space-y-3">
@@ -546,6 +557,22 @@ function ProfileEditor({
             Resolved via global or project credential bindings at preflight.
           </p>
         </div>}
+        {has("runtime_extensions") && <div className="col-span-2">
+          <Label>Runtime extensions JSON</Label>
+          <Textarea
+            value={form.runtime_extensions}
+            onChange={(e) => onChange({ ...form, runtime_extensions: e.target.value })}
+            placeholder='[{"id":"pi_browser_tools","enabled":true,"config":{"mode":"readonly"}}]'
+            rows={3}
+          />
+          {compatibleExtensions.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {compatibleExtensions.map((extension) => (
+                <Badge key={extension.id} variant="outline">{extension.id}</Badge>
+              ))}
+            </div>
+          )}
+        </div>}
       </div>
       {form.provider === "claude_code" && form.endpoint.includes("bigmodel.cn") && (
         <Card className="border-muted bg-muted/20 p-3 text-xs text-muted-foreground space-y-1">
@@ -589,6 +616,7 @@ function profileToForm(profile: RuntimeProfile, plugins: RuntimePlugin[]): Profi
     env: formatEnv(profile.fields.env),
     api_key_env: apiKeyEnv || defaultAPIKeyEnv(profile.provider, plugins) || "",
     api_key: apiKeyValue,
+    runtime_extensions: formatRuntimeExtensions(profile.fields.runtime_extensions),
     mcp_servers: formatMCPServers(profile.fields.mcp_servers),
     default_runner: profile.fields.default_runner ?? "sandbox",
     sandbox_image: profile.fields.sandbox_image ?? "",
@@ -603,6 +631,7 @@ function buildFields(form: ProfileForm, plugins: RuntimePlugin[]): RuntimeProfil
   const endpoint = emptyToUndefined(form.endpoint);
   const customArgs = splitLines(form.custom_args);
   const env = parseEnv(form.env);
+  const runtimeExtensions = parseRuntimeExtensions(form.runtime_extensions);
   const mcpServers = parseMCPServers(form.mcp_servers);
   const defaultRunner = emptyToUndefined(form.default_runner);
   const sandboxImage = emptyToUndefined(form.sandbox_image);
@@ -620,6 +649,7 @@ function buildFields(form: ProfileForm, plugins: RuntimePlugin[]): RuntimeProfil
     fields.api_keys = { [apiKeyEnv]: API_KEY_CONFIGURED };
   }
   if (mcpServers && mcpServers.length > 0) fields.mcp_servers = mcpServers;
+  if (runtimeExtensions && runtimeExtensions.length > 0) fields.runtime_extensions = runtimeExtensions;
   if (defaultRunner) fields.default_runner = defaultRunner;
   if (sandboxImage) fields.sandbox_image = sandboxImage;
   const credentialRefs = splitLines(form.credential_refs);
@@ -696,6 +726,9 @@ function buildGeneratedConfigPreview(
   const launchPreview = buildLaunchPreview(provider, fields, form, (mcpServers?.length ?? 0) > 0, plugin);
   const configPath = plugin?.config_projection.config_path;
   const mcpConfigPath = plugin?.config_projection.mcp_config_path;
+  const runtimeExtensionPreview = fields.runtime_extensions?.length
+    ? { runtime_extensions: fields.runtime_extensions }
+    : {};
 
   if (provider === "claude_code") {
     const env: Record<string, string> = { ...(fields.env ?? {}) };
@@ -705,6 +738,7 @@ function buildGeneratedConfigPreview(
       provider,
       settings_path: configPath ?? "runtime-home/claude/settings.json",
       env,
+      ...runtimeExtensionPreview,
       ...(mcpPreview ? { mcp_servers: mcpPreview, mcp_config_path: mcpConfigPath ?? "workdir/.mcp.json" } : {}),
       ...(fields.api_keys && Object.keys(fields.api_keys).length > 0
         ? { api_keys: redactedAPIKeyPreview(fields) }
@@ -739,6 +773,7 @@ function buildGeneratedConfigPreview(
       provider,
       config_path: configPath ?? "runtime-home/codex/config.toml",
       config_toml: configToml,
+      ...runtimeExtensionPreview,
       ...(mcpPreview ? { mcp_servers: mcpPreview } : {}),
       ...(fields.api_keys && Object.keys(fields.api_keys).length > 0
         ? {
@@ -780,6 +815,7 @@ function buildGeneratedConfigPreview(
       provider,
       models_path: configPath ?? "runtime-home/pi/agent/models.json",
       models_json: modelsJson,
+      ...runtimeExtensionPreview,
       ...(mcpPreview ? { mcp_servers: mcpPreview, mcp_config_path: mcpConfigPath ?? "runtime-home/pi/agent/mcp.json" } : {}),
       ...(fields.api_keys && Object.keys(fields.api_keys).length > 0
         ? {
@@ -803,6 +839,7 @@ function buildGeneratedConfigPreview(
   if (fields.api_keys && Object.keys(fields.api_keys).length > 0) {
     cfg.api_keys = redactedAPIKeyPreview(fields);
   }
+  if (fields.runtime_extensions?.length) cfg.runtime_extensions = fields.runtime_extensions;
   if (mcpPreview) cfg.mcp_servers = mcpPreview;
   if (fields.default_runner) cfg.default_runner = fields.default_runner;
   return cfg;
@@ -1116,6 +1153,18 @@ function parseMCPServers(value: string): RuntimeProfileFields["mcp_servers"] {
   if (!trimmed) return [];
   const parsed = JSON.parse(trimmed);
   return Array.isArray(parsed) ? parsed : [];
+}
+
+function parseRuntimeExtensions(value: string): RuntimeProfileFields["runtime_extensions"] {
+  const trimmed = value.trim();
+  if (!trimmed) return [];
+  const parsed = JSON.parse(trimmed);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+function formatRuntimeExtensions(extensions?: RuntimeProfileFields["runtime_extensions"]): string {
+  if (!extensions || extensions.length === 0) return "";
+  return JSON.stringify(extensions, null, 2);
 }
 
 function formatMCPServers(servers?: RuntimeProfileFields["mcp_servers"]): string {

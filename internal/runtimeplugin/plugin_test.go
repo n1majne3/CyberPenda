@@ -56,6 +56,33 @@ func TestBuiltinRegistryContainsStableBuiltIns(t *testing.T) {
 	}
 }
 
+func TestBuiltinPluginsExposeRuntimeExtensionProfileField(t *testing.T) {
+	registry, err := runtimeplugin.BuiltinRegistry()
+	if err != nil {
+		t.Fatalf("builtin registry: %v", err)
+	}
+	for _, id := range []string{"codex", "claude_code", "pi"} {
+		t.Run(id, func(t *testing.T) {
+			plugin, ok := registry.Get(id)
+			if !ok {
+				t.Fatalf("missing plugin %q", id)
+			}
+			found := false
+			for _, field := range plugin.ProfileSchema.Fields {
+				if field.Name == "runtime_extensions" {
+					found = true
+					if field.Type != "runtime_extensions" {
+						t.Fatalf("runtime_extensions field type = %q", field.Type)
+					}
+				}
+			}
+			if !found {
+				t.Fatalf("expected runtime_extensions field in %#v", plugin.ProfileSchema.Fields)
+			}
+		})
+	}
+}
+
 func TestRegistryReturnsCopies(t *testing.T) {
 	registry, err := runtimeplugin.BuiltinRegistry()
 	if err != nil {

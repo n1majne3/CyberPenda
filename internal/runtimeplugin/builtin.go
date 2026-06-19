@@ -9,6 +9,7 @@ func BuiltinPlugins() []Plugin {
 		{Name: "env", Type: "env_map", Label: "Environment"},
 		{Name: "api_keys", Type: "secret_env_map", Label: "API keys"},
 		{Name: "credential_refs", Type: "string_list", Label: "Credential refs"},
+		{Name: "runtime_extensions", Type: "runtime_extensions", Label: "Runtime extensions"},
 		{Name: "mcp_servers", Type: "mcp_servers", Label: "MCP servers"},
 		{Name: "default_runner", Type: "runner", Label: "Default runner"},
 		{Name: "sandbox_image", Type: "string", Label: "Sandbox image"},

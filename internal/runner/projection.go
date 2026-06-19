@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"pentest/internal/credential"
+	"pentest/internal/runtimeextension"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
 )
@@ -18,12 +19,13 @@ var secretEnvKeyPattern = regexp.MustCompile(`(?i)(token|api[_-]?key|secret|pass
 
 // ProjectionRequest supplies task and daemon context for launch projection.
 type ProjectionRequest struct {
-	ProjectID      string
-	TaskID         string
-	Credentials    *credential.Service
-	DaemonAddr     string
-	Sandbox        bool
-	RuntimePlugins *runtimeplugin.Registry
+	ProjectID         string
+	TaskID            string
+	Credentials       *credential.Service
+	DaemonAddr        string
+	Sandbox           bool
+	RuntimePlugins    *runtimeplugin.Registry
+	RuntimeExtensions *runtimeextension.Registry
 }
 
 // ProjectRuntimeConfig writes provider-specific runtime files into the task-local
@@ -46,18 +48,133 @@ func ProjectRuntimeConfig(layout Layout, profile runtimeprofile.Profile, req Pro
 		return projectGenericConfig(layout, profile)
 	}
 
+	var projection ConfigProjection
+	var err error
 	switch plugin.ConfigProjection.Primitive {
 	case "claude_settings":
-		return projectClaudeSettings(layout, profile, req)
+		projection, err = projectClaudeSettings(layout, profile, req)
 	case "codex_home":
-		return projectCodexConfig(layout, profile, req)
+		projection, err = projectCodexConfig(layout, profile, req)
 	case "pi_agent":
-		return projectPiConfig(layout, profile, req)
+		projection, err = projectPiConfig(layout, profile, req)
 	case "none":
-		return ConfigProjection{Config: runtimeprofile.GeneratedConfig(profile)}, nil
+		projection = ConfigProjection{Config: runtimeprofile.GeneratedConfig(profile)}
 	default:
-		return projectGenericConfig(layout, profile)
+		projection, err = projectGenericConfig(layout, profile)
 	}
+	if err != nil {
+		return ConfigProjection{}, err
+	}
+	if err := projectRuntimeExtensions(layout, profile, req, &projection); err != nil {
+		return ConfigProjection{}, err
+	}
+	return projection, nil
+}
+
+func projectRuntimeExtensions(layout Layout, profile runtimeprofile.Profile, req ProjectionRequest, projection *ConfigProjection) error {
+	if req.RuntimeExtensions == nil || len(profile.Fields.RuntimeExtensions) == 0 {
+		return nil
+	}
+	previews := make([]map[string]any, 0, len(profile.Fields.RuntimeExtensions))
+	for _, ref := range profile.Fields.RuntimeExtensions {
+		if !runtimeExtensionRefEnabled(ref) {
+			continue
+		}
+		extension, ok := req.RuntimeExtensions.Get(ref.ID)
+		if !ok {
+			return fmt.Errorf("runtime extension %q not found", ref.ID)
+		}
+		if !runtimeextension.CompatibleWith(extension, string(profile.Provider)) {
+			return fmt.Errorf("runtime extension %q is not compatible with provider %q", ref.ID, profile.Provider)
+		}
+		targetRoot, err := runtimeExtensionTargetRoot(layout, extension.Projection.Location)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(targetRoot, filepath.FromSlash(extension.Projection.Path))
+		if err := copyRuntimeExtension(extension, target); err != nil {
+			return err
+		}
+		preview := map[string]any{
+			"id":     extension.ID,
+			"name":   extension.Name,
+			"target": target,
+		}
+		if len(ref.Config) > 0 {
+			preview["config"] = ref.Config
+		}
+		previews = append(previews, preview)
+	}
+	if len(previews) == 0 {
+		return nil
+	}
+	if projection.Config == nil {
+		projection.Config = map[string]any{}
+	}
+	projection.Config["runtime_extensions"] = previews
+	return nil
+}
+
+func runtimeExtensionRefEnabled(ref runtimeprofile.RuntimeExtensionRef) bool {
+	return ref.Enabled == nil || *ref.Enabled
+}
+
+func runtimeExtensionTargetRoot(layout Layout, location string) (string, error) {
+	switch location {
+	case "provider_home":
+		return layout.ProviderHome, nil
+	case "runtime_home":
+		return layout.RuntimeHome, nil
+	case "workdir":
+		return layout.Workdir, nil
+	default:
+		return "", fmt.Errorf("unsupported runtime extension projection location %q", location)
+	}
+}
+
+func copyRuntimeExtension(extension runtimeextension.Extension, target string) error {
+	switch extension.Source.Type {
+	case "local_dir":
+		return copyRuntimeExtensionDir(extension.Source.Path, target)
+	case "local_file":
+		return copyRuntimeExtensionFile(extension.Source.Path, target)
+	default:
+		return fmt.Errorf("unsupported runtime extension source type %q", extension.Source.Type)
+	}
+}
+
+func copyRuntimeExtensionDir(source, target string) error {
+	return filepath.WalkDir(source, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("runtime extension source must not contain symlinks: %s", path)
+		}
+		rel, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(target, rel)
+		if entry.IsDir() {
+			return os.MkdirAll(dst, 0o700)
+		}
+		return copyRuntimeExtensionFile(path, dst)
+	})
+}
+
+func copyRuntimeExtensionFile(source, target string) error {
+	raw, err := os.ReadFile(source)
+	if err != nil {
+		return fmt.Errorf("read runtime extension source %q: %w", source, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		return fmt.Errorf("prepare runtime extension target: %w", err)
+	}
+	if err := os.WriteFile(target, raw, 0o600); err != nil {
+		return fmt.Errorf("write runtime extension target %q: %w", target, err)
+	}
+	return nil
 }
 
 func runtimePluginForProvider(provider runtimeprofile.Provider, registry *runtimeplugin.Registry) (runtimeplugin.Plugin, bool) {
