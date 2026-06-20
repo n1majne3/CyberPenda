@@ -13,6 +13,7 @@ import (
 	"pentest/internal/runtimeextension"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
+	"pentest/internal/skill"
 )
 
 var secretEnvKeyPattern = regexp.MustCompile(`(?i)(token|api[_-]?key|secret|password|auth)`)
@@ -26,6 +27,7 @@ type ProjectionRequest struct {
 	Sandbox           bool
 	RuntimePlugins    *runtimeplugin.Registry
 	RuntimeExtensions *runtimeextension.Registry
+	SkillBundles      []skill.Bundle
 }
 
 // ProjectRuntimeConfig writes provider-specific runtime files into the task-local
@@ -37,8 +39,20 @@ func ProjectRuntimeConfig(layout Layout, profile runtimeprofile.Profile, req Pro
 	if err := os.MkdirAll(layout.ProviderHome, 0o700); err != nil {
 		return ConfigProjection{}, fmt.Errorf("prepare provider home: %w", err)
 	}
-	if req.Sandbox {
-		if err := PrepareSandboxSkills(layout, profile.Provider); err != nil {
+	if len(req.SkillBundles) > 0 {
+		if err := projectSkillBundles(layout, req.SkillBundles); err != nil {
+			return ConfigProjection{}, err
+		}
+	}
+	if req.Sandbox || len(req.SkillBundles) > 0 {
+		target := sandboxSkillsImagePath
+		if len(req.SkillBundles) > 0 {
+			target = layout.SkillsRoot
+			if req.Sandbox {
+				target = "/task/skills"
+			}
+		}
+		if err := PrepareSandboxSkills(layout, profile.Provider, target); err != nil {
 			return ConfigProjection{}, err
 		}
 	}
@@ -68,7 +82,60 @@ func ProjectRuntimeConfig(layout Layout, profile runtimeprofile.Profile, req Pro
 	if err := projectRuntimeExtensions(layout, profile, req, &projection); err != nil {
 		return ConfigProjection{}, err
 	}
+	if len(req.SkillBundles) > 0 {
+		addSkillProjectionPreview(&projection, req.SkillBundles, layout)
+	}
 	return projection, nil
+}
+
+func projectSkillBundles(layout Layout, bundles []skill.Bundle) error {
+	if strings.TrimSpace(layout.SkillsRoot) == "" {
+		return fmt.Errorf("skills root is required")
+	}
+	if err := os.MkdirAll(layout.SkillsRoot, 0o700); err != nil {
+		return fmt.Errorf("prepare skills root: %w", err)
+	}
+	targets := map[string]string{}
+	for _, bundle := range bundles {
+		projectionID := skill.DisplayID(bundle.ID, bundle.Source)
+		projectionName := skill.DisplayName(bundle.Name, bundle.ID, bundle.Source)
+		if previous, exists := targets[projectionID]; exists {
+			return fmt.Errorf("project skill %q: source-free skill folder %q conflicts with %q", bundle.ID, projectionID, previous)
+		}
+		targets[projectionID] = bundle.ID
+		meta := skill.Metadata{ID: projectionID, Name: projectionName}
+		if strings.TrimSpace(meta.Name) == "" {
+			meta.Name = projectionID
+		}
+		if err := skill.ValidateBundle(bundle.Path, meta); err != nil {
+			return err
+		}
+		target := filepath.Join(layout.SkillsRoot, projectionID)
+		if err := os.RemoveAll(target); err != nil {
+			return fmt.Errorf("clear projected skill %q: %w", projectionID, err)
+		}
+		if err := copyRuntimeExtensionDir(bundle.Path, target); err != nil {
+			return fmt.Errorf("project skill %q: %w", projectionID, err)
+		}
+	}
+	return nil
+}
+
+func addSkillProjectionPreview(projection *ConfigProjection, bundles []skill.Bundle, layout Layout) {
+	if projection.Config == nil {
+		projection.Config = map[string]any{}
+	}
+	previews := make([]map[string]any, 0, len(bundles))
+	for _, bundle := range bundles {
+		projectionID := skill.DisplayID(bundle.ID, bundle.Source)
+		preview := map[string]any{
+			"id":     projectionID,
+			"name":   skill.DisplayName(bundle.Name, bundle.ID, bundle.Source),
+			"target": filepath.Join(layout.SkillsRoot, projectionID),
+		}
+		previews = append(previews, preview)
+	}
+	projection.Config["skills"] = previews
 }
 
 func projectRuntimeExtensions(layout Layout, profile runtimeprofile.Profile, req ProjectionRequest, projection *ConfigProjection) error {
@@ -834,6 +901,9 @@ func processEnvRenderContext(layout Layout, profile runtimeprofile.Profile, sand
 // runtimes that interpolate env references from their generated config.
 func LaunchProcessEnvWithCredentials(layout Layout, profile runtimeprofile.Profile, sandbox bool, ctx TaskContext, req ProjectionRequest) (map[string]string, error) {
 	env := launchProcessEnv(layout, profile, sandbox, ctx, req.RuntimePlugins)
+	if sandbox && len(req.SkillBundles) > 0 {
+		env["PENTEST_SKILLS_DIR"] = "/task/skills"
+	}
 	for key, value := range profile.Fields.Env {
 		env[key] = value
 	}

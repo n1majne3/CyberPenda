@@ -161,6 +161,19 @@ export function TaskLaunchPage() {
                 </div>
               ))}
             </div>
+            {preflight.skills && preflight.skills.length > 0 && (
+              <div className="mt-3 border-t border-border/60 pt-3">
+                <p className="mb-2 text-sm font-medium">Enabled Skills</p>
+                <div className="space-y-2">
+                  {preflight.skills.map((skill) => (
+                    <div key={skill.id} className="rounded-lg border border-border/60 bg-background/50 p-2 text-sm">
+                      <div className="font-medium">{skill.name || skill.id}</div>
+                      <div className="font-mono text-xs text-muted-foreground">{skill.id}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </Card>
         )}
 

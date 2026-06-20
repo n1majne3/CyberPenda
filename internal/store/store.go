@@ -73,6 +73,20 @@ func migrate(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS skills (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			source_provenance_json TEXT NOT NULL DEFAULT '{}',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS skill_profile_opt_outs (
+			profile_id TEXT NOT NULL,
+			skill_id TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			PRIMARY KEY (profile_id, skill_id)
+		);`,
 		`CREATE TABLE IF NOT EXISTS credential_bindings (
 			id TEXT PRIMARY KEY,
 			credential_ref TEXT NOT NULL,

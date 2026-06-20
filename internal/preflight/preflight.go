@@ -13,6 +13,7 @@ import (
 
 	"pentest/internal/credential"
 	"pentest/internal/runtimeprofile"
+	"pentest/internal/skill"
 )
 
 // CheckStatus is the outcome for a single preflight check.
@@ -30,10 +31,16 @@ type Check struct {
 	Detail string      `json:"detail,omitempty"`
 }
 
+type SkillPreview struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 // Result is the full preflight outcome for a task launch.
 type Result struct {
-	Pass   bool    `json:"pass"`
-	Checks []Check `json:"checks"`
+	Pass   bool           `json:"pass"`
+	Checks []Check        `json:"checks"`
+	Skills []SkillPreview `json:"skills,omitempty"`
 }
 
 // Request describes what to validate for a task launch.
@@ -60,15 +67,24 @@ type ProfileGetter interface {
 	Get(id string) (runtimeprofile.Profile, error)
 }
 
+type SkillGetter interface {
+	EnabledSkills(profileID string) ([]skill.Skill, error)
+}
+
 // Service runs preflight against the runtime profile and credential services.
 type Service struct {
 	profiles ProfileGetter
 	creds    *credential.Service
+	skills   SkillGetter
 }
 
 // NewService returns a preflight Service.
-func NewService(profiles ProfileGetter, creds *credential.Service) *Service {
-	return &Service{profiles: profiles, creds: creds}
+func NewService(profiles ProfileGetter, creds *credential.Service, skillGetters ...SkillGetter) *Service {
+	svc := &Service{profiles: profiles, creds: creds}
+	if len(skillGetters) > 0 {
+		svc.skills = skillGetters[0]
+	}
+	return svc
 }
 
 // Run executes all preflight checks for a launch request.
@@ -77,6 +93,7 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 
 	// Check 1: the runtime profile exists and is loadable.
 	profile, err := s.profiles.Get(request.RuntimeProfileID)
+	profileLoaded := err == nil
 	if err != nil {
 		result.add(Check{
 			Name:   "runtime_profile",
@@ -87,6 +104,30 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 		// the runner check so the result lists every problem.
 	} else {
 		result.add(Check{Name: "runtime_profile", Status: CheckPass})
+	}
+
+	if profileLoaded && s.skills != nil {
+		enabledSkills, err := s.skills.EnabledSkills(profile.ID)
+		if err != nil {
+			result.add(Check{
+				Name:   "skills",
+				Status: CheckFail,
+				Detail: fmt.Sprintf("resolve enabled skills: %v", err),
+			})
+		} else {
+			for _, enabled := range enabledSkills {
+				preview := SkillPreview{
+					ID:   skill.DisplayID(enabled.ID, enabled.Source),
+					Name: skill.DisplayName(enabled.Name, enabled.ID, enabled.Source),
+				}
+				result.Skills = append(result.Skills, preview)
+			}
+			if len(enabledSkills) == 0 {
+				result.add(Check{Name: "skills", Status: CheckPass, Detail: "no enabled skills"})
+			} else {
+				result.add(Check{Name: "skills", Status: CheckPass, Detail: fmt.Sprintf("%d enabled skill(s)", len(enabledSkills))})
+			}
+		}
 	}
 
 	// Check 2: the selected runner is valid. Empty defaults to sandbox.
@@ -115,11 +156,11 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 	}
 
 	// Check 3: inline profile API keys or every credential reference resolves.
-	if runtimeprofile.HasInlineAPIKeys(profile) {
+	refs := collectRefs(profile, request, runtimeprofile.HasInlineAPIKeys(profile))
+	if runtimeprofile.HasInlineAPIKeys(profile) && len(refs) == 0 {
 		result.add(Check{Name: "credentials", Status: CheckPass, Detail: "inline profile API keys configured"})
 		return result
 	}
-	refs := collectRefs(profile, request)
 	if len(refs) == 0 {
 		result.add(Check{Name: "credentials", Status: CheckPass, Detail: "no credential references"})
 	} else {
@@ -176,7 +217,7 @@ func (r *Result) add(check Check) {
 	}
 }
 
-func collectRefs(profile runtimeprofile.Profile, request Request) []string {
+func collectRefs(profile runtimeprofile.Profile, request Request, skipProfileRefs bool) []string {
 	seen := map[string]bool{}
 	var refs []string
 	add := func(ref string) {
@@ -187,8 +228,10 @@ func collectRefs(profile runtimeprofile.Profile, request Request) []string {
 		seen[ref] = true
 		refs = append(refs, ref)
 	}
-	for _, ref := range profile.Fields.CredentialRefs {
-		add(ref)
+	if !skipProfileRefs {
+		for _, ref := range profile.Fields.CredentialRefs {
+			add(ref)
+		}
 	}
 	for _, ref := range request.CredentialRefsToResolve {
 		add(ref)

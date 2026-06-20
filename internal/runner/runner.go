@@ -35,6 +35,7 @@ type Layout struct {
 	Workdir      string `json:"workdir"`
 	RuntimeHome  string `json:"runtime_home"`
 	ProviderHome string `json:"provider_home"`
+	SkillsRoot   string `json:"skills_root"`
 	Artifacts    string `json:"artifacts"`
 	Logs         string `json:"logs"`
 }
@@ -76,8 +77,8 @@ type FallbackRequest struct {
 }
 
 // PrepareTaskLayout creates the task-local directory layout:
-// task_root/workdir, task_root/runtime-home/<provider>, task_root/artifacts,
-// and task_root/logs.
+// task_root/workdir, task_root/runtime-home/<provider>, task_root/skills,
+// task_root/artifacts, and task_root/logs.
 func PrepareTaskLayout(rootDir, taskID string, provider runtimeprofile.Provider) (Layout, error) {
 	if strings.TrimSpace(rootDir) == "" {
 		return Layout{}, fmt.Errorf("runner root is required")
@@ -96,10 +97,11 @@ func PrepareTaskLayout(rootDir, taskID string, provider runtimeprofile.Provider)
 		Workdir:      filepath.Join(taskRoot, "workdir"),
 		RuntimeHome:  filepath.Join(taskRoot, "runtime-home"),
 		ProviderHome: filepath.Join(taskRoot, "runtime-home", providerDir),
+		SkillsRoot:   filepath.Join(taskRoot, "skills"),
 		Artifacts:    filepath.Join(taskRoot, "artifacts"),
 		Logs:         filepath.Join(taskRoot, "logs"),
 	}
-	for _, dir := range []string{layout.Workdir, layout.ProviderHome, layout.Artifacts, layout.Logs} {
+	for _, dir := range []string{layout.Workdir, layout.ProviderHome, layout.SkillsRoot, layout.Artifacts, layout.Logs} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return Layout{}, fmt.Errorf("prepare %s: %w", dir, err)
 		}

@@ -8,11 +8,13 @@ import (
 	"pentest/internal/credential"
 	"pentest/internal/preflight"
 	"pentest/internal/runtimeprofile"
+	"pentest/internal/skill"
 	"pentest/internal/store"
 )
 
 type services struct {
 	preflight *preflight.Service
+	db        *store.DB
 	profiles  *runtimeprofile.Service
 	creds     *credential.Service
 }
@@ -32,6 +34,7 @@ func newTestServices(t *testing.T) services {
 	creds := credential.NewService(db)
 	return services{
 		preflight: preflight.NewService(profiles, creds),
+		db:        db,
 		profiles:  profiles,
 		creds:     creds,
 	}
@@ -243,6 +246,36 @@ func TestRunIncludesExtraRefsFromRequest(t *testing.T) {
 	}
 	if !checkFailed(result, "credentials") {
 		t.Fatalf("expected credentials check to fail, got %#v", result.Checks)
+	}
+}
+
+func TestRunListsEnabledSkillsWithoutAddingCredentialRequirements(t *testing.T) {
+	svc := newTestServices(t)
+	skills := skill.NewService(svc.db, filepath.Join(t.TempDir(), "skills"))
+	svc.preflight = preflight.NewService(svc.profiles, svc.creds, skills)
+	profile, err := svc.profiles.Create("codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	if _, err := skills.Publish(context.Background(), skill.PublishRequest{
+		Metadata: skill.Metadata{
+			ID:   "recon-helper",
+			Name: "Recon Helper",
+		},
+		Files: map[string]string{"SKILL.md": "# Recon"},
+	}); err != nil {
+		t.Fatalf("publish skill: %v", err)
+	}
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+	})
+	if !result.Pass {
+		t.Fatalf("expected enabled skill without profile credentials to pass preflight, got %#v", result.Checks)
+	}
+	if len(result.Skills) != 1 || result.Skills[0].ID != "recon-helper" {
+		t.Fatalf("expected enabled skill preview, got %#v", result.Skills)
 	}
 }
 

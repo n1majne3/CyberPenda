@@ -234,6 +234,24 @@ export interface CredentialBinding {
   updated_at: string;
 }
 
+export interface Skill {
+  id: string;
+  name: string;
+  description?: string;
+  source_provenance?: {
+    kind?: string;
+    package?: string;
+    ref?: string;
+    source_url?: string;
+    last_imported_at?: string;
+    local_modified?: boolean;
+  };
+  files?: Record<string, string>;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Task {
   id: string;
   project_id: string;
@@ -282,9 +300,15 @@ export interface PreflightCheck {
   detail?: string;
 }
 
+export interface PreflightSkill {
+  id: string;
+  name: string;
+}
+
 export interface PreflightResult {
   pass: boolean;
   checks: PreflightCheck[];
+  skills?: PreflightSkill[];
 }
 
 export interface FactIndexEntry {

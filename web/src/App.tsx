@@ -1,12 +1,13 @@
 import { NavLink, Outlet, useRouteError } from "react-router-dom";
 import { createBrowserRouter, RouterProvider } from "react-router-dom";
 import type { ReactNode } from "react";
-import { ShieldAlert, FolderKanban, Cpu, KeyRound } from "lucide-react";
+import { ShieldAlert, FolderKanban, Cpu, KeyRound, BookOpen } from "lucide-react";
 import { ProjectListPage } from "@/pages/ProjectListPage";
 import { ProjectDashboardPage } from "@/pages/ProjectDashboardPage";
 import { ScopeEditorPage } from "@/pages/ScopeEditorPage";
 import { RuntimeProfilesPage } from "@/pages/RuntimeProfilesPage";
 import { CredentialBindingsPage } from "@/pages/CredentialBindingsPage";
+import { SkillsPage } from "@/pages/SkillsPage";
 import { TaskLaunchPage } from "@/pages/TaskLaunchPage";
 import { TaskDetailPage } from "@/pages/TaskDetailPage";
 import { FactsPage } from "@/pages/FactsPage";
@@ -54,6 +55,9 @@ function Layout() {
             </SideLink>
             <SideLink to="/credentials" icon={<KeyRound className="size-4" />}>
               Credentials
+            </SideLink>
+            <SideLink to="/skills" icon={<BookOpen className="size-4" />}>
+              Skills
             </SideLink>
           </NavSection>
         </nav>
@@ -112,6 +116,7 @@ const router = createBrowserRouter([
       { path: "/", element: <ProjectListPage /> },
       { path: "/profiles", element: <RuntimeProfilesPage /> },
       { path: "/credentials", element: <CredentialBindingsPage /> },
+      { path: "/skills", element: <SkillsPage /> },
       { path: "/projects/:projectId", element: <ProjectDashboardPage /> },
       { path: "/projects/:projectId/scope", element: <ScopeEditorPage /> },
       { path: "/projects/:projectId/tasks", element: <TasksPage /> },

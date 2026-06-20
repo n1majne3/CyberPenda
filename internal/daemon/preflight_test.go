@@ -132,3 +132,78 @@ func TestPreflightUsesProjectDefaultsWhenLaunchOmitsRuntimeControls(t *testing.T
 		t.Fatalf("expected runtime_profile check to pass, got %#v", result.Checks)
 	}
 }
+
+func TestPreflightReturnsEnabledSkillPreviewWithoutCredentialBlockers(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	profileID := createRuntimeProfile(t, server, `{"name":"Codex","provider":"codex"}`)
+	putSkill(t, server, "recon-helper", `{
+		"name":"Recon Helper",
+		"credential_refs":["recon-api-key"],
+		"files":{"SKILL.md":"# Recon"}
+	}`)
+
+	body := []byte(`{"runtime_profile_id":"` + profileID + `"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/preflight", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected preflight status 200, got %d with body %s", resp.Code, resp.Body.String())
+	}
+	var result struct {
+		Pass   bool `json:"pass"`
+		Checks []struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+			Detail string `json:"detail"`
+		} `json:"checks"`
+		Skills []struct {
+			ID string `json:"id"`
+		} `json:"skills"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode preflight response: %v", err)
+	}
+	if !result.Pass {
+		t.Fatalf("expected skill credential_refs input to be ignored by preflight, got %#v", result.Checks)
+	}
+	if !checkNamed(result.Checks, "skills", "pass") || !checkNamed(result.Checks, "credentials", "pass") {
+		t.Fatalf("expected skills and credentials checks to pass, got %#v", result.Checks)
+	}
+	if len(result.Skills) != 1 || result.Skills[0].ID != "recon-helper" {
+		t.Fatalf("expected skill preview, got %#v", result.Skills)
+	}
+}
+
+func TestPreflightBuiltinSkillPreviewUsesSourceFreeID(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	profileID := createRuntimeProfile(t, server, `{"name":"Codex","provider":"codex"}`)
+	putSkill(t, server, "cyberstrikeai-api-security-testing", `{
+		"name":"cyberstrikeai-api-security-testing",
+		"source_provenance":{"kind":"builtin"},
+		"files":{"SKILL.md":"# API Security Testing"}
+	}`)
+
+	body := []byte(`{"runtime_profile_id":"` + profileID + `"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/preflight", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected preflight status 200, got %d with body %s", resp.Code, resp.Body.String())
+	}
+	var result struct {
+		Skills []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"skills"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode preflight response: %v", err)
+	}
+	if len(result.Skills) != 1 || result.Skills[0].ID != "api-security-testing" || result.Skills[0].Name != "api-security-testing" {
+		t.Fatalf("expected source-free builtin skill preview, got %#v", result.Skills)
+	}
+}

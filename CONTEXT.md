@@ -112,6 +112,94 @@ _Avoid_: manifest code, user-provided hook
 A runtime-native plugin, skill, package, or configuration bundle that a selected **Runtime** consumes after **Config Projection** prepares it for a **Task**.
 _Avoid_: runtime provider, daemon plugin, arbitrary host hook
 
+**Runtime Extension Bundle**:
+The file-backed content of a **Runtime Extension**, including its instructions, scripts, assets, and structured non-secret metadata.
+_Avoid_: manifest-only skill, external path pointer, raw JSON config
+
+**Skill**:
+A runtime-agnostic **Runtime Extension Bundle** managed through the **Skills Page** and projected for any supported **Runtime** when enabled by a **Runtime Profile**.
+_Avoid_: runtime plugin, provider-specific extension, MCP server
+
+**Skill ID**:
+The stable identifier for one **Skill** in the **Runtime Extension Library**, used by **Runtime Extension Enablement** and repeated imports to refer to the same skill.
+_Avoid_: display name, package source, duplicate copy
+
+**Skill Source Provenance**:
+The non-authoritative record of where a **Skill** came from and how it was last imported or edited.
+_Avoid_: Skill ID, trust proof, enablement source of truth
+
+**Built-in Skill**:
+A packaged **Skill** seeded by the daemon into the **Runtime Extension Library** from reviewed upstream sources.
+_Avoid_: remote runtime download, hardcoded prompt fragment, uneditable system-only skill
+
+**Skill Bundle Format**:
+The canonical file layout for a **Skill**, centered on a skill instruction document with optional scripts and assets.
+_Avoid_: provider-native plugin format, manifest-only format
+
+**Skill Bundle Edit**:
+A bounded change to a **Skill**'s instruction document, structured metadata, scripts, or assets within its **Runtime Extension Bundle**.
+_Avoid_: raw manifest editing, host filesystem edit, path escape
+
+**Skill Execution Boundary**:
+The existing **Task**, **Scope**, **Runner**, **Approval**, credential, and **Project Interface** constraints that govern actions influenced by a **Skill**.
+_Avoid_: skill-granted permission, approval bypass, scope expansion
+
+**Skill Deletion**:
+Removal of a **Skill** from the **Runtime Extension Library**, guarded so it does not silently leave broken **Runtime Extension Enablement**.
+_Avoid_: dangling profile reference, live task mutation, silent launch breakage
+
+**Skill Audit Event**:
+An **Audit Log** entry recording a security-relevant **Skill**, **Skill Source Provenance**, or **Runtime Extension Enablement** change.
+_Avoid_: Task Event, runtime transcript entry, bundle content
+
+**Skill Preflight Preview**:
+The **Run Controls** and **Preflight** view of enabled **Skills** and their projection readiness before **Task** launch.
+_Avoid_: hidden runtime context, raw bundle dump
+
+**Task Skills Root**:
+The task-local directory containing enabled **Skills** for one **Task**, exposed to the selected **Runtime** through that runtime's skill discovery path.
+_Avoid_: global skills directory, host runtime home, package install location
+
+**Runtime-Specific Extension**:
+A provider-native plugin, package, or configuration bundle represented as a **Runtime Extension** but scoped to a specific **Runtime Plugin** family.
+_Avoid_: Skill, Runtime Plugin
+
+**Runtime Extension Library**:
+The global user-facing collection where reusable **Skills** and other **Runtime Extensions** are discovered, uploaded, edited, and made available to **Runtime Profiles**.
+_Avoid_: project skill store, profile-local skill editor, runtime provider list
+
+**Runtime Extension Import**:
+The management-time intake of an external skill or package into the **Runtime Extension Library** so it can be reused and projected by later **Tasks**.
+_Avoid_: task launch install, transient package reference, runtime-side package manager execution
+
+**Controlled Skill Import**:
+A **Runtime Extension Import** that accepts a package, source, or reference and runs a fixed import primitive rather than user-supplied shell.
+_Avoid_: arbitrary command execution, task launch install, shell-scripted management
+
+**Skill Publication**:
+The atomic promotion of a validated **Runtime Extension Bundle** into the live **Runtime Extension Library**.
+_Avoid_: partial live update, versioning system, failed-save mutation
+
+**Skill Validation**:
+The checks that gate **Skill Publication** for identity, bundle shape, path safety, non-secret metadata, credential references, size limits, and update intent.
+_Avoid_: runtime execution test, trust proof, full code audit
+
+**Runtime Extension Enablement**:
+A **Runtime Profile** choice that allows a compatible **Runtime Extension** from the **Runtime Extension Library** to be projected for tasks using that profile.
+_Avoid_: library membership, automatic global mount, project-wide default
+
+**Default Skill Enablement**:
+The default-on policy that enables newly uploaded or imported **Skills** for all current and future **Runtime Profiles** unless a profile opts out.
+_Avoid_: runtime-specific plugin default, live task mutation, project-local default
+
+**Skill Opt-Out**:
+A **Runtime Profile** override that disables a default-enabled **Skill** by **Skill ID**.
+_Avoid_: Skill Deletion, Runtime-Specific Extension disablement, temporary task skip
+
+**Skills Page**:
+The top-level product view named Skills for managing **Skills** in the **Runtime Extension Library**.
+_Avoid_: runtime profile subform, project settings panel, provider-specific plugin manager
+
 **Runtime Extension Manifest**:
 The declarative document that identifies a **Runtime Extension**, its compatible **Runtime Plugins**, source location, task-local projection target, and non-secret configuration.
 _Avoid_: executable installer, credential file, remote marketplace listing
@@ -374,9 +462,42 @@ _Avoid_: transcript, export, source of truth
 - A **Runtime Plugin Manifest** is declarative and may reference only known **Runtime Plugin Primitives**.
 - A **Runtime Plugin Registry** is the source of supported runtime provider identifiers.
 - A **Runtime Extension** belongs to a selected **Runtime Plugin** and does not define a new runtime provider identifier.
+- A **Runtime Extension Bundle** is the editable and projectable content managed by the **Runtime Extension Library**.
+- A **Skill ID** identifies a **Skill** independently of display name or import source.
+- **Skill Source Provenance** records manual upload, package import, source URL, update, or local modification context without replacing **Skill ID**.
+- A **Built-in Skill** uses **Skill Source Provenance** kind `builtin` without exposing upstream repository details in user-facing payloads.
+- A **Skill** is compatible with all supported **Runtime Plugins**.
+- A **Skill** uses the **Skill Bundle Format** rather than a provider-native plugin format.
+- A **Skill Bundle Edit** may modify the full **Runtime Extension Bundle** but must stay within that bundle.
+- A **Skill** must not contain credential values or declare credential resolution requirements; credentials and environment variables belong to **Runtime Profiles** and **Credential Bindings**.
+- A **Skill** follows the **Skill Execution Boundary** and does not grant permissions by itself.
+- **Skill Deletion** is blocked while the **Skill** is enabled unless the user explicitly removes that enablement everywhere.
+- **Skill Audit Events** record import, upload, edit, deletion, provenance, and enablement changes.
+- **Skill Preflight Preview** makes enabled **Skills** and related launch blockers visible before a **Task** starts.
+- **Runtime Extension Projection** materializes enabled **Skills** into a **Task Skills Root**.
+- A **Runtime-Specific Extension** narrows compatibility to the relevant **Runtime Plugin** family.
+- The **Runtime Extension Library** is global and reusable across **Projects**.
+- **Runtime Extension Import** happens before **Task** launch and produces or updates a reusable **Runtime Extension** in the **Runtime Extension Library**.
+- **Controlled Skill Import** is the import path for package-backed skills.
+- **Skill Validation** must pass before **Skill Publication**.
+- **Skill Publication** makes successful imports or edits visible to future **Tasks**.
+- A **Runtime Extension Import** with an existing **Skill ID** updates that **Skill** rather than creating a duplicate.
+- **Built-in Skills** are seeded on daemon startup when missing, but startup seeding does not overwrite an existing **Skill ID** so user edits survive restart.
+- The **Skills Page** is the top-level management view for **Skills** in the **Runtime Extension Library**.
+- The **Skills Page** lives in global navigation rather than project navigation.
+- **Runtime-Specific Extensions** are managed through their owning runtime-specific surfaces rather than treated as universal **Skills**.
 - A **Runtime Extension Manifest** may declare compatibility, source paths, projection targets, and non-secret defaults but must not contain credential values.
 - A **Runtime Profile** manages **Runtime Extensions** through structured controls rather than raw manifest JSON.
+- **Runtime Extension Enablement** belongs to a **Runtime Profile** and is limited to compatible **Runtime Plugins**.
+- **Default Skill Enablement** applies to **Skills** but not **Runtime-Specific Extensions**.
+- A **Runtime Profile** may opt out of a **Skill** enabled by **Default Skill Enablement**.
+- A **Skill Opt-Out** is tied to **Skill ID** and survives ordinary imports or edits that update the same **Skill**.
+- **Skill Deletion** ends the enablement lifecycle for that **Skill ID**; re-importing the same **Skill ID** follows **Default Skill Enablement** instead of restoring old opt-outs.
+- The **Skills Page** may change **Runtime Extension Enablement**, but the enablement state still belongs to the affected **Runtime Profile**.
 - A **Runtime Profile** may reference a manually entered **Runtime Extension** identifier, but task launch still requires the daemon **Runtime Extension Registry** to resolve it.
+- A new **Task** loads the current **Runtime Extensions** from the **Runtime Extension Library** when its runtime configuration is projected.
+- **Preflight** previews enabled **Skills** but resolves credentials only from **Runtime Profiles** and launch requests.
+- A started **Task** keeps the **Runtime Extensions** already materialized into its task-local runtime boundary.
 - **Runtime Extension Projection** happens during **Config Projection** and must not mutate host runtime plugin directories.
 - A **Credential Reference** resolves first through **Credential Bindings**, then through **Global Credential Bindings**.
 - A **Project** may define **Credential Bindings** that override **Global Credential Bindings** for **Credential References** used by global **Runtime Profiles**.
@@ -601,6 +722,32 @@ _Avoid_: transcript, export, source of truth
 - **Runtime Plugin Manifest** is not secret storage; resolved: manifests declare credential names and requirements while credential values resolve through bindings.
 - **Runtime Plugin Registry** is not a remote marketplace; resolved: built-ins load first, and external manifests require explicit local trust.
 - **Runtime Extension** is not a **Runtime Plugin**; resolved: extensions are consumed by a runtime selected through a runtime plugin, while runtime plugins define the provider family itself.
+- **Runtime Extension Bundle** is not a manifest-only pointer; resolved: uploaded, edited, and imported skills keep file-backed content that can be projected into task-local runtime boundaries.
+- **Skill ID** is not a display name or source URL; resolved: it is the stable identity used for enablement and repeated imports.
+- **Skill Source Provenance** is not skill identity; resolved: provenance supports display, update, and audit while **Skill ID** controls identity.
+- **Runtime Extension Library** is not project-local skill storage; resolved: uploaded, edited, and discovered runtime extensions are globally reusable.
+- Duplicate **Runtime Extension Import** is not copy-by-default; resolved: an existing **Skill ID** is updated unless the user chooses a different identity.
+- **Skill** compatibility is not runtime-specific; resolved: skills are compatible with all supported runtimes, while runtime-specific plugins belong to their runtime family.
+- **Skill Bundle Format** is not provider-native plugin format; resolved: provider-native plugins are **Runtime-Specific Extensions**.
+- **Skill Bundle Edit** is not raw manifest editing; resolved: users edit bounded bundle content and structured metadata.
+- **Built-in Skill** is not a live remote install; resolved: packaged content is bundled with the daemon and seeded into the normal editable **Runtime Extension Library**.
+- Skills do not define credential needs; resolved: credential and environment resolution stays with **Runtime Profiles**, launch requests, and **Credential Bindings**.
+- **Skill Execution Boundary** is not expanded by enabling a skill; resolved: skills do not bypass scope, runner, approval, credential, or project-interface controls.
+- **Skill Deletion** is not silent profile breakage; resolved: deletion is blocked while enabled unless the user explicitly deletes and disables everywhere.
+- **Skill Audit Event** is not a **Task Event**; resolved: skill management changes enter the **Audit Log**, not a task-local runtime timeline.
+- **Skill Preflight Preview** is not hidden runtime context; resolved: enabled skills and their blockers are visible during task launch checks.
+- **Task Skills Root** is not global skill installation; resolved: each task receives its own materialized enabled skills.
+- **Skills Page** is not provider-specific plugin management; resolved: runtime-specific plugins belong to their own runtime family.
+- **Skills Page** is not a project tab; resolved: it belongs in global navigation alongside runtime profile and credential management.
+- **Default Skill Enablement** is not runtime-specific plugin injection; resolved: skills are default-on for runtime profiles with per-profile opt-out, while runtime-specific extensions remain explicit.
+- **Skill Opt-Out** is not reset by a skill update; resolved: profile opt-outs follow the stable **Skill ID**.
+- Re-import after **Skill Deletion** is not a skill update; resolved: old opt-outs are not restored after deletion and recreation.
+- **Skills Page** enablement controls are not a second source of truth; resolved: they update **Runtime Profile** enablement.
+- **Runtime Extension Import** is not task startup installation; resolved: package-backed skills are imported or updated through management, while task launch projects already-managed extensions.
+- **Controlled Skill Import** is not arbitrary shell execution; resolved: package-backed skill import uses a fixed importer from structured input.
+- **Skill Publication** is not partial live update; resolved: failed imports or edits leave the current live skill unchanged.
+- **Skill Validation** is not a full trust proof; resolved: it blocks malformed or unsafe bundle structure and warns on suspect free-form content.
+- **Runtime Extension Library** edits are not live task mutations; resolved: started tasks keep already-projected skills, and new tasks load the current library contents.
 - **Runtime Extension Projection** is not a global install; resolved: enabled extensions are materialized into the task-local runtime boundary.
 - **Config Projection** failure is not automatically **Runtime Profile** invalidity; resolved: treat it as a **Task** startup failure unless validation proves the profile itself is invalid.
 - **Preflight** failure is not **Runtime** failure; resolved: startup checks fail before the runtime performs task work.

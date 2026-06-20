@@ -218,6 +218,10 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string) (r
 		runtimeConfig["generated_config"] = runtimeprofile.GeneratedConfig(profile)
 		return runtime.NewFakeAdapter(), runtimeConfig, nil
 	}
+	skillBundles, err := server.skills.EnabledSkillBundles(profile.ID)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	layout, err := runner.PrepareTaskLayout(server.runtimeRoot, created.ID, profile.Provider)
 	if err != nil {
@@ -235,6 +239,7 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string) (r
 		Sandbox:           sandbox,
 		RuntimePlugins:    server.runtimePlugins,
 		RuntimeExtensions: server.runtimeExtensions,
+		SkillBundles:      skillBundles,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -270,6 +275,7 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string) (r
 		Sandbox:           sandbox,
 		RuntimePlugins:    server.runtimePlugins,
 		RuntimeExtensions: server.runtimeExtensions,
+		SkillBundles:      skillBundles,
 	})
 	if err != nil {
 		return nil, nil, err

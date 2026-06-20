@@ -1187,7 +1187,7 @@ function buildLaunchPreview(
 
   if (sandbox) {
     processEnv.IS_SANDBOX = "1";
-    processEnv.PENTEST_SKILLS_DIR = "/opt/pentest/skills";
+    processEnv.PENTEST_SKILLS_DIR = "/task/skills";
     if (form?.endpoint?.includes("bigmodel.cn") || fields.endpoint?.includes("bigmodel.cn")) {
       processEnv.ANTHROPIC_BASE_URL = fields.endpoint ?? form?.endpoint ?? "";
     }

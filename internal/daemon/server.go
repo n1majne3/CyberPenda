@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io/fs"
 	"log"
 	"net/http"
+	"os"
 	"path"
 	"path/filepath"
 	"strings"
@@ -20,6 +22,7 @@ import (
 	"pentest/internal/runtimeextension"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
+	"pentest/internal/skill"
 	"pentest/internal/store"
 	"pentest/internal/task"
 
@@ -30,6 +33,7 @@ type Config struct {
 	Version      string
 	DBPath       string
 	RuntimeRoot  string
+	SkillsRoot   string
 	SandboxImage string
 	ContainerCLI string
 	ListenAddr   string
@@ -43,6 +47,12 @@ type Config struct {
 	// RuntimeExtensionDirs are trusted local directories containing runtime
 	// extension manifest JSON files. Empty means no external extensions.
 	RuntimeExtensionDirs []string
+	// SkillImporter is the controlled management-time importer for package-backed
+	// skills. Nil means the import endpoint rejects import attempts.
+	SkillImporter skill.Importer
+	// DisableBuiltinSkills skips packaged built-in Skill seeding. This is used by
+	// tests that need an empty Skill library; production leaves built-ins on.
+	DisableBuiltinSkills bool
 }
 
 type Server struct {
@@ -54,6 +64,7 @@ type Server struct {
 	runtimePlugins    *runtimeplugin.Registry
 	runtimeExtensions *runtimeextension.Registry
 	profiles          *runtimeprofile.Service
+	skills            *skill.Service
 	creds             *credential.Service
 	preflight         *preflight.Service
 	tasks             *task.Service
@@ -64,6 +75,7 @@ type Server struct {
 	sandboxImage      string
 	containerCLI      string
 	listenAddr        string
+	tempSkillsRoot    string
 }
 
 func NewServer(config Config) (*Server, error) {
@@ -81,6 +93,34 @@ func NewServer(config Config) (*Server, error) {
 		return nil, err
 	}
 	profiles := runtimeprofile.NewService(db, runtimeProfileProviders(runtimePlugins))
+	skillsRoot := strings.TrimSpace(config.SkillsRoot)
+	var tempSkillsRoot string
+	if skillsRoot == "" {
+		if config.DBPath == "" || config.DBPath == ":memory:" {
+			tempSkillsRoot, err = os.MkdirTemp("", "pentest-skills-*")
+			if err != nil {
+				_ = db.Close()
+				return nil, err
+			}
+			skillsRoot = tempSkillsRoot
+		} else {
+			skillsRoot = filepath.Join(filepath.Dir(config.DBPath), "skills")
+		}
+	}
+	skillImporter := config.SkillImporter
+	if skillImporter == nil {
+		skillImporter = skill.NPXImporter{}
+	}
+	skills := skill.NewService(db, skillsRoot, skillImporter)
+	if !config.DisableBuiltinSkills {
+		if err := skills.InstallBuiltinSkills(context.Background()); err != nil {
+			_ = db.Close()
+			if tempSkillsRoot != "" {
+				_ = os.RemoveAll(tempSkillsRoot)
+			}
+			return nil, err
+		}
+	}
 	creds := credential.NewService(db)
 	tasks := task.NewService(db, nil)
 	runtimeRoot := config.RuntimeRoot
@@ -100,8 +140,9 @@ func NewServer(config Config) (*Server, error) {
 		runtimePlugins:    runtimePlugins,
 		runtimeExtensions: runtimeExtensions,
 		profiles:          profiles,
+		skills:            skills,
 		creds:             creds,
-		preflight:         preflight.NewService(profiles, creds),
+		preflight:         preflight.NewService(profiles, creds, skills),
 		tasks:             tasks,
 		harness:           runtime.NewHarness(tasks),
 		facts:             blackboard.NewService(db),
@@ -110,6 +151,7 @@ func NewServer(config Config) (*Server, error) {
 		sandboxImage:      config.SandboxImage,
 		containerCLI:      config.ContainerCLI,
 		listenAddr:        listenAddr,
+		tempSkillsRoot:    tempSkillsRoot,
 	}
 	if server.logger == nil {
 		server.logger = log.Default()
@@ -189,7 +231,13 @@ func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Requ
 }
 
 func (server *Server) Close() error {
-	return server.db.Close()
+	err := server.db.Close()
+	if server.tempSkillsRoot != "" {
+		if removeErr := os.RemoveAll(server.tempSkillsRoot); err == nil {
+			err = removeErr
+		}
+	}
+	return err
 }
 
 func (server *Server) routes() {
@@ -208,6 +256,13 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/runtime-extensions", server.handleListRuntimeExtensions)
 	server.mux.HandleFunc("GET /api/runtime-extension-catalog", server.handleListRuntimeExtensionCatalog)
 	server.mux.HandleFunc("GET /api/runtime-extensions/{extension_id}", server.handleGetRuntimeExtension)
+	server.mux.HandleFunc("GET /api/skills", server.handleListSkills)
+	server.mux.HandleFunc("POST /api/skills/import", server.handleImportSkill)
+	server.mux.HandleFunc("GET /api/skills/{skill_id}", server.handleGetSkill)
+	server.mux.HandleFunc("PUT /api/skills/{skill_id}", server.handlePutSkill)
+	server.mux.HandleFunc("DELETE /api/skills/{skill_id}", server.handleDeleteSkill)
+	server.mux.HandleFunc("PUT /api/skills/{skill_id}/profiles/{profile_id}/opt-out", server.handlePutSkillProfileOptOut)
+	server.mux.HandleFunc("DELETE /api/skills/{skill_id}/profiles/{profile_id}/opt-out", server.handleDeleteSkillProfileOptOut)
 	server.mux.HandleFunc("PUT /api/credential-bindings", server.handleUpsertGlobalCredentialBinding)
 	server.mux.HandleFunc("GET /api/credential-bindings", server.handleListGlobalCredentialBindings)
 	server.mux.HandleFunc("DELETE /api/credential-bindings/{binding_id}", server.handleDeleteCredentialBinding)
@@ -243,6 +298,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/projects/{id}/approvals", server.handleListApprovals)
 	server.mux.HandleFunc("POST /api/projects/{id}/approvals/{approval_id}/decide", server.handleDecideApproval)
 	server.mux.HandleFunc("GET /api/projects/{id}/audit-log", server.handleListAuditLog)
+	server.mux.HandleFunc("GET /api/audit-log", server.handleListGlobalAuditLog)
 	server.registerMCP()
 	server.registerSPA()
 }

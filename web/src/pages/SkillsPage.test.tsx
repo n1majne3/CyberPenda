@@ -1,0 +1,134 @@
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { StrictMode } from "react";
+import { MemoryRouter } from "react-router-dom";
+import { describe, expect, it } from "vitest";
+import { mockApi } from "@/test/mockApi";
+import { SkillsPage } from "./SkillsPage";
+
+function renderPage() {
+  return render(
+    <StrictMode>
+      <MemoryRouter>
+        <SkillsPage />
+      </MemoryRouter>
+    </StrictMode>,
+  );
+}
+
+describe("SkillsPage", () => {
+  it("lists global skills with source provenance and profile opt-out controls", async () => {
+    const fetchMock = mockApi({
+      "/api/runtime-profiles": {
+        profiles: [
+          {
+            id: "profile-1",
+            name: "Codex Default",
+            provider: "codex",
+            fields: {},
+            created_at: "",
+            updated_at: "",
+          },
+        ],
+      },
+      "/api/skills?runtime_profile_id=profile-1": {
+        skills: [
+          {
+            id: "recon-helper",
+            name: "Recon Helper",
+            description: "Reusable recon workflow",
+            enabled: true,
+            source_provenance: { kind: "npm", package: "@acme/recon-skill", ref: "1.2.3" },
+            created_at: "",
+            updated_at: "",
+          },
+        ],
+      },
+      "/api/skills/recon-helper": {
+        id: "recon-helper",
+        name: "Recon Helper",
+        description: "Reusable recon workflow",
+        enabled: true,
+        source_provenance: { kind: "npm", package: "@acme/recon-skill", ref: "1.2.3" },
+        files: { "SKILL.md": "# Existing Recon", "scripts/probe.sh": "#!/bin/sh\n" },
+        created_at: "",
+        updated_at: "",
+      },
+    });
+
+    renderPage();
+
+    expect(await screen.findByRole("heading", { name: "Skills" })).toBeInTheDocument();
+    expect(await screen.findByText("Recon Helper")).toBeInTheDocument();
+    expect(screen.getByText("@acme/recon-skill@1.2.3")).toBeInTheDocument();
+    expect(screen.queryByText("recon-api-key")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /edit Recon Helper/i }));
+    expect(await screen.findByDisplayValue("# Existing Recon")).toBeInTheDocument();
+    expect(screen.getByDisplayValue(/scripts\/probe\.sh/)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /opt out for Codex Default/i }));
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/skills/recon-helper/profiles/profile-1/opt-out",
+      expect.objectContaining({ method: "PUT" }),
+    );
+  });
+
+  it("does not show source labels or source-prefixed ids for built-in skills", async () => {
+    const fetchMock = mockApi({
+      "/api/runtime-profiles": {
+        profiles: [
+          {
+            id: "profile-1",
+            name: "Codex Default",
+            provider: "codex",
+            fields: {},
+            created_at: "",
+            updated_at: "",
+          },
+        ],
+      },
+      "/api/skills?runtime_profile_id=profile-1": {
+        skills: [
+          {
+            id: "cyberstrikeai-api-security-testing",
+            name: "cyberstrikeai-api-security-testing",
+            description: "cyberstrikeai-api-security-testing: API security testing methodology",
+            enabled: true,
+            source_provenance: { kind: "builtin" },
+            created_at: "",
+            updated_at: "",
+          },
+        ],
+      },
+      "/api/skills/cyberstrikeai-api-security-testing": {
+        id: "cyberstrikeai-api-security-testing",
+        name: "cyberstrikeai-api-security-testing",
+        description: "cyberstrikeai-api-security-testing: API security testing methodology",
+        enabled: true,
+        source_provenance: { kind: "builtin" },
+        files: { "SKILL.md": "# API Security Testing" },
+        created_at: "",
+        updated_at: "",
+      },
+    });
+
+    renderPage();
+
+    expect(await screen.findByRole("heading", { name: "api-security-testing" })).toBeInTheDocument();
+    expect(screen.getByText("API security testing methodology")).toBeInTheDocument();
+    expect(screen.queryByText("builtin")).not.toBeInTheDocument();
+    expect(screen.queryByText(/cyberstrikeai/i)).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /edit api-security-testing/i }));
+    expect(await screen.findByLabelText("Skill ID")).toHaveValue("api-security-testing");
+    expect(screen.queryByDisplayValue(/cyberstrikeai/i)).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /publish skill/i }));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/skills/cyberstrikeai-api-security-testing",
+      expect.objectContaining({ method: "PUT" }),
+    );
+  });
+});

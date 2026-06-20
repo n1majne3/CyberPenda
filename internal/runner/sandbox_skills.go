@@ -10,20 +10,25 @@ import (
 
 const sandboxSkillsImagePath = "/opt/pentest/skills"
 
-// PrepareSandboxSkills links image-baked skills into the task workdir and provider
-// home so Claude/Codex/Pi can discover them inside the container.
-func PrepareSandboxSkills(layout Layout, provider runtimeprofile.Provider) error {
+// PrepareSandboxSkills links skills into the task workdir and provider home so
+// Claude/Codex/Pi can discover them. Without an explicit target it preserves
+// the legacy image-baked skills path used by sandbox images.
+func PrepareSandboxSkills(layout Layout, provider runtimeprofile.Provider, targets ...string) error {
+	target := sandboxSkillsImagePath
+	if len(targets) > 0 && targets[0] != "" {
+		target = targets[0]
+	}
 	agentsDir := filepath.Join(layout.Workdir, ".agents")
 	if err := os.MkdirAll(agentsDir, 0o700); err != nil {
 		return fmt.Errorf("prepare sandbox agents dir: %w", err)
 	}
-	if err := symlinkUnlessExists(filepath.Join(agentsDir, "skills"), sandboxSkillsImagePath); err != nil {
+	if err := symlinkUnlessExists(filepath.Join(agentsDir, "skills"), target); err != nil {
 		return err
 	}
 
 	switch provider {
 	case runtimeprofile.ProviderClaudeCode, runtimeprofile.ProviderCodex:
-		if err := symlinkUnlessExists(filepath.Join(layout.ProviderHome, "skills"), sandboxSkillsImagePath); err != nil {
+		if err := symlinkUnlessExists(filepath.Join(layout.ProviderHome, "skills"), target); err != nil {
 			return err
 		}
 	case runtimeprofile.ProviderPi:
@@ -31,7 +36,7 @@ func PrepareSandboxSkills(layout Layout, provider runtimeprofile.Provider) error
 		if err := os.MkdirAll(agentDir, 0o700); err != nil {
 			return fmt.Errorf("prepare pi agent dir: %w", err)
 		}
-		if err := symlinkUnlessExists(filepath.Join(agentDir, "skills"), sandboxSkillsImagePath); err != nil {
+		if err := symlinkUnlessExists(filepath.Join(agentDir, "skills"), target); err != nil {
 			return err
 		}
 	}

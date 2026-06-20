@@ -128,7 +128,7 @@ func writeRuntimeSmokeInstructions(workdir string, ctx TaskContext) error {
 	b.WriteString("\nRead `.pentest/context.json` or env vars `PENTEST_PROJECT_ID`, `PENTEST_TASK_ID`, `PENTEST_MCP_URL` if needed.\n")
 	if ctx.Sandbox {
 		b.WriteString("\n## Sandbox skills and browser\n\n")
-		b.WriteString("Preinstalled agent skills are linked at `.agents/skills/` (image path `/opt/pentest/skills`).\n")
+		b.WriteString("Enabled task skills are linked at `.agents/skills/` and materialized under the task-local skills root.\n")
 		b.WriteString("For web testing, read the `agent-browser` skill and use the `agent-browser` CLI.\n")
 		b.WriteString("\n## Host-reachable targets\n\n")
 		b.WriteString("Loopback targets (`127.0.0.1`, `localhost`) in your task goal have been rewritten to `host.docker.internal` so you can reach services running on the host. Use the `host.docker.internal` addresses exactly as given; do not try to reinstall or relaunch the target service yourself.\n")
