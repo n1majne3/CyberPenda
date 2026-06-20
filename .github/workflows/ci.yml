@@ -35,4 +35,4 @@ jobs:
           EOF
           make build-sandbox-image
       - name: Smoke sandbox MCP (no LLM)
-        run: make smoke-sandbox-mcp
+        run: scripts/with-pentestd-live.sh make smoke-sandbox-mcp

@@ -22,4 +22,9 @@ jobs:
         env:
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: make smoke-runtime-tasks
+        run: |
+          if [ -z "${ANTHROPIC_AUTH_TOKEN}" ] || [ -z "${OPENAI_API_KEY}" ]; then
+            echo "Skipping runtime smoke: ANTHROPIC_AUTH_TOKEN and OPENAI_API_KEY secrets are required."
+            exit 0
+          fi
+          scripts/with-pentestd-live.sh make smoke-runtime-tasks
