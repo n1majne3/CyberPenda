@@ -16,6 +16,7 @@ import (
 	"pentest/internal/approval"
 	"pentest/internal/blackboard"
 	"pentest/internal/credential"
+	"pentest/internal/modelprovider"
 	"pentest/internal/preflight"
 	"pentest/internal/project"
 	"pentest/internal/runtime"
@@ -64,6 +65,7 @@ type Server struct {
 	runtimePlugins    *runtimeplugin.Registry
 	runtimeExtensions *runtimeextension.Registry
 	profiles          *runtimeprofile.Service
+	modelProviders    *modelprovider.Service
 	skills            *skill.Service
 	creds             *credential.Service
 	preflight         *preflight.Service
@@ -93,6 +95,7 @@ func NewServer(config Config) (*Server, error) {
 		return nil, err
 	}
 	profiles := runtimeprofile.NewService(db, runtimeProfileProviders(runtimePlugins))
+	modelProviders := modelprovider.NewService(db)
 	skillsRoot := strings.TrimSpace(config.SkillsRoot)
 	var tempSkillsRoot string
 	if skillsRoot == "" {
@@ -140,9 +143,10 @@ func NewServer(config Config) (*Server, error) {
 		runtimePlugins:    runtimePlugins,
 		runtimeExtensions: runtimeExtensions,
 		profiles:          profiles,
+		modelProviders:    modelProviders,
 		skills:            skills,
 		creds:             creds,
-		preflight:         preflight.NewService(profiles, creds, skills),
+		preflight:         preflight.NewService(profiles, creds, skills).WithModelProviders(modelProviders, runtimePlugins),
 		tasks:             tasks,
 		harness:           runtime.NewHarness(tasks),
 		facts:             blackboard.NewService(db),
@@ -247,10 +251,19 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/projects/{id}", server.handleGetProject)
 	server.mux.HandleFunc("PATCH /api/projects/{id}", server.handleUpdateProject)
 	server.mux.HandleFunc("POST /api/runtime-profiles", server.handleCreateRuntimeProfile)
+	server.mux.HandleFunc("POST /api/runtime-profiles/resolve-launch", server.handleResolveLaunchRuntimeProfile)
 	server.mux.HandleFunc("GET /api/runtime-profiles", server.handleListRuntimeProfiles)
 	server.mux.HandleFunc("GET /api/runtime-profiles/{id}", server.handleGetRuntimeProfile)
 	server.mux.HandleFunc("PATCH /api/runtime-profiles/{id}", server.handleUpdateRuntimeProfile)
 	server.mux.HandleFunc("DELETE /api/runtime-profiles/{id}", server.handleDeleteRuntimeProfile)
+	server.mux.HandleFunc("GET /api/runtime-profiles/{id}/model-provider-migration-preview", server.handlePreviewModelProviderMigration)
+	server.mux.HandleFunc("POST /api/runtime-profiles/{id}/model-provider-migration", server.handleApplyModelProviderMigration)
+	server.mux.HandleFunc("GET /api/model-providers", server.handleListModelProviders)
+	server.mux.HandleFunc("POST /api/model-providers", server.handleCreateModelProvider)
+	server.mux.HandleFunc("GET /api/model-providers/{id}", server.handleGetModelProvider)
+	server.mux.HandleFunc("PATCH /api/model-providers/{id}", server.handleUpdateModelProvider)
+	server.mux.HandleFunc("DELETE /api/model-providers/{id}", server.handleDeleteModelProvider)
+	server.mux.HandleFunc("POST /api/model-providers/{id}/refresh-models", server.handleRefreshModelProviderModels)
 	server.mux.HandleFunc("GET /api/runtime-plugins", server.handleListRuntimePlugins)
 	server.mux.HandleFunc("GET /api/runtime-plugins/{plugin_id}", server.handleGetRuntimePlugin)
 	server.mux.HandleFunc("GET /api/runtime-extensions", server.handleListRuntimeExtensions)
@@ -611,7 +624,7 @@ func (server *Server) handleUpsertGlobalCredentialBinding(response http.Response
 		writeCredentialError(response, err)
 		return
 	}
-	writeJSON(response, http.StatusOK, binding)
+	writeJSON(response, http.StatusOK, credential.SanitizeBinding(binding))
 }
 
 func (server *Server) handleListGlobalCredentialBindings(response http.ResponseWriter, request *http.Request) {
@@ -626,7 +639,7 @@ func (server *Server) handleListGlobalCredentialBindings(response http.ResponseW
 	writeJSON(response, http.StatusOK, struct {
 		Bindings []credential.Binding `json:"bindings"`
 	}{
-		Bindings: bindings,
+		Bindings: credential.SanitizeBindings(bindings),
 	})
 }
 
@@ -658,7 +671,7 @@ func (server *Server) handleUpsertProjectCredentialBinding(response http.Respons
 		writeCredentialError(response, err)
 		return
 	}
-	writeJSON(response, http.StatusOK, binding)
+	writeJSON(response, http.StatusOK, credential.SanitizeBinding(binding))
 }
 
 func (server *Server) handleListProjectCredentialBindings(response http.ResponseWriter, request *http.Request) {
@@ -679,7 +692,7 @@ func (server *Server) handleListProjectCredentialBindings(response http.Response
 	writeJSON(response, http.StatusOK, struct {
 		Bindings []credential.Binding `json:"bindings"`
 	}{
-		Bindings: bindings,
+		Bindings: credential.SanitizeBindings(bindings),
 	})
 }
 
@@ -711,6 +724,7 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 
 	var input struct {
 		RuntimeProfileID        string           `json:"runtime_profile_id"`
+		ModelOverride           string           `json:"model_override,omitempty"`
 		Runner                  string           `json:"runner"`
 		RunControls             task.RunControls `json:"run_controls"`
 		CredentialRefsToResolve []string         `json:"credential_refs"`
@@ -735,6 +749,7 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 	yolo := input.RunControls.YOLO || input.YOLO
 	result := server.preflight.Run(request.Context(), preflight.Request{
 		RuntimeProfileID:        defaulted.runtimeProfileID,
+		LaunchModelOverride:     strings.TrimSpace(input.ModelOverride),
 		ProjectID:               projectID,
 		CredentialRefsToResolve: input.CredentialRefsToResolve,
 		Runner:                  string(defaulted.runner),

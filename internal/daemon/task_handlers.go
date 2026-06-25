@@ -30,6 +30,7 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 	var input struct {
 		Goal             string            `json:"goal"`
 		RuntimeProfileID string            `json:"runtime_profile_id"`
+		ModelOverride    string            `json:"model_override,omitempty"`
 		Runner           task.Runner       `json:"runner"`
 		RunControls      task.RunControls  `json:"run_controls"`
 		Extras           map[string]string `json:"extras"`
@@ -54,12 +55,14 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 	input.RuntimeProfileID = defaulted.runtimeProfileID
 	input.Runner = defaulted.runner
 
+	launchModelOverride := strings.TrimSpace(input.ModelOverride)
 	preflightResult := server.preflight.Run(request.Context(), preflight.Request{
-		RuntimeProfileID: input.RuntimeProfileID,
-		ProjectID:        projectID,
-		Runner:           string(input.Runner),
-		HostActivated:    input.RunControls.HostActivated,
-		YOLO:             input.RunControls.YOLO,
+		RuntimeProfileID:    input.RuntimeProfileID,
+		LaunchModelOverride: launchModelOverride,
+		ProjectID:           projectID,
+		Runner:              string(input.Runner),
+		HostActivated:       input.RunControls.HostActivated,
+		YOLO:                input.RunControls.YOLO,
 	})
 	if !preflightResult.Pass {
 		writeJSON(response, http.StatusBadRequest, struct {
@@ -92,7 +95,7 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		return
 	}
 
-	adapter, runtimeConfig, err := server.buildTaskAdapter(created)
+	adapter, runtimeConfig, err := server.buildTaskAdapter(created, launchModelOverride)
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "prepare runtime adapter")
 		return
@@ -199,11 +202,11 @@ func (server *Server) recordLoopbackRewriteEvent(created task.Task) {
 	})
 }
 
-func (server *Server) buildTaskAdapter(created task.Task) (runtime.Adapter, map[string]any, error) {
-	return server.buildTaskAdapterForGoal(created, created.Goal)
+func (server *Server) buildTaskAdapter(created task.Task, launchModelOverride string) (runtime.Adapter, map[string]any, error) {
+	return server.buildTaskAdapterForGoal(created, created.Goal, launchModelOverride)
 }
 
-func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string) (runtime.Adapter, map[string]any, error) {
+func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string, launchModelOverride string) (runtime.Adapter, map[string]any, error) {
 	runtimeConfig := map[string]any{
 		"runtime_profile_id": created.RuntimeProfileID,
 		"runner":             created.Runner,
@@ -232,23 +235,29 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string) (r
 	goal = runner.RewriteLoopbackTargets(goal, sandbox)
 	mcpURL := runner.MCPEndpointURL(server.listenAddr, sandbox)
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
-		ProjectID:         created.ProjectID,
-		TaskID:            created.ID,
-		Credentials:       server.creds,
-		DaemonAddr:        server.listenAddr,
-		Sandbox:           sandbox,
-		RuntimePlugins:    server.runtimePlugins,
-		RuntimeExtensions: server.runtimeExtensions,
-		SkillBundles:      skillBundles,
+		ProjectID:           created.ProjectID,
+		TaskID:              created.ID,
+		Credentials:         server.creds,
+		DaemonAddr:          server.listenAddr,
+		Sandbox:             sandbox,
+		RuntimePlugins:      server.runtimePlugins,
+		RuntimeExtensions:   server.runtimeExtensions,
+		ModelProviders:      server.modelProviders,
+		LaunchModelOverride: launchModelOverride,
+		SkillBundles:        skillBundles,
 	})
 	if err != nil {
 		return nil, nil, err
 	}
 	configPath := runner.LaunchConfigPath(layout, profile.Provider, projection.ConfigPath, sandbox)
 	mcpConfigPath := runner.LaunchMCPConfigPath(layout, profile.Provider, sandbox, projection)
+	launchProfile := profile
+	if projection.ResolvedProfile.Provider != "" {
+		launchProfile = projection.ResolvedProfile
+	}
 	providerCommand, err := adapters.BuildLaunchArgs(adapters.LaunchArgsRequest{
 		Provider:      profile.Provider,
-		Profile:       profile,
+		Profile:       launchProfile,
 		Goal:          goal,
 		ConfigPath:    configPath,
 		MCPConfigPath: mcpConfigPath,
@@ -267,7 +276,7 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string) (r
 		MCPURL:    mcpURL,
 		Sandbox:   sandbox,
 	}
-	processEnv, err := runner.LaunchProcessEnvWithCredentials(layout, profile, sandbox, launchCtx, runner.ProjectionRequest{
+	processEnv, err := runner.LaunchProcessEnvWithCredentials(layout, launchProfile, sandbox, launchCtx, runner.ProjectionRequest{
 		ProjectID:         created.ProjectID,
 		TaskID:            created.ID,
 		Credentials:       server.creds,
@@ -275,6 +284,8 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string) (r
 		Sandbox:           sandbox,
 		RuntimePlugins:    server.runtimePlugins,
 		RuntimeExtensions: server.runtimeExtensions,
+		ModelProviders:    server.modelProviders,
+		ModelSnapshot:     projection.ModelSnapshot,
 		SkillBundles:      skillBundles,
 	})
 	if err != nil {
@@ -287,7 +298,7 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string) (r
 		}
 		sandboxRuntime := runtimeCommand
 		if profile.Provider == runtimeprofile.ProviderPi {
-			wrapped, err := runner.WrapSandboxPiCommand(runtimeCommand, profile.Fields.Env)
+			wrapped, err := runner.WrapSandboxPiCommand(runtimeCommand, launchProfile.Fields.Env)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -311,6 +322,12 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string) (r
 
 	runtimeConfig["provider"] = string(profile.Provider)
 	runtimeConfig["generated_config"] = projection.Config
+	if projection.ModelSnapshot != nil {
+		runtimeConfig["model_provider_snapshot"] = projection.Config["model_provider_snapshot"]
+	}
+	if launchModelOverride != "" {
+		runtimeConfig["launch_model_override"] = launchModelOverride
+	}
 	runtimeConfig["layout"] = layout
 	runtimeConfig["launch_command"] = adapters.Redact(map[string]any{
 		"program": commandProgram,
@@ -532,7 +549,7 @@ func (server *Server) handleResumeTask(response http.ResponseWriter, request *ht
 		SteeringDirective: steeringDirective,
 	})
 
-	adapter, runtimeConfig, err := server.buildTaskAdapterForGoal(found, resumeGoal)
+	adapter, runtimeConfig, err := server.buildTaskAdapterForGoal(found, resumeGoal, "")
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "prepare runtime adapter")
 		return

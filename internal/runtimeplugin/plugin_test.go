@@ -83,6 +83,44 @@ func TestBuiltinPluginsExposeRuntimeExtensionProfileField(t *testing.T) {
 	}
 }
 
+func TestBuiltinPluginsDeclareModelProviderProtocols(t *testing.T) {
+	registry, err := runtimeplugin.BuiltinRegistry()
+	if err != nil {
+		t.Fatalf("builtin registry: %v", err)
+	}
+	cases := map[string]struct {
+		required  string
+		supported []string
+		preferred []string
+	}{
+		"fake":        {required: "none"},
+		"codex":       {required: "required", supported: []string{"openai_responses"}, preferred: []string{"openai_responses"}},
+		"claude_code": {required: "required", supported: []string{"anthropic_messages"}, preferred: []string{"anthropic_messages"}},
+		"pi": {
+			required:  "required",
+			supported: []string{"openai_chat_completions", "openai_responses", "anthropic_messages"},
+			preferred: []string{"openai_chat_completions", "openai_responses", "anthropic_messages"},
+		},
+	}
+	for id, want := range cases {
+		t.Run(id, func(t *testing.T) {
+			plugin, ok := registry.Get(id)
+			if !ok {
+				t.Fatalf("missing plugin %q", id)
+			}
+			if plugin.ModelProvider.Requirement != want.required {
+				t.Fatalf("requirement = %q, want %q", plugin.ModelProvider.Requirement, want.required)
+			}
+			if !reflect.DeepEqual(plugin.ModelProvider.SupportedProtocols, want.supported) {
+				t.Fatalf("supported = %#v, want %#v", plugin.ModelProvider.SupportedProtocols, want.supported)
+			}
+			if !reflect.DeepEqual(plugin.ModelProvider.ProtocolPreference, want.preferred) {
+				t.Fatalf("preference = %#v, want %#v", plugin.ModelProvider.ProtocolPreference, want.preferred)
+			}
+		})
+	}
+}
+
 func TestRegistryReturnsCopies(t *testing.T) {
 	registry, err := runtimeplugin.BuiltinRegistry()
 	if err != nil {

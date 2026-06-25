@@ -259,11 +259,11 @@ func TestLaunchProcessEnvSetsPentestContext(t *testing.T) {
 	})
 
 	for key, want := range map[string]string{
-		"IS_SANDBOX":           "1",
-		"PENTEST_PROJECT_ID":   "project-1",
-		"PENTEST_TASK_ID":      "task-env",
-		"PENTEST_MCP_URL":      "http://host.docker.internal:8787/mcp",
-		"CODEX_HOME": "/task/runtime-home/codex",
+		"IS_SANDBOX":         "1",
+		"PENTEST_PROJECT_ID": "project-1",
+		"PENTEST_TASK_ID":    "task-env",
+		"PENTEST_MCP_URL":    "http://host.docker.internal:8787/mcp",
+		"CODEX_HOME":         "/task/runtime-home/codex",
 	} {
 		if env[key] != want {
 			t.Fatalf("expected %s=%q, got %q", key, want, env[key])

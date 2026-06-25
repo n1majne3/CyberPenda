@@ -73,6 +73,15 @@ func migrate(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS model_providers (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			base_url TEXT NOT NULL,
+			protocols_json TEXT NOT NULL DEFAULT '[]',
+			catalog_json TEXT NOT NULL DEFAULT '{}',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
 		`CREATE TABLE IF NOT EXISTS skills (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,

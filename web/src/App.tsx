@@ -1,11 +1,12 @@
 import { NavLink, Outlet, useRouteError } from "react-router-dom";
 import { createBrowserRouter, RouterProvider } from "react-router-dom";
-import type { ReactNode } from "react";
-import { ShieldAlert, FolderKanban, Cpu, KeyRound, BookOpen } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { ShieldAlert, FolderKanban, Cpu, KeyRound, BookOpen, Network, ChevronRight } from "lucide-react";
 import { ProjectListPage } from "@/pages/ProjectListPage";
 import { ProjectDashboardPage } from "@/pages/ProjectDashboardPage";
 import { ScopeEditorPage } from "@/pages/ScopeEditorPage";
 import { RuntimeProfilesPage } from "@/pages/RuntimeProfilesPage";
+import { ModelProvidersPage } from "@/pages/ModelProvidersPage";
 import { CredentialBindingsPage } from "@/pages/CredentialBindingsPage";
 import { SkillsPage } from "@/pages/SkillsPage";
 import { TaskLaunchPage } from "@/pages/TaskLaunchPage";
@@ -34,6 +35,8 @@ function ErrorBoundary() {
 }
 
 function Layout() {
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+
   return (
     <div className="flex h-svh w-screen overflow-hidden">
       {/* Sidebar — multica pattern: bg-sidebar raised over the app surface,
@@ -50,8 +53,8 @@ function Layout() {
             </SideLink>
           </NavSection>
           <NavSection label="Settings">
-            <SideLink to="/profiles" icon={<Cpu className="size-4" />}>
-              Runtime profiles
+            <SideLink to="/model-providers" icon={<Network className="size-4" />}>
+              Model providers
             </SideLink>
             <SideLink to="/credentials" icon={<KeyRound className="size-4" />}>
               Credentials
@@ -60,6 +63,23 @@ function Layout() {
               Skills
             </SideLink>
           </NavSection>
+          <div>
+            <button
+              type="button"
+              onClick={() => setAdvancedOpen((open) => !open)}
+              className="mb-1 flex w-full items-center gap-1 px-2 text-xs font-medium text-muted-foreground/70 hover:text-muted-foreground"
+            >
+              <ChevronRight className={`size-3 transition-transform ${advancedOpen ? "rotate-90" : ""}`} />
+              Advanced
+            </button>
+            {advancedOpen && (
+              <div className="space-y-0.5">
+                <SideLink to="/profiles" icon={<Cpu className="size-4" />}>
+                  Runtime profiles
+                </SideLink>
+              </div>
+            )}
+          </div>
         </nav>
         <div className="flex items-center justify-between border-t border-sidebar-border px-3 py-2">
           <span className="px-1 text-xs text-muted-foreground">Theme</span>
@@ -115,6 +135,7 @@ const router = createBrowserRouter([
     children: [
       { path: "/", element: <ProjectListPage /> },
       { path: "/profiles", element: <RuntimeProfilesPage /> },
+      { path: "/model-providers", element: <ModelProvidersPage /> },
       { path: "/credentials", element: <CredentialBindingsPage /> },
       { path: "/skills", element: <SkillsPage /> },
       { path: "/projects/:projectId", element: <ProjectDashboardPage /> },

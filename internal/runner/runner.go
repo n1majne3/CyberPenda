@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"pentest/internal/modelprovider"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
 )
@@ -43,8 +44,10 @@ type Layout struct {
 // ConfigProjection describes generated runtime config written into a
 // task-local provider home.
 type ConfigProjection struct {
-	ConfigPath string         `json:"config_path"`
-	Config     map[string]any `json:"config"`
+	ConfigPath      string                  `json:"config_path"`
+	Config          map[string]any          `json:"config"`
+	ResolvedProfile runtimeprofile.Profile  `json:"-"`
+	ModelSnapshot   *modelprovider.Snapshot `json:"-"`
 }
 
 // Command is a launch command that can be executed later by the harness or an

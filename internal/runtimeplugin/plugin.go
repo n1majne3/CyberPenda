@@ -23,12 +23,19 @@ type Plugin struct {
 	Description      string            `json:"description,omitempty"`
 	Binary           Binary            `json:"binary"`
 	Capabilities     Capabilities      `json:"capabilities"`
+	ModelProvider    ModelProvider     `json:"model_provider"`
 	ProfileSchema    ProfileSchema     `json:"profile_schema"`
 	ConfigProjection ConfigProjection  `json:"config_projection"`
 	Launch           LaunchTemplate    `json:"launch"`
 	ProcessEnv       map[string]string `json:"process_env,omitempty"`
 	CredentialEnv    []string          `json:"credential_env,omitempty"`
 	Transcript       Transcript        `json:"transcript"`
+}
+
+type ModelProvider struct {
+	Requirement        string   `json:"requirement"`
+	SupportedProtocols []string `json:"supported_protocols,omitempty"`
+	ProtocolPreference []string `json:"protocol_preference,omitempty"`
 }
 
 type Binary struct {
@@ -93,6 +100,18 @@ var projectionPrimitives = map[string]bool{
 	"pi_agent":        true,
 }
 
+var modelProviderRequirements = map[string]bool{
+	"none":     true,
+	"optional": true,
+	"required": true,
+}
+
+var modelProviderProtocols = map[string]bool{
+	"openai_chat_completions": true,
+	"openai_responses":        true,
+	"anthropic_messages":      true,
+}
+
 var transcriptParsers = map[string]bool{
 	"plain_runtime_output": true,
 	"codex_json":           true,
@@ -115,6 +134,29 @@ func Validate(plugin Plugin) error {
 	}
 	if !projectionPrimitives[plugin.ConfigProjection.Primitive] {
 		return fmt.Errorf("%w: unknown config projection primitive %q", ErrInvalidPlugin, plugin.ConfigProjection.Primitive)
+	}
+	if plugin.ModelProvider.Requirement == "" {
+		plugin.ModelProvider.Requirement = "none"
+	}
+	if !modelProviderRequirements[plugin.ModelProvider.Requirement] {
+		return fmt.Errorf("%w: unknown model provider requirement %q", ErrInvalidPlugin, plugin.ModelProvider.Requirement)
+	}
+	seenProtocols := map[string]bool{}
+	for _, protocol := range plugin.ModelProvider.SupportedProtocols {
+		protocol = strings.TrimSpace(protocol)
+		if !modelProviderProtocols[protocol] {
+			return fmt.Errorf("%w: unknown model provider protocol %q", ErrInvalidPlugin, protocol)
+		}
+		if seenProtocols[protocol] {
+			return fmt.Errorf("%w: duplicate model provider protocol %q", ErrInvalidPlugin, protocol)
+		}
+		seenProtocols[protocol] = true
+	}
+	for _, protocol := range plugin.ModelProvider.ProtocolPreference {
+		protocol = strings.TrimSpace(protocol)
+		if !seenProtocols[protocol] {
+			return fmt.Errorf("%w: model provider protocol preference %q is not supported", ErrInvalidPlugin, protocol)
+		}
 	}
 	if !transcriptParsers[plugin.Transcript.Parser] {
 		return fmt.Errorf("%w: unknown transcript parser %q", ErrInvalidPlugin, plugin.Transcript.Parser)

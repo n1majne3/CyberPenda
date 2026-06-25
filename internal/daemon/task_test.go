@@ -301,6 +301,7 @@ func TestLaunchTaskReturnsBeforeRuntimeProcessCompletes(t *testing.T) {
 	}
 	profileID := createLocalRuntimeProfile(t, server, "Slow Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
 		BinaryPath: binary,
+		Model:      "gpt-test",
 	})
 
 	start := time.Now()

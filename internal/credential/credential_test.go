@@ -32,6 +32,30 @@ func TestUpsertRejectsBlankRef(t *testing.T) {
 	}
 }
 
+func TestUpsertRejectsEnvSourceThatLooksLikeSecret(t *testing.T) {
+	service := newTestService(t)
+
+	_, err := service.Upsert(
+		"MIMO_2_API_KEY",
+		credential.ScopeGlobal,
+		"",
+		credential.Source{Kind: credential.SourceEnv, Value: "tp-cgq4h06x3nkai3am3j7mp3plwdmkptn2ihzt5bcm2w2pnu6f"},
+		false,
+	)
+	if err == nil {
+		t.Fatal("expected env source that looks like a secret to be rejected")
+	}
+}
+
+func TestUpsertRejectsInvalidEnvSourceName(t *testing.T) {
+	service := newTestService(t)
+
+	_, err := service.Upsert("api-key", credential.ScopeGlobal, "", credential.Source{Kind: credential.SourceEnv, Value: "not-a-valid-name"}, false)
+	if err == nil {
+		t.Fatal("expected invalid env source name to be rejected")
+	}
+}
+
 func TestUpsertRejectsInvalidSourceKind(t *testing.T) {
 	service := newTestService(t)
 
@@ -150,6 +174,34 @@ func TestUpsertIsIdempotentPerRef(t *testing.T) {
 	}
 	if globals[0].Source.Value != "NEW" {
 		t.Fatalf("expected replaced value NEW, got %q", globals[0].Source.Value)
+	}
+}
+
+func TestLiteralBindingIsSanitizedAndConfiguredSentinelPreservesSecret(t *testing.T) {
+	service := newTestService(t)
+
+	created, err := service.Upsert("MIMO_API_KEY", credential.ScopeGlobal, "", credential.Source{Kind: credential.SourceLiteral, Value: "sk-original"}, false)
+	if err != nil {
+		t.Fatalf("upsert literal: %v", err)
+	}
+	sanitized := credential.SanitizeBinding(created)
+	if sanitized.Source.Value != credential.ConfiguredSourceSentinel {
+		t.Fatalf("expected sanitized literal sentinel, got %q", sanitized.Source.Value)
+	}
+
+	updated, err := service.Upsert("MIMO_API_KEY", credential.ScopeGlobal, "", credential.Source{Kind: credential.SourceLiteral, Value: credential.ConfiguredSourceSentinel}, false)
+	if err != nil {
+		t.Fatalf("preserve configured literal: %v", err)
+	}
+	if updated.Source.Value != "sk-original" {
+		t.Fatalf("expected original secret preserved, got %q", updated.Source.Value)
+	}
+	value, err := credential.Materialize(updated.Source)
+	if err != nil {
+		t.Fatalf("materialize updated literal: %v", err)
+	}
+	if value != "sk-original" {
+		t.Fatalf("expected original materialized secret, got %q", value)
 	}
 }
 

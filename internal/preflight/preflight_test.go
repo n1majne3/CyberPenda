@@ -6,17 +6,20 @@ import (
 	"testing"
 
 	"pentest/internal/credential"
+	"pentest/internal/modelprovider"
 	"pentest/internal/preflight"
+	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/skill"
 	"pentest/internal/store"
 )
 
 type services struct {
-	preflight *preflight.Service
-	db        *store.DB
-	profiles  *runtimeprofile.Service
-	creds     *credential.Service
+	preflight      *preflight.Service
+	db             *store.DB
+	profiles       *runtimeprofile.Service
+	creds          *credential.Service
+	modelProviders *modelprovider.Service
 }
 
 func newTestServices(t *testing.T) services {
@@ -32,11 +35,14 @@ func newTestServices(t *testing.T) services {
 	})
 	profiles := runtimeprofile.NewService(db)
 	creds := credential.NewService(db)
+	providers := modelprovider.NewService(db)
+	plugins := runtimeplugin.MustBuiltinRegistry()
 	return services{
-		preflight: preflight.NewService(profiles, creds),
-		db:        db,
-		profiles:  profiles,
-		creds:     creds,
+		preflight:      preflight.NewService(profiles, creds).WithModelProviders(providers, plugins),
+		db:             db,
+		profiles:       profiles,
+		creds:          creds,
+		modelProviders: providers,
 	}
 }
 
@@ -252,8 +258,9 @@ func TestRunIncludesExtraRefsFromRequest(t *testing.T) {
 func TestRunListsEnabledSkillsWithoutAddingCredentialRequirements(t *testing.T) {
 	svc := newTestServices(t)
 	skills := skill.NewService(svc.db, filepath.Join(t.TempDir(), "skills"))
-	svc.preflight = preflight.NewService(svc.profiles, svc.creds, skills)
-	profile, err := svc.profiles.Create("codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{})
+	svc.preflight = preflight.NewService(svc.profiles, svc.creds, skills).
+		WithModelProviders(svc.modelProviders, runtimeplugin.MustBuiltinRegistry())
+	profile, err := svc.profiles.Create("fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
 	}
@@ -276,6 +283,136 @@ func TestRunListsEnabledSkillsWithoutAddingCredentialRequirements(t *testing.T) 
 	}
 	if len(result.Skills) != 1 || result.Skills[0].ID != "recon-helper" {
 		t.Fatalf("expected enabled skill preview, got %#v", result.Skills)
+	}
+}
+
+func TestRunFailsWhenRequiredRuntimeLacksModelProvider(t *testing.T) {
+	svc := newTestServices(t)
+	profile, err := svc.profiles.Create("codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+	})
+
+	if result.Pass {
+		t.Fatal("expected preflight to fail when required runtime has no model provider")
+	}
+	if !checkFailed(result, "model_provider") {
+		t.Fatalf("expected model_provider check to fail, got %#v", result.Checks)
+	}
+}
+
+func TestRunUsesLaunchModelOverrideWithoutMutatingProfile(t *testing.T) {
+	svc := newTestServices(t)
+	provider, err := svc.modelProviders.Create(modelprovider.CreateRequest{
+		Name:      "MiMo",
+		BaseURL:   "https://api.example.test/v1",
+		Protocols: []modelprovider.Protocol{modelprovider.ProtocolOpenAIResponses},
+		Catalog: modelprovider.Catalog{
+			Manual:       []string{"mimo-v2-flash", "mimo-v2-pro"},
+			DefaultModel: "mimo-v2-flash",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	t.Setenv(provider.APIKeyEnv, "sk-test")
+	profile, err := svc.profiles.Create("codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		ModelProviderID: provider.ID,
+		ModelOverride:   "mimo-v2-flash",
+	})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID:    profile.ID,
+		LaunchModelOverride: "mimo-v2-pro",
+		ProjectID:           "p1",
+	})
+	if !result.Pass {
+		t.Fatalf("expected preflight to pass, got %#v", result.Checks)
+	}
+	if result.ModelProvider == nil || result.ModelProvider.Model != "mimo-v2-pro" {
+		t.Fatalf("expected launch override model preview, got %#v", result.ModelProvider)
+	}
+
+	stored, err := svc.profiles.Get(profile.ID)
+	if err != nil {
+		t.Fatalf("get profile: %v", err)
+	}
+	if stored.Fields.ModelOverride != "mimo-v2-flash" {
+		t.Fatalf("profile model_override mutated to %q", stored.Fields.ModelOverride)
+	}
+}
+
+func TestRunPassesWhenModelProviderConfigured(t *testing.T) {
+	svc := newTestServices(t)
+	provider, err := svc.modelProviders.Create(modelprovider.CreateRequest{
+		Name:      "MiMo",
+		BaseURL:   "https://api.example.test/v1",
+		Protocols: []modelprovider.Protocol{modelprovider.ProtocolOpenAIResponses},
+		Catalog:   modelprovider.Catalog{Manual: []string{"mimo"}, DefaultModel: "mimo"},
+	})
+	if err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	t.Setenv(provider.APIKeyEnv, "sk-test")
+	profile, err := svc.profiles.Create("codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		ModelProviderID: provider.ID,
+	})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+	})
+
+	if !result.Pass {
+		t.Fatalf("expected preflight to pass with model provider, got %#v", result.Checks)
+	}
+	if !checkPassed(result, "model_provider") {
+		t.Fatalf("expected model_provider check to pass, got %#v", result.Checks)
+	}
+	if result.ModelProvider == nil || result.ModelProvider.ModelProviderID != provider.ID {
+		t.Fatalf("expected model provider preview, got %#v", result.ModelProvider)
+	}
+}
+
+func TestRunSkipsModelProviderCheckForLegacyConfig(t *testing.T) {
+	svc := newTestServices(t)
+	profile, err := svc.profiles.Create(
+		"codex-inline",
+		runtimeprofile.ProviderCodex,
+		runtimeprofile.Fields{
+			Model: "gpt-5",
+			APIKeys: map[string]string{
+				"OPENAI_API_KEY": "sk-inline",
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+	})
+
+	if !result.Pass {
+		t.Fatalf("expected legacy inline config to pass without model provider check, got %#v", result.Checks)
+	}
+	for _, check := range result.Checks {
+		if check.Name == "model_provider" {
+			t.Fatalf("expected no model_provider check for legacy config, got %#v", check)
+		}
 	}
 }
 

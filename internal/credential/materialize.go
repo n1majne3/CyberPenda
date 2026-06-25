@@ -44,6 +44,15 @@ func Materialize(source Source) (string, error) {
 			return "", fmt.Errorf("credential command returned empty output")
 		}
 		return value, nil
+	case SourceLiteral:
+		value := strings.TrimSpace(source.Value)
+		if value == "" {
+			return "", fmt.Errorf("literal source value is required")
+		}
+		if value == ConfiguredSourceSentinel {
+			return "", fmt.Errorf("literal source value is not materialized")
+		}
+		return value, nil
 	default:
 		return "", fmt.Errorf("%w: %q", ErrInvalidSourceKind, source.Kind)
 	}

@@ -13,8 +13,8 @@ A bounded security-testing engagement with its own **Scope**, tasks, memory, evi
 _Avoid_: workspace, conversation, campaign
 
 **Project Defaults**:
-Project-level choices for default runtime, runner, and task policy that do not copy global **Runtime Profiles**.
-_Avoid_: project-local runtime profile, copied profile
+Project-level choices for default runner, optional **Default Runtime Profile Preset**, and task policy that do not copy global **Runtime Profiles**.
+_Avoid_: project-local runtime profile, copied profile, launch selection store
 
 **Project Dashboard**:
 The primary project view that surfaces scope status, task runs, blackboard growth, findings, and evidence health.
@@ -29,8 +29,24 @@ The user's natural-language objective for a **Task**.
 _Avoid_: raw prompt only, plan step
 
 **Run Controls**:
-The structured task launch settings that choose runtime, runner, mode, scope preview, and artifact behavior.
+The structured task launch settings that choose **Launch Selection** or an optional **Runtime Profile Preset**, runner, mode, scope preview, and artifact behavior.
 _Avoid_: hidden prompt flags, runtime internals
+
+**Launch Selection**:
+The primary task-launch choice of one **Runtime Plugin** family, one **Model Provider**, and an optional model for that launch.
+_Avoid_: runtime profile picker, MCP preset, profile name
+
+**Launch Model Override**:
+A task-only model choice applied at launch that may differ from the selected **Runtime Profile**'s **Model Override** without editing that profile.
+_Avoid_: profile edit, model provider edit, catalog refresh
+
+**Launch Profile Resolution**:
+The daemon step that turns **Run Controls** into the **Runtime Profile** used for a **Task**, either by reusing an explicitly selected **Runtime Profile Preset** or by finding or creating a minimal matching **Runtime Profile** from a **Launch Selection**.
+_Avoid_: live profile mutation, project-local profile fork
+
+**Default Runtime Profile Preset**:
+An optional **Project Defaults** reference to a global **Runtime Profile Preset** that preselects advanced launch configuration for new **Tasks** in that **Project**.
+_Avoid_: copied profile, project-local profile, required launch picker
 
 **Task Event**:
 A structured timeline entry for a **Task**, including runtime output, status changes, startup checks, and task-local workflow markers.
@@ -90,7 +106,99 @@ _Avoid_: live thought editing, new task
 
 **Runtime Profile**:
 A global user-editable configuration that chooses how a **Runtime** should run for a task without storing secret values.
-_Avoid_: preset, account, credential bundle, secret store
+_Avoid_: account, credential bundle, secret store
+
+**Runtime Profile Preset**:
+A **Runtime Profile** saved for reuse because it carries advanced launch configuration such as **MCP Configuration**, **Runtime Extension Enablement**, binary paths, or runner defaults beyond a minimal **Launch Selection**.
+_Avoid_: model provider, launch picker default, project-local copy
+
+**Model Provider**:
+A global reusable non-secret configuration for a model service that a **Runtime Profile** can use when a **Runtime** needs model access.
+_Avoid_: runtime profile, runtime plugin, model only, credential value
+
+**Model Provider ID**:
+The immutable identifier for a **Model Provider**, used to derive its **Model API Key Environment Variable**.
+_Avoid_: display name, editable label, secret name
+
+**Model Provider ID Generation**:
+The creation-time derivation of a **Model Provider ID** from a **Model Provider** display name.
+_Avoid_: user-entered identifier, editable id
+
+**Model Providers Page**:
+The global settings view for managing **Model Providers**.
+_Avoid_: runtime profile subform, project settings panel, credential page
+
+**Model Provider Migration**:
+An explicit management action that moves legacy model-service fields from a **Runtime Profile** into a reusable **Model Provider**.
+_Avoid_: silent automatic migration, runtime profile edit side effect
+
+**Model Provider Migration Preview**:
+The non-secret review of proposed **Model Provider** fields before a **Model Provider Migration** is confirmed.
+_Avoid_: automatic migration result, hidden protocol choice, credential value
+
+**Model Provider Migration Match**:
+A possible existing **Model Provider** shown during **Model Provider Migration** when legacy fields resemble an already configured provider.
+_Avoid_: automatic reuse, forced merge, duplicate detection as truth
+
+**Model Catalog**:
+The model names and default model exposed by one **Model Provider**.
+_Avoid_: endpoint-specific model list, runtime model list
+
+**Manual Model Entry**:
+A user-entered model identifier in a **Model Catalog** that is preserved across **Model Catalog Refresh**.
+_Avoid_: refreshed model, provider metadata
+
+**Model Catalog Refresh**:
+An explicit user-triggered management action that fetches model names from a **Model Provider Endpoint** by appending `/models` to its **Normalized Model Base URL** and updates the **Model Catalog**.
+_Avoid_: background polling, task-launch discovery, runtime introspection
+
+**Model Catalog Refresh Format**:
+The response shape accepted by **Model Catalog Refresh** when parsing a model-list response.
+_Avoid_: protocol negotiation, provider-specific parser selection
+
+**Model Provider Endpoint**:
+A concrete non-secret base URL within a **Model Provider** that may support one or more **Model Provider Protocols**.
+_Avoid_: protocol, runtime profile, credential value, custom header bundle
+
+**Normalized Model Base URL**:
+A **Model Provider Endpoint** base URL stored without trailing slashes while preserving path prefixes such as `/v1`.
+_Avoid_: semantic URL repair, proxy route
+
+**Model Override**:
+A **Runtime Profile** field that replaces the selected **Model Provider**'s default model when that profile is used without a **Launch Model Override**.
+_Avoid_: provider edit, endpoint fork, hidden model switch, launch-only override
+
+**Model Provider Protocol**:
+The model-service API contract a **Model Provider Endpoint** supports and a **Runtime Plugin** knows how to project for a **Runtime**.
+_Avoid_: runtime provider, endpoint URL, model name
+
+**Model Protocol Preference**:
+A **Runtime Plugin** ordering that chooses a compatible **Model Provider Protocol** when a **Runtime Profile** does not pin one.
+_Avoid_: hidden provider switch, model ranking, runtime profile default
+
+**Model Credential Projection**:
+The **Runtime Plugin** mapping that injects a **Model Provider** API key into the environment, config, or argument shape required by a **Runtime**.
+_Avoid_: separate credential, runtime profile credential, endpoint secret
+
+**Model Runtime Projection**:
+The **Config Projection** step that passes the resolved model endpoint URL, protocol, model, and credential to a **Runtime** without proxying model traffic.
+_Avoid_: LLM proxy, gateway request, daemon model call
+
+**Model API Key Source**:
+The required single source for the API key used by a **Model Provider**.
+_Avoid_: credential reference, project override, runtime profile key
+
+**Model API Key Environment Variable**:
+The generated environment variable name used as the **Model API Key Source** for a **Model Provider**.
+_Avoid_: user-entered env var, inline API key, secret value, credential reference
+
+**Model Provider Snapshot**:
+The non-secret resolved model provider values captured in a **Task Runtime Configuration** for one launch or continuation.
+_Avoid_: live model provider reference, model catalog copy, credential value
+
+**Model Provider Requirement**:
+A **Runtime Plugin** declaration that says whether a **Runtime Profile** must, may, or must not resolve a compatible **Model Provider** and **Model Provider Protocol**.
+_Avoid_: hidden preflight rule, runtime profile convention, provider guess
 
 **Runtime Plugin**:
 A declarative provider definition that describes how a **Runtime Profile** launches, projects config, validates startup, and selects transcript parsing for a runtime family.
@@ -208,9 +316,17 @@ _Avoid_: executable installer, credential file, remote marketplace listing
 The task-local materialization of enabled **Runtime Extensions** into the selected **Runtime**'s home, config, skill, plugin, or MCP-compatible directories.
 _Avoid_: host runtime mutation, global plugin install, profile edit side effect
 
+**Preset Selector**:
+An advanced task-launch control for choosing an optional **Runtime Profile Preset** filtered to the selected **Runtime Plugin** family.
+_Avoid_: primary launch picker, model provider switch, raw config editor
+
 **Profile Selector**:
-A user-facing control for choosing or quickly switching the **Runtime Profile** used by a **Task**.
-_Avoid_: raw config picker, provider switch only
+The settings-page control for choosing which **Runtime Profile** or **Runtime Profile Preset** to edit.
+_Avoid_: task launch default, launch selection picker
+
+**Protocol Pin Selector**:
+The **Runtime Profile** control for choosing Auto or a compatible **Model Provider Protocol**.
+_Avoid_: all-protocol list, runtime plugin editor
 
 **Generated Runtime Config**:
 A previewable task-local config output produced from structured profile fields during **Config Projection**.
@@ -233,7 +349,7 @@ An advanced action that parses edited runtime config back into structured **Runt
 _Avoid_: raw config save, opaque override
 
 **Task Runtime Configuration**:
-The task-specific copy of runtime settings captured from a **Runtime Profile** for launching a **Task**.
+The task-specific copy of runtime settings captured from a **Runtime Profile** for launching a **Task**, including any **Launch Model Override** applied at launch.
 _Avoid_: live profile reference, mutable profile, embedded secret
 
 **Task Runtime Configuration Version**:
@@ -281,12 +397,16 @@ A project override that explicitly prevents a **Credential Reference** from usin
 _Avoid_: missing binding, broken secret
 
 **Config Projection**:
-The task-local preparation of runtime configuration from a **Runtime Profile** and **Credential References**.
+The task-local preparation of runtime configuration from a **Runtime Profile**, **Model Provider**, and **Credential References**.
 _Avoid_: host config edit, config sync
 
 **Preflight**:
 A recorded startup check phase that determines whether a **Task** can launch its **Runtime**.
 _Avoid_: runtime execution, pentest work
+
+**Model Preflight Preview**:
+The **Preflight** view of resolved non-secret model provider projection and generated API key environment variable readiness.
+_Avoid_: API key display, LLM connectivity test
 
 **Project Interface**:
 A supported channel that lets a **Runtime** read or write project state, memory, approvals, evidence, and reports.
@@ -453,11 +573,65 @@ _Avoid_: transcript, export, source of truth
 - A **Project** has exactly one current **Scope**.
 - **YOLO-Derived Scope** is part of **Scope** but carries distinct **Provenance** from human-approved scope.
 - An **Out-of-Scope Fact** does not change **Scope** and does not authorize testing.
-- A **Project** may define **Project Defaults** for new **Tasks**.
+- A **Project** may define **Project Defaults** for new **Tasks**, including an optional **Default Runtime Profile Preset** and default **Runner**.
+- A **Project Defaults** reference to a **Default Runtime Profile Preset** preselects that preset on the task launch page but does not copy the **Runtime Profile**.
+- When no **Default Runtime Profile Preset** is configured, task launch starts from **Launch Selection** and uses **Launch Profile Resolution** to find or create a minimal **Runtime Profile**.
 - A **Project Dashboard** is the primary UI entry point for a **Project**.
 - **Runtime Profiles** are global and reusable across **Projects**.
 - A **Runtime Profile** selects one **Runtime Plugin** by plugin identifier.
-- A **Runtime Profile** may include **Credential References** but not credential values.
+- **Model Providers** are global and reusable across **Runtime Profiles**.
+- A **Model Provider** has an immutable **Model Provider ID**.
+- A **Model Provider ID** is created through **Model Provider ID Generation**.
+- **Model Provider ID Generation** appends a numeric suffix when the derived ID already exists.
+- Editing a **Model Provider** display name does not change its **Model Provider ID** or **Model API Key Environment Variable**.
+- **Model Providers** are managed through the **Model Providers Page**.
+- A **Runtime Profile** may select one **Model Provider**.
+- A **Runtime Profile** for a runtime with required **Model Provider Requirement** may be saved without a selected **Model Provider**, but it is not launch-ready.
+- Legacy model-service fields on a **Runtime Profile** may be preserved for compatibility until a **Model Provider Migration** is explicitly run.
+- A **Model Provider Migration** presents a **Model Provider Migration Preview** before creating or updating a **Model Provider**.
+- A **Model Provider Migration Preview** may suggest a protocol from the source **Runtime Plugin**, but the user must confirm it.
+- A **Model Provider Migration Preview** may show **Model Provider Migration Matches**, but the user chooses whether to reuse an existing **Model Provider** or create a new one.
+- A successful **Model Provider Migration** removes migrated legacy model-service fields from the source **Runtime Profile**.
+- A **Model Provider** may define a **Model Catalog**.
+- A **Model Catalog** stores model identifiers, not full provider response objects.
+- A **Model Catalog** may be edited manually or updated through **Model Catalog Refresh**.
+- A **Model Catalog** may include manually entered model identifiers that were not returned by **Model Catalog Refresh**.
+- **Manual Model Entries** are preserved when **Model Catalog Refresh** updates refreshed model identifiers.
+- A **Manual Model Entry** with the same identifier as a refreshed model is merged into the refreshed model entry.
+- A **Manual Model Entry** may be deleted unless it has been merged into a refreshed model entry.
+- Refreshed model identifiers in a **Model Catalog** are not manually deleted or hidden.
+- Any model identifier in the **Model Catalog**, whether manual or refreshed, may be used as a provider default or **Model Override**.
+- A **Model Catalog Refresh** is a user-triggered management action, not part of **Preflight** or task launch.
+- A **Model Catalog Refresh** uses `{normalized_model_base_url}/models` rather than a protocol-specific model list.
+- A **Model Catalog Refresh** uses the **Model API Key Environment Variable** for the selected **Model Provider**.
+- **Model Catalog Refresh Format** is OpenAI-style `/models` in MVP.
+- A failed **Model Catalog Refresh** preserves the existing **Model Catalog**.
+- A successful **Model Catalog Refresh** stores the returned **Model Catalog** even if existing defaults or overrides become invalid.
+- A **Model Provider** may be saved without a **Model Catalog**, but tasks that require model access cannot launch from it.
+- A **Model Catalog** drives model dropdown choices in **Runtime Profile** editing and in **Launch Selection**.
+- A **Model Provider** must include exactly one **Model API Key Source**.
+- A **Model API Key Source** is a **Model API Key Environment Variable** in MVP.
+- A **Model API Key Environment Variable** is generated from the **Model Provider** identifier as `<PROVIDER_ID>_API_KEY`.
+- A **Model Provider** contains exactly one **Model Provider Endpoint**.
+- A **Model Provider Endpoint** stores a **Normalized Model Base URL**.
+- A **Model Provider Endpoint** may support one or more **Model Provider Protocols**, such as `openai_chat_completions`, `openai_responses`, or `anthropic_messages`.
+- **Model Provider Protocol** support is manually configured on the **Model Providers Page**.
+- A **Model Provider** may be saved without configured **Model Provider Protocol** support, but tasks that require model access cannot launch from it.
+- Removing **Model Provider Protocol** support from a **Model Provider** is allowed even if existing **Runtime Profiles** become invalid.
+- A **Model Provider Endpoint** does not contain custom headers or proxy request configuration.
+- A **Runtime Plugin** may support one or more **Model Provider Protocols**.
+- A **Runtime Plugin Manifest** declares supported **Model Provider Protocols** and **Model Protocol Preference**.
+- A **Runtime Profile** may pin a **Model Provider Protocol**; otherwise the selected **Runtime Plugin** applies its **Model Protocol Preference**.
+- An empty **Model Provider Protocol** pin means use the selected **Runtime Plugin**'s **Model Protocol Preference**.
+- A **Protocol Pin Selector** shows Auto and the intersection of protocols supported by the selected **Runtime Plugin** and **Model Provider**.
+- A pinned **Model Provider Protocol** must remain compatible with the selected **Model Provider Endpoint** or **Preflight** fails.
+- **Model Protocol Preference** selects the first compatible protocol and fails **Preflight** when none is compatible.
+- The resolved model from a **Model Override** or **Model Catalog** default must exist in the **Model Catalog** or **Preflight** fails.
+- A **Runtime Profile** may define a **Model Override** instead of editing the selected **Model Provider**.
+- A **Runtime Plugin** owns **Model Credential Projection** for supported **Model Provider Protocols**.
+- A **Runtime Plugin** owns **Model Runtime Projection** for supported **Model Provider Protocols**.
+- A **Runtime Plugin** declares a **Model Provider Requirement**.
+- A **Runtime Profile** may include runtime-specific **Credential References** but not model API key configuration by default.
 - A **Runtime Plugin Manifest** may declare credential environment names but must not contain credential values.
 - A **Runtime Plugin Manifest** is declarative and may reference only known **Runtime Plugin Primitives**.
 - A **Runtime Plugin Registry** is the source of supported runtime provider identifiers.
@@ -496,7 +670,8 @@ _Avoid_: transcript, export, source of truth
 - The **Skills Page** may change **Runtime Extension Enablement**, but the enablement state still belongs to the affected **Runtime Profile**.
 - A **Runtime Profile** may reference a manually entered **Runtime Extension** identifier, but task launch still requires the daemon **Runtime Extension Registry** to resolve it.
 - A new **Task** loads the current **Runtime Extensions** from the **Runtime Extension Library** when its runtime configuration is projected.
-- **Preflight** previews enabled **Skills** but resolves credentials only from **Runtime Profiles** and launch requests.
+- **Preflight** previews enabled **Skills** but resolves credentials only from **Runtime Profiles**, **Model Providers**, and launch requests.
+- **Preflight** includes a **Model Preflight Preview** when model access is used.
 - A started **Task** keeps the **Runtime Extensions** already materialized into its task-local runtime boundary.
 - **Runtime Extension Projection** happens during **Config Projection** and must not mutate host runtime plugin directories.
 - A **Credential Reference** resolves first through **Credential Bindings**, then through **Global Credential Bindings**.
@@ -504,8 +679,19 @@ _Avoid_: transcript, export, source of truth
 - **Credential Binding Mode** defaults to using **Global Credential Bindings** unless the user explicitly chooses a project override.
 - A **Disabled Credential Binding** blocks fallback to **Global Credential Bindings**.
 - A **Runtime Profile** may define a default **Runner** for new **Tasks**.
-- A **Profile Selector** chooses a **Runtime Profile** while detailed edits happen through structured profile fields.
+- A **Profile Selector** chooses which **Runtime Profile** or **Runtime Profile Preset** to edit on the settings page.
+- A **Preset Selector** is an advanced task-launch control and is not the primary launch path.
+- A **Preset Selector** lists only **Runtime Profile Presets** compatible with the selected **Runtime Plugin** family.
+- Selecting a **Runtime Profile Preset** locks the **Launch Selection** runtime and **Model Provider** to that preset's values.
+- A **Launch Model Override** may still be chosen at launch when a **Runtime Profile Preset** is selected.
+- A selected **Runtime Profile Preset** keeps its **Runtime Profile** identity for the **Task** even when a **Launch Model Override** is used.
+- A **Launch Model Override** affects only the launching **Task** and its captured **Task Runtime Configuration**; it does not edit the selected **Runtime Profile**.
+- Changing the selected **Runtime Plugin** family during launch clears an incompatible **Runtime Profile Preset** selection.
+- **Launch Profile Resolution** reuses an explicitly selected **Runtime Profile Preset** when one is chosen.
+- **Launch Profile Resolution** otherwise finds or creates a minimal **Runtime Profile** that matches the **Launch Selection** runtime, **Model Provider**, and model choice.
+- A minimal **Runtime Profile** created by **Launch Profile Resolution** may later gain MCP, skills, or extension configuration without breaking reuse for the same **Launch Selection**.
 - A **Runtime Profile** uses structured fields as source of truth for **Generated Runtime Config**.
+- **Generated Runtime Config** previews the resolved non-secret **Model Runtime Projection**, including base URL, protocol, model, generated API key environment variable name, and runtime-specific projection target.
 - A **Runtime Plugin** describes which structured fields a **Runtime Profile** exposes.
 - A **Runtime Profile** manages **MCP Configuration** as structured entries with raw preview or import as compatibility support.
 - **MCP Configuration** may include **Trusted MCP Servers** and **External MCP Servers**.
@@ -515,13 +701,21 @@ _Avoid_: transcript, export, source of truth
 - A **Profile Config Import** updates a **Runtime Profile** only when the edited config can be parsed into structured fields.
 - A **Project** has zero or more **Tasks**.
 - A **Task** starts from one **Task Goal** plus **Run Controls**.
-- A **Task** chooses one **Runtime Profile** and one **Runner**.
+- A **Task** resolves to one **Runtime Profile** through **Launch Profile Resolution** and chooses one **Runner**.
 - A **Task** has one **Runtime Harness** that controls runtime lifecycle for that task.
 - A **Task** launches from its **Task Runtime Configuration**, not a live mutable **Runtime Profile**.
 - A **Task Runtime Configuration** captures the selected **Runtime Plugin** identifier.
+- A **Task Runtime Configuration** captures a **Model Provider Snapshot** when model access is used.
+- A **Model Provider Snapshot** includes the resolved base URL, protocol, model, and non-secret **Model API Key Source** provenance.
+- A **Model Provider Snapshot** uses a **Launch Model Override** when one was supplied at launch; otherwise it uses the selected **Runtime Profile**'s **Model Override** or **Model Catalog** default.
+- A **Model Provider Snapshot** does not include the full **Model Catalog** or any credential value.
 - A **Task Runtime Configuration** may include **Credential References** but not credential values.
 - Editing a **Runtime Profile** does not change existing **Task Runtime Configurations**.
+- Editing a **Model Provider** does not change existing **Task Runtime Configurations** or an active **Runtime Continuation**.
+- A **Model Provider** cannot be deleted while any **Runtime Profile** still references it.
+- Historical task views read captured **Task Runtime Configurations** and **Model Provider Snapshots**, not live **Runtime Profiles** or live **Model Providers**.
 - A runtime-profile switch inside a **Task** creates a new **Task Runtime Configuration Version** for the next **Runtime Continuation**.
+- A runtime-profile switch re-resolves the selected **Model Provider** and captures a new **Model Provider Snapshot** for the new **Task Runtime Configuration Version**.
 - A **Task** may contain internal steps, but those steps are not separate **Tasks**.
 - A **Task** has zero or more **Task Events**.
 - A **Task Conversation** belongs to exactly one **Task**.
@@ -541,6 +735,8 @@ _Avoid_: transcript, export, source of truth
 - A **Config Projection** failure belongs to the affected **Task** unless the **Runtime Profile** itself is explicitly invalid.
 - A **Task** passes **Preflight** before its **Runtime** starts.
 - A **Credential Reference** that cannot be resolved during **Preflight** prevents **Runtime** launch.
+- A missing **Model API Key Environment Variable** value prevents **Runtime** launch during **Preflight**.
+- A required **Model Provider Requirement** that cannot resolve a compatible **Model Provider Protocol** prevents **Runtime** launch during **Preflight**.
 - A **Preflight** failure prevents **Runtime** execution and is recorded in the **Audit Log**.
 - A **Task** runs under exactly one **Scope Snapshot**.
 - A **Scope Snapshot** records historical authorization and does not change when current **Scope** later changes.
@@ -641,6 +837,9 @@ _Avoid_: transcript, export, source of truth
 > **Dev:** "The Runtime confirmed SQL injection and saved the HTTP exchange. Is that a Project Fact or a Finding?"
 > **Domain expert:** "Both can be involved: the reproducible issue is a Finding, and the reproduction context can be stored as Project Facts with Evidence Artifacts attached."
 
+> **Dev:** "Task launch no longer asks for a Runtime Profile. Where do MCP and skills come from?"
+> **Domain expert:** "Most launches only need Launch Selection: runtime, model provider, and model. The daemon resolves that to a minimal Runtime Profile automatically. If the user expands the advanced preset picker and chooses a saved Runtime Profile Preset, that preset's MCP and skill enablement apply. Runtime and model provider lock to the preset, but the user may still set a Launch Model Override for just that task."
+
 ## Flagged Ambiguities
 
 - "vulnerability" and **Finding** were used for the same reportable issue concept; resolved: use **Finding** as the product/domain term and reserve "vulnerability" for type names, schemas, or imported source terminology.
@@ -698,7 +897,67 @@ _Avoid_: transcript, export, source of truth
 - **Runtime Profile** default **Runner** is not final task truth; resolved: the **Task** records the actual **Runner** used.
 - **Runtime Profile** edits are not retroactive task edits; resolved: existing tasks use captured **Task Runtime Configuration** unless explicitly refreshed with audit history.
 - **Runtime Profile** is not project-local; resolved: profiles are global, while each **Task** captures the runtime configuration it actually used.
+- **Runtime Profile** is not the primary task-launch picker; resolved: most launches use **Launch Selection**, while **Runtime Profile Presets** are optional advanced choices.
+- **Profile Selector** is not the default launch control; resolved: task launch uses **Launch Selection** plus an optional **Preset Selector**, and settings-page editing keeps **Profile Selector**.
+- **Launch Profile Resolution** is not a live profile edit; resolved: it selects or creates the **Runtime Profile** record used for the task without mutating preset fields for a one-off model change.
+- A **Launch Model Override** is not a **Runtime Profile** edit; resolved: it changes only the launching task's captured model choice and snapshot.
+- **Default Runtime Profile Preset** is not a copied profile; resolved: project defaults may reference a global preset without creating project-local runtime configuration.
+- **Model Provider** is not a **Runtime Profile**; resolved: model-service configuration is globally reusable across runtime profiles and does not store credential values.
+- **Model Provider ID** is not a display name; resolved: display names may change, while provider IDs stay stable to preserve generated environment variable names.
+- **Model Provider ID Generation** is not user-controlled ID entry; resolved: IDs are generated from display names at creation time and then locked.
+- **Model Provider ID Generation** collision handling is automatic; resolved: duplicate display names receive numeric suffixes and environment variables derive from the final ID.
+- **Model API Key Environment Variable** is not regenerated on display-name edits; resolved: it follows the immutable provider ID.
+- **Model Providers Page** is not a runtime profile editor section; resolved: model providers are managed as global settings alongside runtime profiles and credentials.
+- A missing **Model Provider** on a model-required **Runtime Profile** is allowed as a draft configuration; resolved: validation surfaces it and **Preflight** blocks launch.
+- **Model Provider Migration** is not silent schema guessing; resolved: users explicitly confirm migration from legacy runtime-profile model fields into model providers.
+- **Model Provider Migration Preview** is not a secret display; resolved: it shows proposed provider name, base URL, model, protocol, and API key source provenance but not key values.
+- **Model Provider Migration Match** is not automatic provider reuse; resolved: possible matches are shown for user choice rather than merged silently.
+- **Model Provider Migration** does not leave dual model-service sources of truth; resolved: migrated legacy fields are cleared from the runtime profile after successful migration.
+- **Model Provider Protocol** names are not marketing compatibility labels; resolved: use concrete API contracts such as `openai_chat_completions`, `openai_responses`, and `anthropic_messages`.
+- **Model Provider Protocol** is not a runtime family; resolved: protocol compatibility connects reusable model-service configuration to runtime-specific projection.
+- **Model Protocol Preference** is not user-configured; resolved: runtime plugin manifests define each runtime family's protocol support and ordering.
+- **Model Provider Protocol** support is not auto-detected; resolved: users explicitly configure supported protocols for a model provider.
+- Empty **Model Provider Protocol** support is allowed for provider configuration; resolved: it is a management draft state, not launch-ready task configuration.
+- Removing **Model Provider Protocol** support is not blocked by affected runtime profiles; resolved: save the provider change and surface invalid strict pins through validation and preflight.
+- **Model Provider Endpoint** is not a protocol; resolved: one endpoint may support multiple model-provider protocols.
+- **Model Provider Endpoint** is not a plural endpoint set; resolved: each model provider has exactly one endpoint/base URL.
+- **Model Provider Endpoint** is not proxy configuration; resolved: endpoints carry base URLs and supported protocols, not custom headers or arbitrary request-shaping settings.
+- **Normalized Model Base URL** is not the model-list URL; resolved: preserve path prefixes and append `/models` only for **Model Catalog Refresh**.
+- **Normalized Model Base URL** is not semantically repaired; resolved: do not detect, reject, or trim model-list paths such as `/models`.
+- **Model Provider Endpoint** selection is not guessed at task runtime; resolved: each model provider has one endpoint and runtime plugins only resolve protocol preference.
+- **Model Protocol Preference** is ordered fallback, not a single default; resolved: the runtime plugin chooses the first compatible protocol.
+- Empty **Model Provider Protocol** pin is not an invalid profile; resolved: it means runtime-plugin preference should resolve the protocol.
+- **Protocol Pin Selector** is not a list of every known protocol; resolved: it shows only compatible choices plus Auto.
+- A pinned **Model Provider Protocol** is not a preference; resolved: incompatible or deleted pins fail validation instead of falling back silently.
+- **Model Catalog** is not endpoint-specific; resolved: the model provider exposes one shared model catalog.
+- **Model Catalog** is not raw provider metadata; resolved: store model identifiers only and discard unrelated `/models` response fields.
+- **Model Catalog** is not limited to refreshed models; resolved: users may manually add model identifiers when `/models` is unavailable or incomplete.
+- **Manual Model Entry** is not duplicated after refresh; resolved: if refresh returns the same model identifier, treat it as a refreshed entry.
+- **Manual Model Entry** deletion applies only while the entry remains manual; resolved: entries returned by refresh become refreshed entries and are not manually deleted.
+- Refreshed model entries are not user-curated; resolved: keep provider-returned model identifiers as returned by refresh.
+- Model selection does not depend on catalog entry source; resolved: manual and refreshed model identifiers are both selectable.
+- **Model Catalog Refresh** is not automatic model discovery during task startup; resolved: refresh happens only through an explicit management action that fetches `{normalized_model_base_url}/models`.
+- **Model Catalog Refresh** does not use a separate credential path; resolved: it reads the same generated API key environment variable as runtime launch.
+- **Model Catalog Refresh Format** is not provider-specific in MVP; resolved: parse only OpenAI-style `/models` responses.
+- A failed **Model Catalog Refresh** does not clear model choices; resolved: keep the previous catalog and surface the refresh error.
+- A successful **Model Catalog Refresh** is not blocked by stale selections; resolved: save the provider's returned list and let validation surface invalid defaults or model overrides.
+- An empty **Model Catalog** is allowed for provider configuration; resolved: it is a management draft state, not launch-ready task configuration.
+- **Model Override** is not a **Model Provider** edit; resolved: provider defaults stay reusable while runtime profiles may choose a different model for their tasks.
+- Invalid model selection is not auto-healed; resolved: missing provider defaults or stale **Model Overrides** fail validation instead of selecting another model.
+- Model API key configuration does not belong to **Runtime Profiles**; resolved: model-service API key source is provider-level while runtime profiles keep only runtime-specific credential needs.
+- A **Model Provider** does not have zero or multiple model API keys; resolved: each provider has exactly one **Model API Key Source**.
+- **Model API Key Source** is not project-overridable in the model-provider flow; resolved: keep one provider-level API key source and let runtime plugins project it.
+- **Model API Key Source** is not an inline secret store in MVP; resolved: model providers use a generated environment variable name, not an API key value.
+- **Model API Key Environment Variable** is not user-named in MVP; resolved: derive it from the provider identifier, such as `MIMO_API_KEY`.
+- **Model Credential Projection** is not a separate credential; resolved: the same provider API key may be injected differently for different runtime plugins.
+- **Model Provider Snapshot** is not a live provider reference; resolved: task runtime configuration captures only the non-secret values used for that launch or continuation.
+- **Model Runtime Projection** is not LLM proxying; resolved: the daemon passes URL, protocol, model, and credential into the runtime, and the runtime calls the model service directly.
+- **Model Provider Requirement** is not universal; resolved: runtime plugins declare whether model-provider resolution is required, optional, or unsupported.
 - Runtime-profile switching does not create a new **Task**; resolved: it creates a new **Runtime Continuation** with a new **Task Runtime Configuration Version**.
+- Runtime-profile switching does not reuse the prior **Model Provider Snapshot**; resolved: each new task runtime configuration version captures its own resolved model provider values.
+- **Model Provider** edits are not live task mutation; resolved: active continuations keep the **Model Provider Snapshot** captured at launch or continuation start.
+- **Model Provider** deletion is not silent profile breakage; resolved: deletion is blocked while any runtime profile references the provider.
+- Historical task inspection does not require live profile or provider records; resolved: task history uses captured runtime configuration snapshots.
 - **Project Defaults** are not copied **Runtime Profiles**; resolved: they select defaults while profiles remain global.
 - **Project Dashboard** is not a chat-first view; resolved: the project home prioritizes scope, task runs, blackboard state, findings, and evidence.
 - **Task Goal** is not the whole task configuration; resolved: natural-language goals are paired with visible **Run Controls**.
@@ -707,6 +966,7 @@ _Avoid_: transcript, export, source of truth
 - **Harness Steering** is not silent run-control mutation; resolved: runner, profile, YOLO, or other run-control changes apply through explicit task events and only at continuation boundaries.
 - **Profile Selector** is not raw configuration editing; resolved: switching profiles is fast, while editing profiles remains structured.
 - **Generated Runtime Config** is not the editable source of truth; resolved: raw config preview and diff are derived from structured profile fields.
+- **Generated Runtime Config** is not a secret preview; resolved: show generated API key environment variable names and projection targets, not API key values.
 - **Profile Config Import** is not raw passthrough; resolved: edited config must round-trip into structured profile fields before saving.
 - **MCP Configuration** is not raw JSON as source of truth; resolved: manage entries structurally and use raw JSON only for preview or import.
 - **External MCP Server** is not a trusted project interface by default; resolved: project write authority belongs only to **Trusted MCP Servers** or explicitly granted interfaces.
@@ -751,6 +1011,7 @@ _Avoid_: transcript, export, source of truth
 - **Runtime Extension Projection** is not a global install; resolved: enabled extensions are materialized into the task-local runtime boundary.
 - **Config Projection** failure is not automatically **Runtime Profile** invalidity; resolved: treat it as a **Task** startup failure unless validation proves the profile itself is invalid.
 - **Preflight** failure is not **Runtime** failure; resolved: startup checks fail before the runtime performs task work.
+- **Model Preflight Preview** is not a secret display; resolved: show base URL, protocol, model, generated API key environment variable name, and configured/missing status without showing key values.
 - **CLI Fallback** is not a bypass; resolved: CLI writes carry the same validation, provenance, audit, and blackboard semantics as other project interfaces.
 - **Task Event** and **Audit Log** are distinct; resolved: task events are task-local timeline entries, while audit entries are project-level security history.
 - **Task Event** is not raw output storage; resolved: preserve full output through logs or **Evidence Artifacts** and keep the task timeline structured.

@@ -73,16 +73,19 @@ type RuntimeExtensionRef struct {
 // and redacted in API responses; legacy CredentialRefs still resolve through
 // global credential bindings when present.
 type Fields struct {
-	BinaryPath        string                `json:"binary_path,omitempty"`
-	Model             string                `json:"model,omitempty"`
-	Endpoint          string                `json:"endpoint,omitempty"`
-	CustomArgs        []string              `json:"custom_args,omitempty"`
-	Env               map[string]string     `json:"env,omitempty"`
-	APIKeys           map[string]string     `json:"api_keys,omitempty"`
-	CredentialRefs    []string              `json:"credential_refs,omitempty"`
-	RuntimeExtensions []RuntimeExtensionRef `json:"runtime_extensions,omitempty"`
-	MCPServers        []MCPServer           `json:"mcp_servers,omitempty"`
-	DefaultRunner     string                `json:"default_runner,omitempty"`
+	BinaryPath            string                `json:"binary_path,omitempty"`
+	Model                 string                `json:"model,omitempty"`
+	Endpoint              string                `json:"endpoint,omitempty"`
+	ModelProviderID       string                `json:"model_provider_id,omitempty"`
+	ModelProviderProtocol string                `json:"model_provider_protocol,omitempty"`
+	ModelOverride         string                `json:"model_override,omitempty"`
+	CustomArgs            []string              `json:"custom_args,omitempty"`
+	Env                   map[string]string     `json:"env,omitempty"`
+	APIKeys               map[string]string     `json:"api_keys,omitempty"`
+	CredentialRefs        []string              `json:"credential_refs,omitempty"`
+	RuntimeExtensions     []RuntimeExtensionRef `json:"runtime_extensions,omitempty"`
+	MCPServers            []MCPServer           `json:"mcp_servers,omitempty"`
+	DefaultRunner         string                `json:"default_runner,omitempty"`
 	// SandboxImage overrides the daemon default sandbox image for tasks using
 	// this profile. Leave empty to use the daemon-wide setting.
 	SandboxImage string `json:"sandbox_image,omitempty"`
@@ -232,6 +235,34 @@ func (s *Service) Update(id, name string, provider Provider, fields Fields, fiel
 	return existing, nil
 }
 
+// ReplaceFields replaces the structured fields on a profile without merging
+// inline API keys. Management flows such as model-provider migration use this
+// to clear legacy model-service fields explicitly.
+func (s *Service) ReplaceFields(id string, fields Fields) (Profile, error) {
+	existing, err := s.Get(id)
+	if err != nil {
+		return Profile{}, err
+	}
+	if err := s.validate(existing.Name, existing.Provider); err != nil {
+		return Profile{}, err
+	}
+	existing.Fields = fields
+	existing.UpdatedAt = time.Now().UTC()
+
+	fieldsJSON, err := json.Marshal(existing.Fields)
+	if err != nil {
+		return Profile{}, fmt.Errorf("encode fields: %w", err)
+	}
+	_, err = s.db.Exec(
+		`UPDATE runtime_profiles SET fields_json = ?, updated_at = ? WHERE id = ?`,
+		string(fieldsJSON), existing.UpdatedAt.Format(time.RFC3339Nano), existing.ID,
+	)
+	if err != nil {
+		return Profile{}, fmt.Errorf("store runtime profile fields: %w", err)
+	}
+	return existing, nil
+}
+
 // Delete removes a profile. It does not cascade into tasks; tasks capture their
 // own runtime configuration at launch.
 func (s *Service) Delete(id string) error {
@@ -264,6 +295,15 @@ func GeneratedConfig(profile Profile) map[string]any {
 	}
 	if profile.Fields.Endpoint != "" {
 		cfg["endpoint"] = profile.Fields.Endpoint
+	}
+	if profile.Fields.ModelProviderID != "" {
+		cfg["model_provider_id"] = profile.Fields.ModelProviderID
+	}
+	if profile.Fields.ModelProviderProtocol != "" {
+		cfg["model_provider_protocol"] = profile.Fields.ModelProviderProtocol
+	}
+	if profile.Fields.ModelOverride != "" {
+		cfg["model_override"] = profile.Fields.ModelOverride
 	}
 	if len(profile.Fields.CustomArgs) > 0 {
 		cfg["custom_args"] = profile.Fields.CustomArgs

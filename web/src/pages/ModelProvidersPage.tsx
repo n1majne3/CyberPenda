@@ -1,0 +1,304 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { RefreshCw, Trash2 } from "lucide-react";
+import { apiDelete, apiGet, apiPatch, apiPost, apiPut, type CredentialBinding, type ModelProvider } from "@/lib/api";
+import { Button, Card, Input, Label, Select, Textarea, Badge } from "@/components/ui";
+import { SaveActionButton } from "@/components/SaveActionButton";
+import { PageContainer } from "@/components/shared";
+import { canSubmitModelProvider, providerApiKeyPlaceholder, type ModelProviderForm } from "./modelProviderForm";
+
+const PROTOCOLS = [
+  "openai_chat_completions",
+  "openai_responses",
+  "anthropic_messages",
+] as const;
+
+type Form = ModelProviderForm;
+
+const emptyForm: Form = {
+  name: "",
+  base_url: "",
+  protocols: ["openai_responses"],
+  manual_models: "",
+  default_model: "",
+  api_key: "",
+};
+
+export function ModelProvidersPage() {
+  const [providers, setProviders] = useState<ModelProvider[]>([]);
+  const [bindings, setBindings] = useState<CredentialBinding[]>([]);
+  const [selectedId, setSelectedId] = useState("");
+  const [form, setForm] = useState<Form>(emptyForm);
+  const [creating, setCreating] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [savedNotice, setSavedNotice] = useState(false);
+  const savedNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const selected = providers.find((p) => p.id === selectedId) ?? null;
+  const selectedBinding = selected ? bindings.find((binding) => binding.credential_ref === selected.api_key_env) : undefined;
+  const canSubmit = canSubmitModelProvider(form, creating);
+
+  async function load() {
+    try {
+      const [data, credentialData] = await Promise.all([
+        apiGet<{ providers: ModelProvider[] }>("/api/model-providers"),
+        apiGet<{ bindings: CredentialBinding[] }>("/api/credential-bindings"),
+      ]);
+      const loaded = data.providers ?? [];
+      setBindings(credentialData.bindings ?? []);
+      setProviders(loaded);
+      setSelectedId((current) => current && loaded.some((p) => p.id === current) ? current : loaded[0]?.id ?? "");
+      setCreating(loaded.length === 0);
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  useEffect(() => { void load(); }, []);
+
+  useEffect(() => {
+    return () => {
+      if (savedNoticeTimer.current) clearTimeout(savedNoticeTimer.current);
+    };
+  }, []);
+
+  function showSavedNotice() {
+    setSavedNotice(true);
+    if (savedNoticeTimer.current) clearTimeout(savedNoticeTimer.current);
+    savedNoticeTimer.current = setTimeout(() => setSavedNotice(false), 2000);
+  }
+
+  useEffect(() => {
+    if (!selected || creating) return;
+    setForm(providerToForm(selected, selectedBinding));
+  }, [selected?.id, selected?.updated_at, selectedBinding?.updated_at, creating]);
+
+  const models = useMemo(() => {
+    const base = selected ? catalogModels(selected) : [];
+    const manual = splitLines(form.manual_models);
+    const extra = form.default_model ? [form.default_model] : [];
+    return Array.from(new Set([...base, ...manual, ...extra])).sort();
+  }, [selected, form.manual_models, form.default_model]);
+
+  async function create() {
+    if (saving) return;
+    setSaving(true);
+    setError(null);
+    setSavedNotice(false);
+    try {
+      const created = await apiPost<ModelProvider>("/api/model-providers", formToPayload(form));
+      await saveCredentialSource(created, form);
+      setCreating(false);
+      await load();
+      setSelectedId(created.id);
+      showSavedNotice();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function save() {
+    if (!selected || saving) return;
+    setSaving(true);
+    setError(null);
+    setSavedNotice(false);
+    try {
+      await apiPatch<ModelProvider>(`/api/model-providers/${encodeURIComponent(selected.id)}`, formToPayload(form));
+      await saveCredentialSource(selected, form);
+      await load();
+      showSavedNotice();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function refresh(provider: ModelProvider) {
+    try {
+      await apiPost<ModelProvider>(`/api/model-providers/${encodeURIComponent(provider.id)}/refresh-models`);
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  async function remove(provider: ModelProvider) {
+    try {
+      await apiDelete(`/api/model-providers/${encodeURIComponent(provider.id)}`);
+      setSelectedId("");
+      setCreating(true);
+      setForm(emptyForm);
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  return (
+    <PageContainer className="max-w-6xl">
+      <div className="mb-6 flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-semibold">Model providers</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Manage reusable model endpoints, supported protocols, model catalog, and generated API key env vars.
+          </p>
+        </div>
+        <Button variant="outline" onClick={() => { setCreating(true); setSelectedId(""); setForm(emptyForm); }}>
+          New provider
+        </Button>
+      </div>
+      {error && <p className="mb-4 text-sm text-destructive">{error}</p>}
+
+      <div className="grid gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
+        <Card className="space-y-2 p-3">
+          {providers.length === 0 && <p className="text-sm text-muted-foreground">No model providers yet.</p>}
+          {providers.map((provider) => (
+            <button
+              key={provider.id}
+              className={`w-full rounded-md px-2.5 py-2 text-left text-sm ${selectedId === provider.id && !creating ? "bg-primary/10 ring-1 ring-primary/30" : "hover:bg-muted/60"}`}
+              onClick={() => { setCreating(false); setSelectedId(provider.id); }}
+            >
+              <span className="block font-medium">{provider.name}</span>
+              <span className="block truncate font-mono text-[11px] text-muted-foreground">{provider.api_key_env}</span>
+            </button>
+          ))}
+        </Card>
+
+        <Card className="space-y-4 p-4">
+          <div className="grid gap-3 md:grid-cols-2">
+            <div>
+              <Label>Name</Label>
+              <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="MiMo" />
+            </div>
+            <div>
+              <Label>Base URL</Label>
+              <Input value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} placeholder="https://api.example.test/v1" />
+            </div>
+          </div>
+
+          <Card className="space-y-3 border-muted bg-muted/20 p-3">
+            <div>
+              <Label>API key</Label>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Stored as a local credential for <code>{selected?.api_key_env ?? "the generated provider key"}</code>. The secret is never shown again.
+              </p>
+            </div>
+            <Input
+              type="password"
+              value={form.api_key}
+              onChange={(e) => setForm({ ...form, api_key: e.target.value })}
+              placeholder={providerApiKeyPlaceholder(selectedBinding)}
+            />
+            {selectedBinding && (
+              <p className="text-[11px] text-muted-foreground">
+                {selectedBinding.source.kind === "literal"
+                  ? "Current API key: [configured]"
+                  : <>Current source: {selectedBinding.source.kind}: {selectedBinding.source.value}. Enter an API key here to replace it with a local credential.</>}
+              </p>
+            )}
+          </Card>
+
+          <div>
+            <Label>Supported protocols</Label>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {PROTOCOLS.map((protocol) => (
+                <label key={protocol} className="inline-flex items-center gap-2 rounded-md border border-border px-2 py-1 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={form.protocols.includes(protocol)}
+                    onChange={(e) => setForm({ ...form, protocols: toggle(form.protocols, protocol, e.target.checked) })}
+                  />
+                  {protocol}
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <div>
+              <Label>Manual models</Label>
+              <Textarea value={form.manual_models} onChange={(e) => setForm({ ...form, manual_models: e.target.value })} placeholder="mimo-v2.5-pro" rows={5} />
+            </div>
+            <div>
+              <Label>Default model</Label>
+              <Select value={form.default_model} onChange={(e) => setForm({ ...form, default_model: e.target.value })}>
+                <option value="">No default</option>
+                {models.map((model) => <option key={model} value={model}>{model}</option>)}
+              </Select>
+              {selected && (
+                <div className="mt-3 space-y-2 text-sm">
+                  <div>Generated API key env: <code>{selected.api_key_env}</code></div>
+                  <div className="flex flex-wrap gap-1">
+                    {(selected.catalog?.refreshed ?? []).map((model) => <Badge key={model} variant="outline">{model}</Badge>)}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <SaveActionButton
+              label={creating ? "Create provider" : "Save provider"}
+              pending={saving}
+              saved={savedNotice}
+              disabled={!canSubmit}
+              onClick={() => void (creating ? create() : save())}
+            />
+            {selected && <Button variant="outline" onClick={() => refresh(selected)}><RefreshCw className="h-4 w-4" /> Refresh models</Button>}
+            {selected && <Button variant="destructive" onClick={() => remove(selected)}><Trash2 className="h-4 w-4" /> Delete</Button>}
+          </div>
+        </Card>
+      </div>
+    </PageContainer>
+  );
+}
+
+async function saveCredentialSource(provider: ModelProvider, form: Form) {
+  const value = form.api_key.trim();
+  if (!value || value === "[configured]") return;
+  await apiPut("/api/credential-bindings", {
+    credential_ref: provider.api_key_env,
+    source: { kind: "literal", value },
+  });
+}
+
+function providerToForm(provider: ModelProvider, binding?: CredentialBinding): Form {
+  return {
+    name: provider.name,
+    base_url: provider.base_url,
+    protocols: provider.protocols ?? [],
+    manual_models: (provider.catalog?.manual ?? []).join("\n"),
+    default_model: provider.catalog?.default_model ?? "",
+    api_key: binding?.source.kind === "literal" && binding.source.value === "[configured]" ? "[configured]" : "",
+  };
+}
+
+function formToPayload(form: Form) {
+  return {
+    name: form.name,
+    base_url: form.base_url,
+    protocols: form.protocols,
+    catalog: {
+      manual: splitLines(form.manual_models),
+      default_model: form.default_model || undefined,
+    },
+  };
+}
+
+function catalogModels(provider: ModelProvider): string[] {
+  return Array.from(new Set([...(provider.catalog?.manual ?? []), ...(provider.catalog?.refreshed ?? [])])).sort();
+}
+
+function splitLines(value: string): string[] {
+  return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+}
+
+function toggle(values: string[], value: string, checked: boolean): string[] {
+  const next = new Set(values);
+  if (checked) next.add(value);
+  else next.delete(value);
+  return Array.from(next);
+}

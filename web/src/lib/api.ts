@@ -137,6 +137,9 @@ export interface RuntimeProfile {
     binary_path?: string;
     model?: string;
     endpoint?: string;
+    model_provider_id?: string;
+    model_provider_protocol?: string;
+    model_override?: string;
     custom_args?: string[];
     env?: Record<string, string>;
     api_keys?: Record<string, string>;
@@ -148,6 +151,49 @@ export interface RuntimeProfile {
   };
   created_at: string;
   updated_at: string;
+}
+
+export interface ModelProvider {
+  id: string;
+  name: string;
+  base_url: string;
+  protocols?: string[];
+  api_key_env: string;
+  catalog?: {
+    manual?: string[];
+    refreshed?: string[];
+    default_model?: string;
+  };
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ModelProviderMigrationPreview {
+  profile_id: string;
+  profile_name: string;
+  runtime_provider: string;
+  eligible: boolean;
+  reason?: string;
+  proposed: {
+    name: string;
+    base_url: string;
+    model?: string;
+    protocols?: string[];
+    suggested_protocol?: string;
+    api_key_env?: string;
+  };
+  matches: { provider: ModelProvider }[];
+  api_key_sources: {
+    kind: string;
+    credential_ref?: string;
+    env_var?: string;
+    configured?: boolean;
+  }[];
+}
+
+export interface ModelProviderMigrationResult {
+  profile: RuntimeProfile;
+  provider: ModelProvider;
 }
 
 export interface RuntimePluginCapabilities {
@@ -178,6 +224,11 @@ export interface RuntimePlugin {
     profile_field?: string;
   };
   capabilities: RuntimePluginCapabilities;
+  model_provider?: {
+    requirement: string;
+    supported_protocols?: string[];
+    protocol_preference?: string[];
+  };
   profile_schema: RuntimePluginProfileSchema;
   config_projection: {
     primitive: string;
@@ -305,10 +356,22 @@ export interface PreflightSkill {
   name: string;
 }
 
+export interface PreflightModelProvider {
+  model_provider_id?: string;
+  model_provider_name?: string;
+  base_url?: string;
+  protocol?: string;
+  model?: string;
+  api_key_env?: string;
+  api_key_source?: string;
+  projection_target?: string;
+}
+
 export interface PreflightResult {
   pass: boolean;
   checks: PreflightCheck[];
   skills?: PreflightSkill[];
+  model_provider?: PreflightModelProvider;
 }
 
 export interface FactIndexEntry {

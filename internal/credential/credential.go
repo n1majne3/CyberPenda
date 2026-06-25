@@ -12,10 +12,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	"pentest/internal/store"
+)
+
+var (
+	envVarNamePattern    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	secretLikeEnvPattern = regexp.MustCompile(`(?i)(^sk-|^tp-|bearer\s+|api[_-]?key=|token=|secret=|[=/])`)
 )
 
 // Scope identifies where a binding lives: global or project.
@@ -28,8 +34,10 @@ const (
 	ScopeProject Scope = "project"
 )
 
-// Source names how a credential is actually obtained. The daemon never stores
-// the secret value; it stores a pointer to where the runtime can find it.
+// Source names how a credential is actually obtained. Most source kinds store
+// a pointer to where the runtime can find the secret. SourceLiteral stores the
+// local secret value itself and must be redacted before returning bindings to
+// API clients.
 type Source struct {
 	Kind  string `json:"kind"`
 	Value string `json:"value,omitempty"`
@@ -41,17 +49,24 @@ type Source struct {
 //   - file:     Value is a path to a file containing the secret.
 //   - command:  Value is a command whose stdout is the secret (e.g. an agent of a
 //     password store). Used sparingly.
+//   - literal:  Value is the local secret value. API responses must redact it.
 const (
 	SourceEnv     = "env"
 	SourceFile    = "file"
 	SourceCommand = "command"
+	SourceLiteral = "literal"
 )
 
 var sourceKinds = map[string]bool{
 	SourceEnv:     true,
 	SourceFile:    true,
 	SourceCommand: true,
+	SourceLiteral: true,
 }
+
+// ConfiguredSourceSentinel is returned to clients when a literal secret exists
+// and can be sent back to preserve the current stored value.
+const ConfiguredSourceSentinel = "[configured]"
 
 // Binding maps a credential reference to its source at a given scope.
 type Binding struct {
@@ -110,6 +125,16 @@ func (s *Service) Upsert(credentialRef string, scope Scope, scopeID string, sour
 		scopeID = ""
 	}
 	if !disabled {
+		if source.Kind == SourceLiteral && source.Value == ConfiguredSourceSentinel {
+			existing, err := s.findOptional(credentialRef, scope, scopeID)
+			if err != nil {
+				return Binding{}, err
+			}
+			if existing == nil || existing.Source.Kind != SourceLiteral || strings.TrimSpace(existing.Source.Value) == "" {
+				return Binding{}, errors.New("configured literal source is not available")
+			}
+			source.Value = existing.Source.Value
+		}
 		if err := validateSource(source); err != nil {
 			return Binding{}, err
 		}
@@ -277,7 +302,43 @@ func validateSource(source Source) error {
 	if strings.TrimSpace(source.Value) == "" {
 		return errors.New("source value is required")
 	}
+	if source.Kind == SourceEnv {
+		if err := validateEnvSourceValue(source.Value); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func validateEnvSourceValue(value string) error {
+	name := strings.TrimSpace(value)
+	if !envVarNamePattern.MatchString(name) {
+		return fmt.Errorf("env source must be an environment variable name, got %q", value)
+	}
+	if secretLikeEnvPattern.MatchString(name) {
+		return errors.New("env source looks like a secret value; use literal source kind instead")
+	}
+	return nil
+}
+
+// SanitizeBinding returns a copy safe for API responses.
+func SanitizeBinding(binding Binding) Binding {
+	if binding.Source.Kind == SourceLiteral && strings.TrimSpace(binding.Source.Value) != "" {
+		binding.Source.Value = ConfiguredSourceSentinel
+	}
+	return binding
+}
+
+// SanitizeBindings returns copies safe for API responses.
+func SanitizeBindings(bindings []Binding) []Binding {
+	if bindings == nil {
+		return nil
+	}
+	out := make([]Binding, len(bindings))
+	for i, binding := range bindings {
+		out[i] = SanitizeBinding(binding)
+	}
+	return out
 }
 
 type scanner interface {

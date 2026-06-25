@@ -58,6 +58,64 @@ func TestPutGlobalCredentialBindingIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestCredentialBindingRejectsEnvSourceThatLooksLikeSecret(t *testing.T) {
+	server := newDaemon(t)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/credential-bindings", bytes.NewReader([]byte(`{
+		"credential_ref": "MIMO_2_API_KEY",
+		"source": {"kind": "env", "value": "tp-cgq4h06x3nkai3am3j7mp3plwdmkptn2ihzt5bcm2w2pnu6f"}
+	}`)))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestLiteralCredentialBindingResponsesAreRedacted(t *testing.T) {
+	server := newDaemon(t)
+
+	putResp := putBindingRaw(t, server, "/api/credential-bindings", `{
+		"credential_ref": "MIMO_API_KEY",
+		"source": {"kind": "literal", "value": "sk-local-secret"}
+	}`)
+	var created struct {
+		Source struct {
+			Kind  string `json:"kind"`
+			Value string `json:"value"`
+		} `json:"source"`
+	}
+	if err := json.NewDecoder(putResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode put response: %v", err)
+	}
+	if created.Source.Kind != "literal" || created.Source.Value != "[configured]" {
+		t.Fatalf("expected redacted put response, got %#v", created.Source)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/credential-bindings", nil)
+	listResp := httptest.NewRecorder()
+	server.ServeHTTP(listResp, listReq)
+	var listed struct {
+		Bindings []struct {
+			Source struct {
+				Value string `json:"value"`
+			} `json:"source"`
+		} `json:"bindings"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(listed.Bindings) != 1 || listed.Bindings[0].Source.Value != "[configured]" {
+		t.Fatalf("expected redacted list response, got %#v", listed.Bindings)
+	}
+
+	putBinding(t, server, "/api/credential-bindings", `{
+		"credential_ref": "MIMO_API_KEY",
+		"source": {"kind": "literal", "value": "[configured]"}
+	}`)
+}
+
 func putBinding(t *testing.T, server *daemon.Server, path, body string) {
 	t.Helper()
 	putBindingRaw(t, server, path, body)

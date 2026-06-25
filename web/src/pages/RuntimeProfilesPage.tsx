@@ -1,8 +1,19 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
-import { apiGet, apiPost, apiPatch, apiDelete, type RuntimeExtension, type RuntimeExtensionCatalogItem, type RuntimePlugin, type RuntimeProfile } from "@/lib/api";
+import { apiGet, apiPost, apiPatch, apiDelete, type ModelProvider, type RuntimeExtension, type RuntimeExtensionCatalogItem, type RuntimePlugin, type RuntimeProfile } from "@/lib/api";
+import { ModelProviderMigrationPanel } from "@/pages/ModelProviderMigrationPanel";
+import { enrichPreviewWithModelProvider } from "@/pages/runtimeProfilePreview";
+import {
+  applyModelProviderSelection,
+  buildProfileFields,
+  isModelProviderCompatibleWithRuntime,
+  profileListModelHint,
+  selectableModelProviders,
+  showLegacyModelFields,
+} from "@/pages/runtimeProfileForm";
 import { cn } from "@/lib/utils";
 import { Button, Card, Input, Label, Badge, Textarea, Select } from "@/components/ui";
+import { SaveActionButton } from "@/components/SaveActionButton";
 import { PageContainer } from "@/components/shared";
 
 const FALLBACK_PROVIDER_IDS = ["codex", "claude_code", "pi", "fake"] as const;
@@ -25,7 +36,6 @@ const DEFAULT_API_KEY_ENV: Record<string, string> = {
   pi: "ANTHROPIC_API_KEY",
 };
 
-const API_KEY_CONFIGURED = "[configured]";
 const DEFAULT_DAEMON_MCP_PORT = "8787";
 
 let runtimeExtensionCatalogRequest: Promise<{ items: RuntimeExtensionCatalogItem[] }> | null = null;
@@ -53,6 +63,9 @@ type ProfileForm = {
   binary_path: string;
   model: string;
   endpoint: string;
+  model_provider_id: string;
+  model_provider_protocol: string;
+  model_override: string;
   custom_args: string;
   env: string;
   api_key_env: string;
@@ -70,6 +83,9 @@ const emptyForm: ProfileForm = {
   binary_path: "",
   model: "",
   endpoint: "",
+  model_provider_id: "",
+  model_provider_protocol: "",
+  model_override: "",
   custom_args: "",
   env: "",
   api_key_env: "",
@@ -85,9 +101,13 @@ export function RuntimeProfilesPage() {
   const [profiles, setProfiles] = useState<RuntimeProfile[]>([]);
   const [plugins, setPlugins] = useState<RuntimePlugin[]>([]);
   const [extensions, setExtensions] = useState<RuntimeExtension[]>([]);
+  const [modelProviders, setModelProviders] = useState<ModelProvider[]>([]);
   const [extensionCatalog, setExtensionCatalog] = useState<RuntimeExtensionCatalogItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [savedNotice, setSavedNotice] = useState(false);
+  const savedNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState<ProfileForm>(emptyForm);
   const [draft, setDraft] = useState<ProfileForm | null>(null);
@@ -121,6 +141,9 @@ export function RuntimeProfilesPage() {
         apiGet<{ plugins: RuntimePlugin[] }>("/api/runtime-plugins"),
         apiGet<{ extensions: RuntimeExtension[] }>("/api/runtime-extensions"),
       ]);
+      void apiGet<{ providers: ModelProvider[] }>("/api/model-providers")
+        .then((providerData) => setModelProviders(providerData.providers ?? []))
+        .catch(() => setModelProviders([]));
       const loaded = profileData.profiles ?? [];
       setPlugins(pluginData.plugins ?? []);
       setExtensions(extensionData.extensions ?? []);
@@ -157,19 +180,38 @@ export function RuntimeProfilesPage() {
   }, [selected?.id, selected?.updated_at, effectivePlugins]);
   /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
 
+  useEffect(() => {
+    return () => {
+      if (savedNoticeTimer.current) clearTimeout(savedNoticeTimer.current);
+    };
+  }, []);
+
+  function showSavedNotice() {
+    setSavedNotice(true);
+    if (savedNoticeTimer.current) clearTimeout(savedNoticeTimer.current);
+    savedNoticeTimer.current = setTimeout(() => setSavedNotice(false), 2000);
+  }
+
   async function create() {
+    if (saving) return;
+    setSaving(true);
+    setError(null);
+    setSavedNotice(false);
     try {
       const created = await apiPost<RuntimeProfile>("/api/runtime-profiles", {
         name: form.name,
         provider: form.provider,
-        fields: buildFields(form, effectivePlugins),
+        fields: buildProfileFields(form, effectivePlugins),
       });
       setForm(emptyForm);
       setCreating(false);
       await load();
       setSelectedId(created.id);
+      showSavedNotice();
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -184,16 +226,22 @@ export function RuntimeProfilesPage() {
   }
 
   async function saveSelected() {
-    if (!selected || !draft) return;
+    if (!selected || !draft || saving) return;
+    setSaving(true);
+    setError(null);
+    setSavedNotice(false);
     try {
       await apiPatch(`/api/runtime-profiles/${selected.id}`, {
         name: draft.name,
         provider: draft.provider,
-        fields: buildFields(draft, effectivePlugins),
+        fields: buildProfileFields(draft, effectivePlugins),
       });
       await load();
+      showSavedNotice();
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -201,9 +249,10 @@ export function RuntimeProfilesPage() {
     ? JSON.stringify(
         buildGeneratedConfigPreview(
           draft?.provider ?? selected.provider,
-          buildFields(draft ?? profileToForm(selected, effectivePlugins), effectivePlugins),
+          buildProfileFields(draft ?? profileToForm(selected, effectivePlugins), effectivePlugins),
           draft ?? profileToForm(selected, effectivePlugins),
-          pluginFor(effectivePlugins, draft?.provider ?? selected.provider)
+          pluginFor(effectivePlugins, draft?.provider ?? selected.provider),
+          modelProviders,
         ),
         null,
         2
@@ -212,12 +261,18 @@ export function RuntimeProfilesPage() {
 
   return (
     <PageContainer className="max-w-6xl">
-      <div className="mb-6">
-        <h2 className="text-xl font-semibold">Runtime profiles</h2>
-        <p className="text-sm text-muted-foreground mt-1">
-          Manage global runtime configurations here — provider, model, endpoint, env keys, MCP, and runner.
-          Profiles are stored in pentest and projected into each task workspace at launch.
-        </p>
+      <div className="mb-6 space-y-3">
+        <div>
+          <h2 className="text-xl font-semibold">Runtime profiles</h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            Advanced presets for MCP servers, skills, binary paths, runner defaults, and extension hooks.
+            Most launches only need Runtime + Model provider on the task launch page.
+          </p>
+        </div>
+        <Card className="border-border/70 bg-muted/20 p-3 text-sm text-muted-foreground">
+          The runtime plugin system is still taking shape — extension catalog entries and install flows are not fully wired yet.
+          Profiles created here are reused automatically when a launch selection matches provider, model provider, and model override.
+        </Card>
       </div>
 
       {error && <p className="text-sm text-destructive mb-4">{error}</p>}
@@ -265,8 +320,10 @@ export function RuntimeProfilesPage() {
                         )}
                       >
                         <span className="font-medium block truncate">{p.name}</span>
-                        {p.fields.model && (
-                          <span className="text-[11px] truncate block opacity-70">{p.fields.model}</span>
+                        {profileListModelHint(p.fields, modelProviders) && (
+                          <span className="text-[11px] truncate block opacity-70">
+                            {profileListModelHint(p.fields, modelProviders)}
+                          </span>
                         )}
                       </button>
                     ))}
@@ -286,11 +343,13 @@ export function RuntimeProfilesPage() {
               title="New profile"
               form={form}
               onChange={setForm}
-              onSave={create}
+              onSave={() => void create()}
               onCancel={() => setCreating(false)}
               saveLabel="Create"
               saveDisabled={!form.name.trim()}
+              savePending={saving}
               plugins={effectivePlugins}
+              modelProviders={modelProviders}
               extensions={extensions}
               extensionCatalog={extensionCatalog}
             />
@@ -304,16 +363,24 @@ export function RuntimeProfilesPage() {
                   </div>
                   <p className="text-xs text-muted-foreground font-mono truncate">{selected.id}</p>
                 </div>
-                <div className="flex gap-2">
-                  <Button size="sm" onClick={saveSelected}>
-                    Save
-                  </Button>
+                <div className="flex items-center gap-2">
+                  <SaveActionButton
+                    pending={saving}
+                    saved={savedNotice}
+                    onClick={() => void saveSelected()}
+                  />
                   <Button size="icon" variant="ghost" onClick={() => remove(selected.id)}>
                     <Trash2 className="h-4 w-4 text-destructive" />
                   </Button>
                 </div>
               </div>
-              <ProfileEditor form={draft} onChange={setDraft} hideActions plugins={effectivePlugins} extensions={extensions} extensionCatalog={extensionCatalog} />
+              <ModelProviderMigrationPanel
+                profileId={selected.id}
+                profileUpdatedAt={selected.updated_at}
+                onMigrated={load}
+                onError={setError}
+              />
+              <ProfileEditor form={draft} onChange={setDraft} hideActions plugins={effectivePlugins} modelProviders={modelProviders} extensions={extensions} extensionCatalog={extensionCatalog} />
               <div className="min-w-0">
                 <Label>Generated config preview</Label>
                 <pre className="mt-1 w-full max-w-full rounded-md border border-border bg-muted/30 p-3 text-xs overflow-x-auto max-h-96">
@@ -398,6 +465,15 @@ function pluginFor(plugins: RuntimePlugin[], provider: string): RuntimePlugin | 
   return plugins.find((plugin) => plugin.id === provider);
 }
 
+function intersection(left: string[], right: string[]) {
+  const allowed = new Set(right);
+  return left.filter((item) => allowed.has(item));
+}
+
+function modelProviderModels(provider: ModelProvider) {
+  return Array.from(new Set([...(provider.catalog?.manual ?? []), ...(provider.catalog?.refreshed ?? [])])).sort();
+}
+
 // defaultProvider returns the first selectable (non-hidden) plugin id, so that
 // creating a new profile never defaults to a hidden provider like the fake
 // harness. Falls back to the first plugin or "codex" when none qualify.
@@ -427,8 +503,10 @@ function ProfileEditor({
   onCancel,
   saveLabel = "Save",
   saveDisabled,
+  savePending,
   hideActions,
   plugins,
+  modelProviders,
   extensions,
   extensionCatalog,
 }: {
@@ -439,8 +517,10 @@ function ProfileEditor({
   onCancel?: () => void;
   saveLabel?: string;
   saveDisabled?: boolean;
+  savePending?: boolean;
   hideActions?: boolean;
   plugins: RuntimePlugin[];
+  modelProviders: ModelProvider[];
   extensions: RuntimeExtension[];
   extensionCatalog: RuntimeExtensionCatalogItem[];
 }) {
@@ -448,6 +528,10 @@ function ProfileEditor({
   const [catalogItemToAdd, setCatalogItemToAdd] = useState("");
   const [manualExtensionID, setManualExtensionID] = useState("");
   const plugin = pluginFor(plugins, form.provider);
+  const selectableProviders = selectableModelProviders(modelProviders, plugin, form.model_provider_id);
+  const selectedModelProvider = modelProviders.find((provider) => provider.id === form.model_provider_id);
+  const compatibleProtocols = intersection(plugin?.model_provider?.supported_protocols ?? [], selectedModelProvider?.protocols ?? []);
+  const providerModels = selectedModelProvider ? modelProviderModels(selectedModelProvider) : [];
   const providerOptions = (plugin
     ? plugins
     : [
@@ -466,6 +550,7 @@ function ProfileEditor({
       ]
   ).filter((p) => p.id === form.provider || !HIDDEN_PROVIDER_IDS.has(p.id));
   const has = (field: string) => pluginHasField(plugin, field);
+  const legacyModelFields = showLegacyModelFields(form);
   const apiKeyPlaceholder = defaultAPIKeyEnv(form.provider, plugins) ?? "API_KEY";
   const compatibleExtensions = extensions.filter((extension) =>
     extension.compatible_runtime_plugins.includes(form.provider)
@@ -596,6 +681,60 @@ function ProfileEditor({
             </div>
           )}
         </div>
+        <div>
+          <Label>Model provider</Label>
+          <Select
+            value={form.model_provider_id}
+            onChange={(e) => onChange(applyModelProviderSelection(form, e.target.value))}
+          >
+            <option value="">Legacy / none</option>
+            {selectableProviders.map((provider) => {
+              const compatible = isModelProviderCompatibleWithRuntime(provider, plugin);
+              return (
+                <option key={provider.id} value={provider.id}>
+                  {provider.name} ({provider.api_key_env}){compatible ? "" : " (incompatible)"}
+                </option>
+              );
+            })}
+          </Select>
+          {selectedModelProvider && (
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              {selectedModelProvider.base_url} · {selectedModelProvider.protocols?.join(", ") || "no protocols"}
+            </p>
+          )}
+        </div>
+        <div>
+          <Label>Model protocol</Label>
+          <Select
+            value={form.model_provider_protocol}
+            onChange={(e) => onChange({ ...form, model_provider_protocol: e.target.value })}
+            disabled={!form.model_provider_id}
+          >
+            <option value="">Auto</option>
+            {compatibleProtocols.map((protocol) => (
+              <option key={protocol} value={protocol}>{protocol}</option>
+            ))}
+            {form.model_provider_protocol && !compatibleProtocols.includes(form.model_provider_protocol) && (
+              <option value={form.model_provider_protocol}>{form.model_provider_protocol} (stale)</option>
+            )}
+          </Select>
+        </div>
+        <div>
+          <Label>Model override</Label>
+          <Select
+            value={form.model_override}
+            onChange={(e) => onChange({ ...form, model_override: e.target.value })}
+            disabled={!form.model_provider_id}
+          >
+            <option value="">Use provider default</option>
+            {providerModels.map((model) => (
+              <option key={model} value={model}>{model}</option>
+            ))}
+            {form.model_override && !providerModels.includes(form.model_override) && (
+              <option value={form.model_override}>{form.model_override} (stale)</option>
+            )}
+          </Select>
+        </div>
         {has("binary_path") && <div>
           <Label>Binary path</Label>
           <Input
@@ -604,11 +743,11 @@ function ProfileEditor({
             placeholder={plugin?.binary.default ? "/usr/local/bin/" + plugin.binary.default : "/usr/local/bin/codex"}
           />
         </div>}
-        {has("model") && <div>
+        {has("model") && legacyModelFields && <div>
           <Label>Model</Label>
           <Input value={form.model} onChange={(e) => onChange({ ...form, model: e.target.value })} placeholder="gpt-5" />
         </div>}
-        {has("endpoint") && <div>
+        {has("endpoint") && legacyModelFields && <div>
           <Label>Endpoint</Label>
           <Input
             value={form.endpoint}
@@ -644,7 +783,7 @@ function ProfileEditor({
             placeholder={'ANTHROPIC_BASE_URL=https://api.example.test\nANTHROPIC_MODEL=claude-sonnet'}
           />
         </div>}
-        {has("api_keys") && <div>
+        {has("api_keys") && legacyModelFields && <div>
           <Label>API key env</Label>
           <Input
             value={form.api_key_env}
@@ -652,7 +791,7 @@ function ProfileEditor({
             placeholder={apiKeyPlaceholder}
           />
         </div>}
-        {has("api_keys") && <div>
+        {has("api_keys") && legacyModelFields && <div>
           <Label>API key</Label>
           <Input
             type="password"
@@ -840,9 +979,12 @@ function ProfileEditor({
       )}
       {!hideActions && (
         <div className="flex gap-2">
-          <Button size="sm" onClick={onSave} disabled={saveDisabled}>
-            {saveLabel}
-          </Button>
+          <SaveActionButton
+            label={saveLabel}
+            pending={savePending}
+            disabled={saveDisabled}
+            onClick={onSave}
+          />
           {onCancel && (
             <Button size="sm" variant="ghost" onClick={onCancel}>
               Cancel
@@ -861,12 +1003,15 @@ function profileToForm(profile: RuntimeProfile, plugins: RuntimePlugin[]): Profi
     name: profile.name,
     provider: profile.provider,
     binary_path: profile.fields.binary_path ?? "",
-    model: profile.fields.model ?? "",
-    endpoint: profile.fields.endpoint ?? "",
+    model: profile.fields.model_provider_id ? "" : (profile.fields.model ?? ""),
+    endpoint: profile.fields.model_provider_id ? "" : (profile.fields.endpoint ?? ""),
+    model_provider_id: profile.fields.model_provider_id ?? "",
+    model_provider_protocol: profile.fields.model_provider_protocol ?? "",
+    model_override: profile.fields.model_override ?? "",
     custom_args: (profile.fields.custom_args ?? []).join("\n"),
     env: formatEnv(profile.fields.env),
-    api_key_env: apiKeyEnv || defaultAPIKeyEnv(profile.provider, plugins) || "",
-    api_key: apiKeyValue,
+    api_key_env: profile.fields.model_provider_id ? "" : (apiKeyEnv || defaultAPIKeyEnv(profile.provider, plugins) || ""),
+    api_key: profile.fields.model_provider_id ? "" : apiKeyValue,
     runtime_extensions: (profile.fields.runtime_extensions ?? []).map((ref) => ({
       id: ref.id,
       enabled: ref.enabled ?? true,
@@ -877,39 +1022,6 @@ function profileToForm(profile: RuntimeProfile, plugins: RuntimePlugin[]): Profi
     sandbox_image: profile.fields.sandbox_image ?? "",
     credential_refs: (profile.fields.credential_refs ?? []).join("\n"),
   };
-}
-
-function buildFields(form: ProfileForm, plugins: RuntimePlugin[]): RuntimeProfileFields {
-  const fields: RuntimeProfileFields = {};
-  const binaryPath = emptyToUndefined(form.binary_path);
-  const model = emptyToUndefined(form.model);
-  const endpoint = emptyToUndefined(form.endpoint);
-  const customArgs = splitLines(form.custom_args);
-  const env = parseEnv(form.env);
-  const runtimeExtensions = buildRuntimeExtensionRefs(form.runtime_extensions);
-  const mcpServers = parseMCPServers(form.mcp_servers);
-  const defaultRunner = emptyToUndefined(form.default_runner);
-  const sandboxImage = emptyToUndefined(form.sandbox_image);
-  const apiKeyEnv = emptyToUndefined(form.api_key_env) ?? defaultAPIKeyEnv(form.provider, plugins);
-  const apiKey = form.api_key.trim();
-
-  if (binaryPath) fields.binary_path = binaryPath;
-  if (model) fields.model = model;
-  if (endpoint) fields.endpoint = endpoint;
-  if (customArgs.length > 0) fields.custom_args = customArgs;
-  if (Object.keys(env).length > 0) fields.env = env;
-  if (apiKeyEnv && apiKey) {
-    fields.api_keys = { [apiKeyEnv]: apiKey };
-  } else if (apiKeyEnv && apiKey === API_KEY_CONFIGURED) {
-    fields.api_keys = { [apiKeyEnv]: API_KEY_CONFIGURED };
-  }
-  if (mcpServers && mcpServers.length > 0) fields.mcp_servers = mcpServers;
-  if (runtimeExtensions && runtimeExtensions.length > 0) fields.runtime_extensions = runtimeExtensions;
-  if (defaultRunner) fields.default_runner = defaultRunner;
-  if (sandboxImage) fields.sandbox_image = sandboxImage;
-  const credentialRefs = splitLines(form.credential_refs);
-  if (credentialRefs.length > 0) fields.credential_refs = credentialRefs;
-  return fields;
 }
 
 function compatibleRuntimeExtensionRefs(
@@ -924,72 +1036,6 @@ function compatibleRuntimeExtensionRefs(
   });
 }
 
-function buildRuntimeExtensionRefs(refs: RuntimeExtensionFormRef[]): RuntimeProfileFields["runtime_extensions"] {
-  return refs
-    .map((ref) => {
-      const id = ref.id.trim();
-      if (!id) return null;
-      const config = parseEnv(ref.config);
-      return {
-        id,
-        enabled: ref.enabled,
-        ...(Object.keys(config).length > 0 ? { config } : {}),
-      };
-    })
-    .filter((ref): ref is NonNullable<typeof ref> => ref != null);
-}
-
-function splitLines(value: string): string[] {
-  return value
-    .split("\n")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-function parseEnv(value: string): Record<string, string> {
-  const trimmed = value.trim();
-  if (!trimmed) return {};
-
-  if (trimmed.startsWith("{")) {
-    try {
-      const parsed: unknown = JSON.parse(trimmed);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        return Object.fromEntries(
-          Object.entries(parsed as Record<string, unknown>)
-            .filter(([key]) => key.trim())
-            .map(([key, raw]) => [key.trim(), stringifyEnvValue(raw)])
-        );
-      }
-    } catch {
-      // Fall through to line-based parsing.
-    }
-  }
-
-  const out: Record<string, string> = {};
-  for (const line of splitLines(value)) {
-    const eq = line.indexOf("=");
-    if (eq !== -1) {
-      const key = line.slice(0, eq).trim();
-      const envValue = line.slice(eq + 1).trim();
-      if (key) out[key] = envValue;
-      continue;
-    }
-
-    const jsonLine = line.match(/^"?([^":]+)"?\s*:\s*(.+?)"?,?$/);
-    if (jsonLine) {
-      const key = jsonLine[1].trim();
-      const envValue = jsonLine[2].trim().replace(/^"|"$/g, "").replace(/,$/, "");
-      if (key) out[key] = envValue;
-    }
-  }
-  return out;
-}
-
-function stringifyEnvValue(raw: unknown): string {
-  if (raw == null) return "";
-  return String(raw);
-}
-
 function formatEnv(env?: Record<string, string>): string {
   if (!env) return "";
   return Object.entries(env)
@@ -1001,7 +1047,8 @@ function buildGeneratedConfigPreview(
   provider: string,
   fields: RuntimeProfileFields,
   form?: ProfileForm,
-  plugin?: RuntimePlugin
+  plugin?: RuntimePlugin,
+  modelProviders: ModelProvider[] = [],
 ): Record<string, unknown> {
   const mcpServers = buildPreviewMCPServers(fields);
   const mcpPreview = formatMCPServerPreview(mcpServers);
@@ -1032,6 +1079,19 @@ function buildGeneratedConfigPreview(
   }
 
   if (provider === "codex") {
+    if (fields.model_provider_id) {
+      const base: Record<string, unknown> = {
+        provider,
+        config_path: configPath ?? "runtime-home/codex/config.toml",
+        ...runtimeExtensionPreview,
+        ...(mcpPreview ? { mcp_servers: mcpPreview } : {}),
+        ...(fields.default_runner ? { default_runner: fields.default_runner } : {}),
+        task_context_path: "workdir/.pentest/context.json",
+        launch_preview: launchPreview,
+      };
+      return enrichPreviewWithModelProvider(base, fields, modelProviders, plugin);
+    }
+
     const providerId = fields.env?.CODEX_MODEL_PROVIDER?.trim() || "custom";
     const wireApi = fields.env?.CODEX_WIRE_API?.trim() || "responses";
     const providerName = fields.env?.CODEX_PROVIDER_NAME?.trim() || "Custom";
@@ -1116,6 +1176,9 @@ function buildGeneratedConfigPreview(
   if (fields.binary_path) cfg.binary = fields.binary_path;
   if (fields.model) cfg.model = fields.model;
   if (fields.endpoint) cfg.endpoint = fields.endpoint;
+  if (fields.model_provider_id) cfg.model_provider_id = fields.model_provider_id;
+  if (fields.model_provider_protocol) cfg.model_provider_protocol = fields.model_provider_protocol;
+  if (fields.model_override) cfg.model_override = fields.model_override;
   if (fields.custom_args?.length) cfg.custom_args = fields.custom_args;
   if (fields.env && Object.keys(fields.env).length > 0) cfg.env = fields.env;
   if (fields.api_keys && Object.keys(fields.api_keys).length > 0) {
@@ -1430,19 +1493,9 @@ function appendCodexMCPTOMLPreview(servers?: RuntimeProfileFields["mcp_servers"]
   return lines;
 }
 
-function parseMCPServers(value: string): RuntimeProfileFields["mcp_servers"] {
-  const trimmed = value.trim();
-  if (!trimmed) return [];
-  const parsed = JSON.parse(trimmed);
-  return Array.isArray(parsed) ? parsed : [];
-}
-
 function formatMCPServers(servers?: RuntimeProfileFields["mcp_servers"]): string {
   if (!servers || servers.length === 0) return "";
   return JSON.stringify(servers, null, 2);
 }
 
-function emptyToUndefined(value: string) {
-  const trimmed = value.trim();
-  return trimmed ? trimmed : undefined;
-}
+

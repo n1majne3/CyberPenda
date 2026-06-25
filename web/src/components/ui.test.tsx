@@ -70,6 +70,11 @@ describe("Button", () => {
     expect(getByRole("button")).toHaveClass("rounded-lg");
   });
 
+  it("scales slightly on press for tactile feedback", () => {
+    const { getByRole } = render(<Button>x</Button>);
+    expect(getByRole("button")).toHaveClass("active:scale-[0.98]");
+  });
+
   it("destructive variant is soft (translucent bg, not solid)", () => {
     const { getByRole } = render(<Button variant="destructive">x</Button>);
     const btn = getByRole("button");
@@ -126,6 +131,14 @@ describe("Input", () => {
   it("has a focus ring (ring-3)", () => {
     const { getByRole } = render(<Input />);
     expect(getByRole("textbox").className).toMatch(/focus-visible:ring-3/);
+  });
+
+  it("uses an inset background surface instead of transparent dark overlays", () => {
+    const { getByRole } = render(<Input />);
+    const input = getByRole("textbox");
+    expect(input).toHaveClass("bg-background");
+    expect(input.className).toMatch(/dark:bg-background\/75/);
+    expect(input.className).not.toMatch(/dark:bg-input\/30/);
   });
 });
 

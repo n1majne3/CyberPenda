@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"pentest/internal/credential"
+	"pentest/internal/modelprovider"
+	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/skill"
 )
@@ -36,11 +38,23 @@ type SkillPreview struct {
 	Name string `json:"name"`
 }
 
+type ModelProviderPreview struct {
+	ModelProviderID   string `json:"model_provider_id,omitempty"`
+	ModelProviderName string `json:"model_provider_name,omitempty"`
+	BaseURL           string `json:"base_url,omitempty"`
+	Protocol          string `json:"protocol,omitempty"`
+	Model             string `json:"model,omitempty"`
+	APIKeyEnv         string `json:"api_key_env,omitempty"`
+	APIKeySource      string `json:"api_key_source,omitempty"`
+	ProjectionTarget  string `json:"projection_target,omitempty"`
+}
+
 // Result is the full preflight outcome for a task launch.
 type Result struct {
-	Pass   bool           `json:"pass"`
-	Checks []Check        `json:"checks"`
-	Skills []SkillPreview `json:"skills,omitempty"`
+	Pass          bool                  `json:"pass"`
+	Checks        []Check               `json:"checks"`
+	Skills        []SkillPreview        `json:"skills,omitempty"`
+	ModelProvider *ModelProviderPreview `json:"model_provider,omitempty"`
 }
 
 // Request describes what to validate for a task launch.
@@ -60,6 +74,8 @@ type Request struct {
 	HostActivated bool
 	// YOLO skips per-action approvals (smoke / trusted operator path).
 	YOLO bool
+	// LaunchModelOverride applies a task-only model choice without editing the profile.
+	LaunchModelOverride string
 }
 
 // ProfileGetter loads runtime profiles for preflight checks.
@@ -73,9 +89,11 @@ type SkillGetter interface {
 
 // Service runs preflight against the runtime profile and credential services.
 type Service struct {
-	profiles ProfileGetter
-	creds    *credential.Service
-	skills   SkillGetter
+	profiles       ProfileGetter
+	creds          *credential.Service
+	skills         SkillGetter
+	modelProviders modelprovider.ProviderGetter
+	runtimePlugins *runtimeplugin.Registry
 }
 
 // NewService returns a preflight Service.
@@ -85,6 +103,12 @@ func NewService(profiles ProfileGetter, creds *credential.Service, skillGetters 
 		svc.skills = skillGetters[0]
 	}
 	return svc
+}
+
+func (s *Service) WithModelProviders(providers modelprovider.ProviderGetter, plugins *runtimeplugin.Registry) *Service {
+	s.modelProviders = providers
+	s.runtimePlugins = plugins
+	return s
 }
 
 // Run executes all preflight checks for a launch request.
@@ -127,6 +151,33 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 			} else {
 				result.add(Check{Name: "skills", Status: CheckPass, Detail: fmt.Sprintf("%d enabled skill(s)", len(enabledSkills))})
 			}
+		}
+	}
+
+	if profileLoaded && s.modelProviders != nil && shouldCheckModelProvider(profile, s.runtimePlugins) {
+		snapshot, err := modelprovider.Resolve(modelprovider.ResolveRequest{
+			Profile:             profile,
+			Providers:           s.modelProviders,
+			Plugins:             s.runtimePlugins,
+			Credentials:         s.creds,
+			ProjectID:           request.ProjectID,
+			CheckEnv:            true,
+			LaunchModelOverride: request.LaunchModelOverride,
+		})
+		if err != nil {
+			result.add(Check{Name: "model_provider", Status: CheckFail, Detail: err.Error()})
+		} else if snapshot.ModelProviderID != "" {
+			result.ModelProvider = &ModelProviderPreview{
+				ModelProviderID:   snapshot.ModelProviderID,
+				ModelProviderName: snapshot.ModelProviderName,
+				BaseURL:           snapshot.BaseURL,
+				Protocol:          string(snapshot.Protocol),
+				Model:             snapshot.Model,
+				APIKeyEnv:         snapshot.APIKeyEnv,
+				APIKeySource:      snapshot.APIKeySource,
+				ProjectionTarget:  snapshot.ProjectionTarget,
+			}
+			result.add(Check{Name: "model_provider", Status: CheckPass, Detail: fmt.Sprintf("%s via %s", snapshot.Model, snapshot.APIKeyEnv)})
 		}
 	}
 
@@ -208,6 +259,36 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 	}
 
 	return result
+}
+
+func shouldCheckModelProvider(profile runtimeprofile.Profile, registry *runtimeplugin.Registry) bool {
+	if strings.TrimSpace(profile.Fields.ModelProviderID) != "" ||
+		strings.TrimSpace(profile.Fields.ModelProviderProtocol) != "" ||
+		strings.TrimSpace(profile.Fields.ModelOverride) != "" {
+		return true
+	}
+	if hasLegacyModelConfig(profile) {
+		return false
+	}
+	plugin, ok := runtimepluginForProfile(profile, registry)
+	if !ok {
+		return false
+	}
+	return plugin.ModelProvider.Requirement == "required"
+}
+
+func hasLegacyModelConfig(profile runtimeprofile.Profile) bool {
+	return strings.TrimSpace(profile.Fields.Model) != "" ||
+		strings.TrimSpace(profile.Fields.Endpoint) != "" ||
+		len(profile.Fields.APIKeys) > 0 ||
+		len(profile.Fields.CredentialRefs) > 0
+}
+
+func runtimepluginForProfile(profile runtimeprofile.Profile, registry *runtimeplugin.Registry) (runtimeplugin.Plugin, bool) {
+	if registry != nil {
+		return registry.Get(string(profile.Provider))
+	}
+	return runtimeplugin.MustBuiltinRegistry().Get(string(profile.Provider))
 }
 
 func (r *Result) add(check Check) {
