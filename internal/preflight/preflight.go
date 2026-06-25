@@ -13,6 +13,7 @@ import (
 
 	"pentest/internal/credential"
 	"pentest/internal/modelprovider"
+	"pentest/internal/runtimeextension"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/skill"
@@ -38,6 +39,14 @@ type SkillPreview struct {
 	Name string `json:"name"`
 }
 
+type RuntimeExtensionPreview struct {
+	ID         string `json:"id"`
+	Name       string `json:"name,omitempty"`
+	Source     string `json:"source"`
+	InstallRef string `json:"install_ref,omitempty"`
+	Registry   string `json:"registry,omitempty"`
+}
+
 type ModelProviderPreview struct {
 	ModelProviderID   string `json:"model_provider_id,omitempty"`
 	ModelProviderName string `json:"model_provider_name,omitempty"`
@@ -51,10 +60,11 @@ type ModelProviderPreview struct {
 
 // Result is the full preflight outcome for a task launch.
 type Result struct {
-	Pass          bool                  `json:"pass"`
-	Checks        []Check               `json:"checks"`
-	Skills        []SkillPreview        `json:"skills,omitempty"`
-	ModelProvider *ModelProviderPreview `json:"model_provider,omitempty"`
+	Pass              bool                        `json:"pass"`
+	Checks            []Check                     `json:"checks"`
+	Skills            []SkillPreview              `json:"skills,omitempty"`
+	RuntimeExtensions []RuntimeExtensionPreview   `json:"runtime_extensions,omitempty"`
+	ModelProvider     *ModelProviderPreview       `json:"model_provider,omitempty"`
 }
 
 // Request describes what to validate for a task launch.
@@ -89,11 +99,12 @@ type SkillGetter interface {
 
 // Service runs preflight against the runtime profile and credential services.
 type Service struct {
-	profiles       ProfileGetter
-	creds          *credential.Service
-	skills         SkillGetter
-	modelProviders modelprovider.ProviderGetter
-	runtimePlugins *runtimeplugin.Registry
+	profiles          ProfileGetter
+	creds             *credential.Service
+	skills            SkillGetter
+	modelProviders    modelprovider.ProviderGetter
+	runtimePlugins    *runtimeplugin.Registry
+	runtimeExtensions *runtimeextension.Registry
 }
 
 // NewService returns a preflight Service.
@@ -108,6 +119,11 @@ func NewService(profiles ProfileGetter, creds *credential.Service, skillGetters 
 func (s *Service) WithModelProviders(providers modelprovider.ProviderGetter, plugins *runtimeplugin.Registry) *Service {
 	s.modelProviders = providers
 	s.runtimePlugins = plugins
+	return s
+}
+
+func (s *Service) WithRuntimeExtensions(registry *runtimeextension.Registry) *Service {
+	s.runtimeExtensions = registry
 	return s
 }
 
@@ -152,6 +168,10 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 				result.add(Check{Name: "skills", Status: CheckPass, Detail: fmt.Sprintf("%d enabled skill(s)", len(enabledSkills))})
 			}
 		}
+	}
+
+	if profileLoaded {
+		s.checkRuntimeExtensions(&result, profile)
 	}
 
 	if profileLoaded && s.modelProviders != nil && shouldCheckModelProvider(profile, s.runtimePlugins) {
@@ -259,6 +279,89 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 	}
 
 	return result
+}
+
+func (s *Service) checkRuntimeExtensions(result *Result, profile runtimeprofile.Profile) {
+	enabled := enabledRuntimeExtensionRefs(profile.Fields.RuntimeExtensions)
+	if len(enabled) == 0 {
+		result.add(Check{Name: "runtime_extensions", Status: CheckPass, Detail: "no enabled runtime extensions"})
+		return
+	}
+
+	var failures []string
+	for _, ref := range enabled {
+		preview, err := resolveRuntimeExtensionPreview(ref, profile.Provider, s.runtimeExtensions)
+		if err != nil {
+			failures = append(failures, err.Error())
+			continue
+		}
+		result.RuntimeExtensions = append(result.RuntimeExtensions, preview)
+	}
+	if len(failures) > 0 {
+		result.add(Check{
+			Name:   "runtime_extensions",
+			Status: CheckFail,
+			Detail: strings.Join(failures, "; "),
+		})
+		return
+	}
+	result.add(Check{
+		Name:   "runtime_extensions",
+		Status: CheckPass,
+		Detail: fmt.Sprintf("%d enabled runtime extension(s)", len(result.RuntimeExtensions)),
+	})
+}
+
+func enabledRuntimeExtensionRefs(refs []runtimeprofile.RuntimeExtensionRef) []runtimeprofile.RuntimeExtensionRef {
+	enabled := make([]runtimeprofile.RuntimeExtensionRef, 0, len(refs))
+	for _, ref := range refs {
+		if ref.Enabled == nil || *ref.Enabled {
+			enabled = append(enabled, ref)
+		}
+	}
+	return enabled
+}
+
+func resolveRuntimeExtensionPreview(
+	ref runtimeprofile.RuntimeExtensionRef,
+	provider runtimeprofile.Provider,
+	registry *runtimeextension.Registry,
+) (RuntimeExtensionPreview, error) {
+	if registry != nil {
+		if extension, ok := registry.Get(ref.ID); ok {
+			if !runtimeextension.CompatibleWith(extension, string(provider)) {
+				return RuntimeExtensionPreview{}, fmt.Errorf(
+					"runtime extension %q is not compatible with provider %q",
+					ref.ID,
+					provider,
+				)
+			}
+			return RuntimeExtensionPreview{
+				ID:     extension.ID,
+				Name:   extension.Name,
+				Source: "registry",
+			}, nil
+		}
+	}
+	if preview, ok := catalogRuntimeExtensionPreview(ref); ok {
+		return preview, nil
+	}
+	return RuntimeExtensionPreview{}, fmt.Errorf("runtime extension %q not found", ref.ID)
+}
+
+func catalogRuntimeExtensionPreview(ref runtimeprofile.RuntimeExtensionRef) (RuntimeExtensionPreview, bool) {
+	registry := trim(ref.Config["registry"])
+	installRef := trim(ref.Config["install_ref"])
+	if registry == "" && installRef == "" {
+		return RuntimeExtensionPreview{}, false
+	}
+	preview := RuntimeExtensionPreview{
+		ID:         ref.ID,
+		Source:     "catalog",
+		InstallRef: installRef,
+		Registry:   registry,
+	}
+	return preview, true
 }
 
 func shouldCheckModelProvider(profile runtimeprofile.Profile, registry *runtimeplugin.Registry) bool {

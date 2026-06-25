@@ -64,6 +64,67 @@ func TestPreflightPassesWhenCredentialsResolveGlobally(t *testing.T) {
 	}
 }
 
+func TestPreflightPreviewsPiCatalogRuntimeExtension(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+
+	profileID := createRuntimeProfile(t, server, `{
+		"name":"Pi Catalog",
+		"provider":"pi",
+		"fields":{
+			"model":"claude-sonnet-4",
+			"endpoint":"https://api.example.test/anthropic",
+			"api_keys":{"ANTHROPIC_API_KEY":"sk-test"},
+			"runtime_extensions":[{
+				"id":"npm:pi-mcp-adapter",
+				"enabled":true,
+				"config":{
+					"install_ref":"npm:pi-mcp-adapter",
+					"registry":"pi.dev/packages"
+				}
+			}]
+		}
+	}`)
+
+	body := []byte(`{"runtime_profile_id":"` + profileID + `"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/preflight", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected preflight status 200, got %d with body %s", resp.Code, resp.Body.String())
+	}
+
+	var result struct {
+		Pass              bool `json:"pass"`
+		RuntimeExtensions []struct {
+			ID         string `json:"id"`
+			Source     string `json:"source"`
+			InstallRef string `json:"install_ref"`
+		} `json:"runtime_extensions"`
+		Checks []struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+			Detail string `json:"detail"`
+		} `json:"checks"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !result.Pass {
+		t.Fatalf("expected preflight to pass, got %#v", result.Checks)
+	}
+	if !checkNamed(result.Checks, "runtime_extensions", "pass") {
+		t.Fatalf("expected runtime_extensions check to pass, got %#v", result.Checks)
+	}
+	if len(result.RuntimeExtensions) != 1 || result.RuntimeExtensions[0].ID != "npm:pi-mcp-adapter" {
+		t.Fatalf("expected runtime extension preview, got %#v", result.RuntimeExtensions)
+	}
+	if result.RuntimeExtensions[0].Source != "catalog" || result.RuntimeExtensions[0].InstallRef != "npm:pi-mcp-adapter" {
+		t.Fatalf("unexpected catalog preview: %#v", result.RuntimeExtensions[0])
+	}
+}
+
 func TestPreflightFailsWhenRuntimeProfileMissing(t *testing.T) {
 	server := newDaemon(t)
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)

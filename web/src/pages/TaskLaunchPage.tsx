@@ -365,6 +365,22 @@ export function TaskLaunchPage() {
                 </div>
               </div>
             )}
+            {preflight.runtime_extensions && preflight.runtime_extensions.length > 0 && (
+              <div className="mt-3 border-t border-border/60 pt-3">
+                <p className="mb-2 text-sm font-medium">Runtime extensions</p>
+                <div className="space-y-2">
+                  {preflight.runtime_extensions.map((extension) => (
+                    <div key={extension.id} className="rounded-lg border border-border/60 bg-background/50 p-2 text-sm">
+                      <div className="font-medium">{extension.name || extension.id}</div>
+                      <div className="font-mono text-xs text-muted-foreground">{extension.id}</div>
+                      {extension.source === "catalog" && extension.install_ref && (
+                        <div className="text-xs text-muted-foreground">Install: {extension.install_ref}</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {preflight.skills && preflight.skills.length > 0 && (
               <div className="mt-3 border-t border-border/60 pt-3">
                 <p className="mb-2 text-sm font-medium">Enabled Skills</p>

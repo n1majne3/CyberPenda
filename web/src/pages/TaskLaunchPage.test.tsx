@@ -210,6 +210,96 @@ describe("TaskLaunchPage", () => {
     );
   });
 
+  it("shows runtime extension preview from preflight for preset launches", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const method = init?.method ?? "GET";
+        if (url.includes("/api/runtime-plugins")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ plugins: [codexPlugin] }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+        }
+        if (url.includes("/api/model-providers")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ providers: [mimoProvider] }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+        }
+        if (url.includes("/api/runtime-profiles")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ profiles: [codexPreset] }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+        }
+        if (url.includes("/api/projects/project-1/preflight") && method === "POST") {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                pass: true,
+                checks: [
+                  { name: "runtime_profile", status: "pass" },
+                  { name: "runtime_extensions", status: "pass", detail: "1 enabled runtime extension(s)" },
+                ],
+                runtime_extensions: [
+                  {
+                    id: "npm:pi-mcp-adapter",
+                    source: "catalog",
+                    install_ref: "npm:pi-mcp-adapter",
+                    registry: "pi.dev/packages",
+                  },
+                ],
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url.includes("/api/projects/project-1/tasks") && method === "POST") {
+          return new Promise<Response>(() => {});
+        }
+        if (url.includes("/api/projects/project-1")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                id: "project-1",
+                name: "Acme",
+                description: "",
+                scope: {},
+                defaults: { runtime_profile: "codex-preset", runner: "sandbox" },
+                created_at: "",
+                updated_at: "",
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        return Promise.resolve(
+          new Response(JSON.stringify({}), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }),
+    );
+
+    renderPage();
+
+    await userEvent.type(await screen.findByLabelText("Task goal"), "Run with extension");
+    await userEvent.click(screen.getByRole("button", { name: /launch/i }));
+
+    expect(await screen.findByText("Runtime extensions")).toBeInTheDocument();
+    expect(screen.getAllByText("npm:pi-mcp-adapter").length).toBeGreaterThan(0);
+    expect(screen.getByText("Install: npm:pi-mcp-adapter")).toBeInTheDocument();
+  });
+
   it("resolves launch profile for simple path and shows model provider preview after preflight", async () => {
     vi.stubGlobal(
       "fetch",

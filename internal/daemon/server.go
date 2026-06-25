@@ -146,7 +146,9 @@ func NewServer(config Config) (*Server, error) {
 		modelProviders:    modelProviders,
 		skills:            skills,
 		creds:             creds,
-		preflight:         preflight.NewService(profiles, creds, skills).WithModelProviders(modelProviders, runtimePlugins),
+		preflight: preflight.NewService(profiles, creds, skills).
+			WithModelProviders(modelProviders, runtimePlugins).
+			WithRuntimeExtensions(runtimeExtensions),
 		tasks:             tasks,
 		harness:           runtime.NewHarness(tasks),
 		facts:             blackboard.NewService(db),

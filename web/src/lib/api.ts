@@ -368,10 +368,19 @@ export interface PreflightModelProvider {
   projection_target?: string;
 }
 
+export interface PreflightRuntimeExtension {
+  id: string;
+  name?: string;
+  source: "registry" | "catalog" | string;
+  install_ref?: string;
+  registry?: string;
+}
+
 export interface PreflightResult {
   pass: boolean;
   checks: PreflightCheck[];
   skills?: PreflightSkill[];
+  runtime_extensions?: PreflightRuntimeExtension[];
   model_provider?: PreflightModelProvider;
 }
 
