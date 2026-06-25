@@ -133,6 +133,7 @@ export interface RuntimeProfile {
   id: string;
   name: string;
   provider: string;
+  kind?: "manual" | "launch_resolve";
   fields: {
     binary_path?: string;
     model?: string;

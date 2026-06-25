@@ -1,4 +1,5 @@
 import type { ModelProvider, RuntimePlugin, RuntimeProfile } from "@/lib/api";
+import { isManualRuntimeProfile } from "@/pages/runtimeProfileKind";
 import { selectableModelProviders } from "@/pages/runtimeProfileForm";
 
 export const LAUNCH_RUNTIME_IDS = ["codex", "claude_code", "pi"] as const;
@@ -78,7 +79,9 @@ type DefaultLaunchFormInput = {
 export function presetsForRuntime(profiles: RuntimeProfile[], runtime: string): RuntimeProfile[] {
   const normalized = runtime.trim();
   if (!normalized) return [];
-  return profiles.filter((profile) => profile.provider === normalized);
+  return profiles.filter(
+    (profile) => profile.provider === normalized && isManualRuntimeProfile(profile),
+  );
 }
 
 export function presetMatchesRuntime(
@@ -89,7 +92,7 @@ export function presetMatchesRuntime(
   const normalized = presetId.trim();
   if (!normalized) return true;
   const preset = profiles.find((profile) => profile.id === normalized);
-  return preset?.provider === runtime.trim();
+  return Boolean(preset && preset.provider === runtime.trim() && isManualRuntimeProfile(preset));
 }
 
 export function defaultPresetSelection(
@@ -98,7 +101,8 @@ export function defaultPresetSelection(
 ): string {
   const normalized = defaultRuntimeProfileId?.trim();
   if (!normalized) return "";
-  return profiles.some((profile) => profile.id === normalized) ? normalized : "";
+  const preset = profiles.find((profile) => profile.id === normalized);
+  return preset && isManualRuntimeProfile(preset) ? normalized : "";
 }
 
 export function formFromPreset(
@@ -174,7 +178,7 @@ export function initialLaunchState(input: InitialLaunchStateInput): {
   const presetId = defaultPresetSelection(input.profiles, input.defaultRuntimeProfileId);
   if (presetId) {
     const preset = input.profiles.find((profile) => profile.id === presetId);
-    if (preset) {
+    if (preset && isManualRuntimeProfile(preset)) {
       return {
         form: formFromPreset(preset, input.modelProviders, input.projectRunner),
         presetId,

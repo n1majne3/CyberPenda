@@ -82,6 +82,9 @@ func TestResolveLaunchProfileCreatesMinimalProfileWhenMissing(t *testing.T) {
 	if resolution.Profile.Fields.DefaultRunner != "sandbox" {
 		t.Fatalf("default runner = %q", resolution.Profile.Fields.DefaultRunner)
 	}
+	if resolution.Profile.Kind != runtimeprofile.ProfileKindLaunchResolve {
+		t.Fatalf("kind = %q, want launch_resolve", resolution.Profile.Kind)
+	}
 
 	second, err := svc.ResolveLaunchProfile(runtimeprofile.LaunchSelection{
 		Provider:        runtimeprofile.ProviderCodex,

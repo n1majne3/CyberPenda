@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { BookOpen, PackagePlus, RefreshCw, Trash2 } from "lucide-react";
 import { apiDelete, apiGet, apiPost, apiPut, type RuntimeProfile, type Skill } from "@/lib/api";
+import { isLaunchResolvedProfile } from "@/pages/runtimeProfileKind";
 import { Badge, Button, Card, Input, Label, Select, Textarea } from "@/components/ui";
 import { PageContainer } from "@/components/shared";
 
@@ -188,9 +189,20 @@ export function SkillsPage() {
                   {profiles.map((profile) => (
                     <option key={profile.id} value={profile.id}>
                       {profile.name} ({profile.provider})
+                      {isLaunchResolvedProfile(profile) ? " · launch-resolved" : ""}
                     </option>
                   ))}
                 </Select>
+                {selectedProfile && isLaunchResolvedProfile(selectedProfile) && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    This profile was created by launch resolution. Skill opt-outs bind to this record and apply to future launches that resolve to the same runtime, model provider, and model override.
+                  </p>
+                )}
+                {selectedProfile && !isLaunchResolvedProfile(selectedProfile) && profileId && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Skill opt-outs apply to this preset for every task that launches with it.
+                  </p>
+                )}
               </div>
               <div className="text-sm text-muted-foreground">
                 {enabledCount} enabled / {skills.length} total

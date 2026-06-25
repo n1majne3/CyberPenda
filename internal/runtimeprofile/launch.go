@@ -81,7 +81,7 @@ func (s *Service) ResolveLaunchProfile(selection LaunchSelection, providerName s
 		return LaunchResolution{Profile: found, Created: false}, nil
 	}
 	name := LaunchProfileName(normalized, providerName)
-	created, err := s.Create(name, normalized.Provider, Fields{
+	created, err := s.CreateLaunchResolved(name, normalized.Provider, Fields{
 		ModelProviderID: normalized.ModelProviderID,
 		ModelOverride:   normalized.ModelOverride,
 		DefaultRunner:   "sandbox",

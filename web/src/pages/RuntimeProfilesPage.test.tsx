@@ -304,6 +304,154 @@ describe("RuntimeProfilesPage", () => {
     expect(document.querySelector(".save-check-pop")).not.toBeNull();
   });
 
+  it("groups launch-resolved profiles separately from presets", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.includes("/api/runtime-profiles")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                profiles: [
+                  {
+                    id: "preset-1",
+                    name: "Codex MCP",
+                    provider: "codex",
+                    kind: "manual",
+                    fields: { model_provider_id: "mimo" },
+                    created_at: "",
+                    updated_at: "2026-06-25T00:00:00Z",
+                  },
+                  {
+                    id: "auto-1",
+                    name: "Codex · MiMo",
+                    provider: "codex",
+                    kind: "launch_resolve",
+                    fields: { model_provider_id: "mimo" },
+                    created_at: "",
+                    updated_at: "2026-06-25T00:00:00Z",
+                  },
+                ],
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url.includes("/api/runtime-plugins")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ plugins: [] }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+        }
+        if (url.includes("/api/runtime-extensions") || url.includes("/api/runtime-extension-catalog")) {
+          return Promise.resolve(
+            new Response(JSON.stringify(url.includes("catalog") ? { items: [] } : { extensions: [] }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+        }
+        return Promise.resolve(
+          new Response(JSON.stringify({}), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }),
+    );
+
+    renderPage();
+
+    expect(await screen.findByText("Codex MCP")).toBeInTheDocument();
+    expect(screen.getByText("Presets")).toBeInTheDocument();
+    expect(screen.getByText(/Launch-resolved \(1\)/)).toBeInTheDocument();
+    expect(screen.queryByText("Codex · MiMo")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /Launch-resolved \(1\)/ }));
+    expect(await screen.findByText("Codex · MiMo")).toBeInTheDocument();
+  });
+
+  it("promotes a launch-resolved profile to a preset", async () => {
+    let promoted = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const method = init?.method ?? "GET";
+        if (url.includes("/api/runtime-profiles/auto-1/promote") && method === "POST") {
+          promoted = true;
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                id: "auto-1",
+                name: "Codex · MiMo",
+                provider: "codex",
+                kind: "manual",
+                fields: { model_provider_id: "mimo" },
+                created_at: "",
+                updated_at: "2026-06-25T00:00:01Z",
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url.includes("/api/runtime-profiles")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                profiles: [
+                  {
+                    id: "auto-1",
+                    name: "Codex · MiMo",
+                    provider: "codex",
+                    kind: promoted ? "manual" : "launch_resolve",
+                    fields: { model_provider_id: "mimo" },
+                    created_at: "",
+                    updated_at: "2026-06-25T00:00:00Z",
+                  },
+                ],
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url.includes("/api/runtime-plugins")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ plugins: [] }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+        }
+        if (url.includes("/api/runtime-extensions") || url.includes("/api/runtime-extension-catalog")) {
+          return Promise.resolve(
+            new Response(JSON.stringify(url.includes("catalog") ? { items: [] } : { extensions: [] }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+        }
+        return Promise.resolve(
+          new Response(JSON.stringify({}), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }),
+    );
+
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: /Launch-resolved \(1\)/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /Codex · MiMo/i }));
+    await userEvent.click(await screen.findByRole("button", { name: "Promote to preset" }));
+
+    await waitFor(() => expect(promoted).toBe(true));
+    expect(screen.queryByRole("button", { name: "Promote to preset" })).not.toBeInTheDocument();
+  });
+
   it("keeps long Codex generated config preview from widening the page", async () => {
     const longEndpoint = `https://${"very-long-host-segment-".repeat(12)}example.test/v1`;
     vi.stubGlobal(

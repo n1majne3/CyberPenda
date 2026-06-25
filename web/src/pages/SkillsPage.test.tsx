@@ -75,6 +75,32 @@ describe("SkillsPage", () => {
     );
   });
 
+  it("explains launch-resolved profile scope for skill opt-outs", async () => {
+    mockApi({
+      "/api/runtime-profiles": {
+        profiles: [
+          {
+            id: "auto-1",
+            name: "Codex · MiMo",
+            provider: "codex",
+            kind: "launch_resolve",
+            fields: { model_provider_id: "mimo" },
+            created_at: "",
+            updated_at: "",
+          },
+        ],
+      },
+      "/api/skills?runtime_profile_id=auto-1": { skills: [] },
+    });
+
+    renderPage();
+
+    expect(
+      await screen.findByText(/created by launch resolution/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/future launches that resolve/i)).toBeInTheDocument();
+  });
+
   it("does not show source labels or source-prefixed ids for built-in skills", async () => {
     const fetchMock = mockApi({
       "/api/runtime-profiles": {

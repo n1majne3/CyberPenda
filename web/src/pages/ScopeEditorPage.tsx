@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Save } from "lucide-react";
 import { apiGet, apiPatch, type Project, type RuntimeProfile, type Scope } from "@/lib/api";
+import { isManualRuntimeProfile } from "@/pages/runtimeProfileKind";
 import { ProjectNav } from "@/components/ProjectNav";
 import { BackLink, PageContainer } from "@/components/shared";
 import { Button, Card, CardTitle, CardHeader, Label, Textarea, Badge, Select } from "@/components/ui";
@@ -141,7 +142,7 @@ export function ScopeEditorPage() {
               onChange={(e) => setDefaultProfile(e.target.value)}
             >
               <option value="">(none)</option>
-              {profiles.map((p) => (
+              {profiles.filter(isManualRuntimeProfile).map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name} ({p.provider})
                 </option>
