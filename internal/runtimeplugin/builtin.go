@@ -28,6 +28,7 @@ func BuiltinPlugins() []Plugin {
 				StreamingTranscript: false,
 				Resume:              true,
 			},
+			ModelProvider:    ModelProvider{Requirement: "none"},
 			ProfileSchema:    ProfileSchema{Fields: commonFields},
 			ConfigProjection: ConfigProjection{Primitive: "none"},
 			Launch:           LaunchTemplate{Args: []string{"{{binary}}", "{{goal}}"}},
@@ -45,6 +46,11 @@ func BuiltinPlugins() []Plugin {
 				MCPConfig:           true,
 				StreamingTranscript: true,
 				Resume:              true,
+			},
+			ModelProvider: ModelProvider{
+				Requirement:        "required",
+				SupportedProtocols: []string{"openai_responses"},
+				ProtocolPreference: []string{"openai_responses"},
 			},
 			ProfileSchema: commonProfileSchema(commonFields),
 			ConfigProjection: ConfigProjection{
@@ -70,6 +76,11 @@ func BuiltinPlugins() []Plugin {
 				MCPConfig:           true,
 				StreamingTranscript: true,
 				Resume:              true,
+			},
+			ModelProvider: ModelProvider{
+				Requirement:        "required",
+				SupportedProtocols: []string{"anthropic_messages"},
+				ProtocolPreference: []string{"anthropic_messages"},
 			},
 			ProfileSchema: commonProfileSchema(commonFields),
 			ConfigProjection: ConfigProjection{
@@ -112,6 +123,11 @@ func BuiltinPlugins() []Plugin {
 				MCPConfig:           true,
 				StreamingTranscript: true,
 				Resume:              true,
+			},
+			ModelProvider: ModelProvider{
+				Requirement:        "required",
+				SupportedProtocols: []string{"openai_chat_completions", "openai_responses", "anthropic_messages"},
+				ProtocolPreference: []string{"openai_chat_completions", "openai_responses", "anthropic_messages"},
 			},
 			ProfileSchema: commonProfileSchema(commonFields),
 			ConfigProjection: ConfigProjection{

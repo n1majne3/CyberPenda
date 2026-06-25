@@ -149,4 +149,3 @@ func TestRequestLogSuppressesNoisyPolls(t *testing.T) {
 		t.Fatalf("task detail GET should not be logged, got:\n%s", output)
 	}
 }
-

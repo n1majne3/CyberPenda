@@ -35,6 +35,16 @@ func TestMaterializeFileSourceReadsFileContents(t *testing.T) {
 	}
 }
 
+func TestMaterializeLiteralSourceReadsStoredSecret(t *testing.T) {
+	got, err := credential.Materialize(credential.Source{Kind: credential.SourceLiteral, Value: "sk-local-secret\n"})
+	if err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	if got != "sk-local-secret" {
+		t.Fatalf("expected literal secret, got %q", got)
+	}
+}
+
 func TestMaterializeMissingEnvReturnsError(t *testing.T) {
 	_, err := credential.Materialize(credential.Source{Kind: credential.SourceEnv, Value: "PENTEST_MISSING_KEY_XYZ"})
 	if err == nil {

@@ -80,6 +80,8 @@ func (r *Registry) IDs() []string {
 func clonePlugin(plugin Plugin) Plugin {
 	clone := plugin
 	clone.ProfileSchema.Fields = append([]ProfileField(nil), plugin.ProfileSchema.Fields...)
+	clone.ModelProvider.SupportedProtocols = append([]string(nil), plugin.ModelProvider.SupportedProtocols...)
+	clone.ModelProvider.ProtocolPreference = append([]string(nil), plugin.ModelProvider.ProtocolPreference...)
 	clone.Launch.Args = append([]string(nil), plugin.Launch.Args...)
 	clone.Launch.SingletonOptions = append([]SingletonOption(nil), plugin.Launch.SingletonOptions...)
 	for i := range clone.Launch.SingletonOptions {

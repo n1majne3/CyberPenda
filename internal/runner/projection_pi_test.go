@@ -201,4 +201,3 @@ func TestProjectPiConfigWritesCatalogExtensionPackages(t *testing.T) {
 		t.Fatalf("expected packages preview with 2 entries, got %#v", projection.Config["packages"])
 	}
 }
-

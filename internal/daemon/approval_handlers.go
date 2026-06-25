@@ -35,9 +35,9 @@ func (server *Server) handleDecideApproval(response http.ResponseWriter, request
 	}
 
 	var input struct {
-		Reviewer string             `json:"reviewer"`
-		Decision approval.Decision  `json:"decision"`
-		Notes    string             `json:"notes"`
+		Reviewer string            `json:"reviewer"`
+		Decision approval.Decision `json:"decision"`
+		Notes    string            `json:"notes"`
 	}
 	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
 		writeError(response, http.StatusBadRequest, "invalid JSON body")

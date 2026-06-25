@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"pentest/internal/credential"
+	"pentest/internal/modelprovider"
 	"pentest/internal/runtimeextension"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
@@ -27,7 +28,10 @@ type ProjectionRequest struct {
 	Sandbox           bool
 	RuntimePlugins    *runtimeplugin.Registry
 	RuntimeExtensions *runtimeextension.Registry
-	SkillBundles      []skill.Bundle
+	ModelProviders      modelprovider.ProviderGetter
+	ModelSnapshot       *modelprovider.Snapshot
+	LaunchModelOverride string
+	SkillBundles        []skill.Bundle
 }
 
 // ProjectRuntimeConfig writes provider-specific runtime files into the task-local
@@ -61,6 +65,24 @@ func ProjectRuntimeConfig(layout Layout, profile runtimeprofile.Profile, req Pro
 	if !ok {
 		return projectGenericConfig(layout, profile)
 	}
+	if req.ModelProviders != nil && strings.TrimSpace(profile.Fields.ModelProviderID) != "" {
+		snapshot, err := modelprovider.Resolve(modelprovider.ResolveRequest{
+			Profile:             profile,
+			Providers:           req.ModelProviders,
+			Plugins:             req.RuntimePlugins,
+			Credentials:         req.Credentials,
+			ProjectID:           req.ProjectID,
+			CheckEnv:            true,
+			LaunchModelOverride: req.LaunchModelOverride,
+		})
+		if err != nil {
+			return ConfigProjection{}, err
+		}
+		if snapshot.ModelProviderID != "" {
+			req.ModelSnapshot = &snapshot
+			profile = profileWithModelSnapshot(profile, snapshot)
+		}
+	}
 
 	var projection ConfigProjection
 	var err error
@@ -79,6 +101,8 @@ func ProjectRuntimeConfig(layout Layout, profile runtimeprofile.Profile, req Pro
 	if err != nil {
 		return ConfigProjection{}, err
 	}
+	projection.ResolvedProfile = profile
+	projection.ModelSnapshot = req.ModelSnapshot
 	if err := projectRuntimeExtensions(layout, profile, req, &projection); err != nil {
 		return ConfigProjection{}, err
 	}
@@ -280,6 +304,47 @@ func runtimePluginForProvider(provider runtimeprofile.Provider, registry *runtim
 	return runtimeplugin.MustBuiltinRegistry().Get(string(provider))
 }
 
+func profileWithModelSnapshot(profile runtimeprofile.Profile, snapshot modelprovider.Snapshot) runtimeprofile.Profile {
+	profile.Fields.Model = snapshot.Model
+	profile.Fields.Endpoint = snapshot.BaseURL
+	if profile.Fields.Env == nil {
+		profile.Fields.Env = map[string]string{}
+	}
+	switch profile.Provider {
+	case runtimeprofile.ProviderCodex:
+		profile.Fields.Env["CODEX_MODEL_PROVIDER"] = snapshot.ModelProviderID
+		profile.Fields.Env["CODEX_PROVIDER_NAME"] = snapshot.ModelProviderName
+		profile.Fields.Env["CODEX_WIRE_API"] = codexWireAPI(snapshot.Protocol)
+	case runtimeprofile.ProviderPi:
+		profile.Fields.Env["PI_PROVIDER_ID"] = snapshot.ModelProviderID
+		profile.Fields.Env["PI_API"] = piAPIForProtocol(snapshot.Protocol)
+	case runtimeprofile.ProviderClaudeCode:
+		profile.Fields.Env["ANTHROPIC_BASE_URL"] = snapshot.BaseURL
+		profile.Fields.Env["ANTHROPIC_MODEL"] = snapshot.Model
+	}
+	return profile
+}
+
+func codexWireAPI(protocol modelprovider.Protocol) string {
+	switch protocol {
+	case modelprovider.ProtocolOpenAIResponses:
+		return "responses"
+	default:
+		return string(protocol)
+	}
+}
+
+func piAPIForProtocol(protocol modelprovider.Protocol) string {
+	switch protocol {
+	case modelprovider.ProtocolAnthropicMessages:
+		return "anthropic-messages"
+	case modelprovider.ProtocolOpenAIResponses:
+		return "openai-responses"
+	default:
+		return "openai-completions"
+	}
+}
+
 func projectGenericConfig(layout Layout, profile runtimeprofile.Profile) (ConfigProjection, error) {
 	config := runtimeprofile.GeneratedConfig(profile)
 	configPath := filepath.Join(layout.ProviderHome, "config.json")
@@ -359,6 +424,7 @@ func projectClaudeSettings(layout Layout, profile runtimeprofile.Profile, req Pr
 	if len(installRefs) > 0 {
 		preview["enabled_plugins"] = installRefs
 	}
+	addModelSnapshotPreview(preview, req.ModelSnapshot)
 
 	return ConfigProjection{ConfigPath: settingsPath, Config: preview}, nil
 }
@@ -367,6 +433,17 @@ func projectCodexConfig(layout Layout, profile runtimeprofile.Profile, req Proje
 	materialized, err := resolveMaterializedCredentials(profile, req)
 	if err != nil {
 		return ConfigProjection{}, err
+	}
+	if req.ModelSnapshot != nil && req.ModelSnapshot.APIKeyEnv != "" {
+		value := strings.TrimSpace(os.Getenv(req.ModelSnapshot.APIKeyEnv))
+		if value == "" {
+			if materialized, ok := materializeModelProviderAPIKey(req); ok {
+				value = materialized
+			}
+		}
+		if value != "" {
+			materialized = map[string]string{"OPENAI_API_KEY": value}
+		}
 	}
 
 	mcpServers := collectMCPServers(profile, req)
@@ -431,6 +508,7 @@ func projectCodexConfig(layout Layout, profile runtimeprofile.Profile, req Proje
 	if servers := mcpPreview(mcpServers); len(servers) > 0 {
 		preview["mcp_servers"] = servers
 	}
+	addModelSnapshotPreview(preview, req.ModelSnapshot)
 
 	return ConfigProjection{ConfigPath: configPath, Config: preview}, nil
 }
@@ -540,8 +618,25 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 	if len(packages) > 0 {
 		preview["packages"] = packages
 	}
+	addModelSnapshotPreview(preview, req.ModelSnapshot)
 
 	return ConfigProjection{ConfigPath: modelsPath, Config: preview}, nil
+}
+
+func addModelSnapshotPreview(preview map[string]any, snapshot *modelprovider.Snapshot) {
+	if snapshot == nil || snapshot.ModelProviderID == "" {
+		return
+	}
+	preview["model_provider_snapshot"] = map[string]any{
+		"model_provider_id":   snapshot.ModelProviderID,
+		"model_provider_name": snapshot.ModelProviderName,
+		"base_url":            snapshot.BaseURL,
+		"protocol":            string(snapshot.Protocol),
+		"model":               snapshot.Model,
+		"api_key_env":         snapshot.APIKeyEnv,
+		"api_key_source":      snapshot.APIKeySource,
+		"projection_target":   snapshot.ProjectionTarget,
+	}
 }
 
 // enabledExtensionInstallRefs collects the install_ref of each enabled runtime
@@ -566,6 +661,16 @@ func enabledExtensionInstallRefs(profile runtimeprofile.Profile) []string {
 }
 
 func resolveMaterializedCredentials(profile runtimeprofile.Profile, req ProjectionRequest) (map[string]string, error) {
+	if req.ModelSnapshot != nil && req.ModelSnapshot.APIKeyEnv != "" {
+		if value, ok := materializeModelProviderAPIKey(req); ok {
+			return map[string]string{req.ModelSnapshot.APIKeyEnv: value}, nil
+		}
+		value := strings.TrimSpace(os.Getenv(req.ModelSnapshot.APIKeyEnv))
+		if value == "" {
+			return nil, fmt.Errorf("model provider API key env %s is not configured", req.ModelSnapshot.APIKeyEnv)
+		}
+		return map[string]string{req.ModelSnapshot.APIKeyEnv: value}, nil
+	}
 	inline := runtimeprofile.MaterializedAPIKeys(profile)
 	if len(inline) > 0 {
 		return inline, nil
@@ -811,6 +916,23 @@ func buildClaudeEnv(profile runtimeprofile.Profile, req ProjectionRequest) (map[
 	for key, value := range materialized {
 		env[key] = value
 	}
+	if req.ModelSnapshot != nil && req.ModelSnapshot.APIKeyEnv != "" {
+		value := strings.TrimSpace(os.Getenv(req.ModelSnapshot.APIKeyEnv))
+		if value == "" {
+			if materialized, ok := materializeModelProviderAPIKey(req); ok {
+				value = materialized
+			}
+		}
+		if value != "" {
+			env[req.ModelSnapshot.APIKeyEnv] = value
+			if env["ANTHROPIC_API_KEY"] == "" {
+				env["ANTHROPIC_API_KEY"] = value
+			}
+			if env["ANTHROPIC_AUTH_TOKEN"] == "" {
+				env["ANTHROPIC_AUTH_TOKEN"] = value
+			}
+		}
+	}
 	return env, nil
 }
 
@@ -927,4 +1049,23 @@ func LaunchProcessEnvWithCredentials(layout Layout, profile runtimeprofile.Profi
 		env[key] = value
 	}
 	return env, nil
+}
+
+func materializeModelProviderAPIKey(req ProjectionRequest) (string, bool) {
+	if req.Credentials == nil || req.ModelSnapshot == nil || strings.TrimSpace(req.ModelSnapshot.APIKeyEnv) == "" {
+		return "", false
+	}
+	resolution, err := req.Credentials.Resolve(req.ModelSnapshot.APIKeyEnv, req.ProjectID)
+	if err != nil || !resolution.Found || resolution.Disabled || resolution.Source == nil {
+		return "", false
+	}
+	value, err := credential.Materialize(*resolution.Source)
+	if err != nil {
+		return "", false
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", false
+	}
+	return value, true
 }

@@ -136,7 +136,7 @@ func TestPreflightUsesProjectDefaultsWhenLaunchOmitsRuntimeControls(t *testing.T
 func TestPreflightReturnsEnabledSkillPreviewWithoutCredentialBlockers(t *testing.T) {
 	server := newDaemon(t)
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
-	profileID := createRuntimeProfile(t, server, `{"name":"Codex","provider":"codex"}`)
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 	putSkill(t, server, "recon-helper", `{
 		"name":"Recon Helper",
 		"credential_refs":["recon-api-key"],
@@ -176,10 +176,42 @@ func TestPreflightReturnsEnabledSkillPreviewWithoutCredentialBlockers(t *testing
 	}
 }
 
-func TestPreflightBuiltinSkillPreviewUsesSourceFreeID(t *testing.T) {
+func TestPreflightFailsWhenRequiredRuntimeLacksModelProvider(t *testing.T) {
 	server := newDaemon(t)
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
 	profileID := createRuntimeProfile(t, server, `{"name":"Codex","provider":"codex"}`)
+
+	body := []byte(`{"runtime_profile_id":"` + profileID + `"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/preflight", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected preflight status 200, got %d with body %s", resp.Code, resp.Body.String())
+	}
+	var result struct {
+		Pass   bool `json:"pass"`
+		Checks []struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+			Detail string `json:"detail"`
+		} `json:"checks"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode preflight response: %v", err)
+	}
+	if result.Pass {
+		t.Fatal("expected preflight to fail when codex profile has no model provider")
+	}
+	if !checkNamed(result.Checks, "model_provider", "fail") {
+		t.Fatalf("expected model_provider check to fail, got %#v", result.Checks)
+	}
+}
+
+func TestPreflightBuiltinSkillPreviewUsesSourceFreeID(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 	putSkill(t, server, "cyberstrikeai-api-security-testing", `{
 		"name":"cyberstrikeai-api-security-testing",
 		"source_provenance":{"kind":"builtin"},

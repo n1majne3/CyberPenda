@@ -111,7 +111,8 @@
 
     /* Translucent-white base; alpha is applied at the border utility below. */
     --border: 0 0% 100%;
-    --input: 0 0% 100%;
+    /* Input borders + inset surfaces sit slightly below card brightness. */
+    --input: 222 12% 24%;
     --ring: 215 14% 60%;
 
     --sidebar: 222 16% 14%;
@@ -196,6 +197,46 @@
 
   @media (prefers-reduced-motion: reduce) {
     .logo-entrance-spin {
+      animation: none;
+    }
+  }
+
+  @keyframes save-label-in {
+    from {
+      opacity: 0;
+      transform: translateY(2px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes save-check-pop {
+    0% {
+      opacity: 0;
+      transform: scale(0.7);
+    }
+    70% {
+      transform: scale(1.08);
+    }
+    100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  .save-label-in {
+    animation: save-label-in 180ms ease-out;
+  }
+
+  .save-check-pop {
+    animation: save-check-pop 220ms ease-out;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .save-label-in,
+    .save-check-pop {
       animation: none;
     }
   }

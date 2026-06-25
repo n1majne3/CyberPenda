@@ -51,7 +51,7 @@ export function CardFooter({ className, ...props }: HTMLAttributes<HTMLDivElemen
 
 // ---- Button ---------------------------------------------------------------
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-1.5 rounded-lg border border-transparent bg-clip-padding text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px",
+  "inline-flex items-center justify-center gap-1.5 rounded-lg border border-transparent bg-clip-padding text-sm font-medium transition-[transform,background-color,box-shadow,opacity,color,border-color] duration-200 ease-out disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 active:scale-[0.98] motion-reduce:active:scale-100",
   {
     variants: {
       variant: {
@@ -115,15 +115,16 @@ export function Badge({ className, variant, ...props }: BadgeProps) {
   return <span className={cn(badgeVariants({ variant }), className)} {...props} />;
 }
 
+// Shared form control surface — slightly inset from card in both themes.
+const formControlClasses =
+  "w-full rounded-lg border border-input bg-background px-2.5 text-sm text-foreground shadow-[inset_0_1px_0_0_hsl(var(--foreground)/0.04)] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-input dark:bg-background/75";
+
 // ---- Input ----------------------------------------------------------------
 export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(
   ({ className, ...props }, ref) => (
     <input
       ref={ref}
-      className={cn(
-        "flex h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm placeholder:text-muted-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-input/30",
-        className,
-      )}
+      className={cn("flex h-8", formControlClasses, className)}
       {...props}
     />
   ),
@@ -135,10 +136,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<H
   ({ className, ...props }, ref) => (
     <textarea
       ref={ref}
-      className={cn(
-        "flex min-h-[80px] w-full rounded-lg border border-input bg-transparent px-2.5 py-2 text-sm placeholder:text-muted-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-input/30",
-        className,
-      )}
+      className={cn("flex min-h-[80px] py-2", formControlClasses, className)}
       {...props}
     />
   ),
@@ -152,10 +150,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSel
   ({ className, ...props }, ref) => (
     <select
       ref={ref}
-      className={cn(
-        "flex h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm focus-visible:border-ring focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-input/30",
-        className,
-      )}
+      className={cn("flex h-8", formControlClasses, className)}
       {...props}
     />
   ),
