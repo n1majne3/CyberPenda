@@ -460,7 +460,7 @@ export function TaskLaunchPage() {
             {preflight.skills && preflight.skills.length > 0 && (
               <div className="mt-3 border-t border-border/60 pt-3">
                 <p className="mb-2 text-sm font-medium">Enabled Skills</p>
-                <div className="space-y-2">
+                <div className="max-h-60 space-y-2 overflow-y-auto overscroll-y-contain pr-1">
                   {preflight.skills.map((skill) => (
                     <div key={skill.id} className="rounded-lg border border-border/60 bg-background/50 p-2 text-sm">
                       <div className="font-medium">{skill.name || skill.id}</div>
@@ -525,7 +525,10 @@ function LaunchSkillsPreviewCard({
         <p className="text-sm text-muted-foreground">No skills enabled for this profile.</p>
       )}
       {!loading && !error && skills.length > 0 && (
-        <div className="space-y-2">
+        <div
+          className="max-h-60 space-y-2 overflow-y-auto overscroll-y-contain pr-1"
+          aria-label={`${skills.length} enabled skills`}
+        >
           {skills.map((skill) => (
             <div key={skill.id} className="rounded-lg border border-border/60 bg-background/50 p-2 text-sm">
               <div className="font-medium">{skill.name || skill.id}</div>
