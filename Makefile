@@ -12,9 +12,24 @@ dev:
 	trap 'kill 0' EXIT INT TERM; \
 	go run ./cmd/pentestd -addr 127.0.0.1:8787 -db pentest.db -sandbox-image $(SANDBOX_IMAGE) & \
 	backend_pid=$$!; \
+	echo "dev: backend pid=$$backend_pid — waiting for http://127.0.0.1:8787/health …"; \
+	ready=0; \
+	for _ in $$(seq 1 120); do \
+		if curl -sf http://127.0.0.1:8787/health >/dev/null 2>&1; then ready=1; break; fi; \
+		if ! kill -0 $$backend_pid 2>/dev/null; then \
+			echo "dev: backend exited before becoming ready"; \
+			exit 1; \
+		fi; \
+		sleep 0.25; \
+	done; \
+	if [ "$$ready" -ne 1 ]; then \
+		echo "dev: backend did not become ready within 30s"; \
+		exit 1; \
+	fi; \
+	echo "dev: backend ready"; \
 	( cd web && npm run dev ) & \
 	frontend_pid=$$!; \
-	echo "dev: backend pid=$$backend_pid, frontend pid=$$frontend_pid"; \
+	echo "dev: frontend pid=$$frontend_pid"; \
 	while kill -0 $$backend_pid 2>/dev/null && kill -0 $$frontend_pid 2>/dev/null; do \
 		sleep 0.5; \
 	done; \
