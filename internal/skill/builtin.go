@@ -27,10 +27,39 @@ func BuiltinBundles() ([]ImportedBundle, error) {
 	return builtinBundlesFromFS(builtinAssetFS, builtinAssetsRoot)
 }
 
+var prunedBuiltinSuccessors = map[string]string{
+	"business-logic-testing":    "vulnerabilities-business-logic",
+	"sql-injection-testing":     "vulnerabilities-sql-injection",
+	"xss-testing":               "vulnerabilities-xss",
+	"ssrf-testing":              "vulnerabilities-ssrf",
+	"csrf-testing":              "vulnerabilities-csrf",
+	"idor-testing":              "vulnerabilities-idor",
+	"file-upload-testing":       "vulnerabilities-insecure-file-uploads",
+	"command-injection-testing": "vulnerabilities-rce",
+}
+
+var retiredPrunedBuiltinIDs = []string{
+	"cyberstrike-eino-demo",
+	"security-awareness-training",
+	"incident-response",
+	"security-automation",
+	"secure-code-review",
+	"vulnerability-assessment",
+	"coordination-root-agent",
+	"scan-modes-quick",
+	"scan-modes-standard",
+	"scan-modes-deep",
+	"tooling-agent-browser",
+	"tooling-python",
+}
+
 // InstallBuiltinSkills publishes packaged built-in Skills that are not already
 // present. Existing skills are left untouched so user edits survive daemon
 // restarts.
 func (s *Service) InstallBuiltinSkills(ctx context.Context) error {
+	if err := s.purgeRetiredLegacyBuiltins(ctx); err != nil {
+		return err
+	}
 	bundles, err := BuiltinBundles()
 	if err != nil {
 		return err
@@ -108,6 +137,76 @@ func (s *Service) migrateLegacyBuiltinSkillID(newID string) (Skill, error) {
 
 func legacyBuiltinIDs(id string) []string {
 	return []string{"cyberstrikeai-" + id, "strix-" + id}
+}
+
+func supersededLegacyBuiltinIDs(newID string) []string {
+	var ids []string
+	for prunedID, successorID := range prunedBuiltinSuccessors {
+		if successorID != newID {
+			continue
+		}
+		ids = append(ids, legacyBuiltinIDs(prunedID)...)
+		ids = append(ids, prunedID)
+	}
+	return ids
+}
+
+func (s *Service) purgeRetiredLegacyBuiltins(ctx context.Context) error {
+	bundles, err := BuiltinBundles()
+	if err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	purge := func(legacyID, successorID string) error {
+		legacyID = strings.TrimSpace(legacyID)
+		if legacyID == "" || seen[legacyID] {
+			return nil
+		}
+		seen[legacyID] = true
+		return s.purgeLegacyBuiltinIfPresent(ctx, legacyID, successorID)
+	}
+	for _, bundle := range bundles {
+		for _, legacyID := range supersededLegacyBuiltinIDs(bundle.Metadata.ID) {
+			if err := purge(legacyID, bundle.Metadata.ID); err != nil {
+				return err
+			}
+		}
+	}
+	for _, prunedID := range retiredPrunedBuiltinIDs {
+		for _, legacyID := range append(legacyBuiltinIDs(prunedID), prunedID) {
+			if err := purge(legacyID, ""); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Service) purgeLegacyBuiltinIfPresent(ctx context.Context, legacyID, successorID string) error {
+	existing, err := s.Get(legacyID)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if existing.Source.Kind != "builtin" {
+		return nil
+	}
+	if strings.TrimSpace(successorID) != "" {
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		if _, err := s.db.Exec(
+			`INSERT INTO skill_profile_opt_outs (profile_id, skill_id, created_at)
+			 SELECT profile_id, ?, ?
+			 FROM skill_profile_opt_outs
+			 WHERE skill_id = ?
+			 ON CONFLICT(profile_id, skill_id) DO NOTHING`,
+			successorID, now, legacyID,
+		); err != nil {
+			return fmt.Errorf("migrate legacy skill opt-outs %q -> %q: %w", legacyID, successorID, err)
+		}
+	}
+	return s.Delete(ctx, legacyID, true)
 }
 
 func (s *Service) repairMissingBuiltinBundle(ctx context.Context, existing Skill, bundle ImportedBundle) error {

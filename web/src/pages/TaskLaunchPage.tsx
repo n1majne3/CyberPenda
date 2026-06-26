@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Rocket, AlertTriangle, CheckCircle2, XCircle, ChevronRight } from "lucide-react";
+import { BookOpen, Rocket, AlertTriangle, CheckCircle2, XCircle, ChevronRight } from "lucide-react";
 import {
   apiGet,
   apiPost,
@@ -9,6 +9,7 @@ import {
   type Project,
   type RuntimePlugin,
   type RuntimeProfile,
+  type Skill,
 } from "@/lib/api";
 import { Button, Card, Label, Textarea, Badge, Select } from "@/components/ui";
 import { BackLink, PageContainer } from "@/components/shared";
@@ -27,6 +28,12 @@ import {
   simpleLaunchFormForRuntime,
   type LaunchForm,
 } from "@/pages/taskLaunchForm";
+import {
+  canPreviewLaunchSkills,
+  enabledLaunchSkills,
+  launchProfileIdForSkillsPreview,
+  launchSkillsPreviewDetail,
+} from "@/pages/taskLaunchSkills";
 
 export function TaskLaunchPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -49,8 +56,17 @@ export function TaskLaunchPage() {
   const [hostActivated, setHostActivated] = useState(false);
   const [launching, setLaunching] = useState(false);
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
+  const [resolvedProfileId, setResolvedProfileId] = useState("");
+  const [skillsPreview, setSkillsPreview] = useState<Skill[] | null>(null);
+  const [skillsPreviewLoading, setSkillsPreviewLoading] = useState(false);
+  const [skillsPreviewError, setSkillsPreviewError] = useState<string | null>(null);
 
   const presetMode = presetId.trim() !== "";
+  const skillsProfileId = launchProfileIdForSkillsPreview(presetId, resolvedProfileId);
+  const enabledSkillsPreview = useMemo(
+    () => (skillsPreview ? enabledLaunchSkills(skillsPreview) : []),
+    [skillsPreview],
+  );
   const launchRuntimePlugins = useMemo(() => launchRuntimes(plugins), [plugins]);
   const runtimePresets = useMemo(() => presetsForRuntime(profiles, form.runtime), [profiles, form.runtime]);
   const selectedPlugin = useMemo(
@@ -99,6 +115,55 @@ export function TaskLaunchPage() {
       }
     })();
   }, [projectId]);
+
+  useEffect(() => {
+    if (!canPreviewLaunchSkills(form, presetId)) {
+      setResolvedProfileId("");
+      setSkillsPreview(null);
+      setSkillsPreviewError(null);
+      setSkillsPreviewLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        setSkillsPreviewLoading(true);
+        setSkillsPreviewError(null);
+        try {
+          let profileId = presetId.trim();
+          if (!profileId) {
+            const resolved = await apiPost<{
+              profile_id: string;
+              profile: RuntimeProfile;
+            }>("/api/runtime-profiles/resolve-launch", resolveLaunchPayload(form));
+            if (cancelled) return;
+            profileId = resolved.profile_id;
+            setResolvedProfileId(profileId);
+          } else if (!cancelled) {
+            setResolvedProfileId("");
+          }
+
+          const data = await apiGet<{ skills: Skill[] }>(
+            `/api/skills?runtime_profile_id=${encodeURIComponent(profileId)}`,
+          );
+          if (cancelled) return;
+          setSkillsPreview(data.skills ?? []);
+        } catch (e) {
+          if (cancelled) return;
+          setSkillsPreview(null);
+          setSkillsPreviewError((e as Error).message);
+        } finally {
+          if (!cancelled) setSkillsPreviewLoading(false);
+        }
+      })();
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [presetId, form.runtime, form.modelProviderId, form.modelOverride]);
 
   function updateRuntime(runtime: string) {
     const nextPresetId = presetMatchesRuntime(presetId, profiles, runtime) ? presetId : "";
@@ -308,6 +373,17 @@ export function TaskLaunchPage() {
         )}
 
         {/* Safety states must be visually loud (prd.md:183). */}
+        {canPreviewLaunchSkills(form, presetId) && (
+          <LaunchSkillsPreviewCard
+            presetMode={presetMode}
+            profileId={skillsProfileId}
+            loading={skillsPreviewLoading}
+            error={skillsPreviewError}
+            skills={enabledSkillsPreview}
+            ready={skillsPreview !== null}
+          />
+        )}
+
         {hostWithYolo && (
           <Card className="border-warning bg-warning/10 p-3 space-y-2">
             <div className="flex items-center gap-2 text-warning">
@@ -365,10 +441,26 @@ export function TaskLaunchPage() {
                 </div>
               </div>
             )}
+            {preflight.runtime_extensions && preflight.runtime_extensions.length > 0 && (
+              <div className="mt-3 border-t border-border/60 pt-3">
+                <p className="mb-2 text-sm font-medium">Runtime extensions</p>
+                <div className="space-y-2">
+                  {preflight.runtime_extensions.map((extension) => (
+                    <div key={extension.id} className="rounded-lg border border-border/60 bg-background/50 p-2 text-sm">
+                      <div className="font-medium">{extension.name || extension.id}</div>
+                      <div className="font-mono text-xs text-muted-foreground">{extension.id}</div>
+                      {extension.source === "catalog" && extension.install_ref && (
+                        <div className="text-xs text-muted-foreground">Install: {extension.install_ref}</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {preflight.skills && preflight.skills.length > 0 && (
               <div className="mt-3 border-t border-border/60 pt-3">
                 <p className="mb-2 text-sm font-medium">Enabled Skills</p>
-                <div className="space-y-2">
+                <div className="max-h-60 space-y-2 overflow-y-auto overscroll-y-contain pr-1">
                   {preflight.skills.map((skill) => (
                     <div key={skill.id} className="rounded-lg border border-border/60 bg-background/50 p-2 text-sm">
                       <div className="font-medium">{skill.name || skill.id}</div>
@@ -399,5 +491,52 @@ export function TaskLaunchPage() {
         </Button>
       </div>
     </PageContainer>
+  );
+}
+
+function LaunchSkillsPreviewCard({
+  presetMode,
+  profileId,
+  loading,
+  error,
+  skills,
+  ready,
+}: {
+  presetMode: boolean;
+  profileId: string;
+  loading: boolean;
+  error: string | null;
+  skills: Skill[];
+  ready: boolean;
+}) {
+  return (
+    <Card className="border-border/70 bg-muted/10 p-3">
+      <div className="mb-2 flex items-center gap-2">
+        <BookOpen className="h-4 w-4 text-muted-foreground" />
+        <p className="text-sm font-medium">Skills for this launch</p>
+      </div>
+      <p className="mb-3 text-xs text-muted-foreground">{launchSkillsPreviewDetail(presetMode)}</p>
+      {profileId && (
+        <p className="mb-3 font-mono text-[11px] text-muted-foreground truncate">Profile: {profileId}</p>
+      )}
+      {loading && <p className="text-sm text-muted-foreground">Loading enabled skills…</p>}
+      {error && <p className="text-sm text-destructive">{error}</p>}
+      {!loading && !error && ready && skills.length === 0 && (
+        <p className="text-sm text-muted-foreground">No skills enabled for this profile.</p>
+      )}
+      {!loading && !error && skills.length > 0 && (
+        <div
+          className="max-h-60 space-y-2 overflow-y-auto overscroll-y-contain pr-1"
+          aria-label={`${skills.length} enabled skills`}
+        >
+          {skills.map((skill) => (
+            <div key={skill.id} className="rounded-lg border border-border/60 bg-background/50 p-2 text-sm">
+              <div className="font-medium">{skill.name || skill.id}</div>
+              <div className="font-mono text-xs text-muted-foreground">{skill.id}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }

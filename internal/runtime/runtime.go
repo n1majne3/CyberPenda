@@ -15,6 +15,7 @@ import (
 
 	"pentest/internal/adapters"
 	"pentest/internal/task"
+	"pentest/internal/transcript"
 )
 
 // Adapter is the provider-specific runtime boundary. Real adapters (Codex,
@@ -234,9 +235,13 @@ func scanOutput(wg *sync.WaitGroup, reader io.Reader, stream string, emit func(t
 	defer wg.Done()
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
+		line := scanner.Text()
+		if transcript.IsIgnorableRuntimeLine(line) {
+			continue
+		}
 		emit(task.EventKindRuntimeOutput, adapters.Redact(task.EventPayload{
 			"stream": stream,
-			"text":   scanner.Text(),
+			"text":   line,
 		}))
 	}
 	if err := scanner.Err(); err != nil {

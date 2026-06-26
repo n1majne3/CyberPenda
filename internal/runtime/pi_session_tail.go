@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"pentest/internal/task"
+	"pentest/internal/transcript"
 )
 
 // piSessionTailAdapter wraps a runtime Adapter and, in parallel with the
@@ -88,7 +89,7 @@ func tailPiSession(ctx context.Context, sessionDir string, emit func(task.EventK
 			line, err := reader.ReadString('\n')
 			if len(line) > 0 {
 				offset += int64(len(line))
-				if trimmed := strings.TrimRight(line, "\n"); trimmed != "" {
+				if trimmed := strings.TrimRight(line, "\n"); trimmed != "" && !transcript.IsIgnorableRuntimeLine(trimmed) {
 					emit(task.EventKindRuntimeOutput, task.EventPayload{
 						"stream": "pi_session",
 						"text":   trimmed,

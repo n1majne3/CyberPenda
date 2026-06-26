@@ -91,14 +91,25 @@ type Fields struct {
 	SandboxImage string `json:"sandbox_image,omitempty"`
 }
 
+// ProfileKind classifies how a runtime profile was created.
+type ProfileKind string
+
+const (
+	// ProfileKindManual marks user-authored presets intended for advanced launch.
+	ProfileKindManual ProfileKind = "manual"
+	// ProfileKindLaunchResolve marks minimal profiles created by launch resolution.
+	ProfileKindLaunchResolve ProfileKind = "launch_resolve"
+)
+
 // Profile is a global runtime profile reusable across projects.
 type Profile struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Provider  Provider  `json:"provider"`
-	Fields    Fields    `json:"fields"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID        string      `json:"id"`
+	Name      string      `json:"name"`
+	Provider  Provider    `json:"provider"`
+	Kind      ProfileKind `json:"kind"`
+	Fields    Fields      `json:"fields"`
+	CreatedAt time.Time   `json:"created_at"`
+	UpdatedAt time.Time   `json:"updated_at"`
 }
 
 // ErrNotFound is returned when no profile matches the requested id.
@@ -126,8 +137,38 @@ func NewService(db *store.DB, supportedProviders ...[]Provider) *Service {
 	return svc
 }
 
-// Create stores a new runtime profile and returns it.
+// Create stores a new user-authored runtime profile preset and returns it.
 func (s *Service) Create(name string, provider Provider, fields Fields) (Profile, error) {
+	return s.create(name, provider, fields, ProfileKindManual)
+}
+
+// CreateLaunchResolved stores a minimal profile created by launch resolution.
+func (s *Service) CreateLaunchResolved(name string, provider Provider, fields Fields) (Profile, error) {
+	return s.create(name, provider, fields, ProfileKindLaunchResolve)
+}
+
+// PromoteToPreset marks a launch-resolved profile as a user-authored preset.
+func (s *Service) PromoteToPreset(id string) (Profile, error) {
+	existing, err := s.Get(id)
+	if err != nil {
+		return Profile{}, err
+	}
+	if existing.Kind == ProfileKindManual {
+		return existing, nil
+	}
+	existing.Kind = ProfileKindManual
+	existing.UpdatedAt = time.Now().UTC()
+	_, err = s.db.Exec(
+		`UPDATE runtime_profiles SET kind = ?, updated_at = ? WHERE id = ?`,
+		string(existing.Kind), existing.UpdatedAt.Format(time.RFC3339Nano), existing.ID,
+	)
+	if err != nil {
+		return Profile{}, fmt.Errorf("promote runtime profile: %w", err)
+	}
+	return existing, nil
+}
+
+func (s *Service) create(name string, provider Provider, fields Fields, kind ProfileKind) (Profile, error) {
 	if err := s.validate(name, provider); err != nil {
 		return Profile{}, err
 	}
@@ -137,6 +178,7 @@ func (s *Service) Create(name string, provider Provider, fields Fields) (Profile
 		ID:        newID(),
 		Name:      strings.TrimSpace(name),
 		Provider:  provider,
+		Kind:      kind,
 		Fields:    fields,
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -148,8 +190,8 @@ func (s *Service) Create(name string, provider Provider, fields Fields) (Profile
 	}
 
 	_, err = s.db.Exec(
-		`INSERT INTO runtime_profiles (id, name, provider, fields_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		created.ID, created.Name, string(created.Provider), string(fieldsJSON),
+		`INSERT INTO runtime_profiles (id, name, provider, kind, fields_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		created.ID, created.Name, string(created.Provider), string(created.Kind), string(fieldsJSON),
 		created.CreatedAt.Format(time.RFC3339Nano), created.UpdatedAt.Format(time.RFC3339Nano),
 	)
 	if err != nil {
@@ -161,7 +203,7 @@ func (s *Service) Create(name string, provider Provider, fields Fields) (Profile
 // Get loads a single profile by id.
 func (s *Service) Get(id string) (Profile, error) {
 	return scanProfile(s.db.QueryRow(
-		`SELECT id, name, provider, fields_json, created_at, updated_at FROM runtime_profiles WHERE id = ?`,
+		`SELECT id, name, provider, kind, fields_json, created_at, updated_at FROM runtime_profiles WHERE id = ?`,
 		id,
 	))
 }
@@ -169,7 +211,7 @@ func (s *Service) Get(id string) (Profile, error) {
 // List returns all profiles ordered by creation time.
 func (s *Service) List() ([]Profile, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, provider, fields_json, created_at, updated_at FROM runtime_profiles ORDER BY created_at ASC`,
+		`SELECT id, name, provider, kind, fields_json, created_at, updated_at FROM runtime_profiles ORDER BY created_at ASC`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list runtime profiles: %w", err)
@@ -399,10 +441,11 @@ func scanProfile(row scanner) (Profile, error) {
 	var found Profile
 	var fieldsJSON string
 	var provider string
+	var kind string
 	var createdAt string
 	var updatedAt string
 
-	err := row.Scan(&found.ID, &found.Name, &provider, &fieldsJSON, &createdAt, &updatedAt)
+	err := row.Scan(&found.ID, &found.Name, &provider, &kind, &fieldsJSON, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Profile{}, ErrNotFound
 	}
@@ -410,6 +453,10 @@ func scanProfile(row scanner) (Profile, error) {
 		return Profile{}, err
 	}
 	found.Provider = Provider(provider)
+	found.Kind = ProfileKind(kind)
+	if found.Kind == "" {
+		found.Kind = ProfileKindManual
+	}
 	if err := json.Unmarshal([]byte(fieldsJSON), &found.Fields); err != nil {
 		return Profile{}, fmt.Errorf("decode fields: %w", err)
 	}

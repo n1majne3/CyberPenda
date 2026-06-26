@@ -12,9 +12,11 @@ import (
 	"pentest/internal/approval"
 	"pentest/internal/blackboard"
 
+	"pentest/internal/modelprovider"
 	"pentest/internal/preflight"
 	"pentest/internal/project"
 	"pentest/internal/runner"
+	"pentest/internal/skill"
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
@@ -97,7 +99,7 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 
 	adapter, runtimeConfig, err := server.buildTaskAdapter(created, launchModelOverride)
 	if err != nil {
-		writeError(response, http.StatusInternalServerError, "prepare runtime adapter")
+		writeTaskAdapterError(response, err)
 		return
 	}
 
@@ -261,6 +263,8 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string, la
 		Goal:          goal,
 		ConfigPath:    configPath,
 		MCPConfigPath: mcpConfigPath,
+		YOLO:    created.RunControls.YOLO,
+		Sandbox: sandbox,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -551,7 +555,7 @@ func (server *Server) handleResumeTask(response http.ResponseWriter, request *ht
 
 	adapter, runtimeConfig, err := server.buildTaskAdapterForGoal(found, resumeGoal, "")
 	if err != nil {
-		writeError(response, http.StatusInternalServerError, "prepare runtime adapter")
+		writeTaskAdapterError(response, err)
 		return
 	}
 	if _, err := server.tasks.RecordRuntimeConfig(found.ID, found.RuntimeProfileID, runtimeConfig); err != nil {
@@ -845,5 +849,18 @@ func writeTaskError(response http.ResponseWriter, err error) {
 		writeError(response, http.StatusNotFound, err.Error())
 	default:
 		writeError(response, http.StatusInternalServerError, "task operation failed")
+	}
+}
+
+func writeTaskAdapterError(response http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, skill.ErrInvalidSkill),
+		errors.Is(err, modelprovider.ErrMissingAPIKeyEnv),
+		errors.Is(err, modelprovider.ErrMissingProvider),
+		errors.Is(err, modelprovider.ErrMissingModel),
+		errors.Is(err, modelprovider.ErrIncompatibleProtocol):
+		writeError(response, http.StatusBadRequest, err.Error())
+	default:
+		writeError(response, http.StatusInternalServerError, err.Error())
 	}
 }

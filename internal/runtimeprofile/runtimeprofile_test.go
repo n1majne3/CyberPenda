@@ -23,6 +23,74 @@ func newTestService(t *testing.T) *runtimeprofile.Service {
 	return runtimeprofile.NewService(db)
 }
 
+func TestCreateDefaultsToManualKind(t *testing.T) {
+	service := newTestService(t)
+
+	created, err := service.Create("Manual Preset", runtimeprofile.ProviderCodex, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if created.Kind != runtimeprofile.ProfileKindManual {
+		t.Fatalf("expected manual kind, got %q", created.Kind)
+	}
+
+	fetched, err := service.Get(created.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if fetched.Kind != runtimeprofile.ProfileKindManual {
+		t.Fatalf("expected persisted manual kind, got %q", fetched.Kind)
+	}
+}
+
+func TestPromoteToPresetChangesLaunchResolvedKind(t *testing.T) {
+	service := newTestService(t)
+
+	created, err := service.CreateLaunchResolved("Codex · MiMo", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		ModelProviderID: "mimo",
+		DefaultRunner:   "sandbox",
+	})
+	if err != nil {
+		t.Fatalf("create launch resolved: %v", err)
+	}
+	if created.Kind != runtimeprofile.ProfileKindLaunchResolve {
+		t.Fatalf("expected launch_resolve, got %q", created.Kind)
+	}
+
+	promoted, err := service.PromoteToPreset(created.ID)
+	if err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	if promoted.Kind != runtimeprofile.ProfileKindManual {
+		t.Fatalf("expected manual after promote, got %q", promoted.Kind)
+	}
+
+	fetched, err := service.Get(created.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if fetched.Kind != runtimeprofile.ProfileKindManual {
+		t.Fatalf("expected persisted manual kind, got %q", fetched.Kind)
+	}
+}
+
+func TestPromoteToPresetIsIdempotentForManualProfiles(t *testing.T) {
+	service := newTestService(t)
+
+	created, err := service.Create("Manual", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	promoted, err := service.PromoteToPreset(created.ID)
+	if err != nil {
+		t.Fatalf("promote manual: %v", err)
+	}
+	if promoted.Kind != runtimeprofile.ProfileKindManual {
+		t.Fatalf("expected manual, got %q", promoted.Kind)
+	}
+}
+
 func TestCreateRejectsBlankName(t *testing.T) {
 	service := newTestService(t)
 

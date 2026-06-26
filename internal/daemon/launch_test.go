@@ -41,12 +41,18 @@ func TestResolveLaunchRuntimeProfileCreatesAndReusesProfile(t *testing.T) {
 	var first struct {
 		ProfileID string `json:"profile_id"`
 		Created   bool   `json:"created"`
+		Profile   struct {
+			Kind string `json:"kind"`
+		} `json:"profile"`
 	}
 	if err := json.NewDecoder(resolveResp.Body).Decode(&first); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if first.ProfileID == "" || !first.Created {
 		t.Fatalf("expected created profile, got %#v", first)
+	}
+	if first.Profile.Kind != "launch_resolve" {
+		t.Fatalf("expected launch_resolve kind, got %q", first.Profile.Kind)
 	}
 
 	req2 := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles/resolve-launch", bytes.NewReader(body))

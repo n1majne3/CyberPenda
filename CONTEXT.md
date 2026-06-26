@@ -112,6 +112,10 @@ _Avoid_: account, credential bundle, secret store
 A **Runtime Profile** saved for reuse because it carries advanced launch configuration such as **MCP Configuration**, **Runtime Extension Enablement**, binary paths, or runner defaults beyond a minimal **Launch Selection**.
 _Avoid_: model provider, launch picker default, project-local copy
 
+**Launch-Resolved Runtime Profile**:
+A minimal global **Runtime Profile** created or reused by **Launch Profile Resolution** when no **Runtime Profile Preset** is selected. It is marked `launch_resolve` in storage, grouped separately from user-authored presets, and may be promoted to a **Runtime Profile Preset** after the user adds MCP, skills, or extension configuration.
+_Avoid_: preset, project-local profile, launch-time copy
+
 **Model Provider**:
 A global reusable non-secret configuration for a model service that a **Runtime Profile** can use when a **Runtime** needs model access.
 _Avoid_: runtime profile, runtime plugin, model only, credential value
@@ -689,7 +693,9 @@ _Avoid_: transcript, export, source of truth
 - Changing the selected **Runtime Plugin** family during launch clears an incompatible **Runtime Profile Preset** selection.
 - **Launch Profile Resolution** reuses an explicitly selected **Runtime Profile Preset** when one is chosen.
 - **Launch Profile Resolution** otherwise finds or creates a minimal **Runtime Profile** that matches the **Launch Selection** runtime, **Model Provider**, and model choice.
-- A minimal **Runtime Profile** created by **Launch Profile Resolution** may later gain MCP, skills, or extension configuration without breaking reuse for the same **Launch Selection**.
+- A minimal **Runtime Profile** created by **Launch Profile Resolution** is stored as a **Launch-Resolved Runtime Profile** (`launch_resolve`) and may later gain MCP, skills, or extension configuration without breaking reuse for the same **Launch Selection**.
+- A **Launch-Resolved Runtime Profile** may be promoted to a **Runtime Profile Preset** (`manual`) without changing its identity or launch-matching behavior.
+- **Skill Opt-Out** changes on a **Launch-Resolved Runtime Profile** apply to future launches that resolve to the same **Launch Selection**.
 - A **Runtime Profile** uses structured fields as source of truth for **Generated Runtime Config**.
 - **Generated Runtime Config** previews the resolved non-secret **Model Runtime Projection**, including base URL, protocol, model, generated API key environment variable name, and runtime-specific projection target.
 - A **Runtime Plugin** describes which structured fields a **Runtime Profile** exposes.

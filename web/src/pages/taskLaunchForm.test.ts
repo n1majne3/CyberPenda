@@ -154,6 +154,39 @@ describe("taskLaunchForm", () => {
     expect(presetMatchesRuntime("codex-preset", profiles, "pi")).toBe(false);
   });
 
+  it("excludes launch-resolved profiles from preset pickers", () => {
+    const profiles: RuntimeProfile[] = [
+      {
+        id: "codex-preset",
+        name: "Codex MCP",
+        provider: "codex",
+        kind: "manual",
+        fields: { model_provider_id: "mimo" },
+        created_at: "",
+        updated_at: "",
+      },
+      {
+        id: "codex-auto",
+        name: "Codex · MiMo",
+        provider: "codex",
+        kind: "launch_resolve",
+        fields: { model_provider_id: "mimo" },
+        created_at: "",
+        updated_at: "",
+      },
+    ];
+    expect(presetsForRuntime(profiles, "codex").map((profile) => profile.id)).toEqual(["codex-preset"]);
+    expect(presetMatchesRuntime("codex-auto", profiles, "codex")).toBe(false);
+    expect(
+      initialLaunchState({
+        plugins: [codexPlugin],
+        modelProviders: [mimoProvider],
+        profiles,
+        defaultRuntimeProfileId: "codex-auto",
+      }).presetId,
+    ).toBe("");
+  });
+
   it("builds launch form from a selected preset", () => {
     const preset: RuntimeProfile = {
       id: "codex-preset",

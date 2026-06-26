@@ -292,6 +292,9 @@ func migrate(db *sql.DB) error {
 	if err := ensureColumn(db, "projects", "defaults_json", "TEXT NOT NULL DEFAULT '{}'"); err != nil {
 		return fmt.Errorf("ensure projects.defaults_json: %w", err)
 	}
+	if err := ensureColumn(db, "runtime_profiles", "kind", "TEXT NOT NULL DEFAULT 'manual'"); err != nil {
+		return fmt.Errorf("ensure runtime_profiles.kind: %w", err)
+	}
 
 	return nil
 }

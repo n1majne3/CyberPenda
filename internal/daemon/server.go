@@ -146,7 +146,9 @@ func NewServer(config Config) (*Server, error) {
 		modelProviders:    modelProviders,
 		skills:            skills,
 		creds:             creds,
-		preflight:         preflight.NewService(profiles, creds, skills).WithModelProviders(modelProviders, runtimePlugins),
+		preflight: preflight.NewService(profiles, creds, skills).
+			WithModelProviders(modelProviders, runtimePlugins).
+			WithRuntimeExtensions(runtimeExtensions),
 		tasks:             tasks,
 		harness:           runtime.NewHarness(tasks),
 		facts:             blackboard.NewService(db),
@@ -255,6 +257,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/runtime-profiles", server.handleListRuntimeProfiles)
 	server.mux.HandleFunc("GET /api/runtime-profiles/{id}", server.handleGetRuntimeProfile)
 	server.mux.HandleFunc("PATCH /api/runtime-profiles/{id}", server.handleUpdateRuntimeProfile)
+	server.mux.HandleFunc("POST /api/runtime-profiles/{id}/promote", server.handlePromoteRuntimeProfile)
 	server.mux.HandleFunc("DELETE /api/runtime-profiles/{id}", server.handleDeleteRuntimeProfile)
 	server.mux.HandleFunc("GET /api/runtime-profiles/{id}/model-provider-migration-preview", server.handlePreviewModelProviderMigration)
 	server.mux.HandleFunc("POST /api/runtime-profiles/{id}/model-provider-migration", server.handleApplyModelProviderMigration)
@@ -590,6 +593,26 @@ func (server *Server) handleUpdateRuntimeProfile(response http.ResponseWriter, r
 	}
 
 	writeJSON(response, http.StatusOK, runtimeprofile.SanitizeProfile(updated))
+}
+
+func (server *Server) handlePromoteRuntimeProfile(response http.ResponseWriter, request *http.Request) {
+	id := request.PathValue("id")
+	if id == "" {
+		writeError(response, http.StatusNotFound, "runtime profile not found")
+		return
+	}
+
+	promoted, err := server.profiles.PromoteToPreset(id)
+	if errors.Is(err, runtimeprofile.ErrNotFound) {
+		writeError(response, http.StatusNotFound, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "promote runtime profile")
+		return
+	}
+
+	writeJSON(response, http.StatusOK, runtimeprofile.SanitizeProfile(promoted))
 }
 
 func (server *Server) handleDeleteRuntimeProfile(response http.ResponseWriter, request *http.Request) {

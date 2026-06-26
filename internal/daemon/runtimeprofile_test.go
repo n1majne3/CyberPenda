@@ -64,6 +64,95 @@ func TestCreateRuntimeProfilePersistsCodexProvider(t *testing.T) {
 	}
 }
 
+func TestCreateRuntimeProfileDefaultsToManualKind(t *testing.T) {
+	server := newDaemon(t)
+
+	body := []byte(`{
+		"name": "Codex Preset",
+		"provider": "codex",
+		"fields": {"model_provider_id": "mimo"}
+	}`)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles", bytes.NewReader(body))
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp := httptest.NewRecorder()
+	server.ServeHTTP(createResp, createReq)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("expected create status 201, got %d with body %s", createResp.Code, createResp.Body.String())
+	}
+
+	var created struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if created.Kind != "manual" {
+		t.Fatalf("expected manual kind, got %q", created.Kind)
+	}
+}
+
+func TestPromoteRuntimeProfileMarksLaunchResolvedAsManual(t *testing.T) {
+	server := newDaemon(t)
+
+	createProvider := httptest.NewRequest(http.MethodPost, "/api/model-providers", bytes.NewReader([]byte(`{
+		"name":"MiMo",
+		"base_url":"https://api.example.test/v1",
+		"protocols":["openai_responses"],
+		"catalog":{"manual":["mimo"],"default_model":"mimo"}
+	}`)))
+	createProvider.Header.Set("Content-Type", "application/json")
+	providerResp := httptest.NewRecorder()
+	server.ServeHTTP(providerResp, createProvider)
+	if providerResp.Code != http.StatusCreated {
+		t.Fatalf("create provider status %d body %s", providerResp.Code, providerResp.Body.String())
+	}
+	var provider struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(providerResp.Body).Decode(&provider); err != nil {
+		t.Fatalf("decode provider: %v", err)
+	}
+
+	resolveBody := []byte(`{"provider":"codex","model_provider_id":"` + provider.ID + `"}`)
+	resolveReq := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles/resolve-launch", bytes.NewReader(resolveBody))
+	resolveReq.Header.Set("Content-Type", "application/json")
+	resolveResp := httptest.NewRecorder()
+	server.ServeHTTP(resolveResp, resolveReq)
+	if resolveResp.Code != http.StatusOK {
+		t.Fatalf("resolve status %d body %s", resolveResp.Code, resolveResp.Body.String())
+	}
+	var resolved struct {
+		ProfileID string `json:"profile_id"`
+		Profile   struct {
+			Kind string `json:"kind"`
+		} `json:"profile"`
+	}
+	if err := json.NewDecoder(resolveResp.Body).Decode(&resolved); err != nil {
+		t.Fatalf("decode resolve: %v", err)
+	}
+	if resolved.Profile.Kind != "launch_resolve" {
+		t.Fatalf("expected launch_resolve, got %q", resolved.Profile.Kind)
+	}
+
+	promoteReq := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles/"+resolved.ProfileID+"/promote", nil)
+	promoteResp := httptest.NewRecorder()
+	server.ServeHTTP(promoteResp, promoteReq)
+	if promoteResp.Code != http.StatusOK {
+		t.Fatalf("promote status %d body %s", promoteResp.Code, promoteResp.Body.String())
+	}
+	var promoted struct {
+		ID   string `json:"id"`
+		Kind string `json:"kind"`
+	}
+	if err := json.NewDecoder(promoteResp.Body).Decode(&promoted); err != nil {
+		t.Fatalf("decode promote: %v", err)
+	}
+	if promoted.ID != resolved.ProfileID || promoted.Kind != "manual" {
+		t.Fatalf("unexpected promoted profile: %#v", promoted)
+	}
+}
+
 func TestCreateRuntimeProfilePersistsFakeProvider(t *testing.T) {
 	server := newDaemon(t)
 

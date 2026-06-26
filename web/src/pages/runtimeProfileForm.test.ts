@@ -110,6 +110,49 @@ describe("runtimeProfileForm", () => {
     expect(fields.credential_refs).toEqual(["codex-api-key"]);
   });
 
+  it("persists catalog extension install metadata in profile fields", () => {
+    const fields = buildProfileFields(
+      {
+        name: "Pi Catalog",
+        provider: "pi",
+        binary_path: "",
+        model: "claude-sonnet-4",
+        endpoint: "https://api.example.test/anthropic",
+        model_provider_id: "",
+        model_provider_protocol: "",
+        model_override: "",
+        custom_args: "",
+        env: "",
+        api_key_env: "ANTHROPIC_API_KEY",
+        api_key: "sk-test",
+        runtime_extensions: [
+          {
+            id: "npm:pi-mcp-adapter",
+            enabled: true,
+            config: "registry=pi.dev/packages\ninstall_ref=npm:pi-mcp-adapter\nsource_url=https://pi.dev/packages/pi-mcp-adapter",
+          },
+        ],
+        mcp_servers: "",
+        default_runner: "sandbox",
+        sandbox_image: "",
+        credential_refs: "",
+      },
+      plugins,
+    );
+
+    expect(fields.runtime_extensions).toEqual([
+      {
+        id: "npm:pi-mcp-adapter",
+        enabled: true,
+        config: {
+          registry: "pi.dev/packages",
+          install_ref: "npm:pi-mcp-adapter",
+          source_url: "https://pi.dev/packages/pi-mcp-adapter",
+        },
+      },
+    ]);
+  });
+
   it("clears legacy fields when selecting a model provider", () => {
     expect(
       applyModelProviderSelection(
