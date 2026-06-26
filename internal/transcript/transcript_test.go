@@ -119,6 +119,49 @@ func TestIsIgnorableRuntimeLineDetectsThinkingTokens(t *testing.T) {
 	}
 }
 
+func TestIsIgnorableRuntimeLineDetectsClaudeInitAndResult(t *testing.T) {
+	init := `{"type":"system","subtype":"init","cwd":"/task/workdir","session_id":"abc"}`
+	if !transcript.IsIgnorableRuntimeLine(init) {
+		t.Fatal("expected system init line to be ignorable")
+	}
+	result := `{"type":"result","subtype":"success","is_error":false}`
+	if !transcript.IsIgnorableRuntimeLine(result) {
+		t.Fatal("expected result line to be ignorable")
+	}
+}
+
+func TestIsIgnorableRuntimeLineDetectsThinkingOnlyAssistant(t *testing.T) {
+	line := `{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"planning next step"}]}}`
+	if !transcript.IsIgnorableRuntimeLine(line) {
+		t.Fatal("expected thinking-only assistant line to be ignorable")
+	}
+}
+
+func TestBuildDropsClaudeInitResultAndThinkingOnlyChunks(t *testing.T) {
+	subject := task.Task{ID: "task-1", Goal: "Do work", CreatedAt: time.Now().UTC()}
+	events := []task.Event{
+		{ID: "ev-1", Seq: 1, Kind: task.EventKindLifecycle, Payload: task.EventPayload{"phase": "started", "adapter": "claude_code"}},
+		{ID: "ev-2", Seq: 2, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"system","subtype":"init","session_id":"abc"}`}},
+		{ID: "ev-3", Seq: 3, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"only thoughts"}]}}`}},
+		{ID: "ev-4", Seq: 4, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"curl example.com"}}]}}`}},
+		{ID: "ev-5", Seq: 5, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"result","subtype":"success","is_error":false}`}},
+		{ID: "ev-6", Seq: 6, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"assistant","message":{"content":[{"type":"text","text":"Done."}]}}`}},
+	}
+
+	got := transcript.Build(subject, events)
+
+	for _, entry := range got {
+		if entry.Kind == "runtime_output" {
+			t.Fatalf("expected no runtime_output fallbacks, got %#v", entry)
+		}
+	}
+	call := requireEntry(t, got, "ev-4-tool-call-0", "tool_call", "assistant", "")
+	if call.ToolName != "Bash" {
+		t.Fatalf("unexpected tool call: %#v", call)
+	}
+	requireEntry(t, got, "ev-6-message-0", "message", "assistant", "Done.")
+}
+
 func TestBuildFallsBackForUnknownJSONRuntimeOutput(t *testing.T) {
 	subject := task.Task{ID: "task-1", Goal: "Do work", CreatedAt: time.Now().UTC()}
 	events := []task.Event{

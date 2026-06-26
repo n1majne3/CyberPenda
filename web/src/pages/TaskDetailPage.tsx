@@ -4,6 +4,7 @@ import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, FileT
 import { apiGet, apiPost, type Task, type TaskEvent, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Card, Input, Badge, Select } from "@/components/ui";
 import { BackLink, PageContainer } from "@/components/shared";
+import { collapsedTranscriptTitle, summarizeTaskEvent } from "./taskDetailView";
 
 const ACTIVE = new Set(["running", "paused"]);
 
@@ -277,7 +278,7 @@ function StatusBadge({ status }: { status: string }) {
 
 function TranscriptList({ entries, endRef }: { entries: TaskTranscriptEntry[]; endRef: RefObject<HTMLDivElement | null> }) {
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       {entries.map((entry) => (
         <TranscriptRow key={entry.id} entry={entry} />
       ))}
@@ -289,12 +290,14 @@ function TranscriptList({ entries, endRef }: { entries: TaskTranscriptEntry[]; e
 
 function TimelineList({ events, endRef }: { events: TaskEvent[]; endRef: RefObject<HTMLDivElement | null> }) {
   return (
-    <div className="space-y-2">
-      {events.map((ev) => (
-        <EventRow key={ev.id} ev={ev} />
-      ))}
-      {events.length === 0 && <p className="text-sm text-muted-foreground">No events yet.</p>}
-      <div ref={endRef} />
+    <div className="rounded-lg border border-border bg-muted/20 p-2 font-mono text-xs">
+      <div className="space-y-1">
+        {events.map((ev) => (
+          <EventRow key={ev.id} ev={ev} />
+        ))}
+        {events.length === 0 && <p className="px-2 py-3 text-sm text-muted-foreground">No events yet.</p>}
+        <div ref={endRef} />
+      </div>
     </div>
   );
 }
@@ -302,9 +305,11 @@ function TimelineList({ events, endRef }: { events: TaskEvent[]; endRef: RefObje
 function TranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
   if (entry.kind === "continuation") {
     return (
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        <GitBranch className="h-3.5 w-3.5" />
-        <span>#{entry.seq} {entry.text}</span>
+      <div className="flex items-center justify-center gap-2 py-1 text-xs text-muted-foreground">
+        <span className="h-px flex-1 bg-border" />
+        <GitBranch className="h-3.5 w-3.5 shrink-0" />
+        <span className="shrink-0">#{entry.seq} {entry.text}</span>
+        <span className="h-px flex-1 bg-border" />
       </div>
     );
   }
@@ -313,16 +318,26 @@ function TranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
     return <CollapsedTranscriptRow entry={entry} />;
   }
 
-  const Icon = entry.role === "user" ? User : entry.role === "assistant" ? Bot : MessageSquare;
+  const isUser = entry.role === "user";
+  const Icon = isUser ? User : entry.role === "assistant" ? Bot : MessageSquare;
   return (
-    <div className="flex gap-3 text-sm">
-      <span className="text-muted-foreground shrink-0 mt-0.5">
-        <Icon className="h-4 w-4" />
-      </span>
-      <div className="flex-1 min-w-0">
-        <div className="text-xs text-muted-foreground mb-1">#{entry.seq} {entry.role}{entry.created_at && ` · ${new Date(entry.created_at).toLocaleString()}`}</div>
+    <div className={`flex gap-2 text-sm ${isUser ? "justify-end" : "justify-start"}`}>
+      {!isUser && (
+        <span className="text-muted-foreground shrink-0 mt-2">
+          <Icon className="h-4 w-4" />
+        </span>
+      )}
+      <div className={`min-w-0 max-w-[85%] rounded-2xl border px-4 py-3 shadow-sm ${isUser ? "border-primary/20 bg-primary/10" : "border-border bg-card"}`}>
+        <div className="mb-1 text-xs text-muted-foreground">
+          #{entry.seq} {entry.role}{entry.created_at && ` · ${new Date(entry.created_at).toLocaleString()}`}
+        </div>
         <div className="whitespace-pre-wrap break-words leading-6">{entry.text}</div>
       </div>
+      {isUser && (
+        <span className="text-muted-foreground shrink-0 mt-2">
+          <Icon className="h-4 w-4" />
+        </span>
+      )}
     </div>
   );
 }
@@ -335,7 +350,7 @@ function CollapsedTranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
         <ChevronRight className="h-3.5 w-3.5 text-muted-foreground transition-transform group-open:rotate-90" />
         <Icon className="h-4 w-4 text-muted-foreground" />
         <span className="text-xs text-muted-foreground shrink-0">#{entry.seq}</span>
-        <span className="truncate">{collapsedTitle(entry)}</span>
+        <span className="truncate">{collapsedTranscriptTitle(entry)}</span>
         {entry.created_at && <span className="text-xs text-muted-foreground ml-auto shrink-0">{new Date(entry.created_at).toLocaleString()}</span>}
       </summary>
       <div className="border-t border-border px-3 py-2">
@@ -347,17 +362,6 @@ function CollapsedTranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
 
 function isCollapsedTranscriptEntry(entry: TaskTranscriptEntry) {
   return entry.kind === "tool_call" || entry.kind === "tool_result" || entry.kind === "runtime_output";
-}
-
-function collapsedTitle(entry: TaskTranscriptEntry) {
-  if (entry.kind === "tool_call") {
-    return entry.tool_name ? `Tool call: ${entry.tool_name}` : "Tool call";
-  }
-  if (entry.kind === "tool_result") {
-    return entry.tool_call_id ? `Tool result: ${entry.tool_call_id}` : "Tool result";
-  }
-  const prefix = entry.stream ? `Runtime output (${entry.stream})` : "Runtime output";
-  return entry.text ? `${prefix}: ${firstLine(entry.text)}` : prefix;
 }
 
 function collapsedBody(entry: TaskTranscriptEntry) {
@@ -377,18 +381,29 @@ function firstLine(value: string) {
 
 function EventRow({ ev }: { ev: TaskEvent }) {
   const icon =
-    ev.kind === "lifecycle" ? <Activity className="h-3.5 w-3.5" /> :
-    ev.kind === "steering" ? <GitBranch className="h-3.5 w-3.5" /> :
-    ev.kind === "conversation" ? <MessageSquare className="h-3.5 w-3.5" /> :
-    <Terminal className="h-3.5 w-3.5" />;
-  const text = (ev.payload.text as string) ?? (ev.payload.phase as string) ?? JSON.stringify(ev.payload);
+    ev.kind === "lifecycle" ? <Activity className="h-3 w-3" /> :
+    ev.kind === "steering" ? <GitBranch className="h-3 w-3" /> :
+    ev.kind === "conversation" ? <MessageSquare className="h-3 w-3" /> :
+    <Terminal className="h-3 w-3" />;
+  const summary = summarizeTaskEvent(ev);
+  const raw = typeof ev.payload.text === "string" ? ev.payload.text : "";
+  const showDetails = ev.kind === "runtime_output" && raw.trim().startsWith("{");
   return (
-    <div className="flex gap-2 text-sm">
-      <span className="text-muted-foreground shrink-0 mt-0.5">{icon}</span>
-      <div className="flex-1 min-w-0">
-        <span className="text-xs text-muted-foreground mr-2">#{ev.seq} {ev.kind}{ev.created_at && ` · ${new Date(ev.created_at).toLocaleString()}`}</span>
-        <span className="whitespace-pre-wrap break-words">{text}</span>
-      </div>
-    </div>
+    <details className="group rounded border border-transparent px-2 py-1 hover:border-border hover:bg-background/60 open:border-border open:bg-background/80">
+      <summary className="flex cursor-pointer list-none items-start gap-2 [&::-webkit-details-marker]:hidden">
+        <span className="mt-0.5 shrink-0 text-muted-foreground">{icon}</span>
+        <span className="min-w-0 flex-1">
+          <span className="text-muted-foreground">#{ev.seq} {ev.kind}</span>
+          {ev.created_at && <span className="text-muted-foreground"> · {new Date(ev.created_at).toLocaleTimeString()}</span>}
+          <span className="ml-2 text-foreground">{summary}</span>
+        </span>
+        {showDetails && <ChevronRight className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />}
+      </summary>
+      {showDetails && (
+        <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words border-t border-border/60 px-2 py-2 text-[11px] leading-5 text-muted-foreground">
+          {raw}
+        </pre>
+      )}
+    </details>
   );
 }

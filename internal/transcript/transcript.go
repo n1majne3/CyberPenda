@@ -176,6 +176,9 @@ func entriesForEvent(event task.Event, continuation int, adapter string) []Entry
 		if parsed := parseRuntimeOutput(event, continuation, adapter, text); len(parsed) > 0 {
 			return parsed
 		}
+		if isIgnorableUnparsedRuntimeLine(text) {
+			return nil
+		}
 		return []Entry{runtimeFallback(event, continuation, text, stream)}
 	default:
 		return nil
@@ -296,6 +299,8 @@ func parseContentBlocks(content []any, base Entry, role string) []Entry {
 		case map[string]any:
 			blockType := stringValue(value, "type")
 			switch strings.ToLower(blockType) {
+			case "thinking":
+				continue
 			case "text":
 				if text := firstText(value, "text", "content"); text != "" {
 					entries = append(entries, messageEntry(base, fmt.Sprintf("%s-message-%d", base.ID, index), role, text))
@@ -380,12 +385,28 @@ func IsIgnorableRuntimeLine(text string) bool {
 	if err := json.Unmarshal([]byte(text), &record); err != nil {
 		return false
 	}
-	return isIgnorableSystemRecord(record) || isIgnorableRecordType(record)
+	return isIgnorableRuntimeRecord(record)
+}
+
+func isIgnorableUnparsedRuntimeLine(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" || !strings.HasPrefix(text, "{") {
+		return false
+	}
+	var record map[string]any
+	if err := json.Unmarshal([]byte(text), &record); err != nil {
+		return false
+	}
+	return isThinkingOnlyAssistantRecord(record)
+}
+
+func isIgnorableRuntimeRecord(record map[string]any) bool {
+	return isIgnorableSystemRecord(record) || isIgnorableRecordType(record) || isThinkingOnlyAssistantRecord(record)
 }
 
 func isIgnorableRecordType(record map[string]any) bool {
 	switch stringValue(record, "type") {
-	case "ping", "keepalive":
+	case "ping", "keepalive", "result":
 		return true
 	default:
 		return false
@@ -397,10 +418,35 @@ func isIgnorableSystemRecord(record map[string]any) bool {
 		return false
 	}
 	switch stringValue(record, "subtype") {
-	case "thinking_tokens":
+	case "thinking_tokens", "init":
 		return true
 	}
 	return false
+}
+
+func isThinkingOnlyAssistantRecord(record map[string]any) bool {
+	if stringValue(record, "type") != "assistant" {
+		return false
+	}
+	message, ok := mapValue(record, "message")
+	if !ok {
+		return false
+	}
+	content, ok := sliceValue(message, "content")
+	if !ok || len(content) == 0 {
+		return false
+	}
+	for _, block := range content {
+		blockMap, ok := block.(map[string]any)
+		if !ok {
+			return false
+		}
+		blockType := strings.ToLower(stringValue(blockMap, "type"))
+		if blockType != "thinking" {
+			return false
+		}
+	}
+	return true
 }
 
 func runtimeFallback(event task.Event, continuation int, text, stream string) Entry {
