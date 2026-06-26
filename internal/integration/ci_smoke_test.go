@@ -52,6 +52,39 @@ func TestGitHubSmokeWorkflowsRunWithDaemonWrapper(t *testing.T) {
 	assertFileContains(t, filepath.Join(root, ".github", "workflows", "smoke-runtime-nightly.yml"), "scripts/with-pentestd-live.sh make smoke-runtime-tasks")
 }
 
+func TestWithPentestdLiveBindsAllInterfacesInGitHubActions(t *testing.T) {
+	root := repoRoot(t)
+	port := freeTCPPort(t)
+	daemonURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+	logPath := filepath.Join(t.TempDir(), "pentestd.log")
+
+	cmd := exec.Command(
+		"bash",
+		filepath.Join(root, "scripts", "with-pentestd-live.sh"),
+		"true",
+	)
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(),
+		"GITHUB_ACTIONS=true",
+		"PENTEST_DAEMON_URL="+daemonURL,
+		"PENTEST_DB="+filepath.Join(t.TempDir(), "pentest.db"),
+		"PENTEST_RUNTIME_ROOT="+filepath.Join(t.TempDir(), "runs"),
+		"PENTEST_DAEMON_LOG="+logPath,
+	)
+
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("with-pentestd-live.sh failed: %v\n%s", err, output)
+	}
+
+	body, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read daemon log: %v", err)
+	}
+	if !strings.Contains(string(body), fmt.Sprintf("listening on http://0.0.0.0:%d", port)) {
+		t.Fatalf("expected daemon to listen on all interfaces in GitHub Actions, got log:\n%s", body)
+	}
+}
+
 func repoRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()
