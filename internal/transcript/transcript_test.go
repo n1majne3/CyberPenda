@@ -1,6 +1,7 @@
 package transcript_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -87,6 +88,34 @@ func TestBuildParsesClaudeAssistantTextAndToolUse(t *testing.T) {
 	result := requireEntry(t, got, "ev-3-tool-result-0", "tool_result", "tool", "OK")
 	if result.ToolCallID != "toolu_1" {
 		t.Fatalf("unexpected Claude tool result: %#v", result)
+	}
+}
+
+func TestBuildDropsClaudeThinkingTokenNoise(t *testing.T) {
+	subject := task.Task{ID: "task-1", Goal: "Do work", CreatedAt: time.Now().UTC()}
+	events := []task.Event{
+		{ID: "ev-1", Seq: 1, Kind: task.EventKindLifecycle, Payload: task.EventPayload{"phase": "started", "adapter": "claude_code"}},
+		{ID: "ev-2", Seq: 2, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"stream": "stdout", "text": `{"type":"system","subtype":"thinking_tokens","estimated_tokens":13,"uuid":"abc"}`}},
+		{ID: "ev-3", Seq: 3, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"stream": "stdout", "text": `{"type":"assistant","message":{"content":[{"type":"text","text":"Ready."}]}}`}},
+	}
+
+	got := transcript.Build(subject, events)
+
+	for _, entry := range got {
+		if entry.Kind == "runtime_output" && strings.Contains(entry.Text, "thinking_tokens") {
+			t.Fatalf("expected thinking token noise to be dropped, got %#v", entry)
+		}
+	}
+	requireEntry(t, got, "ev-3-message-0", "message", "assistant", "Ready.")
+}
+
+func TestIsIgnorableRuntimeLineDetectsThinkingTokens(t *testing.T) {
+	line := `{"type":"system","subtype":"thinking_tokens","estimated_tokens":13}`
+	if !transcript.IsIgnorableRuntimeLine(line) {
+		t.Fatal("expected thinking token line to be ignorable")
+	}
+	if transcript.IsIgnorableRuntimeLine(`{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}`) {
+		t.Fatal("expected assistant message to remain visible")
 	}
 }
 

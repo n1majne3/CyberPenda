@@ -95,6 +95,7 @@ type ProfileGetter interface {
 
 type SkillGetter interface {
 	EnabledSkills(profileID string) ([]skill.Skill, error)
+	EnabledSkillBundles(profileID string) ([]skill.Bundle, error)
 }
 
 // Service runs preflight against the runtime profile and credential services.
@@ -162,7 +163,20 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 				}
 				result.Skills = append(result.Skills, preview)
 			}
-			if len(enabledSkills) == 0 {
+			bundles, err := s.skills.EnabledSkillBundles(profile.ID)
+			if err != nil {
+				result.add(Check{
+					Name:   "skills",
+					Status: CheckFail,
+					Detail: fmt.Sprintf("resolve enabled skill bundles: %v", err),
+				})
+			} else if bundleErr := validateEnabledSkillBundles(bundles); bundleErr != nil {
+				result.add(Check{
+					Name:   "skills",
+					Status: CheckFail,
+					Detail: bundleErr.Error(),
+				})
+			} else if len(enabledSkills) == 0 {
 				result.add(Check{Name: "skills", Status: CheckPass, Detail: "no enabled skills"})
 			} else {
 				result.add(Check{Name: "skills", Status: CheckPass, Detail: fmt.Sprintf("%d enabled skill(s)", len(enabledSkills))})
@@ -392,6 +406,19 @@ func runtimepluginForProfile(profile runtimeprofile.Profile, registry *runtimepl
 		return registry.Get(string(profile.Provider))
 	}
 	return runtimeplugin.MustBuiltinRegistry().Get(string(profile.Provider))
+}
+
+func validateEnabledSkillBundles(bundles []skill.Bundle) error {
+	for _, bundle := range bundles {
+		meta := skill.Metadata{
+			ID:   skill.DisplayID(bundle.ID, bundle.Source),
+			Name: skill.DisplayName(bundle.Name, bundle.ID, bundle.Source),
+		}
+		if err := skill.ValidateBundle(bundle.Path, meta); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *Result) add(check Check) {

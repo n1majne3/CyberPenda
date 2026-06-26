@@ -8,6 +8,7 @@ import (
 	"testing"
 	"unicode"
 
+	"pentest/internal/runtimeprofile"
 	"pentest/internal/skill"
 )
 
@@ -181,6 +182,101 @@ func builtinBundleByID(t *testing.T, id string) skill.ImportedBundle {
 	}
 	t.Fatalf("missing builtin bundle %q", id)
 	return skill.ImportedBundle{}
+}
+
+func TestInstallBuiltinSkillsPurgesSupersededPrunedLegacyIDs(t *testing.T) {
+	db := openTestStore(t)
+	skillsRoot := filepath.Join(t.TempDir(), "skills")
+	svc := skill.NewService(db, skillsRoot)
+	ctx := context.Background()
+	profile, err := runtimeprofile.NewService(db).Create("fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+
+	if _, err := svc.Publish(ctx, skill.PublishRequest{
+		Metadata: skill.Metadata{
+			ID:     "cyberstrikeai-business-logic-testing",
+			Name:   "business-logic-testing",
+			Source: skill.SourceProvenance{Kind: "builtin"},
+		},
+		Files: map[string]string{"SKILL.md": "# legacy"},
+	}); err != nil {
+		t.Fatalf("publish legacy builtin: %v", err)
+	}
+	if err := svc.SetOptOut(profile.ID, "cyberstrikeai-business-logic-testing", true); err != nil {
+		t.Fatalf("set legacy opt-out: %v", err)
+	}
+	if err := svc.InstallBuiltinSkills(ctx); err != nil {
+		t.Fatalf("install builtins: %v", err)
+	}
+	if _, err := svc.Get("cyberstrikeai-business-logic-testing"); err == nil {
+		t.Fatal("expected superseded legacy builtin ID to be removed")
+	}
+	got, err := svc.Get("vulnerabilities-business-logic")
+	if err != nil {
+		t.Fatalf("get successor builtin: %v", err)
+	}
+	if got.Source.Kind != "builtin" {
+		t.Fatalf("unexpected successor provenance: %#v", got.Source)
+	}
+	enabled, err := svc.EnabledSkills(profile.ID)
+	if err != nil {
+		t.Fatalf("list enabled skills: %v", err)
+	}
+	for _, skillID := range enabled {
+		if skillID.ID == "vulnerabilities-business-logic" {
+			t.Fatal("expected successor builtin to remain opted out after legacy purge")
+		}
+	}
+}
+
+func TestInstallBuiltinSkillsPurgesRetiredStrixPrefixedLegacyIDs(t *testing.T) {
+	db := openTestStore(t)
+	skillsRoot := filepath.Join(t.TempDir(), "skills")
+	svc := skill.NewService(db, skillsRoot)
+	ctx := context.Background()
+
+	if _, err := svc.Publish(ctx, skill.PublishRequest{
+		Metadata: skill.Metadata{
+			ID:     "strix-coordination-root-agent",
+			Name:   "root-agent",
+			Source: skill.SourceProvenance{Kind: "builtin"},
+		},
+		Files: map[string]string{"SKILL.md": "# retired"},
+	}); err != nil {
+		t.Fatalf("publish retired strix legacy builtin: %v", err)
+	}
+	if err := svc.InstallBuiltinSkills(ctx); err != nil {
+		t.Fatalf("install builtins: %v", err)
+	}
+	if _, err := svc.Get("strix-coordination-root-agent"); err == nil {
+		t.Fatal("expected retired strix-prefixed legacy builtin ID to be removed")
+	}
+}
+
+func TestInstallBuiltinSkillsPurgesRetiredPrunedLegacyIDs(t *testing.T) {
+	db := openTestStore(t)
+	skillsRoot := filepath.Join(t.TempDir(), "skills")
+	svc := skill.NewService(db, skillsRoot)
+	ctx := context.Background()
+
+	if _, err := svc.Publish(ctx, skill.PublishRequest{
+		Metadata: skill.Metadata{
+			ID:     "cyberstrikeai-incident-response",
+			Name:   "incident-response",
+			Source: skill.SourceProvenance{Kind: "builtin"},
+		},
+		Files: map[string]string{"SKILL.md": "# retired"},
+	}); err != nil {
+		t.Fatalf("publish retired legacy builtin: %v", err)
+	}
+	if err := svc.InstallBuiltinSkills(ctx); err != nil {
+		t.Fatalf("install builtins: %v", err)
+	}
+	if _, err := svc.Get("cyberstrikeai-incident-response"); err == nil {
+		t.Fatal("expected retired legacy builtin ID to be removed")
+	}
 }
 
 func TestInstallBuiltinSkillsRepairsMissingBuiltinBundleFiles(t *testing.T) {

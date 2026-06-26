@@ -170,6 +170,9 @@ func entriesForEvent(event task.Event, continuation int, adapter string) []Entry
 		if text == "" {
 			return nil
 		}
+		if IsIgnorableRuntimeLine(text) {
+			return nil
+		}
 		if parsed := parseRuntimeOutput(event, continuation, adapter, text); len(parsed) > 0 {
 			return parsed
 		}
@@ -233,7 +236,12 @@ func ParseRecord(record map[string]any, base Entry) []Entry {
 
 	recordType := stringValue(record, "type")
 	switch recordType {
-	case "assistant", "user", "system", "message", "assistant_message", "agent_message", "response.output_text", "output_text", "message_delta", "content_block_delta":
+	case "system":
+		if isIgnorableSystemRecord(record) {
+			return nil
+		}
+		return parseMessageRecord(record, base, roleFromType(recordType))
+	case "assistant", "user", "message", "assistant_message", "agent_message", "response.output_text", "output_text", "message_delta", "content_block_delta":
 		return parseMessageRecord(record, base, roleFromType(recordType))
 	case "tool_call", "function_call", "tool_use":
 		return []Entry{toolCallEntry(record, base, indexedID(base.ID, "-tool-call", ""))}
@@ -359,6 +367,40 @@ func toolResultEntry(record map[string]any, base Entry, id string) Entry {
 		Status:       StatusCollapsed,
 		CreatedAt:    base.CreatedAt,
 	}
+}
+
+// IsIgnorableRuntimeLine reports whether a raw runtime stdout/stderr line is
+// provider metadata that should not be stored or shown in the task timeline.
+func IsIgnorableRuntimeLine(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" || !strings.HasPrefix(text, "{") {
+		return false
+	}
+	var record map[string]any
+	if err := json.Unmarshal([]byte(text), &record); err != nil {
+		return false
+	}
+	return isIgnorableSystemRecord(record) || isIgnorableRecordType(record)
+}
+
+func isIgnorableRecordType(record map[string]any) bool {
+	switch stringValue(record, "type") {
+	case "ping", "keepalive":
+		return true
+	default:
+		return false
+	}
+}
+
+func isIgnorableSystemRecord(record map[string]any) bool {
+	if stringValue(record, "type") != "system" {
+		return false
+	}
+	switch stringValue(record, "subtype") {
+	case "thinking_tokens":
+		return true
+	}
+	return false
 }
 
 func runtimeFallback(event task.Event, continuation int, text, stream string) Entry {

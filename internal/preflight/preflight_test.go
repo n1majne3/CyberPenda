@@ -258,6 +258,42 @@ func TestRunIncludesExtraRefsFromRequest(t *testing.T) {
 	}
 }
 
+func TestRunFailsWhenEnabledSkillBundleIsMissing(t *testing.T) {
+	svc := newTestServices(t)
+	skillsRoot := filepath.Join(t.TempDir(), "skills")
+	skills := skill.NewService(svc.db, skillsRoot)
+	svc.preflight = preflight.NewService(svc.profiles, svc.creds, skills).
+		WithModelProviders(svc.modelProviders, runtimeplugin.MustBuiltinRegistry())
+	profile, err := svc.profiles.Create("fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	published, err := skills.Publish(context.Background(), skill.PublishRequest{
+		Metadata: skill.Metadata{
+			ID:   "recon-helper",
+			Name: "Recon Helper",
+		},
+		Files: map[string]string{"SKILL.md": "# Recon"},
+	})
+	if err != nil {
+		t.Fatalf("publish skill: %v", err)
+	}
+	if err := os.RemoveAll(published.BundlePath); err != nil {
+		t.Fatalf("remove bundle: %v", err)
+	}
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+	})
+	if result.Pass {
+		t.Fatal("expected preflight to fail when enabled skill bundle is missing")
+	}
+	if !checkFailed(result, "skills") {
+		t.Fatalf("expected skills check to fail, got %#v", result.Checks)
+	}
+}
+
 func TestRunListsEnabledSkillsWithoutAddingCredentialRequirements(t *testing.T) {
 	svc := newTestServices(t)
 	skills := skill.NewService(svc.db, filepath.Join(t.TempDir(), "skills"))
