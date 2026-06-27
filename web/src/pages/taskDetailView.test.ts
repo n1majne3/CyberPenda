@@ -60,6 +60,29 @@ describe("summarizeTaskEvent", () => {
     expect(summarizeTaskEvent(event)).toBe("stdout · assistant: Checking the login page.");
   });
 
+  it("hides task_started and task_failed runtime output from the timeline", () => {
+    for (const [label, subtype] of [["task_started", "task_started"], ["task_failed", "task_failed"]] as const) {
+      const event: TaskEvent = {
+        id: label,
+        task_id: "t",
+        seq: 4,
+        kind: "runtime_output",
+        payload: {
+          stream: "stdout",
+          text: JSON.stringify({
+            type: "system",
+            subtype,
+            task_id: "bbr05bd75",
+            summary: "Explore FTP directory",
+            status: subtype === "task_failed" ? "failed" : undefined,
+          }),
+        },
+        created_at: "",
+      };
+      expect(shouldShowInTimeline(event), label).toBe(false);
+    }
+  });
+
   it("hides task_progress runtime output from the timeline", () => {
     const event: TaskEvent = {
       id: "2d",

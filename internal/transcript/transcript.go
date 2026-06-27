@@ -417,11 +417,13 @@ func isIgnorableSystemRecord(record map[string]any) bool {
 	if stringValue(record, "type") != "system" {
 		return false
 	}
-	switch stringValue(record, "subtype") {
-	case "thinking_tokens", "init", "task_progress":
+	subtype := stringValue(record, "subtype")
+	switch subtype {
+	case "thinking_tokens", "init":
 		return true
 	}
-	return false
+	// Claude Code workflow telemetry: task_started, task_failed, task_progress, …
+	return strings.HasPrefix(subtype, "task_")
 }
 
 func isThinkingOnlyAssistantRecord(record map[string]any) bool {

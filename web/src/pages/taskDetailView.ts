@@ -159,8 +159,7 @@ function isToolOnlyRuntimeOutput(text: string): boolean {
 
   const type = stringValue(record.type).toLowerCase();
   if (type === "system") {
-    const subtype = stringValue(record.subtype).toLowerCase();
-    return subtype === "task_progress" || subtype === "thinking_tokens" || subtype === "init";
+    return isIgnorableSystemSubtype(stringValue(record.subtype));
   }
   if (type === "tool_call" || type === "function_call" || type === "tool_use") {
     return true;
@@ -184,6 +183,14 @@ function isToolOnlyRuntimeOutput(text: string): boolean {
     });
   }
   return false;
+}
+
+function isIgnorableSystemSubtype(subtype: string): boolean {
+  const normalized = subtype.toLowerCase();
+  if (normalized === "thinking_tokens" || normalized === "init") {
+    return true;
+  }
+  return normalized.startsWith("task_");
 }
 
 function isToolOrThinkingOnlyContent(content: unknown[]): boolean {

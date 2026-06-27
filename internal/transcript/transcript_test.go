@@ -126,6 +126,17 @@ func TestIsIgnorableRuntimeLineDetectsTaskProgress(t *testing.T) {
 	}
 }
 
+func TestIsIgnorableRuntimeLineDetectsTaskStartedAndFailed(t *testing.T) {
+	started := `{"type":"system","subtype":"task_started","task_id":"bbr05bd75","summary":"Explore FTP directory"}`
+	if !transcript.IsIgnorableRuntimeLine(started) {
+		t.Fatal("expected task_started line to be ignorable")
+	}
+	failed := `{"type":"system","subtype":"task_failed","task_id":"bbr05bd75","status":"failed","summary":"Explore FTP directory"}`
+	if !transcript.IsIgnorableRuntimeLine(failed) {
+		t.Fatal("expected task_failed line to be ignorable")
+	}
+}
+
 func TestBuildDropsTaskProgressNoise(t *testing.T) {
 	subject := task.Task{ID: "task-1", Goal: "Do work", CreatedAt: time.Now().UTC()}
 	events := []task.Event{
