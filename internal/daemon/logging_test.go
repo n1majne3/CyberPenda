@@ -136,13 +136,13 @@ func TestRequestLogSuppressesNoisyPolls(t *testing.T) {
 	}`)
 	captured.Reset()
 
-	for _, suffix := range []string{"", "/events", "/transcript"} {
+	for _, suffix := range []string{"", "/events", "/transcript", "/timeline"} {
 		req := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID+suffix, nil)
 		server.ServeHTTP(httptest.NewRecorder(), req)
 	}
 
 	output := captured.String()
-	if strings.Contains(output, "/events") || strings.Contains(output, "/transcript") {
+	if strings.Contains(output, "/events") || strings.Contains(output, "/transcript") || strings.Contains(output, "/timeline") {
 		t.Fatalf("poll endpoints should not be logged, got:\n%s", output)
 	}
 	if strings.Contains(output, "/tasks/"+taskID+" ") {

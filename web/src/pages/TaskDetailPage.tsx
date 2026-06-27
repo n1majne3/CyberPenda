@@ -1,17 +1,18 @@
 import { useEffect, useState, useRef, type RefObject } from "react";
 import { useParams, Link } from "react-router-dom";
 import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, FileText, Shield, ChevronRight, Wrench, User, Bot, ArrowDown, ArrowUp } from "lucide-react";
-import { apiGet, apiPost, type Task, type TaskEvent, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
+import { apiGet, apiPost, type Task, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Card, Input, Badge, Select } from "@/components/ui";
 import { BackLink, PageContainer } from "@/components/shared";
-import { collapsedTranscriptTitle, shouldShowInTimeline, summarizeTaskEvent } from "./taskDetailView";
+import { AgentTranscriptView } from "@/components/task-transcript/AgentTranscriptView";
+import { collapsedTranscriptTitle } from "./taskDetailView";
 
 const ACTIVE = new Set(["running", "paused"]);
 
 export function TaskDetailPage() {
   const { projectId, taskId } = useParams<{ projectId: string; taskId: string }>();
   const [task, setTask] = useState<Task | null>(null);
-  const [events, setEvents] = useState<TaskEvent[]>([]);
+  const [timeline, setTimeline] = useState<TaskTimelineItem[]>([]);
   const [transcript, setTranscript] = useState<TaskTranscriptEntry[]>([]);
   const [activeView, setActiveView] = useState<"conversation" | "timeline">("conversation");
   const [autoFollow, setAutoFollow] = useState(true);
@@ -28,13 +29,13 @@ export function TaskDetailPage() {
   async function loadAll() {
     if (!projectId || !taskId) return;
     try {
-      const [t, ev, tr] = await Promise.all([
+      const [t, tl, tr] = await Promise.all([
         apiGet<Task>(`${base}`),
-        apiGet<{ events: TaskEvent[] }>(`${base}/events`),
+        apiGet<TaskTimeline>(`${base}/timeline`),
         apiGet<TaskTranscript>(`${base}/transcript`),
       ]);
       setTask(t);
-      setEvents(ev.events ?? []);
+      setTimeline(tl.items ?? []);
       setTranscript(tr.entries ?? []);
       setError(null);
     } catch (e) {
@@ -90,7 +91,7 @@ export function TaskDetailPage() {
     if (autoFollowRef.current) {
       timelineEnd.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [events, transcript]);
+  }, [timeline, transcript]);
 
   function scrollToLatest() {
     const container = findScrollContainer(pageRef.current);
@@ -214,7 +215,15 @@ export function TaskDetailPage() {
       {activeView === "conversation" ? (
         <TranscriptList entries={transcript} endRef={timelineEnd} />
       ) : (
-        <TimelineList events={events} endRef={timelineEnd} />
+        <div>
+          <AgentTranscriptView
+            task={task}
+            items={timeline}
+            profileName={profiles.find((p) => p.id === task.runtime_profile_id)?.name}
+            isLive={ACTIVE.has(task.status)}
+          />
+          <div ref={timelineEnd} />
+        </div>
       )}
 
       <FloatingScrollControls autoFollow={autoFollow} onTop={scrollToTop} onBottom={scrollToLatest} />
@@ -284,21 +293,6 @@ function TranscriptList({ entries, endRef }: { entries: TaskTranscriptEntry[]; e
       ))}
       {entries.length === 0 && <p className="text-sm text-muted-foreground">No transcript yet.</p>}
       <div ref={endRef} />
-    </div>
-  );
-}
-
-function TimelineList({ events, endRef }: { events: TaskEvent[]; endRef: RefObject<HTMLDivElement | null> }) {
-  const timelineEvents = events.filter(shouldShowInTimeline);
-  return (
-    <div className="rounded-lg border border-border bg-muted/20 p-2 font-mono text-xs">
-      <div className="space-y-1">
-        {timelineEvents.map((ev) => (
-          <EventRow key={ev.id} ev={ev} />
-        ))}
-        {timelineEvents.length === 0 && <p className="px-2 py-3 text-sm text-muted-foreground">No events yet.</p>}
-        <div ref={endRef} />
-      </div>
     </div>
   );
 }
@@ -376,35 +370,4 @@ function collapsedBody(entry: TaskTranscriptEntry) {
   return parts.join("\n\n") || "(empty)";
 }
 
-function firstLine(value: string) {
-  return value.split(/\r?\n/, 1)[0];
-}
 
-function EventRow({ ev }: { ev: TaskEvent }) {
-  const icon =
-    ev.kind === "lifecycle" ? <Activity className="h-3 w-3" /> :
-    ev.kind === "steering" ? <GitBranch className="h-3 w-3" /> :
-    ev.kind === "conversation" ? <MessageSquare className="h-3 w-3" /> :
-    <Terminal className="h-3 w-3" />;
-  const summary = summarizeTaskEvent(ev);
-  const raw = typeof ev.payload.text === "string" ? ev.payload.text : "";
-  const showDetails = ev.kind === "runtime_output" && raw.trim().startsWith("{");
-  return (
-    <details className="group rounded border border-transparent px-2 py-1 hover:border-border hover:bg-background/60 open:border-border open:bg-background/80">
-      <summary className="flex cursor-pointer list-none items-start gap-2 [&::-webkit-details-marker]:hidden">
-        <span className="mt-0.5 shrink-0 text-muted-foreground">{icon}</span>
-        <span className="min-w-0 flex-1">
-          <span className="text-muted-foreground">#{ev.seq} {ev.kind}</span>
-          {ev.created_at && <span className="text-muted-foreground"> · {new Date(ev.created_at).toLocaleTimeString()}</span>}
-          <span className="ml-2 text-foreground">{summary}</span>
-        </span>
-        {showDetails && <ChevronRight className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />}
-      </summary>
-      {showDetails && (
-        <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words border-t border-border/60 px-2 py-2 text-[11px] leading-5 text-muted-foreground">
-          {raw}
-        </pre>
-      )}
-    </details>
-  );
-}

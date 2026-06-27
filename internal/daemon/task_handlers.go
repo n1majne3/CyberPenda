@@ -20,6 +20,7 @@ import (
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
+	"pentest/internal/timeline"
 	"pentest/internal/transcript"
 )
 
@@ -430,6 +431,30 @@ func (server *Server) handleTaskEvents(response http.ResponseWriter, request *ht
 		Events []task.Event `json:"events"`
 	}{
 		Events: events,
+	})
+}
+
+func (server *Server) handleTaskTimeline(response http.ResponseWriter, request *http.Request) {
+	found, ok := server.requireProjectTask(response, request)
+	if !ok {
+		return
+	}
+
+	events, err := server.tasks.Events(found.ID)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "list task events")
+		return
+	}
+	items := timeline.Build(events)
+	if items == nil {
+		items = []timeline.Item{}
+	}
+	writeJSON(response, http.StatusOK, struct {
+		TaskID string          `json:"task_id"`
+		Items  []timeline.Item `json:"items"`
+	}{
+		TaskID: found.ID,
+		Items:  items,
 	})
 }
 
