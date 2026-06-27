@@ -346,6 +346,21 @@ export interface TaskTranscript {
   entries: TaskTranscriptEntry[];
 }
 
+export interface TaskTimelineItem {
+  seq: number;
+  type: "tool_use" | "tool_result" | "thinking" | "text" | "error";
+  tool?: string;
+  content?: string;
+  input?: Record<string, unknown>;
+  output?: string;
+  created_at?: string;
+}
+
+export interface TaskTimeline {
+  task_id: string;
+  items: TaskTimelineItem[];
+}
+
 export interface PreflightCheck {
   name: string;
   status: "pass" | "fail";

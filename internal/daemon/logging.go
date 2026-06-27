@@ -14,6 +14,7 @@ import (
 var noisyPollPaths = []string{
 	"/events",
 	"/transcript",
+	"/timeline",
 }
 
 // isNoisyPoll reports whether a successful GET is a UI poll endpoint whose
