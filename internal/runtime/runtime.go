@@ -5,17 +5,14 @@
 package runtime
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"sync"
 
 	"pentest/internal/adapters"
 	"pentest/internal/task"
-	"pentest/internal/transcript"
 )
 
 // Adapter is the provider-specific runtime boundary. Real adapters (Codex,
@@ -221,8 +218,14 @@ func (a *commandAdapter) Run(ctx context.Context, goal string, emit func(task.Ev
 
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go scanOutput(&wg, stdout, "stdout", safeEmit)
-	go scanOutput(&wg, stderr, "stderr", safeEmit)
+	go func() {
+		defer wg.Done()
+		ScanOutput(stdout, "stdout", maxRuntimeOutputLineBytes, safeEmit)
+	}()
+	go func() {
+		defer wg.Done()
+		ScanOutput(stderr, "stderr", maxRuntimeOutputLineBytes, safeEmit)
+	}()
 	wg.Wait()
 
 	if err := cmd.Wait(); err != nil {
@@ -231,23 +234,4 @@ func (a *commandAdapter) Run(ctx context.Context, goal string, emit func(task.Ev
 	return nil
 }
 
-func scanOutput(wg *sync.WaitGroup, reader io.Reader, stream string, emit func(task.EventKind, task.EventPayload)) {
-	defer wg.Done()
-	scanner := bufio.NewScanner(reader)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if transcript.IsIgnorableRuntimeLine(line) {
-			continue
-		}
-		emit(task.EventKindRuntimeOutput, adapters.Redact(task.EventPayload{
-			"stream": stream,
-			"text":   line,
-		}))
-	}
-	if err := scanner.Err(); err != nil {
-		emit(task.EventKindRuntimeOutput, adapters.Redact(task.EventPayload{
-			"stream": stream,
-			"text":   fmt.Sprintf("read %s: %v", stream, err),
-		}))
-	}
-}
+

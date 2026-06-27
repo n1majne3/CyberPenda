@@ -141,6 +141,68 @@ func (slowFakeAdapter) Run(ctx context.Context, goal string, emit func(task.Even
 
 // TestHarnessStopEndsActiveRun proves Stop cancels the active continuation and
 // the task ends in the stopped status.
+func TestCommandRuntimeAdapterContinuesAfterOversizedStdoutLine(t *testing.T) {
+	harness, tasks, projects := newServices(t)
+	proj, _ := projects.Create("P", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
+	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "enumerate example.com", RuntimeProfileID: "codex", Runner: task.RunnerHost})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	binary := filepath.Join(t.TempDir(), "huge-line-test")
+	script := "#!/bin/sh\n" +
+		"python3 -c 'import sys; sys.stdout.write(\"x\"*200000); sys.stdout.write(\"\\n\"); print(\"after-huge-line\")'\n"
+	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
+		t.Fatalf("write provider binary: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := harness.Launch(ctx, runtime.LaunchRequest{
+		TaskID: created.ID,
+		Goal:   created.Goal,
+		Adapter: runtime.NewCommandAdapter(runtime.CommandAdapterConfig{
+			Name:    "codex",
+			Program: binary,
+			Args:    []string{"run"},
+		}),
+	}); err != nil {
+		t.Fatalf("launch provider adapter: %v", err)
+	}
+
+	events, err := tasks.Events(created.ID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	var sawHuge bool
+	var sawAfter bool
+	var sawScannerError bool
+	for _, event := range events {
+		if event.Kind != task.EventKindRuntimeOutput {
+			continue
+		}
+		text, _ := event.Payload["text"].(string)
+		if strings.Contains(text, "token too long") {
+			sawScannerError = true
+		}
+		if len(text) > 100_000 {
+			sawHuge = true
+		}
+		if strings.Contains(text, "after-huge-line") {
+			sawAfter = true
+		}
+	}
+	if sawScannerError {
+		t.Fatalf("expected no scanner token-too-long error, got events: %#v", events)
+	}
+	if !sawHuge {
+		t.Fatalf("expected truncated huge line event, got %#v", events)
+	}
+	if !sawAfter {
+		t.Fatalf("expected output after huge line, got %#v", events)
+	}
+}
+
 func TestHarnessStopEndsActiveRun(t *testing.T) {
 	harness, tasks, projects := newServices(t)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
