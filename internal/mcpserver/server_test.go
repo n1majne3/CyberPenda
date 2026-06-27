@@ -223,3 +223,45 @@ func TestMCPApprovalRequestsPersistPendingRecords(t *testing.T) {
 		t.Fatalf("expected scope expansion kind, got %#v", got)
 	}
 }
+
+func TestMCPSubmitTaskSummaryWritesEquivalentState(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	projects := project.NewService(db)
+	tasks := task.NewService(db, projects)
+	proj, err := projects.Create("Acme", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	launched, err := tasks.Create(task.CreateRequest{
+		ProjectID: proj.ID,
+		Goal:      "enumerate example.com",
+		Runner:    task.RunnerSandbox,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	session := connectMCP(t, mcpserver.Deps{Projects: projects, Tasks: tasks})
+	body := callTool(t, session, "submit_task_summary", map[string]any{
+		"project_id":   proj.ID,
+		"task_id":      launched.ID,
+		"summary":      "Mapped APIs and solved 10 easy challenges.",
+		"submitted_by": "claude_code",
+	})
+	if !strings.Contains(body, `"version":1`) {
+		t.Fatalf("expected versioned summary response, got %s", body)
+	}
+
+	versions, err := tasks.SummaryVersions(launched.ID)
+	if err != nil {
+		t.Fatalf("list summary versions: %v", err)
+	}
+	if len(versions) != 1 || versions[0].Summary != "Mapped APIs and solved 10 easy challenges." {
+		t.Fatalf("unexpected stored summary: %#v", versions)
+	}
+}

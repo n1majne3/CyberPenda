@@ -110,7 +110,7 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 
 	server.recordLoopbackRewriteEvent(created)
 
-	server.launchTaskInBackground(created, adapter)
+	server.launchTaskInBackground(created, adapter, created.Goal)
 
 	if _, err := server.approvals.RecordAudit(approval.AuditEntry{
 		ProjectID: projectID,
@@ -137,12 +137,12 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 	writeJSON(response, http.StatusCreated, launched)
 }
 
-func (server *Server) launchTaskInBackground(created task.Task, adapter runtime.Adapter) {
+func (server *Server) launchTaskInBackground(created task.Task, adapter runtime.Adapter, goal string) {
 	server.logTask(created, "launched", "")
 	go func() {
 		err := server.harness.Launch(context.Background(), runtime.LaunchRequest{
 			TaskID:  created.ID,
-			Goal:    created.Goal,
+			Goal:    goal,
 			Adapter: adapter,
 		})
 		switch {
@@ -518,8 +518,31 @@ func (server *Server) handleResumeTask(response http.ResponseWriter, request *ht
 		return
 	}
 	factLines := make([]string, 0, len(factIndex))
+	progressFacts := make([]string, 0)
 	for _, entry := range factIndex {
 		factLines = append(factLines, entry.FactKey+": "+entry.Summary)
+		if !strings.HasPrefix(entry.FactKey, "progress:") {
+			continue
+		}
+		fact, err := server.facts.GetFact(projectID, entry.FactKey)
+		if err != nil || strings.TrimSpace(fact.Body) == "" {
+			continue
+		}
+		progressFacts = append(progressFacts, entry.FactKey+":\n"+fact.Body)
+	}
+
+	findings, err := server.facts.ListFindings(projectID)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "load findings")
+		return
+	}
+	findingLines := make([]string, 0, len(findings))
+	start := 0
+	if len(findings) > adapters.MaxResumeFindings {
+		start = len(findings) - adapters.MaxResumeFindings
+	}
+	for _, finding := range findings[start:] {
+		findingLines = append(findingLines, finding.FindingKey+": "+finding.Title+" ("+string(finding.Status)+")")
 	}
 
 	taskSummary := ""
@@ -552,6 +575,8 @@ func (server *Server) handleResumeTask(response http.ResponseWriter, request *ht
 		Goal:              found.Goal,
 		TaskSummary:       taskSummary,
 		FactIndex:         factLines,
+		FindingIndex:      findingLines,
+		ProgressFacts:     progressFacts,
 		SteeringDirective: steeringDirective,
 	})
 
@@ -565,7 +590,7 @@ func (server *Server) handleResumeTask(response http.ResponseWriter, request *ht
 		return
 	}
 
-	server.launchTaskInBackground(found, adapter)
+	server.launchTaskInBackground(found, adapter, resumeGoal)
 
 	if _, err := server.approvals.RecordAudit(approval.AuditEntry{
 		ProjectID: projectID,
