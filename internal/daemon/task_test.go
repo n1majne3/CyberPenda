@@ -795,6 +795,60 @@ func TestCreateTaskOmitsRewriteEventWhenGoalHasNoLoopback(t *testing.T) {
 	}
 }
 
+func TestResumeTaskEnrichesPromptWithFindingsAndProgressFacts(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
+	taskID := createTask(t, server, projectID, `{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
+		"runner":"sandbox"
+	}`)
+	waitForTaskStatus(t, server, projectID, taskID, "completed")
+
+	upsertFact(t, server, projectID, "progress:juice-shop", `{
+		"summary":"53 of 112 challenges solved",
+		"body":"{\"solved\":53,\"total\":112}"
+	}`)
+	upsertFinding(t, server, projectID, "sqli-login", `{
+		"title":"SQL injection in login",
+		"status":"unconfirmed"
+	}`)
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/resume", nil)
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusAccepted {
+		t.Fatalf("expected resume status 202, got %d with body %s", resp.Code, resp.Body.String())
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	var sawEnrichedGoal bool
+	for time.Now().Before(deadline) {
+		events := getTaskEvents(t, server, projectID, taskID)
+		for _, event := range events {
+			if event["kind"] != "runtime_output" {
+				continue
+			}
+			payload := event["payload"].(map[string]any)
+			goal, _ := payload["goal"].(string)
+			if strings.Contains(goal, "sqli-login") &&
+				strings.Contains(goal, "Current findings:") &&
+				strings.Contains(goal, `"solved":53`) {
+				sawEnrichedGoal = true
+				break
+			}
+		}
+		if sawEnrichedGoal {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !sawEnrichedGoal {
+		t.Fatalf("expected resumed runtime to receive enriched handoff prompt")
+	}
+}
+
 func putTaskSummary(t *testing.T, server interface {
 	ServeHTTP(http.ResponseWriter, *http.Request)
 }, projectID, taskID, body string) {

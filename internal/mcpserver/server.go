@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -241,6 +242,36 @@ func New(deps Deps) *sdkmcp.Server {
 	})
 
 	sdkmcp.AddTool(server, &sdkmcp.Tool{
+		Name:        "submit_task_summary",
+		Description: "Submit a task summary before ending a continuation so the next resume carries compact handoff context.",
+	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args submitTaskSummaryArgs) (*sdkmcp.CallToolResult, any, error) {
+		_ = ctx
+		_ = req
+		if deps.Tasks == nil {
+			return toolError(fmt.Errorf("task service unavailable"))
+		}
+		if _, err := deps.Projects.Get(args.ProjectID); err != nil {
+			return toolError(err)
+		}
+		found, err := deps.Tasks.Get(args.TaskID)
+		if err != nil {
+			return toolError(err)
+		}
+		if found.ProjectID != args.ProjectID {
+			return toolError(fmt.Errorf("task not found"))
+		}
+		submittedBy := strings.TrimSpace(args.SubmittedBy)
+		if submittedBy == "" {
+			submittedBy = "runtime"
+		}
+		version, err := deps.Tasks.PutSummary(args.TaskID, args.Summary, submittedBy)
+		if err != nil {
+			return toolError(err)
+		}
+		return toolJSON(version)
+	})
+
+	sdkmcp.AddTool(server, &sdkmcp.Tool{
 		Name:        "request_scope_expansion",
 		Description: "Request approval to expand project scope with a newly discovered asset or permission.",
 	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args requestApprovalArgs) (*sdkmcp.CallToolResult, any, error) {
@@ -327,6 +358,13 @@ type attachEvidenceArgs struct {
 type generateReportArgs struct {
 	ProjectID string `json:"project_id" jsonschema:"project id"`
 	TaskID    string `json:"task_id,omitempty" jsonschema:"task id for runner and scope context"`
+}
+
+type submitTaskSummaryArgs struct {
+	ProjectID   string `json:"project_id" jsonschema:"project id"`
+	TaskID      string `json:"task_id" jsonschema:"task id"`
+	Summary     string `json:"summary" jsonschema:"compact handoff summary for the next continuation"`
+	SubmittedBy string `json:"submitted_by,omitempty" jsonschema:"runtime identifier"`
 }
 
 type requestApprovalArgs struct {

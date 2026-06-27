@@ -283,10 +283,15 @@ func redactMatch(match string) string {
 // When live steering is unavailable, adapters restart the runtime with a prompt
 // that carries the goal, prior task summary (if any), the fact index, and any
 // pending steering directive. This is the mechanical handoff path.
+// MaxResumeFindings limits how many findings are injected into a resume prompt.
+const MaxResumeFindings = 10
+
 type ResumeRequest struct {
 	Goal              string
 	TaskSummary       string
 	FactIndex         []string
+	FindingIndex      []string
+	ProgressFacts     []string
 	SteeringDirective string
 }
 
@@ -314,6 +319,26 @@ func BuildResumePrompt(req ResumeRequest) string {
 		for _, fact := range req.FactIndex {
 			b.WriteString("- ")
 			b.WriteString(fact)
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
+	if len(req.FindingIndex) > 0 {
+		b.WriteString("Current findings:\n")
+		for _, finding := range req.FindingIndex {
+			b.WriteString("- ")
+			b.WriteString(finding)
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
+	if len(req.ProgressFacts) > 0 {
+		b.WriteString("Progress state:\n")
+		for _, progress := range req.ProgressFacts {
+			b.WriteString("- ")
+			b.WriteString(progress)
 			b.WriteString("\n")
 		}
 		b.WriteString("\n")

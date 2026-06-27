@@ -301,6 +301,14 @@ func TestAGENTSMDDocumentsLoopbackRewriteInSandbox(t *testing.T) {
 	if !strings.Contains(string(agents), "`.claude/skills/`") {
 		t.Fatalf("expected sandbox AGENTS.md to document claude skills path, got:\n%s", agents)
 	}
+	if !strings.Contains(string(agents), "## Required workflow") {
+		t.Fatalf("expected AGENTS.md to document required workflow, got:\n%s", agents)
+	}
+	if !strings.Contains(string(agents), "upsert_project_fact") ||
+		!strings.Contains(string(agents), "record_vulnerability") ||
+		!strings.Contains(string(agents), "submit_task_summary") {
+		t.Fatalf("expected AGENTS.md to document MCP workflow tools, got:\n%s", agents)
+	}
 }
 
 func TestAGENTSMDOmitsLoopbackRewriteForHostRunner(t *testing.T) {

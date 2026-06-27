@@ -81,6 +81,7 @@ func TestMCPEndpointInitializesAndListsTools(t *testing.T) {
 		"generate_report",
 		"request_approval",
 		"request_scope_expansion",
+		"submit_task_summary",
 	} {
 		if !bytes.Contains([]byte(body), []byte(tool)) {
 			t.Fatalf("tools/list missing %q in %s", tool, body)

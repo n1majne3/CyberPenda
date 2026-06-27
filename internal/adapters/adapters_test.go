@@ -345,3 +345,31 @@ func TestBuildResumePromptWorksWithoutTaskSummary(t *testing.T) {
 		t.Fatalf("expected mechanical handoff marker when no summary, got %q", prompt)
 	}
 }
+
+func TestBuildResumePromptIncludesFindingsAndProgressFacts(t *testing.T) {
+	prompt := adapters.BuildResumePrompt(adapters.ResumeRequest{
+		Goal: "solve challenges",
+		FactIndex: []string{
+			"recon:api — mapped REST endpoints",
+		},
+		FindingIndex: []string{
+			"sqli-login: SQL injection in login (unconfirmed)",
+		},
+		ProgressFacts: []string{
+			"progress:juice-shop:\n{\"solved\":53,\"total\":112}",
+		},
+	})
+
+	if !strings.Contains(prompt, "Current findings:") {
+		t.Fatalf("expected findings section, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "sqli-login") {
+		t.Fatalf("expected finding in resume prompt, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "Progress state:") {
+		t.Fatalf("expected progress section, got %q", prompt)
+	}
+	if !strings.Contains(prompt, `"solved":53`) {
+		t.Fatalf("expected progress body in resume prompt, got %q", prompt)
+	}
+}
