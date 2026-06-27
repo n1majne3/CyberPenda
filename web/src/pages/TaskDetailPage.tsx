@@ -4,7 +4,7 @@ import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, FileT
 import { apiGet, apiPost, type Task, type TaskEvent, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Card, Input, Badge, Select } from "@/components/ui";
 import { BackLink, PageContainer } from "@/components/shared";
-import { collapsedTranscriptTitle, summarizeTaskEvent } from "./taskDetailView";
+import { collapsedTranscriptTitle, shouldShowInTimeline, summarizeTaskEvent } from "./taskDetailView";
 
 const ACTIVE = new Set(["running", "paused"]);
 
@@ -289,13 +289,14 @@ function TranscriptList({ entries, endRef }: { entries: TaskTranscriptEntry[]; e
 }
 
 function TimelineList({ events, endRef }: { events: TaskEvent[]; endRef: RefObject<HTMLDivElement | null> }) {
+  const timelineEvents = events.filter(shouldShowInTimeline);
   return (
     <div className="rounded-lg border border-border bg-muted/20 p-2 font-mono text-xs">
       <div className="space-y-1">
-        {events.map((ev) => (
+        {timelineEvents.map((ev) => (
           <EventRow key={ev.id} ev={ev} />
         ))}
-        {events.length === 0 && <p className="px-2 py-3 text-sm text-muted-foreground">No events yet.</p>}
+        {timelineEvents.length === 0 && <p className="px-2 py-3 text-sm text-muted-foreground">No events yet.</p>}
         <div ref={endRef} />
       </div>
     </div>

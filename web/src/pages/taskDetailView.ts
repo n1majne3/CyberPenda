@@ -1,5 +1,18 @@
 import type { TaskEvent, TaskTranscriptEntry } from "@/lib/api";
 
+// Timeline is a diagnostic trace: lifecycle, steering, and high-level messages.
+// Tool calls and results live in Conversation only.
+export function shouldShowInTimeline(event: TaskEvent): boolean {
+  if (event.kind !== "runtime_output") {
+    return true;
+  }
+  const text = stringValue(event.payload?.text);
+  if (!text.trim()) {
+    return false;
+  }
+  return !isToolOnlyRuntimeOutput(text);
+}
+
 export function summarizeTaskEvent(event: TaskEvent): string {
   const payload = event.payload ?? {};
 
@@ -35,7 +48,7 @@ export function summarizeTaskEvent(event: TaskEvent): string {
     const stream = stringValue(payload.stream) || "runtime";
     const text = stringValue(payload.text);
     if (!text) return `${stream} · (empty)`;
-    return `${stream} · ${summarizeRuntimeText(text)}`;
+    return `${stream} · ${summarizeRuntimeText(text, { omitTools: true })}`;
   }
 
   return firstLine(JSON.stringify(payload));
@@ -53,7 +66,11 @@ export function collapsedTranscriptTitle(entry: TaskTranscriptEntry): string {
   return entry.text ? `${prefix}: ${firstLine(entry.text)}` : prefix;
 }
 
-function summarizeRuntimeText(text: string): string {
+type SummarizeRuntimeOptions = {
+  omitTools?: boolean;
+};
+
+function summarizeRuntimeText(text: string, options: SummarizeRuntimeOptions = {}): string {
   const trimmed = text.trim();
   if (!trimmed.startsWith("{")) {
     return firstLine(trimmed);
@@ -86,9 +103,9 @@ function summarizeRuntimeText(text: string): string {
       if (blockType === "text") {
         const line = firstLine(stringValue(item.text) || stringValue(item.content));
         if (line) parts.push(`assistant: ${line}`);
-      } else if (blockType === "tool_use" || blockType === "tool_call") {
+      } else if (!options.omitTools && (blockType === "tool_use" || blockType === "tool_call")) {
         parts.push(`tool_use ${stringValue(item.name) || "tool"}`);
-      } else if (blockType === "thinking") {
+      } else if (!options.omitTools && blockType === "thinking") {
         parts.push("thinking");
       }
     }
@@ -103,6 +120,9 @@ function summarizeRuntimeText(text: string): string {
       if (!item) continue;
       const blockType = stringValue(item.type).toLowerCase();
       if (blockType === "tool_result") {
+        if (options.omitTools) {
+          continue;
+        }
         const preview = firstLine(stringValue(item.content) || stringValue(item.output));
         const err = item.is_error ? " (error)" : "";
         return preview ? `tool_result${err}: ${preview}` : `tool_result${err}`;
@@ -111,14 +131,78 @@ function summarizeRuntimeText(text: string): string {
     return "user event";
   }
   if (type === "tool_call" || type === "function_call") {
-    return `tool_call ${stringValue(record.name) || "tool"}`;
+    return options.omitTools ? "tool event" : `tool_call ${stringValue(record.name) || "tool"}`;
   }
   if (type === "tool_result" || type === "function_call_output") {
+    if (options.omitTools) {
+      return "tool event";
+    }
     const preview = firstLine(stringValue(record.output) || stringValue(record.content));
     return preview ? `tool_result: ${preview}` : "tool_result";
   }
 
   return type ? `${type} event` : firstLine(trimmed);
+}
+
+function isToolOnlyRuntimeOutput(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{")) {
+    return false;
+  }
+
+  let record: Record<string, unknown>;
+  try {
+    record = JSON.parse(trimmed) as Record<string, unknown>;
+  } catch {
+    return false;
+  }
+
+  const type = stringValue(record.type).toLowerCase();
+  if (type === "tool_call" || type === "function_call" || type === "tool_use") {
+    return true;
+  }
+  if (type === "tool_result" || type === "function_call_output") {
+    return true;
+  }
+  if (type === "assistant") {
+    return isToolOrThinkingOnlyContent(asArray(asRecord(record.message)?.content));
+  }
+  if (type === "user") {
+    const content = asArray(asRecord(record.message)?.content);
+    if (content.length === 0) {
+      return false;
+    }
+    return content.every((block) => {
+      const item = asRecord(block);
+      if (!item) return false;
+      const blockType = stringValue(item.type).toLowerCase();
+      return blockType === "tool_result" || blockType === "tool_use";
+    });
+  }
+  return false;
+}
+
+function isToolOrThinkingOnlyContent(content: unknown[]): boolean {
+  if (content.length === 0) {
+    return false;
+  }
+  let sawMeaningful = false;
+  for (const block of content) {
+    const item = asRecord(block);
+    if (!item) continue;
+    const blockType = stringValue(item.type).toLowerCase();
+    if (blockType === "text") {
+      if (stringValue(item.text) || stringValue(item.content)) {
+        sawMeaningful = true;
+      }
+      continue;
+    }
+    if (blockType === "tool_use" || blockType === "tool_call" || blockType === "thinking") {
+      continue;
+    }
+    sawMeaningful = true;
+  }
+  return !sawMeaningful;
 }
 
 function stringValue(value: unknown): string {

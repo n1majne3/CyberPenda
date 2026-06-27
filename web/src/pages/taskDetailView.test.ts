@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TaskEvent, TaskTranscriptEntry } from "@/lib/api";
-import { collapsedTranscriptTitle, summarizeTaskEvent } from "./taskDetailView";
+import { collapsedTranscriptTitle, shouldShowInTimeline, summarizeTaskEvent } from "./taskDetailView";
 
 describe("summarizeTaskEvent", () => {
   it("summarizes lifecycle phases", () => {
@@ -16,7 +16,7 @@ describe("summarizeTaskEvent", () => {
     ).toBe("Started · claude_code");
   });
 
-  it("summarizes Claude tool_use runtime output", () => {
+  it("hides tool-only runtime output from the timeline", () => {
     const event: TaskEvent = {
       id: "2",
       task_id: "t",
@@ -33,7 +33,51 @@ describe("summarizeTaskEvent", () => {
       },
       created_at: "",
     };
-    expect(summarizeTaskEvent(event)).toBe("stdout · tool_use Bash");
+    expect(shouldShowInTimeline(event)).toBe(false);
+  });
+
+  it("summarizes mixed assistant text without tool labels in the timeline", () => {
+    const event: TaskEvent = {
+      id: "2b",
+      task_id: "t",
+      seq: 2,
+      kind: "runtime_output",
+      payload: {
+        stream: "stdout",
+        text: JSON.stringify({
+          type: "assistant",
+          message: {
+            content: [
+              { type: "text", text: "Checking the login page." },
+              { type: "tool_use", id: "call_1", name: "Bash", input: { command: "curl example.com" } },
+            ],
+          },
+        }),
+      },
+      created_at: "",
+    };
+    expect(shouldShowInTimeline(event)).toBe(true);
+    expect(summarizeTaskEvent(event)).toBe("stdout · assistant: Checking the login page.");
+  });
+
+  it("hides tool_result runtime output from the timeline", () => {
+    const event: TaskEvent = {
+      id: "2c",
+      task_id: "t",
+      seq: 3,
+      kind: "runtime_output",
+      payload: {
+        stream: "stdout",
+        text: JSON.stringify({
+          type: "user",
+          message: {
+            content: [{ type: "tool_result", tool_use_id: "call_1", content: "200 OK" }],
+          },
+        }),
+      },
+      created_at: "",
+    };
+    expect(shouldShowInTimeline(event)).toBe(false);
   });
 
   it("summarizes Claude assistant text", () => {
