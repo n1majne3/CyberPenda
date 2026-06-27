@@ -298,6 +298,9 @@ func TestAGENTSMDDocumentsLoopbackRewriteInSandbox(t *testing.T) {
 	if !strings.Contains(string(agents), "do not try to reinstall") {
 		t.Fatalf("expected sandbox AGENTS.md to warn against reinstalling the target, got:\n%s", agents)
 	}
+	if !strings.Contains(string(agents), "`.claude/skills/`") {
+		t.Fatalf("expected sandbox AGENTS.md to document claude skills path, got:\n%s", agents)
+	}
 }
 
 func TestAGENTSMDOmitsLoopbackRewriteForHostRunner(t *testing.T) {

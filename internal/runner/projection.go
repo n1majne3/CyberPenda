@@ -368,7 +368,7 @@ func projectClaudeSettings(layout Layout, profile runtimeprofile.Profile, req Pr
 
 	mcpServers := collectMCPServers(profile, req)
 	mcpURL := MCPEndpointURL(req.DaemonAddr, req.Sandbox)
-	if err := writeTaskContextFiles(layout, taskContextFromProjection(req, mcpURL)); err != nil {
+	if err := writeTaskContextFiles(layout, taskContextFromProjection(req, profile.Provider, mcpURL)); err != nil {
 		return ConfigProjection{}, err
 	}
 	if len(mcpServers) > 0 {
@@ -445,7 +445,7 @@ func projectCodexConfig(layout Layout, profile runtimeprofile.Profile, req Proje
 
 	mcpServers := collectMCPServers(profile, req)
 	mcpURL := MCPEndpointURL(req.DaemonAddr, req.Sandbox)
-	if err := writeTaskContextFiles(layout, taskContextFromProjection(req, mcpURL)); err != nil {
+	if err := writeTaskContextFiles(layout, taskContextFromProjection(req, profile.Provider, mcpURL)); err != nil {
 		return ConfigProjection{}, err
 	}
 
@@ -518,7 +518,7 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 	if err := os.MkdirAll(agentDir, 0o700); err != nil {
 		return ConfigProjection{}, fmt.Errorf("prepare pi agent dir: %w", err)
 	}
-	if err := writeTaskContextFiles(layout, taskContextFromProjection(req, mcpURL)); err != nil {
+	if err := writeTaskContextFiles(layout, taskContextFromProjection(req, profile.Provider, mcpURL)); err != nil {
 		return ConfigProjection{}, err
 	}
 	if len(mcpServers) > 0 {

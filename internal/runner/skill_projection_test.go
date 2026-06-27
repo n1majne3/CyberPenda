@@ -59,6 +59,43 @@ func TestProjectRuntimeConfigProjectsEnabledSkills(t *testing.T) {
 	}
 }
 
+func TestProjectRuntimeConfigProjectsEnabledSkillsForClaudeCode(t *testing.T) {
+	root := t.TempDir()
+	sourceDir := filepath.Join(root, "skill-source")
+	if err := os.MkdirAll(sourceDir, 0o700); err != nil {
+		t.Fatalf("create skill source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "SKILL.md"), []byte("# Recon"), 0o600); err != nil {
+		t.Fatalf("write skill doc: %v", err)
+	}
+	profile := runtimeprofile.Profile{
+		ID:       "profile-1",
+		Provider: runtimeprofile.ProviderClaudeCode,
+		Fields:   runtimeprofile.Fields{Model: "claude-sonnet-4"},
+	}
+	layout, err := runner.PrepareTaskLayout(root, "task-1", profile.Provider)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+
+	if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		SkillBundles: []skill.Bundle{{
+			ID:   "recon-helper",
+			Name: "Recon Helper",
+			Path: sourceDir,
+		}},
+	}); err != nil {
+		t.Fatalf("project runtime config: %v", err)
+	}
+
+	if target, err := os.Readlink(filepath.Join(layout.Workdir, ".claude", "skills")); err != nil || target != layout.SkillsRoot {
+		t.Fatalf("claude workdir skills link = %q, err = %v", target, err)
+	}
+	if _, err := os.Lstat(filepath.Join(layout.Workdir, ".agents", "skills")); !os.IsNotExist(err) {
+		t.Fatalf("expected no .agents/skills link for claude code, err=%v", err)
+	}
+}
+
 func TestProjectRuntimeConfigProjectsBuiltinSkillsWithSourceFreeFolderNames(t *testing.T) {
 	root := t.TempDir()
 	sourceDir := filepath.Join(root, "skill-source")
