@@ -239,6 +239,7 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string, la
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
 		ProjectID:           created.ProjectID,
 		TaskID:              created.ID,
+		ScopeSnapshot:       created.ScopeSnapshot,
 		Credentials:         server.creds,
 		DaemonAddr:          server.listenAddr,
 		Sandbox:             sandbox,
@@ -283,6 +284,7 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string, la
 	processEnv, err := runner.LaunchProcessEnvWithCredentials(layout, launchProfile, sandbox, launchCtx, runner.ProjectionRequest{
 		ProjectID:         created.ProjectID,
 		TaskID:            created.ID,
+		ScopeSnapshot:     created.ScopeSnapshot,
 		Credentials:       server.creds,
 		DaemonAddr:        server.listenAddr,
 		Sandbox:           sandbox,

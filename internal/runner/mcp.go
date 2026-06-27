@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"pentest/internal/project"
 	"pentest/internal/runtimeprofile"
 )
 
@@ -15,10 +16,21 @@ const trustedMCPServerName = "pentest"
 
 // TaskContext carries identifiers runtimes need when calling trusted MCP tools.
 type TaskContext struct {
-	ProjectID string
-	TaskID    string
-	MCPURL    string
-	Sandbox   bool
+	ProjectID     string
+	TaskID        string
+	MCPURL        string
+	Sandbox       bool
+	ScopeSnapshot project.Scope
+}
+
+func taskContextFromProjection(req ProjectionRequest, mcpURL string) TaskContext {
+	return TaskContext{
+		ProjectID:     req.ProjectID,
+		TaskID:        req.TaskID,
+		MCPURL:        mcpURL,
+		Sandbox:       req.Sandbox,
+		ScopeSnapshot: req.ScopeSnapshot,
+	}
 }
 
 // MCPEndpointURL returns the MCP HTTP endpoint reachable from the runtime process.
@@ -105,8 +117,23 @@ func writeTaskContextFiles(layout Layout, ctx TaskContext) error {
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		return fmt.Errorf("write task context: %w", err)
 	}
+	if err := writeTaskScopeFile(dir, ctx.ScopeSnapshot); err != nil {
+		return err
+	}
 	if err := writeRuntimeSmokeInstructions(layout.Workdir, ctx); err != nil {
 		return err
+	}
+	return nil
+}
+
+func writeTaskScopeFile(dir string, scope project.Scope) error {
+	raw, err := json.MarshalIndent(scope, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode task scope: %w", err)
+	}
+	path := filepath.Join(dir, "scope.json")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		return fmt.Errorf("write task scope: %w", err)
 	}
 	return nil
 }
@@ -126,6 +153,10 @@ func writeRuntimeSmokeInstructions(workdir string, ctx TaskContext) error {
 		fmt.Fprintf(&b, "- mcp_url: `%s`\n", ctx.MCPURL)
 	}
 	b.WriteString("\nRead `.pentest/context.json` or env vars `PENTEST_PROJECT_ID`, `PENTEST_TASK_ID`, `PENTEST_MCP_URL` if needed.\n")
+	b.WriteString("\n## Authorized scope\n\n")
+	b.WriteString("Read `.pentest/scope.json` for the task scope snapshot captured at launch. ")
+	b.WriteString("Stay within listed domains, URLs, IPs, ports, exclusions, and testing limits. ")
+	b.WriteString("Use trusted MCP `request_scope_expansion` before testing assets outside this scope.\n")
 	if ctx.Sandbox {
 		b.WriteString("\n## Sandbox skills and browser\n\n")
 		b.WriteString("Enabled task skills are linked at `.agents/skills/` and materialized under the task-local skills root.\n")

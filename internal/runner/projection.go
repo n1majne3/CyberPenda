@@ -11,6 +11,7 @@ import (
 
 	"pentest/internal/credential"
 	"pentest/internal/modelprovider"
+	"pentest/internal/project"
 	"pentest/internal/runtimeextension"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
@@ -23,6 +24,7 @@ var secretEnvKeyPattern = regexp.MustCompile(`(?i)(token|api[_-]?key|secret|pass
 type ProjectionRequest struct {
 	ProjectID         string
 	TaskID            string
+	ScopeSnapshot     project.Scope
 	Credentials       *credential.Service
 	DaemonAddr        string
 	Sandbox           bool
@@ -366,12 +368,7 @@ func projectClaudeSettings(layout Layout, profile runtimeprofile.Profile, req Pr
 
 	mcpServers := collectMCPServers(profile, req)
 	mcpURL := MCPEndpointURL(req.DaemonAddr, req.Sandbox)
-	if err := writeTaskContextFiles(layout, TaskContext{
-		ProjectID: req.ProjectID,
-		TaskID:    req.TaskID,
-		MCPURL:    mcpURL,
-		Sandbox:   req.Sandbox,
-	}); err != nil {
+	if err := writeTaskContextFiles(layout, taskContextFromProjection(req, mcpURL)); err != nil {
 		return ConfigProjection{}, err
 	}
 	if len(mcpServers) > 0 {
@@ -448,12 +445,7 @@ func projectCodexConfig(layout Layout, profile runtimeprofile.Profile, req Proje
 
 	mcpServers := collectMCPServers(profile, req)
 	mcpURL := MCPEndpointURL(req.DaemonAddr, req.Sandbox)
-	if err := writeTaskContextFiles(layout, TaskContext{
-		ProjectID: req.ProjectID,
-		TaskID:    req.TaskID,
-		MCPURL:    mcpURL,
-		Sandbox:   req.Sandbox,
-	}); err != nil {
+	if err := writeTaskContextFiles(layout, taskContextFromProjection(req, mcpURL)); err != nil {
 		return ConfigProjection{}, err
 	}
 
@@ -526,12 +518,7 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 	if err := os.MkdirAll(agentDir, 0o700); err != nil {
 		return ConfigProjection{}, fmt.Errorf("prepare pi agent dir: %w", err)
 	}
-	if err := writeTaskContextFiles(layout, TaskContext{
-		ProjectID: req.ProjectID,
-		TaskID:    req.TaskID,
-		MCPURL:    mcpURL,
-		Sandbox:   req.Sandbox,
-	}); err != nil {
+	if err := writeTaskContextFiles(layout, taskContextFromProjection(req, mcpURL)); err != nil {
 		return ConfigProjection{}, err
 	}
 	if len(mcpServers) > 0 {
