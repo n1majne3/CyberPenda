@@ -418,7 +418,7 @@ func isIgnorableSystemRecord(record map[string]any) bool {
 		return false
 	}
 	switch stringValue(record, "subtype") {
-	case "thinking_tokens", "init":
+	case "thinking_tokens", "init", "task_progress":
 		return true
 	}
 	return false

@@ -158,6 +158,10 @@ function isToolOnlyRuntimeOutput(text: string): boolean {
   }
 
   const type = stringValue(record.type).toLowerCase();
+  if (type === "system") {
+    const subtype = stringValue(record.subtype).toLowerCase();
+    return subtype === "task_progress" || subtype === "thinking_tokens" || subtype === "init";
+  }
   if (type === "tool_call" || type === "function_call" || type === "tool_use") {
     return true;
   }

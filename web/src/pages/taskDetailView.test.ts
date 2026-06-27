@@ -60,6 +60,26 @@ describe("summarizeTaskEvent", () => {
     expect(summarizeTaskEvent(event)).toBe("stdout · assistant: Checking the login page.");
   });
 
+  it("hides task_progress runtime output from the timeline", () => {
+    const event: TaskEvent = {
+      id: "2d",
+      task_id: "t",
+      seq: 4,
+      kind: "runtime_output",
+      payload: {
+        stream: "stdout",
+        text: JSON.stringify({
+          type: "system",
+          subtype: "task_progress",
+          description: "Exploit: privacy-policy",
+          workflow_progress: [{ label: "privacy-policy" }],
+        }),
+      },
+      created_at: "",
+    };
+    expect(shouldShowInTimeline(event)).toBe(false);
+  });
+
   it("hides tool_result runtime output from the timeline", () => {
     const event: TaskEvent = {
       id: "2c",
@@ -98,9 +118,9 @@ describe("summarizeTaskEvent", () => {
     expect(summarizeTaskEvent(event)).toBe("stdout · assistant: Found the flag!");
   });
 
-  it("summarizes Claude init and result as metadata", () => {
+  it("hides Claude init and task_progress from the timeline", () => {
     expect(
-      summarizeTaskEvent({
+      shouldShowInTimeline({
         id: "4",
         task_id: "t",
         seq: 4,
@@ -108,7 +128,7 @@ describe("summarizeTaskEvent", () => {
         payload: { stream: "stdout", text: JSON.stringify({ type: "system", subtype: "init" }) },
         created_at: "",
       }),
-    ).toBe("stdout · system init");
+    ).toBe(false);
 
     expect(
       summarizeTaskEvent({

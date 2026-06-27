@@ -119,6 +119,31 @@ func TestIsIgnorableRuntimeLineDetectsThinkingTokens(t *testing.T) {
 	}
 }
 
+func TestIsIgnorableRuntimeLineDetectsTaskProgress(t *testing.T) {
+	line := `{"type":"system","subtype":"task_progress","description":"Exploit: privacy-policy","workflow_progress":[{"label":"privacy-policy"}]}`
+	if !transcript.IsIgnorableRuntimeLine(line) {
+		t.Fatal("expected task_progress line to be ignorable")
+	}
+}
+
+func TestBuildDropsTaskProgressNoise(t *testing.T) {
+	subject := task.Task{ID: "task-1", Goal: "Do work", CreatedAt: time.Now().UTC()}
+	events := []task.Event{
+		{ID: "ev-1", Seq: 1, Kind: task.EventKindLifecycle, Payload: task.EventPayload{"phase": "started", "adapter": "claude_code"}},
+		{ID: "ev-2", Seq: 2, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"stream": "stdout", "text": `{"type":"system","subtype":"task_progress","description":"Exploit: privacy-policy","workflow_progress":[{"label":"privacy-policy","phaseTitle":"Exploit"}]}`}},
+		{ID: "ev-3", Seq: 3, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"stream": "stdout", "text": `{"type":"assistant","message":{"content":[{"type":"text","text":"Found the policy hash."}]}}`}},
+	}
+
+	got := transcript.Build(subject, events)
+
+	for _, entry := range got {
+		if entry.Kind == "runtime_output" && strings.Contains(entry.Text, "task_progress") {
+			t.Fatalf("expected task_progress noise to be dropped, got %#v", entry)
+		}
+	}
+	requireEntry(t, got, "ev-3-message-0", "message", "assistant", "Found the policy hash.")
+}
+
 func TestIsIgnorableRuntimeLineDetectsClaudeInitAndResult(t *testing.T) {
 	init := `{"type":"system","subtype":"init","cwd":"/task/workdir","session_id":"abc"}`
 	if !transcript.IsIgnorableRuntimeLine(init) {
