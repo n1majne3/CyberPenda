@@ -26,10 +26,18 @@ func TestBuiltinBundlesIncludeRequestedProjects(t *testing.T) {
 	}
 
 	assertBuiltinBundle(t, byID, "vulnerabilities-xss")
-	assertBuiltinBundle(t, byID, "api-security-testing")
+	assertBuiltinBundle(t, byID, "scoreboard-driven-web-challenge")
 
 	for _, prunedID := range []string{
+		"api-security-testing",
+		"cloud-kubernetes",
+		"cloud-security-audit",
+		"container-security-testing",
 		"cyberstrike-eino-demo",
+		"deserialization-testing",
+		"ldap-injection-testing",
+		"mobile-app-security-testing",
+		"network-penetration-testing",
 		"security-awareness-training",
 		"incident-response",
 		"security-automation",
@@ -49,6 +57,8 @@ func TestBuiltinBundlesIncludeRequestedProjects(t *testing.T) {
 		"command-injection-testing",
 		"secure-code-review",
 		"vulnerability-assessment",
+		"xpath-injection-testing",
+		"xxe-testing",
 		"cyberstrikeai-api-security-testing",
 		"strix-vulnerabilities-xss",
 	} {
@@ -113,13 +123,13 @@ func TestInstallBuiltinSkillsSanitizesOldBuiltinSourceDetails(t *testing.T) {
 	skillsRoot := filepath.Join(t.TempDir(), "skills")
 	svc := skill.NewService(db, skillsRoot)
 	ctx := context.Background()
-	expected := builtinBundleByID(t, "api-security-testing").Metadata
+	expected := builtinBundleByID(t, "vulnerabilities-xss").Metadata
 
 	if _, err := svc.Publish(ctx, skill.PublishRequest{
 		Metadata: skill.Metadata{
-			ID:          "cyberstrikeai-api-security-testing",
-			Name:        "cyberstrikeai-api-security-testing",
-			Description: "API安全测试的专业技能和方法论",
+			ID:          "cyberstrikeai-vulnerabilities-xss",
+			Name:        "cyberstrikeai-vulnerabilities-xss",
+			Description: "XSS testing",
 			Source: skill.SourceProvenance{
 				Kind:      "builtin",
 				Package:   "Ed1s0nZ/CyberStrikeAI",
@@ -138,11 +148,11 @@ func TestInstallBuiltinSkillsSanitizesOldBuiltinSourceDetails(t *testing.T) {
 	if err := svc.InstallBuiltinSkills(ctx); err != nil {
 		t.Fatalf("install builtins: %v", err)
 	}
-	got, err := svc.Get("api-security-testing")
+	got, err := svc.Get("vulnerabilities-xss")
 	if err != nil {
 		t.Fatalf("get sanitized builtin: %v", err)
 	}
-	if _, err := svc.Get("cyberstrikeai-api-security-testing"); err == nil {
+	if _, err := svc.Get("cyberstrikeai-vulnerabilities-xss"); err == nil {
 		t.Fatalf("expected legacy source-prefixed builtin ID to be removed")
 	}
 	if got.Source.Kind != "builtin" || got.Source.Package != "" || got.Source.Ref != "" || got.Source.SourceURL != "" {
@@ -151,17 +161,17 @@ func TestInstallBuiltinSkillsSanitizesOldBuiltinSourceDetails(t *testing.T) {
 	if got.Name != expected.Name || got.Description != expected.Description {
 		t.Fatalf("expected builtin metadata to be refreshed from embedded bundle, got name=%q description=%q", got.Name, got.Description)
 	}
-	files, err := svc.Files("api-security-testing")
+	files, err := svc.Files("vulnerabilities-xss")
 	if err != nil {
 		t.Fatalf("read sanitized files: %v", err)
 	}
 	if files["SKILL.md"] != "# user edit" {
 		t.Fatalf("sanitize overwrote user edit: %q", files["SKILL.md"])
 	}
-	if _, err := os.Stat(filepath.Join(skillsRoot, "bundles", "cyberstrikeai-api-security-testing")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(skillsRoot, "bundles", "cyberstrikeai-vulnerabilities-xss")); !os.IsNotExist(err) {
 		t.Fatalf("expected legacy source-prefixed bundle folder to be removed, stat err=%v", err)
 	}
-	if _, err := os.Stat(filepath.Join(skillsRoot, "bundles", "api-security-testing", "SKILL.md")); err != nil {
+	if _, err := os.Stat(filepath.Join(skillsRoot, "bundles", "vulnerabilities-xss", "SKILL.md")); err != nil {
 		t.Fatalf("expected source-free builtin bundle folder, stat err=%v", err)
 	}
 	if _, ok := files["UPSTREAM.md"]; ok {
@@ -276,6 +286,30 @@ func TestInstallBuiltinSkillsPurgesRetiredPrunedLegacyIDs(t *testing.T) {
 	}
 	if _, err := svc.Get("cyberstrikeai-incident-response"); err == nil {
 		t.Fatal("expected retired legacy builtin ID to be removed")
+	}
+}
+
+func TestInstallBuiltinSkillsPurgesRetiredDefaultBuiltinIDs(t *testing.T) {
+	db := openTestStore(t)
+	skillsRoot := filepath.Join(t.TempDir(), "skills")
+	svc := skill.NewService(db, skillsRoot)
+	ctx := context.Background()
+
+	if _, err := svc.Publish(ctx, skill.PublishRequest{
+		Metadata: skill.Metadata{
+			ID:     "api-security-testing",
+			Name:   "API Security Testing",
+			Source: skill.SourceProvenance{Kind: "builtin"},
+		},
+		Files: map[string]string{"SKILL.md": "# retired"},
+	}); err != nil {
+		t.Fatalf("publish retired builtin: %v", err)
+	}
+	if err := svc.InstallBuiltinSkills(ctx); err != nil {
+		t.Fatalf("install builtins: %v", err)
+	}
+	if _, err := svc.Get("api-security-testing"); err == nil {
+		t.Fatal("expected retired default builtin ID to be removed")
 	}
 }
 

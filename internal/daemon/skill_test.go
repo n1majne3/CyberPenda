@@ -258,8 +258,8 @@ func TestDaemonSeedsBuiltinSkills(t *testing.T) {
 	if !hasBuiltinSkill(listed.Skills, "vulnerabilities-xss") {
 		t.Fatalf("expected Strix builtin skill, got %#v", listed.Skills)
 	}
-	if !hasBuiltinSkill(listed.Skills, "api-security-testing") {
-		t.Fatalf("expected CyberStrikeAI builtin skill, got %#v", listed.Skills)
+	if !hasBuiltinSkill(listed.Skills, "scoreboard-driven-web-challenge") {
+		t.Fatalf("expected scoreboard-driven web challenge builtin skill, got %#v", listed.Skills)
 	}
 	detailReq := httptest.NewRequest(http.MethodGet, "/api/skills/"+listed.Skills[0].ID, nil)
 	detailResp := httptest.NewRecorder()

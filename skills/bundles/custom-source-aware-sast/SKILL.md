@@ -12,7 +12,7 @@ Use this skill for source-heavy analysis where static and structural signals sho
 Run tools from repo root and store outputs in a dedicated artifact directory:
 
 ```bash
-mkdir -p /workspace/.strix-source-aware
+mkdir -p /workspace/.source-aware-sast
 ```
 
 ## Baseline Coverage Bundle (Recommended)
@@ -20,7 +20,7 @@ mkdir -p /workspace/.strix-source-aware
 Run this baseline once per repository before deep narrowing:
 
 ```bash
-ART=/workspace/.strix-source-aware
+ART=/workspace/.source-aware-sast
 mkdir -p "$ART"
 
 semgrep scan --config p/default --config p/golang --config p/secrets \
@@ -30,7 +30,7 @@ python3 - <<'PY'
 import json
 from pathlib import Path
 
-art = Path("/workspace/.strix-source-aware")
+art = Path("/workspace/.source-aware-sast")
 semgrep_json = art / "semgrep.json"
 targets_file = art / "sg-targets.txt"
 
@@ -70,10 +70,10 @@ Use Semgrep as the default static triage pass:
 ```bash
 # Preferred deterministic profile set (works with --metrics=off)
 semgrep scan --config p/default --config p/golang --config p/secrets \
-  --metrics=off --json --output /workspace/.strix-source-aware/semgrep.json .
+  --metrics=off --json --output /workspace/.source-aware-sast/semgrep.json .
 
 # If you choose auto config, do not combine it with --metrics=off
-semgrep scan --config auto --json --output /workspace/.strix-source-aware/semgrep-auto.json .
+semgrep scan --config auto --json --output /workspace/.source-aware-sast/semgrep-auto.json .
 ```
 
 If diff scope is active, restrict to changed files first, then expand only when needed.
@@ -85,8 +85,8 @@ Use `sg` for structure-aware code hunting:
 ```bash
 # Ruleless structural pass over deterministic target list (no sgconfig.yml required)
 xargs -r -n 200 sg run --pattern '$F($$$ARGS)' --json=stream \
-  < /workspace/.strix-source-aware/sg-targets.txt \
-  > /workspace/.strix-source-aware/ast-grep.json 2> /workspace/.strix-source-aware/ast-grep.log || true
+  < /workspace/.source-aware-sast/sg-targets.txt \
+  > /workspace/.source-aware-sast/ast-grep.json 2> /workspace/.source-aware-sast/ast-grep.log || true
 ```
 
 Target high-value patterns such as:
@@ -110,15 +110,15 @@ Use outputs to improve route/symbol/sink maps for subsequent targeted scans.
 Detect hardcoded credentials:
 
 ```bash
-gitleaks detect --source . --report-format json --report-path /workspace/.strix-source-aware/gitleaks.json
-trufflehog filesystem --json . > /workspace/.strix-source-aware/trufflehog.json
+gitleaks detect --source . --report-format json --report-path /workspace/.source-aware-sast/gitleaks.json
+trufflehog filesystem --json . > /workspace/.source-aware-sast/trufflehog.json
 ```
 
 Run repository-wide dependency and config checks:
 
 ```bash
 trivy fs --scanners vuln,misconfig --timeout 30m --offline-scan \
-  --format json --output /workspace/.strix-source-aware/trivy-fs.json . || true
+  --format json --output /workspace/.source-aware-sast/trivy-fs.json . || true
 ```
 
 ## JavaScript-Side Coverage
@@ -127,9 +127,9 @@ For frontends and Node services, layer these on top of the language-agnostic
 passes above:
 
 ```bash
-retire --path . --outputformat json --outputpath /workspace/.strix-source-aware/retire.json || true
+retire --path . --outputformat json --outputpath /workspace/.source-aware-sast/retire.json || true
 eslint --no-config-lookup --rule '{"no-eval":2,"no-implied-eval":2}' \
-  -f json -o /workspace/.strix-source-aware/eslint.json . || true
+  -f json -o /workspace/.source-aware-sast/eslint.json . || true
 ```
 
 When you hit a minified bundle, run `js-beautify <file>` for a readable

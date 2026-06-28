@@ -273,10 +273,10 @@ func TestPreflightBuiltinSkillPreviewUsesSourceFreeID(t *testing.T) {
 	server := newDaemon(t)
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
 	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
-	putSkill(t, server, "cyberstrikeai-api-security-testing", `{
-		"name":"cyberstrikeai-api-security-testing",
+	putSkill(t, server, "cyberstrikeai-vulnerabilities-xss", `{
+		"name":"cyberstrikeai-vulnerabilities-xss",
 		"source_provenance":{"kind":"builtin"},
-		"files":{"SKILL.md":"# API Security Testing"}
+		"files":{"SKILL.md":"# XSS Testing"}
 	}`)
 
 	body := []byte(`{"runtime_profile_id":"` + profileID + `"}`)
@@ -296,7 +296,7 @@ func TestPreflightBuiltinSkillPreviewUsesSourceFreeID(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatalf("decode preflight response: %v", err)
 	}
-	if len(result.Skills) != 1 || result.Skills[0].ID != "api-security-testing" || result.Skills[0].Name != "api-security-testing" {
+	if len(result.Skills) != 1 || result.Skills[0].ID != "vulnerabilities-xss" || result.Skills[0].Name != "vulnerabilities-xss" {
 		t.Fatalf("expected source-free builtin skill preview, got %#v", result.Skills)
 	}
 }
