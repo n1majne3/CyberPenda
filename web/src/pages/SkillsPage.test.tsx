@@ -118,9 +118,9 @@ describe("SkillsPage", () => {
       "/api/skills?runtime_profile_id=profile-1": {
         skills: [
           {
-            id: "cyberstrikeai-api-security-testing",
-            name: "cyberstrikeai-api-security-testing",
-            description: "cyberstrikeai-api-security-testing: API security testing methodology",
+            id: "cyberstrikeai-vulnerabilities-xss",
+            name: "cyberstrikeai-vulnerabilities-xss",
+            description: "cyberstrikeai-vulnerabilities-xss: XSS testing methodology",
             enabled: true,
             source_provenance: { kind: "builtin" },
             created_at: "",
@@ -128,13 +128,13 @@ describe("SkillsPage", () => {
           },
         ],
       },
-      "/api/skills/cyberstrikeai-api-security-testing": {
-        id: "cyberstrikeai-api-security-testing",
-        name: "cyberstrikeai-api-security-testing",
-        description: "cyberstrikeai-api-security-testing: API security testing methodology",
+      "/api/skills/cyberstrikeai-vulnerabilities-xss": {
+        id: "cyberstrikeai-vulnerabilities-xss",
+        name: "cyberstrikeai-vulnerabilities-xss",
+        description: "cyberstrikeai-vulnerabilities-xss: XSS testing methodology",
         enabled: true,
         source_provenance: { kind: "builtin" },
-        files: { "SKILL.md": "# API Security Testing" },
+        files: { "SKILL.md": "# XSS Testing" },
         created_at: "",
         updated_at: "",
       },
@@ -142,18 +142,18 @@ describe("SkillsPage", () => {
 
     renderPage();
 
-    expect(await screen.findByRole("heading", { name: "api-security-testing" })).toBeInTheDocument();
-    expect(screen.getByText("API security testing methodology")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "vulnerabilities-xss" })).toBeInTheDocument();
+    expect(screen.getByText("XSS testing methodology")).toBeInTheDocument();
     expect(screen.queryByText("builtin")).not.toBeInTheDocument();
     expect(screen.queryByText(/cyberstrikeai/i)).not.toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole("button", { name: /edit api-security-testing/i }));
-    expect(await screen.findByLabelText("Skill ID")).toHaveValue("api-security-testing");
+    await userEvent.click(screen.getByRole("button", { name: /edit vulnerabilities-xss/i }));
+    expect(await screen.findByLabelText("Skill ID")).toHaveValue("vulnerabilities-xss");
     expect(screen.queryByDisplayValue(/cyberstrikeai/i)).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: /publish skill/i }));
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/skills/cyberstrikeai-api-security-testing",
+      "/api/skills/cyberstrikeai-vulnerabilities-xss",
       expect.objectContaining({ method: "PUT" }),
     );
   });

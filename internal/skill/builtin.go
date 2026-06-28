@@ -39,18 +39,28 @@ var prunedBuiltinSuccessors = map[string]string{
 }
 
 var retiredPrunedBuiltinIDs = []string{
+	"api-security-testing",
+	"cloud-kubernetes",
+	"cloud-security-audit",
+	"container-security-testing",
 	"cyberstrike-eino-demo",
+	"deserialization-testing",
 	"security-awareness-training",
 	"incident-response",
 	"security-automation",
 	"secure-code-review",
 	"vulnerability-assessment",
+	"ldap-injection-testing",
+	"mobile-app-security-testing",
+	"network-penetration-testing",
 	"coordination-root-agent",
 	"scan-modes-quick",
 	"scan-modes-standard",
 	"scan-modes-deep",
 	"tooling-agent-browser",
 	"tooling-python",
+	"xpath-injection-testing",
+	"xxe-testing",
 }
 
 // InstallBuiltinSkills publishes packaged built-in Skills that are not already
