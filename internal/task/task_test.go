@@ -48,9 +48,10 @@ func TestCreateCapturesGoalRunControlsAndScopeSnapshot(t *testing.T) {
 		RuntimeProfileID: "profile-1",
 		Runner:           task.RunnerSandbox,
 		RunControls: task.RunControls{
-			YOLO:   false,
-			Notes:  "business hours only",
-			Extras: map[string]string{"depth": "shallow"},
+			YOLO:           false,
+			SandboxNetwork: "host_proxy_only",
+			Notes:          "business hours only",
+			Extras:         map[string]string{"depth": "shallow"},
 		},
 	})
 	if err != nil {
@@ -74,6 +75,13 @@ func TestCreateCapturesGoalRunControlsAndScopeSnapshot(t *testing.T) {
 	}
 	if created.RunControls.Notes != "business hours only" {
 		t.Fatalf("expected run-control notes, got %q", created.RunControls.Notes)
+	}
+	fetched, err := svc.Get(created.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if fetched.RunControls.SandboxNetwork != "host_proxy_only" {
+		t.Fatalf("expected persisted sandbox network, got %q", fetched.RunControls.SandboxNetwork)
 	}
 	// Scope snapshot is an immutable copy captured at launch.
 	if got := created.ScopeSnapshot.Domains; len(got) != 1 || got[0] != "example.com" {
@@ -329,4 +337,3 @@ func TestReconcileInterruptedStatusesMarksActiveTasksInterrupted(t *testing.T) {
 		t.Fatalf("expected completed task untouched, got %q", completedGot.Status)
 	}
 }
-

@@ -104,6 +104,65 @@ func TestCreateTaskSurfacesSkillBundleErrorViaPreflight(t *testing.T) {
 	}
 }
 
+func TestBuildTaskAdapterAppliesHostProxyOnlySandboxNetworkFromRunControls(t *testing.T) {
+	server, err := NewServer(Config{
+		Version:              "test",
+		DBPath:               filepath.Join(t.TempDir(), "pentest.db"),
+		RuntimeRoot:          t.TempDir(),
+		SandboxImage:         "pentest-sandbox:latest",
+		DisableBuiltinSkills: true,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := server.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	})
+
+	profile, err := server.CreateLocalRuntimeProfile("Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		Model:         "gpt-5",
+		DefaultRunner: "sandbox",
+	})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	proj, err := server.projects.Create("test", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	created, err := server.tasks.Create(task.CreateRequest{
+		ProjectID:        proj.ID,
+		Goal:             "test http://localhost:3000",
+		RuntimeProfileID: profile.ID,
+		Runner:           task.RunnerSandbox,
+		RunControls: task.RunControls{
+			SandboxNetwork: "host_proxy_only",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	_, runtimeConfig, err := server.buildTaskAdapter(created, "")
+	if err != nil {
+		t.Fatalf("build adapter: %v", err)
+	}
+	launchCommand, ok := runtimeConfig["launch_command"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected launch_command in runtime config, got %#v", runtimeConfig["launch_command"])
+	}
+	args, ok := launchCommand["args"].([]string)
+	if !ok {
+		t.Fatalf("expected launch command args, got %#v", launchCommand["args"])
+	}
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--network pentest-host-proxy-only") {
+		t.Fatalf("expected host-proxy-only sandbox network in launch args, got %v", args)
+	}
+}
+
 func newAdapterErrorTestServer(t *testing.T) *Server {
 	t.Helper()
 	server, err := NewServer(Config{

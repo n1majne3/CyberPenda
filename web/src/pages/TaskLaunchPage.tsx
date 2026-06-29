@@ -54,6 +54,7 @@ export function TaskLaunchPage() {
   const [goal, setGoal] = useState("");
   const [yolo, setYolo] = useState(false);
   const [hostActivated, setHostActivated] = useState(false);
+  const [sandboxNetwork, setSandboxNetwork] = useState("");
   const [launching, setLaunching] = useState(false);
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [resolvedProfileId, setResolvedProfileId] = useState("");
@@ -222,10 +223,11 @@ export function TaskLaunchPage() {
       profileId = launchRuntimeProfileId(presetId, profileId);
 
       const launchOverride = launchModelOverridePayload(presetId, form);
+      const runControls = launchRunControls(yolo, hostActivated, form.runner, sandboxNetwork);
       const checked = await apiPost<PreflightResult>(`/api/projects/${projectId}/preflight`, {
         runtime_profile_id: profileId,
         runner: form.runner,
-        run_controls: { yolo, host_activated: hostActivated },
+        run_controls: runControls,
         ...launchOverride,
       });
       setPreflight(checked);
@@ -237,7 +239,7 @@ export function TaskLaunchPage() {
         goal,
         runtime_profile_id: profileId,
         runner: form.runner,
-        run_controls: { yolo, host_activated: hostActivated },
+        run_controls: runControls,
         ...launchOverride,
       });
       navigate(`/projects/${projectId}/tasks/${created.id}`);
@@ -294,6 +296,22 @@ export function TaskLaunchPage() {
             </Select>
           </div>
         </div>
+        {form.runner === "sandbox" && (
+          <div>
+            <Label htmlFor="launch-sandbox-network">Sandbox network</Label>
+            <Select
+              id="launch-sandbox-network"
+              value={sandboxNetwork}
+              onChange={(e) => {
+                setSandboxNetwork(e.target.value);
+                setPreflight(null);
+              }}
+            >
+              <option value="">Default bridge</option>
+              <option value="host_proxy_only">Host proxy only</option>
+            </Select>
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <div>
             <Label htmlFor="launch-model-provider">Model provider</Label>
@@ -492,6 +510,19 @@ export function TaskLaunchPage() {
       </div>
     </PageContainer>
   );
+}
+
+function launchRunControls(
+  yolo: boolean,
+  hostActivated: boolean,
+  runner: string,
+  sandboxNetwork: string,
+) {
+  return {
+    yolo,
+    host_activated: hostActivated,
+    ...(runner === "sandbox" && sandboxNetwork ? { sandbox_network: sandboxNetwork } : {}),
+  };
 }
 
 function LaunchSkillsPreviewCard({

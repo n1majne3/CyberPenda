@@ -30,22 +30,23 @@ const (
 type Status string
 
 const (
-	StatusPending    Status = "pending"
-	StatusRunning    Status = "running"
-	StatusPaused     Status = "paused"
-	StatusCompleted  Status = "completed"
-	StatusFailed     Status = "failed"
-	StatusStopped    Status = "stopped"
+	StatusPending     Status = "pending"
+	StatusRunning     Status = "running"
+	StatusPaused      Status = "paused"
+	StatusCompleted   Status = "completed"
+	StatusFailed      Status = "failed"
+	StatusStopped     Status = "stopped"
 	StatusInterrupted Status = "interrupted"
 )
 
 // RunControls are the structured task launch settings: runner is stored
 // separately because it gates execution boundary visibility.
 type RunControls struct {
-	YOLO            bool              `json:"yolo,omitempty"`
-	HostActivated   bool              `json:"host_activated,omitempty"`
-	Notes           string            `json:"notes,omitempty"`
-	Extras          map[string]string `json:"extras,omitempty"`
+	YOLO           bool              `json:"yolo,omitempty"`
+	HostActivated  bool              `json:"host_activated,omitempty"`
+	SandboxNetwork string            `json:"sandbox_network,omitempty"`
+	Notes          string            `json:"notes,omitempty"`
+	Extras         map[string]string `json:"extras,omitempty"`
 }
 
 // ScopeSnapshot is an immutable copy of the project scope captured when a task

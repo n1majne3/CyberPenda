@@ -57,6 +57,21 @@ type Command struct {
 	Args    []string `json:"args"`
 }
 
+// SandboxNetworkMode controls the Docker network boundary used by sandbox
+// launches.
+type SandboxNetworkMode string
+
+const (
+	// SandboxNetworkDefault leaves Docker networking at its default bridge
+	// behavior.
+	SandboxNetworkDefault SandboxNetworkMode = ""
+	// SandboxNetworkHostProxyOnly selects a pre-created internal Docker network
+	// that should only expose host-provided targets and proxies.
+	SandboxNetworkHostProxyOnly SandboxNetworkMode = "host_proxy_only"
+)
+
+const HostProxyOnlySandboxNetworkName = "pentest-host-proxy-only"
+
 // SandboxCommandRequest contains the data needed to construct a Kali sandbox
 // launch command without starting the container.
 type SandboxCommandRequest struct {
@@ -66,6 +81,7 @@ type SandboxCommandRequest struct {
 	ContainerCLI   string
 	RuntimeCommand []string
 	ProcessEnv     map[string]string
+	NetworkMode    SandboxNetworkMode
 }
 
 type ActivationRequest struct {
@@ -149,6 +165,9 @@ func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 		"/task/workdir",
 		"-e",
 		"PENTEST_TASK_ROOT=/task",
+	}
+	if request.NetworkMode == SandboxNetworkHostProxyOnly {
+		args = append(args, "--network", HostProxyOnlySandboxNetworkName)
 	}
 	for key, value := range request.ProcessEnv {
 		if strings.TrimSpace(key) == "" {

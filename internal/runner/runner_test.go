@@ -146,6 +146,35 @@ func TestBuildSandboxCommandConstructsContainerLaunchWithoutExecution(t *testing
 	}
 }
 
+func TestBuildSandboxCommandUsesHostProxyOnlyNetworkWhenRequested(t *testing.T) {
+	root := t.TempDir()
+	layout, err := runner.PrepareTaskLayout(root, "task-123", runtimeprofile.ProviderCodex)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+
+	command, err := runner.BuildSandboxCommand(runner.SandboxCommandRequest{
+		Layout:         layout,
+		Provider:       runtimeprofile.ProviderCodex,
+		Image:          "pentest-kali:local",
+		RuntimeCommand: []string{"codex", "run", "--json"},
+		NetworkMode:    runner.SandboxNetworkHostProxyOnly,
+	})
+	if err != nil {
+		t.Fatalf("build command: %v", err)
+	}
+
+	joined := strings.Join(command.Args, " ")
+	for _, want := range []string{
+		"--network pentest-host-proxy-only",
+		"--add-host=host.docker.internal:host-gateway",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected sandbox args to contain %q, got %v", want, command.Args)
+		}
+	}
+}
+
 func TestBuildSandboxCommandUsesAbsoluteBindMountForRelativeTaskRoot(t *testing.T) {
 	t.Chdir(t.TempDir())
 

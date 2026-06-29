@@ -16,9 +16,9 @@ import (
 	"pentest/internal/preflight"
 	"pentest/internal/project"
 	"pentest/internal/runner"
-	"pentest/internal/skill"
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeprofile"
+	"pentest/internal/skill"
 	"pentest/internal/task"
 	"pentest/internal/timeline"
 	"pentest/internal/transcript"
@@ -265,8 +265,8 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string, la
 		Goal:          goal,
 		ConfigPath:    configPath,
 		MCPConfigPath: mcpConfigPath,
-		YOLO:    created.RunControls.YOLO,
-		Sandbox: sandbox,
+		YOLO:          created.RunControls.YOLO,
+		Sandbox:       sandbox,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -318,6 +318,7 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string, la
 			ContainerCLI:   server.containerCLI,
 			RuntimeCommand: sandboxRuntime,
 			ProcessEnv:     processEnv,
+			NetworkMode:    sandboxNetworkMode(created.RunControls),
 		})
 		if err != nil {
 			return nil, nil, err
@@ -359,6 +360,22 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string, la
 	}
 
 	return adapter, runtimeConfig, nil
+}
+
+func sandboxNetworkMode(runControls task.RunControls) runner.SandboxNetworkMode {
+	switch strings.TrimSpace(runControls.SandboxNetwork) {
+	case string(runner.SandboxNetworkHostProxyOnly):
+		return runner.SandboxNetworkHostProxyOnly
+	}
+	if runControls.Extras == nil {
+		return runner.SandboxNetworkDefault
+	}
+	switch strings.TrimSpace(runControls.Extras["sandbox_network"]) {
+	case string(runner.SandboxNetworkHostProxyOnly):
+		return runner.SandboxNetworkHostProxyOnly
+	default:
+		return runner.SandboxNetworkDefault
+	}
 }
 
 func (server *Server) handleListTasks(response http.ResponseWriter, request *http.Request) {
