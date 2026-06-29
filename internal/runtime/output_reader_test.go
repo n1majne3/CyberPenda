@@ -60,6 +60,22 @@ func TestScanOutputEmitsTruncatedLineAndKeepsReading(t *testing.T) {
 	}
 }
 
+func TestScanOutputDropsIgnorableProviderNoise(t *testing.T) {
+	payload := `{"type":"system","subtype":"thinking_tokens","estimated_tokens":13}` + "\n" +
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"Visible."}]}}` + "\n"
+	var emitted []task.EventPayload
+	runtime.ScanOutput(bytes.NewReader([]byte(payload)), "stdout", 1024, func(_ task.EventKind, payload task.EventPayload) {
+		emitted = append(emitted, payload)
+	})
+
+	if len(emitted) != 1 {
+		t.Fatalf("expected 1 stored line, got %d: %#v", len(emitted), emitted)
+	}
+	if text, _ := emitted[0]["text"].(string); !strings.Contains(text, "Visible.") {
+		t.Fatalf("expected visible assistant text, got %#v", emitted[0])
+	}
+}
+
 func TestReadBoundedLineReturnsEOFWithoutErrorForEmptyStream(t *testing.T) {
 	line, truncated, err := runtime.ReadBoundedLine(bufio.NewReader(strings.NewReader("")), 1024)
 	if err != io.EOF || truncated || line != "" {
