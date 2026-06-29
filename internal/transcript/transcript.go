@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"pentest/internal/runtimeoutput"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/task"
 )
@@ -226,97 +227,43 @@ func ParserForAdapter(adapter string, registry *runtimeplugin.Registry) string {
 // derived entries inherit. It is exported so runtime tails can reuse the same
 // parsing as the post-hoc transcript builder.
 func ParseRecord(record map[string]any, base Entry) []Entry {
-	if item, ok := mapValue(record, "item"); ok {
-		if entries := ParseRecord(item, base); len(entries) > 0 {
-			return entries
-		}
-	}
-	if delta, ok := mapValue(record, "delta"); ok {
-		if text := firstText(delta, "text", "content"); text != "" {
-			return []Entry{messageEntry(base, indexedID(base.ID, "-message", ""), RoleAssistant, text)}
-		}
-	}
-
-	recordType := stringValue(record, "type")
-	switch recordType {
-	case "system":
-		if isIgnorableSystemRecord(record) {
-			return nil
-		}
-		return parseMessageRecord(record, base, roleFromType(recordType))
-	case "assistant", "user", "message", "assistant_message", "agent_message", "response.output_text", "output_text", "message_delta", "content_block_delta":
-		return parseMessageRecord(record, base, roleFromType(recordType))
-	case "tool_call", "function_call", "tool_use":
-		return []Entry{toolCallEntry(record, base, indexedID(base.ID, "-tool-call", ""))}
-	case "tool_result", "function_call_output":
-		return []Entry{toolResultEntry(record, base, indexedID(base.ID, "-tool-result", ""))}
-	default:
-		if recordType == "" && stringValue(record, "role") != "" {
-			text := firstText(record, "text", "content", "message", "output")
-			if text == "" {
-				return nil
-			}
-			role := stringValue(record, "role")
-			return []Entry{messageEntry(base, indexedID(base.ID, "-message", ""), role, text)}
-		}
-		return nil
-	}
+	turns := runtimeoutput.ParseRecord(record, runtimeoutput.ParseOptions{}, base.CreatedAt)
+	return turnsToEntries(turns, base)
 }
 
-func parseMessageRecord(record map[string]any, base Entry, role string) []Entry {
-	if message, ok := mapValue(record, "message"); ok {
-		// pi uses toolResult as a role on the message itself; surface it as a
-		// tool result entry so it renders like other provider tool results.
-		if mr := stringValue(message, "role"); mr == "toolResult" || mr == "tool" {
-			if res := toolResultEntry(message, base, indexedID(base.ID, "-tool-result", "")); res.Text != "" || res.ToolCallID != "" {
-				return []Entry{res}
-			}
-		}
-		if content, ok := sliceValue(message, "content"); ok {
-			return parseContentBlocks(content, base, role)
-		}
-		if text := firstText(message, "text", "content", "message"); text != "" {
-			return []Entry{messageEntry(base, base.ID+"-message", role, text)}
-		}
-	}
-	if content, ok := sliceValue(record, "content"); ok {
-		return parseContentBlocks(content, base, role)
-	}
-	if text := firstText(record, "text", "content", "message"); text != "" {
-		return []Entry{messageEntry(base, base.ID+"-message", role, text)}
-	}
-	return nil
-}
-
-func parseContentBlocks(content []any, base Entry, role string) []Entry {
-	entries := make([]Entry, 0, len(content))
-	for index, block := range content {
-		switch value := block.(type) {
-		case string:
-			if value != "" {
-				entries = append(entries, messageEntry(base, fmt.Sprintf("%s-message-%d", base.ID, index), role, value))
-			}
-		case map[string]any:
-			blockType := stringValue(value, "type")
-			switch strings.ToLower(blockType) {
-			case "thinking":
-				continue
-			case "text":
-				if text := firstText(value, "text", "content"); text != "" {
-					entries = append(entries, messageEntry(base, fmt.Sprintf("%s-message-%d", base.ID, index), role, text))
-				}
-			case "tool_use", "tool_call", "toolcall", "function_call":
-				entries = append(entries, toolCallEntry(value, base, fmt.Sprintf("%s-tool-call-%d", base.ID, index)))
-			case "tool_result", "toolresult", "function_call_output":
-				entries = append(entries, toolResultEntry(value, base, fmt.Sprintf("%s-tool-result-%d", base.ID, index)))
-			default:
-				if text := firstText(value, "text", "content", "message", "output"); text != "" {
-					entries = append(entries, messageEntry(base, fmt.Sprintf("%s-message-%d", base.ID, index), role, text))
-				}
-			}
+func turnsToEntries(turns []runtimeoutput.Turn, base Entry) []Entry {
+	entries := make([]Entry, 0, len(turns))
+	for _, turn := range turns {
+		switch turn.Kind {
+		case runtimeoutput.KindText:
+			entries = append(entries, messageEntry(base, entryID(base.ID, "-message", turn.ContentIndex), mapRuntimeRole(turn.Role), turn.Text))
+		case runtimeoutput.KindToolUse:
+			entries = append(entries, toolCallEntryFromTurn(turn, base, entryID(base.ID, "-tool-call", turn.ContentIndex)))
+		case runtimeoutput.KindToolResult:
+			entries = append(entries, toolResultEntryFromTurn(turn, base, entryID(base.ID, "-tool-result", turn.ContentIndex)))
 		}
 	}
 	return entries
+}
+
+func entryID(baseID, suffix string, index int) string {
+	if index < 0 {
+		return baseID + suffix
+	}
+	return fmt.Sprintf("%s%s-%d", baseID, suffix, index)
+}
+
+func mapRuntimeRole(role string) string {
+	switch role {
+	case "user":
+		return RoleUser
+	case "system":
+		return RoleSystem
+	case "tool":
+		return RoleTool
+	default:
+		return RoleAssistant
+	}
 }
 
 func messageEntry(base Entry, id, role, text string) Entry {
@@ -331,124 +278,45 @@ func messageEntry(base Entry, id, role, text string) Entry {
 	}
 }
 
-func toolCallEntry(record map[string]any, base Entry, id string) Entry {
-	details := map[string]any{}
-	for _, key := range []string{"arguments", "input", "parameters"} {
-		if value, ok := record[key]; ok {
-			details[key] = value
-		}
-	}
+func toolCallEntryFromTurn(turn runtimeoutput.Turn, base Entry, id string) Entry {
 	return Entry{
 		ID:           id,
 		Seq:          base.Seq,
 		Continuation: base.Continuation,
 		Kind:         KindToolCall,
 		Role:         RoleAssistant,
-		ToolCallID:   firstText(record, "tool_call_id", "tool_use_id", "call_id", "id"),
-		ToolName:     toolName(record),
-		Details:      nilIfEmpty(details),
+		ToolCallID:   turn.ToolCallID,
+		ToolName:     turn.Tool,
+		Details:      turn.Details,
 		Status:       StatusCollapsed,
 		CreatedAt:    base.CreatedAt,
 	}
 }
 
-func toolResultEntry(record map[string]any, base Entry, id string) Entry {
-	details := map[string]any{}
-	for _, key := range []string{"is_error", "isError", "error"} {
-		if value, ok := record[key]; ok {
-			details[key] = value
-		}
-	}
+func toolResultEntryFromTurn(turn runtimeoutput.Turn, base Entry, id string) Entry {
 	return Entry{
 		ID:           id,
 		Seq:          base.Seq,
 		Continuation: base.Continuation,
 		Kind:         KindToolResult,
 		Role:         RoleTool,
-		Text:         firstText(record, "output", "content", "result", "text"),
-		ToolCallID:   firstText(record, "tool_call_id", "tool_use_id", "call_id", "toolCallId", "id"),
-		ToolName:     firstText(record, "tool_name", "toolName", "name"),
-		Details:      nilIfEmpty(details),
+		Text:         turn.Output,
+		ToolCallID:   turn.ToolCallID,
+		ToolName:     turn.Tool,
+		Details:      turn.Details,
 		Status:       StatusCollapsed,
 		CreatedAt:    base.CreatedAt,
 	}
 }
 
 // IsIgnorableRuntimeLine reports whether a raw runtime stdout/stderr line is
-// provider metadata that should not be stored or shown in the task timeline.
+// provider metadata that should not be stored or shown in the task conversation transcript.
 func IsIgnorableRuntimeLine(text string) bool {
-	text = strings.TrimSpace(text)
-	if text == "" || !strings.HasPrefix(text, "{") {
-		return false
-	}
-	var record map[string]any
-	if err := json.Unmarshal([]byte(text), &record); err != nil {
-		return false
-	}
-	return isIgnorableRuntimeRecord(record)
+	return runtimeoutput.ShouldIgnoreForStorage(text)
 }
 
 func isIgnorableUnparsedRuntimeLine(text string) bool {
-	text = strings.TrimSpace(text)
-	if text == "" || !strings.HasPrefix(text, "{") {
-		return false
-	}
-	var record map[string]any
-	if err := json.Unmarshal([]byte(text), &record); err != nil {
-		return false
-	}
-	return isThinkingOnlyAssistantRecord(record)
-}
-
-func isIgnorableRuntimeRecord(record map[string]any) bool {
-	return isIgnorableSystemRecord(record) || isIgnorableRecordType(record) || isThinkingOnlyAssistantRecord(record)
-}
-
-func isIgnorableRecordType(record map[string]any) bool {
-	switch stringValue(record, "type") {
-	case "ping", "keepalive", "result":
-		return true
-	default:
-		return false
-	}
-}
-
-func isIgnorableSystemRecord(record map[string]any) bool {
-	if stringValue(record, "type") != "system" {
-		return false
-	}
-	subtype := stringValue(record, "subtype")
-	switch subtype {
-	case "thinking_tokens", "init":
-		return true
-	}
-	// Claude Code workflow telemetry: task_started, task_failed, task_progress, …
-	return strings.HasPrefix(subtype, "task_")
-}
-
-func isThinkingOnlyAssistantRecord(record map[string]any) bool {
-	if stringValue(record, "type") != "assistant" {
-		return false
-	}
-	message, ok := mapValue(record, "message")
-	if !ok {
-		return false
-	}
-	content, ok := sliceValue(message, "content")
-	if !ok || len(content) == 0 {
-		return false
-	}
-	for _, block := range content {
-		blockMap, ok := block.(map[string]any)
-		if !ok {
-			return false
-		}
-		blockType := strings.ToLower(stringValue(blockMap, "type"))
-		if blockType != "thinking" {
-			return false
-		}
-	}
-	return true
+	return runtimeoutput.IsThinkingOnlyAssistantLine(text)
 }
 
 func runtimeFallback(event task.Event, continuation int, text, stream string) Entry {
@@ -463,27 +331,6 @@ func runtimeFallback(event task.Event, continuation int, text, stream string) En
 		Status:       StatusCollapsed,
 		CreatedAt:    event.CreatedAt,
 	}
-}
-
-func roleFromType(recordType string) string {
-	switch recordType {
-	case "user":
-		return RoleUser
-	case "system":
-		return RoleSystem
-	default:
-		return RoleAssistant
-	}
-}
-
-func toolName(record map[string]any) string {
-	if name := firstText(record, "name", "tool_name"); name != "" {
-		return name
-	}
-	if function, ok := mapValue(record, "function"); ok {
-		return firstText(function, "name")
-	}
-	return ""
 }
 
 func firstText(record map[string]any, keys ...string) string {
@@ -578,9 +425,4 @@ func nilIfEmpty(values map[string]any) map[string]any {
 	return values
 }
 
-func indexedID(base, suffix, index string) string {
-	if index == "" {
-		return base + suffix
-	}
-	return base + suffix + "-" + index
-}
+
