@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"pentest/internal/adapters"
+	"pentest/internal/runtimeoutput"
 	"pentest/internal/task"
-	"pentest/internal/transcript"
 )
 
 // maxRuntimeOutputLineBytes matches multica's codex stdout scanner cap so a
@@ -69,7 +69,7 @@ func ScanOutput(reader io.Reader, stream string, maxLineBytes int, emit func(tas
 	for {
 		line, truncated, err := ReadBoundedLine(br, maxLineBytes)
 		if line != "" {
-			if !transcript.IsIgnorableRuntimeLine(line) {
+			if !runtimeoutput.ShouldIgnoreForStorage(line) {
 				payload := task.EventPayload{
 					"stream": stream,
 					"text":   line,
