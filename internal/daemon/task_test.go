@@ -324,7 +324,7 @@ func TestLaunchTaskUsesRuntimeProfileProviderAdapter(t *testing.T) {
 		"run_controls":{"host_activated":true}
 	}`)
 
-	waitForEventText(t, server, projectID, taskID, "codex-provider:run")
+	waitForEventText(t, server, projectID, taskID, "codex-provider:exec")
 	events := getTaskEvents(t, server, projectID, taskID)
 	var sawCodexLifecycle bool
 	var sawProviderOutput bool
@@ -338,7 +338,7 @@ func TestLaunchTaskUsesRuntimeProfileProviderAdapter(t *testing.T) {
 		if event["kind"] == "runtime_output" {
 			payload := event["payload"].(map[string]any)
 			text, _ := payload["text"].(string)
-			if strings.Contains(text, "codex-provider:run --model gpt-test") &&
+			if strings.Contains(text, "codex-provider:exec --model gpt-test") &&
 				strings.Contains(text, "enumerate example.com") {
 				sawProviderOutput = true
 			}
@@ -429,7 +429,7 @@ func TestLaunchTaskWrapsProviderCommandInSandboxRunner(t *testing.T) {
 		payload := event["payload"].(map[string]any)
 		text, _ := payload["text"].(string)
 		if strings.Contains(text, "sandbox-command:run --rm -i") &&
-			strings.Contains(text, "pentest-kali:test codex run --model gpt-test") &&
+			strings.Contains(text, "pentest-kali:test codex exec --model gpt-test") &&
 			strings.Contains(text, "enumerate example.com") {
 			sawSandboxCommand = true
 		}

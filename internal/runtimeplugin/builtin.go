@@ -58,7 +58,7 @@ func BuiltinPlugins() []Plugin {
 				ConfigPath: "runtime-home/codex/config.toml",
 			},
 			Launch: LaunchTemplate{
-				Args: []string{"{{binary}}", "{{codex_subcommand}}", "--model", "{{model}}", "{{custom_args}}", "{{codex_goal_prefix}}", "{{goal}}"},
+				Args: []string{"{{binary}}", "{{codex_subcommand}}", "--model", "{{model}}", "{{codex_exec_args}}", "{{custom_args}}", "{{codex_goal_prefix}}", "{{goal}}"},
 			},
 			ProcessEnv:    map[string]string{"CODEX_HOME": "{{runtime_home}}/codex"},
 			CredentialEnv: []string{"OPENAI_API_KEY", "CODEX_API_KEY"},

@@ -88,11 +88,14 @@ func launchRenderContext(req LaunchArgsRequest, binary string) runtimeplugin.Ren
 	extra = appendYOLOProviderArgs(req.Provider, req.Sandbox, req.YOLO, extra)
 	subcommand := strings.TrimSpace(req.Profile.Fields.Env["PENTEST_CODEX_SUBCOMMAND"])
 	if subcommand == "" {
-		subcommand = "run"
+		subcommand = "exec"
 	}
 
 	lists := map[string][]string{
 		"custom_args": extra,
+	}
+	if req.Provider == runtimeprofile.ProviderCodex && subcommand == "exec" && !hasCLIOption(extra, "--skip-git-repo-check") {
+		lists["codex_exec_args"] = []string{"--skip-git-repo-check"}
 	}
 	if req.Goal != "" && subcommand != "exec" {
 		lists["codex_goal_prefix"] = []string{"--"}

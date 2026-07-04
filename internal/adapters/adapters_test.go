@@ -63,6 +63,49 @@ func TestBuildCodexLaunchArgsFromRuntimeConfig(t *testing.T) {
 	}
 }
 
+func TestBuildCodexLaunchArgsDefaultsToExecForPrompt(t *testing.T) {
+	goal := "rest2\nA seemingly simple interactive function can have a serious impact.\nhttp://example.test/archive.zip"
+	args, err := adapters.BuildLaunchArgs(adapters.LaunchArgsRequest{
+		Provider: runtimeprofile.ProviderCodex,
+		Profile: runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderCodex,
+			Fields: runtimeprofile.Fields{
+				Model: "gpt-5.5",
+			},
+		},
+		Goal: goal,
+	})
+	if err != nil {
+		t.Fatalf("build args: %v", err)
+	}
+
+	want := []string{"codex", "exec", "--model", "gpt-5.5", "--skip-git-repo-check", goal}
+	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("args = %#v, want %#v", args, want)
+	}
+}
+
+func TestBuildCodexLaunchArgsDoesNotDuplicateExplicitSkipGitRepoCheck(t *testing.T) {
+	args, err := adapters.BuildLaunchArgs(adapters.LaunchArgsRequest{
+		Provider: runtimeprofile.ProviderCodex,
+		Profile: runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderCodex,
+			Fields: runtimeprofile.Fields{
+				Model:      "gpt-5.5",
+				CustomArgs: []string{"--skip-git-repo-check", "--json"},
+			},
+		},
+		Goal: "scan target",
+	})
+	if err != nil {
+		t.Fatalf("build args: %v", err)
+	}
+
+	if strings.Count(strings.Join(args, " "), "--skip-git-repo-check") != 1 {
+		t.Fatalf("expected one --skip-git-repo-check, got %#v", args)
+	}
+}
+
 // TestBuildClaudeCodeLaunchArgs proves the same contract for Claude Code.
 func TestBuildClaudeCodeLaunchArgs(t *testing.T) {
 	profile := runtimeprofile.Profile{

@@ -1310,13 +1310,16 @@ function buildLaunchPreview(
   const runtimeHome = sandbox ? "/task/runtime-home" : "runtime-home";
   const workdir = sandbox ? "/task/workdir" : "workdir";
   const binary = fields.binary_path?.trim() || plugin?.binary.default || fallbackBinary(provider);
-  const subcommand = fields.env?.PENTEST_CODEX_SUBCOMMAND?.trim() || "run";
+  const subcommand = fields.env?.PENTEST_CODEX_SUBCOMMAND?.trim() || "exec";
   const configPath = previewRuntimePath(defaultConfigPath(provider, plugin), sandbox);
   const mcpConfigPath = previewRuntimePath(defaultMCPConfigPath(provider, plugin), sandbox);
   const customArgs = fields.custom_args ?? [];
   const lists: Record<string, string[]> = {
     custom_args: customArgs,
   };
+  if (provider === "codex" && subcommand === "exec" && !hasCLIOption(customArgs, "--skip-git-repo-check")) {
+    lists.codex_exec_args = ["--skip-git-repo-check"];
+  }
   if (hasMCP && mcpConfigPath) {
     lists.mcp_args = ["--strict-mcp-config", "--mcp-config", mcpConfigPath];
   }
@@ -1379,9 +1382,12 @@ function renderCompatibilityLaunch(
   const args = [binary];
   const customArgs = fields.custom_args ?? [];
   if (provider === "codex") {
-    const subcommand = fields.env?.PENTEST_CODEX_SUBCOMMAND?.trim() || "run";
+    const subcommand = fields.env?.PENTEST_CODEX_SUBCOMMAND?.trim() || "exec";
     args.push(subcommand);
     if (fields.model) args.push("--model", fields.model);
+    if (subcommand === "exec" && !hasCLIOption(customArgs, "--skip-git-repo-check")) {
+      args.push("--skip-git-repo-check");
+    }
     args.push(...customArgs);
     if (subcommand !== "exec") args.push("--");
     args.push("<goal>");
@@ -1606,5 +1612,3 @@ function formatMCPServers(servers?: RuntimeProfileFields["mcp_servers"]): string
   if (!servers || servers.length === 0) return "";
   return JSON.stringify(servers, null, 2);
 }
-
-
