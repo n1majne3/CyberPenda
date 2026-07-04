@@ -277,6 +277,109 @@ func TestRuntimeConfigVersionsIncrementOnProfileSwitch(t *testing.T) {
 	}
 }
 
+func TestContinuationLifecycleTracksLatestAndActiveRun(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, _ := svc.Create(task.CreateRequest{
+		ProjectID:        proj.ID,
+		Goal:             "g",
+		RuntimeProfileID: "prof-a",
+		Runner:           task.RunnerSandbox,
+	})
+
+	first, err := svc.CreateContinuation(created.ID, "prof-a", "fake", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create first continuation: %v", err)
+	}
+	if first.Number != 1 {
+		t.Fatalf("expected first continuation number 1, got %d", first.Number)
+	}
+	if first.Status != task.StatusPending {
+		t.Fatalf("expected first continuation pending, got %q", first.Status)
+	}
+
+	active, err := svc.ActiveContinuation(created.ID)
+	if err != nil {
+		t.Fatalf("active continuation: %v", err)
+	}
+	if active == nil || active.ID != first.ID {
+		t.Fatalf("expected active continuation %q, got %#v", first.ID, active)
+	}
+
+	if _, err := svc.UpdateContinuationStatus(first.ID, task.StatusRunning); err != nil {
+		t.Fatalf("mark first running: %v", err)
+	}
+	if _, err := svc.UpdateContinuationStatus(first.ID, task.StatusCompleted); err != nil {
+		t.Fatalf("mark first completed: %v", err)
+	}
+
+	active, err = svc.ActiveContinuation(created.ID)
+	if err != nil {
+		t.Fatalf("active continuation after completion: %v", err)
+	}
+	if active != nil {
+		t.Fatalf("expected no active continuation after completion, got %#v", active)
+	}
+
+	second, err := svc.CreateContinuation(created.ID, "prof-a", "fake", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create second continuation: %v", err)
+	}
+	if second.Number != 2 {
+		t.Fatalf("expected second continuation number 2, got %d", second.Number)
+	}
+
+	latest, err := svc.LatestContinuation(created.ID)
+	if err != nil {
+		t.Fatalf("latest continuation: %v", err)
+	}
+	if latest == nil || latest.ID != second.ID {
+		t.Fatalf("expected latest continuation %q, got %#v", second.ID, latest)
+	}
+}
+
+func TestContinuationRuntimeMetadataIsPersisted(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, _ := svc.Create(task.CreateRequest{
+		ProjectID:        proj.ID,
+		Goal:             "g",
+		RuntimeProfileID: "prof-a",
+		Runner:           task.RunnerSandbox,
+	})
+
+	continuation, err := svc.CreateContinuation(created.ID, "prof-a", "codex", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create continuation: %v", err)
+	}
+
+	updated, err := svc.UpdateContinuationRuntimeMetadata(continuation.ID, "ctr-1", "sess-123", "/tmp/session.jsonl")
+	if err != nil {
+		t.Fatalf("update continuation metadata: %v", err)
+	}
+	if updated.ContainerID != "ctr-1" {
+		t.Fatalf("expected container id ctr-1, got %q", updated.ContainerID)
+	}
+	if updated.NativeSessionID != "sess-123" {
+		t.Fatalf("expected native session id sess-123, got %q", updated.NativeSessionID)
+	}
+	if updated.NativeSessionPath != "/tmp/session.jsonl" {
+		t.Fatalf("expected native session path /tmp/session.jsonl, got %q", updated.NativeSessionPath)
+	}
+
+	latest, err := svc.LatestContinuation(created.ID)
+	if err != nil {
+		t.Fatalf("latest continuation: %v", err)
+	}
+	if latest == nil || latest.NativeSessionID != "sess-123" {
+		t.Fatalf("expected persisted native session id sess-123, got %#v", latest)
+	}
+}
+
 // TestReconcileInterruptedStatusesMarksActiveTasksInterrupted proves the daemon
 // startup reconcile: tasks left running/paused/pending by a previous daemon
 // instance become interrupted, while already-terminal tasks are untouched.

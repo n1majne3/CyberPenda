@@ -14,7 +14,7 @@ export function TaskDetailPage() {
   const [task, setTask] = useState<Task | null>(null);
   const [timeline, setTimeline] = useState<TaskTimelineItem[]>([]);
   const [transcript, setTranscript] = useState<TaskTranscriptEntry[]>([]);
-  const [activeView, setActiveView] = useState<"conversation" | "timeline">("conversation");
+  const [activeView, setActiveView] = useState<"conversation" | "timeline">("timeline");
   const [autoFollow, setAutoFollow] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [steering, setSteering] = useState("");
@@ -88,10 +88,10 @@ export function TaskDetailPage() {
   /* eslint-enable react-hooks/exhaustive-deps */
 
   useEffect(() => {
-    if (autoFollowRef.current) {
+    if (activeView === "conversation" && autoFollowRef.current) {
       timelineEnd.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [timeline, transcript]);
+  }, [activeView, timeline, transcript]);
 
   function scrollToLatest() {
     const container = findScrollContainer(pageRef.current);
@@ -137,6 +137,7 @@ export function TaskDetailPage() {
 
   if (error) return <PageContainer className="text-destructive">{error}</PageContainer>;
   if (!task) return <PageContainer className="text-muted-foreground">Loading…</PageContainer>;
+  const currentContinuation = task.active_continuation ?? task.latest_continuation;
 
   return (
     <PageContainer ref={pageRef} className="max-w-4xl">
@@ -164,6 +165,13 @@ export function TaskDetailPage() {
         </Badge>
         {task.run_controls.yolo && <Badge variant="warning">YOLO</Badge>}
       </div>
+      {currentContinuation && (
+        <div className="mb-6 flex gap-2">
+          <Badge variant="outline">continuation #{currentContinuation.number}</Badge>
+          <Badge variant="outline">runtime: {currentContinuation.runtime_provider}</Badge>
+          <Badge variant="outline">continuation status: {currentContinuation.status}</Badge>
+        </div>
+      )}
 
       <div className="mb-6 flex flex-wrap gap-2 text-sm">
         <Link to={`/projects/${projectId}/facts`} className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground">
@@ -204,17 +212,15 @@ export function TaskDetailPage() {
       </Card>
 
       <div className="flex items-center gap-1 border-b border-border mb-3">
-        <button className={tabClass(activeView === "conversation")} onClick={() => setActiveView("conversation")}>
-          <MessageSquare className="h-4 w-4" /> Conversation
-        </button>
         <button className={tabClass(activeView === "timeline")} onClick={() => setActiveView("timeline")}>
           <Activity className="h-4 w-4" /> Timeline
         </button>
+        <button className={tabClass(activeView === "conversation")} onClick={() => setActiveView("conversation")}>
+          <MessageSquare className="h-4 w-4" /> Conversation
+        </button>
       </div>
 
-      {activeView === "conversation" ? (
-        <TranscriptList entries={transcript} endRef={timelineEnd} />
-      ) : (
+      {activeView === "timeline" ? (
         <div>
           <AgentTranscriptView
             task={task}
@@ -224,6 +230,8 @@ export function TaskDetailPage() {
           />
           <div ref={timelineEnd} />
         </div>
+      ) : (
+        <TranscriptList entries={transcript} endRef={timelineEnd} />
       )}
 
       <FloatingScrollControls autoFollow={autoFollow} onTop={scrollToTop} onBottom={scrollToLatest} />
@@ -369,5 +377,3 @@ function collapsedBody(entry: TaskTranscriptEntry) {
   }
   return parts.join("\n\n") || "(empty)";
 }
-
-

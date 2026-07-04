@@ -59,7 +59,7 @@ export function TasksPage() {
       )}
 
       <div className="space-y-2">
-        {tasks.map((task) => (
+        {sortTasksForDisplay(tasks).map((task) => (
           <Link key={task.id} to={`${base}/tasks/${task.id}`} className="group">
             <Card className="transition-all hover:bg-accent/40 hover:ring-foreground/20">
               <div className="flex items-start justify-between gap-3">
@@ -80,4 +80,12 @@ export function TasksPage() {
       </div>
     </PageContainer>
   );
+}
+
+function sortTasksForDisplay(tasks: Task[]): Task[] {
+  return [...tasks].sort((a, b) => {
+    const runningDelta = Number(b.status === "running") - Number(a.status === "running");
+    if (runningDelta !== 0) return runningDelta;
+    return Date.parse(b.created_at) - Date.parse(a.created_at);
+  });
 }

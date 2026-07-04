@@ -128,6 +128,22 @@ func migrate(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			UNIQUE (task_id, version)
 		);`,
+		`CREATE TABLE IF NOT EXISTS task_continuations (
+			id TEXT PRIMARY KEY,
+			task_id TEXT NOT NULL,
+			number INTEGER NOT NULL,
+			runtime_profile_id TEXT NOT NULL,
+			runtime_provider TEXT NOT NULL,
+			runner TEXT NOT NULL,
+			status TEXT NOT NULL,
+			container_id TEXT NOT NULL DEFAULT '',
+			native_session_id TEXT NOT NULL DEFAULT '',
+			native_session_path TEXT NOT NULL DEFAULT '',
+			started_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			ended_at TEXT NOT NULL DEFAULT '',
+			UNIQUE (task_id, number)
+		);`,
 		`CREATE TABLE IF NOT EXISTS task_events (
 			id TEXT PRIMARY KEY,
 			task_id TEXT NOT NULL,

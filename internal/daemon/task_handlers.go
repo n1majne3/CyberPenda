@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"pentest/internal/adapters"
 	"pentest/internal/approval"
@@ -98,20 +100,23 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		return
 	}
 
-	adapter, runtimeConfig, err := server.buildTaskAdapter(created, launchModelOverride)
+	plan, err := server.buildTaskLaunchPlan(created, created.Goal, launchModelOverride, "")
 	if err != nil {
 		writeTaskAdapterError(response, err)
 		return
 	}
 
-	if _, err := server.tasks.RecordRuntimeConfig(created.ID, created.RuntimeProfileID, runtimeConfig); err != nil {
+	if _, err := server.tasks.RecordRuntimeConfig(created.ID, created.RuntimeProfileID, plan.RuntimeConfig); err != nil {
 		writeError(response, http.StatusInternalServerError, "record task runtime configuration")
 		return
 	}
 
 	server.recordLoopbackRewriteEvent(created)
 
-	server.launchTaskInBackground(created, adapter, created.Goal)
+	if err := server.launchTaskInBackground(created, plan, created.Goal); err != nil {
+		writeError(response, http.StatusInternalServerError, "create task continuation")
+		return
+	}
 
 	if _, err := server.approvals.RecordAudit(approval.AuditEntry{
 		ProjectID: projectID,
@@ -130,7 +135,7 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		return
 	}
 
-	launched, err := server.tasks.Get(created.ID)
+	launched, err := server.taskDetail(created.ID)
 	if err != nil {
 		writeTaskError(response, err)
 		return
@@ -138,13 +143,27 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 	writeJSON(response, http.StatusCreated, launched)
 }
 
-func (server *Server) launchTaskInBackground(created task.Task, adapter runtime.Adapter, goal string) {
+type taskLaunchPlan struct {
+	Adapter          runtime.Adapter
+	RuntimeConfig    map[string]any
+	Metadata         func() (runtime.NativeSessionMetadata, error)
+	StopConfirmation runtime.StopConfirmation
+}
+
+func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchPlan, goal string) error {
+	continuation, err := server.tasks.CreateContinuation(created.ID, created.RuntimeProfileID, plan.Adapter.Name(), created.Runner)
+	if err != nil {
+		return err
+	}
 	server.logTask(created, "launched", "")
 	go func() {
 		err := server.harness.Launch(context.Background(), runtime.LaunchRequest{
-			TaskID:  created.ID,
-			Goal:    goal,
-			Adapter: adapter,
+			TaskID:           created.ID,
+			Goal:             goal,
+			Adapter:          plan.Adapter,
+			ContinuationID:   continuation.ID,
+			Metadata:         plan.Metadata,
+			StopConfirmation: plan.StopConfirmation,
 		})
 		switch {
 		case err == nil:
@@ -155,6 +174,7 @@ func (server *Server) launchTaskInBackground(created task.Task, adapter runtime.
 			server.logTask(created, "failed", err.Error())
 		}
 	}()
+	return nil
 }
 
 type taskLaunchDefaults struct {
@@ -206,10 +226,22 @@ func (server *Server) recordLoopbackRewriteEvent(created task.Task) {
 }
 
 func (server *Server) buildTaskAdapter(created task.Task, launchModelOverride string) (runtime.Adapter, map[string]any, error) {
-	return server.buildTaskAdapterForGoal(created, created.Goal, launchModelOverride)
+	plan, err := server.buildTaskLaunchPlan(created, created.Goal, launchModelOverride, "")
+	if err != nil {
+		return nil, nil, err
+	}
+	return plan.Adapter, plan.RuntimeConfig, nil
 }
 
 func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string, launchModelOverride string) (runtime.Adapter, map[string]any, error) {
+	plan, err := server.buildTaskLaunchPlan(created, goal, launchModelOverride, "")
+	if err != nil {
+		return nil, nil, err
+	}
+	return plan.Adapter, plan.RuntimeConfig, nil
+}
+
+func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string) (taskLaunchPlan, error) {
 	runtimeConfig := map[string]any{
 		"runtime_profile_id": created.RuntimeProfileID,
 		"runner":             created.Runner,
@@ -217,21 +249,21 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string, la
 
 	profile, err := server.profiles.Get(created.RuntimeProfileID)
 	if err != nil {
-		return nil, nil, err
+		return taskLaunchPlan{}, err
 	}
 	if profile.Provider == runtimeprofile.ProviderFake {
 		runtimeConfig["provider"] = string(runtimeprofile.ProviderFake)
 		runtimeConfig["generated_config"] = runtimeprofile.GeneratedConfig(profile)
-		return runtime.NewFakeAdapter(), runtimeConfig, nil
+		return taskLaunchPlan{Adapter: runtime.NewFakeAdapter(), RuntimeConfig: runtimeConfig}, nil
 	}
 	skillBundles, err := server.skills.EnabledSkillBundles(profile.ID)
 	if err != nil {
-		return nil, nil, err
+		return taskLaunchPlan{}, err
 	}
 
 	layout, err := runner.PrepareTaskLayout(server.runtimeRoot, created.ID, profile.Provider)
 	if err != nil {
-		return nil, nil, err
+		return taskLaunchPlan{}, err
 	}
 
 	sandbox := created.Runner == task.RunnerSandbox
@@ -251,7 +283,7 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string, la
 		SkillBundles:        skillBundles,
 	})
 	if err != nil {
-		return nil, nil, err
+		return taskLaunchPlan{}, err
 	}
 	configPath := runner.LaunchConfigPath(layout, profile.Provider, projection.ConfigPath, sandbox)
 	mcpConfigPath := runner.LaunchMCPConfigPath(layout, profile.Provider, sandbox, projection)
@@ -269,13 +301,17 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string, la
 		Sandbox:       sandbox,
 	})
 	if err != nil {
-		return nil, nil, err
+		return taskLaunchPlan{}, err
+	}
+	if nativeResumeSessionID != "" && profile.Provider == runtimeprofile.ProviderCodex {
+		providerCommand = buildCodexResumeCommand(providerCommand[0], strings.TrimSpace(launchProfile.Fields.Model), nativeResumeSessionID, goal)
 	}
 
 	runtimeCommand := append([]string{}, providerCommand...)
 	commandProgram := runtimeCommand[0]
 	commandArgs := runtimeCommand[1:]
 	workdir := layout.Workdir
+	containerIDFile := ""
 	launchCtx := runner.TaskContext{
 		ProjectID: created.ProjectID,
 		TaskID:    created.ID,
@@ -296,32 +332,37 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string, la
 		SkillBundles:      skillBundles,
 	})
 	if err != nil {
-		return nil, nil, err
+		return taskLaunchPlan{}, err
 	}
 	if sandbox {
 		sandboxImage := strings.TrimSpace(profile.Fields.SandboxImage)
 		if sandboxImage == "" {
 			sandboxImage = server.sandboxImage
 		}
+		containerIDFile = filepath.Join(layout.Logs, "container.cid")
+		if err := os.Remove(containerIDFile); err != nil && !os.IsNotExist(err) {
+			return taskLaunchPlan{}, err
+		}
 		sandboxRuntime := runtimeCommand
 		if profile.Provider == runtimeprofile.ProviderPi {
 			wrapped, err := runner.WrapSandboxPiCommand(runtimeCommand, launchProfile.Fields.Env)
 			if err != nil {
-				return nil, nil, err
+				return taskLaunchPlan{}, err
 			}
 			sandboxRuntime = wrapped
 		}
 		command, err := runner.BuildSandboxCommand(runner.SandboxCommandRequest{
-			Layout:         layout,
-			Provider:       profile.Provider,
-			Image:          sandboxImage,
-			ContainerCLI:   server.containerCLI,
-			RuntimeCommand: sandboxRuntime,
-			ProcessEnv:     processEnv,
-			NetworkMode:    sandboxNetworkMode(created.RunControls),
+			Layout:          layout,
+			Provider:        profile.Provider,
+			Image:           sandboxImage,
+			ContainerCLI:    server.containerCLI,
+			ContainerIDFile: containerIDFile,
+			RuntimeCommand:  sandboxRuntime,
+			ProcessEnv:      processEnv,
+			NetworkMode:     sandboxNetworkMode(created.RunControls),
 		})
 		if err != nil {
-			return nil, nil, err
+			return taskLaunchPlan{}, err
 		}
 		commandProgram = command.Program
 		commandArgs = command.Args
@@ -337,6 +378,9 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string, la
 		runtimeConfig["launch_model_override"] = launchModelOverride
 	}
 	runtimeConfig["layout"] = layout
+	if containerIDFile != "" {
+		runtimeConfig["container_id_file"] = containerIDFile
+	}
 	runtimeConfig["launch_command"] = adapters.Redact(map[string]any{
 		"program": commandProgram,
 		"args":    commandArgs,
@@ -359,7 +403,51 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string, la
 		adapter = runtime.NewPiSessionTailAdapter(adapter, sessionDir)
 	}
 
-	return adapter, runtimeConfig, nil
+	var metadata func() (runtime.NativeSessionMetadata, error)
+	if sandbox || profile.Provider == runtimeprofile.ProviderCodex {
+		metadata = func() (runtime.NativeSessionMetadata, error) {
+			var collected runtime.NativeSessionMetadata
+			if containerIDFile != "" {
+				containerID, err := runtime.ReadContainerIDFile(containerIDFile)
+				if err != nil && !os.IsNotExist(err) {
+					return runtime.NativeSessionMetadata{}, err
+				}
+				collected.ContainerID = containerID
+			}
+			if profile.Provider == runtimeprofile.ProviderCodex {
+				session, err := runtime.DiscoverCodexSession(layout.ProviderHome)
+				if err != nil {
+					return runtime.NativeSessionMetadata{}, err
+				}
+				collected.NativeSessionID = session.NativeSessionID
+				collected.NativeSessionPath = session.NativeSessionPath
+			}
+			return collected, nil
+		}
+	}
+	var stopConfirmation runtime.StopConfirmation
+	if containerIDFile != "" {
+		stopConfirmation = runtime.DockerContainerStopConfirmation(server.containerCLI, containerIDFile)
+	}
+
+	return taskLaunchPlan{
+		Adapter:          adapter,
+		RuntimeConfig:    runtimeConfig,
+		Metadata:         metadata,
+		StopConfirmation: stopConfirmation,
+	}, nil
+}
+
+func buildCodexResumeCommand(binary string, model string, sessionID string, goal string) []string {
+	command := []string{binary}
+	if strings.TrimSpace(model) != "" {
+		command = append(command, "--model", strings.TrimSpace(model))
+	}
+	command = append(command, "resume", sessionID)
+	if strings.TrimSpace(goal) != "" {
+		command = append(command, goal)
+	}
+	return command
 }
 
 func sandboxNetworkMode(runControls task.RunControls) runner.SandboxNetworkMode {
@@ -404,7 +492,12 @@ func (server *Server) handleGetTask(response http.ResponseWriter, request *http.
 	if !ok {
 		return
 	}
-	writeJSON(response, http.StatusOK, found)
+	detailed, err := server.decorateTask(found)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "load task continuation")
+		return
+	}
+	writeJSON(response, http.StatusOK, detailed)
 }
 
 func (server *Server) requireProjectTask(response http.ResponseWriter, request *http.Request) (task.Task, bool) {
@@ -428,6 +521,28 @@ func (server *Server) requireProjectTask(response http.ResponseWriter, request *
 		return task.Task{}, false
 	}
 	return found, true
+}
+
+func (server *Server) taskDetail(taskID string) (task.Task, error) {
+	found, err := server.tasks.Get(taskID)
+	if err != nil {
+		return task.Task{}, err
+	}
+	return server.decorateTask(found)
+}
+
+func (server *Server) decorateTask(found task.Task) (task.Task, error) {
+	active, err := server.tasks.ActiveContinuation(found.ID)
+	if err != nil {
+		return task.Task{}, err
+	}
+	latest, err := server.tasks.LatestContinuation(found.ID)
+	if err != nil {
+		return task.Task{}, err
+	}
+	found.ActiveContinuation = active
+	found.LatestContinuation = latest
+	return found, nil
 }
 
 func (server *Server) handleTaskEvents(response http.ResponseWriter, request *http.Request) {
@@ -553,86 +668,20 @@ func (server *Server) handleResumeTask(response http.ResponseWriter, request *ht
 		writeError(response, http.StatusConflict, "task is already running")
 		return
 	}
-
-	factIndex, err := server.facts.FactIndex(projectID, blackboard.FactIndexOptions{})
+	found, resumeGoal, plan, err := server.prepareResumeContinuation(found)
 	if err != nil {
-		writeError(response, http.StatusInternalServerError, "load fact index")
+		server.writeResumePreparationError(response, err)
 		return
 	}
-	factLines := make([]string, 0, len(factIndex))
-	progressFacts := make([]string, 0)
-	for _, entry := range factIndex {
-		factLines = append(factLines, entry.FactKey+": "+entry.Summary)
-		if !strings.HasPrefix(entry.FactKey, "progress:") {
-			continue
-		}
-		fact, err := server.facts.GetFact(projectID, entry.FactKey)
-		if err != nil || strings.TrimSpace(fact.Body) == "" {
-			continue
-		}
-		progressFacts = append(progressFacts, entry.FactKey+":\n"+fact.Body)
-	}
-
-	findings, err := server.facts.ListFindings(projectID)
-	if err != nil {
-		writeError(response, http.StatusInternalServerError, "load findings")
-		return
-	}
-	findingLines := make([]string, 0, len(findings))
-	start := 0
-	if len(findings) > adapters.MaxResumeFindings {
-		start = len(findings) - adapters.MaxResumeFindings
-	}
-	for _, finding := range findings[start:] {
-		findingLines = append(findingLines, finding.FindingKey+": "+finding.Title+" ("+string(finding.Status)+")")
-	}
-
-	taskSummary := ""
-	summaries, err := server.tasks.SummaryVersions(taskID)
-	if err != nil {
-		writeTaskError(response, err)
-		return
-	}
-	if len(summaries) > 0 {
-		taskSummary = summaries[len(summaries)-1].Summary
-	}
-
-	steeringDirective := ""
-	events, err := server.tasks.Events(taskID)
-	if err != nil {
-		writeError(response, http.StatusInternalServerError, "list task events")
-		return
-	}
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Kind != task.EventKindSteering {
-			continue
-		}
-		if directive, ok := events[i].Payload["directive"].(string); ok {
-			steeringDirective = directive
-			break
-		}
-	}
-
-	resumeGoal := adapters.BuildResumePrompt(adapters.ResumeRequest{
-		Goal:              found.Goal,
-		TaskSummary:       taskSummary,
-		FactIndex:         factLines,
-		FindingIndex:      findingLines,
-		ProgressFacts:     progressFacts,
-		SteeringDirective: steeringDirective,
-	})
-
-	adapter, runtimeConfig, err := server.buildTaskAdapterForGoal(found, resumeGoal, "")
-	if err != nil {
-		writeTaskAdapterError(response, err)
-		return
-	}
-	if _, err := server.tasks.RecordRuntimeConfig(found.ID, found.RuntimeProfileID, runtimeConfig); err != nil {
+	if _, err := server.tasks.RecordRuntimeConfig(found.ID, found.RuntimeProfileID, plan.RuntimeConfig); err != nil {
 		writeError(response, http.StatusInternalServerError, "record task runtime configuration")
 		return
 	}
 
-	server.launchTaskInBackground(found, adapter, resumeGoal)
+	if err := server.launchTaskInBackground(found, plan, resumeGoal); err != nil {
+		writeError(response, http.StatusInternalServerError, "create task continuation")
+		return
+	}
 
 	if _, err := server.approvals.RecordAudit(approval.AuditEntry{
 		ProjectID: projectID,
@@ -648,12 +697,109 @@ func (server *Server) handleResumeTask(response http.ResponseWriter, request *ht
 		return
 	}
 
-	updated, err := server.tasks.Get(found.ID)
+	updated, err := server.taskDetail(found.ID)
 	if err != nil {
 		writeTaskError(response, err)
 		return
 	}
 	writeJSON(response, http.StatusAccepted, updated)
+}
+
+func (server *Server) prepareResumeContinuation(found task.Task) (task.Task, string, taskLaunchPlan, error) {
+	effectiveProfile, err := server.resolveTaskRuntimeProfile(found)
+	if err != nil {
+		return task.Task{}, "", taskLaunchPlan{}, err
+	}
+	found.RuntimeProfileID = effectiveProfile.ID
+
+	resumeGoal, err := server.buildResumeGoal(found)
+	if err != nil {
+		return task.Task{}, "", taskLaunchPlan{}, err
+	}
+	nativeResumeSessionID, err := server.discoverNativeResumeSession(found)
+	if err != nil {
+		return task.Task{}, "", taskLaunchPlan{}, err
+	}
+	plan, err := server.buildTaskLaunchPlan(found, resumeGoal, "", nativeResumeSessionID)
+	if err != nil {
+		return task.Task{}, "", taskLaunchPlan{}, err
+	}
+	return found, resumeGoal, plan, nil
+}
+
+func (server *Server) buildResumeGoal(found task.Task) (string, error) {
+	factIndex, err := server.facts.FactIndex(found.ProjectID, blackboard.FactIndexOptions{})
+	if err != nil {
+		return "", err
+	}
+	factLines := make([]string, 0, len(factIndex))
+	progressFacts := make([]string, 0)
+	for _, entry := range factIndex {
+		factLines = append(factLines, entry.FactKey+": "+entry.Summary)
+		if !strings.HasPrefix(entry.FactKey, "progress:") {
+			continue
+		}
+		fact, err := server.facts.GetFact(found.ProjectID, entry.FactKey)
+		if err != nil || strings.TrimSpace(fact.Body) == "" {
+			continue
+		}
+		progressFacts = append(progressFacts, entry.FactKey+":\n"+fact.Body)
+	}
+
+	findings, err := server.facts.ListFindings(found.ProjectID)
+	if err != nil {
+		return "", err
+	}
+	findingLines := make([]string, 0, len(findings))
+	start := 0
+	if len(findings) > adapters.MaxResumeFindings {
+		start = len(findings) - adapters.MaxResumeFindings
+	}
+	for _, finding := range findings[start:] {
+		findingLines = append(findingLines, finding.FindingKey+": "+finding.Title+" ("+string(finding.Status)+")")
+	}
+
+	taskSummary := ""
+	summaries, err := server.tasks.SummaryVersions(found.ID)
+	if err != nil {
+		return "", err
+	}
+	if len(summaries) > 0 {
+		taskSummary = summaries[len(summaries)-1].Summary
+	}
+
+	steeringDirective := ""
+	events, err := server.tasks.Events(found.ID)
+	if err != nil {
+		return "", err
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != task.EventKindSteering {
+			continue
+		}
+		if directive, ok := events[i].Payload["directive"].(string); ok {
+			steeringDirective = directive
+			break
+		}
+	}
+
+	return adapters.BuildResumePrompt(adapters.ResumeRequest{
+		Goal:              found.Goal,
+		TaskSummary:       taskSummary,
+		FactIndex:         factLines,
+		FindingIndex:      findingLines,
+		ProgressFacts:     progressFacts,
+		SteeringDirective: steeringDirective,
+	}), nil
+}
+
+func (server *Server) writeResumePreparationError(response http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, runtimeprofile.ErrNotFound):
+		writeError(response, http.StatusBadRequest, "runtime profile not found")
+	default:
+		writeTaskAdapterError(response, err)
+	}
 }
 
 func (server *Server) handleSteerTask(response http.ResponseWriter, request *http.Request) {
@@ -710,6 +856,29 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 
 	var configVersion *task.RuntimeConfigVersion
 	if input.RuntimeProfileID != "" {
+		currentProfile, err := server.resolveTaskRuntimeProfile(found)
+		if err != nil {
+			if errors.Is(err, runtimeprofile.ErrNotFound) {
+				writeError(response, http.StatusBadRequest, "runtime profile not found")
+				return
+			}
+			writeError(response, http.StatusInternalServerError, "load runtime profile")
+			return
+		}
+		requestedProfile, err := server.profiles.Get(input.RuntimeProfileID)
+		if err != nil {
+			if errors.Is(err, runtimeprofile.ErrNotFound) {
+				writeError(response, http.StatusBadRequest, "runtime profile not found")
+				return
+			}
+			writeError(response, http.StatusInternalServerError, "load runtime profile")
+			return
+		}
+		if requestedProfile.Provider != currentProfile.Provider {
+			writeError(response, http.StatusBadRequest, "steering runtime profile must keep the same runtime provider")
+			return
+		}
+
 		config := input.Config
 		if config == nil {
 			config = map[string]any{}
@@ -725,6 +894,47 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 		configVersion = &recorded
 	}
 
+	if found.Status == task.StatusRunning || found.Status == task.StatusPaused {
+		if ok := server.harness.StopAndWait(taskID, 10*time.Second); !ok {
+			writeError(response, http.StatusConflict, "runtime did not stop in time")
+			return
+		}
+
+		refreshed, err := server.tasks.Get(taskID)
+		if err != nil {
+			writeTaskError(response, err)
+			return
+		}
+		resumedTask, resumeGoal, plan, err := server.prepareResumeContinuation(refreshed)
+		if err != nil {
+			server.writeResumePreparationError(response, err)
+			return
+		}
+		if _, err := server.tasks.RecordRuntimeConfig(taskID, resumedTask.RuntimeProfileID, plan.RuntimeConfig); err != nil {
+			writeError(response, http.StatusInternalServerError, "record task runtime configuration")
+			return
+		}
+		if err := server.launchTaskInBackground(resumedTask, plan, resumeGoal); err != nil {
+			writeError(response, http.StatusInternalServerError, "create task continuation")
+			return
+		}
+		detailed, err := server.taskDetail(taskID)
+		if err != nil {
+			writeTaskError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusAccepted, struct {
+			Event                task.Event                 `json:"event"`
+			RuntimeConfigVersion *task.RuntimeConfigVersion `json:"runtime_config_version,omitempty"`
+			Task                 task.Task                  `json:"task"`
+		}{
+			Event:                event,
+			RuntimeConfigVersion: configVersion,
+			Task:                 detailed,
+		})
+		return
+	}
+
 	writeJSON(response, http.StatusOK, struct {
 		Event                task.Event                 `json:"event"`
 		RuntimeConfigVersion *task.RuntimeConfigVersion `json:"runtime_config_version,omitempty"`
@@ -732,6 +942,40 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 		Event:                event,
 		RuntimeConfigVersion: configVersion,
 	})
+}
+
+func (server *Server) resolveTaskRuntimeProfile(found task.Task) (runtimeprofile.Profile, error) {
+	profileID := found.RuntimeProfileID
+	versions, err := server.tasks.RuntimeConfigVersions(found.ID)
+	if err != nil {
+		return runtimeprofile.Profile{}, err
+	}
+	if len(versions) > 0 {
+		latest := versions[len(versions)-1]
+		if strings.TrimSpace(latest.RuntimeProfileID) != "" {
+			profileID = latest.RuntimeProfileID
+		}
+	}
+	return server.profiles.Get(profileID)
+}
+
+func (server *Server) discoverNativeResumeSession(found task.Task) (string, error) {
+	profile, err := server.profiles.Get(found.RuntimeProfileID)
+	if err != nil {
+		return "", err
+	}
+	if profile.Provider != runtimeprofile.ProviderCodex {
+		return "", nil
+	}
+	layout, err := runner.PrepareTaskLayout(server.runtimeRoot, found.ID, profile.Provider)
+	if err != nil {
+		return "", err
+	}
+	metadata, err := runtime.DiscoverCodexSession(layout.ProviderHome)
+	if err != nil {
+		return "", err
+	}
+	return metadata.NativeSessionID, nil
 }
 
 func (server *Server) handleTaskContinuation(response http.ResponseWriter, request *http.Request) {

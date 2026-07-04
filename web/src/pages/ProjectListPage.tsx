@@ -94,7 +94,7 @@ export function ProjectListPage() {
       )}
 
       <div className="grid gap-3 sm:grid-cols-2">
-        {projects.map((p) => (
+        {sortNewestFirst(projects).map((p) => (
           <Link key={p.id} to={`/projects/${p.id}`} className="group">
             <Card className="h-full transition-all hover:bg-accent/40 hover:ring-foreground/20">
               <div className="flex items-center gap-2">
@@ -122,4 +122,8 @@ export function ProjectListPage() {
       </div>
     </PageContainer>
   );
+}
+
+function sortNewestFirst<T extends { created_at: string }>(items: T[]): T[] {
+  return [...items].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
 }

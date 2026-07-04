@@ -42,12 +42,19 @@ func TestLaunchTaskRunsFakeRuntimeAndStreamsEvents(t *testing.T) {
 	}
 
 	var created struct {
-		ID               string `json:"id"`
-		ProjectID        string `json:"project_id"`
-		Goal             string `json:"goal"`
-		Runner           string `json:"runner"`
-		RuntimeProfileID string `json:"runtime_profile_id"`
-		ScopeSnapshot    struct {
+		ID                 string `json:"id"`
+		ProjectID          string `json:"project_id"`
+		Goal               string `json:"goal"`
+		Runner             string `json:"runner"`
+		RuntimeProfileID   string `json:"runtime_profile_id"`
+		LatestContinuation *struct {
+			Number           int    `json:"number"`
+			RuntimeProfileID string `json:"runtime_profile_id"`
+			RuntimeProvider  string `json:"runtime_provider"`
+			Runner           string `json:"runner"`
+			Status           string `json:"status"`
+		} `json:"latest_continuation"`
+		ScopeSnapshot struct {
 			Domains []string `json:"domains"`
 			Notes   string   `json:"notes"`
 		} `json:"scope_snapshot"`
@@ -68,6 +75,18 @@ func TestLaunchTaskRunsFakeRuntimeAndStreamsEvents(t *testing.T) {
 	if created.RuntimeProfileID != profileID {
 		t.Fatalf("expected runtime profile id, got %q", created.RuntimeProfileID)
 	}
+	if created.LatestContinuation == nil {
+		t.Fatal("expected latest continuation in create response")
+	}
+	if created.LatestContinuation.Number != 1 {
+		t.Fatalf("expected first continuation number 1, got %d", created.LatestContinuation.Number)
+	}
+	if created.LatestContinuation.RuntimeProvider != "fake" {
+		t.Fatalf("expected runtime provider fake, got %q", created.LatestContinuation.RuntimeProvider)
+	}
+	if created.LatestContinuation.Runner != "sandbox" {
+		t.Fatalf("expected continuation runner sandbox, got %q", created.LatestContinuation.Runner)
+	}
 	// Scope snapshot is captured at launch.
 	if got := created.ScopeSnapshot.Domains; len(got) != 1 || got[0] != "example.com" {
 		t.Fatalf("expected scope snapshot domain, got %#v", got)
@@ -85,6 +104,48 @@ func TestLaunchTaskRunsFakeRuntimeAndStreamsEvents(t *testing.T) {
 	}
 	if !kinds["lifecycle"] || !kinds["runtime_output"] {
 		t.Fatalf("expected lifecycle and runtime_output events, got %#v", kinds)
+	}
+}
+
+func TestGetTaskIncludesLatestContinuation(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
+	taskID := createTask(t, server, projectID, `{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
+		"runner":"sandbox"
+	}`)
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID, nil)
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected get task status 200, got %d with body %s", resp.Code, resp.Body.String())
+	}
+
+	var found struct {
+		ID                 string `json:"id"`
+		LatestContinuation *struct {
+			Number           int    `json:"number"`
+			RuntimeProfileID string `json:"runtime_profile_id"`
+			RuntimeProvider  string `json:"runtime_provider"`
+		} `json:"latest_continuation"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&found); err != nil {
+		t.Fatalf("decode task detail: %v", err)
+	}
+	if found.ID != taskID {
+		t.Fatalf("expected task id %q, got %q", taskID, found.ID)
+	}
+	if found.LatestContinuation == nil {
+		t.Fatal("expected latest continuation in task detail")
+	}
+	if found.LatestContinuation.Number != 1 {
+		t.Fatalf("expected latest continuation number 1, got %d", found.LatestContinuation.Number)
+	}
+	if found.LatestContinuation.RuntimeProvider != "fake" {
+		t.Fatalf("expected latest continuation provider fake, got %q", found.LatestContinuation.RuntimeProvider)
 	}
 }
 
@@ -378,6 +439,109 @@ func TestLaunchTaskWrapsProviderCommandInSandboxRunner(t *testing.T) {
 	}
 }
 
+func TestSandboxResumeRebuildsContainerWithPersistentTaskMountAndRuntimeHome(t *testing.T) {
+	dir := t.TempDir()
+	runtimeRoot := filepath.Join(dir, "runtime-root")
+	logPath := filepath.Join(dir, "docker.log")
+	countPath := filepath.Join(dir, "docker-count")
+	containerCLI := filepath.Join(dir, "fake-docker")
+	script := "#!/bin/sh\n" +
+		"echo \"$*\" >> " + shellQuote(logPath) + "\n" +
+		"cidfile=\"\"\n" +
+		"prev=\"\"\n" +
+		"for arg in \"$@\"; do\n" +
+		"  if [ \"$prev\" = \"--cidfile\" ]; then cidfile=\"$arg\"; fi\n" +
+		"  prev=\"$arg\"\n" +
+		"done\n" +
+		"count=$(cat " + shellQuote(countPath) + " 2>/dev/null || echo 0)\n" +
+		"count=$((count + 1))\n" +
+		"echo \"$count\" > " + shellQuote(countPath) + "\n" +
+		"if [ -n \"$cidfile\" ]; then echo \"ctr-$count\" > \"$cidfile\"; fi\n" +
+		"echo sandbox-command:$*\n"
+	if err := os.WriteFile(containerCLI, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake container cli: %v", err)
+	}
+	server := newDaemonWithConfig(t, daemon.Config{
+		Version:              "test-version",
+		DBPath:               filepath.Join(t.TempDir(), "pentest.db"),
+		RuntimeRoot:          runtimeRoot,
+		SandboxImage:         "pentest-kali:test",
+		ContainerCLI:         containerCLI,
+		DisableBuiltinSkills: true,
+	})
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	profileID := createLocalRuntimeProfile(t, server, "Codex Sandbox", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		Model: "gpt-test",
+	})
+
+	taskID := createTask(t, server, projectID, `{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
+		"runner":"sandbox"
+	}`)
+	waitForTaskStatus(t, server, projectID, taskID, "completed")
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/resume", nil)
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusAccepted {
+		t.Fatalf("expected resume status 202, got %d with body %s", resp.Code, resp.Body.String())
+	}
+	waitForTaskStatus(t, server, projectID, taskID, "completed")
+
+	rawLog, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read docker log: %v", err)
+	}
+	logText := string(rawLog)
+	taskMount := filepath.Join(runtimeRoot, taskID) + ":/task"
+	if got := strings.Count(logText, "run --rm -i --cidfile"); got != 2 {
+		t.Fatalf("expected two sandbox container launches, got %d in log:\n%s", got, logText)
+	}
+	if got := strings.Count(logText, taskMount); got != 2 {
+		t.Fatalf("expected both launches to reuse task mount %q, got log:\n%s", taskMount, logText)
+	}
+	var launchLines []string
+	for _, line := range strings.Split(strings.TrimSpace(logText), "\n") {
+		if strings.HasPrefix(line, "run --rm") {
+			launchLines = append(launchLines, line)
+		}
+	}
+	if len(launchLines) != 2 {
+		t.Fatalf("expected two docker launch log lines, got %d in log:\n%s", len(launchLines), logText)
+	}
+	for _, line := range launchLines {
+		if !strings.Contains(line, "CODEX_HOME=/task/runtime-home/codex") {
+			t.Fatalf("expected launch to use persistent runtime home, got line:\n%s", line)
+		}
+	}
+
+	detailResp := httptest.NewRecorder()
+	detailReq := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID, nil)
+	server.ServeHTTP(detailResp, detailReq)
+	if detailResp.Code != http.StatusOK {
+		t.Fatalf("expected task detail status 200, got %d with body %s", detailResp.Code, detailResp.Body.String())
+	}
+	var detailed struct {
+		LatestContinuation *struct {
+			Number      int    `json:"number"`
+			ContainerID string `json:"container_id"`
+		} `json:"latest_continuation"`
+	}
+	if err := json.NewDecoder(detailResp.Body).Decode(&detailed); err != nil {
+		t.Fatalf("decode task detail: %v", err)
+	}
+	if detailed.LatestContinuation == nil {
+		t.Fatal("expected latest continuation")
+	}
+	if detailed.LatestContinuation.Number != 2 {
+		t.Fatalf("expected resumed continuation number 2, got %d", detailed.LatestContinuation.Number)
+	}
+	if detailed.LatestContinuation.ContainerID != "ctr-2" {
+		t.Fatalf("expected latest continuation container id ctr-2, got %q", detailed.LatestContinuation.ContainerID)
+	}
+}
+
 func TestTaskSummaryUpdatesAreAcceptedAndVersioned(t *testing.T) {
 	server := newDaemon(t)
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
@@ -439,6 +603,7 @@ func TestSteerTaskRecordsDirectiveAndRuntimeProfileSwitch(t *testing.T) {
 		"runtime_profile_id":`+quoteJSON(profileA)+`,
 		"runner":"sandbox"
 	}`)
+	waitForTaskStatus(t, server, projectID, taskID, "completed")
 
 	resp := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/steer", bytes.NewReader([]byte(`{
@@ -717,6 +882,10 @@ func quoteJSON(value string) string {
 	return string(raw)
 }
 
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
 // findTargetRewriteEvent returns the lifecycle target_rewrite event for a task,
 // or nil when none was recorded.
 func findTargetRewriteEvent(events []map[string]any) map[string]any {
@@ -846,6 +1015,276 @@ func TestResumeTaskEnrichesPromptWithFindingsAndProgressFacts(t *testing.T) {
 	}
 	if !sawEnrichedGoal {
 		t.Fatalf("expected resumed runtime to receive enriched handoff prompt")
+	}
+}
+
+func TestSteerTaskRejectsRuntimeProviderChange(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	fakeProfileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
+	codexProfileID := createRuntimeProfile(t, server, `{"name":"Codex","provider":"codex","fields":{"model":"gpt-test"}}`)
+	taskID := createTask(t, server, projectID, `{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":`+quoteJSON(fakeProfileID)+`,
+		"runner":"sandbox"
+	}`)
+	waitForTaskStatus(t, server, projectID, taskID, "completed")
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/steer", bytes.NewReader([]byte(`{
+		"directive":"switch runtimes",
+		"runtime_profile_id":`+quoteJSON(codexProfileID)+`
+	}`)))
+	req.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected steer status 400 for provider change, got %d with body %s", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), "runtime provider") {
+		t.Fatalf("expected provider-change error, got %s", resp.Body.String())
+	}
+}
+
+func TestResumeTaskUsesSteeredRuntimeProfileWhenProviderMatches(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	profileA := createRuntimeProfile(t, server, `{"name":"Fake A","provider":"fake"}`)
+	profileB := createRuntimeProfile(t, server, `{"name":"Fake B","provider":"fake"}`)
+	taskID := createTask(t, server, projectID, `{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":`+quoteJSON(profileA)+`,
+		"runner":"sandbox"
+	}`)
+	waitForTaskStatus(t, server, projectID, taskID, "completed")
+
+	steerResp := httptest.NewRecorder()
+	steerReq := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/steer", bytes.NewReader([]byte(`{
+		"directive":"use profile b next",
+		"runtime_profile_id":`+quoteJSON(profileB)+`
+	}`)))
+	steerReq.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(steerResp, steerReq)
+	if steerResp.Code != http.StatusOK {
+		t.Fatalf("expected steer status 200, got %d with body %s", steerResp.Code, steerResp.Body.String())
+	}
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/resume", nil)
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusAccepted {
+		t.Fatalf("expected resume status 202, got %d with body %s", resp.Code, resp.Body.String())
+	}
+
+	var resumed struct {
+		LatestContinuation *struct {
+			RuntimeProfileID string `json:"runtime_profile_id"`
+		} `json:"latest_continuation"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&resumed); err != nil {
+		t.Fatalf("decode resumed task: %v", err)
+	}
+	if resumed.LatestContinuation == nil {
+		t.Fatal("expected latest continuation in resume response")
+	}
+	if resumed.LatestContinuation.RuntimeProfileID != profileB {
+		t.Fatalf("expected resumed continuation profile %q, got %q", profileB, resumed.LatestContinuation.RuntimeProfileID)
+	}
+	waitForTaskStatus(t, server, projectID, taskID, "completed")
+}
+
+func TestResumeTaskUsesCodexNativeResumeWhenSessionExists(t *testing.T) {
+	runtimeRoot := t.TempDir()
+	server := newDaemonWithConfig(t, daemon.Config{
+		Version:              "test-version",
+		DBPath:               filepath.Join(t.TempDir(), "pentest.db"),
+		RuntimeRoot:          runtimeRoot,
+		DisableBuiltinSkills: true,
+	})
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+
+	binary := filepath.Join(t.TempDir(), "codex-test")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\necho codex-provider:$*\n"), 0o700); err != nil {
+		t.Fatalf("write provider binary: %v", err)
+	}
+	profileID := createLocalRuntimeProfile(t, server, "Codex Test", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		BinaryPath: binary,
+		Model:      "gpt-test",
+	})
+
+	taskID := createTask(t, server, projectID, `{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
+		"runner":"host",
+		"run_controls":{"host_activated":true}
+	}`)
+	waitForTaskStatus(t, server, projectID, taskID, "completed")
+
+	sessionPath := filepath.Join(runtimeRoot, taskID, "runtime-home", "codex", "sessions", "2026", "07", "04", "rollout-test.jsonl")
+	if err := os.MkdirAll(filepath.Dir(sessionPath), 0o700); err != nil {
+		t.Fatalf("mkdir session path: %v", err)
+	}
+	sessionMeta := `{"timestamp":"2026-07-04T00:00:00Z","type":"session_meta","payload":{"session_id":"sess-123","cwd":"` + runtimeRoot + `"}}` + "\n"
+	if err := os.WriteFile(sessionPath, []byte(sessionMeta), 0o600); err != nil {
+		t.Fatalf("write session file: %v", err)
+	}
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/resume", nil)
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusAccepted {
+		t.Fatalf("expected resume status 202, got %d with body %s", resp.Code, resp.Body.String())
+	}
+
+	waitForEventText(t, server, projectID, taskID, "resume sess-123")
+	waitForTaskStatus(t, server, projectID, taskID, "completed")
+}
+
+func TestSteerTaskInterruptsActiveRunAndLaunchesResumedContinuation(t *testing.T) {
+	runtimeRoot := t.TempDir()
+	server := newDaemonWithConfig(t, daemon.Config{
+		Version:              "test-version",
+		DBPath:               filepath.Join(t.TempDir(), "pentest.db"),
+		RuntimeRoot:          runtimeRoot,
+		DisableBuiltinSkills: true,
+	})
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+
+	binary := filepath.Join(t.TempDir(), "codex-slow")
+	script := "#!/bin/sh\n" +
+		"echo codex-provider:$*\n" +
+		"case \"$*\" in\n" +
+		"  *resume*) exit 0 ;;\n" +
+		"esac\n" +
+		"exec sleep 5\n"
+	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
+		t.Fatalf("write provider binary: %v", err)
+	}
+	profileID := createLocalRuntimeProfile(t, server, "Codex Slow", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		BinaryPath: binary,
+		Model:      "gpt-test",
+	})
+
+	taskID := createTask(t, server, projectID, `{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
+		"runner":"host",
+		"run_controls":{"host_activated":true}
+	}`)
+	waitForEventText(t, server, projectID, taskID, "codex-provider:run")
+
+	sessionPath := filepath.Join(runtimeRoot, taskID, "runtime-home", "codex", "sessions", "2026", "07", "04", "rollout-live.jsonl")
+	if err := os.MkdirAll(filepath.Dir(sessionPath), 0o700); err != nil {
+		t.Fatalf("mkdir session path: %v", err)
+	}
+	sessionMeta := `{"timestamp":"2026-07-04T00:00:00Z","type":"session_meta","payload":{"session_id":"sess-live","cwd":"` + runtimeRoot + `"}}` + "\n"
+	if err := os.WriteFile(sessionPath, []byte(sessionMeta), 0o600); err != nil {
+		t.Fatalf("write session file: %v", err)
+	}
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/steer", bytes.NewReader([]byte(`{
+		"directive":"focus admin.example.com"
+	}`)))
+	req.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusAccepted {
+		t.Fatalf("expected steer interrupt status 202, got %d with body %s", resp.Code, resp.Body.String())
+	}
+
+	waitForEventText(t, server, projectID, taskID, "resume sess-live")
+	waitForEventText(t, server, projectID, taskID, "focus admin.example.com")
+	waitForTaskStatus(t, server, projectID, taskID, "completed")
+}
+
+func TestSandboxSteerConfirmsContainerExitBeforeNativeResume(t *testing.T) {
+	dir := t.TempDir()
+	runtimeRoot := filepath.Join(dir, "runtime-root")
+	dockerLog := filepath.Join(dir, "docker.log")
+	inspectLog := filepath.Join(dir, "inspect.log")
+	countPath := filepath.Join(dir, "docker-count")
+	containerCLI := filepath.Join(dir, "fake-docker")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"inspect\" ]; then\n" +
+		"  echo \"$*\" >> " + shellQuote(inspectLog) + "\n" +
+		"  echo false\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"echo \"$*\" >> " + shellQuote(dockerLog) + "\n" +
+		"cidfile=\"\"\n" +
+		"prev=\"\"\n" +
+		"for arg in \"$@\"; do\n" +
+		"  if [ \"$prev\" = \"--cidfile\" ]; then cidfile=\"$arg\"; fi\n" +
+		"  prev=\"$arg\"\n" +
+		"done\n" +
+		"count=$(cat " + shellQuote(countPath) + " 2>/dev/null || echo 0)\n" +
+		"count=$((count + 1))\n" +
+		"echo \"$count\" > " + shellQuote(countPath) + "\n" +
+		"if [ -n \"$cidfile\" ]; then echo \"ctr-$count\" > \"$cidfile\"; fi\n" +
+		"echo sandbox-command:$*\n" +
+		"case \"$*\" in\n" +
+		"  *resume*) exit 0 ;;\n" +
+		"esac\n" +
+		"exec sleep 5\n"
+	if err := os.WriteFile(containerCLI, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake container cli: %v", err)
+	}
+	server := newDaemonWithConfig(t, daemon.Config{
+		Version:              "test-version",
+		DBPath:               filepath.Join(t.TempDir(), "pentest.db"),
+		RuntimeRoot:          runtimeRoot,
+		SandboxImage:         "pentest-kali:test",
+		ContainerCLI:         containerCLI,
+		DisableBuiltinSkills: true,
+	})
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	profileID := createLocalRuntimeProfile(t, server, "Codex Sandbox", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		Model: "gpt-test",
+	})
+
+	taskID := createTask(t, server, projectID, `{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
+		"runner":"sandbox"
+	}`)
+	waitForEventText(t, server, projectID, taskID, "sandbox-command:run")
+
+	sessionPath := filepath.Join(runtimeRoot, taskID, "runtime-home", "codex", "sessions", "2026", "07", "04", "sandbox-live.jsonl")
+	if err := os.MkdirAll(filepath.Dir(sessionPath), 0o700); err != nil {
+		t.Fatalf("mkdir session path: %v", err)
+	}
+	sessionMeta := `{"timestamp":"2026-07-04T00:00:00Z","type":"session_meta","payload":{"session_id":"sess-sandbox","cwd":"` + runtimeRoot + `"}}` + "\n"
+	if err := os.WriteFile(sessionPath, []byte(sessionMeta), 0o600); err != nil {
+		t.Fatalf("write session file: %v", err)
+	}
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/steer", bytes.NewReader([]byte(`{
+		"directive":"focus admin.example.com"
+	}`)))
+	req.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusAccepted {
+		t.Fatalf("expected steer interrupt status 202, got %d with body %s", resp.Code, resp.Body.String())
+	}
+
+	inspectRaw, err := os.ReadFile(inspectLog)
+	if err != nil {
+		t.Fatalf("read inspect log: %v", err)
+	}
+	if !strings.Contains(string(inspectRaw), "inspect -f {{.State.Running}} ctr-1") {
+		t.Fatalf("expected steer to inspect stopped container ctr-1, got %s", string(inspectRaw))
+	}
+	waitForEventText(t, server, projectID, taskID, "resume sess-sandbox")
+	waitForEventText(t, server, projectID, taskID, "focus admin.example.com")
+	waitForTaskStatus(t, server, projectID, taskID, "completed")
+
+	dockerRaw, err := os.ReadFile(dockerLog)
+	if err != nil {
+		t.Fatalf("read docker log: %v", err)
+	}
+	if got := strings.Count(string(dockerRaw), "run --rm -i --cidfile"); got != 2 {
+		t.Fatalf("expected initial and resumed sandbox launches, got %d in log:\n%s", got, string(dockerRaw))
 	}
 }
 

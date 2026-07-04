@@ -2,9 +2,11 @@ package runtime_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -236,6 +238,167 @@ func TestHarnessStopEndsActiveRun(t *testing.T) {
 	}
 }
 
+func TestHarnessStopAndWaitEndsActiveRun(t *testing.T) {
+	harness, tasks, projects := newServices(t)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, _ := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "long task", Runner: task.RunnerSandbox})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- harness.Launch(context.Background(), runtime.LaunchRequest{
+			TaskID:  created.ID,
+			Adapter: slowFakeAdapter{},
+		})
+	}()
+
+	waitForActive(t, harness, created.ID)
+	if !harness.StopAndWait(created.ID, 2*time.Second) {
+		t.Fatal("expected StopAndWait to observe launch exit")
+	}
+	if err := <-done; err == nil {
+		t.Fatal("expected stopped run to report a cancellation error")
+	}
+}
+
+func TestHarnessStopAndWaitConfirmsRuntimeResourcesExited(t *testing.T) {
+	harness, tasks, projects := newServices(t)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, _ := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "long task", Runner: task.RunnerSandbox})
+
+	var confirmed atomic.Bool
+	done := make(chan error, 1)
+	go func() {
+		done <- harness.Launch(context.Background(), runtime.LaunchRequest{
+			TaskID:  created.ID,
+			Adapter: slowFakeAdapter{},
+			StopConfirmation: func(timeout time.Duration) error {
+				confirmed.Store(timeout > 0)
+				return nil
+			},
+		})
+	}()
+
+	waitForActive(t, harness, created.ID)
+	if !harness.StopAndWait(created.ID, 2*time.Second) {
+		t.Fatal("expected StopAndWait to confirm runtime resource exit")
+	}
+	if !confirmed.Load() {
+		t.Fatal("expected stop confirmation to run after adapter exit")
+	}
+	if err := <-done; err == nil {
+		t.Fatal("expected stopped run to report a cancellation error")
+	}
+}
+
+func TestCommandRuntimeAdapterCancellationReturnsContextCanceled(t *testing.T) {
+	harness, tasks, projects := newServices(t)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, _ := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "long command", Runner: task.RunnerHost})
+
+	binary := filepath.Join(t.TempDir(), "slow-command")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\necho started\nexec sleep 5\n"), 0o700); err != nil {
+		t.Fatalf("write provider binary: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- harness.Launch(context.Background(), runtime.LaunchRequest{
+			TaskID: created.ID,
+			Adapter: runtime.NewCommandAdapter(runtime.CommandAdapterConfig{
+				Name:    "codex",
+				Program: binary,
+			}),
+		})
+	}()
+
+	waitForActive(t, harness, created.ID)
+	if !harness.StopAndWait(created.ID, 2*time.Second) {
+		t.Fatal("expected StopAndWait to observe command exit")
+	}
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled, got %v", err)
+	}
+	fetched, _ := tasks.Get(created.ID)
+	if fetched.Status != task.StatusStopped {
+		t.Fatalf("expected task status stopped, got %q", fetched.Status)
+	}
+}
+
+func TestDockerContainerStopConfirmationTreatsRemovedContainerAsExited(t *testing.T) {
+	dir := t.TempDir()
+	cidFile := filepath.Join(dir, "container.cid")
+	if err := os.WriteFile(cidFile, []byte("ctr-123\n"), 0o600); err != nil {
+		t.Fatalf("write cidfile: %v", err)
+	}
+	logPath := filepath.Join(dir, "inspect.log")
+	docker := filepath.Join(dir, "docker")
+	script := "#!/bin/sh\n" +
+		"echo \"$*\" >> " + shellQuote(logPath) + "\n" +
+		"exit 1\n"
+	if err := os.WriteFile(docker, []byte(script), 0o700); err != nil {
+		t.Fatalf("write docker stub: %v", err)
+	}
+
+	if err := runtime.ConfirmDockerContainerExited(docker, cidFile, time.Second); err != nil {
+		t.Fatalf("confirm docker container exited: %v", err)
+	}
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read inspect log: %v", err)
+	}
+	if !strings.Contains(string(raw), "inspect -f {{.State.Running}} ctr-123") {
+		t.Fatalf("expected docker inspect for cidfile container, got %s", string(raw))
+	}
+}
+
+func TestDockerContainerStopConfirmationTimesOutWhileContainerRuns(t *testing.T) {
+	dir := t.TempDir()
+	cidFile := filepath.Join(dir, "container.cid")
+	if err := os.WriteFile(cidFile, []byte("ctr-running\n"), 0o600); err != nil {
+		t.Fatalf("write cidfile: %v", err)
+	}
+	docker := filepath.Join(dir, "docker")
+	if err := os.WriteFile(docker, []byte("#!/bin/sh\necho true\n"), 0o700); err != nil {
+		t.Fatalf("write docker stub: %v", err)
+	}
+
+	if err := runtime.ConfirmDockerContainerExited(docker, cidFile, 80*time.Millisecond); err == nil {
+		t.Fatal("expected timeout while container is still running")
+	}
+}
+
+func TestDiscoverCodexSessionReturnsNewestSavedSession(t *testing.T) {
+	providerHome := filepath.Join(t.TempDir(), "codex")
+	oldPath := filepath.Join(providerHome, "sessions", "2026", "07", "03", "older.jsonl")
+	newPath := filepath.Join(providerHome, "sessions", "2026", "07", "04", "newer.jsonl")
+	for path, sessionID := range map[string]string{
+		oldPath: "sess-old",
+		newPath: "sess-new",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("mkdir session dir: %v", err)
+		}
+		line := `{"type":"session_meta","payload":{"session_id":"` + sessionID + `"}}` + "\n"
+		if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+			t.Fatalf("write session file: %v", err)
+		}
+	}
+	if err := os.Chtimes(newPath, time.Now(), time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("chtimes newer session: %v", err)
+	}
+
+	metadata, err := runtime.DiscoverCodexSession(providerHome)
+	if err != nil {
+		t.Fatalf("discover codex session: %v", err)
+	}
+	if metadata.NativeSessionID != "sess-new" {
+		t.Fatalf("expected newest session id sess-new, got %q", metadata.NativeSessionID)
+	}
+	if metadata.NativeSessionPath != newPath {
+		t.Fatalf("expected newest session path %q, got %q", newPath, metadata.NativeSessionPath)
+	}
+}
+
 func waitForActive(t *testing.T, h *runtime.Harness, taskID string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -246,4 +409,8 @@ func waitForActive(t *testing.T, h *runtime.Harness, taskID string) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("run did not become active")
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
