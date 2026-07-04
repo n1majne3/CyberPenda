@@ -111,10 +111,11 @@ func TestBuildSandboxCommandConstructsContainerLaunchWithoutExecution(t *testing
 	}
 
 	command, err := runner.BuildSandboxCommand(runner.SandboxCommandRequest{
-		Layout:         layout,
-		Provider:       runtimeprofile.ProviderCodex,
-		Image:          "pentest-kali:local",
-		RuntimeCommand: []string{"codex", "run", "--json"},
+		Layout:          layout,
+		Provider:        runtimeprofile.ProviderCodex,
+		Image:           "pentest-kali:local",
+		ContainerIDFile: filepath.Join(layout.Logs, "container.cid"),
+		RuntimeCommand:  []string{"codex", "run", "--json"},
 	})
 	if err != nil {
 		t.Fatalf("build command: %v", err)
@@ -127,6 +128,8 @@ func TestBuildSandboxCommandConstructsContainerLaunchWithoutExecution(t *testing
 		"run",
 		"--rm",
 		"-i",
+		"--cidfile",
+		filepath.Join(layout.Logs, "container.cid"),
 		"--add-host=host.docker.internal:host-gateway",
 		"-v",
 		layout.TaskRoot + ":/task",

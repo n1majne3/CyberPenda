@@ -137,6 +137,7 @@ export function TaskDetailPage() {
 
   if (error) return <PageContainer className="text-destructive">{error}</PageContainer>;
   if (!task) return <PageContainer className="text-muted-foreground">Loading…</PageContainer>;
+  const currentContinuation = task.active_continuation ?? task.latest_continuation;
 
   return (
     <PageContainer ref={pageRef} className="max-w-4xl">
@@ -164,6 +165,13 @@ export function TaskDetailPage() {
         </Badge>
         {task.run_controls.yolo && <Badge variant="warning">YOLO</Badge>}
       </div>
+      {currentContinuation && (
+        <div className="mb-6 flex gap-2">
+          <Badge variant="outline">continuation #{currentContinuation.number}</Badge>
+          <Badge variant="outline">runtime: {currentContinuation.runtime_provider}</Badge>
+          <Badge variant="outline">continuation status: {currentContinuation.status}</Badge>
+        </div>
+      )}
 
       <div className="mb-6 flex flex-wrap gap-2 text-sm">
         <Link to={`/projects/${projectId}/facts`} className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground">

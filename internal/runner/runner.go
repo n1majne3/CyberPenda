@@ -75,13 +75,14 @@ const HostProxyOnlySandboxNetworkName = "pentest-host-proxy-only"
 // SandboxCommandRequest contains the data needed to construct a Kali sandbox
 // launch command without starting the container.
 type SandboxCommandRequest struct {
-	Layout         Layout
-	Provider       runtimeprofile.Provider
-	Image          string
-	ContainerCLI   string
-	RuntimeCommand []string
-	ProcessEnv     map[string]string
-	NetworkMode    SandboxNetworkMode
+	Layout          Layout
+	Provider        runtimeprofile.Provider
+	Image           string
+	ContainerCLI    string
+	ContainerIDFile string
+	RuntimeCommand  []string
+	ProcessEnv      map[string]string
+	NetworkMode     SandboxNetworkMode
 }
 
 type ActivationRequest struct {
@@ -158,14 +159,19 @@ func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 		"run",
 		"--rm",
 		"-i",
+	}
+	if strings.TrimSpace(request.ContainerIDFile) != "" {
+		args = append(args, "--cidfile", request.ContainerIDFile)
+	}
+	args = append(args,
 		"--add-host=host.docker.internal:host-gateway",
 		"-v",
-		taskRoot + ":/task",
+		taskRoot+":/task",
 		"-w",
 		"/task/workdir",
 		"-e",
 		"PENTEST_TASK_ROOT=/task",
-	}
+	)
 	if request.NetworkMode == SandboxNetworkHostProxyOnly {
 		args = append(args, "--network", HostProxyOnlySandboxNetworkName)
 	}

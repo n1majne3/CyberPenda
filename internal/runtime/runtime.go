@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"time"
 
 	"pentest/internal/adapters"
 	"pentest/internal/task"
@@ -30,9 +31,12 @@ type Adapter interface {
 
 // LaunchRequest describes a harness launch for one task continuation.
 type LaunchRequest struct {
-	TaskID  string
-	Goal    string
-	Adapter Adapter
+	TaskID           string
+	Goal             string
+	Adapter          Adapter
+	ContinuationID   string
+	Metadata         func() (NativeSessionMetadata, error)
+	StopConfirmation StopConfirmation
 }
 
 // Harness owns runtime lifecycle for tasks through adapters. It records
@@ -41,12 +45,18 @@ type LaunchRequest struct {
 type Harness struct {
 	tasks  *task.Service
 	mu     sync.Mutex
-	active map[string]context.CancelFunc // taskID -> cancel
+	active map[string]activeRun // taskID -> cancel + completion
+}
+
+type activeRun struct {
+	cancel           context.CancelFunc
+	done             chan struct{}
+	stopConfirmation StopConfirmation
 }
 
 // NewHarness returns a Harness that records events through the task service.
 func NewHarness(tasks *task.Service) *Harness {
-	return &Harness{tasks: tasks, active: map[string]context.CancelFunc{}}
+	return &Harness{tasks: tasks, active: map[string]activeRun{}}
 }
 
 // Launch starts one runtime continuation for a task. It marks the task running,
@@ -62,8 +72,12 @@ func (h *Harness) Launch(ctx context.Context, req LaunchRequest) error {
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
-	h.register(req.TaskID, cancel)
-	defer h.unregister(req.TaskID)
+	done := make(chan struct{})
+	h.register(req.TaskID, cancel, done, req.StopConfirmation)
+	defer func() {
+		close(done)
+		h.unregister(req.TaskID)
+	}()
 
 	emit := func(kind task.EventKind, payload task.EventPayload) {
 		if _, err := h.tasks.AppendEvent(req.TaskID, kind, payload); err != nil {
@@ -76,6 +90,11 @@ func (h *Harness) Launch(ctx context.Context, req LaunchRequest) error {
 	emit(task.EventKindLifecycle, task.EventPayload{"phase": "started", "adapter": req.Adapter.Name()})
 	if _, err := h.tasks.UpdateStatus(req.TaskID, task.StatusRunning); err != nil {
 		return fmt.Errorf("mark running: %w", err)
+	}
+	if req.ContinuationID != "" {
+		if _, err := h.tasks.UpdateContinuationStatus(req.ContinuationID, task.StatusRunning); err != nil {
+			return fmt.Errorf("mark continuation running: %w", err)
+		}
 	}
 
 	runErr := req.Adapter.Run(ctx, req.Goal, emit)
@@ -91,8 +110,26 @@ func (h *Harness) Launch(ctx context.Context, req LaunchRequest) error {
 		finalPhase = "stopped"
 	}
 	emit(task.EventKindLifecycle, task.EventPayload{"phase": finalPhase, "adapter": req.Adapter.Name()})
+	if req.ContinuationID != "" && req.Metadata != nil {
+		metadata, err := req.Metadata()
+		if err == nil {
+			if metadata.ContainerID != "" || metadata.NativeSessionID != "" || metadata.NativeSessionPath != "" {
+				if _, err := h.tasks.UpdateContinuationRuntimeMetadata(req.ContinuationID, metadata.ContainerID, metadata.NativeSessionID, metadata.NativeSessionPath); err != nil {
+					return fmt.Errorf("record continuation metadata: %w", err)
+				}
+			}
+		}
+	}
 	if _, err := h.tasks.UpdateStatus(req.TaskID, finalStatus); err != nil {
 		return fmt.Errorf("mark %s: %w", finalStatus, err)
+	}
+	if req.ContinuationID != "" {
+		if _, err := h.tasks.UpdateContinuationStatus(req.ContinuationID, finalStatus); err != nil {
+			return fmt.Errorf("mark continuation %s: %w", finalStatus, err)
+		}
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 	return runErr
 }
@@ -102,8 +139,8 @@ func (h *Harness) Launch(ctx context.Context, req LaunchRequest) error {
 func (h *Harness) Stop(taskID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if cancel, ok := h.active[taskID]; ok {
-		cancel()
+	if run, ok := h.active[taskID]; ok {
+		run.cancel()
 	}
 }
 
@@ -115,10 +152,39 @@ func (h *Harness) IsActive(taskID string) bool {
 	return ok
 }
 
-func (h *Harness) register(taskID string, cancel context.CancelFunc) {
+// StopAndWait requests a stop and waits for the active continuation to exit.
+// It returns true when no continuation is active or the runtime exits before
+// the timeout.
+func (h *Harness) StopAndWait(taskID string, timeout time.Duration) bool {
+	h.mu.Lock()
+	run, ok := h.active[taskID]
+	h.mu.Unlock()
+	if !ok {
+		return true
+	}
+	run.cancel()
+	deadline := time.Now().Add(timeout)
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-run.done:
+		if run.stopConfirmation == nil {
+			return true
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return false
+		}
+		return run.stopConfirmation(remaining) == nil
+	case <-timer.C:
+		return false
+	}
+}
+
+func (h *Harness) register(taskID string, cancel context.CancelFunc, done chan struct{}, stopConfirmation StopConfirmation) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.active[taskID] = cancel
+	h.active[taskID] = activeRun{cancel: cancel, done: done, stopConfirmation: stopConfirmation}
 }
 
 func (h *Harness) unregister(taskID string) {
@@ -233,5 +299,3 @@ func (a *commandAdapter) Run(ctx context.Context, goal string, emit func(task.Ev
 	}
 	return nil
 }
-
-

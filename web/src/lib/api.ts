@@ -313,8 +313,26 @@ export interface Task {
   runtime_profile_id: string;
   run_controls: { yolo?: boolean; host_activated?: boolean; sandbox_network?: string; notes?: string; extras?: Record<string, string> };
   scope_snapshot: Scope;
+  active_continuation?: TaskContinuation;
+  latest_continuation?: TaskContinuation;
   created_at: string;
   updated_at: string;
+}
+
+export interface TaskContinuation {
+  id: string;
+  task_id: string;
+  number: number;
+  runtime_profile_id: string;
+  runtime_provider: string;
+  runner: string;
+  status: string;
+  container_id?: string;
+  native_session_id?: string;
+  native_session_path?: string;
+  started_at: string;
+  updated_at: string;
+  ended_at?: string;
 }
 
 export interface TaskEvent {

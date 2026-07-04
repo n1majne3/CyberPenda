@@ -52,6 +52,18 @@ function stubTaskDetailApi() {
       runtime_profile_id: "profile-1",
       run_controls: {},
       scope_snapshot: {},
+      latest_continuation: {
+        id: "cont-1",
+        task_id: "task-1",
+        number: 1,
+        runtime_profile_id: "profile-1",
+        runtime_provider: "codex",
+        runner: "sandbox",
+        status: "completed",
+        started_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:00:05Z",
+        ended_at: "2026-01-01T00:00:05Z",
+      },
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:05Z",
     },
@@ -80,5 +92,15 @@ describe("TaskDetailPage", () => {
 
     expect(await screen.findByText("Timeline opened first")).toBeInTheDocument();
     expect(scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it("shows the latest continuation summary when present", async () => {
+    stubTaskDetailApi();
+
+    renderPage();
+
+    expect(await screen.findByText("continuation #1")).toBeInTheDocument();
+    expect(screen.getByText("runtime: codex")).toBeInTheDocument();
+    expect(screen.getByText("continuation status: completed")).toBeInTheDocument();
   });
 });

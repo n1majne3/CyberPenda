@@ -91,6 +91,24 @@ type RuntimeConfigVersion struct {
 	CreatedAt        time.Time      `json:"created_at"`
 }
 
+// TaskContinuation is one Runtime Continuation for a Task. It tracks the
+// Runtime-specific run instance that later Stop/Resume controls will own.
+type TaskContinuation struct {
+	ID                string     `json:"id"`
+	TaskID            string     `json:"task_id"`
+	Number            int        `json:"number"`
+	RuntimeProfileID  string     `json:"runtime_profile_id"`
+	RuntimeProvider   string     `json:"runtime_provider"`
+	Runner            Runner     `json:"runner"`
+	Status            Status     `json:"status"`
+	ContainerID       string     `json:"container_id,omitempty"`
+	NativeSessionID   string     `json:"native_session_id,omitempty"`
+	NativeSessionPath string     `json:"native_session_path,omitempty"`
+	StartedAt         time.Time  `json:"started_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+	EndedAt           *time.Time `json:"ended_at,omitempty"`
+}
+
 type SummaryVersion struct {
 	ID          string    `json:"id"`
 	TaskID      string    `json:"task_id"`
@@ -102,16 +120,18 @@ type SummaryVersion struct {
 
 // Task is a single user-goal-driven run within a project.
 type Task struct {
-	ID               string        `json:"id"`
-	ProjectID        string        `json:"project_id"`
-	Goal             string        `json:"goal"`
-	Status           Status        `json:"status"`
-	Runner           Runner        `json:"runner"`
-	RuntimeProfileID string        `json:"runtime_profile_id"`
-	RunControls      RunControls   `json:"run_controls"`
-	ScopeSnapshot    ScopeSnapshot `json:"scope_snapshot"`
-	CreatedAt        time.Time     `json:"created_at"`
-	UpdatedAt        time.Time     `json:"updated_at"`
+	ID                 string            `json:"id"`
+	ProjectID          string            `json:"project_id"`
+	Goal               string            `json:"goal"`
+	Status             Status            `json:"status"`
+	Runner             Runner            `json:"runner"`
+	RuntimeProfileID   string            `json:"runtime_profile_id"`
+	RunControls        RunControls       `json:"run_controls"`
+	ScopeSnapshot      ScopeSnapshot     `json:"scope_snapshot"`
+	ActiveContinuation *TaskContinuation `json:"active_continuation,omitempty"`
+	LatestContinuation *TaskContinuation `json:"latest_continuation,omitempty"`
+	CreatedAt          time.Time         `json:"created_at"`
+	UpdatedAt          time.Time         `json:"updated_at"`
 }
 
 // CreateRequest is the input to Service.Create.
@@ -428,6 +448,167 @@ func (s *Service) RecordRuntimeConfig(taskID, runtimeProfileID string, config ma
 	return version, nil
 }
 
+// CreateContinuation records the next Runtime Continuation for a Task before
+// the harness launches it.
+func (s *Service) CreateContinuation(taskID, runtimeProfileID, runtimeProvider string, runner Runner) (TaskContinuation, error) {
+	if _, err := s.Get(taskID); err != nil {
+		return TaskContinuation{}, err
+	}
+
+	now := time.Now().UTC()
+	continuation := TaskContinuation{
+		ID:               newID(),
+		TaskID:           taskID,
+		RuntimeProfileID: runtimeProfileID,
+		RuntimeProvider:  runtimeProvider,
+		Runner:           runner,
+		Status:           StatusPending,
+		StartedAt:        now,
+		UpdatedAt:        now,
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return TaskContinuation{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var maxNumber sql.NullInt64
+	if err := tx.QueryRow(`SELECT MAX(number) FROM task_continuations WHERE task_id = ?`, taskID).Scan(&maxNumber); err != nil {
+		return TaskContinuation{}, fmt.Errorf("read max continuation number: %w", err)
+	}
+	continuation.Number = int(maxNumber.Int64) + 1
+
+	if _, err := tx.Exec(
+		`INSERT INTO task_continuations (id, task_id, number, runtime_profile_id, runtime_provider, runner, status, container_id, native_session_id, native_session_path, started_at, updated_at, ended_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, '', '', '', ?, ?, '')`,
+		continuation.ID, continuation.TaskID, continuation.Number, continuation.RuntimeProfileID,
+		continuation.RuntimeProvider, string(continuation.Runner), string(continuation.Status),
+		continuation.StartedAt.Format(time.RFC3339Nano), continuation.UpdatedAt.Format(time.RFC3339Nano),
+	); err != nil {
+		return TaskContinuation{}, fmt.Errorf("store continuation: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return TaskContinuation{}, fmt.Errorf("commit continuation: %w", err)
+	}
+	return continuation, nil
+}
+
+// ActiveContinuation returns the currently active Runtime Continuation for a
+// Task, if one exists.
+func (s *Service) ActiveContinuation(taskID string) (*TaskContinuation, error) {
+	if _, err := s.Get(taskID); err != nil {
+		return nil, err
+	}
+	found, err := scanContinuation(s.db.QueryRow(
+		`SELECT id, task_id, number, runtime_profile_id, runtime_provider, runner, status, container_id, native_session_id, native_session_path, started_at, updated_at, ended_at
+		 FROM task_continuations
+		 WHERE task_id = ? AND status IN (?, ?, ?)
+		 ORDER BY number DESC LIMIT 1`,
+		taskID, string(StatusPending), string(StatusRunning), string(StatusPaused),
+	))
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &found, nil
+}
+
+// LatestContinuation returns the latest recorded Runtime Continuation for a
+// Task, whether active or terminal.
+func (s *Service) LatestContinuation(taskID string) (*TaskContinuation, error) {
+	if _, err := s.Get(taskID); err != nil {
+		return nil, err
+	}
+	found, err := scanContinuation(s.db.QueryRow(
+		`SELECT id, task_id, number, runtime_profile_id, runtime_provider, runner, status, container_id, native_session_id, native_session_path, started_at, updated_at, ended_at
+		 FROM task_continuations
+		 WHERE task_id = ? ORDER BY number DESC LIMIT 1`,
+		taskID,
+	))
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &found, nil
+}
+
+// UpdateContinuationStatus updates the lifecycle status of a recorded Runtime
+// Continuation.
+func (s *Service) UpdateContinuationStatus(continuationID string, status Status) (TaskContinuation, error) {
+	found, err := scanContinuation(s.db.QueryRow(
+		`SELECT id, task_id, number, runtime_profile_id, runtime_provider, runner, status, container_id, native_session_id, native_session_path, started_at, updated_at, ended_at
+		 FROM task_continuations WHERE id = ?`,
+		continuationID,
+	))
+	if err != nil {
+		return TaskContinuation{}, err
+	}
+
+	now := time.Now().UTC()
+	found.Status = status
+	found.UpdatedAt = now
+	endedAt := ""
+	if isTerminalStatus(status) {
+		found.EndedAt = &now
+		endedAt = now.Format(time.RFC3339Nano)
+	} else {
+		found.EndedAt = nil
+	}
+
+	_, err = s.db.Exec(
+		`UPDATE task_continuations SET status = ?, updated_at = ?, ended_at = ? WHERE id = ?`,
+		string(found.Status), found.UpdatedAt.Format(time.RFC3339Nano), endedAt, found.ID,
+	)
+	if err != nil {
+		return TaskContinuation{}, fmt.Errorf("update continuation status: %w", err)
+	}
+	return found, nil
+}
+
+// UpdateContinuationRuntimeMetadata stores best-effort runtime ownership data
+// discovered for a continuation, such as container and native session ids.
+func (s *Service) UpdateContinuationRuntimeMetadata(continuationID, containerID, nativeSessionID, nativeSessionPath string) (TaskContinuation, error) {
+	found, err := scanContinuation(s.db.QueryRow(
+		`SELECT id, task_id, number, runtime_profile_id, runtime_provider, runner, status, container_id, native_session_id, native_session_path, started_at, updated_at, ended_at
+		 FROM task_continuations WHERE id = ?`,
+		continuationID,
+	))
+	if err != nil {
+		return TaskContinuation{}, err
+	}
+
+	if containerID != "" {
+		found.ContainerID = containerID
+	}
+	if nativeSessionID != "" {
+		found.NativeSessionID = nativeSessionID
+	}
+	if nativeSessionPath != "" {
+		found.NativeSessionPath = nativeSessionPath
+	}
+	found.UpdatedAt = time.Now().UTC()
+
+	_, err = s.db.Exec(
+		`UPDATE task_continuations
+		 SET container_id = ?, native_session_id = ?, native_session_path = ?, updated_at = ?
+		 WHERE id = ?`,
+		found.ContainerID,
+		found.NativeSessionID,
+		found.NativeSessionPath,
+		found.UpdatedAt.Format(time.RFC3339Nano),
+		found.ID,
+	)
+	if err != nil {
+		return TaskContinuation{}, fmt.Errorf("update continuation runtime metadata: %w", err)
+	}
+	return found, nil
+}
+
 // RuntimeConfigVersions returns the captured runtime configuration versions for
 // a task, ordered by version.
 func (s *Service) RuntimeConfigVersions(taskID string) ([]RuntimeConfigVersion, error) {
@@ -598,4 +779,60 @@ func newID() string {
 		return hex.EncodeToString([]byte(time.Now().UTC().Format(time.RFC3339Nano)))
 	}
 	return hex.EncodeToString(bytes[:])
+}
+
+func scanContinuation(row scanner) (TaskContinuation, error) {
+	var found TaskContinuation
+	var runner string
+	var status string
+	var startedAt string
+	var updatedAt string
+	var endedAt string
+
+	err := row.Scan(
+		&found.ID,
+		&found.TaskID,
+		&found.Number,
+		&found.RuntimeProfileID,
+		&found.RuntimeProvider,
+		&runner,
+		&status,
+		&found.ContainerID,
+		&found.NativeSessionID,
+		&found.NativeSessionPath,
+		&startedAt,
+		&updatedAt,
+		&endedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return TaskContinuation{}, ErrNotFound
+	}
+	if err != nil {
+		return TaskContinuation{}, err
+	}
+	found.Runner = Runner(runner)
+	found.Status = Status(status)
+	if found.StartedAt, err = time.Parse(time.RFC3339Nano, startedAt); err != nil {
+		return TaskContinuation{}, fmt.Errorf("parse started_at: %w", err)
+	}
+	if found.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt); err != nil {
+		return TaskContinuation{}, fmt.Errorf("parse updated_at: %w", err)
+	}
+	if endedAt != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, endedAt)
+		if err != nil {
+			return TaskContinuation{}, fmt.Errorf("parse ended_at: %w", err)
+		}
+		found.EndedAt = &parsed
+	}
+	return found, nil
+}
+
+func isTerminalStatus(status Status) bool {
+	switch status {
+	case StatusCompleted, StatusFailed, StatusStopped, StatusInterrupted:
+		return true
+	default:
+		return false
+	}
 }
