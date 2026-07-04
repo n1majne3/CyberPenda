@@ -15,3 +15,6 @@ pentestd
 runs/
 __pycache__/
 *.pyc
+
+# macOS Finder metadata
+.DS_Store
