@@ -324,6 +324,85 @@ func TestCommandRuntimeAdapterCancellationReturnsContextCanceled(t *testing.T) {
 	}
 }
 
+func TestDockerSandboxAdapterRecordsContainerAndStopsByID(t *testing.T) {
+	harness, tasks, projects := newServices(t)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, _ := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "sandbox task", Runner: task.RunnerSandbox})
+	continuation, err := tasks.CreateContinuation(created.ID, "codex-profile", "codex", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create continuation: %v", err)
+	}
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "docker.log")
+	stoppedPath := filepath.Join(dir, "stopped")
+	docker := filepath.Join(dir, "docker")
+	script := "#!/bin/sh\n" +
+		"echo \"$*\" >> " + shellQuote(logPath) + "\n" +
+		"case \"$1\" in\n" +
+		"  create) echo ctr-owned ;;\n" +
+		"  start) echo sandbox-started; while [ ! -f " + shellQuote(stoppedPath) + " ]; do sleep 0.05; done ;;\n" +
+		"  stop) touch " + shellQuote(stoppedPath) + " ;;\n" +
+		"  rm) exit 0 ;;\n" +
+		"  *) exit 1 ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(docker, []byte(script), 0o700); err != nil {
+		t.Fatalf("write docker stub: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- harness.Launch(context.Background(), runtime.LaunchRequest{
+			TaskID:         created.ID,
+			Goal:           created.Goal,
+			ContinuationID: continuation.ID,
+			Adapter: runtime.NewDockerSandboxAdapter(runtime.DockerSandboxConfig{
+				Name:         "codex",
+				ContainerCLI: docker,
+				CreateArgs:   []string{"create", "-i", "image", "codex", "run"},
+			}),
+		})
+	}()
+
+	waitForActive(t, harness, created.ID)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		active, err := tasks.ActiveContinuation(created.ID)
+		if err != nil {
+			t.Fatalf("active continuation: %v", err)
+		}
+		if active != nil && active.ContainerID == "ctr-owned" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	active, err := tasks.ActiveContinuation(created.ID)
+	if err != nil {
+		t.Fatalf("active continuation: %v", err)
+	}
+	if active == nil || active.ContainerID != "ctr-owned" {
+		t.Fatalf("expected active continuation container id ctr-owned, got %#v", active)
+	}
+
+	if !harness.StopAndWait(created.ID, 2*time.Second) {
+		t.Fatal("expected StopAndWait to stop docker sandbox")
+	}
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled, got %v", err)
+	}
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read docker log: %v", err)
+	}
+	logText := string(raw)
+	if !strings.Contains(logText, "stop ctr-owned") {
+		t.Fatalf("expected docker stop by container id, got log:\n%s", logText)
+	}
+	if !strings.Contains(logText, "rm -f ctr-owned") {
+		t.Fatalf("expected docker rm by container id, got log:\n%s", logText)
+	}
+}
+
 func TestDockerContainerStopConfirmationTreatsRemovedContainerAsExited(t *testing.T) {
 	dir := t.TempDir()
 	cidFile := filepath.Join(dir, "container.cid")

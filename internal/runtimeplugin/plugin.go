@@ -27,6 +27,7 @@ type Plugin struct {
 	ProfileSchema    ProfileSchema     `json:"profile_schema"`
 	ConfigProjection ConfigProjection  `json:"config_projection"`
 	Launch           LaunchTemplate    `json:"launch"`
+	NativeResume     NativeResume      `json:"native_resume,omitempty"`
 	ProcessEnv       map[string]string `json:"process_env,omitempty"`
 	CredentialEnv    []string          `json:"credential_env,omitempty"`
 	Transcript       Transcript        `json:"transcript"`
@@ -70,6 +71,12 @@ type ConfigProjection struct {
 type LaunchTemplate struct {
 	Args             []string          `json:"args"`
 	SingletonOptions []SingletonOption `json:"singleton_options,omitempty"`
+}
+
+type NativeResume struct {
+	Supported     bool     `json:"supported"`
+	SessionSource string   `json:"session_source,omitempty"`
+	Args          []string `json:"args,omitempty"`
 }
 
 type SingletonOption struct {
@@ -163,6 +170,9 @@ func Validate(plugin Plugin) error {
 	}
 	if len(plugin.Launch.Args) == 0 {
 		return fmt.Errorf("%w: launch args are required", ErrInvalidPlugin)
+	}
+	if plugin.NativeResume.Supported && len(plugin.NativeResume.Args) == 0 {
+		return fmt.Errorf("%w: native_resume args are required when native resume is supported", ErrInvalidPlugin)
 	}
 	seen := map[string]bool{}
 	for _, field := range plugin.ProfileSchema.Fields {

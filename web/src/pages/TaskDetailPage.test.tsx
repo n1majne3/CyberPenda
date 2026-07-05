@@ -52,6 +52,15 @@ function stubTaskDetailApi() {
       runtime_profile_id: "profile-1",
       run_controls: {},
       scope_snapshot: {},
+      runtime_controls: {
+        native_resume_available: true,
+        handoff_resume_available: true,
+        queue_steer_available: true,
+        interrupt_steer_available: false,
+        native_session_captured: true,
+        same_runtime_provider_only: true,
+        runtime_provider: "codex",
+      },
       latest_continuation: {
         id: "cont-1",
         task_id: "task-1",
@@ -60,6 +69,7 @@ function stubTaskDetailApi() {
         runtime_provider: "codex",
         runner: "sandbox",
         status: "completed",
+        native_session_id: "sess-1",
         started_at: "2026-01-01T00:00:00Z",
         updated_at: "2026-01-01T00:00:05Z",
         ended_at: "2026-01-01T00:00:05Z",
@@ -67,7 +77,12 @@ function stubTaskDetailApi() {
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:05Z",
     },
-    "/api/runtime-profiles": { profiles: [{ id: "profile-1", name: "Codex" }] },
+    "/api/runtime-profiles": {
+      profiles: [
+        { id: "profile-1", name: "Codex", provider: "codex" },
+        { id: "profile-2", name: "Fake", provider: "fake" },
+      ],
+    },
   });
 
   return { scrollIntoView };
@@ -102,5 +117,19 @@ describe("TaskDetailPage", () => {
     expect(await screen.findByText("continuation #1")).toBeInTheDocument();
     expect(screen.getByText("runtime: codex")).toBeInTheDocument();
     expect(screen.getByText("continuation status: completed")).toBeInTheDocument();
+    expect(screen.getByText("native session: captured")).toBeInTheDocument();
+    expect(screen.getByText("same runtime only")).toBeInTheDocument();
+  });
+
+  it("separates native resume, handoff resume, and queue steering controls", async () => {
+    stubTaskDetailApi();
+
+    renderPage();
+
+    expect(await screen.findByRole("button", { name: /Resume$/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Resume with handoff/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Queue steer/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Use Codex/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /Use Fake/ })).not.toBeInTheDocument();
   });
 });

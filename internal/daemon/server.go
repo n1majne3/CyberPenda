@@ -11,6 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"pentest/internal/approval"
@@ -78,6 +79,8 @@ type Server struct {
 	containerCLI      string
 	listenAddr        string
 	tempSkillsRoot    string
+	controlMu         sync.Mutex
+	activeControls    map[string]bool
 }
 
 func NewServer(config Config) (*Server, error) {
@@ -149,15 +152,16 @@ func NewServer(config Config) (*Server, error) {
 		preflight: preflight.NewService(profiles, creds, skills).
 			WithModelProviders(modelProviders, runtimePlugins).
 			WithRuntimeExtensions(runtimeExtensions),
-		tasks:             tasks,
-		harness:           runtime.NewHarness(tasks),
-		facts:             blackboard.NewService(db),
-		approvals:         approval.NewService(db),
-		runtimeRoot:       runtimeRoot,
-		sandboxImage:      config.SandboxImage,
-		containerCLI:      config.ContainerCLI,
-		listenAddr:        listenAddr,
-		tempSkillsRoot:    tempSkillsRoot,
+		tasks:          tasks,
+		harness:        runtime.NewHarness(tasks),
+		facts:          blackboard.NewService(db),
+		approvals:      approval.NewService(db),
+		runtimeRoot:    runtimeRoot,
+		sandboxImage:   config.SandboxImage,
+		containerCLI:   config.ContainerCLI,
+		listenAddr:     listenAddr,
+		tempSkillsRoot: tempSkillsRoot,
+		activeControls: map[string]bool{},
 	}
 	if server.logger == nil {
 		server.logger = log.Default()
@@ -294,6 +298,8 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/timeline", server.handleTaskTimeline)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/stop", server.handleStopTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/resume", server.handleResumeTask)
+	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/resume/handoff", server.handleResumeHandoffTask)
+	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/steer/queue", server.handleQueueSteerTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/steer", server.handleSteerTask)
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/continuation", server.handleTaskContinuation)
 	server.mux.HandleFunc("PUT /api/projects/{id}/tasks/{task_id}/summary", server.handlePutTaskSummary)

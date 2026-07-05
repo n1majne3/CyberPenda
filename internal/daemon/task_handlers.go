@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -24,6 +25,11 @@ import (
 	"pentest/internal/task"
 	"pentest/internal/timeline"
 	"pentest/internal/transcript"
+)
+
+var (
+	errNativeResumeUnavailable  = errors.New("native resume unavailable")
+	errNativeSessionUnavailable = errors.New("native session unavailable")
 )
 
 func (server *Server) handleCreateTask(response http.ResponseWriter, request *http.Request) {
@@ -303,8 +309,16 @@ func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launch
 	if err != nil {
 		return taskLaunchPlan{}, err
 	}
-	if nativeResumeSessionID != "" && profile.Provider == runtimeprofile.ProviderCodex {
-		providerCommand = buildCodexResumeCommand(providerCommand[0], strings.TrimSpace(launchProfile.Fields.Model), nativeResumeSessionID, goal)
+	if nativeResumeSessionID != "" {
+		providerCommand, err = adapters.BuildNativeResumeArgs(adapters.NativeResumeArgsRequest{
+			Provider:        profile.Provider,
+			Profile:         launchProfile,
+			NativeSessionID: nativeResumeSessionID,
+			ResumedMessage:  goal,
+		})
+		if err != nil {
+			return taskLaunchPlan{}, err
+		}
 	}
 
 	runtimeCommand := append([]string{}, providerCommand...)
@@ -386,13 +400,22 @@ func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launch
 		"args":    commandArgs,
 	})
 
-	adapter := runtime.NewCommandAdapter(runtime.CommandAdapterConfig{
-		Name:    string(profile.Provider),
-		Program: commandProgram,
-		Args:    commandArgs,
-		Workdir: workdir,
-		Env:     processEnv,
-	})
+	var adapter runtime.Adapter
+	if sandbox {
+		adapter = runtime.NewDockerSandboxAdapter(runtime.DockerSandboxConfig{
+			Name:         string(profile.Provider),
+			ContainerCLI: commandProgram,
+			CreateArgs:   commandArgs,
+		})
+	} else {
+		adapter = runtime.NewCommandAdapter(runtime.CommandAdapterConfig{
+			Name:    string(profile.Provider),
+			Program: commandProgram,
+			Args:    commandArgs,
+			Workdir: workdir,
+			Env:     processEnv,
+		})
+	}
 
 	// Pi writes its real-time progress to a session jsonl file instead of
 	// stdout, so a sandboxed Pi task's timeline is empty until it exits. Wrap
@@ -436,18 +459,6 @@ func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launch
 		Metadata:         metadata,
 		StopConfirmation: stopConfirmation,
 	}, nil
-}
-
-func buildCodexResumeCommand(binary string, model string, sessionID string, goal string) []string {
-	command := []string{binary}
-	if strings.TrimSpace(model) != "" {
-		command = append(command, "--model", strings.TrimSpace(model))
-	}
-	command = append(command, "resume", sessionID)
-	if strings.TrimSpace(goal) != "" {
-		command = append(command, goal)
-	}
-	return command
 }
 
 func sandboxNetworkMode(runControls task.RunControls) runner.SandboxNetworkMode {
@@ -540,9 +551,44 @@ func (server *Server) decorateTask(found task.Task) (task.Task, error) {
 	if err != nil {
 		return task.Task{}, err
 	}
+	controls, err := server.runtimeControlsForTask(found, latest)
+	if err != nil {
+		return task.Task{}, err
+	}
+	found.RuntimeControls = controls
 	found.ActiveContinuation = active
 	found.LatestContinuation = latest
 	return found, nil
+}
+
+func (server *Server) runtimeControlsForTask(found task.Task, latest *task.TaskContinuation) (task.RuntimeControls, error) {
+	profile, err := server.resolveTaskRuntimeProfile(found)
+	if err != nil {
+		return task.RuntimeControls{}, err
+	}
+	plugin, ok := server.runtimePlugins.Get(string(profile.Provider))
+	nativeResumeSupported := ok && plugin.NativeResume.Supported
+	active := found.Status == task.StatusRunning || found.Status == task.StatusPaused
+	sessionCaptured := latest != nil && strings.TrimSpace(latest.NativeSessionID) != ""
+
+	controls := task.RuntimeControls{
+		HandoffResumeAvailable:  !active,
+		QueueSteerAvailable:     true,
+		NativeSessionCaptured:   sessionCaptured,
+		SameRuntimeProviderOnly: true,
+		RuntimeProvider:         string(profile.Provider),
+	}
+	if nativeResumeSupported {
+		controls.NativeResumeAvailable = !active && sessionCaptured
+		controls.InterruptSteerAvailable = active
+	} else {
+		controls.NativeResumeReason = fmt.Sprintf("native resume unsupported for provider %s", profile.Provider)
+		controls.InterruptSteerReason = controls.NativeResumeReason
+	}
+	if nativeResumeSupported && !sessionCaptured {
+		controls.NativeResumeReason = "native session unavailable"
+	}
+	return controls, nil
 }
 
 func (server *Server) handleTaskEvents(response http.ResponseWriter, request *http.Request) {
@@ -635,13 +681,41 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 		return
 	}
 
-	server.harness.Stop(taskID)
+	if found.Status == task.StatusRunning || found.Status == task.StatusPaused {
+		if ok := server.harness.StopAndWait(taskID, 10*time.Second); !ok {
+			writeError(response, http.StatusConflict, "runtime did not stop in time")
+			return
+		}
+		stopped, err := server.taskDetail(taskID)
+		if err != nil {
+			writeTaskError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, stopped)
+		return
+	}
 	stopped, err := server.tasks.UpdateStatus(taskID, task.StatusStopped)
 	if err != nil {
 		writeTaskError(response, err)
 		return
 	}
 	writeJSON(response, http.StatusOK, stopped)
+}
+
+func (server *Server) acquireTaskControl(taskID string) bool {
+	server.controlMu.Lock()
+	defer server.controlMu.Unlock()
+	if server.activeControls[taskID] {
+		return false
+	}
+	server.activeControls[taskID] = true
+	return true
+}
+
+func (server *Server) releaseTaskControl(taskID string) {
+	server.controlMu.Lock()
+	defer server.controlMu.Unlock()
+	delete(server.activeControls, taskID)
 }
 
 func (server *Server) handleResumeTask(response http.ResponseWriter, request *http.Request) {
@@ -668,7 +742,12 @@ func (server *Server) handleResumeTask(response http.ResponseWriter, request *ht
 		writeError(response, http.StatusConflict, "task is already running")
 		return
 	}
-	found, resumeGoal, plan, err := server.prepareResumeContinuation(found)
+	if !server.acquireTaskControl(taskID) {
+		writeError(response, http.StatusConflict, "task control operation already active")
+		return
+	}
+	defer server.releaseTaskControl(taskID)
+	found, resumeGoal, plan, err := server.prepareNativeResumeContinuation(found, "")
 	if err != nil {
 		server.writeResumePreparationError(response, err)
 		return
@@ -687,7 +766,7 @@ func (server *Server) handleResumeTask(response http.ResponseWriter, request *ht
 		ProjectID: projectID,
 		TaskID:    found.ID,
 		Kind:      "task_resumed",
-		Summary:   "task resumed with mechanical handoff",
+		Summary:   "task resumed with native session",
 		Payload: map[string]any{
 			"task_id": found.ID,
 			"runner":  found.Runner,
@@ -705,7 +784,86 @@ func (server *Server) handleResumeTask(response http.ResponseWriter, request *ht
 	writeJSON(response, http.StatusAccepted, updated)
 }
 
-func (server *Server) prepareResumeContinuation(found task.Task) (task.Task, string, taskLaunchPlan, error) {
+func (server *Server) handleResumeHandoffTask(response http.ResponseWriter, request *http.Request) {
+	projectID := request.PathValue("id")
+	taskID := request.PathValue("task_id")
+	if !server.requireProject(response, projectID) {
+		return
+	}
+	if taskID == "" {
+		writeError(response, http.StatusNotFound, "task not found")
+		return
+	}
+	found, err := server.tasks.Get(taskID)
+	if err != nil {
+		writeTaskError(response, err)
+		return
+	}
+	if found.ProjectID != projectID {
+		writeError(response, http.StatusNotFound, "task not found")
+		return
+	}
+	if server.harness.IsActive(taskID) || found.Status == task.StatusRunning {
+		writeError(response, http.StatusConflict, "task is already running")
+		return
+	}
+	if !server.acquireTaskControl(taskID) {
+		writeError(response, http.StatusConflict, "task control operation already active")
+		return
+	}
+	defer server.releaseTaskControl(taskID)
+	found, resumeGoal, plan, err := server.prepareHandoffResumeContinuation(found)
+	if err != nil {
+		server.writeResumePreparationError(response, err)
+		return
+	}
+	if _, err := server.tasks.RecordRuntimeConfig(found.ID, found.RuntimeProfileID, plan.RuntimeConfig); err != nil {
+		writeError(response, http.StatusInternalServerError, "record task runtime configuration")
+		return
+	}
+	if err := server.launchTaskInBackground(found, plan, resumeGoal); err != nil {
+		writeError(response, http.StatusInternalServerError, "create task continuation")
+		return
+	}
+	if _, err := server.approvals.RecordAudit(approval.AuditEntry{
+		ProjectID: projectID,
+		TaskID:    found.ID,
+		Kind:      "task_resumed",
+		Summary:   "task resumed with mechanical handoff",
+		Payload: map[string]any{
+			"task_id": found.ID,
+			"runner":  found.Runner,
+		},
+	}); err != nil {
+		writeError(response, http.StatusInternalServerError, "record task audit")
+		return
+	}
+	updated, err := server.taskDetail(found.ID)
+	if err != nil {
+		writeTaskError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusAccepted, updated)
+}
+
+func (server *Server) prepareNativeResumeContinuation(found task.Task, resumedMessage string) (task.Task, string, taskLaunchPlan, error) {
+	effectiveProfile, err := server.resolveTaskRuntimeProfile(found)
+	if err != nil {
+		return task.Task{}, "", taskLaunchPlan{}, err
+	}
+	found.RuntimeProfileID = effectiveProfile.ID
+	nativeResumeSessionID, err := server.discoverNativeResumeSession(found)
+	if err != nil {
+		return task.Task{}, "", taskLaunchPlan{}, err
+	}
+	plan, err := server.buildTaskLaunchPlan(found, resumedMessage, "", nativeResumeSessionID)
+	if err != nil {
+		return task.Task{}, "", taskLaunchPlan{}, err
+	}
+	return found, resumedMessage, plan, nil
+}
+
+func (server *Server) prepareHandoffResumeContinuation(found task.Task) (task.Task, string, taskLaunchPlan, error) {
 	effectiveProfile, err := server.resolveTaskRuntimeProfile(found)
 	if err != nil {
 		return task.Task{}, "", taskLaunchPlan{}, err
@@ -716,11 +874,7 @@ func (server *Server) prepareResumeContinuation(found task.Task) (task.Task, str
 	if err != nil {
 		return task.Task{}, "", taskLaunchPlan{}, err
 	}
-	nativeResumeSessionID, err := server.discoverNativeResumeSession(found)
-	if err != nil {
-		return task.Task{}, "", taskLaunchPlan{}, err
-	}
-	plan, err := server.buildTaskLaunchPlan(found, resumeGoal, "", nativeResumeSessionID)
+	plan, err := server.buildTaskLaunchPlan(found, resumeGoal, "", "")
 	if err != nil {
 		return task.Task{}, "", taskLaunchPlan{}, err
 	}
@@ -797,9 +951,76 @@ func (server *Server) writeResumePreparationError(response http.ResponseWriter, 
 	switch {
 	case errors.Is(err, runtimeprofile.ErrNotFound):
 		writeError(response, http.StatusBadRequest, "runtime profile not found")
+	case errors.Is(err, errNativeResumeUnavailable):
+		writeError(response, http.StatusBadRequest, err.Error())
+	case errors.Is(err, errNativeSessionUnavailable):
+		writeError(response, http.StatusConflict, err.Error())
 	default:
 		writeTaskAdapterError(response, err)
 	}
+}
+
+func (server *Server) handleQueueSteerTask(response http.ResponseWriter, request *http.Request) {
+	projectID := request.PathValue("id")
+	taskID := request.PathValue("task_id")
+	if !server.requireProject(response, projectID) {
+		return
+	}
+	if taskID == "" {
+		writeError(response, http.StatusNotFound, "task not found")
+		return
+	}
+	found, err := server.tasks.Get(taskID)
+	if err != nil {
+		writeTaskError(response, err)
+		return
+	}
+	if found.ProjectID != projectID {
+		writeError(response, http.StatusNotFound, "task not found")
+		return
+	}
+	var input struct {
+		Directive        string         `json:"directive"`
+		RuntimeProfileID string         `json:"runtime_profile_id"`
+		SubmittedBy      string         `json:"submitted_by"`
+		Config           map[string]any `json:"config"`
+	}
+	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if strings.TrimSpace(input.Directive) == "" {
+		writeError(response, http.StatusBadRequest, "steering directive is required")
+		return
+	}
+	payload := task.EventPayload{
+		"directive": input.Directive,
+		"phase":     "steering_requested",
+		"mode":      "queue",
+	}
+	if input.SubmittedBy != "" {
+		payload["submitted_by"] = input.SubmittedBy
+	}
+	if input.RuntimeProfileID != "" {
+		payload["runtime_profile_id"] = input.RuntimeProfileID
+	}
+	event, err := server.tasks.AppendEvent(taskID, task.EventKindSteering, payload)
+	if err != nil {
+		writeTaskError(response, err)
+		return
+	}
+	var configVersion *task.RuntimeConfigVersion
+	if input.RuntimeProfileID != "" {
+		recorded, ok := server.recordSteeredRuntimeConfig(response, found, event.ID, input.RuntimeProfileID, input.Config)
+		if !ok {
+			return
+		}
+		configVersion = &recorded
+	}
+	writeJSON(response, http.StatusOK, struct {
+		Event                task.Event                 `json:"event"`
+		RuntimeConfigVersion *task.RuntimeConfigVersion `json:"runtime_config_version,omitempty"`
+	}{Event: event, RuntimeConfigVersion: configVersion})
 }
 
 func (server *Server) handleSteerTask(response http.ResponseWriter, request *http.Request) {
@@ -838,8 +1059,18 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 		return
 	}
 
+	activeSteer := found.Status == task.StatusRunning || found.Status == task.StatusPaused
+	if activeSteer {
+		if !server.acquireTaskControl(taskID) {
+			writeError(response, http.StatusConflict, "task control operation already active")
+			return
+		}
+		defer server.releaseTaskControl(taskID)
+	}
+
 	payload := task.EventPayload{
 		"directive": input.Directive,
+		"phase":     "steering_requested",
 	}
 	if input.SubmittedBy != "" {
 		payload["submitted_by"] = input.SubmittedBy
@@ -856,46 +1087,21 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 
 	var configVersion *task.RuntimeConfigVersion
 	if input.RuntimeProfileID != "" {
-		currentProfile, err := server.resolveTaskRuntimeProfile(found)
-		if err != nil {
-			if errors.Is(err, runtimeprofile.ErrNotFound) {
-				writeError(response, http.StatusBadRequest, "runtime profile not found")
-				return
-			}
-			writeError(response, http.StatusInternalServerError, "load runtime profile")
-			return
-		}
-		requestedProfile, err := server.profiles.Get(input.RuntimeProfileID)
-		if err != nil {
-			if errors.Is(err, runtimeprofile.ErrNotFound) {
-				writeError(response, http.StatusBadRequest, "runtime profile not found")
-				return
-			}
-			writeError(response, http.StatusInternalServerError, "load runtime profile")
-			return
-		}
-		if requestedProfile.Provider != currentProfile.Provider {
-			writeError(response, http.StatusBadRequest, "steering runtime profile must keep the same runtime provider")
-			return
-		}
-
-		config := input.Config
-		if config == nil {
-			config = map[string]any{}
-		}
-		config["runtime_profile_id"] = input.RuntimeProfileID
-		config["runner"] = found.Runner
-		config["steering_event_id"] = event.ID
-		recorded, err := server.tasks.RecordRuntimeConfig(taskID, input.RuntimeProfileID, config)
-		if err != nil {
-			writeTaskError(response, err)
+		recorded, ok := server.recordSteeredRuntimeConfig(response, found, event.ID, input.RuntimeProfileID, input.Config)
+		if !ok {
 			return
 		}
 		configVersion = &recorded
 	}
 
-	if found.Status == task.StatusRunning || found.Status == task.StatusPaused {
+	if activeSteer {
+		_, _ = server.tasks.AppendEvent(taskID, task.EventKindLifecycle, task.EventPayload{
+			"phase": "interrupting",
+		})
 		if ok := server.harness.StopAndWait(taskID, 10*time.Second); !ok {
+			_, _ = server.tasks.AppendEvent(taskID, task.EventKindLifecycle, task.EventPayload{
+				"phase": "stop_failed",
+			})
 			writeError(response, http.StatusConflict, "runtime did not stop in time")
 			return
 		}
@@ -905,8 +1111,12 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 			writeTaskError(response, err)
 			return
 		}
-		resumedTask, resumeGoal, plan, err := server.prepareResumeContinuation(refreshed)
+		resumedTask, resumeGoal, plan, err := server.prepareNativeResumeContinuation(refreshed, input.Directive)
 		if err != nil {
+			_, _ = server.tasks.AppendEvent(taskID, task.EventKindLifecycle, task.EventPayload{
+				"phase": "resume_failed",
+				"error": err.Error(),
+			})
 			server.writeResumePreparationError(response, err)
 			return
 		}
@@ -914,10 +1124,18 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 			writeError(response, http.StatusInternalServerError, "record task runtime configuration")
 			return
 		}
+		_, _ = server.tasks.AppendEvent(taskID, task.EventKindLifecycle, task.EventPayload{
+			"phase": "resuming_native",
+		})
 		if err := server.launchTaskInBackground(resumedTask, plan, resumeGoal); err != nil {
 			writeError(response, http.StatusInternalServerError, "create task continuation")
 			return
 		}
+		_, _ = server.tasks.AppendEvent(taskID, task.EventKindSteering, task.EventPayload{
+			"phase":              "steering_applied",
+			"directive":          input.Directive,
+			"requested_event_id": event.ID,
+		})
 		detailed, err := server.taskDetail(taskID)
 		if err != nil {
 			writeTaskError(response, err)
@@ -944,6 +1162,44 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 	})
 }
 
+func (server *Server) recordSteeredRuntimeConfig(response http.ResponseWriter, found task.Task, steeringEventID string, runtimeProfileID string, config map[string]any) (task.RuntimeConfigVersion, bool) {
+	currentProfile, err := server.resolveTaskRuntimeProfile(found)
+	if err != nil {
+		if errors.Is(err, runtimeprofile.ErrNotFound) {
+			writeError(response, http.StatusBadRequest, "runtime profile not found")
+			return task.RuntimeConfigVersion{}, false
+		}
+		writeError(response, http.StatusInternalServerError, "load runtime profile")
+		return task.RuntimeConfigVersion{}, false
+	}
+	requestedProfile, err := server.profiles.Get(runtimeProfileID)
+	if err != nil {
+		if errors.Is(err, runtimeprofile.ErrNotFound) {
+			writeError(response, http.StatusBadRequest, "runtime profile not found")
+			return task.RuntimeConfigVersion{}, false
+		}
+		writeError(response, http.StatusInternalServerError, "load runtime profile")
+		return task.RuntimeConfigVersion{}, false
+	}
+	if requestedProfile.Provider != currentProfile.Provider {
+		writeError(response, http.StatusBadRequest, "steering runtime profile must keep the same runtime provider")
+		return task.RuntimeConfigVersion{}, false
+	}
+
+	if config == nil {
+		config = map[string]any{}
+	}
+	config["runtime_profile_id"] = runtimeProfileID
+	config["runner"] = found.Runner
+	config["steering_event_id"] = steeringEventID
+	recorded, err := server.tasks.RecordRuntimeConfig(found.ID, runtimeProfileID, config)
+	if err != nil {
+		writeTaskError(response, err)
+		return task.RuntimeConfigVersion{}, false
+	}
+	return recorded, true
+}
+
 func (server *Server) resolveTaskRuntimeProfile(found task.Task) (runtimeprofile.Profile, error) {
 	profileID := found.RuntimeProfileID
 	versions, err := server.tasks.RuntimeConfigVersions(found.ID)
@@ -964,8 +1220,16 @@ func (server *Server) discoverNativeResumeSession(found task.Task) (string, erro
 	if err != nil {
 		return "", err
 	}
-	if profile.Provider != runtimeprofile.ProviderCodex {
-		return "", nil
+	plugin, ok := server.runtimePlugins.Get(string(profile.Provider))
+	if !ok || !plugin.NativeResume.Supported {
+		return "", fmt.Errorf("%w for provider %s", errNativeResumeUnavailable, profile.Provider)
+	}
+	latest, err := server.tasks.LatestContinuation(found.ID)
+	if err != nil {
+		return "", err
+	}
+	if latest != nil && strings.TrimSpace(latest.NativeSessionID) != "" {
+		return latest.NativeSessionID, nil
 	}
 	layout, err := runner.PrepareTaskLayout(server.runtimeRoot, found.ID, profile.Provider)
 	if err != nil {
@@ -974,6 +1238,9 @@ func (server *Server) discoverNativeResumeSession(found task.Task) (string, erro
 	metadata, err := runtime.DiscoverCodexSession(layout.ProviderHome)
 	if err != nil {
 		return "", err
+	}
+	if strings.TrimSpace(metadata.NativeSessionID) == "" {
+		return "", errNativeSessionUnavailable
 	}
 	return metadata.NativeSessionID, nil
 }

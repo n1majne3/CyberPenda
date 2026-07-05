@@ -12,6 +12,9 @@ export function getEventColor(item: TimelineItem): EventColor {
       return "result";
     case "error":
       return "error";
+    case "lifecycle":
+    case "steering":
+      return "result";
     default:
       return "result";
   }
@@ -37,6 +40,10 @@ export function getEventLabel(item: TimelineItem): string {
       return item.tool ? item.tool : "Result";
     case "error":
       return "Error";
+    case "lifecycle":
+      return "Lifecycle";
+    case "steering":
+      return "Steering";
     default:
       return "Event";
   }
@@ -73,6 +80,9 @@ export function getEventSummary(item: TimelineItem): string {
     case "tool_result":
       return item.output?.slice(0, 200) ?? "";
     case "error":
+      return item.content ?? "";
+    case "lifecycle":
+    case "steering":
       return item.content ?? "";
     default:
       return "";

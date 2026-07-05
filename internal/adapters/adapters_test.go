@@ -1,6 +1,7 @@
 package adapters_test
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -103,6 +104,39 @@ func TestBuildCodexLaunchArgsDoesNotDuplicateExplicitSkipGitRepoCheck(t *testing
 
 	if strings.Count(strings.Join(args, " "), "--skip-git-repo-check") != 1 {
 		t.Fatalf("expected one --skip-git-repo-check, got %#v", args)
+	}
+}
+
+func TestBuildNativeResumeArgsUsesRuntimePluginContract(t *testing.T) {
+	args, err := adapters.BuildNativeResumeArgs(adapters.NativeResumeArgsRequest{
+		Provider: runtimeprofile.ProviderCodex,
+		Profile: runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderCodex,
+			Fields: runtimeprofile.Fields{
+				BinaryPath: "/usr/local/bin/codex",
+				Model:      "gpt-5",
+			},
+		},
+		NativeSessionID: "sess-123",
+		ResumedMessage:  "focus admin",
+	})
+	if err != nil {
+		t.Fatalf("build native resume args: %v", err)
+	}
+	want := []string{"/usr/local/bin/codex", "--model", "gpt-5", "resume", "sess-123", "focus admin"}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("unexpected native resume args:\nwant %#v\ngot  %#v", want, args)
+	}
+}
+
+func TestBuildNativeResumeArgsRejectsUnsupportedRuntime(t *testing.T) {
+	_, err := adapters.BuildNativeResumeArgs(adapters.NativeResumeArgsRequest{
+		Provider:        runtimeprofile.ProviderClaudeCode,
+		Profile:         runtimeprofile.Profile{Provider: runtimeprofile.ProviderClaudeCode},
+		NativeSessionID: "sess-123",
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("expected unsupported native resume error, got %v", err)
 	}
 }
 

@@ -109,6 +109,18 @@ type TaskContinuation struct {
 	EndedAt           *time.Time `json:"ended_at,omitempty"`
 }
 
+type RuntimeControls struct {
+	NativeResumeAvailable   bool   `json:"native_resume_available"`
+	NativeResumeReason      string `json:"native_resume_reason,omitempty"`
+	HandoffResumeAvailable  bool   `json:"handoff_resume_available"`
+	QueueSteerAvailable     bool   `json:"queue_steer_available"`
+	InterruptSteerAvailable bool   `json:"interrupt_steer_available"`
+	InterruptSteerReason    string `json:"interrupt_steer_reason,omitempty"`
+	NativeSessionCaptured   bool   `json:"native_session_captured"`
+	SameRuntimeProviderOnly bool   `json:"same_runtime_provider_only"`
+	RuntimeProvider         string `json:"runtime_provider,omitempty"`
+}
+
 type SummaryVersion struct {
 	ID          string    `json:"id"`
 	TaskID      string    `json:"task_id"`
@@ -128,6 +140,7 @@ type Task struct {
 	RuntimeProfileID   string            `json:"runtime_profile_id"`
 	RunControls        RunControls       `json:"run_controls"`
 	ScopeSnapshot      ScopeSnapshot     `json:"scope_snapshot"`
+	RuntimeControls    RuntimeControls   `json:"runtime_controls"`
 	ActiveContinuation *TaskContinuation `json:"active_continuation,omitempty"`
 	LatestContinuation *TaskContinuation `json:"latest_continuation,omitempty"`
 	CreatedAt          time.Time         `json:"created_at"`

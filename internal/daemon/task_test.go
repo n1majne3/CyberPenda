@@ -116,6 +116,7 @@ func TestGetTaskIncludesLatestContinuation(t *testing.T) {
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"sandbox"
 	}`)
+	waitForTaskStatus(t, server, projectID, taskID, "completed")
 
 	resp := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID, nil)
@@ -125,7 +126,15 @@ func TestGetTaskIncludesLatestContinuation(t *testing.T) {
 	}
 
 	var found struct {
-		ID                 string `json:"id"`
+		ID              string `json:"id"`
+		RuntimeControls struct {
+			NativeResumeAvailable   bool   `json:"native_resume_available"`
+			NativeResumeReason      string `json:"native_resume_reason"`
+			HandoffResumeAvailable  bool   `json:"handoff_resume_available"`
+			QueueSteerAvailable     bool   `json:"queue_steer_available"`
+			SameRuntimeProviderOnly bool   `json:"same_runtime_provider_only"`
+			RuntimeProvider         string `json:"runtime_provider"`
+		} `json:"runtime_controls"`
 		LatestContinuation *struct {
 			Number           int    `json:"number"`
 			RuntimeProfileID string `json:"runtime_profile_id"`
@@ -146,6 +155,18 @@ func TestGetTaskIncludesLatestContinuation(t *testing.T) {
 	}
 	if found.LatestContinuation.RuntimeProvider != "fake" {
 		t.Fatalf("expected latest continuation provider fake, got %q", found.LatestContinuation.RuntimeProvider)
+	}
+	if found.RuntimeControls.NativeResumeAvailable {
+		t.Fatal("expected fake runtime native resume to be unavailable")
+	}
+	if !strings.Contains(found.RuntimeControls.NativeResumeReason, "unsupported") {
+		t.Fatalf("expected unsupported native resume reason, got %q", found.RuntimeControls.NativeResumeReason)
+	}
+	if !found.RuntimeControls.HandoffResumeAvailable || !found.RuntimeControls.QueueSteerAvailable {
+		t.Fatalf("expected handoff resume and queue steer available, got %#v", found.RuntimeControls)
+	}
+	if !found.RuntimeControls.SameRuntimeProviderOnly || found.RuntimeControls.RuntimeProvider != "fake" {
+		t.Fatalf("expected same-provider fake controls, got %#v", found.RuntimeControls)
 	}
 }
 
@@ -388,8 +409,17 @@ func TestLaunchTaskReturnsBeforeRuntimeProcessCompletes(t *testing.T) {
 }
 
 func TestLaunchTaskWrapsProviderCommandInSandboxRunner(t *testing.T) {
-	containerCLI := filepath.Join(t.TempDir(), "fake-docker")
-	if err := os.WriteFile(containerCLI, []byte("#!/bin/sh\necho sandbox-command:$*\n"), 0o700); err != nil {
+	dir := t.TempDir()
+	createLog := filepath.Join(dir, "create.log")
+	containerCLI := filepath.Join(dir, "fake-docker")
+	script := "#!/bin/sh\n" +
+		"case \"$1\" in\n" +
+		"  create) echo \"$*\" > " + shellQuote(createLog) + "; echo ctr-1 ;;\n" +
+		"  start) echo sandbox-command:$(cat " + shellQuote(createLog) + ") ;;\n" +
+		"  rm) exit 0 ;;\n" +
+		"  *) exit 0 ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(containerCLI, []byte(script), 0o700); err != nil {
 		t.Fatalf("write fake container cli: %v", err)
 	}
 	server, err := daemon.NewServer(daemon.Config{
@@ -419,7 +449,7 @@ func TestLaunchTaskWrapsProviderCommandInSandboxRunner(t *testing.T) {
 		"runner":"sandbox"
 	}`)
 
-	waitForEventText(t, server, projectID, taskID, "sandbox-command:run --rm -i")
+	waitForEventText(t, server, projectID, taskID, "sandbox-command:create -i")
 	events := getTaskEvents(t, server, projectID, taskID)
 	var sawSandboxCommand bool
 	for _, event := range events {
@@ -428,7 +458,7 @@ func TestLaunchTaskWrapsProviderCommandInSandboxRunner(t *testing.T) {
 		}
 		payload := event["payload"].(map[string]any)
 		text, _ := payload["text"].(string)
-		if strings.Contains(text, "sandbox-command:run --rm -i") &&
+		if strings.Contains(text, "sandbox-command:create -i") &&
 			strings.Contains(text, "pentest-kali:test codex exec --model gpt-test") &&
 			strings.Contains(text, "enumerate example.com") {
 			sawSandboxCommand = true
@@ -447,6 +477,7 @@ func TestSandboxResumeRebuildsContainerWithPersistentTaskMountAndRuntimeHome(t *
 	containerCLI := filepath.Join(dir, "fake-docker")
 	script := "#!/bin/sh\n" +
 		"echo \"$*\" >> " + shellQuote(logPath) + "\n" +
+		"if [ \"$1\" != \"create\" ]; then exit 0; fi\n" +
 		"cidfile=\"\"\n" +
 		"prev=\"\"\n" +
 		"for arg in \"$@\"; do\n" +
@@ -457,7 +488,7 @@ func TestSandboxResumeRebuildsContainerWithPersistentTaskMountAndRuntimeHome(t *
 		"count=$((count + 1))\n" +
 		"echo \"$count\" > " + shellQuote(countPath) + "\n" +
 		"if [ -n \"$cidfile\" ]; then echo \"ctr-$count\" > \"$cidfile\"; fi\n" +
-		"echo sandbox-command:$*\n"
+		"echo ctr-$count\n"
 	if err := os.WriteFile(containerCLI, []byte(script), 0o700); err != nil {
 		t.Fatalf("write fake container cli: %v", err)
 	}
@@ -482,7 +513,7 @@ func TestSandboxResumeRebuildsContainerWithPersistentTaskMountAndRuntimeHome(t *
 	waitForTaskStatus(t, server, projectID, taskID, "completed")
 
 	resp := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/resume", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/resume/handoff", nil)
 	server.ServeHTTP(resp, req)
 	if resp.Code != http.StatusAccepted {
 		t.Fatalf("expected resume status 202, got %d with body %s", resp.Code, resp.Body.String())
@@ -495,7 +526,7 @@ func TestSandboxResumeRebuildsContainerWithPersistentTaskMountAndRuntimeHome(t *
 	}
 	logText := string(rawLog)
 	taskMount := filepath.Join(runtimeRoot, taskID) + ":/task"
-	if got := strings.Count(logText, "run --rm -i --cidfile"); got != 2 {
+	if got := strings.Count(logText, "create -i --cidfile"); got != 2 {
 		t.Fatalf("expected two sandbox container launches, got %d in log:\n%s", got, logText)
 	}
 	if got := strings.Count(logText, taskMount); got != 2 {
@@ -503,7 +534,7 @@ func TestSandboxResumeRebuildsContainerWithPersistentTaskMountAndRuntimeHome(t *
 	}
 	var launchLines []string
 	for _, line := range strings.Split(strings.TrimSpace(logText), "\n") {
-		if strings.HasPrefix(line, "run --rm") {
+		if strings.HasPrefix(line, "create -i") {
 			launchLines = append(launchLines, line)
 		}
 	}
@@ -753,6 +784,7 @@ func TestTaskRoutesRejectUnknownProject(t *testing.T) {
 		{"task events", http.MethodGet, "/api/projects/" + bogus + "/tasks/anything/events", ""},
 		{"stop task", http.MethodPost, "/api/projects/" + bogus + "/tasks/anything/stop", ""},
 		{"steer task", http.MethodPost, "/api/projects/" + bogus + "/tasks/anything/steer", `{"directive":"focus"}`},
+		{"resume handoff task", http.MethodPost, "/api/projects/" + bogus + "/tasks/anything/resume/handoff", ""},
 		{"task continuation", http.MethodGet, "/api/projects/" + bogus + "/tasks/anything/continuation", ""},
 		{"put task summary", http.MethodPut, "/api/projects/" + bogus + "/tasks/anything/summary", `{"summary":"s"}`},
 		{"get task summary", http.MethodGet, "/api/projects/" + bogus + "/tasks/anything/summary", ""},
@@ -815,6 +847,20 @@ func waitForEventText(t *testing.T, server interface {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for event text %q", want)
+}
+
+func waitForDockerLogText(t *testing.T, logPath, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		raw, err := os.ReadFile(logPath)
+		if err == nil && strings.Contains(string(raw), want) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	raw, _ := os.ReadFile(logPath)
+	t.Fatalf("timed out waiting for docker log text %q in\n%s", want, string(raw))
 }
 
 func hasTranscriptEntry(entries []map[string]any, kind, role, text string) bool {
@@ -985,7 +1031,7 @@ func TestResumeTaskEnrichesPromptWithFindingsAndProgressFacts(t *testing.T) {
 	}`)
 
 	resp := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/resume", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/resume/handoff", nil)
 	server.ServeHTTP(resp, req)
 	if resp.Code != http.StatusAccepted {
 		t.Fatalf("expected resume status 202, got %d with body %s", resp.Code, resp.Body.String())
@@ -1070,7 +1116,7 @@ func TestResumeTaskUsesSteeredRuntimeProfileWhenProviderMatches(t *testing.T) {
 	}
 
 	resp := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/resume", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/resume/handoff", nil)
 	server.ServeHTTP(resp, req)
 	if resp.Code != http.StatusAccepted {
 		t.Fatalf("expected resume status 202, got %d with body %s", resp.Code, resp.Body.String())
@@ -1089,6 +1135,60 @@ func TestResumeTaskUsesSteeredRuntimeProfileWhenProviderMatches(t *testing.T) {
 	}
 	if resumed.LatestContinuation.RuntimeProfileID != profileB {
 		t.Fatalf("expected resumed continuation profile %q, got %q", profileB, resumed.LatestContinuation.RuntimeProfileID)
+	}
+	waitForTaskStatus(t, server, projectID, taskID, "completed")
+}
+
+func TestQueueSteerRecordsSameProviderRuntimeProfileForNextContinuation(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	profileA := createRuntimeProfile(t, server, `{"name":"Fake A","provider":"fake"}`)
+	profileB := createRuntimeProfile(t, server, `{"name":"Fake B","provider":"fake"}`)
+	taskID := createTask(t, server, projectID, `{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":`+quoteJSON(profileA)+`,
+		"runner":"sandbox"
+	}`)
+	waitForTaskStatus(t, server, projectID, taskID, "completed")
+
+	steerResp := httptest.NewRecorder()
+	steerReq := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/steer/queue", bytes.NewReader([]byte(`{
+		"directive":"use profile b next",
+		"runtime_profile_id":`+quoteJSON(profileB)+`
+	}`)))
+	steerReq.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(steerResp, steerReq)
+	if steerResp.Code != http.StatusOK {
+		t.Fatalf("expected queue steer status 200, got %d with body %s", steerResp.Code, steerResp.Body.String())
+	}
+	var queued struct {
+		RuntimeConfigVersion *struct {
+			RuntimeProfileID string `json:"runtime_profile_id"`
+		} `json:"runtime_config_version"`
+	}
+	if err := json.NewDecoder(steerResp.Body).Decode(&queued); err != nil {
+		t.Fatalf("decode queue steer: %v", err)
+	}
+	if queued.RuntimeConfigVersion == nil || queued.RuntimeConfigVersion.RuntimeProfileID != profileB {
+		t.Fatalf("expected queued runtime profile %q, got %#v", profileB, queued.RuntimeConfigVersion)
+	}
+
+	resumeResp := httptest.NewRecorder()
+	resumeReq := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/resume/handoff", nil)
+	server.ServeHTTP(resumeResp, resumeReq)
+	if resumeResp.Code != http.StatusAccepted {
+		t.Fatalf("expected resume status 202, got %d with body %s", resumeResp.Code, resumeResp.Body.String())
+	}
+	var resumed struct {
+		LatestContinuation *struct {
+			RuntimeProfileID string `json:"runtime_profile_id"`
+		} `json:"latest_continuation"`
+	}
+	if err := json.NewDecoder(resumeResp.Body).Decode(&resumed); err != nil {
+		t.Fatalf("decode resumed task: %v", err)
+	}
+	if resumed.LatestContinuation == nil || resumed.LatestContinuation.RuntimeProfileID != profileB {
+		t.Fatalf("expected resumed continuation profile %q, got %#v", profileB, resumed.LatestContinuation)
 	}
 	waitForTaskStatus(t, server, projectID, taskID, "completed")
 }
@@ -1140,6 +1240,44 @@ func TestResumeTaskUsesCodexNativeResumeWhenSessionExists(t *testing.T) {
 	waitForTaskStatus(t, server, projectID, taskID, "completed")
 }
 
+func TestResumeTaskFailsWhenNativeSessionIsMissing(t *testing.T) {
+	runtimeRoot := t.TempDir()
+	server := newDaemonWithConfig(t, daemon.Config{
+		Version:              "test-version",
+		DBPath:               filepath.Join(t.TempDir(), "pentest.db"),
+		RuntimeRoot:          runtimeRoot,
+		DisableBuiltinSkills: true,
+	})
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+
+	binary := filepath.Join(t.TempDir(), "codex-test")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\necho codex-provider:$*\n"), 0o700); err != nil {
+		t.Fatalf("write provider binary: %v", err)
+	}
+	profileID := createLocalRuntimeProfile(t, server, "Codex Test", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		BinaryPath: binary,
+		Model:      "gpt-test",
+	})
+
+	taskID := createTask(t, server, projectID, `{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
+		"runner":"host",
+		"run_controls":{"host_activated":true}
+	}`)
+	waitForTaskStatus(t, server, projectID, taskID, "completed")
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/resume", nil)
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusConflict {
+		t.Fatalf("expected resume status 409 without native session, got %d with body %s", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), "native session") {
+		t.Fatalf("expected native session error, got %s", resp.Body.String())
+	}
+}
+
 func TestSteerTaskInterruptsActiveRunAndLaunchesResumedContinuation(t *testing.T) {
 	runtimeRoot := t.TempDir()
 	server := newDaemonWithConfig(t, daemon.Config{
@@ -1171,7 +1309,7 @@ func TestSteerTaskInterruptsActiveRunAndLaunchesResumedContinuation(t *testing.T
 		"runner":"host",
 		"run_controls":{"host_activated":true}
 	}`)
-	waitForEventText(t, server, projectID, taskID, "codex-provider:run")
+	waitForEventText(t, server, projectID, taskID, "codex-provider:exec")
 
 	sessionPath := filepath.Join(runtimeRoot, taskID, "runtime-home", "codex", "sessions", "2026", "07", "04", "rollout-live.jsonl")
 	if err := os.MkdirAll(filepath.Dir(sessionPath), 0o700); err != nil {
@@ -1201,16 +1339,25 @@ func TestSandboxSteerConfirmsContainerExitBeforeNativeResume(t *testing.T) {
 	dir := t.TempDir()
 	runtimeRoot := filepath.Join(dir, "runtime-root")
 	dockerLog := filepath.Join(dir, "docker.log")
-	inspectLog := filepath.Join(dir, "inspect.log")
 	countPath := filepath.Join(dir, "docker-count")
+	stoppedPath := filepath.Join(dir, "stopped")
 	containerCLI := filepath.Join(dir, "fake-docker")
 	script := "#!/bin/sh\n" +
-		"if [ \"$1\" = \"inspect\" ]; then\n" +
-		"  echo \"$*\" >> " + shellQuote(inspectLog) + "\n" +
-		"  echo false\n" +
+		"echo \"$*\" >> " + shellQuote(dockerLog) + "\n" +
+		"if [ \"$1\" = \"start\" ]; then\n" +
+		"  id=\"$3\"\n" +
+		"  create_file=" + shellQuote(dir) + "/$id.create\n" +
+		"  echo sandbox-command:$(cat \"$create_file\")\n" +
+		"  case \"$(cat \"$create_file\")\" in\n" +
+		"    *resume*) exit 0 ;;\n" +
+		"  esac\n" +
+		"  while [ ! -f " + shellQuote(stoppedPath) + " ]; do sleep 0.05; done\n" +
 		"  exit 0\n" +
 		"fi\n" +
-		"echo \"$*\" >> " + shellQuote(dockerLog) + "\n" +
+		"if [ \"$1\" = \"stop\" ]; then touch " + shellQuote(stoppedPath) + "; exit 0; fi\n" +
+		"if [ \"$1\" = \"kill\" ]; then touch " + shellQuote(stoppedPath) + "; exit 0; fi\n" +
+		"if [ \"$1\" = \"rm\" ]; then exit 0; fi\n" +
+		"if [ \"$1\" != \"create\" ]; then exit 1; fi\n" +
 		"cidfile=\"\"\n" +
 		"prev=\"\"\n" +
 		"for arg in \"$@\"; do\n" +
@@ -1220,12 +1367,9 @@ func TestSandboxSteerConfirmsContainerExitBeforeNativeResume(t *testing.T) {
 		"count=$(cat " + shellQuote(countPath) + " 2>/dev/null || echo 0)\n" +
 		"count=$((count + 1))\n" +
 		"echo \"$count\" > " + shellQuote(countPath) + "\n" +
+		"echo \"$*\" > " + shellQuote(dir) + "/ctr-$count.create\n" +
 		"if [ -n \"$cidfile\" ]; then echo \"ctr-$count\" > \"$cidfile\"; fi\n" +
-		"echo sandbox-command:$*\n" +
-		"case \"$*\" in\n" +
-		"  *resume*) exit 0 ;;\n" +
-		"esac\n" +
-		"exec sleep 5\n"
+		"echo ctr-$count\n"
 	if err := os.WriteFile(containerCLI, []byte(script), 0o700); err != nil {
 		t.Fatalf("write fake container cli: %v", err)
 	}
@@ -1247,7 +1391,7 @@ func TestSandboxSteerConfirmsContainerExitBeforeNativeResume(t *testing.T) {
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"sandbox"
 	}`)
-	waitForEventText(t, server, projectID, taskID, "sandbox-command:run")
+	waitForEventText(t, server, projectID, taskID, "sandbox-command:create")
 
 	sessionPath := filepath.Join(runtimeRoot, taskID, "runtime-home", "codex", "sessions", "2026", "07", "04", "sandbox-live.jsonl")
 	if err := os.MkdirAll(filepath.Dir(sessionPath), 0o700); err != nil {
@@ -1268,13 +1412,7 @@ func TestSandboxSteerConfirmsContainerExitBeforeNativeResume(t *testing.T) {
 		t.Fatalf("expected steer interrupt status 202, got %d with body %s", resp.Code, resp.Body.String())
 	}
 
-	inspectRaw, err := os.ReadFile(inspectLog)
-	if err != nil {
-		t.Fatalf("read inspect log: %v", err)
-	}
-	if !strings.Contains(string(inspectRaw), "inspect -f {{.State.Running}} ctr-1") {
-		t.Fatalf("expected steer to inspect stopped container ctr-1, got %s", string(inspectRaw))
-	}
+	waitForDockerLogText(t, dockerLog, "stop ctr-1")
 	waitForEventText(t, server, projectID, taskID, "resume sess-sandbox")
 	waitForEventText(t, server, projectID, taskID, "focus admin.example.com")
 	waitForTaskStatus(t, server, projectID, taskID, "completed")
@@ -1283,7 +1421,7 @@ func TestSandboxSteerConfirmsContainerExitBeforeNativeResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read docker log: %v", err)
 	}
-	if got := strings.Count(string(dockerRaw), "run --rm -i --cidfile"); got != 2 {
+	if got := strings.Count(string(dockerRaw), "create -i --cidfile"); got != 2 {
 		t.Fatalf("expected initial and resumed sandbox launches, got %d in log:\n%s", got, string(dockerRaw))
 	}
 }

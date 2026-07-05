@@ -1,4 +1,4 @@
-export type TimelineItemType = "tool_use" | "tool_result" | "thinking" | "text" | "error";
+export type TimelineItemType = "tool_use" | "tool_result" | "thinking" | "text" | "error" | "lifecycle" | "steering";
 
 export interface TimelineItem {
   seq: number;
