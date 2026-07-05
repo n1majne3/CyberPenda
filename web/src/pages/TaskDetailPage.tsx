@@ -1,11 +1,13 @@
-import { useEffect, useState, useRef, type RefObject } from "react";
+import { useEffect, useMemo, useState, useRef, type RefObject } from "react";
 import { useParams, Link } from "react-router-dom";
 import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, FileText, Shield, ChevronRight, Wrench, User, Bot, ArrowDown, ArrowUp } from "lucide-react";
-import { apiGet, apiPost, type Task, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
+import { apiGet, apiPost, type ModelProvider, type RuntimePlugin, type RuntimeProfile, type Task, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Card, Input, Badge } from "@/components/ui";
 import { BackLink, PageContainer } from "@/components/shared";
 import { AgentTranscriptView } from "@/components/task-transcript/AgentTranscriptView";
 import { collapsedTranscriptTitle } from "./taskDetailView";
+import { selectableModelProviders } from "./runtimeProfileForm";
+import { modelsForProvider } from "./taskLaunchForm";
 
 const ACTIVE = new Set(["running", "paused"]);
 
@@ -18,8 +20,11 @@ export function TaskDetailPage() {
   const [autoFollow, setAutoFollow] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [steering, setSteering] = useState("");
-  const [steeringProfile, setSteeringProfile] = useState("");
-  const [profiles, setProfiles] = useState<{ id: string; name: string; provider?: string }[]>([]);
+  const [continuationModelProvider, setContinuationModelProvider] = useState("");
+  const [continuationModelOverride, setContinuationModelOverride] = useState("");
+  const [profiles, setProfiles] = useState<RuntimeProfile[]>([]);
+  const [modelProviders, setModelProviders] = useState<ModelProvider[]>([]);
+  const [runtimePlugins, setRuntimePlugins] = useState<RuntimePlugin[]>([]);
   const pageRef = useRef<HTMLDivElement>(null);
   const timelineEnd = useRef<HTMLDivElement>(null);
   const autoFollowRef = useRef(true);
@@ -48,7 +53,11 @@ export function TaskDetailPage() {
     // Initial load on mount/task change. loadAll() is reused by the poll loop
     // and event handlers.
     loadAll();
-    apiGet<{ profiles: { id: string; name: string }[] }>("/api/runtime-profiles").then((d) => setProfiles(d.profiles ?? [])).catch(() => {});
+    Promise.all([
+      apiGet<{ profiles: RuntimeProfile[] }>("/api/runtime-profiles").then((d) => setProfiles(d.profiles ?? [])),
+      apiGet<{ providers: ModelProvider[] }>("/api/model-providers").then((d) => setModelProviders(d.providers ?? [])),
+      apiGet<{ plugins: RuntimePlugin[] }>("/api/runtime-plugins").then((d) => setRuntimePlugins(d.plugins ?? [])),
+    ]).catch(() => {});
   }, [projectId, taskId]);
   /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
 
@@ -93,6 +102,37 @@ export function TaskDetailPage() {
     }
   }, [activeView, timeline, transcript]);
 
+  const currentProfileRuntimeProvider = profiles.find((profile) => profile.id === task?.runtime_profile_id)?.provider;
+  const currentRuntimeProvider =
+    task?.runtime_controls?.runtime_provider ??
+    task?.active_continuation?.runtime_provider ??
+    task?.latest_continuation?.runtime_provider ??
+    currentProfileRuntimeProvider;
+  const runtimePlugin = runtimePlugins.find((plugin) => plugin.id === currentRuntimeProvider);
+  const continuationModelProviders = selectableModelProviders(
+    modelProviders,
+    runtimePlugin,
+    continuationModelProvider,
+  );
+  const selectedContinuationModelProvider =
+    continuationModelProviders.find((provider) => provider.id === continuationModelProvider) ??
+    modelProviders.find((provider) => provider.id === continuationModelProvider);
+  const continuationModelOptions = useMemo(
+    () => modelsForProvider(selectedContinuationModelProvider),
+    [selectedContinuationModelProvider],
+  );
+
+  useEffect(() => {
+    if (!continuationModelProvider) {
+      if (continuationModelOverride) setContinuationModelOverride("");
+      return;
+    }
+    if (continuationModelOverride && continuationModelOptions.includes(continuationModelOverride)) {
+      return;
+    }
+    setContinuationModelOverride(continuationModelOptions[0] ?? "");
+  }, [continuationModelProvider, continuationModelOptions, continuationModelOverride]);
+
   function scrollToLatest() {
     const container = findScrollContainer(pageRef.current);
     autoFollowRef.current = true;
@@ -118,7 +158,8 @@ export function TaskDetailPage() {
 
   async function resumeNative() {
     try {
-      await apiPost(`${base}/resume`, {});
+      await apiPost(`${base}/resume`, continuationModelPayload());
+      resetContinuationModelSelection();
       loadAll();
     } catch (e) {
       setError((e as Error).message);
@@ -138,10 +179,10 @@ export function TaskDetailPage() {
     try {
       await apiPost(`${base}/steer/queue`, {
         directive: steering,
-        runtime_profile_id: steeringProfile || undefined,
+        ...continuationModelPayload(),
       });
       setSteering("");
-      setSteeringProfile("");
+      resetContinuationModelSelection();
       loadAll();
     } catch (e) {
       setError((e as Error).message);
@@ -152,14 +193,37 @@ export function TaskDetailPage() {
     try {
       await apiPost(`${base}/steer`, {
         directive: steering,
-        runtime_profile_id: steeringProfile || undefined,
+        ...continuationModelPayload(),
       });
       setSteering("");
-      setSteeringProfile("");
+      resetContinuationModelSelection();
       loadAll();
     } catch (e) {
       setError((e as Error).message);
     }
+  }
+
+  function continuationModelPayload() {
+    const providerID = continuationModelProvider.trim();
+    if (!providerID) return {};
+    const payload: { model_provider_id: string; model_override?: string } = {
+      model_provider_id: providerID,
+    };
+    const modelOverride = continuationModelOverride.trim();
+    if (modelOverride) payload.model_override = modelOverride;
+    return payload;
+  }
+
+  function resetContinuationModelSelection() {
+    setContinuationModelProvider("");
+    setContinuationModelOverride("");
+  }
+
+  function selectContinuationModelProvider(providerID: string) {
+    setContinuationModelProvider(providerID);
+    const provider = continuationModelProviders.find((item) => item.id === providerID) ??
+      modelProviders.find((item) => item.id === providerID);
+    setContinuationModelOverride(modelsForProvider(provider)[0] ?? "");
   }
 
   if (error) return <PageContainer className="text-destructive">{error}</PageContainer>;
@@ -173,7 +237,6 @@ export function TaskDetailPage() {
   const nativeResumeReason = controls?.native_resume_reason ?? "Native resume unavailable";
   const interruptSteerReason = controls?.interrupt_steer_reason ?? nativeResumeReason;
   const running = ACTIVE.has(task.status);
-  const sameRuntimeProfiles = profiles.filter((profile) => !controls?.runtime_provider || profile.provider === controls.runtime_provider);
 
   return (
     <PageContainer ref={pageRef} className="max-w-4xl">
@@ -240,13 +303,26 @@ export function TaskDetailPage() {
         <div className="flex flex-wrap gap-2 items-center">
           <select
             className="h-8 max-w-xs rounded-md border border-input bg-background px-2 text-sm"
-            value={steeringProfile}
-            onChange={(e) => setSteeringProfile(e.target.value)}
-            aria-label="Steering runtime profile"
+            value={continuationModelProvider}
+            onChange={(e) => selectContinuationModelProvider(e.target.value)}
+            aria-label="Continuation model provider"
           >
-            <option value="">Keep current model</option>
-            {sameRuntimeProfiles.map((profile) => (
-              <option key={profile.id} value={profile.id}>Use {profile.name}</option>
+            <option value="">Keep current model provider</option>
+            {continuationModelProviders.map((provider) => (
+              <option key={provider.id} value={provider.id}>{provider.name}</option>
+            ))}
+          </select>
+          <select
+            className="h-8 max-w-xs rounded-md border border-input bg-background px-2 text-sm disabled:opacity-60"
+            value={continuationModelOverride}
+            onChange={(e) => setContinuationModelOverride(e.target.value)}
+            aria-label="Continuation model"
+            disabled={!continuationModelProvider || continuationModelOptions.length === 0}
+          >
+            {continuationModelOptions.length === 0 ? (
+              <option value="">Default model</option>
+            ) : continuationModelOptions.map((model) => (
+              <option key={model} value={model}>{model}</option>
             ))}
           </select>
           <Button size="sm" variant="outline" onClick={queueSteer} disabled={!steering.trim() || !queueSteerAvailable}>

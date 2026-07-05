@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -31,6 +32,18 @@ var (
 	errNativeResumeUnavailable  = errors.New("native resume unavailable")
 	errNativeSessionUnavailable = errors.New("native session unavailable")
 )
+
+type taskContinuationSelectionInput struct {
+	RuntimeProfileID string         `json:"runtime_profile_id"`
+	ModelProviderID  string         `json:"model_provider_id"`
+	ModelOverride    string         `json:"model_override"`
+	SubmittedBy      string         `json:"submitted_by"`
+	Config           map[string]any `json:"config"`
+}
+
+func (input taskContinuationSelectionInput) hasSelection() bool {
+	return strings.TrimSpace(input.RuntimeProfileID) != "" || strings.TrimSpace(input.ModelProviderID) != ""
+}
 
 func (server *Server) handleCreateTask(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
@@ -742,11 +755,27 @@ func (server *Server) handleResumeTask(response http.ResponseWriter, request *ht
 		writeError(response, http.StatusConflict, "task is already running")
 		return
 	}
+	var input taskContinuationSelectionInput
+	if err := decodeOptionalJSON(request, &input); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
 	if !server.acquireTaskControl(taskID) {
 		writeError(response, http.StatusConflict, "task control operation already active")
 		return
 	}
 	defer server.releaseTaskControl(taskID)
+	if input.hasSelection() {
+		if _, ok := server.recordSelectedRuntimeConfig(response, found, "", input); !ok {
+			return
+		}
+		refreshed, err := server.tasks.Get(taskID)
+		if err != nil {
+			writeTaskError(response, err)
+			return
+		}
+		found = refreshed
+	}
 	found, resumeGoal, plan, err := server.prepareNativeResumeContinuation(found, "")
 	if err != nil {
 		server.writeResumePreparationError(response, err)
@@ -980,10 +1009,8 @@ func (server *Server) handleQueueSteerTask(response http.ResponseWriter, request
 		return
 	}
 	var input struct {
-		Directive        string         `json:"directive"`
-		RuntimeProfileID string         `json:"runtime_profile_id"`
-		SubmittedBy      string         `json:"submitted_by"`
-		Config           map[string]any `json:"config"`
+		Directive string `json:"directive"`
+		taskContinuationSelectionInput
 	}
 	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
 		writeError(response, http.StatusBadRequest, "invalid JSON body")
@@ -1004,14 +1031,20 @@ func (server *Server) handleQueueSteerTask(response http.ResponseWriter, request
 	if input.RuntimeProfileID != "" {
 		payload["runtime_profile_id"] = input.RuntimeProfileID
 	}
+	if input.ModelProviderID != "" {
+		payload["model_provider_id"] = input.ModelProviderID
+	}
+	if input.ModelOverride != "" {
+		payload["model_override"] = input.ModelOverride
+	}
 	event, err := server.tasks.AppendEvent(taskID, task.EventKindSteering, payload)
 	if err != nil {
 		writeTaskError(response, err)
 		return
 	}
 	var configVersion *task.RuntimeConfigVersion
-	if input.RuntimeProfileID != "" {
-		recorded, ok := server.recordSteeredRuntimeConfig(response, found, event.ID, input.RuntimeProfileID, input.Config)
+	if input.hasSelection() {
+		recorded, ok := server.recordSelectedRuntimeConfig(response, found, event.ID, input.taskContinuationSelectionInput)
 		if !ok {
 			return
 		}
@@ -1045,10 +1078,8 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 	}
 
 	var input struct {
-		Directive        string         `json:"directive"`
-		RuntimeProfileID string         `json:"runtime_profile_id"`
-		SubmittedBy      string         `json:"submitted_by"`
-		Config           map[string]any `json:"config"`
+		Directive string `json:"directive"`
+		taskContinuationSelectionInput
 	}
 	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
 		writeError(response, http.StatusBadRequest, "invalid JSON body")
@@ -1078,6 +1109,12 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 	if input.RuntimeProfileID != "" {
 		payload["runtime_profile_id"] = input.RuntimeProfileID
 	}
+	if input.ModelProviderID != "" {
+		payload["model_provider_id"] = input.ModelProviderID
+	}
+	if input.ModelOverride != "" {
+		payload["model_override"] = input.ModelOverride
+	}
 
 	event, err := server.tasks.AppendEvent(taskID, task.EventKindSteering, payload)
 	if err != nil {
@@ -1086,8 +1123,8 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 	}
 
 	var configVersion *task.RuntimeConfigVersion
-	if input.RuntimeProfileID != "" {
-		recorded, ok := server.recordSteeredRuntimeConfig(response, found, event.ID, input.RuntimeProfileID, input.Config)
+	if input.hasSelection() {
+		recorded, ok := server.recordSelectedRuntimeConfig(response, found, event.ID, input.taskContinuationSelectionInput)
 		if !ok {
 			return
 		}
@@ -1162,42 +1199,123 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 	})
 }
 
-func (server *Server) recordSteeredRuntimeConfig(response http.ResponseWriter, found task.Task, steeringEventID string, runtimeProfileID string, config map[string]any) (task.RuntimeConfigVersion, bool) {
-	currentProfile, err := server.resolveTaskRuntimeProfile(found)
-	if err != nil {
-		if errors.Is(err, runtimeprofile.ErrNotFound) {
-			writeError(response, http.StatusBadRequest, "runtime profile not found")
-			return task.RuntimeConfigVersion{}, false
-		}
-		writeError(response, http.StatusInternalServerError, "load runtime profile")
-		return task.RuntimeConfigVersion{}, false
+func decodeOptionalJSON(request *http.Request, target any) error {
+	if request.Body == nil {
+		return nil
 	}
-	requestedProfile, err := server.profiles.Get(runtimeProfileID)
-	if err != nil {
-		if errors.Is(err, runtimeprofile.ErrNotFound) {
-			writeError(response, http.StatusBadRequest, "runtime profile not found")
-			return task.RuntimeConfigVersion{}, false
-		}
-		writeError(response, http.StatusInternalServerError, "load runtime profile")
-		return task.RuntimeConfigVersion{}, false
+	err := json.NewDecoder(request.Body).Decode(target)
+	if errors.Is(err, io.EOF) {
+		return nil
 	}
-	if requestedProfile.Provider != currentProfile.Provider {
-		writeError(response, http.StatusBadRequest, "steering runtime profile must keep the same runtime provider")
+	return err
+}
+
+func (server *Server) recordSelectedRuntimeConfig(response http.ResponseWriter, found task.Task, steeringEventID string, input taskContinuationSelectionInput) (task.RuntimeConfigVersion, bool) {
+	requestedProfile, ok := server.resolveTaskContinuationRuntimeProfile(response, found, input)
+	if !ok {
 		return task.RuntimeConfigVersion{}, false
 	}
 
+	config := input.Config
 	if config == nil {
 		config = map[string]any{}
 	}
-	config["runtime_profile_id"] = runtimeProfileID
+	config["runtime_profile_id"] = requestedProfile.ID
 	config["runner"] = found.Runner
-	config["steering_event_id"] = steeringEventID
-	recorded, err := server.tasks.RecordRuntimeConfig(found.ID, runtimeProfileID, config)
+	if steeringEventID != "" {
+		config["steering_event_id"] = steeringEventID
+	}
+	if requestedProfile.Fields.ModelProviderID != "" {
+		config["model_provider_id"] = requestedProfile.Fields.ModelProviderID
+	}
+	if requestedProfile.Fields.ModelOverride != "" {
+		config["model_override"] = requestedProfile.Fields.ModelOverride
+	}
+	recorded, err := server.tasks.RecordRuntimeConfig(found.ID, requestedProfile.ID, config)
 	if err != nil {
 		writeTaskError(response, err)
 		return task.RuntimeConfigVersion{}, false
 	}
 	return recorded, true
+}
+
+func (server *Server) resolveTaskContinuationRuntimeProfile(response http.ResponseWriter, found task.Task, input taskContinuationSelectionInput) (runtimeprofile.Profile, bool) {
+	currentProfile, err := server.resolveTaskRuntimeProfile(found)
+	if err != nil {
+		if errors.Is(err, runtimeprofile.ErrNotFound) {
+			writeError(response, http.StatusBadRequest, "runtime profile not found")
+			return runtimeprofile.Profile{}, false
+		}
+		writeError(response, http.StatusInternalServerError, "load runtime profile")
+		return runtimeprofile.Profile{}, false
+	}
+	return server.resolveSelectedRuntimeProfile(response, currentProfile, input)
+}
+
+func (server *Server) resolveSelectedRuntimeProfile(response http.ResponseWriter, currentProfile runtimeprofile.Profile, input taskContinuationSelectionInput) (runtimeprofile.Profile, bool) {
+	runtimeProfileID := strings.TrimSpace(input.RuntimeProfileID)
+	modelProviderID := strings.TrimSpace(input.ModelProviderID)
+	if runtimeProfileID != "" && modelProviderID != "" {
+		writeError(response, http.StatusBadRequest, "choose runtime_profile_id or model_provider_id, not both")
+		return runtimeprofile.Profile{}, false
+	}
+	if runtimeProfileID != "" {
+		requestedProfile, err := server.profiles.Get(runtimeProfileID)
+		if err != nil {
+			if errors.Is(err, runtimeprofile.ErrNotFound) {
+				writeError(response, http.StatusBadRequest, "runtime profile not found")
+				return runtimeprofile.Profile{}, false
+			}
+			writeError(response, http.StatusInternalServerError, "load runtime profile")
+			return runtimeprofile.Profile{}, false
+		}
+		if requestedProfile.Provider != currentProfile.Provider {
+			writeError(response, http.StatusBadRequest, "steering runtime profile must keep the same runtime provider")
+			return runtimeprofile.Profile{}, false
+		}
+		return requestedProfile, true
+	}
+	if modelProviderID == "" {
+		return currentProfile, true
+	}
+
+	providerName := modelProviderID
+	if server.modelProviders != nil {
+		provider, err := server.modelProviders.Get(modelProviderID)
+		if err != nil {
+			if errors.Is(err, modelprovider.ErrNotFound) {
+				writeError(response, http.StatusBadRequest, "model provider not found")
+				return runtimeprofile.Profile{}, false
+			}
+			writeError(response, http.StatusInternalServerError, "load model provider")
+			return runtimeprofile.Profile{}, false
+		}
+		providerName = provider.Name
+	}
+
+	modelOverride := strings.TrimSpace(input.ModelOverride)
+	if strings.TrimSpace(currentProfile.Fields.ModelProviderID) == modelProviderID &&
+		strings.TrimSpace(currentProfile.Fields.ModelOverride) == modelOverride {
+		return currentProfile, true
+	}
+	fields := currentProfile.Fields
+	fields.ModelProviderID = modelProviderID
+	fields.ModelOverride = modelOverride
+	fields.ModelProviderProtocol = ""
+	fields.Model = ""
+	fields.Endpoint = ""
+	fields.APIKeys = nil
+	name := runtimeprofile.LaunchProfileName(runtimeprofile.LaunchSelection{
+		Provider:        currentProfile.Provider,
+		ModelProviderID: modelProviderID,
+		ModelOverride:   modelOverride,
+	}, providerName)
+	created, err := server.profiles.CreateLaunchResolved(name, currentProfile.Provider, fields)
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err.Error())
+		return runtimeprofile.Profile{}, false
+	}
+	return created, true
 }
 
 func (server *Server) resolveTaskRuntimeProfile(found task.Task) (runtimeprofile.Profile, error) {

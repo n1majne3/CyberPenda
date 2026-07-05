@@ -928,6 +928,24 @@ func quoteJSON(value string) string {
 	return string(raw)
 }
 
+func createModelProvider(t *testing.T, server *daemon.Server, body string) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/model-providers", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("expected create model provider status 201, got %d with body %s", resp.Code, resp.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode model provider: %v", err)
+	}
+	return created.ID
+}
+
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
@@ -1193,6 +1211,102 @@ func TestQueueSteerRecordsSameProviderRuntimeProfileForNextContinuation(t *testi
 	waitForTaskStatus(t, server, projectID, taskID, "completed")
 }
 
+func TestQueueSteerRecordsSameRuntimeModelSelection(t *testing.T) {
+	runtimeRoot := t.TempDir()
+	server := newDaemonWithConfig(t, daemon.Config{
+		Version:              "test-version",
+		DBPath:               filepath.Join(t.TempDir(), "pentest.db"),
+		RuntimeRoot:          runtimeRoot,
+		DisableBuiltinSkills: true,
+	})
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+
+	binary := filepath.Join(t.TempDir(), "codex-test")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\necho codex-provider:$*\n"), 0o700); err != nil {
+		t.Fatalf("write provider binary: %v", err)
+	}
+	profileID := createLocalRuntimeProfile(t, server, "Codex Test", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		BinaryPath: binary,
+		Model:      "gpt-test",
+	})
+	taskID := createTask(t, server, projectID, `{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
+		"runner":"host",
+		"run_controls":{"host_activated":true}
+	}`)
+	waitForTaskStatus(t, server, projectID, taskID, "completed")
+
+	providerID := createModelProvider(t, server, `{
+		"name":"MiMo",
+		"base_url":"https://api.example.test/v1",
+		"protocols":["openai_responses"],
+		"catalog":{"manual":["mimo-v2-flash","mimo-v2-pro"],"default_model":"mimo-v2-flash"}
+	}`)
+
+	steerResp := httptest.NewRecorder()
+	steerReq := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/steer/queue", bytes.NewReader([]byte(`{
+		"directive":"continue with mimo pro",
+		"model_provider_id":`+quoteJSON(providerID)+`,
+		"model_override":"mimo-v2-pro"
+	}`)))
+	steerReq.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(steerResp, steerReq)
+	if steerResp.Code != http.StatusOK {
+		t.Fatalf("expected queue steer status 200, got %d with body %s", steerResp.Code, steerResp.Body.String())
+	}
+	var queued struct {
+		RuntimeConfigVersion *struct {
+			RuntimeProfileID string         `json:"runtime_profile_id"`
+			Config           map[string]any `json:"config"`
+		} `json:"runtime_config_version"`
+	}
+	if err := json.NewDecoder(steerResp.Body).Decode(&queued); err != nil {
+		t.Fatalf("decode queue steer: %v", err)
+	}
+	if queued.RuntimeConfigVersion == nil {
+		t.Fatal("expected queued runtime config version")
+	}
+	queuedProfileID := queued.RuntimeConfigVersion.RuntimeProfileID
+	if queuedProfileID == "" || queuedProfileID == profileID {
+		t.Fatalf("expected launch-resolved continuation profile, got %q", queuedProfileID)
+	}
+	if queued.RuntimeConfigVersion.Config["model_provider_id"] != providerID {
+		t.Fatalf("expected queued model provider %q, got %#v", providerID, queued.RuntimeConfigVersion.Config)
+	}
+	if queued.RuntimeConfigVersion.Config["model_override"] != "mimo-v2-pro" {
+		t.Fatalf("expected queued model override, got %#v", queued.RuntimeConfigVersion.Config)
+	}
+
+	getProfile := httptest.NewRequest(http.MethodGet, "/api/runtime-profiles/"+queuedProfileID, nil)
+	getResp := httptest.NewRecorder()
+	server.ServeHTTP(getResp, getProfile)
+	if getResp.Code != http.StatusOK {
+		t.Fatalf("expected get profile status 200, got %d with body %s", getResp.Code, getResp.Body.String())
+	}
+	var profile struct {
+		Provider string `json:"provider"`
+		Kind     string `json:"kind"`
+		Fields   struct {
+			BinaryPath      string `json:"binary_path"`
+			ModelProviderID string `json:"model_provider_id"`
+			ModelOverride   string `json:"model_override"`
+		} `json:"fields"`
+	}
+	if err := json.NewDecoder(getResp.Body).Decode(&profile); err != nil {
+		t.Fatalf("decode profile: %v", err)
+	}
+	if profile.Provider != "codex" || profile.Kind != "launch_resolve" {
+		t.Fatalf("expected same-runtime launch profile, got %#v", profile)
+	}
+	if profile.Fields.BinaryPath != binary {
+		t.Fatalf("expected continuation profile to preserve binary path %q, got %q", binary, profile.Fields.BinaryPath)
+	}
+	if profile.Fields.ModelProviderID != providerID || profile.Fields.ModelOverride != "mimo-v2-pro" {
+		t.Fatalf("expected continuation model selection, got %#v", profile.Fields)
+	}
+}
+
 func TestResumeTaskUsesCodexNativeResumeWhenSessionExists(t *testing.T) {
 	runtimeRoot := t.TempDir()
 	server := newDaemonWithConfig(t, daemon.Config{
@@ -1238,6 +1352,103 @@ func TestResumeTaskUsesCodexNativeResumeWhenSessionExists(t *testing.T) {
 
 	waitForEventText(t, server, projectID, taskID, "resume sess-123")
 	waitForTaskStatus(t, server, projectID, taskID, "completed")
+}
+
+func TestResumeTaskUsesContinuationModelSelectionWithoutDroppingRuntimeFields(t *testing.T) {
+	runtimeRoot := t.TempDir()
+	server := newDaemonWithConfig(t, daemon.Config{
+		Version:              "test-version",
+		DBPath:               filepath.Join(t.TempDir(), "pentest.db"),
+		RuntimeRoot:          runtimeRoot,
+		DisableBuiltinSkills: true,
+	})
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+
+	binary := filepath.Join(t.TempDir(), "codex-test")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\necho codex-provider:$*\n"), 0o700); err != nil {
+		t.Fatalf("write provider binary: %v", err)
+	}
+	profileID := createLocalRuntimeProfile(t, server, "Codex Test", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		BinaryPath: binary,
+		Model:      "gpt-test",
+	})
+	taskID := createTask(t, server, projectID, `{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
+		"runner":"host",
+		"run_controls":{"host_activated":true}
+	}`)
+	waitForTaskStatus(t, server, projectID, taskID, "completed")
+
+	sessionPath := filepath.Join(runtimeRoot, taskID, "runtime-home", "codex", "sessions", "2026", "07", "04", "rollout-test.jsonl")
+	if err := os.MkdirAll(filepath.Dir(sessionPath), 0o700); err != nil {
+		t.Fatalf("mkdir session path: %v", err)
+	}
+	sessionMeta := `{"timestamp":"2026-07-04T00:00:00Z","type":"session_meta","payload":{"session_id":"sess-456","cwd":"` + runtimeRoot + `"}}` + "\n"
+	if err := os.WriteFile(sessionPath, []byte(sessionMeta), 0o600); err != nil {
+		t.Fatalf("write session file: %v", err)
+	}
+	t.Setenv("MIMO_API_KEY", "sk-test")
+	providerID := createModelProvider(t, server, `{
+		"name":"MiMo",
+		"base_url":"https://api.example.test/v1",
+		"protocols":["openai_responses"],
+		"catalog":{"manual":["mimo-v2-pro"],"default_model":"mimo-v2-pro"}
+	}`)
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/resume", bytes.NewReader([]byte(`{
+		"model_provider_id":`+quoteJSON(providerID)+`,
+		"model_override":"mimo-v2-pro"
+	}`)))
+	req.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusAccepted {
+		t.Fatalf("expected resume status 202, got %d with body %s", resp.Code, resp.Body.String())
+	}
+	waitForEventText(t, server, projectID, taskID, "resume sess-456")
+	waitForTaskStatus(t, server, projectID, taskID, "completed")
+
+	detailResp := httptest.NewRecorder()
+	detailReq := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID, nil)
+	server.ServeHTTP(detailResp, detailReq)
+	if detailResp.Code != http.StatusOK {
+		t.Fatalf("expected get task status 200, got %d with body %s", detailResp.Code, detailResp.Body.String())
+	}
+	var resumed struct {
+		LatestContinuation *struct {
+			RuntimeProfileID string `json:"runtime_profile_id"`
+		} `json:"latest_continuation"`
+	}
+	if err := json.NewDecoder(detailResp.Body).Decode(&resumed); err != nil {
+		t.Fatalf("decode resumed task: %v", err)
+	}
+	if resumed.LatestContinuation == nil || resumed.LatestContinuation.RuntimeProfileID == profileID {
+		t.Fatalf("expected continuation-specific runtime profile, got %#v", resumed.LatestContinuation)
+	}
+
+	getProfile := httptest.NewRequest(http.MethodGet, "/api/runtime-profiles/"+resumed.LatestContinuation.RuntimeProfileID, nil)
+	getResp := httptest.NewRecorder()
+	server.ServeHTTP(getResp, getProfile)
+	if getResp.Code != http.StatusOK {
+		t.Fatalf("expected get profile status 200, got %d with body %s", getResp.Code, getResp.Body.String())
+	}
+	var profile struct {
+		Fields struct {
+			BinaryPath      string `json:"binary_path"`
+			ModelProviderID string `json:"model_provider_id"`
+			ModelOverride   string `json:"model_override"`
+		} `json:"fields"`
+	}
+	if err := json.NewDecoder(getResp.Body).Decode(&profile); err != nil {
+		t.Fatalf("decode profile: %v", err)
+	}
+	if profile.Fields.BinaryPath != binary {
+		t.Fatalf("expected continuation profile to preserve binary path %q, got %q", binary, profile.Fields.BinaryPath)
+	}
+	if profile.Fields.ModelProviderID != providerID || profile.Fields.ModelOverride != "mimo-v2-pro" {
+		t.Fatalf("expected continuation model selection, got %#v", profile.Fields)
+	}
 }
 
 func TestResumeTaskFailsWhenNativeSessionIsMissing(t *testing.T) {

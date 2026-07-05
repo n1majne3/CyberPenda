@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { StrictMode } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
@@ -24,7 +25,7 @@ function stubTaskDetailApi() {
     configurable: true,
   });
 
-  mockApi({
+  const fetchMock = mockApi({
     "/api/projects/project-1/tasks/task-1/timeline": {
       task_id: "task-1",
       items: [{ seq: 1, type: "text", content: "Timeline opened first", created_at: "2026-01-01T00:00:00Z" }],
@@ -79,13 +80,53 @@ function stubTaskDetailApi() {
     },
     "/api/runtime-profiles": {
       profiles: [
-        { id: "profile-1", name: "Codex", provider: "codex" },
-        { id: "profile-2", name: "Fake", provider: "fake" },
+        { id: "profile-1", name: "Codex", provider: "codex", fields: {} },
+        { id: "profile-2", name: "Fake", provider: "fake", fields: {} },
+      ],
+    },
+    "/api/model-providers": {
+      providers: [
+        {
+          id: "mimo",
+          name: "MiMo",
+          base_url: "https://api.example.test/v1",
+          protocols: ["openai_responses"],
+          api_key_env: "MIMO_API_KEY",
+          catalog: { manual: ["mimo-v2-flash", "mimo-v2-pro"], default_model: "mimo-v2-flash" },
+        },
+        {
+          id: "anthropic",
+          name: "Anthropic",
+          base_url: "https://api.anthropic.test/v1",
+          protocols: ["anthropic_messages"],
+          api_key_env: "ANTHROPIC_API_KEY",
+          catalog: { manual: ["claude-sonnet"], default_model: "claude-sonnet" },
+        },
+      ],
+    },
+    "/api/runtime-plugins": {
+      plugins: [
+        {
+          schema_version: 1,
+          id: "codex",
+          name: "Codex",
+          binary: { default: "codex" },
+          capabilities: { sandbox: true, host: true, mcp_config: true, streaming_transcript: true, resume: true },
+          model_provider: {
+            requirement: "required",
+            supported_protocols: ["openai_responses"],
+            protocol_preference: ["openai_responses"],
+          },
+          profile_schema: { fields: [] },
+          config_projection: { primitive: "codex" },
+          launch: { args: [] },
+          transcript: { parser: "codex" },
+        },
       ],
     },
   });
 
-  return { scrollIntoView };
+  return { fetchMock, scrollIntoView };
 }
 
 describe("TaskDetailPage", () => {
@@ -129,7 +170,34 @@ describe("TaskDetailPage", () => {
     expect(await screen.findByRole("button", { name: /Resume$/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Resume with handoff/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Queue steer/ })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: /Use Codex/ })).toBeInTheDocument();
-    expect(screen.queryByRole("option", { name: /Use Fake/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Continuation model provider" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "MiMo" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Anthropic" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /Use Codex/ })).not.toBeInTheDocument();
+  });
+
+  it("queues steering with a continuation model selection", async () => {
+    const { fetchMock } = stubTaskDetailApi();
+    const user = userEvent.setup();
+
+    renderPage();
+
+    await screen.findByText("Timeline opened first");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model provider" }), "mimo");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model" }), "mimo-v2-pro");
+    await user.type(screen.getByPlaceholderText("Focus on admin.example.com next"), "continue with mimo");
+    await user.click(screen.getByRole("button", { name: /Queue steer/ }));
+
+    const steerCall = fetchMock.mock.calls.find(([input]) =>
+      String(input).includes("/api/projects/project-1/tasks/task-1/steer/queue"),
+    );
+    expect(steerCall?.[1]).toMatchObject({
+      method: "POST",
+      body: JSON.stringify({
+        directive: "continue with mimo",
+        model_provider_id: "mimo",
+        model_override: "mimo-v2-pro",
+      }),
+    });
   });
 });
