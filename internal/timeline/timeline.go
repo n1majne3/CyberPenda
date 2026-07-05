@@ -28,9 +28,34 @@ var timelineParseOpts = runtimeoutput.ParseOptions{
 
 // Build projects task events into coalesced timeline items.
 func Build(events []task.Event) []Item {
+	items := make([]Item, 0, len(events))
+	nextSeq := 1
 	turns := make([]runtimeoutput.Turn, 0, len(events))
+	flushTurns := func() {
+		for _, item := range turnsToItems(runtimeoutput.CoalesceStreaming(turns)) {
+			item.Seq = nextSeq
+			nextSeq++
+			items = append(items, item)
+		}
+		turns = turns[:0]
+	}
 	for _, event := range events {
 		if event.Kind == task.EventKindLifecycle {
+			flushTurns()
+			if item, ok := lifecycleItem(event); ok {
+				item.Seq = nextSeq
+				nextSeq++
+				items = append(items, item)
+			}
+			continue
+		}
+		if event.Kind == task.EventKindSteering {
+			flushTurns()
+			if item, ok := steeringItem(event); ok {
+				item.Seq = nextSeq
+				nextSeq++
+				items = append(items, item)
+			}
 			continue
 		}
 		if event.Kind != task.EventKindRuntimeOutput {
@@ -46,7 +71,8 @@ func Build(events []task.Event) []Item {
 		lineTurns, _ := runtimeoutput.ParseLine(text, event.CreatedAt, timelineParseOpts)
 		turns = append(turns, lineTurns...)
 	}
-	return turnsToItems(runtimeoutput.CoalesceStreaming(turns))
+	flushTurns()
+	return items
 }
 
 func turnsToItems(turns []runtimeoutput.Turn) []Item {
@@ -62,6 +88,35 @@ func turnsToItems(turns []runtimeoutput.Turn) []Item {
 		items = append(items, item)
 	}
 	return items
+}
+
+func lifecycleItem(event task.Event) (Item, bool) {
+	phase := stringValue(event.Payload, "phase")
+	if strings.TrimSpace(phase) == "" {
+		return Item{}, false
+	}
+	return Item{
+		Type:      "lifecycle",
+		Content:   "Lifecycle: " + phase,
+		CreatedAt: event.CreatedAt,
+	}, true
+}
+
+func steeringItem(event task.Event) (Item, bool) {
+	phase := stringValue(event.Payload, "phase")
+	if phase == "" {
+		phase = "steering"
+	}
+	directive := stringValue(event.Payload, "directive")
+	content := "Steering: " + phase
+	if strings.TrimSpace(directive) != "" {
+		content += " - " + directive
+	}
+	return Item{
+		Type:      "steering",
+		Content:   content,
+		CreatedAt: event.CreatedAt,
+	}, true
 }
 
 func turnToItem(turn runtimeoutput.Turn) (Item, bool) {

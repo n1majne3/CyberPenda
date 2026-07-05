@@ -125,8 +125,7 @@ func TestBuildSandboxCommandConstructsContainerLaunchWithoutExecution(t *testing
 		t.Fatalf("expected docker program, got %q", command.Program)
 	}
 	expectedArgs := []string{
-		"run",
-		"--rm",
+		"create",
 		"-i",
 		"--cidfile",
 		filepath.Join(layout.Logs, "container.cid"),

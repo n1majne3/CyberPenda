@@ -2,7 +2,7 @@ import { useEffect, useState, useRef, type RefObject } from "react";
 import { useParams, Link } from "react-router-dom";
 import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, FileText, Shield, ChevronRight, Wrench, User, Bot, ArrowDown, ArrowUp } from "lucide-react";
 import { apiGet, apiPost, type Task, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
-import { Button, Card, Input, Badge, Select } from "@/components/ui";
+import { Button, Card, Input, Badge } from "@/components/ui";
 import { BackLink, PageContainer } from "@/components/shared";
 import { AgentTranscriptView } from "@/components/task-transcript/AgentTranscriptView";
 import { collapsedTranscriptTitle } from "./taskDetailView";
@@ -18,8 +18,8 @@ export function TaskDetailPage() {
   const [autoFollow, setAutoFollow] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [steering, setSteering] = useState("");
-  const [steerProfile, setSteerProfile] = useState("");
-  const [profiles, setProfiles] = useState<{ id: string; name: string }[]>([]);
+  const [steeringProfile, setSteeringProfile] = useState("");
+  const [profiles, setProfiles] = useState<{ id: string; name: string; provider?: string }[]>([]);
   const pageRef = useRef<HTMLDivElement>(null);
   const timelineEnd = useRef<HTMLDivElement>(null);
   const autoFollowRef = useRef(true);
@@ -116,7 +116,7 @@ export function TaskDetailPage() {
     }
   }
 
-  async function resume() {
+  async function resumeNative() {
     try {
       await apiPost(`${base}/resume`, {});
       loadAll();
@@ -125,10 +125,37 @@ export function TaskDetailPage() {
     }
   }
 
-  async function steer() {
+  async function resumeHandoff() {
     try {
-      await apiPost(`${base}/steer`, { directive: steering, runtime_profile_id: steerProfile || undefined });
+      await apiPost(`${base}/resume/handoff`, {});
+      loadAll();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  async function queueSteer() {
+    try {
+      await apiPost(`${base}/steer/queue`, {
+        directive: steering,
+        runtime_profile_id: steeringProfile || undefined,
+      });
       setSteering("");
+      setSteeringProfile("");
+      loadAll();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  async function interruptSteer() {
+    try {
+      await apiPost(`${base}/steer`, {
+        directive: steering,
+        runtime_profile_id: steeringProfile || undefined,
+      });
+      setSteering("");
+      setSteeringProfile("");
       loadAll();
     } catch (e) {
       setError((e as Error).message);
@@ -138,6 +165,15 @@ export function TaskDetailPage() {
   if (error) return <PageContainer className="text-destructive">{error}</PageContainer>;
   if (!task) return <PageContainer className="text-muted-foreground">Loading…</PageContainer>;
   const currentContinuation = task.active_continuation ?? task.latest_continuation;
+  const controls = task.runtime_controls;
+  const nativeResumeAvailable = controls?.native_resume_available ?? Boolean(currentContinuation?.native_session_id);
+  const handoffResumeAvailable = controls?.handoff_resume_available ?? !ACTIVE.has(task.status);
+  const queueSteerAvailable = controls?.queue_steer_available ?? true;
+  const interruptSteerAvailable = controls?.interrupt_steer_available ?? nativeResumeAvailable;
+  const nativeResumeReason = controls?.native_resume_reason ?? "Native resume unavailable";
+  const interruptSteerReason = controls?.interrupt_steer_reason ?? nativeResumeReason;
+  const running = ACTIVE.has(task.status);
+  const sameRuntimeProfiles = profiles.filter((profile) => !controls?.runtime_provider || profile.provider === controls.runtime_provider);
 
   return (
     <PageContainer ref={pageRef} className="max-w-4xl">
@@ -146,12 +182,17 @@ export function TaskDetailPage() {
       <div className="mb-2 flex items-center justify-between">
         <h2 className="text-xl font-semibold tracking-tight">{task.goal}</h2>
         <div className="flex gap-2">
-          {!ACTIVE.has(task.status) && (
-            <Button size="sm" variant="outline" onClick={resume}>
+          {!running && (
+            <Button size="sm" variant="outline" onClick={resumeNative} disabled={!nativeResumeAvailable} title={nativeResumeAvailable ? "Resume native session" : nativeResumeReason}>
               <Play className="h-4 w-4" /> Resume
             </Button>
           )}
-          {ACTIVE.has(task.status) && (
+          {!running && (
+            <Button size="sm" variant="outline" onClick={resumeHandoff} disabled={!handoffResumeAvailable}>
+              <FileText className="h-4 w-4" /> Resume with handoff
+            </Button>
+          )}
+          {running && (
             <Button size="sm" variant="destructive" onClick={stop}>
               <Square className="h-4 w-4" /> Stop
             </Button>
@@ -170,6 +211,8 @@ export function TaskDetailPage() {
           <Badge variant="outline">continuation #{currentContinuation.number}</Badge>
           <Badge variant="outline">runtime: {currentContinuation.runtime_provider}</Badge>
           <Badge variant="outline">continuation status: {currentContinuation.status}</Badge>
+          {(controls?.native_session_captured || currentContinuation.native_session_id) && <Badge variant="outline">native session: captured</Badge>}
+          {controls?.same_runtime_provider_only && <Badge variant="outline">same runtime only</Badge>}
         </div>
       )}
 
@@ -191,23 +234,29 @@ export function TaskDetailPage() {
       {/* Steering */}
       <Card className="mb-6 space-y-2">
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <GitBranch className="h-4 w-4" /> Steering (applies to next continuation)
+          <GitBranch className="h-4 w-4" /> Task controls
         </div>
         <Input value={steering} onChange={(e) => setSteering(e.target.value)} placeholder="Focus on admin.example.com next" />
-        <div className="flex gap-2 items-center">
-          <Select
-            className="max-w-xs"
-            value={steerProfile}
-            onChange={(e) => setSteerProfile(e.target.value)}
+        <div className="flex flex-wrap gap-2 items-center">
+          <select
+            className="h-8 max-w-xs rounded-md border border-input bg-background px-2 text-sm"
+            value={steeringProfile}
+            onChange={(e) => setSteeringProfile(e.target.value)}
+            aria-label="Steering runtime profile"
           >
-            <option value="">Keep current profile</option>
-            {profiles.map((p) => (
-              <option key={p.id} value={p.id}>Switch to {p.name}</option>
+            <option value="">Keep current model</option>
+            {sameRuntimeProfiles.map((profile) => (
+              <option key={profile.id} value={profile.id}>Use {profile.name}</option>
             ))}
-          </Select>
-          <Button size="sm" onClick={steer} disabled={!steering.trim()}>
-            <Send className="h-4 w-4 mr-1" /> Steer
+          </select>
+          <Button size="sm" variant="outline" onClick={queueSteer} disabled={!steering.trim() || !queueSteerAvailable}>
+            <Send className="h-4 w-4 mr-1" /> Queue steer
           </Button>
+          {running && (
+            <Button size="sm" onClick={interruptSteer} disabled={!steering.trim() || !interruptSteerAvailable} title={interruptSteerAvailable ? "Interrupt and resume native session" : interruptSteerReason}>
+              <GitBranch className="h-4 w-4 mr-1" /> Interrupt & Steer
+            </Button>
+          )}
         </div>
       </Card>
 

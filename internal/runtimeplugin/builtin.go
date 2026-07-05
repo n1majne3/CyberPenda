@@ -26,7 +26,7 @@ func BuiltinPlugins() []Plugin {
 				Sandbox:             true,
 				Host:                true,
 				StreamingTranscript: false,
-				Resume:              true,
+				Resume:              false,
 			},
 			ModelProvider:    ModelProvider{Requirement: "none"},
 			ProfileSchema:    ProfileSchema{Fields: commonFields},
@@ -60,6 +60,11 @@ func BuiltinPlugins() []Plugin {
 			Launch: LaunchTemplate{
 				Args: []string{"{{binary}}", "{{codex_subcommand}}", "--model", "{{model}}", "{{codex_exec_args}}", "{{custom_args}}", "{{codex_goal_prefix}}", "{{goal}}"},
 			},
+			NativeResume: NativeResume{
+				Supported:     true,
+				SessionSource: "codex_session_jsonl",
+				Args:          []string{"{{binary}}", "--model", "{{model}}", "resume", "{{native_session}}", "{{resumed_message}}"},
+			},
 			ProcessEnv:    map[string]string{"CODEX_HOME": "{{runtime_home}}/codex"},
 			CredentialEnv: []string{"OPENAI_API_KEY", "CODEX_API_KEY"},
 			Transcript:    Transcript{Parser: "codex_json"},
@@ -75,7 +80,7 @@ func BuiltinPlugins() []Plugin {
 				Host:                true,
 				MCPConfig:           true,
 				StreamingTranscript: true,
-				Resume:              true,
+				Resume:              false,
 			},
 			ModelProvider: ModelProvider{
 				Requirement:        "required",
@@ -122,7 +127,7 @@ func BuiltinPlugins() []Plugin {
 				Host:                true,
 				MCPConfig:           true,
 				StreamingTranscript: true,
-				Resume:              true,
+				Resume:              false,
 			},
 			ModelProvider: ModelProvider{
 				Requirement:        "required",

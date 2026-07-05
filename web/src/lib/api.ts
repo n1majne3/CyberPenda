@@ -313,10 +313,23 @@ export interface Task {
   runtime_profile_id: string;
   run_controls: { yolo?: boolean; host_activated?: boolean; sandbox_network?: string; notes?: string; extras?: Record<string, string> };
   scope_snapshot: Scope;
+  runtime_controls?: RuntimeControls;
   active_continuation?: TaskContinuation;
   latest_continuation?: TaskContinuation;
   created_at: string;
   updated_at: string;
+}
+
+export interface RuntimeControls {
+  native_resume_available: boolean;
+  native_resume_reason?: string;
+  handoff_resume_available: boolean;
+  queue_steer_available: boolean;
+  interrupt_steer_available: boolean;
+  interrupt_steer_reason?: string;
+  native_session_captured: boolean;
+  same_runtime_provider_only: boolean;
+  runtime_provider?: string;
 }
 
 export interface TaskContinuation {
@@ -366,7 +379,7 @@ export interface TaskTranscript {
 
 export interface TaskTimelineItem {
   seq: number;
-  type: "tool_use" | "tool_result" | "thinking" | "text" | "error";
+  type: "tool_use" | "tool_result" | "thinking" | "text" | "error" | "lifecycle" | "steering";
   tool?: string;
   content?: string;
   input?: Record<string, unknown>;

@@ -73,7 +73,7 @@ const (
 const HostProxyOnlySandboxNetworkName = "pentest-host-proxy-only"
 
 // SandboxCommandRequest contains the data needed to construct a Kali sandbox
-// launch command without starting the container.
+// container create command without starting the container.
 type SandboxCommandRequest struct {
 	Layout          Layout
 	Provider        runtimeprofile.Provider
@@ -129,8 +129,9 @@ func PrepareTaskLayout(rootDir, taskID string, provider runtimeprofile.Provider)
 	return layout, nil
 }
 
-// BuildSandboxCommand constructs a container launch command for a task-local
-// runtime. It does not execute the command.
+// BuildSandboxCommand constructs a container create command for a task-local
+// runtime. It does not execute the command; the runtime harness owns start,
+// stop/kill, logs, wait, and rm for the created container.
 func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 	if strings.TrimSpace(request.Layout.TaskRoot) == "" {
 		return Command{}, fmt.Errorf("task root is required")
@@ -156,8 +157,7 @@ func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 		return Command{}, fmt.Errorf("resolve task root: %w", err)
 	}
 	args := []string{
-		"run",
-		"--rm",
+		"create",
 		"-i",
 	}
 	if strings.TrimSpace(request.ContainerIDFile) != "" {

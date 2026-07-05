@@ -29,6 +29,10 @@ type Adapter interface {
 	Run(ctx context.Context, goal string, emit func(task.EventKind, task.EventPayload)) error
 }
 
+type metadataRecordingAdapter interface {
+	SetMetadataRecorder(func(NativeSessionMetadata) error)
+}
+
 // LaunchRequest describes a harness launch for one task continuation.
 type LaunchRequest struct {
 	TaskID           string
@@ -94,6 +98,17 @@ func (h *Harness) Launch(ctx context.Context, req LaunchRequest) error {
 	if req.ContinuationID != "" {
 		if _, err := h.tasks.UpdateContinuationStatus(req.ContinuationID, task.StatusRunning); err != nil {
 			return fmt.Errorf("mark continuation running: %w", err)
+		}
+	}
+	if req.ContinuationID != "" {
+		if recorder, ok := req.Adapter.(metadataRecordingAdapter); ok {
+			recorder.SetMetadataRecorder(func(metadata NativeSessionMetadata) error {
+				if metadata.ContainerID == "" && metadata.NativeSessionID == "" && metadata.NativeSessionPath == "" {
+					return nil
+				}
+				_, err := h.tasks.UpdateContinuationRuntimeMetadata(req.ContinuationID, metadata.ContainerID, metadata.NativeSessionID, metadata.NativeSessionPath)
+				return err
+			})
 		}
 	}
 

@@ -40,7 +40,7 @@ func TestResumeTaskSurfacesAdapterPrepareError(t *testing.T) {
 	proj := createAdapterErrorTestProject(t, server)
 	created := createAdapterErrorTestTask(t, server, proj.ID, profile.ID)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+proj.ID+"/tasks/"+created.ID+"/resume", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+proj.ID+"/tasks/"+created.ID+"/resume/handoff", nil)
 	resp := httptest.NewRecorder()
 	server.ServeHTTP(resp, req)
 

@@ -35,6 +35,13 @@ type LaunchArgsRequest struct {
 	Sandbox bool
 }
 
+type NativeResumeArgsRequest struct {
+	Provider        runtimeprofile.Provider
+	Profile         runtimeprofile.Profile
+	NativeSessionID string
+	ResumedMessage  string
+}
+
 // BuildLaunchArgs constructs the command-line arguments a real runtime would
 // receive, derived from the structured profile fields and task goal. It never
 // embeds resolved secret values — credential references are resolved by the
@@ -55,6 +62,38 @@ func BuildLaunchArgs(req LaunchArgsRequest) ([]string, error) {
 	}
 
 	return runtimeplugin.RenderLaunch(plugin.Launch, launchRenderContext(req, binary))
+}
+
+func BuildNativeResumeArgs(req NativeResumeArgsRequest) ([]string, error) {
+	registry := runtimeplugin.MustBuiltinRegistry()
+	plugin, ok := registry.Get(string(req.Provider))
+	if !ok {
+		return nil, fmt.Errorf("unsupported provider %q", req.Provider)
+	}
+	if !plugin.NativeResume.Supported {
+		return nil, fmt.Errorf("native resume unsupported for provider %q", req.Provider)
+	}
+	if strings.TrimSpace(req.NativeSessionID) == "" {
+		return nil, fmt.Errorf("native resume requires a native session id")
+	}
+	binary := strings.TrimSpace(req.Profile.Fields.BinaryPath)
+	if binary == "" {
+		binary = strings.TrimSpace(plugin.Binary.Default)
+	}
+	if binary == "" {
+		return nil, fmt.Errorf("no binary path configured for provider %q", req.Provider)
+	}
+	return runtimeplugin.RenderLaunch(runtimeplugin.LaunchTemplate{Args: plugin.NativeResume.Args}, runtimeplugin.RenderContext{
+		Scalars: map[string]string{
+			"binary":          binary,
+			"model":           strings.TrimSpace(req.Profile.Fields.Model),
+			"native_session":  strings.TrimSpace(req.NativeSessionID),
+			"resumed_message": req.ResumedMessage,
+		},
+		Lists: map[string][]string{
+			"custom_args": append([]string{}, req.Profile.Fields.CustomArgs...),
+		},
+	})
 }
 
 func hasCLIOption(args []string, option string) bool {
