@@ -148,6 +148,54 @@ func TestBuildSandboxCommandConstructsContainerLaunchWithoutExecution(t *testing
 	}
 }
 
+func TestBuildSandboxCommandSetsClaudeHomeToPersistentRuntimeHome(t *testing.T) {
+	root := t.TempDir()
+	layout, err := runner.PrepareTaskLayout(root, "task-claude", runtimeprofile.ProviderClaudeCode)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+
+	command, err := runner.BuildSandboxCommand(runner.SandboxCommandRequest{
+		Layout:         layout,
+		Provider:       runtimeprofile.ProviderClaudeCode,
+		Image:          "pentest-kali:local",
+		RuntimeCommand: []string{"claude", "--resume", "sess-123", "continue"},
+	})
+	if err != nil {
+		t.Fatalf("build command: %v", err)
+	}
+
+	env := sandboxEnvArgs(command.Args)
+	for _, want := range []string{
+		"CLAUDE_HOME=/task/runtime-home/claude",
+		"HOME=/task/runtime-home/claude",
+	} {
+		if !containsString(env, want) {
+			t.Fatalf("expected sandbox env to contain %q, got env=%#v args=%#v", want, env, command.Args)
+		}
+	}
+}
+
+func sandboxEnvArgs(args []string) []string {
+	var out []string
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "-e" {
+			out = append(out, args[i+1])
+			i++
+		}
+	}
+	return out
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestBuildSandboxCommandUsesHostProxyOnlyNetworkWhenRequested(t *testing.T) {
 	root := t.TempDir()
 	layout, err := runner.PrepareTaskLayout(root, "task-123", runtimeprofile.ProviderCodex)

@@ -181,18 +181,33 @@ func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 		}
 		args = append(args, "-e", key+"="+value)
 	}
-	envName, envPath := sandboxProviderEnv(request.Provider, providerDir)
-	args = append(args, "-e", envName+"="+envPath)
+	for _, env := range sandboxProviderEnv(request.Provider, providerDir) {
+		args = append(args, "-e", env.Name+"="+env.Value)
+	}
 	args = append(args, image)
 	args = append(args, request.RuntimeCommand...)
 	return Command{Program: program, Args: args}, nil
 }
 
-func sandboxProviderEnv(provider runtimeprofile.Provider, providerDir string) (string, string) {
+type sandboxEnvVar struct {
+	Name  string
+	Value string
+}
+
+func sandboxProviderEnv(provider runtimeprofile.Provider, providerDir string) []sandboxEnvVar {
 	if provider == runtimeprofile.ProviderPi {
-		return "PI_CODING_AGENT_DIR", "/task/runtime-home/" + providerDir + "/agent"
+		return []sandboxEnvVar{{Name: "PI_CODING_AGENT_DIR", Value: "/task/runtime-home/" + providerDir + "/agent"}}
 	}
-	return providerHomeEnv(provider), "/task/runtime-home/" + providerDir
+	providerHome := "/task/runtime-home/" + providerDir
+	if provider == runtimeprofile.ProviderClaudeCode {
+		// Claude Code stores resumable conversations under HOME; keep it inside
+		// the task mount so sandbox container rebuilds can find native sessions.
+		return []sandboxEnvVar{
+			{Name: providerHomeEnv(provider), Value: providerHome},
+			{Name: "HOME", Value: providerHome},
+		}
+	}
+	return []sandboxEnvVar{{Name: providerHomeEnv(provider), Value: providerHome}}
 }
 
 func ValidateActivation(request ActivationRequest) error {
