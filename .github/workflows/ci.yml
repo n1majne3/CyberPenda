@@ -17,7 +17,35 @@ jobs:
       - name: Go tests
         run: make test-ci
 
+  sandbox-smoke-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      required: ${{ steps.detect.outputs.required }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: detect
+        name: Detect sandbox smoke changes
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BASE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          GITHUB_SHA_VALUE: ${{ github.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            base="$PR_BASE"
+            head="$PR_HEAD"
+          else
+            base="$PUSH_BASE"
+            head="$GITHUB_SHA_VALUE"
+          fi
+          scripts/ci-sandbox-smoke-required.sh "$base" "$head" >> "$GITHUB_OUTPUT"
+
   smoke-sandbox-mcp:
+    needs: sandbox-smoke-changes
+    if: needs.sandbox-smoke-changes.outputs.required == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
