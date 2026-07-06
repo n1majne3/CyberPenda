@@ -535,6 +535,24 @@ func TestDockerContainerStopConfirmationTimesOutWhileContainerRuns(t *testing.T)
 	}
 }
 
+func TestDockerContainerCleanupTreatsMissingContainerAsSuccess(t *testing.T) {
+	dir := t.TempDir()
+	docker := filepath.Join(dir, "docker")
+	script := "#!/bin/sh\n" +
+		"echo 'Error response from daemon: No such container: ctr-missing' >&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(docker, []byte(script), 0o700); err != nil {
+		t.Fatalf("write docker stub: %v", err)
+	}
+
+	if err := runtime.StopDockerContainer(docker, "ctr-missing", 2*time.Second); err != nil {
+		t.Fatalf("expected missing container stop to succeed, got %v", err)
+	}
+	if err := runtime.RemoveDockerContainer(docker, "ctr-missing"); err != nil {
+		t.Fatalf("expected missing container rm to succeed, got %v", err)
+	}
+}
+
 func TestDiscoverCodexSessionReturnsNewestSavedSession(t *testing.T) {
 	providerHome := filepath.Join(t.TempDir(), "codex")
 	oldPath := filepath.Join(providerHome, "sessions", "2026", "07", "03", "older.jsonl")

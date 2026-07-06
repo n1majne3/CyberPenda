@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -185,7 +186,14 @@ func StopDockerContainer(containerCLI, containerID string, grace time.Duration) 
 	if id == "" {
 		return nil
 	}
-	return stopThenKillContainer(cli, id, grace)
+	if err := runDockerContainerCommand(cli, grace, "stop", id); err == nil || isMissingDockerContainerError(err) {
+		return nil
+	}
+	err := runDockerContainerCommand(cli, grace, "kill", id)
+	if isMissingDockerContainerError(err) {
+		return nil
+	}
+	return err
 }
 
 func removeContainer(containerCLI, containerID string) error {
@@ -203,5 +211,46 @@ func RemoveDockerContainer(containerCLI, containerID string) error {
 	if id == "" {
 		return nil
 	}
-	return removeContainer(cli, id)
+	err := runDockerContainerCommand(cli, 0, "rm", "-f", id)
+	if isMissingDockerContainerError(err) {
+		return nil
+	}
+	return err
+}
+
+type dockerContainerCommandError struct {
+	err    error
+	output string
+}
+
+func (e dockerContainerCommandError) Error() string {
+	return e.err.Error()
+}
+
+func runDockerContainerCommand(containerCLI string, timeout time.Duration, args ...string) error {
+	var cmd *exec.Cmd
+	if timeout > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		cmd = exec.CommandContext(ctx, containerCLI, args...)
+	} else {
+		cmd = exec.Command(containerCLI, args...)
+	}
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	return dockerContainerCommandError{err: err, output: string(output)}
+}
+
+func isMissingDockerContainerError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var commandErr dockerContainerCommandError
+	if errors.As(err, &commandErr) {
+		text := strings.ToLower(commandErr.output)
+		return strings.Contains(text, "no such container") || strings.Contains(text, "no such object")
+	}
+	return false
 }
