@@ -121,6 +121,13 @@ type RuntimeControls struct {
 	RuntimeProvider         string `json:"runtime_provider,omitempty"`
 }
 
+// ReconcileInterruptedResult describes active runtime state interrupted during
+// daemon startup reconciliation.
+type ReconcileInterruptedResult struct {
+	Tasks         []Task
+	Continuations []TaskContinuation
+}
+
 type SummaryVersion struct {
 	ID          string    `json:"id"`
 	TaskID      string    `json:"task_id"`
@@ -755,41 +762,84 @@ func (s *Service) UpdateStatus(taskID string, status Status) (Task, error) {
 // state is gone, so nothing is actually running them. It returns the tasks it
 // changed so the caller can log and emit lifecycle events.
 func (s *Service) ReconcileInterruptedStatuses() ([]Task, error) {
+	result, err := s.ReconcileInterruptedState()
+	if err != nil {
+		return result.Tasks, err
+	}
+	return result.Tasks, nil
+}
+
+// ReconcileInterruptedState marks every task and continuation in an active
+// state as interrupted. It is intended to run at daemon startup: those runtime
+// records belonged to a previous daemon instance whose in-memory harness state
+// is gone. It returns the records it changed so callers can log and clean up
+// runtime-owned resources such as sandbox containers.
+func (s *Service) ReconcileInterruptedState() (ReconcileInterruptedResult, error) {
 	rows, err := s.db.Query(
 		`SELECT id, project_id, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at
 		 FROM tasks WHERE status IN (?, ?, ?)`,
 		string(StatusRunning), string(StatusPending), string(StatusPaused))
 	if err != nil {
-		return nil, fmt.Errorf("query active tasks: %w", err)
+		return ReconcileInterruptedResult{}, fmt.Errorf("query active tasks: %w", err)
 	}
 	defer rows.Close()
 	var active []Task
 	for rows.Next() {
 		task, err := scanTask(rows)
 		if err != nil {
-			return nil, fmt.Errorf("scan active task: %w", err)
+			return ReconcileInterruptedResult{}, fmt.Errorf("scan active task: %w", err)
 		}
 		active = append(active, task)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate active tasks: %w", err)
+		return ReconcileInterruptedResult{}, fmt.Errorf("iterate active tasks: %w", err)
+	}
+
+	activeContinuations, err := s.activeContinuations()
+	if err != nil {
+		return ReconcileInterruptedResult{}, err
 	}
 
 	var changed []Task
 	for _, t := range active {
 		updated, err := s.UpdateStatus(t.ID, StatusInterrupted)
 		if err != nil {
-			return changed, fmt.Errorf("interrupt task %s: %w", t.ID, err)
+			return ReconcileInterruptedResult{Tasks: changed, Continuations: activeContinuations}, fmt.Errorf("interrupt task %s: %w", t.ID, err)
 		}
 		if err := s.interruptActiveContinuations(t.ID); err != nil {
-			return changed, fmt.Errorf("interrupt continuations for task %s: %w", t.ID, err)
+			return ReconcileInterruptedResult{Tasks: changed, Continuations: activeContinuations}, fmt.Errorf("interrupt continuations for task %s: %w", t.ID, err)
 		}
 		changed = append(changed, updated)
 	}
 	if err := s.interruptStaleActiveContinuations(); err != nil {
-		return changed, err
+		return ReconcileInterruptedResult{Tasks: changed, Continuations: activeContinuations}, err
 	}
-	return changed, nil
+	return ReconcileInterruptedResult{Tasks: changed, Continuations: activeContinuations}, nil
+}
+
+func (s *Service) activeContinuations() ([]TaskContinuation, error) {
+	rows, err := s.db.Query(
+		`SELECT id, task_id, number, runtime_profile_id, runtime_provider, runner, status, container_id, native_session_id, native_session_path, started_at, updated_at, ended_at
+		 FROM task_continuations
+		 WHERE status IN (?, ?, ?)`,
+		string(StatusPending), string(StatusRunning), string(StatusPaused),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query active continuations: %w", err)
+	}
+	defer rows.Close()
+	var active []TaskContinuation
+	for rows.Next() {
+		continuation, err := scanContinuation(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan active continuation: %w", err)
+		}
+		active = append(active, continuation)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate active continuations: %w", err)
+	}
+	return active, nil
 }
 
 func (s *Service) interruptActiveContinuations(taskID string) error {

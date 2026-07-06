@@ -179,21 +179,44 @@ func NewServer(config Config) (*Server, error) {
 // lifecycle event so the timeline and logs explain the gap. Failures are
 // logged but never block startup.
 func (server *Server) reconcileInterruptedTasks() {
-	changed, err := server.tasks.ReconcileInterruptedStatuses()
+	reconciled, err := server.tasks.ReconcileInterruptedState()
 	if err != nil {
 		server.logger.Printf("task reconcile: failed to interrupt stale tasks: %v", err)
 		return
 	}
-	for _, t := range changed {
+	for _, continuation := range reconciled.Continuations {
+		server.cleanupStaleContinuationContainer(continuation)
+	}
+	for _, t := range reconciled.Tasks {
 		_, _ = server.tasks.AppendEvent(t.ID, task.EventKindLifecycle, task.EventPayload{
 			"phase":  "interrupted",
 			"reason": "daemon_restart",
 		})
 		server.logTask(t, "interrupted", "daemon restart orphaned this task")
 	}
-	if len(changed) > 0 {
-		server.logger.Printf("task reconcile: %d task(s) interrupted on daemon restart", len(changed))
+	if len(reconciled.Tasks) > 0 {
+		server.logger.Printf("task reconcile: %d task(s) interrupted on daemon restart", len(reconciled.Tasks))
 	}
+}
+
+func (server *Server) cleanupStaleContinuationContainer(continuation task.TaskContinuation) {
+	if continuation.Runner != task.RunnerSandbox || strings.TrimSpace(continuation.ContainerID) == "" {
+		return
+	}
+	containerID := strings.TrimSpace(continuation.ContainerID)
+	if err := runtime.StopDockerContainer(server.containerCLI, containerID, 2*time.Second); err != nil {
+		server.logger.Printf("task reconcile: failed to stop stale container %s for task %s: %v", containerID, continuation.TaskID, err)
+		return
+	}
+	if err := runtime.RemoveDockerContainer(server.containerCLI, containerID); err != nil {
+		server.logger.Printf("task reconcile: failed to remove stale container %s for task %s: %v", containerID, continuation.TaskID, err)
+		return
+	}
+	_, _ = server.tasks.AppendEvent(continuation.TaskID, task.EventKindLifecycle, task.EventPayload{
+		"phase":        "container_cleaned",
+		"reason":       "daemon_restart",
+		"container_id": containerID,
+	})
 }
 
 func runtimePluginRegistry(dirs []string) (*runtimeplugin.Registry, error) {

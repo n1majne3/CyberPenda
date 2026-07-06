@@ -5,10 +5,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"pentest/internal/daemon"
+	"pentest/internal/project"
+	"pentest/internal/store"
+	"pentest/internal/task"
 )
 
 func TestHealthEndpointReportsVersionAndDatabaseStatus(t *testing.T) {
@@ -484,6 +489,76 @@ func TestNewServerReconcilesGhostTasksOnRestart(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected an interrupted lifecycle event, got %#v", events)
+	}
+}
+
+func TestNewServerStopsGhostSandboxContainersOnRestart(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "pentest.db")
+	dockerLog := filepath.Join(dir, "docker.log")
+	dockerCLI := filepath.Join(dir, "fake-docker")
+	script := "#!/bin/sh\n" +
+		"echo \"$*\" >> " + shellQuote(dockerLog) + "\n" +
+		"if [ \"$1\" = \"stop\" ]; then exit 0; fi\n" +
+		"if [ \"$1\" = \"kill\" ]; then exit 0; fi\n" +
+		"if [ \"$1\" = \"rm\" ]; then exit 0; fi\n" +
+		"exit 0\n"
+	if err := os.WriteFile(dockerCLI, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake docker: %v", err)
+	}
+
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	projects := project.NewService(db)
+	tasks := task.NewService(db, projects)
+	proj, err := projects.Create("Acme", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	created, err := tasks.Create(task.CreateRequest{
+		ProjectID:        proj.ID,
+		Goal:             "ghost sandbox",
+		RuntimeProfileID: "profile-1",
+		Runner:           task.RunnerSandbox,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	continuation, err := tasks.CreateContinuation(created.ID, "profile-1", "pi", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create continuation: %v", err)
+	}
+	if _, err := tasks.UpdateContinuationRuntimeMetadata(continuation.ID, "ctr-ghost", "", ""); err != nil {
+		t.Fatalf("record container id: %v", err)
+	}
+	if _, err := tasks.UpdateContinuationStatus(continuation.ID, task.StatusRunning); err != nil {
+		t.Fatalf("set continuation running: %v", err)
+	}
+	if _, err := tasks.UpdateStatus(created.ID, task.StatusRunning); err != nil {
+		t.Fatalf("set task running: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	server, err := daemon.NewServer(daemon.Config{Version: "v", DBPath: dbPath, ContainerCLI: dockerCLI})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	raw, err := os.ReadFile(dockerLog)
+	if err != nil {
+		t.Fatalf("read docker log: %v", err)
+	}
+	log := string(raw)
+	if !strings.Contains(log, "stop ctr-ghost") {
+		t.Fatalf("expected docker stop for ghost container, got:\n%s", log)
+	}
+	if !strings.Contains(log, "rm -f ctr-ghost") {
+		t.Fatalf("expected docker rm for ghost container, got:\n%s", log)
 	}
 }
 

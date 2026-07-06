@@ -174,6 +174,34 @@ func stopThenKillContainer(containerCLI, containerID string, grace time.Duration
 	return nil
 }
 
+// StopDockerContainer requests a docker container stop, escalating to kill when
+// the graceful stop command fails or times out.
+func StopDockerContainer(containerCLI, containerID string, grace time.Duration) error {
+	cli := strings.TrimSpace(containerCLI)
+	if cli == "" {
+		cli = "docker"
+	}
+	id := strings.TrimSpace(containerID)
+	if id == "" {
+		return nil
+	}
+	return stopThenKillContainer(cli, id, grace)
+}
+
 func removeContainer(containerCLI, containerID string) error {
 	return exec.Command(containerCLI, "rm", "-f", containerID).Run()
+}
+
+// RemoveDockerContainer force-removes a docker container. Missing containers
+// are treated as a successful cleanup by Docker itself.
+func RemoveDockerContainer(containerCLI, containerID string) error {
+	cli := strings.TrimSpace(containerCLI)
+	if cli == "" {
+		cli = "docker"
+	}
+	id := strings.TrimSpace(containerID)
+	if id == "" {
+		return nil
+	}
+	return removeContainer(cli, id)
 }
