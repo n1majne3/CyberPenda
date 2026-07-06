@@ -196,7 +196,12 @@ type sandboxEnvVar struct {
 
 func sandboxProviderEnv(provider runtimeprofile.Provider, providerDir string) []sandboxEnvVar {
 	if provider == runtimeprofile.ProviderPi {
-		return []sandboxEnvVar{{Name: "PI_CODING_AGENT_DIR", Value: "/task/runtime-home/" + providerDir + "/agent"}}
+		providerHome := "/task/runtime-home/" + providerDir
+		return []sandboxEnvVar{
+			{Name: "PI_CODING_AGENT_DIR", Value: providerHome + "/agent"},
+			{Name: "PI_CODING_AGENT_SESSION_DIR", Value: providerHome + "/agent/sessions"},
+			{Name: "HOME", Value: providerHome},
+		}
 	}
 	providerHome := "/task/runtime-home/" + providerDir
 	if provider == runtimeprofile.ProviderClaudeCode {

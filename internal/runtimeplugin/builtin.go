@@ -175,7 +175,10 @@ func BuiltinPlugins() []Plugin {
 					"{{resumed_message}}",
 				},
 			},
-			ProcessEnv:    map[string]string{"PI_CODING_AGENT_DIR": "{{runtime_home}}/pi/agent"},
+			ProcessEnv: map[string]string{
+				"PI_CODING_AGENT_DIR":         "{{runtime_home}}/pi/agent",
+				"PI_CODING_AGENT_SESSION_DIR": "{{runtime_home}}/pi/agent/sessions",
+			},
 			CredentialEnv: []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY"},
 			Transcript:    Transcript{Parser: "pi_json_session"},
 		},

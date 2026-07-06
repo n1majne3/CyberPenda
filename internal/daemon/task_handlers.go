@@ -435,12 +435,12 @@ func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launch
 	// the adapter with a session-file tailer that re-emits appended lines as
 	// runtime_output events the transcript parser already understands.
 	if sandbox && profile.Provider == runtimeprofile.ProviderPi {
-		sessionDir := filepath.Join(layout.ProviderHome, "agent", "sessions", "--task-workdir--")
+		sessionDir := filepath.Join(layout.ProviderHome, "agent", "sessions")
 		adapter = runtime.NewPiSessionTailAdapter(adapter, sessionDir)
 	}
 
 	var metadata func() (runtime.NativeSessionMetadata, error)
-	if sandbox || profile.Provider == runtimeprofile.ProviderCodex {
+	if sandbox || profile.Provider == runtimeprofile.ProviderCodex || profile.Provider == runtimeprofile.ProviderPi {
 		metadata = func() (runtime.NativeSessionMetadata, error) {
 			var collected runtime.NativeSessionMetadata
 			if containerIDFile != "" {
@@ -450,8 +450,16 @@ func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launch
 				}
 				collected.ContainerID = containerID
 			}
-			if profile.Provider == runtimeprofile.ProviderCodex {
+			switch profile.Provider {
+			case runtimeprofile.ProviderCodex:
 				session, err := runtime.DiscoverCodexSession(layout.ProviderHome)
+				if err != nil {
+					return runtime.NativeSessionMetadata{}, err
+				}
+				collected.NativeSessionID = session.NativeSessionID
+				collected.NativeSessionPath = session.NativeSessionPath
+			case runtimeprofile.ProviderPi:
+				session, err := runtime.DiscoverPiSession(layout.ProviderHome)
 				if err != nil {
 					return runtime.NativeSessionMetadata{}, err
 				}
@@ -564,6 +572,13 @@ func (server *Server) decorateTask(found task.Task) (task.Task, error) {
 	if err != nil {
 		return task.Task{}, err
 	}
+	latest, err = server.captureDiscoverableNativeSession(found, latest)
+	if err != nil {
+		return task.Task{}, err
+	}
+	if active != nil && latest != nil && active.ID == latest.ID {
+		active = latest
+	}
 	controls, err := server.runtimeControlsForTask(found, latest)
 	if err != nil {
 		return task.Task{}, err
@@ -572,6 +587,31 @@ func (server *Server) decorateTask(found task.Task) (task.Task, error) {
 	found.ActiveContinuation = active
 	found.LatestContinuation = latest
 	return found, nil
+}
+
+func (server *Server) captureDiscoverableNativeSession(found task.Task, latest *task.TaskContinuation) (*task.TaskContinuation, error) {
+	if latest == nil || strings.TrimSpace(latest.NativeSessionID) != "" {
+		return latest, nil
+	}
+	profile, err := server.resolveTaskRuntimeProfile(found)
+	if err != nil {
+		return nil, err
+	}
+	if profile.Provider != runtimeprofile.ProviderCodex && profile.Provider != runtimeprofile.ProviderPi {
+		return latest, nil
+	}
+	metadata, err := server.discoverProviderNativeSession(found.ID, profile.Provider)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(metadata.NativeSessionID) == "" {
+		return latest, nil
+	}
+	updated, err := server.tasks.UpdateContinuationRuntimeMetadata(latest.ID, "", metadata.NativeSessionID, metadata.NativeSessionPath)
+	if err != nil {
+		return nil, err
+	}
+	return &updated, nil
 }
 
 func (server *Server) runtimeControlsForTask(found task.Task, latest *task.TaskContinuation) (task.RuntimeControls, error) {
@@ -1350,11 +1390,7 @@ func (server *Server) discoverNativeResumeSession(found task.Task) (string, erro
 	if latest != nil && strings.TrimSpace(latest.NativeSessionID) != "" {
 		return latest.NativeSessionID, nil
 	}
-	layout, err := runner.PrepareTaskLayout(server.runtimeRoot, found.ID, profile.Provider)
-	if err != nil {
-		return "", err
-	}
-	metadata, err := runtime.DiscoverCodexSession(layout.ProviderHome)
+	metadata, err := server.discoverProviderNativeSession(found.ID, profile.Provider)
 	if err != nil {
 		return "", err
 	}
@@ -1362,6 +1398,24 @@ func (server *Server) discoverNativeResumeSession(found task.Task) (string, erro
 		return "", errNativeSessionUnavailable
 	}
 	return metadata.NativeSessionID, nil
+}
+
+func (server *Server) discoverProviderNativeSession(taskID string, provider runtimeprofile.Provider) (runtime.NativeSessionMetadata, error) {
+	if provider != runtimeprofile.ProviderCodex && provider != runtimeprofile.ProviderPi {
+		return runtime.NativeSessionMetadata{}, nil
+	}
+	layout, err := runner.PrepareTaskLayout(server.runtimeRoot, taskID, provider)
+	if err != nil {
+		return runtime.NativeSessionMetadata{}, err
+	}
+	switch provider {
+	case runtimeprofile.ProviderCodex:
+		return runtime.DiscoverCodexSession(layout.ProviderHome)
+	case runtimeprofile.ProviderPi:
+		return runtime.DiscoverPiSession(layout.ProviderHome)
+	default:
+		return runtime.NativeSessionMetadata{}, nil
+	}
 }
 
 func (server *Server) handleTaskContinuation(response http.ResponseWriter, request *http.Request) {

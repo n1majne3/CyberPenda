@@ -62,6 +62,9 @@ func TestLaunchProcessEnvSetsPiCodingAgentDirInSandbox(t *testing.T) {
 	if env["PI_CODING_AGENT_DIR"] != "/task/runtime-home/pi/agent" {
 		t.Fatalf("expected pi agent dir in sandbox, got %#v", env["PI_CODING_AGENT_DIR"])
 	}
+	if env["PI_CODING_AGENT_SESSION_DIR"] != "/task/runtime-home/pi/agent/sessions" {
+		t.Fatalf("expected pi session dir in sandbox, got %#v", env["PI_CODING_AGENT_SESSION_DIR"])
+	}
 	if env["PI_HOME"] != "" {
 		t.Fatalf("expected PI_HOME to be unset, got %#v", env["PI_HOME"])
 	}
@@ -160,7 +163,13 @@ func TestBuildSandboxCommandSetsPiCodingAgentDir(t *testing.T) {
 		t.Fatalf("build command: %v", err)
 	}
 	joined := strings.Join(command.Args, " ")
-	if !strings.Contains(joined, "PI_CODING_AGENT_DIR=/task/runtime-home/pi/agent") {
-		t.Fatalf("expected pi agent dir env in sandbox args, got %q", joined)
+	for _, want := range []string{
+		"PI_CODING_AGENT_DIR=/task/runtime-home/pi/agent",
+		"PI_CODING_AGENT_SESSION_DIR=/task/runtime-home/pi/agent/sessions",
+		"HOME=/task/runtime-home/pi",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected %q in sandbox args, got %q", want, joined)
+		}
 	}
 }

@@ -599,6 +599,38 @@ func TestDiscoverCodexSessionFallsBackToNewestSQLiteThread(t *testing.T) {
 	}
 }
 
+func TestDiscoverPiSessionReturnsNewestPersistedSession(t *testing.T) {
+	providerHome := filepath.Join(t.TempDir(), "pi")
+	oldPath := filepath.Join(providerHome, "agent", "sessions", "--task-workdir--", "2026-07-03T00-00-00-000Z_old.jsonl")
+	newPath := filepath.Join(providerHome, "agent", "sessions", "--task-workdir--", "2026-07-04T00-00-00-000Z_new.jsonl")
+	for path, sessionID := range map[string]string{
+		oldPath: "sess-old",
+		newPath: "sess-new",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("mkdir session dir: %v", err)
+		}
+		line := `{"type":"session","version":3,"id":"` + sessionID + `","cwd":"/task/workdir"}` + "\n"
+		if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+			t.Fatalf("write session file: %v", err)
+		}
+	}
+	if err := os.Chtimes(newPath, time.Now(), time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("chtimes newer session: %v", err)
+	}
+
+	metadata, err := runtime.DiscoverPiSession(providerHome)
+	if err != nil {
+		t.Fatalf("discover pi session: %v", err)
+	}
+	if metadata.NativeSessionID != "sess-new" {
+		t.Fatalf("expected newest session id sess-new, got %q", metadata.NativeSessionID)
+	}
+	if metadata.NativeSessionPath != newPath {
+		t.Fatalf("expected newest session path %q, got %q", newPath, metadata.NativeSessionPath)
+	}
+}
+
 func waitForActive(t *testing.T, h *runtime.Harness, taskID string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)

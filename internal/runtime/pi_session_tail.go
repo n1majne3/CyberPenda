@@ -148,25 +148,26 @@ func tailPiSession(ctx context.Context, sessionDir string, observe func(string),
 }
 
 // newestSessionFile returns the lexicographically newest *.jsonl file under
-// dir (Pi names files with a leading ISO timestamp, so newest == most recent).
-// ok is false when the directory or no matching file exists yet.
+// dir, including cwd-specific child directories. Pi names files with a leading
+// ISO timestamp, so newest == most recent. ok is false when the directory or no
+// matching file exists yet.
 func newestSessionFile(dir string) (string, bool) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
+	var paths []string
+	if err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			return nil
+		}
+		paths = append(paths, path)
+		return nil
+	}); err != nil {
 		return "", false
 	}
-	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		if strings.HasSuffix(e.Name(), ".jsonl") {
-			names = append(names, e.Name())
-		}
-	}
-	if len(names) == 0 {
+	if len(paths) == 0 {
 		return "", false
 	}
-	sort.Strings(names)
-	return filepath.Join(dir, names[len(names)-1]), true
+	sort.Strings(paths)
+	return paths[len(paths)-1], true
 }
