@@ -177,6 +177,7 @@ func TestPiBuiltinDeclaresNativeResume(t *testing.T) {
 		"{{binary}}",
 		"{{pi_provider_args}}",
 		"--model", "{{model}}",
+		"--mode", "json",
 		"--session", "{{native_session}}",
 		"{{custom_args}}",
 		"{{resumed_message}}",

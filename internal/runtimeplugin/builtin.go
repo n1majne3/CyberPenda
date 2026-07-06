@@ -156,9 +156,10 @@ func BuiltinPlugins() []Plugin {
 				MCPConfigPath: "runtime-home/pi/agent/mcp.json",
 			},
 			Launch: LaunchTemplate{
-				Args: []string{"{{binary}}", "{{pi_provider_args}}", "--model", "{{model}}", "{{custom_args}}", "{{goal}}"},
+				Args: []string{"{{binary}}", "{{pi_provider_args}}", "--model", "{{model}}", "--mode", "json", "{{custom_args}}", "{{goal}}"},
 				SingletonOptions: []SingletonOption{
 					{Options: []string{"--provider"}, Arity: 1},
+					{Options: []string{"--mode"}, Arity: 1},
 				},
 			},
 			NativeResume: NativeResume{
@@ -168,6 +169,7 @@ func BuiltinPlugins() []Plugin {
 					"{{binary}}",
 					"{{pi_provider_args}}",
 					"--model", "{{model}}",
+					"--mode", "json",
 					"--session", "{{native_session}}",
 					"{{custom_args}}",
 					"{{resumed_message}}",

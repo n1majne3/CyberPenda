@@ -184,6 +184,7 @@ func TestBuildNativeResumeArgsUsesPiRuntimePluginContract(t *testing.T) {
 		"/usr/local/bin/pi",
 		"--provider", "custom",
 		"--model", "DeepSeek-V4-Pro",
+		"--mode", "json",
 		"--session", "sess-pi",
 		"--thinking", "medium",
 		"focus admin",
@@ -348,6 +349,9 @@ func TestBuildPiLaunchArgsSelectsGeneratedCustomProvider(t *testing.T) {
 	}
 	if !strings.Contains(joined, "--model DeepSeek-V4-Pro") {
 		t.Fatalf("expected configured model, got %q", joined)
+	}
+	if !strings.Contains(joined, "--mode json") {
+		t.Fatalf("expected Pi JSON event stream mode, got %q", joined)
 	}
 }
 

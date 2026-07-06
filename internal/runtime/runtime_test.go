@@ -2,6 +2,7 @@ package runtime_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -14,6 +15,8 @@ import (
 	"pentest/internal/runtime"
 	"pentest/internal/store"
 	"pentest/internal/task"
+
+	_ "modernc.org/sqlite"
 )
 
 func newServices(t *testing.T) (*runtime.Harness, *task.Service, *project.Service) {
@@ -561,6 +564,38 @@ func TestDiscoverCodexSessionReturnsNewestSavedSession(t *testing.T) {
 	}
 	if metadata.NativeSessionPath != newPath {
 		t.Fatalf("expected newest session path %q, got %q", newPath, metadata.NativeSessionPath)
+	}
+}
+
+func TestDiscoverCodexSessionFallsBackToNewestSQLiteThread(t *testing.T) {
+	providerHome := filepath.Join(t.TempDir(), "codex")
+	if err := os.MkdirAll(providerHome, 0o700); err != nil {
+		t.Fatalf("mkdir provider home: %v", err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(providerHome, "state_5.sqlite"))
+	if err != nil {
+		t.Fatalf("open codex state sqlite: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, updated_at INTEGER NOT NULL)`); err != nil {
+		t.Fatalf("create threads table: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO threads (id, rollout_path, updated_at) VALUES (?, ?, ?), (?, ?, ?)`,
+		"thread-old", "rollouts/old.jsonl", int64(100),
+		"thread-new", "rollouts/new.jsonl", int64(200),
+	); err != nil {
+		t.Fatalf("insert threads: %v", err)
+	}
+
+	metadata, err := runtime.DiscoverCodexSession(providerHome)
+	if err != nil {
+		t.Fatalf("discover codex session: %v", err)
+	}
+	if metadata.NativeSessionID != "thread-new" {
+		t.Fatalf("expected newest thread id thread-new, got %q", metadata.NativeSessionID)
+	}
+	if metadata.NativeSessionPath != filepath.Join(providerHome, "state_5.sqlite") {
+		t.Fatalf("expected sqlite path, got %q", metadata.NativeSessionPath)
 	}
 }
 

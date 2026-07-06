@@ -2,11 +2,14 @@ package runtime
 
 import (
 	"bufio"
+	"database/sql"
 	"encoding/json"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+
+	_ "modernc.org/sqlite"
 )
 
 type NativeSessionMetadata struct {
@@ -47,12 +50,15 @@ func DiscoverCodexSession(providerHome string) (NativeSessionMetadata, error) {
 		return NativeSessionMetadata{}, err
 	}
 	if newestPath == "" {
-		return NativeSessionMetadata{}, nil
+		return discoverCodexSQLiteSession(providerHome)
 	}
 
 	sessionID, err := readCodexSessionID(newestPath)
 	if err != nil {
 		return NativeSessionMetadata{}, err
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		return discoverCodexSQLiteSession(providerHome)
 	}
 	return NativeSessionMetadata{
 		NativeSessionID:   sessionID,
@@ -86,4 +92,54 @@ func readCodexSessionID(path string) (string, error) {
 		return "", err
 	}
 	return "", nil
+}
+
+func discoverCodexSQLiteSession(providerHome string) (NativeSessionMetadata, error) {
+	paths, err := filepath.Glob(filepath.Join(providerHome, "state*.sqlite"))
+	if err != nil {
+		return NativeSessionMetadata{}, err
+	}
+	var newest NativeSessionMetadata
+	var newestUpdated int64
+	for _, path := range paths {
+		sessionID, updated, err := readCodexSQLiteThread(path)
+		if err != nil || strings.TrimSpace(sessionID) == "" {
+			continue
+		}
+		if newest.NativeSessionID == "" || updated > newestUpdated {
+			newest = NativeSessionMetadata{
+				NativeSessionID:   sessionID,
+				NativeSessionPath: path,
+			}
+			newestUpdated = updated
+		}
+	}
+	return newest, nil
+}
+
+func readCodexSQLiteThread(path string) (string, int64, error) {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return "", 0, err
+	}
+	defer db.Close()
+	queries := []string{
+		`SELECT id, updated_at_ms FROM threads WHERE trim(id) <> '' ORDER BY updated_at_ms DESC LIMIT 1`,
+		`SELECT id, updated_at FROM threads WHERE trim(id) <> '' ORDER BY updated_at DESC LIMIT 1`,
+		`SELECT id, created_at_ms FROM threads WHERE trim(id) <> '' ORDER BY created_at_ms DESC LIMIT 1`,
+		`SELECT id, created_at FROM threads WHERE trim(id) <> '' ORDER BY created_at DESC LIMIT 1`,
+		`SELECT id, 0 FROM threads WHERE trim(id) <> '' LIMIT 1`,
+	}
+	for _, query := range queries {
+		var sessionID string
+		var updated int64
+		err := db.QueryRow(query).Scan(&sessionID, &updated)
+		if err == nil {
+			return strings.TrimSpace(sessionID), updated, nil
+		}
+		if err == sql.ErrNoRows {
+			return "", 0, nil
+		}
+	}
+	return "", 0, nil
 }

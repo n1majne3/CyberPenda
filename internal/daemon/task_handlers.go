@@ -593,13 +593,14 @@ func (server *Server) runtimeControlsForTask(found task.Task, latest *task.TaskC
 	}
 	if nativeResumeSupported {
 		controls.NativeResumeAvailable = !active && sessionCaptured
-		controls.InterruptSteerAvailable = active
+		controls.InterruptSteerAvailable = active && sessionCaptured
 	} else {
 		controls.NativeResumeReason = fmt.Sprintf("native resume unsupported for provider %s", profile.Provider)
 		controls.InterruptSteerReason = controls.NativeResumeReason
 	}
 	if nativeResumeSupported && !sessionCaptured {
 		controls.NativeResumeReason = "native session unavailable"
+		controls.InterruptSteerReason = controls.NativeResumeReason
 	}
 	return controls, nil
 }
