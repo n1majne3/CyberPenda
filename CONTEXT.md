@@ -28,6 +28,10 @@ _Avoid_: chat message, report section, shell command, plan step
 The user's natural-language objective for a **Task**.
 _Avoid_: raw prompt only, plan step
 
+**Task Launch**:
+The creation or continuation of a **Task** from **Run Controls**, resolved runtime configuration, selected **Runner**, **Scope Snapshot**, and startup checks.
+_Avoid_: runtime projection, task adapter build, launch plumbing
+
 **Run Controls**:
 The structured task launch settings that choose **Launch Selection** or an optional **Runtime Profile Preset**, runner, mode, scope preview, and artifact behavior.
 _Avoid_: hidden prompt flags, runtime internals
