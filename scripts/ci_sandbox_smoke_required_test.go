@@ -33,6 +33,16 @@ func TestCISandboxSmokeRequired(t *testing.T) {
 			wantOut: "required=true",
 		},
 		{
+			name:    "requires smoke for runner sandbox command changes",
+			files:   "internal/runner/runner.go\n",
+			wantOut: "required=true",
+		},
+		{
+			name:    "requires smoke for daemon sandbox launch assembly changes",
+			files:   "internal/daemon/task_handlers.go\n",
+			wantOut: "required=true",
+		},
+		{
 			name:    "requires smoke for CI workflow changes",
 			files:   ".github/workflows/ci.yml\n",
 			wantOut: "required=true",

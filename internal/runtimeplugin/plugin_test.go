@@ -143,6 +143,8 @@ func TestClaudeCodeBuiltinDeclaresNativeResume(t *testing.T) {
 		"{{binary}}",
 		"--resume", "{{native_session}}",
 		"--model", "{{model}}",
+		"--settings", "{{config_path}}",
+		"{{mcp_args}}",
 		"-p",
 		"--output-format", "stream-json",
 		"--verbose",

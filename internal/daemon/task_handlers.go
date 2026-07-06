@@ -328,6 +328,8 @@ func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launch
 			Profile:         launchProfile,
 			NativeSessionID: nativeResumeSessionID,
 			ResumedMessage:  goal,
+			ConfigPath:      configPath,
+			MCPConfigPath:   mcpConfigPath,
 		})
 		if err != nil {
 			return taskLaunchPlan{}, err
@@ -917,12 +919,7 @@ func (server *Server) handleResumeHandoffTask(response http.ResponseWriter, requ
 }
 
 func (server *Server) prepareNativeResumeContinuation(found task.Task, resumedMessage string) (task.Task, string, taskLaunchPlan, error) {
-	effectiveProfile, err := server.resolveTaskRuntimeProfile(found)
-	if err != nil {
-		return task.Task{}, "", taskLaunchPlan{}, err
-	}
-	found.RuntimeProfileID = effectiveProfile.ID
-	nativeResumeSessionID, err := server.discoverNativeResumeSession(found)
+	found, resumedMessage, nativeResumeSessionID, err := server.prepareNativeResumeRequest(found, resumedMessage)
 	if err != nil {
 		return task.Task{}, "", taskLaunchPlan{}, err
 	}
@@ -931,6 +928,19 @@ func (server *Server) prepareNativeResumeContinuation(found task.Task, resumedMe
 		return task.Task{}, "", taskLaunchPlan{}, err
 	}
 	return found, resumedMessage, plan, nil
+}
+
+func (server *Server) prepareNativeResumeRequest(found task.Task, resumedMessage string) (task.Task, string, string, error) {
+	effectiveProfile, err := server.resolveTaskRuntimeProfile(found)
+	if err != nil {
+		return task.Task{}, "", "", err
+	}
+	found.RuntimeProfileID = effectiveProfile.ID
+	nativeResumeSessionID, err := server.discoverNativeResumeSession(found)
+	if err != nil {
+		return task.Task{}, "", "", err
+	}
+	return found, resumedMessage, nativeResumeSessionID, nil
 }
 
 func (server *Server) prepareHandoffResumeContinuation(found task.Task) (task.Task, string, taskLaunchPlan, error) {
@@ -1173,6 +1183,15 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 	}
 
 	if activeSteer {
+		resumedTask, resumeGoal, nativeResumeSessionID, err := server.prepareNativeResumeRequest(found, input.Directive)
+		if err != nil {
+			_, _ = server.tasks.AppendEvent(taskID, task.EventKindLifecycle, task.EventPayload{
+				"phase": "resume_failed",
+				"error": err.Error(),
+			})
+			server.writeResumePreparationError(response, err)
+			return
+		}
 		_, _ = server.tasks.AppendEvent(taskID, task.EventKindLifecycle, task.EventPayload{
 			"phase": "interrupting",
 		})
@@ -1184,12 +1203,7 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 			return
 		}
 
-		refreshed, err := server.tasks.Get(taskID)
-		if err != nil {
-			writeTaskError(response, err)
-			return
-		}
-		resumedTask, resumeGoal, plan, err := server.prepareNativeResumeContinuation(refreshed, input.Directive)
+		plan, err := server.buildTaskLaunchPlan(resumedTask, resumeGoal, "", nativeResumeSessionID)
 		if err != nil {
 			_, _ = server.tasks.AppendEvent(taskID, task.EventKindLifecycle, task.EventPayload{
 				"phase": "resume_failed",

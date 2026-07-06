@@ -1792,6 +1792,142 @@ func TestSteerTaskInterruptsActiveRunAndLaunchesResumedContinuation(t *testing.T
 	waitForTaskStatus(t, server, projectID, taskID, "completed")
 }
 
+func TestClaudeSteerNativeResumeKeepsSettingsAndMCPArgs(t *testing.T) {
+	runtimeRoot := t.TempDir()
+	server := newDaemonWithConfig(t, daemon.Config{
+		Version:              "test-version",
+		DBPath:               filepath.Join(t.TempDir(), "pentest.db"),
+		RuntimeRoot:          runtimeRoot,
+		DisableBuiltinSkills: true,
+	})
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+
+	binary := filepath.Join(t.TempDir(), "claude-steer")
+	script := "#!/bin/sh\n" +
+		"echo claude-provider:$*\n" +
+		"case \"$*\" in\n" +
+		"  *--resume*) exit 0 ;;\n" +
+		"esac\n" +
+		"printf '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"sess-claude\"}\\n'\n" +
+		"exec sleep 5\n"
+	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
+		t.Fatalf("write provider binary: %v", err)
+	}
+	profileID := createLocalRuntimeProfile(t, server, "Claude Steer", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{
+		BinaryPath: binary,
+		Model:      "claude-sonnet-4",
+	})
+
+	taskID := createTask(t, server, projectID, `{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
+		"runner":"host",
+		"run_controls":{"host_activated":true}
+	}`)
+	waitForInterruptSteerAvailable(t, server, projectID, taskID)
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/steer", bytes.NewReader([]byte(`{
+		"directive":"focus admin.example.com"
+	}`)))
+	req.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusAccepted {
+		t.Fatalf("expected steer interrupt status 202, got %d with body %s", resp.Code, resp.Body.String())
+	}
+
+	waitForEventText(t, server, projectID, taskID, "claude-provider:--resume sess-claude")
+	waitForTaskStatus(t, server, projectID, taskID, "completed")
+
+	events := getTaskEvents(t, server, projectID, taskID)
+	var resumeLine string
+	for _, event := range events {
+		if event["kind"] != "runtime_output" {
+			continue
+		}
+		payload, _ := event["payload"].(map[string]any)
+		text, _ := payload["text"].(string)
+		if strings.Contains(text, "claude-provider:--resume sess-claude") {
+			resumeLine = text
+			break
+		}
+	}
+	if resumeLine == "" {
+		t.Fatalf("expected resumed claude command in events, got %#v", events)
+	}
+	for _, want := range []string{"--settings", "settings.json", "--strict-mcp-config", "--mcp-config", ".mcp.json"} {
+		if !strings.Contains(resumeLine, want) {
+			t.Fatalf("expected resumed claude command to contain %q, got %q", want, resumeLine)
+		}
+	}
+}
+
+func TestSteerTaskRejectsActiveRunWithoutNativeSessionBeforeStopping(t *testing.T) {
+	runtimeRoot := t.TempDir()
+	server := newDaemonWithConfig(t, daemon.Config{
+		Version:              "test-version",
+		DBPath:               filepath.Join(t.TempDir(), "pentest.db"),
+		RuntimeRoot:          runtimeRoot,
+		DisableBuiltinSkills: true,
+	})
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+
+	binary := filepath.Join(t.TempDir(), "codex-no-session")
+	script := "#!/bin/sh\n" +
+		"echo codex-provider:$*\n" +
+		"exec sleep 5\n"
+	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
+		t.Fatalf("write provider binary: %v", err)
+	}
+	profileID := createLocalRuntimeProfile(t, server, "Codex No Session", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		BinaryPath: binary,
+		Model:      "gpt-test",
+	})
+
+	taskID := createTask(t, server, projectID, `{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
+		"runner":"host",
+		"run_controls":{"host_activated":true}
+	}`)
+	waitForEventText(t, server, projectID, taskID, "codex-provider:exec")
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/steer", bytes.NewReader([]byte(`{
+		"directive":"focus admin.example.com"
+	}`)))
+	req.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusConflict {
+		t.Fatalf("expected steer status 409 without native session, got %d with body %s", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), "native session") {
+		t.Fatalf("expected native session error, got %s", resp.Body.String())
+	}
+
+	detailResp := httptest.NewRecorder()
+	detailReq := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID, nil)
+	server.ServeHTTP(detailResp, detailReq)
+	if detailResp.Code != http.StatusOK {
+		t.Fatalf("expected task detail status 200, got %d with body %s", detailResp.Code, detailResp.Body.String())
+	}
+	var detailed struct {
+		Status             string `json:"status"`
+		ActiveContinuation *struct {
+			Status string `json:"status"`
+		} `json:"active_continuation"`
+	}
+	if err := json.NewDecoder(detailResp.Body).Decode(&detailed); err != nil {
+		t.Fatalf("decode task detail: %v", err)
+	}
+	if detailed.Status != "running" {
+		t.Fatalf("expected task to remain running, got %q", detailed.Status)
+	}
+	if detailed.ActiveContinuation == nil || detailed.ActiveContinuation.Status != "running" {
+		t.Fatalf("expected active continuation to remain running, got %#v", detailed.ActiveContinuation)
+	}
+}
+
 func TestSandboxSteerConfirmsContainerExitBeforeNativeResume(t *testing.T) {
 	dir := t.TempDir()
 	runtimeRoot := filepath.Join(dir, "runtime-root")

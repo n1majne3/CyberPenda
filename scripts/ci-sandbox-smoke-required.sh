@@ -26,6 +26,8 @@ while IFS= read -r path; do
     scripts/ci-sandbox-smoke-required.sh|\
     scripts/smoke-sandbox-mcp-live.sh|\
     scripts/with-pentestd-live.sh|\
+    internal/daemon/task_handlers.go|\
+    internal/runner/runner.go|\
     internal/runtime/container.go|\
     internal/runtime/docker_sandbox.go)
       required=true

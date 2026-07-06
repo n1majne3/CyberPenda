@@ -499,3 +499,47 @@ func TestReconcileInterruptedStatusesClearsStaleActiveContinuations(t *testing.T
 		t.Fatalf("expected stale active continuation -> interrupted, got %#v", latest)
 	}
 }
+
+func TestReconcileInterruptedStateIgnoresTerminalSandboxContainers(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+
+	proj, err := projects.Create("Acme", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	created, err := svc.Create(task.CreateRequest{
+		ProjectID:        proj.ID,
+		Goal:             "completed sandbox task",
+		RuntimeProfileID: "profile-1",
+		Runner:           task.RunnerSandbox,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	continuation, err := svc.CreateContinuation(created.ID, "profile-1", "codex", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create continuation: %v", err)
+	}
+	if _, err := svc.UpdateContinuationRuntimeMetadata(continuation.ID, "ctr-completed", "", ""); err != nil {
+		t.Fatalf("set continuation container: %v", err)
+	}
+	if _, err := svc.UpdateContinuationStatus(continuation.ID, task.StatusCompleted); err != nil {
+		t.Fatalf("set continuation completed: %v", err)
+	}
+	if _, err := svc.UpdateStatus(created.ID, task.StatusCompleted); err != nil {
+		t.Fatalf("set task completed: %v", err)
+	}
+
+	reconciled, err := svc.ReconcileInterruptedState()
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(reconciled.Tasks) != 0 {
+		t.Fatalf("expected no task status changes, got %d", len(reconciled.Tasks))
+	}
+	if len(reconciled.Continuations) != 0 {
+		t.Fatalf("expected no terminal continuation cleanup candidates, got %#v", reconciled.Continuations)
+	}
+}

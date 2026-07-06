@@ -142,6 +142,8 @@ func TestBuildNativeResumeArgsUsesClaudeCodeRuntimePluginContract(t *testing.T) 
 		},
 		NativeSessionID: "sess-123",
 		ResumedMessage:  "focus admin",
+		ConfigPath:      "/task/runtime-home/claude/settings.json",
+		MCPConfigPath:   "/task/workdir/.mcp.json",
 	})
 	if err != nil {
 		t.Fatalf("build native resume args: %v", err)
@@ -150,6 +152,8 @@ func TestBuildNativeResumeArgsUsesClaudeCodeRuntimePluginContract(t *testing.T) 
 		"/usr/local/bin/claude",
 		"--resume", "sess-123",
 		"--model", "claude-sonnet-4",
+		"--settings", "/task/runtime-home/claude/settings.json",
+		"--strict-mcp-config", "--mcp-config", "/task/workdir/.mcp.json",
 		"-p",
 		"--output-format", "stream-json",
 		"--verbose",

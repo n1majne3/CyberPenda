@@ -821,8 +821,12 @@ func (s *Service) sandboxContinuationsWithContainers() ([]TaskContinuation, erro
 	rows, err := s.db.Query(
 		`SELECT id, task_id, number, runtime_profile_id, runtime_provider, runner, status, container_id, native_session_id, native_session_path, started_at, updated_at, ended_at
 		 FROM task_continuations
-		 WHERE runner = ? AND trim(container_id) <> ''`,
+		 WHERE runner = ? AND trim(container_id) <> ''
+		   AND status IN (?, ?, ?)`,
 		string(RunnerSandbox),
+		string(StatusPending),
+		string(StatusRunning),
+		string(StatusPaused),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("query sandbox continuations with containers: %w", err)

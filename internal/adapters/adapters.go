@@ -40,6 +40,8 @@ type NativeResumeArgsRequest struct {
 	Profile         runtimeprofile.Profile
 	NativeSessionID string
 	ResumedMessage  string
+	ConfigPath      string
+	MCPConfigPath   string
 }
 
 // BuildLaunchArgs constructs the command-line arguments a real runtime would
@@ -93,6 +95,9 @@ func BuildNativeResumeArgs(req NativeResumeArgsRequest) ([]string, error) {
 	if req.Provider == runtimeprofile.ProviderClaudeCode && strings.TrimSpace(req.ResumedMessage) != "" {
 		lists["claude_goal_prefix"] = []string{"--"}
 	}
+	if mcpConfig := strings.TrimSpace(req.MCPConfigPath); mcpConfig != "" {
+		lists["mcp_args"] = []string{"--strict-mcp-config", "--mcp-config", mcpConfig}
+	}
 	if piArgs := piProviderArgs(req.Profile.Fields, req.Profile.Fields.CustomArgs); len(piArgs) > 0 {
 		lists["pi_provider_args"] = piArgs
 	}
@@ -100,6 +105,8 @@ func BuildNativeResumeArgs(req NativeResumeArgsRequest) ([]string, error) {
 		Scalars: map[string]string{
 			"binary":          binary,
 			"model":           strings.TrimSpace(req.Profile.Fields.Model),
+			"config_path":     strings.TrimSpace(req.ConfigPath),
+			"mcp_config_path": strings.TrimSpace(req.MCPConfigPath),
 			"native_session":  strings.TrimSpace(req.NativeSessionID),
 			"resumed_message": req.ResumedMessage,
 		},
