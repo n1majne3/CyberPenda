@@ -533,11 +533,11 @@ func TestNewServerStopsGhostSandboxContainersOnRestart(t *testing.T) {
 	if _, err := tasks.UpdateContinuationRuntimeMetadata(continuation.ID, "ctr-ghost", "", ""); err != nil {
 		t.Fatalf("record container id: %v", err)
 	}
-	if _, err := tasks.UpdateContinuationStatus(continuation.ID, task.StatusRunning); err != nil {
-		t.Fatalf("set continuation running: %v", err)
+	if _, err := tasks.UpdateContinuationStatus(continuation.ID, task.StatusInterrupted); err != nil {
+		t.Fatalf("set continuation interrupted: %v", err)
 	}
-	if _, err := tasks.UpdateStatus(created.ID, task.StatusRunning); err != nil {
-		t.Fatalf("set task running: %v", err)
+	if _, err := tasks.UpdateStatus(created.ID, task.StatusInterrupted); err != nil {
+		t.Fatalf("set task interrupted: %v", err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatalf("close db: %v", err)

@@ -795,7 +795,7 @@ func (s *Service) ReconcileInterruptedState() (ReconcileInterruptedResult, error
 		return ReconcileInterruptedResult{}, fmt.Errorf("iterate active tasks: %w", err)
 	}
 
-	activeContinuations, err := s.activeContinuations()
+	containerContinuations, err := s.sandboxContinuationsWithContainers()
 	if err != nil {
 		return ReconcileInterruptedResult{}, err
 	}
@@ -804,42 +804,42 @@ func (s *Service) ReconcileInterruptedState() (ReconcileInterruptedResult, error
 	for _, t := range active {
 		updated, err := s.UpdateStatus(t.ID, StatusInterrupted)
 		if err != nil {
-			return ReconcileInterruptedResult{Tasks: changed, Continuations: activeContinuations}, fmt.Errorf("interrupt task %s: %w", t.ID, err)
+			return ReconcileInterruptedResult{Tasks: changed, Continuations: containerContinuations}, fmt.Errorf("interrupt task %s: %w", t.ID, err)
 		}
 		if err := s.interruptActiveContinuations(t.ID); err != nil {
-			return ReconcileInterruptedResult{Tasks: changed, Continuations: activeContinuations}, fmt.Errorf("interrupt continuations for task %s: %w", t.ID, err)
+			return ReconcileInterruptedResult{Tasks: changed, Continuations: containerContinuations}, fmt.Errorf("interrupt continuations for task %s: %w", t.ID, err)
 		}
 		changed = append(changed, updated)
 	}
 	if err := s.interruptStaleActiveContinuations(); err != nil {
-		return ReconcileInterruptedResult{Tasks: changed, Continuations: activeContinuations}, err
+		return ReconcileInterruptedResult{Tasks: changed, Continuations: containerContinuations}, err
 	}
-	return ReconcileInterruptedResult{Tasks: changed, Continuations: activeContinuations}, nil
+	return ReconcileInterruptedResult{Tasks: changed, Continuations: containerContinuations}, nil
 }
 
-func (s *Service) activeContinuations() ([]TaskContinuation, error) {
+func (s *Service) sandboxContinuationsWithContainers() ([]TaskContinuation, error) {
 	rows, err := s.db.Query(
 		`SELECT id, task_id, number, runtime_profile_id, runtime_provider, runner, status, container_id, native_session_id, native_session_path, started_at, updated_at, ended_at
 		 FROM task_continuations
-		 WHERE status IN (?, ?, ?)`,
-		string(StatusPending), string(StatusRunning), string(StatusPaused),
+		 WHERE runner = ? AND trim(container_id) <> ''`,
+		string(RunnerSandbox),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("query active continuations: %w", err)
+		return nil, fmt.Errorf("query sandbox continuations with containers: %w", err)
 	}
 	defer rows.Close()
-	var active []TaskContinuation
+	var continuations []TaskContinuation
 	for rows.Next() {
 		continuation, err := scanContinuation(rows)
 		if err != nil {
-			return nil, fmt.Errorf("scan active continuation: %w", err)
+			return nil, fmt.Errorf("scan sandbox continuation with container: %w", err)
 		}
-		active = append(active, continuation)
+		continuations = append(continuations, continuation)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate active continuations: %w", err)
+		return nil, fmt.Errorf("iterate sandbox continuations with containers: %w", err)
 	}
-	return active, nil
+	return continuations, nil
 }
 
 func (s *Service) interruptActiveContinuations(taskID string) error {
