@@ -409,6 +409,13 @@ func TestReconcileInterruptedStatusesMarksActiveTasksInterrupted(t *testing.T) {
 	running := createTaskWithStatus("running ghost")
 	paused := createTaskWithStatus("paused ghost")
 	completed := createTaskWithStatus("done task")
+	runningContinuation, err := svc.CreateContinuation(running.ID, "profile-1", "pi", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create running continuation: %v", err)
+	}
+	if _, err := svc.UpdateContinuationStatus(runningContinuation.ID, task.StatusRunning); err != nil {
+		t.Fatalf("set running continuation: %v", err)
+	}
 	if _, err := svc.UpdateStatus(running.ID, task.StatusRunning); err != nil {
 		t.Fatalf("set running: %v", err)
 	}
@@ -433,10 +440,62 @@ func TestReconcileInterruptedStatusesMarksActiveTasksInterrupted(t *testing.T) {
 	if runningGot.Status != task.StatusInterrupted {
 		t.Fatalf("expected running task -> interrupted, got %q", runningGot.Status)
 	}
+	runningContinuationGot, err := svc.LatestContinuation(running.ID)
+	if err != nil {
+		t.Fatalf("latest running continuation: %v", err)
+	}
+	if runningContinuationGot == nil || runningContinuationGot.Status != task.StatusInterrupted {
+		t.Fatalf("expected running continuation -> interrupted, got %#v", runningContinuationGot)
+	}
 	if pausedGot.Status != task.StatusInterrupted {
 		t.Fatalf("expected paused task -> interrupted, got %q", pausedGot.Status)
 	}
 	if completedGot.Status != task.StatusCompleted {
 		t.Fatalf("expected completed task untouched, got %q", completedGot.Status)
+	}
+}
+
+func TestReconcileInterruptedStatusesClearsStaleActiveContinuations(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+
+	proj, err := projects.Create("Acme", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	created, err := svc.Create(task.CreateRequest{
+		ProjectID:        proj.ID,
+		Goal:             "already interrupted task",
+		RuntimeProfileID: "profile-1",
+		Runner:           task.RunnerSandbox,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	continuation, err := svc.CreateContinuation(created.ID, "profile-1", "pi", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create continuation: %v", err)
+	}
+	if _, err := svc.UpdateContinuationStatus(continuation.ID, task.StatusRunning); err != nil {
+		t.Fatalf("set continuation running: %v", err)
+	}
+	if _, err := svc.UpdateStatus(created.ID, task.StatusInterrupted); err != nil {
+		t.Fatalf("set task interrupted: %v", err)
+	}
+
+	changed, err := svc.ReconcileInterruptedStatuses()
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(changed) != 0 {
+		t.Fatalf("expected no task status changes, got %d", len(changed))
+	}
+	latest, err := svc.LatestContinuation(created.ID)
+	if err != nil {
+		t.Fatalf("latest continuation: %v", err)
+	}
+	if latest == nil || latest.Status != task.StatusInterrupted {
+		t.Fatalf("expected stale active continuation -> interrupted, got %#v", latest)
 	}
 }

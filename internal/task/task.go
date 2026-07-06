@@ -781,9 +781,60 @@ func (s *Service) ReconcileInterruptedStatuses() ([]Task, error) {
 		if err != nil {
 			return changed, fmt.Errorf("interrupt task %s: %w", t.ID, err)
 		}
+		if err := s.interruptActiveContinuations(t.ID); err != nil {
+			return changed, fmt.Errorf("interrupt continuations for task %s: %w", t.ID, err)
+		}
 		changed = append(changed, updated)
 	}
+	if err := s.interruptStaleActiveContinuations(); err != nil {
+		return changed, err
+	}
 	return changed, nil
+}
+
+func (s *Service) interruptActiveContinuations(taskID string) error {
+	now := time.Now().UTC()
+	_, err := s.db.Exec(
+		`UPDATE task_continuations
+		 SET status = ?, updated_at = ?, ended_at = ?
+		 WHERE task_id = ? AND status IN (?, ?, ?)`,
+		string(StatusInterrupted),
+		now.Format(time.RFC3339Nano),
+		now.Format(time.RFC3339Nano),
+		taskID,
+		string(StatusPending),
+		string(StatusRunning),
+		string(StatusPaused),
+	)
+	if err != nil {
+		return fmt.Errorf("update active continuations: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) interruptStaleActiveContinuations() error {
+	now := time.Now().UTC()
+	_, err := s.db.Exec(
+		`UPDATE task_continuations
+		 SET status = ?, updated_at = ?, ended_at = ?
+		 WHERE status IN (?, ?, ?)
+		   AND task_id IN (
+		       SELECT id FROM tasks WHERE status NOT IN (?, ?, ?)
+		   )`,
+		string(StatusInterrupted),
+		now.Format(time.RFC3339Nano),
+		now.Format(time.RFC3339Nano),
+		string(StatusPending),
+		string(StatusRunning),
+		string(StatusPaused),
+		string(StatusPending),
+		string(StatusRunning),
+		string(StatusPaused),
+	)
+	if err != nil {
+		return fmt.Errorf("interrupt stale active continuations: %w", err)
+	}
+	return nil
 }
 
 func newID() string {
