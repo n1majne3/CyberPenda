@@ -155,6 +155,36 @@ func TestClaudeCodeBuiltinDeclaresNativeResume(t *testing.T) {
 	}
 }
 
+func TestCodexBuiltinDeclaresNonInteractiveNativeResume(t *testing.T) {
+	registry, err := runtimeplugin.BuiltinRegistry()
+	if err != nil {
+		t.Fatalf("builtin registry: %v", err)
+	}
+	plugin, ok := registry.Get("codex")
+	if !ok {
+		t.Fatal("missing codex plugin")
+	}
+	if !plugin.NativeResume.Supported {
+		t.Fatal("expected codex native resume support")
+	}
+	if plugin.NativeResume.SessionSource != "codex_session_jsonl" {
+		t.Fatalf("session source = %q, want codex_session_jsonl", plugin.NativeResume.SessionSource)
+	}
+	want := []string{
+		"{{binary}}",
+		"exec",
+		"--model", "{{model}}",
+		"{{codex_exec_args}}",
+		"{{custom_args}}",
+		"resume",
+		"{{native_session}}",
+		"{{resumed_message}}",
+	}
+	if !reflect.DeepEqual(plugin.NativeResume.Args, want) {
+		t.Fatalf("native resume args = %#v, want %#v", plugin.NativeResume.Args, want)
+	}
+}
+
 func TestPiBuiltinDeclaresNativeResume(t *testing.T) {
 	registry, err := runtimeplugin.BuiltinRegistry()
 	if err != nil {

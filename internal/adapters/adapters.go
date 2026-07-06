@@ -83,8 +83,12 @@ func BuildNativeResumeArgs(req NativeResumeArgsRequest) ([]string, error) {
 	if binary == "" {
 		return nil, fmt.Errorf("no binary path configured for provider %q", req.Provider)
 	}
+	extra := append([]string{}, req.Profile.Fields.CustomArgs...)
 	lists := map[string][]string{
-		"custom_args": append([]string{}, req.Profile.Fields.CustomArgs...),
+		"custom_args": extra,
+	}
+	if req.Provider == runtimeprofile.ProviderCodex && !hasCLIOption(extra, "--skip-git-repo-check") {
+		lists["codex_exec_args"] = []string{"--skip-git-repo-check"}
 	}
 	if req.Provider == runtimeprofile.ProviderClaudeCode && strings.TrimSpace(req.ResumedMessage) != "" {
 		lists["claude_goal_prefix"] = []string{"--"}

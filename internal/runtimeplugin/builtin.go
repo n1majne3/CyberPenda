@@ -63,7 +63,7 @@ func BuiltinPlugins() []Plugin {
 			NativeResume: NativeResume{
 				Supported:     true,
 				SessionSource: "codex_session_jsonl",
-				Args:          []string{"{{binary}}", "--model", "{{model}}", "resume", "{{native_session}}", "{{resumed_message}}"},
+				Args:          []string{"{{binary}}", "exec", "--model", "{{model}}", "{{codex_exec_args}}", "{{custom_args}}", "resume", "{{native_session}}", "{{resumed_message}}"},
 			},
 			ProcessEnv:    map[string]string{"CODEX_HOME": "{{runtime_home}}/codex"},
 			CredentialEnv: []string{"OPENAI_API_KEY", "CODEX_API_KEY"},

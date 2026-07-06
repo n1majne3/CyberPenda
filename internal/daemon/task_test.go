@@ -665,7 +665,7 @@ func TestLaunchTaskWrapsProviderCommandInSandboxRunner(t *testing.T) {
 		"runner":"sandbox"
 	}`)
 
-	waitForEventText(t, server, projectID, taskID, "sandbox-command:create -i")
+	waitForEventText(t, server, projectID, taskID, "sandbox-command:create --cidfile")
 	events := getTaskEvents(t, server, projectID, taskID)
 	var sawSandboxCommand bool
 	for _, event := range events {
@@ -674,7 +674,7 @@ func TestLaunchTaskWrapsProviderCommandInSandboxRunner(t *testing.T) {
 		}
 		payload := event["payload"].(map[string]any)
 		text, _ := payload["text"].(string)
-		if strings.Contains(text, "sandbox-command:create -i") &&
+		if strings.Contains(text, "sandbox-command:create --cidfile") &&
 			strings.Contains(text, "pentest-kali:test codex exec --model gpt-test") &&
 			strings.Contains(text, "enumerate example.com") {
 			sawSandboxCommand = true
@@ -742,7 +742,7 @@ func TestSandboxResumeRebuildsContainerWithPersistentTaskMountAndRuntimeHome(t *
 	}
 	logText := string(rawLog)
 	taskMount := filepath.Join(runtimeRoot, taskID) + ":/task"
-	if got := strings.Count(logText, "create -i --cidfile"); got != 2 {
+	if got := strings.Count(logText, "create --cidfile"); got != 2 {
 		t.Fatalf("expected two sandbox container launches, got %d in log:\n%s", got, logText)
 	}
 	if got := strings.Count(logText, taskMount); got != 2 {
@@ -750,7 +750,7 @@ func TestSandboxResumeRebuildsContainerWithPersistentTaskMountAndRuntimeHome(t *
 	}
 	var launchLines []string
 	for _, line := range strings.Split(strings.TrimSpace(logText), "\n") {
-		if strings.HasPrefix(line, "create -i") {
+		if strings.HasPrefix(line, "create --cidfile") {
 			launchLines = append(launchLines, line)
 		}
 	}
@@ -1878,7 +1878,7 @@ func TestSandboxSteerConfirmsContainerExitBeforeNativeResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read docker log: %v", err)
 	}
-	if got := strings.Count(string(dockerRaw), "create -i --cidfile"); got != 2 {
+	if got := strings.Count(string(dockerRaw), "create --cidfile"); got != 2 {
 		t.Fatalf("expected initial and resumed sandbox launches, got %d in log:\n%s", got, string(dockerRaw))
 	}
 }

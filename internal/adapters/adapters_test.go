@@ -123,7 +123,7 @@ func TestBuildNativeResumeArgsUsesRuntimePluginContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build native resume args: %v", err)
 	}
-	want := []string{"/usr/local/bin/codex", "--model", "gpt-5", "resume", "sess-123", "focus admin"}
+	want := []string{"/usr/local/bin/codex", "exec", "--model", "gpt-5", "--skip-git-repo-check", "resume", "sess-123", "focus admin"}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("unexpected native resume args:\nwant %#v\ngot  %#v", want, args)
 	}

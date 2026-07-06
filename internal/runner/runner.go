@@ -156,10 +156,7 @@ func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 	if err != nil {
 		return Command{}, fmt.Errorf("resolve task root: %w", err)
 	}
-	args := []string{
-		"create",
-		"-i",
-	}
+	args := []string{"create"}
 	if strings.TrimSpace(request.ContainerIDFile) != "" {
 		args = append(args, "--cidfile", request.ContainerIDFile)
 	}

@@ -126,7 +126,6 @@ func TestBuildSandboxCommandConstructsContainerLaunchWithoutExecution(t *testing
 	}
 	expectedArgs := []string{
 		"create",
-		"-i",
 		"--cidfile",
 		filepath.Join(layout.Logs, "container.cid"),
 		"--add-host=host.docker.internal:host-gateway",
@@ -145,6 +144,9 @@ func TestBuildSandboxCommandConstructsContainerLaunchWithoutExecution(t *testing
 	}
 	if !reflect.DeepEqual(command.Args, expectedArgs) {
 		t.Fatalf("unexpected sandbox args:\nwant %#v\ngot  %#v", expectedArgs, command.Args)
+	}
+	if containsString(command.Args, "-i") {
+		t.Fatalf("sandbox containers must not keep stdin open; got args %#v", command.Args)
 	}
 }
 
