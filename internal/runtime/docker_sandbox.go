@@ -96,12 +96,33 @@ func (a *dockerSandboxAdapter) Run(ctx context.Context, goal string, emit func(t
 	})
 
 	stopDone := make(chan struct{})
+	runDone := make(chan struct{})
 	go func() {
 		defer close(stopDone)
-		<-ctx.Done()
-		if err := stopThenKillContainer(cli, containerID, dockerStopGrace); err != nil {
+		select {
+		case <-ctx.Done():
+		case <-runDone:
+			return
+		}
+		if err := StopDockerContainer(cli, containerID, dockerStopGrace); err != nil {
 			emit(task.EventKindLifecycle, task.EventPayload{
 				"phase":        "stop_failed",
+				"adapter":      a.Name(),
+				"container_id": containerID,
+				"error":        err.Error(),
+			})
+		}
+	}()
+	defer func() {
+		if ctx.Err() != nil {
+			<-stopDone
+		} else {
+			close(runDone)
+			<-stopDone
+		}
+		if err := RemoveDockerContainer(cli, containerID); err != nil {
+			emit(task.EventKindLifecycle, task.EventPayload{
+				"phase":        "cleanup_failed",
 				"adapter":      a.Name(),
 				"container_id": containerID,
 				"error":        err.Error(),
@@ -142,35 +163,10 @@ func (a *dockerSandboxAdapter) Run(ctx context.Context, goal string, emit func(t
 	wg.Wait()
 	waitErr := start.Wait()
 	if ctx.Err() != nil {
-		<-stopDone
-	}
-	if err := removeContainer(cli, containerID); err != nil {
-		emit(task.EventKindLifecycle, task.EventPayload{
-			"phase":        "cleanup_failed",
-			"adapter":      a.Name(),
-			"container_id": containerID,
-			"error":        err.Error(),
-		})
-	}
-	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 	if waitErr != nil {
 		return fmt.Errorf("sandbox container failed: %w", waitErr)
-	}
-	return nil
-}
-
-func stopThenKillContainer(containerCLI, containerID string, grace time.Duration) error {
-	stopCtx, cancel := context.WithTimeout(context.Background(), grace)
-	defer cancel()
-	if err := exec.CommandContext(stopCtx, containerCLI, "stop", containerID).Run(); err == nil {
-		return nil
-	}
-	killCtx, killCancel := context.WithTimeout(context.Background(), grace)
-	defer killCancel()
-	if err := exec.CommandContext(killCtx, containerCLI, "kill", containerID).Run(); err != nil {
-		return err
 	}
 	return nil
 }
@@ -194,10 +190,6 @@ func StopDockerContainer(containerCLI, containerID string, grace time.Duration) 
 		return nil
 	}
 	return err
-}
-
-func removeContainer(containerCLI, containerID string) error {
-	return exec.Command(containerCLI, "rm", "-f", containerID).Run()
 }
 
 // RemoveDockerContainer force-removes a docker container. Missing containers

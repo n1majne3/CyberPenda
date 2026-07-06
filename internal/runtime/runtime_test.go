@@ -492,6 +492,55 @@ func TestDockerSandboxAdapterRecordsContainerAndStopsByID(t *testing.T) {
 	}
 }
 
+func TestDockerSandboxAdapterRemovesContainerWhenCanceledBeforeStart(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "docker.log")
+	docker := filepath.Join(dir, "docker")
+	script := "#!/bin/sh\n" +
+		"echo \"$*\" >> " + shellQuote(logPath) + "\n" +
+		"case \"$1\" in\n" +
+		"  create) echo ctr-owned ;;\n" +
+		"  start) echo unexpected-start ;;\n" +
+		"  stop) exit 0 ;;\n" +
+		"  rm) exit 0 ;;\n" +
+		"  *) exit 1 ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(docker, []byte(script), 0o700); err != nil {
+		t.Fatalf("write docker stub: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	adapter := runtime.NewDockerSandboxAdapter(runtime.DockerSandboxConfig{
+		Name:         "codex",
+		ContainerCLI: docker,
+		CreateArgs:   []string{"create", "-i", "image", "codex", "run"},
+	})
+	recorder, ok := adapter.(interface {
+		SetMetadataRecorder(func(runtime.NativeSessionMetadata) error)
+	})
+	if !ok {
+		t.Fatal("expected docker sandbox adapter to record metadata")
+	}
+	recorder.SetMetadataRecorder(func(metadata runtime.NativeSessionMetadata) error {
+		if metadata.ContainerID == "ctr-owned" {
+			cancel()
+		}
+		return nil
+	})
+
+	if err := adapter.Run(ctx, "sandbox task", func(task.EventKind, task.EventPayload) {}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled, got %v", err)
+	}
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read docker log: %v", err)
+	}
+	logText := string(raw)
+	if !strings.Contains(logText, "rm -f ctr-owned") {
+		t.Fatalf("expected docker rm after pre-start cancel, got log:\n%s", logText)
+	}
+}
+
 func TestDockerContainerStopConfirmationTreatsRemovedContainerAsExited(t *testing.T) {
 	dir := t.TempDir()
 	cidFile := filepath.Join(dir, "container.cid")
