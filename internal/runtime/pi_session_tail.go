@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"pentest/internal/runtimeoutput"
@@ -24,6 +25,8 @@ import (
 type piSessionTailAdapter struct {
 	inner      Adapter
 	sessionDir string
+	mu         sync.Mutex
+	record     func(NativeSessionMetadata) error
 }
 
 // NewPiSessionTailAdapter wraps inner with a Pi session jsonl tailer rooted
@@ -34,11 +37,33 @@ func NewPiSessionTailAdapter(inner Adapter, sessionDir string) Adapter {
 
 func (a *piSessionTailAdapter) Name() string { return a.inner.Name() }
 
+func (a *piSessionTailAdapter) SetMetadataRecorder(record func(NativeSessionMetadata) error) {
+	a.mu.Lock()
+	a.record = record
+	a.mu.Unlock()
+	if inner, ok := a.inner.(metadataRecordingAdapter); ok {
+		inner.SetMetadataRecorder(record)
+	}
+}
+
+func (a *piSessionTailAdapter) recordRuntimeLineMetadata(line string) {
+	metadata := NativeSessionMetadataFromRuntimeLine(line)
+	if metadata.NativeSessionID == "" && metadata.NativeSessionPath == "" && metadata.ContainerID == "" {
+		return
+	}
+	a.mu.Lock()
+	record := a.record
+	a.mu.Unlock()
+	if record != nil {
+		_ = record(metadata)
+	}
+}
+
 func (a *piSessionTailAdapter) Run(ctx context.Context, goal string, emit func(task.EventKind, task.EventPayload)) error {
 	tailDone := make(chan struct{})
 	go func() {
 		defer close(tailDone)
-		tailPiSession(ctx, a.sessionDir, emit)
+		tailPiSession(ctx, a.sessionDir, a.recordRuntimeLineMetadata, emit)
 	}()
 	// The inner Run blocks until the runtime exits; when it does, ctx is
 	// cancelled by the harness and the tail goroutine winds down.
@@ -48,7 +73,7 @@ func (a *piSessionTailAdapter) Run(ctx context.Context, goal string, emit func(t
 // tailPiSession polls sessionDir until a *.jsonl file appears, then follows it
 // line-by-line, emitting each new line as a runtime_output event. It returns
 // when ctx is cancelled.
-func tailPiSession(ctx context.Context, sessionDir string, emit func(task.EventKind, task.EventPayload)) {
+func tailPiSession(ctx context.Context, sessionDir string, observe func(string), emit func(task.EventKind, task.EventPayload)) {
 	currentPath := ""
 	var reader *bufio.Reader
 	var file *os.File
@@ -89,7 +114,13 @@ func tailPiSession(ctx context.Context, sessionDir string, emit func(task.EventK
 			line, err := reader.ReadString('\n')
 			if len(line) > 0 {
 				offset += int64(len(line))
-				if trimmed := strings.TrimRight(line, "\n"); trimmed != "" && !runtimeoutput.ShouldIgnoreForStorage(trimmed) {
+				if trimmed := strings.TrimRight(line, "\n"); trimmed != "" {
+					if observe != nil {
+						observe(trimmed)
+					}
+					if runtimeoutput.ShouldIgnoreForStorage(trimmed) {
+						continue
+					}
 					emit(task.EventKindRuntimeOutput, task.EventPayload{
 						"stream": "pi_session",
 						"text":   trimmed,

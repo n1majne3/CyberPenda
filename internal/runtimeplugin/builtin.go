@@ -80,7 +80,7 @@ func BuiltinPlugins() []Plugin {
 				Host:                true,
 				MCPConfig:           true,
 				StreamingTranscript: true,
-				Resume:              false,
+				Resume:              true,
 			},
 			ModelProvider: ModelProvider{
 				Requirement:        "required",
@@ -112,6 +112,21 @@ func BuiltinPlugins() []Plugin {
 					{Options: []string{"--verbose"}, Arity: 0},
 				},
 			},
+			NativeResume: NativeResume{
+				Supported:     true,
+				SessionSource: "claude_stream_json",
+				Args: []string{
+					"{{binary}}",
+					"--resume", "{{native_session}}",
+					"--model", "{{model}}",
+					"-p",
+					"--output-format", "stream-json",
+					"--verbose",
+					"{{custom_args}}",
+					"{{claude_goal_prefix}}",
+					"{{resumed_message}}",
+				},
+			},
 			ProcessEnv:    map[string]string{"CLAUDE_HOME": "{{runtime_home}}/claude"},
 			CredentialEnv: []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"},
 			Transcript:    Transcript{Parser: "claude_stream_json"},
@@ -127,7 +142,7 @@ func BuiltinPlugins() []Plugin {
 				Host:                true,
 				MCPConfig:           true,
 				StreamingTranscript: true,
-				Resume:              false,
+				Resume:              true,
 			},
 			ModelProvider: ModelProvider{
 				Requirement:        "required",
@@ -144,6 +159,18 @@ func BuiltinPlugins() []Plugin {
 				Args: []string{"{{binary}}", "{{pi_provider_args}}", "--model", "{{model}}", "{{custom_args}}", "{{goal}}"},
 				SingletonOptions: []SingletonOption{
 					{Options: []string{"--provider"}, Arity: 1},
+				},
+			},
+			NativeResume: NativeResume{
+				Supported:     true,
+				SessionSource: "pi_json_session",
+				Args: []string{
+					"{{binary}}",
+					"{{pi_provider_args}}",
+					"--model", "{{model}}",
+					"--session", "{{native_session}}",
+					"{{custom_args}}",
+					"{{resumed_message}}",
 				},
 			},
 			ProcessEnv:    map[string]string{"PI_CODING_AGENT_DIR": "{{runtime_home}}/pi/agent"},

@@ -121,6 +121,71 @@ func TestBuiltinPluginsDeclareModelProviderProtocols(t *testing.T) {
 	}
 }
 
+func TestClaudeCodeBuiltinDeclaresNativeResume(t *testing.T) {
+	registry, err := runtimeplugin.BuiltinRegistry()
+	if err != nil {
+		t.Fatalf("builtin registry: %v", err)
+	}
+	plugin, ok := registry.Get("claude_code")
+	if !ok {
+		t.Fatal("missing claude_code plugin")
+	}
+	if !plugin.Capabilities.Resume {
+		t.Fatal("expected claude_code resume capability")
+	}
+	if !plugin.NativeResume.Supported {
+		t.Fatal("expected claude_code native resume support")
+	}
+	if plugin.NativeResume.SessionSource != "claude_stream_json" {
+		t.Fatalf("session source = %q, want claude_stream_json", plugin.NativeResume.SessionSource)
+	}
+	want := []string{
+		"{{binary}}",
+		"--resume", "{{native_session}}",
+		"--model", "{{model}}",
+		"-p",
+		"--output-format", "stream-json",
+		"--verbose",
+		"{{custom_args}}",
+		"{{claude_goal_prefix}}",
+		"{{resumed_message}}",
+	}
+	if !reflect.DeepEqual(plugin.NativeResume.Args, want) {
+		t.Fatalf("native resume args = %#v, want %#v", plugin.NativeResume.Args, want)
+	}
+}
+
+func TestPiBuiltinDeclaresNativeResume(t *testing.T) {
+	registry, err := runtimeplugin.BuiltinRegistry()
+	if err != nil {
+		t.Fatalf("builtin registry: %v", err)
+	}
+	plugin, ok := registry.Get("pi")
+	if !ok {
+		t.Fatal("missing pi plugin")
+	}
+	if !plugin.Capabilities.Resume {
+		t.Fatal("expected pi resume capability")
+	}
+	if !plugin.NativeResume.Supported {
+		t.Fatal("expected pi native resume support")
+	}
+	if plugin.NativeResume.SessionSource != "pi_json_session" {
+		t.Fatalf("session source = %q, want pi_json_session", plugin.NativeResume.SessionSource)
+	}
+	want := []string{
+		"{{binary}}",
+		"{{pi_provider_args}}",
+		"--model", "{{model}}",
+		"--session", "{{native_session}}",
+		"{{custom_args}}",
+		"{{resumed_message}}",
+	}
+	if !reflect.DeepEqual(plugin.NativeResume.Args, want) {
+		t.Fatalf("native resume args = %#v, want %#v", plugin.NativeResume.Args, want)
+	}
+}
+
 func TestRegistryReturnsCopies(t *testing.T) {
 	registry, err := runtimeplugin.BuiltinRegistry()
 	if err != nil {

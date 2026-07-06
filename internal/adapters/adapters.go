@@ -83,6 +83,15 @@ func BuildNativeResumeArgs(req NativeResumeArgsRequest) ([]string, error) {
 	if binary == "" {
 		return nil, fmt.Errorf("no binary path configured for provider %q", req.Provider)
 	}
+	lists := map[string][]string{
+		"custom_args": append([]string{}, req.Profile.Fields.CustomArgs...),
+	}
+	if req.Provider == runtimeprofile.ProviderClaudeCode && strings.TrimSpace(req.ResumedMessage) != "" {
+		lists["claude_goal_prefix"] = []string{"--"}
+	}
+	if piArgs := piProviderArgs(req.Profile.Fields, req.Profile.Fields.CustomArgs); len(piArgs) > 0 {
+		lists["pi_provider_args"] = piArgs
+	}
 	return runtimeplugin.RenderLaunch(runtimeplugin.LaunchTemplate{Args: plugin.NativeResume.Args}, runtimeplugin.RenderContext{
 		Scalars: map[string]string{
 			"binary":          binary,
@@ -90,9 +99,7 @@ func BuildNativeResumeArgs(req NativeResumeArgsRequest) ([]string, error) {
 			"native_session":  strings.TrimSpace(req.NativeSessionID),
 			"resumed_message": req.ResumedMessage,
 		},
-		Lists: map[string][]string{
-			"custom_args": append([]string{}, req.Profile.Fields.CustomArgs...),
-		},
+		Lists: lists,
 	})
 }
 
@@ -145,14 +152,8 @@ func launchRenderContext(req LaunchArgsRequest, binary string) runtimeplugin.Ren
 	if mcpConfig := strings.TrimSpace(req.MCPConfigPath); mcpConfig != "" {
 		lists["mcp_args"] = []string{"--strict-mcp-config", "--mcp-config", mcpConfig}
 	}
-	if !hasCLIOption(extra, "--provider") {
-		providerID := strings.TrimSpace(req.Profile.Fields.Env["PI_PROVIDER_ID"])
-		if providerID == "" && strings.TrimSpace(req.Profile.Fields.Endpoint) != "" {
-			providerID = "custom"
-		}
-		if providerID != "" {
-			lists["pi_provider_args"] = []string{"--provider", providerID}
-		}
+	if piArgs := piProviderArgs(req.Profile.Fields, extra); len(piArgs) > 0 {
+		lists["pi_provider_args"] = piArgs
 	}
 
 	return runtimeplugin.RenderContext{
@@ -167,6 +168,20 @@ func launchRenderContext(req LaunchArgsRequest, binary string) runtimeplugin.Ren
 		},
 		Lists: lists,
 	}
+}
+
+func piProviderArgs(fields runtimeprofile.Fields, customArgs []string) []string {
+	if hasCLIOption(customArgs, "--provider") {
+		return nil
+	}
+	providerID := strings.TrimSpace(fields.Env["PI_PROVIDER_ID"])
+	if providerID == "" && strings.TrimSpace(fields.Endpoint) != "" {
+		providerID = "custom"
+	}
+	if providerID == "" {
+		return nil
+	}
+	return []string{"--provider", providerID}
 }
 
 // DetectRequest is the input to DetectBinary.

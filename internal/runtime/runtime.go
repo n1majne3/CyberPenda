@@ -243,6 +243,8 @@ type CommandAdapterConfig struct {
 
 type commandAdapter struct {
 	config CommandAdapterConfig
+	mu     sync.Mutex
+	record func(NativeSessionMetadata) error
 }
 
 // NewCommandAdapter returns a runtime adapter backed by a real local process.
@@ -257,6 +259,25 @@ func (a *commandAdapter) Name() string {
 		return a.config.Name
 	}
 	return a.config.Program
+}
+
+func (a *commandAdapter) SetMetadataRecorder(record func(NativeSessionMetadata) error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.record = record
+}
+
+func (a *commandAdapter) recordRuntimeLineMetadata(line string) {
+	metadata := NativeSessionMetadataFromRuntimeLine(line)
+	if metadata.NativeSessionID == "" && metadata.NativeSessionPath == "" && metadata.ContainerID == "" {
+		return
+	}
+	a.mu.Lock()
+	record := a.record
+	a.mu.Unlock()
+	if record != nil {
+		_ = record(metadata)
+	}
 }
 
 func (a *commandAdapter) Run(ctx context.Context, goal string, emit func(task.EventKind, task.EventPayload)) error {
@@ -301,11 +322,11 @@ func (a *commandAdapter) Run(ctx context.Context, goal string, emit func(task.Ev
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		ScanOutput(stdout, "stdout", maxRuntimeOutputLineBytes, safeEmit)
+		ScanOutputWithObserver(stdout, "stdout", maxRuntimeOutputLineBytes, a.recordRuntimeLineMetadata, safeEmit)
 	}()
 	go func() {
 		defer wg.Done()
-		ScanOutput(stderr, "stderr", maxRuntimeOutputLineBytes, safeEmit)
+		ScanOutputWithObserver(stderr, "stderr", maxRuntimeOutputLineBytes, a.recordRuntimeLineMetadata, safeEmit)
 	}()
 	wg.Wait()
 

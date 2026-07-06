@@ -96,6 +96,49 @@ func TestPiSessionTailEmitsAppendedLines(t *testing.T) {
 	}
 }
 
+func TestPiSessionTailRecordsNativeSessionFromSessionHeader(t *testing.T) {
+	root := t.TempDir()
+	sessionDir := filepath.Join(root, "sessions", "--task-workdir--")
+
+	adapter := runtime.NewPiSessionTailAdapter(fakeInnerAdapter{}, sessionDir)
+	recorder, ok := adapter.(interface {
+		SetMetadataRecorder(func(runtime.NativeSessionMetadata) error)
+	})
+	if !ok {
+		t.Fatal("expected pi tail adapter to support metadata recording")
+	}
+	var recorded runtime.NativeSessionMetadata
+	var mu sync.Mutex
+	recorder.SetMetadataRecorder(func(metadata runtime.NativeSessionMetadata) error {
+		mu.Lock()
+		defer mu.Unlock()
+		recorded = metadata
+		return nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	emitCalls, _, _ := collectEmits(func(task.EventKind, task.EventPayload) {})
+	go func() { _ = adapter.Run(ctx, "goal", emitCalls) }()
+
+	sessionFile := filepath.Join(sessionDir, "2026-06-19T12-11-46-221Z_abc.jsonl")
+	writeSessionLine(t, sessionFile, `{"type":"session","version":3,"id":"sess-pi","cwd":"/task/workdir"}`)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		got := recorded.NativeSessionID
+		mu.Unlock()
+		if got == "sess-pi" {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	t.Fatalf("expected captured pi session id, got %#v", recorded)
+}
+
 // TestPiSessionTailStopsOnContextCancel proves the tail goroutine exits when
 // the run context is cancelled (i.e. when the task is stopped).
 func TestPiSessionTailStopsOnContextCancel(t *testing.T) {

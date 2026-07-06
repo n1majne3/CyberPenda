@@ -62,6 +62,13 @@ func ReadBoundedLine(br *bufio.Reader, maxBytes int) (line string, truncated boo
 // events. It keeps draining after oversized lines instead of failing the
 // reader with bufio.Scanner's default token cap.
 func ScanOutput(reader io.Reader, stream string, maxLineBytes int, emit func(task.EventKind, task.EventPayload)) {
+	ScanOutputWithObserver(reader, stream, maxLineBytes, nil, emit)
+}
+
+// ScanOutputWithObserver reads provider stdout/stderr like ScanOutput, while
+// also exposing every raw line to observe before storage filters drop provider
+// metadata such as Claude Code session init records.
+func ScanOutputWithObserver(reader io.Reader, stream string, maxLineBytes int, observe func(string), emit func(task.EventKind, task.EventPayload)) {
 	if maxLineBytes <= 0 {
 		maxLineBytes = maxRuntimeOutputLineBytes
 	}
@@ -69,6 +76,9 @@ func ScanOutput(reader io.Reader, stream string, maxLineBytes int, emit func(tas
 	for {
 		line, truncated, err := ReadBoundedLine(br, maxLineBytes)
 		if line != "" {
+			if observe != nil {
+				observe(line)
+			}
 			if !runtimeoutput.ShouldIgnoreForStorage(line) {
 				payload := task.EventPayload{
 					"stream": stream,

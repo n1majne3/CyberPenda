@@ -131,6 +131,92 @@ func TestCommandRuntimeAdapterExecutesProviderProcessAndStreamsOutput(t *testing
 	}
 }
 
+func TestCommandRuntimeAdapterRecordsNativeSessionFromClaudeInitOutput(t *testing.T) {
+	harness, tasks, projects := newServices(t)
+	proj, _ := projects.Create("P", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
+	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "enumerate example.com", RuntimeProfileID: "claude", Runner: task.RunnerHost})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	continuation, err := tasks.CreateContinuation(created.ID, "claude", "claude_code", task.RunnerHost)
+	if err != nil {
+		t.Fatalf("create continuation: %v", err)
+	}
+
+	binary := filepath.Join(t.TempDir(), "claude-test")
+	script := "#!/bin/sh\n" +
+		"echo '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"sess-claude\"}'\n" +
+		"echo '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}'\n"
+	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
+		t.Fatalf("write provider binary: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := harness.Launch(ctx, runtime.LaunchRequest{
+		TaskID:         created.ID,
+		Goal:           created.Goal,
+		ContinuationID: continuation.ID,
+		Adapter: runtime.NewCommandAdapter(runtime.CommandAdapterConfig{
+			Name:    "claude_code",
+			Program: binary,
+		}),
+	}); err != nil {
+		t.Fatalf("launch provider adapter: %v", err)
+	}
+
+	updated, err := tasks.LatestContinuation(created.ID)
+	if err != nil {
+		t.Fatalf("latest continuation: %v", err)
+	}
+	if updated == nil || updated.NativeSessionID != "sess-claude" {
+		t.Fatalf("expected captured claude session id, got %#v", updated)
+	}
+}
+
+func TestCommandRuntimeAdapterRecordsNativeSessionFromPiSessionHeader(t *testing.T) {
+	harness, tasks, projects := newServices(t)
+	proj, _ := projects.Create("P", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
+	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "enumerate example.com", RuntimeProfileID: "pi", Runner: task.RunnerHost})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	continuation, err := tasks.CreateContinuation(created.ID, "pi", "pi", task.RunnerHost)
+	if err != nil {
+		t.Fatalf("create continuation: %v", err)
+	}
+
+	binary := filepath.Join(t.TempDir(), "pi-test")
+	script := "#!/bin/sh\n" +
+		"echo '{\"type\":\"session\",\"version\":3,\"id\":\"sess-pi\",\"cwd\":\"/task/workdir\"}'\n" +
+		"echo '{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}'\n"
+	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
+		t.Fatalf("write provider binary: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := harness.Launch(ctx, runtime.LaunchRequest{
+		TaskID:         created.ID,
+		Goal:           created.Goal,
+		ContinuationID: continuation.ID,
+		Adapter: runtime.NewCommandAdapter(runtime.CommandAdapterConfig{
+			Name:    "pi",
+			Program: binary,
+		}),
+	}); err != nil {
+		t.Fatalf("launch provider adapter: %v", err)
+	}
+
+	updated, err := tasks.LatestContinuation(created.ID)
+	if err != nil {
+		t.Fatalf("latest continuation: %v", err)
+	}
+	if updated == nil || updated.NativeSessionID != "sess-pi" {
+		t.Fatalf("expected captured pi session id, got %#v", updated)
+	}
+}
+
 // slowFakeAdapter cooperates with cancellation so Stop can be observed.
 type slowFakeAdapter struct{}
 

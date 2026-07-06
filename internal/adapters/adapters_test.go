@@ -129,14 +129,67 @@ func TestBuildNativeResumeArgsUsesRuntimePluginContract(t *testing.T) {
 	}
 }
 
-func TestBuildNativeResumeArgsRejectsUnsupportedRuntime(t *testing.T) {
-	_, err := adapters.BuildNativeResumeArgs(adapters.NativeResumeArgsRequest{
-		Provider:        runtimeprofile.ProviderClaudeCode,
-		Profile:         runtimeprofile.Profile{Provider: runtimeprofile.ProviderClaudeCode},
+func TestBuildNativeResumeArgsUsesClaudeCodeRuntimePluginContract(t *testing.T) {
+	args, err := adapters.BuildNativeResumeArgs(adapters.NativeResumeArgsRequest{
+		Provider: runtimeprofile.ProviderClaudeCode,
+		Profile: runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderClaudeCode,
+			Fields: runtimeprofile.Fields{
+				BinaryPath: "/usr/local/bin/claude",
+				Model:      "claude-sonnet-4",
+				CustomArgs: []string{"--permission-mode", "bypassPermissions"},
+			},
+		},
 		NativeSessionID: "sess-123",
+		ResumedMessage:  "focus admin",
 	})
-	if err == nil || !strings.Contains(err.Error(), "unsupported") {
-		t.Fatalf("expected unsupported native resume error, got %v", err)
+	if err != nil {
+		t.Fatalf("build native resume args: %v", err)
+	}
+	want := []string{
+		"/usr/local/bin/claude",
+		"--resume", "sess-123",
+		"--model", "claude-sonnet-4",
+		"-p",
+		"--output-format", "stream-json",
+		"--verbose",
+		"--permission-mode", "bypassPermissions",
+		"--",
+		"focus admin",
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("unexpected claude native resume args:\nwant %#v\ngot  %#v", want, args)
+	}
+}
+
+func TestBuildNativeResumeArgsUsesPiRuntimePluginContract(t *testing.T) {
+	args, err := adapters.BuildNativeResumeArgs(adapters.NativeResumeArgsRequest{
+		Provider: runtimeprofile.ProviderPi,
+		Profile: runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderPi,
+			Fields: runtimeprofile.Fields{
+				BinaryPath: "/usr/local/bin/pi",
+				Model:      "DeepSeek-V4-Pro",
+				Endpoint:   "https://api.edgefn.net/v1",
+				CustomArgs: []string{"--thinking", "medium"},
+			},
+		},
+		NativeSessionID: "sess-pi",
+		ResumedMessage:  "focus admin",
+	})
+	if err != nil {
+		t.Fatalf("build native resume args: %v", err)
+	}
+	want := []string{
+		"/usr/local/bin/pi",
+		"--provider", "custom",
+		"--model", "DeepSeek-V4-Pro",
+		"--session", "sess-pi",
+		"--thinking", "medium",
+		"focus admin",
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("unexpected pi native resume args:\nwant %#v\ngot  %#v", want, args)
 	}
 }
 

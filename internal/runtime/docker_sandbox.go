@@ -48,6 +48,19 @@ func (a *dockerSandboxAdapter) SetMetadataRecorder(record func(NativeSessionMeta
 	a.record = record
 }
 
+func (a *dockerSandboxAdapter) recordRuntimeLineMetadata(line string) {
+	metadata := NativeSessionMetadataFromRuntimeLine(line)
+	if metadata.NativeSessionID == "" && metadata.NativeSessionPath == "" && metadata.ContainerID == "" {
+		return
+	}
+	a.mu.Lock()
+	record := a.record
+	a.mu.Unlock()
+	if record != nil {
+		_ = record(metadata)
+	}
+}
+
 func (a *dockerSandboxAdapter) Run(ctx context.Context, goal string, emit func(task.EventKind, task.EventPayload)) error {
 	cli := strings.TrimSpace(a.config.ContainerCLI)
 	if cli == "" {
@@ -119,11 +132,11 @@ func (a *dockerSandboxAdapter) Run(ctx context.Context, goal string, emit func(t
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		ScanOutput(stdout, "stdout", maxRuntimeOutputLineBytes, emit)
+		ScanOutputWithObserver(stdout, "stdout", maxRuntimeOutputLineBytes, a.recordRuntimeLineMetadata, emit)
 	}()
 	go func() {
 		defer wg.Done()
-		ScanOutput(stderr, "stderr", maxRuntimeOutputLineBytes, emit)
+		ScanOutputWithObserver(stderr, "stderr", maxRuntimeOutputLineBytes, a.recordRuntimeLineMetadata, emit)
 	}()
 	wg.Wait()
 	waitErr := start.Wait()
