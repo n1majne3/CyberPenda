@@ -2,6 +2,8 @@
 // documented in the backend audit.
 
 const base = "";
+const authTokenParam = "token";
+const authTokenStorageKey = "pentest.authToken";
 
 export class ApiError extends Error {
   status: number;
@@ -18,7 +20,7 @@ export class ApiError extends Error {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(base + path, {
     ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    headers: requestHeaders(init?.headers),
   });
   if (!res.ok) {
     let message = `${res.status} ${res.statusText}`;
@@ -33,6 +35,48 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
+}
+
+function requestHeaders(initHeaders?: HeadersInit): Record<string, string> {
+  const headers: Record<string, string> = {};
+  setHeader(headers, "Content-Type", "application/json");
+  new Headers(initHeaders).forEach((value, key) => {
+    setHeader(headers, key, value);
+  });
+  const token = dashboardAuthToken();
+  if (token && !hasHeader(headers, "Authorization")) {
+    setHeader(headers, "Authorization", `Bearer ${token}`);
+  }
+  return headers;
+}
+
+function setHeader(headers: Record<string, string>, name: string, value: string) {
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === name.toLowerCase()) delete headers[key];
+  }
+  headers[name] = value;
+}
+
+function hasHeader(headers: Record<string, string>, name: string): boolean {
+  return Object.keys(headers).some((key) => key.toLowerCase() === name.toLowerCase());
+}
+
+function dashboardAuthToken(): string {
+  if (typeof window === "undefined") return "";
+  const token = new URLSearchParams(window.location.search).get(authTokenParam)?.trim() ?? "";
+  if (token) {
+    try {
+      window.sessionStorage.setItem(authTokenStorageKey, token);
+    } catch {
+      // Session storage may be disabled; the URL token still works for this request.
+    }
+    return token;
+  }
+  try {
+    return window.sessionStorage.getItem(authTokenStorageKey)?.trim() ?? "";
+  } catch {
+    return "";
+  }
 }
 
 export function apiGet<T>(path: string) {
