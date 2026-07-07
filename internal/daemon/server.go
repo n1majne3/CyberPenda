@@ -14,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"pentest/internal/approval"
 	"pentest/internal/blackboard"
 	"pentest/internal/credential"
 	"pentest/internal/modelprovider"
@@ -73,7 +72,6 @@ type Server struct {
 	tasks             *task.Service
 	harness           *runtime.Harness
 	facts             *blackboard.Service
-	approvals         *approval.Service
 	runtimeRoot       string
 	sandboxImage      string
 	containerCLI      string
@@ -155,7 +153,6 @@ func NewServer(config Config) (*Server, error) {
 		tasks:          tasks,
 		harness:        runtime.NewHarness(tasks),
 		facts:          blackboard.NewService(db),
-		approvals:      approval.NewService(db),
 		runtimeRoot:    runtimeRoot,
 		sandboxImage:   config.SandboxImage,
 		containerCLI:   config.ContainerCLI,
@@ -341,10 +338,6 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /api/projects/{id}/evidence", server.handleAttachEvidence)
 	server.mux.HandleFunc("GET /api/projects/{id}/evidence", server.handleListEvidence)
 	server.mux.HandleFunc("POST /api/projects/{id}/report", server.handleReportTrigger)
-	server.mux.HandleFunc("GET /api/projects/{id}/approvals", server.handleListApprovals)
-	server.mux.HandleFunc("POST /api/projects/{id}/approvals/{approval_id}/decide", server.handleDecideApproval)
-	server.mux.HandleFunc("GET /api/projects/{id}/audit-log", server.handleListAuditLog)
-	server.mux.HandleFunc("GET /api/audit-log", server.handleListGlobalAuditLog)
 	server.registerMCP()
 	server.registerSPA()
 }
@@ -781,7 +774,6 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 		Runner                  string           `json:"runner"`
 		RunControls             task.RunControls `json:"run_controls"`
 		CredentialRefsToResolve []string         `json:"credential_refs"`
-		YOLO                    bool             `json:"yolo"`
 		HostActivated           bool             `json:"host_activated"`
 	}
 	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
@@ -799,7 +791,6 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 	}
 
 	hostActivated := input.RunControls.HostActivated || input.HostActivated
-	yolo := input.RunControls.YOLO || input.YOLO
 	result := server.preflight.Run(request.Context(), preflight.Request{
 		RuntimeProfileID:        defaulted.runtimeProfileID,
 		LaunchModelOverride:     strings.TrimSpace(input.ModelOverride),
@@ -807,7 +798,6 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 		CredentialRefsToResolve: input.CredentialRefsToResolve,
 		Runner:                  string(defaulted.runner),
 		HostActivated:           hostActivated,
-		YOLO:                    yolo,
 	})
 
 	// A preflight result is always 200: the body reports pass/fail per check.
@@ -850,11 +840,10 @@ func (server *Server) handleDashboard(response http.ResponseWriter, request *htt
 			Ready            bool `json:"ready"`
 		} `json:"scope"`
 		Counts struct {
-			Tasks            int `json:"tasks"`
-			Facts            int `json:"facts"`
-			Findings         int `json:"findings"`
-			Evidence         int `json:"evidence"`
-			PendingApprovals int `json:"pending_approvals"`
+			Tasks    int `json:"tasks"`
+			Facts    int `json:"facts"`
+			Findings int `json:"findings"`
+			Evidence int `json:"evidence"`
 		} `json:"counts"`
 	}{
 		ProjectID: found.ID,
@@ -890,16 +879,10 @@ func (server *Server) handleDashboard(response http.ResponseWriter, request *htt
 		writeError(response, http.StatusInternalServerError, "count evidence")
 		return
 	}
-	pendingApprovals, err := server.approvals.CountPending(found.ID)
-	if err != nil {
-		writeError(response, http.StatusInternalServerError, "count pending approvals")
-		return
-	}
 	summary.Counts.Tasks = len(tasks)
 	summary.Counts.Facts = factCount
 	summary.Counts.Findings = findingCount
 	summary.Counts.Evidence = evidenceCount
-	summary.Counts.PendingApprovals = pendingApprovals
 
 	writeJSON(response, http.StatusOK, summary)
 }

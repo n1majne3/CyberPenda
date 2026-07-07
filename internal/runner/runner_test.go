@@ -260,7 +260,7 @@ func TestBuildSandboxCommandUsesAbsoluteBindMountForRelativeTaskRoot(t *testing.
 	t.Fatalf("expected volume mount in docker args: %#v", command.Args)
 }
 
-func TestHostRunnerRequiresExplicitActivationOrYOLO(t *testing.T) {
+func TestHostRunnerRequiresExplicitActivation(t *testing.T) {
 	err := runner.ValidateActivation(runner.ActivationRequest{Runner: runner.RunnerHost})
 	if !errors.Is(err, runner.ErrHostRunnerRequiresActivation) {
 		t.Fatalf("expected host activation error, got %v", err)
@@ -271,13 +271,6 @@ func TestHostRunnerRequiresExplicitActivationOrYOLO(t *testing.T) {
 		HostActivated: true,
 	}); err != nil {
 		t.Fatalf("expected activated host runner to pass: %v", err)
-	}
-
-	if err := runner.ValidateActivation(runner.ActivationRequest{
-		Runner: runner.RunnerHost,
-		YOLO:   true,
-	}); err != nil {
-		t.Fatalf("expected yolo host runner to pass: %v", err)
 	}
 }
 

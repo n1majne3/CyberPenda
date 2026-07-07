@@ -257,30 +257,6 @@ func migrate(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			UNIQUE (project_id, finding_key, version)
 		);`,
-		`CREATE TABLE IF NOT EXISTS approvals (
-			id TEXT PRIMARY KEY,
-			project_id TEXT NOT NULL,
-			task_id TEXT NOT NULL DEFAULT '',
-			kind TEXT NOT NULL,
-			status TEXT NOT NULL DEFAULT 'pending',
-			requester TEXT NOT NULL DEFAULT '',
-			requested_action TEXT NOT NULL,
-			rationale TEXT NOT NULL DEFAULT '',
-			payload_json TEXT NOT NULL DEFAULT '{}',
-			reviewer TEXT NOT NULL DEFAULT '',
-			decision TEXT NOT NULL DEFAULT '',
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
-		);`,
-		`CREATE TABLE IF NOT EXISTS audit_logs (
-			id TEXT PRIMARY KEY,
-			project_id TEXT NOT NULL,
-			task_id TEXT NOT NULL DEFAULT '',
-			kind TEXT NOT NULL,
-			summary TEXT NOT NULL,
-			payload_json TEXT NOT NULL DEFAULT '{}',
-			created_at TEXT NOT NULL
-		);`,
 		`CREATE TABLE IF NOT EXISTS evidence_artifacts (
 			id TEXT PRIMARY KEY,
 			project_id TEXT NOT NULL,

@@ -48,7 +48,6 @@ func TestCreateCapturesGoalRunControlsAndScopeSnapshot(t *testing.T) {
 		RuntimeProfileID: "profile-1",
 		Runner:           task.RunnerSandbox,
 		RunControls: task.RunControls{
-			YOLO:           false,
 			SandboxNetwork: "host_proxy_only",
 			Notes:          "business hours only",
 			Extras:         map[string]string{"depth": "shallow"},
@@ -69,9 +68,6 @@ func TestCreateCapturesGoalRunControlsAndScopeSnapshot(t *testing.T) {
 	}
 	if created.Runner != task.RunnerSandbox {
 		t.Fatalf("expected sandbox runner, got %q", created.Runner)
-	}
-	if created.RunControls.YOLO {
-		t.Fatal("expected YOLO off by default")
 	}
 	if created.RunControls.Notes != "business hours only" {
 		t.Fatalf("expected run-control notes, got %q", created.RunControls.Notes)

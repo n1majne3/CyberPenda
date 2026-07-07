@@ -70,7 +70,6 @@ export function TasksPage() {
                   </p>
                 </div>
                 <div className="flex shrink-0 gap-1">
-                  {task.run_controls?.yolo && <Badge variant="warning">YOLO</Badge>}
                   <Badge variant={STATUS_VARIANT[task.status] ?? "outline"}>{task.status}</Badge>
                 </div>
               </div>

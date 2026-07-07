@@ -79,8 +79,6 @@ func TestMCPEndpointInitializesAndListsTools(t *testing.T) {
 		"list_vulnerabilities",
 		"attach_evidence",
 		"generate_report",
-		"request_approval",
-		"request_scope_expansion",
 		"submit_task_summary",
 	} {
 		if !bytes.Contains([]byte(body), []byte(tool)) {

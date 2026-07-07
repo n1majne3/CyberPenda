@@ -92,24 +92,6 @@ func TestSkillsPublishListOptOutDeleteAndAuditHTTP(t *testing.T) {
 	if deleteResp.Code != http.StatusNoContent {
 		t.Fatalf("expected delete of fully opted-out skill status 204, got %d with body %s", deleteResp.Code, deleteResp.Body.String())
 	}
-
-	auditReq := httptest.NewRequest(http.MethodGet, "/api/audit-log", nil)
-	auditResp := httptest.NewRecorder()
-	server.ServeHTTP(auditResp, auditReq)
-	if auditResp.Code != http.StatusOK {
-		t.Fatalf("expected global audit status 200, got %d with body %s", auditResp.Code, auditResp.Body.String())
-	}
-	var audit struct {
-		Entries []struct {
-			Kind string `json:"kind"`
-		} `json:"entries"`
-	}
-	if err := json.NewDecoder(auditResp.Body).Decode(&audit); err != nil {
-		t.Fatalf("decode audit: %v", err)
-	}
-	if !auditHasKind(audit.Entries, "skill_published") || !auditHasKind(audit.Entries, "skill_opt_out_changed") || !auditHasKind(audit.Entries, "skill_deleted") {
-		t.Fatalf("expected skill audit events, got %#v", audit.Entries)
-	}
 }
 
 func TestControlledSkillImportPublishesBundle(t *testing.T) {
@@ -311,17 +293,6 @@ func putSkill(t *testing.T, server *daemon.Server, id, body string) {
 	if resp.Code != http.StatusCreated && resp.Code != http.StatusOK {
 		t.Fatalf("expected put skill status 2xx, got %d with body %s", resp.Code, resp.Body.String())
 	}
-}
-
-func auditHasKind(entries []struct {
-	Kind string `json:"kind"`
-}, kind string) bool {
-	for _, entry := range entries {
-		if entry.Kind == kind {
-			return true
-		}
-	}
-	return false
 }
 
 func hasBuiltinSkill(skills []struct {

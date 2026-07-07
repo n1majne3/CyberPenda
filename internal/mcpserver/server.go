@@ -11,7 +11,6 @@ import (
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"pentest/internal/approval"
 	"pentest/internal/blackboard"
 	"pentest/internal/project"
 	"pentest/internal/report"
@@ -20,10 +19,9 @@ import (
 
 // Deps are the domain services MCP tools call into.
 type Deps struct {
-	Projects  *project.Service
-	Facts     *blackboard.Service
-	Tasks     *task.Service
-	Approvals *approval.Service
+	Projects *project.Service
+	Facts    *blackboard.Service
+	Tasks    *task.Service
 }
 
 // New builds a configured MCP server with the MVP trusted project-interface tools.
@@ -219,29 +217,6 @@ func New(deps Deps) *sdkmcp.Server {
 	})
 
 	sdkmcp.AddTool(server, &sdkmcp.Tool{
-		Name:        "request_approval",
-		Description: "Request human approval for a high-risk action.",
-	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args requestApprovalArgs) (*sdkmcp.CallToolResult, any, error) {
-		_ = ctx
-		_ = req
-		if deps.Approvals == nil {
-			return toolError(fmt.Errorf("approval service unavailable"))
-		}
-		got, err := deps.Approvals.RequestHighRiskAction(approval.Request{
-			ProjectID:       args.ProjectID,
-			TaskID:          args.TaskID,
-			Requester:       args.Requester,
-			RequestedAction: args.RequestedAction,
-			Rationale:       args.Rationale,
-			Payload:         args.Payload,
-		})
-		if err != nil {
-			return toolError(err)
-		}
-		return toolJSON(got)
-	})
-
-	sdkmcp.AddTool(server, &sdkmcp.Tool{
 		Name:        "submit_task_summary",
 		Description: "Submit a task summary before ending a continuation so the next resume carries compact handoff context.",
 	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args submitTaskSummaryArgs) (*sdkmcp.CallToolResult, any, error) {
@@ -269,29 +244,6 @@ func New(deps Deps) *sdkmcp.Server {
 			return toolError(err)
 		}
 		return toolJSON(version)
-	})
-
-	sdkmcp.AddTool(server, &sdkmcp.Tool{
-		Name:        "request_scope_expansion",
-		Description: "Request approval to expand project scope with a newly discovered asset or permission.",
-	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args requestApprovalArgs) (*sdkmcp.CallToolResult, any, error) {
-		_ = ctx
-		_ = req
-		if deps.Approvals == nil {
-			return toolError(fmt.Errorf("approval service unavailable"))
-		}
-		got, err := deps.Approvals.RequestScopeExpansion(approval.Request{
-			ProjectID:       args.ProjectID,
-			TaskID:          args.TaskID,
-			Requester:       args.Requester,
-			RequestedAction: args.RequestedAction,
-			Rationale:       args.Rationale,
-			Payload:         args.Payload,
-		})
-		if err != nil {
-			return toolError(err)
-		}
-		return toolJSON(got)
 	})
 
 	return server
@@ -365,15 +317,6 @@ type submitTaskSummaryArgs struct {
 	TaskID      string `json:"task_id" jsonschema:"task id"`
 	Summary     string `json:"summary" jsonschema:"compact handoff summary for the next continuation"`
 	SubmittedBy string `json:"submitted_by,omitempty" jsonschema:"runtime identifier"`
-}
-
-type requestApprovalArgs struct {
-	ProjectID       string `json:"project_id" jsonschema:"project id"`
-	TaskID          string `json:"task_id,omitempty"`
-	Requester       string `json:"requester,omitempty"`
-	RequestedAction string `json:"requested_action" jsonschema:"planned action"`
-	Rationale       string `json:"rationale,omitempty"`
-	Payload         any    `json:"payload,omitempty"`
 }
 
 func toolJSON(payload any) (*sdkmcp.CallToolResult, any, error) {

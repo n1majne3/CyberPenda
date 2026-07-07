@@ -9,7 +9,7 @@ A local-first system that coordinates authorized security testing work for a def
 _Avoid_: autonomous hacker, exploit bot
 
 **Project**:
-A bounded security-testing engagement with its own **Scope**, tasks, memory, evidence, approvals, and report.
+A bounded security-testing engagement with its own **Scope**, tasks, memory, evidence, and report.
 _Avoid_: workspace, conversation, campaign
 
 **Project Defaults**:
@@ -79,10 +79,6 @@ _Avoid_: target list, allowlist, permission note
 **Scope Expansion**:
 A proposed change that adds a newly discovered asset or testing permission to an existing **Scope**.
 _Avoid_: auto-enrollment, target drift
-
-**YOLO-Derived Scope**:
-Scope content added during **YOLO Mode** under an explicit project policy rather than a human **Approval**.
-_Avoid_: approved scope, normal scope
 
 **Out-of-Scope Fact**:
 A **Project Fact** about an asset or action outside current **Scope** that is retained for context but not authorization.
@@ -257,16 +253,12 @@ A bounded change to a **Skill**'s instruction document, structured metadata, scr
 _Avoid_: raw manifest editing, host filesystem edit, path escape
 
 **Skill Execution Boundary**:
-The existing **Task**, **Scope**, **Runner**, **Approval**, credential, and **Project Interface** constraints that govern actions influenced by a **Skill**.
-_Avoid_: skill-granted permission, approval bypass, scope expansion
+The existing **Task**, **Scope**, **Runner**, credential, and **Project Interface** constraints that govern actions influenced by a **Skill**.
+_Avoid_: skill-granted permission, scope expansion
 
 **Skill Deletion**:
 Removal of a **Skill** from the **Runtime Extension Library**, guarded so it does not silently leave broken **Runtime Extension Enablement**.
 _Avoid_: dangling profile reference, live task mutation, silent launch breakage
-
-**Skill Audit Event**:
-An **Audit Log** entry recording a security-relevant **Skill**, **Skill Source Provenance**, or **Runtime Extension Enablement** change.
-_Avoid_: Task Event, runtime transcript entry, bundle content
 
 **Skill Preflight Preview**:
 The **Run Controls** and **Preflight** view of enabled **Skills** and their projection readiness before **Task** launch.
@@ -345,7 +337,7 @@ Structured runtime interface configuration that defines available project-facing
 _Avoid_: raw JSON blob, unvalidated tool config
 
 **Trusted MCP Server**:
-An MCP server allowed to act as a **Project Interface** for project state, memory, approval, evidence, or reporting.
+An MCP server allowed to act as a **Project Interface** for project state, memory, evidence, or reporting.
 _Avoid_: arbitrary MCP server, external tool server
 
 **External MCP Server**:
@@ -417,7 +409,7 @@ The **Preflight** view of resolved non-secret model provider projection and gene
 _Avoid_: API key display, LLM connectivity test
 
 **Project Interface**:
-A supported channel that lets a **Runtime** read or write project state, memory, approvals, evidence, and reports.
+A supported channel that lets a **Runtime** read or write project state, memory, evidence, and reports.
 _Avoid_: backdoor, low-level database access
 
 **CLI Fallback**:
@@ -538,23 +530,19 @@ _Avoid_: shared project workspace, artifact root
 
 **Provenance**:
 The source context that explains which task, runtime, runner, scope, mode, and evidence produced a project conclusion.
-_Avoid_: metadata blob, audit log
-
-**Approval**:
-A recorded human decision for scope changes or high-risk security-testing actions.
-_Avoid_: permission popup, confirmation
+_Avoid_: metadata blob
 
 **High-Risk Action**:
 A testing action that may cause disruption, privileged data access, authenticated impact, exploit validation, or other impact beyond ordinary enumeration.
 _Avoid_: dangerous command, scary action
 
 **Intended Action**:
-A pre-action record of what a runtime plans to do and why before a high-risk or approval-relevant step.
+A pre-action record of what a runtime plans to do and why before a high-risk step.
 _Avoid_: result log, after-the-fact note
 
 **Policy Violation**:
-A recorded workflow breach where a runtime performs or attempts an action outside the required scope, approval, or declaration process.
-_Avoid_: approval, YOLO action, runtime error
+A recorded workflow breach where a runtime performs or attempts an action outside the required scope or declaration process.
+_Avoid_: runtime error
 
 **Reconciliation**:
 A governed review action that accepts, rejects, or reclassifies state discovered outside normal **Project Interface** writes.
@@ -564,22 +552,14 @@ _Avoid_: silent import, automatic trust
 Untrusted discovered state proposed for **Reconciliation**.
 _Avoid_: accepted fact, imported evidence
 
-**YOLO Mode**:
-A task mode that skips high-risk approval waits while preserving audit records and scope boundaries.
-_Avoid_: unrestricted mode, unsafe mode
-
-**Audit Log**:
-A chronological, append-only record of security-relevant project, task, approval, and report events.
-_Avoid_: debug log, transcript
-
 **Report**:
-A deliverable generated from **Findings**, **Project Facts**, **Fact Relations**, **Evidence Artifacts**, and the **Audit Log**.
+A deliverable generated from **Findings**, **Project Facts**, **Fact Relations**, and **Evidence Artifacts**.
 _Avoid_: transcript, export, source of truth
 
 ## Relationships
 
 - A **Project** has exactly one current **Scope**.
-- **YOLO-Derived Scope** is part of **Scope** but carries distinct **Provenance** from human-approved scope.
+- **Scope Expansion** is part of **Scope** but carries distinct **Provenance** from human-approved scope.
 - An **Out-of-Scope Fact** does not change **Scope** and does not authorize testing.
 - A **Project** may define **Project Defaults** for new **Tasks**, including an optional **Default Runtime Profile Preset** and default **Runner**.
 - A **Project Defaults** reference to a **Default Runtime Profile Preset** preselects that preset on the task launch page but does not copy the **Runtime Profile**.
@@ -654,7 +634,7 @@ _Avoid_: transcript, export, source of truth
 - A **Skill** must not contain credential values or declare credential resolution requirements; credentials and environment variables belong to **Runtime Profiles** and **Credential Bindings**.
 - A **Skill** follows the **Skill Execution Boundary** and does not grant permissions by itself.
 - **Skill Deletion** is blocked while the **Skill** is enabled unless the user explicitly removes that enablement everywhere.
-- **Skill Audit Events** record import, upload, edit, deletion, provenance, and enablement changes.
+- **Skill Events** record import, upload, edit, deletion, provenance, and enablement changes.
 - **Skill Preflight Preview** makes enabled **Skills** and related launch blockers visible before a **Task** starts.
 - **Runtime Extension Projection** materializes enabled **Skills** into a **Task Skills Root**.
 - A **Runtime-Specific Extension** narrows compatibility to the relevant **Runtime Plugin** family.
@@ -740,14 +720,14 @@ _Avoid_: transcript, export, source of truth
 - A **Task** has its own **Runtime Workdir**.
 - **Tasks** do not share **Runtime Workdirs** by default.
 - A **Runtime Continuation** after a runtime-profile switch does not inherit the prior runtime's **Runtime Workdir** by default.
-- A **Task** may override its **Runtime Profile**'s default **Runner**, and that override is recorded in the **Audit Log**.
+- A **Task** may override its **Runtime Profile**'s default **Runner**, and that override is recorded as a task event.
 - A **Task** uses **Config Projection** to prepare runtime configuration without mutating host runtime configuration.
 - A **Config Projection** failure belongs to the affected **Task** unless the **Runtime Profile** itself is explicitly invalid.
 - A **Task** passes **Preflight** before its **Runtime** starts.
 - A **Credential Reference** that cannot be resolved during **Preflight** prevents **Runtime** launch.
 - A missing **Model API Key Environment Variable** value prevents **Runtime** launch during **Preflight**.
 - A required **Model Provider Requirement** that cannot resolve a compatible **Model Provider Protocol** prevents **Runtime** launch during **Preflight**.
-- A **Preflight** failure prevents **Runtime** execution and is recorded in the **Audit Log**.
+- A **Preflight** failure prevents **Runtime** execution.
 - A **Task** runs under exactly one **Scope Snapshot**.
 - A **Scope Snapshot** records historical authorization and does not change when current **Scope** later changes.
 - A **Runtime** performs a **Task** but is not the whole **Pentest Agent**.
@@ -760,9 +740,8 @@ _Avoid_: transcript, export, source of truth
 - A **Runtime** may propose a **Reconciliation Candidate** but must not automatically complete **Reconciliation**.
 - A **Sandbox Runner** runs a **Runtime** inside a **Sandbox** and is the default **Runner**.
 - A **Runner** may place a **Runtime** inside a **Sandbox**.
-- A **Host Runner** runs outside a **Sandbox** and must be visible in the **Audit Log** and **Report**.
-- A **Host Runner Activation** requires an **Approval** unless **YOLO Mode** is active for the **Task**.
-- A **Host Runner Activation** in **YOLO Mode** still creates an **Intended Action** before launch.
+- A **Host Runner** runs outside a **Sandbox** and must be visible in the **Report**.
+- A **Host Runner Activation** requires explicit operator activation before launch.
 - A **Sandbox Runner** failure must not automatically fall back to the **Host Runner**.
 - A **Sandbox** isolates runtime environment state but does not imply full network or command enforcement.
 - A **Blackboard** belongs to exactly one **Project**.
@@ -819,21 +798,10 @@ _Avoid_: transcript, export, source of truth
 - An **Evidence Artifact** may reference a **Task Artifact Root** to preserve task provenance.
 - **Runtime Workdir** files become **Evidence Artifacts** only when explicitly attached or retained.
 - Complete raw runtime or tool output is stored as logs or **Evidence Artifacts**, not as **Task Events**.
-- A **Scope Expansion** requires an **Approval** unless the **Project** explicitly allows that behavior for the active task mode.
 - A rejected **Scope Expansion** may leave an **Out-of-Scope Fact** for context and audit.
-- An **Approval** for a **High-Risk Action** includes an **Intended Action**.
-- A **High-Risk Action** requires an **Approval** unless **YOLO Mode** is active for the **Task**.
-- A **High-Risk Action** in **YOLO Mode** still creates an **Intended Action** before execution.
-- A **High-Risk Action** without the required **Approval**, **YOLO Mode**, or **Intended Action** is recorded as a **Policy Violation**.
 - A **Policy Violation** marks the affected **Task** but does not automatically pause the whole **Project**.
 - Direct runtime writes to storage outside **Project Interfaces** are recorded as **Policy Violations** when detected.
-- **YOLO Mode** changes approval waiting behavior but does not by itself change **Scope**.
-- **YOLO Mode** does not bypass **Scope Expansion** approval unless the **Project** explicitly allows YOLO scope expansion.
-- **YOLO-Derived Scope** must be visible in the **Audit Log** and **Report**.
-- **YOLO Mode** records skipped high-risk approval waits in the **Audit Log** but does not create **Approvals**.
-- An **Audit Log** records **Task** launches, approvals, YOLO use, blackboard writes, evidence changes, and report generation.
-- **Task Events** explain what happened inside one **Task**, while the **Audit Log** records security-relevant history across the **Project**.
-- An **Audit Log** is corrected by appending new events, not rewriting existing events.
+- **Task Events** explain what happened inside one **Task**.
 - A **Report** presents project conclusions but is not itself the source of truth for **Findings** or **Project Facts**.
 - A **Report** presents high-signal **Provenance** without expanding every **Task Event**.
 - A **Report** distinguishes **Tentative Facts** from confirmed conclusions.
@@ -842,7 +810,7 @@ _Avoid_: transcript, export, source of truth
 ## Example dialogue
 
 > **Dev:** "The Runtime discovered a new subdomain during a task. Should it write that straight into Scope?"
-> **Domain expert:** "No. It should create a Scope Expansion request. If approved, the Project Scope changes and the Audit Log records the decision."
+> **Domain expert:** "No. It should create a Scope Expansion request. If accepted, the Project Scope changes and the decision is recorded."
 
 > **Dev:** "The Runtime confirmed SQL injection and saved the HTTP exchange. Is that a Project Fact or a Finding?"
 > **Domain expert:** "Both can be involved: the reproducible issue is a Finding, and the reproduction context can be stored as Project Facts with Evidence Artifacts attached."
@@ -853,16 +821,11 @@ _Avoid_: transcript, export, source of truth
 ## Flagged Ambiguities
 
 - "vulnerability" and **Finding** were used for the same reportable issue concept; resolved: use **Finding** as the product/domain term and reserve "vulnerability" for type names, schemas, or imported source terminology.
-- **Approval** and **YOLO Mode** both touch high-risk actions; resolved: **Approval** means a human decision, while **YOLO Mode** records skipped waits in the **Audit Log**.
-- **YOLO Mode** is not scope authorization; resolved: it does not bypass **Scope Expansion** approval unless the **Project** explicitly allows YOLO scope expansion.
-- **YOLO-Derived Scope** is not human-approved scope; resolved: keep distinct provenance in audit and report output.
-- **YOLO Mode** is not after-the-fact-only audit; resolved: record an **Intended Action** before each skipped high-risk approval wait.
-- **Intended Action** is not YOLO-only; resolved: approval requests and YOLO-skipped approvals share the same planned-action record shape.
 - **Policy Violation** is not an approval state; resolved: it records a workflow breach that may be detected after the fact.
 - **Policy Violation** is not automatic project suspension; resolved: flag the affected task strongly and leave project-level pause decisions to a human.
 - Direct storage mutation is not trusted project state; resolved: use **Reconciliation** before such content affects **Current Truth** or reports.
 - **Reconciliation** is not runtime self-approval; resolved: runtime-discovered candidates stay untrusted until accepted by a human or explicit project policy.
-- **Host Runner Activation** is not implicit host fallback; resolved: host execution requires approval or YOLO-scoped declaration and must be visible in audit and report output.
+- **Host Runner Activation** is not implicit host fallback; resolved: host execution requires explicit activation and must be visible in report output.
 - **Sandbox Runner** failure is not permission to use **Host Runner**; resolved: host execution requires explicit **Host Runner Activation**.
 - **Deprecated Fact** is not deleted history; resolved: deprecated facts remain available for audit, contradiction handling, and report context.
 - **Current Truth** is not the whole **Blackboard**; resolved: it is the default working set that excludes **Deprecated Facts**.
@@ -973,7 +936,7 @@ _Avoid_: transcript, export, source of truth
 - **Task Goal** is not the whole task configuration; resolved: natural-language goals are paired with visible **Run Controls**.
 - **Harness Steering** is not direct pentest tool control; resolved: it controls runtime continuation inside the same **Task** through the **Runtime Harness**.
 - **Runtime Continuation** is not live thought editing; resolved: steering applies at input, checkpoint, interrupt, or resume boundaries.
-- **Harness Steering** is not silent run-control mutation; resolved: runner, profile, YOLO, or other run-control changes apply through explicit task events and only at continuation boundaries.
+- **Harness Steering** is not silent run-control mutation; resolved: runner, profile, or other run-control changes apply through explicit task events and only at continuation boundaries.
 - **Profile Selector** is not raw configuration editing; resolved: switching profiles is fast, while editing profiles remains structured.
 - **Generated Runtime Config** is not the editable source of truth; resolved: raw config preview and diff are derived from structured profile fields.
 - **Generated Runtime Config** is not a secret preview; resolved: show generated API key environment variable names and projection targets, not API key values.
@@ -1002,9 +965,9 @@ _Avoid_: transcript, export, source of truth
 - **Skill Bundle Edit** is not raw manifest editing; resolved: users edit bounded bundle content and structured metadata.
 - **Built-in Skill** is not a live remote install; resolved: packaged content is bundled with the daemon and seeded into the normal editable **Runtime Extension Library**.
 - Skills do not define credential needs; resolved: credential and environment resolution stays with **Runtime Profiles**, launch requests, and **Credential Bindings**.
-- **Skill Execution Boundary** is not expanded by enabling a skill; resolved: skills do not bypass scope, runner, approval, credential, or project-interface controls.
+- **Skill Execution Boundary** is not expanded by enabling a skill; resolved: skills do not bypass scope, runner, credential, or project-interface controls.
 - **Skill Deletion** is not silent profile breakage; resolved: deletion is blocked while enabled unless the user explicitly deletes and disables everywhere.
-- **Skill Audit Event** is not a **Task Event**; resolved: skill management changes enter the **Audit Log**, not a task-local runtime timeline.
+- **Skill Event** is not a **Task Event**; resolved: skill management changes are project-level records, not a task-local runtime timeline.
 - **Skill Preflight Preview** is not hidden runtime context; resolved: enabled skills and their blockers are visible during task launch checks.
 - **Task Skills Root** is not global skill installation; resolved: each task receives its own materialized enabled skills.
 - **Skills Page** is not provider-specific plugin management; resolved: runtime-specific plugins belong to their own runtime family.
@@ -1023,13 +986,13 @@ _Avoid_: transcript, export, source of truth
 - **Preflight** failure is not **Runtime** failure; resolved: startup checks fail before the runtime performs task work.
 - **Model Preflight Preview** is not a secret display; resolved: show base URL, protocol, model, generated API key environment variable name, and configured/missing status without showing key values.
 - **CLI Fallback** is not a bypass; resolved: CLI writes carry the same validation, provenance, audit, and blackboard semantics as other project interfaces.
-- **Task Event** and **Audit Log** are distinct; resolved: task events are task-local timeline entries, while audit entries are project-level security history.
+- **Task Event** and project-level history are distinct; resolved: task events are task-local timeline entries, while project-level records are security history.
 - **Task Event** is not raw output storage; resolved: preserve full output through logs or **Evidence Artifacts** and keep the task timeline structured.
 - **Task Summary** is not daemon-authored intelligence; resolved: runtimes maintain summary candidates, while the daemon stores and injects accepted summaries.
 - **Task Summary** acceptance is automatic; resolved: the latest runtime-submitted summary is accepted while prior versions remain inspectable.
 - **Mechanical Handoff Packet** is not an LLM summary; resolved: it is structured fallback context assembled without semantic summarization.
-- **Provenance** is not the **Audit Log** itself; resolved: provenance is the source context attached to conclusions, while audit is chronological security history.
-- **Report** provenance is summarized, not exhaustive; resolved: reports show the runner, scope context, approval or YOLO origin, and key evidence rather than every task event.
+- **Provenance** is not chronological history; resolved: provenance is the source context attached to conclusions, while project history is chronological security records.
+- **Report** provenance is summarized, not exhaustive; resolved: reports show the runner, scope context, and key evidence rather than every task event.
 - **Tentative Fact** is visible current context, not confirmed conclusion; resolved: current views may include it with confidence while reports mark it separately from confirmed findings.
 - Unconfirmed **Findings** are not confirmed report conclusions; resolved: reports may show them as needing validation outside the confirmed findings summary.
 - **Runtime Workdir** is not shared memory; resolved: cross-task knowledge flows through **Blackboard** and retained artifacts.

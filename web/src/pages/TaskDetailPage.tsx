@@ -267,7 +267,6 @@ export function TaskDetailPage() {
         <Badge variant={task.runner === "host" ? "destructive" : "outline"}>
           runner: {task.runner}
         </Badge>
-        {task.run_controls.yolo && <Badge variant="warning">YOLO</Badge>}
       </div>
       {currentContinuation && (
         <div className="mb-6 flex gap-2">

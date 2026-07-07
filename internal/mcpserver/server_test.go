@@ -2,14 +2,12 @@ package mcpserver_test
 
 import (
 	"context"
-	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"pentest/internal/approval"
 	"pentest/internal/blackboard"
 	"pentest/internal/mcpserver"
 	"pentest/internal/project"
@@ -180,47 +178,6 @@ func TestMCPFindingEvidenceAndReportFlow(t *testing.T) {
 	})
 	if !strings.Contains(reportBody, "SQL injection in login") || !strings.Contains(reportBody, "Confirmed Findings") {
 		t.Fatalf("generate_report missing expected content: %s", reportBody)
-	}
-}
-
-func TestMCPApprovalRequestsPersistPendingRecords(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer db.Close()
-
-	projects := project.NewService(db)
-	approvals := approval.NewService(db)
-	proj, err := projects.Create("Acme", "", project.Scope{}, project.Defaults{})
-	if err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-	session := connectMCP(t, mcpserver.Deps{Projects: projects, Approvals: approvals})
-
-	body := callTool(t, session, "request_approval", map[string]any{
-		"project_id":       proj.ID,
-		"task_id":          "task-1",
-		"requested_action": "run authenticated scanner",
-		"rationale":        "validate suspected issue",
-	})
-	var got approval.Approval
-	if err := json.Unmarshal([]byte(body), &got); err != nil {
-		t.Fatalf("decode approval: %v", err)
-	}
-	if got.Status != approval.StatusPending {
-		t.Fatalf("expected pending approval, got %#v", got)
-	}
-
-	body = callTool(t, session, "request_scope_expansion", map[string]any{
-		"project_id":       proj.ID,
-		"requested_action": "add staging.example.com",
-	})
-	if err := json.Unmarshal([]byte(body), &got); err != nil {
-		t.Fatalf("decode scope approval: %v", err)
-	}
-	if got.Kind != approval.KindScopeExpansion {
-		t.Fatalf("expected scope expansion kind, got %#v", got)
 	}
 }
 

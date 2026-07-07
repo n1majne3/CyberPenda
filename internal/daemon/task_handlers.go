@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"pentest/internal/adapters"
-	"pentest/internal/approval"
 	"pentest/internal/blackboard"
 
 	"pentest/internal/modelprovider"
@@ -58,7 +57,6 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		Runner           task.Runner       `json:"runner"`
 		RunControls      task.RunControls  `json:"run_controls"`
 		Extras           map[string]string `json:"extras"`
-		YOLO             bool              `json:"yolo"`
 	}
 	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
 		writeError(response, http.StatusBadRequest, "invalid JSON body")
@@ -66,9 +64,6 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 	}
 	if input.RunControls.Extras == nil && input.Extras != nil {
 		input.RunControls.Extras = input.Extras
-	}
-	if input.YOLO {
-		input.RunControls.YOLO = true
 	}
 
 	defaulted, err := server.applyTaskLaunchDefaults(projectID, input.RuntimeProfileID, input.Runner)
@@ -86,7 +81,6 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		ProjectID:           projectID,
 		Runner:              string(input.Runner),
 		HostActivated:       input.RunControls.HostActivated,
-		YOLO:                input.RunControls.YOLO,
 	})
 	if !preflightResult.Pass {
 		writeJSON(response, http.StatusBadRequest, struct {
@@ -101,7 +95,6 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 	if err := runner.ValidateActivation(runner.ActivationRequest{
 		Runner:        runner.Runner(input.Runner),
 		HostActivated: input.RunControls.HostActivated,
-		YOLO:          input.RunControls.YOLO,
 	}); err != nil {
 		writeError(response, http.StatusBadRequest, err.Error())
 		return
@@ -134,23 +127,6 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 
 	if err := server.launchTaskInBackground(created, plan, created.Goal); err != nil {
 		writeError(response, http.StatusInternalServerError, "create task continuation")
-		return
-	}
-
-	if _, err := server.approvals.RecordAudit(approval.AuditEntry{
-		ProjectID: projectID,
-		TaskID:    created.ID,
-		Kind:      "task_created",
-		Summary:   "task launched: " + created.Goal,
-		Payload: map[string]any{
-			"task_id":            created.ID,
-			"runner":             created.Runner,
-			"runtime_profile_id": created.RuntimeProfileID,
-			"yolo":               created.RunControls.YOLO,
-			"host_activated":     created.RunControls.HostActivated,
-		},
-	}); err != nil {
-		writeError(response, http.StatusInternalServerError, "record task audit")
 		return
 	}
 
@@ -316,7 +292,6 @@ func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launch
 		Goal:          goal,
 		ConfigPath:    configPath,
 		MCPConfigPath: mcpConfigPath,
-		YOLO:          created.RunControls.YOLO,
 		Sandbox:       sandbox,
 	})
 	if err != nil {
@@ -834,20 +809,6 @@ func (server *Server) handleResumeTask(response http.ResponseWriter, request *ht
 		return
 	}
 
-	if _, err := server.approvals.RecordAudit(approval.AuditEntry{
-		ProjectID: projectID,
-		TaskID:    found.ID,
-		Kind:      "task_resumed",
-		Summary:   "task resumed with native session",
-		Payload: map[string]any{
-			"task_id": found.ID,
-			"runner":  found.Runner,
-		},
-	}); err != nil {
-		writeError(response, http.StatusInternalServerError, "record task audit")
-		return
-	}
-
 	updated, err := server.taskDetail(found.ID)
 	if err != nil {
 		writeTaskError(response, err)
@@ -895,19 +856,6 @@ func (server *Server) handleResumeHandoffTask(response http.ResponseWriter, requ
 	}
 	if err := server.launchTaskInBackground(found, plan, resumeGoal); err != nil {
 		writeError(response, http.StatusInternalServerError, "create task continuation")
-		return
-	}
-	if _, err := server.approvals.RecordAudit(approval.AuditEntry{
-		ProjectID: projectID,
-		TaskID:    found.ID,
-		Kind:      "task_resumed",
-		Summary:   "task resumed with mechanical handoff",
-		Payload: map[string]any{
-			"task_id": found.ID,
-			"runner":  found.Runner,
-		},
-	}); err != nil {
-		writeError(response, http.StatusInternalServerError, "record task audit")
 		return
 	}
 	updated, err := server.taskDetail(found.ID)

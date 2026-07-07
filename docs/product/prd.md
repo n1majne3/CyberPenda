@@ -95,7 +95,7 @@ Preflight checks run before runtime launch. If required runtime, sandbox, config
 
 The user or runtime can steer the runtime harness without creating a new task. Steering may revise the goal, request a pause, resume, interrupt, stop after current step, switch runtime profile, or change run controls.
 
-Changes that affect runner, runtime profile, YOLO mode, or other run controls apply only at runtime continuation boundaries and are recorded as task events.
+Changes that affect runner, runtime profile, or other run controls apply only at runtime continuation boundaries and are recorded as task events.
 
 Runtime continuations receive a runtime-maintained task summary by default. If no accepted summary exists, the daemon provides a mechanical handoff packet assembled from structured task state.
 
@@ -180,7 +180,7 @@ Reports are generated deliverables, not the source of truth. They present confir
 - The primary UI entry point must be the project dashboard.
 - The dashboard must show scope status, task runs, blackboard growth, findings, evidence health, and report generation.
 - The runtime profile editor must provide fast profile selection plus structured detail editing.
-- YOLO mode, host runner use, scope status, and unconfirmed findings must be visually hard to miss.
+- Host runner use, scope status, and unconfirmed findings must be visually hard to miss.
 
 ### Reports
 

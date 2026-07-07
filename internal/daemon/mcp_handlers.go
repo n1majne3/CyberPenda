@@ -10,10 +10,9 @@ import (
 func (server *Server) registerMCP() {
 	handler := sdkmcp.NewStreamableHTTPHandler(func(*http.Request) *sdkmcp.Server {
 		return mcpserver.New(mcpserver.Deps{
-			Projects:  server.projects,
-			Facts:     server.facts,
-			Tasks:     server.tasks,
-			Approvals: server.approvals,
+			Projects: server.projects,
+			Facts:    server.facts,
+			Tasks:    server.tasks,
 		})
 	}, &sdkmcp.StreamableHTTPOptions{
 		Stateless:    true,

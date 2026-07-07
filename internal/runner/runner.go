@@ -25,7 +25,7 @@ const (
 )
 
 var (
-	ErrHostRunnerRequiresActivation = errors.New("host runner requires explicit activation or YOLO mode")
+	ErrHostRunnerRequiresActivation = errors.New("host runner requires explicit activation")
 	ErrSandboxDoesNotFallbackToHost = errors.New("sandbox runner failure must not fallback to host runner")
 )
 
@@ -88,7 +88,6 @@ type SandboxCommandRequest struct {
 type ActivationRequest struct {
 	Runner        Runner
 	HostActivated bool
-	YOLO          bool
 }
 
 type FallbackRequest struct {
@@ -213,7 +212,7 @@ func sandboxProviderEnv(provider runtimeprofile.Provider, providerDir string) []
 }
 
 func ValidateActivation(request ActivationRequest) error {
-	if request.Runner == RunnerHost && !request.HostActivated && !request.YOLO {
+	if request.Runner == RunnerHost && !request.HostActivated {
 		return ErrHostRunnerRequiresActivation
 	}
 	return nil

@@ -18,7 +18,7 @@ import (
 )
 
 // Runner names the execution boundary for a task. The sandbox runner is the
-// default; the host runner requires explicit activation or YOLO mode.
+// default; the host runner requires explicit activation.
 type Runner string
 
 const (
@@ -42,7 +42,6 @@ const (
 // RunControls are the structured task launch settings: runner is stored
 // separately because it gates execution boundary visibility.
 type RunControls struct {
-	YOLO           bool              `json:"yolo,omitempty"`
 	HostActivated  bool              `json:"host_activated,omitempty"`
 	SandboxNetwork string            `json:"sandbox_network,omitempty"`
 	Notes          string            `json:"notes,omitempty"`

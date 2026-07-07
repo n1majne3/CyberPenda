@@ -99,34 +99,7 @@ export interface Dashboard {
     facts: number;
     findings: number;
     evidence: number;
-    pending_approvals: number;
   };
-}
-
-export interface Approval {
-  id: string;
-  project_id: string;
-  task_id?: string;
-  kind: string;
-  status: string;
-  requester?: string;
-  requested_action: string;
-  rationale?: string;
-  payload?: unknown;
-  reviewer?: string;
-  decision?: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface AuditEntry {
-  id: string;
-  project_id: string;
-  task_id?: string;
-  kind: string;
-  summary: string;
-  payload?: unknown;
-  created_at: string;
 }
 
 export interface RuntimeProfile {
@@ -311,7 +284,7 @@ export interface Task {
   status: string;
   runner: string;
   runtime_profile_id: string;
-  run_controls: { yolo?: boolean; host_activated?: boolean; sandbox_network?: string; notes?: string; extras?: Record<string, string> };
+  run_controls: { host_activated?: boolean; sandbox_network?: string; notes?: string; extras?: Record<string, string> };
   scope_snapshot: Scope;
   runtime_controls?: RuntimeControls;
   active_continuation?: TaskContinuation;

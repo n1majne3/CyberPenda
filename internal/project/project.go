@@ -49,12 +49,8 @@ type Defaults struct {
 	TaskPolicy     string `json:"task_policy,omitempty"`
 }
 
-// DefaultsYoloPolicy is the value for TaskPolicy that permits YOLO-derived
-// scope expansion without per-action approval.
-const DefaultsYoloPolicy = "yolo"
-
 // Project is a bounded security-testing engagement with its own scope, tasks,
-// memory, evidence, approvals, and report.
+// memory, evidence, and report.
 type Project struct {
 	ID          string    `json:"id"`
 	Name        string    `json:"name"`

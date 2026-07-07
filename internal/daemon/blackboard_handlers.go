@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 
-	"pentest/internal/approval"
 	"pentest/internal/blackboard"
 	"pentest/internal/project"
 	"pentest/internal/report"
@@ -463,19 +462,6 @@ func (server *Server) handleReportTrigger(response http.ResponseWriter, request 
 		out, err := generator.Generate(report.Request{ProjectID: projectID, TaskID: taskID})
 		if err != nil {
 			writeError(response, http.StatusInternalServerError, "generate report")
-			return
-		}
-		if _, err := server.approvals.RecordAudit(approval.AuditEntry{
-			ProjectID: projectID,
-			TaskID:    taskID,
-			Kind:      "report_generated",
-			Summary:   "markdown report generated",
-			Payload: map[string]any{
-				"task_id": taskID,
-				"format":  out.Format,
-			},
-		}); err != nil {
-			writeError(response, http.StatusInternalServerError, "record report audit")
 			return
 		}
 		writeJSON(response, http.StatusOK, out)

@@ -7,11 +7,8 @@ import (
 	"net/http"
 	"strings"
 
-	"pentest/internal/approval"
 	"pentest/internal/skill"
 )
-
-const globalAuditProjectID = "global"
 
 type skillWriteRequest struct {
 	Name        string                 `json:"name"`
@@ -104,14 +101,6 @@ func (server *Server) handlePutSkill(response http.ResponseWriter, request *http
 		writeSkillError(response, err)
 		return
 	}
-	kind := "skill_published"
-	if existed {
-		kind = "skill_updated"
-	}
-	if err := server.recordSkillAudit(kind, published.ID, map[string]any{"skill": published}); err != nil {
-		writeError(response, http.StatusInternalServerError, "record skill audit")
-		return
-	}
 	status := http.StatusCreated
 	if existed {
 		status = http.StatusOK
@@ -144,10 +133,6 @@ func (server *Server) handleImportSkill(response http.ResponseWriter, request *h
 		writeSkillError(response, err)
 		return
 	}
-	if err := server.recordSkillAudit("skill_imported", imported.ID, map[string]any{"skill": imported, "request": input}); err != nil {
-		writeError(response, http.StatusInternalServerError, "record skill audit")
-		return
-	}
 	writeJSON(response, http.StatusCreated, newSkillResponse(imported, true))
 }
 
@@ -156,10 +141,6 @@ func (server *Server) handleDeleteSkill(response http.ResponseWriter, request *h
 	forceDisable := parseBoolQuery(request.URL.Query().Get("force_disable"))
 	if err := server.skills.Delete(request.Context(), id, forceDisable); err != nil {
 		writeSkillError(response, err)
-		return
-	}
-	if err := server.recordSkillAudit("skill_deleted", id, map[string]any{"skill_id": id, "force_disable": forceDisable}); err != nil {
-		writeError(response, http.StatusInternalServerError, "record skill audit")
 		return
 	}
 	response.WriteHeader(http.StatusNoContent)
@@ -180,37 +161,7 @@ func (server *Server) handleSkillProfileOptOut(response http.ResponseWriter, req
 		writeSkillError(response, err)
 		return
 	}
-	if err := server.recordSkillAudit("skill_opt_out_changed", skillID, map[string]any{
-		"skill_id":   skillID,
-		"profile_id": profileID,
-		"opted_out":  optedOut,
-	}); err != nil {
-		writeError(response, http.StatusInternalServerError, "record skill audit")
-		return
-	}
 	response.WriteHeader(http.StatusNoContent)
-}
-
-func (server *Server) handleListGlobalAuditLog(response http.ResponseWriter, request *http.Request) {
-	entries, err := server.approvals.ListAudit(globalAuditProjectID, 200)
-	if err != nil {
-		writeError(response, http.StatusInternalServerError, "list audit log")
-		return
-	}
-	writeJSON(response, http.StatusOK, struct {
-		Entries []approval.AuditEntry `json:"entries"`
-	}{Entries: entries})
-}
-
-func (server *Server) recordSkillAudit(kind, skillID string, payload map[string]any) error {
-	summary := strings.ReplaceAll(kind, "_", " ") + ": " + skillID
-	_, err := server.approvals.RecordAudit(approval.AuditEntry{
-		ProjectID: globalAuditProjectID,
-		Kind:      kind,
-		Summary:   summary,
-		Payload:   payload,
-	})
-	return err
 }
 
 func newSkillResponse(got skill.Skill, enabled bool) skillResponse {

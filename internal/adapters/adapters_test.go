@@ -261,7 +261,7 @@ func TestBuildClaudeCodeLaunchArgsKeepsExplicitOutputFormat(t *testing.T) {
 	}
 }
 
-func TestBuildClaudeCodeLaunchArgsAddsYOLOBypassInSandbox(t *testing.T) {
+func TestBuildClaudeCodeLaunchArgsAddsBypassInSandbox(t *testing.T) {
 	args, err := adapters.BuildLaunchArgs(adapters.LaunchArgsRequest{
 		Provider: runtimeprofile.ProviderClaudeCode,
 		Profile: runtimeprofile.Profile{
@@ -269,7 +269,6 @@ func TestBuildClaudeCodeLaunchArgsAddsYOLOBypassInSandbox(t *testing.T) {
 			Fields:   runtimeprofile.Fields{Model: "deepseek-v4-flash"},
 		},
 		Goal:    "enumerate example.com",
-		YOLO:    true,
 		Sandbox: true,
 	})
 	if err != nil {
@@ -278,12 +277,12 @@ func TestBuildClaudeCodeLaunchArgsAddsYOLOBypassInSandbox(t *testing.T) {
 	joined := strings.Join(args, " ")
 	for _, want := range []string{"--dangerously-skip-permissions", "--permission-mode bypassPermissions"} {
 		if !strings.Contains(joined, want) {
-			t.Fatalf("expected YOLO bypass arg %q in %q", want, joined)
+			t.Fatalf("expected bypass arg %q in %q", want, joined)
 		}
 	}
 }
 
-func TestBuildClaudeCodeLaunchArgsSkipsYOLOBypassOutsideSandbox(t *testing.T) {
+func TestBuildClaudeCodeLaunchArgsSkipsBypassOutsideSandbox(t *testing.T) {
 	args, err := adapters.BuildLaunchArgs(adapters.LaunchArgsRequest{
 		Provider: runtimeprofile.ProviderClaudeCode,
 		Profile: runtimeprofile.Profile{
@@ -291,7 +290,6 @@ func TestBuildClaudeCodeLaunchArgsSkipsYOLOBypassOutsideSandbox(t *testing.T) {
 			Fields:   runtimeprofile.Fields{Model: "deepseek-v4-flash"},
 		},
 		Goal:    "enumerate example.com",
-		YOLO:    true,
 		Sandbox: false,
 	})
 	if err != nil {
@@ -299,7 +297,7 @@ func TestBuildClaudeCodeLaunchArgsSkipsYOLOBypassOutsideSandbox(t *testing.T) {
 	}
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "--dangerously-skip-permissions") {
-		t.Fatalf("expected host runner to skip YOLO bypass args, got %q", joined)
+		t.Fatalf("expected host runner to skip bypass args, got %q", joined)
 	}
 }
 

@@ -138,9 +138,6 @@ func (g *Generator) writeContext(md *strings.Builder, req Request) {
 	md.WriteString("- **Runner:** `")
 	md.WriteString(string(t.Runner))
 	md.WriteString("`")
-	if t.RunControls.YOLO {
-		md.WriteString(" (YOLO mode)")
-	}
 	md.WriteString("\n")
 	writeScopeLines(md, t.ScopeSnapshot)
 	md.WriteString("\n")

@@ -82,8 +82,6 @@ type Request struct {
 	Runner string
 	// HostActivated is true when the operator explicitly confirmed host runner.
 	HostActivated bool
-	// YOLO skips per-action approvals (smoke / trusted operator path).
-	YOLO bool
 	// LaunchModelOverride applies a task-only model choice without editing the profile.
 	LaunchModelOverride string
 }
@@ -230,11 +228,11 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 		result.add(Check{Name: "runner", Status: CheckPass})
 	}
 
-	if runner == "host" && !request.HostActivated && !request.YOLO {
+	if runner == "host" && !request.HostActivated {
 		result.add(Check{
 			Name:   "host_activation",
 			Status: CheckFail,
-			Detail: "host runner requires explicit activation or YOLO mode",
+			Detail: "host runner requires explicit activation",
 		})
 	} else if runner == "host" {
 		result.add(Check{Name: "host_activation", Status: CheckPass})

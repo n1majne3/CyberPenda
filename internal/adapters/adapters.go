@@ -29,8 +29,6 @@ type LaunchArgsRequest struct {
 	Goal          string
 	ConfigPath    string
 	MCPConfigPath string
-	// YOLO requests provider-side permission bypass where supported.
-	YOLO bool
 	// Sandbox is true when the task runs inside the container runner.
 	Sandbox bool
 }
@@ -118,8 +116,8 @@ func hasCLIOption(args []string, option string) bool {
 	return runtimeplugin.HasCLIOption(args, option)
 }
 
-func appendYOLOProviderArgs(provider runtimeprofile.Provider, sandbox, yolo bool, args []string) []string {
-	if !yolo || !sandbox || provider != runtimeprofile.ProviderClaudeCode {
+func appendSandboxProviderArgs(provider runtimeprofile.Provider, sandbox bool, args []string) []string {
+	if !sandbox || provider != runtimeprofile.ProviderClaudeCode {
 		return args
 	}
 	if !hasCLIOption(args, "--dangerously-skip-permissions") {
@@ -142,7 +140,7 @@ func defaultBinary(provider runtimeprofile.Provider) string {
 
 func launchRenderContext(req LaunchArgsRequest, binary string) runtimeplugin.RenderContext {
 	extra := append([]string{}, req.Profile.Fields.CustomArgs...)
-	extra = appendYOLOProviderArgs(req.Provider, req.Sandbox, req.YOLO, extra)
+	extra = appendSandboxProviderArgs(req.Provider, req.Sandbox, extra)
 	subcommand := strings.TrimSpace(req.Profile.Fields.Env["PENTEST_CODEX_SUBCOMMAND"])
 	if subcommand == "" {
 		subcommand = "exec"

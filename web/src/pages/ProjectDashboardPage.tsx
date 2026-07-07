@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { AlertTriangle, Target, ListChecks, FileText, FlaskConical, FolderLock, ClipboardList, ShieldAlert, Rocket } from "lucide-react";
+import { AlertTriangle, Target, ListChecks, FileText, FlaskConical, FolderLock, ClipboardList, Rocket } from "lucide-react";
 import { apiGet, type Dashboard, type Project } from "@/lib/api";
 import { ProjectNav } from "@/components/ProjectNav";
 import { Card, CardTitle, CardHeader, Badge, Button } from "@/components/ui";
@@ -87,14 +87,6 @@ export function ProjectDashboardPage() {
       </div>
 
       <div className="flex flex-wrap gap-2">
-        {dash.counts.pending_approvals > 0 && (
-          <Link to={`${base}/approvals`}>
-            <Button variant="warning" size="sm">
-              <ShieldAlert className="h-4 w-4" />
-              {dash.counts.pending_approvals} pending approval{dash.counts.pending_approvals === 1 ? "" : "s"}
-            </Button>
-          </Link>
-        )}
         <Link to={`${base}/report`}>
           <Button variant="secondary" size="sm">
             <ClipboardList className="h-4 w-4" /> Generate report
