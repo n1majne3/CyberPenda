@@ -1,0 +1,14 @@
+.git
+.cache
+.DS_Store
+
+dist
+pentestd
+pentest.db
+*.db
+*.db-*
+runs
+
+web/node_modules
+web/dist
+internal/daemon/webfs/dist

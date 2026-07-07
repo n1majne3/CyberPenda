@@ -75,12 +75,18 @@ func TestReleaseWorkflowBuildsSandboxImagePerPlatform(t *testing.T) {
 	assertContains(t, workflow, "merge-multiple: true")
 	assertContains(t, workflow, "docker buildx imagetools create")
 
-	if strings.Contains(workflow, "platforms: linux/amd64,linux/arm64") {
+	if strings.Contains(workflow, "file: docker/pentest-sandbox/Dockerfile\n          platforms: linux/amd64,linux/arm64") {
 		t.Fatal("release workflow must not build both sandbox platforms in one Buildx invocation")
 	}
 
-	cleanupIndex := strings.Index(workflow, "Free disk space for sandbox image")
-	buildxIndex := strings.Index(workflow, "docker/setup-buildx-action@v4")
+	sandboxStart := strings.Index(workflow, "publish-sandbox-image:")
+	manifestStart := strings.Index(workflow, "publish-sandbox-manifest:")
+	if sandboxStart == -1 || manifestStart == -1 || manifestStart <= sandboxStart {
+		t.Fatal("release workflow must include sandbox image and manifest jobs")
+	}
+	sandboxJob := workflow[sandboxStart:manifestStart]
+	cleanupIndex := strings.Index(sandboxJob, "Free disk space for sandbox image")
+	buildxIndex := strings.Index(sandboxJob, "docker/setup-buildx-action@v4")
 	if cleanupIndex == -1 || buildxIndex == -1 {
 		t.Fatal("release workflow must include disk cleanup and Buildx setup")
 	}

@@ -12,7 +12,7 @@ dist/
 pentest.db
 pentest.db-shm
 pentest.db-wal
-pentestd
+/pentestd
 runs/
 __pycache__/
 *.pyc
