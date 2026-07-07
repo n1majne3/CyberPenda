@@ -13,6 +13,7 @@ describe("SaveActionButton", () => {
     render(<SaveActionButton saved label="Save provider" />);
     expect(screen.getByRole("button", { name: /Saved/ })).toBeEnabled();
     expect(document.querySelector(".save-check-pop")).not.toBeNull();
+    expect(document.querySelector('[aria-live="polite"]')?.className).not.toContain("transition-all");
   });
 
   it("uses the idle label by default", () => {

@@ -18,6 +18,10 @@ export function Logo({
     <img
       src="/cyberpenda-logo.png"
       alt="CyberPenda"
+      width={96}
+      height={96}
+      fetchPriority="high"
+      decoding="async"
       className={cn("object-contain", spin && "logo-entrance-spin", className)}
     />
   );

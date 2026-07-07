@@ -28,7 +28,7 @@ export function SaveActionButton({
       <span
         aria-live="polite"
         className={cn(
-          "pointer-events-none text-xs font-medium text-success transition-all duration-200 ease-out",
+          "pointer-events-none text-xs font-medium text-success transition-[transform,opacity,width] duration-200 ease-out",
           showSaved ? "translate-x-0 opacity-100" : "-translate-x-1 opacity-0 w-0 overflow-hidden",
         )}
       >

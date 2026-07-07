@@ -145,6 +145,7 @@ export function ModelProvidersPage() {
   }
 
   async function remove(provider: ModelProvider) {
+    if (!window.confirm(`Delete model provider ${provider.name}?`)) return;
     try {
       await apiDelete(`/api/model-providers/${encodeURIComponent(provider.id)}`);
       setSelectedId("");
@@ -176,8 +177,10 @@ export function ModelProvidersPage() {
           {providers.length === 0 && <p className="text-sm text-muted-foreground">No model providers yet.</p>}
           {providers.map((provider) => (
             <button
+              type="button"
               key={provider.id}
-              className={`w-full rounded-md px-2.5 py-2 text-left text-sm ${selectedId === provider.id && !creating ? "bg-primary/10 ring-1 ring-primary/30" : "hover:bg-muted/60"}`}
+              aria-pressed={selectedId === provider.id && !creating}
+              className={`w-full rounded-md px-2.5 py-2 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 ${selectedId === provider.id && !creating ? "bg-primary/10 ring-1 ring-primary/30" : "hover:bg-muted/60"}`}
               onClick={() => { setCreating(false); setSelectedId(provider.id); }}
             >
               <span className="block font-medium">{provider.name}</span>
@@ -189,27 +192,49 @@ export function ModelProvidersPage() {
         <Card className="space-y-4 p-4">
           <div className="grid gap-3 md:grid-cols-2">
             <div>
-              <Label>Name</Label>
-              <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="MiMo" />
+              <Label htmlFor="provider-name">Name</Label>
+              <Input
+                id="provider-name"
+                name="provider_name"
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+                placeholder="MiMo…"
+                autoComplete="off"
+                spellCheck={false}
+              />
             </div>
             <div>
-              <Label>Base URL</Label>
-              <Input value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} placeholder="https://api.example.test/v1" />
+              <Label htmlFor="provider-base-url">Base URL</Label>
+              <Input
+                id="provider-base-url"
+                name="base_url"
+                type="url"
+                inputMode="url"
+                value={form.base_url}
+                onChange={(e) => setForm({ ...form, base_url: e.target.value })}
+                placeholder="https://api.example.test/v1…"
+                autoComplete="off"
+                spellCheck={false}
+              />
             </div>
           </div>
 
           <Card className="space-y-3 border-muted bg-muted/20 p-3">
             <div>
-              <Label>API key</Label>
+              <Label htmlFor="provider-api-key">API key</Label>
               <p className="mt-1 text-[11px] text-muted-foreground">
                 Stored as a local credential for <code>{selected?.api_key_env ?? "the generated provider key"}</code>. The secret is never shown again.
               </p>
             </div>
             <Input
+              id="provider-api-key"
+              name="api_key"
               type="password"
               value={form.api_key}
               onChange={(e) => setForm({ ...form, api_key: e.target.value })}
               placeholder={providerApiKeyPlaceholder(selectedBinding)}
+              autoComplete="off"
+              spellCheck={false}
             />
             {selectedBinding && (
               <p className="text-[11px] text-muted-foreground">
@@ -220,13 +245,14 @@ export function ModelProvidersPage() {
             )}
           </Card>
 
-          <div>
-            <Label>Supported protocols</Label>
+          <fieldset>
+            <legend className="text-sm font-medium leading-none text-muted-foreground">Supported protocols</legend>
             <div className="mt-2 flex flex-wrap gap-2">
               {PROTOCOLS.map((protocol) => (
                 <label key={protocol} className="inline-flex items-center gap-2 rounded-md border border-border px-2 py-1 text-sm">
                   <input
                     type="checkbox"
+                    name="protocols"
                     checked={form.protocols.includes(protocol)}
                     onChange={(e) => setForm({ ...form, protocols: toggle(form.protocols, protocol, e.target.checked) })}
                   />
@@ -234,16 +260,30 @@ export function ModelProvidersPage() {
                 </label>
               ))}
             </div>
-          </div>
+          </fieldset>
 
           <div className="grid gap-3 md:grid-cols-2">
             <div>
-              <Label>Manual models</Label>
-              <Textarea value={form.manual_models} onChange={(e) => setForm({ ...form, manual_models: e.target.value })} placeholder="mimo-v2.5-pro" rows={5} />
+              <Label htmlFor="provider-manual-models">Manual models</Label>
+              <Textarea
+                id="provider-manual-models"
+                name="manual_models"
+                value={form.manual_models}
+                onChange={(e) => setForm({ ...form, manual_models: e.target.value })}
+                placeholder="mimo-v2.5-pro…"
+                rows={5}
+                autoComplete="off"
+                spellCheck={false}
+              />
             </div>
             <div>
-              <Label>Default model</Label>
-              <Select value={form.default_model} onChange={(e) => setForm({ ...form, default_model: e.target.value })}>
+              <Label htmlFor="provider-default-model">Default model</Label>
+              <Select
+                id="provider-default-model"
+                name="default_model"
+                value={form.default_model}
+                onChange={(e) => setForm({ ...form, default_model: e.target.value })}
+              >
                 <option value="">No default</option>
                 {models.map((model) => <option key={model} value={model}>{model}</option>)}
               </Select>

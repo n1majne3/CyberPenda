@@ -1,15 +1,16 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { StrictMode } from "react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { StrictMode, useEffect } from "react";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mockApi } from "@/test/mockApi";
 import { TaskDetailPage } from "./TaskDetailPage";
 
-function renderPage() {
+function renderPage(initialEntry = "/projects/project-1/tasks/task-1", onSearch?: (search: string) => void) {
   return render(
     <StrictMode>
-      <MemoryRouter initialEntries={["/projects/project-1/tasks/task-1"]}>
+      <MemoryRouter initialEntries={[initialEntry]}>
+        {onSearch && <LocationProbe onChange={onSearch} />}
         <Routes>
           <Route path="/projects/:projectId/tasks/:taskId" element={<TaskDetailPage />} />
         </Routes>
@@ -18,7 +19,15 @@ function renderPage() {
   );
 }
 
-function stubTaskDetailApi() {
+function LocationProbe({ onChange }: { onChange: (search: string) => void }) {
+  const location = useLocation();
+  useEffect(() => {
+    onChange(location.search);
+  }, [location.search, onChange]);
+  return null;
+}
+
+function stubTaskDetailApi(taskOverrides: Record<string, unknown> = {}) {
   const scrollIntoView = vi.fn();
   Object.defineProperty(Element.prototype, "scrollIntoView", {
     value: scrollIntoView,
@@ -77,6 +86,7 @@ function stubTaskDetailApi() {
       },
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:05Z",
+      ...taskOverrides,
     },
     "/api/runtime-profiles": {
       profiles: [
@@ -130,6 +140,10 @@ function stubTaskDetailApi() {
 }
 
 describe("TaskDetailPage", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("opens on the timeline tab before conversation", async () => {
     stubTaskDetailApi();
 
@@ -137,8 +151,25 @@ describe("TaskDetailPage", () => {
 
     const tabs = await screen.findAllByRole("button", { name: /^(Timeline|Conversation)$/ });
     expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(["Timeline", "Conversation"]);
+    expect(tabs[0]).toHaveAttribute("aria-pressed", "true");
+    expect(tabs[1]).toHaveAttribute("aria-pressed", "false");
     expect(await screen.findByText("Timeline opened first")).toBeInTheDocument();
     expect(screen.queryByText("Conversation should be hidden by default")).not.toBeInTheDocument();
+  });
+
+  it("deep-links and updates the task view tab", async () => {
+    const searches: string[] = [];
+    const user = userEvent.setup();
+    stubTaskDetailApi();
+
+    renderPage("/projects/project-1/tasks/task-1?view=conversation", (search) => searches.push(search));
+
+    expect(await screen.findByText("Conversation should be hidden by default")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Conversation" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTestId("transcript-row")).toHaveClass("[content-visibility:auto]");
+
+    await user.click(screen.getByRole("button", { name: "Timeline" }));
+    expect(searches.at(-1)).toBe("?view=timeline");
   });
 
   it("does not auto-scroll the default timeline view to the bottom", async () => {
@@ -170,7 +201,8 @@ describe("TaskDetailPage", () => {
     expect(await screen.findByRole("button", { name: /Resume$/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Resume with handoff/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Queue steer/ })).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Continuation model provider" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Continuation model provider" })).toHaveClass("focus-visible:ring-3");
+    expect(screen.getByRole("combobox", { name: "Continuation model" })).toHaveClass("focus-visible:ring-3");
     expect(screen.getByRole("option", { name: "MiMo" })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "Anthropic" })).not.toBeInTheDocument();
     expect(screen.queryByRole("option", { name: /Use Codex/ })).not.toBeInTheDocument();
@@ -185,7 +217,7 @@ describe("TaskDetailPage", () => {
     await screen.findByText("Timeline opened first");
     await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model provider" }), "mimo");
     await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model" }), "mimo-v2-pro");
-    await user.type(screen.getByPlaceholderText("Focus on admin.example.com next"), "continue with mimo");
+    await user.type(screen.getByPlaceholderText("Focus on admin.example.com next…"), "continue with mimo");
     await user.click(screen.getByRole("button", { name: /Queue steer/ }));
 
     const steerCall = fetchMock.mock.calls.find(([input]) =>
@@ -199,5 +231,20 @@ describe("TaskDetailPage", () => {
         model_override: "mimo-v2-pro",
       }),
     });
+  });
+
+  it("requires confirmation before stopping a running task", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const { fetchMock } = stubTaskDetailApi({ status: "running" });
+
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: /Stop/i }));
+
+    expect(confirm).toHaveBeenCalledWith("Stop task Inspect task view?");
+    expect(
+      fetchMock.mock.calls.some(([input, init]) =>
+        String(input).includes("/api/projects/project-1/tasks/task-1/stop") && init?.method === "POST",
+      ),
+    ).toBe(false);
   });
 });

@@ -107,14 +107,18 @@ export function ScopeEditorPage() {
 
   const field = (key: keyof ScopeDraft, label: string, placeholder: string, warning = false) => (
     <div>
-      <Label className={warning ? "text-warning" : undefined}>
+      <Label htmlFor={`scope-${key}`} className={warning ? "text-warning" : undefined}>
         {label}
         {warning && <Badge variant="warning" className="ml-2">safety</Badge>}
       </Label>
       <Textarea
+        id={`scope-${key}`}
+        name={key}
         value={draft[key]}
         onChange={(e) => setDraft({ ...draft, [key]: e.target.value })}
-        placeholder={placeholder}
+        placeholder={`${placeholder}…`}
+        autoComplete="off"
+        spellCheck={false}
       />
     </div>
   );
@@ -136,8 +140,10 @@ export function ScopeEditorPage() {
         </CardHeader>
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <Label>Default runtime profile</Label>
+            <Label htmlFor="scope-default-profile">Default runtime profile</Label>
             <Select
+              id="scope-default-profile"
+              name="default_runtime_profile"
               value={defaultProfile}
               onChange={(e) => setDefaultProfile(e.target.value)}
             >
@@ -150,8 +156,10 @@ export function ScopeEditorPage() {
             </Select>
           </div>
           <div>
-            <Label>Default runner</Label>
+            <Label htmlFor="scope-default-runner">Default runner</Label>
             <Select
+              id="scope-default-runner"
+              name="default_runner"
               value={defaultRunner}
               onChange={(e) => setDefaultRunner(e.target.value)}
             >
@@ -181,11 +189,14 @@ export function ScopeEditorPage() {
           <div>{field("testing_limits", "Authorized limits", "No destructive payloads\nBusiness hours only", true)}</div>
         </Card>
         <div>
-          <Label>Scope notes</Label>
+          <Label htmlFor="scope-notes">Scope notes</Label>
           <Textarea
+            id="scope-notes"
+            name="notes"
             value={draft.notes}
             onChange={(e) => setDraft({ ...draft, notes: e.target.value })}
             placeholder="Free-form context for the runtime…"
+            autoComplete="off"
           />
         </div>
       </div>

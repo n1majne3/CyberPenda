@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ArrowRightLeft } from "lucide-react";
 import { apiGet, apiPost, type ModelProviderMigrationPreview } from "@/lib/api";
-import { Button, Card, Input, Label, Badge } from "@/components/ui";
+import { Button, Card, Input, Label, Badge, Select } from "@/components/ui";
 
 type Props = {
   profileId: string;
@@ -89,7 +89,7 @@ export function ModelProviderMigrationPanel({ profileId, profileUpdatedAt, onMig
       <div className="flex items-start gap-2">
         <ArrowRightLeft className="mt-0.5 h-4 w-4 text-primary" />
         <div>
-          <h4 className="text-sm font-medium">Migrate to model provider</h4>
+          <h3 className="text-sm font-medium">Migrate to model provider</h3>
           <p className="mt-1 text-xs text-muted-foreground">
             Move legacy endpoint, model, and API key settings into a reusable model provider, then clear them from this profile.
           </p>
@@ -117,32 +117,40 @@ export function ModelProviderMigrationPanel({ profileId, profileUpdatedAt, onMig
         </div>
       )}
 
-      <div className="space-y-2">
-        <Label>Migration target</Label>
+      <fieldset className="space-y-2">
+        <legend className="text-sm font-medium leading-none text-muted-foreground">Migration target</legend>
         <div className="flex flex-wrap gap-3 text-sm">
           <label className="inline-flex items-center gap-2">
-            <input type="radio" checked={action === "create"} onChange={() => setAction("create")} />
+            <input type="radio" name="migration_target" checked={action === "create"} onChange={() => setAction("create")} />
             Create new provider
           </label>
           {(preview.matches ?? []).length > 0 && (
             <label className="inline-flex items-center gap-2">
-              <input type="radio" checked={action === "reuse"} onChange={() => setAction("reuse")} />
+              <input type="radio" name="migration_target" checked={action === "reuse"} onChange={() => setAction("reuse")} />
               Reuse existing match
             </label>
           )}
         </div>
-      </div>
+      </fieldset>
 
       {action === "create" ? (
         <div>
-          <Label>Provider name</Label>
-          <Input value={providerName} onChange={(e) => setProviderName(e.target.value)} />
+          <Label htmlFor="migration-provider-name">Provider name</Label>
+          <Input
+            id="migration-provider-name"
+            name="provider_name"
+            value={providerName}
+            onChange={(e) => setProviderName(e.target.value)}
+            autoComplete="off"
+            spellCheck={false}
+          />
         </div>
       ) : (
         <div>
-          <Label>Existing provider</Label>
-          <select
-            className="flex h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm"
+          <Label htmlFor="migration-existing-provider">Existing provider</Label>
+          <Select
+            id="migration-existing-provider"
+            name="existing_provider"
             value={providerId}
             onChange={(e) => setProviderId(e.target.value)}
           >
@@ -151,13 +159,13 @@ export function ModelProviderMigrationPanel({ profileId, profileUpdatedAt, onMig
                 {match.provider.name} ({match.provider.base_url})
               </option>
             ))}
-          </select>
+          </Select>
         </div>
       )}
 
       {(preview.api_key_sources ?? []).some((source) => source.kind === "inline_api_key") && (
         <label className="inline-flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={migrateAPIKey} onChange={(e) => setMigrateAPIKey(e.target.checked)} />
+          <input name="migrate_api_key" type="checkbox" checked={migrateAPIKey} onChange={(e) => setMigrateAPIKey(e.target.checked)} />
           Copy inline API key into the model provider credential binding
         </label>
       )}

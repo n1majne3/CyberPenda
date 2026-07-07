@@ -61,9 +61,11 @@ export function ProjectListPage() {
             <Label htmlFor="proj-name">Project name</Label>
             <Input
               id="proj-name"
+              name="project_name"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="Acme External"
+              placeholder="Acme External…"
+              autoComplete="off"
               className="mt-1"
             />
           </div>
@@ -96,7 +98,7 @@ export function ProjectListPage() {
       <div className="grid gap-3 sm:grid-cols-2">
         {sortNewestFirst(projects).map((p) => (
           <Link key={p.id} to={`/projects/${p.id}`} className="group">
-            <Card className="h-full transition-all hover:bg-accent/40 hover:ring-foreground/20">
+            <Card className="h-full transition-[background-color,box-shadow] hover:bg-accent/40 hover:ring-foreground/20">
               <div className="flex items-center gap-2">
                 <FolderOpen className="h-4 w-4 text-primary" />
                 <span className="font-medium group-hover:text-foreground">{p.name}</span>

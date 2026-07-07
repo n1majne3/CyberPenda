@@ -26,5 +26,5 @@ export function providerApiKeyPlaceholder(binding?: CredentialBinding): string {
   if (binding?.source.kind === "literal" && binding.source.value === "[configured]") {
     return "[configured]";
   }
-  return "Enter API key";
+  return "Enter API key…";
 }

@@ -188,7 +188,9 @@ function FactRow({
   return (
     <div>
       <button
-        className="w-full text-left flex items-center gap-2 p-2 rounded-md hover:bg-accent/50"
+        type="button"
+        aria-expanded={open}
+        className="w-full text-left flex items-center gap-2 p-2 rounded-md hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
         onClick={onToggle}
       >
         {open ? <ChevronDown className="h-4 w-4 shrink-0" /> : <ChevronRight className="h-4 w-4 shrink-0" />}
@@ -275,10 +277,13 @@ function FactRow({
                   <p className="text-xs text-muted-foreground">
                     Merge <code>{entry.fact_key}</code> into the canonical fact. The old key becomes an alias; history is preserved.
                   </p>
-                  <Select className="max-w-md text-xs"
-                    value={mergeTarget}
-                    onChange={(e) => setMergeTarget(e.target.value)}
-                  >
+	                  <Select
+	                    aria-label="Canonical fact key"
+	                    name="canonical_fact_key"
+	                    className="max-w-md text-xs"
+	                    value={mergeTarget}
+	                    onChange={(e) => setMergeTarget(e.target.value)}
+	                  >
                     <option value="">Choose canonical fact key</option>
                     {allFactKeys.map((k) => (
                       <option key={k} value={k}>

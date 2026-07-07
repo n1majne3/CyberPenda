@@ -65,11 +65,11 @@ export function getEventSummary(item: TimelineItem): string {
       if (inp.description) return String(inp.description);
       if (inp.command) {
         const cmd = String(inp.command);
-        return cmd.length > 120 ? cmd.slice(0, 120) + "..." : cmd;
+        return cmd.length > 120 ? cmd.slice(0, 120) + "…" : cmd;
       }
       if (inp.prompt) {
         const prompt = String(inp.prompt);
-        return prompt.length > 120 ? prompt.slice(0, 120) + "..." : prompt;
+        return prompt.length > 120 ? prompt.slice(0, 120) + "…" : prompt;
       }
       if (inp.skill) return String(inp.skill);
       for (const value of Object.values(inp)) {
@@ -92,7 +92,7 @@ export function getEventSummary(item: TimelineItem): string {
 export function shortenPath(path: string): string {
   const parts = path.split("/");
   if (parts.length <= 3) return path;
-  return ".../" + parts.slice(-2).join("/");
+  return "…/" + parts.slice(-2).join("/");
 }
 
 export function itemFilterKey(item: TimelineItem): string {

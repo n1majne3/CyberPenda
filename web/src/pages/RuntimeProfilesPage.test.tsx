@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { StrictMode } from "react";
-import { MemoryRouter } from "react-router-dom";
+import { StrictMode, useEffect } from "react";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RuntimeProfilesPage } from "./RuntimeProfilesPage";
 
@@ -15,8 +15,17 @@ function renderPage() {
   );
 }
 
+function LocationProbe({ onChange }: { onChange: (search: string) => void }) {
+  const location = useLocation();
+  useEffect(() => {
+    onChange(location.search);
+  }, [location.search, onChange]);
+  return null;
+}
+
 describe("RuntimeProfilesPage", () => {
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
@@ -445,7 +454,7 @@ describe("RuntimeProfilesPage", () => {
 
     renderPage();
     await userEvent.click(await screen.findByRole("button", { name: /Launch-resolved \(1\)/ }));
-    await userEvent.click(await screen.findByRole("button", { name: /Codex · MiMo/i }));
+    await userEvent.click((await screen.findAllByRole("button", { name: /Codex · MiMo/i }))[0]);
     await userEvent.click(await screen.findByRole("button", { name: "Promote to preset" }));
 
     await waitFor(() => expect(promoted).toBe(true));
@@ -530,5 +539,140 @@ describe("RuntimeProfilesPage", () => {
     expect(preview).toHaveTextContent(longEndpoint);
     expect(previewSection).toHaveClass("min-w-0");
     expect(preview).toHaveClass("w-full", "max-w-full", "overflow-x-auto");
+  });
+
+  it("reflects the selected profile in the URL", async () => {
+    const searches: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.includes("/api/runtime-profiles")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                profiles: [
+                  {
+                    id: "profile-1",
+                    name: "Codex URL",
+                    provider: "codex",
+                    fields: {},
+                    created_at: "",
+                    updated_at: "2026-06-25T00:00:00Z",
+                  },
+                ],
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url.includes("/api/runtime-plugins")) {
+          return Promise.resolve(new Response(JSON.stringify({ plugins: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        if (url.includes("/api/runtime-extensions") || url.includes("/api/runtime-extension-catalog")) {
+          return Promise.resolve(new Response(JSON.stringify(url.includes("catalog") ? { items: [] } : { extensions: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        return Promise.resolve(new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }),
+    );
+
+    render(
+      <StrictMode>
+        <MemoryRouter>
+          <LocationProbe onChange={(search) => searches.push(search)} />
+          <RuntimeProfilesPage />
+        </MemoryRouter>
+      </StrictMode>,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: /Codex URL/i }));
+    await waitFor(() => expect(searches.at(-1)).toBe("?profile=profile-1"));
+  });
+
+  it("associates profile editor labels with named controls", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.includes("/api/runtime-profiles")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                profiles: [
+                  {
+                    id: "profile-1",
+                    name: "Codex Labels",
+                    provider: "codex",
+                    fields: {},
+                    created_at: "",
+                    updated_at: "2026-06-25T00:00:00Z",
+                  },
+                ],
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url.includes("/api/runtime-plugins")) {
+          return Promise.resolve(new Response(JSON.stringify({ plugins: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        if (url.includes("/api/runtime-extensions") || url.includes("/api/runtime-extension-catalog")) {
+          return Promise.resolve(new Response(JSON.stringify(url.includes("catalog") ? { items: [] } : { extensions: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        return Promise.resolve(new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }),
+    );
+
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: /Codex Labels/i }));
+
+    expect(screen.getByLabelText("Name")).toHaveAttribute("name", "profile_name");
+    expect(screen.getByLabelText("Provider")).toHaveAttribute("name", "provider");
+    expect(screen.getByLabelText("Default runner")).toHaveAttribute("name", "default_runner");
+  });
+
+  it("requires confirmation before deleting a runtime profile", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/api/runtime-profiles")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              profiles: [
+                {
+                  id: "profile-1",
+                  name: "Codex Delete",
+                  provider: "codex",
+                  fields: {},
+                  created_at: "",
+                  updated_at: "2026-06-25T00:00:00Z",
+                },
+              ],
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      if (url.includes("/api/runtime-plugins")) {
+        return Promise.resolve(new Response(JSON.stringify({ plugins: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.includes("/api/runtime-extensions") || url.includes("/api/runtime-extension-catalog")) {
+        return Promise.resolve(new Response(JSON.stringify(url.includes("catalog") ? { items: [] } : { extensions: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: /Codex Delete/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /Delete Codex Delete runtime profile/i }));
+
+    expect(confirm).toHaveBeenCalledWith("Delete runtime profile Codex Delete?");
+    expect(
+      fetchMock.mock.calls.some(([input, init]) =>
+        String(input).includes("/api/runtime-profiles/profile-1") && init?.method === "DELETE",
+      ),
+    ).toBe(false);
   });
 });

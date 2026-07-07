@@ -32,4 +32,58 @@ describe("AgentTranscriptView", () => {
     const eventRows = screen.getAllByRole("button", { name: /timeline event/i });
     expect(eventRows.map((row) => row.textContent)).toEqual(["Newer timeline event", "Older timeline event"]);
   });
+
+  it("labels timeline segment buttons and gives rows a content-visibility boundary", () => {
+    render(
+      <AgentTranscriptView
+        task={task}
+        items={[
+          { seq: 1, type: "tool_use", tool: "shell", input: { command: "ls" } },
+          { seq: 2, type: "error", content: "Command failed" },
+        ]}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /Jump to shell event/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Jump to Error event/i })).toBeInTheDocument();
+    expect(screen.getAllByTestId("transcript-event-row")[0]).toHaveClass("[content-visibility:auto]");
+  });
+
+  it("exposes disclosure state and visible focus styles on transcript controls", () => {
+    render(
+      <AgentTranscriptView
+        task={task}
+        items={[
+          { seq: 1, type: "tool_use", tool: "shell", input: { command: "ls" } },
+          { seq: 2, type: "tool_result", tool: "shell", output: "ok" },
+        ]}
+      />,
+    );
+
+    const filter = screen.getByRole("button", { name: /Filter/i });
+    expect(filter).toHaveAttribute("aria-expanded", "false");
+    expect(filter).toHaveClass("focus-visible:ring-3");
+    expect(screen.getByRole("button", { name: /Copy all/i })).toHaveClass("focus-visible:ring-3");
+    for (const segment of screen.getAllByRole("button", { name: /Jump to shell event/i })) {
+      expect(segment).toHaveClass("focus-visible:ring-3");
+    }
+    expect(screen.getByRole("button", { name: /Newest/i })).toHaveClass("focus-visible:ring-3");
+  });
+
+  it("honors reduced motion classes and typographic ellipses in dynamic states", async () => {
+    render(
+      <AgentTranscriptView
+        task={{ ...task, status: "running" }}
+        isLive
+        items={[
+          { seq: 1, type: "tool_result", tool: "shell", output: "x".repeat(4100) },
+        ]}
+      />,
+    );
+
+    expect(document.querySelector(".animate-spin")).toHaveClass("motion-reduce:animate-none");
+    await screen.getByRole("button", { name: /x+/i }).click();
+    expect(screen.getByText(/… \(truncated\)$/)).toBeInTheDocument();
+    expect(screen.queryByText(/\.\.\. \(truncated\)$/)).not.toBeInTheDocument();
+  });
 });

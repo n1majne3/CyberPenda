@@ -5,6 +5,7 @@ import { apiGet, apiPost, type Finding, type FindingVersion } from "@/lib/api";
 import { ProjectNav } from "@/components/ProjectNav";
 import { BackLink, PageContainer } from "@/components/shared";
 import { Card, CardTitle, CardHeader, Badge, Button, Select } from "@/components/ui";
+import { formatDateTime } from "@/lib/format";
 
 export function FindingsPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -154,12 +155,14 @@ function FindingCard({
         {finding.cvss_vector && <p><span className="text-foreground">CVSS {finding.cvss_version}:</span> <code>{finding.cvss_vector}</code></p>}
         {finding.impact && <p><span className="text-foreground">Impact:</span> {finding.impact}</p>}
         {finding.recommendation && <p><span className="text-foreground">Recommendation:</span> {finding.recommendation}</p>}
-        {finding.updated_at && <p><span className="text-foreground">Updated:</span> {new Date(finding.updated_at).toLocaleString()}</p>}
+        {finding.updated_at && <p><span className="text-foreground">Updated:</span> {formatDateTime(finding.updated_at)}</p>}
       </div>
 
       {/* Versions — historical revisions of this finding key. */}
       <button
-        className="mt-3 flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+        type="button"
+        aria-expanded={open}
+        className="mt-3 flex items-center gap-1 rounded-md text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
         onClick={() => setOpen((v) => !v)}
       >
         {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
@@ -181,7 +184,7 @@ function FindingCard({
                   <Badge variant={v.status === "confirmed" ? "success" : "outline"}>{v.status}</Badge>
                   {v.cvss_vector && <code className="text-muted-foreground">{v.cvss_vector}</code>}
                   <span className="text-muted-foreground">{v.title}</span>
-                  {v.created_at && <span className="text-muted-foreground">{new Date(v.created_at).toLocaleString()}</span>}
+                  {v.created_at && <span className="text-muted-foreground">{formatDateTime(v.created_at)}</span>}
                 </li>
               ))}
             </ol>
@@ -200,7 +203,10 @@ function FindingCard({
               <p className="text-xs text-muted-foreground">
                 Merge <code>{finding.finding_key}</code> into the canonical finding. The old key becomes an alias; history is preserved.
               </p>
-              <Select className="max-w-md text-xs"
+              <Select
+                aria-label="Canonical finding key"
+                name="canonical_finding_key"
+                className="max-w-md text-xs"
                 value={mergeTarget}
                 onChange={(e) => setMergeTarget(e.target.value)}
               >

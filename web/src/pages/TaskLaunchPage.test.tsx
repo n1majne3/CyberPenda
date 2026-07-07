@@ -668,7 +668,10 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
-    await userEvent.click(await screen.findByRole("button", { name: /use saved preset/i }));
+    const presetToggle = await screen.findByRole("button", { name: /use saved preset/i });
+    expect(presetToggle).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(presetToggle);
+    expect(presetToggle).toHaveAttribute("aria-expanded", "true");
     await userEvent.selectOptions(screen.getByLabelText("Runtime profile preset"), "");
 
     await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");

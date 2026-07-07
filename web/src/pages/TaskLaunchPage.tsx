@@ -269,13 +269,21 @@ export function TaskLaunchPage() {
       <div className="space-y-4">
         <div>
           <Label htmlFor="goal">Task goal</Label>
-          <Textarea id="goal" value={goal} onChange={(e) => setGoal(e.target.value)} placeholder="Enumerate example.com and assess exposure" />
+          <Textarea
+            id="goal"
+            name="task_goal"
+            value={goal}
+            onChange={(e) => setGoal(e.target.value)}
+            placeholder="Enumerate example.com and assess exposure…"
+            autoComplete="off"
+          />
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
             <Label htmlFor="launch-runtime">Runtime</Label>
             <Select
               id="launch-runtime"
+              name="runtime"
               value={form.runtime}
               disabled={presetMode}
               onChange={(e) => updateRuntime(e.target.value)}
@@ -291,6 +299,7 @@ export function TaskLaunchPage() {
             <Label htmlFor="launch-runner">Runner</Label>
             <Select
               id="launch-runner"
+              name="runner"
               value={form.runner}
               onChange={(e) => {
                 setForm((current) => ({ ...current, runner: e.target.value }));
@@ -307,6 +316,7 @@ export function TaskLaunchPage() {
             <Label htmlFor="launch-sandbox-network">Sandbox network</Label>
             <Select
               id="launch-sandbox-network"
+              name="sandbox_network"
               value={sandboxNetwork}
               onChange={(e) => {
                 setSandboxNetwork(e.target.value);
@@ -323,6 +333,7 @@ export function TaskLaunchPage() {
             <Label htmlFor="launch-model-provider">Model provider</Label>
             <Select
               id="launch-model-provider"
+              name="model_provider"
               value={form.modelProviderId}
               disabled={presetMode}
               onChange={(e) => updateModelProvider(e.target.value)}
@@ -342,6 +353,7 @@ export function TaskLaunchPage() {
             <Label htmlFor="launch-model">Model</Label>
             <Select
               id="launch-model"
+              name="model"
               value={form.modelOverride}
               onChange={(e) => {
                 setForm((current) => ({ ...current, modelOverride: e.target.value }));
@@ -372,7 +384,8 @@ export function TaskLaunchPage() {
             <button
               type="button"
               onClick={() => setPresetOpen((open) => !open)}
-              className="flex w-full items-center gap-2 text-left text-sm font-medium"
+              aria-expanded={presetOpen}
+              className="flex w-full items-center gap-2 rounded-md text-left text-sm font-medium focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
             >
               <ChevronRight className={`size-4 shrink-0 transition-transform ${presetOpen ? "rotate-90" : ""}`} />
               Use saved preset
@@ -380,7 +393,7 @@ export function TaskLaunchPage() {
             {presetOpen && (
               <div className="mt-3 space-y-2">
                 <Label htmlFor="launch-preset">Runtime profile preset</Label>
-                <Select id="launch-preset" value={presetId} onChange={(e) => updatePreset(e.target.value)}>
+                <Select id="launch-preset" name="runtime_profile_preset" value={presetId} onChange={(e) => updatePreset(e.target.value)}>
                   <option value="">Auto-resolve minimal profile</option>
                   {runtimePresets.map((profile) => (
                     <option key={profile.id} value={profile.id}>
@@ -417,9 +430,10 @@ export function TaskLaunchPage() {
               </span>
             </div>
             <label className="flex items-start gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={hostActivated}
+                <input
+                  type="checkbox"
+                  name="host_runner_acknowledged"
+                  checked={hostActivated}
                 onChange={(e) => {
                   setHostActivated(e.target.checked);
                   setPreflight(null);

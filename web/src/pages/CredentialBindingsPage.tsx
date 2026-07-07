@@ -48,7 +48,8 @@ export function CredentialBindingsPage() {
     }
   }
 
-  async function remove(id: string) {
+  async function remove(id: string, credentialRef: string) {
+    if (!window.confirm(`Delete credential binding ${credentialRef}?`)) return;
     try {
       await apiDelete(`/api/credential-bindings/${id}`);
       load();
@@ -84,13 +85,23 @@ export function CredentialBindingsPage() {
       {creating && (
         <Card className="mb-4 space-y-3">
           <div>
-            <Label>Credential reference</Label>
-            <Input value={form.credential_ref} onChange={(e) => setForm({ ...form, credential_ref: e.target.value })} placeholder="codex-api-key" />
+            <Label htmlFor="credential-ref">Credential reference</Label>
+            <Input
+              id="credential-ref"
+              name="credential_ref"
+              value={form.credential_ref}
+              onChange={(e) => setForm({ ...form, credential_ref: e.target.value })}
+              placeholder="codex-api-key…"
+              autoComplete="off"
+              spellCheck={false}
+            />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <Label>Source kind</Label>
+              <Label htmlFor="credential-source-kind">Source kind</Label>
               <Select
+                id="credential-source-kind"
+                name="source_kind"
                 value={form.kind}
                 onChange={(e) => setForm({ ...form, kind: e.target.value, value: "" })}
               >
@@ -101,7 +112,7 @@ export function CredentialBindingsPage() {
               </Select>
             </div>
             <div>
-              <Label>
+              <Label htmlFor="credential-source-value">
                 {form.kind === "env"
                   ? "Environment variable name"
                   : form.kind === "literal"
@@ -111,19 +122,22 @@ export function CredentialBindingsPage() {
                       : "Command"}
               </Label>
               <Input
+                id="credential-source-value"
+                name="source_value"
                 type={form.kind === "literal" ? "password" : "text"}
                 value={form.value}
                 onChange={(e) => setForm({ ...form, value: e.target.value })}
                 placeholder={
                   form.kind === "env"
-                    ? "OPENAI_API_KEY"
+                    ? "OPENAI_API_KEY…"
                     : form.kind === "literal"
-                      ? "sk-..."
+                      ? "sk-…"
                       : form.kind === "file"
-                        ? "/path/to/secret"
-                        : "op read ..."
+                        ? "/path/to/secret…"
+                        : "op read …"
                 }
                 autoComplete="off"
+                spellCheck={false}
               />
               {form.kind === "env" && (
                 <p className="mt-1 text-[11px] text-muted-foreground">
@@ -160,7 +174,12 @@ export function CredentialBindingsPage() {
                 </span>
               )}
             </div>
-            <Button size="icon" variant="ghost" onClick={() => remove(b.id)}>
+            <Button
+              size="icon"
+              variant="ghost"
+              aria-label={`Delete ${b.credential_ref} binding`}
+              onClick={() => remove(b.id, b.credential_ref)}
+            >
               <Trash2 className="h-4 w-4 text-destructive" />
             </Button>
           </Card>

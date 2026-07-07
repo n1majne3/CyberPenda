@@ -60,8 +60,11 @@ export function ReportPage() {
 
       <Card className="mb-4 space-y-3">
         <div>
-          <Label>Task (for runner and scope context)</Label>
-          <Select className="mt-1"
+          <Label htmlFor="report-task">Task (for runner and scope context)</Label>
+          <Select
+            id="report-task"
+            name="task_id"
+            className="mt-1"
             value={taskId}
             onChange={(e) => setTaskId(e.target.value)}
           >

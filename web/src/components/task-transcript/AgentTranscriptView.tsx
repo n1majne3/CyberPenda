@@ -15,6 +15,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { formatClockTime, formatCompactDateTime, formatDateTime } from "@/lib/format";
 import type { Task } from "@/lib/api";
 import type { TimelineItem, TranscriptSortDirection } from "./types";
 import {
@@ -89,7 +90,10 @@ export function AgentTranscriptView({ task, items, profileName, isLive = false }
 
   const handleSegmentClick = useCallback((seq: number) => {
     setSelectedSeq(seq);
-    eventRefs.current.get(seq)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    eventRefs.current.get(seq)?.scrollIntoView({
+      behavior: prefersReducedMotion() ? "auto" : "smooth",
+      block: "center",
+    });
   }, []);
 
   const handleCopyAll = useCallback(() => {
@@ -124,7 +128,7 @@ export function AgentTranscriptView({ task, items, profileName, isLive = false }
 
   const statusBadge = isLive ? (
     <span className="inline-flex items-center gap-1 rounded-full bg-info/15 px-2 py-0.5 text-xs font-medium text-info">
-      <Loader2 className="h-3 w-3 animate-spin" />
+      <Loader2 className="h-3 w-3 animate-spin motion-reduce:animate-none" />
       Running
     </span>
   ) : task.status === "completed" ? (
@@ -162,9 +166,10 @@ export function AgentTranscriptView({ task, items, profileName, isLive = false }
               <div className="relative" ref={filterRef}>
                 <button
                   type="button"
+                  aria-expanded={filterOpen}
                   onClick={() => setFilterOpen((open) => !open)}
                   className={cn(
-                    "flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors",
+                    "flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
                     selectedTools.size > 0
                       ? "bg-blue-500/10 text-blue-600 hover:bg-blue-500/20 dark:text-blue-400"
                       : "text-muted-foreground hover:bg-accent hover:text-foreground",
@@ -195,7 +200,7 @@ export function AgentTranscriptView({ task, items, profileName, isLive = false }
                       <button
                         type="button"
                         onClick={clearFilters}
-                        className="mt-1 w-full rounded px-2 py-1.5 text-left text-muted-foreground hover:bg-accent"
+                        className="mt-1 w-full rounded px-2 py-1.5 text-left text-muted-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
                       >
                         Clear filters
                       </button>
@@ -207,7 +212,7 @@ export function AgentTranscriptView({ task, items, profileName, isLive = false }
             <button
               type="button"
               onClick={handleCopyAll}
-              className="flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              className="flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
             >
               {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
               {copied ? "Copied" : selectedTools.size > 0 ? "Copy filtered" : "Copy all"}
@@ -231,12 +236,7 @@ export function AgentTranscriptView({ task, items, profileName, isLive = false }
           </MetadataChip>
           {task.created_at && (
             <MetadataChip>
-              {new Date(task.created_at).toLocaleString(undefined, {
-                month: "short",
-                day: "numeric",
-                hour: "2-digit",
-                minute: "2-digit",
-              })}
+              {formatCompactDateTime(task.created_at)}
             </MetadataChip>
           )}
         </div>
@@ -299,7 +299,7 @@ function SortDirectionToggle({
         title="Chronological"
         onClick={() => onChange("chronological")}
         className={cn(
-          "flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors",
+          "flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
           value === "chronological"
             ? "bg-background text-foreground shadow-sm"
             : "text-muted-foreground hover:text-foreground",
@@ -314,7 +314,7 @@ function SortDirectionToggle({
         title="Newest first"
         onClick={() => onChange("newest_first")}
         className={cn(
-          "flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors",
+          "flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
           value === "newest_first"
             ? "bg-background text-foreground shadow-sm"
             : "text-muted-foreground hover:text-foreground",
@@ -377,11 +377,12 @@ function TimelineBar({
             type="button"
             key={seg.startIdx}
             className={cn(
-              "group relative h-full min-w-[4px] transition-all duration-150 hover:opacity-80",
+              "group relative h-full min-w-[4px] transition-[background-color,opacity] duration-150 hover:opacity-80 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
               isSelected ? color.bgActive : color.bg,
             )}
             style={{ width: `${Math.max(widthPercent, 0.5)}%` }}
             onClick={() => onSegmentClick(items[seg.startIdx]!.seq)}
+            aria-label={`Jump to ${getEventLabel(items[seg.startIdx]!)} event${seg.count > 1 ? ` with ${seg.count} entries` : ""}`}
             title={`${getEventLabel(items[seg.startIdx]!)}${seg.count > 1 ? ` (+${seg.count - 1} more)` : ""}`}
           >
             <div className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-1 hidden -translate-x-1/2 group-hover:block">
@@ -420,7 +421,14 @@ function TranscriptEventRow({
     (item.type === "error" && item.content && item.content.length > 0);
 
   return (
-    <div ref={ref} className={cn("group transition-colors", isSelected && "bg-accent/50")}>
+    <div
+      ref={ref}
+      data-testid="transcript-event-row"
+      className={cn(
+        "group [contain-intrinsic-size:48px] [content-visibility:auto] transition-colors",
+        isSelected && "bg-accent/50",
+      )}
+    >
       <div className="flex items-start gap-2 px-4 py-2">
         <span
           className={cn(
@@ -438,7 +446,7 @@ function TranscriptEventRow({
           disabled={!hasDetail}
           onClick={() => hasDetail && setExpanded((open) => !open)}
           className={cn(
-            "min-w-0 flex-1 py-0.5 text-left text-xs transition-colors",
+            "min-w-0 flex-1 rounded py-0.5 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
             hasDetail ? "cursor-pointer hover:text-foreground" : "cursor-default",
             item.type === "error" ? "text-destructive" : "text-muted-foreground",
           )}
@@ -461,13 +469,9 @@ function TranscriptEventRow({
         {date && (
           <span
             className="mt-1 shrink-0 text-[10px] tabular-nums text-muted-foreground/50"
-            title={date.toLocaleString()}
+            title={formatDateTime(date)}
           >
-            {date.toLocaleTimeString(undefined, {
-              hour: "2-digit",
-              minute: "2-digit",
-              second: "2-digit",
-            })}
+            {formatClockTime(date)}
           </span>
         )}
       </div>
@@ -491,16 +495,18 @@ function EventDetailContent({ item }: { item: TimelineItem }) {
           {item.input ? JSON.stringify(item.input, null, 2) : ""}
         </pre>
       );
-    case "tool_result":
+    case "tool_result": {
+      const output = item.output
+        ? item.output.length > 4000
+          ? item.output.slice(0, 4000) + "\n… (truncated)"
+          : item.output
+        : "";
       return (
         <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-all p-3 text-[11px] text-muted-foreground">
-          {item.output
-            ? item.output.length > 4000
-              ? item.output.slice(0, 4000) + "\n... (truncated)"
-              : item.output
-            : ""}
+          {output}
         </pre>
       );
+    }
     case "thinking":
     case "text":
       return (
@@ -517,4 +523,8 @@ function EventDetailContent({ item }: { item: TimelineItem }) {
     default:
       return null;
   }
+}
+
+function prefersReducedMotion(): boolean {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 }

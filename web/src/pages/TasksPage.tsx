@@ -5,6 +5,7 @@ import { apiGet, type Task } from "@/lib/api";
 import { ProjectNav } from "@/components/ProjectNav";
 import { Badge, Button, Card } from "@/components/ui";
 import { BackLink, PageContainer } from "@/components/shared";
+import { formatDateTime } from "@/lib/format";
 
 const STATUS_VARIANT: Record<string, "primary" | "success" | "warning" | "destructive" | "outline"> = {
   running: "primary",
@@ -61,12 +62,12 @@ export function TasksPage() {
       <div className="space-y-2">
         {sortTasksForDisplay(tasks).map((task) => (
           <Link key={task.id} to={`${base}/tasks/${task.id}`} className="group">
-            <Card className="transition-all hover:bg-accent/40 hover:ring-foreground/20">
+            <Card className="transition-[background-color,box-shadow] hover:bg-accent/40 hover:ring-foreground/20">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-medium group-hover:text-foreground">{task.goal || "(no goal)"}</p>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    {new Date(task.created_at).toLocaleString()} · runner {task.runner}
+                    {formatDateTime(task.created_at)} · runner {task.runner}
                   </p>
                 </div>
                 <div className="flex shrink-0 gap-1">

@@ -5,6 +5,7 @@ import { apiGet, type EvidenceArtifact } from "@/lib/api";
 import { ProjectNav } from "@/components/ProjectNav";
 import { BackLink, PageContainer } from "@/components/shared";
 import { Card, Badge } from "@/components/ui";
+import { formatDateTime } from "@/lib/format";
 
 export function EvidencePage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -47,7 +48,7 @@ export function EvidencePage() {
                 <div className="flex-1 min-w-0">
                   <p className="text-sm">{e.summary || e.evidence_key}</p>
                   <p className="text-xs text-muted-foreground font-mono truncate">{e.managed_path}</p>
-                  {e.created_at && <p className="text-xs text-muted-foreground">{new Date(e.created_at).toLocaleString()}</p>}
+                  {e.created_at && <p className="text-xs text-muted-foreground">{formatDateTime(e.created_at)}</p>}
                 </div>
                 <Badge variant="outline">{e.artifact_type}</Badge>
                 {e.sha256 && <Badge variant="outline">sha256: {e.sha256.slice(0, 8)}</Badge>}

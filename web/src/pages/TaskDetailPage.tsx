@@ -1,22 +1,26 @@
 import { useEffect, useState, useRef, type RefObject } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useSearchParams } from "react-router-dom";
 import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, FileText, Shield, ChevronRight, Wrench, User, Bot, ArrowDown, ArrowUp } from "lucide-react";
 import { apiGet, apiPost, type ModelProvider, type RuntimePlugin, type RuntimeProfile, type Task, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
-import { Button, Card, Input, Badge } from "@/components/ui";
+import { Button, Card, Input, Badge, Select } from "@/components/ui";
 import { BackLink, PageContainer } from "@/components/shared";
 import { AgentTranscriptView } from "@/components/task-transcript/AgentTranscriptView";
 import { collapsedTranscriptTitle } from "./taskDetailView";
 import { selectableModelProviders } from "./runtimeProfileForm";
 import { modelsForProvider } from "./taskLaunchForm";
+import { formatDateTime } from "@/lib/format";
 
 const ACTIVE = new Set(["running", "paused"]);
 
 export function TaskDetailPage() {
   const { projectId, taskId } = useParams<{ projectId: string; taskId: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [task, setTask] = useState<Task | null>(null);
   const [timeline, setTimeline] = useState<TaskTimelineItem[]>([]);
   const [transcript, setTranscript] = useState<TaskTranscriptEntry[]>([]);
-  const [activeView, setActiveView] = useState<"conversation" | "timeline">("timeline");
+  const [activeView, setActiveView] = useState<"conversation" | "timeline">(
+    () => searchParams.get("view") === "conversation" ? "conversation" : "timeline",
+  );
   const [autoFollow, setAutoFollow] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [steering, setSteering] = useState("");
@@ -140,17 +144,18 @@ export function TaskDetailPage() {
     const container = findScrollContainer(pageRef.current);
     autoFollowRef.current = true;
     setAutoFollow(true);
-    container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
+    container.scrollTo({ top: container.scrollHeight, behavior: prefersReducedMotion() ? "auto" : "smooth" });
   }
 
   function scrollToTop() {
     const container = findScrollContainer(pageRef.current);
     autoFollowRef.current = false;
     setAutoFollow(false);
-    container.scrollTo({ top: 0, behavior: "smooth" });
+    container.scrollTo({ top: 0, behavior: prefersReducedMotion() ? "auto" : "smooth" });
   }
 
   async function stop() {
+    if (!task || !window.confirm(`Stop task ${task.goal}?`)) return;
     try {
       await apiPost(`${base}/stop`, {});
       loadAll();
@@ -220,6 +225,13 @@ export function TaskDetailPage() {
   function resetContinuationModelSelection() {
     setContinuationModelProvider("");
     setContinuationModelOverride("");
+  }
+
+  function selectView(view: "conversation" | "timeline") {
+    setActiveView(view);
+    const next = new URLSearchParams(searchParams);
+    next.set("view", view);
+    setSearchParams(next, { replace: true });
   }
 
   function selectContinuationModelProvider(providerID: string) {
@@ -301,10 +313,18 @@ export function TaskDetailPage() {
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <GitBranch className="h-4 w-4" /> Task controls
         </div>
-        <Input value={steering} onChange={(e) => setSteering(e.target.value)} placeholder="Focus on admin.example.com next" />
+        <Input
+          aria-label="Steering directive"
+          name="steering_directive"
+          value={steering}
+          onChange={(e) => setSteering(e.target.value)}
+          placeholder="Focus on admin.example.com next…"
+          autoComplete="off"
+        />
         <div className="flex flex-wrap gap-2 items-center">
-          <select
-            className="h-8 max-w-xs rounded-md border border-input bg-background px-2 text-sm"
+          <Select
+            className="max-w-xs"
+            name="continuation_model_provider"
             value={continuationModelProvider}
             onChange={(e) => selectContinuationModelProvider(e.target.value)}
             aria-label="Continuation model provider"
@@ -313,9 +333,10 @@ export function TaskDetailPage() {
             {continuationModelProviders.map((provider) => (
               <option key={provider.id} value={provider.id}>{provider.name}</option>
             ))}
-          </select>
-          <select
-            className="h-8 max-w-xs rounded-md border border-input bg-background px-2 text-sm disabled:opacity-60"
+          </Select>
+          <Select
+            className="max-w-xs"
+            name="continuation_model"
             value={continuationModelOverride}
             onChange={(e) => setContinuationModelOverride(e.target.value)}
             aria-label="Continuation model"
@@ -326,7 +347,7 @@ export function TaskDetailPage() {
             ) : continuationModelOptions.map((model) => (
               <option key={model} value={model}>{model}</option>
             ))}
-          </select>
+          </Select>
           <Button size="sm" variant="outline" onClick={queueSteer} disabled={!steering.trim() || !queueSteerAvailable}>
             <Send className="h-4 w-4 mr-1" /> Queue steer
           </Button>
@@ -339,10 +360,20 @@ export function TaskDetailPage() {
       </Card>
 
       <div className="flex items-center gap-1 border-b border-border mb-3">
-        <button className={tabClass(activeView === "timeline")} onClick={() => setActiveView("timeline")}>
+        <button
+          type="button"
+          className={tabClass(activeView === "timeline")}
+          aria-pressed={activeView === "timeline"}
+          onClick={() => selectView("timeline")}
+        >
           <Activity className="h-4 w-4" /> Timeline
         </button>
-        <button className={tabClass(activeView === "conversation")} onClick={() => setActiveView("conversation")}>
+        <button
+          type="button"
+          className={tabClass(activeView === "conversation")}
+          aria-pressed={activeView === "conversation"}
+          onClick={() => selectView("conversation")}
+        >
           <MessageSquare className="h-4 w-4" /> Conversation
         </button>
       </div>
@@ -424,7 +455,13 @@ function TranscriptList({ entries, endRef }: { entries: TaskTranscriptEntry[]; e
   return (
     <div className="space-y-4">
       {entries.map((entry) => (
-        <TranscriptRow key={entry.id} entry={entry} />
+        <div
+          key={entry.id}
+          data-testid="transcript-row"
+          className="[contain-intrinsic-size:72px] [content-visibility:auto]"
+        >
+          <TranscriptRow entry={entry} />
+        </div>
       ))}
       {entries.length === 0 && <p className="text-sm text-muted-foreground">No transcript yet.</p>}
       <div ref={endRef} />
@@ -459,7 +496,7 @@ function TranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
       )}
       <div className={`min-w-0 max-w-[85%] rounded-2xl border px-4 py-3 shadow-sm ${isUser ? "border-primary/20 bg-primary/10" : "border-border bg-card"}`}>
         <div className="mb-1 text-xs text-muted-foreground">
-          #{entry.seq} {entry.role}{entry.created_at && ` · ${new Date(entry.created_at).toLocaleString()}`}
+          #{entry.seq} {entry.role}{entry.created_at && ` · ${formatDateTime(entry.created_at)}`}
         </div>
         <div className="whitespace-pre-wrap break-words leading-6">{entry.text}</div>
       </div>
@@ -481,7 +518,7 @@ function CollapsedTranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
         <Icon className="h-4 w-4 text-muted-foreground" />
         <span className="text-xs text-muted-foreground shrink-0">#{entry.seq}</span>
         <span className="truncate">{collapsedTranscriptTitle(entry)}</span>
-        {entry.created_at && <span className="text-xs text-muted-foreground ml-auto shrink-0">{new Date(entry.created_at).toLocaleString()}</span>}
+        {entry.created_at && <span className="text-xs text-muted-foreground ml-auto shrink-0">{formatDateTime(entry.created_at)}</span>}
       </summary>
       <div className="border-t border-border px-3 py-2">
         <pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">{collapsedBody(entry)}</pre>
@@ -503,4 +540,8 @@ function collapsedBody(entry: TaskTranscriptEntry) {
     parts.push(JSON.stringify(entry.details, null, 2));
   }
   return parts.join("\n\n") || "(empty)";
+}
+
+function prefersReducedMotion(): boolean {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 }

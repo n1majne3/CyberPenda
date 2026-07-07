@@ -104,7 +104,7 @@ function ScopeChip({ label, n }: { label: string; n: number }) {
 function CountCard({ icon, label, n, to }: { icon: React.ReactNode; label: string; n: number; to: string }) {
   return (
     <Link to={to} className="group">
-      <Card className="transition-all hover:bg-accent/40 hover:ring-foreground/20">
+      <Card className="transition-[background-color,box-shadow] hover:bg-accent/40 hover:ring-foreground/20">
         <CardTitle className="flex items-center gap-1.5 text-sm text-muted-foreground group-hover:text-foreground">
           {icon}{label}
         </CardTitle>

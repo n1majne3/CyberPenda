@@ -155,6 +155,7 @@ export function SkillsPage() {
   }
 
   async function deleteSkill(skill: Skill) {
+    if (!window.confirm(`Delete skill ${displaySkillName(skill)}?`)) return;
     setError(null);
     try {
       await apiDelete(`/api/skills/${encodeURIComponent(skill.id)}?force_disable=true`);
@@ -186,9 +187,14 @@ export function SkillsPage() {
         <div className="space-y-4">
           <Card>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-              <div>
-                <Label>Runtime profile view</Label>
-                <Select value={profileId} onChange={(event) => setProfileId(event.target.value)}>
+	              <div>
+	                <Label htmlFor="skills-runtime-profile">Runtime profile view</Label>
+	                <Select
+	                  id="skills-runtime-profile"
+	                  name="runtime_profile"
+	                  value={profileId}
+	                  onChange={(event) => setProfileId(event.target.value)}
+	                >
                   {profiles.length === 0 && <option value="">All profiles</option>}
                   {profiles.map((profile) => (
                     <option key={profile.id} value={profile.id}>
@@ -271,30 +277,56 @@ export function SkillsPage() {
                 <Label htmlFor="skill-id">Skill ID</Label>
                 <Input
                   id="skill-id"
+                  name="skill_id"
                   value={form.id}
                   onChange={(e) => setForm({ ...form, id: e.target.value, storage_id: undefined, source_provenance: undefined })}
-                  placeholder="recon-helper"
+                  placeholder="recon-helper…"
+                  autoComplete="off"
+                  spellCheck={false}
                 />
               </div>
               <div>
                 <Label htmlFor="skill-name">Name</Label>
-                <Input id="skill-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Recon Helper" />
+                <Input
+                  id="skill-name"
+                  name="skill_name"
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  placeholder="Recon Helper…"
+                  autoComplete="off"
+                />
               </div>
               <div>
                 <Label htmlFor="skill-description">Description</Label>
-                <Input id="skill-description" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+                <Input
+                  id="skill-description"
+                  name="skill_description"
+                  value={form.description}
+                  onChange={(e) => setForm({ ...form, description: e.target.value })}
+                  autoComplete="off"
+                />
               </div>
               <div>
                 <Label htmlFor="skill-instruction">SKILL.md</Label>
-                <Textarea id="skill-instruction" value={form.instruction} onChange={(e) => setForm({ ...form, instruction: e.target.value })} />
+                <Textarea
+                  id="skill-instruction"
+                  name="skill_instruction"
+                  value={form.instruction}
+                  onChange={(e) => setForm({ ...form, instruction: e.target.value })}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
               </div>
               <div>
                 <Label htmlFor="skill-extra-files">Additional files JSON</Label>
                 <Textarea
                   id="skill-extra-files"
+                  name="skill_extra_files"
                   value={form.extra_files}
                   onChange={(e) => setForm({ ...form, extra_files: e.target.value })}
-                  placeholder={'{"scripts/probe.sh":"#!/bin/sh\\n"}'}
+                  placeholder={'{"scripts/probe.sh":"#!/bin/sh\\n"}…'}
+                  autoComplete="off"
+                  spellCheck={false}
                 />
               </div>
               <Button onClick={publishSkill} disabled={saving || !form.id.trim() || !form.name.trim()}>
@@ -311,11 +343,27 @@ export function SkillsPage() {
             <div className="space-y-3">
               <div>
                 <Label htmlFor="import-package">Package/ref</Label>
-                <Input id="import-package" value={importPackage} onChange={(e) => setImportPackage(e.target.value)} placeholder="@acme/recon-skill" />
+                <Input
+                  id="import-package"
+                  name="import_package"
+                  value={importPackage}
+                  onChange={(e) => setImportPackage(e.target.value)}
+                  placeholder="@acme/recon-skill…"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
               </div>
               <div>
                 <Label htmlFor="import-ref">Version/ref</Label>
-                <Input id="import-ref" value={importRef} onChange={(e) => setImportRef(e.target.value)} placeholder="latest" />
+                <Input
+                  id="import-ref"
+                  name="import_ref"
+                  value={importRef}
+                  onChange={(e) => setImportRef(e.target.value)}
+                  placeholder="latest…"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
               </div>
               <Button onClick={importSkill} disabled={saving || !importPackage.trim()}>
                 <PackagePlus className="h-4 w-4" /> Import

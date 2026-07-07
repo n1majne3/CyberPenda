@@ -77,4 +77,11 @@ describe("index.css design tokens", () => {
     const light = tokenBlock(":root");
     expect(light).toMatch(/--primary:\s*2[0-4]\d\s/);
   });
+
+  it("sets global focus, touch, and overflow interaction defaults", () => {
+    expect(css).toContain(":focus-visible");
+    expect(css).toContain("touch-action: manipulation");
+    expect(css).toContain("-webkit-tap-highlight-color");
+    expect(css).toContain("overflow-x: hidden");
+  });
 });

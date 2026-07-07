@@ -8,6 +8,9 @@ describe("Logo", () => {
     const { getByRole } = render(<Logo />);
     const img = getByRole("img", { name: /cyberpenda/i });
     expect(img).toHaveAttribute("src", "/cyberpenda-logo.png");
+    expect(img).toHaveAttribute("width", "96");
+    expect(img).toHaveAttribute("height", "96");
+    expect(img).toHaveAttribute("fetchpriority", "high");
   });
 
   it("respects a custom size", () => {

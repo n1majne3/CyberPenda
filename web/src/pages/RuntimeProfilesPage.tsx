@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { ChevronDown, Plus, Trash2 } from "lucide-react";
 import { apiGet, apiPost, apiPatch, apiDelete, type ModelProvider, type RuntimeExtension, type RuntimeExtensionCatalogItem, type RuntimePlugin, type RuntimeProfile } from "@/lib/api";
 import { ModelProviderMigrationPanel } from "@/pages/ModelProviderMigrationPanel";
@@ -116,7 +117,7 @@ function ProfileListButton({
       type="button"
       onClick={onSelect}
       className={cn(
-        "w-full text-left rounded-md px-2.5 py-2 text-sm transition-colors",
+        "w-full text-left rounded-md px-2.5 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
         selected
           ? "bg-primary/10 text-foreground ring-1 ring-primary/30"
           : "hover:bg-muted/60 text-muted-foreground hover:text-foreground",
@@ -138,12 +139,13 @@ function ProfileListButton({
 }
 
 export function RuntimeProfilesPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [profiles, setProfiles] = useState<RuntimeProfile[]>([]);
   const [plugins, setPlugins] = useState<RuntimePlugin[]>([]);
   const [extensions, setExtensions] = useState<RuntimeExtension[]>([]);
   const [modelProviders, setModelProviders] = useState<ModelProvider[]>([]);
   const [extensionCatalog, setExtensionCatalog] = useState<RuntimeExtensionCatalogItem[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(() => searchParams.get("profile"));
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [savedNotice, setSavedNotice] = useState(false);
@@ -232,6 +234,15 @@ export function RuntimeProfilesPage() {
     };
   }, []);
 
+  useEffect(() => {
+    const current = searchParams.get("profile");
+    if ((selectedId ?? "") === (current ?? "")) return;
+    const next = new URLSearchParams(searchParams);
+    if (selectedId) next.set("profile", selectedId);
+    else next.delete("profile");
+    setSearchParams(next, { replace: true });
+  }, [selectedId, searchParams, setSearchParams]);
+
   function showSavedNotice() {
     setSavedNotice(true);
     if (savedNoticeTimer.current) clearTimeout(savedNoticeTimer.current);
@@ -262,6 +273,8 @@ export function RuntimeProfilesPage() {
   }
 
   async function remove(id: string) {
+    const profile = profiles.find((item) => item.id === id);
+    if (!window.confirm(`Delete runtime profile ${profile?.name ?? id}?`)) return;
     try {
       await apiDelete(`/api/runtime-profiles/${id}`);
       if (selectedId === id) setSelectedId(null);
@@ -343,12 +356,13 @@ export function RuntimeProfilesPage() {
         <Card className="p-3 flex flex-col gap-3">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Profiles</span>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                setCreating(true);
-                setSelectedId(null);
+	            <Button
+	              size="sm"
+	              variant="outline"
+	              aria-label="New runtime profile"
+	              onClick={() => {
+	                setCreating(true);
+	                setSelectedId(null);
                 setForm({ ...emptyForm, provider: defaultProvider(effectivePlugins) });
               }}
             >
@@ -387,13 +401,14 @@ export function RuntimeProfilesPage() {
                     </div>
                   )}
                   {launchResolvedItems.length > 0 && (
-                    <div className={cn("space-y-1", presetItems.length > 0 && "mt-2")}>
-                      <button
-                        type="button"
-                        className="flex w-full items-center gap-1 px-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/80"
-                        onClick={() =>
-                          setLaunchResolvedOpen((open) => ({ ...open, [provider]: !open[provider] }))
-                        }
+	                    <div className={cn("space-y-1", presetItems.length > 0 && "mt-2")}>
+	                      <button
+	                        type="button"
+	                        aria-expanded={Boolean(launchResolvedOpen[provider])}
+	                        className="flex w-full items-center gap-1 rounded-md px-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/80 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+	                        onClick={() =>
+	                          setLaunchResolvedOpen((open) => ({ ...open, [provider]: !open[provider] }))
+	                        }
                       >
                         <ChevronDown
                           className={cn(
@@ -478,7 +493,12 @@ export function RuntimeProfilesPage() {
                     saved={savedNotice}
                     onClick={() => void saveSelected()}
                   />
-                  <Button size="icon" variant="ghost" onClick={() => remove(selected.id)}>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    aria-label={`Delete ${selected.name} runtime profile`}
+                    onClick={() => remove(selected.id)}
+                  >
                     <Trash2 className="h-4 w-4 text-destructive" />
                   </Button>
                 </div>
@@ -491,7 +511,7 @@ export function RuntimeProfilesPage() {
               />
               <ProfileEditor form={draft} onChange={setDraft} hideActions plugins={effectivePlugins} modelProviders={modelProviders} extensions={extensions} extensionCatalog={extensionCatalog} />
               <div className="min-w-0">
-                <Label>Generated config preview</Label>
+                <p className="text-sm font-medium leading-none text-muted-foreground">Generated config preview</p>
                 <pre className="mt-1 w-full max-w-full rounded-md border border-border bg-muted/30 p-3 text-xs overflow-x-auto max-h-96">
                   {previewConfig}
                 </pre>
@@ -756,12 +776,22 @@ function ProfileEditor({
       {title && <h3 className="font-medium">{title}</h3>}
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <Label>Name</Label>
-          <Input value={form.name} onChange={(e) => onChange({ ...form, name: e.target.value })} placeholder="Codex Default" />
+          <Label htmlFor="profile-name">Name</Label>
+          <Input
+            id="profile-name"
+            name="profile_name"
+            value={form.name}
+            onChange={(e) => onChange({ ...form, name: e.target.value })}
+            placeholder="Codex Default…"
+            autoComplete="off"
+            spellCheck={false}
+          />
         </div>
         <div>
-          <Label>Provider</Label>
+          <Label htmlFor="profile-provider">Provider</Label>
           <Select
+            id="profile-provider"
+            name="provider"
             value={form.provider}
             onChange={(e) => {
               const provider = e.target.value;
@@ -791,8 +821,10 @@ function ProfileEditor({
           )}
         </div>
         <div>
-          <Label>Model provider</Label>
+          <Label htmlFor="profile-model-provider">Model provider</Label>
           <Select
+            id="profile-model-provider"
+            name="model_provider_id"
             value={form.model_provider_id}
             onChange={(e) => onChange(applyModelProviderSelection(form, e.target.value))}
           >
@@ -813,8 +845,10 @@ function ProfileEditor({
           )}
         </div>
         <div>
-          <Label>Model protocol</Label>
+          <Label htmlFor="profile-model-provider-protocol">Model protocol</Label>
           <Select
+            id="profile-model-provider-protocol"
+            name="model_provider_protocol"
             value={form.model_provider_protocol}
             onChange={(e) => onChange({ ...form, model_provider_protocol: e.target.value })}
             disabled={!form.model_provider_id}
@@ -829,8 +863,10 @@ function ProfileEditor({
           </Select>
         </div>
         <div>
-          <Label>Model override</Label>
+          <Label htmlFor="profile-model-override">Model override</Label>
           <Select
+            id="profile-model-override"
+            name="model_override"
             value={form.model_override}
             onChange={(e) => onChange({ ...form, model_override: e.target.value })}
             disabled={!form.model_provider_id}
@@ -845,28 +881,48 @@ function ProfileEditor({
           </Select>
         </div>
         {has("binary_path") && <div>
-          <Label>Binary path</Label>
+          <Label htmlFor="profile-binary-path">Binary path</Label>
           <Input
+            id="profile-binary-path"
+            name="binary_path"
             value={form.binary_path}
             onChange={(e) => onChange({ ...form, binary_path: e.target.value })}
-            placeholder={plugin?.binary.default ? "/usr/local/bin/" + plugin.binary.default : "/usr/local/bin/codex"}
+            placeholder={plugin?.binary.default ? `/usr/local/bin/${plugin.binary.default}…` : "/usr/local/bin/codex…"}
+            autoComplete="off"
+            spellCheck={false}
           />
         </div>}
         {has("model") && legacyModelFields && <div>
-          <Label>Model</Label>
-          <Input value={form.model} onChange={(e) => onChange({ ...form, model: e.target.value })} placeholder="gpt-5" />
+          <Label htmlFor="profile-model">Model</Label>
+          <Input
+            id="profile-model"
+            name="model"
+            value={form.model}
+            onChange={(e) => onChange({ ...form, model: e.target.value })}
+            placeholder="gpt-5…"
+            autoComplete="off"
+            spellCheck={false}
+          />
         </div>}
         {has("endpoint") && legacyModelFields && <div>
-          <Label>Endpoint</Label>
+          <Label htmlFor="profile-endpoint">Endpoint</Label>
           <Input
+            id="profile-endpoint"
+            name="endpoint"
+            type="url"
+            inputMode="url"
             value={form.endpoint}
             onChange={(e) => onChange({ ...form, endpoint: e.target.value })}
-            placeholder="https://api.example.test/v1"
+            placeholder="https://api.example.test/v1…"
+            autoComplete="off"
+            spellCheck={false}
           />
         </div>}
         {has("default_runner") && <div>
-          <Label>Default runner</Label>
+          <Label htmlFor="profile-default-runner">Default runner</Label>
           <Select
+            id="profile-default-runner"
+            name="default_runner"
             value={form.default_runner}
             onChange={(e) => onChange({ ...form, default_runner: e.target.value })}
           >
@@ -880,74 +936,108 @@ function ProfileEditor({
       </div>
       <div className="grid grid-cols-2 gap-3">
         {has("custom_args") && <div>
-          <Label>Custom args</Label>
-          <Textarea value={form.custom_args} onChange={(e) => onChange({ ...form, custom_args: e.target.value })} placeholder="--json" />
+          <Label htmlFor="profile-custom-args">Custom args</Label>
+          <Textarea
+            id="profile-custom-args"
+            name="custom_args"
+            value={form.custom_args}
+            onChange={(e) => onChange({ ...form, custom_args: e.target.value })}
+            placeholder="--json…"
+            autoComplete="off"
+            spellCheck={false}
+          />
         </div>}
         {has("env") && <div>
-          <Label>Environment</Label>
+          <Label htmlFor="profile-env">Environment</Label>
           <p className="text-[11px] text-muted-foreground mb-1">KEY=VALUE lines or a JSON object</p>
           <Textarea
+            id="profile-env"
+            name="env"
             value={form.env}
             onChange={(e) => onChange({ ...form, env: e.target.value })}
-            placeholder={'ANTHROPIC_BASE_URL=https://api.example.test\nANTHROPIC_MODEL=claude-sonnet'}
+            placeholder={'ANTHROPIC_BASE_URL=https://api.example.test\nANTHROPIC_MODEL=claude-sonnet…'}
+            autoComplete="off"
+            spellCheck={false}
           />
         </div>}
         {has("api_keys") && legacyModelFields && <div>
-          <Label>API key env</Label>
+          <Label htmlFor="profile-api-key-env">API key env</Label>
           <Input
+            id="profile-api-key-env"
+            name="api_key_env"
             value={form.api_key_env}
             onChange={(e) => onChange({ ...form, api_key_env: e.target.value })}
-            placeholder={apiKeyPlaceholder}
+            placeholder={`${apiKeyPlaceholder}…`}
+            autoComplete="off"
+            spellCheck={false}
           />
         </div>}
         {has("api_keys") && legacyModelFields && <div>
-          <Label>API key</Label>
+          <Label htmlFor="profile-api-key">API key</Label>
           <Input
+            id="profile-api-key"
+            name="api_key"
             type="password"
             value={form.api_key}
             onChange={(e) => onChange({ ...form, api_key: e.target.value })}
-            placeholder="sk-..."
+            placeholder="sk-…"
             autoComplete="off"
+            spellCheck={false}
           />
           <p className="text-[11px] text-muted-foreground mt-1">
             Stored on this profile only. Leave as [configured] to keep the existing key.
           </p>
         </div>}
         {has("mcp_servers") && <div>
-          <Label>MCP servers JSON</Label>
+          <Label htmlFor="profile-mcp-servers">MCP servers JSON</Label>
           <Textarea
+            id="profile-mcp-servers"
+            name="mcp_servers"
             value={form.mcp_servers}
             onChange={(e) => onChange({ ...form, mcp_servers: e.target.value })}
-            placeholder='[{"name":"project","mode":"trusted","url":"http://127.0.0.1:8787/mcp"}]'
+            placeholder='[{"name":"project","mode":"trusted","url":"http://127.0.0.1:8787/mcp"}]…'
+            autoComplete="off"
+            spellCheck={false}
           />
         </div>}
         {has("sandbox_image") && <div>
-          <Label>Sandbox image</Label>
+          <Label htmlFor="profile-sandbox-image">Sandbox image</Label>
           <Input
+            id="profile-sandbox-image"
+            name="sandbox_image"
             value={form.sandbox_image}
             onChange={(e) => onChange({ ...form, sandbox_image: e.target.value })}
-            placeholder="gemini_kali-gemini-kali:latest (daemon default if empty)"
+            placeholder="gemini_kali-gemini-kali:latest…"
+            autoComplete="off"
+            spellCheck={false}
           />
           <p className="text-[11px] text-muted-foreground mt-1">
             Override the daemon sandbox image for tasks using this profile.
           </p>
         </div>}
         {has("credential_refs") && <div className="col-span-2">
-          <Label>Credential refs</Label>
+          <Label htmlFor="profile-credential-refs">Credential refs</Label>
           <Textarea
+            id="profile-credential-refs"
+            name="credential_refs"
             value={form.credential_refs}
             onChange={(e) => onChange({ ...form, credential_refs: e.target.value })}
-            placeholder="codex-api-key"
+            placeholder="codex-api-key…"
             rows={2}
+            autoComplete="off"
+            spellCheck={false}
           />
           <p className="text-[11px] text-muted-foreground mt-1">
             Resolved via global or project credential bindings at preflight.
           </p>
         </div>}
         {has("runtime_extensions") && <div className="col-span-2">
-          <Label>Runtime extensions</Label>
+          <Label htmlFor="profile-runtime-extension">Runtime extensions</Label>
           <div className="mt-1 flex gap-2">
-            <Select className="flex-1"
+            <Select
+              id="profile-runtime-extension"
+              name="runtime_extension"
+              className="flex-1"
               value={selectedExtensionID}
               onChange={(e) => setExtensionToAdd(e.target.value)}
               disabled={availableExtensions.length === 0}
@@ -968,7 +1058,10 @@ function ProfileEditor({
             </Button>
           </div>
           <div className="mt-2 flex gap-2">
-            <Select className="flex-1"
+            <Select
+              id="profile-catalog-extension"
+              name="catalog_extension"
+              className="flex-1"
               value={selectedCatalogItemID}
               onChange={(e) => setCatalogItemToAdd(e.target.value)}
               disabled={availableCatalogItems.length === 0}
@@ -990,9 +1083,13 @@ function ProfileEditor({
           </div>
           <div className="mt-2 flex gap-2">
             <Input
+              id="profile-manual-extension-id"
+              name="manual_extension_id"
               value={manualExtensionID}
               onChange={(e) => setManualExtensionID(e.target.value)}
-              placeholder="manual_extension_id"
+              placeholder="manual_extension_id…"
+              autoComplete="off"
+              spellCheck={false}
             />
             <Button type="button" size="sm" variant="outline" onClick={addManualRuntimeExtension} disabled={!canAddManualExtension}>
               <Plus className="h-4 w-4" />
@@ -1019,11 +1116,12 @@ function ProfileEditor({
               return (
                 <div key={`${ref.id}-${index}`} className="rounded-md border border-border p-3 space-y-2">
                   <div className="flex items-start justify-between gap-3">
-                    <label className="flex items-start gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        className="mt-1 h-4 w-4 accent-primary"
-                        checked={ref.enabled}
+	                    <label className="flex items-start gap-2 text-sm">
+	                      <input
+	                        type="checkbox"
+	                        name="runtime_extension_enabled"
+	                        className="mt-1 h-4 w-4 accent-primary"
+	                        checked={ref.enabled}
                         onChange={(e) => updateRuntimeExtension(index, { enabled: e.target.checked })}
                       />
                       <span>
@@ -1047,17 +1145,27 @@ function ProfileEditor({
                         )}
                       </span>
                     </label>
-                    <Button type="button" size="icon" variant="ghost" onClick={() => removeRuntimeExtension(index)}>
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      aria-label={`Remove ${extension?.name || catalogItem?.name || ref.id} runtime extension`}
+                      onClick={() => removeRuntimeExtension(index)}
+                    >
                       <Trash2 className="h-4 w-4 text-destructive" />
                     </Button>
                   </div>
                   <div>
-                    <Label>Config</Label>
+                    <Label htmlFor={`runtime-extension-config-${index}`}>Config</Label>
                     <Textarea
+                      id={`runtime-extension-config-${index}`}
+                      name="runtime_extension_config"
                       value={ref.config}
                       onChange={(e) => updateRuntimeExtension(index, { config: e.target.value })}
-                      placeholder="KEY=value"
+                      placeholder="KEY=value…"
                       rows={2}
+                      autoComplete="off"
+                      spellCheck={false}
                     />
                   </div>
                 </div>
