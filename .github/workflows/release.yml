@@ -189,5 +189,3 @@ jobs:
           docker buildx imagetools create "${tag_args[@]}" "${digest_args[@]}"
         env:
           IMAGE: ${{ steps.image.outputs.name }}
-          labels: ${{ steps.meta.outputs.labels }}
-          annotations: ${{ steps.meta.outputs.annotations }}

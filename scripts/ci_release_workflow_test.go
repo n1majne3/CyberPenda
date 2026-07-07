@@ -61,8 +61,10 @@ func TestReleaseWorkflowPublishesBinariesAndSandboxImage(t *testing.T) {
 	assertContains(t, workflow, `docker/metadata-action@v6`)
 	assertContains(t, workflow, `docker/build-push-action@v7`)
 	assertContains(t, workflow, `file: docker/pentest-sandbox/Dockerfile`)
-	assertContains(t, workflow, `platforms: linux/amd64,linux/arm64`)
-	assertContains(t, workflow, `push: true`)
+	assertContains(t, workflow, `platforms: ${{ matrix.platform }}`)
+	assertContains(t, workflow, `outputs: type=image,push-by-digest=true,name-canonical=true,push=true`)
+	assertContains(t, workflow, `steps.build.outputs.digest`)
+	assertContains(t, workflow, `docker buildx imagetools create`)
 	assertContains(t, workflow, `ghcr.io/${image_name}`)
 }
 
