@@ -16,6 +16,7 @@ import { BackLink, PageContainer } from "@/components/shared";
 import { selectableModelProviders } from "@/pages/runtimeProfileForm";
 import {
   canLaunch,
+  findLaunchProfileForSelection,
   formFromPreset,
   initialLaunchState,
   launchRuntimes,
@@ -56,13 +57,21 @@ export function TaskLaunchPage() {
   const [sandboxNetwork, setSandboxNetwork] = useState("");
   const [launching, setLaunching] = useState(false);
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
-  const [resolvedProfileId, setResolvedProfileId] = useState("");
   const [skillsPreview, setSkillsPreview] = useState<Skill[] | null>(null);
   const [skillsPreviewLoading, setSkillsPreviewLoading] = useState(false);
   const [skillsPreviewError, setSkillsPreviewError] = useState<string | null>(null);
 
   const presetMode = presetId.trim() !== "";
-  const skillsProfileId = launchProfileIdForSkillsPreview(presetId, resolvedProfileId);
+  const matchingLaunchProfile = useMemo(
+    () =>
+      findLaunchProfileForSelection(profiles, {
+        runtime: form.runtime,
+        modelProviderId: form.modelProviderId,
+        modelOverride: form.modelOverride,
+      }),
+    [profiles, form.runtime, form.modelProviderId, form.modelOverride],
+  );
+  const skillsProfileId = launchProfileIdForSkillsPreview(presetId, matchingLaunchProfile?.id ?? "");
   const enabledSkillsPreview = useMemo(
     () => (skillsPreview ? enabledLaunchSkills(skillsPreview) : []),
     [skillsPreview],
@@ -121,7 +130,6 @@ export function TaskLaunchPage() {
       // Clear stale preview state asynchronously so the setState calls are not
       // synchronous within the effect body (react-hooks/set-state-in-effect).
       const clearTimer = window.setTimeout(() => {
-        setResolvedProfileId("");
         setSkillsPreview(null);
         setSkillsPreviewError(null);
         setSkillsPreviewLoading(false);
@@ -135,17 +143,11 @@ export function TaskLaunchPage() {
         setSkillsPreviewLoading(true);
         setSkillsPreviewError(null);
         try {
-          let profileId = presetId.trim();
+          const profileId = skillsProfileId;
           if (!profileId) {
-            const resolved = await apiPost<{
-              profile_id: string;
-              profile: RuntimeProfile;
-            }>("/api/runtime-profiles/resolve-launch", resolveLaunchPayload(form));
             if (cancelled) return;
-            profileId = resolved.profile_id;
-            setResolvedProfileId(profileId);
-          } else if (!cancelled) {
-            setResolvedProfileId("");
+            setSkillsPreview([]);
+            return;
           }
 
           const data = await apiGet<{ skills: Skill[] }>(
@@ -171,7 +173,7 @@ export function TaskLaunchPage() {
     // drive profile resolution. Whole-form identity is not needed; listing the
     // specific fields keeps the preview from refetching on unrelated edits.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [presetId, form.runtime, form.modelProviderId, form.modelOverride]);
+  }, [presetId, skillsProfileId, form.runtime, form.modelProviderId, form.modelOverride]);
 
   function updateRuntime(runtime: string) {
     const nextPresetId = presetMatchesRuntime(presetId, profiles, runtime) ? presetId : "";
@@ -558,7 +560,9 @@ function LaunchSkillsPreviewCard({
       {loading && <p className="text-sm text-muted-foreground">Loading enabled skills…</p>}
       {error && <p className="text-sm text-destructive">{error}</p>}
       {!loading && !error && ready && skills.length === 0 && (
-        <p className="text-sm text-muted-foreground">No skills enabled for this profile.</p>
+        <p className="text-sm text-muted-foreground">
+          {profileId ? "No skills enabled for this profile." : "No matching skills profile yet."}
+        </p>
       )}
       {!loading && !error && skills.length > 0 && (
         <div

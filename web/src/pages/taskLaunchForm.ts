@@ -130,6 +130,22 @@ export function launchRuntimeProfileId(presetId: string, resolvedProfileId: stri
   return presetId.trim() || resolvedProfileId;
 }
 
+export function findLaunchProfileForSelection(
+  profiles: RuntimeProfile[],
+  form: Pick<LaunchForm, "runtime" | "modelProviderId" | "modelOverride">,
+): RuntimeProfile | undefined {
+  const runtime = form.runtime.trim();
+  const modelProviderId = form.modelProviderId.trim();
+  const modelOverride = form.modelOverride.trim();
+  if (!runtime || !modelProviderId) return undefined;
+  return profiles.find(
+    (profile) =>
+      profile.provider === runtime &&
+      (profile.fields.model_provider_id?.trim() ?? "") === modelProviderId &&
+      (profile.fields.model_override?.trim() ?? "") === modelOverride,
+  );
+}
+
 export function launchModelOverridePayload(
   presetId: string,
   form: Pick<LaunchForm, "modelOverride">,

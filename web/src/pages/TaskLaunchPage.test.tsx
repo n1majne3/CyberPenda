@@ -40,6 +40,16 @@ const codexPreset = {
   updated_at: "",
 };
 
+const autoResolvedProfile = {
+  id: "resolved-profile",
+  name: "Codex · MiMo",
+  provider: "codex",
+  kind: "launch_resolve",
+  fields: { model_provider_id: "mimo", model_override: "mimo-v2.5-pro" },
+  created_at: "",
+  updated_at: "",
+};
+
 function renderPage() {
   return render(
     <StrictMode>
@@ -228,24 +238,7 @@ describe("TaskLaunchPage", () => {
           );
         }
         if (url.includes("/api/runtime-profiles/resolve-launch") && method === "POST") {
-          return Promise.resolve(
-            new Response(
-              JSON.stringify({
-                profile_id: "resolved-profile",
-                created: false,
-                profile: {
-                  id: "resolved-profile",
-                  name: "Codex · MiMo",
-                  provider: "codex",
-                  kind: "launch_resolve",
-                  fields: { model_provider_id: "mimo" },
-                  created_at: "",
-                  updated_at: "",
-                },
-              }),
-              { status: 200, headers: { "Content-Type": "application/json" } },
-            ),
-          );
+          return Promise.reject(new Error("skills preview must not create launch profiles"));
         }
         if (url.includes("/api/skills?runtime_profile_id=resolved-profile")) {
           return Promise.resolve(
@@ -267,7 +260,7 @@ describe("TaskLaunchPage", () => {
         }
         if (url.includes("/api/runtime-profiles")) {
           return Promise.resolve(
-            new Response(JSON.stringify({ profiles: [codexPreset] }), {
+            new Response(JSON.stringify({ profiles: [autoResolvedProfile] }), {
               status: 200,
               headers: { "Content-Type": "application/json" },
             }),
@@ -301,10 +294,80 @@ describe("TaskLaunchPage", () => {
     renderPage();
 
     await waitFor(() => {
-      expect(screen.getByText(/auto-resolved runtime profile/i)).toBeInTheDocument();
+      expect(screen.getByText(/matching runtime profile/i)).toBeInTheDocument();
     });
     expect(await screen.findByText("Recon Helper")).toBeInTheDocument();
     expect(screen.getByText("Profile: resolved-profile")).toBeInTheDocument();
+  });
+
+  it("does not resolve a launch profile just to preview skills", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.includes("/api/runtime-plugins")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ plugins: [codexPlugin] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/model-providers")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ providers: [mimoProvider] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/runtime-profiles/resolve-launch") && method === "POST") {
+        return Promise.reject(new Error("resolve-launch should only run during launch"));
+      }
+      if (url.includes("/api/skills")) {
+        return Promise.reject(new Error("skills preview needs an existing profile id"));
+      }
+      if (url.includes("/api/runtime-profiles")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ profiles: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/projects/project-1")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: "project-1",
+              name: "Acme",
+              description: "",
+              scope: {},
+              defaults: { runner: "sandbox" },
+              created_at: "",
+              updated_at: "",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+
+    expect(await screen.findByText("Skills for this launch")).toBeInTheDocument();
+    await new Promise((resolve) => window.setTimeout(resolve, 300));
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining("/api/runtime-profiles/resolve-launch"),
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(screen.queryByText(/^Profile:/)).not.toBeInTheDocument();
   });
 
   it("shows empty skills state when profile has no enabled skills", async () => {

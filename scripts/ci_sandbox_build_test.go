@@ -49,7 +49,7 @@ func TestSandboxDockerfileKeepsKaliLinuxHeadlessMetaPackage(t *testing.T) {
 	}
 }
 
-func TestReleaseWorkflowFreesDiskForFullKaliSandboxImage(t *testing.T) {
+func TestReleaseWorkflowBuildsSandboxImagePerPlatform(t *testing.T) {
 	repoRoot := repoRoot(t)
 	workflowPath := filepath.Join(repoRoot, ".github", "workflows", "release.yml")
 	workflowBytes, err := os.ReadFile(workflowPath)
@@ -63,7 +63,21 @@ func TestReleaseWorkflowFreesDiskForFullKaliSandboxImage(t *testing.T) {
 	assertContains(t, workflow, "/usr/local/lib/android")
 	assertContains(t, workflow, "${AGENT_TOOLSDIRECTORY:-}")
 	assertContains(t, workflow, "docker system prune -af")
-	assertContains(t, workflow, "platforms: linux/amd64,linux/arm64")
+	assertContains(t, workflow, "matrix:")
+	assertContains(t, workflow, "platform:")
+	assertContains(t, workflow, "linux/amd64")
+	assertContains(t, workflow, "linux/arm64")
+	assertContains(t, workflow, "platforms: ${{ matrix.platform }}")
+	assertContains(t, workflow, "push-by-digest=true")
+	assertContains(t, workflow, "steps.build.outputs.digest")
+	assertContains(t, workflow, "actions/upload-artifact@v7")
+	assertContains(t, workflow, "pattern: sandbox-image-digest-*")
+	assertContains(t, workflow, "merge-multiple: true")
+	assertContains(t, workflow, "docker buildx imagetools create")
+
+	if strings.Contains(workflow, "platforms: linux/amd64,linux/arm64") {
+		t.Fatal("release workflow must not build both sandbox platforms in one Buildx invocation")
+	}
 
 	cleanupIndex := strings.Index(workflow, "Free disk space for sandbox image")
 	buildxIndex := strings.Index(workflow, "docker/setup-buildx-action@v4")
