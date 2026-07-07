@@ -8,6 +8,7 @@ web/dist/
 # embeds the latest UI. Regenerate with: make build-ui
 
 # Local daemon/runtime artifacts
+dist/
 pentest.db
 pentest.db-shm
 pentest.db-wal
