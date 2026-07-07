@@ -19,5 +19,5 @@ export function launchSkillsPreviewDetail(presetMode: boolean): string {
   if (presetMode) {
     return "Skills follow the selected preset. Library skills are enabled by default unless this profile has opt-outs.";
   }
-  return "Skills follow the matching runtime profile for this launch selection. Library skills are enabled by default unless that profile has opt-outs.";
+  return "Skills follow the matching runtime profile from launch resolution. Library skills are enabled by default unless that profile has opt-outs.";
 }

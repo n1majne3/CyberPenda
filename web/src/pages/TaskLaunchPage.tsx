@@ -261,7 +261,8 @@ export function TaskLaunchPage() {
 
   const hostRunner = form.runner === "host";
   const hostBlocked = hostRunner && !hostActivated;
-  const launchReady = canLaunch(goal, form) && compatibleProviders.length > 0;
+  const launchReady =
+    canLaunch(goal, form, { presetId }) && (presetMode || compatibleProviders.length > 0);
 
   return (
     <PageContainer className="max-w-2xl">
@@ -304,7 +305,9 @@ export function TaskLaunchPage() {
               name="runner"
               value={form.runner}
               onChange={(e) => {
-                setForm((current) => ({ ...current, runner: e.target.value }));
+                const runner = e.target.value;
+                setForm((current) => ({ ...current, runner }));
+                if (runner !== "host") setHostActivated(false);
                 setPreflight(null);
               }}
             >
@@ -527,7 +530,7 @@ function launchRunControls(
   sandboxNetwork: string,
 ) {
   return {
-    host_activated: hostActivated,
+    ...(runner === "host" ? { host_activated: hostActivated } : {}),
     ...(runner === "sandbox" && sandboxNetwork ? { sandbox_network: sandboxNetwork } : {}),
   };
 }

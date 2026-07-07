@@ -252,6 +252,43 @@ func TestUpdateReplacesFieldsWhenTouched(t *testing.T) {
 	}
 }
 
+func TestUpdateClearsInlineAPIKeysWhenModelProviderSelected(t *testing.T) {
+	service := newTestService(t)
+	created, err := service.Create(
+		"Codex",
+		runtimeprofile.ProviderCodex,
+		runtimeprofile.Fields{
+			Model:    "gpt-5",
+			Endpoint: "https://legacy.example.test/v1",
+			APIKeys:  map[string]string{"OPENAI_API_KEY": "sk-old"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	updated, err := service.Update(
+		created.ID,
+		"Codex",
+		"",
+		runtimeprofile.Fields{ModelProviderID: "mimo", ModelOverride: "mimo-v2-flash"},
+		true,
+	)
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	if len(updated.Fields.APIKeys) != 0 {
+		t.Fatalf("expected inline api keys cleared after selecting model provider, got %#v", updated.Fields.APIKeys)
+	}
+	if updated.Fields.Model != "" || updated.Fields.Endpoint != "" {
+		t.Fatalf("expected legacy model fields cleared, got model %q endpoint %q", updated.Fields.Model, updated.Fields.Endpoint)
+	}
+	if updated.Fields.ModelProviderID != "mimo" {
+		t.Fatalf("expected model provider saved, got %q", updated.Fields.ModelProviderID)
+	}
+}
+
 func TestUpdateRejectsBlankName(t *testing.T) {
 	service := newTestService(t)
 	created, err := service.Create("Original", runtimeprofile.ProviderFake, runtimeprofile.Fields{})

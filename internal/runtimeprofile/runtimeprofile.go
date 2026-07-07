@@ -258,7 +258,11 @@ func (s *Service) Update(id, name string, provider Provider, fields Fields, fiel
 	if fieldsTouched {
 		mergedAPIKeys := MergeAPIKeys(existing.Fields.APIKeys, fields.APIKeys)
 		existing.Fields = fields
-		existing.Fields.APIKeys = mergedAPIKeys
+		if strings.TrimSpace(existing.Fields.ModelProviderID) == "" {
+			existing.Fields.APIKeys = mergedAPIKeys
+		} else {
+			existing.Fields.APIKeys = nil
+		}
 	}
 	existing.UpdatedAt = time.Now().UTC()
 

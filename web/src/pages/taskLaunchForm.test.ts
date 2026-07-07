@@ -73,11 +73,31 @@ describe("taskLaunchForm", () => {
     expect(runtimes.map((plugin) => plugin.id)).toEqual(["codex", "pi"]);
   });
 
-  it("requires goal, runtime, and model provider to launch", () => {
+  it("requires goal, runtime, and model provider for auto-resolved launches", () => {
     expect(canLaunch("scan target", { runtime: "codex", modelProviderId: "mimo" })).toBe(true);
     expect(canLaunch("", { runtime: "codex", modelProviderId: "mimo" })).toBe(false);
     expect(canLaunch("scan target", { runtime: "", modelProviderId: "mimo" })).toBe(false);
     expect(canLaunch("scan target", { runtime: "codex", modelProviderId: "" })).toBe(false);
+  });
+
+  it("allows saved legacy presets to launch without a model provider", () => {
+    const preset: RuntimeProfile = {
+      id: "legacy-preset",
+      name: "Legacy Codex",
+      provider: "codex",
+      fields: {
+        model: "gpt-5",
+        endpoint: "https://legacy.example.test/v1",
+        default_runner: "sandbox",
+      },
+      created_at: "",
+      updated_at: "",
+    };
+
+    const form = formFromPreset(preset, [], "sandbox");
+
+    expect(form.modelProviderId).toBe("");
+    expect(canLaunch("scan target", form, { presetId: "legacy-preset" })).toBe(true);
   });
 
   it("lists provider models with default first", () => {

@@ -19,8 +19,14 @@ export function launchRuntimes(plugins: RuntimePlugin[]): RuntimePlugin[] {
 export function canLaunch(
   goal: string,
   form: Pick<LaunchForm, "runtime" | "modelProviderId">,
+  options: { presetId?: string } = {},
 ): boolean {
-  return goal.trim() !== "" && form.runtime.trim() !== "" && form.modelProviderId.trim() !== "";
+  const presetLaunch = Boolean(options.presetId?.trim());
+  return (
+    goal.trim() !== "" &&
+    form.runtime.trim() !== "" &&
+    (presetLaunch || form.modelProviderId.trim() !== "")
+  );
 }
 
 export function modelsForProvider(provider: ModelProvider | undefined): string[] {

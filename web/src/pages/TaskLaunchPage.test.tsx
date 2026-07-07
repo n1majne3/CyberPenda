@@ -40,6 +40,19 @@ const codexPreset = {
   updated_at: "",
 };
 
+const legacyCodexPreset = {
+  id: "legacy-preset",
+  name: "Legacy Codex Preset",
+  provider: "codex",
+  fields: {
+    model: "gpt-5",
+    endpoint: "https://legacy.example.test/v1",
+    default_runner: "sandbox",
+  },
+  created_at: "",
+  updated_at: "",
+};
+
 const autoResolvedProfile = {
   id: "resolved-profile",
   name: "Codex · MiMo",
@@ -540,6 +553,111 @@ describe("TaskLaunchPage", () => {
     );
   });
 
+  it("launches a saved legacy preset without model providers", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.includes("/api/runtime-plugins")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ plugins: [codexPlugin] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/model-providers")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ providers: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/runtime-profiles/resolve-launch") && method === "POST") {
+        return Promise.reject(new Error("resolve-launch should not be called for preset launch"));
+      }
+      if (url.includes("/api/skills?runtime_profile_id=legacy-preset")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ skills: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/runtime-profiles")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ profiles: [legacyCodexPreset] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/projects/project-1/preflight") && method === "POST") {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { runtime_profile_id?: string };
+        expect(body.runtime_profile_id).toBe("legacy-preset");
+        return Promise.resolve(
+          new Response(JSON.stringify({ pass: true, checks: [{ name: "runtime_profile", status: "pass" }] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/projects/project-1/tasks") && method === "POST") {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { runtime_profile_id?: string };
+        expect(body.runtime_profile_id).toBe("legacy-preset");
+        return Promise.resolve(
+          new Response(JSON.stringify({ id: "task-1" }), {
+            status: 201,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/projects/project-1")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: "project-1",
+              name: "Acme",
+              description: "",
+              scope: {},
+              defaults: { runtime_profile: "legacy-preset", runner: "sandbox" },
+              created_at: "",
+              updated_at: "",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+
+    expect(await screen.findByLabelText("Runtime profile preset")).toHaveValue("legacy-preset");
+    await userEvent.type(screen.getByLabelText("Task goal"), "Run legacy recon");
+
+    const launchButton = screen.getByRole("button", { name: /launch/i });
+    expect(launchButton).not.toBeDisabled();
+    await userEvent.click(launchButton);
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining("/api/projects/project-1/tasks"),
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining("/api/runtime-profiles/resolve-launch"),
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
   it("shows runtime extension preview from preflight for preset launches", async () => {
     vi.stubGlobal(
       "fetch",
@@ -953,6 +1071,123 @@ describe("TaskLaunchPage", () => {
     renderPage();
 
     await userEvent.selectOptions(await screen.findByLabelText("Sandbox network"), "host_proxy_only");
+    await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
+    await userEvent.click(screen.getByRole("button", { name: /launch/i }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining("/api/projects/project-1/tasks"),
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+  });
+
+  it("omits host activation from sandbox launch after switching back from host", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.includes("/api/runtime-plugins")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ plugins: [codexPlugin] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/model-providers")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ providers: [mimoProvider] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/runtime-profiles/resolve-launch") && method === "POST") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              profile_id: "resolved-profile",
+              created: true,
+              profile: autoResolvedProfile,
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      if (url.includes("/api/skills?runtime_profile_id=resolved-profile")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ skills: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/runtime-profiles")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ profiles: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/projects/project-1/preflight") && method === "POST") {
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          runner?: string;
+          run_controls?: { host_activated?: boolean };
+        };
+        expect(body.runner).toBe("sandbox");
+        expect(body.run_controls).not.toHaveProperty("host_activated");
+        return Promise.resolve(
+          new Response(JSON.stringify({ pass: true, checks: [{ name: "runtime_profile", status: "pass" }] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/projects/project-1/tasks") && method === "POST") {
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          runner?: string;
+          run_controls?: { host_activated?: boolean };
+        };
+        expect(body.runner).toBe("sandbox");
+        expect(body.run_controls).not.toHaveProperty("host_activated");
+        return Promise.resolve(
+          new Response(JSON.stringify({ id: "task-1" }), {
+            status: 201,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/projects/project-1")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: "project-1",
+              name: "Acme",
+              description: "",
+              scope: {},
+              defaults: { runner: "sandbox" },
+              created_at: "",
+              updated_at: "",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+
+    await userEvent.selectOptions(await screen.findByLabelText("Runner"), "host");
+    await userEvent.click(screen.getByLabelText(/explicitly activate the host runner/i));
+    await userEvent.selectOptions(screen.getByLabelText("Runner"), "sandbox");
     await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
 
