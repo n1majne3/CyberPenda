@@ -1,49 +1,29 @@
 import {
-  createContext,
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   useState,
   type ReactNode,
 } from "react";
 import { Moon, Sun } from "lucide-react";
+import {
+  applyTheme,
+  resolveTheme,
+  THEME_STORAGE_KEY,
+  ThemeContext,
+  useTheme,
+  type Theme,
+  type ThemeContextValue,
+} from "@/components/theme-context";
 
 /*
  * Dependency-free system theme provider (multica pattern): follows the OS
  * preference by default, persists an explicit choice to localStorage, and
  * toggles the `.dark` class on <html>. No next-themes needed.
+ *
+ * Only components are exported from this file so Fast Refresh keeps a stable
+ * HMR boundary; useTheme and the context live in ./theme-context.
  */
-
-type Theme = "light" | "dark";
-
-const STORAGE_KEY = "theme";
-
-interface ThemeContextValue {
-  theme: Theme;
-  setTheme: (theme: Theme) => void;
-  toggleTheme: () => void;
-}
-
-const ThemeContext = createContext<ThemeContextValue | null>(null);
-
-function systemPrefersDark(): boolean {
-  if (typeof window === "undefined" || !window.matchMedia) return false;
-  return window.matchMedia("(prefers-color-scheme: dark)").matches;
-}
-
-function resolveTheme(): Theme {
-  if (typeof window === "undefined") return "light";
-  const stored = window.localStorage.getItem(STORAGE_KEY);
-  if (stored === "light" || stored === "dark") return stored;
-  return systemPrefersDark() ? "dark" : "light";
-}
-
-function applyTheme(theme: Theme) {
-  const root = document.documentElement;
-  root.classList.toggle("dark", theme === "dark");
-  root.style.colorScheme = theme;
-}
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<Theme>(() => resolveTheme());
@@ -59,7 +39,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     if (!window.matchMedia) return;
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
     const onChange = () => {
-      if (!window.localStorage.getItem(STORAGE_KEY)) {
+      if (!window.localStorage.getItem(THEME_STORAGE_KEY)) {
         setThemeState(mq.matches ? "dark" : "light");
       }
     };
@@ -68,14 +48,14 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const setTheme = useCallback((next: Theme) => {
-    window.localStorage.setItem(STORAGE_KEY, next);
+    window.localStorage.setItem(THEME_STORAGE_KEY, next);
     setThemeState(next);
   }, []);
 
   const toggleTheme = useCallback(() => {
     setThemeState((current) => {
       const next = current === "dark" ? "light" : "dark";
-      window.localStorage.setItem(STORAGE_KEY, next);
+      window.localStorage.setItem(THEME_STORAGE_KEY, next);
       return next;
     });
   }, []);
@@ -86,12 +66,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
-}
-
-export function useTheme(): ThemeContextValue {
-  const ctx = useContext(ThemeContext);
-  if (!ctx) throw new Error("useTheme must be used within a ThemeProvider");
-  return ctx;
 }
 
 export function ThemeToggle({ className }: { className?: string }) {

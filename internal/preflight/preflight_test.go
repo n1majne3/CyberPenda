@@ -148,6 +148,7 @@ func TestRunPassesWhenCredentialResolvedGlobally(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
 	}
+	t.Setenv("CODEX_API_KEY", "configured-secret")
 	if _, err := svc.creds.Upsert("codex-api-key", credential.ScopeGlobal, "", credential.Source{Kind: credential.SourceEnv, Value: "CODEX_API_KEY"}, false); err != nil {
 		t.Fatalf("upsert global binding: %v", err)
 	}
@@ -159,6 +160,163 @@ func TestRunPassesWhenCredentialResolvedGlobally(t *testing.T) {
 
 	if !result.Pass {
 		t.Fatalf("expected preflight to pass with global binding, got %#v", result.Checks)
+	}
+}
+
+func TestRunFailsWhenEnvCredentialNotSet(t *testing.T) {
+	svc := newTestServices(t)
+	profile, err := svc.profiles.Create(
+		"codex",
+		runtimeprofile.ProviderCodex,
+		runtimeprofile.Fields{CredentialRefs: []string{"codex-api-key"}},
+	)
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	os.Unsetenv("PREFLIGHT_MISSING_API_KEY")
+	if _, err := svc.creds.Upsert("codex-api-key", credential.ScopeGlobal, "", credential.Source{Kind: credential.SourceEnv, Value: "PREFLIGHT_MISSING_API_KEY"}, false); err != nil {
+		t.Fatalf("upsert global binding: %v", err)
+	}
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+	})
+
+	if result.Pass {
+		t.Fatal("expected preflight to fail when env credential is not set")
+	}
+	if !checkFailed(result, "credentials") {
+		t.Fatalf("expected credentials check to fail, got %#v", result.Checks)
+	}
+}
+
+func TestRunFailsWhenFileCredentialUnreadable(t *testing.T) {
+	svc := newTestServices(t)
+	profile, err := svc.profiles.Create(
+		"codex",
+		runtimeprofile.ProviderCodex,
+		runtimeprofile.Fields{CredentialRefs: []string{"codex-api-key"}},
+	)
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	source := credential.Source{Kind: credential.SourceFile, Value: filepath.Join(t.TempDir(), "does-not-exist.txt"), DestinationEnv: "CODEX_API_KEY"}
+	if _, err := svc.creds.Upsert("codex-api-key", credential.ScopeGlobal, "", source, false); err != nil {
+		t.Fatalf("upsert global binding: %v", err)
+	}
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+	})
+
+	if result.Pass {
+		t.Fatal("expected preflight to fail when file credential is unreadable")
+	}
+	if !checkFailed(result, "credentials") {
+		t.Fatalf("expected credentials check to fail, got %#v", result.Checks)
+	}
+}
+
+func TestRunFailsWhenCommandCredentialExitsNonZero(t *testing.T) {
+	svc := newTestServices(t)
+	profile, err := svc.profiles.Create(
+		"codex",
+		runtimeprofile.ProviderCodex,
+		runtimeprofile.Fields{CredentialRefs: []string{"codex-api-key"}},
+	)
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	source := credential.Source{Kind: credential.SourceCommand, Value: "exit 42", DestinationEnv: "CODEX_API_KEY"}
+	if _, err := svc.creds.Upsert("codex-api-key", credential.ScopeGlobal, "", source, false); err != nil {
+		t.Fatalf("upsert global binding: %v", err)
+	}
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+	})
+
+	if result.Pass {
+		t.Fatal("expected preflight to fail when command credential exits non-zero")
+	}
+	if !checkFailed(result, "credentials") {
+		t.Fatalf("expected credentials check to fail, got %#v", result.Checks)
+	}
+}
+
+func TestRunPassesWhenAllCredentialsMaterialize(t *testing.T) {
+	svc := newTestServices(t)
+	profile, err := svc.profiles.Create(
+		"codex",
+		runtimeprofile.ProviderCodex,
+		runtimeprofile.Fields{CredentialRefs: []string{"codex-api-key", "extra-key"}},
+	)
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	t.Setenv("CODEX_API_KEY", "configured-secret")
+	if _, err := svc.creds.Upsert("codex-api-key", credential.ScopeGlobal, "", credential.Source{Kind: credential.SourceEnv, Value: "CODEX_API_KEY"}, false); err != nil {
+		t.Fatalf("upsert global binding: %v", err)
+	}
+	tokenPath := filepath.Join(t.TempDir(), "token.txt")
+	if err := os.WriteFile(tokenPath, []byte("file-secret"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	fileSource := credential.Source{Kind: credential.SourceFile, Value: tokenPath, DestinationEnv: "EXTRA_TOKEN"}
+	if _, err := svc.creds.Upsert("extra-key", credential.ScopeGlobal, "", fileSource, false); err != nil {
+		t.Fatalf("upsert global binding: %v", err)
+	}
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+	})
+
+	if !result.Pass {
+		t.Fatalf("expected preflight to pass when all credentials materialize, got %#v", result.Checks)
+	}
+	if !checkPassed(result, "credentials") {
+		t.Fatalf("expected credentials check to pass, got %#v", result.Checks)
+	}
+}
+
+func TestRunFailsWhenFileCredentialHasNoDestinationEnv(t *testing.T) {
+	// A file source without destination_env materializes fine, but projection
+	// errors because there is no env var name to project under. Preflight must
+	// catch this so the task fails before launch, not during it.
+	svc := newTestServices(t)
+	profile, err := svc.profiles.Create(
+		"codex",
+		runtimeprofile.ProviderCodex,
+		runtimeprofile.Fields{CredentialRefs: []string{"codex-api-key"}},
+	)
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	tokenPath := filepath.Join(t.TempDir(), "token.txt")
+	if err := os.WriteFile(tokenPath, []byte("file-secret"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	// File source with a readable file but no DestinationEnv: Materialize would
+	// succeed, but destinationEnv (and thus projection) would fail.
+	source := credential.Source{Kind: credential.SourceFile, Value: tokenPath}
+	if _, err := svc.creds.Upsert("codex-api-key", credential.ScopeGlobal, "", source, false); err != nil {
+		t.Fatalf("upsert global binding: %v", err)
+	}
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+	})
+
+	if result.Pass {
+		t.Fatal("expected preflight to fail when file source has no destination_env")
+	}
+	if !checkFailed(result, "credentials") {
+		t.Fatalf("expected credentials check to fail, got %#v", result.Checks)
 	}
 }
 

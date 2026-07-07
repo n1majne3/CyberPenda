@@ -4,6 +4,26 @@ import { join, relative } from "node:path";
 
 const srcRoot = join(process.cwd(), "src");
 
+// Build the emoji character class from code points. Composing it from literals
+// (e.g. /[\u2705\u274C...]/) trips eslint's no-misleading-character-class rule
+// because some emoji carry combining marks; String.fromCodePoint avoids that.
+const emojiPattern = new RegExp(
+  "[" + String.fromCodePoint(
+    0x1f9ea, // 🧪 test tube
+    0x1f4cb, // 📋 clipboard
+    0x1f50e, // 🔎 magnifying glass
+    0x2705,  // ✅ check mark button
+    0x274c,  // ❌ cross mark
+    0x26a0,  // ⚠ warning sign
+    0x1f680, // 🚀 rocket
+    0x1f510, // 🔐 lock with key
+    0x1f6e1, // 🛡️ shield
+    0x1f4c1, // 📁 folder
+    0x1f4c4, // 📄 page facing up
+  ) + "]",
+  "u",
+);
+
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((entry) => {
     const path = join(dir, entry);
@@ -23,7 +43,7 @@ describe("icon source policy", () => {
       const found = [];
       if (/<svg\b/.test(source)) found.push("inline svg");
       if (/<img\b/.test(source)) found.push("image icon");
-      if (/[🧪📋🔎✅❌⚠️🚀🔐🛡️📁📄]/u.test(source)) found.push("emoji icon");
+      if (emojiPattern.test(source)) found.push("emoji icon");
       return found.map((kind) => `${rel}: ${kind}`);
     });
 

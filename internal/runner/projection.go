@@ -27,6 +27,7 @@ type ProjectionRequest struct {
 	ScopeSnapshot     project.Scope
 	Credentials       *credential.Service
 	DaemonAddr        string
+	AuthToken         string
 	Sandbox           bool
 	RuntimePlugins    *runtimeplugin.Registry
 	RuntimeExtensions *runtimeextension.Registry
@@ -970,6 +971,9 @@ func launchProcessEnv(layout Layout, profile runtimeprofile.Profile, sandbox boo
 	}
 	if ctx.MCPURL != "" {
 		env["PENTEST_MCP_URL"] = ctx.MCPURL
+	}
+	if ctx.AuthToken != "" {
+		env["PENTEST_AUTH_TOKEN"] = ctx.AuthToken
 	}
 	manifestEnvRendered := false
 	if plugin, ok := runtimePluginForProvider(profile.Provider, registry); ok {

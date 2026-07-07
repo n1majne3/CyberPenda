@@ -17,6 +17,26 @@ jobs:
       - name: Go tests
         run: make test-ci
 
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+      - name: Lint
+        working-directory: web
+        run: npm run lint
+      - name: Embedded UI is in sync with a fresh build
+        run: |
+          make build-ui
+          git diff --exit-code internal/daemon/webfs/dist
+
   sandbox-smoke-changes:
     runs-on: ubuntu-latest
     outputs:

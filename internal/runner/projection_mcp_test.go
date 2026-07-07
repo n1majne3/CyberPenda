@@ -271,6 +271,45 @@ func TestLaunchProcessEnvSetsPentestContext(t *testing.T) {
 	}
 }
 
+func TestTrustedMCPEmbedsAuthTokenWhenConfigured(t *testing.T) {
+	root := t.TempDir()
+	layout, err := runner.PrepareTaskLayout(root, "task-auth", runtimeprofile.ProviderClaudeCode)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+
+	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderClaudeCode}
+	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		ProjectID:  "project-1",
+		TaskID:     "task-auth",
+		DaemonAddr: "127.0.0.1:8787",
+		AuthToken:  "secret-token",
+		Sandbox:    true,
+	})
+	if err != nil {
+		t.Fatalf("project config: %v", err)
+	}
+
+	servers, ok := projection.Config["mcp_servers"].([]map[string]any)
+	if !ok || len(servers) == 0 {
+		t.Fatalf("expected mcp_servers preview, got %#v", projection.Config["mcp_servers"])
+	}
+	wantURL := "http://host.docker.internal:8787/mcp?token=secret-token"
+	if servers[0]["url"] != wantURL {
+		t.Fatalf("expected trusted URL to embed token, got %q", servers[0]["url"])
+	}
+
+	env := runner.LaunchProcessEnv(layout, profile, true, runner.TaskContext{
+		ProjectID: "project-1",
+		TaskID:    "task-auth",
+		MCPURL:    "http://host.docker.internal:8787/mcp",
+		AuthToken: "secret-token",
+	})
+	if env["PENTEST_AUTH_TOKEN"] != "secret-token" {
+		t.Fatalf("expected PENTEST_AUTH_TOKEN in sandbox env, got %q", env["PENTEST_AUTH_TOKEN"])
+	}
+}
+
 func TestAGENTSMDDocumentsLoopbackRewriteInSandbox(t *testing.T) {
 	root := t.TempDir()
 	layout, err := runner.PrepareTaskLayout(root, "task-agents", runtimeprofile.ProviderClaudeCode)

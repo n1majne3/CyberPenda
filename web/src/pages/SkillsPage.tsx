@@ -71,6 +71,10 @@ export function SkillsPage() {
         setError((e as Error).message);
       }
     })();
+    // Reload skills when the selected profile changes. loadSkills is a component
+    // closure that also reads profileId, so listing it would force a refetch on
+    // every render; profileId alone is the intended trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profileId]);
 
   async function publishSkill() {

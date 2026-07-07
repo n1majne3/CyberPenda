@@ -118,11 +118,15 @@ export function TaskLaunchPage() {
 
   useEffect(() => {
     if (!canPreviewLaunchSkills(form, presetId)) {
-      setResolvedProfileId("");
-      setSkillsPreview(null);
-      setSkillsPreviewError(null);
-      setSkillsPreviewLoading(false);
-      return;
+      // Clear stale preview state asynchronously so the setState calls are not
+      // synchronous within the effect body (react-hooks/set-state-in-effect).
+      const clearTimer = window.setTimeout(() => {
+        setResolvedProfileId("");
+        setSkillsPreview(null);
+        setSkillsPreviewError(null);
+        setSkillsPreviewLoading(false);
+      }, 0);
+      return () => window.clearTimeout(clearTimer);
     }
 
     let cancelled = false;
@@ -163,6 +167,10 @@ export function TaskLaunchPage() {
       cancelled = true;
       window.clearTimeout(timer);
     };
+    // The preview depends on the selected preset and the launch form fields that
+    // drive profile resolution. Whole-form identity is not needed; listing the
+    // specific fields keeps the preview from refetching on unrelated edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [presetId, form.runtime, form.modelProviderId, form.modelOverride]);
 
   function updateRuntime(runtime: string) {

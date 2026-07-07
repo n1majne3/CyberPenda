@@ -283,6 +283,23 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 					Detail: fmt.Sprintf("credential %q has no binding (project or global)", ref),
 				})
 				anyMissing = true
+				continue
+			}
+			// A binding that resolves is not necessarily launchable: the env var
+			// may be unset, the file unreadable, the command failing, or a
+			// file/command/literal source may lack the destination_env needed to
+			// project under a real env var name. Validate exactly what projection
+			// does (materialize + resolve destination env) so preflight catches
+			// every failure mode the task would otherwise hit mid-run.
+			if resolution.Source != nil {
+				if _, _, err := credential.ResolveSourceEnv(*resolution.Source); err != nil {
+					result.add(Check{
+						Name:   "credentials",
+						Status: CheckFail,
+						Detail: fmt.Sprintf("credential %q: %v", ref, err),
+					})
+					anyMissing = true
+				}
 			}
 		}
 		if !anyMissing {

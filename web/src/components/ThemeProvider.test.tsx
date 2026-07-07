@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { ThemeProvider, useTheme, ThemeToggle } from "./ThemeProvider";
+import { ThemeProvider, ThemeToggle } from "./ThemeProvider";
+import { useTheme } from "./theme-context";
 
 // Probe hook to read the current theme inside a provider tree.
 function ThemeProbe() {

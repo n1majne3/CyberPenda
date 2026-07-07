@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { RefreshCw, Trash2 } from "lucide-react";
 import { apiDelete, apiGet, apiPatch, apiPost, apiPut, type CredentialBinding, type ModelProvider } from "@/lib/api";
 import { Button, Card, Input, Label, Select, Textarea, Badge } from "@/components/ui";
@@ -37,6 +37,22 @@ export function ModelProvidersPage() {
   const selectedBinding = selected ? bindings.find((binding) => binding.credential_ref === selected.api_key_env) : undefined;
   const canSubmit = canSubmitModelProvider(form, creating);
 
+  // When the selection (or its loaded binding) changes, reset the form to match
+  // the selected provider. React allows adjusting state during render by
+  // comparing against a stored previous value, which avoids a setState-in-effect.
+  const formSelectionKey = selected && !creating
+    ? `${selected.id}:${selected.updated_at ?? ""}:${selectedBinding?.updated_at ?? ""}`
+    : "";
+  const [lastFormKey, setLastFormKey] = useState("");
+  if (lastFormKey !== formSelectionKey) {
+    setLastFormKey(formSelectionKey);
+    if (selected && !creating) {
+      setForm(providerToForm(selected, selectedBinding));
+    } else if (formSelectionKey === "" && form !== emptyForm) {
+      setForm(emptyForm);
+    }
+  }
+
   async function load() {
     try {
       const [data, credentialData] = await Promise.all([
@@ -54,7 +70,14 @@ export function ModelProvidersPage() {
     }
   }
 
-  useEffect(() => { void load(); }, []);
+  // Initial load. load() is async, so every setState it dispatches runs after an
+  // await (never synchronous in the effect body); the rule cannot prove that, so
+  // it is suppressed for this canonical fetch-on-mount pattern.
+  useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect */
+    void load();
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -68,17 +91,13 @@ export function ModelProvidersPage() {
     savedNoticeTimer.current = setTimeout(() => setSavedNotice(false), 2000);
   }
 
-  useEffect(() => {
-    if (!selected || creating) return;
-    setForm(providerToForm(selected, selectedBinding));
-  }, [selected?.id, selected?.updated_at, selectedBinding?.updated_at, creating]);
-
-  const models = useMemo(() => {
-    const base = selected ? catalogModels(selected) : [];
-    const manual = splitLines(form.manual_models);
-    const extra = form.default_model ? [form.default_model] : [];
-    return Array.from(new Set([...base, ...manual, ...extra])).sort();
-  }, [selected, form.manual_models, form.default_model]);
+  // Compute the candidate model list inline. It's a cheap derivation and the
+  // React Compiler cannot preserve a useMemo over the selected provider (which
+  // may be mutated later), so manual memoization would be skipped anyway.
+  const baseModels = selected ? catalogModels(selected) : [];
+  const manualModels = splitLines(form.manual_models);
+  const extraModels = form.default_model ? [form.default_model] : [];
+  const models = Array.from(new Set([...baseModels, ...manualModels, ...extraModels])).sort();
 
   async function create() {
     if (saving) return;

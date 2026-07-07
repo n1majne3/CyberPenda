@@ -41,6 +41,12 @@ const (
 type Source struct {
 	Kind  string `json:"kind"`
 	Value string `json:"value,omitempty"`
+	// DestinationEnv names the environment variable the materialized secret is
+	// projected as at launch. For env sources it defaults to Value (so existing
+	// bindings behave unchanged); file, command, and literal sources must set
+	// it, otherwise the runtime would project under a path/command/secret-shaped
+	// key instead of a real env var name.
+	DestinationEnv string `json:"destination_env,omitempty"`
 }
 
 // Source kinds the product understands. The value field's meaning depends on kind:
@@ -305,6 +311,14 @@ func validateSource(source Source) error {
 	if source.Kind == SourceEnv {
 		if err := validateEnvSourceValue(source.Value); err != nil {
 			return err
+		}
+	}
+	if dest := strings.TrimSpace(source.DestinationEnv); dest != "" {
+		if !envVarNamePattern.MatchString(dest) {
+			return fmt.Errorf("destination_env must be an environment variable name, got %q", source.DestinationEnv)
+		}
+		if secretLikeEnvPattern.MatchString(dest) {
+			return errors.New("destination_env looks like a secret value; use a variable name")
 		}
 	}
 	return nil

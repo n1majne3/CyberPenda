@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useRef, type RefObject } from "react";
+import { useEffect, useState, useRef, type RefObject } from "react";
 import { useParams, Link } from "react-router-dom";
 import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, FileText, Shield, ChevronRight, Wrench, User, Bot, ArrowDown, ArrowUp } from "lucide-react";
 import { apiGet, apiPost, type ModelProvider, type RuntimePlugin, type RuntimeProfile, type Task, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
@@ -117,21 +117,24 @@ export function TaskDetailPage() {
   const selectedContinuationModelProvider =
     continuationModelProviders.find((provider) => provider.id === continuationModelProvider) ??
     modelProviders.find((provider) => provider.id === continuationModelProvider);
-  const continuationModelOptions = useMemo(
-    () => modelsForProvider(selectedContinuationModelProvider),
-    [selectedContinuationModelProvider],
-  );
+  // Compute inline instead of useMemo: the compiler cannot preserve memoization
+  // over selectedContinuationModelProvider (it may be mutated later), and the
+  // derivation is a cheap filter.
+  const continuationModelOptions = modelsForProvider(selectedContinuationModelProvider);
 
-  useEffect(() => {
+  // Keep continuationModelOverride valid for the selected provider by adjusting
+  // state during render (not in an effect), comparing against the previous
+  // provider/option set so we only reset when the selection actually changes.
+  const overrideKey = `${continuationModelProvider}:${continuationModelOptions.join(",")}`;
+  const [lastOverrideKey, setLastOverrideKey] = useState("");
+  if (lastOverrideKey !== overrideKey) {
+    setLastOverrideKey(overrideKey);
     if (!continuationModelProvider) {
       if (continuationModelOverride) setContinuationModelOverride("");
-      return;
+    } else if (!continuationModelOverride || !continuationModelOptions.includes(continuationModelOverride)) {
+      setContinuationModelOverride(continuationModelOptions[0] ?? "");
     }
-    if (continuationModelOverride && continuationModelOptions.includes(continuationModelOverride)) {
-      return;
-    }
-    setContinuationModelOverride(continuationModelOptions[0] ?? "");
-  }, [continuationModelProvider, continuationModelOptions, continuationModelOverride]);
+  }
 
   function scrollToLatest() {
     const container = findScrollContainer(pageRef.current);

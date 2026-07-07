@@ -8,11 +8,18 @@ IMAGE="${PENTEST_SANDBOX_IMAGE:-gemini_kali-gemini-kali:latest}"
 CONTAINER_CLI="${PENTEST_CONTAINER_CLI:-docker}"
 FACT_KEY="${PENTEST_SMOKE_FACT_KEY:-live:sandbox-smoke}"
 
+# curl auth header args, empty when no token is configured (loopback dev).
+auth_args=()
+if [[ -n "${PENTEST_AUTH_TOKEN:-}" ]]; then
+  auth_args+=(-H "Authorization: Bearer ${PENTEST_AUTH_TOKEN}")
+fi
+
 echo "==> checking daemon health at ${DAEMON_URL}"
 health="$(curl -sf "${DAEMON_URL}/health")"
 echo "${health}" | python3 -m json.tool
 
 project_id="$(curl -sf -X POST "${DAEMON_URL}/api/projects" \
+  "${auth_args[@]}" \
   -H 'Content-Type: application/json' \
   -d '{"name":"Sandbox MCP Live Smoke","scope":{"domains":["example.com"]}}' \
   | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')"
@@ -42,6 +49,11 @@ PY
 
 mcp_port="$(python3 -c "from urllib.parse import urlparse; u=urlparse('${DAEMON_URL}'); print(u.port or 8787)")"
 mcp_url="http://host.docker.internal:${mcp_port}/mcp"
+# The sandbox container authenticates with the token as a query param, mirroring
+# how the daemon embeds it into the projected runtime MCP URL.
+if [[ -n "${PENTEST_AUTH_TOKEN:-}" ]]; then
+  mcp_url="${mcp_url}?token=${PENTEST_AUTH_TOKEN}"
+fi
 
 echo "==> calling upsert_project_fact from ${IMAGE} via ${mcp_url}"
 "${CONTAINER_CLI}" run --rm \
@@ -54,6 +66,6 @@ echo "==> calling upsert_project_fact from ${IMAGE} via ${mcp_url}"
 
 echo
 echo "==> verifying fact via REST API"
-curl -sf "${DAEMON_URL}/api/projects/${project_id}/facts/${FACT_KEY}" | python3 -m json.tool
+curl -sf "${DAEMON_URL}/api/projects/${project_id}/facts/${FACT_KEY}" "${auth_args[@]}" | python3 -m json.tool
 
 echo "OK: sandbox MCP live smoke passed"

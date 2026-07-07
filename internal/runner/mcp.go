@@ -16,11 +16,12 @@ const trustedMCPServerName = "pentest"
 
 // TaskContext carries identifiers runtimes need when calling trusted MCP tools.
 type TaskContext struct {
-	ProjectID     string
-	TaskID        string
-	MCPURL        string
-	Provider      runtimeprofile.Provider
-	Sandbox       bool
+	ProjectID string
+	TaskID    string
+	MCPURL    string
+	AuthToken string
+	Provider  runtimeprofile.Provider
+	Sandbox   bool
 	ScopeSnapshot project.Scope
 }
 
@@ -29,6 +30,7 @@ func taskContextFromProjection(req ProjectionRequest, provider runtimeprofile.Pr
 		ProjectID:     req.ProjectID,
 		TaskID:        req.TaskID,
 		MCPURL:        mcpURL,
+		AuthToken:     req.AuthToken,
 		Provider:      provider,
 		Sandbox:       req.Sandbox,
 		ScopeSnapshot: req.ScopeSnapshot,
@@ -73,7 +75,14 @@ func collectMCPServers(profile runtimeprofile.Profile, req ProjectionRequest) []
 		return servers
 	}
 	trustedURL := MCPEndpointURL(req.DaemonAddr, req.Sandbox)
-	if hasMCPServerURL(servers, trustedURL) {
+	if token := strings.TrimSpace(req.AuthToken); token != "" {
+		// The runtime MCP transports cannot always attach per-request headers,
+		// so the daemon accepts the token as a query parameter. Embedding it in
+		// the trusted server URL authenticates every runtime without per-runtime
+		// header plumbing.
+		trustedURL = trustedURL + "?token=" + token
+	}
+	if hasMCPServerURL(servers, MCPEndpointURL(req.DaemonAddr, req.Sandbox)) {
 		return servers
 	}
 	return append([]runtimeprofile.MCPServer{{

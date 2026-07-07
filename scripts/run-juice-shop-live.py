@@ -32,11 +32,15 @@ Do not ask questions. Execute and use MCP tools for all blackboard writes."""
 
 def request(method: str, path: str, body: dict | None = None) -> dict:
     data = None if body is None else json.dumps(body).encode()
+    headers = {"Content-Type": "application/json"}
+    token = os.environ.get("PENTEST_AUTH_TOKEN", "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(
         DAEMON + path,
         data=data,
         method=method,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
     )
     with urllib.request.urlopen(req, timeout=60) as resp:
         raw = resp.read().decode()

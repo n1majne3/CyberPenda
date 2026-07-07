@@ -19,4 +19,13 @@ export default defineConfig([
       globals: globals.browser,
     },
   },
+  {
+    // ui.tsx is an intentional primitive barrel exporting components alongside
+    // helper functions (buttonVariants, cn re-exports). Fast-refresh HMR
+    // boundary correctness is low-value here, so the rule is turned off.
+    files: ['src/components/ui.tsx'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+    },
+  },
 ])

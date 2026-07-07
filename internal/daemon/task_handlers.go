@@ -270,6 +270,7 @@ func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launch
 		ScopeSnapshot:       created.ScopeSnapshot,
 		Credentials:         server.creds,
 		DaemonAddr:          server.listenAddr,
+		AuthToken:           server.authToken,
 		Sandbox:             sandbox,
 		RuntimePlugins:      server.runtimePlugins,
 		RuntimeExtensions:   server.runtimeExtensions,
@@ -320,6 +321,7 @@ func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launch
 		ProjectID: created.ProjectID,
 		TaskID:    created.ID,
 		MCPURL:    mcpURL,
+		AuthToken: server.authToken,
 		Sandbox:   sandbox,
 	}
 	processEnv, err := runner.LaunchProcessEnvWithCredentials(layout, launchProfile, sandbox, launchCtx, runner.ProjectionRequest{
@@ -328,6 +330,7 @@ func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launch
 		ScopeSnapshot:     created.ScopeSnapshot,
 		Credentials:       server.creds,
 		DaemonAddr:        server.listenAddr,
+		AuthToken:         server.authToken,
 		Sandbox:           sandbox,
 		RuntimePlugins:    server.runtimePlugins,
 		RuntimeExtensions: server.runtimeExtensions,

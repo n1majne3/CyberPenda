@@ -59,7 +59,10 @@ func Materialize(source Source) (string, error) {
 }
 
 // ResolveMaterializedEnv resolves credential references to env var name -> value
-// pairs using each binding's source.Value as the runtime env key.
+// pairs. The runtime env key is the binding's DestinationEnv when set; for env
+// sources it falls back to Value (so existing bindings behave unchanged). File,
+// command, and literal sources must declare DestinationEnv, otherwise they would
+// project under a path/command/secret-shaped key instead of a real env var.
 func (s *Service) ResolveMaterializedEnv(projectID string, refs []string) (map[string]string, error) {
 	if len(refs) == 0 {
 		return nil, nil
@@ -77,15 +80,42 @@ func (s *Service) ResolveMaterializedEnv(projectID string, refs []string) (map[s
 		if !resolution.Found || resolution.Disabled || resolution.Source == nil {
 			return nil, fmt.Errorf("credential %q is not available", ref)
 		}
-		value, err := Materialize(*resolution.Source)
+		envName, value, err := ResolveSourceEnv(*resolution.Source)
 		if err != nil {
 			return nil, fmt.Errorf("credential %q: %w", ref, err)
 		}
-		key := strings.TrimSpace(resolution.Source.Value)
-		if key == "" {
-			return nil, fmt.Errorf("credential %q has empty source value", ref)
-		}
-		out[key] = value
+		out[envName] = value
 	}
 	return out, nil
+}
+
+// ResolveSourceEnv materializes a credential source and returns the runtime
+// env var name it projects under together with its value. It is the single
+// check that projection performs per credential, so preflight can call it to
+// validate that a source is launch-ready (materializable AND projectable under
+// a real env var name) without duplicating the destination-env logic.
+func ResolveSourceEnv(source Source) (envName, value string, err error) {
+	value, err = Materialize(source)
+	if err != nil {
+		return "", "", err
+	}
+	envName, err = destinationEnv(source)
+	if err != nil {
+		return "", "", err
+	}
+	return envName, value, nil
+}
+
+// destinationEnv returns the runtime env var name a materialized secret projects
+// under. DestinationEnv wins; otherwise env sources fall back to their Value
+// (the variable name); all other kinds require DestinationEnv because their
+// Value is a path/command/secret, not an env var name.
+func destinationEnv(source Source) (string, error) {
+	if dest := strings.TrimSpace(source.DestinationEnv); dest != "" {
+		return dest, nil
+	}
+	if source.Kind == SourceEnv {
+		return strings.TrimSpace(source.Value), nil
+	}
+	return "", fmt.Errorf("%s source must declare destination_env to project as a runtime env var", source.Kind)
 }

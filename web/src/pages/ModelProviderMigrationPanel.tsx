@@ -28,17 +28,22 @@ export function ModelProviderMigrationPanel({ profileId, profileUpdatedAt, onMig
 
   useEffect(() => {
     let cancelled = false;
-    setPreview(null);
-    void apiGet<ModelProviderMigrationPreview>(
-      `/api/runtime-profiles/${encodeURIComponent(profileId)}/model-provider-migration-preview`,
-    )
-      .then((data) => {
+    void (async () => {
+      // Clear the stale preview before refetching, but after the first await so
+      // the setState is not synchronous within the effect body.
+      await Promise.resolve();
+      if (cancelled) return;
+      setPreview(null);
+      try {
+        const data = await apiGet<ModelProviderMigrationPreview>(
+          `/api/runtime-profiles/${encodeURIComponent(profileId)}/model-provider-migration-preview`,
+        );
         if (cancelled) return;
         applyPreview(normalizePreview(data));
-      })
-      .catch((error) => {
+      } catch (error) {
         if (!cancelled) onError((error as Error).message);
-      });
+      }
+    })();
     return () => {
       cancelled = true;
     };

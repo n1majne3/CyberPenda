@@ -25,7 +25,9 @@ func TestPreflightPassesWhenCredentialsResolveGlobally(t *testing.T) {
 	server := newDaemon(t)
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
 
-	// Profile declares a credential ref; a global binding resolves it.
+	// Profile declares a credential ref; a global binding resolves it. Preflight
+	// also materializes the binding, so the env var must actually be set.
+	t.Setenv("CODEX_API_KEY", "configured-secret")
 	profileID := createRuntimeProfile(t, server, `{
 		"name":"Codex",
 		"provider":"codex",

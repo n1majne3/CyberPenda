@@ -2,10 +2,13 @@ package daemon
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path"
@@ -38,6 +41,11 @@ type Config struct {
 	SandboxImage string
 	ContainerCLI string
 	ListenAddr   string
+	// AuthToken gates every mutating route when non-empty. A non-loopback bind
+	// refuses to start unless this is set, so a daemon exposed to the network
+	// cannot become an unauthenticated control plane. Loopback dev (make dev)
+	// leaves it empty, so no enforcement applies.
+	AuthToken string
 	// Logger receives request and task-lifecycle log lines. When nil the daemon
 	// uses the standard library default logger, so output appears under
 	// `make dev` alongside the startup lines.
@@ -76,6 +84,7 @@ type Server struct {
 	sandboxImage      string
 	containerCLI      string
 	listenAddr        string
+	authToken         string
 	tempSkillsRoot    string
 	controlMu         sync.Mutex
 	activeControls    map[string]bool
@@ -135,6 +144,14 @@ func NewServer(config Config) (*Server, error) {
 	if listenAddr == "" {
 		listenAddr = "127.0.0.1:8787"
 	}
+	authToken := strings.TrimSpace(config.AuthToken)
+	if !isLoopback(listenAddr) && authToken == "" {
+		_ = db.Close()
+		if tempSkillsRoot != "" {
+			_ = os.RemoveAll(tempSkillsRoot)
+		}
+		return nil, fmt.Errorf("non-loopback bind %q requires an auth token; set -auth-token or PENTEST_AUTH_TOKEN", listenAddr)
+	}
 	server := &Server{
 		mux:               http.NewServeMux(),
 		version:           config.Version,
@@ -157,6 +174,7 @@ func NewServer(config Config) (*Server, error) {
 		sandboxImage:   config.SandboxImage,
 		containerCLI:   config.ContainerCLI,
 		listenAddr:     listenAddr,
+		authToken:      authToken,
 		tempSkillsRoot: tempSkillsRoot,
 		activeControls: map[string]bool{},
 	}
@@ -254,6 +272,12 @@ func runtimeProfileProviders(registry *runtimeplugin.Registry) []runtimeprofile.
 }
 
 func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) {
+	if server.authToken != "" && !server.publicPath(request) {
+		if !server.authorized(request) {
+			writeError(response, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+	}
 	start := time.Now()
 	recorder := newStatusRecorder(response)
 	server.mux.ServeHTTP(recorder, request)
@@ -268,6 +292,87 @@ func (server *Server) Close() error {
 		}
 	}
 	return err
+}
+
+// authorized reports whether the request carries the configured auth token.
+// The token is accepted as either an "Authorization: Bearer <token>" header or
+// a "?token=<token>" query parameter; the query form exists so sandbox MCP
+// transports that cannot attach per-request headers still authenticate.
+func (server *Server) authorized(request *http.Request) bool {
+	if server.authToken == "" {
+		return true
+	}
+	if header := strings.TrimSpace(request.Header.Get("Authorization")); header != "" {
+		if scheme, token, ok := strings.Cut(header, " "); ok && strings.EqualFold(scheme, "Bearer") {
+			if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(token)), []byte(server.authToken)) == 1 {
+				return true
+			}
+		}
+	}
+	if queryToken := request.URL.Query().Get("token"); queryToken != "" {
+		if subtle.ConstantTimeCompare([]byte(queryToken), []byte(server.authToken)) == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// publicPath reports whether the request targets a route that stays reachable
+// without the auth token: the health probe, CORS preflight, and the SPA's static
+// assets (which a browser loads before it can attach a header). API and MCP
+// routes are never public.
+func (server *Server) publicPath(request *http.Request) bool {
+	if request.Method == http.MethodOptions {
+		return true
+	}
+	if request.Method == http.MethodGet && request.URL.Path == "/health" {
+		return true
+	}
+	// Every public path below is a static asset the SPA file server serves via
+	// GET only, so non-GET requests must go through auth (and then 404/405).
+	if request.Method != http.MethodGet {
+		return false
+	}
+	clean := path.Clean(request.URL.Path)
+	if strings.HasPrefix(clean, "/assets/") {
+		return true
+	}
+	switch clean {
+	case "/", "/index.html":
+		return true
+	}
+	return isStaticAssetPath(clean)
+}
+
+// isStaticAssetPath reports whether the cleaned path is a static asset served
+// by the SPA file server (favicon, logos, manifest, etc.).
+func isStaticAssetPath(clean string) bool {
+	ext := strings.ToLower(path.Ext(clean))
+	switch ext {
+	case ".svg", ".png", ".ico", ".webp", ".woff", ".woff2", ".css", ".js", ".json":
+		// Exclude API-shaped JSON (/api/...) and the MCP route: only top-level
+		// asset files count as static SPA assets.
+		return !strings.HasPrefix(clean, "/api/") && clean != "/mcp"
+	}
+	return false
+}
+
+// isLoopback reports whether the listen address binds only to the local host.
+// An empty address defaults to loopback. IPv6 any-addresses ("[::]", "::")
+// count as non-loopback so they require an auth token like 0.0.0.0.
+func isLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = strings.TrimSpace(addr)
+	}
+	host = strings.TrimSpace(strings.Trim(host, "[]"))
+	if host == "" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return strings.EqualFold(host, "localhost")
 }
 
 func (server *Server) routes() {
