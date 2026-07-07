@@ -1,0 +1,34 @@
+# Usage:
+#   PENTEST_AUTH_TOKEN="$(openssl rand -hex 24)" docker compose up -d
+# Then open http://127.0.0.1:8787/?token=<that-token>.
+name: cyberpenda
+
+services:
+  cyberpenda:
+    image: ghcr.io/n1majne3/cyberpenda:${CYBERPENDA_IMAGE_TAG:-latest}
+    container_name: cyberpenda
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${CYBERPENDA_BIND:-127.0.0.1}:${CYBERPENDA_PORT:-8787}:8787"
+    environment:
+      PENTEST_AUTH_TOKEN: ${PENTEST_AUTH_TOKEN:?Set PENTEST_AUTH_TOKEN before starting CyberPenda}
+      PENTEST_LISTEN_ADDR: 0.0.0.0:8787
+      PENTEST_DB: /data/pentest.db
+      PENTEST_RUNTIME_ROOT: /data/runs
+      PENTEST_SANDBOX_IMAGE: ${PENTEST_SANDBOX_IMAGE:-ghcr.io/n1majne3/cyberpenda-sandbox:latest}
+      PENTEST_CONTAINER_CLI: docker
+    volumes:
+      - cyberpenda-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8787/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  cyberpenda-data:

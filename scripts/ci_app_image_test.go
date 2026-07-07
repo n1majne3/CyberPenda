@@ -47,6 +47,35 @@ func TestDockerignoreKeepsAppImageContextSmall(t *testing.T) {
 	}
 }
 
+func TestDockerComposeRunsPublishedAppImage(t *testing.T) {
+	repoRoot := repoRoot(t)
+	composePath := filepath.Join(repoRoot, "docker-compose.yaml")
+	composeBytes, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("read docker-compose.yaml: %v", err)
+	}
+	compose := string(composeBytes)
+
+	assertContains(t, compose, "name: cyberpenda")
+	assertContains(t, compose, "cyberpenda:")
+	assertContains(t, compose, "image: ghcr.io/n1majne3/cyberpenda:${CYBERPENDA_IMAGE_TAG:-latest}")
+	assertContains(t, compose, "restart: unless-stopped")
+	assertContains(t, compose, "init: true")
+	assertContains(t, compose, `"${CYBERPENDA_BIND:-127.0.0.1}:${CYBERPENDA_PORT:-8787}:8787"`)
+	assertContains(t, compose, "PENTEST_AUTH_TOKEN: ${PENTEST_AUTH_TOKEN:?Set PENTEST_AUTH_TOKEN before starting CyberPenda}")
+	assertContains(t, compose, "PENTEST_LISTEN_ADDR: 0.0.0.0:8787")
+	assertContains(t, compose, "PENTEST_DB: /data/pentest.db")
+	assertContains(t, compose, "PENTEST_RUNTIME_ROOT: /data/runs")
+	assertContains(t, compose, "PENTEST_SANDBOX_IMAGE: ${PENTEST_SANDBOX_IMAGE:-ghcr.io/n1majne3/cyberpenda-sandbox:latest}")
+	assertContains(t, compose, "PENTEST_CONTAINER_CLI: docker")
+	assertContains(t, compose, "cyberpenda-data:/data")
+	assertContains(t, compose, "/var/run/docker.sock:/var/run/docker.sock")
+	assertContains(t, compose, "no-new-privileges:true")
+	assertContains(t, compose, "healthcheck:")
+	assertContains(t, compose, "volumes:")
+	assertContains(t, compose, "cyberpenda-data:")
+}
+
 func TestCIWorkflowBuildsAppImage(t *testing.T) {
 	repoRoot := repoRoot(t)
 	workflowPath := filepath.Join(repoRoot, ".github", "workflows", "ci.yml")
