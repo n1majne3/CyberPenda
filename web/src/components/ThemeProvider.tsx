@@ -17,12 +17,10 @@ import {
 } from "@/components/theme-context";
 
 /*
- * Dependency-free system theme provider (multica pattern): follows the OS
- * preference by default, persists an explicit choice to localStorage, and
- * toggles the `.dark` class on <html>. No next-themes needed.
- *
- * Only components are exported from this file so Fast Refresh keeps a stable
- * HMR boundary; useTheme and the context live in ./theme-context.
+ * Dependency-free system theme provider: follows the OS preference by default,
+ * persists an explicit choice to localStorage, and toggles the `.dark` class on
+ * <html>. Only components are exported from this file so Fast Refresh keeps a
+ * stable HMR boundary; useTheme and the context live in ./theme-context.
  */
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
@@ -78,7 +76,7 @@ export function ThemeToggle({ className }: { className?: string }) {
       aria-label={isDark ? "Switch to light theme" : "Switch to dark theme"}
       title={isDark ? "Light mode" : "Dark mode"}
       className={
-        "inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 " +
+        "inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background " +
         (className ?? "")
       }
     >

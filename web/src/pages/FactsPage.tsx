@@ -190,7 +190,7 @@ function FactRow({
       <button
         type="button"
         aria-expanded={open}
-        className="w-full text-left flex items-center gap-2 p-2 rounded-md hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+        className="w-full text-left flex items-center gap-2 p-2 rounded-md hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
         onClick={onToggle}
       >
         {open ? <ChevronDown className="h-4 w-4 shrink-0" /> : <ChevronRight className="h-4 w-4 shrink-0" />}

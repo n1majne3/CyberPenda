@@ -38,7 +38,7 @@ describe("App", () => {
 
     expect(screen.getByRole("link", { name: "Skip to main content" })).toHaveAttribute("href", "#main-content");
     expect(document.querySelector("main")).toHaveAttribute("id", "main-content");
-    expect(await screen.findByRole("link", { name: /projects/i })).toHaveClass("focus-visible:ring-3");
-    expect(screen.getByRole("button", { name: /advanced/i })).toHaveClass("focus-visible:ring-3");
+    expect(await screen.findByRole("link", { name: /projects/i })).toHaveClass("focus-visible:ring-2");
+    expect(screen.getByRole("button", { name: /advanced/i })).toHaveClass("focus-visible:ring-2");
   });
 });

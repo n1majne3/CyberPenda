@@ -201,8 +201,8 @@ describe("TaskDetailPage", () => {
     expect(await screen.findByRole("button", { name: /Resume$/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Resume with handoff/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Queue steer/ })).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Continuation model provider" })).toHaveClass("focus-visible:ring-3");
-    expect(screen.getByRole("combobox", { name: "Continuation model" })).toHaveClass("focus-visible:ring-3");
+    expect(screen.getByRole("combobox", { name: "Continuation model provider" })).toHaveClass("focus-visible:ring-2");
+    expect(screen.getByRole("combobox", { name: "Continuation model" })).toHaveClass("focus-visible:ring-2");
     expect(screen.getByRole("option", { name: "MiMo" })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "Anthropic" })).not.toBeInTheDocument();
     expect(screen.queryByRole("option", { name: /Use Codex/ })).not.toBeInTheDocument();

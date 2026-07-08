@@ -10,20 +10,32 @@ import {
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
-/*
- * Multica-style primitives: flat ring-based elevation, dense sizing (h-8),
- * soft semantic variants, pill badges, ring-3 focus rings.
- */
-
 // ---- Card -----------------------------------------------------------------
-// Flat: a 1px hairline ring replaces drop-shadows. xl radius (14px).
-export function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+const cardVariants = cva(
+  "flex flex-col rounded-lg border border-border bg-card text-card-foreground shadow-sm",
+  {
+    variants: {
+      variant: {
+        default: "",
+        flat: "shadow-none",
+        elevated: "shadow-md",
+      },
+      size: {
+        compact: "gap-3 p-3",
+        default: "gap-4 p-4",
+        spacious: "gap-5 p-5",
+      },
+    },
+    defaultVariants: { variant: "default", size: "default" },
+  },
+);
+export interface CardProps
+  extends HTMLAttributes<HTMLDivElement>,
+    VariantProps<typeof cardVariants> {}
+export function Card({ className, variant, size, ...props }: CardProps) {
   return (
     <div
-      className={cn(
-        "flex flex-col gap-4 rounded-xl bg-card px-4 py-4 text-card-foreground ring-1 ring-foreground/10",
-        className,
-      )}
+      className={cn(cardVariants({ variant, size }), className)}
       {...props}
     />
   );
@@ -43,7 +55,7 @@ export function CardContent({ className, ...props }: HTMLAttributes<HTMLDivEleme
 export function CardFooter({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return (
     <div
-      className={cn("-mx-4 -mb-4 mt-auto flex items-center rounded-b-xl border-t bg-muted/50 px-4 py-3", className)}
+      className={cn("mt-auto flex items-center border-t bg-muted/40 px-4 py-3", className)}
       {...props}
     />
   );
@@ -51,23 +63,22 @@ export function CardFooter({ className, ...props }: HTMLAttributes<HTMLDivElemen
 
 // ---- Button ---------------------------------------------------------------
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-1.5 rounded-lg border border-transparent bg-clip-padding text-sm font-medium transition-[transform,background-color,box-shadow,opacity,color,border-color] duration-200 ease-out disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 active:scale-[0.98] motion-reduce:active:scale-100",
+  "inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-transparent text-sm font-medium transition-colors duration-150 disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/90",
-        secondary: "bg-secondary text-secondary-foreground hover:bg-secondary/80",
-        // Soft destructive: translucent bg + solid text (multica treatment).
-        destructive: "bg-destructive/10 text-destructive hover:bg-destructive/20",
-        warning: "bg-warning text-warning-foreground hover:bg-warning/90",
-        outline: "border-input bg-transparent hover:bg-accent hover:text-accent-foreground",
+        default: "bg-primary text-primary-foreground shadow-sm hover:bg-primary/90",
+        secondary: "border-border bg-secondary text-secondary-foreground shadow-sm hover:bg-secondary/80",
+        destructive: "bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90",
+        warning: "bg-warning text-warning-foreground shadow-sm hover:bg-warning/90",
+        outline: "border-border bg-background shadow-sm hover:bg-accent hover:text-accent-foreground",
         ghost: "hover:bg-accent hover:text-accent-foreground",
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {
         xs: "h-6 px-2 text-xs",
         sm: "h-7 px-2.5 text-xs",
-        default: "h-8 px-2.5",
+        default: "h-8 px-3",
         lg: "h-9 px-4",
         icon: "h-8 w-8",
         "icon-sm": "h-7 w-7",
@@ -89,42 +100,61 @@ Button.displayName = "Button";
 export { buttonVariants };
 
 // ---- Badge ----------------------------------------------------------------
-// Pill: fully rounded (4xl), fixed height h-5. Soft semantic variants.
-// Used heavily for safety states (YOLO, host runner, CVSS pending, etc.).
 const badgeVariants = cva(
-  "inline-flex h-5 items-center gap-1 rounded-4xl px-2 py-0.5 text-xs font-medium leading-none",
+  "inline-flex items-center gap-1 rounded-md border text-xs font-medium leading-none",
   {
     variants: {
       variant: {
-        default: "bg-secondary text-secondary-foreground",
-        primary: "bg-primary/10 text-primary",
-        brand: "bg-brand/10 text-brand",
-        success: "bg-success/10 text-success",
-        warning: "bg-warning/15 text-warning",
-        destructive: "bg-destructive/10 text-destructive",
-        outline: "border border-border text-muted-foreground",
+        default: "border-transparent bg-secondary text-secondary-foreground",
+        primary: "border-primary/15 bg-primary/5 text-primary",
+        success: "border-success/20 bg-success/10 text-success",
+        warning: "border-warning/25 bg-warning/10 text-warning",
+        destructive: "border-destructive/20 bg-destructive/10 text-destructive",
+        outline: "border-border bg-background text-muted-foreground",
+      },
+      size: {
+        sm: "h-5 px-1.5 py-0",
+        default: "h-6 px-2 py-0.5",
       },
     },
-    defaultVariants: { variant: "default" },
+    defaultVariants: { variant: "default", size: "default" },
   },
 );
 export interface BadgeProps
   extends HTMLAttributes<HTMLSpanElement>,
     VariantProps<typeof badgeVariants> {}
-export function Badge({ className, variant, ...props }: BadgeProps) {
-  return <span className={cn(badgeVariants({ variant }), className)} {...props} />;
+export function Badge({ className, variant, size, ...props }: BadgeProps) {
+  return <span className={cn(badgeVariants({ variant, size }), className)} {...props} />;
 }
 
-// Shared form control surface — slightly inset from card in both themes.
-const formControlClasses =
-  "w-full rounded-lg border border-input bg-background px-2.5 text-sm text-foreground shadow-[inset_0_1px_0_0_hsl(var(--foreground)/0.04)] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-input dark:bg-background/75";
+const controlBaseClasses =
+  "w-full rounded-md border bg-background text-sm text-foreground shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50";
+const controlToneVariants = {
+  default: "border-input",
+  invalid: "border-destructive focus-visible:border-destructive focus-visible:ring-destructive/30",
+} as const;
+
+const inputVariants = cva(cn("flex", controlBaseClasses), {
+  variants: {
+    variant: controlToneVariants,
+    size: {
+      sm: "h-7 px-2 text-xs",
+      default: "h-8 px-3",
+      lg: "h-9 px-3",
+    },
+  },
+  defaultVariants: { variant: "default", size: "default" },
+});
 
 // ---- Input ----------------------------------------------------------------
-export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(
-  ({ className, ...props }, ref) => (
+export interface InputProps
+  extends Omit<InputHTMLAttributes<HTMLInputElement>, "size">,
+    VariantProps<typeof inputVariants> {}
+export const Input = forwardRef<HTMLInputElement, InputProps>(
+  ({ className, variant, size, ...props }, ref) => (
     <input
       ref={ref}
-      className={cn("flex h-8", formControlClasses, className)}
+      className={cn(inputVariants({ variant, size }), className)}
       {...props}
     />
   ),
@@ -132,11 +162,25 @@ export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputE
 Input.displayName = "Input";
 
 // ---- Textarea -------------------------------------------------------------
-export const Textarea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<HTMLTextAreaElement>>(
-  ({ className, ...props }, ref) => (
+const textareaVariants = cva(cn("flex px-3 py-2", controlBaseClasses), {
+  variants: {
+    variant: controlToneVariants,
+    size: {
+      sm: "min-h-[64px]",
+      default: "min-h-[80px]",
+      lg: "min-h-[120px]",
+    },
+  },
+  defaultVariants: { variant: "default", size: "default" },
+});
+export interface TextareaProps
+  extends Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "size">,
+    VariantProps<typeof textareaVariants> {}
+export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
+  ({ className, variant, size, ...props }, ref) => (
     <textarea
       ref={ref}
-      className={cn("flex min-h-[80px] py-2", formControlClasses, className)}
+      className={cn(textareaVariants({ variant, size }), className)}
       {...props}
     />
   ),
@@ -144,13 +188,14 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<H
 Textarea.displayName = "Textarea";
 
 // ---- Select ---------------------------------------------------------------
-// Styled native select replacing the repeated inline `className="flex h-9..."`
-// selects scattered across pages. h-8 + lg radius to match the other controls.
-export const Select = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSelectElement>>(
-  ({ className, ...props }, ref) => (
+export interface SelectProps
+  extends Omit<SelectHTMLAttributes<HTMLSelectElement>, "size">,
+    VariantProps<typeof inputVariants> {}
+export const Select = forwardRef<HTMLSelectElement, SelectProps>(
+  ({ className, variant, size, ...props }, ref) => (
     <select
       ref={ref}
-      className={cn("flex h-8", formControlClasses, className)}
+      className={cn(inputVariants({ variant, size }), className)}
       {...props}
     />
   ),
@@ -158,10 +203,26 @@ export const Select = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSel
 Select.displayName = "Select";
 
 // ---- Label ----------------------------------------------------------------
-export function Label({ className, ...props }: LabelHTMLAttributes<HTMLLabelElement>) {
+const labelVariants = cva("font-medium leading-none", {
+  variants: {
+    variant: {
+      default: "text-foreground",
+      muted: "text-muted-foreground",
+    },
+    size: {
+      sm: "text-xs",
+      default: "text-sm",
+    },
+  },
+  defaultVariants: { variant: "default", size: "default" },
+});
+export interface LabelProps
+  extends Omit<LabelHTMLAttributes<HTMLLabelElement>, "size">,
+    VariantProps<typeof labelVariants> {}
+export function Label({ className, variant, size, ...props }: LabelProps) {
   return (
     <label
-      className={cn("text-sm font-medium leading-none text-muted-foreground", className)}
+      className={cn(labelVariants({ variant, size }), className)}
       {...props}
     />
   );

@@ -3,7 +3,7 @@ import { getEventColor, getEventLabel, getEventSummary, itemFilterKey } from "./
 import type { TimelineItem } from "./types";
 
 describe("timeline-utils", () => {
-  it("maps item types to multica colors", () => {
+  it("maps item types to timeline color roles", () => {
     expect(getEventColor({ seq: 1, type: "thinking" })).toBe("thinking");
     expect(getEventColor({ seq: 2, type: "tool_use", tool: "Bash" })).toBe("tool");
     expect(getEventColor({ seq: 3, type: "text", content: "hi" })).toBe("agent");

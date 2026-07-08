@@ -16,6 +16,8 @@ const THEME_TOKENS = [
   "--foreground",
   "--card",
   "--card-foreground",
+  "--popover",
+  "--popover-foreground",
   "--primary",
   "--primary-foreground",
   "--secondary",
@@ -26,23 +28,31 @@ const THEME_TOKENS = [
   "--accent-foreground",
   "--destructive",
   "--destructive-foreground",
+  "--success",
+  "--success-foreground",
+  "--info",
+  "--info-foreground",
+  "--warning",
+  "--warning-foreground",
   "--border",
   "--input",
   "--ring",
-  // Multica additions
-  "--brand",
-  "--brand-foreground",
-  "--success",
-  "--warning",
-  "--warning-foreground",
   "--sidebar",
   "--sidebar-foreground",
   "--sidebar-accent",
+  "--sidebar-accent-foreground",
   "--sidebar-border",
+  "--sidebar-ring",
 ] as const;
 
 // Tokens that are theme-independent (defined once on :root).
-const GLOBAL_TOKENS = ["--radius", "--font-inter", "--font-mono"] as const;
+const GLOBAL_TOKENS = [
+  "--radius",
+  "--font-geist-sans",
+  "--font-geist-mono",
+  "--shadow-card",
+  "--shadow-popover",
+] as const;
 
 function tokenBlock(scope: string): string {
   // Grab the body of the `:root { ... }` or `.dark { ... }` rule.
@@ -72,14 +82,24 @@ describe("index.css design tokens", () => {
     expect(tokenBlock(":root")).toContain(token);
   });
 
-  it("uses the blue brand hue for --primary (multica hue 255)", () => {
-    // Blue sits roughly in hue 210–250 in HSL. Assert --primary is blue-ish.
+  it("uses Geist neutral primary and no legacy brand tokens", () => {
     const light = tokenBlock(":root");
-    expect(light).toMatch(/--primary:\s*2[0-4]\d\s/);
+    expect(light).toMatch(/--primary:\s*0\s+0%\s+9%/);
+    expect(css).not.toMatch(/--brand\b/);
+    expect(css).not.toMatch(/multica/i);
+    expect(css).not.toContain("--font-inter");
+  });
+
+  it("sets Geist font variables and a tight control radius", () => {
+    const light = tokenBlock(":root");
+    expect(light).toContain('--font-geist-sans: "Geist"');
+    expect(light).toContain('--font-geist-mono: "Geist Mono"');
+    expect(light).toMatch(/--radius:\s*0\.375rem/);
   });
 
   it("sets global focus, touch, and overflow interaction defaults", () => {
     expect(css).toContain(":focus-visible");
+    expect(css).toContain("outline: 2px solid hsl(var(--ring))");
     expect(css).toContain("touch-action: manipulation");
     expect(css).toContain("-webkit-tap-highlight-color");
     expect(css).toContain("overflow-x: hidden");

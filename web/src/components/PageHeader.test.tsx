@@ -2,8 +2,8 @@ import { describe, it, expect } from "vitest";
 import { render } from "@testing-library/react";
 import { PageHeader, PageHeaderTitle, PageHeaderActions } from "./PageHeader";
 
-// PageHeader is the consistent top bar (multica h-12 border-b pattern). It
-// renders a title row plus an optional actions slot.
+// PageHeader is the consistent top bar. It renders a title row plus an
+// optional actions slot.
 describe("PageHeader", () => {
   it("renders the title", () => {
     const { getByText } = render(

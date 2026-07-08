@@ -117,7 +117,7 @@ function ProfileListButton({
       type="button"
       onClick={onSelect}
       className={cn(
-        "w-full text-left rounded-md px-2.5 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+        "w-full text-left rounded-md px-2.5 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
         selected
           ? "bg-primary/10 text-foreground ring-1 ring-primary/30"
           : "hover:bg-muted/60 text-muted-foreground hover:text-foreground",
@@ -405,7 +405,7 @@ export function RuntimeProfilesPage() {
 	                      <button
 	                        type="button"
 	                        aria-expanded={Boolean(launchResolvedOpen[provider])}
-	                        className="flex w-full items-center gap-1 rounded-md px-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/80 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+	                        className="flex w-full items-center gap-1 rounded-md px-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
 	                        onClick={() =>
 	                          setLaunchResolvedOpen((open) => ({ ...open, [provider]: !open[provider] }))
 	                        }

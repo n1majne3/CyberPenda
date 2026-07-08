@@ -169,7 +169,7 @@ export function AgentTranscriptView({ task, items, profileName, isLive = false }
                   aria-expanded={filterOpen}
                   onClick={() => setFilterOpen((open) => !open)}
                   className={cn(
-                    "flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+                    "flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
                     selectedTools.size > 0
                       ? "bg-blue-500/10 text-blue-600 hover:bg-blue-500/20 dark:text-blue-400"
                       : "text-muted-foreground hover:bg-accent hover:text-foreground",
@@ -200,7 +200,7 @@ export function AgentTranscriptView({ task, items, profileName, isLive = false }
                       <button
                         type="button"
                         onClick={clearFilters}
-                        className="mt-1 w-full rounded px-2 py-1.5 text-left text-muted-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                        className="mt-1 w-full rounded px-2 py-1.5 text-left text-muted-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
                       >
                         Clear filters
                       </button>
@@ -212,7 +212,7 @@ export function AgentTranscriptView({ task, items, profileName, isLive = false }
             <button
               type="button"
               onClick={handleCopyAll}
-              className="flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+              className="flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
             >
               {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
               {copied ? "Copied" : selectedTools.size > 0 ? "Copy filtered" : "Copy all"}
@@ -299,7 +299,7 @@ function SortDirectionToggle({
         title="Chronological"
         onClick={() => onChange("chronological")}
         className={cn(
-          "flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+          "flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
           value === "chronological"
             ? "bg-background text-foreground shadow-sm"
             : "text-muted-foreground hover:text-foreground",
@@ -314,7 +314,7 @@ function SortDirectionToggle({
         title="Newest first"
         onClick={() => onChange("newest_first")}
         className={cn(
-          "flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+          "flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
           value === "newest_first"
             ? "bg-background text-foreground shadow-sm"
             : "text-muted-foreground hover:text-foreground",
@@ -377,7 +377,7 @@ function TimelineBar({
             type="button"
             key={seg.startIdx}
             className={cn(
-              "group relative h-full min-w-[4px] transition-[background-color,opacity] duration-150 hover:opacity-80 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+              "group relative h-full min-w-[4px] transition-[background-color,opacity] duration-150 hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
               isSelected ? color.bgActive : color.bg,
             )}
             style={{ width: `${Math.max(widthPercent, 0.5)}%` }}
@@ -446,7 +446,7 @@ function TranscriptEventRow({
           disabled={!hasDetail}
           onClick={() => hasDetail && setExpanded((open) => !open)}
           className={cn(
-            "min-w-0 flex-1 rounded py-0.5 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+            "min-w-0 flex-1 rounded py-0.5 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
             hasDetail ? "cursor-pointer hover:text-foreground" : "cursor-default",
             item.type === "error" ? "text-destructive" : "text-muted-foreground",
           )}

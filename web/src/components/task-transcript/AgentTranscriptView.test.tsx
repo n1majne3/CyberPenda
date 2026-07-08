@@ -62,12 +62,12 @@ describe("AgentTranscriptView", () => {
 
     const filter = screen.getByRole("button", { name: /Filter/i });
     expect(filter).toHaveAttribute("aria-expanded", "false");
-    expect(filter).toHaveClass("focus-visible:ring-3");
-    expect(screen.getByRole("button", { name: /Copy all/i })).toHaveClass("focus-visible:ring-3");
+    expect(filter).toHaveClass("focus-visible:ring-2");
+    expect(screen.getByRole("button", { name: /Copy all/i })).toHaveClass("focus-visible:ring-2");
     for (const segment of screen.getAllByRole("button", { name: /Jump to shell event/i })) {
-      expect(segment).toHaveClass("focus-visible:ring-3");
+      expect(segment).toHaveClass("focus-visible:ring-2");
     }
-    expect(screen.getByRole("button", { name: /Newest/i })).toHaveClass("focus-visible:ring-3");
+    expect(screen.getByRole("button", { name: /Newest/i })).toHaveClass("focus-visible:ring-2");
   });
 
   it("honors reduced motion classes and typographic ellipses in dynamic states", async () => {

@@ -43,11 +43,6 @@ export default {
           DEFAULT: "hsl(var(--popover))",
           foreground: "hsl(var(--popover-foreground))",
         },
-        // Multica additions: brand accent + semantic colors.
-        brand: {
-          DEFAULT: "hsl(var(--brand))",
-          foreground: "hsl(var(--brand-foreground))",
-        },
         success: {
           DEFAULT: "hsl(var(--success))",
           foreground: "hsl(var(--success-foreground))",
@@ -60,7 +55,6 @@ export default {
           DEFAULT: "hsl(var(--warning))",
           foreground: "hsl(var(--warning-foreground))",
         },
-        // Sidebar palette (shadcn sidebar pattern).
         sidebar: {
           DEFAULT: "hsl(var(--sidebar))",
           foreground: "hsl(var(--sidebar-foreground))",
@@ -70,22 +64,15 @@ export default {
           ring: "hsl(var(--sidebar-ring))",
         },
       },
-      // Multica radius scale — base 10px, derived. 4xl is the badge pill.
       borderRadius: {
-        sm: "calc(var(--radius) * 0.6)",
-        md: "calc(var(--radius) * 0.8)",
+        sm: "0.125rem",
+        md: "0.25rem",
         lg: "var(--radius)",
-        xl: "calc(var(--radius) * 1.4)",
-        "2xl": "calc(var(--radius) * 1.8)",
-        "4xl": "calc(var(--radius) * 2.6)",
-      },
-      // Multica focus style uses ring-3; Tailwind only ships ring-0/1/2/4/8.
-      ringWidth: {
-        3: "3px",
+        xl: "0.5rem",
       },
       fontFamily: {
-        sans: ["var(--font-inter)", "sans-serif"],
-        mono: ["var(--font-mono)", "monospace"],
+        sans: ["var(--font-geist-sans)", "sans-serif"],
+        mono: ["var(--font-geist-mono)", "monospace"],
       },
     },
   },

@@ -390,7 +390,7 @@ export function TaskLaunchPage() {
               type="button"
               onClick={() => setPresetOpen((open) => !open)}
               aria-expanded={presetOpen}
-              className="flex w-full items-center gap-2 rounded-md text-left text-sm font-medium focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+              className="flex w-full items-center gap-2 rounded-md text-left text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
             >
               <ChevronRight className={`size-4 shrink-0 transition-transform ${presetOpen ? "rotate-90" : ""}`} />
               Use saved preset

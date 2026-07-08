@@ -39,13 +39,12 @@ function Layout() {
     <>
       <a
         href="#main-content"
-        className="sr-only focus:fixed focus:left-3 focus:top-3 focus:z-50 focus:h-auto focus:w-auto focus:overflow-visible focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-foreground focus:shadow-md focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+        className="sr-only focus:fixed focus:left-3 focus:top-3 focus:z-50 focus:h-auto focus:w-auto focus:overflow-visible focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-foreground focus:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
       >
         Skip to main content
       </a>
       <div className="flex h-svh w-screen overflow-hidden">
-      {/* Sidebar — multica pattern: bg-sidebar raised over the app surface,
-          border-r, 256px wide, with a brand header and a footer toggle. */}
+      {/* Sidebar uses the shared page chrome surface and fixed navigation rail. */}
       <aside className="flex w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar">
         <div className="flex h-12 items-center gap-2 border-b border-sidebar-border px-4">
           <Logo className="h-5 w-5" spin />
@@ -74,7 +73,7 @@ function Layout() {
               type="button"
               aria-expanded={advancedOpen}
               onClick={() => setAdvancedOpen((open) => !open)}
-              className="mb-1 flex w-full items-center gap-1 rounded-md px-2 text-xs font-medium text-muted-foreground/70 hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+              className="mb-1 flex w-full items-center gap-1 rounded-md px-2 text-xs font-medium text-muted-foreground/70 hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
             >
               <ChevronRight className={`size-3 transition-transform ${advancedOpen ? "rotate-90" : ""}`} />
               Advanced
@@ -123,7 +122,7 @@ function SideLink({
     <NavLink
       to={to}
       className={({ isActive }) =>
-        `flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 ${
+        `flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${
           isActive
             ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
             : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"

@@ -80,7 +80,7 @@ describe("ModelProvidersPage", () => {
     const providerButton = await screen.findByRole("button", { name: /MiMo/i });
     expect(providerButton).toHaveAttribute("type", "button");
     expect(providerButton).toHaveAttribute("aria-pressed", "true");
-    expect(providerButton).toHaveClass("focus-visible:ring-3");
+    expect(providerButton).toHaveClass("focus-visible:ring-2");
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "Save provider" })).toBeEnabled();
     });

@@ -2,9 +2,8 @@ import type { HTMLAttributes, ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 /*
- * Consistent sticky top bar — multica's `h-12 border-b px-4` page header
- * pattern. Pages compose a PageHeaderTitle (left) plus an optional
- * PageHeaderActions slot (right) and an optional description below.
+ * Consistent sticky top bar. Pages compose a PageHeaderTitle (left) plus an
+ * optional PageHeaderActions slot (right) and an optional description below.
  */
 export function PageHeader({ className, children, ...props }: HTMLAttributes<HTMLDivElement>) {
   return (

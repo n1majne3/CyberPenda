@@ -180,7 +180,7 @@ export function ModelProvidersPage() {
               type="button"
               key={provider.id}
               aria-pressed={selectedId === provider.id && !creating}
-              className={`w-full rounded-md px-2.5 py-2 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 ${selectedId === provider.id && !creating ? "bg-primary/10 ring-1 ring-primary/30" : "hover:bg-muted/60"}`}
+              className={`w-full rounded-md px-2.5 py-2 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${selectedId === provider.id && !creating ? "bg-primary/10 ring-1 ring-primary/30" : "hover:bg-muted/60"}`}
               onClick={() => { setCreating(false); setSelectedId(provider.id); }}
             >
               <span className="block font-medium">{provider.name}</span>
