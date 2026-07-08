@@ -209,3 +209,54 @@ func TestResolveModelProviderAcceptsGeneratedCredentialBinding(t *testing.T) {
 		t.Fatalf("snapshot APIKeyEnv = %q", snapshot.APIKeyEnv)
 	}
 }
+
+// TestResolveModelProviderBackfillsLegacyProviderRow verifies that an old
+// provider record carrying only provider-level base_url and protocols still
+// resolves as an endpoint-backed provider during the transition, with the
+// Anthropic final-segment adaptation applied to the resolved endpoint.
+func TestResolveModelProviderBackfillsLegacyProviderRow(t *testing.T) {
+	db := newStore(t)
+	if err := seedLegacyProvider(db, "legacy", "https://hub.example.test/v1/",
+		[]modelprovider.Protocol{modelprovider.ProtocolOpenAIResponses, modelprovider.ProtocolAnthropicMessages},
+		modelprovider.Catalog{Manual: []string{"gpt-5"}, DefaultModel: "gpt-5"}); err != nil {
+		t.Fatalf("insert legacy provider: %v", err)
+	}
+	svc := modelprovider.NewService(db)
+	t.Setenv("LEGACY_API_KEY", "sk-test")
+
+	// Claude Code resolves through the Anthropic Messages endpoint, which
+	// must have the final /v1 segment dropped during backfill.
+	snapshot, err := modelprovider.Resolve(modelprovider.ResolveRequest{
+		Profile: runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderClaudeCode,
+			Fields:   runtimeprofile.Fields{ModelProviderID: "legacy"},
+		},
+		Providers: svc,
+		Plugins:   runtimeplugin.MustBuiltinRegistry(),
+		CheckEnv:  true,
+	})
+	if err != nil {
+		t.Fatalf("resolve claude_code: %v", err)
+	}
+	if snapshot.EndpointBaseURL != "https://hub.example.test" || snapshot.Protocol != modelprovider.ProtocolAnthropicMessages {
+		t.Fatalf("anthropic snapshot = %#v", snapshot)
+	}
+
+	// Codex resolves through the OpenAI Responses endpoint, which must copy
+	// the normalized legacy base URL unchanged.
+	snapshot, err = modelprovider.Resolve(modelprovider.ResolveRequest{
+		Profile: runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderCodex,
+			Fields:   runtimeprofile.Fields{ModelProviderID: "legacy"},
+		},
+		Providers: svc,
+		Plugins:   runtimeplugin.MustBuiltinRegistry(),
+		CheckEnv:  true,
+	})
+	if err != nil {
+		t.Fatalf("resolve codex: %v", err)
+	}
+	if snapshot.EndpointBaseURL != "https://hub.example.test/v1" || snapshot.Protocol != modelprovider.ProtocolOpenAIResponses {
+		t.Fatalf("openai snapshot = %#v", snapshot)
+	}
+}

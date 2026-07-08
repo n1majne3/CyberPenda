@@ -40,6 +40,7 @@ type ProposedProvider struct {
 	BaseURL           string                   `json:"base_url"`
 	Model             string                   `json:"model,omitempty"`
 	Protocols         []modelprovider.Protocol `json:"protocols"`
+	Endpoints         []modelprovider.Endpoint `json:"endpoints,omitempty"`
 	SuggestedProtocol modelprovider.Protocol   `json:"suggested_protocol,omitempty"`
 	APIKeyEnv         string                   `json:"api_key_env,omitempty"`
 }
@@ -222,6 +223,11 @@ func buildPreview(
 	if len(protocols) > 0 {
 		suggested = protocols[0]
 	}
+	endpoints, err := modelprovider.BackfillEndpoints(baseURL, protocols)
+	if err != nil {
+		out.Reason = fmt.Sprintf("could not derive provider endpoints: %s", err)
+		return out
+	}
 	proposedName := strings.TrimSpace(profile.Name)
 	if proposedName == "" {
 		proposedName = "Migrated provider"
@@ -232,6 +238,7 @@ func buildPreview(
 		BaseURL:           baseURL,
 		Model:             model,
 		Protocols:         protocols,
+		Endpoints:         endpoints,
 		SuggestedProtocol: suggested,
 	}
 	out.APIKeySources = nonNilAPIKeySources(extractAPIKeySources(profile, plugin, creds))

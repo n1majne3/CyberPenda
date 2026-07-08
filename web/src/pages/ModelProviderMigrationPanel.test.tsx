@@ -79,6 +79,53 @@ describe("ModelProviderMigrationPanel", () => {
     expect(screen.getByRole("button", { name: "Migrate profile" })).toBeEnabled();
   });
 
+  it("surfaces the derived protocol-specific endpoint base URLs in the preview", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({
+              profile_id: "profile-1",
+              profile_name: "Pi Hub",
+              runtime_provider: "pi",
+              eligible: true,
+              proposed: {
+                name: "Pi Hub",
+                base_url: "https://hub.example.test/v1",
+                model: "mimo-v2",
+                suggested_protocol: "openai_chat_completions",
+                endpoints: [
+                  { protocol: "openai_chat_completions", base_url: "https://hub.example.test/v1" },
+                  { protocol: "openai_responses", base_url: "https://hub.example.test/v1" },
+                  { protocol: "anthropic_messages", base_url: "https://hub.example.test" },
+                ],
+              },
+              matches: [],
+              api_key_sources: [],
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        ),
+      ),
+    );
+
+    render(
+      <StrictMode>
+        <ModelProviderMigrationPanel profileId="profile-1" onMigrated={() => {}} onError={() => {}} />
+      </StrictMode>,
+    );
+
+    // Each derived endpoint base URL should be reviewable before migrating, so
+    // the Anthropic final-segment adaptation is visible to the user. The
+    // host-level Anthropic value is unique evidence the final-segment drop
+    // happened; the shared /v1 value appears for the OpenAI-family protocols.
+    expect(await screen.findByText("https://hub.example.test")).toBeInTheDocument();
+    expect(screen.getAllByText("https://hub.example.test/v1").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("anthropic_messages")).toBeInTheDocument();
+    expect(screen.getByText("openai_responses")).toBeInTheDocument();
+  });
+
   it("handles null matches and api_key_sources from the API", async () => {
     vi.stubGlobal(
       "fetch",

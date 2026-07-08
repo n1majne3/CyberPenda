@@ -45,6 +45,116 @@ func TestPreviewLegacyCodexProfile(t *testing.T) {
 	}
 }
 
+// TestPreviewShowsDerivedEndpoints applies the same Anthropic final-segment
+// adaptation as Model Provider Endpoint Backfill so a user can review the
+// protocol-specific base URLs before confirming a migration.
+func TestPreviewShowsDerivedEndpoints(t *testing.T) {
+	svc := newServices(t)
+	profile, err := svc.Profiles.Create("Pi Hub", runtimeprofile.ProviderPi, runtimeprofile.Fields{
+		Endpoint: "https://hub.example.test/v1/",
+		Model:    "mimo-v2",
+	})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+
+	preview, err := svc.Migrator.Preview(profile.ID)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if !reflect.DeepEqual(preview.Proposed.Endpoints, []modelprovider.Endpoint{
+		{Protocol: modelprovider.ProtocolOpenAIChatCompletions, BaseURL: "https://hub.example.test/v1"},
+		{Protocol: modelprovider.ProtocolOpenAIResponses, BaseURL: "https://hub.example.test/v1"},
+		{Protocol: modelprovider.ProtocolAnthropicMessages, BaseURL: "https://hub.example.test"},
+	}) {
+		t.Fatalf("proposed endpoints = %#v", preview.Proposed.Endpoints)
+	}
+}
+
+// TestPreviewAndApplyDeriveEndpointsConsistently covers the URL matrix from
+// the acceptance criteria (/v1, /v2, host-only, deeper path) and proves that
+// the preview's derived endpoints match the persisted provider endpoints after
+// apply, without any semantic URL repair beyond the Anthropic final-segment
+// adaptation.
+func TestPreviewAndApplyDeriveEndpointsConsistently(t *testing.T) {
+	cases := []struct {
+		name     string
+		baseURL  string
+		expected []modelprovider.Endpoint
+	}{
+		{
+			name:    "v1 hub style",
+			baseURL: "https://hub.example.test/v1/",
+			expected: []modelprovider.Endpoint{
+				{Protocol: modelprovider.ProtocolOpenAIChatCompletions, BaseURL: "https://hub.example.test/v1"},
+				{Protocol: modelprovider.ProtocolOpenAIResponses, BaseURL: "https://hub.example.test/v1"},
+				{Protocol: modelprovider.ProtocolAnthropicMessages, BaseURL: "https://hub.example.test"},
+			},
+		},
+		{
+			name:    "v2 versioned",
+			baseURL: "https://provider.example.test/v2",
+			expected: []modelprovider.Endpoint{
+				{Protocol: modelprovider.ProtocolOpenAIChatCompletions, BaseURL: "https://provider.example.test/v2"},
+				{Protocol: modelprovider.ProtocolOpenAIResponses, BaseURL: "https://provider.example.test/v2"},
+				{Protocol: modelprovider.ProtocolAnthropicMessages, BaseURL: "https://provider.example.test"},
+			},
+		},
+		{
+			name:    "host only leaves anthropic unchanged",
+			baseURL: "https://host-only.example.test",
+			expected: []modelprovider.Endpoint{
+				{Protocol: modelprovider.ProtocolOpenAIChatCompletions, BaseURL: "https://host-only.example.test"},
+				{Protocol: modelprovider.ProtocolOpenAIResponses, BaseURL: "https://host-only.example.test"},
+				{Protocol: modelprovider.ProtocolAnthropicMessages, BaseURL: "https://host-only.example.test"},
+			},
+		},
+		{
+			name:    "deeper coding path drops only final segment for anthropic",
+			baseURL: "https://open.example.test/api/coding/paas/v4",
+			expected: []modelprovider.Endpoint{
+				{Protocol: modelprovider.ProtocolOpenAIChatCompletions, BaseURL: "https://open.example.test/api/coding/paas/v4"},
+				{Protocol: modelprovider.ProtocolOpenAIResponses, BaseURL: "https://open.example.test/api/coding/paas/v4"},
+				{Protocol: modelprovider.ProtocolAnthropicMessages, BaseURL: "https://open.example.test/api/coding/paas"},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newServices(t)
+			profile, err := svc.Profiles.Create("Pi "+tc.name, runtimeprofile.ProviderPi, runtimeprofile.Fields{
+				Endpoint: tc.baseURL,
+				Model:    "mimo",
+			})
+			if err != nil {
+				t.Fatalf("create profile: %v", err)
+			}
+
+			preview, err := svc.Migrator.Preview(profile.ID)
+			if err != nil {
+				t.Fatalf("preview: %v", err)
+			}
+			if !reflect.DeepEqual(preview.Proposed.Endpoints, tc.expected) {
+				t.Fatalf("preview endpoints = %#v, want %#v", preview.Proposed.Endpoints, tc.expected)
+			}
+
+			result, err := svc.Migrator.Apply(modelprovidermigrate.ApplyRequest{
+				ProfileID: profile.ID,
+				Action:    modelprovidermigrate.ActionCreate,
+			})
+			if err != nil {
+				t.Fatalf("apply: %v", err)
+			}
+			if !reflect.DeepEqual(result.Provider.Endpoints, tc.expected) {
+				t.Fatalf("applied provider endpoints = %#v, want %#v", result.Provider.Endpoints, tc.expected)
+			}
+			if !reflect.DeepEqual(result.Provider.Endpoints, preview.Proposed.Endpoints) {
+				t.Fatalf("preview and apply disagree: preview=%#v apply=%#v", preview.Proposed.Endpoints, result.Provider.Endpoints)
+			}
+		})
+	}
+}
+
 func TestPreviewShowsExistingProviderMatch(t *testing.T) {
 	svc := newServices(t)
 	if _, err := svc.Providers.Create(modelprovider.CreateRequest{

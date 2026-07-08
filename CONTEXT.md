@@ -136,6 +136,10 @@ _Avoid_: runtime profile subform, project settings panel, credential page
 An explicit management action that moves legacy model-service fields from a **Runtime Profile** into a reusable **Model Provider**.
 _Avoid_: silent automatic migration, runtime profile edit side effect
 
+**Model Provider Endpoint Backfill**:
+The automatic interpretation of an older **Model Provider** with provider-level `base_url` and `protocols` fields as a new **Model Provider** with backfilled **Model Provider Endpoints**, including the explicit Anthropic final-segment adaptation.
+_Avoid_: user migration, runtime profile migration, endpoint guessing
+
 **Model Provider Migration Preview**:
 The non-secret review of proposed **Model Provider** fields before a **Model Provider Migration** is confirmed.
 _Avoid_: automatic migration result, hidden protocol choice, credential value
@@ -153,20 +157,44 @@ A user-entered model identifier in a **Model Catalog** that is preserved across 
 _Avoid_: refreshed model, provider metadata
 
 **Model Catalog Refresh**:
-An explicit user-triggered management action that fetches model names from a **Model Provider Endpoint** by appending `/models` to its **Normalized Model Base URL** and updates the **Model Catalog**.
+An explicit user-triggered management action that fetches model names from a **Model Provider** using a `/v1/models` model-list path and updates the **Model Catalog**.
 _Avoid_: background polling, task-launch discovery, runtime introspection
+
+**Model Catalog Refresh URL**:
+The derived non-secret URL used by **Model Catalog Refresh**. It is not user-configured; it is derived from an OpenAI-family **Model Provider Endpoint** origin and the model-list path is always `/v1/models`.
+_Avoid_: custom catalog base URL, runtime endpoint, protocol endpoint
+
+**Model Endpoint Origin**:
+The scheme, host, and optional port shared by one or more **Model Provider Endpoints** for a **Model Provider**.
+_Avoid_: protocol path prefix, operation URL, catalog refresh URL
+
+**Model Protocol Path Prefix**:
+The protocol-specific path portion of a **Model Protocol Base URL** before the **Runtime** appends its operation suffix, such as an empty path, `/v1`, `/api/anthropic`, or `/api/coding/paas/v4`.
+_Avoid_: operation suffix, model-list path, full endpoint URL
+
+**Model Operation Suffix**:
+The protocol operation path appended by a **Runtime** after receiving a **Model Protocol Base URL**, such as `/v1/messages`, `/messages`, `/v1/responses`, `/responses`, `/v1/chat/completions`, or `/chat/completions`.
+_Avoid_: protocol path prefix, model-list path, configured base URL
+
+**Model Protocol Base URL**:
+The non-secret base URL for one **Model Provider Protocol**, stored as `base_url` on a **Model Provider Endpoint**. It combines a **Model Endpoint Origin** with any **Model Protocol Path Prefix** and excludes the protocol operation suffix that the **Runtime** appends, such as `/v1/messages`, `/responses`, or `/chat/completions`.
+_Avoid_: operation URL, catalog refresh URL, full request URL
 
 **Model Catalog Refresh Format**:
 The response shape accepted by **Model Catalog Refresh** when parsing a model-list response.
 _Avoid_: protocol negotiation, provider-specific parser selection
 
 **Model Provider Endpoint**:
-A concrete non-secret base URL within a **Model Provider** that may support one or more **Model Provider Protocols**.
+A concrete non-secret entry within a **Model Provider**'s `endpoints` list that records one **Model Provider Protocol** and its **Model Protocol Base URL**. A **Model Provider** may have different **Model Provider Endpoints** for different protocols while sharing one **Model API Key Source**.
 _Avoid_: protocol, runtime profile, credential value, custom header bundle
 
-**Normalized Model Base URL**:
-A **Model Provider Endpoint** base URL stored without trailing slashes while preserving path prefixes such as `/v1`.
-_Avoid_: semantic URL repair, proxy route
+**Model Provider Endpoint Defaults**:
+The **Model Providers Page** quick-setup behavior that derives common **Model Provider Endpoints** from one shared provider base URL, often including an API version path such as `/v1` or `/v2`, before saving composed endpoint `base_url` values.
+_Avoid_: canonical storage fields, operation suffix generation, protocol support auto-detection
+
+**Normalized Model Protocol Base URL**:
+A **Model Protocol Base URL** stored after uniformly removing trailing slashes while preserving provider path prefixes such as `/v1`, `/api/anthropic`, or `/api/coding/paas/v4`.
+_Avoid_: semantic URL repair, proxy route, operation suffix
 
 **Model Override**:
 A **Runtime Profile** field that replaces the selected **Model Provider**'s default model when that profile is used without a **Launch Model Override**.
@@ -185,7 +213,7 @@ The **Runtime Plugin** mapping that injects a **Model Provider** API key into th
 _Avoid_: separate credential, runtime profile credential, endpoint secret
 
 **Model Runtime Projection**:
-The **Config Projection** step that passes the resolved model endpoint URL, protocol, model, and credential to a **Runtime** without proxying model traffic.
+The **Config Projection** step that derives and passes the runtime-specific model URL, protocol, model, and credential to a **Runtime** without proxying model traffic.
 _Avoid_: LLM proxy, gateway request, daemon model call
 
 **Model API Key Source**:
@@ -197,7 +225,7 @@ The generated environment variable name used as the **Model API Key Source** for
 _Avoid_: user-entered env var, inline API key, secret value, credential reference
 
 **Model Provider Snapshot**:
-The non-secret resolved model provider values captured in a **Task Runtime Configuration** for one launch or continuation.
+The non-secret resolved model provider values captured in a **Task Runtime Configuration** for one launch or continuation, including `endpoint_base_url`, protocol, model, and API key source provenance.
 _Avoid_: live model provider reference, model catalog copy, credential value
 
 **Model Provider Requirement**:
@@ -578,6 +606,7 @@ _Avoid_: transcript, export, source of truth
 - Legacy model-service fields on a **Runtime Profile** may be preserved for compatibility until a **Model Provider Migration** is explicitly run.
 - A **Model Provider Migration** presents a **Model Provider Migration Preview** before creating or updating a **Model Provider**.
 - A **Model Provider Migration Preview** may suggest a protocol from the source **Runtime Plugin**, but the user must confirm it.
+- A **Model Provider Migration** uses the same explicit Anthropic final-segment adaptation as **Model Provider Endpoint Backfill** when deriving an `anthropic_messages` endpoint from a legacy `base_url`.
 - A **Model Provider Migration Preview** may show **Model Provider Migration Matches**, but the user chooses whether to reuse an existing **Model Provider** or create a new one.
 - A successful **Model Provider Migration** removes migrated legacy model-service fields from the source **Runtime Profile**.
 - A **Model Provider** may define a **Model Catalog**.
@@ -590,9 +619,15 @@ _Avoid_: transcript, export, source of truth
 - Refreshed model identifiers in a **Model Catalog** are not manually deleted or hidden.
 - Any model identifier in the **Model Catalog**, whether manual or refreshed, may be used as a provider default or **Model Override**.
 - A **Model Catalog Refresh** is a user-triggered management action, not part of **Preflight** or task launch.
-- A **Model Catalog Refresh** uses `{normalized_model_base_url}/models` rather than a protocol-specific model list.
+- A **Model Provider** does not store a custom `catalog_base_url`.
+- A **Model Catalog Refresh URL** is derived, not user-configured.
+- A **Model Catalog Refresh URL** always uses the `/v1/models` path.
+- A **Model Catalog Refresh URL** is derived from an OpenAI-family endpoint when one exists, preferring `openai_chat_completions` over `openai_responses`.
+- A **Model Catalog Refresh URL** uses the selected OpenAI-family endpoint origin plus `/v1/models`, not the endpoint URI path.
+- A **Model Catalog Refresh URL** ignores non-standard OpenAI runtime path prefixes such as `/api/coding/paas/v4` and still uses the selected endpoint origin plus `/v1/models`.
+- A **Model Catalog Refresh** is unavailable when a **Model Provider** has no OpenAI-family endpoint; users may maintain the **Model Catalog** manually.
 - A **Model Catalog Refresh** uses the **Model API Key Environment Variable** for the selected **Model Provider**.
-- **Model Catalog Refresh Format** is OpenAI-style `/models` in MVP.
+- **Model Catalog Refresh Format** is OpenAI-style `/v1/models` in MVP.
 - A failed **Model Catalog Refresh** preserves the existing **Model Catalog**.
 - A successful **Model Catalog Refresh** stores the returned **Model Catalog** even if existing defaults or overrides become invalid.
 - A **Model Provider** may be saved without a **Model Catalog**, but tasks that require model access cannot launch from it.
@@ -600,12 +635,37 @@ _Avoid_: transcript, export, source of truth
 - A **Model Provider** must include exactly one **Model API Key Source**.
 - A **Model API Key Source** is a **Model API Key Environment Variable** in MVP.
 - A **Model API Key Environment Variable** is generated from the **Model Provider** identifier as `<PROVIDER_ID>_API_KEY`.
-- A **Model Provider** contains exactly one **Model Provider Endpoint**.
-- A **Model Provider Endpoint** stores a **Normalized Model Base URL**.
-- A **Model Provider Endpoint** may support one or more **Model Provider Protocols**, such as `openai_chat_completions`, `openai_responses`, or `anthropic_messages`.
-- **Model Provider Protocol** support is manually configured on the **Model Providers Page**.
+- A **Model Provider** may contain one or more **Model Provider Endpoints**.
+- A **Model Provider** stores **Model Provider Endpoints** as an `endpoints` list rather than a map keyed by protocol.
+- A **Model Provider** does not store provider-level `protocols` in the new provider shape.
+- A **Model Provider** derives protocol support from `endpoints[].protocol`.
+- A **Model Provider Endpoint** stores exactly one **Model Provider Protocol** as `protocol`.
+- A **Model Provider Endpoint** stores a **Normalized Model Protocol Base URL** as `base_url`.
+- Multiple **Model Provider Endpoints** for one **Model Provider** commonly share a **Model Endpoint Origin** while differing by **Model Protocol Path Prefix**.
+- A **Model Protocol Base URL** remains the canonical stored endpoint value; editing interfaces may split it into **Model Endpoint Origin** and **Model Protocol Path Prefix** controls before saving.
+- **Model Provider Endpoint Defaults** let most users enter one shared provider base URL, commonly up to the provider API version path such as `/v1` or `/v2`, and derive common endpoint `base_url` values before save.
+- **Model Provider Endpoint Defaults** use the shared provider base URL as the default `openai_chat_completions` and `openai_responses` `base_url`; they do not hardcode appending `/v1`.
+- **Model Provider Endpoint Defaults** derive the default `anthropic_messages` `base_url` by removing the final non-empty path segment from the shared provider base URL after splitting the URL path on `/`.
+- **Model Provider Endpoint Defaults** leave the shared provider base URL unchanged for `anthropic_messages` when it has no path segment to remove.
+- A user may override individual **Model Provider Endpoint** `base_url` values when a provider exposes different protocol paths.
+- **Model Provider Endpoint Defaults** are editing helpers only; saved **Model Provider** records still contain composed `endpoints[]` values rather than a separate shared provider base URL field.
+- Each **Model Provider Protocol** may appear in at most one **Model Provider Endpoint** for a **Model Provider**.
+- **Model Provider** management removes trailing slashes from endpoint `base_url` values before validation and storage.
+- A **Model Provider Endpoint** `base_url` excludes any known **Model Operation Suffix** the selected **Runtime** appends.
+- **Model Provider** management does not auto-fill, append, or store protocol operation suffixes in endpoint `base_url` values.
+- A **Model Provider Endpoint** `base_url` that already ends with any known **Model Operation Suffix** after trailing slash normalization is invalid, even when that suffix belongs to a different **Model Provider Protocol**.
+- **Model Provider** management rejects operation-suffixed endpoint `base_url` values instead of silently stripping the suffix.
+- A **Model Runtime Projection** passes the selected endpoint `base_url` to the **Runtime** without appending the operation suffix in the daemon.
+- A **Runtime** appends its own protocol operation suffix, such as `/v1/messages`, `/responses`, or `/chat/completions`.
+- A **Model Provider Endpoint Backfill** treats the normalized old `base_url` as legacy runtime base URL source data for deriving endpoint `base_url` values.
+- A **Model Provider Endpoint Backfill** creates one endpoint record for each old protocol.
+- A **Model Provider Endpoint Backfill** derives the `anthropic_messages` endpoint by removing the final non-empty path segment from the old `base_url` after splitting the URL path on `/`, because Claude Code appends its own versioned messages operation path.
+- A **Model Provider Endpoint Backfill** leaves the old `base_url` unchanged for `anthropic_messages` when it has no path segment to remove.
+- A **Model Provider Endpoint Backfill** copies the normalized old `base_url` into non-Anthropic endpoint `base_url` values.
+- A **Model Provider Endpoint Backfill** does not infer arbitrary provider-specific path repairs beyond the explicit Anthropic final-segment adaptation.
+- **Model Provider Protocol** support is configured by editing **Model Provider Endpoints** on the **Model Providers Page**.
 - A **Model Provider** may be saved without configured **Model Provider Protocol** support, but tasks that require model access cannot launch from it.
-- Removing **Model Provider Protocol** support from a **Model Provider** is allowed even if existing **Runtime Profiles** become invalid.
+- Removing a **Model Provider Endpoint** removes that **Model Provider Protocol** support from a **Model Provider** and is allowed even if existing **Runtime Profiles** become invalid.
 - A **Model Provider Endpoint** does not contain custom headers or proxy request configuration.
 - A **Runtime Plugin** may support one or more **Model Provider Protocols**.
 - A **Runtime Plugin Manifest** declares supported **Model Provider Protocols** and **Model Protocol Preference**.
@@ -681,7 +741,7 @@ _Avoid_: transcript, export, source of truth
 - A **Launch-Resolved Runtime Profile** may be promoted to a **Runtime Profile Preset** (`manual`) without changing its identity or launch-matching behavior.
 - **Skill Opt-Out** changes on a **Launch-Resolved Runtime Profile** apply to future launches that resolve to the same **Launch Selection**.
 - A **Runtime Profile** uses structured fields as source of truth for **Generated Runtime Config**.
-- **Generated Runtime Config** previews the resolved non-secret **Model Runtime Projection**, including base URL, protocol, model, generated API key environment variable name, and runtime-specific projection target.
+- **Generated Runtime Config** previews the resolved non-secret **Model Runtime Projection**, including the runtime-specific model URL, protocol, model, generated API key environment variable name, and runtime-specific projection target.
 - A **Runtime Plugin** describes which structured fields a **Runtime Profile** exposes.
 - A **Runtime Profile** manages **MCP Configuration** as structured entries with raw preview or import as compatibility support.
 - **MCP Configuration** may include **Trusted MCP Servers** and **External MCP Servers**.
@@ -696,7 +756,8 @@ _Avoid_: transcript, export, source of truth
 - A **Task** launches from its **Task Runtime Configuration**, not a live mutable **Runtime Profile**.
 - A **Task Runtime Configuration** captures the selected **Runtime Plugin** identifier.
 - A **Task Runtime Configuration** captures a **Model Provider Snapshot** when model access is used.
-- A **Model Provider Snapshot** includes the resolved base URL, protocol, model, and non-secret **Model API Key Source** provenance.
+- A **Model Provider Snapshot** includes `endpoint_base_url`, protocol, model, and non-secret **Model API Key Source** provenance.
+- A **Model Provider Snapshot** may expose `base_url` as a transition alias for `endpoint_base_url`, but new code uses `endpoint_base_url`.
 - A **Model Provider Snapshot** uses a **Launch Model Override** when one was supplied at launch; otherwise it uses the selected **Runtime Profile**'s **Model Override** or **Model Catalog** default.
 - A **Model Provider Snapshot** does not include the full **Model Catalog** or any credential value.
 - A **Task Runtime Configuration** may include **Credential References** but not credential values.
@@ -889,15 +950,27 @@ _Avoid_: transcript, export, source of truth
 - **Model Provider Protocol** names are not marketing compatibility labels; resolved: use concrete API contracts such as `openai_chat_completions`, `openai_responses`, and `anthropic_messages`.
 - **Model Provider Protocol** is not a runtime family; resolved: protocol compatibility connects reusable model-service configuration to runtime-specific projection.
 - **Model Protocol Preference** is not user-configured; resolved: runtime plugin manifests define each runtime family's protocol support and ordering.
-- **Model Provider Protocol** support is not auto-detected; resolved: users explicitly configure supported protocols for a model provider.
+- **Model Provider Protocol** support is not auto-detected or stored separately; resolved: users explicitly configure supported protocols through **Model Provider Endpoints**.
+- Provider-level `protocols` is not part of the new **Model Provider** API shape; resolved: derive provider protocol support from `endpoints[].protocol` and read old `protocols` only for **Model Provider Endpoint Backfill**.
 - Empty **Model Provider Protocol** support is allowed for provider configuration; resolved: it is a management draft state, not launch-ready task configuration.
 - Removing **Model Provider Protocol** support is not blocked by affected runtime profiles; resolved: save the provider change and surface invalid strict pins through validation and preflight.
-- **Model Provider Endpoint** is not a protocol; resolved: one endpoint may support multiple model-provider protocols.
-- **Model Provider Endpoint** is not a plural endpoint set; resolved: each model provider has exactly one endpoint/base URL.
-- **Model Provider Endpoint** is not proxy configuration; resolved: endpoints carry base URLs and supported protocols, not custom headers or arbitrary request-shaping settings.
-- **Normalized Model Base URL** is not the model-list URL; resolved: preserve path prefixes and append `/models` only for **Model Catalog Refresh**.
-- **Normalized Model Base URL** is not semantically repaired; resolved: do not detect, reject, or trim model-list paths such as `/models`.
-- **Model Provider Endpoint** selection is not guessed at task runtime; resolved: each model provider has one endpoint and runtime plugins only resolve protocol preference.
+- **Model Provider Endpoint** is not a protocol-only marker; resolved: each endpoint binds one **Model Provider Protocol** to one **Model Protocol Base URL**.
+- **Model Provider Endpoint** is not a full operation URL; resolved: it records the base URL the runtime consumes before adding its operation suffix.
+- **Model Provider Endpoint** normalization is not optional; resolved: remove trailing slashes before endpoint validation, storage, migration, and backfill derivation.
+- **Model Provider Endpoint** validation is not protocol-local suffix checking; resolved: reject every known **Model Operation Suffix**, including versioned and unversioned forms, instead of stripping it.
+- **Model Provider Endpoint** validation is not semantic URL repair; resolved: report operation-suffixed values rather than silently rewriting them.
+- **Model Provider Endpoint** is not forced to be a provider-wide singleton; resolved: one model provider may have protocol-specific endpoints under one shared model-service configuration.
+- **Model Protocol Base URL** is not necessarily only a host-level URL; resolved: it may include a protocol path prefix when providers expose different API families under one origin.
+- **Model Endpoint Origin** and **Model Protocol Path Prefix** are not separate canonical storage fields; resolved: they may be used by the **Model Providers Page** as editing helpers, while the saved endpoint value remains `base_url`.
+- **Model Provider Endpoint Defaults** are not stored provider configuration; resolved: quick setup composes endpoint `base_url` values from one shared provider base URL, derives Anthropic by removing the final path segment, then per-protocol overrides edit the composed endpoint list.
+- **Model Provider Endpoint** storage is not keyed by **Model Provider Protocol**; resolved: store an `endpoints` list of `{protocol, base_url}` records.
+- **Model Provider Endpoint Backfill** is not a user-confirmed **Model Provider Migration**; resolved: it is compatibility interpretation of existing provider records.
+- **Model Provider Endpoint Backfill** is not regex-based version detection; resolved: `anthropic_messages` removes the final non-empty path segment by splitting the normalized URL path on `/`.
+- **Model Provider Endpoint Backfill** is not arbitrary URL repair; resolved: only the explicit Anthropic final-segment adaptation changes the old `base_url`.
+- **Model Provider Endpoint** is not proxy configuration; resolved: endpoints carry base URLs and protocols, not custom headers or arbitrary request-shaping settings.
+- **Normalized Model Protocol Base URL** is not the model-list URL; resolved: preserve provider path prefixes for **Model Runtime Projection**, while **Model Catalog Refresh** derives a **Model Catalog Refresh URL** from an OpenAI-family endpoint origin plus `/v1/models`.
+- **Normalized Model Protocol Base URL** is not semantically repaired during normal provider editing; resolved: outside explicit legacy migration/backfill rules, do not detect, reject, or trim provider path prefixes.
+- **Model Provider Endpoint** selection is not guessed at task runtime; resolved: runtime plugins resolve a compatible protocol, then use the endpoint base URL configured for that protocol.
 - **Model Protocol Preference** is ordered fallback, not a single default; resolved: the runtime plugin chooses the first compatible protocol.
 - Empty **Model Provider Protocol** pin is not an invalid profile; resolved: it means runtime-plugin preference should resolve the protocol.
 - **Protocol Pin Selector** is not a list of every known protocol; resolved: it shows only compatible choices plus Auto.
@@ -909,9 +982,12 @@ _Avoid_: transcript, export, source of truth
 - **Manual Model Entry** deletion applies only while the entry remains manual; resolved: entries returned by refresh become refreshed entries and are not manually deleted.
 - Refreshed model entries are not user-curated; resolved: keep provider-returned model identifiers as returned by refresh.
 - Model selection does not depend on catalog entry source; resolved: manual and refreshed model identifiers are both selectable.
-- **Model Catalog Refresh** is not automatic model discovery during task startup; resolved: refresh happens only through an explicit management action that fetches `{normalized_model_base_url}/models`.
+- **Model Catalog Refresh** is not automatic model discovery during task startup; resolved: refresh happens only through an explicit management action that fetches a derived **Model Catalog Refresh URL** ending in `/v1/models`.
+- **Model Catalog Refresh URL** is not derived from an arbitrary protocol URI path; resolved: prefer the `openai_chat_completions` endpoint origin, then `openai_responses` endpoint origin, and append `/v1/models`.
+- **Model Catalog Refresh URL** is not derived from OpenAI-family runtime path prefixes; resolved: an endpoint such as `https://open.bigmodel.cn/api/coding/paas/v4` refreshes from `https://open.bigmodel.cn/v1/models`.
+- **Model Catalog Refresh URL** is not custom provider configuration; resolved: there is no `catalog_base_url` field and the model-list path is always `/v1/models`.
 - **Model Catalog Refresh** does not use a separate credential path; resolved: it reads the same generated API key environment variable as runtime launch.
-- **Model Catalog Refresh Format** is not provider-specific in MVP; resolved: parse only OpenAI-style `/models` responses.
+- **Model Catalog Refresh Format** is not provider-specific in MVP; resolved: parse only OpenAI-style `/v1/models` responses.
 - A failed **Model Catalog Refresh** does not clear model choices; resolved: keep the previous catalog and surface the refresh error.
 - A successful **Model Catalog Refresh** is not blocked by stale selections; resolved: save the provider's returned list and let validation surface invalid defaults or model overrides.
 - An empty **Model Catalog** is allowed for provider configuration; resolved: it is a management draft state, not launch-ready task configuration.
@@ -924,7 +1000,8 @@ _Avoid_: transcript, export, source of truth
 - **Model API Key Environment Variable** is not user-named in MVP; resolved: derive it from the provider identifier, such as `MIMO_API_KEY`.
 - **Model Credential Projection** is not a separate credential; resolved: the same provider API key may be injected differently for different runtime plugins.
 - **Model Provider Snapshot** is not a live provider reference; resolved: task runtime configuration captures only the non-secret values used for that launch or continuation.
-- **Model Runtime Projection** is not LLM proxying; resolved: the daemon passes URL, protocol, model, and credential into the runtime, and the runtime calls the model service directly.
+- **Model Provider Snapshot** `base_url` is not the canonical new snapshot field; resolved: `endpoint_base_url` names the selected endpoint base URL, with `base_url` only as a compatibility alias during transition.
+- **Model Runtime Projection** is not LLM proxying; resolved: the daemon derives and passes a runtime-specific URL, protocol, model, and credential into the runtime, and the runtime calls the model service directly.
 - **Model Provider Requirement** is not universal; resolved: runtime plugins declare whether model-provider resolution is required, optional, or unsupported.
 - Runtime-profile switching does not create a new **Task**; resolved: it creates a new **Runtime Continuation** with a new **Task Runtime Configuration Version**.
 - Runtime-profile switching does not reuse the prior **Model Provider Snapshot**; resolved: each new task runtime configuration version captures its own resolved model provider values.
@@ -984,7 +1061,7 @@ _Avoid_: transcript, export, source of truth
 - **Runtime Extension Projection** is not a global install; resolved: enabled extensions are materialized into the task-local runtime boundary.
 - **Config Projection** failure is not automatically **Runtime Profile** invalidity; resolved: treat it as a **Task** startup failure unless validation proves the profile itself is invalid.
 - **Preflight** failure is not **Runtime** failure; resolved: startup checks fail before the runtime performs task work.
-- **Model Preflight Preview** is not a secret display; resolved: show base URL, protocol, model, generated API key environment variable name, and configured/missing status without showing key values.
+- **Model Preflight Preview** is not a secret display; resolved: show endpoint base URL, protocol, model, generated API key environment variable name, and configured/missing status without showing key values.
 - **CLI Fallback** is not a bypass; resolved: CLI writes carry the same validation, provenance, audit, and blackboard semantics as other project interfaces.
 - **Task Event** and project-level history are distinct; resolved: task events are task-local timeline entries, while project-level records are security history.
 - **Task Event** is not raw output storage; resolved: preserve full output through logs or **Evidence Artifacts** and keep the task timeline structured.

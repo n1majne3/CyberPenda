@@ -3,6 +3,8 @@ package modelprovider_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -152,12 +154,9 @@ func TestEndpointValidationRejectsDuplicatesAndOperationSuffixes(t *testing.T) {
 
 func TestLegacyProviderBackfillsEndpointsFromBaseURLAndProtocols(t *testing.T) {
 	db := newStore(t)
-	now := "2026-07-08T00:00:00Z"
-	if _, err := db.Exec(
-		`INSERT INTO model_providers (id, name, base_url, protocols_json, catalog_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		"legacy", "Legacy", "https://hub.example.test/v1/",
-		`["openai_responses","anthropic_messages"]`, `{}`, now, now,
-	); err != nil {
+	if err := seedLegacyProvider(db, "legacy", "https://hub.example.test/v1/",
+		[]modelprovider.Protocol{modelprovider.ProtocolOpenAIResponses, modelprovider.ProtocolAnthropicMessages},
+		modelprovider.Catalog{}); err != nil {
 		t.Fatalf("insert legacy provider: %v", err)
 	}
 
@@ -173,6 +172,48 @@ func TestLegacyProviderBackfillsEndpointsFromBaseURLAndProtocols(t *testing.T) {
 	}
 	if !provider.Supports(modelprovider.ProtocolAnthropicMessages) {
 		t.Fatalf("legacy protocols were not derived from endpoints: %#v", provider.Protocols)
+	}
+}
+
+// TestLegacyProviderBackfillEndpointMatrix locks the endpoint-backfill
+// contract across the URL shapes called out for migration: /v1, /v2,
+// host-only, and deeper path prefixes. Non-Anthropic protocols copy the
+// normalized legacy base URL; anthropic_messages removes only the final
+// non-empty path segment with no other semantic URL repair.
+func TestLegacyProviderBackfillEndpointMatrix(t *testing.T) {
+	cases := []struct {
+		name     string
+		baseURL  string
+		protocol modelprovider.Protocol
+		want     string
+	}{
+		{"openai responses v1", "https://hub.example.test/v1/", modelprovider.ProtocolOpenAIResponses, "https://hub.example.test/v1"},
+		{"anthropic messages v1", "https://hub.example.test/v1/", modelprovider.ProtocolAnthropicMessages, "https://hub.example.test"},
+		{"openai responses v2", "https://provider.example.test/v2", modelprovider.ProtocolOpenAIResponses, "https://provider.example.test/v2"},
+		{"anthropic messages v2", "https://provider.example.test/v2", modelprovider.ProtocolAnthropicMessages, "https://provider.example.test"},
+		{"openai responses host only", "https://host-only.example.test", modelprovider.ProtocolOpenAIResponses, "https://host-only.example.test"},
+		{"anthropic messages host only unchanged", "https://host-only.example.test", modelprovider.ProtocolAnthropicMessages, "https://host-only.example.test"},
+		{"openai chat completions deeper path", "https://open.example.test/api/coding/paas/v4", modelprovider.ProtocolOpenAIChatCompletions, "https://open.example.test/api/coding/paas/v4"},
+		{"anthropic messages deeper path drops only final segment", "https://open.example.test/api/coding/paas/v4", modelprovider.ProtocolAnthropicMessages, "https://open.example.test/api/coding/paas"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newStore(t)
+			if err := seedLegacyProvider(db, "legacy", tc.baseURL, []modelprovider.Protocol{tc.protocol}, modelprovider.Catalog{}); err != nil {
+				t.Fatalf("insert legacy provider: %v", err)
+			}
+			provider, err := modelprovider.NewService(db).Get("legacy")
+			if err != nil {
+				t.Fatalf("get legacy provider: %v", err)
+			}
+			endpoint, ok := provider.EndpointFor(tc.protocol)
+			if !ok {
+				t.Fatalf("expected backfilled endpoint for %s, got %#v", tc.protocol, provider.Endpoints)
+			}
+			if endpoint.BaseURL != tc.want {
+				t.Fatalf("endpoint base URL = %q, want %q", endpoint.BaseURL, tc.want)
+			}
+		})
 	}
 }
 
@@ -333,6 +374,26 @@ func newStore(t *testing.T) *store.DB {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db
+}
+
+// seedLegacyProvider inserts an old-shape provider row carrying only the
+// provider-level base URL and protocols, without endpoints, so tests can
+// assert compatibility-backfill behavior during the transition.
+func seedLegacyProvider(db *store.DB, id, baseURL string, protocols []modelprovider.Protocol, catalog modelprovider.Catalog) error {
+	protocolsJSON, err := json.Marshal(protocols)
+	if err != nil {
+		return fmt.Errorf("encode protocols: %w", err)
+	}
+	catalogJSON, err := json.Marshal(catalog)
+	if err != nil {
+		return fmt.Errorf("encode catalog: %w", err)
+	}
+	now := "2026-07-08T00:00:00Z"
+	_, err = db.Exec(
+		`INSERT INTO model_providers (id, name, base_url, protocols_json, catalog_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id, "Legacy", baseURL, string(protocolsJSON), string(catalogJSON), now, now,
+	)
+	return err
 }
 
 func ptr(s string) *string { return &s }

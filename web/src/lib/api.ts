@@ -203,6 +203,7 @@ export interface ModelProviderMigrationPreview {
     base_url: string;
     model?: string;
     protocols?: string[];
+    endpoints?: ModelProviderEndpoint[];
     suggested_protocol?: string;
     api_key_env?: string;
   };

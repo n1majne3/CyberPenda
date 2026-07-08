@@ -108,6 +108,20 @@ export function ModelProviderMigrationPanel({ profileId, profileUpdatedAt, onMig
         )}
       </div>
 
+      {(preview.proposed.endpoints ?? []).length > 0 && (
+        <div className="space-y-1">
+          <p className="text-xs text-muted-foreground">Derived endpoints:</p>
+          <ul className="space-y-1 text-sm">
+            {(preview.proposed.endpoints ?? []).map((endpoint) => (
+              <li key={endpoint.protocol} className="flex flex-wrap items-center gap-2">
+                <Badge variant="outline">{endpoint.protocol}</Badge>
+                <code>{endpoint.base_url}</code>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {(preview.api_key_sources ?? []).length > 0 && (
         <div className="flex flex-wrap gap-1">
           {(preview.api_key_sources ?? []).map((source) => (
