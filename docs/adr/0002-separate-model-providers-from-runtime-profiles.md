@@ -30,10 +30,10 @@ Runtime profiles choose how a runtime CLI is launched and projected, while model
 - Legacy migration may show possible existing-provider matches, but users choose whether to reuse an existing provider or create a new one; matches are not auto-merged.
 - Successful legacy migration writes the model provider reference back to the runtime profile and clears migrated legacy model-service fields to avoid dual sources of truth.
 - A model provider may have protocol-specific base URLs under one shared non-secret provider configuration and API key source.
-- Multiple protocol endpoints for one provider commonly share the same URL origin while differing only by protocol path prefix, such as `/v1`, `/api/anthropic`, or `/api/coding/paas/v4`.
-- Protocol endpoints are stored as an `endpoints` list of `{protocol, base_url}` records rather than a map keyed by protocol.
+- Multiple Model Provider Endpoints for one provider commonly share the same URL origin while differing only by Model Protocol Path Prefix, such as `/v1`, `/api/anthropic`, or `/api/coding/paas/v4`.
+- Model Provider Endpoint records are stored as an `endpoints` list of `{protocol, base_url}` records rather than a map keyed by protocol.
 - Endpoint storage does not split origin and path prefix into separate canonical fields; management UI may expose that split as an editing convenience and save the composed `base_url`.
-- The Model Providers Page offers quick setup for the common case: enter one shared provider base URL, commonly up to the provider API version path such as `/v1` or `/v2`, then derive protocol endpoint `base_url` values from it.
+- The Model Providers Page offers quick setup for the common case: enter one shared provider base URL, commonly up to the provider API version path such as `/v1` or `/v2`, then derive Model Provider Endpoint `base_url` values from it.
 - Quick setup uses the shared provider base URL as the default `openai_chat_completions` and `openai_responses` `base_url`; it does not hardcode appending `/v1`.
 - Quick setup derives the default `anthropic_messages` `base_url` by removing the final non-empty URL path segment from the shared provider base URL when one exists.
 - Users can override individual endpoint `base_url` values when protocol paths differ; overrides save into the same composed `endpoints[]` shape.
@@ -45,7 +45,7 @@ Runtime profiles choose how a runtime CLI is launched and projected, while model
 - Model provider management rejects endpoint `base_url` values that already end with any known operation suffix after trailing slash normalization, including `/v1/messages`, `/messages`, `/v1/responses`, `/responses`, `/v1/chat/completions`, or `/chat/completions`, rather than silently stripping that suffix.
 - Model catalog refresh uses a derived URL ending in `/v1/models`.
 - Model catalog refresh derives its URL from an OpenAI-family endpoint origin, preferring `openai_chat_completions` over `openai_responses`, then appends `/v1/models`. It does not use arbitrary protocol URI paths such as `/api/anthropic` or `/api/coding/paas/v4` for the model-list URL.
-- For example, an OpenAI-family runtime endpoint `https://open.bigmodel.cn/api/coding/paas/v4` refreshes from `https://open.bigmodel.cn/v1/models`, not from the runtime endpoint path.
+- For example, an OpenAI-family Model Provider Endpoint with `base_url` `https://open.bigmodel.cn/api/coding/paas/v4` refreshes from `https://open.bigmodel.cn/v1/models`, not from that endpoint record's Model Protocol Path Prefix.
 - There is no custom `catalog_base_url` field; the model-list path is always `/v1/models`.
 - Existing providers with provider-level `base_url` and `protocols` are automatically backfilled by treating the normalized old `base_url` as legacy runtime base URL source data. Backfill creates one endpoint per old protocol.
 - Backfill derives `anthropic_messages` endpoint `base_url` by removing the final non-empty URL path segment from the old `base_url` when one exists, because Claude Code appends its own versioned messages operation path.

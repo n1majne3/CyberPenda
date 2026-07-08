@@ -809,10 +809,12 @@ describe("TaskLaunchPage", () => {
                 model_provider: {
                   model_provider_id: "mimo",
                   model_provider_name: "MiMo",
-                  base_url: "https://api.example.test/v1",
+                  endpoint_base_url: "https://endpoint.example.test/v1",
+                  base_url: "https://alias.example.test/v1",
                   protocol: "openai_responses",
                   model: "mimo-v2.5-pro",
                   api_key_env: "MIMO_API_KEY",
+                  api_key_source: "generated_env",
                 },
               }),
               { status: 200, headers: { "Content-Type": "application/json" } },
@@ -861,7 +863,9 @@ describe("TaskLaunchPage", () => {
     const preview = await screen.findByText("Model provider", { selector: "p" });
     expect(preview.parentElement).toHaveTextContent("MiMo");
     expect(preview.parentElement).toHaveTextContent(/mimo-v2\.5-pro via openai_responses/);
-    expect(preview.parentElement).toHaveTextContent("API key: MIMO_API_KEY");
+    expect(preview.parentElement).toHaveTextContent("https://endpoint.example.test/v1");
+    expect(preview.parentElement).not.toHaveTextContent("https://alias.example.test/v1");
+    expect(preview.parentElement).toHaveTextContent("API key: generated_env via MIMO_API_KEY");
   });
 
   it("sends launch model override when preset model changes", async () => {

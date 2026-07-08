@@ -430,6 +430,7 @@ export interface PreflightSkill {
 export interface PreflightModelProvider {
   model_provider_id?: string;
   model_provider_name?: string;
+  endpoint_base_url?: string;
   base_url?: string;
   protocol?: string;
   model?: string;

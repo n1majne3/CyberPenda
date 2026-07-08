@@ -41,6 +41,25 @@ describe("canSubmitModelProvider", () => {
     ).toBe(true);
   });
 
+  it("allows creating a draft provider before endpoints are configured", () => {
+    const form = {
+      name: "Draft",
+      base_url: "",
+      api_key: "sk-test",
+      protocols: [],
+      endpoint_base_urls: {},
+      manual_models: "",
+      default_model: "",
+    };
+
+    expect(canSubmitModelProvider(form, true)).toBe(true);
+    expect(buildModelProviderPayload(form)).toMatchObject({
+      name: "Draft",
+      base_url: "",
+      endpoints: [],
+    });
+  });
+
   it("builds endpoint payloads from shared quick setup and per-protocol overrides", () => {
     const payload = buildModelProviderPayload({
       name: "Split Provider",
@@ -180,5 +199,23 @@ describe("canSubmitModelProvider", () => {
         true,
       ),
     ).toBe(false);
+  });
+
+  it("rejects Anthropic operation suffixes before quick setup derivation", () => {
+    const form = {
+      name: "Bad",
+      base_url: "https://api.example.test/v1/messages/",
+      protocols: ["anthropic_messages"],
+      endpoint_base_urls: {},
+      manual_models: "",
+      default_model: "",
+      api_key: "sk-test",
+    };
+
+    const errors = endpointValidationErrors(form);
+
+    expect(errors.anthropic_messages).toMatch(/anthropic_messages/);
+    expect(errors.anthropic_messages).toMatch(/operation suffix/i);
+    expect(canSubmitModelProvider(form, true)).toBe(false);
   });
 });

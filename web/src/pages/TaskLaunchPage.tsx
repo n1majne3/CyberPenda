@@ -486,8 +486,12 @@ export function TaskLaunchPage() {
                   <div className="font-mono text-xs text-muted-foreground">
                     {preflight.model_provider.model} via {preflight.model_provider.protocol}
                   </div>
-                  <div className="text-xs text-muted-foreground">{preflight.model_provider.base_url}</div>
-                  <div className="font-mono text-xs text-muted-foreground">API key: {preflight.model_provider.api_key_env}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {preflight.model_provider.endpoint_base_url ?? preflight.model_provider.base_url}
+                  </div>
+                  <div className="font-mono text-xs text-muted-foreground">
+                    API key: {formatAPIKeyStatus(preflight.model_provider)}
+                  </div>
                 </div>
               </div>
             )}
@@ -563,6 +567,13 @@ function launchUnavailableReason({
   }
   if (!goal.trim()) return "Enter a Task goal before launching.";
   return null;
+}
+
+function formatAPIKeyStatus(modelProvider: NonNullable<PreflightResult["model_provider"]>): string {
+  if (modelProvider.api_key_source && modelProvider.api_key_env) {
+    return `${modelProvider.api_key_source} via ${modelProvider.api_key_env}`;
+  }
+  return modelProvider.api_key_source || modelProvider.api_key_env || "not configured";
 }
 
 function launchRunControls(

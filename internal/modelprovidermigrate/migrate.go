@@ -50,14 +50,14 @@ type ProviderMatch struct {
 }
 
 type Preview struct {
-	ProfileID         string                `json:"profile_id"`
-	ProfileName       string                `json:"profile_name"`
-	RuntimeProvider   string                `json:"runtime_provider"`
-	Eligible          bool                  `json:"eligible"`
-	Reason            string                `json:"reason,omitempty"`
-	Proposed          ProposedProvider      `json:"proposed"`
-	Matches           []ProviderMatch       `json:"matches"`
-	APIKeySources     []APIKeySourcePreview `json:"api_key_sources"`
+	ProfileID       string                `json:"profile_id"`
+	ProfileName     string                `json:"profile_name"`
+	RuntimeProvider string                `json:"runtime_provider"`
+	Eligible        bool                  `json:"eligible"`
+	Reason          string                `json:"reason,omitempty"`
+	Proposed        ProposedProvider      `json:"proposed"`
+	Matches         []ProviderMatch       `json:"matches"`
+	APIKeySources   []APIKeySourcePreview `json:"api_key_sources"`
 }
 
 type ApplyRequest struct {
@@ -69,8 +69,8 @@ type ApplyRequest struct {
 }
 
 type ApplyResult struct {
-	Profile  runtimeprofile.Profile  `json:"profile"`
-	Provider modelprovider.Provider  `json:"provider"`
+	Profile  runtimeprofile.Profile `json:"profile"`
+	Provider modelprovider.Provider `json:"provider"`
 }
 
 type Service struct {
@@ -137,6 +137,7 @@ func (s *Service) Apply(req ApplyRequest) (ApplyResult, error) {
 			Name:      name,
 			BaseURL:   preview.Proposed.BaseURL,
 			Protocols: preview.Proposed.Protocols,
+			Endpoints: preview.Proposed.Endpoints,
 			Catalog: modelprovider.Catalog{
 				Manual:       manualCatalog(preview.Proposed.Model),
 				DefaultModel: preview.Proposed.Model,
@@ -474,4 +475,3 @@ func legacyCredentialEnvNames(provider runtimeprofile.Provider) map[string]bool 
 	}
 	return names
 }
-

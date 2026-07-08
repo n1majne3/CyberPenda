@@ -71,6 +71,28 @@ func TestPreviewShowsDerivedEndpoints(t *testing.T) {
 	}
 }
 
+func TestPreviewRejectsOperationSuffixBeforeAnthropicAdaptation(t *testing.T) {
+	svc := newServices(t)
+	profile, err := svc.Profiles.Create("Claude Operation URL", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{
+		Endpoint: "https://api.example.test/v1/messages/",
+		Model:    "claude-sonnet",
+	})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+
+	preview, err := svc.Migrator.Preview(profile.ID)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if preview.Eligible {
+		t.Fatalf("expected operation-suffixed migration to be ineligible: %#v", preview.Proposed)
+	}
+	if preview.Reason == "" {
+		t.Fatal("expected preview to explain why endpoints could not be derived")
+	}
+}
+
 // TestPreviewAndApplyDeriveEndpointsConsistently covers the URL matrix from
 // the acceptance criteria (/v1, /v2, host-only, deeper path) and proves that
 // the preview's derived endpoints match the persisted provider endpoints after

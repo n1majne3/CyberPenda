@@ -113,6 +113,21 @@ func TestCreateUpdateAndFetchEndpointBackedProvider(t *testing.T) {
 	}
 }
 
+func TestCreateAllowsDraftProviderWithoutEndpoints(t *testing.T) {
+	svc := modelprovider.NewService(newStore(t))
+
+	created, err := svc.Create(modelprovider.CreateRequest{Name: "Draft Provider"})
+	if err != nil {
+		t.Fatalf("create draft provider: %v", err)
+	}
+	if created.BaseURL != "" {
+		t.Fatalf("draft base URL = %q, want empty", created.BaseURL)
+	}
+	if len(created.Protocols) != 0 || len(created.Endpoints) != 0 {
+		t.Fatalf("draft protocol state = protocols %#v endpoints %#v", created.Protocols, created.Endpoints)
+	}
+}
+
 func TestEndpointValidationRejectsDuplicatesAndOperationSuffixes(t *testing.T) {
 	svc := modelprovider.NewService(newStore(t))
 
@@ -149,6 +164,18 @@ func TestEndpointValidationRejectsDuplicatesAndOperationSuffixes(t *testing.T) {
 				t.Fatalf("expected operation URL %q to fail", tc.baseURL)
 			}
 		})
+	}
+}
+
+func TestBackfillRejectsOperationSuffixesBeforeAnthropicAdaptation(t *testing.T) {
+	svc := modelprovider.NewService(newStore(t))
+
+	if _, err := svc.Create(modelprovider.CreateRequest{
+		Name:      "Bad Anthropic",
+		BaseURL:   "https://api.example.test/v1/messages/",
+		Protocols: []modelprovider.Protocol{modelprovider.ProtocolAnthropicMessages},
+	}); err == nil {
+		t.Fatal("expected Anthropic operation URL to fail before final-segment adaptation")
 	}
 }
 

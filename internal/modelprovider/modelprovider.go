@@ -156,11 +156,15 @@ func (s *Service) Update(id string, req UpdateRequest) (Provider, error) {
 		existing.Name = name
 	}
 	if req.BaseURL != nil {
-		baseURL, err := NormalizeBaseURL(*req.BaseURL)
-		if err != nil {
-			return Provider{}, err
+		if strings.TrimSpace(*req.BaseURL) == "" {
+			existing.BaseURL = ""
+		} else {
+			baseURL, err := NormalizeBaseURL(*req.BaseURL)
+			if err != nil {
+				return Provider{}, err
+			}
+			existing.BaseURL = baseURL
 		}
-		existing.BaseURL = baseURL
 	}
 	if req.Protocols != nil {
 		protocols, err := NormalizeProtocols(*req.Protocols)
@@ -434,6 +438,9 @@ func BackfillEndpoints(baseURL string, protocols []Protocol) ([]Endpoint, error)
 	if err != nil {
 		return nil, err
 	}
+	if hasOperationSuffix(normalizedBaseURL) {
+		return nil, fmt.Errorf("%w: %q includes an operation suffix; provide the model protocol base URL before messages, responses, or chat/completions", ErrInvalidEndpointBaseURL, baseURL)
+	}
 	protocols, err = NormalizeProtocols(protocols)
 	if err != nil {
 		return nil, err
@@ -495,6 +502,16 @@ func normalizeRequestedEndpoints(baseURL string, protocols []Protocol, endpoints
 			return "", nil, err
 		}
 		return compatibilityBaseURL("", normalized), normalized, nil
+	}
+	protocols, err := NormalizeProtocols(protocols)
+	if err != nil {
+		return "", nil, err
+	}
+	if strings.TrimSpace(baseURL) == "" {
+		if len(protocols) == 0 {
+			return "", nil, nil
+		}
+		return "", nil, ErrMissingBaseURL
 	}
 	normalizedBaseURL, err := NormalizeBaseURL(baseURL)
 	if err != nil {

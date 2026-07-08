@@ -319,7 +319,8 @@ describe("ModelProvidersPage", () => {
     await userEvent.type(screen.getByLabelText("Base URL"), "https://hub.example.test/v1");
     await userEvent.type(screen.getByLabelText("API key"), "sk-test");
 
-    // Enable all three protocols. The default form only has openai_responses.
+    // Enable all three protocols from the blank draft form.
+    await userEvent.click(screen.getByRole("checkbox", { name: "openai_responses" }));
     await userEvent.click(screen.getByRole("checkbox", { name: "openai_chat_completions" }));
     await userEvent.click(screen.getByRole("checkbox", { name: "anthropic_messages" }));
 
@@ -343,6 +344,58 @@ describe("ModelProvidersPage", () => {
             byProtocol.openai_responses === "https://hub.example.test/v1" &&
             byProtocol.anthropic_messages === "https://hub.example.test"
           );
+        }),
+      ).toBe(true);
+    });
+  });
+
+  it("creates a draft provider without endpoint records", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/api/model-providers") && init?.method === "POST") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: "draft",
+              name: "Draft",
+              base_url: "",
+              endpoints: [],
+              api_key_env: "DRAFT_API_KEY",
+              catalog: {},
+              created_at: "2026-07-08T00:00:00Z",
+              updated_at: "2026-07-08T00:00:00Z",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      if (url.includes("/api/model-providers")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ providers: [] }), { status: 200, headers: { "Content-Type": "application/json" } }),
+        );
+      }
+      if (url.includes("/api/credential-bindings")) {
+        return Promise.resolve(new Response(JSON.stringify({ bindings: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+
+    await screen.findByText("No model providers yet.");
+    expect(screen.queryByLabelText("openai_responses endpoint base URL")).not.toBeInTheDocument();
+
+    await userEvent.type(await screen.findByLabelText("Name"), "Draft");
+    await userEvent.type(screen.getByLabelText("API key"), "sk-test");
+    await userEvent.click(screen.getByRole("button", { name: "Create provider" }));
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(([input, init]) => {
+          if (!String(input).includes("/api/model-providers") || init?.method !== "POST") return false;
+          const body = JSON.parse(String(init.body));
+          return body.name === "Draft" && body.base_url === "" && Array.isArray(body.endpoints) && body.endpoints.length === 0;
         }),
       ).toBe(true);
     });

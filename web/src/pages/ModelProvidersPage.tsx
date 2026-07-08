@@ -33,7 +33,7 @@ type Form = ModelProviderForm;
 const emptyForm: Form = {
   name: "",
   base_url: "",
-  protocols: ["openai_responses"],
+  protocols: [],
   endpoint_base_urls: {},
   manual_models: "",
   default_model: "",

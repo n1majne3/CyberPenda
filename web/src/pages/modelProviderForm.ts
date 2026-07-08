@@ -14,7 +14,7 @@ export function canSubmitModelProvider(
   form: Pick<ModelProviderForm, "name" | "base_url" | "api_key" | "protocols" | "endpoint_base_urls">,
   creating: boolean,
 ): boolean {
-  if (!form.name.trim() || !form.base_url.trim()) {
+  if (!form.name.trim()) {
     return false;
   }
   if (Object.keys(endpointValidationErrors(form)).length > 0) {
@@ -73,16 +73,17 @@ export function endpointValidationErrors(
       continue;
     }
     seen.add(protocol);
+    const rawBaseURL = endpointInputBaseURL(form, protocol);
     const baseURL = endpointBaseURLForProtocol(form, protocol);
-    if (!baseURL) {
+    if (!rawBaseURL) {
       errors[protocol] = `${protocol} endpoint base URL is required.`;
       continue;
     }
-    if (!isAbsoluteURL(baseURL)) {
+    if (!isAbsoluteURL(rawBaseURL)) {
       errors[protocol] = `${protocol} endpoint base URL must include scheme and host.`;
       continue;
     }
-    if (hasOperationSuffix(baseURL)) {
+    if (hasOperationSuffix(rawBaseURL) || hasOperationSuffix(baseURL)) {
       errors[protocol] = `${protocol} endpoint base URL must not include messages, responses, or chat/completions operation suffixes.`;
     }
   }
@@ -94,6 +95,13 @@ export function endpointBaseURLForProtocol(
   protocol: string,
 ): string {
   return normalizedBaseURL(form.endpoint_base_urls[protocol] ?? deriveEndpointBaseURL(form.base_url, protocol));
+}
+
+function endpointInputBaseURL(
+  form: Pick<ModelProviderForm, "base_url" | "endpoint_base_urls">,
+  protocol: string,
+): string {
+  return normalizedBaseURL(form.endpoint_base_urls[protocol] ?? form.base_url);
 }
 
 export function modelProviderProtocols(provider: ModelProvider): string[] {
