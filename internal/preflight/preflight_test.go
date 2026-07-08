@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"pentest/internal/credential"
@@ -772,6 +773,108 @@ func TestRunSkipsModelProviderCheckForLegacyConfig(t *testing.T) {
 		if check.Name == "model_provider" {
 			t.Fatalf("expected no model_provider check for legacy config, got %#v", check)
 		}
+	}
+}
+
+// TestRunPreviewsSelectedEndpointBaseURLWithoutSecrets locks the Model
+// Preflight Preview contract: the preview surfaces the selected endpoint base
+// URL, protocol, model, and API key source provenance without exposing the API
+// key value. The selected endpoint follows runtime plugin preference.
+func TestRunPreviewsSelectedEndpointBaseURLWithoutSecrets(t *testing.T) {
+	svc := newTestServices(t)
+	provider, err := svc.modelProviders.Create(modelprovider.CreateRequest{
+		Name: "Split Path",
+		Endpoints: []modelprovider.Endpoint{
+			{Protocol: modelprovider.ProtocolOpenAIResponses, BaseURL: "https://api.example.test/api/coding/paas/v4"},
+			{Protocol: modelprovider.ProtocolAnthropicMessages, BaseURL: "https://api.example.test/api/anthropic"},
+		},
+		Catalog: modelprovider.Catalog{Manual: []string{"glm"}, DefaultModel: "glm"},
+	})
+	if err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	t.Setenv(provider.APIKeyEnv, "sk-preview-secret-value")
+	profile, err := svc.profiles.Create("claude", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{
+		ModelProviderID: provider.ID,
+	})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+	})
+	if !result.Pass {
+		t.Fatalf("expected preflight to pass, got %#v", result.Checks)
+	}
+	if result.ModelProvider == nil {
+		t.Fatalf("expected model provider preview")
+	}
+	preview := result.ModelProvider
+	if preview.EndpointBaseURL != "https://api.example.test/api/anthropic" {
+		t.Fatalf("endpoint_base_url = %q", preview.EndpointBaseURL)
+	}
+	if preview.BaseURL != preview.EndpointBaseURL {
+		t.Fatalf("base_url alias = %q, want endpoint_base_url %q", preview.BaseURL, preview.EndpointBaseURL)
+	}
+	if preview.Protocol != string(modelprovider.ProtocolAnthropicMessages) {
+		t.Fatalf("protocol = %q", preview.Protocol)
+	}
+	if preview.Model != "glm" {
+		t.Fatalf("model = %q", preview.Model)
+	}
+	if preview.APIKeyEnv != provider.APIKeyEnv || preview.APIKeySource == "" {
+		t.Fatalf("api key source provenance missing: env=%q source=%q", preview.APIKeyEnv, preview.APIKeySource)
+	}
+	if preview.ProjectionTarget != "claude_settings" {
+		t.Fatalf("projection_target = %q", preview.ProjectionTarget)
+	}
+	// The preview is non-secret: the materialized API key value must never
+	// appear anywhere in the encoded result.
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("encode result: %v", err)
+	}
+	if strings.Contains(string(encoded), "sk-preview-secret-value") {
+		t.Fatalf("preflight preview leaked API key value: %s", encoded)
+	}
+}
+
+// TestRunFailsWhenProtocolPinHasNoCompatibleEndpoint locks the contract that a
+// strict Runtime Profile protocol pin surfaces as a Preflight failure when the
+// provider no longer has a compatible endpoint, rather than silently falling
+// back to another protocol.
+func TestRunFailsWhenProtocolPinHasNoCompatibleEndpoint(t *testing.T) {
+	svc := newTestServices(t)
+	provider, err := svc.modelProviders.Create(modelprovider.CreateRequest{
+		Name: "Anthropic Only",
+		Endpoints: []modelprovider.Endpoint{
+			{Protocol: modelprovider.ProtocolAnthropicMessages, BaseURL: "https://api.example.test/api/anthropic"},
+		},
+		Catalog: modelprovider.Catalog{Manual: []string{"glm"}, DefaultModel: "glm"},
+	})
+	if err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	t.Setenv(provider.APIKeyEnv, "sk-test")
+	profile, err := svc.profiles.Create("claude", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{
+		ModelProviderID:       provider.ID,
+		ModelProviderProtocol: string(modelprovider.ProtocolOpenAIResponses),
+	})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+	})
+	if result.Pass {
+		t.Fatal("expected preflight to fail for an incompatible protocol pin")
+	}
+	if !checkFailed(result, "model_provider") {
+		t.Fatalf("expected model_provider check to fail, got %#v", result.Checks)
 	}
 }
 

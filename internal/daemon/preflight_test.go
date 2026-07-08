@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -300,5 +301,100 @@ func TestPreflightBuiltinSkillPreviewUsesSourceFreeID(t *testing.T) {
 	}
 	if len(result.Skills) != 1 || result.Skills[0].ID != "vulnerabilities-xss" || result.Skills[0].Name != "vulnerabilities-xss" {
 		t.Fatalf("expected source-free builtin skill preview, got %#v", result.Skills)
+	}
+}
+
+// TestPreflightPreviewsSelectedEndpointBaseURL locks the daemon Model Preflight
+// Preview contract: the HTTP preflight preview surfaces the selected endpoint
+// base URL, protocol, model, and API key source status for a provider with
+// split protocol paths, without exposing API key values. Claude Code selects
+// the Anthropic Messages endpoint via runtime plugin preference.
+func TestPreflightPreviewsSelectedEndpointBaseURL(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+
+	createProvider := httptest.NewRequest(http.MethodPost, "/api/model-providers", bytes.NewReader([]byte(`{
+		"name":"Split Path",
+		"endpoints":[
+			{"protocol":"openai_responses","base_url":"https://api.example.test/api/coding/paas/v4"},
+			{"protocol":"anthropic_messages","base_url":"https://api.example.test/api/anthropic"}
+		],
+		"catalog":{"manual":["glm"],"default_model":"glm"}
+	}`)))
+	createProvider.Header.Set("Content-Type", "application/json")
+	providerResp := httptest.NewRecorder()
+	server.ServeHTTP(providerResp, createProvider)
+	if providerResp.Code != http.StatusCreated {
+		t.Fatalf("create provider status %d body %s", providerResp.Code, providerResp.Body.String())
+	}
+	var provider struct {
+		ID        string `json:"id"`
+		APIKeyEnv string `json:"api_key_env"`
+	}
+	if err := json.NewDecoder(providerResp.Body).Decode(&provider); err != nil {
+		t.Fatalf("decode provider: %v", err)
+	}
+	t.Setenv(provider.APIKeyEnv, "sk-daemon-preview-secret")
+
+	profileID := createRuntimeProfile(t, server, `{
+		"name":"Claude",
+		"provider":"claude_code",
+		"fields":{"model_provider_id":"`+provider.ID+`"}
+	}`)
+
+	body := []byte(`{
+		"runtime_profile_id":"` + profileID + `",
+		"runner":"sandbox"
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/preflight", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("preflight status %d body %s", resp.Code, resp.Body.String())
+	}
+	var result struct {
+		Pass bool `json:"pass"`
+		ModelProvider *struct {
+			EndpointBaseURL  string `json:"endpoint_base_url"`
+			BaseURL          string `json:"base_url"`
+			Protocol         string `json:"protocol"`
+			Model            string `json:"model"`
+			APIKeyEnv        string `json:"api_key_env"`
+			APIKeySource     string `json:"api_key_source"`
+			ProjectionTarget string `json:"projection_target"`
+		} `json:"model_provider"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode preflight: %v", err)
+	}
+	if !result.Pass {
+		t.Fatal("expected preflight to pass")
+	}
+	if result.ModelProvider == nil {
+		t.Fatal("expected model provider preview")
+	}
+	preview := result.ModelProvider
+	if preview.EndpointBaseURL != "https://api.example.test/api/anthropic" {
+		t.Fatalf("endpoint_base_url = %q", preview.EndpointBaseURL)
+	}
+	if preview.BaseURL != preview.EndpointBaseURL {
+		t.Fatalf("base_url alias = %q, want endpoint_base_url %q", preview.BaseURL, preview.EndpointBaseURL)
+	}
+	if preview.Protocol != "anthropic_messages" {
+		t.Fatalf("protocol = %q", preview.Protocol)
+	}
+	if preview.Model != "glm" {
+		t.Fatalf("model = %q", preview.Model)
+	}
+	if preview.APIKeyEnv != provider.APIKeyEnv || preview.APIKeySource == "" {
+		t.Fatalf("api key source provenance missing: env=%q source=%q", preview.APIKeyEnv, preview.APIKeySource)
+	}
+	if preview.ProjectionTarget != "claude_settings" {
+		t.Fatalf("projection_target = %q", preview.ProjectionTarget)
+	}
+	// The HTTP preview must not expose the API key value.
+	if strings.Contains(resp.Body.String(), "sk-daemon-preview-secret") {
+		t.Fatalf("preflight response leaked API key value: %s", resp.Body.String())
 	}
 }

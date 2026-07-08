@@ -260,3 +260,121 @@ func TestResolveModelProviderBackfillsLegacyProviderRow(t *testing.T) {
 		t.Fatalf("openai snapshot = %#v", snapshot)
 	}
 }
+
+// TestResolveModelProviderSelectsEndpointByRuntimePluginPreferenceForAuto
+// locks the contract that a Runtime Profile protocol pin of Auto (empty)
+// resolves a compatible endpoint from runtime plugin preference. Each runtime
+// receives the endpoint base URL for its preferred protocol, exactly as a
+// runtime-consumed base URL with no daemon-added operation suffix.
+func TestResolveModelProviderSelectsEndpointByRuntimePluginPreferenceForAuto(t *testing.T) {
+	svc := modelprovider.NewService(newStore(t))
+	provider, err := svc.Create(modelprovider.CreateRequest{
+		Name: "Split Origin",
+		Endpoints: []modelprovider.Endpoint{
+			{Protocol: modelprovider.ProtocolOpenAIResponses, BaseURL: "https://api.example.test/api/coding/paas/v4"},
+			{Protocol: modelprovider.ProtocolAnthropicMessages, BaseURL: "https://api.example.test/api/anthropic"},
+			{Protocol: modelprovider.ProtocolOpenAIChatCompletions, BaseURL: "https://api.example.test/api/coding/paas/v4"},
+		},
+		Catalog: modelprovider.Catalog{Manual: []string{"glm"}, DefaultModel: "glm"},
+	})
+	if err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	t.Setenv(provider.APIKeyEnv, "sk-test")
+
+	cases := []struct {
+		name             string
+		provider         runtimeprofile.Provider
+		wantProtocol     modelprovider.Protocol
+		wantEndpoint     string
+		wantProjectionOn string
+	}{
+		{
+			name:             "codex openai responses",
+			provider:         runtimeprofile.ProviderCodex,
+			wantProtocol:     modelprovider.ProtocolOpenAIResponses,
+			wantEndpoint:     "https://api.example.test/api/coding/paas/v4",
+			wantProjectionOn: "codex_home",
+		},
+		{
+			name:             "claude code anthropic messages",
+			provider:         runtimeprofile.ProviderClaudeCode,
+			wantProtocol:     modelprovider.ProtocolAnthropicMessages,
+			wantEndpoint:     "https://api.example.test/api/anthropic",
+			wantProjectionOn: "claude_settings",
+		},
+		{
+			name:             "pi prefers openai chat completions",
+			provider:         runtimeprofile.ProviderPi,
+			wantProtocol:     modelprovider.ProtocolOpenAIChatCompletions,
+			wantEndpoint:     "https://api.example.test/api/coding/paas/v4",
+			wantProjectionOn: "pi_agent",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			snapshot, err := modelprovider.Resolve(modelprovider.ResolveRequest{
+				Profile: runtimeprofile.Profile{
+					Provider: tc.provider,
+					Fields:   runtimeprofile.Fields{ModelProviderID: provider.ID},
+				},
+				Providers: svc,
+				Plugins:   runtimeplugin.MustBuiltinRegistry(),
+				CheckEnv:  true,
+			})
+			if err != nil {
+				t.Fatalf("resolve %s: %v", tc.provider, err)
+			}
+			if snapshot.Protocol != tc.wantProtocol {
+				t.Fatalf("protocol = %q, want %q", snapshot.Protocol, tc.wantProtocol)
+			}
+			if snapshot.EndpointBaseURL != tc.wantEndpoint {
+				t.Fatalf("endpoint_base_url = %q, want %q (no operation suffix)", snapshot.EndpointBaseURL, tc.wantEndpoint)
+			}
+			if snapshot.BaseURL != snapshot.EndpointBaseURL {
+				t.Fatalf("base_url alias = %q, want endpoint_base_url %q", snapshot.BaseURL, snapshot.EndpointBaseURL)
+			}
+			if snapshot.ProjectionTarget != tc.wantProjectionOn {
+				t.Fatalf("projection_target = %q, want %q", snapshot.ProjectionTarget, tc.wantProjectionOn)
+			}
+		})
+	}
+}
+
+// TestResolveModelProviderStrictProtocolPinFailsWhenEndpointRemoved locks the
+// contract that a strict Runtime Profile protocol pin does not silently fall
+// back to another protocol when the provider no longer has a compatible
+// endpoint, even when the runtime plugin could otherwise support alternatives.
+func TestResolveModelProviderStrictProtocolPinFailsWhenEndpointRemoved(t *testing.T) {
+	svc := modelprovider.NewService(newStore(t))
+	provider, err := svc.Create(modelprovider.CreateRequest{
+		Name: "Anthropic Only",
+		Endpoints: []modelprovider.Endpoint{
+			{Protocol: modelprovider.ProtocolAnthropicMessages, BaseURL: "https://api.example.test/api/anthropic"},
+		},
+		Catalog: modelprovider.Catalog{Manual: []string{"glm"}, DefaultModel: "glm"},
+	})
+	if err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	t.Setenv(provider.APIKeyEnv, "sk-test")
+
+	// Pi supports openai_chat_completions/openai_responses/anthropic_messages,
+	// but the pinned openai_responses endpoint was removed. Resolution must fail
+	// rather than silently selecting the available anthropic_messages endpoint.
+	_, err = modelprovider.Resolve(modelprovider.ResolveRequest{
+		Profile: runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderPi,
+			Fields: runtimeprofile.Fields{
+				ModelProviderID:       provider.ID,
+				ModelProviderProtocol: string(modelprovider.ProtocolOpenAIResponses),
+			},
+		},
+		Providers: svc,
+		Plugins:   runtimeplugin.MustBuiltinRegistry(),
+		CheckEnv:  true,
+	})
+	if err == nil {
+		t.Fatal("expected strict pin to fail when the pinned endpoint is unavailable")
+	}
+}
