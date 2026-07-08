@@ -16,7 +16,7 @@ export function ProjectNav() {
   const base = `/projects/${projectId}`;
 
   return (
-    <nav className="mb-6 flex flex-wrap gap-1 border-b border-border">
+    <nav aria-label="Project sections" className="flex flex-wrap gap-1 rounded-lg border border-border bg-card p-1 shadow-sm">
       {links.map((link) => (
         <NavLink
           key={link.to}
@@ -24,10 +24,10 @@ export function ProjectNav() {
           end={link.end}
           className={({ isActive }) =>
             cn(
-              "-mb-px border-b-2 px-3 py-2 text-sm transition-colors",
+              "rounded-md border px-3 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
               isActive
-                ? "border-primary font-medium text-foreground"
-                : "border-transparent text-muted-foreground hover:text-foreground",
+                ? "border-border bg-secondary font-medium text-foreground shadow-sm"
+                : "border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
             )
           }
         >
