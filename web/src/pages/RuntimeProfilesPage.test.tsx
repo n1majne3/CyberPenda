@@ -93,6 +93,80 @@ describe("RuntimeProfilesPage", () => {
     ).toHaveLength(1);
   });
 
+  it("uses the shared Geist settings layout for profile selection and details", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.includes("/api/runtime-profiles")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                profiles: [
+                  {
+                    id: "profile-1",
+                    name: "Codex Layout",
+                    provider: "codex",
+                    kind: "manual",
+                    fields: { model: "gpt-5" },
+                    created_at: "",
+                    updated_at: "2026-06-25T00:00:00Z",
+                  },
+                ],
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url.includes("/api/runtime-plugins")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ plugins: [] }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+        }
+        if (url.includes("/api/runtime-extensions") || url.includes("/api/runtime-extension-catalog")) {
+          return Promise.resolve(
+            new Response(JSON.stringify(url.includes("catalog") ? { items: [] } : { extensions: [] }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+        }
+        return Promise.resolve(
+          new Response(JSON.stringify({}), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }),
+    );
+
+    renderPage();
+
+    const layout = await screen.findByTestId("runtime-profiles-settings-layout");
+    expect(layout).toHaveClass(
+      "grid",
+      "min-w-0",
+      "lg:grid-cols-[minmax(220px,280px)_minmax(0,1fr)]",
+    );
+    expect(screen.getByTestId("runtime-profiles-settings-list")).toHaveClass(
+      "rounded-lg",
+      "border",
+      "bg-card",
+      "p-3",
+    );
+    expect(screen.getByTestId("runtime-profiles-settings-detail")).toHaveClass(
+      "min-w-0",
+      "overflow-hidden",
+    );
+
+    const profileButton = await screen.findByRole("button", { name: /Codex Layout/i });
+    expect(profileButton).toHaveAttribute("aria-current", "true");
+    expect(profileButton).toHaveClass("rounded-md", "focus-visible:ring-2");
+  });
+
   it("hides legacy model fields when a model provider is selected", async () => {
     vi.stubGlobal(
       "fetch",

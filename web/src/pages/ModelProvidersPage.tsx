@@ -1,9 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { RefreshCw, Trash2 } from "lucide-react";
 import { apiDelete, apiGet, apiPatch, apiPost, apiPut, type CredentialBinding, type ModelProvider } from "@/lib/api";
-import { Button, Card, Input, Label, Select, Textarea, Badge } from "@/components/ui";
+import { Button, Input, Label, Select, Textarea, Badge } from "@/components/ui";
 import { SaveActionButton } from "@/components/SaveActionButton";
-import { PageContainer } from "@/components/shared";
+import {
+  PageContainer,
+  SettingsAlert,
+  SettingsListPanel,
+  SettingsPageHeader,
+  SettingsPanel,
+  SettingsSplitLayout,
+} from "@/components/shared";
+import { settingsListItemClasses } from "@/components/sharedStyles";
 import { canSubmitModelProvider, providerApiKeyPlaceholder, type ModelProviderForm } from "./modelProviderForm";
 
 const PROTOCOLS = [
@@ -159,37 +167,36 @@ export function ModelProvidersPage() {
 
   return (
     <PageContainer className="max-w-6xl">
-      <div className="mb-6 flex items-start justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-semibold">Model providers</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Manage reusable model endpoints, supported protocols, model catalog, and generated API key env vars.
-          </p>
-        </div>
+      <SettingsPageHeader
+        title="Model providers"
+        description="Reusable model endpoints, supported protocols, catalogs, and generated API key env vars."
+        actions={
         <Button variant="outline" onClick={() => { setCreating(true); setSelectedId(""); setForm(emptyForm); }}>
           New provider
         </Button>
-      </div>
-      {error && <p className="mb-4 text-sm text-destructive">{error}</p>}
+        }
+      />
+      {error && <SettingsAlert>{error}</SettingsAlert>}
 
-      <div className="grid gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
-        <Card className="space-y-2 p-3">
+      <SettingsSplitLayout data-testid="model-providers-settings-layout">
+        <SettingsListPanel data-testid="model-providers-settings-list" className="space-y-2">
           {providers.length === 0 && <p className="text-sm text-muted-foreground">No model providers yet.</p>}
           {providers.map((provider) => (
             <button
               type="button"
               key={provider.id}
               aria-pressed={selectedId === provider.id && !creating}
-              className={`w-full rounded-md px-2.5 py-2 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${selectedId === provider.id && !creating ? "bg-primary/10 ring-1 ring-primary/30" : "hover:bg-muted/60"}`}
+              aria-current={selectedId === provider.id && !creating ? "true" : undefined}
+              className={settingsListItemClasses(selectedId === provider.id && !creating)}
               onClick={() => { setCreating(false); setSelectedId(provider.id); }}
             >
               <span className="block font-medium">{provider.name}</span>
               <span className="block truncate font-mono text-[11px] text-muted-foreground">{provider.api_key_env}</span>
             </button>
           ))}
-        </Card>
+        </SettingsListPanel>
 
-        <Card className="space-y-4 p-4">
+        <SettingsPanel data-testid="model-providers-settings-detail" className="space-y-4">
           <div className="grid gap-3 md:grid-cols-2">
             <div>
               <Label htmlFor="provider-name">Name</Label>
@@ -219,7 +226,7 @@ export function ModelProvidersPage() {
             </div>
           </div>
 
-          <Card className="space-y-3 border-muted bg-muted/20 p-3">
+          <div className="space-y-3 rounded-lg border border-border bg-muted/30 p-3">
             <div>
               <Label htmlFor="provider-api-key">API key</Label>
               <p className="mt-1 text-[11px] text-muted-foreground">
@@ -243,7 +250,7 @@ export function ModelProvidersPage() {
                   : <>Current source: {selectedBinding.source.kind}: {selectedBinding.source.value}. Enter an API key here to replace it with a local credential.</>}
               </p>
             )}
-          </Card>
+          </div>
 
           <fieldset>
             <legend className="text-sm font-medium leading-none text-muted-foreground">Supported protocols</legend>
@@ -309,8 +316,8 @@ export function ModelProvidersPage() {
             {selected && <Button variant="outline" onClick={() => refresh(selected)}><RefreshCw className="h-4 w-4" /> Refresh models</Button>}
             {selected && <Button variant="destructive" onClick={() => remove(selected)}><Trash2 className="h-4 w-4" /> Delete</Button>}
           </div>
-        </Card>
-      </div>
+        </SettingsPanel>
+      </SettingsSplitLayout>
     </PageContainer>
   );
 }

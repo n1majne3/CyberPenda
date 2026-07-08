@@ -17,6 +17,59 @@ function renderPage() {
 }
 
 describe("SkillsPage", () => {
+  it("uses the shared Geist settings layout for skill list and management panels", async () => {
+    mockApi({
+      "/api/runtime-profiles": {
+        profiles: [
+          {
+            id: "profile-1",
+            name: "Codex Default",
+            provider: "codex",
+            fields: {},
+            created_at: "",
+            updated_at: "",
+          },
+        ],
+      },
+      "/api/skills?runtime_profile_id=profile-1": {
+        skills: [
+          {
+            id: "recon-helper",
+            name: "Recon Helper",
+            description: "Reusable recon workflow",
+            enabled: true,
+            source_provenance: { kind: "npm", package: "@acme/recon-skill", ref: "1.2.3" },
+            created_at: "",
+            updated_at: "",
+          },
+        ],
+      },
+    });
+
+    renderPage();
+
+    const layout = await screen.findByTestId("skills-settings-layout");
+    expect(layout).toHaveClass(
+      "grid",
+      "min-w-0",
+      "lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]",
+    );
+    expect(screen.getByTestId("skills-settings-list")).toHaveClass("min-w-0", "space-y-3");
+    expect(screen.getByTestId("skills-form-panel")).toHaveClass(
+      "rounded-lg",
+      "border",
+      "bg-card",
+      "min-w-0",
+      "overflow-hidden",
+    );
+    expect(await screen.findByTestId("skill-card-recon-helper")).toHaveClass(
+      "rounded-lg",
+      "border",
+      "bg-card",
+      "min-w-0",
+    );
+  });
+
   it("lists global skills with source provenance and profile opt-out controls", async () => {
     const fetchMock = mockApi({
       "/api/runtime-profiles": {

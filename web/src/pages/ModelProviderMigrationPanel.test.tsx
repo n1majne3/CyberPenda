@@ -5,6 +5,44 @@ import { describe, expect, it, vi } from "vitest";
 import { ModelProviderMigrationPanel } from "./ModelProviderMigrationPanel";
 
 describe("ModelProviderMigrationPanel", () => {
+  it("presents the migration preview as an accessible Geist callout", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({
+              profile_id: "profile-1",
+              profile_name: "Codex CN",
+              runtime_provider: "codex",
+              eligible: true,
+              proposed: {
+                name: "Codex CN",
+                base_url: "https://api.example.test/v1",
+                model: "gpt-5",
+                suggested_protocol: "openai_responses",
+              },
+              matches: [],
+              api_key_sources: [{ kind: "inline_api_key", env_var: "OPENAI_API_KEY", configured: true }],
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        ),
+      ),
+    );
+
+    render(
+      <StrictMode>
+        <ModelProviderMigrationPanel profileId="profile-1" onMigrated={() => {}} onError={() => {}} />
+      </StrictMode>,
+    );
+
+    const callout = await screen.findByRole("region", { name: "Model provider migration" });
+    expect(callout).toHaveClass("rounded-lg", "border-info/20", "bg-muted/30");
+    expect(screen.getByRole("group", { name: "Migration target" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Migrate profile" })).toHaveClass("focus-visible:ring-2");
+  });
+
   it("shows migration actions for eligible legacy profiles", async () => {
     vi.stubGlobal(
       "fetch",

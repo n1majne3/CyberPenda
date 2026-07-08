@@ -18,6 +18,46 @@ describe("CredentialBindingsPage", () => {
     vi.restoreAllMocks();
   });
 
+  it("uses the shared Geist settings layout for bindings and the create panel", async () => {
+    mockApi({
+      "/api/credential-bindings": {
+        bindings: [
+          {
+            id: "binding-1",
+            credential_ref: "OPENAI_API_KEY",
+            scope: "global",
+            source: { kind: "env", value: "OPENAI_API_KEY" },
+            created_at: "",
+            updated_at: "",
+          },
+        ],
+      },
+      "/api/runtime-profiles": { profiles: [] },
+      "/api/model-providers": { providers: [] },
+    });
+
+    renderPage();
+
+    const layout = await screen.findByTestId("credential-bindings-settings-layout");
+    expect(layout).toHaveClass(
+      "grid",
+      "min-w-0",
+      "lg:grid-cols-[minmax(220px,280px)_minmax(0,1fr)]",
+    );
+    expect(screen.getByTestId("credential-bindings-settings-list")).toHaveClass(
+      "rounded-lg",
+      "border",
+      "bg-card",
+      "p-3",
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: /New binding/i }));
+
+    const panel = screen.getByTestId("credential-binding-create-panel");
+    expect(panel).toHaveClass("rounded-lg", "border", "bg-card", "min-w-0", "overflow-hidden");
+    expect(screen.getByRole("button", { name: "Create binding" })).toBeDisabled();
+  });
+
   it("associates creation labels with named controls", async () => {
     mockApi({
       "/api/credential-bindings": { bindings: [] },

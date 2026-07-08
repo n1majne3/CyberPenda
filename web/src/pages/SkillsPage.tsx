@@ -2,8 +2,14 @@ import { useEffect, useMemo, useState } from "react";
 import { BookOpen, PackagePlus, RefreshCw, Trash2 } from "lucide-react";
 import { apiDelete, apiGet, apiPost, apiPut, type RuntimeProfile, type Skill } from "@/lib/api";
 import { isLaunchResolvedProfile } from "@/pages/runtimeProfileKind";
-import { Badge, Button, Card, Input, Label, Select, Textarea } from "@/components/ui";
-import { PageContainer } from "@/components/shared";
+import { Badge, Button, Input, Label, Select, Textarea } from "@/components/ui";
+import {
+  PageContainer,
+  SettingsAlert,
+  SettingsPageHeader,
+  SettingsPanel,
+  SettingsSplitLayout,
+} from "@/components/shared";
 
 type SkillForm = {
   id: string;
@@ -169,32 +175,30 @@ export function SkillsPage() {
 
   return (
     <PageContainer className="max-w-6xl">
-      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h2 className="text-xl font-semibold">Skills</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Manage global runtime-agnostic Skill bundles. Skills are default-on for runtime profiles unless a profile opts out.
-          </p>
-        </div>
+      <SettingsPageHeader
+        title="Skills"
+        description="Global runtime-agnostic Skill bundles. Skills are default-on unless a profile opts out."
+        actions={
         <Button variant="outline" onClick={() => loadSkills()} aria-label="Refresh skills">
           <RefreshCw className="h-4 w-4" /> Refresh
         </Button>
-      </div>
+        }
+      />
 
-      {error && <p className="mb-4 text-sm text-destructive">{error}</p>}
+      {error && <SettingsAlert>{error}</SettingsAlert>}
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
-        <div className="space-y-4">
-          <Card>
+      <SettingsSplitLayout data-testid="skills-settings-layout" variant="management">
+        <div data-testid="skills-settings-list" className="min-w-0 space-y-3">
+          <SettingsPanel>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-	              <div>
-	                <Label htmlFor="skills-runtime-profile">Runtime profile view</Label>
-	                <Select
-	                  id="skills-runtime-profile"
-	                  name="runtime_profile"
-	                  value={profileId}
-	                  onChange={(event) => setProfileId(event.target.value)}
-	                >
+              <div>
+                <Label htmlFor="skills-runtime-profile">Runtime profile view</Label>
+                <Select
+                  id="skills-runtime-profile"
+                  name="runtime_profile"
+                  value={profileId}
+                  onChange={(event) => setProfileId(event.target.value)}
+                >
                   {profiles.length === 0 && <option value="">All profiles</option>}
                   {profiles.map((profile) => (
                     <option key={profile.id} value={profile.id}>
@@ -218,19 +222,19 @@ export function SkillsPage() {
                 {enabledCount} enabled / {skills.length} total
               </div>
             </div>
-          </Card>
+          </SettingsPanel>
 
           {skills.length === 0 ? (
-            <Card className="items-center py-10 text-center">
+            <SettingsPanel className="items-center py-10 text-center">
               <BookOpen className="h-8 w-8 text-muted-foreground" />
               <div>
                 <p className="font-medium">No Skills yet</p>
                 <p className="text-sm text-muted-foreground">Upload a bundle or import one through the controlled importer.</p>
               </div>
-            </Card>
+            </SettingsPanel>
           ) : (
             skills.map((skill) => (
-              <Card key={skill.id}>
+              <SettingsPanel key={skill.id} data-testid={`skill-card-${skill.id}`}>
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
@@ -261,13 +265,13 @@ export function SkillsPage() {
                     </Button>
                   </div>
                 </div>
-              </Card>
+              </SettingsPanel>
             ))
           )}
         </div>
 
-        <div className="space-y-4">
-          <Card>
+        <div className="min-w-0 space-y-4">
+          <SettingsPanel data-testid="skills-form-panel">
             <div>
               <h3 className="font-medium">Upload / edit Skill</h3>
               <p className="text-sm text-muted-foreground">Publishes a canonical bundle atomically. Reusing a Skill ID updates it.</p>
@@ -333,9 +337,9 @@ export function SkillsPage() {
                 Publish Skill
               </Button>
             </div>
-          </Card>
+          </SettingsPanel>
 
-          <Card>
+          <SettingsPanel>
             <div>
               <h3 className="font-medium">Import with npx skills</h3>
               <p className="text-sm text-muted-foreground">Structured import only; the daemon never accepts raw shell commands from this form.</p>
@@ -369,9 +373,9 @@ export function SkillsPage() {
                 <PackagePlus className="h-4 w-4" /> Import
               </Button>
             </div>
-          </Card>
+          </SettingsPanel>
         </div>
-      </div>
+      </SettingsSplitLayout>
     </PageContainer>
   );
 }

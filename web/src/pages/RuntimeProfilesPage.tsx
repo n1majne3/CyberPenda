@@ -14,9 +14,17 @@ import {
 } from "@/pages/runtimeProfileForm";
 import { isLaunchResolvedProfile, isManualRuntimeProfile } from "@/pages/runtimeProfileKind";
 import { cn } from "@/lib/utils";
-import { Button, Card, Input, Label, Badge, Textarea, Select } from "@/components/ui";
+import { Button, Input, Label, Badge, Textarea, Select } from "@/components/ui";
 import { SaveActionButton } from "@/components/SaveActionButton";
-import { PageContainer } from "@/components/shared";
+import {
+  PageContainer,
+  SettingsAlert,
+  SettingsListPanel,
+  SettingsPageHeader,
+  SettingsPanel,
+  SettingsSplitLayout,
+} from "@/components/shared";
+import { settingsListItemClasses } from "@/components/sharedStyles";
 
 const FALLBACK_PROVIDER_IDS = ["codex", "claude_code", "pi", "fake"] as const;
 // HIDDEN_PROVIDER_IDS are real, registered providers that should not be
@@ -116,12 +124,8 @@ function ProfileListButton({
     <button
       type="button"
       onClick={onSelect}
-      className={cn(
-        "w-full text-left rounded-md px-2.5 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
-        selected
-          ? "bg-primary/10 text-foreground ring-1 ring-primary/30"
-          : "hover:bg-muted/60 text-muted-foreground hover:text-foreground",
-      )}
+      aria-current={selected ? "true" : undefined}
+      className={settingsListItemClasses(selected)}
     >
       <span className="font-medium block truncate">{profile.name}</span>
       {profileListModelHint(profile.fields, modelProviders) && (
@@ -336,33 +340,28 @@ export function RuntimeProfilesPage() {
 
   return (
     <PageContainer className="max-w-6xl">
-      <div className="mb-6 space-y-3">
-        <div>
-          <h2 className="text-xl font-semibold">Runtime profiles</h2>
-          <p className="text-sm text-muted-foreground mt-1">
-            Advanced presets for MCP servers, skills, binary paths, runner defaults, and extension hooks.
-            Most launches only need Runtime + Model provider on the task launch page.
-          </p>
-        </div>
-        <Card className="border-border/70 bg-muted/20 p-3 text-sm text-muted-foreground">
+      <SettingsPageHeader
+        title="Runtime profiles"
+        description="Advanced presets for MCP servers, skills, binary paths, runner defaults, and extension hooks."
+      />
+      <div className="mb-6 rounded-lg border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
           Presets are intentional advanced configurations for MCP, skills, and extensions.
           Launch-resolved profiles are created automatically when a task launch matches runtime, model provider, and model override; they stay grouped separately until you promote one to a preset.
-        </Card>
       </div>
 
-      {error && <p className="text-sm text-destructive mb-4">{error}</p>}
+      {error && <SettingsAlert>{error}</SettingsAlert>}
 
-      <div className="grid grid-cols-1 lg:grid-cols-[240px_minmax(0,1fr)] gap-4 min-h-[520px]">
-        <Card className="p-3 flex flex-col gap-3">
+      <SettingsSplitLayout data-testid="runtime-profiles-settings-layout" className="min-h-[520px]">
+        <SettingsListPanel data-testid="runtime-profiles-settings-list" className="flex flex-col gap-3">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Profiles</span>
-	            <Button
-	              size="sm"
-	              variant="outline"
-	              aria-label="New runtime profile"
-	              onClick={() => {
-	                setCreating(true);
-	                setSelectedId(null);
+            <Button
+              size="sm"
+              variant="outline"
+              aria-label="New runtime profile"
+              onClick={() => {
+                setCreating(true);
+                setSelectedId(null);
                 setForm({ ...emptyForm, provider: defaultProvider(effectivePlugins) });
               }}
             >
@@ -446,9 +445,9 @@ export function RuntimeProfilesPage() {
               </p>
             )}
           </div>
-        </Card>
+        </SettingsListPanel>
 
-        <Card className="min-w-0 p-4">
+        <SettingsPanel data-testid="runtime-profiles-settings-detail" className="min-h-[520px]">
           {creating ? (
             <ProfileEditor
               title="New profile"
@@ -522,8 +521,8 @@ export function RuntimeProfilesPage() {
               Select a profile or create a new one.
             </div>
           )}
-        </Card>
-      </div>
+        </SettingsPanel>
+      </SettingsSplitLayout>
     </PageContainer>
   );
 }
@@ -1182,12 +1181,12 @@ function ProfileEditor({
         </div>}
       </div>
       {form.provider === "claude_code" && form.endpoint.includes("bigmodel.cn") && (
-        <Card className="border-muted bg-muted/20 p-3 text-xs text-muted-foreground space-y-1">
+        <div className="space-y-1 rounded-lg border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
           <p className="font-medium text-foreground">智谱 GLM runtime notes</p>
           <p>Endpoint: use <code className="text-[11px]">https://open.bigmodel.cn/api/anthropic</code> (not Minimax).</p>
           <p>Launch adds <code className="text-[11px]">--strict-mcp-config --mcp-config workdir/.mcp.json</code>; smoke may need <code className="text-[11px]">--permission-mode bypassPermissions</code> in custom args.</p>
           <p>Third-party APIs may not expose local MCP tools in the model tool list — allow JSON-RPC fallback to PENTEST_MCP_URL.</p>
-        </Card>
+        </div>
       )}
       {form.provider === "pi" && form.default_runner === "sandbox" && (
         <p className="text-[11px] text-muted-foreground">

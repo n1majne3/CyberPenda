@@ -86,6 +86,73 @@ describe("ModelProvidersPage", () => {
     });
   });
 
+  it("uses the shared Geist settings layout for provider selection and details", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.includes("/api/model-providers")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                providers: [
+                  {
+                    id: "mimo",
+                    name: "MiMo",
+                    base_url: "https://api.example.test/v1",
+                    protocols: ["openai_responses"],
+                    api_key_env: "MIMO_API_KEY",
+                    catalog: { manual: ["mimo-v2"], default_model: "mimo-v2" },
+                    created_at: "2026-06-25T00:00:00Z",
+                    updated_at: "2026-06-25T00:00:00Z",
+                  },
+                ],
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url.includes("/api/credential-bindings")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ bindings: [] }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+        }
+        return Promise.resolve(
+          new Response(JSON.stringify({}), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }),
+    );
+
+    renderPage();
+
+    const layout = await screen.findByTestId("model-providers-settings-layout");
+    expect(layout).toHaveClass(
+      "grid",
+      "min-w-0",
+      "lg:grid-cols-[minmax(220px,280px)_minmax(0,1fr)]",
+    );
+    expect(screen.getByTestId("model-providers-settings-list")).toHaveClass(
+      "rounded-lg",
+      "border",
+      "bg-card",
+      "p-3",
+    );
+    expect(screen.getByTestId("model-providers-settings-detail")).toHaveClass(
+      "min-w-0",
+      "overflow-hidden",
+    );
+
+    const providerButton = await screen.findByRole("button", { name: /MiMo/i });
+    expect(providerButton).toHaveAttribute("aria-current", "true");
+    expect(providerButton).toHaveClass("rounded-md", "focus-visible:ring-2");
+  });
+
   it("associates labels with named provider form controls", async () => {
     vi.stubGlobal(
       "fetch",

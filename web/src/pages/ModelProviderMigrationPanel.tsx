@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ArrowRightLeft } from "lucide-react";
 import { apiGet, apiPost, type ModelProviderMigrationPreview } from "@/lib/api";
-import { Button, Card, Input, Label, Badge, Select } from "@/components/ui";
+import { Button, Input, Label, Badge, Select } from "@/components/ui";
 
 type Props = {
   profileId: string;
@@ -85,9 +85,13 @@ export function ModelProviderMigrationPanel({ profileId, profileUpdatedAt, onMig
   const canMigrate = action === "create" ? !!providerName.trim() : !!providerId;
 
   return (
-    <Card className="space-y-3 border-primary/20 bg-primary/5 p-4">
+    <section
+      role="region"
+      aria-label="Model provider migration"
+      className="space-y-3 rounded-lg border border-info/20 bg-muted/30 p-4"
+    >
       <div className="flex items-start gap-2">
-        <ArrowRightLeft className="mt-0.5 h-4 w-4 text-primary" />
+        <ArrowRightLeft className="mt-0.5 h-4 w-4 text-info" />
         <div>
           <h3 className="text-sm font-medium">Migrate to model provider</h3>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -117,7 +121,7 @@ export function ModelProviderMigrationPanel({ profileId, profileUpdatedAt, onMig
         </div>
       )}
 
-      <fieldset className="space-y-2">
+      <fieldset className="space-y-2" role="group" aria-label="Migration target">
         <legend className="text-sm font-medium leading-none text-muted-foreground">Migration target</legend>
         <div className="flex flex-wrap gap-3 text-sm">
           <label className="inline-flex items-center gap-2">
@@ -173,6 +177,6 @@ export function ModelProviderMigrationPanel({ profileId, profileUpdatedAt, onMig
       <Button size="sm" onClick={() => void migrate()} disabled={!canMigrate || loading}>
         {loading ? "Migrating…" : "Migrate profile"}
       </Button>
-    </Card>
+    </section>
   );
 }
