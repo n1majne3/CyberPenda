@@ -269,6 +269,85 @@ describe("ModelProvidersPage", () => {
     });
   });
 
+  it("derives composed endpoints from a shared base URL in the quick setup flow", async () => {
+    // From scratch: one shared provider base URL should derive protocol-specific
+    // endpoints before save. OpenAI protocols use it as-is; Anthropic Messages
+    // drops the final /v1 segment. The saved payload holds composed endpoint
+    // records and no separate shared-base field.
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/api/model-providers") && init?.method === "POST") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: "hub",
+              name: "Hub",
+              base_url: "https://hub.example.test/v1",
+              endpoints: [
+                { protocol: "openai_chat_completions", base_url: "https://hub.example.test/v1" },
+                { protocol: "openai_responses", base_url: "https://hub.example.test/v1" },
+                { protocol: "anthropic_messages", base_url: "https://hub.example.test" },
+              ],
+              api_key_env: "HUB_API_KEY",
+              catalog: {},
+              created_at: "2026-07-08T00:00:00Z",
+              updated_at: "2026-07-08T00:00:00Z",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      if (url.includes("/api/model-providers")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ providers: [] }), { status: 200, headers: { "Content-Type": "application/json" } }),
+        );
+      }
+      if (url.includes("/api/credential-bindings")) {
+        return Promise.resolve(new Response(JSON.stringify({ bindings: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+
+    // Empty provider list starts on a blank New provider form.
+    await screen.findByText("No model providers yet.");
+    expect(screen.getByRole("button", { name: "Create provider" })).toBeDisabled();
+
+    await userEvent.type(await screen.findByLabelText("Name"), "Hub");
+    await userEvent.type(screen.getByLabelText("Base URL"), "https://hub.example.test/v1");
+    await userEvent.type(screen.getByLabelText("API key"), "sk-test");
+
+    // Enable all three protocols. The default form only has openai_responses.
+    await userEvent.click(screen.getByRole("checkbox", { name: "openai_chat_completions" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "anthropic_messages" }));
+
+    // The derived endpoint inputs reflect quick-setup derivation without the
+    // user typing a single per-protocol value.
+    expect(screen.getByLabelText("openai_chat_completions endpoint base URL")).toHaveValue("https://hub.example.test/v1");
+    expect(screen.getByLabelText("openai_responses endpoint base URL")).toHaveValue("https://hub.example.test/v1");
+    expect(screen.getByLabelText("anthropic_messages endpoint base URL")).toHaveValue("https://hub.example.test");
+
+    await userEvent.click(screen.getByRole("button", { name: "Create provider" }));
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(([input, init]) => {
+          if (!String(input).includes("/api/model-providers") || init?.method !== "POST") return false;
+          const body = JSON.parse(String(init.body));
+          if (body.shared_base_url !== undefined) return false;
+          const byProtocol = Object.fromEntries(body.endpoints.map((e: { protocol: string; base_url: string }) => [e.protocol, e.base_url]));
+          return (
+            byProtocol.openai_chat_completions === "https://hub.example.test/v1" &&
+            byProtocol.openai_responses === "https://hub.example.test/v1" &&
+            byProtocol.anthropic_messages === "https://hub.example.test"
+          );
+        }),
+      ).toBe(true);
+    });
+  });
+
   it("requires confirmation before deleting a model provider", async () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     const fetchMock = vi.fn((input: RequestInfo | URL) => {

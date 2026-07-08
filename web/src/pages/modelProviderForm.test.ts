@@ -2,9 +2,19 @@ import { describe, expect, it } from "vitest";
 import {
   buildModelProviderPayload,
   canSubmitModelProvider,
+  endpointBaseURLForProtocol,
   endpointValidationErrors,
   providerToModelProviderForm,
 } from "./modelProviderForm";
+
+// A minimal form for the quick-setup + validation cases, where only the shared
+// base URL, enabled protocols, and optional per-protocol overrides matter.
+const quickSetupForm = (
+  baseURL: string,
+  protocols: string[],
+  endpointBaseURLs: Record<string, string> = {},
+  name = "Hub",
+) => ({ name, base_url: baseURL, protocols, endpoint_base_urls: endpointBaseURLs });
 
 describe("canSubmitModelProvider", () => {
   it("requires an API key when creating a provider", () => {
@@ -77,6 +87,78 @@ describe("canSubmitModelProvider", () => {
     expect(form.endpoint_base_urls).toEqual({
       openai_responses: "https://api.example.test/v1",
       anthropic_messages: "https://api.example.test/api/anthropic",
+    });
+  });
+
+  describe("quick setup endpoint derivation", () => {
+    // OpenAI Chat Completions and OpenAI Responses use the shared provider base
+    // URL as-is; Anthropic Messages removes the final non-empty path segment so
+    // Claude Code can append its own versioned messages operation path.
+    it("uses the shared provider base URL as-is for OpenAI Chat Completions and Responses", () => {
+      const form = quickSetupForm("https://hub.example.test/v1", ["openai_chat_completions", "openai_responses"]);
+      expect(endpointBaseURLForProtocol(form, "openai_chat_completions")).toBe("https://hub.example.test/v1");
+      expect(endpointBaseURLForProtocol(form, "openai_responses")).toBe("https://hub.example.test/v1");
+    });
+
+    it.each(["/v1", "/v2"])(
+      "derives Anthropic Messages by removing the final path segment for %s",
+      (version) => {
+        const form = quickSetupForm(`https://hub.example.test${version}`, ["anthropic_messages"]);
+        expect(endpointBaseURLForProtocol(form, "anthropic_messages")).toBe("https://hub.example.test");
+      },
+    );
+
+    it("removes only the final non-empty path segment for deeper paths", () => {
+      // A Z.ai-like coding path: Anthropic drops only the last segment, not the
+      // whole prefix. This is pure segment splitting, not version detection.
+      const form = quickSetupForm("https://api.example.test/api/coding/paas/v4", ["anthropic_messages"]);
+      expect(endpointBaseURLForProtocol(form, "anthropic_messages")).toBe("https://api.example.test/api/coding/paas");
+    });
+
+    it("leaves a host-only shared base URL unchanged for Anthropic Messages", () => {
+      const form = quickSetupForm("https://hub.example.test", ["anthropic_messages"]);
+      expect(endpointBaseURLForProtocol(form, "anthropic_messages")).toBe("https://hub.example.test");
+    });
+
+    it("normalizes trailing slashes before deriving any protocol endpoint", () => {
+      const form = quickSetupForm("https://hub.example.test/v1/", ["openai_responses", "anthropic_messages"]);
+      expect(endpointBaseURLForProtocol(form, "openai_responses")).toBe("https://hub.example.test/v1");
+      expect(endpointBaseURLForProtocol(form, "anthropic_messages")).toBe("https://hub.example.test");
+    });
+
+    it("prefers an explicit per-protocol override over the derived value", () => {
+      const form = quickSetupForm(
+        "https://hub.example.test/v1",
+        ["anthropic_messages"],
+        { anthropic_messages: "https://hub.example.test/api/anthropic" },
+      );
+      expect(endpointBaseURLForProtocol(form, "anthropic_messages")).toBe("https://hub.example.test/api/anthropic");
+    });
+  });
+
+  describe("endpoint validation messaging", () => {
+    it("reports a protocol-specific duplicate protocol error", () => {
+      const errors = endpointValidationErrors(
+        quickSetupForm("https://api.example.test/v1", ["openai_responses", "openai_responses"], {}, "Bad"),
+      );
+      expect(errors.openai_responses).toMatch(/openai_responses/);
+      expect(errors.openai_responses).toMatch(/duplicate/i);
+    });
+
+    it("reports a protocol-specific missing base URL error when the shared base URL is blank", () => {
+      const errors = endpointValidationErrors(
+        quickSetupForm("", ["openai_responses"], {}, "Bad"),
+      );
+      expect(errors.openai_responses).toMatch(/openai_responses/);
+      expect(errors.openai_responses).toMatch(/required/i);
+    });
+
+    it("names the affected protocol when a base URL is not absolute", () => {
+      const errors = endpointValidationErrors(
+        quickSetupForm("api.example.test/v1", ["openai_responses"], {}, "Bad"),
+      );
+      expect(errors.openai_responses).toMatch(/openai_responses/);
+      expect(errors.openai_responses).toMatch(/scheme and host/i);
     });
   });
 
