@@ -35,16 +35,22 @@ export function FindingsPage() {
   const base = `/api/projects/${projectId}`;
 
   return (
-    <PageContainer className="max-w-4xl">
+    <PageContainer className="max-w-4xl space-y-6">
       <BackLink to={`/projects/${projectId}`}>Back to dashboard</BackLink>
       <ProjectNav />
-      <h2 className="text-xl font-semibold mb-6">Findings</h2>
+      <div>
+        <h2 className="text-xl font-semibold tracking-tight">Findings</h2>
+      </div>
 
       {error && <p className="text-sm text-destructive mb-4">{error}</p>}
 
       <Section title="Confirmed" base={base} items={confirmed} allFindingKeys={allFindingKeys} onMerged={loadFindings} />
       <Section title="Unconfirmed" base={base} items={unconfirmed} allFindingKeys={allFindingKeys} onMerged={loadFindings} muted />
-      {findings.length === 0 && !error && <p className="text-sm text-muted-foreground">No findings recorded yet.</p>}
+      {findings.length === 0 && !error && (
+        <Card as="section" variant="flat" className="border-dashed bg-muted/30 text-sm text-muted-foreground">
+          No findings recorded yet.
+        </Card>
+      )}
     </PageContainer>
   );
 }
@@ -65,8 +71,8 @@ function Section({
   muted?: boolean;
 }) {
   return (
-    <div className="mb-6">
-      <h3 className={`text-sm font-medium mb-2 ${muted ? "text-muted-foreground" : ""}`}>{title} ({items.length})</h3>
+    <section className="space-y-2">
+      <h3 className={`text-sm font-medium tracking-tight ${muted ? "text-muted-foreground" : ""}`}>{title} ({items.length})</h3>
       <div className="space-y-2">
         {items.map((f) => (
           <FindingCard
@@ -78,7 +84,7 @@ function Section({
           />
         ))}
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -137,12 +143,12 @@ function FindingCard({
   }
 
   return (
-    <Card>
+    <Card as="article">
       <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle className="flex items-center gap-2">
+        <CardTitle className="flex min-w-0 items-center gap-2">
           <FlaskConical className="h-4 w-4" /> {finding.title}
         </CardTitle>
-        <div className="flex gap-1">
+        <div className="flex flex-wrap justify-end gap-1">
           <SeverityBadge severity={finding.severity} />
           {finding.cvss_pending && (
             <Badge variant="warning"><AlertTriangle className="h-3 w-3 mr-1" />CVSS pending</Badge>

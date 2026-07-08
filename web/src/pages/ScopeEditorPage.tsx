@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Save } from "lucide-react";
+import { AlertTriangle, Save } from "lucide-react";
 import { apiGet, apiPatch, type Project, type RuntimeProfile, type Scope } from "@/lib/api";
 import { isManualRuntimeProfile } from "@/pages/runtimeProfileKind";
 import { ProjectNav } from "@/components/ProjectNav";
@@ -106,10 +106,11 @@ export function ScopeEditorPage() {
   if (!project || !draft) return <PageContainer className="text-muted-foreground">Loading…</PageContainer>;
 
   const field = (key: keyof ScopeDraft, label: string, placeholder: string, warning = false) => (
-    <div>
-      <Label htmlFor={`scope-${key}`} className={warning ? "text-warning" : undefined}>
+    <div className="space-y-2">
+      <Label htmlFor={`scope-${key}`} className={warning ? "flex items-center gap-2 text-warning" : undefined}>
+        {warning && <AlertTriangle className="h-3.5 w-3.5" />}
         {label}
-        {warning && <Badge variant="warning" className="ml-2">safety</Badge>}
+        {warning && <Badge variant="warning">safety limit</Badge>}
       </Label>
       <Textarea
         id={`scope-${key}`}
@@ -124,21 +125,23 @@ export function ScopeEditorPage() {
   );
 
   return (
-    <PageContainer className="max-w-3xl">
+    <PageContainer className="max-w-4xl space-y-6">
       <BackLink to={`/projects/${projectId}`}>Back to dashboard</BackLink>
       <ProjectNav />
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-xl font-semibold">Scope & defaults — {project.name}</h2>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h2 className="text-xl font-semibold tracking-tight">Scope & defaults — {project.name}</h2>
+        </div>
         <Button size="sm" onClick={save} disabled={saving}>
           <Save className="h-4 w-4 mr-1" /> {saving ? "Saving…" : "Save"}
         </Button>
       </div>
 
-      <Card className="mb-6">
+      <Card as="section">
         <CardHeader>
           <CardTitle>Project defaults</CardTitle>
         </CardHeader>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div>
             <Label htmlFor="scope-default-profile">Default runtime profile</Label>
             <Select
@@ -170,25 +173,35 @@ export function ScopeEditorPage() {
         </div>
       </Card>
 
-      <div className="space-y-4">
+      <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {field("domains", "Domains", "example.com\napi.example.com")}
         {field("ips", "IP addresses", "203.0.113.5")}
         {field("cidrs", "CIDRs", "203.0.113.0/24")}
         {field("urls", "URLs", "https://example.com/admin")}
         {field("ports", "Ports", "443\n8443")}
-        <Card className="border-warning/50">
+      </section>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <Card as="section" className="border-warning/25 bg-warning/5">
           <CardHeader>
-            <CardTitle className="text-warning">Exclusions (out of scope)</CardTitle>
+            <CardTitle className="flex items-center gap-2 text-warning">
+              <AlertTriangle className="h-4 w-4" /> Exclusions
+              <Badge variant="warning">non-actionable</Badge>
+            </CardTitle>
           </CardHeader>
-          <div>{field("excluded", "Excluded assets", "admin.example.com\nmail.example.com")}</div>
+          <div>{field("excluded", "Out-of-scope assets", "admin.example.com\nmail.example.com")}</div>
         </Card>
-        <Card className="border-warning/50">
+        <Card as="section" className="border-warning/25 bg-warning/5">
           <CardHeader>
-            <CardTitle className="text-warning">Testing limits</CardTitle>
+            <CardTitle className="flex items-center gap-2 text-warning">
+              <AlertTriangle className="h-4 w-4" /> Testing limits
+            </CardTitle>
           </CardHeader>
           <div>{field("testing_limits", "Authorized limits", "No destructive payloads\nBusiness hours only", true)}</div>
         </Card>
-        <div>
+      </div>
+
+      <section className="space-y-2">
           <Label htmlFor="scope-notes">Scope notes</Label>
           <Textarea
             id="scope-notes"
@@ -198,8 +211,7 @@ export function ScopeEditorPage() {
             placeholder="Free-form context for the runtime…"
             autoComplete="off"
           />
-        </div>
-      </div>
+      </section>
     </PageContainer>
   );
 }

@@ -4,7 +4,7 @@ import { FolderLock } from "lucide-react";
 import { apiGet, type EvidenceArtifact } from "@/lib/api";
 import { ProjectNav } from "@/components/ProjectNav";
 import { BackLink, PageContainer } from "@/components/shared";
-import { Card, Badge } from "@/components/ui";
+import { Card, Badge, CardHeader, CardTitle } from "@/components/ui";
 import { formatDateTime } from "@/lib/format";
 
 export function EvidencePage() {
@@ -31,34 +31,47 @@ export function EvidencePage() {
   }, {});
 
   return (
-    <PageContainer className="max-w-4xl">
+    <PageContainer className="max-w-4xl space-y-6">
       <BackLink to={`/projects/${projectId}`}>Back to dashboard</BackLink>
       <ProjectNav />
-      <h2 className="text-xl font-semibold mb-6">Evidence</h2>
+      <div>
+        <h2 className="text-xl font-semibold tracking-tight">Evidence</h2>
+      </div>
 
       {error && <p className="text-sm text-destructive mb-4">{error}</p>}
 
       {Object.entries(byTarget).map(([target, items]) => (
-        <div key={target} className="mb-4">
-          <h3 className="text-sm font-medium text-muted-foreground mb-2">{target}</h3>
+        <section key={target} className="space-y-2">
+          <h3 className="text-sm font-medium text-muted-foreground">{target}</h3>
           <div className="space-y-2">
             {items.map((e) => (
-              <Card key={e.id} className="flex-row items-center gap-3">
-                <FolderLock className="h-4 w-4 text-primary shrink-0" />
+              <Card key={e.id} as="article" className="flex-col gap-3 sm:flex-row sm:items-center">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/5 text-primary">
+                  <FolderLock className="h-4 w-4" />
+                </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-sm">{e.summary || e.evidence_key}</p>
                   <p className="text-xs text-muted-foreground font-mono truncate">{e.managed_path}</p>
                   {e.created_at && <p className="text-xs text-muted-foreground">{formatDateTime(e.created_at)}</p>}
                 </div>
-                <Badge variant="outline">{e.artifact_type}</Badge>
-                {e.sha256 && <Badge variant="outline">sha256: {e.sha256.slice(0, 8)}</Badge>}
+                <div className="flex max-w-full flex-wrap gap-1 sm:justify-end">
+                  <Badge variant="outline">{e.artifact_type}</Badge>
+                  {e.sha256 && <Badge variant="outline" className="max-w-full truncate">sha256: {e.sha256.slice(0, 8)}</Badge>}
+                </div>
               </Card>
             ))}
           </div>
-        </div>
+        </section>
       ))}
       {evidence.length === 0 && !error && (
-        <p className="text-sm text-muted-foreground">No evidence attached. Runtime workdir files require explicit attach or retain.</p>
+        <Card as="section" variant="flat" className="border-dashed bg-muted/30 text-sm text-muted-foreground">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <FolderLock className="h-4 w-4" /> No evidence attached.
+            </CardTitle>
+          </CardHeader>
+          Runtime workdir files require explicit attach or retain.
+        </Card>
       )}
     </PageContainer>
   );

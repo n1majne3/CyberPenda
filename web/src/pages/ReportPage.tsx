@@ -4,7 +4,7 @@ import { ClipboardList, Download } from "lucide-react";
 import { apiGet, apiPost, type Task } from "@/lib/api";
 import { ProjectNav } from "@/components/ProjectNav";
 import { BackLink, PageContainer } from "@/components/shared";
-import { Button, Card, Label, Select } from "@/components/ui";
+import { Button, Card, CardHeader, CardTitle, Label, Select } from "@/components/ui";
 
 export function ReportPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -53,12 +53,17 @@ export function ReportPage() {
   }
 
   return (
-    <PageContainer className="max-w-3xl">
+    <PageContainer className="max-w-4xl space-y-6">
       <BackLink to={`/projects/${projectId}`}>Back to dashboard</BackLink>
       <ProjectNav />
-      <h2 className="text-xl font-semibold mb-6">Generate report</h2>
+      <div>
+        <h2 className="text-xl font-semibold tracking-tight">Generate report</h2>
+      </div>
 
-      <Card className="mb-4 space-y-3">
+      <Card as="section" className="space-y-3">
+        <CardHeader>
+          <CardTitle>Report source</CardTitle>
+        </CardHeader>
         <div>
           <Label htmlFor="report-task">Task (for runner and scope context)</Label>
           <Select
@@ -73,7 +78,7 @@ export function ReportPage() {
             ))}
           </Select>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button size="sm" onClick={generate} disabled={generating}>
             <ClipboardList className="h-4 w-4 mr-1" /> {generating ? "Generating…" : "Generate"}
           </Button>
@@ -87,9 +92,16 @@ export function ReportPage() {
 
       {error && <p className="text-sm text-destructive mb-4">{error}</p>}
 
-      {markdown && (
-        <Card>
-          <pre className="text-xs whitespace-pre-wrap font-mono overflow-x-auto">{markdown}</pre>
+      {markdown ? (
+        <Card as="section" className="overflow-hidden">
+          <CardHeader>
+            <CardTitle>Report preview</CardTitle>
+          </CardHeader>
+          <pre className="max-h-[32rem] overflow-auto rounded-md border border-border bg-muted/30 p-3 text-xs font-mono whitespace-pre-wrap">{markdown}</pre>
+        </Card>
+      ) : (
+        <Card as="section" variant="flat" className="border-dashed bg-muted/30 text-sm text-muted-foreground">
+          No report generated yet.
         </Card>
       )}
     </PageContainer>

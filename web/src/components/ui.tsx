@@ -1,4 +1,5 @@
 import {
+  createElement,
   forwardRef,
   type ButtonHTMLAttributes,
   type HTMLAttributes,
@@ -29,16 +30,17 @@ const cardVariants = cva(
     defaultVariants: { variant: "default", size: "default" },
   },
 );
+type CardElement = "article" | "div" | "section";
 export interface CardProps
-  extends HTMLAttributes<HTMLDivElement>,
-    VariantProps<typeof cardVariants> {}
-export function Card({ className, variant, size, ...props }: CardProps) {
-  return (
-    <div
-      className={cn(cardVariants({ variant, size }), className)}
-      {...props}
-    />
-  );
+  extends HTMLAttributes<HTMLElement>,
+    VariantProps<typeof cardVariants> {
+  as?: CardElement;
+}
+export function Card({ as = "div", className, variant, size, ...props }: CardProps) {
+  return createElement(as, {
+    className: cn(cardVariants({ variant, size }), className),
+    ...props,
+  });
 }
 export function CardHeader({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return <div className={cn("flex flex-col", className)} {...props} />;

@@ -63,17 +63,19 @@ export function FactsPage() {
   }, {});
 
   return (
-    <PageContainer className="max-w-4xl">
+    <PageContainer className="max-w-4xl space-y-6">
       <BackLink to={`/projects/${projectId}`}>Back to dashboard</BackLink>
       <ProjectNav />
-      <h2 className="text-xl font-semibold mb-2">Blackboard</h2>
+      <div>
+        <h2 className="text-xl font-semibold tracking-tight">Blackboard</h2>
+      </div>
 
       {/* Task summaries belong to project memory (CONTEXT.md groups them with the
           blackboard), so they surface here rather than on a separate route. */}
       <TaskSummaries base={base} />
 
-      <div className="flex items-center justify-between mb-6 mt-6">
-        <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">Facts</h3>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <h3 className="text-sm font-medium uppercase text-muted-foreground">Facts</h3>
         <Button size="sm" variant="ghost" onClick={() => setShowDeprecated((v) => !v)}>
           {showDeprecated ? <EyeOff className="h-4 w-4 mr-1" /> : <Eye className="h-4 w-4 mr-1" />}
           {showDeprecated ? "Hide deprecated" : "Show deprecated"}
@@ -83,8 +85,8 @@ export function FactsPage() {
       {error && <p className="text-sm text-destructive mb-4">{error}</p>}
 
       {Object.entries(byCategory).map(([cat, items]) => (
-        <div key={cat} className="mb-4">
-          <h4 className="text-xs font-medium text-muted-foreground mb-2 uppercase tracking-wide">{cat}</h4>
+        <section key={cat} className="space-y-2">
+          <h4 className="text-xs font-medium uppercase text-muted-foreground">{cat}</h4>
           <div className="space-y-1">
             {items.map((f) => (
               <FactRow
@@ -99,9 +101,13 @@ export function FactsPage() {
               />
             ))}
           </div>
-        </div>
+        </section>
       ))}
-      {facts.length === 0 && !error && <p className="text-sm text-muted-foreground">No facts recorded yet.</p>}
+      {facts.length === 0 && !error && (
+        <Card as="section" variant="flat" className="border-dashed bg-muted/30 text-sm text-muted-foreground">
+          No facts recorded yet.
+        </Card>
+      )}
     </PageContainer>
   );
 }
@@ -190,14 +196,17 @@ function FactRow({
       <button
         type="button"
         aria-expanded={open}
-        className="w-full text-left flex items-center gap-2 p-2 rounded-md hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+        className="flex w-full items-center gap-2 rounded-lg border border-border bg-card p-3 text-left shadow-sm transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
         onClick={onToggle}
       >
         {open ? <ChevronDown className="h-4 w-4 shrink-0" /> : <ChevronRight className="h-4 w-4 shrink-0" />}
-        <span className={`text-sm ${deprecated ? "line-through text-muted-foreground" : ""}`}>{entry.summary}</span>
+        <span className={`min-w-0 flex-1 text-sm ${deprecated ? "line-through text-muted-foreground" : ""}`}>{entry.summary}</span>
         <ConfidenceBadge confidence={entry.confidence} />
         {entry.scope_status === "out_of_scope" && (
-          <Badge variant="warning">out-of-scope (non-actionable)</Badge>
+          <span className="flex flex-wrap gap-1">
+            <Badge variant="warning">out-of-scope</Badge>
+            <Badge variant="warning">non-actionable</Badge>
+          </span>
         )}
       </button>
       {open && (
@@ -349,7 +358,7 @@ function TaskSummaries({ base }: { base: string }) {
 
   if (!loaded) return null;
   return (
-    <Card className="space-y-2">
+    <Card as="section" className="space-y-2">
       <p className="text-xs font-medium text-muted-foreground flex items-center gap-1">
         <ScrollText className="h-3.5 w-3.5" /> Task summaries
       </p>
