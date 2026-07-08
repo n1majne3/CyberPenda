@@ -263,6 +263,15 @@ export function TaskLaunchPage() {
   const hostBlocked = hostRunner && !hostActivated;
   const launchReady =
     canLaunch(goal, form, { presetId }) && (presetMode || compatibleProviders.length > 0);
+  const launchDisabledReason = launching
+    ? null
+    : launchUnavailableReason({
+      goal,
+      form,
+      presetMode,
+      compatibleProviderCount: compatibleProviders.length,
+      hostBlocked,
+    });
 
   return (
     <PageContainer className="max-w-2xl">
@@ -281,7 +290,7 @@ export function TaskLaunchPage() {
             autoComplete="off"
           />
         </div>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div>
             <Label htmlFor="launch-runtime">Runtime</Label>
             <Select
@@ -333,7 +342,7 @@ export function TaskLaunchPage() {
             </Select>
           </div>
         )}
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div>
             <Label htmlFor="launch-model-provider">Model provider</Label>
             <Select
@@ -516,12 +525,44 @@ export function TaskLaunchPage() {
 
         {error && <p className="text-sm text-destructive">{error}</p>}
 
+        {launchDisabledReason && (
+          <p className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 p-3 text-sm text-warning">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>{launchDisabledReason}</span>
+          </p>
+        )}
+
         <Button onClick={launch} disabled={!launchReady || launching || hostBlocked}>
           <Rocket className="h-4 w-4 mr-1" /> {launching ? "Launching…" : "Launch"}
         </Button>
       </div>
     </PageContainer>
   );
+}
+
+function launchUnavailableReason({
+  goal,
+  form,
+  presetMode,
+  compatibleProviderCount,
+  hostBlocked,
+}: {
+  goal: string;
+  form: Pick<LaunchForm, "runtime" | "modelProviderId">;
+  presetMode: boolean;
+  compatibleProviderCount: number;
+  hostBlocked: boolean;
+}) {
+  if (hostBlocked) return "Activate the Host runner acknowledgement before launching.";
+  if (!form.runtime.trim()) return "Select a runtime before launching.";
+  if (!presetMode && compatibleProviderCount === 0) {
+    return "Select a compatible model provider before launching.";
+  }
+  if (!presetMode && !form.modelProviderId.trim()) {
+    return "Select a model provider before launching.";
+  }
+  if (!goal.trim()) return "Enter a Task goal before launching.";
+  return null;
 }
 
 function launchRunControls(

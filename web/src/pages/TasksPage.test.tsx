@@ -48,4 +48,25 @@ describe("TasksPage", () => {
     const goals = ["Newer running", "Older running", "Newer completed", "Older completed"];
     expect(links.map((link) => goals.find((goal) => link.textContent?.includes(goal)))).toEqual(goals);
   });
+
+  it("keeps long task goals inside focusable Geist task cards", async () => {
+    const longGoal =
+      "Investigate a-super-long-hostname-that-should-wrap-without-overlapping-status-or-metadata.example.internal";
+    mockApi({
+      "/api/projects/project-1/tasks": {
+        tasks: [
+          task("long-goal", longGoal, "running", "2026-01-04T00:00:00Z"),
+        ],
+      },
+    });
+
+    renderPage();
+
+    const goal = await screen.findByText(longGoal);
+    expect(goal).toHaveClass("break-words");
+    expect(goal).not.toHaveClass("truncate");
+    expect(screen.getByRole("link", { name: /a-super-long-hostname/i })).toHaveClass(
+      "focus-visible:ring-2",
+    );
+  });
 });

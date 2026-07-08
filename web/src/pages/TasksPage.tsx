@@ -1,20 +1,26 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ListChecks, Plus } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Circle, ListChecks, Loader2, PauseCircle, Plus, Square } from "lucide-react";
 import { apiGet, type Task } from "@/lib/api";
 import { ProjectNav } from "@/components/ProjectNav";
 import { Badge, Button, Card } from "@/components/ui";
 import { BackLink, PageContainer } from "@/components/shared";
 import { formatDateTime } from "@/lib/format";
 
-const STATUS_VARIANT: Record<string, "primary" | "success" | "warning" | "destructive" | "outline"> = {
-  running: "primary",
-  completed: "success",
-  pending: "outline",
-  paused: "warning",
-  failed: "destructive",
-  stopped: "outline",
-  interrupted: "warning",
+const STATUS_META: Record<
+  string,
+  {
+    variant: "primary" | "success" | "warning" | "destructive" | "outline";
+    icon: typeof Circle;
+  }
+> = {
+  running: { variant: "primary", icon: Loader2 },
+  completed: { variant: "success", icon: CheckCircle2 },
+  pending: { variant: "outline", icon: Circle },
+  paused: { variant: "warning", icon: PauseCircle },
+  failed: { variant: "destructive", icon: AlertTriangle },
+  stopped: { variant: "outline", icon: Square },
+  interrupted: { variant: "warning", icon: AlertTriangle },
 };
 
 export function TasksPage() {
@@ -39,7 +45,7 @@ export function TasksPage() {
       <BackLink to="/">All projects</BackLink>
       <ProjectNav />
 
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h2 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
           <ListChecks className="h-5 w-5 text-primary" /> Tasks
         </h2>
@@ -61,17 +67,24 @@ export function TasksPage() {
 
       <div className="space-y-2">
         {sortTasksForDisplay(tasks).map((task) => (
-          <Link key={task.id} to={`${base}/tasks/${task.id}`} className="group">
+          <Link
+            key={task.id}
+            to={`${base}/tasks/${task.id}`}
+            className="group block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          >
             <Card className="transition-[background-color,box-shadow] hover:bg-accent/40 hover:ring-foreground/20">
-              <div className="flex items-start justify-between gap-3">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium group-hover:text-foreground">{task.goal || "(no goal)"}</p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {formatDateTime(task.created_at)} · runner {task.runner}
+                  <p className="break-words font-medium leading-snug group-hover:text-foreground">
+                    {task.goal || "(no goal)"}
                   </p>
+                  <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                    <span>{formatDateTime(task.created_at)}</span>
+                    <span>runner {task.runner}</span>
+                  </div>
                 </div>
-                <div className="flex shrink-0 gap-1">
-                  <Badge variant={STATUS_VARIANT[task.status] ?? "outline"}>{task.status}</Badge>
+                <div className="flex shrink-0 flex-wrap gap-1 sm:justify-end">
+                  <TaskStatusBadge status={task.status} />
                 </div>
               </div>
             </Card>
@@ -79,6 +92,17 @@ export function TasksPage() {
         ))}
       </div>
     </PageContainer>
+  );
+}
+
+function TaskStatusBadge({ status }: { status: string }) {
+  const meta = STATUS_META[status] ?? { variant: "outline" as const, icon: Circle };
+  const Icon = meta.icon;
+  return (
+    <Badge variant={meta.variant}>
+      <Icon className={`h-3 w-3 ${status === "running" ? "animate-spin motion-reduce:animate-none" : ""}`} />
+      {status}
+    </Badge>
   );
 }
 

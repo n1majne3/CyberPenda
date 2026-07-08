@@ -172,6 +172,17 @@ describe("TaskDetailPage", () => {
     expect(searches.at(-1)).toBe("?view=timeline");
   });
 
+  it("uses shared Geist radii for conversation message surfaces", async () => {
+    stubTaskDetailApi();
+
+    renderPage("/projects/project-1/tasks/task-1?view=conversation");
+
+    expect(await screen.findByText("Conversation should be hidden by default")).toBeInTheDocument();
+    const message = screen.getByTestId("transcript-message-bubble");
+    expect(message).toHaveClass("rounded-lg");
+    expect(message).not.toHaveClass("rounded-2xl");
+  });
+
   it("does not auto-scroll the default timeline view to the bottom", async () => {
     const { scrollIntoView } = stubTaskDetailApi();
 
@@ -179,6 +190,21 @@ describe("TaskDetailPage", () => {
 
     expect(await screen.findByText("Timeline opened first")).toBeInTheDocument();
     expect(scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it("gives task tabs focus rings and names the auto-follow state", async () => {
+    stubTaskDetailApi();
+
+    renderPage();
+
+    expect(await screen.findByText("Timeline opened first")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Timeline" })).toHaveClass("focus-visible:ring-2");
+    expect(screen.getByRole("button", { name: "Conversation" })).toHaveClass("focus-visible:ring-2");
+    expect(screen.getByRole("button", { name: "Scroll to top" })).toHaveClass("focus-visible:ring-2");
+    expect(screen.getByRole("button", { name: /Scroll to latest \(auto-follow on\)/i })).toHaveClass(
+      "h-9",
+      "w-9",
+    );
   });
 
   it("shows the latest continuation summary when present", async () => {

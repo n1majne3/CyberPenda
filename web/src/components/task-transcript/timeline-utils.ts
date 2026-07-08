@@ -106,7 +106,7 @@ export function buildFilterOptions(items: TimelineItem[]): [string, string][] {
   for (const item of items) {
     if (item.tool && (item.type === "tool_use" || item.type === "tool_result")) {
       const key = `tool:${item.tool}`;
-      if (!options.has(key)) options.set(key, key);
+      if (!options.has(key)) options.set(key, item.tool);
     } else {
       const value = item.type;
       if (!options.has(value)) {

@@ -1265,4 +1265,65 @@ describe("TaskLaunchPage", () => {
     expect(screen.getByLabelText("Runtime")).not.toBeDisabled();
     expect(screen.getByLabelText("Model provider")).not.toBeDisabled();
   });
+
+  it("explains unavailable launch actions with visible text", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.includes("/api/runtime-plugins")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ plugins: [codexPlugin] }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+        }
+        if (url.includes("/api/model-providers")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ providers: [] }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+        }
+        if (url.includes("/api/runtime-profiles")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ profiles: [] }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+        }
+        if (url.includes("/api/projects/project-1")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                id: "project-1",
+                name: "Acme",
+                description: "",
+                scope: {},
+                defaults: { runner: "sandbox" },
+                created_at: "",
+                updated_at: "",
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        return Promise.resolve(
+          new Response(JSON.stringify({}), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }),
+    );
+
+    renderPage();
+
+    expect(await screen.findByText("No compatible providers")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Launch/i })).toBeDisabled();
+    expect(screen.getByText(/Select a compatible model provider/i)).toBeInTheDocument();
+  });
 });

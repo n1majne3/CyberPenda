@@ -15,6 +15,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui";
 import { formatClockTime, formatCompactDateTime, formatDateTime } from "@/lib/format";
 import type { Task } from "@/lib/api";
 import type { TimelineItem, TranscriptSortDirection } from "./types";
@@ -127,30 +128,30 @@ export function AgentTranscriptView({ task, items, profileName, isLive = false }
   const toolCount = items.filter((item) => item.type === "tool_use").length;
 
   const statusBadge = isLive ? (
-    <span className="inline-flex items-center gap-1 rounded-full bg-info/15 px-2 py-0.5 text-xs font-medium text-info">
+    <Badge size="sm" variant="info">
       <Loader2 className="h-3 w-3 animate-spin motion-reduce:animate-none" />
       Running
-    </span>
+    </Badge>
   ) : task.status === "completed" ? (
-    <span className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-xs font-medium text-success">
+    <Badge size="sm" variant="success">
       <CheckCircle2 className="h-3 w-3" />
       Completed
-    </span>
+    </Badge>
   ) : task.status === "failed" ? (
-    <span className="inline-flex items-center gap-1 rounded-full bg-destructive/15 px-2 py-0.5 text-xs font-medium text-destructive">
+    <Badge size="sm" variant="destructive">
       <XCircle className="h-3 w-3" />
       Failed
-    </span>
+    </Badge>
   ) : (
-    <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground capitalize">
+    <Badge size="sm" variant="outline" className="capitalize">
       {task.status}
-    </span>
+    </Badge>
   );
 
   return (
-    <div className="flex min-h-[32rem] flex-col overflow-hidden rounded-xl border border-border bg-card">
+    <div className="flex min-h-[32rem] flex-col overflow-hidden rounded-lg border border-border bg-card">
       <div className="shrink-0 space-y-2 border-b px-4 py-3">
-        <div className="flex items-center gap-3">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
           <div className="flex items-center gap-2">
             <div className="flex h-6 w-6 items-center justify-center rounded-full bg-info/10 text-info">
               <Bot className="h-3.5 w-3.5" />
@@ -158,7 +159,7 @@ export function AgentTranscriptView({ task, items, profileName, isLive = false }
             <span className="text-sm font-medium">{profileName ?? "Agent"}</span>
           </div>
           {statusBadge}
-          <div className="ml-auto flex items-center gap-1">
+          <div className="flex flex-wrap items-center gap-1 sm:ml-auto">
             {items.length > 1 && (
               <SortDirectionToggle value={sortDirection} onChange={handleSortDirectionChange} />
             )}
@@ -171,14 +172,14 @@ export function AgentTranscriptView({ task, items, profileName, isLive = false }
                   className={cn(
                     "flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
                     selectedTools.size > 0
-                      ? "bg-blue-500/10 text-blue-600 hover:bg-blue-500/20 dark:text-blue-400"
+                      ? "bg-info/10 text-info hover:bg-info/15"
                       : "text-muted-foreground hover:bg-accent hover:text-foreground",
                   )}
                 >
                   <Filter className="h-3 w-3" />
                   Filter
                   {selectedTools.size > 0 && (
-                    <span className="ml-0.5 rounded-full bg-blue-500/20 px-1.5 py-0 text-[10px] font-medium">
+                    <span className="ml-0.5 rounded-full bg-info/15 px-1.5 py-0 text-[10px] font-medium">
                       {selectedTools.size}
                     </span>
                   )}
@@ -189,6 +190,7 @@ export function AgentTranscriptView({ task, items, profileName, isLive = false }
                       <label key={value} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-accent">
                         <input
                           type="checkbox"
+                          aria-label={label.replace(/^tool:/i, "")}
                           checked={selectedTools.has(value)}
                           onChange={() => toggleTool(value)}
                           className="rounded border-input"

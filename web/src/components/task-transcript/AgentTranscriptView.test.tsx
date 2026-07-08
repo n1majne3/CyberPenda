@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import type { Task } from "@/lib/api";
 import { AgentTranscriptView } from "./AgentTranscriptView";
@@ -68,6 +69,40 @@ describe("AgentTranscriptView", () => {
       expect(segment).toHaveClass("focus-visible:ring-2");
     }
     expect(screen.getByRole("button", { name: /Newest/i })).toHaveClass("focus-visible:ring-2");
+  });
+
+  it("uses shared Geist radii for transcript chrome and status badges", () => {
+    const { container } = render(
+      <AgentTranscriptView
+        task={task}
+        items={[{ seq: 1, type: "text", content: "Timeline opened" }]}
+      />,
+    );
+
+    expect(container.firstChild).toHaveClass("rounded-lg");
+    expect(container.firstChild).not.toHaveClass("rounded-xl");
+    expect(screen.getByText("Completed")).toHaveClass("rounded-md");
+    expect(screen.getByText("Completed")).not.toHaveClass("rounded-full");
+  });
+
+  it("uses semantic Geist tokens for active transcript filters", async () => {
+    const user = userEvent.setup();
+    render(
+      <AgentTranscriptView
+        task={task}
+        items={[
+          { seq: 1, type: "tool_use", tool: "shell", input: { command: "ls" } },
+          { seq: 2, type: "tool_result", tool: "shell", output: "ok" },
+        ]}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /Filter/i }));
+    await user.click(screen.getByLabelText("shell"));
+
+    const filterButton = screen.getByRole("button", { name: /^Filter/i });
+    expect(filterButton).toHaveClass("bg-info/10", "text-info");
+    expect(filterButton).not.toHaveClass("bg-blue-500/10");
   });
 
   it("honors reduced motion classes and typographic ellipses in dynamic states", async () => {

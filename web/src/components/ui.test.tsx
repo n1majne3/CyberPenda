@@ -123,6 +123,7 @@ describe("Badge", () => {
   it.each([
     ["default"],
     ["primary"],
+    ["info"],
     ["success"],
     ["warning"],
     ["destructive"],

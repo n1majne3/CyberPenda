@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, type RefObject } from "react";
 import { useParams, Link, useSearchParams } from "react-router-dom";
-import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, FileText, Shield, ChevronRight, Wrench, User, Bot, ArrowDown, ArrowUp } from "lucide-react";
+import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, FileText, Shield, ChevronRight, Wrench, User, Bot, ArrowDown, ArrowUp, CheckCircle2 } from "lucide-react";
 import { apiGet, apiPost, type ModelProvider, type RuntimePlugin, type RuntimeProfile, type Task, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Card, Input, Badge, Select } from "@/components/ui";
 import { BackLink, PageContainer } from "@/components/shared";
@@ -257,9 +257,9 @@ export function TaskDetailPage() {
     <PageContainer ref={pageRef} className="max-w-4xl">
       <BackLink to={`/projects/${projectId}`}>Back to dashboard</BackLink>
 
-      <div className="mb-2 flex items-center justify-between">
-        <h2 className="text-xl font-semibold tracking-tight">{task.goal}</h2>
-        <div className="flex gap-2">
+      <div className="mb-2 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <h2 className="min-w-0 break-words text-xl font-semibold tracking-tight">{task.goal}</h2>
+        <div className="flex flex-wrap gap-2 sm:justify-end">
           {!running && (
             <Button size="sm" variant="outline" onClick={resumeNative} disabled={!nativeResumeAvailable} title={nativeResumeAvailable ? "Resume native session" : nativeResumeReason}>
               <Play className="h-4 w-4" /> Resume
@@ -277,14 +277,14 @@ export function TaskDetailPage() {
           )}
         </div>
       </div>
-      <div className="mb-6 flex gap-2">
+      <div className="mb-6 flex flex-wrap gap-2">
         <StatusBadge status={task.status} />
         <Badge variant={task.runner === "host" ? "destructive" : "outline"}>
           runner: {task.runner}
         </Badge>
       </div>
       {currentContinuation && (
-        <div className="mb-6 flex gap-2">
+        <div className="mb-6 flex flex-wrap gap-2">
           <Badge variant="outline">continuation #{currentContinuation.number}</Badge>
           <Badge variant="outline">runtime: {currentContinuation.runtime_provider}</Badge>
           <Badge variant="outline">continuation status: {currentContinuation.status}</Badge>
@@ -294,16 +294,16 @@ export function TaskDetailPage() {
       )}
 
       <div className="mb-6 flex flex-wrap gap-2 text-sm">
-        <Link to={`/projects/${projectId}/facts`} className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground">
+        <Link to={`/projects/${projectId}/facts`} className="inline-flex items-center gap-1 rounded-md text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background">
           <FileText className="h-4 w-4" /> Facts
         </Link>
-        <Link to={`/projects/${projectId}/findings`} className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground">
+        <Link to={`/projects/${projectId}/findings`} className="inline-flex items-center gap-1 rounded-md text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background">
           <Shield className="h-4 w-4" /> Findings
         </Link>
-        <Link to={`/projects/${projectId}/evidence`} className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground">
+        <Link to={`/projects/${projectId}/evidence`} className="inline-flex items-center gap-1 rounded-md text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background">
           <Terminal className="h-4 w-4" /> Evidence
         </Link>
-        <Link to={`/projects/${projectId}/report`} className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground">
+        <Link to={`/projects/${projectId}/report`} className="inline-flex items-center gap-1 rounded-md text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background">
           <FileText className="h-4 w-4" /> Report
         </Link>
       </div>
@@ -323,7 +323,7 @@ export function TaskDetailPage() {
         />
         <div className="flex flex-wrap gap-2 items-center">
           <Select
-            className="max-w-xs"
+            className="min-w-0 flex-1 sm:max-w-xs"
             name="continuation_model_provider"
             value={continuationModelProvider}
             onChange={(e) => selectContinuationModelProvider(e.target.value)}
@@ -335,7 +335,7 @@ export function TaskDetailPage() {
             ))}
           </Select>
           <Select
-            className="max-w-xs"
+            className="min-w-0 flex-1 sm:max-w-xs"
             name="continuation_model"
             value={continuationModelOverride}
             onChange={(e) => setContinuationModelOverride(e.target.value)}
@@ -399,7 +399,7 @@ export function TaskDetailPage() {
 
 function tabClass(active: boolean) {
   return [
-    "inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm",
+    "inline-flex items-center gap-1.5 rounded-t-md border-b-2 px-3 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
     active ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
   ].join(" ");
 }
@@ -429,13 +429,27 @@ function FloatingScrollControls({
   onTop: () => void;
   onBottom: () => void;
 }) {
+  const latestLabel = autoFollow
+    ? "Scroll to latest (auto-follow on)"
+    : "Scroll to latest (auto-follow off)";
+
   return (
     <div className="fixed bottom-5 right-5 z-30 flex flex-col gap-2">
       <Button size="sm" variant="outline" className="h-9 w-9 p-0 shadow-md" onClick={onTop} aria-label="Scroll to top" title="Top">
         <ArrowUp className="h-4 w-4" />
       </Button>
-      <Button size="sm" variant={autoFollow ? "secondary" : "outline"} className="h-9 w-9 p-0 shadow-md" onClick={onBottom} aria-label="Scroll to bottom" title="Bottom">
+      <Button
+        size="sm"
+        variant={autoFollow ? "secondary" : "outline"}
+        className="relative h-9 w-9 p-0 shadow-md"
+        onClick={onBottom}
+        aria-label={latestLabel}
+        title={latestLabel}
+      >
         <ArrowDown className="h-4 w-4" />
+        {autoFollow && (
+          <CheckCircle2 className="absolute right-0.5 top-0.5 h-3 w-3 text-primary" aria-hidden="true" />
+        )}
       </Button>
     </div>
   );
@@ -494,7 +508,10 @@ function TranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
           <Icon className="h-4 w-4" />
         </span>
       )}
-      <div className={`min-w-0 max-w-[85%] rounded-2xl border px-4 py-3 shadow-sm ${isUser ? "border-primary/20 bg-primary/10" : "border-border bg-card"}`}>
+      <div
+        data-testid="transcript-message-bubble"
+        className={`min-w-0 max-w-[85%] rounded-lg border px-4 py-3 shadow-sm ${isUser ? "border-primary/20 bg-primary/10" : "border-border bg-card"}`}
+      >
         <div className="mb-1 text-xs text-muted-foreground">
           #{entry.seq} {entry.role}{entry.created_at && ` · ${formatDateTime(entry.created_at)}`}
         </div>
