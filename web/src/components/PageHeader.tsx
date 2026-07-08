@@ -1,17 +1,38 @@
 import type { HTMLAttributes, ReactNode } from "react";
+import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 /*
  * Consistent sticky top bar. Pages compose a PageHeaderTitle (left) plus an
  * optional PageHeaderActions slot (right) and an optional description below.
  */
-export function PageHeader({ className, children, ...props }: HTMLAttributes<HTMLDivElement>) {
+const pageHeaderVariants = cva(
+  "sticky top-0 z-20 flex items-center gap-3 border-b",
+  {
+    variants: {
+      variant: {
+        default: "bg-background/80 backdrop-blur-sm",
+        solid: "bg-background",
+        flat: "bg-transparent",
+      },
+      size: {
+        compact: "h-10 px-3",
+        default: "h-12 px-4",
+        spacious: "h-14 px-5",
+      },
+    },
+    defaultVariants: { variant: "default", size: "default" },
+  },
+);
+
+export interface PageHeaderProps
+  extends HTMLAttributes<HTMLDivElement>,
+    VariantProps<typeof pageHeaderVariants> {}
+
+export function PageHeader({ className, children, variant, size, ...props }: PageHeaderProps) {
   return (
     <div
-      className={cn(
-        "sticky top-0 z-20 flex h-12 items-center gap-3 border-b bg-background/80 px-4 backdrop-blur-sm",
-        className,
-      )}
+      className={cn(pageHeaderVariants({ variant, size }), className)}
       {...props}
     >
       {children}
@@ -19,9 +40,26 @@ export function PageHeader({ className, children, ...props }: HTMLAttributes<HTM
   );
 }
 
-export function PageHeaderTitle({ className, children }: { className?: string; children: ReactNode }) {
+const pageHeaderTitleVariants = cva("truncate font-semibold", {
+  variants: {
+    size: {
+      sm: "text-xs",
+      default: "text-sm",
+      lg: "text-base",
+    },
+  },
+  defaultVariants: { size: "default" },
+});
+
+export interface PageHeaderTitleProps
+  extends VariantProps<typeof pageHeaderTitleVariants> {
+  className?: string;
+  children: ReactNode;
+}
+
+export function PageHeaderTitle({ className, children, size }: PageHeaderTitleProps) {
   return (
-    <h2 className={cn("truncate text-sm font-semibold", className)}>
+    <h2 className={cn(pageHeaderTitleVariants({ size }), className)}>
       {children}
     </h2>
   );

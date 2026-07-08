@@ -23,6 +23,17 @@ describe("PageHeader", () => {
     expect(container.firstChild).toHaveClass("h-12", "border-b");
   });
 
+  it("exposes Geist-compatible variants and sizes", () => {
+    const { container } = render(
+      <PageHeader variant="solid" size="compact">
+        <PageHeaderTitle size="sm">Projects</PageHeaderTitle>
+      </PageHeader>,
+    );
+    expect(container.firstChild).toHaveClass("h-10", "px-3", "bg-background");
+    expect(container.firstChild).not.toHaveClass("h-12", "bg-background/80");
+    expect(container.querySelector("h2")).toHaveClass("text-xs");
+  });
+
   it("renders an actions slot on the right", () => {
     const { getByText } = render(
       <PageHeader>
