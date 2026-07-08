@@ -35,11 +35,18 @@ function intersection(left: string[], right: string[]): string[] {
   return left.filter((item) => allowed.has(item));
 }
 
+export function modelProviderSupportedProtocols(provider: ModelProvider): string[] {
+  if (provider.endpoints?.length) {
+    return provider.endpoints.map((endpoint) => endpoint.protocol);
+  }
+  return provider.protocols ?? [];
+}
+
 export function compatibleProtocolsForRuntime(
   plugin: RuntimePlugin | undefined,
   provider: ModelProvider,
 ): string[] {
-  return intersection(plugin?.model_provider?.supported_protocols ?? [], provider.protocols ?? []);
+  return intersection(plugin?.model_provider?.supported_protocols ?? [], modelProviderSupportedProtocols(provider));
 }
 
 export function isModelProviderCompatibleWithRuntime(

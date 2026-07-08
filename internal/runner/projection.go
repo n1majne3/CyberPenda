@@ -22,15 +22,15 @@ var secretEnvKeyPattern = regexp.MustCompile(`(?i)(token|api[_-]?key|secret|pass
 
 // ProjectionRequest supplies task and daemon context for launch projection.
 type ProjectionRequest struct {
-	ProjectID         string
-	TaskID            string
-	ScopeSnapshot     project.Scope
-	Credentials       *credential.Service
-	DaemonAddr        string
-	AuthToken         string
-	Sandbox           bool
-	RuntimePlugins    *runtimeplugin.Registry
-	RuntimeExtensions *runtimeextension.Registry
+	ProjectID           string
+	TaskID              string
+	ScopeSnapshot       project.Scope
+	Credentials         *credential.Service
+	DaemonAddr          string
+	AuthToken           string
+	Sandbox             bool
+	RuntimePlugins      *runtimeplugin.Registry
+	RuntimeExtensions   *runtimeextension.Registry
 	ModelProviders      modelprovider.ProviderGetter
 	ModelSnapshot       *modelprovider.Snapshot
 	LaunchModelOverride string
@@ -309,7 +309,7 @@ func runtimePluginForProvider(provider runtimeprofile.Provider, registry *runtim
 
 func profileWithModelSnapshot(profile runtimeprofile.Profile, snapshot modelprovider.Snapshot) runtimeprofile.Profile {
 	profile.Fields.Model = snapshot.Model
-	profile.Fields.Endpoint = snapshot.BaseURL
+	profile.Fields.Endpoint = snapshot.EndpointBaseURL
 	if profile.Fields.Env == nil {
 		profile.Fields.Env = map[string]string{}
 	}
@@ -322,7 +322,7 @@ func profileWithModelSnapshot(profile runtimeprofile.Profile, snapshot modelprov
 		profile.Fields.Env["PI_PROVIDER_ID"] = snapshot.ModelProviderID
 		profile.Fields.Env["PI_API"] = piAPIForProtocol(snapshot.Protocol)
 	case runtimeprofile.ProviderClaudeCode:
-		profile.Fields.Env["ANTHROPIC_BASE_URL"] = snapshot.BaseURL
+		profile.Fields.Env["ANTHROPIC_BASE_URL"] = snapshot.EndpointBaseURL
 		profile.Fields.Env["ANTHROPIC_MODEL"] = snapshot.Model
 	}
 	return profile
@@ -618,6 +618,7 @@ func addModelSnapshotPreview(preview map[string]any, snapshot *modelprovider.Sna
 	preview["model_provider_snapshot"] = map[string]any{
 		"model_provider_id":   snapshot.ModelProviderID,
 		"model_provider_name": snapshot.ModelProviderName,
+		"endpoint_base_url":   snapshot.EndpointBaseURL,
 		"base_url":            snapshot.BaseURL,
 		"protocol":            string(snapshot.Protocol),
 		"model":               snapshot.Model,

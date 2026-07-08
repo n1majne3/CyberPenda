@@ -29,6 +29,7 @@ func (server *Server) handleCreateModelProvider(response http.ResponseWriter, re
 		Name      string                   `json:"name"`
 		BaseURL   string                   `json:"base_url"`
 		Protocols []modelprovider.Protocol `json:"protocols"`
+		Endpoints []modelprovider.Endpoint `json:"endpoints"`
 		Catalog   modelprovider.Catalog    `json:"catalog"`
 	}
 	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
@@ -39,6 +40,7 @@ func (server *Server) handleCreateModelProvider(response http.ResponseWriter, re
 		Name:      input.Name,
 		BaseURL:   input.BaseURL,
 		Protocols: input.Protocols,
+		Endpoints: input.Endpoints,
 		Catalog:   input.Catalog,
 	})
 	if err != nil {
@@ -62,6 +64,7 @@ func (server *Server) handleUpdateModelProvider(response http.ResponseWriter, re
 		Name      *string                   `json:"name"`
 		BaseURL   *string                   `json:"base_url"`
 		Protocols *[]modelprovider.Protocol `json:"protocols"`
+		Endpoints *[]modelprovider.Endpoint `json:"endpoints"`
 		Catalog   *modelprovider.Catalog    `json:"catalog"`
 	}
 	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
@@ -72,6 +75,7 @@ func (server *Server) handleUpdateModelProvider(response http.ResponseWriter, re
 		Name:      input.Name,
 		BaseURL:   input.BaseURL,
 		Protocols: input.Protocols,
+		Endpoints: input.Endpoints,
 		Catalog:   input.Catalog,
 	})
 	if err != nil {
@@ -134,7 +138,9 @@ func writeModelProviderError(response http.ResponseWriter, err error) {
 		writeError(response, http.StatusNotFound, err.Error())
 	case errors.Is(err, modelprovider.ErrMissingName),
 		errors.Is(err, modelprovider.ErrMissingBaseURL),
-		errors.Is(err, modelprovider.ErrInvalidProtocol):
+		errors.Is(err, modelprovider.ErrInvalidProtocol),
+		errors.Is(err, modelprovider.ErrDuplicateEndpointProtocol),
+		errors.Is(err, modelprovider.ErrInvalidEndpointBaseURL):
 		writeError(response, http.StatusBadRequest, err.Error())
 	case errors.Is(err, modelprovider.ErrInUse):
 		writeError(response, http.StatusConflict, err.Error())

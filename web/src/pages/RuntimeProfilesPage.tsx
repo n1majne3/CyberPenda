@@ -7,7 +7,9 @@ import { enrichPreviewWithModelProvider } from "@/pages/runtimeProfilePreview";
 import {
   applyModelProviderSelection,
   buildProfileFields,
+  compatibleProtocolsForRuntime,
   isModelProviderCompatibleWithRuntime,
+  modelProviderSupportedProtocols,
   profileListModelHint,
   selectableModelProviders,
   showLegacyModelFields,
@@ -593,11 +595,6 @@ function pluginFor(plugins: RuntimePlugin[], provider: string): RuntimePlugin | 
   return plugins.find((plugin) => plugin.id === provider);
 }
 
-function intersection(left: string[], right: string[]) {
-  const allowed = new Set(right);
-  return left.filter((item) => allowed.has(item));
-}
-
 function modelProviderModels(provider: ModelProvider) {
   return Array.from(new Set([...(provider.catalog?.manual ?? []), ...(provider.catalog?.refreshed ?? [])])).sort();
 }
@@ -658,7 +655,7 @@ function ProfileEditor({
   const plugin = pluginFor(plugins, form.provider);
   const selectableProviders = selectableModelProviders(modelProviders, plugin, form.model_provider_id);
   const selectedModelProvider = modelProviders.find((provider) => provider.id === form.model_provider_id);
-  const compatibleProtocols = intersection(plugin?.model_provider?.supported_protocols ?? [], selectedModelProvider?.protocols ?? []);
+  const compatibleProtocols = selectedModelProvider ? compatibleProtocolsForRuntime(plugin, selectedModelProvider) : [];
   const providerModels = selectedModelProvider ? modelProviderModels(selectedModelProvider) : [];
   const providerOptions = (plugin
     ? plugins
@@ -839,7 +836,7 @@ function ProfileEditor({
           </Select>
           {selectedModelProvider && (
             <p className="mt-1 text-[11px] text-muted-foreground">
-              {selectedModelProvider.base_url} · {selectedModelProvider.protocols?.join(", ") || "no protocols"}
+              {selectedModelProvider.base_url} · {modelProviderSupportedProtocols(selectedModelProvider).join(", ") || "no protocols"}
             </p>
           )}
         </div>

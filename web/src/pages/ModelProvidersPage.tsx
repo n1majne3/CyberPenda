@@ -12,7 +12,15 @@ import {
   SettingsSplitLayout,
 } from "@/components/shared";
 import { settingsListItemClasses } from "@/components/sharedStyles";
-import { canSubmitModelProvider, providerApiKeyPlaceholder, type ModelProviderForm } from "./modelProviderForm";
+import {
+  buildModelProviderPayload,
+  canSubmitModelProvider,
+  endpointBaseURLForProtocol,
+  endpointValidationErrors,
+  providerApiKeyPlaceholder,
+  providerToModelProviderForm,
+  type ModelProviderForm,
+} from "./modelProviderForm";
 
 const PROTOCOLS = [
   "openai_chat_completions",
@@ -26,6 +34,7 @@ const emptyForm: Form = {
   name: "",
   base_url: "",
   protocols: ["openai_responses"],
+  endpoint_base_urls: {},
   manual_models: "",
   default_model: "",
   api_key: "",
@@ -44,6 +53,7 @@ export function ModelProvidersPage() {
   const selected = providers.find((p) => p.id === selectedId) ?? null;
   const selectedBinding = selected ? bindings.find((binding) => binding.credential_ref === selected.api_key_env) : undefined;
   const canSubmit = canSubmitModelProvider(form, creating);
+  const endpointErrors = endpointValidationErrors(form);
 
   // When the selection (or its loaded binding) changes, reset the form to match
   // the selected provider. React allows adjusting state during render by
@@ -55,7 +65,7 @@ export function ModelProvidersPage() {
   if (lastFormKey !== formSelectionKey) {
     setLastFormKey(formSelectionKey);
     if (selected && !creating) {
-      setForm(providerToForm(selected, selectedBinding));
+      setForm(providerToModelProviderForm(selected, selectedBinding));
     } else if (formSelectionKey === "" && form !== emptyForm) {
       setForm(emptyForm);
     }
@@ -113,7 +123,7 @@ export function ModelProvidersPage() {
     setError(null);
     setSavedNotice(false);
     try {
-      const created = await apiPost<ModelProvider>("/api/model-providers", formToPayload(form));
+      const created = await apiPost<ModelProvider>("/api/model-providers", buildModelProviderPayload(form));
       await saveCredentialSource(created, form);
       setCreating(false);
       await load();
@@ -132,7 +142,7 @@ export function ModelProvidersPage() {
     setError(null);
     setSavedNotice(false);
     try {
-      await apiPatch<ModelProvider>(`/api/model-providers/${encodeURIComponent(selected.id)}`, formToPayload(form));
+      await apiPatch<ModelProvider>(`/api/model-providers/${encodeURIComponent(selected.id)}`, buildModelProviderPayload(form));
       await saveCredentialSource(selected, form);
       await load();
       showSavedNotice();
@@ -261,13 +271,46 @@ export function ModelProvidersPage() {
                     type="checkbox"
                     name="protocols"
                     checked={form.protocols.includes(protocol)}
-                    onChange={(e) => setForm({ ...form, protocols: toggle(form.protocols, protocol, e.target.checked) })}
+                    onChange={(e) => setForm(toggleProtocol(form, protocol, e.target.checked))}
                   />
                   {protocol}
                 </label>
               ))}
             </div>
           </fieldset>
+
+          {form.protocols.length > 0 && (
+            <fieldset className="space-y-3">
+              <legend className="text-sm font-medium leading-none text-muted-foreground">Endpoint base URLs</legend>
+              <div className="grid gap-3 md:grid-cols-2">
+                {form.protocols.map((protocol) => (
+                  <div key={protocol}>
+                    <Label htmlFor={`provider-endpoint-${protocol}`}>{protocol} endpoint base URL</Label>
+                    <Input
+                      id={`provider-endpoint-${protocol}`}
+                      name={`endpoint_${protocol}`}
+                      type="url"
+                      inputMode="url"
+                      value={endpointBaseURLForProtocol(form, protocol)}
+                      onChange={(e) => setForm({
+                        ...form,
+                        endpoint_base_urls: {
+                          ...form.endpoint_base_urls,
+                          [protocol]: e.target.value,
+                        },
+                      })}
+                      placeholder="https://api.example.test/v1"
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                    {endpointErrors[protocol] && (
+                      <p className="mt-1 text-[11px] text-destructive">{endpointErrors[protocol]}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </fieldset>
+          )}
 
           <div className="grid gap-3 md:grid-cols-2">
             <div>
@@ -331,29 +374,6 @@ async function saveCredentialSource(provider: ModelProvider, form: Form) {
   });
 }
 
-function providerToForm(provider: ModelProvider, binding?: CredentialBinding): Form {
-  return {
-    name: provider.name,
-    base_url: provider.base_url,
-    protocols: provider.protocols ?? [],
-    manual_models: (provider.catalog?.manual ?? []).join("\n"),
-    default_model: provider.catalog?.default_model ?? "",
-    api_key: binding?.source.kind === "literal" && binding.source.value === "[configured]" ? "[configured]" : "",
-  };
-}
-
-function formToPayload(form: Form) {
-  return {
-    name: form.name,
-    base_url: form.base_url,
-    protocols: form.protocols,
-    catalog: {
-      manual: splitLines(form.manual_models),
-      default_model: form.default_model || undefined,
-    },
-  };
-}
-
 function catalogModels(provider: ModelProvider): string[] {
   return Array.from(new Set([...(provider.catalog?.manual ?? []), ...(provider.catalog?.refreshed ?? [])])).sort();
 }
@@ -367,4 +387,14 @@ function toggle(values: string[], value: string, checked: boolean): string[] {
   if (checked) next.add(value);
   else next.delete(value);
   return Array.from(next);
+}
+
+function toggleProtocol(form: Form, protocol: string, checked: boolean): Form {
+  const endpointBaseURLs = { ...form.endpoint_base_urls };
+  if (!checked) delete endpointBaseURLs[protocol];
+  return {
+    ...form,
+    protocols: toggle(form.protocols, protocol, checked),
+    endpoint_base_urls: endpointBaseURLs,
+  };
 }

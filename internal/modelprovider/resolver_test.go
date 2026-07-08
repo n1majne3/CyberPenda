@@ -44,6 +44,41 @@ func TestResolveModelProviderUsesRuntimeProtocolPreference(t *testing.T) {
 	}
 }
 
+func TestResolveModelProviderUsesSelectedEndpointBaseURL(t *testing.T) {
+	svc := modelprovider.NewService(newStore(t))
+	provider, err := svc.Create(modelprovider.CreateRequest{
+		Name: "Split Path",
+		Endpoints: []modelprovider.Endpoint{
+			{Protocol: modelprovider.ProtocolOpenAIResponses, BaseURL: "https://api.example.test/api/coding/paas/v4"},
+			{Protocol: modelprovider.ProtocolAnthropicMessages, BaseURL: "https://api.example.test/api/anthropic"},
+		},
+		Catalog: modelprovider.Catalog{Manual: []string{"gpt"}, DefaultModel: "gpt"},
+	})
+	if err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	t.Setenv(provider.APIKeyEnv, "sk-test")
+
+	snapshot, err := modelprovider.Resolve(modelprovider.ResolveRequest{
+		Profile: runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderClaudeCode,
+			Fields: runtimeprofile.Fields{
+				ModelProviderID:       provider.ID,
+				ModelProviderProtocol: string(modelprovider.ProtocolAnthropicMessages),
+			},
+		},
+		Providers: svc,
+		Plugins:   runtimeplugin.MustBuiltinRegistry(),
+		CheckEnv:  true,
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if snapshot.EndpointBaseURL != "https://api.example.test/api/anthropic" || snapshot.BaseURL != snapshot.EndpointBaseURL {
+		t.Fatalf("snapshot endpoint base URL = %#v", snapshot)
+	}
+}
+
 func TestResolveModelProviderStrictPinDoesNotFallback(t *testing.T) {
 	svc := modelprovider.NewService(newStore(t))
 	provider, err := svc.Create(modelprovider.CreateRequest{

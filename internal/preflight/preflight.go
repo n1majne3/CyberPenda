@@ -50,6 +50,7 @@ type RuntimeExtensionPreview struct {
 type ModelProviderPreview struct {
 	ModelProviderID   string `json:"model_provider_id,omitempty"`
 	ModelProviderName string `json:"model_provider_name,omitempty"`
+	EndpointBaseURL   string `json:"endpoint_base_url,omitempty"`
 	BaseURL           string `json:"base_url,omitempty"`
 	Protocol          string `json:"protocol,omitempty"`
 	Model             string `json:"model,omitempty"`
@@ -60,11 +61,11 @@ type ModelProviderPreview struct {
 
 // Result is the full preflight outcome for a task launch.
 type Result struct {
-	Pass              bool                        `json:"pass"`
-	Checks            []Check                     `json:"checks"`
-	Skills            []SkillPreview              `json:"skills,omitempty"`
-	RuntimeExtensions []RuntimeExtensionPreview   `json:"runtime_extensions,omitempty"`
-	ModelProvider     *ModelProviderPreview       `json:"model_provider,omitempty"`
+	Pass              bool                      `json:"pass"`
+	Checks            []Check                   `json:"checks"`
+	Skills            []SkillPreview            `json:"skills,omitempty"`
+	RuntimeExtensions []RuntimeExtensionPreview `json:"runtime_extensions,omitempty"`
+	ModelProvider     *ModelProviderPreview     `json:"model_provider,omitempty"`
 }
 
 // Request describes what to validate for a task launch.
@@ -202,6 +203,7 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 			result.ModelProvider = &ModelProviderPreview{
 				ModelProviderID:   snapshot.ModelProviderID,
 				ModelProviderName: snapshot.ModelProviderName,
+				EndpointBaseURL:   snapshot.EndpointBaseURL,
 				BaseURL:           snapshot.BaseURL,
 				Protocol:          string(snapshot.Protocol),
 				Model:             snapshot.Model,

@@ -171,11 +171,17 @@ export interface RuntimeProfile {
   updated_at: string;
 }
 
+export interface ModelProviderEndpoint {
+  protocol: string;
+  base_url: string;
+}
+
 export interface ModelProvider {
   id: string;
   name: string;
   base_url: string;
   protocols?: string[];
+  endpoints?: ModelProviderEndpoint[];
   api_key_env: string;
   catalog?: {
     manual?: string[];

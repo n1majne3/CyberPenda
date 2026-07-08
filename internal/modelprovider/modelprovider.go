@@ -38,11 +38,17 @@ type Catalog struct {
 	DefaultModel string   `json:"default_model,omitempty"`
 }
 
+type Endpoint struct {
+	Protocol Protocol `json:"protocol"`
+	BaseURL  string   `json:"base_url"`
+}
+
 type Provider struct {
 	ID        string     `json:"id"`
 	Name      string     `json:"name"`
 	BaseURL   string     `json:"base_url"`
 	Protocols []Protocol `json:"protocols"`
+	Endpoints []Endpoint `json:"endpoints"`
 	APIKeyEnv string     `json:"api_key_env"`
 	Catalog   Catalog    `json:"catalog"`
 	CreatedAt time.Time  `json:"created_at"`
@@ -53,6 +59,7 @@ type CreateRequest struct {
 	Name      string
 	BaseURL   string
 	Protocols []Protocol
+	Endpoints []Endpoint
 	Catalog   Catalog
 }
 
@@ -60,15 +67,18 @@ type UpdateRequest struct {
 	Name      *string
 	BaseURL   *string
 	Protocols *[]Protocol
+	Endpoints *[]Endpoint
 	Catalog   *Catalog
 }
 
 var (
-	ErrNotFound        = errors.New("model provider not found")
-	ErrMissingName     = errors.New("model provider name is required")
-	ErrMissingBaseURL  = errors.New("model provider base URL is required")
-	ErrInvalidProtocol = errors.New("model provider protocol is not supported")
-	ErrInUse           = errors.New("model provider is referenced by a runtime profile")
+	ErrNotFound                  = errors.New("model provider not found")
+	ErrMissingName               = errors.New("model provider name is required")
+	ErrMissingBaseURL            = errors.New("model provider base URL is required")
+	ErrInvalidProtocol           = errors.New("model provider protocol is not supported")
+	ErrDuplicateEndpointProtocol = errors.New("model provider endpoint protocol is duplicated")
+	ErrInvalidEndpointBaseURL    = errors.New("model provider endpoint base URL is invalid")
+	ErrInUse                     = errors.New("model provider is referenced by a runtime profile")
 )
 
 type Service struct {
@@ -84,11 +94,7 @@ func (s *Service) Create(req CreateRequest) (Provider, error) {
 	if name == "" {
 		return Provider{}, ErrMissingName
 	}
-	baseURL, err := NormalizeBaseURL(req.BaseURL)
-	if err != nil {
-		return Provider{}, err
-	}
-	protocols, err := NormalizeProtocols(req.Protocols)
+	baseURL, endpoints, err := normalizeRequestedEndpoints(req.BaseURL, req.Protocols, req.Endpoints)
 	if err != nil {
 		return Provider{}, err
 	}
@@ -97,7 +103,8 @@ func (s *Service) Create(req CreateRequest) (Provider, error) {
 		ID:        s.nextID(name),
 		Name:      name,
 		BaseURL:   baseURL,
-		Protocols: protocols,
+		Protocols: protocolsForEndpoints(endpoints),
+		Endpoints: endpoints,
 		Catalog:   normalizeCatalog(req.Catalog),
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -111,13 +118,13 @@ func (s *Service) Create(req CreateRequest) (Provider, error) {
 
 func (s *Service) Get(id string) (Provider, error) {
 	return scanProvider(s.db.QueryRow(
-		`SELECT id, name, base_url, protocols_json, catalog_json, created_at, updated_at FROM model_providers WHERE id = ?`,
+		`SELECT id, name, base_url, protocols_json, endpoints_json, catalog_json, created_at, updated_at FROM model_providers WHERE id = ?`,
 		strings.TrimSpace(id),
 	))
 }
 
 func (s *Service) List() ([]Provider, error) {
-	rows, err := s.db.Query(`SELECT id, name, base_url, protocols_json, catalog_json, created_at, updated_at FROM model_providers ORDER BY created_at ASC`)
+	rows, err := s.db.Query(`SELECT id, name, base_url, protocols_json, endpoints_json, catalog_json, created_at, updated_at FROM model_providers ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("list model providers: %w", err)
 	}
@@ -162,9 +169,23 @@ func (s *Service) Update(id string, req UpdateRequest) (Provider, error) {
 		}
 		existing.Protocols = protocols
 	}
+	if req.Endpoints != nil {
+		endpoints, err := NormalizeEndpoints(*req.Endpoints)
+		if err != nil {
+			return Provider{}, err
+		}
+		existing.Endpoints = endpoints
+	} else if req.BaseURL != nil || req.Protocols != nil {
+		endpoints, err := BackfillEndpoints(existing.BaseURL, existing.Protocols)
+		if err != nil {
+			return Provider{}, err
+		}
+		existing.Endpoints = endpoints
+	}
 	if req.Catalog != nil {
 		existing.Catalog = mergeCatalog(existing.Catalog, *req.Catalog)
 	}
+	existing = withEndpointCompatibility(existing)
 	existing.UpdatedAt = time.Now().UTC()
 	if err := s.update(existing); err != nil {
 		return Provider{}, err
@@ -219,7 +240,10 @@ func (s *Service) RefreshModelsWithKey(ctx context.Context, id string, client *h
 	if client == nil {
 		client = http.DefaultClient
 	}
-	refreshURL := provider.BaseURL + "/models"
+	refreshURL, err := CatalogRefreshURL(provider)
+	if err != nil {
+		return Provider{}, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, refreshURL, nil)
 	if err != nil {
 		return Provider{}, err
@@ -256,13 +280,13 @@ func (s *Service) RefreshModelsWithKey(ctx context.Context, id string, client *h
 }
 
 func (s *Service) insert(provider Provider) error {
-	protocolsJSON, catalogJSON, err := encode(provider)
+	protocolsJSON, endpointsJSON, catalogJSON, err := encode(provider)
 	if err != nil {
 		return err
 	}
 	_, err = s.db.Exec(
-		`INSERT INTO model_providers (id, name, base_url, protocols_json, catalog_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		provider.ID, provider.Name, provider.BaseURL, protocolsJSON, catalogJSON,
+		`INSERT INTO model_providers (id, name, base_url, protocols_json, endpoints_json, catalog_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		provider.ID, provider.Name, provider.BaseURL, protocolsJSON, endpointsJSON, catalogJSON,
 		provider.CreatedAt.Format(time.RFC3339Nano), provider.UpdatedAt.Format(time.RFC3339Nano),
 	)
 	if err != nil {
@@ -272,13 +296,13 @@ func (s *Service) insert(provider Provider) error {
 }
 
 func (s *Service) update(provider Provider) error {
-	protocolsJSON, catalogJSON, err := encode(provider)
+	protocolsJSON, endpointsJSON, catalogJSON, err := encode(provider)
 	if err != nil {
 		return err
 	}
 	_, err = s.db.Exec(
-		`UPDATE model_providers SET name = ?, base_url = ?, protocols_json = ?, catalog_json = ?, updated_at = ? WHERE id = ?`,
-		provider.Name, provider.BaseURL, protocolsJSON, catalogJSON, provider.UpdatedAt.Format(time.RFC3339Nano), provider.ID,
+		`UPDATE model_providers SET name = ?, base_url = ?, protocols_json = ?, endpoints_json = ?, catalog_json = ?, updated_at = ? WHERE id = ?`,
+		provider.Name, provider.BaseURL, protocolsJSON, endpointsJSON, catalogJSON, provider.UpdatedAt.Format(time.RFC3339Nano), provider.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("store model provider update: %w", err)
@@ -286,22 +310,30 @@ func (s *Service) update(provider Provider) error {
 	return nil
 }
 
-func encode(provider Provider) (string, string, error) {
-	protocolsJSON, err := json.Marshal(provider.Protocols)
+func encode(provider Provider) (string, string, string, error) {
+	storedProtocols := provider.Protocols
+	if len(provider.Endpoints) > 0 {
+		storedProtocols = []Protocol{}
+	}
+	protocolsJSON, err := json.Marshal(storedProtocols)
 	if err != nil {
-		return "", "", fmt.Errorf("encode protocols: %w", err)
+		return "", "", "", fmt.Errorf("encode protocols: %w", err)
+	}
+	endpointsJSON, err := json.Marshal(provider.Endpoints)
+	if err != nil {
+		return "", "", "", fmt.Errorf("encode endpoints: %w", err)
 	}
 	catalogJSON, err := json.Marshal(provider.Catalog)
 	if err != nil {
-		return "", "", fmt.Errorf("encode catalog: %w", err)
+		return "", "", "", fmt.Errorf("encode catalog: %w", err)
 	}
-	return string(protocolsJSON), string(catalogJSON), nil
+	return string(protocolsJSON), string(endpointsJSON), string(catalogJSON), nil
 }
 
 func scanProvider(row interface{ Scan(dest ...any) error }) (Provider, error) {
 	var provider Provider
-	var protocolsJSON, catalogJSON, createdAt, updatedAt string
-	err := row.Scan(&provider.ID, &provider.Name, &provider.BaseURL, &protocolsJSON, &catalogJSON, &createdAt, &updatedAt)
+	var protocolsJSON, endpointsJSON, catalogJSON, createdAt, updatedAt string
+	err := row.Scan(&provider.ID, &provider.Name, &provider.BaseURL, &protocolsJSON, &endpointsJSON, &catalogJSON, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Provider{}, ErrNotFound
 	}
@@ -310,6 +342,9 @@ func scanProvider(row interface{ Scan(dest ...any) error }) (Provider, error) {
 	}
 	if err := json.Unmarshal([]byte(protocolsJSON), &provider.Protocols); err != nil {
 		return Provider{}, fmt.Errorf("decode protocols: %w", err)
+	}
+	if err := json.Unmarshal([]byte(endpointsJSON), &provider.Endpoints); err != nil {
+		return Provider{}, fmt.Errorf("decode endpoints: %w", err)
 	}
 	if err := json.Unmarshal([]byte(catalogJSON), &provider.Catalog); err != nil {
 		return Provider{}, fmt.Errorf("decode catalog: %w", err)
@@ -323,6 +358,10 @@ func scanProvider(row interface{ Scan(dest ...any) error }) (Provider, error) {
 	}
 	provider.APIKeyEnv = APIKeyEnv(provider.ID)
 	provider.Catalog = normalizeCatalog(provider.Catalog)
+	provider, err = normalizeScannedProvider(provider)
+	if err != nil {
+		return Provider{}, err
+	}
 	return provider, nil
 }
 
@@ -353,6 +392,196 @@ func NormalizeProtocols(protocols []Protocol) ([]Protocol, error) {
 		out = append(out, protocol)
 	}
 	return out, nil
+}
+
+func NormalizeEndpoints(endpoints []Endpoint) ([]Endpoint, error) {
+	seen := map[Protocol]bool{}
+	var out []Endpoint
+	for _, endpoint := range endpoints {
+		protocol := Protocol(strings.TrimSpace(string(endpoint.Protocol)))
+		if protocol == "" {
+			continue
+		}
+		if !validProtocols[protocol] {
+			return nil, fmt.Errorf("%w: %s", ErrInvalidProtocol, protocol)
+		}
+		if seen[protocol] {
+			return nil, fmt.Errorf("%w: %s", ErrDuplicateEndpointProtocol, protocol)
+		}
+		baseURL, err := NormalizeEndpointBaseURL(protocol, endpoint.BaseURL)
+		if err != nil {
+			return nil, err
+		}
+		seen[protocol] = true
+		out = append(out, Endpoint{Protocol: protocol, BaseURL: baseURL})
+	}
+	return out, nil
+}
+
+func NormalizeEndpointBaseURL(protocol Protocol, input string) (string, error) {
+	baseURL, err := NormalizeBaseURL(input)
+	if err != nil {
+		return "", err
+	}
+	if hasOperationSuffix(baseURL) {
+		return "", fmt.Errorf("%w for %s: %q includes an operation suffix; provide the model protocol base URL before messages, responses, or chat/completions", ErrInvalidEndpointBaseURL, protocol, input)
+	}
+	return baseURL, nil
+}
+
+func BackfillEndpoints(baseURL string, protocols []Protocol) ([]Endpoint, error) {
+	normalizedBaseURL, err := NormalizeBaseURL(baseURL)
+	if err != nil {
+		return nil, err
+	}
+	protocols, err = NormalizeProtocols(protocols)
+	if err != nil {
+		return nil, err
+	}
+	endpoints := make([]Endpoint, 0, len(protocols))
+	for _, protocol := range protocols {
+		endpointBaseURL := normalizedBaseURL
+		if protocol == ProtocolAnthropicMessages {
+			endpointBaseURL = DropFinalPathSegment(normalizedBaseURL)
+		}
+		endpoints = append(endpoints, Endpoint{Protocol: protocol, BaseURL: endpointBaseURL})
+	}
+	return NormalizeEndpoints(endpoints)
+}
+
+func DropFinalPathSegment(input string) string {
+	baseURL := strings.TrimRight(strings.TrimSpace(input), "/")
+	parsed, err := url.Parse(baseURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return baseURL
+	}
+	segments := nonEmptyPathSegments(parsed.Path)
+	if len(segments) == 0 {
+		return baseURL
+	}
+	segments = segments[:len(segments)-1]
+	if len(segments) == 0 {
+		parsed.Path = ""
+	} else {
+		parsed.Path = "/" + strings.Join(segments, "/")
+	}
+	parsed.RawPath = ""
+	return strings.TrimRight(parsed.String(), "/")
+}
+
+func CatalogRefreshURL(provider Provider) (string, error) {
+	for _, protocol := range []Protocol{ProtocolOpenAIChatCompletions, ProtocolOpenAIResponses} {
+		endpoint, ok := provider.EndpointFor(protocol)
+		if !ok {
+			continue
+		}
+		parsed, err := url.Parse(endpoint.BaseURL)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			return "", fmt.Errorf("%w: %q", ErrMissingBaseURL, endpoint.BaseURL)
+		}
+		parsed.Path = "/v1/models"
+		parsed.RawPath = ""
+		parsed.RawQuery = ""
+		parsed.Fragment = ""
+		return parsed.String(), nil
+	}
+	return "", fmt.Errorf("model catalog refresh requires an OpenAI-family endpoint")
+}
+
+func normalizeRequestedEndpoints(baseURL string, protocols []Protocol, endpoints []Endpoint) (string, []Endpoint, error) {
+	if len(endpoints) > 0 {
+		normalized, err := NormalizeEndpoints(endpoints)
+		if err != nil {
+			return "", nil, err
+		}
+		return compatibilityBaseURL("", normalized), normalized, nil
+	}
+	normalizedBaseURL, err := NormalizeBaseURL(baseURL)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(protocols) == 0 {
+		return normalizedBaseURL, nil, nil
+	}
+	normalized, err := BackfillEndpoints(normalizedBaseURL, protocols)
+	if err != nil {
+		return "", nil, err
+	}
+	return compatibilityBaseURL(normalizedBaseURL, normalized), normalized, nil
+}
+
+func normalizeScannedProvider(provider Provider) (Provider, error) {
+	if len(provider.Endpoints) > 0 {
+		endpoints, err := NormalizeEndpoints(provider.Endpoints)
+		if err != nil {
+			return Provider{}, err
+		}
+		provider.Endpoints = endpoints
+		return withEndpointCompatibility(provider), nil
+	}
+	if strings.TrimSpace(provider.BaseURL) == "" || len(provider.Protocols) == 0 {
+		protocols, err := NormalizeProtocols(provider.Protocols)
+		if err != nil {
+			return Provider{}, err
+		}
+		provider.Protocols = protocols
+		return provider, nil
+	}
+	endpoints, err := BackfillEndpoints(provider.BaseURL, provider.Protocols)
+	if err != nil {
+		return Provider{}, err
+	}
+	provider.Endpoints = endpoints
+	return withEndpointCompatibility(provider), nil
+}
+
+func withEndpointCompatibility(provider Provider) Provider {
+	provider.Protocols = protocolsForEndpoints(provider.Endpoints)
+	provider.BaseURL = compatibilityBaseURL(provider.BaseURL, provider.Endpoints)
+	return provider
+}
+
+func compatibilityBaseURL(existing string, endpoints []Endpoint) string {
+	if len(endpoints) > 0 {
+		return endpoints[0].BaseURL
+	}
+	return strings.TrimRight(strings.TrimSpace(existing), "/")
+}
+
+func protocolsForEndpoints(endpoints []Endpoint) []Protocol {
+	out := make([]Protocol, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		out = append(out, endpoint.Protocol)
+	}
+	return out
+}
+
+func hasOperationSuffix(baseURL string) bool {
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	segments := nonEmptyPathSegments(parsed.Path)
+	if len(segments) == 0 {
+		return false
+	}
+	last := strings.ToLower(segments[len(segments)-1])
+	if last == "messages" || last == "responses" {
+		return true
+	}
+	return len(segments) >= 2 &&
+		strings.ToLower(segments[len(segments)-2]) == "chat" &&
+		last == "completions"
+}
+
+func nonEmptyPathSegments(path string) []string {
+	var segments []string
+	for _, segment := range strings.Split(strings.Trim(path, "/"), "/") {
+		if segment != "" {
+			segments = append(segments, segment)
+		}
+	}
+	return segments
 }
 
 var slugPartPattern = regexp.MustCompile(`[^a-z0-9]+`)
@@ -451,12 +680,24 @@ func set(values []string) map[string]bool {
 }
 
 func (p Provider) Supports(protocol Protocol) bool {
+	if _, ok := p.EndpointFor(protocol); ok {
+		return true
+	}
 	for _, supported := range p.Protocols {
 		if supported == protocol {
 			return true
 		}
 	}
 	return false
+}
+
+func (p Provider) EndpointFor(protocol Protocol) (Endpoint, bool) {
+	for _, endpoint := range p.Endpoints {
+		if endpoint.Protocol == protocol {
+			return endpoint, true
+		}
+	}
+	return Endpoint{}, false
 }
 
 func (c Catalog) Contains(model string) bool {

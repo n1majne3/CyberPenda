@@ -28,6 +28,7 @@ type ResolveRequest struct {
 type Snapshot struct {
 	ModelProviderID   string   `json:"model_provider_id"`
 	ModelProviderName string   `json:"model_provider_name"`
+	EndpointBaseURL   string   `json:"endpoint_base_url"`
 	BaseURL           string   `json:"base_url"`
 	Protocol          Protocol `json:"protocol"`
 	Model             string   `json:"model"`
@@ -62,6 +63,10 @@ func Resolve(req ResolveRequest) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
+	endpoint, ok := provider.EndpointFor(protocol)
+	if !ok {
+		return Snapshot{}, fmt.Errorf("%w: %s", ErrIncompatibleProtocol, protocol)
+	}
 	model := strings.TrimSpace(req.LaunchModelOverride)
 	if model == "" {
 		model = strings.TrimSpace(req.Profile.Fields.ModelOverride)
@@ -78,7 +83,8 @@ func Resolve(req ResolveRequest) (Snapshot, error) {
 	return Snapshot{
 		ModelProviderID:   provider.ID,
 		ModelProviderName: provider.Name,
-		BaseURL:           provider.BaseURL,
+		EndpointBaseURL:   endpoint.BaseURL,
+		BaseURL:           endpoint.BaseURL,
 		Protocol:          protocol,
 		Model:             model,
 		APIKeyEnv:         provider.APIKeyEnv,
