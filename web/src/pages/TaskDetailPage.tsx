@@ -3,7 +3,7 @@ import { useParams, Link, useSearchParams } from "react-router-dom";
 import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, FileText, Shield, ChevronRight, Wrench, User, Bot, ArrowDown, ArrowUp, CheckCircle2 } from "lucide-react";
 import { apiGet, apiPost, type ModelProvider, type RuntimePlugin, type RuntimeProfile, type Task, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Card, Input, Badge, Select } from "@/components/ui";
-import { BackLink, PageContainer } from "@/components/shared";
+import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { AgentTranscriptView } from "@/components/task-transcript/AgentTranscriptView";
 import { collapsedTranscriptTitle } from "./taskDetailView";
 import { selectableModelProviders } from "./runtimeProfileForm";
@@ -241,8 +241,20 @@ export function TaskDetailPage() {
     setContinuationModelOverride(modelsForProvider(provider)[0] ?? "");
   }
 
-  if (error) return <PageContainer className="text-destructive">{error}</PageContainer>;
-  if (!task) return <PageContainer className="text-muted-foreground">Loading…</PageContainer>;
+  if (error) {
+    return (
+      <ProjectPageShell>
+        <p className="text-destructive">{error}</p>
+      </ProjectPageShell>
+    );
+  }
+  if (!task) {
+    return (
+      <ProjectPageShell>
+        <p className="text-muted-foreground">Loading…</p>
+      </ProjectPageShell>
+    );
+  }
   const currentContinuation = task.active_continuation ?? task.latest_continuation;
   const controls = task.runtime_controls;
   const nativeResumeAvailable = controls?.native_resume_available ?? Boolean(currentContinuation?.native_session_id);
@@ -254,11 +266,10 @@ export function TaskDetailPage() {
   const running = ACTIVE.has(task.status);
 
   return (
-    <PageContainer ref={pageRef} className="max-w-4xl">
-      <BackLink to={`/projects/${projectId}`}>Back to dashboard</BackLink>
-
-      <div className="mb-2 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <h2 className="min-w-0 break-words text-xl font-semibold tracking-tight">{task.goal}</h2>
+    <ProjectPageShell
+      ref={pageRef}
+      title={<h2 className="min-w-0 break-words text-xl font-semibold tracking-tight">{task.goal}</h2>}
+      actions={
         <div className="flex flex-wrap gap-2 sm:justify-end">
           {!running && (
             <Button size="sm" variant="outline" onClick={resumeNative} disabled={!nativeResumeAvailable} title={nativeResumeAvailable ? "Resume native session" : nativeResumeReason}>
@@ -276,15 +287,17 @@ export function TaskDetailPage() {
             </Button>
           )}
         </div>
-      </div>
-      <div className="mb-6 flex flex-wrap gap-2">
+      }
+      bodyClassName="space-y-6"
+    >
+      <div className="flex flex-wrap gap-2">
         <StatusBadge status={task.status} />
         <Badge variant={task.runner === "host" ? "destructive" : "outline"}>
           runner: {task.runner}
         </Badge>
       </div>
       {currentContinuation && (
-        <div className="mb-6 flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2">
           <Badge variant="outline">continuation #{currentContinuation.number}</Badge>
           <Badge variant="outline">runtime: {currentContinuation.runtime_provider}</Badge>
           <Badge variant="outline">continuation status: {currentContinuation.status}</Badge>
@@ -393,7 +406,7 @@ export function TaskDetailPage() {
       )}
 
       <FloatingScrollControls autoFollow={autoFollow} onTop={scrollToTop} onBottom={scrollToLatest} />
-    </PageContainer>
+    </ProjectPageShell>
   );
 }
 

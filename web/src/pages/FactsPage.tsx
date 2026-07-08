@@ -21,8 +21,7 @@ import {
   type Task,
   type TaskSummaryResponse,
 } from "@/lib/api";
-import { ProjectNav } from "@/components/ProjectNav";
-import { BackLink, PageContainer } from "@/components/shared";
+import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { Card, Badge, Button, Select } from "@/components/ui";
 
 export function FactsPage() {
@@ -63,13 +62,7 @@ export function FactsPage() {
   }, {});
 
   return (
-    <PageContainer className="max-w-4xl space-y-6">
-      <BackLink to={`/projects/${projectId}`}>Back to dashboard</BackLink>
-      <ProjectNav />
-      <div>
-        <h2 className="text-xl font-semibold tracking-tight">Blackboard</h2>
-      </div>
-
+    <ProjectPageShell title="Blackboard" bodyClassName="space-y-6">
       {/* Task summaries belong to project memory (CONTEXT.md groups them with the
           blackboard), so they surface here rather than on a separate route. */}
       <TaskSummaries base={base} />
@@ -108,7 +101,7 @@ export function FactsPage() {
           No facts recorded yet.
         </Card>
       )}
-    </PageContainer>
+    </ProjectPageShell>
   );
 }
 

@@ -105,7 +105,11 @@ export function ShellLayout() {
             <ThemeToggle />
           </div>
         </aside>
-        <main id="main-content" tabIndex={-1} className="flex-1 overflow-y-auto bg-background">
+        <main
+          id="main-content"
+          tabIndex={-1}
+          className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-background"
+        >
           <Outlet />
         </main>
       </div>

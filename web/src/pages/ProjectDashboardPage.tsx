@@ -13,9 +13,8 @@ import {
   Target,
 } from "lucide-react";
 import { apiGet, type Dashboard, type Project } from "@/lib/api";
-import { ProjectNav } from "@/components/ProjectNav";
+import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { Badge, buttonVariants, Card, CardDescription, CardTitle } from "@/components/ui";
-import { PageContainer } from "@/components/shared";
 import { cn } from "@/lib/utils";
 
 export function ProjectDashboardPage() {
@@ -47,7 +46,7 @@ export function ProjectDashboardPage() {
 
   if (loading) {
     return (
-      <PageContainer className="mx-auto max-w-6xl">
+      <ProjectPageShell>
         <Card
           role="status"
           aria-label="Loading dashboard"
@@ -55,13 +54,13 @@ export function ProjectDashboardPage() {
         >
           Loading dashboard
         </Card>
-      </PageContainer>
+      </ProjectPageShell>
     );
   }
 
   if (error) {
     return (
-      <PageContainer className="mx-auto max-w-6xl">
+      <ProjectPageShell>
         <Card role="alert" className="border-destructive/25">
           <div className="flex items-start gap-3">
             <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-destructive/20 bg-destructive/10 text-destructive">
@@ -73,7 +72,7 @@ export function ProjectDashboardPage() {
             </div>
           </div>
         </Card>
-      </PageContainer>
+      </ProjectPageShell>
     );
   }
 
@@ -83,19 +82,16 @@ export function ProjectDashboardPage() {
   const scopeReady = dash.scope.ready;
 
   return (
-    <PageContainer className="mx-auto max-w-6xl space-y-6">
-      <ProjectNav />
-
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="max-w-2xl">
-          <h1 className="text-2xl font-semibold tracking-tight">{project.name}</h1>
-          {project.description && <p className="mt-2 text-sm leading-6 text-muted-foreground">{project.description}</p>}
-        </div>
+    <ProjectPageShell
+      title={<h1 className="text-2xl font-semibold tracking-tight">{project.name}</h1>}
+      description={project.description || undefined}
+      actions={
         <Link to={`${base}/tasks/new`} className={buttonVariants()}>
           <Rocket className="h-4 w-4" /> Launch task
         </Link>
-      </div>
-
+      }
+      bodyClassName="space-y-6"
+    >
       <Card
         role="region"
         aria-labelledby="scope-readiness-title"
@@ -160,7 +156,7 @@ export function ProjectDashboardPage() {
           <ClipboardList className="h-4 w-4" /> Generate report
         </Link>
       </div>
-    </PageContainer>
+    </ProjectPageShell>
   );
 }
 

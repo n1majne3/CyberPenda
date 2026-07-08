@@ -12,7 +12,7 @@ import {
   type Skill,
 } from "@/lib/api";
 import { Button, Card, Label, Textarea, Select } from "@/components/ui";
-import { BackLink, PageContainer } from "@/components/shared";
+import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { selectableModelProviders } from "@/pages/runtimeProfileForm";
 import {
   canLaunch,
@@ -274,10 +274,7 @@ export function TaskLaunchPage() {
     });
 
   return (
-    <PageContainer className="max-w-2xl">
-      <BackLink to={`/projects/${projectId}`}>Back to dashboard</BackLink>
-      <h2 className="text-xl font-semibold mb-6">Launch task</h2>
-
+    <ProjectPageShell title="Launch task" bodyClassName="w-full max-w-3xl space-y-4">
       <div className="space-y-4">
         <div>
           <Label htmlFor="goal">Task goal</Label>
@@ -540,7 +537,7 @@ export function TaskLaunchPage() {
           <Rocket className="h-4 w-4 mr-1" /> {launching ? "Launching…" : "Launch"}
         </Button>
       </div>
-    </PageContainer>
+    </ProjectPageShell>
   );
 }
 

@@ -2,8 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { FolderLock } from "lucide-react";
 import { apiGet, type EvidenceArtifact } from "@/lib/api";
-import { ProjectNav } from "@/components/ProjectNav";
-import { BackLink, PageContainer } from "@/components/shared";
+import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { Card, Badge, CardHeader, CardTitle } from "@/components/ui";
 import { formatDateTime } from "@/lib/format";
 
@@ -31,14 +30,8 @@ export function EvidencePage() {
   }, {});
 
   return (
-    <PageContainer className="max-w-4xl space-y-6">
-      <BackLink to={`/projects/${projectId}`}>Back to dashboard</BackLink>
-      <ProjectNav />
-      <div>
-        <h2 className="text-xl font-semibold tracking-tight">Evidence</h2>
-      </div>
-
-      {error && <p className="text-sm text-destructive mb-4">{error}</p>}
+    <ProjectPageShell title="Evidence" bodyClassName="space-y-6">
+      {error && <p className="text-sm text-destructive">{error}</p>}
 
       {Object.entries(byTarget).map(([target, items]) => (
         <section key={target} className="space-y-2">
@@ -73,6 +66,6 @@ export function EvidencePage() {
           Runtime workdir files require explicit attach or retain.
         </Card>
       )}
-    </PageContainer>
+    </ProjectPageShell>
   );
 }

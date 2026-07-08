@@ -2,9 +2,8 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { AlertTriangle, CheckCircle2, Circle, ListChecks, Loader2, PauseCircle, Plus, Square } from "lucide-react";
 import { apiGet, type Task } from "@/lib/api";
-import { ProjectNav } from "@/components/ProjectNav";
+import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { Badge, Button, Card } from "@/components/ui";
-import { BackLink, PageContainer } from "@/components/shared";
 import { formatDateTime } from "@/lib/format";
 
 const STATUS_META: Record<
@@ -41,22 +40,22 @@ export function TasksPage() {
   const base = `/projects/${projectId}`;
 
   return (
-    <PageContainer className="max-w-4xl">
-      <BackLink to="/">All projects</BackLink>
-      <ProjectNav />
-
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+    <ProjectPageShell
+      title={
         <h2 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
           <ListChecks className="h-5 w-5 text-primary" /> Tasks
         </h2>
+      }
+      actions={
         <Link to={`${base}/tasks/new`}>
           <Button size="sm">
             <Plus className="h-4 w-4" /> Launch task
           </Button>
         </Link>
-      </div>
-
-      {error && <p className="mb-4 text-sm text-destructive">{error}</p>}
+      }
+      bodyClassName="space-y-4"
+    >
+      {error && <p className="text-sm text-destructive">{error}</p>}
 
       {tasks.length === 0 && !error && (
         <Card className="items-center justify-center !py-12 text-center">
@@ -91,7 +90,7 @@ export function TasksPage() {
           </Link>
         ))}
       </div>
-    </PageContainer>
+    </ProjectPageShell>
   );
 }
 

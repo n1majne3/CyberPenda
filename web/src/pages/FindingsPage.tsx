@@ -2,8 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { AlertTriangle, FlaskConical, History, ChevronDown, ChevronRight, GitMerge } from "lucide-react";
 import { apiGet, apiPost, type Finding, type FindingVersion } from "@/lib/api";
-import { ProjectNav } from "@/components/ProjectNav";
-import { BackLink, PageContainer } from "@/components/shared";
+import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { Card, CardTitle, CardHeader, Badge, Button, Select } from "@/components/ui";
 import { formatDateTime } from "@/lib/format";
 
@@ -35,14 +34,8 @@ export function FindingsPage() {
   const base = `/api/projects/${projectId}`;
 
   return (
-    <PageContainer className="max-w-4xl space-y-6">
-      <BackLink to={`/projects/${projectId}`}>Back to dashboard</BackLink>
-      <ProjectNav />
-      <div>
-        <h2 className="text-xl font-semibold tracking-tight">Findings</h2>
-      </div>
-
-      {error && <p className="text-sm text-destructive mb-4">{error}</p>}
+    <ProjectPageShell title="Findings" bodyClassName="space-y-6">
+      {error && <p className="text-sm text-destructive">{error}</p>}
 
       <Section title="Confirmed" base={base} items={confirmed} allFindingKeys={allFindingKeys} onMerged={loadFindings} />
       <Section title="Unconfirmed" base={base} items={unconfirmed} allFindingKeys={allFindingKeys} onMerged={loadFindings} muted />
@@ -51,7 +44,7 @@ export function FindingsPage() {
           No findings recorded yet.
         </Card>
       )}
-    </PageContainer>
+    </ProjectPageShell>
   );
 }
 

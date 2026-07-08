@@ -2,8 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { ClipboardList, Download } from "lucide-react";
 import { apiGet, apiPost, type Task } from "@/lib/api";
-import { ProjectNav } from "@/components/ProjectNav";
-import { BackLink, PageContainer } from "@/components/shared";
+import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { Button, Card, CardHeader, CardTitle, Label, Select } from "@/components/ui";
 
 export function ReportPage() {
@@ -53,13 +52,7 @@ export function ReportPage() {
   }
 
   return (
-    <PageContainer className="max-w-4xl space-y-6">
-      <BackLink to={`/projects/${projectId}`}>Back to dashboard</BackLink>
-      <ProjectNav />
-      <div>
-        <h2 className="text-xl font-semibold tracking-tight">Generate report</h2>
-      </div>
-
+    <ProjectPageShell title="Generate report" bodyClassName="space-y-6">
       <Card as="section" className="space-y-3">
         <CardHeader>
           <CardTitle>Report source</CardTitle>
@@ -90,7 +83,7 @@ export function ReportPage() {
         </div>
       </Card>
 
-      {error && <p className="text-sm text-destructive mb-4">{error}</p>}
+      {error && <p className="text-sm text-destructive">{error}</p>}
 
       {markdown ? (
         <Card as="section" className="overflow-hidden">
@@ -104,6 +97,6 @@ export function ReportPage() {
           No report generated yet.
         </Card>
       )}
-    </PageContainer>
+    </ProjectPageShell>
   );
 }

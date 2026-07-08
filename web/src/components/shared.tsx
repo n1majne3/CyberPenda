@@ -71,11 +71,32 @@ export function SettingsPageHeader({
   );
 }
 
+/** Fills the shell main pane on large screens so list/detail scroll independently. */
+export function SettingsPageShell({
+  className,
+  ...props
+}: HTMLAttributes<HTMLDivElement>) {
+  return (
+    <PageContainer
+      className={cn(
+        "flex w-full max-w-6xl flex-col lg:min-h-0 lg:flex-1 lg:overflow-hidden",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
 export function SettingsSplitLayout({
   className,
   variant = "list-detail",
+  fill = false,
   ...props
-}: HTMLAttributes<HTMLDivElement> & { variant?: "list-detail" | "management" }) {
+}: HTMLAttributes<HTMLDivElement> & {
+  variant?: "list-detail" | "management";
+  /** Constrain to parent height and let columns scroll independently (lg+). */
+  fill?: boolean;
+}) {
   return (
     <div
       className={cn(
@@ -83,6 +104,7 @@ export function SettingsSplitLayout({
         variant === "management"
           ? "lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]"
           : "lg:grid-cols-[minmax(220px,280px)_minmax(0,1fr)]",
+        fill && "lg:min-h-0 lg:flex-1 lg:grid-rows-[minmax(0,1fr)] lg:overflow-hidden",
         className,
       )}
       {...props}

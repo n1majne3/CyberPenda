@@ -3,8 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { AlertTriangle, Save } from "lucide-react";
 import { apiGet, apiPatch, type Project, type RuntimeProfile, type Scope } from "@/lib/api";
 import { isManualRuntimeProfile } from "@/pages/runtimeProfileKind";
-import { ProjectNav } from "@/components/ProjectNav";
-import { BackLink, PageContainer } from "@/components/shared";
+import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { Button, Card, CardTitle, CardHeader, Label, Textarea, Badge, Select } from "@/components/ui";
 
 // Each list field is edited as newline-separated text.
@@ -102,8 +101,20 @@ export function ScopeEditorPage() {
     }
   }
 
-  if (error) return <PageContainer className="text-destructive">{error}</PageContainer>;
-  if (!project || !draft) return <PageContainer className="text-muted-foreground">Loading…</PageContainer>;
+  if (error) {
+    return (
+      <ProjectPageShell>
+        <p className="text-destructive">{error}</p>
+      </ProjectPageShell>
+    );
+  }
+  if (!project || !draft) {
+    return (
+      <ProjectPageShell>
+        <p className="text-muted-foreground">Loading…</p>
+      </ProjectPageShell>
+    );
+  }
 
   const field = (key: keyof ScopeDraft, label: string, placeholder: string, warning = false) => (
     <div className="space-y-2">
@@ -125,18 +136,15 @@ export function ScopeEditorPage() {
   );
 
   return (
-    <PageContainer className="max-w-4xl space-y-6">
-      <BackLink to={`/projects/${projectId}`}>Back to dashboard</BackLink>
-      <ProjectNav />
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h2 className="text-xl font-semibold tracking-tight">Scope & defaults — {project.name}</h2>
-        </div>
+    <ProjectPageShell
+      title={`Scope & defaults — ${project.name}`}
+      actions={
         <Button size="sm" onClick={save} disabled={saving}>
           <Save className="h-4 w-4 mr-1" /> {saving ? "Saving…" : "Save"}
         </Button>
-      </div>
-
+      }
+      bodyClassName="space-y-6"
+    >
       <Card as="section">
         <CardHeader>
           <CardTitle>Project defaults</CardTitle>
@@ -212,6 +220,6 @@ export function ScopeEditorPage() {
             autoComplete="off"
           />
       </section>
-    </PageContainer>
+    </ProjectPageShell>
   );
 }

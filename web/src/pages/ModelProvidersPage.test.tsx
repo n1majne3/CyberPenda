@@ -138,15 +138,18 @@ describe("ModelProvidersPage", () => {
       "lg:grid-cols-[minmax(220px,280px)_minmax(0,1fr)]",
     );
     expect(screen.getByTestId("model-providers-settings-list")).toHaveClass(
-      "rounded-lg",
-      "border",
-      "bg-card",
-      "p-3",
+      "min-w-0",
+      "flex-col",
+      "lg:min-h-0",
+      "lg:overflow-hidden",
     );
     expect(screen.getByTestId("model-providers-settings-detail")).toHaveClass(
       "min-w-0",
-      "overflow-hidden",
+      "lg:min-h-0",
+      "lg:overflow-hidden",
     );
+    expect(layout).toHaveClass("lg:min-h-0", "lg:flex-1");
+    expect(screen.getByLabelText("Search model providers")).toBeInTheDocument();
 
     const providerButton = await screen.findByRole("button", { name: /MiMo/i });
     expect(providerButton).toHaveAttribute("aria-current", "true");
@@ -442,5 +445,92 @@ describe("ModelProvidersPage", () => {
         String(input).includes("/api/model-providers/mimo") && init?.method === "DELETE",
       ),
     ).toBe(false);
+  });
+
+  it("filters the provider library by search", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.includes("/api/model-providers")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                providers: [
+                  {
+                    id: "mimo",
+                    name: "MiMo",
+                    base_url: "https://api.example.test/v1",
+                    protocols: ["openai_responses"],
+                    api_key_env: "MIMO_API_KEY",
+                    catalog: { manual: ["mimo-v2"], default_model: "mimo-v2" },
+                    created_at: "2026-06-25T00:00:00Z",
+                    updated_at: "2026-06-25T00:00:00Z",
+                  },
+                  {
+                    id: "openai",
+                    name: "OpenAI",
+                    base_url: "https://api.openai.com/v1",
+                    protocols: ["openai_chat_completions"],
+                    api_key_env: "OPENAI_API_KEY",
+                    catalog: { manual: ["gpt-4o"], default_model: "gpt-4o" },
+                    created_at: "2026-06-25T00:00:00Z",
+                    updated_at: "2026-06-25T00:00:00Z",
+                  },
+                ],
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url.includes("/api/credential-bindings")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                bindings: [
+                  {
+                    id: "binding-1",
+                    credential_ref: "MIMO_API_KEY",
+                    scope: "global",
+                    source: { kind: "env", value: "MIMO_API_KEY" },
+                    created_at: "2026-06-25T00:00:00Z",
+                    updated_at: "2026-06-25T00:00:00Z",
+                  },
+                ],
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        return Promise.resolve(
+          new Response(JSON.stringify({}), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }),
+    );
+
+    renderPage();
+
+    expect(await screen.findByRole("button", { name: /MiMo/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /OpenAI/i })).toBeInTheDocument();
+
+    // Use host/key needles that do not collide with MiMo's openai_responses protocol label.
+    await userEvent.type(screen.getByLabelText("Search model providers"), "api.openai.com");
+    expect(screen.queryByRole("button", { name: /MiMo/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /OpenAI/i })).toBeInTheDocument();
+
+    await userEvent.clear(screen.getByLabelText("Search model providers"));
+    await userEvent.type(screen.getByLabelText("Search model providers"), "mimo_api");
+    expect(screen.getByRole("button", { name: /MiMo/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /OpenAI/i })).not.toBeInTheDocument();
+
+    await userEvent.clear(screen.getByLabelText("Search model providers"));
+    await userEvent.type(screen.getByLabelText("Search model providers"), "no-such-provider");
+    expect(screen.getByText("No matching providers")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /clear search/i }));
+    expect(screen.getByRole("button", { name: /MiMo/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /OpenAI/i })).toBeInTheDocument();
   });
 });
