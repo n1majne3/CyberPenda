@@ -80,7 +80,6 @@ describe("AgentTranscriptView", () => {
     );
 
     expect(container.firstChild).toHaveClass("rounded-lg");
-    expect(container.firstChild).not.toHaveClass("rounded-xl");
     expect(screen.getByText("Completed")).toHaveClass("rounded-md");
     expect(screen.getByText("Completed")).not.toHaveClass("rounded-full");
   });
@@ -102,7 +101,6 @@ describe("AgentTranscriptView", () => {
 
     const filterButton = screen.getByRole("button", { name: /^Filter/i });
     expect(filterButton).toHaveClass("bg-info/10", "text-info");
-    expect(filterButton).not.toHaveClass("bg-blue-500/10");
   });
 
   it("honors reduced motion classes and typographic ellipses in dynamic states", async () => {

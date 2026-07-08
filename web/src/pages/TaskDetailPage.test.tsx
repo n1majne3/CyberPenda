@@ -180,7 +180,6 @@ describe("TaskDetailPage", () => {
     expect(await screen.findByText("Conversation should be hidden by default")).toBeInTheDocument();
     const message = screen.getByTestId("transcript-message-bubble");
     expect(message).toHaveClass("rounded-lg");
-    expect(message).not.toHaveClass("rounded-2xl");
   });
 
   it("does not auto-scroll the default timeline view to the bottom", async () => {

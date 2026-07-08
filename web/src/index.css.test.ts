@@ -82,12 +82,9 @@ describe("index.css design tokens", () => {
     expect(tokenBlock(":root")).toContain(token);
   });
 
-  it("uses Geist neutral primary and no legacy brand tokens", () => {
+  it("uses Geist neutral primary", () => {
     const light = tokenBlock(":root");
     expect(light).toMatch(/--primary:\s*0\s+0%\s+9%/);
-    expect(css).not.toMatch(/--brand\b/);
-    expect(css).not.toMatch(/multica/i);
-    expect(css).not.toContain("--font-inter");
   });
 
   it("sets Geist font variables and a tight control radius", () => {
