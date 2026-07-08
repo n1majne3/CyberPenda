@@ -100,8 +100,12 @@ func (server *Server) handleRefreshModelProviderModels(response http.ResponseWri
 		writeModelProviderError(response, err)
 		return
 	}
+	client := server.modelRefreshClient
+	if client == nil {
+		client = http.DefaultClient
+	}
 	if value, ok := server.materializeModelProviderCredential(provider.APIKeyEnv); ok {
-		updated, err := server.modelProviders.RefreshModelsWithKey(context.Background(), provider.ID, http.DefaultClient, value)
+		updated, err := server.modelProviders.RefreshModelsWithKey(context.Background(), provider.ID, client, value)
 		if err != nil {
 			writeModelProviderError(response, err)
 			return
@@ -109,7 +113,7 @@ func (server *Server) handleRefreshModelProviderModels(response http.ResponseWri
 		writeJSON(response, http.StatusOK, updated)
 		return
 	}
-	updated, err := server.modelProviders.RefreshModels(context.Background(), provider.ID, http.DefaultClient)
+	updated, err := server.modelProviders.RefreshModels(context.Background(), provider.ID, client)
 	if err != nil {
 		writeModelProviderError(response, err)
 		return

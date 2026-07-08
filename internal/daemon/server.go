@@ -62,32 +62,38 @@ type Config struct {
 	// DisableBuiltinSkills skips packaged built-in Skill seeding. This is used by
 	// tests that need an empty Skill library; production leaves built-ins on.
 	DisableBuiltinSkills bool
+	// ModelRefreshClient is the HTTP client used to call upstream /v1/models
+	// during Model Catalog Refresh. Nil means http.DefaultClient, which is the
+	// production behavior; tests inject a stubbed transport so the refresh API
+	// can be exercised end to end without real network traffic.
+	ModelRefreshClient *http.Client
 }
 
 type Server struct {
-	mux               *http.ServeMux
-	version           string
-	logger            *log.Logger
-	db                *store.DB
-	projects          *project.Service
-	runtimePlugins    *runtimeplugin.Registry
-	runtimeExtensions *runtimeextension.Registry
-	profiles          *runtimeprofile.Service
-	modelProviders    *modelprovider.Service
-	skills            *skill.Service
-	creds             *credential.Service
-	preflight         *preflight.Service
-	tasks             *task.Service
-	harness           *runtime.Harness
-	facts             *blackboard.Service
-	runtimeRoot       string
-	sandboxImage      string
-	containerCLI      string
-	listenAddr        string
-	authToken         string
-	tempSkillsRoot    string
-	controlMu         sync.Mutex
-	activeControls    map[string]bool
+	mux                *http.ServeMux
+	version            string
+	logger             *log.Logger
+	db                 *store.DB
+	projects           *project.Service
+	runtimePlugins     *runtimeplugin.Registry
+	runtimeExtensions  *runtimeextension.Registry
+	profiles           *runtimeprofile.Service
+	modelProviders     *modelprovider.Service
+	skills             *skill.Service
+	creds              *credential.Service
+	modelRefreshClient *http.Client
+	preflight          *preflight.Service
+	tasks              *task.Service
+	harness            *runtime.Harness
+	facts              *blackboard.Service
+	runtimeRoot        string
+	sandboxImage       string
+	containerCLI       string
+	listenAddr         string
+	authToken          string
+	tempSkillsRoot     string
+	controlMu          sync.Mutex
+	activeControls     map[string]bool
 }
 
 func NewServer(config Config) (*Server, error) {
@@ -153,17 +159,18 @@ func NewServer(config Config) (*Server, error) {
 		return nil, fmt.Errorf("non-loopback bind %q requires an auth token; set -auth-token or PENTEST_AUTH_TOKEN", listenAddr)
 	}
 	server := &Server{
-		mux:               http.NewServeMux(),
-		version:           config.Version,
-		logger:            config.Logger,
-		db:                db,
-		projects:          project.NewService(db),
-		runtimePlugins:    runtimePlugins,
-		runtimeExtensions: runtimeExtensions,
-		profiles:          profiles,
-		modelProviders:    modelProviders,
-		skills:            skills,
-		creds:             creds,
+		mux:                http.NewServeMux(),
+		version:            config.Version,
+		logger:             config.Logger,
+		db:                 db,
+		projects:           project.NewService(db),
+		runtimePlugins:     runtimePlugins,
+		runtimeExtensions:  runtimeExtensions,
+		profiles:           profiles,
+		modelProviders:     modelProviders,
+		skills:             skills,
+		creds:              creds,
+		modelRefreshClient: config.ModelRefreshClient,
 		preflight: preflight.NewService(profiles, creds, skills).
 			WithModelProviders(modelProviders, runtimePlugins).
 			WithRuntimeExtensions(runtimeExtensions),

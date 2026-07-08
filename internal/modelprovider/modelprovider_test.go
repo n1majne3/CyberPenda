@@ -293,6 +293,159 @@ func TestRefreshModelsUsesOpenAIFamilyEndpointOrigin(t *testing.T) {
 	}
 }
 
+// TestRefreshModelsPrefersChatCompletionsOrigin locks the Model Catalog
+// Refresh URL preference order: when both OpenAI-family endpoints exist,
+// the refresh URL derives from the Chat Completions endpoint origin, never
+// the Responses endpoint. The derived path is always /v1/models regardless
+// of the runtime path prefix on the selected endpoint.
+func TestRefreshModelsPrefersChatCompletionsOrigin(t *testing.T) {
+	var refreshURL string
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		refreshURL = r.URL.String()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewBufferString(`{"data":[{"id":"gpt-5"}]}`)),
+			Header:     http.Header{},
+		}, nil
+	})}
+
+	svc := modelprovider.NewService(newStore(t))
+	provider, err := svc.Create(modelprovider.CreateRequest{
+		Name: "Preference Order Provider",
+		Endpoints: []modelprovider.Endpoint{
+			{Protocol: modelprovider.ProtocolOpenAIResponses, BaseURL: "https://responses.example.test/api/coding/paas/v4"},
+			{Protocol: modelprovider.ProtocolOpenAIChatCompletions, BaseURL: "https://chat.example.test/openai/v1"},
+			{Protocol: modelprovider.ProtocolAnthropicMessages, BaseURL: "https://api.example.test/anthropic"},
+		},
+		Catalog: modelprovider.Catalog{Manual: []string{"manual"}, DefaultModel: "manual"},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	t.Setenv(provider.APIKeyEnv, "sk-test")
+
+	if _, err := svc.RefreshModels(context.Background(), provider.ID, client); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if refreshURL != "https://chat.example.test/v1/models" {
+		t.Fatalf("refresh URL = %q, want chat-completions origin plus /v1/models", refreshURL)
+	}
+}
+
+// TestRefreshModelsUnavailableForAnthropicOnlyProvider locks the contract
+// that Model Catalog Refresh is unavailable when a provider has no
+// OpenAI-family endpoint. Refresh must fail clearly rather than guessing
+// from an Anthropic-only configuration, while manual catalog maintenance
+// remains possible.
+func TestRefreshModelsUnavailableForAnthropicOnlyProvider(t *testing.T) {
+	svc := modelprovider.NewService(newStore(t))
+	provider, err := svc.Create(modelprovider.CreateRequest{
+		Name: "Anthropic Only",
+		Endpoints: []modelprovider.Endpoint{
+			{Protocol: modelprovider.ProtocolAnthropicMessages, BaseURL: "https://api.anthropic.example.test"},
+		},
+		Catalog: modelprovider.Catalog{Manual: []string{"claude-sonnet"}, DefaultModel: "claude-sonnet"},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	t.Setenv(provider.APIKeyEnv, "sk-test")
+
+	if _, err := svc.RefreshModels(context.Background(), provider.ID, http.DefaultClient); err == nil {
+		t.Fatal("expected refresh to be unavailable for an Anthropic-only provider")
+	}
+	after, err := svc.Get(provider.ID)
+	if err != nil {
+		t.Fatalf("get after unavailable refresh: %v", err)
+	}
+	if !reflect.DeepEqual(after.Catalog, provider.Catalog) {
+		t.Fatalf("manual catalog changed when refresh was unavailable: %#v", after.Catalog)
+	}
+}
+
+// TestRefreshModelsFailurePreservesCatalogOnUpstreamError locks the
+// contract that a temporary provider error during refresh does not erase
+// the existing Model Catalog. The previous manual and refreshed model
+// choices must survive an upstream HTTP failure.
+func TestRefreshModelsFailurePreservesCatalogOnUpstreamError(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadGateway,
+			Body:       io.NopCloser(bytes.NewBufferString(`{"error":"upstream"}`)),
+			Header:     http.Header{},
+		}, nil
+	})}
+
+	svc := modelprovider.NewService(newStore(t))
+	provider, err := svc.Create(modelprovider.CreateRequest{
+		Name:    "MiMo",
+		BaseURL: "https://api.example.test/v1",
+		Catalog: modelprovider.Catalog{
+			Manual:       []string{"manual"},
+			Refreshed:    []string{"refreshed-model"},
+			DefaultModel: "manual",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	t.Setenv(provider.APIKeyEnv, "sk-test")
+
+	if _, err := svc.RefreshModels(context.Background(), provider.ID, client); err == nil {
+		t.Fatal("expected refresh to fail on upstream error")
+	}
+	after, err := svc.Get(provider.ID)
+	if err != nil {
+		t.Fatalf("get after upstream failure: %v", err)
+	}
+	if !reflect.DeepEqual(after.Catalog, provider.Catalog) {
+		t.Fatalf("catalog changed on upstream failure: %#v", after.Catalog)
+	}
+}
+
+// TestRefreshModelsMergesManualAndRefreshedByIdentifier locks the
+// contract that manual model entries and refreshed model identifiers
+// coexist in one provider-level Model Catalog, with duplicate identifiers
+// merged by identifier rather than shown twice.
+func TestRefreshModelsMergesManualAndRefreshedByIdentifier(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewBufferString(`{"data":[{"id":"shared"},{"id":"refreshed-only"}]}`)),
+			Header:     http.Header{},
+		}, nil
+	})}
+
+	svc := modelprovider.NewService(newStore(t))
+	provider, err := svc.Create(modelprovider.CreateRequest{
+		Name:      "MiMo",
+		BaseURL:   "https://api.example.test/v1",
+		Protocols: []modelprovider.Protocol{modelprovider.ProtocolOpenAIChatCompletions},
+		Catalog: modelprovider.Catalog{
+			Manual:       []string{"shared", "manual-only"},
+			DefaultModel: "shared",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	t.Setenv(provider.APIKeyEnv, "sk-test")
+
+	refreshed, err := svc.RefreshModels(context.Background(), provider.ID, client)
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if !reflect.DeepEqual(refreshed.Catalog.Refreshed, []string{"refreshed-only", "shared"}) {
+		t.Fatalf("refreshed catalog = %#v", refreshed.Catalog.Refreshed)
+	}
+	if !reflect.DeepEqual(refreshed.Catalog.Manual, []string{"manual-only"}) {
+		t.Fatalf("manual catalog = %#v, want shared merged into refreshed", refreshed.Catalog.Manual)
+	}
+	if !refreshed.Catalog.Contains("shared") {
+		t.Fatalf("merged catalog missing shared identifier: %#v", refreshed.Catalog)
+	}
+}
+
 func TestRefreshModelsFailurePreservesCatalog(t *testing.T) {
 	svc := modelprovider.NewService(newStore(t))
 	provider, err := svc.Create(modelprovider.CreateRequest{
