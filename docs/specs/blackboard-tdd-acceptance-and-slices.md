@@ -2,6 +2,7 @@
 
 - **Status:** implementation sequencing contract for [Design TDD acceptance matrix and implementation slices for graph Blackboard](https://github.com/n1majne3/CyberPenda/issues/61)
 - **Map:** [Map: Refactor Blackboard into bounded graph memory](https://github.com/n1majne3/CyberPenda/issues/55)
+- **Assembly:** [Graph-first Blackboard Refactor Specification](./blackboard-graph-refactor.md)
 - **Graph contract:** [Blackboard Typed Property Graph Contract](./blackboard-graph-contract.md)
 - **Storage contract:** [Blackboard SQLite Persistence, History, Compaction, and Health Contract](./blackboard-graph-storage.md)
 - **Runtime contract:** [Blackboard Runtime and Project Interface Protocol Contract](./blackboard-runtime-protocol.md)
