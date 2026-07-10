@@ -62,6 +62,10 @@ func normalizedCreateProperties(op Operation) map[string]any {
 		if _, exists := props["status"]; !exists {
 			props["status"] = "unconfirmed"
 		}
+	case NodeTypeSolution:
+		if _, exists := props["status"]; !exists {
+			props["status"] = "candidate"
+		}
 	}
 	return props
 }
@@ -102,6 +106,9 @@ func validateNodeProperties(t NodeType, props map[string]any) *ValidationError {
 			if v, _ := props["value"].(string); strings.TrimSpace(v) == "" {
 				return validationError(ErrCodeMissingProperty, "solution.value is required", -1, "", "properties.value")
 			}
+		}
+		if props["status"] == "verified" && strings.TrimSpace(stringProp(props, "verification_summary")) == "" {
+			return validationError(ErrCodeMissingProperty, "verified Solution requires verification_summary", -1, "", "properties.verification_summary")
 		}
 	}
 	return nil

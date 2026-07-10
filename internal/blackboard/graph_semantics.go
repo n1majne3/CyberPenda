@@ -277,6 +277,110 @@ func applyFindingTransition(tx *sql.Tx, projectID string, current mutableNode, o
 	return nil
 }
 
+func applySolutionTransition(tx *sql.Tx, projectID string, current mutableNode, op Operation, batch MutationBatch, edges map[string][2]resolvedNode, props map[string]any) error {
+	old, _ := props["status"].(string)
+	next := op.Transition.Status
+	allowed := (old == "candidate" && contains(next, "verified", "rejected", "superseded")) ||
+		(old == "verified" && contains(next, "rejected", "superseded"))
+	if !allowed {
+		return validationError(ErrCodeInvalidTransition, "Solution transitions are candidate -> verified|rejected|superseded and verified -> rejected|superseded", -1, op.OpID, "operations[].transition.status")
+	}
+	if next == "verified" {
+		if strings.TrimSpace(op.Transition.VerificationSummary) == "" {
+			return validationError(ErrCodeMissingProperty, "verified Solution requires verification_summary", -1, op.OpID, "operations[].transition.verification_summary")
+		}
+		if props["kind"] == "flag" {
+			if !solutionVerificationActor(batch.Context.ActorType) {
+				return validationError(ErrCodeTransitionGuardFailed, "verified flag Solution requires Runtime, operator, or system provenance", -1, op.OpID, "operations[].transition.status")
+			}
+			producingTaskID, _, err := nodeHeadProvenance(tx, projectID, current.nodeID)
+			if err != nil {
+				return fmt.Errorf("read Solution producing Task provenance: %w", err)
+			}
+			supported, err := solutionSatisfiesTaskGoal(tx, projectID, "id:"+current.nodeID, producingTaskID, batch, edges)
+			if err != nil {
+				return err
+			}
+			if !supported {
+				return validationError(ErrCodeTransitionGuardFailed, "verified flag Solution must satisfy its producing Task Goal", -1, op.OpID, "operations[].transition.status")
+			}
+		}
+		props["verification_summary"] = op.Transition.VerificationSummary
+	}
+	if next == "superseded" {
+		ok, err := hasIncomingEdge(tx, projectID, current.nodeID, EdgeTypeSupersedes, batch, edges)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return validationError(ErrCodeTransitionGuardFailed, "superseded Solution requires an incoming supersedes edge", -1, op.OpID, "operations[].transition.status")
+		}
+	}
+	props["status"] = next
+	return nil
+}
+
+func solutionVerificationActor(actor ActorType) bool {
+	return actor == ActorTypeRuntime || actor == ActorTypeOperator || actor == ActorTypeSystem
+}
+
+func solutionSatisfiesTaskGoal(tx *sql.Tx, projectID, solutionIdentity, taskID string, batch MutationBatch, edges map[string][2]resolvedNode) (bool, error) {
+	if strings.TrimSpace(taskID) == "" {
+		return false, nil
+	}
+	if strings.HasPrefix(solutionIdentity, "id:") {
+		var count int
+		err := tx.QueryRow(`SELECT COUNT(*)
+			FROM blackboard_edge_heads e
+			JOIN blackboard_node_heads h ON h.project_id=e.project_id AND h.node_id=e.to_node_id AND h.node_type='goal' AND h.disposition='main'
+			JOIN blackboard_node_versions v ON v.project_id=h.project_id AND v.node_id=h.node_id AND v.version=h.version
+			WHERE e.project_id=? AND e.edge_type='satisfies' AND e.from_node_id=? AND e.state='active'
+			  AND json_extract(v.properties_json, '$.task_id')=?`, projectID, strings.TrimPrefix(solutionIdentity, "id:"), taskID).Scan(&count)
+		if err != nil {
+			return false, fmt.Errorf("check Solution satisfying Goal: %w", err)
+		}
+		if count > 0 {
+			return true, nil
+		}
+	}
+	for _, edgeOp := range batch.Operations {
+		if edgeOp.Kind != OpPutEdge || edgeOp.PutEdge.EdgeType != EdgeTypeSatisfies {
+			continue
+		}
+		pair := edges[edgeOp.OpID]
+		if pair[0].identity != solutionIdentity || pair[1].nodeType != NodeTypeGoal {
+			continue
+		}
+		goalTaskID, err := resolvedGoalTaskID(tx, projectID, pair[1], batch)
+		if err != nil {
+			return false, err
+		}
+		if goalTaskID == taskID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func resolvedGoalTaskID(tx *sql.Tx, projectID string, goal resolvedNode, batch MutationBatch) (string, error) {
+	if goal.opID != "" {
+		op, ok := findOperation(batch, goal.opID)
+		if !ok {
+			return "", nil
+		}
+		return stringProp(normalizedCreateProperties(op), "task_id"), nil
+	}
+	var propertiesJSON string
+	if err := tx.QueryRow(`SELECT v.properties_json FROM blackboard_node_heads h JOIN blackboard_node_versions v ON v.project_id=h.project_id AND v.node_id=h.node_id AND v.version=h.version WHERE h.project_id=? AND h.node_id=? AND h.node_type='goal' AND h.disposition='main'`, projectID, goal.nodeID).Scan(&propertiesJSON); err != nil {
+		return "", fmt.Errorf("read satisfying Goal: %w", err)
+	}
+	var props map[string]any
+	if err := json.Unmarshal([]byte(propertiesJSON), &props); err != nil {
+		return "", fmt.Errorf("decode satisfying Goal: %w", err)
+	}
+	return stringProp(props, "task_id"), nil
+}
+
 func validateCreatedConfirmations(tx *sql.Tx, projectID string, batch MutationBatch, edges map[string][2]resolvedNode) error {
 	for i, op := range batch.Operations {
 		if op.Kind != OpCreateNode {
@@ -321,6 +425,30 @@ func validateCreatedConfirmations(tx *sql.Tx, projectID string, batch MutationBa
 			}
 			if !supported {
 				return validationError(ErrCodeTransitionGuardFailed, "confirmed Finding requires an Evidence Artifact or confirmed Project Fact", i, op.OpID, "operations[].properties.status")
+			}
+		}
+		if op.Node.NodeType == NodeTypeSolution {
+			status, _ := props["status"].(string)
+			if status == "verified" && props["kind"] == "flag" {
+				if !solutionVerificationActor(batch.Context.ActorType) {
+					return validationError(ErrCodeTransitionGuardFailed, "verified flag Solution requires Runtime, operator, or system provenance", i, op.OpID, "operations[].properties.status")
+				}
+				supported, err := solutionSatisfiesTaskGoal(tx, projectID, identity, batch.Context.TaskID, batch, edges)
+				if err != nil {
+					return err
+				}
+				if !supported {
+					return validationError(ErrCodeTransitionGuardFailed, "verified flag Solution must satisfy its producing Task Goal", i, op.OpID, "operations[].properties.status")
+				}
+			}
+			if status == "superseded" {
+				supported, err := incomingFrom(tx, projectID, identity, EdgeTypeSupersedes, nil, batch, edges)
+				if err != nil {
+					return err
+				}
+				if !supported {
+					return validationError(ErrCodeTransitionGuardFailed, "superseded Solution requires an incoming supersedes edge", i, op.OpID, "operations[].properties.status")
+				}
 			}
 		}
 	}

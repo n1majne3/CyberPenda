@@ -143,10 +143,11 @@ type PatchNodeInput struct {
 // TransitionNodeInput carries a lifecycle transition requested through Apply.
 // resolved_at remains system-managed and is derived from the batch timestamp.
 type TransitionNodeInput struct {
-	ExpectedVersion   int    `json:"expected_version"`
-	Status            string `json:"status"`
-	Summary           string `json:"summary,omitempty"`
-	ResolutionSummary string `json:"resolution_summary,omitempty"`
+	ExpectedVersion     int    `json:"expected_version"`
+	Status              string `json:"status"`
+	Summary             string `json:"summary,omitempty"`
+	ResolutionSummary   string `json:"resolution_summary,omitempty"`
+	VerificationSummary string `json:"verification_summary,omitempty"`
 }
 
 type PutEdgeInput struct {
@@ -289,6 +290,34 @@ type ReadNodeResult struct {
 	Node                  NodeRecord
 	ObservedGraphRevision int
 	ResolvedFromAlias     string // empty if the key was the canonical stable key
+}
+
+// CTFSolvedState is a derived read model. Solved is never persisted: it is
+// recomputed from the current main verified flag Solutions.
+type CTFSolvedState struct {
+	ProjectID                string                `json:"project_id"`
+	Solved                   bool                  `json:"solved"`
+	PrimaryVerifiedFlag      *VerifiedFlagSummary  `json:"primary_verified_flag,omitempty"`
+	VerifiedFlags            []VerifiedFlagSummary `json:"verified_flags"`
+	ConflictingVerifiedFlags bool                  `json:"conflicting_verified_flags"`
+}
+
+// VerifiedFlagSummary intentionally omits the exact flag value from general
+// CTF state summaries. The value is used internally only for conflict detection.
+type VerifiedFlagSummary struct {
+	ID                  string        `json:"id"`
+	StableKey           string        `json:"stable_key"`
+	Summary             string        `json:"summary"`
+	VerificationSummary string        `json:"verification_summary"`
+	SatisfyingGoals     []GoalSummary `json:"satisfying_goals"`
+}
+
+// GoalSummary identifies a Task-owned Goal satisfied by a verified flag.
+type GoalSummary struct {
+	ID        string `json:"id"`
+	StableKey string `json:"stable_key"`
+	TaskID    string `json:"task_id"`
+	Text      string `json:"text"`
 }
 
 type ReadEdgeRequest struct{ ProjectID, EdgeID string }

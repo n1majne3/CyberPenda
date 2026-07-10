@@ -74,6 +74,9 @@ type Project struct {
 // ErrNotFound is returned when no project matches the requested id.
 var ErrNotFound = errors.New("project not found")
 
+// ErrInvalidKind is returned when a Project kind is outside the closed set.
+var ErrInvalidKind = errors.New("invalid project kind")
+
 // Service implements project business rules against SQLite.
 type Service struct {
 	db *store.DB
@@ -84,11 +87,21 @@ func NewService(db *store.DB) *Service {
 	return &Service{db: db}
 }
 
-// Create stores a new project and returns it with a generated id and timestamps.
+// Create stores a new Pentest Project and returns it with a generated id and timestamps.
 func (s *Service) Create(name, description string, scope Scope, defaults Defaults) (Project, error) {
+	return s.CreateWithKind(name, description, KindPentest, scope, defaults)
+}
+
+// CreateWithKind stores a Project of one of the closed Project kinds. It is the
+// creation seam used by graph-domain tests and later Project Interface wiring
+// for CTF challenges; ordinary callers continue to use Create.
+func (s *Service) CreateWithKind(name, description, kind string, scope Scope, defaults Defaults) (Project, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return Project{}, ErrMissingName
+	}
+	if kind != KindPentest && kind != KindCTFChallenge {
+		return Project{}, ErrInvalidKind
 	}
 
 	now := time.Now().UTC()
@@ -96,7 +109,7 @@ func (s *Service) Create(name, description string, scope Scope, defaults Default
 		ID:          newID(),
 		Name:        name,
 		Description: description,
-		Kind:        KindPentest,
+		Kind:        kind,
 		Scope:       scope,
 		Defaults:    defaults,
 		CreatedAt:   now,
