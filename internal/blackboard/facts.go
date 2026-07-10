@@ -29,6 +29,9 @@ type ScopeStatus string
 const (
 	ScopeStatusInScope    ScopeStatus = "in_scope"
 	ScopeStatusOutOfScope ScopeStatus = "out_of_scope"
+	// ScopeStatusUnknown is the graph-contract §5.7 third scope status. Legacy
+	// facts never carried it; it is available for graph-native records.
+	ScopeStatusUnknown ScopeStatus = "unknown"
 )
 
 type Fact struct {

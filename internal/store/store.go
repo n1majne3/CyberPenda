@@ -200,6 +200,7 @@ func migrations() []migration {
 	return []migration{
 		newMigration(1, "baseline_legacy_schema", migration1BaselineSQL, migration1Up),
 		newMigration(2, "store_epoch_and_graph_support", migration2SQL, migration2Up),
+		newMigration(3, "graph_ledger_core", migration3SQL, migration3Up),
 	}
 }
 
@@ -657,6 +658,293 @@ func migration2Up(tx *sql.Tx) error {
 		if err != nil {
 			return fmt.Errorf("insert default store epoch: %w", err)
 		}
+	}
+	return nil
+}
+
+// GraphSchemaVersion is the Blackboard typed-property-graph schema version
+// implemented by this binary. It matches the graph contract's schema version.
+const GraphSchemaVersion = 1
+
+// mutation3SQL creates the C02 subset of the Blackboard graph ledger and
+// rebuildable head tables (storage contract §6/§7). Edge, compaction, health,
+// and projection_metrics tables are intentionally deferred to the slices that
+// first need them (C03 edges, C09/C10 projection/health). Append-only triggers
+// are installed in migration3Up because their BEGIN...END bodies contain
+// semicolons that execStatements' simple splitter cannot parse.
+const migration3SQL = `
+-- C02 ledger tables (storage contract §6). All append-only: BEFORE UPDATE and
+-- BEFORE DELETE triggers installed in migration3Up abort mutation.
+CREATE TABLE IF NOT EXISTS blackboard_graph_mutations (
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+	mutation_seq INTEGER NOT NULL,
+	mutation_id TEXT NOT NULL,
+	base_graph_revision INTEGER NOT NULL,
+	result_graph_revision INTEGER NOT NULL,
+	schema_version INTEGER NOT NULL,
+	mutation_kind TEXT NOT NULL CHECK (mutation_kind IN ('normal','merge','compaction','restore','reconciliation','projection','migration')),
+	maintenance_metadata_json TEXT NOT NULL DEFAULT '{}',
+	maintenance_subject_id TEXT,
+	idempotency_scope TEXT NOT NULL,
+	idempotency_key TEXT NOT NULL,
+	request_hash TEXT NOT NULL,
+	request_json TEXT NOT NULL,
+	result_json TEXT NOT NULL,
+	result_hash TEXT NOT NULL,
+	recorded_at TEXT NOT NULL,
+	previous_mutation_hash TEXT NOT NULL,
+	mutation_hash TEXT NOT NULL,
+	resulting_state_hash TEXT NOT NULL,
+	projection_status TEXT NOT NULL CHECK (projection_status IN ('measured','dirty')),
+	resulting_main_projection_hash TEXT,
+	projection_renderer_version TEXT NOT NULL DEFAULT '',
+	projection_estimator_version TEXT NOT NULL DEFAULT '',
+	projection_bytes INTEGER,
+	projection_estimated_tokens INTEGER,
+	CHECK (result_graph_revision >= base_graph_revision),
+	CHECK (mutation_seq >= 0),
+	CHECK (base_graph_revision >= 0),
+	CHECK (result_graph_revision >= 0),
+	PRIMARY KEY (project_id, mutation_seq)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_blackboard_graph_mutations_id
+	ON blackboard_graph_mutations (mutation_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_blackboard_graph_mutations_idempotency
+	ON blackboard_graph_mutations (project_id, idempotency_scope, idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_blackboard_graph_mutations_order
+	ON blackboard_graph_mutations (project_id, mutation_seq);
+CREATE INDEX IF NOT EXISTS idx_blackboard_graph_mutations_revision
+	ON blackboard_graph_mutations (project_id, result_graph_revision);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_blackboard_graph_mutations_one_change_per_revision
+	ON blackboard_graph_mutations (project_id, result_graph_revision)
+	WHERE result_graph_revision > base_graph_revision;
+
+CREATE TABLE IF NOT EXISTS blackboard_graph_provenance (
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+	id TEXT NOT NULL,
+	actor_type TEXT NOT NULL CHECK (actor_type IN ('runtime','operator','system','migration')),
+	actor_id TEXT NOT NULL,
+	task_id TEXT,
+	continuation_id TEXT,
+	runtime_profile_id TEXT,
+	runner TEXT,
+	migration_source_json TEXT,
+	recorded_at TEXT NOT NULL,
+	PRIMARY KEY (project_id, id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_blackboard_graph_provenance_id
+	ON blackboard_graph_provenance (id);
+CREATE INDEX IF NOT EXISTS idx_blackboard_graph_provenance_task
+	ON blackboard_graph_provenance (project_id, task_id);
+CREATE INDEX IF NOT EXISTS idx_blackboard_graph_provenance_continuation
+	ON blackboard_graph_provenance (project_id, continuation_id);
+
+CREATE TABLE IF NOT EXISTS blackboard_graph_provenance_events (
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+	provenance_id TEXT NOT NULL,
+	ordinal INTEGER NOT NULL,
+	event_id TEXT NOT NULL,
+	PRIMARY KEY (project_id, provenance_id, ordinal),
+	FOREIGN KEY (project_id, provenance_id) REFERENCES blackboard_graph_provenance (project_id, id) ON DELETE RESTRICT,
+	CHECK (ordinal >= 0)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_blackboard_graph_provenance_events_event
+	ON blackboard_graph_provenance_events (project_id, provenance_id, event_id);
+
+CREATE TABLE IF NOT EXISTS blackboard_graph_operations (
+	project_id TEXT NOT NULL,
+	mutation_seq INTEGER NOT NULL,
+	operation_index INTEGER NOT NULL,
+	op_id TEXT NOT NULL,
+	operation_kind TEXT NOT NULL,
+	operation_json TEXT NOT NULL,
+	result_json TEXT NOT NULL,
+	changed INTEGER NOT NULL CHECK (changed IN (0,1)),
+	provenance_id TEXT NOT NULL,
+	CHECK (operation_index >= 0),
+	PRIMARY KEY (project_id, mutation_seq, operation_index),
+	FOREIGN KEY (project_id, mutation_seq) REFERENCES blackboard_graph_mutations (project_id, mutation_seq) ON DELETE RESTRICT,
+	FOREIGN KEY (project_id, provenance_id) REFERENCES blackboard_graph_provenance (project_id, id) ON DELETE RESTRICT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_blackboard_graph_operations_opid
+	ON blackboard_graph_operations (project_id, mutation_seq, op_id);
+
+CREATE TABLE IF NOT EXISTS blackboard_nodes (
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+	id TEXT NOT NULL,
+	node_type TEXT NOT NULL,
+	original_stable_key TEXT NOT NULL,
+	created_mutation_seq INTEGER NOT NULL,
+	created_operation_index INTEGER NOT NULL,
+	created_at TEXT NOT NULL,
+	CHECK (created_mutation_seq >= 0),
+	CHECK (created_operation_index >= 0),
+	PRIMARY KEY (project_id, id),
+	FOREIGN KEY (project_id, created_mutation_seq, created_operation_index)
+		REFERENCES blackboard_graph_operations (project_id, mutation_seq, operation_index) ON DELETE RESTRICT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_blackboard_nodes_id
+	ON blackboard_nodes (id);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_blackboard_nodes_type_key
+	ON blackboard_nodes (project_id, node_type, original_stable_key);
+
+CREATE TABLE IF NOT EXISTS blackboard_node_versions (
+	project_id TEXT NOT NULL,
+	node_id TEXT NOT NULL,
+	version INTEGER NOT NULL,
+	result_graph_revision INTEGER NOT NULL,
+	mutation_seq INTEGER NOT NULL,
+	operation_index INTEGER NOT NULL,
+	schema_version INTEGER NOT NULL,
+	disposition TEXT NOT NULL CHECK (disposition IN ('main','archived','merged')),
+	merge_target_id TEXT,
+	properties_json TEXT NOT NULL CHECK (json_valid(properties_json)),
+	semantic_hash TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	CHECK (version > 0),
+	CHECK (result_graph_revision >= 0),
+	CHECK (mutation_seq >= 0),
+	CHECK (operation_index >= 0),
+	CHECK (schema_version >= 0),
+	CHECK ((disposition = 'merged' AND merge_target_id IS NOT NULL) OR (disposition <> 'merged' AND merge_target_id IS NULL)),
+	PRIMARY KEY (project_id, node_id, version),
+	FOREIGN KEY (project_id, node_id) REFERENCES blackboard_nodes (project_id, id) ON DELETE RESTRICT,
+	FOREIGN KEY (project_id, mutation_seq, operation_index)
+		REFERENCES blackboard_graph_operations (project_id, mutation_seq, operation_index) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_blackboard_node_versions_node_desc
+	ON blackboard_node_versions (project_id, node_id, version DESC);
+CREATE INDEX IF NOT EXISTS idx_blackboard_node_versions_revision
+	ON blackboard_node_versions (project_id, result_graph_revision);
+
+CREATE TABLE IF NOT EXISTS blackboard_key_events (
+	project_id TEXT NOT NULL,
+	node_type TEXT NOT NULL,
+	key TEXT NOT NULL,
+	key_version INTEGER NOT NULL,
+	role TEXT NOT NULL CHECK (role IN ('stable','alias')),
+	source_node_id TEXT NOT NULL,
+	canonical_node_id TEXT NOT NULL,
+	legacy_nonconforming INTEGER NOT NULL DEFAULT 0 CHECK (legacy_nonconforming IN (0,1)),
+	result_graph_revision INTEGER NOT NULL,
+	mutation_seq INTEGER NOT NULL,
+	operation_index INTEGER NOT NULL,
+	semantic_hash TEXT NOT NULL,
+	CHECK (key_version > 0),
+	CHECK (result_graph_revision >= 0),
+	CHECK (mutation_seq >= 0),
+	CHECK (operation_index >= 0),
+	PRIMARY KEY (project_id, node_type, key, key_version),
+	FOREIGN KEY (project_id, source_node_id) REFERENCES blackboard_nodes (project_id, id) ON DELETE RESTRICT,
+	FOREIGN KEY (project_id, canonical_node_id) REFERENCES blackboard_nodes (project_id, id) ON DELETE RESTRICT,
+	FOREIGN KEY (project_id, mutation_seq, operation_index)
+		REFERENCES blackboard_graph_operations (project_id, mutation_seq, operation_index) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_blackboard_key_events_canonical
+	ON blackboard_key_events (project_id, node_type, canonical_node_id);
+
+-- C02 rebuildable materialized tables (storage contract §7). Mutable caches.
+CREATE TABLE IF NOT EXISTS blackboard_graph_state (
+	project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE RESTRICT,
+	latest_mutation_seq INTEGER NOT NULL,
+	current_graph_revision INTEGER NOT NULL,
+	materialized_mutation_seq INTEGER NOT NULL,
+	history_head_hash TEXT NOT NULL,
+	current_semantic_state_hash TEXT NOT NULL,
+	current_main_projection_hash TEXT,
+	projection_renderer_version TEXT NOT NULL DEFAULT '',
+	projection_estimator_version TEXT NOT NULL DEFAULT '',
+	projection_bytes INTEGER,
+	projection_estimated_tokens INTEGER,
+	budget_state TEXT NOT NULL DEFAULT 'unknown',
+	projection_dirty_revision INTEGER NOT NULL DEFAULT 0,
+	updated_at TEXT NOT NULL,
+	CHECK (latest_mutation_seq >= 0),
+	CHECK (current_graph_revision >= 0),
+	CHECK (materialized_mutation_seq >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS blackboard_node_heads (
+	project_id TEXT NOT NULL,
+	node_id TEXT NOT NULL,
+	node_type TEXT NOT NULL,
+	version INTEGER NOT NULL,
+	graph_revision INTEGER NOT NULL,
+	disposition TEXT NOT NULL CHECK (disposition IN ('main','archived','merged')),
+	merge_target_id TEXT,
+	lifecycle_state TEXT NOT NULL DEFAULT '',
+	entity_kind TEXT NOT NULL DEFAULT '',
+	scope_status TEXT NOT NULL DEFAULT '',
+	semantic_hash TEXT NOT NULL,
+	CHECK (version > 0),
+	CHECK (graph_revision >= 0),
+	CHECK ((disposition = 'merged' AND merge_target_id IS NOT NULL) OR (disposition <> 'merged' AND merge_target_id IS NULL)),
+	PRIMARY KEY (project_id, node_id),
+	FOREIGN KEY (project_id, node_id, version) REFERENCES blackboard_node_versions (project_id, node_id, version) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_blackboard_node_heads_type
+	ON blackboard_node_heads (project_id, node_type, disposition, lifecycle_state, node_id);
+CREATE INDEX IF NOT EXISTS idx_blackboard_node_heads_entity
+	ON blackboard_node_heads (project_id, entity_kind, disposition, node_id);
+
+CREATE TABLE IF NOT EXISTS blackboard_key_registry (
+	project_id TEXT NOT NULL,
+	node_type TEXT NOT NULL,
+	key TEXT NOT NULL,
+	latest_key_version INTEGER NOT NULL,
+	role TEXT NOT NULL CHECK (role IN ('stable','alias')),
+	source_node_id TEXT NOT NULL,
+	canonical_node_id TEXT NOT NULL,
+	semantic_hash TEXT NOT NULL,
+	CHECK (latest_key_version > 0),
+	PRIMARY KEY (project_id, node_type, key),
+	FOREIGN KEY (project_id, node_type, key, latest_key_version)
+		REFERENCES blackboard_key_events (project_id, node_type, key, key_version) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_blackboard_key_registry_canonical
+	ON blackboard_key_registry (project_id, canonical_node_id);
+`
+
+// appendOnlyLedgerTables are the storage contract §6 tables that must reject
+// any UPDATE or DELETE; repair rebuilds materialized heads rather than
+// rewriting the ledger.
+var appendOnlyLedgerTables = []string{
+	"blackboard_graph_mutations",
+	"blackboard_graph_provenance",
+	"blackboard_graph_provenance_events",
+	"blackboard_graph_operations",
+	"blackboard_nodes",
+	"blackboard_node_versions",
+	"blackboard_key_events",
+}
+
+func migration3Up(tx *sql.Tx) error {
+	if err := execStatements(tx, migration3SQL); err != nil {
+		return err
+	}
+
+	// Append-only ledger guard triggers (storage contract §6). Each is a
+	// self-contained statement; install directly because execStatements'
+	// splitter cannot handle semicolons inside BEGIN...END bodies.
+	for _, table := range appendOnlyLedgerTables {
+		for _, stmt := range []string{
+			`CREATE TRIGGER IF NOT EXISTS ` + table + `_no_update BEFORE UPDATE ON ` + table + ` BEGIN SELECT RAISE(ABORT, '` + table + ` is append-only'); END`,
+			`CREATE TRIGGER IF NOT EXISTS ` + table + `_no_delete BEFORE DELETE ON ` + table + ` BEGIN SELECT RAISE(ABORT, '` + table + ` is append-only'); END`,
+		} {
+			if _, err := tx.Exec(stmt); err != nil {
+				return fmt.Errorf("install ledger guard for %s: %w", table, err)
+			}
+		}
+	}
+
+	// The graph ledger now exists; record its schema version while the store
+	// epoch remains legacy_v1 (production writes stay dark until the M05
+	// cutover).
+	if _, err := tx.Exec(
+		`UPDATE blackboard_store_state SET graph_schema_version = ?, updated_at = ? WHERE id = 1`,
+		GraphSchemaVersion, time.Now().UTC().Format(time.RFC3339Nano),
+	); err != nil {
+		return fmt.Errorf("set graph_schema_version: %w", err)
 	}
 	return nil
 }

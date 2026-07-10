@@ -49,12 +49,22 @@ type Defaults struct {
 	TaskPolicy     string `json:"task_policy,omitempty"`
 }
 
+// KindPentest is the default Project kind: a bounded security-testing
+// engagement. Tasks complete against their Task Goals; the Project has no
+// automatic solved state. See the Blackboard graph contract §2.
+const KindPentest = "pentest"
+
+// KindCTFChallenge is the Project kind for a single CTF challenge whose
+// Project is solved when the current graph contains a verified flag Solution.
+const KindCTFChallenge = "ctf_challenge"
+
 // Project is a bounded security-testing engagement with its own scope, tasks,
 // memory, evidence, and report.
 type Project struct {
 	ID          string    `json:"id"`
 	Name        string    `json:"name"`
 	Description string    `json:"description"`
+	Kind        string    `json:"kind"`
 	Scope       Scope     `json:"scope"`
 	Defaults    Defaults  `json:"defaults"`
 	CreatedAt   time.Time `json:"created_at"`
@@ -86,6 +96,7 @@ func (s *Service) Create(name, description string, scope Scope, defaults Default
 		ID:          newID(),
 		Name:        name,
 		Description: description,
+		Kind:        KindPentest,
 		Scope:       scope,
 		Defaults:    defaults,
 		CreatedAt:   now,
@@ -102,8 +113,8 @@ func (s *Service) Create(name, description string, scope Scope, defaults Default
 	}
 
 	_, err = s.db.Exec(
-		`INSERT INTO projects (id, name, description, scope_json, defaults_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		created.ID, created.Name, created.Description, string(scopeJSON), string(defaultsJSON),
+		`INSERT INTO projects (id, name, description, kind, scope_json, defaults_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		created.ID, created.Name, created.Description, created.Kind, string(scopeJSON), string(defaultsJSON),
 		created.CreatedAt.Format(time.RFC3339Nano), created.UpdatedAt.Format(time.RFC3339Nano),
 	)
 	if err != nil {
@@ -116,7 +127,7 @@ func (s *Service) Create(name, description string, scope Scope, defaults Default
 // Get loads a single project by id.
 func (s *Service) Get(id string) (Project, error) {
 	row := s.db.QueryRow(
-		`SELECT id, name, description, scope_json, defaults_json, created_at, updated_at FROM projects WHERE id = ?`,
+		`SELECT id, name, description, kind, scope_json, defaults_json, created_at, updated_at FROM projects WHERE id = ?`,
 		id,
 	)
 	return scanProject(row)
@@ -125,7 +136,7 @@ func (s *Service) Get(id string) (Project, error) {
 // List returns all projects ordered by creation time.
 func (s *Service) List() ([]Project, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, description, scope_json, defaults_json, created_at, updated_at FROM projects ORDER BY created_at ASC`,
+		`SELECT id, name, description, kind, scope_json, defaults_json, created_at, updated_at FROM projects ORDER BY created_at ASC`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
@@ -199,7 +210,7 @@ func scanProject(row scanner) (Project, error) {
 	var createdAt string
 	var updatedAt string
 
-	err := row.Scan(&found.ID, &found.Name, &found.Description, &scopeJSON, &defaultsJSON, &createdAt, &updatedAt)
+	err := row.Scan(&found.ID, &found.Name, &found.Description, &found.Kind, &scopeJSON, &defaultsJSON, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Project{}, ErrNotFound
 	}

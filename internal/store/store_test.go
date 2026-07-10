@@ -232,23 +232,38 @@ func TestOpenDefaultsCanonicalStoreToLegacyV1(t *testing.T) {
 		t.Fatalf("canonical store: got %q want %q", epoch, store.CanonicalStoreLegacyV1)
 	}
 
-	// Control tables exist; graph ledger tables do not yet (C02).
+	// Control tables and the C02 graph ledger core now exist (the full graph
+	// schema lands across C03+ slices). Production graph writes stay dark
+	// while the store epoch is legacy_v1.
 	for _, table := range []string{
 		"schema_migrations",
 		"blackboard_store_state",
 		"blackboard_migration_runs",
 		"blackboard_legacy_mappings",
-	} {
-		if !tableExists(t, db.DB, table) {
-			t.Fatalf("expected control table %s", table)
-		}
-	}
-	for _, table := range []string{
 		"blackboard_graph_mutations",
 		"blackboard_nodes",
+		"blackboard_node_versions",
+		"blackboard_key_events",
+		"blackboard_key_registry",
+		"blackboard_node_heads",
+		"blackboard_graph_state",
+	} {
+		if !tableExists(t, db.DB, table) {
+			t.Fatalf("expected table %s", table)
+		}
+	}
+	// Edge, compaction, health, and projection_metrics tables arrive in the
+	// slices that first need them (C03 edges, C09/C10 projection/health).
+	for _, table := range []string{
+		"blackboard_edges",
+		"blackboard_edge_versions",
+		"blackboard_edge_heads",
+		"blackboard_compactions",
+		"blackboard_projection_metrics",
+		"blackboard_health_runs",
 	} {
 		if tableExists(t, db.DB, table) {
-			t.Fatalf("production graph table %s must not exist in C01", table)
+			t.Fatalf("graph table %s must not exist until its owning slice", table)
 		}
 	}
 
