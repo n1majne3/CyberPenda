@@ -45,9 +45,22 @@ func operationProperties(op Operation) map[string]any {
 
 func normalizedCreateProperties(op Operation) map[string]any {
 	props := clonePropertyMap(operationProperties(op))
-	if op.Node.NodeType == NodeTypeExplorationObjective {
+	switch op.Node.NodeType {
+	case NodeTypeExplorationObjective, NodeTypeAttempt, NodeTypeHypothesis:
 		if _, exists := props["status"]; !exists {
 			props["status"] = "open"
+		}
+	case NodeTypeObservation:
+		if _, exists := props["status"]; !exists {
+			props["status"] = "recorded"
+		}
+	case NodeTypeProjectFact:
+		if _, exists := props["confidence"]; !exists {
+			props["confidence"] = "tentative"
+		}
+	case NodeTypeFinding:
+		if _, exists := props["status"]; !exists {
+			props["status"] = "unconfirmed"
 		}
 	}
 	return props

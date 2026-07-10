@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
-	"strings"
 
 	"pentest/internal/store"
 )
@@ -43,8 +42,8 @@ type GraphService struct {
 }
 
 type resolvedNode struct {
-	identity, nodeID, opID, entityKind string
-	nodeType                           NodeType
+	identity, nodeID, opID, stableKey, entityKind string
+	nodeType                                      NodeType
 }
 
 func (n resolvedNode) id(created map[string]string) string {
@@ -61,7 +60,7 @@ func resolveNodeRef(tx *sql.Tx, projectID string, ref NodeRef, ops map[string]Op
 			return resolvedNode{}, validationError(ErrCodeEdgeEndpointNotFound, "op_id endpoint does not resolve", -1, "", "op_id")
 		}
 		kind, _ := operationProperties(op)["kind"].(string)
-		return resolvedNode{identity: "op:" + ref.OpID, opID: ref.OpID, nodeType: op.Node.NodeType, entityKind: kind}, nil
+		return resolvedNode{identity: "op:" + ref.OpID, opID: ref.OpID, stableKey: op.Node.StableKey, nodeType: op.Node.NodeType, entityKind: kind}, nil
 	}
 	var id, typ, kind string
 	if ref.ID != "" {
@@ -79,7 +78,7 @@ func resolveNodeRef(tx *sql.Tx, projectID string, ref NodeRef, ops map[string]Op
 	if id == "" {
 		return resolvedNode{}, validationError(ErrCodeEdgeEndpointNotFound, "edge endpoint reference is empty", -1, "", "")
 	}
-	return resolvedNode{identity: "id:" + id, nodeID: id, nodeType: NodeType(typ), entityKind: kind}, nil
+	return resolvedNode{identity: "id:" + id, nodeID: id, stableKey: ref.StableKey, nodeType: NodeType(typ), entityKind: kind}, nil
 }
 
 func validateFinalCycles(tx *sql.Tx, projectID string, batch MutationBatch, resolved map[string][2]resolvedNode) *ValidationError {
@@ -229,6 +228,9 @@ func (s *GraphService) Apply(ctx context.Context, batch MutationBatch) (Mutation
 	if err := assertProjectExists(tx, batch.Context.ProjectID, batch.Context.ProjectKind); err != nil {
 		return MutationResult{}, err
 	}
+	if err := validateExecutionContext(tx, batch.Context); err != nil {
+		return MutationResult{}, err
+	}
 
 	// Idempotency: same scope/key/hash returns the stored result; different
 	// hash returns idempotency_conflict (storage §9 step 5). Full exact-replay
@@ -306,6 +308,14 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 				return MutationResult{}, validationError(ErrCodeInvalidProperty, "resolution_summary is transition-managed", i, op.OpID, "operations[].properties.resolution_summary")
 			}
 		}
+		if op.Node.NodeType == NodeTypeAttempt {
+			if status, _ := createProps["status"].(string); status != "open" {
+				return MutationResult{}, validationError(ErrCodeInvalidTransition, "Attempt must be created open", i, op.OpID, "operations[].properties.status")
+			}
+			if _, supplied := operationProperties(op)["ended_at"]; supplied {
+				return MutationResult{}, validationError(ErrCodeInvalidProperty, "ended_at is system-managed", i, op.OpID, "operations[].properties.ended_at")
+			}
+		}
 		if err := validateNodeProperties(op.Node.NodeType, createProps); err != nil {
 			err.OperationIndex = i
 			err.OpID = op.OpID
@@ -372,6 +382,15 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 		}
 	}
 	if e := validateFinalCycles(tx, projectID, batch, resolvedEdges); e != nil {
+		return MutationResult{}, e
+	}
+	if e := validateAttemptCreates(batch, resolvedEdges); e != nil {
+		return MutationResult{}, e
+	}
+	if e := validateRuntimeProducedEdges(tx, projectID, batch, resolvedEdges); e != nil {
+		return MutationResult{}, e
+	}
+	if e := validateCreatedConfirmations(tx, projectID, batch, resolvedEdges); e != nil {
 		return MutationResult{}, e
 	}
 
@@ -449,38 +468,30 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 				}
 				props["task_status"] = durableStatus
 			} else {
-				if current.nodeType != NodeTypeExplorationObjective {
-					return MutationResult{}, validationError(ErrCodeInvalidRequest, "transition_node requires an exploration_objective", i, op.OpID, "operations[].node")
-				}
-				oldStatus, _ := props["status"].(string)
-				newStatus := op.Transition.Status
-				if oldStatus != "open" || (newStatus != "resolved" && newStatus != "abandoned" && newStatus != "superseded") {
-					return MutationResult{}, validationError(ErrCodeInvalidTransition, "Exploration Objective transitions are open -> resolved|abandoned|superseded only", i, op.OpID, "operations[].transition.status")
-				}
-				if strings.TrimSpace(op.Transition.ResolutionSummary) == "" {
-					return MutationResult{}, validationError(ErrCodeMissingProperty, "terminal Objective transition requires resolution_summary", i, op.OpID, "operations[].transition.resolution_summary")
-				}
-				if newStatus == "resolved" {
-					ok, err := hasIncomingEdge(tx, projectID, current.nodeID, EdgeTypeSatisfies, batch, resolvedEdges)
-					if err != nil {
-						return MutationResult{}, err
+				switch current.nodeType {
+				case NodeTypeExplorationObjective:
+					if err := applyObjectiveTransition(tx, projectID, current, op, batch, resolvedEdges, recordedAt, props); err != nil {
+						return MutationResult{}, annotateOperationError(err, i)
 					}
-					if !ok {
-						return MutationResult{}, validationError(ErrCodeTransitionGuardFailed, "resolved Exploration Objective requires an incoming satisfies edge", i, op.OpID, "operations[].transition.status")
+				case NodeTypeAttempt:
+					if err := applyAttemptTransition(tx, projectID, current, op, batch, resolvedEdges, recordedAt, props); err != nil {
+						return MutationResult{}, annotateOperationError(err, i)
 					}
+				case NodeTypeHypothesis:
+					if err := applyHypothesisTransition(tx, projectID, current, op, batch, resolvedEdges, props); err != nil {
+						return MutationResult{}, annotateOperationError(err, i)
+					}
+				case NodeTypeProjectFact:
+					if err := applyProjectFactTransition(tx, projectID, current, op, batch, resolvedEdges, props); err != nil {
+						return MutationResult{}, annotateOperationError(err, i)
+					}
+				case NodeTypeFinding:
+					if err := applyFindingTransition(tx, projectID, current, op, batch, resolvedEdges, props); err != nil {
+						return MutationResult{}, annotateOperationError(err, i)
+					}
+				default:
+					return MutationResult{}, validationError(ErrCodeInvalidRequest, "transition_node is not supported for this node type", i, op.OpID, "operations[].node")
 				}
-				if newStatus == "superseded" {
-					ok, err := hasIncomingEdge(tx, projectID, current.nodeID, EdgeTypeSupersedes, batch, resolvedEdges)
-					if err != nil {
-						return MutationResult{}, err
-					}
-					if !ok {
-						return MutationResult{}, validationError(ErrCodeTransitionGuardFailed, "superseded Exploration Objective requires an incoming supersedes edge", i, op.OpID, "operations[].transition.status")
-					}
-				}
-				props["status"] = newStatus
-				props["resolution_summary"] = op.Transition.ResolutionSummary
-				props["resolved_at"] = recordedAt.Format("2006-01-02T15:04:05.000000000Z07:00")
 			}
 			if err := validateNodeProperties(current.nodeType, props); err != nil {
 				err.OperationIndex = i
@@ -967,14 +978,17 @@ func (s *GraphService) finalizeAndPersist(
 // for the ledger, excluding server-generated IDs and timestamps.
 func (b MutationBatch) requestLedgerForm() any {
 	return struct {
-		SchemaVersion  int         `json:"schema_version"`
-		IdempotencyKey string      `json:"idempotency_key"`
-		ProjectID      string      `json:"project_id"`
-		ActorType      ActorType   `json:"actor_type"`
-		ActorID        string      `json:"actor_id"`
-		TaskID         string      `json:"task_id,omitempty"`
-		Operations     []Operation `json:"operations"`
-	}{b.SchemaVersion, b.IdempotencyKey, b.Context.ProjectID, b.Context.ActorType, b.Context.ActorID, b.Context.TaskID, b.Operations}
+		SchemaVersion    int         `json:"schema_version"`
+		IdempotencyKey   string      `json:"idempotency_key"`
+		ProjectID        string      `json:"project_id"`
+		ActorType        ActorType   `json:"actor_type"`
+		ActorID          string      `json:"actor_id"`
+		TaskID           string      `json:"task_id,omitempty"`
+		ContinuationID   string      `json:"continuation_id,omitempty"`
+		RuntimeProfileID string      `json:"runtime_profile_id,omitempty"`
+		Runner           string      `json:"runner,omitempty"`
+		Operations       []Operation `json:"operations"`
+	}{b.SchemaVersion, b.IdempotencyKey, b.Context.ProjectID, b.Context.ActorType, b.Context.ActorID, b.Context.TaskID, b.Context.ContinuationID, b.Context.RuntimeProfileID, b.Context.Runner, b.Operations}
 }
 
 // ledgerForm returns the result in the canonical form stored in result_json.
@@ -1308,11 +1322,22 @@ func computeRequestHash(batch MutationBatch) ([]byte, error) {
 	return h[:], nil
 }
 
-// insertProvenance records one immutable provenance row (storage §6.2). C02
-// wires only the non-Runtime fields; Runtime binding (task_id,
-// continuation_id, runtime_profile_id, runner) arrives in I01.
+// insertProvenance records one immutable provenance row (storage §6.2),
+// including the trusted Runtime Task/Continuation/profile/runner binding.
 func insertProvenance(tx *sql.Tx, projectID, provenanceID string, ec ExecutionContext, recordedAt string) error {
 	var taskID, contID, profileID, runner any
+	if ec.TaskID != "" {
+		taskID = ec.TaskID
+	}
+	if ec.ContinuationID != "" {
+		contID = ec.ContinuationID
+	}
+	if ec.RuntimeProfileID != "" {
+		profileID = ec.RuntimeProfileID
+	}
+	if ec.Runner != "" {
+		runner = ec.Runner
+	}
 	_, err := tx.Exec(
 		`INSERT INTO blackboard_graph_provenance
 		 (project_id, id, actor_type, actor_id, task_id, continuation_id, runtime_profile_id, runner, migration_source_json, recorded_at)

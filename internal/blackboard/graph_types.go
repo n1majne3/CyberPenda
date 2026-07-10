@@ -145,6 +145,7 @@ type PatchNodeInput struct {
 type TransitionNodeInput struct {
 	ExpectedVersion   int    `json:"expected_version"`
 	Status            string `json:"status"`
+	Summary           string `json:"summary,omitempty"`
 	ResolutionSummary string `json:"resolution_summary,omitempty"`
 }
 
@@ -178,20 +179,23 @@ type Operation struct {
 // ExecutionContext is the server-side trusted context bound to a mutation
 // batch (storage contract §2, graph contract §3.3). The graph service treats
 // these fields as authoritative; caller-supplied Project/provenance is never
-// trusted. C02 wires only the non-Runtime fields; Runtime binding (task_id,
-// continuation_id, runtime_profile_id, runner) is enforced from I01.
+// trusted. Runtime Task/Continuation/profile/runner binding is revalidated
+// transactionally before Apply accepts a Runtime-authored mutation.
 type ExecutionContext struct {
-	ProjectID   string    `json:"project_id"`
-	ProjectKind string    `json:"project_kind"`
-	ActorType   ActorType `json:"actor_type"`
-	ActorID     string    `json:"actor_id"`
-	TaskID      string    `json:"task_id,omitempty"`
+	ProjectID        string    `json:"project_id"`
+	ProjectKind      string    `json:"project_kind"`
+	ActorType        ActorType `json:"actor_type"`
+	ActorID          string    `json:"actor_id"`
+	TaskID           string    `json:"task_id,omitempty"`
+	ContinuationID   string    `json:"continuation_id,omitempty"`
+	RuntimeProfileID string    `json:"runtime_profile_id,omitempty"`
+	Runner           string    `json:"runner,omitempty"`
 }
 
 // SystemExecutionContext builds a trusted context for a system actor. This is
 // the construction path used while the store epoch is legacy_v1 (graph data is
 // exercised only in tests and migration transactions). Runtime-bound contexts
-// are constructed by the project-interface module from I01.
+// are constructed by the project-interface module.
 func SystemExecutionContext(projectID, projectKind, systemActorID string) ExecutionContext {
 	return ExecutionContext{
 		ProjectID:   projectID,
@@ -202,11 +206,13 @@ func SystemExecutionContext(projectID, projectKind, systemActorID string) Execut
 }
 
 // idempotencyScope derives the idempotency scope for this context (graph
-// contract §10): runtime uses continuation:<continuation_id> (wired in I01),
+// contract §10): runtime uses continuation:<continuation_id>,
 // operator uses operator:<actor_id>, system uses system:<actor_id>, and
 // migration uses migration:<actor_id>.
 func (c ExecutionContext) idempotencyScope() string {
 	switch c.ActorType {
+	case ActorTypeRuntime:
+		return "continuation:" + c.ContinuationID
 	case ActorTypeSystem:
 		return "system:" + c.ActorID
 	case ActorTypeOperator:
