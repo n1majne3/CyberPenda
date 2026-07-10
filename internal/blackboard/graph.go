@@ -39,6 +39,128 @@ type GraphService struct {
 	ids   IDSource
 }
 
+type resolvedNode struct {
+	identity, nodeID, opID, entityKind string
+	nodeType                           NodeType
+}
+
+func (n resolvedNode) id(created map[string]string) string {
+	if n.nodeID != "" {
+		return n.nodeID
+	}
+	return created[n.opID]
+}
+
+func resolveNodeRef(tx *sql.Tx, projectID string, ref NodeRef, ops map[string]Operation) (resolvedNode, *ValidationError) {
+	if ref.OpID != "" {
+		op, ok := ops[ref.OpID]
+		if !ok || op.Kind != OpCreateNode {
+			return resolvedNode{}, validationError(ErrCodeEdgeEndpointNotFound, "op_id endpoint does not resolve", -1, "", "op_id")
+		}
+		kind, _ := operationProperties(op)["kind"].(string)
+		return resolvedNode{identity: "op:" + ref.OpID, opID: ref.OpID, nodeType: op.Node.NodeType, entityKind: kind}, nil
+	}
+	var id, typ, kind string
+	if ref.ID != "" {
+		err := tx.QueryRow(`SELECT h.node_id,h.node_type,h.entity_kind FROM blackboard_node_heads h WHERE h.project_id=? AND h.node_id=? AND h.disposition='main'`, projectID, ref.ID).Scan(&id, &typ, &kind)
+		if err != nil {
+			return resolvedNode{}, validationError(ErrCodeEdgeEndpointNotFound, "node id endpoint does not resolve", -1, "", "id")
+		}
+	}
+	if ref.StableKey != "" && ref.NodeType != "" {
+		err := tx.QueryRow(`SELECT h.node_id,h.node_type,h.entity_kind FROM blackboard_key_registry k JOIN blackboard_node_heads h ON h.project_id=k.project_id AND h.node_id=k.canonical_node_id WHERE k.project_id=? AND k.node_type=? AND k.key=? AND h.disposition='main'`, projectID, string(ref.NodeType), ref.StableKey).Scan(&id, &typ, &kind)
+		if err != nil {
+			return resolvedNode{}, validationError(ErrCodeEdgeEndpointNotFound, "stable-key endpoint does not resolve", -1, "", "stable_key")
+		}
+	}
+	if id == "" {
+		return resolvedNode{}, validationError(ErrCodeEdgeEndpointNotFound, "edge endpoint reference is empty", -1, "", "")
+	}
+	return resolvedNode{identity: "id:" + id, nodeID: id, nodeType: NodeType(typ), entityKind: kind}, nil
+}
+
+func validateFinalCycles(tx *sql.Tx, projectID string, batch MutationBatch, resolved map[string][2]resolvedNode) *ValidationError {
+	graphs := []map[string][]string{{}, {}, {}}
+	rows, err := tx.Query(`SELECT edge_type,from_node_id,to_node_id FROM blackboard_edge_heads WHERE project_id=? AND state='active' AND edge_type IN ('part_of','depends_on','blocks','supersedes')`, projectID)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var typ, from, to string
+			_ = rows.Scan(&typ, &from, &to)
+			g := -1
+			switch EdgeType(typ) {
+			case EdgeTypePartOf:
+				g = 0
+			case EdgeTypeDependsOn:
+				g = 1
+				from, to = to, from
+			case EdgeTypeBlocks:
+				g = 1
+			case EdgeTypeSupersedes:
+				g = 2
+			}
+			if g >= 0 {
+				graphs[g]["id:"+from] = append(graphs[g]["id:"+from], "id:"+to)
+			}
+		}
+	}
+	for i, op := range batch.Operations {
+		if op.Kind != OpPutEdge {
+			continue
+		}
+		pair := resolved[op.OpID]
+		from, to, g := pair[0].identity, pair[1].identity, -1
+		switch op.PutEdge.EdgeType {
+		case EdgeTypePartOf:
+			if pair[0].nodeType == NodeTypeEntity {
+				g = 0
+			}
+		case EdgeTypeDependsOn:
+			g = 1
+			from, to = to, from
+		case EdgeTypeBlocks:
+			g = 1
+		case EdgeTypeSupersedes:
+			g = 2
+		}
+		if g < 0 {
+			continue
+		}
+		graphs[g][from] = append(graphs[g][from], to)
+		if hasCycle(graphs[g]) {
+			return validationError(ErrCodeGraphCycle, "controlled edge would create a cycle", i, op.OpID, fmt.Sprintf("operations[%d].from", i))
+		}
+	}
+	return nil
+}
+func hasCycle(g map[string][]string) bool {
+	visiting, done := map[string]bool{}, map[string]bool{}
+	var walk func(string) bool
+	walk = func(n string) bool {
+		if visiting[n] {
+			return true
+		}
+		if done[n] {
+			return false
+		}
+		visiting[n] = true
+		for _, x := range g[n] {
+			if walk(x) {
+				return true
+			}
+		}
+		visiting[n] = false
+		done[n] = true
+		return false
+	}
+	for n := range g {
+		if walk(n) {
+			return true
+		}
+	}
+	return false
+}
+
 // NewGraphService returns a GraphService wired with injected deterministic
 // dependencies (slices §2.1). Production callers pass SystemClock and
 // RandomIDSource; tests pass deterministic sources for byte-stable hashes.
@@ -131,17 +253,24 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 
 	// Validate every operation against the closed envelope before allocating
 	// any IDs or writing any row (storage §9 steps 6-8).
+	seenOps := make(map[string]Operation, len(batch.Operations))
 	for i, op := range batch.Operations {
 		if op.OpID == "" {
 			return MutationResult{}, validationError(ErrCodeInvalidRequest, "op_id is required", i, "", "operations[].op_id")
 		}
-		if op.Kind != OpCreateNode {
+		if _, duplicate := seenOps[op.OpID]; duplicate {
+			return MutationResult{}, validationError(ErrCodeInvalidRequest, "op_id must be unique", i, op.OpID, fmt.Sprintf("operations[%d].op_id", i))
+		}
+		seenOps[op.OpID] = op
+		if op.Kind != OpCreateNode && op.Kind != OpPutEdge {
 			return MutationResult{}, validationError(ErrCodeInvalidRequest,
 				fmt.Sprintf("operation kind %q is not implemented in C02", op.Kind), i, op.OpID, "operations[].kind")
 		}
-		if op.Node.NodeType != NodeTypeProjectFact {
-			return MutationResult{}, validationError(ErrCodeUnknownNodeType,
-				fmt.Sprintf("C02 create_node supports project_fact, got %q", op.Node.NodeType), i, op.OpID, "operations[].node_type")
+		if op.Kind == OpPutEdge {
+			continue
+		}
+		if _, ok := nodeSchemas[op.Node.NodeType]; !ok {
+			return MutationResult{}, validationError(ErrCodeUnknownNodeType, fmt.Sprintf("unknown node type %q", op.Node.NodeType), i, op.OpID, fmt.Sprintf("operations[%d].node_type", i))
 		}
 		if !stableKeyPattern.MatchString(op.Node.StableKey) {
 			return MutationResult{}, validationError(ErrCodeInvalidProperty,
@@ -156,11 +285,58 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 			return MutationResult{}, validationError(ErrCodeUnknownProperty,
 				fmt.Sprintf("unknown project_fact property: %v", keys), i, op.OpID, "operations[].properties")
 		}
-		if err := validateProjectFactProperties(op.Create.Properties); err != nil {
+		if err := validateNodeProperties(op.Node.NodeType, operationProperties(op)); err != nil {
 			err.OperationIndex = i
 			err.OpID = op.OpID
 			return MutationResult{}, err
 		}
+		if op.Node.NodeType == NodeTypeSolution && batch.Context.ProjectKind != "ctf_challenge" {
+			return MutationResult{}, validationError(ErrCodeProjectKindViolation, "solution is valid only in a ctf_challenge Project", i, op.OpID, fmt.Sprintf("operations[%d].node_type", i))
+		}
+	}
+	// Resolve same-batch and current-graph references and validate every controlled edge against
+	// the final proposed node set before allocating IDs or writing rows.
+	resolvedEdges := map[string][2]resolvedNode{}
+	for i, op := range batch.Operations {
+		if op.Kind != OpPutEdge {
+			continue
+		}
+		allowed, known := edgeEndpoints[op.PutEdge.EdgeType]
+		if !known {
+			return MutationResult{}, validationError(ErrCodeUnknownEdgeType, fmt.Sprintf("unknown edge type %q", op.PutEdge.EdgeType), i, op.OpID, fmt.Sprintf("operations[%d].edge_type", i))
+		}
+		from, err := resolveNodeRef(tx, projectID, op.PutEdge.From, seenOps)
+		if err != nil {
+			err.OperationIndex = i
+			err.OpID = op.OpID
+			err.Path = fmt.Sprintf("operations[%d].from", i)
+			return MutationResult{}, err
+		}
+		to, err := resolveNodeRef(tx, projectID, op.PutEdge.To, seenOps)
+		if err != nil {
+			err.OperationIndex = i
+			err.OpID = op.OpID
+			err.Path = fmt.Sprintf("operations[%d].to", i)
+			return MutationResult{}, err
+		}
+		resolvedEdges[op.OpID] = [2]resolvedNode{from, to}
+		if from.identity == to.identity {
+			return MutationResult{}, validationError(ErrCodeSelfEdgeForbidden, "self edges are forbidden", i, op.OpID, fmt.Sprintf("operations[%d].from", i))
+		}
+		if !allowed(from.nodeType, to.nodeType) {
+			return MutationResult{}, validationError(ErrCodeEdgeEndpointType, fmt.Sprintf("%s cannot connect %s to %s", op.PutEdge.EdgeType, from.nodeType, to.nodeType), i, op.OpID, fmt.Sprintf("operations[%d].from", i))
+		}
+		if op.PutEdge.EdgeType == EdgeTypePartOf && from.nodeType == NodeTypeEntity {
+			if e := validateEntityPartOfKinds(from.entityKind, to.entityKind); e != nil {
+				e.OperationIndex = i
+				e.OpID = op.OpID
+				e.Path = fmt.Sprintf("operations[%d].from", i)
+				return MutationResult{}, e
+			}
+		}
+	}
+	if e := validateFinalCycles(tx, projectID, batch, resolvedEdges); e != nil {
+		return MutationResult{}, e
 	}
 
 	// Load current graph state for the Project (storage §9 step 6). C02 has no
@@ -182,7 +358,26 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 	// Apply each create_node. C02's minimal round-trip has a single operation;
 	// the loop keeps the shape for when multi-op batches arrive in later slices.
 	stateChanged := false
+	nodeIDs := map[string]string{}
 	for i, op := range batch.Operations {
+		provenanceID := s.ids.NextID()
+		if err := insertProvenance(tx, projectID, provenanceID, batch.Context, recordedAt.Format("2006-01-02T15:04:05.000000000Z07:00")); err != nil {
+			return MutationResult{}, err
+		}
+		state.provenanceIDs = append(state.provenanceIDs, provenanceID)
+		if op.Kind == OpPutEdge {
+			if !stateChanged {
+				result.GraphRevision = state.currentGraphRevision + 1
+				stateChanged = true
+			}
+			edgeID := s.ids.NextID()
+			resolved := resolvedEdges[op.OpID]
+			fromID, toID := resolved[0].id(nodeIDs), resolved[1].id(nodeIDs)
+			semHash := framedHash("CyberPenda.Blackboard.EdgeSemantic.v1", []byte(op.PutEdge.EdgeType), []byte(fromID), []byte(toID), []byte("active"), []byte(op.PutEdge.Summary))
+			result.Operations[i] = OperationResult{OpID: op.OpID, EdgeID: edgeID, EdgeType: op.PutEdge.EdgeType, EdgeVersion: 1, SemanticHash: hex.EncodeToString(semHash), Changed: true}
+			state.pendingEdges = append(state.pendingEdges, pendingEdge{id: edgeID, edgeType: op.PutEdge.EdgeType, fromID: fromID, toID: toID, summary: op.PutEdge.Summary, semHash: semHash, opIndex: i, graphRevision: result.GraphRevision})
+			continue
+		}
 		// Key uniqueness across live keys and aliases (graph §4, storage §7.4).
 		conflict, err := keyIsLive(tx, projectID, op.Node.NodeType, op.Node.StableKey)
 		if err != nil {
@@ -193,15 +388,21 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 				fmt.Sprintf("stable key %q is already live or reserved by an alias", op.Node.StableKey), i, op.OpID, "operations[].stable_key")
 		}
 
-		props := normalizeProjectFactProperties(op.Create.Properties)
+		props := operationProperties(op)
+		if op.Node.NodeType == NodeTypeProjectFact {
+			n := normalizeProjectFactProperties(op.Create.Properties)
+			if op.Create.PropertyMap == nil {
+				props = map[string]any{"category": n.Category, "summary": n.Summary, "body": n.Body, "confidence": string(n.Confidence), "scope_status": string(n.ScopeStatus)}
+			}
+		}
 		nodeID := s.ids.NextID()
-		provenanceID := s.ids.NextID()
+		nodeIDs[op.OpID] = nodeID
 
 		propsJSON, err := canonicalJSON(props)
 		if err != nil {
 			return MutationResult{}, fmt.Errorf("encode project_fact properties: %w", err)
 		}
-		semHash := projectFactSemanticHash(DispositionMain, "", props)
+		semHash := genericNodeSemanticHash(DispositionMain, "", props)
 
 		// A create always changes current semantic state: new node, version 1.
 		if !stateChanged {
@@ -209,10 +410,6 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 			stateChanged = true
 		}
 		nodeVersion := 1
-
-		if err := insertProvenance(tx, projectID, provenanceID, batch.Context, recordedAt.Format("2006-01-02T15:04:05.000000000Z07:00")); err != nil {
-			return MutationResult{}, err
-		}
 
 		// We have not yet allocated the mutation_seq, so insert operation/node
 		// rows after the mutation header is written. Collect pending inserts.
@@ -281,6 +478,13 @@ type pendingCreate struct {
 	opID          string
 	graphRevision int
 }
+type pendingEdge struct {
+	id                     string
+	edgeType               EdgeType
+	fromID, toID, summary  string
+	semHash                []byte
+	opIndex, graphRevision int
+}
 
 // finalizeAndPersist inserts the mutation header, operation, node identity,
 // node version, key event, and rebuilds the materialized heads and graph state.
@@ -319,7 +523,7 @@ func (s *GraphService) finalizeAndPersist(
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("encode operation result json: %w", err)
 		}
-		opRows[i] = opRow{opJSON: opJSON, resJSON: resJSON, changed: result.Operations[i].Changed, provID: state.pending[i].provenanceID, opID: op.OpID}
+		opRows[i] = opRow{opJSON: opJSON, resJSON: resJSON, changed: result.Operations[i].Changed, provID: state.provenanceIDs[i], opID: op.OpID}
 	}
 
 	// Canonical request JSON for the ledger.
@@ -405,17 +609,21 @@ func (s *GraphService) finalizeAndPersist(
 		return nil, nil, nil, nil, fmt.Errorf("insert graph mutation: %w", err)
 	}
 
-	// Insert operations, node identities, node versions, key events, heads.
-	for i, p := range state.pending {
+	// Every requested operation is recorded, including edge operations. Node
+	// identity/version rows are emitted only for create_node operations.
+	for i, op := range batch.Operations {
 		_, err := tx.Exec(
 			`INSERT INTO blackboard_graph_operations
 			 (project_id, mutation_seq, operation_index, op_id, operation_kind, operation_json, result_json, changed, provenance_id)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			projectID, mutationSeq, p.opIndex, p.opID, string(OpCreateNode), string(opRows[i].opJSON), string(opRows[i].resJSON), boolToInt(opRows[i].changed), p.provenanceID,
+			projectID, mutationSeq, i, op.OpID, string(op.Kind), string(opRows[i].opJSON), string(opRows[i].resJSON), boolToInt(opRows[i].changed), opRows[i].provID,
 		)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("insert graph operation: %w", err)
 		}
+	}
+	// Insert node identities, node versions, key events, and heads.
+	for _, p := range state.pending {
 
 		createdAt := tsStr
 		_, err = tx.Exec(
@@ -453,7 +661,7 @@ func (s *GraphService) finalizeAndPersist(
 		}
 
 		// Rebuild materialized heads and registry (storage §9 step 13).
-		lifecycle, entity, scope := projectFactDerivedFields(p.propsJSON)
+		lifecycle, entity, scope := genericDerivedFields(p.nodeType, p.propsJSON)
 		_, err = tx.Exec(
 			`INSERT INTO blackboard_node_heads
 			 (project_id, node_id, node_type, version, graph_revision, disposition, merge_target_id,
@@ -474,6 +682,20 @@ func (s *GraphService) finalizeAndPersist(
 		)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("insert key registry: %w", err)
+		}
+	}
+	for _, e := range state.pendingEdges {
+		_, err = tx.Exec(`INSERT INTO blackboard_edges(project_id,id,edge_type,from_node_id,to_node_id,created_mutation_seq,created_operation_index,created_at) VALUES(?,?,?,?,?,?,?,?)`, projectID, e.id, string(e.edgeType), e.fromID, e.toID, mutationSeq, e.opIndex, tsStr)
+		if err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("insert edge identity: %w", err)
+		}
+		_, err = tx.Exec(`INSERT INTO blackboard_edge_versions(project_id,edge_id,version,result_graph_revision,mutation_seq,operation_index,state,summary,semantic_hash,updated_at) VALUES(?,?,1,?,?,?,'active',?,?,?)`, projectID, e.id, e.graphRevision, mutationSeq, e.opIndex, e.summary, hex.EncodeToString(e.semHash), tsStr)
+		if err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("insert edge version: %w", err)
+		}
+		_, err = tx.Exec(`INSERT INTO blackboard_edge_heads(project_id,edge_id,edge_type,from_node_id,to_node_id,version,graph_revision,state,semantic_hash) VALUES(?,?,?,?,?,1,?,'active',?)`, projectID, e.id, string(e.edgeType), e.fromID, e.toID, e.graphRevision, hex.EncodeToString(e.semHash))
+		if err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("insert edge head: %w", err)
 		}
 	}
 
@@ -542,7 +764,7 @@ func (r MutationResult) ledgerForm() resultLedgerForm {
 	for i, o := range r.Operations {
 		ops[i] = operationResultLedgerForm{
 			OpID: o.OpID, NodeID: o.NodeID, NodeType: o.NodeType, StableKey: o.StableKey,
-			NodeVersion: o.NodeVersion, SemanticHash: o.SemanticHash, Changed: o.Changed,
+			NodeVersion: o.NodeVersion, EdgeID: o.EdgeID, EdgeType: o.EdgeType, EdgeVersion: o.EdgeVersion, SemanticHash: o.SemanticHash, Changed: o.Changed,
 		}
 	}
 	return resultLedgerForm{
@@ -618,6 +840,8 @@ type graphState struct {
 	currentGraphRevision int
 	historyHeadHash      []byte
 	pending              []pendingCreate
+	pendingEdges         []pendingEdge
+	provenanceIDs        []string
 }
 
 func loadGraphState(tx *sql.Tx, projectID string) (graphState, error) {
@@ -737,12 +961,37 @@ func projectFactSemanticHash(disposition Disposition, mergeTarget string, props 
 		[]byte(disposition), nullableBytes(mergeTarget != "", []byte(mergeTarget)), propsJSON)
 }
 
+func genericNodeSemanticHash(disposition Disposition, mergeTarget string, props map[string]any) []byte {
+	b, _ := canonicalJSON(props)
+	return framedHash("CyberPenda.Blackboard.NodeSemantic.v1", []byte(disposition), nullableBytes(mergeTarget != "", []byte(mergeTarget)), b)
+}
+
 // projectFactDerivedFields extracts the head-table derived lifecycle_state,
 // entity_kind, and scope_status from the node's properties JSON (storage §7.2).
 func projectFactDerivedFields(propsJSON []byte) (lifecycle, entity, scope string) {
 	var props ProjectFactProperties
 	_ = jsonUnmarshalProps(propsJSON, &props)
 	return string(props.Confidence), "", string(props.ScopeStatus)
+}
+
+func genericDerivedFields(t NodeType, propsJSON []byte) (lifecycle, entity, scope string) {
+	var p map[string]any
+	_ = jsonUnmarshalProps(propsJSON, &p)
+	if v, ok := p["status"].(string); ok {
+		lifecycle = v
+	}
+	if t == NodeTypeProjectFact {
+		if v, ok := p["confidence"].(string); ok {
+			lifecycle = v
+		}
+	}
+	if v, ok := p["kind"].(string); ok && t == NodeTypeEntity {
+		entity = v
+	}
+	if v, ok := p["scope_status"].(string); ok {
+		scope = v
+	}
+	return
 }
 
 // ComputeRequestHashForTesting exposes the canonical request hash for tests

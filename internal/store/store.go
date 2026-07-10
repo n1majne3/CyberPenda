@@ -201,8 +201,34 @@ func migrations() []migration {
 		newMigration(1, "baseline_legacy_schema", migration1BaselineSQL, migration1Up),
 		newMigration(2, "store_epoch_and_graph_support", migration2SQL, migration2Up),
 		newMigration(3, "graph_ledger_core", migration3SQL, migration3Up),
+		newMigration(4, "graph_edges", migration4SQL, migration4Up),
 	}
 }
+
+const migration4SQL = `
+CREATE TABLE blackboard_edges (
+ project_id TEXT NOT NULL, id TEXT NOT NULL, edge_type TEXT NOT NULL,
+ from_node_id TEXT NOT NULL, to_node_id TEXT NOT NULL,
+ created_mutation_seq INTEGER NOT NULL, created_operation_index INTEGER NOT NULL, created_at TEXT NOT NULL,
+ PRIMARY KEY(project_id,id), UNIQUE(project_id,edge_type,from_node_id,to_node_id),
+ FOREIGN KEY(project_id,from_node_id) REFERENCES blackboard_nodes(project_id,id),
+ FOREIGN KEY(project_id,to_node_id) REFERENCES blackboard_nodes(project_id,id),
+ FOREIGN KEY(project_id,created_mutation_seq,created_operation_index) REFERENCES blackboard_graph_operations(project_id,mutation_seq,operation_index));
+CREATE TABLE blackboard_edge_versions (
+ project_id TEXT NOT NULL, edge_id TEXT NOT NULL, version INTEGER NOT NULL, result_graph_revision INTEGER NOT NULL,
+ mutation_seq INTEGER NOT NULL, operation_index INTEGER NOT NULL, state TEXT NOT NULL CHECK(state IN ('active','retired')),
+ summary TEXT NOT NULL DEFAULT '', semantic_hash TEXT NOT NULL, updated_at TEXT NOT NULL,
+ PRIMARY KEY(project_id,edge_id,version), FOREIGN KEY(project_id,edge_id) REFERENCES blackboard_edges(project_id,id),
+ FOREIGN KEY(project_id,mutation_seq,operation_index) REFERENCES blackboard_graph_operations(project_id,mutation_seq,operation_index));
+CREATE TABLE blackboard_edge_heads (
+ project_id TEXT NOT NULL, edge_id TEXT NOT NULL, edge_type TEXT NOT NULL, from_node_id TEXT NOT NULL, to_node_id TEXT NOT NULL,
+ version INTEGER NOT NULL, graph_revision INTEGER NOT NULL, state TEXT NOT NULL CHECK(state IN ('active','retired')), semantic_hash TEXT NOT NULL,
+ PRIMARY KEY(project_id,edge_id), FOREIGN KEY(project_id,edge_id,version) REFERENCES blackboard_edge_versions(project_id,edge_id,version));
+CREATE INDEX idx_blackboard_edge_heads_from ON blackboard_edge_heads(project_id,from_node_id,state,edge_type);
+CREATE INDEX idx_blackboard_edge_heads_to ON blackboard_edge_heads(project_id,to_node_id,state,edge_type);
+`
+
+func migration4Up(tx *sql.Tx) error { return execStatements(tx, migration4SQL) }
 
 func newMigration(version int, name, sqlBody string, up func(*sql.Tx) error) migration {
 	sum := sha256.Sum256([]byte(sqlBody))

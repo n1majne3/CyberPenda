@@ -28,10 +28,25 @@ func decodeResultJSON(data string) (*MutationResult, error) {
 	for i, o := range rf.Operations {
 		out.Operations[i] = OperationResult{
 			OpID: o.OpID, NodeID: o.NodeID, NodeType: o.NodeType, StableKey: o.StableKey,
-			NodeVersion: o.NodeVersion, SemanticHash: o.SemanticHash, Changed: o.Changed,
+			NodeVersion: o.NodeVersion, EdgeID: o.EdgeID, EdgeType: o.EdgeType, EdgeVersion: o.EdgeVersion, SemanticHash: o.SemanticHash, Changed: o.Changed,
 		}
 	}
 	return out, nil
+}
+
+func (s *GraphService) ReadEdge(ctx context.Context, req ReadEdgeRequest) (EdgeRecord, error) {
+	var e EdgeRecord
+	var typ string
+	err := s.db.QueryRowContext(ctx, `SELECT h.edge_id,h.edge_type,h.from_node_id,h.to_node_id,h.version,h.state,v.summary,h.semantic_hash FROM blackboard_edge_heads h JOIN blackboard_edge_versions v ON v.project_id=h.project_id AND v.edge_id=h.edge_id AND v.version=h.version WHERE h.project_id=? AND h.edge_id=?`, req.ProjectID, req.EdgeID).Scan(&e.ID, &typ, &e.FromNodeID, &e.ToNodeID, &e.Version, &e.State, &e.Summary, &e.SemanticHash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return EdgeRecord{}, validationError(ErrCodeEdgeEndpointNotFound, "edge not found", -1, "", "edge_id")
+	}
+	if err != nil {
+		return EdgeRecord{}, fmt.Errorf("read edge head: %w", err)
+	}
+	e.ProjectID = req.ProjectID
+	e.EdgeType = EdgeType(typ)
+	return e, nil
 }
 
 // ReadNode resolves a node by key through the alias-resolving key registry and

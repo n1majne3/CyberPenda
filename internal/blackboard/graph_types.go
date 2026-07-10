@@ -109,8 +109,37 @@ type ProjectFactProperties struct {
 // ExtraProperties is nil for conforming calls; any key present there is
 // rejected as unknown_property under the closed envelope.
 type CreateNodeInput struct {
-	Properties      ProjectFactProperties
+	Properties ProjectFactProperties
+	// PropertyMap is the canonical closed property envelope for every graph
+	// node type. ProjectFact callers may continue to use Properties; adapters
+	// use this representation so one conformance corpus can exercise all types.
+	PropertyMap     map[string]any
 	ExtraProperties map[string]any
+}
+
+type EdgeType string
+
+const (
+	EdgeTypeAbout       EdgeType = "about"
+	EdgeTypePartOf      EdgeType = "part_of"
+	EdgeTypeTests       EdgeType = "tests"
+	EdgeTypeProduced    EdgeType = "produced"
+	EdgeTypeEvidences   EdgeType = "evidences"
+	EdgeTypeSupports    EdgeType = "supports"
+	EdgeTypeContradicts EdgeType = "contradicts"
+	EdgeTypeDerivedFrom EdgeType = "derived_from"
+	EdgeTypeDependsOn   EdgeType = "depends_on"
+	EdgeTypeBlocks      EdgeType = "blocks"
+	EdgeTypeLeadsTo     EdgeType = "leads_to"
+	EdgeTypeSatisfies   EdgeType = "satisfies"
+	EdgeTypeSupersedes  EdgeType = "supersedes"
+)
+
+type PutEdgeInput struct {
+	EdgeType EdgeType `json:"edge_type"`
+	From     NodeRef  `json:"from"`
+	To       NodeRef  `json:"to"`
+	Summary  string   `json:"summary,omitempty"`
 }
 
 // NodeRef references a node by id, (node_type, stable_key), or same-batch op_id
@@ -125,10 +154,11 @@ type NodeRef struct {
 // Operation is one mutation batch operation. C02 implements only create_node
 // for project_fact; other kinds fail closed.
 type Operation struct {
-	OpID   string          `json:"op_id"`
-	Kind   OperationKind   `json:"kind"`
-	Node   NodeRef         `json:"node"`
-	Create CreateNodeInput `json:"create,omitempty"`
+	OpID    string          `json:"op_id"`
+	Kind    OperationKind   `json:"kind"`
+	Node    NodeRef         `json:"node"`
+	Create  CreateNodeInput `json:"create,omitempty"`
+	PutEdge PutEdgeInput    `json:"put_edge,omitempty"`
 }
 
 // ExecutionContext is the server-side trusted context bound to a mutation
@@ -190,6 +220,9 @@ type OperationResult struct {
 	NodeType     NodeType `json:"node_type,omitempty"`
 	StableKey    string   `json:"stable_key,omitempty"`
 	NodeVersion  int      `json:"node_version,omitempty"`
+	EdgeID       string   `json:"edge_id,omitempty"`
+	EdgeType     EdgeType `json:"edge_type,omitempty"`
+	EdgeVersion  int      `json:"edge_version,omitempty"`
 	SemanticHash string   `json:"semantic_hash,omitempty"`
 	Changed      bool     `json:"changed"`
 }
@@ -237,6 +270,15 @@ type ReadNodeResult struct {
 	ResolvedFromAlias     string // empty if the key was the canonical stable key
 }
 
+type ReadEdgeRequest struct{ ProjectID, EdgeID string }
+type EdgeRecord struct {
+	ID, ProjectID                string
+	EdgeType                     EdgeType
+	FromNodeID, ToNodeID         string
+	Version                      int
+	State, Summary, SemanticHash string
+}
+
 // operationResultLedgerForm is the canonical JSON shape used both when writing
 // result_json to the ledger and when decoding it back for replay/reads. Keeping
 // one definition ensures the stored and decoded forms are byte-compatible.
@@ -246,6 +288,9 @@ type operationResultLedgerForm struct {
 	NodeType     NodeType `json:"node_type"`
 	StableKey    string   `json:"stable_key"`
 	NodeVersion  int      `json:"node_version"`
+	EdgeID       string   `json:"edge_id,omitempty"`
+	EdgeType     EdgeType `json:"edge_type,omitempty"`
+	EdgeVersion  int      `json:"edge_version,omitempty"`
 	SemanticHash string   `json:"semantic_hash"`
 	Changed      bool     `json:"changed"`
 }
@@ -284,13 +329,21 @@ const (
 	ErrCodeUnsupportedSchemaVersion = "unsupported_schema_version"
 	ErrCodeInvalidRequest           = "invalid_request"
 	ErrCodeUnknownNodeType          = "unknown_node_type"
+	ErrCodeUnknownEdgeType          = "unknown_edge_type"
 	ErrCodeUnknownProperty          = "unknown_property"
 	ErrCodeMissingProperty          = "missing_property"
 	ErrCodeInvalidProperty          = "invalid_property"
 	ErrCodeProjectNotFound          = "project_not_found"
 	ErrCodeProjectMismatch          = "project_mismatch"
+	ErrCodeProjectKindViolation     = "project_kind_violation"
 	ErrCodeNodeKeyConflict          = "node_key_conflict"
 	ErrCodeNodeNotFound             = "node_not_found"
+	ErrCodeEdgeEndpointNotFound     = "edge_endpoint_not_found"
+	ErrCodeEdgeEndpointType         = "edge_endpoint_type"
+	ErrCodeSelfEdgeForbidden        = "self_edge_forbidden"
+	ErrCodeGraphCycle               = "graph_cycle"
+	ErrCodeTransitionGuardFailed    = "transition_guard_failed"
+	ErrCodeProvenanceSpoofed        = "provenance_spoofed"
 	ErrCodeIdempotencyConflict      = "idempotency_conflict"
 	ErrCodeProvenanceRequired       = "provenance_required"
 )

@@ -160,6 +160,106 @@ func TestApplyCreatesTentativeProjectFactAndReadReturnsItAfterReopen(t *testing.
 	_ = firstResultHash
 }
 
+// TestApplyRejectsReversedControlledEdgeWithoutPartialWrite is C03's first
+// tracer bullet at BlackboardGraphService.Apply. about is record -> Entity;
+// the reversed Entity -> ProjectFact direction must fail atomically.
+func TestApplyRejectsReversedControlledEdgeWithoutPartialWrite(t *testing.T) {
+	graph, projects, _ := newGraphServices(t)
+	_, ctx := mustGraphProject(t, projects)
+	batch := blackboard.MutationBatch{
+		SchemaVersion:  blackboard.GraphMutationSchemaVersion,
+		IdempotencyKey: "c03:reversed-about",
+		Context:        ctx,
+		Operations: []blackboard.Operation{
+			{OpID: "entity", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEntity, StableKey: "host:example.com"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "host", "name": "example.com", "locator": "example.com", "scope_status": "in_scope"}}},
+			{OpID: "fact", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "dns:example.com"}, Create: blackboard.CreateNodeInput{Properties: blackboard.ProjectFactProperties{Category: "dns", Summary: "example.com exists", ScopeStatus: blackboard.ScopeStatusInScope}}},
+			{OpID: "reversed", Kind: blackboard.OpPutEdge, PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypeAbout, From: blackboard.NodeRef{OpID: "entity"}, To: blackboard.NodeRef{OpID: "fact"}}},
+		},
+	}
+
+	_, err := graph.Apply(context.Background(), batch)
+	var verr *blackboard.ValidationError
+	if !errors.As(err, &verr) || verr.Code != blackboard.ErrCodeEdgeEndpointType {
+		t.Fatalf("expected edge_endpoint_type, got %v", err)
+	}
+	if verr.OperationIndex != 2 || verr.OpID != "reversed" || verr.Path != "operations[2].from" {
+		t.Fatalf("unexpected validation location: %+v", verr)
+	}
+	// Reusing both stable keys in a corrected batch proves the rejection left
+	// no partial node/key state, entirely through the public Apply seam.
+	batch.IdempotencyKey = "c03:corrected-about"
+	batch.Operations[2].PutEdge.From, batch.Operations[2].PutEdge.To = batch.Operations[2].PutEdge.To, batch.Operations[2].PutEdge.From
+	if _, err := graph.Apply(context.Background(), batch); err != nil {
+		t.Fatalf("corrected batch after rejection: %v", err)
+	}
+}
+
+func TestApplyAcceptsControlledEdgeDirection(t *testing.T) {
+	graph, projects, path := newGraphServices(t)
+	_, ctx := mustGraphProject(t, projects)
+	batch := blackboard.MutationBatch{SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "c03:about", Context: ctx, Operations: []blackboard.Operation{
+		{OpID: "entity", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEntity, StableKey: "host:example.com"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "host", "name": "example.com", "locator": "example.com", "scope_status": "in_scope"}}},
+		{OpID: "fact", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "dns:example.com"}, Create: blackboard.CreateNodeInput{Properties: blackboard.ProjectFactProperties{Category: "dns", Summary: "example.com exists", ScopeStatus: blackboard.ScopeStatusInScope}}},
+		{OpID: "about", Kind: blackboard.OpPutEdge, PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypeAbout, From: blackboard.NodeRef{OpID: "fact"}, To: blackboard.NodeRef{OpID: "entity"}}},
+	}}
+	result, err := graph.Apply(context.Background(), batch)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if got := result.Operations[2]; got.EdgeType != blackboard.EdgeTypeAbout || got.EdgeVersion != 1 || !got.Changed {
+		t.Fatalf("edge result: %+v", got)
+	}
+	reopened := reopenGraphServices(t, path)
+	edge, err := reopened.ReadEdge(context.Background(), blackboard.ReadEdgeRequest{ProjectID: ctx.ProjectID, EdgeID: result.Operations[2].EdgeID})
+	if err != nil {
+		t.Fatalf("read edge after reopen: %v", err)
+	}
+	if edge.EdgeType != blackboard.EdgeTypeAbout || edge.FromNodeID == "" || edge.ToNodeID == "" {
+		t.Fatalf("reopened edge: %+v", edge)
+	}
+}
+
+func TestApplyRejectsFinalGraphCycle(t *testing.T) {
+	graph, projects, _ := newGraphServices(t)
+	_, ctx := mustGraphProject(t, projects)
+	entity := func(id, key, kind string) blackboard.Operation {
+		return blackboard.Operation{OpID: id, Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEntity, StableKey: key}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": kind, "name": id, "locator": key, "scope_status": "in_scope"}}}
+	}
+	batch := blackboard.MutationBatch{SchemaVersion: 1, IdempotencyKey: "c03:cycle", Context: ctx, Operations: []blackboard.Operation{entity("n1", "network:n1", "network"), entity("n2", "network:n2", "network"), {OpID: "p1", Kind: blackboard.OpPutEdge, PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypePartOf, From: blackboard.NodeRef{OpID: "n1"}, To: blackboard.NodeRef{OpID: "n2"}}}, {OpID: "p2", Kind: blackboard.OpPutEdge, PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypePartOf, From: blackboard.NodeRef{OpID: "n2"}, To: blackboard.NodeRef{OpID: "n1"}}}}}
+	_, err := graph.Apply(context.Background(), batch)
+	var verr *blackboard.ValidationError
+	if !errors.As(err, &verr) || verr.Code != blackboard.ErrCodeGraphCycle {
+		t.Fatalf("expected graph_cycle, got %v", err)
+	}
+}
+
+func TestApplyResolvesExistingNodesAndRejectsCycleAcrossBatches(t *testing.T) {
+	graph, projects, path := newGraphServices(t)
+	_, ctx := mustGraphProject(t, projects)
+	entity := func(id, key string) blackboard.Operation {
+		return blackboard.Operation{OpID: id, Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEntity, StableKey: key}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "network", "name": id, "locator": key, "scope_status": "in_scope"}}}
+	}
+	if _, err := graph.Apply(context.Background(), blackboard.MutationBatch{SchemaVersion: 1, IdempotencyKey: "c03:nodes", Context: ctx, Operations: []blackboard.Operation{entity("n1", "network:n1"), entity("n2", "network:n2")}}); err != nil {
+		t.Fatalf("create nodes: %v", err)
+	}
+	reopened := reopenGraphServices(t, path)
+	ref := func(key string) blackboard.NodeRef {
+		return blackboard.NodeRef{NodeType: blackboard.NodeTypeEntity, StableKey: key}
+	}
+	forward := blackboard.MutationBatch{SchemaVersion: 1, IdempotencyKey: "c03:forward", Context: ctx, Operations: []blackboard.Operation{{OpID: "forward", Kind: blackboard.OpPutEdge, PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypePartOf, From: ref("network:n1"), To: ref("network:n2")}}}}
+	if _, err := reopened.Apply(context.Background(), forward); err != nil {
+		t.Fatalf("edge to existing nodes: %v", err)
+	}
+	forward.IdempotencyKey = "c03:reverse"
+	forward.Operations[0].OpID = "reverse"
+	forward.Operations[0].PutEdge.From, forward.Operations[0].PutEdge.To = forward.Operations[0].PutEdge.To, forward.Operations[0].PutEdge.From
+	_, err := reopened.Apply(context.Background(), forward)
+	var verr *blackboard.ValidationError
+	if !errors.As(err, &verr) || verr.Code != blackboard.ErrCodeGraphCycle {
+		t.Fatalf("expected graph_cycle across batches, got %v", err)
+	}
+}
+
 // TestApplyProjectFactCreateReturnsVersion1GraphRevision1 proves a valid
 // ProjectFact create returns version 1 and graph revision 1.
 func TestApplyProjectFactCreateReturnsVersion1GraphRevision1(t *testing.T) {

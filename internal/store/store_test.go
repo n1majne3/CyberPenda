@@ -247,17 +247,17 @@ func TestOpenDefaultsCanonicalStoreToLegacyV1(t *testing.T) {
 		"blackboard_key_registry",
 		"blackboard_node_heads",
 		"blackboard_graph_state",
+		"blackboard_edges",
+		"blackboard_edge_versions",
+		"blackboard_edge_heads",
 	} {
 		if !tableExists(t, db.DB, table) {
 			t.Fatalf("expected table %s", table)
 		}
 	}
-	// Edge, compaction, health, and projection_metrics tables arrive in the
-	// slices that first need them (C03 edges, C09/C10 projection/health).
+	// Compaction, health, and projection_metrics tables arrive in their owning
+	// C09/C10 slices. C03 owns the edge ledger and heads above.
 	for _, table := range []string{
-		"blackboard_edges",
-		"blackboard_edge_versions",
-		"blackboard_edge_heads",
 		"blackboard_compactions",
 		"blackboard_projection_metrics",
 		"blackboard_health_runs",
