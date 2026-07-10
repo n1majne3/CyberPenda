@@ -66,6 +66,7 @@ Envelope rules:
 - `id`, `project_id`, and `node_type` are immutable.
 - `stable_key` is immutable and unique within `(project_id, node_type)` across both live keys and aliases.
 - `version` starts at `1` and increases only when current semantic state changes. Replay and exact no-op writes do not create versions.
+- The one-time legacy import MAY preserve legacy version numbering, redundant historical post-images, and legacy-invalid historical transitions only as defined by the migration contract. The imported current head and every post-cutover mutation still obey this contract.
 - `disposition` is `main`, `archived`, or `merged`.
 - `merge_target_id` is required only when disposition is `merged`.
 - Unknown envelope fields or unknown type-specific properties are rejected for schema version `1`.
@@ -292,6 +293,7 @@ Rules:
 
 - Confirmed means supported by evidence, reproduction, human confirmation, or independent corroboration.
 - Creating or transitioning to `confirmed` requires at least one of: an incoming `evidences` edge; an incoming `supports` edge from an Observation or confirmed ProjectFact; an incoming `produced` edge from an Attempt that is `succeeded` in the final graph and has matching Task/Continuation provenance; or operator/system/migration provenance with a non-empty body recording the confirmation basis.
+- The migration contract defines the narrower one-time exception for a legacy confirmed head whose old schema retained no support or confirmation body. Ordinary confirmation is unchanged.
 - Updating with an omitted optional field preserves it. Clearing uses an explicit `clear` field list.
 - Current Truth includes `tentative` and `confirmed` ProjectFacts, with uncertainty and scope status explicit; it excludes deprecated, archived, and merged nodes.
 
@@ -316,6 +318,8 @@ Finding is a reportable security issue and remains separate from ProjectFact.
 Transitions: `unconfirmed -> confirmed|false_positive`; `confirmed -> false_positive`; `false_positive` is terminal.
 
 Confirmation requires complete report fields plus at least one active incoming `evidences` edge from EvidenceArtifact or `supports` edge from a confirmed ProjectFact. The graph service validates both the field completeness and supporting edge in the same atomic batch/current graph.
+
+The migration contract defines the narrower one-time exception for a complete legacy confirmed head whose old schema retained no support edge. Ordinary confirmation is unchanged.
 
 ### 5.9 Solution
 

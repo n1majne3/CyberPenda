@@ -1518,8 +1518,9 @@ Legacy Fact Relations map active edges whose two endpoints are ProjectFact:
 
 - supports;
 - contradicts;
-- depends_on;
 - leads_to.
+
+The graph schema reserves depends_on for Exploration Objective prerequisites, so a migrated legacy ProjectFact-to-ProjectFact depends_on row is preserved in the hashed migration mapping and returned only by the legacy compatibility projection during its support window. It is not a core graph edge and never affects Frontier. Exact normalization and removal rules live in the migration contract.
 
 The legacy shape is:
 

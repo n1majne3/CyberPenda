@@ -69,6 +69,8 @@ The graph remains Project-local while Task and Runtime lifecycle stay outside it
 - immutable **task_continuations.blackboard_graph_revision**, renderer/estimator versions, projection hash, bytes, and estimated tokens as defined in section 12.3.
 - **task_continuations.blackboard_reconciliation_status**, reconciliation mutation ID, and reconciled_at for durable normal/crash-recovery completion tracking.
 
+The migration contract defines the explicit nullable/legacy-not-applicable values for pre-graph Continuations when no exact Runtime Configuration Version or historical graph pin can be reconstructed. Every post-cutover Continuation requires the complete fields above.
+
 Project kind is immutable after Project creation or legacy backfill. A future conversion between Pentest Project and CTF Challenge Project requires an explicit new migration/design decision because kind changes graph validity and solved-state semantics. Project kind participates in graph state/projection hashes.
 
 Runtime Profile provenance MUST be checked against the Continuation's captured runtime configuration. It MUST NOT use a cascading foreign key to a live Runtime Profile row that may later be removed.
@@ -235,6 +237,8 @@ Complete node post-images:
 - updated_at.
 
 The primary key is (project_id, node_id, version). Versions MUST be contiguous from 1. properties_json MUST pass json_valid and the domain schema before insertion.
+
+The one-time legacy import MAY preserve redundant or legacy-invalid historical post-images only under the migration contract. Current heads and all later Apply-created versions obey the ordinary semantic-version and lifecycle rules.
 
 The semantic hash covers disposition, merge target, and normalized type-specific properties. Exact no-op updates do not insert a version.
 
@@ -1036,6 +1040,8 @@ A Health view is stale when its checked graph revision/hash differs from current
 | completion_protocol_stuck | Same clean-completion anomaly for 300 seconds or more | critical |
 | orphan_node | Main node is not weakly connected (edge direction ignored for reachability) to a protected root in section 15.1 through active edges | info; warning when Runtime-created |
 | evidence_missing | Required Evidence is missing, payload absent, or hash mismatched | warning; critical for confirmed Finding/verified Solution |
+| legacy_confirmed_fact_without_basis | Imported confirmed ProjectFact still relies on the migration-only confirmation exception | warning |
+| legacy_confirmed_finding_without_support | Imported confirmed Finding still lacks an active evidences/supports edge | warning |
 | duplicate_candidate | Deterministic duplicate fingerprint collision | info |
 | unresolved_contradiction | Active contradiction between semantically live conclusions | warning; critical when both are confirmed/verified |
 | objective_stranded | Open Objective depends on abandoned, superseded, archived, merged, or missing prerequisite | warning |
