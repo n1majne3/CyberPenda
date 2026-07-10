@@ -2,6 +2,7 @@ package daemon_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"pentest/internal/blackboard"
 	"pentest/internal/daemon"
 	"pentest/internal/project"
 	"pentest/internal/store"
@@ -582,4 +584,54 @@ func createProject(t *testing.T, server *daemon.Server, body string) string {
 		t.Fatalf("decode create response: %v", err)
 	}
 	return created.ID
+}
+
+func TestGraphEpochStartupRepairsTaskGoalsBeforeServing(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "graph-startup.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open seed store: %v", err)
+	}
+	projects := project.NewService(db)
+	projectRow, err := projects.Create("Graph project", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	tasks := task.NewService(db, projects)
+	created, err := tasks.Create(task.CreateRequest{ProjectID: projectRow.ID, Goal: "Repair at startup", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatalf("create unprojected task: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE blackboard_store_state SET canonical_store=?,cutover_state='graph' WHERE id=1`, store.CanonicalStoreGraphV1); err != nil {
+		t.Fatalf("enable graph epoch: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed store: %v", err)
+	}
+
+	server, err := daemon.NewServer(daemon.Config{Version: "v", DBPath: dbPath, DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatalf("start graph-epoch server: %v", err)
+	}
+	if err := server.Close(); err != nil {
+		t.Fatalf("close graph-epoch server: %v", err)
+	}
+
+	verifyDB, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen graph store: %v", err)
+	}
+	defer verifyDB.Close()
+	graph := blackboard.NewGraphService(verifyDB, blackboard.SystemClock{}, blackboard.RandomIDSource{})
+	goal, err := graph.ReadNode(context.Background(), blackboard.ReadNodeRequest{ProjectID: projectRow.ID, NodeType: blackboard.NodeTypeGoal, Key: "task:" + created.ID + ":goal"})
+	if err != nil {
+		t.Fatalf("read startup-repaired Goal: %v", err)
+	}
+	durable, err := task.NewService(verifyDB).Get(created.ID)
+	if err != nil {
+		t.Fatalf("read reconciled Task: %v", err)
+	}
+	if goal.Node.PropertyMap["text"] != created.Goal || goal.Node.PropertyMap["task_status"] != string(durable.Status) {
+		t.Fatalf("startup Goal projection: task=%+v goal=%+v", durable, goal.Node)
+	}
 }

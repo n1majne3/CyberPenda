@@ -135,6 +135,19 @@ const (
 	EdgeTypeSupersedes  EdgeType = "supersedes"
 )
 
+type PatchNodeInput struct {
+	ExpectedVersion int            `json:"expected_version"`
+	Properties      map[string]any `json:"properties"`
+}
+
+// TransitionNodeInput carries a lifecycle transition requested through Apply.
+// resolved_at remains system-managed and is derived from the batch timestamp.
+type TransitionNodeInput struct {
+	ExpectedVersion   int    `json:"expected_version"`
+	Status            string `json:"status"`
+	ResolutionSummary string `json:"resolution_summary,omitempty"`
+}
+
 type PutEdgeInput struct {
 	EdgeType EdgeType `json:"edge_type"`
 	From     NodeRef  `json:"from"`
@@ -151,14 +164,15 @@ type NodeRef struct {
 	OpID      string   `json:"op_id,omitempty"`
 }
 
-// Operation is one mutation batch operation. C02 implements only create_node
-// for project_fact; other kinds fail closed.
+// Operation is one mutation batch operation in the closed graph mutation envelope.
 type Operation struct {
-	OpID    string          `json:"op_id"`
-	Kind    OperationKind   `json:"kind"`
-	Node    NodeRef         `json:"node"`
-	Create  CreateNodeInput `json:"create,omitempty"`
-	PutEdge PutEdgeInput    `json:"put_edge,omitempty"`
+	OpID       string              `json:"op_id"`
+	Kind       OperationKind       `json:"kind"`
+	Node       NodeRef             `json:"node"`
+	Create     CreateNodeInput     `json:"create,omitempty"`
+	Patch      PatchNodeInput      `json:"patch,omitempty"`
+	Transition TransitionNodeInput `json:"transition,omitempty"`
+	PutEdge    PutEdgeInput        `json:"put_edge,omitempty"`
 }
 
 // ExecutionContext is the server-side trusted context bound to a mutation
@@ -255,7 +269,8 @@ type NodeRecord struct {
 	StableKey    string                `json:"stable_key"`
 	Version      int                   `json:"version"`
 	Disposition  Disposition           `json:"disposition"`
-	ProjectFact  ProjectFactProperties `json:"properties"`
+	ProjectFact  ProjectFactProperties `json:"project_fact_properties,omitempty"`
+	PropertyMap  map[string]any        `json:"properties"`
 	CreatedAt    string                `json:"created_at"`
 	UpdatedAt    string                `json:"updated_at"`
 	SemanticHash string                `json:"semantic_hash"`
@@ -343,6 +358,10 @@ const (
 	ErrCodeSelfEdgeForbidden        = "self_edge_forbidden"
 	ErrCodeGraphCycle               = "graph_cycle"
 	ErrCodeTransitionGuardFailed    = "transition_guard_failed"
+	ErrCodeImmutableField           = "immutable_field"
+	ErrCodeInvalidTransition        = "invalid_transition"
+	ErrCodeInvariantViolation       = "invariant_violation"
+	ErrCodeVersionConflict          = "version_conflict"
 	ErrCodeProvenanceSpoofed        = "provenance_spoofed"
 	ErrCodeIdempotencyConflict      = "idempotency_conflict"
 	ErrCodeProvenanceRequired       = "provenance_required"

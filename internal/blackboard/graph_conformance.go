@@ -43,6 +43,16 @@ func operationProperties(op Operation) map[string]any {
 	return map[string]any{"category": p.Category, "summary": p.Summary, "body": p.Body, "confidence": string(p.Confidence), "scope_status": string(p.ScopeStatus)}
 }
 
+func normalizedCreateProperties(op Operation) map[string]any {
+	props := clonePropertyMap(operationProperties(op))
+	if op.Node.NodeType == NodeTypeExplorationObjective {
+		if _, exists := props["status"]; !exists {
+			props["status"] = "open"
+		}
+	}
+	return props
+}
+
 func validateNodeProperties(t NodeType, props map[string]any) *ValidationError {
 	schema, ok := nodeSchemas[t]
 	if !ok {

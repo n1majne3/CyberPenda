@@ -189,6 +189,19 @@ func NewServer(config Config) (*Server, error) {
 		server.logger = log.Default()
 	}
 	server.tasks.SetProjectService(server.projects)
+	epoch, err := db.CanonicalStore()
+	if err != nil {
+		_ = server.Close()
+		return nil, err
+	}
+	if epoch == store.CanonicalStoreGraphV1 || epoch == store.CanonicalStoreGraphV1Finalized {
+		graph := blackboard.NewGraphService(db, blackboard.SystemClock{}, blackboard.RandomIDSource{})
+		if err := graph.RepairTaskGoals(context.Background()); err != nil {
+			_ = server.Close()
+			return nil, fmt.Errorf("repair Task Goals at graph startup: %w", err)
+		}
+		server.tasks.SetGoalProjector(graph)
+	}
 	server.routes()
 	server.reconcileInterruptedTasks()
 

@@ -35,8 +35,27 @@ func newGraphServices(t *testing.T) (*blackboard.GraphService, *project.Service,
 		"2024-01-02T03:04:08.000000000Z",
 		"2024-01-02T03:04:09.000000000Z",
 		"2024-01-02T03:04:10.000000000Z",
+		"2024-01-02T03:04:11.000000000Z",
+		"2024-01-02T03:04:12.000000000Z",
+		"2024-01-02T03:04:13.000000000Z",
+		"2024-01-02T03:04:14.000000000Z",
+		"2024-01-02T03:04:15.000000000Z",
+		"2024-01-02T03:04:16.000000000Z",
+		"2024-01-02T03:04:17.000000000Z",
+		"2024-01-02T03:04:18.000000000Z",
+		"2024-01-02T03:04:19.000000000Z",
+		"2024-01-02T03:04:20.000000000Z",
 	)
-	ids := blackboard.NewSequenceIDSource("node_1", "node_2", "node_3", "mut_1", "mut_2", "prov_1", "prov_2")
+	ids := blackboard.NewSequenceIDSource(
+		"node_1", "node_2", "node_3", "mut_1", "mut_2", "prov_1", "prov_2",
+		"node_4", "node_5", "node_6", "node_7", "node_8", "node_9", "node_10",
+		"mut_3", "mut_4", "mut_5", "mut_6", "mut_7", "mut_8", "mut_9", "mut_10",
+		"prov_3", "prov_4", "prov_5", "prov_6", "prov_7", "prov_8", "prov_9", "prov_10",
+		"node_11", "node_12", "node_13", "node_14", "node_15", "node_16", "node_17", "node_18", "node_19", "node_20",
+		"node_21", "node_22", "node_23", "node_24", "node_25", "node_26", "node_27", "node_28", "node_29", "node_30",
+		"mut_11", "mut_12", "mut_13", "mut_14", "mut_15", "mut_16", "mut_17", "mut_18", "mut_19", "mut_20",
+		"prov_11", "prov_12", "prov_13", "prov_14", "prov_15", "prov_16", "prov_17", "prov_18", "prov_19", "prov_20",
+	)
 	return blackboard.NewGraphService(db, clock, ids), project.NewService(db), path
 }
 

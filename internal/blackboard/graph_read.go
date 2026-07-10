@@ -109,9 +109,15 @@ func (s *GraphService) ReadNode(ctx context.Context, req ReadNodeRequest) (ReadN
 		return ReadNodeResult{}, fmt.Errorf("read node head: %w", err)
 	}
 
-	var props ProjectFactProperties
-	if err := json.Unmarshal([]byte(propsJSON), &props); err != nil {
+	var propertyMap map[string]any
+	if err := json.Unmarshal([]byte(propsJSON), &propertyMap); err != nil {
 		return ReadNodeResult{}, fmt.Errorf("decode properties: %w", err)
+	}
+	var props ProjectFactProperties
+	if NodeType(nodeType) == NodeTypeProjectFact {
+		if err := json.Unmarshal([]byte(propsJSON), &props); err != nil {
+			return ReadNodeResult{}, fmt.Errorf("decode project_fact properties: %w", err)
+		}
 	}
 
 	var stateHash string
@@ -124,7 +130,7 @@ func (s *GraphService) ReadNode(ctx context.Context, req ReadNodeRequest) (ReadN
 		Node: NodeRecord{
 			ID: nodeID, ProjectID: req.ProjectID, NodeType: NodeType(nodeType),
 			StableKey: stableKey, Version: version, Disposition: Disposition(disposition),
-			ProjectFact: props, CreatedAt: createdAt, UpdatedAt: updatedAt,
+			ProjectFact: props, PropertyMap: propertyMap, CreatedAt: createdAt, UpdatedAt: updatedAt,
 			SemanticHash: semHash, StateHash: stateHash,
 		},
 		ObservedGraphRevision: graphRev,

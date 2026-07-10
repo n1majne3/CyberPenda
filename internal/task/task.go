@@ -179,9 +179,16 @@ var ErrMissingSummary = errors.New("task summary is required")
 
 // Service implements task business rules against SQLite. It depends on the
 // project service only to read the scope at launch; it does not mutate projects.
+type GoalProjector interface {
+	ProjectTaskGoal(taskID string) error
+}
+
+// Service owns durable Task state. Goal projection is an optional system
+// adapter so graph data can remain dark until the graph store cutover.
 type Service struct {
-	db       *store.DB
-	projects *project.Service
+	db            *store.DB
+	projects      *project.Service
+	goalProjector GoalProjector
 }
 
 // NewService returns a Service backed by the given database. It reads project
@@ -202,6 +209,22 @@ func NewService(db *store.DB, projects ...*project.Service) *Service {
 // in any order.
 func (s *Service) SetProjectService(projects *project.Service) {
 	s.projects = projects
+}
+
+// SetGoalProjector wires the system-owned Task Goal projection. Production
+// leaves this unset until graph cutover; graph tests and migration wiring set it.
+func (s *Service) SetGoalProjector(projector GoalProjector) {
+	s.goalProjector = projector
+}
+
+func (s *Service) projectGoal(taskID string) error {
+	if s.goalProjector == nil {
+		return nil
+	}
+	if err := s.goalProjector.ProjectTaskGoal(taskID); err != nil {
+		return fmt.Errorf("project task goal: %w", err)
+	}
+	return nil
 }
 
 // Create launches a new task: it validates the goal and runner, captures an
@@ -261,6 +284,9 @@ func (s *Service) Create(req CreateRequest) (Task, error) {
 	)
 	if err != nil {
 		return Task{}, fmt.Errorf("store task: %w", err)
+	}
+	if err := s.projectGoal(created.ID); err != nil {
+		return created, err
 	}
 	return created, nil
 }
@@ -471,6 +497,9 @@ func (s *Service) RecordRuntimeConfig(taskID, runtimeProfileID string, config ma
 // the harness launches it.
 func (s *Service) CreateContinuation(taskID, runtimeProfileID, runtimeProvider string, runner Runner) (TaskContinuation, error) {
 	if _, err := s.Get(taskID); err != nil {
+		return TaskContinuation{}, err
+	}
+	if err := s.projectGoal(taskID); err != nil {
 		return TaskContinuation{}, err
 	}
 
@@ -751,6 +780,9 @@ func (s *Service) UpdateStatus(taskID string, status Status) (Task, error) {
 		string(found.Status), found.UpdatedAt.Format(time.RFC3339Nano), found.ID)
 	if err != nil {
 		return Task{}, fmt.Errorf("update status: %w", err)
+	}
+	if err := s.projectGoal(found.ID); err != nil {
+		return found, err
 	}
 	return found, nil
 }
