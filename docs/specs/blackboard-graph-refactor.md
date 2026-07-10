@@ -261,10 +261,10 @@ The implementation MUST use four execution maps. This split contains failure bla
 
 | Execution map | Slices | Destination |
 | --- | --- | --- |
-| Graph core and SQLite | C01-C10 | Canonical graph semantics, ledger, deterministic projection, compaction, and Health are complete behind `legacy_v1`. |
-| Runtime project interfaces | I01-I06 | All six Runtime capabilities, grant/provenance binding, Evidence, Finish, reconciliation, snapshots, and adapter parity are complete. |
-| Reads, reports, and operator UI | U01-U06 | One read module serves canonical projections, reports, legacy reads, and the bundled UI. |
-| Migration, cutover, and retirement | M01-M07 | Legacy data is safely cut over, direct legacy writes freeze, compatibility retires by gates, and tables may be finalized. |
+| [Map: Implement graph core and SQLite Blackboard](https://github.com/n1majne3/CyberPenda/issues/63) | C01-C10 | Canonical graph semantics, ledger, deterministic projection, compaction, and Health are complete behind `legacy_v1`. |
+| [Map: Implement Runtime project interfaces for graph Blackboard](https://github.com/n1majne3/CyberPenda/issues/66) | I01-I06 | All six Runtime capabilities, grant/provenance binding, Evidence, Finish, reconciliation, snapshots, and adapter parity are complete. |
+| [Map: Implement graph Blackboard reads, reports, and operator UI](https://github.com/n1majne3/CyberPenda/issues/64) | U01-U06 | One read module serves canonical projections, reports, legacy reads, and the bundled UI. |
+| [Map: Execute graph Blackboard migration, cutover, and retirement](https://github.com/n1majne3/CyberPenda/issues/65) | M01-M07 | Legacy data is safely cut over, direct legacy writes freeze, compatibility retires by gates, and tables may be finalized. |
 
 The canonical dependency graph is:
 
@@ -391,7 +391,14 @@ Creating another ADR would duplicate those normative records without adding deci
 
 ## 12. Implementation handoff
 
-The tracker handoff consists of four execution-map issues and their 29 unassigned child implementation tickets. Each child ticket links to its complete **First red test**, **Minimal green path**, **Exit gate**, and **Coverage** section in the TDD plan. Native GitHub dependency edges are canonical; an issue is claimable only when all blockers are closed and it has no assignee.
+The tracker handoff consists of four execution-map issues and their 29 unassigned child implementation tickets:
+
+- [Map: Implement graph core and SQLite Blackboard](https://github.com/n1majne3/CyberPenda/issues/63) — C01-C10.
+- [Map: Implement Runtime project interfaces for graph Blackboard](https://github.com/n1majne3/CyberPenda/issues/66) — I01-I06.
+- [Map: Implement graph Blackboard reads, reports, and operator UI](https://github.com/n1majne3/CyberPenda/issues/64) — U01-U06.
+- [Map: Execute graph Blackboard migration, cutover, and retirement](https://github.com/n1majne3/CyberPenda/issues/65) — M01-M07.
+
+Each child ticket links to its complete **First red test**, **Minimal green path**, **Exit gate**, and **Coverage** section in the TDD plan. Native GitHub dependency edges are canonical; an issue is claimable only when all blockers are closed and it has no assignee.
 
 Execution is explicitly in scope for those four maps. Their agents MUST:
 
