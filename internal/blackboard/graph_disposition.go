@@ -9,7 +9,7 @@ import (
 
 func (s *GraphService) stageSetDisposition(tx *sql.Tx, batch MutationBatch, op Operation, opIndex, graphRevision int, state *graphState) (OperationResult, error) {
 	projectID := batch.Context.ProjectID
-	node, err := loadMutableNode(tx, projectID, op.Node)
+	node, err := loadMutableNodeWithState(tx, projectID, op.Node, state)
 	if err != nil {
 		return OperationResult{}, err
 	}
@@ -35,7 +35,7 @@ func (s *GraphService) stageSetDisposition(tx *sql.Tx, batch MutationBatch, op O
 		if node.disposition != DispositionArchived {
 			return OperationResult{}, validationError(ErrCodeInvalidTransition, "only archived nodes can be restored", opIndex, op.OpID, "operations[].set_disposition")
 		}
-		manifest := batch.Context.RestoreManifest
+		manifest := batch.Context.restoreManifest
 		if (batch.Context.ActorType != ActorTypeSystem && batch.Context.ActorType != ActorTypeOperator) || manifest == nil || manifest.ID == "" || manifest.ID != op.Disposition.RestoreManifestID || !manifestContainsNode(manifest, node.nodeID) {
 			return OperationResult{}, validationError(ErrCodeArchiveGuardFailed, "restore requires a matching trusted manifest", opIndex, op.OpID, "operations[].set_disposition.restore_manifest_id")
 		}
@@ -198,7 +198,14 @@ func stageRetireTouchingEdges(tx *sql.Tx, projectID, nodeID string, opIndex, gra
 		if err := rows.Scan(&edge.id, &edge.edgeType, &edge.fromID, &edge.toID, &edge.version, &edge.state, &edge.summary, &edge.updatedAt, &edge.createdMutation, &edge.createdOperation, &edge.updatedMutation, &edge.updatedOperation); err != nil {
 			return err
 		}
-		stageMergedEdge(edge, edge.fromID, edge.toID, "retired", edge.summary, opIndex, graphRevision, state)
+		for _, pending := range state.pendingEdgeUpdates {
+			if pending.id == edge.id {
+				edge.version, edge.fromID, edge.toID, edge.state, edge.summary = pending.version, pending.fromID, pending.toID, pending.state, pending.summary
+			}
+		}
+		if edge.state != "retired" {
+			stageMergedEdge(edge, edge.fromID, edge.toID, "retired", edge.summary, opIndex, graphRevision, state)
+		}
 	}
 	return rows.Err()
 }
@@ -213,20 +220,24 @@ func manifestContainsNode(manifest *RestoreManifest, nodeID string) bool {
 }
 
 func (s *GraphService) stageRestoreEdges(tx *sql.Tx, batch MutationBatch, restoringNodeID string, opIndex, graphRevision int, state *graphState) error {
-	for _, requested := range batch.Context.RestoreManifest.Edges {
-		from, err := loadMutableNode(tx, batch.Context.ProjectID, requested.From)
+	for _, requested := range batch.Context.restoreManifest.Edges {
+		from, err := loadMutableNodeWithState(tx, batch.Context.ProjectID, requested.From, state)
 		if err != nil {
 			return err
 		}
-		to, err := loadMutableNode(tx, batch.Context.ProjectID, requested.To)
+		to, err := loadMutableNodeWithState(tx, batch.Context.ProjectID, requested.To, state)
 		if err != nil {
 			return err
 		}
 		if from.nodeID != restoringNodeID && from.disposition != DispositionMain {
-			continue
+			if !batchRestoresNode(tx, batch, from.nodeID) {
+				continue
+			}
 		}
 		if to.nodeID != restoringNodeID && to.disposition != DispositionMain {
-			continue
+			if !batchRestoresNode(tx, batch, to.nodeID) {
+				continue
+			}
 		}
 		if from.nodeID == to.nodeID {
 			continue
@@ -243,9 +254,40 @@ func (s *GraphService) stageRestoreEdges(tx *sql.Tx, batch MutationBatch, restor
 		if !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("check restored edge: %w", err)
 		}
+		alreadyPending := false
+		for _, pending := range state.pendingEdges {
+			if pending.edgeType == requested.EdgeType && pending.fromID == from.nodeID && pending.toID == to.nodeID {
+				alreadyPending = true
+				break
+			}
+		}
+		if alreadyPending {
+			continue
+		}
 		edgeID := s.ids.NextID()
 		semHash := edgeSemanticHash(requested.EdgeType, from.nodeID, to.nodeID, "active", requested.Summary)
 		state.pendingEdges = append(state.pendingEdges, pendingEdge{id: edgeID, edgeType: requested.EdgeType, fromID: from.nodeID, toID: to.nodeID, summary: requested.Summary, semHash: semHash, opIndex: opIndex, graphRevision: graphRevision})
 	}
 	return nil
+}
+
+func batchRestoresNode(tx *sql.Tx, batch MutationBatch, nodeID string) bool {
+	if batch.Context.restoreManifest == nil || !manifestContainsNode(batch.Context.restoreManifest, nodeID) {
+		return false
+	}
+	for _, operation := range batch.Operations {
+		if operation.Kind != OpSetDisposition || operation.Disposition.Disposition != DispositionMain {
+			continue
+		}
+		if operation.Node.ID == nodeID {
+			return true
+		}
+		if operation.Node.NodeType != "" && operation.Node.StableKey != "" {
+			resolved, err := loadMutableNode(tx, batch.Context.ProjectID, operation.Node)
+			if err == nil && resolved.nodeID == nodeID {
+				return true
+			}
+		}
+	}
+	return false
 }

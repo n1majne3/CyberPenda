@@ -151,7 +151,7 @@ func TestArchiveGuardsRetireEdgesAndRestoreManifestUsesCurrentRedirects(t *testi
 	if err != nil {
 		t.Fatalf("merge entity after archive: %v", err)
 	}
-	execCtx.RestoreManifest = &blackboard.RestoreManifest{ID: "restore:archive", Nodes: []string{factID}, Edges: []blackboard.RestoreEdge{{EdgeType: blackboard.EdgeTypeAbout, From: blackboard.NodeRef{ID: factID}, To: blackboard.NodeRef{ID: oldEntityID}, Summary: "restored topology"}}}
+	execCtx = blackboard.SystemRestoreExecutionContext(projectID, execCtx.ProjectKind, execCtx.ActorID, blackboard.RestoreManifest{ID: "restore:archive", Nodes: []string{factID}, Edges: []blackboard.RestoreEdge{{EdgeType: blackboard.EdgeTypeAbout, From: blackboard.NodeRef{ID: factID}, To: blackboard.NodeRef{ID: oldEntityID}, Summary: "restored topology"}}})
 	_, err = graph.Apply(context.Background(), blackboard.MutationBatch{SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "c08:restore", Context: execCtx, Operations: []blackboard.Operation{{OpID: "restore", Kind: blackboard.OpSetDisposition, Node: blackboard.NodeRef{ID: factID}, Disposition: blackboard.SetDispositionInput{ExpectedVersion: deprecated.Operations[0].NodeVersion + 1, Disposition: blackboard.DispositionMain, RestoreManifestID: "restore:archive"}}}})
 	if err != nil {
 		t.Fatalf("restore from manifest: %v", err)
@@ -260,5 +260,120 @@ func TestMergeRejectsRewiredCycleWithoutPartialWrites(t *testing.T) {
 	read, err := graph.ReadNode(context.Background(), blackboard.ReadNodeRequest{ProjectID: projectID, NodeType: blackboard.NodeTypeEntity, Key: "network:source"})
 	if err != nil || read.Node.ID != created.Operations[2].NodeID || read.ResolvedFromAlias != "" || read.Node.Disposition != blackboard.DispositionMain {
 		t.Fatalf("failed merge left partial alias/disposition: %+v err=%v", read, err)
+	}
+}
+
+func TestSameBatchMergeObservesPriorCreatesAndEdges(t *testing.T) {
+	graph, projects, _ := newGraphServices(t)
+	projectID, execCtx := mustGraphProject(t, projects)
+	result, err := graph.Apply(context.Background(), blackboard.MutationBatch{SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "c08:same-batch-merge", Context: execCtx, Operations: []blackboard.Operation{
+		{OpID: "canonical", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "fact:batch-canonical"}, Create: blackboard.CreateNodeInput{Properties: blackboard.ProjectFactProperties{Category: "service", Summary: "canonical", ScopeStatus: blackboard.ScopeStatusInScope}}},
+		{OpID: "source", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "fact:batch-source"}, Create: blackboard.CreateNodeInput{Properties: blackboard.ProjectFactProperties{Category: "service", Summary: "source", ScopeStatus: blackboard.ScopeStatusInScope}}},
+		{OpID: "entity", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEntity, StableKey: "host:batch"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "host", "name": "batch", "locator": "batch.example", "scope_status": "in_scope"}}},
+		{OpID: "source-about", Kind: blackboard.OpPutEdge, PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypeAbout, From: blackboard.NodeRef{OpID: "source"}, To: blackboard.NodeRef{OpID: "entity"}}},
+		{OpID: "merge", Kind: blackboard.OpMergeNodes, Merge: blackboard.MergeNodesInput{Source: blackboard.NodeRef{OpID: "source"}, Canonical: blackboard.NodeRef{OpID: "canonical"}, SourceExpectedVersion: 1, CanonicalExpectedVersion: 1}},
+	}})
+	if err != nil {
+		t.Fatalf("same-batch merge: %v", err)
+	}
+	alias, err := graph.ReadNode(context.Background(), blackboard.ReadNodeRequest{ProjectID: projectID, NodeType: blackboard.NodeTypeProjectFact, Key: "fact:batch-source"})
+	if err != nil || alias.Node.ID != result.Operations[0].NodeID || alias.ResolvedFromAlias != "fact:batch-source" {
+		t.Fatalf("same-batch alias missing: %+v err=%v", alias, err)
+	}
+	edge, err := graph.ReadEdge(context.Background(), blackboard.ReadEdgeRequest{ProjectID: projectID, EdgeID: result.Operations[3].EdgeID})
+	if err != nil || edge.FromNodeID != result.Operations[0].NodeID || edge.Version != 2 {
+		t.Fatalf("same-batch edge not rewired: %+v err=%v", edge, err)
+	}
+}
+
+func TestRestoreMultipleArchivedNodesRecreatesInternalTopology(t *testing.T) {
+	graph, projects, _ := newGraphServices(t)
+	projectID, execCtx := mustGraphProject(t, projects)
+	created, err := graph.Apply(context.Background(), blackboard.MutationBatch{SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "c08:multi-restore-fixture", Context: execCtx, Operations: []blackboard.Operation{
+		{OpID: "child", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEntity, StableKey: "network:restore-child"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "network", "name": "child", "locator": "10.1.0.0/16", "scope_status": "in_scope", "status": "retired"}}},
+		{OpID: "parent", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEntity, StableKey: "network:restore-parent"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "network", "name": "parent", "locator": "10.0.0.0/8", "scope_status": "in_scope", "status": "retired"}}},
+		{OpID: "part-of", Kind: blackboard.OpPutEdge, PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypePartOf, From: blackboard.NodeRef{OpID: "child"}, To: blackboard.NodeRef{OpID: "parent"}}},
+	}})
+	if err != nil {
+		t.Fatalf("create restore fixture: %v", err)
+	}
+	childID, parentID := created.Operations[0].NodeID, created.Operations[1].NodeID
+	archived, err := graph.Apply(context.Background(), blackboard.MutationBatch{SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "c08:archive-pair", Context: execCtx, Operations: []blackboard.Operation{
+		{OpID: "archive-child", Kind: blackboard.OpSetDisposition, Node: blackboard.NodeRef{ID: childID}, Disposition: blackboard.SetDispositionInput{ExpectedVersion: 1, Disposition: blackboard.DispositionArchived}},
+		{OpID: "archive-parent", Kind: blackboard.OpSetDisposition, Node: blackboard.NodeRef{ID: parentID}, Disposition: blackboard.SetDispositionInput{ExpectedVersion: 1, Disposition: blackboard.DispositionArchived}},
+	}})
+	if err != nil {
+		t.Fatalf("archive pair: %v", err)
+	}
+	execCtx = blackboard.SystemRestoreExecutionContext(projectID, execCtx.ProjectKind, execCtx.ActorID, blackboard.RestoreManifest{ID: "restore:pair", Nodes: []string{childID, parentID}, Edges: []blackboard.RestoreEdge{{EdgeType: blackboard.EdgeTypePartOf, From: blackboard.NodeRef{ID: childID}, To: blackboard.NodeRef{ID: parentID}}}})
+	_, err = graph.Apply(context.Background(), blackboard.MutationBatch{SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "c08:restore-pair", Context: execCtx, Operations: []blackboard.Operation{
+		{OpID: "restore-child", Kind: blackboard.OpSetDisposition, Node: blackboard.NodeRef{ID: childID}, Disposition: blackboard.SetDispositionInput{ExpectedVersion: archived.Operations[0].NodeVersion, Disposition: blackboard.DispositionMain, RestoreManifestID: "restore:pair"}},
+		{OpID: "restore-parent", Kind: blackboard.OpSetDisposition, Node: blackboard.NodeRef{ID: parentID}, Disposition: blackboard.SetDispositionInput{ExpectedVersion: archived.Operations[1].NodeVersion, Disposition: blackboard.DispositionMain, RestoreManifestID: "restore:pair"}},
+	}})
+	if err != nil {
+		t.Fatalf("restore pair: %v", err)
+	}
+	if _, err := graph.ReadActiveEdge(context.Background(), blackboard.ReadActiveEdgeRequest{ProjectID: projectID, EdgeType: blackboard.EdgeTypePartOf, FromNodeID: childID, ToNodeID: parentID}); err != nil {
+		t.Fatalf("restored internal topology missing: %v", err)
+	}
+}
+
+func TestMergeRejectsActiveEdgesIntoArchivedCanonical(t *testing.T) {
+	graph, projects, _ := newGraphServices(t)
+	_, execCtx := mustGraphProject(t, projects)
+	created, err := graph.Apply(context.Background(), blackboard.MutationBatch{SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "c08:archived-canonical-fixture", Context: execCtx, Operations: []blackboard.Operation{
+		{OpID: "source", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEntity, StableKey: "host:active-source"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "host", "name": "source", "locator": "source.example", "scope_status": "in_scope", "status": "retired"}}},
+		{OpID: "canonical", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEntity, StableKey: "host:archived-canonical"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "host", "name": "canonical", "locator": "canonical.example", "scope_status": "in_scope", "status": "retired"}}},
+		{OpID: "fact", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "fact:touching"}, Create: blackboard.CreateNodeInput{Properties: blackboard.ProjectFactProperties{Category: "service", Summary: "touching", ScopeStatus: blackboard.ScopeStatusInScope}}},
+		{OpID: "about", Kind: blackboard.OpPutEdge, PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypeAbout, From: blackboard.NodeRef{OpID: "fact"}, To: blackboard.NodeRef{OpID: "source"}}},
+	}})
+	if err != nil {
+		t.Fatalf("create fixture: %v", err)
+	}
+	_, err = graph.Apply(context.Background(), blackboard.MutationBatch{SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "c08:archive-canonical", Context: execCtx, Operations: []blackboard.Operation{{OpID: "archive", Kind: blackboard.OpSetDisposition, Node: blackboard.NodeRef{ID: created.Operations[1].NodeID}, Disposition: blackboard.SetDispositionInput{ExpectedVersion: 1, Disposition: blackboard.DispositionArchived}}}})
+	if err != nil {
+		t.Fatalf("archive canonical: %v", err)
+	}
+	_, err = graph.Apply(context.Background(), blackboard.MutationBatch{SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "c08:reject-archived-canonical", Context: execCtx, Operations: []blackboard.Operation{{OpID: "merge", Kind: blackboard.OpMergeNodes, Merge: blackboard.MergeNodesInput{Source: blackboard.NodeRef{ID: created.Operations[0].NodeID}, Canonical: blackboard.NodeRef{ID: created.Operations[1].NodeID}, SourceExpectedVersion: 1, CanonicalExpectedVersion: 2}}}})
+	var validation *blackboard.ValidationError
+	if !errors.As(err, &validation) || validation.Code != blackboard.ErrCodeMergeConflict {
+		t.Fatalf("expected merge_conflict, got %v", err)
+	}
+}
+
+func TestDispositionNoOpKeepsRevisionAndCombinedReferenceMustAgree(t *testing.T) {
+	graph, projects, _ := newGraphServices(t)
+	_, execCtx := mustGraphProject(t, projects)
+	created, err := graph.Apply(context.Background(), blackboard.MutationBatch{SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "c08:reference-fixture", Context: execCtx, Operations: []blackboard.Operation{
+		{OpID: "one", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEntity, StableKey: "host:one"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "host", "name": "one", "locator": "one.example", "scope_status": "in_scope", "status": "retired"}}},
+		{OpID: "two", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEntity, StableKey: "host:two"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "host", "name": "two", "locator": "two.example", "scope_status": "in_scope", "status": "retired"}}},
+	}})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	noop, err := graph.Apply(context.Background(), blackboard.MutationBatch{SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "c08:disposition-noop", Context: execCtx, Operations: []blackboard.Operation{{OpID: "noop", Kind: blackboard.OpSetDisposition, Node: blackboard.NodeRef{ID: created.Operations[0].NodeID}, Disposition: blackboard.SetDispositionInput{ExpectedVersion: 1, Disposition: blackboard.DispositionMain}}}})
+	if err != nil || noop.GraphRevision != created.GraphRevision || noop.Operations[0].Changed {
+		t.Fatalf("disposition no-op advanced state: %+v err=%v", noop, err)
+	}
+	_, err = graph.Apply(context.Background(), blackboard.MutationBatch{SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "c08:mismatched-combined-ref", Context: execCtx, Operations: []blackboard.Operation{{OpID: "archive", Kind: blackboard.OpSetDisposition, Node: blackboard.NodeRef{ID: created.Operations[0].NodeID, NodeType: blackboard.NodeTypeEntity, StableKey: "host:two"}, Disposition: blackboard.SetDispositionInput{ExpectedVersion: 1, Disposition: blackboard.DispositionArchived}}}})
+	var validation *blackboard.ValidationError
+	if !errors.As(err, &validation) || validation.Code != blackboard.ErrCodeNodeNotFound {
+		t.Fatalf("expected mismatched combined reference failure, got %v", err)
+	}
+}
+
+func TestEntityDuplicateFingerprintCanonicalizesIPv6(t *testing.T) {
+	graph, projects, _ := newGraphServices(t)
+	projectID, execCtx := mustGraphProject(t, projects)
+	_, err := graph.Apply(context.Background(), blackboard.MutationBatch{SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "c08:ipv6-duplicates", Context: execCtx, Operations: []blackboard.Operation{
+		{OpID: "expanded", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEntity, StableKey: "ip:expanded"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "ip_address", "name": "expanded", "locator": "2001:0db8:0000:0000:0000:0000:0000:0001", "scope_status": "in_scope"}}},
+		{OpID: "compressed", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEntity, StableKey: "ip:compressed"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "ip_address", "name": "compressed", "locator": "2001:db8::1", "scope_status": "in_scope"}}},
+	}})
+	if err != nil {
+		t.Fatalf("create IPv6 entities: %v", err)
+	}
+	candidates, err := graph.DuplicateCandidates(context.Background(), projectID)
+	if err != nil || len(candidates) != 1 || candidates[0].NodeType != blackboard.NodeTypeEntity || len(candidates[0].NodeIDs) != 2 {
+		t.Fatalf("IPv6 duplicate fingerprint drift: %+v err=%v", candidates, err)
 	}
 }

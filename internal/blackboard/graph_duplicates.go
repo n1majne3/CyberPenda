@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"net/netip"
 	"sort"
 	"strings"
 	"unicode"
@@ -131,9 +132,20 @@ func normalizeDuplicateText(value string) string {
 func normalizeEntityLocator(kind, locator string) string {
 	locator = strings.TrimSpace(norm.NFKC.String(locator))
 	switch kind {
-	case "host", "domain", "network", "ip_address", "service", "endpoint", "application", "identity", "credential", "data_store":
+	case "ip_address":
+		if address, err := netip.ParseAddr(locator); err == nil {
+			return address.Unmap().String()
+		}
+	case "network":
+		if prefix, err := netip.ParsePrefix(locator); err == nil {
+			return prefix.Masked().String()
+		}
+	case "host", "domain":
+		return strings.TrimSuffix(strings.ToLower(locator), ".")
+	case "service", "endpoint", "application", "identity", "credential", "data_store":
 		return strings.ToLower(locator)
 	default:
 		return locator
 	}
+	return strings.ToLower(locator)
 }

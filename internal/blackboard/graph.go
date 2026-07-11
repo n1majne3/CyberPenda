@@ -298,13 +298,13 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 			continue
 		}
 		if op.Kind == OpMergeNodes {
-			if (op.Merge.Source.ID == "" && op.Merge.Source.StableKey == "") || (op.Merge.Canonical.ID == "" && op.Merge.Canonical.StableKey == "") {
+			if (op.Merge.Source.ID == "" && op.Merge.Source.StableKey == "" && op.Merge.Source.OpID == "") || (op.Merge.Canonical.ID == "" && op.Merge.Canonical.StableKey == "" && op.Merge.Canonical.OpID == "") {
 				return MutationResult{}, validationError(ErrCodeInvalidRequest, "merge source and canonical references are required", i, op.OpID, "operations[].merge")
 			}
 			continue
 		}
 		if op.Kind == OpSetDisposition {
-			if op.Node.ID == "" && (op.Node.NodeType == "" || op.Node.StableKey == "") {
+			if op.Node.ID == "" && op.Node.OpID == "" && (op.Node.NodeType == "" || op.Node.StableKey == "") {
 				return MutationResult{}, validationError(ErrCodeInvalidRequest, "set_disposition node reference is required", i, op.OpID, "operations[].node")
 			}
 			if op.Disposition.Disposition != DispositionArchived && op.Disposition.Disposition != DispositionMain {
@@ -479,13 +479,14 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 			continue
 		}
 		if op.Kind == OpSetDisposition {
-			if !stateChanged {
-				result.GraphRevision = state.currentGraphRevision + 1
-				stateChanged = true
-			}
-			dispositionResult, dispositionErr := s.stageSetDisposition(tx, batch, op, i, result.GraphRevision, &state)
+			prospectiveRevision := state.currentGraphRevision + 1
+			dispositionResult, dispositionErr := s.stageSetDisposition(tx, batch, op, i, prospectiveRevision, &state)
 			if dispositionErr != nil {
 				return MutationResult{}, dispositionErr
+			}
+			if dispositionResult.Changed && !stateChanged {
+				result.GraphRevision = prospectiveRevision
+				stateChanged = true
 			}
 			result.Operations[i] = dispositionResult
 			continue
@@ -1136,10 +1137,6 @@ func (s *GraphService) finalizeAndPersist(
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("insert edge version: %w", err)
 		}
-		_, err = tx.Exec(`INSERT INTO blackboard_edge_heads(project_id,edge_id,edge_type,from_node_id,to_node_id,version,graph_revision,state,semantic_hash) VALUES(?,?,?,?,?,1,?,'active',?)`, projectID, e.id, string(e.edgeType), e.fromID, e.toID, e.graphRevision, hex.EncodeToString(e.semHash))
-		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("insert edge head: %w", err)
-		}
 	}
 	// Remove all touched materialized heads before reinserting their final
 	// states. This lets merge collapse unique active tuples atomically without
@@ -1149,6 +1146,7 @@ func (s *GraphService) finalizeAndPersist(
 			return nil, nil, nil, nil, fmt.Errorf("remove touched edge head: %w", err)
 		}
 	}
+	lastEdgeUpdate := map[string]pendingEdgeUpdate{}
 	for _, e := range state.pendingEdgeUpdates {
 		edgeState := e.state
 		if edgeState == "" {
@@ -1158,7 +1156,20 @@ func (s *GraphService) finalizeAndPersist(
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("insert edge update version: %w", err)
 		}
-		_, err = tx.Exec(`INSERT INTO blackboard_edge_heads(project_id,edge_id,edge_type,from_node_id,to_node_id,version,graph_revision,state,semantic_hash) VALUES(?,?,?,?,?,?,?,?,?)`, projectID, e.id, string(e.edgeType), e.fromID, e.toID, e.version, e.graphRevision, edgeState, hex.EncodeToString(e.semHash))
+		e.state = edgeState
+		lastEdgeUpdate[e.id] = e
+	}
+	for _, e := range state.pendingEdges {
+		if _, updated := lastEdgeUpdate[e.id]; updated {
+			continue
+		}
+		_, err = tx.Exec(`INSERT INTO blackboard_edge_heads(project_id,edge_id,edge_type,from_node_id,to_node_id,version,graph_revision,state,semantic_hash) VALUES(?,?,?,?,?,1,?,'active',?)`, projectID, e.id, string(e.edgeType), e.fromID, e.toID, e.graphRevision, hex.EncodeToString(e.semHash))
+		if err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("insert edge head: %w", err)
+		}
+	}
+	for _, e := range lastEdgeUpdate {
+		_, err = tx.Exec(`INSERT INTO blackboard_edge_heads(project_id,edge_id,edge_type,from_node_id,to_node_id,version,graph_revision,state,semantic_hash) VALUES(?,?,?,?,?,?,?,?,?)`, projectID, e.id, string(e.edgeType), e.fromID, e.toID, e.version, e.graphRevision, e.state, hex.EncodeToString(e.semHash))
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("update edge head: %w", err)
 		}
@@ -1208,7 +1219,7 @@ func (b MutationBatch) requestLedgerForm() any {
 		Operations         []Operation         `json:"operations"`
 		SourceEventIDsByOp map[string][]string `json:"source_event_ids_by_op,omitempty"`
 		RestoreManifest    *RestoreManifest    `json:"restore_manifest,omitempty"`
-	}{b.SchemaVersion, b.IdempotencyKey, b.Context.ProjectID, b.Context.ActorType, b.Context.ActorID, b.Context.TaskID, b.Context.ContinuationID, b.Context.RuntimeProfileID, b.Context.Runner, b.Operations, b.SourceEventIDsByOp, b.Context.RestoreManifest}
+	}{b.SchemaVersion, b.IdempotencyKey, b.Context.ProjectID, b.Context.ActorType, b.Context.ActorID, b.Context.TaskID, b.Context.ContinuationID, b.Context.RuntimeProfileID, b.Context.Runner, b.Operations, b.SourceEventIDsByOp, b.Context.restoreManifest}
 }
 
 // ledgerForm returns the result in the canonical form stored in result_json.
@@ -1249,10 +1260,10 @@ func mutationKindForBatch(batch MutationBatch) string {
 }
 
 func maintenanceMetadataJSON(batch MutationBatch) string {
-	if batch.Context.RestoreManifest == nil {
+	if batch.Context.restoreManifest == nil {
 		return "{}"
 	}
-	encoded, err := canonicalJSON(batch.Context.RestoreManifest)
+	encoded, err := canonicalJSON(batch.Context.restoreManifest)
 	if err != nil {
 		return "{}"
 	}
@@ -1371,6 +1382,21 @@ type mutableNode struct {
 }
 
 func loadMutableNode(tx *sql.Tx, projectID string, ref NodeRef) (mutableNode, error) {
+	if ref.ID != "" && ref.NodeType != "" && ref.StableKey != "" {
+		byID, err := loadMutableNode(tx, projectID, NodeRef{ID: ref.ID})
+		if err != nil {
+			return mutableNode{}, err
+		}
+		byKey, err := loadMutableNode(tx, projectID, NodeRef{NodeType: ref.NodeType, StableKey: ref.StableKey})
+		if err != nil {
+			return mutableNode{}, err
+		}
+		if byID.nodeID != byKey.nodeID {
+			return mutableNode{}, validationError(ErrCodeNodeNotFound, "id and stable key resolve to different nodes", -1, "", "operations[].node")
+		}
+		byID.resolvedFromAlias = byKey.resolvedFromAlias
+		return byID, nil
+	}
 	var n mutableNode
 	var propsJSON string
 	var row *sql.Row
@@ -1408,6 +1434,94 @@ func loadMutableNode(tx *sql.Tx, projectID string, ref NodeRef) (mutableNode, er
 		return n, fmt.Errorf("decode mutable node: %w", err)
 	}
 	return n, nil
+}
+
+// loadMutableNodeWithState resolves through the transaction's staged working
+// graph so ordered C08 operations observe prior same-batch creates, aliases,
+// merges, archives, and restores before any materialized head is written.
+func loadMutableNodeWithState(tx *sql.Tx, projectID string, ref NodeRef, state *graphState) (mutableNode, error) {
+	if ref.ID != "" && ref.NodeType != "" && ref.StableKey != "" {
+		byID, err := loadMutableNodeWithState(tx, projectID, NodeRef{ID: ref.ID}, state)
+		if err != nil {
+			return mutableNode{}, err
+		}
+		byKey, err := loadMutableNodeWithState(tx, projectID, NodeRef{NodeType: ref.NodeType, StableKey: ref.StableKey}, state)
+		if err != nil {
+			return mutableNode{}, err
+		}
+		if byID.nodeID != byKey.nodeID {
+			return mutableNode{}, validationError(ErrCodeNodeNotFound, "id and stable key resolve to different nodes", -1, "", "operations[].node")
+		}
+		byID.resolvedFromAlias = byKey.resolvedFromAlias
+		return byID, nil
+	}
+	if ref.OpID != "" {
+		for _, created := range state.pending {
+			if created.opID == ref.OpID {
+				var props map[string]any
+				if err := json.Unmarshal(created.propsJSON, &props); err != nil {
+					return mutableNode{}, err
+				}
+				return overlayMutableNode(mutableNode{nodeID: created.nodeID, nodeType: created.nodeType, stableKey: created.stableKey, version: created.version, props: props, semHash: hex.EncodeToString(created.semHash), disposition: DispositionMain}, state)
+			}
+		}
+		return mutableNode{}, validationError(ErrCodeNodeNotFound, "same-batch node reference does not exist", -1, "", "operations[].node.op_id")
+	}
+	if ref.ID != "" {
+		for _, created := range state.pending {
+			if created.nodeID == ref.ID {
+				var props map[string]any
+				if err := json.Unmarshal(created.propsJSON, &props); err != nil {
+					return mutableNode{}, err
+				}
+				return overlayMutableNode(mutableNode{nodeID: created.nodeID, nodeType: created.nodeType, stableKey: created.stableKey, version: created.version, props: props, semHash: hex.EncodeToString(created.semHash), disposition: DispositionMain}, state)
+			}
+		}
+	}
+	if ref.NodeType != "" && ref.StableKey != "" {
+		for i := len(state.pendingKeys) - 1; i >= 0; i-- {
+			key := state.pendingKeys[i]
+			if key.nodeType == ref.NodeType && key.key == ref.StableKey {
+				resolved, err := loadMutableNodeWithState(tx, projectID, NodeRef{ID: key.canonicalNodeID}, state)
+				if err == nil {
+					resolved.resolvedFromAlias = ref.StableKey
+				}
+				return resolved, err
+			}
+		}
+		for _, created := range state.pending {
+			if created.nodeType == ref.NodeType && created.stableKey == ref.StableKey {
+				return loadMutableNodeWithState(tx, projectID, NodeRef{ID: created.nodeID}, state)
+			}
+		}
+	}
+	node, err := loadMutableNode(tx, projectID, ref)
+	if err != nil {
+		return mutableNode{}, err
+	}
+	return overlayMutableNode(node, state)
+}
+
+func overlayMutableNode(node mutableNode, state *graphState) (mutableNode, error) {
+	for _, update := range state.pendingUpdates {
+		if update.nodeID != node.nodeID {
+			continue
+		}
+		var props map[string]any
+		if err := json.Unmarshal(update.propsJSON, &props); err != nil {
+			return mutableNode{}, err
+		}
+		disposition := update.disposition
+		if disposition == "" {
+			disposition = DispositionMain
+		}
+		node.version, node.props, node.semHash, node.disposition, node.mergeTargetID = update.version, props, hex.EncodeToString(update.semHash), disposition, update.mergeTargetID
+	}
+	if node.disposition == DispositionMerged && node.mergeTargetID != "" {
+		// The caller will resolve the redirect through loadMutableNodeWithState;
+		// keep the staged literal available here to avoid recursive cycles.
+	}
+	return node, nil
 }
 
 func clonePropertyMap(in map[string]any) map[string]any {

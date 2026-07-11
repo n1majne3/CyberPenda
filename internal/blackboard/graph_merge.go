@@ -18,11 +18,11 @@ type mergeEdge struct {
 // participates in the same ledger, idempotency, and integrity chain as every
 // other Apply operation.
 func stageMergeNodes(tx *sql.Tx, projectID string, op Operation, opIndex, graphRevision int, state *graphState) (OperationResult, error) {
-	source, err := loadMutableNode(tx, projectID, op.Merge.Source)
+	source, err := loadMutableNodeWithState(tx, projectID, op.Merge.Source, state)
 	if err != nil {
 		return OperationResult{}, err
 	}
-	canonical, err := loadMutableNode(tx, projectID, op.Merge.Canonical)
+	canonical, err := loadMutableNodeWithState(tx, projectID, op.Merge.Canonical, state)
 	if err != nil {
 		return OperationResult{}, err
 	}
@@ -37,6 +37,20 @@ func stageMergeNodes(tx *sql.Tx, projectID string, op Operation, opIndex, graphR
 	}
 	if source.disposition == DispositionMerged || canonical.disposition == DispositionMerged {
 		return OperationResult{}, validationError(ErrCodeMergeConflict, "merge endpoints must be current canonical identities", opIndex, op.OpID, "operations[].merge")
+	}
+	if canonical.disposition == DispositionArchived {
+		var touching int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM blackboard_edge_heads WHERE project_id=? AND state='active' AND (from_node_id=? OR to_node_id=?)`, projectID, source.nodeID, source.nodeID).Scan(&touching); err != nil {
+			return OperationResult{}, err
+		}
+		if touching > 0 {
+			return OperationResult{}, validationError(ErrCodeMergeConflict, "cannot rewire active source edges to an archived canonical node", opIndex, op.OpID, "operations[].merge.canonical")
+		}
+		for _, edge := range state.pendingEdges {
+			if edge.fromID == source.nodeID || edge.toID == source.nodeID {
+				return OperationResult{}, validationError(ErrCodeMergeConflict, "cannot rewire active source edges to an archived canonical node", opIndex, op.OpID, "operations[].merge.canonical")
+			}
+		}
 	}
 
 	canonicalVersion := canonical.version
@@ -88,6 +102,22 @@ func stageMergeNodes(tx *sql.Tx, projectID string, op Operation, opIndex, graphR
 		return OperationResult{}, rowsErr
 	}
 	keyRows.Close()
+	for _, created := range state.pending {
+		if created.nodeID != source.nodeID {
+			continue
+		}
+		alreadyStaged := false
+		for _, key := range state.pendingKeys {
+			if key.nodeType == source.nodeType && key.key == created.stableKey {
+				alreadyStaged = true
+				break
+			}
+		}
+		if !alreadyStaged {
+			semHash := keySemanticHash(source.nodeType, created.stableKey, "alias", source.nodeID, canonical.nodeID, false)
+			state.pendingKeys = append(state.pendingKeys, pendingKeyUpdate{nodeType: source.nodeType, key: created.stableKey, role: "alias", sourceNodeID: source.nodeID, canonicalNodeID: canonical.nodeID, keyVersion: 2, semHash: semHash, opIndex: opIndex, graphRevision: graphRevision})
+		}
+	}
 
 	if err := stageMergeEdges(tx, projectID, source.nodeID, canonical.nodeID, opIndex, graphRevision, state); err != nil {
 		return OperationResult{}, err
@@ -162,19 +192,34 @@ func stageMergeEdges(tx *sql.Tx, projectID, sourceID, canonicalID string, opInde
 		return fmt.Errorf("read active edges for merge: %w", err)
 	}
 	var all []mergeEdge
+	byID := map[string]mergeEdge{}
 	for rows.Next() {
 		var edge mergeEdge
 		if err := rows.Scan(&edge.id, &edge.edgeType, &edge.fromID, &edge.toID, &edge.version, &edge.state, &edge.summary, &edge.updatedAt, &edge.createdMutation, &edge.createdOperation, &edge.updatedMutation, &edge.updatedOperation); err != nil {
 			rows.Close()
 			return err
 		}
-		all = append(all, edge)
+		byID[edge.id] = edge
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
 		return err
 	}
 	rows.Close()
+	for _, edge := range state.pendingEdges {
+		byID[edge.id] = mergeEdge{id: edge.id, edgeType: string(edge.edgeType), fromID: edge.fromID, toID: edge.toID, version: 1, state: "active", summary: edge.summary, createdMutation: state.latestMutationSeq + 1, createdOperation: edge.opIndex, updatedMutation: state.latestMutationSeq + 1, updatedOperation: edge.opIndex}
+	}
+	for _, update := range state.pendingEdgeUpdates {
+		edge := byID[update.id]
+		edge.id, edge.edgeType, edge.fromID, edge.toID, edge.version, edge.state, edge.summary = update.id, string(update.edgeType), update.fromID, update.toID, update.version, update.state, update.summary
+		edge.updatedMutation, edge.updatedOperation = state.latestMutationSeq+1, update.opIndex
+		byID[update.id] = edge
+	}
+	for _, edge := range byID {
+		if edge.state == "active" {
+			all = append(all, edge)
+		}
+	}
 
 	type transformed struct {
 		edge     mergeEdge
@@ -226,7 +271,7 @@ func stageMergeEdges(tx *sql.Tx, projectID, sourceID, canonicalID string, opInde
 			return candidates[i].edge.id < candidates[j].edge.id
 		})
 		winner := candidates[0]
-		summary, latestMutation, latestOperation, latestID := winner.edge.summary, winner.edge.updatedMutation, winner.edge.updatedOperation, winner.edge.id
+		summary, latestMutation, latestOperation, latestID := "", -1, -1, ""
 		for _, candidate := range candidates {
 			newer := candidate.edge.updatedMutation > latestMutation || (candidate.edge.updatedMutation == latestMutation && candidate.edge.updatedOperation > latestOperation) || (candidate.edge.updatedMutation == latestMutation && candidate.edge.updatedOperation == latestOperation && candidate.edge.id > latestID)
 			if candidate.edge.summary != "" && newer {

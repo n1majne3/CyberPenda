@@ -205,15 +205,15 @@ type Operation struct {
 // trusted. Runtime Task/Continuation/profile/runner binding is revalidated
 // transactionally before Apply accepts a Runtime-authored mutation.
 type ExecutionContext struct {
-	ProjectID        string           `json:"project_id"`
-	ProjectKind      string           `json:"project_kind"`
-	ActorType        ActorType        `json:"actor_type"`
-	ActorID          string           `json:"actor_id"`
-	TaskID           string           `json:"task_id,omitempty"`
-	ContinuationID   string           `json:"continuation_id,omitempty"`
-	RuntimeProfileID string           `json:"runtime_profile_id,omitempty"`
-	Runner           string           `json:"runner,omitempty"`
-	RestoreManifest  *RestoreManifest `json:"-"`
+	ProjectID        string    `json:"project_id"`
+	ProjectKind      string    `json:"project_kind"`
+	ActorType        ActorType `json:"actor_type"`
+	ActorID          string    `json:"actor_id"`
+	TaskID           string    `json:"task_id,omitempty"`
+	ContinuationID   string    `json:"continuation_id,omitempty"`
+	RuntimeProfileID string    `json:"runtime_profile_id,omitempty"`
+	Runner           string    `json:"runner,omitempty"`
+	restoreManifest  *RestoreManifest
 }
 
 type RestoreManifest struct {
@@ -240,6 +240,14 @@ func SystemExecutionContext(projectID, projectKind, systemActorID string) Execut
 		ActorType:   ActorTypeSystem,
 		ActorID:     systemActorID,
 	}
+}
+
+// SystemRestoreExecutionContext binds a trusted restore manifest without
+// exposing maintenance metadata as caller-serializable mutation input.
+func SystemRestoreExecutionContext(projectID, projectKind, systemActorID string, manifest RestoreManifest) ExecutionContext {
+	context := SystemExecutionContext(projectID, projectKind, systemActorID)
+	context.restoreManifest = &manifest
+	return context
 }
 
 // idempotencyScope derives the idempotency scope for this context (graph
