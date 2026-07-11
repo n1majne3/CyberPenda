@@ -290,7 +290,14 @@ func pendingIntegrityHashes(batch MutationBatch, state graphState, operations []
 		)
 	}
 	for _, row := range state.pendingUpdates {
-		records = append(records, integrityRecord{kind: integrityNodeVersion, identity: fmt.Sprintf("%s:%020d", row.nodeID, row.version), data: nodeVersionIntegrity{ProjectID: batch.Context.ProjectID, NodeID: row.nodeID, Version: row.version, ResultGraphRevision: row.graphRevision, MutationSeq: mutationSeq, OperationIndex: row.opIndex, SchemaVersion: GraphMutationSchemaVersion, Disposition: string(DispositionMain), PropertiesJSON: string(row.propsJSON), SemanticHash: hex.EncodeToString(row.semHash), UpdatedAt: recordedAt, ProvenanceHash: provenanceForOp(row.opIndex)}})
+		disposition := row.disposition
+		if disposition == "" {
+			disposition = DispositionMain
+		}
+		records = append(records, integrityRecord{kind: integrityNodeVersion, identity: fmt.Sprintf("%s:%020d", row.nodeID, row.version), data: nodeVersionIntegrity{ProjectID: batch.Context.ProjectID, NodeID: row.nodeID, Version: row.version, ResultGraphRevision: row.graphRevision, MutationSeq: mutationSeq, OperationIndex: row.opIndex, SchemaVersion: GraphMutationSchemaVersion, Disposition: string(disposition), MergeTargetID: row.mergeTargetID, MergeTargetPresent: row.mergeTargetID != "", PropertiesJSON: string(row.propsJSON), SemanticHash: hex.EncodeToString(row.semHash), UpdatedAt: recordedAt, ProvenanceHash: provenanceForOp(row.opIndex)}})
+	}
+	for _, row := range state.pendingKeys {
+		records = append(records, integrityRecord{kind: integrityKeyEvent, identity: fmt.Sprintf("%020d:%s:%020d", nodeTypeOrdinal(row.nodeType), row.key, row.keyVersion), data: keyEventIntegrity{ProjectID: batch.Context.ProjectID, NodeType: string(row.nodeType), Key: row.key, KeyVersion: row.keyVersion, Role: row.role, SourceNodeID: row.sourceNodeID, CanonicalNodeID: row.canonicalNodeID, LegacyNonconforming: row.legacyNonconforming, ResultGraphRevision: row.graphRevision, MutationSeq: mutationSeq, OperationIndex: row.opIndex, SemanticHash: hex.EncodeToString(row.semHash), ProvenanceHash: provenanceForOp(row.opIndex)}})
 	}
 	for _, row := range state.pendingEdges {
 		records = append(records,
@@ -299,7 +306,11 @@ func pendingIntegrityHashes(batch MutationBatch, state graphState, operations []
 		)
 	}
 	for _, row := range state.pendingEdgeUpdates {
-		records = append(records, integrityRecord{kind: integrityEdgeVersion, identity: fmt.Sprintf("%s:%020d", row.id, row.version), data: edgeVersionIntegrity{ProjectID: batch.Context.ProjectID, EdgeID: row.id, Version: row.version, ResultGraphRevision: row.graphRevision, MutationSeq: mutationSeq, OperationIndex: row.opIndex, FromNodeID: row.fromID, ToNodeID: row.toID, State: "active", Summary: row.summary, SemanticHash: hex.EncodeToString(row.semHash), UpdatedAt: recordedAt, ProvenanceHash: provenanceForOp(row.opIndex)}})
+		edgeState := row.state
+		if edgeState == "" {
+			edgeState = "active"
+		}
+		records = append(records, integrityRecord{kind: integrityEdgeVersion, identity: fmt.Sprintf("%s:%020d", row.id, row.version), data: edgeVersionIntegrity{ProjectID: batch.Context.ProjectID, EdgeID: row.id, Version: row.version, ResultGraphRevision: row.graphRevision, MutationSeq: mutationSeq, OperationIndex: row.opIndex, FromNodeID: row.fromID, ToNodeID: row.toID, State: edgeState, Summary: row.summary, SemanticHash: hex.EncodeToString(row.semHash), UpdatedAt: recordedAt, ProvenanceHash: provenanceForOp(row.opIndex)}})
 	}
 	return hashIntegrityRecords(records)
 }

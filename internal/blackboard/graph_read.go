@@ -30,7 +30,7 @@ func decodeResultJSON(data string) (*MutationResult, error) {
 	for i, o := range rf.Operations {
 		out.Operations[i] = OperationResult{
 			OpID: o.OpID, NodeID: o.NodeID, NodeType: o.NodeType, StableKey: o.StableKey,
-			NodeVersion: o.NodeVersion, EdgeID: o.EdgeID, EdgeType: o.EdgeType, EdgeVersion: o.EdgeVersion, SemanticHash: o.SemanticHash, Changed: o.Changed,
+			NodeVersion: o.NodeVersion, EdgeID: o.EdgeID, EdgeType: o.EdgeType, EdgeVersion: o.EdgeVersion, SemanticHash: o.SemanticHash, ResolvedFromAlias: o.ResolvedFromAlias, Changed: o.Changed,
 		}
 	}
 	return out, nil
@@ -49,6 +49,18 @@ func (s *GraphService) ReadEdge(ctx context.Context, req ReadEdgeRequest) (EdgeR
 	e.ProjectID = req.ProjectID
 	e.EdgeType = EdgeType(typ)
 	return e, nil
+}
+
+func (s *GraphService) ReadActiveEdge(ctx context.Context, req ReadActiveEdgeRequest) (EdgeRecord, error) {
+	var edgeID string
+	err := s.db.QueryRowContext(ctx, `SELECT edge_id FROM blackboard_edge_heads WHERE project_id=? AND edge_type=? AND from_node_id=? AND to_node_id=? AND state='active'`, req.ProjectID, string(req.EdgeType), req.FromNodeID, req.ToNodeID).Scan(&edgeID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return EdgeRecord{}, validationError(ErrCodeEdgeEndpointNotFound, "active edge not found", -1, "", "edge")
+	}
+	if err != nil {
+		return EdgeRecord{}, fmt.Errorf("read active edge identity: %w", err)
+	}
+	return s.ReadEdge(ctx, ReadEdgeRequest{ProjectID: req.ProjectID, EdgeID: edgeID})
 }
 
 // ReadNode resolves a node by key through the alias-resolving key registry and
@@ -139,4 +151,61 @@ func (s *GraphService) ReadNode(ctx context.Context, req ReadNodeRequest) (ReadN
 		ObservedGraphRevision: graphRev,
 		ResolvedFromAlias:     resolvedFromAlias,
 	}, nil
+}
+
+// ReadLiteralNode returns the immutable identity and its complete version
+// history without following merge redirects. Ordinary callers should use
+// ReadNode; this method exists for the contract's explicit audit/history path.
+func (s *GraphService) ReadLiteralNode(ctx context.Context, req ReadLiteralNodeRequest) (ReadLiteralNodeResult, error) {
+	var node NodeRecord
+	var nodeType, disposition, propsJSON string
+	var mergeTarget sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+		SELECT h.node_id,h.node_type,n.original_stable_key,h.version,h.disposition,
+		       h.merge_target_id,v.properties_json,n.created_at,v.updated_at,h.semantic_hash
+		  FROM blackboard_node_heads h
+		  JOIN blackboard_nodes n ON n.project_id=h.project_id AND n.id=h.node_id
+		  JOIN blackboard_node_versions v ON v.project_id=h.project_id AND v.node_id=h.node_id AND v.version=h.version
+		 WHERE h.project_id=? AND h.node_id=?`, req.ProjectID, req.NodeID).
+		Scan(&node.ID, &nodeType, &node.StableKey, &node.Version, &disposition, &mergeTarget, &propsJSON, &node.CreatedAt, &node.UpdatedAt, &node.SemanticHash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ReadLiteralNodeResult{}, validationError(ErrCodeNodeNotFound, "literal node does not exist", -1, "", "node_id")
+	}
+	if err != nil {
+		return ReadLiteralNodeResult{}, fmt.Errorf("read literal node: %w", err)
+	}
+	node.ProjectID, node.NodeType, node.Disposition, node.MergeTargetID = req.ProjectID, NodeType(nodeType), Disposition(disposition), mergeTarget.String
+	if err := json.Unmarshal([]byte(propsJSON), &node.PropertyMap); err != nil {
+		return ReadLiteralNodeResult{}, fmt.Errorf("decode literal node properties: %w", err)
+	}
+	if node.NodeType == NodeTypeProjectFact {
+		if err := json.Unmarshal([]byte(propsJSON), &node.ProjectFact); err != nil {
+			return ReadLiteralNodeResult{}, fmt.Errorf("decode literal project fact: %w", err)
+		}
+	}
+	_ = s.db.QueryRowContext(ctx, `SELECT current_semantic_state_hash FROM blackboard_graph_state WHERE project_id=?`, req.ProjectID).Scan(&node.StateHash)
+
+	rows, err := s.db.QueryContext(ctx, `SELECT version,disposition,merge_target_id,properties_json,semantic_hash FROM blackboard_node_versions WHERE project_id=? AND node_id=? ORDER BY version`, req.ProjectID, req.NodeID)
+	if err != nil {
+		return ReadLiteralNodeResult{}, fmt.Errorf("read literal node versions: %w", err)
+	}
+	defer rows.Close()
+	versions := []NodeVersionRecord{}
+	for rows.Next() {
+		var version NodeVersionRecord
+		var merge sql.NullString
+		var properties string
+		if err := rows.Scan(&version.Version, &version.Disposition, &merge, &properties, &version.SemanticHash); err != nil {
+			return ReadLiteralNodeResult{}, err
+		}
+		version.MergeTargetID = merge.String
+		if err := json.Unmarshal([]byte(properties), &version.PropertyMap); err != nil {
+			return ReadLiteralNodeResult{}, err
+		}
+		versions = append(versions, version)
+	}
+	if err := rows.Err(); err != nil {
+		return ReadLiteralNodeResult{}, err
+	}
+	return ReadLiteralNodeResult{Node: node, Versions: versions}, nil
 }

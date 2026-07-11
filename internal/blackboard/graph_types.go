@@ -80,6 +80,7 @@ type MutationKind string
 
 const (
 	MutationKindNormal MutationKind = "normal"
+	MutationKindMerge  MutationKind = "merge"
 )
 
 // OperationKind names a mutation batch operation (graph contract §9).
@@ -140,6 +141,24 @@ type PatchNodeInput struct {
 	Properties      map[string]any `json:"properties"`
 }
 
+// MergeNodesInput is the explicit, version-checked identity consolidation
+// operation from graph contract section 11. CanonicalPatch is optional;
+// absent fields never inherit values from the source node.
+type MergeNodesInput struct {
+	Source                   NodeRef        `json:"source"`
+	Canonical                NodeRef        `json:"canonical"`
+	SourceExpectedVersion    int            `json:"source_expected_version"`
+	CanonicalExpectedVersion int            `json:"canonical_expected_version"`
+	CanonicalPatch           map[string]any `json:"canonical_patch,omitempty"`
+}
+
+// SetDispositionInput archives or explicitly restores one node.
+type SetDispositionInput struct {
+	ExpectedVersion   int         `json:"expected_version"`
+	Disposition       Disposition `json:"disposition"`
+	RestoreManifestID string      `json:"restore_manifest_id,omitempty"`
+}
+
 // TransitionNodeInput carries a lifecycle transition requested through Apply.
 // resolved_at remains system-managed and is derived from the batch timestamp.
 type TransitionNodeInput struct {
@@ -169,13 +188,15 @@ type NodeRef struct {
 
 // Operation is one mutation batch operation in the closed graph mutation envelope.
 type Operation struct {
-	OpID       string              `json:"op_id"`
-	Kind       OperationKind       `json:"kind"`
-	Node       NodeRef             `json:"node"`
-	Create     CreateNodeInput     `json:"create,omitempty"`
-	Patch      PatchNodeInput      `json:"patch,omitempty"`
-	Transition TransitionNodeInput `json:"transition,omitempty"`
-	PutEdge    PutEdgeInput        `json:"put_edge,omitempty"`
+	OpID        string              `json:"op_id"`
+	Kind        OperationKind       `json:"kind"`
+	Node        NodeRef             `json:"node"`
+	Create      CreateNodeInput     `json:"create,omitempty"`
+	Patch       PatchNodeInput      `json:"patch,omitempty"`
+	Transition  TransitionNodeInput `json:"transition,omitempty"`
+	PutEdge     PutEdgeInput        `json:"put_edge,omitempty"`
+	Merge       MergeNodesInput     `json:"merge,omitempty"`
+	Disposition SetDispositionInput `json:"set_disposition,omitempty"`
 }
 
 // ExecutionContext is the server-side trusted context bound to a mutation
@@ -184,14 +205,28 @@ type Operation struct {
 // trusted. Runtime Task/Continuation/profile/runner binding is revalidated
 // transactionally before Apply accepts a Runtime-authored mutation.
 type ExecutionContext struct {
-	ProjectID        string    `json:"project_id"`
-	ProjectKind      string    `json:"project_kind"`
-	ActorType        ActorType `json:"actor_type"`
-	ActorID          string    `json:"actor_id"`
-	TaskID           string    `json:"task_id,omitempty"`
-	ContinuationID   string    `json:"continuation_id,omitempty"`
-	RuntimeProfileID string    `json:"runtime_profile_id,omitempty"`
-	Runner           string    `json:"runner,omitempty"`
+	ProjectID        string           `json:"project_id"`
+	ProjectKind      string           `json:"project_kind"`
+	ActorType        ActorType        `json:"actor_type"`
+	ActorID          string           `json:"actor_id"`
+	TaskID           string           `json:"task_id,omitempty"`
+	ContinuationID   string           `json:"continuation_id,omitempty"`
+	RuntimeProfileID string           `json:"runtime_profile_id,omitempty"`
+	Runner           string           `json:"runner,omitempty"`
+	RestoreManifest  *RestoreManifest `json:"-"`
+}
+
+type RestoreManifest struct {
+	ID    string        `json:"id"`
+	Nodes []string      `json:"nodes"`
+	Edges []RestoreEdge `json:"edges,omitempty"`
+}
+
+type RestoreEdge struct {
+	EdgeType EdgeType `json:"edge_type"`
+	From     NodeRef  `json:"from"`
+	To       NodeRef  `json:"to"`
+	Summary  string   `json:"summary,omitempty"`
 }
 
 // SystemExecutionContext builds a trusted context for a system actor. This is
@@ -238,16 +273,17 @@ type MutationBatch struct {
 
 // OperationResult is the per-operation outcome within a MutationResult.
 type OperationResult struct {
-	OpID         string   `json:"op_id"`
-	NodeID       string   `json:"node_id,omitempty"`
-	NodeType     NodeType `json:"node_type,omitempty"`
-	StableKey    string   `json:"stable_key,omitempty"`
-	NodeVersion  int      `json:"node_version,omitempty"`
-	EdgeID       string   `json:"edge_id,omitempty"`
-	EdgeType     EdgeType `json:"edge_type,omitempty"`
-	EdgeVersion  int      `json:"edge_version,omitempty"`
-	SemanticHash string   `json:"semantic_hash,omitempty"`
-	Changed      bool     `json:"changed"`
+	OpID              string   `json:"op_id"`
+	NodeID            string   `json:"node_id,omitempty"`
+	NodeType          NodeType `json:"node_type,omitempty"`
+	StableKey         string   `json:"stable_key,omitempty"`
+	NodeVersion       int      `json:"node_version,omitempty"`
+	EdgeID            string   `json:"edge_id,omitempty"`
+	EdgeType          EdgeType `json:"edge_type,omitempty"`
+	EdgeVersion       int      `json:"edge_version,omitempty"`
+	SemanticHash      string   `json:"semantic_hash,omitempty"`
+	ResolvedFromAlias string   `json:"resolved_from_alias,omitempty"`
+	Changed           bool     `json:"changed"`
 }
 
 // MutationResult is the observable outcome of Apply (graph contract §13,
@@ -299,6 +335,33 @@ type ReadNodeResult struct {
 	ResolvedFromAlias     string // empty if the key was the canonical stable key
 }
 
+// ReadLiteralNodeRequest selects an immutable identity without following its
+// merge redirect. This is the audit/history escape hatch; ordinary reads use
+// ReadNode and resolve aliases.
+type ReadLiteralNodeRequest struct {
+	ProjectID string
+	NodeID    string
+}
+
+type NodeVersionRecord struct {
+	Version       int
+	Disposition   Disposition
+	MergeTargetID string
+	PropertyMap   map[string]any
+	SemanticHash  string
+}
+
+type ReadLiteralNodeResult struct {
+	Node     NodeRecord
+	Versions []NodeVersionRecord
+}
+
+type DuplicateCandidate struct {
+	NodeType    NodeType `json:"node_type"`
+	Fingerprint string   `json:"fingerprint"`
+	NodeIDs     []string `json:"node_ids"`
+}
+
 // CTFSolvedState is a derived read model. Solved is never persisted: it is
 // recomputed from the current main verified flag Solutions.
 type CTFSolvedState struct {
@@ -328,6 +391,12 @@ type GoalSummary struct {
 }
 
 type ReadEdgeRequest struct{ ProjectID, EdgeID string }
+type ReadActiveEdgeRequest struct {
+	ProjectID  string
+	EdgeType   EdgeType
+	FromNodeID string
+	ToNodeID   string
+}
 type EdgeRecord struct {
 	ID, ProjectID                string
 	EdgeType                     EdgeType
@@ -340,16 +409,17 @@ type EdgeRecord struct {
 // result_json to the ledger and when decoding it back for replay/reads. Keeping
 // one definition ensures the stored and decoded forms are byte-compatible.
 type operationResultLedgerForm struct {
-	OpID         string   `json:"op_id"`
-	NodeID       string   `json:"node_id"`
-	NodeType     NodeType `json:"node_type"`
-	StableKey    string   `json:"stable_key"`
-	NodeVersion  int      `json:"node_version"`
-	EdgeID       string   `json:"edge_id,omitempty"`
-	EdgeType     EdgeType `json:"edge_type,omitempty"`
-	EdgeVersion  int      `json:"edge_version,omitempty"`
-	SemanticHash string   `json:"semantic_hash"`
-	Changed      bool     `json:"changed"`
+	OpID              string   `json:"op_id"`
+	NodeID            string   `json:"node_id"`
+	NodeType          NodeType `json:"node_type"`
+	StableKey         string   `json:"stable_key"`
+	NodeVersion       int      `json:"node_version"`
+	EdgeID            string   `json:"edge_id,omitempty"`
+	EdgeType          EdgeType `json:"edge_type,omitempty"`
+	EdgeVersion       int      `json:"edge_version,omitempty"`
+	SemanticHash      string   `json:"semantic_hash"`
+	ResolvedFromAlias string   `json:"resolved_from_alias,omitempty"`
+	Changed           bool     `json:"changed"`
 }
 
 // resultLedgerForm is the canonical JSON shape stored in
@@ -423,6 +493,10 @@ const (
 	ErrCodeIdempotencyConflict      = "idempotency_conflict"
 	ErrCodeProvenanceRequired       = "provenance_required"
 	ErrCodeStorageBusy              = "storage_busy"
+	ErrCodeMergeSelf                = "merge_self"
+	ErrCodeMergeTypeMismatch        = "merge_type_mismatch"
+	ErrCodeMergeConflict            = "merge_conflict"
+	ErrCodeArchiveGuardFailed       = "archive_guard_failed"
 )
 
 // validationError builds a ValidationError at the given operation index.
