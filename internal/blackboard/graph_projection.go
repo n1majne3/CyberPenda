@@ -97,6 +97,17 @@ func (s *GraphService) CanonicalMainGraph(ctx context.Context, projectID string,
 	if err != nil {
 		return CanonicalMainGraphProjection{}, err
 	}
+	projection, err := measureCanonicalMainGraphDocument(projectID, revision, doc)
+	if err != nil {
+		return CanonicalMainGraphProjection{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return CanonicalMainGraphProjection{}, graphStorageError("commit canonical main graph", err)
+	}
+	return projection, nil
+}
+
+func measureCanonicalMainGraphDocument(projectID string, revision int, doc canonicalMainGraphDocument) (CanonicalMainGraphProjection, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
@@ -105,15 +116,7 @@ func (s *GraphService) CanonicalMainGraph(ctx context.Context, projectID string,
 	}
 	data := bytes.TrimSuffix(buf.Bytes(), []byte{'\n'})
 	hash := framedHash("CyberPenda.Blackboard.MainProjection.v1", data)
-	projection := CanonicalMainGraphProjection{
-		ProjectID: projectID, GraphRevision: revision, RendererVersion: CanonicalMainGraphRendererV1,
-		EstimatorVersion: UTF8BytesDiv4EstimatorV1, Bytes: data,
-		Hash: hex.EncodeToString(hash), ByteCount: len(data), EstimatedTokens: (len(data) + 3) / 4,
-	}
-	if err := tx.Commit(); err != nil {
-		return CanonicalMainGraphProjection{}, graphStorageError("commit canonical main graph", err)
-	}
-	return projection, nil
+	return CanonicalMainGraphProjection{ProjectID: projectID, GraphRevision: revision, RendererVersion: CanonicalMainGraphRendererV1, EstimatorVersion: UTF8BytesDiv4EstimatorV1, Bytes: data, Hash: hex.EncodeToString(hash), ByteCount: len(data), EstimatedTokens: (len(data) + 3) / 4}, nil
 }
 
 func canonicalMainGraphDocumentAt(ctx context.Context, q graphQuerier, projectID string, revision int) (canonicalMainGraphDocument, error) {
@@ -426,6 +429,10 @@ func verifyProjectionMatchesPin(pin CanonicalMainGraphPin, data []byte) error {
 // and refreshes only the rebuildable projection cache. A rendering failure
 // leaves the already-committed ledger and its dirty/unknown state untouched.
 func (s *GraphService) RemeasureCanonicalMainGraph(ctx context.Context, projectID string) (CanonicalMainGraphProjection, error) {
+	return s.remeasureCanonicalMainGraphAt(ctx, projectID, s.clock.Now().UTC().Format(time.RFC3339Nano))
+}
+
+func (s *GraphService) remeasureCanonicalMainGraphAt(ctx context.Context, projectID, measuredAt string) (CanonicalMainGraphProjection, error) {
 	var revision, dirtyRevision int
 	if err := s.db.QueryRowContext(ctx, `SELECT current_graph_revision,projection_dirty_revision FROM blackboard_graph_state WHERE project_id=?`, projectID).Scan(&revision, &dirtyRevision); err != nil {
 		return CanonicalMainGraphProjection{}, graphStorageError("read graph revision for projection sizing", err)
@@ -440,7 +447,7 @@ func (s *GraphService) RemeasureCanonicalMainGraph(ctx context.Context, projectI
 		WHERE project_id=? AND current_graph_revision=? AND projection_dirty_revision=?`,
 		projection.Hash, projection.RendererVersion, projection.EstimatorVersion,
 		projection.ByteCount, projection.EstimatedTokens, budgetStateForEstimatedTokens(projection.EstimatedTokens),
-		s.clock.Now().UTC().Format(time.RFC3339Nano), projectID, revision, dirtyRevision)
+		measuredAt, projectID, revision, dirtyRevision)
 	if err != nil {
 		return CanonicalMainGraphProjection{}, graphStorageError("store canonical main graph measurement", err)
 	}
@@ -451,18 +458,11 @@ func (s *GraphService) RemeasureCanonicalMainGraph(ctx context.Context, projectI
 	if updated != 1 {
 		return CanonicalMainGraphProjection{}, fmt.Errorf("canonical main graph changed during projection sizing")
 	}
-	return projection, nil
-}
-
-func budgetStateForEstimatedTokens(tokens int) string {
-	switch {
-	case tokens >= 20_000:
-		return "required"
-	case tokens >= 16_000:
-		return "warning"
-	case tokens >= 12_001:
-		return "above_target"
-	default:
-		return "within_target"
+	_, err = s.db.ExecContext(ctx, `INSERT INTO blackboard_projection_metrics(project_id,graph_revision,projection_hash,renderer_version,estimator_version,projection_bytes,estimated_tokens,budget_state,measured_at)
+		VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(project_id,graph_revision) DO UPDATE SET projection_hash=excluded.projection_hash,renderer_version=excluded.renderer_version,estimator_version=excluded.estimator_version,projection_bytes=excluded.projection_bytes,estimated_tokens=excluded.estimated_tokens,budget_state=excluded.budget_state,measured_at=excluded.measured_at`,
+		projectID, revision, projection.Hash, projection.RendererVersion, projection.EstimatorVersion, projection.ByteCount, projection.EstimatedTokens, budgetStateForEstimatedTokens(projection.EstimatedTokens), measuredAt)
+	if err != nil {
+		return CanonicalMainGraphProjection{}, graphStorageError("store projection metric", err)
 	}
+	return projection, nil
 }

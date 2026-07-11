@@ -205,10 +205,11 @@ func TestProjectionSizingFailurePreservesCommittedGraphForRemeasurement(t *testi
 	if err != nil {
 		t.Fatalf("apply first semantic write: %v", err)
 	}
-	assertGraphProjectionState(t, graph, projectID, first.GraphRevision, "unknown", "", 0, 0)
-	if _, err := graph.RemeasureCanonicalMainGraph(context.Background(), projectID); err != nil {
-		t.Fatalf("measure baseline graph: %v", err)
+	firstProjection, err := graph.CanonicalMainGraph(context.Background(), projectID, first.GraphRevision)
+	if err != nil {
+		t.Fatalf("render automatically measured baseline: %v", err)
 	}
+	assertGraphProjectionState(t, graph, projectID, 0, "within_target", firstProjection.Hash, firstProjection.ByteCount, firstProjection.EstimatedTokens)
 
 	written, err := graph.Apply(context.Background(), blackboard.MutationBatch{
 		SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "c09:dirty:second", Context: execCtx,
@@ -217,14 +218,18 @@ func TestProjectionSizingFailurePreservesCommittedGraphForRemeasurement(t *testi
 	if err != nil {
 		t.Fatalf("apply semantic write before failed sizing: %v", err)
 	}
-	assertGraphProjectionState(t, graph, projectID, written.GraphRevision, "unknown", "", 0, 0)
+	writtenProjection, err := graph.CanonicalMainGraph(context.Background(), projectID, written.GraphRevision)
+	if err != nil {
+		t.Fatalf("render automatically measured graph: %v", err)
+	}
+	assertGraphProjectionState(t, graph, projectID, 0, "within_target", writtenProjection.Hash, writtenProjection.ByteCount, writtenProjection.EstimatedTokens)
 
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := graph.RemeasureCanonicalMainGraph(cancelled, projectID); err == nil {
 		t.Fatal("expected cancelled projection sizing to fail")
 	}
-	assertGraphProjectionState(t, graph, projectID, written.GraphRevision, "unknown", "", 0, 0)
+	assertGraphProjectionState(t, graph, projectID, 0, "within_target", writtenProjection.Hash, writtenProjection.ByteCount, writtenProjection.EstimatedTokens)
 
 	measured, err := graph.RemeasureCanonicalMainGraph(context.Background(), projectID)
 	if err != nil {

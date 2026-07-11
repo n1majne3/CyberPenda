@@ -249,11 +249,33 @@ func (s *GraphService) Apply(ctx context.Context, batch MutationBatch) (result M
 	if err != nil {
 		return MutationResult{}, err
 	}
+	if batch.Context.compactionPlan != nil {
+		if err := s.persistCompactionManifestTx(ctx, tx, batch, result); err != nil {
+			return MutationResult{}, err
+		}
+	}
+	if batch.Context.restoreManifest != nil && mutationKindForBatch(batch) == "restore" {
+		if err := s.persistRestoreManifestTx(ctx, tx, batch, result); err != nil {
+			return MutationResult{}, err
+		}
+	}
 
 	if err := tx.Commit(); err != nil {
 		return MutationResult{}, graphStorageError("commit graph transaction", err)
 	}
+	if anyOperationChanged(result.Operations) {
+		s.postCommitMaintenance(ctx, batch, result)
+	}
 	return result, nil
+}
+
+func anyOperationChanged(operations []OperationResult) bool {
+	for _, operation := range operations {
+		if operation.Changed {
+			return true
+		}
+	}
+	return false
 }
 
 func graphStorageError(action string, err error) error {
@@ -1251,6 +1273,9 @@ func boolToInt(b bool) int {
 }
 
 func mutationKindForBatch(batch MutationBatch) string {
+	if batch.Context.ActorType == ActorTypeSystem && batch.Context.ActorID == blackboardCompactorActorID {
+		return "compaction"
+	}
 	for _, op := range batch.Operations {
 		if op.Kind == OpSetDisposition && op.Disposition.Disposition == DispositionMain {
 			return "restore"

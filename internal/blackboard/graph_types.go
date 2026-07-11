@@ -214,6 +214,7 @@ type ExecutionContext struct {
 	RuntimeProfileID string    `json:"runtime_profile_id,omitempty"`
 	Runner           string    `json:"runner,omitempty"`
 	restoreManifest  *RestoreManifest
+	compactionPlan   *CompactionPlan
 }
 
 type RestoreManifest struct {

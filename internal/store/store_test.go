@@ -255,15 +255,17 @@ func TestOpenDefaultsCanonicalStoreToLegacyV1(t *testing.T) {
 			t.Fatalf("expected table %s", table)
 		}
 	}
-	// Compaction, health, and projection_metrics tables arrive in their owning
-	// C09/C10 slices. C03 owns the edge ledger and heads above.
+	// C10 owns the rebuildable projection cache, append-only maintenance manifests,
+	// and derived Blackboard Health persistence.
 	for _, table := range []string{
 		"blackboard_compactions",
+		"blackboard_restore_manifests",
 		"blackboard_projection_metrics",
 		"blackboard_health_runs",
+		"blackboard_health_results",
 	} {
-		if tableExists(t, db.DB, table) {
-			t.Fatalf("graph table %s must not exist until its owning slice", table)
+		if !tableExists(t, db.DB, table) {
+			t.Fatalf("expected C10 graph table %s", table)
 		}
 	}
 

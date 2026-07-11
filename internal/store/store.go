@@ -205,6 +205,7 @@ func migrations() []migration {
 		newMigration(5, "graph_edge_ledger_guards", migration5SQL, migration5Up),
 		newMigration(6, "graph_edge_version_endpoints", migration6SQL, migration6Up),
 		newMigration(7, "graph_edge_identity_and_integrity_cutover", migration7SQL, migration7Up),
+		newMigration(8, "graph_budget_compaction_and_health", migration8SQL, migration8Up),
 	}
 }
 
@@ -377,6 +378,99 @@ func migration7Up(tx *sql.Tx) error {
 	} {
 		if _, err := tx.Exec(stmt); err != nil {
 			return fmt.Errorf("install canonical edge ledger guard: %w", err)
+		}
+	}
+	return nil
+}
+
+const migration8SQL = `
+CREATE TABLE blackboard_projection_metrics (
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  graph_revision INTEGER NOT NULL,
+  projection_hash TEXT NOT NULL,
+  renderer_version TEXT NOT NULL,
+  estimator_version TEXT NOT NULL,
+  projection_bytes INTEGER NOT NULL,
+  estimated_tokens INTEGER NOT NULL,
+  budget_state TEXT NOT NULL CHECK (budget_state IN ('within_target','above_target','warning','required','unknown')),
+  measured_at TEXT NOT NULL,
+  PRIMARY KEY(project_id, graph_revision)
+);
+CREATE TABLE blackboard_compactions (
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  manifest_id TEXT NOT NULL UNIQUE,
+  base_graph_revision INTEGER NOT NULL,
+  result_graph_revision INTEGER NOT NULL,
+  before_hash TEXT NOT NULL,
+  after_hash TEXT NOT NULL,
+  before_bytes INTEGER NOT NULL,
+  after_bytes INTEGER NOT NULL,
+  before_tokens INTEGER NOT NULL,
+  after_tokens INTEGER NOT NULL,
+  expected_versions_json TEXT NOT NULL,
+  archived_node_ids_json TEXT NOT NULL,
+  retired_edge_ids_json TEXT NOT NULL,
+  preserved_anchor_ids_json TEXT NOT NULL,
+  rationale_json TEXT NOT NULL,
+  mutation_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(project_id, manifest_id)
+);
+CREATE TABLE blackboard_restore_manifests (
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  manifest_id TEXT NOT NULL UNIQUE,
+  base_graph_revision INTEGER NOT NULL,
+  result_graph_revision INTEGER NOT NULL,
+  restored_node_ids_json TEXT NOT NULL,
+  restored_edge_ids_json TEXT NOT NULL,
+  before_hash TEXT NOT NULL,
+  after_hash TEXT NOT NULL,
+  before_tokens INTEGER NOT NULL,
+  after_tokens INTEGER NOT NULL,
+  mutation_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(project_id, manifest_id)
+);
+CREATE TABLE blackboard_health_runs (
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  run_id TEXT NOT NULL UNIQUE,
+  checked_graph_revision INTEGER NOT NULL,
+  checked_state_hash TEXT NOT NULL,
+  checked_projection_hash TEXT NOT NULL,
+  checker_version TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('healthy','attention','degraded','critical','unknown')),
+  artifact_scan_status TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  completed_at TEXT,
+  metrics_json TEXT NOT NULL,
+  PRIMARY KEY(project_id, run_id)
+);
+CREATE TABLE blackboard_health_results (
+  project_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  code TEXT NOT NULL,
+  severity TEXT NOT NULL CHECK (severity IN ('info','warning','critical')),
+  subject_kind TEXT NOT NULL,
+  subject_id TEXT NOT NULL,
+  details_json TEXT NOT NULL,
+  PRIMARY KEY(project_id, run_id, fingerprint),
+  FOREIGN KEY(project_id, run_id) REFERENCES blackboard_health_runs(project_id, run_id) ON DELETE CASCADE
+);
+`
+
+func migration8Up(tx *sql.Tx) error {
+	if err := execStatements(tx, migration8SQL); err != nil {
+		return err
+	}
+	for _, statement := range []string{
+		`CREATE TRIGGER blackboard_compactions_no_update BEFORE UPDATE ON blackboard_compactions BEGIN SELECT RAISE(ABORT, 'blackboard compaction manifests are append-only'); END`,
+		`CREATE TRIGGER blackboard_compactions_no_delete BEFORE DELETE ON blackboard_compactions BEGIN SELECT RAISE(ABORT, 'blackboard compaction manifests are append-only'); END`,
+		`CREATE TRIGGER blackboard_restore_manifests_no_update BEFORE UPDATE ON blackboard_restore_manifests BEGIN SELECT RAISE(ABORT, 'blackboard restore manifests are append-only'); END`,
+		`CREATE TRIGGER blackboard_restore_manifests_no_delete BEFORE DELETE ON blackboard_restore_manifests BEGIN SELECT RAISE(ABORT, 'blackboard restore manifests are append-only'); END`,
+	} {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
 		}
 	}
 	return nil
