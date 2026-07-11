@@ -22,10 +22,12 @@ const (
 
 // PentestReportRequest selects the deterministic Pentest report projection.
 type PentestReportRequest struct {
-	IncludeUnconfirmed       bool
-	IncludeTentativeFacts    bool
-	IncludeOutOfScopeContext bool
-	IncludeUnresolvedWork    bool
+	// Nil include flags use contract defaults (true for unconfirmed/tentative/out-of-scope,
+	// false for unresolved work).
+	IncludeUnconfirmed       *bool
+	IncludeTentativeFacts    *bool
+	IncludeOutOfScopeContext *bool
+	IncludeUnresolvedWork    *bool
 	ScopeContext             string // current | task:TASK_ID
 	EvidenceDetail           string // summary | index
 	Format                   string // json | markdown
@@ -33,8 +35,9 @@ type PentestReportRequest struct {
 
 // CTFSolutionRequest selects the deterministic CTF solution projection.
 type CTFSolutionRequest struct {
-	IncludeCandidates bool
-	IncludeProcedure  bool
+	// Nil include flags default to true (include candidates and procedures).
+	IncludeCandidates *bool
+	IncludeProcedure  *bool
 	Format            string // json | markdown
 }
 
@@ -150,18 +153,19 @@ type ReportUnresolvedWorkV1 struct {
 
 // PentestReportV1 is the deterministic pentest deliverable semantic model.
 type PentestReportV1 struct {
-	ReportVersion       string                  `json:"report_version"`
-	Source              ReportSourceV1          `json:"source"`
-	Engagement          ReportEngagementV1      `json:"engagement"`
-	Summary             ReportSummaryV1         `json:"summary"`
-	ConfirmedFindings   []ReportFindingV1       `json:"confirmed_findings"`
-	UnconfirmedFindings []ReportFindingV1       `json:"unconfirmed_findings"`
-	CurrentTruth        ReportCurrentTruthV1    `json:"current_truth"`
-	ExplicitPaths       []ReportExplicitPathV1  `json:"explicit_paths"`
-	EvidenceIndex       []ReportEvidenceRefV1   `json:"evidence_index"`
-	UnresolvedWork      *ReportUnresolvedWorkV1 `json:"unresolved_work"`
-	ProvenanceSummary   []ProvenanceSummaryV1   `json:"provenance_summary"`
-	Limitations         []string                `json:"limitations"`
+	ReportVersion          string                  `json:"report_version"`
+	Source                 ReportSourceV1          `json:"source"`
+	Engagement             ReportEngagementV1      `json:"engagement"`
+	Summary                ReportSummaryV1         `json:"summary"`
+	ConfirmedFindings      []ReportFindingV1       `json:"confirmed_findings"`
+	UnconfirmedFindings    []ReportFindingV1       `json:"unconfirmed_findings"`
+	CurrentTruth           ReportCurrentTruthV1    `json:"current_truth"`
+	ExplicitPaths          []ReportExplicitPathV1  `json:"explicit_paths"`
+	ExplicitPathsTruncated bool                    `json:"explicit_paths_truncated"`
+	EvidenceIndex          []ReportEvidenceRefV1   `json:"evidence_index"`
+	UnresolvedWork         *ReportUnresolvedWorkV1 `json:"unresolved_work"`
+	ProvenanceSummary      []ProvenanceSummaryV1   `json:"provenance_summary"`
+	Limitations            []string                `json:"limitations"`
 }
 
 // CTFSolutionEntryV1 is one Solution record in the CTF deliverable.
@@ -322,7 +326,7 @@ func buildPentestReport(ctx context.Context, tx *sql.Tx, snapshot GraphSnapshot,
 		return evidenceIndex[i].ID < evidenceIndex[j].ID
 	})
 
-	paths := buildExplicitPaths(snapshot, byID, confirmedFindings)
+	paths, pathsTruncated := buildExplicitPaths(snapshot, byID, confirmedFindings)
 
 	objectives := []NodeRefV1{}
 	for _, node := range snapshot.Nodes {
@@ -395,13 +399,14 @@ func buildPentestReport(ctx context.Context, tx *sql.Tx, snapshot GraphSnapshot,
 			EvidenceMissing:      missing,
 			UnresolvedObjectives: len(objectives),
 		},
-		ConfirmedFindings:   confirmedFindings,
-		UnconfirmedFindings: unconfirmedFindings,
-		CurrentTruth:        truth,
-		ExplicitPaths:       paths,
-		EvidenceIndex:       evidenceIndex,
-		UnresolvedWork:      unresolved,
-		ProvenanceSummary:   provenanceSummary,
+		ConfirmedFindings:      confirmedFindings,
+		UnconfirmedFindings:    unconfirmedFindings,
+		CurrentTruth:           truth,
+		ExplicitPaths:          paths,
+		ExplicitPathsTruncated: pathsTruncated,
+		EvidenceIndex:          evidenceIndex,
+		UnresolvedWork:         unresolved,
+		ProvenanceSummary:      provenanceSummary,
 		Limitations: []string{
 			"Report conclusions are derived only from the graph Blackboard and durable Project/Task/Scope context.",
 			"Produced artifacts without an active evidences edge are not presented as proof.",
@@ -646,21 +651,14 @@ type pentestSourceOptions struct {
 
 func normalizePentestReportRequest(request PentestReportRequest) (normalizedPentestReportRequest, error) {
 	out := normalizedPentestReportRequest{
-		IncludeUnconfirmed:       request.IncludeUnconfirmed,
-		IncludeTentativeFacts:    request.IncludeTentativeFacts,
-		IncludeOutOfScopeContext: request.IncludeOutOfScopeContext,
-		IncludeUnresolvedWork:    request.IncludeUnresolvedWork,
+		// Contract defaults apply unless the caller sets an explicit bool.
+		IncludeUnconfirmed:       boolOrDefault(request.IncludeUnconfirmed, true),
+		IncludeTentativeFacts:    boolOrDefault(request.IncludeTentativeFacts, true),
+		IncludeOutOfScopeContext: boolOrDefault(request.IncludeOutOfScopeContext, true),
+		IncludeUnresolvedWork:    boolOrDefault(request.IncludeUnresolvedWork, false),
 		ScopeContext:             request.ScopeContext,
 		EvidenceDetail:           request.EvidenceDetail,
 		Format:                   request.Format,
-	}
-	// Contract defaults apply when the request is fully empty.
-	empty := !request.IncludeUnconfirmed && !request.IncludeTentativeFacts && !request.IncludeOutOfScopeContext &&
-		!request.IncludeUnresolvedWork && request.ScopeContext == "" && request.EvidenceDetail == "" && request.Format == ""
-	if empty {
-		out.IncludeUnconfirmed = true
-		out.IncludeTentativeFacts = true
-		out.IncludeOutOfScopeContext = true
 	}
 	if out.ScopeContext == "" {
 		out.ScopeContext = "current"
@@ -697,6 +695,13 @@ func (opts normalizedPentestReportRequest) sourceOptions() pentestSourceOptions 
 	}
 }
 
+func boolOrDefault(value *bool, defaultValue bool) bool {
+	if value == nil {
+		return defaultValue
+	}
+	return *value
+}
+
 type normalizedCTFSolutionRequest struct {
 	IncludeCandidates bool
 	IncludeProcedure  bool
@@ -705,15 +710,9 @@ type normalizedCTFSolutionRequest struct {
 
 func normalizeCTFSolutionRequest(request CTFSolutionRequest) normalizedCTFSolutionRequest {
 	out := normalizedCTFSolutionRequest{
-		IncludeCandidates: request.IncludeCandidates,
-		IncludeProcedure:  request.IncludeProcedure,
+		IncludeCandidates: boolOrDefault(request.IncludeCandidates, true),
+		IncludeProcedure:  boolOrDefault(request.IncludeProcedure, true),
 		Format:            request.Format,
-	}
-	// Contract defaults include candidates and procedure unless explicitly disabled
-	// via zero values on a fully empty request.
-	if !request.IncludeCandidates && !request.IncludeProcedure && request.Format == "" {
-		out.IncludeCandidates = true
-		out.IncludeProcedure = true
 	}
 	if out.Format == "" {
 		out.Format = "json"
@@ -909,7 +908,8 @@ func collectReportContribution(ctx context.Context, tx *sql.Tx, snapshot GraphSn
 	provenanceSummary := []ProvenanceSummaryV1{}
 	seenProv := map[string]bool{}
 	runners := ReportRunnerSummaryV1{}
-	runnerSeen := map[string]bool{}
+	// Provenance runner contributions without a Task still count.
+	orphanRunnerCounts := map[string]int{}
 
 	addProv := func(items []ProvenanceSummaryV1) {
 		for _, p := range items {
@@ -920,15 +920,10 @@ func collectReportContribution(ctx context.Context, tx *sql.Tx, snapshot GraphSn
 			}
 			if p.TaskID != nil && *p.TaskID != "" {
 				taskIDs[*p.TaskID] = true
+				continue
 			}
-			if p.Runner != nil && *p.Runner != "" && !runnerSeen[*p.Runner] {
-				runnerSeen[*p.Runner] = true
-				switch *p.Runner {
-				case "host":
-					runners.Host++
-				case "sandbox":
-					runners.Sandbox++
-				}
+			if p.Runner != nil && *p.Runner != "" {
+				orphanRunnerCounts[*p.Runner]++
 			}
 		}
 	}
@@ -959,14 +954,11 @@ func collectReportContribution(ctx context.Context, tx *sql.Tx, snapshot GraphSn
 		if err != nil {
 			return nil, nil, ReportRunnerSummaryV1{}, err
 		}
-		if !runnerSeen[runner] {
-			runnerSeen[runner] = true
-			switch runner {
-			case "host":
-				runners.Host++
-			case "sandbox":
-				runners.Sandbox++
-			}
+		switch runner {
+		case "host":
+			runners.Host++
+		case "sandbox":
+			runners.Sandbox++
 		}
 		contributing = append(contributing, ReportContributingTaskV1{
 			TaskID:        taskID,
@@ -977,6 +969,8 @@ func collectReportContribution(ctx context.Context, tx *sql.Tx, snapshot GraphSn
 			CrossTask:     selectedTaskID != "" && taskID != selectedTaskID,
 		})
 	}
+	runners.Host += orphanRunnerCounts["host"]
+	runners.Sandbox += orphanRunnerCounts["sandbox"]
 	sort.Slice(contributing, func(i, j int) bool {
 		if contributing[i].TaskID != contributing[j].TaskID {
 			return contributing[i].TaskID < contributing[j].TaskID
@@ -986,14 +980,19 @@ func collectReportContribution(ctx context.Context, tx *sql.Tx, snapshot GraphSn
 	return contributing, provenanceSummary, runners, nil
 }
 
-func buildExplicitPaths(snapshot GraphSnapshot, byID map[string]NodeRecord, findings []ReportFindingV1) []ReportExplicitPathV1 {
-	// Minimal deterministic path: Entity/Fact -about/supports/evidences-> Finding.
-	paths := []ReportExplicitPathV1{}
+func buildExplicitPaths(snapshot GraphSnapshot, byID map[string]NodeRecord, findings []ReportFindingV1) ([]ReportExplicitPathV1, bool) {
+	// Deterministic one-hop explanatory paths from Entity/confirmed Fact to Finding.
+	// Contract caps: 20 paths per Finding, 100 paths per report, truncation stated.
+	const maxPathsPerFinding = 20
+	const maxPathsPerReport = 100
 	pathEdges := map[EdgeType]bool{
 		EdgeTypeAbout: true, EdgeTypeSupports: true, EdgeTypeEvidences: true,
 		EdgeTypeDerivedFrom: true, EdgeTypeLeadsTo: true, EdgeTypeProduced: true, EdgeTypeSatisfies: true,
 	}
+	paths := []ReportExplicitPathV1{}
+	truncated := false
 	for _, finding := range findings {
+		findingPaths := []ReportExplicitPathV1{}
 		for _, edge := range snapshot.Edges {
 			if edge.State != "active" || !pathEdges[edge.EdgeType] {
 				continue
@@ -1014,16 +1013,36 @@ func buildExplicitPaths(snapshot GraphSnapshot, byID map[string]NodeRecord, find
 			if start.NodeType != NodeTypeEntity && !(start.NodeType == NodeTypeProjectFact && stringProp(start.PropertyMap, "confidence") == "confirmed") {
 				continue
 			}
-			paths = append(paths, ReportExplicitPathV1{
+			findingPaths = append(findingPaths, ReportExplicitPathV1{
 				Finding: finding.Finding,
 				Nodes:   []NodeRefV1{nodeRefForNode(start), finding.Finding},
 				Edges:   []string{string(edge.EdgeType)},
 			})
 		}
+		sort.Slice(findingPaths, func(i, j int) bool {
+			if len(findingPaths[i].Nodes) != len(findingPaths[j].Nodes) {
+				return len(findingPaths[i].Nodes) < len(findingPaths[j].Nodes)
+			}
+			if findingPaths[i].Nodes[0].StableKey != findingPaths[j].Nodes[0].StableKey {
+				return findingPaths[i].Nodes[0].StableKey < findingPaths[j].Nodes[0].StableKey
+			}
+			if findingPaths[i].Nodes[0].ID != findingPaths[j].Nodes[0].ID {
+				return findingPaths[i].Nodes[0].ID < findingPaths[j].Nodes[0].ID
+			}
+			return strings.Join(findingPaths[i].Edges, ",") < strings.Join(findingPaths[j].Edges, ",")
+		})
+		if len(findingPaths) > maxPathsPerFinding {
+			truncated = true
+			findingPaths = findingPaths[:maxPathsPerFinding]
+		}
+		paths = append(paths, findingPaths...)
 	}
 	sort.Slice(paths, func(i, j int) bool {
 		if paths[i].Finding.StableKey != paths[j].Finding.StableKey {
 			return paths[i].Finding.StableKey < paths[j].Finding.StableKey
+		}
+		if paths[i].Finding.ID != paths[j].Finding.ID {
+			return paths[i].Finding.ID < paths[j].Finding.ID
 		}
 		if len(paths[i].Nodes) != len(paths[j].Nodes) {
 			return len(paths[i].Nodes) < len(paths[j].Nodes)
@@ -1033,10 +1052,11 @@ func buildExplicitPaths(snapshot GraphSnapshot, byID map[string]NodeRecord, find
 		}
 		return strings.Join(paths[i].Edges, ",") < strings.Join(paths[j].Edges, ",")
 	})
-	if len(paths) > 100 {
-		paths = paths[:100]
+	if len(paths) > maxPathsPerReport {
+		truncated = true
+		paths = paths[:maxPathsPerReport]
 	}
-	return paths
+	return paths, truncated
 }
 
 func sortReportFindings(items []ReportFindingV1) {
@@ -1163,6 +1183,7 @@ func hashPentestReportSource(report PentestReportV1, opts normalizedPentestRepor
 		Unconfirmed   []ReportFindingV1       `json:"unconfirmed_findings"`
 		Truth         ReportCurrentTruthV1    `json:"current_truth"`
 		Paths         []ReportExplicitPathV1  `json:"explicit_paths"`
+		PathsTrunc    bool                    `json:"explicit_paths_truncated"`
 		Evidence      []ReportEvidenceRefV1   `json:"evidence_index"`
 		Unresolved    *ReportUnresolvedWorkV1 `json:"unresolved_work"`
 		Provenance    []ProvenanceSummaryV1   `json:"provenance_summary"`
@@ -1182,6 +1203,7 @@ func hashPentestReportSource(report PentestReportV1, opts normalizedPentestRepor
 		Unconfirmed:   report.UnconfirmedFindings,
 		Truth:         report.CurrentTruth,
 		Paths:         report.ExplicitPaths,
+		PathsTrunc:    report.ExplicitPathsTruncated,
 		Evidence:      report.EvidenceIndex,
 		Unresolved:    report.UnresolvedWork,
 		Provenance:    report.ProvenanceSummary,
@@ -1328,6 +1350,10 @@ func renderPentestReportMarkdown(report PentestReportV1, opts normalizedPentestR
 				nodes = append(nodes, node.StableKey)
 			}
 			writeln("- ", escapeMarkdown(strings.Join(nodes, " -> ")), " [", escapeMarkdown(strings.Join(path.Edges, ", ")), "]")
+		}
+		if report.ExplicitPathsTruncated {
+			writeln()
+			writeln("_Path enumeration truncated (max 20 per Finding, 100 per report)._")
 		}
 	}
 	writeln()

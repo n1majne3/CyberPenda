@@ -14,6 +14,8 @@ import (
 	"pentest/internal/task"
 )
 
+func boolPtr(v bool) *bool { return &v }
+
 func newReportGraphServices(t *testing.T) (*blackboard.GraphService, *project.Service) {
 	t.Helper()
 	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
@@ -216,10 +218,10 @@ func TestPentestReportSameSourceHashProducesByteIdenticalJSONAndMarkdown(t *test
 		ProjectID:       created.ID,
 		Kind:            blackboard.ReadKindPentestReportV1,
 		PentestReport: &blackboard.PentestReportRequest{
-			IncludeUnconfirmed:       true,
-			IncludeTentativeFacts:    true,
-			IncludeOutOfScopeContext: true,
-			IncludeUnresolvedWork:    false,
+			IncludeUnconfirmed:       boolPtr(true),
+			IncludeTentativeFacts:    boolPtr(true),
+			IncludeOutOfScopeContext: boolPtr(true),
+			IncludeUnresolvedWork:    boolPtr(false),
 			ScopeContext:             "current",
 			EvidenceDetail:           "summary",
 			Format:                   "json",
@@ -280,15 +282,15 @@ func TestPentestReportSameSourceHashProducesByteIdenticalJSONAndMarkdown(t *test
 	if !missingVisible {
 		t.Fatalf("missing Evidence must remain visible without invented proof: %#v", report.ConfirmedFindings[0].Evidence)
 	}
-	if report.Engagement.RunnerSummary.Host < 1 {
-		t.Fatalf("host Runner contribution must be explicit: %+v", report.Engagement.RunnerSummary)
+	if report.Engagement.RunnerSummary.Host < 1 || report.Engagement.RunnerSummary.Sandbox < 1 {
+		t.Fatalf("runner contributions must count host and sandbox Tasks: %+v", report.Engagement.RunnerSummary)
 	}
 
 	mdReq := req
 	mdReq.PentestReport = &blackboard.PentestReportRequest{
-		IncludeUnconfirmed:       true,
-		IncludeTentativeFacts:    true,
-		IncludeOutOfScopeContext: true,
+		IncludeUnconfirmed:       boolPtr(true),
+		IncludeTentativeFacts:    boolPtr(true),
+		IncludeOutOfScopeContext: boolPtr(true),
 		ScopeContext:             "current",
 		EvidenceDetail:           "summary",
 		Format:                   "markdown",
@@ -438,8 +440,8 @@ func TestCTFSolutionIncludesVerifiedCandidatesEvidenceAndNoRedaction(t *testing.
 		ProjectID:       ctfProject.ID,
 		Kind:            blackboard.ReadKindCTFSolutionV1,
 		CTFSolution: &blackboard.CTFSolutionRequest{
-			IncludeCandidates: true,
-			IncludeProcedure:  true,
+			IncludeCandidates: boolPtr(true),
+			IncludeProcedure:  boolPtr(true),
 			Format:            "json",
 		},
 	})
@@ -467,7 +469,7 @@ func TestCTFSolutionIncludesVerifiedCandidatesEvidenceAndNoRedaction(t *testing.
 		ProtocolVersion: blackboard.BlackboardReadProtocolVersion,
 		ProjectID:       ctfProject.ID,
 		Kind:            blackboard.ReadKindCTFSolutionV1,
-		CTFSolution:     &blackboard.CTFSolutionRequest{IncludeCandidates: true, IncludeProcedure: true, Format: "markdown"},
+		CTFSolution:     &blackboard.CTFSolutionRequest{IncludeCandidates: boolPtr(true), IncludeProcedure: boolPtr(true), Format: "markdown"},
 	})
 	if err != nil {
 		t.Fatalf("markdown CTF solution: %v", err)
@@ -481,5 +483,153 @@ func TestCTFSolutionIncludesVerifiedCandidatesEvidenceAndNoRedaction(t *testing.
 	}
 	if !strings.Contains(md.Markdown, "FLAG{correct}") && !strings.Contains(md.Markdown, `FLAG\{correct\}`) {
 		t.Fatalf("CTF Markdown must disclose flag value on explicit route")
+	}
+}
+
+func TestPentestReportIncludeDefaultsApplyWhenOnlyFormatSet(t *testing.T) {
+	graph, projects := newReportGraphServices(t)
+	created, _, _ := seedPentestReportGraph(t, graph, projects)
+	reads := blackboard.NewBlackboardReadService(graph.DBForTesting())
+
+	// Only format is set; include_* must still default true/false per contract.
+	envelope, err := reads.Read(context.Background(), blackboard.ReadRequest{
+		ProtocolVersion: blackboard.BlackboardReadProtocolVersion,
+		ProjectID:       created.ID,
+		Kind:            blackboard.ReadKindPentestReportV1,
+		PentestReport:   &blackboard.PentestReportRequest{Format: "json"},
+	})
+	if err != nil {
+		t.Fatalf("read with format-only request: %v", err)
+	}
+	report := envelope.Result.(blackboard.PentestReportV1)
+	if report.Summary.UnconfirmedFindings != 1 {
+		t.Fatalf("include_unconfirmed should default true, unconfirmed=%d", report.Summary.UnconfirmedFindings)
+	}
+	if report.Summary.TentativeFacts != 1 {
+		t.Fatalf("include_tentative_facts should default true, tentative=%d", report.Summary.TentativeFacts)
+	}
+	if len(report.CurrentTruth.OutOfScope) != 1 {
+		t.Fatalf("include_out_of_scope_context should default true, out_of_scope=%d", len(report.CurrentTruth.OutOfScope))
+	}
+	if report.UnresolvedWork != nil {
+		t.Fatalf("include_unresolved_work should default false")
+	}
+
+	// Explicit false must suppress defaults.
+	suppressed, err := reads.Read(context.Background(), blackboard.ReadRequest{
+		ProtocolVersion: blackboard.BlackboardReadProtocolVersion,
+		ProjectID:       created.ID,
+		Kind:            blackboard.ReadKindPentestReportV1,
+		PentestReport: &blackboard.PentestReportRequest{
+			IncludeUnconfirmed:       boolPtr(false),
+			IncludeTentativeFacts:    boolPtr(false),
+			IncludeOutOfScopeContext: boolPtr(false),
+			Format:                   "json",
+		},
+	})
+	if err != nil {
+		t.Fatalf("read with explicit false includes: %v", err)
+	}
+	suppressedReport := suppressed.Result.(blackboard.PentestReportV1)
+	if suppressedReport.Summary.UnconfirmedFindings != 0 || len(suppressedReport.UnconfirmedFindings) != 0 {
+		t.Fatalf("explicit include_unconfirmed=false leaked unconfirmed findings")
+	}
+	if suppressedReport.Summary.TentativeFacts != 0 || len(suppressedReport.CurrentTruth.Tentative) != 0 {
+		t.Fatalf("explicit include_tentative_facts=false leaked tentative facts")
+	}
+	if len(suppressedReport.CurrentTruth.OutOfScope) != 0 {
+		t.Fatalf("explicit include_out_of_scope_context=false leaked out-of-scope facts")
+	}
+}
+
+func TestPentestReportTaskScopeContextPinsSnapshotAndMarksCrossTask(t *testing.T) {
+	graph, projects := newReportGraphServices(t)
+	created, sandboxTask, hostTask := seedPentestReportGraph(t, graph, projects)
+	// Change current Project Scope after Tasks captured snapshots.
+	if _, err := projects.Update(created.ID, created.Name, created.Description, project.Scope{Domains: []string{"changed.example"}, Notes: "mutated current scope"}, true, project.Defaults{}, false); err != nil {
+		t.Fatalf("update current scope: %v", err)
+	}
+	reads := blackboard.NewBlackboardReadService(graph.DBForTesting())
+
+	current, err := reads.Read(context.Background(), blackboard.ReadRequest{
+		ProtocolVersion: blackboard.BlackboardReadProtocolVersion,
+		ProjectID:       created.ID,
+		Kind:            blackboard.ReadKindPentestReportV1,
+		PentestReport:   &blackboard.PentestReportRequest{ScopeContext: "current"},
+	})
+	if err != nil {
+		t.Fatalf("current scope report: %v", err)
+	}
+	currentReport := current.Result.(blackboard.PentestReportV1)
+	if len(currentReport.Engagement.Scope.Domains) != 1 || currentReport.Engagement.Scope.Domains[0] != "changed.example" {
+		t.Fatalf("current scope should use live Project Scope, got %+v", currentReport.Engagement.Scope)
+	}
+
+	taskScoped, err := reads.Read(context.Background(), blackboard.ReadRequest{
+		ProtocolVersion: blackboard.BlackboardReadProtocolVersion,
+		ProjectID:       created.ID,
+		Kind:            blackboard.ReadKindPentestReportV1,
+		PentestReport:   &blackboard.PentestReportRequest{ScopeContext: "task:" + sandboxTask.ID},
+	})
+	if err != nil {
+		t.Fatalf("task scope report: %v", err)
+	}
+	taskReport := taskScoped.Result.(blackboard.PentestReportV1)
+	if len(taskReport.Engagement.Scope.Domains) != 1 || taskReport.Engagement.Scope.Domains[0] != "example.com" {
+		t.Fatalf("task scope should pin immutable snapshot, got %+v", taskReport.Engagement.Scope)
+	}
+	if taskReport.Source.ScopeContext != "task:"+sandboxTask.ID {
+		t.Fatalf("scope_context = %q", taskReport.Source.ScopeContext)
+	}
+	hostMarked := false
+	for _, contrib := range taskReport.Engagement.ContributingTasks {
+		if contrib.TaskID == hostTask.ID {
+			hostMarked = contrib.CrossTask
+		}
+	}
+	if !hostMarked {
+		t.Fatalf("host Task conclusions should be marked cross_task under sandbox Scope Snapshot")
+	}
+	// Confirmed finding was authored under sandbox Task; host-authored fact should be cross-task on findings when selected.
+	for _, finding := range taskReport.ConfirmedFindings {
+		if finding.Finding.StableKey == "finding:sqli" && finding.CrossTask {
+			t.Fatalf("sandbox-authored finding should not be cross_task under sandbox scope")
+		}
+	}
+}
+
+func TestCTFSolutionDefaultsIncludeCandidatesWhenOnlyFormatSet(t *testing.T) {
+	graph, projects := newReportGraphServices(t)
+	ctfProject, ctfTask, ctfCtx := createCTFTaskContext(t, graph, projects, "Recover the challenge flag")
+	_, err := graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion:  blackboard.GraphMutationSchemaVersion,
+		IdempotencyKey: "u04:ctf-defaults",
+		Context:        ctfCtx,
+		Operations: []blackboard.Operation{
+			{OpID: "candidate", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeSolution, StableKey: "solution:candidate"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "flag", "summary": "Candidate", "value": "FLAG{cand}"}}},
+			{OpID: "flag", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeSolution, StableKey: "solution:flag"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "flag", "summary": "Primary", "value": "FLAG{ok}", "status": "verified", "verification_summary": "accepted"}}},
+			{OpID: "procedure", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeSolution, StableKey: "solution:procedure"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "procedure", "summary": "Steps", "status": "verified", "verification_summary": "worked"}}},
+			{OpID: "satisfies", Kind: blackboard.OpPutEdge, PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypeSatisfies, From: blackboard.NodeRef{OpID: "flag"}, To: solutionGoalRef(ctfTask.ID)}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed CTF defaults graph: %v", err)
+	}
+	reads := blackboard.NewBlackboardReadService(graph.DBForTesting())
+	envelope, err := reads.Read(context.Background(), blackboard.ReadRequest{
+		ProtocolVersion: blackboard.BlackboardReadProtocolVersion,
+		ProjectID:       ctfProject.ID,
+		Kind:            blackboard.ReadKindCTFSolutionV1,
+		CTFSolution:     &blackboard.CTFSolutionRequest{Format: "json"},
+	})
+	if err != nil {
+		t.Fatalf("CTF format-only read: %v", err)
+	}
+	solution := envelope.Result.(blackboard.CTFSolutionV1)
+	if len(solution.CandidateFlags) != 1 {
+		t.Fatalf("include_candidates should default true, got %#v", solution.CandidateFlags)
+	}
+	if len(solution.Procedures) != 1 {
+		t.Fatalf("include_procedure should default true, got %#v", solution.Procedures)
 	}
 }
