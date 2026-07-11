@@ -437,7 +437,15 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /api/projects/{id}/preflight", server.handlePreflight)
 	server.mux.HandleFunc("GET /api/projects/{id}/dashboard", server.handleDashboard)
 	server.mux.HandleFunc("GET /api/projects/{id}/blackboard/runtime-graph", server.handleBlackboardRuntimeGraph)
+	server.mux.HandleFunc("GET /api/projects/{id}/blackboard/work-view", server.handleBlackboardWorkView)
+	server.mux.HandleFunc("GET /api/projects/{id}/blackboard/current-truth", server.handleBlackboardCurrentTruth)
+	server.mux.HandleFunc("GET /api/projects/{id}/blackboard/frontier", server.handleBlackboardFrontier)
 	server.mux.HandleFunc("GET /api/projects/{id}/blackboard/records", server.handleBlackboardRecords)
+	server.mux.HandleFunc("GET /api/projects/{id}/blackboard/records:resolve", server.handleBlackboardRecordResolve)
+	server.mux.HandleFunc("GET /api/projects/{id}/blackboard/records/{node_id}", server.handleBlackboardRecordDetail)
+	server.mux.HandleFunc("GET /api/projects/{id}/blackboard/records/{node_id}/history", server.handleBlackboardRecordHistory)
+	server.mux.HandleFunc("GET /api/projects/{id}/blackboard/entities", server.handleBlackboardEntities)
+	server.mux.HandleFunc("GET /api/projects/{id}/blackboard/entities/{node_id}", server.handleBlackboardEntityDetail)
 	server.mux.HandleFunc("PUT /api/projects/{id}/credential-bindings", server.handleUpsertProjectCredentialBinding)
 	server.mux.HandleFunc("GET /api/projects/{id}/credential-bindings", server.handleListProjectCredentialBindings)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks", server.handleCreateTask)
@@ -960,15 +968,21 @@ func (server *Server) handleBlackboardRecords(response http.ResponseWriter, requ
 	for _, value := range query["disposition"] {
 		dispositions = append(dispositions, blackboard.Disposition(value))
 	}
+	hasEvidence, ok := parseOptionalReadBool(response, query.Get("has_evidence"), "has_evidence")
+	if !ok {
+		return
+	}
+	hasContradiction, ok := parseOptionalReadBool(response, query.Get("has_contradiction"), "has_contradiction")
+	if !ok {
+		return
+	}
+	frontier, ok := parseOptionalReadBool(response, query.Get("frontier"), "frontier")
+	if !ok {
+		return
+	}
 	server.handleCanonicalBlackboardRead(response, request, blackboard.ReadRequest{
-		ProtocolVersion: blackboard.BlackboardReadProtocolVersion,
-		ProjectID:       request.PathValue("id"),
-		Kind:            blackboard.ReadKindRecordCollectionV1,
-		AtRevision:      atRevision,
-		RecordCollection: &blackboard.RecordCollectionRequest{
-			NodeTypes: nodeTypes, Dispositions: dispositions, Lifecycle: query["lifecycle"],
-			Query: query.Get("query"), Sort: query.Get("sort"), Limit: limit, Cursor: query.Get("cursor"),
-		},
+		ProtocolVersion: blackboard.BlackboardReadProtocolVersion, ProjectID: request.PathValue("id"), Kind: blackboard.ReadKindRecordCollectionV1, AtRevision: atRevision,
+		RecordCollection: &blackboard.RecordCollectionRequest{NodeTypes: nodeTypes, Dispositions: dispositions, Lifecycle: query["lifecycle"], ScopeStatus: query["scope_status"], Severity: query["severity"], EntityKind: query["entity_kind"], ActorType: query["actor_type"], TaskID: query.Get("task_id"), ContinuationID: query.Get("continuation_id"), RuntimeProfileID: query.Get("runtime_profile_id"), Runner: query.Get("runner"), AboutEntityID: query.Get("about_entity_id"), EdgeType: blackboard.EdgeType(query.Get("edge_type")), Direction: query.Get("direction"), HasEvidence: hasEvidence, HasContradiction: hasContradiction, Frontier: frontier, HealthSeverity: query["health_severity"], UpdatedBefore: query.Get("updated_before"), UpdatedAfter: query.Get("updated_after"), Query: query.Get("query"), Sort: query.Get("sort"), Limit: limit, Cursor: query.Get("cursor")},
 	})
 }
 
@@ -994,6 +1008,18 @@ func (server *Server) handleCanonicalBlackboardRead(response http.ResponseWriter
 		return
 	}
 	writeJSON(response, http.StatusOK, envelope)
+}
+
+func parseOptionalReadBool(response http.ResponseWriter, value, path string) (*bool, bool) {
+	if strings.TrimSpace(value) == "" {
+		return nil, true
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		writeBlackboardReadError(response, &blackboard.ValidationError{Code: blackboard.ErrCodeInvalidQuery, Message: path + " must be a boolean", OperationIndex: -1, Path: path})
+		return nil, false
+	}
+	return &parsed, true
 }
 
 func parseOptionalReadInt(response http.ResponseWriter, value, path string) (int, bool) {
@@ -1063,6 +1089,32 @@ func writeBlackboardReadError(response http.ResponseWriter, err error) {
 
 func (server *Server) handleDashboard(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
+	if server.reads != nil {
+		envelope, err := server.reads.Read(request.Context(), blackboard.ReadRequest{ProtocolVersion: blackboard.BlackboardReadProtocolVersion, ProjectID: projectID, Kind: blackboard.ReadKindProjectBlackboardSummaryV1, ProjectSummary: &blackboard.ProjectBlackboardSummaryRequest{}})
+		if err != nil {
+			writeBlackboardReadError(response, err)
+			return
+		}
+		raw, err := json.Marshal(envelope.Result)
+		if err != nil {
+			writeError(response, http.StatusInternalServerError, "encode dashboard summary")
+			return
+		}
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			writeError(response, http.StatusInternalServerError, "encode dashboard summary")
+			return
+		}
+		body["_read"] = map[string]any{"protocol_version": envelope.ProtocolVersion, "projection": envelope.Projection, "observed_graph_revision": envelope.ObservedGraphRevision, "observed_state_hash": envelope.ObservedStateHash, "source_pins": envelope.SourcePins, "projection_hash": envelope.ProjectionHash}
+		response.Header().Set("ETag", `"`+envelope.ProjectionHash+`"`)
+		response.Header().Set("Cache-Control", "private, no-cache")
+		if request.Header.Get("If-None-Match") == response.Header().Get("ETag") {
+			response.WriteHeader(http.StatusNotModified)
+			return
+		}
+		writeJSON(response, http.StatusOK, body)
+		return
+	}
 	if projectID == "" {
 		writeError(response, http.StatusNotFound, "project not found")
 		return
@@ -1202,4 +1254,75 @@ func writeError(response http.ResponseWriter, status int, message string) {
 	}{
 		Error: message,
 	})
+}
+
+func (server *Server) handleBlackboardWorkView(response http.ResponseWriter, request *http.Request) {
+	at, ok := parseOptionalReadIntPointer(response, request.URL.Query().Get("at_revision"), "at_revision")
+	if !ok {
+		return
+	}
+	server.handleCanonicalBlackboardRead(response, request, blackboard.ReadRequest{ProtocolVersion: 1, ProjectID: request.PathValue("id"), Kind: blackboard.ReadKindBlackboardWorkV1, AtRevision: at, BlackboardWork: &blackboard.BlackboardWorkRequest{}})
+}
+func (server *Server) handleBlackboardCurrentTruth(response http.ResponseWriter, request *http.Request) {
+	q := request.URL.Query()
+	limit, ok := parseOptionalReadInt(response, q.Get("limit"), "limit")
+	if !ok {
+		return
+	}
+	at, ok := parseOptionalReadIntPointer(response, q.Get("at_revision"), "at_revision")
+	if !ok {
+		return
+	}
+	server.handleCanonicalBlackboardRead(response, request, blackboard.ReadRequest{ProtocolVersion: 1, ProjectID: request.PathValue("id"), Kind: blackboard.ReadKindCurrentTruthV1, AtRevision: at, CurrentTruth: &blackboard.CurrentTruthRequest{Confidence: q["confidence"], ScopeStatus: q["scope_status"], Category: q.Get("category"), EntityID: q.Get("entity_id"), Query: q.Get("query"), Limit: limit, Cursor: q.Get("cursor")}})
+}
+func (server *Server) handleBlackboardFrontier(response http.ResponseWriter, request *http.Request) {
+	q := request.URL.Query()
+	limit, ok := parseOptionalReadInt(response, q.Get("limit"), "limit")
+	if !ok {
+		return
+	}
+	at, ok := parseOptionalReadIntPointer(response, q.Get("at_revision"), "at_revision")
+	if !ok {
+		return
+	}
+	server.handleCanonicalBlackboardRead(response, request, blackboard.ReadRequest{ProtocolVersion: 1, ProjectID: request.PathValue("id"), Kind: blackboard.ReadKindExplorationFrontierV1, AtRevision: at, ExplorationFrontier: &blackboard.ExplorationFrontierRequest{ParentGoalID: q.Get("parent_goal_id"), EntityID: q.Get("entity_id"), Query: q.Get("query"), Limit: limit, Cursor: q.Get("cursor")}})
+}
+func (server *Server) handleBlackboardRecordResolve(response http.ResponseWriter, request *http.Request) {
+	q := request.URL.Query()
+	server.handleCanonicalBlackboardRead(response, request, blackboard.ReadRequest{ProtocolVersion: 1, ProjectID: request.PathValue("id"), Kind: blackboard.ReadKindRecordResolveV1, RecordResolve: &blackboard.RecordResolveRequest{NodeType: blackboard.NodeType(q.Get("node_type")), StableKey: q.Get("stable_key"), NodeID: q.Get("node_id")}})
+}
+func (server *Server) handleBlackboardRecordDetail(response http.ResponseWriter, request *http.Request) {
+	server.handleCanonicalBlackboardRead(response, request, blackboard.ReadRequest{ProtocolVersion: 1, ProjectID: request.PathValue("id"), Kind: blackboard.ReadKindRecordDetailV1, RecordDetail: &blackboard.RecordDetailRequest{NodeID: request.PathValue("node_id"), Literal: request.URL.Query().Get("literal") == "true"}})
+}
+func (server *Server) handleBlackboardRecordHistory(response http.ResponseWriter, request *http.Request) {
+	q := request.URL.Query()
+	limit, ok := parseOptionalReadInt(response, q.Get("limit"), "limit")
+	if !ok {
+		return
+	}
+	before, ok := parseOptionalReadInt(response, q.Get("before_version"), "before_version")
+	if !ok {
+		return
+	}
+	at, ok := parseOptionalReadIntPointer(response, q.Get("at_revision"), "at_revision")
+	if !ok {
+		return
+	}
+	server.handleCanonicalBlackboardRead(response, request, blackboard.ReadRequest{ProtocolVersion: 1, ProjectID: request.PathValue("id"), Kind: blackboard.ReadKindRecordHistoryV1, AtRevision: at, RecordHistory: &blackboard.RecordHistoryRequest{NodeID: request.PathValue("node_id"), Literal: q.Get("literal") == "true", BeforeVersion: before, Limit: limit, Cursor: q.Get("cursor")}})
+}
+func (server *Server) handleBlackboardEntities(response http.ResponseWriter, request *http.Request) {
+	q := request.URL.Query()
+	limit, ok := parseOptionalReadInt(response, q.Get("limit"), "limit")
+	if !ok {
+		return
+	}
+	at, ok := parseOptionalReadIntPointer(response, q.Get("at_revision"), "at_revision")
+	if !ok {
+		return
+	}
+	include := q.Get("include_counts") != "false"
+	server.handleCanonicalBlackboardRead(response, request, blackboard.ReadRequest{ProtocolVersion: 1, ProjectID: request.PathValue("id"), Kind: blackboard.ReadKindEntityCollectionV1, AtRevision: at, EntityCollection: &blackboard.EntityCollectionRequest{ParentID: q.Get("parent_id"), AncestorID: q.Get("ancestor_id"), Kind: q.Get("kind"), Status: q.Get("status"), ScopeStatus: q.Get("scope_status"), Query: q.Get("query"), IncludeCounts: &include, Limit: limit, Cursor: q.Get("cursor")}})
+}
+func (server *Server) handleBlackboardEntityDetail(response http.ResponseWriter, request *http.Request) {
+	server.handleCanonicalBlackboardRead(response, request, blackboard.ReadRequest{ProtocolVersion: 1, ProjectID: request.PathValue("id"), Kind: blackboard.ReadKindEntityDetailV1, EntityDetail: &blackboard.EntityDetailRequest{NodeID: request.PathValue("node_id")}})
 }

@@ -22,10 +22,17 @@ import (
 const BlackboardReadProtocolVersion = 1
 
 const (
-	ReadKindRecordCollectionV1 ReadKind = "record_collection_v1"
-	ReadKindRecordResolveV1    ReadKind = "record_resolve_v1"
-	ReadKindRecordHistoryV1    ReadKind = "record_history_v1"
-	ReadKindCanonicalGraphV1   ReadKind = "canonical_main_graph_v1"
+	ReadKindRecordCollectionV1         ReadKind = "record_collection_v1"
+	ReadKindRecordResolveV1            ReadKind = "record_resolve_v1"
+	ReadKindRecordDetailV1             ReadKind = "record_detail_v1"
+	ReadKindRecordHistoryV1            ReadKind = "record_history_v1"
+	ReadKindCanonicalGraphV1           ReadKind = "canonical_main_graph_v1"
+	ReadKindBlackboardWorkV1           ReadKind = "blackboard_work_v1"
+	ReadKindProjectBlackboardSummaryV1 ReadKind = "project_blackboard_summary_v1"
+	ReadKindCurrentTruthV1             ReadKind = "current_truth_v1"
+	ReadKindExplorationFrontierV1      ReadKind = "exploration_frontier_v1"
+	ReadKindEntityCollectionV1         ReadKind = "entity_collection_v1"
+	ReadKindEntityDetailV1             ReadKind = "entity_detail_v1"
 )
 
 const (
@@ -40,18 +47,28 @@ const recordSortRelevance = "relevance"
 
 const readCursorDomain = "CyberPenda.Blackboard.ReadCursor.v1"
 
+// ReadKind is the versioned Blackboard read shape for this projection.
 type ReadKind string
 
+// ReadRequest is the versioned Blackboard read shape for this projection.
 type ReadRequest struct {
-	ProtocolVersion  int
-	ProjectID        string
-	Kind             ReadKind
-	AtRevision       *int
-	RecordCollection *RecordCollectionRequest
-	RecordResolve    *RecordResolveRequest
-	RecordHistory    *RecordHistoryRequest
+	ProtocolVersion     int
+	ProjectID           string
+	Kind                ReadKind
+	AtRevision          *int
+	RecordCollection    *RecordCollectionRequest
+	RecordResolve       *RecordResolveRequest
+	RecordDetail        *RecordDetailRequest
+	RecordHistory       *RecordHistoryRequest
+	BlackboardWork      *BlackboardWorkRequest
+	ProjectSummary      *ProjectBlackboardSummaryRequest
+	CurrentTruth        *CurrentTruthRequest
+	ExplorationFrontier *ExplorationFrontierRequest
+	EntityCollection    *EntityCollectionRequest
+	EntityDetail        *EntityDetailRequest
 }
 
+// ReadEnvelope is the versioned Blackboard read shape for this projection.
 type ReadEnvelope struct {
 	ProtocolVersion       int            `json:"protocol_version"`
 	Projection            string         `json:"projection"`
@@ -64,22 +81,42 @@ type ReadEnvelope struct {
 	Result                any            `json:"result"`
 }
 
+// RecordCollectionRequest is the versioned Blackboard read shape for this projection.
 type RecordCollectionRequest struct {
-	NodeTypes    []NodeType
-	Dispositions []Disposition
-	Lifecycle    []string
-	Query        string
-	Sort         string
-	Limit        int
-	Cursor       string
+	NodeTypes        []NodeType
+	Dispositions     []Disposition
+	Lifecycle        []string
+	ScopeStatus      []string
+	Severity         []string
+	EntityKind       []string
+	ActorType        []string
+	TaskID           string
+	ContinuationID   string
+	RuntimeProfileID string
+	Runner           string
+	AboutEntityID    string
+	EdgeType         EdgeType
+	Direction        string
+	HasEvidence      *bool
+	HasContradiction *bool
+	Frontier         *bool
+	HealthSeverity   []string
+	UpdatedBefore    string
+	UpdatedAfter     string
+	Query            string
+	Sort             string
+	Limit            int
+	Cursor           string
 }
 
+// RecordResolveRequest is the versioned Blackboard read shape for this projection.
 type RecordResolveRequest struct {
 	NodeType  NodeType
 	StableKey string
 	NodeID    string
 }
 
+// RecordResolveV1 is the versioned Blackboard read shape for this projection.
 type RecordResolveV1 struct {
 	Requested            NodeRefV1 `json:"requested"`
 	Resolved             NodeRefV1 `json:"resolved"`
@@ -87,6 +124,7 @@ type RecordResolveV1 struct {
 	ResolvedFromMergedID *string   `json:"resolved_from_merged_id"`
 }
 
+// RecordHistoryRequest is the versioned Blackboard read shape for this projection.
 type RecordHistoryRequest struct {
 	NodeID        string
 	Literal       bool
@@ -95,6 +133,7 @@ type RecordHistoryRequest struct {
 	Cursor        string
 }
 
+// NodeRefV1 is the versioned Blackboard read shape for this projection.
 type NodeRefV1 struct {
 	ID        string   `json:"id"`
 	NodeType  NodeType `json:"node_type"`
@@ -102,11 +141,13 @@ type NodeRefV1 struct {
 	Label     string   `json:"label"`
 }
 
+// LifecycleV1 is the versioned Blackboard read shape for this projection.
 type LifecycleV1 struct {
 	Field string `json:"field"`
 	Value string `json:"value"`
 }
 
+// RelationshipCountsV1 is the versioned Blackboard read shape for this projection.
 type RelationshipCountsV1 struct {
 	AboutEntities  int `json:"about_entities"`
 	Incoming       int `json:"incoming"`
@@ -115,6 +156,7 @@ type RelationshipCountsV1 struct {
 	Contradictions int `json:"contradictions"`
 }
 
+// ProvenanceSummaryV1 is the versioned Blackboard read shape for this projection.
 type ProvenanceSummaryV1 struct {
 	ActorType        ActorType `json:"actor_type"`
 	ActorID          string    `json:"actor_id"`
@@ -127,6 +169,7 @@ type ProvenanceSummaryV1 struct {
 	RecordedAt       string    `json:"recorded_at"`
 }
 
+// NodeRowV1 is the versioned Blackboard read shape for this projection.
 type NodeRowV1 struct {
 	Ref                NodeRefV1            `json:"ref"`
 	Version            int                  `json:"version"`
@@ -140,20 +183,79 @@ type NodeRowV1 struct {
 	RelationshipCounts RelationshipCountsV1 `json:"relationship_counts"`
 	UpdatedProvenance  ProvenanceSummaryV1  `json:"updated_provenance"`
 	searchRank         int
+	attentionRank      int
+	entityKind         string
 }
 
+// PageV1 is the versioned Blackboard read shape for this projection.
 type PageV1 struct {
 	Limit      int    `json:"limit"`
 	TotalItems int    `json:"total_items"`
 	NextCursor string `json:"next_cursor,omitempty"`
 }
 
+// RecordCollectionV1 is the versioned Blackboard read shape for this projection.
 type RecordCollectionV1 struct {
-	Items  []NodeRowV1    `json:"items"`
-	Facets map[string]any `json:"facets"`
-	Page   PageV1         `json:"page"`
+	Items      []NodeRowV1    `json:"items"`
+	Facets     map[string]any `json:"facets"`
+	Page       PageV1         `json:"page"`
+	sourcePins map[string]any
 }
 
+// BlackboardWorkRequest is the versioned Blackboard read shape for this projection.
+type BlackboardWorkRequest struct{}
+
+// BlackboardWorkBudgetV1 is the versioned Blackboard read shape for this projection.
+type BlackboardWorkBudgetV1 struct {
+	State           BudgetState `json:"state"`
+	ProjectionBytes int         `json:"projection_bytes"`
+	EstimatedTokens int         `json:"estimated_tokens"`
+	TargetTokens    int         `json:"target_tokens"`
+	WarningTokens   int         `json:"warning_tokens"`
+	RequiredTokens  int         `json:"required_tokens"`
+}
+
+// BlackboardWorkSummaryV1 is the versioned Blackboard read shape for this projection.
+type BlackboardWorkSummaryV1 struct {
+	GraphRevision       int                    `json:"graph_revision"`
+	NodeCounts          map[string]int         `json:"node_counts"`
+	EdgeCounts          map[string]int         `json:"edge_counts"`
+	CurrentTruth        int                    `json:"current_truth"`
+	Frontier            int                    `json:"frontier"`
+	OpenAttempts        int                    `json:"open_attempts"`
+	ConfirmedFindings   int                    `json:"confirmed_findings"`
+	UnconfirmedFindings int                    `json:"unconfirmed_findings"`
+	VerifiedSolutions   int                    `json:"verified_solutions"`
+	EvidenceMissing     int                    `json:"evidence_missing"`
+	Budget              BlackboardWorkBudgetV1 `json:"budget"`
+	Health              DashboardHealthV1      `json:"health"`
+}
+
+// SemanticChangeV1 is the versioned Blackboard read shape for this projection.
+type SemanticChangeV1 struct {
+	Kind      string     `json:"kind"`
+	Node      *NodeRowV1 `json:"node"`
+	Edge      *EdgeRowV1 `json:"edge"`
+	UpdatedAt string     `json:"updated_at"`
+}
+
+// SemanticChangeCollectionV1 is the versioned Blackboard read shape for this projection.
+type SemanticChangeCollectionV1 struct {
+	Items []SemanticChangeV1 `json:"items"`
+	Page  PageV1             `json:"page"`
+}
+
+// BlackboardWorkViewV1 is the versioned Blackboard read shape for this projection.
+type BlackboardWorkViewV1 struct {
+	Summary        BlackboardWorkSummaryV1    `json:"summary"`
+	Attention      RecordCollectionV1         `json:"attention"`
+	Frontier       RecordCollectionV1         `json:"frontier"`
+	ActiveAttempts RecordCollectionV1         `json:"active_attempts"`
+	RecentChanges  SemanticChangeCollectionV1 `json:"recent_changes"`
+	Facets         map[string]any             `json:"facets"`
+}
+
+// RecordHistoryV1 is the versioned Blackboard read shape for this projection.
 type RecordHistoryV1 struct {
 	Record     NodeRefV1            `json:"record"`
 	Versions   []NodeHistoryVersion `json:"versions"`
@@ -162,6 +264,7 @@ type RecordHistoryV1 struct {
 	Merge      *NodeRefV1           `json:"merge"`
 }
 
+// NodeHistoryVersion is the versioned Blackboard read shape for this projection.
 type NodeHistoryVersion struct {
 	Version      int            `json:"version"`
 	Disposition  Disposition    `json:"disposition"`
@@ -170,6 +273,7 @@ type NodeHistoryVersion struct {
 	SemanticHash string         `json:"semantic_hash"`
 }
 
+// BlackboardReadService is the versioned Blackboard read shape for this projection.
 type BlackboardReadService struct {
 	db           *store.DB
 	cursorKey    []byte
@@ -186,14 +290,15 @@ func NewBlackboardReadService(db *store.DB) *BlackboardReadService {
 }
 
 type readCursor struct {
-	Version    int      `json:"version"`
-	Projection ReadKind `json:"projection"`
-	ProjectID  string   `json:"project_id"`
-	Revision   int      `json:"revision"`
-	QueryHash  string   `json:"query_hash"`
-	Sort       string   `json:"sort"`
-	Limit      int      `json:"limit"`
-	Last       []string `json:"last"`
+	Version    int               `json:"version"`
+	Projection ReadKind          `json:"projection"`
+	ProjectID  string            `json:"project_id"`
+	Revision   int               `json:"revision"`
+	QueryHash  string            `json:"query_hash"`
+	Sort       string            `json:"sort"`
+	Limit      int               `json:"limit"`
+	Last       []string          `json:"last"`
+	SourcePins map[string]string `json:"source_pins,omitempty"`
 }
 
 func (s *BlackboardReadService) Read(ctx context.Context, request ReadRequest) (ReadEnvelope, error) {
@@ -243,6 +348,11 @@ func (s *BlackboardReadService) Read(ctx context.Context, request ReadRequest) (
 			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "record_collection request is required", "record_collection")
 		}
 		result, err = buildRecordCollection(ctx, tx, snapshot, *request.RecordCollection, cursor, s.cursorKey)
+	case ReadKindRecordDetailV1:
+		if request.RecordDetail == nil {
+			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "record_detail request is required", "record_detail")
+		}
+		result, err = buildRecordDetail(ctx, tx, snapshot, *request.RecordDetail)
 	case ReadKindRecordResolveV1:
 		if request.RecordResolve == nil {
 			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "record_resolve request is required", "record_resolve")
@@ -255,6 +365,36 @@ func (s *BlackboardReadService) Read(ctx context.Context, request ReadRequest) (
 		result, err = buildRecordHistory(ctx, tx, snapshot, *request.RecordHistory, cursor, s.cursorKey)
 	case ReadKindCanonicalGraphV1:
 		result, err = canonicalMainGraphDocumentAt(ctx, tx, request.ProjectID, revision)
+	case ReadKindEntityCollectionV1:
+		if request.EntityCollection == nil {
+			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "entity_collection request is required", "entity_collection")
+		}
+		result, err = buildEntityCollection(ctx, tx, snapshot, *request.EntityCollection, cursor, s.cursorKey)
+	case ReadKindEntityDetailV1:
+		if request.EntityDetail == nil {
+			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "entity_detail request is required", "entity_detail")
+		}
+		result, err = buildEntityDetail(ctx, tx, snapshot, *request.EntityDetail)
+	case ReadKindExplorationFrontierV1:
+		if request.ExplorationFrontier == nil {
+			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "exploration_frontier request is required", "exploration_frontier")
+		}
+		result, err = buildExplorationFrontier(snapshot, *request.ExplorationFrontier, cursor, s.cursorKey)
+	case ReadKindCurrentTruthV1:
+		if request.CurrentTruth == nil {
+			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "current_truth request is required", "current_truth")
+		}
+		result, err = buildCurrentTruth(snapshot, *request.CurrentTruth, cursor, s.cursorKey)
+	case ReadKindProjectBlackboardSummaryV1:
+		if request.ProjectSummary == nil {
+			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "project_summary request is required", "project_summary")
+		}
+		result, err = buildProjectBlackboardSummary(ctx, tx, snapshot, projectKind)
+	case ReadKindBlackboardWorkV1:
+		if request.BlackboardWork == nil {
+			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "blackboard_work request is required", "blackboard_work")
+		}
+		result, err = buildBlackboardWork(ctx, tx, snapshot)
 	default:
 		err = readValidationError(ErrCodeInvalidQuery, "unknown read projection", "kind")
 	}
@@ -262,6 +402,33 @@ func (s *BlackboardReadService) Read(ctx context.Context, request ReadRequest) (
 		return ReadEnvelope{}, err
 	}
 
+	sourcePins := map[string]any{}
+	switch value := result.(type) {
+	case RecordCollectionV1:
+		for key, pin := range value.sourcePins {
+			sourcePins[key] = pin
+		}
+	case EntityCollectionV1:
+		for key, pin := range value.sourcePins {
+			sourcePins[key] = pin
+		}
+	case RecordDetailV1:
+		for key, pin := range value.sourcePins {
+			sourcePins[key] = pin
+		}
+	case EntityDetailV1:
+		for key, pin := range value.sourcePins {
+			sourcePins[key] = pin
+		}
+	case BlackboardWorkViewV1:
+		if value.Summary.Health.LatestRunID != "" {
+			sourcePins["health_run_id"] = value.Summary.Health.LatestRunID
+		}
+	case ProjectBlackboardSummaryV1:
+		if value.Health.LatestRunID != "" {
+			sourcePins["health_run_id"] = value.Health.LatestRunID
+		}
+	}
 	envelope := ReadEnvelope{
 		ProtocolVersion:       BlackboardReadProtocolVersion,
 		Projection:            string(request.Kind),
@@ -269,7 +436,7 @@ func (s *BlackboardReadService) Read(ctx context.Context, request ReadRequest) (
 		ProjectKind:           projectKind,
 		ObservedGraphRevision: snapshot.GraphRevision,
 		ObservedStateHash:     snapshot.StateHash,
-		SourcePins:            map[string]any{},
+		SourcePins:            sourcePins,
 		Result:                result,
 	}
 	envelope.ProjectionHash, err = hashReadEnvelope(envelope)
@@ -307,6 +474,25 @@ func resolveReadRevision(ctx context.Context, tx *sql.Tx, request ReadRequest, c
 		}
 		return cursor.Revision, &cursor, nil
 	}
+	collectionCursor := ""
+	switch {
+	case request.CurrentTruth != nil:
+		collectionCursor = request.CurrentTruth.Cursor
+	case request.ExplorationFrontier != nil:
+		collectionCursor = request.ExplorationFrontier.Cursor
+	case request.EntityCollection != nil:
+		collectionCursor = request.EntityCollection.Cursor
+	}
+	if collectionCursor != "" {
+		cursor, err := decodeReadCursor(collectionCursor, cursorKey)
+		if err != nil {
+			return 0, nil, err
+		}
+		if cursor.ProjectID != request.ProjectID || cursor.Projection != request.Kind {
+			return 0, nil, readValidationError(ErrCodeInvalidCursor, "The cursor does not match this query.", "cursor")
+		}
+		return cursor.Revision, &cursor, nil
+	}
 	if request.AtRevision != nil {
 		if *request.AtRevision < 0 || *request.AtRevision > latest {
 			return 0, nil, readValidationError(ErrCodeRevisionNotFound, "requested graph revision does not exist", "at_revision")
@@ -330,6 +516,18 @@ func buildRecordCollection(ctx context.Context, tx *sql.Tx, snapshot GraphSnapsh
 	}
 
 	rows := make([]NodeRowV1, 0, len(snapshot.Nodes))
+	frontierSet := make(map[string]bool)
+	for _, id := range historicalFrontierNodeIDs(snapshot) {
+		frontierSet[id] = true
+	}
+	pinnedHealthRun := ""
+	if cursor != nil && cursor.SourcePins != nil {
+		pinnedHealthRun = cursor.SourcePins["health_run_id"]
+	}
+	healthRanks, healthRunID, err := healthSubjectRanks(ctx, tx, snapshot.ProjectID, snapshot.GraphRevision, pinnedHealthRun)
+	if err != nil {
+		return RecordCollectionV1{}, err
+	}
 	for _, node := range snapshot.Nodes {
 		if !recordMatches(node, normalized) {
 			continue
@@ -339,6 +537,10 @@ func buildRecordCollection(ctx context.Context, tx *sql.Tx, snapshot GraphSnapsh
 			return RecordCollectionV1{}, err
 		}
 		row.searchRank = lexicalSearchRank(node, normalized.Query)
+		row.attentionRank = workAttentionRank(node, frontierSet[node.ID], healthRanks[node.ID])
+		if !recordRowMatches(snapshot, node, row, normalized, frontierSet[node.ID], healthRanks[node.ID]) {
+			continue
+		}
 		rows = append(rows, row)
 	}
 	sortRecordRows(rows, normalized.Sort)
@@ -357,13 +559,13 @@ func buildRecordCollection(ctx context.Context, tx *sql.Tx, snapshot GraphSnapsh
 		next, err = encodeReadCursor(readCursor{
 			Version: BlackboardReadProtocolVersion, Projection: ReadKindRecordCollectionV1,
 			ProjectID: snapshot.ProjectID, Revision: snapshot.GraphRevision, QueryHash: queryHash,
-			Sort: normalized.Sort, Limit: normalized.Limit, Last: rowTuple(pageRows[len(pageRows)-1], normalized.Sort),
+			Sort: normalized.Sort, Limit: normalized.Limit, Last: rowTuple(pageRows[len(pageRows)-1], normalized.Sort), SourcePins: stringSourcePins("health_run_id", healthRunID),
 		}, cursorKey)
 		if err != nil {
 			return RecordCollectionV1{}, err
 		}
 	}
-	return RecordCollectionV1{Items: pageRows, Facets: recordFacets(rows), Page: PageV1{Limit: normalized.Limit, TotalItems: total, NextCursor: next}}, nil
+	return RecordCollectionV1{Items: pageRows, Facets: recordFacets(rows), Page: PageV1{Limit: normalized.Limit, TotalItems: total, NextCursor: next}, sourcePins: anySourcePins("health_run_id", healthRunID)}, nil
 }
 
 func normalizeRecordCollectionRequest(request RecordCollectionRequest) (RecordCollectionRequest, error) {
@@ -377,7 +579,7 @@ func normalizeRecordCollectionRequest(request RecordCollectionRequest) (RecordCo
 		if normalizeSearchText(request.Query) != "" {
 			request.Sort = recordSortRelevance
 		} else {
-			request.Sort = RecordSortUpdatedDesc
+			request.Sort = RecordSortAttention
 		}
 	}
 	switch request.Sort {
@@ -388,7 +590,7 @@ func normalizeRecordCollectionRequest(request RecordCollectionRequest) (RecordCo
 	if len([]rune(request.Query)) > 500 {
 		return RecordCollectionRequest{}, readValidationError(ErrCodeInvalidQuery, "query exceeds 500 Unicode scalar values", "query")
 	}
-	if len(request.NodeTypes) > 50 || len(request.Dispositions) > 50 || len(request.Lifecycle) > 50 {
+	if len(request.NodeTypes) > 50 || len(request.Dispositions) > 50 || len(request.Lifecycle) > 50 || len(request.ScopeStatus) > 50 || len(request.Severity) > 50 || len(request.EntityKind) > 50 || len(request.ActorType) > 50 || len(request.HealthSeverity) > 50 {
 		return RecordCollectionRequest{}, readValidationError(ErrCodeInvalidQuery, "repeated filter exceeds 50 values", "filters")
 	}
 	request.Query = normalizeSearchText(request.Query)
@@ -405,6 +607,29 @@ func normalizeRecordCollectionRequest(request RecordCollectionRequest) (RecordCo
 		}
 	}
 	request.Lifecycle = sortedUniqueStrings(request.Lifecycle)
+	request.ScopeStatus = sortedUniqueStrings(request.ScopeStatus)
+	request.Severity = sortedUniqueStrings(request.Severity)
+	request.EntityKind = sortedUniqueStrings(request.EntityKind)
+	request.ActorType = sortedUniqueStrings(request.ActorType)
+	request.HealthSeverity = sortedUniqueStrings(request.HealthSeverity)
+	if request.Direction == "" {
+		request.Direction = "either"
+	}
+	if request.Direction != "incoming" && request.Direction != "outgoing" && request.Direction != "either" {
+		return RecordCollectionRequest{}, readValidationError(ErrCodeInvalidQuery, "unsupported direction", "direction")
+	}
+	if request.EdgeType != "" && edgeTypeOrdinal(request.EdgeType) < 0 {
+		return RecordCollectionRequest{}, readValidationError(ErrCodeInvalidQuery, "unsupported edge_type", "edge_type")
+	}
+	if err := validateEnumFilters("scope_status", request.ScopeStatus, "in_scope", "unknown", "out_of_scope"); err != nil {
+		return RecordCollectionRequest{}, err
+	}
+	if err := validateEnumFilters("actor_type", request.ActorType, "runtime", "operator", "system", "migration"); err != nil {
+		return RecordCollectionRequest{}, err
+	}
+	if err := validateEnumFilters("health_severity", request.HealthSeverity, "critical", "warning", "info"); err != nil {
+		return RecordCollectionRequest{}, err
+	}
 	if len(request.Dispositions) == 0 {
 		request.Dispositions = []Disposition{DispositionMain}
 	}
@@ -449,11 +674,15 @@ func nodeRowAt(ctx context.Context, tx *sql.Tx, snapshot GraphSnapshot, node Nod
 	if err != nil {
 		return NodeRowV1{}, err
 	}
-	return NodeRowV1{
+	row := NodeRowV1{
 		Ref: nodeRefForNode(node), Version: node.Version, Disposition: node.Disposition,
 		Lifecycle: lifecycle, ScopeStatus: scopeStatus, Severity: severity, Secondary: secondary,
 		UpdatedAt: node.UpdatedAt, AboutEntities: about, RelationshipCounts: counts, UpdatedProvenance: provenance,
-	}, nil
+	}
+	if node.NodeType == NodeTypeEntity {
+		row.entityKind = propertyString(node, "kind")
+	}
+	return row, nil
 }
 
 func provenanceSummaryForNodeVersion(ctx context.Context, tx *sql.Tx, projectID, nodeID string, version int) (ProvenanceSummaryV1, error) {
@@ -680,11 +909,15 @@ func buildRecordHistory(ctx context.Context, tx *sql.Tx, snapshot GraphSnapshot,
 
 func normalizedRecordQueryHash(request RecordCollectionRequest) (string, error) {
 	value := struct {
-		NodeTypes    []NodeType    `json:"node_types"`
-		Dispositions []Disposition `json:"dispositions"`
-		Lifecycle    []string      `json:"lifecycle"`
-		Query        string        `json:"query"`
-	}{request.NodeTypes, request.Dispositions, request.Lifecycle, request.Query}
+		NodeTypes                                                               []NodeType    `json:"node_types"`
+		Dispositions                                                            []Disposition `json:"dispositions"`
+		Lifecycle, ScopeStatus, Severity, EntityKind, ActorType, HealthSeverity []string
+		TaskID, ContinuationID, RuntimeProfileID, Runner, AboutEntityID         string
+		EdgeType                                                                EdgeType
+		Direction                                                               string
+		HasEvidence, HasContradiction, Frontier                                 *bool
+		UpdatedBefore, UpdatedAfter, Query                                      string
+	}{request.NodeTypes, request.Dispositions, request.Lifecycle, request.ScopeStatus, request.Severity, request.EntityKind, request.ActorType, request.HealthSeverity, request.TaskID, request.ContinuationID, request.RuntimeProfileID, request.Runner, request.AboutEntityID, request.EdgeType, request.Direction, request.HasEvidence, request.HasContradiction, request.Frontier, request.UpdatedBefore, request.UpdatedAfter, request.Query}
 	data, err := canonicalJSON(value)
 	if err != nil {
 		return "", fmt.Errorf("encode normalized record query: %w", err)
@@ -880,8 +1113,10 @@ func rowTuple(row NodeRowV1, mode string) []string {
 		return []string{fmt.Sprintf("%02d", row.searchRank), string(row.Ref.NodeType), row.Ref.StableKey, row.Ref.ID}
 	case RecordSortCreatedAsc:
 		return []string{row.UpdatedAt, string(row.Ref.NodeType), row.Ref.StableKey, row.Ref.ID}
-	case RecordSortUpdatedDesc, RecordSortAttention:
+	case RecordSortUpdatedDesc:
 		return []string{invertLexical(row.UpdatedAt), string(row.Ref.NodeType), row.Ref.StableKey, row.Ref.ID}
+	case RecordSortAttention:
+		return []string{fmt.Sprintf("%02d", row.attentionRank), invertLexical(row.UpdatedAt), fmt.Sprintf("%02d", nodeTypeOrdinal(row.Ref.NodeType)), row.Ref.StableKey, row.Ref.ID}
 	case RecordSortSeverity:
 		severity := ""
 		if row.Severity != nil {
@@ -944,13 +1179,25 @@ func compareStrings(values ...string) int {
 }
 
 func recordFacets(rows []NodeRowV1) map[string]any {
-	nodeTypes := map[string]int{}
-	dispositions := map[string]int{}
+	nodeTypes, dispositions, lifecycle, scopeStatus, severity, entityKind, actorType := map[string]int{}, map[string]int{}, map[string]int{}, map[string]int{}, map[string]int{}, map[string]int{}, map[string]int{}
 	for _, row := range rows {
 		nodeTypes[string(row.Ref.NodeType)]++
 		dispositions[string(row.Disposition)]++
+		if row.Lifecycle != nil {
+			lifecycle[row.Lifecycle.Value]++
+		}
+		if row.ScopeStatus != nil {
+			scopeStatus[*row.ScopeStatus]++
+		}
+		if row.Severity != nil {
+			severity[*row.Severity]++
+		}
+		if row.entityKind != "" {
+			entityKind[row.entityKind]++
+		}
+		actorType[string(row.UpdatedProvenance.ActorType)]++
 	}
-	return map[string]any{"node_type": nodeTypes, "disposition": dispositions}
+	return map[string]any{"node_type": nodeTypes, "disposition": dispositions, "lifecycle": lifecycle, "scope_status": scopeStatus, "severity": severity, "entity_kind": entityKind, "actor_type": actorType}
 }
 
 func sortedUniqueNodeTypes(values []NodeType) []NodeType {
@@ -1032,4 +1279,281 @@ const (
 
 func readValidationError(code, message, path string) *ValidationError {
 	return validationError(code, message, -1, "", path)
+}
+
+func buildBlackboardWork(ctx context.Context, tx *sql.Tx, snapshot GraphSnapshot) (BlackboardWorkViewV1, error) {
+	rows := make([]NodeRowV1, 0, len(snapshot.Nodes))
+	frontierIDs := make(map[string]bool)
+	for _, id := range historicalFrontierNodeIDs(snapshot) {
+		frontierIDs[id] = true
+	}
+	healthRanks, _, err := healthSubjectRanks(ctx, tx, snapshot.ProjectID, snapshot.GraphRevision, "")
+	if err != nil {
+		return BlackboardWorkViewV1{}, err
+	}
+	summary := BlackboardWorkSummaryV1{GraphRevision: snapshot.GraphRevision, NodeCounts: map[string]int{}, EdgeCounts: map[string]int{}}
+	for _, edge := range snapshot.Edges {
+		if edge.State == "active" {
+			summary.EdgeCounts[string(edge.EdgeType)]++
+		}
+	}
+	for _, node := range snapshot.Nodes {
+		if node.Disposition != DispositionMain {
+			continue
+		}
+		summary.NodeCounts[string(node.NodeType)]++
+		row, err := nodeRowAt(ctx, tx, snapshot, node)
+		if err != nil {
+			return BlackboardWorkViewV1{}, err
+		}
+		row.attentionRank = workAttentionRank(node, frontierIDs[node.ID], healthRanks[node.ID])
+		rows = append(rows, row)
+		switch node.NodeType {
+		case NodeTypeProjectFact:
+			if node.PropertyMap["confidence"] == "confirmed" || node.PropertyMap["confidence"] == "tentative" {
+				summary.CurrentTruth++
+			}
+		case NodeTypeAttempt:
+			if node.PropertyMap["status"] == "open" {
+				summary.OpenAttempts++
+			}
+		case NodeTypeFinding:
+			if node.PropertyMap["status"] == "confirmed" {
+				summary.ConfirmedFindings++
+			}
+			if node.PropertyMap["status"] == "unconfirmed" {
+				summary.UnconfirmedFindings++
+			}
+		case NodeTypeSolution:
+			if node.PropertyMap["status"] == "verified" {
+				summary.VerifiedSolutions++
+			}
+		case NodeTypeEvidenceArtifact:
+			if node.PropertyMap["status"] == "missing" {
+				summary.EvidenceMissing++
+			}
+		}
+	}
+	summary.Frontier = len(frontierIDs)
+	doc, err := canonicalMainGraphDocumentAt(ctx, tx, snapshot.ProjectID, snapshot.GraphRevision)
+	if err != nil {
+		return BlackboardWorkViewV1{}, err
+	}
+	projection, err := measureCanonicalMainGraphDocument(snapshot.ProjectID, snapshot.GraphRevision, doc)
+	if err != nil {
+		return BlackboardWorkViewV1{}, err
+	}
+	summary.Budget = BlackboardWorkBudgetV1{State: budgetStateForEstimatedTokens(projection.EstimatedTokens), ProjectionBytes: projection.ByteCount, EstimatedTokens: projection.EstimatedTokens, TargetTokens: budgetTargetTokens, WarningTokens: budgetWarningTokens, RequiredTokens: budgetRequiredTokens}
+	summary.Health, err = dashboardHealth(ctx, tx, snapshot.ProjectID, snapshot.GraphRevision)
+	if err != nil {
+		return BlackboardWorkViewV1{}, err
+	}
+	attention := append([]NodeRowV1(nil), rows...)
+	sortRecordRows(attention, RecordSortAttention)
+	frontier := filterRows(rows, func(row NodeRowV1) bool { return frontierIDs[row.Ref.ID] })
+	active := filterRows(rows, func(row NodeRowV1) bool {
+		return row.Ref.NodeType == NodeTypeAttempt && row.Lifecycle != nil && row.Lifecycle.Value == "open"
+	})
+	recent, err := semanticChangesAt(ctx, tx, snapshot, rows, 20)
+	if err != nil {
+		return BlackboardWorkViewV1{}, err
+	}
+	return BlackboardWorkViewV1{Summary: summary, Attention: previewCollection(attention, 20), Frontier: previewCollection(frontier, 20), ActiveAttempts: previewCollection(active, 20), RecentChanges: recent, Facets: recordFacets(rows)}, nil
+}
+
+func healthSubjectRanks(ctx context.Context, tx *sql.Tx, projectID string, revision int, pinnedRunID string) (map[string]int, string, error) {
+	runID := pinnedRunID
+	if runID != "" {
+		var checked int
+		if err := tx.QueryRowContext(ctx, `SELECT checked_graph_revision FROM blackboard_health_runs WHERE project_id=? AND run_id=? AND completed_at IS NOT NULL`, projectID, runID).Scan(&checked); errors.Is(err, sql.ErrNoRows) {
+			return nil, "", readValidationError(ErrCodeSnapshotUnavailable, "The pinned Health run is unavailable.", "cursor")
+		} else if err != nil {
+			return nil, "", err
+		} else if checked > revision {
+			return nil, "", readValidationError(ErrCodeInvalidCursor, "The cursor Health pin is newer than its graph revision.", "cursor")
+		}
+	} else {
+		err := tx.QueryRowContext(ctx, `SELECT run_id FROM blackboard_health_runs WHERE project_id=? AND checked_graph_revision<=? AND completed_at IS NOT NULL ORDER BY started_at DESC,rowid DESC LIMIT 1`, projectID, revision).Scan(&runID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return map[string]int{}, "", nil
+		}
+		if err != nil {
+			return nil, "", fmt.Errorf("read latest Health run for Work: %w", err)
+		}
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT subject_id,severity FROM blackboard_health_results WHERE project_id=? AND run_id=? ORDER BY fingerprint`, projectID, runID)
+	if err != nil {
+		return nil, "", fmt.Errorf("read Health subjects for Work: %w", err)
+	}
+	defer rows.Close()
+	ranks := map[string]int{}
+	for rows.Next() {
+		var id, severity string
+		if err := rows.Scan(&id, &severity); err != nil {
+			return nil, "", err
+		}
+		rank := 99
+		if severity == "critical" {
+			rank = 1
+		} else if severity == "warning" {
+			rank = 2
+		} else if severity == "info" {
+			rank = 3
+		}
+		if old, ok := ranks[id]; !ok || rank < old {
+			ranks[id] = rank
+		}
+	}
+	return ranks, runID, rows.Err()
+}
+func stringSourcePins(key, value string) map[string]string {
+	if value == "" {
+		return nil
+	}
+	return map[string]string{key: value}
+}
+func anySourcePins(key, value string) map[string]any {
+	if value == "" {
+		return nil
+	}
+	return map[string]any{key: value}
+}
+
+func workAttentionRank(node NodeRecord, frontier bool, healthRank int) int {
+	if healthRank == 1 || healthRank == 2 {
+		return healthRank
+	}
+	if frontier {
+		return 3
+	}
+	switch node.NodeType {
+	case NodeTypeAttempt:
+		if node.PropertyMap["status"] == "open" {
+			return 4
+		}
+	case NodeTypeFinding:
+		if node.PropertyMap["status"] == "confirmed" {
+			return 5
+		}
+	case NodeTypeSolution:
+		if node.PropertyMap["status"] == "verified" || node.PropertyMap["status"] == "candidate" {
+			return 6
+		}
+	case NodeTypeProjectFact:
+		if node.PropertyMap["confidence"] == "confirmed" {
+			return 7
+		}
+		if node.PropertyMap["confidence"] == "tentative" {
+			return 8
+		}
+	case NodeTypeHypothesis:
+		return 9
+	case NodeTypeObservation:
+		return 10
+	case NodeTypeEvidenceArtifact:
+		return 11
+	case NodeTypeEntity:
+		return 12
+	case NodeTypeProjectDirective:
+		return 13
+	}
+	return 14
+}
+
+func filterRows(rows []NodeRowV1, keep func(NodeRowV1) bool) []NodeRowV1 {
+	out := []NodeRowV1{}
+	for _, row := range rows {
+		if keep(row) {
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+func previewCollection(rows []NodeRowV1, limit int) RecordCollectionV1 {
+	total := len(rows)
+	if len(rows) > limit {
+		rows = rows[:limit]
+	}
+	return RecordCollectionV1{Items: rows, Facets: recordFacets(rows), Page: PageV1{Limit: limit, TotalItems: total}}
+}
+
+func recordRowMatches(snapshot GraphSnapshot, node NodeRecord, row NodeRowV1, request RecordCollectionRequest, frontier bool, healthRank int) bool {
+	if len(request.ScopeStatus) > 0 {
+		if row.ScopeStatus == nil || !containsString(request.ScopeStatus, *row.ScopeStatus) {
+			return false
+		}
+	}
+	if len(request.Severity) > 0 {
+		if row.Severity == nil || !containsString(request.Severity, *row.Severity) {
+			return false
+		}
+	}
+	if len(request.EntityKind) > 0 && (node.NodeType != NodeTypeEntity || !containsString(request.EntityKind, propertyString(node, "kind"))) {
+		return false
+	}
+	if len(request.ActorType) > 0 && !containsString(request.ActorType, string(row.UpdatedProvenance.ActorType)) {
+		return false
+	}
+	if request.TaskID != "" && (row.UpdatedProvenance.TaskID == nil || *row.UpdatedProvenance.TaskID != request.TaskID) {
+		return false
+	}
+	if request.ContinuationID != "" && (row.UpdatedProvenance.ContinuationID == nil || *row.UpdatedProvenance.ContinuationID != request.ContinuationID) {
+		return false
+	}
+	if request.RuntimeProfileID != "" && (row.UpdatedProvenance.RuntimeProfileID == nil || *row.UpdatedProvenance.RuntimeProfileID != request.RuntimeProfileID) {
+		return false
+	}
+	if request.Runner != "" && (row.UpdatedProvenance.Runner == nil || *row.UpdatedProvenance.Runner != request.Runner) {
+		return false
+	}
+	if request.AboutEntityID != "" && !hasActiveEdge(snapshot, EdgeTypeAbout, node.ID, request.AboutEntityID) {
+		return false
+	}
+	if request.EdgeType != "" {
+		matched := false
+		for _, edge := range snapshot.Edges {
+			if edge.State != "active" || edge.EdgeType != request.EdgeType {
+				continue
+			}
+			if (request.Direction == "incoming" || request.Direction == "either") && edge.ToNodeID == node.ID {
+				matched = true
+			}
+			if (request.Direction == "outgoing" || request.Direction == "either") && edge.FromNodeID == node.ID {
+				matched = true
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	if request.HasEvidence != nil && (row.RelationshipCounts.Evidence > 0) != *request.HasEvidence {
+		return false
+	}
+	if request.HasContradiction != nil && (row.RelationshipCounts.Contradictions > 0) != *request.HasContradiction {
+		return false
+	}
+	if request.Frontier != nil && frontier != *request.Frontier {
+		return false
+	}
+	if len(request.HealthSeverity) > 0 {
+		severity := ""
+		if healthRank == 1 {
+			severity = "critical"
+		} else if healthRank == 2 {
+			severity = "warning"
+		} else if healthRank == 3 {
+			severity = "info"
+		}
+		if !containsString(request.HealthSeverity, severity) {
+			return false
+		}
+	}
+	if request.UpdatedBefore != "" && row.UpdatedAt >= request.UpdatedBefore {
+		return false
+	}
+	if request.UpdatedAfter != "" && row.UpdatedAt <= request.UpdatedAfter {
+		return false
+	}
+	return true
 }

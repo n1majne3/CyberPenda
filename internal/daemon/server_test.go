@@ -708,3 +708,71 @@ func TestBlackboardRecordsHTTPUsesCanonicalEnvelopeETagAndConditionalRead(t *tes
 		t.Fatalf("different query reused ETag: status=%d etag=%q body=%s", different.Code, different.Header().Get("ETag"), different.Body.String())
 	}
 }
+
+func TestGraphDashboardAndU02ReadsUseCanonicalBlackboardService(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "u02-http.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	projects := project.NewService(db)
+	projectRow, err := projects.Create("U02 project", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	graph := blackboard.NewGraphService(db, blackboard.NewSequenceClock("2024-01-02T03:04:05Z"), blackboard.RandomIDSource{})
+	if _, err := graph.Apply(context.Background(), blackboard.MutationBatch{SchemaVersion: 1, IdempotencyKey: "u02:http", Context: blackboard.SystemExecutionContext(projectRow.ID, projectRow.Kind, "test-system"), Operations: []blackboard.Operation{{OpID: "fact", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "fact:http"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"category": "service", "summary": "HTTP fact", "confidence": "tentative", "scope_status": "out_of_scope"}}}}}); err != nil {
+		t.Fatalf("seed graph: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE blackboard_store_state SET canonical_store=?,cutover_state='graph' WHERE id=1`, store.CanonicalStoreGraphV1); err != nil {
+		t.Fatalf("enable graph epoch: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed store: %v", err)
+	}
+	server, err := daemon.NewServer(daemon.Config{Version: "v", DBPath: dbPath, DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer server.Close()
+
+	dashboard := httptest.NewRecorder()
+	server.ServeHTTP(dashboard, httptest.NewRequest(http.MethodGet, "/api/projects/"+projectRow.ID+"/dashboard", nil))
+	if dashboard.Code != http.StatusOK {
+		t.Fatalf("dashboard status=%d body=%s", dashboard.Code, dashboard.Body.String())
+	}
+	var summary struct {
+		Read struct {
+			Projection string `json:"projection"`
+		} `json:"_read"`
+		Blackboard struct {
+			CurrentTruth int `json:"current_truth"`
+		} `json:"blackboard"`
+	}
+	if err := json.NewDecoder(dashboard.Body).Decode(&summary); err != nil {
+		t.Fatalf("decode dashboard: %v", err)
+	}
+	if summary.Read.Projection != string(blackboard.ReadKindProjectBlackboardSummaryV1) || summary.Blackboard.CurrentTruth != 1 {
+		t.Fatalf("dashboard=%+v", summary)
+	}
+
+	truth := httptest.NewRecorder()
+	server.ServeHTTP(truth, httptest.NewRequest(http.MethodGet, "/api/projects/"+projectRow.ID+"/blackboard/current-truth", nil))
+	if truth.Code != http.StatusOK {
+		t.Fatalf("truth status=%d body=%s", truth.Code, truth.Body.String())
+	}
+	var envelope struct {
+		Projection string `json:"projection"`
+		Result     struct {
+			Items []struct {
+				NonActionable bool `json:"non_actionable"`
+			} `json:"items"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(truth.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode truth: %v", err)
+	}
+	if envelope.Projection != string(blackboard.ReadKindCurrentTruthV1) || len(envelope.Result.Items) != 1 || !envelope.Result.Items[0].NonActionable {
+		t.Fatalf("truth=%+v", envelope)
+	}
+}

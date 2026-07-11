@@ -494,3 +494,50 @@ func TestReadRejectsUnknownRecordFilters(t *testing.T) {
 		assertReadErrorCode(t, err, blackboard.ErrCodeInvalidQuery)
 	}
 }
+
+// TestBlackboardWorkAttentionOrdersCriticalHealthBeforeFrontierAndActiveWork is
+// the U02 first-red test. It proves the shared Work projection applies the
+// canonical attention classes instead of falling back to timestamp ordering.
+func TestBlackboardWorkAttentionOrdersCriticalHealthBeforeFrontierAndActiveWork(t *testing.T) {
+	graph, projects, _ := newGraphServices(t)
+	projectID, execCtx := mustGraphProject(t, projects)
+	created, err := graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "u02:attention", Context: execCtx,
+		Operations: []blackboard.Operation{
+			{OpID: "critical", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeFinding, StableKey: "finding:critical-health"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"title": "Critical health subject", "status": "unconfirmed", "target": "example.com"}}},
+			{OpID: "warning", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeFinding, StableKey: "finding:warning-health"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"title": "Warning health subject", "status": "unconfirmed", "target": "example.com"}}},
+			{OpID: "frontier", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeExplorationObjective, StableKey: "objective:frontier"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"objective": "What is exposed?", "status": "open"}}},
+			{OpID: "attempt", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeAttempt, StableKey: "attempt:open"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"status": "open", "summary": "Enumerate services"}}},
+			{OpID: "tests", Kind: blackboard.OpPutEdge, PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypeTests, From: blackboard.NodeRef{OpID: "attempt"}, To: blackboard.NodeRef{OpID: "frontier"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed attention fixture: %v", err)
+	}
+	criticalID := created.Operations[0].NodeID
+	warningID := created.Operations[1].NodeID
+	if _, err := graph.DBForTesting().Exec(`INSERT INTO blackboard_health_runs(project_id,run_id,checked_graph_revision,checked_state_hash,checked_projection_hash,checker_version,status,artifact_scan_status,started_at,completed_at,metrics_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, projectID, "health:u02", created.GraphRevision, created.ResultingStateHash, "projection", "blackboard_health_v1", "critical", "complete", created.RecordedAt, created.RecordedAt, `{}`); err != nil {
+		t.Fatalf("seed Health run: %v", err)
+	}
+	for _, result := range []struct{ fingerprint, severity, subjectID string }{{"critical", "critical", criticalID}, {"warning", "warning", warningID}} {
+		if _, err := graph.DBForTesting().Exec(`INSERT INTO blackboard_health_results(project_id,run_id,fingerprint,code,severity,subject_kind,subject_id,details_json) VALUES(?,?,?,?,?,?,?,?)`, projectID, "health:u02", result.fingerprint, "fixture", result.severity, "node", result.subjectID, `{}`); err != nil {
+			t.Fatalf("seed Health result: %v", err)
+		}
+	}
+
+	envelope, err := blackboard.NewBlackboardReadService(graph.DBForTesting()).Read(context.Background(), blackboard.ReadRequest{
+		ProtocolVersion: blackboard.BlackboardReadProtocolVersion,
+		ProjectID:       projectID,
+		Kind:            blackboard.ReadKindBlackboardWorkV1,
+		BlackboardWork:  &blackboard.BlackboardWorkRequest{},
+	})
+	if err != nil {
+		t.Fatalf("read Blackboard Work: %v", err)
+	}
+	work := envelope.Result.(blackboard.BlackboardWorkViewV1)
+	got := recordKeys(blackboard.RecordCollectionV1{Items: work.Attention.Items})
+	want := []string{"finding:critical-health", "finding:warning-health", "objective:frontier", "attempt:open"}
+	if !equalStrings(got, want) {
+		t.Fatalf("attention order = %v want %v", got, want)
+	}
+}
