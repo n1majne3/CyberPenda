@@ -10,6 +10,32 @@ import (
 	"pentest/internal/report"
 )
 
+// serveLegacyRead dispatches a legacy compatibility read through
+// BlackboardReadService when the graph store is active (read contract §18). It
+// writes the legacy-shaped result with ETag/If-None-Match handling and returns
+// true; when the graph store is not yet active it returns false so the caller
+// falls back to the legacy-table path.
+func (server *Server) serveLegacyRead(response http.ResponseWriter, request *http.Request, readRequest blackboard.ReadRequest) bool {
+	if server.reads == nil {
+		return false
+	}
+	readRequest.ProtocolVersion = blackboard.BlackboardReadProtocolVersion
+	envelope, err := server.reads.Read(request.Context(), readRequest)
+	if err != nil {
+		writeBlackboardReadError(response, err)
+		return true
+	}
+	etag := `"` + envelope.ProjectionHash + `"`
+	response.Header().Set("ETag", etag)
+	response.Header().Set("Cache-Control", "private, no-cache")
+	if request.Header.Get("If-None-Match") == etag {
+		response.WriteHeader(http.StatusNotModified)
+		return true
+	}
+	writeJSON(response, http.StatusOK, envelope.Result)
+	return true
+}
+
 func (server *Server) handleUpsertProjectFact(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
 	factKey := request.PathValue("fact_key")
@@ -65,7 +91,11 @@ func (server *Server) handleFactIndex(response http.ResponseWriter, request *htt
 
 	// ?include_deprecated=1 surfaces deprecated facts alongside Current Truth.
 	// Default omits them, matching the dashboard counts and runtime context.
-	opts := blackboard.FactIndexOptions{IncludeDeprecated: request.URL.Query().Get("include_deprecated") == "1"}
+	includeDeprecated := request.URL.Query().Get("include_deprecated") == "1"
+	if server.serveLegacyRead(response, request, blackboard.ReadRequest{ProjectID: projectID, Kind: blackboard.ReadKindLegacyFactIndexV1, LegacyFactIndex: &blackboard.LegacyFactIndexRequest{IncludeDeprecated: &includeDeprecated}}) {
+		return
+	}
+	opts := blackboard.FactIndexOptions{IncludeDeprecated: includeDeprecated}
 
 	facts, err := server.facts.FactIndex(projectID, opts)
 	if err != nil {
@@ -90,6 +120,10 @@ func (server *Server) handleGetProjectFact(response http.ResponseWriter, request
 	}
 	if factKey == "" {
 		writeError(response, http.StatusNotFound, "project fact not found")
+		return
+	}
+
+	if server.serveLegacyRead(response, request, blackboard.ReadRequest{ProjectID: projectID, Kind: blackboard.ReadKindLegacyFactDetailV1, LegacyFactDetail: &blackboard.LegacyFactDetailRequest{FactKey: factKey}}) {
 		return
 	}
 
@@ -191,6 +225,10 @@ func (server *Server) handleProjectFactVersions(response http.ResponseWriter, re
 		return
 	}
 
+	if server.serveLegacyRead(response, request, blackboard.ReadRequest{ProjectID: projectID, Kind: blackboard.ReadKindLegacyFactVersionsV1, LegacyFactVersions: &blackboard.LegacyFactVersionsRequest{FactKey: factKey}}) {
+		return
+	}
+
 	versions, err := server.facts.FactVersions(projectID, factKey)
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "list fact versions")
@@ -249,6 +287,10 @@ func (server *Server) handleFactRelations(response http.ResponseWriter, request 
 	}
 	if factKey == "" {
 		writeError(response, http.StatusNotFound, "project fact not found")
+		return
+	}
+
+	if server.serveLegacyRead(response, request, blackboard.ReadRequest{ProjectID: projectID, Kind: blackboard.ReadKindLegacyFactRelationsV1, LegacyFactRelations: &blackboard.LegacyFactRelationsRequest{FactKey: factKey}}) {
 		return
 	}
 
@@ -319,6 +361,9 @@ func (server *Server) handleListFindings(response http.ResponseWriter, request *
 	if !server.requireProject(response, projectID) {
 		return
 	}
+	if server.serveLegacyRead(response, request, blackboard.ReadRequest{ProjectID: projectID, Kind: blackboard.ReadKindLegacyFindingCollectionV1, LegacyFindingCollection: &blackboard.LegacyFindingCollectionRequest{}}) {
+		return
+	}
 	findings, err := server.facts.ListFindings(projectID)
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "list findings")
@@ -345,6 +390,10 @@ func (server *Server) handleFindingVersions(response http.ResponseWriter, reques
 		return
 	}
 
+	if server.serveLegacyRead(response, request, blackboard.ReadRequest{ProjectID: projectID, Kind: blackboard.ReadKindLegacyFindingVersionsV1, LegacyFindingVersions: &blackboard.LegacyFindingVersionsRequest{FindingKey: findingKey}}) {
+		return
+	}
+
 	versions, err := server.facts.FindingVersions(projectID, findingKey)
 	if err != nil {
 		writeFactError(response, err)
@@ -363,6 +412,9 @@ func (server *Server) handleFindingVersions(response http.ResponseWriter, reques
 func (server *Server) handleListEvidence(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
 	if !server.requireProject(response, projectID) {
+		return
+	}
+	if server.serveLegacyRead(response, request, blackboard.ReadRequest{ProjectID: projectID, Kind: blackboard.ReadKindLegacyEvidenceCollectionV1, LegacyEvidenceCollection: &blackboard.LegacyEvidenceCollectionRequest{}}) {
 		return
 	}
 	evidence, err := server.facts.ListEvidence(projectID)
@@ -444,6 +496,29 @@ func (server *Server) handleReportTrigger(response http.ResponseWriter, request 
 			writeError(response, http.StatusBadRequest, "invalid JSON body")
 			return
 		}
+	}
+
+	// Graph epoch: delegate to PentestReportV1 (read contract §18.5). A task_id
+	// selects the task Scope; an absent task_id uses the current Scope. CTF
+	// Projects fail project_kind_mismatch rather than rendering a vuln report.
+	if server.reads != nil {
+		scopeContext := "current"
+		if input.TaskID != "" {
+			scopeContext = "task:" + input.TaskID
+		}
+		includeTrue := true
+		envelope, err := server.reads.Read(request.Context(), blackboard.ReadRequest{ProtocolVersion: blackboard.BlackboardReadProtocolVersion, ProjectID: projectID, Kind: blackboard.ReadKindPentestReportV1, PentestReport: &blackboard.PentestReportRequest{Format: "markdown", ScopeContext: scopeContext, IncludeUnconfirmed: &includeTrue, IncludeTentativeFacts: &includeTrue}})
+		if err != nil {
+			writeBlackboardReadError(response, err)
+			return
+		}
+		markdown, ok := envelope.Result.(blackboard.ReportMarkdownV1)
+		if !ok {
+			writeError(response, http.StatusInternalServerError, "report projection returned unexpected shape")
+			return
+		}
+		writeJSON(response, http.StatusOK, blackboard.LegacyReportEnvelopeV1{Status: "generated", Format: "markdown", Markdown: markdown.Markdown})
+		return
 	}
 
 	taskID := input.TaskID

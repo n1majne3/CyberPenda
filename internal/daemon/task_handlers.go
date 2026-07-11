@@ -913,35 +913,9 @@ func (server *Server) prepareHandoffResumeContinuation(found task.Task) (task.Ta
 }
 
 func (server *Server) buildResumeGoal(found task.Task) (string, error) {
-	factIndex, err := server.facts.FactIndex(found.ProjectID, blackboard.FactIndexOptions{})
+	factLines, progressFacts, findingLines, err := server.resumeGoalBlackboardLines(found.ProjectID)
 	if err != nil {
 		return "", err
-	}
-	factLines := make([]string, 0, len(factIndex))
-	progressFacts := make([]string, 0)
-	for _, entry := range factIndex {
-		factLines = append(factLines, entry.FactKey+": "+entry.Summary)
-		if !strings.HasPrefix(entry.FactKey, "progress:") {
-			continue
-		}
-		fact, err := server.facts.GetFact(found.ProjectID, entry.FactKey)
-		if err != nil || strings.TrimSpace(fact.Body) == "" {
-			continue
-		}
-		progressFacts = append(progressFacts, entry.FactKey+":\n"+fact.Body)
-	}
-
-	findings, err := server.facts.ListFindings(found.ProjectID)
-	if err != nil {
-		return "", err
-	}
-	findingLines := make([]string, 0, len(findings))
-	start := 0
-	if len(findings) > adapters.MaxResumeFindings {
-		start = len(findings) - adapters.MaxResumeFindings
-	}
-	for _, finding := range findings[start:] {
-		findingLines = append(findingLines, finding.FindingKey+": "+finding.Title+" ("+string(finding.Status)+")")
 	}
 
 	taskSummary := ""
@@ -976,6 +950,102 @@ func (server *Server) buildResumeGoal(found task.Task) (string, error) {
 		ProgressFacts:     progressFacts,
 		SteeringDirective: steeringDirective,
 	}), nil
+}
+
+// resumeGoalBlackboardLines gathers the Fact/Finding lines that seed a Task
+// resume prompt. In the graph epoch it reads through the legacy compatibility
+// projections so no frozen legacy table is queried; otherwise it falls back to
+// the legacy table service.
+func (server *Server) resumeGoalBlackboardLines(projectID string) (factLines, progressFacts, findingLines []string, err error) {
+	if server.reads != nil {
+		return server.resumeGoalBlackboardLinesGraph(projectID)
+	}
+	return server.resumeGoalBlackboardLinesLegacy(projectID)
+}
+
+func (server *Server) resumeGoalBlackboardLinesLegacy(projectID string) (factLines, progressFacts, findingLines []string, err error) {
+	factIndex, err := server.facts.FactIndex(projectID, blackboard.FactIndexOptions{})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	factLines = make([]string, 0, len(factIndex))
+	progressFacts = make([]string, 0)
+	for _, entry := range factIndex {
+		factLines = append(factLines, entry.FactKey+": "+entry.Summary)
+		if !strings.HasPrefix(entry.FactKey, "progress:") {
+			continue
+		}
+		fact, err := server.facts.GetFact(projectID, entry.FactKey)
+		if err != nil || strings.TrimSpace(fact.Body) == "" {
+			continue
+		}
+		progressFacts = append(progressFacts, entry.FactKey+":\n"+fact.Body)
+	}
+
+	findings, err := server.facts.ListFindings(projectID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	findingLines = make([]string, 0, len(findings))
+	start := 0
+	if len(findings) > adapters.MaxResumeFindings {
+		start = len(findings) - adapters.MaxResumeFindings
+	}
+	for _, finding := range findings[start:] {
+		findingLines = append(findingLines, finding.FindingKey+": "+finding.Title+" ("+string(finding.Status)+")")
+	}
+	return factLines, progressFacts, findingLines, nil
+}
+
+func (server *Server) resumeGoalBlackboardLinesGraph(projectID string) (factLines, progressFacts, findingLines []string, err error) {
+	ctx := context.Background()
+	factEnvelope, err := server.reads.Read(ctx, blackboard.ReadRequest{ProtocolVersion: blackboard.BlackboardReadProtocolVersion, ProjectID: projectID, Kind: blackboard.ReadKindLegacyFactIndexV1, LegacyFactIndex: &blackboard.LegacyFactIndexRequest{}})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	index, ok := factEnvelope.Result.(blackboard.LegacyFactIndexV1)
+	if !ok {
+		return nil, nil, nil, fmt.Errorf("legacy fact index projection returned %T", factEnvelope.Result)
+	}
+	factLines = make([]string, 0, len(index.Facts))
+	progressKeys := make([]string, 0)
+	for _, entry := range index.Facts {
+		factLines = append(factLines, entry.FactKey+": "+entry.Summary)
+		if strings.HasPrefix(entry.FactKey, "progress:") {
+			progressKeys = append(progressKeys, entry.FactKey)
+		}
+	}
+	progressFacts = make([]string, 0)
+	for _, key := range progressKeys {
+		detailEnvelope, err := server.reads.Read(ctx, blackboard.ReadRequest{ProtocolVersion: blackboard.BlackboardReadProtocolVersion, ProjectID: projectID, Kind: blackboard.ReadKindLegacyFactDetailV1, LegacyFactDetail: &blackboard.LegacyFactDetailRequest{FactKey: key}})
+		if err != nil {
+			continue
+		}
+		detail, ok := detailEnvelope.Result.(blackboard.LegacyFactDetailV1)
+		if !ok || strings.TrimSpace(detail.Body) == "" {
+			continue
+		}
+		progressFacts = append(progressFacts, key+":\n"+detail.Body)
+	}
+
+	findingsEnvelope, err := server.reads.Read(ctx, blackboard.ReadRequest{ProtocolVersion: blackboard.BlackboardReadProtocolVersion, ProjectID: projectID, Kind: blackboard.ReadKindLegacyFindingCollectionV1, LegacyFindingCollection: &blackboard.LegacyFindingCollectionRequest{}})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	collection, ok := findingsEnvelope.Result.(blackboard.LegacyFindingCollectionV1)
+	if !ok {
+		return nil, nil, nil, fmt.Errorf("legacy finding collection projection returned %T", findingsEnvelope.Result)
+	}
+	findings := collection.Findings
+	findingLines = make([]string, 0, len(findings))
+	start := 0
+	if len(findings) > adapters.MaxResumeFindings {
+		start = len(findings) - adapters.MaxResumeFindings
+	}
+	for _, finding := range findings[start:] {
+		findingLines = append(findingLines, finding.FindingKey+": "+finding.Title+" ("+finding.Status+")")
+	}
+	return factLines, progressFacts, findingLines, nil
 }
 
 func (server *Server) writeResumePreparationError(response http.ResponseWriter, err error) {

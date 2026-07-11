@@ -66,6 +66,15 @@ type DashboardCTFV1 struct {
 	PrimarySolution        *NodeRefV1 `json:"primary_solution"`
 }
 
+// DashboardCountsV1 preserves the legacy Dashboard counts shape alongside
+// the additive Blackboard/Health/CTF fields (read contract §18.5).
+type DashboardCountsV1 struct {
+	Tasks    int `json:"tasks"`
+	Facts    int `json:"facts"`
+	Findings int `json:"findings"`
+	Evidence int `json:"evidence"`
+}
+
 // ProjectBlackboardSummaryV1 is the versioned Blackboard read shape for this projection.
 type ProjectBlackboardSummaryV1 struct {
 	ProjectID   string                `json:"project_id"`
@@ -76,6 +85,7 @@ type ProjectBlackboardSummaryV1 struct {
 	Blackboard  DashboardBlackboardV1 `json:"blackboard"`
 	Health      DashboardHealthV1     `json:"health"`
 	CTF         *DashboardCTFV1       `json:"ctf"`
+	Counts      DashboardCountsV1     `json:"counts"`
 	NextActions []string              `json:"next_actions"`
 }
 
@@ -127,8 +137,18 @@ func buildProjectBlackboardSummary(ctx context.Context, tx *sql.Tx, snapshot Gra
 		return ProjectBlackboardSummaryV1{}, err
 	}
 	bb := DashboardBlackboardV1{ObservedGraphRevision: snapshot.GraphRevision, NodesByType: work.Summary.NodeCounts, CurrentTruth: work.Summary.CurrentTruth, Frontier: work.Summary.Frontier, OpenAttempts: work.Summary.OpenAttempts, ConfirmedFindings: work.Summary.ConfirmedFindings, UnconfirmedFindings: work.Summary.UnconfirmedFindings}
+	counts := DashboardCountsV1{Tasks: tasks.Total}
 	for _, n := range snapshot.Nodes {
-		if n.NodeType == NodeTypeEvidenceArtifact && n.Disposition == DispositionMain {
+		if n.Disposition != DispositionMain {
+			continue
+		}
+		switch n.NodeType {
+		case NodeTypeProjectFact:
+			counts.Facts++
+		case NodeTypeFinding:
+			counts.Findings++
+		case NodeTypeEvidenceArtifact:
+			counts.Evidence++
 			if n.PropertyMap["status"] == "available" {
 				bb.AvailableEvidence++
 			}
@@ -174,7 +194,7 @@ func buildProjectBlackboardSummary(ctx context.Context, tx *sql.Tx, snapshot Gra
 		ctf = &value
 	}
 	actions := dashboardNextActions(scope, tasks, bb, health)
-	return ProjectBlackboardSummaryV1{ProjectID: snapshot.ProjectID, Name: name, ProjectKind: projectKind, Scope: scope, Tasks: tasks, Blackboard: bb, Health: health, CTF: ctf, NextActions: actions}, nil
+	return ProjectBlackboardSummaryV1{ProjectID: snapshot.ProjectID, Name: name, ProjectKind: projectKind, Scope: scope, Tasks: tasks, Blackboard: bb, Health: health, CTF: ctf, Counts: counts, NextActions: actions}, nil
 }
 func dashboardHealth(ctx context.Context, tx *sql.Tx, projectID string, revision int) (DashboardHealthV1, error) {
 	var h DashboardHealthV1

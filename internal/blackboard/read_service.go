@@ -41,6 +41,13 @@ const (
 	ReadKindEntityDetailV1             ReadKind = "entity_detail_v1"
 	ReadKindPentestReportV1            ReadKind = "pentest_report_v1"
 	ReadKindCTFSolutionV1              ReadKind = "ctf_solution_v1"
+	ReadKindLegacyFactIndexV1          ReadKind = "legacy_fact_index_v1"
+	ReadKindLegacyFactDetailV1         ReadKind = "legacy_fact_detail_v1"
+	ReadKindLegacyFactVersionsV1       ReadKind = "legacy_fact_versions_v1"
+	ReadKindLegacyFactRelationsV1      ReadKind = "legacy_fact_relations_v1"
+	ReadKindLegacyFindingCollectionV1  ReadKind = "legacy_finding_collection_v1"
+	ReadKindLegacyFindingVersionsV1    ReadKind = "legacy_finding_versions_v1"
+	ReadKindLegacyEvidenceCollectionV1 ReadKind = "legacy_evidence_collection_v1"
 )
 
 const (
@@ -60,28 +67,35 @@ type ReadKind string
 
 // ReadRequest is the versioned Blackboard read shape for this projection.
 type ReadRequest struct {
-	ProtocolVersion     int
-	ProjectID           string
-	Kind                ReadKind
-	AtRevision          *int
-	RecordCollection    *RecordCollectionRequest
-	RecordResolve       *RecordResolveRequest
-	RecordDetail        *RecordDetailRequest
-	RecordHistory       *RecordHistoryRequest
-	RecordProvenance    *RecordProvenanceRequest
-	GraphTraversal      *GraphTraversalRequest
-	BlackboardHealth    *BlackboardHealthRequest
-	HealthRun           *HealthRunRequest
-	HealthResults       *HealthResultsRequest
-	GraphExplorer       *GraphExplorerRequest
-	BlackboardWork      *BlackboardWorkRequest
-	ProjectSummary      *ProjectBlackboardSummaryRequest
-	CurrentTruth        *CurrentTruthRequest
-	ExplorationFrontier *ExplorationFrontierRequest
-	EntityCollection    *EntityCollectionRequest
-	EntityDetail        *EntityDetailRequest
-	PentestReport       *PentestReportRequest
-	CTFSolution         *CTFSolutionRequest
+	ProtocolVersion          int
+	ProjectID                string
+	Kind                     ReadKind
+	AtRevision               *int
+	RecordCollection         *RecordCollectionRequest
+	RecordResolve            *RecordResolveRequest
+	RecordDetail             *RecordDetailRequest
+	RecordHistory            *RecordHistoryRequest
+	RecordProvenance         *RecordProvenanceRequest
+	GraphTraversal           *GraphTraversalRequest
+	BlackboardHealth         *BlackboardHealthRequest
+	HealthRun                *HealthRunRequest
+	HealthResults            *HealthResultsRequest
+	GraphExplorer            *GraphExplorerRequest
+	BlackboardWork           *BlackboardWorkRequest
+	ProjectSummary           *ProjectBlackboardSummaryRequest
+	CurrentTruth             *CurrentTruthRequest
+	ExplorationFrontier      *ExplorationFrontierRequest
+	EntityCollection         *EntityCollectionRequest
+	EntityDetail             *EntityDetailRequest
+	PentestReport            *PentestReportRequest
+	CTFSolution              *CTFSolutionRequest
+	LegacyFactIndex          *LegacyFactIndexRequest
+	LegacyFactDetail         *LegacyFactDetailRequest
+	LegacyFactVersions       *LegacyFactVersionsRequest
+	LegacyFactRelations      *LegacyFactRelationsRequest
+	LegacyFindingCollection  *LegacyFindingCollectionRequest
+	LegacyFindingVersions    *LegacyFindingVersionsRequest
+	LegacyEvidenceCollection *LegacyEvidenceCollectionRequest
 }
 
 // ReadEnvelope is the versioned Blackboard read shape for this projection.
@@ -458,6 +472,41 @@ func (s *BlackboardReadService) Read(ctx context.Context, request ReadRequest) (
 			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "ctf_solution request is required", "ctf_solution")
 		}
 		result, err = buildCTFSolutionReport(ctx, tx, snapshot, projectKind, *request.CTFSolution)
+	case ReadKindLegacyFactIndexV1:
+		if request.LegacyFactIndex == nil {
+			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "legacy_fact_index request is required", "legacy_fact_index")
+		}
+		result, err = buildLegacyFactIndex(snapshot, *request.LegacyFactIndex, cursor, s.cursorKey)
+	case ReadKindLegacyFactDetailV1:
+		if request.LegacyFactDetail == nil {
+			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "legacy_fact_detail request is required", "legacy_fact_detail")
+		}
+		result, err = buildLegacyFactDetail(snapshot, *request.LegacyFactDetail)
+	case ReadKindLegacyFactVersionsV1:
+		if request.LegacyFactVersions == nil {
+			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "legacy_fact_versions request is required", "legacy_fact_versions")
+		}
+		result, err = buildLegacyFactVersions(ctx, tx, snapshot, *request.LegacyFactVersions)
+	case ReadKindLegacyFactRelationsV1:
+		if request.LegacyFactRelations == nil {
+			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "legacy_fact_relations request is required", "legacy_fact_relations")
+		}
+		result, err = buildLegacyFactRelations(ctx, tx, snapshot, *request.LegacyFactRelations)
+	case ReadKindLegacyFindingCollectionV1:
+		if request.LegacyFindingCollection == nil {
+			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "legacy_finding_collection request is required", "legacy_finding_collection")
+		}
+		result, err = buildLegacyFindingCollection(snapshot, *request.LegacyFindingCollection, cursor, s.cursorKey)
+	case ReadKindLegacyFindingVersionsV1:
+		if request.LegacyFindingVersions == nil {
+			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "legacy_finding_versions request is required", "legacy_finding_versions")
+		}
+		result, err = buildLegacyFindingVersions(ctx, tx, snapshot, *request.LegacyFindingVersions)
+	case ReadKindLegacyEvidenceCollectionV1:
+		if request.LegacyEvidenceCollection == nil {
+			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "legacy_evidence_collection request is required", "legacy_evidence_collection")
+		}
+		result, err = buildLegacyEvidenceCollection(snapshot, *request.LegacyEvidenceCollection, cursor, s.cursorKey)
 	default:
 		err = readValidationError(ErrCodeInvalidQuery, "unknown read projection", "kind")
 	}
@@ -565,6 +614,12 @@ func resolveReadRevision(ctx context.Context, tx *sql.Tx, request ReadRequest, c
 		collectionCursor = request.ExplorationFrontier.Cursor
 	case request.EntityCollection != nil:
 		collectionCursor = request.EntityCollection.Cursor
+	case request.LegacyFactIndex != nil:
+		collectionCursor = request.LegacyFactIndex.Cursor
+	case request.LegacyFindingCollection != nil:
+		collectionCursor = request.LegacyFindingCollection.Cursor
+	case request.LegacyEvidenceCollection != nil:
+		collectionCursor = request.LegacyEvidenceCollection.Cursor
 	}
 	if collectionCursor != "" {
 		cursor, err := decodeReadCursor(collectionCursor, cursorKey)

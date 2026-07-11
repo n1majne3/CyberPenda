@@ -13,6 +13,7 @@ func (server *Server) registerMCP() {
 			Projects: server.projects,
 			Facts:    server.facts,
 			Tasks:    server.tasks,
+			Reads:    server.reads,
 		})
 	}, &sdkmcp.StreamableHTTPOptions{
 		Stateless:    true,

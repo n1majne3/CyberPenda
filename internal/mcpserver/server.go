@@ -22,6 +22,20 @@ type Deps struct {
 	Projects *project.Service
 	Facts    *blackboard.Service
 	Tasks    *task.Service
+	// Reads, when non-nil (graph store active), makes the compatibility read
+	// tools delegate to BlackboardReadService instead of the legacy tables.
+	Reads *blackboard.BlackboardReadService
+}
+
+// legacyReadResult runs a legacy compatibility read against BlackboardReadService
+// and returns the legacy-shaped result. Callers must guard with deps.Reads != nil.
+func (deps Deps) legacyReadResult(ctx context.Context, readRequest blackboard.ReadRequest) (any, error) {
+	readRequest.ProtocolVersion = blackboard.BlackboardReadProtocolVersion
+	envelope, err := deps.Reads.Read(ctx, readRequest)
+	if err != nil {
+		return nil, err
+	}
+	return envelope.Result, nil
 }
 
 // New builds a configured MCP server with the MVP trusted project-interface tools.
@@ -59,8 +73,14 @@ func New(deps Deps) *sdkmcp.Server {
 		Name:        "get_project_fact",
 		Description: "Fetch the full body of a project fact by fact key.",
 	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args projectFactKeyArgs) (*sdkmcp.CallToolResult, any, error) {
-		_ = ctx
 		_ = req
+		if deps.Reads != nil {
+			result, err := deps.legacyReadResult(ctx, blackboard.ReadRequest{ProjectID: args.ProjectID, Kind: blackboard.ReadKindLegacyFactDetailV1, LegacyFactDetail: &blackboard.LegacyFactDetailRequest{FactKey: args.FactKey}})
+			if err != nil {
+				return toolError(err)
+			}
+			return toolJSON(result)
+		}
 		fact, err := deps.Facts.GetFact(args.ProjectID, args.FactKey)
 		if err != nil {
 			return toolError(err)
@@ -72,8 +92,14 @@ func New(deps Deps) *sdkmcp.Server {
 		Name:        "list_project_facts",
 		Description: "List the compact fact index for current truth.",
 	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args projectOnlyArgs) (*sdkmcp.CallToolResult, any, error) {
-		_ = ctx
 		_ = req
+		if deps.Reads != nil {
+			result, err := deps.legacyReadResult(ctx, blackboard.ReadRequest{ProjectID: args.ProjectID, Kind: blackboard.ReadKindLegacyFactIndexV1, LegacyFactIndex: &blackboard.LegacyFactIndexRequest{}})
+			if err != nil {
+				return toolError(err)
+			}
+			return toolJSON(result)
+		}
 		index, err := deps.Facts.FactIndex(args.ProjectID, blackboard.FactIndexOptions{})
 		if err != nil {
 			return toolError(err)
@@ -85,8 +111,15 @@ func New(deps Deps) *sdkmcp.Server {
 		Name:        "search_project_facts",
 		Description: "Search project facts by key, summary, or body.",
 	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args searchFactsArgs) (*sdkmcp.CallToolResult, any, error) {
-		_ = ctx
 		_ = req
+		if deps.Reads != nil {
+			include := args.IncludeDeprecated
+			result, err := deps.legacyReadResult(ctx, blackboard.ReadRequest{ProjectID: args.ProjectID, Kind: blackboard.ReadKindLegacyFactIndexV1, LegacyFactIndex: &blackboard.LegacyFactIndexRequest{IncludeDeprecated: &include, Query: args.Query}})
+			if err != nil {
+				return toolError(err)
+			}
+			return toolJSON(result)
+		}
 		matches, err := deps.Facts.SearchFacts(args.ProjectID, args.Query, args.IncludeDeprecated)
 		if err != nil {
 			return toolError(err)
@@ -158,8 +191,14 @@ func New(deps Deps) *sdkmcp.Server {
 		Name:        "list_vulnerabilities",
 		Description: "List all findings for a project.",
 	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args projectOnlyArgs) (*sdkmcp.CallToolResult, any, error) {
-		_ = ctx
 		_ = req
+		if deps.Reads != nil {
+			result, err := deps.legacyReadResult(ctx, blackboard.ReadRequest{ProjectID: args.ProjectID, Kind: blackboard.ReadKindLegacyFindingCollectionV1, LegacyFindingCollection: &blackboard.LegacyFindingCollectionRequest{}})
+			if err != nil {
+				return toolError(err)
+			}
+			return toolJSON(result)
+		}
 		findings, err := deps.Facts.ListFindings(args.ProjectID)
 		if err != nil {
 			return toolError(err)
@@ -193,8 +232,23 @@ func New(deps Deps) *sdkmcp.Server {
 		Name:        "generate_report",
 		Description: "Generate a Markdown report from stored project state.",
 	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args generateReportArgs) (*sdkmcp.CallToolResult, any, error) {
-		_ = ctx
 		_ = req
+		if deps.Reads != nil {
+			scopeContext := "current"
+			if args.TaskID != "" {
+				scopeContext = "task:" + args.TaskID
+			}
+			includeTrue := true
+			result, err := deps.legacyReadResult(ctx, blackboard.ReadRequest{ProjectID: args.ProjectID, Kind: blackboard.ReadKindPentestReportV1, PentestReport: &blackboard.PentestReportRequest{Format: "markdown", ScopeContext: scopeContext, IncludeUnconfirmed: &includeTrue, IncludeTentativeFacts: &includeTrue}})
+			if err != nil {
+				return toolError(err)
+			}
+			markdown, ok := result.(blackboard.ReportMarkdownV1)
+			if !ok {
+				return toolError(fmt.Errorf("report projection returned unexpected shape"))
+			}
+			return toolJSON(blackboard.LegacyReportEnvelopeV1{Status: "generated", Format: "markdown", Markdown: markdown.Markdown})
+		}
 		taskID := args.TaskID
 		if taskID == "" && deps.Tasks != nil {
 			tasks, err := deps.Tasks.ListForProject(args.ProjectID)
