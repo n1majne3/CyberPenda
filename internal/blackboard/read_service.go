@@ -39,6 +39,8 @@ const (
 	ReadKindExplorationFrontierV1      ReadKind = "exploration_frontier_v1"
 	ReadKindEntityCollectionV1         ReadKind = "entity_collection_v1"
 	ReadKindEntityDetailV1             ReadKind = "entity_detail_v1"
+	ReadKindPentestReportV1            ReadKind = "pentest_report_v1"
+	ReadKindCTFSolutionV1              ReadKind = "ctf_solution_v1"
 )
 
 const (
@@ -78,6 +80,8 @@ type ReadRequest struct {
 	ExplorationFrontier *ExplorationFrontierRequest
 	EntityCollection    *EntityCollectionRequest
 	EntityDetail        *EntityDetailRequest
+	PentestReport       *PentestReportRequest
+	CTFSolution         *CTFSolutionRequest
 }
 
 // ReadEnvelope is the versioned Blackboard read shape for this projection.
@@ -444,6 +448,16 @@ func (s *BlackboardReadService) Read(ctx context.Context, request ReadRequest) (
 			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "blackboard_work request is required", "blackboard_work")
 		}
 		result, err = buildBlackboardWork(ctx, tx, snapshot)
+	case ReadKindPentestReportV1:
+		if request.PentestReport == nil {
+			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "pentest_report request is required", "pentest_report")
+		}
+		result, err = buildPentestReport(ctx, tx, snapshot, projectKind, *request.PentestReport)
+	case ReadKindCTFSolutionV1:
+		if request.CTFSolution == nil {
+			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "ctf_solution request is required", "ctf_solution")
+		}
+		result, err = buildCTFSolutionReport(ctx, tx, snapshot, projectKind, *request.CTFSolution)
 	default:
 		err = readValidationError(ErrCodeInvalidQuery, "unknown read projection", "kind")
 	}
