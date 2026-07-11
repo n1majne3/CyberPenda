@@ -281,17 +281,18 @@ type MutationBatch struct {
 
 // OperationResult is the per-operation outcome within a MutationResult.
 type OperationResult struct {
-	OpID              string   `json:"op_id"`
-	NodeID            string   `json:"node_id,omitempty"`
-	NodeType          NodeType `json:"node_type,omitempty"`
-	StableKey         string   `json:"stable_key,omitempty"`
-	NodeVersion       int      `json:"node_version,omitempty"`
-	EdgeID            string   `json:"edge_id,omitempty"`
-	EdgeType          EdgeType `json:"edge_type,omitempty"`
-	EdgeVersion       int      `json:"edge_version,omitempty"`
-	SemanticHash      string   `json:"semantic_hash,omitempty"`
-	ResolvedFromAlias string   `json:"resolved_from_alias,omitempty"`
-	Changed           bool     `json:"changed"`
+	OpID                 string   `json:"op_id"`
+	NodeID               string   `json:"node_id,omitempty"`
+	NodeType             NodeType `json:"node_type,omitempty"`
+	StableKey            string   `json:"stable_key,omitempty"`
+	NodeVersion          int      `json:"node_version,omitempty"`
+	EdgeID               string   `json:"edge_id,omitempty"`
+	EdgeType             EdgeType `json:"edge_type,omitempty"`
+	EdgeVersion          int      `json:"edge_version,omitempty"`
+	SemanticHash         string   `json:"semantic_hash,omitempty"`
+	ResolvedFromAlias    string   `json:"resolved_from_alias,omitempty"`
+	ResolvedFromMergedID string   `json:"resolved_from_merged_id,omitempty"`
+	Changed              bool     `json:"changed"`
 }
 
 // MutationResult is the observable outcome of Apply (graph contract §13,
@@ -417,17 +418,18 @@ type EdgeRecord struct {
 // result_json to the ledger and when decoding it back for replay/reads. Keeping
 // one definition ensures the stored and decoded forms are byte-compatible.
 type operationResultLedgerForm struct {
-	OpID              string   `json:"op_id"`
-	NodeID            string   `json:"node_id"`
-	NodeType          NodeType `json:"node_type"`
-	StableKey         string   `json:"stable_key"`
-	NodeVersion       int      `json:"node_version"`
-	EdgeID            string   `json:"edge_id,omitempty"`
-	EdgeType          EdgeType `json:"edge_type,omitempty"`
-	EdgeVersion       int      `json:"edge_version,omitempty"`
-	SemanticHash      string   `json:"semantic_hash"`
-	ResolvedFromAlias string   `json:"resolved_from_alias,omitempty"`
-	Changed           bool     `json:"changed"`
+	OpID                 string   `json:"op_id"`
+	NodeID               string   `json:"node_id"`
+	NodeType             NodeType `json:"node_type"`
+	StableKey            string   `json:"stable_key"`
+	NodeVersion          int      `json:"node_version"`
+	EdgeID               string   `json:"edge_id,omitempty"`
+	EdgeType             EdgeType `json:"edge_type,omitempty"`
+	EdgeVersion          int      `json:"edge_version,omitempty"`
+	SemanticHash         string   `json:"semantic_hash"`
+	ResolvedFromAlias    string   `json:"resolved_from_alias,omitempty"`
+	ResolvedFromMergedID string   `json:"resolved_from_merged_id,omitempty"`
+	Changed              bool     `json:"changed"`
 }
 
 // resultLedgerForm is the canonical JSON shape stored in

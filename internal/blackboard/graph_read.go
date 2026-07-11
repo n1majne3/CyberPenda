@@ -30,7 +30,7 @@ func decodeResultJSON(data string) (*MutationResult, error) {
 	for i, o := range rf.Operations {
 		out.Operations[i] = OperationResult{
 			OpID: o.OpID, NodeID: o.NodeID, NodeType: o.NodeType, StableKey: o.StableKey,
-			NodeVersion: o.NodeVersion, EdgeID: o.EdgeID, EdgeType: o.EdgeType, EdgeVersion: o.EdgeVersion, SemanticHash: o.SemanticHash, ResolvedFromAlias: o.ResolvedFromAlias, Changed: o.Changed,
+			NodeVersion: o.NodeVersion, EdgeID: o.EdgeID, EdgeType: o.EdgeType, EdgeVersion: o.EdgeVersion, SemanticHash: o.SemanticHash, ResolvedFromAlias: o.ResolvedFromAlias, ResolvedFromMergedID: o.ResolvedFromMergedID, Changed: o.Changed,
 		}
 	}
 	return out, nil

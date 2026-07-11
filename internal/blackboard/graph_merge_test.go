@@ -377,3 +377,76 @@ func TestEntityDuplicateFingerprintCanonicalizesIPv6(t *testing.T) {
 		t.Fatalf("IPv6 duplicate fingerprint drift: %+v err=%v", candidates, err)
 	}
 }
+
+func TestSameBatchArchiveRetiresPendingEdge(t *testing.T) {
+	graph, projects, _ := newGraphServices(t)
+	projectID, execCtx := mustGraphProject(t, projects)
+	result, err := graph.Apply(context.Background(), blackboard.MutationBatch{SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "c08:pending-edge-archive", Context: execCtx, Operations: []blackboard.Operation{
+		{OpID: "child", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEntity, StableKey: "network:pending-child"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "network", "name": "child", "locator": "10.1.0.0/16", "scope_status": "in_scope", "status": "retired"}}},
+		{OpID: "parent", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEntity, StableKey: "network:pending-parent"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "network", "name": "parent", "locator": "10.0.0.0/8", "scope_status": "in_scope", "status": "retired"}}},
+		{OpID: "part-of", Kind: blackboard.OpPutEdge, PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypePartOf, From: blackboard.NodeRef{OpID: "child"}, To: blackboard.NodeRef{OpID: "parent"}}},
+		{OpID: "archive", Kind: blackboard.OpSetDisposition, Node: blackboard.NodeRef{OpID: "child"}, Disposition: blackboard.SetDispositionInput{ExpectedVersion: 1, Disposition: blackboard.DispositionArchived}},
+	}})
+	if err != nil {
+		t.Fatalf("same-batch archive: %v", err)
+	}
+	edge, err := graph.ReadEdge(context.Background(), blackboard.ReadEdgeRequest{ProjectID: projectID, EdgeID: result.Operations[2].EdgeID})
+	if err != nil || edge.State != "retired" || edge.Version != 2 {
+		t.Fatalf("pending touching edge stayed active: %+v err=%v", edge, err)
+	}
+}
+
+func TestSameBatchMergeRedirectsFlattenAndOrdinaryWriteFollowsID(t *testing.T) {
+	graph, projects, _ := newGraphServices(t)
+	projectID, execCtx := mustGraphProject(t, projects)
+	result, err := graph.Apply(context.Background(), blackboard.MutationBatch{SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "c08:staged-redirect-chain", Context: execCtx, Operations: []blackboard.Operation{
+		{OpID: "a", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "fact:chain-a"}, Create: blackboard.CreateNodeInput{Properties: blackboard.ProjectFactProperties{Category: "service", Summary: "a", ScopeStatus: blackboard.ScopeStatusInScope}}},
+		{OpID: "b", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "fact:chain-b"}, Create: blackboard.CreateNodeInput{Properties: blackboard.ProjectFactProperties{Category: "service", Summary: "b", ScopeStatus: blackboard.ScopeStatusInScope}}},
+		{OpID: "c", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "fact:chain-c"}, Create: blackboard.CreateNodeInput{Properties: blackboard.ProjectFactProperties{Category: "service", Summary: "c", ScopeStatus: blackboard.ScopeStatusInScope}}},
+		{OpID: "a-into-b", Kind: blackboard.OpMergeNodes, Merge: blackboard.MergeNodesInput{Source: blackboard.NodeRef{OpID: "a"}, Canonical: blackboard.NodeRef{OpID: "b"}, SourceExpectedVersion: 1, CanonicalExpectedVersion: 1}},
+		{OpID: "b-into-c", Kind: blackboard.OpMergeNodes, Merge: blackboard.MergeNodesInput{Source: blackboard.NodeRef{OpID: "b"}, Canonical: blackboard.NodeRef{OpID: "c"}, SourceExpectedVersion: 1, CanonicalExpectedVersion: 1}},
+		{OpID: "write-via-a-id", Kind: blackboard.OpTransitionNode, Node: blackboard.NodeRef{OpID: "a"}, Transition: blackboard.TransitionNodeInput{ExpectedVersion: 1, Status: "deprecated"}},
+	}})
+	if err != nil {
+		t.Fatalf("staged redirect chain: %v", err)
+	}
+	finalID := result.Operations[2].NodeID
+	if result.Operations[5].NodeID != finalID || result.Operations[5].ResolvedFromMergedID == "" {
+		t.Fatalf("ordinary write did not follow staged merged ID: %+v", result.Operations[5])
+	}
+	for _, key := range []string{"fact:chain-a", "fact:chain-b"} {
+		read, err := graph.ReadNode(context.Background(), blackboard.ReadNodeRequest{ProjectID: projectID, NodeType: blackboard.NodeTypeProjectFact, Key: key})
+		if err != nil || read.Node.ID != finalID || read.ResolvedFromAlias != key {
+			t.Fatalf("staged alias not flattened for %s: %+v err=%v", key, read, err)
+		}
+	}
+}
+
+func TestSameBatchTransitionThenArchiveUsesProposedState(t *testing.T) {
+	graph, projects, _ := newGraphServices(t)
+	_, execCtx := mustGraphProject(t, projects)
+	_, err := graph.Apply(context.Background(), blackboard.MutationBatch{SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "c08:transition-archive", Context: execCtx, Operations: []blackboard.Operation{
+		{OpID: "fact", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "fact:transition-archive"}, Create: blackboard.CreateNodeInput{Properties: blackboard.ProjectFactProperties{Category: "service", Summary: "archive", ScopeStatus: blackboard.ScopeStatusInScope}}},
+		{OpID: "deprecate", Kind: blackboard.OpTransitionNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "fact:transition-archive"}, Transition: blackboard.TransitionNodeInput{ExpectedVersion: 1, Status: "deprecated"}},
+		{OpID: "archive", Kind: blackboard.OpSetDisposition, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "fact:transition-archive"}, Disposition: blackboard.SetDispositionInput{ExpectedVersion: 2, Disposition: blackboard.DispositionArchived}},
+	}})
+	if err != nil {
+		t.Fatalf("transition then archive: %v", err)
+	}
+}
+
+func TestEndpointDuplicateFingerprintPreservesPathCase(t *testing.T) {
+	graph, projects, _ := newGraphServices(t)
+	projectID, execCtx := mustGraphProject(t, projects)
+	_, err := graph.Apply(context.Background(), blackboard.MutationBatch{SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "c08:endpoint-case", Context: execCtx, Operations: []blackboard.Operation{
+		{OpID: "upper", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEntity, StableKey: "endpoint:upper"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "endpoint", "name": "upper", "locator": "https://EXAMPLE.com/Admin", "scope_status": "in_scope"}}},
+		{OpID: "lower", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEntity, StableKey: "endpoint:lower"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "endpoint", "name": "lower", "locator": "https://example.com/admin", "scope_status": "in_scope"}}},
+	}})
+	if err != nil {
+		t.Fatalf("create endpoints: %v", err)
+	}
+	candidates, err := graph.DuplicateCandidates(context.Background(), projectID)
+	if err != nil || len(candidates) != 0 {
+		t.Fatalf("case-sensitive endpoint paths collapsed: %+v err=%v", candidates, err)
+	}
+}

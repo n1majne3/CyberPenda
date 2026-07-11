@@ -39,17 +39,12 @@ func stageMergeNodes(tx *sql.Tx, projectID string, op Operation, opIndex, graphR
 		return OperationResult{}, validationError(ErrCodeMergeConflict, "merge endpoints must be current canonical identities", opIndex, op.OpID, "operations[].merge")
 	}
 	if canonical.disposition == DispositionArchived {
-		var touching int
-		if err := tx.QueryRow(`SELECT COUNT(*) FROM blackboard_edge_heads WHERE project_id=? AND state='active' AND (from_node_id=? OR to_node_id=?)`, projectID, source.nodeID, source.nodeID).Scan(&touching); err != nil {
+		touching, err := finalActiveEdgeTouches(tx, projectID, source.nodeID, state)
+		if err != nil {
 			return OperationResult{}, err
 		}
-		if touching > 0 {
+		if touching {
 			return OperationResult{}, validationError(ErrCodeMergeConflict, "cannot rewire active source edges to an archived canonical node", opIndex, op.OpID, "operations[].merge.canonical")
-		}
-		for _, edge := range state.pendingEdges {
-			if edge.fromID == source.nodeID || edge.toID == source.nodeID {
-				return OperationResult{}, validationError(ErrCodeMergeConflict, "cannot rewire active source edges to an archived canonical node", opIndex, op.OpID, "operations[].merge.canonical")
-			}
 		}
 	}
 
@@ -102,6 +97,17 @@ func stageMergeNodes(tx *sql.Tx, projectID string, op Operation, opIndex, graphR
 		return OperationResult{}, rowsErr
 	}
 	keyRows.Close()
+	latestPendingKeys := map[string]pendingKeyUpdate{}
+	for _, key := range state.pendingKeys {
+		latestPendingKeys[string(key.nodeType)+"\x00"+key.key] = key
+	}
+	for _, key := range latestPendingKeys {
+		if key.canonicalNodeID != source.nodeID {
+			continue
+		}
+		semHash := keySemanticHash(key.nodeType, key.key, "alias", key.sourceNodeID, canonical.nodeID, key.legacyNonconforming)
+		state.pendingKeys = append(state.pendingKeys, pendingKeyUpdate{nodeType: key.nodeType, key: key.key, role: "alias", sourceNodeID: key.sourceNodeID, canonicalNodeID: canonical.nodeID, keyVersion: key.keyVersion + 1, legacyNonconforming: key.legacyNonconforming, semHash: semHash, opIndex: opIndex, graphRevision: graphRevision})
+	}
 	for _, created := range state.pending {
 		if created.nodeID != source.nodeID {
 			continue
@@ -126,6 +132,41 @@ func stageMergeNodes(tx *sql.Tx, projectID string, op Operation, opIndex, graphR
 		return OperationResult{}, validationError(ErrCodeMergeConflict, "merge rewiring would create a controlled graph cycle", opIndex, op.OpID, "operations[].merge")
 	}
 	return OperationResult{OpID: op.OpID, NodeID: canonical.nodeID, NodeType: canonical.nodeType, StableKey: canonical.stableKey, NodeVersion: canonicalVersion, SemanticHash: canonicalHash, Changed: true}, nil
+}
+
+func finalActiveEdgeTouches(tx *sql.Tx, projectID, nodeID string, state *graphState) (bool, error) {
+	type edgeState struct{ from, to, state string }
+	edges := map[string]edgeState{}
+	rows, err := tx.Query(`SELECT edge_id,from_node_id,to_node_id,state FROM blackboard_edge_heads WHERE project_id=?`, projectID)
+	if err != nil {
+		return false, err
+	}
+	for rows.Next() {
+		var id string
+		var edge edgeState
+		if err := rows.Scan(&id, &edge.from, &edge.to, &edge.state); err != nil {
+			rows.Close()
+			return false, err
+		}
+		edges[id] = edge
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return false, err
+	}
+	rows.Close()
+	for _, edge := range state.pendingEdges {
+		edges[edge.id] = edgeState{from: edge.fromID, to: edge.toID, state: "active"}
+	}
+	for _, edge := range state.pendingEdgeUpdates {
+		edges[edge.id] = edgeState{from: edge.fromID, to: edge.toID, state: edge.state}
+	}
+	for _, edge := range edges {
+		if edge.state == "active" && (edge.from == nodeID || edge.to == nodeID) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func mergedGraphHasCycle(tx *sql.Tx, projectID string, state *graphState) bool {

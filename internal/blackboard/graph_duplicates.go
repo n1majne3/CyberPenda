@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/netip"
+	"net/url"
 	"sort"
 	"strings"
 	"unicode"
@@ -142,10 +143,14 @@ func normalizeEntityLocator(kind, locator string) string {
 		}
 	case "host", "domain":
 		return strings.TrimSuffix(strings.ToLower(locator), ".")
-	case "service", "endpoint", "application", "identity", "credential", "data_store":
-		return strings.ToLower(locator)
+	case "endpoint":
+		if parsed, err := url.Parse(locator); err == nil && parsed.IsAbs() {
+			parsed.Scheme = strings.ToLower(parsed.Scheme)
+			parsed.Host = strings.ToLower(parsed.Host)
+			return parsed.String()
+		}
 	default:
 		return locator
 	}
-	return strings.ToLower(locator)
+	return locator
 }

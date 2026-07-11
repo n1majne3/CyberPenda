@@ -21,7 +21,7 @@ func (s *GraphService) stageSetDisposition(tx *sql.Tx, batch MutationBatch, op O
 		return OperationResult{OpID: op.OpID, NodeID: node.nodeID, NodeType: node.nodeType, StableKey: node.stableKey, NodeVersion: node.version, SemanticHash: node.semHash, Changed: false}, nil
 	}
 	if want == DispositionArchived {
-		protected, protectErr := archiveProtected(tx, projectID, node.nodeID)
+		protected, protectErr := archiveProtected(tx, projectID, node.nodeID, state)
 		if protectErr != nil {
 			return OperationResult{}, protectErr
 		}
@@ -52,69 +52,111 @@ func (s *GraphService) stageSetDisposition(tx *sql.Tx, batch MutationBatch, op O
 	}
 	semHash := genericNodeSemanticHash(want, "", node.props)
 	state.pendingUpdates = append(state.pendingUpdates, pendingUpdate{nodeID: node.nodeID, nodeType: node.nodeType, stableKey: node.stableKey, version: node.version + 1, propsJSON: propsJSON, semHash: semHash, opIndex: opIndex, graphRevision: graphRevision, disposition: want})
-	return OperationResult{OpID: op.OpID, NodeID: node.nodeID, NodeType: node.nodeType, StableKey: node.stableKey, NodeVersion: node.version + 1, SemanticHash: hex.EncodeToString(semHash), ResolvedFromAlias: node.resolvedFromAlias, Changed: true}, nil
+	return OperationResult{OpID: op.OpID, NodeID: node.nodeID, NodeType: node.nodeType, StableKey: node.stableKey, NodeVersion: node.version + 1, SemanticHash: hex.EncodeToString(semHash), ResolvedFromAlias: node.resolvedFromAlias, ResolvedFromMergedID: node.resolvedFromMergedID, Changed: true}, nil
 }
 
 // archiveProtected computes the storage-contract protected closure needed by
 // an archive guard. It intentionally follows only relationships that preserve
 // live meaning; ordinary weak connectivity does not make a node protected.
-func archiveProtected(tx *sql.Tx, projectID, subjectID string) (bool, error) {
-	protected := map[string]bool{}
-	rows, err := tx.Query(`SELECT node_id,node_type,lifecycle_state FROM blackboard_node_heads WHERE project_id=? AND disposition='main'`, projectID)
+func archiveProtected(tx *sql.Tx, projectID, subjectID string, state *graphState) (bool, error) {
+	type finalNode struct {
+		nodeType    NodeType
+		lifecycle   string
+		disposition Disposition
+	}
+	nodes := map[string]finalNode{}
+	rows, err := tx.Query(`SELECT node_id,node_type,lifecycle_state,disposition FROM blackboard_node_heads WHERE project_id=?`, projectID)
 	if err != nil {
 		return false, err
 	}
 	for rows.Next() {
-		var id, nodeType, lifecycle string
-		if err := rows.Scan(&id, &nodeType, &lifecycle); err != nil {
+		var id, nodeType, lifecycle, disposition string
+		if err := rows.Scan(&id, &nodeType, &lifecycle, &disposition); err != nil {
 			rows.Close()
 			return false, err
 		}
-		switch NodeType(nodeType) {
-		case NodeTypeGoal:
-			protected[id] = lifecycle != "completed" && lifecycle != "failed" && lifecycle != "stopped" && lifecycle != "interrupted"
-		case NodeTypeExplorationObjective:
-			protected[id] = lifecycle == "open"
-		case NodeTypeAttempt:
-			protected[id] = lifecycle == "open" || lifecycle == "failed" || lifecycle == "blocked" || lifecycle == "inconclusive" || lifecycle == "interrupted"
-		case NodeTypeProjectDirective:
-			protected[id] = lifecycle == "active"
-		case NodeTypeProjectFact:
-			protected[id] = lifecycle == "tentative" || lifecycle == "confirmed"
-		case NodeTypeFinding:
-			protected[id] = lifecycle == "confirmed"
-		case NodeTypeSolution:
-			protected[id] = lifecycle == "verified"
-		}
+		nodes[id] = finalNode{nodeType: NodeType(nodeType), lifecycle: lifecycle, disposition: Disposition(disposition)}
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
 		return false, err
 	}
 	rows.Close()
+	for _, created := range state.pending {
+		lifecycle, _, _ := genericDerivedFields(created.nodeType, created.propsJSON)
+		nodes[created.nodeID] = finalNode{nodeType: created.nodeType, lifecycle: lifecycle, disposition: DispositionMain}
+	}
+	for _, update := range state.pendingUpdates {
+		disposition := update.disposition
+		if disposition == "" {
+			disposition = DispositionMain
+		}
+		lifecycle, _, _ := genericDerivedFields(update.nodeType, update.propsJSON)
+		nodes[update.nodeID] = finalNode{nodeType: update.nodeType, lifecycle: lifecycle, disposition: disposition}
+	}
+	protected := map[string]bool{}
+	for id, node := range nodes {
+		if node.disposition != DispositionMain {
+			continue
+		}
+		switch node.nodeType {
+		case NodeTypeGoal:
+			protected[id] = node.lifecycle != "completed" && node.lifecycle != "failed" && node.lifecycle != "stopped" && node.lifecycle != "interrupted"
+		case NodeTypeExplorationObjective:
+			protected[id] = node.lifecycle == "open"
+		case NodeTypeAttempt:
+			protected[id] = node.lifecycle == "open" || node.lifecycle == "failed" || node.lifecycle == "blocked" || node.lifecycle == "inconclusive" || node.lifecycle == "interrupted"
+		case NodeTypeProjectDirective:
+			protected[id] = node.lifecycle == "active"
+		case NodeTypeProjectFact:
+			protected[id] = node.lifecycle == "tentative" || node.lifecycle == "confirmed"
+		case NodeTypeFinding:
+			protected[id] = node.lifecycle == "confirmed"
+		case NodeTypeSolution:
+			protected[id] = node.lifecycle == "verified"
+		}
+	}
 
 	type relation struct{ edgeType, from, to string }
-	edgeRows, err := tx.Query(`SELECT edge_type,from_node_id,to_node_id FROM blackboard_edge_heads WHERE project_id=? AND state='active'`, projectID)
+	type finalEdge struct {
+		relation relation
+		state    string
+	}
+	edges := map[string]finalEdge{}
+	edgeRows, err := tx.Query(`SELECT edge_id,edge_type,from_node_id,to_node_id,state FROM blackboard_edge_heads WHERE project_id=?`, projectID)
 	if err != nil {
 		return false, err
 	}
-	var relations []relation
 	for edgeRows.Next() {
+		var id, edgeState string
 		var relation relation
-		if err := edgeRows.Scan(&relation.edgeType, &relation.from, &relation.to); err != nil {
+		if err := edgeRows.Scan(&id, &relation.edgeType, &relation.from, &relation.to, &edgeState); err != nil {
 			edgeRows.Close()
 			return false, err
 		}
-		relations = append(relations, relation)
-		if relation.edgeType == string(EdgeTypeContradicts) {
-			protected[relation.from], protected[relation.to] = true, true
-		}
+		edges[id] = finalEdge{relation: relation, state: edgeState}
 	}
 	if err := edgeRows.Err(); err != nil {
 		edgeRows.Close()
 		return false, err
 	}
 	edgeRows.Close()
+	for _, edge := range state.pendingEdges {
+		edges[edge.id] = finalEdge{relation: relation{edgeType: string(edge.edgeType), from: edge.fromID, to: edge.toID}, state: "active"}
+	}
+	for _, edge := range state.pendingEdgeUpdates {
+		edges[edge.id] = finalEdge{relation: relation{edgeType: string(edge.edgeType), from: edge.fromID, to: edge.toID}, state: edge.state}
+	}
+	var relations []relation
+	for _, edge := range edges {
+		if edge.state != "active" {
+			continue
+		}
+		relations = append(relations, edge.relation)
+		if edge.relation.edgeType == string(EdgeTypeContradicts) {
+			protected[edge.relation.from], protected[edge.relation.to] = true, true
+		}
+	}
 	for changed := true; changed; {
 		changed = false
 		protect := func(id string) {
@@ -207,7 +249,21 @@ func stageRetireTouchingEdges(tx *sql.Tx, projectID, nodeID string, opIndex, gra
 			stageMergedEdge(edge, edge.fromID, edge.toID, "retired", edge.summary, opIndex, graphRevision, state)
 		}
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, pending := range state.pendingEdges {
+		edge := mergeEdge{id: pending.id, edgeType: string(pending.edgeType), fromID: pending.fromID, toID: pending.toID, version: 1, state: "active", summary: pending.summary}
+		for _, update := range state.pendingEdgeUpdates {
+			if update.id == edge.id {
+				edge.version, edge.fromID, edge.toID, edge.state, edge.summary = update.version, update.fromID, update.toID, update.state, update.summary
+			}
+		}
+		if edge.state == "active" && (edge.fromID == nodeID || edge.toID == nodeID) {
+			stageMergedEdge(edge, edge.fromID, edge.toID, "retired", edge.summary, opIndex, graphRevision, state)
+		}
+	}
+	return nil
 }
 
 func manifestContainsNode(manifest *RestoreManifest, nodeID string) bool {

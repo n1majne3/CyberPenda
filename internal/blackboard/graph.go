@@ -313,7 +313,7 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 			continue
 		}
 		if op.Kind == OpPatchNode || op.Kind == OpTransitionNode {
-			if op.Node.ID == "" && (op.Node.NodeType == "" || op.Node.StableKey == "") {
+			if op.Node.ID == "" && op.Node.OpID == "" && (op.Node.NodeType == "" || op.Node.StableKey == "") {
 				return MutationResult{}, validationError(ErrCodeInvalidRequest, "node reference is required", i, op.OpID, "operations[].node")
 			}
 			continue
@@ -535,7 +535,7 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 			continue
 		}
 		if op.Kind == OpPatchNode || op.Kind == OpTransitionNode {
-			current, err := loadMutableNode(tx, projectID, op.Node)
+			current, err := loadMutableNodeWithState(tx, projectID, op.Node, &state)
 			if err != nil {
 				return MutationResult{}, err
 			}
@@ -618,7 +618,7 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 				version++
 				state.pendingUpdates = append(state.pendingUpdates, pendingUpdate{nodeID: current.nodeID, nodeType: current.nodeType, stableKey: current.stableKey, version: version, propsJSON: propsJSON, semHash: semHash, opIndex: i, graphRevision: result.GraphRevision})
 			}
-			result.Operations[i] = OperationResult{OpID: op.OpID, NodeID: current.nodeID, NodeType: current.nodeType, StableKey: current.stableKey, NodeVersion: version, SemanticHash: hex.EncodeToString(semHash), ResolvedFromAlias: current.resolvedFromAlias, Changed: changed}
+			result.Operations[i] = OperationResult{OpID: op.OpID, NodeID: current.nodeID, NodeType: current.nodeType, StableKey: current.stableKey, NodeVersion: version, SemanticHash: hex.EncodeToString(semHash), ResolvedFromAlias: current.resolvedFromAlias, ResolvedFromMergedID: current.resolvedFromMergedID, Changed: changed}
 			continue
 		}
 
@@ -1228,7 +1228,7 @@ func (r MutationResult) ledgerForm() resultLedgerForm {
 	for i, o := range r.Operations {
 		ops[i] = operationResultLedgerForm{
 			OpID: o.OpID, NodeID: o.NodeID, NodeType: o.NodeType, StableKey: o.StableKey,
-			NodeVersion: o.NodeVersion, EdgeID: o.EdgeID, EdgeType: o.EdgeType, EdgeVersion: o.EdgeVersion, SemanticHash: o.SemanticHash, ResolvedFromAlias: o.ResolvedFromAlias, Changed: o.Changed,
+			NodeVersion: o.NodeVersion, EdgeID: o.EdgeID, EdgeType: o.EdgeType, EdgeVersion: o.EdgeVersion, SemanticHash: o.SemanticHash, ResolvedFromAlias: o.ResolvedFromAlias, ResolvedFromMergedID: o.ResolvedFromMergedID, Changed: o.Changed,
 		}
 	}
 	return resultLedgerForm{
@@ -1370,15 +1370,16 @@ func validateGoalProjectionSource(tx *sql.Tx, projectID, stableKey string, props
 }
 
 type mutableNode struct {
-	nodeID            string
-	nodeType          NodeType
-	stableKey         string
-	version           int
-	props             map[string]any
-	semHash           string
-	disposition       Disposition
-	mergeTargetID     string
-	resolvedFromAlias string
+	nodeID               string
+	nodeType             NodeType
+	stableKey            string
+	version              int
+	props                map[string]any
+	semHash              string
+	disposition          Disposition
+	mergeTargetID        string
+	resolvedFromAlias    string
+	resolvedFromMergedID string
 }
 
 func loadMutableNode(tx *sql.Tx, projectID string, ref NodeRef) (mutableNode, error) {
@@ -1413,6 +1414,9 @@ func loadMutableNode(tx *sql.Tx, projectID string, ref NodeRef) (mutableNode, er
 				break
 			}
 			currentID = merge.String
+		}
+		if currentID != ref.ID {
+			n.resolvedFromMergedID = ref.ID
 		}
 		row = tx.QueryRow(`SELECT h.node_id,h.node_type,n.original_stable_key,h.version,v.properties_json,h.semantic_hash,h.disposition,h.merge_target_id FROM blackboard_node_heads h JOIN blackboard_nodes n ON n.project_id=h.project_id AND n.id=h.node_id JOIN blackboard_node_versions v ON v.project_id=h.project_id AND v.node_id=h.node_id AND v.version=h.version WHERE h.project_id=? AND h.node_id=?`, projectID, currentID)
 	} else {
@@ -1462,7 +1466,7 @@ func loadMutableNodeWithState(tx *sql.Tx, projectID string, ref NodeRef, state *
 				if err := json.Unmarshal(created.propsJSON, &props); err != nil {
 					return mutableNode{}, err
 				}
-				return overlayMutableNode(mutableNode{nodeID: created.nodeID, nodeType: created.nodeType, stableKey: created.stableKey, version: created.version, props: props, semHash: hex.EncodeToString(created.semHash), disposition: DispositionMain}, state)
+				return finishMutableNode(tx, projectID, mutableNode{nodeID: created.nodeID, nodeType: created.nodeType, stableKey: created.stableKey, version: created.version, props: props, semHash: hex.EncodeToString(created.semHash), disposition: DispositionMain}, state)
 			}
 		}
 		return mutableNode{}, validationError(ErrCodeNodeNotFound, "same-batch node reference does not exist", -1, "", "operations[].node.op_id")
@@ -1474,7 +1478,7 @@ func loadMutableNodeWithState(tx *sql.Tx, projectID string, ref NodeRef, state *
 				if err := json.Unmarshal(created.propsJSON, &props); err != nil {
 					return mutableNode{}, err
 				}
-				return overlayMutableNode(mutableNode{nodeID: created.nodeID, nodeType: created.nodeType, stableKey: created.stableKey, version: created.version, props: props, semHash: hex.EncodeToString(created.semHash), disposition: DispositionMain}, state)
+				return finishMutableNode(tx, projectID, mutableNode{nodeID: created.nodeID, nodeType: created.nodeType, stableKey: created.stableKey, version: created.version, props: props, semHash: hex.EncodeToString(created.semHash), disposition: DispositionMain}, state)
 			}
 		}
 	}
@@ -1499,7 +1503,49 @@ func loadMutableNodeWithState(tx *sql.Tx, projectID string, ref NodeRef, state *
 	if err != nil {
 		return mutableNode{}, err
 	}
-	return overlayMutableNode(node, state)
+	return finishMutableNode(tx, projectID, node, state)
+}
+
+func finishMutableNode(tx *sql.Tx, projectID string, node mutableNode, state *graphState) (mutableNode, error) {
+	resolved, err := overlayMutableNode(node, state)
+	if err != nil {
+		return mutableNode{}, err
+	}
+	alias := resolved.resolvedFromAlias
+	mergedFrom := resolved.resolvedFromMergedID
+	for redirects := 0; resolved.disposition == DispositionMerged && resolved.mergeTargetID != "" && redirects < 32; redirects++ {
+		if mergedFrom == "" {
+			mergedFrom = resolved.nodeID
+		}
+		var target mutableNode
+		found := false
+		for _, created := range state.pending {
+			if created.nodeID == resolved.mergeTargetID {
+				var props map[string]any
+				if err := json.Unmarshal(created.propsJSON, &props); err != nil {
+					return mutableNode{}, err
+				}
+				target = mutableNode{nodeID: created.nodeID, nodeType: created.nodeType, stableKey: created.stableKey, version: created.version, props: props, semHash: hex.EncodeToString(created.semHash), disposition: DispositionMain}
+				found = true
+				break
+			}
+		}
+		if !found {
+			target, err = loadMutableNode(tx, projectID, NodeRef{ID: resolved.mergeTargetID})
+			if err != nil {
+				return mutableNode{}, err
+			}
+		}
+		resolved, err = overlayMutableNode(target, state)
+		if err != nil {
+			return mutableNode{}, err
+		}
+	}
+	if resolved.disposition == DispositionMerged {
+		return mutableNode{}, validationError(ErrCodeMergeConflict, "merge redirect chain is too deep or cyclic", -1, "", "operations[].node")
+	}
+	resolved.resolvedFromAlias, resolved.resolvedFromMergedID = alias, mergedFrom
+	return resolved, nil
 }
 
 func overlayMutableNode(node mutableNode, state *graphState) (mutableNode, error) {
@@ -1516,10 +1562,6 @@ func overlayMutableNode(node mutableNode, state *graphState) (mutableNode, error
 			disposition = DispositionMain
 		}
 		node.version, node.props, node.semHash, node.disposition, node.mergeTargetID = update.version, props, hex.EncodeToString(update.semHash), disposition, update.mergeTargetID
-	}
-	if node.disposition == DispositionMerged && node.mergeTargetID != "" {
-		// The caller will resolve the redirect through loadMutableNodeWithState;
-		// keep the staged literal available here to avoid recursive cycles.
 	}
 	return node, nil
 }
