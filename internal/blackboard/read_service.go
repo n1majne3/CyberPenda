@@ -26,6 +26,12 @@ const (
 	ReadKindRecordResolveV1            ReadKind = "record_resolve_v1"
 	ReadKindRecordDetailV1             ReadKind = "record_detail_v1"
 	ReadKindRecordHistoryV1            ReadKind = "record_history_v1"
+	ReadKindRecordProvenanceV1         ReadKind = "record_provenance_v1"
+	ReadKindGraphTraversalV1           ReadKind = "graph_traversal_v1"
+	ReadKindBlackboardHealthV1         ReadKind = "blackboard_health_v1"
+	ReadKindHealthRunV1                ReadKind = "health_run_v1"
+	ReadKindHealthResultsV1            ReadKind = "health_results_v1"
+	ReadKindGraphExplorerV1            ReadKind = "graph_explorer_v1"
 	ReadKindCanonicalGraphV1           ReadKind = "canonical_main_graph_v1"
 	ReadKindBlackboardWorkV1           ReadKind = "blackboard_work_v1"
 	ReadKindProjectBlackboardSummaryV1 ReadKind = "project_blackboard_summary_v1"
@@ -60,6 +66,12 @@ type ReadRequest struct {
 	RecordResolve       *RecordResolveRequest
 	RecordDetail        *RecordDetailRequest
 	RecordHistory       *RecordHistoryRequest
+	RecordProvenance    *RecordProvenanceRequest
+	GraphTraversal      *GraphTraversalRequest
+	BlackboardHealth    *BlackboardHealthRequest
+	HealthRun           *HealthRunRequest
+	HealthResults       *HealthResultsRequest
+	GraphExplorer       *GraphExplorerRequest
 	BlackboardWork      *BlackboardWorkRequest
 	ProjectSummary      *ProjectBlackboardSummaryRequest
 	CurrentTruth        *CurrentTruthRequest
@@ -278,6 +290,7 @@ type BlackboardReadService struct {
 	db           *store.DB
 	cursorKey    []byte
 	cursorKeyErr error
+	artifactRoot string
 }
 
 func NewBlackboardReadService(db *store.DB) *BlackboardReadService {
@@ -299,6 +312,12 @@ type readCursor struct {
 	Limit      int               `json:"limit"`
 	Last       []string          `json:"last"`
 	SourcePins map[string]string `json:"source_pins,omitempty"`
+}
+
+// WithArtifactRoot confines Health staleness checks to the managed Artifact Root.
+func (s *BlackboardReadService) WithArtifactRoot(root string) *BlackboardReadService {
+	s.artifactRoot = root
+	return s
 }
 
 func (s *BlackboardReadService) Read(ctx context.Context, request ReadRequest) (ReadEnvelope, error) {
@@ -363,6 +382,36 @@ func (s *BlackboardReadService) Read(ctx context.Context, request ReadRequest) (
 			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "record_history request is required", "record_history")
 		}
 		result, err = buildRecordHistory(ctx, tx, snapshot, *request.RecordHistory, cursor, s.cursorKey)
+	case ReadKindRecordProvenanceV1:
+		if request.RecordProvenance == nil {
+			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "record_provenance request is required", "record_provenance")
+		}
+		result, err = buildRecordProvenance(ctx, tx, snapshot, *request.RecordProvenance)
+	case ReadKindGraphTraversalV1:
+		if request.GraphTraversal == nil {
+			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "graph_traversal request is required", "graph_traversal")
+		}
+		result, err = buildGraphTraversal(ctx, tx, snapshot, *request.GraphTraversal)
+	case ReadKindBlackboardHealthV1:
+		if request.BlackboardHealth == nil {
+			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "blackboard_health request is required", "blackboard_health")
+		}
+		result, err = buildBlackboardHealth(ctx, tx, snapshot, s.artifactRoot)
+	case ReadKindHealthRunV1:
+		if request.HealthRun == nil {
+			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "health_run request is required", "health_run")
+		}
+		result, err = buildHealthRun(ctx, tx, snapshot, *request.HealthRun, s.artifactRoot)
+	case ReadKindHealthResultsV1:
+		if request.HealthResults == nil {
+			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "health_results request is required", "health_results")
+		}
+		result, err = buildHealthResults(ctx, tx, snapshot, *request.HealthResults, cursor, s.cursorKey, s.artifactRoot)
+	case ReadKindGraphExplorerV1:
+		if request.GraphExplorer == nil {
+			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "graph_explorer request is required", "graph_explorer")
+		}
+		result, err = buildGraphExplorer(ctx, tx, snapshot, *request.GraphExplorer)
 	case ReadKindCanonicalGraphV1:
 		result, err = canonicalMainGraphDocumentAt(ctx, tx, request.ProjectID, revision)
 	case ReadKindEntityCollectionV1:
@@ -428,6 +477,16 @@ func (s *BlackboardReadService) Read(ctx context.Context, request ReadRequest) (
 		if value.Health.LatestRunID != "" {
 			sourcePins["health_run_id"] = value.Health.LatestRunID
 		}
+	case BlackboardHealthV1:
+		if value.LatestRun != nil {
+			sourcePins["health_run_id"] = value.LatestRun.RunID
+		}
+	case HealthRunV1:
+		sourcePins["health_run_id"] = value.RunID
+	case HealthResultCollectionV1:
+		if request.HealthResults != nil {
+			sourcePins["health_run_id"] = request.HealthResults.RunID
+		}
 	}
 	envelope := ReadEnvelope{
 		ProtocolVersion:       BlackboardReadProtocolVersion,
@@ -456,6 +515,16 @@ func resolveReadRevision(ctx context.Context, tx *sql.Tx, request ReadRequest, c
 	}
 	if request.RecordCollection != nil && request.RecordCollection.Cursor != "" {
 		cursor, err := decodeReadCursor(request.RecordCollection.Cursor, cursorKey)
+		if err != nil {
+			return 0, nil, err
+		}
+		if cursor.ProjectID != request.ProjectID || cursor.Projection != request.Kind {
+			return 0, nil, readValidationError(ErrCodeInvalidCursor, "The cursor does not match this query.", "cursor")
+		}
+		return cursor.Revision, &cursor, nil
+	}
+	if request.HealthResults != nil && request.HealthResults.Cursor != "" {
+		cursor, err := decodeReadCursor(request.HealthResults.Cursor, cursorKey)
 		if err != nil {
 			return 0, nil, err
 		}

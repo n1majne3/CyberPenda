@@ -93,6 +93,7 @@ type HealthMetrics struct {
 	ProjectionHash                   string         `json:"projection_hash"`
 	OpenAttemptsOnEndedContinuations int            `json:"open_attempts_on_ended_continuations"`
 	MaxReconciliationAgeSeconds      int            `json:"max_reconciliation_age_seconds"`
+	ArtifactScanFingerprint          string         `json:"artifact_scan_fingerprint"`
 }
 
 type HealthResult struct {
@@ -105,17 +106,20 @@ type HealthResult struct {
 }
 
 type HealthRun struct {
-	RunID                 string         `json:"run_id"`
-	ProjectID             string         `json:"project_id"`
-	CheckedGraphRevision  int            `json:"checked_graph_revision"`
-	CheckedStateHash      string         `json:"checked_state_hash"`
-	CheckedProjectionHash string         `json:"checked_projection_hash"`
-	Status                HealthStatus   `json:"status"`
-	StartedAt             string         `json:"started_at"`
-	CompletedAt           string         `json:"completed_at"`
-	Metrics               HealthMetrics  `json:"metrics"`
-	Results               []HealthResult `json:"results"`
-	Stale                 bool           `json:"stale"`
+	RunID                   string         `json:"run_id"`
+	ProjectID               string         `json:"project_id"`
+	CheckedGraphRevision    int            `json:"checked_graph_revision"`
+	CheckedStateHash        string         `json:"checked_state_hash"`
+	CheckedProjectionHash   string         `json:"checked_projection_hash"`
+	Status                  HealthStatus   `json:"status"`
+	StartedAt               string         `json:"started_at"`
+	CompletedAt             string         `json:"completed_at"`
+	Metrics                 HealthMetrics  `json:"metrics"`
+	Results                 []HealthResult `json:"results"`
+	Stale                   bool           `json:"stale"`
+	RunStatus               string         `json:"run_status,omitempty"`
+	ArtifactScanStatus      string         `json:"artifact_scan_status,omitempty"`
+	ArtifactScanFingerprint string         `json:"artifact_scan_fingerprint,omitempty"`
 }
 
 func budgetStateForEstimatedTokens(tokens int) BudgetState {

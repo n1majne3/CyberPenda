@@ -207,7 +207,36 @@ func migrations() []migration {
 		newMigration(7, "graph_edge_identity_and_integrity_cutover", migration7SQL, migration7Up),
 		newMigration(8, "graph_budget_compaction_and_health", migration8SQL, migration8Up),
 		newMigration(9, "blackboard_read_cursor_secret", migration9SQL, migration9Up),
+		newMigration(10, "blackboard_health_run_requests", migration10SQL, migration10Up),
 	}
+}
+
+const migration10SQL = `
+CREATE TABLE blackboard_health_run_requests (
+ project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+ idempotency_key TEXT NOT NULL,
+ request_hash TEXT NOT NULL,
+ run_id TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ PRIMARY KEY(project_id,idempotency_key),
+ FOREIGN KEY(project_id,run_id) REFERENCES blackboard_health_runs(project_id,run_id) ON DELETE CASCADE
+);
+`
+
+func migration10Up(tx *sql.Tx) error {
+	if err := ensureColumn(tx, "blackboard_health_runs", "run_status", "TEXT NOT NULL DEFAULT 'completed'"); err != nil {
+		return fmt.Errorf("ensure blackboard_health_runs.run_status: %w", err)
+	}
+	if err := ensureColumn(tx, "blackboard_health_runs", "overall", "TEXT NOT NULL DEFAULT 'unknown'"); err != nil {
+		return fmt.Errorf("ensure blackboard_health_runs.overall: %w", err)
+	}
+	if err := ensureColumn(tx, "blackboard_health_runs", "artifact_scan_fingerprint", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return fmt.Errorf("ensure blackboard_health_runs.artifact_scan_fingerprint: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE blackboard_health_runs SET overall=status,run_status=CASE WHEN completed_at IS NULL THEN 'running' WHEN status='unknown' THEN 'failed' ELSE 'completed' END`); err != nil {
+		return fmt.Errorf("backfill Health run lifecycle: %w", err)
+	}
+	return execStatements(tx, migration10SQL)
 }
 
 const migration9SQL = `

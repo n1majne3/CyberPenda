@@ -37,9 +37,10 @@ var idempotencyKeyPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,1
 // reach this service until the M05 cutover (slices §1, C02 "keep graph data
 // dark while the store epoch is legacy_v1").
 type GraphService struct {
-	db    *store.DB
-	clock Clock
-	ids   IDSource
+	db           *store.DB
+	clock        Clock
+	ids          IDSource
+	artifactRoot string
 }
 
 type resolvedNode struct {
@@ -175,6 +176,12 @@ func NewGraphService(db *store.DB, clock Clock, ids IDSource) *GraphService {
 		ids = RandomIDSource{}
 	}
 	return &GraphService{db: db, clock: clock, ids: ids}
+}
+
+// WithArtifactRoot confines Health payload verification to one managed root.
+func (s *GraphService) WithArtifactRoot(root string) *GraphService {
+	s.artifactRoot = root
+	return s
 }
 
 // DBForTesting exposes the underlying database for storage-integrity assertions

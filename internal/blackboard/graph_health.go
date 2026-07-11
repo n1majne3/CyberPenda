@@ -2,15 +2,21 @@ package blackboard
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 )
 
-func (s *GraphService) runHealth(ctx context.Context, projectID string, p CanonicalMainGraphProjection, blocked bool, stale bool, full bool, checkedAt string) (HealthRun, error) {
+func (s *GraphService) runHealthWithID(ctx context.Context, projectID string, p CanonicalMainGraphProjection, blocked bool, stale bool, full bool, checkedAt, forcedRunID string) (HealthRun, error) {
 	started := checkedAt
 	var stateHash, historyHash string
 	if err := s.db.QueryRowContext(ctx, `SELECT current_semantic_state_hash,history_head_hash FROM blackboard_graph_state WHERE project_id=?`, projectID).Scan(&stateHash, &historyHash); err != nil {
@@ -71,9 +77,23 @@ func (s *GraphService) runHealth(ctx context.Context, projectID string, p Canoni
 	case BudgetRequired:
 		add("compaction_required", "critical", map[string]any{"estimated_tokens": p.EstimatedTokens})
 	}
+	artifactScanStatus := "not_scanned"
+	artifactScanFingerprint := ""
 	if full {
 		for _, detected := range projectionHealthResults(doc) {
 			add(detected.Code, detected.Severity, detected.Details)
+		}
+		artifactResults, fingerprint, err := inspectEvidenceArtifacts(ctx, doc, s.artifactRoot)
+		if err != nil {
+			return HealthRun{}, err
+		}
+		artifactScanStatus, artifactScanFingerprint = "completed", fingerprint
+		metrics.ArtifactScanFingerprint = fingerprint
+		for _, detected := range artifactResults {
+			raw, _ := canonicalJSON(detected.Details)
+			fp := fmt.Sprintf("%x", framedHash("CyberPenda.Blackboard.HealthFingerprint.v1", []byte(detected.Code), raw))
+			detected.Fingerprint = fp
+			results = append(results, detected)
 		}
 		operational, operationalMetrics, err := s.operationalHealthResults(ctx, projectID, doc, checkedAt)
 		if err != nil {
@@ -107,14 +127,24 @@ func (s *GraphService) runHealth(ctx context.Context, projectID string, p Canoni
 	}
 	status := healthStatus(results)
 	completed := checkedAt
-	runID := fmt.Sprintf("health:%x", framedHash("CyberPenda.Blackboard.HealthRun.v1", []byte(projectID), u64Bytes(uint64(p.GraphRevision)), []byte(p.Hash), []byte(started)))
+	runID := forcedRunID
+	if runID == "" {
+		runID = fmt.Sprintf("health:%x", framedHash("CyberPenda.Blackboard.HealthRun.v1", []byte(projectID), u64Bytes(uint64(p.GraphRevision)), []byte(p.Hash), []byte(started)))
+	} else {
+		var acceptedAt string
+		if err := s.db.QueryRowContext(ctx, `SELECT started_at FROM blackboard_health_runs WHERE project_id=? AND run_id=?`, projectID, runID).Scan(&acceptedAt); err == nil {
+			started = acceptedAt
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return HealthRun{}, err
+		}
+	}
 	metricsJSON, _ := canonicalJSON(metrics)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return HealthRun{}, err
 	}
 	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx, `INSERT OR REPLACE INTO blackboard_health_runs(project_id,run_id,checked_graph_revision,checked_state_hash,checked_projection_hash,checker_version,status,artifact_scan_status,started_at,completed_at,metrics_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, projectID, runID, p.GraphRevision, stateHash, p.Hash, blackboardHealthCheckerV1, status, "not_scanned", started, completed, string(metricsJSON))
+	_, err = tx.ExecContext(ctx, `INSERT INTO blackboard_health_runs(project_id,run_id,checked_graph_revision,checked_state_hash,checked_projection_hash,checker_version,status,artifact_scan_status,started_at,completed_at,metrics_json,run_status,overall,artifact_scan_fingerprint) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(project_id,run_id) DO UPDATE SET checked_graph_revision=excluded.checked_graph_revision,checked_state_hash=excluded.checked_state_hash,checked_projection_hash=excluded.checked_projection_hash,checker_version=excluded.checker_version,status=excluded.status,artifact_scan_status=excluded.artifact_scan_status,started_at=excluded.started_at,completed_at=excluded.completed_at,metrics_json=excluded.metrics_json,run_status=excluded.run_status,overall=excluded.overall,artifact_scan_fingerprint=excluded.artifact_scan_fingerprint`, projectID, runID, p.GraphRevision, stateHash, p.Hash, blackboardHealthCheckerV1, status, artifactScanStatus, started, completed, string(metricsJSON), "completed", status, artifactScanFingerprint)
 	if err != nil {
 		return HealthRun{}, err
 	}
@@ -127,7 +157,11 @@ func (s *GraphService) runHealth(ctx context.Context, projectID string, p Canoni
 	if err = tx.Commit(); err != nil {
 		return HealthRun{}, err
 	}
-	return HealthRun{RunID: runID, ProjectID: projectID, CheckedGraphRevision: p.GraphRevision, CheckedStateHash: stateHash, CheckedProjectionHash: p.Hash, Status: status, StartedAt: started, CompletedAt: completed, Metrics: metrics, Results: results, Stale: stale}, nil
+	return HealthRun{RunID: runID, ProjectID: projectID, CheckedGraphRevision: p.GraphRevision, CheckedStateHash: stateHash, CheckedProjectionHash: p.Hash, Status: status, StartedAt: started, CompletedAt: completed, Metrics: metrics, Results: results, Stale: stale, RunStatus: "completed", ArtifactScanStatus: artifactScanStatus, ArtifactScanFingerprint: artifactScanFingerprint}, nil
+}
+
+func (s *GraphService) runHealth(ctx context.Context, projectID string, p CanonicalMainGraphProjection, blocked bool, stale bool, full bool, checkedAt string) (HealthRun, error) {
+	return s.runHealthWithID(ctx, projectID, p, blocked, stale, full, checkedAt, "")
 }
 
 func projectionHealthResults(doc canonicalMainGraphDocument) []HealthResult {
@@ -549,7 +583,7 @@ func healthStatus(results []HealthResult) HealthStatus {
 func (s *GraphService) LatestHealth(ctx context.Context, projectID string) (HealthRun, error) {
 	var health HealthRun
 	var metricsJSON string
-	err := s.db.QueryRowContext(ctx, `SELECT run_id,checked_graph_revision,checked_state_hash,checked_projection_hash,status,started_at,COALESCE(completed_at,''),metrics_json FROM blackboard_health_runs WHERE project_id=? ORDER BY started_at DESC,rowid DESC LIMIT 1`, projectID).Scan(&health.RunID, &health.CheckedGraphRevision, &health.CheckedStateHash, &health.CheckedProjectionHash, &health.Status, &health.StartedAt, &health.CompletedAt, &metricsJSON)
+	err := s.db.QueryRowContext(ctx, `SELECT run_id,checked_graph_revision,checked_state_hash,checked_projection_hash,overall,run_status,artifact_scan_status,artifact_scan_fingerprint,started_at,COALESCE(completed_at,''),metrics_json FROM blackboard_health_runs WHERE project_id=? AND run_status IN ('completed','failed','cancelled') ORDER BY started_at DESC,rowid DESC LIMIT 1`, projectID).Scan(&health.RunID, &health.CheckedGraphRevision, &health.CheckedStateHash, &health.CheckedProjectionHash, &health.Status, &health.RunStatus, &health.ArtifactScanStatus, &health.ArtifactScanFingerprint, &health.StartedAt, &health.CompletedAt, &metricsJSON)
 	if err != nil {
 		return health, err
 	}
@@ -583,23 +617,39 @@ func (s *GraphService) LatestHealth(ctx context.Context, projectID string) (Heal
 		return health, err
 	}
 	health.Stale = health.CheckedGraphRevision != currentRevision || health.CheckedStateHash != currentStateHash || health.CheckedProjectionHash != currentProjectionHash || renderer != CanonicalMainGraphRendererV1
+	if !health.Stale && health.ArtifactScanStatus == "completed" {
+		doc, err := canonicalMainGraphDocumentAt(ctx, s.db.DB, projectID, currentRevision)
+		if err != nil {
+			return health, err
+		}
+		_, fingerprint, err := inspectEvidenceArtifacts(ctx, doc, s.artifactRoot)
+		if err != nil {
+			return health, err
+		}
+		health.Stale = fingerprint != health.ArtifactScanFingerprint
+	}
 	return health, nil
 }
 
 func (s *GraphService) persistUnknownHealth(ctx context.Context, projectID string, revision int, checkedAt string, cause error) error {
 	runID := fmt.Sprintf("health:%x", framedHash("CyberPenda.Blackboard.HealthRun.v1", []byte(projectID), u64Bytes(uint64(revision)), []byte("unknown"), []byte(checkedAt)))
 	metricsJSON, _ := canonicalJSON(HealthMetrics{BudgetState: BudgetUnknown, NodeCounts: map[string]int{}})
+	code := "budget_unknown"
+	severity := "warning"
+	if strings.Contains(strings.ToLower(cause.Error()), "integrity_check") || strings.Contains(strings.ToLower(cause.Error()), "sqlite") {
+		code, severity = "sqlite_integrity_failure", "critical"
+	}
 	details, _ := canonicalJSON(map[string]any{"error": cause.Error()})
-	fingerprint := fmt.Sprintf("%x", framedHash("CyberPenda.Blackboard.HealthFingerprint.v1", []byte("budget_unknown"), details))
+	fingerprint := fmt.Sprintf("%x", framedHash("CyberPenda.Blackboard.HealthFingerprint.v1", []byte(code), details))
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `INSERT INTO blackboard_health_runs(project_id,run_id,checked_graph_revision,checked_state_hash,checked_projection_hash,checker_version,status,artifact_scan_status,started_at,completed_at,metrics_json) VALUES(?,?,?,'','',?,'unknown','unknown',?,?,?)`, projectID, runID, revision, blackboardHealthCheckerV1, checkedAt, checkedAt, string(metricsJSON)); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO blackboard_health_runs(project_id,run_id,checked_graph_revision,checked_state_hash,checked_projection_hash,checker_version,status,artifact_scan_status,started_at,completed_at,metrics_json,run_status,overall,artifact_scan_fingerprint) VALUES(?,?,?,'','',?,'unknown','failed',?,?,?,'failed','unknown','')`, projectID, runID, revision, blackboardHealthCheckerV1, checkedAt, checkedAt, string(metricsJSON)); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO blackboard_health_results(project_id,run_id,fingerprint,code,severity,subject_kind,subject_id,details_json) VALUES(?,?,?,?,?,?,?,?)`, projectID, runID, fingerprint, "budget_unknown", "warning", "project", projectID, string(details)); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO blackboard_health_results(project_id,run_id,fingerprint,code,severity,subject_kind,subject_id,details_json) VALUES(?,?,?,?,?,?,?,?)`, projectID, runID, fingerprint, code, severity, "project", projectID, string(details)); err != nil {
 		return err
 	}
 	lower := strings.ToLower(cause.Error())
@@ -612,12 +662,44 @@ func (s *GraphService) persistUnknownHealth(ctx context.Context, projectID strin
 	return tx.Commit()
 }
 
+func (s *GraphService) ensureEmptyHealthState(ctx context.Context, projectID, checkedAt string) error {
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM blackboard_graph_state WHERE project_id=?`, projectID).Scan(&count); err != nil {
+		return fmt.Errorf("check Health graph state: %w", err)
+	}
+	if count != 0 {
+		return nil
+	}
+	snapshot, err := s.Reconstruct(ctx, projectID, 0)
+	if err != nil {
+		return err
+	}
+	projection, err := s.CanonicalMainGraph(ctx, projectID, 0)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT OR IGNORE INTO blackboard_graph_state(project_id,latest_mutation_seq,current_graph_revision,materialized_mutation_seq,history_head_hash,current_semantic_state_hash,current_main_projection_hash,projection_renderer_version,projection_estimator_version,projection_bytes,projection_estimated_tokens,budget_state,projection_dirty_revision,updated_at) VALUES(?,0,0,0,'',?,?,?,?,?,?,?,0,?)`, projectID, snapshot.StateHash, projection.Hash, projection.RendererVersion, projection.EstimatorVersion, projection.ByteCount, projection.EstimatedTokens, budgetStateForEstimatedTokens(projection.EstimatedTokens), checkedAt)
+	if err != nil {
+		return fmt.Errorf("initialize empty Health graph state: %w", err)
+	}
+	return nil
+}
+
 // RunHealth performs a fresh canonical measurement and persists a derived Health run.
 func (s *GraphService) RunHealth(ctx context.Context, projectID string) (HealthRun, error) {
 	checkedAt := s.clock.Now().UTC().Format(time.RFC3339Nano)
 	var revision, dirty int
 	var hash, renderer string
-	if err := s.db.QueryRowContext(ctx, `SELECT current_graph_revision,projection_dirty_revision,COALESCE(current_main_projection_hash,''),projection_renderer_version FROM blackboard_graph_state WHERE project_id=?`, projectID).Scan(&revision, &dirty, &hash, &renderer); err != nil {
+	readState := func() error {
+		return s.db.QueryRowContext(ctx, `SELECT current_graph_revision,projection_dirty_revision,COALESCE(current_main_projection_hash,''),projection_renderer_version FROM blackboard_graph_state WHERE project_id=?`, projectID).Scan(&revision, &dirty, &hash, &renderer)
+	}
+	err := readState()
+	if errors.Is(err, sql.ErrNoRows) {
+		if err = s.ensureEmptyHealthState(ctx, projectID, checkedAt); err == nil {
+			err = readState()
+		}
+	}
+	if err != nil {
 		if persistErr := s.persistUnknownHealth(context.Background(), projectID, revision, checkedAt, err); persistErr != nil {
 			return HealthRun{}, fmt.Errorf("read Health projection state: %v; persist unknown Health run: %w", err, persistErr)
 		}
@@ -632,4 +714,292 @@ func (s *GraphService) RunHealth(ctx context.Context, projectID string) (HealthR
 		return HealthRun{}, err
 	}
 	return s.runHealth(ctx, projectID, projection, false, stale, true, checkedAt)
+}
+
+// HealthRunAction is the durable accepted state for an explicit Health scan.
+type HealthRunAction struct {
+	RunID   string
+	Status  string
+	Created bool
+}
+
+// StartHealthRun atomically creates one running Health run and binds an
+// optional idempotency key before any slow checks begin.
+func (s *GraphService) StartHealthRun(ctx context.Context, projectID, idempotencyKey, sqliteIntegrity string) (HealthRunAction, error) {
+	if sqliteIntegrity == "" {
+		sqliteIntegrity = "quick"
+	}
+	if sqliteIntegrity != "quick" && sqliteIntegrity != "full" {
+		return HealthRunAction{}, validationError(ErrCodeInvalidRequest, "sqlite_integrity must be quick or full", -1, "", "sqlite_integrity")
+	}
+	checkedAt := s.clock.Now().UTC().Format(time.RFC3339Nano)
+	if err := s.ensureEmptyHealthState(ctx, projectID, checkedAt); err != nil {
+		return HealthRunAction{}, err
+	}
+	requestHash := fmt.Sprintf("%x", framedHash("CyberPenda.Blackboard.HealthRequest.v1", []byte(sqliteIntegrity)))
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return HealthRunAction{}, err
+	}
+	defer tx.Rollback()
+	if idempotencyKey != "" {
+		var storedHash, runID, status string
+		err := tx.QueryRowContext(ctx, `SELECT r.request_hash,r.run_id,h.run_status FROM blackboard_health_run_requests r JOIN blackboard_health_runs h ON h.project_id=r.project_id AND h.run_id=r.run_id WHERE r.project_id=? AND r.idempotency_key=?`, projectID, idempotencyKey).Scan(&storedHash, &runID, &status)
+		if err == nil {
+			if storedHash != requestHash {
+				return HealthRunAction{}, validationError(ErrCodeIdempotencyConflict, "idempotency key was already used for a different Health request", -1, "", "idempotency_key")
+			}
+			return HealthRunAction{RunID: runID, Status: status}, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return HealthRunAction{}, fmt.Errorf("read explicit Health idempotency: %w", err)
+		}
+	}
+	var revision int
+	var stateHash, projectionHash string
+	if err := tx.QueryRowContext(ctx, `SELECT current_graph_revision,current_semantic_state_hash,COALESCE(current_main_projection_hash,'') FROM blackboard_graph_state WHERE project_id=?`, projectID).Scan(&revision, &stateHash, &projectionHash); err != nil {
+		return HealthRunAction{}, err
+	}
+	runID := "health:" + s.ids.NextID()
+	metricsJSON, _ := canonicalJSON(HealthMetrics{BudgetState: BudgetUnknown, NodeCounts: map[string]int{}})
+	if _, err := tx.ExecContext(ctx, `INSERT INTO blackboard_health_runs(project_id,run_id,checked_graph_revision,checked_state_hash,checked_projection_hash,checker_version,status,artifact_scan_status,started_at,completed_at,metrics_json,run_status,overall,artifact_scan_fingerprint) VALUES(?,?,?,?,?,?,'unknown','pending',?,NULL,?,'running','unknown','')`, projectID, runID, revision, stateHash, projectionHash, blackboardHealthCheckerV1, checkedAt, string(metricsJSON)); err != nil {
+		return HealthRunAction{}, err
+	}
+	if idempotencyKey != "" {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO blackboard_health_run_requests(project_id,idempotency_key,request_hash,run_id,created_at) VALUES(?,?,?,?,?)`, projectID, idempotencyKey, requestHash, runID, checkedAt); err != nil {
+			return HealthRunAction{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return HealthRunAction{}, err
+	}
+	return HealthRunAction{RunID: runID, Status: "running", Created: true}, nil
+}
+
+// CompleteHealthRun finishes a previously accepted explicit run.
+func (s *GraphService) CompleteHealthRun(ctx context.Context, projectID, runID, sqliteIntegrity string) (HealthRun, error) {
+	if sqliteIntegrity == "full" {
+		var integrity string
+		if err := s.db.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&integrity); err != nil {
+			return s.failExplicitHealthRun(projectID, runID, err)
+		}
+		if integrity != "ok" {
+			return s.failExplicitHealthRun(projectID, runID, fmt.Errorf("SQLite integrity_check: %s", integrity))
+		}
+	}
+	checkedAt := s.clock.Now().UTC().Format(time.RFC3339Nano)
+	var revision, dirty int
+	var hash, renderer string
+	if err := s.db.QueryRowContext(ctx, `SELECT current_graph_revision,projection_dirty_revision,COALESCE(current_main_projection_hash,''),projection_renderer_version FROM blackboard_graph_state WHERE project_id=?`, projectID).Scan(&revision, &dirty, &hash, &renderer); err != nil {
+		return s.failExplicitHealthRun(projectID, runID, err)
+	}
+	stale := dirty != 0 || hash == "" || renderer != CanonicalMainGraphRendererV1
+	projection, err := s.remeasureCanonicalMainGraphAt(ctx, projectID, checkedAt)
+	if err != nil {
+		return s.failExplicitHealthRun(projectID, runID, err)
+	}
+	run, err := s.runHealthWithID(ctx, projectID, projection, false, stale, true, checkedAt, runID)
+	if err != nil {
+		return s.failExplicitHealthRun(projectID, runID, err)
+	}
+	return run, nil
+}
+
+func (s *GraphService) failExplicitHealthRun(projectID, runID string, cause error) (HealthRun, error) {
+	completedAt := s.clock.Now().UTC().Format(time.RFC3339Nano)
+	status := "failed"
+	if errors.Is(cause, context.Canceled) {
+		status = "cancelled"
+	}
+	code := "budget_unknown"
+	severity := "warning"
+	if strings.Contains(strings.ToLower(cause.Error()), "integrity_check") || strings.Contains(strings.ToLower(cause.Error()), "sqlite") {
+		code, severity = "sqlite_integrity_failure", "critical"
+	}
+	details, _ := canonicalJSON(map[string]any{"error": cause.Error()})
+	fingerprint := fmt.Sprintf("%x", framedHash("CyberPenda.Blackboard.HealthFingerprint.v1", []byte(code), details))
+	tx, err := s.db.Begin()
+	if err != nil {
+		return HealthRun{}, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE blackboard_health_runs SET status='unknown',overall='unknown',run_status=?,artifact_scan_status='failed',completed_at=? WHERE project_id=? AND run_id=?`, status, completedAt, projectID, runID); err != nil {
+		return HealthRun{}, err
+	}
+	if _, err := tx.Exec(`DELETE FROM blackboard_health_results WHERE project_id=? AND run_id=?`, projectID, runID); err != nil {
+		return HealthRun{}, err
+	}
+	if _, err := tx.Exec(`INSERT INTO blackboard_health_results(project_id,run_id,fingerprint,code,severity,subject_kind,subject_id,details_json) VALUES(?,?,?,?,?,?,?,?)`, projectID, runID, fingerprint, code, severity, "project", projectID, string(details)); err != nil {
+		return HealthRun{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return HealthRun{}, err
+	}
+	run, loadErr := s.healthRunByID(context.Background(), projectID, runID)
+	if loadErr != nil {
+		return HealthRun{}, loadErr
+	}
+	return run, cause
+}
+
+// RunHealthExplicit is the synchronous service-level wrapper used by tests and
+// non-HTTP callers. HTTP uses StartHealthRun and completes in the background.
+func (s *GraphService) RunHealthExplicit(ctx context.Context, projectID, idempotencyKey, sqliteIntegrity string) (HealthRun, error) {
+	action, err := s.StartHealthRun(ctx, projectID, idempotencyKey, sqliteIntegrity)
+	if err != nil {
+		return HealthRun{}, err
+	}
+	if !action.Created {
+		return s.healthRunByID(ctx, projectID, action.RunID)
+	}
+	return s.CompleteHealthRun(ctx, projectID, action.RunID, sqliteIntegrity)
+}
+
+func (s *GraphService) healthRunByID(ctx context.Context, projectID, runID string) (HealthRun, error) {
+	var health HealthRun
+	var metricsJSON string
+	err := s.db.QueryRowContext(ctx, `SELECT run_id,checked_graph_revision,checked_state_hash,checked_projection_hash,overall,run_status,artifact_scan_status,artifact_scan_fingerprint,started_at,COALESCE(completed_at,''),metrics_json FROM blackboard_health_runs WHERE project_id=? AND run_id=?`, projectID, runID).Scan(&health.RunID, &health.CheckedGraphRevision, &health.CheckedStateHash, &health.CheckedProjectionHash, &health.Status, &health.RunStatus, &health.ArtifactScanStatus, &health.ArtifactScanFingerprint, &health.StartedAt, &health.CompletedAt, &metricsJSON)
+	if err != nil {
+		return health, err
+	}
+	health.ProjectID = projectID
+	if err := json.Unmarshal([]byte(metricsJSON), &health.Metrics); err != nil {
+		return health, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT fingerprint,code,severity,subject_kind,subject_id,details_json FROM blackboard_health_results WHERE project_id=? AND run_id=? ORDER BY fingerprint`, projectID, runID)
+	if err != nil {
+		return health, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var result HealthResult
+		var details string
+		if err := rows.Scan(&result.Fingerprint, &result.Code, &result.Severity, &result.SubjectKind, &result.SubjectID, &details); err != nil {
+			return health, err
+		}
+		if err := json.Unmarshal([]byte(details), &result.Details); err != nil {
+			return health, err
+		}
+		health.Results = append(health.Results, result)
+	}
+	var currentRevision int
+	var currentStateHash, currentProjectionHash, renderer string
+	if err := s.db.QueryRowContext(ctx, `SELECT current_graph_revision,current_semantic_state_hash,COALESCE(current_main_projection_hash,''),projection_renderer_version FROM blackboard_graph_state WHERE project_id=?`, projectID).Scan(&currentRevision, &currentStateHash, &currentProjectionHash, &renderer); err != nil {
+		return health, err
+	}
+	health.Stale = health.CheckedGraphRevision != currentRevision || health.CheckedStateHash != currentStateHash || health.CheckedProjectionHash != currentProjectionHash || renderer != CanonicalMainGraphRendererV1
+	if !health.Stale && health.ArtifactScanStatus == "completed" {
+		doc, err := canonicalMainGraphDocumentAt(ctx, s.db.DB, projectID, currentRevision)
+		if err != nil {
+			return health, err
+		}
+		_, fingerprint, err := inspectEvidenceArtifacts(ctx, doc, s.artifactRoot)
+		if err != nil {
+			return health, err
+		}
+		health.Stale = fingerprint != health.ArtifactScanFingerprint
+	}
+	return health, rows.Err()
+}
+
+func inspectEvidenceArtifacts(ctx context.Context, doc canonicalMainGraphDocument, artifactRoot string) ([]HealthResult, string, error) {
+	parts := make([][]byte, 0)
+	results := []HealthResult{}
+	byID := make(map[string]canonicalMainNode, len(doc.Nodes))
+	for _, node := range doc.Nodes {
+		byID[node.ID] = node
+	}
+	severityFor := func(nodeID string) HealthSeverity {
+		severity := HealthSeverity("warning")
+		for _, edge := range doc.Edges {
+			if edge.EdgeType != EdgeTypeEvidences || edge.FromNodeID != nodeID {
+				continue
+			}
+			target := byID[edge.ToNodeID]
+			if (target.NodeType == NodeTypeFinding && stringProp(target.Properties, "status") == "confirmed") || (target.NodeType == NodeTypeSolution && stringProp(target.Properties, "status") == "verified") {
+				return "critical"
+			}
+		}
+		return severity
+	}
+	for _, node := range doc.Nodes {
+		if node.NodeType != NodeTypeEvidenceArtifact {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, "", err
+		}
+		status := stringProp(node.Properties, "status")
+		managedPath := stringProp(node.Properties, "managed_path")
+		expectedHash := stringProp(node.Properties, "sha256")
+		if status != "available" {
+			parts = append(parts, []byte(node.ID+"\x00"+status+"\x00"+managedPath+"\x00"+expectedHash))
+			continue
+		}
+		path, stat, resolveErr := resolveManagedArtifactPath(artifactRoot, managedPath)
+		if resolveErr != nil {
+			parts = append(parts, []byte(node.ID+"\x00missing\x00"+managedPath+"\x00"+resolveErr.Error()))
+			results = append(results, HealthResult{Code: "evidence_missing", Severity: severityFor(node.ID), SubjectKind: "node", SubjectID: node.ID, Details: map[string]any{"node_id": node.ID, "stable_key": node.StableKey, "managed_path": managedPath, "reason": "payload_unavailable"}})
+			continue
+		}
+		if expectedHash == "" {
+			parts = append(parts, []byte(node.ID+"\x00digest_missing\x00"+managedPath))
+			results = append(results, HealthResult{Code: "evidence_missing", Severity: severityFor(node.ID), SubjectKind: "node", SubjectID: node.ID, Details: map[string]any{"node_id": node.ID, "stable_key": node.StableKey, "managed_path": managedPath, "reason": "digest_missing"}})
+			continue
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			return nil, "", fmt.Errorf("open managed Evidence artifact %s: %w", node.ID, err)
+		}
+		h := sha256.New()
+		size, copyErr := io.Copy(h, file)
+		closeErr := file.Close()
+		if copyErr != nil || closeErr != nil {
+			return nil, "", fmt.Errorf("inspect Evidence artifact %s: %v %v", node.ID, copyErr, closeErr)
+		}
+		actualHash := hex.EncodeToString(h.Sum(nil))
+		parts = append(parts, []byte(fmt.Sprintf("%s\x00available\x00%s\x00%d\x00%d\x00%s", node.ID, managedPath, size, stat.ModTime().UnixNano(), actualHash)))
+		if expectedHash != "" && actualHash != expectedHash {
+			results = append(results, HealthResult{Code: "evidence_missing", Severity: severityFor(node.ID), SubjectKind: "node", SubjectID: node.ID, Details: map[string]any{"node_id": node.ID, "stable_key": node.StableKey, "managed_path": managedPath, "reason": "hash_mismatch", "expected_sha256": expectedHash, "actual_sha256": actualHash}})
+		}
+	}
+	return results, hex.EncodeToString(framedHash("CyberPenda.Blackboard.ArtifactScan.v1", parts...)), nil
+}
+
+func resolveManagedArtifactPath(root, managedPath string) (string, os.FileInfo, error) {
+	if strings.TrimSpace(root) == "" {
+		return "", nil, fmt.Errorf("managed Artifact Root is not configured")
+	}
+	if managedPath == "" || filepath.IsAbs(managedPath) || strings.Contains(managedPath, "://") {
+		return "", nil, fmt.Errorf("managed path must be relative")
+	}
+	clean := filepath.Clean(managedPath)
+	artifactPrefix := "artifacts" + string(filepath.Separator)
+	if clean != "artifacts" && !strings.HasPrefix(clean, artifactPrefix) {
+		return "", nil, fmt.Errorf("managed path is outside the artifacts directory")
+	}
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", nil, fmt.Errorf("managed path escapes Artifact Root")
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", nil, err
+	}
+	candidate := filepath.Join(resolvedRoot, clean)
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return "", nil, err
+	}
+	rel, err := filepath.Rel(resolvedRoot, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", nil, fmt.Errorf("managed path escapes Artifact Root")
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return "", nil, fmt.Errorf("managed artifact is not a regular file")
+	}
+	return resolved, info, nil
 }

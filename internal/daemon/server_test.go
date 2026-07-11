@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"pentest/internal/blackboard"
 	"pentest/internal/daemon"
@@ -774,5 +775,94 @@ func TestGraphDashboardAndU02ReadsUseCanonicalBlackboardService(t *testing.T) {
 	}
 	if envelope.Projection != string(blackboard.ReadKindCurrentTruthV1) || len(envelope.Result.Items) != 1 || !envelope.Result.Items[0].NonActionable {
 		t.Fatalf("truth=%+v", envelope)
+	}
+}
+
+func TestU03BlackboardHTTPExposesProvenanceTraversalHealthAndExplorer(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "u03-http.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	projects := project.NewService(db)
+	projectRow, err := projects.Create("U03 project", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	graph := blackboard.NewGraphService(db, blackboard.NewSequenceClock("2024-01-02T03:04:05Z", "2024-01-02T03:04:06Z", "2024-01-02T03:04:07Z"), blackboard.RandomIDSource{})
+	mutation, err := graph.Apply(context.Background(), blackboard.MutationBatch{SchemaVersion: 1, IdempotencyKey: "u03:http", Context: blackboard.SystemExecutionContext(projectRow.ID, projectRow.Kind, "test-system"), Operations: []blackboard.Operation{
+		{OpID: "host", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEntity, StableKey: "entity:host"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "host", "name": "Host", "locator": "example.com", "status": "active", "scope_status": "in_scope"}}},
+		{OpID: "service", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEntity, StableKey: "entity:service"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "service", "name": "HTTPS", "locator": "example.com:443", "status": "active", "scope_status": "in_scope"}}},
+		{OpID: "endpoint", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEntity, StableKey: "entity:endpoint"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "endpoint", "name": "Admin", "locator": "https://example.com/admin", "status": "active", "scope_status": "in_scope"}}},
+		{OpID: "service-host", Kind: blackboard.OpPutEdge, PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypePartOf, From: blackboard.NodeRef{OpID: "service"}, To: blackboard.NodeRef{OpID: "host"}}},
+		{OpID: "endpoint-service", Kind: blackboard.OpPutEdge, PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypePartOf, From: blackboard.NodeRef{OpID: "endpoint"}, To: blackboard.NodeRef{OpID: "service"}}},
+	}})
+	if err != nil {
+		t.Fatalf("seed U03 graph: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE blackboard_store_state SET canonical_store=?,cutover_state='graph' WHERE id=1`, store.CanonicalStoreGraphV1); err != nil {
+		t.Fatalf("enable graph epoch: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed store: %v", err)
+	}
+	server, err := daemon.NewServer(daemon.Config{Version: "v", DBPath: dbPath, DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer server.Close()
+
+	rootID := mutation.Operations[0].NodeID
+	for _, url := range []string{
+		"/api/projects/" + projectRow.ID + "/blackboard/records/" + rootID + "/provenance",
+		"/api/projects/" + projectRow.ID + "/blackboard/records/" + rootID + "/traversal?direction=incoming&max_depth=2",
+		"/api/projects/" + projectRow.ID + "/blackboard/health",
+	} {
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, url, nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("GET %s status=%d body=%s", url, recorder.Code, recorder.Body.String())
+		}
+	}
+
+	oversized := httptest.NewRecorder()
+	server.ServeHTTP(oversized, httptest.NewRequest(http.MethodGet, "/api/projects/"+projectRow.ID+"/blackboard/graph-explorer?max_nodes=2&max_edges=10", nil))
+	if oversized.Code != http.StatusUnprocessableEntity || !strings.Contains(oversized.Body.String(), `"node_count":3`) || !strings.Contains(oversized.Body.String(), `"edge_count":2`) {
+		t.Fatalf("oversized Explorer status=%d body=%s", oversized.Code, oversized.Body.String())
+	}
+
+	startRequest := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectRow.ID+"/blackboard/health-runs", strings.NewReader(`{"sqlite_integrity":"quick"}`))
+	startRequest.Header.Set("Idempotency-Key", "u03-http-health")
+	started := httptest.NewRecorder()
+	server.ServeHTTP(started, startRequest)
+	if started.Code != http.StatusAccepted {
+		t.Fatalf("start Health status=%d body=%s", started.Code, started.Body.String())
+	}
+	var action struct {
+		RunID  string `json:"run_id"`
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(started.Body).Decode(&action); err != nil || action.RunID == "" || action.Status != "running" {
+		t.Fatalf("decode Health action: run=%+v err=%v", action, err)
+	}
+	statusURL := "/api/projects/" + projectRow.ID + "/blackboard/health-runs/" + action.RunID
+	for deadline := time.Now().Add(2 * time.Second); ; {
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, statusURL, nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("Health detail status=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+		if !strings.Contains(recorder.Body.String(), `"status":"running"`) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Health run remained running: %s", recorder.Body.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	results := httptest.NewRecorder()
+	server.ServeHTTP(results, httptest.NewRequest(http.MethodGet, statusURL+"/results", nil))
+	if results.Code != http.StatusOK {
+		t.Fatalf("Health results status=%d body=%s", results.Code, results.Body.String())
 	}
 }
