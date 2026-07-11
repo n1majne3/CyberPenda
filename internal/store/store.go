@@ -206,8 +206,19 @@ func migrations() []migration {
 		newMigration(6, "graph_edge_version_endpoints", migration6SQL, migration6Up),
 		newMigration(7, "graph_edge_identity_and_integrity_cutover", migration7SQL, migration7Up),
 		newMigration(8, "graph_budget_compaction_and_health", migration8SQL, migration8Up),
+		newMigration(9, "blackboard_read_cursor_secret", migration9SQL, migration9Up),
 	}
 }
+
+const migration9SQL = `
+CREATE TABLE blackboard_read_state (
+ id INTEGER PRIMARY KEY CHECK(id=1),
+ cursor_secret BLOB NOT NULL CHECK(length(cursor_secret)=32)
+);
+INSERT INTO blackboard_read_state(id,cursor_secret) VALUES(1,randomblob(32));
+`
+
+func migration9Up(tx *sql.Tx) error { return execStatements(tx, migration9SQL) }
 
 const migration4SQL = `
 CREATE TABLE blackboard_edges (

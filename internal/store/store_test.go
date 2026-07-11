@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"path/filepath"
@@ -548,5 +549,48 @@ func assertCount(t *testing.T, db *sql.DB, table string, want int) {
 	}
 	if n != want {
 		t.Fatalf("%s count: got %d want %d", table, n, want)
+	}
+}
+
+func TestBlackboardReadCursorSecretIsDatabaseSpecificAndPersistsAcrossReopen(t *testing.T) {
+	firstPath := filepath.Join(t.TempDir(), "first.db")
+	first, err := store.Open(firstPath)
+	if err != nil {
+		t.Fatalf("open first store: %v", err)
+	}
+	var before []byte
+	if err := first.QueryRow(`SELECT cursor_secret FROM blackboard_read_state WHERE id=1`).Scan(&before); err != nil {
+		t.Fatalf("read first cursor secret: %v", err)
+	}
+	if len(before) != 32 {
+		t.Fatalf("cursor secret length = %d want 32", len(before))
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first store: %v", err)
+	}
+	first, err = store.Open(firstPath)
+	if err != nil {
+		t.Fatalf("reopen first store: %v", err)
+	}
+	defer first.Close()
+	var after []byte
+	if err := first.QueryRow(`SELECT cursor_secret FROM blackboard_read_state WHERE id=1`).Scan(&after); err != nil {
+		t.Fatalf("read persisted cursor secret: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("cursor secret changed across reopen")
+	}
+
+	second, err := store.Open(filepath.Join(t.TempDir(), "second.db"))
+	if err != nil {
+		t.Fatalf("open second store: %v", err)
+	}
+	defer second.Close()
+	var other []byte
+	if err := second.QueryRow(`SELECT cursor_secret FROM blackboard_read_state WHERE id=1`).Scan(&other); err != nil {
+		t.Fatalf("read second cursor secret: %v", err)
+	}
+	if bytes.Equal(before, other) {
+		t.Fatal("independent databases share the same cursor secret")
 	}
 }

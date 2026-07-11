@@ -635,3 +635,76 @@ func TestGraphEpochStartupRepairsTaskGoalsBeforeServing(t *testing.T) {
 		t.Fatalf("startup Goal projection: task=%+v goal=%+v", durable, goal.Node)
 	}
 }
+
+func TestBlackboardRecordsHTTPUsesCanonicalEnvelopeETagAndConditionalRead(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "blackboard-read.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open seed store: %v", err)
+	}
+	projects := project.NewService(db)
+	projectRow, err := projects.Create("Read project", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	graph := blackboard.NewGraphService(db, blackboard.NewSequenceClock("2024-01-02T03:04:05Z"), blackboard.RandomIDSource{})
+	if _, err := graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "u01:http",
+		Context: blackboard.SystemExecutionContext(projectRow.ID, projectRow.Kind, "test-system"),
+		Operations: []blackboard.Operation{
+			{OpID: "a", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "fact:a"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"category": "test", "summary": "A", "scope_status": "in_scope"}}},
+			{OpID: "b", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "fact:b"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"category": "test", "summary": "B", "scope_status": "in_scope"}}},
+		},
+	}); err != nil {
+		t.Fatalf("seed graph: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE blackboard_store_state SET canonical_store=?,cutover_state='graph' WHERE id=1`, store.CanonicalStoreGraphV1); err != nil {
+		t.Fatalf("enable graph epoch: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed store: %v", err)
+	}
+
+	server, err := daemon.NewServer(daemon.Config{Version: "v", DBPath: dbPath, DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer server.Close()
+
+	url := "/api/projects/" + projectRow.ID + "/blackboard/records?node_type=project_fact&sort=stable_key&limit=1"
+	first := httptest.NewRecorder()
+	server.ServeHTTP(first, httptest.NewRequest(http.MethodGet, url, nil))
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status = %d body=%s", first.Code, first.Body.String())
+	}
+	etag := first.Header().Get("ETag")
+	if etag == "" || !strings.HasPrefix(etag, `"`) || !strings.HasSuffix(etag, `"`) {
+		t.Fatalf("ETag = %q want strong quoted tag", etag)
+	}
+	if got := first.Header().Get("Cache-Control"); got != "private, no-cache" {
+		t.Fatalf("Cache-Control = %q", got)
+	}
+	var envelope blackboard.ReadEnvelope
+	if err := json.NewDecoder(first.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+	if envelope.Projection != string(blackboard.ReadKindRecordCollectionV1) || envelope.ProjectID != projectRow.ID || envelope.ProjectionHash == "" {
+		t.Fatalf("envelope = %+v", envelope)
+	}
+
+	conditionalRequest := httptest.NewRequest(http.MethodGet, url, nil)
+	conditionalRequest.Header.Set("If-None-Match", etag)
+	conditional := httptest.NewRecorder()
+	server.ServeHTTP(conditional, conditionalRequest)
+	if conditional.Code != http.StatusNotModified || conditional.Body.Len() != 0 {
+		t.Fatalf("conditional status=%d body=%s", conditional.Code, conditional.Body.String())
+	}
+
+	differentQuery := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectRow.ID+"/blackboard/records?node_type=project_fact&sort=stable_key&limit=2", nil)
+	differentQuery.Header.Set("If-None-Match", etag)
+	different := httptest.NewRecorder()
+	server.ServeHTTP(different, differentQuery)
+	if different.Code != http.StatusOK || different.Header().Get("ETag") == etag {
+		t.Fatalf("different query reused ETag: status=%d etag=%q body=%s", different.Code, different.Header().Get("ETag"), different.Body.String())
+	}
+}

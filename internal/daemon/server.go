@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -86,6 +87,7 @@ type Server struct {
 	tasks              *task.Service
 	harness            *runtime.Harness
 	facts              *blackboard.Service
+	reads              *blackboard.BlackboardReadService
 	runtimeRoot        string
 	sandboxImage       string
 	containerCLI       string
@@ -196,6 +198,7 @@ func NewServer(config Config) (*Server, error) {
 	}
 	if epoch == store.CanonicalStoreGraphV1 || epoch == store.CanonicalStoreGraphV1Finalized {
 		graph := blackboard.NewGraphService(db, blackboard.SystemClock{}, blackboard.RandomIDSource{})
+		server.reads = blackboard.NewBlackboardReadService(db)
 		if err := graph.RepairTaskGoals(context.Background()); err != nil {
 			_ = server.Close()
 			return nil, fmt.Errorf("repair Task Goals at graph startup: %w", err)
@@ -433,6 +436,8 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("DELETE /api/credential-bindings/{binding_id}", server.handleDeleteCredentialBinding)
 	server.mux.HandleFunc("POST /api/projects/{id}/preflight", server.handlePreflight)
 	server.mux.HandleFunc("GET /api/projects/{id}/dashboard", server.handleDashboard)
+	server.mux.HandleFunc("GET /api/projects/{id}/blackboard/runtime-graph", server.handleBlackboardRuntimeGraph)
+	server.mux.HandleFunc("GET /api/projects/{id}/blackboard/records", server.handleBlackboardRecords)
 	server.mux.HandleFunc("PUT /api/projects/{id}/credential-bindings", server.handleUpsertProjectCredentialBinding)
 	server.mux.HandleFunc("GET /api/projects/{id}/credential-bindings", server.handleListProjectCredentialBindings)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks", server.handleCreateTask)
@@ -927,6 +932,133 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 
 	// A preflight result is always 200: the body reports pass/fail per check.
 	writeJSON(response, http.StatusOK, result)
+}
+
+func (server *Server) handleBlackboardRuntimeGraph(response http.ResponseWriter, request *http.Request) {
+	server.handleCanonicalBlackboardRead(response, request, blackboard.ReadRequest{
+		ProtocolVersion: blackboard.BlackboardReadProtocolVersion,
+		ProjectID:       request.PathValue("id"),
+		Kind:            blackboard.ReadKindCanonicalGraphV1,
+	})
+}
+
+func (server *Server) handleBlackboardRecords(response http.ResponseWriter, request *http.Request) {
+	query := request.URL.Query()
+	limit, ok := parseOptionalReadInt(response, query.Get("limit"), "limit")
+	if !ok {
+		return
+	}
+	atRevision, ok := parseOptionalReadIntPointer(response, query.Get("at_revision"), "at_revision")
+	if !ok {
+		return
+	}
+	nodeTypes := make([]blackboard.NodeType, 0, len(query["node_type"]))
+	for _, value := range query["node_type"] {
+		nodeTypes = append(nodeTypes, blackboard.NodeType(value))
+	}
+	dispositions := make([]blackboard.Disposition, 0, len(query["disposition"]))
+	for _, value := range query["disposition"] {
+		dispositions = append(dispositions, blackboard.Disposition(value))
+	}
+	server.handleCanonicalBlackboardRead(response, request, blackboard.ReadRequest{
+		ProtocolVersion: blackboard.BlackboardReadProtocolVersion,
+		ProjectID:       request.PathValue("id"),
+		Kind:            blackboard.ReadKindRecordCollectionV1,
+		AtRevision:      atRevision,
+		RecordCollection: &blackboard.RecordCollectionRequest{
+			NodeTypes: nodeTypes, Dispositions: dispositions, Lifecycle: query["lifecycle"],
+			Query: query.Get("query"), Sort: query.Get("sort"), Limit: limit, Cursor: query.Get("cursor"),
+		},
+	})
+}
+
+func (server *Server) handleCanonicalBlackboardRead(response http.ResponseWriter, request *http.Request, readRequest blackboard.ReadRequest) {
+	if server.reads == nil {
+		writeError(response, http.StatusConflict, "graph Blackboard reads are unavailable before graph cutover")
+		return
+	}
+	envelope, err := server.reads.Read(request.Context(), readRequest)
+	if err != nil {
+		writeBlackboardReadError(response, err)
+		return
+	}
+	etag := `"` + envelope.ProjectionHash + `"`
+	response.Header().Set("ETag", etag)
+	if readRequest.AtRevision != nil {
+		response.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	} else {
+		response.Header().Set("Cache-Control", "private, no-cache")
+	}
+	if request.Header.Get("If-None-Match") == etag {
+		response.WriteHeader(http.StatusNotModified)
+		return
+	}
+	writeJSON(response, http.StatusOK, envelope)
+}
+
+func parseOptionalReadInt(response http.ResponseWriter, value, path string) (int, bool) {
+	if strings.TrimSpace(value) == "" {
+		return 0, true
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		writeBlackboardReadError(response, &blackboard.ValidationError{Code: blackboard.ErrCodeInvalidQuery, Message: path + " must be an integer", OperationIndex: -1, Path: path})
+		return 0, false
+	}
+	return parsed, true
+}
+
+func parseOptionalReadIntPointer(response http.ResponseWriter, value, path string) (*int, bool) {
+	if strings.TrimSpace(value) == "" {
+		return nil, true
+	}
+	parsed, ok := parseOptionalReadInt(response, value, path)
+	if !ok {
+		return nil, false
+	}
+	return &parsed, true
+}
+
+func writeBlackboardReadError(response http.ResponseWriter, err error) {
+	var validation *blackboard.ValidationError
+	if !errors.As(err, &validation) {
+		writeError(response, http.StatusInternalServerError, "Blackboard read failed")
+		return
+	}
+	status := http.StatusBadRequest
+	switch validation.Code {
+	case blackboard.ErrCodeProjectNotFound, blackboard.ErrCodeRevisionNotFound, blackboard.ErrCodeRecordNotFound, blackboard.ErrCodeHealthRunNotFound:
+		status = http.StatusNotFound
+	case blackboard.ErrCodeLiteralIdentityRequired, blackboard.ErrCodeHealthRunInProgress:
+		status = http.StatusConflict
+	case blackboard.ErrCodeProjectionTooLarge, blackboard.ErrCodeProjectKindMismatch:
+		status = http.StatusUnprocessableEntity
+	case blackboard.ErrCodeSnapshotUnavailable:
+		status = http.StatusServiceUnavailable
+	}
+	writeJSON(response, status, struct {
+		Error struct {
+			ProtocolVersion int            `json:"protocol_version"`
+			Code            string         `json:"code"`
+			Message         string         `json:"message"`
+			OperationIndex  *int           `json:"operation_index"`
+			OpID            *string        `json:"op_id"`
+			Path            string         `json:"path"`
+			Retryable       bool           `json:"retryable"`
+			Details         map[string]any `json:"details"`
+			RequestID       string         `json:"request_id"`
+		} `json:"error"`
+	}{Error: struct {
+		ProtocolVersion int            `json:"protocol_version"`
+		Code            string         `json:"code"`
+		Message         string         `json:"message"`
+		OperationIndex  *int           `json:"operation_index"`
+		OpID            *string        `json:"op_id"`
+		Path            string         `json:"path"`
+		Retryable       bool           `json:"retryable"`
+		Details         map[string]any `json:"details"`
+		RequestID       string         `json:"request_id"`
+	}{ProtocolVersion: blackboard.BlackboardReadProtocolVersion, Code: validation.Code, Message: validation.Message, Path: validation.Path, Retryable: validation.Retryable, Details: map[string]any{}}})
 }
 
 func (server *Server) handleDashboard(response http.ResponseWriter, request *http.Request) {
