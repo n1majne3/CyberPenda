@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 
 	"pentest/internal/store"
 )
@@ -186,7 +187,8 @@ func (s *GraphService) DBForTesting() *store.DB { return s.db }
 // operation kinds fail closed with invalid_request until their owning slice.
 //
 //nolint:gocyclo // C02 Apply is one cohesive transaction; complexity drops as slices mature.
-func (s *GraphService) Apply(ctx context.Context, batch MutationBatch) (MutationResult, error) {
+func (s *GraphService) Apply(ctx context.Context, batch MutationBatch) (result MutationResult, err error) {
+	defer func() { err = classifyStorageBusy(err) }()
 	if batch.SchemaVersion != GraphMutationSchemaVersion {
 		return MutationResult{}, validationError(ErrCodeUnsupportedSchemaVersion,
 			fmt.Sprintf("unsupported mutation schema version %d", batch.SchemaVersion), -1, "", "schema_version")
@@ -220,7 +222,7 @@ func (s *GraphService) Apply(ctx context.Context, batch MutationBatch) (Mutation
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return MutationResult{}, fmt.Errorf("begin graph transaction: %w", err)
+		return MutationResult{}, graphStorageError("begin graph transaction", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -231,25 +233,46 @@ func (s *GraphService) Apply(ctx context.Context, batch MutationBatch) (Mutation
 	if err := validateExecutionContext(tx, batch.Context); err != nil {
 		return MutationResult{}, err
 	}
+	if err := verifyMutationChain(ctx, tx, projectID); err != nil {
+		return MutationResult{}, fmt.Errorf("verify graph ledger before Apply: %w", err)
+	}
 
-	// Idempotency: same scope/key/hash returns the stored result; different
-	// hash returns idempotency_conflict (storage §9 step 5). Full exact-replay
-	// semantics land in C07.
+	// Idempotency: same scope/key/hash returns the exact stored result bytes;
+	// different hash returns idempotency_conflict (storage §9 step 5).
 	if stored, err := s.checkIdempotency(tx, projectID, scope, batch.IdempotencyKey, requestHash); err != nil {
 		return MutationResult{}, err
 	} else if stored != nil {
 		return *stored, nil
 	}
 
-	result, err := s.applyOperations(tx, batch, requestHash)
+	result, err = s.applyOperations(tx, batch, requestHash)
 	if err != nil {
 		return MutationResult{}, err
 	}
 
 	if err := tx.Commit(); err != nil {
-		return MutationResult{}, fmt.Errorf("commit graph transaction: %w", err)
+		return MutationResult{}, graphStorageError("commit graph transaction", err)
 	}
 	return result, nil
+}
+
+func graphStorageError(action string, err error) error {
+	return classifyStorageBusy(fmt.Errorf("%s: %w", action, err))
+}
+
+func classifyStorageBusy(err error) error {
+	if err == nil {
+		return nil
+	}
+	var alreadyClassified *StorageError
+	if errors.As(err, &alreadyClassified) {
+		return err
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "database is locked") || strings.Contains(message, "database is busy") || strings.Contains(message, "sqlite_busy") || strings.Contains(message, "sqlite_locked") {
+		return &StorageError{Code: ErrCodeStorageBusy, Message: "SQLite writer lock is busy", Retryable: true, Cause: err}
+	}
+	return err
 }
 
 // applyOperations validates the batch, applies it, and returns the result.
@@ -340,6 +363,9 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 			}
 		}
 	}
+	if err := validateSourceEvents(tx, batch, seenOps); err != nil {
+		return MutationResult{}, err
+	}
 	// Resolve same-batch and current-graph references and validate every controlled edge against
 	// the final proposed node set before allocating IDs or writing rows.
 	resolvedEdges := map[string][2]resolvedNode{}
@@ -419,16 +445,51 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 		if err := insertProvenance(tx, projectID, provenanceID, batch.Context, recordedAt.Format("2006-01-02T15:04:05.000000000Z07:00")); err != nil {
 			return MutationResult{}, err
 		}
+		for ordinal, eventID := range batch.SourceEventIDsByOp[op.OpID] {
+			if _, err := tx.Exec(`INSERT INTO blackboard_graph_provenance_events(project_id,provenance_id,ordinal,event_id) VALUES(?,?,?,?)`, projectID, provenanceID, ordinal, eventID); err != nil {
+				return MutationResult{}, fmt.Errorf("insert provenance event: %w", err)
+			}
+		}
 		state.provenanceIDs = append(state.provenanceIDs, provenanceID)
 		if op.Kind == OpPutEdge {
+			resolved := resolvedEdges[op.OpID]
+			fromID, toID := resolved[0].id(nodeIDs), resolved[1].id(nodeIDs)
+			var existingID, existingSummary, existingSemanticHash string
+			var existingVersion int
+			err := tx.QueryRow(
+				`SELECT h.edge_id, h.version, v.summary, h.semantic_hash
+				   FROM blackboard_edge_heads h
+				   JOIN blackboard_edge_versions v
+				     ON v.project_id=h.project_id AND v.edge_id=h.edge_id AND v.version=h.version
+				  WHERE h.project_id=? AND h.edge_type=? AND h.from_node_id=? AND h.to_node_id=? AND h.state='active'`,
+				projectID, string(op.PutEdge.EdgeType), fromID, toID,
+			).Scan(&existingID, &existingVersion, &existingSummary, &existingSemanticHash)
+			if err == nil && existingSummary == op.PutEdge.Summary {
+				result.Operations[i] = OperationResult{OpID: op.OpID, EdgeID: existingID, EdgeType: op.PutEdge.EdgeType, EdgeVersion: existingVersion, SemanticHash: existingSemanticHash, Changed: false}
+				continue
+			}
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return MutationResult{}, fmt.Errorf("read existing edge: %w", err)
+			}
+			if err == nil {
+				if op.PutEdge.ExpectedVersion <= 0 || op.PutEdge.ExpectedVersion != existingVersion {
+					return MutationResult{}, validationError(ErrCodeVersionConflict, fmt.Sprintf("expected edge version %d does not match current version %d", op.PutEdge.ExpectedVersion, existingVersion), i, op.OpID, "operations[].put_edge.expected_version")
+				}
+				if !stateChanged {
+					result.GraphRevision = state.currentGraphRevision + 1
+					stateChanged = true
+				}
+				semHash := edgeSemanticHash(op.PutEdge.EdgeType, fromID, toID, "active", op.PutEdge.Summary)
+				result.Operations[i] = OperationResult{OpID: op.OpID, EdgeID: existingID, EdgeType: op.PutEdge.EdgeType, EdgeVersion: existingVersion + 1, SemanticHash: hex.EncodeToString(semHash), Changed: true}
+				state.pendingEdgeUpdates = append(state.pendingEdgeUpdates, pendingEdgeUpdate{id: existingID, edgeType: op.PutEdge.EdgeType, fromID: fromID, toID: toID, version: existingVersion + 1, summary: op.PutEdge.Summary, semHash: semHash, opIndex: i, graphRevision: result.GraphRevision})
+				continue
+			}
 			if !stateChanged {
 				result.GraphRevision = state.currentGraphRevision + 1
 				stateChanged = true
 			}
 			edgeID := s.ids.NextID()
-			resolved := resolvedEdges[op.OpID]
-			fromID, toID := resolved[0].id(nodeIDs), resolved[1].id(nodeIDs)
-			semHash := framedHash("CyberPenda.Blackboard.EdgeSemantic.v1", []byte(op.PutEdge.EdgeType), []byte(fromID), []byte(toID), []byte("active"), []byte(op.PutEdge.Summary))
+			semHash := edgeSemanticHash(op.PutEdge.EdgeType, fromID, toID, "active", op.PutEdge.Summary)
 			result.Operations[i] = OperationResult{OpID: op.OpID, EdgeID: edgeID, EdgeType: op.PutEdge.EdgeType, EdgeVersion: 1, SemanticHash: hex.EncodeToString(semHash), Changed: true}
 			state.pendingEdges = append(state.pendingEdges, pendingEdge{id: edgeID, edgeType: op.PutEdge.EdgeType, fromID: fromID, toID: toID, summary: op.PutEdge.Summary, semHash: semHash, opIndex: i, graphRevision: result.GraphRevision})
 			continue
@@ -573,6 +634,7 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 			version:       nodeVersion,
 			propsJSON:     propsJSON,
 			semHash:       semHash,
+			keySemHash:    keySemanticHash(op.Node.NodeType, op.Node.StableKey, "stable", nodeID, nodeID, false),
 			provenanceID:  provenanceID,
 			opIndex:       i,
 			opID:          op.OpID,
@@ -592,6 +654,10 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 	// steps 8-13).
 	mutationID := s.ids.NextID()
 	mutationSeq := state.latestMutationSeq + 1
+	result.MutationSequence = mutationSeq
+	result.MutationID = mutationID
+	result.RecordedAt = recordedAt.Format("2006-01-02T15:04:05.000000000Z07:00")
+	result.RequestHash = hex.EncodeToString(requestHash)
 	resultBytes, resultHash, resultingStateHash, _, err := s.finalizeAndPersist(
 		tx, batch, state, mutationID, mutationSeq, requestHash, result, recordedAt,
 	)
@@ -599,10 +665,9 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 		return MutationResult{}, err
 	}
 
-	result.RequestHash = hex.EncodeToString(decodeOrEmpty(requestHash))
 	result.ResultHash = hex.EncodeToString(resultHash)
 	result.ResultingStateHash = hex.EncodeToString(resultingStateHash)
-	_ = resultBytes
+	result.ResultBytes = append([]byte(nil), resultBytes...)
 
 	return result, nil
 }
@@ -616,6 +681,7 @@ type pendingCreate struct {
 	version       int
 	propsJSON     []byte
 	semHash       []byte
+	keySemHash    []byte
 	provenanceID  string
 	opIndex       int
 	opID          string
@@ -635,6 +701,21 @@ type pendingEdge struct {
 	fromID, toID, summary  string
 	semHash                []byte
 	opIndex, graphRevision int
+}
+
+type pendingEdgeUpdate struct {
+	id                     string
+	edgeType               EdgeType
+	fromID, toID, summary  string
+	version                int
+	semHash                []byte
+	opIndex, graphRevision int
+}
+
+type pendingOperationRow struct {
+	opJSON, resJSON []byte
+	changed         bool
+	provID, opID    string
 }
 
 func computeResultingStateHash(tx *sql.Tx, projectID, projectKind string, state graphState) ([]byte, error) {
@@ -686,24 +767,24 @@ func computeResultingStateHash(tx *sql.Tx, projectID, projectKind string, state 
 		}
 		return ordered[i].nodeID < ordered[j].nodeID
 	})
-	parts := [][]byte{[]byte(projectKind), u64Bytes(uint64(store.GraphSchemaVersion))}
+	parts := [][]byte{[]byte(projectID), []byte(projectKind), u64Bytes(uint64(store.GraphSchemaVersion))}
 	for _, r := range ordered {
 		parts = append(parts, u64Bytes(uint64(nodeTypeOrdinal(r.nodeType))), []byte(r.stableKey), []byte(r.nodeID), r.semHash)
 	}
 	type edgeHashRecord struct {
-		edgeType     EdgeType
-		from, to, id string
-		semHash      []byte
+		edgeType EdgeType
+		id       string
+		semHash  []byte
 	}
-	var edges []edgeHashRecord
-	erows, err := tx.Query(`SELECT edge_id,edge_type,from_node_id,to_node_id,semantic_hash FROM blackboard_edge_heads WHERE project_id=?`, projectID)
+	edgesByID := map[string]edgeHashRecord{}
+	erows, err := tx.Query(`SELECT edge_id,edge_type,semantic_hash FROM blackboard_edge_heads WHERE project_id=?`, projectID)
 	if err != nil {
 		return nil, err
 	}
 	for erows.Next() {
 		var r edgeHashRecord
 		var sem string
-		if err := erows.Scan(&r.id, &r.edgeType, &r.from, &r.to, &sem); err != nil {
+		if err := erows.Scan(&r.id, &r.edgeType, &sem); err != nil {
 			_ = erows.Close()
 			return nil, err
 		}
@@ -712,7 +793,7 @@ func computeResultingStateHash(tx *sql.Tx, projectID, projectKind string, state 
 			_ = erows.Close()
 			return nil, err
 		}
-		edges = append(edges, r)
+		edgesByID[r.id] = r
 	}
 	if err := erows.Err(); err != nil {
 		_ = erows.Close()
@@ -720,22 +801,68 @@ func computeResultingStateHash(tx *sql.Tx, projectID, projectKind string, state 
 	}
 	_ = erows.Close()
 	for _, e := range state.pendingEdges {
-		edges = append(edges, edgeHashRecord{e.edgeType, e.fromID, e.toID, e.id, e.semHash})
+		edgesByID[e.id] = edgeHashRecord{e.edgeType, e.id, e.semHash}
+	}
+	for _, e := range state.pendingEdgeUpdates {
+		edgesByID[e.id] = edgeHashRecord{e.edgeType, e.id, e.semHash}
+	}
+	edges := make([]edgeHashRecord, 0, len(edgesByID))
+	for _, edge := range edgesByID {
+		edges = append(edges, edge)
 	}
 	sort.Slice(edges, func(i, j int) bool {
 		if edges[i].edgeType != edges[j].edgeType {
-			return edges[i].edgeType < edges[j].edgeType
-		}
-		if edges[i].from != edges[j].from {
-			return edges[i].from < edges[j].from
-		}
-		if edges[i].to != edges[j].to {
-			return edges[i].to < edges[j].to
+			return edgeTypeOrdinal(edges[i].edgeType) < edgeTypeOrdinal(edges[j].edgeType)
 		}
 		return edges[i].id < edges[j].id
 	})
 	for _, e := range edges {
-		parts = append(parts, []byte(e.edgeType), []byte(e.from), []byte(e.to), []byte(e.id), e.semHash)
+		parts = append(parts, u64Bytes(uint64(edgeTypeOrdinal(e.edgeType))), []byte(e.id), e.semHash)
+	}
+	type keyHashRecord struct {
+		nodeType NodeType
+		key      string
+		semHash  []byte
+	}
+	keys := map[string]keyHashRecord{}
+	keyRows, err := tx.Query(`SELECT node_type,key,semantic_hash FROM blackboard_key_registry WHERE project_id=?`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("read keys for state hash: %w", err)
+	}
+	for keyRows.Next() {
+		var record keyHashRecord
+		var semanticHash string
+		if err := keyRows.Scan(&record.nodeType, &record.key, &semanticHash); err != nil {
+			keyRows.Close()
+			return nil, err
+		}
+		record.semHash, err = hex.DecodeString(semanticHash)
+		if err != nil {
+			keyRows.Close()
+			return nil, err
+		}
+		keys[string(record.nodeType)+"\x00"+record.key] = record
+	}
+	if err := keyRows.Err(); err != nil {
+		keyRows.Close()
+		return nil, err
+	}
+	keyRows.Close()
+	for _, pending := range state.pending {
+		keys[string(pending.nodeType)+"\x00"+pending.stableKey] = keyHashRecord{nodeType: pending.nodeType, key: pending.stableKey, semHash: pending.keySemHash}
+	}
+	orderedKeys := make([]keyHashRecord, 0, len(keys))
+	for _, record := range keys {
+		orderedKeys = append(orderedKeys, record)
+	}
+	sort.Slice(orderedKeys, func(i, j int) bool {
+		if orderedKeys[i].nodeType != orderedKeys[j].nodeType {
+			return nodeTypeOrdinal(orderedKeys[i].nodeType) < nodeTypeOrdinal(orderedKeys[j].nodeType)
+		}
+		return orderedKeys[i].key < orderedKeys[j].key
+	})
+	for _, key := range orderedKeys {
+		parts = append(parts, u64Bytes(uint64(nodeTypeOrdinal(key.nodeType))), []byte(key.key), key.semHash)
 	}
 	return framedHash("CyberPenda.Blackboard.State.v1", parts...), nil
 }
@@ -760,14 +887,7 @@ func (s *GraphService) finalizeAndPersist(
 	tsStr := recordedAt.Format("2006-01-02T15:04:05.000000000Z07:00")
 
 	// Operation result JSON per op (operation_json + result_json).
-	type opRow struct {
-		opJSON  []byte
-		resJSON []byte
-		changed bool
-		provID  string
-		opID    string
-	}
-	opRows := make([]opRow, len(batch.Operations))
+	opRows := make([]pendingOperationRow, len(batch.Operations))
 	for i, op := range batch.Operations {
 		opJSON, err := canonicalJSON(op)
 		if err != nil {
@@ -777,7 +897,7 @@ func (s *GraphService) finalizeAndPersist(
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("encode operation result json: %w", err)
 		}
-		opRows[i] = opRow{opJSON: opJSON, resJSON: resJSON, changed: result.Operations[i].Changed, provID: state.provenanceIDs[i], opID: op.OpID}
+		opRows[i] = pendingOperationRow{opJSON: opJSON, resJSON: resJSON, changed: result.Operations[i].Changed, provID: state.provenanceIDs[i], opID: op.OpID}
 	}
 
 	// Canonical request JSON for the ledger.
@@ -786,46 +906,44 @@ func (s *GraphService) finalizeAndPersist(
 		return nil, nil, nil, nil, fmt.Errorf("encode request json: %w", err)
 	}
 
-	// Result JSON (the canonical MutationResult stored for replay).
-	resultJSON, err := canonicalJSON(result.ledgerForm())
-	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("encode result json: %w", err)
-	}
-	// result_hash is SHA-256 of the canonical result_json bytes (storage §6.1).
-	resultHashSum := sha256.Sum256(resultJSON)
-	resultHash := resultHashSum[:]
-
 	// Semantic state hash covers the complete resulting materialized graph,
 	// overlaying this batch's pending creates/updates/edges on current heads.
 	resultingStateHash, err := computeResultingStateHash(tx, projectID, batch.Context.ProjectKind, state)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
+	result.ResultingStateHash = hex.EncodeToString(resultingStateHash)
 
-	// Mutation integrity chain (storage §11.3). C02 covers the mutation-header
-	// fields only; the ordered changed-record integrity hashes (provenance,
-	// operation, node identity/version, key event — §11.3 ordinals 1-9) are
-	// added by C07 when full replay and reconstruction land. The genesis
-	// previous hash seeds the per-Project chain.
+	// Result JSON is finalized only after all replay-visible server fields and
+	// the resulting state hash are known. ResultHash is metadata about these
+	// exact bytes and is therefore not recursively embedded in result_json.
+	resultJSON, err := canonicalJSON(result.ledgerForm())
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("encode result json: %w", err)
+	}
+	resultHashSum := sha256.Sum256(resultJSON)
+	resultHash := resultHashSum[:]
+
+	// Mutation integrity chain (storage §11.3) covers the complete header and
+	// ordered changed-record hashes. The genesis previous hash seeds the
+	// per-Project chain.
 	prevHash := state.historyHeadHash
 	if prevHash == nil {
 		prevHash = genesisHash(projectID)
 	}
-	mutationHash := framedHash("CyberPenda.Blackboard.Mutation.v1",
-		[]byte(projectID), []byte(mutationID), prevHash, u64Bytes(uint64(mutationSeq)),
-		u64Bytes(uint64(baseRev)), u64Bytes(uint64(resultRev)),
-		u64Bytes(uint64(GraphMutationSchemaVersion)), []byte(MutationKindNormal),
-		nullableBytes(false, nil), // maintenance_subject_id
-		[]byte("{}"),              // maintenance_metadata_json
-		[]byte(batch.Context.idempotencyScope()), []byte(batch.IdempotencyKey),
-		requestHashRaw, resultHash, []byte(tsStr),
-		resultingStateHash, []byte("dirty"), // projection_status: C02 marks dirty
-		[]byte(""),                // renderer version
-		[]byte(""),                // estimator version
-		nullableBytes(false, nil), // main projection hash
-		nullableBytes(false, nil), // projection bytes
-		nullableBytes(false, nil), // projection tokens
-	)
+	recordHashes, err := pendingIntegrityHashes(batch, state, opRows, mutationSeq, tsStr)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	mutationHash := computeMutationHash(mutationHashInput{
+		ProjectID: projectID, MutationID: mutationID, PreviousHash: prevHash, MutationSeq: mutationSeq,
+		BaseRevision: baseRev, ResultRevision: resultRev, SchemaVersion: GraphMutationSchemaVersion,
+		MutationKind: string(MutationKindNormal), MaintenanceMetadataJSON: "{}",
+		IdempotencyScope: batch.Context.idempotencyScope(), IdempotencyKey: batch.IdempotencyKey,
+		RequestHash: requestHashRaw, ResultHash: resultHash, RecordedAt: tsStr,
+		ResultingStateHash: resultingStateHash, ProjectionStatus: "dirty",
+		RecordHashes: recordHashes,
+	})
 
 	// Insert mutation header.
 	_, err = tx.Exec(
@@ -892,7 +1010,7 @@ func (s *GraphService) finalizeAndPersist(
 			  legacy_nonconforming, result_graph_revision, mutation_seq, operation_index, semantic_hash)
 			 VALUES (?, ?, ?, 1, 'stable', ?, ?, 0, ?, ?, ?, ?)`,
 			projectID, string(p.nodeType), p.stableKey, p.nodeID, p.nodeID,
-			p.graphRevision, mutationSeq, p.opIndex, hex.EncodeToString(p.semHash),
+			p.graphRevision, mutationSeq, p.opIndex, hex.EncodeToString(p.keySemHash),
 		)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("insert key event: %w", err)
@@ -916,7 +1034,7 @@ func (s *GraphService) finalizeAndPersist(
 			`INSERT INTO blackboard_key_registry
 			 (project_id, node_type, key, latest_key_version, role, source_node_id, canonical_node_id, semantic_hash)
 			 VALUES (?, ?, ?, 1, 'stable', ?, ?, ?)`,
-			projectID, string(p.nodeType), p.stableKey, p.nodeID, p.nodeID, hex.EncodeToString(p.semHash),
+			projectID, string(p.nodeType), p.stableKey, p.nodeID, p.nodeID, hex.EncodeToString(p.keySemHash),
 		)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("insert key registry: %w", err)
@@ -936,17 +1054,27 @@ func (s *GraphService) finalizeAndPersist(
 		}
 	}
 	for _, e := range state.pendingEdges {
-		_, err = tx.Exec(`INSERT INTO blackboard_edges(project_id,id,edge_type,from_node_id,to_node_id,created_mutation_seq,created_operation_index,created_at) VALUES(?,?,?,?,?,?,?,?)`, projectID, e.id, string(e.edgeType), e.fromID, e.toID, mutationSeq, e.opIndex, tsStr)
+		_, err = tx.Exec(`INSERT INTO blackboard_edges(project_id,id,edge_type,created_mutation_seq,created_operation_index,created_at) VALUES(?,?,?,?,?,?)`, projectID, e.id, string(e.edgeType), mutationSeq, e.opIndex, tsStr)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("insert edge identity: %w", err)
 		}
-		_, err = tx.Exec(`INSERT INTO blackboard_edge_versions(project_id,edge_id,version,result_graph_revision,mutation_seq,operation_index,state,summary,semantic_hash,updated_at) VALUES(?,?,1,?,?,?,'active',?,?,?)`, projectID, e.id, e.graphRevision, mutationSeq, e.opIndex, e.summary, hex.EncodeToString(e.semHash), tsStr)
+		_, err = tx.Exec(`INSERT INTO blackboard_edge_versions(project_id,edge_id,version,result_graph_revision,mutation_seq,operation_index,state,summary,semantic_hash,updated_at,from_node_id,to_node_id) VALUES(?,?,1,?,?,?,'active',?,?,?,?,?)`, projectID, e.id, e.graphRevision, mutationSeq, e.opIndex, e.summary, hex.EncodeToString(e.semHash), tsStr, e.fromID, e.toID)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("insert edge version: %w", err)
 		}
 		_, err = tx.Exec(`INSERT INTO blackboard_edge_heads(project_id,edge_id,edge_type,from_node_id,to_node_id,version,graph_revision,state,semantic_hash) VALUES(?,?,?,?,?,1,?,'active',?)`, projectID, e.id, string(e.edgeType), e.fromID, e.toID, e.graphRevision, hex.EncodeToString(e.semHash))
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("insert edge head: %w", err)
+		}
+	}
+	for _, e := range state.pendingEdgeUpdates {
+		_, err = tx.Exec(`INSERT INTO blackboard_edge_versions(project_id,edge_id,version,result_graph_revision,mutation_seq,operation_index,state,summary,semantic_hash,updated_at,from_node_id,to_node_id) VALUES(?,?,?,?,?,?,'active',?,?,?,?,?)`, projectID, e.id, e.version, e.graphRevision, mutationSeq, e.opIndex, e.summary, hex.EncodeToString(e.semHash), tsStr, e.fromID, e.toID)
+		if err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("insert edge update version: %w", err)
+		}
+		_, err = tx.Exec(`UPDATE blackboard_edge_heads SET version=?,graph_revision=?,state='active',semantic_hash=? WHERE project_id=? AND edge_id=?`, e.version, e.graphRevision, hex.EncodeToString(e.semHash), projectID, e.id)
+		if err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("update edge head: %w", err)
 		}
 	}
 
@@ -982,17 +1110,18 @@ func (s *GraphService) finalizeAndPersist(
 // for the ledger, excluding server-generated IDs and timestamps.
 func (b MutationBatch) requestLedgerForm() any {
 	return struct {
-		SchemaVersion    int         `json:"schema_version"`
-		IdempotencyKey   string      `json:"idempotency_key"`
-		ProjectID        string      `json:"project_id"`
-		ActorType        ActorType   `json:"actor_type"`
-		ActorID          string      `json:"actor_id"`
-		TaskID           string      `json:"task_id,omitempty"`
-		ContinuationID   string      `json:"continuation_id,omitempty"`
-		RuntimeProfileID string      `json:"runtime_profile_id,omitempty"`
-		Runner           string      `json:"runner,omitempty"`
-		Operations       []Operation `json:"operations"`
-	}{b.SchemaVersion, b.IdempotencyKey, b.Context.ProjectID, b.Context.ActorType, b.Context.ActorID, b.Context.TaskID, b.Context.ContinuationID, b.Context.RuntimeProfileID, b.Context.Runner, b.Operations}
+		SchemaVersion      int                 `json:"schema_version"`
+		IdempotencyKey     string              `json:"idempotency_key"`
+		ProjectID          string              `json:"project_id"`
+		ActorType          ActorType           `json:"actor_type"`
+		ActorID            string              `json:"actor_id"`
+		TaskID             string              `json:"task_id,omitempty"`
+		ContinuationID     string              `json:"continuation_id,omitempty"`
+		RuntimeProfileID   string              `json:"runtime_profile_id,omitempty"`
+		Runner             string              `json:"runner,omitempty"`
+		Operations         []Operation         `json:"operations"`
+		SourceEventIDsByOp map[string][]string `json:"source_event_ids_by_op,omitempty"`
+	}{b.SchemaVersion, b.IdempotencyKey, b.Context.ProjectID, b.Context.ActorType, b.Context.ActorID, b.Context.TaskID, b.Context.ContinuationID, b.Context.RuntimeProfileID, b.Context.Runner, b.Operations, b.SourceEventIDsByOp}
 }
 
 // ledgerForm returns the result in the canonical form stored in result_json.
@@ -1005,7 +1134,8 @@ func (r MutationResult) ledgerForm() resultLedgerForm {
 		}
 	}
 	return resultLedgerForm{
-		GraphRevision: r.GraphRevision, RequestHash: r.RequestHash, ResultHash: r.ResultHash,
+		MutationSequence: r.MutationSequence, MutationID: r.MutationID, RecordedAt: r.RecordedAt,
+		GraphRevision: r.GraphRevision, RequestHash: r.RequestHash,
 		ResultingStateHash: r.ResultingStateHash, Operations: ops,
 	}
 }
@@ -1015,13 +1145,6 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
-}
-
-func decodeOrEmpty(b []byte) []byte {
-	if b == nil {
-		return []byte{}
-	}
-	return b
 }
 
 func sortPendingByKey(p []pendingCreate) {
@@ -1079,6 +1202,7 @@ type graphState struct {
 	pending              []pendingCreate
 	pendingUpdates       []pendingUpdate
 	pendingEdges         []pendingEdge
+	pendingEdgeUpdates   []pendingEdgeUpdate
 	provenanceIDs        []string
 }
 
@@ -1193,17 +1317,15 @@ func keyIsLive(tx *sql.Tx, projectID string, nodeType NodeType, key string) (boo
 	return n > 0, nil
 }
 
-// checkIdempotency implements storage §9 step 5 for first-seen matching. C02
-// returns the stored result when an identical request hash was already
-// recorded for this scope/key, and idempotency_conflict on a hash mismatch.
-// Full exact-replay byte comparison lands in C07.
+// checkIdempotency implements storage §9 step 5: an identical request returns
+// the exact stored result, while a hash mismatch returns idempotency_conflict.
 func (s *GraphService) checkIdempotency(tx *sql.Tx, projectID, scope, key string, requestHash []byte) (*MutationResult, error) {
-	var storedHash, storedResultJSON string
+	var storedHash, storedResultJSON, storedResultHash string
 	err := tx.QueryRow(
-		`SELECT request_hash, result_json FROM blackboard_graph_mutations
+		`SELECT request_hash, result_json, result_hash FROM blackboard_graph_mutations
 		  WHERE project_id = ? AND idempotency_scope = ? AND idempotency_key = ?`,
 		projectID, scope, key,
-	).Scan(&storedHash, &storedResultJSON)
+	).Scan(&storedHash, &storedResultJSON, &storedResultHash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -1218,6 +1340,7 @@ func (s *GraphService) checkIdempotency(tx *sql.Tx, projectID, scope, key string
 	if err != nil {
 		return nil, err
 	}
+	res.ResultHash = storedResultHash
 	return res, nil
 }
 
@@ -1266,12 +1389,22 @@ func projectFactSemanticHash(disposition Disposition, mergeTarget string, props 
 		propsJSON = []byte(props.Summary)
 	}
 	return framedHash("CyberPenda.Blackboard.NodeSemantic.v1",
-		[]byte(disposition), nullableBytes(mergeTarget != "", []byte(mergeTarget)), propsJSON)
+		u64Bytes(uint64(dispositionOrdinal(string(disposition)))), nullableBytes(mergeTarget != "", []byte(mergeTarget)), propsJSON)
 }
 
 func genericNodeSemanticHash(disposition Disposition, mergeTarget string, props map[string]any) []byte {
 	b, _ := canonicalJSON(props)
-	return framedHash("CyberPenda.Blackboard.NodeSemantic.v1", []byte(disposition), nullableBytes(mergeTarget != "", []byte(mergeTarget)), b)
+	return framedHash("CyberPenda.Blackboard.NodeSemantic.v1", u64Bytes(uint64(dispositionOrdinal(string(disposition)))), nullableBytes(mergeTarget != "", []byte(mergeTarget)), b)
+}
+
+func edgeSemanticHash(edgeType EdgeType, fromNodeID, toNodeID, state, summary string) []byte {
+	return framedHash("CyberPenda.Blackboard.EdgeSemantic.v1", u64Bytes(uint64(edgeTypeOrdinal(edgeType))), []byte(fromNodeID), []byte(toNodeID), u64Bytes(uint64(edgeStateOrdinal(state))), []byte(summary))
+}
+
+func keySemanticHash(nodeType NodeType, key, role, sourceNodeID, canonicalNodeID string, legacyNonconforming bool) []byte {
+	return framedHash("CyberPenda.Blackboard.KeySemantic.v1",
+		u64Bytes(uint64(nodeTypeOrdinal(nodeType))), []byte(key), u64Bytes(uint64(keyRoleOrdinal(role))),
+		[]byte(sourceNodeID), []byte(canonicalNodeID), u64Bytes(boolOrdinal(legacyNonconforming)))
 }
 
 // projectFactDerivedFields extracts the head-table derived lifecycle_state,
@@ -1350,6 +1483,42 @@ func insertProvenance(tx *sql.Tx, projectID, provenanceID string, ec ExecutionCo
 	)
 	if err != nil {
 		return fmt.Errorf("insert provenance: %w", err)
+	}
+	return nil
+}
+
+func validateSourceEvents(tx *sql.Tx, batch MutationBatch, operations map[string]Operation) error {
+	for opID, eventIDs := range batch.SourceEventIDsByOp {
+		if _, ok := operations[opID]; !ok {
+			return validationError(ErrCodeInvalidRequest, "source Task Event mapping references an unknown op_id", -1, opID, "source_event_ids_by_op")
+		}
+		if len(eventIDs) > 32 {
+			return validationError(ErrCodeInvalidRequest, "an operation may reference at most 32 source Task Events", -1, opID, "source_event_ids_by_op")
+		}
+		seen := make(map[string]struct{}, len(eventIDs))
+		for _, eventID := range eventIDs {
+			if eventID == "" {
+				return validationError(ErrCodeInvalidRequest, "source Task Event ID is empty", -1, opID, "source_event_ids_by_op")
+			}
+			if _, duplicate := seen[eventID]; duplicate {
+				return validationError(ErrCodeInvalidRequest, "source Task Event IDs must be ordered and deduplicated", -1, opID, "source_event_ids_by_op")
+			}
+			seen[eventID] = struct{}{}
+			var taskID string
+			var continuationID sql.NullString
+			if err := tx.QueryRow(`SELECT task_id,continuation_id FROM task_events WHERE id=?`, eventID).Scan(&taskID, &continuationID); err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return validationError(ErrCodeProvenanceSpoofed, "source Task Event does not exist", -1, opID, "source_event_ids_by_op")
+				}
+				return fmt.Errorf("validate source Task Event: %w", err)
+			}
+			if batch.Context.TaskID == "" || taskID != batch.Context.TaskID {
+				return validationError(ErrCodeProvenanceSpoofed, "source Task Event belongs to another Task", -1, opID, "source_event_ids_by_op")
+			}
+			if batch.Context.ActorType == ActorTypeRuntime && continuationID.Valid && continuationID.String != batch.Context.ContinuationID {
+				return validationError(ErrCodeProvenanceSpoofed, "source Task Event belongs to another Continuation", -1, opID, "source_event_ids_by_op")
+			}
+		}
 	}
 	return nil
 }

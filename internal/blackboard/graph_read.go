@@ -21,9 +21,11 @@ func decodeResultJSON(data string) (*MutationResult, error) {
 		return nil, fmt.Errorf("decode result json: %w", err)
 	}
 	out := &MutationResult{
-		GraphRevision: rf.GraphRevision, RequestHash: rf.RequestHash, ResultHash: rf.ResultHash,
+		MutationSequence: rf.MutationSequence, MutationID: rf.MutationID, RecordedAt: rf.RecordedAt,
+		GraphRevision: rf.GraphRevision, RequestHash: rf.RequestHash,
 		ResultingStateHash: rf.ResultingStateHash,
 		Operations:         make([]OperationResult, len(rf.Operations)),
+		ResultBytes:        append([]byte(nil), []byte(data)...),
 	}
 	for i, o := range rf.Operations {
 		out.Operations[i] = OperationResult{
@@ -88,19 +90,20 @@ func (s *GraphService) ReadNode(ctx context.Context, req ReadNodeRequest) (ReadN
 		semHash     string
 		createdAt   string
 		updatedAt   string
+		mergeTarget sql.NullString
 	)
 	// Read current node envelope by joining heads -> versions. original_stable_key
 	// is the canonical stable key; for an alias read we still report the
 	// canonical key.
 	err = s.db.QueryRow(
 		`SELECT h.node_id, h.node_type, n.original_stable_key, h.version, h.graph_revision,
-		        h.disposition, v.properties_json, h.semantic_hash, n.created_at, v.updated_at
+		        h.disposition, h.merge_target_id, v.properties_json, h.semantic_hash, n.created_at, v.updated_at
 		   FROM blackboard_node_heads h
 		   JOIN blackboard_nodes n ON n.project_id = h.project_id AND n.id = h.node_id
 		   JOIN blackboard_node_versions v ON v.project_id = h.project_id AND v.node_id = h.node_id AND v.version = h.version
 		  WHERE h.project_id = ? AND h.node_id = ?`,
 		req.ProjectID, canonicalNodeID,
-	).Scan(&nodeID, &nodeType, &stableKey, &version, &graphRev, &disposition, &propsJSON, &semHash, &createdAt, &updatedAt)
+	).Scan(&nodeID, &nodeType, &stableKey, &version, &graphRev, &disposition, &mergeTarget, &propsJSON, &semHash, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ReadNodeResult{}, validationError(ErrCodeNodeNotFound,
 			fmt.Sprintf("node %s not found in project", canonicalNodeID), -1, "", "node_id")
@@ -129,7 +132,7 @@ func (s *GraphService) ReadNode(ctx context.Context, req ReadNodeRequest) (ReadN
 	return ReadNodeResult{
 		Node: NodeRecord{
 			ID: nodeID, ProjectID: req.ProjectID, NodeType: NodeType(nodeType),
-			StableKey: stableKey, Version: version, Disposition: Disposition(disposition),
+			StableKey: stableKey, Version: version, Disposition: Disposition(disposition), MergeTargetID: mergeTarget.String,
 			ProjectFact: props, PropertyMap: propertyMap, CreatedAt: createdAt, UpdatedAt: updatedAt,
 			SemanticHash: semHash, StateHash: stateHash,
 		},

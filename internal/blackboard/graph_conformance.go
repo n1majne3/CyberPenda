@@ -179,6 +179,20 @@ var edgeEndpoints = map[EdgeType]func(NodeType, NodeType) bool{
 	},
 }
 
+var edgeTypeOrdinals = map[EdgeType]int{
+	EdgeTypeAbout: 0, EdgeTypePartOf: 1, EdgeTypeTests: 2, EdgeTypeProduced: 3,
+	EdgeTypeEvidences: 4, EdgeTypeSupports: 5, EdgeTypeContradicts: 6,
+	EdgeTypeDerivedFrom: 7, EdgeTypeDependsOn: 8, EdgeTypeBlocks: 9,
+	EdgeTypeLeadsTo: 10, EdgeTypeSatisfies: 11, EdgeTypeSupersedes: 12,
+}
+
+func edgeTypeOrdinal(edgeType EdgeType) int {
+	if ordinal, ok := edgeTypeOrdinals[edgeType]; ok {
+		return ordinal
+	}
+	return len(edgeTypeOrdinals)
+}
+
 func oneOf(v NodeType, xs ...NodeType) bool {
 	for _, x := range xs {
 		if v == x {

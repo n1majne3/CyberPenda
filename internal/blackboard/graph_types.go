@@ -151,10 +151,11 @@ type TransitionNodeInput struct {
 }
 
 type PutEdgeInput struct {
-	EdgeType EdgeType `json:"edge_type"`
-	From     NodeRef  `json:"from"`
-	To       NodeRef  `json:"to"`
-	Summary  string   `json:"summary,omitempty"`
+	EdgeType        EdgeType `json:"edge_type"`
+	From            NodeRef  `json:"from"`
+	To              NodeRef  `json:"to"`
+	Summary         string   `json:"summary,omitempty"`
+	ExpectedVersion int      `json:"expected_version,omitempty"`
 }
 
 // NodeRef references a node by id, (node_type, stable_key), or same-batch op_id
@@ -227,11 +228,12 @@ func (c ExecutionContext) idempotencyScope() string {
 // MutationBatch is a graph contract §9 batch. ProjectID is the caller-declared
 // Project; it MUST match Context.ProjectID or project_mismatch is raised.
 type MutationBatch struct {
-	SchemaVersion  int              `json:"schema_version"`
-	IdempotencyKey string           `json:"idempotency_key"`
-	ProjectID      string           `json:"project_id,omitempty"`
-	Context        ExecutionContext `json:"context"`
-	Operations     []Operation      `json:"operations"`
+	SchemaVersion      int                 `json:"schema_version"`
+	IdempotencyKey     string              `json:"idempotency_key"`
+	ProjectID          string              `json:"project_id,omitempty"`
+	Context            ExecutionContext    `json:"context"`
+	Operations         []Operation         `json:"operations"`
+	SourceEventIDsByOp map[string][]string `json:"-"`
 }
 
 // OperationResult is the per-operation outcome within a MutationResult.
@@ -252,11 +254,15 @@ type OperationResult struct {
 // storage §9). ResultHash/ResultBytes carry the exact replay-comparable
 // canonical result.
 type MutationResult struct {
+	MutationSequence   int               `json:"mutation_sequence"`
+	MutationID         string            `json:"mutation_id"`
+	RecordedAt         string            `json:"recorded_at"`
 	GraphRevision      int               `json:"graph_revision"`
 	RequestHash        string            `json:"request_hash"`
 	ResultHash         string            `json:"result_hash"`
 	ResultingStateHash string            `json:"resulting_state_hash"`
 	Operations         []OperationResult `json:"operations"`
+	ResultBytes        []byte            `json:"-"`
 }
 
 // ReadNodeRequest selects a node by key for the alias-resolving read.
@@ -270,18 +276,19 @@ type ReadNodeRequest struct {
 // the type-specific properties. It is the smallest view needed to observe a
 // committed record at a graph revision (C02 minimal green path).
 type NodeRecord struct {
-	ID           string                `json:"id"`
-	ProjectID    string                `json:"project_id"`
-	NodeType     NodeType              `json:"node_type"`
-	StableKey    string                `json:"stable_key"`
-	Version      int                   `json:"version"`
-	Disposition  Disposition           `json:"disposition"`
-	ProjectFact  ProjectFactProperties `json:"project_fact_properties,omitempty"`
-	PropertyMap  map[string]any        `json:"properties"`
-	CreatedAt    string                `json:"created_at"`
-	UpdatedAt    string                `json:"updated_at"`
-	SemanticHash string                `json:"semantic_hash"`
-	StateHash    string                `json:"state_hash"`
+	ID            string                `json:"id"`
+	ProjectID     string                `json:"project_id"`
+	NodeType      NodeType              `json:"node_type"`
+	StableKey     string                `json:"stable_key"`
+	Version       int                   `json:"version"`
+	Disposition   Disposition           `json:"disposition"`
+	MergeTargetID string                `json:"merge_target_id,omitempty"`
+	ProjectFact   ProjectFactProperties `json:"project_fact_properties,omitempty"`
+	PropertyMap   map[string]any        `json:"properties"`
+	CreatedAt     string                `json:"created_at"`
+	UpdatedAt     string                `json:"updated_at"`
+	SemanticHash  string                `json:"semantic_hash"`
+	StateHash     string                `json:"state_hash"`
 }
 
 // ReadNodeResult wraps a NodeRecord with the observed graph revision and alias
@@ -348,9 +355,11 @@ type operationResultLedgerForm struct {
 // resultLedgerForm is the canonical JSON shape stored in
 // blackboard_graph_mutations.result_json.
 type resultLedgerForm struct {
+	MutationSequence   int                         `json:"mutation_sequence"`
+	MutationID         string                      `json:"mutation_id"`
+	RecordedAt         string                      `json:"recorded_at"`
 	GraphRevision      int                         `json:"graph_revision"`
 	RequestHash        string                      `json:"request_hash"`
-	ResultHash         string                      `json:"result_hash"`
 	ResultingStateHash string                      `json:"resulting_state_hash"`
 	Operations         []operationResultLedgerForm `json:"operations"`
 }
@@ -366,6 +375,19 @@ type ValidationError struct {
 	Retryable      bool
 	Details        map[string]any
 }
+
+// StorageError is a retry classification for persistence failures that are
+// not domain validation errors. In particular, SQLite writer-lock exhaustion
+// is safe for callers to retry with the same idempotency key.
+type StorageError struct {
+	Code      string
+	Message   string
+	Retryable bool
+	Cause     error
+}
+
+func (e *StorageError) Error() string { return e.Code + ": " + e.Message }
+func (e *StorageError) Unwrap() error { return e.Cause }
 
 func (e *ValidationError) Error() string {
 	if e.OpID != "" {
@@ -400,6 +422,7 @@ const (
 	ErrCodeProvenanceSpoofed        = "provenance_spoofed"
 	ErrCodeIdempotencyConflict      = "idempotency_conflict"
 	ErrCodeProvenanceRequired       = "provenance_required"
+	ErrCodeStorageBusy              = "storage_busy"
 )
 
 // validationError builds a ValidationError at the given operation index.

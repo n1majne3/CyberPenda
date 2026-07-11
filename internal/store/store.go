@@ -202,6 +202,9 @@ func migrations() []migration {
 		newMigration(2, "store_epoch_and_graph_support", migration2SQL, migration2Up),
 		newMigration(3, "graph_ledger_core", migration3SQL, migration3Up),
 		newMigration(4, "graph_edges", migration4SQL, migration4Up),
+		newMigration(5, "graph_edge_ledger_guards", migration5SQL, migration5Up),
+		newMigration(6, "graph_edge_version_endpoints", migration6SQL, migration6Up),
+		newMigration(7, "graph_edge_identity_and_integrity_cutover", migration7SQL, migration7Up),
 	}
 }
 
@@ -229,6 +232,155 @@ CREATE INDEX idx_blackboard_edge_heads_to ON blackboard_edge_heads(project_id,to
 `
 
 func migration4Up(tx *sql.Tx) error { return execStatements(tx, migration4SQL) }
+
+const migration5SQL = `-- C07 append-only guards for edge identity and version history.`
+
+func migration5Up(tx *sql.Tx) error {
+	for _, table := range []string{"blackboard_edges", "blackboard_edge_versions"} {
+		for _, stmt := range []string{
+			`CREATE TRIGGER IF NOT EXISTS ` + table + `_no_update BEFORE UPDATE ON ` + table + ` BEGIN SELECT RAISE(ABORT, '` + table + ` is append-only'); END`,
+			`CREATE TRIGGER IF NOT EXISTS ` + table + `_no_delete BEFORE DELETE ON ` + table + ` BEGIN SELECT RAISE(ABORT, '` + table + ` is append-only'); END`,
+		} {
+			if _, err := tx.Exec(stmt); err != nil {
+				return fmt.Errorf("install edge ledger guard for %s: %w", table, err)
+			}
+		}
+	}
+	return nil
+}
+
+const migration6SQL = `-- C07 full edge post-images carry endpoint IDs on every version.`
+
+func migration6Up(tx *sql.Tx) error {
+	// Migration 5 protects existing ledgers. Temporarily remove only the update
+	// guard while the new post-image columns are backfilled, then restore it.
+	if _, err := tx.Exec(`DROP TRIGGER IF EXISTS blackboard_edge_versions_no_update`); err != nil {
+		return fmt.Errorf("drop edge-version update guard for backfill: %w", err)
+	}
+	if err := ensureColumn(tx, "blackboard_edge_versions", "from_node_id", "TEXT"); err != nil {
+		return fmt.Errorf("ensure edge version from_node_id: %w", err)
+	}
+	if err := ensureColumn(tx, "blackboard_edge_versions", "to_node_id", "TEXT"); err != nil {
+		return fmt.Errorf("ensure edge version to_node_id: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE blackboard_edge_versions
+		SET from_node_id=(SELECT from_node_id FROM blackboard_edges e WHERE e.project_id=blackboard_edge_versions.project_id AND e.id=blackboard_edge_versions.edge_id),
+		    to_node_id=(SELECT to_node_id FROM blackboard_edges e WHERE e.project_id=blackboard_edge_versions.project_id AND e.id=blackboard_edge_versions.edge_id)
+		WHERE from_node_id IS NULL OR to_node_id IS NULL`); err != nil {
+		return fmt.Errorf("backfill edge-version endpoints: %w", err)
+	}
+	for _, stmt := range []string{
+		`CREATE TRIGGER blackboard_edge_versions_no_update BEFORE UPDATE ON blackboard_edge_versions BEGIN SELECT RAISE(ABORT, 'blackboard_edge_versions is append-only'); END`,
+		`CREATE TRIGGER blackboard_edge_versions_require_endpoints BEFORE INSERT ON blackboard_edge_versions WHEN NEW.from_node_id IS NULL OR NEW.to_node_id IS NULL BEGIN SELECT RAISE(ABORT, 'blackboard_edge_versions endpoints are required'); END`,
+	} {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("install edge-version endpoint guard: %w", err)
+		}
+	}
+	return nil
+}
+
+const migration7SQL = `
+CREATE TABLE blackboard_edges_new (
+ project_id TEXT NOT NULL, id TEXT NOT NULL, edge_type TEXT NOT NULL,
+ created_mutation_seq INTEGER NOT NULL, created_operation_index INTEGER NOT NULL, created_at TEXT NOT NULL,
+ PRIMARY KEY(project_id,id), UNIQUE(id),
+ FOREIGN KEY(project_id,created_mutation_seq,created_operation_index) REFERENCES blackboard_graph_operations(project_id,mutation_seq,operation_index));
+CREATE TABLE blackboard_edge_versions_new (
+ project_id TEXT NOT NULL, edge_id TEXT NOT NULL, version INTEGER NOT NULL, result_graph_revision INTEGER NOT NULL,
+ mutation_seq INTEGER NOT NULL, operation_index INTEGER NOT NULL,
+ from_node_id TEXT NOT NULL, to_node_id TEXT NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('active','retired')), summary TEXT NOT NULL DEFAULT '', semantic_hash TEXT NOT NULL, updated_at TEXT NOT NULL,
+ PRIMARY KEY(project_id,edge_id,version),
+ FOREIGN KEY(project_id,edge_id) REFERENCES blackboard_edges_new(project_id,id),
+ FOREIGN KEY(project_id,from_node_id) REFERENCES blackboard_nodes(project_id,id),
+ FOREIGN KEY(project_id,to_node_id) REFERENCES blackboard_nodes(project_id,id),
+ FOREIGN KEY(project_id,mutation_seq,operation_index) REFERENCES blackboard_graph_operations(project_id,mutation_seq,operation_index));
+CREATE TABLE blackboard_edge_heads_new (
+ project_id TEXT NOT NULL, edge_id TEXT NOT NULL, edge_type TEXT NOT NULL, from_node_id TEXT NOT NULL, to_node_id TEXT NOT NULL,
+ version INTEGER NOT NULL, graph_revision INTEGER NOT NULL, state TEXT NOT NULL CHECK(state IN ('active','retired')), semantic_hash TEXT NOT NULL,
+ CHECK(state <> 'active' OR from_node_id <> to_node_id),
+ PRIMARY KEY(project_id,edge_id), FOREIGN KEY(project_id,edge_id,version) REFERENCES blackboard_edge_versions_new(project_id,edge_id,version));
+INSERT INTO blackboard_edges_new(project_id,id,edge_type,created_mutation_seq,created_operation_index,created_at)
+ SELECT project_id,id,edge_type,created_mutation_seq,created_operation_index,created_at FROM blackboard_edges;
+INSERT INTO blackboard_edge_versions_new(project_id,edge_id,version,result_graph_revision,mutation_seq,operation_index,from_node_id,to_node_id,state,summary,semantic_hash,updated_at)
+ SELECT project_id,edge_id,version,result_graph_revision,mutation_seq,operation_index,from_node_id,to_node_id,state,summary,semantic_hash,updated_at FROM blackboard_edge_versions;
+INSERT INTO blackboard_edge_heads_new(project_id,edge_id,edge_type,from_node_id,to_node_id,version,graph_revision,state,semantic_hash)
+ SELECT project_id,edge_id,edge_type,from_node_id,to_node_id,version,graph_revision,state,semantic_hash FROM blackboard_edge_heads;
+DROP TABLE blackboard_edge_heads;
+DROP TABLE blackboard_edge_versions;
+DROP TABLE blackboard_edges;
+ALTER TABLE blackboard_edges_new RENAME TO blackboard_edges;
+ALTER TABLE blackboard_edge_versions_new RENAME TO blackboard_edge_versions;
+ALTER TABLE blackboard_edge_heads_new RENAME TO blackboard_edge_heads;
+CREATE INDEX idx_blackboard_edge_heads_from ON blackboard_edge_heads(project_id,from_node_id,state,edge_type);
+CREATE INDEX idx_blackboard_edge_heads_to ON blackboard_edge_heads(project_id,to_node_id,state,edge_type);
+CREATE UNIQUE INDEX ux_blackboard_edge_heads_active_tuple ON blackboard_edge_heads(project_id,edge_type,from_node_id,to_node_id) WHERE state='active';
+CREATE TABLE blackboard_graph_integrity_cutovers (
+ project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE RESTRICT,
+ legacy_through_mutation_seq INTEGER NOT NULL CHECK(legacy_through_mutation_seq >= 0));
+INSERT INTO blackboard_graph_integrity_cutovers(project_id,legacy_through_mutation_seq)
+ SELECT project_id,MAX(mutation_seq) FROM blackboard_graph_mutations GROUP BY project_id;
+CREATE VIEW blackboard_graph_legacy_current_records AS
+ SELECT DISTINCT p.project_id,o.mutation_seq,1 AS record_kind,json_array(p.id) AS record_identity,
+  json_object('project_id',p.project_id,'id',p.id,'actor_type',p.actor_type,'actor_id',p.actor_id,'task_id',p.task_id,'continuation_id',p.continuation_id,'runtime_profile_id',p.runtime_profile_id,'runner',p.runner,'migration_source_json',p.migration_source_json,'recorded_at',p.recorded_at) AS record_json
+ FROM blackboard_graph_provenance p JOIN blackboard_graph_operations o ON o.project_id=p.project_id AND o.provenance_id=p.id
+ UNION ALL
+ SELECT pe.project_id,o.mutation_seq,8,json_array(pe.provenance_id,pe.ordinal),
+  json_object('project_id',pe.project_id,'provenance_id',pe.provenance_id,'ordinal',pe.ordinal,'event_id',pe.event_id)
+ FROM blackboard_graph_provenance_events pe JOIN blackboard_graph_operations o ON o.project_id=pe.project_id AND o.provenance_id=pe.provenance_id
+ UNION ALL
+ SELECT o.project_id,o.mutation_seq,2,json_array(o.operation_index),
+  json_object('project_id',o.project_id,'mutation_seq',o.mutation_seq,'operation_index',o.operation_index,'op_id',o.op_id,'operation_kind',o.operation_kind,'operation_json',o.operation_json,'result_json',o.result_json,'changed',o.changed,'provenance_id',o.provenance_id)
+ FROM blackboard_graph_operations o
+ UNION ALL
+ SELECT n.project_id,n.created_mutation_seq,3,json_array(n.id),
+  json_object('project_id',n.project_id,'id',n.id,'node_type',n.node_type,'original_stable_key',n.original_stable_key,'created_mutation_seq',n.created_mutation_seq,'created_operation_index',n.created_operation_index,'created_at',n.created_at)
+ FROM blackboard_nodes n
+ UNION ALL
+ SELECT v.project_id,v.mutation_seq,4,json_array(v.node_id,v.version),
+  json_object('project_id',v.project_id,'node_id',v.node_id,'version',v.version,'result_graph_revision',v.result_graph_revision,'mutation_seq',v.mutation_seq,'operation_index',v.operation_index,'schema_version',v.schema_version,'disposition',v.disposition,'merge_target_id',v.merge_target_id,'properties_json',v.properties_json,'semantic_hash',v.semantic_hash,'updated_at',v.updated_at)
+ FROM blackboard_node_versions v
+ UNION ALL
+ SELECT e.project_id,e.created_mutation_seq,5,json_array(e.id),
+  json_object('project_id',e.project_id,'id',e.id,'edge_type',e.edge_type,'created_mutation_seq',e.created_mutation_seq,'created_operation_index',e.created_operation_index,'created_at',e.created_at)
+ FROM blackboard_edges e
+ UNION ALL
+ SELECT v.project_id,v.mutation_seq,6,json_array(v.edge_id,v.version),
+  json_object('project_id',v.project_id,'edge_id',v.edge_id,'version',v.version,'result_graph_revision',v.result_graph_revision,'mutation_seq',v.mutation_seq,'operation_index',v.operation_index,'from_node_id',v.from_node_id,'to_node_id',v.to_node_id,'state',v.state,'summary',v.summary,'semantic_hash',v.semantic_hash,'updated_at',v.updated_at)
+ FROM blackboard_edge_versions v
+ UNION ALL
+ SELECT k.project_id,k.mutation_seq,7,json_array(k.node_type,k.key,k.key_version),
+  json_object('project_id',k.project_id,'node_type',k.node_type,'key',k.key,'key_version',k.key_version,'role',k.role,'source_node_id',k.source_node_id,'canonical_node_id',k.canonical_node_id,'legacy_nonconforming',k.legacy_nonconforming,'result_graph_revision',k.result_graph_revision,'mutation_seq',k.mutation_seq,'operation_index',k.operation_index,'semantic_hash',k.semantic_hash)
+ FROM blackboard_key_events k;
+CREATE TABLE blackboard_graph_legacy_record_anchors (
+ project_id TEXT NOT NULL, mutation_seq INTEGER NOT NULL, record_kind INTEGER NOT NULL, record_identity TEXT NOT NULL, record_json TEXT NOT NULL,
+ PRIMARY KEY(project_id,mutation_seq,record_kind,record_identity));
+INSERT INTO blackboard_graph_legacy_record_anchors(project_id,mutation_seq,record_kind,record_identity,record_json)
+ SELECT r.project_id,r.mutation_seq,r.record_kind,r.record_identity,r.record_json
+ FROM blackboard_graph_legacy_current_records r
+ JOIN blackboard_graph_integrity_cutovers c ON c.project_id=r.project_id AND r.mutation_seq<=c.legacy_through_mutation_seq;
+`
+
+func migration7Up(tx *sql.Tx) error {
+	if err := execStatements(tx, migration7SQL); err != nil {
+		return err
+	}
+	for _, stmt := range []string{
+		`CREATE TRIGGER blackboard_edges_no_update BEFORE UPDATE ON blackboard_edges BEGIN SELECT RAISE(ABORT, 'blackboard_edges is append-only'); END`,
+		`CREATE TRIGGER blackboard_edges_no_delete BEFORE DELETE ON blackboard_edges BEGIN SELECT RAISE(ABORT, 'blackboard_edges is append-only'); END`,
+		`CREATE TRIGGER blackboard_edge_versions_no_update BEFORE UPDATE ON blackboard_edge_versions BEGIN SELECT RAISE(ABORT, 'blackboard_edge_versions is append-only'); END`,
+		`CREATE TRIGGER blackboard_edge_versions_no_delete BEFORE DELETE ON blackboard_edge_versions BEGIN SELECT RAISE(ABORT, 'blackboard_edge_versions is append-only'); END`,
+		`CREATE TRIGGER blackboard_edge_versions_require_endpoints BEFORE INSERT ON blackboard_edge_versions WHEN NEW.from_node_id IS NULL OR NEW.to_node_id IS NULL BEGIN SELECT RAISE(ABORT, 'blackboard_edge_versions endpoints are required'); END`,
+		`CREATE TRIGGER blackboard_graph_legacy_record_anchors_no_update BEFORE UPDATE ON blackboard_graph_legacy_record_anchors BEGIN SELECT RAISE(ABORT, 'blackboard_graph_legacy_record_anchors is append-only'); END`,
+		`CREATE TRIGGER blackboard_graph_legacy_record_anchors_no_delete BEFORE DELETE ON blackboard_graph_legacy_record_anchors BEGIN SELECT RAISE(ABORT, 'blackboard_graph_legacy_record_anchors is append-only'); END`,
+	} {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("install canonical edge ledger guard: %w", err)
+		}
+	}
+	return nil
+}
 
 func newMigration(version int, name, sqlBody string, up func(*sql.Tx) error) migration {
 	sum := sha256.Sum256([]byte(sqlBody))
