@@ -18,7 +18,7 @@ func (s *GraphService) stageSetDisposition(tx *sql.Tx, batch MutationBatch, op O
 	}
 	want := op.Disposition.Disposition
 	if node.disposition == want {
-		return OperationResult{OpID: op.OpID, NodeID: node.nodeID, NodeType: node.nodeType, StableKey: node.stableKey, NodeVersion: node.version, SemanticHash: node.semHash, Changed: false}, nil
+		return OperationResult{OpID: op.OpID, NodeID: node.nodeID, NodeType: node.nodeType, StableKey: node.stableKey, NodeVersion: node.version, SemanticHash: node.semHash, ResolvedFromAlias: node.resolvedFromAlias, ResolvedFromMergedID: node.resolvedFromMergedID, Changed: false}, nil
 	}
 	if want == DispositionArchived {
 		protected, protectErr := archiveProtected(tx, projectID, node.nodeID, state)

@@ -94,9 +94,13 @@ func TestAliasWritesReportRedirectAndCreateNeverUpdatesThroughAlias(t *testing.T
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	_, err = graph.Apply(context.Background(), blackboard.MutationBatch{SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "c08:alias-merge", Context: execCtx, Operations: []blackboard.Operation{{OpID: "merge", Kind: blackboard.OpMergeNodes, Merge: blackboard.MergeNodesInput{Source: blackboard.NodeRef{ID: created.Operations[1].NodeID}, Canonical: blackboard.NodeRef{ID: created.Operations[0].NodeID}, SourceExpectedVersion: 1, CanonicalExpectedVersion: 1}}}})
+	mergedResult, err := graph.Apply(context.Background(), blackboard.MutationBatch{SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "c08:alias-merge", Context: execCtx, Operations: []blackboard.Operation{{OpID: "merge", Kind: blackboard.OpMergeNodes, Merge: blackboard.MergeNodesInput{Source: blackboard.NodeRef{ID: created.Operations[1].NodeID}, Canonical: blackboard.NodeRef{ID: created.Operations[0].NodeID}, SourceExpectedVersion: 1, CanonicalExpectedVersion: 1}}}})
 	if err != nil {
 		t.Fatalf("merge: %v", err)
+	}
+	noop, err := graph.Apply(context.Background(), blackboard.MutationBatch{SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "c08:alias-noop", Context: execCtx, Operations: []blackboard.Operation{{OpID: "noop", Kind: blackboard.OpSetDisposition, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "fact:old"}, Disposition: blackboard.SetDispositionInput{ExpectedVersion: 1, Disposition: blackboard.DispositionMain}}}})
+	if err != nil || noop.GraphRevision != mergedResult.GraphRevision || noop.Operations[0].ResolvedFromAlias != "fact:old" || noop.Operations[0].Changed {
+		t.Fatalf("alias no-op did not report redirect without revision: %+v err=%v", noop, err)
 	}
 
 	updated, err := graph.Apply(context.Background(), blackboard.MutationBatch{SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "c08:write-alias", Context: execCtx, Operations: []blackboard.Operation{{OpID: "deprecate", Kind: blackboard.OpTransitionNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "fact:old"}, Transition: blackboard.TransitionNodeInput{ExpectedVersion: 1, Status: "deprecated"}}}})
