@@ -215,7 +215,6 @@ func (s *GraphService) Apply(ctx context.Context, batch MutationBatch) (result M
 			-1, "", "project_id")
 	}
 
-	projectID := batch.Context.ProjectID
 	scope := batch.Context.idempotencyScope()
 	if scope == "" {
 		return MutationResult{}, validationError(ErrCodeProvenanceRequired,
@@ -232,7 +231,23 @@ func (s *GraphService) Apply(ctx context.Context, batch MutationBatch) (result M
 		return MutationResult{}, graphStorageError("begin graph transaction", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	result, err = s.applyInTransaction(ctx, tx, batch, requestHash)
+	if err != nil {
+		return MutationResult{}, err
+	}
 
+	if err := tx.Commit(); err != nil {
+		return MutationResult{}, graphStorageError("commit graph transaction", err)
+	}
+	if anyOperationChanged(result.Operations) {
+		s.postCommitMaintenance(ctx, batch, result)
+	}
+	return result, nil
+}
+
+func (s *GraphService) applyInTransaction(ctx context.Context, tx *sql.Tx, batch MutationBatch, requestHash []byte) (MutationResult, error) {
+	projectID := batch.Context.ProjectID
+	scope := batch.Context.idempotencyScope()
 	// Revalidate trusted context inside the transaction (storage §9 step 3).
 	if err := assertProjectExists(tx, batch.Context.ProjectID, batch.Context.ProjectKind); err != nil {
 		return MutationResult{}, err
@@ -252,7 +267,7 @@ func (s *GraphService) Apply(ctx context.Context, batch MutationBatch) (result M
 		return *stored, nil
 	}
 
-	result, err = s.applyOperations(tx, batch, requestHash)
+	result, err := s.applyOperations(tx, batch, requestHash)
 	if err != nil {
 		return MutationResult{}, err
 	}
@@ -267,12 +282,6 @@ func (s *GraphService) Apply(ctx context.Context, batch MutationBatch) (result M
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return MutationResult{}, graphStorageError("commit graph transaction", err)
-	}
-	if anyOperationChanged(result.Operations) {
-		s.postCommitMaintenance(ctx, batch, result)
-	}
 	return result, nil
 }
 
@@ -394,7 +403,9 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 		if op.Node.NodeType == NodeTypeGoal {
 			taskID, _ := createProps["task_id"].(string)
 			wantKey := "task:" + taskID + ":goal"
-			if batch.Context.ActorType != ActorTypeSystem || batch.Context.ActorID != taskGoalProjectorActor || batch.Context.TaskID != taskID {
+			isTaskProjector := batch.Context.ActorType == ActorTypeSystem && batch.Context.ActorID == taskGoalProjectorActor && batch.Context.TaskID == taskID
+			isLegacyImport := batch.Context.ActorType == ActorTypeMigration && batch.migrationImport != nil
+			if !isTaskProjector && !isLegacyImport {
 				return MutationResult{}, validationError(ErrCodeInvalidRequest, "Goals are system-owned Task projections", i, op.OpID, "operations[].node_type")
 			}
 			if op.Node.StableKey != wantKey {
@@ -486,7 +497,11 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 	nodeIDs := map[string]string{}
 	for i, op := range batch.Operations {
 		provenanceID := s.ids.NextID()
-		if err := insertProvenance(tx, projectID, provenanceID, batch.Context, recordedAt.Format("2006-01-02T15:04:05.000000000Z07:00")); err != nil {
+		migrationSource, sourceErr := migrationSourceForOperation(batch, op.OpID)
+		if sourceErr != nil {
+			return MutationResult{}, sourceErr
+		}
+		if err := insertProvenance(tx, projectID, provenanceID, batch.Context, migrationSource, recordedAt.Format("2006-01-02T15:04:05.000000000Z07:00")); err != nil {
 			return MutationResult{}, err
 		}
 		for ordinal, eventID := range batch.SourceEventIDsByOp[op.OpID] {
@@ -500,9 +515,15 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 				result.GraphRevision = state.currentGraphRevision + 1
 				stateChanged = true
 			}
+			pendingUpdatesBefore := len(state.pendingUpdates)
 			mergeResult, mergeErr := stageMergeNodes(tx, projectID, op, i, result.GraphRevision, &state)
 			if mergeErr != nil {
 				return MutationResult{}, mergeErr
+			}
+			if batch.migrationImport != nil && batch.migrationImport.operations[op.OpID].mergedAt != "" {
+				for updateIndex := pendingUpdatesBefore; updateIndex < len(state.pendingUpdates); updateIndex++ {
+					state.pendingUpdates[updateIndex].updatedAt = batch.migrationImport.operations[op.OpID].mergedAt
+				}
 			}
 			result.Operations[i] = mergeResult
 			continue
@@ -558,9 +579,21 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 				stateChanged = true
 			}
 			edgeID := s.ids.NextID()
+			if batch.migrationImport != nil {
+				if imported := batch.migrationImport.operations[op.OpID].edge; imported != nil && imported.id != "" {
+					edgeID = imported.id
+				}
+			}
 			semHash := edgeSemanticHash(op.PutEdge.EdgeType, fromID, toID, "active", op.PutEdge.Summary)
 			result.Operations[i] = OperationResult{OpID: op.OpID, EdgeID: edgeID, EdgeType: op.PutEdge.EdgeType, EdgeVersion: 1, SemanticHash: hex.EncodeToString(semHash), Changed: true}
-			state.pendingEdges = append(state.pendingEdges, pendingEdge{id: edgeID, edgeType: op.PutEdge.EdgeType, fromID: fromID, toID: toID, summary: op.PutEdge.Summary, semHash: semHash, opIndex: i, graphRevision: result.GraphRevision})
+			pending := pendingEdge{id: edgeID, edgeType: op.PutEdge.EdgeType, fromID: fromID, toID: toID, summary: op.PutEdge.Summary, semHash: semHash, opIndex: i, graphRevision: result.GraphRevision}
+			if batch.migrationImport != nil {
+				if imported := batch.migrationImport.operations[op.OpID].edge; imported != nil {
+					pending.createdAt = imported.createdAt
+					pending.updatedAt = imported.updatedAt
+				}
+			}
+			state.pendingEdges = append(state.pendingEdges, pending)
 			continue
 		}
 		if op.Kind == OpPatchNode || op.Kind == OpTransitionNode {
@@ -669,6 +702,16 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 			}
 		}
 		nodeID := s.ids.NextID()
+		createdAt := ""
+		var importedVersions []pendingImportedVersion
+		if batch.migrationImport != nil {
+			if operation := batch.migrationImport.operations[op.OpID]; operation != nil && operation.node != nil {
+				imported := operation.node
+				nodeID = imported.id
+				createdAt = imported.createdAt
+				importedVersions = imported.versions
+			}
+		}
 		nodeIDs[op.OpID] = nodeID
 
 		propsJSON, err := canonicalJSON(props)
@@ -683,6 +726,12 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 			stateChanged = true
 		}
 		nodeVersion := 1
+		if len(importedVersions) > 0 {
+			current := importedVersions[len(importedVersions)-1]
+			nodeVersion = current.version
+			propsJSON = current.propsJSON
+			semHash = current.semHash
+		}
 
 		// We have not yet allocated the mutation_seq, so insert operation/node
 		// rows after the mutation header is written. Collect pending inserts.
@@ -708,8 +757,31 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 			opIndex:       i,
 			opID:          op.OpID,
 			graphRevision: result.GraphRevision,
+			createdAt:     createdAt,
+			versions:      importedVersions,
 		}
 		state.pending = append(state.pending, pending)
+	}
+	if batch.migrationImport != nil {
+		seenAliases := make(map[string]struct{}, len(batch.migrationImport.aliases))
+		for _, alias := range batch.migrationImport.aliases {
+			identity := string(alias.nodeType) + "\x00" + alias.key
+			if _, duplicate := seenAliases[identity]; duplicate {
+				return MutationResult{}, validationError(ErrCodeNodeKeyConflict, fmt.Sprintf("migration alias %q is duplicated", alias.key), -1, "", "migration.aliases")
+			}
+			seenAliases[identity] = struct{}{}
+			if live, err := keyIsLive(tx, projectID, alias.nodeType, alias.key); err != nil {
+				return MutationResult{}, err
+			} else if live {
+				return MutationResult{}, validationError(ErrCodeNodeKeyConflict, fmt.Sprintf("migration alias %q conflicts with a live key", alias.key), -1, "", "migration.aliases")
+			}
+			state.pendingKeys = append(state.pendingKeys, pendingKeyUpdate{
+				nodeType: alias.nodeType, key: alias.key, role: "alias", sourceNodeID: alias.canonicalNodeID,
+				canonicalNodeID: alias.canonicalNodeID, keyVersion: 1, legacyNonconforming: alias.legacyNonconforming,
+				semHash: keySemanticHash(alias.nodeType, alias.key, "alias", alias.canonicalNodeID, alias.canonicalNodeID, alias.legacyNonconforming),
+				opIndex: alias.opIndex, graphRevision: result.GraphRevision,
+			})
+		}
 	}
 
 	if !stateChanged {
@@ -755,7 +827,39 @@ type pendingCreate struct {
 	opIndex       int
 	opID          string
 	graphRevision int
+	createdAt     string
+	versions      []pendingImportedVersion
 }
+
+type pendingImportedVersion struct {
+	version   int
+	propsJSON []byte
+	semHash   []byte
+	updatedAt string
+}
+
+func normalizedPendingVersions(create pendingCreate, fallbackUpdatedAt string) []pendingImportedVersion {
+	versions := create.versions
+	if len(versions) == 0 {
+		versions = []pendingImportedVersion{{version: create.version, propsJSON: create.propsJSON, semHash: create.semHash}}
+	}
+	normalized := make([]pendingImportedVersion, len(versions))
+	copy(normalized, versions)
+	for index := range normalized {
+		if normalized[index].updatedAt == "" {
+			normalized[index].updatedAt = fallbackUpdatedAt
+		}
+	}
+	return normalized
+}
+
+func importedTimestamp(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
 type pendingUpdate struct {
 	nodeID, stableKey      string
 	nodeType               NodeType
@@ -764,6 +868,7 @@ type pendingUpdate struct {
 	opIndex, graphRevision int
 	disposition            Disposition
 	mergeTargetID          string
+	updatedAt              string
 }
 
 type pendingEdge struct {
@@ -772,6 +877,7 @@ type pendingEdge struct {
 	fromID, toID, summary  string
 	semHash                []byte
 	opIndex, graphRevision int
+	createdAt, updatedAt   string
 }
 
 type pendingEdgeUpdate struct {
@@ -1067,7 +1173,7 @@ func (s *GraphService) finalizeAndPersist(
 	// Insert node identities, node versions, key events, and heads.
 	for _, p := range state.pending {
 
-		createdAt := tsStr
+		createdAt := importedTimestamp(p.createdAt, tsStr)
 		_, err = tx.Exec(
 			`INSERT INTO blackboard_nodes
 			 (project_id, id, node_type, original_stable_key, created_mutation_seq, created_operation_index, created_at)
@@ -1078,16 +1184,18 @@ func (s *GraphService) finalizeAndPersist(
 			return nil, nil, nil, nil, fmt.Errorf("insert node identity: %w", err)
 		}
 
-		_, err = tx.Exec(
-			`INSERT INTO blackboard_node_versions
-			 (project_id, node_id, version, result_graph_revision, mutation_seq, operation_index,
-			  schema_version, disposition, merge_target_id, properties_json, semantic_hash, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, 'main', NULL, ?, ?, ?)`,
-			projectID, p.nodeID, p.version, p.graphRevision, mutationSeq, p.opIndex,
-			GraphMutationSchemaVersion, string(p.propsJSON), hex.EncodeToString(p.semHash), tsStr,
-		)
-		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("insert node version: %w", err)
+		for _, version := range normalizedPendingVersions(p, tsStr) {
+			_, err = tx.Exec(
+				`INSERT INTO blackboard_node_versions
+				 (project_id, node_id, version, result_graph_revision, mutation_seq, operation_index,
+				  schema_version, disposition, merge_target_id, properties_json, semantic_hash, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, 'main', NULL, ?, ?, ?)`,
+				projectID, p.nodeID, version.version, p.graphRevision, mutationSeq, p.opIndex,
+				GraphMutationSchemaVersion, string(version.propsJSON), hex.EncodeToString(version.semHash), version.updatedAt,
+			)
+			if err != nil {
+				return nil, nil, nil, nil, fmt.Errorf("insert node version: %w", err)
+			}
 		}
 
 		_, err = tx.Exec(
@@ -1135,9 +1243,10 @@ func (s *GraphService) finalizeAndPersist(
 		if p.mergeTargetID != "" {
 			mergeTarget = p.mergeTargetID
 		}
+		updatedAt := importedTimestamp(p.updatedAt, tsStr)
 		_, err = tx.Exec(`INSERT INTO blackboard_node_versions
 			(project_id,node_id,version,result_graph_revision,mutation_seq,operation_index,schema_version,disposition,merge_target_id,properties_json,semantic_hash,updated_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, projectID, p.nodeID, p.version, p.graphRevision, mutationSeq, p.opIndex, GraphMutationSchemaVersion, string(disposition), mergeTarget, string(p.propsJSON), hex.EncodeToString(p.semHash), tsStr)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, projectID, p.nodeID, p.version, p.graphRevision, mutationSeq, p.opIndex, GraphMutationSchemaVersion, string(disposition), mergeTarget, string(p.propsJSON), hex.EncodeToString(p.semHash), updatedAt)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("insert node update version: %w", err)
 		}
@@ -1158,11 +1267,13 @@ func (s *GraphService) finalizeAndPersist(
 		}
 	}
 	for _, e := range state.pendingEdges {
-		_, err = tx.Exec(`INSERT INTO blackboard_edges(project_id,id,edge_type,created_mutation_seq,created_operation_index,created_at) VALUES(?,?,?,?,?,?)`, projectID, e.id, string(e.edgeType), mutationSeq, e.opIndex, tsStr)
+		createdAt := importedTimestamp(e.createdAt, tsStr)
+		updatedAt := importedTimestamp(e.updatedAt, tsStr)
+		_, err = tx.Exec(`INSERT INTO blackboard_edges(project_id,id,edge_type,created_mutation_seq,created_operation_index,created_at) VALUES(?,?,?,?,?,?)`, projectID, e.id, string(e.edgeType), mutationSeq, e.opIndex, createdAt)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("insert edge identity: %w", err)
 		}
-		_, err = tx.Exec(`INSERT INTO blackboard_edge_versions(project_id,edge_id,version,result_graph_revision,mutation_seq,operation_index,state,summary,semantic_hash,updated_at,from_node_id,to_node_id) VALUES(?,?,1,?,?,?,'active',?,?,?,?,?)`, projectID, e.id, e.graphRevision, mutationSeq, e.opIndex, e.summary, hex.EncodeToString(e.semHash), tsStr, e.fromID, e.toID)
+		_, err = tx.Exec(`INSERT INTO blackboard_edge_versions(project_id,edge_id,version,result_graph_revision,mutation_seq,operation_index,state,summary,semantic_hash,updated_at,from_node_id,to_node_id) VALUES(?,?,1,?,?,?,'active',?,?,?,?,?)`, projectID, e.id, e.graphRevision, mutationSeq, e.opIndex, e.summary, hex.EncodeToString(e.semHash), updatedAt, e.fromID, e.toID)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("insert edge version: %w", err)
 		}
@@ -1241,19 +1352,20 @@ func (s *GraphService) finalizeAndPersist(
 // for the ledger, excluding server-generated IDs and timestamps.
 func (b MutationBatch) requestLedgerForm() any {
 	return struct {
-		SchemaVersion      int                 `json:"schema_version"`
-		IdempotencyKey     string              `json:"idempotency_key"`
-		ProjectID          string              `json:"project_id"`
-		ActorType          ActorType           `json:"actor_type"`
-		ActorID            string              `json:"actor_id"`
-		TaskID             string              `json:"task_id,omitempty"`
-		ContinuationID     string              `json:"continuation_id,omitempty"`
-		RuntimeProfileID   string              `json:"runtime_profile_id,omitempty"`
-		Runner             string              `json:"runner,omitempty"`
-		Operations         []Operation         `json:"operations"`
-		SourceEventIDsByOp map[string][]string `json:"source_event_ids_by_op,omitempty"`
-		RestoreManifest    *RestoreManifest    `json:"restore_manifest,omitempty"`
-	}{b.SchemaVersion, b.IdempotencyKey, b.Context.ProjectID, b.Context.ActorType, b.Context.ActorID, b.Context.TaskID, b.Context.ContinuationID, b.Context.RuntimeProfileID, b.Context.Runner, b.Operations, b.SourceEventIDsByOp, b.Context.restoreManifest}
+		SchemaVersion       int                 `json:"schema_version"`
+		IdempotencyKey      string              `json:"idempotency_key"`
+		ProjectID           string              `json:"project_id"`
+		ActorType           ActorType           `json:"actor_type"`
+		ActorID             string              `json:"actor_id"`
+		TaskID              string              `json:"task_id,omitempty"`
+		ContinuationID      string              `json:"continuation_id,omitempty"`
+		RuntimeProfileID    string              `json:"runtime_profile_id,omitempty"`
+		Runner              string              `json:"runner,omitempty"`
+		Operations          []Operation         `json:"operations"`
+		SourceEventIDsByOp  map[string][]string `json:"source_event_ids_by_op,omitempty"`
+		RestoreManifest     *RestoreManifest    `json:"restore_manifest,omitempty"`
+		MigrationPlanDigest string              `json:"migration_plan_digest,omitempty"`
+	}{b.SchemaVersion, b.IdempotencyKey, b.Context.ProjectID, b.Context.ActorType, b.Context.ActorID, b.Context.TaskID, b.Context.ContinuationID, b.Context.RuntimeProfileID, b.Context.Runner, b.Operations, b.SourceEventIDsByOp, b.Context.restoreManifest, migrationPlanDigest(b)}
 }
 
 // ledgerForm returns the result in the canonical form stored in result_json.
@@ -1280,6 +1392,9 @@ func boolToInt(b bool) int {
 }
 
 func mutationKindForBatch(batch MutationBatch) string {
+	if batch.Context.ActorType == ActorTypeMigration && batch.migrationImport != nil {
+		return "migration"
+	}
 	if batch.Context.ActorType == ActorTypeSystem && batch.Context.ActorID == blackboardCompactorActorID {
 		return "compaction"
 	}
@@ -1294,6 +1409,13 @@ func mutationKindForBatch(batch MutationBatch) string {
 		}
 	}
 	return string(MutationKindNormal)
+}
+
+func migrationPlanDigest(batch MutationBatch) string {
+	if batch.migrationImport == nil {
+		return ""
+	}
+	return batch.migrationImport.digest
 }
 
 func maintenanceMetadataJSON(batch MutationBatch) string {
@@ -1794,8 +1916,8 @@ func computeRequestHash(batch MutationBatch) ([]byte, error) {
 
 // insertProvenance records one immutable provenance row (storage §6.2),
 // including the trusted Runtime Task/Continuation/profile/runner binding.
-func insertProvenance(tx *sql.Tx, projectID, provenanceID string, ec ExecutionContext, recordedAt string) error {
-	var taskID, contID, profileID, runner any
+func insertProvenance(tx *sql.Tx, projectID, provenanceID string, ec ExecutionContext, migrationSource, recordedAt string) error {
+	var taskID, contID, profileID, runner, migration any
 	if ec.TaskID != "" {
 		taskID = ec.TaskID
 	}
@@ -1808,16 +1930,43 @@ func insertProvenance(tx *sql.Tx, projectID, provenanceID string, ec ExecutionCo
 	if ec.Runner != "" {
 		runner = ec.Runner
 	}
+	if migrationSource != "" {
+		migration = migrationSource
+	}
 	_, err := tx.Exec(
 		`INSERT INTO blackboard_graph_provenance
 		 (project_id, id, actor_type, actor_id, task_id, continuation_id, runtime_profile_id, runner, migration_source_json, recorded_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
-		projectID, provenanceID, string(ec.ActorType), ec.ActorID, taskID, contID, profileID, runner, recordedAt,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		projectID, provenanceID, string(ec.ActorType), ec.ActorID, taskID, contID, profileID, runner, migration, recordedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert provenance: %w", err)
 	}
 	return nil
+}
+
+func migrationSourceForOperation(batch MutationBatch, opID string) (string, error) {
+	if batch.migrationImport == nil {
+		return "", nil
+	}
+	operation := batch.migrationImport.operations[opID]
+	if operation == nil {
+		return "", nil
+	}
+	sources := make([]LegacyImportSourceV1, 0, len(operation.sources))
+	for _, source := range operation.sources {
+		if source.Table != "" && source.PrimaryID != "" {
+			sources = append(sources, source)
+		}
+	}
+	if len(sources) == 0 {
+		return "", nil
+	}
+	encoded, err := canonicalJSON(map[string]any{"contract": "legacy_blackboard_to_graph_v1", "sources": sources})
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
 }
 
 func validateSourceEvents(tx *sql.Tx, batch MutationBatch, operations map[string]Operation) error {

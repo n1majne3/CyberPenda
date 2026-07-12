@@ -1,0 +1,645 @@
+package blackboardmigration
+
+import (
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
+	"sort"
+	"strings"
+	"testing"
+
+	"pentest/internal/blackboard"
+	"pentest/internal/store"
+)
+
+func TestLegacyFactCorpusImportsDeterministicallyWithExactGoalAndCompatibilityParity(t *testing.T) {
+	t.Parallel()
+
+	db, service := newInspectionService(t)
+	insertLegacyM02Corpus(t, db)
+	service = NewService(db, service.databasePath, service.artifactRoot, withDisposableImportCommitForTesting())
+
+	result, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindCutover})
+	if !errors.Is(err, ErrCutoverImplementationPending) {
+		t.Fatalf("Execute(cutover) error = %v, want incremental cutover sentinel", err)
+	}
+	if result.Import == nil || result.Import.MappingDigest == "" {
+		t.Fatalf("Execute(cutover) import result = %#v, want deterministic mapping digest", result.Import)
+	}
+	var migrationKey string
+	if err := db.QueryRow(`SELECT idempotency_key FROM blackboard_graph_mutations WHERE project_id='project-m02'`).Scan(&migrationKey); err != nil {
+		t.Fatal(err)
+	}
+	wantMigrationKey := "legacy-blackboard-v1:" + result.Plan.SourceDigest + ":project-m02"
+	if migrationKey != wantMigrationKey {
+		t.Fatalf("migration idempotency key = %q, want %q", migrationKey, wantMigrationKey)
+	}
+
+	var projectKind string
+	if err := db.QueryRow(`SELECT kind FROM projects WHERE id='project-m02'`).Scan(&projectKind); err != nil {
+		t.Fatal(err)
+	}
+	if projectKind != "pentest" {
+		t.Fatalf("legacy Project kind = %q, want immutable pentest", projectKind)
+	}
+
+	graph := blackboard.NewGraphService(db, nil, nil)
+	if err := graph.VerifyIntegrity(context.Background(), "project-m02"); err != nil {
+		t.Fatalf("verify imported graph ledger: %v", err)
+	}
+	goal, err := graph.ReadNode(context.Background(), blackboard.ReadNodeRequest{
+		ProjectID: "project-m02", NodeType: blackboard.NodeTypeGoal, Key: "task:task-m02:goal",
+	})
+	if err != nil {
+		t.Fatalf("read imported Task Goal: %v", err)
+	}
+	if goal.Node.PropertyMap["text"] != "Map the CTF-looking perimeter" || goal.Node.PropertyMap["task_status"] != "completed" {
+		t.Fatalf("imported Task Goal = %#v", goal.Node.PropertyMap)
+	}
+
+	detail := readLegacyFact[blackboard.LegacyFactDetailV1](t, db, blackboard.ReadKindLegacyFactDetailV1,
+		blackboard.LegacyFactDetailRequest{FactKey: "Host Web"})
+	if detail.ID != "fact-m02" || detail.Version != 2 || detail.Summary != "Current web host" || detail.Category != "uncategorized" || detail.ScopeStatus != "unknown" {
+		t.Fatalf("legacy Fact detail parity = %#v", detail)
+	}
+	if detail.ResolvedFromAlias == nil || *detail.ResolvedFromAlias != "Host Web" {
+		t.Fatalf("nonconforming legacy key did not resolve as an alias: %#v", detail.ResolvedFromAlias)
+	}
+
+	versions := readLegacyFact[blackboard.LegacyFactVersionsV1](t, db, blackboard.ReadKindLegacyFactVersionsV1,
+		blackboard.LegacyFactVersionsRequest{FactKey: "Host Web"})
+	if len(versions.Versions) != 2 || versions.Versions[0].Summary != "Historical web host" || versions.Versions[1].Summary != "Current web host" {
+		t.Fatalf("legacy Fact version parity = %#v", versions.Versions)
+	}
+
+	relations := readLegacyFact[blackboard.LegacyFactRelationsV1](t, db, blackboard.ReadKindLegacyFactRelationsV1,
+		blackboard.LegacyFactRelationsRequest{FactKey: "Host Web"})
+	if len(relations.Relations) != 2 || relations.Relations[0].Relation != "leads_to" || relations.Relations[1].Relation != "depends_on" {
+		t.Fatalf("legacy Fact relation parity = %#v", relations.Relations)
+	}
+
+	firstDigest := result.Import.MappingDigest
+	secondDB, secondService := newInspectionService(t)
+	insertLegacyM02Corpus(t, secondDB)
+	secondService = NewService(secondDB, secondService.databasePath, secondService.artifactRoot, withDisposableImportCommitForTesting())
+	second, secondErr := secondService.Execute(context.Background(), MigrationRequest{Kind: MigrationKindCutover})
+	if !errors.Is(secondErr, ErrCutoverImplementationPending) {
+		t.Fatalf("second Execute(cutover): %v", secondErr)
+	}
+	if second.Import == nil || second.Import.MappingDigest != firstDigest {
+		t.Fatalf("mapping digest is not deterministic: first=%q second=%#v", firstDigest, second.Import)
+	}
+}
+
+func TestLegacyContinuationBackfillUsesOnlyOneExactRuntimeConfigurationMatch(t *testing.T) {
+	t.Parallel()
+
+	db, service := newInspectionService(t)
+	statements := []string{
+		`INSERT INTO projects (id,name,description,scope_json,defaults_json,kind,created_at,updated_at) VALUES ('project-cont','Legacy','', '{}','{}','pentest','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+		`INSERT INTO tasks (id,project_id,goal,status,runner,runtime_profile_id,run_controls_json,scope_snapshot_json,created_at,updated_at) VALUES ('task-cont','project-cont','Preserve provenance','completed','local','profile-a','{}','{}','2026-01-01T00:00:00Z','2026-01-03T00:00:00Z')`,
+		`INSERT INTO task_runtime_config_versions (id,task_id,version,runtime_profile_id,config_json,created_at) VALUES ('config-old','task-cont',1,'profile-a','{}','2026-01-01T00:00:00Z')`,
+		`INSERT INTO task_runtime_config_versions (id,task_id,version,runtime_profile_id,config_json,created_at) VALUES ('config-exact','task-cont',2,'profile-a','{}','2026-01-02T00:00:00Z')`,
+		`INSERT INTO task_continuations (id,task_id,number,runtime_profile_id,runtime_provider,runner,status,started_at,updated_at,ended_at) VALUES ('continuation-exact','task-cont',1,'profile-a','manual','local','completed','2026-01-02T12:00:00Z','2026-01-03T00:00:00Z','2026-01-03T00:00:00Z')`,
+		`INSERT INTO task_continuations (id,task_id,number,runtime_profile_id,runtime_provider,runner,status,started_at,updated_at,ended_at) VALUES ('continuation-missing','task-cont',2,'profile-missing','manual','local','completed','2026-01-02T12:00:00Z','2026-01-03T00:00:00Z','2026-01-03T00:00:00Z')`,
+		`INSERT INTO task_events (id,task_id,seq,kind,payload_json,created_at) VALUES ('event-legacy','task-cont',1,'output','{}','2026-01-02T13:00:00Z')`,
+		`INSERT INTO task_summary_versions (id,task_id,version,summary,submitted_by,created_at) VALUES ('summary-legacy','task-cont',1,'legacy summary','operator','2026-01-03T00:00:00Z')`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	service = NewService(db, service.databasePath, service.artifactRoot, withDisposableImportCommitForTesting())
+	if _, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindCutover}); !errors.Is(err, ErrCutoverImplementationPending) {
+		t.Fatalf("Execute(cutover): %v", err)
+	}
+
+	var exact sql.NullString
+	var reconciliation string
+	if err := db.QueryRow(`SELECT runtime_config_version_id,blackboard_reconciliation_status FROM task_continuations WHERE id='continuation-exact'`).Scan(&exact, &reconciliation); err != nil {
+		t.Fatal(err)
+	}
+	if !exact.Valid || exact.String != "config-exact" || reconciliation != "legacy_not_applicable" {
+		t.Fatalf("exact Continuation backfill = (%#v,%q)", exact, reconciliation)
+	}
+	var missing, eventContinuation, eventAttempt, summaryContinuation sql.NullString
+	if err := db.QueryRow(`SELECT runtime_config_version_id FROM task_continuations WHERE id='continuation-missing'`).Scan(&missing); err != nil {
+		t.Fatal(err)
+	}
+	if missing.Valid {
+		t.Fatalf("missing Runtime Configuration was guessed as %q", missing.String)
+	}
+	if err := db.QueryRow(`SELECT continuation_id,attempt_node_id FROM task_events WHERE id='event-legacy'`).Scan(&eventContinuation, &eventAttempt); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT continuation_id FROM task_summary_versions WHERE id='summary-legacy'`).Scan(&summaryContinuation); err != nil {
+		t.Fatal(err)
+	}
+	if eventContinuation.Valid || eventAttempt.Valid || summaryContinuation.Valid {
+		t.Fatalf("legacy Event/Summary associations were inferred: event_cont=%#v attempt=%#v summary_cont=%#v", eventContinuation, eventAttempt, summaryContinuation)
+	}
+}
+
+func TestLegacyConfirmedFactImportsWithMigrationWarningWhileOrdinaryConfirmationStillFails(t *testing.T) {
+	t.Parallel()
+
+	db, service := newInspectionService(t)
+	if _, err := db.Exec(`INSERT INTO projects (id,name,description,scope_json,defaults_json,kind,created_at,updated_at) VALUES ('project-confirmed','Legacy','', '{}','{}','pentest','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO project_facts (id,project_id,fact_key,category,summary,body,confidence,scope_status,created_at,updated_at) VALUES ('fact-confirmed','project-confirmed','fact:confirmed','asset','Legacy confirmed','','confirmed','in_scope','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	service = NewService(db, service.databasePath, service.artifactRoot, withDisposableImportCommitForTesting())
+	if _, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindCutover}); !errors.Is(err, ErrCutoverImplementationPending) {
+		t.Fatalf("Execute(cutover): %v", err)
+	}
+	graph := blackboard.NewGraphService(db, nil, nil)
+	health, err := graph.RunHealth(context.Background(), "project-confirmed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundWarning := false
+	for _, result := range health.Results {
+		foundWarning = foundWarning || result.Code == "legacy_confirmed_fact_without_basis"
+	}
+	if !foundWarning {
+		t.Fatalf("Health results = %#v, want legacy confirmation warning", health.Results)
+	}
+	_, err = graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "support-imported-confirmation",
+		Context: blackboard.SystemExecutionContext("project-confirmed", "pentest", "test"),
+		Operations: []blackboard.Operation{
+			{OpID: "supporter", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "fact:supporter"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"category": "asset", "summary": "Supporting Fact", "body": "durable support", "confidence": "confirmed", "scope_status": "in_scope"}}},
+			{OpID: "supports", Kind: blackboard.OpPutEdge, PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypeSupports, From: blackboard.NodeRef{OpID: "supporter"}, To: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "fact:confirmed"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("add normal support: %v", err)
+	}
+	health, err = graph.RunHealth(context.Background(), "project-confirmed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, result := range health.Results {
+		if result.Code == "legacy_confirmed_fact_without_basis" {
+			t.Fatalf("legacy confirmation warning remained after normal support: %#v", health.Results)
+		}
+	}
+	_, err = graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "ordinary-confirmation",
+		Context:    blackboard.SystemExecutionContext("project-confirmed", "pentest", "test"),
+		Operations: []blackboard.Operation{{OpID: "fact", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "fact:new-confirmed"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"category": "asset", "summary": "New confirmed", "body": "", "confidence": "confirmed", "scope_status": "in_scope"}}}},
+	})
+	var validation *blackboard.ValidationError
+	if !errors.As(err, &validation) || validation.Code != blackboard.ErrCodeTransitionGuardFailed {
+		t.Fatalf("ordinary unsupported confirmation error = %v", err)
+	}
+}
+
+func TestLegacyAliasHistoryImportsAsMergedIdentityAndUnresolvableRelationsStayAuditOnly(t *testing.T) {
+	t.Parallel()
+
+	db, service := newInspectionService(t)
+	statements := []string{
+		`INSERT INTO projects (id,name,description,scope_json,defaults_json,kind,created_at,updated_at) VALUES ('project-alias','Legacy','', '{}','{}','pentest','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+		`INSERT INTO project_facts (id,project_id,fact_key,category,summary,body,confidence,scope_status,created_at,updated_at) VALUES ('fact-canonical','project-alias','fact:canonical','asset','Canonical','','tentative','in_scope','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z')`,
+		`INSERT INTO project_fact_versions (id,project_id,fact_key,version,category,summary,body,confidence,scope_status,created_at) VALUES ('fact-canonical-v1','project-alias','fact:canonical',1,'asset','Canonical','','tentative','in_scope','2025-12-31T00:00:00Z')`,
+		`INSERT INTO project_fact_versions (id,project_id,fact_key,version,category,summary,body,confidence,scope_status,created_at) VALUES ('fact-canonical-v2','project-alias','fact:canonical',2,'asset','Source history','','tentative','in_scope','2026-01-01T00:00:00Z')`,
+		`INSERT INTO project_fact_versions (id,project_id,fact_key,version,category,summary,body,confidence,scope_status,created_at) VALUES ('fact-source-v1','project-alias','fact:source',1,'asset','Source history','','tentative','in_scope','2026-01-01T00:00:00Z')`,
+		`INSERT INTO fact_key_aliases (id,project_id,alias_fact_key,canon_fact_key,created_at) VALUES ('alias-source','project-alias','fact:source','fact:canonical','2026-01-03T00:00:00Z')`,
+		`INSERT INTO fact_key_aliases (id,project_id,alias_fact_key,canon_fact_key,created_at) VALUES ('alias-cycle-a','project-alias','cycle:a','cycle:b','2026-01-03T00:00:00Z')`,
+		`INSERT INTO fact_key_aliases (id,project_id,alias_fact_key,canon_fact_key,created_at) VALUES ('alias-cycle-b','project-alias','cycle:b','cycle:a','2026-01-03T00:00:00Z')`,
+		`INSERT INTO project_fact_relations (id,project_id,source_fact_key,target_fact_key,relation,summary,created_at,updated_at) VALUES ('relation-duplicates','project-alias','fact:canonical','fact:source','duplicates','advisory only','2026-01-04T00:00:00Z','2026-01-04T00:00:00Z')`,
+		`INSERT INTO project_fact_relations (id,project_id,source_fact_key,target_fact_key,relation,summary,created_at,updated_at) VALUES ('relation-unknown','project-alias','fact:canonical','fact:source','nearby-to','audit only','2026-01-05T00:00:00Z','2026-01-05T00:00:00Z')`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	service = NewService(db, service.databasePath, service.artifactRoot, withDisposableImportCommitForTesting())
+	if _, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindCutover}); !errors.Is(err, ErrCutoverImplementationPending) {
+		t.Fatalf("Execute(cutover): %v", err)
+	}
+
+	graph := blackboard.NewGraphService(db, nil, nil)
+	resolved, err := graph.ReadNode(context.Background(), blackboard.ReadNodeRequest{ProjectID: "project-alias", NodeType: blackboard.NodeTypeProjectFact, Key: "fact:source"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Node.ID != "fact-canonical" || resolved.ResolvedFromAlias != "fact:source" {
+		t.Fatalf("merged source resolution = %#v", resolved)
+	}
+	var sourceID string
+	if err := db.QueryRow(`SELECT id FROM blackboard_nodes WHERE project_id='project-alias' AND original_stable_key='fact:source'`).Scan(&sourceID); err != nil {
+		t.Fatal(err)
+	}
+	literal, err := graph.ReadLiteralNode(context.Background(), blackboard.ReadLiteralNodeRequest{ProjectID: "project-alias", NodeID: sourceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if literal.Node.Disposition != blackboard.DispositionMerged || len(literal.Versions) != 2 || literal.Versions[0].PropertyMap["summary"] != "Source history" {
+		t.Fatalf("literal merged source history = %#v", literal)
+	}
+	var auditAliases, auditRelations, activeDuplicateEdges int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM blackboard_legacy_mappings WHERE project_id='project-alias' AND mapping_status='unresolvable_legacy_alias'`).Scan(&auditAliases); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM blackboard_legacy_mappings WHERE project_id='project-alias' AND mapping_status='audit_only_relation'`).Scan(&auditRelations); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM blackboard_edge_heads WHERE project_id='project-alias' AND edge_type IN ('duplicates','depends_on')`).Scan(&activeDuplicateEdges); err != nil {
+		t.Fatal(err)
+	}
+	if auditAliases != 2 || auditRelations != 2 || activeDuplicateEdges != 0 {
+		t.Fatalf("audit-only preservation aliases=%d relations=%d active=%d", auditAliases, auditRelations, activeDuplicateEdges)
+	}
+	var rebadgedCopies int
+	var unknownMetadata string
+	if err := db.QueryRow(`SELECT COUNT(*) FROM blackboard_legacy_mappings WHERE project_id='project-alias' AND mapping_status='legacy_rebadged_copy'`).Scan(&rebadgedCopies); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT compatibility_metadata_json FROM blackboard_legacy_mappings WHERE legacy_primary_id='relation-unknown'`).Scan(&unknownMetadata); err != nil {
+		t.Fatal(err)
+	}
+	if rebadgedCopies != 1 || !strings.Contains(unknownMetadata, `"relation":"nearby-to"`) {
+		t.Fatalf("rebadged copies=%d unknown relation metadata=%s", rebadgedCopies, unknownMetadata)
+	}
+}
+
+func readLegacyFact[V any](t *testing.T, db *store.DB, kind blackboard.ReadKind, request any) V {
+	t.Helper()
+	readRequest := blackboard.ReadRequest{ProtocolVersion: blackboard.BlackboardReadProtocolVersion, ProjectID: "project-m02", Kind: kind}
+	switch value := request.(type) {
+	case blackboard.LegacyFactDetailRequest:
+		readRequest.LegacyFactDetail = &value
+	case blackboard.LegacyFactVersionsRequest:
+		readRequest.LegacyFactVersions = &value
+	case blackboard.LegacyFactRelationsRequest:
+		readRequest.LegacyFactRelations = &value
+	default:
+		t.Fatalf("unsupported legacy request %T", request)
+	}
+	envelope, err := blackboard.NewBlackboardReadService(db).Read(context.Background(), readRequest)
+	if err != nil {
+		t.Fatalf("Read(%s): %v", kind, err)
+	}
+	result, ok := envelope.Result.(V)
+	if !ok {
+		t.Fatalf("Read(%s) result type = %T", kind, envelope.Result)
+	}
+	return result
+}
+
+func insertLegacyM02Corpus(t *testing.T, db *store.DB) {
+	t.Helper()
+	statements := []string{
+		`INSERT INTO projects (id,name,description,scope_json,defaults_json,kind,created_at,updated_at) VALUES ('project-m02','CTF Flag Lab','', '{}','{}','ctf_challenge','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+		`INSERT INTO tasks (id,project_id,goal,status,runner,runtime_profile_id,run_controls_json,scope_snapshot_json,created_at,updated_at) VALUES ('task-m02','project-m02','Map the CTF-looking perimeter','completed','local','profile-m02','{}','{}','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z')`,
+		`INSERT INTO project_facts (id,project_id,fact_key,category,summary,body,confidence,scope_status,created_at,updated_at) VALUES ('fact-m02','project-m02','Host Web','','Current web host','current body','tentative','','2026-01-01T00:00:00Z','2026-01-03T00:00:00Z')`,
+		`INSERT INTO project_fact_versions (id,project_id,fact_key,version,category,summary,body,confidence,scope_status,created_at) VALUES ('fact-m02-v1','project-m02','Host Web',1,'','Historical web host','old body','tentative','','2026-01-01T00:00:00Z')`,
+		`INSERT INTO project_facts (id,project_id,fact_key,category,summary,body,confidence,scope_status,created_at,updated_at) VALUES ('fact-api','project-m02','service:api','service','API service','','tentative','in_scope','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+		`INSERT INTO fact_key_aliases (id,project_id,alias_fact_key,canon_fact_key,created_at) VALUES ('alias-host','project-m02','old host','Host Web','2026-01-04T00:00:00Z')`,
+		`INSERT INTO project_fact_relations (id,project_id,source_fact_key,target_fact_key,relation,summary,created_at,updated_at) VALUES ('relation-leads','project-m02','Host Web','service:api','leads-to','discovery path','2026-01-05T00:00:00Z','2026-01-05T00:00:00Z')`,
+		`INSERT INTO project_fact_relations (id,project_id,source_fact_key,target_fact_key,relation,summary,created_at,updated_at) VALUES ('relation-depends','project-m02','Host Web','service:api','depends_on','legacy ordering only','2026-01-06T00:00:00Z','2026-01-06T00:00:00Z')`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestInspectIsDeterministicAndWritesNeitherDatabaseNorFilesystem(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	databasePath := filepath.Join(root, "pentest.db")
+	artifactRoot := filepath.Join(root, "artifacts")
+	if err := os.Mkdir(artifactRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := store.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	insertLegacyInspectionFixture(t, db)
+	service := NewService(db, databasePath, artifactRoot)
+
+	beforeChanges := totalChanges(t, db)
+	beforeFiles := directoryEntries(t, root)
+
+	first, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindInspect})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindInspect})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(first, second) {
+		firstJSON, _ := json.MarshalIndent(first, "", "  ")
+		secondJSON, _ := json.MarshalIndent(second, "", "  ")
+		t.Fatalf("inspection is not deterministic\nfirst: %s\nsecond: %s", firstJSON, secondJSON)
+	}
+	if first.Plan.SourceDigest == "" {
+		t.Fatal("inspection returned an empty source digest")
+	}
+	if first.Plan.SourceCounts["project_facts"] != 1 || first.Plan.SourceCounts["findings"] != 1 {
+		t.Fatalf("unexpected source counts: %#v", first.Plan.SourceCounts)
+	}
+	if got := totalChanges(t, db); got != beforeChanges {
+		t.Fatalf("inspection wrote to the database: total_changes before=%d after=%d", beforeChanges, got)
+	}
+	if got := directoryEntries(t, root); !reflect.DeepEqual(got, beforeFiles) {
+		t.Fatalf("inspection wrote to the filesystem: before=%v after=%v", beforeFiles, got)
+	}
+}
+
+func TestInspectDigestIgnoresSQLRowOrderAndChangesWithAnySourceRow(t *testing.T) {
+	t.Parallel()
+
+	db, service := newInspectionService(t)
+	insertProjectAndFacts(t, db, []string{"fact-a", "fact-b"})
+	first, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindInspect})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db.Exec(`DELETE FROM project_facts`); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"fact-b", "fact-a"} {
+		if _, err := db.Exec(`INSERT INTO project_facts (id,project_id,fact_key,category,summary,body,confidence,scope_status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+			id, "project-1", "key:"+id, "asset", "Summary "+id, "body "+id, "tentative", "in_scope", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	second, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindInspect})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Plan.SourceDigest != second.Plan.SourceDigest {
+		t.Fatalf("row order changed digest: %s != %s", first.Plan.SourceDigest, second.Plan.SourceDigest)
+	}
+
+	if _, err := db.Exec(`UPDATE project_facts SET body='changed secret' WHERE id='fact-a'`); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindInspect})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.Plan.SourceDigest == second.Plan.SourceDigest {
+		t.Fatal("source-row change did not change digest")
+	}
+}
+
+func TestInspectReportsStableRedactedBlockersAndWarnings(t *testing.T) {
+	t.Parallel()
+
+	db, service := newInspectionService(t)
+	statements := []string{
+		`INSERT INTO projects (id,name,description,scope_json,defaults_json,kind,created_at,updated_at) VALUES ('project-1','Example','', '{}','{}','pentest','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+		`INSERT INTO tasks (id,project_id,goal,status,runner,runtime_profile_id,run_controls_json,scope_snapshot_json,created_at,updated_at) VALUES ('task-1','project-1','Inspect','running','local','profile-1','{}','{}','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+		`INSERT INTO task_continuations (id,task_id,number,runtime_profile_id,runtime_provider,runner,status,started_at,updated_at) VALUES ('continuation-1','task-1',1,'profile-1','manual','local','paused','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+		`INSERT INTO project_facts (id,project_id,fact_key,category,summary,body,confidence,scope_status,created_at,updated_at) VALUES ('fact-1','project-1','fact:bad','asset','Bad fact','BODY_SECRET','certain','in_scope','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+		`INSERT INTO findings (id,project_id,finding_key,version,title,description,status,target,proof,impact,recommendation,cvss_version,cvss_vector,cvss_pending,severity,created_at,updated_at) VALUES ('finding-1','project-1','finding:bad',1,'Bad finding','','confirmed','','PROOF_SECRET','','','','',1,'pending','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+		`INSERT INTO fact_key_aliases (id,project_id,alias_fact_key,canon_fact_key,created_at) VALUES ('alias-1','project-1','old:a','old:b','2026-01-01T00:00:00Z')`,
+		`INSERT INTO fact_key_aliases (id,project_id,alias_fact_key,canon_fact_key,created_at) VALUES ('alias-2','project-1','old:b','old:a','2026-01-01T00:00:00Z')`,
+		`INSERT INTO evidence_artifacts (id,project_id,evidence_key,attach_to_type,attach_to_key,artifact_type,source_path,managed_path,sha256,summary,created_at,updated_at) VALUES ('evidence-1','project-1','evidence:bad','fact','fact:bad','text','/Users/operator/secret.txt','../escape.txt','','TOKEN_SECRET','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+		`UPDATE schema_migrations SET checksum='mismatched' WHERE version=1`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindInspect})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDiagnosticCodes(t, result.Plan.Blockers,
+		"active_continuation",
+		"confirmed_finding_incomplete",
+		"migration_checksum_mismatch",
+		"unknown_fact_confidence",
+	)
+	assertDiagnosticCodes(t, result.Plan.Warnings,
+		"cyclic_fact_alias",
+		"evidence_path_escape",
+	)
+
+	encoded, err := json.Marshal(result.Plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"BODY_SECRET", "PROOF_SECRET", "TOKEN_SECRET", "/Users/operator/secret.txt", "../escape.txt"} {
+		if strings.Contains(string(encoded), secret) {
+			t.Fatalf("diagnostics leaked sensitive value %q: %s", secret, encoded)
+		}
+	}
+}
+
+func TestCutoverPreparationCreatesVerifiedWALConsistentOwnerOnlyBackup(t *testing.T) {
+	t.Parallel()
+
+	db, service := newInspectionService(t)
+	insertProjectAndFacts(t, db, []string{"fact-a"})
+	backupPath := filepath.Join(t.TempDir(), "legacy.bak")
+
+	result, err := service.Execute(context.Background(), MigrationRequest{
+		Kind:       MigrationKindCutover,
+		BackupPath: backupPath,
+	})
+	if !errors.Is(err, ErrCutoverImplementationPending) {
+		t.Fatalf("expected incremental cutover sentinel, got %v", err)
+	}
+	if result.Backup == nil {
+		t.Fatal("cutover preparation did not return verified backup metadata")
+	}
+	if result.Backup.Path != backupPath || result.Backup.QuickCheck != "ok" {
+		t.Fatalf("unexpected backup metadata: %#v", result.Backup)
+	}
+	info, err := os.Stat(backupPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("backup permissions = %o, want 600", got)
+	}
+	content, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDigest := fmt.Sprintf("%x", sha256.Sum256(content))
+	if result.Backup.SHA256 != wantDigest {
+		t.Fatalf("backup SHA-256 = %s, want %s", result.Backup.SHA256, wantDigest)
+	}
+
+	backupDB, err := sql.Open("sqlite", "file:"+backupPath+"?mode=ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backupDB.Close()
+	var factCount int
+	if err := backupDB.QueryRow(`SELECT COUNT(*) FROM project_facts WHERE id='fact-a'`).Scan(&factCount); err != nil {
+		t.Fatal(err)
+	}
+	if factCount != 1 {
+		t.Fatalf("backup missed committed WAL content: fact count=%d", factCount)
+	}
+	assertLegacySourceAndEpoch(t, db, 1)
+}
+
+func TestBackupFailureLeavesSourceRowsAndStoreEpochUnchanged(t *testing.T) {
+	t.Parallel()
+
+	db, _ := newInspectionService(t)
+	insertProjectAndFacts(t, db, []string{"fact-a"})
+	backupFailure := errors.New("injected backup failure")
+	service := NewService(db, "ignored.db", t.TempDir(), WithBackupImplementation(
+		BackupImplementationFunc(func(context.Context, *store.DB, string, string) (VerifiedBackup, error) {
+			return VerifiedBackup{}, backupFailure
+		}),
+	))
+
+	_, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindCutover})
+	if !errors.Is(err, backupFailure) {
+		t.Fatalf("expected injected backup failure, got %v", err)
+	}
+	assertLegacySourceAndEpoch(t, db, 1)
+}
+
+func assertLegacySourceAndEpoch(t *testing.T, db *store.DB, wantFacts int) {
+	t.Helper()
+	var facts int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM project_facts`).Scan(&facts); err != nil {
+		t.Fatal(err)
+	}
+	if facts != wantFacts {
+		t.Fatalf("legacy source facts changed: got %d want %d", facts, wantFacts)
+	}
+	epoch, err := db.CanonicalStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if epoch != store.CanonicalStoreLegacyV1 {
+		t.Fatalf("canonical store changed on backup path: %s", epoch)
+	}
+}
+
+func assertDiagnosticCodes(t *testing.T, diagnostics []Diagnostic, want ...string) {
+	t.Helper()
+	got := make([]string, 0, len(diagnostics))
+	for _, diagnostic := range diagnostics {
+		got = append(got, diagnostic.Code)
+	}
+	sort.Strings(got)
+	sort.Strings(want)
+	for _, code := range want {
+		if !containsString(got, code) {
+			t.Fatalf("missing diagnostic %q; got %v", code, got)
+		}
+	}
+}
+
+func containsString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func newInspectionService(t *testing.T) (*store.DB, *Service) {
+	t.Helper()
+	root := t.TempDir()
+	databasePath := filepath.Join(root, "pentest.db")
+	artifactRoot := filepath.Join(root, "artifacts")
+	if err := os.Mkdir(artifactRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db, NewService(db, databasePath, artifactRoot)
+}
+
+func insertProjectAndFacts(t *testing.T, db *store.DB, factIDs []string) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO projects (id,name,description,scope_json,defaults_json,kind,created_at,updated_at) VALUES ('project-1','Example','', '{}','{}','pentest','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range factIDs {
+		if _, err := db.Exec(`INSERT INTO project_facts (id,project_id,fact_key,category,summary,body,confidence,scope_status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+			id, "project-1", "key:"+id, "asset", "Summary "+id, "body "+id, "tentative", "in_scope", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func insertLegacyInspectionFixture(t *testing.T, db *store.DB) {
+	t.Helper()
+	statements := []string{
+		`INSERT INTO projects (id,name,description,scope_json,defaults_json,kind,created_at,updated_at) VALUES ('project-1','Example','', '{}','{}','pentest','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+		`INSERT INTO project_facts (id,project_id,fact_key,category,summary,body,confidence,scope_status,created_at,updated_at) VALUES ('fact-1','project-1','host:web','asset','Web host','sensitive body','tentative','in_scope','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+		`INSERT INTO project_fact_versions (id,project_id,fact_key,version,category,summary,body,confidence,scope_status,created_at) VALUES ('fact-version-1','project-1','host:web',1,'asset','Web host','sensitive body','tentative','in_scope','2026-01-01T00:00:00Z')`,
+		`INSERT INTO findings (id,project_id,finding_key,version,title,description,status,target,proof,impact,recommendation,cvss_version,cvss_vector,cvss_pending,severity,created_at,updated_at) VALUES ('finding-1','project-1','finding:web','1','Example finding','','unconfirmed','','secret proof','','','','',1,'pending','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+		`INSERT INTO finding_versions (id,project_id,finding_key,version,title,description,status,target,proof,impact,recommendation,cvss_version,cvss_vector,cvss_pending,severity,created_at) VALUES ('finding-version-1','project-1','finding:web',1,'Example finding','','unconfirmed','','secret proof','','','','',1,'pending','2026-01-01T00:00:00Z')`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func totalChanges(t *testing.T, db *store.DB) int64 {
+	t.Helper()
+	var changes int64
+	if err := db.QueryRow(`SELECT total_changes()`).Scan(&changes); err != nil {
+		t.Fatal(err)
+	}
+	return changes
+}
+
+func directoryEntries(t *testing.T, root string) []string {
+	t.Helper()
+	var entries []string
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == root {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		entries = append(entries, rel)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(entries)
+	return entries
+}

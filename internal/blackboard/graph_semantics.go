@@ -402,6 +402,9 @@ func validateCreatedConfirmations(tx *sql.Tx, projectID string, batch MutationBa
 			}
 		}
 		if op.Node.NodeType == NodeTypeProjectFact && props["confidence"] == "confirmed" {
+			if batch.Context.ActorType == ActorTypeMigration && batch.migrationImport != nil {
+				continue
+			}
 			supported, err := projectFactConfirmationSupported(tx, projectID, identity, props, batch, edges)
 			if err != nil {
 				return err
@@ -461,18 +464,20 @@ func projectFactConfirmationSupported(tx *sql.Tx, projectID, target string, prop
 	if batch.Context.ActorType != ActorTypeRuntime && strings.TrimSpace(stringProp(props, "body")) != "" {
 		return true, nil
 	}
-	if supported, err := incomingFrom(tx, projectID, target, EdgeTypeEvidences, nil, batch, edges); err != nil || supported {
+	if supported, err := incomingFrom(tx, projectID, target, EdgeTypeEvidences, func(n resolvedNode) (bool, error) {
+		return projectFactConfirmationCandidateQualifies(EdgeTypeEvidences, n.nodeType, "", false), nil
+	}, batch, edges); err != nil || supported {
 		return supported, err
 	}
 	if supported, err := incomingFrom(tx, projectID, target, EdgeTypeSupports, func(n resolvedNode) (bool, error) {
-		if n.nodeType == NodeTypeObservation {
-			return true, nil
-		}
 		if n.nodeType != NodeTypeProjectFact {
-			return false, nil
+			return projectFactConfirmationCandidateQualifies(EdgeTypeSupports, n.nodeType, "", false), nil
 		}
 		state, err := finalNodeState(tx, projectID, n, batch)
-		return state == "confirmed", err
+		if err != nil {
+			return false, err
+		}
+		return projectFactConfirmationCandidateQualifies(EdgeTypeSupports, n.nodeType, state, false), nil
 	}, batch, edges); err != nil || supported {
 		return supported, err
 	}
@@ -485,7 +490,7 @@ func projectFactConfirmationSupported(tx *sql.Tx, projectID, target string, prop
 			return false, err
 		}
 		if batch.Context.ActorType != ActorTypeRuntime {
-			return false, nil
+			return projectFactConfirmationCandidateQualifies(EdgeTypeProduced, n.nodeType, state, false), nil
 		}
 		if n.nodeID == "" {
 			return true, nil
@@ -494,8 +499,22 @@ func projectFactConfirmationSupported(tx *sql.Tx, projectID, target string, prop
 		if err != nil {
 			return false, fmt.Errorf("read producing Attempt provenance: %w", err)
 		}
-		return taskID == batch.Context.TaskID && contID == batch.Context.ContinuationID, nil
+		matchingRuntime := taskID == batch.Context.TaskID && contID == batch.Context.ContinuationID
+		return projectFactConfirmationCandidateQualifies(EdgeTypeProduced, n.nodeType, state, matchingRuntime), nil
 	}, batch, edges)
+}
+
+func projectFactConfirmationCandidateQualifies(edgeType EdgeType, sourceType NodeType, sourceState string, producedByMatchingRuntime bool) bool {
+	switch edgeType {
+	case EdgeTypeEvidences:
+		return sourceType == NodeTypeEvidenceArtifact
+	case EdgeTypeSupports:
+		return sourceType == NodeTypeObservation || (sourceType == NodeTypeProjectFact && sourceState == "confirmed")
+	case EdgeTypeProduced:
+		return sourceType == NodeTypeAttempt && sourceState == "succeeded" && producedByMatchingRuntime
+	default:
+		return false
+	}
 }
 
 func findingConfirmationSupported(tx *sql.Tx, projectID, target string, batch MutationBatch, edges map[string][2]resolvedNode) (bool, error) {

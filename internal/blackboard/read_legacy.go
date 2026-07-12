@@ -362,6 +362,47 @@ func buildLegacyFactRelations(ctx context.Context, tx *sql.Tx, snapshot GraphSna
 			UpdatedAt:     updated.updated,
 		})
 	}
+	// ProjectFact depends_on is intentionally audit-only because the graph
+	// reserves that edge type for Exploration Objective prerequisites. Preserve
+	// it through the bounded migration mapping for legacy relation parity.
+	auditRows, err := tx.QueryContext(ctx, `
+		SELECT legacy_primary_id,compatibility_metadata_json
+		FROM blackboard_legacy_mappings
+		WHERE project_id=? AND source_table='project_fact_relations' AND mapping_status='audit_only_relation'
+		ORDER BY legacy_primary_id`, snapshot.ProjectID)
+	if err != nil {
+		return LegacyFactRelationsV1{}, err
+	}
+	for auditRows.Next() {
+		var id, metadataJSON string
+		if err := auditRows.Scan(&id, &metadataJSON); err != nil {
+			auditRows.Close()
+			return LegacyFactRelationsV1{}, err
+		}
+		var metadata struct {
+			SourceFactKey string `json:"source_fact_key"`
+			TargetFactKey string `json:"target_fact_key"`
+			Relation      string `json:"relation"`
+			Summary       string `json:"summary"`
+			CreatedAt     string `json:"created_at"`
+			UpdatedAt     string `json:"updated_at"`
+		}
+		if err := json.Unmarshal([]byte(metadataJSON), &metadata); err != nil || metadata.Relation != "depends_on" {
+			continue
+		}
+		source, _, _, sourceErr := resolveLegacyNodeByKey(snapshot, NodeTypeProjectFact, metadata.SourceFactKey)
+		target, _, _, targetErr := resolveLegacyNodeByKey(snapshot, NodeTypeProjectFact, metadata.TargetFactKey)
+		if sourceErr != nil || targetErr != nil || source.ID != resolved.ID {
+			continue
+		}
+		relations = append(relations, LegacyFactRelationRow{
+			ID: id, ProjectID: snapshot.ProjectID, SourceFactKey: resolved.StableKey, TargetFactKey: target.StableKey,
+			Relation: metadata.Relation, Summary: metadata.Summary, CreatedAt: metadata.CreatedAt, UpdatedAt: metadata.UpdatedAt,
+		})
+	}
+	if err := auditRows.Close(); err != nil {
+		return LegacyFactRelationsV1{}, err
+	}
 	sort.SliceStable(relations, func(i, j int) bool {
 		return compareRowTuple([]string{relations[i].CreatedAt, relations[i].ID}, []string{relations[j].CreatedAt, relations[j].ID}) < 0
 	})

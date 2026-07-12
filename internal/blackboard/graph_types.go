@@ -278,6 +278,7 @@ type MutationBatch struct {
 	Context            ExecutionContext    `json:"context"`
 	Operations         []Operation         `json:"operations"`
 	SourceEventIDsByOp map[string][]string `json:"-"`
+	migrationImport    *migrationImportBatch
 }
 
 // OperationResult is the per-operation outcome within a MutationResult.

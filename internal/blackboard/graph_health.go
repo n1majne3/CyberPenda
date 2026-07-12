@@ -271,7 +271,9 @@ func projectionHealthResults(doc canonicalMainGraphDocument) []HealthResult {
 	}
 	for _, node := range doc.Nodes {
 		if node.NodeType == NodeTypeProjectFact && stringProp(node.Properties, "confidence") == "confirmed" && node.CreatedProvenance.ActorType == ActorTypeMigration {
-			out = append(out, HealthResult{Code: "legacy_confirmed_fact_without_basis", Severity: "warning", Details: map[string]any{"node_id": node.ID}})
+			if !legacyConfirmedFactHasSupport(doc, byID, node) {
+				out = append(out, HealthResult{Code: "legacy_confirmed_fact_without_basis", Severity: "warning", Details: map[string]any{"node_id": node.ID}})
+			}
 		}
 		if node.NodeType == NodeTypeFinding && stringProp(node.Properties, "status") == "confirmed" && node.CreatedProvenance.ActorType == ActorTypeMigration {
 			supported := false
@@ -286,6 +288,31 @@ func projectionHealthResults(doc canonicalMainGraphDocument) []HealthResult {
 		}
 	}
 	return out
+}
+
+func legacyConfirmedFactHasSupport(doc canonicalMainGraphDocument, byID map[string]canonicalMainNode, node canonicalMainNode) bool {
+	if strings.TrimSpace(stringProp(node.Properties, "body")) != "" {
+		return true
+	}
+	for _, edge := range doc.Edges {
+		if edge.State != "active" || edge.ToNodeID != node.ID {
+			continue
+		}
+		source := byID[edge.FromNodeID]
+		sourceState := stringProp(source.Properties, "confidence")
+		if source.NodeType == NodeTypeAttempt {
+			sourceState = stringProp(source.Properties, "status")
+		}
+		matchingRuntime := edge.CreatedProvenance.ActorType == ActorTypeRuntime && sameOptionalString(edge.CreatedProvenance.TaskID, source.CreatedProvenance.TaskID) && sameOptionalString(edge.CreatedProvenance.ContinuationID, source.CreatedProvenance.ContinuationID)
+		if projectFactConfirmationCandidateQualifies(edge.EdgeType, source.NodeType, sourceState, matchingRuntime) {
+			return true
+		}
+	}
+	return false
+}
+
+func sameOptionalString(left, right *string) bool {
+	return left != nil && right != nil && *left == *right
 }
 
 func (s *GraphService) operationalHealthResults(ctx context.Context, projectID string, doc canonicalMainGraphDocument, checkedAt string) ([]HealthResult, HealthMetrics, error) {

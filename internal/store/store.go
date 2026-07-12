@@ -5,6 +5,7 @@
 package store
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -68,6 +69,50 @@ func (db *DB) CanonicalStore() (string, error) {
 		return "", fmt.Errorf("read canonical store epoch: %w", err)
 	}
 	return epoch, nil
+}
+
+// ValidateMigrationHistory verifies that every applied numbered migration is
+// known to this binary and still has its recorded checksum. It performs no
+// writes and is used by pre-cutover inspection.
+func (db *DB) ValidateMigrationHistory(ctx context.Context) error {
+	return ValidateMigrationHistory(ctx, db)
+}
+
+type migrationHistoryQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+// ValidateMigrationHistory performs the same read-only check through a caller
+// supplied transaction when inspection needs one consistent SQLite snapshot.
+func ValidateMigrationHistory(ctx context.Context, queryer migrationHistoryQueryer) error {
+	rows, err := queryer.QueryContext(ctx, `SELECT version, name, checksum FROM schema_migrations ORDER BY version ASC`)
+	if err != nil {
+		return fmt.Errorf("read schema_migrations: %w", err)
+	}
+	defer rows.Close()
+
+	known := make(map[int]migration)
+	for _, definition := range migrations() {
+		known[definition.version] = definition
+	}
+	for rows.Next() {
+		var version int
+		var name, checksum string
+		if err := rows.Scan(&version, &name, &checksum); err != nil {
+			return fmt.Errorf("scan schema_migrations: %w", err)
+		}
+		definition, ok := known[version]
+		if !ok {
+			return fmt.Errorf("database schema is newer/unknown: applied migration version %d (%s) is not known to this binary", version, name)
+		}
+		if checksum != definition.checksum {
+			return fmt.Errorf("migration checksum mismatch for version %d (%s)", version, definition.name)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate schema_migrations: %w", err)
+	}
+	return nil
 }
 
 func buildDSN(path string) (string, error) {
