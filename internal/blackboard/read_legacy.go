@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -332,6 +333,22 @@ func buildLegacyFactRelations(ctx context.Context, tx *sql.Tx, snapshot GraphSna
 	if err != nil {
 		return LegacyFactRelationsV1{}, err
 	}
+	legacyIDs := map[string]string{}
+	idRows, err := tx.QueryContext(ctx, `SELECT target_id,legacy_primary_id FROM blackboard_legacy_mappings WHERE project_id=? AND source_table='project_fact_relations' AND mapping_status='imported' ORDER BY id`, snapshot.ProjectID)
+	if err != nil {
+		return LegacyFactRelationsV1{}, err
+	}
+	for idRows.Next() {
+		var targetID, legacyID string
+		if err := idRows.Scan(&targetID, &legacyID); err != nil {
+			idRows.Close()
+			return LegacyFactRelationsV1{}, err
+		}
+		legacyIDs[targetID] = legacyID
+	}
+	if err := idRows.Close(); err != nil {
+		return LegacyFactRelationsV1{}, err
+	}
 	relations := []LegacyFactRelationRow{}
 	for _, edge := range snapshot.Edges {
 		if edge.State != "active" || edge.FromNodeID != resolved.ID {
@@ -351,8 +368,12 @@ func buildLegacyFactRelations(ctx context.Context, tx *sql.Tx, snapshot GraphSna
 			continue
 		}
 		created, updated := timestamps[edge.ID], timestamps[edge.ID]
+		id := edge.ID
+		if legacyID := legacyIDs[edge.ID]; legacyID != "" {
+			id = legacyID
+		}
 		relations = append(relations, LegacyFactRelationRow{
-			ID:            edge.ID,
+			ID:            id,
 			ProjectID:     edge.ProjectID,
 			SourceFactKey: resolved.StableKey,
 			TargetFactKey: target.StableKey,
@@ -479,7 +500,7 @@ func buildLegacyFindingVersions(ctx context.Context, tx *sql.Tx, snapshot GraphS
 
 // buildLegacyEvidenceCollection projects main EvidenceArtifacts into the legacy
 // list shape, one row per artifact with deterministic singular attach target.
-func buildLegacyEvidenceCollection(snapshot GraphSnapshot, request LegacyEvidenceCollectionRequest, cursor *readCursor, cursorKey []byte) (LegacyEvidenceCollectionV1, error) {
+func buildLegacyEvidenceCollection(ctx context.Context, tx *sql.Tx, snapshot GraphSnapshot, request LegacyEvidenceCollectionRequest, cursor *readCursor, cursorKey []byte) (LegacyEvidenceCollectionV1, error) {
 	limit := legacyListLimit(request.Limit)
 	if err := legacyValidateLimit(limit); err != nil {
 		return LegacyEvidenceCollectionV1{}, err
@@ -514,7 +535,10 @@ func buildLegacyEvidenceCollection(snapshot GraphSnapshot, request LegacyEvidenc
 		// properties when present and still current); tier 2 falls back to the
 		// first current ProjectFact or Finding by node-type ordinal, stable key,
 		// and ID; tier 3 leaves the singular fields empty.
-		attachType, attachKey := legacySingularAttachTarget(node, factTargets, findingTargets, byID)
+		attachType, attachKey, err := legacySingularAttachTarget(ctx, tx, node, factTargets, findingTargets)
+		if err != nil {
+			return LegacyEvidenceCollectionV1{}, err
+		}
 		artifacts = append(artifacts, LegacyEvidenceArtifactV1{
 			ID:           node.ID,
 			ProjectID:    node.ProjectID,
@@ -557,15 +581,24 @@ func buildLegacyEvidenceCollection(snapshot GraphSnapshot, request LegacyEvidenc
 //  2. otherwise the first current ProjectFact or Finding evidences target by
 //     node-type ordinal (ProjectFact before Finding), stable key, then ID;
 //  3. otherwise empty strings.
-func legacySingularAttachTarget(node NodeRecord, factTargets, findingTargets []NodeRecord, byID map[string]NodeRecord) (string, string) {
+func legacySingularAttachTarget(ctx context.Context, tx *sql.Tx, node NodeRecord, factTargets, findingTargets []NodeRecord) (string, string, error) {
 	if migratedType := propertyString(node, "migrated_attach_to_type"); migratedType == "fact" || migratedType == "finding" {
 		if migratedKey := propertyString(node, "migrated_attach_to_key"); migratedKey != "" {
-			for _, target := range append(append([]NodeRecord{}, factTargets...), findingTargets...) {
-				if target.Disposition == DispositionMain && target.StableKey == migratedKey {
-					return migratedType, migratedKey
-				}
-			}
+			return migratedType, migratedKey, nil
 		}
+	}
+	var metadataRaw string
+	err := tx.QueryRowContext(ctx, `SELECT compatibility_metadata_json FROM blackboard_legacy_mappings WHERE project_id=? AND source_table='evidence_artifacts' AND target_id=? ORDER BY id LIMIT 1`, node.ProjectID, node.ID).Scan(&metadataRaw)
+	if err == nil {
+		var metadata struct {
+			AttachToType string `json:"attach_to_type"`
+			AttachToKey  string `json:"attach_to_key"`
+		}
+		if json.Unmarshal([]byte(metadataRaw), &metadata) == nil && (metadata.AttachToType == "fact" || metadata.AttachToType == "finding") && metadata.AttachToKey != "" {
+			return metadata.AttachToType, metadata.AttachToKey, nil
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return "", "", fmt.Errorf("read migrated Evidence attachment preference: %w", err)
 	}
 	pick := func(targets []NodeRecord, label string) (string, string, bool) {
 		if len(targets) == 0 {
@@ -580,12 +613,12 @@ func legacySingularAttachTarget(node NodeRecord, factTargets, findingTargets []N
 		return label, best.StableKey, true
 	}
 	if label, key, ok := pick(factTargets, "fact"); ok {
-		return label, key
+		return label, key, nil
 	}
 	if label, key, ok := pick(findingTargets, "finding"); ok {
-		return label, key
+		return label, key, nil
 	}
-	return "", ""
+	return "", "", nil
 }
 
 func legacyFindingFromNode(node NodeRecord) LegacyFindingV1 {

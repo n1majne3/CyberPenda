@@ -422,6 +422,9 @@ func validateCreatedConfirmations(tx *sql.Tx, projectID string, batch MutationBa
 			if !validCVSS(props) {
 				return validationError(ErrCodeInvalidProperty, "confirmed Finding requires a complete CVSS vector matching cvss_version", i, op.OpID, "operations[].properties.cvss_vector")
 			}
+			if batch.Context.ActorType == ActorTypeMigration && batch.migrationImport != nil {
+				continue
+			}
 			supported, err := findingConfirmationSupported(tx, projectID, identity, batch, edges)
 			if err != nil {
 				return err

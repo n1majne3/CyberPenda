@@ -26,6 +26,7 @@ type LegacyImportNodeV1 struct {
 	ID          string
 	NodeType    NodeType
 	StableKey   string
+	Disposition Disposition
 	CreatedAt   string
 	Versions    []LegacyImportNodeVersionV1
 	Sources     []LegacyImportSourceV1
@@ -93,9 +94,10 @@ type migrationImportEdge struct {
 }
 
 type migrationImportNode struct {
-	id        string
-	createdAt string
-	versions  []pendingImportedVersion
+	id          string
+	disposition Disposition
+	createdAt   string
+	versions    []pendingImportedVersion
 }
 
 type migrationImportAlias struct {
@@ -128,6 +130,10 @@ func (s *GraphService) ApplyLegacyImportPlan(ctx context.Context, tx *sql.Tx, pl
 			return MutationResult{}, validationError(ErrCodeInvalidRequest, "legacy import node is incomplete", -1, node.OperationID, "legacy_import_plan.nodes")
 		}
 		versions := make([]pendingImportedVersion, 0, len(node.Versions))
+		disposition := node.Disposition
+		if disposition == "" {
+			disposition = DispositionMain
+		}
 		for _, version := range node.Versions {
 			if version.Version <= 0 {
 				return MutationResult{}, validationError(ErrCodeInvalidRequest, "legacy import version must be positive", -1, node.OperationID, "legacy_import_plan.nodes.versions")
@@ -141,7 +147,7 @@ func (s *GraphService) ApplyLegacyImportPlan(ctx context.Context, tx *sql.Tx, pl
 			}
 			versions = append(versions, pendingImportedVersion{
 				version: version.Version, propsJSON: propertiesJSON,
-				semHash: genericNodeSemanticHash(DispositionMain, "", version.Properties), updatedAt: version.UpdatedAt,
+				semHash: genericNodeSemanticHash(disposition, "", version.Properties), disposition: disposition, updatedAt: version.UpdatedAt,
 			})
 		}
 		current := node.Versions[len(node.Versions)-1].Properties
@@ -153,7 +159,7 @@ func (s *GraphService) ApplyLegacyImportPlan(ctx context.Context, tx *sql.Tx, pl
 			Create: CreateNodeInput{PropertyMap: current},
 		})
 		metadata.operations[node.OperationID] = &migrationImportOperation{
-			node:    &migrationImportNode{id: node.ID, createdAt: node.CreatedAt, versions: versions},
+			node:    &migrationImportNode{id: node.ID, disposition: disposition, createdAt: node.CreatedAt, versions: versions},
 			sources: append([]LegacyImportSourceV1(nil), node.Sources...),
 		}
 	}

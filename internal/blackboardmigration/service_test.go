@@ -18,6 +18,237 @@ import (
 	"pentest/internal/store"
 )
 
+func TestLegacyFindingEvidenceCorpusPreservesHistoryAttachmentsAndMissingArtifactsWithoutSyntheticCounts(t *testing.T) {
+	t.Parallel()
+
+	db, service := newInspectionService(t)
+	managedPath := filepath.Join("artifacts", "captures", "response.txt")
+	managedFile := filepath.Join(service.artifactRoot, managedPath)
+	if err := os.MkdirAll(filepath.Dir(managedFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const managedContent = "HTTP/1.1 500 Internal Server Error\n"
+	if err := os.WriteFile(managedFile, []byte(managedContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(service.artifactRoot, "..", "outside.txt"), []byte("must never be opened"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	actualDigest := fmt.Sprintf("%x", sha256.Sum256([]byte(managedContent)))
+
+	statements := []string{
+		`INSERT INTO projects (id,name,description,scope_json,defaults_json,kind,created_at,updated_at) VALUES ('project-m03','Legacy','', '{}','{}','pentest','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+		`INSERT INTO project_facts (id,project_id,fact_key,category,summary,body,confidence,scope_status,created_at,updated_at) VALUES ('fact-target','project-m03','fact:target','asset','Target service','','tentative','in_scope','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+		`INSERT INTO findings (id,project_id,finding_key,version,title,description,status,target,proof,impact,recommendation,cvss_version,cvss_vector,cvss_pending,severity,created_at,updated_at) VALUES ('finding-main','project-m03','finding:sqli',2,'SQL injection','Legacy description','confirmed','https://example.test/login','SQL error','Account takeover','Use parameters','','CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H',1,'pending','2026-01-01T00:00:00Z','2026-01-03T00:00:00Z')`,
+		`INSERT INTO finding_versions (id,project_id,finding_key,version,title,description,status,target,proof,impact,recommendation,cvss_version,cvss_vector,cvss_pending,severity,created_at) VALUES ('finding-main-v1','project-m03','finding:sqli',1,'SQL injection','Legacy description','unconfirmed','https://example.test/login','SQL error','Account takeover','Use parameters','','',1,'pending','2026-01-01T00:00:00Z')`,
+		`INSERT INTO finding_versions (id,project_id,finding_key,version,title,description,status,target,proof,impact,recommendation,cvss_version,cvss_vector,cvss_pending,severity,created_at) VALUES ('finding-main-v2','project-m03','finding:sqli',2,'SQL injection','Legacy description','confirmed','https://example.test/login','SQL error','Account takeover','Use parameters','','CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H',0,'low','2026-01-03T00:00:00Z')`,
+		`INSERT INTO findings (id,project_id,finding_key,version,title,description,status,target,proof,impact,recommendation,cvss_version,cvss_vector,cvss_pending,severity,created_at,updated_at) VALUES ('finding-fp','project-m03','finding:false-alarm',1,'False alarm','','false_positive','','','','','','',1,'pending','2026-01-02T00:00:00Z','2026-01-02T00:00:00Z')`,
+		`INSERT INTO findings (id,project_id,finding_key,version,title,description,status,target,proof,impact,recommendation,cvss_version,cvss_vector,cvss_pending,severity,created_at,updated_at) VALUES ('finding-unsupported','project-m03','finding:unsupported',1,'Unsupported legacy confirmation','','confirmed','https://example.test/admin','Administrative access','Full compromise','Restrict access','3.1','CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H',0,'critical','2026-01-02T00:00:00Z','2026-01-02T00:00:00Z')`,
+		`INSERT INTO finding_key_aliases (id,project_id,alias_finding_key,canon_finding_key,created_at) VALUES ('finding-alias','project-m03','finding:old-sqli','finding:sqli','2026-01-04T00:00:00Z')`,
+		`INSERT INTO evidence_artifacts (id,project_id,evidence_key,attach_to_type,attach_to_key,artifact_type,source_path,managed_path,sha256,summary,created_at,updated_at) VALUES ('evidence-live','project-m03','evidence:response','finding','finding:old-sqli','http_exchange','captures/raw.txt','` + filepath.ToSlash(managedPath) + `','deadbeef','Captured response','2026-01-04T00:00:00Z','2026-01-04T00:00:00Z')`,
+		`INSERT INTO evidence_artifacts (id,project_id,evidence_key,attach_to_type,attach_to_key,artifact_type,source_path,managed_path,sha256,summary,created_at,updated_at) VALUES ('evidence-missing','project-m03','evidence:missing','fact','fact:missing','custom_trace','','artifacts/missing.trace','','Missing trace','2026-01-05T00:00:00Z','2026-01-05T00:00:00Z')`,
+		`INSERT INTO evidence_artifacts (id,project_id,evidence_key,attach_to_type,attach_to_key,artifact_type,source_path,managed_path,sha256,summary,created_at,updated_at) VALUES ('evidence-escape','project-m03','evidence:escape','fact','fact:target','file','','../outside.txt','cafebabe','Escaping path','2026-01-06T00:00:00Z','2026-01-06T00:00:00Z')`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	service = NewService(db, service.databasePath, service.artifactRoot, withDisposableImportCommitForTesting())
+	result, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindCutover})
+	if !errors.Is(err, ErrCutoverImplementationPending) {
+		t.Fatalf("Execute(cutover): %v", err)
+	}
+	if result.Import == nil || result.Import.MappingDigest == "" || !result.Import.MappingVerified || result.Import.ParityDigest == "" || result.Import.ParityChecks["dashboard"] != 1 || result.Import.ParityChecks["report"] != 1 {
+		t.Fatalf("import result = %#v", result.Import)
+	}
+
+	var facts, findings, evidence int
+	for query, destination := range map[string]*int{
+		`SELECT COUNT(*) FROM blackboard_node_heads WHERE project_id='project-m03' AND node_type='project_fact'`:      &facts,
+		`SELECT COUNT(*) FROM blackboard_node_heads WHERE project_id='project-m03' AND node_type='finding'`:           &findings,
+		`SELECT COUNT(*) FROM blackboard_node_heads WHERE project_id='project-m03' AND node_type='evidence_artifact'`: &evidence,
+	} {
+		if err := db.QueryRow(query).Scan(destination); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if facts != 1 || findings != 3 || evidence != 3 {
+		t.Fatalf("semantic counts facts=%d findings=%d evidence=%d", facts, findings, evidence)
+	}
+
+	reads := blackboard.NewBlackboardReadService(db)
+	findingEnvelope, err := reads.Read(context.Background(), blackboard.ReadRequest{ProtocolVersion: 1, ProjectID: "project-m03", Kind: blackboard.ReadKindLegacyFindingCollectionV1, LegacyFindingCollection: &blackboard.LegacyFindingCollectionRequest{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyFindings := findingEnvelope.Result.(blackboard.LegacyFindingCollectionV1)
+	if len(legacyFindings.Findings) != 3 || legacyFindings.Findings[0].Severity == "low" {
+		t.Fatalf("legacy Findings = %#v", legacyFindings.Findings)
+	}
+	versionsEnvelope, err := reads.Read(context.Background(), blackboard.ReadRequest{ProtocolVersion: 1, ProjectID: "project-m03", Kind: blackboard.ReadKindLegacyFindingVersionsV1, LegacyFindingVersions: &blackboard.LegacyFindingVersionsRequest{FindingKey: "finding:old-sqli"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	versions := versionsEnvelope.Result.(blackboard.LegacyFindingVersionsV1)
+	if len(versions.Versions) != 2 || versions.Versions[0].Status != "unconfirmed" || versions.Versions[1].Status != "confirmed" || versions.Versions[1].CVSSVersion != "3.1" {
+		t.Fatalf("legacy Finding versions = %#v", versions.Versions)
+	}
+
+	evidenceEnvelope, err := reads.Read(context.Background(), blackboard.ReadRequest{ProtocolVersion: 1, ProjectID: "project-m03", Kind: blackboard.ReadKindLegacyEvidenceCollectionV1, LegacyEvidenceCollection: &blackboard.LegacyEvidenceCollectionRequest{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyEvidence := evidenceEnvelope.Result.(blackboard.LegacyEvidenceCollectionV1)
+	byKey := make(map[string]blackboard.LegacyEvidenceArtifactV1, len(legacyEvidence.Evidence))
+	for _, artifact := range legacyEvidence.Evidence {
+		byKey[artifact.EvidenceKey] = artifact
+	}
+	live := byKey["evidence:response"]
+	if live.SHA256 != actualDigest || live.AttachToType != "finding" || live.AttachToKey != "finding:sqli" || len(live.Attachments) != 1 {
+		t.Fatalf("available Evidence = %#v", live)
+	}
+	missing := byKey["evidence:missing"]
+	if missing.ArtifactType != "other" || missing.ManagedPath != "artifacts/missing.trace" || missing.AttachToType != "fact" || missing.AttachToKey != "fact:missing" || len(missing.Attachments) != 0 {
+		t.Fatalf("missing Evidence = %#v", missing)
+	}
+	escaping := byKey["evidence:escape"]
+	if !strings.HasPrefix(escaping.ManagedPath, "missing://") || len(escaping.Attachments) != 1 || escaping.SHA256 != "" {
+		t.Fatalf("escaping Evidence = %#v", escaping)
+	}
+
+	health, err := blackboard.NewGraphService(db, nil, nil).RunHealth(context.Background(), "project-m03")
+	if err != nil {
+		t.Fatal(err)
+	}
+	warnings := map[string]bool{}
+	for _, item := range health.Results {
+		warnings[item.Code] = true
+	}
+	if !warnings["legacy_confirmed_finding_without_support"] || !warnings["legacy_evidence_digest_mismatch"] {
+		t.Fatalf("Health results = %#v", health.Results)
+	}
+	graph := blackboard.NewGraphService(db, nil, nil)
+	_, err = graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "later-native-attachment",
+		Context:    blackboard.SystemExecutionContext("project-m03", "pentest", "test"),
+		Operations: []blackboard.Operation{{OpID: "edge", Kind: blackboard.OpPutEdge, PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypeEvidences, From: blackboard.NodeRef{NodeType: blackboard.NodeTypeEvidenceArtifact, StableKey: "evidence:missing"}, To: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "fact:target"}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidenceEnvelope, err = reads.Read(context.Background(), blackboard.ReadRequest{ProtocolVersion: 1, ProjectID: "project-m03", Kind: blackboard.ReadKindLegacyEvidenceCollectionV1, LegacyEvidenceCollection: &blackboard.LegacyEvidenceCollectionRequest{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, artifact := range evidenceEnvelope.Result.(blackboard.LegacyEvidenceCollectionV1).Evidence {
+		if artifact.EvidenceKey == "evidence:missing" && (artifact.AttachToType != "fact" || artifact.AttachToKey != "fact:missing" || len(artifact.Attachments) != 1) {
+			t.Fatalf("later attachment replaced migrated preference: %#v", artifact)
+		}
+	}
+	_, err = graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "nonqualifying-support",
+		Context: blackboard.SystemExecutionContext("project-m03", "pentest", "test"),
+		Operations: []blackboard.Operation{
+			{OpID: "fact", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "fact:tentative-support"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"category": "test", "summary": "Tentative support", "body": "", "confidence": "tentative", "scope_status": "in_scope"}}},
+			{OpID: "edge", Kind: blackboard.OpPutEdge, PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypeSupports, From: blackboard.NodeRef{OpID: "fact"}, To: blackboard.NodeRef{NodeType: blackboard.NodeTypeFinding, StableKey: "finding:unsupported"}}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	health, err = graph.RunHealth(context.Background(), "project-m03")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stillWarns := false
+	for _, item := range health.Results {
+		stillWarns = stillWarns || item.Code == "legacy_confirmed_finding_without_support"
+	}
+	if !stillWarns {
+		t.Fatalf("nonqualifying support cleared migration warning: %#v", health.Results)
+	}
+	_, err = blackboard.NewGraphService(db, nil, nil).Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "ordinary-unsupported-finding",
+		Context: blackboard.SystemExecutionContext("project-m03", "pentest", "test"),
+		Operations: []blackboard.Operation{{OpID: "finding", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeFinding, StableKey: "finding:new-unsupported"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{
+			"title": "New unsupported", "status": "confirmed", "target": "https://example.test", "proof": "proof", "impact": "impact", "recommendation": "fix",
+			"cvss_version": "3.1", "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+		}}}},
+	})
+	var validation *blackboard.ValidationError
+	if !errors.As(err, &validation) || validation.Code != blackboard.ErrCodeTransitionGuardFailed {
+		t.Fatalf("ordinary unsupported Finding error = %v", err)
+	}
+}
+
+func TestHistoryOnlyFindingRemainsAddressableWithoutChangingCurrentCounts(t *testing.T) {
+	t.Parallel()
+
+	db, service := newInspectionService(t)
+	statements := []string{
+		`INSERT INTO projects (id,name,description,scope_json,defaults_json,kind,created_at,updated_at) VALUES ('project-history-only','Legacy','', '{}','{}','pentest','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+		`INSERT INTO finding_versions (id,project_id,finding_key,version,title,description,status,target,proof,impact,recommendation,cvss_version,cvss_vector,cvss_pending,severity,created_at) VALUES ('finding-old-v1','project-history-only','finding:old',1,'Historical Finding','','false_positive','','','','','','',1,'pending','2026-01-01T00:00:00Z')`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	service = NewService(db, service.databasePath, service.artifactRoot, withDisposableImportCommitForTesting())
+	if _, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindCutover}); !errors.Is(err, ErrCutoverImplementationPending) {
+		t.Fatalf("Execute(cutover): %v", err)
+	}
+	var main, archived int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM blackboard_node_heads WHERE project_id='project-history-only' AND node_type='finding' AND disposition='main'`).Scan(&main); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM blackboard_node_heads WHERE project_id='project-history-only' AND node_type='finding' AND disposition='archived'`).Scan(&archived); err != nil {
+		t.Fatal(err)
+	}
+	if main != 0 || archived != 1 {
+		t.Fatalf("Finding dispositions main=%d archived=%d", main, archived)
+	}
+	envelope, err := blackboard.NewBlackboardReadService(db).Read(context.Background(), blackboard.ReadRequest{ProtocolVersion: 1, ProjectID: "project-history-only", Kind: blackboard.ReadKindLegacyFindingVersionsV1, LegacyFindingVersions: &blackboard.LegacyFindingVersionsRequest{FindingKey: "finding:old"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	versions := envelope.Result.(blackboard.LegacyFindingVersionsV1)
+	if len(versions.Versions) != 1 || versions.Versions[0].Title != "Historical Finding" {
+		t.Fatalf("historical versions = %#v", versions.Versions)
+	}
+}
+
+func TestParityGatesFollowEveryLegacyFindingAndEvidencePage(t *testing.T) {
+	t.Parallel()
+
+	db, service := newInspectionService(t)
+	if _, err := db.Exec(`INSERT INTO projects (id,name,description,scope_json,defaults_json,kind,created_at,updated_at) VALUES ('project-pages','Legacy','', '{}','{}','pentest','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 201; index++ {
+		key := fmt.Sprintf("finding:page-%03d", index)
+		id := fmt.Sprintf("finding-page-%03d", index)
+		if _, err := db.Exec(`INSERT INTO findings (id,project_id,finding_key,version,title,description,status,target,proof,impact,recommendation,cvss_version,cvss_vector,cvss_pending,severity,created_at,updated_at) VALUES (?,?,?,?,?,'','unconfirmed','','','','','','',1,'pending','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`, id, "project-pages", key, 1, key); err != nil {
+			t.Fatal(err)
+		}
+		evidenceKey := fmt.Sprintf("evidence:page-%03d", index)
+		evidenceID := fmt.Sprintf("evidence-page-%03d", index)
+		if _, err := db.Exec(`INSERT INTO evidence_artifacts (id,project_id,evidence_key,attach_to_type,attach_to_key,artifact_type,source_path,managed_path,sha256,summary,created_at,updated_at) VALUES (?, ?, ?, 'fact', 'fact:missing', 'log', '', ?, '', ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, evidenceID, "project-pages", evidenceKey, "artifacts/"+evidenceID+".log", evidenceKey); err != nil {
+			t.Fatal(err)
+		}
+	}
+	service = NewService(db, service.databasePath, service.artifactRoot, withDisposableImportCommitForTesting())
+	result, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindCutover})
+	if !errors.Is(err, ErrCutoverImplementationPending) {
+		t.Fatalf("Execute(cutover): %v", err)
+	}
+	if result.Import == nil || result.Import.ParityChecks["legacy_findings"] != 2 || result.Import.ParityChecks["legacy_evidence"] != 2 {
+		t.Fatalf("paged parity result = %#v", result.Import)
+	}
+}
+
 func TestLegacyFactCorpusImportsDeterministicallyWithExactGoalAndCompatibilityParity(t *testing.T) {
 	t.Parallel()
 

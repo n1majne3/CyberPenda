@@ -6,21 +6,30 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"sort"
+	"strings"
 
 	"pentest/internal/blackboard"
+	"pentest/internal/project"
 )
 
 var graphStableKeyPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._:/-]{0,159}$`)
 
 type LegacyImportResultV1 struct {
-	MappingDigest string         `json:"mapping_digest"`
-	Mappings      map[string]int `json:"mappings"`
-	Projects      int            `json:"projects"`
-	Mutations     int            `json:"mutations"`
+	MappingDigest   string         `json:"mapping_digest"`
+	MappingVerified bool           `json:"mapping_verified"`
+	ParityDigest    string         `json:"parity_digest"`
+	Mappings        map[string]int `json:"mappings"`
+	ParityChecks    map[string]int `json:"parity_checks"`
+	Projects        int            `json:"projects"`
+	Mutations       int            `json:"mutations"`
 }
 
 type legacyMapping struct {
@@ -39,6 +48,18 @@ type legacyFactVersion struct {
 
 type legacyFactCurrent struct {
 	id, key, category, summary, body, confidence, scopeStatus, createdAt, updatedAt string
+}
+
+type legacyFindingVersion struct {
+	id, key, title, description, status, target, proof, impact, recommendation string
+	cvssVersion, cvssVector, createdAt                                         string
+	version                                                                    int
+}
+
+type legacyFindingCurrent struct {
+	id, key, title, description, status, target, proof, impact, recommendation string
+	cvssVersion, cvssVector, createdAt, updatedAt                              string
+	version                                                                    int
 }
 
 func (s *Service) importLegacyGraph(ctx context.Context, sourceDigest string) (LegacyImportResultV1, error) {
@@ -67,7 +88,8 @@ func (s *Service) importLegacyGraph(ctx context.Context, sourceDigest string) (L
 
 	graph := blackboard.NewGraphService(s.db, nil, nil)
 	allMappings := make([]legacyMapping, 0)
-	result := LegacyImportResultV1{Mappings: make(map[string]int), Projects: len(projectIDs)}
+	result := LegacyImportResultV1{Mappings: make(map[string]int), ParityChecks: make(map[string]int), Projects: len(projectIDs)}
+	parityDigests := make([]string, 0, len(projectIDs))
 	for _, projectID := range projectIDs {
 		if _, err := tx.ExecContext(ctx, `UPDATE projects SET kind='pentest' WHERE id=?`, projectID); err != nil {
 			return LegacyImportResultV1{}, fmt.Errorf("backfill Project kind: %w", err)
@@ -75,7 +97,7 @@ func (s *Service) importLegacyGraph(ctx context.Context, sourceDigest string) (L
 		if err := backfillLegacyContinuations(ctx, tx, projectID); err != nil {
 			return LegacyImportResultV1{}, err
 		}
-		plan, mappings, err := buildProjectImportPlan(ctx, tx, projectID, sourceDigest)
+		plan, mappings, err := s.buildProjectImportPlan(ctx, tx, projectID, sourceDigest)
 		if err != nil {
 			return LegacyImportResultV1{}, err
 		}
@@ -86,6 +108,14 @@ func (s *Service) importLegacyGraph(ctx context.Context, sourceDigest string) (L
 					return LegacyImportResultV1{}, err
 				}
 				result.Mappings[mappings[i].status]++
+			}
+			parity, checks, err := validateProjectImportParity(ctx, tx, projectID, s.artifactRoot)
+			if err != nil {
+				return LegacyImportResultV1{}, err
+			}
+			parityDigests = append(parityDigests, parity)
+			for check, count := range checks {
+				result.ParityChecks[check] += count
 			}
 			continue
 		}
@@ -100,17 +130,694 @@ func (s *Service) importLegacyGraph(ctx context.Context, sourceDigest string) (L
 			}
 			result.Mappings[mappings[i].status]++
 		}
+		parity, checks, err := validateProjectImportParity(ctx, tx, projectID, s.artifactRoot)
+		if err != nil {
+			return LegacyImportResultV1{}, err
+		}
+		parityDigests = append(parityDigests, parity)
+		for check, count := range checks {
+			result.ParityChecks[check] += count
+		}
 	}
 	result.MappingDigest, err = legacyMappingsDigest(allMappings)
 	if err != nil {
 		return LegacyImportResultV1{}, err
 	}
+	persistedDigest, err := persistedLegacyMappingsDigest(ctx, tx)
+	if err != nil {
+		return LegacyImportResultV1{}, err
+	}
+	if persistedDigest != result.MappingDigest {
+		return LegacyImportResultV1{}, fmt.Errorf("persisted legacy mapping digest mismatch: memory=%s persisted=%s", result.MappingDigest, persistedDigest)
+	}
+	result.MappingVerified = true
+	parityHash := sha256.New()
+	writeFrame(parityHash, []byte("legacy_blackboard_parity_v1"))
+	for _, digest := range parityDigests {
+		writeFrame(parityHash, []byte(digest))
+	}
+	result.ParityDigest = hex.EncodeToString(parityHash.Sum(nil))
 	if s.commitDisposableImport {
 		if err := tx.Commit(); err != nil {
 			return LegacyImportResultV1{}, fmt.Errorf("commit disposable M02 import: %w", err)
 		}
 	}
 	return result, nil
+}
+
+func validateProjectImportParity(ctx context.Context, tx *sql.Tx, projectID, artifactRoot string) (string, map[string]int, error) {
+	reads := blackboard.NewBlackboardReadServiceInTransaction(tx)
+	checks := make(map[string]int)
+	results := make(map[string]any)
+	read := func(name string, request blackboard.ReadRequest) error {
+		envelope, err := reads.ReadInTransaction(ctx, tx, request)
+		if err != nil {
+			return fmt.Errorf("M03 parity %s for Project %s: %w", name, projectID, err)
+		}
+		results[name] = envelope.Result
+		checks[name]++
+		return nil
+	}
+	base := blackboard.ReadRequest{ProtocolVersion: blackboard.BlackboardReadProtocolVersion, ProjectID: projectID}
+	include := true
+	facts, pages, err := readAllLegacyFacts(ctx, reads, tx, base, &include)
+	if err != nil {
+		return "", nil, err
+	}
+	results["legacy_fact_index"] = facts
+	checks["legacy_fact_index"] += pages
+	excludeDeprecated := false
+	currentFacts, pages, err := readAllLegacyFacts(ctx, reads, tx, base, &excludeDeprecated)
+	if err != nil {
+		return "", nil, err
+	}
+	results["legacy_fact_index_current"] = currentFacts
+	checks["legacy_fact_index_current"] += pages
+	findings, pages, err := readAllLegacyFindings(ctx, reads, tx, base)
+	if err != nil {
+		return "", nil, err
+	}
+	results["legacy_findings"] = findings
+	checks["legacy_findings"] += pages
+	evidence, pages, err := readAllLegacyEvidence(ctx, reads, tx, base)
+	if err != nil {
+		return "", nil, err
+	}
+	results["legacy_evidence"] = evidence
+	checks["legacy_evidence"] += pages
+	factKeys, err := legacyParityKeys(ctx, tx, projectID, `SELECT fact_key FROM project_facts WHERE project_id=? UNION SELECT fact_key FROM project_fact_versions WHERE project_id=? UNION SELECT original_stable_key FROM blackboard_legacy_mappings WHERE project_id=? AND source_table='fact_key_aliases' AND mapping_status IN ('alias','merged') ORDER BY 1`)
+	if err != nil {
+		return "", nil, err
+	}
+	factDetails := make([]any, 0, len(factKeys))
+	factVersions := make([]any, 0, len(factKeys))
+	factRelations := make([]any, 0, len(factKeys))
+	for _, key := range factKeys {
+		detailRequest := base
+		detailRequest.Kind = blackboard.ReadKindLegacyFactDetailV1
+		detailRequest.LegacyFactDetail = &blackboard.LegacyFactDetailRequest{FactKey: key}
+		envelope, err := reads.ReadInTransaction(ctx, tx, detailRequest)
+		if err != nil {
+			return "", nil, fmt.Errorf("M03 Fact detail parity for Project %s key %s: %w", projectID, key, err)
+		}
+		detail := envelope.Result.(blackboard.LegacyFactDetailV1)
+		sourceKey, err := legacyFactSourceKey(ctx, tx, projectID, detail.ID, detail.FactKey)
+		if err != nil {
+			return "", nil, err
+		}
+		if err := validateLegacyFactDetailSourceParity(ctx, tx, projectID, sourceKey, detail); err != nil {
+			return "", nil, err
+		}
+		factDetails = append(factDetails, detail)
+		checks["legacy_fact_detail"]++
+
+		versionsRequest := base
+		versionsRequest.Kind = blackboard.ReadKindLegacyFactVersionsV1
+		versionsRequest.LegacyFactVersions = &blackboard.LegacyFactVersionsRequest{FactKey: key}
+		envelope, err = reads.ReadInTransaction(ctx, tx, versionsRequest)
+		if err != nil {
+			return "", nil, fmt.Errorf("M03 Fact version parity for Project %s key %s: %w", projectID, key, err)
+		}
+		versions := envelope.Result.(blackboard.LegacyFactVersionsV1)
+		if err := validateLegacyFactVersionSourceParity(ctx, tx, projectID, sourceKey, versions); err != nil {
+			return "", nil, err
+		}
+		factVersions = append(factVersions, versions)
+		checks["legacy_fact_versions"]++
+
+		relationsRequest := base
+		relationsRequest.Kind = blackboard.ReadKindLegacyFactRelationsV1
+		relationsRequest.LegacyFactRelations = &blackboard.LegacyFactRelationsRequest{FactKey: key}
+		envelope, err = reads.ReadInTransaction(ctx, tx, relationsRequest)
+		if err != nil {
+			return "", nil, fmt.Errorf("M03 Fact relation parity for Project %s key %s: %w", projectID, key, err)
+		}
+		relations := envelope.Result.(blackboard.LegacyFactRelationsV1)
+		if err := validateLegacyFactRelationSourceParity(ctx, tx, projectID, sourceKey, relations); err != nil {
+			return "", nil, err
+		}
+		factRelations = append(factRelations, relations)
+		checks["legacy_fact_relations"]++
+	}
+	results["legacy_fact_details"] = factDetails
+	results["legacy_fact_versions"] = factVersions
+	results["legacy_fact_relations"] = factRelations
+
+	findingKeys, err := legacyParityKeys(ctx, tx, projectID, `SELECT finding_key FROM findings WHERE project_id=? UNION SELECT finding_key FROM finding_versions WHERE project_id=? UNION SELECT original_stable_key FROM blackboard_legacy_mappings WHERE project_id=? AND source_table='finding_key_aliases' AND mapping_status IN ('alias','merged') ORDER BY 1`)
+	if err != nil {
+		return "", nil, err
+	}
+	findingVersions := make([]any, 0, len(findingKeys))
+	for _, key := range findingKeys {
+		request := base
+		request.Kind = blackboard.ReadKindLegacyFindingVersionsV1
+		request.LegacyFindingVersions = &blackboard.LegacyFindingVersionsRequest{FindingKey: key}
+		envelope, err := reads.ReadInTransaction(ctx, tx, request)
+		if err != nil {
+			return "", nil, fmt.Errorf("M03 Finding version parity for Project %s key %s: %w", projectID, key, err)
+		}
+		versions := envelope.Result.(blackboard.LegacyFindingVersionsV1)
+		if err := validateLegacyFindingVersionSourceParity(ctx, tx, projectID, versions); err != nil {
+			return "", nil, err
+		}
+		findingVersions = append(findingVersions, versions)
+		checks["legacy_finding_versions"]++
+	}
+	results["legacy_finding_versions"] = findingVersions
+	dashboardRequest := base
+	dashboardRequest.Kind = blackboard.ReadKindProjectBlackboardSummaryV1
+	dashboardRequest.ProjectSummary = &blackboard.ProjectBlackboardSummaryRequest{}
+	if err := read("dashboard", dashboardRequest); err != nil {
+		return "", nil, err
+	}
+	graphRequest := base
+	graphRequest.Kind = blackboard.ReadKindCanonicalGraphV1
+	if err := read("canonical_graph", graphRequest); err != nil {
+		return "", nil, err
+	}
+	reportRequest := base
+	reportRequest.Kind = blackboard.ReadKindPentestReportV1
+	reportRequest.PentestReport = &blackboard.PentestReportRequest{IncludeUnconfirmed: &include, IncludeTentativeFacts: &include, IncludeOutOfScopeContext: &include, Format: "json"}
+	if err := read("report", reportRequest); err != nil {
+		return "", nil, err
+	}
+	taskRows, err := tx.QueryContext(ctx, `SELECT id FROM tasks WHERE project_id=? ORDER BY created_at,id`, projectID)
+	if err != nil {
+		return "", nil, err
+	}
+	var taskIDs []string
+	for taskRows.Next() {
+		var taskID string
+		if err := taskRows.Scan(&taskID); err != nil {
+			taskRows.Close()
+			return "", nil, err
+		}
+		taskIDs = append(taskIDs, taskID)
+	}
+	if err := taskRows.Close(); err != nil {
+		return "", nil, err
+	}
+	taskReports := make([]any, 0, len(taskIDs))
+	for _, taskID := range taskIDs {
+		request := base
+		request.Kind = blackboard.ReadKindPentestReportV1
+		request.PentestReport = &blackboard.PentestReportRequest{IncludeUnconfirmed: &include, IncludeTentativeFacts: &include, IncludeOutOfScopeContext: &include, ScopeContext: "task:" + taskID, Format: "json"}
+		envelope, err := reads.ReadInTransaction(ctx, tx, request)
+		if err != nil {
+			return "", nil, fmt.Errorf("M03 task-scope report parity for Project %s Task %s: %w", projectID, taskID, err)
+		}
+		report := envelope.Result.(blackboard.PentestReportV1)
+		if err := validateLegacyReportSourceParity(report, findings.Findings, evidence.Evidence); err != nil {
+			return "", nil, fmt.Errorf("M03 task-scope report parity for Project %s Task %s: %w", projectID, taskID, err)
+		}
+		var scopeRaw string
+		if err := tx.QueryRowContext(ctx, `SELECT scope_snapshot_json FROM tasks WHERE id=? AND project_id=?`, taskID, projectID).Scan(&scopeRaw); err != nil {
+			return "", nil, err
+		}
+		var sourceScope project.Scope
+		if err := json.Unmarshal([]byte(scopeRaw), &sourceScope); err != nil {
+			return "", nil, err
+		}
+		if !reflect.DeepEqual(report.Engagement.Scope, sourceScope) {
+			return "", nil, fmt.Errorf("M03 task-scope report selected wrong Scope for Project %s Task %s", projectID, taskID)
+		}
+		taskReports = append(taskReports, report)
+		checks["task_scope_report"]++
+	}
+	results["task_scope_reports"] = taskReports
+
+	var sourceFacts, sourceFindings, sourceEvidence, sourceTasks int
+	for query, destination := range map[string]*int{
+		`SELECT COUNT(*) FROM project_facts WHERE project_id=?`:      &sourceFacts,
+		`SELECT COUNT(*) FROM findings WHERE project_id=?`:           &sourceFindings,
+		`SELECT COUNT(*) FROM evidence_artifacts WHERE project_id=?`: &sourceEvidence,
+		`SELECT COUNT(*) FROM tasks WHERE project_id=?`:              &sourceTasks,
+	} {
+		if err := tx.QueryRowContext(ctx, query, projectID).Scan(destination); err != nil {
+			return "", nil, err
+		}
+	}
+	dashboard := results["dashboard"].(blackboard.ProjectBlackboardSummaryV1)
+	if err := validateLegacyFindingSourceParity(ctx, tx, projectID, findings.Findings); err != nil {
+		return "", nil, err
+	}
+	checks["finding_source_fields"]++
+	if err := validateLegacyEvidenceSourceParity(ctx, tx, projectID, artifactRoot, evidence.Evidence); err != nil {
+		return "", nil, err
+	}
+	checks["evidence_source_fields"]++
+	if len(facts.Facts) != sourceFacts || len(findings.Findings) != sourceFindings || len(evidence.Evidence) != sourceEvidence {
+		return "", nil, fmt.Errorf("M03 legacy read parity failed for Project %s: source facts/findings/evidence=%d/%d/%d graph=%d/%d/%d", projectID, sourceFacts, sourceFindings, sourceEvidence, len(facts.Facts), len(findings.Findings), len(evidence.Evidence))
+	}
+	var sourceCurrentFacts int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM project_facts WHERE project_id=? AND confidence<>'deprecated'`, projectID).Scan(&sourceCurrentFacts); err != nil {
+		return "", nil, err
+	}
+	if len(currentFacts.Facts) != sourceCurrentFacts {
+		return "", nil, fmt.Errorf("M03 current Fact index parity failed for Project %s: source=%d graph=%d", projectID, sourceCurrentFacts, len(currentFacts.Facts))
+	}
+	if dashboard.Counts.Tasks != sourceTasks || dashboard.Counts.Facts != sourceFacts || dashboard.Counts.Findings != sourceFindings || dashboard.Counts.Evidence != sourceEvidence {
+		return "", nil, fmt.Errorf("M03 Dashboard parity failed for Project %s: source=%d/%d/%d/%d graph=%d/%d/%d/%d", projectID, sourceTasks, sourceFacts, sourceFindings, sourceEvidence, dashboard.Counts.Tasks, dashboard.Counts.Facts, dashboard.Counts.Findings, dashboard.Counts.Evidence)
+	}
+	checks["semantic_counts"]++
+	checks["task_summary_versions"]++
+	summaryDigest, latestSummaryDigest, summaryCount, err := legacyTaskSummaryDigests(ctx, tx, projectID)
+	if err != nil {
+		return "", nil, err
+	}
+	results["task_summary_version_count"] = summaryCount
+	results["task_summary_version_digest"] = summaryDigest
+	results["task_summary_latest_digest"] = latestSummaryDigest
+	report := results["report"].(blackboard.PentestReportV1)
+	var sourceConfirmed, sourceUnconfirmed int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM findings WHERE project_id=? AND status='confirmed'`, projectID).Scan(&sourceConfirmed); err != nil {
+		return "", nil, err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM findings WHERE project_id=? AND status='unconfirmed'`, projectID).Scan(&sourceUnconfirmed); err != nil {
+		return "", nil, err
+	}
+	if len(report.ConfirmedFindings) != sourceConfirmed || len(report.UnconfirmedFindings) != sourceUnconfirmed {
+		return "", nil, fmt.Errorf("M03 report parity failed for Project %s: source confirmed/unconfirmed=%d/%d graph=%d/%d", projectID, sourceConfirmed, sourceUnconfirmed, len(report.ConfirmedFindings), len(report.UnconfirmedFindings))
+	}
+	if err := validateLegacyReportSourceParity(report, findings.Findings, evidence.Evidence); err != nil {
+		return "", nil, fmt.Errorf("M03 report parity failed for Project %s: %w", projectID, err)
+	}
+	checks["report_source_counts"]++
+
+	body, err := json.Marshal(results)
+	if err != nil {
+		return "", nil, err
+	}
+	digest := sha256.Sum256(append([]byte("legacy_blackboard_project_parity_v1\x00"), body...))
+	return hex.EncodeToString(digest[:]), checks, nil
+}
+
+func validateLegacyReportSourceParity(report blackboard.PentestReportV1, findings []blackboard.LegacyFindingV1, evidence []blackboard.LegacyEvidenceArtifactV1) error {
+	legacyFindings := make(map[string]blackboard.LegacyFindingV1, len(findings))
+	for _, finding := range findings {
+		legacyFindings[finding.ID] = finding
+	}
+	for _, group := range [][]blackboard.ReportFindingV1{report.ConfirmedFindings, report.UnconfirmedFindings} {
+		for _, item := range group {
+			source, ok := legacyFindings[item.Finding.ID]
+			if !ok {
+				return fmt.Errorf("report Finding %s has no legacy source row", item.Finding.ID)
+			}
+			if item.Title != source.Title || item.Status != source.Status || item.Severity != source.Severity || item.CVSSVersion != source.CVSSVersion || item.CVSSVector != source.CVSSVector || item.Target != source.Target || item.Description != source.Description || item.Proof != source.Proof || item.Impact != source.Impact || item.Recommendation != source.Recommendation {
+				return fmt.Errorf("report Finding fields differ for %s", item.Finding.ID)
+			}
+		}
+	}
+	legacyEvidence := make(map[string]blackboard.LegacyEvidenceArtifactV1, len(evidence))
+	for _, artifact := range evidence {
+		legacyEvidence[artifact.ID] = artifact
+	}
+	for _, item := range report.EvidenceIndex {
+		source, ok := legacyEvidence[item.ID]
+		if !ok {
+			return fmt.Errorf("report Evidence %s has no legacy source row", item.ID)
+		}
+		if item.StableKey != source.EvidenceKey || item.ArtifactType != source.ArtifactType || item.Summary != source.Summary || item.SHA256 != source.SHA256 {
+			return fmt.Errorf("report Evidence fields differ for %s", item.ID)
+		}
+	}
+	return nil
+}
+
+func legacyFactSourceKey(ctx context.Context, tx *sql.Tx, projectID, targetID, fallback string) (string, error) {
+	var key string
+	err := tx.QueryRowContext(ctx, `SELECT original_stable_key FROM blackboard_legacy_mappings WHERE project_id=? AND target_id=? AND source_table IN ('project_facts','project_fact_versions') AND original_stable_key<>'' ORDER BY CASE source_table WHEN 'project_facts' THEN 0 ELSE 1 END,id LIMIT 1`, projectID, targetID).Scan(&key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fallback, nil
+	}
+	return key, err
+}
+
+func validateLegacyFactDetailSourceParity(ctx context.Context, tx *sql.Tx, projectID, sourceKey string, projected blackboard.LegacyFactDetailV1) error {
+	var category, summary, body, confidence, scopeStatus, createdAt, updatedAt string
+	err := tx.QueryRowContext(ctx, `SELECT category,summary,body,confidence,scope_status,created_at,updated_at FROM project_facts WHERE project_id=? AND fact_key=?`, projectID, sourceKey).Scan(&category, &summary, &body, &confidence, &scopeStatus, &createdAt, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	normalized := normalizedFactProperties(category, summary, body, confidence, scopeStatus)
+	if projected.Category != normalized["category"] || projected.Summary != summary || projected.Body != body || projected.Confidence != normalized["confidence"] || projected.ScopeStatus != normalized["scope_status"] || projected.CreatedAt != createdAt || projected.UpdatedAt != updatedAt {
+		return fmt.Errorf("M03 Fact detail field parity failed for %s: projected=%#v", projected.FactKey, projected)
+	}
+	return nil
+}
+
+func validateLegacyFactVersionSourceParity(ctx context.Context, tx *sql.Tx, projectID, key string, projected blackboard.LegacyFactVersionsV1) error {
+	rows, err := tx.QueryContext(ctx, `SELECT version,category,summary,body,confidence,scope_status,created_at FROM project_fact_versions WHERE project_id=? AND fact_key=? ORDER BY version,id`, projectID, key)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	index := 0
+	for rows.Next() {
+		var version int
+		var category, summary, body, confidence, scopeStatus, createdAt string
+		if err := rows.Scan(&version, &category, &summary, &body, &confidence, &scopeStatus, &createdAt); err != nil {
+			return err
+		}
+		if index >= len(projected.Versions) {
+			return fmt.Errorf("M03 Fact version parity lost source version %s/%d", key, version)
+		}
+		got := projected.Versions[index]
+		normalized := normalizedFactProperties(category, summary, body, confidence, scopeStatus)
+		if got.Version != version || got.Category != normalized["category"] || got.Summary != summary || got.Body != body || got.Confidence != normalized["confidence"] || got.ScopeStatus != normalized["scope_status"] || got.CreatedAt != createdAt {
+			return fmt.Errorf("M03 Fact version field parity failed for %s/%d: projected=%#v", key, version, got)
+		}
+		index++
+	}
+	return rows.Err()
+}
+
+func validateLegacyFactRelationSourceParity(ctx context.Context, tx *sql.Tx, projectID, key string, projected blackboard.LegacyFactRelationsV1) error {
+	rows, err := tx.QueryContext(ctx, `SELECT id,source_fact_key,target_fact_key,relation,summary,created_at,updated_at FROM project_fact_relations WHERE project_id=? AND source_fact_key=? ORDER BY created_at,id`, projectID, key)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	expected := []blackboard.LegacyFactRelationRow{}
+	for rows.Next() {
+		var id, sourceKey, targetKey, relation, summary, createdAt, updatedAt string
+		if err := rows.Scan(&id, &sourceKey, &targetKey, &relation, &summary, &createdAt, &updatedAt); err != nil {
+			return err
+		}
+		normalized := relation
+		if normalized == "leads-to" {
+			normalized = "leads_to"
+		}
+		if normalized == "depends-on" {
+			normalized = "depends_on"
+		}
+		switch relation {
+		case "supports", "contradicts", "leads_to", "leads-to", "depends_on", "depends-on":
+			projectedSource, err := legacyFactProjectedStableKey(ctx, tx, projectID, sourceKey)
+			if err != nil {
+				return err
+			}
+			projectedTarget, err := legacyFactProjectedStableKey(ctx, tx, projectID, targetKey)
+			if err != nil {
+				return err
+			}
+			expected = append(expected, blackboard.LegacyFactRelationRow{ID: id, ProjectID: projectID, SourceFactKey: projectedSource, TargetFactKey: projectedTarget, Relation: normalized, Summary: summary, CreatedAt: createdAt, UpdatedAt: updatedAt})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(projected.Relations, expected) {
+		return fmt.Errorf("M03 Fact relation parity failed for %s: source=%#v graph=%#v", key, expected, projected.Relations)
+	}
+	return nil
+}
+
+func legacyFactProjectedStableKey(ctx context.Context, tx *sql.Tx, projectID, sourceKey string) (string, error) {
+	var stableKey string
+	err := tx.QueryRowContext(ctx, `SELECT n.original_stable_key FROM blackboard_legacy_mappings m JOIN blackboard_nodes n ON n.project_id=m.project_id AND n.id=m.target_id WHERE m.project_id=? AND m.original_stable_key=? AND m.target_id<>'' AND m.source_table IN ('project_facts','project_fact_versions','fact_key_aliases') ORDER BY CASE m.source_table WHEN 'project_facts' THEN 0 WHEN 'fact_key_aliases' THEN 1 ELSE 2 END,m.id LIMIT 1`, projectID, sourceKey).Scan(&stableKey)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("legacy Fact relation target %s is not resolvable", sourceKey)
+	}
+	return stableKey, err
+}
+
+func validateLegacyFindingVersionSourceParity(ctx context.Context, tx *sql.Tx, projectID string, projected blackboard.LegacyFindingVersionsV1) error {
+	if len(projected.Versions) == 0 {
+		return nil
+	}
+	key := projected.Versions[0].FindingKey
+	rows, err := tx.QueryContext(ctx, `SELECT version,title,description,status,target,proof,impact,recommendation,cvss_version,cvss_vector,created_at FROM finding_versions WHERE project_id=? AND finding_key=? ORDER BY version,id`, projectID, key)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	index := 0
+	for rows.Next() {
+		var version int
+		var title, description, status, target, proof, impact, recommendation, cvssVersion, cvssVector, createdAt string
+		if err := rows.Scan(&version, &title, &description, &status, &target, &proof, &impact, &recommendation, &cvssVersion, &cvssVector, &createdAt); err != nil {
+			return err
+		}
+		if index >= len(projected.Versions) {
+			return fmt.Errorf("M03 Finding version parity lost source version %s/%d", key, version)
+		}
+		got := projected.Versions[index]
+		normalized := normalizedFindingProperties(title, description, status, target, proof, impact, recommendation, cvssVersion, cvssVector)
+		if got.Version != version || got.Title != title || got.Description != description || got.Status != status || got.Target != target || got.Proof != proof || got.Impact != impact || got.Recommendation != recommendation || got.CVSSVersion != normalized["cvss_version"] || got.CVSSVector != cvssVector || got.CVSSPending != (strings.TrimSpace(cvssVector) == "") || got.Severity != legacyDerivedSeverity(cvssVector) || got.CreatedAt != createdAt {
+			return fmt.Errorf("M03 Finding version field parity failed for %s/%d: projected=%#v", key, version, got)
+		}
+		index++
+	}
+	return rows.Err()
+}
+
+func readAllLegacyFacts(ctx context.Context, reads *blackboard.BlackboardReadService, tx *sql.Tx, base blackboard.ReadRequest, includeDeprecated *bool) (blackboard.LegacyFactIndexV1, int, error) {
+	result := blackboard.LegacyFactIndexV1{}
+	cursor, pages := "", 0
+	for {
+		request := base
+		request.Kind = blackboard.ReadKindLegacyFactIndexV1
+		request.LegacyFactIndex = &blackboard.LegacyFactIndexRequest{Limit: 200, Cursor: cursor, IncludeDeprecated: includeDeprecated}
+		envelope, err := reads.ReadInTransaction(ctx, tx, request)
+		if err != nil {
+			return result, pages, fmt.Errorf("M03 Fact index parity: %w", err)
+		}
+		page := envelope.Result.(blackboard.LegacyFactIndexV1)
+		result.Facts = append(result.Facts, page.Facts...)
+		pages++
+		if page.NextCursor == "" {
+			return result, pages, nil
+		}
+		cursor = page.NextCursor
+	}
+}
+
+func readAllLegacyFindings(ctx context.Context, reads *blackboard.BlackboardReadService, tx *sql.Tx, base blackboard.ReadRequest) (blackboard.LegacyFindingCollectionV1, int, error) {
+	result := blackboard.LegacyFindingCollectionV1{}
+	cursor, pages := "", 0
+	for {
+		request := base
+		request.Kind = blackboard.ReadKindLegacyFindingCollectionV1
+		request.LegacyFindingCollection = &blackboard.LegacyFindingCollectionRequest{Limit: 200, Cursor: cursor}
+		envelope, err := reads.ReadInTransaction(ctx, tx, request)
+		if err != nil {
+			return result, pages, fmt.Errorf("M03 Finding collection parity: %w", err)
+		}
+		page := envelope.Result.(blackboard.LegacyFindingCollectionV1)
+		result.Findings = append(result.Findings, page.Findings...)
+		pages++
+		if page.NextCursor == "" {
+			return result, pages, nil
+		}
+		cursor = page.NextCursor
+	}
+}
+
+func readAllLegacyEvidence(ctx context.Context, reads *blackboard.BlackboardReadService, tx *sql.Tx, base blackboard.ReadRequest) (blackboard.LegacyEvidenceCollectionV1, int, error) {
+	result := blackboard.LegacyEvidenceCollectionV1{}
+	cursor, pages := "", 0
+	for {
+		request := base
+		request.Kind = blackboard.ReadKindLegacyEvidenceCollectionV1
+		request.LegacyEvidenceCollection = &blackboard.LegacyEvidenceCollectionRequest{Limit: 200, Cursor: cursor}
+		envelope, err := reads.ReadInTransaction(ctx, tx, request)
+		if err != nil {
+			return result, pages, fmt.Errorf("M03 Evidence collection parity: %w", err)
+		}
+		page := envelope.Result.(blackboard.LegacyEvidenceCollectionV1)
+		result.Evidence = append(result.Evidence, page.Evidence...)
+		pages++
+		if page.NextCursor == "" {
+			return result, pages, nil
+		}
+		cursor = page.NextCursor
+	}
+}
+
+func validateLegacyFindingSourceParity(ctx context.Context, tx *sql.Tx, projectID string, projected []blackboard.LegacyFindingV1) error {
+	byID := make(map[string]blackboard.LegacyFindingV1, len(projected))
+	for _, finding := range projected {
+		byID[finding.ID] = finding
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT f.id,f.version,f.title,f.description,f.status,f.target,f.proof,f.impact,f.recommendation,f.cvss_version,f.cvss_vector,f.created_at,f.updated_at,m.target_id,m.target_version
+		FROM findings f JOIN blackboard_legacy_mappings m ON m.project_id=f.project_id AND m.source_table='findings' AND m.legacy_primary_id=f.id
+		WHERE f.project_id=? ORDER BY f.id`, projectID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sourceID, title, description, status, target, proof, impact, recommendation, cvssVersion, cvssVector, createdAt, updatedAt, targetID string
+		var sourceVersion, targetVersion int
+		if err := rows.Scan(&sourceID, &sourceVersion, &title, &description, &status, &target, &proof, &impact, &recommendation, &cvssVersion, &cvssVector, &createdAt, &updatedAt, &targetID, &targetVersion); err != nil {
+			return err
+		}
+		finding, ok := byID[targetID]
+		if !ok {
+			return fmt.Errorf("M03 Finding parity missing source %s target %s", sourceID, targetID)
+		}
+		normalized := normalizedFindingProperties(title, description, status, target, proof, impact, recommendation, cvssVersion, cvssVector)
+		if finding.Version != targetVersion || finding.Title != title || finding.Description != description || finding.Status != status || finding.Target != target || finding.Proof != proof || finding.Impact != impact || finding.Recommendation != recommendation || finding.CVSSVersion != normalized["cvss_version"] || finding.CVSSVector != cvssVector || finding.CVSSPending != (strings.TrimSpace(cvssVector) == "") || finding.Severity != legacyDerivedSeverity(cvssVector) || finding.CreatedAt != createdAt || finding.UpdatedAt != updatedAt {
+			return fmt.Errorf("M03 Finding field parity failed for source %s (source version %d): projected=%#v", sourceID, sourceVersion, finding)
+		}
+	}
+	return rows.Err()
+}
+
+func validateLegacyEvidenceSourceParity(ctx context.Context, tx *sql.Tx, projectID, artifactRoot string, projected []blackboard.LegacyEvidenceArtifactV1) error {
+	byID := make(map[string]blackboard.LegacyEvidenceArtifactV1, len(projected))
+	for _, artifact := range projected {
+		byID[artifact.ID] = artifact
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT e.id,e.evidence_key,e.artifact_type,e.source_path,e.managed_path,e.summary,e.created_at,e.updated_at,m.target_id,m.compatibility_metadata_json
+		FROM evidence_artifacts e JOIN blackboard_legacy_mappings m ON m.project_id=e.project_id AND m.source_table='evidence_artifacts' AND m.legacy_primary_id=e.id
+		WHERE e.project_id=? ORDER BY e.id`, projectID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sourceID, evidenceKey, artifactType, sourcePath, managedPath, summary, createdAt, updatedAt, targetID, metadataRaw string
+		if err := rows.Scan(&sourceID, &evidenceKey, &artifactType, &sourcePath, &managedPath, &summary, &createdAt, &updatedAt, &targetID, &metadataRaw); err != nil {
+			return err
+		}
+		artifact, ok := byID[targetID]
+		if !ok {
+			return fmt.Errorf("M03 Evidence parity missing source %s target %s", sourceID, targetID)
+		}
+		var metadata struct {
+			AttachToType string `json:"attach_to_type"`
+			AttachToKey  string `json:"attach_to_key"`
+		}
+		if err := json.Unmarshal([]byte(metadataRaw), &metadata); err != nil {
+			return err
+		}
+		expectedPath, expectedDigest, expectedSize, expectedStatus := inspectManagedEvidence(artifactRoot, evidenceKey, managedPath)
+		if artifact.ArtifactType != normalizeEvidenceType(artifactType) || artifact.SourcePath != sourcePath || artifact.ManagedPath != expectedPath || artifact.SHA256 != expectedDigest || artifact.Summary != summary || artifact.CreatedAt != createdAt || artifact.UpdatedAt != updatedAt {
+			return fmt.Errorf("M03 Evidence field parity failed for source %s: projected=%#v", sourceID, artifact)
+		}
+		var propertiesRaw string
+		if err := tx.QueryRowContext(ctx, `SELECT v.properties_json FROM blackboard_node_heads h JOIN blackboard_node_versions v ON v.project_id=h.project_id AND v.node_id=h.node_id AND v.version=h.version WHERE h.project_id=? AND h.node_id=?`, projectID, targetID).Scan(&propertiesRaw); err != nil {
+			return err
+		}
+		var properties map[string]any
+		if err := json.Unmarshal([]byte(propertiesRaw), &properties); err != nil {
+			return err
+		}
+		size, _ := properties["size_bytes"].(float64)
+		if properties["status"] != expectedStatus || int64(size) != expectedSize {
+			return fmt.Errorf("M03 Evidence status/size parity failed for source %s: properties=%s", sourceID, propertiesRaw)
+		}
+		var edgeCount int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM blackboard_edge_heads WHERE project_id=? AND edge_type='evidences' AND from_node_id=? AND state='active'`, projectID, targetID).Scan(&edgeCount); err != nil {
+			return err
+		}
+		if edgeCount != len(artifact.Attachments) || edgeCount > 1 {
+			return fmt.Errorf("M03 Evidence attachment parity failed for source %s: graph=%d projection=%d", sourceID, edgeCount, len(artifact.Attachments))
+		}
+		if edgeCount == 1 {
+			attachment := artifact.Attachments[0]
+			expectedType := ""
+			if attachment.NodeType == blackboard.NodeTypeProjectFact {
+				expectedType = "fact"
+			} else if attachment.NodeType == blackboard.NodeTypeFinding {
+				expectedType = "finding"
+			}
+			if artifact.AttachToType != expectedType || artifact.AttachToKey != attachment.StableKey {
+				return fmt.Errorf("M03 Evidence singular attachment parity failed for source %s: projected=%s/%s attachment=%s/%s", sourceID, artifact.AttachToType, artifact.AttachToKey, expectedType, attachment.StableKey)
+			}
+		}
+		if len(artifact.Attachments) == 0 && (artifact.AttachToType != metadata.AttachToType || artifact.AttachToKey != metadata.AttachToKey) {
+			return fmt.Errorf("M03 dangling Evidence preference parity failed for source %s: projected=%s/%s source=%s/%s", sourceID, artifact.AttachToType, artifact.AttachToKey, metadata.AttachToType, metadata.AttachToKey)
+		}
+	}
+	return rows.Err()
+}
+
+func legacyTaskSummaryDigests(ctx context.Context, tx *sql.Tx, projectID string) (string, string, int, error) {
+	allDigest, count, err := taskSummaryQueryDigest(ctx, tx, `SELECT s.* FROM task_summary_versions s JOIN tasks t ON t.id=s.task_id WHERE t.project_id=? ORDER BY s.task_id,s.version,s.id`, projectID)
+	if err != nil {
+		return "", "", 0, err
+	}
+	latestDigest, _, err := taskSummaryQueryDigest(ctx, tx, `SELECT s.* FROM task_summary_versions s JOIN tasks t ON t.id=s.task_id WHERE t.project_id=? AND s.version=(SELECT MAX(latest.version) FROM task_summary_versions latest WHERE latest.task_id=s.task_id) ORDER BY s.task_id,s.id`, projectID)
+	if err != nil {
+		return "", "", 0, err
+	}
+	return allDigest, latestDigest, count, nil
+}
+
+func taskSummaryQueryDigest(ctx context.Context, tx *sql.Tx, query, projectID string) (string, int, error) {
+	rows, err := tx.QueryContext(ctx, query, projectID)
+	if err != nil {
+		return "", 0, err
+	}
+	defer rows.Close()
+	columns, err := rows.Columns()
+	if err != nil {
+		return "", 0, err
+	}
+	hash := sha256.New()
+	writeFrame(hash, []byte("legacy_task_summary_versions_v1"))
+	count := 0
+	for rows.Next() {
+		values := make([]any, len(columns))
+		destinations := make([]any, len(columns))
+		for index := range values {
+			destinations[index] = &values[index]
+		}
+		if err := rows.Scan(destinations...); err != nil {
+			return "", 0, err
+		}
+		for index, column := range columns {
+			writeFrame(hash, []byte(column))
+			writeFrame(hash, canonicalSQLValue(values[index]))
+		}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return "", 0, err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), count, nil
+}
+
+func legacyDerivedSeverity(vector string) string {
+	if strings.TrimSpace(vector) == "" {
+		return "pending"
+	}
+	highs := 0
+	for _, metric := range []string{"/VC:H", "/VI:H", "/VA:H", "/C:H", "/I:H", "/A:H"} {
+		if strings.Contains(vector, metric) {
+			highs++
+		}
+	}
+	if highs >= 2 {
+		return "critical"
+	}
+	if highs == 1 {
+		return "high"
+	}
+	return "medium"
+}
+
+func legacyParityKeys(ctx context.Context, tx *sql.Tx, projectID, query string) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, query, projectID, projectID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var keys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
 }
 
 func backfillLegacyContinuations(ctx context.Context, tx *sql.Tx, projectID string) error {
@@ -174,7 +881,7 @@ func backfillLegacyContinuations(ctx context.Context, tx *sql.Tx, projectID stri
 	return nil
 }
 
-func buildProjectImportPlan(ctx context.Context, tx *sql.Tx, projectID, sourceDigest string) (blackboard.LegacyImportPlanV1, []legacyMapping, error) {
+func (s *Service) buildProjectImportPlan(ctx context.Context, tx *sql.Tx, projectID, sourceDigest string) (blackboard.LegacyImportPlanV1, []legacyMapping, error) {
 	plan := blackboard.LegacyImportPlanV1{ProjectID: projectID, ProjectKind: "pentest"}
 	mappings := []legacyMapping{newLegacyMapping(projectID, "projects", "project", projectID, "", nil, map[string]any{"id": projectID, "kind": "pentest"}, "project", projectID, nil, "imported", nil)}
 
@@ -288,6 +995,30 @@ func buildProjectImportPlan(ctx context.Context, tx *sql.Tx, projectID, sourceDi
 	}
 	plan.Edges = append(plan.Edges, edges...)
 	mappings = append(mappings, relationMappings...)
+
+	findingNodes, findingMappings, findingAliases, findingMerges, err := readLegacyFindings(ctx, tx, projectID)
+	if err != nil {
+		return plan, nil, err
+	}
+	orderedFindingKeys := make([]string, 0, len(findingNodes))
+	for key := range findingNodes {
+		orderedFindingKeys = append(orderedFindingKeys, key)
+	}
+	sort.Strings(orderedFindingKeys)
+	for _, key := range orderedFindingKeys {
+		plan.Nodes = append(plan.Nodes, findingNodes[key])
+	}
+	plan.Aliases = append(plan.Aliases, findingAliases...)
+	plan.Merges = append(plan.Merges, findingMerges...)
+	mappings = append(mappings, findingMappings...)
+
+	evidenceNodes, evidenceEdges, evidenceMappings, err := s.readLegacyEvidence(ctx, tx, projectID, nodeByLegacyKey, findingNodes)
+	if err != nil {
+		return plan, nil, err
+	}
+	plan.Nodes = append(plan.Nodes, evidenceNodes...)
+	plan.Edges = append(plan.Edges, evidenceEdges...)
+	mappings = append(mappings, evidenceMappings...)
 
 	plan.SourceDigest = sourceDigest
 	plan.PlanDigest, err = importPlanDigest(plan)
@@ -571,6 +1302,324 @@ func normalizedFactProperties(category, summary, body, confidence, scope string)
 	return map[string]any{"category": category, "summary": summary, "body": body, "confidence": confidence, "scope_status": scope}
 }
 
+func readLegacyFindings(ctx context.Context, tx *sql.Tx, projectID string) (map[string]blackboard.LegacyImportNodeV1, []legacyMapping, []blackboard.LegacyImportAliasV1, []blackboard.LegacyImportMergeV1, error) {
+	history, mappings, err := readLegacyFindingHistory(ctx, tx, projectID)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	current, err := readLegacyCurrentFindings(ctx, tx, projectID)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	keys := make(map[string]struct{}, len(history)+len(current))
+	for key := range history {
+		keys[key] = struct{}{}
+	}
+	for key := range current {
+		keys[key] = struct{}{}
+	}
+	ordered := make([]string, 0, len(keys))
+	for key := range keys {
+		ordered = append(ordered, key)
+	}
+	sort.Strings(ordered)
+	nodes := make(map[string]blackboard.LegacyImportNodeV1, len(ordered))
+	historyOnly := make(map[string]bool)
+	for _, key := range ordered {
+		versions := append([]legacyFindingVersion(nil), history[key]...)
+		currentFinding, hasCurrent := current[key]
+		if hasCurrent {
+			properties := normalizedFindingProperties(currentFinding.title, currentFinding.description, currentFinding.status, currentFinding.target, currentFinding.proof, currentFinding.impact, currentFinding.recommendation, currentFinding.cvssVersion, currentFinding.cvssVector)
+			if len(versions) == 0 {
+				versions = append(versions, legacyFindingVersion{id: currentFinding.id, key: key, version: 1, title: currentFinding.title, description: currentFinding.description, status: currentFinding.status, target: currentFinding.target, proof: currentFinding.proof, impact: currentFinding.impact, recommendation: currentFinding.recommendation, cvssVersion: currentFinding.cvssVersion, cvssVector: currentFinding.cvssVector, createdAt: currentFinding.updatedAt})
+			} else if !reflect.DeepEqual(normalizedFindingVersionProperties(versions[len(versions)-1]), properties) {
+				versions = append(versions, legacyFindingVersion{id: currentFinding.id, key: key, version: versions[len(versions)-1].version + 1, title: currentFinding.title, description: currentFinding.description, status: currentFinding.status, target: currentFinding.target, proof: currentFinding.proof, impact: currentFinding.impact, recommendation: currentFinding.recommendation, cvssVersion: currentFinding.cvssVersion, cvssVector: currentFinding.cvssVector, createdAt: currentFinding.updatedAt})
+			}
+		}
+		if len(versions) == 0 {
+			continue
+		}
+		nodeID := migrationIdentity("node", projectID, "finding_versions", key)
+		createdAt := versions[0].createdAt
+		if hasCurrent && legacyIDGloballyUnique(ctx, tx, currentFinding.id) {
+			nodeID = currentFinding.id
+			createdAt = currentFinding.createdAt
+		}
+		stableKey := normalizedLegacyStableKey(projectID, "finding", key)
+		node := blackboard.LegacyImportNodeV1{OperationID: "finding:" + shortHash(key), ID: nodeID, NodeType: blackboard.NodeTypeFinding, StableKey: stableKey, CreatedAt: createdAt}
+		for _, version := range versions {
+			ordinal := version.version
+			node.Versions = append(node.Versions, blackboard.LegacyImportNodeVersionV1{Version: ordinal, Properties: normalizedFindingVersionProperties(version), UpdatedAt: version.createdAt})
+			node.Sources = append(node.Sources, blackboard.LegacyImportSourceV1{Table: "finding_versions", PrimaryID: version.id, Key: key, Version: &ordinal})
+		}
+		if hasCurrent {
+			node.Sources = append(node.Sources, blackboard.LegacyImportSourceV1{Table: "findings", PrimaryID: currentFinding.id, Key: key})
+		}
+		nodes[key] = node
+		historyOnly[key] = !hasCurrent
+		for index := range mappings {
+			if mappings[index].sourceTable == "finding_versions" && mappings[index].originalStableKey == key {
+				mappings[index].targetID = nodeID
+			}
+		}
+		if hasCurrent {
+			version := node.Versions[len(node.Versions)-1].Version
+			mappings = append(mappings, newLegacyMapping(projectID, "findings", "finding", currentFinding.id, key, nil, currentFinding, "finding", nodeID, &version, "imported", nil))
+		}
+	}
+
+	aliases, merges, aliasMappings, err := readLegacyFindingAliases(ctx, tx, projectID, nodes)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	mergedSourceIDs := make(map[string]bool, len(merges))
+	for _, merge := range merges {
+		mergedSourceIDs[merge.SourceNodeID] = true
+	}
+	for _, key := range ordered {
+		node := nodes[key]
+		if historyOnly[key] && !mergedSourceIDs[node.ID] {
+			node.Disposition = blackboard.DispositionArchived
+			nodes[key] = node
+		}
+		if node.StableKey != key {
+			aliases = append(aliases, blackboard.LegacyImportAliasV1{NodeType: blackboard.NodeTypeFinding, Key: key, CanonicalNodeID: node.ID, LegacyNonconforming: true})
+		}
+	}
+	mappings = append(mappings, aliasMappings...)
+	return nodes, mappings, aliases, merges, nil
+}
+
+func readLegacyFindingHistory(ctx context.Context, tx *sql.Tx, projectID string) (map[string][]legacyFindingVersion, []legacyMapping, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id,finding_key,version,title,description,status,target,proof,impact,recommendation,cvss_version,cvss_vector,created_at FROM finding_versions WHERE project_id=? ORDER BY finding_key,version,id`, projectID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	history := make(map[string][]legacyFindingVersion)
+	var mappings []legacyMapping
+	for rows.Next() {
+		var value legacyFindingVersion
+		if err := rows.Scan(&value.id, &value.key, &value.version, &value.title, &value.description, &value.status, &value.target, &value.proof, &value.impact, &value.recommendation, &value.cvssVersion, &value.cvssVector, &value.createdAt); err != nil {
+			return nil, nil, err
+		}
+		history[value.key] = append(history[value.key], value)
+		ordinal := value.version
+		mappings = append(mappings, newLegacyMapping(projectID, "finding_versions", "finding_version", value.id, value.key, &ordinal, value, "finding", "", &ordinal, "imported", nil))
+	}
+	return history, mappings, rows.Err()
+}
+
+func readLegacyCurrentFindings(ctx context.Context, tx *sql.Tx, projectID string) (map[string]legacyFindingCurrent, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id,finding_key,version,title,description,status,target,proof,impact,recommendation,cvss_version,cvss_vector,created_at,updated_at FROM findings WHERE project_id=? ORDER BY finding_key,id`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string]legacyFindingCurrent)
+	for rows.Next() {
+		var value legacyFindingCurrent
+		if err := rows.Scan(&value.id, &value.key, &value.version, &value.title, &value.description, &value.status, &value.target, &value.proof, &value.impact, &value.recommendation, &value.cvssVersion, &value.cvssVector, &value.createdAt, &value.updatedAt); err != nil {
+			return nil, err
+		}
+		result[value.key] = value
+	}
+	return result, rows.Err()
+}
+
+func normalizedFindingVersionProperties(value legacyFindingVersion) map[string]any {
+	return normalizedFindingProperties(value.title, value.description, value.status, value.target, value.proof, value.impact, value.recommendation, value.cvssVersion, value.cvssVector)
+}
+
+func normalizedFindingProperties(title, description, status, target, proof, impact, recommendation, cvssVersion, cvssVector string) map[string]any {
+	if cvssVersion != "4.0" && cvssVersion != "3.1" {
+		cvssVersion = ""
+	}
+	if cvssVersion == "" {
+		switch {
+		case strings.HasPrefix(cvssVector, "CVSS:4.0/"):
+			cvssVersion = "4.0"
+		case strings.HasPrefix(cvssVector, "CVSS:3.1/"):
+			cvssVersion = "3.1"
+		}
+	}
+	return map[string]any{"title": title, "description": description, "status": status, "target": target, "proof": proof, "impact": impact, "recommendation": recommendation, "cvss_version": cvssVersion, "cvss_vector": cvssVector}
+}
+
+func readLegacyFindingAliases(ctx context.Context, tx *sql.Tx, projectID string, nodes map[string]blackboard.LegacyImportNodeV1) ([]blackboard.LegacyImportAliasV1, []blackboard.LegacyImportMergeV1, []legacyMapping, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id,alias_finding_key,canon_finding_key,created_at FROM finding_key_aliases WHERE project_id=? ORDER BY alias_finding_key,id`, projectID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	defer rows.Close()
+	type aliasRow struct{ id, alias, canonical, createdAt string }
+	var source []aliasRow
+	graph := make(map[string]string)
+	for rows.Next() {
+		var row aliasRow
+		if err := rows.Scan(&row.id, &row.alias, &row.canonical, &row.createdAt); err != nil {
+			return nil, nil, nil, err
+		}
+		source = append(source, row)
+		graph[row.alias] = row.canonical
+	}
+	var aliases []blackboard.LegacyImportAliasV1
+	var merges []blackboard.LegacyImportMergeV1
+	var mappings []legacyMapping
+	for _, row := range source {
+		target, ok := flattenLegacyAlias(row.alias, graph, nodes)
+		status, targetID := "unresolvable_legacy_alias", ""
+		if ok {
+			targetNode := nodes[target]
+			targetID = targetNode.ID
+			if sourceNode, sourceExists := nodes[row.alias]; sourceExists && sourceNode.ID != targetNode.ID {
+				status = "merged"
+				merges = append(merges, blackboard.LegacyImportMergeV1{OperationID: "finding-merge:" + shortHash(row.id), SourceNodeID: sourceNode.ID, CanonicalNodeID: targetNode.ID, SourceExpectedVersion: sourceNode.Versions[len(sourceNode.Versions)-1].Version, CanonicalExpectedVersion: targetNode.Versions[len(targetNode.Versions)-1].Version, Source: blackboard.LegacyImportSourceV1{Table: "finding_key_aliases", PrimaryID: row.id, Key: row.alias}, MergedAt: row.createdAt})
+			} else {
+				status = "alias"
+				aliases = append(aliases, blackboard.LegacyImportAliasV1{NodeType: blackboard.NodeTypeFinding, Key: row.alias, CanonicalNodeID: targetID, LegacyNonconforming: !graphStableKeyPattern.MatchString(row.alias), Source: blackboard.LegacyImportSourceV1{Table: "finding_key_aliases", PrimaryID: row.id, Key: row.alias}})
+			}
+		}
+		metadata := map[string]any{"canonical_key": row.canonical, "created_at": row.createdAt}
+		mappings = append(mappings, newLegacyMapping(projectID, "finding_key_aliases", "finding_alias", row.id, row.alias, nil, row, "finding", targetID, nil, status, metadata))
+	}
+	return aliases, merges, mappings, rows.Err()
+}
+
+func (s *Service) readLegacyEvidence(ctx context.Context, tx *sql.Tx, projectID string, factNodes, findingNodes map[string]blackboard.LegacyImportNodeV1) ([]blackboard.LegacyImportNodeV1, []blackboard.LegacyImportEdgeV1, []legacyMapping, error) {
+	findingAliases, err := legacyAliasMap(ctx, tx, projectID, "finding_key_aliases", "alias_finding_key", "canon_finding_key")
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	factAliases, err := legacyAliasMap(ctx, tx, projectID, "fact_key_aliases", "alias_fact_key", "canon_fact_key")
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id,evidence_key,attach_to_type,attach_to_key,artifact_type,source_path,managed_path,sha256,summary,created_at,updated_at FROM evidence_artifacts WHERE project_id=? ORDER BY evidence_key,id`, projectID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	defer rows.Close()
+	var nodes []blackboard.LegacyImportNodeV1
+	var edges []blackboard.LegacyImportEdgeV1
+	var mappings []legacyMapping
+	for rows.Next() {
+		var id, key, attachType, attachKey, artifactType, sourcePath, managedPath, storedDigest, summary, createdAt, updatedAt string
+		if err := rows.Scan(&id, &key, &attachType, &attachKey, &artifactType, &sourcePath, &managedPath, &storedDigest, &summary, &createdAt, &updatedAt); err != nil {
+			return nil, nil, nil, err
+		}
+		canonicalType := normalizeEvidenceType(artifactType)
+		canonicalPath, actualDigest, size, status := inspectManagedEvidence(s.artifactRoot, key, managedPath)
+		properties := map[string]any{"artifact_type": canonicalType, "source_path": sourcePath, "managed_path": canonicalPath, "sha256": actualDigest, "size_bytes": size, "summary": summary, "status": status, "captured_at": createdAt}
+		nodeID := migrationIdentity("node", projectID, "evidence_artifacts", id)
+		if legacyIDGloballyUnique(ctx, tx, id) {
+			nodeID = id
+		}
+		metadata := map[string]any{"attach_to_type": attachType, "attach_to_key": attachKey, "managed_path": managedPath}
+		mappingStatus := "imported"
+		if canonicalType != artifactType {
+			metadata["original_artifact_type"] = artifactType
+		}
+		if storedDigest != "" && actualDigest != "" && !strings.EqualFold(storedDigest, actualDigest) {
+			metadata["recorded_sha256"] = storedDigest
+			metadata["actual_sha256"] = actualDigest
+			mappingStatus = "digest_mismatch"
+		}
+		if canonicalPath != managedPath {
+			metadata["unsafe_or_missing_managed_path"] = managedPath
+		}
+
+		resolvedType, resolvedKey, targetID := resolveLegacyEvidenceTarget(attachType, attachKey, factAliases, findingAliases, factNodes, findingNodes)
+		if targetID != "" {
+			properties["migrated_attach_to_type"] = resolvedType
+			properties["migrated_attach_to_key"] = resolvedKey
+			edgeID := migrationIdentity("edge", projectID, "evidence_artifacts", id)
+			edges = append(edges, blackboard.LegacyImportEdgeV1{OperationID: "evidence-edge:" + shortHash(id), ID: edgeID, EdgeType: blackboard.EdgeTypeEvidences, FromNodeID: nodeID, ToNodeID: targetID, Summary: summary, CreatedAt: createdAt, UpdatedAt: updatedAt, Source: blackboard.LegacyImportSourceV1{Table: "evidence_artifacts", PrimaryID: id, Key: key}})
+		}
+		node := blackboard.LegacyImportNodeV1{OperationID: "evidence:" + shortHash(key), ID: nodeID, NodeType: blackboard.NodeTypeEvidenceArtifact, StableKey: normalizedLegacyStableKey(projectID, "evidence", key), CreatedAt: createdAt, Versions: []blackboard.LegacyImportNodeVersionV1{{Version: 1, Properties: properties, UpdatedAt: updatedAt}}, Sources: []blackboard.LegacyImportSourceV1{{Table: "evidence_artifacts", PrimaryID: id, Key: key}}}
+		nodes = append(nodes, node)
+		mappings = append(mappings, newLegacyMapping(projectID, "evidence_artifacts", "evidence", id, key, nil, properties, "evidence_artifact", nodeID, intPointer(1), mappingStatus, metadata))
+	}
+	return nodes, edges, mappings, rows.Err()
+}
+
+func legacyAliasMap(ctx context.Context, tx *sql.Tx, projectID, table, aliasColumn, canonicalColumn string) (map[string]string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT `+aliasColumn+`,`+canonicalColumn+` FROM "`+table+`" WHERE project_id=? ORDER BY `+aliasColumn, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string]string)
+	for rows.Next() {
+		var alias, canonical string
+		if err := rows.Scan(&alias, &canonical); err != nil {
+			return nil, err
+		}
+		result[alias] = canonical
+	}
+	return result, rows.Err()
+}
+
+func resolveLegacyEvidenceTarget(attachType, attachKey string, factAliases, findingAliases map[string]string, factNodes, findingNodes map[string]blackboard.LegacyImportNodeV1) (string, string, string) {
+	switch attachType {
+	case "fact":
+		key, ok := flattenLegacyAlias(attachKey, factAliases, factNodes)
+		if ok {
+			return "fact", factNodes[key].StableKey, factNodes[key].ID
+		}
+	case "finding":
+		key, ok := flattenLegacyAlias(attachKey, findingAliases, findingNodes)
+		if ok {
+			return "finding", findingNodes[key].StableKey, findingNodes[key].ID
+		}
+	}
+	return "", "", ""
+}
+
+func normalizeEvidenceType(value string) string {
+	switch value {
+	case "http_exchange", "screenshot", "terminal_capture", "log", "pcap", "file", "binary", "source_code", "structured_data", "report", "other":
+		return value
+	default:
+		return "other"
+	}
+}
+
+func inspectManagedEvidence(artifactRoot, key, managedPath string) (string, string, int64, string) {
+	missing := "missing://legacy/" + shortHash(key)
+	if !pathIsConfined(artifactRoot, managedPath) {
+		return missing, "", 0, "missing"
+	}
+	root, err := filepath.EvalSymlinks(artifactRoot)
+	if err != nil {
+		return filepath.ToSlash(managedPath), "", 0, "missing"
+	}
+	candidate := filepath.Join(root, filepath.FromSlash(managedPath))
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return filepath.ToSlash(managedPath), "", 0, "missing"
+	}
+	relative, err := filepath.Rel(root, resolved)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return missing, "", 0, "missing"
+	}
+	file, err := os.Open(resolved)
+	if err != nil {
+		return filepath.ToSlash(managedPath), "", 0, "missing"
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return filepath.ToSlash(managedPath), "", 0, "missing"
+	}
+	hash := sha256.New()
+	size, err := io.Copy(hash, file)
+	if err != nil {
+		return filepath.ToSlash(managedPath), "", 0, "missing"
+	}
+	return filepath.ToSlash(managedPath), hex.EncodeToString(hash.Sum(nil)), size, "available"
+}
+
 func normalizedLegacyStableKey(projectID, kind, original string) string {
 	if graphStableKeyPattern.MatchString(original) {
 		return original
@@ -658,6 +1707,39 @@ func legacyMappingsDigest(mappings []legacyMapping) (string, error) {
 	}
 	sum := sha256.Sum256(append([]byte("legacy_blackboard_mapping_v1\x00"), body...))
 	return hex.EncodeToString(sum[:]), nil
+}
+
+func persistedLegacyMappingsDigest(ctx context.Context, tx *sql.Tx) (string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT project_id,source_table,source_kind,legacy_primary_id,original_stable_key,original_version,source_row_hash,target_kind,target_id,target_version,mapping_status,compatibility_metadata_json FROM blackboard_legacy_mappings ORDER BY project_id,source_table,legacy_primary_id,id`)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	var mappings []legacyMapping
+	for rows.Next() {
+		var mapping legacyMapping
+		var originalVersion, targetVersion sql.NullInt64
+		var metadataRaw string
+		if err := rows.Scan(&mapping.projectID, &mapping.sourceTable, &mapping.sourceKind, &mapping.legacyPrimaryID, &mapping.originalStableKey, &originalVersion, &mapping.sourceRowHash, &mapping.targetKind, &mapping.targetID, &targetVersion, &mapping.status, &metadataRaw); err != nil {
+			return "", err
+		}
+		if originalVersion.Valid {
+			value := int(originalVersion.Int64)
+			mapping.originalVersion = &value
+		}
+		if targetVersion.Valid {
+			value := int(targetVersion.Int64)
+			mapping.targetVersion = &value
+		}
+		if err := json.Unmarshal([]byte(metadataRaw), &mapping.compatibilityMetadata); err != nil {
+			return "", err
+		}
+		mappings = append(mappings, mapping)
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	return legacyMappingsDigest(mappings)
 }
 
 func intPointer(value int) *int { return &value }

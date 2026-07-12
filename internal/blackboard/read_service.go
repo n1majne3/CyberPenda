@@ -313,11 +313,31 @@ type BlackboardReadService struct {
 
 func NewBlackboardReadService(db *store.DB) *BlackboardReadService {
 	service := &BlackboardReadService{db: db}
-	service.cursorKeyErr = db.QueryRow(`SELECT cursor_secret FROM blackboard_read_state WHERE id=1`).Scan(&service.cursorKey)
-	if service.cursorKeyErr == nil && len(service.cursorKey) != 32 {
-		service.cursorKeyErr = fmt.Errorf("Blackboard read cursor secret has invalid length %d", len(service.cursorKey))
-	}
+	service.loadCursorKey(db)
 	return service
+}
+
+// NewBlackboardReadServiceInTransaction binds read cursor state to the same
+// caller-owned snapshot used by migration parity reads.
+func NewBlackboardReadServiceInTransaction(tx *sql.Tx) *BlackboardReadService {
+	service := &BlackboardReadService{}
+	if tx == nil {
+		service.cursorKeyErr = fmt.Errorf("Blackboard read transaction is unavailable")
+		return service
+	}
+	service.loadCursorKey(tx)
+	return service
+}
+
+type cursorSecretQueryer interface {
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+func (s *BlackboardReadService) loadCursorKey(queryer cursorSecretQueryer) {
+	s.cursorKeyErr = queryer.QueryRow(`SELECT cursor_secret FROM blackboard_read_state WHERE id=1`).Scan(&s.cursorKey)
+	if s.cursorKeyErr == nil && len(s.cursorKey) != 32 {
+		s.cursorKeyErr = fmt.Errorf("Blackboard read cursor secret has invalid length %d", len(s.cursorKey))
+	}
 }
 
 type readCursor struct {
@@ -339,21 +359,44 @@ func (s *BlackboardReadService) WithArtifactRoot(root string) *BlackboardReadSer
 }
 
 func (s *BlackboardReadService) Read(ctx context.Context, request ReadRequest) (ReadEnvelope, error) {
-	if s.cursorKeyErr != nil {
-		return ReadEnvelope{}, readValidationError(ErrCodeSnapshotUnavailable, "Blackboard read cursor state is unavailable", "cursor")
-	}
-	if request.ProtocolVersion != BlackboardReadProtocolVersion {
-		return ReadEnvelope{}, validationError(ErrCodeUnsupportedSchemaVersion, "unsupported Blackboard read protocol version", -1, "", "protocol_version")
-	}
-	if request.ProjectID == "" {
-		return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "project_id is required", "project_id")
+	if err := s.validateReadRequest(request); err != nil {
+		return ReadEnvelope{}, err
 	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return ReadEnvelope{}, graphStorageError("begin Blackboard read", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	return s.readInTransaction(ctx, tx, request, true)
+}
 
+// ReadInTransaction runs the ordinary read contract against a caller-owned
+// transaction. It exists for migration parity gates that must observe the
+// uncommitted graph snapshot before the canonical store epoch can flip.
+func (s *BlackboardReadService) ReadInTransaction(ctx context.Context, tx *sql.Tx, request ReadRequest) (ReadEnvelope, error) {
+	if tx == nil {
+		return ReadEnvelope{}, readValidationError(ErrCodeSnapshotUnavailable, "Blackboard read transaction is unavailable", "transaction")
+	}
+	if err := s.validateReadRequest(request); err != nil {
+		return ReadEnvelope{}, err
+	}
+	return s.readInTransaction(ctx, tx, request, false)
+}
+
+func (s *BlackboardReadService) validateReadRequest(request ReadRequest) error {
+	if s.cursorKeyErr != nil {
+		return readValidationError(ErrCodeSnapshotUnavailable, "Blackboard read cursor state is unavailable", "cursor")
+	}
+	if request.ProtocolVersion != BlackboardReadProtocolVersion {
+		return validationError(ErrCodeUnsupportedSchemaVersion, "unsupported Blackboard read protocol version", -1, "", "protocol_version")
+	}
+	if request.ProjectID == "" {
+		return readValidationError(ErrCodeInvalidQuery, "project_id is required", "project_id")
+	}
+	return nil
+}
+
+func (s *BlackboardReadService) readInTransaction(ctx context.Context, tx *sql.Tx, request ReadRequest, commit bool) (ReadEnvelope, error) {
 	var projectKind string
 	if err := tx.QueryRowContext(ctx, `SELECT kind FROM projects WHERE id=?`, request.ProjectID).Scan(&projectKind); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -506,7 +549,7 @@ func (s *BlackboardReadService) Read(ctx context.Context, request ReadRequest) (
 		if request.LegacyEvidenceCollection == nil {
 			return ReadEnvelope{}, readValidationError(ErrCodeInvalidQuery, "legacy_evidence_collection request is required", "legacy_evidence_collection")
 		}
-		result, err = buildLegacyEvidenceCollection(snapshot, *request.LegacyEvidenceCollection, cursor, s.cursorKey)
+		result, err = buildLegacyEvidenceCollection(ctx, tx, snapshot, *request.LegacyEvidenceCollection, cursor, s.cursorKey)
 	default:
 		err = readValidationError(ErrCodeInvalidQuery, "unknown read projection", "kind")
 	}
@@ -565,8 +608,10 @@ func (s *BlackboardReadService) Read(ctx context.Context, request ReadRequest) (
 	if err != nil {
 		return ReadEnvelope{}, err
 	}
-	if err := tx.Commit(); err != nil {
-		return ReadEnvelope{}, graphStorageError("commit Blackboard read", err)
+	if commit {
+		if err := tx.Commit(); err != nil {
+			return ReadEnvelope{}, graphStorageError("commit Blackboard read", err)
+		}
 	}
 	return envelope, nil
 }

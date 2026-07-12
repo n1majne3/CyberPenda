@@ -719,6 +719,7 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 			return MutationResult{}, fmt.Errorf("encode project_fact properties: %w", err)
 		}
 		semHash := genericNodeSemanticHash(DispositionMain, "", props)
+		disposition := DispositionMain
 
 		// A create always changes current semantic state: new node, version 1.
 		if !stateChanged {
@@ -731,6 +732,7 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 			nodeVersion = current.version
 			propsJSON = current.propsJSON
 			semHash = current.semHash
+			disposition = current.disposition
 		}
 
 		// We have not yet allocated the mutation_seq, so insert operation/node
@@ -757,6 +759,7 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 			opIndex:       i,
 			opID:          op.OpID,
 			graphRevision: result.GraphRevision,
+			disposition:   disposition,
 			createdAt:     createdAt,
 			versions:      importedVersions,
 		}
@@ -827,15 +830,17 @@ type pendingCreate struct {
 	opIndex       int
 	opID          string
 	graphRevision int
+	disposition   Disposition
 	createdAt     string
 	versions      []pendingImportedVersion
 }
 
 type pendingImportedVersion struct {
-	version   int
-	propsJSON []byte
-	semHash   []byte
-	updatedAt string
+	version     int
+	propsJSON   []byte
+	semHash     []byte
+	disposition Disposition
+	updatedAt   string
 }
 
 func normalizedPendingVersions(create pendingCreate, fallbackUpdatedAt string) []pendingImportedVersion {
@@ -846,6 +851,9 @@ func normalizedPendingVersions(create pendingCreate, fallbackUpdatedAt string) [
 	normalized := make([]pendingImportedVersion, len(versions))
 	copy(normalized, versions)
 	for index := range normalized {
+		if normalized[index].disposition == "" {
+			normalized[index].disposition = DispositionMain
+		}
 		if normalized[index].updatedAt == "" {
 			normalized[index].updatedAt = fallbackUpdatedAt
 		}
@@ -1189,9 +1197,9 @@ func (s *GraphService) finalizeAndPersist(
 				`INSERT INTO blackboard_node_versions
 				 (project_id, node_id, version, result_graph_revision, mutation_seq, operation_index,
 				  schema_version, disposition, merge_target_id, properties_json, semantic_hash, updated_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, 'main', NULL, ?, ?, ?)`,
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
 				projectID, p.nodeID, version.version, p.graphRevision, mutationSeq, p.opIndex,
-				GraphMutationSchemaVersion, string(version.propsJSON), hex.EncodeToString(version.semHash), version.updatedAt,
+				GraphMutationSchemaVersion, string(version.disposition), string(version.propsJSON), hex.EncodeToString(version.semHash), version.updatedAt,
 			)
 			if err != nil {
 				return nil, nil, nil, nil, fmt.Errorf("insert node version: %w", err)
@@ -1216,9 +1224,9 @@ func (s *GraphService) finalizeAndPersist(
 			`INSERT INTO blackboard_node_heads
 			 (project_id, node_id, node_type, version, graph_revision, disposition, merge_target_id,
 			  lifecycle_state, entity_kind, scope_status, semantic_hash)
-			 VALUES (?, ?, ?, ?, ?, 'main', NULL, ?, ?, ?, ?)`,
+				 VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
 			projectID, p.nodeID, string(p.nodeType), p.version, p.graphRevision,
-			lifecycle, entity, scope, hex.EncodeToString(p.semHash),
+			string(p.disposition), lifecycle, entity, scope, hex.EncodeToString(p.semHash),
 		)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("insert node head: %w", err)

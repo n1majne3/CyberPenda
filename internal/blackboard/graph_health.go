@@ -83,6 +83,13 @@ func (s *GraphService) runHealthWithID(ctx context.Context, projectID string, p 
 		for _, detected := range projectionHealthResults(doc) {
 			add(detected.Code, detected.Severity, detected.Details)
 		}
+		legacyDigestResults, err := s.legacyEvidenceDigestHealth(ctx, projectID)
+		if err != nil {
+			return HealthRun{}, err
+		}
+		for _, detected := range legacyDigestResults {
+			add(detected.Code, detected.Severity, detected.Details)
+		}
 		artifactResults, fingerprint, err := inspectEvidenceArtifacts(ctx, doc, s.artifactRoot)
 		if err != nil {
 			return HealthRun{}, err
@@ -158,6 +165,28 @@ func (s *GraphService) runHealthWithID(ctx context.Context, projectID string, p 
 		return HealthRun{}, err
 	}
 	return HealthRun{RunID: runID, ProjectID: projectID, CheckedGraphRevision: p.GraphRevision, CheckedStateHash: stateHash, CheckedProjectionHash: p.Hash, Status: status, StartedAt: started, CompletedAt: completed, Metrics: metrics, Results: results, Stale: stale, RunStatus: "completed", ArtifactScanStatus: artifactScanStatus, ArtifactScanFingerprint: artifactScanFingerprint}, nil
+}
+
+func (s *GraphService) legacyEvidenceDigestHealth(ctx context.Context, projectID string) ([]HealthResult, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT target_id,
+		COALESCE(json_extract(compatibility_metadata_json,'$.recorded_sha256'),''),
+		COALESCE(json_extract(compatibility_metadata_json,'$.actual_sha256'),'')
+		FROM blackboard_legacy_mappings
+		WHERE project_id=? AND source_table='evidence_artifacts' AND mapping_status='digest_mismatch'
+		ORDER BY target_id`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("read legacy Evidence digest mappings: %w", err)
+	}
+	defer rows.Close()
+	var results []HealthResult
+	for rows.Next() {
+		var nodeID, recorded, actual string
+		if err := rows.Scan(&nodeID, &recorded, &actual); err != nil {
+			return nil, err
+		}
+		results = append(results, HealthResult{Code: "legacy_evidence_digest_mismatch", Severity: "warning", Details: map[string]any{"node_id": nodeID, "recorded_sha256": recorded, "actual_sha256": actual}})
+	}
+	return results, rows.Err()
 }
 
 func (s *GraphService) runHealth(ctx context.Context, projectID string, p CanonicalMainGraphProjection, blocked bool, stale bool, full bool, checkedAt string) (HealthRun, error) {
@@ -278,7 +307,14 @@ func projectionHealthResults(doc canonicalMainGraphDocument) []HealthResult {
 		if node.NodeType == NodeTypeFinding && stringProp(node.Properties, "status") == "confirmed" && node.CreatedProvenance.ActorType == ActorTypeMigration {
 			supported := false
 			for _, edge := range doc.Edges {
-				if edge.ToNodeID == node.ID && (edge.EdgeType == EdgeTypeEvidences || edge.EdgeType == EdgeTypeSupports) {
+				if edge.ToNodeID != node.ID {
+					continue
+				}
+				source := byID[edge.FromNodeID]
+				if edge.EdgeType == EdgeTypeEvidences && source.NodeType == NodeTypeEvidenceArtifact {
+					supported = true
+				}
+				if edge.EdgeType == EdgeTypeSupports && source.NodeType == NodeTypeProjectFact && stringProp(source.Properties, "confidence") == "confirmed" {
 					supported = true
 				}
 			}
