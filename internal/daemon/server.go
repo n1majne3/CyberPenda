@@ -486,6 +486,10 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /api/projects/{id}/evidence", server.handleAttachEvidence)
 	server.mux.HandleFunc("GET /api/projects/{id}/evidence", server.handleListEvidence)
 	server.mux.HandleFunc("POST /api/projects/{id}/report", server.handleReportTrigger)
+	// Graph-native deterministic deliverables (read contract §7.2). Available only
+	// while the store epoch has activated BlackboardReadService (graph_v1).
+	server.mux.HandleFunc("GET /api/projects/{id}/reports/pentest", server.handlePentestReport)
+	server.mux.HandleFunc("GET /api/projects/{id}/reports/ctf-solution", server.handleCTFSolution)
 	server.registerMCP()
 	server.registerSPA()
 }
@@ -1464,4 +1468,50 @@ func (server *Server) handleBlackboardGraphExplorer(response http.ResponseWriter
 		nodeTypes[i] = blackboard.NodeType(value)
 	}
 	server.handleCanonicalBlackboardRead(response, request, blackboard.ReadRequest{ProtocolVersion: 1, ProjectID: request.PathValue("id"), Kind: blackboard.ReadKindGraphExplorerV1, AtRevision: at, GraphExplorer: &blackboard.GraphExplorerRequest{SeedNodeIDs: q["seed_node_id"], NodeTypes: nodeTypes, EdgeTypes: edgeTypes, Lifecycle: q["lifecycle"], ScopeStatus: q["scope_status"], EntityKind: q["entity_kind"], Direction: q.Get("direction"), MaxDepth: maxDepth, Query: q.Get("query"), IncludeArchived: q.Get("include_archived") == "true", IncludeRetiredEdges: q.Get("include_retired_edges") == "true", MaxNodes: maxNodes, MaxEdges: maxEdges}})
+}
+
+// handlePentestReport serves GET /api/projects/{id}/reports/pentest from the
+// shared BlackboardReadService. Activation remains behind the store epoch:
+// handleCanonicalBlackboardRead returns conflict while reads is nil.
+func (server *Server) handlePentestReport(response http.ResponseWriter, request *http.Request) {
+	q := request.URL.Query()
+	// Empty format follows the projection default (json). The bundled UI always
+	// requests format=markdown explicitly for operator previews.
+	format := q.Get("format")
+	scopeContext := q.Get("scope_context")
+	if scopeContext == "" {
+		scopeContext = "current"
+	}
+	includeTrue := true
+	includeUnresolved := false
+	server.handleCanonicalBlackboardRead(response, request, blackboard.ReadRequest{
+		ProtocolVersion: blackboard.BlackboardReadProtocolVersion,
+		ProjectID:       request.PathValue("id"),
+		Kind:            blackboard.ReadKindPentestReportV1,
+		PentestReport: &blackboard.PentestReportRequest{
+			Format:                format,
+			ScopeContext:          scopeContext,
+			IncludeUnconfirmed:    &includeTrue,
+			IncludeTentativeFacts: &includeTrue,
+			IncludeUnresolvedWork: &includeUnresolved,
+		},
+	})
+}
+
+// handleCTFSolution serves GET /api/projects/{id}/reports/ctf-solution.
+func (server *Server) handleCTFSolution(response http.ResponseWriter, request *http.Request) {
+	q := request.URL.Query()
+	// Empty format follows the projection default (json).
+	format := q.Get("format")
+	includeTrue := true
+	server.handleCanonicalBlackboardRead(response, request, blackboard.ReadRequest{
+		ProtocolVersion: blackboard.BlackboardReadProtocolVersion,
+		ProjectID:       request.PathValue("id"),
+		Kind:            blackboard.ReadKindCTFSolutionV1,
+		CTFSolution: &blackboard.CTFSolutionRequest{
+			Format:            format,
+			IncludeCandidates: &includeTrue,
+			IncludeProcedure:  &includeTrue,
+		},
+	})
 }

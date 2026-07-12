@@ -1,71 +1,83 @@
 import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { FolderLock } from "lucide-react";
-import { apiGet, type EvidenceArtifact } from "@/lib/api";
+import type { NodeRow } from "@/lib/api";
+import { readRecords, recordHref } from "@/lib/blackboard";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
-import { Card, Badge, CardHeader, CardTitle } from "@/components/ui";
-import { formatDateTime } from "@/lib/format";
+import { ProjectLedger } from "@/components/shared";
+import { Badge, Card, CardHeader, CardTitle } from "@/components/ui";
 
+/**
+ * Focused Evidence view over RecordCollectionV1. Bookmark-compatible with the
+ * legacy /evidence route; does not call frozen-table fallbacks.
+ */
 export function EvidencePage() {
-  const { projectId } = useParams<{ projectId: string }>();
-  const [evidence, setEvidence] = useState<EvidenceArtifact[]>([]);
+  const { projectId = "" } = useParams<{ projectId: string }>();
+  const [rows, setRows] = useState<NodeRow[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       try {
-        const d = await apiGet<{ evidence: EvidenceArtifact[] }>(`/api/projects/${projectId}/evidence`);
-        setEvidence(d.evidence ?? []);
+        const envelope = await readRecords(projectId, {
+          node_type: "evidence_artifact",
+          sort: "updated_desc",
+          limit: 100,
+        });
+        if (cancelled) return;
+        setRows(envelope.result.items ?? []);
         setError(null);
       } catch (e) {
-        setError((e as Error).message);
+        if (!cancelled) setError((e as Error).message);
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [projectId]);
 
-  const byTarget = evidence.reduce<Record<string, EvidenceArtifact[]>>((acc, e) => {
-    const key = `${e.attach_to_type}: ${e.attach_to_key}`;
-    (acc[key] ||= []).push(e);
-    return acc;
-  }, {});
-
   return (
-    <ProjectPageShell title="Evidence" bodyClassName="space-y-6">
-      {error && <p className="text-sm text-destructive">{error}</p>}
+    <ProjectPageShell title="Evidence" bodyClassName="">
+      <ProjectLedger>
+        {error && <p className="p-4 text-sm text-destructive">{error}</p>}
 
-      {Object.entries(byTarget).map(([target, items]) => (
-        <section key={target} className="space-y-2">
-          <h3 className="text-sm font-medium text-muted-foreground">{target}</h3>
-          <div className="space-y-2">
-            {items.map((e) => (
-              <Card key={e.id} as="article" className="flex-col gap-3 sm:flex-row sm:items-center">
+        <ul className="divide-y divide-slate-300 border-y border-slate-300" role="list">
+          {rows.map((row) => (
+            <li key={row.ref.id}>
+              <Link
+                to={recordHref(projectId, row.ref.id)}
+                className="flex w-full flex-col gap-2 border-b border-slate-300 bg-transparent p-4 text-left transition-colors hover:bg-white/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:flex-row sm:items-center"
+              >
                 <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/5 text-primary">
-                  <FolderLock className="h-4 w-4" />
+                  <FolderLock className="h-4 w-4" aria-hidden="true" />
                 </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm">{e.summary || e.evidence_key}</p>
-                  <p className="text-xs text-muted-foreground font-mono truncate">{e.managed_path}</p>
-                  {e.created_at && <p className="text-xs text-muted-foreground">{formatDateTime(e.created_at)}</p>}
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium text-slate-950">{row.ref.label}</p>
+                  <p className="truncate font-mono text-xs text-slate-500">
+                    {row.secondary || row.ref.stable_key}
+                  </p>
                 </div>
                 <div className="flex max-w-full flex-wrap gap-1 sm:justify-end">
-                  <Badge variant="outline">{e.artifact_type}</Badge>
-                  {e.sha256 && <Badge variant="outline" className="max-w-full truncate">sha256: {e.sha256.slice(0, 8)}</Badge>}
+                  {row.lifecycle?.value && <Badge variant="outline">{row.lifecycle.value}</Badge>}
+                  <Badge variant="outline">{row.ref.node_type}</Badge>
                 </div>
-              </Card>
-            ))}
-          </div>
-        </section>
-      ))}
-      {evidence.length === 0 && !error && (
-        <Card as="section" variant="flat" className="border-dashed bg-muted/30 text-sm text-muted-foreground">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-sm">
-              <FolderLock className="h-4 w-4" /> No evidence attached.
-            </CardTitle>
-          </CardHeader>
-          Runtime workdir files require explicit attach or retain.
-        </Card>
-      )}
+              </Link>
+            </li>
+          ))}
+        </ul>
+
+        {rows.length === 0 && !error && (
+          <Card as="section" variant="flat" className="border-dashed bg-muted/30 text-sm text-muted-foreground">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <FolderLock className="h-4 w-4" /> No evidence attached.
+              </CardTitle>
+            </CardHeader>
+            Runtime workdir files require explicit attach or retain.
+          </Card>
+        )}
+      </ProjectLedger>
     </ProjectPageShell>
   );
 }
