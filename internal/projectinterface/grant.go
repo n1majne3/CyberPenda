@@ -123,14 +123,14 @@ func (s GrantStatus) IsReadable() bool { return s != GrantStatusRevoked }
 // Grant is the stored Continuation Interface Grant. It never carries the
 // plaintext bearer token, only its SHA-256 hash (runtime protocol §4.1).
 type Grant struct {
-	ID                     string     `json:"id"`
-	ProjectID              string     `json:"project_id"`
-	TaskID                 string     `json:"task_id"`
-	ContinuationID         string     `json:"continuation_id"`
-	RuntimeConfigVersionID string     `json:"runtime_config_version_id"`
-	RuntimeProfileID       string     `json:"runtime_profile_id"`
-	RuntimePluginID        string     `json:"runtime_plugin_id"`
-	Runner                 string     `json:"runner"`
+	ID                     string `json:"id"`
+	ProjectID              string `json:"project_id"`
+	TaskID                 string `json:"task_id"`
+	ContinuationID         string `json:"continuation_id"`
+	RuntimeConfigVersionID string `json:"runtime_config_version_id"`
+	RuntimeProfileID       string `json:"runtime_profile_id"`
+	RuntimePluginID        string `json:"runtime_plugin_id"`
+	Runner                 string `json:"runner"`
 	// ActorID is server-derived as runtime:<runtime_plugin_id>:<continuation_id>
 	// (runtime protocol §4.1 provenance table).
 	ActorID    string `json:"actor_id"`
@@ -210,29 +210,35 @@ func (s *GrantStore) Issue(ctx context.Context, req IssueGrantRequest) (string, 
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	plaintext, grant, err := s.issueTx(ctx, tx, req)
+	if err != nil {
+		return "", Grant{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", Grant{}, fmt.Errorf("commit grant issue: %w", err)
+	}
+	return plaintext, grant, nil
+}
+
+func (s *GrantStore) issueTx(ctx context.Context, tx *sql.Tx, req IssueGrantRequest) (string, Grant, error) {
+	if err := validateIssueRequest(req); err != nil {
+		return "", Grant{}, err
+	}
 	if err := validateBoundRows(tx, req); err != nil {
 		return "", Grant{}, err
 	}
-
 	plaintext, err := s.tokens.NewToken()
 	if err != nil {
 		return "", Grant{}, fmt.Errorf("generate grant token: %w", err)
 	}
-	issuedAt := s.clock.Now().UTC().Format(time.RFC3339Nano)
 	grant := Grant{
-		ID:                     s.ids.NextID(),
-		ProjectID:              req.ProjectID,
-		TaskID:                 req.TaskID,
-		ContinuationID:         req.ContinuationID,
-		RuntimeConfigVersionID: req.RuntimeConfigVersionID,
-		RuntimeProfileID:       req.RuntimeProfileID,
-		RuntimePluginID:        req.RuntimePluginID,
-		Runner:                 req.Runner,
-		ActorID:                runtimeActorID(req.RuntimePluginID, req.ContinuationID),
-		TokenHash:              hashToken(plaintext),
-		IssuedAt:               issuedAt,
+		ID: s.ids.NextID(), ProjectID: req.ProjectID, TaskID: req.TaskID,
+		ContinuationID: req.ContinuationID, RuntimeConfigVersionID: req.RuntimeConfigVersionID,
+		RuntimeProfileID: req.RuntimeProfileID, RuntimePluginID: req.RuntimePluginID,
+		Runner: req.Runner, ActorID: runtimeActorID(req.RuntimePluginID, req.ContinuationID),
+		TokenHash: hashToken(plaintext), IssuedAt: s.clock.Now().UTC().Format(time.RFC3339Nano),
 	}
-	if _, err := tx.Exec(
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO blackboard_continuation_grants
 		 (grant_id, token_hash, project_id, task_id, continuation_id, runtime_config_version_id,
 		  runtime_profile_id, runtime_plugin_id, runner, actor_id, issued_at)
@@ -242,9 +248,6 @@ func (s *GrantStore) Issue(ctx context.Context, req IssueGrantRequest) (string, 
 		grant.Runner, grant.ActorID, grant.IssuedAt,
 	); err != nil {
 		return "", Grant{}, fmt.Errorf("insert continuation grant: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return "", Grant{}, fmt.Errorf("commit grant issue: %w", err)
 	}
 	return plaintext, grant, nil
 }

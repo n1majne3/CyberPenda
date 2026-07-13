@@ -1,13 +1,18 @@
 package runner_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"pentest/internal/blackboard"
+	"pentest/internal/project"
+	"pentest/internal/projectinterface"
 	"pentest/internal/runner"
+	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
 )
 
@@ -49,6 +54,69 @@ func TestMCPEndpointURL(t *testing.T) {
 			got := runner.MCPEndpointURL(tc.daemonAddr, tc.sandbox)
 			if got != tc.want {
 				t.Fatalf("expected %q, got %q", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestEveryBuiltinRuntimeAdapterReconstructsExactCanonicalMainGraphFromRuntimeBlackboardContextV1(t *testing.T) {
+	canonicalGraph := []byte(`{"schema_version":1,"project_id":"project-1","project_kind":"pentest","graph_revision":42,"nodes":[],"edges":[],"frontier_node_ids":[],"current_truth_node_ids":[]}`)
+	wantDigest := projectinterface.RuntimeProtocolRuleDigest()
+	for _, plugin := range runtimeplugin.BuiltinPlugins() {
+		plugin := plugin
+		t.Run(plugin.ID, func(t *testing.T) {
+			layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-1", runtimeprofile.Provider(plugin.ID))
+			if err != nil {
+				t.Fatalf("prepare layout: %v", err)
+			}
+			snapshotPath := filepath.Join(layout.Workdir, ".pentest", "blackboard.json")
+			if err := os.MkdirAll(filepath.Dir(snapshotPath), 0o700); err != nil {
+				t.Fatalf("prepare snapshot directory: %v", err)
+			}
+			if err := os.WriteFile(snapshotPath, canonicalGraph, 0o600); err != nil {
+				t.Fatalf("write canonical graph fixture: %v", err)
+			}
+			ctx := projectinterface.RuntimeBlackboardContextV1{
+				ProjectID: "project-1", TaskID: "task-1", ContinuationID: "continuation-1",
+				RuntimeConfigVersionID: "config-1", RuntimeProfileID: "profile-1", RuntimePluginID: plugin.ID,
+				Runner: "sandbox", APIURL: "http://host.docker.internal:8787/api", MCPURL: "http://host.docker.internal:8787/mcp",
+				ScopePath: ".pentest/scope.json", BlackboardPath: ".pentest/blackboard.json",
+				BlackboardGraphRevision: 42, BlackboardRendererVersion: blackboard.CanonicalMainGraphRendererV1,
+				BlackboardEstimatorVersion: blackboard.UTF8BytesDiv4EstimatorV1,
+				BlackboardProjectionHash:   "projection-hash", BlackboardProjectionBytes: len(canonicalGraph),
+				BlackboardEstimatedTokens: (len(canonicalGraph) + 3) / 4,
+			}
+			if err := runner.ProjectRuntimeBlackboardFiles(layout, ctx, project.Scope{}); err != nil {
+				t.Fatalf("project Runtime Blackboard files: %v", err)
+			}
+			contextBytes, err := os.ReadFile(filepath.Join(layout.Workdir, ".pentest", "context.json"))
+			if err != nil {
+				t.Fatalf("read context: %v", err)
+			}
+			var reconstructed projectinterface.RuntimeBlackboardContextV1
+			if err := json.Unmarshal(contextBytes, &reconstructed); err != nil {
+				t.Fatalf("decode context: %v", err)
+			}
+			if reconstructed.ProtocolVersion != projectinterface.RuntimeProtocolVersion || reconstructed.ProtocolRuleDigest != wantDigest {
+				t.Fatalf("protocol identity = %d/%s", reconstructed.ProtocolVersion, reconstructed.ProtocolRuleDigest)
+			}
+			resolvedGraph, err := os.ReadFile(filepath.Join(layout.Workdir, filepath.FromSlash(reconstructed.BlackboardPath)))
+			if err != nil {
+				t.Fatalf("read graph through Runtime context: %v", err)
+			}
+			if !bytes.Equal(resolvedGraph, canonicalGraph) {
+				t.Fatalf("adapter reconstructed different graph bytes: got %q want %q", resolvedGraph, canonicalGraph)
+			}
+			agents, err := os.ReadFile(filepath.Join(layout.Workdir, "AGENTS.md"))
+			if err != nil {
+				t.Fatalf("read AGENTS.md: %v", err)
+			}
+			claude, err := os.ReadFile(filepath.Join(layout.Workdir, "CLAUDE.md"))
+			if err != nil {
+				t.Fatalf("read CLAUDE.md: %v", err)
+			}
+			if !bytes.Equal(agents, claude) || !bytes.Contains(agents, []byte(wantDigest)) {
+				t.Fatalf("instruction projections drifted for %s", plugin.ID)
 			}
 		})
 	}

@@ -234,6 +234,10 @@ func NewServer(config Config) (*Server, error) {
 			return nil, fmt.Errorf("repair Task Goals at graph startup: %w", err)
 		}
 		server.tasks.SetGoalProjector(graph)
+		if err := server.recoverPinnedContinuationFiles(); err != nil {
+			_ = server.Close()
+			return nil, err
+		}
 	}
 	server.routes()
 	server.reconcileInterruptedTasks()

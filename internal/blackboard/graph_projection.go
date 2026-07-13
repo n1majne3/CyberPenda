@@ -107,6 +107,24 @@ func (s *GraphService) CanonicalMainGraph(ctx context.Context, projectID string,
 	return projection, nil
 }
 
+// PinCurrentCanonicalMainGraph renders the current full graph through a
+// caller-owned transaction. Continuation launch uses this form so the graph
+// revision and every row bound to the launch commit are one atomic decision.
+func (s *GraphService) PinCurrentCanonicalMainGraph(ctx context.Context, tx *sql.Tx, projectID string) (CanonicalMainGraphProjection, error) {
+	var revision int
+	if err := tx.QueryRowContext(ctx, `SELECT current_graph_revision FROM blackboard_graph_state WHERE project_id=?`, projectID).Scan(&revision); err != nil {
+		return CanonicalMainGraphProjection{}, graphStorageError("read current graph revision for Continuation pin", err)
+	}
+	if err := verifyMutationChain(ctx, tx, projectID); err != nil {
+		return CanonicalMainGraphProjection{}, fmt.Errorf("verify graph ledger before Continuation pin: %w", err)
+	}
+	doc, err := canonicalMainGraphDocumentAt(ctx, tx, projectID, revision)
+	if err != nil {
+		return CanonicalMainGraphProjection{}, err
+	}
+	return measureCanonicalMainGraphDocument(projectID, revision, doc)
+}
+
 func measureCanonicalMainGraphDocument(projectID string, revision int, doc canonicalMainGraphDocument) (CanonicalMainGraphProjection, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)

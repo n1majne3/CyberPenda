@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"pentest/internal/project"
+	"pentest/internal/projectinterface"
 	"pentest/internal/runtimeprofile"
 )
 
@@ -16,25 +17,47 @@ const trustedMCPServerName = "pentest"
 
 // TaskContext carries identifiers runtimes need when calling trusted MCP tools.
 type TaskContext struct {
-	ProjectID string
-	TaskID    string
-	MCPURL    string
-	AuthToken string
-	Provider  runtimeprofile.Provider
-	Sandbox   bool
-	ScopeSnapshot project.Scope
+	ProjectID      string
+	TaskID         string
+	MCPURL         string
+	APIURL         string
+	AuthToken      string
+	InterfaceToken string
+	Provider       runtimeprofile.Provider
+	Sandbox        bool
+	ScopeSnapshot  project.Scope
+	RuntimeContext *projectinterface.RuntimeBlackboardContextV1
 }
 
 func taskContextFromProjection(req ProjectionRequest, provider runtimeprofile.Provider, mcpURL string) TaskContext {
-	return TaskContext{
-		ProjectID:     req.ProjectID,
-		TaskID:        req.TaskID,
-		MCPURL:        mcpURL,
-		AuthToken:     req.AuthToken,
-		Provider:      provider,
-		Sandbox:       req.Sandbox,
-		ScopeSnapshot: req.ScopeSnapshot,
+	ctx := TaskContext{
+		ProjectID:      req.ProjectID,
+		TaskID:         req.TaskID,
+		MCPURL:         mcpURL,
+		AuthToken:      req.AuthToken,
+		Provider:       provider,
+		Sandbox:        req.Sandbox,
+		ScopeSnapshot:  req.ScopeSnapshot,
+		RuntimeContext: req.RuntimeContext,
 	}
+	if req.RuntimeContext != nil {
+		ctx.APIURL = req.RuntimeContext.APIURL
+		ctx.MCPURL = req.RuntimeContext.MCPURL
+		ctx.InterfaceToken = req.AuthToken
+		ctx.AuthToken = ""
+	}
+	return ctx
+}
+
+// APIEndpointURL returns the daemon API root reachable by a Runtime process.
+func APIEndpointURL(daemonAddr string, sandbox bool) string {
+	host, port := splitListenHostPort(daemonAddr)
+	if sandbox {
+		host = "host.docker.internal"
+	} else if host == "" || host == "0.0.0.0" || host == "[::]" || host == "::" {
+		host = "127.0.0.1"
+	}
+	return fmt.Sprintf("http://%s:%s/api", host, port)
 }
 
 // MCPEndpointURL returns the MCP HTTP endpoint reachable from the runtime process.
@@ -110,6 +133,9 @@ func writeTaskContextFiles(layout Layout, ctx TaskContext) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("prepare task context dir: %w", err)
 	}
+	if ctx.RuntimeContext != nil {
+		return ProjectRuntimeBlackboardFiles(layout, *ctx.RuntimeContext, ctx.ScopeSnapshot)
+	}
 	payload := map[string]string{}
 	if ctx.ProjectID != "" {
 		payload["project_id"] = ctx.ProjectID
@@ -125,7 +151,7 @@ func writeTaskContextFiles(layout Layout, ctx TaskContext) error {
 		return fmt.Errorf("encode task context: %w", err)
 	}
 	path := filepath.Join(dir, "context.json")
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
+	if err := writeOwnerOnlyFile(path, raw); err != nil {
 		return fmt.Errorf("write task context: %w", err)
 	}
 	if err := writeTaskScopeFile(dir, ctx.ScopeSnapshot); err != nil {
@@ -137,13 +163,70 @@ func writeTaskContextFiles(layout Layout, ctx TaskContext) error {
 	return nil
 }
 
+// ProjectRuntimeBlackboardFiles atomically installs the non-secret context,
+// immutable Scope Snapshot, and the same canonical protocol block for all
+// built-in Runtime instruction discovery paths.
+func ProjectRuntimeBlackboardFiles(layout Layout, ctx projectinterface.RuntimeBlackboardContextV1, scope project.Scope) error {
+	ctx.ProtocolVersion = projectinterface.RuntimeProtocolVersion
+	ctx.ProtocolRuleDigest = projectinterface.RuntimeProtocolRuleDigest()
+	dir := filepath.Join(layout.Workdir, ".pentest")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("prepare Runtime Blackboard context: %w", err)
+	}
+	raw, err := json.MarshalIndent(ctx, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode Runtime Blackboard context: %w", err)
+	}
+	if err := writeOwnerOnlyFile(filepath.Join(dir, "context.json"), raw); err != nil {
+		return fmt.Errorf("write Runtime Blackboard context: %w", err)
+	}
+	if err := writeTaskScopeFile(dir, scope); err != nil {
+		return err
+	}
+	instructions := []byte("# Pentest task context\n\n" + projectinterface.CanonicalRuntimeProtocolBlock(ctx))
+	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
+		if err := writeOwnerOnlyFile(filepath.Join(layout.Workdir, name), instructions); err != nil {
+			return fmt.Errorf("write %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func writeOwnerOnlyFile(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".runtime-context-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
 func writeTaskScopeFile(dir string, scope project.Scope) error {
 	raw, err := json.MarshalIndent(scope, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode task scope: %w", err)
 	}
 	path := filepath.Join(dir, "scope.json")
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
+	if err := writeOwnerOnlyFile(path, raw); err != nil {
 		return fmt.Errorf("write task scope: %w", err)
 	}
 	return nil
@@ -183,7 +266,7 @@ func writeRuntimeSmokeInstructions(workdir string, ctx TaskContext) error {
 		b.WriteString("Loopback targets (`127.0.0.1`, `localhost`) in your task goal have been rewritten to `host.docker.internal` so you can reach services running on the host. Use the `host.docker.internal` addresses exactly as given; do not try to reinstall or relaunch the target service yourself.\n")
 	}
 	path := filepath.Join(workdir, "AGENTS.md")
-	return os.WriteFile(path, []byte(b.String()), 0o600)
+	return writeOwnerOnlyFile(path, []byte(b.String()))
 }
 
 func writeClaudeMCPConfig(workdir string, servers []runtimeprofile.MCPServer) error {

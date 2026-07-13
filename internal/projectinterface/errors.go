@@ -60,6 +60,9 @@ const (
 	// ErrCodeEvidenceSourceChanged reports a missing or replaced source across
 	// a retry of the same Retain Evidence request.
 	ErrCodeEvidenceSourceChanged = "evidence_source_changed"
+	// ErrCodeSnapshotUnavailable is a concrete launch-readiness failure: the
+	// pinned full graph could not be rendered, materialized, or hash-verified.
+	ErrCodeSnapshotUnavailable = "snapshot_unavailable"
 )
 
 // Error is the stable ProjectInterfaceErrorV1 shape (runtime protocol §3). It is
