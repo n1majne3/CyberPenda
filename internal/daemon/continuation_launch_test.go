@@ -159,6 +159,22 @@ func TestContinuationLaunchAtomicallyPinsConfigGraphGrantAndVerifiesSnapshotBefo
 	if grantCount != 1 || configCount != 1 {
 		t.Fatalf("atomic rows: grant=%d config=%d", grantCount, configCount)
 	}
+	var configJSON string
+	if err := verificationDB.QueryRow(`SELECT config_json FROM task_runtime_config_versions WHERE id=?`, continuation.RuntimeConfigVersionID).Scan(&configJSON); err != nil {
+		t.Fatalf("read captured Task Runtime Configuration: %v", err)
+	}
+	var capturedConfig map[string]any
+	if err := json.Unmarshal([]byte(configJSON), &capturedConfig); err != nil {
+		t.Fatalf("decode captured Task Runtime Configuration: %v", err)
+	}
+	if capturedConfig["runtime_plugin_id"] != "fake" || capturedConfig["runtime_profile_id"] != profileID {
+		t.Fatalf("captured Task Runtime Configuration = %#v", capturedConfig)
+	}
+	for _, projectionOnly := range []string{"launch_command", "layout", "interface_token"} {
+		if _, persisted := capturedConfig[projectionOnly]; persisted {
+			t.Fatalf("captured Task Runtime Configuration persisted projection-only %s", projectionOnly)
+		}
+	}
 	snapshotBytes, err := os.ReadFile(snapshotPath)
 	if err != nil {
 		t.Fatalf("read snapshot for adapter assertion: %v", err)

@@ -137,6 +137,7 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 type taskLaunchPlan struct {
 	Adapter               runtime.Adapter
 	RuntimeConfig         map[string]any
+	CapturedRuntimeConfig map[string]any
 	Metadata              func() (runtime.NativeSessionMetadata, error)
 	StopConfirmation      runtime.StopConfirmation
 	LaunchModelOverride   string
@@ -201,7 +202,7 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 func (server *Server) prepareGraphNativeContinuationLaunch(created task.Task, plan taskLaunchPlan, goal string) (task.TaskContinuation, taskLaunchPlan, error) {
 	launch, err := server.projectInterface.CreateContinuationLaunch(context.Background(), projectinterface.ContinuationLaunchRequest{
 		ProjectID: created.ProjectID, TaskID: created.ID, RuntimeProfileID: created.RuntimeProfileID,
-		RuntimePluginID: plan.Adapter.Name(), Runner: created.Runner, RuntimeConfig: plan.RuntimeConfig,
+		RuntimePluginID: plan.Adapter.Name(), Runner: created.Runner, RuntimeConfig: plan.CapturedRuntimeConfig,
 	})
 	if err != nil {
 		return task.TaskContinuation{}, taskLaunchPlan{}, err
@@ -378,7 +379,11 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	if profile.Provider == runtimeprofile.ProviderFake {
 		runtimeConfig["provider"] = string(runtimeprofile.ProviderFake)
 		runtimeConfig["generated_config"] = runtimeprofile.GeneratedConfig(profile)
-		return taskLaunchPlan{Adapter: runtime.NewFakeAdapter(), RuntimeConfig: runtimeConfig, LaunchModelOverride: launchModelOverride, NativeResumeSessionID: nativeResumeSessionID, ResolvedProfile: profile, LaunchGoal: launchGoal}, nil
+		capturedRuntimeConfig := capturedTaskRuntimeConfig(created, profile, runtimeConfig["generated_config"], nil, launchModelOverride)
+		if captured != nil {
+			capturedRuntimeConfig = captured.CapturedRuntimeConfig
+		}
+		return taskLaunchPlan{Adapter: runtime.NewFakeAdapter(), RuntimeConfig: runtimeConfig, CapturedRuntimeConfig: capturedRuntimeConfig, LaunchModelOverride: launchModelOverride, NativeResumeSessionID: nativeResumeSessionID, ResolvedProfile: profile, LaunchGoal: launchGoal}, nil
 	}
 	if captured == nil {
 		var err error
@@ -542,6 +547,10 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		"program": commandProgram,
 		"args":    commandArgs,
 	})
+	capturedRuntimeConfig := capturedTaskRuntimeConfig(created, launchProfile, runtimeprofile.GeneratedConfig(launchProfile), projection.Config["model_provider_snapshot"], launchModelOverride)
+	if captured != nil {
+		capturedRuntimeConfig = captured.CapturedRuntimeConfig
+	}
 
 	var adapter runtime.Adapter
 	if sandbox {
@@ -607,6 +616,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	return taskLaunchPlan{
 		Adapter:               adapter,
 		RuntimeConfig:         runtimeConfig,
+		CapturedRuntimeConfig: capturedRuntimeConfig,
 		Metadata:              metadata,
 		StopConfirmation:      stopConfirmation,
 		LaunchModelOverride:   launchModelOverride,
@@ -616,6 +626,22 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		SkillBundles:          append([]skill.Bundle(nil), skillBundles...),
 		LaunchGoal:            launchGoal,
 	}, nil
+}
+
+func capturedTaskRuntimeConfig(created task.Task, profile runtimeprofile.Profile, generatedConfig any, modelSnapshot any, launchModelOverride string) map[string]any {
+	captured := map[string]any{
+		"runtime_profile_id": created.RuntimeProfileID,
+		"runtime_plugin_id":  string(profile.Provider),
+		"runner":             created.Runner,
+		"generated_config":   generatedConfig,
+	}
+	if modelSnapshot != nil {
+		captured["model_provider_snapshot"] = modelSnapshot
+	}
+	if launchModelOverride != "" {
+		captured["launch_model_override"] = launchModelOverride
+	}
+	return captured
 }
 
 func sandboxNetworkMode(runControls task.RunControls) runner.SandboxNetworkMode {
