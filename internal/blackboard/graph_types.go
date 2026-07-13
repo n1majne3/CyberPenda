@@ -216,9 +216,11 @@ type ExecutionContext struct {
 	// InterfaceGrantID is trusted project-interface context used only to
 	// revalidate the selected Continuation Interface Grant after Apply holds the
 	// SQLite writer lock. It is never caller JSON or graph provenance.
-	InterfaceGrantID string `json:"-"`
-	restoreManifest  *RestoreManifest
-	compactionPlan   *CompactionPlan
+	InterfaceGrantID        string `json:"-"`
+	restoreManifest         *RestoreManifest
+	compactionPlan          *CompactionPlan
+	reconciliationSubjectID string
+	reconciliationReason    string
 }
 
 type RestoreManifest struct {
@@ -252,6 +254,18 @@ func SystemExecutionContext(projectID, projectKind, systemActorID string) Execut
 func SystemRestoreExecutionContext(projectID, projectKind, systemActorID string, manifest RestoreManifest) ExecutionContext {
 	context := SystemExecutionContext(projectID, projectKind, systemActorID)
 	context.restoreManifest = &manifest
+	return context
+}
+
+// SystemReconciliationExecutionContext binds the Task and Continuation whose
+// unexpectedly ended Runtime work is being repaired. The maintenance subject
+// and reason are trusted adapter state, never caller JSON.
+func SystemReconciliationExecutionContext(projectID, projectKind, taskID, continuationID, reason string) ExecutionContext {
+	context := SystemExecutionContext(projectID, projectKind, attemptInterruptionReconcilerActor)
+	context.TaskID = taskID
+	context.ContinuationID = continuationID
+	context.reconciliationSubjectID = continuationID
+	context.reconciliationReason = reason
 	return context
 }
 

@@ -20,6 +20,31 @@ func (m *recordingTerminalMarker) MarkContinuationTerminal(_ context.Context, co
 	return nil
 }
 
+type restartOrderingReconciler struct {
+	tasks        *task.Service
+	reason       string
+	eventVisible bool
+}
+
+func (r *restartOrderingReconciler) ReconcileTerminalContinuation(_ context.Context, continuationID, reason string) error {
+	r.reason = reason
+	continuation, err := r.tasks.Continuation(continuationID)
+	if err != nil {
+		return err
+	}
+	events, err := r.tasks.Events(continuation.TaskID)
+	if err != nil {
+		return err
+	}
+	for _, event := range events {
+		if event.ContinuationID == continuationID && event.Kind == task.EventKindLifecycle &&
+			event.Payload["phase"] == "interrupted" && event.Payload["reason"] == "daemon_restart" {
+			r.eventVisible = true
+		}
+	}
+	return nil
+}
+
 func newStore(t *testing.T) *store.DB {
 	t.Helper()
 	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
@@ -513,6 +538,45 @@ func TestReconcileInterruptedStatusesClearsStaleActiveContinuations(t *testing.T
 	}
 	if len(marker.continuationIDs) != 1 || marker.continuationIDs[0] != continuation.ID {
 		t.Fatalf("stale reconciliation terminal marker calls = %v", marker.continuationIDs)
+	}
+}
+
+func TestRestartInterruptionPersistsTerminalEventBeforeReconciliation(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+
+	proj, err := projects.Create("Acme", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	created, err := svc.Create(task.CreateRequest{
+		ProjectID: proj.ID, Goal: "restart ordering", RuntimeProfileID: "profile-1", Runner: task.RunnerSandbox,
+	})
+	if err != nil {
+		t.Fatalf("create Task: %v", err)
+	}
+	continuation, err := svc.CreateContinuation(created.ID, "profile-1", "pi", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create Continuation: %v", err)
+	}
+	if _, err := svc.UpdateContinuationStatus(continuation.ID, task.StatusRunning); err != nil {
+		t.Fatalf("start Continuation: %v", err)
+	}
+	if _, err := svc.UpdateStatus(created.ID, task.StatusRunning); err != nil {
+		t.Fatalf("start Task: %v", err)
+	}
+
+	reconciler := &restartOrderingReconciler{tasks: svc}
+	svc.SetContinuationReconciler(reconciler)
+	if _, err := svc.ReconcileInterruptedState(); err != nil {
+		t.Fatalf("reconcile restart state: %v", err)
+	}
+	if reconciler.reason != "daemon_restart" {
+		t.Fatalf("reconciliation reason = %q, want daemon_restart", reconciler.reason)
+	}
+	if !reconciler.eventVisible {
+		t.Fatal("daemon_restart terminal Event was not visible before reconciliation")
 	}
 }
 

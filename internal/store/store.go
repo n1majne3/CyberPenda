@@ -257,8 +257,16 @@ func migrations() []migration {
 		newMigration(12, "project_interface_evidence_requests", migration12SQL, migration12Up),
 		newMigration(13, "continuation_finish", migration13SQL, migration13Up),
 		newMigration(14, "attempt_checkpoint_requests", migration14SQL, migration14Up),
+		newMigration(15, "continuation_reconciliation_recovery", migration15SQL, migration15Up),
 	}
 }
+
+const migration15SQL = `
+CREATE INDEX IF NOT EXISTS idx_blackboard_graph_mutations_maintenance_recovery
+ ON blackboard_graph_mutations (project_id,mutation_kind,maintenance_subject_id,mutation_seq DESC);
+`
+
+func migration15Up(tx *sql.Tx) error { return execStatements(tx, migration15SQL) }
 
 // migration14SQL persists the Task Event chosen for one checkpoint request
 // before graph Apply runs. An empty result_json means the Event is durable and

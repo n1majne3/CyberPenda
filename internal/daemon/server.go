@@ -226,6 +226,7 @@ func NewServer(config Config) (*Server, error) {
 			ArtifactRoot: artifactRoot, RuntimeRoot: runtimeRoot,
 			OperatorRoots: config.EvidenceSourceRoots,
 		})
+		server.tasks.SetContinuationReconciler(server.projectInterface)
 		server.projectInterfaceHTTP = projectinterface.NewHTTPHandler(server.projectInterface).
 			WithOperatorAuth(server.authToken, server.authToken == "")
 		if err := graph.RepairTaskGoals(context.Background()); err != nil {
@@ -263,6 +264,18 @@ func (server *Server) reconcileInterruptedTasks() {
 	}
 	if len(reconciled.Tasks) > 0 {
 		server.logger.Printf("task reconcile: %d task(s) interrupted on daemon restart", len(reconciled.Tasks))
+	}
+	if server.projectInterface != nil {
+		continuations, listErr := server.tasks.TerminalContinuations()
+		if listErr != nil {
+			server.logger.Printf("task reconcile: failed to list terminal Continuations: %v", listErr)
+			return
+		}
+		for _, continuation := range continuations {
+			if _, reconcileErr := server.projectInterface.ReconcileContinuation(context.Background(), continuation.ID, "daemon_restart"); reconcileErr != nil {
+				server.logger.Printf("task reconcile: failed to reconcile Continuation %s: %v", continuation.ID, reconcileErr)
+			}
+		}
 	}
 }
 

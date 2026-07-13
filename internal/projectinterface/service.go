@@ -17,34 +17,36 @@ import (
 // logic: it binds trusted context, authorizes, and maps errors (runtime
 // protocol §1, deletion test).
 type Deps struct {
-	DB                 *store.DB
-	Graph              *blackboard.GraphService
-	Grants             *GrantStore
-	Tasks              *task.Service
-	Clock              Clock
-	IDs                IDSource
-	ArtifactRoot       string
-	RuntimeRoot        string
-	OperatorRoots      []string
-	EvidenceFailures   EvidenceFailureInjector
-	CheckpointFailures CheckpointFailureInjector
+	DB                     *store.DB
+	Graph                  *blackboard.GraphService
+	Grants                 *GrantStore
+	Tasks                  *task.Service
+	Clock                  Clock
+	IDs                    IDSource
+	ArtifactRoot           string
+	RuntimeRoot            string
+	OperatorRoots          []string
+	EvidenceFailures       EvidenceFailureInjector
+	CheckpointFailures     CheckpointFailureInjector
+	ReconciliationFailures ReconciliationFailureInjector
 }
 
 // Service is the transport-neutral owner of the six Runtime capabilities:
 // Apply Mutation, Resolve Records, Current Runtime Graph, Retain Evidence,
 // Checkpoint Attempt, and Finish Continuation.
 type Service struct {
-	db                 *store.DB
-	graph              *blackboard.GraphService
-	grants             *GrantStore
-	tasks              *task.Service
-	clock              Clock
-	ids                IDSource
-	artifactRoot       string
-	runtimeRoot        string
-	operatorRoots      []string
-	evidenceFailures   EvidenceFailureInjector
-	checkpointFailures CheckpointFailureInjector
+	db                     *store.DB
+	graph                  *blackboard.GraphService
+	grants                 *GrantStore
+	tasks                  *task.Service
+	clock                  Clock
+	ids                    IDSource
+	artifactRoot           string
+	runtimeRoot            string
+	operatorRoots          []string
+	evidenceFailures       EvidenceFailureInjector
+	checkpointFailures     CheckpointFailureInjector
+	reconciliationFailures ReconciliationFailureInjector
 }
 
 // NewService wires a Service from its domain dependencies.
@@ -59,9 +61,10 @@ func NewService(deps Deps) *Service {
 		db: deps.DB, graph: deps.Graph, grants: deps.Grants, tasks: deps.Tasks,
 		clock: deps.Clock, ids: deps.IDs,
 		artifactRoot: deps.ArtifactRoot, runtimeRoot: deps.RuntimeRoot,
-		operatorRoots:      append([]string(nil), deps.OperatorRoots...),
-		evidenceFailures:   deps.EvidenceFailures,
-		checkpointFailures: deps.CheckpointFailures,
+		operatorRoots:          append([]string(nil), deps.OperatorRoots...),
+		evidenceFailures:       deps.EvidenceFailures,
+		checkpointFailures:     deps.CheckpointFailures,
+		reconciliationFailures: deps.ReconciliationFailures,
 	}
 }
 

@@ -435,7 +435,10 @@ func (s *GraphService) operationalHealthResults(ctx context.Context, projectID s
 		if age > metrics.MaxReconciliationAgeSeconds {
 			metrics.MaxReconciliationAgeSeconds = age
 		}
-		if status == "completed" && reconciliation == "completed" {
+		if status == "completed" {
+			if reconciliation == "pending" {
+				continue
+			}
 			code := "completion_protocol_gap"
 			severity := HealthSeverity("warning")
 			if age >= 300 {

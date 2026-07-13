@@ -32,6 +32,9 @@ var (
 	// ErrContinuationWriteClosed is returned when the bound grant was already
 	// finished, revoked, or marked terminal by reconciliation.
 	ErrContinuationWriteClosed = errors.New("continuation grant is closed to new writes")
+	// ErrContinuationFinishMarkerMismatch is returned when the durable Finish
+	// marker no longer matches its Summary or recorded graph position.
+	ErrContinuationFinishMarkerMismatch = errors.New("continuation Finish marker does not match its recorded graph position")
 )
 
 // FinishContinuationRequest is the trusted input to the Task-domain Finish
@@ -207,6 +210,71 @@ func (s *Service) FinishContinuation(ctx context.Context, req FinishContinuation
 		return FinishContinuationResult{}, fmt.Errorf("commit Continuation Finish: %w", err)
 	}
 	return FinishContinuationResult{SummaryVersion: summary}, nil
+}
+
+// VerifyContinuationFinishMarker audits the graph revision and latest Runtime
+// mutation sequence recorded by a valid Finish before clean completion is
+// acknowledged.
+func (s *Service) VerifyContinuationFinishMarker(ctx context.Context, continuationID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin Continuation Finish audit: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var taskID string
+	var markerGraphRevision, markerMutationSequence int
+	var summaryGraphRevision, summaryMutationSequence int
+	err = tx.QueryRowContext(ctx, `
+		SELECT c.task_id,c.blackboard_finish_graph_revision,c.blackboard_finish_mutation_sequence,
+		       s.blackboard_graph_revision,s.blackboard_mutation_sequence
+		FROM task_continuations c
+		JOIN task_summary_versions s
+		  ON s.id=c.blackboard_finish_summary_version_id
+		 AND s.task_id=c.task_id AND s.continuation_id=c.id
+		WHERE c.id=? AND c.blackboard_finish_summary_version_id<>''`, continuationID).Scan(
+		&taskID, &markerGraphRevision, &markerMutationSequence,
+		&summaryGraphRevision, &summaryMutationSequence,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrContinuationFinishMarkerMismatch
+	}
+	if err != nil {
+		return fmt.Errorf("read Continuation Finish audit marker: %w", err)
+	}
+	if markerGraphRevision != summaryGraphRevision || markerMutationSequence != summaryMutationSequence {
+		return ErrContinuationFinishMarkerMismatch
+	}
+
+	var projectID string
+	if err := tx.QueryRowContext(ctx, `SELECT project_id FROM tasks WHERE id=?`, taskID).Scan(&projectID); err != nil {
+		return fmt.Errorf("read Continuation Finish audit Project: %w", err)
+	}
+	var currentGraphRevision int
+	err = tx.QueryRowContext(ctx, `SELECT current_graph_revision FROM blackboard_graph_state WHERE project_id=?`, projectID).Scan(&currentGraphRevision)
+	if errors.Is(err, sql.ErrNoRows) {
+		currentGraphRevision = 0
+	} else if err != nil {
+		return fmt.Errorf("read current graph revision for Finish audit: %w", err)
+	}
+	if markerGraphRevision > currentGraphRevision {
+		return ErrContinuationFinishMarkerMismatch
+	}
+
+	var latestRuntimeMutationSequence int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(MAX(o.mutation_seq),0)
+		FROM blackboard_graph_operations o
+		JOIN blackboard_graph_provenance p ON p.project_id=o.project_id AND p.id=o.provenance_id
+		WHERE o.project_id=? AND p.task_id=? AND p.continuation_id=?`,
+		projectID, taskID, continuationID,
+	).Scan(&latestRuntimeMutationSequence); err != nil {
+		return fmt.Errorf("read latest Runtime mutation sequence for Finish audit: %w", err)
+	}
+	if markerMutationSequence != latestRuntimeMutationSequence {
+		return ErrContinuationFinishMarkerMismatch
+	}
+	return nil
 }
 
 func validateFinishObjectiveOutcome(ctx context.Context, tx *sql.Tx, projectID, taskID string, outcome FinishObjectiveOutcome) error {

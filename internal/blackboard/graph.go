@@ -1158,11 +1158,17 @@ func (s *GraphService) finalizeAndPersist(
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
+	var maintenanceSubjectID *string
+	if batch.Context.reconciliationSubjectID != "" {
+		subject := batch.Context.reconciliationSubjectID
+		maintenanceSubjectID = &subject
+	}
 	mutationHash := computeMutationHash(mutationHashInput{
 		ProjectID: projectID, MutationID: mutationID, PreviousHash: prevHash, MutationSeq: mutationSeq,
 		BaseRevision: baseRev, ResultRevision: resultRev, SchemaVersion: GraphMutationSchemaVersion,
 		MutationKind: mutationKindForBatch(batch), MaintenanceMetadataJSON: maintenanceMetadataJSON(batch),
-		IdempotencyScope: batch.Context.idempotencyScope(), IdempotencyKey: batch.IdempotencyKey,
+		MaintenanceSubjectID: maintenanceSubjectID,
+		IdempotencyScope:     batch.Context.idempotencyScope(), IdempotencyKey: batch.IdempotencyKey,
 		RequestHash: requestHashRaw, ResultHash: resultHash, RecordedAt: tsStr,
 		ResultingStateHash: resultingStateHash, ProjectionStatus: "dirty",
 		RecordHashes: recordHashes,
@@ -1177,9 +1183,10 @@ func (s *GraphService) finalizeAndPersist(
 		  recorded_at, previous_mutation_hash, mutation_hash, resulting_state_hash,
 		  projection_status, resulting_main_projection_hash, projection_renderer_version,
 		  projection_estimator_version, projection_bytes, projection_estimated_tokens)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'dirty', NULL, '', '', NULL, NULL)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?,''), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'dirty', NULL, '', '', NULL, NULL)`,
 		projectID, mutationSeq, mutationID, baseRev, resultRev,
 		GraphMutationSchemaVersion, mutationKindForBatch(batch), maintenanceMetadataJSON(batch),
+		batch.Context.reconciliationSubjectID,
 		batch.Context.idempotencyScope(), batch.IdempotencyKey,
 		hex.EncodeToString(requestHashRaw), string(requestJSON), string(resultJSON), hex.EncodeToString(resultHash),
 		tsStr, hex.EncodeToString(prevHash), hex.EncodeToString(mutationHash), hex.EncodeToString(resultingStateHash),
@@ -1383,20 +1390,22 @@ func (s *GraphService) finalizeAndPersist(
 // for the ledger, excluding server-generated IDs and timestamps.
 func (b MutationBatch) requestLedgerForm() any {
 	return struct {
-		SchemaVersion       int                 `json:"schema_version"`
-		IdempotencyKey      string              `json:"idempotency_key"`
-		ProjectID           string              `json:"project_id"`
-		ActorType           ActorType           `json:"actor_type"`
-		ActorID             string              `json:"actor_id"`
-		TaskID              string              `json:"task_id,omitempty"`
-		ContinuationID      string              `json:"continuation_id,omitempty"`
-		RuntimeProfileID    string              `json:"runtime_profile_id,omitempty"`
-		Runner              string              `json:"runner,omitempty"`
-		Operations          []Operation         `json:"operations"`
-		SourceEventIDsByOp  map[string][]string `json:"source_event_ids_by_op,omitempty"`
-		RestoreManifest     *RestoreManifest    `json:"restore_manifest,omitempty"`
-		MigrationPlanDigest string              `json:"migration_plan_digest,omitempty"`
-	}{b.SchemaVersion, b.IdempotencyKey, b.Context.ProjectID, b.Context.ActorType, b.Context.ActorID, b.Context.TaskID, b.Context.ContinuationID, b.Context.RuntimeProfileID, b.Context.Runner, b.Operations, b.SourceEventIDsByOp, b.Context.restoreManifest, migrationPlanDigest(b)}
+		SchemaVersion           int                 `json:"schema_version"`
+		IdempotencyKey          string              `json:"idempotency_key"`
+		ProjectID               string              `json:"project_id"`
+		ActorType               ActorType           `json:"actor_type"`
+		ActorID                 string              `json:"actor_id"`
+		TaskID                  string              `json:"task_id,omitempty"`
+		ContinuationID          string              `json:"continuation_id,omitempty"`
+		RuntimeProfileID        string              `json:"runtime_profile_id,omitempty"`
+		Runner                  string              `json:"runner,omitempty"`
+		Operations              []Operation         `json:"operations"`
+		SourceEventIDsByOp      map[string][]string `json:"source_event_ids_by_op,omitempty"`
+		RestoreManifest         *RestoreManifest    `json:"restore_manifest,omitempty"`
+		MigrationPlanDigest     string              `json:"migration_plan_digest,omitempty"`
+		ReconciliationSubjectID string              `json:"reconciliation_subject_id,omitempty"`
+		ReconciliationReason    string              `json:"reconciliation_reason,omitempty"`
+	}{b.SchemaVersion, b.IdempotencyKey, b.Context.ProjectID, b.Context.ActorType, b.Context.ActorID, b.Context.TaskID, b.Context.ContinuationID, b.Context.RuntimeProfileID, b.Context.Runner, b.Operations, b.SourceEventIDsByOp, b.Context.restoreManifest, migrationPlanDigest(b), b.Context.reconciliationSubjectID, b.Context.reconciliationReason}
 }
 
 // ledgerForm returns the result in the canonical form stored in result_json.
@@ -1429,6 +1438,9 @@ func mutationKindForBatch(batch MutationBatch) string {
 	if batch.Context.ActorType == ActorTypeSystem && batch.Context.ActorID == blackboardCompactorActorID {
 		return "compaction"
 	}
+	if batch.Context.ActorType == ActorTypeSystem && batch.Context.reconciliationSubjectID != "" {
+		return "reconciliation"
+	}
 	for _, op := range batch.Operations {
 		if op.Kind == OpSetDisposition && op.Disposition.Disposition == DispositionMain {
 			return "restore"
@@ -1450,6 +1462,13 @@ func migrationPlanDigest(batch MutationBatch) string {
 }
 
 func maintenanceMetadataJSON(batch MutationBatch) string {
+	if batch.Context.reconciliationSubjectID != "" {
+		encoded, err := canonicalJSON(map[string]any{"reason": batch.Context.reconciliationReason})
+		if err != nil {
+			return "{}"
+		}
+		return string(encoded)
+	}
 	if batch.Context.restoreManifest == nil {
 		return "{}"
 	}
