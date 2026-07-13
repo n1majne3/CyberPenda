@@ -114,7 +114,7 @@ func newServiceFixture(t *testing.T) serviceFixture {
 	tasks.SetContinuationTerminalMarker(grants)
 	graph := blackboard.NewGraphService(db, blackboard.SystemClock{}, blackboard.RandomIDSource{})
 	service := projectinterface.NewService(projectinterface.Deps{
-		DB: db, Graph: graph, Grants: grants,
+		DB: db, Graph: graph, Grants: grants, Tasks: tasks,
 		ArtifactRoot: artifactRoot, RuntimeRoot: runtimeRoot,
 	})
 
@@ -145,6 +145,19 @@ type failEvidenceOnce struct {
 	fired bool
 }
 
+type failCheckpointOnce struct {
+	point projectinterface.CheckpointFailurePoint
+	fired bool
+}
+
+func (f *failCheckpointOnce) FailAfter(point projectinterface.CheckpointFailurePoint) error {
+	if f.fired || point != f.point {
+		return nil
+	}
+	f.fired = true
+	return errors.New("injected checkpoint failure after " + string(point))
+}
+
 func (f *failEvidenceOnce) FailAfter(point projectinterface.EvidenceFailurePoint) error {
 	if f.fired || point != f.point {
 		return nil
@@ -169,6 +182,434 @@ func prepareRetainEvidenceAttempt(t *testing.T, fixture serviceFixture, principa
 	})
 	if err != nil {
 		t.Fatalf("prepare retaining Attempt: %v", err)
+	}
+}
+
+// TestFinishRejectsOpenAttemptsThenStoresSummaryAndClosesGrantAfterTerminalCheckpoint
+// is the I04 first-red test at the Project-interface and Task/Continuation
+// public seams. Finish must be all-or-nothing while an Attempt remains open,
+// then atomically publish the Continuation-bound Task Summary and close the
+// grant after the Attempt reaches a terminal outcome.
+func TestFinishRejectsOpenAttemptsThenStoresSummaryAndClosesGrantAfterTerminalCheckpoint(t *testing.T) {
+	fixture := newServiceFixture(t)
+	ctx := context.Background()
+	principal, err := fixture.service.Authenticate(ctx, fixture.token, fixture.project.ID)
+	if err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	prepareRetainEvidenceAttempt(t, fixture, principal, "finish-open")
+
+	request := projectinterface.FinishContinuationRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+		IdempotencyKey:  "finish:open-then-terminal",
+		Summary:         "Admin enumeration failed before role-management authorization could be tested.",
+	}
+	if _, err := fixture.service.FinishContinuation(ctx, principal, request); err == nil {
+		t.Fatal("Finish unexpectedly accepted an open Attempt")
+	} else {
+		assertErrorCode(t, err, projectinterface.ErrCodeContinuationOpenAttempts)
+	}
+	if summaries, err := fixture.tasks.SummaryVersions(fixture.task.ID); err != nil {
+		t.Fatalf("read summaries after rejected Finish: %v", err)
+	} else if len(summaries) != 0 {
+		t.Fatalf("rejected Finish stored summaries: %#v", summaries)
+	}
+	if current, err := fixture.grants.Get(ctx, fixture.grant.ID); err != nil {
+		t.Fatalf("read grant after rejected Finish: %v", err)
+	} else if current.Status() != projectinterface.GrantStatusOpen {
+		t.Fatalf("rejected Finish changed grant status to %q", current.Status())
+	}
+
+	if _, err := fixture.service.Apply(ctx, principal, projectinterface.ApplyMutationRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+		Batch: projectinterface.RequestBatch{
+			SchemaVersion:  blackboard.GraphMutationSchemaVersion,
+			IdempotencyKey: "finish:terminal-checkpoint",
+			Operations: []blackboard.Operation{{
+				OpID: "terminal", Kind: blackboard.OpTransitionNode,
+				Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeAttempt, StableKey: "attempt:finish-open"},
+				Transition: blackboard.TransitionNodeInput{
+					ExpectedVersion: 1,
+					Status:          "failed",
+					Summary:         "Authenticated enumeration failed before authorization checks.",
+				},
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("store terminal Attempt checkpoint: %v", err)
+	}
+
+	finished, err := fixture.service.FinishContinuation(ctx, principal, request)
+	if err != nil {
+		t.Fatalf("Finish after terminal checkpoint: %v", err)
+	}
+	summaries, err := fixture.tasks.SummaryVersions(fixture.task.ID)
+	if err != nil {
+		t.Fatalf("read summaries after Finish: %v", err)
+	}
+	if len(summaries) != 1 || summaries[0].ContinuationID != fixture.continuation.ID ||
+		summaries[0].Summary != request.Summary {
+		t.Fatalf("stored Continuation summary = %#v", summaries)
+	}
+	if finished.Result.SummaryVersion.ID != summaries[0].ID ||
+		finished.Result.GraphRevision != 2 || finished.ObservedGraphRevision != 2 {
+		t.Fatalf("Finish result = %#v, summary = %#v", finished, summaries[0])
+	}
+	if current, err := fixture.grants.Get(ctx, fixture.grant.ID); err != nil {
+		t.Fatalf("read grant after Finish: %v", err)
+	} else if current.Status() != projectinterface.GrantStatusFinished {
+		t.Fatalf("Finish left grant status %q", current.Status())
+	}
+	continuation, err := fixture.tasks.LatestContinuation(fixture.task.ID)
+	if err != nil {
+		t.Fatalf("read Continuation Finish marker: %v", err)
+	}
+	if continuation == nil || continuation.BlackboardFinishSummaryVersionID != summaries[0].ID ||
+		continuation.BlackboardFinishGraphRevision != 2 || continuation.BlackboardFinishedAt == nil {
+		t.Fatalf("Continuation Finish marker = %#v", continuation)
+	}
+
+	replay, err := fixture.service.FinishContinuation(ctx, principal, request)
+	if err != nil {
+		t.Fatalf("exact Finish replay: %v", err)
+	}
+	firstJSON, _ := json.Marshal(finished)
+	replayJSON, _ := json.Marshal(replay)
+	if !bytes.Equal(firstJSON, replayJSON) {
+		t.Fatalf("Finish replay drifted:\nfirst %s\nreplay %s", firstJSON, replayJSON)
+	}
+	newWrite := objectiveApplyRequest()
+	newWrite.Batch.IdempotencyKey = "finish:new-write"
+	newWrite.Batch.Operations[0].Node.StableKey = "objective:after-finish"
+	if _, err := fixture.service.Apply(ctx, principal, newWrite); err == nil {
+		t.Fatal("new Runtime write after Finish unexpectedly succeeded")
+	} else {
+		assertErrorCode(t, err, projectinterface.ErrCodeContinuationClosed)
+	}
+	if _, err := fixture.service.RetainEvidence(ctx, principal, projectinterface.RetainEvidenceRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+		IdempotencyKey:  "retain:after-finish",
+		StableKey:       "evidence:after-finish",
+		ArtifactType:    "file",
+		SourcePath:      "does-not-exist.txt",
+		Summary:         "must be rejected by the closed Continuation before filesystem access",
+		ProducedByAttempt: blackboard.NodeRef{
+			NodeType: blackboard.NodeTypeAttempt, StableKey: "attempt:finish-open",
+		},
+	}); err == nil {
+		t.Fatal("new Retain Evidence after Finish unexpectedly succeeded")
+	} else {
+		assertErrorCode(t, err, projectinterface.ErrCodeContinuationClosed)
+	}
+}
+
+// TestCheckpointAttemptReusesEventAfterGraphFailure proves the I04 recovery
+// anchor at the public checkpoint seam: the compact Event commits first, an
+// Apply failure reports that Event, and retry reuses it instead of appending a
+// second timeline entry.
+func TestCheckpointAttemptReusesEventAfterGraphFailure(t *testing.T) {
+	fixture := newServiceFixture(t)
+	ctx := context.Background()
+	principal, err := fixture.service.Authenticate(ctx, fixture.token, fixture.project.ID)
+	if err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	prepareRetainEvidenceAttempt(t, fixture, principal, "checkpoint-retry")
+
+	injector := &failCheckpointOnce{point: projectinterface.CheckpointFailureAfterEventCommit}
+	fixture.service = projectinterface.NewService(projectinterface.Deps{
+		DB: fixture.db, Graph: fixture.graph, Grants: fixture.grants, Tasks: fixture.tasks,
+		ArtifactRoot: fixture.artifactRoot, RuntimeRoot: fixture.runtimeRoot,
+		CheckpointFailures: injector,
+	})
+	request := projectinterface.CheckpointAttemptRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+		IdempotencyKey:  "checkpoint:retry",
+		Attempt: blackboard.NodeRef{
+			NodeType:  blackboard.NodeTypeAttempt,
+			StableKey: "attempt:checkpoint-retry",
+		},
+		ExpectedVersion: 1,
+		Summary:         "Authenticated shell enumerated; role management remains untested.",
+	}
+	if _, err := fixture.service.CheckpointAttempt(ctx, principal, request); err == nil {
+		t.Fatal("injected checkpoint failure unexpectedly succeeded")
+	} else if got := projectinterface.AsError(err); got == nil || got.Details["event_id"] == "" {
+		t.Fatalf("checkpoint failure omitted durable Event ID: %#v", err)
+	}
+	events, err := fixture.tasks.Events(fixture.task.ID)
+	if err != nil {
+		t.Fatalf("read checkpoint Events: %v", err)
+	}
+	if len(events) != 1 || events[0].Kind != task.EventKindBlackboardCheckpoint ||
+		events[0].ContinuationID != fixture.continuation.ID || events[0].AttemptNodeID == "" {
+		t.Fatalf("durable checkpoint Event = %#v", events)
+	}
+
+	checkpoint, err := fixture.service.CheckpointAttempt(ctx, principal, request)
+	if err != nil {
+		t.Fatalf("retry checkpoint: %v", err)
+	}
+	if checkpoint.Result.Event.ID != events[0].ID {
+		t.Fatalf("retry Event ID = %q want %q", checkpoint.Result.Event.ID, events[0].ID)
+	}
+	events, err = fixture.tasks.Events(fixture.task.ID)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("checkpoint retry duplicated Event: %#v err=%v", events, err)
+	}
+	attempt, err := fixture.graph.ReadNode(ctx, blackboard.ReadNodeRequest{
+		ProjectID: fixture.project.ID, NodeType: blackboard.NodeTypeAttempt, Key: "attempt:checkpoint-retry",
+	})
+	if err != nil {
+		t.Fatalf("read checkpointed Attempt: %v", err)
+	}
+	if attempt.Node.Version != 2 || attempt.Node.PropertyMap["summary"] != request.Summary {
+		t.Fatalf("checkpointed Attempt = %#v", attempt.Node)
+	}
+
+	changed := request
+	changed.Summary = "changed checkpoint payload"
+	if _, err := fixture.service.CheckpointAttempt(ctx, principal, changed); err == nil {
+		t.Fatal("changed checkpoint replay unexpectedly succeeded")
+	} else {
+		assertErrorCode(t, err, blackboard.ErrCodeIdempotencyConflict)
+	}
+	if _, err := fixture.service.Apply(ctx, principal, projectinterface.ApplyMutationRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+		Batch: projectinterface.RequestBatch{
+			SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "checkpoint:terminal",
+			Operations: []blackboard.Operation{{
+				OpID: "terminal", Kind: blackboard.OpTransitionNode,
+				Node:       blackboard.NodeRef{NodeType: blackboard.NodeTypeAttempt, StableKey: "attempt:checkpoint-retry"},
+				Transition: blackboard.TransitionNodeInput{ExpectedVersion: 2, Status: "failed", Summary: "Checkpointed work later failed."},
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("conclude checkpointed Attempt: %v", err)
+	}
+	if _, err := fixture.service.FinishContinuation(ctx, principal, projectinterface.FinishContinuationRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+		IdempotencyKey:  "finish:after-checkpoint",
+		Summary:         "Checkpointed work failed and the Continuation is finished.",
+	}); err != nil {
+		t.Fatalf("Finish after checkpoint: %v", err)
+	}
+	if _, err := fixture.service.CheckpointAttempt(ctx, principal, request); err != nil {
+		t.Fatalf("exact checkpoint replay after Finish: %v", err)
+	}
+	newCheckpoint := request
+	newCheckpoint.IdempotencyKey = "checkpoint:after-finish"
+	newCheckpoint.ExpectedVersion = 2
+	if _, err := fixture.service.CheckpointAttempt(ctx, principal, newCheckpoint); err == nil {
+		t.Fatal("new checkpoint after Finish unexpectedly succeeded")
+	} else {
+		assertErrorCode(t, err, projectinterface.ErrCodeContinuationClosed)
+	}
+}
+
+func TestFinishStoresObjectiveOutcomeWithoutTransitioningPrimaryObjective(t *testing.T) {
+	fixture := newServiceFixture(t)
+	ctx := context.Background()
+	principal, err := fixture.service.Authenticate(ctx, fixture.token, fixture.project.ID)
+	if err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	if err := fixture.graph.ProjectTaskGoal(fixture.task.ID); err != nil {
+		t.Fatalf("project Task Goal: %v", err)
+	}
+	goalRef := blackboard.NodeRef{NodeType: blackboard.NodeTypeGoal, StableKey: "task:" + fixture.task.ID + ":goal"}
+	objectiveRef := blackboard.NodeRef{NodeType: blackboard.NodeTypeExplorationObjective, StableKey: "objective:finish-outcome"}
+	if _, err := fixture.service.Apply(ctx, principal, projectinterface.ApplyMutationRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+		Batch: projectinterface.RequestBatch{
+			SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "finish-outcome:objective",
+			Operations: []blackboard.Operation{
+				{OpID: "objective", Kind: blackboard.OpCreateNode, Node: objectiveRef, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"objective": "Confirm the admin surface", "status": "open"}}},
+				{OpID: "primary", Kind: blackboard.OpPutEdge, PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypePartOf, From: blackboard.NodeRef{OpID: "objective"}, To: goalRef}},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("create primary Objective: %v", err)
+	}
+	factRef := blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "fact:finish-outcome"}
+	if _, err := fixture.service.Apply(ctx, principal, projectinterface.ApplyMutationRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+		Batch: projectinterface.RequestBatch{
+			SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "finish-outcome:attempt",
+			Operations: []blackboard.Operation{
+				{OpID: "attempt", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeAttempt, StableKey: "attempt:finish-outcome"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{}}},
+				{OpID: "fact", Kind: blackboard.OpCreateNode, Node: factRef, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"category": "endpoint", "summary": "Authenticated admin surface is reachable", "confidence": "tentative", "scope_status": "in_scope"}}},
+				{OpID: "tests", Kind: blackboard.OpPutEdge, PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypeTests, From: blackboard.NodeRef{OpID: "attempt"}, To: objectiveRef}},
+				{OpID: "produced", Kind: blackboard.OpPutEdge, PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypeProduced, From: blackboard.NodeRef{OpID: "attempt"}, To: blackboard.NodeRef{OpID: "fact"}}},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("create outcome support: %v", err)
+	}
+	if _, err := fixture.service.Apply(ctx, principal, projectinterface.ApplyMutationRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+		Batch: projectinterface.RequestBatch{
+			SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "finish-outcome:terminal",
+			Operations: []blackboard.Operation{{
+				OpID: "terminal", Kind: blackboard.OpTransitionNode,
+				Node:       blackboard.NodeRef{NodeType: blackboard.NodeTypeAttempt, StableKey: "attempt:finish-outcome"},
+				Transition: blackboard.TransitionNodeInput{ExpectedVersion: 1, Status: "succeeded", Summary: "Confirmed the authenticated admin surface."},
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("conclude outcome Attempt: %v", err)
+	}
+
+	request := projectinterface.FinishContinuationRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+		IdempotencyKey:  "finish:objective-outcome",
+		Summary:         "Confirmed the authenticated admin surface.",
+		ObjectiveOutcome: &projectinterface.ObjectiveOutcome{
+			Objective:          objectiveRef,
+			Status:             "supported",
+			SupportingNodeRefs: []blackboard.NodeRef{factRef},
+		},
+	}
+	invalidSupport := request
+	invalidSupport.IdempotencyKey = "finish:invalid-objective-support"
+	invalidSupport.ObjectiveOutcome = &projectinterface.ObjectiveOutcome{
+		Objective: objectiveRef, Status: "supported", SupportingNodeRefs: []blackboard.NodeRef{objectiveRef},
+	}
+	if _, err := fixture.service.FinishContinuation(ctx, principal, invalidSupport); err == nil {
+		t.Fatal("Objective Outcome accepted an Exploration Objective as a supporting record")
+	} else {
+		assertErrorCode(t, err, projectinterface.ErrCodeInvalidRequest)
+	}
+	if _, err := fixture.service.FinishContinuation(ctx, principal, request); err != nil {
+		t.Fatalf("Finish with Objective Outcome: %v", err)
+	}
+	summaries, err := fixture.tasks.SummaryVersions(fixture.task.ID)
+	if err != nil || len(summaries) != 1 {
+		t.Fatalf("read Objective Outcome summary: %#v err=%v", summaries, err)
+	}
+	var stored projectinterface.ObjectiveOutcome
+	if err := json.Unmarshal(summaries[0].ObjectiveOutcome, &stored); err != nil {
+		t.Fatalf("decode stored Objective Outcome: %v", err)
+	}
+	storedJSON, _ := json.Marshal(stored)
+	wantJSON, _ := json.Marshal(request.ObjectiveOutcome)
+	if !bytes.Equal(storedJSON, wantJSON) {
+		t.Fatalf("stored Objective Outcome = %s want %s", storedJSON, wantJSON)
+	}
+	objective, err := fixture.graph.ReadNode(ctx, blackboard.ReadNodeRequest{
+		ProjectID: fixture.project.ID, NodeType: blackboard.NodeTypeExplorationObjective, Key: objectiveRef.StableKey,
+	})
+	if err != nil || objective.Node.PropertyMap["status"] != "open" {
+		t.Fatalf("Finish transitioned Objective: %#v err=%v", objective.Node, err)
+	}
+
+	changed := request
+	changed.ObjectiveOutcome = &projectinterface.ObjectiveOutcome{
+		Objective: objectiveRef, Status: "contradicted", SupportingNodeRefs: []blackboard.NodeRef{factRef},
+	}
+	if _, err := fixture.service.FinishContinuation(ctx, principal, changed); err == nil {
+		t.Fatal("changed Objective Outcome replay unexpectedly succeeded")
+	} else {
+		assertErrorCode(t, err, projectinterface.ErrCodeContinuationFinishConflict)
+	}
+}
+
+func TestFinishPreservesEveryRuntimeTerminalAttemptOutcome(t *testing.T) {
+	for _, outcome := range []string{"succeeded", "failed", "blocked", "inconclusive"} {
+		t.Run(outcome, func(t *testing.T) {
+			fixture := newServiceFixture(t)
+			ctx := context.Background()
+			principal, err := fixture.service.Authenticate(ctx, fixture.token, fixture.project.ID)
+			if err != nil {
+				t.Fatalf("authenticate: %v", err)
+			}
+			prepareRetainEvidenceAttempt(t, fixture, principal, "outcome-"+outcome)
+			if outcome == "succeeded" {
+				if _, err := fixture.service.Apply(ctx, principal, projectinterface.ApplyMutationRequest{
+					ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+					Batch: projectinterface.RequestBatch{
+						SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "outcome:succeeded:produced",
+						Operations: []blackboard.Operation{
+							{OpID: "observation", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeObservation, StableKey: "observation:outcome-succeeded"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"summary": "Admin endpoint responded", "scope_status": "in_scope"}}},
+							{OpID: "produced", Kind: blackboard.OpPutEdge, PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypeProduced, From: blackboard.NodeRef{NodeType: blackboard.NodeTypeAttempt, StableKey: "attempt:outcome-succeeded"}, To: blackboard.NodeRef{OpID: "observation"}}},
+						},
+					},
+				}); err != nil {
+					t.Fatalf("create succeeded output: %v", err)
+				}
+			}
+			if _, err := fixture.service.Apply(ctx, principal, projectinterface.ApplyMutationRequest{
+				ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+				Batch: projectinterface.RequestBatch{
+					SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "outcome:" + outcome + ":terminal",
+					Operations: []blackboard.Operation{{
+						OpID: "terminal", Kind: blackboard.OpTransitionNode,
+						Node:       blackboard.NodeRef{NodeType: blackboard.NodeTypeAttempt, StableKey: "attempt:outcome-" + outcome},
+						Transition: blackboard.TransitionNodeInput{ExpectedVersion: 1, Status: outcome, Summary: "Terminal " + outcome + " outcome."},
+					}},
+				},
+			}); err != nil {
+				t.Fatalf("store %s outcome: %v", outcome, err)
+			}
+			if _, err := fixture.service.FinishContinuation(ctx, principal, projectinterface.FinishContinuationRequest{
+				ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+				IdempotencyKey:  "finish:outcome:" + outcome,
+				Summary:         "Continuation ended with a " + outcome + " Attempt.",
+			}); err != nil {
+				t.Fatalf("Finish %s outcome: %v", outcome, err)
+			}
+			attempt, err := fixture.graph.ReadNode(ctx, blackboard.ReadNodeRequest{
+				ProjectID: fixture.project.ID, NodeType: blackboard.NodeTypeAttempt, Key: "attempt:outcome-" + outcome,
+			})
+			if err != nil || attempt.Node.PropertyMap["status"] != outcome {
+				t.Fatalf("Finish reclassified %s Attempt: %#v err=%v", outcome, attempt.Node, err)
+			}
+		})
+	}
+}
+
+// TestGraphApplyRevalidatesGrantAfterFinishWinsTheWriterRace simulates an
+// Apply that already captured trusted Runtime context before Finish commits.
+// The graph transaction must re-read the selected grant after acquiring its
+// writer lock and reject the stale mutation.
+func TestGraphApplyRevalidatesGrantAfterFinishWinsTheWriterRace(t *testing.T) {
+	fixture := newServiceFixture(t)
+	ctx := context.Background()
+	principal, err := fixture.service.Authenticate(ctx, fixture.token, fixture.project.ID)
+	if err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	if _, err := fixture.service.FinishContinuation(ctx, principal, projectinterface.FinishContinuationRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+		IdempotencyKey:  "finish:wins-writer-race",
+		Summary:         "Finish acquired the writer lock before the stale Apply.",
+	}); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	_, err = fixture.graph.Apply(ctx, blackboard.MutationBatch{
+		SchemaVersion:  blackboard.GraphMutationSchemaVersion,
+		IdempotencyKey: "apply:lost-writer-race",
+		Context: blackboard.ExecutionContext{
+			ProjectID: fixture.project.ID, ProjectKind: fixture.project.Kind,
+			ActorType: blackboard.ActorTypeRuntime, ActorID: principal.ActorID,
+			TaskID: fixture.task.ID, ContinuationID: fixture.continuation.ID,
+			RuntimeProfileID: fixture.runtimeProfile, Runner: fixture.runner,
+			InterfaceGrantID: fixture.grant.ID,
+		},
+		Operations: []blackboard.Operation{{
+			OpID: "stale", Kind: blackboard.OpCreateNode,
+			Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeExplorationObjective, StableKey: "objective:lost-writer-race"},
+			Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{
+				"objective": "This mutation must not commit behind Finish", "status": "open",
+			}},
+		}},
+	})
+	var validation *blackboard.ValidationError
+	if !errors.As(err, &validation) || validation.Code != projectinterface.ErrCodeContinuationClosed {
+		t.Fatalf("stale Apply error = %#v", err)
+	}
+	if graphNodeResolves(t, fixture.graph, fixture.project.ID, "objective:lost-writer-race") {
+		t.Fatal("stale Apply committed behind Finish")
 	}
 }
 
@@ -203,7 +644,7 @@ func TestRetainEvidenceConvergesAcrossFilePublishGraphCommitAndLostResponseFailu
 
 			injector := &failEvidenceOnce{point: failurePoint}
 			fixture.service = projectinterface.NewService(projectinterface.Deps{
-				DB: fixture.db, Graph: fixture.graph, Grants: fixture.grants,
+				DB: fixture.db, Graph: fixture.graph, Grants: fixture.grants, Tasks: fixture.tasks,
 				ArtifactRoot: fixture.artifactRoot, RuntimeRoot: fixture.runtimeRoot,
 				EvidenceFailures: injector,
 			})
@@ -219,6 +660,28 @@ func TestRetainEvidenceConvergesAcrossFilePublishGraphCommitAndLostResponseFailu
 			}
 			if _, err := fixture.service.RetainEvidence(context.Background(), principal, request); err == nil {
 				t.Fatal("injected failure unexpectedly returned success")
+			}
+			if failurePoint == projectinterface.EvidenceFailureAfterGraphCommit {
+				if _, err := fixture.service.Apply(context.Background(), principal, projectinterface.ApplyMutationRequest{
+					ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+					Batch: projectinterface.RequestBatch{
+						SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "retain:terminal:" + key,
+						Operations: []blackboard.Operation{{
+							OpID: "terminal", Kind: blackboard.OpTransitionNode,
+							Node:       request.ProducedByAttempt,
+							Transition: blackboard.TransitionNodeInput{ExpectedVersion: 1, Status: "succeeded", Summary: "Evidence graph commit completed before the response was lost."},
+						}},
+					},
+				}); err != nil {
+					t.Fatalf("conclude retained-Evidence Attempt: %v", err)
+				}
+				if _, err := fixture.service.FinishContinuation(context.Background(), principal, projectinterface.FinishContinuationRequest{
+					ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+					IdempotencyKey:  "finish:retain-recovery",
+					Summary:         "Evidence committed before a lost response; Finish happened before retry.",
+				}); err != nil {
+					t.Fatalf("Finish before retained-Evidence recovery: %v", err)
+				}
 			}
 			first, err := fixture.service.RetainEvidence(context.Background(), principal, request)
 			if err != nil {
@@ -644,6 +1107,14 @@ func TestProjectInterfaceRejectsActorIneligibleOperationsBeforeGraphAccess(t *te
 		{
 			name: "interrupted Attempt",
 			op:   blackboard.Operation{OpID: "forbidden", Kind: blackboard.OpTransitionNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeAttempt}, Transition: blackboard.TransitionNodeInput{Status: "interrupted"}},
+		},
+		{
+			name: "Attempt checkpoint bypass",
+			op: blackboard.Operation{
+				OpID: "forbidden", Kind: blackboard.OpPatchNode,
+				Node:  blackboard.NodeRef{NodeType: blackboard.NodeTypeAttempt, StableKey: "attempt:bypass"},
+				Patch: blackboard.PatchNodeInput{ExpectedVersion: 1, Properties: map[string]any{"summary": "bypass"}},
+			},
 		},
 	}
 	for _, tt := range tests {

@@ -221,6 +221,144 @@ func TestProjectInterfaceConformanceProducesSameResultAndErrorAcrossAllTransport
 	}
 }
 
+func TestCheckpointAndFinishConformAcrossMCPAndTaskCLI(t *testing.T) {
+	fixture := newServiceFixture(t)
+	ctx := context.Background()
+	principal, err := fixture.service.Authenticate(ctx, fixture.token, fixture.project.ID)
+	if err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	prepareRetainEvidenceAttempt(t, fixture, principal, "mcp-cli-finish")
+
+	clientTransport, serverTransport := sdkmcp.NewInMemoryTransports()
+	mcpServer := mcpserver.New(mcpserver.Deps{ProjectInterface: fixture.service, Principal: &principal})
+	serverSession, err := mcpServer.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatalf("connect MCP server: %v", err)
+	}
+	t.Cleanup(func() { _ = serverSession.Close() })
+	mcpClient := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "i04-conformance", Version: "test"}, nil)
+	clientSession, err := mcpClient.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("connect MCP client: %v", err)
+	}
+	t.Cleanup(func() { _ = clientSession.Close() })
+
+	checkpointRequest := projectinterface.CheckpointAttemptRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+		IdempotencyKey:  "checkpoint:mcp-cli",
+		Attempt:         blackboard.NodeRef{NodeType: blackboard.NodeTypeAttempt, StableKey: "attempt:mcp-cli-finish"},
+		ExpectedVersion: 1,
+		Summary:         "MCP checkpoint replayed through task CLI.",
+	}
+	checkpointArgs := map[string]any{}
+	checkpointBody, _ := json.Marshal(checkpointRequest)
+	_ = json.Unmarshal(checkpointBody, &checkpointArgs)
+	mcpCheckpoint, err := clientSession.CallTool(ctx, &sdkmcp.CallToolParams{Name: "blackboard_checkpoint_attempt", Arguments: checkpointArgs})
+	if err != nil || mcpCheckpoint.IsError {
+		t.Fatalf("MCP checkpoint: result=%#v err=%v", mcpCheckpoint, err)
+	}
+	var canonicalCheckpoint projectinterface.CheckpointAttemptResponse
+	if err := json.Unmarshal([]byte(mcpText(mcpCheckpoint)), &canonicalCheckpoint); err != nil {
+		t.Fatalf("decode MCP checkpoint: %v", err)
+	}
+
+	httpServer := httptest.NewServer(newHTTPMux(fixture))
+	t.Cleanup(httpServer.Close)
+	t.Setenv("PENTEST_API_URL", httpServer.URL)
+	t.Setenv("PENTEST_INTERFACE_TOKEN", fixture.token)
+	t.Setenv("PENTEST_PROJECT_ID", fixture.project.ID)
+	t.Setenv("PENTEST_TASK_ID", fixture.task.ID)
+	t.Setenv("PENTEST_CONTINUATION_ID", fixture.continuation.ID)
+	checkpointPath := filepath.Join(t.TempDir(), "checkpoint.json")
+	if err := os.WriteFile(checkpointPath, checkpointBody, 0o600); err != nil {
+		t.Fatalf("write checkpoint input: %v", err)
+	}
+	var cliCheckpointJSON bytes.Buffer
+	if err := pentestctl.Run(&cliCheckpointJSON, []string{"blackboard", "attempt", "checkpoint", "--input", checkpointPath}); err != nil {
+		t.Fatalf("task CLI checkpoint: %v", err)
+	}
+	var cliCheckpoint projectinterface.CheckpointAttemptResponse
+	if err := json.Unmarshal(cliCheckpointJSON.Bytes(), &cliCheckpoint); err != nil {
+		t.Fatalf("decode task CLI checkpoint: %v", err)
+	}
+	if cliCheckpoint.Result.Event.ID != canonicalCheckpoint.Result.Event.ID ||
+		cliCheckpoint.Result.Mutation.MutationID != canonicalCheckpoint.Result.Mutation.MutationID {
+		t.Fatalf("task CLI checkpoint drifted: MCP=%#v CLI=%#v", canonicalCheckpoint, cliCheckpoint)
+	}
+
+	if _, err := fixture.service.Apply(ctx, principal, projectinterface.ApplyMutationRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+		Batch: projectinterface.RequestBatch{
+			SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "mcp-cli:terminal",
+			Operations: []blackboard.Operation{{
+				OpID: "terminal", Kind: blackboard.OpTransitionNode,
+				Node:       blackboard.NodeRef{NodeType: blackboard.NodeTypeAttempt, StableKey: "attempt:mcp-cli-finish"},
+				Transition: blackboard.TransitionNodeInput{ExpectedVersion: 2, Status: "failed", Summary: "MCP/CLI conformance Attempt failed."},
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("conclude MCP/CLI Attempt: %v", err)
+	}
+	finishRequest := projectinterface.FinishContinuationRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+		IdempotencyKey:  "finish:mcp-cli",
+		Summary:         "MCP Finish replayed through task CLI.",
+	}
+	finishArgs := map[string]any{}
+	finishBody, _ := json.Marshal(finishRequest)
+	_ = json.Unmarshal(finishBody, &finishArgs)
+	mcpFinish, err := clientSession.CallTool(ctx, &sdkmcp.CallToolParams{Name: "blackboard_finish_continuation", Arguments: finishArgs})
+	if err != nil || mcpFinish.IsError {
+		t.Fatalf("MCP Finish: result=%#v err=%v", mcpFinish, err)
+	}
+	var canonicalFinish projectinterface.FinishContinuationResponse
+	if err := json.Unmarshal([]byte(mcpText(mcpFinish)), &canonicalFinish); err != nil {
+		t.Fatalf("decode MCP Finish: %v", err)
+	}
+	finishPath := filepath.Join(t.TempDir(), "finish.json")
+	if err := os.WriteFile(finishPath, finishBody, 0o600); err != nil {
+		t.Fatalf("write Finish input: %v", err)
+	}
+	var cliFinishJSON bytes.Buffer
+	if err := pentestctl.Run(&cliFinishJSON, []string{"blackboard", "continuation", "finish", "--input", finishPath}); err != nil {
+		t.Fatalf("task CLI Finish: %v", err)
+	}
+	var cliFinish projectinterface.FinishContinuationResponse
+	if err := json.Unmarshal(cliFinishJSON.Bytes(), &cliFinish); err != nil {
+		t.Fatalf("decode task CLI Finish: %v", err)
+	}
+	if cliFinish.Result.SummaryVersion.ID != canonicalFinish.Result.SummaryVersion.ID ||
+		cliFinish.Result.GraphRevision != canonicalFinish.Result.GraphRevision {
+		t.Fatalf("task CLI Finish drifted: MCP=%#v CLI=%#v", canonicalFinish, cliFinish)
+	}
+
+	closedCheckpoint := checkpointRequest
+	closedCheckpoint.IdempotencyKey = "checkpoint:mcp-cli:after-finish"
+	closedCheckpoint.ExpectedVersion = 2
+	closedArgs := map[string]any{}
+	closedBody, _ := json.Marshal(closedCheckpoint)
+	_ = json.Unmarshal(closedBody, &closedArgs)
+	mcpClosed, err := clientSession.CallTool(ctx, &sdkmcp.CallToolParams{Name: "blackboard_checkpoint_attempt", Arguments: closedArgs})
+	if err != nil || !mcpClosed.IsError {
+		t.Fatalf("MCP closed checkpoint: result=%#v err=%v", mcpClosed, err)
+	}
+	var mcpClosedEnvelope struct {
+		Error projectinterface.Error `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(mcpText(mcpClosed)), &mcpClosedEnvelope); err != nil || mcpClosedEnvelope.Error.Code != projectinterface.ErrCodeContinuationClosed {
+		t.Fatalf("MCP closed error = %#v decode=%v", mcpClosedEnvelope.Error, err)
+	}
+	closedPath := filepath.Join(t.TempDir(), "closed-checkpoint.json")
+	if err := os.WriteFile(closedPath, closedBody, 0o600); err != nil {
+		t.Fatalf("write closed checkpoint input: %v", err)
+	}
+	cliClosedErr := pentestctl.Run(io.Discard, []string{"blackboard", "attempt", "checkpoint", "--input", closedPath})
+	if got := projectinterface.AsError(cliClosedErr); got == nil || got.Code != projectinterface.ErrCodeContinuationClosed || pentestctl.ExitCode(cliClosedErr) != 5 {
+		t.Fatalf("task CLI closed error = %#v exit=%d", cliClosedErr, pentestctl.ExitCode(cliClosedErr))
+	}
+}
+
 func TestRetainEvidenceProducesSameResultAcrossModuleHTTPMCPAndTaskCLI(t *testing.T) {
 	fixture := newServiceFixture(t)
 	ctx := context.Background()

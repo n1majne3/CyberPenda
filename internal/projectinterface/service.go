@@ -9,6 +9,7 @@ import (
 
 	"pentest/internal/blackboard"
 	"pentest/internal/store"
+	"pentest/internal/task"
 )
 
 // Deps are the domain services the project-interface module orchestrates. The
@@ -16,35 +17,51 @@ import (
 // logic: it binds trusted context, authorizes, and maps errors (runtime
 // protocol §1, deletion test).
 type Deps struct {
-	DB               *store.DB
-	Graph            *blackboard.GraphService
-	Grants           *GrantStore
-	ArtifactRoot     string
-	RuntimeRoot      string
-	OperatorRoots    []string
-	EvidenceFailures EvidenceFailureInjector
+	DB                 *store.DB
+	Graph              *blackboard.GraphService
+	Grants             *GrantStore
+	Tasks              *task.Service
+	Clock              Clock
+	IDs                IDSource
+	ArtifactRoot       string
+	RuntimeRoot        string
+	OperatorRoots      []string
+	EvidenceFailures   EvidenceFailureInjector
+	CheckpointFailures CheckpointFailureInjector
 }
 
-// Service is the transport-neutral owner of the six Runtime capabilities. I01
-// implements Apply Mutation, Resolve Records, and Current Runtime Graph; I03
-// adds Retain Evidence. Checkpoint Attempt and Finish Continuation land in I04.
+// Service is the transport-neutral owner of the six Runtime capabilities:
+// Apply Mutation, Resolve Records, Current Runtime Graph, Retain Evidence,
+// Checkpoint Attempt, and Finish Continuation.
 type Service struct {
-	db               *store.DB
-	graph            *blackboard.GraphService
-	grants           *GrantStore
-	artifactRoot     string
-	runtimeRoot      string
-	operatorRoots    []string
-	evidenceFailures EvidenceFailureInjector
+	db                 *store.DB
+	graph              *blackboard.GraphService
+	grants             *GrantStore
+	tasks              *task.Service
+	clock              Clock
+	ids                IDSource
+	artifactRoot       string
+	runtimeRoot        string
+	operatorRoots      []string
+	evidenceFailures   EvidenceFailureInjector
+	checkpointFailures CheckpointFailureInjector
 }
 
 // NewService wires a Service from its domain dependencies.
 func NewService(deps Deps) *Service {
+	if deps.Clock == nil {
+		deps.Clock = SystemClock{}
+	}
+	if deps.IDs == nil {
+		deps.IDs = RandomIDSource{}
+	}
 	return &Service{
-		db: deps.DB, graph: deps.Graph, grants: deps.Grants,
+		db: deps.DB, graph: deps.Graph, grants: deps.Grants, tasks: deps.Tasks,
+		clock: deps.Clock, ids: deps.IDs,
 		artifactRoot: deps.ArtifactRoot, runtimeRoot: deps.RuntimeRoot,
-		operatorRoots:    append([]string(nil), deps.OperatorRoots...),
-		evidenceFailures: deps.EvidenceFailures,
+		operatorRoots:      append([]string(nil), deps.OperatorRoots...),
+		evidenceFailures:   deps.EvidenceFailures,
+		checkpointFailures: deps.CheckpointFailures,
 	}
 }
 
@@ -118,6 +135,7 @@ type ApplyMutationRequest struct {
 	ProtocolVersion    int                 `json:"protocol_version"`
 	Batch              RequestBatch        `json:"batch"`
 	SourceEventIDsByOp map[string][]string `json:"source_event_ids_by_op,omitempty"`
+	attemptCheckpoint  bool
 }
 
 // ApplyMutationResponse is the canonical Apply success envelope (runtime
@@ -165,7 +183,7 @@ func (s *Service) Apply(ctx context.Context, principal Principal, req ApplyMutat
 	if err := validateNoProvenanceInBatch(req.Batch); err != nil {
 		return ApplyMutationResponse{}, err
 	}
-	if err := s.authorizeApply(ctx, principal, req.Batch.Operations); err != nil {
+	if err := s.authorizeApply(ctx, principal, req.Batch.Operations, req.attemptCheckpoint); err != nil {
 		return ApplyMutationResponse{}, err
 	}
 
@@ -185,6 +203,7 @@ func (s *Service) Apply(ctx context.Context, principal Principal, req ApplyMutat
 		execCtx.ContinuationID = principal.Grant.ContinuationID
 		execCtx.RuntimeProfileID = principal.Grant.RuntimeProfileID
 		execCtx.Runner = principal.Grant.Runner
+		execCtx.InterfaceGrantID = principal.Grant.ID
 	}
 	batch := blackboard.MutationBatch{
 		SchemaVersion:      req.Batch.SchemaVersion,
@@ -576,7 +595,7 @@ var provenancePropertyKeys = []string{
 // authorizeApply enforces the runtime-protocol §5 actor eligibility table at
 // the project-interface seam. The graph remains the final semantic validator,
 // but forbidden actor/operation combinations never reach graph Apply.
-func (s *Service) authorizeApply(ctx context.Context, principal Principal, operations []blackboard.Operation) *Error {
+func (s *Service) authorizeApply(ctx context.Context, principal Principal, operations []blackboard.Operation, attemptCheckpoint bool) *Error {
 	if principal.ActorType != blackboard.ActorTypeRuntime && principal.ActorType != blackboard.ActorTypeOperator {
 		return ValidationError(ErrCodeActorForbidden, "actor type cannot use the project interface", "authorization")
 	}
@@ -601,6 +620,8 @@ func (s *Service) authorizeApply(ctx context.Context, principal Principal, opera
 			reason = "Goal mutations are reserved for the Goal projector or migration"
 		case nodeType == blackboard.NodeTypeAttempt && op.Kind == blackboard.OpTransitionNode && op.Transition.Status == "interrupted":
 			reason = "Attempt interruption is reserved for system reconciliation"
+		case nodeType == blackboard.NodeTypeAttempt && op.Kind == blackboard.OpPatchNode && !attemptCheckpoint:
+			reason = "Attempt summary patches must use Checkpoint Attempt"
 		case genericAvailableEvidenceMutation(op) && (nodeType == blackboard.NodeTypeEvidenceArtifact || nodeType == ""):
 			reason = "available Evidence must use Retain Evidence"
 		case principal.ActorType == blackboard.ActorTypeRuntime && nodeType == blackboard.NodeTypeProjectDirective && !runtimeDirectiveProposal(op):

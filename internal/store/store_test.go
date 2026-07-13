@@ -251,6 +251,7 @@ func TestOpenDefaultsCanonicalStoreToLegacyV1(t *testing.T) {
 		"blackboard_edges",
 		"blackboard_edge_versions",
 		"blackboard_edge_heads",
+		"blackboard_attempt_checkpoint_requests",
 	} {
 		if !tableExists(t, db.DB, table) {
 			t.Fatalf("expected table %s", table)
@@ -278,6 +279,11 @@ func TestOpenDefaultsCanonicalStoreToLegacyV1(t *testing.T) {
 		{"task_events", "continuation_id"},
 		{"task_events", "attempt_node_id"},
 		{"task_summary_versions", "continuation_id"},
+		{"task_summary_versions", "objective_outcome_json"},
+		{"task_summary_versions", "blackboard_graph_revision"},
+		{"task_summary_versions", "blackboard_mutation_sequence"},
+		{"task_summary_versions", "finish_idempotency_key"},
+		{"task_summary_versions", "finish_request_hash"},
 		{"task_continuations", "runtime_config_version_id"},
 		{"task_continuations", "blackboard_graph_revision"},
 		{"task_continuations", "blackboard_renderer_version"},
@@ -288,6 +294,10 @@ func TestOpenDefaultsCanonicalStoreToLegacyV1(t *testing.T) {
 		{"task_continuations", "blackboard_reconciliation_status"},
 		{"task_continuations", "blackboard_reconciliation_mutation_id"},
 		{"task_continuations", "blackboard_reconciled_at"},
+		{"task_continuations", "blackboard_finish_summary_version_id"},
+		{"task_continuations", "blackboard_finish_graph_revision"},
+		{"task_continuations", "blackboard_finish_mutation_sequence"},
+		{"task_continuations", "blackboard_finished_at"},
 	} {
 		if !columnExists(t, db.DB, col.table, col.column) {
 			t.Fatalf("expected column %s.%s", col.table, col.column)

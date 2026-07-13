@@ -59,11 +59,12 @@ type ScopeSnapshot = project.Scope
 type EventKind string
 
 const (
-	EventKindRuntimeOutput EventKind = "runtime_output"
-	EventKindStatus        EventKind = "status"
-	EventKindSteering      EventKind = "steering"
-	EventKindConversation  EventKind = "conversation"
-	EventKindLifecycle     EventKind = "lifecycle"
+	EventKindRuntimeOutput        EventKind = "runtime_output"
+	EventKindStatus               EventKind = "status"
+	EventKindSteering             EventKind = "steering"
+	EventKindConversation         EventKind = "conversation"
+	EventKindLifecycle            EventKind = "lifecycle"
+	EventKindBlackboardCheckpoint EventKind = "blackboard_checkpoint"
 )
 
 // EventPayload is the structured payload of a task event. Keep it compact.
@@ -74,6 +75,7 @@ type Event struct {
 	ID             string       `json:"id"`
 	TaskID         string       `json:"task_id"`
 	ContinuationID string       `json:"continuation_id,omitempty"`
+	AttemptNodeID  string       `json:"attempt_node_id,omitempty"`
 	Seq            int          `json:"seq"`
 	Kind           EventKind    `json:"kind"`
 	Payload        EventPayload `json:"payload"`
@@ -108,22 +110,26 @@ type ContinuationSnapshotPin struct {
 // Runtime-specific run instance that later Stop/Resume controls will own.
 type TaskContinuation struct {
 	ContinuationSnapshotPin
-	ID                string     `json:"id"`
-	TaskID            string     `json:"task_id"`
-	Number            int        `json:"number"`
-	RuntimeProfileID  string     `json:"runtime_profile_id"`
-	RuntimeProvider   string     `json:"runtime_provider"`
-	Runner            Runner     `json:"runner"`
-	Status            Status     `json:"status"`
-	ContainerID       string     `json:"container_id,omitempty"`
-	NativeSessionID   string     `json:"native_session_id,omitempty"`
-	NativeSessionPath string     `json:"native_session_path,omitempty"`
-	StartedAt         time.Time  `json:"started_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
-	EndedAt           *time.Time `json:"ended_at,omitempty"`
+	ID                               string     `json:"id"`
+	TaskID                           string     `json:"task_id"`
+	Number                           int        `json:"number"`
+	RuntimeProfileID                 string     `json:"runtime_profile_id"`
+	RuntimeProvider                  string     `json:"runtime_provider"`
+	Runner                           Runner     `json:"runner"`
+	Status                           Status     `json:"status"`
+	ContainerID                      string     `json:"container_id,omitempty"`
+	NativeSessionID                  string     `json:"native_session_id,omitempty"`
+	NativeSessionPath                string     `json:"native_session_path,omitempty"`
+	StartedAt                        time.Time  `json:"started_at"`
+	UpdatedAt                        time.Time  `json:"updated_at"`
+	EndedAt                          *time.Time `json:"ended_at,omitempty"`
+	BlackboardFinishSummaryVersionID string     `json:"blackboard_finish_summary_version_id,omitempty"`
+	BlackboardFinishGraphRevision    int        `json:"blackboard_finish_graph_revision,omitempty"`
+	BlackboardFinishMutationSequence int        `json:"blackboard_finish_mutation_sequence,omitempty"`
+	BlackboardFinishedAt             *time.Time `json:"blackboard_finished_at,omitempty"`
 }
 
-const continuationSelectColumns = `id, task_id, number, runtime_profile_id, runtime_provider, runner, status, container_id, native_session_id, native_session_path, started_at, updated_at, ended_at, runtime_config_version_id, blackboard_graph_revision, blackboard_renderer_version, blackboard_estimator_version, blackboard_projection_hash, blackboard_projection_bytes, blackboard_projection_estimated_tokens`
+const continuationSelectColumns = `id, task_id, number, runtime_profile_id, runtime_provider, runner, status, container_id, native_session_id, native_session_path, started_at, updated_at, ended_at, runtime_config_version_id, blackboard_graph_revision, blackboard_renderer_version, blackboard_estimator_version, blackboard_projection_hash, blackboard_projection_bytes, blackboard_projection_estimated_tokens, blackboard_finish_summary_version_id, blackboard_finish_graph_revision, blackboard_finish_mutation_sequence, blackboard_finished_at`
 
 type RuntimeControls struct {
 	NativeResumeAvailable   bool   `json:"native_resume_available"`
@@ -145,12 +151,18 @@ type ReconcileInterruptedResult struct {
 }
 
 type SummaryVersion struct {
-	ID          string    `json:"id"`
-	TaskID      string    `json:"task_id"`
-	Version     int       `json:"version"`
-	Summary     string    `json:"summary"`
-	SubmittedBy string    `json:"submitted_by,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID                         string          `json:"id"`
+	TaskID                     string          `json:"task_id"`
+	ContinuationID             string          `json:"continuation_id,omitempty"`
+	Version                    int             `json:"version"`
+	Summary                    string          `json:"summary"`
+	ObjectiveOutcome           json.RawMessage `json:"objective_outcome,omitempty"`
+	BlackboardGraphRevision    int             `json:"blackboard_graph_revision,omitempty"`
+	BlackboardMutationSequence int             `json:"blackboard_mutation_sequence,omitempty"`
+	FinishIdempotencyKey       string          `json:"finish_idempotency_key,omitempty"`
+	FinishRequestHash          string          `json:"-"`
+	SubmittedBy                string          `json:"submitted_by,omitempty"`
+	CreatedAt                  time.Time       `json:"created_at"`
 }
 
 // Task is a single user-goal-driven run within a project.
@@ -467,7 +479,7 @@ func (s *Service) appendEvent(taskID, continuationID string, kind EventKind, pay
 // Events returns the task timeline ordered by sequence.
 func (s *Service) Events(taskID string) ([]Event, error) {
 	rows, err := s.db.Query(
-		`SELECT id, task_id, continuation_id, seq, kind, payload_json, created_at FROM task_events WHERE task_id = ? ORDER BY seq ASC`,
+		`SELECT id, task_id, continuation_id, attempt_node_id, seq, kind, payload_json, created_at FROM task_events WHERE task_id = ? ORDER BY seq ASC`,
 		taskID,
 	)
 	if err != nil {
@@ -479,13 +491,15 @@ func (s *Service) Events(taskID string) ([]Event, error) {
 	for rows.Next() {
 		var event Event
 		var continuationID sql.NullString
+		var attemptNodeID sql.NullString
 		var kind string
 		var payloadJSON string
 		var createdAt string
-		if err := rows.Scan(&event.ID, &event.TaskID, &continuationID, &event.Seq, &kind, &payloadJSON, &createdAt); err != nil {
+		if err := rows.Scan(&event.ID, &event.TaskID, &continuationID, &attemptNodeID, &event.Seq, &kind, &payloadJSON, &createdAt); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
 		}
 		event.ContinuationID = continuationID.String
+		event.AttemptNodeID = attemptNodeID.String
 		event.Kind = EventKind(kind)
 		if err := json.Unmarshal([]byte(payloadJSON), &event.Payload); err != nil {
 			return nil, fmt.Errorf("decode event payload: %w", err)
@@ -833,7 +847,9 @@ func (s *Service) SummaryVersions(taskID string) ([]SummaryVersion, error) {
 	}
 
 	rows, err := s.db.Query(
-		`SELECT id, task_id, version, summary, submitted_by, created_at
+		`SELECT id, task_id, continuation_id, version, summary, objective_outcome_json,
+		        blackboard_graph_revision, blackboard_mutation_sequence,
+		        finish_idempotency_key, finish_request_hash, submitted_by, created_at
 		 FROM task_summary_versions WHERE task_id = ? ORDER BY version ASC`,
 		taskID,
 	)
@@ -845,9 +861,20 @@ func (s *Service) SummaryVersions(taskID string) ([]SummaryVersion, error) {
 	var versions []SummaryVersion
 	for rows.Next() {
 		var version SummaryVersion
+		var continuationID sql.NullString
+		var objectiveOutcome string
 		var createdAt string
-		if err := rows.Scan(&version.ID, &version.TaskID, &version.Version, &version.Summary, &version.SubmittedBy, &createdAt); err != nil {
+		if err := rows.Scan(
+			&version.ID, &version.TaskID, &continuationID, &version.Version,
+			&version.Summary, &objectiveOutcome, &version.BlackboardGraphRevision,
+			&version.BlackboardMutationSequence, &version.FinishIdempotencyKey,
+			&version.FinishRequestHash, &version.SubmittedBy, &createdAt,
+		); err != nil {
 			return nil, fmt.Errorf("scan task summary: %w", err)
+		}
+		version.ContinuationID = continuationID.String
+		if objectiveOutcome != "" {
+			version.ObjectiveOutcome = json.RawMessage(objectiveOutcome)
 		}
 		if version.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt); err != nil {
 			return nil, fmt.Errorf("parse created_at: %w", err)
@@ -1043,6 +1070,7 @@ func scanContinuation(row scanner) (TaskContinuation, error) {
 	var startedAt string
 	var updatedAt string
 	var endedAt string
+	var blackboardFinishedAt string
 	var runtimeConfigVersionID sql.NullString
 	var graphRevision, projectionBytes, estimatedTokens sql.NullInt64
 
@@ -1067,6 +1095,10 @@ func scanContinuation(row scanner) (TaskContinuation, error) {
 		&found.BlackboardProjectionHash,
 		&projectionBytes,
 		&estimatedTokens,
+		&found.BlackboardFinishSummaryVersionID,
+		&found.BlackboardFinishGraphRevision,
+		&found.BlackboardFinishMutationSequence,
+		&blackboardFinishedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TaskContinuation{}, ErrNotFound
@@ -1100,6 +1132,13 @@ func scanContinuation(row scanner) (TaskContinuation, error) {
 			return TaskContinuation{}, fmt.Errorf("parse ended_at: %w", err)
 		}
 		found.EndedAt = &parsed
+	}
+	if blackboardFinishedAt != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, blackboardFinishedAt)
+		if err != nil {
+			return TaskContinuation{}, fmt.Errorf("parse blackboard_finished_at: %w", err)
+		}
+		found.BlackboardFinishedAt = &parsed
 	}
 	return found, nil
 }

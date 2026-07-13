@@ -73,6 +73,56 @@
         }
       }
     },
+    "/api/projects/{project_id}/blackboard/attempts:checkpoint": {
+      "post": {
+        "operationId": "checkpointBlackboardAttemptV1",
+        "summary": "Append a durable Attempt checkpoint Event and update its summary",
+        "security": [{"continuationGrant": []}],
+        "parameters": [{"$ref": "#/components/parameters/ProjectID"}],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CheckpointAttemptV1"}}}
+        },
+        "responses": {
+          "200": {"description": "Checkpointed or exact replay", "headers": {"Cache-Control": {"schema": {"const": "no-store"}}}, "content": {"application/json": {"schema": {"type": "object"}}}},
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "403": {"$ref": "#/components/responses/Error"},
+          "404": {"$ref": "#/components/responses/Error"},
+          "409": {"$ref": "#/components/responses/Error"},
+          "422": {"$ref": "#/components/responses/Error"},
+          "500": {"$ref": "#/components/responses/Error"},
+          "503": {"$ref": "#/components/responses/RetryableError"}
+        }
+      }
+    },
+    "/api/projects/{project_id}/tasks/{task_id}/continuations/{continuation_id}:finish": {
+      "post": {
+        "operationId": "finishContinuationV1",
+        "summary": "Store the Continuation Task Summary and close later Runtime writes",
+        "security": [{"continuationGrant": []}],
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectID"},
+          {"name": "task_id", "in": "path", "required": true, "schema": {"type": "string", "minLength": 1}},
+          {"name": "continuation_id", "in": "path", "required": true, "schema": {"type": "string", "minLength": 1}}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FinishContinuationV1"}}}
+        },
+        "responses": {
+          "200": {"description": "Finished or exact replay", "headers": {"Cache-Control": {"schema": {"const": "no-store"}}}, "content": {"application/json": {"schema": {"type": "object"}}}},
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "403": {"$ref": "#/components/responses/Error"},
+          "404": {"$ref": "#/components/responses/Error"},
+          "409": {"$ref": "#/components/responses/Error"},
+          "422": {"$ref": "#/components/responses/Error"},
+          "500": {"$ref": "#/components/responses/Error"},
+          "503": {"$ref": "#/components/responses/RetryableError"}
+        }
+      }
+    },
     "/api/projects/{project_id}/blackboard/runtime-graph": {
       "get": {
         "operationId": "getCurrentRuntimeGraphV1",
@@ -156,11 +206,50 @@
           "links": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["edge_type", "to"], "properties": {"edge_type": {"enum": ["evidences", "about"]}, "to": {"$ref": "#/components/schemas/NodeLookupV1"}}}}
         }
       },
+      "CheckpointAttemptV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["protocol_version", "idempotency_key", "attempt", "expected_version", "summary"],
+        "properties": {
+          "protocol_version": {"const": 1},
+          "idempotency_key": {"type": "string", "minLength": 1},
+          "attempt": {"$ref": "#/components/schemas/NodeLookupV1"},
+          "expected_version": {"type": "integer", "minimum": 1},
+          "summary": {"type": "string", "minLength": 1}
+        }
+      },
+      "FinishContinuationV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["protocol_version", "idempotency_key", "summary"],
+        "properties": {
+          "protocol_version": {"const": 1},
+          "idempotency_key": {"type": "string", "minLength": 1},
+          "summary": {"type": "string", "minLength": 1},
+          "objective_outcome": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["objective", "status"],
+            "properties": {
+              "objective": {"$ref": "#/components/schemas/NodeLookupV1"},
+              "status": {"enum": ["supported", "contradicted", "inconclusive", "blocked"]},
+              "supporting_node_refs": {"type": "array", "items": {"$ref": "#/components/schemas/ObjectiveOutcomeSupportingRefV1"}}
+            }
+          }
+        }
+      },
       "NodeLookupV1": {
         "type": "object",
         "additionalProperties": false,
         "properties": {"id": {"type": "string"}, "node_type": {"type": "string"}, "stable_key": {"type": "string"}},
         "oneOf": [{"required": ["id"]}, {"required": ["node_type", "stable_key"]}]
+      },
+      "ObjectiveOutcomeSupportingRefV1": {
+        "description": "An ID must resolve to a Project Fact, Finding, or Evidence Artifact; keyed references are restricted to those node types.",
+        "allOf": [
+          {"$ref": "#/components/schemas/NodeLookupV1"},
+          {"type": "object", "properties": {"node_type": {"enum": ["project_fact", "finding", "evidence_artifact"]}}}
+        ]
       },
       "ApplyMutationResultV1": {"allOf": [{"$ref": "#/components/schemas/SuccessEnvelopeV1"}, {"type": "object", "required": ["result"], "properties": {"request_kind": {"const": "apply"}, "result": {"type": "object"}}}]},
       "RetainEvidenceResultV1": {"allOf": [{"$ref": "#/components/schemas/SuccessEnvelopeV1"}, {"type": "object", "required": ["result"], "properties": {"request_kind": {"const": "retain_evidence"}, "result": {"type": "object", "required": ["node", "edges", "managed_path", "sha256", "size_bytes", "mutation"]}}}]},

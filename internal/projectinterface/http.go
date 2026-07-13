@@ -133,6 +133,65 @@ func (h *HTTPHandler) RetainEvidence(response http.ResponseWriter, request *http
 	writeJSON(response, http.StatusOK, result)
 }
 
+// CheckpointAttempt handles POST
+// /api/projects/{project_id}/blackboard/attempts:checkpoint.
+func (h *HTTPHandler) CheckpointAttempt(response http.ResponseWriter, request *http.Request) {
+	principal, authErr := h.AuthenticateRequest(request)
+	if authErr != nil {
+		writeProjectInterfaceError(response, authErr)
+		return
+	}
+	var req CheckpointAttemptRequest
+	if decodeErr := decodeStrictJSON(request, &req); decodeErr != nil {
+		writeProjectInterfaceError(response, &Error{Code: ErrCodeInvalidRequest, Message: decodeErr.Error(), Path: "body"})
+		return
+	}
+	result, err := h.service.CheckpointAttempt(request.Context(), principal, req)
+	if err != nil {
+		writeProjectInterfaceError(response, AsError(err))
+		return
+	}
+	response.Header().Set("Cache-Control", "no-store")
+	writeJSON(response, http.StatusOK, result)
+}
+
+// FinishContinuation handles POST
+// /api/projects/{project_id}/tasks/{task_id}/continuations/{continuation_id}:finish.
+func (h *HTTPHandler) FinishContinuation(response http.ResponseWriter, request *http.Request) {
+	principal, authErr := h.AuthenticateRequest(request)
+	if authErr != nil {
+		writeProjectInterfaceError(response, authErr)
+		return
+	}
+	continuationID := request.PathValue("continuation_id")
+	if continuationID == "" {
+		action := request.PathValue("continuation_action")
+		var ok bool
+		continuationID, ok = strings.CutSuffix(action, ":finish")
+		if !ok || continuationID == "" {
+			writeProjectInterfaceError(response, ValidationError(ErrCodeInvalidRequest, "Finish path must end in :finish", "path"))
+			return
+		}
+	}
+	if principal.isRuntime() && (request.PathValue("task_id") != principal.Grant.TaskID || continuationID != principal.Grant.ContinuationID) {
+		writeProjectInterfaceError(response, ValidationError(ErrCodeProjectMismatch,
+			"Finish path Task or Continuation does not match the grant", "path"))
+		return
+	}
+	var req FinishContinuationRequest
+	if decodeErr := decodeStrictJSON(request, &req); decodeErr != nil {
+		writeProjectInterfaceError(response, &Error{Code: ErrCodeInvalidRequest, Message: decodeErr.Error(), Path: "body"})
+		return
+	}
+	result, err := h.service.FinishContinuation(request.Context(), principal, req)
+	if err != nil {
+		writeProjectInterfaceError(response, AsError(err))
+		return
+	}
+	response.Header().Set("Cache-Control", "no-store")
+	writeJSON(response, http.StatusOK, result)
+}
+
 // ResolveRecords handles POST /api/projects/{project_id}/blackboard/records:resolve.
 func (h *HTTPHandler) ResolveRecords(response http.ResponseWriter, request *http.Request) {
 	principal, authErr := h.AuthenticateRequest(request)
@@ -240,6 +299,8 @@ func httpStatusFor(err *Error) int {
 		if status, _ := err.Details["grant_status"].(string); status == string(GrantStatusRevoked) {
 			return http.StatusForbidden
 		}
+		return http.StatusConflict
+	case ErrCodeContinuationOpenAttempts, ErrCodeContinuationFinishConflict:
 		return http.StatusConflict
 	case ErrCodeEvidenceSourceChanged:
 		return http.StatusConflict

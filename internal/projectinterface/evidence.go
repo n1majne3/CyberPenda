@@ -97,6 +97,9 @@ func (s *Service) RetainEvidence(ctx context.Context, principal Principal, req R
 		return RetainEvidenceResponse{}, err
 	}
 	grantStatus := GrantStatusOpen
+	scope := evidenceIdempotencyScope(principal)
+	var row evidenceRequestRow
+	var existed bool
 	if principal.isRuntime() {
 		current, err := s.currentGrant(ctx, principal)
 		if err != nil {
@@ -105,6 +108,15 @@ func (s *Service) RetainEvidence(ctx context.Context, principal Principal, req R
 		grantStatus = current.Status()
 		if !grantStatus.IsReadable() {
 			return RetainEvidenceResponse{}, continuationClosedError(grantStatus)
+		}
+		if !grantStatus.IsWriteable() {
+			row, existed, err = s.readEvidenceRequest(ctx, principal.projectID(), scope, req.IdempotencyKey)
+			if err != nil {
+				return RetainEvidenceResponse{}, err
+			}
+			if !existed {
+				return RetainEvidenceResponse{}, continuationClosedError(grantStatus)
+			}
 		}
 	}
 
@@ -119,18 +131,7 @@ func (s *Service) RetainEvidence(ctx context.Context, principal Principal, req R
 	if err != nil {
 		return RetainEvidenceResponse{}, InternalError(err.Error())
 	}
-	scope := evidenceIdempotencyScope(principal)
-	var row evidenceRequestRow
-	var existed bool
-	if principal.isRuntime() && !grantStatus.IsWriteable() {
-		row, existed, err = s.readEvidenceRequest(ctx, principal.projectID(), scope, req.IdempotencyKey)
-		if err != nil {
-			return RetainEvidenceResponse{}, err
-		}
-		if !existed {
-			return RetainEvidenceResponse{}, continuationClosedError(grantStatus)
-		}
-	} else {
+	if !principal.isRuntime() || grantStatus.IsWriteable() {
 		row, existed, err = s.reserveEvidenceRequest(ctx, principal.projectID(), scope, req.IdempotencyKey, requestHash, source)
 	}
 	if err != nil {
@@ -645,8 +646,20 @@ func (s *Service) applyRetainedEvidence(ctx context.Context, principal Principal
 	execCtx := blackboard.ExecutionContext{ProjectID: principal.projectID(), ProjectKind: projectKind, ActorType: principal.ActorType, ActorID: principal.ActorID}
 	if principal.isRuntime() {
 		execCtx.TaskID, execCtx.ContinuationID, execCtx.RuntimeProfileID, execCtx.Runner = principal.Grant.TaskID, principal.Grant.ContinuationID, principal.Grant.RuntimeProfileID, principal.Grant.Runner
+		execCtx.InterfaceGrantID = principal.Grant.ID
 	}
-	result, err := s.graph.Apply(ctx, blackboard.MutationBatch{SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "retain-evidence:" + req.IdempotencyKey, Context: execCtx, Operations: operations})
+	batch := blackboard.MutationBatch{SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "retain-evidence:" + req.IdempotencyKey, Context: execCtx, Operations: operations}
+	// Retain Evidence is a compound saga and calls the graph service directly.
+	// Probe its exact graph replay before the in-transaction new-write grant
+	// gate so recovery can finish storing the compound result after Finish.
+	if principal.isRuntime() {
+		if replay, found, err := s.graph.ReplayResult(ctx, batch); err != nil {
+			return blackboard.MutationResult{}, mapGraphError(err)
+		} else if found {
+			return replay, nil
+		}
+	}
+	result, err := s.graph.Apply(ctx, batch)
 	if err != nil {
 		return blackboard.MutationResult{}, mapGraphError(err)
 	}

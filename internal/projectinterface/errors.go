@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // tokenEncoding is unpadded base64url: safe in Authorization headers, query
@@ -33,6 +34,12 @@ const (
 	// grant finished, was revoked, or became terminal. Exact replay and reads
 	// remain available.
 	ErrCodeContinuationClosed = "continuation_closed"
+	// ErrCodeContinuationOpenAttempts rejects Finish while canonical main
+	// Attempts created by the current Continuation remain open.
+	ErrCodeContinuationOpenAttempts = "continuation_open_attempts"
+	// ErrCodeContinuationFinishConflict rejects reuse of a Finish idempotency
+	// key with a changed summary or Objective Outcome.
+	ErrCodeContinuationFinishConflict = "continuation_finish_conflict"
 	// ErrCodeContinuationContextRequired is a task-only operation lacking a
 	// valid Continuation grant.
 	ErrCodeContinuationContextRequired = "continuation_context_required"
@@ -89,6 +96,22 @@ func ValidationError(code, message, path string) *Error {
 // §12.4: 500 is reserved for unexpected internal/integrity failures).
 func InternalError(message string) *Error {
 	return &Error{ProtocolVersion: RuntimeProtocolVersion, Code: ErrCodeInternal, Message: message, Path: "internal"}
+}
+
+func persistenceError(action string, err error) *Error {
+	message := action + ": " + err.Error()
+	lower := strings.ToLower(message)
+	if strings.Contains(lower, "database is locked") || strings.Contains(lower, "database is busy") ||
+		strings.Contains(lower, "sqlite_busy") || strings.Contains(lower, "sqlite_locked") {
+		return &Error{
+			ProtocolVersion: RuntimeProtocolVersion,
+			Code:            ErrCodeStorageBusy,
+			Message:         "SQLite writer lock is busy",
+			Path:            "storage",
+			Retryable:       true,
+		}
+	}
+	return InternalError(message)
 }
 
 // ErrCodeInternal is the interface code for unexpected internal/integrity

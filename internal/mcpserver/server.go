@@ -59,7 +59,7 @@ func New(deps Deps) *sdkmcp.Server {
 	}, nil)
 
 	// A Continuation Interface Grant is authoritative for one Project and only
-	// the three graph-native capabilities. Never register compatibility tools
+	// the six graph-native capabilities. Never register compatibility tools
 	// that accept caller-supplied project_id on a grant-authenticated session.
 	if deps.ProjectInterface != nil && (deps.Principal != nil || deps.PrincipalError != nil) {
 		registerProjectInterfaceTools(server, deps)
@@ -334,6 +334,38 @@ func New(deps Deps) *sdkmcp.Server {
 // requests get continuation_context_required.
 func registerProjectInterfaceTools(server *sdkmcp.Server, deps Deps) {
 	sdkmcp.AddTool(server, &sdkmcp.Tool{
+		Name:        "blackboard_checkpoint_attempt",
+		Description: projectinterface.TrustedToolDescription("blackboard_checkpoint_attempt"),
+	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args blackboardCheckpointAttemptArgs) (*sdkmcp.CallToolResult, any, error) {
+		_ = req
+		principal, principalErr := deps.requirePrincipal()
+		if principalErr != nil {
+			return toolProjectInterfaceError(principalErr)
+		}
+		result, checkpointErr := deps.ProjectInterface.CheckpointAttempt(ctx, *principal, projectinterface.CheckpointAttemptRequest(args))
+		if checkpointErr != nil {
+			return toolProjectInterfaceError(projectinterface.AsError(checkpointErr))
+		}
+		return toolJSON(result)
+	})
+
+	sdkmcp.AddTool(server, &sdkmcp.Tool{
+		Name:        "blackboard_finish_continuation",
+		Description: projectinterface.TrustedToolDescription("blackboard_finish_continuation"),
+	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args blackboardFinishContinuationArgs) (*sdkmcp.CallToolResult, any, error) {
+		_ = req
+		principal, principalErr := deps.requirePrincipal()
+		if principalErr != nil {
+			return toolProjectInterfaceError(principalErr)
+		}
+		result, finishErr := deps.ProjectInterface.FinishContinuation(ctx, *principal, projectinterface.FinishContinuationRequest(args))
+		if finishErr != nil {
+			return toolProjectInterfaceError(projectinterface.AsError(finishErr))
+		}
+		return toolJSON(result)
+	})
+
+	sdkmcp.AddTool(server, &sdkmcp.Tool{
 		Name:        "blackboard_retain_evidence",
 		Description: projectinterface.TrustedToolDescription("blackboard_retain_evidence"),
 	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args blackboardRetainEvidenceArgs) (*sdkmcp.CallToolResult, any, error) {
@@ -446,6 +478,10 @@ type blackboardApplyArgs struct {
 }
 
 type blackboardRetainEvidenceArgs projectinterface.RetainEvidenceRequest
+
+type blackboardCheckpointAttemptArgs projectinterface.CheckpointAttemptRequest
+
+type blackboardFinishContinuationArgs projectinterface.FinishContinuationRequest
 
 type blackboardResolveRecordsArgs struct {
 	ProtocolVersion int                           `json:"protocol_version" jsonschema:"protocol version, always 1"`

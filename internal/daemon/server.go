@@ -222,7 +222,7 @@ func NewServer(config Config) (*Server, error) {
 		server.projectInterfaceGrants = projectinterface.NewGrantStore(db, projectinterface.SystemClock{}, projectinterface.RandomIDSource{}, projectinterface.RandomTokenSource{})
 		server.tasks.SetContinuationTerminalMarker(server.projectInterfaceGrants)
 		server.projectInterface = projectinterface.NewService(projectinterface.Deps{
-			DB: db, Graph: graph, Grants: server.projectInterfaceGrants,
+			DB: db, Graph: graph, Grants: server.projectInterfaceGrants, Tasks: server.tasks,
 			ArtifactRoot: artifactRoot, RuntimeRoot: runtimeRoot,
 			OperatorRoots: config.EvidenceSourceRoots,
 		})
@@ -516,6 +516,10 @@ func (server *Server) routes() {
 		server.mux.HandleFunc("POST /api/projects/{id}/blackboard/mutations", server.projectInterfaceHTTP.Apply)
 		server.mux.HandleFunc("POST /api/projects/{id}/blackboard/records:resolve", server.projectInterfaceHTTP.ResolveRecords)
 		server.mux.HandleFunc("POST /api/projects/{id}/blackboard/evidence:retain", server.projectInterfaceHTTP.RetainEvidence)
+		server.mux.HandleFunc("POST /api/projects/{id}/blackboard/attempts:checkpoint", server.projectInterfaceHTTP.CheckpointAttempt)
+		// net/http patterns cannot suffix a wildcard with ":finish". Capture the
+		// final segment and let the adapter validate/remove that exact suffix.
+		server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/continuations/{continuation_action}", server.projectInterfaceHTTP.FinishContinuation)
 	}
 	server.mux.HandleFunc("GET /api/projects/{id}/blackboard/records/{node_id}", server.handleBlackboardRecordDetail)
 	server.mux.HandleFunc("GET /api/projects/{id}/blackboard/records/{node_id}/history", server.handleBlackboardRecordHistory)

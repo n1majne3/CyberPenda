@@ -255,7 +255,70 @@ func migrations() []migration {
 		newMigration(10, "blackboard_health_run_requests", migration10SQL, migration10Up),
 		newMigration(11, "continuation_interface_grants", migration11SQL, migration11Up),
 		newMigration(12, "project_interface_evidence_requests", migration12SQL, migration12Up),
+		newMigration(13, "continuation_finish", migration13SQL, migration13Up),
+		newMigration(14, "attempt_checkpoint_requests", migration14SQL, migration14Up),
 	}
+}
+
+// migration14SQL persists the Task Event chosen for one checkpoint request
+// before graph Apply runs. An empty result_json means the Event is durable and
+// the same request must resume/replay Apply on retry.
+const migration14SQL = `
+CREATE TABLE blackboard_attempt_checkpoint_requests (
+ project_id TEXT NOT NULL,
+ continuation_id TEXT NOT NULL,
+ idempotency_key TEXT NOT NULL,
+ request_hash TEXT NOT NULL,
+ event_id TEXT NOT NULL,
+ attempt_node_id TEXT NOT NULL,
+ result_json TEXT NOT NULL DEFAULT '',
+ created_at TEXT NOT NULL,
+ updated_at TEXT NOT NULL,
+ PRIMARY KEY(project_id,continuation_id,idempotency_key),
+ UNIQUE(event_id)
+);
+`
+
+func migration14Up(tx *sql.Tx) error { return execStatements(tx, migration14SQL) }
+
+// migration13SQL adds the durable Finish marker owned by the Task domain. The
+// finish request identity and graph position live with the Continuation-bound
+// Task Summary Version so an exact replay can be returned after the grant is
+// write-closed.
+const migration13SQL = `
+-- task_summary_versions.objective_outcome_json TEXT NOT NULL DEFAULT ''
+-- task_summary_versions.blackboard_graph_revision INTEGER NOT NULL DEFAULT 0
+-- task_summary_versions.blackboard_mutation_sequence INTEGER NOT NULL DEFAULT 0
+-- task_summary_versions.finish_idempotency_key TEXT NOT NULL DEFAULT ''
+-- task_summary_versions.finish_request_hash TEXT NOT NULL DEFAULT ''
+-- task_continuations.blackboard_finish_summary_version_id TEXT NOT NULL DEFAULT ''
+-- task_continuations.blackboard_finish_graph_revision INTEGER NOT NULL DEFAULT 0
+-- task_continuations.blackboard_finish_mutation_sequence INTEGER NOT NULL DEFAULT 0
+-- task_continuations.blackboard_finished_at TEXT NOT NULL DEFAULT ''
+CREATE UNIQUE INDEX IF NOT EXISTS ux_task_summary_versions_continuation_finish
+	ON task_summary_versions (continuation_id, finish_idempotency_key)
+	WHERE continuation_id IS NOT NULL AND continuation_id <> '' AND finish_idempotency_key <> '';
+`
+
+func migration13Up(tx *sql.Tx) error {
+	for _, column := range []struct {
+		table, name, definition string
+	}{
+		{"task_summary_versions", "objective_outcome_json", "TEXT NOT NULL DEFAULT ''"},
+		{"task_summary_versions", "blackboard_graph_revision", "INTEGER NOT NULL DEFAULT 0"},
+		{"task_summary_versions", "blackboard_mutation_sequence", "INTEGER NOT NULL DEFAULT 0"},
+		{"task_summary_versions", "finish_idempotency_key", "TEXT NOT NULL DEFAULT ''"},
+		{"task_summary_versions", "finish_request_hash", "TEXT NOT NULL DEFAULT ''"},
+		{"task_continuations", "blackboard_finish_summary_version_id", "TEXT NOT NULL DEFAULT ''"},
+		{"task_continuations", "blackboard_finish_graph_revision", "INTEGER NOT NULL DEFAULT 0"},
+		{"task_continuations", "blackboard_finish_mutation_sequence", "INTEGER NOT NULL DEFAULT 0"},
+		{"task_continuations", "blackboard_finished_at", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := ensureColumn(tx, column.table, column.name, column.definition); err != nil {
+			return fmt.Errorf("ensure %s.%s: %w", column.table, column.name, err)
+		}
+	}
+	return execStatements(tx, migration13SQL)
 }
 
 // migration12SQL stores the cross-domain Retain Evidence saga checkpoint. It

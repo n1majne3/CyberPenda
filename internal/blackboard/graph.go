@@ -636,6 +636,16 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 						}
 						props[key] = value
 					}
+				case NodeTypeAttempt:
+					if stringProp(props, "status") != "open" {
+						return MutationResult{}, validationError(ErrCodeInvalidTransition, "only an open Attempt may be checkpointed", i, op.OpID, "operations[].patch")
+					}
+					for key, value := range op.Patch.Properties {
+						if key != "summary" {
+							return MutationResult{}, validationError(ErrCodeImmutableField, "Attempt checkpoints may patch only summary", i, op.OpID, "operations[].patch.properties."+key)
+						}
+						props[key] = value
+					}
 				default:
 					return MutationResult{}, validationError(ErrCodeInvalidRequest, "patch_node is not supported for this node type", i, op.OpID, "operations[].kind")
 				}

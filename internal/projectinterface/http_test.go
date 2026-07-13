@@ -22,8 +22,82 @@ func newHTTPMux(fixture serviceFixture) http.Handler {
 	mux.HandleFunc("POST /api/projects/{id}/blackboard/mutations", handler.Apply)
 	mux.HandleFunc("POST /api/projects/{id}/blackboard/records:resolve", handler.ResolveRecords)
 	mux.HandleFunc("POST /api/projects/{id}/blackboard/evidence:retain", handler.RetainEvidence)
+	mux.HandleFunc("POST /api/projects/{id}/blackboard/attempts:checkpoint", handler.CheckpointAttempt)
+	mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/continuations/{continuation_action}", handler.FinishContinuation)
 	mux.HandleFunc("GET /api/projects/{id}/blackboard/runtime-graph", handler.CurrentGraph)
 	return mux
+}
+
+func TestProjectInterfaceHTTPCheckpointAndFinishAreReplaySafe(t *testing.T) {
+	fixture := newServiceFixture(t)
+	ctx := context.Background()
+	principal, err := fixture.service.Authenticate(ctx, fixture.token, fixture.project.ID)
+	if err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	prepareRetainEvidenceAttempt(t, fixture, principal, "http-finish")
+	server := httptest.NewServer(newHTTPMux(fixture))
+	t.Cleanup(server.Close)
+	post := func(path string, body []byte) (int, []byte) {
+		t.Helper()
+		request, err := http.NewRequest(http.MethodPost, server.URL+path, bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("create HTTP request: %v", err)
+		}
+		request.Header.Set("Authorization", "Bearer "+fixture.token)
+		request.Header.Set("Content-Type", "application/json")
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatalf("HTTP request: %v", err)
+		}
+		defer response.Body.Close()
+		var payload bytes.Buffer
+		_, _ = payload.ReadFrom(response.Body)
+		return response.StatusCode, payload.Bytes()
+	}
+	checkpointBody, _ := json.Marshal(projectinterface.CheckpointAttemptRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+		IdempotencyKey:  "checkpoint:http-finish",
+		Attempt:         blackboard.NodeRef{NodeType: blackboard.NodeTypeAttempt, StableKey: "attempt:http-finish"},
+		ExpectedVersion: 1,
+		Summary:         "HTTP checkpoint before Finish.",
+	})
+	checkpointPath := "/api/projects/" + fixture.project.ID + "/blackboard/attempts:checkpoint"
+	status, firstCheckpoint := post(checkpointPath, checkpointBody)
+	if status != http.StatusOK {
+		t.Fatalf("checkpoint status = %d body=%s", status, firstCheckpoint)
+	}
+	status, replayCheckpoint := post(checkpointPath, checkpointBody)
+	if status != http.StatusOK || !bytes.Equal(firstCheckpoint, replayCheckpoint) {
+		t.Fatalf("checkpoint replay status=%d\nfirst %s\nreplay %s", status, firstCheckpoint, replayCheckpoint)
+	}
+	if _, err := fixture.service.Apply(ctx, principal, projectinterface.ApplyMutationRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+		Batch: projectinterface.RequestBatch{
+			SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "http-finish:terminal",
+			Operations: []blackboard.Operation{{
+				OpID: "terminal", Kind: blackboard.OpTransitionNode,
+				Node:       blackboard.NodeRef{NodeType: blackboard.NodeTypeAttempt, StableKey: "attempt:http-finish"},
+				Transition: blackboard.TransitionNodeInput{ExpectedVersion: 2, Status: "failed", Summary: "HTTP flow failed safely."},
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("terminal Attempt: %v", err)
+	}
+	finishBody, _ := json.Marshal(projectinterface.FinishContinuationRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+		IdempotencyKey:  "finish:http",
+		Summary:         "HTTP Finish stored a compact handoff.",
+	})
+	finishPath := "/api/projects/" + fixture.project.ID + "/tasks/" + fixture.task.ID + "/continuations/" + fixture.continuation.ID + ":finish"
+	status, firstFinish := post(finishPath, finishBody)
+	if status != http.StatusOK {
+		t.Fatalf("Finish status = %d body=%s", status, firstFinish)
+	}
+	status, replayFinish := post(finishPath, finishBody)
+	if status != http.StatusOK || !bytes.Equal(firstFinish, replayFinish) {
+		t.Fatalf("Finish replay status=%d\nfirst %s\nreplay %s", status, firstFinish, replayFinish)
+	}
 }
 
 func TestProjectInterfaceHTTPRetainsEvidenceThroughCanonicalRoute(t *testing.T) {

@@ -213,6 +213,10 @@ type ExecutionContext struct {
 	ContinuationID   string    `json:"continuation_id,omitempty"`
 	RuntimeProfileID string    `json:"runtime_profile_id,omitempty"`
 	Runner           string    `json:"runner,omitempty"`
+	// InterfaceGrantID is trusted project-interface context used only to
+	// revalidate the selected Continuation Interface Grant after Apply holds the
+	// SQLite writer lock. It is never caller JSON or graph provenance.
+	InterfaceGrantID string `json:"-"`
 	restoreManifest  *RestoreManifest
 	compactionPlan   *CompactionPlan
 }
@@ -513,6 +517,7 @@ const (
 	ErrCodeMergeTypeMismatch        = "merge_type_mismatch"
 	ErrCodeMergeConflict            = "merge_conflict"
 	ErrCodeArchiveGuardFailed       = "archive_guard_failed"
+	ErrCodeContinuationClosed       = "continuation_closed"
 )
 
 // validationError builds a ValidationError at the given operation index.

@@ -45,6 +45,41 @@ func validateExecutionContext(tx *sql.Tx, ec ExecutionContext) error {
 	if taskID != ec.TaskID || profileID != ec.RuntimeProfileID || runner != ec.Runner {
 		return validationError(ErrCodeProvenanceSpoofed, "Runtime provenance does not match the durable Continuation", -1, "", "context")
 	}
+	if ec.InterfaceGrantID != "" {
+		var grantProjectID, grantTaskID, grantContinuationID, grantProfileID, grantRunner, grantActorID string
+		var finishedAt, revokedAt, terminalAt string
+		err := tx.QueryRow(`
+			SELECT project_id,task_id,continuation_id,runtime_profile_id,runner,actor_id,
+			       finished_at,revoked_at,terminal_at
+			FROM blackboard_continuation_grants WHERE grant_id=?`, ec.InterfaceGrantID).Scan(
+			&grantProjectID, &grantTaskID, &grantContinuationID, &grantProfileID, &grantRunner, &grantActorID,
+			&finishedAt, &revokedAt, &terminalAt,
+		)
+		if errors.Is(err, sql.ErrNoRows) {
+			return validationError(ErrCodeProvenanceSpoofed, "Continuation Interface Grant does not exist", -1, "", "context.interface_grant_id")
+		}
+		if err != nil {
+			return fmt.Errorf("validate Continuation Interface Grant: %w", err)
+		}
+		if grantProjectID != ec.ProjectID || grantTaskID != ec.TaskID || grantContinuationID != ec.ContinuationID ||
+			grantProfileID != ec.RuntimeProfileID || grantRunner != ec.Runner || grantActorID != ec.ActorID {
+			return validationError(ErrCodeProvenanceSpoofed, "Continuation Interface Grant does not match trusted Runtime provenance", -1, "", "context.interface_grant_id")
+		}
+		status := "open"
+		switch {
+		case revokedAt != "":
+			status = "revoked"
+		case terminalAt != "":
+			status = "terminal"
+		case finishedAt != "":
+			status = "finished"
+		}
+		if status != "open" {
+			closed := validationError(ErrCodeContinuationClosed, "Continuation Interface Grant is closed to new writes", -1, "", "authorization")
+			closed.Details = map[string]any{"grant_status": status}
+			return closed
+		}
+	}
 	return nil
 }
 

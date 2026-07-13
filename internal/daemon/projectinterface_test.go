@@ -340,10 +340,12 @@ func TestProjectInterfaceDaemonMCPApplyAndCurrentGraph(t *testing.T) {
 		t.Fatalf("list grant-authenticated MCP tools: %v", err)
 	}
 	allowed := map[string]bool{
-		"blackboard_apply":             true,
-		"blackboard_resolve_records":   true,
-		"blackboard_get_current_graph": true,
-		"blackboard_retain_evidence":   true,
+		"blackboard_apply":               true,
+		"blackboard_resolve_records":     true,
+		"blackboard_get_current_graph":   true,
+		"blackboard_retain_evidence":     true,
+		"blackboard_checkpoint_attempt":  true,
+		"blackboard_finish_continuation": true,
 	}
 	for _, tool := range tools.Tools {
 		if !allowed[tool.Name] {
