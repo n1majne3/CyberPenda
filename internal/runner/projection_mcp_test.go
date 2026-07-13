@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"pentest/internal/adapters"
 	"pentest/internal/blackboard"
 	"pentest/internal/project"
 	"pentest/internal/projectinterface"
@@ -142,6 +143,77 @@ func TestNativeResumeContextSupersedesHistoricalSnapshotBlocks(t *testing.T) {
 	}
 	if strings.Count(resume, string(graph)) != 1 {
 		t.Fatalf("native resume context duplicated or omitted the exact graph: %s", resume)
+	}
+}
+
+func TestBuiltinRuntimeLaunchAndResumeArgsCarryExactCanonicalMainGraphContext(t *testing.T) {
+	canonicalGraph := []byte(`{"schema_version":1,"project_id":"project-1","project_kind":"pentest","graph_revision":42,"nodes":[],"edges":[],"frontier_node_ids":[],"current_truth_node_ids":[]}`)
+	for _, plugin := range runtimeplugin.BuiltinPlugins() {
+		if plugin.ID == "fake" {
+			continue
+		}
+		plugin := plugin
+		t.Run(plugin.ID, func(t *testing.T) {
+			provider := runtimeprofile.Provider(plugin.ID)
+			ctx := projectinterface.RuntimeBlackboardContextV1{
+				ProtocolVersion: projectinterface.RuntimeProtocolVersion, ProtocolRuleDigest: projectinterface.RuntimeProtocolRuleDigest(),
+				ProjectID: "project-1", TaskID: "task-1", ContinuationID: "continuation-1",
+				RuntimeConfigVersionID: "config-1", RuntimeProfileID: "profile-1", RuntimePluginID: plugin.ID,
+				Runner: "sandbox", ScopePath: ".pentest/scope.json", BlackboardPath: ".pentest/blackboard.json",
+				BlackboardGraphRevision: 42, BlackboardRendererVersion: blackboard.CanonicalMainGraphRendererV1,
+				BlackboardEstimatorVersion: blackboard.UTF8BytesDiv4EstimatorV1,
+				BlackboardProjectionHash:   "projection-hash", BlackboardProjectionBytes: len(canonicalGraph),
+				BlackboardEstimatedTokens: (len(canonicalGraph) + 3) / 4,
+			}
+			profile := runtimeprofile.Profile{Provider: provider, Fields: runtimeprofile.Fields{Model: "test-model", Env: map[string]string{"PI_PROVIDER_ID": "test-provider"}}}
+			launchContext := projectinterface.CanonicalRuntimeLaunchContext(ctx, canonicalGraph, false) + "\n\nTASK GOAL:\ncontinue the task"
+			launchArgs, err := adapters.BuildLaunchArgs(adapters.LaunchArgsRequest{
+				Provider: provider, Profile: profile, Goal: launchContext,
+				ConfigPath: "/task/runtime-config", MCPConfigPath: "/task/mcp-config", Sandbox: true,
+			})
+			if err != nil {
+				t.Fatalf("render launch args: %v", err)
+			}
+			assertRenderedAdapterContext(t, launchArgs, launchContext, canonicalGraph)
+
+			resumeContext := projectinterface.CanonicalRuntimeLaunchContext(ctx, canonicalGraph, true) + "\n\nTASK GOAL:\ncontinue the task"
+			resumeArgs, err := adapters.BuildNativeResumeArgs(adapters.NativeResumeArgsRequest{
+				Provider: provider, Profile: profile, NativeSessionID: "session-1", ResumedMessage: resumeContext,
+				ConfigPath: "/task/runtime-config", MCPConfigPath: "/task/mcp-config",
+			})
+			if err != nil {
+				t.Fatalf("render resume args: %v", err)
+			}
+			assertRenderedAdapterContext(t, resumeArgs, resumeContext, canonicalGraph)
+		})
+	}
+}
+
+func assertRenderedAdapterContext(t *testing.T, args []string, wantContext string, wantGraph []byte) {
+	t.Helper()
+	var rendered string
+	for _, arg := range args {
+		if arg == wantContext {
+			rendered = arg
+			break
+		}
+	}
+	if rendered == "" {
+		t.Fatalf("adapter args omit canonical launch context: %q", args)
+	}
+	for _, required := range []string{
+		"Blackboard Runtime Protocol v1",
+		projectinterface.RuntimeProtocolRuleDigest(),
+		string(wantGraph),
+	} {
+		if !strings.Contains(rendered, required) {
+			t.Fatalf("rendered adapter context is missing %q", required)
+		}
+	}
+	graphStart := strings.Index(rendered, "\n{"+`"schema_version"`)
+	graphEnd := strings.Index(rendered, "\n<<< END CURRENT CONTINUATION SNAPSHOT >>>")
+	if graphStart < 0 || graphEnd <= graphStart || !bytes.Equal([]byte(rendered[graphStart+1:graphEnd]), wantGraph) {
+		t.Fatalf("adapter did not reconstruct exact CanonicalMainGraphV1 bytes: %q", rendered)
 	}
 }
 
