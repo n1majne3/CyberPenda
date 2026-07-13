@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"pentest/internal/blackboard"
+	"pentest/internal/blackboardcompat"
 	"pentest/internal/credential"
 	"pentest/internal/modelprovider"
 	"pentest/internal/preflight"
@@ -96,6 +97,7 @@ type Server struct {
 	facts              *blackboard.Service
 	reads              *blackboard.BlackboardReadService
 	graph              *blackboard.GraphService
+	compatibility      *blackboardcompat.Service
 	// projectInterface is the graph-native Runtime project-interface module
 	// (runtime protocol §1). It is wired only while the store epoch has
 	// activated the graph Blackboard (graph_v1), so graph data stays dark
@@ -225,6 +227,10 @@ func NewServer(config Config) (*Server, error) {
 			DB: db, Graph: graph, Grants: server.projectInterfaceGrants, Tasks: server.tasks,
 			ArtifactRoot: artifactRoot, RuntimeRoot: runtimeRoot,
 			OperatorRoots: config.EvidenceSourceRoots,
+		})
+		server.compatibility = blackboardcompat.NewService(blackboardcompat.Deps{
+			DB: db, Graph: graph, Reads: server.reads,
+			ProjectInterface: server.projectInterface, Tasks: server.tasks,
 		})
 		server.tasks.SetContinuationReconciler(server.projectInterface)
 		server.projectInterfaceHTTP = projectinterface.NewHTTPHandler(server.projectInterface).
@@ -391,13 +397,28 @@ func (server *Server) authorized(request *http.Request) bool {
 	// A Continuation Interface Grant is a separate, narrower credential from
 	// the daemon operator token. Accept it only on the trusted project-interface
 	// transports; the adapter then enforces the bound Project and capability.
-	if server.projectInterface != nil && isProjectInterfaceTransport(request) {
+	if server.projectInterface != nil && (isProjectInterfaceTransport(request) || (server.compatibility != nil && isCompatibilityWriteHTTPTransport(request))) {
 		if token := projectinterface.BearerToken(request); token != "" {
 			_, err := server.projectInterface.Authenticate(request.Context(), token, "")
 			return err == nil
 		}
 	}
 	return false
+}
+
+func isCompatibilityWriteHTTPTransport(request *http.Request) bool {
+	if !strings.HasPrefix(request.URL.Path, "/api/projects/") {
+		return false
+	}
+	path := request.URL.Path
+	switch request.Method {
+	case http.MethodPut:
+		return strings.Contains(path, "/facts/") || strings.Contains(path, "/findings/") || strings.HasSuffix(path, "/summary")
+	case http.MethodPost:
+		return strings.HasSuffix(path, "/evidence") || strings.HasSuffix(path, "/report") || strings.HasSuffix(path, "/facts/merge") || strings.HasSuffix(path, "/findings/merge")
+	default:
+		return false
+	}
 }
 
 func isProjectInterfaceTransport(request *http.Request) bool {

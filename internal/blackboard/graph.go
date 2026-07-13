@@ -636,6 +636,20 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 						}
 						props[key] = value
 					}
+				case NodeTypeProjectFact:
+					for key, value := range op.Patch.Properties {
+						if key == "confidence" {
+							return MutationResult{}, validationError(ErrCodeImmutableField, "Project Fact confidence changes require transition_node", i, op.OpID, "operations[].patch.properties.confidence")
+						}
+						props[key] = value
+					}
+				case NodeTypeFinding:
+					for key, value := range op.Patch.Properties {
+						if key == "status" {
+							return MutationResult{}, validationError(ErrCodeImmutableField, "Finding status changes require transition_node", i, op.OpID, "operations[].patch.properties.status")
+						}
+						props[key] = value
+					}
 				case NodeTypeAttempt:
 					if stringProp(props, "status") != "open" {
 						return MutationResult{}, validationError(ErrCodeInvalidTransition, "only an open Attempt may be checkpointed", i, op.OpID, "operations[].patch")

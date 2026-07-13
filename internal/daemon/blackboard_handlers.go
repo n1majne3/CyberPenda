@@ -1,12 +1,13 @@
 package daemon
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 
 	"pentest/internal/blackboard"
+	"pentest/internal/blackboardcompat"
 	"pentest/internal/project"
+	"pentest/internal/projectinterface"
 	"pentest/internal/report"
 )
 
@@ -18,6 +19,15 @@ import (
 func (server *Server) serveLegacyRead(response http.ResponseWriter, request *http.Request, readRequest blackboard.ReadRequest) bool {
 	if server.reads == nil {
 		return false
+	}
+	if server.compatibility != nil {
+		setCompatibilityHeaders(response)
+		if kind := blackboardcompat.ReadCallKind(readRequest.Kind); kind != "" {
+			if err := server.compatibility.RecordUse(request.Context(), blackboardcompat.Use{ProjectID: readRequest.ProjectID, Transport: blackboardcompat.TransportHTTP, Kind: kind, Mode: blackboardcompat.UseModeRead}); err != nil {
+				writeCompatibilityError(response, err)
+				return true
+			}
+		}
 	}
 	readRequest.ProtocolVersion = blackboard.BlackboardReadProtocolVersion
 	envelope, err := server.reads.Read(request.Context(), readRequest)
@@ -39,7 +49,7 @@ func (server *Server) serveLegacyRead(response http.ResponseWriter, request *htt
 func (server *Server) handleUpsertProjectFact(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
 	factKey := request.PathValue("fact_key")
-	if !server.requireProject(response, projectID) {
+	if !server.requireCompatibilityProject(response, request, projectID) {
 		return
 	}
 	if factKey == "" {
@@ -48,22 +58,54 @@ func (server *Server) handleUpsertProjectFact(response http.ResponseWriter, requ
 	}
 
 	var input struct {
-		FactKey     string                 `json:"fact_key"`
-		Category    string                 `json:"category"`
-		Summary     string                 `json:"summary"`
-		Body        string                 `json:"body"`
-		Confidence  blackboard.Confidence  `json:"confidence"`
-		ScopeStatus blackboard.ScopeStatus `json:"scope_status"`
+		FactKey         string                 `json:"fact_key"`
+		Category        string                 `json:"category"`
+		Summary         string                 `json:"summary"`
+		Body            string                 `json:"body"`
+		Confidence      blackboard.Confidence  `json:"confidence"`
+		ScopeStatus     blackboard.ScopeStatus `json:"scope_status"`
+		ExpectedVersion *int                   `json:"expected_version,omitempty"`
+		IdempotencyKey  string                 `json:"idempotency_key,omitempty"`
 	}
-	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
-		writeError(response, http.StatusBadRequest, "invalid JSON body")
+	if !server.decodeCompatibilityJSON(response, request, &input) {
 		return
 	}
 	if input.FactKey == "" {
 		input.FactKey = factKey
 	}
 	if input.FactKey != factKey {
-		writeError(response, http.StatusBadRequest, "fact key path and body must match")
+		if server.compatibility != nil {
+			writeCompatibilityError(response, projectinterface.ValidationError(projectinterface.ErrCodeInvalidRequest, "fact key path and body must match", "fact_key"))
+		} else {
+			writeError(response, http.StatusBadRequest, "fact key path and body must match")
+		}
+		return
+	}
+	if server.compatibility != nil {
+		setCompatibilityHeaders(response)
+		principal, err := server.requestCompatibilityPrincipal(request, projectID)
+		if err != nil {
+			writeCompatibilityError(response, err)
+			return
+		}
+		idempotencyKey := request.Header.Get("Idempotency-Key")
+		if idempotencyKey == "" {
+			idempotencyKey = input.IdempotencyKey
+		}
+		result, err := server.compatibility.Call(request.Context(), blackboardcompat.LegacyCall{
+			Kind: blackboardcompat.CallUpsertFact, Transport: blackboardcompat.TransportHTTP,
+			ProjectID: projectID, Principal: principal, IdempotencyKey: idempotencyKey,
+			ExpectedVersion: input.ExpectedVersion,
+			Fact: &blackboardcompat.FactWrite{
+				FactKey: input.FactKey, Category: input.Category, Summary: input.Summary,
+				Body: input.Body, Confidence: string(input.Confidence), ScopeStatus: string(input.ScopeStatus),
+			},
+		})
+		if err != nil {
+			writeCompatibilityError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, result.Payload)
 		return
 	}
 
@@ -144,16 +186,39 @@ func (server *Server) handleGetProjectFact(response http.ResponseWriter, request
 // project-scoped like every other blackboard route.
 func (server *Server) handleMergeFacts(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
-	if !server.requireProject(response, projectID) {
+	if !server.requireCompatibilityProject(response, request, projectID) {
 		return
 	}
 
 	var input struct {
 		SourceFactKey    string `json:"source_fact_key"`
 		CanonicalFactKey string `json:"canonical_fact_key"`
+		IdempotencyKey   string `json:"idempotency_key,omitempty"`
 	}
-	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
-		writeError(response, http.StatusBadRequest, "invalid JSON body")
+	if !server.decodeCompatibilityJSON(response, request, &input) {
+		return
+	}
+	if server.compatibility != nil {
+		setCompatibilityHeaders(response)
+		principal, err := server.requestCompatibilityPrincipal(request, projectID)
+		if err != nil {
+			writeCompatibilityError(response, err)
+			return
+		}
+		key := request.Header.Get("Idempotency-Key")
+		if key == "" {
+			key = input.IdempotencyKey
+		}
+		result, err := server.compatibility.Call(request.Context(), blackboardcompat.LegacyCall{
+			Kind: blackboardcompat.CallMergeFacts, Transport: blackboardcompat.TransportHTTP,
+			ProjectID: projectID, Principal: principal, IdempotencyKey: key,
+			FactMerge: &blackboardcompat.MergeWrite{SourceKey: input.SourceFactKey, CanonicalKey: input.CanonicalFactKey},
+		})
+		if err != nil {
+			writeCompatibilityError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, result.Payload)
 		return
 	}
 
@@ -181,16 +246,39 @@ func (server *Server) handleMergeFacts(response http.ResponseWriter, request *ht
 // consolidated into the canonical key and becomes an alias of it (CONTEXT.md).
 func (server *Server) handleMergeFindings(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
-	if !server.requireProject(response, projectID) {
+	if !server.requireCompatibilityProject(response, request, projectID) {
 		return
 	}
 
 	var input struct {
 		SourceFindingKey    string `json:"source_finding_key"`
 		CanonicalFindingKey string `json:"canonical_finding_key"`
+		IdempotencyKey      string `json:"idempotency_key,omitempty"`
 	}
-	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
-		writeError(response, http.StatusBadRequest, "invalid JSON body")
+	if !server.decodeCompatibilityJSON(response, request, &input) {
+		return
+	}
+	if server.compatibility != nil {
+		setCompatibilityHeaders(response)
+		principal, err := server.requestCompatibilityPrincipal(request, projectID)
+		if err != nil {
+			writeCompatibilityError(response, err)
+			return
+		}
+		key := request.Header.Get("Idempotency-Key")
+		if key == "" {
+			key = input.IdempotencyKey
+		}
+		result, err := server.compatibility.Call(request.Context(), blackboardcompat.LegacyCall{
+			Kind: blackboardcompat.CallMergeFindings, Transport: blackboardcompat.TransportHTTP,
+			ProjectID: projectID, Principal: principal, IdempotencyKey: key,
+			FindingMerge: &blackboardcompat.MergeWrite{SourceKey: input.SourceFindingKey, CanonicalKey: input.CanonicalFindingKey},
+		})
+		if err != nil {
+			writeCompatibilityError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, result.Payload)
 		return
 	}
 
@@ -247,7 +335,7 @@ func (server *Server) handleProjectFactVersions(response http.ResponseWriter, re
 func (server *Server) handleUpsertFactRelation(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
 	factKey := request.PathValue("fact_key")
-	if !server.requireProject(response, projectID) {
+	if !server.requireCompatibilityProject(response, request, projectID) {
 		return
 	}
 	if factKey == "" {
@@ -256,12 +344,40 @@ func (server *Server) handleUpsertFactRelation(response http.ResponseWriter, req
 	}
 
 	var input struct {
-		TargetFactKey string `json:"target_fact_key"`
-		Relation      string `json:"relation"`
-		Summary       string `json:"summary"`
+		TargetFactKey   string `json:"target_fact_key"`
+		Relation        string `json:"relation"`
+		Summary         string `json:"summary"`
+		ExpectedVersion *int   `json:"expected_version,omitempty"`
+		IdempotencyKey  string `json:"idempotency_key,omitempty"`
 	}
-	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
-		writeError(response, http.StatusBadRequest, "invalid JSON body")
+	if !server.decodeCompatibilityJSON(response, request, &input) {
+		return
+	}
+	if server.compatibility != nil {
+		setCompatibilityHeaders(response)
+		principal, err := server.requestCompatibilityPrincipal(request, projectID)
+		if err != nil {
+			writeCompatibilityError(response, err)
+			return
+		}
+		idempotencyKey := request.Header.Get("Idempotency-Key")
+		if idempotencyKey == "" {
+			idempotencyKey = input.IdempotencyKey
+		}
+		result, err := server.compatibility.Call(request.Context(), blackboardcompat.LegacyCall{
+			Kind: blackboardcompat.CallPutFactRelation, Transport: blackboardcompat.TransportHTTP,
+			ProjectID: projectID, Principal: principal, IdempotencyKey: idempotencyKey,
+			ExpectedVersion: input.ExpectedVersion,
+			Relation: &blackboardcompat.FactRelationWrite{
+				SourceFactKey: factKey, TargetFactKey: input.TargetFactKey,
+				Relation: input.Relation, Summary: input.Summary,
+			},
+		})
+		if err != nil {
+			writeCompatibilityError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, result.Payload)
 		return
 	}
 
@@ -312,7 +428,7 @@ func (server *Server) handleFactRelations(response http.ResponseWriter, request 
 func (server *Server) handleUpsertFinding(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
 	findingKey := request.PathValue("finding_key")
-	if !server.requireProject(response, projectID) {
+	if !server.requireCompatibilityProject(response, request, projectID) {
 		return
 	}
 	if findingKey == "" {
@@ -321,18 +437,46 @@ func (server *Server) handleUpsertFinding(response http.ResponseWriter, request 
 	}
 
 	var input struct {
-		Title          string                   `json:"title"`
-		Description    string                   `json:"description"`
-		Status         blackboard.FindingStatus `json:"status"`
-		Target         string                   `json:"target"`
-		Proof          string                   `json:"proof"`
-		Impact         string                   `json:"impact"`
-		Recommendation string                   `json:"recommendation"`
-		CVSSVersion    string                   `json:"cvss_version"`
-		CVSSVector     string                   `json:"cvss_vector"`
+		Title           string                   `json:"title"`
+		Description     string                   `json:"description"`
+		Status          blackboard.FindingStatus `json:"status"`
+		Target          string                   `json:"target"`
+		Proof           string                   `json:"proof"`
+		Impact          string                   `json:"impact"`
+		Recommendation  string                   `json:"recommendation"`
+		CVSSVersion     string                   `json:"cvss_version"`
+		CVSSVector      string                   `json:"cvss_vector"`
+		ExpectedVersion *int                     `json:"expected_version,omitempty"`
+		IdempotencyKey  string                   `json:"idempotency_key,omitempty"`
 	}
-	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
-		writeError(response, http.StatusBadRequest, "invalid JSON body")
+	if !server.decodeCompatibilityJSON(response, request, &input) {
+		return
+	}
+	if server.compatibility != nil {
+		setCompatibilityHeaders(response)
+		principal, err := server.requestCompatibilityPrincipal(request, projectID)
+		if err != nil {
+			writeCompatibilityError(response, err)
+			return
+		}
+		key := request.Header.Get("Idempotency-Key")
+		if key == "" {
+			key = input.IdempotencyKey
+		}
+		result, err := server.compatibility.Call(request.Context(), blackboardcompat.LegacyCall{
+			Kind: blackboardcompat.CallUpsertFinding, Transport: blackboardcompat.TransportHTTP,
+			ProjectID: projectID, Principal: principal, IdempotencyKey: key, ExpectedVersion: input.ExpectedVersion,
+			Finding: &blackboardcompat.FindingWrite{
+				FindingKey: findingKey, Title: input.Title, Description: input.Description, Status: string(input.Status),
+				Target: input.Target, Proof: input.Proof, Impact: input.Impact, Recommendation: input.Recommendation,
+				CVSSVersion: input.CVSSVersion, CVSSVector: input.CVSSVector,
+			},
+		})
+		if err != nil {
+			writeCompatibilityError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, result.Payload)
 		return
 	}
 
@@ -434,21 +578,48 @@ func (server *Server) handleListEvidence(response http.ResponseWriter, request *
 
 func (server *Server) handleAttachEvidence(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
-	if !server.requireProject(response, projectID) {
+	if !server.requireCompatibilityProject(response, request, projectID) {
 		return
 	}
 
 	var input struct {
-		EvidenceKey  string                        `json:"evidence_key"`
-		AttachToType blackboard.EvidenceAttachType `json:"attach_to_type"`
-		AttachToKey  string                        `json:"attach_to_key"`
-		ArtifactType string                        `json:"artifact_type"`
-		SourcePath   string                        `json:"source_path"`
-		SHA256       string                        `json:"sha256"`
-		Summary      string                        `json:"summary"`
+		EvidenceKey     string                        `json:"evidence_key"`
+		AttachToType    blackboard.EvidenceAttachType `json:"attach_to_type"`
+		AttachToKey     string                        `json:"attach_to_key"`
+		ArtifactType    string                        `json:"artifact_type"`
+		SourcePath      string                        `json:"source_path"`
+		SHA256          string                        `json:"sha256"`
+		Summary         string                        `json:"summary"`
+		ExpectedVersion *int                          `json:"expected_version,omitempty"`
+		IdempotencyKey  string                        `json:"idempotency_key,omitempty"`
 	}
-	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
-		writeError(response, http.StatusBadRequest, "invalid JSON body")
+	if !server.decodeCompatibilityJSON(response, request, &input) {
+		return
+	}
+	if server.compatibility != nil {
+		setCompatibilityHeaders(response)
+		principal, err := server.requestCompatibilityPrincipal(request, projectID)
+		if err != nil {
+			writeCompatibilityError(response, err)
+			return
+		}
+		key := request.Header.Get("Idempotency-Key")
+		if key == "" {
+			key = input.IdempotencyKey
+		}
+		result, err := server.compatibility.Call(request.Context(), blackboardcompat.LegacyCall{
+			Kind: blackboardcompat.CallAttachEvidence, Transport: blackboardcompat.TransportHTTP,
+			ProjectID: projectID, Principal: principal, IdempotencyKey: key, ExpectedVersion: input.ExpectedVersion,
+			Evidence: &blackboardcompat.EvidenceWrite{
+				EvidenceKey: input.EvidenceKey, AttachToType: string(input.AttachToType), AttachToKey: input.AttachToKey,
+				ArtifactType: input.ArtifactType, SourcePath: input.SourcePath, Summary: input.Summary,
+			},
+		})
+		if err != nil {
+			writeCompatibilityError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, result.Payload)
 		return
 	}
 
@@ -471,12 +642,23 @@ func (server *Server) handleAttachEvidence(response http.ResponseWriter, request
 
 func (server *Server) handleReportTrigger(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
+	if server.compatibility != nil {
+		setCompatibilityHeaders(response)
+	}
 	if projectID == "" {
 		writeError(response, http.StatusNotFound, "project not found")
 		return
 	}
 	found, err := server.projects.Get(projectID)
 	if err != nil {
+		if server.compatibility != nil {
+			if errors.Is(err, project.ErrNotFound) {
+				writeCompatibilityError(response, projectinterface.ValidationError(projectinterface.ErrCodeProjectNotFound, "Project not found", "project_id"))
+			} else {
+				writeCompatibilityError(response, projectinterface.InternalError("load compatibility Project: "+err.Error()))
+			}
+			return
+		}
 		if errors.Is(err, project.ErrNotFound) {
 			writeError(response, http.StatusNotFound, err.Error())
 			return
@@ -489,11 +671,11 @@ func (server *Server) handleReportTrigger(response http.ResponseWriter, request 
 	// task id we render the full report derived from stored state; without one
 	// we fall back to the inventory stub.
 	var input struct {
-		TaskID string `json:"task_id"`
+		TaskID         string `json:"task_id"`
+		IdempotencyKey string `json:"idempotency_key,omitempty"`
 	}
 	if request.ContentLength > 0 {
-		if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
-			writeError(response, http.StatusBadRequest, "invalid JSON body")
+		if !server.decodeCompatibilityJSON(response, request, &input) {
 			return
 		}
 	}
@@ -502,22 +684,26 @@ func (server *Server) handleReportTrigger(response http.ResponseWriter, request 
 	// selects the task Scope; an absent task_id uses the current Scope. CTF
 	// Projects fail project_kind_mismatch rather than rendering a vuln report.
 	if server.reads != nil {
-		scopeContext := "current"
-		if input.TaskID != "" {
-			scopeContext = "task:" + input.TaskID
-		}
-		includeTrue := true
-		envelope, err := server.reads.Read(request.Context(), blackboard.ReadRequest{ProtocolVersion: blackboard.BlackboardReadProtocolVersion, ProjectID: projectID, Kind: blackboard.ReadKindPentestReportV1, PentestReport: &blackboard.PentestReportRequest{Format: "markdown", ScopeContext: scopeContext, IncludeUnconfirmed: &includeTrue, IncludeTentativeFacts: &includeTrue}})
+		setCompatibilityHeaders(response)
+		principal, err := server.requestCompatibilityPrincipal(request, projectID)
 		if err != nil {
-			writeBlackboardReadError(response, err)
+			writeCompatibilityError(response, err)
 			return
 		}
-		markdown, ok := envelope.Result.(blackboard.ReportMarkdownV1)
-		if !ok {
-			writeError(response, http.StatusInternalServerError, "report projection returned unexpected shape")
+		key := request.Header.Get("Idempotency-Key")
+		if key == "" {
+			key = input.IdempotencyKey
+		}
+		result, err := server.compatibility.Call(request.Context(), blackboardcompat.LegacyCall{
+			Kind: blackboardcompat.CallGenerateReport, Transport: blackboardcompat.TransportHTTP,
+			ProjectID: projectID, Principal: principal, IdempotencyKey: key,
+			Report: &blackboardcompat.ReportWrite{TaskID: input.TaskID},
+		})
+		if err != nil {
+			writeCompatibilityError(response, err)
 			return
 		}
-		writeJSON(response, http.StatusOK, blackboard.LegacyReportEnvelopeV1{Status: "generated", Format: "markdown", Markdown: markdown.Markdown})
+		writeJSON(response, http.StatusOK, result.Payload)
 		return
 	}
 

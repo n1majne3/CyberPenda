@@ -123,6 +123,122 @@
         }
       }
     },
+    "/api/projects/{project_id}/facts/{fact_key}": {
+      "put": {
+        "operationId": "compatibilityUpsertFactV1", "deprecated": true, "summary": "Legacy Fact write translated to the graph",
+        "security": [{"operatorBearer": []}, {"continuationGrant": []}],
+        "parameters": [{"$ref": "#/components/parameters/ProjectID"}, {"name": "fact_key", "in": "path", "required": true, "schema": {"type": "string", "minLength": 1}}, {"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LegacyFactWriteV1"}}}},
+        "responses": {"200": {"description": "Legacy Fact shape", "headers": {"Deprecation": {"$ref": "#/components/headers/Deprecation"}, "Link": {"$ref": "#/components/headers/DeprecationLink"}, "CyberPenda-Compatibility": {"$ref": "#/components/headers/Compatibility"}}, "content": {"application/json": {"schema": {"type": "object"}}}}, "400": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "422": {"$ref": "#/components/responses/Error"}, "500": {"$ref": "#/components/responses/Error"}}
+      },
+      "get": {
+        "operationId": "compatibilityGetFactV1", "deprecated": true, "summary": "Graph-backed legacy Fact projection",
+        "security": [{"operatorBearer": []}, {"continuationGrant": []}], "parameters": [{"$ref": "#/components/parameters/ProjectID"}, {"name": "fact_key", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "Legacy Fact shape", "headers": {"Deprecation": {"$ref": "#/components/headers/Deprecation"}, "Link": {"$ref": "#/components/headers/DeprecationLink"}, "CyberPenda-Compatibility": {"$ref": "#/components/headers/Compatibility"}}, "content": {"application/json": {"schema": {"type": "object"}}}}, "304": {"description": "Projection unchanged"}, "404": {"$ref": "#/components/responses/Error"}, "500": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/api/projects/{project_id}/facts/index": {
+      "get": {
+        "operationId": "compatibilityListFactsV1", "deprecated": true, "summary": "Graph-backed legacy Fact index",
+        "security": [{"operatorBearer": []}, {"continuationGrant": []}], "parameters": [{"$ref": "#/components/parameters/ProjectID"}],
+        "responses": {"200": {"description": "Legacy Fact index", "headers": {"Deprecation": {"$ref": "#/components/headers/Deprecation"}, "Link": {"$ref": "#/components/headers/DeprecationLink"}, "CyberPenda-Compatibility": {"$ref": "#/components/headers/Compatibility"}}, "content": {"application/json": {"schema": {"type": "object"}}}}, "304": {"description": "Projection unchanged"}, "404": {"$ref": "#/components/responses/Error"}, "500": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/api/projects/{project_id}/facts/{fact_key}/versions": {
+      "get": {
+        "operationId": "compatibilityListFactVersionsV1", "deprecated": true, "summary": "Graph-backed legacy Fact versions",
+        "security": [{"operatorBearer": []}, {"continuationGrant": []}], "parameters": [{"$ref": "#/components/parameters/ProjectID"}, {"name": "fact_key", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "Legacy Fact versions", "headers": {"Deprecation": {"$ref": "#/components/headers/Deprecation"}, "Link": {"$ref": "#/components/headers/DeprecationLink"}, "CyberPenda-Compatibility": {"$ref": "#/components/headers/Compatibility"}}, "content": {"application/json": {"schema": {"type": "object"}}}}, "304": {"description": "Projection unchanged"}, "404": {"$ref": "#/components/responses/Error"}, "500": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/api/projects/{project_id}/facts/{fact_key}/relations": {
+      "put": {
+        "operationId": "compatibilityPutFactRelationV1", "deprecated": true, "summary": "Legacy relation write translated to a graph edge",
+        "security": [{"operatorBearer": []}, {"continuationGrant": []}],
+        "parameters": [{"$ref": "#/components/parameters/ProjectID"}, {"name": "fact_key", "in": "path", "required": true, "schema": {"type": "string"}}, {"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LegacyRelationWriteV1"}}}},
+        "responses": {"200": {"description": "Legacy relation shape", "headers": {"Deprecation": {"$ref": "#/components/headers/Deprecation"}, "Link": {"$ref": "#/components/headers/DeprecationLink"}, "CyberPenda-Compatibility": {"$ref": "#/components/headers/Compatibility"}}, "content": {"application/json": {"schema": {"type": "object"}}}}, "400": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "422": {"$ref": "#/components/responses/Error"}, "500": {"$ref": "#/components/responses/Error"}}
+      },
+      "get": {
+        "operationId": "compatibilityListFactRelationsV1", "deprecated": true, "summary": "Graph-backed legacy Fact relations",
+        "security": [{"operatorBearer": []}, {"continuationGrant": []}], "parameters": [{"$ref": "#/components/parameters/ProjectID"}, {"name": "fact_key", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "Legacy relation collection", "headers": {"Deprecation": {"$ref": "#/components/headers/Deprecation"}, "Link": {"$ref": "#/components/headers/DeprecationLink"}, "CyberPenda-Compatibility": {"$ref": "#/components/headers/Compatibility"}}, "content": {"application/json": {"schema": {"type": "object"}}}}, "304": {"description": "Projection unchanged"}, "404": {"$ref": "#/components/responses/Error"}, "500": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/api/projects/{project_id}/facts/merge": {
+      "post": {
+        "operationId": "compatibilityMergeFactsV1", "deprecated": true, "summary": "Legacy Fact merge translated to merge_nodes",
+        "security": [{"operatorBearer": []}, {"continuationGrant": []}], "parameters": [{"$ref": "#/components/parameters/ProjectID"}, {"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LegacyFactMergeWriteV1"}}}},
+        "responses": {"200": {"description": "Legacy merge result", "headers": {"Deprecation": {"$ref": "#/components/headers/Deprecation"}, "Link": {"$ref": "#/components/headers/DeprecationLink"}, "CyberPenda-Compatibility": {"$ref": "#/components/headers/Compatibility"}}, "content": {"application/json": {"schema": {"type": "object"}}}}, "400": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "422": {"$ref": "#/components/responses/Error"}, "500": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/api/projects/{project_id}/findings/{finding_key}": {
+      "put": {
+        "operationId": "compatibilityUpsertFindingV1", "deprecated": true, "summary": "Legacy Finding write translated to the graph",
+        "security": [{"operatorBearer": []}, {"continuationGrant": []}],
+        "parameters": [{"$ref": "#/components/parameters/ProjectID"}, {"name": "finding_key", "in": "path", "required": true, "schema": {"type": "string"}}, {"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LegacyFindingWriteV1"}}}},
+        "responses": {"200": {"description": "Legacy Finding shape", "headers": {"Deprecation": {"$ref": "#/components/headers/Deprecation"}, "Link": {"$ref": "#/components/headers/DeprecationLink"}, "CyberPenda-Compatibility": {"$ref": "#/components/headers/Compatibility"}}, "content": {"application/json": {"schema": {"type": "object"}}}}, "400": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "422": {"$ref": "#/components/responses/Error"}, "500": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/api/projects/{project_id}/findings": {
+      "get": {
+        "operationId": "compatibilityListFindingsV1", "deprecated": true, "summary": "Graph-backed legacy Finding collection",
+        "security": [{"operatorBearer": []}, {"continuationGrant": []}], "parameters": [{"$ref": "#/components/parameters/ProjectID"}],
+        "responses": {"200": {"description": "Legacy Finding collection", "headers": {"Deprecation": {"$ref": "#/components/headers/Deprecation"}, "Link": {"$ref": "#/components/headers/DeprecationLink"}, "CyberPenda-Compatibility": {"$ref": "#/components/headers/Compatibility"}}, "content": {"application/json": {"schema": {"type": "object"}}}}, "304": {"description": "Projection unchanged"}, "404": {"$ref": "#/components/responses/Error"}, "500": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/api/projects/{project_id}/findings/{finding_key}/versions": {
+      "get": {
+        "operationId": "compatibilityListFindingVersionsV1", "deprecated": true, "summary": "Graph-backed legacy Finding versions",
+        "security": [{"operatorBearer": []}, {"continuationGrant": []}], "parameters": [{"$ref": "#/components/parameters/ProjectID"}, {"name": "finding_key", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "Legacy Finding versions", "headers": {"Deprecation": {"$ref": "#/components/headers/Deprecation"}, "Link": {"$ref": "#/components/headers/DeprecationLink"}, "CyberPenda-Compatibility": {"$ref": "#/components/headers/Compatibility"}}, "content": {"application/json": {"schema": {"type": "object"}}}}, "304": {"description": "Projection unchanged"}, "404": {"$ref": "#/components/responses/Error"}, "500": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/api/projects/{project_id}/findings/merge": {
+      "post": {
+        "operationId": "compatibilityMergeFindingsV1", "deprecated": true, "summary": "Legacy Finding merge translated to merge_nodes",
+        "security": [{"operatorBearer": []}, {"continuationGrant": []}], "parameters": [{"$ref": "#/components/parameters/ProjectID"}, {"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LegacyFindingMergeWriteV1"}}}},
+        "responses": {"200": {"description": "Legacy merge result", "headers": {"Deprecation": {"$ref": "#/components/headers/Deprecation"}, "Link": {"$ref": "#/components/headers/DeprecationLink"}, "CyberPenda-Compatibility": {"$ref": "#/components/headers/Compatibility"}}, "content": {"application/json": {"schema": {"type": "object"}}}}, "400": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "422": {"$ref": "#/components/responses/Error"}, "500": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/api/projects/{project_id}/evidence": {
+      "post": {
+        "operationId": "compatibilityAttachEvidenceV1", "deprecated": true, "summary": "Legacy Evidence write translated to retained Evidence",
+        "security": [{"operatorBearer": []}, {"continuationGrant": []}], "parameters": [{"$ref": "#/components/parameters/ProjectID"}, {"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LegacyEvidenceWriteV1"}}}},
+        "responses": {"200": {"description": "Legacy Evidence shape", "headers": {"Deprecation": {"$ref": "#/components/headers/Deprecation"}, "Link": {"$ref": "#/components/headers/DeprecationLink"}, "CyberPenda-Compatibility": {"$ref": "#/components/headers/Compatibility"}}, "content": {"application/json": {"schema": {"type": "object"}}}}, "400": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "422": {"$ref": "#/components/responses/Error"}, "500": {"$ref": "#/components/responses/Error"}}
+      },
+      "get": {
+        "operationId": "compatibilityListEvidenceV1", "deprecated": true, "summary": "Graph-backed legacy Evidence collection",
+        "security": [{"operatorBearer": []}, {"continuationGrant": []}], "parameters": [{"$ref": "#/components/parameters/ProjectID"}],
+        "responses": {"200": {"description": "Legacy Evidence collection", "headers": {"Deprecation": {"$ref": "#/components/headers/Deprecation"}, "Link": {"$ref": "#/components/headers/DeprecationLink"}, "CyberPenda-Compatibility": {"$ref": "#/components/headers/Compatibility"}}, "content": {"application/json": {"schema": {"type": "object"}}}}, "304": {"description": "Projection unchanged"}, "404": {"$ref": "#/components/responses/Error"}, "500": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/api/projects/{project_id}/tasks/{task_id}/summary": {
+      "put": {
+        "operationId": "compatibilityPutTaskSummaryV1", "deprecated": true, "summary": "Legacy operator Task Summary compatibility write",
+        "security": [{"operatorBearer": []}, {"continuationGrant": []}],
+        "parameters": [{"$ref": "#/components/parameters/ProjectID"}, {"name": "task_id", "in": "path", "required": true, "schema": {"type": "string"}}, {"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LegacyTaskSummaryWriteV1"}}}},
+        "responses": {"200": {"description": "Legacy Task Summary version", "headers": {"Deprecation": {"$ref": "#/components/headers/Deprecation"}, "Link": {"$ref": "#/components/headers/DeprecationLink"}, "CyberPenda-Compatibility": {"$ref": "#/components/headers/Compatibility"}}, "content": {"application/json": {"schema": {"type": "object"}}}}, "400": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "422": {"$ref": "#/components/responses/Error"}, "500": {"$ref": "#/components/responses/Error"}}
+      },
+      "get": {
+        "operationId": "compatibilityGetTaskSummaryV1", "deprecated": true, "summary": "Legacy Task Summary projection",
+        "security": [{"operatorBearer": []}, {"continuationGrant": []}], "parameters": [{"$ref": "#/components/parameters/ProjectID"}, {"name": "task_id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "Legacy Task Summary shape", "headers": {"Deprecation": {"$ref": "#/components/headers/Deprecation"}, "Link": {"$ref": "#/components/headers/DeprecationLink"}, "CyberPenda-Compatibility": {"$ref": "#/components/headers/Compatibility"}}, "content": {"application/json": {"schema": {"type": "object"}}}}, "404": {"$ref": "#/components/responses/Error"}, "500": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/api/projects/{project_id}/report": {
+      "post": {
+        "operationId": "compatibilityGenerateReportV1", "deprecated": true, "summary": "Legacy report envelope backed by PentestReportV1",
+        "security": [{"operatorBearer": []}, {"continuationGrant": []}], "parameters": [{"$ref": "#/components/parameters/ProjectID"}, {"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/LegacyReportRequestV1"}}}},
+        "responses": {"200": {"description": "Legacy report envelope", "headers": {"Deprecation": {"$ref": "#/components/headers/Deprecation"}, "Link": {"$ref": "#/components/headers/DeprecationLink"}, "CyberPenda-Compatibility": {"$ref": "#/components/headers/Compatibility"}}, "content": {"application/json": {"schema": {"type": "object"}}}}, "400": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "422": {"$ref": "#/components/responses/Error"}, "500": {"$ref": "#/components/responses/Error"}}
+      }
+    },
     "/api/projects/{project_id}/blackboard/runtime-graph": {
       "get": {
         "operationId": "getCurrentRuntimeGraphV1",
@@ -151,13 +267,27 @@
       "operatorBearer": {"type": "http", "scheme": "bearer", "description": "Daemon operator credential; operator identity is resolved by the trusted daemon"}
     },
     "parameters": {
-      "ProjectID": {"name": "project_id", "in": "path", "required": true, "schema": {"type": "string", "minLength": 1}}
+      "ProjectID": {"name": "project_id", "in": "path", "required": true, "schema": {"type": "string", "minLength": 1}},
+      "IdempotencyKey": {"name": "Idempotency-Key", "in": "header", "required": false, "description": "Enables exact lost-response replay; calls without a key are best effort", "schema": {"type": "string", "minLength": 1}}
+    },
+    "headers": {
+      "Deprecation": {"description": "The route is a deprecated compatibility surface", "schema": {"const": "true"}},
+      "DeprecationLink": {"description": "Migration documentation", "schema": {"type": "string", "pattern": "rel=\"deprecation\""}},
+      "Compatibility": {"description": "Compatibility contract identifier", "schema": {"const": "legacy_blackboard_v1"}}
     },
     "responses": {
       "Error": {"description": "Structured project-interface failure", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelopeV1"}}}},
       "RetryableError": {"description": "Retryable local storage failure", "headers": {"Retry-After": {"required": true, "schema": {"type": "integer", "minimum": 1}}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelopeV1"}}}}
     },
     "schemas": {
+      "LegacyFactWriteV1": {"type": "object", "properties": {"fact_key": {"type": "string"}, "category": {"type": "string"}, "summary": {"type": "string"}, "body": {"type": "string"}, "confidence": {"enum": ["", "tentative", "confirmed", "deprecated"]}, "scope_status": {"enum": ["", "unknown", "in_scope", "out_of_scope"]}, "expected_version": {"type": ["integer", "null"], "minimum": 1}, "idempotency_key": {"type": "string"}}},
+      "LegacyRelationWriteV1": {"type": "object", "required": ["target_fact_key", "relation"], "properties": {"target_fact_key": {"type": "string"}, "relation": {"enum": ["supports", "contradicts", "leads_to", "leads-to"]}, "summary": {"type": "string"}, "expected_version": {"type": ["integer", "null"], "minimum": 1}, "idempotency_key": {"type": "string"}}},
+      "LegacyFactMergeWriteV1": {"type": "object", "required": ["source_fact_key", "canonical_fact_key"], "properties": {"source_fact_key": {"type": "string"}, "canonical_fact_key": {"type": "string"}, "idempotency_key": {"type": "string"}}},
+      "LegacyFindingMergeWriteV1": {"type": "object", "required": ["source_finding_key", "canonical_finding_key"], "properties": {"source_finding_key": {"type": "string"}, "canonical_finding_key": {"type": "string"}, "idempotency_key": {"type": "string"}}},
+      "LegacyFindingWriteV1": {"type": "object", "properties": {"title": {"type": "string"}, "description": {"type": "string"}, "status": {"enum": ["", "unconfirmed", "confirmed", "false_positive"]}, "target": {"type": "string"}, "proof": {"type": "string"}, "impact": {"type": "string"}, "recommendation": {"type": "string"}, "cvss_version": {"type": "string"}, "cvss_vector": {"type": "string"}, "expected_version": {"type": ["integer", "null"], "minimum": 1}, "idempotency_key": {"type": "string"}}},
+      "LegacyEvidenceWriteV1": {"type": "object", "required": ["evidence_key", "attach_to_type", "attach_to_key", "source_path"], "properties": {"evidence_key": {"type": "string"}, "attach_to_type": {"enum": ["fact", "finding"]}, "attach_to_key": {"type": "string"}, "artifact_type": {"type": "string"}, "source_path": {"type": "string"}, "sha256": {"type": "string"}, "summary": {"type": "string"}, "expected_version": {"type": ["integer", "null"], "minimum": 1}, "idempotency_key": {"type": "string"}, "produced_by_attempt": {"$ref": "#/components/schemas/NodeLookupV1"}}},
+      "LegacyTaskSummaryWriteV1": {"type": "object", "required": ["summary"], "properties": {"summary": {"type": "string"}, "submitted_by": {"type": "string"}, "idempotency_key": {"type": "string"}}},
+      "LegacyReportRequestV1": {"type": "object", "properties": {"task_id": {"type": "string"}, "idempotency_key": {"type": "string"}}},
       "ApplyMutationV1": {
         "type": "object",
         "additionalProperties": false,

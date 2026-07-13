@@ -258,8 +258,54 @@ func migrations() []migration {
 		newMigration(13, "continuation_finish", migration13SQL, migration13Up),
 		newMigration(14, "attempt_checkpoint_requests", migration14SQL, migration14Up),
 		newMigration(15, "continuation_reconciliation_recovery", migration15SQL, migration15Up),
+		newMigration(16, "blackboard_compatibility_requests", migration16SQL, migration16Up),
 	}
 }
+
+const migration16SQL = `
+CREATE TABLE blackboard_compatibility_requests (
+ project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+ idempotency_scope TEXT NOT NULL,
+ idempotency_key TEXT NOT NULL,
+ call_kind TEXT NOT NULL,
+ request_hash TEXT NOT NULL,
+ translated_request_json TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ PRIMARY KEY(project_id,idempotency_scope,idempotency_key)
+);
+CREATE TABLE blackboard_compatibility_use (
+ project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+ transport TEXT NOT NULL,
+ call_kind TEXT NOT NULL,
+ use_mode TEXT NOT NULL CHECK (use_mode IN ('read','write')),
+ use_count INTEGER NOT NULL,
+ last_used_at TEXT NOT NULL,
+ PRIMARY KEY(project_id,transport,call_kind,use_mode)
+);
+CREATE TABLE blackboard_compatibility_results (
+ project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+ idempotency_scope TEXT NOT NULL,
+ idempotency_key TEXT NOT NULL,
+ call_kind TEXT NOT NULL,
+ request_hash TEXT NOT NULL,
+ payload_json TEXT NOT NULL,
+ mutation_json TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ PRIMARY KEY(project_id,idempotency_scope,idempotency_key)
+);
+CREATE TABLE blackboard_compatibility_task_summaries (
+ project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+ idempotency_scope TEXT NOT NULL,
+ idempotency_key TEXT NOT NULL,
+ request_hash TEXT NOT NULL,
+ task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+ result_json TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ PRIMARY KEY(project_id,idempotency_scope,idempotency_key)
+);
+`
+
+func migration16Up(tx *sql.Tx) error { return execStatements(tx, migration16SQL) }
 
 const migration15SQL = `
 CREATE INDEX IF NOT EXISTS idx_blackboard_graph_mutations_maintenance_recovery

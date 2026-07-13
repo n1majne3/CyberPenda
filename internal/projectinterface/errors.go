@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"pentest/internal/blackboard"
 )
 
 // tokenEncoding is unpadded base64url: safe in Authorization headers, query
@@ -133,6 +135,14 @@ func AsError(err error) *Error {
 	var e *Error
 	if errors.As(err, &e) {
 		return e
+	}
+	var validation *blackboard.ValidationError
+	if errors.As(err, &validation) {
+		return &Error{
+			ProtocolVersion: RuntimeProtocolVersion,
+			Code:            validation.Code, Message: validation.Message, Path: validation.Path,
+			Retryable: false, Details: validation.Details,
+		}
 	}
 	return nil
 }

@@ -13,10 +13,11 @@ import (
 func (server *Server) registerMCP() {
 	handler := sdkmcp.NewStreamableHTTPHandler(func(request *http.Request) *sdkmcp.Server {
 		deps := mcpserver.Deps{
-			Projects: server.projects,
-			Facts:    server.facts,
-			Tasks:    server.tasks,
-			Reads:    server.reads,
+			Projects:      server.projects,
+			Facts:         server.facts,
+			Tasks:         server.tasks,
+			Reads:         server.reads,
+			Compatibility: server.compatibility,
 		}
 		// Resolve the Continuation Interface Grant when the graph project-interface
 		// module is active and the request carries a grant token (runtime protocol

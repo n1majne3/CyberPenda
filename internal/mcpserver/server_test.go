@@ -9,8 +9,10 @@ import (
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"pentest/internal/blackboard"
+	"pentest/internal/blackboardcompat"
 	"pentest/internal/mcpserver"
 	"pentest/internal/project"
+	"pentest/internal/projectinterface"
 	"pentest/internal/store"
 	"pentest/internal/task"
 )
@@ -32,6 +34,78 @@ func connectMCP(t *testing.T, deps mcpserver.Deps) *sdkmcp.ClientSession {
 	return session
 }
 
+func TestLegacyMCPWriteUsesGraphCompatibilityAndDeprecationMetadata(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "mcp-compatibility.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	projects := project.NewService(db)
+	projectRow, err := projects.Create("MCP compatibility", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create Project: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE blackboard_store_state SET canonical_store=?,cutover_state='graph' WHERE id=1`, store.CanonicalStoreGraphV1); err != nil {
+		t.Fatalf("activate graph epoch: %v", err)
+	}
+	graph := blackboard.NewGraphService(db, blackboard.SystemClock{}, blackboard.RandomIDSource{})
+	tasks := task.NewService(db)
+	projectInterface := projectinterface.NewService(projectinterface.Deps{DB: db, Graph: graph, Tasks: tasks})
+	compatibility := blackboardcompat.NewService(blackboardcompat.Deps{
+		DB: db, Graph: graph, Reads: blackboard.NewBlackboardReadService(db), ProjectInterface: projectInterface, Tasks: tasks,
+	})
+	session := connectMCP(t, mcpserver.Deps{
+		Projects: projects, Facts: blackboard.NewService(db), Tasks: tasks,
+		Reads: blackboard.NewBlackboardReadService(db), ProjectInterface: projectInterface,
+		Compatibility: compatibility,
+	})
+
+	listed, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("list MCP tools: %v", err)
+	}
+	deprecatedTools := map[string]bool{}
+	for _, tool := range listed.Tools {
+		deprecated, _ := tool.Meta["deprecated"].(bool)
+		deprecatedTools[tool.Name] = deprecated
+	}
+	for _, name := range []string{
+		"upsert_project_fact", "get_project_fact", "list_project_facts", "search_project_facts",
+		"deprecate_project_fact", "upsert_fact_relation", "record_vulnerability", "list_vulnerabilities",
+		"attach_evidence", "generate_report", "submit_task_summary",
+	} {
+		if !deprecatedTools[name] {
+			t.Errorf("%s missing MCP deprecation metadata", name)
+		}
+	}
+
+	body := callTool(t, session, "upsert_project_fact", map[string]any{
+		"project_id": projectRow.ID, "fact_key": "fact:mcp", "category": "service",
+		"summary": "MCP compatibility", "confidence": "tentative", "scope_status": "in_scope",
+		"idempotency_key": "mcp:fact",
+	})
+	if !strings.Contains(body, `"fact_key":"fact:mcp"`) || !strings.Contains(body, `"version":1`) {
+		t.Fatalf("legacy MCP payload = %s", body)
+	}
+	if _, err := graph.ReadNode(context.Background(), blackboard.ReadNodeRequest{ProjectID: projectRow.ID, NodeType: blackboard.NodeTypeProjectFact, Key: "fact:mcp"}); err != nil {
+		t.Fatalf("read graph Fact: %v", err)
+	}
+	missing, err := session.CallTool(context.Background(), &sdkmcp.CallToolParams{Name: "upsert_fact_relation", Arguments: map[string]any{
+		"project_id": projectRow.ID, "source_fact_key": "fact:mcp", "target_fact_key": "fact:missing",
+		"relation": "supports", "idempotency_key": "mcp:missing-endpoint",
+	}})
+	if err != nil {
+		t.Fatalf("call missing-endpoint relation: %v", err)
+	}
+	if !missing.IsError || !strings.Contains(mcpResultText(missing), `"code":"node_not_found"`) {
+		t.Fatalf("missing-endpoint MCP error = %#v body=%s", missing, mcpResultText(missing))
+	}
+	legacy, err := blackboard.NewService(db).FactIndex(projectRow.ID, blackboard.FactIndexOptions{IncludeDeprecated: true})
+	if err != nil || len(legacy) != 0 {
+		t.Fatalf("legacy storage = %+v err=%v", legacy, err)
+	}
+}
+
 func callTool(t *testing.T, session *sdkmcp.ClientSession, name string, args map[string]any) string {
 	t.Helper()
 	res, err := session.CallTool(context.Background(), &sdkmcp.CallToolParams{Name: name, Arguments: args})
@@ -49,6 +123,16 @@ func callTool(t *testing.T, session *sdkmcp.ClientSession, name string, args map
 		t.Fatalf("%s expected text content, got %T", name, res.Content[0])
 	}
 	return text.Text
+}
+
+func mcpResultText(result *sdkmcp.CallToolResult) string {
+	var out strings.Builder
+	for _, content := range result.Content {
+		if text, ok := content.(*sdkmcp.TextContent); ok {
+			out.WriteString(text.Text)
+		}
+	}
+	return out.String()
 }
 
 // TestUpsertProjectFactWritesEquivalentState proves the trusted MCP server

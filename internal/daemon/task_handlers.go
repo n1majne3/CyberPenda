@@ -14,6 +14,7 @@ import (
 
 	"pentest/internal/adapters"
 	"pentest/internal/blackboard"
+	"pentest/internal/blackboardcompat"
 
 	"pentest/internal/modelprovider"
 	"pentest/internal/preflight"
@@ -1708,7 +1709,7 @@ func (server *Server) handleTaskContinuation(response http.ResponseWriter, reque
 func (server *Server) handlePutTaskSummary(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
 	taskID := request.PathValue("task_id")
-	if !server.requireProject(response, projectID) {
+	if !server.requireCompatibilityProject(response, request, projectID) {
 		return
 	}
 	if taskID == "" {
@@ -1726,11 +1727,34 @@ func (server *Server) handlePutTaskSummary(response http.ResponseWriter, request
 	}
 
 	var input struct {
-		Summary     string `json:"summary"`
-		SubmittedBy string `json:"submitted_by"`
+		Summary        string `json:"summary"`
+		SubmittedBy    string `json:"submitted_by"`
+		IdempotencyKey string `json:"idempotency_key,omitempty"`
 	}
-	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
-		writeError(response, http.StatusBadRequest, "invalid JSON body")
+	if !server.decodeCompatibilityJSON(response, request, &input) {
+		return
+	}
+	if server.compatibility != nil {
+		setCompatibilityHeaders(response)
+		principal, err := server.requestCompatibilityPrincipal(request, projectID)
+		if err != nil {
+			writeCompatibilityError(response, err)
+			return
+		}
+		key := request.Header.Get("Idempotency-Key")
+		if key == "" {
+			key = input.IdempotencyKey
+		}
+		result, err := server.compatibility.Call(request.Context(), blackboardcompat.LegacyCall{
+			Kind: blackboardcompat.CallPutTaskSummary, Transport: blackboardcompat.TransportHTTP,
+			ProjectID: projectID, Principal: principal, IdempotencyKey: key,
+			TaskSummary: &blackboardcompat.TaskSummaryWrite{TaskID: taskID, Summary: input.Summary, SubmittedBy: input.SubmittedBy},
+		})
+		if err != nil {
+			writeCompatibilityError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, result.Payload)
 		return
 	}
 	summary, err := server.tasks.PutSummary(taskID, input.Summary, input.SubmittedBy)
@@ -1750,6 +1774,13 @@ func (server *Server) handleGetTaskSummary(response http.ResponseWriter, request
 	if taskID == "" {
 		writeError(response, http.StatusNotFound, "task not found")
 		return
+	}
+	if server.compatibility != nil {
+		setCompatibilityHeaders(response)
+		if err := server.compatibility.RecordUse(request.Context(), blackboardcompat.Use{ProjectID: projectID, Transport: blackboardcompat.TransportHTTP, Kind: blackboardcompat.CallReadTaskSummary, Mode: blackboardcompat.UseModeRead}); err != nil {
+			writeCompatibilityError(response, err)
+			return
+		}
 	}
 	found, err := server.tasks.Get(taskID)
 	if err != nil {

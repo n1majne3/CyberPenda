@@ -6,12 +6,14 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"pentest/internal/blackboard"
+	"pentest/internal/blackboardcompat"
 	"pentest/internal/project"
 	"pentest/internal/projectinterface"
 	"pentest/internal/report"
@@ -26,6 +28,9 @@ type Deps struct {
 	// Reads, when non-nil (graph store active), makes the compatibility read
 	// tools delegate to BlackboardReadService instead of the legacy tables.
 	Reads *blackboard.BlackboardReadService
+	// Compatibility translates legacy_blackboard_v1 write tools after graph
+	// cutover. Nil preserves the legacy_v1 direct-service path.
+	Compatibility *blackboardcompat.Service
 	// ProjectInterface, when non-nil (graph store active), exposes the
 	// graph-native project-interface MCP tools authenticated with a
 	// Continuation Interface Grant (runtime protocol §12.2).
@@ -43,6 +48,13 @@ type Deps struct {
 // legacyReadResult runs a legacy compatibility read against BlackboardReadService
 // and returns the legacy-shaped result. Callers must guard with deps.Reads != nil.
 func (deps Deps) legacyReadResult(ctx context.Context, readRequest blackboard.ReadRequest) (any, error) {
+	if deps.Compatibility != nil {
+		if kind := blackboardcompat.ReadCallKind(readRequest.Kind); kind != "" {
+			if err := deps.Compatibility.RecordUse(ctx, blackboardcompat.Use{ProjectID: readRequest.ProjectID, Transport: blackboardcompat.TransportMCP, Kind: kind, Mode: blackboardcompat.UseModeRead}); err != nil {
+				return nil, err
+			}
+		}
+	}
 	readRequest.ProtocolVersion = blackboard.BlackboardReadProtocolVersion
 	envelope, err := deps.Reads.Read(ctx, readRequest)
 	if err != nil {
@@ -58,20 +70,28 @@ func New(deps Deps) *sdkmcp.Server {
 		Version: "0.1.0",
 	}, nil)
 
-	// A Continuation Interface Grant is authoritative for one Project and only
-	// the six graph-native capabilities. Never register compatibility tools
-	// that accept caller-supplied project_id on a grant-authenticated session.
-	if deps.ProjectInterface != nil && (deps.Principal != nil || deps.PrincipalError != nil) {
-		registerProjectInterfaceTools(server, deps)
-		return server
-	}
-
-	sdkmcp.AddTool(server, &sdkmcp.Tool{
-		Name:        "upsert_project_fact",
-		Description: "Upsert a project fact by fact key. Conflicting writes update the existing fact and preserve history as fact versions.",
-	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args upsertProjectFactArgs) (*sdkmcp.CallToolResult, any, error) {
-		_ = ctx
+	sdkmcp.AddTool(server, deps.legacyTool("upsert_project_fact", "Upsert a project fact by fact key. Conflicting writes update the existing fact and preserve history as fact versions.", "blackboard_apply"), func(ctx context.Context, req *sdkmcp.CallToolRequest, args upsertProjectFactArgs) (*sdkmcp.CallToolResult, any, error) {
 		_ = req
+		if deps.Compatibility != nil {
+			principal, err := deps.compatibilityPrincipal(args.ProjectID)
+			if err != nil {
+				return toolProjectInterfaceError(compatibilityError(err))
+			}
+			result, err := deps.Compatibility.Call(ctx, blackboardcompat.LegacyCall{
+				Kind: blackboardcompat.CallUpsertFact, Transport: blackboardcompat.TransportMCP,
+				ProjectID: args.ProjectID, Principal: principal, IdempotencyKey: args.IdempotencyKey,
+				ExpectedVersion: args.ExpectedVersion,
+				Fact: &blackboardcompat.FactWrite{
+					FactKey: args.FactKey, Category: args.Category, Summary: args.Summary,
+					Body: args.Body, Confidence: args.Confidence, ScopeStatus: args.ScopeStatus,
+				},
+			})
+			if err != nil {
+				return toolProjectInterfaceError(projectinterface.AsError(err))
+			}
+			return toolJSON(result.Payload)
+		}
+		_ = ctx
 		if _, err := deps.Projects.Get(args.ProjectID); err != nil {
 			return toolError(err)
 		}
@@ -90,10 +110,7 @@ func New(deps Deps) *sdkmcp.Server {
 		return toolJSON(fact)
 	})
 
-	sdkmcp.AddTool(server, &sdkmcp.Tool{
-		Name:        "get_project_fact",
-		Description: "Fetch the full body of a project fact by fact key.",
-	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args projectFactKeyArgs) (*sdkmcp.CallToolResult, any, error) {
+	sdkmcp.AddTool(server, deps.legacyTool("get_project_fact", "Fetch the full body of a project fact by fact key.", "blackboard_records_resolve"), func(ctx context.Context, req *sdkmcp.CallToolRequest, args projectFactKeyArgs) (*sdkmcp.CallToolResult, any, error) {
 		_ = req
 		if deps.Reads != nil {
 			result, err := deps.legacyReadResult(ctx, blackboard.ReadRequest{ProjectID: args.ProjectID, Kind: blackboard.ReadKindLegacyFactDetailV1, LegacyFactDetail: &blackboard.LegacyFactDetailRequest{FactKey: args.FactKey}})
@@ -109,10 +126,7 @@ func New(deps Deps) *sdkmcp.Server {
 		return toolJSON(fact)
 	})
 
-	sdkmcp.AddTool(server, &sdkmcp.Tool{
-		Name:        "list_project_facts",
-		Description: "List the compact fact index for current truth.",
-	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args projectOnlyArgs) (*sdkmcp.CallToolResult, any, error) {
+	sdkmcp.AddTool(server, deps.legacyTool("list_project_facts", "List the compact fact index for current truth.", "blackboard_records_list"), func(ctx context.Context, req *sdkmcp.CallToolRequest, args projectOnlyArgs) (*sdkmcp.CallToolResult, any, error) {
 		_ = req
 		if deps.Reads != nil {
 			result, err := deps.legacyReadResult(ctx, blackboard.ReadRequest{ProjectID: args.ProjectID, Kind: blackboard.ReadKindLegacyFactIndexV1, LegacyFactIndex: &blackboard.LegacyFactIndexRequest{}})
@@ -128,10 +142,7 @@ func New(deps Deps) *sdkmcp.Server {
 		return toolJSON(index)
 	})
 
-	sdkmcp.AddTool(server, &sdkmcp.Tool{
-		Name:        "search_project_facts",
-		Description: "Search project facts by key, summary, or body.",
-	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args searchFactsArgs) (*sdkmcp.CallToolResult, any, error) {
+	sdkmcp.AddTool(server, deps.legacyTool("search_project_facts", "Search project facts by key, summary, or body.", "blackboard_records_list"), func(ctx context.Context, req *sdkmcp.CallToolRequest, args searchFactsArgs) (*sdkmcp.CallToolResult, any, error) {
 		_ = req
 		if deps.Reads != nil {
 			include := args.IncludeDeprecated
@@ -148,12 +159,24 @@ func New(deps Deps) *sdkmcp.Server {
 		return toolJSON(matches)
 	})
 
-	sdkmcp.AddTool(server, &sdkmcp.Tool{
-		Name:        "deprecate_project_fact",
-		Description: "Mark a project fact as deprecated while preserving its body and history.",
-	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args projectFactKeyArgs) (*sdkmcp.CallToolResult, any, error) {
-		_ = ctx
+	sdkmcp.AddTool(server, deps.legacyTool("deprecate_project_fact", "Mark a project fact as deprecated while preserving its body and history.", "blackboard_apply"), func(ctx context.Context, req *sdkmcp.CallToolRequest, args projectFactKeyArgs) (*sdkmcp.CallToolResult, any, error) {
 		_ = req
+		if deps.Compatibility != nil {
+			principal, err := deps.compatibilityPrincipal(args.ProjectID)
+			if err != nil {
+				return toolProjectInterfaceError(projectinterface.AsError(err))
+			}
+			result, err := deps.Compatibility.Call(ctx, blackboardcompat.LegacyCall{
+				Kind: blackboardcompat.CallDeprecateFact, Transport: blackboardcompat.TransportMCP,
+				ProjectID: args.ProjectID, Principal: principal, IdempotencyKey: args.IdempotencyKey, ExpectedVersion: args.ExpectedVersion,
+				Fact: &blackboardcompat.FactWrite{FactKey: args.FactKey, Confidence: "deprecated"},
+			})
+			if err != nil {
+				return toolProjectInterfaceError(projectinterface.AsError(err))
+			}
+			return toolJSON(result.Payload)
+		}
+		_ = ctx
 		fact, err := deps.Facts.DeprecateFact(args.ProjectID, args.FactKey)
 		if err != nil {
 			return toolError(err)
@@ -161,12 +184,24 @@ func New(deps Deps) *sdkmcp.Server {
 		return toolJSON(fact)
 	})
 
-	sdkmcp.AddTool(server, &sdkmcp.Tool{
-		Name:        "upsert_fact_relation",
-		Description: "Create or update a typed relation between two project facts.",
-	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args upsertRelationArgs) (*sdkmcp.CallToolResult, any, error) {
-		_ = ctx
+	sdkmcp.AddTool(server, deps.legacyTool("upsert_fact_relation", "Create or update a typed relation between two project facts.", "blackboard_apply"), func(ctx context.Context, req *sdkmcp.CallToolRequest, args upsertRelationArgs) (*sdkmcp.CallToolResult, any, error) {
 		_ = req
+		if deps.Compatibility != nil {
+			principal, err := deps.compatibilityPrincipal(args.ProjectID)
+			if err != nil {
+				return toolProjectInterfaceError(projectinterface.AsError(err))
+			}
+			result, err := deps.Compatibility.Call(ctx, blackboardcompat.LegacyCall{
+				Kind: blackboardcompat.CallPutFactRelation, Transport: blackboardcompat.TransportMCP,
+				ProjectID: args.ProjectID, Principal: principal, IdempotencyKey: args.IdempotencyKey, ExpectedVersion: args.ExpectedVersion,
+				Relation: &blackboardcompat.FactRelationWrite{SourceFactKey: args.SourceFactKey, TargetFactKey: args.TargetFactKey, Relation: args.Relation, Summary: args.Summary},
+			})
+			if err != nil {
+				return toolProjectInterfaceError(projectinterface.AsError(err))
+			}
+			return toolJSON(result.Payload)
+		}
+		_ = ctx
 		relation, err := deps.Facts.UpsertFactRelation(blackboard.UpsertFactRelationRequest{
 			ProjectID:     args.ProjectID,
 			SourceFactKey: args.SourceFactKey,
@@ -180,12 +215,24 @@ func New(deps Deps) *sdkmcp.Server {
 		return toolJSON(relation)
 	})
 
-	sdkmcp.AddTool(server, &sdkmcp.Tool{
-		Name:        "record_vulnerability",
-		Description: "Record or update a finding by finding key. This is the reportable issue interface.",
-	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args recordFindingArgs) (*sdkmcp.CallToolResult, any, error) {
-		_ = ctx
+	sdkmcp.AddTool(server, deps.legacyTool("record_vulnerability", "Record or update a finding by finding key. This is the reportable issue interface.", "blackboard_apply"), func(ctx context.Context, req *sdkmcp.CallToolRequest, args recordFindingArgs) (*sdkmcp.CallToolResult, any, error) {
 		_ = req
+		if deps.Compatibility != nil {
+			principal, err := deps.compatibilityPrincipal(args.ProjectID)
+			if err != nil {
+				return toolProjectInterfaceError(projectinterface.AsError(err))
+			}
+			result, err := deps.Compatibility.Call(ctx, blackboardcompat.LegacyCall{
+				Kind: blackboardcompat.CallUpsertFinding, Transport: blackboardcompat.TransportMCP,
+				ProjectID: args.ProjectID, Principal: principal, IdempotencyKey: args.IdempotencyKey, ExpectedVersion: args.ExpectedVersion,
+				Finding: &blackboardcompat.FindingWrite{FindingKey: args.FindingKey, Title: args.Title, Description: args.Description, Status: args.Status, Target: args.Target, Proof: args.Proof, Impact: args.Impact, Recommendation: args.Recommendation, CVSSVersion: args.CVSSVersion, CVSSVector: args.CVSSVector},
+			})
+			if err != nil {
+				return toolProjectInterfaceError(projectinterface.AsError(err))
+			}
+			return toolJSON(result.Payload)
+		}
+		_ = ctx
 		if _, err := deps.Projects.Get(args.ProjectID); err != nil {
 			return toolError(err)
 		}
@@ -208,10 +255,7 @@ func New(deps Deps) *sdkmcp.Server {
 		return toolJSON(finding)
 	})
 
-	sdkmcp.AddTool(server, &sdkmcp.Tool{
-		Name:        "list_vulnerabilities",
-		Description: "List all findings for a project.",
-	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args projectOnlyArgs) (*sdkmcp.CallToolResult, any, error) {
+	sdkmcp.AddTool(server, deps.legacyTool("list_vulnerabilities", "List all findings for a project.", "blackboard_records_list"), func(ctx context.Context, req *sdkmcp.CallToolRequest, args projectOnlyArgs) (*sdkmcp.CallToolResult, any, error) {
 		_ = req
 		if deps.Reads != nil {
 			result, err := deps.legacyReadResult(ctx, blackboard.ReadRequest{ProjectID: args.ProjectID, Kind: blackboard.ReadKindLegacyFindingCollectionV1, LegacyFindingCollection: &blackboard.LegacyFindingCollectionRequest{}})
@@ -227,12 +271,24 @@ func New(deps Deps) *sdkmcp.Server {
 		return toolJSON(findings)
 	})
 
-	sdkmcp.AddTool(server, &sdkmcp.Tool{
-		Name:        "attach_evidence",
-		Description: "Attach or retain an evidence artifact under a managed artifact root.",
-	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args attachEvidenceArgs) (*sdkmcp.CallToolResult, any, error) {
-		_ = ctx
+	sdkmcp.AddTool(server, deps.legacyTool("attach_evidence", "Attach or retain an evidence artifact under a managed artifact root.", "blackboard_retain_evidence"), func(ctx context.Context, req *sdkmcp.CallToolRequest, args attachEvidenceArgs) (*sdkmcp.CallToolResult, any, error) {
 		_ = req
+		if deps.Compatibility != nil {
+			principal, err := deps.compatibilityPrincipal(args.ProjectID)
+			if err != nil {
+				return toolProjectInterfaceError(projectinterface.AsError(err))
+			}
+			result, err := deps.Compatibility.Call(ctx, blackboardcompat.LegacyCall{
+				Kind: blackboardcompat.CallAttachEvidence, Transport: blackboardcompat.TransportMCP,
+				ProjectID: args.ProjectID, Principal: principal, IdempotencyKey: args.IdempotencyKey, ExpectedVersion: args.ExpectedVersion,
+				Evidence: &blackboardcompat.EvidenceWrite{EvidenceKey: args.EvidenceKey, AttachToType: args.AttachToType, AttachToKey: args.AttachToKey, ArtifactType: args.ArtifactType, SourcePath: args.SourcePath, Summary: args.Summary, ProducedByAttempt: args.ProducedByAttempt},
+			})
+			if err != nil {
+				return toolProjectInterfaceError(projectinterface.AsError(err))
+			}
+			return toolJSON(result.Payload)
+		}
+		_ = ctx
 		artifact, err := deps.Facts.AttachEvidence(blackboard.AttachEvidenceRequest{
 			ProjectID:    args.ProjectID,
 			EvidenceKey:  args.EvidenceKey,
@@ -249,26 +305,22 @@ func New(deps Deps) *sdkmcp.Server {
 		return toolJSON(artifact)
 	})
 
-	sdkmcp.AddTool(server, &sdkmcp.Tool{
-		Name:        "generate_report",
-		Description: "Generate a Markdown report from stored project state.",
-	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args generateReportArgs) (*sdkmcp.CallToolResult, any, error) {
+	sdkmcp.AddTool(server, deps.legacyTool("generate_report", "Generate a Markdown report from stored project state.", "PentestReportV1"), func(ctx context.Context, req *sdkmcp.CallToolRequest, args generateReportArgs) (*sdkmcp.CallToolResult, any, error) {
 		_ = req
-		if deps.Reads != nil {
-			scopeContext := "current"
-			if args.TaskID != "" {
-				scopeContext = "task:" + args.TaskID
-			}
-			includeTrue := true
-			result, err := deps.legacyReadResult(ctx, blackboard.ReadRequest{ProjectID: args.ProjectID, Kind: blackboard.ReadKindPentestReportV1, PentestReport: &blackboard.PentestReportRequest{Format: "markdown", ScopeContext: scopeContext, IncludeUnconfirmed: &includeTrue, IncludeTentativeFacts: &includeTrue}})
+		if deps.Compatibility != nil {
+			principal, err := deps.compatibilityPrincipal(args.ProjectID)
 			if err != nil {
-				return toolError(err)
+				return toolProjectInterfaceError(projectinterface.AsError(err))
 			}
-			markdown, ok := result.(blackboard.ReportMarkdownV1)
-			if !ok {
-				return toolError(fmt.Errorf("report projection returned unexpected shape"))
+			result, err := deps.Compatibility.Call(ctx, blackboardcompat.LegacyCall{
+				Kind: blackboardcompat.CallGenerateReport, Transport: blackboardcompat.TransportMCP,
+				ProjectID: args.ProjectID, Principal: principal, IdempotencyKey: args.IdempotencyKey,
+				Report: &blackboardcompat.ReportWrite{TaskID: args.TaskID},
+			})
+			if err != nil {
+				return toolProjectInterfaceError(projectinterface.AsError(err))
 			}
-			return toolJSON(blackboard.LegacyReportEnvelopeV1{Status: "generated", Format: "markdown", Markdown: markdown.Markdown})
+			return toolJSON(result.Payload)
 		}
 		taskID := args.TaskID
 		if taskID == "" && deps.Tasks != nil {
@@ -291,12 +343,24 @@ func New(deps Deps) *sdkmcp.Server {
 		return toolJSON(out)
 	})
 
-	sdkmcp.AddTool(server, &sdkmcp.Tool{
-		Name:        "submit_task_summary",
-		Description: "Submit a task summary before ending a continuation so the next resume carries compact handoff context.",
-	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args submitTaskSummaryArgs) (*sdkmcp.CallToolResult, any, error) {
-		_ = ctx
+	sdkmcp.AddTool(server, deps.legacyTool("submit_task_summary", "Submit a task summary before ending a continuation so the next resume carries compact handoff context.", "blackboard_finish_continuation"), func(ctx context.Context, req *sdkmcp.CallToolRequest, args submitTaskSummaryArgs) (*sdkmcp.CallToolResult, any, error) {
 		_ = req
+		if deps.Compatibility != nil {
+			principal, err := deps.compatibilityPrincipal(args.ProjectID)
+			if err != nil {
+				return toolProjectInterfaceError(projectinterface.AsError(err))
+			}
+			result, err := deps.Compatibility.Call(ctx, blackboardcompat.LegacyCall{
+				Kind: blackboardcompat.CallPutTaskSummary, Transport: blackboardcompat.TransportMCP,
+				ProjectID: args.ProjectID, Principal: principal, IdempotencyKey: args.IdempotencyKey,
+				TaskSummary: &blackboardcompat.TaskSummaryWrite{TaskID: args.TaskID, Summary: args.Summary, SubmittedBy: args.SubmittedBy},
+			})
+			if err != nil {
+				return toolProjectInterfaceError(projectinterface.AsError(err))
+			}
+			return toolJSON(result.Payload)
+		}
+		_ = ctx
 		if deps.Tasks == nil {
 			return toolError(fmt.Errorf("task service unavailable"))
 		}
@@ -494,18 +558,56 @@ type blackboardCurrentGraphArgs struct {
 }
 
 type upsertProjectFactArgs struct {
-	ProjectID   string `json:"project_id" jsonschema:"project id"`
-	FactKey     string `json:"fact_key" jsonschema:"stable fact key"`
-	Category    string `json:"category,omitempty" jsonschema:"fact category"`
-	Summary     string `json:"summary" jsonschema:"short summary"`
-	Body        string `json:"body,omitempty" jsonschema:"full fact body"`
-	Confidence  string `json:"confidence,omitempty" jsonschema:"tentative, confirmed, or deprecated"`
-	ScopeStatus string `json:"scope_status,omitempty" jsonschema:"in_scope or out_of_scope"`
+	ProjectID       string `json:"project_id" jsonschema:"project id"`
+	FactKey         string `json:"fact_key" jsonschema:"stable fact key"`
+	Category        string `json:"category,omitempty" jsonschema:"fact category"`
+	Summary         string `json:"summary" jsonschema:"short summary"`
+	Body            string `json:"body,omitempty" jsonschema:"full fact body"`
+	Confidence      string `json:"confidence,omitempty" jsonschema:"tentative, confirmed, or deprecated"`
+	ScopeStatus     string `json:"scope_status,omitempty" jsonschema:"in_scope or out_of_scope"`
+	ExpectedVersion *int   `json:"expected_version,omitempty" jsonschema:"optional current graph node version"`
+	IdempotencyKey  string `json:"idempotency_key,omitempty" jsonschema:"optional exact replay key"`
+}
+
+func (deps Deps) compatibilityPrincipal(projectID string) (projectinterface.Principal, error) {
+	if deps.Principal != nil {
+		return *deps.Principal, nil
+	}
+	if deps.PrincipalError != nil {
+		return projectinterface.Principal{}, deps.PrincipalError
+	}
+	return projectinterface.OperatorPrincipal(projectID, "local-operator")
+}
+
+func compatibilityError(err error) *projectinterface.Error {
+	if mapped := projectinterface.AsError(err); mapped != nil {
+		return mapped
+	}
+	var validation *blackboard.ValidationError
+	if errors.As(err, &validation) {
+		return &projectinterface.Error{
+			ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+			Code:            validation.Code, Message: validation.Message, Path: validation.Path,
+			Retryable: false, Details: validation.Details,
+		}
+	}
+	return projectinterface.InternalError("unexpected compatibility failure")
+}
+
+func (deps Deps) legacyTool(name, description, replacement string) *sdkmcp.Tool {
+	tool := &sdkmcp.Tool{Name: name, Description: description}
+	if deps.Compatibility != nil {
+		tool.Meta = sdkmcp.Meta{"deprecated": true, "replacement": replacement, "compatibility": "legacy_blackboard_v1"}
+		tool.Description = "Deprecated compatibility tool. Use " + replacement + ". " + description
+	}
+	return tool
 }
 
 type projectFactKeyArgs struct {
-	ProjectID string `json:"project_id" jsonschema:"project id"`
-	FactKey   string `json:"fact_key" jsonschema:"stable fact key"`
+	ProjectID       string `json:"project_id" jsonschema:"project id"`
+	FactKey         string `json:"fact_key" jsonschema:"stable fact key"`
+	ExpectedVersion *int   `json:"expected_version,omitempty" jsonschema:"optional current graph node version"`
+	IdempotencyKey  string `json:"idempotency_key,omitempty" jsonschema:"optional exact replay key"`
 }
 
 type projectOnlyArgs struct {
@@ -519,48 +621,57 @@ type searchFactsArgs struct {
 }
 
 type upsertRelationArgs struct {
-	ProjectID     string `json:"project_id" jsonschema:"project id"`
-	SourceFactKey string `json:"source_fact_key" jsonschema:"source fact key"`
-	TargetFactKey string `json:"target_fact_key" jsonschema:"target fact key"`
-	Relation      string `json:"relation" jsonschema:"supports, contradicts, depends_on, leads_to, or duplicates"`
-	Summary       string `json:"summary,omitempty" jsonschema:"relation summary"`
+	ProjectID       string `json:"project_id" jsonschema:"project id"`
+	SourceFactKey   string `json:"source_fact_key" jsonschema:"source fact key"`
+	TargetFactKey   string `json:"target_fact_key" jsonschema:"target fact key"`
+	Relation        string `json:"relation" jsonschema:"supports, contradicts, depends_on, leads_to, or duplicates"`
+	Summary         string `json:"summary,omitempty" jsonschema:"relation summary"`
+	ExpectedVersion *int   `json:"expected_version,omitempty" jsonschema:"optional current edge version"`
+	IdempotencyKey  string `json:"idempotency_key,omitempty" jsonschema:"optional exact replay key"`
 }
 
 type recordFindingArgs struct {
-	ProjectID      string `json:"project_id" jsonschema:"project id"`
-	FindingKey     string `json:"finding_key" jsonschema:"stable finding key"`
-	Title          string `json:"title" jsonschema:"finding title"`
-	Description    string `json:"description,omitempty"`
-	Status         string `json:"status,omitempty" jsonschema:"unconfirmed or confirmed"`
-	Target         string `json:"target,omitempty"`
-	Proof          string `json:"proof,omitempty"`
-	Impact         string `json:"impact,omitempty"`
-	Recommendation string `json:"recommendation,omitempty"`
-	CVSSVersion    string `json:"cvss_version,omitempty"`
-	CVSSVector     string `json:"cvss_vector,omitempty"`
+	ProjectID       string `json:"project_id" jsonschema:"project id"`
+	FindingKey      string `json:"finding_key" jsonschema:"stable finding key"`
+	Title           string `json:"title" jsonschema:"finding title"`
+	Description     string `json:"description,omitempty"`
+	Status          string `json:"status,omitempty" jsonschema:"unconfirmed or confirmed"`
+	Target          string `json:"target,omitempty"`
+	Proof           string `json:"proof,omitempty"`
+	Impact          string `json:"impact,omitempty"`
+	Recommendation  string `json:"recommendation,omitempty"`
+	CVSSVersion     string `json:"cvss_version,omitempty"`
+	CVSSVector      string `json:"cvss_vector,omitempty"`
+	ExpectedVersion *int   `json:"expected_version,omitempty" jsonschema:"optional current graph node version"`
+	IdempotencyKey  string `json:"idempotency_key,omitempty" jsonschema:"optional exact replay key"`
 }
 
 type attachEvidenceArgs struct {
-	ProjectID    string `json:"project_id" jsonschema:"project id"`
-	EvidenceKey  string `json:"evidence_key" jsonschema:"stable evidence key"`
-	AttachToType string `json:"attach_to_type" jsonschema:"fact or finding"`
-	AttachToKey  string `json:"attach_to_key" jsonschema:"target fact or finding key"`
-	ArtifactType string `json:"artifact_type" jsonschema:"artifact type"`
-	SourcePath   string `json:"source_path,omitempty"`
-	SHA256       string `json:"sha256,omitempty"`
-	Summary      string `json:"summary,omitempty"`
+	ProjectID         string             `json:"project_id" jsonschema:"project id"`
+	EvidenceKey       string             `json:"evidence_key" jsonschema:"stable evidence key"`
+	AttachToType      string             `json:"attach_to_type" jsonschema:"fact or finding"`
+	AttachToKey       string             `json:"attach_to_key" jsonschema:"target fact or finding key"`
+	ArtifactType      string             `json:"artifact_type" jsonschema:"artifact type"`
+	SourcePath        string             `json:"source_path,omitempty"`
+	SHA256            string             `json:"sha256,omitempty"`
+	Summary           string             `json:"summary,omitempty"`
+	ExpectedVersion   *int               `json:"expected_version,omitempty" jsonschema:"optional current graph node version"`
+	IdempotencyKey    string             `json:"idempotency_key,omitempty" jsonschema:"optional exact replay key"`
+	ProducedByAttempt blackboard.NodeRef `json:"produced_by_attempt,omitempty" jsonschema:"required matching Attempt for Runtime Evidence"`
 }
 
 type generateReportArgs struct {
-	ProjectID string `json:"project_id" jsonschema:"project id"`
-	TaskID    string `json:"task_id,omitempty" jsonschema:"task id for runner and scope context"`
+	ProjectID      string `json:"project_id" jsonschema:"project id"`
+	TaskID         string `json:"task_id,omitempty" jsonschema:"task id for runner and scope context"`
+	IdempotencyKey string `json:"idempotency_key,omitempty" jsonschema:"optional compatibility use key"`
 }
 
 type submitTaskSummaryArgs struct {
-	ProjectID   string `json:"project_id" jsonschema:"project id"`
-	TaskID      string `json:"task_id" jsonschema:"task id"`
-	Summary     string `json:"summary" jsonschema:"compact handoff summary for the next continuation"`
-	SubmittedBy string `json:"submitted_by,omitempty" jsonschema:"runtime identifier"`
+	ProjectID      string `json:"project_id" jsonschema:"project id"`
+	TaskID         string `json:"task_id" jsonschema:"task id"`
+	Summary        string `json:"summary" jsonschema:"compact handoff summary for the next continuation"`
+	SubmittedBy    string `json:"submitted_by,omitempty" jsonschema:"runtime identifier"`
+	IdempotencyKey string `json:"idempotency_key,omitempty" jsonschema:"optional exact Finish replay key"`
 }
 
 func toolJSON(payload any) (*sdkmcp.CallToolResult, any, error) {

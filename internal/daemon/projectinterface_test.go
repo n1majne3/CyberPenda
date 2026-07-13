@@ -25,10 +25,12 @@ import (
 // piSeed carries everything a daemon-level project-interface test needs after
 // seeding a graph_v1 database with a bound Continuation Interface Grant.
 type piSeed struct {
-	dbPath        string
-	token         string
-	projectID     string
-	runtimePlugin string
+	dbPath         string
+	token          string
+	projectID      string
+	runtimePlugin  string
+	taskID         string
+	continuationID string
 }
 
 // seedProjectInterfaceGrant opens a graph_v1 database and creates the Project.
@@ -82,6 +84,8 @@ func issueProjectInterfaceGrant(t *testing.T, seed *piSeed) {
 	if err != nil {
 		t.Fatalf("create continuation: %v", err)
 	}
+	seed.taskID = created.ID
+	seed.continuationID = continuation.ID
 	grants := projectinterface.NewGrantStore(db, projectinterface.SystemClock{}, projectinterface.RandomIDSource{}, projectinterface.RandomTokenSource{})
 	token, _, err := grants.Issue(context.Background(), projectinterface.IssueGrantRequest{
 		ProjectID:              seed.projectID,
@@ -339,7 +343,7 @@ func TestProjectInterfaceDaemonMCPApplyAndCurrentGraph(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list grant-authenticated MCP tools: %v", err)
 	}
-	allowed := map[string]bool{
+	canonical := map[string]bool{
 		"blackboard_apply":               true,
 		"blackboard_resolve_records":     true,
 		"blackboard_get_current_graph":   true,
@@ -347,17 +351,31 @@ func TestProjectInterfaceDaemonMCPApplyAndCurrentGraph(t *testing.T) {
 		"blackboard_checkpoint_attempt":  true,
 		"blackboard_finish_continuation": true,
 	}
-	for _, tool := range tools.Tools {
-		if !allowed[tool.Name] {
-			t.Fatalf("grant-authenticated MCP exposed compatibility tool %q", tool.Name)
-		}
-		if tool.Description != projectinterface.TrustedToolDescription(tool.Name) {
-			t.Fatalf("MCP description drift for %q: %q", tool.Name, tool.Description)
-		}
-		delete(allowed, tool.Name)
+	compatibility := map[string]bool{
+		"upsert_project_fact": true, "get_project_fact": true, "list_project_facts": true,
+		"search_project_facts": true, "deprecate_project_fact": true, "upsert_fact_relation": true,
+		"record_vulnerability": true, "list_vulnerabilities": true, "attach_evidence": true,
+		"generate_report": true, "submit_task_summary": true,
 	}
-	if len(allowed) != 0 {
-		t.Fatalf("grant-authenticated MCP missing canonical tools: %v", allowed)
+	for _, tool := range tools.Tools {
+		if canonical[tool.Name] {
+			if tool.Description != projectinterface.TrustedToolDescription(tool.Name) {
+				t.Fatalf("MCP description drift for %q: %q", tool.Name, tool.Description)
+			}
+			delete(canonical, tool.Name)
+			continue
+		}
+		if compatibility[tool.Name] {
+			if deprecated, _ := tool.Meta["deprecated"].(bool); !deprecated {
+				t.Fatalf("compatibility MCP tool %q lacks deprecation metadata", tool.Name)
+			}
+			delete(compatibility, tool.Name)
+			continue
+		}
+		t.Fatalf("grant-authenticated MCP exposed unknown tool %q", tool.Name)
+	}
+	if len(canonical) != 0 || len(compatibility) != 0 {
+		t.Fatalf("grant-authenticated MCP missing canonical=%v compatibility=%v", canonical, compatibility)
 	}
 
 	operatorSession, err := client.Connect(ctx, &sdkmcp.StreamableClientTransport{
@@ -425,6 +443,50 @@ func TestProjectInterfaceDaemonMCPApplyAndCurrentGraph(t *testing.T) {
 	// The plaintext token never appears in any MCP result.
 	if strings.Contains(mcpResultText(applyRes), seed.token) || strings.Contains(mcpResultText(graphRes), seed.token) {
 		t.Fatal("plaintext grant token appeared in an MCP result")
+	}
+	summaryRes, err := session.CallTool(ctx, &sdkmcp.CallToolParams{
+		Name: "submit_task_summary", Arguments: map[string]any{
+			"project_id": seed.projectID, "task_id": seed.taskID,
+			"summary": "MCP compatibility handoff", "idempotency_key": "summary:mcp-finish",
+		},
+	})
+	if err != nil || summaryRes.IsError {
+		t.Fatalf("submit_task_summary compatibility Finish: err=%v result=%s", err, mcpResultText(summaryRes))
+	}
+	db, err := store.Open(seed.dbPath)
+	if err != nil {
+		t.Fatalf("open summary verification store: %v", err)
+	}
+	defer db.Close()
+	versions, err := task.NewService(db).SummaryVersions(seed.taskID)
+	if err != nil || len(versions) != 1 || versions[0].ContinuationID != seed.continuationID {
+		t.Fatalf("MCP compatibility Summary versions = %+v err=%v", versions, err)
+	}
+}
+
+func TestRuntimeLegacyHTTPSummaryUsesFinish(t *testing.T) {
+	seed := seedProjectInterfaceGrant(t)
+	server, err := daemon.NewServer(daemon.Config{Version: "v", DBPath: seed.dbPath, AuthToken: "operator-token", DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer server.Close()
+	issueProjectInterfaceGrant(t, &seed)
+	request := httptest.NewRequest(http.MethodPut, "/api/projects/"+seed.projectID+"/tasks/"+seed.taskID+"/summary", bytes.NewBufferString(`{"summary":"HTTP compatibility handoff","idempotency_key":"summary:http-finish"}`))
+	request.Header.Set("Authorization", "Bearer "+seed.token)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("legacy Summary status = %d body=%s", response.Code, response.Body.String())
+	}
+	db, err := store.Open(seed.dbPath)
+	if err != nil {
+		t.Fatalf("open summary verification store: %v", err)
+	}
+	defer db.Close()
+	versions, err := task.NewService(db).SummaryVersions(seed.taskID)
+	if err != nil || len(versions) != 1 || versions[0].ContinuationID != seed.continuationID {
+		t.Fatalf("HTTP compatibility Summary versions = %+v err=%v", versions, err)
 	}
 }
 

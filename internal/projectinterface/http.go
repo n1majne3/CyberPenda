@@ -341,6 +341,10 @@ func httpStatusFor(err *Error) int {
 	return http.StatusBadRequest
 }
 
+// HTTPStatusForError exposes the canonical ProjectInterfaceErrorV1 HTTP
+// mapping to compatibility adapters without duplicating status semantics.
+func HTTPStatusForError(err *Error) int { return httpStatusFor(err) }
+
 // newRequestID returns an opaque per-request identifier for the error envelope
 // (runtime protocol §3). It is not correlated with any other identifier.
 func newRequestID() string {
