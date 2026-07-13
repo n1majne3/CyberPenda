@@ -42,21 +42,26 @@ const (
 	// ErrCodeStorageBusy is retryable SQLite writer lock exhaustion that
 	// consumes no idempotency key.
 	ErrCodeStorageBusy = "storage_busy"
+	// ErrCodeSourceEventNotFound is a referenced Task Event that does not exist.
+	ErrCodeSourceEventNotFound = "source_event_not_found"
+	// ErrCodeSourceEventMismatch is a Task Event outside the bound Task or
+	// Continuation provenance context.
+	ErrCodeSourceEventMismatch = "source_event_mismatch"
 )
 
 // Error is the stable ProjectInterfaceErrorV1 shape (runtime protocol §3). It is
 // the only failure envelope returned by the project-interface module; transport
 // adapters map it to their status/exit conventions without reclassification.
 type Error struct {
-	ProtocolVersion int    `json:"protocol_version"`
-	Code            string `json:"code"`
-	Message         string `json:"message"`
-	OperationIndex  *int   `json:"operation_index,omitempty"`
-	OpID            string `json:"op_id,omitempty"`
-	Path            string `json:"path,omitempty"`
-	Retryable       bool   `json:"retryable"`
+	ProtocolVersion int            `json:"protocol_version"`
+	Code            string         `json:"code"`
+	Message         string         `json:"message"`
+	OperationIndex  *int           `json:"operation_index,omitempty"`
+	OpID            string         `json:"op_id,omitempty"`
+	Path            string         `json:"path,omitempty"`
+	Retryable       bool           `json:"retryable"`
 	Details         map[string]any `json:"details,omitempty"`
-	RequestID       string `json:"request_id,omitempty"`
+	RequestID       string         `json:"request_id,omitempty"`
 }
 
 func (e *Error) Error() string {

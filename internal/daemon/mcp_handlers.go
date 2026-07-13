@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"crypto/subtle"
 	"net/http"
 
 	"pentest/internal/mcpserver"
@@ -25,7 +26,8 @@ func (server *Server) registerMCP() {
 		// conflating it with an operator request.
 		if server.projectInterface != nil {
 			deps.ProjectInterface = server.projectInterface
-			if token := projectinterface.BearerToken(request); token != "" {
+			if token := projectinterface.BearerToken(request); token != "" &&
+				(server.authToken == "" || subtle.ConstantTimeCompare([]byte(token), []byte(server.authToken)) != 1) {
 				principal, err := server.projectInterface.Authenticate(request.Context(), token, "")
 				switch {
 				case err == nil:

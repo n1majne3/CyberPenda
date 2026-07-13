@@ -1,6 +1,7 @@
 package task_test
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -9,6 +10,15 @@ import (
 	"pentest/internal/store"
 	"pentest/internal/task"
 )
+
+type recordingTerminalMarker struct {
+	continuationIDs []string
+}
+
+func (m *recordingTerminalMarker) MarkContinuationTerminal(_ context.Context, continuationID string) error {
+	m.continuationIDs = append(m.continuationIDs, continuationID)
+	return nil
+}
 
 func newStore(t *testing.T) *store.DB {
 	t.Helper()
@@ -383,6 +393,8 @@ func TestReconcileInterruptedStatusesMarksActiveTasksInterrupted(t *testing.T) {
 	db := newStore(t)
 	projects := project.NewService(db)
 	svc := task.NewService(db, projects)
+	marker := &recordingTerminalMarker{}
+	svc.SetContinuationTerminalMarker(marker)
 
 	proj, err := projects.Create("Acme", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
 	if err != nil {
@@ -443,6 +455,9 @@ func TestReconcileInterruptedStatusesMarksActiveTasksInterrupted(t *testing.T) {
 	if runningContinuationGot == nil || runningContinuationGot.Status != task.StatusInterrupted {
 		t.Fatalf("expected running continuation -> interrupted, got %#v", runningContinuationGot)
 	}
+	if len(marker.continuationIDs) != 1 || marker.continuationIDs[0] != runningContinuation.ID {
+		t.Fatalf("startup reconciliation terminal marker calls = %v", marker.continuationIDs)
+	}
 	if pausedGot.Status != task.StatusInterrupted {
 		t.Fatalf("expected paused task -> interrupted, got %q", pausedGot.Status)
 	}
@@ -455,6 +470,8 @@ func TestReconcileInterruptedStatusesClearsStaleActiveContinuations(t *testing.T
 	db := newStore(t)
 	projects := project.NewService(db)
 	svc := task.NewService(db, projects)
+	marker := &recordingTerminalMarker{}
+	svc.SetContinuationTerminalMarker(marker)
 
 	proj, err := projects.Create("Acme", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
 	if err != nil {
@@ -493,6 +510,9 @@ func TestReconcileInterruptedStatusesClearsStaleActiveContinuations(t *testing.T
 	}
 	if latest == nil || latest.Status != task.StatusInterrupted {
 		t.Fatalf("expected stale active continuation -> interrupted, got %#v", latest)
+	}
+	if len(marker.continuationIDs) != 1 || marker.continuationIDs[0] != continuation.ID {
+		t.Fatalf("stale reconciliation terminal marker calls = %v", marker.continuationIDs)
 	}
 }
 
@@ -673,5 +693,31 @@ func TestContinuationSnapshotPinIsPersistedAndSurvivesLifecycleUpdates(t *testin
 	mismatched.RuntimeConfigVersionID = otherConfig.ID
 	if _, err := svc.CreateContinuationWithSnapshotPin(created.ID, "prof-a", "codex", task.RunnerSandbox, mismatched); err == nil {
 		t.Fatal("expected runtime config profile mismatch to fail")
+	}
+}
+
+func TestTerminalContinuationClosesBoundCapabilities(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	marker := &recordingTerminalMarker{}
+	svc.SetContinuationTerminalMarker(marker)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "g", Runner: task.RunnerSandbox})
+	continuation, err := svc.CreateContinuation(created.ID, "prof-a", "codex", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create continuation: %v", err)
+	}
+	if _, err := svc.UpdateContinuationStatus(continuation.ID, task.StatusRunning); err != nil {
+		t.Fatalf("mark running: %v", err)
+	}
+	if len(marker.continuationIDs) != 0 {
+		t.Fatalf("non-terminal status closed capabilities: %v", marker.continuationIDs)
+	}
+	if _, err := svc.UpdateContinuationStatus(continuation.ID, task.StatusCompleted); err != nil {
+		t.Fatalf("mark completed: %v", err)
+	}
+	if len(marker.continuationIDs) != 1 || marker.continuationIDs[0] != continuation.ID {
+		t.Fatalf("terminal marker calls = %v", marker.continuationIDs)
 	}
 }

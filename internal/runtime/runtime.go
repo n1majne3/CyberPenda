@@ -84,7 +84,13 @@ func (h *Harness) Launch(ctx context.Context, req LaunchRequest) error {
 	}()
 
 	emit := func(kind task.EventKind, payload task.EventPayload) {
-		if _, err := h.tasks.AppendEvent(req.TaskID, kind, payload); err != nil {
+		var err error
+		if req.ContinuationID != "" {
+			_, err = h.tasks.AppendContinuationEvent(req.TaskID, req.ContinuationID, kind, payload)
+		} else {
+			_, err = h.tasks.AppendEvent(req.TaskID, kind, payload)
+		}
+		if err != nil {
 			// Event recording failure must not crash the runtime; it is surfaced
 			// via the returned run error below when relevant.
 			return

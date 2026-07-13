@@ -8,6 +8,11 @@ import (
 	"fmt"
 )
 
+type graphReadQueryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
 // jsonUnmarshalProps decodes canonical properties JSON into a typed struct.
 func jsonUnmarshalProps(data []byte, v any) error {
 	return json.Unmarshal(data, v)
@@ -37,9 +42,13 @@ func decodeResultJSON(data string) (*MutationResult, error) {
 }
 
 func (s *GraphService) ReadEdge(ctx context.Context, req ReadEdgeRequest) (EdgeRecord, error) {
+	return readEdge(ctx, s.db, req)
+}
+
+func readEdge(ctx context.Context, queryer graphReadQueryer, req ReadEdgeRequest) (EdgeRecord, error) {
 	var e EdgeRecord
 	var typ string
-	err := s.db.QueryRowContext(ctx, `SELECT h.edge_id,h.edge_type,h.from_node_id,h.to_node_id,h.version,h.state,v.summary,h.semantic_hash FROM blackboard_edge_heads h JOIN blackboard_edge_versions v ON v.project_id=h.project_id AND v.edge_id=h.edge_id AND v.version=h.version WHERE h.project_id=? AND h.edge_id=?`, req.ProjectID, req.EdgeID).Scan(&e.ID, &typ, &e.FromNodeID, &e.ToNodeID, &e.Version, &e.State, &e.Summary, &e.SemanticHash)
+	err := queryer.QueryRowContext(ctx, `SELECT h.edge_id,h.edge_type,h.from_node_id,h.to_node_id,h.version,h.state,v.summary,h.semantic_hash FROM blackboard_edge_heads h JOIN blackboard_edge_versions v ON v.project_id=h.project_id AND v.edge_id=h.edge_id AND v.version=h.version WHERE h.project_id=? AND h.edge_id=?`, req.ProjectID, req.EdgeID).Scan(&e.ID, &typ, &e.FromNodeID, &e.ToNodeID, &e.Version, &e.State, &e.Summary, &e.SemanticHash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return EdgeRecord{}, validationError(ErrCodeEdgeEndpointNotFound, "edge not found", -1, "", "edge_id")
 	}
@@ -68,12 +77,16 @@ func (s *GraphService) ReadActiveEdge(ctx context.Context, req ReadActiveEdgeReq
 // green path; full read service is U01). The read enforces Project isolation
 // and reports alias redirection (graph contract §4).
 func (s *GraphService) ReadNode(ctx context.Context, req ReadNodeRequest) (ReadNodeResult, error) {
+	return readNode(ctx, s.db, req)
+}
+
+func readNode(ctx context.Context, queryer graphReadQueryer, req ReadNodeRequest) (ReadNodeResult, error) {
 	var (
 		canonicalNodeID string
 		role            string
 		sourceNodeID    string
 	)
-	err := s.db.QueryRow(
+	err := queryer.QueryRowContext(ctx,
 		`SELECT canonical_node_id, role, source_node_id FROM blackboard_key_registry
 		  WHERE project_id = ? AND node_type = ? AND key = ?`,
 		req.ProjectID, string(req.NodeType), req.Key,
@@ -107,7 +120,7 @@ func (s *GraphService) ReadNode(ctx context.Context, req ReadNodeRequest) (ReadN
 	// Read current node envelope by joining heads -> versions. original_stable_key
 	// is the canonical stable key; for an alias read we still report the
 	// canonical key.
-	err = s.db.QueryRow(
+	err = queryer.QueryRowContext(ctx,
 		`SELECT h.node_id, h.node_type, n.original_stable_key, h.version, h.graph_revision,
 		        h.disposition, h.merge_target_id, v.properties_json, h.semantic_hash, n.created_at, v.updated_at
 		   FROM blackboard_node_heads h
@@ -136,7 +149,7 @@ func (s *GraphService) ReadNode(ctx context.Context, req ReadNodeRequest) (ReadN
 	}
 
 	var stateHash string
-	_ = s.db.QueryRow(
+	_ = queryer.QueryRowContext(ctx,
 		`SELECT current_semantic_state_hash FROM blackboard_graph_state WHERE project_id = ?`,
 		req.ProjectID,
 	).Scan(&stateHash)
@@ -157,10 +170,14 @@ func (s *GraphService) ReadNode(ctx context.Context, req ReadNodeRequest) (ReadN
 // history without following merge redirects. Ordinary callers should use
 // ReadNode; this method exists for the contract's explicit audit/history path.
 func (s *GraphService) ReadLiteralNode(ctx context.Context, req ReadLiteralNodeRequest) (ReadLiteralNodeResult, error) {
+	return readLiteralNode(ctx, s.db, req)
+}
+
+func readLiteralNode(ctx context.Context, queryer graphReadQueryer, req ReadLiteralNodeRequest) (ReadLiteralNodeResult, error) {
 	var node NodeRecord
 	var nodeType, disposition, propsJSON string
 	var mergeTarget sql.NullString
-	err := s.db.QueryRowContext(ctx, `
+	err := queryer.QueryRowContext(ctx, `
 		SELECT h.node_id,h.node_type,n.original_stable_key,h.version,h.disposition,
 		       h.merge_target_id,v.properties_json,n.created_at,v.updated_at,h.semantic_hash
 		  FROM blackboard_node_heads h
@@ -183,9 +200,9 @@ func (s *GraphService) ReadLiteralNode(ctx context.Context, req ReadLiteralNodeR
 			return ReadLiteralNodeResult{}, fmt.Errorf("decode literal project fact: %w", err)
 		}
 	}
-	_ = s.db.QueryRowContext(ctx, `SELECT current_semantic_state_hash FROM blackboard_graph_state WHERE project_id=?`, req.ProjectID).Scan(&node.StateHash)
+	_ = queryer.QueryRowContext(ctx, `SELECT current_semantic_state_hash FROM blackboard_graph_state WHERE project_id=?`, req.ProjectID).Scan(&node.StateHash)
 
-	rows, err := s.db.QueryContext(ctx, `SELECT version,disposition,merge_target_id,properties_json,semantic_hash FROM blackboard_node_versions WHERE project_id=? AND node_id=? ORDER BY version`, req.ProjectID, req.NodeID)
+	rows, err := queryer.QueryContext(ctx, `SELECT version,disposition,merge_target_id,properties_json,semantic_hash FROM blackboard_node_versions WHERE project_id=? AND node_id=? ORDER BY version`, req.ProjectID, req.NodeID)
 	if err != nil {
 		return ReadLiteralNodeResult{}, fmt.Errorf("read literal node versions: %w", err)
 	}

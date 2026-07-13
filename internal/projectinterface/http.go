@@ -2,6 +2,7 @@ package projectinterface
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -19,12 +20,26 @@ import (
 // and maps every failure to a ProjectInterfaceErrorV1 response. Operator/UI
 // traffic stays on the daemon bearer credential and does not reach this handler.
 type HTTPHandler struct {
-	service *Service
+	service                      *Service
+	operatorToken                string
+	allowUnauthenticatedOperator bool
 }
+
+// OperatorActorHeader carries the stable local operator identity on daemon-
+// authenticated project-interface requests. Runtime requests must omit it.
+const OperatorActorHeader = "CyberPenda-Actor-ID"
 
 // NewHTTPHandler wires a grant-authed HTTP adapter.
 func NewHTTPHandler(service *Service) *HTTPHandler {
 	return &HTTPHandler{service: service}
+}
+
+// WithOperatorAuth enables operator HTTP mode behind the daemon credential.
+// allowUnauthenticated is used only by the daemon's loopback no-token mode.
+func (h *HTTPHandler) WithOperatorAuth(daemonToken string, allowUnauthenticated bool) *HTTPHandler {
+	h.operatorToken = strings.TrimSpace(daemonToken)
+	h.allowUnauthenticatedOperator = allowUnauthenticated
+	return h
 }
 
 // BearerToken extracts the Continuation Interface Grant token from an
@@ -49,6 +64,22 @@ func BearerToken(request *http.Request) string {
 // write the structured response without reclassification.
 func (h *HTTPHandler) AuthenticateRequest(request *http.Request) (Principal, *Error) {
 	token := BearerToken(request)
+	operatorRequest := token == "" && h.allowUnauthenticatedOperator
+	if token != "" && h.operatorToken != "" &&
+		subtle.ConstantTimeCompare([]byte(token), []byte(h.operatorToken)) == 1 {
+		operatorRequest = true
+	}
+	if operatorRequest {
+		actorID := strings.TrimSpace(request.Header.Get(OperatorActorHeader))
+		if actorID == "" {
+			actorID = "local-operator"
+		}
+		principal, err := OperatorPrincipal(request.PathValue("id"), actorID)
+		if err != nil {
+			return Principal{}, AsError(err)
+		}
+		return principal, nil
+	}
 	if token == "" {
 		return Principal{}, ValidationError(ErrCodeGrantNotFound, "continuation interface grant token is required", "authorization")
 	}
@@ -126,24 +157,6 @@ func (h *HTTPHandler) CurrentGraph(response http.ResponseWriter, request *http.R
 	writeJSON(response, http.StatusOK, result)
 }
 
-// HasRuntimeGrant reports whether the request carries a bearer token that
-// should be treated as a Continuation Interface Grant rather than the daemon
-// operator credential. The daemon uses this to route the dual-mode runtime-graph
-// path: a request with a grant token goes through the project-interface module,
-// while an operator/UI request (daemon bearer or none) falls back to the read
-// service. daemonAuthToken is the operator credential the daemon already knows;
-// a request carrying it is operator traffic.
-func (h *HTTPHandler) HasRuntimeGrant(request *http.Request, daemonAuthToken string) bool {
-	token := BearerToken(request)
-	if token == "" {
-		return false
-	}
-	if daemonAuthToken != "" && token == daemonAuthToken {
-		return false
-	}
-	return true
-}
-
 // decodeStrictJSON decodes one JSON object into target with unknown-field
 // rejection so a Runtime request cannot smuggle provenance or Project fields
 // past the structural envelope (runtime protocol §4.1, §3 versioning).
@@ -182,7 +195,12 @@ func writeProjectInterfaceError(response http.ResponseWriter, err *Error) {
 	type errorEnvelope struct {
 		Error Error `json:"error"`
 	}
-	writeJSON(response, httpStatusFor(err), errorEnvelope{Error: *err})
+	status := httpStatusFor(err)
+	response.Header().Set("Cache-Control", "no-store")
+	if status == http.StatusServiceUnavailable || status == http.StatusTooManyRequests {
+		response.Header().Set("Retry-After", "1")
+	}
+	writeJSON(response, status, errorEnvelope{Error: *err})
 }
 
 // httpStatusFor selects the HTTP status for a ProjectInterfaceErrorV1. Revoked
@@ -192,9 +210,9 @@ func httpStatusFor(err *Error) int {
 	switch err.Code {
 	case ErrCodeGrantNotFound:
 		return http.StatusUnauthorized
-	case ErrCodeProjectMismatch, ErrCodeActorForbidden:
+	case ErrCodeProjectMismatch, ErrCodeActorForbidden, ErrCodeSourceEventMismatch:
 		return http.StatusForbidden
-	case ErrCodeProjectNotFound:
+	case ErrCodeProjectNotFound, ErrCodeSourceEventNotFound:
 		return http.StatusNotFound
 	case ErrCodeContinuationClosed:
 		if status, _ := err.Details["grant_status"].(string); status == string(GrantStatusRevoked) {

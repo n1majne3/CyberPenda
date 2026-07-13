@@ -43,6 +43,9 @@ func NewService(deps Deps) *Service {
 type Principal struct {
 	Grant             Grant
 	DeclaredProjectID string
+	ActorType         blackboard.ActorType
+	ActorID           string
+	ProjectID         string
 }
 
 // Authenticate resolves a bearer token to a Continuation Interface Grant and
@@ -60,7 +63,34 @@ func (s *Service) Authenticate(ctx context.Context, token, declaredProjectID str
 			fmt.Sprintf("declared project %q does not match grant project %q", declaredProjectID, grant.ProjectID),
 			"path.project_id")
 	}
-	return Principal{Grant: grant, DeclaredProjectID: declaredProjectID}, nil
+	return Principal{
+		Grant: grant, DeclaredProjectID: declaredProjectID,
+		ActorType: blackboard.ActorTypeRuntime, ActorID: grant.ActorID,
+		ProjectID: grant.ProjectID,
+	}, nil
+}
+
+// OperatorPrincipal binds an authenticated local operator to one explicit
+// Project. It cannot fabricate Runtime Task/Continuation provenance.
+func OperatorPrincipal(projectID, actorID string) (Principal, error) {
+	projectID = strings.TrimSpace(projectID)
+	actorID = strings.TrimSpace(actorID)
+	if projectID == "" {
+		return Principal{}, ValidationError(ErrCodeInvalidRequest, "project id is required", "project_id")
+	}
+	if actorID == "" {
+		return Principal{}, ValidationError(ErrCodeActorForbidden, "operator actor id is required", "actor_id")
+	}
+	return Principal{ActorType: blackboard.ActorTypeOperator, ActorID: actorID, ProjectID: projectID}, nil
+}
+
+func (p Principal) isRuntime() bool { return p.ActorType == blackboard.ActorTypeRuntime }
+
+func (p Principal) projectID() string {
+	if p.ProjectID != "" {
+		return p.ProjectID
+	}
+	return p.Grant.ProjectID
 }
 
 // RequestBatch is the Runtime-supplied mutation batch (runtime protocol §6.1).
@@ -82,10 +112,10 @@ type ApplyMutationRequest struct {
 // protocol §3, §6.2). project_id is returned for operator clarity and is
 // always the grant's bound Project.
 type ApplyMutationResponse struct {
-	ProtocolVersion       int                      `json:"protocol_version"`
-	RequestKind           string                   `json:"request_kind"`
-	ProjectID             string                   `json:"project_id"`
-	ObservedGraphRevision int                      `json:"observed_graph_revision"`
+	ProtocolVersion       int                       `json:"protocol_version"`
+	RequestKind           string                    `json:"request_kind"`
+	ProjectID             string                    `json:"project_id"`
+	ObservedGraphRevision int                       `json:"observed_graph_revision"`
 	Result                blackboard.MutationResult `json:"result"`
 }
 
@@ -98,6 +128,20 @@ func (s *Service) Apply(ctx context.Context, principal Principal, req ApplyMutat
 	if err := requireGraph(s.graph); err != nil {
 		return ApplyMutationResponse{}, err
 	}
+	// Revalidate lifecycle before authorization or any request-dependent graph
+	// read. A revoked grant rejects every use and must not become a graph-state
+	// oracle through patch/transition authorization.
+	status := GrantStatusOpen
+	if principal.isRuntime() {
+		current, err := s.currentGrant(ctx, principal)
+		if err != nil {
+			return ApplyMutationResponse{}, err
+		}
+		status = current.Status()
+		if !status.IsReadable() {
+			return ApplyMutationResponse{}, continuationClosedError(status)
+		}
+	}
 	if req.ProtocolVersion != RuntimeProtocolVersion {
 		return ApplyMutationResponse{}, ValidationError(ErrCodeInvalidRequest,
 			fmt.Sprintf("unsupported protocol version %d", req.ProtocolVersion), "protocol_version")
@@ -109,20 +153,26 @@ func (s *Service) Apply(ctx context.Context, principal Principal, req ApplyMutat
 	if err := validateNoProvenanceInBatch(req.Batch); err != nil {
 		return ApplyMutationResponse{}, err
 	}
+	if err := s.authorizeApply(ctx, principal, req.Batch.Operations); err != nil {
+		return ApplyMutationResponse{}, err
+	}
 
-	projectKind, err := s.loadProjectKind(ctx, principal.Grant.ProjectID)
+	projectID := principal.projectID()
+	projectKind, err := s.loadProjectKind(ctx, projectID)
 	if err != nil {
 		return ApplyMutationResponse{}, err
 	}
 	execCtx := blackboard.ExecutionContext{
-		ProjectID:        principal.Grant.ProjectID,
-		ProjectKind:      projectKind,
-		ActorType:        blackboard.ActorTypeRuntime,
-		ActorID:          principal.Grant.ActorID,
-		TaskID:           principal.Grant.TaskID,
-		ContinuationID:   principal.Grant.ContinuationID,
-		RuntimeProfileID: principal.Grant.RuntimeProfileID,
-		Runner:           principal.Grant.Runner,
+		ProjectID:   projectID,
+		ProjectKind: projectKind,
+		ActorType:   principal.ActorType,
+		ActorID:     principal.ActorID,
+	}
+	if principal.isRuntime() {
+		execCtx.TaskID = principal.Grant.TaskID
+		execCtx.ContinuationID = principal.Grant.ContinuationID
+		execCtx.RuntimeProfileID = principal.Grant.RuntimeProfileID
+		execCtx.Runner = principal.Grant.Runner
 	}
 	batch := blackboard.MutationBatch{
 		SchemaVersion:      req.Batch.SchemaVersion,
@@ -130,20 +180,6 @@ func (s *Service) Apply(ctx context.Context, principal Principal, req ApplyMutat
 		Context:            execCtx,
 		Operations:         req.Batch.Operations,
 		SourceEventIDsByOp: req.SourceEventIDsByOp,
-	}
-
-	// Revalidate lifecycle authoritatively. The principal may be a snapshot from
-	// before the grant closed, and Finish/Revoke/terminal marking can race with
-	// a long-lived caller (runtime protocol §11.2).
-	current, err := s.currentGrant(ctx, principal)
-	if err != nil {
-		return ApplyMutationResponse{}, err
-	}
-	status := current.Status()
-	// Revocation rejects every use, including exact replay (runtime protocol
-	// §4.2). Finish and a terminal Continuation close only new writes.
-	if !status.IsReadable() {
-		return ApplyMutationResponse{}, continuationClosedError(status)
 	}
 
 	// Exact idempotent replay remains available for non-revoked closed grants,
@@ -155,14 +191,14 @@ func (s *Service) Apply(ctx context.Context, principal Principal, req ApplyMutat
 		return ApplyMutationResponse{
 			ProtocolVersion:       RuntimeProtocolVersion,
 			RequestKind:           "apply",
-			ProjectID:             principal.Grant.ProjectID,
+			ProjectID:             projectID,
 			ObservedGraphRevision: replay.GraphRevision,
 			Result:                replay,
 		}, nil
 	}
 
 	// New write requires an open grant.
-	if !status.IsWriteable() {
+	if principal.isRuntime() && !status.IsWriteable() {
 		return ApplyMutationResponse{}, continuationClosedError(status)
 	}
 
@@ -173,7 +209,7 @@ func (s *Service) Apply(ctx context.Context, principal Principal, req ApplyMutat
 	return ApplyMutationResponse{
 		ProtocolVersion:       RuntimeProtocolVersion,
 		RequestKind:           "apply",
-		ProjectID:             principal.Grant.ProjectID,
+		ProjectID:             projectID,
 		ObservedGraphRevision: result.GraphRevision,
 		Result:                result,
 	}, nil
@@ -198,7 +234,7 @@ type ResolveRecordsRequest struct {
 
 // ResolvedNode is one resolved record with alias/merge resolution metadata.
 type ResolvedNode struct {
-	Node                 any `json:"node"`
+	Node                 any    `json:"node"`
 	ResolvedFromAlias    string `json:"resolved_from_alias,omitempty"`
 	ResolvedFromMergedID string `json:"resolved_from_merged_id,omitempty"`
 }
@@ -248,44 +284,49 @@ func (s *Service) ResolveRecords(ctx context.Context, principal Principal, req R
 	if len(req.Nodes)+len(req.EdgeIDs) > 100 {
 		return ResolveRecordsResponse{}, ValidationError(ErrCodeInvalidRequest, "at most 100 node references plus edge IDs per request", "edge_ids")
 	}
-	current, err := s.currentGrant(ctx, principal)
-	if err != nil {
-		return ResolveRecordsResponse{}, err
-	}
-	if !current.Status().IsReadable() {
-		return ResolveRecordsResponse{}, continuationClosedError(current.Status())
-	}
-	observedRevision, err := s.currentGraphRevision(ctx, principal.Grant.ProjectID)
-	if err != nil {
-		return ResolveRecordsResponse{}, err
-	}
-	response := ResolveRecordsResponse{
-		ProtocolVersion:       RuntimeProtocolVersion,
-		RequestKind:           "resolve_records",
-		ProjectID:             principal.Grant.ProjectID,
-		ObservedGraphRevision: observedRevision,
-	}
-	for _, lookup := range req.Nodes {
-		resolved, missing, err := s.resolveOne(ctx, principal.Grant.ProjectID, lookup)
+	if principal.isRuntime() {
+		current, err := s.currentGrant(ctx, principal)
 		if err != nil {
 			return ResolveRecordsResponse{}, err
 		}
-		if missing {
-			response.Missing = append(response.Missing, MissingNode(lookup))
-			continue
+		if !current.Status().IsReadable() {
+			return ResolveRecordsResponse{}, continuationClosedError(current.Status())
 		}
-		response.Nodes = append(response.Nodes, resolved)
 	}
-	for _, edgeID := range req.EdgeIDs {
-		edge, err := s.graph.ReadEdge(ctx, blackboard.ReadEdgeRequest{ProjectID: principal.Grant.ProjectID, EdgeID: edgeID})
-		if err != nil {
-			if isMissingNode(err) {
-				response.MissingEdges = append(response.MissingEdges, MissingEdge(edgeID))
+	projectID := principal.projectID()
+	response := ResolveRecordsResponse{
+		ProtocolVersion: RuntimeProtocolVersion,
+		RequestKind:     "resolve_records",
+		ProjectID:       projectID,
+	}
+	err := s.graph.WithReadSnapshot(ctx, projectID, func(observedRevision int, reader blackboard.SnapshotReader) error {
+		response.ObservedGraphRevision = observedRevision
+		for _, lookup := range req.Nodes {
+			resolved, missing, err := s.resolveOne(ctx, reader, projectID, lookup)
+			if err != nil {
+				return err
+			}
+			if missing {
+				response.Missing = append(response.Missing, MissingNode(lookup))
 				continue
 			}
-			return ResolveRecordsResponse{}, mapGraphError(err)
+			response.Nodes = append(response.Nodes, resolved)
 		}
-		response.Edges = append(response.Edges, ResolvedEdge{Edge: edge})
+		for _, edgeID := range req.EdgeIDs {
+			edge, err := reader.ReadEdge(ctx, blackboard.ReadEdgeRequest{ProjectID: projectID, EdgeID: edgeID})
+			if err != nil {
+				if isMissingNode(err) {
+					response.MissingEdges = append(response.MissingEdges, MissingEdge(edgeID))
+					continue
+				}
+				return mapGraphError(err)
+			}
+			response.Edges = append(response.Edges, ResolvedEdge{Edge: edge})
+		}
+		return nil
+	})
+	if err != nil {
+		return ResolveRecordsResponse{}, err
 	}
 	return response, nil
 }
@@ -304,11 +345,11 @@ type CurrentGraphResponse struct {
 	ProjectID             string `json:"project_id"`
 	ObservedGraphRevision int    `json:"observed_graph_revision"`
 	Result                struct {
-		RendererVersion  string `json:"renderer_version"`
-		ProjectionHash   string `json:"projection_hash"`
-		ProjectionBytes  int    `json:"projection_bytes"`
-		EstimatedTokens  int    `json:"estimated_tokens"`
-		Graph            any    `json:"graph"`
+		RendererVersion string `json:"renderer_version"`
+		ProjectionHash  string `json:"projection_hash"`
+		ProjectionBytes int    `json:"projection_bytes"`
+		EstimatedTokens int    `json:"estimated_tokens"`
+		Graph           any    `json:"graph"`
 	} `json:"result"`
 }
 
@@ -324,25 +365,28 @@ func (s *Service) CurrentGraph(ctx context.Context, principal Principal, req Cur
 		return CurrentGraphResponse{}, ValidationError(ErrCodeInvalidRequest,
 			fmt.Sprintf("unsupported protocol version %d", req.ProtocolVersion), "protocol_version")
 	}
-	current, err := s.currentGrant(ctx, principal)
+	if principal.isRuntime() {
+		current, err := s.currentGrant(ctx, principal)
+		if err != nil {
+			return CurrentGraphResponse{}, err
+		}
+		if !current.Status().IsReadable() {
+			return CurrentGraphResponse{}, continuationClosedError(current.Status())
+		}
+	}
+	projectID := principal.projectID()
+	revision, err := s.currentGraphRevision(ctx, projectID)
 	if err != nil {
 		return CurrentGraphResponse{}, err
 	}
-	if !current.Status().IsReadable() {
-		return CurrentGraphResponse{}, continuationClosedError(current.Status())
-	}
-	revision, err := s.currentGraphRevision(ctx, principal.Grant.ProjectID)
-	if err != nil {
-		return CurrentGraphResponse{}, err
-	}
-	projection, err := s.graph.CanonicalMainGraph(ctx, principal.Grant.ProjectID, revision)
+	projection, err := s.graph.CanonicalMainGraph(ctx, projectID, revision)
 	if err != nil {
 		return CurrentGraphResponse{}, mapGraphError(err)
 	}
 	response := CurrentGraphResponse{
 		ProtocolVersion:       RuntimeProtocolVersion,
 		RequestKind:           "current_graph",
-		ProjectID:             principal.Grant.ProjectID,
+		ProjectID:             projectID,
 		ObservedGraphRevision: projection.GraphRevision,
 	}
 	response.Result.RendererVersion = projection.RendererVersion
@@ -354,10 +398,10 @@ func (s *Service) CurrentGraph(ctx context.Context, principal Principal, req Cur
 }
 
 // resolveOne resolves a single node lookup, reporting whether it was missing.
-func (s *Service) resolveOne(ctx context.Context, projectID string, lookup NodeLookup) (ResolvedNode, bool, error) {
+func (s *Service) resolveOne(ctx context.Context, reader blackboard.SnapshotReader, projectID string, lookup NodeLookup) (ResolvedNode, bool, error) {
 	switch {
 	case lookup.ID != "":
-		literal, err := s.graph.ReadLiteralNode(ctx, blackboard.ReadLiteralNodeRequest{ProjectID: projectID, NodeID: lookup.ID})
+		literal, err := reader.ReadLiteralNode(ctx, blackboard.ReadLiteralNodeRequest{ProjectID: projectID, NodeID: lookup.ID})
 		if err != nil {
 			if isMissingNode(err) {
 				return ResolvedNode{}, true, nil
@@ -368,7 +412,7 @@ func (s *Service) resolveOne(ctx context.Context, projectID string, lookup NodeL
 		// callers recover the canonical record (runtime protocol §7).
 		resolved := ResolvedNode{Node: literal.Node}
 		if literal.Node.MergeTargetID != "" {
-			canonical, err := s.graph.ReadLiteralNode(ctx, blackboard.ReadLiteralNodeRequest{ProjectID: projectID, NodeID: literal.Node.MergeTargetID})
+			canonical, err := reader.ReadLiteralNode(ctx, blackboard.ReadLiteralNodeRequest{ProjectID: projectID, NodeID: literal.Node.MergeTargetID})
 			if err != nil {
 				if isMissingNode(err) {
 					return ResolvedNode{}, true, nil
@@ -380,7 +424,7 @@ func (s *Service) resolveOne(ctx context.Context, projectID string, lookup NodeL
 		}
 		return resolved, false, nil
 	case lookup.NodeType != "" && lookup.StableKey != "":
-		read, err := s.graph.ReadNode(ctx, blackboard.ReadNodeRequest{
+		read, err := reader.ReadNode(ctx, blackboard.ReadNodeRequest{
 			ProjectID: projectID,
 			NodeType:  blackboard.NodeType(lookup.NodeType),
 			Key:       lookup.StableKey,
@@ -517,6 +561,84 @@ var provenancePropertyKeys = []string{
 	"runtime_plugin_id", "runner", "actor_id", "actor_type", "recorded_at",
 }
 
+// authorizeApply enforces the runtime-protocol §5 actor eligibility table at
+// the project-interface seam. The graph remains the final semantic validator,
+// but forbidden actor/operation combinations never reach graph Apply.
+func (s *Service) authorizeApply(ctx context.Context, principal Principal, operations []blackboard.Operation) *Error {
+	if principal.ActorType != blackboard.ActorTypeRuntime && principal.ActorType != blackboard.ActorTypeOperator {
+		return ValidationError(ErrCodeActorForbidden, "actor type cannot use the project interface", "authorization")
+	}
+	for i, op := range operations {
+		nodeType := op.Node.NodeType
+		if nodeType == "" && op.Node.ID != "" && (op.Kind == blackboard.OpPatchNode || op.Kind == blackboard.OpTransitionNode) {
+			resolved, err := s.graph.ReadLiteralNode(ctx, blackboard.ReadLiteralNodeRequest{
+				ProjectID: principal.projectID(), NodeID: op.Node.ID,
+			})
+			if err != nil {
+				return mapGraphError(err)
+			}
+			nodeType = resolved.Node.NodeType
+		}
+		reason := ""
+		switch {
+		case principal.ActorType == blackboard.ActorTypeRuntime && op.Kind == blackboard.OpMergeNodes:
+			reason = "Runtime actors cannot merge graph nodes"
+		case principal.ActorType == blackboard.ActorTypeRuntime && op.Kind == blackboard.OpSetDisposition:
+			reason = "Runtime actors cannot archive or restore graph nodes"
+		case nodeType == blackboard.NodeTypeGoal:
+			reason = "Goal mutations are reserved for the Goal projector or migration"
+		case nodeType == blackboard.NodeTypeAttempt && op.Kind == blackboard.OpTransitionNode && op.Transition.Status == "interrupted":
+			reason = "Attempt interruption is reserved for system reconciliation"
+		case genericAvailableEvidenceMutation(op) && (nodeType == blackboard.NodeTypeEvidenceArtifact || nodeType == ""):
+			reason = "available Evidence must use Retain Evidence"
+		case principal.ActorType == blackboard.ActorTypeRuntime && nodeType == blackboard.NodeTypeProjectDirective && !runtimeDirectiveProposal(op):
+			reason = "Runtime actors may only propose Project Directives"
+		}
+		if reason == "" {
+			continue
+		}
+		index := i
+		return &Error{
+			ProtocolVersion: RuntimeProtocolVersion,
+			Code:            ErrCodeActorForbidden,
+			Message:         reason,
+			OperationIndex:  &index,
+			OpID:            op.OpID,
+			Path:            fmt.Sprintf("batch.operations[%d]", i),
+			Details: map[string]any{
+				"actor_type":     principal.ActorType,
+				"operation_kind": op.Kind,
+				"node_type":      nodeType,
+			},
+		}
+	}
+	return nil
+}
+
+func genericAvailableEvidenceMutation(op blackboard.Operation) bool {
+	switch op.Kind {
+	case blackboard.OpCreateNode:
+		status, _ := op.Create.PropertyMap["status"].(string)
+		return status == "" || status == "available"
+	case blackboard.OpPatchNode:
+		status, supplied := op.Patch.Properties["status"].(string)
+		return !supplied || status == "" || status == "available"
+	}
+	return false
+}
+
+func runtimeDirectiveProposal(op blackboard.Operation) bool {
+	switch op.Kind {
+	case blackboard.OpCreateNode:
+		status, _ := op.Create.PropertyMap["status"].(string)
+		return status == "proposed"
+	case blackboard.OpPatchNode:
+		status, supplied := op.Patch.Properties["status"].(string)
+		return !supplied || status == "proposed"
+	}
+	return false
+}
+
 // continuationClosedError reports that a grant no longer admits the requested
 // use. The grant_status detail lets HTTP map revocation to 403 (every use
 // rejected) while finish/terminal stay 409 (new writes rejected, reads and
@@ -546,9 +668,17 @@ func mapGraphError(err error) *Error {
 	}
 	var validation *blackboard.ValidationError
 	if errors.As(err, &validation) {
+		code := validation.Code
+		if validation.Path == "source_event_ids_by_op" && validation.Code == blackboard.ErrCodeProvenanceSpoofed {
+			if reason, _ := validation.Details["source_event_reason"].(string); reason == "not_found" {
+				code = ErrCodeSourceEventNotFound
+			} else {
+				code = ErrCodeSourceEventMismatch
+			}
+		}
 		mapped := &Error{
 			ProtocolVersion: RuntimeProtocolVersion,
-			Code:            validation.Code,
+			Code:            code,
 			Message:         validation.Message,
 			Path:            validation.Path,
 			Retryable:       validation.Retryable,

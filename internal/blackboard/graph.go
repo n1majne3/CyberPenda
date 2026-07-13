@@ -2039,15 +2039,21 @@ func validateSourceEvents(tx *sql.Tx, batch MutationBatch, operations map[string
 			var continuationID sql.NullString
 			if err := tx.QueryRow(`SELECT task_id,continuation_id FROM task_events WHERE id=?`, eventID).Scan(&taskID, &continuationID); err != nil {
 				if errors.Is(err, sql.ErrNoRows) {
-					return validationError(ErrCodeProvenanceSpoofed, "source Task Event does not exist", -1, opID, "source_event_ids_by_op")
+					validation := validationError(ErrCodeProvenanceSpoofed, "source Task Event does not exist", -1, opID, "source_event_ids_by_op")
+					validation.Details = map[string]any{"source_event_reason": "not_found"}
+					return validation
 				}
 				return fmt.Errorf("validate source Task Event: %w", err)
 			}
 			if batch.Context.TaskID == "" || taskID != batch.Context.TaskID {
-				return validationError(ErrCodeProvenanceSpoofed, "source Task Event belongs to another Task", -1, opID, "source_event_ids_by_op")
+				validation := validationError(ErrCodeProvenanceSpoofed, "source Task Event belongs to another Task", -1, opID, "source_event_ids_by_op")
+				validation.Details = map[string]any{"source_event_reason": "context_mismatch"}
+				return validation
 			}
 			if batch.Context.ActorType == ActorTypeRuntime && continuationID.Valid && continuationID.String != batch.Context.ContinuationID {
-				return validationError(ErrCodeProvenanceSpoofed, "source Task Event belongs to another Continuation", -1, opID, "source_event_ids_by_op")
+				validation := validationError(ErrCodeProvenanceSpoofed, "source Task Event belongs to another Continuation", -1, opID, "source_event_ids_by_op")
+				validation.Details = map[string]any{"source_event_reason": "context_mismatch"}
+				return validation
 			}
 		}
 	}

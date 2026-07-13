@@ -31,10 +31,9 @@ type piSeed struct {
 	runtimePlugin string
 }
 
-// seedProjectInterfaceGrant opens a graph_v1 database, creates a Project, Task,
-// Runtime Configuration Version, and Continuation, issues a Continuation
-// Interface Grant, and closes the seeding connection so the daemon can own the
-// database. The plaintext grant token is returned for transport auth.
+// seedProjectInterfaceGrant opens a graph_v1 database and creates the Project.
+// The grant is issued after daemon startup so startup orphan reconciliation
+// cannot correctly terminalize what the test intends to be a new Continuation.
 func seedProjectInterfaceGrant(t *testing.T) piSeed {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "pi-daemon.db")
@@ -53,8 +52,22 @@ func seedProjectInterfaceGrant(t *testing.T) piSeed {
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed store: %v", err)
+	}
+	return piSeed{dbPath: dbPath, projectID: proj.ID, runtimePlugin: "codex"}
+}
+
+func issueProjectInterfaceGrant(t *testing.T, seed *piSeed) {
+	t.Helper()
+	db, err := store.Open(seed.dbPath)
+	if err != nil {
+		t.Fatalf("open grant store: %v", err)
+	}
+	defer db.Close()
+	projects := project.NewService(db)
 	tasks := task.NewService(db, projects)
-	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "Drive the project interface", Runner: task.RunnerSandbox})
+	created, err := tasks.Create(task.CreateRequest{ProjectID: seed.projectID, Goal: "Drive the project interface", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -71,7 +84,7 @@ func seedProjectInterfaceGrant(t *testing.T) piSeed {
 	}
 	grants := projectinterface.NewGrantStore(db, projectinterface.SystemClock{}, projectinterface.RandomIDSource{}, projectinterface.RandomTokenSource{})
 	token, _, err := grants.Issue(context.Background(), projectinterface.IssueGrantRequest{
-		ProjectID:              proj.ID,
+		ProjectID:              seed.projectID,
 		TaskID:                 created.ID,
 		ContinuationID:         continuation.ID,
 		RuntimeConfigVersionID: configVersion.ID,
@@ -82,10 +95,8 @@ func seedProjectInterfaceGrant(t *testing.T) piSeed {
 	if err != nil {
 		t.Fatalf("issue grant: %v", err)
 	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("close seed store: %v", err)
-	}
-	return piSeed{dbPath: dbPath, token: token, projectID: proj.ID, runtimePlugin: runtimePlugin}
+	seed.token = token
+	seed.runtimePlugin = runtimePlugin
 }
 
 func objectiveMutationBody() []byte {
@@ -120,6 +131,7 @@ func TestProjectInterfaceDaemonHTTPRoundTrip(t *testing.T) {
 		t.Fatalf("start server: %v", err)
 	}
 	defer server.Close()
+	issueProjectInterfaceGrant(t, &seed)
 
 	// POST mutations with the grant token lands the objective.
 	mutationURL := "/api/projects/" + seed.projectID + "/blackboard/mutations"
@@ -193,6 +205,101 @@ func TestProjectInterfaceDaemonHTTPRoundTrip(t *testing.T) {
 	}
 }
 
+// TestProjectInterfaceDaemonAcceptsGrantAlongsideOperatorCredential proves the
+// daemon-wide operator credential does not shadow a valid Continuation Grant,
+// and both trusted caller modes reach the same HTTP project-interface route.
+func TestProjectInterfaceDaemonAcceptsGrantAlongsideOperatorCredential(t *testing.T) {
+	seed := seedProjectInterfaceGrant(t)
+	server, err := daemon.NewServer(daemon.Config{
+		Version: "v", DBPath: seed.dbPath, AuthToken: "daemon-operator-token", DisableBuiltinSkills: true,
+	})
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer server.Close()
+	issueProjectInterfaceGrant(t, &seed)
+
+	runtimeReq := httptest.NewRequest(http.MethodPost,
+		"/api/projects/"+seed.projectID+"/blackboard/mutations",
+		bytes.NewReader(objectiveMutationBody()))
+	runtimeReq.Header.Set("Authorization", "Bearer "+seed.token)
+	runtimeRec := httptest.NewRecorder()
+	server.ServeHTTP(runtimeRec, runtimeReq)
+	if runtimeRec.Code != http.StatusOK {
+		t.Fatalf("Runtime grant status = %d body %s", runtimeRec.Code, runtimeRec.Body.String())
+	}
+
+	var operatorRequest projectinterface.ApplyMutationRequest
+	if err := json.Unmarshal(objectiveMutationBody(), &operatorRequest); err != nil {
+		t.Fatalf("decode operator request: %v", err)
+	}
+	operatorRequest.Batch.IdempotencyKey = "obj:operator-http"
+	operatorRequest.Batch.Operations[0].Node.StableKey = "objective:operator-http"
+	operatorBody, _ := json.Marshal(operatorRequest)
+	operatorReq := httptest.NewRequest(http.MethodPost,
+		"/api/projects/"+seed.projectID+"/blackboard/mutations",
+		bytes.NewReader(operatorBody))
+	operatorReq.Header.Set("Authorization", "Bearer daemon-operator-token")
+	operatorReq.Header.Set(projectinterface.OperatorActorHeader, "operator:alice")
+	operatorRec := httptest.NewRecorder()
+	server.ServeHTTP(operatorRec, operatorReq)
+	if operatorRec.Code != http.StatusOK {
+		t.Fatalf("operator credential status = %d body %s", operatorRec.Code, operatorRec.Body.String())
+	}
+	if !strings.Contains(operatorRec.Body.String(), "objective:operator-http") {
+		t.Fatalf("operator response missing semantic result: %s", operatorRec.Body.String())
+	}
+	operatorGraphReq := httptest.NewRequest(http.MethodGet,
+		"/api/projects/"+seed.projectID+"/blackboard/runtime-graph", nil)
+	operatorGraphReq.Header.Set("Authorization", "Bearer daemon-operator-token")
+	operatorGraphReq.Header.Set(projectinterface.OperatorActorHeader, "alice")
+	operatorGraphRec := httptest.NewRecorder()
+	server.ServeHTTP(operatorGraphRec, operatorGraphReq)
+	if operatorGraphRec.Code != http.StatusOK {
+		t.Fatalf("operator current graph status = %d body %s", operatorGraphRec.Code, operatorGraphRec.Body.String())
+	}
+	var operatorGraph projectinterface.CurrentGraphResponse
+	if err := json.Unmarshal(operatorGraphRec.Body.Bytes(), &operatorGraph); err != nil {
+		t.Fatalf("decode operator current graph: %v", err)
+	}
+	if operatorGraph.RequestKind != "current_graph" || operatorGraph.ProjectID != seed.projectID {
+		t.Fatalf("operator current graph used non-project-interface envelope: %#v", operatorGraph)
+	}
+
+	missingCredential := httptest.NewRequest(http.MethodPost,
+		"/api/projects/"+seed.projectID+"/blackboard/mutations",
+		bytes.NewReader(objectiveMutationBody()))
+	missingRec := httptest.NewRecorder()
+	server.ServeHTTP(missingRec, missingCredential)
+	if missingRec.Code != http.StatusUnauthorized {
+		t.Fatalf("missing credential status = %d want 401", missingRec.Code)
+	}
+	var missingEnvelope struct {
+		Error projectinterface.Error `json:"error"`
+	}
+	if err := json.Unmarshal(missingRec.Body.Bytes(), &missingEnvelope); err != nil {
+		t.Fatalf("decode structured missing-credential error: %v", err)
+	}
+	if missingEnvelope.Error.Code != projectinterface.ErrCodeGrantNotFound ||
+		missingEnvelope.Error.ProtocolVersion != projectinterface.RuntimeProtocolVersion {
+		t.Fatalf("missing-credential error = %#v", missingEnvelope.Error)
+	}
+
+	missingGraphReq := httptest.NewRequest(http.MethodGet,
+		"/api/projects/"+seed.projectID+"/blackboard/runtime-graph", nil)
+	missingGraphRec := httptest.NewRecorder()
+	server.ServeHTTP(missingGraphRec, missingGraphReq)
+	if missingGraphRec.Code != http.StatusUnauthorized {
+		t.Fatalf("missing graph credential status = %d want 401; body %s", missingGraphRec.Code, missingGraphRec.Body.String())
+	}
+	if err := json.Unmarshal(missingGraphRec.Body.Bytes(), &missingEnvelope); err != nil {
+		t.Fatalf("decode structured missing graph credential error: %v", err)
+	}
+	if missingEnvelope.Error.Code != projectinterface.ErrCodeGrantNotFound {
+		t.Fatalf("missing graph credential error = %#v", missingEnvelope.Error)
+	}
+}
+
 // TestProjectInterfaceDaemonMCPApplyAndCurrentGraph drives the canonical path
 // through the trusted MCP endpoint authenticated with a Continuation Interface
 // Grant (runtime protocol §12.2): blackboard_apply lands a record and
@@ -205,11 +312,12 @@ func TestProjectInterfaceDaemonMCPApplyAndCurrentGraph(t *testing.T) {
 	}
 	addr := listener.Addr().String()
 	server, err := daemon.NewServer(daemon.Config{
-		Version: "v", DBPath: seed.dbPath, DisableBuiltinSkills: true, ListenAddr: addr,
+		Version: "v", DBPath: seed.dbPath, AuthToken: "daemon-operator-token", DisableBuiltinSkills: true, ListenAddr: addr,
 	})
 	if err != nil {
 		t.Fatalf("start server: %v", err)
 	}
+	issueProjectInterfaceGrant(t, &seed)
 	httpServer := &http.Server{Handler: server}
 	go func() { _ = httpServer.Serve(listener) }()
 	t.Cleanup(func() {
@@ -226,6 +334,50 @@ func TestProjectInterfaceDaemonMCPApplyAndCurrentGraph(t *testing.T) {
 		t.Fatalf("mcp connect: %v", err)
 	}
 	defer func() { _ = session.Close() }()
+
+	tools, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("list grant-authenticated MCP tools: %v", err)
+	}
+	allowed := map[string]bool{
+		"blackboard_apply":             true,
+		"blackboard_resolve_records":   true,
+		"blackboard_get_current_graph": true,
+	}
+	for _, tool := range tools.Tools {
+		if !allowed[tool.Name] {
+			t.Fatalf("grant-authenticated MCP exposed compatibility tool %q", tool.Name)
+		}
+		if tool.Description != projectinterface.TrustedToolDescription(tool.Name) {
+			t.Fatalf("MCP description drift for %q: %q", tool.Name, tool.Description)
+		}
+		delete(allowed, tool.Name)
+	}
+	if len(allowed) != 0 {
+		t.Fatalf("grant-authenticated MCP missing canonical tools: %v", allowed)
+	}
+
+	operatorSession, err := client.Connect(ctx, &sdkmcp.StreamableClientTransport{
+		Endpoint: "http://" + addr + "/mcp?token=daemon-operator-token",
+	}, nil)
+	if err != nil {
+		t.Fatalf("operator MCP connect: %v", err)
+	}
+	defer func() { _ = operatorSession.Close() }()
+	operatorTools, err := operatorSession.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("list operator MCP tools: %v", err)
+	}
+	foundLegacy := false
+	for _, tool := range operatorTools.Tools {
+		if tool.Name == "upsert_project_fact" {
+			foundLegacy = true
+			break
+		}
+	}
+	if !foundLegacy {
+		t.Fatal("daemon operator token lost compatibility MCP tools")
+	}
 
 	applyRes, err := session.CallTool(ctx, &sdkmcp.CallToolParams{
 		Name: "blackboard_apply",

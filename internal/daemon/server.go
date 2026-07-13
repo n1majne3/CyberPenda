@@ -99,13 +99,13 @@ type Server struct {
 	projectInterfaceGrants *projectinterface.GrantStore
 	projectInterfaceHTTP   *projectinterface.HTTPHandler
 	runtimeRoot            string
-	sandboxImage       string
-	containerCLI       string
-	listenAddr         string
-	authToken          string
-	tempSkillsRoot     string
-	controlMu          sync.Mutex
-	activeControls     map[string]bool
+	sandboxImage           string
+	containerCLI           string
+	listenAddr             string
+	authToken              string
+	tempSkillsRoot         string
+	controlMu              sync.Mutex
+	activeControls         map[string]bool
 }
 
 func NewServer(config Config) (*Server, error) {
@@ -211,12 +211,14 @@ func NewServer(config Config) (*Server, error) {
 		server.graph = graph
 		server.reads = blackboard.NewBlackboardReadService(db).WithArtifactRoot(filepath.Dir(config.DBPath))
 		server.projectInterfaceGrants = projectinterface.NewGrantStore(db, projectinterface.SystemClock{}, projectinterface.RandomIDSource{}, projectinterface.RandomTokenSource{})
+		server.tasks.SetContinuationTerminalMarker(server.projectInterfaceGrants)
 		server.projectInterface = projectinterface.NewService(projectinterface.Deps{
 			DB:     db,
 			Graph:  graph,
 			Grants: server.projectInterfaceGrants,
 		})
-		server.projectInterfaceHTTP = projectinterface.NewHTTPHandler(server.projectInterface)
+		server.projectInterfaceHTTP = projectinterface.NewHTTPHandler(server.projectInterface).
+			WithOperatorAuth(server.authToken, server.authToken == "")
 		if err := graph.RepairTaskGoals(context.Background()); err != nil {
 			_ = server.Close()
 			return nil, fmt.Errorf("repair Task Goals at graph startup: %w", err)
@@ -315,8 +317,13 @@ func runtimeProfileProviders(registry *runtimeplugin.Registry) []runtimeprofile.
 func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) {
 	if server.authToken != "" && !server.publicPath(request) {
 		if !server.authorized(request) {
-			writeError(response, http.StatusUnauthorized, "unauthorized")
-			return
+			// Project-interface HTTP handlers own their structured credential
+			// errors. Let those narrow routes classify a missing/invalid grant;
+			// every other API and MCP route remains behind the daemon middleware.
+			if server.projectInterfaceHTTP == nil || !isProjectInterfaceHTTPTransport(request) {
+				writeError(response, http.StatusUnauthorized, "unauthorized")
+				return
+			}
 		}
 	}
 	start := time.Now()
@@ -354,6 +361,37 @@ func (server *Server) authorized(request *http.Request) bool {
 		if subtle.ConstantTimeCompare([]byte(queryToken), []byte(server.authToken)) == 1 {
 			return true
 		}
+	}
+	// A Continuation Interface Grant is a separate, narrower credential from
+	// the daemon operator token. Accept it only on the trusted project-interface
+	// transports; the adapter then enforces the bound Project and capability.
+	if server.projectInterface != nil && isProjectInterfaceTransport(request) {
+		if token := projectinterface.BearerToken(request); token != "" {
+			_, err := server.projectInterface.Authenticate(request.Context(), token, "")
+			return err == nil
+		}
+	}
+	return false
+}
+
+func isProjectInterfaceTransport(request *http.Request) bool {
+	if request.URL.Path == "/mcp" {
+		return true
+	}
+	return isProjectInterfaceHTTPTransport(request)
+}
+
+func isProjectInterfaceHTTPTransport(request *http.Request) bool {
+	if !strings.HasPrefix(request.URL.Path, "/api/projects/") {
+		return false
+	}
+	switch {
+	case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/blackboard/mutations"):
+		return true
+	case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/blackboard/records:resolve"):
+		return true
+	case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/blackboard/runtime-graph"):
+		return true
 	}
 	return false
 }
@@ -979,11 +1017,11 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 }
 
 func (server *Server) handleBlackboardRuntimeGraph(response http.ResponseWriter, request *http.Request) {
-	// Dual-mode (runtime protocol §12.4): a request carrying a Continuation
-	// Interface Grant rather than the daemon operator credential is Runtime
-	// traffic and goes through the project-interface module. Operator/UI
-	// requests fall through to the shared read service.
-	if server.projectInterfaceHTTP != nil && server.projectInterfaceHTTP.HasRuntimeGrant(request, server.authToken) {
+	// Once graph_v1 is active this route is one canonical project-interface
+	// transport. The handler owns both grant and operator authentication and
+	// returns the same structured envelope (including credential failures) for
+	// every caller.
+	if server.projectInterfaceHTTP != nil {
 		server.projectInterfaceHTTP.CurrentGraph(response, request)
 		return
 	}

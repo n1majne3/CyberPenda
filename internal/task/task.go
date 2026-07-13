@@ -5,6 +5,7 @@
 package task
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -70,12 +71,13 @@ type EventPayload map[string]any
 
 // Event is one structured timeline entry for a task.
 type Event struct {
-	ID        string       `json:"id"`
-	TaskID    string       `json:"task_id"`
-	Seq       int          `json:"seq"`
-	Kind      EventKind    `json:"kind"`
-	Payload   EventPayload `json:"payload"`
-	CreatedAt time.Time    `json:"created_at"`
+	ID             string       `json:"id"`
+	TaskID         string       `json:"task_id"`
+	ContinuationID string       `json:"continuation_id,omitempty"`
+	Seq            int          `json:"seq"`
+	Kind           EventKind    `json:"kind"`
+	Payload        EventPayload `json:"payload"`
+	CreatedAt      time.Time    `json:"created_at"`
 }
 
 // RuntimeConfigVersion is a historical task-specific runtime configuration
@@ -198,12 +200,19 @@ type GoalProjector interface {
 	ProjectTaskGoal(taskID string) error
 }
 
+// ContinuationTerminalMarker closes capabilities whose lifecycle is bound to
+// a Continuation when that Continuation reaches a terminal Task status.
+type ContinuationTerminalMarker interface {
+	MarkContinuationTerminal(context.Context, string) error
+}
+
 // Service owns durable Task state. Goal projection is an optional system
 // adapter so graph data can remain dark until the graph store cutover.
 type Service struct {
-	db            *store.DB
-	projects      *project.Service
-	goalProjector GoalProjector
+	db             *store.DB
+	projects       *project.Service
+	goalProjector  GoalProjector
+	terminalMarker ContinuationTerminalMarker
 }
 
 // NewService returns a Service backed by the given database. It reads project
@@ -224,6 +233,12 @@ func NewService(db *store.DB, projects ...*project.Service) *Service {
 // in any order.
 func (s *Service) SetProjectService(projects *project.Service) {
 	s.projects = projects
+}
+
+// SetContinuationTerminalMarker wires the lifecycle projection that closes
+// Continuation-scoped capabilities in the same production assembly.
+func (s *Service) SetContinuationTerminalMarker(marker ContinuationTerminalMarker) {
+	s.terminalMarker = marker
 }
 
 // SetGoalProjector wires the system-owned Task Goal projection. Production
@@ -380,8 +395,30 @@ func scanTask(row scanner) (Task, error) {
 // AppendEvent appends a structured event to the task timeline. Seq is assigned
 // monotonically per task. The task must exist.
 func (s *Service) AppendEvent(taskID string, kind EventKind, payload EventPayload) (Event, error) {
+	return s.appendEvent(taskID, "", kind, payload)
+}
+
+// AppendContinuationEvent appends a Runtime Event bound to one Continuation.
+// The Continuation must belong to the Task.
+func (s *Service) AppendContinuationEvent(taskID, continuationID string, kind EventKind, payload EventPayload) (Event, error) {
+	return s.appendEvent(taskID, continuationID, kind, payload)
+}
+
+func (s *Service) appendEvent(taskID, continuationID string, kind EventKind, payload EventPayload) (Event, error) {
 	if _, err := s.Get(taskID); err != nil {
 		return Event{}, err
+	}
+	if continuationID != "" {
+		var ownerTaskID string
+		if err := s.db.QueryRow(`SELECT task_id FROM task_continuations WHERE id=?`, continuationID).Scan(&ownerTaskID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return Event{}, ErrNotFound
+			}
+			return Event{}, fmt.Errorf("load event Continuation: %w", err)
+		}
+		if ownerTaskID != taskID {
+			return Event{}, ErrNotFound
+		}
 	}
 
 	if payload == nil {
@@ -394,11 +431,12 @@ func (s *Service) AppendEvent(taskID string, kind EventKind, payload EventPayloa
 
 	now := time.Now().UTC()
 	event := Event{
-		ID:        newID(),
-		TaskID:    taskID,
-		Kind:      kind,
-		Payload:   payload,
-		CreatedAt: now,
+		ID:             newID(),
+		TaskID:         taskID,
+		ContinuationID: continuationID,
+		Kind:           kind,
+		Payload:        payload,
+		CreatedAt:      now,
 	}
 
 	// Compute next seq within a transaction so concurrent appends stay ordered.
@@ -415,8 +453,8 @@ func (s *Service) AppendEvent(taskID string, kind EventKind, payload EventPayloa
 	event.Seq = int(maxSeq.Int64) + 1
 
 	if _, err := tx.Exec(
-		`INSERT INTO task_events (id, task_id, seq, kind, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		event.ID, event.TaskID, event.Seq, string(event.Kind), string(payloadJSON), event.CreatedAt.Format(time.RFC3339Nano),
+		`INSERT INTO task_events (id, task_id, continuation_id, seq, kind, payload_json, created_at) VALUES (?, ?, NULLIF(?,''), ?, ?, ?, ?)`,
+		event.ID, event.TaskID, event.ContinuationID, event.Seq, string(event.Kind), string(payloadJSON), event.CreatedAt.Format(time.RFC3339Nano),
 	); err != nil {
 		return Event{}, fmt.Errorf("store event: %w", err)
 	}
@@ -429,7 +467,7 @@ func (s *Service) AppendEvent(taskID string, kind EventKind, payload EventPayloa
 // Events returns the task timeline ordered by sequence.
 func (s *Service) Events(taskID string) ([]Event, error) {
 	rows, err := s.db.Query(
-		`SELECT id, task_id, seq, kind, payload_json, created_at FROM task_events WHERE task_id = ? ORDER BY seq ASC`,
+		`SELECT id, task_id, continuation_id, seq, kind, payload_json, created_at FROM task_events WHERE task_id = ? ORDER BY seq ASC`,
 		taskID,
 	)
 	if err != nil {
@@ -440,12 +478,14 @@ func (s *Service) Events(taskID string) ([]Event, error) {
 	var events []Event
 	for rows.Next() {
 		var event Event
+		var continuationID sql.NullString
 		var kind string
 		var payloadJSON string
 		var createdAt string
-		if err := rows.Scan(&event.ID, &event.TaskID, &event.Seq, &kind, &payloadJSON, &createdAt); err != nil {
+		if err := rows.Scan(&event.ID, &event.TaskID, &continuationID, &event.Seq, &kind, &payloadJSON, &createdAt); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
 		}
+		event.ContinuationID = continuationID.String
 		event.Kind = EventKind(kind)
 		if err := json.Unmarshal([]byte(payloadJSON), &event.Payload); err != nil {
 			return nil, fmt.Errorf("decode event payload: %w", err)
@@ -664,6 +704,11 @@ func (s *Service) UpdateContinuationStatus(continuationID string, status Status)
 	)
 	if err != nil {
 		return TaskContinuation{}, fmt.Errorf("update continuation status: %w", err)
+	}
+	if isTerminalStatus(status) && s.terminalMarker != nil {
+		if err := s.terminalMarker.MarkContinuationTerminal(context.Background(), found.ID); err != nil {
+			return TaskContinuation{}, fmt.Errorf("mark continuation capabilities terminal: %w", err)
+		}
 	}
 	return found, nil
 }
@@ -928,37 +973,23 @@ func (s *Service) sandboxContinuationsWithContainers() ([]TaskContinuation, erro
 }
 
 func (s *Service) interruptActiveContinuations(taskID string) error {
-	now := time.Now().UTC()
-	_, err := s.db.Exec(
-		`UPDATE task_continuations
-		 SET status = ?, updated_at = ?, ended_at = ?
+	return s.interruptContinuations(
+		`SELECT id FROM task_continuations
 		 WHERE task_id = ? AND status IN (?, ?, ?)`,
-		string(StatusInterrupted),
-		now.Format(time.RFC3339Nano),
-		now.Format(time.RFC3339Nano),
 		taskID,
 		string(StatusPending),
 		string(StatusRunning),
 		string(StatusPaused),
 	)
-	if err != nil {
-		return fmt.Errorf("update active continuations: %w", err)
-	}
-	return nil
 }
 
 func (s *Service) interruptStaleActiveContinuations() error {
-	now := time.Now().UTC()
-	_, err := s.db.Exec(
-		`UPDATE task_continuations
-		 SET status = ?, updated_at = ?, ended_at = ?
+	return s.interruptContinuations(
+		`SELECT id FROM task_continuations
 		 WHERE status IN (?, ?, ?)
 		   AND task_id IN (
 		       SELECT id FROM tasks WHERE status NOT IN (?, ?, ?)
 		   )`,
-		string(StatusInterrupted),
-		now.Format(time.RFC3339Nano),
-		now.Format(time.RFC3339Nano),
 		string(StatusPending),
 		string(StatusRunning),
 		string(StatusPaused),
@@ -966,8 +997,33 @@ func (s *Service) interruptStaleActiveContinuations() error {
 		string(StatusRunning),
 		string(StatusPaused),
 	)
+}
+
+func (s *Service) interruptContinuations(query string, args ...any) error {
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
-		return fmt.Errorf("interrupt stale active continuations: %w", err)
+		return fmt.Errorf("query active continuations: %w", err)
+	}
+	var continuationIDs []string
+	for rows.Next() {
+		var continuationID string
+		if err := rows.Scan(&continuationID); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan active continuation: %w", err)
+		}
+		continuationIDs = append(continuationIDs, continuationID)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate active continuations: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close active continuations: %w", err)
+	}
+	for _, continuationID := range continuationIDs {
+		if _, err := s.UpdateContinuationStatus(continuationID, StatusInterrupted); err != nil {
+			return fmt.Errorf("interrupt continuation %s: %w", continuationID, err)
+		}
 	}
 	return nil
 }

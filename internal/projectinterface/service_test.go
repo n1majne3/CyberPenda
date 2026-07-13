@@ -1,6 +1,7 @@
 package projectinterface_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -106,6 +107,7 @@ func newServiceFixture(t *testing.T) serviceFixture {
 	ids := blackboard.NewSequenceIDSource(fixedIDValues()...)
 	tokens := newSequenceTokenSource("grant-token-one", "grant-token-two", "grant-token-three", "grant-token-four")
 	grants := projectinterface.NewGrantStore(db, clock, ids, tokens)
+	tasks.SetContinuationTerminalMarker(grants)
 	graph := blackboard.NewGraphService(db, blackboard.SystemClock{}, blackboard.RandomIDSource{})
 	service := projectinterface.NewService(projectinterface.Deps{DB: db, Graph: graph, Grants: grants})
 
@@ -169,6 +171,245 @@ func objectiveApplyRequest() projectinterface.ApplyMutationRequest {
 				}},
 			}},
 		},
+	}
+}
+
+// TestProjectInterfaceRejectsActorIneligibleOperationsBeforeGraphAccess proves
+// the project-interface authorization table is enforced before graph-domain
+// validation can reclassify a forbidden request.
+func TestProjectInterfaceRejectsActorIneligibleOperationsBeforeGraphAccess(t *testing.T) {
+	fixture := newServiceFixture(t)
+	principal, err := fixture.service.Authenticate(context.Background(), fixture.token, fixture.project.ID)
+	if err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	if err := fixture.graph.ProjectTaskGoal(fixture.task.ID); err != nil {
+		t.Fatalf("project Task Goal: %v", err)
+	}
+	goal, err := fixture.graph.ReadNode(context.Background(), blackboard.ReadNodeRequest{
+		ProjectID: fixture.project.ID, NodeType: blackboard.NodeTypeGoal, Key: "task:" + fixture.task.ID + ":goal",
+	})
+	if err != nil {
+		t.Fatalf("read Task Goal: %v", err)
+	}
+	tests := []struct {
+		name string
+		op   blackboard.Operation
+	}{
+		{
+			name: "merge",
+			op:   blackboard.Operation{OpID: "forbidden", Kind: blackboard.OpMergeNodes},
+		},
+		{
+			name: "archive",
+			op:   blackboard.Operation{OpID: "forbidden", Kind: blackboard.OpSetDisposition, Disposition: blackboard.SetDispositionInput{Disposition: blackboard.DispositionArchived}},
+		},
+		{
+			name: "Goal",
+			op:   blackboard.Operation{OpID: "forbidden", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeGoal}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"goal": "spoof"}}},
+		},
+		{
+			name: "Goal by immutable ID",
+			op:   blackboard.Operation{OpID: "forbidden", Kind: blackboard.OpPatchNode, Node: blackboard.NodeRef{ID: goal.Node.ID}, Patch: blackboard.PatchNodeInput{ExpectedVersion: 1, Properties: map[string]any{"text": "spoof"}}},
+		},
+		{
+			name: "available Evidence",
+			op:   blackboard.Operation{OpID: "forbidden", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEvidenceArtifact}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"status": "available"}}},
+		},
+		{
+			name: "default-available Evidence",
+			op:   blackboard.Operation{OpID: "forbidden", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEvidenceArtifact}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"managed_path": "artifacts/probe.bin"}}},
+		},
+		{
+			name: "Evidence metadata patch preserving available status",
+			op:   blackboard.Operation{OpID: "forbidden", Kind: blackboard.OpPatchNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEvidenceArtifact}, Patch: blackboard.PatchNodeInput{ExpectedVersion: 1, Properties: map[string]any{"managed_path": "artifacts/replaced.bin"}}},
+		},
+		{
+			name: "active Project Directive",
+			op:   blackboard.Operation{OpID: "forbidden", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectDirective}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"status": "active"}}},
+		},
+		{
+			name: "interrupted Attempt",
+			op:   blackboard.Operation{OpID: "forbidden", Kind: blackboard.OpTransitionNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeAttempt}, Transition: blackboard.TransitionNodeInput{Status: "interrupted"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := projectinterface.ApplyMutationRequest{
+				ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+				Batch: projectinterface.RequestBatch{
+					SchemaVersion:  blackboard.GraphMutationSchemaVersion,
+					IdempotencyKey: "forbidden:" + tt.name,
+					Operations:     []blackboard.Operation{tt.op},
+				},
+			}
+			_, err := fixture.service.Apply(context.Background(), principal, request)
+			if err == nil {
+				t.Fatal("actor-ineligible operation unexpectedly reached graph Apply")
+			}
+			assertErrorCode(t, err, projectinterface.ErrCodeActorForbidden)
+			var got *projectinterface.Error
+			if !errors.As(err, &got) || got.OperationIndex == nil || *got.OperationIndex != 0 || got.OpID != "forbidden" {
+				t.Fatalf("authorization error lacks operation context: %#v", err)
+			}
+		})
+	}
+}
+
+// TestProjectInterfaceSourceEventsStayBoundToTaskAndContinuation proves source
+// Events from the bound Task/Continuation are accepted while cross-Task and
+// cross-Continuation provenance is rejected at the public Apply seam.
+func TestProjectInterfaceSourceEventsStayBoundToTaskAndContinuation(t *testing.T) {
+	fixture := newServiceFixture(t)
+	ctx := context.Background()
+	principal, err := fixture.service.Authenticate(ctx, fixture.token, fixture.project.ID)
+	if err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	matching, err := fixture.tasks.AppendContinuationEvent(
+		fixture.task.ID, fixture.continuation.ID,
+		task.EventKindRuntimeOutput, task.EventPayload{"phase": "checkpoint"},
+	)
+	if err != nil {
+		t.Fatalf("append matching Event: %v", err)
+	}
+	accepted := objectiveApplyRequest()
+	accepted.Batch.IdempotencyKey = "source-event:matching"
+	accepted.Batch.Operations[0].Node.StableKey = "objective:matching-event"
+	accepted.SourceEventIDsByOp = map[string][]string{"obj": {matching.ID}}
+	if _, err := fixture.service.Apply(ctx, principal, accepted); err != nil {
+		t.Fatalf("Apply matching Event: %v", err)
+	}
+
+	otherContinuation, err := fixture.tasks.CreateContinuation(
+		fixture.task.ID, fixture.runtimeProfile, fixture.runtimePlugin, task.Runner(fixture.runner),
+	)
+	if err != nil {
+		t.Fatalf("create other Continuation: %v", err)
+	}
+	crossContinuation, err := fixture.tasks.AppendContinuationEvent(
+		fixture.task.ID, otherContinuation.ID,
+		task.EventKindRuntimeOutput, task.EventPayload{"phase": "other-continuation"},
+	)
+	if err != nil {
+		t.Fatalf("append cross-Continuation Event: %v", err)
+	}
+	assertRejectedEvent := func(name string, eventID, wantCode string) {
+		t.Helper()
+		request := objectiveApplyRequest()
+		request.Batch.IdempotencyKey = "source-event:" + name
+		request.Batch.Operations[0].Node.StableKey = "objective:" + name
+		request.SourceEventIDsByOp = map[string][]string{"obj": {eventID}}
+		_, err := fixture.service.Apply(ctx, principal, request)
+		if err == nil {
+			t.Fatalf("%s source Event unexpectedly accepted", name)
+		}
+		assertErrorCode(t, err, wantCode)
+	}
+	assertRejectedEvent("cross-continuation", crossContinuation.ID, projectinterface.ErrCodeSourceEventMismatch)
+
+	otherTask, err := fixture.tasks.Create(task.CreateRequest{
+		ProjectID: fixture.project.ID, Goal: "Other Task", Runner: task.RunnerSandbox,
+	})
+	if err != nil {
+		t.Fatalf("create other Task: %v", err)
+	}
+	crossTask, err := fixture.tasks.AppendEvent(otherTask.ID, task.EventKindRuntimeOutput, task.EventPayload{"phase": "other-task"})
+	if err != nil {
+		t.Fatalf("append cross-Task Event: %v", err)
+	}
+	assertRejectedEvent("cross-task", crossTask.ID, projectinterface.ErrCodeSourceEventMismatch)
+	assertRejectedEvent("missing", "event-does-not-exist", projectinterface.ErrCodeSourceEventNotFound)
+}
+
+func TestResolveRecordsReturnsAliasMergeAndMissingMetadataAtOneRevision(t *testing.T) {
+	fixture := newServiceFixture(t)
+	operator, err := projectinterface.OperatorPrincipal(fixture.project.ID, "local-operator")
+	if err != nil {
+		t.Fatalf("operator principal: %v", err)
+	}
+	created, err := fixture.service.Apply(context.Background(), operator, projectinterface.ApplyMutationRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+		Batch: projectinterface.RequestBatch{
+			SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "resolve:create-duplicates",
+			Operations: []blackboard.Operation{
+				{OpID: "source", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeExplorationObjective, StableKey: "objective:old"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"objective": "Old objective", "status": "open"}}},
+				{OpID: "canonical", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeExplorationObjective, StableKey: "objective:canonical"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"objective": "Canonical objective", "status": "open"}}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create duplicate objectives: %v", err)
+	}
+	sourceID := created.Result.Operations[0].NodeID
+	if _, err := fixture.service.Apply(context.Background(), operator, projectinterface.ApplyMutationRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+		Batch: projectinterface.RequestBatch{
+			SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "resolve:merge",
+			Operations: []blackboard.Operation{{
+				OpID: "merge", Kind: blackboard.OpMergeNodes,
+				Merge: blackboard.MergeNodesInput{
+					Source: blackboard.NodeRef{ID: sourceID}, Canonical: blackboard.NodeRef{ID: created.Result.Operations[1].NodeID},
+					SourceExpectedVersion: 1, CanonicalExpectedVersion: 1,
+				},
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("merge duplicate objectives: %v", err)
+	}
+
+	runtimePrincipal, err := fixture.service.Authenticate(context.Background(), fixture.token, fixture.project.ID)
+	if err != nil {
+		t.Fatalf("authenticate Runtime: %v", err)
+	}
+	resolved, err := fixture.service.ResolveRecords(context.Background(), runtimePrincipal, projectinterface.ResolveRecordsRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+		Nodes: []projectinterface.NodeLookup{
+			{NodeType: string(blackboard.NodeTypeExplorationObjective), StableKey: "objective:old"},
+			{ID: sourceID},
+			{NodeType: string(blackboard.NodeTypeExplorationObjective), StableKey: "objective:missing"},
+		},
+		EdgeIDs: []string{"edge-missing"},
+	})
+	if err != nil {
+		t.Fatalf("resolve alias/merge/missing: %v", err)
+	}
+	if len(resolved.Nodes) != 2 || resolved.Nodes[0].ResolvedFromAlias != "objective:old" || resolved.Nodes[1].ResolvedFromMergedID != sourceID {
+		t.Fatalf("resolution metadata = %#v", resolved.Nodes)
+	}
+	if len(resolved.Missing) != 1 || len(resolved.MissingEdges) != 1 || resolved.ObservedGraphRevision != 2 {
+		t.Fatalf("missing/revision result = %#v", resolved)
+	}
+}
+
+func TestApplyLostResponseReplayIsByteIdenticalAndChangedPayloadConflicts(t *testing.T) {
+	fixture := newServiceFixture(t)
+	principal, err := fixture.service.Authenticate(context.Background(), fixture.token, fixture.project.ID)
+	if err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	first, err := fixture.service.Apply(context.Background(), principal, objectiveApplyRequest())
+	if err != nil {
+		t.Fatalf("first Apply: %v", err)
+	}
+	// Simulate a transport losing the first response: the caller retries the
+	// exact same key and payload without observing first.
+	replay, err := fixture.service.Apply(context.Background(), principal, objectiveApplyRequest())
+	if err != nil {
+		t.Fatalf("lost-response replay: %v", err)
+	}
+	if !bytes.Equal(first.Result.ResultBytes, replay.Result.ResultBytes) ||
+		first.Result.MutationID != replay.Result.MutationID ||
+		first.Result.RecordedAt != replay.Result.RecordedAt ||
+		first.Result.GraphRevision != replay.Result.GraphRevision {
+		t.Fatalf("replay drifted: first=%+v replay=%+v", first.Result, replay.Result)
+	}
+	changed := objectiveApplyRequest()
+	changed.Batch.Operations[0].Create.PropertyMap["objective"] = "Changed payload under the same key"
+	if _, err := fixture.service.Apply(context.Background(), principal, changed); err == nil {
+		t.Fatal("changed payload under the same idempotency key unexpectedly applied")
+	} else {
+		assertErrorCode(t, err, blackboard.ErrCodeIdempotencyConflict)
 	}
 }
 
@@ -349,7 +590,8 @@ func TestClosedGrantsRejectNewWritesWhileReadsAndReplayRemain(t *testing.T) {
 			return err
 		}, true},
 		{"terminal", func(t *testing.T, fixture serviceFixture, ctx context.Context) error {
-			return fixture.grants.MarkContinuationTerminal(ctx, fixture.continuation.ID)
+			_, err := fixture.tasks.UpdateContinuationStatus(fixture.continuation.ID, task.StatusCompleted)
+			return err
 		}, false},
 	}
 	for _, tc := range cases {

@@ -58,6 +58,14 @@ func New(deps Deps) *sdkmcp.Server {
 		Version: "0.1.0",
 	}, nil)
 
+	// A Continuation Interface Grant is authoritative for one Project and only
+	// the three graph-native capabilities. Never register compatibility tools
+	// that accept caller-supplied project_id on a grant-authenticated session.
+	if deps.ProjectInterface != nil && (deps.Principal != nil || deps.PrincipalError != nil) {
+		registerProjectInterfaceTools(server, deps)
+		return server
+	}
+
 	sdkmcp.AddTool(server, &sdkmcp.Tool{
 		Name:        "upsert_project_fact",
 		Description: "Upsert a project fact by fact key. Conflicting writes update the existing fact and preserve history as fact versions.",
@@ -327,7 +335,7 @@ func New(deps Deps) *sdkmcp.Server {
 func registerProjectInterfaceTools(server *sdkmcp.Server, deps Deps) {
 	sdkmcp.AddTool(server, &sdkmcp.Tool{
 		Name:        "blackboard_apply",
-		Description: "Apply one atomic typed graph mutation batch to the Blackboard. Project and provenance are bound from the Continuation Interface Grant; do not supply them.",
+		Description: projectinterface.TrustedToolDescription("blackboard_apply"),
 	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args blackboardApplyArgs) (*sdkmcp.CallToolResult, any, error) {
 		_ = req
 		principal, principalErr := deps.requirePrincipal()
@@ -347,7 +355,7 @@ func registerProjectInterfaceTools(server *sdkmcp.Server, deps Deps) {
 
 	sdkmcp.AddTool(server, &sdkmcp.Tool{
 		Name:        "blackboard_resolve_records",
-		Description: "Resolve current Blackboard records after alias and merge resolution. A narrow optimistic-concurrency read; missing references are reported separately.",
+		Description: projectinterface.TrustedToolDescription("blackboard_resolve_records"),
 	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args blackboardResolveRecordsArgs) (*sdkmcp.CallToolResult, any, error) {
 		_ = req
 		principal, principalErr := deps.requirePrincipal()
@@ -357,6 +365,7 @@ func registerProjectInterfaceTools(server *sdkmcp.Server, deps Deps) {
 		result, resolveErr := deps.ProjectInterface.ResolveRecords(ctx, *principal, projectinterface.ResolveRecordsRequest{
 			ProtocolVersion: args.ProtocolVersion,
 			Nodes:           args.Nodes,
+			EdgeIDs:         args.EdgeIDs,
 		})
 		if resolveErr != nil {
 			return toolProjectInterfaceError(projectinterface.AsError(resolveErr))
@@ -366,7 +375,7 @@ func registerProjectInterfaceTools(server *sdkmcp.Server, deps Deps) {
 
 	sdkmcp.AddTool(server, &sdkmcp.Tool{
 		Name:        "blackboard_get_current_graph",
-		Description: "Read the current full Runtime Blackboard graph (CanonicalMainGraphV1). Does not repin or rewrite the Continuation snapshot.",
+		Description: projectinterface.TrustedToolDescription("blackboard_get_current_graph"),
 	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args blackboardCurrentGraphArgs) (*sdkmcp.CallToolResult, any, error) {
 		_ = req
 		principal, principalErr := deps.requirePrincipal()
@@ -404,24 +413,26 @@ func toolProjectInterfaceError(err *projectinterface.Error) (*sdkmcp.CallToolRes
 	if err == nil {
 		err = projectinterface.ValidationError(projectinterface.ErrCodeInvalidRequest, "unexpected failure", "internal")
 	}
-	data, _ := json.Marshal(struct {
+	envelope := struct {
 		Error projectinterface.Error `json:"error"`
-	}{Error: *err})
+	}{Error: *err}
+	data, _ := json.Marshal(envelope)
 	return &sdkmcp.CallToolResult{
 		Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: string(data)}},
 		IsError: true,
-	}, nil, nil
+	}, envelope, nil
 }
 
 type blackboardApplyArgs struct {
-	ProtocolVersion    int                              `json:"protocol_version" jsonschema:"protocol version, always 1"`
-	Batch              projectinterface.RequestBatch    `json:"batch" jsonschema:"mutation batch"`
-	SourceEventIDsByOp map[string][]string              `json:"source_event_ids_by_op,omitempty" jsonschema:"optional op_id to source Task Event IDs"`
+	ProtocolVersion    int                           `json:"protocol_version" jsonschema:"protocol version, always 1"`
+	Batch              projectinterface.RequestBatch `json:"batch" jsonschema:"mutation batch"`
+	SourceEventIDsByOp map[string][]string           `json:"source_event_ids_by_op,omitempty" jsonschema:"optional op_id to source Task Event IDs"`
 }
 
 type blackboardResolveRecordsArgs struct {
-	ProtocolVersion int                               `json:"protocol_version" jsonschema:"protocol version, always 1"`
-	Nodes           []projectinterface.NodeLookup     `json:"nodes" jsonschema:"node references to resolve"`
+	ProtocolVersion int                           `json:"protocol_version" jsonschema:"protocol version, always 1"`
+	Nodes           []projectinterface.NodeLookup `json:"nodes" jsonschema:"node references to resolve"`
+	EdgeIDs         []string                      `json:"edge_ids,omitempty" jsonschema:"edge IDs to resolve"`
 }
 
 type blackboardCurrentGraphArgs struct {
