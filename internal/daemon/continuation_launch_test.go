@@ -3,13 +3,16 @@ package daemon_test
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"pentest/internal/blackboard"
 	"pentest/internal/daemon"
@@ -156,6 +159,32 @@ func TestContinuationLaunchAtomicallyPinsConfigGraphGrantAndVerifiesSnapshotBefo
 	if grantCount != 1 || configCount != 1 {
 		t.Fatalf("atomic rows: grant=%d config=%d", grantCount, configCount)
 	}
+	snapshotBytes, err := os.ReadFile(snapshotPath)
+	if err != nil {
+		t.Fatalf("read snapshot for adapter assertion: %v", err)
+	}
+	var payloadJSON string
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		err = verificationDB.QueryRow(`SELECT payload_json FROM task_events WHERE task_id=? AND kind='runtime_output' AND payload_json LIKE '%"goal"%' ORDER BY seq LIMIT 1`, launched.ID).Scan(&payloadJSON)
+		if err == nil || !errors.Is(err, sql.ErrNoRows) || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("read fake adapter launch context: %v", err)
+	}
+	var runtimeOutput map[string]any
+	if err := json.Unmarshal([]byte(payloadJSON), &runtimeOutput); err != nil {
+		t.Fatalf("decode fake adapter output: %v", err)
+	}
+	adapterContext, _ := runtimeOutput["goal"].(string)
+	if !strings.Contains(adapterContext, "<<< CURRENT CONTINUATION SNAPSHOT >>>") ||
+		!strings.Contains(adapterContext, string(snapshotBytes)) ||
+		!strings.Contains(adapterContext, "TASK GOAL:\nenumerate the authorized target") {
+		t.Fatalf("fake adapter did not receive the exact current full graph context: %q", adapterContext)
+	}
 }
 
 func TestGraphEpochStartupRegeneratesCommittedContinuationFilesWithoutRepinning(t *testing.T) {
@@ -221,6 +250,9 @@ func TestGraphEpochStartupRegeneratesCommittedContinuationFilesWithoutRepinning(
 	}
 	if _, err := crashDB.Exec(`UPDATE task_continuations SET status='pending',ended_at='' WHERE id=?`, launched.LatestContinuation.ID); err != nil {
 		t.Fatalf("restore pending Continuation state: %v", err)
+	}
+	if _, err := crashDB.Exec(`DELETE FROM runtime_profiles WHERE id=?`, profileID); err != nil {
+		t.Fatalf("delete live Runtime Profile before historical recovery: %v", err)
 	}
 	_ = crashDB.Close()
 

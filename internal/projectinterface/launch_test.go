@@ -138,8 +138,8 @@ func TestContinuationLaunchRollsBackConfigPinAndGrantWhenGrantIssuanceFails(t *t
 
 func TestContinuationResumePinsNewFullGraphAndHistoricalSnapshotRegeneratesAt20K(t *testing.T) {
 	fixture := newLaunchFixture(t)
-	operations := make([]blackboard.Operation, 0, 48)
-	for index := 0; index < 48; index++ {
+	operations := make([]blackboard.Operation, 0, 64)
+	for index := 0; index < 64; index++ {
 		key := strconv.Itoa(index)
 		operations = append(operations, blackboard.Operation{
 			OpID: "fact-" + key, Kind: blackboard.OpCreateNode,
@@ -155,10 +155,20 @@ func TestContinuationResumePinsNewFullGraphAndHistoricalSnapshotRegeneratesAt20K
 	}); err != nil {
 		t.Fatalf("seed large graph: %v", err)
 	}
+	if _, err := fixture.db.Exec(`DELETE FROM blackboard_health_runs WHERE project_id=?`, fixture.project.ID); err != nil {
+		t.Fatalf("clear post-write Health so launch must rerun it: %v", err)
+	}
 
 	first := fixture.launch(t)
-	if first.Projection.ByteCount < 20_000 {
-		t.Fatalf("fixture projection is only %d bytes", first.Projection.ByteCount)
+	if first.Projection.EstimatedTokens < 20_000 {
+		t.Fatalf("fixture projection is only %d estimated tokens", first.Projection.EstimatedTokens)
+	}
+	var blocked int
+	if err := fixture.db.QueryRow(`SELECT COUNT(*) FROM blackboard_health_results WHERE project_id=? AND code='compaction_blocked'`, fixture.project.ID).Scan(&blocked); err != nil {
+		t.Fatalf("read pre-pin Health result: %v", err)
+	}
+	if blocked != 1 {
+		t.Fatalf("pre-pin maintenance did not record compaction_blocked; count=%d", blocked)
 	}
 	firstPath := filepath.Join(t.TempDir(), "first", ".pentest", "blackboard.json")
 	if err := fixture.graph.MaterializeCanonicalMainGraphSnapshot(context.Background(), first.Projection.ImmutablePin(), firstPath); err != nil {

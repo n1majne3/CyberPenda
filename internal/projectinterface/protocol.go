@@ -116,3 +116,19 @@ func CanonicalRuntimeProtocolBlock(ctx RuntimeBlackboardContextV1) string {
 	}
 	return b.String()
 }
+
+// CanonicalRuntimeLaunchContext is the lossless initial adapter context. The
+// exact snapshot appears once here and once on disk; generated instruction
+// files contain only the protocol and pointers.
+func CanonicalRuntimeLaunchContext(ctx RuntimeBlackboardContextV1, snapshot []byte, nativeResume bool) string {
+	var b strings.Builder
+	b.WriteString("<<< CURRENT CONTINUATION SNAPSHOT >>>\n")
+	if nativeResume {
+		b.WriteString("Older snapshot blocks in this native session are historical and MUST NOT be treated as current.\n")
+	}
+	b.WriteString(CanonicalRuntimeProtocolBlock(ctx))
+	fmt.Fprintf(&b, "\nComplete pinned graph (%s, revision %d, hash %s):\n", ctx.BlackboardRendererVersion, ctx.BlackboardGraphRevision, ctx.BlackboardProjectionHash)
+	b.Write(snapshot)
+	b.WriteString("\n<<< END CURRENT CONTINUATION SNAPSHOT >>>")
+	return b.String()
+}

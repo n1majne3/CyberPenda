@@ -122,6 +122,29 @@ func TestEveryBuiltinRuntimeAdapterReconstructsExactCanonicalMainGraphFromRuntim
 	}
 }
 
+func TestNativeResumeContextSupersedesHistoricalSnapshotBlocks(t *testing.T) {
+	graph := []byte(`{"schema_version":1,"graph_revision":9,"nodes":[],"edges":[]}`)
+	ctx := projectinterface.RuntimeBlackboardContextV1{
+		ContinuationID: "continuation-9", BlackboardGraphRevision: 9,
+		BlackboardRendererVersion: blackboard.CanonicalMainGraphRendererV1,
+		BlackboardProjectionHash:  "current-hash", BlackboardPath: ".pentest/blackboard.json", ScopePath: ".pentest/scope.json",
+	}
+	resume := projectinterface.CanonicalRuntimeLaunchContext(ctx, graph, true)
+	for _, required := range []string{
+		"<<< CURRENT CONTINUATION SNAPSHOT >>>",
+		"Older snapshot blocks in this native session are historical and MUST NOT be treated as current.",
+		"revision 9, hash current-hash",
+		string(graph),
+	} {
+		if !strings.Contains(resume, required) {
+			t.Fatalf("native resume context is missing %q:\n%s", required, resume)
+		}
+	}
+	if strings.Count(resume, string(graph)) != 1 {
+		t.Fatalf("native resume context duplicated or omitted the exact graph: %s", resume)
+	}
+}
+
 func TestProjectRuntimeConfigAutoInjectsTrustedMCP(t *testing.T) {
 	root := t.TempDir()
 	layout, err := runner.PrepareTaskLayout(root, "task-mcp", runtimeprofile.ProviderClaudeCode)

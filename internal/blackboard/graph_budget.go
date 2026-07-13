@@ -2,6 +2,7 @@ package blackboard
 
 import (
 	"context"
+	"time"
 )
 
 type BudgetState string
@@ -161,6 +162,35 @@ func (s *GraphService) postCommitMaintenance(ctx context.Context, batch Mutation
 	if _, healthErr := s.runHealth(ctx, batch.Context.ProjectID, projection, blocked, false, compacted || mutationKindForBatch(batch) == "restore" || blocked, result.RecordedAt); healthErr != nil {
 		_ = s.persistUnknownHealth(context.Background(), batch.Context.ProjectID, result.GraphRevision, result.RecordedAt, healthErr)
 	}
+}
+
+// PrepareContinuationSnapshot reruns required budget maintenance immediately
+// before a Continuation pin. Health/compaction failures are diagnosed but do
+// not substitute a partial graph or block launch solely because of Health.
+func (s *GraphService) PrepareContinuationSnapshot(ctx context.Context, projectID string) error {
+	checkedAt := s.clock.Now().UTC().Format(time.RFC3339Nano)
+	projection, err := s.remeasureCanonicalMainGraphAt(ctx, projectID, checkedAt)
+	if err != nil {
+		return err
+	}
+	blocked, compacted := false, false
+	if projection.EstimatedTokens >= budgetRequiredTokens {
+		plan, planErr := s.PlanCompaction(ctx, projectID)
+		if planErr == nil && len(plan.ArchiveNodeIDs) > 0 {
+			_, planErr = s.ApplyCompaction(ctx, plan)
+			if planErr == nil {
+				compacted = true
+				projection, planErr = s.remeasureCanonicalMainGraphAt(ctx, projectID, checkedAt)
+			}
+		}
+		if planErr != nil || projection.EstimatedTokens >= budgetRequiredTokens {
+			blocked = true
+		}
+	}
+	if _, healthErr := s.runHealth(ctx, projectID, projection, blocked, false, compacted || blocked, checkedAt); healthErr != nil {
+		_ = s.persistUnknownHealth(context.Background(), projectID, projection.GraphRevision, checkedAt, healthErr)
+	}
+	return nil
 }
 
 // BudgetStateForEstimatedTokens classifies the provider-neutral canonical budget estimate.

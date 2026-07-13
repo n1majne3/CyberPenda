@@ -38,6 +38,9 @@ func (s *Service) CreateContinuationLaunch(ctx context.Context, req Continuation
 	if err := s.tasks.PrepareContinuationLaunch(req.TaskID); err != nil {
 		return ContinuationLaunch{}, err
 	}
+	if err := s.graph.PrepareContinuationSnapshot(ctx, req.ProjectID); err != nil {
+		return ContinuationLaunch{}, ValidationError(ErrCodeSnapshotUnavailable, "prepare current full Blackboard snapshot: "+err.Error(), "blackboard")
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ContinuationLaunch{}, fmt.Errorf("begin atomic Continuation launch: %w", err)

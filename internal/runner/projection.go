@@ -70,7 +70,7 @@ func ProjectRuntimeConfig(layout Layout, profile runtimeprofile.Profile, req Pro
 	if !ok {
 		return projectGenericConfig(layout, profile)
 	}
-	if req.ModelProviders != nil && strings.TrimSpace(profile.Fields.ModelProviderID) != "" {
+	if req.ModelSnapshot == nil && req.ModelProviders != nil && strings.TrimSpace(profile.Fields.ModelProviderID) != "" {
 		snapshot, err := modelprovider.Resolve(modelprovider.ResolveRequest{
 			Profile:             profile,
 			Providers:           req.ModelProviders,

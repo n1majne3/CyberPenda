@@ -141,11 +141,16 @@ type taskLaunchPlan struct {
 	StopConfirmation      runtime.StopConfirmation
 	LaunchModelOverride   string
 	NativeResumeSessionID string
+	ResolvedProfile       runtimeprofile.Profile
+	ModelSnapshot         *modelprovider.Snapshot
+	SkillBundles          []skill.Bundle
+	LaunchGoal            string
 }
 
 type continuationLaunchBinding struct {
 	Context        projectinterface.RuntimeBlackboardContextV1
 	InterfaceToken string
+	Snapshot       []byte
 }
 
 func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchPlan, goal string) error {
@@ -169,9 +174,13 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 	}
 	server.logTask(created, "launched", "")
 	go func() {
+		launchGoal := plan.LaunchGoal
+		if launchGoal == "" {
+			launchGoal = goal
+		}
 		err := server.harness.Launch(context.Background(), runtime.LaunchRequest{
 			TaskID:           created.ID,
-			Goal:             goal,
+			Goal:             launchGoal,
 			Adapter:          plan.Adapter,
 			ContinuationID:   continuation.ID,
 			Metadata:         plan.Metadata,
@@ -197,28 +206,11 @@ func (server *Server) prepareGraphNativeContinuationLaunch(created task.Task, pl
 	if err != nil {
 		return task.TaskContinuation{}, taskLaunchPlan{}, err
 	}
-	profile, err := server.profiles.Get(created.RuntimeProfileID)
+	layout, err := runner.PrepareTaskLayout(server.runtimeRoot, created.ID, plan.ResolvedProfile.Provider)
 	if err != nil {
 		return task.TaskContinuation{}, taskLaunchPlan{}, err
 	}
-	layout, err := runner.PrepareTaskLayout(server.runtimeRoot, created.ID, profile.Provider)
-	if err != nil {
-		return task.TaskContinuation{}, taskLaunchPlan{}, err
-	}
-	sandbox := created.Runner == task.RunnerSandbox
-	ctx := projectinterface.RuntimeBlackboardContextV1{
-		ProjectID: created.ProjectID, TaskID: created.ID, ContinuationID: launch.Continuation.ID,
-		RuntimeConfigVersionID: launch.RuntimeConfig.ID, RuntimeProfileID: created.RuntimeProfileID,
-		RuntimePluginID: plan.Adapter.Name(), Runner: string(created.Runner),
-		APIURL: runner.APIEndpointURL(server.listenAddr, sandbox), MCPURL: runner.MCPEndpointURL(server.listenAddr, sandbox),
-		ScopePath: ".pentest/scope.json", BlackboardPath: ".pentest/blackboard.json",
-		BlackboardGraphRevision:    launch.Projection.GraphRevision,
-		BlackboardRendererVersion:  launch.Projection.RendererVersion,
-		BlackboardEstimatorVersion: launch.Projection.EstimatorVersion,
-		BlackboardProjectionHash:   launch.Projection.Hash, BlackboardProjectionBytes: launch.Projection.ByteCount,
-		BlackboardEstimatedTokens: launch.Projection.EstimatedTokens,
-	}
-	pin := launch.Projection.ImmutablePin()
+	ctx, pin := server.runtimeBlackboardContext(created, launch.Continuation)
 	snapshotPath := filepath.Join(layout.Workdir, filepath.FromSlash(ctx.BlackboardPath))
 	if err := server.graph.MaterializeCanonicalMainGraphSnapshot(context.Background(), pin, snapshotPath); err != nil {
 		return task.TaskContinuation{}, taskLaunchPlan{}, projectinterface.ValidationError(projectinterface.ErrCodeSnapshotUnavailable, "materialize pinned full Blackboard snapshot: "+err.Error(), "blackboard_path")
@@ -229,8 +221,8 @@ func (server *Server) prepareGraphNativeContinuationLaunch(created task.Task, pl
 	if err := runner.ProjectRuntimeBlackboardFiles(layout, ctx, created.ScopeSnapshot); err != nil {
 		return task.TaskContinuation{}, taskLaunchPlan{}, projectinterface.ValidationError(projectinterface.ErrCodeSnapshotUnavailable, "materialize Runtime Blackboard context: "+err.Error(), "context")
 	}
-	binding := &continuationLaunchBinding{Context: ctx, InterfaceToken: launch.Token}
-	boundPlan, err := server.buildTaskLaunchPlanWithBinding(created, goal, plan.LaunchModelOverride, plan.NativeResumeSessionID, binding)
+	binding := &continuationLaunchBinding{Context: ctx, InterfaceToken: launch.Token, Snapshot: append([]byte(nil), launch.Projection.Bytes...)}
+	boundPlan, err := server.buildTaskLaunchPlanWithBinding(created, goal, plan.LaunchModelOverride, plan.NativeResumeSessionID, binding, &plan)
 	if err != nil {
 		return task.TaskContinuation{}, taskLaunchPlan{}, err
 	}
@@ -247,42 +239,46 @@ func (server *Server) recoverPinnedContinuationFiles() error {
 		if err != nil {
 			return fmt.Errorf("recover pinned Continuation %s Task: %w", continuation.ID, err)
 		}
-		profile, err := server.profiles.Get(continuation.RuntimeProfileID)
-		if err != nil {
-			return fmt.Errorf("recover pinned Continuation %s profile: %w", continuation.ID, err)
-		}
-		layout, err := runner.PrepareTaskLayout(server.runtimeRoot, created.ID, profile.Provider)
+		layout, err := runner.PrepareTaskLayout(server.runtimeRoot, created.ID, runtimeprofile.Provider(continuation.RuntimeProvider))
 		if err != nil {
 			return fmt.Errorf("recover pinned Continuation %s layout: %w", continuation.ID, err)
 		}
-		sandbox := continuation.Runner == task.RunnerSandbox
-		ctx := projectinterface.RuntimeBlackboardContextV1{
-			ProjectID: created.ProjectID, TaskID: created.ID, ContinuationID: continuation.ID,
-			RuntimeConfigVersionID: continuation.RuntimeConfigVersionID, RuntimeProfileID: continuation.RuntimeProfileID,
-			RuntimePluginID: continuation.RuntimeProvider, Runner: string(continuation.Runner),
-			APIURL: runner.APIEndpointURL(server.listenAddr, sandbox), MCPURL: runner.MCPEndpointURL(server.listenAddr, sandbox),
-			ScopePath: ".pentest/scope.json", BlackboardPath: ".pentest/blackboard.json",
-			BlackboardGraphRevision:    continuation.BlackboardGraphRevision,
-			BlackboardRendererVersion:  continuation.BlackboardRendererVersion,
-			BlackboardEstimatorVersion: continuation.BlackboardEstimatorVersion,
-			BlackboardProjectionHash:   continuation.BlackboardProjectionHash,
-			BlackboardProjectionBytes:  continuation.BlackboardProjectionBytes,
-			BlackboardEstimatedTokens:  continuation.BlackboardProjectionEstimatedTokens,
-		}
-		pin := blackboard.CanonicalMainGraphPin{
-			ProjectID: created.ProjectID, GraphRevision: continuation.BlackboardGraphRevision,
-			RendererVersion: continuation.BlackboardRendererVersion, EstimatorVersion: continuation.BlackboardEstimatorVersion,
-			ProjectionHash: continuation.BlackboardProjectionHash, ProjectionBytes: continuation.BlackboardProjectionBytes,
-			EstimatedTokens: continuation.BlackboardProjectionEstimatedTokens,
-		}
+		ctx, pin := server.runtimeBlackboardContext(created, continuation)
 		if err := server.graph.MaterializeCanonicalMainGraphSnapshot(context.Background(), pin, filepath.Join(layout.Workdir, filepath.FromSlash(ctx.BlackboardPath))); err != nil {
 			return projectinterface.ValidationError(projectinterface.ErrCodeSnapshotUnavailable, "recover pinned full Blackboard snapshot: "+err.Error(), "blackboard_path")
+		}
+		if err := blackboard.VerifyCanonicalMainGraphSnapshot(pin, filepath.Join(layout.Workdir, filepath.FromSlash(ctx.BlackboardPath))); err != nil {
+			return projectinterface.ValidationError(projectinterface.ErrCodeSnapshotUnavailable, "verify recovered full Blackboard snapshot: "+err.Error(), "blackboard_path")
 		}
 		if err := runner.ProjectRuntimeBlackboardFiles(layout, ctx, created.ScopeSnapshot); err != nil {
 			return projectinterface.ValidationError(projectinterface.ErrCodeSnapshotUnavailable, "recover Runtime Blackboard context: "+err.Error(), "context")
 		}
 	}
 	return nil
+}
+
+func (server *Server) runtimeBlackboardContext(created task.Task, continuation task.TaskContinuation) (projectinterface.RuntimeBlackboardContextV1, blackboard.CanonicalMainGraphPin) {
+	sandbox := continuation.Runner == task.RunnerSandbox
+	ctx := projectinterface.RuntimeBlackboardContextV1{
+		ProjectID: created.ProjectID, TaskID: created.ID, ContinuationID: continuation.ID,
+		RuntimeConfigVersionID: continuation.RuntimeConfigVersionID, RuntimeProfileID: continuation.RuntimeProfileID,
+		RuntimePluginID: continuation.RuntimeProvider, Runner: string(continuation.Runner),
+		APIURL: runner.APIEndpointURL(server.listenAddr, sandbox), MCPURL: runner.MCPEndpointURL(server.listenAddr, sandbox),
+		ScopePath: ".pentest/scope.json", BlackboardPath: ".pentest/blackboard.json",
+		BlackboardGraphRevision:    continuation.BlackboardGraphRevision,
+		BlackboardRendererVersion:  continuation.BlackboardRendererVersion,
+		BlackboardEstimatorVersion: continuation.BlackboardEstimatorVersion,
+		BlackboardProjectionHash:   continuation.BlackboardProjectionHash,
+		BlackboardProjectionBytes:  continuation.BlackboardProjectionBytes,
+		BlackboardEstimatedTokens:  continuation.BlackboardProjectionEstimatedTokens,
+	}
+	pin := blackboard.CanonicalMainGraphPin{
+		ProjectID: created.ProjectID, GraphRevision: continuation.BlackboardGraphRevision,
+		RendererVersion: continuation.BlackboardRendererVersion, EstimatorVersion: continuation.BlackboardEstimatorVersion,
+		ProjectionHash: continuation.BlackboardProjectionHash, ProjectionBytes: continuation.BlackboardProjectionBytes,
+		EstimatedTokens: continuation.BlackboardProjectionEstimatedTokens,
+	}
+	return ctx, pin
 }
 
 type taskLaunchDefaults struct {
@@ -350,27 +346,46 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string, la
 }
 
 func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string) (taskLaunchPlan, error) {
-	return server.buildTaskLaunchPlanWithBinding(created, goal, launchModelOverride, nativeResumeSessionID, nil)
+	return server.buildTaskLaunchPlanWithBinding(created, goal, launchModelOverride, nativeResumeSessionID, nil, nil)
 }
 
-func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, binding *continuationLaunchBinding) (taskLaunchPlan, error) {
+func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, binding *continuationLaunchBinding, captured *taskLaunchPlan) (taskLaunchPlan, error) {
 	runtimeConfig := map[string]any{
 		"runtime_profile_id": created.RuntimeProfileID,
 		"runner":             created.Runner,
 	}
 
-	profile, err := server.profiles.Get(created.RuntimeProfileID)
-	if err != nil {
-		return taskLaunchPlan{}, err
+	var profile runtimeprofile.Profile
+	var skillBundles []skill.Bundle
+	var capturedModelSnapshot *modelprovider.Snapshot
+	if captured != nil {
+		profile = captured.ResolvedProfile
+		skillBundles = append([]skill.Bundle(nil), captured.SkillBundles...)
+		capturedModelSnapshot = captured.ModelSnapshot
+	} else {
+		var err error
+		profile, err = server.profiles.Get(created.RuntimeProfileID)
+		if err != nil {
+			return taskLaunchPlan{}, err
+		}
+	}
+	sandbox := created.Runner == task.RunnerSandbox
+	goal = runner.RewriteLoopbackTargets(goal, sandbox)
+	launchGoal := goal
+	if binding != nil {
+		launchGoal = projectinterface.CanonicalRuntimeLaunchContext(binding.Context, binding.Snapshot, nativeResumeSessionID != "") + "\n\nTASK GOAL:\n" + goal
 	}
 	if profile.Provider == runtimeprofile.ProviderFake {
 		runtimeConfig["provider"] = string(runtimeprofile.ProviderFake)
 		runtimeConfig["generated_config"] = runtimeprofile.GeneratedConfig(profile)
-		return taskLaunchPlan{Adapter: runtime.NewFakeAdapter(), RuntimeConfig: runtimeConfig, LaunchModelOverride: launchModelOverride, NativeResumeSessionID: nativeResumeSessionID}, nil
+		return taskLaunchPlan{Adapter: runtime.NewFakeAdapter(), RuntimeConfig: runtimeConfig, LaunchModelOverride: launchModelOverride, NativeResumeSessionID: nativeResumeSessionID, ResolvedProfile: profile, LaunchGoal: launchGoal}, nil
 	}
-	skillBundles, err := server.skills.EnabledSkillBundles(profile.ID)
-	if err != nil {
-		return taskLaunchPlan{}, err
+	if captured == nil {
+		var err error
+		skillBundles, err = server.skills.EnabledSkillBundles(profile.ID)
+		if err != nil {
+			return taskLaunchPlan{}, err
+		}
 	}
 
 	layout, err := runner.PrepareTaskLayout(server.runtimeRoot, created.ID, profile.Provider)
@@ -378,8 +393,6 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		return taskLaunchPlan{}, err
 	}
 
-	sandbox := created.Runner == task.RunnerSandbox
-	goal = runner.RewriteLoopbackTargets(goal, sandbox)
 	mcpURL := runner.MCPEndpointURL(server.listenAddr, sandbox)
 	authToken := server.authToken
 	var runtimeContext *projectinterface.RuntimeBlackboardContextV1
@@ -398,6 +411,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		RuntimePlugins:      server.runtimePlugins,
 		RuntimeExtensions:   server.runtimeExtensions,
 		ModelProviders:      server.modelProviders,
+		ModelSnapshot:       capturedModelSnapshot,
 		LaunchModelOverride: launchModelOverride,
 		SkillBundles:        skillBundles,
 		RuntimeContext:      runtimeContext,
@@ -414,7 +428,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	providerCommand, err := adapters.BuildLaunchArgs(adapters.LaunchArgsRequest{
 		Provider:      profile.Provider,
 		Profile:       launchProfile,
-		Goal:          goal,
+		Goal:          launchGoal,
 		ConfigPath:    configPath,
 		MCPConfigPath: mcpConfigPath,
 		Sandbox:       sandbox,
@@ -427,7 +441,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 			Provider:        profile.Provider,
 			Profile:         launchProfile,
 			NativeSessionID: nativeResumeSessionID,
-			ResumedMessage:  goal,
+			ResumedMessage:  launchGoal,
 			ConfigPath:      configPath,
 			MCPConfigPath:   mcpConfigPath,
 		})
@@ -489,15 +503,20 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 			}
 			sandboxRuntime = wrapped
 		}
+		var readOnlyTaskFiles []string
+		if binding != nil {
+			readOnlyTaskFiles = []string{"workdir/.pentest/blackboard.json", "workdir/.pentest/scope.json"}
+		}
 		command, err := runner.BuildSandboxCommand(runner.SandboxCommandRequest{
-			Layout:          layout,
-			Provider:        profile.Provider,
-			Image:           sandboxImage,
-			ContainerCLI:    server.containerCLI,
-			ContainerIDFile: containerIDFile,
-			RuntimeCommand:  sandboxRuntime,
-			ProcessEnv:      processEnv,
-			NetworkMode:     sandboxNetworkMode(created.RunControls),
+			Layout:            layout,
+			Provider:          profile.Provider,
+			Image:             sandboxImage,
+			ContainerCLI:      server.containerCLI,
+			ContainerIDFile:   containerIDFile,
+			RuntimeCommand:    sandboxRuntime,
+			ProcessEnv:        processEnv,
+			NetworkMode:       sandboxNetworkMode(created.RunControls),
+			ReadOnlyTaskFiles: readOnlyTaskFiles,
 		})
 		if err != nil {
 			return taskLaunchPlan{}, err
@@ -592,6 +611,10 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		StopConfirmation:      stopConfirmation,
 		LaunchModelOverride:   launchModelOverride,
 		NativeResumeSessionID: nativeResumeSessionID,
+		ResolvedProfile:       launchProfile,
+		ModelSnapshot:         projection.ModelSnapshot,
+		SkillBundles:          append([]skill.Bundle(nil), skillBundles...),
+		LaunchGoal:            launchGoal,
 	}, nil
 }
 
