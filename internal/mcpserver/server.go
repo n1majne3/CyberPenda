@@ -13,6 +13,7 @@ import (
 
 	"pentest/internal/blackboard"
 	"pentest/internal/project"
+	"pentest/internal/projectinterface"
 	"pentest/internal/report"
 	"pentest/internal/task"
 )
@@ -25,6 +26,18 @@ type Deps struct {
 	// Reads, when non-nil (graph store active), makes the compatibility read
 	// tools delegate to BlackboardReadService instead of the legacy tables.
 	Reads *blackboard.BlackboardReadService
+	// ProjectInterface, when non-nil (graph store active), exposes the
+	// graph-native project-interface MCP tools authenticated with a
+	// Continuation Interface Grant (runtime protocol §12.2).
+	ProjectInterface *projectinterface.Service
+	// Principal is the trusted Runtime caller resolved from the request's grant
+	// token. It is nil for operator/legacy requests.
+	Principal *projectinterface.Principal
+	// PrincipalError, when set, is the structured failure from resolving a
+	// presented-but-invalid grant token. It lets the project-interface tools
+	// report grant_not_found rather than conflating an invalid token with "no
+	// grant presented" (continuation_context_required).
+	PrincipalError *projectinterface.Error
 }
 
 // legacyReadResult runs a legacy compatibility read against BlackboardReadService
@@ -300,7 +313,119 @@ func New(deps Deps) *sdkmcp.Server {
 		return toolJSON(version)
 	})
 
+	if deps.ProjectInterface != nil {
+		registerProjectInterfaceTools(server, deps)
+	}
+
 	return server
+}
+
+// registerProjectInterfaceTools adds the graph-native Runtime project-interface
+// MCP tools (runtime protocol §12.1, §12.2). They authenticate through the
+// Continuation Interface Grant resolved into deps.Principal; operator/legacy
+// requests get continuation_context_required.
+func registerProjectInterfaceTools(server *sdkmcp.Server, deps Deps) {
+	sdkmcp.AddTool(server, &sdkmcp.Tool{
+		Name:        "blackboard_apply",
+		Description: "Apply one atomic typed graph mutation batch to the Blackboard. Project and provenance are bound from the Continuation Interface Grant; do not supply them.",
+	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args blackboardApplyArgs) (*sdkmcp.CallToolResult, any, error) {
+		_ = req
+		principal, principalErr := deps.requirePrincipal()
+		if principalErr != nil {
+			return toolProjectInterfaceError(principalErr)
+		}
+		result, applyErr := deps.ProjectInterface.Apply(ctx, *principal, projectinterface.ApplyMutationRequest{
+			ProtocolVersion:    args.ProtocolVersion,
+			Batch:              args.Batch,
+			SourceEventIDsByOp: args.SourceEventIDsByOp,
+		})
+		if applyErr != nil {
+			return toolProjectInterfaceError(projectinterface.AsError(applyErr))
+		}
+		return toolJSON(result)
+	})
+
+	sdkmcp.AddTool(server, &sdkmcp.Tool{
+		Name:        "blackboard_resolve_records",
+		Description: "Resolve current Blackboard records after alias and merge resolution. A narrow optimistic-concurrency read; missing references are reported separately.",
+	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args blackboardResolveRecordsArgs) (*sdkmcp.CallToolResult, any, error) {
+		_ = req
+		principal, principalErr := deps.requirePrincipal()
+		if principalErr != nil {
+			return toolProjectInterfaceError(principalErr)
+		}
+		result, resolveErr := deps.ProjectInterface.ResolveRecords(ctx, *principal, projectinterface.ResolveRecordsRequest{
+			ProtocolVersion: args.ProtocolVersion,
+			Nodes:           args.Nodes,
+		})
+		if resolveErr != nil {
+			return toolProjectInterfaceError(projectinterface.AsError(resolveErr))
+		}
+		return toolJSON(result)
+	})
+
+	sdkmcp.AddTool(server, &sdkmcp.Tool{
+		Name:        "blackboard_get_current_graph",
+		Description: "Read the current full Runtime Blackboard graph (CanonicalMainGraphV1). Does not repin or rewrite the Continuation snapshot.",
+	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args blackboardCurrentGraphArgs) (*sdkmcp.CallToolResult, any, error) {
+		_ = req
+		principal, principalErr := deps.requirePrincipal()
+		if principalErr != nil {
+			return toolProjectInterfaceError(principalErr)
+		}
+		result, graphErr := deps.ProjectInterface.CurrentGraph(ctx, *principal, projectinterface.CurrentGraphRequest{
+			ProtocolVersion: args.ProtocolVersion,
+		})
+		if graphErr != nil {
+			return toolProjectInterfaceError(projectinterface.AsError(graphErr))
+		}
+		return toolJSON(result)
+	})
+}
+
+// requirePrincipal returns the resolved Runtime principal, or a structured
+// error: PrincipalError when a grant token was presented but rejected,
+// otherwise continuation_context_required for operator/legacy requests.
+func (deps Deps) requirePrincipal() (*projectinterface.Principal, *projectinterface.Error) {
+	if deps.Principal != nil {
+		return deps.Principal, nil
+	}
+	if deps.PrincipalError != nil {
+		return nil, deps.PrincipalError
+	}
+	return nil, projectinterface.ValidationError(projectinterface.ErrCodeContinuationContextRequired,
+		"this tool requires a Continuation Interface Grant", "authorization")
+}
+
+// toolProjectInterfaceError returns a structured isError result carrying the
+// ProjectInterfaceErrorV1 envelope (runtime protocol §12.2: domain/interface
+// failures are structured isError results, not unstructured transport errors).
+func toolProjectInterfaceError(err *projectinterface.Error) (*sdkmcp.CallToolResult, any, error) {
+	if err == nil {
+		err = projectinterface.ValidationError(projectinterface.ErrCodeInvalidRequest, "unexpected failure", "internal")
+	}
+	data, _ := json.Marshal(struct {
+		Error projectinterface.Error `json:"error"`
+	}{Error: *err})
+	return &sdkmcp.CallToolResult{
+		Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: string(data)}},
+		IsError: true,
+	}, nil, nil
+}
+
+type blackboardApplyArgs struct {
+	ProtocolVersion    int                              `json:"protocol_version" jsonschema:"protocol version, always 1"`
+	Batch              projectinterface.RequestBatch    `json:"batch" jsonschema:"mutation batch"`
+	SourceEventIDsByOp map[string][]string              `json:"source_event_ids_by_op,omitempty" jsonschema:"optional op_id to source Task Event IDs"`
+}
+
+type blackboardResolveRecordsArgs struct {
+	ProtocolVersion int                               `json:"protocol_version" jsonschema:"protocol version, always 1"`
+	Nodes           []projectinterface.NodeLookup     `json:"nodes" jsonschema:"node references to resolve"`
+}
+
+type blackboardCurrentGraphArgs struct {
+	ProtocolVersion int `json:"protocol_version" jsonschema:"protocol version, always 1"`
 }
 
 type upsertProjectFactArgs struct {

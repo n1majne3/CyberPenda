@@ -1909,6 +1909,47 @@ func ComputeRequestHashForTesting(batch MutationBatch) (string, error) {
 	return hex.EncodeToString(h), nil
 }
 
+// ReplayResult is a read-only idempotency probe: it returns the exact stored
+// MutationResult when an equivalent batch (same trusted idempotency scope, key,
+// and canonical request hash) has already committed, and (false, zero) when no
+// stored result exists. It does not mutate the graph and does not consume a
+// mutation sequence, so a caller may use it to distinguish an exact replay from
+// a new write before applying a lifecycle gate that must leave replays available
+// (runtime protocol §4.2). A same-key/different-hash request reports found=false
+// rather than returning idempotency_conflict; Apply performs that check
+// authoritatively inside its transaction.
+func (s *GraphService) ReplayResult(ctx context.Context, batch MutationBatch) (MutationResult, bool, error) {
+	scope := batch.Context.idempotencyScope()
+	if scope == "" || batch.IdempotencyKey == "" {
+		return MutationResult{}, false, nil
+	}
+	requestHash, err := computeRequestHash(batch)
+	if err != nil {
+		return MutationResult{}, false, fmt.Errorf("compute request hash for replay probe: %w", err)
+	}
+	var storedHash, storedResultJSON, storedResultHash string
+	err = s.db.QueryRowContext(ctx,
+		`SELECT request_hash, result_json, result_hash FROM blackboard_graph_mutations
+		  WHERE project_id = ? AND idempotency_scope = ? AND idempotency_key = ?`,
+		batch.Context.ProjectID, scope, batch.IdempotencyKey,
+	).Scan(&storedHash, &storedResultJSON, &storedResultHash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return MutationResult{}, false, nil
+	}
+	if err != nil {
+		return MutationResult{}, false, fmt.Errorf("probe replay result: %w", err)
+	}
+	if storedHash != hex.EncodeToString(requestHash) {
+		return MutationResult{}, false, nil
+	}
+	res, err := decodeResultJSON(storedResultJSON)
+	if err != nil {
+		return MutationResult{}, false, err
+	}
+	res.ResultHash = storedResultHash
+	return *res, true, nil
+}
+
 // computeRequestHash canonicalizes the batch excluding server-generated fields
 // and returns SHA-256 of those canonical bytes (storage §6.1 request_hash:
 // "SHA-256 of the normalized batch plus trusted maintenance metadata,

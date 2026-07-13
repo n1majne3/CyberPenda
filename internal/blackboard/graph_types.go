@@ -110,12 +110,12 @@ type ProjectFactProperties struct {
 // ExtraProperties is nil for conforming calls; any key present there is
 // rejected as unknown_property under the closed envelope.
 type CreateNodeInput struct {
-	Properties ProjectFactProperties
+	Properties ProjectFactProperties `json:"properties,omitempty"`
 	// PropertyMap is the canonical closed property envelope for every graph
 	// node type. ProjectFact callers may continue to use Properties; adapters
 	// use this representation so one conformance corpus can exercise all types.
-	PropertyMap     map[string]any
-	ExtraProperties map[string]any
+	PropertyMap     map[string]any `json:"property_map,omitempty"`
+	ExtraProperties map[string]any `json:"extra_properties,omitempty"`
 }
 
 type EdgeType string

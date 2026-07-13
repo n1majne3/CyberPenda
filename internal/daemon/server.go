@@ -24,6 +24,7 @@ import (
 	"pentest/internal/modelprovider"
 	"pentest/internal/preflight"
 	"pentest/internal/project"
+	"pentest/internal/projectinterface"
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeextension"
 	"pentest/internal/runtimeplugin"
@@ -90,7 +91,14 @@ type Server struct {
 	facts              *blackboard.Service
 	reads              *blackboard.BlackboardReadService
 	graph              *blackboard.GraphService
-	runtimeRoot        string
+	// projectInterface is the graph-native Runtime project-interface module
+	// (runtime protocol §1). It is wired only while the store epoch has
+	// activated the graph Blackboard (graph_v1), so graph data stays dark
+	// before the M05 cutover.
+	projectInterface       *projectinterface.Service
+	projectInterfaceGrants *projectinterface.GrantStore
+	projectInterfaceHTTP   *projectinterface.HTTPHandler
+	runtimeRoot            string
 	sandboxImage       string
 	containerCLI       string
 	listenAddr         string
@@ -202,6 +210,13 @@ func NewServer(config Config) (*Server, error) {
 		graph := blackboard.NewGraphService(db, blackboard.SystemClock{}, blackboard.RandomIDSource{}).WithArtifactRoot(filepath.Dir(config.DBPath))
 		server.graph = graph
 		server.reads = blackboard.NewBlackboardReadService(db).WithArtifactRoot(filepath.Dir(config.DBPath))
+		server.projectInterfaceGrants = projectinterface.NewGrantStore(db, projectinterface.SystemClock{}, projectinterface.RandomIDSource{}, projectinterface.RandomTokenSource{})
+		server.projectInterface = projectinterface.NewService(projectinterface.Deps{
+			DB:     db,
+			Graph:  graph,
+			Grants: server.projectInterfaceGrants,
+		})
+		server.projectInterfaceHTTP = projectinterface.NewHTTPHandler(server.projectInterface)
 		if err := graph.RepairTaskGoals(context.Background()); err != nil {
 			_ = server.Close()
 			return nil, fmt.Errorf("repair Task Goals at graph startup: %w", err)
@@ -445,6 +460,13 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/projects/{id}/blackboard/frontier", server.handleBlackboardFrontier)
 	server.mux.HandleFunc("GET /api/projects/{id}/blackboard/records", server.handleBlackboardRecords)
 	server.mux.HandleFunc("GET /api/projects/{id}/blackboard/records:resolve", server.handleBlackboardRecordResolve)
+	// Graph-native Runtime project-interface routes (runtime protocol §12.1).
+	// Grant-authed; only registered while the graph Blackboard is active. The
+	// records:resolve POST coexists with the operator GET by HTTP method.
+	if server.projectInterfaceHTTP != nil {
+		server.mux.HandleFunc("POST /api/projects/{id}/blackboard/mutations", server.projectInterfaceHTTP.Apply)
+		server.mux.HandleFunc("POST /api/projects/{id}/blackboard/records:resolve", server.projectInterfaceHTTP.ResolveRecords)
+	}
 	server.mux.HandleFunc("GET /api/projects/{id}/blackboard/records/{node_id}", server.handleBlackboardRecordDetail)
 	server.mux.HandleFunc("GET /api/projects/{id}/blackboard/records/{node_id}/history", server.handleBlackboardRecordHistory)
 	server.mux.HandleFunc("GET /api/projects/{id}/blackboard/records/{node_id}/provenance", server.handleBlackboardRecordProvenance)
@@ -957,6 +979,14 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 }
 
 func (server *Server) handleBlackboardRuntimeGraph(response http.ResponseWriter, request *http.Request) {
+	// Dual-mode (runtime protocol §12.4): a request carrying a Continuation
+	// Interface Grant rather than the daemon operator credential is Runtime
+	// traffic and goes through the project-interface module. Operator/UI
+	// requests fall through to the shared read service.
+	if server.projectInterfaceHTTP != nil && server.projectInterfaceHTTP.HasRuntimeGrant(request, server.authToken) {
+		server.projectInterfaceHTTP.CurrentGraph(response, request)
+		return
+	}
 	server.handleCanonicalBlackboardRead(response, request, blackboard.ReadRequest{
 		ProtocolVersion: blackboard.BlackboardReadProtocolVersion,
 		ProjectID:       request.PathValue("id"),

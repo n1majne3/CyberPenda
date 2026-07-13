@@ -253,6 +253,7 @@ func migrations() []migration {
 		newMigration(8, "graph_budget_compaction_and_health", migration8SQL, migration8Up),
 		newMigration(9, "blackboard_read_cursor_secret", migration9SQL, migration9Up),
 		newMigration(10, "blackboard_health_run_requests", migration10SQL, migration10Up),
+		newMigration(11, "continuation_interface_grants", migration11SQL, migration11Up),
 	}
 }
 
@@ -283,6 +284,36 @@ func migration10Up(tx *sql.Tx) error {
 	}
 	return execStatements(tx, migration10SQL)
 }
+
+// migration11SQL creates the Continuation Interface Grant store (runtime
+// protocol §4.1). The server stores only a SHA-256 hash of the cryptographically
+// random bearer token; the plaintext is projected solely to the task-local
+// Runtime environment and trusted MCP configuration. Grant lifecycle timestamps
+// gate new writes while reads and exact replay remain allowed after finish,
+// revocation, or a terminal Continuation (runtime protocol §4.2).
+const migration11SQL = `
+CREATE TABLE blackboard_continuation_grants (
+ grant_id TEXT PRIMARY KEY,
+ token_hash TEXT NOT NULL UNIQUE,
+ project_id TEXT NOT NULL,
+ task_id TEXT NOT NULL,
+ continuation_id TEXT NOT NULL,
+ runtime_config_version_id TEXT NOT NULL,
+ runtime_profile_id TEXT NOT NULL,
+ runtime_plugin_id TEXT NOT NULL,
+ runner TEXT NOT NULL,
+ actor_id TEXT NOT NULL,
+ issued_at TEXT NOT NULL,
+ finished_at TEXT NOT NULL DEFAULT '',
+ revoked_at TEXT NOT NULL DEFAULT '',
+ terminal_at TEXT NOT NULL DEFAULT '',
+ CHECK (token_hash <> '')
+);
+CREATE INDEX idx_blackboard_continuation_grants_continuation
+	ON blackboard_continuation_grants (continuation_id);
+`
+
+func migration11Up(tx *sql.Tx) error { return execStatements(tx, migration11SQL) }
 
 const migration9SQL = `
 CREATE TABLE blackboard_read_state (
