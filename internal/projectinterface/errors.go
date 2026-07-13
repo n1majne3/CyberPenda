@@ -47,6 +47,12 @@ const (
 	// ErrCodeSourceEventMismatch is a Task Event outside the bound Task or
 	// Continuation provenance context.
 	ErrCodeSourceEventMismatch = "source_event_mismatch"
+	// ErrCodeEvidenceSourceForbidden rejects traversal or a resolved source
+	// outside the caller's trusted Runtime/operator roots.
+	ErrCodeEvidenceSourceForbidden = "evidence_source_forbidden"
+	// ErrCodeEvidenceSourceChanged reports a missing or replaced source across
+	// a retry of the same Retain Evidence request.
+	ErrCodeEvidenceSourceChanged = "evidence_source_changed"
 )
 
 // Error is the stable ProjectInterfaceErrorV1 shape (runtime protocol §3). It is

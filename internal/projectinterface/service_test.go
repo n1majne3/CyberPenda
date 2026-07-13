@@ -62,11 +62,15 @@ type serviceFixture struct {
 	runtimeProfile string
 	runtimePlugin  string
 	runner         string
+	artifactRoot   string
+	runtimeRoot    string
 }
 
 func newServiceFixture(t *testing.T) serviceFixture {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "projectinterface.db")
+	artifactRoot := t.TempDir()
+	dbPath := filepath.Join(artifactRoot, "projectinterface.db")
+	runtimeRoot := filepath.Join(artifactRoot, "runs")
 	db, err := store.Open(dbPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -109,7 +113,10 @@ func newServiceFixture(t *testing.T) serviceFixture {
 	grants := projectinterface.NewGrantStore(db, clock, ids, tokens)
 	tasks.SetContinuationTerminalMarker(grants)
 	graph := blackboard.NewGraphService(db, blackboard.SystemClock{}, blackboard.RandomIDSource{})
-	service := projectinterface.NewService(projectinterface.Deps{DB: db, Graph: graph, Grants: grants})
+	service := projectinterface.NewService(projectinterface.Deps{
+		DB: db, Graph: graph, Grants: grants,
+		ArtifactRoot: artifactRoot, RuntimeRoot: runtimeRoot,
+	})
 
 	token, grant, err := grants.Issue(context.Background(), projectinterface.IssueGrantRequest{
 		ProjectID:              proj.ID,
@@ -129,6 +136,412 @@ func newServiceFixture(t *testing.T) serviceFixture {
 		continuation: continuation, configVersion: configVersion,
 		token: token, grant: grant, runtimeProfile: runtimeProfile,
 		runtimePlugin: runtimePlugin, runner: string(runner),
+		artifactRoot: artifactRoot, runtimeRoot: runtimeRoot,
+	}
+}
+
+type failEvidenceOnce struct {
+	point projectinterface.EvidenceFailurePoint
+	fired bool
+}
+
+func (f *failEvidenceOnce) FailAfter(point projectinterface.EvidenceFailurePoint) error {
+	if f.fired || point != f.point {
+		return nil
+	}
+	f.fired = true
+	return errors.New("injected evidence retention failure after " + string(point))
+}
+
+func prepareRetainEvidenceAttempt(t *testing.T, fixture serviceFixture, principal projectinterface.Principal, stableKey string) {
+	t.Helper()
+	_, err := fixture.service.Apply(context.Background(), principal, projectinterface.ApplyMutationRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+		Batch: projectinterface.RequestBatch{
+			SchemaVersion:  blackboard.GraphMutationSchemaVersion,
+			IdempotencyKey: "retain:prepare:" + stableKey,
+			Operations: []blackboard.Operation{
+				{OpID: "objective", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeExplorationObjective, StableKey: "objective:" + stableKey}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"objective": "Capture durable proof"}}},
+				{OpID: "attempt", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeAttempt, StableKey: "attempt:" + stableKey}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{}}},
+				{OpID: "tests", Kind: blackboard.OpPutEdge, PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypeTests, From: blackboard.NodeRef{OpID: "attempt"}, To: blackboard.NodeRef{OpID: "objective"}}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepare retaining Attempt: %v", err)
+	}
+}
+
+// TestRetainEvidenceConvergesAcrossFilePublishGraphCommitAndLostResponseFailures
+// is the I03 first-red test at the transport-neutral Retain Evidence seam. A
+// retry must converge from every durable boundary without duplicating the
+// managed payload, EvidenceArtifact, or produced edge.
+func TestRetainEvidenceConvergesAcrossFilePublishGraphCommitAndLostResponseFailures(t *testing.T) {
+	for _, failurePoint := range []projectinterface.EvidenceFailurePoint{
+		projectinterface.EvidenceFailureAfterFilePublish,
+		projectinterface.EvidenceFailureAfterGraphCommit,
+		projectinterface.EvidenceFailureAfterResultStore,
+	} {
+		t.Run(string(failurePoint), func(t *testing.T) {
+			fixture := newServiceFixture(t)
+			principal, err := fixture.service.Authenticate(context.Background(), fixture.token, fixture.project.ID)
+			if err != nil {
+				t.Fatalf("authenticate: %v", err)
+			}
+			key := strings.ReplaceAll(string(failurePoint), "_", "-")
+			prepareRetainEvidenceAttempt(t, fixture, principal, key)
+
+			workdir := filepath.Join(fixture.runtimeRoot, fixture.task.ID, "workdir", "captures")
+			if err := os.MkdirAll(workdir, 0o700); err != nil {
+				t.Fatalf("create workdir: %v", err)
+			}
+			source := filepath.Join(workdir, "admin-login.txt")
+			payload := []byte("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nadmin=true\n")
+			if err := os.WriteFile(source, payload, 0o600); err != nil {
+				t.Fatalf("write source: %v", err)
+			}
+
+			injector := &failEvidenceOnce{point: failurePoint}
+			fixture.service = projectinterface.NewService(projectinterface.Deps{
+				DB: fixture.db, Graph: fixture.graph, Grants: fixture.grants,
+				ArtifactRoot: fixture.artifactRoot, RuntimeRoot: fixture.runtimeRoot,
+				EvidenceFailures: injector,
+			})
+			request := projectinterface.RetainEvidenceRequest{
+				ProtocolVersion:   projectinterface.RuntimeProtocolVersion,
+				IdempotencyKey:    "retain:" + key,
+				StableKey:         "evidence:" + key,
+				ArtifactType:      "http_exchange",
+				MediaType:         "application/http",
+				SourcePath:        "captures/admin-login.txt",
+				Summary:           "Authenticated response proving the admin endpoint",
+				ProducedByAttempt: blackboard.NodeRef{NodeType: blackboard.NodeTypeAttempt, StableKey: "attempt:" + key},
+			}
+			if _, err := fixture.service.RetainEvidence(context.Background(), principal, request); err == nil {
+				t.Fatal("injected failure unexpectedly returned success")
+			}
+			first, err := fixture.service.RetainEvidence(context.Background(), principal, request)
+			if err != nil {
+				t.Fatalf("retry Retain Evidence: %v", err)
+			}
+			replay, err := fixture.service.RetainEvidence(context.Background(), principal, request)
+			if err != nil {
+				t.Fatalf("replay Retain Evidence: %v", err)
+			}
+			firstJSON, _ := json.Marshal(first)
+			replayJSON, _ := json.Marshal(replay)
+			if !bytes.Equal(firstJSON, replayJSON) {
+				t.Fatalf("compound replay drifted:\nfirst %s\nreplay %s", firstJSON, replayJSON)
+			}
+			if first.Result.Node.StableKey != request.StableKey || first.Result.Node.Version != 1 {
+				t.Fatalf("retained Evidence node = %+v", first.Result.Node)
+			}
+			provenance, err := fixture.graph.ReadNodeRuntimeProvenance(context.Background(), fixture.project.ID, first.Result.Node.ID)
+			if err != nil || provenance.TaskID != fixture.task.ID || provenance.ContinuationID != fixture.continuation.ID {
+				t.Fatalf("retained Evidence provenance = %+v, err = %v", provenance, err)
+			}
+			if got := first.Result.Node.PropertyMap["sha256"]; got != first.Result.SHA256 {
+				t.Fatalf("graph sha256 = %v, result sha256 = %s", got, first.Result.SHA256)
+			}
+			if got := int64(first.Result.Node.PropertyMap["size_bytes"].(float64)); got != int64(len(payload)) {
+				t.Fatalf("graph size = %d want %d", got, len(payload))
+			}
+			managed := filepath.Join(fixture.artifactRoot, filepath.FromSlash(first.Result.ManagedPath))
+			if got, err := os.ReadFile(managed); err != nil || !bytes.Equal(got, payload) {
+				t.Fatalf("managed payload = %q, err = %v", got, err)
+			}
+			matches, err := filepath.Glob(filepath.Join(fixture.runtimeRoot, fixture.task.ID, "artifacts", "retained", "*", "*"))
+			if err != nil || len(matches) != 1 {
+				t.Fatalf("managed payload copies = %v, err = %v", matches, err)
+			}
+			if len(first.Result.Edges) != 1 || first.Result.Edges[0].EdgeType != blackboard.EdgeTypeProduced {
+				t.Fatalf("retained Evidence edges = %+v", first.Result.Edges)
+			}
+		})
+	}
+}
+
+type replaceEvidenceSource struct {
+	path string
+}
+
+type mutateEvidenceSource struct{ path string }
+
+func (m mutateEvidenceSource) FailAfter(point projectinterface.EvidenceFailurePoint) error {
+	if point != projectinterface.EvidenceFailureBeforeFilePublish {
+		return nil
+	}
+	return os.WriteFile(m.path, []byte("mutated in place"), 0o600)
+}
+
+func (r replaceEvidenceSource) FailAfter(point projectinterface.EvidenceFailurePoint) error {
+	if point != projectinterface.EvidenceFailureBeforeFilePublish {
+		return nil
+	}
+	if err := os.Rename(r.path, r.path+".original"); err != nil {
+		return err
+	}
+	return os.WriteFile(r.path, []byte("replacement bytes"), 0o600)
+}
+
+func TestRetainEvidenceConfinesRuntimeSourcesAndRejectsReplacementRaces(t *testing.T) {
+	fixture := newServiceFixture(t)
+	principal, err := fixture.service.Authenticate(context.Background(), fixture.token, fixture.project.ID)
+	if err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	prepareRetainEvidenceAttempt(t, fixture, principal, "confinement")
+	workdir := filepath.Join(fixture.runtimeRoot, fixture.task.ID, "workdir")
+	if err := os.MkdirAll(workdir, 0o700); err != nil {
+		t.Fatalf("create workdir: %v", err)
+	}
+	outside := filepath.Join(fixture.artifactRoot, "outside.txt")
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatalf("write outside source: %v", err)
+	}
+	symlink := filepath.Join(workdir, "escape.txt")
+	if err := os.Symlink(outside, symlink); err != nil {
+		t.Fatalf("create escaping symlink: %v", err)
+	}
+	otherTaskSource := filepath.Join(fixture.runtimeRoot, "another-task", "workdir", "capture.txt")
+	if err := os.MkdirAll(filepath.Dir(otherTaskSource), 0o700); err != nil {
+		t.Fatalf("create other Task root: %v", err)
+	}
+	if err := os.WriteFile(otherTaskSource, []byte("other Task"), 0o600); err != nil {
+		t.Fatalf("write other Task source: %v", err)
+	}
+
+	for name, sourcePath := range map[string]string{
+		"traversal":         "../../outside.txt",
+		"symlink escape":    "escape.txt",
+		"another Task root": otherTaskSource,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := fixture.service.RetainEvidence(context.Background(), principal, projectinterface.RetainEvidenceRequest{
+				ProtocolVersion: projectinterface.RuntimeProtocolVersion, IdempotencyKey: "forbidden:" + name,
+				StableKey: "evidence:forbidden-" + strings.ReplaceAll(name, " ", "-"), ArtifactType: "file",
+				SourcePath: sourcePath, Summary: "must not be retained",
+				ProducedByAttempt: blackboard.NodeRef{NodeType: blackboard.NodeTypeAttempt, StableKey: "attempt:confinement"},
+			})
+			assertErrorCode(t, err, projectinterface.ErrCodeEvidenceSourceForbidden)
+		})
+	}
+
+	source := filepath.Join(workdir, "replace.txt")
+	if err := os.WriteFile(source, []byte("original bytes"), 0o600); err != nil {
+		t.Fatalf("write race source: %v", err)
+	}
+	fixture.service = projectinterface.NewService(projectinterface.Deps{
+		DB: fixture.db, Graph: fixture.graph, Grants: fixture.grants,
+		ArtifactRoot: fixture.artifactRoot, RuntimeRoot: fixture.runtimeRoot,
+		EvidenceFailures: replaceEvidenceSource{path: source},
+	})
+	_, err = fixture.service.RetainEvidence(context.Background(), principal, projectinterface.RetainEvidenceRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion, IdempotencyKey: "race:replace",
+		StableKey: "evidence:race-replace", ArtifactType: "file", SourcePath: "replace.txt", Summary: "original bytes only",
+		ProducedByAttempt: blackboard.NodeRef{NodeType: blackboard.NodeTypeAttempt, StableKey: "attempt:confinement"},
+	})
+	assertErrorCode(t, err, projectinterface.ErrCodeEvidenceSourceChanged)
+	if _, err := fixture.graph.ReadNode(context.Background(), blackboard.ReadNodeRequest{ProjectID: fixture.project.ID, NodeType: blackboard.NodeTypeEvidenceArtifact, Key: "evidence:race-replace"}); err == nil {
+		t.Fatal("replacement race created false graph support")
+	}
+
+	inPlace := filepath.Join(workdir, "mutate.txt")
+	if err := os.WriteFile(inPlace, []byte("original in-place bytes"), 0o600); err != nil {
+		t.Fatalf("write in-place source: %v", err)
+	}
+	fixture.service = projectinterface.NewService(projectinterface.Deps{
+		DB: fixture.db, Graph: fixture.graph, Grants: fixture.grants,
+		ArtifactRoot: fixture.artifactRoot, RuntimeRoot: fixture.runtimeRoot,
+		EvidenceFailures: mutateEvidenceSource{path: inPlace},
+	})
+	_, err = fixture.service.RetainEvidence(context.Background(), principal, projectinterface.RetainEvidenceRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion, IdempotencyKey: "race:mutate",
+		StableKey: "evidence:race-mutate", ArtifactType: "file", SourcePath: "mutate.txt", Summary: "original in-place bytes only",
+		ProducedByAttempt: blackboard.NodeRef{NodeType: blackboard.NodeTypeAttempt, StableKey: "attempt:confinement"},
+	})
+	assertErrorCode(t, err, projectinterface.ErrCodeEvidenceSourceChanged)
+}
+
+func TestRetainEvidenceExactReplayRemainsAvailableAfterFinish(t *testing.T) {
+	fixture := newServiceFixture(t)
+	principal, err := fixture.service.Authenticate(context.Background(), fixture.token, fixture.project.ID)
+	if err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	prepareRetainEvidenceAttempt(t, fixture, principal, "finished-replay")
+	workdir := filepath.Join(fixture.runtimeRoot, fixture.task.ID, "workdir")
+	if err := os.MkdirAll(workdir, 0o700); err != nil {
+		t.Fatalf("create workdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "finished.txt"), []byte("finished replay"), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	request := projectinterface.RetainEvidenceRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion, IdempotencyKey: "retain:finished-replay",
+		StableKey: "evidence:finished-replay", ArtifactType: "file", SourcePath: "finished.txt", Summary: "finished replay",
+		ProducedByAttempt: blackboard.NodeRef{NodeType: blackboard.NodeTypeAttempt, StableKey: "attempt:finished-replay"},
+	}
+	want, err := fixture.service.RetainEvidence(context.Background(), principal, request)
+	if err != nil {
+		t.Fatalf("initial retain: %v", err)
+	}
+	if _, err := fixture.grants.Finish(context.Background(), fixture.grant.ID); err != nil {
+		t.Fatalf("finish grant: %v", err)
+	}
+	got, err := fixture.service.RetainEvidence(context.Background(), principal, request)
+	if err != nil {
+		t.Fatalf("replay after Finish: %v", err)
+	}
+	wantJSON, _ := json.Marshal(want)
+	gotJSON, _ := json.Marshal(got)
+	if !bytes.Equal(wantJSON, gotJSON) {
+		t.Fatalf("finished replay = %s want %s", gotJSON, wantJSON)
+	}
+}
+
+func TestRetainEvidenceReplacesContentWithExpectedVersionAndPreservesPriorPayload(t *testing.T) {
+	fixture := newServiceFixture(t)
+	principal, err := fixture.service.Authenticate(context.Background(), fixture.token, fixture.project.ID)
+	if err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	prepareRetainEvidenceAttempt(t, fixture, principal, "replace-content")
+	attempt, err := fixture.graph.ReadNode(context.Background(), blackboard.ReadNodeRequest{ProjectID: fixture.project.ID, NodeType: blackboard.NodeTypeAttempt, Key: "attempt:replace-content"})
+	if err != nil {
+		t.Fatalf("read producing Attempt: %v", err)
+	}
+	workdir := filepath.Join(fixture.runtimeRoot, fixture.task.ID, "workdir")
+	if err := os.MkdirAll(workdir, 0o700); err != nil {
+		t.Fatalf("create workdir: %v", err)
+	}
+	source := filepath.Join(workdir, "replace-content.txt")
+	request := projectinterface.RetainEvidenceRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion, IdempotencyKey: "retain:replace-content:v1",
+		StableKey: "evidence:replace-content", ArtifactType: "file", SourcePath: "replace-content.txt", Summary: "version one",
+		ProducedByAttempt: blackboard.NodeRef{ID: attempt.Node.ID},
+	}
+	if err := os.WriteFile(source, []byte("version one"), 0o600); err != nil {
+		t.Fatalf("write v1: %v", err)
+	}
+	first, err := fixture.service.RetainEvidence(context.Background(), principal, request)
+	if err != nil {
+		t.Fatalf("retain v1: %v", err)
+	}
+	if err := os.WriteFile(source, []byte("version two"), 0o600); err != nil {
+		t.Fatalf("write v2: %v", err)
+	}
+	expectedVersion := 1
+	request.IdempotencyKey = "retain:replace-content:v2"
+	request.ExpectedVersion = &expectedVersion
+	request.Summary = "version two"
+	second, err := fixture.service.RetainEvidence(context.Background(), principal, request)
+	if err != nil {
+		t.Fatalf("retain v2: %v", err)
+	}
+	if second.Result.Node.Version != 2 || second.Result.SHA256 == first.Result.SHA256 {
+		t.Fatalf("replacement results: first=%+v second=%+v", first.Result, second.Result)
+	}
+	for path, want := range map[string]string{first.Result.ManagedPath: "version one", second.Result.ManagedPath: "version two"} {
+		got, err := os.ReadFile(filepath.Join(fixture.artifactRoot, filepath.FromSlash(path)))
+		if err != nil || string(got) != want {
+			t.Fatalf("retained %s = %q, err=%v", path, got, err)
+		}
+	}
+	if _, err := fixture.service.Apply(context.Background(), principal, projectinterface.ApplyMutationRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion,
+		Batch: projectinterface.RequestBatch{
+			SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "evidence:replace-content:missing",
+			Operations: []blackboard.Operation{{
+				OpID: "missing", Kind: blackboard.OpTransitionNode,
+				Node:       blackboard.NodeRef{NodeType: blackboard.NodeTypeEvidenceArtifact, StableKey: "evidence:replace-content"},
+				Transition: blackboard.TransitionNodeInput{ExpectedVersion: 2, Status: "missing"},
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("mark Evidence missing: %v", err)
+	}
+	if err := os.WriteFile(source, []byte("version three"), 0o600); err != nil {
+		t.Fatalf("write v3: %v", err)
+	}
+	expectedVersion = 3
+	request.IdempotencyKey = "retain:replace-content:v3"
+	request.ExpectedVersion = &expectedVersion
+	request.Summary = "version three"
+	third, err := fixture.service.RetainEvidence(context.Background(), principal, request)
+	if err != nil {
+		t.Fatalf("retain missing Evidence as available: %v", err)
+	}
+	if third.Result.Node.Version != 5 || third.Result.Node.PropertyMap["status"] != "available" {
+		t.Fatalf("missing Evidence was not restored by Retain: %+v", third.Result.Node)
+	}
+}
+
+func TestOperatorRetainEvidenceIsConfinedToConfiguredSourceRoots(t *testing.T) {
+	fixture := newServiceFixture(t)
+	operator, err := projectinterface.OperatorPrincipal(fixture.project.ID, "local-operator")
+	if err != nil {
+		t.Fatalf("operator principal: %v", err)
+	}
+	sourceRoot := filepath.Join(fixture.artifactRoot, "operator-sources")
+	if err := os.MkdirAll(sourceRoot, 0o700); err != nil {
+		t.Fatalf("create operator source root: %v", err)
+	}
+	source := filepath.Join(sourceRoot, "operator.txt")
+	if err := os.WriteFile(source, []byte("operator proof"), 0o600); err != nil {
+		t.Fatalf("write operator source: %v", err)
+	}
+	fixture.service = projectinterface.NewService(projectinterface.Deps{
+		DB: fixture.db, Graph: fixture.graph, Grants: fixture.grants,
+		ArtifactRoot: fixture.artifactRoot, RuntimeRoot: fixture.runtimeRoot, OperatorRoots: []string{sourceRoot},
+	})
+	result, err := fixture.service.RetainEvidence(context.Background(), operator, projectinterface.RetainEvidenceRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion, IdempotencyKey: "retain:operator",
+		StableKey: "evidence:operator", ArtifactType: "file", SourcePath: source, Summary: "operator proof",
+	})
+	if err != nil {
+		t.Fatalf("operator retain: %v", err)
+	}
+	if len(result.Result.Edges) != 0 || result.Result.Node.PropertyMap["sha256"] == "" {
+		t.Fatalf("operator retained Evidence = %+v", result.Result)
+	}
+	_, err = fixture.service.RetainEvidence(context.Background(), operator, projectinterface.RetainEvidenceRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion, IdempotencyKey: "retain:operator-outside",
+		StableKey: "evidence:operator-outside", ArtifactType: "file", SourcePath: fixture.dbPath, Summary: "database must stay forbidden",
+	})
+	assertErrorCode(t, err, projectinterface.ErrCodeEvidenceSourceForbidden)
+}
+
+func TestRetainEvidenceRejectsSymlinkedTaskArtifactRoot(t *testing.T) {
+	fixture := newServiceFixture(t)
+	principal, err := fixture.service.Authenticate(context.Background(), fixture.token, fixture.project.ID)
+	if err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	prepareRetainEvidenceAttempt(t, fixture, principal, "artifact-symlink")
+	workdir := filepath.Join(fixture.runtimeRoot, fixture.task.ID, "workdir")
+	if err := os.MkdirAll(workdir, 0o700); err != nil {
+		t.Fatalf("create workdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "proof.txt"), []byte("proof"), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	escape := filepath.Join(fixture.artifactRoot, "managed-escape")
+	if err := os.MkdirAll(escape, 0o700); err != nil {
+		t.Fatalf("create escape directory: %v", err)
+	}
+	if err := os.Symlink(escape, filepath.Join(fixture.runtimeRoot, fixture.task.ID, "artifacts")); err != nil {
+		t.Fatalf("symlink Task Artifact Root: %v", err)
+	}
+	_, err = fixture.service.RetainEvidence(context.Background(), principal, projectinterface.RetainEvidenceRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion, IdempotencyKey: "retain:artifact-symlink",
+		StableKey: "evidence:artifact-symlink", ArtifactType: "file", SourcePath: "proof.txt", Summary: "proof",
+		ProducedByAttempt: blackboard.NodeRef{NodeType: blackboard.NodeTypeAttempt, StableKey: "attempt:artifact-symlink"},
+	})
+	assertErrorCode(t, err, projectinterface.ErrCodeInternal)
+	entries, readErr := os.ReadDir(escape)
+	if readErr != nil || len(entries) != 0 {
+		t.Fatalf("symlink escape received managed files: %v, err=%v", entries, readErr)
 	}
 }
 

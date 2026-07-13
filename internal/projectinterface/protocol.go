@@ -12,6 +12,7 @@ var trustedToolDefinitions = []TrustedToolDefinition{
 	{RuntimeProtocolVersion, "blackboard_apply", "Apply one atomic typed graph mutation batch to the Blackboard. Project and provenance are bound from the Continuation Interface Grant; do not supply them."},
 	{RuntimeProtocolVersion, "blackboard_resolve_records", "Resolve graph nodes and edges by stable key or immutable ID at one observed graph revision."},
 	{RuntimeProtocolVersion, "blackboard_get_current_graph", "Return the exact current CanonicalMainGraphV1 projection and metadata for the bound Project."},
+	{RuntimeProtocolVersion, "blackboard_retain_evidence", "Retain one confined payload under the managed Artifact Root, compute its digest and size, and represent it with matching Attempt provenance."},
 }
 
 // TrustedToolDefinitions returns a copy in canonical protocol order.

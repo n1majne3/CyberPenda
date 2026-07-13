@@ -30,6 +30,7 @@ func TestProjectInterfaceOpenAPICoversVersionedRoutesAndErrors(t *testing.T) {
 	}{
 		{"/api/projects/{project_id}/blackboard/mutations", "post", []string{"200", "400", "401", "403", "404", "409", "422", "500", "503"}},
 		{"/api/projects/{project_id}/blackboard/records:resolve", "post", []string{"200", "400", "401", "403", "404", "500", "503"}},
+		{"/api/projects/{project_id}/blackboard/evidence:retain", "post", []string{"200", "400", "401", "403", "404", "409", "422", "500", "503"}},
 		{"/api/projects/{project_id}/blackboard/runtime-graph", "get", []string{"200", "304", "400", "401", "403", "404", "500", "503"}},
 	}
 	for _, tt := range tests {

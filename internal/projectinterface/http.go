@@ -111,6 +111,28 @@ func (h *HTTPHandler) Apply(response http.ResponseWriter, request *http.Request)
 	writeJSON(response, http.StatusOK, result)
 }
 
+// RetainEvidence handles POST
+// /api/projects/{project_id}/blackboard/evidence:retain.
+func (h *HTTPHandler) RetainEvidence(response http.ResponseWriter, request *http.Request) {
+	principal, authErr := h.AuthenticateRequest(request)
+	if authErr != nil {
+		writeProjectInterfaceError(response, authErr)
+		return
+	}
+	var req RetainEvidenceRequest
+	if decodeErr := decodeStrictJSON(request, &req); decodeErr != nil {
+		writeProjectInterfaceError(response, &Error{Code: ErrCodeInvalidRequest, Message: decodeErr.Error(), Path: "body", Retryable: false})
+		return
+	}
+	result, err := h.service.RetainEvidence(request.Context(), principal, req)
+	if err != nil {
+		writeProjectInterfaceError(response, AsError(err))
+		return
+	}
+	response.Header().Set("Cache-Control", "no-store")
+	writeJSON(response, http.StatusOK, result)
+}
+
 // ResolveRecords handles POST /api/projects/{project_id}/blackboard/records:resolve.
 func (h *HTTPHandler) ResolveRecords(response http.ResponseWriter, request *http.Request) {
 	principal, authErr := h.AuthenticateRequest(request)
@@ -210,7 +232,7 @@ func httpStatusFor(err *Error) int {
 	switch err.Code {
 	case ErrCodeGrantNotFound:
 		return http.StatusUnauthorized
-	case ErrCodeProjectMismatch, ErrCodeActorForbidden, ErrCodeSourceEventMismatch:
+	case ErrCodeProjectMismatch, ErrCodeActorForbidden, ErrCodeSourceEventMismatch, ErrCodeEvidenceSourceForbidden:
 		return http.StatusForbidden
 	case ErrCodeProjectNotFound, ErrCodeSourceEventNotFound:
 		return http.StatusNotFound
@@ -218,6 +240,8 @@ func httpStatusFor(err *Error) int {
 		if status, _ := err.Details["grant_status"].(string); status == string(GrantStatusRevoked) {
 			return http.StatusForbidden
 		}
+		return http.StatusConflict
+	case ErrCodeEvidenceSourceChanged:
 		return http.StatusConflict
 	case blackboard.ErrCodeVersionConflict,
 		blackboard.ErrCodeIdempotencyConflict,

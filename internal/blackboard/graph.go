@@ -610,26 +610,35 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 				return MutationResult{}, validationError(ErrCodeVersionConflict, fmt.Sprintf("expected version %d does not match current version %d", expectedVersion, current.version), i, op.OpID, "operations[].expected_version")
 			}
 			if op.Kind == OpPatchNode {
-				if current.nodeType != NodeTypeGoal {
-					return MutationResult{}, validationError(ErrCodeInvalidRequest, "patch_node is currently restricted to system Goal status projection", i, op.OpID, "operations[].kind")
-				}
-				if batch.Context.ActorType != ActorTypeSystem || batch.Context.ActorID != taskGoalProjectorActor || batch.Context.TaskID != current.props["task_id"] {
-					return MutationResult{}, validationError(ErrCodeInvalidRequest, "Goals are system-owned Task projections", i, op.OpID, "operations[].patch")
-				}
-				for k := range op.Patch.Properties {
-					if k != "task_status" {
-						return MutationResult{}, validationError(ErrCodeImmutableField, "Goal identity and text are immutable", i, op.OpID, "operations[].patch.properties."+k)
+				switch current.nodeType {
+				case NodeTypeGoal:
+					if batch.Context.ActorType != ActorTypeSystem || batch.Context.ActorID != taskGoalProjectorActor || batch.Context.TaskID != current.props["task_id"] {
+						return MutationResult{}, validationError(ErrCodeInvalidRequest, "Goals are system-owned Task projections", i, op.OpID, "operations[].patch")
 					}
+					for k := range op.Patch.Properties {
+						if k != "task_status" {
+							return MutationResult{}, validationError(ErrCodeImmutableField, "Goal identity and text are immutable", i, op.OpID, "operations[].patch.properties."+k)
+						}
+					}
+					taskID, _ := current.props["task_id"].(string)
+					var durableText, durableStatus string
+					if err := tx.QueryRow(`SELECT goal,status FROM tasks WHERE id=? AND project_id=?`, taskID, projectID).Scan(&durableText, &durableStatus); err != nil {
+						return MutationResult{}, validationError(ErrCodeInvariantViolation, "Goal source Task is missing", i, op.OpID, "operations[].patch")
+					}
+					if current.props["text"] != durableText {
+						return MutationResult{}, validationError(ErrCodeInvariantViolation, "Task Goal immutable text drifted", i, op.OpID, "operations[].patch")
+					}
+					props["task_status"] = durableStatus
+				case NodeTypeEvidenceArtifact:
+					for key, value := range op.Patch.Properties {
+						if key == "status" {
+							return MutationResult{}, validationError(ErrCodeImmutableField, "Evidence semantic status changes require transition_node", i, op.OpID, "operations[].patch.properties.status")
+						}
+						props[key] = value
+					}
+				default:
+					return MutationResult{}, validationError(ErrCodeInvalidRequest, "patch_node is not supported for this node type", i, op.OpID, "operations[].kind")
 				}
-				taskID, _ := current.props["task_id"].(string)
-				var durableText, durableStatus string
-				if err := tx.QueryRow(`SELECT goal,status FROM tasks WHERE id=? AND project_id=?`, taskID, projectID).Scan(&durableText, &durableStatus); err != nil {
-					return MutationResult{}, validationError(ErrCodeInvariantViolation, "Goal source Task is missing", i, op.OpID, "operations[].patch")
-				}
-				if current.props["text"] != durableText {
-					return MutationResult{}, validationError(ErrCodeInvariantViolation, "Task Goal immutable text drifted", i, op.OpID, "operations[].patch")
-				}
-				props["task_status"] = durableStatus
 			} else {
 				switch current.nodeType {
 				case NodeTypeExplorationObjective:
@@ -654,6 +663,10 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 					}
 				case NodeTypeSolution:
 					if err := applySolutionTransition(tx, projectID, current, op, batch, resolvedEdges, props); err != nil {
+						return MutationResult{}, annotateOperationError(err, i)
+					}
+				case NodeTypeEvidenceArtifact:
+					if err := applyEvidenceTransition(tx, projectID, current, op, batch, resolvedEdges, props); err != nil {
 						return MutationResult{}, annotateOperationError(err, i)
 					}
 				default:

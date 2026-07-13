@@ -312,3 +312,36 @@ func TestSucceededAttemptSupportsConfirmedConclusionOnlyWithMatchingRuntimeProve
 	})
 	assertGraphErrorCode(t, err, blackboard.ErrCodeProvenanceSpoofed)
 }
+
+func TestEvidencePatchCannotChangeSemanticStatus(t *testing.T) {
+	graph, projects := newLifecycleGraphServices(t)
+	projectID, execCtx := mustGraphProject(t, projects)
+	_, err := graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "evidence:patch-status:create", Context: execCtx,
+		Operations: []blackboard.Operation{{
+			OpID: "evidence", Kind: blackboard.OpCreateNode,
+			Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEvidenceArtifact, StableKey: "evidence:patch-status"},
+			Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{
+				"artifact_type": "file", "managed_path": "artifacts/patch-status.txt",
+				"sha256":  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				"summary": "Evidence patch status guard", "status": "available",
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create Evidence: %v", err)
+	}
+	_, err = graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "evidence:patch-status:missing", Context: execCtx,
+		Operations: []blackboard.Operation{{
+			OpID: "evidence", Kind: blackboard.OpPatchNode,
+			Node:  blackboard.NodeRef{NodeType: blackboard.NodeTypeEvidenceArtifact, StableKey: "evidence:patch-status"},
+			Patch: blackboard.PatchNodeInput{ExpectedVersion: 1, Properties: map[string]any{"status": "missing"}},
+		}},
+	})
+	assertGraphErrorCode(t, err, blackboard.ErrCodeImmutableField)
+	got, err := graph.ReadNode(context.Background(), blackboard.ReadNodeRequest{ProjectID: projectID, NodeType: blackboard.NodeTypeEvidenceArtifact, Key: "evidence:patch-status"})
+	if err != nil || got.Node.PropertyMap["status"] != "available" {
+		t.Fatalf("Evidence status changed through patch: %+v err=%v", got.Node.PropertyMap, err)
+	}
+}

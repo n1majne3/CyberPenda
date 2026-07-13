@@ -409,11 +409,15 @@ type ReadActiveEdgeRequest struct {
 	ToNodeID   string
 }
 type EdgeRecord struct {
-	ID, ProjectID                string
-	EdgeType                     EdgeType
-	FromNodeID, ToNodeID         string
-	Version                      int
-	State, Summary, SemanticHash string
+	ID           string   `json:"id"`
+	ProjectID    string   `json:"project_id"`
+	EdgeType     EdgeType `json:"edge_type"`
+	FromNodeID   string   `json:"from_node_id"`
+	ToNodeID     string   `json:"to_node_id"`
+	Version      int      `json:"version"`
+	State        string   `json:"state"`
+	Summary      string   `json:"summary"`
+	SemanticHash string   `json:"semantic_hash"`
 }
 
 // operationResultLedgerForm is the canonical JSON shape used both when writing

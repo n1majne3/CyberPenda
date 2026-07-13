@@ -320,6 +320,33 @@ func applySolutionTransition(tx *sql.Tx, projectID string, current mutableNode, 
 	return nil
 }
 
+func applyEvidenceTransition(tx *sql.Tx, projectID string, current mutableNode, op Operation, batch MutationBatch, edges map[string][2]resolvedNode, props map[string]any) error {
+	from := stringProp(props, "status")
+	if from == "" {
+		from = "available"
+	}
+	to := op.Transition.Status
+	allowed := map[string]map[string]bool{
+		"available":  {"missing": true, "superseded": true},
+		"missing":    {"available": true, "superseded": true},
+		"superseded": {},
+	}
+	if !allowed[from][to] {
+		return validationError(ErrCodeInvalidTransition, fmt.Sprintf("EvidenceArtifact cannot transition from %s to %s", from, to), -1, op.OpID, "operations[].transition.status")
+	}
+	if to == "superseded" {
+		hasReplacement, err := incomingFrom(tx, projectID, "id:"+current.nodeID, EdgeTypeSupersedes, nil, batch, edges)
+		if err != nil {
+			return err
+		}
+		if !hasReplacement {
+			return validationError(ErrCodeTransitionGuardFailed, "superseded EvidenceArtifact requires an incoming supersedes edge", -1, op.OpID, "operations[].transition.status")
+		}
+	}
+	props["status"] = to
+	return nil
+}
+
 func solutionVerificationActor(actor ActorType) bool {
 	return actor == ActorTypeRuntime || actor == ActorTypeOperator || actor == ActorTypeSystem
 }

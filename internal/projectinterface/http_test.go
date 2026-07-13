@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"pentest/internal/blackboard"
@@ -19,8 +21,44 @@ func newHTTPMux(fixture serviceFixture) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/projects/{id}/blackboard/mutations", handler.Apply)
 	mux.HandleFunc("POST /api/projects/{id}/blackboard/records:resolve", handler.ResolveRecords)
+	mux.HandleFunc("POST /api/projects/{id}/blackboard/evidence:retain", handler.RetainEvidence)
 	mux.HandleFunc("GET /api/projects/{id}/blackboard/runtime-graph", handler.CurrentGraph)
 	return mux
+}
+
+func TestProjectInterfaceHTTPRetainsEvidenceThroughCanonicalRoute(t *testing.T) {
+	fixture := newServiceFixture(t)
+	principal, err := fixture.service.Authenticate(context.Background(), fixture.token, fixture.project.ID)
+	if err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	prepareRetainEvidenceAttempt(t, fixture, principal, "http")
+	workdir := filepath.Join(fixture.runtimeRoot, fixture.task.ID, "workdir")
+	if err := os.MkdirAll(workdir, 0o700); err != nil {
+		t.Fatalf("create workdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "http.txt"), []byte("HTTP proof"), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	body := mustJSON(t, projectinterface.RetainEvidenceRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion, IdempotencyKey: "retain:http",
+		StableKey: "evidence:http", ArtifactType: "http_exchange", SourcePath: "http.txt", Summary: "HTTP proof",
+		ProducedByAttempt: blackboard.NodeRef{NodeType: blackboard.NodeTypeAttempt, StableKey: "attempt:http"},
+	})
+	request := httptest.NewRequest(http.MethodPost, "/api/projects/"+fixture.project.ID+"/blackboard/evidence:retain", bytes.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+fixture.token)
+	recorder := httptest.NewRecorder()
+	newHTTPMux(fixture).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("retain status = %d body %s", recorder.Code, recorder.Body.String())
+	}
+	var response projectinterface.RetainEvidenceResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode retain response: %v", err)
+	}
+	if response.RequestKind != "retain_evidence" || response.Result.Node.StableKey != "evidence:http" {
+		t.Fatalf("retain response = %+v", response)
+	}
 }
 
 func mustApplyOverHTTP(t *testing.T, mux http.Handler, token, projectID string, req projectinterface.ApplyMutationRequest) projectinterface.ApplyMutationResponse {
@@ -252,7 +290,6 @@ func TestProjectInterfaceHTTPRevokedGrantMapsToForbidden(t *testing.T) {
 		t.Fatal("error envelope missing request_id")
 	}
 }
-
 
 // applyResponseHeader issues an apply and returns one response header value,
 // proving mutation responses carry Cache-Control: no-store.

@@ -37,13 +37,18 @@ import (
 )
 
 type Config struct {
-	Version      string
-	DBPath       string
-	RuntimeRoot  string
-	SkillsRoot   string
-	SandboxImage string
-	ContainerCLI string
-	ListenAddr   string
+	Version     string
+	DBPath      string
+	RuntimeRoot string
+	// ArtifactRoot contains managed Evidence payloads. Empty defaults to the
+	// database directory. EvidenceSourceRoots are the explicit local roots from
+	// which authenticated operators may retain payloads.
+	ArtifactRoot        string
+	EvidenceSourceRoots []string
+	SkillsRoot          string
+	SandboxImage        string
+	ContainerCLI        string
+	ListenAddr          string
 	// AuthToken gates every mutating route when non-empty. A non-loopback bind
 	// refuses to start unless this is set, so a daemon exposed to the network
 	// cannot become an unauthenticated control plane. Loopback dev (make dev)
@@ -158,6 +163,10 @@ func NewServer(config Config) (*Server, error) {
 	if runtimeRoot == "" {
 		runtimeRoot = filepath.Join(filepath.Dir(config.DBPath), "runs")
 	}
+	artifactRoot := strings.TrimSpace(config.ArtifactRoot)
+	if artifactRoot == "" {
+		artifactRoot = filepath.Dir(config.DBPath)
+	}
 	listenAddr := strings.TrimSpace(config.ListenAddr)
 	if listenAddr == "" {
 		listenAddr = "127.0.0.1:8787"
@@ -207,15 +216,15 @@ func NewServer(config Config) (*Server, error) {
 		return nil, err
 	}
 	if epoch == store.CanonicalStoreGraphV1 || epoch == store.CanonicalStoreGraphV1Finalized {
-		graph := blackboard.NewGraphService(db, blackboard.SystemClock{}, blackboard.RandomIDSource{}).WithArtifactRoot(filepath.Dir(config.DBPath))
+		graph := blackboard.NewGraphService(db, blackboard.SystemClock{}, blackboard.RandomIDSource{}).WithArtifactRoot(artifactRoot)
 		server.graph = graph
-		server.reads = blackboard.NewBlackboardReadService(db).WithArtifactRoot(filepath.Dir(config.DBPath))
+		server.reads = blackboard.NewBlackboardReadService(db).WithArtifactRoot(artifactRoot)
 		server.projectInterfaceGrants = projectinterface.NewGrantStore(db, projectinterface.SystemClock{}, projectinterface.RandomIDSource{}, projectinterface.RandomTokenSource{})
 		server.tasks.SetContinuationTerminalMarker(server.projectInterfaceGrants)
 		server.projectInterface = projectinterface.NewService(projectinterface.Deps{
-			DB:     db,
-			Graph:  graph,
-			Grants: server.projectInterfaceGrants,
+			DB: db, Graph: graph, Grants: server.projectInterfaceGrants,
+			ArtifactRoot: artifactRoot, RuntimeRoot: runtimeRoot,
+			OperatorRoots: config.EvidenceSourceRoots,
 		})
 		server.projectInterfaceHTTP = projectinterface.NewHTTPHandler(server.projectInterface).
 			WithOperatorAuth(server.authToken, server.authToken == "")
@@ -390,6 +399,8 @@ func isProjectInterfaceHTTPTransport(request *http.Request) bool {
 		return true
 	case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/blackboard/records:resolve"):
 		return true
+	case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/blackboard/evidence:retain"):
+		return true
 	case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/blackboard/runtime-graph"):
 		return true
 	}
@@ -504,6 +515,7 @@ func (server *Server) routes() {
 	if server.projectInterfaceHTTP != nil {
 		server.mux.HandleFunc("POST /api/projects/{id}/blackboard/mutations", server.projectInterfaceHTTP.Apply)
 		server.mux.HandleFunc("POST /api/projects/{id}/blackboard/records:resolve", server.projectInterfaceHTTP.ResolveRecords)
+		server.mux.HandleFunc("POST /api/projects/{id}/blackboard/evidence:retain", server.projectInterfaceHTTP.RetainEvidence)
 	}
 	server.mux.HandleFunc("GET /api/projects/{id}/blackboard/records/{node_id}", server.handleBlackboardRecordDetail)
 	server.mux.HandleFunc("GET /api/projects/{id}/blackboard/records/{node_id}/history", server.handleBlackboardRecordHistory)

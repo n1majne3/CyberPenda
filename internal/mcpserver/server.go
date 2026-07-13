@@ -334,6 +334,22 @@ func New(deps Deps) *sdkmcp.Server {
 // requests get continuation_context_required.
 func registerProjectInterfaceTools(server *sdkmcp.Server, deps Deps) {
 	sdkmcp.AddTool(server, &sdkmcp.Tool{
+		Name:        "blackboard_retain_evidence",
+		Description: projectinterface.TrustedToolDescription("blackboard_retain_evidence"),
+	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args blackboardRetainEvidenceArgs) (*sdkmcp.CallToolResult, any, error) {
+		_ = req
+		principal, principalErr := deps.requirePrincipal()
+		if principalErr != nil {
+			return toolProjectInterfaceError(principalErr)
+		}
+		result, retainErr := deps.ProjectInterface.RetainEvidence(ctx, *principal, projectinterface.RetainEvidenceRequest(args))
+		if retainErr != nil {
+			return toolProjectInterfaceError(projectinterface.AsError(retainErr))
+		}
+		return toolJSON(result)
+	})
+
+	sdkmcp.AddTool(server, &sdkmcp.Tool{
 		Name:        "blackboard_apply",
 		Description: projectinterface.TrustedToolDescription("blackboard_apply"),
 	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args blackboardApplyArgs) (*sdkmcp.CallToolResult, any, error) {
@@ -428,6 +444,8 @@ type blackboardApplyArgs struct {
 	Batch              projectinterface.RequestBatch `json:"batch" jsonschema:"mutation batch"`
 	SourceEventIDsByOp map[string][]string           `json:"source_event_ids_by_op,omitempty" jsonschema:"optional op_id to source Task Event IDs"`
 }
+
+type blackboardRetainEvidenceArgs projectinterface.RetainEvidenceRequest
 
 type blackboardResolveRecordsArgs struct {
 	ProtocolVersion int                           `json:"protocol_version" jsonschema:"protocol version, always 1"`

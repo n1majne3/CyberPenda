@@ -50,6 +50,29 @@
         }
       }
     },
+    "/api/projects/{project_id}/blackboard/evidence:retain": {
+      "post": {
+        "operationId": "retainBlackboardEvidenceV1",
+        "summary": "Retain a confined Evidence payload and represent it in the graph",
+        "security": [{"continuationGrant": []}, {"operatorBearer": []}],
+        "parameters": [{"$ref": "#/components/parameters/ProjectID"}],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RetainEvidenceV1"}}}
+        },
+        "responses": {
+          "200": {"description": "Retained or exact replay", "headers": {"Cache-Control": {"schema": {"const": "no-store"}}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RetainEvidenceResultV1"}}}},
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "403": {"$ref": "#/components/responses/Error"},
+          "404": {"$ref": "#/components/responses/Error"},
+          "409": {"$ref": "#/components/responses/Error"},
+          "422": {"$ref": "#/components/responses/Error"},
+          "500": {"$ref": "#/components/responses/Error"},
+          "503": {"$ref": "#/components/responses/RetryableError"}
+        }
+      }
+    },
     "/api/projects/{project_id}/blackboard/runtime-graph": {
       "get": {
         "operationId": "getCurrentRuntimeGraphV1",
@@ -115,6 +138,24 @@
           "edge_ids": {"type": "array", "maxItems": 100, "items": {"type": "string", "minLength": 1}}
         }
       },
+      "RetainEvidenceV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["protocol_version", "idempotency_key", "stable_key", "artifact_type", "source_path", "summary"],
+        "properties": {
+          "protocol_version": {"const": 1},
+          "idempotency_key": {"type": "string", "minLength": 1},
+          "stable_key": {"type": "string", "minLength": 1},
+          "expected_version": {"type": ["integer", "null"], "minimum": 1},
+          "artifact_type": {"type": "string", "minLength": 1},
+          "media_type": {"type": "string"},
+          "source_path": {"type": "string", "minLength": 1},
+          "summary": {"type": "string", "minLength": 1},
+          "captured_at": {"type": "string", "format": "date-time"},
+          "produced_by_attempt": {"$ref": "#/components/schemas/NodeLookupV1"},
+          "links": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["edge_type", "to"], "properties": {"edge_type": {"enum": ["evidences", "about"]}, "to": {"$ref": "#/components/schemas/NodeLookupV1"}}}}
+        }
+      },
       "NodeLookupV1": {
         "type": "object",
         "additionalProperties": false,
@@ -122,6 +163,7 @@
         "oneOf": [{"required": ["id"]}, {"required": ["node_type", "stable_key"]}]
       },
       "ApplyMutationResultV1": {"allOf": [{"$ref": "#/components/schemas/SuccessEnvelopeV1"}, {"type": "object", "required": ["result"], "properties": {"request_kind": {"const": "apply"}, "result": {"type": "object"}}}]},
+      "RetainEvidenceResultV1": {"allOf": [{"$ref": "#/components/schemas/SuccessEnvelopeV1"}, {"type": "object", "required": ["result"], "properties": {"request_kind": {"const": "retain_evidence"}, "result": {"type": "object", "required": ["node", "edges", "managed_path", "sha256", "size_bytes", "mutation"]}}}]},
       "ResolveRecordsResultV1": {"allOf": [{"$ref": "#/components/schemas/SuccessEnvelopeV1"}, {"type": "object", "properties": {"request_kind": {"const": "resolve_records"}, "nodes": {"type": "array"}, "edges": {"type": "array"}, "missing": {"type": "array"}, "missing_edges": {"type": "array"}}}]},
       "CurrentGraphResultV1": {"allOf": [{"$ref": "#/components/schemas/SuccessEnvelopeV1"}, {"type": "object", "required": ["result"], "properties": {"request_kind": {"const": "current_graph"}, "result": {"type": "object", "required": ["renderer_version", "projection_hash", "projection_bytes", "estimated_tokens", "graph"]}}}]},
       "SuccessEnvelopeV1": {"type": "object", "required": ["protocol_version", "request_kind", "project_id", "observed_graph_revision"], "properties": {"protocol_version": {"const": 1}, "request_kind": {"type": "string"}, "project_id": {"type": "string"}, "observed_graph_revision": {"type": "integer", "minimum": 0}}},

@@ -16,24 +16,36 @@ import (
 // logic: it binds trusted context, authorizes, and maps errors (runtime
 // protocol §1, deletion test).
 type Deps struct {
-	DB     *store.DB
-	Graph  *blackboard.GraphService
-	Grants *GrantStore
+	DB               *store.DB
+	Graph            *blackboard.GraphService
+	Grants           *GrantStore
+	ArtifactRoot     string
+	RuntimeRoot      string
+	OperatorRoots    []string
+	EvidenceFailures EvidenceFailureInjector
 }
 
 // Service is the transport-neutral owner of the six Runtime capabilities. I01
-// implements the first three: Apply Mutation, Resolve Records, and Current
-// Runtime Graph. Retain Evidence (I03), Checkpoint Attempt (I04), and Finish
-// Continuation (I04) land in later slices.
+// implements Apply Mutation, Resolve Records, and Current Runtime Graph; I03
+// adds Retain Evidence. Checkpoint Attempt and Finish Continuation land in I04.
 type Service struct {
-	db     *store.DB
-	graph  *blackboard.GraphService
-	grants *GrantStore
+	db               *store.DB
+	graph            *blackboard.GraphService
+	grants           *GrantStore
+	artifactRoot     string
+	runtimeRoot      string
+	operatorRoots    []string
+	evidenceFailures EvidenceFailureInjector
 }
 
 // NewService wires a Service from its domain dependencies.
 func NewService(deps Deps) *Service {
-	return &Service{db: deps.DB, graph: deps.Graph, grants: deps.Grants}
+	return &Service{
+		db: deps.DB, graph: deps.Graph, grants: deps.Grants,
+		artifactRoot: deps.ArtifactRoot, runtimeRoot: deps.RuntimeRoot,
+		operatorRoots:    append([]string(nil), deps.OperatorRoots...),
+		evidenceFailures: deps.EvidenceFailures,
+	}
 }
 
 // Principal is a trusted, resolved caller. It is the only authority for

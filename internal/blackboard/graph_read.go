@@ -173,6 +173,37 @@ func (s *GraphService) ReadLiteralNode(ctx context.Context, req ReadLiteralNodeR
 	return readLiteralNode(ctx, s.db, req)
 }
 
+// NodeRuntimeProvenance is the trusted Runtime binding recorded on a node's
+// current version. Cross-domain orchestrators use this read to validate a
+// producing Attempt without reaching into graph tables themselves.
+type NodeRuntimeProvenance struct {
+	ActorType      ActorType
+	TaskID         string
+	ContinuationID string
+}
+
+// ReadNodeRuntimeProvenance returns the current node version's trusted actor,
+// Task, and Continuation binding.
+func (s *GraphService) ReadNodeRuntimeProvenance(ctx context.Context, projectID, nodeID string) (NodeRuntimeProvenance, error) {
+	var provenance NodeRuntimeProvenance
+	var taskID, continuationID sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT p.actor_type,p.task_id,p.continuation_id
+		FROM blackboard_node_heads h
+		JOIN blackboard_node_versions v ON v.project_id=h.project_id AND v.node_id=h.node_id AND v.version=h.version
+		JOIN blackboard_graph_operations o ON o.project_id=v.project_id AND o.mutation_seq=v.mutation_seq AND o.operation_index=v.operation_index
+		JOIN blackboard_graph_provenance p ON p.project_id=o.project_id AND p.id=o.provenance_id
+		WHERE h.project_id=? AND h.node_id=?`, projectID, nodeID).
+		Scan(&provenance.ActorType, &taskID, &continuationID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return NodeRuntimeProvenance{}, validationError(ErrCodeNodeNotFound, "node provenance does not exist", -1, "", "node_id")
+	}
+	if err != nil {
+		return NodeRuntimeProvenance{}, fmt.Errorf("read node Runtime provenance: %w", err)
+	}
+	provenance.TaskID, provenance.ContinuationID = taskID.String, continuationID.String
+	return provenance, nil
+}
+
 func readLiteralNode(ctx context.Context, queryer graphReadQueryer, req ReadLiteralNodeRequest) (ReadLiteralNodeResult, error) {
 	var node NodeRecord
 	var nodeType, disposition, propsJSON string

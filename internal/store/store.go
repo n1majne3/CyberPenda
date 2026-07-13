@@ -254,8 +254,33 @@ func migrations() []migration {
 		newMigration(9, "blackboard_read_cursor_secret", migration9SQL, migration9Up),
 		newMigration(10, "blackboard_health_run_requests", migration10SQL, migration10Up),
 		newMigration(11, "continuation_interface_grants", migration11SQL, migration11Up),
+		newMigration(12, "project_interface_evidence_requests", migration12SQL, migration12Up),
 	}
 }
+
+// migration12SQL stores the cross-domain Retain Evidence saga checkpoint. It
+// contains metadata and exact result JSON only; artifact payload bytes remain
+// under the managed Artifact Root.
+const migration12SQL = `
+CREATE TABLE blackboard_interface_requests (
+ project_id TEXT NOT NULL,
+ idempotency_scope TEXT NOT NULL,
+ request_kind TEXT NOT NULL,
+ idempotency_key TEXT NOT NULL,
+ request_hash TEXT NOT NULL,
+ source_identity TEXT NOT NULL,
+ source_sha256 TEXT NOT NULL,
+ source_size_bytes INTEGER NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('reserved','published','completed')),
+ managed_path TEXT NOT NULL DEFAULT '',
+ result_json TEXT NOT NULL DEFAULT '',
+ created_at TEXT NOT NULL,
+ updated_at TEXT NOT NULL,
+ PRIMARY KEY(project_id,idempotency_scope,request_kind,idempotency_key)
+);
+`
+
+func migration12Up(tx *sql.Tx) error { return execStatements(tx, migration12SQL) }
 
 const migration10SQL = `
 CREATE TABLE blackboard_health_run_requests (

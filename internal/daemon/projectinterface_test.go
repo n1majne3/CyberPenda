@@ -343,6 +343,7 @@ func TestProjectInterfaceDaemonMCPApplyAndCurrentGraph(t *testing.T) {
 		"blackboard_apply":             true,
 		"blackboard_resolve_records":   true,
 		"blackboard_get_current_graph": true,
+		"blackboard_retain_evidence":   true,
 	}
 	for _, tool := range tools.Tools {
 		if !allowed[tool.Name] {

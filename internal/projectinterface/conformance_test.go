@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -217,6 +218,136 @@ func TestProjectInterfaceConformanceProducesSameResultAndErrorAcrossAllTransport
 	if !bytes.Contains(operatorCurrent.Bytes(), []byte("objective:find-admin-surface")) ||
 		!bytes.Contains(operatorCurrent.Bytes(), []byte("Locate the authenticated admin surface")) {
 		t.Fatalf("operator CLI current graph omitted operator mutation: %s", operatorCurrent.String())
+	}
+}
+
+func TestRetainEvidenceProducesSameResultAcrossModuleHTTPMCPAndTaskCLI(t *testing.T) {
+	fixture := newServiceFixture(t)
+	ctx := context.Background()
+	principal, err := fixture.service.Authenticate(ctx, fixture.token, fixture.project.ID)
+	if err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	prepareRetainEvidenceAttempt(t, fixture, principal, "parity")
+	workdir := filepath.Join(fixture.runtimeRoot, fixture.task.ID, "workdir")
+	if err := os.MkdirAll(workdir, 0o700); err != nil {
+		t.Fatalf("create workdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "parity.txt"), []byte("transport parity proof"), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	request := projectinterface.RetainEvidenceRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion, IdempotencyKey: "retain:parity",
+		StableKey: "evidence:parity", ArtifactType: "file", SourcePath: "parity.txt", Summary: "transport parity proof",
+		ProducedByAttempt: blackboard.NodeRef{NodeType: blackboard.NodeTypeAttempt, StableKey: "attempt:parity"},
+	}
+	want, err := fixture.service.RetainEvidence(ctx, principal, request)
+	if err != nil {
+		t.Fatalf("module Retain Evidence: %v", err)
+	}
+	wantJSON, _ := json.Marshal(want)
+
+	handler := projectinterface.NewHTTPHandler(fixture.service)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/projects/{id}/blackboard/evidence:retain", handler.RetainEvidence)
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	body, _ := json.Marshal(request)
+	httpRequest, _ := http.NewRequest(http.MethodPost, server.URL+"/api/projects/"+fixture.project.ID+"/blackboard/evidence:retain", bytes.NewReader(body))
+	httpRequest.Header.Set("Authorization", "Bearer "+fixture.token)
+	httpResponse, err := http.DefaultClient.Do(httpRequest)
+	if err != nil {
+		t.Fatalf("HTTP Retain Evidence: %v", err)
+	}
+	defer httpResponse.Body.Close()
+	var gotHTTP json.RawMessage
+	if err := json.NewDecoder(httpResponse.Body).Decode(&gotHTTP); err != nil || !bytes.Equal(gotHTTP, wantJSON) {
+		t.Fatalf("HTTP retain result = %s want %s err=%v", gotHTTP, wantJSON, err)
+	}
+
+	clientTransport, serverTransport := sdkmcp.NewInMemoryTransports()
+	mcpServer := mcpserver.New(mcpserver.Deps{ProjectInterface: fixture.service, Principal: &principal})
+	serverSession, err := mcpServer.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatalf("connect MCP server: %v", err)
+	}
+	t.Cleanup(func() { _ = serverSession.Close() })
+	mcpClient := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "i03-conformance", Version: "test"}, nil)
+	clientSession, err := mcpClient.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("connect MCP client: %v", err)
+	}
+	t.Cleanup(func() { _ = clientSession.Close() })
+	var args map[string]any
+	_ = json.Unmarshal(body, &args)
+	mcpResult, err := clientSession.CallTool(ctx, &sdkmcp.CallToolParams{Name: "blackboard_retain_evidence", Arguments: args})
+	if err != nil {
+		t.Fatalf("MCP Retain Evidence: %v", err)
+	}
+	if mcpResult.IsError || !bytes.Equal([]byte(mcpText(mcpResult)), wantJSON) {
+		t.Fatalf("MCP retain result = %s want %s", mcpText(mcpResult), wantJSON)
+	}
+
+	inputPath := filepath.Join(t.TempDir(), "retain.json")
+	if err := os.WriteFile(inputPath, body, 0o600); err != nil {
+		t.Fatalf("write CLI input: %v", err)
+	}
+	t.Setenv("PENTEST_API_URL", server.URL)
+	t.Setenv("PENTEST_INTERFACE_TOKEN", fixture.token)
+	t.Setenv("PENTEST_PROJECT_ID", fixture.project.ID)
+	var cli bytes.Buffer
+	if err := pentestctl.Run(&cli, []string{"blackboard", "evidence", "retain", "--input", inputPath}); err != nil {
+		t.Fatalf("task CLI Retain Evidence: %v", err)
+	}
+	if !bytes.Equal(bytes.TrimSpace(cli.Bytes()), wantJSON) {
+		t.Fatalf("task CLI retain result = %s want %s", cli.Bytes(), wantJSON)
+	}
+}
+
+func TestOperatorCLIRetainEvidenceRequiresExplicitSourceRoot(t *testing.T) {
+	fixture := newServiceFixture(t)
+	sourceRoot := filepath.Join(fixture.artifactRoot, "operator-cli-source")
+	if err := os.MkdirAll(sourceRoot, 0o700); err != nil {
+		t.Fatalf("create operator CLI source root: %v", err)
+	}
+	source := filepath.Join(sourceRoot, "proof.txt")
+	if err := os.WriteFile(source, []byte("operator CLI proof"), 0o600); err != nil {
+		t.Fatalf("write operator CLI source: %v", err)
+	}
+	body, _ := json.Marshal(projectinterface.RetainEvidenceRequest{
+		ProtocolVersion: projectinterface.RuntimeProtocolVersion, IdempotencyKey: "retain:operator-cli",
+		StableKey: "evidence:operator-cli", ArtifactType: "file", SourcePath: source, Summary: "operator CLI proof",
+	})
+	inputPath := filepath.Join(t.TempDir(), "operator-retain.json")
+	if err := os.WriteFile(inputPath, body, 0o600); err != nil {
+		t.Fatalf("write operator CLI input: %v", err)
+	}
+	baseArgs := []string{"--db", fixture.dbPath, "blackboard", "evidence", "retain", "--project", fixture.project.ID, "--actor-id", "local-operator", "--input", inputPath}
+	missingRootErr := pentestctl.Run(io.Discard, baseArgs)
+	if interfaceErr := projectinterface.AsError(missingRootErr); interfaceErr == nil || interfaceErr.Code != projectinterface.ErrCodeInvalidRequest {
+		t.Fatalf("operator CLI without source root error = %v", missingRootErr)
+	}
+	var output bytes.Buffer
+	args := append(append([]string{}, baseArgs...), "--source-root", sourceRoot)
+	if err := pentestctl.Run(&output, args); err != nil {
+		t.Fatalf("operator CLI retain: %v", err)
+	}
+	var response projectinterface.RetainEvidenceResponse
+	if err := json.Unmarshal(output.Bytes(), &response); err != nil || response.Result.Node.StableKey != "evidence:operator-cli" {
+		t.Fatalf("operator CLI response = %s err=%v", output.Bytes(), err)
+	}
+	var replay bytes.Buffer
+	if err := pentestctl.Run(&replay, args); err != nil {
+		t.Fatalf("operator CLI replay: %v", err)
+	}
+	if !bytes.Equal(output.Bytes(), replay.Bytes()) {
+		t.Fatalf("operator CLI replay drifted:\nfirst %s\nreplay %s", output.Bytes(), replay.Bytes())
+	}
+	stored, err := fixture.graph.ReadNode(context.Background(), blackboard.ReadNodeRequest{
+		ProjectID: fixture.project.ID, NodeType: blackboard.NodeTypeEvidenceArtifact, Key: "evidence:operator-cli",
+	})
+	if err != nil || stored.Node.PropertyMap["sha256"] != response.Result.SHA256 {
+		t.Fatalf("operator CLI graph state = %+v err=%v", stored.Node, err)
 	}
 }
 
