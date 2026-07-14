@@ -12,7 +12,7 @@ web/dist/
 /.zcode/
 
 # macOS conflict copies of committed embedded UI entry files
-/internal/daemon/webfs/dist/* 2.*
+/internal/daemon/webfs/dist/* [0-9]*.*
 
 # Local daemon/runtime artifacts
 /dist/

@@ -9,6 +9,12 @@ import (
 func TestEmbeddedUISyncGuardRunsLocallyAndInCI(t *testing.T) {
 	repoRoot := repoRoot(t)
 
+	gitignoreBytes, err := os.ReadFile(filepath.Join(repoRoot, ".gitignore"))
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+	assertContains(t, string(gitignoreBytes), "/internal/daemon/webfs/dist/* [0-9]*.*")
+
 	makefileBytes, err := os.ReadFile(filepath.Join(repoRoot, "Makefile"))
 	if err != nil {
 		t.Fatalf("read Makefile: %v", err)
