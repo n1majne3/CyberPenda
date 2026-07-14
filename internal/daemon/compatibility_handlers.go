@@ -15,7 +15,7 @@ const compatibilityActorID = "local-operator"
 
 func setCompatibilityHeaders(response http.ResponseWriter) {
 	response.Header().Set("Deprecation", "true")
-	response.Header().Set("Link", `</docs/blackboard-graph-migration>; rel="deprecation"`)
+	response.Header().Set("Link", `<https://github.com/n1majne3/CyberPenda/blob/main/docs/blackboard-graph-migration.md>; rel="deprecation"`)
 	response.Header().Set("CyberPenda-Compatibility", "legacy_blackboard_v1")
 }
 
@@ -74,6 +74,9 @@ func writeCompatibilityError(response http.ResponseWriter, err error) {
 		interfaceErr = projectinterface.InternalError(err.Error())
 	}
 	status := projectinterface.HTTPStatusForError(interfaceErr)
+	if interfaceErr.Code == blackboardcompat.ErrCodeCompatibilityRemoved {
+		status = http.StatusGone
+	}
 	if interfaceErr.Code == blackboardcompat.ErrCodeLegacyRelationNotGraphRepresentable ||
 		interfaceErr.Code == blackboardcompat.ErrCodeCompatibilityAttemptRequired ||
 		interfaceErr.Code == blackboard.ErrCodeProjectKindMismatch ||

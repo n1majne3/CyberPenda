@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"pentest/internal/blackboard"
 	"pentest/internal/blackboardcompat"
@@ -16,7 +17,260 @@ import (
 	"pentest/internal/projectinterface"
 	"pentest/internal/store"
 	"pentest/internal/task"
+	"pentest/internal/testsupport/blackboardfixture"
 )
+
+func TestCompatibilityWritesReturnStable410OnlyAfterEveryRetirementGatePasses(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	ready := blackboardcompat.WriteRetirementPolicy{
+		GraphNativeStableReleases: 2,
+		BundledRuntimeV1Only:      true,
+		ReplacementDocsReady:      true,
+	}
+	tests := []struct {
+		name    string
+		arrange func(*store.DB, *blackboardcompat.WriteRetirementPolicy)
+	}{
+		{name: "stable release age", arrange: func(_ *store.DB, policy *blackboardcompat.WriteRetirementPolicy) {
+			policy.GraphNativeStableReleases = 1
+		}},
+		{name: "bundled Runtime adoption", arrange: func(_ *store.DB, policy *blackboardcompat.WriteRetirementPolicy) {
+			policy.BundledRuntimeV1Only = false
+		}},
+		{name: "active pre-cutover Continuation", arrange: func(db *store.DB, _ *blackboardcompat.WriteRetirementPolicy) {
+			insertPreCutoverContinuation(t, db)
+		}},
+		{name: "compatibility-write observation", arrange: func(db *store.DB, _ *blackboardcompat.WriteRetirementPolicy) {
+			if _, err := db.Exec(`INSERT INTO blackboard_compatibility_use(project_id,transport,call_kind,use_mode,use_count,last_used_at) SELECT id,'http','upsert_fact','write',1,? FROM projects LIMIT 1`, now.Add(-29*24*time.Hour).Format(time.RFC3339Nano)); err != nil {
+				t.Fatalf("record recent compatibility write: %v", err)
+			}
+		}},
+		{name: "migration and Health verification", arrange: func(db *store.DB, _ *blackboardcompat.WriteRetirementPolicy) {
+			if _, err := db.Exec(`UPDATE blackboard_store_state SET latest_verification_result_hash='' WHERE id=1`); err != nil {
+				t.Fatalf("clear migration verification: %v", err)
+			}
+		}},
+		{name: "critical Blackboard Health result", arrange: func(db *store.DB, _ *blackboardcompat.WriteRetirementPolicy) {
+			if _, err := db.Exec(`INSERT INTO blackboard_health_results(project_id,run_id,fingerprint,code,severity,subject_kind,subject_id,details_json) SELECT project_id,run_id,'critical:m06','migration_integrity_fixture','critical','project',project_id,'{}' FROM blackboard_health_runs ORDER BY started_at DESC,run_id DESC LIMIT 1`); err != nil {
+				t.Fatalf("record critical Blackboard Health result: %v", err)
+			}
+		}},
+		{name: "failed latest Blackboard Health scan", arrange: func(db *store.DB, _ *blackboardcompat.WriteRetirementPolicy) {
+			if _, err := db.Exec(`INSERT INTO blackboard_health_runs(project_id,run_id,checked_graph_revision,checked_state_hash,checked_projection_hash,checker_version,status,artifact_scan_status,started_at,completed_at,metrics_json,run_status,overall,artifact_scan_fingerprint) SELECT id,'health:m06-failed',0,'state','projection','fixture','unknown','failed',? ,?,'{}','failed','unknown','failed-scan' FROM projects LIMIT 1`, now.Add(time.Minute).Format(time.RFC3339Nano), now.Add(2*time.Minute).Format(time.RFC3339Nano)); err != nil {
+				t.Fatalf("record failed latest Blackboard Health scan: %v", err)
+			}
+		}},
+		{name: "equal-timestamp newer failed Blackboard Health scan", arrange: func(db *store.DB, _ *blackboardcompat.WriteRetirementPolicy) {
+			startedAt := now.Add(time.Minute).Format(time.RFC3339Nano)
+			if _, err := db.Exec(`INSERT INTO blackboard_health_runs(project_id,run_id,checked_graph_revision,checked_state_hash,checked_projection_hash,checker_version,status,artifact_scan_status,started_at,completed_at,metrics_json,run_status,overall,artifact_scan_fingerprint) SELECT id,'z-health-older',0,'state','projection','fixture','healthy','ok',?,?,'{}','completed','healthy','older-healthy' FROM projects LIMIT 1`, startedAt, startedAt); err != nil {
+				t.Fatalf("record older healthy Blackboard Health scan: %v", err)
+			}
+			if _, err := db.Exec(`INSERT INTO blackboard_health_runs(project_id,run_id,checked_graph_revision,checked_state_hash,checked_projection_hash,checker_version,status,artifact_scan_status,started_at,completed_at,metrics_json,run_status,overall,artifact_scan_fingerprint) SELECT id,'a-health-newer',0,'state','projection','fixture','unknown','failed',?,?,'{}','failed','unknown','newer-failed' FROM projects LIMIT 1`, startedAt, startedAt); err != nil {
+				t.Fatalf("record newer failed Blackboard Health scan: %v", err)
+			}
+		}},
+		{name: "frozen legacy-table guards", arrange: func(db *store.DB, _ *blackboardcompat.WriteRetirementPolicy) {
+			if _, err := db.Exec(`DROP TRIGGER blackboard_legacy_project_facts_insert_guard`); err != nil {
+				t.Fatalf("remove legacy write guard: %v", err)
+			}
+		}},
+		{name: "replacement documentation", arrange: func(_ *store.DB, policy *blackboardcompat.WriteRetirementPolicy) {
+			policy.ReplacementDocsReady = false
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run("unmet "+test.name+" keeps writes deprecated and available", func(t *testing.T) {
+			db, compatibility, projectRow, principal := newRetirementFixture(t, now, ready)
+			policy := ready
+			test.arrange(db, &policy)
+			compatibility = newRetirementService(t, db, policy, now)
+			if _, err := compatibility.Call(context.Background(), retirementFactCall(projectRow.ID, principal)); err != nil {
+				t.Fatalf("compatibility write with unmet %s gate: %v", test.name, err)
+			}
+		})
+	}
+
+	t.Run("all gates retire writes before mutation", func(t *testing.T) {
+		db, compatibility, projectRow, principal := newRetirementFixture(t, now, ready)
+		_, err := compatibility.Call(context.Background(), retirementFactCall(projectRow.ID, principal))
+		interfaceErr := projectinterface.AsError(err)
+		if interfaceErr == nil || interfaceErr.Code != blackboardcompat.ErrCodeCompatibilityRemoved {
+			t.Fatalf("retired compatibility write error = %#v, want %s", err, blackboardcompat.ErrCodeCompatibilityRemoved)
+		}
+		if got := interfaceErr.Details["replacement_operation"]; got != "blackboard apply" {
+			t.Fatalf("replacement operation = %#v, want blackboard apply", got)
+		}
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM blackboard_nodes WHERE project_id=? AND original_stable_key='fact:retirement-probe'`, projectRow.ID).Scan(&count); err != nil {
+			t.Fatalf("count retirement probe mutations: %v", err)
+		}
+		if count != 0 {
+			t.Fatalf("retired compatibility write created %d graph nodes, want 0", count)
+		}
+	})
+}
+
+func TestCompatibilityWriteObservationWaiverIsExplicitAndRecorded(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	policy := blackboardcompat.WriteRetirementPolicy{
+		GraphNativeStableReleases: 2,
+		BundledRuntimeV1Only:      true,
+		ReplacementDocsReady:      true,
+		ObservationWaiver: &blackboardcompat.ObservationWaiver{
+			OperatorID: "operator:release-c", Reason: "managed deployment completed replacement adoption review",
+		},
+	}
+	db, compatibility, projectRow, principal := newRetirementFixture(t, now, policy)
+	if _, err := db.Exec(`UPDATE blackboard_store_state SET cutover_committed_at=? WHERE id=1`, now.Add(-24*time.Hour).Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("shorten observation period: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO blackboard_compatibility_use(project_id,transport,call_kind,use_mode,use_count,last_used_at) VALUES(?,?,?,?,1,?)`, projectRow.ID, "cli", "upsert_fact", "write", now.Add(-time.Hour).Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("record recent compatibility write: %v", err)
+	}
+
+	_, err := compatibility.Call(context.Background(), retirementFactCall(projectRow.ID, principal))
+	interfaceErr := projectinterface.AsError(err)
+	if interfaceErr == nil || interfaceErr.Code != blackboardcompat.ErrCodeCompatibilityRemoved {
+		t.Fatalf("waived retirement error = %#v", err)
+	}
+	var waived int
+	var operatorID, reason string
+	if err := db.QueryRow(`SELECT observation_waived,waiver_operator_id,waiver_reason FROM blackboard_compatibility_write_retirement WHERE id=1`).Scan(&waived, &operatorID, &reason); err != nil {
+		t.Fatalf("read recorded observation waiver: %v", err)
+	}
+	if waived != 1 || operatorID != policy.ObservationWaiver.OperatorID || reason != policy.ObservationWaiver.Reason {
+		t.Fatalf("recorded waiver = (%d,%q,%q)", waived, operatorID, reason)
+	}
+}
+
+func TestCompatibilityWriteRetirementTargetsOnlyReleaseCWrites(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	policy := blackboardcompat.WriteRetirementPolicy{
+		GraphNativeStableReleases: 2, BundledRuntimeV1Only: true, ReplacementDocsReady: true,
+	}
+	db, compatibility, projectRow, principal := newRetirementFixture(t, now, policy)
+	_, err := compatibility.Call(context.Background(), retirementFactCall(projectRow.ID, principal))
+	if interfaceErr := projectinterface.AsError(err); interfaceErr == nil || interfaceErr.Code != blackboardcompat.ErrCodeCompatibilityRemoved {
+		t.Fatalf("activate compatibility-write retirement: %v", err)
+	}
+
+	runtimePrincipal := principal
+	runtimePrincipal.ActorType = blackboard.ActorTypeRuntime
+	for _, test := range []struct {
+		name        string
+		call        blackboardcompat.LegacyCall
+		replacement string
+	}{
+		{name: "Fact deprecation", call: blackboardcompat.LegacyCall{Kind: blackboardcompat.CallDeprecateFact}, replacement: "blackboard apply"},
+		{name: "Fact merge", call: blackboardcompat.LegacyCall{Kind: blackboardcompat.CallMergeFacts}, replacement: "blackboard apply"},
+		{name: "Fact relation", call: blackboardcompat.LegacyCall{Kind: blackboardcompat.CallPutFactRelation}, replacement: "blackboard apply"},
+		{name: "Finding", call: blackboardcompat.LegacyCall{Kind: blackboardcompat.CallUpsertFinding}, replacement: "blackboard apply"},
+		{name: "Finding merge", call: blackboardcompat.LegacyCall{Kind: blackboardcompat.CallMergeFindings}, replacement: "blackboard apply"},
+		{name: "Evidence", call: blackboardcompat.LegacyCall{Kind: blackboardcompat.CallAttachEvidence}, replacement: "blackboard evidence retain"},
+		{name: "Runtime summary", call: blackboardcompat.LegacyCall{Kind: blackboardcompat.CallPutTaskSummary, Principal: runtimePrincipal}, replacement: "blackboard continuation finish"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			call := test.call
+			call.ProjectID = projectRow.ID
+			if call.Principal.ProjectID == "" {
+				call.Principal = principal
+			}
+			_, err := compatibility.Call(context.Background(), call)
+			interfaceErr := projectinterface.AsError(err)
+			if interfaceErr == nil || interfaceErr.Code != blackboardcompat.ErrCodeCompatibilityRemoved || interfaceErr.Details["replacement_operation"] != test.replacement {
+				t.Fatalf("removal error = %#v, want replacement %q", err, test.replacement)
+			}
+		})
+	}
+
+	_, err = compatibility.Call(context.Background(), blackboardcompat.LegacyCall{
+		Kind: blackboardcompat.CallPutTaskSummary, ProjectID: projectRow.ID, Principal: principal,
+	})
+	if interfaceErr := projectinterface.AsError(err); interfaceErr != nil && interfaceErr.Code == blackboardcompat.ErrCodeCompatibilityRemoved {
+		t.Fatalf("operator Task Summary was retired: %v", err)
+	}
+	if _, err := compatibility.Call(context.Background(), blackboardcompat.LegacyCall{
+		Kind: blackboardcompat.CallGenerateReport, ProjectID: projectRow.ID, Principal: principal,
+		Report: &blackboardcompat.ReportWrite{},
+	}); err != nil {
+		t.Fatalf("compatibility report read after write retirement: %v", err)
+	}
+
+	graph := blackboard.NewGraphService(db, blackboard.SystemClock{}, blackboard.RandomIDSource{})
+	if _, err := graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion: 1, IdempotencyKey: "retirement:canonical-write",
+		Context: blackboard.SystemExecutionContext(projectRow.ID, projectRow.Kind, "retirement-test"),
+		Operations: []blackboard.Operation{{
+			OpID: "canonical", Kind: blackboard.OpCreateNode,
+			Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEntity, StableKey: "entity:canonical-after-retirement"},
+			Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{
+				"kind": "service", "name": "Canonical write", "locator": "canonical.test", "scope_status": "in_scope",
+			}},
+		}},
+	}); err != nil {
+		t.Fatalf("canonical graph write after compatibility retirement: %v", err)
+	}
+}
+
+func retirementFactCall(projectID string, principal projectinterface.Principal) blackboardcompat.LegacyCall {
+	return blackboardcompat.LegacyCall{
+		Kind: blackboardcompat.CallUpsertFact, Transport: blackboardcompat.TransportHTTP,
+		ProjectID: projectID, Principal: principal, IdempotencyKey: "retirement:fact",
+		Fact: &blackboardcompat.FactWrite{
+			FactKey: "fact:retirement-probe", Category: "service", Summary: "Retirement probe",
+			Confidence: "tentative", ScopeStatus: "in_scope",
+		},
+	}
+}
+
+func newRetirementFixture(t *testing.T, now time.Time, policy blackboardcompat.WriteRetirementPolicy) (*store.DB, *blackboardcompat.Service, project.Project, projectinterface.Principal) {
+	t.Helper()
+	db, _, graph, projectRow, principal, _ := newCompatibilityFixture(t)
+	if _, err := graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "retirement:health-anchor",
+		Context: blackboard.SystemExecutionContext(projectRow.ID, projectRow.Kind, "retirement-test"),
+		Operations: []blackboard.Operation{{
+			OpID: "anchor", Kind: blackboard.OpCreateNode,
+			Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEntity, StableKey: "entity:retirement-anchor"},
+			Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{
+				"kind": "service", "name": "Retirement anchor", "locator": "retirement.test", "scope_status": "in_scope",
+			}},
+		}},
+	}); err != nil {
+		t.Fatalf("create retirement Health anchor: %v", err)
+	}
+	if _, err := graph.RunHealth(context.Background(), projectRow.ID); err != nil {
+		t.Fatalf("run retirement Health: %v", err)
+	}
+	blackboardfixture.InstallLegacyWriteGuards(t, db)
+	if _, err := db.Exec(`UPDATE blackboard_store_state SET cutover_id='cutover:m06',cutover_committed_at=?,latest_verification_at=?,latest_verification_result_hash='verified:m06' WHERE id=1`, now.Add(-31*24*time.Hour).Format(time.RFC3339Nano), now.Add(-time.Hour).Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("prepare verified Release B state: %v", err)
+	}
+	return db, newRetirementService(t, db, policy, now), projectRow, principal
+}
+
+func newRetirementService(t *testing.T, db *store.DB, policy blackboardcompat.WriteRetirementPolicy, now time.Time) *blackboardcompat.Service {
+	t.Helper()
+	graph := blackboard.NewGraphService(db, blackboard.SystemClock{}, blackboard.RandomIDSource{})
+	tasks := task.NewService(db)
+	projectInterface := projectinterface.NewService(projectinterface.Deps{DB: db, Graph: graph, Tasks: tasks})
+	return blackboardcompat.NewService(blackboardcompat.Deps{
+		DB: db, Graph: graph, Reads: blackboard.NewBlackboardReadService(db),
+		ProjectInterface: projectInterface, Tasks: tasks,
+		WriteRetirement: &policy, Clock: func() time.Time { return now },
+	})
+}
+
+func insertPreCutoverContinuation(t *testing.T, db *store.DB) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO tasks(id,project_id,goal,status,runner,runtime_profile_id,run_controls_json,scope_snapshot_json,created_at,updated_at) SELECT 'task:m06',id,'legacy task','running','sandbox','profile:m06','{}','{}','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z' FROM projects LIMIT 1`); err != nil {
+		t.Fatalf("insert pre-cutover Task: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO task_continuations(id,task_id,number,runtime_profile_id,runtime_provider,runner,status,started_at,updated_at,blackboard_graph_revision) VALUES('continuation:m06','task:m06',1,'profile:m06','legacy','sandbox','running','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',0)`); err != nil {
+		t.Fatalf("insert pre-cutover Continuation: %v", err)
+	}
+}
 
 func TestEquivalentLegacyHTTPMCPAndCLIWritesTranslateToOneGraphMutation(t *testing.T) {
 	db, compatibility, graph, projectRow, principal, _ := newCompatibilityFixture(t)

@@ -11,4 +11,5 @@ These documents define CyberPenda, a local-first pentest agent, from product int
 ## Supporting Context
 
 - [Project Glossary](../CONTEXT.md): canonical domain language.
+- [Graph Blackboard compatibility retirement](./blackboard-graph-migration.md): Release C gates, replacement operations, and stable removal guidance.
 - [Original Design Draft](./superpowers/specs/2026-06-17-pentest-agent-design.md): approved architecture draft from the initial brainstorming session.

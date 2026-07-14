@@ -77,6 +77,9 @@ type Config struct {
 	// production behavior; tests inject a stubbed transport so the refresh API
 	// can be exercised end to end without real network traffic.
 	ModelRefreshClient *http.Client
+	// CompatibilityWriteRetirement supplies Release C evidence that is not
+	// derivable from a local database. Nil keeps deprecated writes available.
+	CompatibilityWriteRetirement *blackboardcompat.WriteRetirementPolicy
 }
 
 type Server struct {
@@ -248,6 +251,7 @@ func NewServer(config Config) (*Server, error) {
 		server.compatibility = blackboardcompat.NewService(blackboardcompat.Deps{
 			DB: db, Graph: graph, Reads: server.reads,
 			ProjectInterface: server.projectInterface, Tasks: server.tasks,
+			WriteRetirement: config.CompatibilityWriteRetirement,
 		})
 		server.tasks.SetContinuationReconciler(server.projectInterface)
 		server.projectInterfaceHTTP = projectinterface.NewHTTPHandler(server.projectInterface).

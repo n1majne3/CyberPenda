@@ -113,6 +113,8 @@ Common `pentestd` options (flags or env):
 | `-auth-token` | `PENTEST_AUTH_TOKEN` | (required for non-loopback binds) |
 | `-runtime-plugin-dirs` | `PENTEST_RUNTIME_PLUGIN_DIRS` | trusted plugin dirs |
 | `-runtime-extension-dirs` | `PENTEST_RUNTIME_EXTENSION_DIRS` | trusted extension dirs |
+| `-blackboard-write-waiver-operator` | `PENTEST_BLACKBOARD_WRITE_WAIVER_OPERATOR` | (empty) |
+| `-blackboard-write-waiver-reason` | `PENTEST_BLACKBOARD_WRITE_WAIVER_REASON` | (empty) |
 
 Auth (when configured): `Authorization: Bearer <token>` or `?token=` on API/MCP routes.
 
@@ -146,6 +148,7 @@ scripts/               Release builds and live smokes
 
 - [Product docs index](docs/README.md) — PRD, MVP scope, implementation plan
 - [Domain glossary](CONTEXT.md) — shared product language
+- [Graph Blackboard compatibility retirement](docs/blackboard-graph-migration.md) — Release C gates, replacements, and stable 410 guidance
 - [ADRs](docs/adr/) — architecture decisions (skills default-on, model providers vs profiles)
 
 ## License / authorization

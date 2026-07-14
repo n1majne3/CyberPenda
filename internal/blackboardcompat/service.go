@@ -34,6 +34,7 @@ const (
 const (
 	ErrCodeLegacyRelationNotGraphRepresentable = "legacy_relation_not_graph_representable"
 	ErrCodeCompatibilityAttemptRequired        = "compatibility_attempt_required"
+	ErrCodeCompatibilityRemoved                = "compatibility_removed"
 )
 
 // CallKind is the closed legacy_blackboard_v1 operation union.
@@ -154,6 +155,33 @@ type UseCounter interface {
 	Increment(context.Context, Use) error
 }
 
+// WriteRetirementPolicy records the release-owned evidence that cannot be
+// derived from one local store. Live store gates are evaluated by Call.
+type WriteRetirementPolicy struct {
+	GraphNativeStableReleases int
+	BundledRuntimeV1Only      bool
+	ReplacementDocsReady      bool
+	ObservationWaiver         *ObservationWaiver
+}
+
+// ObservationWaiver is an explicit operator decision to bypass only the
+// 30-day local compatibility-use observation period.
+type ObservationWaiver struct {
+	OperatorID string
+	Reason     string
+}
+
+// ReleaseCWriteRetirementPolicy is the evidence shipped by the Release C
+// binary. Local observation, Continuation, verification, Health, and guard
+// gates are still evaluated from the opened store.
+func ReleaseCWriteRetirementPolicy() *WriteRetirementPolicy {
+	return &WriteRetirementPolicy{
+		GraphNativeStableReleases: 2,
+		BundledRuntimeV1Only:      true,
+		ReplacementDocsReady:      true,
+	}
+}
+
 type Deps struct {
 	DB               *store.DB
 	Graph            *blackboard.GraphService
@@ -161,6 +189,8 @@ type Deps struct {
 	ProjectInterface *projectinterface.Service
 	Tasks            *task.Service
 	UseCounter       UseCounter
+	WriteRetirement  *WriteRetirementPolicy
+	Clock            func() time.Time
 	// AfterResultMiss is a stable failure-point seam used by concurrency and
 	// crash tests. Production leaves it nil.
 	AfterResultMiss func()
@@ -169,6 +199,7 @@ type Deps struct {
 type Service struct {
 	deps       Deps
 	useCounter UseCounter
+	clock      func() time.Time
 	missMu     sync.Mutex
 }
 
@@ -177,7 +208,11 @@ func NewService(deps Deps) *Service {
 	if counter == nil && deps.DB != nil {
 		counter = sqliteUseCounter{db: deps.DB}
 	}
-	return &Service{deps: deps, useCounter: counter}
+	clock := deps.Clock
+	if clock == nil {
+		clock = time.Now
+	}
+	return &Service{deps: deps, useCounter: counter, clock: clock}
 }
 
 func (s *Service) RecordUse(ctx context.Context, use Use) error {
@@ -210,6 +245,9 @@ func (s *Service) Call(ctx context.Context, call LegacyCall) (LegacyResult, erro
 	}
 	if call.ProjectID == "" || call.ProjectID != call.Principal.ProjectID {
 		return LegacyResult{}, projectinterface.ValidationError(projectinterface.ErrCodeProjectMismatch, "legacy call Project does not match trusted principal", "project_id")
+	}
+	if err := s.rejectRetiredWrite(ctx, call); err != nil {
+		return LegacyResult{}, err
 	}
 	if strings.TrimSpace(call.IdempotencyKey) == "" {
 		key, err := newBestEffortKey()
@@ -285,6 +323,168 @@ func (s *Service) Call(ctx context.Context, call LegacyCall) (LegacyResult, erro
 		return LegacyResult{}, err
 	}
 	return result, nil
+}
+
+const writeObservationPeriod = 30 * 24 * time.Hour
+
+func (s *Service) rejectRetiredWrite(ctx context.Context, call LegacyCall) error {
+	if !isRetirableWrite(call) {
+		return nil
+	}
+	var retired int
+	err := s.deps.DB.QueryRowContext(ctx, `SELECT 1 FROM blackboard_compatibility_write_retirement WHERE id=1`).Scan(&retired)
+	if err == nil {
+		return compatibilityRemovedError(call)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return projectinterface.InternalError("read compatibility-write retirement: " + err.Error())
+	}
+	policy := s.deps.WriteRetirement
+	if policy == nil || policy.GraphNativeStableReleases < 2 || !policy.BundledRuntimeV1Only || !policy.ReplacementDocsReady {
+		return nil
+	}
+	eligible, waived, err := s.localWriteRetirementGatesPass(ctx, *policy)
+	if err != nil {
+		return projectinterface.InternalError("evaluate compatibility-write retirement: " + err.Error())
+	}
+	if !eligible {
+		return nil
+	}
+	now := s.clock().UTC().Format(time.RFC3339Nano)
+	waiverOperator, waiverReason := "", ""
+	if waived {
+		waiverOperator = strings.TrimSpace(policy.ObservationWaiver.OperatorID)
+		waiverReason = strings.TrimSpace(policy.ObservationWaiver.Reason)
+	}
+	_, err = s.deps.DB.ExecContext(ctx, `
+		INSERT OR IGNORE INTO blackboard_compatibility_write_retirement (
+			id,retired_at,graph_native_stable_releases,bundled_runtime_v1_only,replacement_docs_ready,
+			observation_waived,waiver_operator_id,waiver_reason
+		) VALUES (1,?,?,?,?,?,?,?)`, now, policy.GraphNativeStableReleases, true, true, waived, waiverOperator, waiverReason)
+	if err != nil {
+		return projectinterface.InternalError("record compatibility-write retirement: " + err.Error())
+	}
+	return compatibilityRemovedError(call)
+}
+
+func (s *Service) localWriteRetirementGatesPass(ctx context.Context, policy WriteRetirementPolicy) (bool, bool, error) {
+	var epoch, cutoverState, cutoverCommittedAt, verificationHash string
+	if err := s.deps.DB.QueryRowContext(ctx, `
+		SELECT canonical_store,cutover_state,cutover_committed_at,latest_verification_result_hash
+		FROM blackboard_store_state WHERE id=1`).Scan(&epoch, &cutoverState, &cutoverCommittedAt, &verificationHash); err != nil {
+		return false, false, err
+	}
+	if epoch != store.CanonicalStoreGraphV1 || cutoverState != "graph" || cutoverCommittedAt == "" || verificationHash == "" {
+		return false, false, nil
+	}
+	guardsIntact, err := s.legacyWriteGuardsIntact(ctx)
+	if err != nil || !guardsIntact {
+		return false, false, err
+	}
+
+	var activePreCutover int
+	if err := s.deps.DB.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM task_continuations
+			WHERE status IN ('pending','running','paused')
+			  AND COALESCE(blackboard_renderer_version,'')=''
+		)`).Scan(&activePreCutover); err != nil || activePreCutover != 0 {
+		return false, false, err
+	}
+
+	var unhealthyProjects int
+	if err := s.deps.DB.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM projects p
+		WHERE NOT EXISTS (
+			SELECT 1 FROM blackboard_health_runs r
+			WHERE r.project_id=p.id AND r.run_status='completed'
+			  AND r.run_id=(
+				SELECT latest.run_id FROM blackboard_health_runs latest
+				WHERE latest.project_id=p.id
+				ORDER BY latest.started_at DESC,latest.rowid DESC LIMIT 1
+			  )
+			  AND NOT EXISTS (
+				SELECT 1 FROM blackboard_health_results result
+				WHERE result.project_id=r.project_id AND result.run_id=r.run_id AND result.severity='critical'
+			  )
+		)`).Scan(&unhealthyProjects); err != nil || unhealthyProjects != 0 {
+		return false, false, err
+	}
+
+	waived := validObservationWaiver(policy.ObservationWaiver)
+	if waived {
+		return true, true, nil
+	}
+	cutoverTime, err := time.Parse(time.RFC3339Nano, cutoverCommittedAt)
+	if err != nil {
+		return false, false, err
+	}
+	observationStart := s.clock().UTC().Add(-writeObservationPeriod)
+	if cutoverTime.After(observationStart) {
+		return false, false, nil
+	}
+	var recentWrites int
+	if err := s.deps.DB.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM blackboard_compatibility_use
+			WHERE use_mode='write' AND last_used_at>?
+		)`, observationStart.Format(time.RFC3339Nano)).Scan(&recentWrites); err != nil {
+		return false, false, err
+	}
+	return recentWrites == 0, false, nil
+}
+
+func (s *Service) legacyWriteGuardsIntact(ctx context.Context) (bool, error) {
+	tables := []string{
+		"project_facts", "project_fact_versions", "project_fact_relations", "fact_key_aliases",
+		"findings", "finding_versions", "finding_key_aliases", "evidence_artifacts",
+	}
+	for _, table := range tables {
+		for _, operation := range []string{"insert", "update", "delete"} {
+			trigger := "blackboard_legacy_" + table + "_" + operation + "_guard"
+			var sqlText string
+			err := s.deps.DB.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?`, trigger).Scan(&sqlText)
+			if errors.Is(err, sql.ErrNoRows) {
+				return false, nil
+			}
+			if err != nil {
+				return false, err
+			}
+			if !strings.Contains(sqlText, table+" is frozen after graph_v1 cutover") {
+				return false, nil
+			}
+		}
+	}
+	return true, nil
+}
+
+func validObservationWaiver(waiver *ObservationWaiver) bool {
+	return waiver != nil && strings.TrimSpace(waiver.OperatorID) != "" && strings.TrimSpace(waiver.Reason) != ""
+}
+
+func isRetirableWrite(call LegacyCall) bool {
+	switch call.Kind {
+	case CallUpsertFact, CallDeprecateFact, CallMergeFacts, CallPutFactRelation,
+		CallUpsertFinding, CallMergeFindings, CallAttachEvidence:
+		return true
+	case CallPutTaskSummary:
+		return call.Principal.ActorType == blackboard.ActorTypeRuntime
+	default:
+		return false
+	}
+}
+
+func compatibilityRemovedError(call LegacyCall) *projectinterface.Error {
+	replacement := "blackboard apply"
+	if call.Kind == CallAttachEvidence {
+		replacement = "blackboard evidence retain"
+	} else if call.Kind == CallPutTaskSummary {
+		replacement = "blackboard continuation finish"
+	}
+	err := projectinterface.ValidationError(ErrCodeCompatibilityRemoved,
+		"Legacy Blackboard compatibility writes were removed; use "+replacement, "kind")
+	err.Details = map[string]any{"replacement_operation": replacement}
+	return err
 }
 
 type compatibilityCall func(context.Context, LegacyCall) (LegacyResult, error)

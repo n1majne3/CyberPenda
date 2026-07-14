@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"pentest/internal/blackboard"
 	"pentest/internal/blackboardcompat"
@@ -15,7 +16,91 @@ import (
 	"pentest/internal/project"
 	"pentest/internal/projectinterface"
 	"pentest/internal/store"
+	"pentest/internal/testsupport/blackboardfixture"
 )
+
+func TestRetiredLegacyHTTPWriteReturnsStable410WithReplacementGuidance(t *testing.T) {
+	now := time.Now().UTC()
+	dbPath := filepath.Join(t.TempDir(), "http-retired-compatibility.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open seed store: %v", err)
+	}
+	projectRow, err := project.NewService(db).Create("Retired HTTP compatibility", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create Project: %v", err)
+	}
+	graph := blackboard.NewGraphService(db, blackboard.SystemClock{}, blackboard.RandomIDSource{})
+	if _, err := graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion: 1, IdempotencyKey: "retirement:http-anchor",
+		Context: blackboard.SystemExecutionContext(projectRow.ID, projectRow.Kind, "fixture"),
+		Operations: []blackboard.Operation{
+			{
+				OpID: "anchor", Kind: blackboard.OpCreateNode,
+				Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEntity, StableKey: "entity:http-retirement"},
+				Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{
+					"kind": "service", "name": "HTTP retirement", "locator": "retirement.test", "scope_status": "in_scope",
+				}},
+			},
+			{
+				OpID: "readable", Kind: blackboard.OpCreateNode,
+				Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "fact:retirement-readable"},
+				Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{
+					"category": "service", "summary": "Compatibility reads remain", "confidence": "tentative", "scope_status": "in_scope",
+				}},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("seed graph: %v", err)
+	}
+	if _, err := graph.RunHealth(context.Background(), projectRow.ID); err != nil {
+		t.Fatalf("run Blackboard Health: %v", err)
+	}
+	blackboardfixture.InstallLegacyWriteGuards(t, db)
+	if _, err := db.Exec(`UPDATE blackboard_store_state SET canonical_store=?,cutover_state='graph',cutover_id='cutover:http-m06',cutover_committed_at=?,latest_verification_at=?,latest_verification_result_hash='verified:http-m06' WHERE id=1`, store.CanonicalStoreGraphV1, now.Add(-31*24*time.Hour).Format(time.RFC3339Nano), now.Add(-time.Hour).Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("prepare Release C state: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed store: %v", err)
+	}
+
+	server, err := daemon.NewServer(daemon.Config{
+		Version: "release-c", DBPath: dbPath, DisableBuiltinSkills: true,
+		CompatibilityWriteRetirement: &blackboardcompat.WriteRetirementPolicy{
+			GraphNativeStableReleases: 2, BundledRuntimeV1Only: true, ReplacementDocsReady: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("start Release C server: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	request := httptest.NewRequest(http.MethodPut, "/api/projects/"+projectRow.ID+"/facts/fact:retired", bytes.NewBufferString(`{"summary":"must not write","category":"service","confidence":"tentative","scope_status":"in_scope"}`))
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusGone {
+		t.Fatalf("retired Fact PUT status = %d body=%s", response.Code, response.Body.String())
+	}
+	if response.Header().Get("Deprecation") != "true" || response.Header().Get("Link") == "" {
+		t.Fatalf("retired compatibility headers = %#v", response.Header())
+	}
+	var envelope struct {
+		Error projectinterface.Error `json:"error"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode removal error: %v", err)
+	}
+	if envelope.Error.Code != blackboardcompat.ErrCodeCompatibilityRemoved || envelope.Error.Details["replacement_operation"] != "blackboard apply" {
+		t.Fatalf("removal error = %+v", envelope.Error)
+	}
+
+	readRequest := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectRow.ID+"/facts/fact:retirement-readable", nil)
+	readResponse := httptest.NewRecorder()
+	server.ServeHTTP(readResponse, readRequest)
+	if readResponse.Code != http.StatusOK || readResponse.Header().Get("Deprecation") != "true" {
+		t.Fatalf("compatibility read after write retirement = status %d headers=%#v body=%s", readResponse.Code, readResponse.Header(), readResponse.Body.String())
+	}
+}
 
 func TestLegacyHTTPWriteUsesGraphCompatibilityAndDeprecationHeaders(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "http-compatibility.db")

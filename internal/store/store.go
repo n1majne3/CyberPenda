@@ -275,8 +275,25 @@ func migrations() []migration {
 		newMigration(14, "attempt_checkpoint_requests", migration14SQL, migration14Up),
 		newMigration(15, "continuation_reconciliation_recovery", migration15SQL, migration15Up),
 		newMigration(16, "blackboard_compatibility_requests", migration16SQL, migration16Up),
+		newMigration(17, "blackboard_compatibility_write_retirement", migration17SQL, migration17Up),
 	}
 }
+
+const migration17SQL = `
+CREATE TABLE blackboard_compatibility_write_retirement (
+ id INTEGER PRIMARY KEY CHECK (id = 1),
+ retired_at TEXT NOT NULL,
+ graph_native_stable_releases INTEGER NOT NULL,
+ bundled_runtime_v1_only INTEGER NOT NULL CHECK (bundled_runtime_v1_only = 1),
+ replacement_docs_ready INTEGER NOT NULL CHECK (replacement_docs_ready = 1),
+ observation_waived INTEGER NOT NULL CHECK (observation_waived IN (0,1)),
+ waiver_operator_id TEXT NOT NULL DEFAULT '',
+ waiver_reason TEXT NOT NULL DEFAULT '',
+ CHECK (observation_waived = 0 OR (waiver_operator_id <> '' AND waiver_reason <> ''))
+);
+`
+
+func migration17Up(tx *sql.Tx) error { return execStatements(tx, migration17SQL) }
 
 const migration16SQL = `
 CREATE TABLE blackboard_compatibility_requests (
