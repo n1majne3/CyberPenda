@@ -1,4 +1,4 @@
-.PHONY: dev build build-ui check-ui-sync install-git-hooks build-sandbox-image test test-ci test-backend smoke-sandbox-mcp smoke-runtime-tasks clean
+.PHONY: dev ensure-web-deps build build-ui check-ui-sync install-git-hooks build-sandbox-image test test-ci test-backend smoke-sandbox-mcp smoke-runtime-tasks clean
 
 # Run the daemon and the Vite dev server together for local development.
 # The Vite proxy forwards /api and /health to the daemon on :8787.
@@ -7,7 +7,7 @@ SANDBOX_IMAGE ?= pentest-sandbox:latest
 # macOS /bin/sh (bash 3.2) has no `wait -n`, so poll: if either child dies,
 # surface the failure instead of silently running the other alone (which hid
 # backend bind errors behind the foreground Vite output).
-dev:
+dev: ensure-web-deps
 	@set -e; \
 	trap 'kill 0' EXIT INT TERM; \
 	go run ./cmd/pentestd -addr 127.0.0.1:8787 -db pentest.db -sandbox-image $(SANDBOX_IMAGE) & \
@@ -54,9 +54,14 @@ smoke-runtime-tasks:
 juice-shop-live:
 	@python3 scripts/run-juice-shop-live.py
 
+# Repair first-checkout, stale-lockfile, and npm optional-native-dependency
+# installs before starting Vite or building the embedded UI.
+ensure-web-deps:
+	@bash scripts/ensure-web-deps.sh
+
 # Build the React UI and copy it into the embed location.
-build-ui:
-	cd web && npm install && npm run build
+build-ui: ensure-web-deps
+	cd web && npm run build
 	mkdir -p internal/daemon/webfs/dist
 	rsync -a --delete web/dist/ internal/daemon/webfs/dist/
 

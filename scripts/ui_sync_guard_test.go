@@ -65,3 +65,25 @@ func TestBuildUIUpdatesEmbedWithoutReplacingSyncedDirectory(t *testing.T) {
 		}
 	}
 }
+
+func TestDevRepairsMissingOrStaleWebDependencies(t *testing.T) {
+	repoRoot := repoRoot(t)
+	makefileBytes, err := os.ReadFile(filepath.Join(repoRoot, "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	makefile := string(makefileBytes)
+
+	assertContains(t, makefile, "dev: ensure-web-deps")
+	assertContains(t, makefile, "ensure-web-deps:\n\t@bash scripts/ensure-web-deps.sh")
+
+	guardBytes, err := os.ReadFile(filepath.Join(repoRoot, "scripts", "ensure-web-deps.sh"))
+	if err != nil {
+		t.Fatalf("read web dependency guard: %v", err)
+	}
+	guard := string(guardBytes)
+	assertContains(t, guard, "node_modules/.bin/vite")
+	assertContains(t, guard, "node_modules/.package-lock.json")
+	assertContains(t, guard, "import('rolldown')")
+	assertContains(t, guard, "npm ci")
+}
