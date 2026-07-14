@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,6 +100,115 @@ func TestRetiredLegacyHTTPWriteReturnsStable410WithReplacementGuidance(t *testin
 	server.ServeHTTP(readResponse, readRequest)
 	if readResponse.Code != http.StatusOK || readResponse.Header().Get("Deprecation") != "true" {
 		t.Fatalf("compatibility read after write retirement = status %d headers=%#v body=%s", readResponse.Code, readResponse.Header(), readResponse.Body.String())
+	}
+}
+
+func TestDaemonStartupPersistsEligibleWriteRetirementWithoutLegacyAttempt(t *testing.T) {
+	now := time.Now().UTC()
+	dbPath := filepath.Join(t.TempDir(), "startup-write-retirement.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectRow, err := project.NewService(db).Create("Startup retirement", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph := blackboard.NewGraphService(db, blackboard.SystemClock{}, blackboard.RandomIDSource{})
+	if _, err := graph.Apply(context.Background(), blackboard.MutationBatch{SchemaVersion: 1, IdempotencyKey: "startup:anchor", Context: blackboard.SystemExecutionContext(projectRow.ID, projectRow.Kind, "fixture"), Operations: []blackboard.Operation{{OpID: "anchor", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEntity, StableKey: "entity:startup-retirement"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "service", "name": "Startup retirement", "locator": "startup.test", "scope_status": "in_scope"}}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := graph.RunHealth(context.Background(), projectRow.ID); err != nil {
+		t.Fatal(err)
+	}
+	blackboardfixture.InstallLegacyWriteGuards(t, db)
+	if _, err := db.Exec(`UPDATE blackboard_store_state SET canonical_store=?,cutover_state='graph',cutover_id='cutover:startup',cutover_committed_at=?,latest_verification_at=?,latest_verification_result_hash='verified:startup' WHERE id=1`, store.CanonicalStoreGraphV1, now.Add(-31*24*time.Hour).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	server, err := daemon.NewServer(daemon.Config{Version: "release-d", DBPath: dbPath, DisableBuiltinSkills: true, CompatibilityWriteRetirement: blackboardcompat.ReleaseCWriteRetirementPolicy()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = server.Close()
+	verify, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer verify.Close()
+	var decisions, requests int
+	if err := verify.QueryRow(`SELECT COUNT(*) FROM blackboard_compatibility_write_retirement`).Scan(&decisions); err != nil {
+		t.Fatal(err)
+	}
+	if err := verify.QueryRow(`SELECT COUNT(*) FROM blackboard_compatibility_requests`).Scan(&requests); err != nil {
+		t.Fatal(err)
+	}
+	if decisions != 1 || requests != 0 {
+		t.Fatalf("write decisions=%d compatibility requests=%d", decisions, requests)
+	}
+}
+
+func TestRetiredLegacyHTTPReadReturnsStable410WithCanonicalReadGuidance(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "http-retired-read.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectRow, err := project.NewService(db).Create("Retired HTTP reads", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE blackboard_store_state SET canonical_store=?,cutover_state='graph' WHERE id=1`, store.CanonicalStoreGraphV1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO blackboard_compatibility_read_retirement(id,retired_at,bundled_web_cli_projections_only,observation_waived) VALUES(1,?,1,0)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	server, err := daemon.NewServer(daemon.Config{Version: "release-d", DBPath: dbPath, DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/projects/"+projectRow.ID+"/facts/index", nil))
+	if response.Code != http.StatusGone {
+		t.Fatalf("retired Fact read status=%d body=%s", response.Code, response.Body.String())
+	}
+	var envelope struct {
+		Error projectinterface.Error `json:"error"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Error.Code != blackboardcompat.ErrCodeCompatibilityRemoved || envelope.Error.Details["replacement_operation"] != "blackboard read records" {
+		t.Fatalf("retired read error=%+v", envelope.Error)
+	}
+	reportResponse := httptest.NewRecorder()
+	server.ServeHTTP(reportResponse, httptest.NewRequest(http.MethodPost, "/api/projects/"+projectRow.ID+"/report", bytes.NewBufferString(`{}`)))
+	if reportResponse.Code != http.StatusGone {
+		t.Fatalf("retired report status=%d body=%s", reportResponse.Code, reportResponse.Body.String())
+	}
+	if err := json.Unmarshal(reportResponse.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Error.Details["replacement_operation"] != "PentestReportV1" {
+		t.Fatalf("retired report error=%+v", envelope.Error)
+	}
+	canonicalResponse := httptest.NewRecorder()
+	server.ServeHTTP(canonicalResponse, httptest.NewRequest(http.MethodGet, "/api/projects/"+projectRow.ID+"/blackboard/records?node_type=project_fact", nil))
+	if canonicalResponse.Code != http.StatusOK {
+		t.Fatalf("canonical records after retirement status=%d body=%s", canonicalResponse.Code, canonicalResponse.Body.String())
+	}
+	browserResponse := httptest.NewRecorder()
+	server.ServeHTTP(browserResponse, httptest.NewRequest(http.MethodGet, "/projects/"+projectRow.ID+"/facts", nil))
+	if browserResponse.Code != http.StatusOK || !strings.Contains(browserResponse.Body.String(), `<div id="root"></div>`) {
+		t.Fatalf("browser bookmark after retirement status=%d body=%s", browserResponse.Code, browserResponse.Body.String())
 	}
 }
 

@@ -144,6 +144,103 @@ func TestCompatibilityWriteObservationWaiverIsExplicitAndRecorded(t *testing.T) 
 	}
 }
 
+func TestCompatibilityReadRetirementUsesThirtyDayObservationAndRecordsWaiver(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	writePolicy := blackboardcompat.WriteRetirementPolicy{GraphNativeStableReleases: 2, BundledRuntimeV1Only: true, ReplacementDocsReady: true}
+	for _, test := range []struct {
+		name           string
+		writeRetiredAt time.Time
+		lastRead       time.Time
+		waiver         *blackboardcompat.ObservationWaiver
+		wantRetired    bool
+	}{
+		{name: "write retirement 1 day old with no reads blocks", writeRetiredAt: now.Add(-24 * time.Hour), wantRetired: false},
+		{name: "write retirement and read 31 days old permit retirement", writeRetiredAt: now.Add(-31 * 24 * time.Hour), lastRead: now.Add(-31 * 24 * time.Hour), wantRetired: true},
+		{name: "read 29 days ago blocks retirement", writeRetiredAt: now.Add(-31 * 24 * time.Hour), lastRead: now.Add(-29 * 24 * time.Hour), wantRetired: false},
+		{name: "recorded waiver bypasses only observation", writeRetiredAt: now, lastRead: now.Add(-time.Hour), waiver: &blackboardcompat.ObservationWaiver{OperatorID: "operator:release-d", Reason: "managed client adoption complete"}, wantRetired: true},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			db, compatibility, projectRow, principal := newRetirementFixture(t, now, writePolicy)
+			if _, err := compatibility.Call(context.Background(), retirementFactCall(projectRow.ID, principal)); projectinterface.AsError(err) == nil {
+				t.Fatalf("activate durable write retirement: %v", err)
+			}
+			if _, err := db.Exec(`UPDATE blackboard_compatibility_write_retirement SET retired_at=? WHERE id=1`, test.writeRetiredAt.Format(time.RFC3339Nano)); err != nil {
+				t.Fatal(err)
+			}
+			if !test.lastRead.IsZero() {
+				if _, err := db.Exec(`INSERT INTO blackboard_compatibility_use(project_id,transport,call_kind,use_mode,use_count,last_used_at) VALUES(?,?,?,?,1,?)`, projectRow.ID, "http", "read_fact", "read", test.lastRead.Format(time.RFC3339Nano)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			retired, err := compatibility.RetireReads(context.Background(), blackboardcompat.ReadRetirementPolicy{BundledWebCLIProjectionsOnly: true, ObservationWaiver: test.waiver})
+			if err != nil {
+				t.Fatalf("RetireReads: %v", err)
+			}
+			if retired != test.wantRetired {
+				t.Fatalf("RetireReads retired=%v, want %v", retired, test.wantRetired)
+			}
+			var count int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM blackboard_compatibility_read_retirement`).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if count != boolInt(test.wantRetired) {
+				t.Fatalf("durable read retirement rows=%d", count)
+			}
+			if test.waiver != nil && test.wantRetired {
+				var operatorID, reason string
+				if err := db.QueryRow(`SELECT waiver_operator_id,waiver_reason FROM blackboard_compatibility_read_retirement WHERE id=1`).Scan(&operatorID, &reason); err != nil {
+					t.Fatal(err)
+				}
+				if operatorID != test.waiver.OperatorID || reason != test.waiver.Reason {
+					t.Fatalf("recorded waiver=(%q,%q)", operatorID, reason)
+				}
+			}
+		})
+	}
+}
+
+func TestRetireWritesCreatesDurableDecisionWithoutLegacyMutationAttempt(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	ready := blackboardcompat.WriteRetirementPolicy{GraphNativeStableReleases: 2, BundledRuntimeV1Only: true, ReplacementDocsReady: true}
+	for _, test := range []struct {
+		name   string
+		policy blackboardcompat.WriteRetirementPolicy
+		want   bool
+	}{
+		{name: "all gates persist decision", policy: ready, want: true},
+		{name: "unmet release gate keeps decision absent", policy: blackboardcompat.WriteRetirementPolicy{GraphNativeStableReleases: 1, BundledRuntimeV1Only: true, ReplacementDocsReady: true}, want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db, compatibility, projectRow, _ := newRetirementFixture(t, now, test.policy)
+			retired, err := compatibility.RetireWrites(context.Background(), test.policy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if retired != test.want {
+				t.Fatalf("RetireWrites=%v, want %v", retired, test.want)
+			}
+			var decision, requests int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM blackboard_compatibility_write_retirement`).Scan(&decision); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.QueryRow(`SELECT COUNT(*) FROM blackboard_compatibility_requests WHERE project_id=?`, projectRow.ID).Scan(&requests); err != nil {
+				t.Fatal(err)
+			}
+			if decision != boolInt(test.want) || requests != 0 {
+				t.Fatalf("decision=%d compatibility requests=%d", decision, requests)
+			}
+		})
+	}
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
 func TestCompatibilityWriteRetirementTargetsOnlyReleaseCWrites(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	policy := blackboardcompat.WriteRetirementPolicy{
@@ -210,6 +307,23 @@ func TestCompatibilityWriteRetirementTargetsOnlyReleaseCWrites(t *testing.T) {
 		}},
 	}); err != nil {
 		t.Fatalf("canonical graph write after compatibility retirement: %v", err)
+	}
+}
+
+func TestRetiredReportReadUsesExactPentestReportV1Guidance(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	policy := blackboardcompat.WriteRetirementPolicy{GraphNativeStableReleases: 2, BundledRuntimeV1Only: true, ReplacementDocsReady: true}
+	db, compatibility, projectRow, principal := newRetirementFixture(t, now, policy)
+	if _, err := db.Exec(`INSERT INTO blackboard_compatibility_read_retirement(id,retired_at,bundled_web_cli_projections_only,observation_waived) VALUES(1,?,1,0)`, now.Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	_, err := compatibility.Call(context.Background(), blackboardcompat.LegacyCall{Kind: blackboardcompat.CallGenerateReport, Transport: blackboardcompat.TransportCLI, ProjectID: projectRow.ID, Principal: principal, Report: &blackboardcompat.ReportWrite{}})
+	interfaceErr := projectinterface.AsError(err)
+	if interfaceErr == nil || interfaceErr.Code != blackboardcompat.ErrCodeCompatibilityRemoved || interfaceErr.Details["replacement_operation"] != "PentestReportV1" {
+		t.Fatalf("retired report error=%#v", err)
+	}
+	if err := compatibility.RejectRetiredRead(context.Background(), blackboardcompat.CallReadTaskSummary); projectinterface.AsError(err) == nil || projectinterface.AsError(err).Details["replacement_operation"] != "Task Summary versions" {
+		t.Fatalf("retired Task Summary error=%#v", err)
 	}
 }
 

@@ -106,6 +106,70 @@ func TestLegacyMCPWriteUsesGraphCompatibilityAndDeprecationMetadata(t *testing.T
 	}
 }
 
+func TestRetiredLegacyMCPReadsAreNotRegisteredAndCannotBeCalled(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "mcp-retired-reads.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	projects := project.NewService(db)
+	projectRow, err := projects.Create("MCP retired reads", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE blackboard_store_state SET canonical_store=?,cutover_state='graph' WHERE id=1`, store.CanonicalStoreGraphV1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO blackboard_compatibility_read_retirement(id,retired_at,bundled_web_cli_projections_only,observation_waived) VALUES(1,'2026-07-14T00:00:00Z',1,0)`); err != nil {
+		t.Fatal(err)
+	}
+	graph := blackboard.NewGraphService(db, blackboard.SystemClock{}, blackboard.RandomIDSource{})
+	tasks := task.NewService(db)
+	projectInterface := projectinterface.NewService(projectinterface.Deps{DB: db, Graph: graph, Tasks: tasks})
+	compatibility := blackboardcompat.NewService(blackboardcompat.Deps{DB: db, Graph: graph, Reads: blackboard.NewBlackboardReadService(db), ProjectInterface: projectInterface, Tasks: tasks})
+	session := connectMCP(t, mcpserver.Deps{Projects: projects, Facts: blackboard.NewService(db), Tasks: tasks, Reads: blackboard.NewBlackboardReadService(db), ProjectInterface: projectInterface, Compatibility: compatibility})
+
+	listed, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range listed.Tools {
+		for _, retired := range []string{"get_project_fact", "list_project_facts", "search_project_facts", "list_vulnerabilities", "generate_report"} {
+			if tool.Name == retired {
+				t.Fatalf("retired MCP read tool %s remains registered", retired)
+			}
+		}
+	}
+	if _, err := session.CallTool(context.Background(), &sdkmcp.CallToolParams{Name: "get_project_fact", Arguments: map[string]any{"project_id": projectRow.ID, "fact_key": "fact:x"}}); err == nil || !strings.Contains(err.Error(), `unknown tool "get_project_fact"`) {
+		t.Fatalf("retired tool call error=%v", err)
+	}
+}
+
+func TestMCPReadRetirementQueryErrorKeepsLegacyToolsRegistered(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "mcp-retirement-error.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	compatibility := blackboardcompat.NewService(blackboardcompat.Deps{DB: db})
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	session := connectMCP(t, mcpserver.Deps{Compatibility: compatibility})
+	listed, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered := map[string]bool{}
+	for _, tool := range listed.Tools {
+		registered[tool.Name] = true
+	}
+	for _, name := range []string{"get_project_fact", "list_project_facts", "search_project_facts", "list_vulnerabilities", "generate_report"} {
+		if !registered[name] {
+			t.Fatalf("query error incorrectly removed %s", name)
+		}
+	}
+}
+
 func callTool(t *testing.T, session *sdkmcp.ClientSession, name string, args map[string]any) string {
 	t.Helper()
 	res, err := session.CallTool(context.Background(), &sdkmcp.CallToolParams{Name: name, Arguments: args})

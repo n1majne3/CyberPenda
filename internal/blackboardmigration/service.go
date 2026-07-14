@@ -36,10 +36,15 @@ var ErrMigrationBlocked = errors.New("Blackboard migration is blocked by inspect
 var ErrCutoverImplementationPending = errors.New("verified backup complete; atomic graph cutover is implemented by M05")
 var ErrCutoverVerificationFailed = errors.New("post-cutover Blackboard verification failed")
 var ErrCutoverConflict = errors.New("Blackboard cutover retry conflicts with the committed source digest")
+var ErrFinalizationBlocked = errors.New("Blackboard legacy finalization is blocked by removal gates")
 
 type MigrationRequest struct {
-	Kind       MigrationKind `json:"kind"`
-	BackupPath string        `json:"backup_path,omitempty"`
+	Kind                     MigrationKind `json:"kind"`
+	BackupPath               string        `json:"backup_path,omitempty"`
+	CutoverID                string        `json:"cutover_id,omitempty"`
+	MappingDigest            string        `json:"mapping_digest,omitempty"`
+	BackupAcknowledged       bool          `json:"backup_acknowledged,omitempty"`
+	MigrationSummaryExported bool          `json:"migration_summary_exported,omitempty"`
 }
 
 type MigrationResult struct {
@@ -93,13 +98,15 @@ type BlackboardMigrationService interface {
 }
 
 type Service struct {
-	db                     *store.DB
-	databasePath           string
-	artifactRoot           string
-	backup                 BackupImplementation
-	clock                  func() time.Time
-	commitDisposableImport bool
-	cutoverFailure         CutoverFailureInjector
+	db                              *store.DB
+	databasePath                    string
+	artifactRoot                    string
+	backup                          BackupImplementation
+	clock                           func() time.Time
+	commitDisposableImport          bool
+	cutoverFailure                  CutoverFailureInjector
+	finalizationFailure             FinalizationFailureInjector
+	finalizationStateTransitionHook func(context.Context, *sql.Tx) error
 }
 
 type Option func(*Service)
@@ -125,6 +132,22 @@ type CutoverFailureInjectorFunc func(CutoverFailurePoint) error
 
 func (fn CutoverFailureInjectorFunc) FailAfter(point CutoverFailurePoint) error { return fn(point) }
 
+type FinalizationFailurePoint string
+
+const FinalizationFailureBeforeAudit FinalizationFailurePoint = "before_audit"
+
+// FinalizationFailureInjector is the stable persistence failure seam for
+// proving that the numbered finalization transaction rolls back atomically.
+type FinalizationFailureInjector interface {
+	FailBefore(FinalizationFailurePoint) error
+}
+
+type FinalizationFailureInjectorFunc func(FinalizationFailurePoint) error
+
+func (fn FinalizationFailureInjectorFunc) FailBefore(point FinalizationFailurePoint) error {
+	return fn(point)
+}
+
 func WithBackupImplementation(backup BackupImplementation) Option {
 	return func(service *Service) { service.backup = backup }
 }
@@ -135,6 +158,16 @@ func WithClock(clock func() time.Time) Option {
 
 func WithCutoverFailureInjector(injector CutoverFailureInjector) Option {
 	return func(service *Service) { service.cutoverFailure = injector }
+}
+
+func WithFinalizationFailureInjector(injector FinalizationFailureInjector) Option {
+	return func(service *Service) { service.finalizationFailure = injector }
+}
+
+// WithFinalizationStateTransitionHook installs the deterministic concurrency
+// seam used to prove a lost conditional epoch transition rolls back all DDL.
+func WithFinalizationStateTransitionHook(hook func(context.Context, *sql.Tx) error) Option {
+	return func(service *Service) { service.finalizationStateTransitionHook = hook }
 }
 
 // withDisposableImportCommitForTesting makes the M02 import observable on a
@@ -254,9 +287,75 @@ func (s *Service) Execute(ctx context.Context, request MigrationRequest) (Migrat
 			return result, fmt.Errorf("%w: %v", ErrCutoverVerificationFailed, err)
 		}
 		return result, nil
+	case MigrationKindFinalizeLegacy:
+		return s.finalizeLegacy(ctx, request)
 	default:
 		return MigrationResult{}, fmt.Errorf("%w: %q", ErrUnsupportedMigrationKind, request.Kind)
 	}
+}
+
+func (s *Service) finalizeLegacy(ctx context.Context, request MigrationRequest) (MigrationResult, error) {
+	var epoch, state, cutoverID, mappingDigest, backupPath, backupSHA, verifiedAt, verificationHash string
+	if err := s.db.QueryRowContext(ctx, `SELECT canonical_store,cutover_state,cutover_id,mapping_digest,verified_backup_path,verified_backup_sha256,latest_verification_at,latest_verification_result_hash FROM blackboard_store_state WHERE id=1`).Scan(&epoch, &state, &cutoverID, &mappingDigest, &backupPath, &backupSHA, &verifiedAt, &verificationHash); err != nil {
+		return MigrationResult{Kind: request.Kind}, err
+	}
+	if epoch != store.CanonicalStoreGraphV1 || state != "graph" || request.CutoverID == "" || request.CutoverID != cutoverID || request.MappingDigest == "" || request.MappingDigest != mappingDigest || !request.BackupAcknowledged || !request.MigrationSummaryExported || backupPath == "" || backupSHA == "" || verifiedAt == "" || verificationHash == "" {
+		return MigrationResult{Kind: request.Kind}, ErrFinalizationBlocked
+	}
+	var readsRetired int
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM blackboard_compatibility_read_retirement WHERE id=1)`).Scan(&readsRetired); err != nil || readsRetired == 0 {
+		return MigrationResult{Kind: request.Kind}, ErrFinalizationBlocked
+	}
+	verification, err := s.verifyCommittedCutover(ctx)
+	if err != nil || verification.CutoverID != request.CutoverID || verification.MappingDigest != request.MappingDigest {
+		if err == nil {
+			err = errors.New("fresh verification does not match requested cutover")
+		}
+		return MigrationResult{Kind: request.Kind, Verification: &verification}, fmt.Errorf("%w: %v", ErrFinalizationBlocked, err)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return MigrationResult{Kind: request.Kind, Verification: &verification}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM blackboard_compatibility_read_retirement WHERE id=1)`).Scan(&readsRetired); err != nil || readsRetired == 0 {
+		return MigrationResult{Kind: request.Kind, Verification: &verification}, ErrFinalizationBlocked
+	}
+	for _, table := range legacyBlackboardTables {
+		if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS "`+table+`"`); err != nil {
+			return MigrationResult{Kind: request.Kind, Verification: &verification}, fmt.Errorf("drop frozen legacy table %s: %w", table, err)
+		}
+	}
+	now := s.clock().UTC().Format(time.RFC3339Nano)
+	if s.finalizationStateTransitionHook != nil {
+		if err := s.finalizationStateTransitionHook(ctx, tx); err != nil {
+			return MigrationResult{Kind: request.Kind, Verification: &verification}, err
+		}
+	}
+	transition, err := tx.ExecContext(ctx, `UPDATE blackboard_store_state SET canonical_store=?,cutover_state='finalized',updated_at=? WHERE id=1 AND canonical_store=? AND cutover_state='graph' AND cutover_id=?`, store.CanonicalStoreGraphV1Finalized, now, store.CanonicalStoreGraphV1, request.CutoverID)
+	if err != nil {
+		return MigrationResult{Kind: request.Kind, Verification: &verification}, err
+	}
+	rows, err := transition.RowsAffected()
+	if err != nil || rows != 1 {
+		return MigrationResult{Kind: request.Kind, Verification: &verification}, fmt.Errorf("%w: finalization state transition affected %d rows", ErrFinalizationBlocked, rows)
+	}
+	if s.finalizationFailure != nil {
+		if err := s.finalizationFailure.FailBefore(FinalizationFailureBeforeAudit); err != nil {
+			return MigrationResult{Kind: request.Kind, Verification: &verification}, err
+		}
+	}
+	body, err := json.Marshal(MigrationResult{Kind: request.Kind, Verification: &verification})
+	if err != nil {
+		return MigrationResult{Kind: request.Kind, Verification: &verification}, fmt.Errorf("encode legacy finalization audit: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO blackboard_migration_runs(id,kind,state,diagnostic_code,source_digest,mapping_digest,backup_path,backup_sha256,counts_json,created_at,updated_at,finished_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, request.CutoverID+":finalize:1", string(MigrationKindFinalizeLegacy), "committed", "finalize_legacy_transaction_1", verification.SourceDigest, verification.MappingDigest, backupPath, backupSHA, string(body), now, now, now); err != nil {
+		return MigrationResult{Kind: request.Kind, Verification: &verification}, fmt.Errorf("record legacy finalization: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return MigrationResult{Kind: request.Kind, Verification: &verification}, err
+	}
+	return MigrationResult{Kind: request.Kind, Verification: &verification}, nil
 }
 
 func (s *Service) markRecoveryRequired() {

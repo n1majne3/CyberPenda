@@ -66,6 +66,193 @@ func TestCutoverCommitsImportParityEpochFlipAndLegacyWriteGuardsAtomically(t *te
 	}
 }
 
+func TestFinalizeLegacyDropsOnlyFrozenBlackboardTablesAfterFreshVerifyAndExplicitCutoverID(t *testing.T) {
+	t.Parallel()
+
+	db, service := newInspectionService(t)
+	insertCutoverGuardFixture(t, db)
+	cutover, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindCutover, BackupPath: filepath.Join(t.TempDir(), "legacy.bak")})
+	if err != nil {
+		t.Fatalf("Execute(cutover): %v", err)
+	}
+	if cutover.Verification == nil || cutover.Backup == nil {
+		t.Fatalf("cutover result = %#v", cutover)
+	}
+	markCompatibilityReadsRetired(t, db)
+	_, err = service.Execute(context.Background(), finalizationRequest(cutover))
+	if err != nil {
+		t.Fatalf("Execute(finalize_legacy): %v", err)
+	}
+	var epoch, state string
+	if err := db.QueryRow(`SELECT canonical_store,cutover_state FROM blackboard_store_state WHERE id=1`).Scan(&epoch, &state); err != nil {
+		t.Fatal(err)
+	}
+	if epoch != store.CanonicalStoreGraphV1Finalized || state != "finalized" {
+		t.Fatalf("store state=(%q,%q), want graph_v1_finalized/finalized", epoch, state)
+	}
+	for _, table := range cutoverGuardTables {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("legacy table %s remains", table)
+		}
+	}
+	for _, table := range []string{
+		"tasks", "task_runtime_config_versions", "task_continuations", "task_events", "task_summary_versions", "projects",
+		"blackboard_node_versions", "blackboard_graph_provenance", "blackboard_health_runs", "blackboard_health_results",
+		"blackboard_legacy_mappings", "blackboard_compatibility_use", "blackboard_compatibility_requests", "blackboard_compatibility_results",
+		"blackboard_compatibility_task_summaries", "blackboard_compatibility_write_retirement", "blackboard_compatibility_read_retirement", "blackboard_migration_runs",
+	} {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("retained table %s missing", table)
+		}
+	}
+	var finalizeAudits int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM blackboard_migration_runs WHERE kind='finalize_legacy' AND state='committed'`).Scan(&finalizeAudits); err != nil {
+		t.Fatal(err)
+	}
+	if finalizeAudits != 1 {
+		t.Fatalf("finalization audit rows=%d", finalizeAudits)
+	}
+}
+
+func TestFinalizeLegacyBlocksMissingBackupAcknowledgementAndStaleVerification(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name    string
+		arrange func(*testing.T, *store.DB, *MigrationRequest)
+	}{
+		{name: "missing backup acknowledgement", arrange: func(_ *testing.T, _ *store.DB, request *MigrationRequest) {
+			request.BackupAcknowledged = false
+		}},
+		{name: "stale verification", arrange: func(t *testing.T, db *store.DB, _ *MigrationRequest) {
+			if _, err := db.Exec(`DROP TRIGGER blackboard_legacy_project_facts_insert_guard`); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "compatibility reads still enabled", arrange: func(t *testing.T, db *store.DB, _ *MigrationRequest) {
+			if _, err := db.Exec(`DELETE FROM blackboard_compatibility_read_retirement`); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			db, service := newInspectionService(t)
+			insertCutoverGuardFixture(t, db)
+			cutover, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindCutover, BackupPath: filepath.Join(t.TempDir(), "legacy.bak")})
+			if err != nil {
+				t.Fatalf("Execute(cutover): %v", err)
+			}
+			markCompatibilityReadsRetired(t, db)
+			request := finalizationRequest(cutover)
+			test.arrange(t, db, &request)
+			if _, err := service.Execute(context.Background(), request); !errors.Is(err, ErrFinalizationBlocked) {
+				t.Fatalf("Execute(finalize_legacy) error = %v, want ErrFinalizationBlocked", err)
+			}
+			var count int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='project_facts'`).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if count != 1 {
+				t.Fatal("blocked finalization dropped project_facts")
+			}
+		})
+	}
+}
+
+func finalizationRequest(cutover MigrationResult) MigrationRequest {
+	return MigrationRequest{
+		Kind: MigrationKindFinalizeLegacy, CutoverID: cutover.Verification.CutoverID,
+		MappingDigest: cutover.Verification.MappingDigest, BackupAcknowledged: true,
+		MigrationSummaryExported: true,
+	}
+}
+
+func markCompatibilityReadsRetired(t *testing.T, db *store.DB) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO blackboard_compatibility_read_retirement(id,retired_at,bundled_web_cli_projections_only,observation_waived) VALUES(1,'2026-07-14T00:00:00Z',1,0)`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFinalizeLegacyAuditFailureRollsBackDropsAndFinalizedState(t *testing.T) {
+	db, base := newInspectionService(t)
+	insertCutoverGuardFixture(t, db)
+	cutover, err := base.Execute(context.Background(), MigrationRequest{Kind: MigrationKindCutover, BackupPath: filepath.Join(t.TempDir(), "legacy.bak")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	markCompatibilityReadsRetired(t, db)
+	injected := errors.New("injected finalization audit failure")
+	service := NewService(db, base.databasePath, base.artifactRoot, WithFinalizationFailureInjector(FinalizationFailureInjectorFunc(func(point FinalizationFailurePoint) error {
+		if point == FinalizationFailureBeforeAudit {
+			return injected
+		}
+		return nil
+	})))
+	_, err = service.Execute(context.Background(), finalizationRequest(cutover))
+	if !errors.Is(err, injected) {
+		t.Fatalf("Execute(finalize_legacy) error=%v", err)
+	}
+	var epoch, state string
+	if err := db.QueryRow(`SELECT canonical_store,cutover_state FROM blackboard_store_state WHERE id=1`).Scan(&epoch, &state); err != nil {
+		t.Fatal(err)
+	}
+	if epoch != store.CanonicalStoreGraphV1 || state != "graph" {
+		t.Fatalf("failed audit committed state=(%q,%q)", epoch, state)
+	}
+	var tableCount, auditCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='project_facts'`).Scan(&tableCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM blackboard_migration_runs WHERE kind='finalize_legacy'`).Scan(&auditCount); err != nil {
+		t.Fatal(err)
+	}
+	if tableCount != 1 || auditCount != 0 {
+		t.Fatalf("failed audit left table_count=%d audit_count=%d", tableCount, auditCount)
+	}
+}
+
+func TestFinalizeLegacyZeroRowStateTransitionRollsBackDropsAndAudit(t *testing.T) {
+	db, base := newInspectionService(t)
+	insertCutoverGuardFixture(t, db)
+	cutover, err := base.Execute(context.Background(), MigrationRequest{Kind: MigrationKindCutover, BackupPath: filepath.Join(t.TempDir(), "legacy.bak")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	markCompatibilityReadsRetired(t, db)
+	service := NewService(db, base.databasePath, base.artifactRoot, WithFinalizationStateTransitionHook(func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE blackboard_store_state SET cutover_state='recovery_required' WHERE id=1`)
+		return err
+	}))
+	_, err = service.Execute(context.Background(), finalizationRequest(cutover))
+	if !errors.Is(err, ErrFinalizationBlocked) {
+		t.Fatalf("Execute(finalize_legacy) error=%v", err)
+	}
+	var epoch, state string
+	if err := db.QueryRow(`SELECT canonical_store,cutover_state FROM blackboard_store_state WHERE id=1`).Scan(&epoch, &state); err != nil {
+		t.Fatal(err)
+	}
+	var tables, audits int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='project_facts'`).Scan(&tables); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM blackboard_migration_runs WHERE kind='finalize_legacy'`).Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if epoch != store.CanonicalStoreGraphV1 || state != "graph" || tables != 1 || audits != 0 {
+		t.Fatalf("rollback epoch=%q state=%q tables=%d audits=%d", epoch, state, tables, audits)
+	}
+}
+
 func TestCutoverFailurePointsRollbackLegacyEpochAndAllGraphState(t *testing.T) {
 	t.Parallel()
 

@@ -80,6 +80,7 @@ type Config struct {
 	// CompatibilityWriteRetirement supplies Release C evidence that is not
 	// derivable from a local database. Nil keeps deprecated writes available.
 	CompatibilityWriteRetirement *blackboardcompat.WriteRetirementPolicy
+	CompatibilityReadRetirement  *blackboardcompat.ReadRetirementPolicy
 }
 
 type Server struct {
@@ -253,6 +254,18 @@ func NewServer(config Config) (*Server, error) {
 			ProjectInterface: server.projectInterface, Tasks: server.tasks,
 			WriteRetirement: config.CompatibilityWriteRetirement,
 		})
+		if config.CompatibilityWriteRetirement != nil {
+			if _, err := server.compatibility.RetireWrites(context.Background(), *config.CompatibilityWriteRetirement); err != nil {
+				_ = server.Close()
+				return nil, fmt.Errorf("evaluate compatibility-write retirement: %w", err)
+			}
+		}
+		if config.CompatibilityReadRetirement != nil {
+			if _, err := server.compatibility.RetireReads(context.Background(), *config.CompatibilityReadRetirement); err != nil {
+				_ = server.Close()
+				return nil, fmt.Errorf("evaluate compatibility-read retirement: %w", err)
+			}
+		}
 		server.tasks.SetContinuationReconciler(server.projectInterface)
 		server.projectInterfaceHTTP = projectinterface.NewHTTPHandler(server.projectInterface).
 			WithOperatorAuth(server.authToken, server.authToken == "")

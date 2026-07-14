@@ -23,6 +23,10 @@ func (server *Server) serveLegacyRead(response http.ResponseWriter, request *htt
 	if server.compatibility != nil {
 		setCompatibilityHeaders(response)
 		if kind := blackboardcompat.ReadCallKind(readRequest.Kind); kind != "" {
+			if err := server.compatibility.RejectRetiredRead(request.Context(), kind); err != nil {
+				writeCompatibilityError(response, err)
+				return true
+			}
 			if err := server.compatibility.RecordUse(request.Context(), blackboardcompat.Use{ProjectID: readRequest.ProjectID, Transport: blackboardcompat.TransportHTTP, Kind: kind, Mode: blackboardcompat.UseModeRead}); err != nil {
 				writeCompatibilityError(response, err)
 				return true

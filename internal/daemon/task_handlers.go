@@ -1719,6 +1719,10 @@ func (server *Server) handleGetTaskSummary(response http.ResponseWriter, request
 	}
 	if server.compatibility != nil {
 		setCompatibilityHeaders(response)
+		if err := server.compatibility.RejectRetiredRead(request.Context(), blackboardcompat.CallReadTaskSummary); err != nil {
+			writeCompatibilityError(response, err)
+			return
+		}
 		if err := server.compatibility.RecordUse(request.Context(), blackboardcompat.Use{ProjectID: projectID, Transport: blackboardcompat.TransportHTTP, Kind: blackboardcompat.CallReadTaskSummary, Mode: blackboardcompat.UseModeRead}); err != nil {
 			writeCompatibilityError(response, err)
 			return

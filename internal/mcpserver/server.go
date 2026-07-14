@@ -50,6 +50,9 @@ type Deps struct {
 func (deps Deps) legacyReadResult(ctx context.Context, readRequest blackboard.ReadRequest) (any, error) {
 	if deps.Compatibility != nil {
 		if kind := blackboardcompat.ReadCallKind(readRequest.Kind); kind != "" {
+			if err := deps.Compatibility.RejectRetiredRead(ctx, kind); err != nil {
+				return nil, err
+			}
 			if err := deps.Compatibility.RecordUse(ctx, blackboardcompat.Use{ProjectID: readRequest.ProjectID, Transport: blackboardcompat.TransportMCP, Kind: kind, Mode: blackboardcompat.UseModeRead}); err != nil {
 				return nil, err
 			}
@@ -69,6 +72,11 @@ func New(deps Deps) *sdkmcp.Server {
 		Name:    "pentest-agent",
 		Version: "0.1.0",
 	}, nil)
+	legacyReadsEnabled := true
+	if deps.Compatibility != nil {
+		retired, err := deps.Compatibility.ReadsRetired(context.Background())
+		legacyReadsEnabled = err != nil || !retired
+	}
 
 	sdkmcp.AddTool(server, deps.legacyTool("upsert_project_fact", "Upsert a project fact by fact key. Conflicting writes update the existing fact and preserve history as fact versions.", "blackboard_apply"), func(ctx context.Context, req *sdkmcp.CallToolRequest, args upsertProjectFactArgs) (*sdkmcp.CallToolResult, any, error) {
 		_ = req
@@ -110,54 +118,56 @@ func New(deps Deps) *sdkmcp.Server {
 		return toolJSON(fact)
 	})
 
-	sdkmcp.AddTool(server, deps.legacyTool("get_project_fact", "Fetch the full body of a project fact by fact key.", "blackboard_records_resolve"), func(ctx context.Context, req *sdkmcp.CallToolRequest, args projectFactKeyArgs) (*sdkmcp.CallToolResult, any, error) {
-		_ = req
-		if deps.Reads != nil {
-			result, err := deps.legacyReadResult(ctx, blackboard.ReadRequest{ProjectID: args.ProjectID, Kind: blackboard.ReadKindLegacyFactDetailV1, LegacyFactDetail: &blackboard.LegacyFactDetailRequest{FactKey: args.FactKey}})
+	if legacyReadsEnabled {
+		sdkmcp.AddTool(server, deps.legacyTool("get_project_fact", "Fetch the full body of a project fact by fact key.", "blackboard_records_resolve"), func(ctx context.Context, req *sdkmcp.CallToolRequest, args projectFactKeyArgs) (*sdkmcp.CallToolResult, any, error) {
+			_ = req
+			if deps.Reads != nil {
+				result, err := deps.legacyReadResult(ctx, blackboard.ReadRequest{ProjectID: args.ProjectID, Kind: blackboard.ReadKindLegacyFactDetailV1, LegacyFactDetail: &blackboard.LegacyFactDetailRequest{FactKey: args.FactKey}})
+				if err != nil {
+					return toolError(err)
+				}
+				return toolJSON(result)
+			}
+			fact, err := deps.Facts.GetFact(args.ProjectID, args.FactKey)
 			if err != nil {
 				return toolError(err)
 			}
-			return toolJSON(result)
-		}
-		fact, err := deps.Facts.GetFact(args.ProjectID, args.FactKey)
-		if err != nil {
-			return toolError(err)
-		}
-		return toolJSON(fact)
-	})
+			return toolJSON(fact)
+		})
 
-	sdkmcp.AddTool(server, deps.legacyTool("list_project_facts", "List the compact fact index for current truth.", "blackboard_records_list"), func(ctx context.Context, req *sdkmcp.CallToolRequest, args projectOnlyArgs) (*sdkmcp.CallToolResult, any, error) {
-		_ = req
-		if deps.Reads != nil {
-			result, err := deps.legacyReadResult(ctx, blackboard.ReadRequest{ProjectID: args.ProjectID, Kind: blackboard.ReadKindLegacyFactIndexV1, LegacyFactIndex: &blackboard.LegacyFactIndexRequest{}})
+		sdkmcp.AddTool(server, deps.legacyTool("list_project_facts", "List the compact fact index for current truth.", "blackboard_records_list"), func(ctx context.Context, req *sdkmcp.CallToolRequest, args projectOnlyArgs) (*sdkmcp.CallToolResult, any, error) {
+			_ = req
+			if deps.Reads != nil {
+				result, err := deps.legacyReadResult(ctx, blackboard.ReadRequest{ProjectID: args.ProjectID, Kind: blackboard.ReadKindLegacyFactIndexV1, LegacyFactIndex: &blackboard.LegacyFactIndexRequest{}})
+				if err != nil {
+					return toolError(err)
+				}
+				return toolJSON(result)
+			}
+			index, err := deps.Facts.FactIndex(args.ProjectID, blackboard.FactIndexOptions{})
 			if err != nil {
 				return toolError(err)
 			}
-			return toolJSON(result)
-		}
-		index, err := deps.Facts.FactIndex(args.ProjectID, blackboard.FactIndexOptions{})
-		if err != nil {
-			return toolError(err)
-		}
-		return toolJSON(index)
-	})
+			return toolJSON(index)
+		})
 
-	sdkmcp.AddTool(server, deps.legacyTool("search_project_facts", "Search project facts by key, summary, or body.", "blackboard_records_list"), func(ctx context.Context, req *sdkmcp.CallToolRequest, args searchFactsArgs) (*sdkmcp.CallToolResult, any, error) {
-		_ = req
-		if deps.Reads != nil {
-			include := args.IncludeDeprecated
-			result, err := deps.legacyReadResult(ctx, blackboard.ReadRequest{ProjectID: args.ProjectID, Kind: blackboard.ReadKindLegacyFactIndexV1, LegacyFactIndex: &blackboard.LegacyFactIndexRequest{IncludeDeprecated: &include, Query: args.Query}})
+		sdkmcp.AddTool(server, deps.legacyTool("search_project_facts", "Search project facts by key, summary, or body.", "blackboard_records_list"), func(ctx context.Context, req *sdkmcp.CallToolRequest, args searchFactsArgs) (*sdkmcp.CallToolResult, any, error) {
+			_ = req
+			if deps.Reads != nil {
+				include := args.IncludeDeprecated
+				result, err := deps.legacyReadResult(ctx, blackboard.ReadRequest{ProjectID: args.ProjectID, Kind: blackboard.ReadKindLegacyFactIndexV1, LegacyFactIndex: &blackboard.LegacyFactIndexRequest{IncludeDeprecated: &include, Query: args.Query}})
+				if err != nil {
+					return toolError(err)
+				}
+				return toolJSON(result)
+			}
+			matches, err := deps.Facts.SearchFacts(args.ProjectID, args.Query, args.IncludeDeprecated)
 			if err != nil {
 				return toolError(err)
 			}
-			return toolJSON(result)
-		}
-		matches, err := deps.Facts.SearchFacts(args.ProjectID, args.Query, args.IncludeDeprecated)
-		if err != nil {
-			return toolError(err)
-		}
-		return toolJSON(matches)
-	})
+			return toolJSON(matches)
+		})
+	}
 
 	sdkmcp.AddTool(server, deps.legacyTool("deprecate_project_fact", "Mark a project fact as deprecated while preserving its body and history.", "blackboard_apply"), func(ctx context.Context, req *sdkmcp.CallToolRequest, args projectFactKeyArgs) (*sdkmcp.CallToolResult, any, error) {
 		_ = req
@@ -255,21 +265,23 @@ func New(deps Deps) *sdkmcp.Server {
 		return toolJSON(finding)
 	})
 
-	sdkmcp.AddTool(server, deps.legacyTool("list_vulnerabilities", "List all findings for a project.", "blackboard_records_list"), func(ctx context.Context, req *sdkmcp.CallToolRequest, args projectOnlyArgs) (*sdkmcp.CallToolResult, any, error) {
-		_ = req
-		if deps.Reads != nil {
-			result, err := deps.legacyReadResult(ctx, blackboard.ReadRequest{ProjectID: args.ProjectID, Kind: blackboard.ReadKindLegacyFindingCollectionV1, LegacyFindingCollection: &blackboard.LegacyFindingCollectionRequest{}})
+	if legacyReadsEnabled {
+		sdkmcp.AddTool(server, deps.legacyTool("list_vulnerabilities", "List all findings for a project.", "blackboard_records_list"), func(ctx context.Context, req *sdkmcp.CallToolRequest, args projectOnlyArgs) (*sdkmcp.CallToolResult, any, error) {
+			_ = req
+			if deps.Reads != nil {
+				result, err := deps.legacyReadResult(ctx, blackboard.ReadRequest{ProjectID: args.ProjectID, Kind: blackboard.ReadKindLegacyFindingCollectionV1, LegacyFindingCollection: &blackboard.LegacyFindingCollectionRequest{}})
+				if err != nil {
+					return toolError(err)
+				}
+				return toolJSON(result)
+			}
+			findings, err := deps.Facts.ListFindings(args.ProjectID)
 			if err != nil {
 				return toolError(err)
 			}
-			return toolJSON(result)
-		}
-		findings, err := deps.Facts.ListFindings(args.ProjectID)
-		if err != nil {
-			return toolError(err)
-		}
-		return toolJSON(findings)
-	})
+			return toolJSON(findings)
+		})
+	}
 
 	sdkmcp.AddTool(server, deps.legacyTool("attach_evidence", "Attach or retain an evidence artifact under a managed artifact root.", "blackboard_retain_evidence"), func(ctx context.Context, req *sdkmcp.CallToolRequest, args attachEvidenceArgs) (*sdkmcp.CallToolResult, any, error) {
 		_ = req
@@ -305,43 +317,45 @@ func New(deps Deps) *sdkmcp.Server {
 		return toolJSON(artifact)
 	})
 
-	sdkmcp.AddTool(server, deps.legacyTool("generate_report", "Generate a Markdown report from stored project state.", "PentestReportV1"), func(ctx context.Context, req *sdkmcp.CallToolRequest, args generateReportArgs) (*sdkmcp.CallToolResult, any, error) {
-		_ = req
-		if deps.Compatibility != nil {
-			principal, err := deps.compatibilityPrincipal(args.ProjectID)
-			if err != nil {
-				return toolProjectInterfaceError(projectinterface.AsError(err))
+	if legacyReadsEnabled {
+		sdkmcp.AddTool(server, deps.legacyTool("generate_report", "Generate a Markdown report from stored project state.", "PentestReportV1"), func(ctx context.Context, req *sdkmcp.CallToolRequest, args generateReportArgs) (*sdkmcp.CallToolResult, any, error) {
+			_ = req
+			if deps.Compatibility != nil {
+				principal, err := deps.compatibilityPrincipal(args.ProjectID)
+				if err != nil {
+					return toolProjectInterfaceError(projectinterface.AsError(err))
+				}
+				result, err := deps.Compatibility.Call(ctx, blackboardcompat.LegacyCall{
+					Kind: blackboardcompat.CallGenerateReport, Transport: blackboardcompat.TransportMCP,
+					ProjectID: args.ProjectID, Principal: principal, IdempotencyKey: args.IdempotencyKey,
+					Report: &blackboardcompat.ReportWrite{TaskID: args.TaskID},
+				})
+				if err != nil {
+					return toolProjectInterfaceError(projectinterface.AsError(err))
+				}
+				return toolJSON(result.Payload)
 			}
-			result, err := deps.Compatibility.Call(ctx, blackboardcompat.LegacyCall{
-				Kind: blackboardcompat.CallGenerateReport, Transport: blackboardcompat.TransportMCP,
-				ProjectID: args.ProjectID, Principal: principal, IdempotencyKey: args.IdempotencyKey,
-				Report: &blackboardcompat.ReportWrite{TaskID: args.TaskID},
-			})
-			if err != nil {
-				return toolProjectInterfaceError(projectinterface.AsError(err))
+			taskID := args.TaskID
+			if taskID == "" && deps.Tasks != nil {
+				tasks, err := deps.Tasks.ListForProject(args.ProjectID)
+				if err != nil {
+					return toolError(err)
+				}
+				if len(tasks) > 0 {
+					taskID = tasks[len(tasks)-1].ID
+				}
 			}
-			return toolJSON(result.Payload)
-		}
-		taskID := args.TaskID
-		if taskID == "" && deps.Tasks != nil {
-			tasks, err := deps.Tasks.ListForProject(args.ProjectID)
+			if taskID == "" {
+				return toolError(fmt.Errorf("task_id is required when the project has no tasks"))
+			}
+			generator := report.NewGenerator(deps.Facts, deps.Tasks)
+			out, err := generator.Generate(report.Request{ProjectID: args.ProjectID, TaskID: taskID})
 			if err != nil {
 				return toolError(err)
 			}
-			if len(tasks) > 0 {
-				taskID = tasks[len(tasks)-1].ID
-			}
-		}
-		if taskID == "" {
-			return toolError(fmt.Errorf("task_id is required when the project has no tasks"))
-		}
-		generator := report.NewGenerator(deps.Facts, deps.Tasks)
-		out, err := generator.Generate(report.Request{ProjectID: args.ProjectID, TaskID: taskID})
-		if err != nil {
-			return toolError(err)
-		}
-		return toolJSON(out)
-	})
+			return toolJSON(out)
+		})
+	}
 
 	sdkmcp.AddTool(server, deps.legacyTool("submit_task_summary", "Submit a task summary before ending a continuation so the next resume carries compact handoff context.", "blackboard_finish_continuation"), func(ctx context.Context, req *sdkmcp.CallToolRequest, args submitTaskSummaryArgs) (*sdkmcp.CallToolResult, any, error) {
 		_ = req

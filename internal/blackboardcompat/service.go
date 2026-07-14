@@ -164,6 +164,18 @@ type WriteRetirementPolicy struct {
 	ObservationWaiver         *ObservationWaiver
 }
 
+// ReadRetirementPolicy records Release D bundled-client evidence and an
+// optional operator waiver for only the local 30-day read-use observation.
+type ReadRetirementPolicy struct {
+	BundledWebCLIProjectionsOnly bool
+	ObservationWaiver            *ObservationWaiver
+}
+
+// ReleaseDReadRetirementPolicy is the evidence shipped by the Release D binary.
+func ReleaseDReadRetirementPolicy() *ReadRetirementPolicy {
+	return &ReadRetirementPolicy{BundledWebCLIProjectionsOnly: true}
+}
+
 // ObservationWaiver is an explicit operator decision to bypass only the
 // 30-day local compatibility-use observation period.
 type ObservationWaiver struct {
@@ -225,6 +237,73 @@ func (s *Service) RecordUse(ctx context.Context, use Use) error {
 	return nil
 }
 
+// RetireReads durably retires compatibility reads only after the Release C
+// write decision, bundled-client adoption, and the read observation gate.
+func (s *Service) RetireReads(ctx context.Context, policy ReadRetirementPolicy) (bool, error) {
+	if s == nil || s.deps.DB == nil || !policy.BundledWebCLIProjectionsOnly {
+		return false, nil
+	}
+	var writeRetiredAt string
+	if err := s.deps.DB.QueryRowContext(ctx, `SELECT retired_at FROM blackboard_compatibility_write_retirement WHERE id=1`).Scan(&writeRetiredAt); errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	waived := validObservationWaiver(policy.ObservationWaiver)
+	if !waived {
+		observationStartTime := s.clock().UTC().Add(-writeObservationPeriod)
+		retiredAt, err := time.Parse(time.RFC3339Nano, writeRetiredAt)
+		if err != nil {
+			return false, err
+		}
+		if retiredAt.After(observationStartTime) {
+			return false, nil
+		}
+		observationStart := observationStartTime.Format(time.RFC3339Nano)
+		var recentReads int
+		if err := s.deps.DB.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM blackboard_compatibility_use WHERE use_mode='read' AND last_used_at>?)`, observationStart).Scan(&recentReads); err != nil || recentReads != 0 {
+			return false, err
+		}
+	}
+	operatorID, reason := "", ""
+	if waived {
+		operatorID = strings.TrimSpace(policy.ObservationWaiver.OperatorID)
+		reason = strings.TrimSpace(policy.ObservationWaiver.Reason)
+	}
+	_, err := s.deps.DB.ExecContext(ctx, `INSERT OR IGNORE INTO blackboard_compatibility_read_retirement(id,retired_at,bundled_web_cli_projections_only,observation_waived,waiver_operator_id,waiver_reason) VALUES(1,?,?,?,?,?)`, s.clock().UTC().Format(time.RFC3339Nano), true, waived, operatorID, reason)
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// RejectRetiredRead returns the stable removal error after durable retirement.
+func (s *Service) RejectRetiredRead(ctx context.Context, kind CallKind) error {
+	if s == nil || s.deps.DB == nil {
+		return nil
+	}
+	var retired int
+	if err := s.deps.DB.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM blackboard_compatibility_read_retirement WHERE id=1)`).Scan(&retired); err != nil {
+		return projectinterface.InternalError("read compatibility-read retirement: " + err.Error())
+	}
+	if retired != 0 {
+		return compatibilityRemovedError(LegacyCall{Kind: kind})
+	}
+	return nil
+}
+
+// ReadsRetired reports the durable Release D registration decision.
+func (s *Service) ReadsRetired(ctx context.Context) (bool, error) {
+	if s == nil || s.deps.DB == nil {
+		return false, nil
+	}
+	var retired int
+	if err := s.deps.DB.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM blackboard_compatibility_read_retirement WHERE id=1)`).Scan(&retired); err != nil {
+		return false, err
+	}
+	return retired != 0, nil
+}
+
 func ReadCallKind(kind blackboard.ReadKind) CallKind {
 	switch kind {
 	case blackboard.ReadKindLegacyFactIndexV1, blackboard.ReadKindLegacyFactDetailV1,
@@ -248,6 +327,11 @@ func (s *Service) Call(ctx context.Context, call LegacyCall) (LegacyResult, erro
 	}
 	if err := s.rejectRetiredWrite(ctx, call); err != nil {
 		return LegacyResult{}, err
+	}
+	if isRetirableRead(call) {
+		if err := s.RejectRetiredRead(ctx, call.Kind); err != nil {
+			return LegacyResult{}, err
+		}
 	}
 	if strings.TrimSpace(call.IdempotencyKey) == "" {
 		key, err := newBestEffortKey()
@@ -331,24 +415,43 @@ func (s *Service) rejectRetiredWrite(ctx context.Context, call LegacyCall) error
 	if !isRetirableWrite(call) {
 		return nil
 	}
-	var retired int
-	err := s.deps.DB.QueryRowContext(ctx, `SELECT 1 FROM blackboard_compatibility_write_retirement WHERE id=1`).Scan(&retired)
-	if err == nil {
-		return compatibilityRemovedError(call)
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return projectinterface.InternalError("read compatibility-write retirement: " + err.Error())
-	}
 	policy := s.deps.WriteRetirement
-	if policy == nil || policy.GraphNativeStableReleases < 2 || !policy.BundledRuntimeV1Only || !policy.ReplacementDocsReady {
+	if policy == nil {
 		return nil
 	}
-	eligible, waived, err := s.localWriteRetirementGatesPass(ctx, *policy)
+	retired, err := s.RetireWrites(ctx, *policy)
 	if err != nil {
 		return projectinterface.InternalError("evaluate compatibility-write retirement: " + err.Error())
 	}
+	if retired {
+		return compatibilityRemovedError(call)
+	}
+	return nil
+}
+
+// RetireWrites durably records the Release C decision without requiring an
+// attempted legacy mutation. Calls continue to recheck this decision.
+func (s *Service) RetireWrites(ctx context.Context, policy WriteRetirementPolicy) (bool, error) {
+	if s == nil || s.deps.DB == nil {
+		return false, nil
+	}
+	var retired int
+	err := s.deps.DB.QueryRowContext(ctx, `SELECT 1 FROM blackboard_compatibility_write_retirement WHERE id=1`).Scan(&retired)
+	if err == nil {
+		return true, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return false, err
+	}
+	if policy.GraphNativeStableReleases < 2 || !policy.BundledRuntimeV1Only || !policy.ReplacementDocsReady {
+		return false, nil
+	}
+	eligible, waived, err := s.localWriteRetirementGatesPass(ctx, policy)
+	if err != nil {
+		return false, err
+	}
 	if !eligible {
-		return nil
+		return false, nil
 	}
 	now := s.clock().UTC().Format(time.RFC3339Nano)
 	waiverOperator, waiverReason := "", ""
@@ -362,9 +465,9 @@ func (s *Service) rejectRetiredWrite(ctx context.Context, call LegacyCall) error
 			observation_waived,waiver_operator_id,waiver_reason
 		) VALUES (1,?,?,?,?,?,?,?)`, now, policy.GraphNativeStableReleases, true, true, waived, waiverOperator, waiverReason)
 	if err != nil {
-		return projectinterface.InternalError("record compatibility-write retirement: " + err.Error())
+		return false, err
 	}
-	return compatibilityRemovedError(call)
+	return true, nil
 }
 
 func (s *Service) localWriteRetirementGatesPass(ctx context.Context, policy WriteRetirementPolicy) (bool, bool, error) {
@@ -474,9 +577,24 @@ func isRetirableWrite(call LegacyCall) bool {
 	}
 }
 
+func isRetirableRead(call LegacyCall) bool {
+	switch call.Kind {
+	case CallReadFact, CallReadFinding, CallReadEvidence, CallReadTaskSummary, CallGenerateReport:
+		return true
+	default:
+		return false
+	}
+}
+
 func compatibilityRemovedError(call LegacyCall) *projectinterface.Error {
 	replacement := "blackboard apply"
-	if call.Kind == CallAttachEvidence {
+	if call.Kind == CallGenerateReport {
+		replacement = "PentestReportV1"
+	} else if call.Kind == CallReadTaskSummary {
+		replacement = "Task Summary versions"
+	} else if isRetirableRead(call) {
+		replacement = "blackboard read records"
+	} else if call.Kind == CallAttachEvidence {
 		replacement = "blackboard evidence retain"
 	} else if call.Kind == CallPutTaskSummary {
 		replacement = "blackboard continuation finish"
