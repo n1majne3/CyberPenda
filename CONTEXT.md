@@ -28,6 +28,10 @@ _Avoid_: chat message, report section, shell command, plan step
 The user's natural-language objective for a **Task**.
 _Avoid_: raw prompt only, plan step
 
+**Reason Task**:
+An operator-triggered planning **Task** that reads a **Blackboard Snapshot** and prepares an approval-required proposal for next **Task Goals**, **Exploration Objective** changes, and a readiness judgment.
+_Avoid_: daemon scheduler, autonomous Blackboard mutation, hidden skill prompt
+
 **Task Launch**:
 The creation or continuation of a **Task** from **Run Controls**, resolved runtime configuration, selected **Runner**, **Scope Snapshot**, and startup checks.
 _Avoid_: runtime projection, task adapter build, launch plumbing
@@ -63,6 +67,10 @@ _Avoid_: new task per reply, detached chat
 **Task Summary**:
 A runtime-maintained compact handoff view of a **Task** used to continue work without replaying every task event or conversation message.
 _Avoid_: full transcript, raw event dump
+
+**Objective Outcome**:
+A structured conclusion in a **Task Summary** for a **Task** pursuing a primary **Exploration Objective**, with status `supported`, `contradicted`, `inconclusive`, or `blocked` and links to supporting **Project Facts**, **Findings**, or **Evidence Artifacts**.
+_Avoid_: automatic objective resolution, unlinked narrative conclusion
 
 **Task Summary Version**:
 A historical revision of a **Task Summary** submitted by a runtime.
@@ -445,7 +453,7 @@ A command-line **Project Interface** used when the primary agent integration is 
 _Avoid_: bypass, debug-only path
 
 **Blackboard**:
-The project-local memory that stores durable facts, relationships, findings, and evidence for one **Project**.
+The project-local memory that stores durable facts, relationships, exploration objectives, project directives, findings, and evidence for one **Project**.
 _Avoid_: chat history, notes database
 
 **Project Fact**:
@@ -491,6 +499,18 @@ _Avoid_: model assumption, unverified claim
 **Fact Relation**:
 A typed link that explains how one **Project Fact** relates to another.
 _Avoid_: finding relation, edge, attack graph link
+
+**Exploration Objective**:
+A durable project-scoped investigation direction that links one or more source **Project Facts** to an unknown future conclusion. It may inform a **Task Goal** and later resolve through **Project Facts**, **Findings**, or **Evidence Artifacts**, but it is not **Current Truth** by itself.
+_Avoid_: intent, open edge, task, fact relation, attack graph edge
+
+**Project Directive**:
+A durable, project-scoped strategy steer that governs future work without being a **Project Fact** or asserting **Current Truth**.
+_Avoid_: hint, note, scratchpad, steering, project fact, finding
+
+**Blackboard Snapshot**:
+A derived, read-only planning projection that brings together relevant **Project Facts**, **Fact Relations**, **Exploration Objectives**, **Project Directives**, **Findings**, and **Evidence Artifacts**.
+_Avoid_: a second source of truth, a scheduler queue, a typed attack graph
 
 **Attack Chain**:
 A narrative path that connects **Project Facts** and **Findings** into an explainable security-testing story.
@@ -751,6 +771,8 @@ _Avoid_: transcript, export, source of truth
 - A **Profile Config Import** updates a **Runtime Profile** only when the edited config can be parsed into structured fields.
 - A **Project** has zero or more **Tasks**.
 - A **Task** starts from one **Task Goal** plus **Run Controls**.
+- A **Reason Task** is operator-triggered and returns a proposal for approval; it does not directly create, retire, or resolve Blackboard records.
+- A **Task** may pursue one primary **Exploration Objective** while producing multiple **Project Facts**, **Findings**, or **Evidence Artifacts**.
 - A **Task** resolves to one **Runtime Profile** through **Launch Profile Resolution** and chooses one **Runner**.
 - A **Task** has one **Runtime Harness** that controls runtime lifecycle for that task.
 - A **Task** launches from its **Task Runtime Configuration**, not a live mutable **Runtime Profile**.
@@ -775,6 +797,8 @@ _Avoid_: transcript, export, source of truth
 - A **Runtime Continuation** receives a **Task Summary** instead of a full task transcript by default.
 - A **Runtime** may submit **Task Summary** updates through a trusted **Project Interface**.
 - A **Task Summary** update is automatically accepted and preserved as a **Task Summary Version**.
+- A **Task Summary** for a Task pursuing a primary **Exploration Objective** records an **Objective Outcome** with links to its supporting Blackboard records.
+- An **Objective Outcome** does not automatically close its **Exploration Objective**.
 - A **Mechanical Handoff Packet** is used for **Runtime Continuation** when no accepted **Task Summary** exists.
 - A **Task Event** may summarize runtime output but should not store complete raw output dumps.
 - **Harness Steering** may request **Run Controls** changes, but those changes apply only at a **Runtime Continuation** boundary.
@@ -806,7 +830,7 @@ _Avoid_: transcript, export, source of truth
 - A **Sandbox Runner** failure must not automatically fall back to the **Host Runner**.
 - A **Sandbox** isolates runtime environment state but does not imply full network or command enforcement.
 - A **Blackboard** belongs to exactly one **Project**.
-- A **Blackboard** contains zero or more **Project Facts**, **Fact Relations**, **Findings**, and **Evidence Artifacts**.
+- A **Blackboard** contains zero or more **Project Facts**, **Fact Relations**, **Exploration Objectives**, **Project Directives**, **Findings**, and **Evidence Artifacts**.
 - **Blackboard** contents are not shared across **Projects** by default.
 - All **Runtimes** in the same **Project** share the same **Blackboard**.
 - A **Runtime** writes important **Project Facts** during a **Task**, not only at task completion.
@@ -831,9 +855,25 @@ _Avoid_: transcript, export, source of truth
 - A **Runtime** sees the **Fact Index** by default and fetches full **Project Fact** bodies on demand.
 - A **Fact Relation** connects exactly two **Project Facts**.
 - A **Fact Relation** does not directly connect **Findings**.
+- A **Fact Relation** connects existing facts; it does not represent an open **Exploration Objective**.
 - A contradictory **Fact Relation** does not automatically turn either **Project Fact** into a **Deprecated Fact**.
+- An **Exploration Objective** belongs to exactly one **Project**.
+- An **Exploration Objective** may reference one or more source **Project Facts**.
+- An **Exploration Objective** is not a **Project Fact**, **Fact Relation**, **Finding**, **Task**, or **Attack Chain**.
+- An **Exploration Objective** may become or inform a **Task Goal**, but the **Task Goal** is the launch objective for one **Task**.
+- Resolving an **Exploration Objective** may produce multiple **Project Facts**, **Findings**, or **Evidence Artifacts**.
 - An **Attack Chain** uses **Project Facts**, **Fact Relations**, and **Findings** without becoming a separate graph source of truth.
 - A stable **Attack Chain** summary is stored as a **Project Fact**.
+- A **Project Directive** belongs to exactly one **Project**.
+- A **Project Directive** is not a **Project Fact**, **Fact Relation**, **Exploration Objective**, **Finding**, **Harness Steering**, **Task**, or **Attack Chain**.
+- A **Project Directive** is never part of **Current Truth**, the **Fact Index**, or a **Report**.
+- A **Project Directive** does not assert facts; an unconfirmed assertion must be recorded as a **Tentative Fact**, not smuggled through a **Project Directive**.
+- A **Project Directive** has no resolved state; it remains active until it is explicitly retired or superseded.
+- An **Exploration Objective** is an interrogative direction that resolves into conclusions; a **Project Directive** is an imperative steer that governs until replaced.
+- A **Project Directive** is advisory, not enforced: a **Runtime** reads it as Blackboard context but the harness performs no directive-compliance check.
+- An operator may realize a **Project Directive** as a **Harness Steering** action for one **Task**, but a **Project Directive** is not itself a **Harness Steering**.
+- A **Project Directive** is included as a separate advisory section in a **Reason Task**'s **Blackboard Snapshot** and in the launch or continuation context of a relevant **Task**; it is never injected into the **Fact Index**.
+- A **Blackboard Snapshot** is derived from the **Blackboard** for planning context and does not become an independent source of truth or scheduling record.
 - A **Finding** has exactly one **Finding Key** within its **Project**.
 - A **Finding Key** identifies the same reportable issue across updates.
 - A conflicting write to an existing **Finding Key** automatically updates that **Finding**.
@@ -904,6 +944,10 @@ _Avoid_: transcript, export, source of truth
 - **Fact Key Alias** is not an independent fact identity; resolved: old keys redirect to canonical keys after merge and stop producing separate current truth.
 - `contradicts` in a **Fact Relation** does not decide truth by itself; resolved: deprecating a fact requires an explicit judgment.
 - **Fact Relation** is not a finding graph; resolved: relate **Findings** through supporting **Project Facts** and **Evidence Artifacts**.
+- Cairn-style Intent is not imported as an attack-graph edge; resolved: use **Exploration Objective** for durable open investigation directions.
+- **Exploration Objective** is not a **Fact Relation**; resolved: relations explain existing facts, while objectives point from known facts toward an unknown conclusion.
+- **Exploration Objective** is not a **Task Goal**; resolved: objectives may inform task launch, but a **Task Goal** belongs to one launched **Task**.
+- **Exploration Objective** is not **Current Truth**; resolved: it is planning state linked to facts, not a reusable assertion.
 - **Finding Key** is not a **Fact Key**; resolved: facts and reportable issues have separate stable identities.
 - **Finding Version** is not a duplicate finding; resolved: current finding views use the latest state while history remains inspectable.
 - **Finding Key** generation is not fully automatic in MVP; resolved: runtimes may propose keys, while naming rules and merge workflows handle cleanup.
@@ -1068,6 +1112,9 @@ _Avoid_: transcript, export, source of truth
 - **Task Summary** is not daemon-authored intelligence; resolved: runtimes maintain summary candidates, while the daemon stores and injects accepted summaries.
 - **Task Summary** acceptance is automatic; resolved: the latest runtime-submitted summary is accepted while prior versions remain inspectable.
 - **Mechanical Handoff Packet** is not an LLM summary; resolved: it is structured fallback context assembled without semantic summarization.
+- Cairn-style **Reason** is not daemon reasoning; resolved: use an operator-triggered **Reason Task** whose proposed Blackboard changes require approval.
+- Cairn-style graph export is not a new graph store; resolved: use a derived **Blackboard Snapshot** for planning context only.
+- A Task conclusion is not automatic objective closure; resolved: record an **Objective Outcome** in the **Task Summary** and leave **Exploration Objective** closure to approval.
 - **Provenance** is not chronological history; resolved: provenance is the source context attached to conclusions, while project history is chronological security records.
 - **Report** provenance is summarized, not exhaustive; resolved: reports show the runner, scope context, and key evidence rather than every task event.
 - **Tentative Fact** is visible current context, not confirmed conclusion; resolved: current views may include it with confidence while reports mark it separately from confirmed findings.
