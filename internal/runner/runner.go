@@ -83,6 +83,9 @@ type SandboxCommandRequest struct {
 	RuntimeCommand  []string
 	ProcessEnv      map[string]string
 	NetworkMode     SandboxNetworkMode
+	// ReadOnlyTaskFiles are task-root-relative mandatory inputs remounted over
+	// the writable task volume with Docker's read-only bind option.
+	ReadOnlyTaskFiles []string
 }
 
 type ActivationRequest struct {
@@ -168,6 +171,15 @@ func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 		"-e",
 		"PENTEST_TASK_ROOT=/task",
 	)
+	for _, relativePath := range request.ReadOnlyTaskFiles {
+		clean := filepath.Clean(relativePath)
+		if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			return Command{}, fmt.Errorf("read-only task file must stay under task root: %q", relativePath)
+		}
+		source := filepath.Join(taskRoot, clean)
+		target := "/task/" + filepath.ToSlash(clean)
+		args = append(args, "--mount", "type=bind,src="+source+",dst="+target+",readonly")
+	}
 	if request.NetworkMode == SandboxNetworkHostProxyOnly {
 		args = append(args, "--network", HostProxyOnlySandboxNetworkName)
 	}

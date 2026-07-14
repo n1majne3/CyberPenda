@@ -1,4 +1,4 @@
-.PHONY: dev build build-ui build-sandbox-image test test-ci test-backend smoke-sandbox-mcp smoke-runtime-tasks clean
+.PHONY: dev build build-ui check-ui-sync install-git-hooks build-sandbox-image test test-ci test-backend smoke-sandbox-mcp smoke-runtime-tasks clean
 
 # Run the daemon and the Vite dev server together for local development.
 # The Vite proxy forwards /api and /health to the daemon on :8787.
@@ -57,8 +57,18 @@ juice-shop-live:
 # Build the React UI and copy it into the embed location.
 build-ui:
 	cd web && npm install && npm run build
-	rm -rf internal/daemon/webfs/dist
-	cp -r web/dist internal/daemon/webfs/dist
+	mkdir -p internal/daemon/webfs/dist
+	rsync -a --delete web/dist/ internal/daemon/webfs/dist/
+
+# Rebuild the committed embedded UI and fail when HEAD does not contain it.
+# A failed check leaves the fresh files in place so they can be reviewed and committed.
+check-ui-sync:
+	@bash scripts/check-embedded-ui-sync.sh
+
+# Enable repository-owned hooks for this checkout. The pre-push hook catches
+# stale embedded UI before GitHub Actions has to report it.
+install-git-hooks:
+	git config core.hooksPath .githooks
 
 # Build the daemon binary with the UI embedded.
 build: build-ui

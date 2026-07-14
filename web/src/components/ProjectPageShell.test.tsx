@@ -29,12 +29,27 @@ describe("ProjectPageShell", () => {
     expect(screen.getByRole("heading", { name: "Tasks" })).toBeInTheDocument();
     expect(screen.getByText("body")).toBeInTheDocument();
 
-    for (const label of ["Dashboard", "Tasks", "Scope", "Blackboard", "Findings", "Evidence", "Report"]) {
+    // IA order from read contract §19.1: Overview → Tasks → Blackboard → Findings →
+    // Evidence → Report → Scope. CTF Projects swap Findings/Report for Solution.
+    for (const label of [
+      "Overview",
+      "Tasks",
+      "Blackboard",
+      "Findings",
+      "Evidence",
+      "Report",
+      "Scope",
+    ]) {
       expect(screen.getByRole("link", { name: label })).toHaveClass("flex-1", "text-center");
     }
 
     const chromeText = chrome.textContent ?? "";
-    expect(chromeText.indexOf("All projects")).toBeLessThan(chromeText.indexOf("Dashboard"));
-    expect(chromeText.indexOf("Dashboard")).toBeLessThan(chromeText.indexOf("Tasks"));
+    expect(chromeText.indexOf("All projects")).toBeLessThan(chromeText.indexOf("Overview"));
+    expect(chromeText.indexOf("Overview")).toBeLessThan(chromeText.indexOf("Tasks"));
+    expect(chromeText.indexOf("Tasks")).toBeLessThan(chromeText.indexOf("Blackboard"));
+    expect(chromeText.indexOf("Blackboard")).toBeLessThan(chromeText.indexOf("Findings"));
+    expect(chromeText.indexOf("Findings")).toBeLessThan(chromeText.indexOf("Evidence"));
+    expect(chromeText.indexOf("Evidence")).toBeLessThan(chromeText.indexOf("Report"));
+    expect(chromeText.indexOf("Report")).toBeLessThan(chromeText.indexOf("Scope"));
   });
 });

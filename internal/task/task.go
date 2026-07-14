@@ -5,6 +5,7 @@
 package task
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -58,11 +59,12 @@ type ScopeSnapshot = project.Scope
 type EventKind string
 
 const (
-	EventKindRuntimeOutput EventKind = "runtime_output"
-	EventKindStatus        EventKind = "status"
-	EventKindSteering      EventKind = "steering"
-	EventKindConversation  EventKind = "conversation"
-	EventKindLifecycle     EventKind = "lifecycle"
+	EventKindRuntimeOutput        EventKind = "runtime_output"
+	EventKindStatus               EventKind = "status"
+	EventKindSteering             EventKind = "steering"
+	EventKindConversation         EventKind = "conversation"
+	EventKindLifecycle            EventKind = "lifecycle"
+	EventKindBlackboardCheckpoint EventKind = "blackboard_checkpoint"
 )
 
 // EventPayload is the structured payload of a task event. Keep it compact.
@@ -70,12 +72,14 @@ type EventPayload map[string]any
 
 // Event is one structured timeline entry for a task.
 type Event struct {
-	ID        string       `json:"id"`
-	TaskID    string       `json:"task_id"`
-	Seq       int          `json:"seq"`
-	Kind      EventKind    `json:"kind"`
-	Payload   EventPayload `json:"payload"`
-	CreatedAt time.Time    `json:"created_at"`
+	ID             string       `json:"id"`
+	TaskID         string       `json:"task_id"`
+	ContinuationID string       `json:"continuation_id,omitempty"`
+	AttemptNodeID  string       `json:"attempt_node_id,omitempty"`
+	Seq            int          `json:"seq"`
+	Kind           EventKind    `json:"kind"`
+	Payload        EventPayload `json:"payload"`
+	CreatedAt      time.Time    `json:"created_at"`
 }
 
 // RuntimeConfigVersion is a historical task-specific runtime configuration
@@ -90,23 +94,55 @@ type RuntimeConfigVersion struct {
 	CreatedAt        time.Time      `json:"created_at"`
 }
 
+// ContinuationSnapshotPin is the immutable runtime-configuration and Blackboard
+// snapshot metadata captured when a Continuation is created.
+type ContinuationSnapshotPin struct {
+	RuntimeConfigVersionID              string `json:"runtime_config_version_id,omitempty"`
+	BlackboardGraphRevision             int    `json:"blackboard_graph_revision,omitempty"`
+	BlackboardRendererVersion           string `json:"blackboard_renderer_version,omitempty"`
+	BlackboardEstimatorVersion          string `json:"blackboard_estimator_version,omitempty"`
+	BlackboardProjectionHash            string `json:"blackboard_projection_hash,omitempty"`
+	BlackboardProjectionBytes           int    `json:"blackboard_projection_bytes,omitempty"`
+	BlackboardProjectionEstimatedTokens int    `json:"blackboard_projection_estimated_tokens,omitempty"`
+}
+
 // TaskContinuation is one Runtime Continuation for a Task. It tracks the
 // Runtime-specific run instance that later Stop/Resume controls will own.
 type TaskContinuation struct {
-	ID                string     `json:"id"`
-	TaskID            string     `json:"task_id"`
-	Number            int        `json:"number"`
-	RuntimeProfileID  string     `json:"runtime_profile_id"`
-	RuntimeProvider   string     `json:"runtime_provider"`
-	Runner            Runner     `json:"runner"`
-	Status            Status     `json:"status"`
-	ContainerID       string     `json:"container_id,omitempty"`
-	NativeSessionID   string     `json:"native_session_id,omitempty"`
-	NativeSessionPath string     `json:"native_session_path,omitempty"`
-	StartedAt         time.Time  `json:"started_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
-	EndedAt           *time.Time `json:"ended_at,omitempty"`
+	ContinuationSnapshotPin
+	ID                                 string               `json:"id"`
+	TaskID                             string               `json:"task_id"`
+	Number                             int                  `json:"number"`
+	RuntimeProfileID                   string               `json:"runtime_profile_id"`
+	RuntimeProvider                    string               `json:"runtime_provider"`
+	Runner                             Runner               `json:"runner"`
+	Status                             Status               `json:"status"`
+	ContainerID                        string               `json:"container_id,omitempty"`
+	NativeSessionID                    string               `json:"native_session_id,omitempty"`
+	NativeSessionPath                  string               `json:"native_session_path,omitempty"`
+	StartedAt                          time.Time            `json:"started_at"`
+	UpdatedAt                          time.Time            `json:"updated_at"`
+	EndedAt                            *time.Time           `json:"ended_at,omitempty"`
+	BlackboardFinishSummaryVersionID   string               `json:"blackboard_finish_summary_version_id,omitempty"`
+	BlackboardFinishGraphRevision      int                  `json:"blackboard_finish_graph_revision,omitempty"`
+	BlackboardFinishMutationSequence   int                  `json:"blackboard_finish_mutation_sequence,omitempty"`
+	BlackboardFinishedAt               *time.Time           `json:"blackboard_finished_at,omitempty"`
+	BlackboardReconciliationStatus     ReconciliationStatus `json:"blackboard_reconciliation_status"`
+	BlackboardReconciliationMutationID string               `json:"blackboard_reconciliation_mutation_id,omitempty"`
+	BlackboardReconciledAt             *time.Time           `json:"blackboard_reconciled_at,omitempty"`
 }
+
+// ReconciliationStatus is the durable normal/unexpected reconciliation marker
+// for one Runtime Continuation.
+type ReconciliationStatus string
+
+const (
+	ReconciliationPending   ReconciliationStatus = "pending"
+	ReconciliationCompleted ReconciliationStatus = "completed"
+	ReconciliationFailed    ReconciliationStatus = "failed"
+)
+
+const continuationSelectColumns = `id, task_id, number, runtime_profile_id, runtime_provider, runner, status, container_id, native_session_id, native_session_path, started_at, updated_at, ended_at, runtime_config_version_id, blackboard_graph_revision, blackboard_renderer_version, blackboard_estimator_version, blackboard_projection_hash, blackboard_projection_bytes, blackboard_projection_estimated_tokens, blackboard_finish_summary_version_id, blackboard_finish_graph_revision, blackboard_finish_mutation_sequence, blackboard_finished_at, blackboard_reconciliation_status, blackboard_reconciliation_mutation_id, blackboard_reconciled_at`
 
 type RuntimeControls struct {
 	NativeResumeAvailable   bool   `json:"native_resume_available"`
@@ -128,12 +164,18 @@ type ReconcileInterruptedResult struct {
 }
 
 type SummaryVersion struct {
-	ID          string    `json:"id"`
-	TaskID      string    `json:"task_id"`
-	Version     int       `json:"version"`
-	Summary     string    `json:"summary"`
-	SubmittedBy string    `json:"submitted_by,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID                         string          `json:"id"`
+	TaskID                     string          `json:"task_id"`
+	ContinuationID             string          `json:"continuation_id,omitempty"`
+	Version                    int             `json:"version"`
+	Summary                    string          `json:"summary"`
+	ObjectiveOutcome           json.RawMessage `json:"objective_outcome,omitempty"`
+	BlackboardGraphRevision    int             `json:"blackboard_graph_revision,omitempty"`
+	BlackboardMutationSequence int             `json:"blackboard_mutation_sequence,omitempty"`
+	FinishIdempotencyKey       string          `json:"finish_idempotency_key,omitempty"`
+	FinishRequestHash          string          `json:"-"`
+	SubmittedBy                string          `json:"submitted_by,omitempty"`
+	CreatedAt                  time.Time       `json:"created_at"`
 }
 
 // Task is a single user-goal-driven run within a project.
@@ -179,9 +221,30 @@ var ErrMissingSummary = errors.New("task summary is required")
 
 // Service implements task business rules against SQLite. It depends on the
 // project service only to read the scope at launch; it does not mutate projects.
+type GoalProjector interface {
+	ProjectTaskGoal(taskID string) error
+}
+
+// ContinuationTerminalMarker closes capabilities whose lifecycle is bound to
+// a Continuation when that Continuation reaches a terminal Task status.
+type ContinuationTerminalMarker interface {
+	MarkContinuationTerminal(context.Context, string) error
+}
+
+// ContinuationReconciler runs the graph normal-audit or unexpected-end
+// recovery after the Task domain has durably made a Continuation terminal.
+type ContinuationReconciler interface {
+	ReconcileTerminalContinuation(context.Context, string, string) error
+}
+
+// Service owns durable Task state. Goal projection is an optional system
+// adapter so graph data can remain dark until the graph store cutover.
 type Service struct {
-	db       *store.DB
-	projects *project.Service
+	db             *store.DB
+	projects       *project.Service
+	goalProjector  GoalProjector
+	terminalMarker ContinuationTerminalMarker
+	reconciler     ContinuationReconciler
 }
 
 // NewService returns a Service backed by the given database. It reads project
@@ -202,6 +265,40 @@ func NewService(db *store.DB, projects ...*project.Service) *Service {
 // in any order.
 func (s *Service) SetProjectService(projects *project.Service) {
 	s.projects = projects
+}
+
+// SetContinuationTerminalMarker wires the lifecycle projection that closes
+// Continuation-scoped capabilities in the same production assembly.
+func (s *Service) SetContinuationTerminalMarker(marker ContinuationTerminalMarker) {
+	s.terminalMarker = marker
+}
+
+// SetContinuationReconciler wires the post-terminal graph reconciliation
+// adapter. The Task domain still owns the Continuation status transition.
+func (s *Service) SetContinuationReconciler(reconciler ContinuationReconciler) {
+	s.reconciler = reconciler
+}
+
+// SetGoalProjector wires the system-owned Task Goal projection. Production
+// leaves this unset until graph cutover; graph tests and migration wiring set it.
+func (s *Service) SetGoalProjector(projector GoalProjector) {
+	s.goalProjector = projector
+}
+
+func (s *Service) projectGoal(taskID string) error {
+	if s.goalProjector == nil {
+		return nil
+	}
+	if err := s.goalProjector.ProjectTaskGoal(taskID); err != nil {
+		return fmt.Errorf("project task goal: %w", err)
+	}
+	return nil
+}
+
+// PrepareContinuationLaunch reconciles the Task-owned Goal before the atomic
+// Continuation pin transaction begins.
+func (s *Service) PrepareContinuationLaunch(taskID string) error {
+	return s.projectGoal(taskID)
 }
 
 // Create launches a new task: it validates the goal and runner, captures an
@@ -261,6 +358,9 @@ func (s *Service) Create(req CreateRequest) (Task, error) {
 	)
 	if err != nil {
 		return Task{}, fmt.Errorf("store task: %w", err)
+	}
+	if err := s.projectGoal(created.ID); err != nil {
+		return created, err
 	}
 	return created, nil
 }
@@ -339,8 +439,30 @@ func scanTask(row scanner) (Task, error) {
 // AppendEvent appends a structured event to the task timeline. Seq is assigned
 // monotonically per task. The task must exist.
 func (s *Service) AppendEvent(taskID string, kind EventKind, payload EventPayload) (Event, error) {
+	return s.appendEvent(taskID, "", kind, payload)
+}
+
+// AppendContinuationEvent appends a Runtime Event bound to one Continuation.
+// The Continuation must belong to the Task.
+func (s *Service) AppendContinuationEvent(taskID, continuationID string, kind EventKind, payload EventPayload) (Event, error) {
+	return s.appendEvent(taskID, continuationID, kind, payload)
+}
+
+func (s *Service) appendEvent(taskID, continuationID string, kind EventKind, payload EventPayload) (Event, error) {
 	if _, err := s.Get(taskID); err != nil {
 		return Event{}, err
+	}
+	if continuationID != "" {
+		var ownerTaskID string
+		if err := s.db.QueryRow(`SELECT task_id FROM task_continuations WHERE id=?`, continuationID).Scan(&ownerTaskID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return Event{}, ErrNotFound
+			}
+			return Event{}, fmt.Errorf("load event Continuation: %w", err)
+		}
+		if ownerTaskID != taskID {
+			return Event{}, ErrNotFound
+		}
 	}
 
 	if payload == nil {
@@ -353,11 +475,12 @@ func (s *Service) AppendEvent(taskID string, kind EventKind, payload EventPayloa
 
 	now := time.Now().UTC()
 	event := Event{
-		ID:        newID(),
-		TaskID:    taskID,
-		Kind:      kind,
-		Payload:   payload,
-		CreatedAt: now,
+		ID:             newID(),
+		TaskID:         taskID,
+		ContinuationID: continuationID,
+		Kind:           kind,
+		Payload:        payload,
+		CreatedAt:      now,
 	}
 
 	// Compute next seq within a transaction so concurrent appends stay ordered.
@@ -374,8 +497,8 @@ func (s *Service) AppendEvent(taskID string, kind EventKind, payload EventPayloa
 	event.Seq = int(maxSeq.Int64) + 1
 
 	if _, err := tx.Exec(
-		`INSERT INTO task_events (id, task_id, seq, kind, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		event.ID, event.TaskID, event.Seq, string(event.Kind), string(payloadJSON), event.CreatedAt.Format(time.RFC3339Nano),
+		`INSERT INTO task_events (id, task_id, continuation_id, seq, kind, payload_json, created_at) VALUES (?, ?, NULLIF(?,''), ?, ?, ?, ?)`,
+		event.ID, event.TaskID, event.ContinuationID, event.Seq, string(event.Kind), string(payloadJSON), event.CreatedAt.Format(time.RFC3339Nano),
 	); err != nil {
 		return Event{}, fmt.Errorf("store event: %w", err)
 	}
@@ -388,7 +511,7 @@ func (s *Service) AppendEvent(taskID string, kind EventKind, payload EventPayloa
 // Events returns the task timeline ordered by sequence.
 func (s *Service) Events(taskID string) ([]Event, error) {
 	rows, err := s.db.Query(
-		`SELECT id, task_id, seq, kind, payload_json, created_at FROM task_events WHERE task_id = ? ORDER BY seq ASC`,
+		`SELECT id, task_id, continuation_id, attempt_node_id, seq, kind, payload_json, created_at FROM task_events WHERE task_id = ? ORDER BY seq ASC`,
 		taskID,
 	)
 	if err != nil {
@@ -399,12 +522,16 @@ func (s *Service) Events(taskID string) ([]Event, error) {
 	var events []Event
 	for rows.Next() {
 		var event Event
+		var continuationID sql.NullString
+		var attemptNodeID sql.NullString
 		var kind string
 		var payloadJSON string
 		var createdAt string
-		if err := rows.Scan(&event.ID, &event.TaskID, &event.Seq, &kind, &payloadJSON, &createdAt); err != nil {
+		if err := rows.Scan(&event.ID, &event.TaskID, &continuationID, &attemptNodeID, &event.Seq, &kind, &payloadJSON, &createdAt); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
 		}
+		event.ContinuationID = continuationID.String
+		event.AttemptNodeID = attemptNodeID.String
 		event.Kind = EventKind(kind)
 		if err := json.Unmarshal([]byte(payloadJSON), &event.Payload); err != nil {
 			return nil, fmt.Errorf("decode event payload: %w", err)
@@ -467,23 +594,125 @@ func (s *Service) RecordRuntimeConfig(taskID, runtimeProfileID string, config ma
 	return version, nil
 }
 
-// CreateContinuation records the next Runtime Continuation for a Task before
-// the harness launches it.
+// ContinuationLaunchRequest is the Task-domain portion of one graph-native
+// atomic Continuation launch. The project-interface coordinator supplies the
+// current graph pin and owns the surrounding transaction.
+type ContinuationLaunchRequest struct {
+	ProjectID        string
+	TaskID           string
+	RuntimeProfileID string
+	RuntimeProvider  string
+	Runner           Runner
+	RuntimeConfig    map[string]any
+	SnapshotPin      ContinuationSnapshotPin
+}
+
+// CreateContinuationLaunchTx stores the runtime configuration version and its
+// pinned Continuation through the caller-owned launch transaction.
+func (s *Service) CreateContinuationLaunchTx(ctx context.Context, tx *sql.Tx, req ContinuationLaunchRequest) (RuntimeConfigVersion, TaskContinuation, error) {
+	if req.Runner != RunnerSandbox && req.Runner != RunnerHost {
+		return RuntimeConfigVersion{}, TaskContinuation{}, ErrUnsupportedRunner
+	}
+	var projectID string
+	if err := tx.QueryRowContext(ctx, `SELECT project_id FROM tasks WHERE id=?`, req.TaskID).Scan(&projectID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return RuntimeConfigVersion{}, TaskContinuation{}, ErrNotFound
+		}
+		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("read launch task: %w", err)
+	}
+	if projectID != req.ProjectID {
+		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("launch task does not belong to project")
+	}
+
+	configJSON, err := json.Marshal(req.RuntimeConfig)
+	if err != nil {
+		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("encode launch runtime config: %w", err)
+	}
+	now := time.Now().UTC()
+	config := RuntimeConfigVersion{
+		ID: newID(), TaskID: req.TaskID, RuntimeProfileID: req.RuntimeProfileID,
+		Config: req.RuntimeConfig, CreatedAt: now,
+	}
+	var maxConfigVersion sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT MAX(version) FROM task_runtime_config_versions WHERE task_id=?`, req.TaskID).Scan(&maxConfigVersion); err != nil {
+		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("read max launch config version: %w", err)
+	}
+	config.Version = int(maxConfigVersion.Int64) + 1
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO task_runtime_config_versions (id,task_id,version,runtime_profile_id,config_json,created_at) VALUES (?,?,?,?,?,?)`,
+		config.ID, config.TaskID, config.Version, config.RuntimeProfileID, string(configJSON), config.CreatedAt.Format(time.RFC3339Nano),
+	); err != nil {
+		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("store launch runtime config: %w", err)
+	}
+
+	pin := req.SnapshotPin
+	pin.RuntimeConfigVersionID = config.ID
+	if pin.BlackboardGraphRevision < 0 || pin.BlackboardRendererVersion == "" || pin.BlackboardEstimatorVersion == "" || pin.BlackboardProjectionHash == "" || pin.BlackboardProjectionBytes <= 0 || pin.BlackboardProjectionEstimatedTokens <= 0 {
+		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("invalid continuation snapshot pin")
+	}
+	continuation := TaskContinuation{
+		ContinuationSnapshotPin: pin,
+		ID:                      newID(), TaskID: req.TaskID, RuntimeProfileID: req.RuntimeProfileID,
+		RuntimeProvider: req.RuntimeProvider, Runner: req.Runner,
+		Status: StatusPending, BlackboardReconciliationStatus: ReconciliationPending,
+		StartedAt: now, UpdatedAt: now,
+	}
+	var maxContinuationNumber sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT MAX(number) FROM task_continuations WHERE task_id=?`, req.TaskID).Scan(&maxContinuationNumber); err != nil {
+		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("read max launch continuation number: %w", err)
+	}
+	continuation.Number = int(maxContinuationNumber.Int64) + 1
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO task_continuations (id,task_id,number,runtime_profile_id,runtime_provider,runner,status,container_id,native_session_id,native_session_path,started_at,updated_at,ended_at,runtime_config_version_id,blackboard_graph_revision,blackboard_renderer_version,blackboard_estimator_version,blackboard_projection_hash,blackboard_projection_bytes,blackboard_projection_estimated_tokens,blackboard_reconciliation_status)
+		 VALUES (?,?,?,?,?,?,?,'','','',?,?,'',?,?,?,?,?,?,?,?)`,
+		continuation.ID, continuation.TaskID, continuation.Number, continuation.RuntimeProfileID,
+		continuation.RuntimeProvider, string(continuation.Runner), string(continuation.Status),
+		continuation.StartedAt.Format(time.RFC3339Nano), continuation.UpdatedAt.Format(time.RFC3339Nano),
+		pin.RuntimeConfigVersionID, pin.BlackboardGraphRevision, pin.BlackboardRendererVersion,
+		pin.BlackboardEstimatorVersion, pin.BlackboardProjectionHash, pin.BlackboardProjectionBytes,
+		pin.BlackboardProjectionEstimatedTokens, string(continuation.BlackboardReconciliationStatus),
+	); err != nil {
+		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("store launch continuation: %w", err)
+	}
+	return config, continuation, nil
+}
+
+// CreateContinuation records the next legacy Runtime Continuation for a Task
+// before the harness launches it. Graph-native launch uses
+// CreateContinuationWithSnapshotPin.
 func (s *Service) CreateContinuation(taskID, runtimeProfileID, runtimeProvider string, runner Runner) (TaskContinuation, error) {
+	return s.createContinuation(taskID, runtimeProfileID, runtimeProvider, runner, ContinuationSnapshotPin{})
+}
+
+// CreateContinuationWithSnapshotPin records immutable runtime configuration and
+// canonical Blackboard snapshot metadata in the Continuation's creation row.
+func (s *Service) CreateContinuationWithSnapshotPin(taskID, runtimeProfileID, runtimeProvider string, runner Runner, pin ContinuationSnapshotPin) (TaskContinuation, error) {
+	if pin.RuntimeConfigVersionID == "" || pin.BlackboardGraphRevision < 0 || pin.BlackboardRendererVersion == "" || pin.BlackboardEstimatorVersion == "" || pin.BlackboardProjectionHash == "" || pin.BlackboardProjectionBytes <= 0 || pin.BlackboardProjectionEstimatedTokens <= 0 {
+		return TaskContinuation{}, fmt.Errorf("invalid continuation snapshot pin")
+	}
+	return s.createContinuation(taskID, runtimeProfileID, runtimeProvider, runner, pin)
+}
+
+func (s *Service) createContinuation(taskID, runtimeProfileID, runtimeProvider string, runner Runner, pin ContinuationSnapshotPin) (TaskContinuation, error) {
 	if _, err := s.Get(taskID); err != nil {
+		return TaskContinuation{}, err
+	}
+	if err := s.projectGoal(taskID); err != nil {
 		return TaskContinuation{}, err
 	}
 
 	now := time.Now().UTC()
 	continuation := TaskContinuation{
-		ID:               newID(),
-		TaskID:           taskID,
-		RuntimeProfileID: runtimeProfileID,
-		RuntimeProvider:  runtimeProvider,
-		Runner:           runner,
-		Status:           StatusPending,
-		StartedAt:        now,
-		UpdatedAt:        now,
+		ContinuationSnapshotPin:        pin,
+		ID:                             newID(),
+		TaskID:                         taskID,
+		RuntimeProfileID:               runtimeProfileID,
+		RuntimeProvider:                runtimeProvider,
+		Runner:                         runner,
+		Status:                         StatusPending,
+		BlackboardReconciliationStatus: ReconciliationPending,
+		StartedAt:                      now,
+		UpdatedAt:                      now,
 	}
 
 	tx, err := s.db.Begin()
@@ -492,18 +721,38 @@ func (s *Service) CreateContinuation(taskID, runtimeProfileID, runtimeProvider s
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	if pin.RuntimeConfigVersionID != "" {
+		var pinnedRuntimeProfileID string
+		if err := tx.QueryRow(`SELECT runtime_profile_id FROM task_runtime_config_versions WHERE id=? AND task_id=?`, pin.RuntimeConfigVersionID, taskID).Scan(&pinnedRuntimeProfileID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return TaskContinuation{}, fmt.Errorf("runtime config version does not belong to task")
+			}
+			return TaskContinuation{}, fmt.Errorf("read runtime config version: %w", err)
+		}
+		if pinnedRuntimeProfileID != runtimeProfileID {
+			return TaskContinuation{}, fmt.Errorf("runtime config version belongs to runtime profile %q, not %q", pinnedRuntimeProfileID, runtimeProfileID)
+		}
+	}
+
 	var maxNumber sql.NullInt64
 	if err := tx.QueryRow(`SELECT MAX(number) FROM task_continuations WHERE task_id = ?`, taskID).Scan(&maxNumber); err != nil {
 		return TaskContinuation{}, fmt.Errorf("read max continuation number: %w", err)
 	}
 	continuation.Number = int(maxNumber.Int64) + 1
 
+	var runtimeConfigVersionID any
+	var graphRevision, projectionBytes, estimatedTokens any
+	if pin.RuntimeConfigVersionID != "" {
+		runtimeConfigVersionID = pin.RuntimeConfigVersionID
+		graphRevision, projectionBytes, estimatedTokens = pin.BlackboardGraphRevision, pin.BlackboardProjectionBytes, pin.BlackboardProjectionEstimatedTokens
+	}
 	if _, err := tx.Exec(
-		`INSERT INTO task_continuations (id, task_id, number, runtime_profile_id, runtime_provider, runner, status, container_id, native_session_id, native_session_path, started_at, updated_at, ended_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, '', '', '', ?, ?, '')`,
+		`INSERT INTO task_continuations (id, task_id, number, runtime_profile_id, runtime_provider, runner, status, container_id, native_session_id, native_session_path, started_at, updated_at, ended_at, runtime_config_version_id, blackboard_graph_revision, blackboard_renderer_version, blackboard_estimator_version, blackboard_projection_hash, blackboard_projection_bytes, blackboard_projection_estimated_tokens, blackboard_reconciliation_status)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, '', '', '', ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?)`,
 		continuation.ID, continuation.TaskID, continuation.Number, continuation.RuntimeProfileID,
 		continuation.RuntimeProvider, string(continuation.Runner), string(continuation.Status),
 		continuation.StartedAt.Format(time.RFC3339Nano), continuation.UpdatedAt.Format(time.RFC3339Nano),
+		runtimeConfigVersionID, graphRevision, pin.BlackboardRendererVersion, pin.BlackboardEstimatorVersion, pin.BlackboardProjectionHash, projectionBytes, estimatedTokens, string(continuation.BlackboardReconciliationStatus),
 	); err != nil {
 		return TaskContinuation{}, fmt.Errorf("store continuation: %w", err)
 	}
@@ -520,7 +769,7 @@ func (s *Service) ActiveContinuation(taskID string) (*TaskContinuation, error) {
 		return nil, err
 	}
 	found, err := scanContinuation(s.db.QueryRow(
-		`SELECT id, task_id, number, runtime_profile_id, runtime_provider, runner, status, container_id, native_session_id, native_session_path, started_at, updated_at, ended_at
+		`SELECT `+continuationSelectColumns+`
 		 FROM task_continuations
 		 WHERE task_id = ? AND status IN (?, ?, ?)
 		 ORDER BY number DESC LIMIT 1`,
@@ -542,7 +791,7 @@ func (s *Service) LatestContinuation(taskID string) (*TaskContinuation, error) {
 		return nil, err
 	}
 	found, err := scanContinuation(s.db.QueryRow(
-		`SELECT id, task_id, number, runtime_profile_id, runtime_provider, runner, status, container_id, native_session_id, native_session_path, started_at, updated_at, ended_at
+		`SELECT `+continuationSelectColumns+`
 		 FROM task_continuations
 		 WHERE task_id = ? ORDER BY number DESC LIMIT 1`,
 		taskID,
@@ -556,11 +805,156 @@ func (s *Service) LatestContinuation(taskID string) (*TaskContinuation, error) {
 	return &found, nil
 }
 
+// Continuation returns one Runtime Continuation by immutable ID.
+func (s *Service) Continuation(continuationID string) (TaskContinuation, error) {
+	return scanContinuation(s.db.QueryRow(
+		`SELECT `+continuationSelectColumns+` FROM task_continuations WHERE id = ?`,
+		continuationID,
+	))
+}
+
+// TerminalContinuations returns every durably terminal Continuation so daemon
+// startup can audit/recover graph reconciliation crash windows idempotently.
+func (s *Service) TerminalContinuations() ([]TaskContinuation, error) {
+	rows, err := s.db.Query(
+		`SELECT `+continuationSelectColumns+`
+		 FROM task_continuations
+		 WHERE status IN (?,?,?,?) AND blackboard_reconciliation_status<>'legacy_not_applicable'
+		 ORDER BY started_at,id`,
+		string(StatusCompleted), string(StatusFailed), string(StatusStopped), string(StatusInterrupted),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query terminal Continuations: %w", err)
+	}
+	defer rows.Close()
+	var continuations []TaskContinuation
+	for rows.Next() {
+		continuation, err := scanContinuation(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan terminal Continuation: %w", err)
+		}
+		continuations = append(continuations, continuation)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate terminal Continuations: %w", err)
+	}
+	return continuations, nil
+}
+
+// ActivePinnedContinuations returns graph-native Continuations whose committed
+// task-local files may need regeneration after a daemon crash.
+func (s *Service) ActivePinnedContinuations() ([]TaskContinuation, error) {
+	rows, err := s.db.Query(
+		`SELECT `+continuationSelectColumns+`
+		 FROM task_continuations
+		 WHERE status IN (?,?,?) AND runtime_config_version_id IS NOT NULL
+		 ORDER BY started_at,id`,
+		string(StatusPending), string(StatusRunning), string(StatusPaused),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query active pinned Continuations: %w", err)
+	}
+	defer rows.Close()
+	var continuations []TaskContinuation
+	for rows.Next() {
+		continuation, err := scanContinuation(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan active pinned Continuation: %w", err)
+		}
+		continuations = append(continuations, continuation)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate active pinned Continuations: %w", err)
+	}
+	return continuations, nil
+}
+
+// MarkContinuationReconciliation stores the durable outcome only after the
+// owning normal audit or unexpected graph recovery has completed.
+func (s *Service) MarkContinuationReconciliation(ctx context.Context, continuationID string, status ReconciliationStatus, mutationID string, reconciledAt time.Time) (TaskContinuation, error) {
+	return s.markContinuationReconciliation(ctx, continuationID, status, mutationID, reconciledAt, nil)
+}
+
+// MarkContinuationReconciliationWithEvent atomically stores the durable marker
+// and its compact system Task Event.
+func (s *Service) MarkContinuationReconciliationWithEvent(ctx context.Context, continuationID string, status ReconciliationStatus, mutationID string, reconciledAt time.Time, payload EventPayload) (TaskContinuation, error) {
+	return s.markContinuationReconciliation(ctx, continuationID, status, mutationID, reconciledAt, payload)
+}
+
+func (s *Service) markContinuationReconciliation(ctx context.Context, continuationID string, status ReconciliationStatus, mutationID string, reconciledAt time.Time, payload EventPayload) (TaskContinuation, error) {
+	if status != ReconciliationCompleted && status != ReconciliationFailed {
+		return TaskContinuation{}, fmt.Errorf("invalid Continuation reconciliation status %q", status)
+	}
+	stamp := reconciledAt.UTC().Format(time.RFC3339Nano)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return TaskContinuation{}, fmt.Errorf("begin Continuation reconciliation marker: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if payload != nil {
+		var taskID, currentStatus, currentMutationID string
+		if err := tx.QueryRowContext(ctx, `
+			SELECT task_id,blackboard_reconciliation_status,blackboard_reconciliation_mutation_id
+			FROM task_continuations WHERE id=?`, continuationID).Scan(&taskID, &currentStatus, &currentMutationID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return TaskContinuation{}, ErrNotFound
+			}
+			return TaskContinuation{}, fmt.Errorf("read reconciliation Event Task: %w", err)
+		}
+		payloadJSON, err := json.Marshal(payload)
+		if err != nil {
+			return TaskContinuation{}, fmt.Errorf("encode reconciliation Event: %w", err)
+		}
+		phase, _ := payload["phase"].(string)
+		if currentStatus == string(status) && currentMutationID == mutationID && phase != "" {
+			var storedPayloadJSON string
+			err := tx.QueryRowContext(ctx, `
+				SELECT payload_json FROM task_events
+				WHERE continuation_id=? AND kind=? AND json_extract(payload_json,'$.phase')=?
+				ORDER BY seq DESC,id DESC LIMIT 1`, continuationID, string(EventKindLifecycle), phase).Scan(&storedPayloadJSON)
+			if err == nil && storedPayloadJSON == string(payloadJSON) {
+				if err := tx.Commit(); err != nil {
+					return TaskContinuation{}, fmt.Errorf("commit repeated Continuation reconciliation audit: %w", err)
+				}
+				return s.Continuation(continuationID)
+			}
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return TaskContinuation{}, fmt.Errorf("read repeated reconciliation Event: %w", err)
+			}
+		}
+		var maxSeq sql.NullInt64
+		if err := tx.QueryRowContext(ctx, `SELECT MAX(seq) FROM task_events WHERE task_id=?`, taskID).Scan(&maxSeq); err != nil {
+			return TaskContinuation{}, fmt.Errorf("read reconciliation Event sequence: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO task_events (id,task_id,continuation_id,seq,kind,payload_json,created_at)
+			VALUES (?,?,?,?,?,?,?)`,
+			newID(), taskID, continuationID, int(maxSeq.Int64)+1, string(EventKindLifecycle), string(payloadJSON), stamp,
+		); err != nil {
+			return TaskContinuation{}, fmt.Errorf("store reconciliation Event: %w", err)
+		}
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE task_continuations
+		SET blackboard_reconciliation_status=?,blackboard_reconciliation_mutation_id=?,blackboard_reconciled_at=?,updated_at=?
+		WHERE id=?`, string(status), mutationID, stamp, stamp, continuationID)
+	if err != nil {
+		return TaskContinuation{}, fmt.Errorf("store Continuation reconciliation marker: %w", err)
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return TaskContinuation{}, ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return TaskContinuation{}, fmt.Errorf("commit Continuation reconciliation marker: %w", err)
+	}
+	return s.Continuation(continuationID)
+}
+
 // UpdateContinuationStatus updates the lifecycle status of a recorded Runtime
 // Continuation.
 func (s *Service) UpdateContinuationStatus(continuationID string, status Status) (TaskContinuation, error) {
 	found, err := scanContinuation(s.db.QueryRow(
-		`SELECT id, task_id, number, runtime_profile_id, runtime_provider, runner, status, container_id, native_session_id, native_session_path, started_at, updated_at, ended_at
+		`SELECT `+continuationSelectColumns+`
 		 FROM task_continuations WHERE id = ?`,
 		continuationID,
 	))
@@ -586,6 +980,23 @@ func (s *Service) UpdateContinuationStatus(continuationID string, status Status)
 	if err != nil {
 		return TaskContinuation{}, fmt.Errorf("update continuation status: %w", err)
 	}
+	if isTerminalStatus(status) {
+		return s.notifyTerminalContinuation(found, string(status))
+	}
+	return found, nil
+}
+
+func (s *Service) notifyTerminalContinuation(found TaskContinuation, reason string) (TaskContinuation, error) {
+	if s.terminalMarker != nil {
+		if err := s.terminalMarker.MarkContinuationTerminal(context.Background(), found.ID); err != nil {
+			return TaskContinuation{}, fmt.Errorf("mark continuation capabilities terminal: %w", err)
+		}
+	}
+	if s.reconciler != nil {
+		if err := s.reconciler.ReconcileTerminalContinuation(context.Background(), found.ID, reason); err != nil {
+			return found, fmt.Errorf("reconcile terminal Continuation: %w", err)
+		}
+	}
 	return found, nil
 }
 
@@ -593,7 +1004,7 @@ func (s *Service) UpdateContinuationStatus(continuationID string, status Status)
 // discovered for a continuation, such as container and native session ids.
 func (s *Service) UpdateContinuationRuntimeMetadata(continuationID, containerID, nativeSessionID, nativeSessionPath string) (TaskContinuation, error) {
 	found, err := scanContinuation(s.db.QueryRow(
-		`SELECT id, task_id, number, runtime_profile_id, runtime_provider, runner, status, container_id, native_session_id, native_session_path, started_at, updated_at, ended_at
+		`SELECT `+continuationSelectColumns+`
 		 FROM task_continuations WHERE id = ?`,
 		continuationID,
 	))
@@ -709,7 +1120,9 @@ func (s *Service) SummaryVersions(taskID string) ([]SummaryVersion, error) {
 	}
 
 	rows, err := s.db.Query(
-		`SELECT id, task_id, version, summary, submitted_by, created_at
+		`SELECT id, task_id, continuation_id, version, summary, objective_outcome_json,
+		        blackboard_graph_revision, blackboard_mutation_sequence,
+		        finish_idempotency_key, finish_request_hash, submitted_by, created_at
 		 FROM task_summary_versions WHERE task_id = ? ORDER BY version ASC`,
 		taskID,
 	)
@@ -721,9 +1134,20 @@ func (s *Service) SummaryVersions(taskID string) ([]SummaryVersion, error) {
 	var versions []SummaryVersion
 	for rows.Next() {
 		var version SummaryVersion
+		var continuationID sql.NullString
+		var objectiveOutcome string
 		var createdAt string
-		if err := rows.Scan(&version.ID, &version.TaskID, &version.Version, &version.Summary, &version.SubmittedBy, &createdAt); err != nil {
+		if err := rows.Scan(
+			&version.ID, &version.TaskID, &continuationID, &version.Version,
+			&version.Summary, &objectiveOutcome, &version.BlackboardGraphRevision,
+			&version.BlackboardMutationSequence, &version.FinishIdempotencyKey,
+			&version.FinishRequestHash, &version.SubmittedBy, &createdAt,
+		); err != nil {
 			return nil, fmt.Errorf("scan task summary: %w", err)
+		}
+		version.ContinuationID = continuationID.String
+		if objectiveOutcome != "" {
+			version.ObjectiveOutcome = json.RawMessage(objectiveOutcome)
 		}
 		if version.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt); err != nil {
 			return nil, fmt.Errorf("parse created_at: %w", err)
@@ -751,6 +1175,9 @@ func (s *Service) UpdateStatus(taskID string, status Status) (Task, error) {
 		string(found.Status), found.UpdatedAt.Format(time.RFC3339Nano), found.ID)
 	if err != nil {
 		return Task{}, fmt.Errorf("update status: %w", err)
+	}
+	if err := s.projectGoal(found.ID); err != nil {
+		return found, err
 	}
 	return found, nil
 }
@@ -818,7 +1245,7 @@ func (s *Service) ReconcileInterruptedState() (ReconcileInterruptedResult, error
 
 func (s *Service) sandboxContinuationsWithContainers() ([]TaskContinuation, error) {
 	rows, err := s.db.Query(
-		`SELECT id, task_id, number, runtime_profile_id, runtime_provider, runner, status, container_id, native_session_id, native_session_path, started_at, updated_at, ended_at
+		`SELECT `+continuationSelectColumns+`
 		 FROM task_continuations
 		 WHERE runner = ? AND trim(container_id) <> ''
 		   AND status IN (?, ?, ?)`,
@@ -846,37 +1273,23 @@ func (s *Service) sandboxContinuationsWithContainers() ([]TaskContinuation, erro
 }
 
 func (s *Service) interruptActiveContinuations(taskID string) error {
-	now := time.Now().UTC()
-	_, err := s.db.Exec(
-		`UPDATE task_continuations
-		 SET status = ?, updated_at = ?, ended_at = ?
+	return s.interruptContinuations(
+		`SELECT id,task_id FROM task_continuations
 		 WHERE task_id = ? AND status IN (?, ?, ?)`,
-		string(StatusInterrupted),
-		now.Format(time.RFC3339Nano),
-		now.Format(time.RFC3339Nano),
 		taskID,
 		string(StatusPending),
 		string(StatusRunning),
 		string(StatusPaused),
 	)
-	if err != nil {
-		return fmt.Errorf("update active continuations: %w", err)
-	}
-	return nil
 }
 
 func (s *Service) interruptStaleActiveContinuations() error {
-	now := time.Now().UTC()
-	_, err := s.db.Exec(
-		`UPDATE task_continuations
-		 SET status = ?, updated_at = ?, ended_at = ?
+	return s.interruptContinuations(
+		`SELECT id,task_id FROM task_continuations
 		 WHERE status IN (?, ?, ?)
 		   AND task_id IN (
 		       SELECT id FROM tasks WHERE status NOT IN (?, ?, ?)
 		   )`,
-		string(StatusInterrupted),
-		now.Format(time.RFC3339Nano),
-		now.Format(time.RFC3339Nano),
 		string(StatusPending),
 		string(StatusRunning),
 		string(StatusPaused),
@@ -884,10 +1297,83 @@ func (s *Service) interruptStaleActiveContinuations() error {
 		string(StatusRunning),
 		string(StatusPaused),
 	)
+}
+
+func (s *Service) interruptContinuations(query string, args ...any) error {
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
-		return fmt.Errorf("interrupt stale active continuations: %w", err)
+		return fmt.Errorf("query active continuations: %w", err)
+	}
+	type continuationRef struct{ id, taskID string }
+	var continuations []continuationRef
+	for rows.Next() {
+		var continuation continuationRef
+		if err := rows.Scan(&continuation.id, &continuation.taskID); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan active continuation: %w", err)
+		}
+		continuations = append(continuations, continuation)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate active continuations: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close active continuations: %w", err)
+	}
+	for _, continuation := range continuations {
+		if _, err := s.interruptContinuationForRestart(continuation.taskID, continuation.id); err != nil {
+			return fmt.Errorf("interrupt continuation %s: %w", continuation.id, err)
+		}
 	}
 	return nil
+}
+
+func (s *Service) interruptContinuationForRestart(taskID, continuationID string) (TaskContinuation, error) {
+	found, err := s.Continuation(continuationID)
+	if err != nil {
+		return TaskContinuation{}, err
+	}
+	now := time.Now().UTC()
+	payloadJSON, err := json.Marshal(EventPayload{"phase": "interrupted", "reason": "daemon_restart"})
+	if err != nil {
+		return TaskContinuation{}, fmt.Errorf("encode restart interruption Event: %w", err)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return TaskContinuation{}, fmt.Errorf("begin restart interruption: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var maxSeq sql.NullInt64
+	if err := tx.QueryRow(`SELECT MAX(seq) FROM task_events WHERE task_id=?`, taskID).Scan(&maxSeq); err != nil {
+		return TaskContinuation{}, fmt.Errorf("read restart interruption Event sequence: %w", err)
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO task_events (id,task_id,continuation_id,seq,kind,payload_json,created_at)
+		 VALUES (?,?,?,?,?,?,?)`,
+		newID(), taskID, continuationID, int(maxSeq.Int64)+1, string(EventKindLifecycle), string(payloadJSON), now.Format(time.RFC3339Nano),
+	); err != nil {
+		return TaskContinuation{}, fmt.Errorf("store restart interruption Event: %w", err)
+	}
+	result, err := tx.Exec(
+		`UPDATE task_continuations SET status=?,updated_at=?,ended_at=?
+		 WHERE id=? AND task_id=? AND status IN (?,?,?)`,
+		string(StatusInterrupted), now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), continuationID, taskID,
+		string(StatusPending), string(StatusRunning), string(StatusPaused),
+	)
+	if err != nil {
+		return TaskContinuation{}, fmt.Errorf("store restart Continuation interruption: %w", err)
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return TaskContinuation{}, ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return TaskContinuation{}, fmt.Errorf("commit restart Continuation interruption: %w", err)
+	}
+	found.Status = StatusInterrupted
+	found.UpdatedAt = now
+	found.EndedAt = &now
+	return s.notifyTerminalContinuation(found, "daemon_restart")
 }
 
 func newID() string {
@@ -905,6 +1391,10 @@ func scanContinuation(row scanner) (TaskContinuation, error) {
 	var startedAt string
 	var updatedAt string
 	var endedAt string
+	var blackboardFinishedAt string
+	var blackboardReconciledAt string
+	var runtimeConfigVersionID sql.NullString
+	var graphRevision, projectionBytes, estimatedTokens sql.NullInt64
 
 	err := row.Scan(
 		&found.ID,
@@ -920,6 +1410,20 @@ func scanContinuation(row scanner) (TaskContinuation, error) {
 		&startedAt,
 		&updatedAt,
 		&endedAt,
+		&runtimeConfigVersionID,
+		&graphRevision,
+		&found.BlackboardRendererVersion,
+		&found.BlackboardEstimatorVersion,
+		&found.BlackboardProjectionHash,
+		&projectionBytes,
+		&estimatedTokens,
+		&found.BlackboardFinishSummaryVersionID,
+		&found.BlackboardFinishGraphRevision,
+		&found.BlackboardFinishMutationSequence,
+		&blackboardFinishedAt,
+		&found.BlackboardReconciliationStatus,
+		&found.BlackboardReconciliationMutationID,
+		&blackboardReconciledAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TaskContinuation{}, ErrNotFound
@@ -929,6 +1433,18 @@ func scanContinuation(row scanner) (TaskContinuation, error) {
 	}
 	found.Runner = Runner(runner)
 	found.Status = Status(status)
+	if runtimeConfigVersionID.Valid {
+		found.RuntimeConfigVersionID = runtimeConfigVersionID.String
+	}
+	if graphRevision.Valid {
+		found.BlackboardGraphRevision = int(graphRevision.Int64)
+	}
+	if projectionBytes.Valid {
+		found.BlackboardProjectionBytes = int(projectionBytes.Int64)
+	}
+	if estimatedTokens.Valid {
+		found.BlackboardProjectionEstimatedTokens = int(estimatedTokens.Int64)
+	}
 	if found.StartedAt, err = time.Parse(time.RFC3339Nano, startedAt); err != nil {
 		return TaskContinuation{}, fmt.Errorf("parse started_at: %w", err)
 	}
@@ -941,6 +1457,20 @@ func scanContinuation(row scanner) (TaskContinuation, error) {
 			return TaskContinuation{}, fmt.Errorf("parse ended_at: %w", err)
 		}
 		found.EndedAt = &parsed
+	}
+	if blackboardFinishedAt != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, blackboardFinishedAt)
+		if err != nil {
+			return TaskContinuation{}, fmt.Errorf("parse blackboard_finished_at: %w", err)
+		}
+		found.BlackboardFinishedAt = &parsed
+	}
+	if blackboardReconciledAt != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, blackboardReconciledAt)
+		if err != nil {
+			return TaskContinuation{}, fmt.Errorf("parse blackboard_reconciled_at: %w", err)
+		}
+		found.BlackboardReconciledAt = &parsed
 	}
 	return found, nil
 }

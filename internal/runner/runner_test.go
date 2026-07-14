@@ -46,6 +46,26 @@ func TestPrepareTaskLayoutCreatesTaskLocalDirectories(t *testing.T) {
 	}
 }
 
+func TestBuildSandboxCommandMountsPinnedBlackboardAndScopeReadOnly(t *testing.T) {
+	layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-pinned", runtimeprofile.ProviderCodex)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+	command, err := runner.BuildSandboxCommand(runner.SandboxCommandRequest{
+		Layout: layout, Provider: runtimeprofile.ProviderCodex, RuntimeCommand: []string{"codex", "exec"},
+		ReadOnlyTaskFiles: []string{"workdir/.pentest/blackboard.json", "workdir/.pentest/scope.json"},
+	})
+	if err != nil {
+		t.Fatalf("build sandbox command: %v", err)
+	}
+	joined := strings.Join(command.Args, " ")
+	for _, file := range []string{"blackboard.json", "scope.json"} {
+		if !strings.Contains(joined, "dst=/task/workdir/.pentest/"+file+",readonly") {
+			t.Fatalf("%s is not mounted read-only: %v", file, command.Args)
+		}
+	}
+}
+
 func TestProjectRuntimeConfigWritesGeneratedConfigWithoutMutatingHostConfig(t *testing.T) {
 	root := t.TempDir()
 	layout, err := runner.PrepareTaskLayout(root, "task-123", runtimeprofile.ProviderCodex)

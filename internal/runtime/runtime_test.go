@@ -74,6 +74,36 @@ func TestFakeRuntimeEmitsNormalizedEvents(t *testing.T) {
 	}
 }
 
+func TestRuntimeEventsAreBoundToTheLaunchedContinuation(t *testing.T) {
+	harness, tasks, projects := newServices(t)
+	proj, _ := projects.Create("P", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
+	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "enumerate example.com", RuntimeProfileID: "fake", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	continuation, err := tasks.CreateContinuation(created.ID, "fake", "fake", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create continuation: %v", err)
+	}
+	if err := harness.Launch(context.Background(), runtime.LaunchRequest{
+		TaskID: created.ID, ContinuationID: continuation.ID, Adapter: runtime.NewFakeAdapter(),
+	}); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	events, err := tasks.Events(created.ID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("launch emitted no Events")
+	}
+	for _, event := range events {
+		if event.ContinuationID != continuation.ID {
+			t.Fatalf("Event %s Continuation = %q want %q", event.ID, event.ContinuationID, continuation.ID)
+		}
+	}
+}
+
 func TestCommandRuntimeAdapterExecutesProviderProcessAndStreamsOutput(t *testing.T) {
 	harness, tasks, projects := newServices(t)
 	proj, _ := projects.Create("P", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})

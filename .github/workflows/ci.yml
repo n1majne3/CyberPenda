@@ -33,9 +33,7 @@ jobs:
         working-directory: web
         run: npm run lint
       - name: Embedded UI is in sync with a fresh build
-        run: |
-          make build-ui
-          git diff --exit-code internal/daemon/webfs/dist
+        run: make check-ui-sync
 
   app-image:
     runs-on: ubuntu-latest

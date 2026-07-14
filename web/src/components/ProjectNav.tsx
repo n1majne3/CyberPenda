@@ -1,19 +1,47 @@
+import { useEffect, useState } from "react";
 import { NavLink, useParams } from "react-router-dom";
+import { apiGet, type Project } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-const links = [
-  { to: "", label: "Dashboard", end: true },
-  { to: "/tasks", label: "Tasks", end: false },
-  { to: "/scope", label: "Scope", end: false },
-  { to: "/facts", label: "Blackboard", end: false },
-  { to: "/findings", label: "Findings", end: false },
-  { to: "/evidence", label: "Evidence", end: false },
-  { to: "/report", label: "Report", end: false },
-] as const;
+type NavItem = { to: string; label: string; end?: boolean };
 
+/**
+ * Project navigation order from the operator IA (read contract §19.1):
+ * Overview → Tasks → Blackboard → Findings|Solution → Evidence → Report? → Scope.
+ */
 export function ProjectNav() {
   const { projectId } = useParams<{ projectId: string }>();
+  const [kind, setKind] = useState<string>("pentest");
+
+  useEffect(() => {
+    if (!projectId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const project = await apiGet<Project>(`/api/projects/${projectId}`);
+        if (!cancelled) setKind(project.kind || "pentest");
+      } catch {
+        if (!cancelled) setKind("pentest");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
+  const isCTF = kind === "ctf_challenge";
   const base = `/projects/${projectId}`;
+  const links: NavItem[] = [
+    { to: "", label: "Overview", end: true },
+    { to: "/tasks", label: "Tasks" },
+    { to: "/blackboard", label: "Blackboard" },
+    isCTF
+      ? { to: "/solution", label: "Solution" }
+      : { to: "/findings", label: "Findings" },
+    { to: "/evidence", label: "Evidence" },
+    ...(!isCTF ? [{ to: "/report", label: "Report" } satisfies NavItem] : []),
+    { to: "/scope", label: "Scope" },
+  ];
 
   return (
     <nav

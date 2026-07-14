@@ -73,6 +73,26 @@ func TestCreatePersistsScopeAndDefaults(t *testing.T) {
 	}
 }
 
+func TestCreateWithKindPersistsCTFAndRejectsUnknownKind(t *testing.T) {
+	service := newTestService(t)
+
+	created, err := service.CreateWithKind("Challenge", "", project.KindCTFChallenge, project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create CTF Project: %v", err)
+	}
+	fetched, err := service.Get(created.ID)
+	if err != nil {
+		t.Fatalf("get CTF Project: %v", err)
+	}
+	if fetched.Kind != project.KindCTFChallenge {
+		t.Fatalf("kind = %q want %q", fetched.Kind, project.KindCTFChallenge)
+	}
+
+	if _, err := service.CreateWithKind("Unknown", "", "other", project.Scope{}, project.Defaults{}); err != project.ErrInvalidKind {
+		t.Fatalf("expected ErrInvalidKind, got %v", err)
+	}
+}
+
 func TestGetMissingReturnsNotFound(t *testing.T) {
 	service := newTestService(t)
 

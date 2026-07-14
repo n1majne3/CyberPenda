@@ -114,10 +114,13 @@ export interface ProjectDefaults {
   task_policy?: string;
 }
 
+export type ProjectKind = "pentest" | "ctf_challenge" | string;
+
 export interface Project {
   id: string;
   name: string;
   description: string;
+  kind?: ProjectKind;
   scope: Scope;
   defaults: ProjectDefaults;
   created_at: string;
@@ -127,6 +130,7 @@ export interface Project {
 export interface Dashboard {
   project_id: string;
   name: string;
+  project_kind?: ProjectKind;
   scope: {
     domains: number;
     ips: number;
@@ -138,12 +142,266 @@ export interface Dashboard {
     has_notes: boolean;
     ready: boolean;
   };
+  tasks?: {
+    total: number;
+    running: number;
+    paused: number;
+    needs_attention: number;
+  };
+  blackboard?: {
+    observed_graph_revision: number;
+    nodes_by_type?: Record<string, number>;
+    current_truth: number;
+    frontier: number;
+    open_attempts: number;
+    confirmed_findings: number;
+    unconfirmed_findings: number;
+    available_evidence: number;
+    missing_evidence: number;
+    budget_state: string;
+    estimated_tokens: number;
+  };
+  health?: {
+    status: string;
+    stale: boolean;
+    critical: number;
+    warning: number;
+    info: number;
+    latest_run_id: string;
+  };
+  ctf?: {
+    solved: boolean;
+    verified_flag_count: number;
+    candidate_solution_count: number;
+    primary_solution?: NodeRef | null;
+  } | null;
   counts: {
     tasks: number;
     facts: number;
     findings: number;
     evidence: number;
   };
+  next_actions?: string[];
+  _read?: ReadMeta;
+}
+
+/** Shared BlackboardReadV1 envelope metadata. */
+export interface ReadMeta {
+  protocol_version: number;
+  projection: string;
+  observed_graph_revision?: number;
+  observed_state_hash?: string;
+  source_pins?: Record<string, unknown>;
+  projection_hash?: string;
+}
+
+export interface ReadEnvelope<T> {
+  protocol_version: number;
+  projection: string;
+  project_id: string;
+  project_kind: ProjectKind;
+  observed_graph_revision: number;
+  observed_state_hash: string;
+  source_pins?: Record<string, unknown>;
+  projection_hash: string;
+  result: T;
+}
+
+export interface NodeRef {
+  id: string;
+  node_type: string;
+  stable_key: string;
+  label: string;
+}
+
+export interface Lifecycle {
+  field: string;
+  value: string;
+}
+
+export interface NodeRow {
+  ref: NodeRef;
+  version: number;
+  disposition: string;
+  lifecycle?: Lifecycle | null;
+  scope_status?: string | null;
+  severity?: string | null;
+  secondary?: string | null;
+  updated_at: string;
+  about_entities?: NodeRef[];
+  relationship_counts?: {
+    about_entities: number;
+    incoming: number;
+    outgoing: number;
+    evidence: number;
+    contradictions: number;
+  };
+  updated_provenance?: {
+    actor_type: string;
+    actor_id: string;
+    task_id?: string | null;
+    continuation_id?: string | null;
+    runtime_profile_id?: string | null;
+    runner?: string | null;
+    source_event_count: number;
+    migration_source?: unknown;
+    recorded_at: string;
+  };
+}
+
+export interface PageInfo {
+  limit: number;
+  total_items: number;
+  next_cursor?: string;
+}
+
+export interface RecordCollection {
+  items: NodeRow[];
+  facets?: Record<string, unknown>;
+  page: PageInfo;
+}
+
+export interface BlackboardWorkView {
+  summary: {
+    graph_revision: number;
+    node_counts: Record<string, number>;
+    edge_counts: Record<string, number>;
+    current_truth: number;
+    frontier: number;
+    open_attempts: number;
+    confirmed_findings: number;
+    unconfirmed_findings: number;
+    verified_solutions: number;
+    evidence_missing: number;
+    budget: {
+      state: string;
+      projection_bytes: number;
+      estimated_tokens: number;
+      target_tokens: number;
+      warning_tokens: number;
+      required_tokens: number;
+    };
+    health: {
+      status: string;
+      stale: boolean;
+      critical: number;
+      warning: number;
+      info: number;
+      latest_run_id: string;
+    };
+  };
+  attention: RecordCollection;
+  frontier: RecordCollection;
+  active_attempts: RecordCollection;
+  recent_changes: {
+    items: {
+      kind: string;
+      node?: NodeRow | null;
+      edge?: unknown;
+      updated_at: string;
+    }[];
+    page: PageInfo;
+  };
+  facets?: Record<string, unknown>;
+}
+
+export interface EntityItem {
+  entity: NodeRef;
+  kind: string;
+  name: string;
+  locator?: string;
+  description?: string;
+  scope_status?: string;
+  status?: string;
+  parent_entities?: NodeRef[];
+  child_count?: number;
+  record_counts?: Record<string, number>;
+  highest_finding_severity?: string | null;
+  health_severity?: string | null;
+}
+
+export interface EntityCollection {
+  items: EntityItem[];
+  page: PageInfo;
+}
+
+export interface GraphExplorer {
+  graph: {
+    nodes: { row: NodeRow; x_group: string; is_seed: boolean }[];
+    edges: unknown[];
+  };
+  table: {
+    nodes: NodeRow[];
+    edges: unknown[];
+  };
+  legend: {
+    node_types: Record<string, number>;
+    edge_types: Record<string, number>;
+    lifecycle_values: Record<string, number>;
+  };
+  limits: {
+    max_nodes: number;
+    max_edges: number;
+    node_count: number;
+    edge_count: number;
+    truncated?: boolean;
+  };
+  equivalent_record_query?: Record<string, unknown>;
+}
+
+export interface BlackboardHealth {
+  current_graph: {
+    revision: number;
+    state_hash: string;
+    main_projection_hash: string;
+  };
+  latest_run?: {
+    run_id: string;
+    status: string;
+    overall: string;
+    counts?: { critical: number; warning: number; info: number };
+    top_results?: unknown[];
+  } | null;
+  overall: string;
+}
+
+export interface NodeDetail {
+  id: string;
+  node_type: string;
+  stable_key: string;
+  version: number;
+  disposition: string;
+  properties: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  merge_target?: NodeRef | null;
+}
+
+export interface RecordDetail {
+  node: NodeDetail;
+  resolved_from_merged_id?: string | null;
+  derived?: Record<string, unknown>;
+  about_entities?: { items: NodeRef[]; total_items: number; records_href?: string };
+  relationships?: {
+    incoming: { items: unknown[]; total_items: number; traversal_href?: string };
+    outgoing: { items: unknown[]; total_items: number; traversal_href?: string };
+  };
+  evidence?: { items: NodeRef[]; total_items: number; records_href?: string };
+  support?: Record<string, { items: NodeRef[]; total_items: number; traversal_href?: string }>;
+  capabilities?: Record<string, unknown>;
+}
+
+export interface ReportMarkdown {
+  source: {
+    project_id: string;
+    project_name: string;
+    graph_revision: number;
+    state_hash: string;
+    source_hash: string;
+    renderer_version: string;
+    scope_context?: string;
+  };
+  markdown: string;
 }
 
 export interface RuntimeProfile {

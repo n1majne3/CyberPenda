@@ -34,6 +34,9 @@ Data lives on the machine by default: SQLite (`pentest.db`), task run directorie
 ### Local development
 
 ```sh
+# One-time checkout setup: reject stale embedded UI before push.
+make install-git-hooks
+
 # Backend on :8787 + Vite UI with /api proxy
 make dev
 ```
@@ -91,6 +94,8 @@ Domain terms are defined in [CONTEXT.md](CONTEXT.md).
 | --- | --- |
 | `make dev` | Daemon + Vite frontend for local development |
 | `make build-ui` | Build React UI into the daemon embed path |
+| `make check-ui-sync` | Rebuild UI and require the committed embed to match |
+| `make install-git-hooks` | Enable the repository pre-push checks for this checkout |
 | `make build` | `build-ui` + compile `pentestd` |
 | `make build-sandbox-image` | Build local sandbox container image |
 | `make test` / `make test-backend` | Go unit and integration tests |
@@ -113,6 +118,8 @@ Common `pentestd` options (flags or env):
 | `-auth-token` | `PENTEST_AUTH_TOKEN` | (required for non-loopback binds) |
 | `-runtime-plugin-dirs` | `PENTEST_RUNTIME_PLUGIN_DIRS` | trusted plugin dirs |
 | `-runtime-extension-dirs` | `PENTEST_RUNTIME_EXTENSION_DIRS` | trusted extension dirs |
+| `-blackboard-write-waiver-operator` | `PENTEST_BLACKBOARD_WRITE_WAIVER_OPERATOR` | (empty) |
+| `-blackboard-write-waiver-reason` | `PENTEST_BLACKBOARD_WRITE_WAIVER_REASON` | (empty) |
 
 Auth (when configured): `Authorization: Bearer <token>` or `?token=` on API/MCP routes.
 
@@ -146,6 +153,7 @@ scripts/               Release builds and live smokes
 
 - [Product docs index](docs/README.md) — PRD, MVP scope, implementation plan
 - [Domain glossary](CONTEXT.md) — shared product language
+- [Graph Blackboard compatibility retirement](docs/blackboard-graph-migration.md) — Release C gates, replacements, and stable 410 guidance
 - [ADRs](docs/adr/) — architecture decisions (skills default-on, model providers vs profiles)
 
 ## License / authorization

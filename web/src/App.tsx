@@ -12,9 +12,11 @@ import { SkillsPage } from "@/pages/SkillsPage";
 import { TaskLaunchPage } from "@/pages/TaskLaunchPage";
 import { TaskDetailPage } from "@/pages/TaskDetailPage";
 import { FactsPage } from "@/pages/FactsPage";
+import { BlackboardPage } from "@/pages/BlackboardPage";
 import { FindingsPage } from "@/pages/FindingsPage";
 import { EvidencePage } from "@/pages/EvidencePage";
 import { ReportPage } from "@/pages/ReportPage";
+import { SolutionPage } from "@/pages/SolutionPage";
 import { TasksPage } from "@/pages/TasksPage";
 import { Logo } from "@/components/Logo";
 import { ThemeToggle } from "@/components/ThemeProvider";
@@ -190,10 +192,14 @@ function createAppRouter() {
         { path: "/projects/:projectId/tasks", element: <TasksPage /> },
         { path: "/projects/:projectId/tasks/new", element: <TaskLaunchPage /> },
         { path: "/projects/:projectId/tasks/:taskId", element: <TaskDetailPage /> },
+        // Legacy Facts bookmark → Blackboard Work filtered to ProjectFact.
         { path: "/projects/:projectId/facts", element: <FactsPage /> },
+        { path: "/projects/:projectId/blackboard/*", element: <BlackboardPage /> },
+        { path: "/projects/:projectId/blackboard", element: <BlackboardPage /> },
         { path: "/projects/:projectId/findings", element: <FindingsPage /> },
         { path: "/projects/:projectId/evidence", element: <EvidencePage /> },
         { path: "/projects/:projectId/report", element: <ReportPage /> },
+        { path: "/projects/:projectId/solution", element: <SolutionPage /> },
       ],
     },
   ]);

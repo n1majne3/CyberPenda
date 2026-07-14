@@ -2,7 +2,9 @@ package daemon_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,8 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"pentest/internal/blackboardmigration"
 	"pentest/internal/daemon"
 	"pentest/internal/runtimeprofile"
+	"pentest/internal/store"
 )
 
 // TestLaunchTaskRunsFakeRuntimeAndStreamsEvents proves the Slice 3 tracer bullet
@@ -1325,6 +1329,160 @@ func TestResumeTaskEnrichesPromptWithFindingsAndProgressFacts(t *testing.T) {
 	}
 	if !sawEnrichedGoal {
 		t.Fatalf("expected resumed runtime to receive enriched handoff prompt")
+	}
+}
+
+func TestGraphCutoverResumeInjectsOnlyPinnedFullGraphWithoutLegacyMemoryChannels(t *testing.T) {
+	root := t.TempDir()
+	databasePath := filepath.Join(root, "pentest.db")
+	server, err := daemon.NewServer(daemon.Config{Version: "test-version", DBPath: databasePath, RuntimeRoot: filepath.Join(root, "runs"), ArtifactRoot: filepath.Join(root, "artifacts"), DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
+	taskID := createTask(t, server, projectID, `{"goal":"enumerate example.com","runtime_profile_id":`+quoteJSON(profileID)+`,"runner":"sandbox"}`)
+	waitForTaskStatus(t, server, projectID, taskID, "completed")
+	upsertFact(t, server, projectID, "progress:cutover", `{"summary":"legacy progress","body":"{\"done\":true}"}`)
+	upsertFinding(t, server, projectID, "finding:cutover", `{"title":"Legacy finding","status":"unconfirmed"}`)
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := store.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	migration := blackboardmigration.NewService(db, databasePath, filepath.Join(root, "artifacts"))
+	if _, err := migration.Execute(context.Background(), blackboardmigration.MigrationRequest{Kind: blackboardmigration.MigrationKindCutover, BackupPath: filepath.Join(root, "legacy.bak")}); err != nil {
+		db.Close()
+		t.Fatalf("Execute(cutover): %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	server, err = daemon.NewServer(daemon.Config{Version: "test-version", DBPath: databasePath, RuntimeRoot: filepath.Join(root, "runs"), ArtifactRoot: filepath.Join(root, "artifacts"), DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/resume/handoff", nil)
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusAccepted {
+		t.Fatalf("resume status = %d body=%s", resp.Code, resp.Body.String())
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, event := range getTaskEvents(t, server, projectID, taskID) {
+			if event["kind"] != "runtime_output" {
+				continue
+			}
+			goal, _ := event["payload"].(map[string]any)["goal"].(string)
+			if !strings.Contains(goal, "Resuming task") {
+				continue
+			}
+			_, resumePrompt, ok := strings.Cut(goal, "TASK GOAL:\n")
+			if !ok {
+				t.Fatalf("graph-native continuation goal omitted TASK GOAL marker: %q", goal)
+			}
+			for _, forbidden := range []string{"Current fact index:", "Current findings:", "Progress state:", "progress:cutover", "finding:cutover"} {
+				if strings.Contains(resumePrompt, forbidden) {
+					t.Fatalf("graph-native resume injected legacy memory channel %q in %q", forbidden, resumePrompt)
+				}
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("resumed runtime did not emit a graph-native continuation goal")
+}
+
+func TestServerRefusesGraphActivationWhileCutoverRecoveryIsRequired(t *testing.T) {
+	root := t.TempDir()
+	databasePath := filepath.Join(root, "pentest.db")
+	db, err := store.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO projects (id,name,description,scope_json,defaults_json,kind,created_at,updated_at) VALUES ('project-recovery','Recovery','', '{}','{}','pentest','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO project_facts (id,project_id,fact_key,category,summary,body,confidence,scope_status,created_at,updated_at) VALUES ('fact-recovery','project-recovery','fact:recovery','test','Recovery','','tentative','in_scope','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	migration := blackboardmigration.NewService(db, databasePath, root)
+	if _, err := migration.Execute(context.Background(), blackboardmigration.MigrationRequest{Kind: blackboardmigration.MigrationKindCutover, BackupPath: filepath.Join(root, "legacy.bak")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DROP TRIGGER blackboard_legacy_project_facts_insert_guard`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migration.Execute(context.Background(), blackboardmigration.MigrationRequest{Kind: blackboardmigration.MigrationKindVerify}); !errors.Is(err, blackboardmigration.ErrCutoverVerificationFailed) {
+		t.Fatalf("Execute(verify) error = %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	server, err := daemon.NewServer(daemon.Config{Version: "test-version", DBPath: databasePath, DisableBuiltinSkills: true})
+	if server != nil {
+		_ = server.Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), "recovery_required") {
+		t.Fatalf("NewServer error = %v, want recovery_required activation failure", err)
+	}
+}
+
+func TestServerVerifiesCommittedCutoverBeforeGraphActivationAfterLostResponse(t *testing.T) {
+	root := t.TempDir()
+	databasePath := filepath.Join(root, "pentest.db")
+	db, err := store.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO projects (id,name,description,scope_json,defaults_json,kind,created_at,updated_at) VALUES ('project-lost','Lost response','', '{}','{}','pentest','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO project_facts (id,project_id,fact_key,category,summary,body,confidence,scope_status,created_at,updated_at) VALUES ('fact-lost','project-lost','fact:lost','test','Lost response','','tentative','in_scope','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	injected := errors.New("process died after commit")
+	migration := blackboardmigration.NewService(db, databasePath, root, blackboardmigration.WithCutoverFailureInjector(
+		blackboardmigration.CutoverFailureInjectorFunc(func(point blackboardmigration.CutoverFailurePoint) error {
+			if point == blackboardmigration.CutoverFailureAfterCommit {
+				return injected
+			}
+			return nil
+		}),
+	))
+	if _, err := migration.Execute(context.Background(), blackboardmigration.MigrationRequest{Kind: blackboardmigration.MigrationKindCutover, BackupPath: filepath.Join(root, "legacy.bak")}); !errors.Is(err, injected) {
+		t.Fatalf("Execute(cutover) error = %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	server, err := daemon.NewServer(daemon.Config{Version: "test-version", DBPath: databasePath, ArtifactRoot: root, DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatalf("NewServer after committed cutover: %v", err)
+	}
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+	verifyDB, err := store.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer verifyDB.Close()
+	var state, verificationHash string
+	if err := verifyDB.QueryRow(`SELECT cutover_state,latest_verification_result_hash FROM blackboard_store_state WHERE id=1`).Scan(&state, &verificationHash); err != nil {
+		t.Fatal(err)
+	}
+	if state != "graph" || verificationHash == "" {
+		t.Fatalf("startup activation skipped committed cutover verification: state=%q hash=%q", state, verificationHash)
 	}
 }
 
