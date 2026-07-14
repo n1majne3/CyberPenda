@@ -171,7 +171,7 @@ func buildEntityCollection(ctx context.Context, tx *sql.Tx, snapshot GraphSnapsh
 	if end > total {
 		end = total
 	}
-	pageItems := append([]EntityItemV1(nil), items[start:end]...)
+	pageItems := append([]EntityItemV1{}, items[start:end]...)
 	next := ""
 	if end < total && len(pageItems) > 0 {
 		next, err = encodeReadCursor(readCursor{Version: 1, Projection: ReadKindEntityCollectionV1, ProjectID: snapshot.ProjectID, Revision: snapshot.GraphRevision, QueryHash: queryHash, Sort: "entities", Limit: limit, Last: tuple(pageItems[len(pageItems)-1]), SourcePins: stringSourcePins("health_run_id", healthRunID)}, cursorKey)

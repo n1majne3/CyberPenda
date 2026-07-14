@@ -736,7 +736,7 @@ func buildRecordCollection(ctx context.Context, tx *sql.Tx, snapshot GraphSnapsh
 	if end > len(rows) {
 		end = len(rows)
 	}
-	pageRows := append([]NodeRowV1(nil), rows[start:end]...)
+	pageRows := append([]NodeRowV1{}, rows[start:end]...)
 	next := ""
 	if end < len(rows) && len(pageRows) > 0 {
 		next, err = encodeReadCursor(readCursor{

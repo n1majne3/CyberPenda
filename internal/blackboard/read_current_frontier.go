@@ -143,7 +143,7 @@ func buildCurrentTruth(snapshot GraphSnapshot, request CurrentTruthRequest, curs
 	if end > total {
 		end = total
 	}
-	pageItems := append([]CurrentTruthItemV1(nil), items[start:end]...)
+	pageItems := append([]CurrentTruthItemV1{}, items[start:end]...)
 	next := ""
 	if end < total && len(pageItems) > 0 {
 		next, err = encodeReadCursor(readCursor{Version: 1, Projection: ReadKindCurrentTruthV1, ProjectID: snapshot.ProjectID, Revision: snapshot.GraphRevision, QueryHash: queryHash, Sort: "current_truth", Limit: limit, Last: tuple(pageItems[len(pageItems)-1])}, cursorKey)
@@ -356,7 +356,7 @@ func buildExplorationFrontier(snapshot GraphSnapshot, request ExplorationFrontie
 	if end > total {
 		end = total
 	}
-	pageItems := append([]FrontierItemV1(nil), items[start:end]...)
+	pageItems := append([]FrontierItemV1{}, items[start:end]...)
 	next := ""
 	if end < total && len(pageItems) > 0 {
 		next, err = encodeReadCursor(readCursor{Version: 1, Projection: ReadKindExplorationFrontierV1, ProjectID: snapshot.ProjectID, Revision: snapshot.GraphRevision, QueryHash: queryHash, Sort: "frontier", Limit: limit, Last: tuple(pageItems[len(pageItems)-1])}, cursorKey)

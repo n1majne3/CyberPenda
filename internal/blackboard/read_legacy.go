@@ -262,7 +262,7 @@ func buildLegacyFactIndex(snapshot GraphSnapshot, request LegacyFactIndexRequest
 	if end > len(entries) {
 		end = len(entries)
 	}
-	page := append([]FactIndexEntry(nil), entries[start:end]...)
+	page := append([]FactIndexEntry{}, entries[start:end]...)
 	return LegacyFactIndexV1{Facts: page, NextCursor: next, CompatibilityTruncated: next != ""}, nil
 }
 
@@ -459,7 +459,7 @@ func buildLegacyFindingCollection(snapshot GraphSnapshot, request LegacyFindingC
 	if end > len(findings) {
 		end = len(findings)
 	}
-	page := append([]LegacyFindingV1(nil), findings[start:end]...)
+	page := append([]LegacyFindingV1{}, findings[start:end]...)
 	return LegacyFindingCollectionV1{Findings: page, NextCursor: next, CompatibilityTruncated: next != ""}, nil
 }
 
@@ -569,7 +569,7 @@ func buildLegacyEvidenceCollection(ctx context.Context, tx *sql.Tx, snapshot Gra
 	if end > len(artifacts) {
 		end = len(artifacts)
 	}
-	page := append([]LegacyEvidenceArtifactV1(nil), artifacts[start:end]...)
+	page := append([]LegacyEvidenceArtifactV1{}, artifacts[start:end]...)
 	return LegacyEvidenceCollectionV1{Evidence: page, NextCursor: next, CompatibilityTruncated: next != ""}, nil
 }
 

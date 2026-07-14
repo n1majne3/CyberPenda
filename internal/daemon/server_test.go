@@ -813,6 +813,21 @@ func TestU03BlackboardHTTPExposesProvenanceTraversalHealthAndExplorer(t *testing
 	defer server.Close()
 
 	rootID := mutation.Operations[0].NodeID
+	for _, path := range []string{
+		"/blackboard/entities?query=does-not-match",
+		"/blackboard/records?query=does-not-match",
+		"/blackboard/current-truth?query=does-not-match",
+		"/blackboard/frontier?query=does-not-match",
+	} {
+		emptyCollection := httptest.NewRecorder()
+		server.ServeHTTP(emptyCollection, httptest.NewRequest(http.MethodGet, "/api/projects/"+projectRow.ID+path, nil))
+		if emptyCollection.Code != http.StatusOK {
+			t.Fatalf("GET %s status=%d body=%s", path, emptyCollection.Code, emptyCollection.Body.String())
+		}
+		if !strings.Contains(emptyCollection.Body.String(), `"items":[]`) {
+			t.Fatalf("GET %s must encode empty items as [], body=%s", path, emptyCollection.Body.String())
+		}
+	}
 	for _, url := range []string{
 		"/api/projects/" + projectRow.ID + "/blackboard/records/" + rootID + "/provenance",
 		"/api/projects/" + projectRow.ID + "/blackboard/records/" + rootID + "/traversal?direction=incoming&max_depth=2",
