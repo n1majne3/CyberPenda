@@ -71,6 +71,22 @@ func (db *DB) CanonicalStore() (string, error) {
 	return epoch, nil
 }
 
+type BlackboardStoreState struct {
+	CanonicalStore         string
+	CutoverState           string
+	CutoverID              string
+	LatestVerificationHash string
+}
+
+func (db *DB) BlackboardStoreState() (BlackboardStoreState, error) {
+	var state BlackboardStoreState
+	err := db.QueryRow(`SELECT canonical_store,cutover_state,cutover_id,latest_verification_result_hash FROM blackboard_store_state WHERE id=1`).Scan(&state.CanonicalStore, &state.CutoverState, &state.CutoverID, &state.LatestVerificationHash)
+	if err != nil {
+		return BlackboardStoreState{}, fmt.Errorf("read Blackboard store state: %w", err)
+	}
+	return state, nil
+}
+
 // ValidateMigrationHistory verifies that every applied numbered migration is
 // known to this binary and still has its recorded checksum. It performs no
 // writes and is used by pre-cutover inspection.

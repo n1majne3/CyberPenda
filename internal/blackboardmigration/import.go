@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"pentest/internal/blackboard"
 	"pentest/internal/project"
@@ -69,6 +70,19 @@ func (s *Service) importLegacyGraph(ctx context.Context, sourceDigest string) (L
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	result, err := s.importLegacyGraphInTransaction(ctx, tx, sourceDigest, "")
+	if err != nil {
+		return LegacyImportResultV1{}, err
+	}
+	if s.commitDisposableImport {
+		if err := tx.Commit(); err != nil {
+			return LegacyImportResultV1{}, fmt.Errorf("commit disposable M02 import: %w", err)
+		}
+	}
+	return result, nil
+}
+
+func (s *Service) importLegacyGraphInTransaction(ctx context.Context, tx *sql.Tx, sourceDigest, cutoverID string) (LegacyImportResultV1, error) {
 	projectRows, err := tx.QueryContext(ctx, `SELECT id FROM projects ORDER BY id`)
 	if err != nil {
 		return LegacyImportResultV1{}, err
@@ -102,33 +116,38 @@ func (s *Service) importLegacyGraph(ctx context.Context, sourceDigest string) (L
 			return LegacyImportResultV1{}, err
 		}
 		allMappings = append(allMappings, mappings...)
+		mutationSequence := 0
 		if len(plan.Nodes) == 0 {
-			for i := range mappings {
-				if err := insertLegacyMapping(ctx, tx, mappings[i], 0, s.clock().UTC().Format("2006-01-02T15:04:05.000000000Z07:00")); err != nil {
-					return LegacyImportResultV1{}, err
-				}
-				result.Mappings[mappings[i].status]++
+			if _, err := graph.InitializeLegacyImportProject(ctx, tx, projectID, s.clock().UTC().Format(time.RFC3339Nano)); err != nil {
+				return LegacyImportResultV1{}, fmt.Errorf("initialize empty legacy Project %s: %w", projectID, err)
 			}
-			parity, checks, err := validateProjectImportParity(ctx, tx, projectID, s.artifactRoot)
+		} else {
+			mutation, err := graph.ApplyLegacyImportPlan(ctx, tx, plan)
 			if err != nil {
-				return LegacyImportResultV1{}, err
+				return LegacyImportResultV1{}, fmt.Errorf("import legacy Project %s through Apply: %w", projectID, err)
 			}
-			parityDigests = append(parityDigests, parity)
-			for check, count := range checks {
-				result.ParityChecks[check] += count
+			mutationSequence = mutation.MutationSequence
+			result.Mutations++
+		}
+		if err := s.failCutover(CutoverFailureAfterProjectImport); err != nil {
+			return LegacyImportResultV1{}, err
+		}
+		if len(plan.Nodes) != 0 {
+			if _, err := graph.MeasureLegacyImportProject(ctx, tx, projectID, s.clock().UTC().Format(time.RFC3339Nano)); err != nil {
+				return LegacyImportResultV1{}, fmt.Errorf("measure imported Project %s projection: %w", projectID, err)
 			}
-			continue
 		}
-		mutation, err := graph.ApplyLegacyImportPlan(ctx, tx, plan)
-		if err != nil {
-			return LegacyImportResultV1{}, fmt.Errorf("import legacy Project %s through Apply: %w", projectID, err)
+		if err := s.failCutover(CutoverFailureAfterHeadBuild); err != nil {
+			return LegacyImportResultV1{}, err
 		}
-		result.Mutations++
 		for i := range mappings {
-			if err := insertLegacyMapping(ctx, tx, mappings[i], mutation.MutationSequence, s.clock().UTC().Format("2006-01-02T15:04:05.000000000Z07:00")); err != nil {
+			if err := insertLegacyMapping(ctx, tx, mappings[i], mutationSequence, cutoverID, s.clock().UTC().Format("2006-01-02T15:04:05.000000000Z07:00")); err != nil {
 				return LegacyImportResultV1{}, err
 			}
 			result.Mappings[mappings[i].status]++
+		}
+		if err := s.failCutover(CutoverFailureAfterMappings); err != nil {
+			return LegacyImportResultV1{}, err
 		}
 		parity, checks, err := validateProjectImportParity(ctx, tx, projectID, s.artifactRoot)
 		if err != nil {
@@ -137,6 +156,9 @@ func (s *Service) importLegacyGraph(ctx context.Context, sourceDigest string) (L
 		parityDigests = append(parityDigests, parity)
 		for check, count := range checks {
 			result.ParityChecks[check] += count
+		}
+		if err := s.failCutover(CutoverFailureAfterParity); err != nil {
+			return LegacyImportResultV1{}, err
 		}
 	}
 	result.MappingDigest, err = legacyMappingsDigest(allMappings)
@@ -157,11 +179,6 @@ func (s *Service) importLegacyGraph(ctx context.Context, sourceDigest string) (L
 		writeFrame(parityHash, []byte(digest))
 	}
 	result.ParityDigest = hex.EncodeToString(parityHash.Sum(nil))
-	if s.commitDisposableImport {
-		if err := tx.Commit(); err != nil {
-			return LegacyImportResultV1{}, fmt.Errorf("commit disposable M02 import: %w", err)
-		}
-	}
 	return result, nil
 }
 
@@ -410,6 +427,97 @@ func validateProjectImportParity(ctx context.Context, tx *sql.Tx, projectID, art
 	}
 	digest := sha256.Sum256(append([]byte("legacy_blackboard_project_parity_v1\x00"), body...))
 	return hex.EncodeToString(digest[:]), checks, nil
+}
+
+// validateProjectPostCutoverCompatibility verifies the shared graph-backed
+// compatibility projections after graph-native writes have legitimately
+// diverged from the frozen legacy source. Exact source parity remains the
+// pre-write cutover gate; after activation these projections must instead be
+// mutually consistent views of current graph state.
+func validateProjectPostCutoverCompatibility(ctx context.Context, tx *sql.Tx, projectID string) (string, map[string]int, error) {
+	reads := blackboard.NewBlackboardReadServiceInTransaction(tx)
+	base := blackboard.ReadRequest{ProtocolVersion: blackboard.BlackboardReadProtocolVersion, ProjectID: projectID}
+	include := true
+	facts, factPages, err := readAllLegacyFacts(ctx, reads, tx, base, &include)
+	if err != nil {
+		return "", nil, err
+	}
+	findings, findingPages, err := readAllLegacyFindings(ctx, reads, tx, base)
+	if err != nil {
+		return "", nil, err
+	}
+	evidence, evidencePages, err := readAllLegacyEvidence(ctx, reads, tx, base)
+	if err != nil {
+		return "", nil, err
+	}
+
+	read := func(request blackboard.ReadRequest) (any, error) {
+		envelope, err := reads.ReadInTransaction(ctx, tx, request)
+		if err != nil {
+			return nil, err
+		}
+		return envelope.Result, nil
+	}
+	dashboardRequest := base
+	dashboardRequest.Kind = blackboard.ReadKindProjectBlackboardSummaryV1
+	dashboardRequest.ProjectSummary = &blackboard.ProjectBlackboardSummaryRequest{}
+	dashboardResult, err := read(dashboardRequest)
+	if err != nil {
+		return "", nil, err
+	}
+	dashboard := dashboardResult.(blackboard.ProjectBlackboardSummaryV1)
+	if dashboard.Counts.Facts != len(facts.Facts) || dashboard.Counts.Findings != len(findings.Findings) || dashboard.Counts.Evidence != len(evidence.Evidence) {
+		return "", nil, fmt.Errorf("post-cutover compatibility counts disagree: dashboard=%d/%d/%d legacy=%d/%d/%d", dashboard.Counts.Facts, dashboard.Counts.Findings, dashboard.Counts.Evidence, len(facts.Facts), len(findings.Findings), len(evidence.Evidence))
+	}
+
+	reportRequest := base
+	reportRequest.Kind = blackboard.ReadKindPentestReportV1
+	reportRequest.PentestReport = &blackboard.PentestReportRequest{IncludeUnconfirmed: &include, IncludeTentativeFacts: &include, IncludeOutOfScopeContext: &include, Format: "json"}
+	reportResult, err := read(reportRequest)
+	if err != nil {
+		return "", nil, err
+	}
+	report := reportResult.(blackboard.PentestReportV1)
+	confirmed, unconfirmed := 0, 0
+	for _, finding := range findings.Findings {
+		switch finding.Status {
+		case "confirmed":
+			confirmed++
+		case "unconfirmed":
+			unconfirmed++
+		}
+	}
+	if len(report.ConfirmedFindings) != confirmed || len(report.UnconfirmedFindings) != unconfirmed {
+		return "", nil, fmt.Errorf("post-cutover report compatibility counts disagree: report=%d/%d legacy=%d/%d", len(report.ConfirmedFindings), len(report.UnconfirmedFindings), confirmed, unconfirmed)
+	}
+
+	graphRequest := base
+	graphRequest.Kind = blackboard.ReadKindCanonicalGraphV1
+	graphResult, err := read(graphRequest)
+	if err != nil {
+		return "", nil, err
+	}
+	results := map[string]any{
+		"legacy_fact_index": facts,
+		"legacy_findings":   findings,
+		"legacy_evidence":   evidence,
+		"dashboard":         dashboard,
+		"report":            report,
+		"canonical_graph":   graphResult,
+	}
+	body, err := json.Marshal(results)
+	if err != nil {
+		return "", nil, err
+	}
+	digest := sha256.Sum256(append([]byte("legacy_blackboard_post_cutover_compatibility_v1\x00"), body...))
+	return hex.EncodeToString(digest[:]), map[string]int{
+		"legacy_fact_index": factPages,
+		"legacy_findings":   findingPages,
+		"legacy_evidence":   evidencePages,
+		"dashboard":         1,
+		"report":            1,
+		"canonical_graph":   1,
+	}, nil
 }
 
 func validateLegacyReportSourceParity(report blackboard.PentestReportV1, findings []blackboard.LegacyFindingV1, evidence []blackboard.LegacyEvidenceArtifactV1) error {
@@ -1665,7 +1773,7 @@ func newLegacyMapping(projectID, table, kind, primaryID, stableKey string, versi
 	return legacyMapping{projectID: projectID, sourceTable: table, sourceKind: kind, legacyPrimaryID: primaryID, originalStableKey: stableKey, originalVersion: version, sourceRowHash: hex.EncodeToString(sum[:]), targetKind: targetKind, targetID: targetID, targetVersion: targetVersion, status: status, compatibilityMetadata: metadata}
 }
 
-func insertLegacyMapping(ctx context.Context, tx *sql.Tx, mapping legacyMapping, mutationSequence int, createdAt string) error {
+func insertLegacyMapping(ctx context.Context, tx *sql.Tx, mapping legacyMapping, mutationSequence int, cutoverID, createdAt string) error {
 	metadata, err := json.Marshal(mapping.compatibilityMetadata)
 	if err != nil {
 		return err
@@ -1675,7 +1783,7 @@ func insertLegacyMapping(ctx context.Context, tx *sql.Tx, mapping legacyMapping,
 		(id,project_id,source_table,source_kind,legacy_primary_id,original_stable_key,original_version,source_row_hash,target_kind,target_id,target_version,mapping_status,compatibility_metadata_json,migration_mutation_seq,cutover_id,created_at)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		id, mapping.projectID, mapping.sourceTable, mapping.sourceKind, mapping.legacyPrimaryID, mapping.originalStableKey, mapping.originalVersion,
-		mapping.sourceRowHash, mapping.targetKind, mapping.targetID, mapping.targetVersion, mapping.status, string(metadata), mutationSequence, "", createdAt)
+		mapping.sourceRowHash, mapping.targetKind, mapping.targetID, mapping.targetVersion, mapping.status, string(metadata), mutationSequence, cutoverID, createdAt)
 	if err != nil {
 		return fmt.Errorf("insert legacy mapping: %w", err)
 	}

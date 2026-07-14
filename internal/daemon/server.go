@@ -21,6 +21,7 @@ import (
 
 	"pentest/internal/blackboard"
 	"pentest/internal/blackboardcompat"
+	"pentest/internal/blackboardmigration"
 	"pentest/internal/credential"
 	"pentest/internal/modelprovider"
 	"pentest/internal/preflight"
@@ -218,6 +219,22 @@ func NewServer(config Config) (*Server, error) {
 		return nil, err
 	}
 	if epoch == store.CanonicalStoreGraphV1 || epoch == store.CanonicalStoreGraphV1Finalized {
+		storeState, stateErr := db.BlackboardStoreState()
+		if stateErr != nil {
+			_ = server.Close()
+			return nil, stateErr
+		}
+		if epoch == store.CanonicalStoreGraphV1 && storeState.CutoverState != "graph" {
+			_ = server.Close()
+			return nil, fmt.Errorf("graph Blackboard activation refused while cutover_state=%s; run migration verify or explicit backup recovery for cutover %s", storeState.CutoverState, storeState.CutoverID)
+		}
+		if epoch == store.CanonicalStoreGraphV1 && storeState.CutoverID != "" && storeState.LatestVerificationHash == "" {
+			migration := blackboardmigration.NewService(db, config.DBPath, artifactRoot)
+			if _, verifyErr := migration.Execute(context.Background(), blackboardmigration.MigrationRequest{Kind: blackboardmigration.MigrationKindVerify}); verifyErr != nil {
+				_ = server.Close()
+				return nil, fmt.Errorf("verify committed graph Blackboard cutover before activation: %w", verifyErr)
+			}
+		}
 		graph := blackboard.NewGraphService(db, blackboard.SystemClock{}, blackboard.RandomIDSource{}).WithArtifactRoot(artifactRoot)
 		server.graph = graph
 		server.reads = blackboard.NewBlackboardReadService(db).WithArtifactRoot(artifactRoot)

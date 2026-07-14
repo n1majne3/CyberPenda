@@ -235,6 +235,11 @@ func (s *GraphService) Apply(ctx context.Context, batch MutationBatch) (result M
 	if err != nil {
 		return MutationResult{}, err
 	}
+	if anyOperationChanged(result.Operations) {
+		if _, err := tx.ExecContext(ctx, `UPDATE blackboard_store_state SET post_cutover_write_committed=1,updated_at=? WHERE id=1 AND canonical_store='graph_v1'`, result.RecordedAt); err != nil {
+			return MutationResult{}, graphStorageError("record post-cutover graph write", err)
+		}
+	}
 
 	if err := tx.Commit(); err != nil {
 		return MutationResult{}, graphStorageError("commit graph transaction", err)

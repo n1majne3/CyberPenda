@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"pentest/internal/blackboard"
 	"pentest/internal/store"
 )
 
@@ -32,6 +34,8 @@ const (
 var ErrUnsupportedMigrationKind = errors.New("unsupported Blackboard migration request kind")
 var ErrMigrationBlocked = errors.New("Blackboard migration is blocked by inspection diagnostics")
 var ErrCutoverImplementationPending = errors.New("verified backup complete; atomic graph cutover is implemented by M05")
+var ErrCutoverVerificationFailed = errors.New("post-cutover Blackboard verification failed")
+var ErrCutoverConflict = errors.New("Blackboard cutover retry conflicts with the committed source digest")
 
 type MigrationRequest struct {
 	Kind       MigrationKind `json:"kind"`
@@ -39,10 +43,30 @@ type MigrationRequest struct {
 }
 
 type MigrationResult struct {
-	Kind   MigrationKind         `json:"kind"`
-	Plan   LegacyMigrationPlanV1 `json:"plan"`
-	Backup *VerifiedBackup       `json:"backup,omitempty"`
-	Import *LegacyImportResultV1 `json:"import,omitempty"`
+	Kind         MigrationKind          `json:"kind"`
+	Plan         LegacyMigrationPlanV1  `json:"plan"`
+	Backup       *VerifiedBackup        `json:"backup,omitempty"`
+	Import       *LegacyImportResultV1  `json:"import,omitempty"`
+	Verification *CutoverVerificationV1 `json:"verification,omitempty"`
+	Recovery     *RecoveryGuidanceV1    `json:"recovery,omitempty"`
+}
+
+type CutoverVerificationV1 struct {
+	CutoverID     string            `json:"cutover_id"`
+	SourceDigest  string            `json:"source_digest"`
+	MappingDigest string            `json:"mapping_digest"`
+	ParityDigest  string            `json:"parity_digest"`
+	ProjectHashes map[string]string `json:"project_hashes"`
+	VerifiedAt    string            `json:"verified_at"`
+	ResultHash    string            `json:"result_hash"`
+}
+
+type RecoveryGuidanceV1 struct {
+	CutoverID         string `json:"cutover_id"`
+	BackupPath        string `json:"backup_path"`
+	BackupSHA256      string `json:"backup_sha256"`
+	PostCutoverWrites bool   `json:"post_cutover_writes"`
+	Warning           string `json:"warning"`
 }
 
 type LegacyMigrationPlanV1 struct {
@@ -75,9 +99,31 @@ type Service struct {
 	backup                 BackupImplementation
 	clock                  func() time.Time
 	commitDisposableImport bool
+	cutoverFailure         CutoverFailureInjector
 }
 
 type Option func(*Service)
+
+type CutoverFailurePoint string
+
+const (
+	CutoverFailureAfterDDL           CutoverFailurePoint = "after_ddl"
+	CutoverFailureAfterProjectImport CutoverFailurePoint = "after_project_import"
+	CutoverFailureAfterMappings      CutoverFailurePoint = "after_mappings"
+	CutoverFailureAfterHeadBuild     CutoverFailurePoint = "after_head_build"
+	CutoverFailureAfterParity        CutoverFailurePoint = "after_parity"
+	CutoverFailureAfterGuards        CutoverFailurePoint = "after_guards"
+	CutoverFailureAfterStateFlip     CutoverFailurePoint = "after_state_flip"
+	CutoverFailureAfterCommit        CutoverFailurePoint = "after_commit"
+)
+
+type CutoverFailureInjector interface {
+	FailAfter(CutoverFailurePoint) error
+}
+
+type CutoverFailureInjectorFunc func(CutoverFailurePoint) error
+
+func (fn CutoverFailureInjectorFunc) FailAfter(point CutoverFailurePoint) error { return fn(point) }
 
 func WithBackupImplementation(backup BackupImplementation) Option {
 	return func(service *Service) { service.backup = backup }
@@ -85,6 +131,10 @@ func WithBackupImplementation(backup BackupImplementation) Option {
 
 func WithClock(clock func() time.Time) Option {
 	return func(service *Service) { service.clock = clock }
+}
+
+func WithCutoverFailureInjector(injector CutoverFailureInjector) Option {
+	return func(service *Service) { service.cutoverFailure = injector }
 }
 
 // withDisposableImportCommitForTesting makes the M02 import observable on a
@@ -117,6 +167,9 @@ func (s *Service) Execute(ctx context.Context, request MigrationRequest) (Migrat
 		}
 		return MigrationResult{Kind: request.Kind, Plan: plan}, nil
 	case MigrationKindCutover:
+		if existing, handled, err := s.committedCutoverResult(ctx); handled {
+			return existing, err
+		}
 		plan, err := s.inspect(ctx)
 		if err != nil {
 			return MigrationResult{}, err
@@ -134,15 +187,332 @@ func (s *Service) Execute(ctx context.Context, request MigrationRequest) (Migrat
 			return result, err
 		}
 		result.Backup = &backup
-		importResult, err := s.importLegacyGraph(ctx, plan.SourceDigest)
+		cutoverID := "cutover_" + shortHash(plan.SourceDigest+"\x00"+s.clock().UTC().Format(time.RFC3339Nano))
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return result, fmt.Errorf("begin atomic Blackboard cutover: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		freshDigest, err := sourceDigestInTransaction(ctx, tx)
+		if err != nil {
+			return result, err
+		}
+		if freshDigest != plan.SourceDigest {
+			return result, fmt.Errorf("legacy source changed after inspection: inspected=%s current=%s", plan.SourceDigest, freshDigest)
+		}
+		if err := s.failCutover(CutoverFailureAfterDDL); err != nil {
+			return result, err
+		}
+		importResult, err := s.importLegacyGraphInTransaction(ctx, tx, plan.SourceDigest, cutoverID)
 		if err != nil {
 			return result, err
 		}
 		result.Import = &importResult
-		return result, ErrCutoverImplementationPending
+		if s.commitDisposableImport {
+			if err := tx.Commit(); err != nil {
+				return result, fmt.Errorf("commit disposable graph import: %w", err)
+			}
+			return result, ErrCutoverImplementationPending
+		}
+		if err := installLegacyWriteGuards(ctx, tx); err != nil {
+			return result, err
+		}
+		if err := s.failCutover(CutoverFailureAfterGuards); err != nil {
+			return result, err
+		}
+		now := s.clock().UTC().Format(time.RFC3339Nano)
+		if _, err := tx.ExecContext(ctx, `UPDATE blackboard_store_state SET canonical_store=?,cutover_state='graph',migration_contract_version='legacy_blackboard_to_graph_v1',graph_schema_version=?,cutover_id=?,source_digest=?,mapping_digest=?,verified_backup_path=?,verified_backup_sha256=?,cutover_application_version='graph-blackboard-m05',cutover_started_at=?,cutover_committed_at=?,post_cutover_write_committed=0,updated_at=? WHERE id=1 AND canonical_store=?`,
+			store.CanonicalStoreGraphV1, store.GraphSchemaVersion, cutoverID, plan.SourceDigest, importResult.MappingDigest, backup.Path, backup.SHA256, now, now, now, store.CanonicalStoreLegacyV1); err != nil {
+			return result, fmt.Errorf("flip canonical Blackboard store epoch: %w", err)
+		}
+		if err := s.failCutover(CutoverFailureAfterStateFlip); err != nil {
+			return result, err
+		}
+		if err := tx.Commit(); err != nil {
+			return result, fmt.Errorf("commit atomic Blackboard cutover: %w", err)
+		}
+		if err := s.failCutover(CutoverFailureAfterCommit); err != nil {
+			return result, err
+		}
+		verification, err := s.verifyCommittedCutover(ctx)
+		if err != nil {
+			s.markRecoveryRequired()
+			result.Recovery = s.recoveryGuidance(context.Background())
+			return result, fmt.Errorf("%w: %v", ErrCutoverVerificationFailed, err)
+		}
+		result.Verification = &verification
+		if err := s.persistCutoverVerification(ctx, result); err != nil {
+			return result, err
+		}
+		return result, nil
+	case MigrationKindVerify:
+		verification, err := s.verifyCommittedCutover(ctx)
+		result := MigrationResult{Kind: request.Kind, Verification: &verification}
+		if err != nil {
+			s.markRecoveryRequired()
+			result.Recovery = s.recoveryGuidance(context.Background())
+			return result, fmt.Errorf("%w: %v", ErrCutoverVerificationFailed, err)
+		}
+		return result, nil
 	default:
 		return MigrationResult{}, fmt.Errorf("%w: %q", ErrUnsupportedMigrationKind, request.Kind)
 	}
+}
+
+func (s *Service) markRecoveryRequired() {
+	_, _ = s.db.ExecContext(context.Background(), `UPDATE blackboard_store_state SET cutover_state='recovery_required',updated_at=? WHERE id=1 AND canonical_store=?`, s.clock().UTC().Format(time.RFC3339Nano), store.CanonicalStoreGraphV1)
+}
+
+func (s *Service) committedCutoverResult(ctx context.Context) (MigrationResult, bool, error) {
+	var epoch, cutoverState, storedDigest, cutoverID, backupPath, backupSHA string
+	err := s.db.QueryRowContext(ctx, `SELECT canonical_store,cutover_state,source_digest,cutover_id,verified_backup_path,verified_backup_sha256 FROM blackboard_store_state WHERE id=1`).Scan(&epoch, &cutoverState, &storedDigest, &cutoverID, &backupPath, &backupSHA)
+	if err != nil {
+		return MigrationResult{}, true, err
+	}
+	if epoch != store.CanonicalStoreGraphV1 && epoch != store.CanonicalStoreGraphV1Finalized {
+		return MigrationResult{}, false, nil
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return MigrationResult{}, true, err
+	}
+	currentDigest, digestErr := sourceDigestInTransaction(ctx, tx)
+	_ = tx.Rollback()
+	if digestErr != nil {
+		return MigrationResult{}, true, digestErr
+	}
+	if currentDigest != storedDigest {
+		return MigrationResult{Kind: MigrationKindCutover, Plan: LegacyMigrationPlanV1{SourceDigest: currentDigest}}, true,
+			fmt.Errorf("%w: cutover_id=%s committed=%s current=%s", ErrCutoverConflict, cutoverID, storedDigest, currentDigest)
+	}
+	if cutoverState == "graph" {
+		if stored, ok, err := s.loadCutoverResult(ctx, cutoverID); err != nil {
+			return MigrationResult{}, true, err
+		} else if ok {
+			return stored, true, nil
+		}
+	}
+	verification, err := s.verifyCommittedCutover(ctx)
+	result := MigrationResult{
+		Kind:         MigrationKindCutover,
+		Plan:         LegacyMigrationPlanV1{SourceDigest: storedDigest},
+		Backup:       &VerifiedBackup{Path: backupPath, SHA256: backupSHA, QuickCheck: "ok"},
+		Verification: &verification,
+	}
+	if err != nil {
+		result.Recovery = s.recoveryGuidance(context.Background())
+		return result, true, fmt.Errorf("%w: %v", ErrCutoverVerificationFailed, err)
+	}
+	result.Import = &LegacyImportResultV1{MappingDigest: verification.MappingDigest, MappingVerified: true, ParityDigest: verification.ParityDigest}
+	if err := s.persistCutoverVerification(ctx, result); err != nil {
+		return result, true, err
+	}
+	return result, true, nil
+}
+
+func (s *Service) recoveryGuidance(ctx context.Context) *RecoveryGuidanceV1 {
+	var guidance RecoveryGuidanceV1
+	var postCutoverWrites int
+	if err := s.db.QueryRowContext(ctx, `SELECT cutover_id,verified_backup_path,verified_backup_sha256,post_cutover_write_committed FROM blackboard_store_state WHERE id=1`).Scan(&guidance.CutoverID, &guidance.BackupPath, &guidance.BackupSHA256, &postCutoverWrites); err != nil {
+		return nil
+	}
+	guidance.PostCutoverWrites = postCutoverWrites != 0
+	if guidance.PostCutoverWrites {
+		guidance.Warning = "Restoring the verified pre-cutover backup would lose post-cutover graph writes; export the graph ledger, migration state, and Blackboard Health before following explicit restore instructions. No reverse migration was performed."
+	} else {
+		guidance.Warning = "Restore the verified pre-cutover backup only through an explicit operator recovery action. No reverse migration was performed."
+	}
+	return &guidance
+}
+
+func (s *Service) persistCutoverVerification(ctx context.Context, result MigrationResult) error {
+	if result.Verification == nil {
+		return nil
+	}
+	body, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	now := s.clock().UTC().Format(time.RFC3339Nano)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO blackboard_migration_runs(id,kind,state,source_digest,mapping_digest,backup_path,backup_sha256,counts_json,created_at,updated_at,finished_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state,source_digest=excluded.source_digest,mapping_digest=excluded.mapping_digest,backup_path=excluded.backup_path,backup_sha256=excluded.backup_sha256,counts_json=excluded.counts_json,updated_at=excluded.updated_at,finished_at=excluded.finished_at`,
+		result.Verification.CutoverID, string(MigrationKindCutover), "committed", result.Verification.SourceDigest, result.Verification.MappingDigest, result.Backup.Path, result.Backup.SHA256, string(body), now, now, now)
+	if err != nil {
+		return fmt.Errorf("persist committed cutover result: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) loadCutoverResult(ctx context.Context, cutoverID string) (MigrationResult, bool, error) {
+	var body string
+	err := s.db.QueryRowContext(ctx, `SELECT counts_json FROM blackboard_migration_runs WHERE id=? AND kind=? AND state='committed'`, cutoverID, string(MigrationKindCutover)).Scan(&body)
+	if errors.Is(err, sql.ErrNoRows) {
+		return MigrationResult{}, false, nil
+	}
+	if err != nil {
+		return MigrationResult{}, false, err
+	}
+	var result MigrationResult
+	if err := json.Unmarshal([]byte(body), &result); err != nil {
+		return MigrationResult{}, false, fmt.Errorf("decode committed cutover result: %w", err)
+	}
+	return result, true, nil
+}
+
+func (s *Service) failCutover(point CutoverFailurePoint) error {
+	if s.cutoverFailure == nil {
+		return nil
+	}
+	return s.cutoverFailure.FailAfter(point)
+}
+
+var legacyBlackboardTables = []string{
+	"project_facts", "project_fact_versions", "project_fact_relations", "fact_key_aliases",
+	"findings", "finding_versions", "finding_key_aliases", "evidence_artifacts",
+}
+
+func installLegacyWriteGuards(ctx context.Context, tx *sql.Tx) error {
+	for _, table := range legacyBlackboardTables {
+		for _, operation := range []string{"insert", "update", "delete"} {
+			trigger := "blackboard_legacy_" + table + "_" + operation + "_guard"
+			statement := `CREATE TRIGGER "` + trigger + `" BEFORE ` + strings.ToUpper(operation) + ` ON "` + table + `" BEGIN SELECT RAISE(ABORT,'` + table + ` is frozen after graph_v1 cutover'); END`
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("install %s legacy write guard: %w", table, err)
+			}
+		}
+	}
+	return nil
+}
+
+func sourceDigestInTransaction(ctx context.Context, tx *sql.Tx) (string, error) {
+	hash := sha256.New()
+	writeFrame(hash, []byte("legacy_blackboard_source_v1"))
+	for _, table := range legacySourceTables {
+		rows, err := canonicalTableRows(ctx, tx, table)
+		if err != nil {
+			return "", err
+		}
+		writeFrame(hash, []byte(table))
+		for _, row := range rows {
+			writeFrame(hash, row)
+		}
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func (s *Service) verifyCommittedCutover(ctx context.Context) (CutoverVerificationV1, error) {
+	var verification CutoverVerificationV1
+	var epoch, state, migrationContract, backupPath, backupSHA string
+	var graphSchemaVersion, postCutoverWrites int
+	if err := s.db.QueryRowContext(ctx, `SELECT canonical_store,cutover_state,migration_contract_version,graph_schema_version,cutover_id,source_digest,mapping_digest,verified_backup_path,verified_backup_sha256,post_cutover_write_committed FROM blackboard_store_state WHERE id=1`).Scan(&epoch, &state, &migrationContract, &graphSchemaVersion, &verification.CutoverID, &verification.SourceDigest, &verification.MappingDigest, &backupPath, &backupSHA, &postCutoverWrites); err != nil {
+		return verification, fmt.Errorf("read committed cutover state: %w", err)
+	}
+	if epoch != store.CanonicalStoreGraphV1 || (state != "graph" && state != "recovery_required") || migrationContract != "legacy_blackboard_to_graph_v1" || graphSchemaVersion != store.GraphSchemaVersion || verification.CutoverID == "" || verification.SourceDigest == "" || verification.MappingDigest == "" || backupPath == "" || backupSHA == "" {
+		return verification, fmt.Errorf("committed cutover store state is incomplete or inconsistent")
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return verification, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	persistedMappingDigest, err := persistedLegacyMappingsDigest(ctx, tx)
+	if err != nil {
+		return verification, fmt.Errorf("verify legacy mapping digest: %w", err)
+	}
+	if persistedMappingDigest != verification.MappingDigest {
+		return verification, fmt.Errorf("legacy mapping digest mismatch: state=%s persisted=%s", verification.MappingDigest, persistedMappingDigest)
+	}
+	for _, table := range legacyBlackboardTables {
+		for _, operation := range []string{"insert", "update", "delete"} {
+			trigger := "blackboard_legacy_" + table + "_" + operation + "_guard"
+			var sqlText string
+			if err := tx.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?`, trigger).Scan(&sqlText); err != nil || !strings.Contains(sqlText, "frozen after graph_v1 cutover") {
+				return verification, fmt.Errorf("legacy write guard missing or invalid: %s", trigger)
+			}
+		}
+	}
+	projectRows, err := tx.QueryContext(ctx, `SELECT id FROM projects ORDER BY id`)
+	if err != nil {
+		return verification, err
+	}
+	var projectIDs []string
+	for projectRows.Next() {
+		var projectID string
+		if err := projectRows.Scan(&projectID); err != nil {
+			projectRows.Close()
+			return verification, err
+		}
+		projectIDs = append(projectIDs, projectID)
+	}
+	if err := projectRows.Close(); err != nil {
+		return verification, err
+	}
+	parityHash := sha256.New()
+	writeFrame(parityHash, []byte("legacy_blackboard_parity_v1"))
+	for _, projectID := range projectIDs {
+		var digest string
+		if postCutoverWrites == 0 {
+			digest, _, err = validateProjectImportParity(ctx, tx, projectID, s.artifactRoot)
+		} else {
+			digest, _, err = validateProjectPostCutoverCompatibility(ctx, tx, projectID)
+		}
+		if err != nil {
+			return verification, fmt.Errorf("verify compatibility parity for Project %s: %w", projectID, err)
+		}
+		writeFrame(parityHash, []byte(digest))
+	}
+	verification.ParityDigest = hex.EncodeToString(parityHash.Sum(nil))
+	if err := tx.Commit(); err != nil {
+		return verification, err
+	}
+
+	verification.ProjectHashes = make(map[string]string, len(projectIDs))
+	graph := blackboard.NewGraphService(s.db, nil, nil).WithArtifactRoot(s.artifactRoot)
+	for _, projectID := range projectIDs {
+		if err := graph.VerifyIntegrity(ctx, projectID); err != nil {
+			return verification, fmt.Errorf("verify graph integrity for Project %s: %w", projectID, err)
+		}
+		var revision, dirty int
+		var storedProjectionHash string
+		if err := s.db.QueryRowContext(ctx, `SELECT current_graph_revision,projection_dirty_revision,COALESCE(current_main_projection_hash,'') FROM blackboard_graph_state WHERE project_id=?`, projectID).Scan(&revision, &dirty, &storedProjectionHash); err != nil {
+			return verification, fmt.Errorf("read stored projection state for Project %s: %w", projectID, err)
+		}
+		reconstructed, err := graph.CanonicalMainGraph(ctx, projectID, revision)
+		if err != nil {
+			return verification, fmt.Errorf("reconstruct canonical projection for Project %s: %w", projectID, err)
+		}
+		if dirty != 0 || storedProjectionHash == "" || storedProjectionHash != reconstructed.Hash {
+			return verification, fmt.Errorf("canonical projection corruption for Project %s: stored=%s reconstructed=%s dirty_revision=%d", projectID, storedProjectionHash, reconstructed.Hash, dirty)
+		}
+		projection, err := graph.RemeasureCanonicalMainGraph(ctx, projectID)
+		if err != nil {
+			return verification, fmt.Errorf("verify canonical projection for Project %s: %w", projectID, err)
+		}
+		if _, err := graph.RunHealth(ctx, projectID); err != nil {
+			return verification, fmt.Errorf("verify Blackboard Health for Project %s: %w", projectID, err)
+		}
+		verification.ProjectHashes[projectID] = projection.Hash
+	}
+	verification.VerifiedAt = s.clock().UTC().Format(time.RFC3339Nano)
+	resultHash := sha256.New()
+	writeFrame(resultHash, []byte("legacy_blackboard_cutover_verification_v1"))
+	writeFrame(resultHash, []byte(verification.CutoverID))
+	writeFrame(resultHash, []byte(verification.SourceDigest))
+	writeFrame(resultHash, []byte(verification.MappingDigest))
+	writeFrame(resultHash, []byte(verification.ParityDigest))
+	keys := make([]string, 0, len(verification.ProjectHashes))
+	for key := range verification.ProjectHashes {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		writeFrame(resultHash, []byte(key))
+		writeFrame(resultHash, []byte(verification.ProjectHashes[key]))
+	}
+	verification.ResultHash = hex.EncodeToString(resultHash.Sum(nil))
+	if _, err := s.db.ExecContext(ctx, `UPDATE blackboard_store_state SET cutover_state='graph',latest_verification_at=?,latest_verification_result_hash=?,updated_at=? WHERE id=1 AND canonical_store=?`, verification.VerifiedAt, verification.ResultHash, verification.VerifiedAt, store.CanonicalStoreGraphV1); err != nil {
+		return verification, fmt.Errorf("record successful cutover verification: %w", err)
+	}
+	return verification, nil
 }
 
 func (s *Service) defaultBackupPath() string {

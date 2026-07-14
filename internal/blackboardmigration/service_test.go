@@ -18,6 +18,495 @@ import (
 	"pentest/internal/store"
 )
 
+func TestCutoverCommitsImportParityEpochFlipAndLegacyWriteGuardsAtomically(t *testing.T) {
+	t.Parallel()
+
+	db, service := newInspectionService(t)
+	insertCutoverGuardFixture(t, db)
+	backupPath := filepath.Join(t.TempDir(), "legacy.bak")
+
+	result, err := service.Execute(context.Background(), MigrationRequest{
+		Kind:       MigrationKindCutover,
+		BackupPath: backupPath,
+	})
+	if err != nil {
+		t.Fatalf("Execute(cutover): %v", err)
+	}
+	if result.Backup == nil || result.Import == nil || !result.Import.MappingVerified {
+		t.Fatalf("cutover result = %#v", result)
+	}
+
+	epoch, err := db.CanonicalStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if epoch != store.CanonicalStoreGraphV1 {
+		t.Fatalf("canonical store = %q, want graph_v1", epoch)
+	}
+	var cutoverState, cutoverID, sourceDigest, mappingDigest string
+	if err := db.QueryRow(`SELECT cutover_state,cutover_id,source_digest,mapping_digest FROM blackboard_store_state WHERE id=1`).Scan(&cutoverState, &cutoverID, &sourceDigest, &mappingDigest); err != nil {
+		t.Fatal(err)
+	}
+	if cutoverState != "graph" || cutoverID == "" || sourceDigest != result.Plan.SourceDigest || mappingDigest != result.Import.MappingDigest {
+		t.Fatalf("store state = (%q,%q,%q,%q), result=%#v", cutoverState, cutoverID, sourceDigest, mappingDigest, result)
+	}
+
+	graph := blackboard.NewGraphService(db, nil, nil)
+	if _, err := graph.ReadNode(context.Background(), blackboard.ReadNodeRequest{
+		ProjectID: "project-1", NodeType: blackboard.NodeTypeProjectFact, Key: "key:fact-cutover",
+	}); err != nil {
+		t.Fatalf("read imported Project Fact: %v", err)
+	}
+	for _, table := range cutoverGuardTables {
+		for _, statement := range legacyWriteStatements(table) {
+			if _, err := db.Exec(statement); err == nil || !strings.Contains(err.Error(), "frozen after graph_v1 cutover") {
+				t.Fatalf("legacy write was not guarded for %s: statement=%q err=%v", table, statement, err)
+			}
+		}
+	}
+}
+
+func TestCutoverFailurePointsRollbackLegacyEpochAndAllGraphState(t *testing.T) {
+	t.Parallel()
+
+	for _, point := range []CutoverFailurePoint{
+		CutoverFailureAfterDDL,
+		CutoverFailureAfterProjectImport,
+		CutoverFailureAfterMappings,
+		CutoverFailureAfterHeadBuild,
+		CutoverFailureAfterParity,
+		CutoverFailureAfterGuards,
+		CutoverFailureAfterStateFlip,
+	} {
+		point := point
+		t.Run(string(point), func(t *testing.T) {
+			db, base := newInspectionService(t)
+			insertProjectAndFacts(t, db, []string{"fact-failure"})
+			injected := errors.New("injected cutover failure at " + string(point))
+			service := NewService(db, base.databasePath, base.artifactRoot, WithCutoverFailureInjector(
+				CutoverFailureInjectorFunc(func(got CutoverFailurePoint) error {
+					if got == point {
+						return injected
+					}
+					return nil
+				}),
+			))
+
+			_, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindCutover, BackupPath: filepath.Join(t.TempDir(), "legacy.bak")})
+			if !errors.Is(err, injected) {
+				t.Fatalf("Execute(cutover) error = %v, want injected failure", err)
+			}
+			assertLegacySourceAndEpoch(t, db, 1)
+			for _, table := range []string{"blackboard_graph_mutations", "blackboard_node_versions", "blackboard_legacy_mappings"} {
+				var count int
+				if err := db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&count); err != nil {
+					t.Fatal(err)
+				}
+				if count != 0 {
+					t.Fatalf("%s retained %d rolled-back rows", table, count)
+				}
+			}
+			var guards int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'blackboard_legacy_%_guard'`).Scan(&guards); err != nil {
+				t.Fatal(err)
+			}
+			if guards != 0 {
+				t.Fatalf("rolled-back cutover retained %d legacy guards", guards)
+			}
+		})
+	}
+}
+
+func TestCommittedCutoverRetryReturnsOriginalResultAndChangedSourceDigestConflicts(t *testing.T) {
+	t.Parallel()
+
+	db, service := newInspectionService(t)
+	insertProjectAndFacts(t, db, []string{"fact-retry"})
+	first, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindCutover, BackupPath: filepath.Join(t.TempDir(), "legacy.bak")})
+	if err != nil {
+		t.Fatalf("first Execute(cutover): %v", err)
+	}
+	second, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindCutover})
+	if err != nil {
+		t.Fatalf("retry Execute(cutover): %v", err)
+	}
+	if first.Verification == nil || second.Verification == nil || first.Verification.CutoverID != second.Verification.CutoverID || first.Verification.ResultHash != second.Verification.ResultHash {
+		t.Fatalf("cutover retry changed result: first=%#v second=%#v", first.Verification, second.Verification)
+	}
+	var mutations int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM blackboard_graph_mutations`).Scan(&mutations); err != nil {
+		t.Fatal(err)
+	}
+	if mutations != 1 {
+		t.Fatalf("cutover retry imported twice: mutations=%d", mutations)
+	}
+
+	if _, err := db.Exec(`UPDATE projects SET name='changed after cutover' WHERE id='project-1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindCutover}); !errors.Is(err, ErrCutoverConflict) {
+		t.Fatalf("changed-digest retry error = %v, want ErrCutoverConflict", err)
+	}
+}
+
+func TestPostCommitVerifyDetectsProjectionCorruptionAndEntersRecoveryRequired(t *testing.T) {
+	t.Parallel()
+
+	db, service := newInspectionService(t)
+	insertProjectAndFacts(t, db, []string{"fact-verify"})
+	if _, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindCutover, BackupPath: filepath.Join(t.TempDir(), "legacy.bak")}); err != nil {
+		t.Fatalf("Execute(cutover): %v", err)
+	}
+	if _, err := db.Exec(`UPDATE blackboard_graph_state SET current_main_projection_hash='corrupt' WHERE project_id='project-1'`); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindVerify})
+	if !errors.Is(err, ErrCutoverVerificationFailed) || !strings.Contains(err.Error(), "projection") {
+		t.Fatalf("Execute(verify) error = %v, want projection verification failure", err)
+	}
+	var state string
+	if err := db.QueryRow(`SELECT cutover_state FROM blackboard_store_state WHERE id=1`).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "recovery_required" {
+		t.Fatalf("cutover state = %q, want recovery_required", state)
+	}
+}
+
+func TestInitialPostCommitVerifyDetectsProjectionCorruptionAfterLostResponse(t *testing.T) {
+	t.Parallel()
+
+	db, base := newInspectionService(t)
+	insertProjectAndFacts(t, db, []string{"fact-initial-verify"})
+	injected := errors.New("lost cutover response")
+	service := NewService(db, base.databasePath, base.artifactRoot, WithCutoverFailureInjector(
+		CutoverFailureInjectorFunc(func(point CutoverFailurePoint) error {
+			if point == CutoverFailureAfterCommit {
+				return injected
+			}
+			return nil
+		}),
+	))
+	if _, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindCutover, BackupPath: filepath.Join(t.TempDir(), "legacy.bak")}); !errors.Is(err, injected) {
+		t.Fatalf("Execute(cutover) error = %v, want lost response", err)
+	}
+	if _, err := db.Exec(`UPDATE blackboard_graph_state SET current_main_projection_hash='corrupt' WHERE project_id='project-1'`); err != nil {
+		t.Fatal(err)
+	}
+
+	service = NewService(db, base.databasePath, base.artifactRoot)
+	_, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindVerify})
+	if !errors.Is(err, ErrCutoverVerificationFailed) || !strings.Contains(err.Error(), "projection") {
+		t.Fatalf("initial Execute(verify) error = %v, want projection verification failure", err)
+	}
+	var state string
+	if err := db.QueryRow(`SELECT cutover_state FROM blackboard_store_state WHERE id=1`).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "recovery_required" {
+		t.Fatalf("cutover state = %q, want recovery_required", state)
+	}
+}
+
+func TestPostCommitVerifyDetectsStoreStateCorruption(t *testing.T) {
+	t.Parallel()
+
+	db, service := newInspectionService(t)
+	insertProjectAndFacts(t, db, []string{"fact-source-verify"})
+	if _, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindCutover, BackupPath: filepath.Join(t.TempDir(), "legacy.bak")}); err != nil {
+		t.Fatalf("Execute(cutover): %v", err)
+	}
+	if _, err := db.Exec(`UPDATE blackboard_store_state SET graph_schema_version=999 WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindVerify})
+	if !errors.Is(err, ErrCutoverVerificationFailed) || !strings.Contains(err.Error(), "store state") {
+		t.Fatalf("Execute(verify) error = %v, want store state failure", err)
+	}
+}
+
+func TestRecoveryGuidanceNamesPostCutoverWritesWithoutImplicitReverseMigration(t *testing.T) {
+	t.Parallel()
+
+	db, service := newInspectionService(t)
+	insertProjectAndFacts(t, db, []string{"fact-recovery"})
+	cutover, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindCutover, BackupPath: filepath.Join(t.TempDir(), "legacy.bak")})
+	if err != nil {
+		t.Fatalf("Execute(cutover): %v", err)
+	}
+	graph := blackboard.NewGraphService(db, nil, nil)
+	if _, err := graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion:  blackboard.GraphMutationSchemaVersion,
+		IdempotencyKey: "post-cutover-write",
+		Context:        blackboard.SystemExecutionContext("project-1", "pentest", "test"),
+		Operations: []blackboard.Operation{{
+			OpID: "fact", Kind: blackboard.OpCreateNode,
+			Node:   blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "fact:post-cutover"},
+			Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"category": "test", "summary": "Post-cutover write", "body": "", "confidence": "tentative", "scope_status": "in_scope"}},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DROP TRIGGER blackboard_legacy_project_facts_insert_guard`); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindVerify})
+	if !errors.Is(err, ErrCutoverVerificationFailed) {
+		t.Fatalf("Execute(verify) error = %v", err)
+	}
+	if result.Recovery == nil || !result.Recovery.PostCutoverWrites || result.Recovery.CutoverID != cutover.Verification.CutoverID || result.Recovery.BackupPath != cutover.Backup.Path || result.Recovery.BackupSHA256 != cutover.Backup.SHA256 {
+		t.Fatalf("recovery guidance = %#v", result.Recovery)
+	}
+	if !strings.Contains(result.Recovery.Warning, "would lose") || !strings.Contains(result.Recovery.Warning, "post-cutover") {
+		t.Fatalf("recovery warning = %q", result.Recovery.Warning)
+	}
+	epoch, epochErr := db.CanonicalStore()
+	if epochErr != nil {
+		t.Fatal(epochErr)
+	}
+	if epoch != store.CanonicalStoreGraphV1 {
+		t.Fatalf("verify implicitly reversed canonical store to %q", epoch)
+	}
+}
+
+func TestPostCutoverVerifyUsesCurrentGraphCompatibilityParityAfterWrites(t *testing.T) {
+	t.Parallel()
+
+	db, service := newInspectionService(t)
+	insertProjectAndFacts(t, db, []string{"fact-before-cutover"})
+	if _, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindCutover, BackupPath: filepath.Join(t.TempDir(), "legacy.bak")}); err != nil {
+		t.Fatalf("Execute(cutover): %v", err)
+	}
+	graph := blackboard.NewGraphService(db, nil, nil)
+	if _, err := graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion:  blackboard.GraphMutationSchemaVersion,
+		IdempotencyKey: "post-cutover-parity",
+		Context:        blackboard.SystemExecutionContext("project-1", "pentest", "test"),
+		Operations: []blackboard.Operation{{
+			OpID: "fact", Kind: blackboard.OpCreateNode,
+			Node:   blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "fact:after-cutover"},
+			Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"category": "test", "summary": "After cutover", "body": "", "confidence": "tentative", "scope_status": "in_scope"}},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindVerify})
+	if err != nil {
+		t.Fatalf("Execute(verify) after graph write: %v", err)
+	}
+	if result.Verification == nil || result.Verification.ParityDigest == "" {
+		t.Fatalf("post-cutover verification = %#v", result.Verification)
+	}
+}
+
+func TestNoOpGraphCallDoesNotClaimPostCutoverWritesWouldBeLost(t *testing.T) {
+	t.Parallel()
+
+	db, service := newInspectionService(t)
+	insertProjectAndFacts(t, db, []string{"fact-noop"})
+	if _, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindCutover, BackupPath: filepath.Join(t.TempDir(), "legacy.bak")}); err != nil {
+		t.Fatalf("Execute(cutover): %v", err)
+	}
+	graph := blackboard.NewGraphService(db, nil, nil)
+	result, err := graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion:  blackboard.GraphMutationSchemaVersion,
+		IdempotencyKey: "post-cutover-noop",
+		Context:        blackboard.SystemExecutionContext("project-1", "pentest", "test"),
+		Operations: []blackboard.Operation{{
+			OpID: "noop", Kind: blackboard.OpSetDisposition,
+			Node:        blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "key:fact-noop"},
+			Disposition: blackboard.SetDispositionInput{ExpectedVersion: 1, Disposition: blackboard.DispositionMain},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Operations[0].Changed {
+		t.Fatalf("expected no-op disposition result, got %#v", result.Operations[0])
+	}
+	var postCutoverWrites int
+	if err := db.QueryRow(`SELECT post_cutover_write_committed FROM blackboard_store_state WHERE id=1`).Scan(&postCutoverWrites); err != nil {
+		t.Fatal(err)
+	}
+	if postCutoverWrites != 0 {
+		t.Fatalf("no-op graph call marked post-cutover writes committed: %d", postCutoverWrites)
+	}
+}
+
+func TestCutoverCrashReopenBeforeAndAfterCommitSelectsOnlyOneCanonicalEpoch(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name      string
+		point     CutoverFailurePoint
+		wantEpoch string
+	}{
+		{name: "before_commit", point: CutoverFailureAfterStateFlip, wantEpoch: store.CanonicalStoreLegacyV1},
+		{name: "after_commit", point: CutoverFailureAfterCommit, wantEpoch: store.CanonicalStoreGraphV1},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			databasePath := filepath.Join(root, "pentest.db")
+			db, err := store.Open(databasePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			insertProjectAndFacts(t, db, []string{"fact-crash"})
+			injected := errors.New("simulated process death")
+			service := NewService(db, databasePath, root, WithCutoverFailureInjector(CutoverFailureInjectorFunc(func(point CutoverFailurePoint) error {
+				if point == test.point {
+					return injected
+				}
+				return nil
+			})))
+			if _, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindCutover, BackupPath: filepath.Join(root, "legacy.bak")}); !errors.Is(err, injected) {
+				t.Fatalf("Execute(cutover) error = %v", err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			reopened, err := store.Open(databasePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reopened.Close()
+			epoch, err := reopened.CanonicalStore()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if epoch != test.wantEpoch {
+				t.Fatalf("reopened epoch = %q, want %q", epoch, test.wantEpoch)
+			}
+			if test.wantEpoch == store.CanonicalStoreGraphV1 {
+				retry := NewService(reopened, databasePath, root)
+				if _, err := retry.Execute(context.Background(), MigrationRequest{Kind: MigrationKindCutover}); err != nil {
+					t.Fatalf("retry committed cutover: %v", err)
+				}
+				var mutations int
+				if err := reopened.QueryRow(`SELECT COUNT(*) FROM blackboard_graph_mutations`).Scan(&mutations); err != nil {
+					t.Fatal(err)
+				}
+				if mutations != 1 {
+					t.Fatalf("committed cutover retry imported twice: %d mutations", mutations)
+				}
+			}
+		})
+	}
+}
+
+func TestPostCommitVerifyDetectsMappingGuardAndParityCorruption(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name    string
+		damage  func(*testing.T, *store.DB)
+		message string
+	}{
+		{name: "mapping", message: "mapping digest", damage: func(t *testing.T, db *store.DB) {
+			if _, err := db.Exec(`DELETE FROM blackboard_legacy_mappings WHERE id=(SELECT MIN(id) FROM blackboard_legacy_mappings)`); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "guard", message: "write guard", damage: func(t *testing.T, db *store.DB) {
+			if _, err := db.Exec(`DROP TRIGGER blackboard_legacy_project_facts_insert_guard`); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "parity", message: "parity", damage: func(t *testing.T, db *store.DB) {
+			if _, err := db.Exec(`DROP TRIGGER blackboard_legacy_project_facts_update_guard`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(`UPDATE project_facts SET summary='tampered parity' WHERE id='fact-corruption'`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(`CREATE TRIGGER blackboard_legacy_project_facts_update_guard BEFORE UPDATE ON project_facts BEGIN SELECT RAISE(ABORT,'project_facts is frozen after graph_v1 cutover'); END`); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			db, service := newInspectionService(t)
+			insertProjectAndFacts(t, db, []string{"fact-corruption"})
+			if _, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindCutover, BackupPath: filepath.Join(t.TempDir(), "legacy.bak")}); err != nil {
+				t.Fatal(err)
+			}
+			test.damage(t, db)
+			if _, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindVerify}); !errors.Is(err, ErrCutoverVerificationFailed) || !strings.Contains(err.Error(), test.message) {
+				t.Fatalf("Execute(verify) error = %v, want %q corruption", err, test.message)
+			}
+		})
+	}
+}
+
+func TestCutoverInitializesEmptyProjectsAndVerifiesRevisionZero(t *testing.T) {
+	t.Parallel()
+
+	db, service := newInspectionService(t)
+	if _, err := db.Exec(`INSERT INTO projects (id,name,description,scope_json,defaults_json,kind,created_at,updated_at) VALUES ('project-empty','Empty','', '{}','{}','pentest','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindCutover, BackupPath: filepath.Join(t.TempDir(), "legacy.bak")})
+	if err != nil {
+		t.Fatalf("Execute(cutover): %v", err)
+	}
+	if result.Verification == nil || result.Verification.ProjectHashes["project-empty"] == "" {
+		t.Fatalf("empty Project verification = %#v", result.Verification)
+	}
+	projection, err := blackboard.NewGraphService(db, nil, nil).CanonicalMainGraph(context.Background(), "project-empty", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.GraphRevision != 0 || projection.Hash != result.Verification.ProjectHashes["project-empty"] {
+		t.Fatalf("empty Project projection = %#v", projection)
+	}
+}
+
+var cutoverGuardTables = []string{
+	"project_facts",
+	"project_fact_versions",
+	"project_fact_relations",
+	"fact_key_aliases",
+	"findings",
+	"finding_versions",
+	"finding_key_aliases",
+	"evidence_artifacts",
+}
+
+func legacyWriteStatements(table string) []string {
+	return []string{
+		`INSERT INTO ` + table + ` SELECT * FROM ` + table + ` LIMIT 1`,
+		`UPDATE ` + table + ` SET rowid=rowid WHERE rowid=(SELECT MIN(rowid) FROM ` + table + `)`,
+		`DELETE FROM ` + table + ` WHERE rowid=(SELECT MIN(rowid) FROM ` + table + `)`,
+	}
+}
+
+func insertCutoverGuardFixture(t *testing.T, db *store.DB) {
+	t.Helper()
+	statements := []string{
+		`INSERT INTO projects (id,name,description,scope_json,defaults_json,kind,created_at,updated_at) VALUES ('project-1','Example','', '{}','{}','pentest','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+		`INSERT INTO project_facts (id,project_id,fact_key,category,summary,body,confidence,scope_status,created_at,updated_at) VALUES ('fact-cutover','project-1','key:fact-cutover','asset','Cutover fact','body','tentative','in_scope','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+		`INSERT INTO project_facts (id,project_id,fact_key,category,summary,body,confidence,scope_status,created_at,updated_at) VALUES ('fact-cutover-target','project-1','key:fact-cutover-target','asset','Cutover target','body','tentative','in_scope','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+		`INSERT INTO project_fact_versions (id,project_id,fact_key,version,category,summary,body,confidence,scope_status,created_at) VALUES ('fact-cutover-v1','project-1','key:fact-cutover',1,'asset','Cutover fact','body','tentative','in_scope','2026-01-01T00:00:00Z')`,
+		`INSERT INTO project_fact_relations (id,project_id,source_fact_key,target_fact_key,relation,summary,created_at,updated_at) VALUES ('relation-cutover','project-1','key:fact-cutover','key:fact-cutover-target','supports','legacy relation','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+		`INSERT INTO fact_key_aliases (id,project_id,alias_fact_key,canon_fact_key,created_at) VALUES ('fact-alias-cutover','project-1','key:old-cutover','key:fact-cutover','2026-01-01T00:00:00Z')`,
+		`INSERT INTO findings (id,project_id,finding_key,version,title,description,status,target,proof,impact,recommendation,cvss_version,cvss_vector,cvss_pending,severity,created_at,updated_at) VALUES ('finding-cutover','project-1','finding:cutover',1,'Cutover finding','','unconfirmed','','','','','','',1,'pending','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+		`INSERT INTO finding_versions (id,project_id,finding_key,version,title,description,status,target,proof,impact,recommendation,cvss_version,cvss_vector,cvss_pending,severity,created_at) VALUES ('finding-cutover-v1','project-1','finding:cutover',1,'Cutover finding','','unconfirmed','','','','','','',1,'pending','2026-01-01T00:00:00Z')`,
+		`INSERT INTO finding_key_aliases (id,project_id,alias_finding_key,canon_finding_key,created_at) VALUES ('finding-alias-cutover','project-1','finding:old-cutover','finding:cutover','2026-01-01T00:00:00Z')`,
+		`INSERT INTO evidence_artifacts (id,project_id,evidence_key,attach_to_type,attach_to_key,artifact_type,source_path,managed_path,sha256,summary,created_at,updated_at) VALUES ('evidence-cutover','project-1','evidence:cutover','finding','finding:cutover','log','','artifacts/missing.log','','Missing evidence','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestLegacyFindingEvidenceCorpusPreservesHistoryAttachmentsAndMissingArtifactsWithoutSyntheticCounts(t *testing.T) {
 	t.Parallel()
 
@@ -685,7 +1174,7 @@ func TestInspectReportsStableRedactedBlockersAndWarnings(t *testing.T) {
 	}
 }
 
-func TestCutoverPreparationCreatesVerifiedWALConsistentOwnerOnlyBackup(t *testing.T) {
+func TestCutoverCreatesVerifiedWALConsistentOwnerOnlyBackup(t *testing.T) {
 	t.Parallel()
 
 	db, service := newInspectionService(t)
@@ -696,8 +1185,8 @@ func TestCutoverPreparationCreatesVerifiedWALConsistentOwnerOnlyBackup(t *testin
 		Kind:       MigrationKindCutover,
 		BackupPath: backupPath,
 	})
-	if !errors.Is(err, ErrCutoverImplementationPending) {
-		t.Fatalf("expected incremental cutover sentinel, got %v", err)
+	if err != nil {
+		t.Fatalf("Execute(cutover): %v", err)
 	}
 	if result.Backup == nil {
 		t.Fatal("cutover preparation did not return verified backup metadata")
@@ -733,7 +1222,13 @@ func TestCutoverPreparationCreatesVerifiedWALConsistentOwnerOnlyBackup(t *testin
 	if factCount != 1 {
 		t.Fatalf("backup missed committed WAL content: fact count=%d", factCount)
 	}
-	assertLegacySourceAndEpoch(t, db, 1)
+	epoch, err := db.CanonicalStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if epoch != store.CanonicalStoreGraphV1 {
+		t.Fatalf("canonical store = %q, want graph_v1", epoch)
+	}
 }
 
 func TestBackupFailureLeavesSourceRowsAndStoreEpochUnchanged(t *testing.T) {

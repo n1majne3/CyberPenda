@@ -3,6 +3,7 @@ package blackboard
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 )
 
@@ -227,4 +228,77 @@ func (s *GraphService) ApplyLegacyImportPlan(ctx context.Context, tx *sql.Tx, pl
 		return MutationResult{}, err
 	}
 	return s.applyInTransaction(ctx, tx, batch, requestHash)
+}
+
+// InitializeLegacyImportProject creates the rebuildable revision-zero graph
+// state for a legacy Project whose sealed import plan has no semantic records.
+// Transaction ownership remains with the migration coordinator.
+func (s *GraphService) InitializeLegacyImportProject(ctx context.Context, tx *sql.Tx, projectID, recordedAt string) (CanonicalMainGraphProjection, error) {
+	if tx == nil {
+		return CanonicalMainGraphProjection{}, fmt.Errorf("migration transaction is required")
+	}
+	var existing int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM blackboard_graph_state WHERE project_id=?`, projectID).Scan(&existing); err != nil {
+		return CanonicalMainGraphProjection{}, err
+	}
+	if existing != 0 {
+		return s.PinCurrentCanonicalMainGraph(ctx, tx, projectID)
+	}
+	var projectKind string
+	if err := tx.QueryRowContext(ctx, `SELECT kind FROM projects WHERE id=?`, projectID).Scan(&projectKind); err != nil {
+		return CanonicalMainGraphProjection{}, err
+	}
+	stateHash, err := computeResultingStateHash(tx, projectID, projectKind, graphState{})
+	if err != nil {
+		return CanonicalMainGraphProjection{}, err
+	}
+	doc, err := canonicalMainGraphDocumentAt(ctx, tx, projectID, 0)
+	if err != nil {
+		return CanonicalMainGraphProjection{}, err
+	}
+	projection, err := measureCanonicalMainGraphDocument(projectID, 0, doc)
+	if err != nil {
+		return CanonicalMainGraphProjection{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO blackboard_graph_state(project_id,latest_mutation_seq,current_graph_revision,materialized_mutation_seq,history_head_hash,current_semantic_state_hash,current_main_projection_hash,projection_renderer_version,projection_estimator_version,projection_bytes,projection_estimated_tokens,budget_state,projection_dirty_revision,updated_at) VALUES(?,0,0,0,'',?,?,?,?,?,?,?,0,?)`,
+		projectID, hex.EncodeToString(stateHash), projection.Hash, projection.RendererVersion, projection.EstimatorVersion, projection.ByteCount, projection.EstimatedTokens, budgetStateForEstimatedTokens(projection.EstimatedTokens), recordedAt); err != nil {
+		return CanonicalMainGraphProjection{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO blackboard_projection_metrics(project_id,graph_revision,projection_hash,renderer_version,estimator_version,projection_bytes,estimated_tokens,budget_state,measured_at) VALUES(?,?,?,?,?,?,?,?,?)`,
+		projectID, 0, projection.Hash, projection.RendererVersion, projection.EstimatorVersion, projection.ByteCount, projection.EstimatedTokens, budgetStateForEstimatedTokens(projection.EstimatedTokens), recordedAt); err != nil {
+		return CanonicalMainGraphProjection{}, err
+	}
+	return projection, nil
+}
+
+// MeasureLegacyImportProject renders and stores the imported current graph
+// inside the caller-owned cutover transaction. Post-commit verification can
+// then validate the committed projection cache without repairing it first.
+func (s *GraphService) MeasureLegacyImportProject(ctx context.Context, tx *sql.Tx, projectID, recordedAt string) (CanonicalMainGraphProjection, error) {
+	if tx == nil {
+		return CanonicalMainGraphProjection{}, fmt.Errorf("migration transaction is required")
+	}
+	projection, err := s.PinCurrentCanonicalMainGraph(ctx, tx, projectID)
+	if err != nil {
+		return CanonicalMainGraphProjection{}, err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE blackboard_graph_state
+		SET current_main_projection_hash=?,projection_renderer_version=?,projection_estimator_version=?,projection_bytes=?,projection_estimated_tokens=?,budget_state=?,projection_dirty_revision=0,updated_at=?
+		WHERE project_id=? AND current_graph_revision=?`,
+		projection.Hash, projection.RendererVersion, projection.EstimatorVersion, projection.ByteCount, projection.EstimatedTokens, budgetStateForEstimatedTokens(projection.EstimatedTokens), recordedAt, projectID, projection.GraphRevision)
+	if err != nil {
+		return CanonicalMainGraphProjection{}, err
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return CanonicalMainGraphProjection{}, err
+	}
+	if updated != 1 {
+		return CanonicalMainGraphProjection{}, fmt.Errorf("imported graph changed during projection measurement")
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO blackboard_projection_metrics(project_id,graph_revision,projection_hash,renderer_version,estimator_version,projection_bytes,estimated_tokens,budget_state,measured_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(project_id,graph_revision) DO UPDATE SET projection_hash=excluded.projection_hash,renderer_version=excluded.renderer_version,estimator_version=excluded.estimator_version,projection_bytes=excluded.projection_bytes,estimated_tokens=excluded.estimated_tokens,budget_state=excluded.budget_state,measured_at=excluded.measured_at`,
+		projectID, projection.GraphRevision, projection.Hash, projection.RendererVersion, projection.EstimatorVersion, projection.ByteCount, projection.EstimatedTokens, budgetStateForEstimatedTokens(projection.EstimatedTokens), recordedAt); err != nil {
+		return CanonicalMainGraphProjection{}, err
+	}
+	return projection, nil
 }
