@@ -34,6 +34,9 @@ Data lives on the machine by default: SQLite (`pentest.db`), task run directorie
 ### Local development
 
 ```sh
+# One-time checkout setup: reject stale embedded UI before push.
+make install-git-hooks
+
 # Backend on :8787 + Vite UI with /api proxy
 make dev
 ```
@@ -91,6 +94,8 @@ Domain terms are defined in [CONTEXT.md](CONTEXT.md).
 | --- | --- |
 | `make dev` | Daemon + Vite frontend for local development |
 | `make build-ui` | Build React UI into the daemon embed path |
+| `make check-ui-sync` | Rebuild UI and require the committed embed to match |
+| `make install-git-hooks` | Enable the repository pre-push checks for this checkout |
 | `make build` | `build-ui` + compile `pentestd` |
 | `make build-sandbox-image` | Build local sandbox container image |
 | `make test` / `make test-backend` | Go unit and integration tests |
