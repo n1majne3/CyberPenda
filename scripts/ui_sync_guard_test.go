@@ -3,17 +3,12 @@ package scripts_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestEmbeddedUISyncGuardRunsLocallyAndInCI(t *testing.T) {
 	repoRoot := repoRoot(t)
-
-	gitignoreBytes, err := os.ReadFile(filepath.Join(repoRoot, ".gitignore"))
-	if err != nil {
-		t.Fatalf("read .gitignore: %v", err)
-	}
-	assertContains(t, string(gitignoreBytes), "/internal/daemon/webfs/dist/* [0-9]*.*")
 
 	makefileBytes, err := os.ReadFile(filepath.Join(repoRoot, "Makefile"))
 	if err != nil {
@@ -50,4 +45,23 @@ func TestEmbeddedUISyncGuardRunsLocallyAndInCI(t *testing.T) {
 	guard := string(guardBytes)
 	assertContains(t, guard, "make build-ui")
 	assertContains(t, guard, "git diff --exit-code HEAD -- internal/daemon/webfs/dist")
+}
+
+func TestBuildUIUpdatesEmbedWithoutReplacingSyncedDirectory(t *testing.T) {
+	repoRoot := repoRoot(t)
+	makefileBytes, err := os.ReadFile(filepath.Join(repoRoot, "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	makefile := string(makefileBytes)
+
+	assertContains(t, makefile, "rsync -a --delete web/dist/ internal/daemon/webfs/dist/")
+	for _, destructiveCopy := range []string{
+		"rm -rf internal/daemon/webfs/dist",
+		"cp -r web/dist internal/daemon/webfs/dist",
+	} {
+		if strings.Contains(makefile, destructiveCopy) {
+			t.Fatalf("build-ui must not replace the iCloud-synced embed directory with %q", destructiveCopy)
+		}
+	}
 }

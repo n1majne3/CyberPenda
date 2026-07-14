@@ -57,8 +57,8 @@ juice-shop-live:
 # Build the React UI and copy it into the embed location.
 build-ui:
 	cd web && npm install && npm run build
-	rm -rf internal/daemon/webfs/dist
-	cp -r web/dist internal/daemon/webfs/dist
+	mkdir -p internal/daemon/webfs/dist
+	rsync -a --delete web/dist/ internal/daemon/webfs/dist/
 
 # Rebuild the committed embedded UI and fail when HEAD does not contain it.
 # A failed check leaves the fresh files in place so they can be reviewed and committed.

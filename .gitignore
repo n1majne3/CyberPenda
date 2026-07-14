@@ -11,9 +11,6 @@ web/dist/
 # Local agent/session state
 /.zcode/
 
-# macOS conflict copies of committed embedded UI entry files
-/internal/daemon/webfs/dist/* [0-9]*.*
-
 # Local daemon/runtime artifacts
 /dist/
 pentest.db
