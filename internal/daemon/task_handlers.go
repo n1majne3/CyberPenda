@@ -461,6 +461,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	commandArgs := runtimeCommand[1:]
 	workdir := layout.Workdir
 	containerIDFile := ""
+	sandboxNetwork := runner.SandboxNetworkDefault
 	launchCtx := runner.TaskContext{
 		ProjectID:      created.ProjectID,
 		TaskID:         created.ID,
@@ -493,6 +494,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		return taskLaunchPlan{}, err
 	}
 	if sandbox {
+		sandboxNetwork = sandboxNetworkMode(created.RunControls)
 		sandboxImage := strings.TrimSpace(profile.Fields.SandboxImage)
 		if sandboxImage == "" {
 			sandboxImage = server.sandboxImage
@@ -521,7 +523,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 			ContainerIDFile:   containerIDFile,
 			RuntimeCommand:    sandboxRuntime,
 			ProcessEnv:        processEnv,
-			NetworkMode:       sandboxNetworkMode(created.RunControls),
+			NetworkMode:       sandboxNetwork,
 			ReadOnlyTaskFiles: readOnlyTaskFiles,
 		})
 		if err != nil {
@@ -555,11 +557,19 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 
 	var adapter runtime.Adapter
 	if sandbox {
-		adapter = runtime.NewDockerSandboxAdapter(runtime.DockerSandboxConfig{
+		sandboxConfig := runtime.DockerSandboxConfig{
 			Name:         string(profile.Provider),
 			ContainerCLI: commandProgram,
 			CreateArgs:   commandArgs,
-		})
+		}
+		if sandboxNetwork == runner.SandboxNetworkHostProxyOnly {
+			sandboxConfig.RequiredNetwork = &runtime.DockerNetworkRequirement{
+				Name:     runner.HostProxyOnlySandboxNetworkName,
+				Driver:   "bridge",
+				Internal: false,
+			}
+		}
+		adapter = runtime.NewDockerSandboxAdapter(sandboxConfig)
 	} else {
 		adapter = runtime.NewCommandAdapter(runtime.CommandAdapterConfig{
 			Name:    string(profile.Provider),

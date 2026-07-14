@@ -689,6 +689,65 @@ func TestLaunchTaskWrapsProviderCommandInSandboxRunner(t *testing.T) {
 	}
 }
 
+func TestLaunchTaskCreatesHostProxyOnlySandboxNetworkBeforeContainerStart(t *testing.T) {
+	dir := t.TempDir()
+	dockerLog := filepath.Join(dir, "docker.log")
+	networkPath := filepath.Join(dir, "network-created")
+	createLog := filepath.Join(dir, "create.log")
+	containerCLI := filepath.Join(dir, "fake-docker")
+	script := "#!/bin/sh\n" +
+		"echo \"$*\" >> " + shellQuote(dockerLog) + "\n" +
+		"if [ \"$1 $2\" = \"network inspect\" ]; then\n" +
+		"  if [ -f " + shellQuote(networkPath) + " ]; then echo 'bridge|false'; exit 0; fi\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"if [ \"$1 $2\" = \"network create\" ]; then touch " + shellQuote(networkPath) + "; echo network-id; exit 0; fi\n" +
+		"case \"$1\" in\n" +
+		"  create) echo \"$*\" > " + shellQuote(createLog) + "; echo ctr-1 ;;\n" +
+		"  start)\n" +
+		"    if [ ! -f " + shellQuote(networkPath) + " ]; then echo 'network pentest-host-proxy-only not found' >&2; exit 1; fi\n" +
+		"    echo sandbox-command:$(cat " + shellQuote(createLog) + ") ;;\n" +
+		"  rm) exit 0 ;;\n" +
+		"  *) exit 0 ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(containerCLI, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake container cli: %v", err)
+	}
+	server := newDaemonWithConfig(t, daemon.Config{
+		Version:              "test-version",
+		DBPath:               filepath.Join(t.TempDir(), "pentest.db"),
+		RuntimeRoot:          t.TempDir(),
+		SandboxImage:         "pentest-kali:test",
+		ContainerCLI:         containerCLI,
+		DisableBuiltinSkills: true,
+	})
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	profileID := createLocalRuntimeProfile(t, server, "Codex Sandbox", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		Model: "gpt-test",
+	})
+
+	taskID := createTask(t, server, projectID, `{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
+		"runner":"sandbox",
+		"run_controls":{"sandbox_network":"host_proxy_only"}
+	}`)
+	waitForTaskStatus(t, server, projectID, taskID, "completed")
+
+	raw, err := os.ReadFile(dockerLog)
+	if err != nil {
+		t.Fatalf("read docker log: %v", err)
+	}
+	logText := string(raw)
+	createNetwork := "network create --driver bridge pentest-host-proxy-only"
+	if !strings.Contains(logText, createNetwork) {
+		t.Fatalf("expected host-proxy-only network creation, got log:\n%s", logText)
+	}
+	if strings.Index(logText, createNetwork) > strings.Index(logText, "create --cidfile") {
+		t.Fatalf("expected network creation before container creation, got log:\n%s", logText)
+	}
+}
+
 func TestSandboxResumeRebuildsContainerWithPersistentTaskMountAndRuntimeHome(t *testing.T) {
 	dir := t.TempDir()
 	runtimeRoot := filepath.Join(dir, "runtime-root")

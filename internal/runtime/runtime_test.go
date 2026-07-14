@@ -522,6 +522,93 @@ func TestDockerSandboxAdapterRecordsContainerAndStopsByID(t *testing.T) {
 	}
 }
 
+func TestDockerSandboxAdapterCreatesMissingRequiredBridgeNetworkBeforeContainerStart(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "docker.log")
+	networkPath := filepath.Join(dir, "network-created")
+	docker := filepath.Join(dir, "docker")
+	script := "#!/bin/sh\n" +
+		"echo \"$*\" >> " + shellQuote(logPath) + "\n" +
+		"if [ \"$1 $2\" = \"network inspect\" ]; then\n" +
+		"  if [ -f " + shellQuote(networkPath) + " ]; then echo 'bridge|false'; exit 0; fi\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"if [ \"$1 $2\" = \"network create\" ]; then touch " + shellQuote(networkPath) + "; echo network-id; exit 0; fi\n" +
+		"case \"$1\" in\n" +
+		"  create) echo ctr-owned ;;\n" +
+		"  start) echo sandbox-started ;;\n" +
+		"  rm) exit 0 ;;\n" +
+		"  *) exit 1 ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(docker, []byte(script), 0o700); err != nil {
+		t.Fatalf("write docker stub: %v", err)
+	}
+
+	adapter := runtime.NewDockerSandboxAdapter(runtime.DockerSandboxConfig{
+		Name:         "codex",
+		ContainerCLI: docker,
+		CreateArgs:   []string{"create", "--network", "pentest-host-proxy-only", "image", "codex", "run"},
+		RequiredNetwork: &runtime.DockerNetworkRequirement{
+			Name:     "pentest-host-proxy-only",
+			Driver:   "bridge",
+			Internal: false,
+		},
+	})
+	if err := adapter.Run(context.Background(), "sandbox task", func(task.EventKind, task.EventPayload) {}); err != nil {
+		t.Fatalf("run docker sandbox: %v", err)
+	}
+
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read docker log: %v", err)
+	}
+	logText := string(raw)
+	createNetwork := "network create --driver bridge pentest-host-proxy-only"
+	if !strings.Contains(logText, createNetwork) {
+		t.Fatalf("expected missing bridge network to be created, got log:\n%s", logText)
+	}
+	if strings.Index(logText, createNetwork) > strings.Index(logText, "create --network pentest-host-proxy-only") {
+		t.Fatalf("expected network creation before container creation, got log:\n%s", logText)
+	}
+}
+
+func TestDockerSandboxAdapterRejectsRequiredNetworkWithUnsafeConfiguration(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "docker.log")
+	docker := filepath.Join(dir, "docker")
+	script := "#!/bin/sh\n" +
+		"echo \"$*\" >> " + shellQuote(logPath) + "\n" +
+		"if [ \"$1 $2\" = \"network inspect\" ]; then echo 'bridge|true'; exit 0; fi\n" +
+		"if [ \"$1\" = \"create\" ]; then echo unexpected-container-create; exit 0; fi\n" +
+		"exit 1\n"
+	if err := os.WriteFile(docker, []byte(script), 0o700); err != nil {
+		t.Fatalf("write docker stub: %v", err)
+	}
+
+	adapter := runtime.NewDockerSandboxAdapter(runtime.DockerSandboxConfig{
+		Name:         "codex",
+		ContainerCLI: docker,
+		CreateArgs:   []string{"create", "--network", "pentest-host-proxy-only", "image", "codex", "run"},
+		RequiredNetwork: &runtime.DockerNetworkRequirement{
+			Name:     "pentest-host-proxy-only",
+			Driver:   "bridge",
+			Internal: false,
+		},
+	})
+	err := adapter.Run(context.Background(), "sandbox task", func(task.EventKind, task.EventPayload) {})
+	if err == nil || !strings.Contains(err.Error(), "unsafe configuration") {
+		t.Fatalf("expected unsafe network configuration error, got %v", err)
+	}
+
+	raw, readErr := os.ReadFile(logPath)
+	if readErr != nil {
+		t.Fatalf("read docker log: %v", readErr)
+	}
+	if strings.Contains(string(raw), "create --network") {
+		t.Fatalf("container must not be created on unsafe network, got log:\n%s", string(raw))
+	}
+}
+
 func TestDockerSandboxAdapterRemovesContainerWhenCanceledBeforeStart(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "docker.log")

@@ -65,12 +65,14 @@ const (
 	// SandboxNetworkDefault leaves Docker networking at its default bridge
 	// behavior.
 	SandboxNetworkDefault SandboxNetworkMode = ""
-	// SandboxNetworkHostProxyOnly selects a pre-created internal Docker network
-	// that should only expose host-provided targets and proxies.
+	// SandboxNetworkHostProxyOnly selects a daemon-managed, egress-filtered
+	// Docker bridge that only exposes host-provided targets and proxies.
 	SandboxNetworkHostProxyOnly SandboxNetworkMode = "host_proxy_only"
 )
 
 const HostProxyOnlySandboxNetworkName = "pentest-host-proxy-only"
+
+const hostProxyOnlyEntrypoint = "/usr/local/bin/pentest-host-proxy-only"
 
 // SandboxCommandRequest contains the data needed to construct a Kali sandbox
 // container create command without starting the container.
@@ -181,7 +183,10 @@ func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 		args = append(args, "--mount", "type=bind,src="+source+",dst="+target+",readonly")
 	}
 	if request.NetworkMode == SandboxNetworkHostProxyOnly {
-		args = append(args, "--network", HostProxyOnlySandboxNetworkName)
+		args = append(args,
+			"--network", HostProxyOnlySandboxNetworkName,
+			"--cap-add", "NET_ADMIN",
+		)
 	}
 	for key, value := range request.ProcessEnv {
 		if strings.TrimSpace(key) == "" {
@@ -193,6 +198,9 @@ func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 		args = append(args, "-e", env.Name+"="+env.Value)
 	}
 	args = append(args, image)
+	if request.NetworkMode == SandboxNetworkHostProxyOnly {
+		args = append(args, hostProxyOnlyEntrypoint)
+	}
 	args = append(args, request.RuntimeCommand...)
 	return Command{Program: program, Args: args}, nil
 }

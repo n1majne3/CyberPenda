@@ -18,9 +18,18 @@ const dockerStopGrace = 2 * time.Second
 // DockerSandboxConfig describes a daemon-owned sandbox container runtime.
 // CreateArgs must be a docker create argv, excluding the container CLI itself.
 type DockerSandboxConfig struct {
-	Name         string
-	ContainerCLI string
-	CreateArgs   []string
+	Name            string
+	ContainerCLI    string
+	CreateArgs      []string
+	RequiredNetwork *DockerNetworkRequirement
+}
+
+// DockerNetworkRequirement describes a daemon-managed Docker network that
+// must exist with the expected isolation properties before a sandbox starts.
+type DockerNetworkRequirement struct {
+	Name     string
+	Driver   string
+	Internal bool
 }
 
 type dockerSandboxAdapter struct {
@@ -69,6 +78,9 @@ func (a *dockerSandboxAdapter) Run(ctx context.Context, goal string, emit func(t
 	}
 	if len(a.config.CreateArgs) == 0 || a.config.CreateArgs[0] != "create" {
 		return fmt.Errorf("docker sandbox adapter requires docker create args")
+	}
+	if err := ensureDockerNetwork(ctx, cli, a.config.RequiredNetwork); err != nil {
+		return err
 	}
 
 	create := exec.CommandContext(ctx, cli, a.config.CreateArgs...)
@@ -167,6 +179,71 @@ func (a *dockerSandboxAdapter) Run(ctx context.Context, goal string, emit func(t
 	}
 	if waitErr != nil {
 		return fmt.Errorf("sandbox container failed: %w", waitErr)
+	}
+	return nil
+}
+
+func ensureDockerNetwork(ctx context.Context, cli string, requirement *DockerNetworkRequirement) error {
+	if requirement == nil {
+		return nil
+	}
+	name := strings.TrimSpace(requirement.Name)
+	if name == "" {
+		return fmt.Errorf("required docker network name is empty")
+	}
+	driver := strings.TrimSpace(requirement.Driver)
+	if driver == "" {
+		driver = "bridge"
+	}
+
+	exists, actualDriver, actualInternal := inspectDockerNetwork(ctx, cli, name)
+	if exists {
+		return validateDockerNetwork(name, driver, requirement.Internal, actualDriver, actualInternal)
+	}
+
+	args := []string{"network", "create", "--driver", driver}
+	if requirement.Internal {
+		args = append(args, "--internal")
+	}
+	args = append(args, name)
+	if output, err := exec.CommandContext(ctx, cli, args...).CombinedOutput(); err != nil {
+		// Another task may have created the network between inspect and create.
+		exists, actualDriver, actualInternal = inspectDockerNetwork(ctx, cli, name)
+		if exists {
+			return validateDockerNetwork(name, driver, requirement.Internal, actualDriver, actualInternal)
+		}
+		return fmt.Errorf("create required docker network %q: %w: %s", name, err, strings.TrimSpace(string(output)))
+	}
+
+	exists, actualDriver, actualInternal = inspectDockerNetwork(ctx, cli, name)
+	if !exists {
+		return fmt.Errorf("required docker network %q was not found after creation", name)
+	}
+	return validateDockerNetwork(name, driver, requirement.Internal, actualDriver, actualInternal)
+}
+
+func inspectDockerNetwork(ctx context.Context, cli, name string) (bool, string, bool) {
+	output, err := exec.CommandContext(ctx, cli, "network", "inspect", "--format", "{{.Driver}}|{{.Internal}}", name).Output()
+	if err != nil {
+		return false, "", false
+	}
+	parts := strings.Split(strings.TrimSpace(string(output)), "|")
+	if len(parts) != 2 {
+		return true, strings.TrimSpace(string(output)), false
+	}
+	return true, strings.TrimSpace(parts[0]), strings.EqualFold(strings.TrimSpace(parts[1]), "true")
+}
+
+func validateDockerNetwork(name, expectedDriver string, expectedInternal bool, actualDriver string, actualInternal bool) error {
+	if actualDriver != expectedDriver || actualInternal != expectedInternal {
+		return fmt.Errorf(
+			"required docker network %q has unsafe configuration: expected driver=%s internal=%t, got driver=%s internal=%t",
+			name,
+			expectedDriver,
+			expectedInternal,
+			actualDriver,
+			actualInternal,
+		)
 	}
 	return nil
 }

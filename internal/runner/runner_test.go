@@ -3,6 +3,7 @@ package runner_test
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -240,10 +241,56 @@ func TestBuildSandboxCommandUsesHostProxyOnlyNetworkWhenRequested(t *testing.T) 
 	for _, want := range []string{
 		"--network pentest-host-proxy-only",
 		"--add-host=host.docker.internal:host-gateway",
+		"--cap-add NET_ADMIN",
+		"pentest-kali:local /usr/local/bin/pentest-host-proxy-only codex run --json",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("expected sandbox args to contain %q, got %v", want, command.Args)
 		}
+	}
+}
+
+func TestHostProxyOnlyEntrypointRestrictsEgressBeforeRuntime(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "commands.log")
+	fakeCommand := "#!/bin/sh\necho \"$(basename \"$0\") $*\" >> \"$COMMAND_LOG\"\n"
+	for _, name := range []string{"iptables", "ip6tables", "setpriv"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(fakeCommand), 0o700); err != nil {
+			t.Fatalf("write fake %s: %v", name, err)
+		}
+	}
+	getent := "#!/bin/sh\necho '0.250.250.254 STREAM host.docker.internal'\n"
+	if err := os.WriteFile(filepath.Join(dir, "getent"), []byte(getent), 0o700); err != nil {
+		t.Fatalf("write fake getent: %v", err)
+	}
+
+	script := filepath.Join("..", "..", "docker", "pentest-sandbox", "host-proxy-only-entrypoint.sh")
+	command := exec.Command("sh", script, "codex", "run", "--json")
+	command.Env = append(os.Environ(), "PATH="+dir+":/usr/bin:/bin", "COMMAND_LOG="+logPath)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("run host-proxy-only entrypoint: %v: %s", err, output)
+	}
+
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read command log: %v", err)
+	}
+	logText := string(raw)
+	for _, want := range []string{
+		"iptables -w -F OUTPUT",
+		"iptables -w -A OUTPUT -o lo -j ACCEPT",
+		"iptables -w -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
+		"iptables -w -A OUTPUT -d 0.250.250.254/32 -j ACCEPT",
+		"iptables -w -P OUTPUT DROP",
+		"ip6tables -w -P OUTPUT DROP",
+		"setpriv --bounding-set=-net_admin --inh-caps=-net_admin --ambient-caps=-net_admin -- codex run --json",
+	} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("expected entrypoint command %q, got log:\n%s", want, logText)
+		}
+	}
+	if strings.Index(logText, "iptables -w -P OUTPUT DROP") > strings.Index(logText, "setpriv ") {
+		t.Fatalf("expected firewall before capability drop and runtime exec, got log:\n%s", logText)
 	}
 }
 
