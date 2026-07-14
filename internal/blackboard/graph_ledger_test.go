@@ -13,6 +13,7 @@ import (
 
 	"pentest/internal/blackboard"
 	"pentest/internal/store"
+	"pentest/internal/task"
 )
 
 // TestLostResponseReplayReturnsByteIdenticalMutationResult is the C07 first-red
@@ -194,8 +195,12 @@ func TestDeletingHeadsAndKeysThenRebuildRestoresCurrentAndHistoricalOutput(t *te
 func TestDeletingProvenanceEventBreaksIntegrityChain(t *testing.T) {
 	graph, projects, _ := newGraphServices(t)
 	projectID, ctx := mustGraphProject(t, projects)
-	ctx.TaskID = "task-events"
 	db := graph.DBForTesting()
+	sourceTask, err := task.NewService(db, projects).Create(task.CreateRequest{ProjectID: projectID, Goal: "Provenance Event integrity fixture", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatalf("create source Task: %v", err)
+	}
+	ctx.TaskID = sourceTask.ID
 	if _, err := db.Exec(`INSERT INTO task_events(id,task_id,seq,kind,payload_json,created_at,continuation_id) VALUES('event-1',?,1,'status','{}','2024-01-01T00:00:00Z',NULL)`, ctx.TaskID); err != nil {
 		t.Fatalf("insert source event: %v", err)
 	}

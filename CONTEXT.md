@@ -453,12 +453,16 @@ A command-line **Project Interface** used when the primary agent integration is 
 _Avoid_: bypass, debug-only path
 
 **Blackboard**:
-The project-local memory that stores durable facts, relationships, exploration objectives, project directives, findings, and evidence for one **Project**.
+The project-local memory that stores durable semantic records and relationships for one **Project**, including projected **Task Goals**, **Entities**, **Exploration Objectives**, **Attempts**, **Observations**, **Hypotheses**, **Project Facts**, **Findings**, **Solutions**, **Evidence Artifacts**, and **Project Directives**.
 _Avoid_: chat history, notes database
+
+**Entity**:
+A durable Blackboard identity for what project knowledge or exploration work is about, such as a host, service, endpoint, identity, file, or function. Its scope status describes memory and never grants authorization.
+_Avoid_: asset authorization, project fact, finding
 
 **Project Fact**:
 A stable, project-scoped assertion that can be reused by later tasks without carrying raw proof content.
-_Avoid_: observation, memory blob
+_Avoid_: Observation, raw observation, memory blob
 
 **Fact Key**:
 A stable project-local identifier used to update the same **Project Fact** over time.
@@ -504,6 +508,18 @@ _Avoid_: finding relation, edge, attack graph link
 A durable project-scoped investigation direction that links one or more source **Project Facts** to an unknown future conclusion. It may inform a **Task Goal** and later resolve through **Project Facts**, **Findings**, or **Evidence Artifacts**, but it is not **Current Truth** by itself.
 _Avoid_: intent, open edge, task, fact relation, attack graph edge
 
+**Attempt**:
+A durable Blackboard record of one exploration episode that tests an **Exploration Objective**, **Hypothesis**, or **Entity** and concludes with a distilled outcome.
+_Avoid_: Task, command, tool call, raw output
+
+**Observation**:
+A significant observed result, including a useful negative result, that is not raw output and does not become **Current Truth** merely by existing.
+_Avoid_: Project Fact, task event, log dump
+
+**Hypothesis**:
+A durable testable proposition whose support, contradiction, or inconclusive state remains distinct from **Current Truth**.
+_Avoid_: Project Fact, assumption presented as fact, finding
+
 **Project Directive**:
 A durable, project-scoped strategy steer that governs future work without being a **Project Fact** or asserting **Current Truth**.
 _Avoid_: hint, note, scratchpad, steering, project fact, finding
@@ -543,6 +559,10 @@ _Avoid_: duplicate finding key, deleted finding key
 **Confirmed Finding**:
 A **Finding** supported strongly enough by confirmed facts or evidence to report as verified.
 _Avoid_: suspected finding, tentative issue
+
+**Solution**:
+A CTF Challenge conclusion represented as a candidate, verified, rejected, or superseded answer, flag, or procedure. It is not valid in a Pentest Project.
+_Avoid_: Finding, Task completion, project solved flag
 
 **CVSS Vector**:
 A structured vulnerability scoring vector used to derive a **Finding** severity.
@@ -830,10 +850,11 @@ _Avoid_: transcript, export, source of truth
 - A **Sandbox Runner** failure must not automatically fall back to the **Host Runner**.
 - A **Sandbox** isolates runtime environment state but does not imply full network or command enforcement.
 - A **Blackboard** belongs to exactly one **Project**.
-- A **Blackboard** contains zero or more **Project Facts**, **Fact Relations**, **Exploration Objectives**, **Project Directives**, **Findings**, and **Evidence Artifacts**.
+- A **Blackboard** contains zero or more projected **Task Goals**, **Entities**, **Exploration Objectives**, **Attempts**, **Observations**, **Hypotheses**, **Project Facts**, **Fact Relations**, **Findings**, **Solutions**, **Evidence Artifacts**, and **Project Directives**.
 - **Blackboard** contents are not shared across **Projects** by default.
 - All **Runtimes** in the same **Project** share the same **Blackboard**.
 - A **Runtime** writes important **Project Facts** during a **Task**, not only at task completion.
+- An **Entity** identifies what Blackboard knowledge or work is about; its scope status does not grant testing authorization.
 - A **Project Fact** has exactly one **Fact Key** within its **Project**.
 - A **Fact Key** identifies the same **Project Fact** across updates.
 - A conflicting write to an existing **Fact Key** automatically updates that **Project Fact**.
@@ -862,6 +883,9 @@ _Avoid_: transcript, export, source of truth
 - An **Exploration Objective** is not a **Project Fact**, **Fact Relation**, **Finding**, **Task**, or **Attack Chain**.
 - An **Exploration Objective** may become or inform a **Task Goal**, but the **Task Goal** is the launch objective for one **Task**.
 - Resolving an **Exploration Objective** may produce multiple **Project Facts**, **Findings**, or **Evidence Artifacts**.
+- An **Attempt** tests an **Exploration Objective**, **Hypothesis**, or **Entity** and may produce **Observations**, **Hypotheses**, **Project Facts**, **Findings**, **Solutions**, or **Evidence Artifacts**.
+- An **Observation** records a significant result without becoming a reusable assertion; a **Project Fact** is the reusable assertion when the result supports one.
+- A **Hypothesis** remains testable planning knowledge and does not change semantic type when later evidence supports a **Project Fact**, **Finding**, or **Solution**.
 - An **Attack Chain** uses **Project Facts**, **Fact Relations**, and **Findings** without becoming a separate graph source of truth.
 - A stable **Attack Chain** summary is stored as a **Project Fact**.
 - A **Project Directive** belongs to exactly one **Project**.
@@ -883,6 +907,7 @@ _Avoid_: transcript, export, source of truth
 - **Findings** on different assets or entry points remain separate and may appear in a **Finding Group** instead of a **Finding Merge**.
 - A **Finding Group** may have aggregate severity without changing the severity of individual **Findings**.
 - A **Finding** may be supported by zero or more **Project Facts** and **Evidence Artifacts**.
+- A **Solution** belongs only to a CTF Challenge Project; verified flag **Solutions** determine current solved state without replacing Task status.
 - A **Finding** uses a **CVSS Vector** to derive severity.
 - A **CVSS Vector** records its **CVSS Version**.
 - A **Finding** without a complete **CVSS Vector** is **CVSS Pending**.

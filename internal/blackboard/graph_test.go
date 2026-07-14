@@ -10,6 +10,7 @@ import (
 	"pentest/internal/blackboard"
 	"pentest/internal/project"
 	"pentest/internal/store"
+	"pentest/internal/task"
 )
 
 // newGraphServices opens a file-backed SQLite database and returns a graph
@@ -407,6 +408,93 @@ func TestApplyCrossProjectReferenceFailsBeforeAnyStateChange(t *testing.T) {
 				t.Fatalf("%s has %d rows for %s after rejected cross-project batch; want 0", table, n, pid)
 			}
 		}
+	}
+}
+
+func TestApplyRejectsCrossProjectTaskProvenanceForSystemActor(t *testing.T) {
+	graph, projects, _ := newGraphServices(t)
+	first, err := projects.Create("First", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create first Project: %v", err)
+	}
+	second, err := projects.Create("Second", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create second Project: %v", err)
+	}
+	tasks := task.NewService(graph.DBForTesting(), projects)
+	foreignTask, err := tasks.Create(task.CreateRequest{ProjectID: second.ID, Goal: "Foreign Task", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatalf("create foreign Task: %v", err)
+	}
+	execCtx := blackboard.SystemExecutionContext(first.ID, first.Kind, "test-system")
+	execCtx.TaskID = foreignTask.ID
+
+	_, err = graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion:  blackboard.GraphMutationSchemaVersion,
+		IdempotencyKey: "project-isolation:foreign-task-provenance",
+		Context:        execCtx,
+		Operations: []blackboard.Operation{{
+			OpID: "fact",
+			Kind: blackboard.OpCreateNode,
+			Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "fact:foreign-task-provenance"},
+			Create: blackboard.CreateNodeInput{Properties: blackboard.ProjectFactProperties{
+				Category: "test", Summary: "Must not commit", ScopeStatus: blackboard.ScopeStatusUnknown,
+			}},
+		}},
+	})
+	var validation *blackboard.ValidationError
+	if !errors.As(err, &validation) || validation.Code != blackboard.ErrCodeProvenanceSpoofed {
+		t.Fatalf("cross-Project Task provenance error = %v", err)
+	}
+	_, err = graph.ReadNode(context.Background(), blackboard.ReadNodeRequest{ProjectID: first.ID, NodeType: blackboard.NodeTypeProjectFact, Key: "fact:foreign-task-provenance"})
+	if !errors.As(err, &validation) || validation.Code != blackboard.ErrCodeNodeNotFound {
+		t.Fatalf("cross-Project provenance committed partial node: %v", err)
+	}
+}
+
+func TestApplyRejectsCrossProjectContinuationProvenanceForSystemActor(t *testing.T) {
+	graph, projects, _ := newGraphServices(t)
+	first, err := projects.Create("First", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create first Project: %v", err)
+	}
+	second, err := projects.Create("Second", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create second Project: %v", err)
+	}
+	tasks := task.NewService(graph.DBForTesting(), projects)
+	localTask, err := tasks.Create(task.CreateRequest{ProjectID: first.ID, Goal: "Local Task", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatalf("create local Task: %v", err)
+	}
+	foreignTask, err := tasks.Create(task.CreateRequest{ProjectID: second.ID, Goal: "Foreign Task", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatalf("create foreign Task: %v", err)
+	}
+	foreignContinuation, err := tasks.CreateContinuation(foreignTask.ID, "profile-foreign", "test", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create foreign Continuation: %v", err)
+	}
+	execCtx := blackboard.SystemExecutionContext(first.ID, first.Kind, "test-system")
+	execCtx.TaskID = localTask.ID
+	execCtx.ContinuationID = foreignContinuation.ID
+
+	_, err = graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion:  blackboard.GraphMutationSchemaVersion,
+		IdempotencyKey: "project-isolation:foreign-continuation-provenance",
+		Context:        execCtx,
+		Operations: []blackboard.Operation{{
+			OpID: "fact",
+			Kind: blackboard.OpCreateNode,
+			Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "fact:foreign-continuation-provenance"},
+			Create: blackboard.CreateNodeInput{Properties: blackboard.ProjectFactProperties{
+				Category: "test", Summary: "Must not commit", ScopeStatus: blackboard.ScopeStatusUnknown,
+			}},
+		}},
+	})
+	var validation *blackboard.ValidationError
+	if !errors.As(err, &validation) || validation.Code != blackboard.ErrCodeProvenanceSpoofed {
+		t.Fatalf("cross-Project Continuation provenance error = %v", err)
 	}
 }
 

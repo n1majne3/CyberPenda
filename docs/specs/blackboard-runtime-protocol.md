@@ -665,7 +665,7 @@ The daemon owns one versioned source string. Every built-in Runtime receives the
 1. **Start from the pinned full graph.** Read the initial Blackboard context and `.pentest/blackboard.json`. It is the complete main graph at the stated revision, not a relevance-selected subset.
 2. **Treat the snapshot as immutable.** Never edit it as a write mechanism. Explicit current-graph reads may show later concurrent changes but do not replace the pinned Continuation context.
 3. **Write semantic milestones, not command noise.** Raw commands, full logs, and payload bytes remain Task Events, logs, or retained Evidence.
-4. **Open work explicitly.** Before an exploration episode, create or reuse an ExplorationObjective when needed, create one Attempt, and put at least one `tests` edge in the same atomic batch.
+4. **Open work explicitly.** Before an exploration episode, create or reuse an Exploration Objective when needed, create one Attempt, and put at least one `tests` edge in the same atomic batch.
 5. **Keep provenance honest.** Never send Project, Task, Continuation, Runtime Profile, Runner, actor, or timestamp claims. The trusted interface binds them.
 6. **Use stable identities and optimistic versions.** Reuse stable keys for the same durable concept, supply current expected versions, and reread on `version_conflict`.
 7. **Make retries replay-safe.** Choose an idempotency key before each semantic action and reuse that exact key and payload after uncertainty. Never reuse a key for a different payload.

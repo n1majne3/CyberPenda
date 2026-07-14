@@ -128,10 +128,16 @@ func buildHealthResults(ctx context.Context, tx *sql.Tx, snapshot GraphSnapshot,
 		return HealthResultCollectionV1{}, readValidationError(ErrCodeInvalidQuery, "run_id is required", "run_id")
 	}
 	if request.Limit == 0 {
-		request.Limit = 100
+		request.Limit = 50
 	}
-	if request.Limit < 1 || request.Limit > 500 {
-		return HealthResultCollectionV1{}, readValidationError(ErrCodeInvalidQuery, "limit must be between 1 and 500", "limit")
+	if request.Limit < 1 || request.Limit > 200 {
+		return HealthResultCollectionV1{}, readValidationError(ErrCodeInvalidQuery, "limit must be between 1 and 200", "limit")
+	}
+	if err := validateRepeatedHealthFilter("severity", request.Severity); err != nil {
+		return HealthResultCollectionV1{}, err
+	}
+	if err := validateRepeatedHealthFilter("code", request.Code); err != nil {
+		return HealthResultCollectionV1{}, err
 	}
 	run, results, err := loadHealthRun(ctx, tx, snapshot, request.RunID, artifactRoot)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -195,6 +201,13 @@ func buildHealthResults(ctx context.Context, tx *sql.Tx, snapshot GraphSnapshot,
 		}
 	}
 	return HealthResultCollectionV1{Items: filtered[start:end], Page: page}, nil
+}
+
+func validateRepeatedHealthFilter(field string, values []string) error {
+	if len(values) > 50 {
+		return readValidationError(ErrCodeInvalidQuery, field+" accepts at most 50 values", field)
+	}
+	return nil
 }
 
 func currentHealthGraph(ctx context.Context, tx *sql.Tx, snapshot GraphSnapshot) (HealthCurrentGraphV1, error) {

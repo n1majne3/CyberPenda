@@ -216,7 +216,7 @@ func loadNodeVersionProvenance(ctx context.Context, tx *sql.Tx, projectID, nodeI
 func loadProvenanceTask(ctx context.Context, tx *sql.Tx, projectID, taskID string) (*ProvenanceTaskV1, *ProvenanceScopeSnapshotV1, error) {
 	var task ProvenanceTaskV1
 	var scopeJSON string
-	if err := tx.QueryRowContext(ctx, `SELECT id,goal,status,scope_snapshot_json FROM tasks WHERE id=?`, taskID).Scan(&task.ID, &task.Goal, &task.Status, &scopeJSON); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT id,goal,status,scope_snapshot_json FROM tasks WHERE id=? AND project_id=?`, taskID, projectID).Scan(&task.ID, &task.Goal, &task.Status, &scopeJSON); err != nil {
 		return nil, nil, err
 	}
 	var scope struct {
@@ -240,7 +240,7 @@ func loadProvenanceContinuation(ctx context.Context, tx *sql.Tx, projectID, cont
 	var continuation ProvenanceContinuationV1
 	var configVersionID sql.NullString
 	var taskID, runtimeProvider string
-	if err := tx.QueryRowContext(ctx, `SELECT id,number,status,runtime_config_version_id,task_id,runtime_provider FROM task_continuations WHERE id=?`, continuationID).Scan(&continuation.ID, &continuation.Number, &continuation.Status, &configVersionID, &taskID, &runtimeProvider); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT c.id,c.number,c.status,c.runtime_config_version_id,c.task_id,c.runtime_provider FROM task_continuations c JOIN tasks t ON t.id=c.task_id AND t.project_id=? WHERE c.id=?`, projectID, continuationID).Scan(&continuation.ID, &continuation.Number, &continuation.Status, &configVersionID, &taskID, &runtimeProvider); err != nil {
 		return nil, nil, err
 	}
 	var configJSON string
@@ -248,7 +248,7 @@ func loadProvenanceContinuation(ctx context.Context, tx *sql.Tx, projectID, cont
 	if !configVersionID.Valid || configVersionID.String == "" {
 		return &continuation, nil, sql.ErrNoRows
 	}
-	if err := tx.QueryRowContext(ctx, `SELECT runtime_profile_id,config_json FROM task_runtime_config_versions WHERE id=?`, configVersionID.String).Scan(&storedProfileID, &configJSON); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT runtime_profile_id,config_json FROM task_runtime_config_versions WHERE id=? AND task_id=?`, configVersionID.String, taskID).Scan(&storedProfileID, &configJSON); err != nil {
 		return &continuation, nil, err
 	}
 	continuation.Href = "/projects/" + projectID + "/tasks/" + taskID + "#continuation-" + continuationID
@@ -288,7 +288,7 @@ func loadProvenanceEvents(ctx context.Context, tx *sql.Tx, projectID, provenance
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM blackboard_graph_provenance_events WHERE project_id=? AND provenance_id=?`, projectID, provenanceID).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT e.id,e.seq,e.kind,e.payload_json,e.created_at FROM blackboard_graph_provenance_events pe JOIN task_events e ON e.id=pe.event_id WHERE pe.project_id=? AND pe.provenance_id=? ORDER BY pe.ordinal LIMIT ?`, projectID, provenanceID, provenanceSourceEventLimit)
+	rows, err := tx.QueryContext(ctx, `SELECT e.id,e.seq,e.kind,e.payload_json,e.created_at FROM blackboard_graph_provenance_events pe JOIN task_events e ON e.id=pe.event_id JOIN tasks t ON t.id=e.task_id AND t.project_id=? WHERE pe.project_id=? AND pe.provenance_id=? ORDER BY pe.ordinal LIMIT ?`, projectID, projectID, provenanceID, provenanceSourceEventLimit)
 	if err != nil {
 		return nil, 0, err
 	}

@@ -145,3 +145,103 @@ func TestRecordProvenanceJoinsCapturedRuntimeStateWithoutRawOutputOrSecrets(t *t
 		}
 	}
 }
+
+func TestRecordProvenanceDoesNotJoinDurableStateFromAnotherProject(t *testing.T) {
+	graph, projects, _ := newGraphServices(t)
+	first, err := projects.Create("First", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create first Project: %v", err)
+	}
+	second, err := projects.Create("Second", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create second Project: %v", err)
+	}
+	db := graph.DBForTesting()
+	if _, err := db.Exec(`INSERT INTO runtime_profiles(id,name,provider,fields_json,created_at,updated_at) VALUES('profile-moved','Moved','codex','{}','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("seed moved Runtime Profile: %v", err)
+	}
+	tasks := task.NewService(db, projects)
+	movedTask, err := tasks.Create(task.CreateRequest{ProjectID: first.ID, Goal: "SECRET MOVED GOAL", RuntimeProfileID: "profile-moved", Runner: task.RunnerHost})
+	if err != nil {
+		t.Fatalf("create Task before Project move: %v", err)
+	}
+	config, err := tasks.RecordRuntimeConfig(movedTask.ID, "profile-moved", map[string]any{
+		"runtime_plugin_id": "moved-plugin",
+		"model":             "SECRET-MOVED-MODEL",
+	})
+	if err != nil {
+		t.Fatalf("record moved Runtime configuration: %v", err)
+	}
+	projection, err := graph.CanonicalMainGraph(context.Background(), first.ID, 0)
+	if err != nil {
+		t.Fatalf("render local Blackboard: %v", err)
+	}
+	movedContinuation, err := tasks.CreateContinuationWithSnapshotPin(movedTask.ID, "profile-moved", "moved-plugin", task.RunnerHost, task.ContinuationSnapshotPin{
+		RuntimeConfigVersionID:              config.ID,
+		BlackboardGraphRevision:             projection.GraphRevision,
+		BlackboardRendererVersion:           projection.RendererVersion,
+		BlackboardEstimatorVersion:          projection.EstimatorVersion,
+		BlackboardProjectionHash:            projection.Hash,
+		BlackboardProjectionBytes:           projection.ByteCount,
+		BlackboardProjectionEstimatedTokens: projection.EstimatedTokens,
+	})
+	if err != nil {
+		t.Fatalf("create Continuation before Project move: %v", err)
+	}
+	movedEvent, err := tasks.AppendEvent(movedTask.ID, task.EventKindRuntimeOutput, task.EventPayload{"phase": "SECRET-MOVED-PHASE"})
+	if err != nil {
+		t.Fatalf("append Event before Project move: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE task_events SET continuation_id=? WHERE id=?`, movedContinuation.ID, movedEvent.ID); err != nil {
+		t.Fatalf("bind moved source Event: %v", err)
+	}
+	execCtx := blackboard.SystemExecutionContext(first.ID, first.Kind, "test-system")
+	execCtx.TaskID = movedTask.ID
+	execCtx.ContinuationID = movedContinuation.ID
+	execCtx.RuntimeProfileID = "profile-moved"
+	execCtx.Runner = "host"
+
+	created, err := graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion:  blackboard.GraphMutationSchemaVersion,
+		IdempotencyKey: "u03:cross-project-provenance",
+		Context:        execCtx,
+		SourceEventIDsByOp: map[string][]string{
+			"fact": {movedEvent.ID},
+		},
+		Operations: []blackboard.Operation{{
+			OpID: "fact",
+			Kind: blackboard.OpCreateNode,
+			Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "fact:cross-project-provenance"},
+			Create: blackboard.CreateNodeInput{Properties: blackboard.ProjectFactProperties{
+				Category: "test", Summary: "Local fact", ScopeStatus: blackboard.ScopeStatusUnknown,
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create local Fact: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE tasks SET project_id=? WHERE id=?`, second.ID, movedTask.ID); err != nil {
+		t.Fatalf("move durable Task to another Project: %v", err)
+	}
+
+	envelope, err := blackboard.NewBlackboardReadService(db).Read(context.Background(), blackboard.ReadRequest{
+		ProtocolVersion:  blackboard.BlackboardReadProtocolVersion,
+		ProjectID:        first.ID,
+		Kind:             blackboard.ReadKindRecordProvenanceV1,
+		RecordProvenance: &blackboard.RecordProvenanceRequest{NodeID: created.Operations[0].NodeID, Version: "current", Provenance: "all"},
+	})
+	if err != nil {
+		t.Fatalf("read corrupt provenance: %v", err)
+	}
+	entry := envelope.Result.(blackboard.RecordProvenanceV1).Entries[0]
+	if entry.JoinStatus != "missing" || entry.Task != nil || entry.ScopeSnapshot != nil || entry.Continuation != nil || entry.RuntimeConfiguration != nil || len(entry.SourceEvents) != 0 {
+		t.Fatalf("cross-Project provenance join = %#v", entry)
+	}
+	encoded, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("encode cross-Project provenance: %v", err)
+	}
+	if strings.Contains(string(encoded), "SECRET MOVED GOAL") || strings.Contains(string(encoded), "SECRET-MOVED-MODEL") || strings.Contains(string(encoded), "SECRET-MOVED-PHASE") {
+		t.Fatalf("cross-Project provenance leaked durable state: %s", encoded)
+	}
+}

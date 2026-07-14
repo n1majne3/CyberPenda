@@ -5,11 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"pentest/internal/blackboard"
+	"pentest/internal/project"
+	"pentest/internal/store"
 	"pentest/internal/task"
 )
 
@@ -169,4 +172,115 @@ func TestFailedExplicitHealthRunIsPersistedWithoutChangingGraph(t *testing.T) {
 	if revision != 0 {
 		t.Fatalf("failed Health changed graph revision to %d", revision)
 	}
+}
+
+func TestHealthResultsDefaultToFiftyItems(t *testing.T) {
+	read, projectID, runID := missingEvidenceHealthRun(t, 60)
+
+	envelope, err := read.Read(context.Background(), blackboard.ReadRequest{
+		ProtocolVersion: blackboard.BlackboardReadProtocolVersion,
+		ProjectID:       projectID,
+		Kind:            blackboard.ReadKindHealthResultsV1,
+		HealthResults:   &blackboard.HealthResultsRequest{RunID: runID},
+	})
+	if err != nil {
+		t.Fatalf("read Health results: %v", err)
+	}
+	results := envelope.Result.(blackboard.HealthResultCollectionV1)
+	if results.Page.Limit != 50 || len(results.Items) != 50 || results.Page.TotalItems < 60 || results.Page.NextCursor == "" {
+		t.Fatalf("default Health results page = %+v items=%d", results.Page, len(results.Items))
+	}
+}
+
+func TestHealthResultsRejectLimitAboveTwoHundred(t *testing.T) {
+	read, projectID, runID := missingEvidenceHealthRun(t, 1)
+
+	_, err := read.Read(context.Background(), blackboard.ReadRequest{
+		ProtocolVersion: blackboard.BlackboardReadProtocolVersion,
+		ProjectID:       projectID,
+		Kind:            blackboard.ReadKindHealthResultsV1,
+		HealthResults:   &blackboard.HealthResultsRequest{RunID: runID, Limit: 201},
+	})
+	assertReadErrorCode(t, err, blackboard.ErrCodeInvalidQuery)
+}
+
+func TestHealthResultsRejectMoreThanFiftySeverityFilters(t *testing.T) {
+	read, projectID, runID := missingEvidenceHealthRun(t, 1)
+	severity := make([]string, 51)
+	for i := range severity {
+		severity[i] = "critical"
+	}
+
+	_, err := read.Read(context.Background(), blackboard.ReadRequest{
+		ProtocolVersion: blackboard.BlackboardReadProtocolVersion,
+		ProjectID:       projectID,
+		Kind:            blackboard.ReadKindHealthResultsV1,
+		HealthResults:   &blackboard.HealthResultsRequest{RunID: runID, Severity: severity},
+	})
+	assertReadErrorCode(t, err, blackboard.ErrCodeInvalidQuery)
+}
+
+func TestHealthResultsRejectMoreThanFiftyCodeFilters(t *testing.T) {
+	read, projectID, runID := missingEvidenceHealthRun(t, 1)
+	codes := make([]string, 51)
+	for i := range codes {
+		codes[i] = "evidence_missing"
+	}
+
+	_, err := read.Read(context.Background(), blackboard.ReadRequest{
+		ProtocolVersion: blackboard.BlackboardReadProtocolVersion,
+		ProjectID:       projectID,
+		Kind:            blackboard.ReadKindHealthResultsV1,
+		HealthResults:   &blackboard.HealthResultsRequest{RunID: runID, Code: codes},
+	})
+	assertReadErrorCode(t, err, blackboard.ErrCodeInvalidQuery)
+}
+
+func missingEvidenceHealthRun(t *testing.T, count int) (*blackboard.BlackboardReadService, string, string) {
+	t.Helper()
+	db, err := store.Open(filepath.Join(t.TempDir(), "health-results.db"))
+	if err != nil {
+		t.Fatalf("open Health results store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("close Health results store: %v", err)
+		}
+	})
+	graph := blackboard.NewGraphService(db, nil, nil)
+	projects := project.NewService(db)
+	projectID, execCtx := mustGraphProject(t, projects)
+	artifactRoot := t.TempDir()
+	graph.WithArtifactRoot(artifactRoot)
+	operations := make([]blackboard.Operation, 0, count)
+	for i := 0; i < count; i++ {
+		operations = append(operations, blackboard.Operation{
+			OpID: fmt.Sprintf("evidence-%03d", i),
+			Kind: blackboard.OpCreateNode,
+			Node: blackboard.NodeRef{
+				NodeType:  blackboard.NodeTypeEvidenceArtifact,
+				StableKey: fmt.Sprintf("evidence:missing-%03d", i),
+			},
+			Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{
+				"artifact_type": "file",
+				"managed_path":  fmt.Sprintf("missing/evidence-%03d.txt", i),
+				"sha256":        "0000000000000000000000000000000000000000000000000000000000000000",
+				"summary":       fmt.Sprintf("Missing Evidence fixture %03d", i),
+				"status":        "available",
+			}},
+		})
+	}
+	if _, err := graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion:  blackboard.GraphMutationSchemaVersion,
+		IdempotencyKey: fmt.Sprintf("health:missing-evidence:%d", count),
+		Context:        execCtx,
+		Operations:     operations,
+	}); err != nil {
+		t.Fatalf("seed missing Evidence: %v", err)
+	}
+	run, err := graph.RunHealthExplicit(context.Background(), projectID, fmt.Sprintf("health:missing-evidence-run:%d", count), "quick")
+	if err != nil {
+		t.Fatalf("run missing Evidence Health: %v", err)
+	}
+	return blackboard.NewBlackboardReadService(graph.DBForTesting()).WithArtifactRoot(artifactRoot), projectID, run.RunID
 }

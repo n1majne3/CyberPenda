@@ -9,6 +9,7 @@ import (
 
 	"pentest/internal/project"
 	"pentest/internal/store"
+	"pentest/internal/task"
 )
 
 // TestIntegrityCutoverPreservesLegacyHistoryAndChainsNewMutations proves that
@@ -22,12 +23,17 @@ func TestIntegrityCutoverPreservesLegacyHistoryAndChainsNewMutations(t *testing.
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	createdProject, err := project.NewService(db).Create("Upgrade", "", project.Scope{}, project.Defaults{})
+	projects := project.NewService(db)
+	createdProject, err := projects.Create("Upgrade", "", project.Scope{}, project.Defaults{})
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 	ctx := SystemExecutionContext(createdProject.ID, createdProject.Kind, "integrity-upgrade")
-	ctx.TaskID = "legacy-task"
+	legacyTask, err := task.NewService(db, projects).Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "Legacy integrity fixture", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatalf("create legacy Task: %v", err)
+	}
+	ctx.TaskID = legacyTask.ID
 	if _, err := db.Exec(`INSERT INTO task_events(id,task_id,seq,kind,payload_json,created_at) VALUES('legacy-event',?,1,'status','{}','2024-01-01T00:00:00Z')`, ctx.TaskID); err != nil {
 		t.Fatalf("insert legacy Task Event: %v", err)
 	}

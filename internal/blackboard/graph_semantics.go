@@ -19,31 +19,37 @@ func annotateOperationError(err error, operationIndex int) error {
 }
 
 func validateExecutionContext(tx *sql.Tx, ec ExecutionContext) error {
+	var taskProjectID string
+	if ec.TaskID != "" {
+		if err := tx.QueryRow(`SELECT project_id FROM tasks WHERE id=?`, ec.TaskID).Scan(&taskProjectID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return validationError(ErrCodeProvenanceSpoofed, "provenance Task does not exist", -1, "", "context.task_id")
+			}
+			return fmt.Errorf("validate provenance Task: %w", err)
+		}
+		if taskProjectID != ec.ProjectID {
+			return validationError(ErrCodeProvenanceSpoofed, "provenance Task does not belong to the trusted Project", -1, "", "context.task_id")
+		}
+	}
+	if ec.ContinuationID != "" {
+		var continuationTaskID, profileID, runner string
+		if err := tx.QueryRow(`SELECT task_id,runtime_profile_id,runner FROM task_continuations WHERE id=?`, ec.ContinuationID).Scan(&continuationTaskID, &profileID, &runner); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return validationError(ErrCodeProvenanceSpoofed, "provenance Continuation does not exist", -1, "", "context.continuation_id")
+			}
+			return fmt.Errorf("validate provenance Continuation: %w", err)
+		}
+		if ec.TaskID == "" || continuationTaskID != ec.TaskID ||
+			(ec.RuntimeProfileID != "" && profileID != ec.RuntimeProfileID) ||
+			(ec.Runner != "" && runner != ec.Runner) {
+			return validationError(ErrCodeProvenanceSpoofed, "provenance Continuation does not match the trusted Task context", -1, "", "context.continuation_id")
+		}
+	}
 	if ec.ActorType != ActorTypeRuntime {
 		return nil
 	}
 	if ec.TaskID == "" || ec.ContinuationID == "" || ec.RuntimeProfileID == "" || ec.Runner == "" || ec.ActorID == "" {
 		return validationError(ErrCodeProvenanceRequired, "Runtime provenance requires actor, Task, Continuation, runtime profile, and runner", -1, "", "context")
-	}
-	var projectID string
-	if err := tx.QueryRow(`SELECT project_id FROM tasks WHERE id=?`, ec.TaskID).Scan(&projectID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return validationError(ErrCodeProvenanceSpoofed, "Runtime Task does not exist", -1, "", "context.task_id")
-		}
-		return fmt.Errorf("validate Runtime Task provenance: %w", err)
-	}
-	if projectID != ec.ProjectID {
-		return validationError(ErrCodeProvenanceSpoofed, "Runtime Task does not belong to the trusted Project", -1, "", "context.task_id")
-	}
-	var taskID, profileID, runner string
-	if err := tx.QueryRow(`SELECT task_id,runtime_profile_id,runner FROM task_continuations WHERE id=?`, ec.ContinuationID).Scan(&taskID, &profileID, &runner); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return validationError(ErrCodeProvenanceSpoofed, "Runtime Continuation does not exist", -1, "", "context.continuation_id")
-		}
-		return fmt.Errorf("validate Runtime Continuation provenance: %w", err)
-	}
-	if taskID != ec.TaskID || profileID != ec.RuntimeProfileID || runner != ec.Runner {
-		return validationError(ErrCodeProvenanceSpoofed, "Runtime provenance does not match the durable Continuation", -1, "", "context")
 	}
 	if ec.InterfaceGrantID != "" {
 		var grantProjectID, grantTaskID, grantContinuationID, grantProfileID, grantRunner, grantActorID string
@@ -376,6 +382,30 @@ func applyEvidenceTransition(tx *sql.Tx, projectID string, current mutableNode, 
 		}
 		if !hasReplacement {
 			return validationError(ErrCodeTransitionGuardFailed, "superseded EvidenceArtifact requires an incoming supersedes edge", -1, op.OpID, "operations[].transition.status")
+		}
+	}
+	props["status"] = to
+	return nil
+}
+
+func applyProjectDirectiveTransition(tx *sql.Tx, projectID string, current mutableNode, op Operation, batch MutationBatch, edges map[string][2]resolvedNode, props map[string]any) error {
+	from := stringProp(props, "status")
+	to := op.Transition.Status
+	allowed := (from == "proposed" && contains(to, "active", "retired", "superseded")) ||
+		(from == "active" && contains(to, "retired", "superseded"))
+	if !allowed {
+		return validationError(ErrCodeInvalidTransition, fmt.Sprintf("ProjectDirective cannot transition from %s to %s", from, to), -1, op.OpID, "operations[].transition.status")
+	}
+	if to == "active" && batch.Context.ActorType != ActorTypeOperator && batch.Context.ActorType != ActorTypeSystem {
+		return validationError(ErrCodeTransitionGuardFailed, "only an operator or system actor may activate a ProjectDirective", -1, op.OpID, "operations[].transition.status")
+	}
+	if to == "superseded" {
+		hasReplacement, err := hasIncomingEdge(tx, projectID, current.nodeID, EdgeTypeSupersedes, batch, edges)
+		if err != nil {
+			return err
+		}
+		if !hasReplacement {
+			return validationError(ErrCodeTransitionGuardFailed, "superseded ProjectDirective requires an incoming supersedes edge", -1, op.OpID, "operations[].transition.status")
 		}
 	}
 	props["status"] = to

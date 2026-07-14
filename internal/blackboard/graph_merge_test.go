@@ -170,6 +170,182 @@ func TestArchiveGuardsRetireEdgesAndRestoreManifestUsesCurrentRedirects(t *testi
 	}
 }
 
+func TestProjectDirectiveCanRetireBeforeArchive(t *testing.T) {
+	graph, projects, _ := newGraphServices(t)
+	_, execCtx := mustGraphProject(t, projects)
+
+	created, err := graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion:  blackboard.GraphMutationSchemaVersion,
+		IdempotencyKey: "directive:create-active",
+		Context:        execCtx,
+		Operations: []blackboard.Operation{{
+			OpID: "directive",
+			Kind: blackboard.OpCreateNode,
+			Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectDirective, StableKey: "directive:retire-before-archive"},
+			Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{
+				"directive": "Prioritize authentication boundaries.",
+				"status":    "active",
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create active Project Directive: %v", err)
+	}
+
+	retired, err := graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion:  blackboard.GraphMutationSchemaVersion,
+		IdempotencyKey: "directive:retire",
+		Context:        execCtx,
+		Operations: []blackboard.Operation{{
+			OpID:       "retire",
+			Kind:       blackboard.OpTransitionNode,
+			Node:       blackboard.NodeRef{ID: created.Operations[0].NodeID},
+			Transition: blackboard.TransitionNodeInput{ExpectedVersion: 1, Status: "retired"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("retire active Project Directive: %v", err)
+	}
+
+	_, err = graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion:  blackboard.GraphMutationSchemaVersion,
+		IdempotencyKey: "directive:archive-retired",
+		Context:        execCtx,
+		Operations: []blackboard.Operation{{
+			OpID: "archive",
+			Kind: blackboard.OpSetDisposition,
+			Node: blackboard.NodeRef{ID: created.Operations[0].NodeID},
+			Disposition: blackboard.SetDispositionInput{
+				ExpectedVersion: retired.Operations[0].NodeVersion,
+				Disposition:     blackboard.DispositionArchived,
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("archive retired Project Directive: %v", err)
+	}
+}
+
+func TestProjectDirectiveSupersessionRequiresReplacement(t *testing.T) {
+	graph, projects, _ := newGraphServices(t)
+	_, execCtx := mustGraphProject(t, projects)
+
+	created, err := graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion:  blackboard.GraphMutationSchemaVersion,
+		IdempotencyKey: "directive:create-supersession",
+		Context:        execCtx,
+		Operations: []blackboard.Operation{
+			{
+				OpID: "old",
+				Kind: blackboard.OpCreateNode,
+				Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectDirective, StableKey: "directive:old-priority"},
+				Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{
+					"directive": "Prioritize the old investigation path.",
+					"status":    "active",
+				}},
+			},
+			{
+				OpID: "replacement",
+				Kind: blackboard.OpCreateNode,
+				Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectDirective, StableKey: "directive:new-priority"},
+				Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{
+					"directive": "Prioritize the replacement investigation path.",
+					"status":    "active",
+				}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create Project Directives: %v", err)
+	}
+
+	_, err = graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion:  blackboard.GraphMutationSchemaVersion,
+		IdempotencyKey: "directive:supersede-without-replacement",
+		Context:        execCtx,
+		Operations: []blackboard.Operation{{
+			OpID:       "supersede",
+			Kind:       blackboard.OpTransitionNode,
+			Node:       blackboard.NodeRef{ID: created.Operations[0].NodeID},
+			Transition: blackboard.TransitionNodeInput{ExpectedVersion: 1, Status: "superseded"},
+		}},
+	})
+	var validation *blackboard.ValidationError
+	if !errors.As(err, &validation) || validation.Code != blackboard.ErrCodeTransitionGuardFailed {
+		t.Fatalf("supersede without replacement error = %v", err)
+	}
+
+	superseded, err := graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion:  blackboard.GraphMutationSchemaVersion,
+		IdempotencyKey: "directive:supersede-with-replacement",
+		Context:        execCtx,
+		Operations: []blackboard.Operation{
+			{
+				OpID: "replacement-edge",
+				Kind: blackboard.OpPutEdge,
+				PutEdge: blackboard.PutEdgeInput{
+					EdgeType: blackboard.EdgeTypeSupersedes,
+					From:     blackboard.NodeRef{ID: created.Operations[1].NodeID},
+					To:       blackboard.NodeRef{ID: created.Operations[0].NodeID},
+				},
+			},
+			{
+				OpID:       "supersede",
+				Kind:       blackboard.OpTransitionNode,
+				Node:       blackboard.NodeRef{ID: created.Operations[0].NodeID},
+				Transition: blackboard.TransitionNodeInput{ExpectedVersion: 1, Status: "superseded"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("supersede active Project Directive: %v", err)
+	}
+	if superseded.Operations[1].NodeVersion != 2 || !superseded.Operations[1].Changed {
+		t.Fatalf("superseded Project Directive result = %+v", superseded.Operations[1])
+	}
+}
+
+func TestProjectDirectiveProposalCanBeActivatedByOperator(t *testing.T) {
+	graph, projects, _ := newGraphServices(t)
+	_, execCtx := mustGraphProject(t, projects)
+
+	created, err := graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion:  blackboard.GraphMutationSchemaVersion,
+		IdempotencyKey: "directive:create-proposal",
+		Context:        execCtx,
+		Operations: []blackboard.Operation{{
+			OpID: "proposal",
+			Kind: blackboard.OpCreateNode,
+			Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectDirective, StableKey: "directive:operator-approval"},
+			Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{
+				"directive": "Validate authentication boundary assumptions.",
+				"status":    "proposed",
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create proposed Project Directive: %v", err)
+	}
+
+	activated, err := graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion:  blackboard.GraphMutationSchemaVersion,
+		IdempotencyKey: "directive:activate-proposal",
+		Context:        execCtx,
+		Operations: []blackboard.Operation{{
+			OpID:       "activate",
+			Kind:       blackboard.OpTransitionNode,
+			Node:       blackboard.NodeRef{ID: created.Operations[0].NodeID},
+			Transition: blackboard.TransitionNodeInput{ExpectedVersion: 1, Status: "active"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("activate proposed Project Directive: %v", err)
+	}
+	if activated.Operations[0].NodeVersion != 2 || !activated.Operations[0].Changed {
+		t.Fatalf("activated Project Directive result = %+v", activated.Operations[0])
+	}
+}
+
 func TestDuplicateFingerprintsAreDeterministicAndNeverAutoMerge(t *testing.T) {
 	graph, projects, _ := newGraphServices(t)
 	projectID, execCtx := mustGraphProject(t, projects)

@@ -698,6 +698,10 @@ func (s *GraphService) applyOperations(tx *sql.Tx, batch MutationBatch, requestH
 					if err := applyEvidenceTransition(tx, projectID, current, op, batch, resolvedEdges, props); err != nil {
 						return MutationResult{}, annotateOperationError(err, i)
 					}
+				case NodeTypeProjectDirective:
+					if err := applyProjectDirectiveTransition(tx, projectID, current, op, batch, resolvedEdges, props); err != nil {
+						return MutationResult{}, annotateOperationError(err, i)
+					}
 				default:
 					return MutationResult{}, validationError(ErrCodeInvalidRequest, "transition_node is not supported for this node type", i, op.OpID, "operations[].node")
 				}
