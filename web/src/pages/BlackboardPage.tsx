@@ -29,7 +29,6 @@ import {
   recordHref,
 } from "@/lib/blackboard";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
-import { ProjectLedger } from "@/components/shared";
 import { Badge, Card, CardDescription, CardTitle } from "@/components/ui";
 import { cn } from "@/lib/utils";
 
@@ -55,15 +54,13 @@ export function BlackboardPage() {
   const nodeTypeFilter = searchParams.get("node_type") ?? undefined;
 
   return (
-    <ProjectPageShell title="Blackboard" bodyClassName="">
-      <ProjectLedger>
-        <BlackboardSubnav projectId={projectId} active={tab === "record" ? "work" : tab} />
-        {tab === "work" && <WorkPanel projectId={projectId} nodeTypeFilter={nodeTypeFilter} />}
-        {tab === "entities" && <EntitiesPanel projectId={projectId} />}
-        {tab === "explorer" && <ExplorerPanel projectId={projectId} />}
-        {tab === "health" && <HealthPanel projectId={projectId} />}
-        {tab === "record" && recordId && <RecordPanel projectId={projectId} nodeId={recordId} />}
-      </ProjectLedger>
+    <ProjectPageShell title="Blackboard" bodyClassName="space-y-4">
+      <BlackboardSubnav projectId={projectId} active={tab === "record" ? "work" : tab} />
+      {tab === "work" && <WorkPanel projectId={projectId} nodeTypeFilter={nodeTypeFilter} />}
+      {tab === "entities" && <EntitiesPanel projectId={projectId} />}
+      {tab === "explorer" && <ExplorerPanel projectId={projectId} />}
+      {tab === "health" && <HealthPanel projectId={projectId} />}
+      {tab === "record" && recordId && <RecordPanel projectId={projectId} nodeId={recordId} />}
     </ProjectPageShell>
   );
 }

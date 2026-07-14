@@ -3,7 +3,6 @@ import { useParams } from "react-router-dom";
 import { Flag, Download } from "lucide-react";
 import { readCTFSolution } from "@/lib/blackboard";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
-import { ProjectLedger } from "@/components/shared";
 import { Button, Card, CardHeader, CardTitle } from "@/components/ui";
 
 /**
@@ -48,8 +47,7 @@ export function SolutionPage() {
   }
 
   return (
-    <ProjectPageShell title="Solution" bodyClassName="">
-      <ProjectLedger>
+    <ProjectPageShell title="Solution" bodyClassName="space-y-4">
         <Card as="section" className="space-y-3">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -83,7 +81,6 @@ export function SolutionPage() {
             </pre>
           </Card>
         )}
-      </ProjectLedger>
     </ProjectPageShell>
   );
 }

@@ -3,7 +3,6 @@ import { Link, useParams } from "react-router-dom";
 import type { NodeRow } from "@/lib/api";
 import { readRecords, recordHref } from "@/lib/blackboard";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
-import { ProjectLedger } from "@/components/shared";
 import { Badge, Card } from "@/components/ui";
 
 /**
@@ -40,17 +39,15 @@ export function FindingsPage() {
   const other = rows.filter((row) => row.lifecycle?.value !== "confirmed");
 
   return (
-    <ProjectPageShell title="Findings" bodyClassName="">
-      <ProjectLedger>
-        {error && <p className="p-4 text-sm text-destructive">{error}</p>}
-        <FindingSection projectId={projectId} title="Confirmed" items={confirmed} />
-        <FindingSection projectId={projectId} title="Unconfirmed" items={other} muted />
-        {rows.length === 0 && !error && (
-          <Card as="section" variant="flat" className="border-dashed bg-muted/30 text-sm text-muted-foreground">
-            No findings recorded yet.
-          </Card>
-        )}
-      </ProjectLedger>
+    <ProjectPageShell title="Findings" bodyClassName="space-y-4">
+      {error && <p className="text-sm text-destructive">{error}</p>}
+      <FindingSection projectId={projectId} title="Confirmed" items={confirmed} />
+      <FindingSection projectId={projectId} title="Unconfirmed" items={other} muted />
+      {rows.length === 0 && !error && (
+        <Card as="section" variant="flat" className="border-dashed bg-muted/30 text-sm text-muted-foreground">
+          No findings recorded yet.
+        </Card>
+      )}
     </ProjectPageShell>
   );
 }

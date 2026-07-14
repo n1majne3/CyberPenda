@@ -3,7 +3,6 @@ import { useParams } from "react-router-dom";
 import { ClipboardList, Download } from "lucide-react";
 import { readPentestReport } from "@/lib/blackboard";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
-import { ProjectLedger } from "@/components/shared";
 import { Button, Card, CardHeader, CardTitle } from "@/components/ui";
 
 /**
@@ -51,8 +50,7 @@ export function ReportPage() {
   }
 
   return (
-    <ProjectPageShell title="Generate report" bodyClassName="">
-      <ProjectLedger>
+    <ProjectPageShell title="Generate report" bodyClassName="space-y-4">
         <Card as="section" className="space-y-3">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -96,7 +94,6 @@ export function ReportPage() {
             </Card>
           )
         )}
-      </ProjectLedger>
     </ProjectPageShell>
   );
 }

@@ -153,7 +153,7 @@ export function ProjectDashboardPage() {
 
       <div className="flex flex-wrap gap-2">
         <Link to={`${base}/report`} className={buttonVariants({ variant: "secondary", size: "sm" })}>
-          <ClipboardList className="h-4 w-4" /> Generate report
+          <ClipboardList className="h-4 w-4" /> Open report
         </Link>
       </div>
     </ProjectPageShell>

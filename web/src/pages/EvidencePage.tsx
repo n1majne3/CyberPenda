@@ -4,7 +4,6 @@ import { FolderLock } from "lucide-react";
 import type { NodeRow } from "@/lib/api";
 import { readRecords, recordHref } from "@/lib/blackboard";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
-import { ProjectLedger } from "@/components/shared";
 import { Badge, Card, CardHeader, CardTitle } from "@/components/ui";
 
 /**
@@ -38,46 +37,44 @@ export function EvidencePage() {
   }, [projectId]);
 
   return (
-    <ProjectPageShell title="Evidence" bodyClassName="">
-      <ProjectLedger>
-        {error && <p className="p-4 text-sm text-destructive">{error}</p>}
+    <ProjectPageShell title="Evidence" bodyClassName="space-y-4">
+      {error && <p className="text-sm text-destructive">{error}</p>}
 
-        <ul className="divide-y divide-slate-300 border-y border-slate-300" role="list">
-          {rows.map((row) => (
-            <li key={row.ref.id}>
-              <Link
-                to={recordHref(projectId, row.ref.id)}
-                className="flex w-full flex-col gap-2 border-b border-slate-300 bg-transparent p-4 text-left transition-colors hover:bg-white/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:flex-row sm:items-center"
-              >
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/5 text-primary">
-                  <FolderLock className="h-4 w-4" aria-hidden="true" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium text-slate-950">{row.ref.label}</p>
-                  <p className="truncate font-mono text-xs text-slate-500">
-                    {row.secondary || row.ref.stable_key}
-                  </p>
-                </div>
-                <div className="flex max-w-full flex-wrap gap-1 sm:justify-end">
-                  {row.lifecycle?.value && <Badge variant="outline">{row.lifecycle.value}</Badge>}
-                  <Badge variant="outline">{row.ref.node_type}</Badge>
-                </div>
-              </Link>
-            </li>
-          ))}
-        </ul>
+      <ul className="divide-y divide-slate-300 border-y border-slate-300" role="list">
+        {rows.map((row) => (
+          <li key={row.ref.id}>
+            <Link
+              to={recordHref(projectId, row.ref.id)}
+              className="flex w-full flex-col gap-2 border-b border-slate-300 bg-transparent p-4 text-left transition-colors hover:bg-white/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:flex-row sm:items-center"
+            >
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/5 text-primary">
+                <FolderLock className="h-4 w-4" aria-hidden="true" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium text-slate-950">{row.ref.label}</p>
+                <p className="truncate font-mono text-xs text-slate-500">
+                  {row.secondary || row.ref.stable_key}
+                </p>
+              </div>
+              <div className="flex max-w-full flex-wrap gap-1 sm:justify-end">
+                {row.lifecycle?.value && <Badge variant="outline">{row.lifecycle.value}</Badge>}
+                <Badge variant="outline">{row.ref.node_type}</Badge>
+              </div>
+            </Link>
+          </li>
+        ))}
+      </ul>
 
-        {rows.length === 0 && !error && (
-          <Card as="section" variant="flat" className="border-dashed bg-muted/30 text-sm text-muted-foreground">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-sm">
-                <FolderLock className="h-4 w-4" /> No evidence attached.
-              </CardTitle>
-            </CardHeader>
-            Runtime workdir files require explicit attach or retain.
-          </Card>
-        )}
-      </ProjectLedger>
+      {rows.length === 0 && !error && (
+        <Card as="section" variant="flat" className="border-dashed bg-muted/30 text-sm text-muted-foreground">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <FolderLock className="h-4 w-4" /> No evidence attached.
+            </CardTitle>
+          </CardHeader>
+          Runtime workdir files require explicit attach or retain.
+        </Card>
+      )}
     </ProjectPageShell>
   );
 }
