@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, type RefObject } from "react";
-import { useParams, Link, useSearchParams } from "react-router-dom";
-import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, FileText, Shield, ChevronRight, Wrench, User, Bot, ArrowDown, ArrowUp, CheckCircle2 } from "lucide-react";
-import { apiGet, apiPost, type ModelProvider, type RuntimePlugin, type RuntimeProfile, type Task, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
+import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, FileText, Shield, ChevronRight, Wrench, User, Bot, ArrowDown, ArrowUp, CheckCircle2, Trash2 } from "lucide-react";
+import { apiDelete, apiGet, apiPost, type ModelProvider, type RuntimePlugin, type RuntimeProfile, type Task, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Card, Input, Badge, Select } from "@/components/ui";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { AgentTranscriptView } from "@/components/task-transcript/AgentTranscriptView";
@@ -11,9 +11,11 @@ import { modelsForProvider } from "./taskLaunchForm";
 import { formatDateTime } from "@/lib/format";
 
 const ACTIVE = new Set(["running", "paused"]);
+const DELETABLE = new Set(["completed", "failed", "stopped", "interrupted"]);
 
 export function TaskDetailPage() {
   const { projectId, taskId } = useParams<{ projectId: string; taskId: string }>();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [task, setTask] = useState<Task | null>(null);
   const [timeline, setTimeline] = useState<TaskTimelineItem[]>([]);
@@ -164,6 +166,16 @@ export function TaskDetailPage() {
     }
   }
 
+  async function deleteTask() {
+    if (!task || !window.confirm(`Delete task ${task.goal}?`)) return;
+    try {
+      await apiDelete(base);
+      navigate(`/projects/${projectId}/tasks`);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
   async function resumeNative() {
     try {
       await apiPost(`${base}/resume`, continuationModelPayload());
@@ -284,6 +296,11 @@ export function TaskDetailPage() {
           {running && (
             <Button size="sm" variant="destructive" onClick={stop}>
               <Square className="h-4 w-4" /> Stop
+            </Button>
+          )}
+          {DELETABLE.has(task.status) && (
+            <Button size="sm" variant="destructive" onClick={deleteTask}>
+              <Trash2 className="h-4 w-4" /> Delete
             </Button>
           )}
         </div>

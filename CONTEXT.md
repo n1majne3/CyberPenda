@@ -76,6 +76,10 @@ _Avoid_: automatic objective resolution, unlinked narrative conclusion
 A historical revision of a **Task Summary** submitted by a runtime.
 _Avoid_: separate task summary, transcript version
 
+**Task Deletion**:
+Operator removal of a terminal **Task** from normal task surfaces and counts while retaining its durable state for historical **Blackboard** and **Provenance** joins.
+_Avoid_: active task cancellation, provenance erasure, hard deletion
+
 **Mechanical Handoff Packet**:
 A daemon-assembled structured handoff view built from task state when no accepted **Task Summary** is available.
 _Avoid_: LLM summary, canonical task understanding
@@ -811,6 +815,9 @@ _Avoid_: transcript, export, source of truth
 - A runtime-profile switch re-resolves the selected **Model Provider** and captures a new **Model Provider Snapshot** for the new **Task Runtime Configuration Version**.
 - A **Task** may contain internal steps, but those steps are not separate **Tasks**.
 - A **Task** has zero or more **Task Events**.
+- A terminal **Task** may undergo **Task Deletion**.
+- **Task Deletion** excludes the **Task** from normal task lists, detail routes, and dashboard counts while retaining its durable state for historical **Blackboard** and **Provenance** joins.
+- A pending, running, or paused **Task** cannot undergo **Task Deletion**.
 - A **Task Conversation** belongs to exactly one **Task**.
 - User messages and runtime replies in a **Task Conversation** are represented as **Task Events**.
 - **Harness Steering** actions are represented as **Task Events**.
@@ -1134,6 +1141,7 @@ _Avoid_: transcript, export, source of truth
 - **CLI Fallback** is not a bypass; resolved: CLI writes carry the same validation, provenance, audit, and blackboard semantics as other project interfaces.
 - **Task Event** and project-level history are distinct; resolved: task events are task-local timeline entries, while project-level records are security history.
 - **Task Event** is not raw output storage; resolved: preserve full output through logs or **Evidence Artifacts** and keep the task timeline structured.
+- **Task Deletion** is not runtime cancellation or provenance erasure; resolved: only terminal Tasks may be removed from normal surfaces, and their durable rows remain available to historical joins.
 - **Task Summary** is not daemon-authored intelligence; resolved: runtimes maintain summary candidates, while the daemon stores and injects accepted summaries.
 - **Task Summary** acceptance is automatic; resolved: the latest runtime-submitted summary is accepted while prior versions remain inspectable.
 - **Mechanical Handoff Packet** is not an LLM summary; resolved: it is structured fallback context assembled without semantic summarization.

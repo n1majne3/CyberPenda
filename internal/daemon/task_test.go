@@ -174,6 +174,104 @@ func TestGetTaskIncludesLatestContinuation(t *testing.T) {
 	}
 }
 
+func TestDeleteCompletedTaskRemovesItFromTaskSurfaces(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
+	taskID := createTask(t, server, projectID, `{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
+		"runner":"sandbox"
+	}`)
+	waitForTaskStatus(t, server, projectID, taskID, "completed")
+
+	deleted := httptest.NewRecorder()
+	server.ServeHTTP(deleted, httptest.NewRequest(http.MethodDelete, "/api/projects/"+projectID+"/tasks/"+taskID, nil))
+	if deleted.Code != http.StatusNoContent {
+		t.Fatalf("expected delete task status 204, got %d with body %s", deleted.Code, deleted.Body.String())
+	}
+
+	list := httptest.NewRecorder()
+	server.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks", nil))
+	if list.Code != http.StatusOK {
+		t.Fatalf("expected list tasks status 200, got %d with body %s", list.Code, list.Body.String())
+	}
+	var listed struct {
+		Tasks []struct {
+			ID string `json:"id"`
+		} `json:"tasks"`
+	}
+	if err := json.NewDecoder(list.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode task list: %v", err)
+	}
+	if len(listed.Tasks) != 0 {
+		t.Fatalf("expected deleted task to be absent from list, got %#v", listed.Tasks)
+	}
+
+	detail := httptest.NewRecorder()
+	server.ServeHTTP(detail, httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID, nil))
+	if detail.Code != http.StatusNotFound {
+		t.Fatalf("expected deleted task detail status 404, got %d with body %s", detail.Code, detail.Body.String())
+	}
+
+	dashboard := httptest.NewRecorder()
+	server.ServeHTTP(dashboard, httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/dashboard", nil))
+	if dashboard.Code != http.StatusOK {
+		t.Fatalf("expected project dashboard status 200, got %d with body %s", dashboard.Code, dashboard.Body.String())
+	}
+	var summary struct {
+		Counts struct {
+			Tasks int `json:"tasks"`
+		} `json:"counts"`
+		Tasks struct {
+			Total int `json:"total"`
+		} `json:"tasks"`
+	}
+	if err := json.NewDecoder(dashboard.Body).Decode(&summary); err != nil {
+		t.Fatalf("decode project dashboard: %v", err)
+	}
+	if summary.Counts.Tasks != 0 || summary.Tasks.Total != 0 {
+		t.Fatalf("expected deleted task to be absent from dashboard counts, got counts=%d summary=%d", summary.Counts.Tasks, summary.Tasks.Total)
+	}
+}
+
+func TestDeleteRunningTaskIsRejected(t *testing.T) {
+	server := newDaemonWithConfig(t, daemon.Config{
+		Version:              "test-version",
+		DBPath:               filepath.Join(t.TempDir(), "pentest.db"),
+		RuntimeRoot:          t.TempDir(),
+		DisableBuiltinSkills: true,
+	})
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	binary := filepath.Join(t.TempDir(), "running-task-test")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\nsleep 5\n"), 0o700); err != nil {
+		t.Fatalf("write provider binary: %v", err)
+	}
+	profileID := createLocalRuntimeProfile(t, server, "Running Task Test", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{
+		BinaryPath: binary,
+		Model:      "claude-sonnet-4",
+	})
+	taskID := createTask(t, server, projectID, `{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
+		"runner":"host",
+		"run_controls":{"host_activated":true}
+	}`)
+	waitForTaskStatus(t, server, projectID, taskID, "running")
+
+	deleted := httptest.NewRecorder()
+	server.ServeHTTP(deleted, httptest.NewRequest(http.MethodDelete, "/api/projects/"+projectID+"/tasks/"+taskID, nil))
+	if deleted.Code != http.StatusConflict {
+		t.Fatalf("expected running task delete status 409, got %d with body %s", deleted.Code, deleted.Body.String())
+	}
+
+	detail := httptest.NewRecorder()
+	server.ServeHTTP(detail, httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID, nil))
+	if detail.Code != http.StatusOK {
+		t.Fatalf("expected running task to remain available, got %d with body %s", detail.Code, detail.Body.String())
+	}
+}
+
 func TestClaudeCodeRunningTaskAllowsInterruptSteer(t *testing.T) {
 	runtimeRoot := t.TempDir()
 	server := newDaemonWithConfig(t, daemon.Config{

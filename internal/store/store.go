@@ -277,7 +277,17 @@ func migrations() []migration {
 		newMigration(16, "blackboard_compatibility_requests", migration16SQL, migration16Up),
 		newMigration(17, "blackboard_compatibility_write_retirement", migration17SQL, migration17Up),
 		newMigration(18, "blackboard_compatibility_read_retirement", migration18SQL, migration18Up),
+		newMigration(19, "task_soft_deletion", migration19SQL, migration19Up),
 	}
+}
+
+const migration19SQL = `-- tasks.deleted_at TEXT NOT NULL DEFAULT ''`
+
+func migration19Up(tx *sql.Tx) error {
+	if err := ensureColumn(tx, "tasks", "deleted_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return fmt.Errorf("ensure tasks.deleted_at: %w", err)
+	}
+	return nil
 }
 
 const migration18SQL = `

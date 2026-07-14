@@ -705,6 +705,18 @@ func (server *Server) handleGetTask(response http.ResponseWriter, request *http.
 	writeJSON(response, http.StatusOK, detailed)
 }
 
+func (server *Server) handleDeleteTask(response http.ResponseWriter, request *http.Request) {
+	found, ok := server.requireProjectTask(response, request)
+	if !ok {
+		return
+	}
+	if err := server.tasks.Delete(found.ID); err != nil {
+		writeTaskError(response, err)
+		return
+	}
+	response.WriteHeader(http.StatusNoContent)
+}
+
 func (server *Server) requireProjectTask(response http.ResponseWriter, request *http.Request) (task.Task, bool) {
 	projectID := request.PathValue("id")
 	taskID := request.PathValue("task_id")
@@ -1791,6 +1803,8 @@ func writeTaskError(response http.ResponseWriter, err error) {
 		writeError(response, http.StatusBadRequest, err.Error())
 	case errors.Is(err, task.ErrProjectNotFound), errors.Is(err, task.ErrNotFound), errors.Is(err, project.ErrNotFound):
 		writeError(response, http.StatusNotFound, err.Error())
+	case errors.Is(err, task.ErrActiveTask):
+		writeError(response, http.StatusConflict, err.Error())
 	default:
 		writeError(response, http.StatusInternalServerError, "task operation failed")
 	}

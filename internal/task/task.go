@@ -214,6 +214,10 @@ var ErrMissingGoal = errors.New("task goal is required")
 // exist.
 var ErrProjectNotFound = errors.New("project not found")
 
+// ErrActiveTask is returned when deletion is requested while a task may still
+// launch or continue runtime work.
+var ErrActiveTask = errors.New("active task cannot be deleted")
+
 // ErrUnsupportedRunner is returned when the runner is neither sandbox nor host.
 var ErrUnsupportedRunner = errors.New("runner must be sandbox or host")
 
@@ -368,7 +372,7 @@ func (s *Service) Create(req CreateRequest) (Task, error) {
 // Get loads a single task by id.
 func (s *Service) Get(id string) (Task, error) {
 	return scanTask(s.db.QueryRow(
-		`SELECT id, project_id, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at FROM tasks WHERE id = ?`,
+		`SELECT id, project_id, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at FROM tasks WHERE id = ? AND deleted_at = ''`,
 		id,
 	))
 }
@@ -377,7 +381,7 @@ func (s *Service) Get(id string) (Task, error) {
 func (s *Service) ListForProject(projectID string) ([]Task, error) {
 	rows, err := s.db.Query(
 		`SELECT id, project_id, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at
-		 FROM tasks WHERE project_id = ? ORDER BY created_at ASC`,
+		 FROM tasks WHERE project_id = ? AND deleted_at = '' ORDER BY created_at ASC`,
 		projectID,
 	)
 	if err != nil {
@@ -397,6 +401,40 @@ func (s *Service) ListForProject(projectID string) ([]Task, error) {
 		return nil, fmt.Errorf("list tasks: %w", err)
 	}
 	return tasks, nil
+}
+
+// Delete removes a terminal task from normal Task surfaces while retaining its
+// durable row for Blackboard provenance and historical joins.
+func (s *Service) Delete(id string) error {
+	result, err := s.db.Exec(
+		`UPDATE tasks SET deleted_at = ?
+		 WHERE id = ? AND deleted_at = '' AND status NOT IN (?, ?, ?)`,
+		time.Now().UTC().Format(time.RFC3339Nano), id,
+		string(StatusPending), string(StatusRunning), string(StatusPaused),
+	)
+	if err != nil {
+		return fmt.Errorf("delete task: %w", err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete task rows affected: %w", err)
+	}
+	if updated == 1 {
+		return nil
+	}
+
+	var status string
+	var deletedAt string
+	if err := s.db.QueryRow(`SELECT status, deleted_at FROM tasks WHERE id = ?`, id).Scan(&status, &deletedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("read task deletion state: %w", err)
+	}
+	if deletedAt != "" {
+		return ErrNotFound
+	}
+	return ErrActiveTask
 }
 
 type scanner interface {

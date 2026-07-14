@@ -609,6 +609,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks", server.handleCreateTask)
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks", server.handleListTasks)
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}", server.handleGetTask)
+	server.mux.HandleFunc("DELETE /api/projects/{id}/tasks/{task_id}", server.handleDeleteTask)
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/events", server.handleTaskEvents)
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/transcript", server.handleTaskTranscript)
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/timeline", server.handleTaskTimeline)

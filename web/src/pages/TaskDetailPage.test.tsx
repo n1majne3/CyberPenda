@@ -13,6 +13,7 @@ function renderPage(initialEntry = "/projects/project-1/tasks/task-1", onSearch?
         {onSearch && <LocationProbe onChange={onSearch} />}
         <Routes>
           <Route path="/projects/:projectId/tasks/:taskId" element={<TaskDetailPage />} />
+          <Route path="/projects/:projectId/tasks" element={<div>Task list</div>} />
         </Routes>
       </MemoryRouter>
     </StrictMode>,
@@ -271,5 +272,21 @@ describe("TaskDetailPage", () => {
         String(input).includes("/api/projects/project-1/tasks/task-1/stop") && init?.method === "POST",
       ),
     ).toBe(false);
+  });
+
+  it("deletes a terminal task after confirmation and returns to the task list", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const { fetchMock } = stubTaskDetailApi();
+
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: /Delete/i }));
+
+    expect(confirm).toHaveBeenCalledWith("Delete task Inspect task view?");
+    expect(
+      fetchMock.mock.calls.some(([input, init]) =>
+        String(input).includes("/api/projects/project-1/tasks/task-1") && init?.method === "DELETE",
+      ),
+    ).toBe(true);
+    expect(await screen.findByText("Task list")).toBeInTheDocument();
   });
 });

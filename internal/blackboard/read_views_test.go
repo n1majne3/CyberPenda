@@ -208,6 +208,40 @@ func TestProjectBlackboardSummaryCountsGoldenGraphRecords(t *testing.T) {
 	}
 }
 
+func TestProjectBlackboardSummaryExcludesDeletedTasks(t *testing.T) {
+	graph, projects, _ := newGraphServices(t)
+	projectID, _ := mustGraphProject(t, projects)
+	tasks := task.NewService(graph.DBForTesting(), projects)
+	created, err := tasks.Create(task.CreateRequest{
+		ProjectID: projectID,
+		Goal:      "completed work",
+		Runner:    task.RunnerSandbox,
+	})
+	if err != nil {
+		t.Fatalf("create Task: %v", err)
+	}
+	if _, err := tasks.UpdateStatus(created.ID, task.StatusCompleted); err != nil {
+		t.Fatalf("complete Task: %v", err)
+	}
+	if err := tasks.Delete(created.ID); err != nil {
+		t.Fatalf("delete Task: %v", err)
+	}
+
+	envelope, err := blackboard.NewBlackboardReadService(graph.DBForTesting()).Read(context.Background(), blackboard.ReadRequest{
+		ProtocolVersion: blackboard.BlackboardReadProtocolVersion,
+		ProjectID:       projectID,
+		Kind:            blackboard.ReadKindProjectBlackboardSummaryV1,
+		ProjectSummary:  &blackboard.ProjectBlackboardSummaryRequest{},
+	})
+	if err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	summary := envelope.Result.(blackboard.ProjectBlackboardSummaryV1)
+	if summary.Tasks.Total != 0 || summary.Counts.Tasks != 0 {
+		t.Fatalf("deleted Task leaked into summary counts: tasks=%d counts=%d", summary.Tasks.Total, summary.Counts.Tasks)
+	}
+}
+
 func TestBlackboardWorkRecentChangesIncludesSemanticEdgesAndExcludesReplay(t *testing.T) {
 	graph, projects, _ := newGraphServices(t)
 	projectID, execCtx := mustGraphProject(t, projects)

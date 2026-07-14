@@ -108,7 +108,7 @@ func buildProjectBlackboardSummary(ctx context.Context, tx *sql.Tx, snapshot Gra
 	scope := DashboardScopeV1{Domains: count("domains"), IPs: count("ips"), CIDRs: count("cidrs"), URLs: count("urls"), Ports: count("ports"), Excluded: count("excluded"), HasTestingLimits: count("testing_limits") > 0, HasNotes: notes != ""}
 	scope.Ready = scope.Domains+scope.IPs+scope.CIDRs+scope.URLs+scope.Ports > 0
 	tasks := DashboardTasksV1{}
-	rows, err := tx.QueryContext(ctx, `SELECT status,COUNT(*) FROM tasks WHERE project_id=? GROUP BY status`, snapshot.ProjectID)
+	rows, err := tx.QueryContext(ctx, `SELECT status,COUNT(*) FROM tasks WHERE project_id=? AND deleted_at='' GROUP BY status`, snapshot.ProjectID)
 	if err != nil {
 		return ProjectBlackboardSummaryV1{}, fmt.Errorf("count Project Tasks: %w", err)
 	}
