@@ -432,7 +432,11 @@ export function ModelProvidersPage() {
                     type="url"
                     inputMode="url"
                     value={form.base_url}
-                    onChange={(e) => setForm({ ...form, base_url: e.target.value })}
+                    onChange={(e) => setForm({
+                      ...form,
+                      base_url: e.target.value,
+                      endpoint_base_urls: {},
+                    })}
                     placeholder="https://api.example.test/v1…"
                     autoComplete="off"
                     spellCheck={false}

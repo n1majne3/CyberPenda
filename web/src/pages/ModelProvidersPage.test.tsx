@@ -272,6 +272,77 @@ describe("ModelProvidersPage", () => {
     });
   });
 
+  it("keeps an edited shared base URL after save reloads the provider", async () => {
+    let provider = {
+      id: "mimo",
+      name: "MiMo",
+      base_url: "https://old.example.test/v1",
+      endpoints: [
+        { protocol: "openai_responses", base_url: "https://old.example.test/v1" },
+      ],
+      api_key_env: "MIMO_API_KEY",
+      catalog: { manual: ["mimo-v2"], default_model: "mimo-v2" },
+      created_at: "2026-06-25T00:00:00Z",
+      updated_at: "2026-06-25T00:00:00Z",
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/api/model-providers/mimo") && init?.method === "PATCH") {
+        const body = JSON.parse(String(init.body));
+        provider = {
+          ...provider,
+          ...body,
+          // The daemon stores endpoint-backed providers canonically and exposes
+          // the first endpoint as the compatibility provider-level base URL.
+          base_url: body.endpoints[0]?.base_url ?? "",
+          updated_at: "2026-06-25T00:00:01Z",
+        };
+        return Promise.resolve(
+          new Response(JSON.stringify(provider), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/model-providers")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ providers: [provider] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/credential-bindings")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ bindings: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+
+    const baseURL = await screen.findByLabelText("Base URL");
+    expect(baseURL).toHaveValue("https://old.example.test/v1");
+
+    await userEvent.clear(baseURL);
+    await userEvent.type(baseURL, "https://new.example.test/v2");
+    await userEvent.click(screen.getByRole("button", { name: "Save provider" }));
+
+    await waitFor(() => {
+      expect(baseURL).toHaveValue("https://new.example.test/v2");
+    });
+  });
+
   it("derives composed endpoints from a shared base URL in the quick setup flow", async () => {
     // From scratch: one shared provider base URL should derive protocol-specific
     // endpoints before save. OpenAI protocols use it as-is; Anthropic Messages
