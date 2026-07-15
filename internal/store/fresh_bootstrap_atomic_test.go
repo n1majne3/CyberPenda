@@ -39,14 +39,14 @@ func TestFreshBootstrapFailureRollsBackAndPublicOpenRetries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect failed fresh bootstrap: %v", err)
 	}
-	var userTables int
-	if err := inspection.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`).Scan(&userTables); err != nil {
+	var schemaObjects int
+	if err := inspection.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE lower(name) NOT GLOB 'sqlite_*'`).Scan(&schemaObjects); err != nil {
 		_ = inspection.Close()
-		t.Fatalf("count tables after failed fresh bootstrap: %v", err)
+		t.Fatalf("count schema objects after failed fresh bootstrap: %v", err)
 	}
-	if userTables != 0 {
+	if schemaObjects != 0 {
 		_ = inspection.Close()
-		t.Fatalf("failed fresh bootstrap left %d user tables, want none", userTables)
+		t.Fatalf("failed fresh bootstrap left %d user schema objects, want none", schemaObjects)
 	}
 	if err := inspection.Close(); err != nil {
 		t.Fatalf("close failed-bootstrap inspection: %v", err)

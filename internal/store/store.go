@@ -418,7 +418,7 @@ func migration1BaselineFingerprint(ctx context.Context) (schemaFingerprint, erro
 }
 
 func readSchemaFingerprint(ctx context.Context, db migrationHistoryQueryer) (schemaFingerprint, error) {
-	rows, err := db.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
+	rows, err := db.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND lower(name) NOT GLOB 'sqlite_*' ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -526,7 +526,7 @@ func unknownCanonicalStoreEpochError(epoch string) error {
 
 func countUserSchemaObjects(db *sql.DB) (int, error) {
 	var count int
-	err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'`).Scan(&count)
+	err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE lower(name) NOT GLOB 'sqlite_*'`).Scan(&count)
 	return count, err
 }
 

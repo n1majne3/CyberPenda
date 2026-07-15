@@ -99,6 +99,13 @@ func TestOpenMigrationSourceRejectsUnrecognizedOrDamagedPreNumberedSchemaReadOnl
 				}
 			})
 		}},
+		{name: "extra table resembling SQLite prefix", make: func(t *testing.T) string {
+			return createFullPreNumberedV1Fixture(t, func(t *testing.T, db *sql.DB) {
+				if _, err := db.Exec(`CREATE TABLE sqliteXnotes(id TEXT PRIMARY KEY, body TEXT NOT NULL)`); err != nil {
+					t.Fatalf("add deceptive extra table: %v", err)
+				}
+			})
+		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

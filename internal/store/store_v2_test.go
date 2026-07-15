@@ -184,6 +184,7 @@ func TestOrdinaryOpenRefusesExistingSchemaWithoutEpochMetadata(t *testing.T) {
 			)`,
 		},
 		{name: "unrecognized user table", sql: `CREATE TABLE notes(id TEXT PRIMARY KEY, body TEXT NOT NULL)`},
+		{name: "user table resembling SQLite prefix", sql: `CREATE TABLE sqliteXnotes(id TEXT PRIMARY KEY, body TEXT NOT NULL)`},
 		{name: "unrecognized user view without tables", sql: `CREATE VIEW user_notes AS SELECT 'unknown' AS body`},
 	}
 	for _, test := range tests {
