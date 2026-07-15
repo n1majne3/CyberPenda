@@ -99,6 +99,7 @@ type Server struct {
 	preflight          *preflight.Service
 	tasks              *task.Service
 	harness            *runtime.Harness
+	canonicalStore     string
 	facts              *blackboard.Service
 	reads              *blackboard.BlackboardReadService
 	graph              *blackboard.GraphService
@@ -186,6 +187,14 @@ func NewServer(config Config) (*Server, error) {
 		}
 		return nil, fmt.Errorf("non-loopback bind %q requires an auth token; set -auth-token or PENTEST_AUTH_TOKEN", listenAddr)
 	}
+	epoch, err := db.CanonicalStore()
+	if err != nil {
+		_ = db.Close()
+		if tempSkillsRoot != "" {
+			_ = os.RemoveAll(tempSkillsRoot)
+		}
+		return nil, err
+	}
 	server := &Server{
 		mux:                http.NewServeMux(),
 		version:            config.Version,
@@ -204,7 +213,7 @@ func NewServer(config Config) (*Server, error) {
 			WithRuntimeExtensions(runtimeExtensions),
 		tasks:          tasks,
 		harness:        runtime.NewHarness(tasks),
-		facts:          blackboard.NewService(db),
+		canonicalStore: epoch,
 		runtimeRoot:    runtimeRoot,
 		sandboxImage:   config.SandboxImage,
 		containerCLI:   config.ContainerCLI,
@@ -217,12 +226,8 @@ func NewServer(config Config) (*Server, error) {
 		server.logger = log.Default()
 	}
 	server.tasks.SetProjectService(server.projects)
-	epoch, err := db.CanonicalStore()
-	if err != nil {
-		_ = server.Close()
-		return nil, err
-	}
 	if epoch == store.CanonicalStoreGraphV1 || epoch == store.CanonicalStoreGraphV1Finalized {
+		server.facts = blackboard.NewService(db)
 		storeState, stateErr := db.BlackboardStoreState()
 		if stateErr != nil {
 			_ = server.Close()
@@ -394,6 +399,11 @@ func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Requ
 	}
 	start := time.Now()
 	recorder := newStatusRecorder(response)
+	if server.canonicalStore == store.CanonicalStoreBlackboardV2 && isLegacyBlackboardV1Transport(request) {
+		writeError(recorder, http.StatusGone, retiredBlackboardV1Message)
+		server.logRequest(start, request, recorder.status)
+		return
+	}
 	server.mux.ServeHTTP(recorder, request)
 	server.logRequest(start, request, recorder.status)
 }
@@ -1348,20 +1358,23 @@ func (server *Server) handleDashboard(response http.ResponseWriter, request *htt
 		writeError(response, http.StatusInternalServerError, "count tasks")
 		return
 	}
-	factCount, err := server.facts.CountFacts(found.ID)
-	if err != nil {
-		writeError(response, http.StatusInternalServerError, "count facts")
-		return
-	}
-	findingCount, err := server.facts.CountFindings(found.ID)
-	if err != nil {
-		writeError(response, http.StatusInternalServerError, "count findings")
-		return
-	}
-	evidenceCount, err := server.facts.CountEvidence(found.ID)
-	if err != nil {
-		writeError(response, http.StatusInternalServerError, "count evidence")
-		return
+	var factCount, findingCount, evidenceCount int
+	if server.facts != nil {
+		factCount, err = server.facts.CountFacts(found.ID)
+		if err != nil {
+			writeError(response, http.StatusInternalServerError, "count facts")
+			return
+		}
+		findingCount, err = server.facts.CountFindings(found.ID)
+		if err != nil {
+			writeError(response, http.StatusInternalServerError, "count findings")
+			return
+		}
+		evidenceCount, err = server.facts.CountEvidence(found.ID)
+		if err != nil {
+			writeError(response, http.StatusInternalServerError, "count evidence")
+			return
+		}
 	}
 	summary.Counts.Tasks = len(tasks)
 	summary.Counts.Facts = factCount

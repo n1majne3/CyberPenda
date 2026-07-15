@@ -45,7 +45,7 @@ func TestMCPEndpointAcceptsDockerInternalHostHeader(t *testing.T) {
 	}
 }
 
-func TestMCPEndpointInitializesAndListsTools(t *testing.T) {
+func TestMCPEndpointInitializesWithNoLegacyV1Tools(t *testing.T) {
 	server := newDaemon(t)
 
 	initBody := []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0.0"}}}`)
@@ -81,8 +81,8 @@ func TestMCPEndpointInitializesAndListsTools(t *testing.T) {
 		"generate_report",
 		"submit_task_summary",
 	} {
-		if !bytes.Contains([]byte(body), []byte(tool)) {
-			t.Fatalf("tools/list missing %q in %s", tool, body)
+		if bytes.Contains([]byte(body), []byte(tool)) {
+			t.Fatalf("blackboard_v2 tools/list exposed retired v1 tool %q in %s", tool, body)
 		}
 	}
 }

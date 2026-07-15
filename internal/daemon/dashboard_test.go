@@ -112,7 +112,7 @@ func TestDashboardScopeNotReadyForEmptyScope(t *testing.T) {
 	}
 }
 
-func TestDashboardCountsTasksAndFacts(t *testing.T) {
+func TestDashboardCountsTasksWithoutReadingLegacyBlackboard(t *testing.T) {
 	server := newDaemon(t)
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
 	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
@@ -122,12 +122,6 @@ func TestDashboardCountsTasksAndFacts(t *testing.T) {
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"sandbox"
 	}`)
-	upsertFact(t, server, projectID, "target:example.com", `{
-		"category":"target",
-		"summary":"example.com is in scope",
-		"confidence":"confirmed"
-	}`)
-
 	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/dashboard", nil)
 	resp := httptest.NewRecorder()
 	server.ServeHTTP(resp, req)
@@ -147,8 +141,8 @@ func TestDashboardCountsTasksAndFacts(t *testing.T) {
 	if body.Counts.Tasks != 1 {
 		t.Fatalf("expected 1 task, got %d", body.Counts.Tasks)
 	}
-	if body.Counts.Facts != 1 {
-		t.Fatalf("expected 1 fact, got %d", body.Counts.Facts)
+	if body.Counts.Facts != 0 {
+		t.Fatalf("expected unavailable v2 Fact count to remain zero, got %d", body.Counts.Facts)
 	}
 }
 

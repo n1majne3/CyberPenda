@@ -946,57 +946,6 @@ func TestSandboxResumeRebuildsContainerWithPersistentTaskMountAndRuntimeHome(t *
 	}
 }
 
-func TestTaskSummaryUpdatesAreAcceptedAndVersioned(t *testing.T) {
-	server := newDaemon(t)
-	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
-	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
-	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
-		"runtime_profile_id":`+quoteJSON(profileID)+`,
-		"runner":"sandbox"
-	}`)
-
-	putTaskSummary(t, server, projectID, taskID, `{
-		"summary":"Found example.com as the primary target.",
-		"submitted_by":"fake"
-	}`)
-	putTaskSummary(t, server, projectID, taskID, `{
-		"summary":"Found example.com and confirmed no subdomains yet.",
-		"submitted_by":"fake"
-	}`)
-
-	resp := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID+"/summary", nil)
-	server.ServeHTTP(resp, req)
-
-	if resp.Code != http.StatusOK {
-		t.Fatalf("expected summary status 200, got %d with body %s", resp.Code, resp.Body.String())
-	}
-
-	var body struct {
-		Summary struct {
-			Version int    `json:"version"`
-			Summary string `json:"summary"`
-		} `json:"summary"`
-		Versions []struct {
-			Version int    `json:"version"`
-			Summary string `json:"summary"`
-		} `json:"versions"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decode summary response: %v", err)
-	}
-	if body.Summary.Version != 2 {
-		t.Fatalf("expected latest version 2, got %d", body.Summary.Version)
-	}
-	if body.Summary.Summary != "Found example.com and confirmed no subdomains yet." {
-		t.Fatalf("expected latest summary, got %q", body.Summary.Summary)
-	}
-	if len(body.Versions) != 2 {
-		t.Fatalf("expected 2 summary versions, got %d", len(body.Versions))
-	}
-}
-
 func TestSteerTaskRecordsDirectiveAndRuntimeProfileSwitch(t *testing.T) {
 	server := newDaemon(t)
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
@@ -1061,80 +1010,6 @@ func TestSteerTaskRecordsDirectiveAndRuntimeProfileSwitch(t *testing.T) {
 	}
 }
 
-func TestTaskContinuationReturnsSummaryOrMechanicalHandoff(t *testing.T) {
-	server := newDaemon(t)
-	projectID := createProject(t, server, `{
-		"name":"Acme",
-		"scope":{"domains":["example.com"],"notes":"approved only"}
-	}`)
-	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
-	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
-		"runtime_profile_id":`+quoteJSON(profileID)+`,
-		"runner":"sandbox"
-	}`)
-
-	resp := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID+"/continuation", nil)
-	server.ServeHTTP(resp, req)
-	if resp.Code != http.StatusOK {
-		t.Fatalf("expected continuation status 200, got %d with body %s", resp.Code, resp.Body.String())
-	}
-	var handoff struct {
-		Mode    string `json:"mode"`
-		Summary *struct {
-			Summary string `json:"summary"`
-		} `json:"summary"`
-		Handoff struct {
-			Goal             string   `json:"goal"`
-			RuntimeProfileID string   `json:"runtime_profile_id"`
-			ScopeDomains     []string `json:"scope_domains"`
-		} `json:"handoff"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&handoff); err != nil {
-		t.Fatalf("decode handoff: %v", err)
-	}
-	if handoff.Mode != "mechanical_handoff" {
-		t.Fatalf("expected mechanical handoff, got %q", handoff.Mode)
-	}
-	if handoff.Summary != nil {
-		t.Fatalf("expected no summary, got %#v", handoff.Summary)
-	}
-	if handoff.Handoff.Goal != "enumerate example.com" {
-		t.Fatalf("expected task goal in handoff, got %q", handoff.Handoff.Goal)
-	}
-	if got := handoff.Handoff.ScopeDomains; len(got) != 1 || got[0] != "example.com" {
-		t.Fatalf("expected scope domains in handoff, got %#v", got)
-	}
-
-	putTaskSummary(t, server, projectID, taskID, `{
-		"summary":"Enumerated example.com and found one web service.",
-		"submitted_by":"fake"
-	}`)
-
-	resp = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID+"/continuation", nil)
-	server.ServeHTTP(resp, req)
-	if resp.Code != http.StatusOK {
-		t.Fatalf("expected continuation with summary status 200, got %d with body %s", resp.Code, resp.Body.String())
-	}
-	var summarized struct {
-		Mode    string `json:"mode"`
-		Summary struct {
-			Summary string `json:"summary"`
-		} `json:"summary"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&summarized); err != nil {
-		t.Fatalf("decode summarized continuation: %v", err)
-	}
-	if summarized.Mode != "summary" {
-		t.Fatalf("expected summary mode, got %q", summarized.Mode)
-	}
-	if summarized.Summary.Summary != "Enumerated example.com and found one web service." {
-		t.Fatalf("expected latest summary, got %q", summarized.Summary.Summary)
-	}
-}
-
 // TestTaskRoutesRejectUnknownProject pins the cross-cutting invariant that
 // every project-scoped task route returns 404 for a project that does not
 // exist, the same way the blackboard / credential / dashboard routes do.
@@ -1157,10 +1032,6 @@ func TestTaskRoutesRejectUnknownProject(t *testing.T) {
 		{"task events", http.MethodGet, "/api/projects/" + bogus + "/tasks/anything/events", ""},
 		{"stop task", http.MethodPost, "/api/projects/" + bogus + "/tasks/anything/stop", ""},
 		{"steer task", http.MethodPost, "/api/projects/" + bogus + "/tasks/anything/steer", `{"directive":"focus"}`},
-		{"resume handoff task", http.MethodPost, "/api/projects/" + bogus + "/tasks/anything/resume/handoff", ""},
-		{"task continuation", http.MethodGet, "/api/projects/" + bogus + "/tasks/anything/continuation", ""},
-		{"put task summary", http.MethodPut, "/api/projects/" + bogus + "/tasks/anything/summary", `{"summary":"s"}`},
-		{"get task summary", http.MethodGet, "/api/projects/" + bogus + "/tasks/anything/summary", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1428,60 +1299,6 @@ func TestCreateTaskOmitsRewriteEventWhenGoalHasNoLoopback(t *testing.T) {
 	events := getTaskEvents(t, server, projectID, taskID)
 	if findTargetRewriteEvent(events) != nil {
 		t.Fatalf("expected no target_rewrite event for loopback-free goal, got events: %#v", events)
-	}
-}
-
-func TestResumeTaskEnrichesPromptWithFindingsAndProgressFacts(t *testing.T) {
-	server := newDaemon(t)
-	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
-	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
-	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
-		"runtime_profile_id":`+quoteJSON(profileID)+`,
-		"runner":"sandbox"
-	}`)
-	waitForTaskStatus(t, server, projectID, taskID, "completed")
-
-	upsertFact(t, server, projectID, "progress:juice-shop", `{
-		"summary":"53 of 112 challenges solved",
-		"body":"{\"solved\":53,\"total\":112}"
-	}`)
-	upsertFinding(t, server, projectID, "sqli-login", `{
-		"title":"SQL injection in login",
-		"status":"unconfirmed"
-	}`)
-
-	resp := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/resume/handoff", nil)
-	server.ServeHTTP(resp, req)
-	if resp.Code != http.StatusAccepted {
-		t.Fatalf("expected resume status 202, got %d with body %s", resp.Code, resp.Body.String())
-	}
-
-	deadline := time.Now().Add(2 * time.Second)
-	var sawEnrichedGoal bool
-	for time.Now().Before(deadline) {
-		events := getTaskEvents(t, server, projectID, taskID)
-		for _, event := range events {
-			if event["kind"] != "runtime_output" {
-				continue
-			}
-			payload := event["payload"].(map[string]any)
-			goal, _ := payload["goal"].(string)
-			if strings.Contains(goal, "sqli-login") &&
-				strings.Contains(goal, "Current findings:") &&
-				strings.Contains(goal, `"solved":53`) {
-				sawEnrichedGoal = true
-				break
-			}
-		}
-		if sawEnrichedGoal {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if !sawEnrichedGoal {
-		t.Fatalf("expected resumed runtime to receive enriched handoff prompt")
 	}
 }
 
@@ -2173,19 +1990,5 @@ func TestSandboxSteerConfirmsContainerExitBeforeNativeResume(t *testing.T) {
 	}
 	if got := strings.Count(string(dockerRaw), "create --cidfile"); got != 2 {
 		t.Fatalf("expected initial and resumed sandbox launches, got %d in log:\n%s", got, string(dockerRaw))
-	}
-}
-
-func putTaskSummary(t *testing.T, server interface {
-	ServeHTTP(http.ResponseWriter, *http.Request)
-}, projectID, taskID, body string) {
-	t.Helper()
-
-	resp := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPut, "/api/projects/"+projectID+"/tasks/"+taskID+"/summary", bytes.NewReader([]byte(body)))
-	req.Header.Set("Content-Type", "application/json")
-	server.ServeHTTP(resp, req)
-	if resp.Code != http.StatusOK {
-		t.Fatalf("expected put summary status 200, got %d with body %s", resp.Code, resp.Body.String())
 	}
 }

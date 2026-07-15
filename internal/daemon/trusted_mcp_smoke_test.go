@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -19,9 +18,8 @@ import (
 	"pentest/internal/runtimeprofile"
 )
 
-// TestTrustedMCPProjectionSmoke proves task launch projects trusted MCP config
-// for each supported provider and a runtime can upsert facts through the HTTP
-// MCP endpoint using the projected task context.
+// TestTrustedMCPProjectionSmoke proves task launch keeps the trusted MCP shell
+// reachable for every provider without exposing the retired v1 tool catalog.
 func TestTrustedMCPProjectionSmoke(t *testing.T) {
 	providers := []struct {
 		name     string
@@ -105,9 +103,7 @@ func TestTrustedMCPProjectionSmoke(t *testing.T) {
 			}
 
 			mcpURL := normalizeMCPURLForHost(ctx.MCPURL, daemonBase)
-			callMCPUpsertFact(t, mcpURL, projectID, "mcp-smoke:"+tc.name, "trusted mcp smoke for "+tc.name)
-
-			waitForFactSummary(t, daemonServer, projectID, "mcp-smoke:"+tc.name, "trusted mcp smoke for "+tc.name)
+			assertMCPBootstrapHasNoLegacyTools(t, mcpURL)
 		})
 	}
 }
@@ -191,7 +187,7 @@ func normalizeMCPURLForHost(projectedURL, daemonBase string) string {
 	return projected.String()
 }
 
-func callMCPUpsertFact(t *testing.T, endpoint, projectID, factKey, summary string) {
+func assertMCPBootstrapHasNoLegacyTools(t *testing.T, endpoint string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -203,42 +199,21 @@ func callMCPUpsertFact(t *testing.T, endpoint, projectID, factKey, summary strin
 	}
 	defer func() { _ = session.Close() }()
 
-	res, err := session.CallTool(ctx, &sdkmcp.CallToolParams{
-		Name: "upsert_project_fact",
-		Arguments: map[string]any{
-			"project_id":   projectID,
-			"fact_key":     factKey,
-			"category":     "recon",
-			"summary":      summary,
-			"body":         "written by trusted mcp smoke test",
-			"confidence":   "confirmed",
-			"scope_status": "in_scope",
-		},
-	})
+	listed, err := session.ListTools(ctx, nil)
 	if err != nil {
-		t.Fatalf("upsert_project_fact: %v", err)
+		t.Fatalf("list v2 bootstrap MCP tools: %v", err)
 	}
-	if res.IsError {
-		t.Fatalf("upsert_project_fact returned error: %#v", res)
+	retired := map[string]bool{
+		"upsert_project_fact": true, "get_project_fact": true, "list_project_facts": true,
+		"search_project_facts": true, "deprecate_project_fact": true, "upsert_fact_relation": true,
+		"record_vulnerability": true, "list_vulnerabilities": true, "attach_evidence": true,
+		"generate_report": true, "submit_task_summary": true,
+		"blackboard_apply": true, "blackboard_retain_evidence": true,
+		"blackboard_checkpoint_attempt": true, "blackboard_finish_continuation": true,
 	}
-}
-
-func waitForFactSummary(t *testing.T, server *daemon.Server, projectID, factKey, wantSummary string) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		req := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/facts/"+factKey, nil)
-		resp := httptest.NewRecorder()
-		server.ServeHTTP(resp, req)
-		if resp.Code == http.StatusOK {
-			var fact struct {
-				Summary string `json:"summary"`
-			}
-			if err := json.NewDecoder(resp.Body).Decode(&fact); err == nil && fact.Summary == wantSummary {
-				return
-			}
+	for _, tool := range listed.Tools {
+		if retired[tool.Name] {
+			t.Fatalf("v2 bootstrap MCP exposed retired tool %q", tool.Name)
 		}
-		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for fact %q summary %q", factKey, wantSummary)
 }

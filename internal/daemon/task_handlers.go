@@ -24,6 +24,7 @@ import (
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/skill"
+	"pentest/internal/store"
 	"pentest/internal/task"
 	"pentest/internal/timeline"
 	"pentest/internal/transcript"
@@ -1110,7 +1111,7 @@ func (server *Server) prepareHandoffResumeContinuation(found task.Task) (task.Ta
 
 func (server *Server) buildResumeGoal(found task.Task) (string, error) {
 	var factLines, progressFacts, findingLines []string
-	if server.reads == nil {
+	if server.canonicalStore != store.CanonicalStoreBlackboardV2 && server.reads == nil {
 		var err error
 		factLines, progressFacts, findingLines, err = server.resumeGoalBlackboardLinesLegacy(found.ProjectID)
 		if err != nil {
@@ -1119,12 +1120,14 @@ func (server *Server) buildResumeGoal(found task.Task) (string, error) {
 	}
 
 	taskSummary := ""
-	summaries, err := server.tasks.SummaryVersions(found.ID)
-	if err != nil {
-		return "", err
-	}
-	if len(summaries) > 0 {
-		taskSummary = summaries[len(summaries)-1].Summary
+	if server.canonicalStore != store.CanonicalStoreBlackboardV2 {
+		summaries, err := server.tasks.SummaryVersions(found.ID)
+		if err != nil {
+			return "", err
+		}
+		if len(summaries) > 0 {
+			taskSummary = summaries[len(summaries)-1].Summary
+		}
 	}
 
 	steeringDirective := ""
@@ -1608,20 +1611,22 @@ func (server *Server) handleTaskContinuation(response http.ResponseWriter, reque
 		return
 	}
 
-	versions, err := server.tasks.SummaryVersions(taskID)
-	if err != nil {
-		writeTaskError(response, err)
-		return
-	}
-	if len(versions) > 0 {
-		writeJSON(response, http.StatusOK, struct {
-			Mode    string              `json:"mode"`
-			Summary task.SummaryVersion `json:"summary"`
-		}{
-			Mode:    "summary",
-			Summary: versions[len(versions)-1],
-		})
-		return
+	if server.canonicalStore != store.CanonicalStoreBlackboardV2 {
+		versions, err := server.tasks.SummaryVersions(taskID)
+		if err != nil {
+			writeTaskError(response, err)
+			return
+		}
+		if len(versions) > 0 {
+			writeJSON(response, http.StatusOK, struct {
+				Mode    string              `json:"mode"`
+				Summary task.SummaryVersion `json:"summary"`
+			}{
+				Mode:    "summary",
+				Summary: versions[len(versions)-1],
+			})
+			return
+		}
 	}
 
 	configVersions, err := server.tasks.RuntimeConfigVersions(taskID)

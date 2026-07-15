@@ -6,12 +6,19 @@ import (
 
 	"pentest/internal/mcpserver"
 	"pentest/internal/projectinterface"
+	"pentest/internal/store"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func (server *Server) registerMCP() {
 	handler := sdkmcp.NewStreamableHTTPHandler(func(request *http.Request) *sdkmcp.Server {
+		if server.canonicalStore == store.CanonicalStoreBlackboardV2 {
+			return sdkmcp.NewServer(&sdkmcp.Implementation{
+				Name:    "pentest-agent",
+				Version: "0.1.0",
+			}, nil)
+		}
 		deps := mcpserver.Deps{
 			Projects:      server.projects,
 			Facts:         server.facts,
