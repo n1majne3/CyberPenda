@@ -10,11 +10,17 @@ import (
 	"pentest/internal/blackboardv2contract"
 )
 
-func TestEmptyRuntimeSnapshotFixtureIsExactAndConformant(t *testing.T) {
+func mustHarness(t *testing.T) *blackboardv2contract.Harness {
+	t.Helper()
 	harness, err := blackboardv2contract.NewHarness()
 	if err != nil {
 		t.Fatalf("load v2 contract harness: %v", err)
 	}
+	return harness
+}
+
+func TestEmptyRuntimeSnapshotFixtureIsExactAndConformant(t *testing.T) {
+	harness := mustHarness(t)
 
 	got, err := harness.Fixture("runtime_snapshot.empty")
 	if err != nil {
@@ -30,10 +36,7 @@ func TestEmptyRuntimeSnapshotFixtureIsExactAndConformant(t *testing.T) {
 }
 
 func TestHarnessRejectsAuthoritySmugglingUnknownFieldsAndUTF8Oversize(t *testing.T) {
-	harness, err := blackboardv2contract.NewHarness()
-	if err != nil {
-		t.Fatalf("load v2 contract harness: %v", err)
-	}
+	harness := mustHarness(t)
 
 	tests := []struct {
 		name       string
@@ -80,6 +83,26 @@ func TestHarnessRejectsAuthoritySmugglingUnknownFieldsAndUTF8Oversize(t *testing
 			schemaName: "changeBatch",
 			value:      `{"schema":"semantic-change-batch/v2","idempotency_key":"merge-clear","changes":[{"op":"merge","source":"fact:a","source_version":1,"canonical":"fact:b","canonical_version":1,"clear":["storage_id"]}]}`,
 		},
+		{
+			name:       "relationship version changes a supplied reason",
+			schemaName: "changeBatch",
+			value:      `{"schema":"semantic-change-batch/v2","idempotency_key":"relation-version","changes":[{"op":"relate","from":"fact:a","relation":"supports","to":"fact:b","version":1}]}`,
+		},
+		{
+			name:       "empty snapshot groups are omitted",
+			schemaName: "runtimeSnapshot",
+			value:      `{"schema":"runtime-blackboard/v2","semantics":"work is active; knowledge is current; history and details are available by key","revision":0,"work":{"objectives":{}},"knowledge":{},"relations":[]}`,
+		},
+		{
+			name:       "verified snapshot Solution retains verification meaning",
+			schemaName: "runtimeSnapshot",
+			value:      `{"schema":"runtime-blackboard/v2","semantics":"work is active; knowledge is current; history and details are available by key","revision":1,"work":{},"knowledge":{"solutions":{"solution:a":{"version":1,"status":"verified","kind":"flag","summary":"Candidate"}}},"relations":[]}`,
+		},
+		{
+			name:       "confirmed snapshot Finding cannot remain CVSS pending",
+			schemaName: "runtimeSnapshot",
+			value:      `{"schema":"runtime-blackboard/v2","semantics":"work is active; knowledge is current; history and details are available by key","revision":1,"work":{},"knowledge":{"findings":{"finding:a":{"version":1,"status":"confirmed","title":"Issue","cvss_pending":true}}},"relations":[]}`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -96,10 +119,7 @@ func TestHarnessRejectsAuthoritySmugglingUnknownFieldsAndUTF8Oversize(t *testing
 }
 
 func TestBaselineSeparatesExistingFailuresFromTheIntentionalV2Red(t *testing.T) {
-	harness, err := blackboardv2contract.NewHarness()
-	if err != nil {
-		t.Fatalf("load v2 contract harness: %v", err)
-	}
+	harness := mustHarness(t)
 	baseline, err := harness.Baseline()
 	if err != nil {
 		t.Fatalf("load implementation baseline: %v", err)
@@ -124,10 +144,7 @@ func TestBaselineSeparatesExistingFailuresFromTheIntentionalV2Red(t *testing.T) 
 }
 
 func TestFixturesReturnStableCompactJSONBytes(t *testing.T) {
-	harness, err := blackboardv2contract.NewHarness()
-	if err != nil {
-		t.Fatalf("load v2 contract harness: %v", err)
-	}
+	harness := mustHarness(t)
 	for _, name := range harness.FixtureNames() {
 		first, err := harness.Fixture(name)
 		if err != nil {
@@ -152,10 +169,7 @@ func TestFixturesReturnStableCompactJSONBytes(t *testing.T) {
 }
 
 func TestSyncAttachmentIsSharedByEveryAuthenticatedTrustedResponse(t *testing.T) {
-	harness, err := blackboardv2contract.NewHarness()
-	if err != nil {
-		t.Fatalf("load v2 contract harness: %v", err)
-	}
+	harness := mustHarness(t)
 	syncFixture, err := harness.Fixture("response.sync")
 	if err != nil {
 		t.Fatalf("load sync fixture: %v", err)
@@ -195,10 +209,7 @@ func TestSyncAttachmentIsSharedByEveryAuthenticatedTrustedResponse(t *testing.T)
 }
 
 func TestUnauthenticatedErrorCanNeverExposeSynchronizationState(t *testing.T) {
-	harness, err := blackboardv2contract.NewHarness()
-	if err != nil {
-		t.Fatalf("load v2 contract harness: %v", err)
-	}
+	harness := mustHarness(t)
 	errorFixture, err := harness.Fixture("response.error")
 	if err != nil {
 		t.Fatalf("load error fixture: %v", err)
@@ -236,11 +247,80 @@ func TestUnauthenticatedErrorCanNeverExposeSynchronizationState(t *testing.T) {
 	}
 }
 
-func TestOpenAPIAndTrustedToolsFreezeTheAcceptedV2Adapters(t *testing.T) {
-	harness, err := blackboardv2contract.NewHarness()
-	if err != nil {
-		t.Fatalf("load v2 contract harness: %v", err)
+func TestRecordWireSchemasExposeLegalPositiveTransitionsAndServerOwnedEvidence(t *testing.T) {
+	harness := mustHarness(t)
+
+	accepted := []string{
+		`{"schema":"semantic-change-batch/v2","idempotency_key":"confirm-fact","changes":[{"op":"transition","key":"fact:a","version":1,"status":"confirmed"}]}`,
+		`{"schema":"semantic-change-batch/v2","idempotency_key":"confirm-finding","changes":[{"op":"transition","key":"finding:a","version":1,"status":"confirmed"}]}`,
+		`{"schema":"semantic-change-batch/v2","idempotency_key":"verify-solution","changes":[{"op":"transition","key":"solution:a","version":1,"status":"verified","verification_summary":"Accepted by the challenge"}]}`,
+		`{"schema":"semantic-change-batch/v2","idempotency_key":"create-evidence","changes":[{"op":"create","key":"evidence:a","type":"evidence","record":{"status":"available","artifact_type":"file","summary":"Captured response","source_path":"captures/response.txt"}}]}`,
 	}
+	for _, raw := range accepted {
+		if err := harness.Validate("changeBatch", []byte(raw)); err != nil {
+			t.Errorf("legal record change rejected: %v\n%s", err, raw)
+		}
+	}
+
+	rejected := []string{
+		`{"schema":"semantic-change-batch/v2","idempotency_key":"incomplete-finding","changes":[{"op":"create","key":"finding:a","type":"finding","record":{"status":"confirmed","title":"Incomplete"}}]}`,
+		`{"schema":"semantic-change-batch/v2","idempotency_key":"incomplete-solution","changes":[{"op":"create","key":"solution:a","type":"solution","record":{"status":"verified","kind":"flag","summary":"Recovered a candidate"}}]}`,
+		`{"schema":"semantic-change-batch/v2","idempotency_key":"smuggle-evidence-derived","changes":[{"op":"create","key":"evidence:a","type":"evidence","record":{"status":"available","artifact_type":"file","summary":"Captured response","source_path":"captures/response.txt","managed_path":"evidence/response.txt","sha256":"0000000000000000000000000000000000000000000000000000000000000000","size":10}}]}`,
+	}
+	for _, raw := range rejected {
+		if err := harness.Validate("changeBatch", []byte(raw)); err == nil {
+			t.Errorf("invalid or caller-derived record change was accepted:\n%s", raw)
+		}
+	}
+}
+
+func TestSemanticHistoryFixtureCarriesRelationshipIdentityAndVersion(t *testing.T) {
+	harness := mustHarness(t)
+	raw, err := harness.Fixture("read.history.relationship_page")
+	if err != nil {
+		t.Fatalf("load relationship history fixture: %v", err)
+	}
+	if err := harness.ValidateFixture("read.history.relationship_page"); err != nil {
+		t.Fatalf("relationship history fixture violates v2 contract: %v", err)
+	}
+	var page struct {
+		Items []struct {
+			Kind     string `json:"kind"`
+			Version  int    `json:"version"`
+			From     string `json:"from"`
+			Relation string `json:"relation"`
+			To       string `json:"to"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &page); err != nil {
+		t.Fatalf("decode relationship history fixture: %v", err)
+	}
+	if len(page.Items) != 1 || page.Items[0].Kind != "relationship" || page.Items[0].Version != 2 || page.Items[0].From != "fact:login" || page.Items[0].Relation != "supports" || page.Items[0].To != "finding:sqli" {
+		t.Fatalf("relationship history item = %+v", page.Items)
+	}
+}
+
+func TestMigrationPlanClosesActionsByRemovedSourceType(t *testing.T) {
+	harness := mustHarness(t)
+	if err := harness.ValidateFixture("migration.plan"); err != nil {
+		t.Fatalf("accepted migration plan fixture rejected: %v", err)
+	}
+
+	invalidDecisions := []string{
+		`{"source":{"project":"p","type":"hypothesis","key":"hypothesis:a"},"allowed_actions":["objective"],"decision":"tentative_fact"}`,
+		`{"source":{"project":"p","type":"project_directive","key":"directive:a"},"allowed_actions":["confirmed_fact"],"decision":"confirmed_fact"}`,
+		`{"source":{"project":"p","type":"observation","key":"observation:a"},"allowed_actions":["objective"],"decision":"objective"}`,
+	}
+	for index, decision := range invalidDecisions {
+		plan := `{"schema":"blackboard-v2-migration-plan/v1","source_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","projects":[],"validation_blockers":[],"required_decisions":[` + decision + `]}`
+		if err := harness.Validate("migrationPlan", []byte(plan)); err == nil {
+			t.Errorf("invalid migration decision %d was accepted: %s", index, decision)
+		}
+	}
+}
+
+func TestOpenAPIAndTrustedToolsFreezeTheAcceptedV2Adapters(t *testing.T) {
+	harness := mustHarness(t)
 
 	openAPIRaw, err := harness.OpenAPI()
 	if err != nil {
@@ -375,10 +455,7 @@ func hasHistoryPagination(parameters []struct {
 }
 
 func TestFixtureCorpusCoversEveryFrozenV2WireShape(t *testing.T) {
-	harness, err := blackboardv2contract.NewHarness()
-	if err != nil {
-		t.Fatalf("load v2 contract harness: %v", err)
-	}
+	harness := mustHarness(t)
 
 	want := []string{
 		"attempt.checkpoint",
@@ -397,6 +474,7 @@ func TestFixtureCorpusCoversEveryFrozenV2WireShape(t *testing.T) {
 		"migration.result",
 		"read.current",
 		"read.history.page",
+		"read.history.relationship_page",
 		"record.attempt",
 		"record.entity",
 		"record.evidence",
@@ -432,10 +510,7 @@ func TestFixtureCorpusCoversEveryFrozenV2WireShape(t *testing.T) {
 }
 
 func TestRelationshipTableEnumeratesEveryEndpointAndGraphPolicy(t *testing.T) {
-	harness, err := blackboardv2contract.NewHarness()
-	if err != nil {
-		t.Fatalf("load v2 contract harness: %v", err)
-	}
+	harness := mustHarness(t)
 	cases, err := harness.RelationshipCases()
 	if err != nil {
 		t.Fatalf("load relationship cases: %v", err)

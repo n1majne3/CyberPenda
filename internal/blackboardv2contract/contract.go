@@ -301,6 +301,43 @@ func (h *Harness) Validate(schemaName string, raw []byte) error {
 	if err := validateUTF8ByteLimits(value, "$", ""); err != nil {
 		return fmt.Errorf("validate %s: %w", schemaName, err)
 	}
+	if schemaName == "migrationPlan" {
+		if err := validateMigrationDecisionMembership(value, "$"); err != nil {
+			return fmt.Errorf("validate %s: %w", schemaName, err)
+		}
+	}
+	return nil
+}
+
+func validateMigrationDecisionMembership(value any, path string) error {
+	switch typed := value.(type) {
+	case map[string]any:
+		if decision, ok := typed["decision"].(string); ok {
+			if rawActions, exists := typed["allowed_actions"].([]any); exists {
+				allowed := false
+				for _, rawAction := range rawActions {
+					if action, ok := rawAction.(string); ok && action == decision {
+						allowed = true
+						break
+					}
+				}
+				if !allowed {
+					return fmt.Errorf("%s.decision %q is not listed in allowed_actions", path, decision)
+				}
+			}
+		}
+		for name, child := range typed {
+			if err := validateMigrationDecisionMembership(child, path+"."+name); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for index, child := range typed {
+			if err := validateMigrationDecisionMembership(child, fmt.Sprintf("%s[%d]", path, index)); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
