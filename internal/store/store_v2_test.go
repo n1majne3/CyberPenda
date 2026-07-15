@@ -184,6 +184,7 @@ func TestOrdinaryOpenRefusesExistingSchemaWithoutEpochMetadata(t *testing.T) {
 			)`,
 		},
 		{name: "unrecognized user table", sql: `CREATE TABLE notes(id TEXT PRIMARY KEY, body TEXT NOT NULL)`},
+		{name: "unrecognized user view without tables", sql: `CREATE VIEW user_notes AS SELECT 'unknown' AS body`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -201,6 +202,9 @@ func TestOrdinaryOpenRefusesExistingSchemaWithoutEpochMetadata(t *testing.T) {
 			}
 			forceJournalMode(t, path, "DELETE")
 			before := captureSQLiteSourceState(t, path)
+			if before.WAL.Exists || before.SHM.Exists {
+				t.Fatalf("fixture has SQLite sidecars before refused Open: wal=%v shm=%v", before.WAL.Exists, before.SHM.Exists)
+			}
 
 			opened, err := store.Open(path)
 			if opened != nil {

@@ -477,11 +477,11 @@ func rejectV1ActiveOpen(db *sql.DB) error {
 		return fmt.Errorf("inspect canonical store epoch: %w", err)
 	}
 	if hasStoreState == 0 {
-		var userTables int
-		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`).Scan(&userTables); err != nil {
+		schemaObjects, err := countUserSchemaObjects(db)
+		if err != nil {
 			return fmt.Errorf("inspect existing Store schema: %w", err)
 		}
-		if userTables == 0 {
+		if schemaObjects == 0 {
 			return nil
 		}
 		var hasLegacySchema int
@@ -522,6 +522,12 @@ func rejectV1ActiveOpen(db *sql.DB) error {
 
 func unknownCanonicalStoreEpochError(epoch string) error {
 	return fmt.Errorf("unknown canonical store epoch %q cannot be opened for daemon/runtime use; restore a supported database or use an explicit offline migration workflow", epoch)
+}
+
+func countUserSchemaObjects(db *sql.DB) (int, error) {
+	var count int
+	err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'`).Scan(&count)
+	return count, err
 }
 
 // CanonicalStore returns the global store epoch for this database.
@@ -637,11 +643,11 @@ type migration struct {
 }
 
 func migrate(db *sql.DB) error {
-	var userTables int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`).Scan(&userTables); err != nil {
+	schemaObjects, err := countUserSchemaObjects(db)
+	if err != nil {
 		return fmt.Errorf("inspect Store schema before migrations: %w", err)
 	}
-	if userTables == 0 {
+	if schemaObjects == 0 {
 		return bootstrapFresh(db, migrations())
 	}
 	if _, err := db.Exec(schemaMigrationsDDL); err != nil {
