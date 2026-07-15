@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -115,6 +116,134 @@ func TestOpenMigrationSourceRejectsUnrecognizedOrDamagedPreNumberedSchemaReadOnl
 			assertMigrationSourceFilesEqual(t, before, after)
 		})
 	}
+}
+
+func TestOpenMigrationSourceCleansPrivateWALInspectionCopies(t *testing.T) {
+	t.Run("successful close", func(t *testing.T) {
+		tempRoot := useInspectionTempRoot(t)
+		path := createFullPreNumberedV1Fixture(t, nil)
+		writer := holdFixtureWriteInWAL(t, path, `UPDATE projects SET name='WAL current'`)
+		defer closeFixtureDB(t, writer)
+
+		source, err := OpenMigrationSource(path)
+		if err != nil {
+			t.Fatalf("open WAL-backed migration source: %v", err)
+		}
+		if got := inspectionCopyDirs(t, tempRoot); len(got) != 1 {
+			_ = source.Close()
+			t.Fatalf("inspection copies while source is open = %v, want one", got)
+		}
+		if err := source.Close(); err != nil {
+			t.Fatalf("close WAL-backed migration source: %v", err)
+		}
+		if got := inspectionCopyDirs(t, tempRoot); len(got) != 0 {
+			t.Fatalf("inspection copies after source close = %v, want none", got)
+		}
+	})
+
+	t.Run("classification failure", func(t *testing.T) {
+		tempRoot := useInspectionTempRoot(t)
+		path := filepath.Join(t.TempDir(), "unrecognized.db")
+		db := openFixtureDB(t, path)
+		if _, err := db.Exec(`CREATE TABLE notes(id TEXT PRIMARY KEY, body TEXT NOT NULL)`); err != nil {
+			t.Fatalf("create unrecognized source: %v", err)
+		}
+		closeFixtureDB(t, db)
+		writer := holdFixtureWriteInWAL(t, path, `INSERT INTO notes(id,body) VALUES ('n1','WAL current')`)
+		defer closeFixtureDB(t, writer)
+
+		source, err := OpenMigrationSource(path)
+		if source != nil {
+			_ = source.Close()
+			t.Fatal("unrecognized WAL-backed schema returned a migration source")
+		}
+		if err == nil {
+			t.Fatal("unrecognized WAL-backed schema was accepted")
+		}
+		if got := inspectionCopyDirs(t, tempRoot); len(got) != 0 {
+			t.Fatalf("inspection copies after classification failure = %v, want none", got)
+		}
+	})
+
+	t.Run("cleanup error is observable and idempotent", func(t *testing.T) {
+		tempRoot := useInspectionTempRoot(t)
+		path := createFullPreNumberedV1Fixture(t, nil)
+		writer := holdFixtureWriteInWAL(t, path, `UPDATE projects SET name='WAL current'`)
+		defer closeFixtureDB(t, writer)
+		source, err := OpenMigrationSource(path)
+		if err != nil {
+			t.Fatalf("open WAL-backed migration source: %v", err)
+		}
+		copies := inspectionCopyDirs(t, tempRoot)
+		if len(copies) != 1 {
+			_ = source.Close()
+			t.Fatalf("inspection copies while source is open = %v, want one", copies)
+		}
+		cleanupErr := errors.New("forced inspection cleanup failure")
+		source.inspection.removeAll = func(path string) error {
+			if path != copies[0] {
+				t.Errorf("cleanup path = %q, want %q", path, copies[0])
+			}
+			return cleanupErr
+		}
+		if err := source.Close(); !errors.Is(err, cleanupErr) {
+			t.Fatalf("first Close error = %v, want cleanup failure", err)
+		}
+		if err := source.Close(); !errors.Is(err, cleanupErr) {
+			t.Fatalf("second Close error = %v, want same cleanup failure", err)
+		}
+		if err := os.RemoveAll(copies[0]); err != nil {
+			t.Fatalf("remove injected-failure inspection copy: %v", err)
+		}
+	})
+}
+
+func useInspectionTempRoot(t *testing.T) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "inspection-tmp")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatalf("create inspection TMPDIR: %v", err)
+	}
+	t.Setenv("TMPDIR", root)
+	return root
+}
+
+func inspectionCopyDirs(t *testing.T, root string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("read inspection TMPDIR: %v", err)
+	}
+	var paths []string
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), "cyberpenda-store-inspection-") {
+			paths = append(paths, filepath.Join(root, entry.Name()))
+		}
+	}
+	return paths
+}
+
+func holdFixtureWriteInWAL(t *testing.T, path, write string) *sql.DB {
+	t.Helper()
+	db := openFixtureDB(t, path)
+	var mode string
+	if err := db.QueryRow(`PRAGMA journal_mode=WAL`).Scan(&mode); err != nil {
+		_ = db.Close()
+		t.Fatalf("enable fixture WAL: %v", err)
+	}
+	if mode != "wal" {
+		_ = db.Close()
+		t.Fatalf("fixture journal mode = %q, want wal", mode)
+	}
+	if _, err := db.Exec(`PRAGMA wal_autocheckpoint=0`); err != nil {
+		_ = db.Close()
+		t.Fatalf("disable fixture WAL autocheckpoint: %v", err)
+	}
+	if _, err := db.Exec(write); err != nil {
+		_ = db.Close()
+		t.Fatalf("write fixture WAL: %v", err)
+	}
+	return db
 }
 
 func createFullPreNumberedV1Fixture(t *testing.T, mutate func(*testing.T, *sql.DB)) string {

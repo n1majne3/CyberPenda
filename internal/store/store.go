@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -46,7 +47,7 @@ type MigrationSource struct {
 	*sql.DB
 	canonicalStore string
 	classification MigrationSourceClassification
-	cleanup        func()
+	inspection     *readOnlyInspection
 }
 
 // MigrationSourceClassification states how an offline v1 source was validated.
@@ -70,12 +71,10 @@ func (source *MigrationSource) Classification() MigrationSourceClassification {
 }
 
 func (source *MigrationSource) Close() error {
-	err := source.DB.Close()
-	if source.cleanup != nil {
-		source.cleanup()
-		source.cleanup = nil
+	if source.inspection != nil {
+		return source.inspection.Close()
 	}
-	return err
+	return source.DB.Close()
 }
 
 // Validate revalidates the source according to its explicit classification.
@@ -138,7 +137,7 @@ func Open(path string) (*DB, error) {
 // rejectV1BeforeActiveOpen classifies an existing file without letting SQLite
 // write to the source. The active DSN enables WAL during Ping, so this check must
 // run first or even a refused v1 open can change the database header.
-func rejectV1BeforeActiveOpen(path string) error {
+func rejectV1BeforeActiveOpen(path string) (returnErr error) {
 	if path == "" || path == ":memory:" {
 		return nil
 	}
@@ -152,15 +151,14 @@ func rejectV1BeforeActiveOpen(path string) error {
 	if info.Size() == 0 {
 		return nil
 	}
-	db, cleanup, err := openReadOnlyInspection(path)
+	inspection, err := openReadOnlyInspection(path)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		_ = db.Close()
-		cleanup()
+		returnErr = joinErrors(returnErr, inspection.Close())
 	}()
-	return rejectV1ActiveOpen(db)
+	return rejectV1ActiveOpen(inspection.db)
 }
 
 // OpenMigrationSource opens an existing Blackboard v1 database read-only for
@@ -170,59 +168,84 @@ func OpenMigrationSource(path string) (*MigrationSource, error) {
 	if path == "" || path == ":memory:" {
 		return nil, fmt.Errorf("offline Blackboard migration source must be an existing file-backed database")
 	}
-	db, cleanup, err := openReadOnlyInspection(path)
+	inspection, err := openReadOnlyInspection(path)
 	if err != nil {
 		return nil, err
 	}
-	closeWith := func(err error) (*MigrationSource, error) {
-		_ = db.Close()
-		cleanup()
-		return nil, err
-	}
-	classification, epoch, err := classifyMigrationSource(context.Background(), db)
+	classification, epoch, err := classifyMigrationSource(context.Background(), inspection.db)
 	if err != nil {
-		return closeWith(err)
+		return nil, joinErrors(err, inspection.Close())
 	}
-	return &MigrationSource{DB: db, canonicalStore: epoch, classification: classification, cleanup: cleanup}, nil
+	return &MigrationSource{DB: inspection.db, canonicalStore: epoch, classification: classification, inspection: inspection}, nil
+}
+
+type readOnlyInspection struct {
+	db        *sql.DB
+	tempDir   string
+	removeAll func(string) error
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func (inspection *readOnlyInspection) Close() error {
+	inspection.closeOnce.Do(func() {
+		dbErr := inspection.db.Close()
+		var removeErr error
+		if inspection.tempDir != "" {
+			if err := inspection.removeAll(inspection.tempDir); err != nil {
+				removeErr = fmt.Errorf("remove SQLite inspection directory: %w", err)
+			}
+		}
+		inspection.closeErr = joinErrors(dbErr, removeErr)
+	})
+	return inspection.closeErr
+}
+
+func joinErrors(primary, cleanup error) error {
+	switch {
+	case primary == nil:
+		return cleanup
+	case cleanup == nil:
+		return primary
+	default:
+		return errors.Join(primary, cleanup)
+	}
 }
 
 // openReadOnlyInspection never lets SQLite open the source in a mode that can
 // create or modify sidecars. A clean source can be read immutable in place. If
 // WAL state exists, main and WAL are copied to a private temporary directory so
 // SQLite can reconstruct shared memory and read the current snapshot there.
-func openReadOnlyInspection(path string) (*sql.DB, func(), error) {
+func openReadOnlyInspection(path string) (*readOnlyInspection, error) {
 	hasSidecars, err := sqliteSidecarsExist(path)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	inspectionPath := path
+	tempDir := ""
 	immutable := true
-	cleanup := func() {}
 	if hasSidecars {
-		inspectionPath, cleanup, err = copySQLiteInspection(path)
+		inspectionPath, tempDir, err = copySQLiteInspection(path)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		immutable = false
 	}
 	dsn, err := buildReadOnlyInspectionDSN(inspectionPath, immutable)
 	if err != nil {
-		cleanup()
-		return nil, nil, err
+		return nil, joinErrors(err, removeInspectionDir(tempDir))
 	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		cleanup()
-		return nil, nil, err
+		return nil, joinErrors(err, removeInspectionDir(tempDir))
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
+	inspection := &readOnlyInspection{db: db, tempDir: tempDir, removeAll: os.RemoveAll}
 	if err := db.Ping(); err != nil {
-		_ = db.Close()
-		cleanup()
-		return nil, nil, fmt.Errorf("inspect existing store read-only: %w", err)
+		return nil, joinErrors(fmt.Errorf("inspect existing store read-only: %w", err), inspection.Close())
 	}
-	return db, cleanup, nil
+	return inspection, nil
 }
 
 func sqliteSidecarsExist(path string) (bool, error) {
@@ -236,22 +259,29 @@ func sqliteSidecarsExist(path string) (bool, error) {
 	return false, nil
 }
 
-func copySQLiteInspection(path string) (string, func(), error) {
+func copySQLiteInspection(path string) (string, string, error) {
 	dir, err := os.MkdirTemp("", "cyberpenda-store-inspection-*")
 	if err != nil {
-		return "", nil, fmt.Errorf("create SQLite inspection directory: %w", err)
+		return "", "", fmt.Errorf("create SQLite inspection directory: %w", err)
 	}
-	cleanup := func() { _ = os.RemoveAll(dir) }
 	target := filepath.Join(dir, "source.db")
 	if err := copySQLiteFile(path, target, false); err != nil {
-		cleanup()
-		return "", nil, err
+		return "", "", joinErrors(err, removeInspectionDir(dir))
 	}
 	if err := copySQLiteFile(path+"-wal", target+"-wal", true); err != nil {
-		cleanup()
-		return "", nil, err
+		return "", "", joinErrors(err, removeInspectionDir(dir))
 	}
-	return target, cleanup, nil
+	return target, dir, nil
+}
+
+func removeInspectionDir(dir string) error {
+	if dir == "" {
+		return nil
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("remove SQLite inspection directory: %w", err)
+	}
+	return nil
 }
 
 func copySQLiteFile(sourcePath, targetPath string, optional bool) error {
