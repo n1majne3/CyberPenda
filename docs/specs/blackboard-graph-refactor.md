@@ -1,6 +1,8 @@
 # Graph-first Blackboard Refactor Specification
 
-- **Status:** implementation-ready assembly for [Assemble the implementation-ready graph-first Blackboard refactor specification](https://github.com/n1majne3/CyberPenda/issues/62)
+- **Status:** superseded by ADRs 0003–0014; historical reference only; do not implement
+
+> **STOP:** This document specifies Blackboard v1. It is retained only as migration history. Implement [Blackboard v2](./blackboard-v2-spec.md) through the [v2 TDD plan](./blackboard-v2-tdd-plan.md).
 - **Planning map:** [Map: Refactor Blackboard into bounded graph memory](https://github.com/n1majne3/CyberPenda/issues/55)
 - **Destination decision:** [Grill: Lock graph-first Blackboard destination and invariants](https://github.com/n1majne3/CyberPenda/issues/54)
 - **Specification version:** `graph_blackboard_refactor_v1`

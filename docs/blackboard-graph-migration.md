@@ -1,5 +1,9 @@
 # Graph Blackboard compatibility retirement
 
+- **Status:** superseded by ADRs 0003–0014; historical Blackboard v1 runbook; do not execute
+
+> **STOP:** The commands and release gates below target Blackboard v1. Implement and migrate with the [Blackboard v2 specification](./specs/blackboard-v2-spec.md) and [v2 TDD plan](./specs/blackboard-v2-tdd-plan.md).
+
 Release C removes legacy Blackboard writes only after every local retirement
 gate passes. Until then, legacy writes remain available with deprecation
 metadata. Compatibility reads and existing browser redirects remain available

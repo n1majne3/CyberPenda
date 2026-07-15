@@ -1,0 +1,3 @@
+# Keep Task Goals out of the Blackboard
+
+A Task is the sole owner of its Task Goal, and Task Launch supplies that goal directly to the Runtime. The Blackboard does not project Tasks into Goal nodes, mirror Task status, or connect Objectives and Solutions to copied Goals. Exploration Objectives remain Project-level work, `satisfies` resolves Objectives, and any execution ownership needed for validation remains internal Trusted Origin rather than semantic graph structure. This removes duplicated text and lifecycle synchronization at the cost of migrating existing Goal nodes and retiring Goal-specific edges, health checks, projections, and CTF verification rules.

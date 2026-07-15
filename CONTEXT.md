@@ -29,7 +29,7 @@ The user's natural-language objective for a **Task**.
 _Avoid_: raw prompt only, plan step
 
 **Reason Task**:
-An operator-triggered planning **Task** that reads a **Blackboard Snapshot** and prepares an approval-required proposal for next **Task Goals**, **Exploration Objective** changes, and a readiness judgment.
+An operator-triggered planning **Task** that reads the complete **Runtime Blackboard Snapshot** and prepares an approval-required proposal for next **Task Goals**, **Exploration Objective** changes, and a readiness judgment.
 _Avoid_: daemon scheduler, autonomous Blackboard mutation, hidden skill prompt
 
 **Task Launch**:
@@ -64,25 +64,9 @@ _Avoid_: audit log entry, transcript line, raw output dump
 The user-runtime interaction that continues inside one **Task** after launch.
 _Avoid_: new task per reply, detached chat
 
-**Task Summary**:
-A runtime-maintained compact handoff view of a **Task** used to continue work without replaying every task event or conversation message.
-_Avoid_: full transcript, raw event dump
-
-**Objective Outcome**:
-A structured conclusion in a **Task Summary** for a **Task** pursuing a primary **Exploration Objective**, with status `supported`, `contradicted`, `inconclusive`, or `blocked` and links to supporting **Project Facts**, **Findings**, or **Evidence Artifacts**.
-_Avoid_: automatic objective resolution, unlinked narrative conclusion
-
-**Task Summary Version**:
-A historical revision of a **Task Summary** submitted by a runtime.
-_Avoid_: separate task summary, transcript version
-
 **Task Deletion**:
-Operator removal of a terminal **Task** from normal task surfaces and counts while retaining its durable state for historical **Blackboard** and **Provenance** joins.
+Operator removal of a terminal **Task** from normal task surfaces and counts while retaining the minimum durable state required for historical **Blackboard** and **Trusted Origin** integrity.
 _Avoid_: active task cancellation, provenance erasure, hard deletion
-
-**Mechanical Handoff Packet**:
-A daemon-assembled structured handoff view built from task state when no accepted **Task Summary** is available.
-_Avoid_: LLM summary, canonical task understanding
 
 **Scope**:
 The asset boundaries and testing limits that define what the **Pentest Agent** is authorized to do within a **Project**.
@@ -457,8 +441,20 @@ A command-line **Project Interface** used when the primary agent integration is 
 _Avoid_: bypass, debug-only path
 
 **Blackboard**:
-The project-local memory that stores durable semantic records and relationships for one **Project**, including projected **Task Goals**, **Entities**, **Exploration Objectives**, **Attempts**, **Observations**, **Hypotheses**, **Project Facts**, **Findings**, **Solutions**, **Evidence Artifacts**, and **Project Directives**.
+The project-local memory that stores durable semantic records and relationships for one **Project**, including **Entities**, **Exploration Objectives**, **Attempts**, **Project Facts**, **Findings**, **Solutions**, and **Evidence Artifacts**.
 _Avoid_: chat history, notes database
+
+**Blackboard Key**:
+A stable, human-readable semantic identifier that is unique across every record in one **Blackboard** and resolves only within its **Project**. It identifies a record without requiring its type or a database ID and does not embed internal Project, Task, Continuation, Runtime, generated-ID, or hash values.
+_Avoid_: database ID, globally unique ID, type-scoped key
+
+**Record Merge**:
+A governed consolidation of duplicate same-type **Project Knowledge** into one canonical record, with relationships rewritten and the source moved to **Semantic History**.
+_Avoid_: silent deletion, Current Work merge, cross-type conversion
+
+**Blackboard Key Redirect**:
+A project-local redirect from a merged record's former **Blackboard Key** to the canonical Blackboard Key.
+_Avoid_: current record, duplicate identity, migration compatibility alias
 
 **Entity**:
 A durable Blackboard identity for what project knowledge or exploration work is about, such as a host, service, endpoint, identity, file, or function. Its scope status describes memory and never grants authorization.
@@ -466,23 +462,15 @@ _Avoid_: asset authorization, project fact, finding
 
 **Project Fact**:
 A stable, project-scoped assertion that can be reused by later tasks without carrying raw proof content.
-_Avoid_: Observation, raw observation, memory blob
+_Avoid_: raw command result, task event, memory blob
 
 **Fact Key**:
-A stable project-local identifier used to update the same **Project Fact** over time.
+A **Blackboard Key** used to update the same **Project Fact** over time.
 _Avoid_: database ID, fact summary
 
 **Fact Version**:
 A historical revision of a **Project Fact** created when a **Fact Key** update changes its content or confidence.
 _Avoid_: separate fact, duplicate fact
-
-**Fact Merge**:
-A governed cleanup action that consolidates duplicate or overly narrow **Project Facts** under a canonical **Fact Key**.
-_Avoid_: silent deletion, overwrite
-
-**Fact Key Alias**:
-A historical **Fact Key** that redirects to the canonical **Fact Key** after a **Fact Merge**.
-_Avoid_: duplicate key, deleted key
 
 **Deprecated Fact**:
 A **Project Fact** that remains historically available but should not be treated as current truth.
@@ -492,10 +480,6 @@ _Avoid_: deleted fact, stale note
 The default working set of non-deprecated **Project Facts** used by runtimes, UI views, and reports.
 _Avoid_: absolute truth, all facts
 
-**Fact Index**:
-A compact view of **Current Truth** that exposes fact keys, categories, summaries, confidence, and scope status without full fact bodies.
-_Avoid_: blackboard dump, full memory
-
 **Tentative Fact**:
 A reusable **Project Fact** that is plausible but not yet confirmed.
 _Avoid_: task noise, confirmed fact
@@ -504,33 +488,49 @@ _Avoid_: task noise, confirmed fact
 A **Project Fact** supported by evidence, reproduction, human confirmation, or independent corroboration.
 _Avoid_: model assumption, unverified claim
 
-**Fact Relation**:
-A typed link that explains how one **Project Fact** relates to another.
-_Avoid_: finding relation, edge, attack graph link
+**Blackboard Relationship**:
+A typed, versioned semantic link between two current Blackboard records, identified by its source **Blackboard Key**, relationship type, and target Blackboard Key.
+_Avoid_: edge ID, audit lineage, untyped relation
 
 **Exploration Objective**:
-A durable project-scoped investigation direction that links one or more source **Project Facts** to an unknown future conclusion. It may inform a **Task Goal** and later resolve through **Project Facts**, **Findings**, or **Evidence Artifacts**, but it is not **Current Truth** by itself.
-_Avoid_: intent, open edge, task, fact relation, attack graph edge
+A durable project-scoped investigation direction that may be derived from existing **Project Facts**, **Findings**, or **Solutions** and points toward an unknown future conclusion. It may inform a **Task Goal** and later resolve through **Project Facts**, **Findings**, or **Solutions**, but it is not **Current Truth** by itself.
+_Avoid_: intent, open relationship, task, attack graph edge
 
 **Attempt**:
-A durable Blackboard record of one exploration episode that tests an **Exploration Objective**, **Hypothesis**, or **Entity** and concludes with a distilled outcome.
+A durable Blackboard record of one exploration episode that tests an **Exploration Objective**, **Entity**, **Project Fact**, **Finding**, or **Solution** and concludes with a distilled outcome.
 _Avoid_: Task, command, tool call, raw output
 
-**Observation**:
-A significant observed result, including a useful negative result, that is not raw output and does not become **Current Truth** merely by existing.
-_Avoid_: Project Fact, task event, log dump
+**Runtime Blackboard Snapshot**:
+A topology-complete semantic view of the current main **Blackboard** graph at one revision. It includes every current reusable semantic record and relationship in compact form while excluding auxiliary record bodies, **Trusted Origin** data, audit history, and audit-only metadata.
+_Avoid_: audit export, storage dump, relevance-selected subset
 
-**Hypothesis**:
-A durable testable proposition whose support, contradiction, or inconclusive state remains distinct from **Current Truth**.
-_Avoid_: Project Fact, assumption presented as fact, finding
+**Launch Blackboard Pin**:
+The immutable **Runtime Blackboard Snapshot** captured when a **Runtime Continuation** starts and retained internally for deterministic recovery.
+_Avoid_: live Blackboard, working file, refreshed snapshot
 
-**Project Directive**:
-A durable, project-scoped strategy steer that governs future work without being a **Project Fact** or asserting **Current Truth**.
-_Avoid_: hint, note, scratchpad, steering, project fact, finding
+**Working Blackboard Snapshot**:
+The task-local Runtime-readable Blackboard file initialized from the **Launch Blackboard Pin** and advanced after acknowledged semantic writes or synchronization.
+_Avoid_: source of truth, immutable launch pin, automatic external refresh
 
-**Blackboard Snapshot**:
-A derived, read-only planning projection that brings together relevant **Project Facts**, **Fact Relations**, **Exploration Objectives**, **Project Directives**, **Findings**, and **Evidence Artifacts**.
-_Avoid_: a second source of truth, a scheduler queue, a typed attack graph
+**Blackboard Change Notice**:
+A coalesced control signal telling an active **Runtime Continuation** that another Task advanced the current Blackboard beyond its last acknowledged revision and that the latest Snapshot will be delivered at the next trusted synchronization.
+_Avoid_: automatic snapshot injection, Task completion transcript, change payload
+
+**Semantic Change Batch**:
+An atomic, replay-safe set of typed Blackboard changes expressed with semantic verbs and **Blackboard Keys**.
+_Avoid_: graph operation envelope, arbitrary property map, storage mutation
+
+**Semantic History**:
+The prior semantic versions and terminal workflow records retained for explicit on-demand understanding without preserving an operation-by-operation audit ledger.
+_Avoid_: event replay log, Provenance history, full historical graph
+
+**Current Work**:
+The active **Exploration Objectives** and **Attempts** that still require project work.
+_Avoid_: task history, terminal workflow records, project knowledge
+
+**Project Knowledge**:
+The current, reusable **Entities**, **Project Facts**, **Findings**, **Solutions**, and **Evidence Artifact** references retained across Tasks. It is broader than **Current Truth**, which contains only non-deprecated Project Facts.
+_Avoid_: current work, task history, absolute truth
 
 **Attack Chain**:
 A narrative path that connects **Project Facts** and **Findings** into an explainable security-testing story.
@@ -541,24 +541,16 @@ A reportable security issue with severity, proof, impact, recommendation, and st
 _Avoid_: vulnerability, vulnerability record, bug
 
 **Finding Key**:
-A stable project-local identifier used to update the same **Finding** over time.
+A **Blackboard Key** used to update the same **Finding** over time.
 _Avoid_: fact key, database ID, finding title
 
 **Finding Version**:
 A historical revision of a **Finding** created when a **Finding Key** update changes its content, status, severity, or confidence.
 _Avoid_: separate finding, duplicate finding
 
-**Finding Merge**:
-A governed cleanup action that consolidates duplicate **Findings** under a canonical **Finding Key**.
-_Avoid_: silent deletion, overwrite
-
 **Finding Group**:
 A report or UI grouping of related **Findings** that keeps each **Finding** identity separate.
 _Avoid_: finding merge, shared finding
-
-**Finding Key Alias**:
-A historical **Finding Key** that redirects to the canonical **Finding Key** after a **Finding Merge**.
-_Avoid_: duplicate finding key, deleted finding key
 
 **Confirmed Finding**:
 A **Finding** supported strongly enough by confirmed facts or evidence to report as verified.
@@ -600,9 +592,9 @@ _Avoid_: temporary folder, runtime workdir
 The task-local working directory used by a **Runtime** while executing one **Task**.
 _Avoid_: shared project workspace, artifact root
 
-**Provenance**:
-The source context that explains which task, runtime, runner, scope, mode, and evidence produced a project conclusion.
-_Avoid_: metadata blob
+**Trusted Origin**:
+The server-owned Project and execution binding used to validate who or what was authorized to create a Blackboard mutation or **Evidence Artifact**. It is internal integrity data, not Blackboard knowledge or user-facing audit content.
+_Avoid_: Provenance, audit trail, metadata blob
 
 **High-Risk Action**:
 A testing action that may cause disruption, privileged data access, authenticated impact, exploit validation, or other impact beyond ordinary enumeration.
@@ -625,13 +617,13 @@ Untrusted discovered state proposed for **Reconciliation**.
 _Avoid_: accepted fact, imported evidence
 
 **Report**:
-A deliverable generated from **Findings**, **Project Facts**, **Fact Relations**, and **Evidence Artifacts**.
+A deliverable generated from **Findings**, **Project Facts**, **Blackboard Relationships**, and **Evidence Artifacts**.
 _Avoid_: transcript, export, source of truth
 
 ## Relationships
 
 - A **Project** has exactly one current **Scope**.
-- **Scope Expansion** is part of **Scope** but carries distinct **Provenance** from human-approved scope.
+- **Scope Expansion** is part of **Scope** but retains a distinct internal **Trusted Origin** from human-approved scope.
 - An **Out-of-Scope Fact** does not change **Scope** and does not authorize testing.
 - A **Project** may define **Project Defaults** for new **Tasks**, including an optional **Default Runtime Profile Preset** and default **Runner**.
 - A **Project Defaults** reference to a **Default Runtime Profile Preset** preselects that preset on the task launch page but does not copy the **Runtime Profile**.
@@ -816,17 +808,13 @@ _Avoid_: transcript, export, source of truth
 - A **Task** may contain internal steps, but those steps are not separate **Tasks**.
 - A **Task** has zero or more **Task Events**.
 - A terminal **Task** may undergo **Task Deletion**.
-- **Task Deletion** excludes the **Task** from normal task lists, detail routes, and dashboard counts while retaining its durable state for historical **Blackboard** and **Provenance** joins.
+- **Task Deletion** excludes the **Task** from normal task lists, detail routes, and dashboard counts while retaining only the durable state required for historical **Blackboard** and **Trusted Origin** integrity.
 - A pending, running, or paused **Task** cannot undergo **Task Deletion**.
 - A **Task Conversation** belongs to exactly one **Task**.
 - User messages and runtime replies in a **Task Conversation** are represented as **Task Events**.
 - **Harness Steering** actions are represented as **Task Events**.
-- A **Runtime Continuation** receives a **Task Summary** instead of a full task transcript by default.
-- A **Runtime** may submit **Task Summary** updates through a trusted **Project Interface**.
-- A **Task Summary** update is automatically accepted and preserved as a **Task Summary Version**.
-- A **Task Summary** for a Task pursuing a primary **Exploration Objective** records an **Objective Outcome** with links to its supporting Blackboard records.
-- An **Objective Outcome** does not automatically close its **Exploration Objective**.
-- A **Mechanical Handoff Packet** is used for **Runtime Continuation** when no accepted **Task Summary** exists.
+- A **Runtime Continuation** resumes from its **Task Goal**, **Scope**, current **Working Blackboard Snapshot**, open **Attempt** checkpoints, and any unconsumed **Harness Steering** without a separate summary or mechanical handoff packet.
+- A Task conclusion is represented by current semantic outcomes and relationships in the **Blackboard**, not by a duplicate task-level conclusion record.
 - A **Task Event** may summarize runtime output but should not store complete raw output dumps.
 - **Harness Steering** may request **Run Controls** changes, but those changes apply only at a **Runtime Continuation** boundary.
 - A **Task** has its own **Runtime Workdir**.
@@ -857,7 +845,8 @@ _Avoid_: transcript, export, source of truth
 - A **Sandbox Runner** failure must not automatically fall back to the **Host Runner**.
 - A **Sandbox** isolates runtime environment state but does not imply full network or command enforcement.
 - A **Blackboard** belongs to exactly one **Project**.
-- A **Blackboard** contains zero or more projected **Task Goals**, **Entities**, **Exploration Objectives**, **Attempts**, **Observations**, **Hypotheses**, **Project Facts**, **Fact Relations**, **Findings**, **Solutions**, **Evidence Artifacts**, and **Project Directives**.
+- A **Blackboard** contains zero or more **Entities**, **Exploration Objectives**, **Attempts**, **Project Facts**, **Blackboard Relationships**, **Findings**, **Solutions**, and **Evidence Artifacts**.
+- A **Task Goal** belongs only to its **Task** and is never projected as a Blackboard record.
 - **Blackboard** contents are not shared across **Projects** by default.
 - All **Runtimes** in the same **Project** share the same **Blackboard**.
 - A **Runtime** writes important **Project Facts** during a **Task**, not only at task completion.
@@ -868,50 +857,86 @@ _Avoid_: transcript, export, source of truth
 - A **Fact Key** update may change a fact's confidence, including downgrading a **Confirmed Fact** to a **Tentative Fact**.
 - A **Fact Key** update preserves prior content and confidence as **Fact Versions**.
 - A **Fact Key** update with an empty body preserves the existing **Project Fact** body unless body clearing is explicit.
-- A **Fact Merge** preserves history while moving duplicate meaning toward a canonical **Fact Key**.
-- A **Fact Key Alias** does not create separate **Current Truth** from its canonical **Fact Key**.
-- Reads or writes through a **Fact Key Alias** resolve to the canonical **Fact Key**.
+- A **Record Merge** applies only to same-type **Project Knowledge** in one **Project**; **Current Work** is superseded or concluded instead of merged.
+- A **Record Merge** atomically rewrites relationships, moves the source to **Semantic History**, and creates a **Blackboard Key Redirect**.
+- A **Blackboard Key Redirect** is excluded from the **Runtime Blackboard Snapshot** and does not create separate **Project Knowledge** from its canonical record.
+- Reads or writes through a **Blackboard Key Redirect** resolve to and report the canonical **Blackboard Key**.
 - A **Project** has one project-level **Artifact Root**.
 - A **Task** may have one **Task Artifact Root** under the project-level **Artifact Root**.
 - A **Runtime Workdir** is task-local scratch space, while a **Task Artifact Root** stores retained task outputs.
 - A **Deprecated Fact** remains in the **Blackboard** but is excluded from default current-truth views.
 - **Current Truth** is derived from non-deprecated **Project Facts** and does not claim absolute certainty.
 - An **Out-of-Scope Fact** may be part of **Current Truth** only with explicit scope status.
-- A **Fact Index** may include **Out-of-Scope Facts** only with explicit non-actionable scope status.
 - A **Tentative Fact** may be part of **Current Truth** when its uncertainty is explicit.
 - A **Tentative Fact** becomes a **Confirmed Fact** by updating the same **Fact Key** when adequate support exists.
-- A **Runtime** sees the **Fact Index** by default and fetches full **Project Fact** bodies on demand.
-- A **Fact Relation** connects exactly two **Project Facts**.
-- A **Fact Relation** does not directly connect **Findings**.
-- A **Fact Relation** connects existing facts; it does not represent an open **Exploration Objective**.
-- A contradictory **Fact Relation** does not automatically turn either **Project Fact** into a **Deprecated Fact**.
+- A **Runtime** sees current **Project Facts** in the **Runtime Blackboard Snapshot** and fetches full Project Fact bodies on demand by **Blackboard Key**.
+- A **Blackboard Relationship** connects two existing records in the same **Project** and is versioned by its source key, type, and target key rather than an internal ID.
+- The relationship vocabulary is `about`, `part_of`, `tests`, `produced`, `evidences`, `supports`, `contradicts`, `derived_from`, `depends_on`, `satisfies`, and `supersedes`.
+- Every relationship type has a closed source-and-target endpoint matrix; combinations outside that matrix are invalid rather than accepted as generic graph edges.
+- `about` connects an **Exploration Objective**, **Attempt**, **Project Fact**, **Finding**, **Solution**, or **Evidence Artifact** to the **Entity** it concerns.
+- `part_of` connects an **Entity** child to an Entity parent or an **Exploration Objective** child to an Exploration Objective parent; each hierarchy is acyclic and does not propagate lifecycle state.
+- `tests` connects an **Attempt** to the **Exploration Objective**, **Entity**, **Project Fact**, **Finding**, or **Solution** it directly evaluates.
+- `produced` connects an **Attempt** to an **Entity**, **Exploration Objective**, **Project Fact**, **Finding**, **Solution**, or **Evidence Artifact** that it directly produced.
+- `evidences` connects an **Evidence Artifact** to the **Project Fact**, **Finding**, or **Solution** that it directly proves.
+- `supports` connects a **Project Fact** to another **Project Fact**, **Finding**, or **Solution** whose conclusion it strengthens.
+- `contradicts` connects a **Project Fact** to another **Project Fact**, **Finding**, or **Solution** whose conclusion it weakens; it never changes lifecycle state by itself.
+- `derived_from` connects an **Exploration Objective** to a source **Project Fact**, **Finding**, or **Solution**; a Project Fact to a source Project Fact or **Evidence Artifact**; or an Evidence Artifact to a source Evidence Artifact.
+- `depends_on` connects one **Exploration Objective** to another prerequisite Exploration Objective, with the dependent as source; the Objective dependency graph is acyclic.
+- `satisfies` connects a **Project Fact**, **Finding**, or **Solution** to the **Exploration Objective** it resolves; an Objective cannot resolve without an incoming satisfies relationship.
+- `supersedes` connects a replacement **Entity**, **Exploration Objective**, **Project Fact**, **Finding**, **Solution**, or **Evidence Artifact** to a replaced record of the same type; it is acyclic and each replaced record has at most one current replacement.
+- Every **Blackboard Relationship** forbids a self-link. The `part_of`, `derived_from`, `depends_on`, `supersedes`, and Project-Fact-to-Project-Fact `supports` subgraphs are each acyclic; reciprocal `contradicts` relationships remain valid.
+- `blocks` is expressed by reversing `depends_on`; `leads_to` is expressed through current relationships plus an **Attack Chain** Project Fact and report narrative.
+- A `contradicts` relationship does not automatically turn a **Project Fact** into a **Deprecated Fact**.
 - An **Exploration Objective** belongs to exactly one **Project**.
-- An **Exploration Objective** may reference one or more source **Project Facts**.
-- An **Exploration Objective** is not a **Project Fact**, **Fact Relation**, **Finding**, **Task**, or **Attack Chain**.
+- An **Exploration Objective** may be derived from one or more source **Project Facts**, **Findings**, or **Solutions**.
+- An **Exploration Objective** is not a **Project Fact**, **Blackboard Relationship**, **Finding**, **Task**, or **Attack Chain**.
 - An **Exploration Objective** may become or inform a **Task Goal**, but the **Task Goal** is the launch objective for one **Task**.
-- Resolving an **Exploration Objective** may produce multiple **Project Facts**, **Findings**, or **Evidence Artifacts**.
-- An **Attempt** tests an **Exploration Objective**, **Hypothesis**, or **Entity** and may produce **Observations**, **Hypotheses**, **Project Facts**, **Findings**, **Solutions**, or **Evidence Artifacts**.
-- An **Observation** records a significant result without becoming a reusable assertion; a **Project Fact** is the reusable assertion when the result supports one.
-- A **Hypothesis** remains testable planning knowledge and does not change semantic type when later evidence supports a **Project Fact**, **Finding**, or **Solution**.
-- An **Attack Chain** uses **Project Facts**, **Fact Relations**, and **Findings** without becoming a separate graph source of truth.
+- An **Exploration Objective** does not link to a copied **Task Goal** in the Blackboard.
+- Resolving an **Exploration Objective** may produce multiple **Project Facts**, **Findings**, **Solutions**, or **Evidence Artifacts**.
+- A **Runtime Blackboard Snapshot** includes open **Exploration Objectives** but excludes resolved, abandoned, or superseded Objectives.
+- Before a terminal **Exploration Objective** leaves Runtime context, every reusable conclusion or abandonment reason is represented by a linked semantic record; a superseded Objective points to its active replacement.
+- An **Attempt** may produce **Entities**, **Project Facts**, **Findings**, **Solutions**, **Evidence Artifacts**, or new **Exploration Objectives**.
+- A **Runtime Blackboard Snapshot** includes open **Attempts** but excludes terminal Attempts.
+- Before a terminal **Attempt** leaves Runtime context, every reusable positive, negative, blocked, or inconclusive outcome is represented by a linked **Project Fact**, **Finding**, **Solution**, **Evidence Artifact**, or **Exploration Objective**.
+- **Current Work** includes only active work records; terminal or superseded work records leave Runtime context after their reusable outcomes are represented.
+- A **Current Work** record exposes only its current version, explicit status, primary semantic text, and an optional concise rationale that adds new meaning.
+- **Project Knowledge** persists across Tasks while current and leaves Runtime context when deprecated, superseded, false-positive, or otherwise explicitly invalidated.
+- Before invalidated **Project Knowledge** leaves Runtime context, every reusable invalidation reason is represented by a concise **Project Fact** or current replacement record; a superseded record identifies its replacement, while an invalidation with no reusable meaning need not manufacture an empty Fact.
+- An **Attack Chain** uses **Project Facts**, **Blackboard Relationships**, and **Findings** without becoming a separate graph source of truth.
 - A stable **Attack Chain** summary is stored as a **Project Fact**.
-- A **Project Directive** belongs to exactly one **Project**.
-- A **Project Directive** is not a **Project Fact**, **Fact Relation**, **Exploration Objective**, **Finding**, **Harness Steering**, **Task**, or **Attack Chain**.
-- A **Project Directive** is never part of **Current Truth**, the **Fact Index**, or a **Report**.
-- A **Project Directive** does not assert facts; an unconfirmed assertion must be recorded as a **Tentative Fact**, not smuggled through a **Project Directive**.
-- A **Project Directive** has no resolved state; it remains active until it is explicitly retired or superseded.
-- An **Exploration Objective** is an interrogative direction that resolves into conclusions; a **Project Directive** is an imperative steer that governs until replaced.
-- A **Project Directive** is advisory, not enforced: a **Runtime** reads it as Blackboard context but the harness performs no directive-compliance check.
-- An operator may realize a **Project Directive** as a **Harness Steering** action for one **Task**, but a **Project Directive** is not itself a **Harness Steering**.
-- A **Project Directive** is included as a separate advisory section in a **Reason Task**'s **Blackboard Snapshot** and in the launch or continuation context of a relevant **Task**; it is never injected into the **Fact Index**.
-- A **Blackboard Snapshot** is derived from the **Blackboard** for planning context and does not become an independent source of truth or scheduling record.
+- A **Runtime Blackboard Snapshot** preserves every current reusable semantic record and relationship without relevance filtering or truncation.
+- Completeness of a **Runtime Blackboard Snapshot** means every current reusable record and relationship is represented, not that every auxiliary text field or proof payload is inlined.
+- A **Runtime Blackboard Snapshot** consists of **Current Work**, **Project Knowledge**, and the current semantic relationships among them.
+- A **Runtime Blackboard Snapshot** groups **Current Work** and **Project Knowledge** by record type, using each **Blackboard Key** as the record's map key; it does not repeat record keys or types inside records.
+- A **Runtime Blackboard Snapshot** does not carry separate Frontier or Current Truth key lists because its work and knowledge sections, record types, and semantic state already express those classifications.
+- A **Runtime Blackboard Snapshot** states every lifecycle or validation status that affects reasoning or a legal semantic transition explicitly; membership in **Current Work** or **Project Knowledge** never substitutes for that status.
+- A **Runtime Blackboard Snapshot** is self-describing: it identifies its schema and graph revision and states that work is active, knowledge is current, and excluded history or details remain available through **Blackboard Keys**.
+- A **Launch Blackboard Pin** is stored exactly for its **Runtime Continuation**; recovery reads that pin rather than replaying a historical graph ledger.
+- A **Working Blackboard Snapshot** starts from the **Launch Blackboard Pin**, advances after the Runtime's own successful semantic writes, and advances to current shared state when an external change is synchronized.
+- A **Blackboard Change Notice** carries last-acknowledged and current graph revisions without Task identities or changed record content, and remains pending until the latest **Runtime Blackboard Snapshot** is delivered.
+- The first trusted tool or checkpoint response after a pending **Blackboard Change Notice** includes the complete current **Runtime Blackboard Snapshot**, updates the **Working Blackboard Snapshot**, and gives one concise explanation that another Task changed shared project knowledge.
+- A normal response with no unseen external change returns only its semantic delta and the updated Working Snapshot path/revision rather than repeating the complete Snapshot.
+- A **Project Interface** accepts Blackboard writes as a **Semantic Change Batch** using create, update, transition, relate, unrelate, merge, or supersede changes addressed by Blackboard Key.
+- A **Semantic Change Batch** carries one idempotency key and current semantic versions where required, while Project and **Trusted Origin** bindings remain server-owned.
+- A **Runtime Blackboard Snapshot** excludes **Trusted Origin** data, audit history, and audit-only metadata from Runtime context.
+- **Task Launch** supplies the current **Task Goal** separately from the **Runtime Blackboard Snapshot**.
+- A **Runtime Blackboard Snapshot** belongs to exactly one **Project**; all record and relationship references resolve only within that Project, and cross-Project references are invalid.
+- A **Runtime Blackboard Snapshot** identifies records and relationship endpoints with **Blackboard Keys** rather than database IDs.
+- A **Runtime Blackboard Snapshot** uses an explicit allowlist of fields required for Runtime reasoning or semantic mutation; new Blackboard or storage fields are excluded until deliberately admitted.
+- A **Runtime Blackboard Snapshot** includes time only when it changes the security meaning of a record, such as observation, expiry, capture, or authorization validity; record creation, update, recording, resolution, and lifecycle-transition timestamps are excluded.
+- Every record in a **Runtime Blackboard Snapshot** has a compact summary that stands on its own together with its type-specific semantic state; auxiliary body, detail, reproduction, and evidence content is fetched on demand through its **Blackboard Key**.
+- Compact primary text and optional explanation fields have hard size limits; a write that exceeds them must move supporting detail to on-demand record content or an **Evidence Artifact** rather than expanding Runtime context.
+- A relationship in a **Runtime Blackboard Snapshot** is represented by its source **Blackboard Key**, relation type, and target Blackboard Key without a restating summary.
+- Only `supports`, `contradicts`, and `depends_on` may add a concise non-redundant reason.
+- Every record in a **Blackboard** has one **Blackboard Key**, and no two records in that Blackboard share the same key even when their types differ.
+- A **Blackboard Key** may contain an external domain identifier when that identifier is part of the record's meaning, but never an internal infrastructure identifier used only to manufacture uniqueness.
+- **Semantic History** is organized by record or relationship identity and semantic version, not by storage mutation, operation, actor, or source event.
+- **Semantic History** is retained until an explicit safe prune; active **Launch Blackboard Pins** and records required by **Blackboard Key Redirects** protect their referenced history from pruning.
 - A **Finding** has exactly one **Finding Key** within its **Project**.
 - A **Finding Key** identifies the same reportable issue across updates.
 - A conflicting write to an existing **Finding Key** automatically updates that **Finding**.
 - A **Finding Key** update preserves prior finding state as **Finding Versions**.
-- A **Finding Merge** preserves history while moving duplicate issue meaning toward a canonical **Finding Key**.
-- A **Finding Key Alias** does not create a separate current **Finding** from its canonical **Finding Key**.
-- **Findings** on different assets or entry points remain separate and may appear in a **Finding Group** instead of a **Finding Merge**.
+- **Findings** on different assets or entry points remain separate and may appear in a **Finding Group** instead of a **Record Merge**.
 - A **Finding Group** may have aggregate severity without changing the severity of individual **Findings**.
 - A **Finding** may be supported by zero or more **Project Facts** and **Evidence Artifacts**.
 - A **Solution** belongs only to a CTF Challenge Project; verified flag **Solutions** determine current solved state without replacing Task status.
@@ -924,7 +949,7 @@ _Avoid_: transcript, export, source of truth
 - A **Finding Update** preserves unspecified fields while allowing the finding to be completed over time.
 - A suspected issue becomes a **Finding** only when it has a target, entry point, impact hypothesis, and validation path.
 - Marking a **Finding** as false-positive does not automatically turn supporting **Project Facts** into **Deprecated Facts**.
-- **Project Facts**, **Findings**, **Evidence Artifacts**, and **Reports** carry or present **Provenance**.
+- The server retains minimal **Trusted Origin** bindings for **Project Facts**, **Findings**, and **Evidence Artifacts**, but Blackboard records and **Reports** do not carry or present those bindings as content.
 - An **Evidence Artifact** supports interpretation but is not itself a **Project Fact**.
 - **Fact Key** updates preserve existing **Evidence Artifact** links unless a later action explicitly changes them.
 - An **Evidence Artifact** references content under an **Artifact Root**.
@@ -936,7 +961,7 @@ _Avoid_: transcript, export, source of truth
 - Direct runtime writes to storage outside **Project Interfaces** are recorded as **Policy Violations** when detected.
 - **Task Events** explain what happened inside one **Task**.
 - A **Report** presents project conclusions but is not itself the source of truth for **Findings** or **Project Facts**.
-- A **Report** presents high-signal **Provenance** without expanding every **Task Event**.
+- A **Report** does not expose **Trusted Origin** or expanded task-execution metadata by default.
 - A **Report** distinguishes **Tentative Facts** from confirmed conclusions.
 - A **Report** may include unconfirmed **Findings** separately from **Confirmed Findings**.
 
@@ -960,10 +985,9 @@ _Avoid_: transcript, export, source of truth
 - **Reconciliation** is not runtime self-approval; resolved: runtime-discovered candidates stay untrusted until accepted by a human or explicit project policy.
 - **Host Runner Activation** is not implicit host fallback; resolved: host execution requires explicit activation and must be visible in report output.
 - **Sandbox Runner** failure is not permission to use **Host Runner**; resolved: host execution requires explicit **Host Runner Activation**.
-- **Deprecated Fact** is not deleted history; resolved: deprecated facts remain available for audit, contradiction handling, and report context.
+- **Deprecated Fact** is not deleted history; resolved: deprecated facts remain in **Semantic History**, while reusable invalidation meaning stays current through a replacement or separate Project Fact.
 - **Current Truth** is not the whole **Blackboard**; resolved: it is the default working set that excludes **Deprecated Facts**.
-- **Fact Index** is not a full blackboard dump; resolved: runtimes receive compact current context first and fetch full bodies only when needed.
-- **Fact Index** visibility is not authorization; resolved: out-of-scope entries may be visible only when clearly marked non-actionable.
+- A current **Project Fact** in the **Runtime Blackboard Snapshot** is compact context, not full proof content; resolved: runtimes fetch full bodies only when needed.
 - **Project Fact** does not mean confirmed fact; resolved: reusable but uncertain observations are **Tentative Facts**, while non-reusable noise stays in **Task Events** or logs.
 - **Fact Version** is not separate current truth; resolved: current views use the latest fact state while history remains inspectable.
 - **Confirmed Fact** is not a model assertion; resolved: confirmation requires evidence, reproduction, human confirmation, or independent corroboration.
@@ -971,20 +995,19 @@ _Avoid_: transcript, export, source of truth
 - **Fact Key** conflict handling is automatic overwrite; resolved: a new write to the same key updates the existing **Project Fact** rather than creating a review queue.
 - **Confirmed Fact** status is not permanent; resolved: later writes to the same **Fact Key** may change confidence when they do so explicitly.
 - Empty fact body updates do not erase detail; resolved: preserve the existing body unless the write explicitly clears it.
-- **Fact Key** generation is not fully automatic in MVP; resolved: runtimes may propose keys, while naming rules and merge workflows handle cleanup.
-- **Fact Merge** is not silent overwrite; resolved: consolidation preserves history, provenance, and relation context.
-- **Fact Key Alias** is not an independent fact identity; resolved: old keys redirect to canonical keys after merge and stop producing separate current truth.
-- `contradicts` in a **Fact Relation** does not decide truth by itself; resolved: deprecating a fact requires an explicit judgment.
-- **Fact Relation** is not a finding graph; resolved: relate **Findings** through supporting **Project Facts** and **Evidence Artifacts**.
+- **Fact Key** generation is not fully automatic in MVP; resolved: runtimes may propose keys, while naming rules and **Record Merge** handle cleanup.
+- **Record Merge** is not silent overwrite; resolved: it preserves **Semantic History** and relationship context while consolidating same-type Project Knowledge.
+- A **Blackboard Key Redirect** is not an independent record identity; resolved: a merged source key resolves to its canonical key without producing separate current knowledge.
+- `contradicts` in a **Blackboard Relationship** does not decide truth by itself; resolved: deprecating a fact requires an explicit judgment.
+- A **Blackboard Relationship** is not a separate finding graph; resolved: Findings participate through supporting **Project Facts** and **Evidence Artifacts**.
 - Cairn-style Intent is not imported as an attack-graph edge; resolved: use **Exploration Objective** for durable open investigation directions.
-- **Exploration Objective** is not a **Fact Relation**; resolved: relations explain existing facts, while objectives point from known facts toward an unknown conclusion.
+- **Exploration Objective** is not a **Blackboard Relationship**; resolved: relationships connect existing records, while objectives represent work toward an unknown conclusion.
 - **Exploration Objective** is not a **Task Goal**; resolved: objectives may inform task launch, but a **Task Goal** belongs to one launched **Task**.
 - **Exploration Objective** is not **Current Truth**; resolved: it is planning state linked to facts, not a reusable assertion.
 - **Finding Key** is not a **Fact Key**; resolved: facts and reportable issues have separate stable identities.
 - **Finding Version** is not a duplicate finding; resolved: current finding views use the latest state while history remains inspectable.
-- **Finding Key** generation is not fully automatic in MVP; resolved: runtimes may propose keys, while naming rules and merge workflows handle cleanup.
-- **Finding Merge** is not silent deletion; resolved: duplicate finding keys become aliases that preserve history and references.
-- **Finding Merge** is not cross-asset grouping; resolved: related findings on different assets or entry points stay separate and can be grouped for presentation.
+- **Finding Key** generation is not fully automatic in MVP; resolved: runtimes may propose keys, while naming rules and **Record Merge** handle cleanup.
+- **Record Merge** is not cross-asset finding grouping; resolved: related findings on different assets or entry points stay separate and can be grouped for presentation.
 - **Finding Group** severity is presentation metadata; resolved: it does not overwrite individual finding severity.
 - **Finding** severity is CVSS-derived; resolved: use **CVSS Vector** rather than freeform severity judgment.
 - **CVSS Version** is explicit; resolved: use CVSS v4.0 as canonical for new findings while allowing v3.1 compatibility for import and export.
@@ -1000,7 +1023,7 @@ _Avoid_: transcript, export, source of truth
 - **Attack Chain** is not report-only inference; resolved: stable chain summaries are stored as **Project Facts** and reports assemble them into narrative form.
 - **Sandbox** is not a complete enforcement boundary; resolved: use it for runtime environment isolation, not per-command or per-network authorization.
 - **Blackboard** is project-local; resolved: cross-project reuse requires explicit import, template, or report reference behavior.
-- **Blackboard** is not separated by **Runtime Profile**; resolved: runtime-specific source context is represented through **Provenance**.
+- **Blackboard** is not separated by **Runtime Profile**; resolved: runtime-specific source context remains internal **Trusted Origin** data rather than Blackboard knowledge.
 - **Blackboard** writing is not only end-of-task summarization; resolved: runtimes should write durable facts during task execution, with final summaries used only as cleanup or gap filling.
 - **Audit Log** history is append-only; resolved: corrections and reversals are represented as later events.
 - **Scope Snapshot** is distinct from current **Scope**; resolved: task history uses the snapshot captured at task start.
@@ -1138,20 +1161,17 @@ _Avoid_: transcript, export, source of truth
 - **Config Projection** failure is not automatically **Runtime Profile** invalidity; resolved: treat it as a **Task** startup failure unless validation proves the profile itself is invalid.
 - **Preflight** failure is not **Runtime** failure; resolved: startup checks fail before the runtime performs task work.
 - **Model Preflight Preview** is not a secret display; resolved: show endpoint base URL, protocol, model, generated API key environment variable name, and configured/missing status without showing key values.
-- **CLI Fallback** is not a bypass; resolved: CLI writes carry the same validation, provenance, audit, and blackboard semantics as other project interfaces.
+- **CLI Fallback** is not a bypass; resolved: CLI writes carry the same validation, **Trusted Origin**, and Blackboard semantics as other project interfaces.
 - **Task Event** and project-level history are distinct; resolved: task events are task-local timeline entries, while project-level records are security history.
 - **Task Event** is not raw output storage; resolved: preserve full output through logs or **Evidence Artifacts** and keep the task timeline structured.
-- **Task Deletion** is not runtime cancellation or provenance erasure; resolved: only terminal Tasks may be removed from normal surfaces, and their durable rows remain available to historical joins.
-- **Task Summary** is not daemon-authored intelligence; resolved: runtimes maintain summary candidates, while the daemon stores and injects accepted summaries.
-- **Task Summary** acceptance is automatic; resolved: the latest runtime-submitted summary is accepted while prior versions remain inspectable.
-- **Mechanical Handoff Packet** is not an LLM summary; resolved: it is structured fallback context assembled without semantic summarization.
+- **Task Deletion** is not runtime cancellation or **Trusted Origin** erasure; resolved: only terminal Tasks may be removed from normal surfaces, and minimum integrity bindings remain available internally.
 - Cairn-style **Reason** is not daemon reasoning; resolved: use an operator-triggered **Reason Task** whose proposed Blackboard changes require approval.
-- Cairn-style graph export is not a new graph store; resolved: use a derived **Blackboard Snapshot** for planning context only.
-- A Task conclusion is not automatic objective closure; resolved: record an **Objective Outcome** in the **Task Summary** and leave **Exploration Objective** closure to approval.
-- **Provenance** is not chronological history; resolved: provenance is the source context attached to conclusions, while project history is chronological security records.
-- **Report** provenance is summarized, not exhaustive; resolved: reports show the runner, scope context, and key evidence rather than every task event.
+- Cairn-style graph export is not a new graph store or relevance-selected planning view; resolved: use the complete **Runtime Blackboard Snapshot**.
+- A Task conclusion is not automatic objective closure; resolved: an **Exploration Objective** closes only through its semantic transition and supporting `satisfies` relationship.
+- **Trusted Origin** is not project history or Blackboard knowledge; resolved: it is internal integrity binding, while project history is chronological security records.
+- **Report** is not an audit view; resolved: reports show current conclusions, scope context, and key evidence without expanded execution-origin metadata.
 - **Tentative Fact** is visible current context, not confirmed conclusion; resolved: current views may include it with confidence while reports mark it separately from confirmed findings.
 - Unconfirmed **Findings** are not confirmed report conclusions; resolved: reports may show them as needing validation outside the confirmed findings summary.
 - **Runtime Workdir** is not shared memory; resolved: cross-task knowledge flows through **Blackboard** and retained artifacts.
-- **Runtime Workdir** is not cross-runtime handoff state; resolved: runtime-profile switches pass context through **Blackboard**, summaries, and retained artifacts.
+- **Runtime Workdir** is not cross-runtime handoff state; resolved: runtime-profile switches pass context through the **Working Blackboard Snapshot**, open Attempt checkpoints, and retained artifacts.
 - **Runtime Workdir** is not automatic evidence capture; resolved: files become **Evidence Artifacts** only through explicit attach or retain actions.

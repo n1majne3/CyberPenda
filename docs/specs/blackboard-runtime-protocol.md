@@ -1,6 +1,8 @@
 # Blackboard Runtime and Project Interface Protocol Contract
 
-- **Status:** implementation contract for [Specify MCP, CLI, and Runtime Blackboard protocol](https://github.com/n1majne3/CyberPenda/issues/58)
+- **Status:** superseded by ADRs 0003–0014; historical reference only; do not implement
+
+> **STOP:** This document specifies Blackboard v1. It is retained only as migration history. Implement [Blackboard v2](./blackboard-v2-spec.md) through the [v2 TDD plan](./blackboard-v2-tdd-plan.md).
 - **Map:** [Map: Refactor Blackboard into bounded graph memory](https://github.com/n1majne3/CyberPenda/issues/55)
 - **Graph contract:** [Blackboard Typed Property Graph Contract](./blackboard-graph-contract.md)
 - **Storage contract:** [Blackboard SQLite Persistence, History, Compaction, and Health Contract](./blackboard-graph-storage.md)

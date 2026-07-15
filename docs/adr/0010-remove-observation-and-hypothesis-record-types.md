@@ -1,0 +1,3 @@
+# Remove Observation and Hypothesis record types
+
+The Blackboard no longer models Observation or Hypothesis as durable record types. A significant reusable positive or negative result is a Project Fact with explicit tentative or confirmed confidence; raw one-off results remain Task Events/logs or Evidence. A durable question to investigate is an Exploration Objective, while a plausible reusable assertion is a tentative Project Fact. This reduces semantic branching for Runtimes and removes two schemas/lifecycles without losing reusable knowledge. Migration maps existing Observations conservatively to Facts and active Hypotheses to open Objectives or tentative Facts, with approval-required consolidation for ambiguous cases.

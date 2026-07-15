@@ -1,0 +1,3 @@
+# Remove Project Directive records
+
+The Blackboard no longer stores Project Directive records. Authorization and durable prohibitions belong to Scope and testing limits, a current Task instruction belongs to its Task Goal, a task-local adjustment belongs to Harness Steering, and a durable investigation direction is an Exploration Objective. This removes another lifecycle and prevents Runtime-proposed imperative text from becoming future shared prompt content. Migration requires operator classification of active Directives into Scope/testing limits or Objectives; task-local, proposed, retired, and superseded directive state is not carried into current Blackboard knowledge.

@@ -1,0 +1,5 @@
+# Store versioned semantic state, not a graph event ledger
+
+The Blackboard stores current project-scoped semantic records and relationships with optimistic versions and a monotonic graph revision, plus per-record/relationship Semantic History. Each Runtime Continuation stores the exact pinned `runtime-blackboard/v2` bytes and internal integrity hash needed for deterministic recovery. Idempotency receipts and minimal Trusted Origin bindings remain separate control data. The system does not keep or replay an append-only mutation/operation ledger, source-event Provenance joins, operation hash chain, or arbitrary historical full-graph revisions. This substantially simplifies the local-first store and removes audit-driven data expansion at the cost of full historical graph replay and operation-level forensics.
+
+Semantic History is retained by default because it is compact and absent from Runtime context. Cleanup is an explicit safe prune rather than an automatic TTL or last-N policy; it cannot remove history referenced by an active Launch Blackboard Pin or required by a Blackboard Key Redirect. Evidence payload retention remains a separate concern.

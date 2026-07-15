@@ -1,0 +1,3 @@
+# Resume from Blackboard state, not Task summaries
+
+A Runtime Continuation resumes from the Task Goal, Scope, current Working Blackboard Snapshot, open Attempt checkpoints, unconsumed Harness Steering, and the compact runtime checklist. The system removes runtime-submitted Task Summaries, Task Summary Versions, Objective Outcome copies, and Mechanical Handoff Packets because they duplicate Current Work, Project Knowledge, and relationships already supplied in the complete Runtime Blackboard Snapshot. Task Conversation and terminal Task status remain normal task surfaces; project conclusions and Objective closure exist only in Blackboard semantic records and `satisfies` relationships.

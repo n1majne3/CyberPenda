@@ -1,6 +1,8 @@
 # Graph Blackboard TDD Acceptance Matrix and Implementation Slices
 
-- **Status:** implementation sequencing contract for [Design TDD acceptance matrix and implementation slices for graph Blackboard](https://github.com/n1majne3/CyberPenda/issues/61)
+- **Status:** superseded by ADRs 0003–0014; historical reference only; do not implement
+
+> **STOP:** This document specifies Blackboard v1. It is retained only as migration history. Implement [Blackboard v2](./blackboard-v2-spec.md) through the [v2 TDD plan](./blackboard-v2-tdd-plan.md).
 - **Map:** [Map: Refactor Blackboard into bounded graph memory](https://github.com/n1majne3/CyberPenda/issues/55)
 - **Assembly:** [Graph-first Blackboard Refactor Specification](./blackboard-graph-refactor.md)
 - **Graph contract:** [Blackboard Typed Property Graph Contract](./blackboard-graph-contract.md)
