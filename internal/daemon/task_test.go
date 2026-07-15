@@ -1032,6 +1032,7 @@ func TestTaskRoutesRejectUnknownProject(t *testing.T) {
 		{"task events", http.MethodGet, "/api/projects/" + bogus + "/tasks/anything/events", ""},
 		{"stop task", http.MethodPost, "/api/projects/" + bogus + "/tasks/anything/stop", ""},
 		{"steer task", http.MethodPost, "/api/projects/" + bogus + "/tasks/anything/steer", `{"directive":"focus"}`},
+		{"resume handoff", http.MethodPost, "/api/projects/" + bogus + "/tasks/anything/resume/handoff", `{}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1050,6 +1051,47 @@ func TestTaskRoutesRejectUnknownProject(t *testing.T) {
 				t.Fatalf("expected 404 for %s on unknown project, got %d with body %s", tc.name, resp.Code, resp.Body.String())
 			}
 		})
+	}
+}
+
+func TestHandoffResumeRejectsCrossProjectTaskWithoutEffect(t *testing.T) {
+	server := newDaemon(t)
+	sourceProjectID := createProject(t, server, `{"name":"Source","scope":{"domains":["source.example"]}}`)
+	otherProjectID := createProject(t, server, `{"name":"Other","scope":{"domains":["other.example"]}}`)
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
+	taskID := createTask(t, server, sourceProjectID, `{
+		"goal":"enumerate source.example",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
+		"runner":"sandbox"
+	}`)
+	waitForTaskStatus(t, server, sourceProjectID, taskID, "completed")
+	eventsBefore := getTaskEvents(t, server, sourceProjectID, taskID)
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+otherProjectID+"/tasks/"+taskID+"/resume/handoff", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("cross-Project handoff resume status = %d, want 404; body=%s", resp.Code, resp.Body.String())
+	}
+
+	eventsAfter := getTaskEvents(t, server, sourceProjectID, taskID)
+	if len(eventsAfter) != len(eventsBefore) {
+		t.Fatalf("cross-Project handoff changed source Task events: before=%d after=%d", len(eventsBefore), len(eventsAfter))
+	}
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/projects/"+sourceProjectID+"/tasks/"+taskID, nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("get source Task after cross-Project handoff: %d %s", response.Code, response.Body.String())
+	}
+	var found struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&found); err != nil {
+		t.Fatalf("decode source Task after cross-Project handoff: %v", err)
+	}
+	if found.Status != "completed" {
+		t.Fatalf("source Task status after cross-Project handoff = %q, want completed", found.Status)
 	}
 }
 

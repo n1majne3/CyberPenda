@@ -477,6 +477,13 @@ func rejectV1ActiveOpen(db *sql.DB) error {
 		return fmt.Errorf("inspect canonical store epoch: %w", err)
 	}
 	if hasStoreState == 0 {
+		var userTables int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`).Scan(&userTables); err != nil {
+			return fmt.Errorf("inspect existing Store schema: %w", err)
+		}
+		if userTables == 0 {
+			return nil
+		}
 		var hasLegacySchema int
 		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','project_facts','blackboard_graph_state')`).Scan(&hasLegacySchema); err != nil {
 			return fmt.Errorf("inspect legacy Blackboard schema: %w", err)
@@ -484,18 +491,37 @@ func rejectV1ActiveOpen(db *sql.DB) error {
 		if hasLegacySchema > 0 {
 			return fmt.Errorf("blackboard v1 store epoch %q cannot be opened for daemon/runtime use; stop the daemon and run 'blackboard v2 inspect', 'blackboard v2 migrate', then 'blackboard v2 verify'", CanonicalStoreLegacyV1)
 		}
-		return nil
+		return unknownCanonicalStoreEpochError("")
 	}
 	var epoch string
 	if err := db.QueryRow(`SELECT canonical_store FROM blackboard_store_state WHERE id=1`).Scan(&epoch); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return unknownCanonicalStoreEpochError("")
+		}
 		return fmt.Errorf("read canonical store epoch: %w", err)
 	}
 	switch epoch {
 	case CanonicalStoreLegacyV1, CanonicalStoreGraphV1, CanonicalStoreGraphV1Finalized:
 		return fmt.Errorf("blackboard v1 store epoch %q cannot be opened for daemon/runtime use; stop the daemon and run 'blackboard v2 inspect', 'blackboard v2 migrate', then 'blackboard v2 verify'", epoch)
-	default:
+	case CanonicalStoreBlackboardV2:
+		if err := ValidateMigrationHistory(context.Background(), db); err != nil {
+			return fmt.Errorf("validate blackboard_v2 migration history: %w", err)
+		}
+		var requiredMigrations int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version BETWEEN 1 AND 20`).Scan(&requiredMigrations); err != nil {
+			return fmt.Errorf("inspect blackboard_v2 required migrations: %w", err)
+		}
+		if requiredMigrations != 20 {
+			return fmt.Errorf("blackboard_v2 store is missing one or more required migrations 1-20; refusing daemon/runtime use")
+		}
 		return nil
+	default:
+		return unknownCanonicalStoreEpochError(epoch)
 	}
+}
+
+func unknownCanonicalStoreEpochError(epoch string) error {
+	return fmt.Errorf("unknown canonical store epoch %q cannot be opened for daemon/runtime use; restore a supported database or use an explicit offline migration workflow", epoch)
 }
 
 // CanonicalStore returns the global store epoch for this database.
@@ -611,14 +637,14 @@ type migration struct {
 }
 
 func migrate(db *sql.DB) error {
-	if _, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS schema_migrations (
-			version INTEGER PRIMARY KEY,
-			name TEXT NOT NULL,
-			checksum TEXT NOT NULL,
-			applied_at TEXT NOT NULL
-		);
-	`); err != nil {
+	var userTables int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`).Scan(&userTables); err != nil {
+		return fmt.Errorf("inspect Store schema before migrations: %w", err)
+	}
+	if userTables == 0 {
+		return bootstrapFresh(db, migrations())
+	}
+	if _, err := db.Exec(schemaMigrationsDDL); err != nil {
 		return fmt.Errorf("ensure schema_migrations: %w", err)
 	}
 
@@ -650,6 +676,44 @@ func migrate(db *sql.DB) error {
 		if err := applyMigration(db, m); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+const schemaMigrationsDDL = `
+CREATE TABLE IF NOT EXISTS schema_migrations (
+	version INTEGER PRIMARY KEY,
+	name TEXT NOT NULL,
+	checksum TEXT NOT NULL,
+	applied_at TEXT NOT NULL
+);
+`
+
+func bootstrapFresh(db *sql.DB, definitions []migration) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin fresh Store bootstrap: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(schemaMigrationsDDL); err != nil {
+		return fmt.Errorf("create fresh schema_migrations: %w", err)
+	}
+	for _, definition := range definitions {
+		if err := definition.up(tx); err != nil {
+			return fmt.Errorf("apply fresh migration %d (%s): %w", definition.version, definition.name, err)
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)`,
+			definition.version,
+			definition.name,
+			definition.checksum,
+			time.Now().UTC().Format(time.RFC3339Nano),
+		); err != nil {
+			return fmt.Errorf("record fresh migration %d: %w", definition.version, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit fresh Store bootstrap: %w", err)
 	}
 	return nil
 }

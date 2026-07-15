@@ -17,6 +17,7 @@ import (
 )
 
 const v1MigrationGuidance = "blackboard v1 store epoch %q cannot be opened for daemon/runtime use; stop the daemon and run 'blackboard v2 inspect', 'blackboard v2 migrate', then 'blackboard v2 verify'"
+const unknownStoreEpochRefusal = "unknown canonical store epoch %q cannot be opened for daemon/runtime use; restore a supported database or use an explicit offline migration workflow"
 
 func TestOpenFreshDatabaseBootstrapsBlackboardV2AndReopensDeterministically(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pentest.db")
@@ -88,6 +89,135 @@ func TestOpenRefusesV1WithoutCutoverAndReturnsStableMigrationGuidance(t *testing
 	}
 }
 
+func TestOrdinaryOpenRefusesUnknownEpochWithoutTouchingSQLiteState(t *testing.T) {
+	tests := []struct {
+		name               string
+		epoch              string
+		make               func(*testing.T) string
+		prepare            func(*testing.T, string) func()
+		wantMigrationCount int
+		wantSidecars       bool
+	}{
+		{
+			name:  "before migration 20",
+			epoch: "future_v3",
+			make: func(t *testing.T) string {
+				path := createV1StoreFixture(t, "future_v3")
+				forceJournalMode(t, path, "DELETE")
+				return path
+			},
+			wantMigrationCount: 19,
+		},
+		{
+			name:  "empty epoch before migration 20",
+			epoch: "",
+			make: func(t *testing.T) string {
+				path := createV1StoreFixture(t, "")
+				forceJournalMode(t, path, "DELETE")
+				return path
+			},
+			wantMigrationCount: 19,
+		},
+		{
+			name:  "migration 20 recorded with unknown epoch in live WAL",
+			epoch: "future_v3",
+			make: func(t *testing.T) string {
+				path := filepath.Join(t.TempDir(), "unknown-v2.db")
+				db, err := store.Open(path)
+				if err != nil {
+					t.Fatalf("create migration-20 fixture: %v", err)
+				}
+				if err := db.Close(); err != nil {
+					t.Fatalf("close migration-20 fixture: %v", err)
+				}
+				return path
+			},
+			prepare: func(t *testing.T, path string) func() {
+				return holdStoreEpochUpdateInWAL(t, path, "future_v3")
+			},
+			wantMigrationCount: 20,
+			wantSidecars:       true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := test.make(t)
+			if test.prepare != nil {
+				defer test.prepare(t, path)()
+			}
+			before := captureSQLiteSourceState(t, path)
+			if len(before.MigrationChecksums) != test.wantMigrationCount {
+				t.Fatalf("fixture migration count = %d, want %d", len(before.MigrationChecksums), test.wantMigrationCount)
+			}
+			if test.wantSidecars && (!before.WAL.Exists || !before.SHM.Exists) {
+				t.Fatalf("fixture lacks SQLite sidecars: wal=%v shm=%v", before.WAL.Exists, before.SHM.Exists)
+			}
+
+			opened, err := store.Open(path)
+			if opened != nil {
+				_ = opened.Close()
+				t.Fatal("ordinary Open returned an active Store for an unknown epoch")
+			}
+			want := fmt.Sprintf(unknownStoreEpochRefusal, test.epoch)
+			if err == nil || err.Error() != want {
+				t.Fatalf("ordinary Open error = %v, want %q", err, want)
+			}
+
+			after := captureSQLiteSourceState(t, path)
+			assertSQLiteSourceStateEqual(t, before, after)
+		})
+	}
+}
+
+func TestOrdinaryOpenRefusesExistingSchemaWithoutEpochMetadata(t *testing.T) {
+	tests := []struct {
+		name string
+		sql  string
+	}{
+		{
+			name: "empty schema migrations table",
+			sql: `CREATE TABLE schema_migrations (
+				version INTEGER PRIMARY KEY,
+				name TEXT NOT NULL,
+				checksum TEXT NOT NULL,
+				applied_at TEXT NOT NULL
+			)`,
+		},
+		{name: "unrecognized user table", sql: `CREATE TABLE notes(id TEXT PRIMARY KEY, body TEXT NOT NULL)`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "missing-epoch.db")
+			db, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatalf("open missing-epoch fixture: %v", err)
+			}
+			if _, err := db.Exec(test.sql); err != nil {
+				_ = db.Close()
+				t.Fatalf("create missing-epoch fixture: %v", err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatalf("close missing-epoch fixture: %v", err)
+			}
+			forceJournalMode(t, path, "DELETE")
+			before := captureSQLiteSourceState(t, path)
+
+			opened, err := store.Open(path)
+			if opened != nil {
+				_ = opened.Close()
+				t.Fatal("ordinary Open bootstrapped an existing schema without epoch metadata")
+			}
+			want := fmt.Sprintf(unknownStoreEpochRefusal, "")
+			if err == nil || err.Error() != want {
+				t.Fatalf("ordinary Open error = %v, want %q", err, want)
+			}
+
+			after := captureSQLiteSourceState(t, path)
+			assertSQLiteSourceStateEqual(t, before, after)
+		})
+	}
+}
+
 func TestOpenMigrationSourceValidatesHistoricalV1ReadOnlyWithoutActivation(t *testing.T) {
 	path := createV1StoreFixture(t, "graph_v1")
 
@@ -127,7 +257,7 @@ func TestOpenMigrationSourceValidatesHistoricalV1ReadOnlyWithoutActivation(t *te
 
 func TestOpenMigrationSourceReadsWALSnapshotWithoutMutatingSource(t *testing.T) {
 	path := createV1StoreFixture(t, store.CanonicalStoreGraphV1)
-	defer holdV1EpochUpdateInWAL(t, path, store.CanonicalStoreGraphV1Finalized)()
+	defer holdStoreEpochUpdateInWAL(t, path, store.CanonicalStoreGraphV1Finalized)()
 	before := captureSQLiteSourceState(t, path)
 	if !before.WAL.Exists || !before.SHM.Exists {
 		t.Fatalf("fixture lacks SQLite sidecars: wal=%v shm=%v", before.WAL.Exists, before.SHM.Exists)
@@ -227,7 +357,7 @@ func TestOrdinaryOpenRefusesV1WithoutTouchingSQLiteFileOrSidecars(t *testing.T) 
 		{name: "numbered v1 with newer epoch in live wal", epoch: store.CanonicalStoreGraphV1Finalized, make: func(t *testing.T) string {
 			return createV1StoreFixture(t, store.CanonicalStoreGraphV1)
 		}, prepare: func(t *testing.T, path string) func() {
-			return holdV1EpochUpdateInWAL(t, path, store.CanonicalStoreGraphV1Finalized)
+			return holdStoreEpochUpdateInWAL(t, path, store.CanonicalStoreGraphV1Finalized)
 		}, wantSidecar: true},
 		{name: "pre-numbered legacy_v1", epoch: store.CanonicalStoreLegacyV1, journalMode: "DELETE", make: createPreNumberedV1Fixture},
 	}
@@ -403,7 +533,7 @@ func forceJournalMode(t *testing.T, path, want string) {
 	}
 }
 
-func holdV1EpochUpdateInWAL(t *testing.T, path, epoch string) func() {
+func holdStoreEpochUpdateInWAL(t *testing.T, path, epoch string) func() {
 	t.Helper()
 	db, err := sql.Open("sqlite", path)
 	if err != nil {

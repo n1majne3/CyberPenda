@@ -650,6 +650,69 @@ func TestDaemonStartupRefusesV1WithStableOfflineMigrationGuidance(t *testing.T) 
 	assertV1TablesPresent(t, afterSource.DB)
 }
 
+func TestDaemonStartupRefusesUnknownEpochWithoutActiveServer(t *testing.T) {
+	const unknownEpoch = "future_v3"
+	dbPath := filepath.Join(t.TempDir(), "unknown-epoch.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("bootstrap disposable v2 store: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE blackboard_store_state SET canonical_store=? WHERE id=1`, unknownEpoch); err != nil {
+		_ = db.Close()
+		t.Fatalf("set unknown canonical store epoch: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close unknown-epoch fixture: %v", err)
+	}
+
+	beforeDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open unknown-epoch fixture for verification: %v", err)
+	}
+	beforeChecksums := migrationChecksumSet(t, beforeDB)
+	if err := beforeDB.Close(); err != nil {
+		t.Fatalf("close unknown-epoch verification DB: %v", err)
+	}
+	beforeBytes, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatalf("read unknown-epoch source bytes: %v", err)
+	}
+
+	server, err := daemon.NewServer(daemon.Config{Version: "v", DBPath: dbPath, ListenAddr: "127.0.0.1:0", DisableBuiltinSkills: true})
+	if server != nil {
+		_ = server.Close()
+		t.Fatal("unknown epoch startup returned an active daemon server")
+	}
+	want := "unknown canonical store epoch \"future_v3\" cannot be opened for daemon/runtime use; restore a supported database or use an explicit offline migration workflow"
+	if err == nil || err.Error() != want {
+		t.Fatalf("unknown epoch daemon startup error = %v, want %q", err, want)
+	}
+
+	afterBytes, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatalf("reread unknown-epoch source bytes: %v", err)
+	}
+	if !bytes.Equal(afterBytes, beforeBytes) {
+		t.Fatal("refused daemon startup changed unknown-epoch source bytes")
+	}
+	afterDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("reopen refused unknown-epoch source: %v", err)
+	}
+	defer afterDB.Close()
+	var afterEpoch string
+	if err := afterDB.QueryRow(`SELECT canonical_store FROM blackboard_store_state WHERE id=1`).Scan(&afterEpoch); err != nil {
+		t.Fatalf("read refused unknown epoch: %v", err)
+	}
+	if afterEpoch != unknownEpoch {
+		t.Fatalf("refused source epoch = %q, want %q", afterEpoch, unknownEpoch)
+	}
+	afterChecksums := migrationChecksumSet(t, afterDB)
+	if strings.Join(afterChecksums, "\n") != strings.Join(beforeChecksums, "\n") {
+		t.Fatalf("refused daemon startup changed migration checksums: before=%v after=%v", beforeChecksums, afterChecksums)
+	}
+}
+
 func migrationChecksumSet(t *testing.T, db interface {
 	Query(string, ...any) (*sql.Rows, error)
 }) []string {
