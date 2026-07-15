@@ -27,11 +27,29 @@ const (
 	CanonicalStoreLegacyV1         = "legacy_v1"
 	CanonicalStoreGraphV1          = "graph_v1"
 	CanonicalStoreGraphV1Finalized = "graph_v1_finalized"
+	CanonicalStoreBlackboardV2     = "blackboard_v2"
 )
 
 // DB wraps a SQLite connection with the daemon's schema applied.
 type DB struct {
 	*sql.DB
+}
+
+// MigrationSource is a read-only Blackboard v1 database opened exclusively
+// for the offline v2 migration workflow. Its distinct type cannot be used as
+// the daemon's active Store.
+type MigrationSource struct {
+	*sql.DB
+	canonicalStore string
+}
+
+// CanonicalStore reports the validated v1 epoch without activating it.
+func (source *MigrationSource) CanonicalStore() string { return source.canonicalStore }
+
+// ValidateMigrationHistory revalidates the source through the read-only
+// connection and never applies a numbered migration.
+func (source *MigrationSource) ValidateMigrationHistory(ctx context.Context) error {
+	return ValidateMigrationHistory(ctx, source.DB)
 }
 
 // Open connects to the SQLite database at path and runs numbered migrations.
@@ -52,6 +70,10 @@ func Open(path string) (*DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := rejectV1ActiveOpen(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 
 	if err := migrate(db); err != nil {
 		_ = db.Close()
@@ -59,6 +81,72 @@ func Open(path string) (*DB, error) {
 	}
 
 	return &DB{db}, nil
+}
+
+// OpenMigrationSource opens an existing Blackboard v1 database read-only for
+// offline inspection and migration. It never applies migrations or changes the
+// canonical Store epoch.
+func OpenMigrationSource(path string) (*MigrationSource, error) {
+	if path == "" || path == ":memory:" {
+		return nil, fmt.Errorf("offline Blackboard migration source must be an existing file-backed database")
+	}
+	dsn, err := buildReadOnlyDSN(path)
+	if err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	closeWith := func(err error) (*MigrationSource, error) {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := db.Ping(); err != nil {
+		return closeWith(err)
+	}
+	if err := ValidateMigrationHistory(context.Background(), db); err != nil {
+		return closeWith(err)
+	}
+	var epoch string
+	if err := db.QueryRow(`SELECT canonical_store FROM blackboard_store_state WHERE id=1`).Scan(&epoch); err != nil {
+		return closeWith(fmt.Errorf("read migration-source store epoch: %w", err))
+	}
+	switch epoch {
+	case CanonicalStoreLegacyV1, CanonicalStoreGraphV1, CanonicalStoreGraphV1Finalized:
+		return &MigrationSource{DB: db, canonicalStore: epoch}, nil
+	default:
+		return closeWith(fmt.Errorf("offline Blackboard migration source requires a v1 store epoch, got %q", epoch))
+	}
+}
+
+func rejectV1ActiveOpen(db *sql.DB) error {
+	var hasStoreState int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='blackboard_store_state'`).Scan(&hasStoreState); err != nil {
+		return fmt.Errorf("inspect canonical store epoch: %w", err)
+	}
+	if hasStoreState == 0 {
+		var hasLegacySchema int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','project_facts','blackboard_graph_state')`).Scan(&hasLegacySchema); err != nil {
+			return fmt.Errorf("inspect legacy Blackboard schema: %w", err)
+		}
+		if hasLegacySchema > 0 {
+			return fmt.Errorf("blackboard v1 store epoch %q cannot be opened for daemon/runtime use; stop the daemon and run 'blackboard v2 inspect', 'blackboard v2 migrate', then 'blackboard v2 verify'", CanonicalStoreLegacyV1)
+		}
+		return nil
+	}
+	var epoch string
+	if err := db.QueryRow(`SELECT canonical_store FROM blackboard_store_state WHERE id=1`).Scan(&epoch); err != nil {
+		return fmt.Errorf("read canonical store epoch: %w", err)
+	}
+	switch epoch {
+	case CanonicalStoreLegacyV1, CanonicalStoreGraphV1, CanonicalStoreGraphV1Finalized:
+		return fmt.Errorf("blackboard v1 store epoch %q cannot be opened for daemon/runtime use; stop the daemon and run 'blackboard v2 inspect', 'blackboard v2 migrate', then 'blackboard v2 verify'", epoch)
+	default:
+		return nil
+	}
 }
 
 // CanonicalStore returns the global store epoch for this database.
@@ -152,6 +240,16 @@ func buildDSN(path string) (string, error) {
 	escaped := url.PathEscape(path)
 	// PathEscape encodes slashes; restore them for a usable filesystem path.
 	escaped = strings.ReplaceAll(escaped, "%2F", "/")
+	return "file:" + escaped + "?" + values.Encode(), nil
+}
+
+func buildReadOnlyDSN(path string) (string, error) {
+	values := url.Values{}
+	values.Set("mode", "ro")
+	values.Add("_pragma", "busy_timeout(5000)")
+	values.Add("_pragma", "foreign_keys(1)")
+	values.Add("_pragma", "query_only(1)")
+	escaped := strings.ReplaceAll(url.PathEscape(path), "%2F", "/")
 	return "file:" + escaped + "?" + values.Encode(), nil
 }
 
@@ -278,8 +376,21 @@ func migrations() []migration {
 		newMigration(17, "blackboard_compatibility_write_retirement", migration17SQL, migration17Up),
 		newMigration(18, "blackboard_compatibility_read_retirement", migration18SQL, migration18Up),
 		newMigration(19, "task_soft_deletion", migration19SQL, migration19Up),
+		newMigration(20, "blackboard_v2_store_epoch", migration20SQL, migration20Up),
 	}
 }
+
+const migration20SQL = `
+UPDATE blackboard_store_state
+SET canonical_store = 'blackboard_v2',
+    cutover_state = 'v2',
+    migration_contract_version = 'blackboard_v2',
+    graph_schema_version = 0,
+    updated_at = '1970-01-01T00:00:00Z'
+WHERE id = 1;
+`
+
+func migration20Up(tx *sql.Tx) error { return execStatements(tx, migration20SQL) }
 
 const migration19SQL = `-- tasks.deleted_at TEXT NOT NULL DEFAULT ''`
 

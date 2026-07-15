@@ -40,9 +40,10 @@ func TestOpenRunsMigrationsIdempotently(t *testing.T) {
 	}
 }
 
-// TestEnsureColumnUpgradesLegacyDatabase simulates a database created before the
-// defaults_json column existed and checks that Open adds it without data loss.
-func TestEnsureColumnUpgradesLegacyDatabase(t *testing.T) {
+// TestOpenRefusalDoesNotUpgradePreNumberedLegacyDatabase simulates a database
+// created before numbered migrations and proves ordinary daemon/runtime open
+// leaves it untouched for the offline migrator.
+func TestOpenRefusalDoesNotUpgradePreNumberedLegacyDatabase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pentest.db")
 
 	// Build a legacy schema that predates the defaults_json column and insert a
@@ -71,28 +72,33 @@ func TestEnsureColumnUpgradesLegacyDatabase(t *testing.T) {
 		t.Fatalf("close legacy db: %v", err)
 	}
 
-	// Reopen through store.Open; migration should add defaults_json and keep
-	// the existing row readable.
+	// Ordinary Open must not add numbered migrations or bootstrap v2 over this
+	// source. The explicit offline migration-source path owns that work.
 	upgraded, err := store.Open(path)
-	if err != nil {
-		t.Fatalf("upgrade open: %v", err)
+	if upgraded != nil {
+		_ = upgraded.Close()
+		t.Fatal("ordinary Open upgraded a pre-numbered v1 database")
 	}
-	t.Cleanup(func() {
-		if err := upgraded.Close(); err != nil {
-			t.Fatalf("close upgraded db: %v", err)
-		}
-	})
+	if err == nil || !strings.Contains(err.Error(), "blackboard v2 inspect") {
+		t.Fatalf("ordinary Open error = %v, want offline v2 migration guidance", err)
+	}
 
-	var id, defaultsJSON string
-	err = upgraded.QueryRow("SELECT id, defaults_json FROM projects WHERE id = ?", "legacy-1").Scan(&id, &defaultsJSON)
+	untouched, err := sql.Open("sqlite", path)
 	if err != nil {
-		t.Fatalf("read legacy row after upgrade: %v", err)
+		t.Fatalf("reopen untouched legacy db: %v", err)
+	}
+	t.Cleanup(func() { _ = untouched.Close() })
+
+	var id string
+	err = untouched.QueryRow("SELECT id FROM projects WHERE id = ?", "legacy-1").Scan(&id)
+	if err != nil {
+		t.Fatalf("read legacy row after refused open: %v", err)
 	}
 	if id != "legacy-1" {
 		t.Fatalf("expected legacy-1, got %q", id)
 	}
-	if defaultsJSON != "{}" {
-		t.Fatalf("expected default defaults_json {}, got %q", defaultsJSON)
+	if columnExists(t, untouched, "projects", "defaults_json") {
+		t.Fatal("refused ordinary Open added projects.defaults_json")
 	}
 }
 
@@ -214,9 +220,9 @@ func TestOpenRejectsUnknownNewerSchemaVersion(t *testing.T) {
 	}
 }
 
-// TestOpenDefaultsCanonicalStoreToLegacyV1 records the store epoch on every
-// database without changing public Fact/Finding/Evidence ownership.
-func TestOpenDefaultsCanonicalStoreToLegacyV1(t *testing.T) {
+// TestOpenDefaultsCanonicalStoreToBlackboardV2 records the accepted epoch on
+// every fresh database while proving no v1 table is dropped during bootstrap.
+func TestOpenDefaultsCanonicalStoreToBlackboardV2(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pentest.db")
 
 	db, err := store.Open(path)
@@ -229,8 +235,8 @@ func TestOpenDefaultsCanonicalStoreToLegacyV1(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CanonicalStore: %v", err)
 	}
-	if epoch != store.CanonicalStoreLegacyV1 {
-		t.Fatalf("canonical store: got %q want %q", epoch, store.CanonicalStoreLegacyV1)
+	if epoch != store.CanonicalStoreBlackboardV2 {
+		t.Fatalf("canonical store: got %q want %q", epoch, store.CanonicalStoreBlackboardV2)
 	}
 
 	// Control tables and the C02 graph ledger core now exist (the full graph
@@ -305,9 +311,9 @@ func TestOpenDefaultsCanonicalStoreToLegacyV1(t *testing.T) {
 	}
 }
 
-// TestOpenPreservesEveryRowFromOlderDatabase upgrades a pre-migration database
-// without losing existing project or Blackboard rows.
-func TestOpenPreservesEveryRowFromOlderDatabase(t *testing.T) {
+// TestOpenRefusalPreservesEveryRowFromOlderDatabase proves ordinary open does
+// not mutate a pre-numbered v1 source before the offline migrator handles it.
+func TestOpenRefusalPreservesEveryRowFromOlderDatabase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pentest.db")
 
 	legacy, err := sql.Open("sqlite", path)
@@ -405,30 +411,26 @@ func TestOpenPreservesEveryRowFromOlderDatabase(t *testing.T) {
 		t.Fatalf("close legacy: %v", err)
 	}
 
-	db, err := store.Open(path)
-	if err != nil {
-		t.Fatalf("upgrade open: %v", err)
+	opened, err := store.Open(path)
+	if opened != nil {
+		_ = opened.Close()
+		t.Fatal("ordinary Open upgraded a pre-numbered v1 database")
 	}
-	t.Cleanup(func() { _ = db.Close() })
+	if err == nil || !strings.Contains(err.Error(), "blackboard v2 inspect") {
+		t.Fatalf("ordinary Open error = %v, want offline v2 migration guidance", err)
+	}
 
-	assertCount(t, db.DB, "projects", 1)
-	assertCount(t, db.DB, "project_facts", 1)
-	assertCount(t, db.DB, "findings", 1)
-	assertCount(t, db.DB, "evidence_artifacts", 1)
-
-	var kind string
-	if err := db.QueryRow(`SELECT kind FROM projects WHERE id = 'p1'`).Scan(&kind); err != nil {
-		t.Fatalf("project kind: %v", err)
-	}
-	if kind != "pentest" {
-		t.Fatalf("legacy project kind: got %q want pentest", kind)
-	}
-	epoch, err := db.CanonicalStore()
+	untouched, err := sql.Open("sqlite", path)
 	if err != nil {
-		t.Fatalf("CanonicalStore: %v", err)
+		t.Fatalf("reopen untouched v1 source: %v", err)
 	}
-	if epoch != store.CanonicalStoreLegacyV1 {
-		t.Fatalf("canonical store after upgrade: got %q", epoch)
+	t.Cleanup(func() { _ = untouched.Close() })
+	assertCount(t, untouched, "projects", 1)
+	assertCount(t, untouched, "project_facts", 1)
+	assertCount(t, untouched, "findings", 1)
+	assertCount(t, untouched, "evidence_artifacts", 1)
+	if columnExists(t, untouched, "projects", "kind") {
+		t.Fatal("refused ordinary Open added projects.kind")
 	}
 }
 

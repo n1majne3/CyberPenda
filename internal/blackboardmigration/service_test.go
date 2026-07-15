@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -539,10 +540,7 @@ func TestCutoverCrashReopenBeforeAndAfterCommitSelectsOnlyOneCanonicalEpoch(t *t
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
 			databasePath := filepath.Join(root, "pentest.db")
-			db, err := store.Open(databasePath)
-			if err != nil {
-				t.Fatal(err)
-			}
+			db := openLegacyFixtureStore(t, databasePath)
 			insertProjectAndFacts(t, db, []string{"fact-crash"})
 			injected := errors.New("simulated process death")
 			service := NewService(db, databasePath, root, WithCutoverFailureInjector(CutoverFailureInjectorFunc(func(point CutoverFailurePoint) error {
@@ -557,10 +555,7 @@ func TestCutoverCrashReopenBeforeAndAfterCommitSelectsOnlyOneCanonicalEpoch(t *t
 			if err := db.Close(); err != nil {
 				t.Fatal(err)
 			}
-			reopened, err := store.Open(databasePath)
-			if err != nil {
-				t.Fatal(err)
-			}
+			reopened := reopenLegacyFixtureStore(t, databasePath)
 			defer reopened.Close()
 			epoch, err := reopened.CanonicalStore()
 			if err != nil {
@@ -1235,10 +1230,7 @@ func TestInspectIsDeterministicAndWritesNeitherDatabaseNorFilesystem(t *testing.
 		t.Fatal(err)
 	}
 
-	db, err := store.Open(databasePath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := openLegacyFixtureStore(t, databasePath)
 	defer db.Close()
 
 	insertLegacyInspectionFixture(t, db)
@@ -1479,6 +1471,153 @@ func containsString(values []string, wanted string) bool {
 	return false
 }
 
+type historicalMigrationRow struct {
+	Version  int
+	Name     string
+	Checksum string
+}
+
+// openLegacyFixtureStore constructs v1 state exclusively for legacy migration
+// tests. Production callers still have no writable v1 open path: every reopen
+// is first validated through store.OpenMigrationSource, then wrapped in a raw
+// test-owned SQLite handle.
+func openLegacyFixtureStore(t *testing.T, databasePath string) *store.DB {
+	t.Helper()
+	fresh, err := store.Open(databasePath)
+	if err != nil {
+		t.Fatalf("bootstrap disposable v2 fixture: %v", err)
+	}
+	if _, err := fresh.Exec(`
+		UPDATE blackboard_store_state
+		SET canonical_store='legacy_v1',
+		    cutover_state='legacy',
+		    migration_contract_version='legacy_blackboard_to_graph_v1',
+		    graph_schema_version=1,
+		    cutover_id='',
+		    source_digest='',
+		    mapping_digest='',
+		    verified_backup_path='',
+		    verified_backup_sha256='',
+		    cutover_application_version='',
+		    cutover_started_at='',
+		    cutover_committed_at='',
+		    post_cutover_write_committed=0,
+		    latest_verification_at='',
+		    latest_verification_result_hash=''
+		WHERE id=1;
+		DELETE FROM schema_migrations WHERE version=20;
+	`); err != nil {
+		_ = fresh.Close()
+		t.Fatalf("construct disposable v1 fixture: %v", err)
+	}
+	if err := fresh.Close(); err != nil {
+		t.Fatalf("close disposable fixture bootstrap: %v", err)
+	}
+	return reopenLegacyFixtureStore(t, databasePath)
+}
+
+func reopenLegacyFixtureStore(t *testing.T, databasePath string) *store.DB {
+	t.Helper()
+	before := readHistoricalMigrationRows(t, databasePath)
+	if len(before) != 19 {
+		t.Fatalf("v1 fixture migration count = %d, want 19", len(before))
+	}
+	assertV1FixtureTables(t, databasePath)
+
+	source, err := store.OpenMigrationSource(databasePath)
+	if err != nil {
+		t.Fatalf("validate explicit offline migration source: %v", err)
+	}
+	if source.CanonicalStore() != store.CanonicalStoreLegacyV1 && source.CanonicalStore() != store.CanonicalStoreGraphV1 && source.CanonicalStore() != store.CanonicalStoreGraphV1Finalized {
+		_ = source.Close()
+		t.Fatalf("offline source epoch = %q, want v1", source.CanonicalStore())
+	}
+	if err := source.ValidateMigrationHistory(context.Background()); err != nil {
+		_ = source.Close()
+		t.Fatalf("revalidate historical migration checksums: %v", err)
+	}
+	if _, err := source.ExecContext(context.Background(), `UPDATE blackboard_store_state SET canonical_store='blackboard_v2' WHERE id=1`); err == nil {
+		_ = source.Close()
+		t.Fatal("offline migration-source handle became a writable active Store")
+	}
+	if err := source.Close(); err != nil {
+		t.Fatalf("close offline migration source: %v", err)
+	}
+
+	after := readHistoricalMigrationRows(t, databasePath)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("offline source changed migration checksums: before=%v after=%v", before, after)
+	}
+	assertV1FixtureTables(t, databasePath)
+
+	db, err := sql.Open("sqlite", testReadWriteDSN(databasePath))
+	if err != nil {
+		t.Fatalf("open test-owned v1 fixture handle: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		t.Fatalf("ping test-owned v1 fixture handle: %v", err)
+	}
+	return &store.DB{DB: db}
+}
+
+func readHistoricalMigrationRows(t *testing.T, databasePath string) []historicalMigrationRow {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+strings.ReplaceAll(url.PathEscape(databasePath), "%2F", "/")+"?mode=ro")
+	if err != nil {
+		t.Fatalf("open migration rows read-only: %v", err)
+	}
+	defer db.Close()
+	rows, err := db.Query(`SELECT version,name,checksum FROM schema_migrations ORDER BY version`)
+	if err != nil {
+		t.Fatalf("read migration rows: %v", err)
+	}
+	defer rows.Close()
+	var out []historicalMigrationRow
+	for rows.Next() {
+		var row historicalMigrationRow
+		if err := rows.Scan(&row.Version, &row.Name, &row.Checksum); err != nil {
+			t.Fatalf("scan migration row: %v", err)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate migration rows: %v", err)
+	}
+	return out
+}
+
+func assertV1FixtureTables(t *testing.T, databasePath string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+strings.ReplaceAll(url.PathEscape(databasePath), "%2F", "/")+"?mode=ro")
+	if err != nil {
+		t.Fatalf("open v1 tables read-only: %v", err)
+	}
+	defer db.Close()
+	for _, table := range []string{"project_facts", "blackboard_graph_mutations", "blackboard_nodes"} {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&count); err != nil {
+			t.Fatalf("inspect v1 table %s: %v", table, err)
+		}
+		if count != 1 {
+			t.Fatalf("v1 table %s missing after offline source open", table)
+		}
+	}
+}
+
+func testReadWriteDSN(databasePath string) string {
+	values := url.Values{}
+	values.Add("_pragma", "busy_timeout(5000)")
+	values.Add("_pragma", "foreign_keys(1)")
+	values.Add("_pragma", "synchronous(FULL)")
+	values.Add("_pragma", "journal_mode(WAL)")
+	values.Set("_txlock", "immediate")
+	escaped := strings.ReplaceAll(url.PathEscape(databasePath), "%2F", "/")
+	return "file:" + escaped + "?" + values.Encode()
+}
+
 func newInspectionService(t *testing.T) (*store.DB, *Service) {
 	t.Helper()
 	root := t.TempDir()
@@ -1487,10 +1626,7 @@ func newInspectionService(t *testing.T) (*store.DB, *Service) {
 	if err := os.Mkdir(artifactRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	db, err := store.Open(databasePath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := openLegacyFixtureStore(t, databasePath)
 	t.Cleanup(func() { _ = db.Close() })
 	return db, NewService(db, databasePath, artifactRoot)
 }

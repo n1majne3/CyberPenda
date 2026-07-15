@@ -19,11 +19,10 @@ import (
 	"pentest/internal/projectinterface"
 )
 
-// TestProjectInterfaceConformanceProducesSameResultAndErrorAcrossAllTransports
-// is the I02 first-red test. The shared corpus drives the public module, HTTP,
-// MCP, task CLI, and operator CLI interfaces. Transport-only metadata is
-// ignored; the canonical response and observable graph result must agree.
-func TestProjectInterfaceConformanceProducesSameResultAndErrorAcrossAllTransports(t *testing.T) {
+// TestProjectInterfaceConformanceProducesSameResultAcrossServiceHTTPMCPAndTaskCLI
+// keeps the epoch-independent adapter corpus active while the retired offline
+// v1 operator CLI awaits its v2 replacement in #113.
+func TestProjectInterfaceConformanceProducesSameResultAcrossServiceHTTPMCPAndTaskCLI(t *testing.T) {
 	fixture := newServiceFixture(t)
 	ctx := context.Background()
 	principal, err := fixture.service.Authenticate(ctx, fixture.token, fixture.project.ID)
@@ -179,46 +178,6 @@ func TestProjectInterfaceConformanceProducesSameResultAndErrorAcrossAllTransport
 		t.Fatalf("task CLI current graph omitted objective: %s", currentOut.String())
 	}
 
-	operatorFixture := newServiceFixture(t)
-	operatorInputPath := filepath.Join(t.TempDir(), "operator-apply.json")
-	if err := os.WriteFile(operatorInputPath, httpRequestBody, 0o600); err != nil {
-		t.Fatalf("write operator CLI input: %v", err)
-	}
-	var operatorCLI bytes.Buffer
-	if err := pentestctl.Run(&operatorCLI, []string{
-		"--db", operatorFixture.dbPath,
-		"blackboard", "apply",
-		"--project", operatorFixture.project.ID,
-		"--actor-id", "local-operator",
-		"--input", operatorInputPath,
-	}); err != nil {
-		t.Fatalf("operator CLI apply: %v", err)
-	}
-	var gotOperator projectinterface.ApplyMutationResponse
-	if err := json.Unmarshal(operatorCLI.Bytes(), &gotOperator); err != nil {
-		t.Fatalf("decode operator CLI apply: %v", err)
-	}
-	if gotOperator.RequestKind != want.RequestKind || gotOperator.ObservedGraphRevision != want.ObservedGraphRevision ||
-		len(gotOperator.Result.Operations) != 1 ||
-		gotOperator.Result.Operations[0].StableKey != want.Result.Operations[0].StableKey ||
-		gotOperator.Result.Operations[0].NodeType != want.Result.Operations[0].NodeType ||
-		gotOperator.Result.Operations[0].NodeVersion != want.Result.Operations[0].NodeVersion ||
-		gotOperator.Result.Operations[0].Changed != want.Result.Operations[0].Changed {
-		t.Fatalf("operator CLI semantic result = %+v", gotOperator)
-	}
-	var operatorCurrent bytes.Buffer
-	if err := pentestctl.Run(&operatorCurrent, []string{
-		"--db", operatorFixture.dbPath,
-		"blackboard", "graph", "current",
-		"--project", operatorFixture.project.ID,
-		"--actor-id", "local-operator",
-	}); err != nil {
-		t.Fatalf("operator CLI current graph: %v", err)
-	}
-	if !bytes.Contains(operatorCurrent.Bytes(), []byte("objective:find-admin-surface")) ||
-		!bytes.Contains(operatorCurrent.Bytes(), []byte("Locate the authenticated admin surface")) {
-		t.Fatalf("operator CLI current graph omitted operator mutation: %s", operatorCurrent.String())
-	}
 }
 
 func TestCheckpointAndFinishConformAcrossMCPAndTaskCLI(t *testing.T) {
@@ -439,53 +398,6 @@ func TestRetainEvidenceProducesSameResultAcrossModuleHTTPMCPAndTaskCLI(t *testin
 	}
 	if !bytes.Equal(bytes.TrimSpace(cli.Bytes()), wantJSON) {
 		t.Fatalf("task CLI retain result = %s want %s", cli.Bytes(), wantJSON)
-	}
-}
-
-func TestOperatorCLIRetainEvidenceRequiresExplicitSourceRoot(t *testing.T) {
-	fixture := newServiceFixture(t)
-	sourceRoot := filepath.Join(fixture.artifactRoot, "operator-cli-source")
-	if err := os.MkdirAll(sourceRoot, 0o700); err != nil {
-		t.Fatalf("create operator CLI source root: %v", err)
-	}
-	source := filepath.Join(sourceRoot, "proof.txt")
-	if err := os.WriteFile(source, []byte("operator CLI proof"), 0o600); err != nil {
-		t.Fatalf("write operator CLI source: %v", err)
-	}
-	body, _ := json.Marshal(projectinterface.RetainEvidenceRequest{
-		ProtocolVersion: projectinterface.RuntimeProtocolVersion, IdempotencyKey: "retain:operator-cli",
-		StableKey: "evidence:operator-cli", ArtifactType: "file", SourcePath: source, Summary: "operator CLI proof",
-	})
-	inputPath := filepath.Join(t.TempDir(), "operator-retain.json")
-	if err := os.WriteFile(inputPath, body, 0o600); err != nil {
-		t.Fatalf("write operator CLI input: %v", err)
-	}
-	baseArgs := []string{"--db", fixture.dbPath, "blackboard", "evidence", "retain", "--project", fixture.project.ID, "--actor-id", "local-operator", "--input", inputPath}
-	missingRootErr := pentestctl.Run(io.Discard, baseArgs)
-	if interfaceErr := projectinterface.AsError(missingRootErr); interfaceErr == nil || interfaceErr.Code != projectinterface.ErrCodeInvalidRequest {
-		t.Fatalf("operator CLI without source root error = %v", missingRootErr)
-	}
-	var output bytes.Buffer
-	args := append(append([]string{}, baseArgs...), "--source-root", sourceRoot)
-	if err := pentestctl.Run(&output, args); err != nil {
-		t.Fatalf("operator CLI retain: %v", err)
-	}
-	var response projectinterface.RetainEvidenceResponse
-	if err := json.Unmarshal(output.Bytes(), &response); err != nil || response.Result.Node.StableKey != "evidence:operator-cli" {
-		t.Fatalf("operator CLI response = %s err=%v", output.Bytes(), err)
-	}
-	var replay bytes.Buffer
-	if err := pentestctl.Run(&replay, args); err != nil {
-		t.Fatalf("operator CLI replay: %v", err)
-	}
-	if !bytes.Equal(output.Bytes(), replay.Bytes()) {
-		t.Fatalf("operator CLI replay drifted:\nfirst %s\nreplay %s", output.Bytes(), replay.Bytes())
-	}
-	stored, err := fixture.graph.ReadNode(context.Background(), blackboard.ReadNodeRequest{
-		ProjectID: fixture.project.ID, NodeType: blackboard.NodeTypeEvidenceArtifact, Key: "evidence:operator-cli",
-	})
-	if err != nil || stored.Node.PropertyMap["sha256"] != response.Result.SHA256 {
-		t.Fatalf("operator CLI graph state = %+v err=%v", stored.Node, err)
 	}
 }
 
