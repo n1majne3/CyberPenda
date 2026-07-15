@@ -203,17 +203,7 @@ func assertMCPBootstrapHasNoLegacyTools(t *testing.T, endpoint string) {
 	if err != nil {
 		t.Fatalf("list v2 bootstrap MCP tools: %v", err)
 	}
-	retired := map[string]bool{
-		"upsert_project_fact": true, "get_project_fact": true, "list_project_facts": true,
-		"search_project_facts": true, "deprecate_project_fact": true, "upsert_fact_relation": true,
-		"record_vulnerability": true, "list_vulnerabilities": true, "attach_evidence": true,
-		"generate_report": true, "submit_task_summary": true,
-		"blackboard_apply": true, "blackboard_retain_evidence": true,
-		"blackboard_checkpoint_attempt": true, "blackboard_finish_continuation": true,
-	}
-	for _, tool := range listed.Tools {
-		if retired[tool.Name] {
-			t.Fatalf("v2 bootstrap MCP exposed retired tool %q", tool.Name)
-		}
+	if len(listed.Tools) != 0 {
+		t.Fatalf("v2 bootstrap MCP tools = %#v, want an empty catalog until #114", listed.Tools)
 	}
 }

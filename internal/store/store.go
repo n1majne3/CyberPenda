@@ -9,8 +9,12 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -41,20 +45,68 @@ type DB struct {
 type MigrationSource struct {
 	*sql.DB
 	canonicalStore string
+	classification MigrationSourceClassification
+	cleanup        func()
 }
+
+// MigrationSourceClassification states how an offline v1 source was validated.
+type MigrationSourceClassification string
+
+const (
+	MigrationSourceNumberedV1    MigrationSourceClassification = "numbered_v1"
+	MigrationSourcePreNumberedV1 MigrationSourceClassification = "pre_numbered_v1"
+)
+
+// ErrMigrationHistoryUnavailable reports that a pre-numbered source has no
+// checksum ledger and was validated through its legacy schema fingerprint.
+var ErrMigrationHistoryUnavailable = errors.New("pre-numbered v1 source has no migration history; legacy schema fingerprint was validated")
 
 // CanonicalStore reports the validated v1 epoch without activating it.
 func (source *MigrationSource) CanonicalStore() string { return source.canonicalStore }
 
+// Classification reports whether the source has numbered migration history.
+func (source *MigrationSource) Classification() MigrationSourceClassification {
+	return source.classification
+}
+
+func (source *MigrationSource) Close() error {
+	err := source.DB.Close()
+	if source.cleanup != nil {
+		source.cleanup()
+		source.cleanup = nil
+	}
+	return err
+}
+
+// Validate revalidates the source according to its explicit classification.
+// Numbered sources validate checksums; pre-numbered sources validate the known
+// legacy table/column fingerprint instead of claiming checksum coverage.
+func (source *MigrationSource) Validate(ctx context.Context) error {
+	switch source.classification {
+	case MigrationSourceNumberedV1:
+		return ValidateMigrationHistory(ctx, source.DB)
+	case MigrationSourcePreNumberedV1:
+		return validatePreNumberedLegacySchema(ctx, source.DB)
+	default:
+		return fmt.Errorf("unknown migration-source classification %q", source.classification)
+	}
+}
+
 // ValidateMigrationHistory revalidates the source through the read-only
 // connection and never applies a numbered migration.
 func (source *MigrationSource) ValidateMigrationHistory(ctx context.Context) error {
+	if source.classification == MigrationSourcePreNumberedV1 {
+		return ErrMigrationHistoryUnavailable
+	}
 	return ValidateMigrationHistory(ctx, source.DB)
 }
 
 // Open connects to the SQLite database at path and runs numbered migrations.
 // An empty path uses an in-memory database, which is handy for tests.
 func Open(path string) (*DB, error) {
+	if err := rejectV1BeforeActiveOpen(path); err != nil {
+		return nil, err
+	}
 	dsn, err := buildDSN(path)
 	if err != nil {
 		return nil, err
@@ -83,6 +135,34 @@ func Open(path string) (*DB, error) {
 	return &DB{db}, nil
 }
 
+// rejectV1BeforeActiveOpen classifies an existing file without letting SQLite
+// write to the source. The active DSN enables WAL during Ping, so this check must
+// run first or even a refused v1 open can change the database header.
+func rejectV1BeforeActiveOpen(path string) error {
+	if path == "" || path == ":memory:" {
+		return nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("inspect existing store path: %w", err)
+	}
+	if info.Size() == 0 {
+		return nil
+	}
+	db, cleanup, err := openReadOnlyInspection(path)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = db.Close()
+		cleanup()
+	}()
+	return rejectV1ActiveOpen(db)
+}
+
 // OpenMigrationSource opens an existing Blackboard v1 database read-only for
 // offline inspection and migration. It never applies migrations or changes the
 // canonical Store epoch.
@@ -90,36 +170,275 @@ func OpenMigrationSource(path string) (*MigrationSource, error) {
 	if path == "" || path == ":memory:" {
 		return nil, fmt.Errorf("offline Blackboard migration source must be an existing file-backed database")
 	}
-	dsn, err := buildReadOnlyDSN(path)
+	db, cleanup, err := openReadOnlyInspection(path)
 	if err != nil {
 		return nil, err
 	}
+	closeWith := func(err error) (*MigrationSource, error) {
+		_ = db.Close()
+		cleanup()
+		return nil, err
+	}
+	classification, epoch, err := classifyMigrationSource(context.Background(), db)
+	if err != nil {
+		return closeWith(err)
+	}
+	return &MigrationSource{DB: db, canonicalStore: epoch, classification: classification, cleanup: cleanup}, nil
+}
+
+// openReadOnlyInspection never lets SQLite open the source in a mode that can
+// create or modify sidecars. A clean source can be read immutable in place. If
+// WAL state exists, main and WAL are copied to a private temporary directory so
+// SQLite can reconstruct shared memory and read the current snapshot there.
+func openReadOnlyInspection(path string) (*sql.DB, func(), error) {
+	hasSidecars, err := sqliteSidecarsExist(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	inspectionPath := path
+	immutable := true
+	cleanup := func() {}
+	if hasSidecars {
+		inspectionPath, cleanup, err = copySQLiteInspection(path)
+		if err != nil {
+			return nil, nil, err
+		}
+		immutable = false
+	}
+	dsn, err := buildReadOnlyInspectionDSN(inspectionPath, immutable)
+	if err != nil {
+		cleanup()
+		return nil, nil, err
+	}
 	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		cleanup()
+		return nil, nil, fmt.Errorf("inspect existing store read-only: %w", err)
+	}
+	return db, cleanup, nil
+}
+
+func sqliteSidecarsExist(path string) (bool, error) {
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Stat(path + suffix); err == nil {
+			return true, nil
+		} else if !os.IsNotExist(err) {
+			return false, fmt.Errorf("inspect SQLite sidecar %s: %w", suffix, err)
+		}
+	}
+	return false, nil
+}
+
+func copySQLiteInspection(path string) (string, func(), error) {
+	dir, err := os.MkdirTemp("", "cyberpenda-store-inspection-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("create SQLite inspection directory: %w", err)
+	}
+	cleanup := func() { _ = os.RemoveAll(dir) }
+	target := filepath.Join(dir, "source.db")
+	if err := copySQLiteFile(path, target, false); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	if err := copySQLiteFile(path+"-wal", target+"-wal", true); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return target, cleanup, nil
+}
+
+func copySQLiteFile(sourcePath, targetPath string, optional bool) error {
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		if optional && os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("open SQLite inspection source %s: %w", filepath.Base(sourcePath), err)
+	}
+	defer source.Close()
+	target, err := os.OpenFile(targetPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("create SQLite inspection copy %s: %w", filepath.Base(targetPath), err)
+	}
+	if _, err := io.Copy(target, source); err != nil {
+		_ = target.Close()
+		return fmt.Errorf("copy SQLite inspection file %s: %w", filepath.Base(sourcePath), err)
+	}
+	if err := target.Close(); err != nil {
+		return fmt.Errorf("close SQLite inspection copy %s: %w", filepath.Base(targetPath), err)
+	}
+	return nil
+}
+
+func classifyMigrationSource(ctx context.Context, db *sql.DB) (MigrationSourceClassification, string, error) {
+	var hasMigrations, hasEpoch int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_migrations'`).Scan(&hasMigrations); err != nil {
+		return "", "", fmt.Errorf("inspect migration-source history table: %w", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='blackboard_store_state'`).Scan(&hasEpoch); err != nil {
+		return "", "", fmt.Errorf("inspect migration-source epoch table: %w", err)
+	}
+	switch {
+	case hasMigrations == 1 && hasEpoch == 1:
+		if err := ValidateMigrationHistory(ctx, db); err != nil {
+			return "", "", err
+		}
+		var epoch string
+		if err := db.QueryRowContext(ctx, `SELECT canonical_store FROM blackboard_store_state WHERE id=1`).Scan(&epoch); err != nil {
+			return "", "", fmt.Errorf("read migration-source store epoch: %w", err)
+		}
+		switch epoch {
+		case CanonicalStoreLegacyV1, CanonicalStoreGraphV1, CanonicalStoreGraphV1Finalized:
+			return MigrationSourceNumberedV1, epoch, nil
+		default:
+			return "", "", fmt.Errorf("offline Blackboard migration source requires a v1 store epoch, got %q", epoch)
+		}
+	case hasMigrations == 0 && hasEpoch == 0:
+		if err := validatePreNumberedLegacySchema(ctx, db); err != nil {
+			return "", "", err
+		}
+		return MigrationSourcePreNumberedV1, CanonicalStoreLegacyV1, nil
+	default:
+		return "", "", fmt.Errorf("offline Blackboard migration source has incomplete numbered-v1 metadata: schema_migrations=%d blackboard_store_state=%d", hasMigrations, hasEpoch)
+	}
+}
+
+type schemaColumnFingerprint struct {
+	Type       string
+	NotNull    int
+	PrimaryKey int
+}
+
+type schemaFingerprint map[string]map[string]schemaColumnFingerprint
+
+func validatePreNumberedLegacySchema(ctx context.Context, db *sql.DB) error {
+	expected, err := migration1BaselineFingerprint(ctx)
+	if err != nil {
+		return fmt.Errorf("build known pre-numbered v1 schema fingerprint: %w", err)
+	}
+	actual, err := readSchemaFingerprint(ctx, db)
+	if err != nil {
+		return fmt.Errorf("read pre-numbered v1 schema fingerprint: %w", err)
+	}
+	if len(actual) != len(expected) {
+		return fmt.Errorf("pre-numbered v1 schema fingerprint mismatch: got %d user tables, want %d", len(actual), len(expected))
+	}
+	optionalMissing := map[string]map[string]bool{
+		"projects": {"defaults_json": true},
+	}
+	for table, expectedColumns := range expected {
+		actualColumns, ok := actual[table]
+		if !ok {
+			return fmt.Errorf("pre-numbered v1 schema fingerprint mismatch: required table %q is missing", table)
+		}
+		for column, got := range actualColumns {
+			want, ok := expectedColumns[column]
+			if !ok {
+				return fmt.Errorf("pre-numbered v1 schema fingerprint mismatch: table %q has unknown column %q", table, column)
+			}
+			if got != want {
+				return fmt.Errorf("pre-numbered v1 schema fingerprint mismatch: table %q column %q = %+v, want %+v", table, column, got, want)
+			}
+		}
+		for column := range expectedColumns {
+			if _, ok := actualColumns[column]; ok {
+				continue
+			}
+			if optionalMissing[table][column] {
+				continue
+			}
+			return fmt.Errorf("pre-numbered v1 schema fingerprint mismatch: table %q column %q is missing", table, column)
+		}
+	}
+	for table := range actual {
+		if _, ok := expected[table]; !ok {
+			return fmt.Errorf("pre-numbered v1 schema fingerprint mismatch: unknown user table %q", table)
+		}
+	}
+	return nil
+}
+
+func migration1BaselineFingerprint(ctx context.Context) (schemaFingerprint, error) {
+	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	closeWith := func(err error) (*MigrationSource, error) {
-		_ = db.Close()
+	defer db.Close()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
 		return nil, err
 	}
-	if err := db.Ping(); err != nil {
-		return closeWith(err)
+	if err := execStatements(tx, migration1BaselineSQL); err != nil {
+		_ = tx.Rollback()
+		return nil, err
 	}
-	if err := ValidateMigrationHistory(context.Background(), db); err != nil {
-		return closeWith(err)
+	if err := tx.Commit(); err != nil {
+		return nil, err
 	}
-	var epoch string
-	if err := db.QueryRow(`SELECT canonical_store FROM blackboard_store_state WHERE id=1`).Scan(&epoch); err != nil {
-		return closeWith(fmt.Errorf("read migration-source store epoch: %w", err))
+	return readSchemaFingerprint(ctx, db)
+}
+
+func readSchemaFingerprint(ctx context.Context, db migrationHistoryQueryer) (schemaFingerprint, error) {
+	rows, err := db.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
+	if err != nil {
+		return nil, err
 	}
-	switch epoch {
-	case CanonicalStoreLegacyV1, CanonicalStoreGraphV1, CanonicalStoreGraphV1Finalized:
-		return &MigrationSource{DB: db, canonicalStore: epoch}, nil
-	default:
-		return closeWith(fmt.Errorf("offline Blackboard migration source requires a v1 store epoch, got %q", epoch))
+	var tables []string
+	for rows.Next() {
+		var table string
+		if err := rows.Scan(&table); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		tables = append(tables, table)
 	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+
+	fingerprint := make(schemaFingerprint, len(tables))
+	for _, table := range tables {
+		quotedTable := strings.ReplaceAll(table, `"`, `""`)
+		columnRows, err := db.QueryContext(ctx, `PRAGMA table_info("`+quotedTable+`")`)
+		if err != nil {
+			return nil, err
+		}
+		columns := map[string]schemaColumnFingerprint{}
+		for columnRows.Next() {
+			var cid, notNull, primaryKey int
+			var name, columnType string
+			var defaultValue any
+			if err := columnRows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+				_ = columnRows.Close()
+				return nil, err
+			}
+			columns[name] = schemaColumnFingerprint{
+				Type: strings.ToUpper(strings.TrimSpace(columnType)), NotNull: notNull, PrimaryKey: primaryKey,
+			}
+		}
+		if err := columnRows.Err(); err != nil {
+			_ = columnRows.Close()
+			return nil, err
+		}
+		if err := columnRows.Close(); err != nil {
+			return nil, err
+		}
+		fingerprint[table] = columns
+	}
+	return fingerprint, nil
 }
 
 func rejectV1ActiveOpen(db *sql.DB) error {
@@ -243,11 +562,12 @@ func buildDSN(path string) (string, error) {
 	return "file:" + escaped + "?" + values.Encode(), nil
 }
 
-func buildReadOnlyDSN(path string) (string, error) {
+func buildReadOnlyInspectionDSN(path string, immutable bool) (string, error) {
 	values := url.Values{}
 	values.Set("mode", "ro")
-	values.Add("_pragma", "busy_timeout(5000)")
-	values.Add("_pragma", "foreign_keys(1)")
+	if immutable {
+		values.Set("immutable", "1")
+	}
 	values.Add("_pragma", "query_only(1)")
 	escaped := strings.ReplaceAll(url.PathEscape(path), "%2F", "/")
 	return "file:" + escaped + "?" + values.Encode(), nil

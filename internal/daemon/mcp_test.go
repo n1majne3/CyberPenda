@@ -67,22 +67,15 @@ func TestMCPEndpointInitializesWithNoLegacyV1Tools(t *testing.T) {
 	if resp.Code != http.StatusOK {
 		t.Fatalf("tools/list expected 200, got %d: %s", resp.Code, resp.Body.String())
 	}
-	body := resp.Body.String()
-	for _, tool := range []string{
-		"upsert_project_fact",
-		"get_project_fact",
-		"list_project_facts",
-		"search_project_facts",
-		"deprecate_project_fact",
-		"upsert_fact_relation",
-		"record_vulnerability",
-		"list_vulnerabilities",
-		"attach_evidence",
-		"generate_report",
-		"submit_task_summary",
-	} {
-		if bytes.Contains([]byte(body), []byte(tool)) {
-			t.Fatalf("blackboard_v2 tools/list exposed retired v1 tool %q in %s", tool, body)
-		}
+	var listed struct {
+		Result struct {
+			Tools []json.RawMessage `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode tools/list: %v", err)
+	}
+	if len(listed.Result.Tools) != 0 {
+		t.Fatalf("blackboard_v2 tools/list = %#v, want an empty catalog until #114", listed.Result.Tools)
 	}
 }

@@ -1,10 +1,16 @@
 package store_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"fmt"
+	"net/url"
+	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
 	"pentest/internal/store"
@@ -92,6 +98,12 @@ func TestOpenMigrationSourceValidatesHistoricalV1ReadOnlyWithoutActivation(t *te
 	if source.CanonicalStore() != "graph_v1" {
 		t.Fatalf("migration source epoch = %q, want graph_v1", source.CanonicalStore())
 	}
+	if source.Classification() != store.MigrationSourceNumberedV1 {
+		t.Fatalf("migration source classification = %q, want numbered_v1", source.Classification())
+	}
+	if err := source.Validate(context.Background()); err != nil {
+		t.Fatalf("revalidate numbered migration source: %v", err)
+	}
 	if err := source.ValidateMigrationHistory(context.Background()); err != nil {
 		t.Fatalf("validate historical v1 migrations: %v", err)
 	}
@@ -111,6 +123,38 @@ func TestOpenMigrationSourceValidatesHistoricalV1ReadOnlyWithoutActivation(t *te
 	if err == nil || err.Error() != want {
 		t.Fatalf("ordinary Open after migration-source read = %v, want %q", err, want)
 	}
+}
+
+func TestOpenMigrationSourceReadsWALSnapshotWithoutMutatingSource(t *testing.T) {
+	path := createV1StoreFixture(t, store.CanonicalStoreGraphV1)
+	defer holdV1EpochUpdateInWAL(t, path, store.CanonicalStoreGraphV1Finalized)()
+	before := captureSQLiteSourceState(t, path)
+	if !before.WAL.Exists || !before.SHM.Exists {
+		t.Fatalf("fixture lacks SQLite sidecars: wal=%v shm=%v", before.WAL.Exists, before.SHM.Exists)
+	}
+
+	source, err := store.OpenMigrationSource(path)
+	if err != nil {
+		t.Fatalf("open WAL-backed migration source: %v", err)
+	}
+	if source.CanonicalStore() != store.CanonicalStoreGraphV1Finalized {
+		_ = source.Close()
+		t.Fatalf("migration source epoch = %q, want graph_v1_finalized", source.CanonicalStore())
+	}
+	if source.Classification() != store.MigrationSourceNumberedV1 {
+		_ = source.Close()
+		t.Fatalf("migration source classification = %q, want numbered_v1", source.Classification())
+	}
+	if err := source.ValidateMigrationHistory(context.Background()); err != nil {
+		_ = source.Close()
+		t.Fatalf("validate WAL-backed migration history: %v", err)
+	}
+	if err := source.Close(); err != nil {
+		t.Fatalf("close WAL-backed migration source: %v", err)
+	}
+
+	after := captureSQLiteSourceState(t, path)
+	assertSQLiteSourceStateEqual(t, before, after)
 }
 
 func TestOpenRefusesPreNumberedV1WithoutBootstrappingV2(t *testing.T) {
@@ -163,6 +207,267 @@ func TestOpenRefusesPreNumberedV1WithoutBootstrappingV2(t *testing.T) {
 	if projectName != "Legacy" || migrationsTable != 0 {
 		t.Fatalf("pre-numbered source mutated: project=%q schema_migrations=%d", projectName, migrationsTable)
 	}
+}
+
+func TestOrdinaryOpenRefusesV1WithoutTouchingSQLiteFileOrSidecars(t *testing.T) {
+	tests := []struct {
+		name        string
+		epoch       string
+		journalMode string
+		make        func(*testing.T) string
+		prepare     func(*testing.T, string) func()
+		wantSidecar bool
+	}{
+		{name: "numbered graph_v1 delete journal", epoch: store.CanonicalStoreGraphV1, journalMode: "DELETE", make: func(t *testing.T) string {
+			return createV1StoreFixture(t, store.CanonicalStoreGraphV1)
+		}},
+		{name: "numbered graph_v1 wal journal", epoch: store.CanonicalStoreGraphV1, journalMode: "WAL", make: func(t *testing.T) string {
+			return createV1StoreFixture(t, store.CanonicalStoreGraphV1)
+		}},
+		{name: "numbered v1 with newer epoch in live wal", epoch: store.CanonicalStoreGraphV1Finalized, make: func(t *testing.T) string {
+			return createV1StoreFixture(t, store.CanonicalStoreGraphV1)
+		}, prepare: func(t *testing.T, path string) func() {
+			return holdV1EpochUpdateInWAL(t, path, store.CanonicalStoreGraphV1Finalized)
+		}, wantSidecar: true},
+		{name: "pre-numbered legacy_v1", epoch: store.CanonicalStoreLegacyV1, journalMode: "DELETE", make: createPreNumberedV1Fixture},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := test.make(t)
+			if test.prepare != nil {
+				defer test.prepare(t, path)()
+			} else {
+				forceJournalMode(t, path, test.journalMode)
+			}
+			before := captureSQLiteSourceState(t, path)
+			if !test.wantSidecar && (before.WAL.Exists || before.SHM.Exists) {
+				t.Fatalf("fixture has SQLite sidecars before refused Open: wal=%v shm=%v", before.WAL.Exists, before.SHM.Exists)
+			}
+			if test.wantSidecar && (!before.WAL.Exists || !before.SHM.Exists) {
+				t.Fatalf("fixture lacks SQLite sidecars before refused Open: wal=%v shm=%v", before.WAL.Exists, before.SHM.Exists)
+			}
+
+			opened, err := store.Open(path)
+			if opened != nil {
+				_ = opened.Close()
+				t.Fatal("ordinary Open returned an active v1 Store")
+			}
+			want := fmt.Sprintf(v1MigrationGuidance, test.epoch)
+			if err == nil || err.Error() != want {
+				t.Fatalf("ordinary Open error = %v, want %q", err, want)
+			}
+
+			after := captureSQLiteSourceState(t, path)
+			assertSQLiteSourceStateEqual(t, before, after)
+		})
+	}
+}
+
+type sqliteFileImage struct {
+	Exists bool
+	Bytes  []byte
+	SHA256 [sha256.Size]byte
+}
+
+type sqliteSourceState struct {
+	Main               sqliteFileImage
+	WAL                sqliteFileImage
+	SHM                sqliteFileImage
+	JournalMode        string
+	MigrationChecksums []string
+	EpochTableExists   bool
+	Epoch              string
+}
+
+func captureSQLiteSourceState(t *testing.T, path string) sqliteSourceState {
+	t.Helper()
+	values := url.Values{"mode": {"ro"}, "immutable": {"1"}}
+	escaped := strings.ReplaceAll(url.PathEscape(path), "%2F", "/")
+	db, err := sql.Open("sqlite", "file:"+escaped+"?"+values.Encode())
+	if err != nil {
+		t.Fatalf("open immutable source snapshot: %v", err)
+	}
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		t.Fatalf("ping immutable source snapshot: %v", err)
+	}
+	state := sqliteSourceState{}
+	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&state.JournalMode); err != nil {
+		_ = db.Close()
+		t.Fatalf("read source journal mode: %v", err)
+	}
+	var hasMigrations int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_migrations'`).Scan(&hasMigrations); err != nil {
+		_ = db.Close()
+		t.Fatalf("inspect source migration history: %v", err)
+	}
+	if hasMigrations == 1 {
+		rows, err := db.Query(`SELECT printf('%d|%s|%s',version,name,checksum) FROM schema_migrations ORDER BY version`)
+		if err != nil {
+			_ = db.Close()
+			t.Fatalf("read source migration checksums: %v", err)
+		}
+		for rows.Next() {
+			var checksum string
+			if err := rows.Scan(&checksum); err != nil {
+				_ = rows.Close()
+				_ = db.Close()
+				t.Fatalf("scan source migration checksum: %v", err)
+			}
+			state.MigrationChecksums = append(state.MigrationChecksums, checksum)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			_ = db.Close()
+			t.Fatalf("iterate source migration checksums: %v", err)
+		}
+		if err := rows.Close(); err != nil {
+			_ = db.Close()
+			t.Fatalf("close source migration checksum rows: %v", err)
+		}
+	}
+	var hasEpoch int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='blackboard_store_state'`).Scan(&hasEpoch); err != nil {
+		_ = db.Close()
+		t.Fatalf("inspect source epoch table: %v", err)
+	}
+	state.EpochTableExists = hasEpoch == 1
+	if state.EpochTableExists {
+		if err := db.QueryRow(`SELECT canonical_store FROM blackboard_store_state WHERE id=1`).Scan(&state.Epoch); err != nil {
+			_ = db.Close()
+			t.Fatalf("read source epoch: %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close immutable source snapshot: %v", err)
+	}
+	state.Main = captureSQLiteFileImage(t, path, true)
+	state.WAL = captureSQLiteFileImage(t, path+"-wal", false)
+	state.SHM = captureSQLiteFileImage(t, path+"-shm", false)
+	return state
+}
+
+func captureSQLiteFileImage(t *testing.T, path string, required bool) sqliteFileImage {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if !required && os.IsNotExist(err) {
+			return sqliteFileImage{}
+		}
+		t.Fatalf("read SQLite file %s: %v", path, err)
+	}
+	return sqliteFileImage{Exists: true, Bytes: raw, SHA256: sha256.Sum256(raw)}
+}
+
+func assertSQLiteSourceStateEqual(t *testing.T, before, after sqliteSourceState) {
+	t.Helper()
+	if !bytes.Equal(after.Main.Bytes, before.Main.Bytes) {
+		t.Errorf("SQLite main file bytes changed after read-only inspection")
+	}
+	if after.Main.SHA256 != before.Main.SHA256 {
+		t.Errorf("SQLite main file SHA256 changed: before=%x after=%x", before.Main.SHA256, after.Main.SHA256)
+	}
+	if after.JournalMode != before.JournalMode {
+		t.Errorf("SQLite journal_mode changed: before=%q after=%q", before.JournalMode, after.JournalMode)
+	}
+	for name, pair := range map[string][2]sqliteFileImage{"-wal": {before.WAL, after.WAL}, "-shm": {before.SHM, after.SHM}} {
+		if pair[0].Exists != pair[1].Exists || !bytes.Equal(pair[0].Bytes, pair[1].Bytes) || pair[0].SHA256 != pair[1].SHA256 {
+			t.Errorf("SQLite %s sidecar changed: before=%+v after=%+v", name, pair[0], pair[1])
+		}
+	}
+	if !reflect.DeepEqual(after.MigrationChecksums, before.MigrationChecksums) {
+		t.Errorf("migration checksum rows changed: before=%v after=%v", before.MigrationChecksums, after.MigrationChecksums)
+	}
+	if after.EpochTableExists != before.EpochTableExists || after.Epoch != before.Epoch {
+		t.Errorf("canonical epoch changed: before=(exists=%v epoch=%q) after=(exists=%v epoch=%q)", before.EpochTableExists, before.Epoch, after.EpochTableExists, after.Epoch)
+	}
+}
+
+func forceJournalMode(t *testing.T, path, want string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open source to set journal mode: %v", err)
+	}
+	var mode string
+	if err := db.QueryRow(`PRAGMA journal_mode=` + want).Scan(&mode); err != nil {
+		_ = db.Close()
+		t.Fatalf("set source journal mode: %v", err)
+	}
+	if mode != strings.ToLower(want) {
+		_ = db.Close()
+		t.Fatalf("source journal mode = %q, want %q", mode, strings.ToLower(want))
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close source journal setup: %v", err)
+	}
+}
+
+func holdV1EpochUpdateInWAL(t *testing.T, path, epoch string) func() {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open v1 source for WAL update: %v", err)
+	}
+	closeDB := func() { _ = db.Close() }
+	var mode string
+	if err := db.QueryRow(`PRAGMA journal_mode=WAL`).Scan(&mode); err != nil {
+		closeDB()
+		t.Fatalf("enable WAL for v1 source: %v", err)
+	}
+	if mode != "wal" {
+		closeDB()
+		t.Fatalf("v1 source journal mode = %q, want wal", mode)
+	}
+	if _, err := db.Exec(`PRAGMA wal_autocheckpoint=0`); err != nil {
+		closeDB()
+		t.Fatalf("disable WAL autocheckpoint: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE blackboard_store_state SET canonical_store=? WHERE id=1`, epoch); err != nil {
+		closeDB()
+		t.Fatalf("write latest v1 epoch into WAL: %v", err)
+	}
+	return closeDB
+}
+
+func createPreNumberedV1Fixture(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "pre-numbered-v1.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open pre-numbered v1 fixture: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE projects (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			scope_json TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);
+		CREATE TABLE project_facts (
+			id TEXT PRIMARY KEY,
+			project_id TEXT NOT NULL,
+			fact_key TEXT NOT NULL,
+			category TEXT NOT NULL,
+			summary TEXT NOT NULL,
+			body TEXT NOT NULL DEFAULT '',
+			confidence TEXT NOT NULL,
+			scope_status TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);
+		INSERT INTO projects (id,name,scope_json,created_at,updated_at)
+		VALUES ('legacy-project','Legacy','{}','2026-07-15T00:00:00Z','2026-07-15T00:00:00Z');
+	`); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed pre-numbered v1 fixture: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close pre-numbered v1 fixture: %v", err)
+	}
+	return path
 }
 
 func createV1StoreFixture(t *testing.T, epoch string) string {

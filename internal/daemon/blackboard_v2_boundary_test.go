@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -188,32 +189,39 @@ func TestBlackboardV2HandoffResumeIgnoresLegacyRows(t *testing.T) {
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("handoff resume status = %d, want 202; body=%s", response.Code, response.Body.String())
 	}
-	waitForTaskStatus(t, server, projectID, taskID, "completed")
-
-	events := getTaskEvents(t, server, projectID, taskID)
-	if eventCountBefore > len(events) {
-		t.Fatalf("task event count moved backwards: before=%d after=%d", eventCountBefore, len(events))
+	deadline := time.Now().Add(2 * time.Second)
+	var resumedGoals []string
+	var events []map[string]any
+	for time.Now().Before(deadline) {
+		events = getTaskEvents(t, server, projectID, taskID)
+		if eventCountBefore > len(events) {
+			t.Fatalf("task event count moved backwards: before=%d after=%d", eventCountBefore, len(events))
+		}
+		for _, event := range events[eventCountBefore:] {
+			if event["kind"] != "runtime_output" {
+				continue
+			}
+			payload, _ := event["payload"].(map[string]any)
+			if goal, _ := payload["goal"].(string); goal != "" {
+				resumedGoals = append(resumedGoals, goal)
+			}
+		}
+		if len(resumedGoals) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	sawResumedGoal := false
-	for _, event := range events[eventCountBefore:] {
-		if event["kind"] != "runtime_output" {
-			continue
-		}
-		payload, _ := event["payload"].(map[string]any)
-		goal, _ := payload["goal"].(string)
-		if goal == "" {
-			continue
-		}
-		sawResumedGoal = true
+	if len(resumedGoals) == 0 {
+		t.Fatalf("resumed fake Runtime emitted no goal after event %d: %#v", eventCountBefore, events)
+	}
+	for _, goal := range resumedGoals {
 		for _, forbidden := range []string{blackboardfixture.SentinelSummary, "fact:v1-sentinel", "finding:v1-sentinel"} {
 			if strings.Contains(goal, forbidden) {
 				t.Fatalf("handoff resume prompt exposed retired v1 state %q: %s", forbidden, goal)
 			}
 		}
 	}
-	if !sawResumedGoal {
-		t.Fatalf("resumed fake Runtime emitted no goal after event %d: %#v", eventCountBefore, events)
-	}
+	waitForTaskStatus(t, server, projectID, taskID, "completed")
 	after := blackboardfixture.CaptureLegacyState(t, inspectionDB)
 	if !reflect.DeepEqual(after, before) {
 		t.Fatalf("handoff resume mutated legacy Blackboard state\nbefore: %#v\nafter:  %#v", before, after)
@@ -234,6 +242,9 @@ func assertV2BootstrapMCPHasNoLegacyTools(t *testing.T, server *daemon.Server) {
 	listed, err := session.ListTools(ctx, nil)
 	if err != nil {
 		t.Fatalf("list v2 bootstrap MCP tools: %v", err)
+	}
+	if len(listed.Tools) != 0 {
+		t.Fatalf("v2 bootstrap MCP tools = %#v, want an empty catalog until #114", listed.Tools)
 	}
 	retiredTools := []string{
 		"upsert_project_fact", "deprecate_project_fact", "upsert_fact_relation",
