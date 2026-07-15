@@ -1,0 +1,29 @@
+{
+  "schema": "blackboard-v2-implementation-baseline/v1",
+  "fixed_point": "61d07e44a71e25d8392d95afb998d7171b4fe37b",
+  "command": "rtk go test ./...",
+  "passed": 944,
+  "failed": 3,
+  "pre_existing_failures": [
+    {
+      "package": "pentest/internal/blackboardcompat",
+      "test": "TestCompatibilityWritesReturnStable410OnlyAfterEveryRetirementGatePasses",
+      "failure": "the aggregate compatibility-retirement gate test fails because two failed-health-scan cases return compatibility_removed"
+    },
+    {
+      "package": "pentest/internal/blackboardcompat",
+      "test": "TestCompatibilityWritesReturnStable410OnlyAfterEveryRetirementGatePasses/unmet_failed_latest_Blackboard_Health_scan_keeps_writes_deprecated_and_available",
+      "failure": "compatibility_removed: Legacy Blackboard compatibility writes were removed; use blackboard apply"
+    },
+    {
+      "package": "pentest/internal/blackboardcompat",
+      "test": "TestCompatibilityWritesReturnStable410OnlyAfterEveryRetirementGatePasses/unmet_equal-timestamp_newer_failed_Blackboard_Health_scan_keeps_writes_deprecated_and_available",
+      "failure": "compatibility_removed: Legacy Blackboard compatibility writes were removed; use blackboard apply"
+    }
+  ],
+  "intentional_v2_red": {
+    "command": "rtk go test ./internal/blackboardv2contract -run TestEmptyRuntimeSnapshotFixtureIsExactAndConformant -count=1",
+    "test": "TestEmptyRuntimeSnapshotFixtureIsExactAndConformant",
+    "failure": "package has no non-test Go files"
+  }
+}

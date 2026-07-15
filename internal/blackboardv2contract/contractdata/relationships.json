@@ -1,0 +1,171 @@
+{
+  "schema": "blackboard-v2-relationship-matrix/v1",
+  "record_types": ["entity", "objective", "attempt", "fact", "finding", "solution", "evidence"],
+  "relations": [
+    {
+      "relation": "about",
+      "reason_policy": "forbidden",
+      "self_link_policy": "reject",
+      "cycle_policy": "unrestricted",
+      "matrix": [
+        [false, false, false, false, false, false, false],
+        [true, false, false, false, false, false, false],
+        [true, false, false, false, false, false, false],
+        [true, false, false, false, false, false, false],
+        [true, false, false, false, false, false, false],
+        [true, false, false, false, false, false, false],
+        [true, false, false, false, false, false, false]
+      ]
+    },
+    {
+      "relation": "part_of",
+      "reason_policy": "forbidden",
+      "self_link_policy": "reject",
+      "cycle_policy": "acyclic_per_endpoint_family",
+      "matrix": [
+        [true, false, false, false, false, false, false],
+        [false, true, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false]
+      ]
+    },
+    {
+      "relation": "tests",
+      "reason_policy": "forbidden",
+      "self_link_policy": "reject",
+      "cycle_policy": "unrestricted",
+      "matrix": [
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [true, true, false, true, true, true, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false]
+      ]
+    },
+    {
+      "relation": "produced",
+      "reason_policy": "forbidden",
+      "self_link_policy": "reject",
+      "cycle_policy": "unrestricted",
+      "matrix": [
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [true, true, false, true, true, true, true],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false]
+      ]
+    },
+    {
+      "relation": "evidences",
+      "reason_policy": "forbidden",
+      "self_link_policy": "reject",
+      "cycle_policy": "unrestricted",
+      "matrix": [
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, true, true, true, false]
+      ]
+    },
+    {
+      "relation": "supports",
+      "reason_policy": "optional",
+      "self_link_policy": "reject",
+      "cycle_policy": "project_fact_to_project_fact_acyclic",
+      "matrix": [
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, true, true, true, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false]
+      ]
+    },
+    {
+      "relation": "contradicts",
+      "reason_policy": "optional",
+      "self_link_policy": "reject",
+      "cycle_policy": "reciprocal_allowed",
+      "matrix": [
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, true, true, true, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false]
+      ]
+    },
+    {
+      "relation": "derived_from",
+      "reason_policy": "forbidden",
+      "self_link_policy": "reject",
+      "cycle_policy": "acyclic",
+      "matrix": [
+        [false, false, false, false, false, false, false],
+        [false, false, false, true, true, true, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, true, false, false, true],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, true]
+      ]
+    },
+    {
+      "relation": "depends_on",
+      "reason_policy": "optional",
+      "self_link_policy": "reject",
+      "cycle_policy": "acyclic",
+      "matrix": [
+        [false, false, false, false, false, false, false],
+        [false, true, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false]
+      ]
+    },
+    {
+      "relation": "satisfies",
+      "reason_policy": "forbidden",
+      "self_link_policy": "reject",
+      "cycle_policy": "unrestricted",
+      "matrix": [
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, true, false, false, false, false, false],
+        [false, true, false, false, false, false, false],
+        [false, true, false, false, false, false, false],
+        [false, false, false, false, false, false, false]
+      ]
+    },
+    {
+      "relation": "supersedes",
+      "reason_policy": "forbidden",
+      "self_link_policy": "reject",
+      "cycle_policy": "acyclic_single_current_replacement",
+      "matrix": [
+        [true, false, false, false, false, false, false],
+        [false, true, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, true, false, false, false],
+        [false, false, false, false, true, false, false],
+        [false, false, false, false, false, true, false],
+        [false, false, false, false, false, false, true]
+      ]
+    }
+  ]
+}

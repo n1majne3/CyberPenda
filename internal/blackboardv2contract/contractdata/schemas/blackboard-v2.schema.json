@@ -1,0 +1,522 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberpenda.local/schemas/blackboard-v2.schema.json",
+  "$defs": {
+    "blackboardKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 96,
+      "pattern": "^[\\x20-\\x7e]+$",
+      "x-max-utf8-bytes": 96
+    },
+    "semanticText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "x-max-utf8-bytes": 1024
+    },
+    "conciseText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "x-max-utf8-bytes": 512
+    },
+    "nonEmptyText": {"type": "string", "minLength": 1},
+    "version": {"type": "integer", "minimum": 1},
+    "revision": {"type": "integer", "minimum": 0},
+    "scopeStatus": {"enum": ["in_scope", "unknown", "out_of_scope"]},
+    "recordType": {"enum": ["entity", "objective", "attempt", "fact", "finding", "solution", "evidence"]},
+    "relationType": {"enum": ["about", "part_of", "tests", "produced", "evidences", "supports", "contradicts", "derived_from", "depends_on", "satisfies", "supersedes"]},
+    "reasonRelationType": {"enum": ["supports", "contradicts", "depends_on"]},
+    "ordinaryRelationType": {"enum": ["about", "part_of", "tests", "produced", "evidences", "derived_from", "satisfies"]},
+    "mutableRelationType": {"enum": ["about", "part_of", "tests", "produced", "evidences", "supports", "contradicts", "derived_from", "depends_on", "satisfies"]},
+
+    "entityRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "kind", "name", "scope_status"],
+      "properties": {
+        "status": {"const": "active"},
+        "kind": {"$ref": "#/$defs/conciseText"},
+        "name": {"$ref": "#/$defs/conciseText"},
+        "locator": {"$ref": "#/$defs/conciseText"},
+        "description": {"$ref": "#/$defs/conciseText"},
+        "scope_status": {"$ref": "#/$defs/scopeStatus"},
+        "credential_ref": {"$ref": "#/$defs/conciseText"}
+      }
+    },
+    "objectiveRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "objective"],
+      "properties": {
+        "status": {"const": "open"},
+        "objective": {"$ref": "#/$defs/semanticText"}
+      }
+    },
+    "attemptRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "summary"],
+      "properties": {
+        "status": {"const": "open"},
+        "summary": {"$ref": "#/$defs/semanticText"}
+      }
+    },
+    "factRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "summary", "confidence", "scope_status"],
+      "properties": {
+        "category": {"$ref": "#/$defs/conciseText"},
+        "summary": {"$ref": "#/$defs/semanticText"},
+        "body": {"$ref": "#/$defs/nonEmptyText"},
+        "confidence": {"enum": ["tentative", "confirmed"]},
+        "scope_status": {"$ref": "#/$defs/scopeStatus"}
+      }
+    },
+    "findingInputRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "title"],
+      "properties": {
+        "status": {"enum": ["unconfirmed", "confirmed"]},
+        "title": {"$ref": "#/$defs/conciseText"},
+        "target": {"$ref": "#/$defs/conciseText"},
+        "description": {"$ref": "#/$defs/semanticText"},
+        "proof": {"$ref": "#/$defs/nonEmptyText"},
+        "impact": {"$ref": "#/$defs/nonEmptyText"},
+        "recommendation": {"$ref": "#/$defs/nonEmptyText"},
+        "cvss_version": {"enum": ["3.1", "4.0"]},
+        "cvss_vector": {"type": "string", "minLength": 1}
+      }
+    },
+    "findingRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "title", "cvss_pending"],
+      "properties": {
+        "status": {"enum": ["unconfirmed", "confirmed"]},
+        "title": {"$ref": "#/$defs/conciseText"},
+        "target": {"$ref": "#/$defs/conciseText"},
+        "description": {"$ref": "#/$defs/semanticText"},
+        "proof": {"$ref": "#/$defs/nonEmptyText"},
+        "impact": {"$ref": "#/$defs/nonEmptyText"},
+        "recommendation": {"$ref": "#/$defs/nonEmptyText"},
+        "cvss_version": {"enum": ["3.1", "4.0"]},
+        "cvss_vector": {"type": "string", "minLength": 1},
+        "severity": {"enum": ["none", "low", "medium", "high", "critical"]},
+        "cvss_pending": {"type": "boolean"}
+      }
+    },
+    "solutionRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "kind", "summary"],
+      "properties": {
+        "status": {"enum": ["candidate", "verified"]},
+        "kind": {"enum": ["answer", "flag", "procedure"]},
+        "summary": {"$ref": "#/$defs/semanticText"},
+        "value": {"$ref": "#/$defs/nonEmptyText"},
+        "verification_summary": {"$ref": "#/$defs/conciseText"}
+      }
+    },
+    "evidenceRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "artifact_type", "summary", "managed_path", "sha256", "size"],
+      "properties": {
+        "status": {"enum": ["available", "missing"]},
+        "artifact_type": {"$ref": "#/$defs/conciseText"},
+        "summary": {"$ref": "#/$defs/semanticText"},
+        "media_type": {"$ref": "#/$defs/conciseText"},
+        "source_path": {"type": "string"},
+        "managed_path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "size": {"type": "integer", "minimum": 0},
+        "captured_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "historicalEntityRecord": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "kind", "name", "scope_status"],
+      "properties": {"status": {"enum": ["active", "retired", "superseded"]}, "kind": {"$ref": "#/$defs/conciseText"}, "name": {"$ref": "#/$defs/conciseText"}, "locator": {"$ref": "#/$defs/conciseText"}, "description": {"$ref": "#/$defs/conciseText"}, "scope_status": {"$ref": "#/$defs/scopeStatus"}, "credential_ref": {"$ref": "#/$defs/conciseText"}}
+    },
+    "historicalObjectiveRecord": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "objective"],
+      "properties": {"status": {"enum": ["open", "resolved", "abandoned", "superseded"]}, "objective": {"$ref": "#/$defs/semanticText"}, "resolution_summary": {"$ref": "#/$defs/conciseText"}}
+    },
+    "historicalAttemptRecord": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "summary"],
+      "properties": {"status": {"enum": ["open", "succeeded", "failed", "blocked", "inconclusive", "interrupted"]}, "summary": {"$ref": "#/$defs/semanticText"}}
+    },
+    "historicalFactRecord": {
+      "type": "object", "additionalProperties": false,
+      "required": ["category", "summary", "confidence", "scope_status"],
+      "properties": {"category": {"$ref": "#/$defs/conciseText"}, "summary": {"$ref": "#/$defs/semanticText"}, "body": {"$ref": "#/$defs/nonEmptyText"}, "confidence": {"enum": ["tentative", "confirmed", "deprecated"]}, "scope_status": {"$ref": "#/$defs/scopeStatus"}}
+    },
+    "historicalFindingRecord": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "title", "cvss_pending"],
+      "properties": {"status": {"enum": ["unconfirmed", "confirmed", "false_positive", "superseded"]}, "title": {"$ref": "#/$defs/conciseText"}, "target": {"$ref": "#/$defs/conciseText"}, "description": {"$ref": "#/$defs/semanticText"}, "proof": {"$ref": "#/$defs/nonEmptyText"}, "impact": {"$ref": "#/$defs/nonEmptyText"}, "recommendation": {"$ref": "#/$defs/nonEmptyText"}, "cvss_version": {"enum": ["3.1", "4.0"]}, "cvss_vector": {"type": "string", "minLength": 1}, "severity": {"enum": ["none", "low", "medium", "high", "critical"]}, "cvss_pending": {"type": "boolean"}, "resolution_summary": {"$ref": "#/$defs/conciseText"}}
+    },
+    "historicalSolutionRecord": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "kind", "summary"],
+      "properties": {"status": {"enum": ["candidate", "verified", "rejected", "superseded"]}, "kind": {"enum": ["answer", "flag", "procedure"]}, "summary": {"$ref": "#/$defs/semanticText"}, "value": {"$ref": "#/$defs/nonEmptyText"}, "verification_summary": {"$ref": "#/$defs/conciseText"}}
+    },
+    "historicalEvidenceRecord": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "artifact_type", "summary", "managed_path", "sha256", "size"],
+      "properties": {"status": {"enum": ["available", "missing", "superseded"]}, "artifact_type": {"$ref": "#/$defs/conciseText"}, "summary": {"$ref": "#/$defs/semanticText"}, "media_type": {"$ref": "#/$defs/conciseText"}, "source_path": {"type": "string"}, "managed_path": {"type": "string", "minLength": 1}, "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "size": {"type": "integer", "minimum": 0}, "captured_at": {"type": "string", "format": "date-time"}}
+    },
+
+    "entityPartial": {
+      "type": "object", "additionalProperties": false, "minProperties": 1,
+      "properties": {"kind": {"$ref": "#/$defs/conciseText"}, "name": {"$ref": "#/$defs/conciseText"}, "locator": {"$ref": "#/$defs/conciseText"}, "description": {"$ref": "#/$defs/conciseText"}, "scope_status": {"$ref": "#/$defs/scopeStatus"}, "credential_ref": {"$ref": "#/$defs/conciseText"}}
+    },
+    "objectivePartial": {"type": "object", "additionalProperties": false, "minProperties": 1, "properties": {"objective": {"$ref": "#/$defs/semanticText"}}},
+    "attemptPartial": {"type": "object", "additionalProperties": false, "minProperties": 1, "properties": {"summary": {"$ref": "#/$defs/semanticText"}}},
+    "factPartial": {
+      "type": "object", "additionalProperties": false, "minProperties": 1,
+      "properties": {"category": {"$ref": "#/$defs/conciseText"}, "summary": {"$ref": "#/$defs/semanticText"}, "body": {"$ref": "#/$defs/nonEmptyText"}, "scope_status": {"$ref": "#/$defs/scopeStatus"}}
+    },
+    "findingPartial": {
+      "type": "object", "additionalProperties": false, "minProperties": 1,
+      "properties": {"title": {"$ref": "#/$defs/conciseText"}, "target": {"$ref": "#/$defs/conciseText"}, "description": {"$ref": "#/$defs/semanticText"}, "proof": {"$ref": "#/$defs/nonEmptyText"}, "impact": {"$ref": "#/$defs/nonEmptyText"}, "recommendation": {"$ref": "#/$defs/nonEmptyText"}, "cvss_version": {"enum": ["3.1", "4.0"]}, "cvss_vector": {"type": "string", "minLength": 1}}
+    },
+    "solutionPartial": {
+      "type": "object", "additionalProperties": false, "minProperties": 1,
+      "properties": {"kind": {"enum": ["answer", "flag", "procedure"]}, "summary": {"$ref": "#/$defs/semanticText"}, "value": {"$ref": "#/$defs/nonEmptyText"}, "verification_summary": {"$ref": "#/$defs/conciseText"}}
+    },
+    "evidencePartial": {
+      "type": "object", "additionalProperties": false, "minProperties": 1,
+      "properties": {"summary": {"$ref": "#/$defs/semanticText"}, "media_type": {"$ref": "#/$defs/conciseText"}, "captured_at": {"type": "string", "format": "date-time"}}
+    },
+
+    "snapshotEntity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "status", "kind", "name", "scope_status"],
+      "properties": {"version": {"$ref": "#/$defs/version"}, "status": {"const": "active"}, "kind": {"$ref": "#/$defs/conciseText"}, "name": {"$ref": "#/$defs/conciseText"}, "locator": {"$ref": "#/$defs/conciseText"}, "description": {"$ref": "#/$defs/conciseText"}, "scope_status": {"$ref": "#/$defs/scopeStatus"}, "credential_ref": {"$ref": "#/$defs/conciseText"}}
+    },
+    "snapshotObjective": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "status", "objective"],
+      "properties": {"version": {"$ref": "#/$defs/version"}, "status": {"const": "open"}, "objective": {"$ref": "#/$defs/semanticText"}}
+    },
+    "snapshotAttempt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "status", "summary"],
+      "properties": {"version": {"$ref": "#/$defs/version"}, "status": {"const": "open"}, "summary": {"$ref": "#/$defs/semanticText"}}
+    },
+    "snapshotFact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "category", "summary", "confidence", "scope_status"],
+      "properties": {"version": {"$ref": "#/$defs/version"}, "category": {"$ref": "#/$defs/conciseText"}, "summary": {"$ref": "#/$defs/semanticText"}, "confidence": {"enum": ["tentative", "confirmed"]}, "scope_status": {"$ref": "#/$defs/scopeStatus"}}
+    },
+    "snapshotFinding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "status", "title", "cvss_pending"],
+      "properties": {"version": {"$ref": "#/$defs/version"}, "status": {"enum": ["unconfirmed", "confirmed"]}, "title": {"$ref": "#/$defs/conciseText"}, "target": {"$ref": "#/$defs/conciseText"}, "description": {"$ref": "#/$defs/semanticText"}, "severity": {"enum": ["none", "low", "medium", "high", "critical"]}, "cvss_pending": {"type": "boolean"}}
+    },
+    "snapshotSolution": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "status", "kind", "summary"],
+      "properties": {"version": {"$ref": "#/$defs/version"}, "status": {"enum": ["candidate", "verified"]}, "kind": {"enum": ["answer", "flag", "procedure"]}, "summary": {"$ref": "#/$defs/semanticText"}, "value": {"$ref": "#/$defs/nonEmptyText"}, "verification_summary": {"$ref": "#/$defs/conciseText"}}
+    },
+    "snapshotEvidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "status", "artifact_type", "summary"],
+      "properties": {"version": {"$ref": "#/$defs/version"}, "status": {"enum": ["available", "missing"]}, "artifact_type": {"$ref": "#/$defs/conciseText"}, "summary": {"$ref": "#/$defs/semanticText"}, "media_type": {"$ref": "#/$defs/conciseText"}, "captured_at": {"type": "string", "format": "date-time"}}
+    },
+    "snapshotWork": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "objectives": {"type": "object", "propertyNames": {"$ref": "#/$defs/blackboardKey"}, "additionalProperties": {"$ref": "#/$defs/snapshotObjective"}},
+        "attempts": {"type": "object", "propertyNames": {"$ref": "#/$defs/blackboardKey"}, "additionalProperties": {"$ref": "#/$defs/snapshotAttempt"}}
+      }
+    },
+    "snapshotKnowledge": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "entities": {"type": "object", "propertyNames": {"$ref": "#/$defs/blackboardKey"}, "additionalProperties": {"$ref": "#/$defs/snapshotEntity"}},
+        "facts": {"type": "object", "propertyNames": {"$ref": "#/$defs/blackboardKey"}, "additionalProperties": {"$ref": "#/$defs/snapshotFact"}},
+        "findings": {"type": "object", "propertyNames": {"$ref": "#/$defs/blackboardKey"}, "additionalProperties": {"$ref": "#/$defs/snapshotFinding"}},
+        "solutions": {"type": "object", "propertyNames": {"$ref": "#/$defs/blackboardKey"}, "additionalProperties": {"$ref": "#/$defs/snapshotSolution"}},
+        "evidence": {"type": "object", "propertyNames": {"$ref": "#/$defs/blackboardKey"}, "additionalProperties": {"$ref": "#/$defs/snapshotEvidence"}}
+      },
+      "not": {"required": ["findings", "solutions"]}
+    },
+    "relationshipTuple": {
+      "oneOf": [
+        {
+          "type": "array", "minItems": 3, "maxItems": 3,
+          "prefixItems": [{"$ref": "#/$defs/blackboardKey"}, {"enum": ["about", "part_of", "tests", "produced", "evidences", "derived_from", "satisfies", "supersedes"]}, {"$ref": "#/$defs/blackboardKey"}],
+          "items": false
+        },
+        {
+          "type": "array", "minItems": 3, "maxItems": 4,
+          "prefixItems": [{"$ref": "#/$defs/blackboardKey"}, {"$ref": "#/$defs/reasonRelationType"}, {"$ref": "#/$defs/blackboardKey"}, {"$ref": "#/$defs/conciseText"}],
+          "items": false
+        }
+      ]
+    },
+    "runtimeSnapshot": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "semantics", "revision", "work", "knowledge", "relations"],
+      "properties": {
+        "schema": {"const": "runtime-blackboard/v2"},
+        "semantics": {"const": "work is active; knowledge is current; history and details are available by key"},
+        "revision": {"$ref": "#/$defs/revision"},
+        "work": {"$ref": "#/$defs/snapshotWork"},
+        "knowledge": {"$ref": "#/$defs/snapshotKnowledge"},
+        "relations": {"type": "array", "items": {"$ref": "#/$defs/relationshipTuple"}}
+      }
+    },
+
+    "currentDetail": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "revision", "key", "type", "version", "record", "relationships"],
+      "properties": {
+        "schema": {"const": "blackboard-record/v2"},
+        "revision": {"$ref": "#/$defs/revision"},
+        "key": {"$ref": "#/$defs/blackboardKey"},
+        "type": {"$ref": "#/$defs/recordType"},
+        "version": {"$ref": "#/$defs/version"},
+        "record": {"type": "object"},
+        "relationships": {"type": "array", "items": {"$ref": "#/$defs/relationshipTuple"}},
+        "sync": {"$ref": "#/$defs/syncAttachment"}
+      },
+      "allOf": [
+        {"if": {"properties": {"type": {"const": "entity"}}}, "then": {"properties": {"record": {"$ref": "#/$defs/entityRecord"}}}},
+        {"if": {"properties": {"type": {"const": "objective"}}}, "then": {"properties": {"record": {"$ref": "#/$defs/objectiveRecord"}}}},
+        {"if": {"properties": {"type": {"const": "attempt"}}}, "then": {"properties": {"record": {"$ref": "#/$defs/attemptRecord"}}}},
+        {"if": {"properties": {"type": {"const": "fact"}}}, "then": {"properties": {"record": {"$ref": "#/$defs/factRecord"}}}},
+        {"if": {"properties": {"type": {"const": "finding"}}}, "then": {"properties": {"record": {"$ref": "#/$defs/findingRecord"}}}},
+        {"if": {"properties": {"type": {"const": "solution"}}}, "then": {"properties": {"record": {"$ref": "#/$defs/solutionRecord"}}}},
+        {"if": {"properties": {"type": {"const": "evidence"}}}, "then": {"properties": {"record": {"$ref": "#/$defs/evidenceRecord"}}}}
+      ]
+    },
+    "historyItem": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "type", "record"],
+      "properties": {"version": {"$ref": "#/$defs/version"}, "type": {"$ref": "#/$defs/recordType"}, "record": {"type": "object"}},
+      "allOf": [
+        {"if": {"properties": {"type": {"const": "entity"}}}, "then": {"properties": {"record": {"$ref": "#/$defs/historicalEntityRecord"}}}},
+        {"if": {"properties": {"type": {"const": "objective"}}}, "then": {"properties": {"record": {"$ref": "#/$defs/historicalObjectiveRecord"}}}},
+        {"if": {"properties": {"type": {"const": "attempt"}}}, "then": {"properties": {"record": {"$ref": "#/$defs/historicalAttemptRecord"}}}},
+        {"if": {"properties": {"type": {"const": "fact"}}}, "then": {"properties": {"record": {"$ref": "#/$defs/historicalFactRecord"}}}},
+        {"if": {"properties": {"type": {"const": "finding"}}}, "then": {"properties": {"record": {"$ref": "#/$defs/historicalFindingRecord"}}}},
+        {"if": {"properties": {"type": {"const": "solution"}}}, "then": {"properties": {"record": {"$ref": "#/$defs/historicalSolutionRecord"}}}},
+        {"if": {"properties": {"type": {"const": "evidence"}}}, "then": {"properties": {"record": {"$ref": "#/$defs/historicalEvidenceRecord"}}}}
+      ]
+    },
+    "semanticHistory": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "revision", "key", "items"],
+      "properties": {
+        "schema": {"const": "semantic-history/v2"},
+        "revision": {"$ref": "#/$defs/revision"},
+        "key": {"$ref": "#/$defs/blackboardKey"},
+        "items": {"type": "array", "items": {"$ref": "#/$defs/historyItem"}},
+        "next_cursor": {"type": "string", "minLength": 1},
+        "sync": {"$ref": "#/$defs/syncAttachment"}
+      }
+    },
+    "readRequest": {
+      "type": "object", "additionalProperties": false, "required": ["key"],
+      "properties": {"key": {"$ref": "#/$defs/blackboardKey"}}
+    },
+    "historyRequest": {
+      "type": "object", "additionalProperties": false, "required": ["key"],
+      "properties": {"key": {"$ref": "#/$defs/blackboardKey"}, "cursor": {"type": "string", "minLength": 1}, "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}
+    },
+
+    "createChange": {
+      "type": "object", "additionalProperties": false,
+      "required": ["op", "key", "type", "record"],
+      "properties": {"op": {"const": "create"}, "key": {"$ref": "#/$defs/blackboardKey"}, "type": {"$ref": "#/$defs/recordType"}, "record": {"type": "object"}},
+      "allOf": [
+        {"if": {"properties": {"type": {"const": "entity"}}}, "then": {"properties": {"record": {"$ref": "#/$defs/entityRecord"}}}},
+        {"if": {"properties": {"type": {"const": "objective"}}}, "then": {"properties": {"record": {"$ref": "#/$defs/objectiveRecord"}}}},
+        {"if": {"properties": {"type": {"const": "attempt"}}}, "then": {"properties": {"record": {"$ref": "#/$defs/attemptRecord"}}}},
+        {"if": {"properties": {"type": {"const": "fact"}}}, "then": {"properties": {"record": {"$ref": "#/$defs/factRecord"}}}},
+        {"if": {"properties": {"type": {"const": "finding"}}}, "then": {"properties": {"record": {"$ref": "#/$defs/findingInputRecord"}}}},
+        {"if": {"properties": {"type": {"const": "solution"}}}, "then": {"properties": {"record": {"$ref": "#/$defs/solutionRecord"}}}},
+        {"if": {"properties": {"type": {"const": "evidence"}}}, "then": {"properties": {"record": {"$ref": "#/$defs/evidenceRecord"}}}}
+      ]
+    },
+    "updateChange": {
+      "type": "object", "additionalProperties": false,
+      "required": ["op", "key", "version", "type", "record"],
+      "properties": {
+        "op": {"const": "update"}, "key": {"$ref": "#/$defs/blackboardKey"}, "version": {"$ref": "#/$defs/version"}, "type": {"$ref": "#/$defs/recordType"}, "record": {"type": "object"},
+        "clear": {"type": "array", "uniqueItems": true, "items": {"enum": ["locator", "description", "credential_ref", "body", "target", "proof", "impact", "recommendation", "cvss_version", "cvss_vector", "value", "verification_summary", "media_type", "captured_at"]}}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"type": {"const": "entity"}}},
+          "then": {"properties": {"record": {"$ref": "#/$defs/entityPartial"}, "clear": {"type": "array", "uniqueItems": true, "items": {"enum": ["locator", "description", "credential_ref"]}}}}
+        },
+        {
+          "if": {"properties": {"type": {"const": "objective"}}},
+          "then": {"properties": {"record": {"$ref": "#/$defs/objectivePartial"}}, "not": {"required": ["clear"]}}
+        },
+        {
+          "if": {"properties": {"type": {"const": "attempt"}}},
+          "then": {"properties": {"record": {"$ref": "#/$defs/attemptPartial"}}, "not": {"required": ["clear"]}}
+        },
+        {
+          "if": {"properties": {"type": {"const": "fact"}}},
+          "then": {"properties": {"record": {"$ref": "#/$defs/factPartial"}, "clear": {"type": "array", "uniqueItems": true, "items": {"const": "body"}}}}
+        },
+        {
+          "if": {"properties": {"type": {"const": "finding"}}},
+          "then": {"properties": {"record": {"$ref": "#/$defs/findingPartial"}, "clear": {"type": "array", "uniqueItems": true, "items": {"enum": ["target", "description", "proof", "impact", "recommendation", "cvss_version", "cvss_vector"]}}}}
+        },
+        {
+          "if": {"properties": {"type": {"const": "solution"}}},
+          "then": {"properties": {"record": {"$ref": "#/$defs/solutionPartial"}, "clear": {"type": "array", "uniqueItems": true, "items": {"enum": ["value", "verification_summary"]}}}}
+        },
+        {
+          "if": {"properties": {"type": {"const": "evidence"}}},
+          "then": {"properties": {"record": {"$ref": "#/$defs/evidencePartial"}, "clear": {"type": "array", "uniqueItems": true, "items": {"enum": ["media_type", "captured_at"]}}}}
+        }
+      ]
+    },
+    "transitionChange": {
+      "oneOf": [
+        {"type": "object", "additionalProperties": false, "required": ["op", "key", "version", "status", "resolution_summary"], "properties": {"op": {"const": "transition"}, "key": {"$ref": "#/$defs/blackboardKey"}, "version": {"$ref": "#/$defs/version"}, "status": {"enum": ["resolved", "abandoned", "retired", "false_positive"]}, "resolution_summary": {"$ref": "#/$defs/conciseText"}}},
+        {"type": "object", "additionalProperties": false, "required": ["op", "key", "version", "status", "summary"], "properties": {"op": {"const": "transition"}, "key": {"$ref": "#/$defs/blackboardKey"}, "version": {"$ref": "#/$defs/version"}, "status": {"enum": ["succeeded", "failed", "blocked", "inconclusive", "interrupted", "deprecated", "missing"]}, "summary": {"$ref": "#/$defs/semanticText"}}},
+        {"type": "object", "additionalProperties": false, "required": ["op", "key", "version", "status", "verification_summary"], "properties": {"op": {"const": "transition"}, "key": {"$ref": "#/$defs/blackboardKey"}, "version": {"$ref": "#/$defs/version"}, "status": {"const": "rejected"}, "verification_summary": {"$ref": "#/$defs/conciseText"}}}
+      ]
+    },
+    "relateChange": {
+      "oneOf": [
+        {"type": "object", "additionalProperties": false, "required": ["op", "from", "relation", "to"], "properties": {"op": {"const": "relate"}, "from": {"$ref": "#/$defs/blackboardKey"}, "relation": {"$ref": "#/$defs/ordinaryRelationType"}, "to": {"$ref": "#/$defs/blackboardKey"}}},
+        {"type": "object", "additionalProperties": false, "required": ["op", "from", "relation", "to"], "properties": {"op": {"const": "relate"}, "from": {"$ref": "#/$defs/blackboardKey"}, "relation": {"$ref": "#/$defs/reasonRelationType"}, "to": {"$ref": "#/$defs/blackboardKey"}, "version": {"$ref": "#/$defs/version"}, "reason": {"$ref": "#/$defs/conciseText"}}}
+      ]
+    },
+    "unrelateChange": {
+      "type": "object", "additionalProperties": false,
+      "required": ["op", "from", "relation", "to", "version"],
+      "properties": {"op": {"const": "unrelate"}, "from": {"$ref": "#/$defs/blackboardKey"}, "relation": {"$ref": "#/$defs/mutableRelationType"}, "to": {"$ref": "#/$defs/blackboardKey"}, "version": {"$ref": "#/$defs/version"}}
+    },
+    "mergeChange": {
+      "type": "object", "additionalProperties": false,
+      "required": ["op", "source", "source_version", "canonical", "canonical_version"],
+      "properties": {
+        "op": {"const": "merge"}, "source": {"$ref": "#/$defs/blackboardKey"}, "source_version": {"$ref": "#/$defs/version"}, "canonical": {"$ref": "#/$defs/blackboardKey"}, "canonical_version": {"$ref": "#/$defs/version"},
+        "canonical_record": {"anyOf": [{"$ref": "#/$defs/entityPartial"}, {"$ref": "#/$defs/factPartial"}, {"$ref": "#/$defs/findingPartial"}, {"$ref": "#/$defs/solutionPartial"}, {"$ref": "#/$defs/evidencePartial"}]},
+        "clear": {"type": "array", "uniqueItems": true, "items": {"enum": ["locator", "description", "credential_ref", "body", "target", "proof", "impact", "recommendation", "cvss_version", "cvss_vector", "value", "verification_summary", "media_type", "captured_at"]}}
+      }
+    },
+    "supersedeChange": {
+      "type": "object", "additionalProperties": false,
+      "required": ["op", "replacement", "replaced", "replaced_version"],
+      "properties": {"op": {"const": "supersede"}, "replacement": {"$ref": "#/$defs/blackboardKey"}, "replacement_version": {"$ref": "#/$defs/version"}, "replaced": {"$ref": "#/$defs/blackboardKey"}, "replaced_version": {"$ref": "#/$defs/version"}}
+    },
+    "change": {"oneOf": [{"$ref": "#/$defs/createChange"}, {"$ref": "#/$defs/updateChange"}, {"$ref": "#/$defs/transitionChange"}, {"$ref": "#/$defs/relateChange"}, {"$ref": "#/$defs/unrelateChange"}, {"$ref": "#/$defs/mergeChange"}, {"$ref": "#/$defs/supersedeChange"}]},
+    "changeBatch": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "idempotency_key", "changes"],
+      "properties": {"schema": {"const": "semantic-change-batch/v2"}, "idempotency_key": {"type": "string", "minLength": 1}, "changes": {"type": "array", "items": {"$ref": "#/$defs/change"}}}
+    },
+    "recordVersionTuple": {"type": "array", "minItems": 2, "maxItems": 2, "prefixItems": [{"$ref": "#/$defs/blackboardKey"}, {"$ref": "#/$defs/version"}], "items": false},
+    "relationVersionTuple": {"type": "array", "minItems": 4, "maxItems": 4, "prefixItems": [{"$ref": "#/$defs/blackboardKey"}, {"$ref": "#/$defs/relationType"}, {"$ref": "#/$defs/blackboardKey"}, {"$ref": "#/$defs/version"}], "items": false},
+    "workingSnapshot": {
+      "type": "object", "additionalProperties": false, "required": ["path", "revision"],
+      "properties": {"path": {"const": ".pentest/blackboard.json"}, "revision": {"$ref": "#/$defs/revision"}}
+    },
+    "syncAttachment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["reason", "from_revision", "revision", "snapshot"],
+      "properties": {"reason": {"const": "another_task_changed_shared_project_knowledge"}, "from_revision": {"$ref": "#/$defs/revision"}, "revision": {"$ref": "#/$defs/revision"}, "snapshot": {"$ref": "#/$defs/runtimeSnapshot"}}
+    },
+    "changeResult": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "revision", "records", "relations", "working_snapshot"],
+      "properties": {"schema": {"const": "semantic-change-result/v2"}, "revision": {"$ref": "#/$defs/revision"}, "records": {"type": "array", "items": {"$ref": "#/$defs/recordVersionTuple"}}, "relations": {"type": "array", "items": {"$ref": "#/$defs/relationVersionTuple"}}, "working_snapshot": {"$ref": "#/$defs/workingSnapshot"}, "sync": {"$ref": "#/$defs/syncAttachment"}}
+    },
+    "syncResponse": {
+      "type": "object", "additionalProperties": false, "required": ["sync"],
+      "properties": {"sync": {"$ref": "#/$defs/syncAttachment"}}
+    },
+    "errorBody": {
+      "type": "object", "additionalProperties": false,
+      "required": ["code", "message", "path", "retryable", "details"],
+      "properties": {"code": {"type": "string", "minLength": 1}, "message": {"type": "string", "minLength": 1}, "path": {"type": "string"}, "retryable": {"type": "boolean"}, "details": {"type": "object"}}
+    },
+    "errorEnvelope": {
+      "type": "object", "additionalProperties": false, "required": ["error"],
+      "properties": {"error": {"$ref": "#/$defs/errorBody"}, "sync": {"$ref": "#/$defs/syncAttachment"}}
+    },
+    "unauthenticatedErrorEnvelope": {
+      "type": "object", "additionalProperties": false, "required": ["error"],
+      "properties": {"error": {"$ref": "#/$defs/errorBody"}}
+    },
+
+    "evidenceLink": {"type": "array", "minItems": 2, "maxItems": 2, "prefixItems": [{"enum": ["evidences", "about"]}, {"$ref": "#/$defs/blackboardKey"}], "items": false},
+    "retainEvidenceRequest": {
+      "type": "object", "additionalProperties": false,
+      "required": ["idempotency_key", "key", "attempt", "source_path", "artifact_type", "summary"],
+      "properties": {"idempotency_key": {"type": "string", "minLength": 1}, "key": {"$ref": "#/$defs/blackboardKey"}, "version": {"$ref": "#/$defs/version"}, "attempt": {"$ref": "#/$defs/blackboardKey"}, "source_path": {"type": "string", "minLength": 1}, "artifact_type": {"$ref": "#/$defs/conciseText"}, "summary": {"$ref": "#/$defs/semanticText"}, "media_type": {"$ref": "#/$defs/conciseText"}, "captured_at": {"type": "string", "format": "date-time"}, "links": {"type": "array", "items": {"$ref": "#/$defs/evidenceLink"}}}
+    },
+    "checkpointAttemptRequest": {
+      "type": "object", "additionalProperties": false,
+      "required": ["idempotency_key", "key", "version", "summary"],
+      "properties": {"idempotency_key": {"type": "string", "minLength": 1}, "key": {"$ref": "#/$defs/blackboardKey"}, "version": {"$ref": "#/$defs/version"}, "summary": {"$ref": "#/$defs/semanticText"}}
+    },
+    "finishRequest": {
+      "type": "object", "additionalProperties": false, "required": ["idempotency_key"],
+      "properties": {"idempotency_key": {"type": "string", "minLength": 1}}
+    },
+    "finishResult": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "status", "revision", "working_snapshot"],
+      "properties": {"schema": {"const": "continuation-finish/v2"}, "status": {"const": "finished"}, "revision": {"$ref": "#/$defs/revision"}, "working_snapshot": {"$ref": "#/$defs/workingSnapshot"}, "sync": {"$ref": "#/$defs/syncAttachment"}}
+    },
+
+    "migrationSource": {
+      "type": "object", "additionalProperties": false, "required": ["project", "type", "key"],
+      "properties": {"project": {"type": "string", "minLength": 1}, "type": {"enum": ["observation", "hypothesis", "project_directive"]}, "key": {"type": "string", "minLength": 1}}
+    },
+    "migrationDecision": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source", "allowed_actions"],
+      "properties": {"source": {"$ref": "#/$defs/migrationSource"}, "allowed_actions": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["objective", "tentative_fact", "confirmed_fact", "scope_limit", "discard"]}}, "decision": {"enum": ["objective", "tentative_fact", "confirmed_fact", "scope_limit", "discard"]}, "target_key": {"$ref": "#/$defs/blackboardKey"}}
+    },
+    "migrationMapping": {
+      "type": "object", "additionalProperties": false, "required": ["source_type", "source_key", "action"],
+      "properties": {"source_type": {"type": "string", "minLength": 1}, "source_key": {"type": "string", "minLength": 1}, "action": {"type": "string", "minLength": 1}, "target_key": {"$ref": "#/$defs/blackboardKey"}}
+    },
+    "migrationProjectPlan": {
+      "type": "object", "additionalProperties": false, "required": ["project", "mappings"],
+      "properties": {"project": {"type": "string", "minLength": 1}, "mappings": {"type": "array", "items": {"$ref": "#/$defs/migrationMapping"}}}
+    },
+    "migrationBlocker": {
+      "type": "object", "additionalProperties": false, "required": ["code", "message", "path"],
+      "properties": {"code": {"type": "string", "minLength": 1}, "message": {"type": "string", "minLength": 1}, "path": {"type": "string"}}
+    },
+    "migrationPlan": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "source_digest", "projects", "validation_blockers", "required_decisions"],
+      "properties": {"schema": {"const": "blackboard-v2-migration-plan/v1"}, "source_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "projects": {"type": "array", "items": {"$ref": "#/$defs/migrationProjectPlan"}}, "validation_blockers": {"type": "array", "items": {"$ref": "#/$defs/migrationBlocker"}}, "required_decisions": {"type": "array", "items": {"$ref": "#/$defs/migrationDecision"}}}
+    },
+    "migrationProjectResult": {
+      "type": "object", "additionalProperties": false, "required": ["project", "revision"],
+      "properties": {"project": {"type": "string", "minLength": 1}, "revision": {"$ref": "#/$defs/revision"}}
+    },
+    "migrationValidation": {
+      "type": "object", "additionalProperties": false, "required": ["status", "snapshots_validated"],
+      "properties": {"status": {"const": "passed"}, "snapshots_validated": {"type": "integer", "minimum": 0}}
+    },
+    "migrationResult": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "status", "verified_backup_path", "project_count", "projects", "validation", "store_epoch"],
+      "properties": {"schema": {"const": "blackboard-v2-migration-result/v1"}, "status": {"const": "migrated"}, "verified_backup_path": {"type": "string", "minLength": 1}, "project_count": {"type": "integer", "minimum": 0}, "projects": {"type": "array", "items": {"$ref": "#/$defs/migrationProjectResult"}}, "validation": {"$ref": "#/$defs/migrationValidation"}, "store_epoch": {"const": "blackboard_v2"}}
+    }
+  }
+}

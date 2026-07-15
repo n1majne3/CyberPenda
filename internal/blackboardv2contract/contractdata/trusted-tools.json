@@ -1,0 +1,43 @@
+{
+  "schema": "trusted-blackboard-tools/v2",
+  "authentication": "continuation_interface_grant",
+  "authority": "server_owned",
+  "tools": [
+    {
+      "name": "blackboard_change",
+      "description": "Apply one atomic semantic-change-batch/v2 to the bound Project. Reuse the same idempotency key after an uncertain retry.",
+      "input_schema": "changeBatch",
+      "result_schema": "changeResult"
+    },
+    {
+      "name": "blackboard_read",
+      "description": "Read the current complete semantic record and its current relationships by Blackboard Key.",
+      "input_schema": "readRequest",
+      "result_schema": "currentDetail"
+    },
+    {
+      "name": "blackboard_history",
+      "description": "Read explicit cursor-paginated Semantic History by Blackboard Key; default limit 20 and maximum 100.",
+      "input_schema": "historyRequest",
+      "result_schema": "semanticHistory"
+    },
+    {
+      "name": "blackboard_retain_evidence",
+      "description": "Retain one confined Evidence payload produced by an open Attempt and derive managed integrity fields server-side.",
+      "input_schema": "retainEvidenceRequest",
+      "result_schema": "changeResult"
+    },
+    {
+      "name": "blackboard_checkpoint_attempt",
+      "description": "Version the compact summary of an owned open Attempt and participate in pending Blackboard synchronization.",
+      "input_schema": "checkpointAttemptRequest",
+      "result_schema": "changeResult"
+    },
+    {
+      "name": "blackboard_finish",
+      "description": "Finish the bound Continuation after all of its Attempts are terminal; accepts no Task Summary or outcome copy.",
+      "input_schema": "finishRequest",
+      "result_schema": "finishResult"
+    }
+  ]
+}
