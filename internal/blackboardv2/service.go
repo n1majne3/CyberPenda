@@ -63,6 +63,7 @@ type Change struct {
 	To                 string   `json:"to,omitempty"`
 	Reason             string   `json:"reason,omitempty"`
 	Status             string   `json:"status,omitempty"`
+	Summary            string   `json:"summary,omitempty"`
 	ResolutionSummary  string   `json:"resolution_summary,omitempty"`
 	Replacement        string   `json:"replacement,omitempty"`
 	ReplacementVersion int      `json:"replacement_version,omitempty"`
@@ -114,7 +115,7 @@ func (change *Change) UnmarshalJSON(raw []byte) error {
 		}
 		*change = decoded
 	case "transition":
-		if err := rejectUnknownFields(fields, map[string]bool{"op": true, "key": true, "version": true, "status": true, "resolution_summary": true}); err != nil {
+		if err := rejectUnknownFields(fields, map[string]bool{"op": true, "key": true, "version": true, "status": true, "summary": true, "resolution_summary": true}); err != nil {
 			return err
 		}
 		decoded, err := decodeTransitionChange(fields)
@@ -158,6 +159,29 @@ type EntityPatch struct {
 	CredentialRef *string `json:"credential_ref,omitempty"`
 }
 
+// ObjectiveRecord is the complete semantic Exploration Objective DTO.
+type ObjectiveRecord struct {
+	Status            string `json:"status"`
+	Objective         string `json:"objective"`
+	ResolutionSummary string `json:"resolution_summary,omitempty"`
+}
+
+// ObjectivePatch is the closed partial update shape for open Objectives.
+type ObjectivePatch struct {
+	Objective *string `json:"objective,omitempty"`
+}
+
+// AttemptRecord is the complete semantic Attempt DTO.
+type AttemptRecord struct {
+	Status  string `json:"status"`
+	Summary string `json:"summary"`
+}
+
+// AttemptPatch is the closed partial update shape for open Attempts.
+type AttemptPatch struct {
+	Summary *string `json:"summary,omitempty"`
+}
+
 // FactRecord is the complete semantic Project Fact DTO.
 type FactRecord struct {
 	Category    string `json:"category"`
@@ -180,17 +204,19 @@ type FactPatch struct {
 // records. Empty fields are omitted so each type still serializes to its closed
 // contract allowlist.
 type Record struct {
-	Status        string `json:"status,omitempty"`
-	Kind          string `json:"kind,omitempty"`
-	Name          string `json:"name,omitempty"`
-	Locator       string `json:"locator,omitempty"`
-	Description   string `json:"description,omitempty"`
-	ScopeStatus   string `json:"scope_status,omitempty"`
-	CredentialRef string `json:"credential_ref,omitempty"`
-	Category      string `json:"category,omitempty"`
-	Summary       string `json:"summary,omitempty"`
-	Body          string `json:"body,omitempty"`
-	Confidence    string `json:"confidence,omitempty"`
+	Status            string `json:"status,omitempty"`
+	Objective         string `json:"objective,omitempty"`
+	ResolutionSummary string `json:"resolution_summary,omitempty"`
+	Kind              string `json:"kind,omitempty"`
+	Name              string `json:"name,omitempty"`
+	Locator           string `json:"locator,omitempty"`
+	Description       string `json:"description,omitempty"`
+	ScopeStatus       string `json:"scope_status,omitempty"`
+	CredentialRef     string `json:"credential_ref,omitempty"`
+	Category          string `json:"category,omitempty"`
+	Summary           string `json:"summary,omitempty"`
+	Body              string `json:"body,omitempty"`
+	Confidence        string `json:"confidence,omitempty"`
 }
 
 // ChangeResult is semantic-change-result/v2.
@@ -313,8 +339,25 @@ type RuntimeSnapshot struct {
 	Relations []RelationshipTuple `json:"relations"`
 }
 
-// SnapshotWork is intentionally empty for #100; later tickets add Current Work.
-type SnapshotWork struct{}
+// SnapshotWork groups open Current Work records.
+type SnapshotWork struct {
+	Objectives map[string]SnapshotObjective `json:"objectives,omitempty"`
+	Attempts   map[string]SnapshotAttempt   `json:"attempts,omitempty"`
+}
+
+// SnapshotObjective is the runtime allowlist for open Objectives.
+type SnapshotObjective struct {
+	Version   int    `json:"version"`
+	Status    string `json:"status"`
+	Objective string `json:"objective"`
+}
+
+// SnapshotAttempt is the runtime allowlist for open Attempts.
+type SnapshotAttempt struct {
+	Version int    `json:"version"`
+	Status  string `json:"status"`
+	Summary string `json:"summary"`
+}
 
 // SnapshotKnowledge groups current Project Knowledge records.
 type SnapshotKnowledge struct {
@@ -368,6 +411,19 @@ type storedRecord struct {
 
 // Apply atomically applies a semantic-change-batch/v2 to one Project.
 func (s *Service) Apply(ctx context.Context, projectID string, batch ChangeBatch) (ChangeResult, error) {
+	return s.apply(ctx, projectID, "", batch)
+}
+
+// ApplyForContinuation applies a trusted Runtime batch using server-bound
+// Continuation identity that never enters the semantic payload or result.
+func (s *Service) ApplyForContinuation(ctx context.Context, projectID, continuationID string, batch ChangeBatch) (ChangeResult, error) {
+	if continuationID == "" {
+		return ChangeResult{}, semanticError("authority_denied", "trusted Continuation identity is required", "", nil)
+	}
+	return s.apply(ctx, projectID, continuationID, batch)
+}
+
+func (s *Service) apply(ctx context.Context, projectID, continuationID string, batch ChangeBatch) (ChangeResult, error) {
 	if batch.Schema != changeBatchSchema {
 		return ChangeResult{}, semanticError("invalid_schema", "unsupported semantic change schema", "", nil)
 	}
@@ -388,7 +444,12 @@ func (s *Service) Apply(ctx context.Context, projectID string, batch ChangeBatch
 	if err := ensureProjectState(ctx, tx, projectID); err != nil {
 		return ChangeResult{}, err
 	}
-	if replay, ok, err := idempotencyReplay(ctx, tx, projectID, batch.IdempotencyKey, requestHash); err != nil {
+	if continuationID != "" {
+		if err := validateContinuationProject(ctx, tx, projectID, continuationID); err != nil {
+			return ChangeResult{}, err
+		}
+	}
+	if replay, ok, err := idempotencyReplay(ctx, tx, projectID, continuationID, batch.IdempotencyKey, requestHash); err != nil {
 		return ChangeResult{}, err
 	} else if ok {
 		if err := tx.Commit(); err != nil {
@@ -408,6 +469,11 @@ func (s *Service) Apply(ctx context.Context, projectID string, batch ChangeBatch
 		if err := validateChangeShape(change, index); err != nil {
 			return ChangeResult{}, err
 		}
+		if continuationID != "" {
+			if err := validateContinuationChangeOwnership(ctx, tx, projectID, continuationID, change, index); err != nil {
+				return ChangeResult{}, err
+			}
+		}
 		switch change.Op {
 		case "create":
 			newRevision, key, version, changed, err := applyCreateRecord(ctx, tx, projectID, revision, index, change, now)
@@ -417,6 +483,11 @@ func (s *Service) Apply(ctx context.Context, projectID string, batch ChangeBatch
 			if changed {
 				revision = newRevision
 				changedRecords[key] = version
+				if continuationID != "" && change.Type == "attempt" {
+					if err := bindAttemptOrigin(ctx, tx, projectID, key, continuationID, now); err != nil {
+						return ChangeResult{}, err
+					}
+				}
 			}
 		case "update":
 			newRevision, key, version, changed, err := applyUpdateRecord(ctx, tx, projectID, revision, index, change, now)
@@ -466,9 +537,9 @@ func (s *Service) Apply(ctx context.Context, projectID string, batch ChangeBatch
 		return ChangeResult{}, fmt.Errorf("encode idempotency result: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO blackboard_v2_idempotency_receipts (project_id, idempotency_key, request_hash, result_json, created_at)
-		VALUES (?, ?, ?, ?, ?)`,
-		projectID, batch.IdempotencyKey, requestHash, string(resultJSON), now,
+		INSERT INTO blackboard_v2_idempotency_receipts (project_id, idempotency_key, request_hash, result_json, created_at, continuation_id)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		projectID, batch.IdempotencyKey, requestHash, string(resultJSON), now, continuationID,
 	); err != nil {
 		return ChangeResult{}, fmt.Errorf("store idempotency receipt: %w", err)
 	}
@@ -624,8 +695,7 @@ func (s *Service) ReadHistory(ctx context.Context, projectID, key string, option
 	return SemanticHistory{Schema: historySchema, Revision: revision, Key: key, Items: items, NextCursor: next}, nil
 }
 
-// RuntimeSnapshot returns the complete current runtime-blackboard/v2 snapshot
-// for the #100 Fact-only semantic path.
+// RuntimeSnapshot returns the complete current runtime-blackboard/v2 snapshot.
 func (s *Service) RuntimeSnapshot(ctx context.Context, projectID string) (RuntimeSnapshot, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -642,7 +712,7 @@ func (s *Service) RuntimeSnapshot(ctx context.Context, projectID string) (Runtim
 	rows, err := tx.QueryContext(ctx, `
 		SELECT key, type, version, record_json
 		FROM blackboard_v2_records
-		WHERE project_id = ? AND type IN ('entity', 'fact')
+		WHERE project_id = ? AND type IN ('entity', 'objective', 'attempt', 'fact')
 		ORDER BY key ASC`, projectID,
 	)
 	if err != nil {
@@ -651,6 +721,8 @@ func (s *Service) RuntimeSnapshot(ctx context.Context, projectID string) (Runtim
 	defer rows.Close()
 
 	entities := make(map[string]SnapshotEntity)
+	objectives := make(map[string]SnapshotObjective)
+	attempts := make(map[string]SnapshotAttempt)
 	facts := make(map[string]SnapshotFact)
 	for rows.Next() {
 		var key, typ, raw string
@@ -675,6 +747,12 @@ func (s *Service) RuntimeSnapshot(ctx context.Context, projectID string) (Runtim
 				ScopeStatus:   entity.ScopeStatus,
 				CredentialRef: entity.CredentialRef,
 			}
+		case "objective":
+			objective := record.objectiveRecord()
+			objectives[key] = SnapshotObjective{Version: version, Status: objective.Status, Objective: objective.Objective}
+		case "attempt":
+			attempt := record.attemptRecord()
+			attempts[key] = SnapshotAttempt{Version: version, Status: attempt.Status, Summary: attempt.Summary}
 		case "fact":
 			fact := record.factRecord()
 			facts[key] = SnapshotFact{
@@ -688,6 +766,13 @@ func (s *Service) RuntimeSnapshot(ctx context.Context, projectID string) (Runtim
 	}
 	if err := rows.Err(); err != nil {
 		return RuntimeSnapshot{}, fmt.Errorf("iterate Blackboard v2 snapshot records: %w", err)
+	}
+	work := SnapshotWork{}
+	if len(objectives) != 0 {
+		work.Objectives = objectives
+	}
+	if len(attempts) != 0 {
+		work.Attempts = attempts
 	}
 	knowledge := SnapshotKnowledge{}
 	if len(entities) != 0 {
@@ -704,7 +789,7 @@ func (s *Service) RuntimeSnapshot(ctx context.Context, projectID string) (Runtim
 		Schema:    snapshotSchema,
 		Semantics: snapshotSemantics,
 		Revision:  revision,
-		Work:      SnapshotWork{},
+		Work:      work,
 		Knowledge: knowledge,
 		Relations: relationships,
 	}, nil
@@ -714,6 +799,10 @@ func applyCreateRecord(ctx context.Context, tx *sql.Tx, projectID string, revisi
 	switch change.Type {
 	case "entity":
 		return applyCreateEntity(ctx, tx, projectID, revision, index, change, now)
+	case "objective":
+		return applyCreateObjective(ctx, tx, projectID, revision, index, change, now)
+	case "attempt":
+		return applyCreateAttempt(ctx, tx, projectID, revision, index, change, now)
 	case "fact":
 		return applyCreateFact(ctx, tx, projectID, revision, index, change, now)
 	default:
@@ -725,11 +814,94 @@ func applyUpdateRecord(ctx context.Context, tx *sql.Tx, projectID string, revisi
 	switch change.Type {
 	case "entity":
 		return applyUpdateEntity(ctx, tx, projectID, revision, index, change, now)
+	case "objective":
+		return applyUpdateObjective(ctx, tx, projectID, revision, index, change, now)
+	case "attempt":
+		return applyUpdateAttempt(ctx, tx, projectID, revision, index, change, now)
 	case "fact":
 		return applyUpdateFact(ctx, tx, projectID, revision, index, change, now)
 	default:
 		return revision, "", 0, false, semanticError("semantic_validation", "unsupported Blackboard v2 record type in this slice", fmt.Sprintf("changes[%d].type", index), nil)
 	}
+}
+
+func applyCreateObjective(ctx context.Context, tx *sql.Tx, projectID string, revision, index int, change Change, now string) (int, string, int, bool, error) {
+	path := fmt.Sprintf("changes[%d]", index)
+	if err := validateKey(change.Key, path+".key"); err != nil {
+		return revision, "", 0, false, err
+	}
+	record, err := completeObjectiveRecord(change.Record, path+".record")
+	if err != nil {
+		return revision, "", 0, false, err
+	}
+	if err := validateObjectiveRecord(record, path+".record"); err != nil {
+		return revision, "", 0, false, err
+	}
+	existing, err := loadCurrentRecord(ctx, tx, projectID, change.Key)
+	if err == nil {
+		if existing.typ == "objective" && objectivesEqual(existing.record.objectiveRecord(), record) {
+			return revision, change.Key, existing.version, false, nil
+		}
+		return revision, "", 0, false, semanticError("key_conflict", fmt.Sprintf("%s already exists", change.Key), path+".key", map[string]any{"key": change.Key})
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return revision, "", 0, false, err
+	}
+	if used, err := historicalKeyExists(ctx, tx, projectID, change.Key); err != nil {
+		return revision, "", 0, false, err
+	} else if used {
+		return revision, "", 0, false, semanticError("key_conflict", fmt.Sprintf("%s already exists in Semantic History", change.Key), path+".key", map[string]any{"key": change.Key})
+	}
+	return insertCurrentWorkRecord(ctx, tx, projectID, revision, change.Key, "objective", record, now)
+}
+
+func applyCreateAttempt(ctx context.Context, tx *sql.Tx, projectID string, revision, index int, change Change, now string) (int, string, int, bool, error) {
+	path := fmt.Sprintf("changes[%d]", index)
+	if err := validateKey(change.Key, path+".key"); err != nil {
+		return revision, "", 0, false, err
+	}
+	record, err := completeAttemptRecord(change.Record, path+".record")
+	if err != nil {
+		return revision, "", 0, false, err
+	}
+	if err := validateAttemptRecord(record, path+".record"); err != nil {
+		return revision, "", 0, false, err
+	}
+	existing, err := loadCurrentRecord(ctx, tx, projectID, change.Key)
+	if err == nil {
+		if existing.typ == "attempt" && attemptsEqual(existing.record.attemptRecord(), record) {
+			return revision, change.Key, existing.version, false, nil
+		}
+		return revision, "", 0, false, semanticError("key_conflict", fmt.Sprintf("%s already exists", change.Key), path+".key", map[string]any{"key": change.Key})
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return revision, "", 0, false, err
+	}
+	if used, err := historicalKeyExists(ctx, tx, projectID, change.Key); err != nil {
+		return revision, "", 0, false, err
+	} else if used {
+		return revision, "", 0, false, semanticError("key_conflict", fmt.Sprintf("%s already exists in Semantic History", change.Key), path+".key", map[string]any{"key": change.Key})
+	}
+	return insertCurrentWorkRecord(ctx, tx, projectID, revision, change.Key, "attempt", record, now)
+}
+
+func insertCurrentWorkRecord(ctx context.Context, tx *sql.Tx, projectID string, revision int, key, typ string, record any, now string) (int, string, int, bool, error) {
+	recordJSON, err := json.Marshal(record)
+	if err != nil {
+		return revision, "", 0, false, fmt.Errorf("encode %s record: %w", typ, err)
+	}
+	nextRevision, err := incrementRevision(ctx, tx, projectID, revision)
+	if err != nil {
+		return revision, "", 0, false, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO blackboard_v2_records (project_id, key, type, version, record_json, created_at, updated_at)
+		VALUES (?, ?, ?, 1, ?, ?, ?)`,
+		projectID, key, typ, string(recordJSON), now, now,
+	); err != nil {
+		return revision, "", 0, false, fmt.Errorf("store Blackboard v2 %s: %w", typ, err)
+	}
+	return nextRevision, key, 1, true, nil
 }
 
 func applyCreateEntity(ctx context.Context, tx *sql.Tx, projectID string, revision, index int, change Change, now string) (int, string, int, bool, error) {
@@ -895,6 +1067,115 @@ func applyUpdateEntity(ctx context.Context, tx *sql.Tx, projectID string, revisi
 	return nextRevision, change.Key, nextVersion, true, nil
 }
 
+func applyUpdateObjective(ctx context.Context, tx *sql.Tx, projectID string, revision, index int, change Change, now string) (int, string, int, bool, error) {
+	path := fmt.Sprintf("changes[%d]", index)
+	existing, err := currentRecordForUpdate(ctx, tx, projectID, change, "objective", path)
+	if err != nil {
+		return revision, "", 0, false, err
+	}
+	if len(change.Clear) != 0 {
+		return revision, "", 0, false, semanticError("semantic_validation", "Objective update does not accept clear", path+".clear", nil)
+	}
+	patch, err := partialObjectiveRecord(change.Record, path+".record")
+	if err != nil {
+		return revision, "", 0, false, err
+	}
+	nextRecord := existing.record.objectiveRecord()
+	if patch.Objective != nil {
+		nextRecord.Objective = *patch.Objective
+	}
+	if err := validateObjectiveRecord(nextRecord, path+".record"); err != nil {
+		return revision, "", 0, false, err
+	}
+	if objectivesEqual(existing.record.objectiveRecord(), nextRecord) {
+		return revision, change.Key, existing.version, false, nil
+	}
+	return replaceCurrentWorkRecord(ctx, tx, projectID, revision, existing, nextRecord, now)
+}
+
+func applyUpdateAttempt(ctx context.Context, tx *sql.Tx, projectID string, revision, index int, change Change, now string) (int, string, int, bool, error) {
+	path := fmt.Sprintf("changes[%d]", index)
+	existing, err := currentRecordForUpdate(ctx, tx, projectID, change, "attempt", path)
+	if err != nil {
+		return revision, "", 0, false, err
+	}
+	if len(change.Clear) != 0 {
+		return revision, "", 0, false, semanticError("semantic_validation", "Attempt update does not accept clear", path+".clear", nil)
+	}
+	patch, err := partialAttemptRecord(change.Record, path+".record")
+	if err != nil {
+		return revision, "", 0, false, err
+	}
+	nextRecord := existing.record.attemptRecord()
+	if patch.Summary != nil {
+		nextRecord.Summary = *patch.Summary
+	}
+	if err := validateAttemptRecord(nextRecord, path+".record"); err != nil {
+		return revision, "", 0, false, err
+	}
+	if attemptsEqual(existing.record.attemptRecord(), nextRecord) {
+		return revision, change.Key, existing.version, false, nil
+	}
+	return replaceCurrentWorkRecord(ctx, tx, projectID, revision, existing, nextRecord, now)
+}
+
+func currentRecordForUpdate(ctx context.Context, tx *sql.Tx, projectID string, change Change, typ, path string) (storedRecord, error) {
+	if err := validateKey(change.Key, path+".key"); err != nil {
+		return storedRecord{}, err
+	}
+	existing, err := loadCurrentRecord(ctx, tx, projectID, change.Key)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return storedRecord{}, semanticError("not_found", fmt.Sprintf("%s was not found", change.Key), path+".key", map[string]any{"key": change.Key})
+		}
+		return storedRecord{}, err
+	}
+	if existing.typ != typ {
+		return storedRecord{}, semanticError("semantic_validation", "record type mismatch", path+".type", map[string]any{"key": change.Key})
+	}
+	if change.Version != existing.version {
+		return storedRecord{}, semanticError(
+			"version_conflict",
+			fmt.Sprintf("%s changed", change.Key),
+			path+".version",
+			map[string]any{"key": change.Key, "expected_version": float64(change.Version), "current_version": float64(existing.version), "next_action": "read_current_record"},
+		)
+	}
+	return existing, nil
+}
+
+func replaceCurrentWorkRecord(ctx context.Context, tx *sql.Tx, projectID string, revision int, existing storedRecord, nextRecord any, now string) (int, string, int, bool, error) {
+	historyJSON, err := json.Marshal(existing.record)
+	if err != nil {
+		return revision, "", 0, false, fmt.Errorf("encode prior %s record: %w", existing.typ, err)
+	}
+	nextJSON, err := json.Marshal(nextRecord)
+	if err != nil {
+		return revision, "", 0, false, fmt.Errorf("encode updated %s record: %w", existing.typ, err)
+	}
+	nextRevision, err := incrementRevision(ctx, tx, projectID, revision)
+	if err != nil {
+		return revision, "", 0, false, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO blackboard_v2_record_history (project_id, key, version, type, record_json, recorded_at)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		projectID, existing.key, existing.version, existing.typ, string(historyJSON), now,
+	); err != nil {
+		return revision, "", 0, false, fmt.Errorf("store prior Blackboard v2 %s: %w", existing.typ, err)
+	}
+	nextVersion := existing.version + 1
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE blackboard_v2_records
+		SET version = ?, record_json = ?, updated_at = ?
+		WHERE project_id = ? AND key = ?`,
+		nextVersion, string(nextJSON), now, projectID, existing.key,
+	); err != nil {
+		return revision, "", 0, false, fmt.Errorf("update Blackboard v2 %s: %w", existing.typ, err)
+	}
+	return nextRevision, existing.key, nextVersion, true, nil
+}
+
 func applyUpdateFact(ctx context.Context, tx *sql.Tx, projectID string, revision, index int, change Change, now string) (int, string, int, bool, error) {
 	if change.Type != "fact" {
 		return revision, "", 0, false, semanticError("semantic_validation", "update supports only Project Facts in this slice", fmt.Sprintf("changes[%d].type", index), nil)
@@ -981,11 +1262,14 @@ func applyRelate(ctx context.Context, tx *sql.Tx, projectID string, revision, in
 	if change.From == change.To {
 		return revision, RelationVersionTuple{}, false, semanticError("semantic_validation", "relationship self-links are invalid", path+".to", nil)
 	}
-	if change.Reason != "" {
+	if change.Relation == "depends_on" {
+		if change.Reason != "" {
+			if err := validateConciseText(change.Reason, path+".reason"); err != nil {
+				return revision, RelationVersionTuple{}, false, err
+			}
+		}
+	} else if change.Reason != "" {
 		return revision, RelationVersionTuple{}, false, semanticError("semantic_validation", "relationship reason is not allowed for this relation", path+".reason", nil)
-	}
-	if change.Version != 0 {
-		return revision, RelationVersionTuple{}, false, semanticError("semantic_validation", "relationship version is not accepted for a new ordinary relation", path+".version", nil)
 	}
 	fromRecord, err := loadCurrentRecord(ctx, tx, projectID, change.From)
 	if err != nil {
@@ -1004,28 +1288,40 @@ func applyRelate(ctx context.Context, tx *sql.Tx, projectID string, revision, in
 	if err := validateRelationshipEndpoint(change.Relation, fromRecord.typ, toRecord.typ, path+".relation"); err != nil {
 		return revision, RelationVersionTuple{}, false, err
 	}
-	if change.Relation == "part_of" {
-		wouldCycle, err := relationshipWouldCycle(ctx, tx, projectID, change.From, change.To)
+	if change.Relation == "part_of" || change.Relation == "derived_from" || change.Relation == "depends_on" {
+		wouldCycle, err := relationshipWouldCycle(ctx, tx, projectID, change.Relation, change.From, change.To)
 		if err != nil {
 			return revision, RelationVersionTuple{}, false, err
 		}
 		if wouldCycle {
-			return revision, RelationVersionTuple{}, false, semanticError("semantic_validation", "Entity part_of containment must be acyclic", path+".to", nil)
+			return revision, RelationVersionTuple{}, false, semanticError("semantic_validation", fmt.Sprintf("%s relationships must be acyclic", change.Relation), path+".to", nil)
 		}
 	}
 
 	var existingVersion int
+	var existingReason string
 	err = tx.QueryRowContext(ctx, `
-		SELECT version
+		SELECT version, reason
 		FROM blackboard_v2_relationships
 		WHERE project_id = ? AND from_key = ? AND relation = ? AND to_key = ?`,
 		projectID, change.From, change.Relation, change.To,
-	).Scan(&existingVersion)
+	).Scan(&existingVersion, &existingReason)
 	if err == nil {
-		return revision, RelationVersionTuple{change.From, change.Relation, change.To, existingVersion}, false, nil
+		if existingReason == change.Reason {
+			return revision, RelationVersionTuple{change.From, change.Relation, change.To, existingVersion}, false, nil
+		}
+		if change.Version != existingVersion {
+			return revision, RelationVersionTuple{}, false, semanticError("version_conflict", "relationship changed", path+".version", map[string]any{
+				"from": change.From, "relation": change.Relation, "to": change.To, "expected_version": float64(change.Version), "current_version": float64(existingVersion), "next_action": "read_current_record",
+			})
+		}
+		return revision, RelationVersionTuple{}, false, semanticError("semantic_validation", "relationship reason updates are implemented by the relation lifecycle slice", path+".reason", nil)
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return revision, RelationVersionTuple{}, false, fmt.Errorf("read Blackboard v2 relationship: %w", err)
+	}
+	if change.Version != 0 {
+		return revision, RelationVersionTuple{}, false, semanticError("semantic_validation", "relationship version is not accepted for a new relation", path+".version", nil)
 	}
 	nextRevision, err := incrementRevision(ctx, tx, projectID, revision)
 	if err != nil {
@@ -1033,8 +1329,8 @@ func applyRelate(ctx context.Context, tx *sql.Tx, projectID string, revision, in
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO blackboard_v2_relationships (project_id, from_key, relation, to_key, version, reason, created_at, updated_at)
-		VALUES (?, ?, ?, ?, 1, '', ?, ?)`,
-		projectID, change.From, change.Relation, change.To, now, now,
+		VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
+		projectID, change.From, change.Relation, change.To, change.Reason, now, now,
 	); err != nil {
 		return revision, RelationVersionTuple{}, false, fmt.Errorf("store Blackboard v2 relationship: %w", err)
 	}
@@ -1046,21 +1342,12 @@ func applyTransition(ctx context.Context, tx *sql.Tx, projectID string, revision
 	if err := validateKey(change.Key, path+".key"); err != nil {
 		return revision, "", 0, false, err
 	}
-	if change.Status != "retired" {
-		return revision, "", 0, false, semanticError("semantic_validation", "only Entity retirement is implemented in this slice", path+".status", nil)
-	}
-	if err := validateConciseText(change.ResolutionSummary, path+".resolution_summary"); err != nil {
-		return revision, "", 0, false, err
-	}
 	existing, err := loadCurrentRecord(ctx, tx, projectID, change.Key)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return revision, "", 0, false, semanticError("not_found", fmt.Sprintf("%s was not found", change.Key), path+".key", map[string]any{"key": change.Key})
 		}
 		return revision, "", 0, false, err
-	}
-	if existing.typ != "entity" {
-		return revision, "", 0, false, semanticError("semantic_validation", "only Entities can be retired in this slice", path+".key", map[string]any{"key": change.Key})
 	}
 	if change.Version != existing.version {
 		return revision, "", 0, false, semanticError(
@@ -1075,15 +1362,110 @@ func applyTransition(ctx context.Context, tx *sql.Tx, projectID string, revision
 			},
 		)
 	}
-	activeJSON, err := json.Marshal(existing.record.entityRecord())
-	if err != nil {
-		return revision, "", 0, false, fmt.Errorf("encode active Entity record: %w", err)
+
+	switch existing.typ {
+	case "entity":
+		if change.Status != "retired" {
+			return revision, "", 0, false, semanticError("semantic_validation", "Entity transition status must be retired", path+".status", nil)
+		}
+		if err := validateConciseText(change.ResolutionSummary, path+".resolution_summary"); err != nil {
+			return revision, "", 0, false, err
+		}
+		terminal := existing.record.entityRecord()
+		terminal.Status = "retired"
+		return terminalizeRecord(ctx, tx, projectID, revision, existing, terminal, now)
+	case "objective":
+		if change.Status != "resolved" && change.Status != "abandoned" {
+			return revision, "", 0, false, semanticError("semantic_validation", "Objective transition status must be resolved or abandoned", path+".status", nil)
+		}
+		if err := validateConciseText(change.ResolutionSummary, path+".resolution_summary"); err != nil {
+			return revision, "", 0, false, err
+		}
+		if change.Status == "resolved" {
+			satisfied, err := hasIncomingSatisfies(ctx, tx, projectID, change.Key)
+			if err != nil {
+				return revision, "", 0, false, err
+			}
+			if !satisfied {
+				return revision, "", 0, false, semanticError("semantic_validation", "resolved Objective requires a current incoming satisfies relationship", path+".status", nil)
+			}
+		}
+		terminal := existing.record.objectiveRecord()
+		terminal.Status = change.Status
+		terminal.ResolutionSummary = change.ResolutionSummary
+		return terminalizeRecord(ctx, tx, projectID, revision, existing, terminal, now)
+	case "attempt":
+		if !isOneOf(change.Status, "succeeded", "failed", "blocked", "inconclusive") {
+			if change.Status == "interrupted" {
+				return revision, "", 0, false, semanticError("semantic_validation", "Runtime interruption is reconciled by the server", path+".status", nil)
+			}
+			return revision, "", 0, false, semanticError("semantic_validation", "Attempt transition status is not terminal", path+".status", nil)
+		}
+		if err := validateSemanticText(change.Summary, path+".summary"); err != nil {
+			return revision, "", 0, false, err
+		}
+		tested, err := currentOutgoingRelationshipCount(ctx, tx, projectID, change.Key, "tests")
+		if err != nil {
+			return revision, "", 0, false, err
+		}
+		if tested == 0 {
+			return revision, "", 0, false, semanticError("semantic_validation", "terminal Attempt requires at least one tested target", path+".status", nil)
+		}
+		produced, err := currentOutgoingRelationshipCount(ctx, tx, projectID, change.Key, "produced")
+		if err != nil {
+			return revision, "", 0, false, err
+		}
+		if produced == 0 {
+			return revision, "", 0, false, semanticError("semantic_validation", "terminal Attempt requires at least one reusable produced outcome", path+".status", nil)
+		}
+		terminal := existing.record.attemptRecord()
+		terminal.Status = change.Status
+		terminal.Summary = change.Summary
+		return terminalizeRecord(ctx, tx, projectID, revision, existing, terminal, now)
+	default:
+		return revision, "", 0, false, semanticError("semantic_validation", "record type does not support this transition", path+".key", map[string]any{"key": change.Key, "type": existing.typ})
 	}
-	retiredRecord := existing.record.entityRecord()
-	retiredRecord.Status = "retired"
-	retiredJSON, err := json.Marshal(retiredRecord)
+}
+
+func currentOutgoingRelationshipCount(ctx context.Context, tx *sql.Tx, projectID, fromKey, relation string) (int, error) {
+	var count int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM blackboard_v2_relationships
+		WHERE project_id = ? AND from_key = ? AND relation = ?`,
+		projectID, fromKey, relation,
+	).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count current %s relationships: %w", relation, err)
+	}
+	return count, nil
+}
+
+func hasIncomingSatisfies(ctx context.Context, tx *sql.Tx, projectID, objectiveKey string) (bool, error) {
+	var exists int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1
+			FROM blackboard_v2_relationships AS rel
+			JOIN blackboard_v2_records AS source
+			  ON source.project_id = rel.project_id AND source.key = rel.from_key
+			WHERE rel.project_id = ? AND rel.relation = 'satisfies' AND rel.to_key = ?
+			  AND source.type IN ('fact', 'finding', 'solution')
+		)`,
+		projectID, objectiveKey,
+	).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check Objective satisfaction: %w", err)
+	}
+	return exists == 1, nil
+}
+
+func terminalizeRecord(ctx context.Context, tx *sql.Tx, projectID string, revision int, existing storedRecord, terminal any, now string) (int, string, int, bool, error) {
+	currentJSON, err := json.Marshal(existing.record)
 	if err != nil {
-		return revision, "", 0, false, fmt.Errorf("encode retired Entity record: %w", err)
+		return revision, "", 0, false, fmt.Errorf("encode current %s record: %w", existing.typ, err)
+	}
+	terminalJSON, err := json.Marshal(terminal)
+	if err != nil {
+		return revision, "", 0, false, fmt.Errorf("encode terminal %s record: %w", existing.typ, err)
 	}
 	nextVersion := existing.version + 1
 	nextRevision, err := incrementRevision(ctx, tx, projectID, revision)
@@ -1092,29 +1474,29 @@ func applyTransition(ctx context.Context, tx *sql.Tx, projectID string, revision
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO blackboard_v2_record_history (project_id, key, version, type, record_json, recorded_at)
-		VALUES (?, ?, ?, 'entity', ?, ?)`,
-		projectID, change.Key, existing.version, string(activeJSON), now,
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		projectID, existing.key, existing.version, existing.typ, string(currentJSON), now,
 	); err != nil {
-		return revision, "", 0, false, fmt.Errorf("store active Entity history: %w", err)
+		return revision, "", 0, false, fmt.Errorf("store current %s history: %w", existing.typ, err)
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO blackboard_v2_record_history (project_id, key, version, type, record_json, recorded_at)
-		VALUES (?, ?, ?, 'entity', ?, ?)`,
-		projectID, change.Key, nextVersion, string(retiredJSON), now,
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		projectID, existing.key, nextVersion, existing.typ, string(terminalJSON), now,
 	); err != nil {
-		return revision, "", 0, false, fmt.Errorf("store retired Entity history: %w", err)
+		return revision, "", 0, false, fmt.Errorf("store terminal %s history: %w", existing.typ, err)
 	}
-	if err := moveCurrentRelationshipsToHistory(ctx, tx, projectID, change.Key); err != nil {
+	if err := moveCurrentRelationshipsToHistory(ctx, tx, projectID, existing.key); err != nil {
 		return revision, "", 0, false, err
 	}
 	if _, err := tx.ExecContext(ctx, `
 		DELETE FROM blackboard_v2_records
 		WHERE project_id = ? AND key = ?`,
-		projectID, change.Key,
+		projectID, existing.key,
 	); err != nil {
-		return revision, "", 0, false, fmt.Errorf("remove retired Entity current record: %w", err)
+		return revision, "", 0, false, fmt.Errorf("remove terminal %s current record: %w", existing.typ, err)
 	}
-	return nextRevision, change.Key, nextVersion, true, nil
+	return nextRevision, existing.key, nextVersion, true, nil
 }
 
 func applySupersede(ctx context.Context, tx *sql.Tx, projectID string, revision, index int, change Change, now string) (int, string, int, RelationVersionTuple, bool, error) {
@@ -1142,8 +1524,8 @@ func applySupersede(ctx context.Context, tx *sql.Tx, projectID string, revision,
 		}
 		return revision, "", 0, RelationVersionTuple{}, false, err
 	}
-	if replacement.typ != "entity" || replaced.typ != "entity" {
-		return revision, "", 0, RelationVersionTuple{}, false, semanticError("semantic_validation", "Entity supersede requires two Entities", path, map[string]any{"replacement_type": replacement.typ, "replaced_type": replaced.typ})
+	if replacement.typ != replaced.typ || !isOneOf(replacement.typ, "entity", "objective") {
+		return revision, "", 0, RelationVersionTuple{}, false, semanticError("semantic_validation", "supersede requires two current records of the same supersedable type", path, map[string]any{"replacement_type": replacement.typ, "replaced_type": replaced.typ})
 	}
 	if change.ReplacementVersion != replacement.version {
 		return revision, "", 0, RelationVersionTuple{}, false, semanticError(
@@ -1161,68 +1543,71 @@ func applySupersede(ctx context.Context, tx *sql.Tx, projectID string, revision,
 			map[string]any{"key": change.Replaced, "expected_version": float64(change.ReplacedVersion), "current_version": float64(replaced.version), "next_action": "read_current_record"},
 		)
 	}
-	activeJSON, err := json.Marshal(replaced.record.entityRecord())
-	if err != nil {
-		return revision, "", 0, RelationVersionTuple{}, false, fmt.Errorf("encode active Entity record: %w", err)
+	var terminal any
+	switch replaced.typ {
+	case "entity":
+		record := replaced.record.entityRecord()
+		record.Status = "superseded"
+		terminal = record
+	case "objective":
+		record := replaced.record.objectiveRecord()
+		record.Status = "superseded"
+		terminal = record
 	}
-	supersededRecord := replaced.record.entityRecord()
-	supersededRecord.Status = "superseded"
-	supersededJSON, err := json.Marshal(supersededRecord)
-	if err != nil {
-		return revision, "", 0, RelationVersionTuple{}, false, fmt.Errorf("encode superseded Entity record: %w", err)
-	}
-	nextVersion := replaced.version + 1
-	nextRevision, err := incrementRevision(ctx, tx, projectID, revision)
+	nextRevision, key, nextVersion, changed, err := terminalizeRecord(ctx, tx, projectID, revision, replaced, terminal, now)
 	if err != nil {
 		return revision, "", 0, RelationVersionTuple{}, false, err
-	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO blackboard_v2_record_history (project_id, key, version, type, record_json, recorded_at)
-		VALUES (?, ?, ?, 'entity', ?, ?)`,
-		projectID, change.Replaced, replaced.version, string(activeJSON), now,
-	); err != nil {
-		return revision, "", 0, RelationVersionTuple{}, false, fmt.Errorf("store active Entity history: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO blackboard_v2_record_history (project_id, key, version, type, record_json, recorded_at)
-		VALUES (?, ?, ?, 'entity', ?, ?)`,
-		projectID, change.Replaced, nextVersion, string(supersededJSON), now,
-	); err != nil {
-		return revision, "", 0, RelationVersionTuple{}, false, fmt.Errorf("store superseded Entity history: %w", err)
-	}
-	if err := moveCurrentRelationshipsToHistory(ctx, tx, projectID, change.Replaced); err != nil {
-		return revision, "", 0, RelationVersionTuple{}, false, err
-	}
-	if _, err := tx.ExecContext(ctx, `
-		DELETE FROM blackboard_v2_records
-		WHERE project_id = ? AND key = ?`,
-		projectID, change.Replaced,
-	); err != nil {
-		return revision, "", 0, RelationVersionTuple{}, false, fmt.Errorf("remove superseded Entity current record: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO blackboard_v2_relationship_history (project_id, from_key, relation, to_key, version, reason, recorded_at)
 		VALUES (?, ?, 'supersedes', ?, 1, '', ?)`,
 		projectID, change.Replacement, change.Replaced, now,
 	); err != nil {
-		return revision, "", 0, RelationVersionTuple{}, false, fmt.Errorf("store Entity supersedes relationship history: %w", err)
+		return revision, "", 0, RelationVersionTuple{}, false, fmt.Errorf("store supersedes relationship history: %w", err)
 	}
 	tuple := RelationVersionTuple{change.Replacement, "supersedes", change.Replaced, 1}
-	return nextRevision, change.Replaced, nextVersion, tuple, true, nil
+	return nextRevision, key, nextVersion, tuple, changed, nil
 }
 
 func validateRelationshipEndpoint(relation, fromType, toType, path string) error {
 	switch relation {
 	case "about":
-		if toType == "entity" && fromType == "fact" {
+		if toType == "entity" && isOneOf(fromType, "objective", "attempt", "fact", "finding", "solution", "evidence") {
 			return nil
 		}
 		return semanticError("semantic_validation", "about must connect an allowed record to an Entity", path, map[string]any{"from_type": fromType, "to_type": toType})
 	case "part_of":
-		if fromType == "entity" && toType == "entity" {
+		if (fromType == "entity" && toType == "entity") || (fromType == "objective" && toType == "objective") {
 			return nil
 		}
-		return semanticError("semantic_validation", "Entity part_of must point from child Entity to parent Entity", path, map[string]any{"from_type": fromType, "to_type": toType})
+		return semanticError("semantic_validation", "part_of must stay within the Entity or Objective endpoint family", path, map[string]any{"from_type": fromType, "to_type": toType})
+	case "tests":
+		if fromType == "attempt" && isOneOf(toType, "objective", "entity", "fact", "finding", "solution") {
+			return nil
+		}
+		return semanticError("semantic_validation", "tests must point from an Attempt to an approved tested target", path, map[string]any{"from_type": fromType, "to_type": toType})
+	case "produced":
+		if fromType == "attempt" && isOneOf(toType, "entity", "objective", "fact", "finding", "solution", "evidence") {
+			return nil
+		}
+		return semanticError("semantic_validation", "produced must point from an Attempt to a reusable outcome", path, map[string]any{"from_type": fromType, "to_type": toType})
+	case "derived_from":
+		if (fromType == "objective" && isOneOf(toType, "fact", "finding", "solution")) ||
+			(fromType == "fact" && isOneOf(toType, "fact", "evidence")) ||
+			(fromType == "evidence" && toType == "evidence") {
+			return nil
+		}
+		return semanticError("semantic_validation", "derived_from endpoint types are not allowed", path, map[string]any{"from_type": fromType, "to_type": toType})
+	case "depends_on":
+		if fromType == "objective" && toType == "objective" {
+			return nil
+		}
+		return semanticError("semantic_validation", "depends_on must point from an Objective to a prerequisite Objective", path, map[string]any{"from_type": fromType, "to_type": toType})
+	case "satisfies":
+		if isOneOf(fromType, "fact", "finding", "solution") && toType == "objective" {
+			return nil
+		}
+		return semanticError("semantic_validation", "satisfies must point from current knowledge to an Objective", path, map[string]any{"from_type": fromType, "to_type": toType})
 	case "supersedes":
 		return semanticError("semantic_validation", "supersedes is created only by the supersede operation", path, nil)
 	default:
@@ -1230,7 +1615,16 @@ func validateRelationshipEndpoint(relation, fromType, toType, path string) error
 	}
 }
 
-func relationshipWouldCycle(ctx context.Context, tx *sql.Tx, projectID, fromKey, toKey string) (bool, error) {
+func isOneOf(value string, allowed ...string) bool {
+	for _, candidate := range allowed {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func relationshipWouldCycle(ctx context.Context, tx *sql.Tx, projectID, relation, fromKey, toKey string) (bool, error) {
 	if fromKey == toKey {
 		return true, nil
 	}
@@ -1249,24 +1643,24 @@ func relationshipWouldCycle(ctx context.Context, tx *sql.Tx, projectID, fromKey,
 		rows, err := tx.QueryContext(ctx, `
 			SELECT to_key
 			FROM blackboard_v2_relationships
-			WHERE project_id = ? AND from_key = ? AND relation = 'part_of'
+			WHERE project_id = ? AND from_key = ? AND relation = ?
 			ORDER BY to_key ASC`,
-			projectID, key,
+			projectID, key, relation,
 		)
 		if err != nil {
-			return false, fmt.Errorf("read Entity part_of containment: %w", err)
+			return false, fmt.Errorf("read %s relationships: %w", relation, err)
 		}
 		for rows.Next() {
 			var parent string
 			if err := rows.Scan(&parent); err != nil {
 				rows.Close()
-				return false, fmt.Errorf("scan Entity part_of containment: %w", err)
+				return false, fmt.Errorf("scan %s relationships: %w", relation, err)
 			}
 			stack = append(stack, parent)
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
-			return false, fmt.Errorf("iterate Entity part_of containment: %w", err)
+			return false, fmt.Errorf("iterate %s relationships: %w", relation, err)
 		}
 		rows.Close()
 	}
@@ -1411,6 +1805,18 @@ func decodeStoredRecord(typ, raw string) (Record, error) {
 			return Record{}, err
 		}
 		return recordFromEntity(record), nil
+	case "objective":
+		var record ObjectiveRecord
+		if err := json.Unmarshal([]byte(raw), &record); err != nil {
+			return Record{}, err
+		}
+		return recordFromObjective(record), nil
+	case "attempt":
+		var record AttemptRecord
+		if err := json.Unmarshal([]byte(raw), &record); err != nil {
+			return Record{}, err
+		}
+		return recordFromAttempt(record), nil
 	case "fact":
 		var record FactRecord
 		if err := json.Unmarshal([]byte(raw), &record); err != nil {
@@ -1477,19 +1883,96 @@ func scanRelationshipTuples(rows relationshipRows) ([]RelationshipTuple, error) 
 	return relationships, nil
 }
 
-func idempotencyReplay(ctx context.Context, tx *sql.Tx, projectID, key, requestHash string) (ChangeResult, bool, error) {
-	var storedHash, raw string
+func validateContinuationProject(ctx context.Context, tx *sql.Tx, projectID, continuationID string) error {
+	var exists int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1
+			FROM task_continuations AS continuation
+			JOIN tasks AS task ON task.id = continuation.task_id
+			WHERE continuation.id = ? AND task.project_id = ?
+		)`,
+		continuationID, projectID,
+	).Scan(&exists); err != nil {
+		return fmt.Errorf("validate trusted Continuation Project: %w", err)
+	}
+	if exists == 0 {
+		return semanticError("authority_denied", "trusted Continuation does not own this Project interface", "", nil)
+	}
+	return nil
+}
+
+func validateContinuationChangeOwnership(ctx context.Context, tx *sql.Tx, projectID, continuationID string, change Change, index int) error {
+	keys := make([]string, 0, 2)
+	switch change.Op {
+	case "update", "transition":
+		keys = append(keys, change.Key)
+	case "relate":
+		keys = append(keys, change.From)
+	case "supersede":
+		keys = append(keys, change.Replacement, change.Replaced)
+	}
+	for _, key := range keys {
+		record, err := loadCurrentRecord(ctx, tx, projectID, key)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if record.typ == "attempt" {
+			if err := requireAttemptOwner(ctx, tx, projectID, key, continuationID, fmt.Sprintf("changes[%d]", index)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func bindAttemptOrigin(ctx context.Context, tx *sql.Tx, projectID, key, continuationID, now string) error {
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO blackboard_v2_attempt_origins (project_id, key, continuation_id, created_at)
+		VALUES (?, ?, ?, ?)`,
+		projectID, key, continuationID, now,
+	); err != nil {
+		return fmt.Errorf("bind Attempt trusted origin: %w", err)
+	}
+	return nil
+}
+
+func requireAttemptOwner(ctx context.Context, tx *sql.Tx, projectID, key, continuationID, path string) error {
+	var owner string
 	err := tx.QueryRowContext(ctx, `
-		SELECT request_hash, result_json
+		SELECT continuation_id
+		FROM blackboard_v2_attempt_origins
+		WHERE project_id = ? AND key = ?`,
+		projectID, key,
+	).Scan(&owner)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && owner != continuationID) {
+		return semanticError("authority_denied", "Attempt is owned by another trusted origin", path, map[string]any{"key": key})
+	}
+	if err != nil {
+		return fmt.Errorf("read Attempt trusted origin: %w", err)
+	}
+	return nil
+}
+
+func idempotencyReplay(ctx context.Context, tx *sql.Tx, projectID, continuationID, key, requestHash string) (ChangeResult, bool, error) {
+	var storedHash, raw, storedContinuationID string
+	err := tx.QueryRowContext(ctx, `
+		SELECT request_hash, result_json, continuation_id
 		FROM blackboard_v2_idempotency_receipts
 		WHERE project_id = ? AND idempotency_key = ?`,
 		projectID, key,
-	).Scan(&storedHash, &raw)
+	).Scan(&storedHash, &raw, &storedContinuationID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ChangeResult{}, false, nil
 	}
 	if err != nil {
 		return ChangeResult{}, false, fmt.Errorf("read idempotency receipt: %w", err)
+	}
+	if storedContinuationID != continuationID {
+		return ChangeResult{}, false, semanticError("authority_denied", "idempotency receipt belongs to another trusted origin", "idempotency_key", nil)
 	}
 	if storedHash != requestHash {
 		return ChangeResult{}, false, semanticError("idempotency_conflict", "idempotency key was already used with different semantics", "idempotency_key", map[string]any{"idempotency_key": key})
@@ -1652,11 +2135,35 @@ func decodeTransitionChange(fields map[string]json.RawMessage) (Change, error) {
 	if err != nil {
 		return Change{}, err
 	}
-	resolutionSummary, err := decodeRequiredString(fields, "resolution_summary")
-	if err != nil {
-		return Change{}, err
+	change := Change{Op: "transition", Key: key, Version: version, Status: status}
+	switch status {
+	case "resolved", "abandoned", "retired", "false_positive":
+		if _, ok := fields["summary"]; ok {
+			return Change{}, fmt.Errorf("transition summary is not allowed for status %s", status)
+		}
+		resolutionSummary, err := decodeRequiredString(fields, "resolution_summary")
+		if err != nil {
+			return Change{}, err
+		}
+		change.ResolutionSummary = resolutionSummary
+	case "succeeded", "failed", "blocked", "inconclusive", "interrupted", "deprecated", "missing":
+		if _, ok := fields["resolution_summary"]; ok {
+			return Change{}, fmt.Errorf("transition resolution_summary is not allowed for status %s", status)
+		}
+		summary, err := decodeRequiredString(fields, "summary")
+		if err != nil {
+			return Change{}, err
+		}
+		change.Summary = summary
+	default:
+		if _, ok := fields["summary"]; ok {
+			return Change{}, fmt.Errorf("transition summary is not allowed for status %s", status)
+		}
+		if _, ok := fields["resolution_summary"]; ok {
+			return Change{}, fmt.Errorf("transition resolution_summary is not allowed for status %s", status)
+		}
 	}
-	return Change{Op: "transition", Key: key, Version: version, Status: status, ResolutionSummary: resolutionSummary}, nil
+	return change, nil
 }
 
 func decodeSupersedeChange(fields map[string]json.RawMessage) (Change, error) {
@@ -1699,6 +2206,10 @@ func decodeCompleteRecord(typ string, raw json.RawMessage) (any, error) {
 	switch typ {
 	case "entity":
 		return decodeEntityRecord(raw)
+	case "objective":
+		return decodeObjectiveRecord(raw)
+	case "attempt":
+		return decodeAttemptRecord(raw)
 	case "fact":
 		return decodeFactRecord(raw)
 	default:
@@ -1710,6 +2221,10 @@ func decodePartialRecord(typ string, raw json.RawMessage) (any, error) {
 	switch typ {
 	case "entity":
 		return decodeEntityPatch(raw)
+	case "objective":
+		return decodeObjectivePatch(raw)
+	case "attempt":
+		return decodeAttemptPatch(raw)
 	case "fact":
 		return decodeFactPatch(raw)
 	default:
@@ -1729,6 +2244,38 @@ func decodeEntityPatch(raw json.RawMessage) (EntityPatch, error) {
 	var patch EntityPatch
 	if err := strictDecodeJSON(raw, &patch); err != nil {
 		return EntityPatch{}, fmt.Errorf("decode Entity patch: %w", err)
+	}
+	return patch, nil
+}
+
+func decodeObjectiveRecord(raw json.RawMessage) (ObjectiveRecord, error) {
+	var record ObjectiveRecord
+	if err := strictDecodeJSON(raw, &record); err != nil {
+		return ObjectiveRecord{}, fmt.Errorf("decode Objective record: %w", err)
+	}
+	return record, nil
+}
+
+func decodeObjectivePatch(raw json.RawMessage) (ObjectivePatch, error) {
+	var patch ObjectivePatch
+	if err := strictDecodeJSON(raw, &patch); err != nil {
+		return ObjectivePatch{}, fmt.Errorf("decode Objective patch: %w", err)
+	}
+	return patch, nil
+}
+
+func decodeAttemptRecord(raw json.RawMessage) (AttemptRecord, error) {
+	var record AttemptRecord
+	if err := strictDecodeJSON(raw, &record); err != nil {
+		return AttemptRecord{}, fmt.Errorf("decode Attempt record: %w", err)
+	}
+	return record, nil
+}
+
+func decodeAttemptPatch(raw json.RawMessage) (AttemptPatch, error) {
+	var patch AttemptPatch
+	if err := strictDecodeJSON(raw, &patch); err != nil {
+		return AttemptPatch{}, fmt.Errorf("decode Attempt patch: %w", err)
 	}
 	return patch, nil
 }
@@ -1801,6 +2348,20 @@ func validateChangeShape(change Change, index int) error {
 		if change.Status == "" {
 			return semanticError("semantic_validation", "transition status is required", fmt.Sprintf("changes[%d].status", index), nil)
 		}
+		switch change.Status {
+		case "resolved", "abandoned", "retired", "false_positive":
+			if change.Summary != "" {
+				return semanticError("semantic_validation", "transition summary is not allowed for this status", fmt.Sprintf("changes[%d].summary", index), nil)
+			}
+		case "succeeded", "failed", "blocked", "inconclusive", "interrupted", "deprecated", "missing":
+			if change.ResolutionSummary != "" {
+				return semanticError("semantic_validation", "transition resolution_summary is not allowed for this status", fmt.Sprintf("changes[%d].resolution_summary", index), nil)
+			}
+		default:
+			if change.Summary != "" || change.ResolutionSummary != "" {
+				return semanticError("semantic_validation", "transition summary field is not allowed for this status", fmt.Sprintf("changes[%d].status", index), nil)
+			}
+		}
 	case "supersede":
 		if change.Replacement == "" {
 			return semanticError("semantic_validation", "supersede replacement is required", fmt.Sprintf("changes[%d].replacement", index), nil)
@@ -1864,6 +2425,90 @@ func partialEntityRecord(value any, path string) (EntityPatch, error) {
 		return decoded, nil
 	default:
 		return EntityPatch{}, semanticError("semantic_validation", "Entity update requires an Entity partial record", path, nil)
+	}
+}
+
+func completeObjectiveRecord(value any, path string) (ObjectiveRecord, error) {
+	switch record := value.(type) {
+	case ObjectiveRecord:
+		return record, nil
+	case *ObjectiveRecord:
+		if record == nil {
+			return ObjectiveRecord{}, semanticError("semantic_validation", "Objective record is required", path, nil)
+		}
+		return *record, nil
+	case json.RawMessage:
+		decoded, err := decodeObjectiveRecord(record)
+		if err != nil {
+			return ObjectiveRecord{}, semanticError("semantic_validation", err.Error(), path, nil)
+		}
+		return decoded, nil
+	default:
+		return ObjectiveRecord{}, semanticError("semantic_validation", "Objective create requires a complete Objective record", path, nil)
+	}
+}
+
+func partialObjectiveRecord(value any, path string) (ObjectivePatch, error) {
+	switch patch := value.(type) {
+	case ObjectivePatch:
+		return patch, nil
+	case *ObjectivePatch:
+		if patch == nil {
+			return ObjectivePatch{}, semanticError("semantic_validation", "Objective update requires an Objective partial record", path, nil)
+		}
+		return *patch, nil
+	case ObjectiveRecord:
+		return ObjectivePatch{Objective: stringPtr(patch.Objective)}, nil
+	case json.RawMessage:
+		decoded, err := decodeObjectivePatch(patch)
+		if err != nil {
+			return ObjectivePatch{}, semanticError("semantic_validation", err.Error(), path, nil)
+		}
+		return decoded, nil
+	default:
+		return ObjectivePatch{}, semanticError("semantic_validation", "Objective update requires an Objective partial record", path, nil)
+	}
+}
+
+func completeAttemptRecord(value any, path string) (AttemptRecord, error) {
+	switch record := value.(type) {
+	case AttemptRecord:
+		return record, nil
+	case *AttemptRecord:
+		if record == nil {
+			return AttemptRecord{}, semanticError("semantic_validation", "Attempt record is required", path, nil)
+		}
+		return *record, nil
+	case json.RawMessage:
+		decoded, err := decodeAttemptRecord(record)
+		if err != nil {
+			return AttemptRecord{}, semanticError("semantic_validation", err.Error(), path, nil)
+		}
+		return decoded, nil
+	default:
+		return AttemptRecord{}, semanticError("semantic_validation", "Attempt create requires a complete Attempt record", path, nil)
+	}
+}
+
+func partialAttemptRecord(value any, path string) (AttemptPatch, error) {
+	switch patch := value.(type) {
+	case AttemptPatch:
+		return patch, nil
+	case *AttemptPatch:
+		if patch == nil {
+			return AttemptPatch{}, semanticError("semantic_validation", "Attempt update requires an Attempt partial record", path, nil)
+		}
+		return *patch, nil
+	case AttemptRecord:
+		return AttemptPatch{Summary: stringPtr(patch.Summary)}, nil
+	case json.RawMessage:
+		decoded, err := decodeAttemptPatch(patch)
+		if err != nil {
+			return AttemptPatch{}, semanticError("semantic_validation", err.Error(), path, nil)
+		}
+		return decoded, nil
+	default:
+		return AttemptPatch{}, semanticError("semantic_validation", "Attempt update requires an Attempt partial record", path, nil)
 	}
 }
 
@@ -2076,6 +2721,23 @@ func containsSecretMarker(value string) bool {
 	return false
 }
 
+func validateObjectiveRecord(record ObjectiveRecord, path string) error {
+	if record.Status != "open" {
+		return semanticError("semantic_validation", "Objective status must be open", path+".status", nil)
+	}
+	if record.ResolutionSummary != "" {
+		return semanticError("semantic_validation", "open Objective must not include resolution_summary", path+".resolution_summary", nil)
+	}
+	return validateSemanticText(record.Objective, path+".objective")
+}
+
+func validateAttemptRecord(record AttemptRecord, path string) error {
+	if record.Status != "open" {
+		return semanticError("semantic_validation", "Attempt status must be open", path+".status", nil)
+	}
+	return validateSemanticText(record.Summary, path+".summary")
+}
+
 func validateFactRecord(record FactRecord, path string) error {
 	if err := validateConciseText(record.Category, path+".category"); err != nil {
 		return err
@@ -2131,6 +2793,14 @@ func factsEqual(a, b FactRecord) bool {
 		a.ScopeStatus == b.ScopeStatus
 }
 
+func objectivesEqual(a, b ObjectiveRecord) bool {
+	return a.Status == b.Status && a.Objective == b.Objective && a.ResolutionSummary == b.ResolutionSummary
+}
+
+func attemptsEqual(a, b AttemptRecord) bool {
+	return a.Status == b.Status && a.Summary == b.Summary
+}
+
 func entitiesEqual(a, b EntityRecord) bool {
 	return a.Status == b.Status &&
 		a.Kind == b.Kind &&
@@ -2153,6 +2823,14 @@ func recordFromEntity(record EntityRecord) Record {
 	}
 }
 
+func recordFromObjective(record ObjectiveRecord) Record {
+	return Record{Status: record.Status, Objective: record.Objective, ResolutionSummary: record.ResolutionSummary}
+}
+
+func recordFromAttempt(record AttemptRecord) Record {
+	return Record{Status: record.Status, Summary: record.Summary}
+}
+
 func recordFromFact(record FactRecord) Record {
 	return Record{
 		Category:    record.Category,
@@ -2173,6 +2851,14 @@ func (record Record) entityRecord() EntityRecord {
 		ScopeStatus:   record.ScopeStatus,
 		CredentialRef: record.CredentialRef,
 	}
+}
+
+func (record Record) objectiveRecord() ObjectiveRecord {
+	return ObjectiveRecord{Status: record.Status, Objective: record.Objective, ResolutionSummary: record.ResolutionSummary}
+}
+
+func (record Record) attemptRecord() AttemptRecord {
+	return AttemptRecord{Status: record.Status, Summary: record.Summary}
 }
 
 func (record Record) factRecord() FactRecord {

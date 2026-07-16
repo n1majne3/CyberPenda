@@ -799,7 +799,27 @@ func migrations() []migration {
 		newMigration(20, "blackboard_v2_store_epoch", migration20SQL, migration20Up),
 		newMigration(21, "blackboard_v2_semantic_facts", migration21SQL, migration21Up),
 		newMigration(22, "blackboard_v2_current_relationships", migration22SQL, migration22Up),
+		newMigration(23, "blackboard_v2_attempt_ownership", migration23SQL, migration23Up),
 	}
+}
+
+const migration23SQL = `
+CREATE TABLE IF NOT EXISTS blackboard_v2_attempt_origins (
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+	key TEXT NOT NULL,
+	continuation_id TEXT NOT NULL REFERENCES task_continuations(id) ON DELETE RESTRICT,
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (project_id, key)
+);
+CREATE INDEX IF NOT EXISTS idx_blackboard_v2_attempt_origins_continuation
+	ON blackboard_v2_attempt_origins (continuation_id);
+`
+
+func migration23Up(tx *sql.Tx) error {
+	if err := ensureColumn(tx, "blackboard_v2_idempotency_receipts", "continuation_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return fmt.Errorf("ensure blackboard_v2_idempotency_receipts.continuation_id: %w", err)
+	}
+	return execStatements(tx, migration23SQL)
 }
 
 const migration22SQL = `

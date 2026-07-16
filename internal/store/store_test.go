@@ -258,6 +258,7 @@ func TestOpenDefaultsCanonicalStoreToBlackboardV2(t *testing.T) {
 		"blackboard_edge_versions",
 		"blackboard_edge_heads",
 		"blackboard_attempt_checkpoint_requests",
+		"blackboard_v2_attempt_origins",
 	} {
 		if !tableExists(t, db.DB, table) {
 			t.Fatalf("expected table %s", table)
@@ -304,6 +305,7 @@ func TestOpenDefaultsCanonicalStoreToBlackboardV2(t *testing.T) {
 		{"task_continuations", "blackboard_finish_graph_revision"},
 		{"task_continuations", "blackboard_finish_mutation_sequence"},
 		{"task_continuations", "blackboard_finished_at"},
+		{"blackboard_v2_idempotency_receipts", "continuation_id"},
 	} {
 		if !columnExists(t, db.DB, col.table, col.column) {
 			t.Fatalf("expected column %s.%s", col.table, col.column)
