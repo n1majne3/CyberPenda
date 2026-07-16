@@ -36,12 +36,19 @@ const (
 
 // Service applies and reads Blackboard v2 semantic state for one Project.
 type Service struct {
-	db *store.DB
+	db             *store.DB
+	evidenceConfig EvidenceConfig
 }
 
 // NewService returns a Blackboard v2 semantic service backed by the Store.
 func NewService(db *store.DB) *Service {
 	return &Service{db: db}
+}
+
+// NewServiceWithEvidence configures the confined filesystem roots used by
+// Runtime Evidence retention.
+func NewServiceWithEvidence(db *store.DB, config EvidenceConfig) *Service {
+	return &Service{db: db, evidenceConfig: config}
 }
 
 // ChangeBatch is the semantic-change-batch/v2 envelope.
@@ -244,6 +251,27 @@ type FactPatch struct {
 	ScopeStatus *string `json:"scope_status,omitempty"`
 }
 
+// EvidenceRecord is the complete semantic Evidence detail DTO. Filesystem and
+// integrity fields are server-derived by RetainEvidenceForContinuation.
+type EvidenceRecord struct {
+	Status       string `json:"status"`
+	ArtifactType string `json:"artifact_type"`
+	Summary      string `json:"summary"`
+	MediaType    string `json:"media_type,omitempty"`
+	SourcePath   string `json:"source_path,omitempty"`
+	ManagedPath  string `json:"managed_path"`
+	SHA256       string `json:"sha256"`
+	Size         int64  `json:"size"`
+	CapturedAt   string `json:"captured_at,omitempty"`
+}
+
+// EvidencePatch is the closed semantic-only update shape for Evidence.
+type EvidencePatch struct {
+	Summary    *string `json:"summary,omitempty"`
+	MediaType  *string `json:"media_type,omitempty"`
+	CapturedAt *string `json:"captured_at,omitempty"`
+}
+
 // Record is the current-detail union for the implemented Project Knowledge
 // records. Empty fields are omitted so each type still serializes to its closed
 // contract allowlist.
@@ -261,6 +289,23 @@ type Record struct {
 	Summary           string `json:"summary,omitempty"`
 	Body              string `json:"body,omitempty"`
 	Confidence        string `json:"confidence,omitempty"`
+	ArtifactType      string `json:"artifact_type,omitempty"`
+	MediaType         string `json:"media_type,omitempty"`
+	SourcePath        string `json:"source_path,omitempty"`
+	ManagedPath       string `json:"managed_path,omitempty"`
+	SHA256            string `json:"sha256,omitempty"`
+	Size              int64  `json:"size,omitempty"`
+	CapturedAt        string `json:"captured_at,omitempty"`
+}
+
+// MarshalJSON keeps Evidence's required zero size while preserving the
+// existing closed DTO shape for every other record type.
+func (record Record) MarshalJSON() ([]byte, error) {
+	if record.ArtifactType != "" && record.ManagedPath != "" && record.SHA256 != "" {
+		return json.Marshal(record.evidenceRecord())
+	}
+	type recordJSON Record
+	return json.Marshal(recordJSON(record))
 }
 
 // ChangeResult is semantic-change-result/v2.
@@ -405,8 +450,9 @@ type SnapshotAttempt struct {
 
 // SnapshotKnowledge groups current Project Knowledge records.
 type SnapshotKnowledge struct {
-	Entities map[string]SnapshotEntity `json:"entities,omitempty"`
-	Facts    map[string]SnapshotFact   `json:"facts,omitempty"`
+	Entities map[string]SnapshotEntity   `json:"entities,omitempty"`
+	Facts    map[string]SnapshotFact     `json:"facts,omitempty"`
+	Evidence map[string]SnapshotEvidence `json:"evidence,omitempty"`
 }
 
 // SnapshotEntity is the runtime allowlist for Entities.
@@ -428,6 +474,16 @@ type SnapshotFact struct {
 	Summary     string `json:"summary"`
 	Confidence  string `json:"confidence"`
 	ScopeStatus string `json:"scope_status"`
+}
+
+// SnapshotEvidence is the Runtime Snapshot allowlist for Evidence.
+type SnapshotEvidence struct {
+	Version      int    `json:"version"`
+	Status       string `json:"status"`
+	ArtifactType string `json:"artifact_type"`
+	Summary      string `json:"summary"`
+	MediaType    string `json:"media_type,omitempty"`
+	CapturedAt   string `json:"captured_at,omitempty"`
 }
 
 // Error is the stable semantic error envelope body surfaced by adapters.
@@ -971,7 +1027,7 @@ func (s *Service) RuntimeSnapshot(ctx context.Context, projectID string) (Runtim
 	rows, err := tx.QueryContext(ctx, `
 		SELECT key, type, version, record_json
 		FROM blackboard_v2_records
-		WHERE project_id = ? AND type IN ('entity', 'objective', 'attempt', 'fact')
+		WHERE project_id = ? AND type IN ('entity', 'objective', 'attempt', 'fact', 'evidence')
 		ORDER BY key ASC`, projectID,
 	)
 	if err != nil {
@@ -983,6 +1039,7 @@ func (s *Service) RuntimeSnapshot(ctx context.Context, projectID string) (Runtim
 	objectives := make(map[string]SnapshotObjective)
 	attempts := make(map[string]SnapshotAttempt)
 	facts := make(map[string]SnapshotFact)
+	evidence := make(map[string]SnapshotEvidence)
 	for rows.Next() {
 		var key, typ, raw string
 		var version int
@@ -1021,6 +1078,16 @@ func (s *Service) RuntimeSnapshot(ctx context.Context, projectID string) (Runtim
 				Confidence:  fact.Confidence,
 				ScopeStatus: fact.ScopeStatus,
 			}
+		case "evidence":
+			item := record.evidenceRecord()
+			evidence[key] = SnapshotEvidence{
+				Version:      version,
+				Status:       item.Status,
+				ArtifactType: item.ArtifactType,
+				Summary:      item.Summary,
+				MediaType:    item.MediaType,
+				CapturedAt:   item.CapturedAt,
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -1039,6 +1106,9 @@ func (s *Service) RuntimeSnapshot(ctx context.Context, projectID string) (Runtim
 	}
 	if len(facts) != 0 {
 		knowledge.Facts = facts
+	}
+	if len(evidence) != 0 {
+		knowledge.Evidence = evidence
 	}
 	relationships, err := loadAllCurrentRelationships(ctx, tx, projectID)
 	if err != nil {
@@ -1079,9 +1149,50 @@ func applyUpdateRecord(ctx context.Context, tx *sql.Tx, projectID string, revisi
 		return applyUpdateAttempt(ctx, tx, projectID, revision, index, change, now)
 	case "fact":
 		return applyUpdateFact(ctx, tx, projectID, revision, index, change, now)
+	case "evidence":
+		return applyUpdateEvidence(ctx, tx, projectID, revision, index, change, now)
 	default:
 		return revision, "", 0, false, semanticError("semantic_validation", "unsupported Blackboard v2 record type in this slice", fmt.Sprintf("changes[%d].type", index), nil)
 	}
+}
+
+func applyUpdateEvidence(ctx context.Context, tx *sql.Tx, projectID string, revision, index int, change Change, now string) (int, string, int, bool, error) {
+	path := fmt.Sprintf("changes[%d]", index)
+	existing, err := currentRecordForUpdate(ctx, tx, projectID, change, "evidence", path)
+	if err != nil {
+		return revision, "", 0, false, err
+	}
+	patch, err := partialEvidenceRecord(change.Record, path+".record")
+	if err != nil {
+		return revision, "", 0, false, err
+	}
+	next := existing.record.evidenceRecord()
+	if patch.Summary != nil {
+		next.Summary = *patch.Summary
+	}
+	if patch.MediaType != nil {
+		next.MediaType = *patch.MediaType
+	}
+	if patch.CapturedAt != nil {
+		next.CapturedAt = *patch.CapturedAt
+	}
+	for _, field := range change.Clear {
+		switch field {
+		case "media_type":
+			next.MediaType = ""
+		case "captured_at":
+			next.CapturedAt = ""
+		default:
+			return revision, "", 0, false, semanticError("semantic_validation", "unsupported Evidence clear field", path+".clear", map[string]any{"field": field})
+		}
+	}
+	if err := validateEvidenceRecord(next, path+".record"); err != nil {
+		return revision, "", 0, false, err
+	}
+	if evidenceEqual(existing.record.evidenceRecord(), next) {
+		return revision, change.Key, existing.version, false, nil
+	}
+	return replaceCurrentWorkRecord(ctx, tx, projectID, revision, existing, next, now)
 }
 
 func applyCreateObjective(ctx context.Context, tx *sql.Tx, projectID string, revision, index int, change Change, now string) (int, string, int, bool, error) {
@@ -1716,6 +1827,21 @@ func applyTransition(ctx context.Context, tx *sql.Tx, projectID string, revision
 			return revision, "", 0, false, err
 		}
 		return replaceCurrentWorkRecord(ctx, tx, projectID, revision, existing, next, now)
+	case "evidence":
+		if change.Status != "missing" {
+			return revision, "", 0, false, semanticError("semantic_validation", "Evidence lifecycle transition must be missing", path+".status", nil)
+		}
+		if err := validateSemanticText(change.Summary, path+".summary"); err != nil {
+			return revision, "", 0, false, err
+		}
+		current := existing.record.evidenceRecord()
+		next := current
+		next.Status = "missing"
+		next.Summary = change.Summary
+		if current.Status == next.Status && current.Summary == next.Summary {
+			return revision, change.Key, existing.version, false, nil
+		}
+		return replaceCurrentWorkRecord(ctx, tx, projectID, revision, existing, next, now)
 	default:
 		return revision, "", 0, false, semanticError("semantic_validation", "record type does not support this transition", path+".key", map[string]any{"key": change.Key, "type": existing.typ})
 	}
@@ -1756,6 +1882,42 @@ func runtimeFactConfirmationHasBasis(ctx context.Context, tx *sql.Tx, projectID,
 	}
 	if err := rows.Close(); err != nil {
 		return false, fmt.Errorf("close supporting Facts for confirmation: %w", err)
+	}
+
+	rows, err = tx.QueryContext(ctx, `
+		SELECT source.record_json
+		FROM blackboard_v2_relationships AS rel
+		JOIN blackboard_v2_records AS source
+		  ON source.project_id = rel.project_id AND source.key = rel.from_key
+		WHERE rel.project_id = ? AND rel.relation = 'evidences' AND rel.to_key = ? AND source.type = 'evidence'
+		ORDER BY source.key ASC`,
+		projectID, factKey,
+	)
+	if err != nil {
+		return false, fmt.Errorf("read Evidence for confirmation: %w", err)
+	}
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			rows.Close()
+			return false, fmt.Errorf("scan Evidence for confirmation: %w", err)
+		}
+		var source EvidenceRecord
+		if err := json.Unmarshal([]byte(raw), &source); err != nil {
+			rows.Close()
+			return false, fmt.Errorf("decode Evidence for confirmation: %w", err)
+		}
+		if source.Status == "available" {
+			rows.Close()
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return false, fmt.Errorf("iterate Evidence for confirmation: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return false, fmt.Errorf("close Evidence for confirmation: %w", err)
 	}
 
 	rows, err = tx.QueryContext(ctx, `
@@ -2048,11 +2210,11 @@ func applySupersede(ctx context.Context, tx *sql.Tx, projectID string, revision,
 
 func validateRelationshipEndpoint(relation, fromType, toType, path string) error {
 	// This semantic kernel admits only endpoint types whose records are fully
-	// decodable in the current slice. Finding, Solution, and Evidence endpoints
-	// are added by their owning tickets alongside their complete record schemas.
+	// decodable in the current slice. Finding and Solution endpoints are added by
+	// their owning tickets alongside their complete record schemas.
 	switch relation {
 	case "about":
-		if toType == "entity" && isOneOf(fromType, "objective", "attempt", "fact") {
+		if toType == "entity" && isOneOf(fromType, "objective", "attempt", "fact", "evidence") {
 			return nil
 		}
 		return semanticError("semantic_validation", "about must connect an allowed record to an Entity", path, map[string]any{"from_type": fromType, "to_type": toType})
@@ -2067,12 +2229,17 @@ func validateRelationshipEndpoint(relation, fromType, toType, path string) error
 		}
 		return semanticError("semantic_validation", "tests must point from an Attempt to an approved tested target", path, map[string]any{"from_type": fromType, "to_type": toType})
 	case "produced":
-		if fromType == "attempt" && isOneOf(toType, "entity", "objective", "fact") {
+		if fromType == "attempt" && isOneOf(toType, "entity", "objective", "fact", "evidence") {
 			return nil
 		}
 		return semanticError("semantic_validation", "produced must point from an Attempt to a reusable outcome", path, map[string]any{"from_type": fromType, "to_type": toType})
+	case "evidences":
+		if fromType == "evidence" && toType == "fact" {
+			return nil
+		}
+		return semanticError("semantic_validation", "evidences must point from Evidence to supported Project Knowledge", path, map[string]any{"from_type": fromType, "to_type": toType})
 	case "derived_from":
-		if (fromType == "objective" && toType == "fact") || (fromType == "fact" && toType == "fact") {
+		if (fromType == "objective" && toType == "fact") || (fromType == "fact" && toType == "fact") || (fromType == "evidence" && toType == "evidence") {
 			return nil
 		}
 		return semanticError("semantic_validation", "derived_from endpoint types are not allowed", path, map[string]any{"from_type": fromType, "to_type": toType})
@@ -2355,6 +2522,12 @@ func decodeStoredRecord(typ, raw string) (Record, error) {
 			return Record{}, err
 		}
 		return recordFromFact(record), nil
+	case "evidence":
+		var record EvidenceRecord
+		if err := json.Unmarshal([]byte(raw), &record); err != nil {
+			return Record{}, err
+		}
+		return recordFromEvidence(record), nil
 	default:
 		return Record{}, fmt.Errorf("unsupported Blackboard v2 record type %q", typ)
 	}
@@ -2794,6 +2967,8 @@ func decodePartialRecord(typ string, raw json.RawMessage) (any, error) {
 		return decodeAttemptPatch(raw)
 	case "fact":
 		return decodeFactPatch(raw)
+	case "evidence":
+		return decodeEvidencePatch(raw)
 	default:
 		return nil, fmt.Errorf("unsupported Blackboard v2 record type %q in this slice", typ)
 	}
@@ -2883,6 +3058,17 @@ func decodeFactPatch(raw json.RawMessage) (FactPatch, error) {
 	}
 	if factPatchEmpty(patch) {
 		return FactPatch{}, fmt.Errorf("Fact partial record requires at least one property")
+	}
+	return patch, nil
+}
+
+func decodeEvidencePatch(raw json.RawMessage) (EvidencePatch, error) {
+	var patch EvidencePatch
+	if err := strictDecodeJSON(raw, &patch); err != nil {
+		return EvidencePatch{}, fmt.Errorf("decode Evidence patch: %w", err)
+	}
+	if evidencePatchEmpty(patch) {
+		return EvidencePatch{}, fmt.Errorf("Evidence partial record requires at least one property")
 	}
 	return patch, nil
 }
@@ -3043,6 +3229,9 @@ func validateChangeDTOShape(change Change, index int) error {
 			return err
 		case "fact":
 			_, err := partialFactRecord(change.Record, path)
+			return err
+		case "evidence":
+			_, err := partialEvidenceRecord(change.Record, path)
 			return err
 		}
 	}
@@ -3273,6 +3462,29 @@ func partialFactRecord(value any, path string) (FactPatch, error) {
 	}
 }
 
+func partialEvidenceRecord(value any, path string) (EvidencePatch, error) {
+	switch patch := value.(type) {
+	case EvidencePatch:
+		if evidencePatchEmpty(patch) {
+			return EvidencePatch{}, semanticError("semantic_validation", "Evidence partial record requires at least one property", path, nil)
+		}
+		return patch, nil
+	case *EvidencePatch:
+		if patch == nil || evidencePatchEmpty(*patch) {
+			return EvidencePatch{}, semanticError("semantic_validation", "Evidence update requires a non-empty Evidence partial record", path, nil)
+		}
+		return *patch, nil
+	case json.RawMessage:
+		decoded, err := decodeEvidencePatch(patch)
+		if err != nil {
+			return EvidencePatch{}, semanticError("semantic_validation", err.Error(), path, nil)
+		}
+		return decoded, nil
+	default:
+		return EvidencePatch{}, semanticError("semantic_validation", "Evidence update requires an Evidence partial record", path, nil)
+	}
+}
+
 func stringPtr(value string) *string {
 	return &value
 }
@@ -3283,6 +3495,10 @@ func entityPatchEmpty(patch EntityPatch) bool {
 
 func factPatchEmpty(patch FactPatch) bool {
 	return patch.Category == nil && patch.Summary == nil && patch.Body == nil && patch.ScopeStatus == nil
+}
+
+func evidencePatchEmpty(patch EvidencePatch) bool {
+	return patch.Summary == nil && patch.MediaType == nil && patch.CapturedAt == nil
 }
 
 func applyEntityPatch(existing EntityRecord, patch EntityPatch, clear []string, path string) (EntityRecord, error) {
@@ -3477,6 +3693,38 @@ func validateFactRecord(record FactRecord, path string) error {
 	}
 }
 
+func validateEvidenceRecord(record EvidenceRecord, path string) error {
+	if record.Status != "available" && record.Status != "missing" {
+		return semanticError("semantic_validation", "Evidence status must be available or missing", path+".status", nil)
+	}
+	if err := validateConciseText(record.ArtifactType, path+".artifact_type"); err != nil {
+		return err
+	}
+	if err := validateSemanticText(record.Summary, path+".summary"); err != nil {
+		return err
+	}
+	if record.MediaType != "" {
+		if err := validateConciseText(record.MediaType, path+".media_type"); err != nil {
+			return err
+		}
+	}
+	if record.ManagedPath == "" || len(record.SHA256) != 64 || record.Size < 0 {
+		return semanticError("semantic_validation", "Evidence integrity details are invalid", path, nil)
+	}
+	if _, err := hex.DecodeString(record.SHA256); err != nil {
+		return semanticError("semantic_validation", "Evidence sha256 must be lowercase hexadecimal", path+".sha256", nil)
+	}
+	if record.SHA256 != strings.ToLower(record.SHA256) {
+		return semanticError("semantic_validation", "Evidence sha256 must be lowercase hexadecimal", path+".sha256", nil)
+	}
+	if record.CapturedAt != "" {
+		if _, err := time.Parse(time.RFC3339, record.CapturedAt); err != nil {
+			return semanticError("semantic_validation", "Evidence captured_at must be an RFC3339 timestamp", path+".captured_at", nil)
+		}
+	}
+	return nil
+}
+
 func validateConciseText(value, path string) error {
 	if strings.TrimSpace(value) == "" || !utf8.ValidString(value) || len([]byte(value)) > 512 {
 		return semanticError("semantic_validation", "concise semantic text is required and must fit the v2 limit", path, nil)
@@ -3509,6 +3757,12 @@ func factsEqual(a, b FactRecord) bool {
 		a.Body == b.Body &&
 		a.Confidence == b.Confidence &&
 		a.ScopeStatus == b.ScopeStatus
+}
+
+func evidenceEqual(a, b EvidenceRecord) bool {
+	return a.Status == b.Status && a.ArtifactType == b.ArtifactType && a.Summary == b.Summary &&
+		a.MediaType == b.MediaType && a.SourcePath == b.SourcePath && a.ManagedPath == b.ManagedPath &&
+		a.SHA256 == b.SHA256 && a.Size == b.Size && a.CapturedAt == b.CapturedAt
 }
 
 func objectivesEqual(a, b ObjectiveRecord) bool {
@@ -3559,6 +3813,20 @@ func recordFromFact(record FactRecord) Record {
 	}
 }
 
+func recordFromEvidence(record EvidenceRecord) Record {
+	return Record{
+		Status:       record.Status,
+		ArtifactType: record.ArtifactType,
+		Summary:      record.Summary,
+		MediaType:    record.MediaType,
+		SourcePath:   record.SourcePath,
+		ManagedPath:  record.ManagedPath,
+		SHA256:       record.SHA256,
+		Size:         record.Size,
+		CapturedAt:   record.CapturedAt,
+	}
+}
+
 func (record Record) entityRecord() EntityRecord {
 	return EntityRecord{
 		Status:        record.Status,
@@ -3586,6 +3854,20 @@ func (record Record) factRecord() FactRecord {
 		Body:        record.Body,
 		Confidence:  record.Confidence,
 		ScopeStatus: record.ScopeStatus,
+	}
+}
+
+func (record Record) evidenceRecord() EvidenceRecord {
+	return EvidenceRecord{
+		Status:       record.Status,
+		ArtifactType: record.ArtifactType,
+		Summary:      record.Summary,
+		MediaType:    record.MediaType,
+		SourcePath:   record.SourcePath,
+		ManagedPath:  record.ManagedPath,
+		SHA256:       record.SHA256,
+		Size:         record.Size,
+		CapturedAt:   record.CapturedAt,
 	}
 }
 
