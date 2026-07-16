@@ -919,6 +919,53 @@ func TestEvidenceDirectoryHierarchyCreationFsyncsEachParentAcrossRestart(t *test
 	}
 }
 
+func TestRetainEvidenceRestartAfterTempFileAndDirectorySync(t *testing.T) {
+	fixture := newEvidenceV2Fixture(t, "Evidence Temp Directory Sync")
+	payload := strings.Repeat("temp-and-directory-durable-proof-", 4096)
+	fixture.writeSource(t, "directory-synced.txt", payload)
+	request := blackboardv2.RetainEvidenceRequest{
+		IdempotencyKey: "retain-temp-directory-sync", Key: "evidence:temp-directory-sync", Attempt: "attempt:evidence",
+		SourcePath: "directory-synced.txt", ArtifactType: "text", Summary: "Staging inode and directory are durable",
+	}
+	service := blackboardv2.NewServiceWithEvidence(fixture.db, blackboardv2.EvidenceConfig{
+		RuntimeRoot: fixture.runtimeRoot, ArtifactRoot: fixture.runtimeRoot,
+		Failures: &failEvidenceV2Once{point: blackboardv2.EvidenceFailureAfterTempDirectorySync},
+	})
+	if _, err := service.RetainEvidenceForContinuation(context.Background(), fixture.projectID, fixture.continuationID, request); err == nil {
+		t.Fatal("post-temp-directory-sync crash unexpectedly succeeded")
+	}
+	var tempPath string
+	if err := fixture.db.QueryRow(`SELECT temp_internal_path FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=? AND status='reserved'`, fixture.projectID, fixture.continuationID, request.IdempotencyKey).Scan(&tempPath); err != nil {
+		t.Fatalf("read directory-synced temp reservation: %v", err)
+	}
+	if err := fixture.db.Close(); err != nil {
+		t.Fatalf("close store after temp directory sync: %v", err)
+	}
+	if err := os.Remove(filepath.Join(fixture.workdir, "directory-synced.txt")); err != nil {
+		t.Fatalf("remove source after temp directory sync: %v", err)
+	}
+	reopened, err := store.Open(fixture.dbPath)
+	if err != nil {
+		t.Fatalf("restart after temp directory sync: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	restarted := blackboardv2.NewServiceWithEvidence(reopened, blackboardv2.EvidenceConfig{RuntimeRoot: fixture.runtimeRoot, ArtifactRoot: fixture.runtimeRoot})
+	if _, err := restarted.RetainEvidenceForContinuation(context.Background(), fixture.projectID, fixture.continuationID, request); err != nil {
+		t.Fatalf("recover after temp file and directory sync: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(fixture.runtimeRoot, filepath.FromSlash(tempPath))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("directory-synced temp remained after recovery: %v", err)
+	}
+	files := retainedEvidenceFiles(t, fixture.runtimeRoot)
+	if len(files) != 1 {
+		t.Fatalf("directory-sync recovery payloads = %v, want one final", files)
+	}
+	got, err := os.ReadFile(files[0])
+	if err != nil || string(got) != payload {
+		t.Fatalf("directory-sync recovery final size=%d err=%v", len(got), err)
+	}
+}
+
 type evidenceDirectoryDurabilityInjector struct {
 	failPoint blackboardv2.EvidenceFailurePoint
 	failed    bool
@@ -1148,7 +1195,7 @@ func TestV24UpgradeAdoptsSyncedLegacyTempForTerminalAttemptReplay(t *testing.T) 
 }
 
 func TestV24UpgradeRecoversLegacyTempBeforeChangedOrMissingSourceValidation(t *testing.T) {
-	for _, sourceState := range []string{"changed", "missing", "changed-invalid-legacy"} {
+	for _, sourceState := range []string{"changed", "missing", "changed-invalid-legacy", "partial-valid-source", "partial-terminal-missing"} {
 		t.Run(sourceState, func(t *testing.T) {
 			fixture := newEvidenceV2Fixture(t, "V24 Source Recovery "+sourceState)
 			payload := strings.Repeat("v24-source-independent-proof-", 2048)
@@ -1173,12 +1220,26 @@ func TestV24UpgradeRecoversLegacyTempBeforeChangedOrMissingSourceValidation(t *t
 			if err := os.Rename(absoluteTemp, legacyTemp); err != nil {
 				t.Fatalf("convert source fixture to v24 temp: %v", err)
 			}
-			if sourceState == "changed-invalid-legacy" {
+			if sourceState == "changed-invalid-legacy" || strings.HasPrefix(sourceState, "partial-") {
 				if err := os.Chmod(legacyTemp, 0o600); err != nil {
 					t.Fatalf("make corrupt v24 temp writable: %v", err)
 				}
-				if err := os.WriteFile(legacyTemp, []byte("corrupt legacy proof bytes\n"), 0o600); err != nil {
-					t.Fatalf("corrupt v24 legacy temp: %v", err)
+				if sourceState == "changed-invalid-legacy" {
+					if err := os.WriteFile(legacyTemp, []byte("corrupt legacy proof bytes\n"), 0o600); err != nil {
+						t.Fatalf("corrupt v24 legacy temp: %v", err)
+					}
+				} else if err := os.Truncate(legacyTemp, int64(len(payload)/2)); err != nil {
+					t.Fatalf("truncate v24 legacy temp: %v", err)
+				}
+			}
+			if sourceState == "partial-terminal-missing" {
+				if _, err := fixture.service.ApplyForContinuation(context.Background(), fixture.projectID, fixture.continuationID, blackboardv2.ChangeBatch{
+					Schema: "semantic-change-batch/v2", IdempotencyKey: "terminalize-partial-v24-source",
+					Changes: []blackboardv2.Change{{
+						Op: "transition", Key: "attempt:evidence", Version: 1, Status: "failed", Summary: "Attempt ended with only a partial v24 temp",
+					}},
+				}); err != nil {
+					t.Fatalf("terminalize partial v24 source Attempt: %v", err)
 				}
 			}
 			if _, err := fixture.db.Exec(`DROP TABLE blackboard_v2_evidence_payloads`); err != nil {
@@ -1198,8 +1259,10 @@ func TestV24UpgradeRecoversLegacyTempBeforeChangedOrMissingSourceValidation(t *t
 				if err := os.WriteFile(sourcePath, []byte("changed Runtime source bytes\n"), 0o600); err != nil {
 					t.Fatalf("change Runtime source before upgrade retry: %v", err)
 				}
-			} else if err := os.Remove(sourcePath); err != nil {
-				t.Fatalf("remove Runtime source before upgrade retry: %v", err)
+			} else if sourceState != "partial-valid-source" {
+				if err := os.Remove(sourcePath); err != nil {
+					t.Fatalf("remove Runtime source before upgrade retry: %v", err)
+				}
 			}
 			reopened, err := store.Open(fixture.dbPath)
 			if err != nil {
@@ -1208,7 +1271,8 @@ func TestV24UpgradeRecoversLegacyTempBeforeChangedOrMissingSourceValidation(t *t
 			t.Cleanup(func() { _ = reopened.Close() })
 			restarted := blackboardv2.NewServiceWithEvidence(reopened, blackboardv2.EvidenceConfig{RuntimeRoot: fixture.runtimeRoot, ArtifactRoot: fixture.runtimeRoot})
 			_, retainErr := restarted.RetainEvidenceForContinuation(context.Background(), fixture.projectID, fixture.continuationID, request)
-			if sourceState == "changed-invalid-legacy" {
+			unrecoverable := sourceState == "changed-invalid-legacy" || sourceState == "partial-terminal-missing"
+			if unrecoverable {
 				if !isSemanticCode(retainErr, "evidence_source_changed") {
 					t.Fatalf("unrecoverable v24 retry error = %#v, want evidence_source_changed", retainErr)
 				}
@@ -1218,7 +1282,7 @@ func TestV24UpgradeRecoversLegacyTempBeforeChangedOrMissingSourceValidation(t *t
 			if _, err := os.Lstat(legacyTemp); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("v24 %s source retry left legacy temp: %v", sourceState, err)
 			}
-			if sourceState == "changed-invalid-legacy" {
+			if unrecoverable {
 				var requestCount int
 				if err := reopened.QueryRow(`SELECT COUNT(*) FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, fixture.projectID, fixture.continuationID, request.IdempotencyKey).Scan(&requestCount); err != nil {
 					t.Fatalf("count cleaned unrecoverable v24 request: %v", err)
@@ -1790,6 +1854,131 @@ func TestReservedSharedPathPreventsConcurrentCleanupUnlink(t *testing.T) {
 	if err != nil || detail.Record.SHA256 == "" {
 		t.Fatalf("read committed reserved shared Evidence: %#v, err=%v", detail, err)
 	}
+}
+
+func TestSharedPayloadOwnershipTransfersAndLastReservationReclaimsAfterRestart(t *testing.T) {
+	fixture := newEvidenceV2Fixture(t, "Shared Evidence Ownership Transfer")
+	fixture.writeSource(t, "current.txt", "current payload\n")
+	if _, err := fixture.service.RetainEvidenceForContinuation(context.Background(), fixture.projectID, fixture.continuationID, blackboardv2.RetainEvidenceRequest{
+		IdempotencyKey: "retain-current-owner-transfer", Key: "evidence:cleanup", Attempt: "attempt:evidence",
+		SourcePath: "current.txt", ArtifactType: "text", Summary: "Current retained payload",
+	}); err != nil {
+		t.Fatalf("retain current Evidence: %v", err)
+	}
+	for _, directory := range []string{"owner-transfer", "last-reservation"} {
+		if err := os.Mkdir(filepath.Join(fixture.workdir, directory), 0o700); err != nil {
+			t.Fatalf("create ownership-transfer source directory: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(fixture.workdir, directory, "shared.txt"), []byte("ownership-transfer-proof\n"), 0o600); err != nil {
+			t.Fatalf("write ownership-transfer source: %v", err)
+		}
+	}
+	waiterInjector := &evidenceTransferredOwnerBarrier{reached: make(chan struct{}), release: make(chan struct{})}
+	waiterService := blackboardv2.NewServiceWithEvidence(fixture.db, blackboardv2.EvidenceConfig{
+		RuntimeRoot: fixture.runtimeRoot, ArtifactRoot: fixture.runtimeRoot, Failures: waiterInjector,
+	})
+	waiterRequest := blackboardv2.RetainEvidenceRequest{
+		IdempotencyKey: "retain-transferred-last", Key: "evidence:cleanup", Version: 1, Attempt: "attempt:evidence",
+		SourcePath: filepath.Join("last-reservation", "shared.txt"), ArtifactType: "text", Summary: "Last shared reservation",
+	}
+	waiterResult := make(chan error, 1)
+	go func() {
+		_, err := waiterService.RetainEvidenceForContinuation(context.Background(), fixture.projectID, fixture.continuationID, waiterRequest)
+		waiterResult <- err
+	}()
+	select {
+	case <-waiterInjector.reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("last shared reservation did not reach publication barrier")
+	}
+	ownerInjector := &evidenceVersionRaceInjector{service: fixture.service, projectID: fixture.projectID, continuationID: fixture.continuationID}
+	ownerService := blackboardv2.NewServiceWithEvidence(fixture.db, blackboardv2.EvidenceConfig{
+		RuntimeRoot: fixture.runtimeRoot, ArtifactRoot: fixture.runtimeRoot, Failures: ownerInjector,
+	})
+	ownerRequest := blackboardv2.RetainEvidenceRequest{
+		IdempotencyKey: "retain-departing-owner", Key: "evidence:cleanup", Version: 1, Attempt: "attempt:evidence",
+		SourcePath: filepath.Join("owner-transfer", "shared.txt"), ArtifactType: "text", Summary: "Departing shared payload owner",
+	}
+	if _, err := ownerService.RetainEvidenceForContinuation(context.Background(), fixture.projectID, fixture.continuationID, ownerRequest); !isSemanticCode(err, "version_conflict") {
+		t.Fatalf("departing owner error = %#v, want version_conflict", err)
+	}
+	var sharedPath, payloadState string
+	var waiterOwned, ownerCount int
+	if err := fixture.db.QueryRow(`SELECT managed_internal_path,payload_owned FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, fixture.projectID, fixture.continuationID, waiterRequest.IdempotencyKey).Scan(&sharedPath, &waiterOwned); err != nil {
+		t.Fatalf("read transferred shared reservation: %v", err)
+	}
+	if err := fixture.db.QueryRow(`SELECT COUNT(*) FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, fixture.projectID, fixture.continuationID, ownerRequest.IdempotencyKey).Scan(&ownerCount); err != nil {
+		t.Fatalf("count departed owner request: %v", err)
+	}
+	if err := fixture.db.QueryRow(`SELECT state FROM blackboard_v2_evidence_payloads WHERE project_id=? AND managed_internal_path=?`, fixture.projectID, sharedPath).Scan(&payloadState); err != nil {
+		t.Fatalf("read transferred payload claim: %v", err)
+	}
+	if ownerCount != 0 || waiterOwned != 1 || payloadState != "active" {
+		t.Fatalf("ownership transfer = owner rows %d waiter owned %d state %q", ownerCount, waiterOwned, payloadState)
+	}
+	close(waiterInjector.release)
+	if err := <-waiterResult; !isSemanticCode(err, "version_conflict") {
+		t.Fatalf("last shared reservation error = %#v, want version_conflict", err)
+	}
+	var gcContinuationID, gcKey string
+	if err := fixture.db.QueryRow(`
+		SELECT payload.state,payload.gc_continuation_id,payload.gc_idempotency_key
+		FROM blackboard_v2_evidence_payloads payload
+		JOIN blackboard_v2_evidence_requests request
+		  ON request.project_id=payload.project_id AND request.managed_internal_path=payload.managed_internal_path
+		WHERE request.project_id=? AND request.continuation_id=? AND request.idempotency_key=?`,
+		fixture.projectID, fixture.continuationID, waiterRequest.IdempotencyKey,
+	).Scan(&payloadState, &gcContinuationID, &gcKey); err != nil {
+		t.Fatalf("read last reservation GC checkpoint: %v", err)
+	}
+	if payloadState != "gc" || gcContinuationID != fixture.continuationID || gcKey != waiterRequest.IdempotencyKey {
+		t.Fatalf("last reservation GC checkpoint = %q/%q/%q", payloadState, gcContinuationID, gcKey)
+	}
+	if err := fixture.db.Close(); err != nil {
+		t.Fatalf("close store after transferred-owner GC crash: %v", err)
+	}
+	reopened, err := store.Open(fixture.dbPath)
+	if err != nil {
+		t.Fatalf("restart transferred-owner GC: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	restarted := blackboardv2.NewServiceWithEvidence(reopened, blackboardv2.EvidenceConfig{RuntimeRoot: fixture.runtimeRoot, ArtifactRoot: fixture.runtimeRoot})
+	if _, err := restarted.RetainEvidenceForContinuation(context.Background(), fixture.projectID, fixture.continuationID, waiterRequest); !isSemanticCode(err, "version_conflict") {
+		t.Fatalf("restart last shared reservation = %#v, want version_conflict", err)
+	}
+	var requestCount, payloadCount int
+	if err := reopened.QueryRow(`SELECT COUNT(*) FROM blackboard_v2_evidence_requests WHERE project_id=? AND managed_internal_path=?`, fixture.projectID, sharedPath).Scan(&requestCount); err != nil {
+		t.Fatalf("count transferred shared requests after recovery: %v", err)
+	}
+	if err := reopened.QueryRow(`SELECT COUNT(*) FROM blackboard_v2_evidence_payloads WHERE project_id=? AND managed_internal_path=?`, fixture.projectID, sharedPath).Scan(&payloadCount); err != nil {
+		t.Fatalf("count transferred payload claim after recovery: %v", err)
+	}
+	if requestCount != 0 || payloadCount != 0 {
+		t.Fatalf("transferred-owner recovery rows = requests %d payloads %d, want zero", requestCount, payloadCount)
+	}
+	if _, err := os.Lstat(filepath.Join(fixture.runtimeRoot, filepath.FromSlash(sharedPath))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("transferred-owner recovery left shared payload: %v", err)
+	}
+}
+
+type evidenceTransferredOwnerBarrier struct {
+	reached   chan struct{}
+	release   chan struct{}
+	blocked   bool
+	gcCrashed bool
+}
+
+func (barrier *evidenceTransferredOwnerBarrier) FailAfter(point blackboardv2.EvidenceFailurePoint) error {
+	if point == blackboardv2.EvidenceFailureBeforeFilePublish && !barrier.blocked {
+		barrier.blocked = true
+		close(barrier.reached)
+		<-barrier.release
+	}
+	if point == blackboardv2.EvidenceFailureAfterPayloadGCClaim && !barrier.gcCrashed {
+		barrier.gcCrashed = true
+		return errors.New("injected crash after transferred-owner GC claim")
+	}
+	return nil
 }
 
 type evidenceBeforePublishBarrier struct {

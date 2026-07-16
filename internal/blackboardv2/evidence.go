@@ -35,21 +35,22 @@ type EvidenceConfig struct {
 type EvidenceFailurePoint string
 
 const (
-	EvidenceFailureBeforeReservation    EvidenceFailurePoint = "before_reservation"
-	EvidenceFailureBeforeFilePublish    EvidenceFailurePoint = "before_file_publish"
-	EvidenceFailureAfterDirectoryCreate EvidenceFailurePoint = "after_managed_directory_create"
-	EvidenceFailureAfterDirectorySync   EvidenceFailurePoint = "after_managed_directory_parent_sync"
-	EvidenceFailureBeforeTempCopy       EvidenceFailurePoint = "before_temp_copy"
-	EvidenceFailureMidTempCopy          EvidenceFailurePoint = "mid_temp_copy"
-	EvidenceFailureAfterTempSync        EvidenceFailurePoint = "after_temp_sync"
-	EvidenceFailureBeforeFileRename     EvidenceFailurePoint = "before_file_rename"
-	EvidenceFailureAfterFileRename      EvidenceFailurePoint = "after_file_rename"
-	EvidenceFailureBeforePublishStore   EvidenceFailurePoint = "before_publication_checkpoint"
-	EvidenceFailureAfterFilePublish     EvidenceFailurePoint = "file_publish"
-	EvidenceFailureAfterPayloadGCClaim  EvidenceFailurePoint = "after_payload_gc_claim"
-	EvidenceFailureAfterPayloadUnlink   EvidenceFailurePoint = "after_payload_unlink"
-	EvidenceFailureAfterGraphCommit     EvidenceFailurePoint = "semantic_commit"
-	EvidenceFailureAfterResultStore     EvidenceFailurePoint = "result_store"
+	EvidenceFailureBeforeReservation      EvidenceFailurePoint = "before_reservation"
+	EvidenceFailureBeforeFilePublish      EvidenceFailurePoint = "before_file_publish"
+	EvidenceFailureAfterDirectoryCreate   EvidenceFailurePoint = "after_managed_directory_create"
+	EvidenceFailureAfterDirectorySync     EvidenceFailurePoint = "after_managed_directory_parent_sync"
+	EvidenceFailureBeforeTempCopy         EvidenceFailurePoint = "before_temp_copy"
+	EvidenceFailureMidTempCopy            EvidenceFailurePoint = "mid_temp_copy"
+	EvidenceFailureAfterTempDirectorySync EvidenceFailurePoint = "after_temp_directory_sync"
+	EvidenceFailureAfterTempSync          EvidenceFailurePoint = "after_temp_sync"
+	EvidenceFailureBeforeFileRename       EvidenceFailurePoint = "before_file_rename"
+	EvidenceFailureAfterFileRename        EvidenceFailurePoint = "after_file_rename"
+	EvidenceFailureBeforePublishStore     EvidenceFailurePoint = "before_publication_checkpoint"
+	EvidenceFailureAfterFilePublish       EvidenceFailurePoint = "file_publish"
+	EvidenceFailureAfterPayloadGCClaim    EvidenceFailurePoint = "after_payload_gc_claim"
+	EvidenceFailureAfterPayloadUnlink     EvidenceFailurePoint = "after_payload_unlink"
+	EvidenceFailureAfterGraphCommit       EvidenceFailurePoint = "semantic_commit"
+	EvidenceFailureAfterResultStore       EvidenceFailurePoint = "result_store"
 )
 
 // EvidenceFailureInjector can simulate a lost response or process failure at
@@ -1035,11 +1036,42 @@ func (s *Service) evidencePublicationRecoveryExists(row evidenceRequestRow) (boo
 		return false, false, fmt.Errorf("close managed Evidence recovery directory: %w", closeErr)
 	}
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), ".retain-") {
+		if !strings.HasPrefix(entry.Name(), ".retain-") {
+			continue
+		}
+		valid, err := legacyEvidenceCandidateValid(directory, entry.Name(), row.sha256, row.size)
+		if err != nil {
+			return false, false, err
+		}
+		if valid {
 			return true, true, nil
 		}
 	}
 	return deterministicExists, false, nil
+}
+
+func legacyEvidenceCandidateValid(root *os.Root, name, digest string, size int64) (bool, error) {
+	info, err := root.Lstat(name)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return false, nil
+	}
+	file, err := root.Open(name)
+	if err != nil {
+		return false, nil
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil || !os.SameFile(info, opened) {
+		return false, nil
+	}
+	valid, err := verifyOpenEvidenceFile(file, digest, size)
+	if err != nil {
+		return false, nil
+	}
+	return valid, nil
 }
 
 func (s *Service) ensureEvidencePublished(ctx context.Context, projectID, continuationID, key string, row *evidenceRequestRow, source *evidenceSource) error {
@@ -1143,6 +1175,12 @@ func (s *Service) ensureEvidencePublished(ctx context.Context, projectID, contin
 	}
 	if err := publisher.file.Sync(); err != nil {
 		return fmt.Errorf("sync journaled Evidence temp: %w", err)
+	}
+	if err := syncEvidenceDirectory(destinationRoot); err != nil {
+		return err
+	}
+	if err := s.failEvidence(EvidenceFailureAfterTempDirectorySync); err != nil {
+		return err
 	}
 	if err := s.failEvidence(EvidenceFailureAfterTempSync); err != nil {
 		return err
@@ -1575,6 +1613,9 @@ func (s *Service) cleanupDefinitiveEvidenceFailure(ctx context.Context, projectI
 	if _, err := sweepLegacyEvidenceTemps(guard.directory, nil, row.sha256, row.size); err != nil {
 		return
 	}
+	if err := removeJournaledEvidenceTemp(guard.directory, filepath.Base(row.tempPath)); err != nil {
+		return
+	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE blackboard_v2_evidence_requests SET publisher_token='',publisher_temp_identity='',updated_at=? WHERE project_id=? AND continuation_id=? AND idempotency_key=? AND request_hash=?`, time.Now().UTC().Format(time.RFC3339Nano), projectID, continuationID, key, row.requestHash); err != nil {
 		return
 	}
@@ -1582,11 +1623,7 @@ func (s *Service) cleanupDefinitiveEvidenceFailure(ctx context.Context, projectI
 	if err != nil || decision == evidenceCleanupPreserve {
 		return
 	}
-	if decision == evidenceCleanupDeleteRequest {
-		if err := s.removeRequestOwnedEvidenceTemp(row); err != nil {
-			return
-		}
-		_, _ = s.db.ExecContext(ctx, `DELETE FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=? AND request_hash=?`, projectID, continuationID, key, row.requestHash)
+	if decision == evidenceCleanupRequestRetired {
 		return
 	}
 	if err := s.failEvidence(EvidenceFailureAfterPayloadGCClaim); err != nil {
@@ -1656,7 +1693,7 @@ type evidenceCleanupDecision uint8
 
 const (
 	evidenceCleanupPreserve evidenceCleanupDecision = iota
-	evidenceCleanupDeleteRequest
+	evidenceCleanupRequestRetired
 	evidenceCleanupOwnPayload
 )
 
@@ -1687,19 +1724,16 @@ func (s *Service) claimEvidencePayloadGC(ctx context.Context, projectID, continu
 		if row.payloadOwned {
 			return evidenceCleanupPreserve, nil
 		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=? AND request_hash=? AND managed_internal_path=?`, projectID, continuationID, key, row.requestHash, row.internalPath); err != nil {
+			return evidenceCleanupPreserve, fmt.Errorf("delete unclaimed Evidence request: %w", err)
+		}
 		if err := tx.Commit(); err != nil {
 			return evidenceCleanupPreserve, fmt.Errorf("commit Evidence request cleanup decision: %w", err)
 		}
-		return evidenceCleanupDeleteRequest, nil
+		return evidenceCleanupRequestRetired, nil
 	}
 	if err != nil {
 		return evidenceCleanupPreserve, fmt.Errorf("read Evidence payload cleanup claim: %w", err)
-	}
-	if !row.payloadOwned {
-		if err := tx.Commit(); err != nil {
-			return evidenceCleanupPreserve, fmt.Errorf("commit Evidence request cleanup decision: %w", err)
-		}
-		return evidenceCleanupDeleteRequest, nil
 	}
 	if state == "gc" {
 		if gcContinuationID != continuationID || gcKey != key {
@@ -1710,20 +1744,48 @@ func (s *Service) claimEvidencePayloadGC(ctx context.Context, projectID, continu
 		}
 		return evidenceCleanupOwnPayload, nil
 	}
-	var references int
-	if err := tx.QueryRowContext(ctx, `
-		SELECT
-			(SELECT COUNT(*) FROM blackboard_v2_evidence_requests WHERE project_id=? AND managed_internal_path=? AND NOT (continuation_id=? AND idempotency_key=?)) +
-			(SELECT COUNT(*) FROM blackboard_v2_records WHERE project_id=? AND type='evidence' AND json_extract(record_json,'$.managed_path')=?)`,
-		projectID, row.internalPath, continuationID, key, projectID, semanticPath,
-	).Scan(&references); err != nil {
-		return evidenceCleanupPreserve, fmt.Errorf("count Evidence payload references: %w", err)
+	var semanticReferences int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM blackboard_v2_records WHERE project_id=? AND type='evidence' AND json_extract(record_json,'$.managed_path')=?`, projectID, semanticPath).Scan(&semanticReferences); err != nil {
+		return evidenceCleanupPreserve, fmt.Errorf("count semantic Evidence payload references: %w", err)
 	}
-	if references != 0 {
-		if err := tx.Commit(); err != nil {
-			return evidenceCleanupPreserve, fmt.Errorf("commit shared Evidence payload cleanup decision: %w", err)
+	if semanticReferences != 0 {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=? AND request_hash=? AND managed_internal_path=?`, projectID, continuationID, key, row.requestHash, row.internalPath); err != nil {
+			return evidenceCleanupPreserve, fmt.Errorf("delete semantically referenced Evidence request: %w", err)
 		}
-		return evidenceCleanupDeleteRequest, nil
+		if err := tx.Commit(); err != nil {
+			return evidenceCleanupPreserve, fmt.Errorf("commit semantically referenced Evidence cleanup: %w", err)
+		}
+		return evidenceCleanupRequestRetired, nil
+	}
+	var nextContinuationID, nextKey string
+	err = tx.QueryRowContext(ctx, `
+		SELECT continuation_id,idempotency_key
+		FROM blackboard_v2_evidence_requests
+		WHERE project_id=? AND managed_internal_path=? AND NOT (continuation_id=? AND idempotency_key=?)
+		ORDER BY created_at,continuation_id,idempotency_key
+		LIMIT 1`, projectID, row.internalPath, continuationID, key).Scan(&nextContinuationID, &nextKey)
+	if err == nil {
+		transfer, err := tx.ExecContext(ctx, `UPDATE blackboard_v2_evidence_requests SET payload_owned=1,updated_at=? WHERE project_id=? AND continuation_id=? AND idempotency_key=? AND managed_internal_path=?`, time.Now().UTC().Format(time.RFC3339Nano), projectID, nextContinuationID, nextKey, row.internalPath)
+		if err != nil {
+			return evidenceCleanupPreserve, fmt.Errorf("transfer shared Evidence payload ownership: %w", err)
+		}
+		if changed, _ := transfer.RowsAffected(); changed != 1 {
+			return evidenceCleanupPreserve, fmt.Errorf("shared Evidence payload ownership target changed")
+		}
+		deleted, err := tx.ExecContext(ctx, `DELETE FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=? AND request_hash=? AND managed_internal_path=?`, projectID, continuationID, key, row.requestHash, row.internalPath)
+		if err != nil {
+			return evidenceCleanupPreserve, fmt.Errorf("delete departing Evidence payload owner: %w", err)
+		}
+		if changed, _ := deleted.RowsAffected(); changed != 1 {
+			return evidenceCleanupPreserve, fmt.Errorf("departing Evidence payload owner changed during transfer")
+		}
+		if err := tx.Commit(); err != nil {
+			return evidenceCleanupPreserve, fmt.Errorf("commit shared Evidence payload ownership transfer: %w", err)
+		}
+		return evidenceCleanupRequestRetired, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return evidenceCleanupPreserve, fmt.Errorf("select next Evidence payload owner: %w", err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	result, err := tx.ExecContext(ctx, `UPDATE blackboard_v2_evidence_payloads SET state='gc',gc_continuation_id=?,gc_idempotency_key=?,updated_at=? WHERE project_id=? AND managed_internal_path=? AND state='active'`, continuationID, key, now, projectID, row.internalPath)
@@ -1762,23 +1824,6 @@ func (s *Service) recoverOwnedEvidenceGC(ctx context.Context, projectID, continu
 		return false, err
 	}
 	return true, nil
-}
-
-func (s *Service) removeRequestOwnedEvidenceTemp(row evidenceRequestRow) error {
-	root, err := os.OpenRoot(s.evidenceConfig.ArtifactRoot)
-	if err != nil {
-		return fmt.Errorf("open managed Artifact Root: %w", err)
-	}
-	defer root.Close()
-	if filepath.Dir(row.tempPath) != filepath.Dir(row.internalPath) {
-		return fmt.Errorf("journaled Evidence temp is outside its final directory")
-	}
-	directory, err := s.openSecureEvidenceDirectory(root, filepath.Dir(row.internalPath))
-	if err != nil {
-		return fmt.Errorf("open managed Evidence directory: %w", err)
-	}
-	defer directory.Close()
-	return removeJournaledEvidenceTemp(directory, filepath.Base(row.tempPath))
 }
 
 func (s *Service) removeClaimedEvidencePayload(row evidenceRequestRow) error {
