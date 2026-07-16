@@ -1519,6 +1519,15 @@ func applyTransition(ctx context.Context, tx *sql.Tx, projectID string, revision
 		if tested == 0 {
 			return revision, "", 0, false, semanticError("semantic_validation", "terminal Attempt requires at least one tested target", path+".status", nil)
 		}
+		if change.Status == "succeeded" {
+			produced, err := currentOutgoingRelationshipCount(ctx, tx, projectID, change.Key, "produced")
+			if err != nil {
+				return revision, "", 0, false, err
+			}
+			if produced == 0 {
+				return revision, "", 0, false, semanticError("semantic_validation", "succeeded Attempt requires at least one produced outcome", path+".status", nil)
+			}
+		}
 		terminal := existing.record.attemptRecord()
 		terminal.Status = change.Status
 		terminal.Summary = change.Summary
@@ -2448,6 +2457,27 @@ func strictDecodeJSON(raw []byte, target any) error {
 }
 
 func validateChangeShape(change Change, index int) error {
+	allowedFields := map[string]bool{}
+	switch change.Op {
+	case "create":
+		allowedFields = map[string]bool{"key": true, "type": true, "record": true}
+	case "update":
+		allowedFields = map[string]bool{"key": true, "version": true, "type": true, "record": true, "clear": true}
+	case "relate":
+		allowedFields = map[string]bool{"version": true, "from": true, "relation": true, "to": true, "reason": true}
+	case "transition":
+		allowedFields = map[string]bool{"key": true, "version": true, "status": true, "summary": true, "resolution_summary": true}
+	case "supersede":
+		allowedFields = map[string]bool{"replacement": true, "replacement_version": true, "replaced": true, "replaced_version": true}
+	}
+	if len(allowedFields) != 0 {
+		for _, field := range populatedChangeFields(change) {
+			if field.populated && !allowedFields[field.name] {
+				return semanticError("semantic_validation", fmt.Sprintf("%s does not accept %s", change.Op, field.name), fmt.Sprintf("changes[%d].%s", index, field.name), nil)
+			}
+		}
+	}
+
 	switch change.Op {
 	case "create":
 		if change.Version != 0 {
@@ -2515,6 +2545,32 @@ func validateChangeShape(change Change, index int) error {
 		}
 	}
 	return nil
+}
+
+type populatedChangeField struct {
+	name      string
+	populated bool
+}
+
+func populatedChangeFields(change Change) []populatedChangeField {
+	return []populatedChangeField{
+		{name: "key", populated: change.Key != ""},
+		{name: "version", populated: change.Version != 0},
+		{name: "type", populated: change.Type != ""},
+		{name: "record", populated: change.Record != nil},
+		{name: "clear", populated: len(change.Clear) != 0},
+		{name: "from", populated: change.From != ""},
+		{name: "relation", populated: change.Relation != ""},
+		{name: "to", populated: change.To != ""},
+		{name: "reason", populated: change.Reason != ""},
+		{name: "status", populated: change.Status != ""},
+		{name: "summary", populated: change.Summary != ""},
+		{name: "resolution_summary", populated: change.ResolutionSummary != ""},
+		{name: "replacement", populated: change.Replacement != ""},
+		{name: "replacement_version", populated: change.ReplacementVersion != 0},
+		{name: "replaced", populated: change.Replaced != ""},
+		{name: "replaced_version", populated: change.ReplacedVersion != 0},
+	}
 }
 
 func completeEntityRecord(value any, path string) (EntityRecord, error) {
@@ -2601,8 +2657,6 @@ func partialObjectiveRecord(value any, path string) (ObjectivePatch, error) {
 			return ObjectivePatch{}, semanticError("semantic_validation", "Objective partial record requires at least one property", path, nil)
 		}
 		return *patch, nil
-	case ObjectiveRecord:
-		return ObjectivePatch{Objective: stringPtr(patch.Objective)}, nil
 	case json.RawMessage:
 		decoded, err := decodeObjectivePatch(patch)
 		if err != nil {
@@ -2649,8 +2703,6 @@ func partialAttemptRecord(value any, path string) (AttemptPatch, error) {
 			return AttemptPatch{}, semanticError("semantic_validation", "Attempt partial record requires at least one property", path, nil)
 		}
 		return *patch, nil
-	case AttemptRecord:
-		return AttemptPatch{Summary: stringPtr(patch.Summary)}, nil
 	case json.RawMessage:
 		decoded, err := decodeAttemptPatch(patch)
 		if err != nil {
