@@ -316,8 +316,11 @@ func TestRetiredEntityLeavesCurrentContextAndRelationships(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read retired entity history: %v", err)
 	}
-	if len(history.Items) != 2 || history.Items[0].Version != 1 || history.Items[0].Record.Status != "active" || history.Items[1].Version != 2 || history.Items[1].Record.Status != "retired" {
+	if len(history.Items) != 3 || history.Items[0].Version != 1 || history.Items[0].Record.Status != "active" || history.Items[1].Version != 2 || history.Items[1].Record.Status != "retired" {
 		t.Fatalf("retired entity history = %#v", history.Items)
+	}
+	if history.Items[2].Kind != "relationship" || history.Items[2].From != "fact:login" || history.Items[2].Relation != "about" || history.Items[2].To != "entity:login" {
+		t.Fatalf("retired Entity relationship history = %#v", history.Items[2])
 	}
 	assertContractJSON(t, harness, "semanticHistory", history)
 
@@ -329,6 +332,21 @@ func TestRetiredEntityLeavesCurrentContextAndRelationships(t *testing.T) {
 	wantSnapshot := `{"schema":"runtime-blackboard/v2","semantics":"work is active; knowledge is current; history and details are available by key","revision":4,"work":{},"knowledge":{"facts":{"fact:login":{"version":1,"category":"authentication","summary":"Login accepts JSON","confidence":"tentative","scope_status":"in_scope"}}},"relations":[]}`
 	if snapshotJSON != wantSnapshot {
 		t.Fatalf("snapshot after Entity retirement = %s, want %s", snapshotJSON, wantSnapshot)
+	}
+
+	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "reject-retired-key-reuse",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "entity:fresh", Type: "entity", Record: blackboardv2.EntityRecord{Status: "active", Kind: "host", Name: "fresh.example", ScopeStatus: "unknown"}},
+			{Op: "create", Key: "entity:login", Type: "fact", Record: blackboardv2.FactRecord{Category: "asset", Summary: "Reused terminal Entity key", Confidence: "tentative", ScopeStatus: "unknown"}},
+		},
+	})
+	if !isSemanticCode(err, "key_conflict") {
+		t.Fatalf("retired key reuse error = %#v, want key_conflict", err)
+	}
+	if _, err := service.ReadCurrent(ctx, createdProject.ID, "entity:fresh"); !isSemanticCode(err, "not_found") {
+		t.Fatalf("failed key-reuse batch created entity:fresh: %#v", err)
 	}
 }
 
@@ -387,7 +405,7 @@ func TestSupersededEntityLeavesCurrentContextWithReplacementMeaning(t *testing.T
 	if err != nil {
 		t.Fatalf("read replacement entity: %v", err)
 	}
-	if got := mustTupleJSON(t, replacement.Relationships); !reflect.DeepEqual(got, [][]any{{"entity:login-v2", "supersedes", "entity:login-v1"}}) {
+	if got := mustTupleJSON(t, replacement.Relationships); len(got) != 0 {
 		t.Fatalf("replacement relationships = %#v", got)
 	}
 	assertContractJSON(t, harness, "currentDetail", replacement)
@@ -404,8 +422,14 @@ func TestSupersededEntityLeavesCurrentContextWithReplacementMeaning(t *testing.T
 	if err != nil {
 		t.Fatalf("read superseded entity history: %v", err)
 	}
-	if len(history.Items) != 2 || history.Items[0].Version != 1 || history.Items[0].Record.Status != "active" || history.Items[1].Version != 2 || history.Items[1].Record.Status != "superseded" {
+	if len(history.Items) != 4 || history.Items[0].Version != 1 || history.Items[0].Record.Status != "active" || history.Items[1].Version != 2 || history.Items[1].Record.Status != "superseded" {
 		t.Fatalf("superseded entity history = %#v", history.Items)
+	}
+	if history.Items[2].Kind != "relationship" || history.Items[2].From != "fact:login" || history.Items[2].Relation != "about" || history.Items[2].To != "entity:login-v1" {
+		t.Fatalf("retired about relationship history = %#v", history.Items[2])
+	}
+	if history.Items[3].Kind != "relationship" || history.Items[3].From != "entity:login-v2" || history.Items[3].Relation != "supersedes" || history.Items[3].To != "entity:login-v1" {
+		t.Fatalf("supersedes relationship history = %#v", history.Items[3])
 	}
 	assertContractJSON(t, harness, "semanticHistory", history)
 
@@ -414,7 +438,7 @@ func TestSupersededEntityLeavesCurrentContextWithReplacementMeaning(t *testing.T
 		t.Fatalf("runtime snapshot: %v", err)
 	}
 	snapshotJSON := string(mustJSON(t, snapshot))
-	wantSnapshot := `{"schema":"runtime-blackboard/v2","semantics":"work is active; knowledge is current; history and details are available by key","revision":5,"work":{},"knowledge":{"entities":{"entity:login-v2":{"version":1,"status":"active","kind":"endpoint","name":"POST /v2/login","scope_status":"in_scope"}},"facts":{"fact:login":{"version":1,"category":"authentication","summary":"Login accepts JSON","confidence":"tentative","scope_status":"in_scope"}}},"relations":[["entity:login-v2","supersedes","entity:login-v1"]]}`
+	wantSnapshot := `{"schema":"runtime-blackboard/v2","semantics":"work is active; knowledge is current; history and details are available by key","revision":5,"work":{},"knowledge":{"entities":{"entity:login-v2":{"version":1,"status":"active","kind":"endpoint","name":"POST /v2/login","scope_status":"in_scope"}},"facts":{"fact:login":{"version":1,"category":"authentication","summary":"Login accepts JSON","confidence":"tentative","scope_status":"in_scope"}}},"relations":[]}`
 	if snapshotJSON != wantSnapshot {
 		t.Fatalf("snapshot after Entity supersession = %s, want %s", snapshotJSON, wantSnapshot)
 	}
@@ -460,6 +484,21 @@ func TestEntityClosedShapeRejectsSecretsUnknownFieldsAndInvalidLocators(t *testi
 			name:   "secret credential ref",
 			record: blackboardv2.EntityRecord{Status: "active", Kind: "identity", Name: "admin", ScopeStatus: "unknown", CredentialRef: "sk-live-secret"},
 			path:   "changes[0].record.credential_ref",
+		},
+		{
+			name:   "secret name",
+			record: blackboardv2.EntityRecord{Status: "active", Kind: "identity", Name: "password=hunter2", ScopeStatus: "unknown"},
+			path:   "changes[0].record.name",
+		},
+		{
+			name:   "secret description",
+			record: blackboardv2.EntityRecord{Status: "active", Kind: "service", Name: "Admin API", Description: "token=live-value", ScopeStatus: "unknown"},
+			path:   "changes[0].record.description",
+		},
+		{
+			name:   "http locator without host",
+			record: blackboardv2.EntityRecord{Status: "active", Kind: "endpoint", Name: "bad", Locator: "https:app.example/login", ScopeStatus: "unknown"},
+			path:   "changes[0].record.locator",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

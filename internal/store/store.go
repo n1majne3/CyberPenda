@@ -814,6 +814,16 @@ CREATE TABLE IF NOT EXISTS blackboard_v2_relationships (
 	updated_at TEXT NOT NULL,
 	PRIMARY KEY (project_id, from_key, relation, to_key)
 );
+CREATE TABLE IF NOT EXISTS blackboard_v2_relationship_history (
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+	from_key TEXT NOT NULL,
+	relation TEXT NOT NULL CHECK (relation IN ('about','part_of','tests','produced','evidences','supports','contradicts','derived_from','depends_on','satisfies','supersedes')),
+	to_key TEXT NOT NULL,
+	version INTEGER NOT NULL CHECK (version >= 1),
+	reason TEXT NOT NULL DEFAULT '',
+	recorded_at TEXT NOT NULL,
+	PRIMARY KEY (project_id, from_key, relation, to_key, version)
+);
 `
 
 func migration22Up(tx *sql.Tx) error { return execStatements(tx, migration22SQL) }

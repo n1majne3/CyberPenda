@@ -293,10 +293,14 @@ type SemanticHistory struct {
 
 // HistoryItem is a record Semantic History item.
 type HistoryItem struct {
-	Kind    string `json:"kind"`
-	Version int    `json:"version"`
-	Type    string `json:"type"`
-	Record  Record `json:"record"`
+	Kind     string  `json:"kind"`
+	Version  int     `json:"version"`
+	Type     string  `json:"type,omitempty"`
+	Record   *Record `json:"record,omitempty"`
+	From     string  `json:"from,omitempty"`
+	Relation string  `json:"relation,omitempty"`
+	To       string  `json:"to,omitempty"`
+	Reason   string  `json:"reason,omitempty"`
 }
 
 // RuntimeSnapshot is runtime-blackboard/v2.
@@ -558,12 +562,21 @@ func (s *Service) ReadHistory(ctx context.Context, projectID, key string, option
 	}
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT version, type, record_json
-		FROM blackboard_v2_record_history
-		WHERE project_id = ? AND key = ?
-		ORDER BY version ASC
+		SELECT kind, version, type, record_json, from_key, relation, to_key, reason
+		FROM (
+			SELECT 0 AS sort_group, recorded_at AS sort_time, 'record' AS kind, version, type, record_json,
+			       '' AS from_key, '' AS relation, '' AS to_key, '' AS reason
+			FROM blackboard_v2_record_history
+			WHERE project_id = ? AND key = ?
+			UNION ALL
+			SELECT 1 AS sort_group, recorded_at AS sort_time, 'relationship' AS kind, version, '' AS type, '' AS record_json,
+			       from_key, relation, to_key, reason
+			FROM blackboard_v2_relationship_history
+			WHERE project_id = ? AND (from_key = ? OR to_key = ?)
+		)
+		ORDER BY sort_group ASC, sort_time ASC, version ASC, from_key ASC, relation ASC, to_key ASC
 		LIMIT ? OFFSET ?`,
-		projectID, key, limit+1, offset,
+		projectID, key, projectID, key, key, limit+1, offset,
 	)
 	if err != nil {
 		return SemanticHistory{}, fmt.Errorf("read Blackboard v2 history: %w", err)
@@ -573,16 +586,20 @@ func (s *Service) ReadHistory(ctx context.Context, projectID, key string, option
 	items := make([]HistoryItem, 0, limit)
 	for rows.Next() {
 		var version int
-		var typ, raw string
-		if err := rows.Scan(&version, &typ, &raw); err != nil {
+		var kind, typ, raw, from, relation, to, reason string
+		if err := rows.Scan(&kind, &version, &typ, &raw, &from, &relation, &to, &reason); err != nil {
 			return SemanticHistory{}, fmt.Errorf("scan Blackboard v2 history: %w", err)
 		}
-		record, err := decodeStoredRecord(typ, raw)
-		if err != nil {
-			return SemanticHistory{}, fmt.Errorf("decode Blackboard v2 history record: %w", err)
-		}
 		if len(items) < limit {
-			items = append(items, HistoryItem{Kind: "record", Version: version, Type: typ, Record: record})
+			if kind == "record" {
+				record, err := decodeStoredRecord(typ, raw)
+				if err != nil {
+					return SemanticHistory{}, fmt.Errorf("decode Blackboard v2 history record: %w", err)
+				}
+				items = append(items, HistoryItem{Kind: kind, Version: version, Type: typ, Record: &record})
+			} else {
+				items = append(items, HistoryItem{Kind: kind, Version: version, From: from, Relation: relation, To: to, Reason: reason})
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -592,9 +609,10 @@ func (s *Service) ReadHistory(ctx context.Context, projectID, key string, option
 	if len(items) == limit {
 		var extra int
 		err := tx.QueryRowContext(ctx, `
-			SELECT COUNT(*)
-			FROM blackboard_v2_record_history
-			WHERE project_id = ? AND key = ?`, projectID, key,
+			SELECT
+				(SELECT COUNT(*) FROM blackboard_v2_record_history WHERE project_id = ? AND key = ?) +
+				(SELECT COUNT(*) FROM blackboard_v2_relationship_history WHERE project_id = ? AND (from_key = ? OR to_key = ?))`,
+			projectID, key, projectID, key, key,
 		).Scan(&extra)
 		if err != nil {
 			return SemanticHistory{}, fmt.Errorf("count Blackboard v2 history: %w", err)
@@ -735,6 +753,11 @@ func applyCreateEntity(ctx context.Context, tx *sql.Tx, projectID string, revisi
 	if !errors.Is(err, sql.ErrNoRows) {
 		return revision, "", 0, false, err
 	}
+	if used, err := historicalKeyExists(ctx, tx, projectID, change.Key); err != nil {
+		return revision, "", 0, false, err
+	} else if used {
+		return revision, "", 0, false, semanticError("key_conflict", fmt.Sprintf("%s already exists in Semantic History", change.Key), fmt.Sprintf("changes[%d].key", index), map[string]any{"key": change.Key})
+	}
 	recordJSON, err := json.Marshal(record)
 	if err != nil {
 		return revision, "", 0, false, fmt.Errorf("encode Entity record: %w", err)
@@ -776,6 +799,11 @@ func applyCreateFact(ctx context.Context, tx *sql.Tx, projectID string, revision
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return revision, "", 0, false, err
+	}
+	if used, err := historicalKeyExists(ctx, tx, projectID, change.Key); err != nil {
+		return revision, "", 0, false, err
+	} else if used {
+		return revision, "", 0, false, semanticError("key_conflict", fmt.Sprintf("%s already exists in Semantic History", change.Key), fmt.Sprintf("changes[%d].key", index), map[string]any{"key": change.Key})
 	}
 	recordJSON, err := json.Marshal(record)
 	if err != nil {
@@ -1076,12 +1104,8 @@ func applyTransition(ctx context.Context, tx *sql.Tx, projectID string, revision
 	); err != nil {
 		return revision, "", 0, false, fmt.Errorf("store retired Entity history: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `
-		DELETE FROM blackboard_v2_relationships
-		WHERE project_id = ? AND (from_key = ? OR to_key = ?)`,
-		projectID, change.Key, change.Key,
-	); err != nil {
-		return revision, "", 0, false, fmt.Errorf("remove retired Entity relationships: %w", err)
+	if err := moveCurrentRelationshipsToHistory(ctx, tx, projectID, change.Key); err != nil {
+		return revision, "", 0, false, err
 	}
 	if _, err := tx.ExecContext(ctx, `
 		DELETE FROM blackboard_v2_records
@@ -1166,12 +1190,8 @@ func applySupersede(ctx context.Context, tx *sql.Tx, projectID string, revision,
 	); err != nil {
 		return revision, "", 0, RelationVersionTuple{}, false, fmt.Errorf("store superseded Entity history: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `
-		DELETE FROM blackboard_v2_relationships
-		WHERE project_id = ? AND (from_key = ? OR to_key = ?)`,
-		projectID, change.Replaced, change.Replaced,
-	); err != nil {
-		return revision, "", 0, RelationVersionTuple{}, false, fmt.Errorf("remove superseded Entity relationships: %w", err)
+	if err := moveCurrentRelationshipsToHistory(ctx, tx, projectID, change.Replaced); err != nil {
+		return revision, "", 0, RelationVersionTuple{}, false, err
 	}
 	if _, err := tx.ExecContext(ctx, `
 		DELETE FROM blackboard_v2_records
@@ -1181,11 +1201,11 @@ func applySupersede(ctx context.Context, tx *sql.Tx, projectID string, revision,
 		return revision, "", 0, RelationVersionTuple{}, false, fmt.Errorf("remove superseded Entity current record: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO blackboard_v2_relationships (project_id, from_key, relation, to_key, version, reason, created_at, updated_at)
-		VALUES (?, ?, 'supersedes', ?, 1, '', ?, ?)`,
-		projectID, change.Replacement, change.Replaced, now, now,
+		INSERT INTO blackboard_v2_relationship_history (project_id, from_key, relation, to_key, version, reason, recorded_at)
+		VALUES (?, ?, 'supersedes', ?, 1, '', ?)`,
+		projectID, change.Replacement, change.Replaced, now,
 	); err != nil {
-		return revision, "", 0, RelationVersionTuple{}, false, fmt.Errorf("store Entity supersedes relationship: %w", err)
+		return revision, "", 0, RelationVersionTuple{}, false, fmt.Errorf("store Entity supersedes relationship history: %w", err)
 	}
 	tuple := RelationVersionTuple{change.Replacement, "supersedes", change.Replaced, 1}
 	return nextRevision, change.Replaced, nextVersion, tuple, true, nil
@@ -1251,6 +1271,54 @@ func relationshipWouldCycle(ctx context.Context, tx *sql.Tx, projectID, fromKey,
 		rows.Close()
 	}
 	return false, nil
+}
+
+func moveCurrentRelationshipsToHistory(ctx context.Context, tx *sql.Tx, projectID, key string) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT from_key, relation, to_key, version, reason, created_at
+		FROM blackboard_v2_relationships
+		WHERE project_id = ? AND (from_key = ? OR to_key = ?)
+		ORDER BY from_key ASC, relation ASC, to_key ASC`,
+		projectID, key, key,
+	)
+	if err != nil {
+		return fmt.Errorf("read terminal Entity relationships: %w", err)
+	}
+	type relationship struct {
+		from, relation, to, reason, createdAt string
+		version                               int
+	}
+	relationships := make([]relationship, 0)
+	for rows.Next() {
+		var item relationship
+		if err := rows.Scan(&item.from, &item.relation, &item.to, &item.version, &item.reason, &item.createdAt); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan terminal Entity relationship: %w", err)
+		}
+		relationships = append(relationships, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate terminal Entity relationships: %w", err)
+	}
+	rows.Close()
+	for _, item := range relationships {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO blackboard_v2_relationship_history (project_id, from_key, relation, to_key, version, reason, recorded_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			projectID, item.from, item.relation, item.to, item.version, item.reason, item.createdAt,
+		); err != nil {
+			return fmt.Errorf("store terminal Entity relationship history: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM blackboard_v2_relationships
+		WHERE project_id = ? AND (from_key = ? OR to_key = ?)`,
+		projectID, key, key,
+	); err != nil {
+		return fmt.Errorf("remove terminal Entity relationships: %w", err)
+	}
+	return nil
 }
 
 func ensureProjectState(ctx context.Context, tx *sql.Tx, projectID string) error {
@@ -1320,6 +1388,19 @@ func loadCurrentRecord(ctx context.Context, tx *sql.Tx, projectID, key string) (
 	}
 	found.record = record
 	return found, nil
+}
+
+func historicalKeyExists(ctx context.Context, tx *sql.Tx, projectID, key string) (bool, error) {
+	var exists int
+	err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM blackboard_v2_record_history WHERE project_id = ? AND key = ?
+		)`, projectID, key,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check Blackboard v2 historical key: %w", err)
+	}
+	return exists == 1, nil
 }
 
 func decodeStoredRecord(typ, raw string) (Record, error) {
@@ -1911,6 +1992,9 @@ func validateEntityRecord(record EntityRecord, path string) error {
 	if err := validateConciseText(record.Name, path+".name"); err != nil {
 		return err
 	}
+	if containsSecretMarker(record.Name) {
+		return semanticError("semantic_validation", "Entity name must not contain secrets", path+".name", nil)
+	}
 	if record.Locator != "" {
 		if err := validateLocator(record.Locator, path+".locator"); err != nil {
 			return err
@@ -1919,6 +2003,9 @@ func validateEntityRecord(record EntityRecord, path string) error {
 	if record.Description != "" {
 		if err := validateConciseText(record.Description, path+".description"); err != nil {
 			return err
+		}
+		if containsSecretMarker(record.Description) {
+			return semanticError("semantic_validation", "Entity description must not contain secrets", path+".description", nil)
 		}
 	}
 	switch record.ScopeStatus {
@@ -1962,6 +2049,9 @@ func validateLocator(locator, path string) error {
 	}
 	if strings.Contains(locator, "://") && (parsed.Scheme == "" || parsed.Host == "") {
 		return semanticError("semantic_validation", "Entity locator URL must include scheme and host", path, nil)
+	}
+	if (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host == "" {
+		return semanticError("semantic_validation", "Entity HTTP locator must include a host", path, nil)
 	}
 	return nil
 }
