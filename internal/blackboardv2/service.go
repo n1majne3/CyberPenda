@@ -571,6 +571,7 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 	changedRecords := make(map[string]int)
 	changedRelations := make(map[string]RelationVersionTuple)
 	createdThisBatch := make(map[string]bool)
+	runtimeConfirmedFacts := make(map[string]string)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for index, change := range batch.Changes {
 		if continuationID != "" {
@@ -588,6 +589,15 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 				revision = newRevision
 				changedRecords[key] = version
 				createdThisBatch[key] = true
+				if continuationID != "" && change.Type == "fact" {
+					created, err := loadCurrentRecord(ctx, tx, projectID, key)
+					if err != nil {
+						return ChangeResult{}, err
+					}
+					if created.record.factRecord().Confidence == "confirmed" {
+						runtimeConfirmedFacts[key] = fmt.Sprintf("changes[%d].record.confidence", index)
+					}
+				}
 				if continuationID != "" && change.Type == "attempt" {
 					if err := bindAttemptOrigin(ctx, tx, projectID, key, continuationID, now); err != nil {
 						return ChangeResult{}, err
@@ -613,13 +623,16 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 				changedRelations[relationKey(tuple)] = tuple
 			}
 		case "transition":
-			newRevision, key, version, changed, err := applyTransition(ctx, tx, projectID, continuationID, revision, index, change, now)
+			newRevision, key, version, changed, err := applyTransition(ctx, tx, projectID, revision, index, change, now)
 			if err != nil {
 				return ChangeResult{}, err
 			}
 			if changed {
 				revision = newRevision
 				changedRecords[key] = version
+				if continuationID != "" && change.Status == "confirmed" {
+					runtimeConfirmedFacts[key] = fmt.Sprintf("changes[%d].status", index)
+				}
 			}
 		case "supersede":
 			newRevision, key, version, tuple, changed, err := applySupersede(ctx, tx, projectID, revision, index, change, createdThisBatch, now)
@@ -633,6 +646,32 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 			}
 		default:
 			return ChangeResult{}, semanticError("semantic_validation", "unsupported Blackboard v2 operation", fmt.Sprintf("changes[%d].op", index), nil)
+		}
+	}
+	if continuationID != "" {
+		keys := make([]string, 0, len(runtimeConfirmedFacts))
+		for key := range runtimeConfirmedFacts {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			current, err := loadCurrentRecord(ctx, tx, projectID, key)
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return ChangeResult{}, err
+			}
+			if current.typ != "fact" || current.record.factRecord().Confidence != "confirmed" {
+				continue
+			}
+			hasBasis, err := runtimeFactConfirmationHasBasis(ctx, tx, projectID, continuationID, key)
+			if err != nil {
+				return ChangeResult{}, err
+			}
+			if !hasBasis {
+				return ChangeResult{}, semanticError("semantic_validation", "Runtime Fact confirmation requires an accepted semantic basis", runtimeConfirmedFacts[key], nil)
+			}
 		}
 	}
 
@@ -1391,6 +1430,15 @@ func applyRelate(ctx context.Context, tx *sql.Tx, projectID string, revision, in
 	if err := validateRelationshipEndpoint(change.Relation, fromRecord.typ, toRecord.typ, path+".relation"); err != nil {
 		return revision, RelationVersionTuple{}, false, err
 	}
+	if change.Relation == "supports" && fromRecord.typ == "fact" && toRecord.typ == "fact" {
+		wouldCycle, err := factSupportsWouldCycle(ctx, tx, projectID, change.From, change.To)
+		if err != nil {
+			return revision, RelationVersionTuple{}, false, err
+		}
+		if wouldCycle {
+			return revision, RelationVersionTuple{}, false, semanticError("semantic_validation", "Fact supports relationships must be acyclic", path+".to", nil)
+		}
+	}
 	if change.Relation == "part_of" || change.Relation == "derived_from" || change.Relation == "depends_on" {
 		wouldCycle, err := relationshipWouldCycle(ctx, tx, projectID, change.Relation, change.From, change.To)
 		if err != nil {
@@ -1463,7 +1511,7 @@ func applyRelate(ctx context.Context, tx *sql.Tx, projectID string, revision, in
 	return nextRevision, RelationVersionTuple{change.From, change.Relation, change.To, 1}, true, nil
 }
 
-func applyTransition(ctx context.Context, tx *sql.Tx, projectID, continuationID string, revision, index int, change Change, now string) (int, string, int, bool, error) {
+func applyTransition(ctx context.Context, tx *sql.Tx, projectID string, revision, index int, change Change, now string) (int, string, int, bool, error) {
 	path := fmt.Sprintf("changes[%d]", index)
 	if err := validateKey(change.Key, path+".key"); err != nil {
 		return revision, "", 0, false, err
@@ -1562,15 +1610,6 @@ func applyTransition(ctx context.Context, tx *sql.Tx, projectID, continuationID 
 		current := existing.record.factRecord()
 		if current.Confidence == change.Status {
 			return revision, change.Key, existing.version, false, nil
-		}
-		if current.Confidence == "tentative" && change.Status == "confirmed" && continuationID != "" {
-			hasBasis, err := runtimeFactConfirmationHasBasis(ctx, tx, projectID, continuationID, change.Key)
-			if err != nil {
-				return revision, "", 0, false, err
-			}
-			if !hasBasis {
-				return revision, "", 0, false, semanticError("semantic_validation", "Runtime Fact confirmation requires an accepted semantic basis", path+".status", nil)
-			}
 		}
 		next := current
 		next.Confidence = change.Status
@@ -1903,6 +1942,55 @@ func relationshipWouldCycle(ctx context.Context, tx *sql.Tx, projectID, relation
 			return false, fmt.Errorf("iterate %s relationships: %w", relation, err)
 		}
 		rows.Close()
+	}
+	return false, nil
+}
+
+func factSupportsWouldCycle(ctx context.Context, tx *sql.Tx, projectID, fromKey, toKey string) (bool, error) {
+	if fromKey == toKey {
+		return true, nil
+	}
+	visited := map[string]bool{}
+	stack := []string{toKey}
+	for len(stack) != 0 {
+		key := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if key == fromKey {
+			return true, nil
+		}
+		if visited[key] {
+			continue
+		}
+		visited[key] = true
+		rows, err := tx.QueryContext(ctx, `
+			SELECT rel.to_key
+			FROM blackboard_v2_relationships AS rel
+			JOIN blackboard_v2_records AS source
+			  ON source.project_id = rel.project_id AND source.key = rel.from_key AND source.type = 'fact'
+			JOIN blackboard_v2_records AS target
+			  ON target.project_id = rel.project_id AND target.key = rel.to_key AND target.type = 'fact'
+			WHERE rel.project_id = ? AND rel.from_key = ? AND rel.relation = 'supports'
+			ORDER BY rel.to_key ASC`,
+			projectID, key,
+		)
+		if err != nil {
+			return false, fmt.Errorf("read Fact supports relationships: %w", err)
+		}
+		for rows.Next() {
+			var target string
+			if err := rows.Scan(&target); err != nil {
+				rows.Close()
+				return false, fmt.Errorf("scan Fact supports relationship: %w", err)
+			}
+			stack = append(stack, target)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return false, fmt.Errorf("iterate Fact supports relationships: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return false, fmt.Errorf("close Fact supports relationships: %w", err)
+		}
 	}
 	return false, nil
 }

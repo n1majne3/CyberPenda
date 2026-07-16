@@ -709,6 +709,222 @@ func TestRuntimeFactConfirmationRequiresAcceptedImplementedBasis(t *testing.T) {
 	}
 }
 
+func TestRuntimeConfirmedFactCreateValidatesFinalBatchBasis(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	projects := project.NewService(db)
+	alpha, err := projects.Create("Runtime Confirmed Fact Create", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create alpha project: %v", err)
+	}
+	beta, err := projects.Create("Foreign Confirmed Fact Basis", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create beta project: %v", err)
+	}
+	tasks := task.NewService(db, projects)
+	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: alpha.ID, Goal: "Create confirmed Facts", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatalf("create Task: %v", err)
+	}
+	continuation, err := tasks.CreateContinuation(createdTask.ID, "profile-confirm-create", "codex", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create Continuation: %v", err)
+	}
+	service := blackboardv2.NewService(db)
+
+	_, err = service.ApplyForContinuation(ctx, alpha.ID, continuation.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "reject-unsupported-confirmed-create",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "entity:must-roll-back", Type: "entity", Record: blackboardv2.EntityRecord{Status: "active", Kind: "host", Name: "rollback.example", ScopeStatus: "in_scope"}},
+			{Op: "create", Key: "fact:unsupported-confirmed-create", Type: "fact", Record: blackboardv2.FactRecord{Category: "asset", Summary: "Unsupported confirmed Runtime Fact", Confidence: "confirmed", ScopeStatus: "in_scope"}},
+		},
+	})
+	if !isSemanticCode(err, "semantic_validation") {
+		t.Fatalf("unsupported confirmed create error = %#v, want semantic_validation", err)
+	}
+	for _, key := range []string{"entity:must-roll-back", "fact:unsupported-confirmed-create"} {
+		if _, err := service.ReadCurrent(ctx, alpha.ID, key); !isSemanticCode(err, "not_found") {
+			t.Fatalf("unsupported confirmed create retained %s: %#v", key, err)
+		}
+	}
+
+	if _, err := service.Apply(ctx, alpha.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "operator-confirmed-create",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "fact:operator-confirmed-create", Type: "fact", Record: blackboardv2.FactRecord{Category: "asset", Summary: "Operator-confirmed Fact", Confidence: "confirmed", ScopeStatus: "in_scope"},
+		}},
+	}); err != nil {
+		t.Fatalf("trusted operator confirmed create: %v", err)
+	}
+	if _, err := service.Apply(ctx, alpha.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "create-final-batch-support-source",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "fact:create-support-source", Type: "fact", Record: blackboardv2.FactRecord{Category: "authentication", Summary: "Confirmed supporting conclusion", Confidence: "confirmed", ScopeStatus: "in_scope"},
+		}},
+	}); err != nil {
+		t.Fatalf("create final-batch support source: %v", err)
+	}
+
+	_, err = service.ApplyForContinuation(ctx, alpha.ID, continuation.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "confirmed-create-with-later-support",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "fact:confirmed-create-supported", Type: "fact", Record: blackboardv2.FactRecord{Category: "authentication", Summary: "Confirmed Runtime Fact with support", Confidence: "confirmed", ScopeStatus: "in_scope"}},
+			{Op: "relate", From: "fact:create-support-source", Relation: "supports", To: "fact:confirmed-create-supported", Reason: "Support added after confirmed create"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("confirmed create with later support: %v", err)
+	}
+
+	_, err = service.ApplyForContinuation(ctx, alpha.ID, continuation.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "confirmed-create-with-producing-attempt",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "objective:confirmed-create", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Establish a directly confirmed Fact"}},
+			{Op: "create", Key: "attempt:confirmed-create", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Testing the directly confirmed conclusion"}},
+			{Op: "create", Key: "fact:confirmed-create-produced", Type: "fact", Record: blackboardv2.FactRecord{Category: "authentication", Summary: "Directly confirmed produced conclusion", Confidence: "confirmed", ScopeStatus: "in_scope"}},
+			{Op: "relate", From: "attempt:confirmed-create", Relation: "tests", To: "objective:confirmed-create"},
+			{Op: "relate", From: "attempt:confirmed-create", Relation: "produced", To: "fact:confirmed-create-produced"},
+			{Op: "transition", Key: "attempt:confirmed-create", Version: 1, Status: "succeeded", Summary: "The producing Attempt established the conclusion"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("confirmed create with same-batch producing Attempt: %v", err)
+	}
+
+	if _, err := service.Apply(ctx, beta.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "foreign-confirmed-create-support",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "fact:foreign-create-support", Type: "fact", Record: blackboardv2.FactRecord{Category: "asset", Summary: "Foreign confirmed support", Confidence: "confirmed", ScopeStatus: "in_scope"},
+		}},
+	}); err != nil {
+		t.Fatalf("create foreign confirmed support: %v", err)
+	}
+	_, err = service.ApplyForContinuation(ctx, alpha.ID, continuation.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "reject-cross-project-confirmed-create-basis",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "fact:cross-project-confirmed-create", Type: "fact", Record: blackboardv2.FactRecord{Category: "asset", Summary: "Cross-Project unsupported confirmed Fact", Confidence: "confirmed", ScopeStatus: "in_scope"},
+		}},
+	})
+	if !isSemanticCode(err, "semantic_validation") {
+		t.Fatalf("cross-Project confirmed create error = %#v, want semantic_validation", err)
+	}
+}
+
+func TestFactSupportsSubgraphIsAcyclic(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	createdProject, err := project.NewService(db).Create("Acyclic Fact Support", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	service := blackboardv2.NewService(db)
+	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "seed-fact-support-dag",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "fact:support-a", Type: "fact", Record: blackboardv2.FactRecord{Category: "authentication", Summary: "Support fact A", Confidence: "confirmed", ScopeStatus: "in_scope"}},
+			{Op: "create", Key: "fact:support-b", Type: "fact", Record: blackboardv2.FactRecord{Category: "authentication", Summary: "Support fact B", Confidence: "confirmed", ScopeStatus: "in_scope"}},
+			{Op: "create", Key: "fact:support-c", Type: "fact", Record: blackboardv2.FactRecord{Category: "authentication", Summary: "Support fact C", Confidence: "tentative", ScopeStatus: "in_scope"}},
+			{Op: "relate", From: "fact:support-a", Relation: "supports", To: "fact:support-b", Reason: "A supports B"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed Fact support DAG: %v", err)
+	}
+
+	noOp, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "exact-support-edge-noop",
+		Changes: []blackboardv2.Change{{
+			Op: "relate", From: "fact:support-a", Relation: "supports", To: "fact:support-b", Reason: "A supports B",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("exact existing supports no-op: %v", err)
+	}
+	assertChangeResult(t, noOp, 4, nil)
+
+	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "reject-reciprocal-support-cycle",
+		Changes: []blackboardv2.Change{{
+			Op: "relate", From: "fact:support-b", Relation: "supports", To: "fact:support-a", Reason: "B must not support A",
+		}},
+	})
+	if !isSemanticCode(err, "semantic_validation") {
+		t.Fatalf("reciprocal supports cycle error = %#v, want semantic_validation", err)
+	}
+	if _, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "extend-support-dag",
+		Changes: []blackboardv2.Change{{
+			Op: "relate", From: "fact:support-b", Relation: "supports", To: "fact:support-c", Reason: "B supports C",
+		}},
+	}); err != nil {
+		t.Fatalf("extend Fact support DAG: %v", err)
+	}
+	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "reject-long-support-cycle",
+		Changes: []blackboardv2.Change{{
+			Op: "relate", From: "fact:support-c", Relation: "supports", To: "fact:support-a", Reason: "C must not close the cycle",
+		}},
+	})
+	if !isSemanticCode(err, "semantic_validation") {
+		t.Fatalf("long supports cycle error = %#v, want semantic_validation", err)
+	}
+
+	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "reject-same-batch-support-cycle",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "entity:support-cycle-marker", Type: "entity", Record: blackboardv2.EntityRecord{Status: "active", Kind: "host", Name: "must-roll-back.example", ScopeStatus: "in_scope"}},
+			{Op: "create", Key: "fact:support-x", Type: "fact", Record: blackboardv2.FactRecord{Category: "asset", Summary: "Support fact X", Confidence: "tentative", ScopeStatus: "in_scope"}},
+			{Op: "create", Key: "fact:support-y", Type: "fact", Record: blackboardv2.FactRecord{Category: "asset", Summary: "Support fact Y", Confidence: "tentative", ScopeStatus: "in_scope"}},
+			{Op: "relate", From: "fact:support-x", Relation: "supports", To: "fact:support-y", Reason: "X supports Y"},
+			{Op: "relate", From: "fact:support-y", Relation: "supports", To: "fact:support-x", Reason: "Y must not support X"},
+		},
+	})
+	if !isSemanticCode(err, "semantic_validation") {
+		t.Fatalf("same-batch supports cycle error = %#v, want semantic_validation", err)
+	}
+	for _, key := range []string{"entity:support-cycle-marker", "fact:support-x", "fact:support-y"} {
+		if _, err := service.ReadCurrent(ctx, createdProject.ID, key); !isSemanticCode(err, "not_found") {
+			t.Fatalf("same-batch supports cycle retained %s: %#v", key, err)
+		}
+	}
+
+	updated, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "update-acyclic-support-reason",
+		Changes: []blackboardv2.Change{{
+			Op: "relate", From: "fact:support-a", Relation: "supports", To: "fact:support-b", Version: 1, Reason: "A independently supports B",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("update acyclic supports reason: %v", err)
+	}
+	assertChangeRecords(t, updated, 6, [][]any{})
+	if len(updated.Relations) != 1 || updated.Relations[0][3] != 2 {
+		t.Fatalf("updated supports result = %#v", updated.Relations)
+	}
+}
+
 func mustHarness(t *testing.T) *blackboardv2contract.Harness {
 	t.Helper()
 	harness, err := blackboardv2contract.NewHarness()
