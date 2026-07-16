@@ -3,7 +3,6 @@ package blackboardv2
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -32,13 +31,19 @@ type EvidenceConfig struct {
 type EvidenceFailurePoint string
 
 const (
-	EvidenceFailureBeforeReservation  EvidenceFailurePoint = "before_reservation"
-	EvidenceFailureBeforeFilePublish  EvidenceFailurePoint = "before_file_publish"
-	EvidenceFailureAfterFileRename    EvidenceFailurePoint = "after_file_rename"
-	EvidenceFailureBeforePublishStore EvidenceFailurePoint = "before_publication_checkpoint"
-	EvidenceFailureAfterFilePublish   EvidenceFailurePoint = "file_publish"
-	EvidenceFailureAfterGraphCommit   EvidenceFailurePoint = "semantic_commit"
-	EvidenceFailureAfterResultStore   EvidenceFailurePoint = "result_store"
+	EvidenceFailureBeforeReservation   EvidenceFailurePoint = "before_reservation"
+	EvidenceFailureBeforeFilePublish   EvidenceFailurePoint = "before_file_publish"
+	EvidenceFailureBeforeTempCopy      EvidenceFailurePoint = "before_temp_copy"
+	EvidenceFailureMidTempCopy         EvidenceFailurePoint = "mid_temp_copy"
+	EvidenceFailureAfterTempSync       EvidenceFailurePoint = "after_temp_sync"
+	EvidenceFailureBeforeFileRename    EvidenceFailurePoint = "before_file_rename"
+	EvidenceFailureAfterFileRename     EvidenceFailurePoint = "after_file_rename"
+	EvidenceFailureBeforePublishStore  EvidenceFailurePoint = "before_publication_checkpoint"
+	EvidenceFailureAfterFilePublish    EvidenceFailurePoint = "file_publish"
+	EvidenceFailureAfterPayloadGCClaim EvidenceFailurePoint = "after_payload_gc_claim"
+	EvidenceFailureAfterPayloadUnlink  EvidenceFailurePoint = "after_payload_unlink"
+	EvidenceFailureAfterGraphCommit    EvidenceFailurePoint = "semantic_commit"
+	EvidenceFailureAfterResultStore    EvidenceFailurePoint = "result_store"
 )
 
 // EvidenceFailureInjector can simulate a lost response or process failure at
@@ -165,6 +170,7 @@ type evidenceRequestRow struct {
 	sha256         string
 	size           int64
 	internalPath   string
+	tempPath       string
 	payloadOwned   bool
 	status         string
 	resultJSON     string
@@ -223,6 +229,16 @@ func (s *Service) RetainEvidenceForContinuation(ctx context.Context, projectID, 
 	if strings.TrimSpace(s.evidenceConfig.RuntimeRoot) == "" || strings.TrimSpace(s.evidenceConfig.ArtifactRoot) == "" {
 		return ChangeResult{}, fmt.Errorf("Evidence Runtime Root and Artifact Root must be configured")
 	}
+	if exists {
+		recovered, err := s.recoverOwnedEvidenceGC(ctx, projectID, continuationID, request.IdempotencyKey, row)
+		if err != nil {
+			return ChangeResult{}, err
+		}
+		if recovered {
+			exists = false
+			row = evidenceRequestRow{}
+		}
+	}
 	var source *evidenceSource
 	if !exists {
 		if !continuationCanWrite(status) {
@@ -266,7 +282,11 @@ func (s *Service) RetainEvidenceForContinuation(ctx context.Context, projectID, 
 		return ChangeResult{}, err
 	}
 	if !payloadReady {
-		if source == nil {
+		tempReady, err := s.verifyJournaledEvidenceTemp(row.tempPath, row.sha256, row.size)
+		if err != nil {
+			return ChangeResult{}, err
+		}
+		if !tempReady && source == nil {
 			opened, err := s.openRuntimeEvidenceSource(taskID, request.SourcePath)
 			if err != nil {
 				s.cleanupDefinitiveEvidenceFailure(ctx, projectID, continuationID, request.IdempotencyKey, row, err)
@@ -276,11 +296,13 @@ func (s *Service) RetainEvidenceForContinuation(ctx context.Context, projectID, 
 			defer source.file.Close()
 			defer source.root.Close()
 		}
-		if err := validateEvidenceReservationRow(row, requestHash, *source); err != nil {
-			s.cleanupDefinitiveEvidenceFailure(ctx, projectID, continuationID, request.IdempotencyKey, row, err)
-			return ChangeResult{}, err
+		if source != nil {
+			if err := validateEvidenceReservationRow(row, requestHash, *source); err != nil {
+				s.cleanupDefinitiveEvidenceFailure(ctx, projectID, continuationID, request.IdempotencyKey, row, err)
+				return ChangeResult{}, err
+			}
 		}
-		if err := s.ensureEvidencePublished(ctx, projectID, continuationID, request.IdempotencyKey, &row, *source); err != nil {
+		if err := s.ensureEvidencePublished(ctx, projectID, continuationID, request.IdempotencyKey, &row, source); err != nil {
 			s.cleanupDefinitiveEvidenceFailure(ctx, projectID, continuationID, request.IdempotencyKey, row, err)
 			return ChangeResult{}, err
 		}
@@ -642,6 +664,17 @@ func plannedEvidenceInternalPath(projectID, digest, sourcePath string) (string, 
 	return path, nil
 }
 
+func plannedEvidenceTempPath(internalPath, requestHash string) (string, error) {
+	if len(requestHash) < 24 {
+		return "", fmt.Errorf("invalid Evidence request hash")
+	}
+	path := internalPath + ".stage-" + requestHash[:24]
+	if clean := filepath.Clean(path); clean != path || filepath.Dir(clean) != filepath.Dir(internalPath) {
+		return "", fmt.Errorf("planned Evidence temp path escapes its final directory")
+	}
+	return path, nil
+}
+
 func semanticEvidencePath(projectID, internalPath, digest string) (string, error) {
 	planned, err := plannedEvidenceInternalPath(projectID, digest, filepath.Base(internalPath))
 	if err != nil {
@@ -667,28 +700,46 @@ func validateEvidenceReservationRow(row evidenceRequestRow, requestHash string, 
 }
 
 func (s *Service) reserveEvidenceRequest(ctx context.Context, projectID, continuationID, key, requestHash, internalPath string, source evidenceSource) (evidenceRequestRow, bool, error) {
+	tempPath, err := plannedEvidenceTempPath(internalPath, requestHash)
+	if err != nil {
+		return evidenceRequestRow{}, false, err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return evidenceRequestRow{}, false, fmt.Errorf("begin Evidence reservation: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO blackboard_v2_evidence_requests(project_id,continuation_id,idempotency_key,request_hash,source_identity,source_sha256,source_size_bytes,managed_internal_path,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?, 'reserved',?,?)`, projectID, continuationID, key, requestHash, source.identity, source.sha256, source.size, internalPath, now, now)
+	result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO blackboard_v2_evidence_requests(project_id,continuation_id,idempotency_key,request_hash,source_identity,source_sha256,source_size_bytes,managed_internal_path,temp_internal_path,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?, 'reserved',?,?)`, projectID, continuationID, key, requestHash, source.identity, source.sha256, source.size, internalPath, tempPath, now, now)
 	if err != nil {
 		return evidenceRequestRow{}, false, fmt.Errorf("reserve Evidence request: %w", err)
 	}
 	rows, _ := result.RowsAffected()
 	var row evidenceRequestRow
 	var payloadOwned int
-	if err := tx.QueryRowContext(ctx, `SELECT request_hash,source_identity,source_sha256,source_size_bytes,managed_internal_path,payload_owned,status,result_json FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, projectID, continuationID, key).Scan(&row.requestHash, &row.sourceIdentity, &row.sha256, &row.size, &row.internalPath, &payloadOwned, &row.status, &row.resultJSON); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT request_hash,source_identity,source_sha256,source_size_bytes,managed_internal_path,temp_internal_path,payload_owned,status,result_json FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, projectID, continuationID, key).Scan(&row.requestHash, &row.sourceIdentity, &row.sha256, &row.size, &row.internalPath, &row.tempPath, &payloadOwned, &row.status, &row.resultJSON); err != nil {
 		return evidenceRequestRow{}, false, fmt.Errorf("read reserved Evidence request: %w", err)
 	}
 	row.payloadOwned = payloadOwned == 1
-	if row.requestHash != requestHash || row.internalPath != internalPath {
+	if row.requestHash != requestHash || row.internalPath != internalPath || row.tempPath != tempPath {
 		return evidenceRequestRow{}, false, semanticError("idempotency_conflict", "idempotency key was already used with different semantics", "idempotency_key", map[string]any{"idempotency_key": key})
 	}
 	if err := validateEvidenceReservationRow(row, requestHash, source); err != nil {
 		return evidenceRequestRow{}, false, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO blackboard_v2_evidence_payloads(project_id,managed_internal_path,sha256,size_bytes,state,created_at,updated_at) VALUES(?,?,?,?,'active',?,?)`, projectID, internalPath, source.sha256, source.size, now, now); err != nil {
+		return evidenceRequestRow{}, false, fmt.Errorf("claim Evidence payload path: %w", err)
+	}
+	var payloadDigest, payloadState string
+	var payloadSize int64
+	if err := tx.QueryRowContext(ctx, `SELECT sha256,size_bytes,state FROM blackboard_v2_evidence_payloads WHERE project_id=? AND managed_internal_path=?`, projectID, internalPath).Scan(&payloadDigest, &payloadSize, &payloadState); err != nil {
+		return evidenceRequestRow{}, false, fmt.Errorf("read Evidence payload claim: %w", err)
+	}
+	if payloadDigest != source.sha256 || payloadSize != source.size {
+		return evidenceRequestRow{}, false, fmt.Errorf("Evidence payload claim metadata conflict")
+	}
+	if payloadState == "gc" {
+		return evidenceRequestRow{}, false, &Error{Code: "evidence_payload_gc_in_progress", Message: "Evidence payload cleanup is in progress", Path: "source_path", Retryable: true}
 	}
 	if err := tx.Commit(); err != nil {
 		return evidenceRequestRow{}, false, fmt.Errorf("commit Evidence reservation: %w", err)
@@ -699,7 +750,7 @@ func (s *Service) reserveEvidenceRequest(ctx context.Context, projectID, continu
 func (s *Service) readEvidenceRequest(ctx context.Context, projectID, continuationID, key string) (evidenceRequestRow, bool, error) {
 	var row evidenceRequestRow
 	var payloadOwned int
-	err := s.db.QueryRowContext(ctx, `SELECT request_hash,source_identity,source_sha256,source_size_bytes,managed_internal_path,payload_owned,status,result_json FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, projectID, continuationID, key).Scan(&row.requestHash, &row.sourceIdentity, &row.sha256, &row.size, &row.internalPath, &payloadOwned, &row.status, &row.resultJSON)
+	err := s.db.QueryRowContext(ctx, `SELECT request_hash,source_identity,source_sha256,source_size_bytes,managed_internal_path,temp_internal_path,payload_owned,status,result_json FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, projectID, continuationID, key).Scan(&row.requestHash, &row.sourceIdentity, &row.sha256, &row.size, &row.internalPath, &row.tempPath, &payloadOwned, &row.status, &row.resultJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return evidenceRequestRow{}, false, nil
 	}
@@ -910,8 +961,31 @@ func (s *Service) factHasDurableBasis(ctx context.Context, tx *sql.Tx, projectID
 	return false, nil
 }
 
-func (s *Service) ensureEvidencePublished(ctx context.Context, projectID, continuationID, key string, row *evidenceRequestRow, source evidenceSource) error {
-	if !evidenceSourceStillSame(source) {
+func (s *Service) verifyJournaledEvidenceTemp(tempPath, digest string, size int64) (bool, error) {
+	root, err := os.OpenRoot(s.evidenceConfig.ArtifactRoot)
+	if err != nil {
+		return false, fmt.Errorf("open managed Artifact Root: %w", err)
+	}
+	defer root.Close()
+	directory, file, _, _, err := openSecureRegularFile(root, tempPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, semanticError("evidence_integrity_failed", "journaled Evidence temp path is symlinked or unsafe", "source_path", nil)
+	}
+	defer directory.Close()
+	defer file.Close()
+	hash := sha256.New()
+	actualSize, err := io.Copy(hash, file)
+	if err != nil {
+		return false, fmt.Errorf("hash journaled Evidence temp: %w", err)
+	}
+	return actualSize == size && hex.EncodeToString(hash.Sum(nil)) == digest, nil
+}
+
+func (s *Service) ensureEvidencePublished(ctx context.Context, projectID, continuationID, key string, row *evidenceRequestRow, source *evidenceSource) error {
+	if source != nil && !evidenceSourceStillSame(*source) {
 		return semanticError("evidence_source_changed", "Evidence source was replaced during retention", "source_path", nil)
 	}
 	if err := s.failEvidence(EvidenceFailureBeforeFilePublish); err != nil {
@@ -938,45 +1012,71 @@ func (s *Service) ensureEvidencePublished(ctx context.Context, projectID, contin
 		if !ready {
 			return fmt.Errorf("managed Evidence disappeared during publication")
 		}
+		if err := removeJournaledEvidenceTemp(destinationRoot, filepath.Base(row.tempPath)); err != nil {
+			return err
+		}
 		return s.syncAndCheckpointPublishedEvidence(ctx, projectID, continuationID, key, row.internalPath)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("inspect managed Evidence destination: %w", err)
 	}
-	tempName, err := newEvidenceTempName()
+	if filepath.Dir(row.tempPath) != directoryPath {
+		return fmt.Errorf("journaled Evidence temp is outside its final directory")
+	}
+	tempName := filepath.Base(row.tempPath)
+	tempReady, err := s.verifyJournaledEvidenceTemp(row.tempPath, row.sha256, row.size)
 	if err != nil {
 		return err
 	}
-	temp, err := destinationRoot.OpenFile(tempName, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return fmt.Errorf("create managed Evidence temp file: %w", err)
-	}
-	defer destinationRoot.Remove(tempName)
-	copiedHash := sha256.New()
-	copiedSize, copyErr := io.Copy(io.MultiWriter(temp, copiedHash), source.file)
-	if copyErr == nil && (copiedSize != source.size || hex.EncodeToString(copiedHash.Sum(nil)) != source.sha256) {
-		_ = temp.Close()
-		return semanticError("evidence_source_changed", "Evidence source bytes changed during retention", "source_path", nil)
-	}
-	if copyErr == nil {
-		copyErr = temp.Chmod(0o400)
-	}
-	if copyErr == nil {
-		copyErr = temp.Sync()
-	}
-	closeErr := temp.Close()
-	if copyErr == nil {
-		copyErr = closeErr
-	}
-	if copyErr != nil {
-		return fmt.Errorf("write managed Evidence: %w", copyErr)
-	}
-	if !evidenceSourceStillSame(source) {
-		return semanticError("evidence_source_changed", "Evidence source was replaced during retention", "source_path", nil)
+	if !tempReady {
+		if source == nil {
+			return semanticError("evidence_source_changed", "Evidence source is required to rebuild an incomplete journaled temp", "source_path", nil)
+		}
+		if err := removeJournaledEvidenceTemp(destinationRoot, tempName); err != nil {
+			return err
+		}
+		temp, err := destinationRoot.OpenFile(tempName, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			return fmt.Errorf("create journaled Evidence temp: %w", err)
+		}
+		if err := s.failEvidence(EvidenceFailureBeforeTempCopy); err != nil {
+			_ = temp.Close()
+			return err
+		}
+		copiedHash := sha256.New()
+		copiedSize, copyErr := copyEvidenceWithMidpointFailure(temp, copiedHash, source.file, func() error {
+			return s.failEvidence(EvidenceFailureMidTempCopy)
+		})
+		if copyErr == nil && (copiedSize != source.size || hex.EncodeToString(copiedHash.Sum(nil)) != source.sha256) {
+			_ = temp.Close()
+			return semanticError("evidence_source_changed", "Evidence source bytes changed during retention", "source_path", nil)
+		}
+		if copyErr == nil {
+			copyErr = temp.Chmod(0o400)
+		}
+		if copyErr == nil {
+			copyErr = temp.Sync()
+		}
+		closeErr := temp.Close()
+		if copyErr == nil {
+			copyErr = closeErr
+		}
+		if copyErr != nil {
+			return fmt.Errorf("write journaled Evidence temp: %w", copyErr)
+		}
+		if err := s.failEvidence(EvidenceFailureAfterTempSync); err != nil {
+			return err
+		}
+		if !evidenceSourceStillSame(*source) {
+			return semanticError("evidence_source_changed", "Evidence source was replaced during retention", "source_path", nil)
+		}
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE blackboard_v2_evidence_requests SET payload_owned=1,updated_at=? WHERE project_id=? AND continuation_id=? AND idempotency_key=? AND managed_internal_path=?`, time.Now().UTC().Format(time.RFC3339Nano), projectID, continuationID, key, row.internalPath); err != nil {
 		return fmt.Errorf("claim managed Evidence payload: %w", err)
 	}
 	row.payloadOwned = true
+	if err := s.failEvidence(EvidenceFailureBeforeFileRename); err != nil {
+		return err
+	}
 	if err := destinationRoot.Rename(tempName, name); err != nil {
 		return fmt.Errorf("publish managed Evidence: %w", err)
 	}
@@ -994,6 +1094,45 @@ func (s *Service) ensureEvidencePublished(ctx context.Context, projectID, contin
 	}
 	row.status = "published"
 	return s.failEvidence(EvidenceFailureAfterFilePublish)
+}
+
+func copyEvidenceWithMidpointFailure(destination io.Writer, hash io.Writer, source io.Reader, fail func() error) (int64, error) {
+	buffer := make([]byte, 32*1024)
+	var copied int64
+	failureChecked := false
+	for {
+		count, readErr := source.Read(buffer)
+		if count != 0 {
+			written, writeErr := io.MultiWriter(destination, hash).Write(buffer[:count])
+			copied += int64(written)
+			if writeErr != nil {
+				return copied, writeErr
+			}
+			if !failureChecked {
+				failureChecked = true
+				if err := fail(); err != nil {
+					return copied, err
+				}
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			return copied, nil
+		}
+		if readErr != nil {
+			return copied, readErr
+		}
+	}
+}
+
+func removeJournaledEvidenceTemp(root *os.Root, name string) error {
+	err := root.Remove(name)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove journaled Evidence temp: %w", err)
+	}
+	if err == nil {
+		return syncEvidenceDirectory(root)
+	}
+	return nil
 }
 
 func (s *Service) syncAndCheckpointPublishedEvidence(ctx context.Context, projectID, continuationID, key, internalPath string) error {
@@ -1036,56 +1175,207 @@ func syncEvidenceDirectory(root *os.Root) error {
 
 func (s *Service) cleanupDefinitiveEvidenceFailure(ctx context.Context, projectID, continuationID, key string, row evidenceRequestRow, cause error) {
 	var semanticErr *Error
-	if !errors.As(cause, &semanticErr) || semanticErr.Code == "idempotency_conflict" {
+	if !errors.As(cause, &semanticErr) || semanticErr.Retryable || semanticErr.Code == "idempotency_conflict" {
 		return
 	}
-	var receiptCount int
-	receiptKey := "retain-evidence-v2:" + continuationID + ":" + key
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM blackboard_v2_idempotency_receipts WHERE project_id=? AND idempotency_key=?`, projectID, receiptKey).Scan(&receiptCount); err != nil || receiptCount != 0 {
+	decision, err := s.claimEvidencePayloadGC(ctx, projectID, continuationID, key, row)
+	if err != nil || decision == evidenceCleanupPreserve {
 		return
 	}
-	if row.payloadOwned {
-		semanticPath, err := semanticEvidencePath(projectID, row.internalPath, row.sha256)
-		if err != nil {
+	if decision == evidenceCleanupDeleteRequest {
+		if err := s.removeRequestOwnedEvidenceTemp(row); err != nil {
 			return
 		}
-		var references int
-		if err := s.db.QueryRowContext(ctx, `
-			SELECT
-				(SELECT COUNT(*) FROM blackboard_v2_evidence_requests WHERE project_id=? AND managed_internal_path=? AND NOT (continuation_id=? AND idempotency_key=?)) +
-				(SELECT COUNT(*) FROM blackboard_v2_records WHERE project_id=? AND type='evidence' AND json_extract(record_json,'$.managed_path')=?)`,
-			projectID, row.internalPath, continuationID, key, projectID, semanticPath,
-		).Scan(&references); err != nil || references != 0 {
-			return
-		}
-		root, err := os.OpenRoot(s.evidenceConfig.ArtifactRoot)
-		if err != nil {
-			return
-		}
-		removeErr := root.Remove(row.internalPath)
-		if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			_ = root.Close()
-			return
-		}
-		directory, err := openSecureDirectory(root, filepath.Dir(row.internalPath))
-		if err == nil {
-			err = syncEvidenceDirectory(directory)
-			_ = directory.Close()
-		}
-		_ = root.Close()
-		if err != nil {
-			return
-		}
+		_, _ = s.db.ExecContext(ctx, `DELETE FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=? AND request_hash=?`, projectID, continuationID, key, row.requestHash)
+		return
 	}
-	_, _ = s.db.ExecContext(ctx, `DELETE FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=? AND request_hash=?`, projectID, continuationID, key, row.requestHash)
+	if err := s.failEvidence(EvidenceFailureAfterPayloadGCClaim); err != nil {
+		return
+	}
+	if err := s.removeClaimedEvidencePayload(row); err != nil {
+		return
+	}
+	if err := s.failEvidence(EvidenceFailureAfterPayloadUnlink); err != nil {
+		return
+	}
+	_ = s.finalizeEvidencePayloadGC(ctx, projectID, continuationID, key, row)
 }
 
-func newEvidenceTempName() (string, error) {
-	var bytes [12]byte
-	if _, err := rand.Read(bytes[:]); err != nil {
-		return "", fmt.Errorf("create Evidence temp name: %w", err)
+type evidenceCleanupDecision uint8
+
+const (
+	evidenceCleanupPreserve evidenceCleanupDecision = iota
+	evidenceCleanupDeleteRequest
+	evidenceCleanupOwnPayload
+)
+
+func (s *Service) claimEvidencePayloadGC(ctx context.Context, projectID, continuationID, key string, row evidenceRequestRow) (evidenceCleanupDecision, error) {
+	semanticPath, err := semanticEvidencePath(projectID, row.internalPath, row.sha256)
+	if err != nil {
+		return evidenceCleanupPreserve, err
 	}
-	return ".retain-" + hex.EncodeToString(bytes[:]), nil
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return evidenceCleanupPreserve, fmt.Errorf("begin Evidence payload cleanup claim: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var requestCount, receiptCount int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=? AND request_hash=? AND managed_internal_path=?`, projectID, continuationID, key, row.requestHash, row.internalPath).Scan(&requestCount); err != nil {
+		return evidenceCleanupPreserve, fmt.Errorf("validate Evidence cleanup request: %w", err)
+	}
+	receiptKey := "retain-evidence-v2:" + continuationID + ":" + key
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM blackboard_v2_idempotency_receipts WHERE project_id=? AND idempotency_key=?`, projectID, receiptKey).Scan(&receiptCount); err != nil {
+		return evidenceCleanupPreserve, fmt.Errorf("validate Evidence cleanup receipt: %w", err)
+	}
+	if requestCount != 1 || receiptCount != 0 {
+		return evidenceCleanupPreserve, nil
+	}
+	var state, gcContinuationID, gcKey string
+	err = tx.QueryRowContext(ctx, `SELECT state,gc_continuation_id,gc_idempotency_key FROM blackboard_v2_evidence_payloads WHERE project_id=? AND managed_internal_path=?`, projectID, row.internalPath).Scan(&state, &gcContinuationID, &gcKey)
+	if errors.Is(err, sql.ErrNoRows) {
+		if row.payloadOwned {
+			return evidenceCleanupPreserve, nil
+		}
+		if err := tx.Commit(); err != nil {
+			return evidenceCleanupPreserve, fmt.Errorf("commit Evidence request cleanup decision: %w", err)
+		}
+		return evidenceCleanupDeleteRequest, nil
+	}
+	if err != nil {
+		return evidenceCleanupPreserve, fmt.Errorf("read Evidence payload cleanup claim: %w", err)
+	}
+	if !row.payloadOwned {
+		if err := tx.Commit(); err != nil {
+			return evidenceCleanupPreserve, fmt.Errorf("commit Evidence request cleanup decision: %w", err)
+		}
+		return evidenceCleanupDeleteRequest, nil
+	}
+	if state == "gc" {
+		if gcContinuationID != continuationID || gcKey != key {
+			return evidenceCleanupPreserve, nil
+		}
+		if err := tx.Commit(); err != nil {
+			return evidenceCleanupPreserve, fmt.Errorf("commit resumed Evidence payload cleanup claim: %w", err)
+		}
+		return evidenceCleanupOwnPayload, nil
+	}
+	var references int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT
+			(SELECT COUNT(*) FROM blackboard_v2_evidence_requests WHERE project_id=? AND managed_internal_path=? AND NOT (continuation_id=? AND idempotency_key=?)) +
+			(SELECT COUNT(*) FROM blackboard_v2_records WHERE project_id=? AND type='evidence' AND json_extract(record_json,'$.managed_path')=?)`,
+		projectID, row.internalPath, continuationID, key, projectID, semanticPath,
+	).Scan(&references); err != nil {
+		return evidenceCleanupPreserve, fmt.Errorf("count Evidence payload references: %w", err)
+	}
+	if references != 0 {
+		if err := tx.Commit(); err != nil {
+			return evidenceCleanupPreserve, fmt.Errorf("commit shared Evidence payload cleanup decision: %w", err)
+		}
+		return evidenceCleanupDeleteRequest, nil
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := tx.ExecContext(ctx, `UPDATE blackboard_v2_evidence_payloads SET state='gc',gc_continuation_id=?,gc_idempotency_key=?,updated_at=? WHERE project_id=? AND managed_internal_path=? AND state='active'`, continuationID, key, now, projectID, row.internalPath)
+	if err != nil {
+		return evidenceCleanupPreserve, fmt.Errorf("claim Evidence payload cleanup: %w", err)
+	}
+	changed, _ := result.RowsAffected()
+	if changed != 1 {
+		return evidenceCleanupPreserve, nil
+	}
+	if err := tx.Commit(); err != nil {
+		return evidenceCleanupPreserve, fmt.Errorf("commit Evidence payload cleanup claim: %w", err)
+	}
+	return evidenceCleanupOwnPayload, nil
+}
+
+func (s *Service) recoverOwnedEvidenceGC(ctx context.Context, projectID, continuationID, key string, row evidenceRequestRow) (bool, error) {
+	var state, gcContinuationID, gcKey string
+	err := s.db.QueryRowContext(ctx, `SELECT state,gc_continuation_id,gc_idempotency_key FROM blackboard_v2_evidence_payloads WHERE project_id=? AND managed_internal_path=?`, projectID, row.internalPath).Scan(&state, &gcContinuationID, &gcKey)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read recoverable Evidence payload cleanup: %w", err)
+	}
+	if state != "gc" || gcContinuationID != continuationID || gcKey != key {
+		return false, nil
+	}
+	if err := s.removeClaimedEvidencePayload(row); err != nil {
+		return false, err
+	}
+	if err := s.finalizeEvidencePayloadGC(ctx, projectID, continuationID, key, row); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *Service) removeRequestOwnedEvidenceTemp(row evidenceRequestRow) error {
+	root, err := os.OpenRoot(s.evidenceConfig.ArtifactRoot)
+	if err != nil {
+		return fmt.Errorf("open managed Artifact Root: %w", err)
+	}
+	defer root.Close()
+	if filepath.Dir(row.tempPath) != filepath.Dir(row.internalPath) {
+		return fmt.Errorf("journaled Evidence temp is outside its final directory")
+	}
+	directory, err := openSecureDirectory(root, filepath.Dir(row.internalPath))
+	if err != nil {
+		return fmt.Errorf("open managed Evidence directory: %w", err)
+	}
+	defer directory.Close()
+	return removeJournaledEvidenceTemp(directory, filepath.Base(row.tempPath))
+}
+
+func (s *Service) removeClaimedEvidencePayload(row evidenceRequestRow) error {
+	root, err := os.OpenRoot(s.evidenceConfig.ArtifactRoot)
+	if err != nil {
+		return fmt.Errorf("open managed Artifact Root: %w", err)
+	}
+	defer root.Close()
+	if filepath.Dir(row.tempPath) != filepath.Dir(row.internalPath) {
+		return fmt.Errorf("journaled Evidence temp is outside its final directory")
+	}
+	directory, err := openSecureDirectory(root, filepath.Dir(row.internalPath))
+	if err != nil {
+		return fmt.Errorf("open managed Evidence directory: %w", err)
+	}
+	defer directory.Close()
+	removed := false
+	for _, name := range []string{filepath.Base(row.tempPath), filepath.Base(row.internalPath)} {
+		err := directory.Remove(name)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove claimed Evidence payload: %w", err)
+		}
+		removed = removed || err == nil
+	}
+	if removed {
+		return syncEvidenceDirectory(directory)
+	}
+	return nil
+}
+
+func (s *Service) finalizeEvidencePayloadGC(ctx context.Context, projectID, continuationID, key string, row evidenceRequestRow) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin Evidence payload cleanup completion: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=? AND request_hash=? AND managed_internal_path=?`, projectID, continuationID, key, row.requestHash, row.internalPath); err != nil {
+		return fmt.Errorf("delete cleaned Evidence request: %w", err)
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM blackboard_v2_evidence_payloads WHERE project_id=? AND managed_internal_path=? AND state='gc' AND gc_continuation_id=? AND gc_idempotency_key=?`, projectID, row.internalPath, continuationID, key)
+	if err != nil {
+		return fmt.Errorf("delete Evidence payload cleanup claim: %w", err)
+	}
+	changed, _ := result.RowsAffected()
+	if changed != 1 {
+		return fmt.Errorf("Evidence payload cleanup claim changed during recovery")
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit Evidence payload cleanup completion: %w", err)
+	}
+	return nil
 }
 
 func evidenceSourceStillSame(source evidenceSource) bool {
@@ -1153,6 +1443,31 @@ func (s *Service) applyRetainedEvidence(ctx context.Context, projectID, continua
 			return ChangeResult{}, fmt.Errorf("commit retained Evidence replay: %w", err)
 		}
 		return replay, nil
+	}
+	if durablyReserved {
+		internalPath, err := plannedEvidenceInternalPath(projectID, metadata.sha256, filepath.Base(managedPath))
+		if err != nil {
+			return ChangeResult{}, err
+		}
+		var payloadDigest, payloadState string
+		var payloadSize int64
+		err = tx.QueryRowContext(ctx, `SELECT sha256,size_bytes,state FROM blackboard_v2_evidence_payloads WHERE project_id=? AND managed_internal_path=?`, projectID, internalPath).Scan(&payloadDigest, &payloadSize, &payloadState)
+		if errors.Is(err, sql.ErrNoRows) || payloadState == "gc" {
+			return ChangeResult{}, &Error{Code: "evidence_payload_gc_in_progress", Message: "Evidence payload cleanup is in progress", Path: "source_path", Retryable: true}
+		}
+		if err != nil {
+			return ChangeResult{}, fmt.Errorf("validate retained Evidence payload claim: %w", err)
+		}
+		if payloadDigest != metadata.sha256 || payloadSize != metadata.size {
+			return ChangeResult{}, semanticError("evidence_integrity_failed", "retained Evidence payload claim failed integrity validation", "source_path", nil)
+		}
+		var reservationCount int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=? AND request_hash=? AND managed_internal_path=?`, projectID, continuationID, request.IdempotencyKey, requestHash, internalPath).Scan(&reservationCount); err != nil {
+			return ChangeResult{}, fmt.Errorf("validate retained Evidence reservation: %w", err)
+		}
+		if reservationCount != 1 {
+			return ChangeResult{}, &Error{Code: "evidence_reservation_changed", Message: "Evidence reservation changed during retention", Path: "idempotency_key", Retryable: true}
+		}
 	}
 	status, err := continuationProjectStatus(ctx, tx, projectID, continuationID)
 	if err != nil {

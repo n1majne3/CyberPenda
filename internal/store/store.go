@@ -801,7 +801,39 @@ func migrations() []migration {
 		newMigration(22, "blackboard_v2_current_relationships", migration22SQL, migration22Up),
 		newMigration(23, "blackboard_v2_attempt_ownership", migration23SQL, migration23Up),
 		newMigration(24, "blackboard_v2_evidence_requests", migration24SQL, migration24Up),
+		newMigration(25, "blackboard_v2_evidence_payload_claims", migration25SQL, migration25Up),
 	}
+}
+
+const migration25SQL = `
+UPDATE blackboard_v2_evidence_requests
+SET temp_internal_path = managed_internal_path || '.stage-' || substr(request_hash,1,24)
+WHERE temp_internal_path = '';
+CREATE TABLE IF NOT EXISTS blackboard_v2_evidence_payloads (
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+	managed_internal_path TEXT NOT NULL,
+	sha256 TEXT NOT NULL,
+	size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+	state TEXT NOT NULL CHECK (state IN ('active','gc')),
+	gc_continuation_id TEXT NOT NULL DEFAULT '',
+	gc_idempotency_key TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (project_id, managed_internal_path),
+	CHECK (state = 'active' OR (gc_continuation_id <> '' AND gc_idempotency_key <> ''))
+);
+INSERT OR IGNORE INTO blackboard_v2_evidence_payloads(
+	project_id,managed_internal_path,sha256,size_bytes,state,created_at,updated_at
+)
+SELECT project_id,managed_internal_path,source_sha256,source_size_bytes,'active',created_at,updated_at
+FROM blackboard_v2_evidence_requests;
+`
+
+func migration25Up(tx *sql.Tx) error {
+	if err := ensureColumn(tx, "blackboard_v2_evidence_requests", "temp_internal_path", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return fmt.Errorf("ensure blackboard_v2_evidence_requests.temp_internal_path: %w", err)
+	}
+	return execStatements(tx, migration25SQL)
 }
 
 const migration24SQL = `
