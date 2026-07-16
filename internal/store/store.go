@@ -798,8 +798,25 @@ func migrations() []migration {
 		newMigration(19, "task_soft_deletion", migration19SQL, migration19Up),
 		newMigration(20, "blackboard_v2_store_epoch", migration20SQL, migration20Up),
 		newMigration(21, "blackboard_v2_semantic_facts", migration21SQL, migration21Up),
+		newMigration(22, "blackboard_v2_current_relationships", migration22SQL, migration22Up),
 	}
 }
+
+const migration22SQL = `
+CREATE TABLE IF NOT EXISTS blackboard_v2_relationships (
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+	from_key TEXT NOT NULL,
+	relation TEXT NOT NULL CHECK (relation IN ('about','part_of','tests','produced','evidences','supports','contradicts','derived_from','depends_on','satisfies','supersedes')),
+	to_key TEXT NOT NULL,
+	version INTEGER NOT NULL CHECK (version >= 1),
+	reason TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (project_id, from_key, relation, to_key)
+);
+`
+
+func migration22Up(tx *sql.Tx) error { return execStatements(tx, migration22SQL) }
 
 const migration21SQL = `
 CREATE TABLE IF NOT EXISTS blackboard_v2_project_state (
