@@ -212,6 +212,210 @@ func TestTrustedContinuationOwnsAttemptsWithoutLeakingTaskState(t *testing.T) {
 	}
 }
 
+func TestServerReconcilesOnlyClosedContinuationsOwnedAttempts(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	projects := project.NewService(db)
+	createdProject, err := projects.Create("Attempt Reconciliation", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	foreignProject, err := projects.Create("Foreign Reconciliation", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create foreign project: %v", err)
+	}
+	tasks := task.NewService(db, projects)
+	ownerTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "Owner", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatalf("create owner Task: %v", err)
+	}
+	owner, err := tasks.CreateContinuation(ownerTask.ID, "profile-owner", "codex", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create owner Continuation: %v", err)
+	}
+	if _, err := tasks.UpdateContinuationStatus(owner.ID, task.StatusRunning); err != nil {
+		t.Fatalf("run owner Continuation: %v", err)
+	}
+	peerTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "Peer", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatalf("create peer Task: %v", err)
+	}
+	peer, err := tasks.CreateContinuation(peerTask.ID, "profile-peer", "codex", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create peer Continuation: %v", err)
+	}
+	if _, err := tasks.UpdateContinuationStatus(peer.ID, task.StatusRunning); err != nil {
+		t.Fatalf("run peer Continuation: %v", err)
+	}
+	foreignTask, err := tasks.Create(task.CreateRequest{ProjectID: foreignProject.ID, Goal: "Foreign", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatalf("create foreign Task: %v", err)
+	}
+	foreign, err := tasks.CreateContinuation(foreignTask.ID, "profile-foreign", "codex", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create foreign Continuation: %v", err)
+	}
+	if _, err := tasks.UpdateContinuationStatus(foreign.ID, task.StatusInterrupted); err != nil {
+		t.Fatalf("interrupt foreign Continuation: %v", err)
+	}
+	service := blackboardv2.NewService(db)
+
+	ownerCreate := blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "owner-reconciliation-work",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "objective:owner", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Exercise owner targets"}},
+			{Op: "create", Key: "attempt:owner-a", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Owner attempt A checkpoint"}},
+			{Op: "create", Key: "attempt:owner-b", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Owner attempt B checkpoint"}},
+			{Op: "create", Key: "attempt:owner-unstarted", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Owner attempt created before its target was linked"}},
+			{Op: "relate", From: "attempt:owner-a", Relation: "tests", To: "objective:owner"},
+			{Op: "relate", From: "attempt:owner-b", Relation: "tests", To: "objective:owner"},
+		},
+	}
+	if _, err := service.ApplyForContinuation(ctx, createdProject.ID, owner.ID, ownerCreate); err != nil {
+		t.Fatalf("create owner reconciliation work: %v", err)
+	}
+	if _, err := service.ApplyForContinuation(ctx, createdProject.ID, peer.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "peer-reconciliation-work",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "attempt:peer", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Peer attempt checkpoint"}},
+			{Op: "relate", From: "attempt:peer", Relation: "tests", To: "objective:owner"},
+		},
+	}); err != nil {
+		t.Fatalf("create peer reconciliation work: %v", err)
+	}
+
+	_, err = service.ApplyForContinuation(ctx, createdProject.ID, owner.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "runtime-self-interrupt",
+		Changes: []blackboardv2.Change{{
+			Op: "transition", Key: "attempt:owner-a", Version: 1, Status: "interrupted", Summary: "Runtime cannot choose interrupted",
+		}},
+	})
+	if !isSemanticCode(err, "semantic_validation") {
+		t.Fatalf("Runtime self-interruption error = %#v, want semantic_validation", err)
+	}
+
+	_, err = service.ReconcileContinuationAttempts(ctx, createdProject.ID, owner.ID)
+	if !isSemanticCode(err, "continuation_not_closed") {
+		t.Fatalf("running reconciliation error = %#v, want continuation_not_closed", err)
+	}
+	if _, err := service.ReconcileContinuationAttempts(ctx, createdProject.ID, foreign.ID); !isSemanticCode(err, "authority_denied") {
+		t.Fatalf("cross-project reconciliation error = %#v, want authority_denied", err)
+	}
+
+	if _, err := tasks.UpdateContinuationStatus(owner.ID, task.StatusInterrupted); err != nil {
+		t.Fatalf("interrupt owner Continuation: %v", err)
+	}
+	_, err = service.ApplyForContinuation(ctx, createdProject.ID, owner.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "closed-owner-write",
+		Changes: []blackboardv2.Change{{
+			Op: "update", Key: "attempt:owner-a", Version: 1, Type: "attempt", Record: blackboardv2.AttemptPatch{Summary: strPtr("Closed owner write")},
+		}},
+	})
+	if !isSemanticCode(err, "closed_continuation") {
+		t.Fatalf("closed Continuation write error = %#v, want closed_continuation", err)
+	}
+	if replay, err := service.ApplyForContinuation(ctx, createdProject.ID, owner.ID, ownerCreate); err != nil || replay.Revision != 6 {
+		t.Fatalf("closed Continuation exact replay = %#v, %v", replay, err)
+	}
+
+	reconciled, err := service.ReconcileContinuationAttempts(ctx, createdProject.ID, owner.ID)
+	if err != nil {
+		t.Fatalf("reconcile interrupted owner: %v", err)
+	}
+	assertChangeRecords(t, reconciled, 11, [][]any{{"attempt:owner-a", float64(2)}, {"attempt:owner-b", float64(2)}, {"attempt:owner-unstarted", float64(2)}})
+	for _, tt := range []struct {
+		key         string
+		historySize int
+	}{
+		{key: "attempt:owner-a", historySize: 3},
+		{key: "attempt:owner-b", historySize: 3},
+		{key: "attempt:owner-unstarted", historySize: 2},
+	} {
+		key := tt.key
+		if _, err := service.ReadCurrent(ctx, createdProject.ID, key); !isSemanticCode(err, "not_found") {
+			t.Fatalf("reconciled Attempt %s current read = %#v, want not_found", key, err)
+		}
+		history, err := service.ReadHistory(ctx, createdProject.ID, key, blackboardv2.HistoryOptions{})
+		if err != nil {
+			t.Fatalf("read reconciled history %s: %v", key, err)
+		}
+		if len(history.Items) != tt.historySize || history.Items[1].Record.Status != "interrupted" || strings.TrimSpace(history.Items[1].Record.Summary) == "" {
+			t.Fatalf("reconciled history %s = %#v", key, history.Items)
+		}
+	}
+	if _, err := service.ReadCurrent(ctx, createdProject.ID, "attempt:peer"); err != nil {
+		t.Fatalf("peer-owned Attempt was reconciled: %v", err)
+	}
+
+	replayReconciliation, err := service.ReconcileContinuationAttempts(ctx, createdProject.ID, owner.ID)
+	if err != nil {
+		t.Fatalf("replay reconciliation: %v", err)
+	}
+	assertChangeRecords(t, replayReconciliation, 11, [][]any{})
+
+	if _, err := tasks.UpdateContinuationStatus(peer.ID, task.StatusCompleted); err != nil {
+		t.Fatalf("complete peer Continuation: %v", err)
+	}
+	completed, err := service.ReconcileContinuationAttempts(ctx, createdProject.ID, peer.ID)
+	if err != nil {
+		t.Fatalf("reconcile completed peer: %v", err)
+	}
+	assertChangeRecords(t, completed, 12, [][]any{{"attempt:peer", float64(2)}})
+}
+
+func TestTrustedAttemptWritesRejectEveryTerminalContinuationStatus(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	projects := project.NewService(db)
+	createdProject, err := projects.Create("Closed Continuations", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	tasks := task.NewService(db, projects)
+	service := blackboardv2.NewService(db)
+
+	for _, status := range []task.Status{task.StatusCompleted, task.StatusFailed, task.StatusStopped, task.StatusInterrupted} {
+		t.Run(string(status), func(t *testing.T) {
+			createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "Closed " + string(status), Runner: task.RunnerSandbox})
+			if err != nil {
+				t.Fatalf("create Task: %v", err)
+			}
+			continuation, err := tasks.CreateContinuation(createdTask.ID, "profile-"+string(status), "codex", task.RunnerSandbox)
+			if err != nil {
+				t.Fatalf("create Continuation: %v", err)
+			}
+			if _, err := tasks.UpdateContinuationStatus(continuation.ID, status); err != nil {
+				t.Fatalf("set Continuation status: %v", err)
+			}
+			_, err = service.ApplyForContinuation(ctx, createdProject.ID, continuation.ID, blackboardv2.ChangeBatch{
+				Schema:         "semantic-change-batch/v2",
+				IdempotencyKey: "closed-attempt-write-" + string(status),
+				Changes: []blackboardv2.Change{{
+					Op: "create", Key: "attempt:closed-" + string(status), Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Must not be created by a closed Continuation"},
+				}},
+			})
+			if !isSemanticCode(err, "closed_continuation") {
+				t.Fatalf("closed %s write error = %#v, want closed_continuation", status, err)
+			}
+			if _, err := service.ReadCurrent(ctx, createdProject.ID, "attempt:closed-"+string(status)); !isSemanticCode(err, "not_found") {
+				t.Fatalf("closed %s Continuation created Attempt: %#v", status, err)
+			}
+		})
+	}
+}
+
 func TestObjectiveLifecycleAndWorkflowChangeShapesAreClosed(t *testing.T) {
 	for _, raw := range []string{
 		`{"op":"create","key":"objective:bad","type":"objective","record":{"status":"open","objective":"Inspect login","task_goal":"copied goal"}}`,
@@ -287,6 +491,14 @@ func TestObjectiveLifecycleAndWorkflowChangeShapesAreClosed(t *testing.T) {
 		t.Fatalf("abandon Objective: %v", err)
 	}
 	assertChangeRecords(t, abandoned, 5, [][]any{{"objective:abandon", float64(2)}})
+	abandonedHistory, err := service.ReadHistory(ctx, createdProject.ID, "objective:abandon", blackboardv2.HistoryOptions{})
+	if err != nil {
+		t.Fatalf("read abandoned Objective history: %v", err)
+	}
+	if len(abandonedHistory.Items) != 2 || abandonedHistory.Items[1].Record.Status != "abandoned" || abandonedHistory.Items[1].Record.ResolutionSummary != "The endpoint was removed before testing" {
+		t.Fatalf("abandoned Objective history = %#v", abandonedHistory.Items)
+	}
+	assertContractJSON(t, harness, "semanticHistory", abandonedHistory)
 
 	superseded, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
 		Schema:         "semantic-change-batch/v2",
@@ -320,6 +532,102 @@ func TestObjectiveLifecycleAndWorkflowChangeShapesAreClosed(t *testing.T) {
 		t.Fatalf("superseded Objective history = %#v", history.Items)
 	}
 	assertContractJSON(t, harness, "semanticHistory", history)
+}
+
+func TestSameBatchCreateAndSupersedeInfersReplacementVersion(t *testing.T) {
+	var jsonSupersede blackboardv2.Change
+	if err := json.Unmarshal([]byte(`{"op":"supersede","replacement":"objective:replacement-json","replaced":"objective:old-json","replaced_version":1}`), &jsonSupersede); err != nil {
+		t.Fatalf("decode same-batch supersede without replacement_version: %v", err)
+	}
+	if jsonSupersede.ReplacementVersion != 0 {
+		t.Fatalf("decoded replacement_version = %d, want omitted zero", jsonSupersede.ReplacementVersion)
+	}
+
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	createdProject, err := project.NewService(db).Create("Same Batch Supersede", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	service := blackboardv2.NewService(db)
+	harness := mustHarness(t)
+	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "seed-same-batch-supersede",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "objective:old-json", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Old JSON Objective"}},
+			{Op: "create", Key: "objective:old-programmatic", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Old programmatic Objective"}},
+			{Op: "create", Key: "objective:existing-replacement", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Existing replacement"}},
+			{Op: "create", Key: "objective:old-existing", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Old existing Objective"}},
+			{Op: "create", Key: "objective:old-stale", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Old stale Objective"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed supersede records: %v", err)
+	}
+
+	jsonBatch := blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "same-batch-json-supersede",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "objective:replacement-json", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Replacement JSON Objective"}},
+			jsonSupersede,
+		},
+	}
+	assertContractJSON(t, harness, "changeBatch", jsonBatch)
+	jsonResult, err := service.Apply(ctx, createdProject.ID, jsonBatch)
+	if err != nil {
+		t.Fatalf("apply JSON same-batch supersede: %v", err)
+	}
+	assertChangeRecords(t, jsonResult, 7, [][]any{{"objective:old-json", float64(2)}, {"objective:replacement-json", float64(1)}})
+	assertRelationResult(t, jsonResult, [][]any{{"objective:replacement-json", "supersedes", "objective:old-json", float64(1)}})
+
+	programmaticResult, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "same-batch-programmatic-supersede",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "objective:replacement-programmatic", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Replacement programmatic Objective"}},
+			{Op: "supersede", Replacement: "objective:replacement-programmatic", Replaced: "objective:old-programmatic", ReplacedVersion: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("apply programmatic same-batch supersede: %v", err)
+	}
+	assertChangeRecords(t, programmaticResult, 9, [][]any{{"objective:old-programmatic", float64(2)}, {"objective:replacement-programmatic", float64(1)}})
+
+	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "reject-omitted-preexisting-replacement-version",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "objective:atomic-marker", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Must roll back"}},
+			{Op: "supersede", Replacement: "objective:existing-replacement", Replaced: "objective:old-existing", ReplacedVersion: 1},
+		},
+	})
+	if !isSemanticCode(err, "semantic_validation") {
+		t.Fatalf("pre-existing omitted replacement_version error = %#v, want semantic_validation", err)
+	}
+	if _, err := service.ReadCurrent(ctx, createdProject.ID, "objective:atomic-marker"); !isSemanticCode(err, "not_found") {
+		t.Fatalf("failed omitted-version batch retained atomic marker: %#v", err)
+	}
+
+	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "rollback-created-replacement-on-stale-replaced",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "objective:replacement-stale", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Must roll back after stale replaced version"}},
+			{Op: "supersede", Replacement: "objective:replacement-stale", Replaced: "objective:old-stale", ReplacedVersion: 99},
+		},
+	})
+	if !isSemanticCode(err, "version_conflict") {
+		t.Fatalf("stale same-batch supersede error = %#v, want version_conflict", err)
+	}
+	if _, err := service.ReadCurrent(ctx, createdProject.ID, "objective:replacement-stale"); !isSemanticCode(err, "not_found") {
+		t.Fatalf("stale same-batch supersede retained replacement: %#v", err)
+	}
 }
 
 func TestObjectiveAndAttemptRelationshipsEnforceEndpointsAndCycles(t *testing.T) {
@@ -446,7 +754,6 @@ func TestAttemptAndObjectiveTerminalGuardsPreserveSemanticHistory(t *testing.T) 
 		summary string
 	}{
 		{key: "attempt:no-tests", version: 1, status: "failed", summary: "No tested target was recorded"},
-		{key: "attempt:no-outcome", version: 1, status: "inconclusive", summary: "Testing produced no retained semantic outcome"},
 		{key: "attempt:login", version: 1, status: "interrupted", summary: "Runtime stopped unexpectedly"},
 	} {
 		_, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
@@ -494,6 +801,9 @@ func TestAttemptAndObjectiveTerminalGuardsPreserveSemanticHistory(t *testing.T) 
 	}
 	if len(attemptHistory.Items) != 5 || attemptHistory.Items[1].Version != 2 || attemptHistory.Items[1].Record.Status != "failed" || attemptHistory.Items[1].Record.Summary != "The tested bypass payloads were rejected by administrative login" {
 		t.Fatalf("Attempt history = %#v", attemptHistory.Items)
+	}
+	if attemptHistory.Items[2].Relation != "produced" || attemptHistory.Items[2].To != "fact:login-outcome" {
+		t.Fatalf("Attempt reusable outcome history = %#v", attemptHistory.Items[2])
 	}
 	assertContractJSON(t, harness, "semanticHistory", attemptHistory)
 
@@ -544,4 +854,64 @@ func TestAttemptAndObjectiveTerminalGuardsPreserveSemanticHistory(t *testing.T) 
 		}
 	}
 	assertContractJSON(t, harness, "runtimeSnapshot", snapshot)
+}
+
+func TestTerminalAttemptDoesNotRequireProducedOutcome(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	createdProject, err := project.NewService(db).Create("No Reusable Attempt Outcome", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	service := blackboardv2.NewService(db)
+
+	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "seed-no-outcome-attempts",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "objective:target", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Exercise a target with no reusable result"}},
+			{Op: "create", Key: "attempt:blocked", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Testing stopped at an authorization boundary"}},
+			{Op: "create", Key: "attempt:inconclusive", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Testing could not distinguish the observed behavior"}},
+			{Op: "create", Key: "attempt:failed", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Testing did not reproduce the suspected behavior"}},
+			{Op: "relate", From: "attempt:blocked", Relation: "tests", To: "objective:target"},
+			{Op: "relate", From: "attempt:inconclusive", Relation: "tests", To: "objective:target"},
+			{Op: "relate", From: "attempt:failed", Relation: "tests", To: "objective:target"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed Attempts without outcomes: %v", err)
+	}
+
+	for index, tt := range []struct {
+		key     string
+		status  string
+		summary string
+	}{
+		{key: "attempt:blocked", status: "blocked", summary: "Authorization prevented the tested action and no reusable result was produced"},
+		{key: "attempt:inconclusive", status: "inconclusive", summary: "The tested behavior remained ambiguous and yielded no reusable result"},
+		{key: "attempt:failed", status: "failed", summary: "The tested behavior was not reproduced and yielded no reusable result"},
+	} {
+		result, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+			Schema:         "semantic-change-batch/v2",
+			IdempotencyKey: "terminal-no-outcome-" + tt.status,
+			Changes: []blackboardv2.Change{{
+				Op: "transition", Key: tt.key, Version: 1, Status: tt.status, Summary: tt.summary,
+			}},
+		})
+		if err != nil {
+			t.Fatalf("terminal %s Attempt without outcome: %v", tt.status, err)
+		}
+		assertChangeRecords(t, result, 8+index, [][]any{{tt.key, float64(2)}})
+		history, err := service.ReadHistory(ctx, createdProject.ID, tt.key, blackboardv2.HistoryOptions{})
+		if err != nil {
+			t.Fatalf("read %s Attempt history: %v", tt.status, err)
+		}
+		if len(history.Items) != 3 || history.Items[1].Record.Status != tt.status || history.Items[1].Record.Summary != tt.summary || history.Items[2].Relation != "tests" {
+			t.Fatalf("%s Attempt history = %#v", tt.status, history.Items)
+		}
+	}
 }

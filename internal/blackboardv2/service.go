@@ -423,6 +423,87 @@ func (s *Service) ApplyForContinuation(ctx context.Context, projectID, continuat
 	return s.apply(ctx, projectID, continuationID, batch)
 }
 
+// ReconcileContinuationAttempts is a server-only control path that moves every
+// open Attempt owned by one terminal Continuation to interrupted history.
+func (s *Service) ReconcileContinuationAttempts(ctx context.Context, projectID, continuationID string) (ChangeResult, error) {
+	if continuationID == "" {
+		return ChangeResult{}, semanticError("authority_denied", "trusted Continuation identity is required", "", nil)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ChangeResult{}, fmt.Errorf("begin Attempt reconciliation: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := ensureProjectState(ctx, tx, projectID); err != nil {
+		return ChangeResult{}, err
+	}
+	status, err := continuationProjectStatus(ctx, tx, projectID, continuationID)
+	if err != nil {
+		return ChangeResult{}, err
+	}
+	if !isTerminalContinuationStatus(status) {
+		return ChangeResult{}, semanticError("continuation_not_closed", "Attempt reconciliation requires a terminal Continuation", "", nil)
+	}
+	revision, err := currentRevision(ctx, tx, projectID)
+	if err != nil {
+		return ChangeResult{}, err
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT record.key, record.version, record.record_json
+		FROM blackboard_v2_records AS record
+		JOIN blackboard_v2_attempt_origins AS origin
+		  ON origin.project_id = record.project_id AND origin.key = record.key
+		WHERE record.project_id = ? AND record.type = 'attempt' AND origin.continuation_id = ?
+		ORDER BY record.key ASC`,
+		projectID, continuationID,
+	)
+	if err != nil {
+		return ChangeResult{}, fmt.Errorf("read owned Attempts for reconciliation: %w", err)
+	}
+	owned := make([]storedRecord, 0)
+	for rows.Next() {
+		var key, raw string
+		var version int
+		if err := rows.Scan(&key, &version, &raw); err != nil {
+			rows.Close()
+			return ChangeResult{}, fmt.Errorf("scan owned Attempt for reconciliation: %w", err)
+		}
+		record, err := decodeStoredRecord("attempt", raw)
+		if err != nil {
+			rows.Close()
+			return ChangeResult{}, fmt.Errorf("decode owned Attempt for reconciliation: %w", err)
+		}
+		owned = append(owned, storedRecord{key: key, typ: "attempt", version: version, record: record})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return ChangeResult{}, fmt.Errorf("iterate owned Attempts for reconciliation: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return ChangeResult{}, fmt.Errorf("close owned Attempt reconciliation rows: %w", err)
+	}
+
+	changedRecords := make(map[string]int)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, existing := range owned {
+		terminal := existing.record.attemptRecord()
+		terminal.Status = "interrupted"
+		nextRevision, key, version, changed, err := terminalizeRecord(ctx, tx, projectID, revision, existing, terminal, now)
+		if err != nil {
+			return ChangeResult{}, err
+		}
+		if changed {
+			revision = nextRevision
+			changedRecords[key] = version
+		}
+	}
+	result := makeChangeResult(revision, changedRecords, nil)
+	if err := tx.Commit(); err != nil {
+		return ChangeResult{}, fmt.Errorf("commit Attempt reconciliation: %w", err)
+	}
+	return result, nil
+}
+
 func (s *Service) apply(ctx context.Context, projectID, continuationID string, batch ChangeBatch) (ChangeResult, error) {
 	if batch.Schema != changeBatchSchema {
 		return ChangeResult{}, semanticError("invalid_schema", "unsupported semantic change schema", "", nil)
@@ -444,8 +525,10 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 	if err := ensureProjectState(ctx, tx, projectID); err != nil {
 		return ChangeResult{}, err
 	}
+	continuationStatus := ""
 	if continuationID != "" {
-		if err := validateContinuationProject(ctx, tx, projectID, continuationID); err != nil {
+		continuationStatus, err = continuationProjectStatus(ctx, tx, projectID, continuationID)
+		if err != nil {
 			return ChangeResult{}, err
 		}
 	}
@@ -457,6 +540,9 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 		}
 		return replay, nil
 	}
+	if continuationID != "" && !continuationCanWrite(continuationStatus) {
+		return ChangeResult{}, semanticError("closed_continuation", "trusted Continuation is closed for new Blackboard writes", "", nil)
+	}
 
 	revision, err := currentRevision(ctx, tx, projectID)
 	if err != nil {
@@ -464,6 +550,7 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 	}
 	changedRecords := make(map[string]int)
 	changedRelations := make(map[string]RelationVersionTuple)
+	createdThisBatch := make(map[string]bool)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for index, change := range batch.Changes {
 		if err := validateChangeShape(change, index); err != nil {
@@ -483,6 +570,7 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 			if changed {
 				revision = newRevision
 				changedRecords[key] = version
+				createdThisBatch[key] = true
 				if continuationID != "" && change.Type == "attempt" {
 					if err := bindAttemptOrigin(ctx, tx, projectID, key, continuationID, now); err != nil {
 						return ChangeResult{}, err
@@ -517,7 +605,7 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 				changedRecords[key] = version
 			}
 		case "supersede":
-			newRevision, key, version, tuple, changed, err := applySupersede(ctx, tx, projectID, revision, index, change, now)
+			newRevision, key, version, tuple, changed, err := applySupersede(ctx, tx, projectID, revision, index, change, createdThisBatch, now)
 			if err != nil {
 				return ChangeResult{}, err
 			}
@@ -1390,6 +1478,11 @@ func applyTransition(ctx context.Context, tx *sql.Tx, projectID string, revision
 				return revision, "", 0, false, semanticError("semantic_validation", "resolved Objective requires a current incoming satisfies relationship", path+".status", nil)
 			}
 		}
+		// Abandonment has no relationship proof guard in this slice. The v2
+		// grammar has no edge that means "invalidation basis", and the spec
+		// explicitly permits meaningless invalidations without manufacturing a
+		// Fact. Its only canonical meaning is the terminal resolution_summary
+		// retained in Semantic History.
 		terminal := existing.record.objectiveRecord()
 		terminal.Status = change.Status
 		terminal.ResolutionSummary = change.ResolutionSummary
@@ -1410,13 +1503,6 @@ func applyTransition(ctx context.Context, tx *sql.Tx, projectID string, revision
 		}
 		if tested == 0 {
 			return revision, "", 0, false, semanticError("semantic_validation", "terminal Attempt requires at least one tested target", path+".status", nil)
-		}
-		produced, err := currentOutgoingRelationshipCount(ctx, tx, projectID, change.Key, "produced")
-		if err != nil {
-			return revision, "", 0, false, err
-		}
-		if produced == 0 {
-			return revision, "", 0, false, semanticError("semantic_validation", "terminal Attempt requires at least one reusable produced outcome", path+".status", nil)
 		}
 		terminal := existing.record.attemptRecord()
 		terminal.Status = change.Status
@@ -1499,7 +1585,7 @@ func terminalizeRecord(ctx context.Context, tx *sql.Tx, projectID string, revisi
 	return nextRevision, existing.key, nextVersion, true, nil
 }
 
-func applySupersede(ctx context.Context, tx *sql.Tx, projectID string, revision, index int, change Change, now string) (int, string, int, RelationVersionTuple, bool, error) {
+func applySupersede(ctx context.Context, tx *sql.Tx, projectID string, revision, index int, change Change, createdThisBatch map[string]bool, now string) (int, string, int, RelationVersionTuple, bool, error) {
 	path := fmt.Sprintf("changes[%d]", index)
 	if err := validateKey(change.Replacement, path+".replacement"); err != nil {
 		return revision, "", 0, RelationVersionTuple{}, false, err
@@ -1527,12 +1613,19 @@ func applySupersede(ctx context.Context, tx *sql.Tx, projectID string, revision,
 	if replacement.typ != replaced.typ || !isOneOf(replacement.typ, "entity", "objective") {
 		return revision, "", 0, RelationVersionTuple{}, false, semanticError("semantic_validation", "supersede requires two current records of the same supersedable type", path, map[string]any{"replacement_type": replacement.typ, "replaced_type": replaced.typ})
 	}
-	if change.ReplacementVersion != replacement.version {
+	replacementVersion := change.ReplacementVersion
+	if replacementVersion == 0 {
+		if !createdThisBatch[change.Replacement] || replacement.version != 1 {
+			return revision, "", 0, RelationVersionTuple{}, false, semanticError("semantic_validation", "replacement_version may be omitted only for a version 1 replacement created earlier in the same batch", path+".replacement_version", nil)
+		}
+		replacementVersion = 1
+	}
+	if replacementVersion != replacement.version {
 		return revision, "", 0, RelationVersionTuple{}, false, semanticError(
 			"version_conflict",
 			fmt.Sprintf("%s changed", change.Replacement),
 			path+".replacement_version",
-			map[string]any{"key": change.Replacement, "expected_version": float64(change.ReplacementVersion), "current_version": float64(replacement.version), "next_action": "read_current_record"},
+			map[string]any{"key": change.Replacement, "expected_version": float64(replacementVersion), "current_version": float64(replacement.version), "next_action": "read_current_record"},
 		)
 	}
 	if change.ReplacedVersion != replaced.version {
@@ -1570,9 +1663,12 @@ func applySupersede(ctx context.Context, tx *sql.Tx, projectID string, revision,
 }
 
 func validateRelationshipEndpoint(relation, fromType, toType, path string) error {
+	// This semantic kernel admits only endpoint types whose records are fully
+	// decodable in the current slice. Finding, Solution, and Evidence endpoints
+	// are added by their owning tickets alongside their complete record schemas.
 	switch relation {
 	case "about":
-		if toType == "entity" && isOneOf(fromType, "objective", "attempt", "fact", "finding", "solution", "evidence") {
+		if toType == "entity" && isOneOf(fromType, "objective", "attempt", "fact") {
 			return nil
 		}
 		return semanticError("semantic_validation", "about must connect an allowed record to an Entity", path, map[string]any{"from_type": fromType, "to_type": toType})
@@ -1582,19 +1678,17 @@ func validateRelationshipEndpoint(relation, fromType, toType, path string) error
 		}
 		return semanticError("semantic_validation", "part_of must stay within the Entity or Objective endpoint family", path, map[string]any{"from_type": fromType, "to_type": toType})
 	case "tests":
-		if fromType == "attempt" && isOneOf(toType, "objective", "entity", "fact", "finding", "solution") {
+		if fromType == "attempt" && isOneOf(toType, "objective", "entity", "fact") {
 			return nil
 		}
 		return semanticError("semantic_validation", "tests must point from an Attempt to an approved tested target", path, map[string]any{"from_type": fromType, "to_type": toType})
 	case "produced":
-		if fromType == "attempt" && isOneOf(toType, "entity", "objective", "fact", "finding", "solution", "evidence") {
+		if fromType == "attempt" && isOneOf(toType, "entity", "objective", "fact") {
 			return nil
 		}
 		return semanticError("semantic_validation", "produced must point from an Attempt to a reusable outcome", path, map[string]any{"from_type": fromType, "to_type": toType})
 	case "derived_from":
-		if (fromType == "objective" && isOneOf(toType, "fact", "finding", "solution")) ||
-			(fromType == "fact" && isOneOf(toType, "fact", "evidence")) ||
-			(fromType == "evidence" && toType == "evidence") {
+		if (fromType == "objective" && toType == "fact") || (fromType == "fact" && toType == "fact") {
 			return nil
 		}
 		return semanticError("semantic_validation", "derived_from endpoint types are not allowed", path, map[string]any{"from_type": fromType, "to_type": toType})
@@ -1604,7 +1698,7 @@ func validateRelationshipEndpoint(relation, fromType, toType, path string) error
 		}
 		return semanticError("semantic_validation", "depends_on must point from an Objective to a prerequisite Objective", path, map[string]any{"from_type": fromType, "to_type": toType})
 	case "satisfies":
-		if isOneOf(fromType, "fact", "finding", "solution") && toType == "objective" {
+		if fromType == "fact" && toType == "objective" {
 			return nil
 		}
 		return semanticError("semantic_validation", "satisfies must point from current knowledge to an Objective", path, map[string]any{"from_type": fromType, "to_type": toType})
@@ -1883,23 +1977,30 @@ func scanRelationshipTuples(rows relationshipRows) ([]RelationshipTuple, error) 
 	return relationships, nil
 }
 
-func validateContinuationProject(ctx context.Context, tx *sql.Tx, projectID, continuationID string) error {
-	var exists int
-	if err := tx.QueryRowContext(ctx, `
-		SELECT EXISTS(
-			SELECT 1
-			FROM task_continuations AS continuation
-			JOIN tasks AS task ON task.id = continuation.task_id
-			WHERE continuation.id = ? AND task.project_id = ?
-		)`,
+func continuationProjectStatus(ctx context.Context, tx *sql.Tx, projectID, continuationID string) (string, error) {
+	var status string
+	err := tx.QueryRowContext(ctx, `
+		SELECT continuation.status
+		FROM task_continuations AS continuation
+		JOIN tasks AS task ON task.id = continuation.task_id
+		WHERE continuation.id = ? AND task.project_id = ?`,
 		continuationID, projectID,
-	).Scan(&exists); err != nil {
-		return fmt.Errorf("validate trusted Continuation Project: %w", err)
+	).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", semanticError("authority_denied", "trusted Continuation does not own this Project interface", "", nil)
 	}
-	if exists == 0 {
-		return semanticError("authority_denied", "trusted Continuation does not own this Project interface", "", nil)
+	if err != nil {
+		return "", fmt.Errorf("validate trusted Continuation Project: %w", err)
 	}
-	return nil
+	return status, nil
+}
+
+func continuationCanWrite(status string) bool {
+	return isOneOf(status, "pending", "running", "paused")
+}
+
+func isTerminalContinuationStatus(status string) bool {
+	return isOneOf(status, "completed", "failed", "stopped", "interrupted")
 }
 
 func validateContinuationChangeOwnership(ctx context.Context, tx *sql.Tx, projectID, continuationID string, change Change, index int) error {
@@ -2176,10 +2277,10 @@ func decodeSupersedeChange(fields map[string]json.RawMessage) (Change, error) {
 		return Change{}, err
 	}
 	var replacementVersion int
-	if raw, ok := fields["replacement_version"]; !ok {
-		return Change{}, fmt.Errorf("supersede replacement_version is required")
-	} else if err := json.Unmarshal(raw, &replacementVersion); err != nil {
-		return Change{}, fmt.Errorf("decode supersede replacement_version: %w", err)
+	if raw, ok := fields["replacement_version"]; ok {
+		if err := json.Unmarshal(raw, &replacementVersion); err != nil {
+			return Change{}, fmt.Errorf("decode supersede replacement_version: %w", err)
+		}
 	}
 	var replacedVersion int
 	if raw, ok := fields["replaced_version"]; !ok {
@@ -2366,8 +2467,8 @@ func validateChangeShape(change Change, index int) error {
 		if change.Replacement == "" {
 			return semanticError("semantic_validation", "supersede replacement is required", fmt.Sprintf("changes[%d].replacement", index), nil)
 		}
-		if change.ReplacementVersion < 1 {
-			return semanticError("semantic_validation", "supersede requires the current replacement version", fmt.Sprintf("changes[%d].replacement_version", index), nil)
+		if change.ReplacementVersion < 0 {
+			return semanticError("semantic_validation", "supersede replacement_version must be positive when provided", fmt.Sprintf("changes[%d].replacement_version", index), nil)
 		}
 		if change.Replaced == "" {
 			return semanticError("semantic_validation", "supersede replaced is required", fmt.Sprintf("changes[%d].replaced", index), nil)
