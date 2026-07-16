@@ -196,7 +196,7 @@ type FactPatch struct {
 	Category    *string `json:"category,omitempty"`
 	Summary     *string `json:"summary,omitempty"`
 	Body        *string `json:"body,omitempty"`
-	Confidence  *string `json:"confidence,omitempty"`
+	Confidence  *string `json:"-"`
 	ScopeStatus *string `json:"scope_status,omitempty"`
 }
 
@@ -1365,11 +1365,9 @@ func applyRelate(ctx context.Context, tx *sql.Tx, projectID string, revision, in
 	if change.From == change.To {
 		return revision, RelationVersionTuple{}, false, semanticError("semantic_validation", "relationship self-links are invalid", path+".to", nil)
 	}
-	if change.Relation == "depends_on" {
-		if change.Reason != "" {
-			if err := validateConciseText(change.Reason, path+".reason"); err != nil {
-				return revision, RelationVersionTuple{}, false, err
-			}
+	if isReasonRelation(change.Relation) && change.Reason != "" {
+		if err := validateConciseText(change.Reason, path+".reason"); err != nil {
+			return revision, RelationVersionTuple{}, false, err
 		}
 	} else if change.Reason != "" {
 		return revision, RelationVersionTuple{}, false, semanticError("semantic_validation", "relationship reason is not allowed for this relation", path+".reason", nil)
@@ -1532,6 +1530,20 @@ func applyTransition(ctx context.Context, tx *sql.Tx, projectID string, revision
 		terminal.Status = change.Status
 		terminal.Summary = change.Summary
 		return terminalizeRecord(ctx, tx, projectID, revision, existing, terminal, now)
+	case "fact":
+		if !isOneOf(change.Status, "tentative", "confirmed") {
+			return revision, "", 0, false, semanticError("semantic_validation", "Fact transition status must be tentative or confirmed", path+".status", nil)
+		}
+		current := existing.record.factRecord()
+		if current.Confidence == change.Status {
+			return revision, change.Key, existing.version, false, nil
+		}
+		next := current
+		next.Confidence = change.Status
+		if err := validateFactRecord(next, path+".status"); err != nil {
+			return revision, "", 0, false, err
+		}
+		return replaceCurrentWorkRecord(ctx, tx, projectID, revision, existing, next, now)
 	default:
 		return revision, "", 0, false, semanticError("semantic_validation", "record type does not support this transition", path+".key", map[string]any{"key": change.Key, "type": existing.typ})
 	}
@@ -2231,6 +2243,23 @@ func decodeRelateChange(fields map[string]json.RawMessage) (Change, error) {
 	if err != nil {
 		return Change{}, err
 	}
+	if !isOrdinaryRelation(relation) && !isReasonRelation(relation) {
+		return Change{}, fmt.Errorf("unsupported relationship type %q", relation)
+	}
+	if isOrdinaryRelation(relation) {
+		if _, ok := fields["version"]; ok {
+			return Change{}, fmt.Errorf("relationship version is forbidden for %s", relation)
+		}
+		if _, ok := fields["reason"]; ok {
+			return Change{}, fmt.Errorf("relationship reason is forbidden for %s", relation)
+		}
+		return Change{Op: "relate", From: from, Relation: relation, To: to}, nil
+	}
+	_, hasVersion := fields["version"]
+	_, hasReason := fields["reason"]
+	if hasVersion && !hasReason {
+		return Change{}, fmt.Errorf("relationship reason is required when version is provided")
+	}
 	var version int
 	if raw, ok := fields["version"]; ok {
 		if err := json.Unmarshal(raw, &version); err != nil {
@@ -2238,12 +2267,13 @@ func decodeRelateChange(fields map[string]json.RawMessage) (Change, error) {
 		}
 	}
 	reason := ""
-	if raw, ok := fields["reason"]; ok {
-		if err := json.Unmarshal(raw, &reason); err != nil {
-			return Change{}, fmt.Errorf("decode relation reason: %w", err)
+	if hasReason {
+		reason, err = decodeRequiredString(fields, "reason")
+		if err != nil {
+			return Change{}, err
 		}
-		if relation == "about" || relation == "part_of" {
-			return Change{}, fmt.Errorf("relationship reason is forbidden for %s", relation)
+		if reason == "" {
+			return Change{}, fmt.Errorf("relationship reason must not be empty")
 		}
 	}
 	return Change{Op: "relate", From: from, Relation: relation, To: to, Version: version, Reason: reason}, nil
@@ -2374,6 +2404,9 @@ func decodeEntityPatch(raw json.RawMessage) (EntityPatch, error) {
 	if err := strictDecodeJSON(raw, &patch); err != nil {
 		return EntityPatch{}, fmt.Errorf("decode Entity patch: %w", err)
 	}
+	if entityPatchEmpty(patch) {
+		return EntityPatch{}, fmt.Errorf("Entity partial record requires at least one property")
+	}
 	return patch, nil
 }
 
@@ -2440,6 +2473,9 @@ func decodeFactPatch(raw json.RawMessage) (FactPatch, error) {
 	if err := strictDecodeJSON(raw, &patch); err != nil {
 		return FactPatch{}, fmt.Errorf("decode Fact patch: %w", err)
 	}
+	if factPatchEmpty(patch) {
+		return FactPatch{}, fmt.Errorf("Fact partial record requires at least one property")
+	}
 	return patch, nil
 }
 
@@ -2475,6 +2511,19 @@ func validateChangeShape(change Change, index int) error {
 			if field.populated && !allowedFields[field.name] {
 				return semanticError("semantic_validation", fmt.Sprintf("%s does not accept %s", change.Op, field.name), fmt.Sprintf("changes[%d].%s", index, field.name), nil)
 			}
+		}
+	}
+	if change.Op == "relate" {
+		path := fmt.Sprintf("changes[%d]", index)
+		if isOrdinaryRelation(change.Relation) {
+			if change.Version != 0 {
+				return semanticError("semantic_validation", "ordinary relationship does not accept version", path+".version", nil)
+			}
+			if change.Reason != "" {
+				return semanticError("semantic_validation", "ordinary relationship does not accept reason", path+".reason", nil)
+			}
+		} else if isReasonRelation(change.Relation) && change.Version != 0 && change.Reason == "" {
+			return semanticError("semantic_validation", "relationship reason is required when version is provided", path+".reason", nil)
 		}
 	}
 
@@ -2573,6 +2622,14 @@ func populatedChangeFields(change Change) []populatedChangeField {
 	}
 }
 
+func isOrdinaryRelation(relation string) bool {
+	return isOneOf(relation, "about", "part_of", "tests", "produced", "evidences", "derived_from", "satisfies")
+}
+
+func isReasonRelation(relation string) bool {
+	return isOneOf(relation, "supports", "contradicts", "depends_on")
+}
+
 func completeEntityRecord(value any, path string) (EntityRecord, error) {
 	switch record := value.(type) {
 	case EntityRecord:
@@ -2596,21 +2653,18 @@ func completeEntityRecord(value any, path string) (EntityRecord, error) {
 func partialEntityRecord(value any, path string) (EntityPatch, error) {
 	switch patch := value.(type) {
 	case EntityPatch:
+		if entityPatchEmpty(patch) {
+			return EntityPatch{}, semanticError("semantic_validation", "Entity partial record requires at least one property", path, nil)
+		}
 		return patch, nil
 	case *EntityPatch:
 		if patch == nil {
 			return EntityPatch{}, semanticError("semantic_validation", "Entity update requires an Entity partial record", path, nil)
 		}
+		if entityPatchEmpty(*patch) {
+			return EntityPatch{}, semanticError("semantic_validation", "Entity partial record requires at least one property", path, nil)
+		}
 		return *patch, nil
-	case EntityRecord:
-		return EntityPatch{
-			Kind:          stringPtr(patch.Kind),
-			Name:          stringPtr(patch.Name),
-			Locator:       stringPtr(patch.Locator),
-			Description:   stringPtr(patch.Description),
-			ScopeStatus:   stringPtr(patch.ScopeStatus),
-			CredentialRef: stringPtr(patch.CredentialRef),
-		}, nil
 	case json.RawMessage:
 		decoded, err := decodeEntityPatch(patch)
 		if err != nil {
@@ -2737,20 +2791,24 @@ func completeFactRecord(value any, path string) (FactRecord, error) {
 func partialFactRecord(value any, path string) (FactPatch, error) {
 	switch patch := value.(type) {
 	case FactPatch:
+		if patch.Confidence != nil {
+			return FactPatch{}, semanticError("semantic_validation", "Fact confidence changes require transition", path+".confidence", nil)
+		}
+		if factPatchEmpty(patch) {
+			return FactPatch{}, semanticError("semantic_validation", "Fact partial record requires at least one property", path, nil)
+		}
 		return patch, nil
 	case *FactPatch:
 		if patch == nil {
 			return FactPatch{}, semanticError("semantic_validation", "Fact update requires a Fact partial record", path, nil)
 		}
+		if patch.Confidence != nil {
+			return FactPatch{}, semanticError("semantic_validation", "Fact confidence changes require transition", path+".confidence", nil)
+		}
+		if factPatchEmpty(*patch) {
+			return FactPatch{}, semanticError("semantic_validation", "Fact partial record requires at least one property", path, nil)
+		}
 		return *patch, nil
-	case FactRecord:
-		return FactPatch{
-			Category:    stringPtr(patch.Category),
-			Summary:     stringPtr(patch.Summary),
-			Body:        stringPtr(patch.Body),
-			Confidence:  stringPtr(patch.Confidence),
-			ScopeStatus: stringPtr(patch.ScopeStatus),
-		}, nil
 	case json.RawMessage:
 		decoded, err := decodeFactPatch(patch)
 		if err != nil {
@@ -2764,6 +2822,14 @@ func partialFactRecord(value any, path string) (FactPatch, error) {
 
 func stringPtr(value string) *string {
 	return &value
+}
+
+func entityPatchEmpty(patch EntityPatch) bool {
+	return patch.Kind == nil && patch.Name == nil && patch.Locator == nil && patch.Description == nil && patch.ScopeStatus == nil && patch.CredentialRef == nil
+}
+
+func factPatchEmpty(patch FactPatch) bool {
+	return patch.Category == nil && patch.Summary == nil && patch.Body == nil && patch.ScopeStatus == nil
 }
 
 func applyEntityPatch(existing EntityRecord, patch EntityPatch, clear []string, path string) (EntityRecord, error) {
@@ -2811,9 +2877,6 @@ func applyFactPatch(existing FactRecord, patch FactPatch, clear []string, path s
 	}
 	if patch.Body != nil {
 		next.Body = *patch.Body
-	}
-	if patch.Confidence != nil {
-		next.Confidence = *patch.Confidence
 	}
 	if patch.ScopeStatus != nil {
 		next.ScopeStatus = *patch.ScopeStatus

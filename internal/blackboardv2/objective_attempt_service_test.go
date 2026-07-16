@@ -961,6 +961,125 @@ func TestObjectiveAndAttemptRelationshipsEnforceEndpointsAndCycles(t *testing.T)
 	}
 }
 
+func TestRelationChangeShapesMatchFrozenReasonAndVersionRules(t *testing.T) {
+	ordinary := []string{"about", "part_of", "tests", "produced", "evidences", "derived_from", "satisfies"}
+	for _, relation := range ordinary {
+		for _, extra := range []string{`,"version":99`, `,"reason":"not allowed"`} {
+			raw := fmt.Sprintf(`{"op":"relate","from":"fact:source","relation":%q,"to":"entity:target"%s}`, relation, extra)
+			var change blackboardv2.Change
+			if err := json.Unmarshal([]byte(raw), &change); err == nil {
+				t.Fatalf("decoded ordinary %s relation with forbidden field: %s", relation, raw)
+			}
+		}
+	}
+	for _, relation := range []string{"supports", "contradicts", "depends_on"} {
+		for _, raw := range []string{
+			fmt.Sprintf(`{"op":"relate","from":"fact:source","relation":%q,"to":"fact:target","version":1}`, relation),
+			fmt.Sprintf(`{"op":"relate","from":"fact:source","relation":%q,"to":"fact:target","reason":""}`, relation),
+		} {
+			var change blackboardv2.Change
+			if err := json.Unmarshal([]byte(raw), &change); err == nil {
+				t.Fatalf("decoded invalid reason-capable %s relation: %s", relation, raw)
+			}
+		}
+		for _, raw := range []string{
+			fmt.Sprintf(`{"op":"relate","from":"fact:source","relation":%q,"to":"fact:target"}`, relation),
+			fmt.Sprintf(`{"op":"relate","from":"fact:source","relation":%q,"to":"fact:target","reason":"semantic basis"}`, relation),
+			fmt.Sprintf(`{"op":"relate","from":"fact:source","relation":%q,"to":"fact:target","version":1,"reason":"semantic basis"}`, relation),
+		} {
+			var change blackboardv2.Change
+			if err := json.Unmarshal([]byte(raw), &change); err != nil {
+				t.Fatalf("decode valid reason-capable %s relation %s: %v", relation, raw, err)
+			}
+		}
+	}
+
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	createdProject, err := project.NewService(db).Create("Closed Relation Changes", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	service := blackboardv2.NewService(db)
+	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "seed-closed-relation-changes",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "entity:target", Type: "entity", Record: blackboardv2.EntityRecord{Status: "active", Kind: "endpoint", Name: "POST /login", ScopeStatus: "in_scope"}},
+			{Op: "create", Key: "fact:source", Type: "fact", Record: blackboardv2.FactRecord{Category: "authentication", Summary: "Login accepts JSON", Confidence: "tentative", ScopeStatus: "in_scope"}},
+			{Op: "create", Key: "objective:dependent", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Test login behavior"}},
+			{Op: "create", Key: "objective:prerequisite", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Map the login endpoint"}},
+			{Op: "relate", From: "fact:source", Relation: "about", To: "entity:target"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed closed relation changes: %v", err)
+	}
+
+	for _, relation := range ordinary {
+		for _, tt := range []struct {
+			name   string
+			change blackboardv2.Change
+			path   string
+		}{
+			{name: "version", change: blackboardv2.Change{Op: "relate", From: "fact:source", Relation: relation, To: "entity:target", Version: 99}, path: "changes[0].version"},
+			{name: "reason", change: blackboardv2.Change{Op: "relate", From: "fact:source", Relation: relation, To: "entity:target", Reason: "not allowed"}, path: "changes[0].reason"},
+		} {
+			t.Run(relation+" rejects "+tt.name, func(t *testing.T) {
+				_, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+					Schema:         "semantic-change-batch/v2",
+					IdempotencyKey: "reject-ordinary-" + relation + "-" + tt.name,
+					Changes:        []blackboardv2.Change{tt.change},
+				})
+				var semanticErr *blackboardv2.Error
+				if !errors.As(err, &semanticErr) || semanticErr.Code != "semantic_validation" || semanticErr.Path != tt.path {
+					t.Fatalf("ordinary %s %s error = %#v, want semantic_validation on %s", relation, tt.name, err, tt.path)
+				}
+			})
+		}
+	}
+	for _, relation := range []string{"supports", "contradicts", "depends_on"} {
+		t.Run(relation+" version requires reason", func(t *testing.T) {
+			_, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+				Schema:         "semantic-change-batch/v2",
+				IdempotencyKey: "reject-reason-relation-version-without-reason-" + relation,
+				Changes: []blackboardv2.Change{{
+					Op: "relate", From: "objective:dependent", Relation: relation, To: "objective:prerequisite", Version: 1,
+				}},
+			})
+			var semanticErr *blackboardv2.Error
+			if !errors.As(err, &semanticErr) || semanticErr.Code != "semantic_validation" || semanticErr.Path != "changes[0].reason" {
+				t.Fatalf("reason-capable %s dependentRequired error = %#v", relation, err)
+			}
+		})
+	}
+
+	noOp, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "ordinary-existing-edge-noop",
+		Changes:        []blackboardv2.Change{{Op: "relate", From: "fact:source", Relation: "about", To: "entity:target"}},
+	})
+	if err != nil {
+		t.Fatalf("valid ordinary existing-edge no-op: %v", err)
+	}
+	assertRelationResult(t, noOp, [][]any{})
+	dependsOn, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "reason-capable-new-relation",
+		Changes: []blackboardv2.Change{{
+			Op: "relate", From: "objective:dependent", Relation: "depends_on", To: "objective:prerequisite", Reason: "Map the endpoint first",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("valid reason-capable new relation: %v", err)
+	}
+	assertRelationResult(t, dependsOn, [][]any{{"objective:dependent", "depends_on", "objective:prerequisite", float64(1)}})
+}
+
 func TestAttemptAndObjectiveTerminalGuardsPreserveSemanticHistory(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
