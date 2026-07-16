@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"pentest/internal/blackboard"
+	"pentest/internal/blackboardv2contract"
 	"pentest/internal/store"
 )
 
@@ -1267,6 +1268,80 @@ func TestInspectIsDeterministicAndWritesNeitherDatabaseNorFilesystem(t *testing.
 	}
 }
 
+func TestInspectEmitsSourceDigestBoundV2PlanWithClassificationDecisions(t *testing.T) {
+	t.Parallel()
+
+	db, service := newInspectionService(t)
+	statements := []string{
+		`INSERT INTO projects (id,name,description,scope_json,defaults_json,kind,created_at,updated_at) VALUES ('project-1','Example','', '{}','{}','pentest','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+		`INSERT INTO project_facts (id,project_id,fact_key,category,summary,body,confidence,scope_status,created_at,updated_at) VALUES ('fact-1','project-1','fact:login','asset','Login endpoint exists','','tentative','in_scope','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+		`CREATE TABLE legacy_observations (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, observation_key TEXT NOT NULL, summary TEXT NOT NULL, confidence TEXT NOT NULL, status TEXT NOT NULL)`,
+		`CREATE TABLE legacy_hypotheses (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, hypothesis_key TEXT NOT NULL, statement TEXT NOT NULL, status TEXT NOT NULL)`,
+		`CREATE TABLE legacy_project_directives (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, directive_key TEXT NOT NULL, directive TEXT NOT NULL, status TEXT NOT NULL)`,
+		`INSERT INTO legacy_observations (id,project_id,observation_key,summary,confidence,status) VALUES ('internal-observation-row','project-1','observation:login-confidence','Observed a login response','ambiguous','recorded')`,
+		`INSERT INTO legacy_hypotheses (id,project_id,hypothesis_key,statement,status) VALUES ('internal-hypothesis-row','project-1','hypothesis:sqli','Login may be injectable','open')`,
+		`INSERT INTO legacy_project_directives (id,project_id,directive_key,directive,status) VALUES ('internal-directive-row','project-1','directive:scope-admin','Keep admin testing bounded','active')`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindInspect})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(result.Plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	harness, err := blackboardv2contract.NewHarness()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := harness.Validate("migrationPlan", raw); err != nil {
+		t.Fatalf("inspect plan violates migrationPlan schema: %v\n%s", err, raw)
+	}
+
+	var plan struct {
+		Schema       string `json:"schema"`
+		SourceDigest string `json:"source_digest"`
+		Projects     []struct {
+			Project  string `json:"project"`
+			Mappings []struct {
+				SourceType string `json:"source_type"`
+				SourceKey  string `json:"source_key"`
+				Action     string `json:"action"`
+				TargetKey  string `json:"target_key,omitempty"`
+			} `json:"mappings"`
+		} `json:"projects"`
+		RequiredDecisions []struct {
+			Source struct {
+				Project string `json:"project"`
+				Type    string `json:"type"`
+				Key     string `json:"key"`
+			} `json:"source"`
+			AllowedActions []string `json:"allowed_actions"`
+		} `json:"required_decisions"`
+	}
+	if err := json.Unmarshal(raw, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.Schema != "blackboard-v2-migration-plan/v1" || !strings.HasPrefix(plan.SourceDigest, "sha256:") {
+		t.Fatalf("unexpected plan identity: schema=%q source_digest=%q", plan.Schema, plan.SourceDigest)
+	}
+	assertProjectMapping(t, plan.Projects, "project-1", "project_fact", "fact:login", "retain", "fact:login")
+	assertDecision(t, plan.RequiredDecisions, "project-1", "hypothesis", "hypothesis:sqli", []string{"objective", "tentative_fact", "discard"})
+	assertDecision(t, plan.RequiredDecisions, "project-1", "project_directive", "directive:scope-admin", []string{"scope_limit", "objective"})
+	assertDecision(t, plan.RequiredDecisions, "project-1", "observation", "observation:login-confidence", []string{"tentative_fact", "confirmed_fact"})
+	for _, internalID := range []string{"internal-observation-row", "internal-hypothesis-row", "internal-directive-row"} {
+		if strings.Contains(string(raw), internalID) {
+			t.Fatalf("migration plan leaked internal source ID %q: %s", internalID, raw)
+		}
+	}
+}
+
 func TestInspectDigestIgnoresSQLRowOrderAndChangesWithAnySourceRow(t *testing.T) {
 	t.Parallel()
 
@@ -1429,6 +1504,41 @@ func TestBackupFailureLeavesSourceRowsAndStoreEpochUnchanged(t *testing.T) {
 	assertLegacySourceAndEpoch(t, db, 1)
 }
 
+func TestMigrationSourceBackupBlocksIfSourceChangesAfterInspection(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	databasePath := filepath.Join(root, "pentest.db")
+	artifactRoot := filepath.Join(root, "artifacts")
+	if err := os.Mkdir(artifactRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	db := openLegacyFixtureStore(t, databasePath)
+	insertProjectAndFacts(t, db, []string{"fact-a"})
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	source, err := store.OpenMigrationSource(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	backupPath := filepath.Join(root, "legacy.bak")
+
+	result, err := backupMigrationSource(context.Background(), source, databasePath, artifactRoot, backupPath, migrationSourceBackupOptions{
+		afterBackup: func() error {
+			mutator := reopenLegacyFixtureStore(t, databasePath)
+			defer mutator.Close()
+			_, err := mutator.Exec(`UPDATE project_facts SET body='changed after inspection' WHERE id='fact-a'`)
+			return err
+		},
+	})
+	if !errors.Is(err, ErrMigrationBlocked) {
+		t.Fatalf("backupMigrationSource error = %v, want ErrMigrationBlocked", err)
+	}
+	assertMigrationBlockerCodes(t, result.Plan.ValidationBlockers, "source_changed")
+}
+
 func assertLegacySourceAndEpoch(t *testing.T, db *store.DB, wantFacts int) {
 	t.Helper()
 	var facts int
@@ -1444,6 +1554,21 @@ func assertLegacySourceAndEpoch(t *testing.T, db *store.DB, wantFacts int) {
 	}
 	if epoch != store.CanonicalStoreLegacyV1 {
 		t.Fatalf("canonical store changed on backup path: %s", epoch)
+	}
+}
+
+func assertMigrationBlockerCodes(t *testing.T, blockers []MigrationBlocker, want ...string) {
+	t.Helper()
+	got := make([]string, 0, len(blockers))
+	for _, blocker := range blockers {
+		got = append(got, blocker.Code)
+	}
+	sort.Strings(got)
+	sort.Strings(want)
+	for _, code := range want {
+		if !containsString(got, code) {
+			t.Fatalf("missing blocker %q; got %v", code, got)
+		}
 	}
 }
 
@@ -1469,6 +1594,49 @@ func containsString(values []string, wanted string) bool {
 		}
 	}
 	return false
+}
+
+func assertProjectMapping(t *testing.T, projects []struct {
+	Project  string `json:"project"`
+	Mappings []struct {
+		SourceType string `json:"source_type"`
+		SourceKey  string `json:"source_key"`
+		Action     string `json:"action"`
+		TargetKey  string `json:"target_key,omitempty"`
+	} `json:"mappings"`
+}, projectID, sourceType, sourceKey, action, targetKey string) {
+	t.Helper()
+	for _, project := range projects {
+		if project.Project != projectID {
+			continue
+		}
+		for _, mapping := range project.Mappings {
+			if mapping.SourceType == sourceType && mapping.SourceKey == sourceKey && mapping.Action == action && mapping.TargetKey == targetKey {
+				return
+			}
+		}
+	}
+	t.Fatalf("missing migration mapping project=%s source=%s/%s action=%s target=%s in %#v", projectID, sourceType, sourceKey, action, targetKey, projects)
+}
+
+func assertDecision(t *testing.T, decisions []struct {
+	Source struct {
+		Project string `json:"project"`
+		Type    string `json:"type"`
+		Key     string `json:"key"`
+	} `json:"source"`
+	AllowedActions []string `json:"allowed_actions"`
+}, projectID, sourceType, sourceKey string, allowed []string) {
+	t.Helper()
+	for _, decision := range decisions {
+		if decision.Source.Project == projectID && decision.Source.Type == sourceType && decision.Source.Key == sourceKey {
+			if !reflect.DeepEqual(decision.AllowedActions, allowed) {
+				t.Fatalf("allowed actions for %s/%s = %v, want %v", sourceType, sourceKey, decision.AllowedActions, allowed)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing required decision project=%s source=%s/%s in %#v", projectID, sourceType, sourceKey, decisions)
 }
 
 type historicalMigrationRow struct {
@@ -1505,7 +1673,7 @@ func openLegacyFixtureStore(t *testing.T, databasePath string) *store.DB {
 		    latest_verification_at='',
 		    latest_verification_result_hash=''
 		WHERE id=1;
-		DELETE FROM schema_migrations WHERE version=20;
+		DELETE FROM schema_migrations WHERE version>=20;
 	`); err != nil {
 		_ = fresh.Close()
 		t.Fatalf("construct disposable v1 fixture: %v", err)
@@ -1519,8 +1687,10 @@ func openLegacyFixtureStore(t *testing.T, databasePath string) *store.DB {
 func reopenLegacyFixtureStore(t *testing.T, databasePath string) *store.DB {
 	t.Helper()
 	before := readHistoricalMigrationRows(t, databasePath)
-	if len(before) != 19 {
-		t.Fatalf("v1 fixture migration count = %d, want 19", len(before))
+	for _, row := range before {
+		if row.Version >= 20 {
+			t.Fatalf("v1 fixture retained v2 migration row: %#v", row)
+		}
 	}
 	assertV1FixtureTables(t, databasePath)
 

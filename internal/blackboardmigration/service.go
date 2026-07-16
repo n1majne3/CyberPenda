@@ -26,6 +26,7 @@ type MigrationKind string
 
 const (
 	MigrationKindInspect        MigrationKind = "inspect"
+	MigrationKindBackup         MigrationKind = "backup"
 	MigrationKindCutover        MigrationKind = "cutover"
 	MigrationKindVerify         MigrationKind = "verify"
 	MigrationKindFinalizeLegacy MigrationKind = "finalize_legacy"
@@ -75,11 +76,16 @@ type RecoveryGuidanceV1 struct {
 }
 
 type LegacyMigrationPlanV1 struct {
-	SourceDigest      string         `json:"source_digest"`
-	SourceCounts      map[string]int `json:"source_counts"`
-	EstimatedMappings map[string]int `json:"estimated_mappings"`
-	Blockers          []Diagnostic   `json:"blockers"`
-	Warnings          []Diagnostic   `json:"warnings"`
+	Schema             string                 `json:"schema"`
+	SourceDigest       string                 `json:"source_digest"`
+	Projects           []MigrationProjectPlan `json:"projects"`
+	ValidationBlockers []MigrationBlocker     `json:"validation_blockers"`
+	RequiredDecisions  []MigrationDecision    `json:"required_decisions"`
+
+	SourceCounts      map[string]int `json:"-"`
+	EstimatedMappings map[string]int `json:"-"`
+	Blockers          []Diagnostic   `json:"-"`
+	Warnings          []Diagnostic   `json:"-"`
 }
 
 type Diagnostic struct {
@@ -89,6 +95,37 @@ type Diagnostic struct {
 	SourceID      string   `json:"source_id,omitempty"`
 	Message       string   `json:"message"`
 	RepairOptions []string `json:"repair_options,omitempty"`
+}
+
+type MigrationProjectPlan struct {
+	Project  string             `json:"project"`
+	Mappings []MigrationMapping `json:"mappings"`
+}
+
+type MigrationMapping struct {
+	SourceType string `json:"source_type"`
+	SourceKey  string `json:"source_key"`
+	Action     string `json:"action"`
+	TargetKey  string `json:"target_key,omitempty"`
+}
+
+type MigrationBlocker struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Path    string `json:"path"`
+}
+
+type MigrationDecision struct {
+	Source         MigrationSourceRef `json:"source"`
+	AllowedActions []string           `json:"allowed_actions"`
+	Decision       string             `json:"decision,omitempty"`
+	TargetKey      string             `json:"target_key,omitempty"`
+}
+
+type MigrationSourceRef struct {
+	Project string `json:"project"`
+	Type    string `json:"type"`
+	Key     string `json:"key"`
 }
 
 // BlackboardMigrationService is the only public migration seam used by
@@ -309,6 +346,66 @@ func InspectMigrationSource(ctx context.Context, source *store.MigrationSource, 
 	return MigrationResult{Kind: MigrationKindInspect, Plan: plan}, nil
 }
 
+func BackupMigrationSource(ctx context.Context, source *store.MigrationSource, sourcePath, artifactRoot, backupPath string) (MigrationResult, error) {
+	return backupMigrationSource(ctx, source, sourcePath, artifactRoot, backupPath, migrationSourceBackupOptions{})
+}
+
+type migrationSourceBackupOptions struct {
+	afterBackup func() error
+}
+
+func backupMigrationSource(ctx context.Context, source *store.MigrationSource, sourcePath, artifactRoot, backupPath string, options migrationSourceBackupOptions) (MigrationResult, error) {
+	if source.Classification() != store.MigrationSourceNumberedV1 {
+		return MigrationResult{}, fmt.Errorf("offline migration backup requires numbered v1 migration history, got %q", source.Classification())
+	}
+	if strings.TrimSpace(backupPath) == "" {
+		backupPath = filepath.Clean(sourcePath) + ".pre-blackboard-v2.bak"
+	}
+	plan, err := inspectLegacyDatabase(ctx, source.DB, filepath.Clean(artifactRoot))
+	if err != nil {
+		return MigrationResult{}, err
+	}
+	result := MigrationResult{Kind: MigrationKindBackup, Plan: plan}
+	if len(plan.ValidationBlockers) > 0 {
+		return result, ErrMigrationBlocked
+	}
+	backup, err := CreateVerifiedMigrationSourceBackup(ctx, source.DB, backupPath)
+	if err != nil {
+		result.Plan.ValidationBlockers = append(result.Plan.ValidationBlockers, MigrationBlocker{
+			Code: "backup_verification_failed", Message: "The pre-cutover backup could not be created and independently verified.", Path: backupPath,
+		})
+		result.Plan.Blockers = append(result.Plan.Blockers, Diagnostic{
+			Code: "backup_verification_failed", Message: "The pre-cutover backup could not be created and independently verified.",
+		})
+		return result, fmt.Errorf("%w: %v", ErrMigrationBlocked, err)
+	}
+	result.Backup = &backup
+	if options.afterBackup != nil {
+		if err := options.afterBackup(); err != nil {
+			return result, err
+		}
+	}
+	current, err := store.OpenMigrationSource(sourcePath)
+	if err != nil {
+		return result, fmt.Errorf("reopen migration source after backup: %w", err)
+	}
+	defer current.Close()
+	after, err := inspectLegacyDatabase(ctx, current.DB, filepath.Clean(artifactRoot))
+	if err != nil {
+		return result, err
+	}
+	if after.SourceDigest != plan.SourceDigest {
+		result.Plan.ValidationBlockers = append(result.Plan.ValidationBlockers, MigrationBlocker{
+			Code: "source_changed", Message: "The v1 source changed after inspection and before backup verification completed.", Path: "source_digest",
+		})
+		result.Plan.Blockers = append(result.Plan.Blockers, Diagnostic{
+			Code: "source_changed", Message: "The v1 source changed after inspection and before backup verification completed.",
+		})
+		return result, ErrMigrationBlocked
+	}
+	return result, nil
+}
+
 func (s *Service) finalizeLegacy(ctx context.Context, request MigrationRequest) (MigrationResult, error) {
 	var epoch, state, cutoverID, mappingDigest, backupPath, backupSHA, verifiedAt, verificationHash string
 	if err := s.db.QueryRowContext(ctx, `SELECT canonical_store,cutover_state,cutover_id,mapping_digest,verified_backup_path,verified_backup_sha256,latest_verification_at,latest_verification_result_hash FROM blackboard_store_state WHERE id=1`).Scan(&epoch, &state, &cutoverID, &mappingDigest, &backupPath, &backupSHA, &verifiedAt, &verificationHash); err != nil {
@@ -500,7 +597,11 @@ func installLegacyWriteGuards(ctx context.Context, tx *sql.Tx) error {
 func sourceDigestInTransaction(ctx context.Context, tx *sql.Tx) (string, error) {
 	hash := sha256.New()
 	writeFrame(hash, []byte("legacy_blackboard_source_v1"))
-	for _, table := range legacySourceTables {
+	tables, err := migrationSourceTables(ctx, tx)
+	if err != nil {
+		return "", err
+	}
+	for _, table := range tables {
 		rows, err := canonicalTableRows(ctx, tx, table)
 		if err != nil {
 			return "", err
@@ -510,7 +611,7 @@ func sourceDigestInTransaction(ctx context.Context, tx *sql.Tx) (string, error) 
 			writeFrame(hash, row)
 		}
 	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func (s *Service) verifyCommittedCutover(ctx context.Context) (CutoverVerificationV1, error) {
@@ -671,7 +772,11 @@ func inspectLegacyDatabase(ctx context.Context, db legacyInspectionDB, artifactR
 	counts := make(map[string]int, len(legacySourceTables))
 	hash := sha256.New()
 	writeFrame(hash, []byte("legacy_blackboard_source_v1"))
-	for _, table := range legacySourceTables {
+	tables, err := migrationSourceTables(ctx, tx)
+	if err != nil {
+		return LegacyMigrationPlanV1{}, err
+	}
+	for _, table := range tables {
 		rows, err := canonicalTableRows(ctx, tx, table)
 		if err != nil {
 			return LegacyMigrationPlanV1{}, err
@@ -694,13 +799,163 @@ func inspectLegacyDatabase(ctx context.Context, db legacyInspectionDB, artifactR
 	if err != nil {
 		return LegacyMigrationPlanV1{}, err
 	}
+	projects, err := inspectProjectPlans(ctx, tx)
+	if err != nil {
+		return LegacyMigrationPlanV1{}, err
+	}
+	decisions, err := inspectRequiredDecisions(ctx, tx)
+	if err != nil {
+		return LegacyMigrationPlanV1{}, err
+	}
 	return LegacyMigrationPlanV1{
-		SourceDigest:      hex.EncodeToString(hash.Sum(nil)),
-		SourceCounts:      counts,
-		EstimatedMappings: estimated,
-		Blockers:          blockers,
-		Warnings:          warnings,
+		Schema:             "blackboard-v2-migration-plan/v1",
+		SourceDigest:       "sha256:" + hex.EncodeToString(hash.Sum(nil)),
+		Projects:           projects,
+		ValidationBlockers: diagnosticBlockers(blockers),
+		RequiredDecisions:  decisions,
+		SourceCounts:       counts,
+		EstimatedMappings:  estimated,
+		Blockers:           blockers,
+		Warnings:           warnings,
 	}, nil
+}
+
+func migrationSourceTables(ctx context.Context, tx *sql.Tx) ([]string, error) {
+	tables := append([]string(nil), legacySourceTables...)
+	for _, table := range []string{"legacy_observations", "legacy_hypotheses", "legacy_project_directives"} {
+		exists, err := tableExists(ctx, tx, table)
+		if err != nil {
+			return nil, err
+		}
+		if exists {
+			tables = append(tables, table)
+		}
+	}
+	return tables, nil
+}
+
+func tableExists(ctx context.Context, tx *sql.Tx, table string) (bool, error) {
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&count); err != nil {
+		return false, fmt.Errorf("inspect optional legacy source table %s: %w", table, err)
+	}
+	return count != 0, nil
+}
+
+func inspectProjectPlans(ctx context.Context, tx *sql.Tx) ([]MigrationProjectPlan, error) {
+	plans := make(map[string][]MigrationMapping)
+	projectRows, err := tx.QueryContext(ctx, `SELECT id FROM projects ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("inspect migration Projects: %w", err)
+	}
+	for projectRows.Next() {
+		var projectID string
+		if err := projectRows.Scan(&projectID); err != nil {
+			projectRows.Close()
+			return nil, err
+		}
+		plans[projectID] = make([]MigrationMapping, 0)
+	}
+	if err := projectRows.Close(); err != nil {
+		return nil, err
+	}
+	addRows := func(sourceType, query string) error {
+		rows, err := tx.QueryContext(ctx, query)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var projectID, key string
+			if err := rows.Scan(&projectID, &key); err != nil {
+				return err
+			}
+			plans[projectID] = append(plans[projectID], MigrationMapping{SourceType: sourceType, SourceKey: key, Action: "retain", TargetKey: key})
+		}
+		return rows.Err()
+	}
+	if err := addRows("project_fact", `SELECT project_id,fact_key FROM project_facts ORDER BY project_id,fact_key`); err != nil {
+		return nil, fmt.Errorf("inspect Project Fact mappings: %w", err)
+	}
+	if err := addRows("finding", `SELECT project_id,finding_key FROM findings ORDER BY project_id,finding_key`); err != nil {
+		return nil, fmt.Errorf("inspect Finding mappings: %w", err)
+	}
+	if err := addRows("evidence", `SELECT project_id,evidence_key FROM evidence_artifacts ORDER BY project_id,evidence_key`); err != nil {
+		return nil, fmt.Errorf("inspect Evidence mappings: %w", err)
+	}
+	projectIDs := make([]string, 0, len(plans))
+	for projectID := range plans {
+		projectIDs = append(projectIDs, projectID)
+	}
+	sort.Strings(projectIDs)
+	result := make([]MigrationProjectPlan, 0, len(projectIDs))
+	for _, projectID := range projectIDs {
+		mappings := plans[projectID]
+		sort.Slice(mappings, func(i, j int) bool {
+			left := mappings[i].SourceType + "\x00" + mappings[i].SourceKey
+			right := mappings[j].SourceType + "\x00" + mappings[j].SourceKey
+			return left < right
+		})
+		result = append(result, MigrationProjectPlan{Project: projectID, Mappings: mappings})
+	}
+	return result, nil
+}
+
+func inspectRequiredDecisions(ctx context.Context, tx *sql.Tx) ([]MigrationDecision, error) {
+	decisions := make([]MigrationDecision, 0)
+	addOptionalRows := func(table, keyColumn, sourceType, where string, allowed []string) error {
+		exists, err := tableExists(ctx, tx, table)
+		if err != nil || !exists {
+			return err
+		}
+		query := `SELECT project_id,` + keyColumn + ` FROM "` + table + `"` + where + ` ORDER BY project_id,` + keyColumn
+		rows, err := tx.QueryContext(ctx, query)
+		if err != nil {
+			return fmt.Errorf("inspect %s decisions: %w", table, err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var projectID, key string
+			if err := rows.Scan(&projectID, &key); err != nil {
+				return err
+			}
+			decisions = append(decisions, MigrationDecision{
+				Source:         MigrationSourceRef{Project: projectID, Type: sourceType, Key: key},
+				AllowedActions: append([]string(nil), allowed...),
+			})
+		}
+		return rows.Err()
+	}
+	if err := addOptionalRows("legacy_hypotheses", "hypothesis_key", "hypothesis", ` WHERE status IN ('open','supported','contradicted','inconclusive')`, []string{"objective", "tentative_fact", "discard"}); err != nil {
+		return nil, err
+	}
+	if err := addOptionalRows("legacy_project_directives", "directive_key", "project_directive", ` WHERE status='active'`, []string{"scope_limit", "objective"}); err != nil {
+		return nil, err
+	}
+	if err := addOptionalRows("legacy_observations", "observation_key", "observation", ` WHERE confidence NOT IN ('tentative','confirmed')`, []string{"tentative_fact", "confirmed_fact"}); err != nil {
+		return nil, err
+	}
+	sort.Slice(decisions, func(i, j int) bool {
+		left := decisions[i].Source.Project + "\x00" + decisions[i].Source.Type + "\x00" + decisions[i].Source.Key
+		right := decisions[j].Source.Project + "\x00" + decisions[j].Source.Type + "\x00" + decisions[j].Source.Key
+		return left < right
+	})
+	return decisions, nil
+}
+
+func diagnosticBlockers(diagnostics []Diagnostic) []MigrationBlocker {
+	blockers := make([]MigrationBlocker, 0, len(diagnostics))
+	for _, diagnostic := range diagnostics {
+		path := diagnostic.SourceTable
+		if diagnostic.ProjectID != "" {
+			path = diagnostic.ProjectID + "/" + path
+		}
+		if diagnostic.SourceID != "" {
+			path += "/" + diagnostic.SourceID
+		}
+		blockers = append(blockers, MigrationBlocker{Code: diagnostic.Code, Message: diagnostic.Message, Path: path})
+	}
+	return blockers
 }
 
 func inspectDiagnostics(ctx context.Context, tx *sql.Tx, schemaValidationErr error, artifactRoot string) ([]Diagnostic, []Diagnostic, error) {
