@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -272,7 +273,6 @@ func TestServerReconcilesOnlyClosedContinuationsOwnedAttempts(t *testing.T) {
 			{Op: "create", Key: "objective:owner", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Exercise owner targets"}},
 			{Op: "create", Key: "attempt:owner-a", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Owner attempt A checkpoint"}},
 			{Op: "create", Key: "attempt:owner-b", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Owner attempt B checkpoint"}},
-			{Op: "create", Key: "attempt:owner-unstarted", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Owner attempt created before its target was linked"}},
 			{Op: "relate", From: "attempt:owner-a", Relation: "tests", To: "objective:owner"},
 			{Op: "relate", From: "attempt:owner-b", Relation: "tests", To: "objective:owner"},
 		},
@@ -323,7 +323,7 @@ func TestServerReconcilesOnlyClosedContinuationsOwnedAttempts(t *testing.T) {
 	if !isSemanticCode(err, "closed_continuation") {
 		t.Fatalf("closed Continuation write error = %#v, want closed_continuation", err)
 	}
-	if replay, err := service.ApplyForContinuation(ctx, createdProject.ID, owner.ID, ownerCreate); err != nil || replay.Revision != 6 {
+	if replay, err := service.ApplyForContinuation(ctx, createdProject.ID, owner.ID, ownerCreate); err != nil || replay.Revision != 5 {
 		t.Fatalf("closed Continuation exact replay = %#v, %v", replay, err)
 	}
 
@@ -331,7 +331,7 @@ func TestServerReconcilesOnlyClosedContinuationsOwnedAttempts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcile interrupted owner: %v", err)
 	}
-	assertChangeRecords(t, reconciled, 10, [][]any{{"attempt:owner-a", float64(2)}, {"attempt:owner-b", float64(2)}})
+	assertChangeRecords(t, reconciled, 9, [][]any{{"attempt:owner-a", float64(2)}, {"attempt:owner-b", float64(2)}})
 	for _, tt := range []struct {
 		key         string
 		historySize int
@@ -351,9 +351,6 @@ func TestServerReconcilesOnlyClosedContinuationsOwnedAttempts(t *testing.T) {
 			t.Fatalf("reconciled history %s = %#v", key, history.Items)
 		}
 	}
-	if untested, err := service.ReadCurrent(ctx, createdProject.ID, "attempt:owner-unstarted"); err != nil || untested.Record.Status != "open" {
-		t.Fatalf("reconciliation terminalized untested Attempt = %#v, %v", untested, err)
-	}
 	if _, err := service.ReadCurrent(ctx, createdProject.ID, "attempt:peer"); err != nil {
 		t.Fatalf("peer-owned Attempt was reconciled: %v", err)
 	}
@@ -362,7 +359,7 @@ func TestServerReconcilesOnlyClosedContinuationsOwnedAttempts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("replay reconciliation: %v", err)
 	}
-	assertChangeRecords(t, replayReconciliation, 10, [][]any{})
+	assertChangeRecords(t, replayReconciliation, 9, [][]any{})
 
 	if _, err := tasks.UpdateContinuationStatus(peer.ID, task.StatusCompleted); err != nil {
 		t.Fatalf("complete peer Continuation: %v", err)
@@ -371,9 +368,267 @@ func TestServerReconcilesOnlyClosedContinuationsOwnedAttempts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcile completed peer: %v", err)
 	}
-	assertChangeRecords(t, completed, 10, [][]any{})
+	assertChangeRecords(t, completed, 9, [][]any{})
 	if peerAttempt, err := service.ReadCurrent(ctx, createdProject.ID, "attempt:peer"); err != nil || peerAttempt.Record.Status != "open" {
 		t.Fatalf("clean completion rewrote peer Attempt = %#v, %v", peerAttempt, err)
+	}
+}
+
+func TestRuntimeAttemptCreateRequiresCurrentTestsInFinalBatch(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	projects := project.NewService(db)
+	createdProject, err := projects.Create("Runtime Attempt Final State", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	foreignProject, err := projects.Create("Foreign Runtime Attempt", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create foreign project: %v", err)
+	}
+	tasks := task.NewService(db, projects)
+	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "Create a tested Attempt", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatalf("create Task: %v", err)
+	}
+	continuation, err := tasks.CreateContinuation(createdTask.ID, "profile-attempt-final", "codex", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create Continuation: %v", err)
+	}
+	foreignTask, err := tasks.Create(task.CreateRequest{ProjectID: foreignProject.ID, Goal: "Foreign Attempt", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatalf("create foreign Task: %v", err)
+	}
+	foreign, err := tasks.CreateContinuation(foreignTask.ID, "profile-foreign-attempt", "codex", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create foreign Continuation: %v", err)
+	}
+	service := blackboardv2.NewService(db)
+	if _, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "create-runtime-attempt-target",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "objective:runtime-attempt-target", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Provide a tested target"},
+		}},
+	}); err != nil {
+		t.Fatalf("create Runtime Attempt target: %v", err)
+	}
+
+	_, err = service.ApplyForContinuation(ctx, createdProject.ID, continuation.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "reject-create-only-runtime-attempt",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "entity:runtime-attempt-rollback", Type: "entity", Record: blackboardv2.EntityRecord{Status: "active", Kind: "endpoint", Name: "Must roll back", ScopeStatus: "in_scope"}},
+			{Op: "create", Key: "attempt:runtime-untested", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Would strand untested Current Work"}},
+		},
+	})
+	var semanticErr *blackboardv2.Error
+	if !errors.As(err, &semanticErr) || semanticErr.Code != "semantic_validation" || semanticErr.Path != "changes[1]" {
+		t.Fatalf("create-only Runtime Attempt error = %#v, want semantic_validation on changes[1]", err)
+	}
+	for _, key := range []string{"entity:runtime-attempt-rollback", "attempt:runtime-untested"} {
+		if _, err := service.ReadCurrent(ctx, createdProject.ID, key); !isSemanticCode(err, "not_found") {
+			t.Fatalf("invalid Runtime Attempt batch retained %s: %#v", key, err)
+		}
+	}
+
+	valid := blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "create-tested-runtime-attempt",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "attempt:runtime-tested", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Tests the required target"}},
+			{Op: "relate", From: "attempt:runtime-tested", Relation: "tests", To: "objective:runtime-attempt-target"},
+		},
+	}
+	created, err := service.ApplyForContinuation(ctx, createdProject.ID, continuation.ID, valid)
+	if err != nil {
+		t.Fatalf("create tested Runtime Attempt: %v", err)
+	}
+	if detail, err := service.ReadCurrent(ctx, createdProject.ID, "attempt:runtime-tested"); err != nil || len(detail.Relationships) != 1 {
+		t.Fatalf("tested Runtime Attempt detail = %#v, %v", detail, err)
+	}
+	if _, err := tasks.UpdateContinuationStatus(continuation.ID, task.StatusInterrupted); err != nil {
+		t.Fatalf("interrupt Continuation: %v", err)
+	}
+	if replay, err := service.ApplyForContinuation(ctx, createdProject.ID, continuation.ID, valid); err != nil || !reflect.DeepEqual(replay, created) {
+		t.Fatalf("closed Continuation exact replay = %#v, %v; want %#v", replay, err, created)
+	}
+
+	_, err = service.ApplyForContinuation(ctx, createdProject.ID, foreign.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "reject-foreign-runtime-attempt",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "attempt:foreign-runtime", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Must remain Project-isolated"}},
+			{Op: "relate", From: "attempt:foreign-runtime", Relation: "tests", To: "objective:runtime-attempt-target"},
+		},
+	})
+	if !isSemanticCode(err, "authority_denied") {
+		t.Fatalf("foreign Continuation Runtime Attempt error = %#v, want authority_denied", err)
+	}
+}
+
+func TestReconciliationAcceptsHistoricalTestsAfterTargetTerminalization(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	projects := project.NewService(db)
+	createdProject, err := projects.Create("Historical Attempt Tests", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	tasks := task.NewService(db, projects)
+	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "Reconcile historical tests", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatalf("create Task: %v", err)
+	}
+	continuation, err := tasks.CreateContinuation(createdTask.ID, "profile-historical-tests", "codex", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create Continuation: %v", err)
+	}
+	if _, err := tasks.UpdateContinuationStatus(continuation.ID, task.StatusRunning); err != nil {
+		t.Fatalf("run Continuation: %v", err)
+	}
+	service := blackboardv2.NewService(db)
+	if _, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "create-terminal-tested-target",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "entity:terminal-tested-target", Type: "entity", Record: blackboardv2.EntityRecord{Status: "active", Kind: "endpoint", Name: "Temporary tested endpoint", ScopeStatus: "in_scope"},
+		}},
+	}); err != nil {
+		t.Fatalf("create tested target: %v", err)
+	}
+	if _, err := service.ApplyForContinuation(ctx, createdProject.ID, continuation.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "create-attempt-with-terminal-target",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "attempt:historically-tested", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Tests a target that later leaves Current Work"}},
+			{Op: "relate", From: "attempt:historically-tested", Relation: "tests", To: "entity:terminal-tested-target"},
+		},
+	}); err != nil {
+		t.Fatalf("create historically tested Attempt: %v", err)
+	}
+	if _, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "terminalize-tested-target",
+		Changes: []blackboardv2.Change{{
+			Op: "transition", Key: "entity:terminal-tested-target", Version: 1, Status: "retired", ResolutionSummary: "The tested endpoint was removed before Continuation interruption",
+		}},
+	}); err != nil {
+		t.Fatalf("terminalize tested target: %v", err)
+	}
+	before, err := service.ReadCurrent(ctx, createdProject.ID, "attempt:historically-tested")
+	if err != nil {
+		t.Fatalf("read Attempt after target terminalization: %v", err)
+	}
+	if len(before.Relationships) != 0 {
+		t.Fatalf("Attempt retained current tests after target terminalization: %#v", before.Relationships)
+	}
+	if _, err := tasks.UpdateContinuationStatus(continuation.ID, task.StatusInterrupted); err != nil {
+		t.Fatalf("interrupt Continuation: %v", err)
+	}
+	reconciled, err := service.ReconcileContinuationAttempts(ctx, createdProject.ID, continuation.ID)
+	if err != nil {
+		t.Fatalf("reconcile historically tested Attempt: %v", err)
+	}
+	assertChangeRecords(t, reconciled, 5, [][]any{{"attempt:historically-tested", float64(2)}})
+	history, err := service.ReadHistory(ctx, createdProject.ID, "attempt:historically-tested", blackboardv2.HistoryOptions{})
+	if err != nil {
+		t.Fatalf("read historically tested Attempt history: %v", err)
+	}
+	if len(history.Items) != 3 || history.Items[1].Record.Status != "interrupted" || history.Items[2].Relation != "tests" || history.Items[2].To != "entity:terminal-tested-target" {
+		t.Fatalf("historically tested Attempt history = %#v", history.Items)
+	}
+	replay, err := service.ReconcileContinuationAttempts(ctx, createdProject.ID, continuation.ID)
+	if err != nil {
+		t.Fatalf("replay historical-tests reconciliation: %v", err)
+	}
+	assertChangeRecords(t, replay, 5, [][]any{})
+}
+
+func TestReconciliationReportsNeverLinkedOwnedAttemptsWithoutForeignHistory(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	projects := project.NewService(db)
+	createdProject, err := projects.Create("Invalid Legacy Attempt", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	foreignProject, err := projects.Create("Foreign Attempt History", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create foreign project: %v", err)
+	}
+	tasks := task.NewService(db, projects)
+	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "Diagnose invalid Attempt", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatalf("create Task: %v", err)
+	}
+	continuation, err := tasks.CreateContinuation(createdTask.ID, "profile-invalid-attempt", "codex", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create Continuation: %v", err)
+	}
+	if _, err := tasks.UpdateContinuationStatus(continuation.ID, task.StatusInterrupted); err != nil {
+		t.Fatalf("interrupt Continuation: %v", err)
+	}
+	service := blackboardv2.NewService(db)
+	if _, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "create-invalid-legacy-attempt",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "attempt:legacy-never-linked", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Legacy Attempt never linked to a tested target"},
+		}},
+	}); err != nil {
+		t.Fatalf("create invalid legacy Attempt: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO blackboard_v2_attempt_origins (project_id, key, continuation_id, created_at)
+		VALUES (?, ?, ?, ?)`, createdProject.ID, "attempt:legacy-never-linked", continuation.ID, "2026-07-16T00:00:00Z"); err != nil {
+		t.Fatalf("bind invalid legacy Attempt origin: %v", err)
+	}
+	if _, err := service.Apply(ctx, foreignProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "create-foreign-tests-history",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "attempt:legacy-never-linked", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Foreign same-key Attempt has a valid target"}},
+			{Op: "create", Key: "entity:foreign-tested-target", Type: "entity", Record: blackboardv2.EntityRecord{Status: "active", Kind: "endpoint", Name: "Foreign tested endpoint", ScopeStatus: "in_scope"}},
+			{Op: "relate", From: "attempt:legacy-never-linked", Relation: "tests", To: "entity:foreign-tested-target"},
+			{Op: "transition", Key: "entity:foreign-tested-target", Version: 1, Status: "retired", ResolutionSummary: "Archive only the foreign Project tests relationship"},
+		},
+	}); err != nil {
+		t.Fatalf("create foreign tests history: %v", err)
+	}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		_, err := service.ReconcileContinuationAttempts(ctx, createdProject.ID, continuation.ID)
+		var semanticErr *blackboardv2.Error
+		if !errors.As(err, &semanticErr) || semanticErr.Code != "semantic_validation" || semanticErr.Message != "Attempt reconciliation found owned Attempts without tested targets" {
+			t.Fatalf("invalid reconciliation %d error = %#v", attempt, err)
+		}
+		if semanticErr.Details["reason"] != "missing_tested_target" || !reflect.DeepEqual(semanticErr.Details["attempts"], []string{"attempt:legacy-never-linked"}) || semanticErr.Details["next_action"] != "repair_invalid_attempt" {
+			t.Fatalf("invalid reconciliation %d details = %#v", attempt, semanticErr.Details)
+		}
+	}
+	current, err := service.ReadCurrent(ctx, createdProject.ID, "attempt:legacy-never-linked")
+	if err != nil || current.Record.Status != "open" || len(current.Relationships) != 0 {
+		t.Fatalf("invalid legacy Attempt changed during reconciliation = %#v, %v", current, err)
+	}
+	history, err := service.ReadHistory(ctx, createdProject.ID, "attempt:legacy-never-linked", blackboardv2.HistoryOptions{})
+	if err != nil {
+		t.Fatalf("read invalid legacy Attempt history: %v", err)
+	}
+	if len(history.Items) != 0 {
+		t.Fatalf("invalid reconciliation invented Semantic History: %#v", history.Items)
 	}
 }
 

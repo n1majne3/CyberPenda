@@ -535,16 +535,33 @@ func (s *Service) ReconcileContinuationAttempts(ctx context.Context, projectID, 
 		return ChangeResult{}, fmt.Errorf("close owned Attempt reconciliation rows: %w", err)
 	}
 
-	changedRecords := make(map[string]int)
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	invalidAttempts := make([]string, 0)
 	for _, existing := range owned {
 		tested, err := currentOutgoingRelationshipCount(ctx, tx, projectID, existing.key, "tests")
 		if err != nil {
 			return ChangeResult{}, err
 		}
 		if tested == 0 {
-			continue
+			tested, err = historicalOutgoingRelationshipCount(ctx, tx, projectID, existing.key, "tests")
+			if err != nil {
+				return ChangeResult{}, err
+			}
 		}
+		if tested == 0 {
+			invalidAttempts = append(invalidAttempts, existing.key)
+		}
+	}
+	if len(invalidAttempts) != 0 {
+		return ChangeResult{}, semanticError("semantic_validation", "Attempt reconciliation found owned Attempts without tested targets", "", map[string]any{
+			"reason":      "missing_tested_target",
+			"attempts":    invalidAttempts,
+			"next_action": "repair_invalid_attempt",
+		})
+	}
+
+	changedRecords := make(map[string]int)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, existing := range owned {
 		terminal := existing.record.attemptRecord()
 		terminal.Status = "interrupted"
 		nextRevision, key, version, changed, err := terminalizeRecord(ctx, tx, projectID, revision, existing, terminal, now)
@@ -619,6 +636,7 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 	changedRelations := make(map[string]RelationVersionTuple)
 	createdThisBatch := make(map[string]bool)
 	runtimeConfirmedFacts := make(map[string]string)
+	runtimeCreatedAttempts := make(map[string]string)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for index, change := range batch.Changes {
 		if continuationID != "" {
@@ -649,6 +667,7 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 					if err := bindAttemptOrigin(ctx, tx, projectID, key, continuationID, now); err != nil {
 						return ChangeResult{}, err
 					}
+					runtimeCreatedAttempts[key] = fmt.Sprintf("changes[%d]", index)
 				}
 			}
 		case "update":
@@ -696,6 +715,31 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 		}
 	}
 	if continuationID != "" {
+		attemptKeys := make([]string, 0, len(runtimeCreatedAttempts))
+		for key := range runtimeCreatedAttempts {
+			attemptKeys = append(attemptKeys, key)
+		}
+		sort.Strings(attemptKeys)
+		for _, key := range attemptKeys {
+			current, err := loadCurrentRecord(ctx, tx, projectID, key)
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return ChangeResult{}, err
+			}
+			if current.typ != "attempt" {
+				continue
+			}
+			tested, err := currentOutgoingRelationshipCount(ctx, tx, projectID, key, "tests")
+			if err != nil {
+				return ChangeResult{}, err
+			}
+			if tested == 0 {
+				return ChangeResult{}, semanticError("semantic_validation", "Runtime-created Attempt requires a current tested target at batch end", runtimeCreatedAttempts[key], map[string]any{"key": key})
+			}
+		}
+
 		keys := make([]string, 0, len(runtimeConfirmedFacts))
 		for key := range runtimeConfirmedFacts {
 			keys = append(keys, key)
@@ -1761,6 +1805,19 @@ func currentOutgoingRelationshipCount(ctx context.Context, tx *sql.Tx, projectID
 		projectID, fromKey, relation,
 	).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count current %s relationships: %w", relation, err)
+	}
+	return count, nil
+}
+
+func historicalOutgoingRelationshipCount(ctx context.Context, tx *sql.Tx, projectID, fromKey, relation string) (int, error) {
+	var count int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM blackboard_v2_relationship_history
+		WHERE project_id = ? AND from_key = ? AND relation = ?`,
+		projectID, fromKey, relation,
+	).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count historical %s relationships: %w", relation, err)
 	}
 	return count, nil
 }
