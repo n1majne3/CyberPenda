@@ -119,23 +119,23 @@ func TestOrdinaryOpenRefusesUnknownEpochWithoutTouchingSQLiteState(t *testing.T)
 			wantMigrationCount: 19,
 		},
 		{
-			name:  "migration 20 recorded with unknown epoch in live WAL",
+			name:  "current v2 migrations recorded with unknown epoch in live WAL",
 			epoch: "future_v3",
 			make: func(t *testing.T) string {
 				path := filepath.Join(t.TempDir(), "unknown-v2.db")
 				db, err := store.Open(path)
 				if err != nil {
-					t.Fatalf("create migration-20 fixture: %v", err)
+					t.Fatalf("create current-v2 fixture: %v", err)
 				}
 				if err := db.Close(); err != nil {
-					t.Fatalf("close migration-20 fixture: %v", err)
+					t.Fatalf("close current-v2 fixture: %v", err)
 				}
 				return path
 			},
 			prepare: func(t *testing.T, path string) func() {
 				return holdStoreEpochUpdateInWAL(t, path, "future_v3")
 			},
-			wantMigrationCount: 20,
+			wantMigrationCount: 21,
 			wantSidecars:       true,
 		},
 	}

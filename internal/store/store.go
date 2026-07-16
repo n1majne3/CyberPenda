@@ -797,8 +797,45 @@ func migrations() []migration {
 		newMigration(18, "blackboard_compatibility_read_retirement", migration18SQL, migration18Up),
 		newMigration(19, "task_soft_deletion", migration19SQL, migration19Up),
 		newMigration(20, "blackboard_v2_store_epoch", migration20SQL, migration20Up),
+		newMigration(21, "blackboard_v2_semantic_facts", migration21SQL, migration21Up),
 	}
 }
+
+const migration21SQL = `
+CREATE TABLE IF NOT EXISTS blackboard_v2_project_state (
+	project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+	revision INTEGER NOT NULL CHECK (revision >= 0)
+);
+CREATE TABLE IF NOT EXISTS blackboard_v2_records (
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+	key TEXT NOT NULL,
+	type TEXT NOT NULL CHECK (type IN ('entity','objective','attempt','fact','finding','solution','evidence')),
+	version INTEGER NOT NULL CHECK (version >= 1),
+	record_json TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (project_id, key)
+);
+CREATE TABLE IF NOT EXISTS blackboard_v2_record_history (
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+	key TEXT NOT NULL,
+	version INTEGER NOT NULL CHECK (version >= 1),
+	type TEXT NOT NULL CHECK (type IN ('entity','objective','attempt','fact','finding','solution','evidence')),
+	record_json TEXT NOT NULL,
+	recorded_at TEXT NOT NULL,
+	PRIMARY KEY (project_id, key, version)
+);
+CREATE TABLE IF NOT EXISTS blackboard_v2_idempotency_receipts (
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+	idempotency_key TEXT NOT NULL,
+	request_hash TEXT NOT NULL,
+	result_json TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (project_id, idempotency_key)
+);
+`
+
+func migration21Up(tx *sql.Tx) error { return execStatements(tx, migration21SQL) }
 
 const migration20SQL = `
 UPDATE blackboard_store_state
