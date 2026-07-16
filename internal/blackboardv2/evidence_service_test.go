@@ -847,6 +847,96 @@ func TestRetainEvidenceRestartRecoversDeterministicJournaledTempAtEveryPublicati
 	}
 }
 
+func TestEvidenceDirectoryHierarchyCreationFsyncsEachParentAcrossRestart(t *testing.T) {
+	for _, crashPoint := range []blackboardv2.EvidenceFailurePoint{
+		blackboardv2.EvidenceFailureAfterDirectoryCreate,
+		blackboardv2.EvidenceFailureAfterDirectorySync,
+	} {
+		t.Run(string(crashPoint), func(t *testing.T) {
+			fixture := newEvidenceV2Fixture(t, "Evidence Directory Durability "+string(crashPoint))
+			fixture.writeSource(t, "directory-proof.txt", "proof requiring durable parent dentries\n")
+			request := blackboardv2.RetainEvidenceRequest{
+				IdempotencyKey: "retain-directory-" + string(crashPoint), Key: "evidence:directory-" + string(crashPoint), Attempt: "attempt:evidence",
+				SourcePath: "directory-proof.txt", ArtifactType: "text", Summary: "Every managed directory parent is durable",
+			}
+			crash := &evidenceDirectoryDurabilityInjector{failPoint: crashPoint}
+			service := blackboardv2.NewServiceWithEvidence(fixture.db, blackboardv2.EvidenceConfig{
+				RuntimeRoot: fixture.runtimeRoot, ArtifactRoot: fixture.runtimeRoot, Failures: crash,
+			})
+			if _, err := service.RetainEvidenceForContinuation(context.Background(), fixture.projectID, fixture.continuationID, request); err == nil {
+				t.Fatal("directory creation durability crash unexpectedly succeeded")
+			}
+			wantEvents := []blackboardv2.EvidenceFailurePoint{blackboardv2.EvidenceFailureAfterDirectoryCreate}
+			if crashPoint == blackboardv2.EvidenceFailureAfterDirectorySync {
+				wantEvents = append(wantEvents, blackboardv2.EvidenceFailureAfterDirectorySync)
+			}
+			if !reflect.DeepEqual(crash.events, wantEvents) {
+				t.Fatalf("directory crash events = %v, want %v", crash.events, wantEvents)
+			}
+			if _, err := fixture.service.ReadCurrent(context.Background(), fixture.projectID, request.Key); !isSemanticCode(err, "not_found") {
+				t.Fatalf("directory crash committed semantic Evidence: %#v", err)
+			}
+			if err := fixture.db.Close(); err != nil {
+				t.Fatalf("close store after directory creation crash: %v", err)
+			}
+			reopened, err := store.Open(fixture.dbPath)
+			if err != nil {
+				t.Fatalf("restart after directory creation crash: %v", err)
+			}
+			t.Cleanup(func() { _ = reopened.Close() })
+			recovery := &evidenceDirectoryDurabilityInjector{}
+			restarted := blackboardv2.NewServiceWithEvidence(reopened, blackboardv2.EvidenceConfig{
+				RuntimeRoot: fixture.runtimeRoot, ArtifactRoot: fixture.runtimeRoot, Failures: recovery,
+			})
+			if _, err := restarted.RetainEvidenceForContinuation(context.Background(), fixture.projectID, fixture.continuationID, request); err != nil {
+				t.Fatalf("recover durable Evidence directory hierarchy: %v", err)
+			}
+			if len(recovery.events) == 0 || recovery.events[0] != blackboardv2.EvidenceFailureAfterDirectorySync {
+				t.Fatalf("restart directory events begin %v, want parent sync of pre-crash component", recovery.events)
+			}
+			unsyncedCreates := 0
+			foundSemanticCommit := false
+			for _, point := range recovery.events {
+				switch point {
+				case blackboardv2.EvidenceFailureAfterDirectoryCreate:
+					if unsyncedCreates != 0 {
+						t.Fatalf("directory create occurred before prior parent sync: %v", recovery.events)
+					}
+					unsyncedCreates++
+				case blackboardv2.EvidenceFailureAfterDirectorySync:
+					unsyncedCreates = 0
+				case blackboardv2.EvidenceFailureAfterGraphCommit:
+					foundSemanticCommit = true
+					if unsyncedCreates != 0 {
+						t.Fatalf("semantic commit preceded directory parent sync: %v", recovery.events)
+					}
+				}
+			}
+			if !foundSemanticCommit {
+				t.Fatalf("directory durability events lack semantic commit: %v", recovery.events)
+			}
+		})
+	}
+}
+
+type evidenceDirectoryDurabilityInjector struct {
+	failPoint blackboardv2.EvidenceFailurePoint
+	failed    bool
+	events    []blackboardv2.EvidenceFailurePoint
+}
+
+func (injector *evidenceDirectoryDurabilityInjector) FailAfter(point blackboardv2.EvidenceFailurePoint) error {
+	if point != blackboardv2.EvidenceFailureAfterDirectoryCreate && point != blackboardv2.EvidenceFailureAfterDirectorySync && point != blackboardv2.EvidenceFailureAfterGraphCommit {
+		return nil
+	}
+	injector.events = append(injector.events, point)
+	if point == injector.failPoint && injector.failPoint != "" && !injector.failed {
+		injector.failed = true
+		return errors.New("injected Evidence directory durability crash")
+	}
+	return nil
+}
+
 func TestConcurrentExactRetainRetryCannotReplaceActivePublisherTemp(t *testing.T) {
 	fixture := newEvidenceV2Fixture(t, "Concurrent Exact Evidence Publisher")
 	payload := strings.Repeat("inode-bound-publication-proof-", 8192)
@@ -1054,6 +1144,98 @@ func TestV24UpgradeAdoptsSyncedLegacyTempForTerminalAttemptReplay(t *testing.T) 
 	}
 	if !foundProduced {
 		t.Fatalf("upgraded v24 Evidence lacks produced history: %#v", history.Items)
+	}
+}
+
+func TestV24UpgradeRecoversLegacyTempBeforeChangedOrMissingSourceValidation(t *testing.T) {
+	for _, sourceState := range []string{"changed", "missing", "changed-invalid-legacy"} {
+		t.Run(sourceState, func(t *testing.T) {
+			fixture := newEvidenceV2Fixture(t, "V24 Source Recovery "+sourceState)
+			payload := strings.Repeat("v24-source-independent-proof-", 2048)
+			fixture.writeSource(t, "source.txt", payload)
+			request := blackboardv2.RetainEvidenceRequest{
+				IdempotencyKey: "retain-v24-source-" + sourceState, Key: "evidence:v24-source-" + sourceState, Attempt: "attempt:evidence",
+				SourcePath: "source.txt", ArtifactType: "text", Summary: "Recover v24 proof before Runtime source validation",
+			}
+			failing := blackboardv2.NewServiceWithEvidence(fixture.db, blackboardv2.EvidenceConfig{
+				RuntimeRoot: fixture.runtimeRoot, ArtifactRoot: fixture.runtimeRoot,
+				Failures: &failEvidenceV2Once{point: blackboardv2.EvidenceFailureAfterTempSync},
+			})
+			if _, err := failing.RetainEvidenceForContinuation(context.Background(), fixture.projectID, fixture.continuationID, request); err == nil {
+				t.Fatal("v24 source fixture publication crash unexpectedly succeeded")
+			}
+			var tempPath, finalPath string
+			if err := fixture.db.QueryRow(`SELECT temp_internal_path,managed_internal_path FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, fixture.projectID, fixture.continuationID, request.IdempotencyKey).Scan(&tempPath, &finalPath); err != nil {
+				t.Fatalf("read v24 source fixture paths: %v", err)
+			}
+			absoluteTemp := filepath.Join(fixture.runtimeRoot, filepath.FromSlash(tempPath))
+			legacyTemp := filepath.Join(filepath.Dir(absoluteTemp), ".retain-v24-source-"+sourceState)
+			if err := os.Rename(absoluteTemp, legacyTemp); err != nil {
+				t.Fatalf("convert source fixture to v24 temp: %v", err)
+			}
+			if sourceState == "changed-invalid-legacy" {
+				if err := os.Chmod(legacyTemp, 0o600); err != nil {
+					t.Fatalf("make corrupt v24 temp writable: %v", err)
+				}
+				if err := os.WriteFile(legacyTemp, []byte("corrupt legacy proof bytes\n"), 0o600); err != nil {
+					t.Fatalf("corrupt v24 legacy temp: %v", err)
+				}
+			}
+			if _, err := fixture.db.Exec(`DROP TABLE blackboard_v2_evidence_payloads`); err != nil {
+				t.Fatalf("remove post-v24 payload claims: %v", err)
+			}
+			if _, err := fixture.db.Exec(`UPDATE blackboard_v2_evidence_requests SET temp_internal_path='',publisher_token='',publisher_temp_identity='' WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, fixture.projectID, fixture.continuationID, request.IdempotencyKey); err != nil {
+				t.Fatalf("restore v24 source request shape: %v", err)
+			}
+			if _, err := fixture.db.Exec(`DELETE FROM schema_migrations WHERE version>=25`); err != nil {
+				t.Fatalf("restore v24 source migration ledger: %v", err)
+			}
+			if err := fixture.db.Close(); err != nil {
+				t.Fatalf("close v24 source fixture: %v", err)
+			}
+			sourcePath := filepath.Join(fixture.workdir, "source.txt")
+			if strings.HasPrefix(sourceState, "changed") {
+				if err := os.WriteFile(sourcePath, []byte("changed Runtime source bytes\n"), 0o600); err != nil {
+					t.Fatalf("change Runtime source before upgrade retry: %v", err)
+				}
+			} else if err := os.Remove(sourcePath); err != nil {
+				t.Fatalf("remove Runtime source before upgrade retry: %v", err)
+			}
+			reopened, err := store.Open(fixture.dbPath)
+			if err != nil {
+				t.Fatalf("upgrade v24 source fixture: %v", err)
+			}
+			t.Cleanup(func() { _ = reopened.Close() })
+			restarted := blackboardv2.NewServiceWithEvidence(reopened, blackboardv2.EvidenceConfig{RuntimeRoot: fixture.runtimeRoot, ArtifactRoot: fixture.runtimeRoot})
+			_, retainErr := restarted.RetainEvidenceForContinuation(context.Background(), fixture.projectID, fixture.continuationID, request)
+			if sourceState == "changed-invalid-legacy" {
+				if !isSemanticCode(retainErr, "evidence_source_changed") {
+					t.Fatalf("unrecoverable v24 retry error = %#v, want evidence_source_changed", retainErr)
+				}
+			} else if retainErr != nil {
+				t.Fatalf("recover v24 temp before %s source validation: %v", sourceState, retainErr)
+			}
+			if _, err := os.Lstat(legacyTemp); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("v24 %s source retry left legacy temp: %v", sourceState, err)
+			}
+			if sourceState == "changed-invalid-legacy" {
+				var requestCount int
+				if err := reopened.QueryRow(`SELECT COUNT(*) FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, fixture.projectID, fixture.continuationID, request.IdempotencyKey).Scan(&requestCount); err != nil {
+					t.Fatalf("count cleaned unrecoverable v24 request: %v", err)
+				}
+				if requestCount != 0 {
+					t.Fatalf("unrecoverable v24 request count = %d, want zero", requestCount)
+				}
+				if _, err := os.Lstat(filepath.Join(fixture.runtimeRoot, filepath.FromSlash(tempPath))); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("unrecoverable v24 retry left deterministic temp: %v", err)
+				}
+				return
+			}
+			finalBytes, err := os.ReadFile(filepath.Join(fixture.runtimeRoot, filepath.FromSlash(finalPath)))
+			if err != nil || string(finalBytes) != payload {
+				t.Fatalf("v24 %s source final size=%d err=%v", sourceState, len(finalBytes), err)
+			}
+		})
 	}
 }
 

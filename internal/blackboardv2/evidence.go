@@ -35,19 +35,21 @@ type EvidenceConfig struct {
 type EvidenceFailurePoint string
 
 const (
-	EvidenceFailureBeforeReservation   EvidenceFailurePoint = "before_reservation"
-	EvidenceFailureBeforeFilePublish   EvidenceFailurePoint = "before_file_publish"
-	EvidenceFailureBeforeTempCopy      EvidenceFailurePoint = "before_temp_copy"
-	EvidenceFailureMidTempCopy         EvidenceFailurePoint = "mid_temp_copy"
-	EvidenceFailureAfterTempSync       EvidenceFailurePoint = "after_temp_sync"
-	EvidenceFailureBeforeFileRename    EvidenceFailurePoint = "before_file_rename"
-	EvidenceFailureAfterFileRename     EvidenceFailurePoint = "after_file_rename"
-	EvidenceFailureBeforePublishStore  EvidenceFailurePoint = "before_publication_checkpoint"
-	EvidenceFailureAfterFilePublish    EvidenceFailurePoint = "file_publish"
-	EvidenceFailureAfterPayloadGCClaim EvidenceFailurePoint = "after_payload_gc_claim"
-	EvidenceFailureAfterPayloadUnlink  EvidenceFailurePoint = "after_payload_unlink"
-	EvidenceFailureAfterGraphCommit    EvidenceFailurePoint = "semantic_commit"
-	EvidenceFailureAfterResultStore    EvidenceFailurePoint = "result_store"
+	EvidenceFailureBeforeReservation    EvidenceFailurePoint = "before_reservation"
+	EvidenceFailureBeforeFilePublish    EvidenceFailurePoint = "before_file_publish"
+	EvidenceFailureAfterDirectoryCreate EvidenceFailurePoint = "after_managed_directory_create"
+	EvidenceFailureAfterDirectorySync   EvidenceFailurePoint = "after_managed_directory_parent_sync"
+	EvidenceFailureBeforeTempCopy       EvidenceFailurePoint = "before_temp_copy"
+	EvidenceFailureMidTempCopy          EvidenceFailurePoint = "mid_temp_copy"
+	EvidenceFailureAfterTempSync        EvidenceFailurePoint = "after_temp_sync"
+	EvidenceFailureBeforeFileRename     EvidenceFailurePoint = "before_file_rename"
+	EvidenceFailureAfterFileRename      EvidenceFailurePoint = "after_file_rename"
+	EvidenceFailureBeforePublishStore   EvidenceFailurePoint = "before_publication_checkpoint"
+	EvidenceFailureAfterFilePublish     EvidenceFailurePoint = "file_publish"
+	EvidenceFailureAfterPayloadGCClaim  EvidenceFailurePoint = "after_payload_gc_claim"
+	EvidenceFailureAfterPayloadUnlink   EvidenceFailurePoint = "after_payload_unlink"
+	EvidenceFailureAfterGraphCommit     EvidenceFailurePoint = "semantic_commit"
+	EvidenceFailureAfterResultStore     EvidenceFailurePoint = "result_store"
 )
 
 // EvidenceFailureInjector can simulate a lost response or process failure at
@@ -292,11 +294,11 @@ func (s *Service) RetainEvidenceForContinuation(ctx context.Context, projectID, 
 		if err != nil {
 			return ChangeResult{}, err
 		}
-		recoveryExists, err := s.evidencePublicationRecoveryExists(row)
+		recoveryExists, legacyRecoveryExists, err := s.evidencePublicationRecoveryExists(row)
 		if err != nil {
 			return ChangeResult{}, err
 		}
-		if !tempReady && source == nil {
+		if !tempReady && !legacyRecoveryExists && source == nil {
 			opened, err := s.openRuntimeEvidenceSource(taskID, request.SourcePath)
 			if err != nil && !recoveryExists {
 				s.cleanupDefinitiveEvidenceFailure(ctx, projectID, continuationID, request.IdempotencyKey, row, err)
@@ -1003,40 +1005,41 @@ func (s *Service) verifyJournaledEvidenceTemp(tempPath, digest string, size int6
 	return actualSize == size && hex.EncodeToString(hash.Sum(nil)) == digest, nil
 }
 
-func (s *Service) evidencePublicationRecoveryExists(row evidenceRequestRow) (bool, error) {
+func (s *Service) evidencePublicationRecoveryExists(row evidenceRequestRow) (bool, bool, error) {
 	root, err := os.OpenRoot(s.evidenceConfig.ArtifactRoot)
 	if err != nil {
-		return false, fmt.Errorf("open managed Artifact Root: %w", err)
+		return false, false, fmt.Errorf("open managed Artifact Root: %w", err)
 	}
 	defer root.Close()
-	directory, err := openSecureDirectory(root, filepath.Dir(row.internalPath))
+	directory, err := s.openSecureEvidenceDirectory(root, filepath.Dir(row.internalPath))
 	if err != nil {
-		return false, fmt.Errorf("open managed Evidence recovery directory: %w", err)
+		return false, false, fmt.Errorf("open managed Evidence recovery directory: %w", err)
 	}
 	defer directory.Close()
+	deterministicExists := false
 	if _, err := directory.Lstat(filepath.Base(row.tempPath)); err == nil {
-		return true, nil
+		deterministicExists = true
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return false, fmt.Errorf("inspect journaled Evidence temp: %w", err)
+		return false, false, fmt.Errorf("inspect journaled Evidence temp: %w", err)
 	}
 	opened, err := directory.Open(".")
 	if err != nil {
-		return false, fmt.Errorf("open managed Evidence recovery directory listing: %w", err)
+		return false, false, fmt.Errorf("open managed Evidence recovery directory listing: %w", err)
 	}
 	entries, readErr := opened.ReadDir(-1)
 	closeErr := opened.Close()
 	if readErr != nil {
-		return false, fmt.Errorf("read managed Evidence recovery directory: %w", readErr)
+		return false, false, fmt.Errorf("read managed Evidence recovery directory: %w", readErr)
 	}
 	if closeErr != nil {
-		return false, fmt.Errorf("close managed Evidence recovery directory: %w", closeErr)
+		return false, false, fmt.Errorf("close managed Evidence recovery directory: %w", closeErr)
 	}
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), ".retain-") {
-			return true, nil
+			return true, true, nil
 		}
 	}
-	return false, nil
+	return deterministicExists, false, nil
 }
 
 func (s *Service) ensureEvidencePublished(ctx context.Context, projectID, continuationID, key string, row *evidenceRequestRow, source *evidenceSource) error {
@@ -1052,7 +1055,7 @@ func (s *Service) ensureEvidencePublished(ctx context.Context, projectID, contin
 	}
 	defer managedRoot.Close()
 	directoryPath := filepath.Dir(row.internalPath)
-	destinationRoot, err := openSecureDirectory(managedRoot, directoryPath)
+	destinationRoot, err := s.openSecureEvidenceDirectory(managedRoot, directoryPath)
 	if err != nil {
 		return fmt.Errorf("open managed Evidence directory: %w", err)
 	}
@@ -1527,7 +1530,7 @@ func (s *Service) syncAndCheckpointPublishedEvidence(ctx context.Context, projec
 		return fmt.Errorf("open managed Artifact Root: %w", err)
 	}
 	defer root.Close()
-	directory, err := openSecureDirectory(root, filepath.Dir(internalPath))
+	directory, err := s.openSecureEvidenceDirectory(root, filepath.Dir(internalPath))
 	if err != nil {
 		return fmt.Errorf("open managed Evidence directory: %w", err)
 	}
@@ -1569,6 +1572,9 @@ func (s *Service) cleanupDefinitiveEvidenceFailure(ctx context.Context, projectI
 		return
 	}
 	defer guard.close()
+	if _, err := sweepLegacyEvidenceTemps(guard.directory, nil, row.sha256, row.size); err != nil {
+		return
+	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE blackboard_v2_evidence_requests SET publisher_token='',publisher_temp_identity='',updated_at=? WHERE project_id=? AND continuation_id=? AND idempotency_key=? AND request_hash=?`, time.Now().UTC().Format(time.RFC3339Nano), projectID, continuationID, key, row.requestHash); err != nil {
 		return
 	}
@@ -1606,7 +1612,7 @@ func (s *Service) acquireEvidenceCleanupGuard(row evidenceRequestRow) (*evidence
 	if err != nil {
 		return nil, fmt.Errorf("open managed Artifact Root for cleanup: %w", err)
 	}
-	directory, err := openSecureDirectory(root, filepath.Dir(row.internalPath))
+	directory, err := s.openSecureEvidenceDirectory(root, filepath.Dir(row.internalPath))
 	if err != nil {
 		_ = root.Close()
 		return nil, fmt.Errorf("open managed Evidence directory for cleanup: %w", err)
@@ -1767,7 +1773,7 @@ func (s *Service) removeRequestOwnedEvidenceTemp(row evidenceRequestRow) error {
 	if filepath.Dir(row.tempPath) != filepath.Dir(row.internalPath) {
 		return fmt.Errorf("journaled Evidence temp is outside its final directory")
 	}
-	directory, err := openSecureDirectory(root, filepath.Dir(row.internalPath))
+	directory, err := s.openSecureEvidenceDirectory(root, filepath.Dir(row.internalPath))
 	if err != nil {
 		return fmt.Errorf("open managed Evidence directory: %w", err)
 	}
@@ -1784,7 +1790,7 @@ func (s *Service) removeClaimedEvidencePayload(row evidenceRequestRow) error {
 	if filepath.Dir(row.tempPath) != filepath.Dir(row.internalPath) {
 		return fmt.Errorf("journaled Evidence temp is outside its final directory")
 	}
-	directory, err := openSecureDirectory(root, filepath.Dir(row.internalPath))
+	directory, err := s.openSecureEvidenceDirectory(root, filepath.Dir(row.internalPath))
 	if err != nil {
 		return fmt.Errorf("open managed Evidence directory: %w", err)
 	}
@@ -1826,7 +1832,11 @@ func evidenceSourceStillSame(source evidenceSource) bool {
 	return err == nil && current.Mode()&os.ModeSymlink == 0 && os.SameFile(source.info, current)
 }
 
-func openSecureDirectory(root *os.Root, relative string) (*os.Root, error) {
+func (s *Service) openSecureEvidenceDirectory(root *os.Root, relative string) (*os.Root, error) {
+	return openSecureDirectoryDurable(root, relative, s.failEvidence)
+}
+
+func openSecureDirectoryDurable(root *os.Root, relative string, checkpoint func(EvidenceFailurePoint) error) (*os.Root, error) {
 	clean := filepath.Clean(relative)
 	if clean == "." {
 		return root.OpenRoot(".")
@@ -1834,35 +1844,58 @@ func openSecureDirectory(root *os.Root, relative string) (*os.Root, error) {
 	if clean == ".." || filepath.IsAbs(clean) || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return nil, errors.New("managed directory escapes its root")
 	}
-	current := ""
-	var final os.FileInfo
-	for _, component := range strings.Split(clean, string(filepath.Separator)) {
-		current = filepath.Join(current, component)
-		info, err := root.Lstat(current)
-		if errors.Is(err, os.ErrNotExist) {
-			if err := root.Mkdir(current, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
-				return nil, err
-			}
-			info, err = root.Lstat(current)
-		}
-		if err != nil {
-			return nil, err
-		}
-		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return nil, errors.New("managed directory contains a non-directory or symbolic link")
-		}
-		final = info
-	}
-	directory, err := root.OpenRoot(clean)
+	current, err := root.OpenRoot(".")
 	if err != nil {
 		return nil, err
 	}
-	opened, err := directory.Stat(".")
-	if err != nil || !os.SameFile(final, opened) {
-		directory.Close()
-		return nil, errors.New("managed directory changed while opening")
+	for _, component := range strings.Split(clean, string(filepath.Separator)) {
+		info, err := current.Lstat(component)
+		if errors.Is(err, os.ErrNotExist) {
+			if err := current.Mkdir(component, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+				_ = current.Close()
+				return nil, err
+			}
+			if checkpoint != nil {
+				if err := checkpoint(EvidenceFailureAfterDirectoryCreate); err != nil {
+					_ = current.Close()
+					return nil, err
+				}
+			}
+		}
+		if err := syncEvidenceDirectory(current); err != nil {
+			_ = current.Close()
+			return nil, err
+		}
+		if checkpoint != nil {
+			if err := checkpoint(EvidenceFailureAfterDirectorySync); err != nil {
+				_ = current.Close()
+				return nil, err
+			}
+		}
+		info, err = current.Lstat(component)
+		if err != nil {
+			_ = current.Close()
+			return nil, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			_ = current.Close()
+			return nil, errors.New("managed directory contains a non-directory or symbolic link")
+		}
+		next, err := current.OpenRoot(component)
+		if err != nil {
+			_ = current.Close()
+			return nil, err
+		}
+		opened, err := next.Stat(".")
+		if err != nil || !os.SameFile(info, opened) {
+			_ = next.Close()
+			_ = current.Close()
+			return nil, errors.New("managed directory changed while opening")
+		}
+		_ = current.Close()
+		current = next
 	}
-	return directory, nil
+	return current, nil
 }
 
 func (s *Service) applyRetainedEvidence(ctx context.Context, projectID, continuationID string, request RetainEvidenceRequest, managedPath string, metadata retainedEvidenceMetadata, durablyReserved bool) (ChangeResult, error) {
