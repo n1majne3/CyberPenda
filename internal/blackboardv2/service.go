@@ -4,6 +4,7 @@
 package blackboardv2
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -11,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -55,6 +57,46 @@ type Change struct {
 	Type    string   `json:"type,omitempty"`
 	Record  any      `json:"record,omitempty"`
 	Clear   []string `json:"clear,omitempty"`
+}
+
+// UnmarshalJSON enforces the closed semantic-change item shapes at the service
+// DTO boundary so adapters cannot silently drop unknown fields before Apply.
+func (change *Change) UnmarshalJSON(raw []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	opRaw, ok := fields["op"]
+	if !ok {
+		return fmt.Errorf("change op is required")
+	}
+	var op string
+	if err := json.Unmarshal(opRaw, &op); err != nil {
+		return fmt.Errorf("decode change op: %w", err)
+	}
+	switch op {
+	case "create":
+		if err := rejectUnknownFields(fields, map[string]bool{"op": true, "key": true, "type": true, "record": true}); err != nil {
+			return err
+		}
+		decoded, err := decodeCreateChange(fields)
+		if err != nil {
+			return err
+		}
+		*change = decoded
+	case "update":
+		if err := rejectUnknownFields(fields, map[string]bool{"op": true, "key": true, "version": true, "type": true, "record": true, "clear": true}); err != nil {
+			return err
+		}
+		decoded, err := decodeUpdateChange(fields)
+		if err != nil {
+			return err
+		}
+		*change = decoded
+	default:
+		*change = Change{Op: op}
+	}
+	return nil
 }
 
 // FactRecord is the complete semantic Project Fact DTO.
@@ -269,6 +311,9 @@ func (s *Service) Apply(ctx context.Context, projectID string, batch ChangeBatch
 	changedRecords := make(map[string]int)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for index, change := range batch.Changes {
+		if err := validateChangeShape(change, index); err != nil {
+			return ChangeResult{}, err
+		}
 		switch change.Op {
 		case "create":
 			newRevision, key, version, changed, err := applyCreateFact(ctx, tx, projectID, revision, index, change, now)
@@ -722,6 +767,137 @@ func canonicalRequestHash(batch ChangeBatch) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
+func rejectUnknownFields(fields map[string]json.RawMessage, allowed map[string]bool) error {
+	for field := range fields {
+		if !allowed[field] {
+			return fmt.Errorf("unknown change field %q", field)
+		}
+	}
+	return nil
+}
+
+func decodeCreateChange(fields map[string]json.RawMessage) (Change, error) {
+	key, err := decodeRequiredString(fields, "key")
+	if err != nil {
+		return Change{}, err
+	}
+	typ, err := decodeRequiredString(fields, "type")
+	if err != nil {
+		return Change{}, err
+	}
+	recordRaw, ok := fields["record"]
+	if !ok {
+		return Change{}, fmt.Errorf("create record is required")
+	}
+	record, err := decodeFactRecord(typ, recordRaw)
+	if err != nil {
+		return Change{}, err
+	}
+	return Change{Op: "create", Key: key, Type: typ, Record: record}, nil
+}
+
+func decodeUpdateChange(fields map[string]json.RawMessage) (Change, error) {
+	key, err := decodeRequiredString(fields, "key")
+	if err != nil {
+		return Change{}, err
+	}
+	typ, err := decodeRequiredString(fields, "type")
+	if err != nil {
+		return Change{}, err
+	}
+	var version int
+	if raw, ok := fields["version"]; !ok {
+		return Change{}, fmt.Errorf("update version is required")
+	} else if err := json.Unmarshal(raw, &version); err != nil {
+		return Change{}, fmt.Errorf("decode update version: %w", err)
+	}
+	recordRaw, ok := fields["record"]
+	if !ok {
+		return Change{}, fmt.Errorf("update record is required")
+	}
+	record, err := decodeFactPatch(typ, recordRaw)
+	if err != nil {
+		return Change{}, err
+	}
+	var clear []string
+	if raw, ok := fields["clear"]; ok {
+		if err := json.Unmarshal(raw, &clear); err != nil {
+			return Change{}, fmt.Errorf("decode update clear: %w", err)
+		}
+	}
+	return Change{Op: "update", Key: key, Version: version, Type: typ, Record: record, Clear: clear}, nil
+}
+
+func decodeRequiredString(fields map[string]json.RawMessage, field string) (string, error) {
+	raw, ok := fields[field]
+	if !ok {
+		return "", fmt.Errorf("%s is required", field)
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", fmt.Errorf("decode %s: %w", field, err)
+	}
+	return value, nil
+}
+
+func decodeFactRecord(typ string, raw json.RawMessage) (FactRecord, error) {
+	if typ != "fact" {
+		return FactRecord{}, fmt.Errorf("only Fact records are implemented in this slice")
+	}
+	var record FactRecord
+	if err := strictDecodeJSON(raw, &record); err != nil {
+		return FactRecord{}, fmt.Errorf("decode Fact record: %w", err)
+	}
+	return record, nil
+}
+
+func decodeFactPatch(typ string, raw json.RawMessage) (FactPatch, error) {
+	if typ != "fact" {
+		return FactPatch{}, fmt.Errorf("only Fact records are implemented in this slice")
+	}
+	var patch FactPatch
+	if err := strictDecodeJSON(raw, &patch); err != nil {
+		return FactPatch{}, fmt.Errorf("decode Fact patch: %w", err)
+	}
+	return patch, nil
+}
+
+func strictDecodeJSON(raw []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return fmt.Errorf("unexpected trailing JSON")
+	}
+	return nil
+}
+
+func validateChangeShape(change Change, index int) error {
+	switch change.Op {
+	case "create":
+		if change.Version != 0 {
+			return semanticError("semantic_validation", "create does not accept version", fmt.Sprintf("changes[%d].version", index), nil)
+		}
+		if len(change.Clear) != 0 {
+			return semanticError("semantic_validation", "create does not accept clear", fmt.Sprintf("changes[%d].clear", index), nil)
+		}
+		if change.Record == nil {
+			return semanticError("semantic_validation", "create record is required", fmt.Sprintf("changes[%d].record", index), nil)
+		}
+	case "update":
+		if change.Version < 1 {
+			return semanticError("semantic_validation", "update requires the current version", fmt.Sprintf("changes[%d].version", index), nil)
+		}
+		if change.Record == nil {
+			return semanticError("semantic_validation", "update record is required", fmt.Sprintf("changes[%d].record", index), nil)
+		}
+	}
+	return nil
+}
+
 func completeFactRecord(value any, path string) (FactRecord, error) {
 	switch record := value.(type) {
 	case FactRecord:
@@ -731,6 +907,12 @@ func completeFactRecord(value any, path string) (FactRecord, error) {
 			return FactRecord{}, semanticError("semantic_validation", "Fact record is required", path, nil)
 		}
 		return *record, nil
+	case json.RawMessage:
+		decoded, err := decodeFactRecord("fact", record)
+		if err != nil {
+			return FactRecord{}, semanticError("semantic_validation", err.Error(), path, nil)
+		}
+		return decoded, nil
 	default:
 		return FactRecord{}, semanticError("semantic_validation", "Fact create requires a complete Fact record", path, nil)
 	}
@@ -742,7 +924,7 @@ func partialFactRecord(value any, path string) (FactPatch, error) {
 		return patch, nil
 	case *FactPatch:
 		if patch == nil {
-			return FactPatch{}, nil
+			return FactPatch{}, semanticError("semantic_validation", "Fact update requires a Fact partial record", path, nil)
 		}
 		return *patch, nil
 	case FactRecord:
@@ -753,6 +935,12 @@ func partialFactRecord(value any, path string) (FactPatch, error) {
 			Confidence:  stringPtr(patch.Confidence),
 			ScopeStatus: stringPtr(patch.ScopeStatus),
 		}, nil
+	case json.RawMessage:
+		decoded, err := decodeFactPatch("fact", patch)
+		if err != nil {
+			return FactPatch{}, semanticError("semantic_validation", err.Error(), path, nil)
+		}
+		return decoded, nil
 	default:
 		return FactPatch{}, semanticError("semantic_validation", "Fact update requires a Fact partial record", path, nil)
 	}

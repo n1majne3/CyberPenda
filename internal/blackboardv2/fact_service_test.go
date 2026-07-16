@@ -235,6 +235,89 @@ func TestProjectFactCreateUpdateDetailHistoryAndSnapshotEndToEnd(t *testing.T) {
 	}
 }
 
+func TestProjectFactChangesRejectNonClosedShapes(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "pentest.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	projects := project.NewService(db)
+	createdProject, err := projects.Create("Closed Shape", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	service := blackboardv2.NewService(db)
+
+	t.Run("create rejects fields outside create shape", func(t *testing.T) {
+		_, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+			Schema:         "semantic-change-batch/v2",
+			IdempotencyKey: "create-with-version",
+			Changes: []blackboardv2.Change{{
+				Op:      "create",
+				Key:     "fact:shape-create",
+				Version: 1,
+				Type:    "fact",
+				Record: blackboardv2.FactRecord{
+					Category: "asset", Summary: "Create must be closed", Confidence: "tentative", ScopeStatus: "in_scope",
+				},
+			}},
+		})
+		var semanticErr *blackboardv2.Error
+		if !errors.As(err, &semanticErr) || semanticErr.Code != "semantic_validation" || semanticErr.Path != "changes[0].version" {
+			t.Fatalf("create with forbidden version error = %#v, want semantic_validation on changes[0].version", err)
+		}
+	})
+
+	t.Run("update rejects missing partial record", func(t *testing.T) {
+		created, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+			Schema:         "semantic-change-batch/v2",
+			IdempotencyKey: "create-shape-update-target",
+			Changes: []blackboardv2.Change{{
+				Op:   "create",
+				Key:  "fact:shape-update",
+				Type: "fact",
+				Record: blackboardv2.FactRecord{
+					Category: "asset", Summary: "Update target", Confidence: "tentative", ScopeStatus: "in_scope",
+				},
+			}},
+		})
+		if err != nil {
+			t.Fatalf("create update target: %v", err)
+		}
+		if created.Revision != 1 {
+			t.Fatalf("created revision = %d, want 1", created.Revision)
+		}
+		_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+			Schema:         "semantic-change-batch/v2",
+			IdempotencyKey: "update-without-record",
+			Changes: []blackboardv2.Change{{
+				Op:      "update",
+				Key:     "fact:shape-update",
+				Version: 1,
+				Type:    "fact",
+			}},
+		})
+		var semanticErr *blackboardv2.Error
+		if !errors.As(err, &semanticErr) || semanticErr.Code != "semantic_validation" || semanticErr.Path != "changes[0].record" {
+			t.Fatalf("update without record error = %#v, want semantic_validation on changes[0].record", err)
+		}
+	})
+
+	t.Run("json decode rejects unknown top-level and record fields", func(t *testing.T) {
+		for _, raw := range []string{
+			`{"op":"create","key":"fact:json","type":"fact","record":{"category":"asset","summary":"Unknown top-level","confidence":"tentative","scope_status":"in_scope"},"unexpected":true}`,
+			`{"op":"create","key":"fact:json","type":"fact","record":{"category":"asset","summary":"Unknown record","confidence":"tentative","scope_status":"in_scope","internal_id":"leak"}}`,
+		} {
+			var change blackboardv2.Change
+			if err := json.Unmarshal([]byte(raw), &change); err == nil {
+				t.Fatalf("decoded non-closed change: %s", raw)
+			}
+		}
+	})
+}
+
 func mustHarness(t *testing.T) *blackboardv2contract.Harness {
 	t.Helper()
 	harness, err := blackboardv2contract.NewHarness()
