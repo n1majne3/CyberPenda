@@ -453,6 +453,11 @@ type storedRecord struct {
 	record  Record
 }
 
+type terminalAttemptValidation struct {
+	status string
+	path   string
+}
+
 // Apply atomically applies a semantic-change-batch/v2 to one Project.
 func (s *Service) Apply(ctx context.Context, projectID string, batch ChangeBatch) (ChangeResult, error) {
 	return s.apply(ctx, projectID, "", batch)
@@ -637,6 +642,7 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 	createdThisBatch := make(map[string]bool)
 	runtimeConfirmedFacts := make(map[string]string)
 	runtimeCreatedAttempts := make(map[string]string)
+	terminalAttempts := make(map[string]terminalAttemptValidation)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for index, change := range batch.Changes {
 		if continuationID != "" {
@@ -696,6 +702,9 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 			if changed {
 				revision = newRevision
 				changedRecords[key] = version
+				if isOneOf(change.Status, "succeeded", "failed", "blocked", "inconclusive") {
+					terminalAttempts[key] = terminalAttemptValidation{status: change.Status, path: fmt.Sprintf("changes[%d].status", index)}
+				}
 				if continuationID != "" && change.Status == "confirmed" {
 					runtimeConfirmedFacts[key] = fmt.Sprintf("changes[%d].status", index)
 				}
@@ -713,6 +722,9 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 		default:
 			return ChangeResult{}, semanticError("semantic_validation", "unsupported Blackboard v2 operation", fmt.Sprintf("changes[%d].op", index), nil)
 		}
+	}
+	if err := validateFinalTerminalAttempts(ctx, tx, projectID, terminalAttempts); err != nil {
+		return ChangeResult{}, err
 	}
 	if continuationID != "" {
 		attemptKeys := make([]string, 0, len(runtimeCreatedAttempts))
@@ -1686,22 +1698,6 @@ func applyTransition(ctx context.Context, tx *sql.Tx, projectID string, revision
 		if err := validateSemanticText(change.Summary, path+".summary"); err != nil {
 			return revision, "", 0, false, err
 		}
-		tested, err := currentOutgoingRelationshipCount(ctx, tx, projectID, change.Key, "tests")
-		if err != nil {
-			return revision, "", 0, false, err
-		}
-		if tested == 0 {
-			return revision, "", 0, false, semanticError("semantic_validation", "terminal Attempt requires at least one tested target", path+".status", nil)
-		}
-		if change.Status == "succeeded" {
-			produced, err := currentOutgoingRelationshipCount(ctx, tx, projectID, change.Key, "produced")
-			if err != nil {
-				return revision, "", 0, false, err
-			}
-			if produced == 0 {
-				return revision, "", 0, false, semanticError("semantic_validation", "succeeded Attempt requires at least one produced outcome", path+".status", nil)
-			}
-		}
 		terminal := existing.record.attemptRecord()
 		terminal.Status = change.Status
 		terminal.Summary = change.Summary
@@ -1820,6 +1816,98 @@ func historicalOutgoingRelationshipCount(ctx context.Context, tx *sql.Tx, projec
 		return 0, fmt.Errorf("count historical %s relationships: %w", relation, err)
 	}
 	return count, nil
+}
+
+func validateFinalTerminalAttempts(ctx context.Context, tx *sql.Tx, projectID string, attempts map[string]terminalAttemptValidation) error {
+	keys := make([]string, 0, len(attempts))
+	for key := range attempts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		validation := attempts[key]
+		currentTests, err := currentOutgoingRelationshipCount(ctx, tx, projectID, key, "tests")
+		if err != nil {
+			return err
+		}
+		historicalTests, err := historicalOutgoingRelationshipCount(ctx, tx, projectID, key, "tests")
+		if err != nil {
+			return err
+		}
+		if currentTests+historicalTests == 0 {
+			return semanticError("semantic_validation", "terminal Attempt requires at least one tested target", validation.path, map[string]any{"key": key})
+		}
+		if validation.status != "succeeded" {
+			continue
+		}
+		hasReusableOutcome, err := succeededAttemptHasReusableProducedOutcome(ctx, tx, projectID, key)
+		if err != nil {
+			return err
+		}
+		if !hasReusableOutcome {
+			return semanticError("semantic_validation", "succeeded Attempt requires a current produced outcome or current same-type replacement", validation.path, map[string]any{"key": key})
+		}
+	}
+	return nil
+}
+
+func succeededAttemptHasReusableProducedOutcome(ctx context.Context, tx *sql.Tx, projectID, attemptKey string) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT to_key
+		FROM blackboard_v2_relationships
+		WHERE project_id = ? AND from_key = ? AND relation = 'produced'
+		UNION
+		SELECT to_key
+		FROM blackboard_v2_relationship_history
+		WHERE project_id = ? AND from_key = ? AND relation = 'produced'
+		ORDER BY to_key ASC`,
+		projectID, attemptKey, projectID, attemptKey,
+	)
+	if err != nil {
+		return false, fmt.Errorf("read succeeded Attempt produced outcomes: %w", err)
+	}
+	defer rows.Close()
+	targets := make([]string, 0)
+	for rows.Next() {
+		var target string
+		if err := rows.Scan(&target); err != nil {
+			return false, fmt.Errorf("scan succeeded Attempt produced outcome: %w", err)
+		}
+		targets = append(targets, target)
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate succeeded Attempt produced outcomes: %w", err)
+	}
+	if len(targets) == 0 {
+		return false, nil
+	}
+	for _, target := range targets {
+		if _, err := loadCurrentRecord(ctx, tx, projectID, target); err == nil {
+			return true, nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return false, err
+		}
+		var replacementExists int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT EXISTS(
+				SELECT 1
+				FROM blackboard_v2_relationship_history AS supersession
+				JOIN blackboard_v2_records AS replacement
+				  ON replacement.project_id = supersession.project_id AND replacement.key = supersession.from_key
+				JOIN blackboard_v2_record_history AS replaced
+				  ON replaced.project_id = supersession.project_id AND replaced.key = supersession.to_key
+				WHERE supersession.project_id = ? AND supersession.relation = 'supersedes' AND supersession.to_key = ?
+				  AND replacement.type = replaced.type
+			)`,
+			projectID, target,
+		).Scan(&replacementExists); err != nil {
+			return false, fmt.Errorf("check produced outcome replacement: %w", err)
+		}
+		if replacementExists != 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func hasIncomingSatisfies(ctx context.Context, tx *sql.Tx, projectID, objectiveKey string) (bool, error) {
