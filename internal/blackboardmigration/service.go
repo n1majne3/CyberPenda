@@ -294,6 +294,21 @@ func (s *Service) Execute(ctx context.Context, request MigrationRequest) (Migrat
 	}
 }
 
+// InspectMigrationSource inspects a v1 database opened through the dedicated
+// read-only migration-source seam. It is the CLI-facing path for T01: ordinary
+// daemon/runtime Store opens refuse v1, but the offline migrator can still read
+// and validate a source snapshot.
+func InspectMigrationSource(ctx context.Context, source *store.MigrationSource, artifactRoot string) (MigrationResult, error) {
+	if source.Classification() != store.MigrationSourceNumberedV1 {
+		return MigrationResult{}, fmt.Errorf("offline migration inspect requires numbered v1 migration history, got %q", source.Classification())
+	}
+	plan, err := inspectLegacyDatabase(ctx, source.DB, filepath.Clean(artifactRoot))
+	if err != nil {
+		return MigrationResult{}, err
+	}
+	return MigrationResult{Kind: MigrationKindInspect, Plan: plan}, nil
+}
+
 func (s *Service) finalizeLegacy(ctx context.Context, request MigrationRequest) (MigrationResult, error) {
 	var epoch, state, cutoverID, mappingDigest, backupPath, backupSHA, verifiedAt, verificationHash string
 	if err := s.db.QueryRowContext(ctx, `SELECT canonical_store,cutover_state,cutover_id,mapping_digest,verified_backup_path,verified_backup_sha256,latest_verification_at,latest_verification_result_hash FROM blackboard_store_state WHERE id=1`).Scan(&epoch, &state, &cutoverID, &mappingDigest, &backupPath, &backupSHA, &verifiedAt, &verificationHash); err != nil {
@@ -638,7 +653,15 @@ var legacySourceTables = []string{
 }
 
 func (s *Service) inspect(ctx context.Context) (LegacyMigrationPlanV1, error) {
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	return inspectLegacyDatabase(ctx, s.db, s.artifactRoot)
+}
+
+type legacyInspectionDB interface {
+	BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
+}
+
+func inspectLegacyDatabase(ctx context.Context, db legacyInspectionDB, artifactRoot string) (LegacyMigrationPlanV1, error) {
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return LegacyMigrationPlanV1{}, fmt.Errorf("begin legacy inspection snapshot: %w", err)
 	}
@@ -667,7 +690,7 @@ func (s *Service) inspect(ctx context.Context) (LegacyMigrationPlanV1, error) {
 		"findings":   counts["findings"],
 		"evidence":   counts["evidence_artifacts"],
 	}
-	blockers, warnings, err := s.inspectDiagnostics(ctx, tx, schemaValidationErr)
+	blockers, warnings, err := inspectDiagnostics(ctx, tx, schemaValidationErr, artifactRoot)
 	if err != nil {
 		return LegacyMigrationPlanV1{}, err
 	}
@@ -680,7 +703,7 @@ func (s *Service) inspect(ctx context.Context) (LegacyMigrationPlanV1, error) {
 	}, nil
 }
 
-func (s *Service) inspectDiagnostics(ctx context.Context, tx *sql.Tx, schemaValidationErr error) ([]Diagnostic, []Diagnostic, error) {
+func inspectDiagnostics(ctx context.Context, tx *sql.Tx, schemaValidationErr error, artifactRoot string) ([]Diagnostic, []Diagnostic, error) {
 	blockers := make([]Diagnostic, 0)
 	warnings := make([]Diagnostic, 0)
 
@@ -821,7 +844,7 @@ func (s *Service) inspectDiagnostics(ctx context.Context, tx *sql.Tx, schemaVali
 			evidenceRows.Close()
 			return nil, nil, err
 		}
-		if !pathIsConfined(s.artifactRoot, managedPath) {
+		if !pathIsConfined(artifactRoot, managedPath) {
 			warnings = append(warnings, Diagnostic{
 				Code: "evidence_path_escape", ProjectID: projectID, SourceTable: "evidence_artifacts", SourceID: id,
 				Message:       "An Evidence Artifact's managed path escapes the configured Artifact Root and will not be opened.",
