@@ -311,6 +311,7 @@ func TestOpenDefaultsCanonicalStoreToBlackboardV2(t *testing.T) {
 		{"blackboard_v2_evidence_requests", "temp_internal_path"},
 		{"blackboard_v2_evidence_requests", "publisher_token"},
 		{"blackboard_v2_evidence_requests", "publisher_temp_identity"},
+		{"blackboard_v2_evidence_requests", "previous_temp_internal_path"},
 	} {
 		if !columnExists(t, db.DB, col.table, col.column) {
 			t.Fatalf("expected column %s.%s", col.table, col.column)

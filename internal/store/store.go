@@ -803,7 +803,32 @@ func migrations() []migration {
 		newMigration(24, "blackboard_v2_evidence_requests", migration24SQL, migration24Up),
 		newMigration(25, "blackboard_v2_evidence_payload_claims", migration25SQL, migration25Up),
 		newMigration(26, "blackboard_v2_evidence_publisher_claims", migration26SQL, migration26Up),
+		newMigration(27, "blackboard_v2_private_evidence_staging", migration27SQL, migration27Up),
 	}
+}
+
+const migration27SQL = `
+UPDATE blackboard_v2_evidence_requests
+SET previous_temp_internal_path = CASE
+		WHEN previous_temp_internal_path = '' THEN temp_internal_path
+		ELSE previous_temp_internal_path
+	END,
+	temp_internal_path =
+		substr(managed_internal_path,1,instr(managed_internal_path,'/retained/')-1) ||
+		'/.evidence-staging/' || lower(hex(continuation_id)) || '/' ||
+		lower(hex(idempotency_key)) || '/' || request_hash
+WHERE instr(managed_internal_path,'/retained/') > 0
+	AND temp_internal_path <>
+		substr(managed_internal_path,1,instr(managed_internal_path,'/retained/')-1) ||
+		'/.evidence-staging/' || lower(hex(continuation_id)) || '/' ||
+		lower(hex(idempotency_key)) || '/' || request_hash;
+`
+
+func migration27Up(tx *sql.Tx) error {
+	if err := ensureColumn(tx, "blackboard_v2_evidence_requests", "previous_temp_internal_path", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return fmt.Errorf("ensure blackboard_v2_evidence_requests.previous_temp_internal_path: %w", err)
+	}
+	return execStatements(tx, migration27SQL)
 }
 
 const migration26SQL = `SELECT 1;`
