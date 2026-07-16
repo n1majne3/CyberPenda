@@ -330,14 +330,13 @@ func TestServerReconcilesOnlyClosedContinuationsOwnedAttempts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcile interrupted owner: %v", err)
 	}
-	assertChangeRecords(t, reconciled, 11, [][]any{{"attempt:owner-a", float64(2)}, {"attempt:owner-b", float64(2)}, {"attempt:owner-unstarted", float64(2)}})
+	assertChangeRecords(t, reconciled, 10, [][]any{{"attempt:owner-a", float64(2)}, {"attempt:owner-b", float64(2)}})
 	for _, tt := range []struct {
 		key         string
 		historySize int
 	}{
 		{key: "attempt:owner-a", historySize: 3},
 		{key: "attempt:owner-b", historySize: 3},
-		{key: "attempt:owner-unstarted", historySize: 2},
 	} {
 		key := tt.key
 		if _, err := service.ReadCurrent(ctx, createdProject.ID, key); !isSemanticCode(err, "not_found") {
@@ -351,6 +350,9 @@ func TestServerReconcilesOnlyClosedContinuationsOwnedAttempts(t *testing.T) {
 			t.Fatalf("reconciled history %s = %#v", key, history.Items)
 		}
 	}
+	if untested, err := service.ReadCurrent(ctx, createdProject.ID, "attempt:owner-unstarted"); err != nil || untested.Record.Status != "open" {
+		t.Fatalf("reconciliation terminalized untested Attempt = %#v, %v", untested, err)
+	}
 	if _, err := service.ReadCurrent(ctx, createdProject.ID, "attempt:peer"); err != nil {
 		t.Fatalf("peer-owned Attempt was reconciled: %v", err)
 	}
@@ -359,7 +361,7 @@ func TestServerReconcilesOnlyClosedContinuationsOwnedAttempts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("replay reconciliation: %v", err)
 	}
-	assertChangeRecords(t, replayReconciliation, 11, [][]any{})
+	assertChangeRecords(t, replayReconciliation, 10, [][]any{})
 
 	if _, err := tasks.UpdateContinuationStatus(peer.ID, task.StatusCompleted); err != nil {
 		t.Fatalf("complete peer Continuation: %v", err)
@@ -368,7 +370,10 @@ func TestServerReconcilesOnlyClosedContinuationsOwnedAttempts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcile completed peer: %v", err)
 	}
-	assertChangeRecords(t, completed, 12, [][]any{{"attempt:peer", float64(2)}})
+	assertChangeRecords(t, completed, 10, [][]any{})
+	if peerAttempt, err := service.ReadCurrent(ctx, createdProject.ID, "attempt:peer"); err != nil || peerAttempt.Record.Status != "open" {
+		t.Fatalf("clean completion rewrote peer Attempt = %#v, %v", peerAttempt, err)
+	}
 }
 
 func TestTrustedAttemptWritesRejectEveryTerminalContinuationStatus(t *testing.T) {
@@ -419,9 +424,12 @@ func TestTrustedAttemptWritesRejectEveryTerminalContinuationStatus(t *testing.T)
 func TestObjectiveLifecycleAndWorkflowChangeShapesAreClosed(t *testing.T) {
 	for _, raw := range []string{
 		`{"op":"create","key":"objective:bad","type":"objective","record":{"status":"open","objective":"Inspect login","task_goal":"copied goal"}}`,
+		`{"op":"create","key":"objective:bad","type":"objective","record":{"status":"open","objective":"Inspect login","resolution_summary":""}}`,
 		`{"op":"create","key":"attempt:bad","type":"attempt","record":{"status":"open","summary":"Inspect login","task_status":"running"}}`,
 		`{"op":"update","key":"objective:bad","version":1,"type":"objective","record":{"status":"resolved"}}`,
 		`{"op":"update","key":"attempt:bad","version":1,"type":"attempt","record":{"status":"failed"}}`,
+		`{"op":"update","key":"objective:bad","version":1,"type":"objective","record":{}}`,
+		`{"op":"update","key":"attempt:bad","version":1,"type":"attempt","record":{}}`,
 		`{"op":"transition","key":"attempt:bad","version":1,"status":"failed","resolution_summary":"wrong terminal field"}`,
 		`{"op":"transition","key":"objective:bad","version":1,"status":"resolved","summary":"wrong terminal field"}`,
 	} {
@@ -469,6 +477,25 @@ func TestObjectiveLifecycleAndWorkflowChangeShapesAreClosed(t *testing.T) {
 		t.Fatalf("terminal Objective create error = %#v, want semantic_validation", err)
 	}
 
+	for _, tt := range []struct {
+		name   string
+		change blackboardv2.Change
+	}{
+		{name: "Objective", change: blackboardv2.Change{Op: "update", Key: "objective:old", Version: 1, Type: "objective", Record: blackboardv2.ObjectivePatch{}}},
+		{name: "Attempt", change: blackboardv2.Change{Op: "update", Key: "attempt:not-supersedable", Version: 1, Type: "attempt", Record: blackboardv2.AttemptPatch{}}},
+	} {
+		t.Run("rejects empty programmatic "+tt.name+" partial", func(t *testing.T) {
+			_, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+				Schema:         "semantic-change-batch/v2",
+				IdempotencyKey: "reject-empty-" + strings.ToLower(tt.name) + "-partial",
+				Changes:        []blackboardv2.Change{tt.change},
+			})
+			if !isSemanticCode(err, "semantic_validation") {
+				t.Fatalf("empty %s partial error = %#v, want semantic_validation", tt.name, err)
+			}
+		})
+	}
+
 	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
 		Schema:         "semantic-change-batch/v2",
 		IdempotencyKey: "reject-mixed-terminal-fields",
@@ -499,6 +526,39 @@ func TestObjectiveLifecycleAndWorkflowChangeShapesAreClosed(t *testing.T) {
 		t.Fatalf("abandoned Objective history = %#v", abandonedHistory.Items)
 	}
 	assertContractJSON(t, harness, "semanticHistory", abandonedHistory)
+	noMeaningSnapshot, err := service.RuntimeSnapshot(ctx, createdProject.ID)
+	if err != nil {
+		t.Fatalf("snapshot after no-meaning abandonment: %v", err)
+	}
+	if len(noMeaningSnapshot.Knowledge.Facts) != 0 {
+		t.Fatalf("no-meaning abandonment manufactured Facts: %#v", noMeaningSnapshot.Knowledge.Facts)
+	}
+
+	meaningfulAbandonment, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "abandon-objective-with-reusable-meaning",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "objective:meaningful-abandonment", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Test the retired administrative login endpoint"}},
+			{Op: "create", Key: "fact:retired-admin-login", Type: "fact", Record: blackboardv2.FactRecord{Category: "authentication", Summary: "The legacy administrative login endpoint was removed from the current deployment", Confidence: "tentative", ScopeStatus: "in_scope"}},
+			{Op: "relate", From: "objective:meaningful-abandonment", Relation: "derived_from", To: "fact:retired-admin-login"},
+			{Op: "transition", Key: "objective:meaningful-abandonment", Version: 1, Status: "abandoned", ResolutionSummary: "The endpoint retirement is reusable deployment knowledge"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("abandon Objective with reusable meaning: %v", err)
+	}
+	assertChangeRecords(t, meaningfulAbandonment, 9, [][]any{{"fact:retired-admin-login", float64(1)}, {"objective:meaningful-abandonment", float64(2)}})
+	assertRelationResult(t, meaningfulAbandonment, [][]any{{"objective:meaningful-abandonment", "derived_from", "fact:retired-admin-login", float64(1)}})
+	if fact, err := service.ReadCurrent(ctx, createdProject.ID, "fact:retired-admin-login"); err != nil || fact.Record.Summary != "The legacy administrative login endpoint was removed from the current deployment" {
+		t.Fatalf("reusable abandonment Fact is not current = %#v, %v", fact, err)
+	}
+	meaningfulHistory, err := service.ReadHistory(ctx, createdProject.ID, "objective:meaningful-abandonment", blackboardv2.HistoryOptions{})
+	if err != nil {
+		t.Fatalf("read meaningful abandoned Objective history: %v", err)
+	}
+	if len(meaningfulHistory.Items) != 3 || meaningfulHistory.Items[2].Relation != "derived_from" || meaningfulHistory.Items[2].To != "fact:retired-admin-login" {
+		t.Fatalf("meaningful abandoned Objective history = %#v", meaningfulHistory.Items)
+	}
 
 	superseded, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
 		Schema:         "semantic-change-batch/v2",
@@ -510,7 +570,7 @@ func TestObjectiveLifecycleAndWorkflowChangeShapesAreClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("supersede Objective: %v", err)
 	}
-	assertChangeRecords(t, superseded, 6, [][]any{{"objective:old", float64(2)}})
+	assertChangeRecords(t, superseded, 10, [][]any{{"objective:old", float64(2)}})
 	assertRelationResult(t, superseded, [][]any{{"objective:new", "supersedes", "objective:old", float64(1)}})
 
 	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{

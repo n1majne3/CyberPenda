@@ -423,8 +423,9 @@ func (s *Service) ApplyForContinuation(ctx context.Context, projectID, continuat
 	return s.apply(ctx, projectID, continuationID, batch)
 }
 
-// ReconcileContinuationAttempts is a server-only control path that moves every
-// open Attempt owned by one terminal Continuation to interrupted history.
+// ReconcileContinuationAttempts is a server-only control path that records an
+// unexpected Continuation end by moving its valid open Attempts to interrupted
+// history. Clean completion is audited elsewhere and never guesses an outcome.
 func (s *Service) ReconcileContinuationAttempts(ctx context.Context, projectID, continuationID string) (ChangeResult, error) {
 	if continuationID == "" {
 		return ChangeResult{}, semanticError("authority_denied", "trusted Continuation identity is required", "", nil)
@@ -447,6 +448,13 @@ func (s *Service) ReconcileContinuationAttempts(ctx context.Context, projectID, 
 	revision, err := currentRevision(ctx, tx, projectID)
 	if err != nil {
 		return ChangeResult{}, err
+	}
+	if !isUnexpectedTerminalContinuationStatus(status) {
+		result := makeChangeResult(revision, nil, nil)
+		if err := tx.Commit(); err != nil {
+			return ChangeResult{}, fmt.Errorf("commit clean Continuation reconciliation audit: %w", err)
+		}
+		return result, nil
 	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT record.key, record.version, record.record_json
@@ -486,6 +494,13 @@ func (s *Service) ReconcileContinuationAttempts(ctx context.Context, projectID, 
 	changedRecords := make(map[string]int)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for _, existing := range owned {
+		tested, err := currentOutgoingRelationshipCount(ctx, tx, projectID, existing.key, "tests")
+		if err != nil {
+			return ChangeResult{}, err
+		}
+		if tested == 0 {
+			continue
+		}
 		terminal := existing.record.attemptRecord()
 		terminal.Status = "interrupted"
 		nextRevision, key, version, changed, err := terminalizeRecord(ctx, tx, projectID, revision, existing, terminal, now)
@@ -2003,6 +2018,10 @@ func isTerminalContinuationStatus(status string) bool {
 	return isOneOf(status, "completed", "failed", "stopped", "interrupted")
 }
 
+func isUnexpectedTerminalContinuationStatus(status string) bool {
+	return isOneOf(status, "failed", "stopped", "interrupted")
+}
+
 func validateContinuationChangeOwnership(ctx context.Context, tx *sql.Tx, projectID, continuationID string, change Change, index int) error {
 	keys := make([]string, 0, 2)
 	switch change.Op {
@@ -2354,6 +2373,9 @@ func decodeObjectiveRecord(raw json.RawMessage) (ObjectiveRecord, error) {
 	if err := strictDecodeJSON(raw, &record); err != nil {
 		return ObjectiveRecord{}, fmt.Errorf("decode Objective record: %w", err)
 	}
+	if jsonFieldPresent(raw, "resolution_summary") {
+		return ObjectiveRecord{}, fmt.Errorf("Objective create does not accept resolution_summary")
+	}
 	return record, nil
 }
 
@@ -2361,6 +2383,9 @@ func decodeObjectivePatch(raw json.RawMessage) (ObjectivePatch, error) {
 	var patch ObjectivePatch
 	if err := strictDecodeJSON(raw, &patch); err != nil {
 		return ObjectivePatch{}, fmt.Errorf("decode Objective patch: %w", err)
+	}
+	if patch.Objective == nil {
+		return ObjectivePatch{}, fmt.Errorf("Objective partial record requires at least one property")
 	}
 	return patch, nil
 }
@@ -2378,7 +2403,19 @@ func decodeAttemptPatch(raw json.RawMessage) (AttemptPatch, error) {
 	if err := strictDecodeJSON(raw, &patch); err != nil {
 		return AttemptPatch{}, fmt.Errorf("decode Attempt patch: %w", err)
 	}
+	if patch.Summary == nil {
+		return AttemptPatch{}, fmt.Errorf("Attempt partial record requires at least one property")
+	}
 	return patch, nil
+}
+
+func jsonFieldPresent(raw json.RawMessage, name string) bool {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return false
+	}
+	_, ok := fields[name]
+	return ok
 }
 
 func decodeFactRecord(raw json.RawMessage) (FactRecord, error) {
@@ -2552,10 +2589,16 @@ func completeObjectiveRecord(value any, path string) (ObjectiveRecord, error) {
 func partialObjectiveRecord(value any, path string) (ObjectivePatch, error) {
 	switch patch := value.(type) {
 	case ObjectivePatch:
+		if patch.Objective == nil {
+			return ObjectivePatch{}, semanticError("semantic_validation", "Objective partial record requires at least one property", path, nil)
+		}
 		return patch, nil
 	case *ObjectivePatch:
 		if patch == nil {
 			return ObjectivePatch{}, semanticError("semantic_validation", "Objective update requires an Objective partial record", path, nil)
+		}
+		if patch.Objective == nil {
+			return ObjectivePatch{}, semanticError("semantic_validation", "Objective partial record requires at least one property", path, nil)
 		}
 		return *patch, nil
 	case ObjectiveRecord:
@@ -2594,10 +2637,16 @@ func completeAttemptRecord(value any, path string) (AttemptRecord, error) {
 func partialAttemptRecord(value any, path string) (AttemptPatch, error) {
 	switch patch := value.(type) {
 	case AttemptPatch:
+		if patch.Summary == nil {
+			return AttemptPatch{}, semanticError("semantic_validation", "Attempt partial record requires at least one property", path, nil)
+		}
 		return patch, nil
 	case *AttemptPatch:
 		if patch == nil {
 			return AttemptPatch{}, semanticError("semantic_validation", "Attempt update requires an Attempt partial record", path, nil)
+		}
+		if patch.Summary == nil {
+			return AttemptPatch{}, semanticError("semantic_validation", "Attempt partial record requires at least one property", path, nil)
 		}
 		return *patch, nil
 	case AttemptRecord:
