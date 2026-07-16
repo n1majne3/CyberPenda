@@ -15,6 +15,7 @@ import (
 	"pentest/internal/blackboardv2contract"
 	"pentest/internal/project"
 	"pentest/internal/store"
+	"pentest/internal/task"
 )
 
 func TestProjectFactCreateUpdateDetailHistoryAndSnapshotEndToEnd(t *testing.T) {
@@ -467,6 +468,245 @@ func TestFactConfidenceChangesUseCanonicalTransitions(t *testing.T) {
 		t.Fatalf("transitioned Fact history = %#v", history.Items)
 	}
 	assertContractJSON(t, harness, "semanticHistory", history)
+}
+
+func TestClosedProgrammaticShapeValidationPrecedesIdempotencyReplay(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	createdProject, err := project.NewService(db).Create("Shape Before Replay", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	service := blackboardv2.NewService(db)
+	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "create-shape-replay-fact",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "fact:shape-replay", Type: "fact", Record: blackboardv2.FactRecord{Category: "asset", Summary: "Original summary", Confidence: "tentative", ScopeStatus: "in_scope"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create shape replay Fact: %v", err)
+	}
+
+	valid := blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "shape-replay-update",
+		Changes: []blackboardv2.Change{{
+			Op: "update", Key: "fact:shape-replay", Version: 1, Type: "fact", Record: blackboardv2.FactPatch{Summary: strPtr("Updated summary")},
+		}},
+	}
+	first, err := service.Apply(ctx, createdProject.ID, valid)
+	if err != nil {
+		t.Fatalf("apply valid shape receipt: %v", err)
+	}
+	replay, err := service.Apply(ctx, createdProject.ID, valid)
+	if err != nil || !reflect.DeepEqual(replay, first) {
+		t.Fatalf("exact valid replay = %#v, %v, want %#v", replay, err, first)
+	}
+
+	forbidden := valid
+	forbidden.Changes = append([]blackboardv2.Change(nil), valid.Changes...)
+	forbidden.Changes[0].Record = blackboardv2.FactPatch{Summary: strPtr("Updated summary"), Confidence: strPtr("confirmed")}
+	_, err = service.Apply(ctx, createdProject.ID, forbidden)
+	var semanticErr *blackboardv2.Error
+	if !errors.As(err, &semanticErr) || semanticErr.Code != "semantic_validation" || semanticErr.Path != "changes[0].record.confidence" {
+		t.Fatalf("forbidden shape replay error = %#v, want semantic_validation before replay", err)
+	}
+}
+
+func TestRuntimeFactConfirmationRequiresAcceptedImplementedBasis(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	projects := project.NewService(db)
+	alpha, err := projects.Create("Runtime Fact Confirmation", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create alpha project: %v", err)
+	}
+	beta, err := projects.Create("Foreign Fact Confirmation", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create beta project: %v", err)
+	}
+	tasks := task.NewService(db, projects)
+	ownerTask, err := tasks.Create(task.CreateRequest{ProjectID: alpha.ID, Goal: "Owner confirmation", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatalf("create owner Task: %v", err)
+	}
+	owner, err := tasks.CreateContinuation(ownerTask.ID, "profile-owner-confirm", "codex", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create owner Continuation: %v", err)
+	}
+	peerTask, err := tasks.Create(task.CreateRequest{ProjectID: alpha.ID, Goal: "Peer confirmation", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatalf("create peer Task: %v", err)
+	}
+	peer, err := tasks.CreateContinuation(peerTask.ID, "profile-peer-confirm", "codex", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create peer Continuation: %v", err)
+	}
+	foreignTask, err := tasks.Create(task.CreateRequest{ProjectID: beta.ID, Goal: "Foreign confirmation", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatalf("create foreign Task: %v", err)
+	}
+	foreign, err := tasks.CreateContinuation(foreignTask.ID, "profile-foreign-confirm", "codex", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create foreign Continuation: %v", err)
+	}
+	service := blackboardv2.NewService(db)
+
+	_, err = service.ApplyForContinuation(ctx, alpha.ID, owner.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "create-unsupported-runtime-fact",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "fact:unsupported-runtime", Type: "fact", Record: blackboardv2.FactRecord{Category: "authentication", Summary: "Unsupported Runtime conclusion", Confidence: "tentative", ScopeStatus: "in_scope"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create unsupported Runtime Fact: %v", err)
+	}
+	_, err = service.ApplyForContinuation(ctx, alpha.ID, owner.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "reject-unsupported-runtime-confirmation",
+		Changes:        []blackboardv2.Change{{Op: "transition", Key: "fact:unsupported-runtime", Version: 1, Status: "confirmed"}},
+	})
+	if !isSemanticCode(err, "semantic_validation") {
+		t.Fatalf("unsupported Runtime confirmation error = %#v, want semantic_validation", err)
+	}
+
+	_, err = service.Apply(ctx, alpha.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "trusted-operator-confirmation-basis",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "fact:operator-confirmed", Type: "fact", Record: blackboardv2.FactRecord{Category: "asset", Summary: "Operator-confirmed asset conclusion", Confidence: "tentative", ScopeStatus: "in_scope"}},
+			{Op: "transition", Key: "fact:operator-confirmed", Version: 1, Status: "confirmed"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("trusted operator confirmation: %v", err)
+	}
+
+	_, err = service.Apply(ctx, alpha.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "create-confirmed-support",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "fact:confirmed-support", Type: "fact", Record: blackboardv2.FactRecord{Category: "authentication", Summary: "Independent confirmed reproduction", Confidence: "confirmed", ScopeStatus: "in_scope"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create confirmed supporting Fact: %v", err)
+	}
+	_, err = service.ApplyForContinuation(ctx, alpha.ID, owner.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "confirm-with-supporting-fact",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "fact:supported-runtime", Type: "fact", Record: blackboardv2.FactRecord{Category: "authentication", Summary: "Runtime conclusion with confirmed support", Confidence: "tentative", ScopeStatus: "in_scope"}},
+			{Op: "relate", From: "fact:confirmed-support", Relation: "supports", To: "fact:supported-runtime", Reason: "Independent confirmed reproduction"},
+			{Op: "transition", Key: "fact:supported-runtime", Version: 1, Status: "confirmed"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Runtime confirmation with supporting Fact: %v", err)
+	}
+
+	_, err = service.Apply(ctx, beta.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "create-foreign-confirmed-support",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "fact:foreign-support", Type: "fact", Record: blackboardv2.FactRecord{Category: "asset", Summary: "Foreign confirmed support", Confidence: "confirmed", ScopeStatus: "in_scope"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create foreign confirmed support: %v", err)
+	}
+	_, err = service.ApplyForContinuation(ctx, alpha.ID, owner.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "create-project-isolated-fact",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "fact:project-isolated", Type: "fact", Record: blackboardv2.FactRecord{Category: "asset", Summary: "Project-isolated conclusion", Confidence: "tentative", ScopeStatus: "in_scope"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create project-isolated Fact: %v", err)
+	}
+	_, err = service.ApplyForContinuation(ctx, alpha.ID, owner.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "reject-foreign-support-confirmation",
+		Changes:        []blackboardv2.Change{{Op: "transition", Key: "fact:project-isolated", Version: 1, Status: "confirmed"}},
+	})
+	if !isSemanticCode(err, "semantic_validation") {
+		t.Fatalf("foreign support confirmation error = %#v, want semantic_validation", err)
+	}
+	if _, err := service.ApplyForContinuation(ctx, alpha.ID, foreign.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "reject-foreign-continuation-confirmation",
+		Changes:        []blackboardv2.Change{{Op: "transition", Key: "fact:project-isolated", Version: 1, Status: "confirmed"}},
+	}); !isSemanticCode(err, "authority_denied") {
+		t.Fatalf("foreign Continuation confirmation error = %#v, want authority_denied", err)
+	}
+
+	_, err = service.ApplyForContinuation(ctx, alpha.ID, owner.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "owner-succeeded-producing-attempt",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "objective:owner-produced", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Establish an owner-produced conclusion"}},
+			{Op: "create", Key: "attempt:owner-produced", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Testing owner-produced conclusion"}},
+			{Op: "create", Key: "fact:owner-produced", Type: "fact", Record: blackboardv2.FactRecord{Category: "authentication", Summary: "Owner-produced tentative conclusion", Confidence: "tentative", ScopeStatus: "in_scope"}},
+			{Op: "relate", From: "attempt:owner-produced", Relation: "tests", To: "objective:owner-produced"},
+			{Op: "relate", From: "attempt:owner-produced", Relation: "produced", To: "fact:owner-produced"},
+			{Op: "transition", Key: "attempt:owner-produced", Version: 1, Status: "succeeded", Summary: "Owner established the produced conclusion"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create owner succeeded producing Attempt: %v", err)
+	}
+	_, err = service.ApplyForContinuation(ctx, alpha.ID, owner.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "confirm-owner-produced-fact",
+		Changes:        []blackboardv2.Change{{Op: "transition", Key: "fact:owner-produced", Version: 1, Status: "confirmed"}},
+	})
+	if err != nil {
+		t.Fatalf("confirm owner-produced Fact: %v", err)
+	}
+
+	_, err = service.ApplyForContinuation(ctx, alpha.ID, peer.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "peer-succeeded-producing-attempt",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "objective:peer-produced", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Establish a peer-produced conclusion"}},
+			{Op: "create", Key: "attempt:peer-produced", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Testing peer-produced conclusion"}},
+			{Op: "create", Key: "fact:peer-produced", Type: "fact", Record: blackboardv2.FactRecord{Category: "authentication", Summary: "Peer-produced tentative conclusion", Confidence: "tentative", ScopeStatus: "in_scope"}},
+			{Op: "relate", From: "attempt:peer-produced", Relation: "tests", To: "objective:peer-produced"},
+			{Op: "relate", From: "attempt:peer-produced", Relation: "produced", To: "fact:peer-produced"},
+			{Op: "transition", Key: "attempt:peer-produced", Version: 1, Status: "succeeded", Summary: "Peer established the produced conclusion"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create peer succeeded producing Attempt: %v", err)
+	}
+	_, err = service.ApplyForContinuation(ctx, alpha.ID, owner.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "reject-peer-produced-owner-confirmation",
+		Changes:        []blackboardv2.Change{{Op: "transition", Key: "fact:peer-produced", Version: 1, Status: "confirmed"}},
+	})
+	if !isSemanticCode(err, "semantic_validation") {
+		t.Fatalf("peer-produced owner confirmation error = %#v, want semantic_validation", err)
+	}
+	_, err = service.ApplyForContinuation(ctx, alpha.ID, peer.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "confirm-peer-produced-fact",
+		Changes:        []blackboardv2.Change{{Op: "transition", Key: "fact:peer-produced", Version: 1, Status: "confirmed"}},
+	})
+	if err != nil {
+		t.Fatalf("confirm peer-produced Fact by peer: %v", err)
+	}
 }
 
 func mustHarness(t *testing.T) *blackboardv2contract.Harness {

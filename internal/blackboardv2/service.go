@@ -526,6 +526,11 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 	if batch.IdempotencyKey == "" {
 		return ChangeResult{}, semanticError("semantic_validation", "idempotency_key is required", "idempotency_key", nil)
 	}
+	for index, change := range batch.Changes {
+		if err := validateChangeDTOShape(change, index); err != nil {
+			return ChangeResult{}, err
+		}
+	}
 	requestHash, err := canonicalRequestHash(batch)
 	if err != nil {
 		return ChangeResult{}, err
@@ -568,9 +573,6 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 	createdThisBatch := make(map[string]bool)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for index, change := range batch.Changes {
-		if err := validateChangeShape(change, index); err != nil {
-			return ChangeResult{}, err
-		}
 		if continuationID != "" {
 			if err := validateContinuationChangeOwnership(ctx, tx, projectID, continuationID, change, index); err != nil {
 				return ChangeResult{}, err
@@ -611,7 +613,7 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 				changedRelations[relationKey(tuple)] = tuple
 			}
 		case "transition":
-			newRevision, key, version, changed, err := applyTransition(ctx, tx, projectID, revision, index, change, now)
+			newRevision, key, version, changed, err := applyTransition(ctx, tx, projectID, continuationID, revision, index, change, now)
 			if err != nil {
 				return ChangeResult{}, err
 			}
@@ -1411,12 +1413,35 @@ func applyRelate(ctx context.Context, tx *sql.Tx, projectID string, revision, in
 		if existingReason == change.Reason {
 			return revision, RelationVersionTuple{change.From, change.Relation, change.To, existingVersion}, false, nil
 		}
+		if change.Version == 0 {
+			return revision, RelationVersionTuple{}, false, semanticError("semantic_validation", "current relationship version is required when reason changes", path+".version", nil)
+		}
 		if change.Version != existingVersion {
 			return revision, RelationVersionTuple{}, false, semanticError("version_conflict", "relationship changed", path+".version", map[string]any{
 				"from": change.From, "relation": change.Relation, "to": change.To, "expected_version": float64(change.Version), "current_version": float64(existingVersion), "next_action": "read_current_record",
 			})
 		}
-		return revision, RelationVersionTuple{}, false, semanticError("semantic_validation", "relationship reason updates are implemented by the relation lifecycle slice", path+".reason", nil)
+		nextRevision, err := incrementRevision(ctx, tx, projectID, revision)
+		if err != nil {
+			return revision, RelationVersionTuple{}, false, err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO blackboard_v2_relationship_history (project_id, from_key, relation, to_key, version, reason, recorded_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			projectID, change.From, change.Relation, change.To, existingVersion, existingReason, now,
+		); err != nil {
+			return revision, RelationVersionTuple{}, false, fmt.Errorf("store prior Blackboard v2 relationship: %w", err)
+		}
+		nextVersion := existingVersion + 1
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE blackboard_v2_relationships
+			SET version = ?, reason = ?, updated_at = ?
+			WHERE project_id = ? AND from_key = ? AND relation = ? AND to_key = ?`,
+			nextVersion, change.Reason, now, projectID, change.From, change.Relation, change.To,
+		); err != nil {
+			return revision, RelationVersionTuple{}, false, fmt.Errorf("update Blackboard v2 relationship reason: %w", err)
+		}
+		return nextRevision, RelationVersionTuple{change.From, change.Relation, change.To, nextVersion}, true, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return revision, RelationVersionTuple{}, false, fmt.Errorf("read Blackboard v2 relationship: %w", err)
@@ -1438,7 +1463,7 @@ func applyRelate(ctx context.Context, tx *sql.Tx, projectID string, revision, in
 	return nextRevision, RelationVersionTuple{change.From, change.Relation, change.To, 1}, true, nil
 }
 
-func applyTransition(ctx context.Context, tx *sql.Tx, projectID string, revision, index int, change Change, now string) (int, string, int, bool, error) {
+func applyTransition(ctx context.Context, tx *sql.Tx, projectID, continuationID string, revision, index int, change Change, now string) (int, string, int, bool, error) {
 	path := fmt.Sprintf("changes[%d]", index)
 	if err := validateKey(change.Key, path+".key"); err != nil {
 		return revision, "", 0, false, err
@@ -1538,6 +1563,15 @@ func applyTransition(ctx context.Context, tx *sql.Tx, projectID string, revision
 		if current.Confidence == change.Status {
 			return revision, change.Key, existing.version, false, nil
 		}
+		if current.Confidence == "tentative" && change.Status == "confirmed" && continuationID != "" {
+			hasBasis, err := runtimeFactConfirmationHasBasis(ctx, tx, projectID, continuationID, change.Key)
+			if err != nil {
+				return revision, "", 0, false, err
+			}
+			if !hasBasis {
+				return revision, "", 0, false, semanticError("semantic_validation", "Runtime Fact confirmation requires an accepted semantic basis", path+".status", nil)
+			}
+		}
 		next := current
 		next.Confidence = change.Status
 		if err := validateFactRecord(next, path+".status"); err != nil {
@@ -1547,6 +1581,77 @@ func applyTransition(ctx context.Context, tx *sql.Tx, projectID string, revision
 	default:
 		return revision, "", 0, false, semanticError("semantic_validation", "record type does not support this transition", path+".key", map[string]any{"key": change.Key, "type": existing.typ})
 	}
+}
+
+func runtimeFactConfirmationHasBasis(ctx context.Context, tx *sql.Tx, projectID, continuationID, factKey string) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT source.record_json
+		FROM blackboard_v2_relationships AS rel
+		JOIN blackboard_v2_records AS source
+		  ON source.project_id = rel.project_id AND source.key = rel.from_key
+		WHERE rel.project_id = ? AND rel.relation = 'supports' AND rel.to_key = ? AND source.type = 'fact'
+		ORDER BY source.key ASC`,
+		projectID, factKey,
+	)
+	if err != nil {
+		return false, fmt.Errorf("read supporting Facts for confirmation: %w", err)
+	}
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			rows.Close()
+			return false, fmt.Errorf("scan supporting Fact for confirmation: %w", err)
+		}
+		var source FactRecord
+		if err := json.Unmarshal([]byte(raw), &source); err != nil {
+			rows.Close()
+			return false, fmt.Errorf("decode supporting Fact for confirmation: %w", err)
+		}
+		if source.Confidence == "confirmed" {
+			rows.Close()
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return false, fmt.Errorf("iterate supporting Facts for confirmation: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return false, fmt.Errorf("close supporting Facts for confirmation: %w", err)
+	}
+
+	rows, err = tx.QueryContext(ctx, `
+		SELECT attempt.record_json, origin.continuation_id
+		FROM blackboard_v2_relationship_history AS rel
+		JOIN blackboard_v2_attempt_origins AS origin
+		  ON origin.project_id = rel.project_id AND origin.key = rel.from_key
+		JOIN blackboard_v2_record_history AS attempt
+		  ON attempt.project_id = rel.project_id AND attempt.key = rel.from_key AND attempt.type = 'attempt'
+		WHERE rel.project_id = ? AND rel.relation = 'produced' AND rel.to_key = ?
+		ORDER BY rel.from_key ASC, attempt.version ASC`,
+		projectID, factKey,
+	)
+	if err != nil {
+		return false, fmt.Errorf("read producing Attempts for confirmation: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var raw, originContinuationID string
+		if err := rows.Scan(&raw, &originContinuationID); err != nil {
+			return false, fmt.Errorf("scan producing Attempt for confirmation: %w", err)
+		}
+		var attempt AttemptRecord
+		if err := json.Unmarshal([]byte(raw), &attempt); err != nil {
+			return false, fmt.Errorf("decode producing Attempt for confirmation: %w", err)
+		}
+		if originContinuationID == continuationID && attempt.Status == "succeeded" {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate producing Attempts for confirmation: %w", err)
+	}
+	return false, nil
 }
 
 func currentOutgoingRelationshipCount(ctx context.Context, tx *sql.Tx, projectID, fromKey, relation string) (int, error) {
@@ -1728,6 +1833,11 @@ func validateRelationshipEndpoint(relation, fromType, toType, path string) error
 			return nil
 		}
 		return semanticError("semantic_validation", "derived_from endpoint types are not allowed", path, map[string]any{"from_type": fromType, "to_type": toType})
+	case "supports", "contradicts":
+		if fromType == "fact" && toType == "fact" {
+			return nil
+		}
+		return semanticError("semantic_validation", fmt.Sprintf("%s must connect supported semantic knowledge", relation), path, map[string]any{"from_type": fromType, "to_type": toType})
 	case "depends_on":
 		if fromType == "objective" && toType == "objective" {
 			return nil
@@ -2262,8 +2372,14 @@ func decodeRelateChange(fields map[string]json.RawMessage) (Change, error) {
 	}
 	var version int
 	if raw, ok := fields["version"]; ok {
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return Change{}, fmt.Errorf("relationship version must be a positive integer")
+		}
 		if err := json.Unmarshal(raw, &version); err != nil {
 			return Change{}, fmt.Errorf("decode relation version: %w", err)
+		}
+		if version < 1 {
+			return Change{}, fmt.Errorf("relationship version must be a positive integer")
 		}
 	}
 	reason := ""
@@ -2522,8 +2638,13 @@ func validateChangeShape(change Change, index int) error {
 			if change.Reason != "" {
 				return semanticError("semantic_validation", "ordinary relationship does not accept reason", path+".reason", nil)
 			}
-		} else if isReasonRelation(change.Relation) && change.Version != 0 && change.Reason == "" {
-			return semanticError("semantic_validation", "relationship reason is required when version is provided", path+".reason", nil)
+		} else if isReasonRelation(change.Relation) {
+			if change.Version < 0 {
+				return semanticError("semantic_validation", "relationship version must be positive when provided", path+".version", nil)
+			}
+			if change.Version != 0 && change.Reason == "" {
+				return semanticError("semantic_validation", "relationship reason is required when version is provided", path+".reason", nil)
+			}
 		}
 	}
 
@@ -2591,6 +2712,46 @@ func validateChangeShape(change Change, index int) error {
 		}
 		if change.ReplacedVersion < 1 {
 			return semanticError("semantic_validation", "supersede requires the current replaced version", fmt.Sprintf("changes[%d].replaced_version", index), nil)
+		}
+	}
+	return nil
+}
+
+func validateChangeDTOShape(change Change, index int) error {
+	if err := validateChangeShape(change, index); err != nil {
+		return err
+	}
+	path := fmt.Sprintf("changes[%d].record", index)
+	if change.Op == "create" {
+		switch change.Type {
+		case "entity":
+			_, err := completeEntityRecord(change.Record, path)
+			return err
+		case "objective":
+			_, err := completeObjectiveRecord(change.Record, path)
+			return err
+		case "attempt":
+			_, err := completeAttemptRecord(change.Record, path)
+			return err
+		case "fact":
+			_, err := completeFactRecord(change.Record, path)
+			return err
+		}
+	}
+	if change.Op == "update" {
+		switch change.Type {
+		case "entity":
+			_, err := partialEntityRecord(change.Record, path)
+			return err
+		case "objective":
+			_, err := partialObjectiveRecord(change.Record, path)
+			return err
+		case "attempt":
+			_, err := partialAttemptRecord(change.Record, path)
+			return err
+		case "fact":
+			_, err := partialFactRecord(change.Record, path)
+			return err
 		}
 	}
 	return nil

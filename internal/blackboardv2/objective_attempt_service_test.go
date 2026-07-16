@@ -992,6 +992,13 @@ func TestRelationChangeShapesMatchFrozenReasonAndVersionRules(t *testing.T) {
 				t.Fatalf("decode valid reason-capable %s relation %s: %v", relation, raw, err)
 			}
 		}
+		for _, version := range []string{"null", "0", "-1"} {
+			raw := fmt.Sprintf(`{"op":"relate","from":"fact:source","relation":%q,"to":"fact:target","version":%s,"reason":"semantic basis"}`, relation, version)
+			var change blackboardv2.Change
+			if err := json.Unmarshal([]byte(raw), &change); err == nil {
+				t.Fatalf("decoded reason-capable %s relation with invalid version %s", relation, version)
+			}
+		}
 	}
 
 	ctx := context.Background()
@@ -1078,6 +1085,115 @@ func TestRelationChangeShapesMatchFrozenReasonAndVersionRules(t *testing.T) {
 		t.Fatalf("valid reason-capable new relation: %v", err)
 	}
 	assertRelationResult(t, dependsOn, [][]any{{"objective:dependent", "depends_on", "objective:prerequisite", float64(1)}})
+}
+
+func TestReasonedRelationshipUpdatesAreVersioned(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	createdProject, err := project.NewService(db).Create("Reasoned Relationship Updates", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	service := blackboardv2.NewService(db)
+	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "seed-reasoned-relationship-updates",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "fact:support-source", Type: "fact", Record: blackboardv2.FactRecord{Category: "authentication", Summary: "Independent reproduction supports the conclusion", Confidence: "confirmed", ScopeStatus: "in_scope"}},
+			{Op: "create", Key: "fact:support-target", Type: "fact", Record: blackboardv2.FactRecord{Category: "authentication", Summary: "Login accepts JSON", Confidence: "tentative", ScopeStatus: "in_scope"}},
+			{Op: "create", Key: "fact:contradict-source", Type: "fact", Record: blackboardv2.FactRecord{Category: "authentication", Summary: "Independent reproduction contradicts the conclusion", Confidence: "confirmed", ScopeStatus: "in_scope"}},
+			{Op: "create", Key: "fact:contradict-target", Type: "fact", Record: blackboardv2.FactRecord{Category: "authentication", Summary: "Login rejects JSON", Confidence: "tentative", ScopeStatus: "in_scope"}},
+			{Op: "create", Key: "objective:dependent-update", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Test administrative login"}},
+			{Op: "create", Key: "objective:prerequisite-update", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Map authentication endpoints"}},
+			{Op: "relate", From: "fact:support-source", Relation: "supports", To: "fact:support-target", Reason: "Initial support reason"},
+			{Op: "relate", From: "fact:contradict-source", Relation: "contradicts", To: "fact:contradict-target", Reason: "Initial contradiction reason"},
+			{Op: "relate", From: "objective:dependent-update", Relation: "depends_on", To: "objective:prerequisite-update", Reason: "Initial dependency reason"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed reasoned relationship updates: %v", err)
+	}
+
+	for index, tt := range []struct {
+		relation  string
+		from      string
+		to        string
+		oldReason string
+		newReason string
+	}{
+		{relation: "supports", from: "fact:support-source", to: "fact:support-target", oldReason: "Initial support reason", newReason: "Updated support reason"},
+		{relation: "contradicts", from: "fact:contradict-source", to: "fact:contradict-target", oldReason: "Initial contradiction reason", newReason: "Updated contradiction reason"},
+		{relation: "depends_on", from: "objective:dependent-update", to: "objective:prerequisite-update", oldReason: "Initial dependency reason", newReason: "Updated dependency reason"},
+	} {
+		t.Run(tt.relation, func(t *testing.T) {
+			for _, invalid := range []struct {
+				name    string
+				version int
+				reason  string
+				code    string
+			}{
+				{name: "negative version before no-op", version: -1, reason: tt.oldReason, code: "semantic_validation"},
+				{name: "changed reason requires version", version: 0, reason: tt.newReason, code: "semantic_validation"},
+				{name: "stale version", version: 99, reason: tt.newReason, code: "version_conflict"},
+			} {
+				_, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+					Schema:         "semantic-change-batch/v2",
+					IdempotencyKey: fmt.Sprintf("reject-%s-%s", tt.relation, invalid.name),
+					Changes: []blackboardv2.Change{{
+						Op: "relate", From: tt.from, Relation: tt.relation, To: tt.to, Version: invalid.version, Reason: invalid.reason,
+					}},
+				})
+				if !isSemanticCode(err, invalid.code) {
+					t.Fatalf("%s error = %#v, want %s", invalid.name, err, invalid.code)
+				}
+			}
+
+			updated, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+				Schema:         "semantic-change-batch/v2",
+				IdempotencyKey: "update-reason-" + tt.relation,
+				Changes: []blackboardv2.Change{{
+					Op: "relate", From: tt.from, Relation: tt.relation, To: tt.to, Version: 1, Reason: tt.newReason,
+				}},
+			})
+			if err != nil {
+				t.Fatalf("update %s reason: %v", tt.relation, err)
+			}
+			assertChangeRecords(t, updated, 10+index, [][]any{})
+			assertRelationResult(t, updated, [][]any{{tt.from, tt.relation, tt.to, float64(2)}})
+
+			noOp, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+				Schema:         "semantic-change-batch/v2",
+				IdempotencyKey: "noop-updated-reason-" + tt.relation,
+				Changes: []blackboardv2.Change{{
+					Op: "relate", From: tt.from, Relation: tt.relation, To: tt.to, Reason: tt.newReason,
+				}},
+			})
+			if err != nil {
+				t.Fatalf("exact %s reason no-op: %v", tt.relation, err)
+			}
+			assertChangeRecords(t, noOp, 10+index, [][]any{})
+			assertRelationResult(t, noOp, [][]any{})
+
+			history, err := service.ReadHistory(ctx, createdProject.ID, tt.from, blackboardv2.HistoryOptions{})
+			if err != nil {
+				t.Fatalf("read %s relationship history: %v", tt.relation, err)
+			}
+			if len(history.Items) != 1 || history.Items[0].Version != 1 || history.Items[0].Relation != tt.relation || history.Items[0].Reason != tt.oldReason {
+				t.Fatalf("%s relationship history = %#v", tt.relation, history.Items)
+			}
+			detail, err := service.ReadCurrent(ctx, createdProject.ID, tt.from)
+			if err != nil {
+				t.Fatalf("read current %s relationship: %v", tt.relation, err)
+			}
+			if len(detail.Relationships) != 1 || len(detail.Relationships[0]) != 4 || detail.Relationships[0][1] != tt.relation || detail.Relationships[0][3] != tt.newReason {
+				t.Fatalf("current %s relationship = %#v", tt.relation, detail.Relationships)
+			}
+		})
+	}
 }
 
 func TestAttemptAndObjectiveTerminalGuardsPreserveSemanticHistory(t *testing.T) {
