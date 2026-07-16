@@ -800,8 +800,32 @@ func migrations() []migration {
 		newMigration(21, "blackboard_v2_semantic_facts", migration21SQL, migration21Up),
 		newMigration(22, "blackboard_v2_current_relationships", migration22SQL, migration22Up),
 		newMigration(23, "blackboard_v2_attempt_ownership", migration23SQL, migration23Up),
+		newMigration(24, "blackboard_v2_evidence_requests", migration24SQL, migration24Up),
 	}
 }
+
+const migration24SQL = `
+CREATE TABLE IF NOT EXISTS blackboard_v2_evidence_requests (
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+	continuation_id TEXT NOT NULL REFERENCES task_continuations(id) ON DELETE RESTRICT,
+	idempotency_key TEXT NOT NULL,
+	request_hash TEXT NOT NULL,
+	source_identity TEXT NOT NULL,
+	source_sha256 TEXT NOT NULL,
+	source_size_bytes INTEGER NOT NULL CHECK (source_size_bytes >= 0),
+	managed_internal_path TEXT NOT NULL,
+	payload_owned INTEGER NOT NULL DEFAULT 0 CHECK (payload_owned IN (0,1)),
+	status TEXT NOT NULL CHECK (status IN ('reserved','published','completed')),
+	result_json TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (project_id, continuation_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_blackboard_v2_evidence_requests_managed_path
+	ON blackboard_v2_evidence_requests (project_id, managed_internal_path);
+`
+
+func migration24Up(tx *sql.Tx) error { return execStatements(tx, migration24SQL) }
 
 const migration23SQL = `
 CREATE TABLE IF NOT EXISTS blackboard_v2_attempt_origins (

@@ -259,6 +259,7 @@ func TestOpenDefaultsCanonicalStoreToBlackboardV2(t *testing.T) {
 		"blackboard_edge_heads",
 		"blackboard_attempt_checkpoint_requests",
 		"blackboard_v2_attempt_origins",
+		"blackboard_v2_evidence_requests",
 	} {
 		if !tableExists(t, db.DB, table) {
 			t.Fatalf("expected table %s", table)

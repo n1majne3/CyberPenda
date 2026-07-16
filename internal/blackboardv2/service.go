@@ -699,10 +699,21 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 	runtimeConfirmedFacts := make(map[string]string)
 	runtimeCreatedAttempts := make(map[string]string)
 	terminalAttempts := make(map[string]terminalAttemptValidation)
+	evidenceDependentFacts := make(map[string]string)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for index, change := range batch.Changes {
 		if continuationID != "" {
 			if err := validateContinuationChangeOwnership(ctx, tx, projectID, continuationID, change, index); err != nil {
+				return ChangeResult{}, err
+			}
+		}
+		if change.Op == "transition" && change.Status == "missing" {
+			if err := collectEvidenceDependentConfirmedFacts(ctx, tx, projectID, change.Key, fmt.Sprintf("changes[%d].status", index), evidenceDependentFacts); err != nil {
+				return ChangeResult{}, err
+			}
+		}
+		if change.Op == "supersede" {
+			if err := collectEvidenceDependentConfirmedFacts(ctx, tx, projectID, change.Replaced, fmt.Sprintf("changes[%d].replaced", index), evidenceDependentFacts); err != nil {
 				return ChangeResult{}, err
 			}
 		}
@@ -824,7 +835,7 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 			if current.typ != "fact" || current.record.factRecord().Confidence != "confirmed" {
 				continue
 			}
-			hasBasis, err := runtimeFactConfirmationHasBasis(ctx, tx, projectID, continuationID, key)
+			hasBasis, err := s.runtimeFactConfirmationHasBasis(ctx, tx, projectID, continuationID, key)
 			if err != nil {
 				return ChangeResult{}, err
 			}
@@ -832,6 +843,9 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 				return ChangeResult{}, semanticError("semantic_validation", "Runtime Fact confirmation requires an accepted semantic basis", runtimeConfirmedFacts[key], nil)
 			}
 		}
+	}
+	if err := s.validateEvidenceDependentFactBases(ctx, tx, projectID, evidenceDependentFacts); err != nil {
+		return ChangeResult{}, err
 	}
 
 	result := makeChangeResult(revision, changedRecords, changedRelations)
@@ -1847,7 +1861,7 @@ func applyTransition(ctx context.Context, tx *sql.Tx, projectID string, revision
 	}
 }
 
-func runtimeFactConfirmationHasBasis(ctx context.Context, tx *sql.Tx, projectID, continuationID, factKey string) (bool, error) {
+func (s *Service) runtimeFactConfirmationHasBasis(ctx context.Context, tx *sql.Tx, projectID, continuationID, factKey string) (bool, error) {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT source.record_json
 		FROM blackboard_v2_relationships AS rel
@@ -1908,8 +1922,15 @@ func runtimeFactConfirmationHasBasis(ctx context.Context, tx *sql.Tx, projectID,
 			return false, fmt.Errorf("decode Evidence for confirmation: %w", err)
 		}
 		if source.Status == "available" {
-			rows.Close()
-			return true, nil
+			valid, err := s.evidenceIntegrityValid(projectID, source)
+			if err != nil {
+				rows.Close()
+				return false, err
+			}
+			if valid {
+				rows.Close()
+				return true, nil
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -2156,7 +2177,7 @@ func applySupersede(ctx context.Context, tx *sql.Tx, projectID string, revision,
 		}
 		return revision, "", 0, RelationVersionTuple{}, false, err
 	}
-	if replacement.typ != replaced.typ || !isOneOf(replacement.typ, "entity", "objective") {
+	if replacement.typ != replaced.typ || !isOneOf(replacement.typ, "entity", "objective", "evidence") {
 		return revision, "", 0, RelationVersionTuple{}, false, semanticError("semantic_validation", "supersede requires two current records of the same supersedable type", path, map[string]any{"replacement_type": replacement.typ, "replaced_type": replaced.typ})
 	}
 	replacementVersion := change.ReplacementVersion
@@ -2190,6 +2211,10 @@ func applySupersede(ctx context.Context, tx *sql.Tx, projectID string, revision,
 		terminal = record
 	case "objective":
 		record := replaced.record.objectiveRecord()
+		record.Status = "superseded"
+		terminal = record
+	case "evidence":
+		record := replaced.record.evidenceRecord()
 		record.Status = "superseded"
 		terminal = record
 	}
@@ -3468,10 +3493,16 @@ func partialEvidenceRecord(value any, path string) (EvidencePatch, error) {
 		if evidencePatchEmpty(patch) {
 			return EvidencePatch{}, semanticError("semantic_validation", "Evidence partial record requires at least one property", path, nil)
 		}
+		if err := validateEvidencePatch(patch, path); err != nil {
+			return EvidencePatch{}, err
+		}
 		return patch, nil
 	case *EvidencePatch:
 		if patch == nil || evidencePatchEmpty(*patch) {
 			return EvidencePatch{}, semanticError("semantic_validation", "Evidence update requires a non-empty Evidence partial record", path, nil)
+		}
+		if err := validateEvidencePatch(*patch, path); err != nil {
+			return EvidencePatch{}, err
 		}
 		return *patch, nil
 	case json.RawMessage:
@@ -3479,10 +3510,35 @@ func partialEvidenceRecord(value any, path string) (EvidencePatch, error) {
 		if err != nil {
 			return EvidencePatch{}, semanticError("semantic_validation", err.Error(), path, nil)
 		}
+		if err := validateEvidencePatch(decoded, path); err != nil {
+			return EvidencePatch{}, err
+		}
 		return decoded, nil
 	default:
 		return EvidencePatch{}, semanticError("semantic_validation", "Evidence update requires an Evidence partial record", path, nil)
 	}
+}
+
+func validateEvidencePatch(patch EvidencePatch, path string) error {
+	if patch.Summary != nil {
+		if err := validateSemanticText(*patch.Summary, path+".summary"); err != nil {
+			return err
+		}
+	}
+	if patch.MediaType != nil {
+		if err := validateConciseText(*patch.MediaType, path+".media_type"); err != nil {
+			return err
+		}
+	}
+	if patch.CapturedAt != nil {
+		if *patch.CapturedAt == "" {
+			return semanticError("semantic_validation", "captured_at must be cleared explicitly", path+".captured_at", nil)
+		}
+		if _, err := time.Parse(time.RFC3339, *patch.CapturedAt); err != nil {
+			return semanticError("semantic_validation", "captured_at must be an RFC3339 timestamp", path+".captured_at", nil)
+		}
+	}
+	return nil
 }
 
 func stringPtr(value string) *string {
