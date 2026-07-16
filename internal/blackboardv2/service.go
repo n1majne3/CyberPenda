@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -784,7 +785,7 @@ func (s *Service) ReadHistory(ctx context.Context, projectID, key string, option
 	if limit > 100 {
 		limit = 100
 	}
-	offset, err := parseCursor(options.Cursor)
+	cursor, err := parseCursor(options.Cursor)
 	if err != nil {
 		return SemanticHistory{}, err
 	}
@@ -800,6 +801,15 @@ func (s *Service) ReadHistory(ctx context.Context, projectID, key string, option
 	if err != nil {
 		return SemanticHistory{}, err
 	}
+	if cursor.present && cursor.revision != revision {
+		return SemanticHistory{}, semanticError("semantic_validation", "history cursor is stale", "cursor", map[string]any{
+			"reason":           "stale_cursor",
+			"cursor_revision":  float64(cursor.revision),
+			"current_revision": float64(revision),
+			"next_action":      "restart_history_read",
+		})
+	}
+	offset := cursor.offset
 	hasCurrent := true
 	if _, err := loadCurrentRecord(ctx, tx, projectID, key); err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
@@ -882,7 +892,7 @@ func (s *Service) ReadHistory(ctx context.Context, projectID, key string, option
 			return SemanticHistory{}, fmt.Errorf("count Blackboard v2 history: %w", err)
 		}
 		if offset+limit < extra {
-			next = makeCursor(offset + limit)
+			next = makeCursor(revision, offset+limit)
 		}
 	}
 	return SemanticHistory{Schema: historySchema, Revision: revision, Key: key, Items: items, NextCursor: next}, nil
@@ -3434,22 +3444,38 @@ func (record Record) factRecord() FactRecord {
 	}
 }
 
-func parseCursor(cursor string) (int, error) {
-	if cursor == "" {
-		return 0, nil
-	}
-	if !strings.HasPrefix(cursor, "opaque:") {
-		return 0, semanticError("semantic_validation", "history cursor is invalid", "cursor", nil)
-	}
-	offset, err := strconv.Atoi(strings.TrimPrefix(cursor, "opaque:"))
-	if err != nil || offset < 0 {
-		return 0, semanticError("semantic_validation", "history cursor is invalid", "cursor", nil)
-	}
-	return offset, nil
+type historyCursor struct {
+	revision int
+	offset   int
+	present  bool
 }
 
-func makeCursor(offset int) string {
-	return "opaque:" + strconv.Itoa(offset)
+func parseCursor(cursor string) (historyCursor, error) {
+	if cursor == "" {
+		return historyCursor{}, nil
+	}
+	if !strings.HasPrefix(cursor, "opaque:") {
+		return historyCursor{}, semanticError("semantic_validation", "history cursor is invalid", "cursor", nil)
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(cursor, "opaque:"))
+	if err != nil {
+		return historyCursor{}, semanticError("semantic_validation", "history cursor is invalid", "cursor", nil)
+	}
+	parts := strings.Split(string(payload), ":")
+	if len(parts) != 3 || parts[0] != "v1" {
+		return historyCursor{}, semanticError("semantic_validation", "history cursor is invalid", "cursor", nil)
+	}
+	revision, revisionErr := strconv.Atoi(parts[1])
+	offset, offsetErr := strconv.Atoi(parts[2])
+	if revisionErr != nil || offsetErr != nil || revision < 0 || offset < 0 || strconv.Itoa(revision) != parts[1] || strconv.Itoa(offset) != parts[2] {
+		return historyCursor{}, semanticError("semantic_validation", "history cursor is invalid", "cursor", nil)
+	}
+	return historyCursor{revision: revision, offset: offset, present: true}, nil
+}
+
+func makeCursor(revision, offset int) string {
+	payload := fmt.Sprintf("v1:%d:%d", revision, offset)
+	return "opaque:" + base64.RawURLEncoding.EncodeToString([]byte(payload))
 }
 
 func semanticError(code, message, path string, details map[string]any) *Error {

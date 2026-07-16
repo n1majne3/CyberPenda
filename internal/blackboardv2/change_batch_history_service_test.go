@@ -158,10 +158,16 @@ func TestRelationshipHistoryUsesSemanticVersionOrderAcrossPages(t *testing.T) {
 
 	var items []blackboardv2.HistoryItem
 	cursor := ""
+	pinnedRevision := 0
 	for {
 		page, err := service.ReadHistory(ctx, createdProject.ID, "objective:dependent-history", blackboardv2.HistoryOptions{Cursor: cursor, Limit: 1})
 		if err != nil {
 			t.Fatalf("read relationship history page after %q: %v", cursor, err)
+		}
+		if pinnedRevision == 0 {
+			pinnedRevision = page.Revision
+		} else if page.Revision != pinnedRevision {
+			t.Fatalf("history page revision = %d, want pinned revision %d", page.Revision, pinnedRevision)
 		}
 		if len(page.Items) != 1 {
 			t.Fatalf("history page after %q has %d items, want 1", cursor, len(page.Items))
@@ -181,5 +187,107 @@ func TestRelationshipHistoryUsesSemanticVersionOrderAcrossPages(t *testing.T) {
 	if items[2].Kind != "relationship" || items[2].Version != 1 || items[2].Reason != "The prerequisite must be mapped first" ||
 		items[3].Kind != "relationship" || items[3].Version != 2 || items[3].Reason != "The prerequisite boundary must be mapped first" {
 		t.Fatalf("relationship history order = %#v", items[2:])
+	}
+}
+
+func TestHistoryCursorRejectsRevisionDriftAndMalformedValues(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	createdProject, err := project.NewService(db).Create("Revision-pinned History", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	service := blackboardv2.NewService(db)
+
+	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "seed-revision-pinned-history",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "objective:cursor-dependent", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Exercise cursor pagination"}},
+			{Op: "create", Key: "objective:cursor-prerequisite", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Provide cursor history"}},
+			{Op: "relate", From: "objective:cursor-dependent", Relation: "depends_on", To: "objective:cursor-prerequisite", Reason: "Initial cursor relationship reason"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed revision-pinned history: %v", err)
+	}
+	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "version-revision-pinned-history",
+		Changes: []blackboardv2.Change{{
+			Op: "relate", From: "objective:cursor-dependent", Relation: "depends_on", To: "objective:cursor-prerequisite", Version: 1, Reason: "Updated cursor relationship reason",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("version revision-pinned history: %v", err)
+	}
+	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "archive-current-revision-pinned-history",
+		Changes: []blackboardv2.Change{{
+			Op: "transition", Key: "objective:cursor-dependent", Version: 1, Status: "abandoned", ResolutionSummary: "The cursor fixture archives both relationship versions",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("archive current revision-pinned history: %v", err)
+	}
+
+	for _, cursor := range []string{"opaque:1", "opaque:not-base64", "not-opaque"} {
+		_, err := service.ReadHistory(ctx, createdProject.ID, "objective:cursor-prerequisite", blackboardv2.HistoryOptions{Cursor: cursor, Limit: 1})
+		var semanticErr *blackboardv2.Error
+		if !errors.As(err, &semanticErr) || semanticErr.Code != "semantic_validation" || semanticErr.Path != "cursor" {
+			t.Fatalf("malformed cursor %q error = %#v, want semantic_validation on cursor", cursor, err)
+		}
+	}
+
+	firstPage, err := service.ReadHistory(ctx, createdProject.ID, "objective:cursor-prerequisite", blackboardv2.HistoryOptions{Limit: 1})
+	if err != nil {
+		t.Fatalf("read first revision-pinned history page: %v", err)
+	}
+	if len(firstPage.Items) != 1 || firstPage.Items[0].Relation != "depends_on" || firstPage.Items[0].Version != 1 || firstPage.NextCursor == "" {
+		t.Fatalf("first revision-pinned history page = %#v", firstPage)
+	}
+	unchangedPage, err := service.ReadHistory(ctx, createdProject.ID, "objective:cursor-prerequisite", blackboardv2.HistoryOptions{Cursor: firstPage.NextCursor, Limit: 1})
+	if err != nil {
+		t.Fatalf("read unchanged second history page: %v", err)
+	}
+	if unchangedPage.Revision != firstPage.Revision || len(unchangedPage.Items) != 1 || unchangedPage.Items[0].Relation != "depends_on" || unchangedPage.Items[0].Version != 2 || unchangedPage.NextCursor != "" {
+		t.Fatalf("unchanged second history page = %#v, first revision %d", unchangedPage, firstPage.Revision)
+	}
+
+	mutation, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "insert-history-before-cursor-offset",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "entity:cursor-archive", Type: "entity", Record: blackboardv2.EntityRecord{Status: "active", Kind: "endpoint", Name: "Cursor archive endpoint", ScopeStatus: "in_scope"}},
+			{Op: "relate", From: "objective:cursor-prerequisite", Relation: "about", To: "entity:cursor-archive"},
+			{Op: "transition", Key: "entity:cursor-archive", Version: 1, Status: "retired", ResolutionSummary: "The endpoint exists only to archive an earlier-sorting relationship"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("insert history before cursor offset: %v", err)
+	}
+	fresh, err := service.ReadHistory(ctx, createdProject.ID, "objective:cursor-prerequisite", blackboardv2.HistoryOptions{})
+	if err != nil {
+		t.Fatalf("read fresh history after mutation: %v", err)
+	}
+	if len(fresh.Items) != 3 || fresh.Items[0].Relation != "about" || fresh.Items[1].Version != 1 || fresh.Items[2].Version != 2 {
+		t.Fatalf("fresh history after earlier insertion = %#v", fresh.Items)
+	}
+
+	_, err = service.ReadHistory(ctx, createdProject.ID, "objective:cursor-prerequisite", blackboardv2.HistoryOptions{Cursor: firstPage.NextCursor, Limit: 1})
+	var staleErr *blackboardv2.Error
+	if !errors.As(err, &staleErr) || staleErr.Code != "semantic_validation" || staleErr.Message != "history cursor is stale" || staleErr.Path != "cursor" {
+		t.Fatalf("stale history cursor error = %#v, want stable semantic_validation stale cursor", err)
+	}
+	if staleErr.Details["reason"] != "stale_cursor" ||
+		staleErr.Details["cursor_revision"] != float64(firstPage.Revision) ||
+		staleErr.Details["current_revision"] != float64(mutation.Revision) ||
+		staleErr.Details["next_action"] != "restart_history_read" {
+		t.Fatalf("stale history cursor details = %#v", staleErr.Details)
 	}
 }
