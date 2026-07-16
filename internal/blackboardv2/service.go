@@ -50,6 +50,49 @@ type ChangeBatch struct {
 	Changes        []Change `json:"changes"`
 }
 
+// UnmarshalJSON enforces the closed semantic-change-batch/v2 envelope before
+// adapters can lose required-field presence or the nil/empty changes boundary.
+func (batch *ChangeBatch) UnmarshalJSON(raw []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	for field := range fields {
+		switch field {
+		case "schema", "idempotency_key", "changes":
+		default:
+			return fmt.Errorf("unknown ChangeBatch field %q", field)
+		}
+	}
+	schema, err := decodeRequiredString(fields, "schema")
+	if err != nil {
+		return err
+	}
+	if schema != changeBatchSchema {
+		return fmt.Errorf("schema must be %q", changeBatchSchema)
+	}
+	idempotencyKey, err := decodeRequiredString(fields, "idempotency_key")
+	if err != nil {
+		return err
+	}
+	if idempotencyKey == "" {
+		return fmt.Errorf("idempotency_key must not be empty")
+	}
+	changesRaw, ok := fields["changes"]
+	if !ok {
+		return fmt.Errorf("changes is required")
+	}
+	if bytes.Equal(bytes.TrimSpace(changesRaw), []byte("null")) {
+		return fmt.Errorf("changes must be an array")
+	}
+	var changes []Change
+	if err := json.Unmarshal(changesRaw, &changes); err != nil {
+		return fmt.Errorf("decode changes: %w", err)
+	}
+	*batch = ChangeBatch{Schema: schema, IdempotencyKey: idempotencyKey, Changes: changes}
+	return nil
+}
+
 // Change is the closed operation shape subset owned by #100.
 type Change struct {
 	Op                 string   `json:"op"`
@@ -526,6 +569,9 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 	if batch.IdempotencyKey == "" {
 		return ChangeResult{}, semanticError("semantic_validation", "idempotency_key is required", "idempotency_key", nil)
 	}
+	if batch.Changes == nil {
+		return ChangeResult{}, semanticError("semantic_validation", "changes must be a non-null array", "changes", nil)
+	}
 	for index, change := range batch.Changes {
 		if err := validateChangeDTOShape(change, index); err != nil {
 			return ChangeResult{}, err
@@ -789,7 +835,10 @@ func (s *Service) ReadHistory(ctx context.Context, projectID, key string, option
 			FROM blackboard_v2_relationship_history
 			WHERE project_id = ? AND (from_key = ? OR to_key = ?)
 		)
-		ORDER BY sort_group ASC, sort_time ASC, version ASC, from_key ASC, relation ASC, to_key ASC
+		ORDER BY sort_group ASC,
+		         CASE WHEN sort_group = 0 THEN sort_time ELSE '' END ASC,
+		         CASE WHEN sort_group = 0 THEN version ELSE 0 END ASC,
+		         relation ASC, from_key ASC, to_key ASC, version ASC
 		LIMIT ? OFFSET ?`,
 		projectID, key, projectID, key, key, limit+1, offset,
 	)
@@ -1752,7 +1801,7 @@ func terminalizeRecord(ctx context.Context, tx *sql.Tx, projectID string, revisi
 	); err != nil {
 		return revision, "", 0, false, fmt.Errorf("store terminal %s history: %w", existing.typ, err)
 	}
-	if err := moveCurrentRelationshipsToHistory(ctx, tx, projectID, existing.key); err != nil {
+	if err := moveCurrentRelationshipsToHistory(ctx, tx, projectID, existing.key, now); err != nil {
 		return revision, "", 0, false, err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -1995,9 +2044,9 @@ func factSupportsWouldCycle(ctx context.Context, tx *sql.Tx, projectID, fromKey,
 	return false, nil
 }
 
-func moveCurrentRelationshipsToHistory(ctx context.Context, tx *sql.Tx, projectID, key string) error {
+func moveCurrentRelationshipsToHistory(ctx context.Context, tx *sql.Tx, projectID, key, recordedAt string) error {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT from_key, relation, to_key, version, reason, created_at
+		SELECT from_key, relation, to_key, version, reason
 		FROM blackboard_v2_relationships
 		WHERE project_id = ? AND (from_key = ? OR to_key = ?)
 		ORDER BY from_key ASC, relation ASC, to_key ASC`,
@@ -2007,13 +2056,13 @@ func moveCurrentRelationshipsToHistory(ctx context.Context, tx *sql.Tx, projectI
 		return fmt.Errorf("read terminal Entity relationships: %w", err)
 	}
 	type relationship struct {
-		from, relation, to, reason, createdAt string
-		version                               int
+		from, relation, to, reason string
+		version                    int
 	}
 	relationships := make([]relationship, 0)
 	for rows.Next() {
 		var item relationship
-		if err := rows.Scan(&item.from, &item.relation, &item.to, &item.version, &item.reason, &item.createdAt); err != nil {
+		if err := rows.Scan(&item.from, &item.relation, &item.to, &item.version, &item.reason); err != nil {
 			rows.Close()
 			return fmt.Errorf("scan terminal Entity relationship: %w", err)
 		}
@@ -2028,7 +2077,7 @@ func moveCurrentRelationshipsToHistory(ctx context.Context, tx *sql.Tx, projectI
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO blackboard_v2_relationship_history (project_id, from_key, relation, to_key, version, reason, recorded_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			projectID, item.from, item.relation, item.to, item.version, item.reason, item.createdAt,
+			projectID, item.from, item.relation, item.to, item.version, item.reason, recordedAt,
 		); err != nil {
 			return fmt.Errorf("store terminal Entity relationship history: %w", err)
 		}
