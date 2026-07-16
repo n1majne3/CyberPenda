@@ -308,6 +308,9 @@ func TestOpenDefaultsCanonicalStoreToBlackboardV2(t *testing.T) {
 		{"task_continuations", "blackboard_finish_mutation_sequence"},
 		{"task_continuations", "blackboard_finished_at"},
 		{"blackboard_v2_idempotency_receipts", "continuation_id"},
+		{"blackboard_v2_evidence_requests", "temp_internal_path"},
+		{"blackboard_v2_evidence_requests", "publisher_token"},
+		{"blackboard_v2_evidence_requests", "publisher_temp_identity"},
 	} {
 		if !columnExists(t, db.DB, col.table, col.column) {
 			t.Fatalf("expected column %s.%s", col.table, col.column)

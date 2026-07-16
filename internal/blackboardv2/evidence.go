@@ -3,6 +3,7 @@ package blackboardv2
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -15,7 +16,10 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
+
+	"pentest/internal/store"
 )
 
 // EvidenceConfig supplies the managed and Runtime filesystem roots used by
@@ -171,6 +175,8 @@ type evidenceRequestRow struct {
 	size           int64
 	internalPath   string
 	tempPath       string
+	publisherToken string
+	publisherID    string
 	payloadOwned   bool
 	status         string
 	resultJSON     string
@@ -286,15 +292,21 @@ func (s *Service) RetainEvidenceForContinuation(ctx context.Context, projectID, 
 		if err != nil {
 			return ChangeResult{}, err
 		}
+		recoveryExists, err := s.evidencePublicationRecoveryExists(row)
+		if err != nil {
+			return ChangeResult{}, err
+		}
 		if !tempReady && source == nil {
 			opened, err := s.openRuntimeEvidenceSource(taskID, request.SourcePath)
-			if err != nil {
+			if err != nil && !recoveryExists {
 				s.cleanupDefinitiveEvidenceFailure(ctx, projectID, continuationID, request.IdempotencyKey, row, err)
 				return ChangeResult{}, err
 			}
-			source = &opened
-			defer source.file.Close()
-			defer source.root.Close()
+			if err == nil {
+				source = &opened
+				defer source.file.Close()
+				defer source.root.Close()
+			}
 		}
 		if source != nil {
 			if err := validateEvidenceReservationRow(row, requestHash, *source); err != nil {
@@ -310,6 +322,13 @@ func (s *Service) RetainEvidenceForContinuation(ctx context.Context, projectID, 
 		if err := s.syncAndCheckpointPublishedEvidence(ctx, projectID, continuationID, request.IdempotencyKey, row.internalPath); err != nil {
 			return ChangeResult{}, err
 		}
+	}
+	payloadReady, err = s.verifyManagedEvidencePayload(row.internalPath, row.sha256, row.size)
+	if err != nil {
+		return ChangeResult{}, err
+	}
+	if !payloadReady {
+		return ChangeResult{}, semanticError("evidence_integrity_failed", "managed Evidence payload failed integrity verification before semantic commit", "key", nil)
 	}
 	result, err := s.applyRetainedEvidence(ctx, projectID, continuationID, request, semanticPath, retainedEvidenceMetadata{sha256: row.sha256, size: row.size}, true)
 	if err != nil {
@@ -717,7 +736,7 @@ func (s *Service) reserveEvidenceRequest(ctx context.Context, projectID, continu
 	rows, _ := result.RowsAffected()
 	var row evidenceRequestRow
 	var payloadOwned int
-	if err := tx.QueryRowContext(ctx, `SELECT request_hash,source_identity,source_sha256,source_size_bytes,managed_internal_path,temp_internal_path,payload_owned,status,result_json FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, projectID, continuationID, key).Scan(&row.requestHash, &row.sourceIdentity, &row.sha256, &row.size, &row.internalPath, &row.tempPath, &payloadOwned, &row.status, &row.resultJSON); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT request_hash,source_identity,source_sha256,source_size_bytes,managed_internal_path,temp_internal_path,publisher_token,publisher_temp_identity,payload_owned,status,result_json FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, projectID, continuationID, key).Scan(&row.requestHash, &row.sourceIdentity, &row.sha256, &row.size, &row.internalPath, &row.tempPath, &row.publisherToken, &row.publisherID, &payloadOwned, &row.status, &row.resultJSON); err != nil {
 		return evidenceRequestRow{}, false, fmt.Errorf("read reserved Evidence request: %w", err)
 	}
 	row.payloadOwned = payloadOwned == 1
@@ -750,7 +769,7 @@ func (s *Service) reserveEvidenceRequest(ctx context.Context, projectID, continu
 func (s *Service) readEvidenceRequest(ctx context.Context, projectID, continuationID, key string) (evidenceRequestRow, bool, error) {
 	var row evidenceRequestRow
 	var payloadOwned int
-	err := s.db.QueryRowContext(ctx, `SELECT request_hash,source_identity,source_sha256,source_size_bytes,managed_internal_path,temp_internal_path,payload_owned,status,result_json FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, projectID, continuationID, key).Scan(&row.requestHash, &row.sourceIdentity, &row.sha256, &row.size, &row.internalPath, &row.tempPath, &payloadOwned, &row.status, &row.resultJSON)
+	err := s.db.QueryRowContext(ctx, `SELECT request_hash,source_identity,source_sha256,source_size_bytes,managed_internal_path,temp_internal_path,publisher_token,publisher_temp_identity,payload_owned,status,result_json FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, projectID, continuationID, key).Scan(&row.requestHash, &row.sourceIdentity, &row.sha256, &row.size, &row.internalPath, &row.tempPath, &row.publisherToken, &row.publisherID, &payloadOwned, &row.status, &row.resultJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return evidenceRequestRow{}, false, nil
 	}
@@ -984,6 +1003,42 @@ func (s *Service) verifyJournaledEvidenceTemp(tempPath, digest string, size int6
 	return actualSize == size && hex.EncodeToString(hash.Sum(nil)) == digest, nil
 }
 
+func (s *Service) evidencePublicationRecoveryExists(row evidenceRequestRow) (bool, error) {
+	root, err := os.OpenRoot(s.evidenceConfig.ArtifactRoot)
+	if err != nil {
+		return false, fmt.Errorf("open managed Artifact Root: %w", err)
+	}
+	defer root.Close()
+	directory, err := openSecureDirectory(root, filepath.Dir(row.internalPath))
+	if err != nil {
+		return false, fmt.Errorf("open managed Evidence recovery directory: %w", err)
+	}
+	defer directory.Close()
+	if _, err := directory.Lstat(filepath.Base(row.tempPath)); err == nil {
+		return true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("inspect journaled Evidence temp: %w", err)
+	}
+	opened, err := directory.Open(".")
+	if err != nil {
+		return false, fmt.Errorf("open managed Evidence recovery directory listing: %w", err)
+	}
+	entries, readErr := opened.ReadDir(-1)
+	closeErr := opened.Close()
+	if readErr != nil {
+		return false, fmt.Errorf("read managed Evidence recovery directory: %w", readErr)
+	}
+	if closeErr != nil {
+		return false, fmt.Errorf("close managed Evidence recovery directory: %w", closeErr)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".retain-") {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (s *Service) ensureEvidencePublished(ctx context.Context, projectID, continuationID, key string, row *evidenceRequestRow, source *evidenceSource) error {
 	if source != nil && !evidenceSourceStillSame(*source) {
 		return semanticError("evidence_source_changed", "Evidence source was replaced during retention", "source_path", nil)
@@ -1003,16 +1058,23 @@ func (s *Service) ensureEvidencePublished(ctx context.Context, projectID, contin
 	}
 	defer destinationRoot.Close()
 	name := filepath.Base(row.internalPath)
-	if existing, err := destinationRoot.Open(name); err == nil {
-		_ = existing.Close()
-		ready, verifyErr := s.verifyManagedEvidencePayload(row.internalPath, row.sha256, row.size)
+	if _, err := destinationRoot.Lstat(name); err == nil {
+		existing, err := openLockedEvidenceFile(destinationRoot, name, "managed Evidence payload")
+		if err != nil {
+			return err
+		}
+		defer unlockAndCloseEvidencePublisher(existing)
+		ready, verifyErr := verifyOpenEvidenceFile(existing, row.sha256, row.size)
 		if verifyErr != nil {
 			return verifyErr
 		}
 		if !ready {
-			return fmt.Errorf("managed Evidence disappeared during publication")
+			return semanticError("evidence_integrity_failed", "managed Evidence payload failed integrity verification", "key", nil)
 		}
-		if err := removeJournaledEvidenceTemp(destinationRoot, filepath.Base(row.tempPath)); err != nil {
+		if _, err := sweepLegacyEvidenceTemps(destinationRoot, nil, row.sha256, row.size); err != nil {
+			return err
+		}
+		if err := removeInactiveJournaledEvidenceTemp(destinationRoot, filepath.Base(row.tempPath)); err != nil {
 			return err
 		}
 		return s.syncAndCheckpointPublishedEvidence(ctx, projectID, continuationID, key, row.internalPath)
@@ -1023,23 +1085,40 @@ func (s *Service) ensureEvidencePublished(ctx context.Context, projectID, contin
 		return fmt.Errorf("journaled Evidence temp is outside its final directory")
 	}
 	tempName := filepath.Base(row.tempPath)
-	tempReady, err := s.verifyJournaledEvidenceTemp(row.tempPath, row.sha256, row.size)
+	publisher, err := s.acquireEvidencePublisher(ctx, destinationRoot, projectID, continuationID, key, row)
 	if err != nil {
 		return err
 	}
+	defer publisher.close()
+	tempReady, err := verifyOpenEvidenceFile(publisher.file, row.sha256, row.size)
+	if err != nil {
+		return fmt.Errorf("verify locked Evidence temp: %w", err)
+	}
+	adopted, err := sweepLegacyEvidenceTemps(destinationRoot, func() (*os.File, error) {
+		if tempReady {
+			return nil, nil
+		}
+		return publisher.writer(destinationRoot, tempName)
+	}, row.sha256, row.size)
+	if err != nil {
+		return err
+	}
+	tempReady = tempReady || adopted
 	if !tempReady {
 		if source == nil {
 			return semanticError("evidence_source_changed", "Evidence source is required to rebuild an incomplete journaled temp", "source_path", nil)
 		}
-		if err := removeJournaledEvidenceTemp(destinationRoot, tempName); err != nil {
+		temp, err := publisher.writer(destinationRoot, tempName)
+		if err != nil {
 			return err
 		}
-		temp, err := destinationRoot.OpenFile(tempName, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
-		if err != nil {
-			return fmt.Errorf("create journaled Evidence temp: %w", err)
+		if err := temp.Truncate(0); err != nil {
+			return fmt.Errorf("truncate journaled Evidence temp: %w", err)
+		}
+		if _, err := temp.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("rewind journaled Evidence temp: %w", err)
 		}
 		if err := s.failEvidence(EvidenceFailureBeforeTempCopy); err != nil {
-			_ = temp.Close()
 			return err
 		}
 		copiedHash := sha256.New()
@@ -1047,31 +1126,40 @@ func (s *Service) ensureEvidencePublished(ctx context.Context, projectID, contin
 			return s.failEvidence(EvidenceFailureMidTempCopy)
 		})
 		if copyErr == nil && (copiedSize != source.size || hex.EncodeToString(copiedHash.Sum(nil)) != source.sha256) {
-			_ = temp.Close()
 			return semanticError("evidence_source_changed", "Evidence source bytes changed during retention", "source_path", nil)
-		}
-		if copyErr == nil {
-			copyErr = temp.Chmod(0o400)
-		}
-		if copyErr == nil {
-			copyErr = temp.Sync()
-		}
-		closeErr := temp.Close()
-		if copyErr == nil {
-			copyErr = closeErr
 		}
 		if copyErr != nil {
 			return fmt.Errorf("write journaled Evidence temp: %w", copyErr)
-		}
-		if err := s.failEvidence(EvidenceFailureAfterTempSync); err != nil {
-			return err
 		}
 		if !evidenceSourceStillSame(*source) {
 			return semanticError("evidence_source_changed", "Evidence source was replaced during retention", "source_path", nil)
 		}
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE blackboard_v2_evidence_requests SET payload_owned=1,updated_at=? WHERE project_id=? AND continuation_id=? AND idempotency_key=? AND managed_internal_path=?`, time.Now().UTC().Format(time.RFC3339Nano), projectID, continuationID, key, row.internalPath); err != nil {
+	if err := publisher.file.Chmod(0o400); err != nil {
+		return fmt.Errorf("make journaled Evidence temp immutable: %w", err)
+	}
+	if err := publisher.file.Sync(); err != nil {
+		return fmt.Errorf("sync journaled Evidence temp: %w", err)
+	}
+	if err := s.failEvidence(EvidenceFailureAfterTempSync); err != nil {
+		return err
+	}
+	ready, err := verifyOpenEvidenceFile(publisher.file, row.sha256, row.size)
+	if err != nil {
+		return fmt.Errorf("rehash synced Evidence temp: %w", err)
+	}
+	if !ready {
+		return semanticError("evidence_integrity_failed", "synced Evidence temp failed integrity verification", "source_path", nil)
+	}
+	if err := publisher.validate(ctx, s.db, destinationRoot, projectID, continuationID, key, *row); err != nil {
+		return err
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE blackboard_v2_evidence_requests SET payload_owned=1,updated_at=? WHERE project_id=? AND continuation_id=? AND idempotency_key=? AND managed_internal_path=? AND publisher_token=? AND publisher_temp_identity=?`, time.Now().UTC().Format(time.RFC3339Nano), projectID, continuationID, key, row.internalPath, publisher.token, publisher.identity)
+	if err != nil {
 		return fmt.Errorf("claim managed Evidence payload: %w", err)
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return &Error{Code: "evidence_publication_in_progress", Message: "Evidence publisher claim changed before publication", Path: "idempotency_key", Retryable: true}
 	}
 	row.payloadOwned = true
 	if err := s.failEvidence(EvidenceFailureBeforeFileRename); err != nil {
@@ -1079,6 +1167,14 @@ func (s *Service) ensureEvidencePublished(ctx context.Context, projectID, contin
 	}
 	if err := destinationRoot.Rename(tempName, name); err != nil {
 		return fmt.Errorf("publish managed Evidence: %w", err)
+	}
+	lockedInfo, err := publisher.file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat published Evidence inode: %w", err)
+	}
+	finalInfo, err := destinationRoot.Lstat(name)
+	if err != nil || !os.SameFile(lockedInfo, finalInfo) {
+		return semanticError("evidence_integrity_failed", "published Evidence path is not the synced publisher inode", "source_path", nil)
 	}
 	if err := s.failEvidence(EvidenceFailureAfterFileRename); err != nil {
 		return err
@@ -1089,11 +1185,301 @@ func (s *Service) ensureEvidencePublished(ctx context.Context, projectID, contin
 	if err := s.failEvidence(EvidenceFailureBeforePublishStore); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE blackboard_v2_evidence_requests SET status='published',updated_at=? WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, time.Now().UTC().Format(time.RFC3339Nano), projectID, continuationID, key); err != nil {
+	ready, err = s.verifyManagedEvidencePayload(row.internalPath, row.sha256, row.size)
+	if err != nil {
+		return err
+	}
+	if !ready {
+		return semanticError("evidence_integrity_failed", "published Evidence payload failed integrity verification", "key", nil)
+	}
+	result, err = s.db.ExecContext(ctx, `UPDATE blackboard_v2_evidence_requests SET status='published',publisher_token='',publisher_temp_identity='',updated_at=? WHERE project_id=? AND continuation_id=? AND idempotency_key=? AND publisher_token=? AND publisher_temp_identity=?`, time.Now().UTC().Format(time.RFC3339Nano), projectID, continuationID, key, publisher.token, publisher.identity)
+	if err != nil {
 		return fmt.Errorf("checkpoint Evidence publication: %w", err)
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return &Error{Code: "evidence_publication_in_progress", Message: "Evidence publisher claim changed before checkpoint", Path: "idempotency_key", Retryable: true}
 	}
 	row.status = "published"
 	return s.failEvidence(EvidenceFailureAfterFilePublish)
+}
+
+type evidencePublisher struct {
+	file     *os.File
+	token    string
+	identity string
+	writerFD *os.File
+}
+
+func (s *Service) acquireEvidencePublisher(ctx context.Context, root *os.Root, projectID, continuationID, key string, row *evidenceRequestRow) (*evidencePublisher, error) {
+	tempName := filepath.Base(row.tempPath)
+	if info, err := root.Lstat(tempName); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return nil, semanticError("evidence_integrity_failed", "journaled Evidence temp path is symlinked", "source_path", nil)
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("inspect journaled Evidence temp: %w", err)
+	}
+	file, err := root.OpenFile(tempName, os.O_RDONLY|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open journaled Evidence temp publisher: %w", err)
+	}
+	if err := lockEvidencePublisherFile(file); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		unlockAndCloseEvidencePublisher(file)
+		return nil, semanticError("evidence_integrity_failed", "journaled Evidence temp is not a regular file", "source_path", nil)
+	}
+	pathInfo, err := root.Lstat(tempName)
+	if err != nil || !os.SameFile(info, pathInfo) {
+		unlockAndCloseEvidencePublisher(file)
+		return nil, semanticError("evidence_integrity_failed", "journaled Evidence temp changed while claiming publisher", "source_path", nil)
+	}
+	token, err := newEvidencePublisherToken()
+	if err != nil {
+		unlockAndCloseEvidencePublisher(file)
+		return nil, err
+	}
+	identity := fileIdentity(row.tempPath, info)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		unlockAndCloseEvidencePublisher(file)
+		return nil, fmt.Errorf("begin Evidence publisher claim: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var payloadState string
+	if err := tx.QueryRowContext(ctx, `SELECT state FROM blackboard_v2_evidence_payloads WHERE project_id=? AND managed_internal_path=?`, projectID, row.internalPath).Scan(&payloadState); err != nil {
+		unlockAndCloseEvidencePublisher(file)
+		return nil, fmt.Errorf("validate Evidence publisher payload claim: %w", err)
+	}
+	if payloadState != "active" {
+		unlockAndCloseEvidencePublisher(file)
+		return nil, &Error{Code: "evidence_payload_gc_in_progress", Message: "Evidence payload cleanup is in progress", Path: "source_path", Retryable: true}
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE blackboard_v2_evidence_requests SET publisher_token=?,publisher_temp_identity=?,updated_at=? WHERE project_id=? AND continuation_id=? AND idempotency_key=? AND request_hash=? AND temp_internal_path=? AND status='reserved'`, token, identity, time.Now().UTC().Format(time.RFC3339Nano), projectID, continuationID, key, row.requestHash, row.tempPath)
+	if err != nil {
+		unlockAndCloseEvidencePublisher(file)
+		return nil, fmt.Errorf("claim Evidence publisher: %w", err)
+	}
+	changed, _ := result.RowsAffected()
+	if changed != 1 {
+		unlockAndCloseEvidencePublisher(file)
+		return nil, &Error{Code: "evidence_publication_in_progress", Message: "Evidence publisher reservation changed", Path: "idempotency_key", Retryable: true}
+	}
+	if err := tx.Commit(); err != nil {
+		unlockAndCloseEvidencePublisher(file)
+		return nil, fmt.Errorf("commit Evidence publisher claim: %w", err)
+	}
+	row.publisherToken = token
+	row.publisherID = identity
+	return &evidencePublisher{file: file, token: token, identity: identity}, nil
+}
+
+func (publisher *evidencePublisher) writer(root *os.Root, name string) (*os.File, error) {
+	if publisher.writerFD != nil {
+		return publisher.writerFD, nil
+	}
+	if err := publisher.file.Chmod(0o600); err != nil {
+		return nil, fmt.Errorf("make journaled Evidence temp writable: %w", err)
+	}
+	writer, err := root.OpenFile(name, os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open journaled Evidence temp writer: %w", err)
+	}
+	lockedInfo, lockErr := publisher.file.Stat()
+	writerInfo, writerErr := writer.Stat()
+	if lockErr != nil || writerErr != nil || !os.SameFile(lockedInfo, writerInfo) {
+		_ = writer.Close()
+		return nil, semanticError("evidence_integrity_failed", "journaled Evidence temp inode changed before write", "source_path", nil)
+	}
+	publisher.writerFD = writer
+	return writer, nil
+}
+
+func (publisher *evidencePublisher) validate(ctx context.Context, db *store.DB, root *os.Root, projectID, continuationID, key string, row evidenceRequestRow) error {
+	lockedInfo, err := publisher.file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat locked Evidence publisher: %w", err)
+	}
+	pathInfo, err := root.Lstat(filepath.Base(row.tempPath))
+	if err != nil || !os.SameFile(lockedInfo, pathInfo) {
+		return semanticError("evidence_integrity_failed", "journaled Evidence temp inode changed before publication", "source_path", nil)
+	}
+	var token, identity string
+	if err := db.QueryRowContext(ctx, `SELECT publisher_token,publisher_temp_identity FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=? AND request_hash=?`, projectID, continuationID, key, row.requestHash).Scan(&token, &identity); err != nil {
+		return fmt.Errorf("validate Evidence publisher claim: %w", err)
+	}
+	if token != publisher.token || identity != publisher.identity || fileIdentity(row.tempPath, lockedInfo) != publisher.identity {
+		return &Error{Code: "evidence_publication_in_progress", Message: "Evidence publisher claim changed", Path: "idempotency_key", Retryable: true}
+	}
+	return nil
+}
+
+func (publisher *evidencePublisher) close() {
+	if publisher.writerFD != nil {
+		_ = publisher.writerFD.Close()
+	}
+	unlockAndCloseEvidencePublisher(publisher.file)
+}
+
+func lockEvidencePublisherFile(file *os.File) error {
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return &Error{Code: "evidence_publication_in_progress", Message: "Evidence publication is already in progress", Path: "idempotency_key", Retryable: true}
+		}
+		return fmt.Errorf("lock Evidence publisher inode: %w", err)
+	}
+	return nil
+}
+
+func openLockedEvidenceFile(root *os.Root, name, description string) (*os.File, error) {
+	info, err := root.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, semanticError("evidence_integrity_failed", description+" is symlinked or not a regular file", "source_path", nil)
+	}
+	file, err := root.Open(name)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", description, err)
+	}
+	if err := lockEvidencePublisherFile(file); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	opened, err := file.Stat()
+	if err != nil || !os.SameFile(info, opened) {
+		unlockAndCloseEvidencePublisher(file)
+		return nil, semanticError("evidence_integrity_failed", description+" changed while acquiring its inode lock", "source_path", nil)
+	}
+	return file, nil
+}
+
+func removeInactiveJournaledEvidenceTemp(root *os.Root, name string) error {
+	if _, err := root.Lstat(name); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("inspect stale journaled Evidence temp: %w", err)
+	}
+	file, err := openLockedEvidenceFile(root, name, "journaled Evidence temp")
+	if err != nil {
+		return err
+	}
+	defer unlockAndCloseEvidencePublisher(file)
+	if err := root.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove stale journaled Evidence temp: %w", err)
+	}
+	return syncEvidenceDirectory(root)
+}
+
+func unlockAndCloseEvidencePublisher(file *os.File) {
+	_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	_ = file.Close()
+}
+
+func verifyOpenEvidenceFile(file *os.File, digest string, size int64) (bool, error) {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return false, err
+	}
+	hash := sha256.New()
+	actualSize, err := io.Copy(hash, file)
+	if err != nil {
+		return false, err
+	}
+	_, seekErr := file.Seek(0, io.SeekStart)
+	return actualSize == size && hex.EncodeToString(hash.Sum(nil)) == digest, seekErr
+}
+
+func newEvidencePublisherToken() (string, error) {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", fmt.Errorf("create Evidence publisher token: %w", err)
+	}
+	return hex.EncodeToString(value[:]), nil
+}
+
+func sweepLegacyEvidenceTemps(root *os.Root, destination func() (*os.File, error), digest string, size int64) (bool, error) {
+	directory, err := root.Open(".")
+	if err != nil {
+		return false, fmt.Errorf("open managed Evidence directory for legacy sweep: %w", err)
+	}
+	entries, readErr := directory.ReadDir(-1)
+	closeErr := directory.Close()
+	if readErr != nil {
+		return false, fmt.Errorf("read managed Evidence directory for legacy sweep: %w", readErr)
+	}
+	if closeErr != nil {
+		return false, fmt.Errorf("close managed Evidence legacy sweep directory: %w", closeErr)
+	}
+	adopted := false
+	removed := false
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, ".retain-") {
+			continue
+		}
+		valid := false
+		info, statErr := root.Lstat(name)
+		if statErr == nil && info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
+			candidate, openErr := root.Open(name)
+			if openErr != nil {
+				return false, fmt.Errorf("open legacy Evidence temp: %w", openErr)
+			}
+			valid, openErr = verifyOpenEvidenceFile(candidate, digest, size)
+			if openErr == nil && valid && !adopted && destination != nil {
+				target, targetErr := destination()
+				if targetErr != nil {
+					_ = candidate.Close()
+					return false, targetErr
+				}
+				if target != nil {
+					if err := target.Truncate(0); err == nil {
+						_, err = target.Seek(0, io.SeekStart)
+					}
+					if err == nil {
+						_, err = candidate.Seek(0, io.SeekStart)
+					}
+					if err == nil {
+						_, err = io.Copy(target, candidate)
+					}
+					if err == nil {
+						err = target.Sync()
+					}
+					if err == nil {
+						var ready bool
+						ready, err = verifyOpenEvidenceFile(target, digest, size)
+						if err == nil && !ready {
+							err = errors.New("adopted Evidence temp failed integrity verification")
+						}
+					}
+					if err != nil {
+						_ = candidate.Close()
+						return false, fmt.Errorf("adopt legacy Evidence temp: %w", err)
+					}
+					adopted = true
+				}
+			}
+			if openErr != nil {
+				_ = candidate.Close()
+				return false, fmt.Errorf("verify legacy Evidence temp: %w", openErr)
+			}
+			if err := candidate.Close(); err != nil {
+				return false, fmt.Errorf("close legacy Evidence temp: %w", err)
+			}
+		}
+		if err := root.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return false, fmt.Errorf("remove legacy Evidence temp: %w", err)
+		} else if err == nil {
+			removed = true
+		}
+	}
+	if removed {
+		if err := syncEvidenceDirectory(root); err != nil {
+			return false, err
+		}
+	}
+	return adopted, nil
 }
 
 func copyEvidenceWithMidpointFailure(destination io.Writer, hash io.Writer, source io.Reader, fail func() error) (int64, error) {
@@ -1152,7 +1538,7 @@ func (s *Service) syncAndCheckpointPublishedEvidence(ctx context.Context, projec
 	if err := s.failEvidence(EvidenceFailureBeforePublishStore); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE blackboard_v2_evidence_requests SET status='published',updated_at=? WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, time.Now().UTC().Format(time.RFC3339Nano), projectID, continuationID, key); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE blackboard_v2_evidence_requests SET status='published',publisher_token='',publisher_temp_identity='',updated_at=? WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, time.Now().UTC().Format(time.RFC3339Nano), projectID, continuationID, key); err != nil {
 		return fmt.Errorf("checkpoint recovered Evidence publication: %w", err)
 	}
 	return s.failEvidence(EvidenceFailureAfterFilePublish)
@@ -1178,6 +1564,14 @@ func (s *Service) cleanupDefinitiveEvidenceFailure(ctx context.Context, projectI
 	if !errors.As(cause, &semanticErr) || semanticErr.Retryable || semanticErr.Code == "idempotency_conflict" {
 		return
 	}
+	guard, err := s.acquireEvidenceCleanupGuard(row)
+	if err != nil {
+		return
+	}
+	defer guard.close()
+	if _, err := s.db.ExecContext(ctx, `UPDATE blackboard_v2_evidence_requests SET publisher_token='',publisher_temp_identity='',updated_at=? WHERE project_id=? AND continuation_id=? AND idempotency_key=? AND request_hash=?`, time.Now().UTC().Format(time.RFC3339Nano), projectID, continuationID, key, row.requestHash); err != nil {
+		return
+	}
 	decision, err := s.claimEvidencePayloadGC(ctx, projectID, continuationID, key, row)
 	if err != nil || decision == evidenceCleanupPreserve {
 		return
@@ -1199,6 +1593,57 @@ func (s *Service) cleanupDefinitiveEvidenceFailure(ctx context.Context, projectI
 		return
 	}
 	_ = s.finalizeEvidencePayloadGC(ctx, projectID, continuationID, key, row)
+}
+
+type evidenceCleanupGuard struct {
+	root      *os.Root
+	directory *os.Root
+	files     []*os.File
+}
+
+func (s *Service) acquireEvidenceCleanupGuard(row evidenceRequestRow) (*evidenceCleanupGuard, error) {
+	root, err := os.OpenRoot(s.evidenceConfig.ArtifactRoot)
+	if err != nil {
+		return nil, fmt.Errorf("open managed Artifact Root for cleanup: %w", err)
+	}
+	directory, err := openSecureDirectory(root, filepath.Dir(row.internalPath))
+	if err != nil {
+		_ = root.Close()
+		return nil, fmt.Errorf("open managed Evidence directory for cleanup: %w", err)
+	}
+	guard := &evidenceCleanupGuard{root: root, directory: directory}
+	seen := make(map[string]bool)
+	for _, name := range []string{filepath.Base(row.tempPath), filepath.Base(row.internalPath)} {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		if _, err := directory.Lstat(name); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			guard.close()
+			return nil, fmt.Errorf("inspect Evidence cleanup inode: %w", err)
+		}
+		file, err := openLockedEvidenceFile(directory, name, "Evidence cleanup payload")
+		if err != nil {
+			guard.close()
+			return nil, err
+		}
+		guard.files = append(guard.files, file)
+	}
+	return guard, nil
+}
+
+func (guard *evidenceCleanupGuard) close() {
+	for index := len(guard.files) - 1; index >= 0; index-- {
+		unlockAndCloseEvidencePublisher(guard.files[index])
+	}
+	if guard.directory != nil {
+		_ = guard.directory.Close()
+	}
+	if guard.root != nil {
+		_ = guard.root.Close()
+	}
 }
 
 type evidenceCleanupDecision uint8
@@ -1304,6 +1749,9 @@ func (s *Service) recoverOwnedEvidenceGC(ctx context.Context, projectID, continu
 	if err := s.removeClaimedEvidencePayload(row); err != nil {
 		return false, err
 	}
+	if err := s.failEvidence(EvidenceFailureAfterPayloadUnlink); err != nil {
+		return false, err
+	}
 	if err := s.finalizeEvidencePayloadGC(ctx, projectID, continuationID, key, row); err != nil {
 		return false, err
 	}
@@ -1341,18 +1789,13 @@ func (s *Service) removeClaimedEvidencePayload(row evidenceRequestRow) error {
 		return fmt.Errorf("open managed Evidence directory: %w", err)
 	}
 	defer directory.Close()
-	removed := false
 	for _, name := range []string{filepath.Base(row.tempPath), filepath.Base(row.internalPath)} {
 		err := directory.Remove(name)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove claimed Evidence payload: %w", err)
 		}
-		removed = removed || err == nil
 	}
-	if removed {
-		return syncEvidenceDirectory(directory)
-	}
-	return nil
+	return syncEvidenceDirectory(directory)
 }
 
 func (s *Service) finalizeEvidencePayloadGC(ctx context.Context, projectID, continuationID, key string, row evidenceRequestRow) error {

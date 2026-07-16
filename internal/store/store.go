@@ -802,7 +802,25 @@ func migrations() []migration {
 		newMigration(23, "blackboard_v2_attempt_ownership", migration23SQL, migration23Up),
 		newMigration(24, "blackboard_v2_evidence_requests", migration24SQL, migration24Up),
 		newMigration(25, "blackboard_v2_evidence_payload_claims", migration25SQL, migration25Up),
+		newMigration(26, "blackboard_v2_evidence_publisher_claims", migration26SQL, migration26Up),
 	}
+}
+
+const migration26SQL = `SELECT 1;`
+
+func migration26Up(tx *sql.Tx) error {
+	for _, column := range []struct {
+		name       string
+		definition string
+	}{
+		{name: "publisher_token", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "publisher_temp_identity", definition: "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := ensureColumn(tx, "blackboard_v2_evidence_requests", column.name, column.definition); err != nil {
+			return fmt.Errorf("ensure blackboard_v2_evidence_requests.%s: %w", column.name, err)
+		}
+	}
+	return execStatements(tx, migration26SQL)
 }
 
 const migration25SQL = `

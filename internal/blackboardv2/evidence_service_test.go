@@ -847,6 +847,239 @@ func TestRetainEvidenceRestartRecoversDeterministicJournaledTempAtEveryPublicati
 	}
 }
 
+func TestConcurrentExactRetainRetryCannotReplaceActivePublisherTemp(t *testing.T) {
+	fixture := newEvidenceV2Fixture(t, "Concurrent Exact Evidence Publisher")
+	payload := strings.Repeat("inode-bound-publication-proof-", 8192)
+	fixture.writeSource(t, "overlap.txt", payload)
+	barrier := &evidenceMidCopyBarrier{reached: make(chan struct{}), release: make(chan struct{})}
+	service := blackboardv2.NewServiceWithEvidence(fixture.db, blackboardv2.EvidenceConfig{
+		RuntimeRoot: fixture.runtimeRoot, ArtifactRoot: fixture.runtimeRoot, Failures: barrier,
+	})
+	request := blackboardv2.RetainEvidenceRequest{
+		IdempotencyKey: "retain-overlapping-exact", Key: "evidence:overlapping-exact", Attempt: "attempt:evidence",
+		SourcePath: "overlap.txt", ArtifactType: "text", Summary: "Concurrent exact retries share one publisher",
+	}
+	firstResult := make(chan error, 1)
+	go func() {
+		_, err := service.RetainEvidenceForContinuation(context.Background(), fixture.projectID, fixture.continuationID, request)
+		firstResult <- err
+	}()
+	select {
+	case <-barrier.reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first publisher did not reach controlled mid-copy boundary")
+	}
+	secondResult := make(chan error, 1)
+	go func() {
+		_, err := service.RetainEvidenceForContinuation(context.Background(), fixture.projectID, fixture.continuationID, request)
+		secondResult <- err
+	}()
+	var secondErr error
+	select {
+	case secondErr = <-secondResult:
+	case <-time.After(5 * time.Second):
+		close(barrier.release)
+		t.Fatal("overlapping exact retry did not return while publisher was active")
+	}
+	var retryable *blackboardv2.Error
+	if !errors.As(secondErr, &retryable) || retryable.Code != "evidence_publication_in_progress" || !retryable.Retryable {
+		close(barrier.release)
+		t.Fatalf("overlapping exact retry error = %#v, want retryable publisher claim", secondErr)
+	}
+	var tempPath, publisherToken, publisherIdentity string
+	if err := fixture.db.QueryRow(`SELECT temp_internal_path,publisher_token,publisher_temp_identity FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, fixture.projectID, fixture.continuationID, request.IdempotencyKey).Scan(&tempPath, &publisherToken, &publisherIdentity); err != nil {
+		close(barrier.release)
+		t.Fatalf("read active publisher temp path: %v", err)
+	}
+	if publisherToken == "" || publisherIdentity == "" {
+		close(barrier.release)
+		t.Fatalf("active publisher claim = token %q identity %q, want durable owner", publisherToken, publisherIdentity)
+	}
+	partial, err := os.Stat(filepath.Join(fixture.runtimeRoot, filepath.FromSlash(tempPath)))
+	if err != nil || partial.Size() == 0 || partial.Size() >= int64(len(payload)) {
+		close(barrier.release)
+		t.Fatalf("active publisher temp size=%v err=%v", func() int64 {
+			if partial == nil {
+				return -1
+			}
+			return partial.Size()
+		}(), err)
+	}
+	close(barrier.release)
+	if err := <-firstResult; err != nil {
+		t.Fatalf("active publisher failed after overlapping retry: %v", err)
+	}
+	if err := fixture.db.QueryRow(`SELECT publisher_token,publisher_temp_identity FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, fixture.projectID, fixture.continuationID, request.IdempotencyKey).Scan(&publisherToken, &publisherIdentity); err != nil {
+		t.Fatalf("read completed publisher claim: %v", err)
+	}
+	if publisherToken != "" || publisherIdentity != "" {
+		t.Fatalf("completed publisher claim = token %q identity %q, want cleared", publisherToken, publisherIdentity)
+	}
+	if _, err := service.RetainEvidenceForContinuation(context.Background(), fixture.projectID, fixture.continuationID, request); err != nil {
+		t.Fatalf("exact replay after active publisher completed: %v", err)
+	}
+	files := retainedEvidenceFiles(t, fixture.runtimeRoot)
+	if len(files) != 1 {
+		t.Fatalf("overlapping exact retry payloads = %v, want one final", files)
+	}
+	got, err := os.ReadFile(files[0])
+	if err != nil || string(got) != payload {
+		t.Fatalf("overlapping exact retry final size=%d err=%v", len(got), err)
+	}
+}
+
+func TestV24UpgradeAdoptsSyncedLegacyTempForTerminalAttemptReplay(t *testing.T) {
+	fixture := newEvidenceV2Fixture(t, "V24 Evidence Temp Upgrade")
+	payload := strings.Repeat("legacy-v24-synced-proof-", 4096)
+	fixture.writeSource(t, "legacy.txt", payload)
+	request := blackboardv2.RetainEvidenceRequest{
+		IdempotencyKey: "retain-v24-upgrade", Key: "evidence:v24-upgrade", Attempt: "attempt:evidence",
+		SourcePath: "legacy.txt", ArtifactType: "text", Summary: "Legacy v24 crash payload",
+	}
+	failing := blackboardv2.NewServiceWithEvidence(fixture.db, blackboardv2.EvidenceConfig{
+		RuntimeRoot: fixture.runtimeRoot, ArtifactRoot: fixture.runtimeRoot,
+		Failures: &failEvidenceV2Once{point: blackboardv2.EvidenceFailureAfterTempSync},
+	})
+	if _, err := failing.RetainEvidenceForContinuation(context.Background(), fixture.projectID, fixture.continuationID, request); err == nil {
+		t.Fatal("v24 fixture publication crash unexpectedly succeeded")
+	}
+	if _, err := fixture.service.ApplyForContinuation(context.Background(), fixture.projectID, fixture.continuationID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "terminalize-v24-upgrade-attempt",
+		Changes: []blackboardv2.Change{{
+			Op: "transition", Key: "attempt:evidence", Version: 1, Status: "failed", Summary: "Attempt ended after v24 temp sync",
+		}},
+	}); err != nil {
+		t.Fatalf("terminalize v24 producing Attempt: %v", err)
+	}
+	var tempPath, finalPath string
+	if err := fixture.db.QueryRow(`SELECT temp_internal_path,managed_internal_path FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, fixture.projectID, fixture.continuationID, request.IdempotencyKey).Scan(&tempPath, &finalPath); err != nil {
+		t.Fatalf("read v24 fixture publication paths: %v", err)
+	}
+	absoluteTemp := filepath.Join(fixture.runtimeRoot, filepath.FromSlash(tempPath))
+	legacyTemp := filepath.Join(filepath.Dir(absoluteTemp), ".retain-v24-crash-state")
+	if err := os.Rename(absoluteTemp, legacyTemp); err != nil {
+		t.Fatalf("convert deterministic temp to v24 random temp: %v", err)
+	}
+	currentVersionTemp := filepath.Join(filepath.Dir(absoluteTemp), filepath.Base(finalPath)+".stage-active-current-version")
+	if err := os.WriteFile(currentVersionTemp, []byte("active current-version publisher bytes"), 0o600); err != nil {
+		t.Fatalf("write current-version temp sweep sentinel: %v", err)
+	}
+	directory, err := os.Open(filepath.Dir(legacyTemp))
+	if err != nil {
+		t.Fatalf("open v24 temp directory: %v", err)
+	}
+	if err := directory.Sync(); err != nil {
+		_ = directory.Close()
+		t.Fatalf("sync v24 temp rename: %v", err)
+	}
+	if err := directory.Close(); err != nil {
+		t.Fatalf("close v24 temp directory: %v", err)
+	}
+	if _, err := fixture.db.Exec(`DROP TABLE blackboard_v2_evidence_payloads`); err != nil {
+		t.Fatalf("remove post-v24 payload claims: %v", err)
+	}
+	if _, err := fixture.db.Exec(`UPDATE blackboard_v2_evidence_requests SET temp_internal_path='',publisher_token='',publisher_temp_identity='' WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, fixture.projectID, fixture.continuationID, request.IdempotencyKey); err != nil {
+		t.Fatalf("restore v24 request shape: %v", err)
+	}
+	if _, err := fixture.db.Exec(`DELETE FROM schema_migrations WHERE version>=25`); err != nil {
+		t.Fatalf("restore v24 migration ledger: %v", err)
+	}
+	if err := fixture.db.Close(); err != nil {
+		t.Fatalf("close v24 crash fixture: %v", err)
+	}
+	if err := os.Remove(filepath.Join(fixture.workdir, "legacy.txt")); err != nil {
+		t.Fatalf("remove v24 source before terminal replay: %v", err)
+	}
+	reopened, err := store.Open(fixture.dbPath)
+	if err != nil {
+		t.Fatalf("upgrade v24 crash fixture: %v", err)
+	}
+	adopting := blackboardv2.NewServiceWithEvidence(reopened, blackboardv2.EvidenceConfig{
+		RuntimeRoot: fixture.runtimeRoot, ArtifactRoot: fixture.runtimeRoot,
+		Failures: &failEvidenceV2Once{point: blackboardv2.EvidenceFailureAfterTempSync},
+	})
+	if _, err := adopting.RetainEvidenceForContinuation(context.Background(), fixture.projectID, fixture.continuationID, request); err == nil {
+		t.Fatal("adopted v24 temp fsync crash unexpectedly succeeded")
+	}
+	if _, err := os.Lstat(legacyTemp); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("v24 adoption left legacy temp after fsync: %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(fixture.runtimeRoot, filepath.FromSlash(tempPath))); err != nil || info.Size() != int64(len(payload)) {
+		t.Fatalf("adopted deterministic temp size=%v err=%v", func() int64 {
+			if info == nil {
+				return -1
+			}
+			return info.Size()
+		}(), err)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatalf("close upgraded store after adopted temp fsync: %v", err)
+	}
+	reopened, err = store.Open(fixture.dbPath)
+	if err != nil {
+		t.Fatalf("restart after adopted v24 temp fsync: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	restarted := blackboardv2.NewServiceWithEvidence(reopened, blackboardv2.EvidenceConfig{RuntimeRoot: fixture.runtimeRoot, ArtifactRoot: fixture.runtimeRoot})
+	result, err := restarted.RetainEvidenceForContinuation(context.Background(), fixture.projectID, fixture.continuationID, request)
+	if err != nil {
+		t.Fatalf("terminal replay from upgraded v24 temp: %v", err)
+	}
+	if got, want := mustTupleJSON(t, result.Records), [][]any{{request.Key, float64(1)}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("upgraded v24 replay records = %#v, want %#v", got, want)
+	}
+	for _, path := range []string{legacyTemp, filepath.Join(fixture.runtimeRoot, filepath.FromSlash(tempPath))} {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("upgraded v24 replay left temp %q: %v", path, err)
+		}
+	}
+	currentBytes, err := os.ReadFile(currentVersionTemp)
+	if err != nil || string(currentBytes) != "active current-version publisher bytes" {
+		t.Fatalf("v24 sweep changed current-version temp = %q err=%v", currentBytes, err)
+	}
+	if err := os.Remove(currentVersionTemp); err != nil {
+		t.Fatalf("remove current-version temp sweep sentinel: %v", err)
+	}
+	finalBytes, err := os.ReadFile(filepath.Join(fixture.runtimeRoot, filepath.FromSlash(finalPath)))
+	if err != nil || string(finalBytes) != payload {
+		t.Fatalf("upgraded v24 final size=%d err=%v", len(finalBytes), err)
+	}
+	history, err := restarted.ReadHistory(context.Background(), fixture.projectID, request.Key, blackboardv2.HistoryOptions{})
+	if err != nil {
+		t.Fatalf("read upgraded v24 Evidence history: %v", err)
+	}
+	foundProduced := false
+	for _, item := range history.Items {
+		foundProduced = foundProduced || (item.Kind == "relationship" && item.From == request.Attempt && item.Relation == "produced" && item.To == request.Key)
+	}
+	if !foundProduced {
+		t.Fatalf("upgraded v24 Evidence lacks produced history: %#v", history.Items)
+	}
+}
+
+type evidenceMidCopyBarrier struct {
+	mu      sync.Mutex
+	reached chan struct{}
+	release chan struct{}
+	blocked bool
+}
+
+func (barrier *evidenceMidCopyBarrier) FailAfter(point blackboardv2.EvidenceFailurePoint) error {
+	if point != blackboardv2.EvidenceFailureMidTempCopy {
+		return nil
+	}
+	barrier.mu.Lock()
+	if barrier.blocked {
+		barrier.mu.Unlock()
+		return nil
+	}
+	barrier.blocked = true
+	close(barrier.reached)
+	barrier.mu.Unlock()
+	<-barrier.release
+	return nil
+}
+
 func TestConcurrentEvidenceReservationAtomicallyRejectsConflictingSemantics(t *testing.T) {
 	fixture := newEvidenceV2Fixture(t, "Concurrent Evidence Reservation")
 	fixture.writeSource(t, "race-a.txt", "reservation A\n")
@@ -1197,10 +1430,34 @@ func TestDefinitiveEvidenceCleanupRecoversDurableGCCheckpointAfterRestart(t *tes
 			if err != nil {
 				t.Fatalf("reopen store after GC crash: %v", err)
 			}
+			syncCrash := blackboardv2.NewServiceWithEvidence(reopened, blackboardv2.EvidenceConfig{
+				RuntimeRoot: fixture.runtimeRoot, ArtifactRoot: fixture.runtimeRoot,
+				Failures: &failEvidenceV2Once{point: blackboardv2.EvidenceFailureAfterPayloadUnlink},
+			})
+			if _, err := syncCrash.RetainEvidenceForContinuation(context.Background(), fixture.projectID, fixture.continuationID, request); err == nil || isSemanticCode(err, "version_conflict") {
+				t.Fatalf("GC recovery sync crash = %#v, want injected durability failure", err)
+			}
+			var durableRequestCount, durablePayloadCount int
+			if err := reopened.QueryRow(`SELECT COUNT(*) FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, fixture.projectID, fixture.continuationID, request.IdempotencyKey).Scan(&durableRequestCount); err != nil {
+				t.Fatalf("count GC request after recovery sync crash: %v", err)
+			}
+			if err := reopened.QueryRow(`SELECT COUNT(*) FROM blackboard_v2_evidence_payloads WHERE project_id=? AND managed_internal_path=? AND state='gc'`, fixture.projectID, finalPath).Scan(&durablePayloadCount); err != nil {
+				t.Fatalf("count GC claim after recovery sync crash: %v", err)
+			}
+			if durableRequestCount != 1 || durablePayloadCount != 1 {
+				t.Fatalf("GC durability rows after sync crash = request %d payload %d, want one each", durableRequestCount, durablePayloadCount)
+			}
+			if err := reopened.Close(); err != nil {
+				t.Fatalf("close store after GC recovery sync crash: %v", err)
+			}
+			reopened, err = store.Open(fixture.dbPath)
+			if err != nil {
+				t.Fatalf("restart after GC recovery sync crash: %v", err)
+			}
 			t.Cleanup(func() { _ = reopened.Close() })
 			restarted := blackboardv2.NewServiceWithEvidence(reopened, blackboardv2.EvidenceConfig{RuntimeRoot: fixture.runtimeRoot, ArtifactRoot: fixture.runtimeRoot})
 			if _, err := restarted.RetainEvidenceForContinuation(context.Background(), fixture.projectID, fixture.continuationID, request); !isSemanticCode(err, "version_conflict") {
-				t.Fatalf("restart after durable GC checkpoint = %#v, want version_conflict", err)
+				t.Fatalf("second restart after durable GC checkpoint = %#v, want version_conflict", err)
 			}
 			var requestCount, payloadCount int
 			if err := reopened.QueryRow(`SELECT COUNT(*) FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, fixture.projectID, fixture.continuationID, request.IdempotencyKey).Scan(&requestCount); err != nil {
