@@ -25,11 +25,12 @@ import (
 type MigrationKind string
 
 const (
-	MigrationKindInspect        MigrationKind = "inspect"
-	MigrationKindBackup         MigrationKind = "backup"
-	MigrationKindCutover        MigrationKind = "cutover"
-	MigrationKindVerify         MigrationKind = "verify"
-	MigrationKindFinalizeLegacy MigrationKind = "finalize_legacy"
+	MigrationKindInspect            MigrationKind = "inspect"
+	MigrationKindBackup             MigrationKind = "backup"
+	MigrationKindCutover            MigrationKind = "cutover"
+	MigrationKindVerify             MigrationKind = "verify"
+	MigrationKindFinalizeLegacy     MigrationKind = "finalize_legacy"
+	MigrationKindRebuildUnambiguous MigrationKind = "rebuild_unambiguous"
 )
 
 var ErrUnsupportedMigrationKind = errors.New("unsupported Blackboard migration request kind")
@@ -53,6 +54,7 @@ type MigrationResult struct {
 	Plan         LegacyMigrationPlanV1  `json:"plan"`
 	Backup       *VerifiedBackup        `json:"backup,omitempty"`
 	Import       *LegacyImportResultV1  `json:"import,omitempty"`
+	Rebuild      *RebuildResultV1       `json:"rebuild,omitempty"`
 	Verification *CutoverVerificationV1 `json:"verification,omitempty"`
 	Recovery     *RecoveryGuidanceV1    `json:"recovery,omitempty"`
 }
@@ -103,6 +105,7 @@ type MigrationProjectPlan struct {
 }
 
 type MigrationMapping struct {
+	Project    string `json:"project,omitempty"`
 	SourceType string `json:"source_type"`
 	SourceKey  string `json:"source_key"`
 	Action     string `json:"action"`
@@ -326,6 +329,13 @@ func (s *Service) Execute(ctx context.Context, request MigrationRequest) (Migrat
 		return result, nil
 	case MigrationKindFinalizeLegacy:
 		return s.finalizeLegacy(ctx, request)
+	case MigrationKindRebuildUnambiguous:
+		rebuild, err := s.rebuildUnambiguousHeads(ctx)
+		result := MigrationResult{Kind: request.Kind, Rebuild: &rebuild}
+		if err != nil {
+			return result, err
+		}
+		return result, nil
 	default:
 		return MigrationResult{}, fmt.Errorf("%w: %q", ErrUnsupportedMigrationKind, request.Kind)
 	}
