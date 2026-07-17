@@ -123,12 +123,12 @@ func (server *Server) handleBlackboardV2Snapshot(response http.ResponseWriter, r
 		writeBlackboardV2Error(response, authErr, nil)
 		return
 	}
-	server.serveBlackboardV2(response, request, principal, true, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, error) {
+	server.serveBlackboardV2Conditional(response, request, principal, true, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, int, error) {
 		projection, err := server.blackboardV2.ProjectRuntimeSnapshot(ctx, principal.projectID)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
-		return projection.Snapshot, nil
+		return projection.Snapshot, projection.Snapshot.Revision, nil
 	})
 }
 
@@ -139,8 +139,12 @@ func (server *Server) handleBlackboardV2Read(response http.ResponseWriter, reque
 		return
 	}
 	key := request.PathValue("key")
-	server.serveBlackboardV2(response, request, principal, true, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, error) {
-		return server.blackboardV2.ReadCurrent(ctx, principal.projectID, key)
+	server.serveBlackboardV2Conditional(response, request, principal, true, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, int, error) {
+		detail, err := server.blackboardV2.ReadCurrent(ctx, principal.projectID, key)
+		if err != nil {
+			return nil, 0, err
+		}
+		return detail, detail.Revision, nil
 	})
 }
 
@@ -273,6 +277,19 @@ func (server *Server) handleBlackboardV2Finish(response http.ResponseWriter, req
 }
 
 func (server *Server) serveBlackboardV2(response http.ResponseWriter, request *http.Request, principal blackboardV2Principal, attachSync bool, action func(context.Context, blackboardv2.ContinuationAuthority) (any, error)) {
+	server.serveBlackboardV2Result(response, request, principal, attachSync, false, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, int, error) {
+		result, err := action(ctx, live)
+		return result, 0, err
+	})
+}
+
+// serveBlackboardV2Conditional serves Snapshot/detail with a revision ETag and
+// honest If-None-Match behavior (200 body or 304 empty).
+func (server *Server) serveBlackboardV2Conditional(response http.ResponseWriter, request *http.Request, principal blackboardV2Principal, attachSync bool, action func(context.Context, blackboardv2.ContinuationAuthority) (any, int, error)) {
+	server.serveBlackboardV2Result(response, request, principal, attachSync, true, action)
+}
+
+func (server *Server) serveBlackboardV2Result(response http.ResponseWriter, request *http.Request, principal blackboardV2Principal, attachSync bool, conditional bool, action func(context.Context, blackboardv2.ContinuationAuthority) (any, int, error)) {
 	ctx := request.Context()
 	var authority blackboardv2.ContinuationAuthority
 	if !principal.operator {
@@ -284,7 +301,7 @@ func (server *Server) serveBlackboardV2(response http.ResponseWriter, request *h
 		}
 		authority = binding
 	}
-	result, err := action(ctx, authority)
+	result, revision, err := action(ctx, authority)
 	if err != nil {
 		var sync *blackboardv2.SynchronizationAttachment
 		if !principal.operator && authority.Live && authority.Sync.Pending && attachSync {
@@ -295,16 +312,23 @@ func (server *Server) serveBlackboardV2(response http.ResponseWriter, request *h
 		writeBlackboardV2Error(response, asBlackboardV2Error(err), sync)
 		return
 	}
+	var sync *blackboardv2.SynchronizationAttachment
 	if !principal.operator && authority.Live && authority.Sync.Pending && attachSync {
-		if attachment, syncErr := server.blackboardV2.SynchronizeContinuation(ctx, principal.projectID, principal.taskID, principal.continuationID, authority.Sync.FromRevision); syncErr != nil {
+		attachment, syncErr := server.blackboardV2.SynchronizeContinuation(ctx, principal.projectID, principal.taskID, principal.continuationID, authority.Sync.FromRevision)
+		if syncErr != nil {
 			writeBlackboardV2Error(response, asBlackboardV2Error(syncErr), nil)
 			return
-		} else {
-			writeBlackboardV2Success(response, result, &attachment)
-			return
+		}
+		sync = &attachment
+		if revision == 0 {
+			revision = attachment.Revision
 		}
 	}
-	writeBlackboardV2Success(response, result, nil)
+	if conditional {
+		writeBlackboardV2ConditionalSuccess(response, request, revision, result, sync)
+		return
+	}
+	writeBlackboardV2Success(response, result, sync)
 }
 
 func requireBlackboardV2IdempotencyKey(request *http.Request) (string, *blackboardv2.Error) {
@@ -339,32 +363,53 @@ func decodeBlackboardV2JSON(request *http.Request, target any) *blackboardv2.Err
 
 func writeBlackboardV2Success(response http.ResponseWriter, result any, sync *blackboardv2.SynchronizationAttachment) {
 	response.Header().Set("Cache-Control", "no-store")
+	writeBlackboardV2JSON(response, http.StatusOK, result, sync)
+}
+
+func writeBlackboardV2ConditionalSuccess(response http.ResponseWriter, request *http.Request, revision int, result any, sync *blackboardv2.SynchronizationAttachment) {
+	etag := blackboardV2RevisionETag(revision)
+	response.Header().Set("ETag", etag)
+	response.Header().Set("Cache-Control", "private, no-cache")
+	if etagMatches(request.Header.Get("If-None-Match"), etag) {
+		// 304 responses carry validators but no body, and never an error envelope.
+		response.WriteHeader(http.StatusNotModified)
+		return
+	}
+	writeBlackboardV2JSON(response, http.StatusOK, result, sync)
+}
+
+func writeBlackboardV2JSON(response http.ResponseWriter, status int, result any, sync *blackboardv2.SynchronizationAttachment) {
 	if sync == nil {
-		writeJSON(response, http.StatusOK, result)
+		writeJSON(response, status, result)
 		return
 	}
 	raw, err := json.Marshal(result)
 	if err != nil {
-		writeBlackboardV2Error(response, blackboardV2HTTPError("internal", "encode Blackboard v2 result: "+err.Error(), ""), nil)
+		writeBlackboardV2Error(response, blackboardV2HTTPError("internal", "unexpected Blackboard v2 failure", "internal"), nil)
 		return
 	}
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &object); err != nil {
-		writeBlackboardV2Error(response, blackboardV2HTTPError("internal", "compose Blackboard v2 synchronization: "+err.Error(), ""), nil)
+		writeBlackboardV2Error(response, blackboardV2HTTPError("internal", "unexpected Blackboard v2 failure", "internal"), nil)
 		return
 	}
 	syncRaw, err := json.Marshal(sync)
 	if err != nil {
-		writeBlackboardV2Error(response, blackboardV2HTTPError("internal", "encode Blackboard v2 synchronization: "+err.Error(), ""), nil)
+		writeBlackboardV2Error(response, blackboardV2HTTPError("internal", "unexpected Blackboard v2 failure", "internal"), nil)
 		return
 	}
 	object["sync"] = syncRaw
-	writeJSON(response, http.StatusOK, object)
+	writeJSON(response, status, object)
 }
 
 func writeBlackboardV2Error(response http.ResponseWriter, err *blackboardv2.Error, sync *blackboardv2.SynchronizationAttachment) {
 	if err == nil {
-		err = blackboardV2HTTPError("internal", "unknown Blackboard v2 error", "")
+		err = blackboardV2HTTPError("internal", "unexpected Blackboard v2 failure", "internal")
+	}
+	// Authenticated semantic errors may carry same-Project sync only; never
+	// attach sync to transport/auth failures.
+	if sync != nil && (err.Code == "authority_denied" || err.Code == "invalid_schema" || err.Code == "internal" || err.Code == "storage_busy") {
+		sync = nil
 	}
 	status := blackboardV2HTTPStatus(err)
 	response.Header().Set("Cache-Control", "no-store")
@@ -379,15 +424,51 @@ func writeBlackboardV2Error(response http.ResponseWriter, err *blackboardv2.Erro
 }
 
 func asBlackboardV2Error(err error) *blackboardv2.Error {
+	if err == nil {
+		return blackboardV2HTTPError("internal", "unexpected Blackboard v2 failure", "internal")
+	}
 	var semantic *blackboardv2.Error
 	if errors.As(err, &semantic) {
 		return semantic
 	}
-	return blackboardV2HTTPError("internal", err.Error(), "")
+	lower := strings.ToLower(err.Error())
+	if strings.Contains(lower, "database is locked") || strings.Contains(lower, "database is busy") ||
+		strings.Contains(lower, "sqlite_busy") || strings.Contains(lower, "sqlite_locked") {
+		return blackboardV2HTTPError("storage_busy", "SQLite writer lock is busy", "storage")
+	}
+	// Unexpected faults map to a closed internal envelope without raw storage
+	// paths, SQL text, or operator secrets.
+	return blackboardV2HTTPError("internal", "unexpected Blackboard v2 failure", "internal")
 }
 
 func blackboardV2HTTPError(code, message, path string) *blackboardv2.Error {
 	return &blackboardv2.Error{Code: code, Message: message, Path: path, Retryable: code == "storage_busy"}
+}
+
+func blackboardV2RevisionETag(revision int) string {
+	return `"` + strconv.Itoa(revision) + `"`
+}
+
+// etagMatches implements honest If-None-Match comparison for a single strong
+// revision ETag: exact match, list membership, or `*`.
+func etagMatches(header, etag string) bool {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return false
+	}
+	if header == "*" {
+		return true
+	}
+	for _, part := range strings.Split(header, ",") {
+		candidate := strings.TrimSpace(part)
+		if strings.HasPrefix(candidate, "W/") {
+			candidate = strings.TrimSpace(strings.TrimPrefix(candidate, "W/"))
+		}
+		if candidate == etag {
+			return true
+		}
+	}
+	return false
 }
 
 func blackboardV2HTTPStatus(err *blackboardv2.Error) int {
@@ -416,6 +497,8 @@ func blackboardV2HTTPStatus(err *blackboardv2.Error) int {
 	case "internal":
 		return http.StatusInternalServerError
 	default:
+		// Retryable evidence/publication codes already returned 503 above.
+		// Remaining domain codes stay closed 422 unless explicitly mapped.
 		return http.StatusUnprocessableEntity
 	}
 }
