@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io/fs"
 	"sort"
+	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
 
@@ -173,8 +174,11 @@ func (h *Harness) Baseline() (Baseline, error) {
 
 // ToolInputSchema returns a closed object JSON Schema for one named trusted-tool
 // input definition from the frozen Blackboard v2 schema bundle. Nested $ref
-// targets resolve against the embedded $defs. The result is suitable for MCP
-// tool InputSchema advertisement (type object at the root).
+// targets resolve against a pruned $defs map that contains only the selected
+// root DTO and its transitive references. Unrelated frozen definitions (for
+// example migration plans, runtime snapshots, or error envelopes) are omitted
+// so tools/list does not advertise them. The result is suitable for MCP tool
+// InputSchema advertisement (type object at the root).
 func (h *Harness) ToolInputSchema(schemaName string) (*jsonschema.Schema, error) {
 	var root jsonschema.Schema
 	if err := json.Unmarshal(h.schemaBytes, &root); err != nil {
@@ -185,8 +189,8 @@ func (h *Harness) ToolInputSchema(schemaName string) (*jsonschema.Schema, error)
 		return nil, fmt.Errorf("unknown Blackboard v2 schema %q", schemaName)
 	}
 	// Clone the definition so callers can own the advertised schema without
-	// mutating the harness document, then attach the full $defs set so nested
-	// refs such as #/$defs/change resolve during MCP validation.
+	// mutating the harness document, then attach only the transitive $defs set
+	// needed to resolve nested refs such as #/$defs/change.
 	raw, err := json.Marshal(def)
 	if err != nil {
 		return nil, fmt.Errorf("encode Blackboard v2 schema %q: %w", schemaName, err)
@@ -198,9 +202,100 @@ func (h *Harness) ToolInputSchema(schemaName string) (*jsonschema.Schema, error)
 	if schema.Type != "object" {
 		return nil, fmt.Errorf("Blackboard v2 schema %q is not a root object", schemaName)
 	}
-	schema.Defs = root.Defs
+	needed, err := transitiveSchemaDefs(def, root.Defs)
+	if err != nil {
+		return nil, fmt.Errorf("collect transitive defs for %q: %w", schemaName, err)
+	}
+	if len(needed) > 0 {
+		schema.Defs = needed
+	}
 	schema.ID = root.ID
 	return &schema, nil
+}
+
+// transitiveSchemaDefs returns the closed set of $defs entries reachable from
+// root through #/$defs/... references, cloned so callers can own the map.
+func transitiveSchemaDefs(root *jsonschema.Schema, all map[string]*jsonschema.Schema) (map[string]*jsonschema.Schema, error) {
+	if root == nil {
+		return nil, nil
+	}
+	pending := schemaDefRefNames(root)
+	seen := make(map[string]bool, len(pending))
+	out := make(map[string]*jsonschema.Schema)
+	for len(pending) > 0 {
+		name := pending[0]
+		pending = pending[1:]
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		def, ok := all[name]
+		if !ok || def == nil {
+			return nil, fmt.Errorf("unknown $defs entry %q", name)
+		}
+		cloned, err := cloneSchema(def)
+		if err != nil {
+			return nil, err
+		}
+		out[name] = cloned
+		for _, child := range schemaDefRefNames(def) {
+			if !seen[child] {
+				pending = append(pending, child)
+			}
+		}
+	}
+	return out, nil
+}
+
+func cloneSchema(schema *jsonschema.Schema) (*jsonschema.Schema, error) {
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		return nil, err
+	}
+	var cloned jsonschema.Schema
+	if err := json.Unmarshal(raw, &cloned); err != nil {
+		return nil, err
+	}
+	return &cloned, nil
+}
+
+func schemaDefRefNames(schema *jsonschema.Schema) []string {
+	if schema == nil {
+		return nil
+	}
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		return nil
+	}
+	const prefix = `#/$defs/`
+	blob := string(raw)
+	seen := make(map[string]bool)
+	var names []string
+	for {
+		index := strings.Index(blob, prefix)
+		if index < 0 {
+			break
+		}
+		blob = blob[index+len(prefix):]
+		end := 0
+		for end < len(blob) {
+			c := blob[end]
+			if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
+				end++
+				continue
+			}
+			break
+		}
+		name := blob[:end]
+		blob = blob[end:]
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // TrustedTools returns the six trusted Runtime tools in canonical order.

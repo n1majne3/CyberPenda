@@ -538,3 +538,479 @@ func TestBlackboardV2MCPPeerReadAttachesSynchronization(t *testing.T) {
 		t.Fatalf("synchronization attachment = %#v body=%s", synchronized, raw)
 	}
 }
+
+func assertV2InvalidSchemaEnvelope(t *testing.T, raw []byte) {
+	t.Helper()
+	var envelope struct {
+		Error *struct {
+			Code      string         `json:"code"`
+			Message   string         `json:"message"`
+			Path      string         `json:"path"`
+			Retryable bool           `json:"retryable"`
+			Details   map[string]any `json:"details"`
+		} `json:"error"`
+		Sync json.RawMessage `json:"sync"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatalf("decode invalid_schema envelope: %v body=%s", err, raw)
+	}
+	if envelope.Error == nil || envelope.Error.Code != "invalid_schema" || envelope.Error.Message == "" || envelope.Error.Retryable {
+		t.Fatalf("invalid_schema envelope = %s", raw)
+	}
+	if envelope.Error.Path != "arguments" {
+		t.Fatalf("invalid_schema path = %q, want arguments; body=%s", envelope.Error.Path, raw)
+	}
+	if len(envelope.Sync) != 0 {
+		t.Fatalf("invalid_schema attached sync: %s", raw)
+	}
+	// Reject the SDK's generic validation text so agents always see the compact v2 envelope.
+	if strings.Contains(string(raw), `validating "arguments"`) {
+		t.Fatalf("generic SDK validation text leaked: %s", raw)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("decode envelope object: %v", err)
+	}
+	if len(fields) != 1 || fields["error"] == nil {
+		t.Fatalf("envelope keys = %v, want only error; body=%s", keysRaw(fields), raw)
+	}
+	var errorFields map[string]json.RawMessage
+	if err := json.Unmarshal(fields["error"], &errorFields); err != nil {
+		t.Fatalf("decode error object: %v", err)
+	}
+	for _, required := range []string{"code", "message", "retryable"} {
+		if errorFields[required] == nil {
+			t.Fatalf("error missing %s: %s", required, raw)
+		}
+	}
+	for key := range errorFields {
+		switch key {
+		case "code", "message", "path", "retryable", "details":
+		default:
+			t.Fatalf("error has unexpected field %q: %s", key, raw)
+		}
+	}
+}
+
+func keysRaw(values map[string]json.RawMessage) []string {
+	out := make([]string, 0, len(values))
+	for key := range values {
+		out = append(out, key)
+	}
+	return out
+}
+
+func TestBlackboardV2MCPInvalidSchemaReturnsStableErrorEnvelope(t *testing.T) {
+	fixture := newV2MCPFixture(t)
+	session := fixture.session(t, &fixture.ownerGrant, nil)
+
+	cases := []struct {
+		name string
+		tool string
+		args any
+	}{
+		{
+			name: "unknown project_id on change",
+			tool: "blackboard_change",
+			args: map[string]any{
+				"schema": "semantic-change-batch/v2", "idempotency_key": "schema-project-id",
+				"changes": []any{}, "project_id": fixture.project.ID,
+			},
+		},
+		{
+			name: "missing required change fields",
+			tool: "blackboard_change",
+			args: map[string]any{"idempotency_key": "schema-missing"},
+		},
+		{
+			name: "unknown task_id on finish",
+			tool: "blackboard_finish",
+			args: map[string]any{"idempotency_key": "schema-finish", "task_id": fixture.task.ID},
+		},
+		{
+			name: "unknown authority on read",
+			tool: "blackboard_read",
+			args: map[string]any{"key": "entity:x", "continuation_id": fixture.continuation.ID},
+		},
+		{
+			name: "wrong type on history limit",
+			tool: "blackboard_history",
+			args: map[string]any{"key": "entity:x", "limit": "twenty"},
+		},
+		{
+			name: "unknown field on retain",
+			tool: "blackboard_retain_evidence",
+			args: map[string]any{
+				"idempotency_key": "schema-retain", "key": "evidence:x", "attempt": "attempt:x",
+				"source_path": "a.txt", "artifact_type": "text", "summary": "x", "actor_id": "model",
+			},
+		},
+		{
+			name: "unknown field on checkpoint",
+			tool: "blackboard_checkpoint_attempt",
+			args: map[string]any{
+				"idempotency_key": "schema-checkpoint", "key": "attempt:x", "version": 1, "summary": "x",
+				"origin": "runtime",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, raw := callV2Tool(t, session, tc.tool, tc.args)
+			if !result.IsError {
+				t.Fatalf("expected schema error, got success: %s", raw)
+			}
+			assertV2InvalidSchemaEnvelope(t, raw)
+		})
+	}
+}
+
+func TestBlackboardV2MCPToolInputSchemasContainOnlyTransitiveRootDefs(t *testing.T) {
+	fixture := newV2MCPFixture(t)
+	session := fixture.session(t, &fixture.ownerGrant, nil)
+	listed, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	harness, err := blackboardv2contract.NewHarness()
+	if err != nil {
+		t.Fatalf("contract harness: %v", err)
+	}
+	tools, err := harness.TrustedTools()
+	if err != nil {
+		t.Fatalf("trusted tools: %v", err)
+	}
+	byName := make(map[string]blackboardv2contract.TrustedTool, len(tools))
+	for _, tool := range tools {
+		byName[tool.Name] = tool
+	}
+	if len(listed.Tools) != 6 {
+		t.Fatalf("tools = %d, want 6", len(listed.Tools))
+	}
+	forbiddenSubstrings := []string{
+		"project_id", "task_id", "continuation_id", "actor_id", "actor_type",
+		"property_map", "get_current_graph", "get-current-graph",
+		"list_project_facts", "migrationPlan", "migrationProject", "migrationDecision",
+		"migrationBlocker", "migrationMapping", "migrationResult", "migrationSource",
+		"migrationValidation", "runtimeSnapshot", "snapshotKnowledge", "snapshotWork",
+		"unauthenticatedErrorEnvelope", "errorEnvelope", "errorBody",
+		"FinishContinuation", "TaskSummary", "continuation_interface",
+	}
+	// Definition names that must never appear unless they are part of the selected
+	// root DTO's transitive closure (checked below against the harness).
+	unrelatedDefNames := []string{
+		"migrationPlan", "migrationProjectPlan", "migrationDecision", "migrationBlocker",
+		"migrationMapping", "migrationResult", "migrationSource", "migrationValidation",
+		"migrationProjectResult", "runtimeSnapshot", "snapshotKnowledge", "snapshotWork",
+		"snapshotEntity", "snapshotObjective", "snapshotAttempt", "snapshotFact",
+		"snapshotFinding", "snapshotSolution", "snapshotEvidence",
+		"errorEnvelope", "errorBody", "unauthenticatedErrorEnvelope", "syncAttachment",
+		"syncResponse", "currentDetail", "semanticHistory", "historyItem",
+		"changeResult", "finishResult", "workingSnapshot",
+	}
+	for _, tool := range listed.Tools {
+		contract, ok := byName[tool.Name]
+		if !ok {
+			t.Fatalf("unexpected tool %q", tool.Name)
+		}
+		wantSchema, err := harness.ToolInputSchema(contract.InputSchema)
+		if err != nil {
+			t.Fatalf("harness schema for %s: %v", tool.Name, err)
+		}
+		wantJSON, err := json.Marshal(wantSchema)
+		if err != nil {
+			t.Fatalf("marshal want schema %s: %v", tool.Name, err)
+		}
+		gotJSON, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			t.Fatalf("marshal listed schema %s: %v", tool.Name, err)
+		}
+		var wantObj, gotObj map[string]any
+		if err := json.Unmarshal(wantJSON, &wantObj); err != nil {
+			t.Fatalf("decode want schema %s: %v", tool.Name, err)
+		}
+		if err := json.Unmarshal(gotJSON, &gotObj); err != nil {
+			t.Fatalf("decode listed schema %s: %v", tool.Name, err)
+		}
+		wantDefs, _ := wantObj["$defs"].(map[string]any)
+		gotDefs, _ := gotObj["$defs"].(map[string]any)
+		if wantDefs == nil {
+			wantDefs = map[string]any{}
+		}
+		if gotDefs == nil {
+			gotDefs = map[string]any{}
+		}
+		if len(gotDefs) != len(wantDefs) {
+			t.Errorf("%s $defs count = %d, want transitive %d (%v vs %v)",
+				tool.Name, len(gotDefs), len(wantDefs), keysAny(gotDefs), keysAny(wantDefs))
+		}
+		for name := range gotDefs {
+			if _, ok := wantDefs[name]; !ok {
+				t.Errorf("%s advertises unrelated $defs entry %q", tool.Name, name)
+			}
+		}
+		for _, name := range unrelatedDefNames {
+			if _, present := gotDefs[name]; present {
+				// Only fail when the name is not part of the transitive root set.
+				if _, allowed := wantDefs[name]; !allowed {
+					t.Errorf("%s $defs includes unrelated %q", tool.Name, name)
+				}
+			}
+		}
+		// tools/list must not advertise authority or retired surfaces as free text
+		// outside the selected root DTO tree.
+		for _, forbidden := range forbiddenSubstrings {
+			if bytes.Contains(gotJSON, []byte(forbidden)) {
+				t.Errorf("%s tools/list schema contains forbidden %q", tool.Name, forbidden)
+			}
+		}
+		// Refs must remain resolvable: every $ref target is present in $defs.
+		for _, match := range collectSchemaDefRefs(gotJSON) {
+			if _, ok := gotDefs[match]; !ok {
+				t.Errorf("%s has unresolved $ref %q", tool.Name, match)
+			}
+		}
+	}
+}
+
+func keysAny(values map[string]any) []string {
+	out := make([]string, 0, len(values))
+	for key := range values {
+		out = append(out, key)
+	}
+	return out
+}
+
+func collectSchemaDefRefs(schemaJSON []byte) []string {
+	const prefix = `#/$defs/`
+	seen := map[string]bool{}
+	var out []string
+	raw := string(schemaJSON)
+	for {
+		index := strings.Index(raw, prefix)
+		if index < 0 {
+			break
+		}
+		raw = raw[index+len(prefix):]
+		end := 0
+		for end < len(raw) {
+			c := raw[end]
+			if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
+				end++
+				continue
+			}
+			break
+		}
+		name := raw[:end]
+		if name != "" && !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+		raw = raw[end:]
+	}
+	return out
+}
+
+func TestBlackboardV2MCPExactReplayAfterFinishAndSupersession(t *testing.T) {
+	fixture := newV2MCPFixture(t)
+	session := fixture.session(t, &fixture.ownerGrant, nil)
+
+	prepare := blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "mcp-replay-open-work",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "entity:replay-target", Type: "entity", Record: blackboardv2.EntityRecord{Status: "active", Kind: "host", Name: "Replay target", ScopeStatus: "in_scope"}},
+			{Op: "create", Key: "objective:replay", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Replay objective"}},
+			{Op: "create", Key: "attempt:replay", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Replay attempt"}},
+			{Op: "relate", From: "attempt:replay", Relation: "tests", To: "objective:replay"},
+		},
+	}
+	if result, raw := callV2Tool(t, session, "blackboard_change", prepare); result.IsError {
+		t.Fatalf("prepare open work: %s", raw)
+	}
+	change := blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "mcp-replay-entity",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "entity:replay-exact", Type: "entity",
+			Record: blackboardv2.EntityRecord{Status: "active", Kind: "host", Name: "Exact replay host", ScopeStatus: "in_scope"},
+		}},
+	}
+	changeResult, changeRaw := callV2Tool(t, session, "blackboard_change", change)
+	if changeResult.IsError {
+		t.Fatalf("first change: %s", changeRaw)
+	}
+	workdir := filepath.Join(fixture.root, "runs", fixture.task.ID, "workdir")
+	if err := os.MkdirAll(workdir, 0o700); err != nil {
+		t.Fatalf("create workdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "replay-proof.txt"), []byte("replay proof\n"), 0o600); err != nil {
+		t.Fatalf("write evidence source: %v", err)
+	}
+	retain := blackboardv2.RetainEvidenceRequest{
+		IdempotencyKey: "mcp-replay-retain", Key: "evidence:replay", Attempt: "attempt:replay",
+		SourcePath: "replay-proof.txt", ArtifactType: "text", Summary: "Replay retained proof", MediaType: "text/plain",
+		Links: []blackboardv2.EvidenceLink{{"about", "entity:replay-target"}},
+	}
+	retainResult, retainRaw := callV2Tool(t, session, "blackboard_retain_evidence", retain)
+	if retainResult.IsError {
+		t.Fatalf("retain: %s", retainRaw)
+	}
+	checkpoint := blackboardv2.CheckpointAttemptRequest{
+		IdempotencyKey: "mcp-replay-checkpoint", Key: "attempt:replay", Version: 1, Summary: "Checkpoint before finish",
+	}
+	checkpointResult, checkpointRaw := callV2Tool(t, session, "blackboard_checkpoint_attempt", checkpoint)
+	if checkpointResult.IsError {
+		t.Fatalf("checkpoint: %s", checkpointRaw)
+	}
+	terminal := blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "mcp-replay-terminal",
+		Changes: []blackboardv2.Change{{Op: "transition", Key: "attempt:replay", Version: 2, Status: "succeeded", Summary: "Replay proof retained"}},
+	}
+	if result, raw := callV2Tool(t, session, "blackboard_change", terminal); result.IsError {
+		t.Fatalf("terminalize attempt: %s", raw)
+	}
+	finish := blackboardv2.FinishContinuationRequest{IdempotencyKey: "mcp-replay-finish"}
+	finishResult, finishRaw := callV2Tool(t, session, "blackboard_finish", finish)
+	if finishResult.IsError {
+		t.Fatalf("finish: %s", finishRaw)
+	}
+
+	// Exact non-mutating replays after Finish: match first response bytes, no live sync.
+	for _, tc := range []struct {
+		name string
+		tool string
+		args any
+		raw  []byte
+	}{
+		{"change", "blackboard_change", change, changeRaw},
+		{"retain", "blackboard_retain_evidence", retain, retainRaw},
+		{"checkpoint", "blackboard_checkpoint_attempt", checkpoint, checkpointRaw},
+		{"finish", "blackboard_finish", finish, finishRaw},
+	} {
+		result, raw := callV2Tool(t, session, tc.tool, tc.args)
+		if result.IsError || !bytes.Equal(raw, tc.raw) {
+			t.Fatalf("post-finish exact %s replay drifted: isError=%v\nfirst=%s\nreplay=%s", tc.name, result.IsError, tc.raw, raw)
+		}
+		if bytes.Contains(raw, []byte(`"sync"`)) {
+			t.Fatalf("post-finish exact %s replay attached live sync: %s", tc.name, raw)
+		}
+	}
+
+	// Changed retry and new writes remain rejected after Finish.
+	altered := change
+	altered.Changes = append([]blackboardv2.Change(nil), change.Changes...)
+	altered.Changes[0].Record = blackboardv2.EntityRecord{Status: "active", Kind: "host", Name: "Altered", ScopeStatus: "in_scope"}
+	if result, raw := callV2Tool(t, session, "blackboard_change", altered); !result.IsError || !bytes.Contains(raw, []byte(`"idempotency_conflict"`)) {
+		t.Fatalf("post-finish changed change retry = %s", raw)
+	}
+	alteredRetain := retain
+	alteredRetain.Summary = "different summary"
+	if result, raw := callV2Tool(t, session, "blackboard_retain_evidence", alteredRetain); !result.IsError || !bytes.Contains(raw, []byte(`"idempotency_conflict"`)) {
+		t.Fatalf("post-finish changed retain retry = %s", raw)
+	}
+	alteredCheckpoint := checkpoint
+	alteredCheckpoint.Summary = "different checkpoint"
+	if result, raw := callV2Tool(t, session, "blackboard_checkpoint_attempt", alteredCheckpoint); !result.IsError || !bytes.Contains(raw, []byte(`"idempotency_conflict"`)) {
+		t.Fatalf("post-finish changed checkpoint retry = %s", raw)
+	}
+	newWrite := blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "mcp-replay-new-after-finish",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "entity:after-finish", Type: "entity",
+			Record: blackboardv2.EntityRecord{Status: "active", Kind: "host", Name: "After finish", ScopeStatus: "in_scope"},
+		}},
+	}
+	if result, raw := callV2Tool(t, session, "blackboard_change", newWrite); !result.IsError || !bytes.Contains(raw, []byte(`"closed_continuation"`)) {
+		t.Fatalf("post-finish new write = %s", raw)
+	}
+	// Closed Continuation loses live read/current knowledge authority.
+	if result, raw := callV2Tool(t, session, "blackboard_read", map[string]any{"key": "entity:replay-exact"}); !result.IsError || !bytes.Contains(raw, []byte(`"closed_continuation"`)) {
+		t.Fatalf("post-finish read authority = %s", raw)
+	}
+	if result, raw := callV2Tool(t, session, "blackboard_history", map[string]any{"key": "entity:replay-exact"}); !result.IsError || !bytes.Contains(raw, []byte(`"closed_continuation"`)) {
+		t.Fatalf("post-finish history authority = %s", raw)
+	}
+
+	// Unauthorized cross-project principal cannot obtain the stored owner replay.
+	foreign := fixture.session(t, &fixture.foreignGrant, nil)
+	foreignChange, foreignChangeRaw := callV2Tool(t, foreign, "blackboard_change", change)
+	if foreignChange.IsError {
+		// Foreign may reject for its own open-work state; it must never return owner bytes.
+		if bytes.Equal(foreignChangeRaw, changeRaw) {
+			t.Fatalf("foreign error body matched owner change replay")
+		}
+	} else if bytes.Equal(foreignChangeRaw, changeRaw) {
+		t.Fatalf("foreign principal received owner exact change replay")
+	}
+	foreignFinish, foreignFinishRaw := callV2Tool(t, foreign, "blackboard_finish", finish)
+	if !foreignFinish.IsError {
+		if bytes.Equal(foreignFinishRaw, finishRaw) {
+			t.Fatalf("foreign principal received owner exact finish replay")
+		}
+	} else if bytes.Equal(foreignFinishRaw, finishRaw) {
+		t.Fatalf("foreign finish error matched owner finish replay")
+	}
+
+	// Supersession: a newer Continuation on the same Task closes offline authority
+	// for the previous run, but stored non-mutating replay still works without sync.
+	superTask, err := task.NewService(fixture.db, project.NewService(fixture.db)).Create(task.CreateRequest{
+		ProjectID: fixture.project.ID, Goal: "supersession replay", RuntimeProfileID: fixture.profile.ID, Runner: task.RunnerSandbox,
+	})
+	if err != nil {
+		t.Fatalf("create supersession Task: %v", err)
+	}
+	first, err := fixture.continuity.CreateContinuation(context.Background(), blackboardv2.ContinuationLaunchRequest{
+		ProjectID: fixture.project.ID, TaskID: superTask.ID, RuntimeProfileID: fixture.profile.ID,
+		RuntimeProvider: string(runtimeprofile.ProviderCodex), Runner: task.RunnerSandbox,
+		RuntimeConfig: map[string]any{"provider": "codex", "model": "gpt-test"},
+	})
+	if err != nil {
+		t.Fatalf("create first supersession Continuation: %v", err)
+	}
+	firstGrant, err := projectinterface.NewGrantStore(fixture.db, projectinterface.SystemClock{}, projectinterface.RandomIDSource{}, projectinterface.RandomTokenSource{}).
+		Resolve(context.Background(), first.Token)
+	if err != nil {
+		t.Fatalf("resolve first supersession grant: %v", err)
+	}
+	firstSession := fixture.session(t, &firstGrant, nil)
+	superChange := blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "mcp-super-entity",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "entity:super-exact", Type: "entity",
+			Record: blackboardv2.EntityRecord{Status: "active", Kind: "host", Name: "Superseded host", ScopeStatus: "in_scope"},
+		}},
+	}
+	superFirst, superFirstRaw := callV2Tool(t, firstSession, "blackboard_change", superChange)
+	if superFirst.IsError {
+		t.Fatalf("supersession first change: %s", superFirstRaw)
+	}
+	if _, err := task.NewService(fixture.db, project.NewService(fixture.db)).UpdateContinuationStatus(first.Continuation.ID, task.StatusCompleted); err != nil {
+		t.Fatalf("close first supersession Continuation: %v", err)
+	}
+	if _, err := fixture.continuity.CreateContinuation(context.Background(), blackboardv2.ContinuationLaunchRequest{
+		ProjectID: fixture.project.ID, TaskID: superTask.ID, RuntimeProfileID: fixture.profile.ID,
+		RuntimeProvider: string(runtimeprofile.ProviderCodex), Runner: task.RunnerSandbox,
+		RuntimeConfig: map[string]any{"provider": "codex", "model": "gpt-test"},
+	}); err != nil {
+		t.Fatalf("create superseding Continuation: %v", err)
+	}
+	superReplay, superReplayRaw := callV2Tool(t, firstSession, "blackboard_change", superChange)
+	if superReplay.IsError || !bytes.Equal(superReplayRaw, superFirstRaw) {
+		t.Fatalf("superseded exact change replay drifted: isError=%v\nfirst=%s\nreplay=%s", superReplay.IsError, superFirstRaw, superReplayRaw)
+	}
+	if bytes.Contains(superReplayRaw, []byte(`"sync"`)) {
+		t.Fatalf("superseded exact change replay attached live sync: %s", superReplayRaw)
+	}
+	superNew := blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "mcp-super-new",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "entity:super-new", Type: "entity",
+			Record: blackboardv2.EntityRecord{Status: "active", Kind: "host", Name: "New after super", ScopeStatus: "in_scope"},
+		}},
+	}
+	if result, raw := callV2Tool(t, firstSession, "blackboard_change", superNew); !result.IsError || !bytes.Contains(raw, []byte(`"closed_continuation"`)) {
+		t.Fatalf("superseded new write = %s", raw)
+	}
+	if result, raw := callV2Tool(t, firstSession, "blackboard_read", map[string]any{"key": "entity:super-exact"}); !result.IsError || !bytes.Contains(raw, []byte(`"closed_continuation"`)) {
+		t.Fatalf("superseded read authority = %s", raw)
+	}
+}

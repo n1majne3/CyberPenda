@@ -519,6 +519,85 @@ func TestOpenAPIAndTrustedToolsFreezeTheAcceptedV2Adapters(t *testing.T) {
 	}
 }
 
+func TestToolInputSchemaIncludesOnlyTransitiveRootDefs(t *testing.T) {
+	harness := mustHarness(t)
+	tools, err := harness.TrustedTools()
+	if err != nil {
+		t.Fatalf("trusted tools: %v", err)
+	}
+	if len(tools) != 6 {
+		t.Fatalf("trusted tools = %d, want 6", len(tools))
+	}
+	unrelated := []string{
+		"migrationPlan", "migrationProjectPlan", "migrationDecision", "migrationBlocker",
+		"migrationMapping", "migrationResult", "migrationSource", "migrationValidation",
+		"migrationProjectResult", "runtimeSnapshot", "snapshotKnowledge", "snapshotWork",
+		"errorEnvelope", "errorBody", "unauthenticatedErrorEnvelope", "syncAttachment",
+		"currentDetail", "semanticHistory", "changeResult", "finishResult",
+	}
+	for _, tool := range tools {
+		schema, err := harness.ToolInputSchema(tool.InputSchema)
+		if err != nil {
+			t.Fatalf("ToolInputSchema(%s): %v", tool.InputSchema, err)
+		}
+		if schema.Type != "object" {
+			t.Fatalf("%s schema type = %q, want object", tool.Name, schema.Type)
+		}
+		raw, err := json.Marshal(schema)
+		if err != nil {
+			t.Fatalf("marshal %s schema: %v", tool.Name, err)
+		}
+		var encoded map[string]any
+		if err := json.Unmarshal(raw, &encoded); err != nil {
+			t.Fatalf("decode %s schema: %v", tool.Name, err)
+		}
+		defs, _ := encoded["$defs"].(map[string]any)
+		if defs == nil {
+			defs = map[string]any{}
+		}
+		// Root DTO is the schema body; it must not re-embed the entire frozen $defs set.
+		if len(defs) > 40 {
+			t.Fatalf("%s $defs count = %d, want a pruned transitive set", tool.Name, len(defs))
+		}
+		for _, name := range unrelated {
+			if _, ok := defs[name]; ok {
+				t.Errorf("%s $defs includes unrelated %q", tool.Name, name)
+			}
+		}
+		// Every advertised $ref must resolve inside the pruned $defs.
+		const prefix = `#/$defs/`
+		blob := string(raw)
+		for {
+			index := strings.Index(blob, prefix)
+			if index < 0 {
+				break
+			}
+			blob = blob[index+len(prefix):]
+			end := 0
+			for end < len(blob) {
+				c := blob[end]
+				if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
+					end++
+					continue
+				}
+				break
+			}
+			name := blob[:end]
+			blob = blob[end:]
+			if name == "" {
+				continue
+			}
+			if _, ok := defs[name]; !ok {
+				t.Errorf("%s unresolved $ref %q", tool.Name, name)
+			}
+		}
+		// Closed advertisement remains intact.
+		if !bytes.Contains(raw, []byte(`"additionalProperties":false`)) && !bytes.Contains(raw, []byte(`"additionalProperties": false`)) {
+			t.Errorf("%s schema is not closed: %s", tool.Name, raw)
+		}
+	}
+}
+
 func hasRequiredParameter(parameters []struct {
 	Name     string `json:"name"`
 	In       string `json:"in"`

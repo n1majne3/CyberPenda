@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -59,62 +60,89 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps V2Deps) {
 		schemas[tool.Name] = schema
 	}
 
+	// Register with the raw AddTool path so tools/list still advertises the closed
+	// contract schemas while every call reaches controlled validation that returns
+	// the compact v2 invalid_schema envelope (never generic SDK validation text).
 	for _, tool := range tools {
+		tool := tool
+		inputSchema := schemas[tool.Name]
 		switch tool.Name {
 		case "blackboard_change":
-			sdkmcp.AddTool(server, &sdkmcp.Tool{
-				Name: tool.Name, Description: tool.Description, InputSchema: schemas[tool.Name],
-			}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args blackboardv2.ChangeBatch) (*sdkmcp.CallToolResult, any, error) {
-				_ = req
-				return deps.serveV2(ctx, true, func(ctx context.Context, projectID, continuationID string) (any, error) {
+			server.AddTool(&sdkmcp.Tool{
+				Name: tool.Name, Description: tool.Description, InputSchema: inputSchema,
+			}, func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+				var args blackboardv2.ChangeBatch
+				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, req.Params.Arguments, &args); decodeErr != nil {
+					return toolBlackboardV2ErrorResult(decodeErr)
+				}
+				// Exact replay remains available after Finish/supersession; only live
+				// Continuations may attach synchronization.
+				return deps.callV2(ctx, false, true, func(ctx context.Context, projectID, continuationID string) (any, error) {
 					return deps.BlackboardV2.ApplyForContinuation(ctx, projectID, continuationID, args)
 				})
 			})
 		case "blackboard_read":
-			sdkmcp.AddTool(server, &sdkmcp.Tool{
-				Name: tool.Name, Description: tool.Description, InputSchema: schemas[tool.Name],
-			}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args blackboardV2ReadArgs) (*sdkmcp.CallToolResult, any, error) {
-				_ = req
-				return deps.serveV2(ctx, true, func(ctx context.Context, projectID, _ string) (any, error) {
+			server.AddTool(&sdkmcp.Tool{
+				Name: tool.Name, Description: tool.Description, InputSchema: inputSchema,
+			}, func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+				var args blackboardV2ReadArgs
+				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, req.Params.Arguments, &args); decodeErr != nil {
+					return toolBlackboardV2ErrorResult(decodeErr)
+				}
+				// Live read/current knowledge authority only; closed Continuations
+				// keep exact write/finish replay but not current knowledge reads.
+				return deps.callV2(ctx, true, true, func(ctx context.Context, projectID, _ string) (any, error) {
 					return deps.BlackboardV2.ReadCurrent(ctx, projectID, args.Key)
 				})
 			})
 		case "blackboard_history":
-			sdkmcp.AddTool(server, &sdkmcp.Tool{
-				Name: tool.Name, Description: tool.Description, InputSchema: schemas[tool.Name],
-			}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args blackboardV2HistoryArgs) (*sdkmcp.CallToolResult, any, error) {
-				_ = req
-				return deps.serveV2(ctx, true, func(ctx context.Context, projectID, _ string) (any, error) {
+			server.AddTool(&sdkmcp.Tool{
+				Name: tool.Name, Description: tool.Description, InputSchema: inputSchema,
+			}, func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+				var args blackboardV2HistoryArgs
+				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, req.Params.Arguments, &args); decodeErr != nil {
+					return toolBlackboardV2ErrorResult(decodeErr)
+				}
+				return deps.callV2(ctx, true, true, func(ctx context.Context, projectID, _ string) (any, error) {
 					return deps.BlackboardV2.ReadHistory(ctx, projectID, args.Key, blackboardv2.HistoryOptions{
 						Cursor: args.Cursor, Limit: args.Limit,
 					})
 				})
 			})
 		case "blackboard_retain_evidence":
-			sdkmcp.AddTool(server, &sdkmcp.Tool{
-				Name: tool.Name, Description: tool.Description, InputSchema: schemas[tool.Name],
-			}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args blackboardv2.RetainEvidenceRequest) (*sdkmcp.CallToolResult, any, error) {
-				_ = req
-				return deps.serveV2(ctx, true, func(ctx context.Context, projectID, continuationID string) (any, error) {
+			server.AddTool(&sdkmcp.Tool{
+				Name: tool.Name, Description: tool.Description, InputSchema: inputSchema,
+			}, func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+				var args blackboardv2.RetainEvidenceRequest
+				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, req.Params.Arguments, &args); decodeErr != nil {
+					return toolBlackboardV2ErrorResult(decodeErr)
+				}
+				return deps.callV2(ctx, false, true, func(ctx context.Context, projectID, continuationID string) (any, error) {
 					return deps.BlackboardV2.RetainEvidenceForContinuation(ctx, projectID, continuationID, args)
 				})
 			})
 		case "blackboard_checkpoint_attempt":
-			sdkmcp.AddTool(server, &sdkmcp.Tool{
-				Name: tool.Name, Description: tool.Description, InputSchema: schemas[tool.Name],
-			}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args blackboardv2.CheckpointAttemptRequest) (*sdkmcp.CallToolResult, any, error) {
-				_ = req
-				return deps.serveV2(ctx, true, func(ctx context.Context, projectID, continuationID string) (any, error) {
+			server.AddTool(&sdkmcp.Tool{
+				Name: tool.Name, Description: tool.Description, InputSchema: inputSchema,
+			}, func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+				var args blackboardv2.CheckpointAttemptRequest
+				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, req.Params.Arguments, &args); decodeErr != nil {
+					return toolBlackboardV2ErrorResult(decodeErr)
+				}
+				return deps.callV2(ctx, false, true, func(ctx context.Context, projectID, continuationID string) (any, error) {
 					return deps.BlackboardV2.CheckpointAttemptForContinuation(ctx, projectID, continuationID, args)
 				})
 			})
 		case "blackboard_finish":
-			sdkmcp.AddTool(server, &sdkmcp.Tool{
-				Name: tool.Name, Description: tool.Description, InputSchema: schemas[tool.Name],
-			}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args blackboardv2.FinishContinuationRequest) (*sdkmcp.CallToolResult, any, error) {
-				_ = req
+			server.AddTool(&sdkmcp.Tool{
+				Name: tool.Name, Description: tool.Description, InputSchema: inputSchema,
+			}, func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+				var args blackboardv2.FinishContinuationRequest
+				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, req.Params.Arguments, &args); decodeErr != nil {
+					return toolBlackboardV2ErrorResult(decodeErr)
+				}
 				// Exact Finish results never attach a new live synchronization sibling.
-				return deps.serveV2(ctx, false, func(ctx context.Context, projectID, continuationID string) (any, error) {
+				return deps.callV2(ctx, false, false, func(ctx context.Context, projectID, continuationID string) (any, error) {
 					return deps.BlackboardV2.FinishContinuation(ctx, projectID, continuationID, args)
 				})
 			})
@@ -134,7 +162,43 @@ type blackboardV2HistoryArgs struct {
 	Limit  int    `json:"limit,omitempty"`
 }
 
-func (deps V2Deps) serveV2(ctx context.Context, attachSync bool, action func(context.Context, string, string) (any, error)) (*sdkmcp.CallToolResult, any, error) {
+// decodeV2ToolArgs validates raw MCP arguments against the frozen contract
+// schema, then decodes into the closed service DTO. Failures always surface as
+// invalid_schema so transport validation never leaks SDK prose.
+func decodeV2ToolArgs(harness *blackboardv2contract.Harness, schemaName string, raw json.RawMessage, target any) *blackboardv2.Error {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		raw = json.RawMessage(`{}`)
+	}
+	if err := harness.Validate(schemaName, raw); err != nil {
+		return &blackboardv2.Error{
+			Code:      "invalid_schema",
+			Message:   "tool arguments do not match the closed input schema",
+			Path:      "arguments",
+			Retryable: false,
+		}
+	}
+	if err := json.Unmarshal(raw, target); err != nil {
+		return &blackboardv2.Error{
+			Code:      "invalid_schema",
+			Message:   "tool arguments do not match the closed input schema",
+			Path:      "arguments",
+			Retryable: false,
+		}
+	}
+	return nil
+}
+
+func (deps V2Deps) callV2(ctx context.Context, requireLive, attachSync bool, action func(context.Context, string, string) (any, error)) (*sdkmcp.CallToolResult, error) {
+	result, _, err := deps.serveV2(ctx, requireLive, attachSync, action)
+	return result, err
+}
+
+func toolBlackboardV2ErrorResult(err *blackboardv2.Error) (*sdkmcp.CallToolResult, error) {
+	result, _, callErr := toolBlackboardV2Error(err, nil)
+	return result, callErr
+}
+
+func (deps V2Deps) serveV2(ctx context.Context, requireLive, attachSync bool, action func(context.Context, string, string) (any, error)) (*sdkmcp.CallToolResult, any, error) {
 	grant, authErr := deps.requireGrant()
 	if authErr != nil {
 		return toolBlackboardV2Error(authErr, nil)
@@ -142,7 +206,11 @@ func (deps V2Deps) serveV2(ctx context.Context, attachSync bool, action func(con
 	if !grant.Status().IsReadable() {
 		return toolBlackboardV2Error(blackboardV2AuthError("authority_denied", "Continuation Interface capability is revoked", "authorization"), nil)
 	}
-	authority, err := deps.BlackboardV2.AuthorizeContinuationBinding(ctx, grant.ProjectID, grant.TaskID, grant.ContinuationID, attachSync)
+	// requireLive gates offline read/current knowledge authority. Mutating tools
+	// that support exact replay pass requireLive=false so stored non-mutating
+	// replays reach the service after Finish/supersession; the service still
+	// rejects changed retries and new writes.
+	authority, err := deps.BlackboardV2.AuthorizeContinuationBinding(ctx, grant.ProjectID, grant.TaskID, grant.ContinuationID, requireLive)
 	if err != nil {
 		return toolBlackboardV2Error(asBlackboardV2Error(err), nil)
 	}
