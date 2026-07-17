@@ -804,7 +804,66 @@ func migrations() []migration {
 		newMigration(25, "blackboard_v2_evidence_payload_claims", migration25SQL, migration25Up),
 		newMigration(26, "blackboard_v2_evidence_publisher_claims", migration26SQL, migration26Up),
 		newMigration(27, "blackboard_v2_private_evidence_staging", migration27SQL, migration27Up),
+		newMigration(28, "blackboard_v2_fixed_evidence_staging_scope", migration28SQL, migration28Up),
 	}
+}
+
+const migration28SQL = `SELECT 1;`
+
+func migration28Up(tx *sql.Tx) error {
+	if err := ensureColumn(tx, "blackboard_v2_evidence_requests", "migration27_temp_internal_path", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return fmt.Errorf("ensure blackboard_v2_evidence_requests.migration27_temp_internal_path: %w", err)
+	}
+	rows, err := tx.Query(`SELECT project_id,continuation_id,idempotency_key,request_hash,managed_internal_path,temp_internal_path,migration27_temp_internal_path FROM blackboard_v2_evidence_requests`)
+	if err != nil {
+		return fmt.Errorf("read Evidence staging paths for migration 28: %w", err)
+	}
+	type stagingRow struct {
+		projectID, continuationID, key, requestHash, managedPath, tempPath, migration27Path string
+	}
+	var stagingRows []stagingRow
+	for rows.Next() {
+		var row stagingRow
+		if err := rows.Scan(&row.projectID, &row.continuationID, &row.key, &row.requestHash, &row.managedPath, &row.tempPath, &row.migration27Path); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan Evidence staging path for migration 28: %w", err)
+		}
+		stagingRows = append(stagingRows, row)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate Evidence staging paths for migration 28: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close Evidence staging paths for migration 28: %w", err)
+	}
+	for _, row := range stagingRows {
+		fixedPath, err := fixedEvidenceStagingPath(row.managedPath, row.continuationID, row.key, row.requestHash)
+		if err != nil {
+			return fmt.Errorf("derive fixed Evidence staging path: %w", err)
+		}
+		if row.tempPath == fixedPath {
+			continue
+		}
+		migration27Path := row.migration27Path
+		if migration27Path == "" {
+			migration27Path = row.tempPath
+		}
+		if _, err := tx.Exec(`UPDATE blackboard_v2_evidence_requests SET migration27_temp_internal_path=?,temp_internal_path=? WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, migration27Path, fixedPath, row.projectID, row.continuationID, row.key); err != nil {
+			return fmt.Errorf("migrate fixed Evidence staging path: %w", err)
+		}
+	}
+	return execStatements(tx, migration28SQL)
+}
+
+func fixedEvidenceStagingPath(managedPath, continuationID, key, requestHash string) (string, error) {
+	marker := string(filepath.Separator) + "retained" + string(filepath.Separator)
+	index := strings.Index(managedPath, marker)
+	if index <= 0 || len(requestHash) != 64 {
+		return "", fmt.Errorf("invalid retained Evidence path")
+	}
+	scope := sha256.Sum256([]byte(continuationID + "\x00" + key))
+	return filepath.Join(managedPath[:index], ".evidence-staging", hex.EncodeToString(scope[:]), requestHash), nil
 }
 
 const migration27SQL = `

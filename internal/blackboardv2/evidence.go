@@ -172,18 +172,19 @@ type evidenceSource struct {
 }
 
 type evidenceRequestRow struct {
-	requestHash    string
-	sourceIdentity string
-	sha256         string
-	size           int64
-	internalPath   string
-	tempPath       string
-	previousTemp   string
-	publisherToken string
-	publisherID    string
-	payloadOwned   bool
-	status         string
-	resultJSON     string
+	requestHash     string
+	sourceIdentity  string
+	sha256          string
+	size            int64
+	internalPath    string
+	tempPath        string
+	previousTemp    string
+	migration27Temp string
+	publisherToken  string
+	publisherID     string
+	payloadOwned    bool
+	status          string
+	resultJSON      string
 }
 
 type retainedEvidenceMetadata struct {
@@ -296,7 +297,7 @@ func (s *Service) RetainEvidenceForContinuation(ctx context.Context, projectID, 
 		if err != nil {
 			return ChangeResult{}, err
 		}
-		recoveryExists, offlineRecoveryValid, err := s.evidencePublicationRecoveryExists(ctx, projectID, row)
+		recoveryExists, offlineRecoveryValid, err := s.evidencePublicationRecoveryExists(ctx, projectID, continuationID, request.IdempotencyKey, row)
 		if err != nil {
 			return ChangeResult{}, err
 		}
@@ -697,11 +698,37 @@ func plannedEvidenceTempPath(internalPath, continuationID, key, requestHash stri
 		return "", fmt.Errorf("planned Evidence path lacks its retained namespace")
 	}
 	projectRoot := internalPath[:index]
-	path := filepath.Join(projectRoot, ".evidence-staging", hex.EncodeToString([]byte(continuationID)), hex.EncodeToString([]byte(key)), requestHash)
+	scope := sha256.Sum256([]byte(continuationID + "\x00" + key))
+	path := filepath.Join(projectRoot, ".evidence-staging", hex.EncodeToString(scope[:]), requestHash)
 	if clean := filepath.Clean(path); clean != path || filepath.IsAbs(clean) || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || strings.Contains(clean, marker) {
 		return "", fmt.Errorf("planned Evidence temp path escapes private staging")
 	}
 	return path, nil
+}
+
+func migration27EvidenceTempPath(internalPath, continuationID, key, requestHash string) (string, error) {
+	if len(requestHash) != 64 || continuationID == "" || key == "" {
+		return "", fmt.Errorf("invalid Evidence request hash")
+	}
+	marker := string(filepath.Separator) + "retained" + string(filepath.Separator)
+	index := strings.Index(internalPath, marker)
+	if index <= 0 {
+		return "", fmt.Errorf("planned Evidence path lacks its retained namespace")
+	}
+	return filepath.Join(internalPath[:index], ".evidence-staging", hex.EncodeToString([]byte(continuationID)), hex.EncodeToString([]byte(key)), requestHash), nil
+}
+
+func filesystemSafeEvidencePath(path string) bool {
+	clean := filepath.Clean(path)
+	if clean != path || clean == "." || clean == ".." || filepath.IsAbs(clean) || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return false
+	}
+	for _, component := range strings.Split(clean, string(filepath.Separator)) {
+		if component == "" || component == "." || component == ".." || len(component) > 255 {
+			return false
+		}
+	}
+	return true
 }
 
 func semanticEvidencePath(projectID, internalPath, digest string) (string, error) {
@@ -746,7 +773,7 @@ func (s *Service) reserveEvidenceRequest(ctx context.Context, projectID, continu
 	rows, _ := result.RowsAffected()
 	var row evidenceRequestRow
 	var payloadOwned int
-	if err := tx.QueryRowContext(ctx, `SELECT request_hash,source_identity,source_sha256,source_size_bytes,managed_internal_path,temp_internal_path,previous_temp_internal_path,publisher_token,publisher_temp_identity,payload_owned,status,result_json FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, projectID, continuationID, key).Scan(&row.requestHash, &row.sourceIdentity, &row.sha256, &row.size, &row.internalPath, &row.tempPath, &row.previousTemp, &row.publisherToken, &row.publisherID, &payloadOwned, &row.status, &row.resultJSON); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT request_hash,source_identity,source_sha256,source_size_bytes,managed_internal_path,temp_internal_path,previous_temp_internal_path,migration27_temp_internal_path,publisher_token,publisher_temp_identity,payload_owned,status,result_json FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, projectID, continuationID, key).Scan(&row.requestHash, &row.sourceIdentity, &row.sha256, &row.size, &row.internalPath, &row.tempPath, &row.previousTemp, &row.migration27Temp, &row.publisherToken, &row.publisherID, &payloadOwned, &row.status, &row.resultJSON); err != nil {
 		return evidenceRequestRow{}, false, fmt.Errorf("read reserved Evidence request: %w", err)
 	}
 	row.payloadOwned = payloadOwned == 1
@@ -779,7 +806,7 @@ func (s *Service) reserveEvidenceRequest(ctx context.Context, projectID, continu
 func (s *Service) readEvidenceRequest(ctx context.Context, projectID, continuationID, key string) (evidenceRequestRow, bool, error) {
 	var row evidenceRequestRow
 	var payloadOwned int
-	err := s.db.QueryRowContext(ctx, `SELECT request_hash,source_identity,source_sha256,source_size_bytes,managed_internal_path,temp_internal_path,previous_temp_internal_path,publisher_token,publisher_temp_identity,payload_owned,status,result_json FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, projectID, continuationID, key).Scan(&row.requestHash, &row.sourceIdentity, &row.sha256, &row.size, &row.internalPath, &row.tempPath, &row.previousTemp, &row.publisherToken, &row.publisherID, &payloadOwned, &row.status, &row.resultJSON)
+	err := s.db.QueryRowContext(ctx, `SELECT request_hash,source_identity,source_sha256,source_size_bytes,managed_internal_path,temp_internal_path,previous_temp_internal_path,migration27_temp_internal_path,publisher_token,publisher_temp_identity,payload_owned,status,result_json FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, projectID, continuationID, key).Scan(&row.requestHash, &row.sourceIdentity, &row.sha256, &row.size, &row.internalPath, &row.tempPath, &row.previousTemp, &row.migration27Temp, &row.publisherToken, &row.publisherID, &payloadOwned, &row.status, &row.resultJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return evidenceRequestRow{}, false, nil
 	}
@@ -1013,7 +1040,7 @@ func (s *Service) verifyJournaledEvidenceTemp(tempPath, digest string, size int6
 	return actualSize == size && hex.EncodeToString(hash.Sum(nil)) == digest, nil
 }
 
-func (s *Service) evidencePublicationRecoveryExists(ctx context.Context, projectID string, row evidenceRequestRow) (bool, bool, error) {
+func (s *Service) evidencePublicationRecoveryExists(ctx context.Context, projectID, continuationID, key string, row evidenceRequestRow) (bool, bool, error) {
 	root, err := os.OpenRoot(s.evidenceConfig.ArtifactRoot)
 	if err != nil {
 		return false, false, fmt.Errorf("open managed Artifact Root: %w", err)
@@ -1029,6 +1056,15 @@ func (s *Service) evidencePublicationRecoveryExists(ctx context.Context, project
 		deterministicExists = true
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, false, fmt.Errorf("inspect journaled Evidence temp: %w", err)
+	}
+	if migration27Temp, err := migration27EvidenceTempPath(row.internalPath, continuationID, key, row.requestHash); err == nil && row.migration27Temp == migration27Temp && filesystemSafeEvidencePath(migration27Temp) {
+		valid, err := s.verifyJournaledEvidenceTemp(migration27Temp, row.sha256, row.size)
+		if err != nil {
+			return false, false, err
+		}
+		if valid {
+			return true, true, nil
+		}
 	}
 	if row.previousTemp != "" && row.previousTemp != row.tempPath {
 		claimed, err := s.evidenceManagedPathClaimed(ctx, projectID, row.previousTemp)
@@ -1185,6 +1221,9 @@ func (s *Service) ensureEvidencePublished(ctx context.Context, projectID, contin
 		if _, err := s.sweepLegacyEvidenceTemps(ctx, projectID, *row, destinationRoot, nil); err != nil {
 			return err
 		}
+		if _, err := s.recoverMigration27EvidenceTemp(managedRoot, continuationID, key, *row, nil); err != nil {
+			return err
+		}
 		if _, err := s.recoverPreviousEvidenceTemp(ctx, projectID, *row, destinationRoot, nil); err != nil {
 			return err
 		}
@@ -1200,10 +1239,23 @@ func (s *Service) ensureEvidencePublished(ctx context.Context, projectID, contin
 		return err
 	}
 	defer publisher.close()
+	if err := syncEvidenceDirectory(stagingRoot); err != nil {
+		return err
+	}
 	tempReady, err := verifyOpenEvidenceFile(publisher.file, row.sha256, row.size)
 	if err != nil {
 		return fmt.Errorf("verify locked Evidence temp: %w", err)
 	}
+	migration27Adopted, err := s.recoverMigration27EvidenceTemp(managedRoot, continuationID, key, *row, func() (*os.File, error) {
+		if tempReady {
+			return nil, nil
+		}
+		return publisher.writer(stagingRoot, tempName)
+	})
+	if err != nil {
+		return err
+	}
+	tempReady = tempReady || migration27Adopted
 	previousAdopted, err := s.recoverPreviousEvidenceTemp(ctx, projectID, *row, destinationRoot, func() (*os.File, error) {
 		if tempReady {
 			return nil, nil
@@ -1214,12 +1266,11 @@ func (s *Service) ensureEvidencePublished(ctx context.Context, projectID, contin
 		return err
 	}
 	tempReady = tempReady || previousAdopted
-	legacyAdopted, err := s.sweepLegacyEvidenceTemps(ctx, projectID, *row, destinationRoot, func() (*os.File, error) {
-		if tempReady {
-			return nil, nil
-		}
-		return publisher.writer(stagingRoot, tempName)
-	})
+	var legacyDestination func() (*os.File, error)
+	if !tempReady {
+		legacyDestination = func() (*os.File, error) { return publisher.writer(stagingRoot, tempName) }
+	}
+	legacyAdopted, err := s.sweepLegacyEvidenceTemps(ctx, projectID, *row, destinationRoot, legacyDestination)
 	if err != nil {
 		return err
 	}
@@ -1534,7 +1585,15 @@ func (s *Service) sweepLegacyEvidenceTemps(ctx context.Context, projectID string
 		return false, fmt.Errorf("begin legacy Evidence temp sweep: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	adopted, err := sweepEvidenceRecoveryTemps(root, destination, row.sha256, row.size, func(name string) (bool, error) {
+	var unresolved int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM blackboard_v2_evidence_requests WHERE project_id=? AND source_sha256=? AND source_size_bytes=? AND status<>'completed'`, projectID, row.sha256, row.size).Scan(&unresolved); err != nil {
+		return false, fmt.Errorf("count unresolved shared Evidence reservations: %w", err)
+	}
+	preserveValid := unresolved - 1
+	if preserveValid < 0 {
+		preserveValid = 0
+	}
+	adopted, err := sweepEvidenceRecoveryTemps(root, destination, row.sha256, row.size, preserveValid, func(name string) (bool, error) {
 		if !isHistoricalEvidenceTempName(name) {
 			return false, nil
 		}
@@ -1571,7 +1630,7 @@ func (s *Service) recoverPreviousEvidenceTemp(ctx context.Context, projectID str
 		return false, nil
 	}
 	previousName := filepath.Base(row.previousTemp)
-	adopted, err := sweepEvidenceRecoveryTemps(root, destination, row.sha256, row.size, func(name string) (bool, error) {
+	adopted, err := sweepEvidenceRecoveryTemps(root, destination, row.sha256, row.size, 0, func(name string) (bool, error) {
 		return name == previousName, nil
 	})
 	if err != nil {
@@ -1583,7 +1642,76 @@ func (s *Service) recoverPreviousEvidenceTemp(ctx context.Context, projectID str
 	return adopted, nil
 }
 
-func sweepEvidenceRecoveryTemps(root *os.Root, destination func() (*os.File, error), digest string, size int64, eligible func(string) (bool, error)) (bool, error) {
+func (s *Service) recoverMigration27EvidenceTemp(root *os.Root, continuationID, key string, row evidenceRequestRow, destination func() (*os.File, error)) (bool, error) {
+	expected, err := migration27EvidenceTempPath(row.internalPath, continuationID, key, row.requestHash)
+	if err != nil || row.migration27Temp == "" || row.migration27Temp == row.tempPath || row.migration27Temp != expected || !filesystemSafeEvidencePath(row.migration27Temp) {
+		return false, nil
+	}
+	directory, err := openExistingSecureDirectory(root, filepath.Dir(row.migration27Temp))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, semanticError("evidence_integrity_failed", "migration 27 Evidence temp path is symlinked or unsafe", "source_path", nil)
+	}
+	defer directory.Close()
+	name := filepath.Base(row.migration27Temp)
+	if _, err := directory.Lstat(name); errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	} else if err != nil {
+		return false, fmt.Errorf("inspect migration 27 Evidence temp: %w", err)
+	}
+	candidate, err := openLockedEvidenceFile(directory, name, "migration 27 Evidence temp")
+	if err != nil {
+		return false, err
+	}
+	defer unlockAndCloseEvidencePublisher(candidate)
+	valid, err := verifyOpenEvidenceFile(candidate, row.sha256, row.size)
+	if err != nil {
+		return false, fmt.Errorf("verify migration 27 Evidence temp: %w", err)
+	}
+	adopted := false
+	if valid && destination != nil {
+		target, err := destination()
+		if err != nil {
+			return false, err
+		}
+		if target != nil {
+			if err := target.Truncate(0); err == nil {
+				_, err = target.Seek(0, io.SeekStart)
+			}
+			if err == nil {
+				_, err = candidate.Seek(0, io.SeekStart)
+			}
+			if err == nil {
+				_, err = io.Copy(target, candidate)
+			}
+			if err == nil {
+				err = target.Sync()
+			}
+			if err == nil {
+				var ready bool
+				ready, err = verifyOpenEvidenceFile(target, row.sha256, row.size)
+				if err == nil && !ready {
+					err = errors.New("adopted migration 27 Evidence temp failed integrity verification")
+				}
+			}
+			if err != nil {
+				return false, fmt.Errorf("adopt migration 27 Evidence temp: %w", err)
+			}
+			adopted = true
+		}
+	}
+	if err := directory.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("remove migration 27 Evidence temp: %w", err)
+	}
+	if err := syncEvidenceDirectory(directory); err != nil {
+		return false, err
+	}
+	return adopted, nil
+}
+
+func sweepEvidenceRecoveryTemps(root *os.Root, destination func() (*os.File, error), digest string, size int64, preserveValid int, eligible func(string) (bool, error)) (bool, error) {
 	directory, err := root.Open(".")
 	if err != nil {
 		return false, fmt.Errorf("open managed Evidence directory for legacy sweep: %w", err)
@@ -1655,6 +1783,10 @@ func sweepEvidenceRecoveryTemps(root *os.Root, destination func() (*os.File, err
 			if err := candidate.Close(); err != nil {
 				return false, fmt.Errorf("close legacy Evidence temp: %w", err)
 			}
+		}
+		if valid && preserveValid > 0 {
+			preserveValid--
+			continue
 		}
 		if err := root.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return false, fmt.Errorf("remove legacy Evidence temp: %w", err)
@@ -1766,6 +1898,9 @@ func (s *Service) cleanupDefinitiveEvidenceFailure(ctx context.Context, projectI
 	}
 	defer guard.close()
 	if _, err := s.sweepLegacyEvidenceTemps(ctx, projectID, row, guard.finalDirectory, nil); err != nil {
+		return
+	}
+	if _, err := s.recoverMigration27EvidenceTemp(guard.root, continuationID, key, row, nil); err != nil {
 		return
 	}
 	if _, err := s.recoverPreviousEvidenceTemp(ctx, projectID, row, guard.finalDirectory, nil); err != nil {
