@@ -71,6 +71,8 @@ func (s *Service) FinishContinuation(ctx context.Context, projectID, continuatio
 	}
 	s.snapshotMu.Lock()
 	defer s.snapshotMu.Unlock()
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	requestHash := finishRequestHash(request)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -111,7 +113,11 @@ func (s *Service) FinishContinuation(ctx context.Context, projectID, continuatio
 		if revision != stored.result.Revision || stored.result.WorkingSnapshot.Revision != revision {
 			return FinishContinuationResult{}, fmt.Errorf("stored Finish result does not match acknowledged Working Snapshot")
 		}
-		if s.runtimeRoot != "" {
+		var newer int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM task_continuations WHERE task_id=? AND number>?`, taskID, number).Scan(&newer); err != nil {
+			return FinishContinuationResult{}, fmt.Errorf("validate replayed Finish Working Snapshot owner: %w", err)
+		}
+		if newer == 0 && s.runtimeRoot != "" {
 			if err := materializeWorkingSnapshot(s.runtimeRoot, taskID, workingBytes); err != nil {
 				return FinishContinuationResult{}, fmt.Errorf("publish replayed closed Working Snapshot: %w", err)
 			}
@@ -167,16 +173,18 @@ func (s *Service) FinishContinuation(ctx context.Context, projectID, continuatio
 		)
 	}
 
-	var revision int
-	var workingBytes []byte
-	if err := tx.QueryRowContext(ctx, `
-		SELECT last_acknowledged_revision,working_snapshot_bytes
-		FROM blackboard_v2_continuation_state WHERE continuation_id=?`, continuationID,
-	).Scan(&revision, &workingBytes); err != nil {
-		return FinishContinuationResult{}, fmt.Errorf("read acknowledged Working Snapshot for Finish: %w", err)
+	projection, err := s.ProjectRuntimeSnapshotTx(ctx, tx, projectID)
+	if err != nil {
+		return FinishContinuationResult{}, fmt.Errorf("project current Runtime Snapshot for Finish: %w", err)
 	}
-	if err := verifySnapshotEnvelope(workingBytes, revision); err != nil {
-		return FinishContinuationResult{}, fmt.Errorf("verify acknowledged Working Snapshot for Finish: %w", err)
+	revision := projection.Snapshot.Revision
+	workingBytes := projection.Bytes
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE blackboard_v2_continuation_state
+		SET last_acknowledged_revision=?,working_snapshot_bytes=?,updated_at=?
+		WHERE continuation_id=?`, revision, workingBytes, time.Now().UTC().Format(time.RFC3339Nano), continuationID,
+	); err != nil {
+		return FinishContinuationResult{}, fmt.Errorf("synchronize current Working Snapshot for Finish: %w", err)
 	}
 	result := FinishContinuationResult{
 		Schema: finishResultSchema, Status: "finished", Revision: revision,

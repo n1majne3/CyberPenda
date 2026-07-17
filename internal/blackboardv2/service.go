@@ -42,6 +42,7 @@ type Service struct {
 	db              *store.DB
 	evidenceConfig  EvidenceConfig
 	runtimeRoot     string
+	writeMu         sync.Mutex
 	snapshotMu      sync.Mutex
 	finishFail      FinishFailureInjector
 	publicationFail SnapshotPublicationInjector
@@ -821,6 +822,13 @@ func markContinuationReconciled(ctx context.Context, tx *sql.Tx, continuationID,
 }
 
 func (s *Service) apply(ctx context.Context, projectID, continuationID string, batch ChangeBatch) (ChangeResult, error) {
+	s.writeMu.Lock()
+	writeLocked := true
+	defer func() {
+		if writeLocked {
+			s.writeMu.Unlock()
+		}
+	}()
 	if batch.Schema != changeBatchSchema {
 		return ChangeResult{}, semanticError("invalid_schema", "unsupported semantic change schema", "", nil)
 	}
@@ -862,6 +870,8 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 		if err := tx.Commit(); err != nil {
 			return ChangeResult{}, fmt.Errorf("commit Blackboard v2 replay: %w", err)
 		}
+		s.writeMu.Unlock()
+		writeLocked = false
 		if continuationID != "" {
 			if err := s.rematerializeContinuationWorkingSnapshot(ctx, continuationID); err != nil {
 				return ChangeResult{}, fmt.Errorf("recover acknowledged Working Blackboard Snapshot: %w", err)
@@ -1128,6 +1138,8 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 	if err := tx.Commit(); err != nil {
 		return ChangeResult{}, fmt.Errorf("commit Blackboard v2 change: %w", err)
 	}
+	s.writeMu.Unlock()
+	writeLocked = false
 	if workingAdvanced {
 		if s.publicationFail != nil {
 			if err := s.publicationFail(SnapshotPublicationAfterCommit, continuationID); err != nil {

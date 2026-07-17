@@ -222,20 +222,22 @@ func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, p
 		return task.TaskContinuation{}, taskLaunchPlan{}, err
 	}
 	plan.ValidatedLayout = &layout
+	var boundPlan taskLaunchPlan
 	launch, err := server.blackboardV2Continuity.CreateContinuation(context.Background(), blackboardv2.ContinuationLaunchRequest{
 		ProjectID: created.ProjectID, TaskID: created.ID, RuntimeProfileID: created.RuntimeProfileID,
 		RuntimeProvider: string(runtimeprofile.ProviderCodex), Runner: created.Runner, RuntimeConfig: plan.CapturedRuntimeConfig,
 		SteeringEventIDs: plan.BlackboardV2SteeringEventIDs,
+		Precommit: func(projection blackboardv2.ContinuationLaunchProjection) error {
+			header := blackboardv2.LaunchHeader{
+				Runner: string(created.Runner), ScopePath: ".pentest/scope.json", BlackboardPath: ".pentest/blackboard.json",
+				Schema: projection.Schema, Revision: projection.Revision,
+			}
+			binding := &continuationLaunchBinding{V2Header: &header}
+			var err error
+			boundPlan, err = server.buildTaskLaunchPlanWithBinding(created, goal, plan.LaunchModelOverride, plan.NativeResumeSessionID, binding, &plan)
+			return err
+		},
 	})
-	if err != nil {
-		return task.TaskContinuation{}, taskLaunchPlan{}, err
-	}
-	header := blackboardv2.LaunchHeader{
-		Runner: string(created.Runner), ScopePath: ".pentest/scope.json", BlackboardPath: ".pentest/blackboard.json",
-		Schema: launch.Schema, Revision: launch.Revision,
-	}
-	binding := &continuationLaunchBinding{V2Header: &header}
-	boundPlan, err := server.buildTaskLaunchPlanWithBinding(created, goal, plan.LaunchModelOverride, plan.NativeResumeSessionID, binding, &plan)
 	if err != nil {
 		return task.TaskContinuation{}, taskLaunchPlan{}, err
 	}
@@ -1618,8 +1620,7 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 	}
 
 	if activeSteer {
-		resumedTask, resumeGoal, nativeResumeSessionID, err := server.prepareNativeResumeRequest(found, input.Directive)
-		if err != nil {
+		if _, _, _, err := server.prepareNativeResumeRequest(found, input.Directive); err != nil {
 			_, _ = server.tasks.AppendEvent(taskID, task.EventKindLifecycle, task.EventPayload{
 				"phase": "resume_failed",
 				"error": err.Error(),
@@ -1638,7 +1639,7 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 			return
 		}
 
-		plan, err := server.buildTaskLaunchPlan(resumedTask, resumeGoal, "", nativeResumeSessionID)
+		resumedTask, resumeGoal, plan, err := server.prepareNativeResumeContinuation(found, input.Directive)
 		if err != nil {
 			_, _ = server.tasks.AppendEvent(taskID, task.EventKindLifecycle, task.EventPayload{
 				"phase": "resume_failed",
@@ -1654,11 +1655,13 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 			writeTaskLaunchError(response, err)
 			return
 		}
-		_, _ = server.tasks.AppendEvent(taskID, task.EventKindSteering, task.EventPayload{
-			"phase":              "steering_applied",
-			"directive":          input.Directive,
-			"requested_event_id": event.ID,
-		})
+		if !plan.BlackboardV2Codex {
+			_, _ = server.tasks.AppendEvent(taskID, task.EventKindSteering, task.EventPayload{
+				"phase":              "steering_applied",
+				"directive":          input.Directive,
+				"requested_event_id": event.ID,
+			})
+		}
 		detailed, err := server.taskDetail(taskID)
 		if err != nil {
 			writeTaskError(response, err)

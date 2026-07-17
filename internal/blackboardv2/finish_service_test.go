@@ -130,6 +130,103 @@ func TestFinishContinuationClosesAtExactWorkingRevisionAndDurablyReplays(t *test
 	}
 }
 
+func TestFinishContinuationSynchronizesExactCurrentProjectRuntimeSnapshot(t *testing.T) {
+	fixture := newContinuityFixture(t)
+	t.Cleanup(func() { _ = fixture.db.Close() })
+	launch := fixture.launch(t)
+	if _, err := fixture.tasks.UpdateContinuationStatus(launch.Continuation.ID, task.StatusRunning); err != nil {
+		t.Fatalf("start Continuation: %v", err)
+	}
+
+	operatorWrite, err := fixture.board.Apply(context.Background(), fixture.project.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "operator-current-before-finish",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "entity:operator-current", Type: "entity",
+			Record: blackboardv2.EntityRecord{Status: "active", Kind: "host", Name: "Operator current", ScopeStatus: "in_scope"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("operator write before Finish: %v", err)
+	}
+	stale, err := fixture.continuity.ReadWorkingSnapshot(context.Background(), launch.Continuation.ID)
+	if err != nil {
+		t.Fatalf("read pre-Finish acknowledged Snapshot: %v", err)
+	}
+	if stale.LastAcknowledgedRevision == operatorWrite.Revision {
+		t.Fatalf("test requires operator write beyond Continuation acknowledgement: %#v", stale)
+	}
+	want, err := fixture.board.ProjectRuntimeSnapshot(context.Background(), fixture.project.ID)
+	if err != nil {
+		t.Fatalf("project exact current Snapshot: %v", err)
+	}
+
+	finished, err := fixture.board.FinishContinuation(context.Background(), fixture.project.ID, launch.Continuation.ID, blackboardv2.FinishContinuationRequest{IdempotencyKey: "finish-current-project"})
+	if err != nil {
+		t.Fatalf("Finish current Project state: %v", err)
+	}
+	working, err := fixture.continuity.ReadWorkingSnapshot(context.Background(), launch.Continuation.ID)
+	if err != nil {
+		t.Fatalf("read synchronized closed Snapshot: %v", err)
+	}
+	onDisk, err := os.ReadFile(filepath.Join(fixture.runtimeRoot, fixture.task.ID, "workdir", ".pentest", "blackboard.json"))
+	if err != nil {
+		t.Fatalf("read final Working Snapshot: %v", err)
+	}
+	if finished.Revision != want.Snapshot.Revision || finished.WorkingSnapshot.Revision != want.Snapshot.Revision || working.LastAcknowledgedRevision != want.Snapshot.Revision || !bytes.Equal(working.Bytes, want.Bytes) || !bytes.Equal(onDisk, want.Bytes) {
+		t.Fatalf("Finish did not close exact current Project bytes: finish=%#v working=%#v want_revision=%d\ndisk=%s\nwant=%s", finished, working, want.Snapshot.Revision, onDisk, want.Bytes)
+	}
+}
+
+func TestOldFinishReplayNeverPublishesOverNewerContinuationWorkingSnapshot(t *testing.T) {
+	fixture := newContinuityFixture(t)
+	t.Cleanup(func() { _ = fixture.db.Close() })
+	first := fixture.launch(t)
+	if _, err := fixture.tasks.UpdateContinuationStatus(first.Continuation.ID, task.StatusRunning); err != nil {
+		t.Fatalf("start first Continuation: %v", err)
+	}
+	request := blackboardv2.FinishContinuationRequest{IdempotencyKey: "finish-first-before-new-owner"}
+	finished, err := fixture.board.FinishContinuation(context.Background(), fixture.project.ID, first.Continuation.ID, request)
+	if err != nil {
+		t.Fatalf("Finish first Continuation: %v", err)
+	}
+	second, err := fixture.continuity.CreateContinuation(context.Background(), blackboardv2.ContinuationLaunchRequest{
+		ProjectID: fixture.project.ID, TaskID: fixture.task.ID, RuntimeProfileID: fixture.profile.ID,
+		RuntimeProvider: "codex", Runner: task.RunnerSandbox, RuntimeConfig: map[string]any{"provider": "codex", "resume": true},
+	})
+	if err != nil {
+		t.Fatalf("create second Continuation: %v", err)
+	}
+	if _, err := fixture.tasks.UpdateContinuationStatus(second.Continuation.ID, task.StatusRunning); err != nil {
+		t.Fatalf("start second Continuation: %v", err)
+	}
+	if _, err := fixture.board.ApplyForContinuation(context.Background(), fixture.project.ID, second.Continuation.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "second-owner-current-bytes",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "entity:second-owner", Type: "entity",
+			Record: blackboardv2.EntityRecord{Status: "active", Kind: "host", Name: "Second owner", ScopeStatus: "in_scope"},
+		}},
+	}); err != nil {
+		t.Fatalf("advance second Working Snapshot: %v", err)
+	}
+	workingPath := filepath.Join(fixture.runtimeRoot, fixture.task.ID, "workdir", ".pentest", "blackboard.json")
+	before, err := os.ReadFile(workingPath)
+	if err != nil {
+		t.Fatalf("read second Working Snapshot: %v", err)
+	}
+
+	replay, err := fixture.board.FinishContinuation(context.Background(), fixture.project.ID, first.Continuation.ID, request)
+	if err != nil || !bytes.Equal(mustJSON(t, replay), mustJSON(t, finished)) {
+		t.Fatalf("replay first Finish = %#v, %v; want %#v", replay, err, finished)
+	}
+	after, err := os.ReadFile(workingPath)
+	if err != nil {
+		t.Fatalf("reread second Working Snapshot: %v", err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("old Finish replay replaced newer owner bytes\nbefore=%s\nafter=%s", before, after)
+	}
+}
+
 func TestFinishContinuationBindsReplayToOwningPrincipal(t *testing.T) {
 	fixture := newContinuityFixture(t)
 	t.Cleanup(func() { _ = fixture.db.Close() })

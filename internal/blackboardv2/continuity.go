@@ -1,6 +1,7 @@
 package blackboardv2
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -41,6 +42,12 @@ type ContinuationLaunchRequest struct {
 	Runner           task.Runner
 	RuntimeConfig    map[string]any
 	SteeringEventIDs []string
+	Precommit        func(ContinuationLaunchProjection) error
+}
+
+type ContinuationLaunchProjection struct {
+	Schema   string
+	Revision int
 }
 
 type ContinuationLaunch struct {
@@ -94,6 +101,19 @@ func (s *ContinuityService) CreateContinuation(ctx context.Context, req Continua
 	}
 	s.board.snapshotMu.Lock()
 	defer s.board.snapshotMu.Unlock()
+	s.board.writeMu.Lock()
+	defer s.board.writeMu.Unlock()
+	var stagedProjection RuntimeSnapshotProjection
+	if req.Precommit != nil {
+		var err error
+		stagedProjection, err = s.board.ProjectRuntimeSnapshot(ctx, req.ProjectID)
+		if err != nil {
+			return ContinuationLaunch{}, fmt.Errorf("stage current Runtime Blackboard Snapshot: %w", err)
+		}
+		if err := req.Precommit(ContinuationLaunchProjection{Schema: snapshotSchema, Revision: stagedProjection.Snapshot.Revision}); err != nil {
+			return ContinuationLaunch{}, err
+		}
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ContinuationLaunch{}, fmt.Errorf("begin atomic Blackboard v2 Continuation launch: %w", err)
@@ -102,6 +122,9 @@ func (s *ContinuityService) CreateContinuation(ctx context.Context, req Continua
 	projection, err := s.board.ProjectRuntimeSnapshotTx(ctx, tx, req.ProjectID)
 	if err != nil {
 		return ContinuationLaunch{}, fmt.Errorf("project current Runtime Blackboard Snapshot: %w", err)
+	}
+	if req.Precommit != nil && !bytes.Equal(stagedProjection.Bytes, projection.Bytes) {
+		return ContinuationLaunch{}, fmt.Errorf("current Runtime Blackboard Snapshot changed during launch projection")
 	}
 	digest := sha256.Sum256(projection.Bytes)
 	config, continuation, err := s.tasks.CreateContinuationLaunchTx(ctx, tx, task.ContinuationLaunchRequest{
