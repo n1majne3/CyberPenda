@@ -172,6 +172,7 @@ func writeV2FactList(output *strings.Builder, heading string, facts []blackboard
 
 func writeV2Label(output *strings.Builder, label, value string) {
 	if isV2Multiline(value) {
+		output.WriteString("\n")
 		writeV2NamedValue(output, label, value)
 		return
 	}
@@ -205,7 +206,7 @@ func writeV2NamedValue(output *strings.Builder, label, value string) {
 	output.WriteString(label)
 	output.WriteString(":**")
 	if isV2Multiline(value) {
-		output.WriteString("\n")
+		output.WriteString("\n\n")
 		writeV2LiteralBlock(output, value)
 		output.WriteString("\n")
 		return

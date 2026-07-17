@@ -1,9 +1,13 @@
 package report_test
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/renderer/html"
 
 	"pentest/internal/blackboardv2"
 	"pentest/internal/report"
@@ -66,6 +70,19 @@ func TestV2MarkdownRendersMultilineSemanticTextAsInertLiteralBlocks(t *testing.T
 	}
 	if strings.Count(first.Markdown, "# Pentest Report") != 1 || strings.Contains(first.Markdown, "# project heading Pentest Report") {
 		t.Fatalf("multiline Project name altered report structure:\n%s", first.Markdown)
+	}
+	var rendered bytes.Buffer
+	markdown := goldmark.New(goldmark.WithRendererOptions(html.WithUnsafe()))
+	if err := markdown.Convert([]byte(first.Markdown), &rendered); err != nil {
+		t.Fatalf("parse rendered Markdown: %v", err)
+	}
+	for _, active := range []string{
+		"<a href=", "<div>html</div>", "<h1>injected heading", "<li>injected list",
+		"<li>injected ordered list", "<hr", `class="language-backticks"`,
+	} {
+		if strings.Contains(rendered.String(), active) {
+			t.Fatalf("multiline semantic text became active Markdown %q:\n%s", active, rendered.String())
+		}
 	}
 	if !strings.HasSuffix(first.Markdown, "\n") || strings.HasSuffix(first.Markdown, "\n\n") {
 		t.Fatalf("Markdown must end with exactly one LF: %q", first.Markdown)
