@@ -7,6 +7,16 @@
       "schema": "runtimeSnapshot"
     },
     {
+      "name": "runtime_snapshot.pentest_complete",
+      "path": "fixtures/runtime-snapshot-pentest-complete.json",
+      "schema": "runtimeSnapshot"
+    },
+    {
+      "name": "runtime_snapshot.ctf_complete",
+      "path": "fixtures/runtime-snapshot-ctf-complete.json",
+      "schema": "runtimeSnapshot"
+    },
+    {
       "name": "runtime_snapshot.pentest",
       "schema": "runtimeSnapshot",
       "value": {

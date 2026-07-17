@@ -600,8 +600,10 @@ func TestFixtureCorpusCoversEveryFrozenV2WireShape(t *testing.T) {
 		"relationship.tests",
 		"response.error",
 		"response.sync",
+		"runtime_snapshot.ctf_complete",
 		"runtime_snapshot.empty",
 		"runtime_snapshot.pentest",
+		"runtime_snapshot.pentest_complete",
 		"runtime_snapshot.solution",
 	}
 	if got := harness.FixtureNames(); !slices.Equal(got, want) {

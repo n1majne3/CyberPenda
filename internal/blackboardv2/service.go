@@ -16,7 +16,6 @@ import (
 	"io"
 	"net/url"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -1079,16 +1078,25 @@ func (s *Service) ReadCurrent(ctx context.Context, projectID, key string) (Curre
 
 // ReadHistory reads prior semantic versions by key with cursor pagination.
 func (s *Service) ReadHistory(ctx context.Context, projectID, key string, options HistoryOptions) (SemanticHistory, error) {
-	limit := options.Limit
-	if limit <= 0 {
-		limit = 20
-	}
-	if limit > 100 {
-		limit = 100
+	if err := validateKey(key, "key"); err != nil {
+		return SemanticHistory{}, err
 	}
 	cursor, err := parseCursor(options.Cursor)
 	if err != nil {
 		return SemanticHistory{}, err
+	}
+	if options.Limit < 0 || options.Limit > 100 {
+		return SemanticHistory{}, semanticError("semantic_validation", "history limit must be between 1 and 100", "limit", nil)
+	}
+	limit := options.Limit
+	if cursor.present {
+		if limit == 0 {
+			limit = cursor.limit
+		} else if limit != cursor.limit {
+			return SemanticHistory{}, invalidHistoryCursorError("page_size_mismatch")
+		}
+	} else if limit == 0 {
+		limit = 20
 	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -1102,6 +1110,14 @@ func (s *Service) ReadHistory(ctx context.Context, projectID, key string, option
 	if err != nil {
 		return SemanticHistory{}, err
 	}
+	canonicalKey, _, err := resolveKeyRedirect(ctx, tx, projectID, key)
+	if err != nil {
+		return SemanticHistory{}, err
+	}
+	key = canonicalKey
+	if cursor.present && cursor.key != canonicalKey {
+		return SemanticHistory{}, invalidHistoryCursorError("key_mismatch")
+	}
 	if cursor.present && cursor.revision != revision {
 		return SemanticHistory{}, semanticError("semantic_validation", "history cursor is stale", "cursor", map[string]any{
 			"reason":           "stale_cursor",
@@ -1111,11 +1127,6 @@ func (s *Service) ReadHistory(ctx context.Context, projectID, key string, option
 		})
 	}
 	offset := cursor.offset
-	canonicalKey, _, err := resolveKeyRedirect(ctx, tx, projectID, key)
-	if err != nil {
-		return SemanticHistory{}, err
-	}
-	key = canonicalKey
 	hasCurrent := true
 	if _, err := loadCurrentRecord(ctx, tx, projectID, canonicalKey); err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
@@ -1124,23 +1135,25 @@ func (s *Service) ReadHistory(ctx context.Context, projectID, key string, option
 		hasCurrent = false
 	}
 	if !hasCurrent {
-		var historyCount int
+		var recordHistoryCount int
 		err := tx.QueryRowContext(ctx, `
-			SELECT COUNT(*)
-			FROM blackboard_v2_record_history
-			WHERE project_id = ? AND (
-				key = ? OR key IN (
-					SELECT source_key FROM blackboard_v2_key_redirects
-					WHERE project_id = ? AND canonical_key = ?
-				)
-			)`, projectID, key, projectID, key,
-		).Scan(&historyCount)
+			SELECT COUNT(*) FROM blackboard_v2_record_history
+			WHERE project_id = ? AND (key = ? OR key IN (
+				SELECT source_key FROM blackboard_v2_key_redirects WHERE project_id = ? AND canonical_key = ?
+			))`, projectID, key, projectID, key).Scan(&recordHistoryCount)
 		if err != nil {
 			return SemanticHistory{}, fmt.Errorf("check Blackboard v2 history: %w", err)
 		}
-		if historyCount == 0 {
+		if recordHistoryCount == 0 {
 			return SemanticHistory{}, semanticError("not_found", fmt.Sprintf("%s was not found", key), "key", map[string]any{"key": key})
 		}
+	}
+	total, err := countSemanticHistoryItems(ctx, tx, projectID, key)
+	if err != nil {
+		return SemanticHistory{}, err
+	}
+	if cursor.present && offset >= total {
+		return SemanticHistory{}, invalidHistoryCursorError("offset_out_of_range")
 	}
 
 	rows, err := tx.QueryContext(ctx, `
@@ -1173,7 +1186,7 @@ func (s *Service) ReadHistory(ctx context.Context, projectID, key string, option
 		LIMIT ? OFFSET ?`,
 		projectID, key, projectID, key,
 		projectID, key, key, projectID, key, projectID, key,
-		limit+1, offset,
+		limit, offset,
 	)
 	if err != nil {
 		return SemanticHistory{}, fmt.Errorf("read Blackboard v2 history: %w", err)
@@ -1203,29 +1216,31 @@ func (s *Service) ReadHistory(ctx context.Context, projectID, key string, option
 		return SemanticHistory{}, fmt.Errorf("iterate Blackboard v2 history: %w", err)
 	}
 	next := ""
-	if len(items) == limit {
-		var extra int
-		err := tx.QueryRowContext(ctx, `
-			SELECT
-				(SELECT COUNT(*) FROM blackboard_v2_record_history WHERE project_id = ? AND (
-					key = ? OR key IN (SELECT source_key FROM blackboard_v2_key_redirects WHERE project_id = ? AND canonical_key = ?)
-				)) +
-				(SELECT COUNT(*) FROM blackboard_v2_relationship_history WHERE project_id = ? AND (
-					from_key = ? OR to_key = ? OR
-					from_key IN (SELECT source_key FROM blackboard_v2_key_redirects WHERE project_id = ? AND canonical_key = ?) OR
-					to_key IN (SELECT source_key FROM blackboard_v2_key_redirects WHERE project_id = ? AND canonical_key = ?)
-				))`,
-			projectID, key, projectID, key,
-			projectID, key, key, projectID, key, projectID, key,
-		).Scan(&extra)
-		if err != nil {
-			return SemanticHistory{}, fmt.Errorf("count Blackboard v2 history: %w", err)
-		}
-		if offset+limit < extra {
-			next = makeCursor(revision, offset+limit)
-		}
+	if offset+len(items) < total {
+		next = makeCursor(revision, canonicalKey, limit, offset+len(items))
 	}
 	return SemanticHistory{Schema: historySchema, Revision: revision, Key: canonicalKey, Items: items, NextCursor: next}, nil
+}
+
+func countSemanticHistoryItems(ctx context.Context, tx *sql.Tx, projectID, key string) (int, error) {
+	var total int
+	err := tx.QueryRowContext(ctx, `
+		SELECT
+			(SELECT COUNT(*) FROM blackboard_v2_record_history WHERE project_id = ? AND (
+				key = ? OR key IN (SELECT source_key FROM blackboard_v2_key_redirects WHERE project_id = ? AND canonical_key = ?)
+			)) +
+			(SELECT COUNT(*) FROM blackboard_v2_relationship_history WHERE project_id = ? AND (
+				from_key = ? OR to_key = ? OR
+				from_key IN (SELECT source_key FROM blackboard_v2_key_redirects WHERE project_id = ? AND canonical_key = ?) OR
+				to_key IN (SELECT source_key FROM blackboard_v2_key_redirects WHERE project_id = ? AND canonical_key = ?)
+			))`,
+		projectID, key, projectID, key,
+		projectID, key, key, projectID, key, projectID, key,
+	).Scan(&total)
+	if err != nil {
+		return 0, fmt.Errorf("count Blackboard v2 history: %w", err)
+	}
+	return total, nil
 }
 
 // RuntimeSnapshot returns the complete current runtime-blackboard/v2 snapshot.
@@ -4603,8 +4618,18 @@ func (record Record) evidenceRecord() EvidenceRecord {
 
 type historyCursor struct {
 	revision int
+	key      string
+	limit    int
 	offset   int
 	present  bool
+}
+
+type historyCursorPayload struct {
+	Schema   string `json:"schema"`
+	Revision int    `json:"revision"`
+	Key      string `json:"key"`
+	Limit    int    `json:"limit"`
+	Offset   int    `json:"offset"`
 }
 
 func parseCursor(cursor string) (historyCursor, error) {
@@ -4614,25 +4639,33 @@ func parseCursor(cursor string) (historyCursor, error) {
 	if !strings.HasPrefix(cursor, "opaque:") {
 		return historyCursor{}, semanticError("semantic_validation", "history cursor is invalid", "cursor", nil)
 	}
-	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(cursor, "opaque:"))
+	payload, err := base64.RawURLEncoding.Strict().DecodeString(strings.TrimPrefix(cursor, "opaque:"))
 	if err != nil {
-		return historyCursor{}, semanticError("semantic_validation", "history cursor is invalid", "cursor", nil)
+		return historyCursor{}, invalidHistoryCursorError("malformed")
 	}
-	parts := strings.Split(string(payload), ":")
-	if len(parts) != 3 || parts[0] != "v1" {
-		return historyCursor{}, semanticError("semantic_validation", "history cursor is invalid", "cursor", nil)
+	var decoded historyCursorPayload
+	if err := strictDecodeJSON(payload, &decoded); err != nil {
+		return historyCursor{}, invalidHistoryCursorError("malformed")
 	}
-	revision, revisionErr := strconv.Atoi(parts[1])
-	offset, offsetErr := strconv.Atoi(parts[2])
-	if revisionErr != nil || offsetErr != nil || revision < 0 || offset < 0 || strconv.Itoa(revision) != parts[1] || strconv.Itoa(offset) != parts[2] {
-		return historyCursor{}, semanticError("semantic_validation", "history cursor is invalid", "cursor", nil)
+	if decoded.Schema != "semantic-history-cursor/v2" || decoded.Revision < 0 || decoded.Limit < 1 || decoded.Limit > 100 || decoded.Offset < 1 {
+		return historyCursor{}, invalidHistoryCursorError("malformed")
 	}
-	return historyCursor{revision: revision, offset: offset, present: true}, nil
+	if err := validateKey(decoded.Key, "cursor"); err != nil {
+		return historyCursor{}, invalidHistoryCursorError("malformed")
+	}
+	return historyCursor{revision: decoded.Revision, key: decoded.Key, limit: decoded.Limit, offset: decoded.Offset, present: true}, nil
 }
 
-func makeCursor(revision, offset int) string {
-	payload := fmt.Sprintf("v1:%d:%d", revision, offset)
-	return "opaque:" + base64.RawURLEncoding.EncodeToString([]byte(payload))
+func makeCursor(revision int, key string, limit, offset int) string {
+	payload, err := json.Marshal(historyCursorPayload{Schema: "semantic-history-cursor/v2", Revision: revision, Key: key, Limit: limit, Offset: offset})
+	if err != nil {
+		panic(fmt.Sprintf("encode Semantic History cursor: %v", err))
+	}
+	return "opaque:" + base64.RawURLEncoding.EncodeToString(payload)
+}
+
+func invalidHistoryCursorError(reason string) error {
+	return semanticError("semantic_validation", "history cursor is invalid", "cursor", map[string]any{"reason": reason, "next_action": "restart_history_read"})
 }
 
 func semanticError(code, message, path string, details map[string]any) *Error {
