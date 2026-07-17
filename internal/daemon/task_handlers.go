@@ -149,6 +149,8 @@ type taskLaunchPlan struct {
 	ModelSnapshot         *modelprovider.Snapshot
 	SkillBundles          []skill.Bundle
 	LaunchGoal            string
+	BlackboardV2Codex     bool
+	ValidatedLayout       *runner.Layout
 }
 
 type continuationLaunchBinding struct {
@@ -160,7 +162,7 @@ type continuationLaunchBinding struct {
 
 func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchPlan, goal string) error {
 	var continuation task.TaskContinuation
-	if server.blackboardV2Continuity != nil && plan.Adapter.Name() == string(runtimeprofile.ProviderCodex) {
+	if plan.BlackboardV2Codex {
 		prepared, boundPlan, err := server.prepareBlackboardV2ContinuationLaunch(created, plan, goal)
 		if err != nil {
 			return err
@@ -211,9 +213,17 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 }
 
 func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, plan taskLaunchPlan, goal string) (task.TaskContinuation, taskLaunchPlan, error) {
+	if plan.ValidatedLayout == nil {
+		return task.TaskContinuation{}, taskLaunchPlan{}, fmt.Errorf("Blackboard v2 Codex layout was not validated")
+	}
+	layout, err := runner.PrepareCodexV2TaskLayout(server.runtimeRoot, created.ID)
+	if err != nil {
+		return task.TaskContinuation{}, taskLaunchPlan{}, err
+	}
+	plan.ValidatedLayout = &layout
 	launch, err := server.blackboardV2Continuity.CreateContinuation(context.Background(), blackboardv2.ContinuationLaunchRequest{
 		ProjectID: created.ProjectID, TaskID: created.ID, RuntimeProfileID: created.RuntimeProfileID,
-		RuntimeProvider: plan.Adapter.Name(), Runner: created.Runner, RuntimeConfig: plan.CapturedRuntimeConfig,
+		RuntimeProvider: string(runtimeprofile.ProviderCodex), Runner: created.Runner, RuntimeConfig: plan.CapturedRuntimeConfig,
 	})
 	if err != nil {
 		return task.TaskContinuation{}, taskLaunchPlan{}, err
@@ -396,7 +406,7 @@ func (server *Server) recordLoopbackRewriteEvent(created task.Task) {
 }
 
 func (server *Server) buildTaskAdapter(created task.Task, launchModelOverride string) (runtime.Adapter, map[string]any, error) {
-	plan, err := server.buildTaskLaunchPlan(created, created.Goal, launchModelOverride, "")
+	plan, err := server.buildTaskLaunchPlanWithBinding(created, created.Goal, launchModelOverride, "", nil, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -404,7 +414,7 @@ func (server *Server) buildTaskAdapter(created task.Task, launchModelOverride st
 }
 
 func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string, launchModelOverride string) (runtime.Adapter, map[string]any, error) {
-	plan, err := server.buildTaskLaunchPlan(created, goal, launchModelOverride, "")
+	plan, err := server.buildTaskLaunchPlanWithBinding(created, goal, launchModelOverride, "", nil, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -412,7 +422,52 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string, la
 }
 
 func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string) (taskLaunchPlan, error) {
+	profile, err := server.profiles.Get(created.RuntimeProfileID)
+	if err != nil {
+		return taskLaunchPlan{}, err
+	}
+	if server.blackboardV2Continuity != nil && profile.Provider == runtimeprofile.ProviderCodex {
+		return server.prepareCodexV2TaskLaunchPlan(created, goal, launchModelOverride, nativeResumeSessionID, profile)
+	}
 	return server.buildTaskLaunchPlanWithBinding(created, goal, launchModelOverride, nativeResumeSessionID, nil, nil)
+}
+
+func (server *Server) prepareCodexV2TaskLaunchPlan(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, profile runtimeprofile.Profile) (taskLaunchPlan, error) {
+	layout, err := runner.PrepareCodexV2TaskLayout(server.runtimeRoot, created.ID)
+	if err != nil {
+		return taskLaunchPlan{}, err
+	}
+	skillBundles, err := server.skills.EnabledSkillBundles(profile.ID)
+	if err != nil {
+		return taskLaunchPlan{}, err
+	}
+	var modelSnapshot *modelprovider.Snapshot
+	if strings.TrimSpace(profile.Fields.ModelProviderID) != "" {
+		resolved, err := modelprovider.Resolve(modelprovider.ResolveRequest{
+			Profile: profile, Providers: server.modelProviders, Plugins: server.runtimePlugins,
+			Credentials: server.creds, ProjectID: created.ProjectID, CheckEnv: true,
+			LaunchModelOverride: launchModelOverride,
+		})
+		if err != nil {
+			return taskLaunchPlan{}, err
+		}
+		if resolved.ModelProviderID != "" {
+			modelSnapshot = &resolved
+			profile = runner.CodexV2ProfileWithModelSnapshot(profile, resolved)
+		}
+	}
+	capturedRuntimeConfig := capturedTaskRuntimeConfig(created, profile, runtimeprofile.GeneratedConfig(profile), codexV2ModelSnapshotPreview(modelSnapshot), launchModelOverride)
+	return taskLaunchPlan{
+		CapturedRuntimeConfig: capturedRuntimeConfig,
+		LaunchModelOverride:   launchModelOverride,
+		NativeResumeSessionID: nativeResumeSessionID,
+		ResolvedProfile:       profile,
+		ModelSnapshot:         modelSnapshot,
+		SkillBundles:          append([]skill.Bundle(nil), skillBundles...),
+		LaunchGoal:            goal,
+		BlackboardV2Codex:     true,
+		ValidatedLayout:       &layout,
+	}, nil
 }
 
 func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, binding *continuationLaunchBinding, captured *taskLaunchPlan) (taskLaunchPlan, error) {
@@ -463,7 +518,16 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		}
 	}
 
-	layout, err := runner.PrepareTaskLayout(server.runtimeRoot, created.ID, profile.Provider)
+	var layout runner.Layout
+	var err error
+	if v2Codex {
+		if captured == nil || captured.ValidatedLayout == nil {
+			return taskLaunchPlan{}, fmt.Errorf("Blackboard v2 Codex layout was not validated")
+		}
+		layout, err = runner.PrepareCodexV2TaskLayout(server.runtimeRoot, created.ID)
+	} else {
+		layout, err = runner.PrepareTaskLayout(server.runtimeRoot, created.ID, profile.Provider)
+	}
 	if err != nil {
 		return taskLaunchPlan{}, err
 	}
@@ -480,7 +544,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		authToken = binding.InterfaceToken
 		runtimeContext = &binding.Context
 	}
-	projection, err := runner.ProjectRuntimeConfig(layout, projectionProfile, runner.ProjectionRequest{
+	projectionRequest := runner.ProjectionRequest{
 		ProjectID:           created.ProjectID,
 		TaskID:              created.ID,
 		ScopeSnapshot:       created.ScopeSnapshot,
@@ -495,7 +559,13 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		LaunchModelOverride: launchModelOverride,
 		SkillBundles:        skillBundles,
 		RuntimeContext:      runtimeContext,
-	})
+	}
+	var projection runner.ConfigProjection
+	if v2Codex {
+		projection, err = runner.ProjectCodexV2RuntimeConfig(layout, projectionProfile, projectionRequest)
+	} else {
+		projection, err = runner.ProjectRuntimeConfig(layout, projectionProfile, projectionRequest)
+	}
 	if err != nil {
 		return taskLaunchPlan{}, err
 	}
@@ -731,7 +801,21 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		ModelSnapshot:         projection.ModelSnapshot,
 		SkillBundles:          append([]skill.Bundle(nil), skillBundles...),
 		LaunchGoal:            launchGoal,
+		BlackboardV2Codex:     v2Codex,
+		ValidatedLayout:       &layout,
 	}, nil
+}
+
+func codexV2ModelSnapshotPreview(snapshot *modelprovider.Snapshot) any {
+	if snapshot == nil || snapshot.ModelProviderID == "" {
+		return nil
+	}
+	return map[string]any{
+		"model_provider_id": snapshot.ModelProviderID, "model_provider_name": snapshot.ModelProviderName,
+		"endpoint_base_url": snapshot.EndpointBaseURL, "base_url": snapshot.BaseURL,
+		"protocol": string(snapshot.Protocol), "model": snapshot.Model, "api_key_env": snapshot.APIKeyEnv,
+		"api_key_source": snapshot.APIKeySource, "projection_target": snapshot.ProjectionTarget,
+	}
 }
 
 func codexV2ProjectionProfile(profile runtimeprofile.Profile) runtimeprofile.Profile {
@@ -1681,7 +1765,13 @@ func (server *Server) discoverProviderNativeSession(taskID string, provider runt
 	if provider != runtimeprofile.ProviderCodex && provider != runtimeprofile.ProviderPi {
 		return runtime.NativeSessionMetadata{}, nil
 	}
-	layout, err := runner.PrepareTaskLayout(server.runtimeRoot, taskID, provider)
+	var layout runner.Layout
+	var err error
+	if server.blackboardV2Continuity != nil && provider == runtimeprofile.ProviderCodex {
+		layout, err = runner.PrepareCodexV2TaskLayout(server.runtimeRoot, taskID)
+	} else {
+		layout, err = runner.PrepareTaskLayout(server.runtimeRoot, taskID, provider)
+	}
 	if err != nil {
 		return runtime.NativeSessionMetadata{}, err
 	}
