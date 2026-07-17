@@ -291,6 +291,117 @@ func TestCrashRecoveryReusesExactPinWhileResumePinsFreshCurrentState(t *testing.
 	}
 }
 
+func TestRecoveryVerifiesAndMaterializesImmutablePinInsteadOfMutableWorkingState(t *testing.T) {
+	fixture := newContinuityFixture(t)
+	t.Cleanup(func() { _ = fixture.db.Close() })
+	launch := fixture.launch(t)
+	if err := fixture.continuity.MaterializeWorkingSnapshot(context.Background(), launch.Continuation.ID); err != nil {
+		t.Fatalf("materialize initial Snapshot: %v", err)
+	}
+	_, err := fixture.board.ApplyForContinuation(context.Background(), fixture.project.ID, launch.Continuation.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "advance-before-recovery",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "entity:advanced-working", Type: "entity",
+			Record: blackboardv2.EntityRecord{Status: "active", Kind: "host", Name: "Mutable working state", ScopeStatus: "in_scope"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("advance mutable Working Snapshot: %v", err)
+	}
+	working, err := fixture.continuity.ReadWorkingSnapshot(context.Background(), launch.Continuation.ID)
+	if err != nil {
+		t.Fatalf("read advanced Working Snapshot: %v", err)
+	}
+	if bytes.Equal(working.Bytes, launch.Snapshot) {
+		t.Fatal("test did not advance mutable Working Snapshot beyond Launch Pin")
+	}
+	path := filepath.Join(fixture.runtimeRoot, fixture.task.ID, "workdir", ".pentest", "blackboard.json")
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove Working Snapshot before recovery: %v", err)
+	}
+	if err := fixture.continuity.RecoverActiveWorkingSnapshots(context.Background()); err != nil {
+		t.Fatalf("recover active Continuation: %v", err)
+	}
+	recovered, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read recovered Snapshot: %v", err)
+	}
+	if !bytes.Equal(recovered, launch.Snapshot) {
+		t.Fatalf("recovery trusted mutable Working Snapshot\ngot=%s\npin=%s\nworking=%s", recovered, launch.Snapshot, working.Bytes)
+	}
+}
+
+func TestRecoveryRejectsCorruptLaunchPinBeforeProjectingAnyBytes(t *testing.T) {
+	fixture := newContinuityFixture(t)
+	t.Cleanup(func() { _ = fixture.db.Close() })
+	launch := fixture.launch(t)
+	path := filepath.Join(fixture.runtimeRoot, fixture.task.ID, "workdir", ".pentest", "blackboard.json")
+	if err := fixture.continuity.MaterializeWorkingSnapshot(context.Background(), launch.Continuation.ID); err != nil {
+		t.Fatalf("materialize initial Snapshot: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove projected Snapshot: %v", err)
+	}
+	if _, err := fixture.db.Exec(`DROP TRIGGER blackboard_v2_continuation_pins_no_update`); err != nil {
+		t.Fatalf("drop immutable guard for corruption injection: %v", err)
+	}
+	if _, err := fixture.db.Exec(`UPDATE blackboard_v2_continuation_pins SET snapshot_bytes=? WHERE continuation_id=?`, []byte(`{"schema":"runtime-blackboard/v2","revision":999}`), launch.Continuation.ID); err != nil {
+		t.Fatalf("inject corrupt Launch Pin: %v", err)
+	}
+	err := fixture.continuity.RecoverActiveWorkingSnapshots(context.Background())
+	if !errors.Is(err, blackboardv2.ErrLaunchPinIntegrity) {
+		t.Fatalf("recovery error = %v, want ErrLaunchPinIntegrity", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("corrupt Launch Pin projected bytes at %s: %v", path, err)
+	}
+}
+
+func TestClosedContinuationReplayCannotOverwriteNewerContinuationWorkingSnapshot(t *testing.T) {
+	fixture := newContinuityFixture(t)
+	t.Cleanup(func() { _ = fixture.db.Close() })
+	c1 := fixture.launch(t)
+	if err := fixture.continuity.MaterializeWorkingSnapshot(context.Background(), c1.Continuation.ID); err != nil {
+		t.Fatalf("materialize C1: %v", err)
+	}
+	batch := blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "c1-durable-replay",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "entity:c1", Type: "entity",
+			Record: blackboardv2.EntityRecord{Status: "active", Kind: "host", Name: "C1 state", ScopeStatus: "in_scope"},
+		}},
+	}
+	c1Result, err := fixture.board.ApplyForContinuation(context.Background(), fixture.project.ID, c1.Continuation.ID, batch)
+	if err != nil {
+		t.Fatalf("apply C1 write: %v", err)
+	}
+	if _, err := fixture.tasks.UpdateContinuationStatus(c1.Continuation.ID, task.StatusCompleted); err != nil {
+		t.Fatalf("close C1: %v", err)
+	}
+	seedCurrentEntity(t, fixture.board, fixture.project.ID, "entity:between", "State before C2")
+	c2 := fixture.launch(t)
+	if err := fixture.continuity.MaterializeWorkingSnapshot(context.Background(), c2.Continuation.ID); err != nil {
+		t.Fatalf("materialize C2: %v", err)
+	}
+	path := filepath.Join(fixture.runtimeRoot, fixture.task.ID, "workdir", ".pentest", "blackboard.json")
+	c2Bytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read C2 Working Snapshot: %v", err)
+	}
+
+	replay, err := fixture.board.ApplyForContinuation(context.Background(), fixture.project.ID, c1.Continuation.ID, batch)
+	if err != nil || replay.Revision != c1Result.Revision {
+		t.Fatalf("closed C1 exact replay = %#v, %v; want durable result %#v", replay, err, c1Result)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read Task Working Snapshot after C1 replay: %v", err)
+	}
+	if !bytes.Equal(after, c2Bytes) || !bytes.Equal(after, c2.Snapshot) {
+		t.Fatalf("closed C1 replay overwrote C2 Working Snapshot\nafter=%s\nC2=%s\nC1=%s", after, c2Bytes, c1.Snapshot)
+	}
+}
+
 func seedCurrentEntity(t *testing.T, board *blackboardv2.Service, projectID, key, name string) {
 	t.Helper()
 	_, err := board.Apply(context.Background(), projectID, blackboardv2.ChangeBatch{

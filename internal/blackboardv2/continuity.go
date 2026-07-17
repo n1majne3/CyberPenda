@@ -206,11 +206,17 @@ func verifySnapshotEnvelope(data []byte, revision int) error {
 }
 
 func (s *ContinuityService) MaterializeWorkingSnapshot(ctx context.Context, continuationID string) error {
+	s.board.snapshotMu.Lock()
+	defer s.board.snapshotMu.Unlock()
 	var taskID string
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT c.task_id FROM task_continuations c
 		JOIN blackboard_v2_continuation_state state ON state.continuation_id=c.id
-		WHERE c.id=?`, continuationID).Scan(&taskID); err != nil {
+		WHERE c.id=? AND c.status IN ('pending','running','paused')
+		  AND NOT EXISTS (
+			SELECT 1 FROM task_continuations newer
+			WHERE newer.task_id=c.task_id AND newer.number>c.number
+		  )`, continuationID).Scan(&taskID); err != nil {
 		return err
 	}
 	state, err := s.ReadWorkingSnapshot(ctx, continuationID)
@@ -220,9 +226,25 @@ func (s *ContinuityService) MaterializeWorkingSnapshot(ctx context.Context, cont
 	return materializeWorkingSnapshot(s.runtimeRoot, taskID, state.Bytes)
 }
 
+// MaterializeLaunchPin verifies the immutable internal integrity before any
+// filesystem write and projects those exact bytes, never mutable working state.
+func (s *ContinuityService) MaterializeLaunchPin(ctx context.Context, continuationID string) error {
+	s.board.snapshotMu.Lock()
+	defer s.board.snapshotMu.Unlock()
+	var taskID string
+	if err := s.db.QueryRowContext(ctx, `SELECT task_id FROM task_continuations WHERE id=?`, continuationID).Scan(&taskID); err != nil {
+		return err
+	}
+	pin, err := s.ReadLaunchPin(ctx, continuationID)
+	if err != nil {
+		return err
+	}
+	return materializeWorkingSnapshot(s.runtimeRoot, taskID, pin.Bytes)
+}
+
 func (s *ContinuityService) ActiveSnapshots(ctx context.Context) ([]ActiveSnapshot, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT c.id,c.task_id,c.runtime_provider,c.runner,p.snapshot_schema,state.last_acknowledged_revision
+		SELECT c.id,c.task_id,c.runtime_provider,c.runner,p.snapshot_schema,p.snapshot_revision
 		FROM task_continuations c
 		JOIN blackboard_v2_continuation_pins p ON p.continuation_id=c.id
 		JOIN blackboard_v2_continuation_state state ON state.continuation_id=c.id
@@ -251,7 +273,7 @@ func (s *ContinuityService) RecoverActiveWorkingSnapshots(ctx context.Context) e
 		return err
 	}
 	for _, snapshot := range active {
-		if err := s.MaterializeWorkingSnapshot(ctx, snapshot.ContinuationID); err != nil {
+		if err := s.MaterializeLaunchPin(ctx, snapshot.ContinuationID); err != nil {
 			return fmt.Errorf("recover Continuation Working Snapshot: %w", err)
 		}
 	}
@@ -266,7 +288,11 @@ func (s *Service) advanceContinuationWorkingSnapshotTx(ctx context.Context, tx *
 		FROM task_continuations c
 		JOIN tasks t ON t.id=c.task_id
 		JOIN blackboard_v2_continuation_state state ON state.continuation_id=c.id
-		WHERE c.id=? AND t.project_id=?`, continuationID, projectID,
+		WHERE c.id=? AND t.project_id=? AND c.status IN ('pending','running','paused')
+		  AND NOT EXISTS (
+			SELECT 1 FROM task_continuations newer
+			WHERE newer.task_id=c.task_id AND newer.number>c.number
+		  )`, continuationID, projectID,
 	).Scan(&taskID, &previousRevision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, "", false, nil
@@ -305,13 +331,19 @@ func (s *Service) rematerializeContinuationWorkingSnapshot(ctx context.Context, 
 	if strings.TrimSpace(s.runtimeRoot) == "" {
 		return nil
 	}
+	s.snapshotMu.Lock()
+	defer s.snapshotMu.Unlock()
 	var taskID string
 	var data []byte
 	err := s.db.QueryRowContext(ctx, `
 		SELECT c.task_id,state.working_snapshot_bytes
 		FROM task_continuations c
 		JOIN blackboard_v2_continuation_state state ON state.continuation_id=c.id
-		WHERE c.id=?`, continuationID,
+		WHERE c.id=? AND c.status IN ('pending','running','paused')
+		  AND NOT EXISTS (
+			SELECT 1 FROM task_continuations newer
+			WHERE newer.task_id=c.task_id AND newer.number>c.number
+		  )`, continuationID,
 	).Scan(&taskID, &data)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil

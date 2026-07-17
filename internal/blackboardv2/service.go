@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -41,6 +42,7 @@ type Service struct {
 	db             *store.DB
 	evidenceConfig EvidenceConfig
 	runtimeRoot    string
+	snapshotMu     sync.Mutex
 }
 
 // NewService returns a Blackboard v2 semantic service backed by the Store.
@@ -806,6 +808,15 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 		return ChangeResult{}, semanticError("closed_continuation", "trusted Continuation is closed for new Blackboard writes", "", nil)
 	}
 	if continuationID != "" {
+		currentOwner, pinned, err := continuationOwnsCurrentWorkingPath(ctx, tx, continuationID)
+		if err != nil {
+			return ChangeResult{}, err
+		}
+		if pinned && !currentOwner {
+			return ChangeResult{}, semanticError("closed_continuation", "trusted Continuation no longer owns the Task Working Snapshot", "", nil)
+		}
+	}
+	if continuationID != "" {
 		for index, change := range batch.Changes {
 			if change.Op == "merge" {
 				return ChangeResult{}, semanticError("authority_denied", "governed Record Merge requires explicit operator approval", fmt.Sprintf("changes[%d].op", index), nil)
@@ -1058,6 +1069,28 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 		}
 	}
 	return result, nil
+}
+
+func continuationOwnsCurrentWorkingPath(ctx context.Context, tx *sql.Tx, continuationID string) (current, pinned bool, err error) {
+	var status string
+	var number int
+	var taskID string
+	err = tx.QueryRowContext(ctx, `
+		SELECT c.task_id,c.number,c.status,
+		       EXISTS(SELECT 1 FROM blackboard_v2_continuation_pins pin WHERE pin.continuation_id=c.id)
+		FROM task_continuations c WHERE c.id=?`, continuationID,
+	).Scan(&taskID, &number, &status, &pinned)
+	if err != nil {
+		return false, false, err
+	}
+	if !pinned || !continuationCanWrite(status) {
+		return false, pinned, nil
+	}
+	var newer int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM task_continuations WHERE task_id=? AND number>?`, taskID, number).Scan(&newer); err != nil {
+		return false, pinned, err
+	}
+	return newer == 0, pinned, nil
 }
 
 // ReadCurrent reads one current semantic record by Blackboard Key.

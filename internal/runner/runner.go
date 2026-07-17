@@ -88,6 +88,9 @@ type SandboxCommandRequest struct {
 	// ReadOnlyTaskFiles are task-root-relative mandatory inputs remounted over
 	// the writable task volume with Docker's read-only bind option.
 	ReadOnlyTaskFiles []string
+	// ReadOnlyTaskDirs keep pathname-based atomic replacements visible inside
+	// the sandbox while preventing the Runtime from changing the directory.
+	ReadOnlyTaskDirs []string
 }
 
 type ActivationRequest struct {
@@ -182,6 +185,14 @@ func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 		target := "/task/" + filepath.ToSlash(clean)
 		args = append(args, "--mount", "type=bind,src="+source+",dst="+target+",readonly")
 	}
+	for _, relativePath := range request.ReadOnlyTaskDirs {
+		clean, source, err := confinedReadOnlyTaskDir(taskRoot, relativePath)
+		if err != nil {
+			return Command{}, err
+		}
+		target := "/task/" + filepath.ToSlash(clean)
+		args = append(args, "--mount", "type=bind,src="+source+",dst="+target+",readonly")
+	}
 	if request.NetworkMode == SandboxNetworkHostProxyOnly {
 		args = append(args,
 			"--network", HostProxyOnlySandboxNetworkName,
@@ -203,6 +214,32 @@ func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 	}
 	args = append(args, request.RuntimeCommand...)
 	return Command{Program: program, Args: args}, nil
+}
+
+func confinedReadOnlyTaskDir(taskRoot, relativePath string) (string, string, error) {
+	clean := filepath.Clean(relativePath)
+	if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || strings.Contains(relativePath, `\`) {
+		return "", "", fmt.Errorf("read-only task directory must stay under task root: %q", relativePath)
+	}
+	current := taskRoot
+	for _, component := range strings.Split(clean, string(filepath.Separator)) {
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if err != nil {
+			return "", "", fmt.Errorf("inspect read-only task directory %q: %w", relativePath, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", "", fmt.Errorf("read-only task directory contains a symbolic link: %q", relativePath)
+		}
+	}
+	info, err := os.Stat(current)
+	if err != nil {
+		return "", "", err
+	}
+	if !info.IsDir() {
+		return "", "", fmt.Errorf("read-only task directory is not a directory: %q", relativePath)
+	}
+	return clean, current, nil
 }
 
 type sandboxEnvVar struct {

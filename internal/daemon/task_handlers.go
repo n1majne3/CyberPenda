@@ -250,7 +250,7 @@ func (server *Server) recoverBlackboardV2ContinuationFiles(ctx context.Context) 
 		if err != nil {
 			return fmt.Errorf("recover Blackboard v2 Codex layout: %w", err)
 		}
-		if err := server.blackboardV2Continuity.MaterializeWorkingSnapshot(ctx, snapshot.ContinuationID); err != nil {
+		if err := server.blackboardV2Continuity.MaterializeLaunchPin(ctx, snapshot.ContinuationID); err != nil {
 			return fmt.Errorf("recover Blackboard v2 Working Snapshot: %w", err)
 		}
 		header := blackboardv2.LaunchHeader{
@@ -416,6 +416,7 @@ func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launch
 }
 
 func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, binding *continuationLaunchBinding, captured *taskLaunchPlan) (taskLaunchPlan, error) {
+	v2Codex := binding != nil && binding.V2Header != nil
 	runtimeConfig := map[string]any{
 		"runtime_profile_id": created.RuntimeProfileID,
 		"runner":             created.Runner,
@@ -469,12 +470,17 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 
 	mcpURL := runner.MCPEndpointURL(server.listenAddr, sandbox)
 	authToken := server.authToken
+	projectionProfile := profile
+	if v2Codex {
+		projectionProfile = codexV2ProjectionProfile(profile)
+		authToken = ""
+	}
 	var runtimeContext *projectinterface.RuntimeBlackboardContextV1
 	if binding != nil && binding.V2Header == nil {
 		authToken = binding.InterfaceToken
 		runtimeContext = &binding.Context
 	}
-	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+	projection, err := runner.ProjectRuntimeConfig(layout, projectionProfile, runner.ProjectionRequest{
 		ProjectID:           created.ProjectID,
 		TaskID:              created.ID,
 		ScopeSnapshot:       created.ScopeSnapshot,
@@ -539,16 +545,18 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	containerIDFile := ""
 	sandboxNetwork := runner.SandboxNetworkDefault
 	launchCtx := runner.TaskContext{
-		ProjectID:      created.ProjectID,
-		TaskID:         created.ID,
-		MCPURL:         mcpURL,
 		Sandbox:        sandbox,
 		RuntimeContext: runtimeContext,
 	}
-	if binding != nil {
+	if !v2Codex {
+		launchCtx.ProjectID = created.ProjectID
+		launchCtx.TaskID = created.ID
+		launchCtx.MCPURL = mcpURL
+	}
+	if binding != nil && !v2Codex {
 		launchCtx.APIURL = binding.Context.APIURL
 		launchCtx.InterfaceToken = binding.InterfaceToken
-	} else {
+	} else if !v2Codex {
 		launchCtx.AuthToken = server.authToken
 	}
 	processEnv, err := runner.LaunchProcessEnvWithCredentials(layout, launchProfile, sandbox, launchCtx, runner.ProjectionRequest{
@@ -569,6 +577,9 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	if err != nil {
 		return taskLaunchPlan{}, err
 	}
+	if v2Codex {
+		processEnv = runner.CodexV2ProcessEnv(processEnv, layout, sandbox)
+	}
 	if sandbox {
 		sandboxNetwork = sandboxNetworkMode(created.RunControls)
 		sandboxImage := strings.TrimSpace(profile.Fields.SandboxImage)
@@ -587,9 +598,13 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 			}
 			sandboxRuntime = wrapped
 		}
-		var readOnlyTaskFiles []string
+		var readOnlyTaskFiles, readOnlyTaskDirs []string
 		if binding != nil {
-			readOnlyTaskFiles = []string{"workdir/.pentest/blackboard.json", "workdir/.pentest/scope.json"}
+			if v2Codex {
+				readOnlyTaskDirs = []string{"workdir/.pentest"}
+			} else {
+				readOnlyTaskFiles = []string{"workdir/.pentest/blackboard.json", "workdir/.pentest/scope.json"}
+			}
 		}
 		command, err := runner.BuildSandboxCommand(runner.SandboxCommandRequest{
 			Layout:            layout,
@@ -601,6 +616,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 			ProcessEnv:        processEnv,
 			NetworkMode:       sandboxNetwork,
 			ReadOnlyTaskFiles: readOnlyTaskFiles,
+			ReadOnlyTaskDirs:  readOnlyTaskDirs,
 		})
 		if err != nil {
 			return taskLaunchPlan{}, err
@@ -626,6 +642,9 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		"program": commandProgram,
 		"args":    commandArgs,
 	})
+	if v2Codex {
+		runtimeConfig = map[string]any{}
+	}
 	capturedRuntimeConfig := capturedTaskRuntimeConfig(created, launchProfile, runtimeprofile.GeneratedConfig(launchProfile), projection.Config["model_provider_snapshot"], launchModelOverride)
 	if captured != nil {
 		capturedRuntimeConfig = captured.CapturedRuntimeConfig
@@ -713,6 +732,17 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		SkillBundles:          append([]skill.Bundle(nil), skillBundles...),
 		LaunchGoal:            launchGoal,
 	}, nil
+}
+
+func codexV2ProjectionProfile(profile runtimeprofile.Profile) runtimeprofile.Profile {
+	projected := profile
+	projected.Fields.MCPServers = nil
+	projected.Fields.Env = make(map[string]string, len(profile.Fields.Env)+1)
+	for key, value := range profile.Fields.Env {
+		projected.Fields.Env[key] = value
+	}
+	projected.Fields.Env["PENTEST_DISABLE_TRUSTED_MCP"] = "true"
+	return projected
 }
 
 func capturedTaskRuntimeConfig(created task.Task, profile runtimeprofile.Profile, generatedConfig any, modelSnapshot any, launchModelOverride string) map[string]any {

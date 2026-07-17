@@ -61,7 +61,49 @@ func ProjectCodexBlackboardV2Files(layout Layout, header blackboardv2.LaunchHead
 			return fmt.Errorf("remove duplicate Runtime context %s: %w", obsolete.name, err)
 		}
 	}
+	entries, err := pentestRoot.Open(".")
+	if err != nil {
+		return fmt.Errorf("inspect Codex task context directory: %w", err)
+	}
+	defer entries.Close()
+	contents, err := entries.ReadDir(-1)
+	if err != nil {
+		return fmt.Errorf("list Codex task context directory: %w", err)
+	}
+	for _, entry := range contents {
+		if entry.Name() != "blackboard.json" && entry.Name() != "scope.json" {
+			return fmt.Errorf("Codex task context directory contains unapproved file %q", entry.Name())
+		}
+		if entry.Type()&os.ModeSymlink != 0 || entry.IsDir() {
+			return fmt.Errorf("Codex task context file %q is not a confined regular file", entry.Name())
+		}
+	}
 	return nil
+}
+
+// CodexV2ProcessEnv removes legacy project-interface identity and network
+// credentials while retaining runtime/model credentials required by Codex.
+func CodexV2ProcessEnv(env map[string]string, layout Layout, sandbox bool) map[string]string {
+	clean := make(map[string]string, len(env))
+	for key, value := range env {
+		switch key {
+		case "PENTEST_PROJECT_ID", "PENTEST_TASK_ID", "PENTEST_CONTINUATION_ID",
+			"PENTEST_MCP_URL", "PENTEST_API_URL", "PENTEST_AUTH_TOKEN", "PENTEST_INTERFACE_TOKEN",
+			"PENTEST_DISABLE_TRUSTED_MCP":
+			continue
+		}
+		if !sandbox && strings.HasPrefix(value, layout.TaskRoot+string(filepath.Separator)) {
+			relative, err := filepath.Rel(layout.Workdir, value)
+			if err == nil {
+				value = filepath.ToSlash(relative)
+			}
+		}
+		clean[key] = value
+	}
+	if !sandbox {
+		clean["PWD"] = "."
+	}
+	return clean
 }
 
 func validateBlackboardV2Header(header blackboardv2.LaunchHeader) error {

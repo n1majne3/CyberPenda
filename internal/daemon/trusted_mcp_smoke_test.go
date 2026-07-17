@@ -25,6 +25,7 @@ func TestTrustedMCPProjectionSmoke(t *testing.T) {
 		name            string
 		provider        runtimeprofile.Provider
 		compactV2Launch bool
+		networklessV2   bool
 		verify          func(t *testing.T, layoutRoot string)
 	}{
 		{
@@ -45,6 +46,7 @@ func TestTrustedMCPProjectionSmoke(t *testing.T) {
 			name:            "codex",
 			provider:        runtimeprofile.ProviderCodex,
 			compactV2Launch: true,
+			networklessV2:   true,
 			verify: func(t *testing.T, layoutRoot string) {
 				t.Helper()
 				raw, err := os.ReadFile(filepath.Join(layoutRoot, "runtime-home", "codex", "config.toml"))
@@ -52,9 +54,9 @@ func TestTrustedMCPProjectionSmoke(t *testing.T) {
 					t.Fatalf("read config.toml: %v", err)
 				}
 				config := string(raw)
-				for _, want := range []string{"[mcp_servers.pentest]", "enabled = true"} {
-					if !strings.Contains(config, want) {
-						t.Fatalf("expected config.toml to contain %q, got:\n%s", want, config)
+				for _, forbidden := range []string{"[mcp_servers.pentest]", "token=", "/mcp"} {
+					if strings.Contains(config, forbidden) {
+						t.Fatalf("Codex v2 config retained network credential surface %q:\n%s", forbidden, config)
 					}
 				}
 			},
@@ -111,7 +113,9 @@ func TestTrustedMCPProjectionSmoke(t *testing.T) {
 				}
 				mcpURL = normalizeMCPURLForHost(ctx.MCPURL, daemonBase)
 			}
-			assertMCPBootstrapHasNoLegacyTools(t, mcpURL)
+			if !tc.networklessV2 {
+				assertMCPBootstrapHasNoLegacyTools(t, mcpURL)
+			}
 		})
 	}
 }
