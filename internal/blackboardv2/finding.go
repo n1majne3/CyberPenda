@@ -3,7 +3,6 @@ package blackboardv2
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -269,7 +268,7 @@ func validateAllConfirmedFindings(ctx context.Context, tx *sql.Tx, projectID str
 			return fmt.Errorf("scan current Finding for final validation: %w", err)
 		}
 		var record findingOutputRecord
-		if err := json.Unmarshal([]byte(raw), &record); err != nil {
+		if err := decodeJSON([]byte(raw), &record); err != nil {
 			return fmt.Errorf("decode current Finding for final validation: %w", err)
 		}
 		if !isOneOf(record.Status, "unconfirmed", "confirmed") {
@@ -324,7 +323,7 @@ func findingHasCurrentSupport(ctx context.Context, tx *sql.Tx, projectID, findin
 		switch typ {
 		case "fact":
 			var fact FactRecord
-			if err := json.Unmarshal([]byte(raw), &fact); err != nil {
+			if err := decodeJSON([]byte(raw), &fact); err != nil {
 				return false, fmt.Errorf("decode supporting Fact: %w", err)
 			}
 			if fact.Confidence == "confirmed" {
@@ -332,7 +331,7 @@ func findingHasCurrentSupport(ctx context.Context, tx *sql.Tx, projectID, findin
 			}
 		case "evidence":
 			var evidence EvidenceRecord
-			if err := json.Unmarshal([]byte(raw), &evidence); err != nil {
+			if err := decodeJSON([]byte(raw), &evidence); err != nil {
 				return false, fmt.Errorf("decode supporting Evidence: %w", err)
 			}
 			if evidence.Status == "available" {

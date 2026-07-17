@@ -6,9 +6,11 @@ package blackboardv2
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -62,7 +64,7 @@ type ChangeBatch struct {
 // adapters can lose required-field presence or the nil/empty changes boundary.
 func (batch *ChangeBatch) UnmarshalJSON(raw []byte) error {
 	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
+	if err := decodeJSON(raw, &fields); err != nil {
 		return err
 	}
 	for field := range fields {
@@ -94,7 +96,7 @@ func (batch *ChangeBatch) UnmarshalJSON(raw []byte) error {
 		return fmt.Errorf("changes must be an array")
 	}
 	var changes []Change
-	if err := json.Unmarshal(changesRaw, &changes); err != nil {
+	if err := decodeJSON(changesRaw, &changes); err != nil {
 		return fmt.Errorf("decode changes: %w", err)
 	}
 	*batch = ChangeBatch{Schema: schema, IdempotencyKey: idempotencyKey, Changes: changes}
@@ -132,7 +134,7 @@ type Change struct {
 // DTO boundary so adapters cannot silently drop unknown fields before Apply.
 func (change *Change) UnmarshalJSON(raw []byte) error {
 	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
+	if err := decodeJSON(raw, &fields); err != nil {
 		return err
 	}
 	opRaw, ok := fields["op"]
@@ -140,7 +142,7 @@ func (change *Change) UnmarshalJSON(raw []byte) error {
 		return fmt.Errorf("change op is required")
 	}
 	var op string
-	if err := json.Unmarshal(opRaw, &op); err != nil {
+	if err := decodeJSON(opRaw, &op); err != nil {
 		return fmt.Errorf("decode change op: %w", err)
 	}
 	switch op {
@@ -408,7 +410,7 @@ type RecordVersionTuple [2]any
 // UnmarshalJSON keeps replayed idempotency receipts structurally stable.
 func (tuple *RecordVersionTuple) UnmarshalJSON(raw []byte) error {
 	var values []json.RawMessage
-	if err := json.Unmarshal(raw, &values); err != nil {
+	if err := decodeJSON(raw, &values); err != nil {
 		return err
 	}
 	if len(values) != 2 {
@@ -416,10 +418,10 @@ func (tuple *RecordVersionTuple) UnmarshalJSON(raw []byte) error {
 	}
 	var key string
 	var version int
-	if err := json.Unmarshal(values[0], &key); err != nil {
+	if err := decodeJSON(values[0], &key); err != nil {
 		return err
 	}
-	if err := json.Unmarshal(values[1], &version); err != nil {
+	if err := decodeJSON(values[1], &version); err != nil {
 		return err
 	}
 	*tuple = RecordVersionTuple{key, version}
@@ -432,7 +434,7 @@ type RelationVersionTuple [4]any
 // UnmarshalJSON keeps replayed relationship tuples structurally stable.
 func (tuple *RelationVersionTuple) UnmarshalJSON(raw []byte) error {
 	var values []json.RawMessage
-	if err := json.Unmarshal(raw, &values); err != nil {
+	if err := decodeJSON(raw, &values); err != nil {
 		return err
 	}
 	if len(values) != 4 {
@@ -440,16 +442,16 @@ func (tuple *RelationVersionTuple) UnmarshalJSON(raw []byte) error {
 	}
 	var from, relation, to string
 	var version int
-	if err := json.Unmarshal(values[0], &from); err != nil {
+	if err := decodeJSON(values[0], &from); err != nil {
 		return err
 	}
-	if err := json.Unmarshal(values[1], &relation); err != nil {
+	if err := decodeJSON(values[1], &relation); err != nil {
 		return err
 	}
-	if err := json.Unmarshal(values[2], &to); err != nil {
+	if err := decodeJSON(values[2], &to); err != nil {
 		return err
 	}
-	if err := json.Unmarshal(values[3], &version); err != nil {
+	if err := decodeJSON(values[3], &version); err != nil {
 		return err
 	}
 	*tuple = RelationVersionTuple{from, relation, to, version}
@@ -1081,12 +1083,24 @@ func (s *Service) ReadHistory(ctx context.Context, projectID, key string, option
 	if err := validateKey(key, "key"); err != nil {
 		return SemanticHistory{}, err
 	}
-	cursor, err := parseCursor(options.Cursor)
+	if options.Limit < 0 || options.Limit > 100 {
+		return SemanticHistory{}, semanticError("semantic_validation", "history limit must be between 1 and 100", "limit", nil)
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return SemanticHistory{}, fmt.Errorf("begin Blackboard v2 history read: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := ensureProjectExists(ctx, tx, projectID); err != nil {
+		return SemanticHistory{}, err
+	}
+	cursorKey, err := loadHistoryCursorKey(ctx, tx)
 	if err != nil {
 		return SemanticHistory{}, err
 	}
-	if options.Limit < 0 || options.Limit > 100 {
-		return SemanticHistory{}, semanticError("semantic_validation", "history limit must be between 1 and 100", "limit", nil)
+	cursor, err := parseCursor(options.Cursor, projectID, cursorKey)
+	if err != nil {
+		return SemanticHistory{}, err
 	}
 	limit := options.Limit
 	if cursor.present {
@@ -1097,14 +1111,6 @@ func (s *Service) ReadHistory(ctx context.Context, projectID, key string, option
 		}
 	} else if limit == 0 {
 		limit = 20
-	}
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return SemanticHistory{}, fmt.Errorf("begin Blackboard v2 history read: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if err := ensureProjectExists(ctx, tx, projectID); err != nil {
-		return SemanticHistory{}, err
 	}
 	revision, err := currentRevisionOrZero(ctx, tx, projectID)
 	if err != nil {
@@ -1217,7 +1223,10 @@ func (s *Service) ReadHistory(ctx context.Context, projectID, key string, option
 	}
 	next := ""
 	if offset+len(items) < total {
-		next = makeCursor(revision, canonicalKey, limit, offset+len(items))
+		next, err = makeCursor(revision, canonicalKey, limit, offset+len(items), projectID, cursorKey)
+		if err != nil {
+			return SemanticHistory{}, err
+		}
 	}
 	return SemanticHistory{Schema: historySchema, Revision: revision, Key: canonicalKey, Items: items, NextCursor: next}, nil
 }
@@ -2198,7 +2207,7 @@ func (s *Service) runtimeFactConfirmationHasBasis(ctx context.Context, tx *sql.T
 			return false, fmt.Errorf("scan supporting Fact for confirmation: %w", err)
 		}
 		var source FactRecord
-		if err := json.Unmarshal([]byte(raw), &source); err != nil {
+		if err := decodeJSON([]byte(raw), &source); err != nil {
 			rows.Close()
 			return false, fmt.Errorf("decode supporting Fact for confirmation: %w", err)
 		}
@@ -2234,7 +2243,7 @@ func (s *Service) runtimeFactConfirmationHasBasis(ctx context.Context, tx *sql.T
 			return false, fmt.Errorf("scan Evidence for confirmation: %w", err)
 		}
 		var source EvidenceRecord
-		if err := json.Unmarshal([]byte(raw), &source); err != nil {
+		if err := decodeJSON([]byte(raw), &source); err != nil {
 			rows.Close()
 			return false, fmt.Errorf("decode Evidence for confirmation: %w", err)
 		}
@@ -2279,7 +2288,7 @@ func (s *Service) runtimeFactConfirmationHasBasis(ctx context.Context, tx *sql.T
 			return false, fmt.Errorf("scan producing Attempt for confirmation: %w", err)
 		}
 		var attempt AttemptRecord
-		if err := json.Unmarshal([]byte(raw), &attempt); err != nil {
+		if err := decodeJSON([]byte(raw), &attempt); err != nil {
 			return false, fmt.Errorf("decode producing Attempt for confirmation: %w", err)
 		}
 		if originContinuationID == continuationID && attempt.Status == "succeeded" {
@@ -2870,43 +2879,43 @@ func decodeStoredRecord(typ, raw string) (Record, error) {
 	switch typ {
 	case "entity":
 		var record EntityRecord
-		if err := json.Unmarshal([]byte(raw), &record); err != nil {
+		if err := decodeJSON([]byte(raw), &record); err != nil {
 			return Record{}, err
 		}
 		return recordFromEntity(record), nil
 	case "objective":
 		var record ObjectiveRecord
-		if err := json.Unmarshal([]byte(raw), &record); err != nil {
+		if err := decodeJSON([]byte(raw), &record); err != nil {
 			return Record{}, err
 		}
 		return recordFromObjective(record), nil
 	case "attempt":
 		var record AttemptRecord
-		if err := json.Unmarshal([]byte(raw), &record); err != nil {
+		if err := decodeJSON([]byte(raw), &record); err != nil {
 			return Record{}, err
 		}
 		return recordFromAttempt(record), nil
 	case "fact":
 		var record FactRecord
-		if err := json.Unmarshal([]byte(raw), &record); err != nil {
+		if err := decodeJSON([]byte(raw), &record); err != nil {
 			return Record{}, err
 		}
 		return recordFromFact(record), nil
 	case "finding":
 		var record findingOutputRecord
-		if err := json.Unmarshal([]byte(raw), &record); err != nil {
+		if err := decodeJSON([]byte(raw), &record); err != nil {
 			return Record{}, err
 		}
 		return recordFromFindingOutput(record), nil
 	case "solution":
 		var record SolutionRecord
-		if err := json.Unmarshal([]byte(raw), &record); err != nil {
+		if err := decodeJSON([]byte(raw), &record); err != nil {
 			return Record{}, err
 		}
 		return recordFromSolution(record), nil
 	case "evidence":
 		var record EvidenceRecord
-		if err := json.Unmarshal([]byte(raw), &record); err != nil {
+		if err := decodeJSON([]byte(raw), &record); err != nil {
 			return Record{}, err
 		}
 		return recordFromEvidence(record), nil
@@ -3166,7 +3175,7 @@ func idempotencyReplay(ctx context.Context, tx *sql.Tx, projectID, continuationI
 		return ChangeResult{}, false, semanticError("idempotency_conflict", "idempotency key was already used with different semantics", "idempotency_key", map[string]any{"idempotency_key": key})
 	}
 	var result ChangeResult
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+	if err := decodeJSON([]byte(raw), &result); err != nil {
 		return ChangeResult{}, false, fmt.Errorf("decode idempotency receipt: %w", err)
 	}
 	return result, true, nil
@@ -3257,7 +3266,7 @@ func decodeUpdateChange(fields map[string]json.RawMessage) (Change, error) {
 	var version int
 	if raw, ok := fields["version"]; !ok {
 		return Change{}, fmt.Errorf("update version is required")
-	} else if err := json.Unmarshal(raw, &version); err != nil {
+	} else if err := decodeJSON(raw, &version); err != nil {
 		return Change{}, fmt.Errorf("decode update version: %w", err)
 	}
 	recordRaw, ok := fields["record"]
@@ -3270,7 +3279,7 @@ func decodeUpdateChange(fields map[string]json.RawMessage) (Change, error) {
 	}
 	var clear []string
 	if raw, ok := fields["clear"]; ok {
-		if err := json.Unmarshal(raw, &clear); err != nil {
+		if err := decodeJSON(raw, &clear); err != nil {
 			return Change{}, fmt.Errorf("decode update clear: %w", err)
 		}
 	}
@@ -3312,7 +3321,7 @@ func decodeRelateChange(fields map[string]json.RawMessage) (Change, error) {
 		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 			return Change{}, fmt.Errorf("relationship version must be a positive integer")
 		}
-		if err := json.Unmarshal(raw, &version); err != nil {
+		if err := decodeJSON(raw, &version); err != nil {
 			return Change{}, fmt.Errorf("decode relation version: %w", err)
 		}
 		if version < 1 {
@@ -3351,7 +3360,7 @@ func decodeUnrelateChange(fields map[string]json.RawMessage) (Change, error) {
 	var version int
 	if raw, ok := fields["version"]; !ok {
 		return Change{}, fmt.Errorf("unrelate version is required")
-	} else if err := json.Unmarshal(raw, &version); err != nil {
+	} else if err := decodeJSON(raw, &version); err != nil {
 		return Change{}, fmt.Errorf("decode unrelate version: %w", err)
 	}
 	if version < 1 {
@@ -3368,7 +3377,7 @@ func decodeTransitionChange(fields map[string]json.RawMessage) (Change, error) {
 	var version int
 	if raw, ok := fields["version"]; !ok {
 		return Change{}, fmt.Errorf("transition version is required")
-	} else if err := json.Unmarshal(raw, &version); err != nil {
+	} else if err := decodeJSON(raw, &version); err != nil {
 		return Change{}, fmt.Errorf("decode transition version: %w", err)
 	}
 	status, err := decodeRequiredString(fields, "status")
@@ -3438,14 +3447,14 @@ func decodeSupersedeChange(fields map[string]json.RawMessage) (Change, error) {
 	}
 	var replacementVersion int
 	if raw, ok := fields["replacement_version"]; ok {
-		if err := json.Unmarshal(raw, &replacementVersion); err != nil {
+		if err := decodeJSON(raw, &replacementVersion); err != nil {
 			return Change{}, fmt.Errorf("decode supersede replacement_version: %w", err)
 		}
 	}
 	var replacedVersion int
 	if raw, ok := fields["replaced_version"]; !ok {
 		return Change{}, fmt.Errorf("supersede replaced_version is required")
-	} else if err := json.Unmarshal(raw, &replacedVersion); err != nil {
+	} else if err := decodeJSON(raw, &replacedVersion); err != nil {
 		return Change{}, fmt.Errorf("decode supersede replaced_version: %w", err)
 	}
 	return Change{Op: "supersede", Replacement: replacement, ReplacementVersion: replacementVersion, Replaced: replaced, ReplacedVersion: replacedVersion}, nil
@@ -3463,12 +3472,12 @@ func decodeMergeChange(fields map[string]json.RawMessage) (Change, error) {
 	var sourceVersion, canonicalVersion int
 	if raw, ok := fields["source_version"]; !ok {
 		return Change{}, fmt.Errorf("merge source_version is required")
-	} else if err := json.Unmarshal(raw, &sourceVersion); err != nil {
+	} else if err := decodeJSON(raw, &sourceVersion); err != nil {
 		return Change{}, fmt.Errorf("decode merge source_version: %w", err)
 	}
 	if raw, ok := fields["canonical_version"]; !ok {
 		return Change{}, fmt.Errorf("merge canonical_version is required")
-	} else if err := json.Unmarshal(raw, &canonicalVersion); err != nil {
+	} else if err := decodeJSON(raw, &canonicalVersion); err != nil {
 		return Change{}, fmt.Errorf("decode merge canonical_version: %w", err)
 	}
 	var canonicalRecord any
@@ -3480,7 +3489,7 @@ func decodeMergeChange(fields map[string]json.RawMessage) (Change, error) {
 		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 			return Change{}, fmt.Errorf("merge clear must be an array")
 		}
-		if err := json.Unmarshal(raw, &clear); err != nil {
+		if err := decodeJSON(raw, &clear); err != nil {
 			return Change{}, fmt.Errorf("decode merge clear: %w", err)
 		}
 		seen := make(map[string]bool, len(clear))
@@ -3500,7 +3509,7 @@ func decodeRequiredString(fields map[string]json.RawMessage, field string) (stri
 		return "", fmt.Errorf("%s is required", field)
 	}
 	var value string
-	if err := json.Unmarshal(raw, &value); err != nil {
+	if err := decodeJSON(raw, &value); err != nil {
 		return "", fmt.Errorf("decode %s: %w", field, err)
 	}
 	return value, nil
@@ -3608,7 +3617,7 @@ func decodeAttemptPatch(raw json.RawMessage) (AttemptPatch, error) {
 
 func jsonFieldPresent(raw json.RawMessage, name string) bool {
 	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
+	if err := decodeJSON(raw, &fields); err != nil {
 		return false
 	}
 	_, ok := fields[name]
@@ -3665,6 +3674,9 @@ func decodeEvidencePatch(raw json.RawMessage) (EvidencePatch, error) {
 }
 
 func strictDecodeJSON(raw []byte, target any) error {
+	if err := requireValidJSONUTF8(raw); err != nil {
+		return err
+	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
@@ -4632,16 +4644,37 @@ type historyCursorPayload struct {
 	Offset   int    `json:"offset"`
 }
 
-func parseCursor(cursor string) (historyCursor, error) {
+const historyCursorMACDomain = "CyberPenda.Blackboard.SemanticHistoryCursor.v2"
+
+func loadHistoryCursorKey(ctx context.Context, tx *sql.Tx) ([]byte, error) {
+	var key []byte
+	if err := tx.QueryRowContext(ctx, `SELECT cursor_secret FROM blackboard_read_state WHERE id=1`).Scan(&key); err != nil {
+		return nil, fmt.Errorf("load Semantic History cursor integrity key: %w", err)
+	}
+	if len(key) != sha256.Size {
+		return nil, fmt.Errorf("Semantic History cursor integrity key has invalid length %d", len(key))
+	}
+	return append([]byte(nil), key...), nil
+}
+
+func parseCursor(cursor, projectID string, cursorKey []byte) (historyCursor, error) {
 	if cursor == "" {
 		return historyCursor{}, nil
 	}
 	if !strings.HasPrefix(cursor, "opaque:") {
-		return historyCursor{}, semanticError("semantic_validation", "history cursor is invalid", "cursor", nil)
+		return historyCursor{}, invalidHistoryCursorError("malformed")
 	}
-	payload, err := base64.RawURLEncoding.Strict().DecodeString(strings.TrimPrefix(cursor, "opaque:"))
+	parts := strings.Split(strings.TrimPrefix(cursor, "opaque:"), ".")
+	if len(parts) != 2 {
+		return historyCursor{}, invalidHistoryCursorError("malformed")
+	}
+	payload, err := base64.RawURLEncoding.Strict().DecodeString(parts[0])
 	if err != nil {
 		return historyCursor{}, invalidHistoryCursorError("malformed")
+	}
+	signature, err := base64.RawURLEncoding.Strict().DecodeString(parts[1])
+	if err != nil || len(signature) != sha256.Size || !hmac.Equal(signature, historyCursorMAC(cursorKey, projectID, payload)) {
+		return historyCursor{}, invalidHistoryCursorError("integrity_check_failed")
 	}
 	var decoded historyCursorPayload
 	if err := strictDecodeJSON(payload, &decoded); err != nil {
@@ -4656,12 +4689,24 @@ func parseCursor(cursor string) (historyCursor, error) {
 	return historyCursor{revision: decoded.Revision, key: decoded.Key, limit: decoded.Limit, offset: decoded.Offset, present: true}, nil
 }
 
-func makeCursor(revision int, key string, limit, offset int) string {
+func makeCursor(revision int, key string, limit, offset int, projectID string, cursorKey []byte) (string, error) {
 	payload, err := json.Marshal(historyCursorPayload{Schema: "semantic-history-cursor/v2", Revision: revision, Key: key, Limit: limit, Offset: offset})
 	if err != nil {
-		panic(fmt.Sprintf("encode Semantic History cursor: %v", err))
+		return "", fmt.Errorf("encode Semantic History cursor: %w", err)
 	}
-	return "opaque:" + base64.RawURLEncoding.EncodeToString(payload)
+	signature := historyCursorMAC(cursorKey, projectID, payload)
+	return "opaque:" + base64.RawURLEncoding.EncodeToString(payload) + "." + base64.RawURLEncoding.EncodeToString(signature), nil
+}
+
+func historyCursorMAC(cursorKey []byte, projectID string, payload []byte) []byte {
+	mac := hmac.New(sha256.New, cursorKey)
+	for _, framed := range [][]byte{[]byte(historyCursorMACDomain), []byte(projectID), payload} {
+		var size [8]byte
+		binary.BigEndian.PutUint64(size[:], uint64(len(framed)))
+		_, _ = mac.Write(size[:])
+		_, _ = mac.Write(framed)
+	}
+	return mac.Sum(nil)
 }
 
 func invalidHistoryCursorError(reason string) error {

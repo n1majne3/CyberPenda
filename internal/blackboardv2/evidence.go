@@ -65,7 +65,7 @@ type EvidenceLink [2]string
 // UnmarshalJSON rejects non-pair and non-string Evidence links.
 func (link *EvidenceLink) UnmarshalJSON(raw []byte) error {
 	var values []string
-	if err := json.Unmarshal(raw, &values); err != nil {
+	if err := decodeJSON(raw, &values); err != nil {
 		return fmt.Errorf("decode Evidence link: %w", err)
 	}
 	if len(values) != 2 {
@@ -94,7 +94,7 @@ type RetainEvidenceRequest struct {
 // unknown fields.
 func (request *RetainEvidenceRequest) UnmarshalJSON(raw []byte) error {
 	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
+	if err := decodeJSON(raw, &fields); err != nil {
 		return err
 	}
 	allowed := map[string]bool{
@@ -130,7 +130,7 @@ func (request *RetainEvidenceRequest) UnmarshalJSON(raw []byte) error {
 			if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
 				return fmt.Errorf("%s must be a string", field)
 			}
-			if err := json.Unmarshal(value, destination); err != nil {
+			if err := decodeJSON(value, destination); err != nil {
 				return fmt.Errorf("decode %s: %w", field, err)
 			}
 			if *destination == "" {
@@ -142,7 +142,7 @@ func (request *RetainEvidenceRequest) UnmarshalJSON(raw []byte) error {
 		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
 			return fmt.Errorf("version must be a positive integer")
 		}
-		if err := json.Unmarshal(value, &result.Version); err != nil {
+		if err := decodeJSON(value, &result.Version); err != nil {
 			return fmt.Errorf("decode version: %w", err)
 		}
 		if result.Version < 1 {
@@ -153,7 +153,7 @@ func (request *RetainEvidenceRequest) UnmarshalJSON(raw []byte) error {
 		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
 			return fmt.Errorf("links must be an array")
 		}
-		if err := json.Unmarshal(value, &result.Links); err != nil {
+		if err := decodeJSON(value, &result.Links); err != nil {
 			return fmt.Errorf("decode links: %w", err)
 		}
 	}
@@ -215,7 +215,7 @@ func (s *Service) RetainEvidenceForContinuation(ctx context.Context, projectID, 
 		}
 		if row.status == "completed" {
 			var replay ChangeResult
-			if err := json.Unmarshal([]byte(row.resultJSON), &replay); err != nil {
+			if err := decodeJSON([]byte(row.resultJSON), &replay); err != nil {
 				return ChangeResult{}, fmt.Errorf("decode retained Evidence replay: %w", err)
 			}
 			return replay, nil
@@ -282,7 +282,7 @@ func (s *Service) RetainEvidenceForContinuation(ctx context.Context, projectID, 
 		}
 		if row.status == "completed" {
 			var replay ChangeResult
-			if err := json.Unmarshal([]byte(row.resultJSON), &replay); err != nil {
+			if err := decodeJSON([]byte(row.resultJSON), &replay); err != nil {
 				return ChangeResult{}, fmt.Errorf("decode raced Evidence replay: %w", err)
 			}
 			return replay, nil
@@ -404,7 +404,7 @@ func (s *Service) readRetainedEvidenceSemanticReplay(ctx context.Context, projec
 		return ChangeResult{}, false, semanticError("idempotency_conflict", "idempotency key was already used with different semantics", "idempotency_key", map[string]any{"idempotency_key": idempotencyKey})
 	}
 	var result ChangeResult
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+	if err := decodeJSON([]byte(raw), &result); err != nil {
 		return ChangeResult{}, false, fmt.Errorf("decode retained Evidence semantic receipt: %w", err)
 	}
 	return result, true, nil
@@ -925,7 +925,7 @@ func collectEvidenceDependentConfirmedFacts(ctx context.Context, tx *sql.Tx, pro
 			return fmt.Errorf("scan Evidence-dependent Fact: %w", err)
 		}
 		var fact FactRecord
-		if err := json.Unmarshal([]byte(raw), &fact); err != nil {
+		if err := decodeJSON([]byte(raw), &fact); err != nil {
 			return fmt.Errorf("decode Evidence-dependent Fact: %w", err)
 		}
 		if fact.Confidence == "confirmed" {
@@ -963,7 +963,7 @@ func collectSupportingFactDependentConfirmedFacts(ctx context.Context, tx *sql.T
 			return fmt.Errorf("scan supporting-Fact-dependent Fact: %w", err)
 		}
 		var fact FactRecord
-		if err := json.Unmarshal([]byte(raw), &fact); err != nil {
+		if err := decodeJSON([]byte(raw), &fact); err != nil {
 			return fmt.Errorf("decode supporting-Fact-dependent Fact: %w", err)
 		}
 		if fact.Confidence == "confirmed" {
@@ -1022,7 +1022,7 @@ func (s *Service) factHasDurableBasis(ctx context.Context, tx *sql.Tx, projectID
 			return false, fmt.Errorf("scan durable Evidence basis: %w", err)
 		}
 		var evidence EvidenceRecord
-		if err := json.Unmarshal([]byte(raw), &evidence); err != nil {
+		if err := decodeJSON([]byte(raw), &evidence); err != nil {
 			rows.Close()
 			return false, fmt.Errorf("decode durable Evidence basis: %w", err)
 		}
@@ -1073,7 +1073,7 @@ func (s *Service) factHasDurableBasis(ctx context.Context, tx *sql.Tx, projectID
 			return false, fmt.Errorf("scan durable producing Attempt basis: %w", err)
 		}
 		var attempt AttemptRecord
-		if err := json.Unmarshal([]byte(raw), &attempt); err != nil {
+		if err := decodeJSON([]byte(raw), &attempt); err != nil {
 			return false, fmt.Errorf("decode durable producing Attempt basis: %w", err)
 		}
 		if attempt.Status == "succeeded" {
@@ -2389,7 +2389,7 @@ func (s *Service) applyRetainedEvidence(ctx context.Context, projectID, continua
 			return ChangeResult{}, fmt.Errorf("read reserved producing Attempt history: %w", err)
 		}
 		var terminal AttemptRecord
-		if err := json.Unmarshal([]byte(raw), &terminal); err != nil {
+		if err := decodeJSON([]byte(raw), &terminal); err != nil {
 			return ChangeResult{}, fmt.Errorf("decode reserved producing Attempt history: %w", err)
 		}
 		if !isOneOf(terminal.Status, "succeeded", "failed", "blocked", "inconclusive", "interrupted") {

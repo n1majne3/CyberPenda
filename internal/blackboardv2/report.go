@@ -3,7 +3,6 @@ package blackboardv2
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"sort"
 )
@@ -119,7 +118,7 @@ func (s *Service) PentestReport(ctx context.Context, projectID string) (PentestR
 		switch typ {
 		case "fact":
 			var fact FactRecord
-			if err := json.Unmarshal([]byte(raw), &fact); err != nil {
+			if err := decodeJSON([]byte(raw), &fact); err != nil {
 				rows.Close()
 				return PentestReportProjection{}, fmt.Errorf("decode report Fact: %w", err)
 			}
@@ -131,7 +130,7 @@ func (s *Service) PentestReport(ctx context.Context, projectID string) (PentestR
 			}
 		case "finding":
 			var finding findingOutputRecord
-			if err := json.Unmarshal([]byte(raw), &finding); err != nil {
+			if err := decodeJSON([]byte(raw), &finding); err != nil {
 				rows.Close()
 				return PentestReportProjection{}, fmt.Errorf("decode report Finding: %w", err)
 			}
@@ -175,7 +174,7 @@ func (s *Service) PentestReport(ctx context.Context, projectID string) (PentestR
 		switch sourceType {
 		case "fact":
 			var fact FactRecord
-			if err := json.Unmarshal([]byte(raw), &fact); err != nil {
+			if err := decodeJSON([]byte(raw), &fact); err != nil {
 				relRows.Close()
 				return PentestReportProjection{}, fmt.Errorf("decode report supporting Fact: %w", err)
 			}
@@ -189,7 +188,7 @@ func (s *Service) PentestReport(ctx context.Context, projectID string) (PentestR
 				continue
 			}
 			var evidence EvidenceRecord
-			if err := json.Unmarshal([]byte(raw), &evidence); err != nil {
+			if err := decodeJSON([]byte(raw), &evidence); err != nil {
 				relRows.Close()
 				return PentestReportProjection{}, fmt.Errorf("decode report Evidence: %w", err)
 			}

@@ -207,7 +207,7 @@ func validateAllVerifiedSolutions(ctx context.Context, tx *sql.Tx, projectID str
 			return fmt.Errorf("scan current Solution: %w", err)
 		}
 		var record SolutionRecord
-		if err := json.Unmarshal([]byte(raw), &record); err != nil {
+		if err := decodeJSON([]byte(raw), &record); err != nil {
 			return fmt.Errorf("decode current Solution: %w", err)
 		}
 		if !isOneOf(record.Status, "candidate", "verified") {

@@ -69,23 +69,24 @@ func (s *Service) ProjectRuntimeSnapshot(ctx context.Context, projectID string) 
 	}, nil
 }
 
-// MeasureRuntimeSnapshot classifies exact emitted bytes. Byte thresholds are
-// used directly so boundary-1, boundary, and boundary+1 are unambiguous even
-// though the diagnostic token estimate rounds partial four-byte groups up.
+// MeasureRuntimeSnapshot classifies the rounded exact-byte token estimate.
+// The 16K target is inclusive; warning and required begin inclusively at 32K
+// and 64K respectively.
 func MeasureRuntimeSnapshot(snapshot []byte) RuntimeSnapshotMeasurement {
 	byteCount := len(snapshot)
+	estimatedTokens := (byteCount + attentionBytesPerToken - 1) / attentionBytesPerToken
 	state := AttentionWithinTarget
 	switch {
-	case byteCount >= attentionRequiredTokens*attentionBytesPerToken:
+	case estimatedTokens >= attentionRequiredTokens:
 		state = AttentionRequired
-	case byteCount >= attentionWarningTokens*attentionBytesPerToken:
+	case estimatedTokens >= attentionWarningTokens:
 		state = AttentionWarning
-	case byteCount >= attentionTargetTokens*attentionBytesPerToken:
+	case estimatedTokens > attentionTargetTokens:
 		state = AttentionAboveTarget
 	}
 	return RuntimeSnapshotMeasurement{
 		Bytes:           byteCount,
-		EstimatedTokens: (byteCount + attentionBytesPerToken - 1) / attentionBytesPerToken,
+		EstimatedTokens: estimatedTokens,
 		State:           state,
 		Complete:        true,
 		Launchable:      true,

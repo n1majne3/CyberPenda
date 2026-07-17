@@ -3,6 +3,7 @@ package blackboardv2_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -229,6 +230,81 @@ func TestSemanticDetailAndHistoryAreDistinctClosedCursorBoundDTOs(t *testing.T) 
 	}
 }
 
+func TestSemanticHistoryCursorsAreProjectBoundTamperEvidentAndStableAcrossReopen(t *testing.T) {
+	ctx := context.Background()
+	projectA := newProjectionFixture(t, project.KindPentest)
+	secondProject, err := project.NewService(projectA.db).Create("Cursor isolation peer", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create cursor isolation Project: %v", err)
+	}
+	projectB := projectionFixture{db: projectA.db, service: projectA.service, projectID: secondProject.ID}
+	seedCursorHistory := func(t *testing.T, fixture projectionFixture) {
+		t.Helper()
+		if _, err := fixture.service.Apply(ctx, fixture.projectID, blackboardv2.ChangeBatch{
+			Schema: "semantic-change-batch/v2", IdempotencyKey: "seed-cursor-history",
+			Changes: []blackboardv2.Change{{Op: "create", Key: "fact:cursor", Type: "fact", Record: blackboardv2.FactRecord{Category: "cursor", Summary: "Cursor version one", Confidence: "tentative", ScopeStatus: "unknown"}}},
+		}); err != nil {
+			t.Fatalf("seed cursor Fact: %v", err)
+		}
+		for version := 1; version <= 3; version++ {
+			summary := fmt.Sprintf("Cursor version %d", version+1)
+			if _, err := fixture.service.Apply(ctx, fixture.projectID, blackboardv2.ChangeBatch{
+				Schema: "semantic-change-batch/v2", IdempotencyKey: fmt.Sprintf("update-cursor-%d", version),
+				Changes: []blackboardv2.Change{{Op: "update", Key: "fact:cursor", Version: version, Type: "fact", Record: blackboardv2.FactPatch{Summary: strPtr(summary)}}},
+			}); err != nil {
+				t.Fatalf("update cursor Fact: %v", err)
+			}
+		}
+	}
+	seedCursorHistory(t, projectA)
+	seedCursorHistory(t, projectB)
+
+	first, err := projectA.service.ReadHistory(ctx, projectA.projectID, "fact:cursor", blackboardv2.HistoryOptions{Limit: 1})
+	if err != nil {
+		t.Fatalf("read Project A first page: %v", err)
+	}
+	if len(first.Items) != 1 || first.Items[0].Version != 1 || first.NextCursor == "" {
+		t.Fatalf("Project A first page = %#v", first)
+	}
+	assertOpaqueCursorPayload(t, first.NextCursor, projectA.projectID)
+
+	_, err = projectB.service.ReadHistory(ctx, projectB.projectID, "fact:cursor", blackboardv2.HistoryOptions{Cursor: first.NextCursor})
+	assertSemanticPath(t, err, "semantic_validation", "cursor")
+
+	for _, tampered := range tamperedHistoryCursors(t, first.NextCursor) {
+		_, err := projectA.service.ReadHistory(ctx, projectA.projectID, "fact:cursor", blackboardv2.HistoryOptions{Cursor: tampered})
+		assertSemanticPath(t, err, "semantic_validation", "cursor")
+	}
+
+	if err := projectA.db.Close(); err != nil {
+		t.Fatalf("close Project A store: %v", err)
+	}
+	reopened, err := store.Open(projectA.dbPath)
+	if err != nil {
+		t.Fatalf("reopen Project A store: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	reopenedService := blackboardv2.NewService(reopened)
+	reissued, err := reopenedService.ReadHistory(ctx, projectA.projectID, "fact:cursor", blackboardv2.HistoryOptions{Limit: 1})
+	if err != nil {
+		t.Fatalf("reissue first page after reopen: %v", err)
+	}
+	if reissued.NextCursor != first.NextCursor {
+		t.Fatalf("cursor bytes changed across reopen:\nfirst=%s\nreissued=%s", first.NextCursor, reissued.NextCursor)
+	}
+	second, err := reopenedService.ReadHistory(ctx, projectA.projectID, "fact:cursor", blackboardv2.HistoryOptions{Cursor: first.NextCursor})
+	if err != nil {
+		t.Fatalf("continue cursor after reopen: %v", err)
+	}
+	third, err := reopenedService.ReadHistory(ctx, projectA.projectID, "fact:cursor", blackboardv2.HistoryOptions{Cursor: second.NextCursor})
+	if err != nil {
+		t.Fatalf("continue second cursor after reopen: %v", err)
+	}
+	if len(second.Items) != 1 || second.Items[0].Version != 2 || len(third.Items) != 1 || third.Items[0].Version != 3 || third.NextCursor != "" {
+		t.Fatalf("stable pagination duplicated or skipped history: second=%#v third=%#v", second, third)
+	}
+}
+
 func TestAttentionBudgetUsesExactSnapshotByteBoundariesAndNeverBlocksLaunch(t *testing.T) {
 	const bytesPerToken = 4
 	for _, test := range []struct {
@@ -237,12 +313,12 @@ func TestAttentionBudgetUsesExactSnapshotByteBoundariesAndNeverBlocksLaunch(t *t
 		want      blackboardv2.AttentionBudgetState
 	}{
 		{name: "16K minus one", byteCount: 16_000*bytesPerToken - 1, want: blackboardv2.AttentionWithinTarget},
-		{name: "16K", byteCount: 16_000 * bytesPerToken, want: blackboardv2.AttentionAboveTarget},
+		{name: "16K", byteCount: 16_000 * bytesPerToken, want: blackboardv2.AttentionWithinTarget},
 		{name: "16K plus one", byteCount: 16_000*bytesPerToken + 1, want: blackboardv2.AttentionAboveTarget},
-		{name: "32K minus one", byteCount: 32_000*bytesPerToken - 1, want: blackboardv2.AttentionAboveTarget},
+		{name: "32K minus one", byteCount: 32_000*bytesPerToken - 1, want: blackboardv2.AttentionWarning},
 		{name: "32K", byteCount: 32_000 * bytesPerToken, want: blackboardv2.AttentionWarning},
 		{name: "32K plus one", byteCount: 32_000*bytesPerToken + 1, want: blackboardv2.AttentionWarning},
-		{name: "64K minus one", byteCount: 64_000*bytesPerToken - 1, want: blackboardv2.AttentionWarning},
+		{name: "64K minus one", byteCount: 64_000*bytesPerToken - 1, want: blackboardv2.AttentionRequired},
 		{name: "64K", byteCount: 64_000 * bytesPerToken, want: blackboardv2.AttentionRequired},
 		{name: "64K plus one", byteCount: 64_000*bytesPerToken + 1, want: blackboardv2.AttentionRequired},
 	} {
@@ -255,6 +331,74 @@ func TestAttentionBudgetUsesExactSnapshotByteBoundariesAndNeverBlocksLaunch(t *t
 				t.Fatalf("attention state %s made a complete Snapshot unlaunchable: %#v", test.want, measurement)
 			}
 		})
+	}
+}
+
+func tamperedHistoryCursors(t *testing.T, cursor string) []string {
+	t.Helper()
+	encoded := strings.TrimPrefix(cursor, "opaque:")
+	parts := strings.Split(encoded, ".")
+	if len(parts) != 2 {
+		t.Fatalf("cursor is not a signed opaque envelope: %s", cursor)
+	}
+	payload, err := base64.RawURLEncoding.Strict().DecodeString(parts[0])
+	if err != nil {
+		t.Fatalf("decode cursor payload: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		t.Fatalf("decode cursor fields: %v", err)
+	}
+	mutations := []func(map[string]any){
+		func(value map[string]any) { value["offset"] = value["offset"].(float64) + 1 },
+		func(value map[string]any) { value["limit"] = value["limit"].(float64) + 1 },
+		func(value map[string]any) { value["key"] = "fact:other" },
+		func(value map[string]any) { value["revision"] = value["revision"].(float64) + 1 },
+	}
+	result := make([]string, 0, len(mutations)+2)
+	for _, mutate := range mutations {
+		copyFields := make(map[string]any, len(fields))
+		for key, value := range fields {
+			copyFields[key] = value
+		}
+		mutate(copyFields)
+		changed, err := json.Marshal(copyFields)
+		if err != nil {
+			t.Fatalf("encode tampered cursor: %v", err)
+		}
+		result = append(result, "opaque:"+base64.RawURLEncoding.EncodeToString(changed)+"."+parts[1])
+	}
+	tamperedPayload := append([]byte(nil), payload...)
+	tamperedPayload[len(tamperedPayload)/2] ^= 1
+	result = append(result, "opaque:"+base64.RawURLEncoding.EncodeToString(tamperedPayload)+"."+parts[1])
+	signature, err := base64.RawURLEncoding.Strict().DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("decode cursor signature: %v", err)
+	}
+	signature[0] ^= 1
+	result = append(result, "opaque:"+parts[0]+"."+base64.RawURLEncoding.EncodeToString(signature))
+	return result
+}
+
+func assertOpaqueCursorPayload(t *testing.T, cursor, projectID string) {
+	t.Helper()
+	parts := strings.Split(strings.TrimPrefix(cursor, "opaque:"), ".")
+	if len(parts) != 2 {
+		t.Fatalf("cursor is not opaque and signed: %s", cursor)
+	}
+	payload, err := base64.RawURLEncoding.Strict().DecodeString(parts[0])
+	if err != nil {
+		t.Fatalf("decode cursor payload: %v", err)
+	}
+	if bytes.Contains(payload, []byte(projectID)) || bytes.Contains(payload, []byte("project_id")) {
+		t.Fatalf("cursor payload exposed internal Project identity: %s", payload)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		t.Fatalf("decode cursor payload JSON: %v", err)
+	}
+	if len(fields) != 5 || fields["schema"] != "semantic-history-cursor/v2" || fields["key"] != "fact:cursor" {
+		t.Fatalf("cursor payload is not closed: %#v", fields)
 	}
 }
 
