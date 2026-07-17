@@ -786,3 +786,164 @@ func TestBlackboardV2HTTPUnexpectedFailureIsSanitized500(t *testing.T) {
 		t.Fatalf("internal message leaked storage detail: %#v", semantic)
 	}
 }
+
+// Authenticated service-origin invalid_schema (unsupported schema after grant
+// binding) must retain same-Project sync when the Continuation is behind.
+// Transport/body-parse invalid_schema must never fabricate sync.
+func TestBlackboardV2HTTPInvalidSchemaSyncAttachDistinguishesServiceFromTransport(t *testing.T) {
+	fixture := newV2HTTPFixture(t)
+	// Advance Project revision so the peer Continuation is behind and pending sync.
+	mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.operator, "operator", "sync-behind-entity",
+		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"entity:behind-schema","type":"entity","record":{"status":"active","kind":"host","name":"Behind","scope_status":"in_scope"}}]}`)
+
+	// Exact reproduction: authenticated peer posts unsupported semantic schema.
+	// Dispatch reaches the service after binding; invalid_schema keeps sync.
+	unsupported := doV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.peer.Token, "", "behind-unsupported-schema",
+		`{"schema":"semantic-change-batch/v1","changes":[]}`)
+	assertV2ErrorEnvelope(t, unsupported.status, unsupported.body, "invalid_schema", http.StatusBadRequest)
+	var semanticEnvelope struct {
+		Error *blackboardv2.Error                     `json:"error"`
+		Sync  *blackboardv2.SynchronizationAttachment `json:"sync"`
+	}
+	if err := json.Unmarshal(unsupported.body, &semanticEnvelope); err != nil {
+		t.Fatalf("decode unsupported-schema envelope: %v body=%s", err, unsupported.body)
+	}
+	if semanticEnvelope.Sync == nil || semanticEnvelope.Sync.Reason != "another_task_changed_shared_project_knowledge" {
+		t.Fatalf("authenticated service invalid_schema must attach same-Project sync, got %s", unsupported.body)
+	}
+	if semanticEnvelope.Sync.Snapshot.Schema != "runtime-blackboard/v2" {
+		t.Fatalf("sync snapshot = %#v", semanticEnvelope.Sync.Snapshot)
+	}
+	if bytes.Contains(unsupported.body, []byte(fixture.foreign.ID)) || bytes.Contains(unsupported.body, []byte(fixture.operator)) || bytes.Contains(unsupported.body, []byte(fixture.peer.Token)) {
+		t.Fatalf("invalid_schema sync leaked foreign identity or secrets: %s", unsupported.body)
+	}
+
+	// Transport/body parse invalid_schema before authenticated semantic dispatch
+	// must not fabricate a synchronization sibling.
+	malformedAuth := doV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.peer.Token, "", "body-parse-malformed",
+		`{"schema":"semantic-change-batch/v2","changes":`)
+	assertV2ErrorEnvelope(t, malformedAuth.status, malformedAuth.body, "invalid_schema", http.StatusBadRequest)
+	if bytes.Contains(malformedAuth.body, []byte(`"sync"`)) {
+		t.Fatalf("body-parse invalid_schema fabricated sync: %s", malformedAuth.body)
+	}
+	// Malicious unauthenticated caller cannot obtain sync via parse failures.
+	unauthBody := doV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", "", "", "unauth-body",
+		`{"schema":"semantic-change-batch/v2","changes":`)
+	// Auth fails first for missing capability (no Continuation token).
+	if unauthBody.status == http.StatusOK || bytes.Contains(unauthBody.body, []byte(`"sync"`)) {
+		t.Fatalf("unauthenticated body-parse path must not attach sync: %d %s", unauthBody.status, unauthBody.body)
+	}
+	// Query-string credentials are transport invalid_schema without sync.
+	queryCred, err := http.NewRequest(http.MethodPost, fixture.base+"/blackboard/changes?token="+fixture.peer.Token,
+		strings.NewReader(`{"schema":"semantic-change-batch/v2","changes":[]}`))
+	if err != nil {
+		t.Fatalf("new query-cred request: %v", err)
+	}
+	queryCred.Header.Set("Authorization", "Bearer "+fixture.peer.Token)
+	queryCred.Header.Set("Content-Type", "application/json")
+	queryCred.Header.Set("Idempotency-Key", "query-cred-no-sync")
+	response, err := http.DefaultClient.Do(queryCred)
+	if err != nil {
+		t.Fatalf("query-cred request: %v", err)
+	}
+	defer response.Body.Close()
+	queryBody, _ := io.ReadAll(response.Body)
+	assertV2ErrorEnvelope(t, response.StatusCode, queryBody, "invalid_schema", http.StatusBadRequest)
+	if bytes.Contains(queryBody, []byte(`"sync"`)) {
+		t.Fatalf("query-credential invalid_schema fabricated sync: %s", queryBody)
+	}
+	// Unknown body fields are transport invalid_schema after auth, still no sync.
+	unknownField := doV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.peer.Token, "", "unknown-field-no-sync",
+		`{"schema":"semantic-change-batch/v2","changes":[],"project_id":"attacker"}`)
+	assertV2ErrorEnvelope(t, unknownField.status, unknownField.body, "invalid_schema", http.StatusBadRequest)
+	if bytes.Contains(unknownField.body, []byte(`"sync"`)) {
+		t.Fatalf("unknown-field body-parse invalid_schema fabricated sync: %s", unknownField.body)
+	}
+}
+
+// HTTP change, Evidence retain, and checkpoint exact replay remain available
+// after Finish without live sync, matching service/MCP semantics. Changed
+// retries and new writes stay closed; cross-project principals stay denied.
+func TestBlackboardV2HTTPExactReplayAfterFinishForChangeRetainCheckpoint(t *testing.T) {
+	fixture := newV2HTTPFixture(t)
+	mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.continuation.Token, "", "http-replay-open",
+		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"entity:replay-target","type":"entity","record":{"status":"active","kind":"host","name":"Replay target","scope_status":"in_scope"}},{"op":"create","key":"objective:replay","type":"objective","record":{"status":"open","objective":"Replay objective"}},{"op":"create","key":"attempt:replay","type":"attempt","record":{"status":"open","summary":"Replay attempt"}},{"op":"relate","from":"attempt:replay","relation":"tests","to":"objective:replay"}]}`)
+
+	changeBody := `{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"entity:replay-exact","type":"entity","record":{"status":"active","kind":"host","name":"Exact replay host","scope_status":"in_scope"}}]}`
+	changeFirst := mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.continuation.Token, "", "http-replay-entity", changeBody)
+
+	workdir := filepath.Join(fixture.runtimeRoot, fixture.task.ID, "workdir")
+	if err := os.MkdirAll(workdir, 0o700); err != nil {
+		t.Fatalf("mkdir workdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "replay-proof.txt"), []byte("replay proof\n"), 0o600); err != nil {
+		t.Fatalf("write proof: %v", err)
+	}
+	retainBody := `{"key":"evidence:replay","attempt":"attempt:replay","source_path":"replay-proof.txt","artifact_type":"text","summary":"Replay retained proof","media_type":"text/plain","links":[["about","entity:replay-target"]]}`
+	retainFirst := mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/evidence:retain", fixture.continuation.Token, "", "http-replay-retain", retainBody)
+
+	checkpointBody := `{"version":1,"summary":"Checkpoint before finish"}`
+	checkpointFirst := mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/attempts/attempt:replay:checkpoint", fixture.continuation.Token, "", "http-replay-checkpoint", checkpointBody)
+
+	mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.continuation.Token, "", "http-replay-terminal",
+		`{"schema":"semantic-change-batch/v2","changes":[{"op":"transition","key":"attempt:replay","version":2,"status":"succeeded","summary":"Replay proof retained"}]}`)
+	finishFirst := mustV2HTTP(t, http.MethodPost, fixture.base+"/continuation:finish", fixture.continuation.Token, "", "http-replay-finish", `{}`)
+
+	// All-three mutating exact replays (plus Finish) after Finish: same bytes, no live sync.
+	for _, tc := range []struct {
+		name           string
+		method         string
+		url            string
+		idempotencyKey string
+		body           string
+		first          []byte
+	}{
+		{"change", http.MethodPost, fixture.base + "/blackboard/changes", "http-replay-entity", changeBody, changeFirst},
+		{"retain", http.MethodPost, fixture.base + "/blackboard/evidence:retain", "http-replay-retain", retainBody, retainFirst},
+		{"checkpoint", http.MethodPost, fixture.base + "/blackboard/attempts/attempt:replay:checkpoint", "http-replay-checkpoint", checkpointBody, checkpointFirst},
+		{"finish", http.MethodPost, fixture.base + "/continuation:finish", "http-replay-finish", `{}`, finishFirst},
+	} {
+		replay := mustV2HTTP(t, tc.method, tc.url, fixture.continuation.Token, "", tc.idempotencyKey, tc.body)
+		if !bytes.Equal(replay, tc.first) {
+			t.Fatalf("post-finish exact %s replay drifted\nfirst=%s\nreplay=%s", tc.name, tc.first, replay)
+		}
+		if bytes.Contains(replay, []byte(`"sync"`)) {
+			t.Fatalf("post-finish exact %s replay attached live sync: %s", tc.name, replay)
+		}
+	}
+
+	// Changed retries remain rejected (idempotency_conflict), not reopened writes.
+	alteredChange := doV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.continuation.Token, "", "http-replay-entity",
+		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"entity:replay-exact","type":"entity","record":{"status":"active","kind":"host","name":"Altered","scope_status":"in_scope"}}]}`)
+	assertV2ErrorEnvelope(t, alteredChange.status, alteredChange.body, "idempotency_conflict", http.StatusConflict)
+	alteredRetain := doV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/evidence:retain", fixture.continuation.Token, "", "http-replay-retain",
+		`{"key":"evidence:replay","attempt":"attempt:replay","source_path":"replay-proof.txt","artifact_type":"text","summary":"different summary","media_type":"text/plain","links":[["about","entity:replay-target"]]}`)
+	assertV2ErrorEnvelope(t, alteredRetain.status, alteredRetain.body, "idempotency_conflict", http.StatusConflict)
+	alteredCheckpoint := doV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/attempts/attempt:replay:checkpoint", fixture.continuation.Token, "", "http-replay-checkpoint",
+		`{"version":1,"summary":"different checkpoint"}`)
+	assertV2ErrorEnvelope(t, alteredCheckpoint.status, alteredCheckpoint.body, "idempotency_conflict", http.StatusConflict)
+
+	// New writes remain closed_continuation after Finish.
+	newWrite := doV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.continuation.Token, "", "http-replay-new-after-finish",
+		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"entity:after-finish","type":"entity","record":{"status":"active","kind":"host","name":"After finish","scope_status":"in_scope"}}]}`)
+	assertV2ErrorEnvelope(t, newWrite.status, newWrite.body, "closed_continuation", http.StatusGone)
+	// Live read/history authority remains closed.
+	closedRead := doV2HTTP(t, http.MethodGet, fixture.base+"/blackboard/records/entity:replay-exact", fixture.continuation.Token, "", "", "")
+	assertV2ErrorEnvelope(t, closedRead.status, closedRead.body, "closed_continuation", http.StatusGone)
+	closedHistory := doV2HTTP(t, http.MethodGet, fixture.base+"/blackboard/records/entity:replay-exact/history", fixture.continuation.Token, "", "", "")
+	assertV2ErrorEnvelope(t, closedHistory.status, closedHistory.body, "closed_continuation", http.StatusGone)
+
+	// Cross-project / foreign principal cannot obtain owner stored exact replay.
+	foreignBase := fixture.httpServer.URL + "/api/v2/projects/" + fixture.foreign.ID
+	foreignChange := doV2HTTP(t, http.MethodPost, foreignBase+"/blackboard/changes", fixture.continuation.Token, "", "http-replay-entity", changeBody)
+	assertV2ErrorEnvelope(t, foreignChange.status, foreignChange.body, "authority_denied", http.StatusForbidden)
+	if bytes.Equal(foreignChange.body, changeFirst) {
+		t.Fatalf("foreign principal received owner exact change replay")
+	}
+	// Peer Continuation on the same Project cannot claim owner idempotency receipts.
+	peerReplay := doV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.peer.Token, "", "http-replay-entity", changeBody)
+	assertV2ErrorEnvelope(t, peerReplay.status, peerReplay.body, "authority_denied", http.StatusForbidden)
+	if bytes.Equal(peerReplay.body, changeFirst) {
+		t.Fatalf("peer principal received owner exact change replay")
+	}
+}

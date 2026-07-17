@@ -109,7 +109,9 @@ func (server *Server) handleBlackboardV2Change(response http.ResponseWriter, req
 		return
 	}
 	batch := blackboardv2.ChangeBatch{Schema: body.Schema, IdempotencyKey: idempotencyKey, Changes: body.Changes}
-	server.serveBlackboardV2(response, request, principal, true, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, error) {
+	// Exact replay remains available after Finish/supersession; only live
+	// Continuations may attach synchronization.
+	server.serveBlackboardV2(response, request, principal, false, true, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, error) {
 		if principal.operator {
 			return server.blackboardV2.Apply(ctx, principal.projectID, batch)
 		}
@@ -123,7 +125,9 @@ func (server *Server) handleBlackboardV2Snapshot(response http.ResponseWriter, r
 		writeBlackboardV2Error(response, authErr, nil)
 		return
 	}
-	server.serveBlackboardV2Conditional(response, request, principal, true, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, int, error) {
+	// Live read/current knowledge authority only; closed Continuations keep
+	// exact write/finish replay but not current knowledge reads.
+	server.serveBlackboardV2Conditional(response, request, principal, true, true, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, int, error) {
 		projection, err := server.blackboardV2.ProjectRuntimeSnapshot(ctx, principal.projectID)
 		if err != nil {
 			return nil, 0, err
@@ -139,7 +143,7 @@ func (server *Server) handleBlackboardV2Read(response http.ResponseWriter, reque
 		return
 	}
 	key := request.PathValue("key")
-	server.serveBlackboardV2Conditional(response, request, principal, true, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, int, error) {
+	server.serveBlackboardV2Conditional(response, request, principal, true, true, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, int, error) {
 		detail, err := server.blackboardV2.ReadCurrent(ctx, principal.projectID, key)
 		if err != nil {
 			return nil, 0, err
@@ -165,7 +169,7 @@ func (server *Server) handleBlackboardV2History(response http.ResponseWriter, re
 		limit = parsed
 	}
 	options := blackboardv2.HistoryOptions{Cursor: request.URL.Query().Get("cursor"), Limit: limit}
-	server.serveBlackboardV2(response, request, principal, true, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, error) {
+	server.serveBlackboardV2(response, request, principal, true, true, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, error) {
 		return server.blackboardV2.ReadHistory(ctx, principal.projectID, key, options)
 	})
 }
@@ -203,7 +207,8 @@ func (server *Server) handleBlackboardV2EvidenceRetain(response http.ResponseWri
 		SourcePath: body.SourcePath, ArtifactType: body.ArtifactType, Summary: body.Summary,
 		MediaType: body.MediaType, CapturedAt: body.CapturedAt, Links: body.Links,
 	}
-	server.serveBlackboardV2(response, request, principal, true, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, error) {
+	// Exact Evidence retain replay remains available after Finish/supersession.
+	server.serveBlackboardV2(response, request, principal, false, true, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, error) {
 		return server.blackboardV2.RetainEvidenceForContinuation(ctx, principal.projectID, principal.continuationID, req)
 	})
 }
@@ -234,7 +239,8 @@ func (server *Server) handleBlackboardV2Checkpoint(response http.ResponseWriter,
 		return
 	}
 	req := blackboardv2.CheckpointAttemptRequest{IdempotencyKey: idempotencyKey, Key: key, Version: body.Version, Summary: body.Summary}
-	server.serveBlackboardV2(response, request, principal, true, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, error) {
+	// Exact checkpoint replay remains available after Finish/supersession.
+	server.serveBlackboardV2(response, request, principal, false, true, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, error) {
 		return server.blackboardV2.CheckpointAttemptForContinuation(ctx, principal.projectID, principal.continuationID, req)
 	})
 }
@@ -270,14 +276,14 @@ func (server *Server) handleBlackboardV2Finish(response http.ResponseWriter, req
 		}
 	}
 	req := blackboardv2.FinishContinuationRequest{IdempotencyKey: idempotencyKey}
-	// Finish exact replay must not attach a new live sync.
-	server.serveBlackboardV2(response, request, principal, false, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, error) {
+	// Exact Finish results never attach a new live synchronization sibling.
+	server.serveBlackboardV2(response, request, principal, false, false, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, error) {
 		return server.blackboardV2.FinishContinuation(ctx, principal.projectID, principal.continuationID, req)
 	})
 }
 
-func (server *Server) serveBlackboardV2(response http.ResponseWriter, request *http.Request, principal blackboardV2Principal, attachSync bool, action func(context.Context, blackboardv2.ContinuationAuthority) (any, error)) {
-	server.serveBlackboardV2Result(response, request, principal, attachSync, false, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, int, error) {
+func (server *Server) serveBlackboardV2(response http.ResponseWriter, request *http.Request, principal blackboardV2Principal, requireLive, attachSync bool, action func(context.Context, blackboardv2.ContinuationAuthority) (any, error)) {
+	server.serveBlackboardV2Result(response, request, principal, requireLive, attachSync, false, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, int, error) {
 		result, err := action(ctx, live)
 		return result, 0, err
 	})
@@ -285,15 +291,21 @@ func (server *Server) serveBlackboardV2(response http.ResponseWriter, request *h
 
 // serveBlackboardV2Conditional serves Snapshot/detail with a revision ETag and
 // honest If-None-Match behavior (200 body or 304 empty).
-func (server *Server) serveBlackboardV2Conditional(response http.ResponseWriter, request *http.Request, principal blackboardV2Principal, attachSync bool, action func(context.Context, blackboardv2.ContinuationAuthority) (any, int, error)) {
-	server.serveBlackboardV2Result(response, request, principal, attachSync, true, action)
+func (server *Server) serveBlackboardV2Conditional(response http.ResponseWriter, request *http.Request, principal blackboardV2Principal, requireLive, attachSync bool, action func(context.Context, blackboardv2.ContinuationAuthority) (any, int, error)) {
+	server.serveBlackboardV2Result(response, request, principal, requireLive, attachSync, true, action)
 }
 
-func (server *Server) serveBlackboardV2Result(response http.ResponseWriter, request *http.Request, principal blackboardV2Principal, attachSync bool, conditional bool, action func(context.Context, blackboardv2.ContinuationAuthority) (any, int, error)) {
+// serveBlackboardV2Result authenticates Continuation binding, runs the action,
+// and optionally attaches same-Project synchronization. requireLive gates
+// offline read/current knowledge authority. Mutating tools that support exact
+// replay pass requireLive=false so stored non-mutating replays reach the
+// service after Finish/supersession; the service still rejects changed retries
+// and new writes. attachSync is independent: only live Continuations with
+// pending sync may attach a synchronization sibling.
+func (server *Server) serveBlackboardV2Result(response http.ResponseWriter, request *http.Request, principal blackboardV2Principal, requireLive, attachSync bool, conditional bool, action func(context.Context, blackboardv2.ContinuationAuthority) (any, int, error)) {
 	ctx := request.Context()
 	var authority blackboardv2.ContinuationAuthority
 	if !principal.operator {
-		requireLive := attachSync
 		binding, err := server.blackboardV2.AuthorizeContinuationBinding(ctx, principal.projectID, principal.taskID, principal.continuationID, requireLive)
 		if err != nil {
 			writeBlackboardV2Error(response, asBlackboardV2Error(err), nil)
@@ -406,9 +418,13 @@ func writeBlackboardV2Error(response http.ResponseWriter, err *blackboardv2.Erro
 	if err == nil {
 		err = blackboardV2HTTPError("internal", "unexpected Blackboard v2 failure", "internal")
 	}
-	// Authenticated semantic errors may carry same-Project sync only; never
-	// attach sync to transport/auth failures.
-	if sync != nil && (err.Code == "authority_denied" || err.Code == "invalid_schema" || err.Code == "internal" || err.Code == "storage_busy") {
+	// Authenticated semantic errors — including service-origin invalid_schema
+	// such as unsupported schema after Continuation binding — may carry
+	// same-Project sync. Transport/body-parse invalid_schema and auth failures
+	// never reach this path with a non-nil sync: callers pass nil before
+	// authenticated semantic dispatch. Still strip codes that must never
+	// advertise synchronization (authority, internal, storage contention).
+	if sync != nil && (err.Code == "authority_denied" || err.Code == "internal" || err.Code == "storage_busy") {
 		sync = nil
 	}
 	status := blackboardV2HTTPStatus(err)
