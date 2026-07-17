@@ -838,6 +838,11 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 				return ChangeResult{}, err
 			}
 		}
+		if change.Op == "transition" && change.Status == "tentative" {
+			if err := collectSupportingFactDependentConfirmedFacts(ctx, tx, projectID, change.Key, fmt.Sprintf("changes[%d].status", index), dependentConfirmedFacts); err != nil {
+				return ChangeResult{}, err
+			}
+		}
 		if change.Op == "supersede" {
 			if err := collectEvidenceDependentConfirmedFacts(ctx, tx, projectID, change.Replaced, fmt.Sprintf("changes[%d].replaced", index), dependentConfirmedFacts); err != nil {
 				return ChangeResult{}, err
@@ -1871,12 +1876,8 @@ func applyRelate(ctx context.Context, tx *sql.Tx, projectID string, revision, in
 	if change.From == change.To {
 		return revision, RelationVersionTuple{}, false, semanticError("semantic_validation", "relationship self-links are invalid", path+".to", nil)
 	}
-	if isReasonRelation(change.Relation) && change.Reason != "" {
-		if err := validateConciseText(change.Reason, path+".reason"); err != nil {
-			return revision, RelationVersionTuple{}, false, err
-		}
-	} else if change.Reason != "" {
-		return revision, RelationVersionTuple{}, false, semanticError("semantic_validation", "relationship reason is not allowed for this relation", path+".reason", nil)
+	if err := validateRelationshipReason(change.Relation, change.Reason, path+".reason"); err != nil {
+		return revision, RelationVersionTuple{}, false, err
 	}
 	fromRecord, err := loadCurrentRecord(ctx, tx, projectID, change.From)
 	if err != nil {
@@ -1960,21 +1961,61 @@ func applyRelate(ctx context.Context, tx *sql.Tx, projectID string, revision, in
 	if !errors.Is(err, sql.ErrNoRows) {
 		return revision, RelationVersionTuple{}, false, fmt.Errorf("read Blackboard v2 relationship: %w", err)
 	}
+	maxVersion, err := maxRelationshipVersion(ctx, tx, projectID, change.From, change.Relation, change.To)
+	if err != nil {
+		return revision, RelationVersionTuple{}, false, err
+	}
 	if change.Version != 0 {
+		if maxVersion != 0 {
+			return revision, RelationVersionTuple{}, false, semanticError("version_conflict", "relationship changed", path+".version", map[string]any{
+				"from": change.From, "relation": change.Relation, "to": change.To, "expected_version": float64(change.Version), "current_version": float64(maxVersion), "current_state": "removed", "next_action": "read_current_record",
+			})
+		}
 		return revision, RelationVersionTuple{}, false, semanticError("semantic_validation", "relationship version is not accepted for a new relation", path+".version", nil)
 	}
+	nextVersion := maxVersion + 1
 	nextRevision, err := incrementRevision(ctx, tx, projectID, revision)
 	if err != nil {
 		return revision, RelationVersionTuple{}, false, err
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO blackboard_v2_relationships (project_id, from_key, relation, to_key, version, reason, created_at, updated_at)
-		VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
-		projectID, change.From, change.Relation, change.To, change.Reason, now, now,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		projectID, change.From, change.Relation, change.To, nextVersion, change.Reason, now, now,
 	); err != nil {
 		return revision, RelationVersionTuple{}, false, fmt.Errorf("store Blackboard v2 relationship: %w", err)
 	}
-	return nextRevision, RelationVersionTuple{change.From, change.Relation, change.To, 1}, true, nil
+	return nextRevision, RelationVersionTuple{change.From, change.Relation, change.To, nextVersion}, true, nil
+}
+
+func maxRelationshipVersion(ctx context.Context, tx *sql.Tx, projectID, from, relation, to string) (int, error) {
+	var version int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(MAX(version), 0)
+		FROM (
+			SELECT version FROM blackboard_v2_relationships WHERE project_id=? AND from_key=? AND relation=? AND to_key=?
+			UNION ALL
+			SELECT version FROM blackboard_v2_relationship_history WHERE project_id=? AND from_key=? AND relation=? AND to_key=?
+		)`, projectID, from, relation, to, projectID, from, relation, to).Scan(&version); err != nil {
+		return 0, fmt.Errorf("read Blackboard v2 relationship identity version: %w", err)
+	}
+	return version, nil
+}
+
+func validateRelationshipReason(relation, reason, path string) error {
+	violation := blackboardv2grammar.ReasonViolation(relation, reason)
+	if violation == "" {
+		return nil
+	}
+	details := map[string]any{"relation": relation, "violation": violation}
+	switch violation {
+	case blackboardv2grammar.ReasonViolationForbidden:
+		return semanticError("semantic_validation", "relationship reason is not allowed for this relation", path, details)
+	case blackboardv2grammar.ReasonViolationRedundant:
+		return semanticError("semantic_validation", "relationship reason must add semantic information beyond the relation type", path, details)
+	default:
+		return semanticError("semantic_validation", "concise semantic text is required and must fit the v2 limit", path, details)
+	}
 }
 
 func applyTransition(ctx context.Context, tx *sql.Tx, projectID string, revision, index int, change Change, now string) (int, string, int, bool, error) {
@@ -2860,22 +2901,17 @@ func decodeStoredRecord(typ, raw string) (Record, error) {
 }
 
 func loadCurrentRelationshipsForKey(ctx context.Context, tx *sql.Tx, projectID, key string) ([]RelationshipTuple, error) {
-	rows, err := tx.QueryContext(ctx, `
-		SELECT rel.from_key, rel.relation, rel.to_key, rel.reason, source.type, target.type
-		FROM blackboard_v2_relationships AS rel
-		LEFT JOIN blackboard_v2_records AS source
-		  ON source.project_id=rel.project_id AND source.key=rel.from_key
-		LEFT JOIN blackboard_v2_records AS target
-		  ON target.project_id=rel.project_id AND target.key=rel.to_key
-		WHERE rel.project_id = ? AND (rel.from_key = ? OR rel.to_key = ?)
-		ORDER BY rel.from_key ASC, rel.relation ASC, rel.to_key ASC, rel.reason ASC`,
-		projectID, key, key,
-	)
+	all, err := loadAllCurrentRelationships(ctx, tx, projectID)
 	if err != nil {
-		return nil, fmt.Errorf("read Blackboard v2 record relationships: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
-	return scanRelationshipTuples(rows)
+	relationships := make([]RelationshipTuple, 0)
+	for _, relationship := range all {
+		if relationship[0] == key || relationship[2] == key {
+			relationships = append(relationships, relationship)
+		}
+	}
+	return relationships, nil
 }
 
 func loadAllCurrentRelationships(ctx context.Context, tx *sql.Tx, projectID string) ([]RelationshipTuple, error) {
@@ -2905,6 +2941,7 @@ type relationshipRows interface {
 
 func scanRelationshipTuples(rows relationshipRows) ([]RelationshipTuple, error) {
 	relationships := []RelationshipTuple{}
+	stored := make([]persistedRelationship, 0)
 	for rows.Next() {
 		var from, relation, to, reason string
 		var fromType, toType sql.NullString
@@ -2912,9 +2949,19 @@ func scanRelationshipTuples(rows relationshipRows) ([]RelationshipTuple, error) 
 			return nil, fmt.Errorf("scan Blackboard v2 relationship: %w", err)
 		}
 		rule, known := blackboardv2grammar.Lookup(relation)
-		if !known || relation == "supersedes" || from == to || !fromType.Valid || !toType.Valid || !rule.Allows(fromType.String, toType.String) || (reason != "" && rule.ReasonPolicy != blackboardv2grammar.ReasonOptional) {
-			return nil, fmt.Errorf("persisted relationship %q %s %q is outside Blackboard v2 relationship grammar", from, relation, to)
+		if !known || relation == "supersedes" {
+			return nil, persistedRelationshipError(from, relation, to, "relation")
 		}
+		if from == to {
+			return nil, persistedRelationshipError(from, relation, to, "self_link")
+		}
+		if !fromType.Valid || !toType.Valid || !rule.Allows(fromType.String, toType.String) {
+			return nil, persistedRelationshipError(from, relation, to, "endpoint")
+		}
+		if violation := blackboardv2grammar.ReasonViolation(relation, reason); violation != "" {
+			return nil, persistedRelationshipError(from, relation, to, violation)
+		}
+		stored = append(stored, persistedRelationship{from: from, relation: relation, to: to, fromType: fromType.String, toType: toType.String})
 		if reason == "" {
 			relationships = append(relationships, RelationshipTuple{from, relation, to})
 		} else {
@@ -2924,7 +2971,78 @@ func scanRelationshipTuples(rows relationshipRows) ([]RelationshipTuple, error) 
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate Blackboard v2 relationships: %w", err)
 	}
+	if relation, cyclic := persistedRelationshipCycle(stored); cyclic {
+		return nil, persistedRelationshipError("", relation, "", "cycle")
+	}
 	return relationships, nil
+}
+
+type persistedRelationship struct {
+	from, relation, to string
+	fromType, toType   string
+}
+
+func persistedRelationshipError(from, relation, to, violation string) error {
+	details := map[string]any{"relation": relation, "violation": violation}
+	if from != "" {
+		details["from"] = from
+	}
+	if to != "" {
+		details["to"] = to
+	}
+	return semanticError("semantic_validation", "persisted relationship is outside Blackboard v2 relationship grammar", "relations", details)
+}
+
+func persistedRelationshipCycle(relationships []persistedRelationship) (string, bool) {
+	for _, rule := range blackboardv2grammar.Rules() {
+		if !isOneOf(rule.CyclePolicy, "acyclic_per_endpoint_family", "acyclic", "project_fact_to_project_fact_acyclic") {
+			continue
+		}
+		adjacency := make(map[string][]string)
+		nodes := make(map[string]bool)
+		for _, relationship := range relationships {
+			if relationship.relation != rule.Relation {
+				continue
+			}
+			if rule.CyclePolicy == "project_fact_to_project_fact_acyclic" && (relationship.fromType != "fact" || relationship.toType != "fact") {
+				continue
+			}
+			adjacency[relationship.from] = append(adjacency[relationship.from], relationship.to)
+			nodes[relationship.from], nodes[relationship.to] = true, true
+		}
+		keys := make([]string, 0, len(nodes))
+		for key := range nodes {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for key := range adjacency {
+			sort.Strings(adjacency[key])
+		}
+		state := make(map[string]uint8, len(nodes))
+		var visit func(string) bool
+		visit = func(key string) bool {
+			if state[key] == 1 {
+				return true
+			}
+			if state[key] == 2 {
+				return false
+			}
+			state[key] = 1
+			for _, target := range adjacency[key] {
+				if visit(target) {
+					return true
+				}
+			}
+			state[key] = 2
+			return false
+		}
+		for _, key := range keys {
+			if visit(key) {
+				return rule.Relation, true
+			}
+		}
+	}
+	return "", false
 }
 
 func continuationProjectStatus(ctx context.Context, tx *sql.Tx, projectID, continuationID string) (string, error) {

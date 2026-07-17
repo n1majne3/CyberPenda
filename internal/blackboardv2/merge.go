@@ -200,14 +200,22 @@ func applyMerge(ctx context.Context, tx *sql.Tx, projectID string, revision, ind
 		if err := validateMergedRelationshipCycle(ctx, tx, projectID, relationship.relation, from, to, path); err != nil {
 			return revision, "", 0, nil, err
 		}
+		canonicalMaxVersion, err := maxRelationshipVersion(ctx, tx, projectID, from, relationship.relation, to)
+		if err != nil {
+			return revision, "", 0, nil, err
+		}
+		rewriteVersion := relationship.version
+		if rewriteVersion <= canonicalMaxVersion {
+			rewriteVersion = canonicalMaxVersion + 1
+		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO blackboard_v2_relationships(project_id,from_key,relation,to_key,version,reason,created_at,updated_at)
 			VALUES(?,?,?,?,?,?,?,?)`,
-			projectID, from, relationship.relation, to, relationship.version, relationship.reason, relationship.createdAt, relationship.updatedAt,
+			projectID, from, relationship.relation, to, rewriteVersion, relationship.reason, relationship.createdAt, relationship.updatedAt,
 		); err != nil {
 			return revision, "", 0, nil, fmt.Errorf("rewrite merged relationship: %w", err)
 		}
-		changedRelations = append(changedRelations, RelationVersionTuple{from, relationship.relation, to, relationship.version})
+		changedRelations = append(changedRelations, RelationVersionTuple{from, relationship.relation, to, rewriteVersion})
 	}
 
 	sourceJSON, err := json.Marshal(source.record)

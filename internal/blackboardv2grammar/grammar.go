@@ -2,11 +2,23 @@
 // vocabulary and endpoint matrix shared by semantic producers and consumers.
 package blackboardv2grammar
 
+import (
+	"strings"
+	"unicode/utf8"
+)
+
 const (
 	ReasonForbidden = "forbidden"
 	ReasonOptional  = "optional"
 
 	SelfLinkReject = "reject"
+
+	ReasonViolationForbidden   = "reason_forbidden"
+	ReasonViolationInvalid     = "reason_invalid"
+	ReasonViolationInvalidUTF8 = "reason_invalid_utf8"
+	ReasonViolationTooLong     = "reason_too_long"
+	ReasonViolationRedundant   = "reason_redundant"
+	MaxReasonBytes             = 512
 )
 
 var recordTypes = []string{"entity", "objective", "attempt", "fact", "finding", "solution", "evidence"}
@@ -114,6 +126,35 @@ func Lookup(relation string) (Rule, bool) {
 		}
 	}
 	return Rule{}, false
+}
+
+// ReasonViolation returns the stable policy violation for a supplied reason,
+// or an empty string when the reason is valid for the relationship.
+func ReasonViolation(relation, reason string) string {
+	if reason == "" {
+		return ""
+	}
+	rule, ok := Lookup(relation)
+	if !ok || rule.ReasonPolicy != ReasonOptional {
+		return ReasonViolationForbidden
+	}
+	if !utf8.ValidString(reason) {
+		return ReasonViolationInvalidUTF8
+	}
+	if len([]byte(reason)) > MaxReasonBytes {
+		return ReasonViolationTooLong
+	}
+	if strings.TrimSpace(reason) == "" {
+		return ReasonViolationInvalid
+	}
+	if normalizeReasonToken(reason) == relation {
+		return ReasonViolationRedundant
+	}
+	return ""
+}
+
+func normalizeReasonToken(reason string) string {
+	return strings.Join(strings.Fields(strings.ToLower(reason)), "_")
 }
 
 // Cases expands the complete ordered 11-by-7-by-7 matrix.

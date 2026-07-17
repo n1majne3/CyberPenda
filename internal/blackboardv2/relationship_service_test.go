@@ -3,6 +3,7 @@ package blackboardv2_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -209,6 +210,163 @@ func TestFactSupersessionPreservesConfirmedFactBasis(t *testing.T) {
 	}
 }
 
+func TestConfirmedSupportingFactDemotionPreservesDependentBasisAtomically(t *testing.T) {
+	fixture := newEvidenceV2Fixture(t, "Supporting Fact demotion basis")
+	ctx := context.Background()
+	_, err := fixture.service.Apply(ctx, fixture.projectID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "seed-supporting-fact-demotion",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "fact:demotion-support", Type: "fact", Record: blackboardv2.FactRecord{Category: "validation", Summary: "Confirmed source S", Confidence: "confirmed", ScopeStatus: "in_scope"}},
+			{Op: "create", Key: "fact:demotion-target", Type: "fact", Record: blackboardv2.FactRecord{Category: "validation", Summary: "Confirmed target T", Confidence: "tentative", ScopeStatus: "in_scope"}},
+			{Op: "relate", From: "fact:demotion-support", Relation: "supports", To: "fact:demotion-target", Reason: "Independent reproduction confirms the target"},
+			{Op: "transition", Key: "fact:demotion-target", Version: 1, Status: "confirmed"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed supporting Fact demotion: %v", err)
+	}
+	_, err = fixture.service.Apply(ctx, fixture.projectID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "reject-stranding-support-demotion",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "fact:demotion-rollback", Type: "fact", Record: blackboardv2.FactRecord{Category: "test", Summary: "Must roll back", Confidence: "tentative", ScopeStatus: "unknown"}},
+			{Op: "transition", Key: "fact:demotion-support", Version: 1, Status: "tentative"},
+		},
+	})
+	var semanticErr *blackboardv2.Error
+	if !errors.As(err, &semanticErr) || semanticErr.Code != "semantic_validation" || semanticErr.Path != "changes[1].status" || semanticErr.Details["fact"] != "fact:demotion-target" {
+		t.Fatalf("supporting Fact demotion error = %#v", err)
+	}
+	if _, err := fixture.service.ReadCurrent(ctx, fixture.projectID, "fact:demotion-rollback"); !isSemanticCode(err, "not_found") {
+		t.Fatalf("supporting Fact demotion retained rollback marker: %#v", err)
+	}
+	support, err := fixture.service.ReadCurrent(ctx, fixture.projectID, "fact:demotion-support")
+	if err != nil || support.Version != 1 || support.Record.Confidence != "confirmed" {
+		t.Fatalf("failed demotion changed supporting Fact: %#v, %v", support, err)
+	}
+	target, err := fixture.service.ReadCurrent(ctx, fixture.projectID, "fact:demotion-target")
+	if err != nil || target.Record.Confidence != "confirmed" || len(target.Relationships) != 1 {
+		t.Fatalf("failed demotion changed dependent Fact: %#v, %v", target, err)
+	}
+}
+
+func TestRelationshipIdentityVersionContinuityAcrossRemovalAndRecreation(t *testing.T) {
+	fixture := newEvidenceV2Fixture(t, "Relationship identity continuity")
+	ctx := context.Background()
+	_, err := fixture.service.Apply(ctx, fixture.projectID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "seed-relationship-identity",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "fact:identity-source", Type: "fact", Record: blackboardv2.FactRecord{Category: "identity", Summary: "Identity source", Confidence: "tentative", ScopeStatus: "unknown"}},
+			{Op: "create", Key: "fact:identity-target", Type: "fact", Record: blackboardv2.FactRecord{Category: "identity", Summary: "Identity target", Confidence: "tentative", ScopeStatus: "unknown"}},
+			{Op: "relate", From: "fact:identity-source", Relation: "contradicts", To: "fact:identity-target", Reason: "Initial independent conflict"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed relationship identity: %v", err)
+	}
+	if _, err := fixture.service.Apply(ctx, fixture.projectID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "remove-relationship-v1",
+		Changes: []blackboardv2.Change{{Op: "unrelate", From: "fact:identity-source", Relation: "contradicts", To: "fact:identity-target", Version: 1}},
+	}); err != nil {
+		t.Fatalf("unrelate relationship v1: %v", err)
+	}
+	recreated, err := fixture.service.Apply(ctx, fixture.projectID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "recreate-relationship-v2",
+		Changes: []blackboardv2.Change{{Op: "relate", From: "fact:identity-source", Relation: "contradicts", To: "fact:identity-target", Reason: "Recreated independent conflict"}},
+	})
+	if err != nil {
+		t.Fatalf("recreate relationship v2: %v", err)
+	}
+	if len(recreated.Relations) != 1 || recreated.Relations[0][3] != 2 {
+		t.Fatalf("recreated relationship result = %#v, want version 2", recreated.Relations)
+	}
+	_, err = fixture.service.Apply(ctx, fixture.projectID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "reject-stale-recreated-reason",
+		Changes: []blackboardv2.Change{{Op: "relate", From: "fact:identity-source", Relation: "contradicts", To: "fact:identity-target", Version: 1, Reason: "Stale reason change"}},
+	})
+	var semanticErr *blackboardv2.Error
+	if !errors.As(err, &semanticErr) || semanticErr.Code != "version_conflict" || semanticErr.Path != "changes[0].version" || semanticErr.Details["current_version"] != float64(2) {
+		t.Fatalf("stale recreated relationship error = %#v", err)
+	}
+	updated, err := fixture.service.Apply(ctx, fixture.projectID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "update-recreated-reason-v3",
+		Changes: []blackboardv2.Change{{Op: "relate", From: "fact:identity-source", Relation: "contradicts", To: "fact:identity-target", Version: 2, Reason: "Current informative reason"}},
+	})
+	if err != nil || len(updated.Relations) != 1 || updated.Relations[0][3] != 3 {
+		t.Fatalf("update recreated relationship = %#v, %v", updated.Relations, err)
+	}
+	if _, err := fixture.service.Apply(ctx, fixture.projectID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "remove-relationship-v3",
+		Changes: []blackboardv2.Change{{Op: "unrelate", From: "fact:identity-source", Relation: "contradicts", To: "fact:identity-target", Version: 3}},
+	}); err != nil {
+		t.Fatalf("unrelate relationship v3: %v", err)
+	}
+	recreatedAgain, err := fixture.service.Apply(ctx, fixture.projectID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "recreate-relationship-v4",
+		Changes: []blackboardv2.Change{{Op: "relate", From: "fact:identity-source", Relation: "contradicts", To: "fact:identity-target", Reason: "Second recreated conflict"}},
+	})
+	if err != nil || len(recreatedAgain.Relations) != 1 || recreatedAgain.Relations[0][3] != 4 {
+		t.Fatalf("second recreated relationship = %#v, %v", recreatedAgain.Relations, err)
+	}
+}
+
+func TestMergeRewrittenRelationshipUsesCollisionSafeCanonicalVersion(t *testing.T) {
+	fixture := newEvidenceV2Fixture(t, "Merge relationship version collision")
+	ctx := context.Background()
+	_, err := fixture.service.Apply(ctx, fixture.projectID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "seed-merge-version-collision",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "fact:merge-version-source", Type: "fact", Record: blackboardv2.FactRecord{Category: "duplicate", Summary: "Same merge version fact", Confidence: "tentative", ScopeStatus: "unknown"}},
+			{Op: "create", Key: "fact:merge-version-canonical", Type: "fact", Record: blackboardv2.FactRecord{Category: "duplicate", Summary: "same merge version fact", Confidence: "tentative", ScopeStatus: "unknown"}},
+			{Op: "create", Key: "fact:merge-version-target", Type: "fact", Record: blackboardv2.FactRecord{Category: "target", Summary: "Merge version target", Confidence: "tentative", ScopeStatus: "unknown"}},
+			{Op: "relate", From: "fact:merge-version-canonical", Relation: "contradicts", To: "fact:merge-version-target", Reason: "Archived canonical conflict"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed merge relationship collision: %v", err)
+	}
+	if _, err := fixture.service.Apply(ctx, fixture.projectID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "archive-canonical-relationship-v1",
+		Changes: []blackboardv2.Change{{Op: "unrelate", From: "fact:merge-version-canonical", Relation: "contradicts", To: "fact:merge-version-target", Version: 1}},
+	}); err != nil {
+		t.Fatalf("archive canonical relationship v1: %v", err)
+	}
+	if _, err := fixture.service.Apply(ctx, fixture.projectID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "create-source-relationship-v1",
+		Changes: []blackboardv2.Change{{Op: "relate", From: "fact:merge-version-source", Relation: "contradicts", To: "fact:merge-version-target", Reason: "Source conflict to rewrite"}},
+	}); err != nil {
+		t.Fatalf("create source relationship: %v", err)
+	}
+	merged, err := fixture.service.Apply(ctx, fixture.projectID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "merge-with-archived-canonical-collision",
+		Changes: []blackboardv2.Change{{Op: "merge", Source: "fact:merge-version-source", SourceVersion: 1, Canonical: "fact:merge-version-canonical", CanonicalVersion: 1}},
+	})
+	if err != nil {
+		t.Fatalf("merge with archived canonical collision: %v", err)
+	}
+	if len(merged.Relations) != 1 || merged.Relations[0][3] != 2 {
+		t.Fatalf("merge rewritten relationship = %#v, want version 2", merged.Relations)
+	}
+	if _, err := fixture.service.Apply(ctx, fixture.projectID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "unrelate-merge-rewrite-v2",
+		Changes: []blackboardv2.Change{{Op: "unrelate", From: "fact:merge-version-canonical", Relation: "contradicts", To: "fact:merge-version-target", Version: 2}},
+	}); err != nil {
+		t.Fatalf("unrelate collision-safe merge rewrite: %v", err)
+	}
+	history, err := fixture.service.ReadHistory(ctx, fixture.projectID, "fact:merge-version-canonical", blackboardv2.HistoryOptions{})
+	if err != nil {
+		t.Fatalf("read canonical merge relationship history: %v", err)
+	}
+	versions := make([]int, 0, 2)
+	for _, item := range history.Items {
+		if item.Kind == "relationship" && item.From == "fact:merge-version-canonical" && item.Relation == "contradicts" && item.To == "fact:merge-version-target" {
+			versions = append(versions, item.Version)
+		}
+	}
+	if !reflect.DeepEqual(versions, []int{1, 2}) {
+		t.Fatalf("canonical relationship history versions = %#v, want [1 2]", versions)
+	}
+}
+
 func TestRelationshipCyclesContradictionAndRedirectSelfLinks(t *testing.T) {
 	fixture := newEvidenceV2Fixture(t, "Relationship cycles and redirects")
 	ctx := context.Background()
@@ -282,6 +440,58 @@ func TestRelationshipReasonBoundary(t *testing.T) {
 	})
 	if !isSemanticCode(err, "semantic_validation") {
 		t.Fatalf("513-byte reason error = %#v", err)
+	}
+}
+
+func TestRelationshipReasonsRejectNormalizedRelationTokenAndAcceptInformation(t *testing.T) {
+	fixture := newEvidenceV2Fixture(t, "Relationship reason semantics")
+	ctx := context.Background()
+	_, err := fixture.service.Apply(ctx, fixture.projectID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "seed-redundant-reasons",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "fact:reason-a", Type: "fact", Record: blackboardv2.FactRecord{Category: "reason", Summary: "Reason A", Confidence: "tentative", ScopeStatus: "unknown"}},
+			{Op: "create", Key: "fact:reason-b", Type: "fact", Record: blackboardv2.FactRecord{Category: "reason", Summary: "Reason B", Confidence: "tentative", ScopeStatus: "unknown"}},
+			{Op: "create", Key: "objective:reason-a", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Reason objective A"}},
+			{Op: "create", Key: "objective:reason-b", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Reason objective B"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed redundant reason records: %v", err)
+	}
+	for index, testCase := range []struct {
+		from, relation, to, reason string
+	}{
+		{"fact:reason-a", "supports", "fact:reason-b", "  SuPpOrTs  "},
+		{"fact:reason-a", "contradicts", "fact:reason-b", "CONTRADICTS"},
+		{"objective:reason-a", "depends_on", "objective:reason-b", "  Depends   On "},
+	} {
+		_, err := fixture.service.Apply(ctx, fixture.projectID, blackboardv2.ChangeBatch{
+			Schema: "semantic-change-batch/v2", IdempotencyKey: fmt.Sprintf("reject-redundant-reason-%d", index),
+			Changes: []blackboardv2.Change{{Op: "relate", From: testCase.from, Relation: testCase.relation, To: testCase.to, Reason: testCase.reason}},
+		})
+		var semanticErr *blackboardv2.Error
+		if !errors.As(err, &semanticErr) || semanticErr.Code != "semantic_validation" || semanticErr.Path != "changes[0].reason" || semanticErr.Details["relation"] != testCase.relation {
+			t.Fatalf("redundant %s reason error = %#v", testCase.relation, err)
+		}
+	}
+	created, err := fixture.service.Apply(ctx, fixture.projectID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "accept-informative-support-reason",
+		Changes: []blackboardv2.Change{{Op: "relate", From: "fact:reason-a", Relation: "supports", To: "fact:reason-b", Reason: "Independent reproduction matched the response"}},
+	})
+	if err != nil || len(created.Relations) != 1 || created.Relations[0][3] != 1 {
+		t.Fatalf("informative reason create = %#v, %v", created.Relations, err)
+	}
+	_, err = fixture.service.Apply(ctx, fixture.projectID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "reject-redundant-support-update",
+		Changes: []blackboardv2.Change{{Op: "relate", From: "fact:reason-a", Relation: "supports", To: "fact:reason-b", Version: 1, Reason: " SUPPORTS "}},
+	})
+	var semanticErr *blackboardv2.Error
+	if !errors.As(err, &semanticErr) || semanticErr.Code != "semantic_validation" || semanticErr.Path != "changes[0].reason" {
+		t.Fatalf("redundant reason update error = %#v", err)
+	}
+	detail, err := fixture.service.ReadCurrent(ctx, fixture.projectID, "fact:reason-a")
+	if err != nil || len(detail.Relationships) != 1 || detail.Relationships[0][3] != "Independent reproduction matched the response" {
+		t.Fatalf("redundant update changed current reason: %#v, %v", detail.Relationships, err)
 	}
 }
 
