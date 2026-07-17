@@ -580,7 +580,8 @@ func TestPentestSolutionTransitionsReturnProjectKindMismatchBeforeTargetLookup(t
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	createdProject, err := project.NewService(db).Create("Pentest", "", project.Scope{}, project.Defaults{})
+	projects := project.NewService(db)
+	createdProject, err := projects.Create("Pentest", "", project.Scope{}, project.Defaults{})
 	if err != nil {
 		t.Fatalf("create Pentest Project: %v", err)
 	}
@@ -616,5 +617,44 @@ func TestPentestSolutionTransitionsReturnProjectKindMismatchBeforeTargetLookup(t
 				t.Fatalf("Pentest transition retained earlier batch write: %#v", err)
 			}
 		})
+	}
+
+	tasks := task.NewService(db, projects)
+	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "Exercise trusted runtime guards", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatalf("create Task: %v", err)
+	}
+	owner, err := tasks.CreateContinuation(createdTask.ID, "solution-kind-owner", "codex", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create owner Continuation: %v", err)
+	}
+	peer, err := tasks.CreateContinuation(createdTask.ID, "solution-kind-peer", "codex", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create peer Continuation: %v", err)
+	}
+	_, err = service.ApplyForContinuation(ctx, createdProject.ID, owner.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "owned-attempt",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "objective:owned", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Own an Attempt"}},
+			{Op: "create", Key: "attempt:owned", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Owned by the first Continuation"}},
+			{Op: "relate", From: "attempt:owned", Relation: "tests", To: "objective:owned"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create owned Attempt: %v", err)
+	}
+	_, err = service.ApplyForContinuation(ctx, createdProject.ID, peer.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "peer-pentest-solution-transition",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "fact:peer-rollback", Type: "fact", Record: blackboardv2.FactRecord{Category: "test", Summary: "must roll back", Confidence: "tentative", ScopeStatus: "unknown"}},
+			{Op: "transition", Key: "attempt:owned", Version: 1, Status: "verified", VerificationSummary: "must reject by Project kind"},
+		},
+	})
+	var semanticErr *blackboardv2.Error
+	if !errors.As(err, &semanticErr) || semanticErr.Code != "project_kind_mismatch" || semanticErr.Message != "Solutions require a CTF Challenge Project" {
+		t.Fatalf("trusted runtime Pentest transition error = %#v", err)
+	}
+	if _, err := service.ReadCurrent(ctx, createdProject.ID, "fact:peer-rollback"); !isSemanticCode(err, "not_found") {
+		t.Fatalf("trusted runtime Pentest transition retained earlier batch write: %#v", err)
 	}
 }

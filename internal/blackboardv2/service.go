@@ -787,6 +787,11 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 	evidenceDependentFacts := make(map[string]string)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for index, change := range batch.Changes {
+		if change.Op == "transition" && isOneOf(change.Status, "verified", "rejected") {
+			if err := ensureCTFProject(ctx, tx, projectID, fmt.Sprintf("changes[%d].status", index)); err != nil {
+				return ChangeResult{}, err
+			}
+		}
 		if continuationID != "" {
 			if err := validateContinuationChangeOwnership(ctx, tx, projectID, continuationID, change, index); err != nil {
 				return ChangeResult{}, err
@@ -1870,11 +1875,6 @@ func applyRelate(ctx context.Context, tx *sql.Tx, projectID string, revision, in
 
 func applyTransition(ctx context.Context, tx *sql.Tx, projectID string, revision, index int, change Change, now string) (int, string, int, bool, error) {
 	path := fmt.Sprintf("changes[%d]", index)
-	if isOneOf(change.Status, "verified", "rejected") {
-		if err := ensureCTFProject(ctx, tx, projectID, path+".status"); err != nil {
-			return revision, "", 0, false, err
-		}
-	}
 	if err := validateKey(change.Key, path+".key"); err != nil {
 		return revision, "", 0, false, err
 	}
