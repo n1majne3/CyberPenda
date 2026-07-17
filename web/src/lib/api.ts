@@ -27,7 +27,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     let body: unknown;
     try {
       body = await res.json();
-      if (isErrorBody(body)) message = body.error;
+      const extracted = extractErrorMessage(body);
+      if (extracted) message = extracted;
     } catch {
       // non-JSON error; keep status text
     }
@@ -830,4 +831,21 @@ export interface Health {
 
 function isErrorBody(body: unknown): body is { error: string } {
   return typeof body === "object" && body !== null && "error" in body && typeof (body as { error?: unknown }).error === "string";
+}
+
+/** Accept both legacy `{error: string}` and Blackboard v2 `{error: {code, message}}`. */
+function extractErrorMessage(body: unknown): string | null {
+  if (isErrorBody(body)) return body.error;
+  if (typeof body !== "object" || body === null || !("error" in body)) return null;
+  const error = (body as { error?: unknown }).error;
+  if (typeof error !== "object" || error === null) return null;
+  const code = (error as { code?: unknown }).code;
+  const message = (error as { message?: unknown }).message;
+  const path = (error as { path?: unknown }).path;
+  if (typeof message !== "string") return null;
+  if (typeof code === "string" && code) {
+    const pathSuffix = typeof path === "string" && path ? ` (${path})` : "";
+    return `${code}: ${message}${pathSuffix}`;
+  }
+  return message;
 }

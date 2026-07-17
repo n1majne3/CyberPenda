@@ -1,7 +1,17 @@
 import { NavLink, Outlet, useLocation, useRouteError } from "react-router-dom";
 import { createBrowserRouter, RouterProvider } from "react-router-dom";
-import { useMemo, useState, type ReactNode } from "react";
-import { ShieldAlert, FolderKanban, Cpu, KeyRound, BookOpen, Network, ChevronRight } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  ShieldAlert,
+  FolderKanban,
+  Cpu,
+  KeyRound,
+  BookOpen,
+  Network,
+  ChevronRight,
+  Menu,
+  X,
+} from "lucide-react";
 import { ProjectListPage } from "@/pages/ProjectListPage";
 import { ProjectDashboardPage } from "@/pages/ProjectDashboardPage";
 import { ScopeEditorPage } from "@/pages/ScopeEditorPage";
@@ -20,6 +30,7 @@ import { SolutionPage } from "@/pages/SolutionPage";
 import { TasksPage } from "@/pages/TasksPage";
 import { Logo } from "@/components/Logo";
 import { ThemeToggle } from "@/components/ThemeProvider";
+import { cn } from "@/lib/utils";
 
 export function ShellErrorBoundary() {
   const err = useRouteError() as Error;
@@ -39,9 +50,74 @@ export function ShellErrorBoundary() {
   );
 }
 
+function useIsDesktopMd() {
+  const [isDesktop, setIsDesktop] = useState(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return false;
+    return window.matchMedia("(min-width: 768px)").matches;
+  });
+
+  useEffect(() => {
+    if (!window.matchMedia) return;
+    const mq = window.matchMedia("(min-width: 768px)");
+    const onChange = () => setIsDesktop(mq.matches);
+    onChange();
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
+  return isDesktop;
+}
+
 export function ShellLayout() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const isDesktop = useIsDesktopMd();
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const sidebarRef = useRef<HTMLElement>(null);
   const advancedState = advancedOpen ? "open" : "closed";
+  // On mobile, a closed off-canvas drawer must leave the a11y tree; desktop is always open.
+  const sidebarAvailable = isDesktop || mobileNavOpen;
+
+  const closeMobileNav = (options?: { restoreFocus?: boolean }) => {
+    setMobileNavOpen(false);
+    if (options?.restoreFocus !== false) {
+      // Restore focus after close so keyboard users return to the opener.
+      queueMicrotask(() => menuButtonRef.current?.focus());
+    }
+  };
+
+  const openMobileNav = () => {
+    setMobileNavOpen(true);
+  };
+
+  const toggleMobileNav = () => {
+    if (mobileNavOpen) {
+      closeMobileNav();
+    } else {
+      openMobileNav();
+    }
+  };
+
+  useEffect(() => {
+    if (!mobileNavOpen || isDesktop) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeMobileNav();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [mobileNavOpen, isDesktop]);
+
+  useEffect(() => {
+    if (!mobileNavOpen || isDesktop) return;
+    // Move focus into the open drawer for keyboard users.
+    const firstFocusable = sidebarRef.current?.querySelector<HTMLElement>(
+      'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    );
+    firstFocusable?.focus();
+  }, [mobileNavOpen, isDesktop]);
 
   return (
     <>
@@ -52,9 +128,48 @@ export function ShellLayout() {
         Skip to main content
       </a>
       <div className="flex h-svh w-screen overflow-hidden bg-background text-foreground">
+        {/* Mobile top bar: primary nav is off-canvas so it cannot squeeze main at ~390px. */}
+        <header className="fixed inset-x-0 top-0 z-30 flex h-14 items-center gap-2 border-b border-border bg-background/95 px-3 backdrop-blur-sm md:hidden">
+          <button
+            ref={menuButtonRef}
+            type="button"
+            aria-label={mobileNavOpen ? "Close navigation" : "Open navigation"}
+            aria-expanded={mobileNavOpen}
+            aria-controls="workspace-sidebar"
+            onClick={toggleMobileNav}
+            className="inline-flex size-9 items-center justify-center rounded-md border border-border bg-background text-foreground shadow-sm transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:hidden"
+          >
+            {mobileNavOpen ? (
+              <X className="size-4" aria-hidden="true" />
+            ) : (
+              <Menu className="size-4" aria-hidden="true" />
+            )}
+          </button>
+          <Logo className="h-5 w-5" spin />
+          <span className="text-sm font-semibold">CyberPenda</span>
+        </header>
+
+        {mobileNavOpen && !isDesktop && (
+          <button
+            type="button"
+            aria-label="Dismiss navigation"
+            className="fixed inset-0 z-40 bg-background/60 backdrop-blur-[1px] md:hidden"
+            onClick={() => closeMobileNav()}
+          />
+        )}
+
         <aside
+          ref={sidebarRef}
+          id="workspace-sidebar"
           aria-label="CyberPenda workspace"
-          className="flex w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground shadow-sm"
+          aria-hidden={sidebarAvailable ? undefined : true}
+          inert={sidebarAvailable ? undefined : true}
+          className={cn(
+            "flex w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground shadow-sm",
+            // Off-canvas below md: out of document flow so main uses full viewport width.
+            "fixed inset-y-0 left-0 z-50 transition-transform duration-200 ease-out md:static md:z-auto md:translate-x-0",
+            mobileNavOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0",
+          )}
         >
           <div className="flex h-14 items-center gap-2 border-b border-sidebar-border px-4">
             <Logo className="h-5 w-5" spin />
@@ -62,18 +177,34 @@ export function ShellLayout() {
           </div>
           <nav aria-label="Primary routes" className="flex-1 space-y-5 overflow-y-auto p-3">
             <NavSection label="Workspace">
-              <SideLink to="/" icon={<FolderKanban className="size-4" />}>
+              <SideLink
+                to="/"
+                icon={<FolderKanban className="size-4" />}
+                onNavigate={() => closeMobileNav({ restoreFocus: false })}
+              >
                 Projects
               </SideLink>
             </NavSection>
             <NavSection label="Settings">
-              <SideLink to="/model-providers" icon={<Network className="size-4" />}>
+              <SideLink
+                to="/model-providers"
+                icon={<Network className="size-4" />}
+                onNavigate={() => closeMobileNav({ restoreFocus: false })}
+              >
                 Model providers
               </SideLink>
-              <SideLink to="/credentials" icon={<KeyRound className="size-4" />}>
+              <SideLink
+                to="/credentials"
+                icon={<KeyRound className="size-4" />}
+                onNavigate={() => closeMobileNav({ restoreFocus: false })}
+              >
                 Credentials
               </SideLink>
-              <SideLink to="/skills" icon={<BookOpen className="size-4" />}>
+              <SideLink
+                to="/skills"
+                icon={<BookOpen className="size-4" />}
+                onNavigate={() => closeMobileNav({ restoreFocus: false })}
+              >
                 Skills
               </SideLink>
             </NavSection>
@@ -95,7 +226,11 @@ export function ShellLayout() {
               </button>
               {advancedOpen && (
                 <div id="advanced-routes" className="space-y-1">
-                  <SideLink to="/profiles" icon={<Cpu className="size-4" />}>
+                  <SideLink
+                    to="/profiles"
+                    icon={<Cpu className="size-4" />}
+                    onNavigate={() => closeMobileNav({ restoreFocus: false })}
+                  >
                     Runtime profiles
                   </SideLink>
                 </div>
@@ -110,7 +245,7 @@ export function ShellLayout() {
         <main
           id="main-content"
           tabIndex={-1}
-          className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-background"
+          className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto bg-background pt-14 md:pt-0"
         >
           <Outlet />
         </main>
@@ -136,10 +271,12 @@ function SideLink({
   to,
   icon,
   children,
+  onNavigate,
 }: {
   to: string;
   icon: ReactNode;
   children: ReactNode;
+  onNavigate?: () => void;
 }) {
   const { pathname } = useLocation();
   const isCurrentPath = pathname === to;
@@ -149,6 +286,7 @@ function SideLink({
       to={to}
       end={to === "/"}
       data-active={isCurrentPath ? "true" : "false"}
+      onClick={onNavigate}
       className={({ isActive }) =>
         `group relative flex h-9 items-center gap-2 rounded-md border px-2 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar ${
           isActive

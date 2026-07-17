@@ -42,9 +42,9 @@ export function EvidencePage() {
 
       <ul className="divide-y divide-slate-300 border-y border-slate-300" role="list">
         {rows.map((row) => (
-          <li key={row.ref.id}>
+          <li key={row.ref.stable_key || row.ref.id}>
             <Link
-              to={recordHref(projectId, row.ref.id)}
+              to={recordHref(projectId, row.ref.stable_key)}
               className="flex w-full flex-col gap-2 border-b border-slate-300 bg-transparent p-4 text-left transition-colors hover:bg-white/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:flex-row sm:items-center"
             >
               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/5 text-primary">

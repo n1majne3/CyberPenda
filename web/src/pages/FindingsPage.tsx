@@ -72,9 +72,9 @@ function FindingSection({
       </h3>
       <ul className="divide-y divide-slate-300 border-y border-slate-300" role="list">
         {items.map((row) => (
-          <li key={row.ref.id}>
+          <li key={row.ref.stable_key || row.ref.id}>
             <Link
-              to={recordHref(projectId, row.ref.id)}
+              to={recordHref(projectId, row.ref.stable_key)}
               className="flex w-full flex-col gap-1 border-b border-slate-300 bg-transparent p-4 text-left transition-colors hover:bg-white/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:flex-row sm:items-center sm:justify-between"
             >
               <div className="min-w-0">

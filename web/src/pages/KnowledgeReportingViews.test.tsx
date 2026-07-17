@@ -119,31 +119,25 @@ describe("knowledge and reporting views", () => {
     );
   });
 
-  it("redirects legacy Facts bookmarks to Blackboard Work filtered by project_fact", async () => {
+  it("redirects legacy Facts bookmarks to Blackboard Knowledge", async () => {
     mockApi({
-      "/api/projects/project-1/blackboard/records": {
-        protocol_version: 1,
-        projection: "record_collection_v1",
-        project_id: "project-1",
-        project_kind: "pentest",
-        observed_graph_revision: 1,
-        observed_state_hash: "hash",
-        projection_hash: "facts",
-        result: {
-          items: [
-            nodeRow({
-              id: "node-fact-1",
-              node_type: "project_fact",
-              stable_key: "asset:mail",
-              label: "mail.acme.test responds but is outside current Scope",
-              secondary: "asset",
+      "/api/v2/projects/project-1/blackboard/snapshot": {
+        schema: "runtime-blackboard/v2",
+        semantics: "work is active; knowledge is current; history and details are available by key",
+        revision: 1,
+        work: {},
+        knowledge: {
+          facts: {
+            "fact:mail": {
+              version: 1,
+              category: "asset",
+              summary: "mail.acme.test responds but is outside current Scope",
+              confidence: "tentative",
               scope_status: "out_of_scope",
-              lifecycle: "tentative",
-            }),
-          ],
-          facets: {},
-          page: { limit: 50, total_items: 1 },
+            },
+          },
         },
+        relations: [],
       },
       "/api/projects/project-1": project,
     });
@@ -159,15 +153,13 @@ describe("knowledge and reporting views", () => {
     );
 
     expect(await screen.findByRole("heading", { name: /Blackboard/i })).toBeInTheDocument();
-    expect(await screen.findByText(/Filtered ledger/i)).toBeInTheDocument();
-    expect(screen.getByText(/node_type=project_fact/i)).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: /Project Knowledge/i })).toBeInTheDocument();
     expect(
       screen.getByRole("link", {
         name: /mail\.acme\.test responds but is outside current Scope/i,
       }),
     ).toBeInTheDocument();
     expect(screen.getByText("out-of-scope")).toHaveClass("border-warning/25", "bg-warning/10");
-    expect(screen.getByText("non-actionable")).toBeInTheDocument();
   });
 
   it("renders Findings as graph-backed ledger rows with severity labels", async () => {
@@ -202,11 +194,53 @@ describe("knowledge and reporting views", () => {
     renderRoute("/projects/project-1/findings", <FindingsPage />, "/projects/:projectId/findings");
 
     expect(await screen.findByText("Confirmed (1)")).toHaveClass("tracking-tight");
-    expect(screen.getByRole("link", { name: /Admin panel exposed/i })).toHaveAttribute(
+    const findingLink = screen.getByRole("link", { name: /Admin panel exposed/i });
+    // Must use stable Blackboard key for v2 record detail — never the v1 node id.
+    expect(findingLink).toHaveAttribute(
       "href",
-      "/projects/project-1/blackboard/records/node-finding-1",
+      "/projects/project-1/blackboard/records/finding%3Aadmin-exposed",
     );
+    expect(findingLink.getAttribute("href")).not.toContain("node-finding-1");
     expect(screen.getByText("high")).toBeInTheDocument();
+  });
+
+  it("Findings row link uses stable key distinct from v1 node id", async () => {
+    mockApi({
+      "/api/projects/project-1/blackboard/records": {
+        protocol_version: 1,
+        projection: "record_collection_v1",
+        project_id: "project-1",
+        project_kind: "pentest",
+        observed_graph_revision: 1,
+        observed_state_hash: "hash",
+        projection_hash: "findings",
+        result: {
+          items: [
+            nodeRow({
+              id: "uuid-v1-node-abc",
+              node_type: "finding",
+              stable_key: "finding:sqli-login",
+              label: "SQL injection on login",
+              severity: "critical",
+              lifecycle: "confirmed",
+            }),
+          ],
+          facets: {},
+          page: { limit: 100, total_items: 1 },
+        },
+      },
+      "/api/projects/project-1": project,
+    });
+
+    renderRoute("/projects/project-1/findings", <FindingsPage />, "/projects/:projectId/findings");
+
+    const link = await screen.findByRole("link", { name: /SQL injection on login/i });
+    expect(link).toHaveAttribute(
+      "href",
+      "/projects/project-1/blackboard/records/finding%3Asqli-login",
+    );
+    expect(link.getAttribute("href")).not.toContain("uuid-v1-node-abc");
+    expect(link.getAttribute("href")).not.toMatch(/node-/);
   });
 
   it("renders Evidence artifacts as graph-backed ledger rows", async () => {
@@ -239,12 +273,51 @@ describe("knowledge and reporting views", () => {
 
     renderRoute("/projects/project-1/evidence", <EvidencePage />, "/projects/:projectId/evidence");
 
-    const artifact = await screen.findByText("Admin response capture");
-    expect(artifact.closest("a")).toHaveAttribute(
+    const artifact = await screen.findByRole("link", { name: /Admin response capture/i });
+    expect(artifact).toHaveAttribute(
       "href",
-      "/projects/project-1/blackboard/records/node-evidence-1",
+      "/projects/project-1/blackboard/records/evidence%3Ahttp-admin",
     );
+    expect(artifact.getAttribute("href")).not.toContain("node-evidence-1");
     expect(screen.getByText("available")).toBeInTheDocument();
+  });
+
+  it("Evidence row link uses stable key distinct from v1 node id", async () => {
+    mockApi({
+      "/api/projects/project-1/blackboard/records": {
+        protocol_version: 1,
+        projection: "record_collection_v1",
+        project_id: "project-1",
+        project_kind: "pentest",
+        observed_graph_revision: 1,
+        observed_state_hash: "hash",
+        projection_hash: "evidence",
+        result: {
+          items: [
+            nodeRow({
+              id: "uuid-v1-ev-xyz",
+              node_type: "evidence_artifact",
+              stable_key: "evidence:pcap-1",
+              label: "Traffic capture",
+              secondary: "pcap",
+              lifecycle: "available",
+            }),
+          ],
+          facets: {},
+          page: { limit: 100, total_items: 1 },
+        },
+      },
+      "/api/projects/project-1": project,
+    });
+
+    renderRoute("/projects/project-1/evidence", <EvidencePage />, "/projects/:projectId/evidence");
+
+    const link = await screen.findByRole("link", { name: /Traffic capture/i });
+    expect(link).toHaveAttribute(
+      "href",
+      "/projects/project-1/blackboard/records/evidence%3Apcap-1",
+    );
+    expect(link.getAttribute("href")).not.toContain("uuid-v1-ev-xyz");
   });
 
   it("renders Report as a deterministic graph deliverable preview", async () => {

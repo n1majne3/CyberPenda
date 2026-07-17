@@ -454,9 +454,98 @@ const ctfProject = {
   kind: "ctf_challenge",
 };
 
+const runtimeSnapshotV2 = {
+  schema: "runtime-blackboard/v2",
+  semantics: "work is active; knowledge is current; history and details are available by key",
+  revision: 3,
+  work: {},
+  knowledge: {
+    entities: {
+      "entity:host:acme.test": {
+        version: 1,
+        status: "active",
+        kind: "host",
+        name: "acme.test",
+        locator: "acme.test",
+        scope_status: "in_scope",
+      },
+    },
+    facts: {
+      "fact:admin": {
+        version: 1,
+        category: "service",
+        summary: "Admin panel exposed",
+        confidence: "confirmed",
+        scope_status: "in_scope",
+      },
+    },
+    findings: {
+      "finding:admin-exposed": {
+        version: 1,
+        status: "confirmed",
+        title: "Admin panel exposed",
+        target: "https://acme.test/admin",
+        severity: "high",
+        cvss_pending: false,
+      },
+    },
+    evidence: {
+      "evidence:resp": {
+        version: 1,
+        status: "available",
+        artifact_type: "http_exchange",
+        summary: "Captured HTTP exchange",
+      },
+    },
+  },
+  relations: [
+    ["finding:admin-exposed", "about", "entity:host:acme.test"],
+    ["evidence:resp", "evidences", "finding:admin-exposed"],
+  ],
+};
+
+const recordDetailV2 = {
+  schema: "blackboard-record/v2",
+  revision: 3,
+  key: "finding:admin-exposed",
+  type: "finding",
+  version: 1,
+  record: {
+    status: "confirmed",
+    title: "Admin panel exposed",
+    severity: "high",
+    target: "https://acme.test/admin",
+  },
+  relationships: [["finding:admin-exposed", "about", "entity:host:acme.test"]],
+};
+
+const historyV2 = {
+  schema: "semantic-history/v2",
+  revision: 3,
+  key: "finding:admin-exposed",
+  items: [
+    {
+      kind: "record",
+      key: "finding:admin-exposed",
+      version: 1,
+      type: "finding",
+      record: { status: "confirmed", title: "Admin panel exposed" },
+    },
+  ],
+};
+
 function routeBody(url: string, routes: Record<string, unknown>): unknown {
   // Loose graph-route matching first so short keys like /api/projects/{id} never
   // shadow blackboard/report projections (URLSearchParams reorders query args).
+  if (url.includes("/api/v2/") && url.includes("/blackboard/snapshot")) {
+    return routes["__snapshot__"] ?? runtimeSnapshotV2;
+  }
+  if (url.includes("/api/v2/") && url.includes("/history")) {
+    return routes["__history_v2__"] ?? historyV2;
+  }
+  if (url.includes("/api/v2/") && /\/blackboard\/records\//.test(url)) {
+    return routes["__detail_v2__"] ?? recordDetailV2;
+  }
   if (url.includes("/blackboard/records") && url.includes("node_type=finding") && !/\/records\/[^?]+/.test(url)) {
     return routes["__findings__"] ?? recordCollectionFinding;
   }
@@ -511,7 +600,7 @@ function routeBody(url: string, routes: Record<string, unknown>): unknown {
       if (url.includes(key) && key.includes("/provenance")) return body;
     }
   }
-  if (/\/blackboard\/records\/[^?/]+/.test(url) && !url.includes("/history") && !url.includes("/provenance")) {
+  if (/\/blackboard\/records\/[^?/]+/.test(url) && !url.includes("/history") && !url.includes("/provenance") && !url.includes("/api/v2/")) {
     return routes["__detail__"] ?? recordDetail;
   }
   if (url.includes("/blackboard/work-view")) return routes["__work__"] ?? workViewEnvelope;
@@ -582,60 +671,11 @@ describe("U06 bundled UI graph-backed focused views", () => {
     const user = userEvent.setup();
     const { requests } = trackFetch({
       "/api/projects/project-1/dashboard": dashboard,
-      "/api/projects/project-1/blackboard/work-view": workViewEnvelope,
+      "/api/v2/projects/project-1/blackboard/snapshot": runtimeSnapshotV2,
+      "/api/v2/projects/project-1/blackboard/records/finding%3Aadmin-exposed": recordDetailV2,
+      "/api/v2/projects/project-1/blackboard/records/finding:admin-exposed": recordDetailV2,
       "/api/projects/project-1/blackboard/records?node_type=finding": recordCollectionFinding,
       "/api/projects/project-1/blackboard/records?node_type=evidence_artifact": recordCollectionEvidence,
-      "/api/projects/project-1/blackboard/entities": entityCollection,
-      "/api/projects/project-1/blackboard/graph-explorer": graphExplorer,
-      "/api/projects/project-1/blackboard/health": healthSummary,
-      "/api/projects/project-1/blackboard/records/node-finding-1": recordDetail,
-      "/api/projects/project-1/blackboard/records/node-finding-1/history": {
-        protocol_version: 1,
-        projection: "record_history_v1",
-        project_id: "project-1",
-        project_kind: "pentest",
-        observed_graph_revision: 3,
-        observed_state_hash: "hash",
-        projection_hash: "history-hash",
-        result: {
-          record: {
-            id: "node-finding-1",
-            node_type: "finding",
-            stable_key: "finding:admin-exposed",
-            label: "Admin panel exposed",
-          },
-          versions: [
-            {
-              version: 1,
-              disposition: "main",
-              properties: { title: "Admin panel exposed", status: "confirmed" },
-              updated_at: "2026-01-02T00:00:00Z",
-              semantic_hash: "sem",
-            },
-          ],
-          page: { limit: 50, total_items: 1 },
-          key_history: [],
-          merge: null,
-        },
-      },
-      "/api/projects/project-1/blackboard/records/node-finding-1/provenance": {
-        protocol_version: 1,
-        projection: "record_provenance_v1",
-        project_id: "project-1",
-        project_kind: "pentest",
-        observed_graph_revision: 3,
-        observed_state_hash: "hash",
-        projection_hash: "prov-hash",
-        result: {
-          record: {
-            id: "node-finding-1",
-            node_type: "finding",
-            stable_key: "finding:admin-exposed",
-            label: "Admin panel exposed",
-          },
-          updated: { actor_type: "operator", actor_id: "tester" },
-        },
-      },
       "/api/projects/project-1/reports/pentest": pentestReport,
       "/api/projects/project-1": project,
       "/api/projects/ctf-1/reports/ctf-solution": ctfSolution,
@@ -648,23 +688,25 @@ describe("U06 bundled UI graph-backed focused views", () => {
     expect(await screen.findByRole("heading", { level: 1, name: "Acme External" })).toBeInTheDocument();
     cleanup();
 
-    // Blackboard Work is the initial graph-backed surface.
+    // Ordinary Blackboard is Snapshot-backed Current Work + Project Knowledge.
     renderBlackboard("/projects/project-1/blackboard");
     expect(await screen.findByRole("heading", { name: /Blackboard/i })).toBeInTheDocument();
-    expect(await screen.findByText("Admin panel exposed")).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: /Current Work/i })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: /Project Knowledge/i })).toBeInTheDocument();
+    expect(screen.getAllByText("Admin panel exposed").length).toBeGreaterThan(0);
     expect(screen.getByRole("navigation", { name: /Blackboard views/i })).toBeInTheDocument();
 
-    // Entities + Explorer tabs stay on graph projections.
-    await user.click(screen.getByRole("link", { name: /^Entities$/i }));
+    // Knowledge + Explorer tabs stay on v2 Snapshot projections.
+    await user.click(screen.getByRole("link", { name: /^Knowledge$/i }));
     expect(await screen.findByText("acme.test")).toBeInTheDocument();
     await user.click(screen.getByRole("link", { name: /^Explorer$/i }));
-    expect(await screen.findByRole("table", { name: /Graph Explorer table/i })).toBeInTheDocument();
-    expect(screen.getByRole("table", { name: /Graph Explorer table/i })).toHaveTextContent(
+    expect(await screen.findByRole("table", { name: /Graph Explorer records/i })).toBeInTheDocument();
+    expect(screen.getByRole("table", { name: /Graph Explorer records/i })).toHaveTextContent(
       "Admin panel exposed",
     );
     cleanup();
 
-    // Focused Finding/Evidence bookmarks remain and use RecordCollectionV1.
+    // Focused Finding/Evidence bookmarks remain and use RecordCollectionV1 until #120.
     renderAt(
       "/projects/project-1/findings",
       <FindingsPage />,
@@ -696,32 +738,29 @@ describe("U06 bundled UI graph-backed focused views", () => {
     expect(await screen.findByText(/Solved: yes/i)).toBeInTheDocument();
     cleanup();
 
-    // Legacy Facts bookmark still works by rendering Work filtered to project_fact.
-    renderBlackboard("/projects/project-1/blackboard?node_type=project_fact");
-    expect(await screen.findByText("Admin panel exposed")).toBeInTheDocument();
+    // Legacy Facts bookmark redirects into Blackboard Knowledge.
+    renderBlackboard("/projects/project-1/blackboard/knowledge");
+    expect(await screen.findByRole("region", { name: /Project Knowledge/i })).toBeInTheDocument();
+    expect(screen.getAllByText("Admin panel exposed").length).toBeGreaterThan(0);
     cleanup();
 
-    // Health surface is graph-backed.
-    renderBlackboard("/projects/project-1/blackboard/health");
-    expect(await screen.findByRole("heading", { name: /^Health$/i })).toBeInTheDocument();
-    cleanup();
-
-    // Record detail bookmark.
-    renderBlackboard("/projects/project-1/blackboard/records/node-finding-1");
-    expect(await screen.findByText("finding:admin-exposed")).toBeInTheDocument();
+    // Record detail bookmark uses Blackboard Keys over v2.
+    renderBlackboard("/projects/project-1/blackboard/records/finding%3Aadmin-exposed");
+    expect((await screen.findAllByText("finding:admin-exposed")).length).toBeGreaterThan(0);
     cleanup();
 
     const legacyHits = requests.filter((url) => isLegacyFrozenRead(url));
     expect(legacyHits).toEqual([]);
 
-    const graphHits = requests.filter(
+    const blackboardHits = requests.filter(
       (url) =>
-        url.includes("/blackboard/") ||
+        url.includes("/api/v2/") && url.includes("/blackboard/") ||
         url.includes("/reports/pentest") ||
         url.includes("/reports/ctf-solution") ||
-        url.includes("/dashboard"),
+        url.includes("/dashboard") ||
+        (url.includes("/blackboard/records") && url.includes("node_type=")),
     );
-    expect(graphHits.length).toBeGreaterThan(0);
+    expect(blackboardHits.length).toBeGreaterThan(0);
 
     // Dense ledger rows remain keyboard reachable (link/row semantics).
     renderAt(
@@ -766,14 +805,15 @@ describe("U06 bundled UI graph-backed focused views", () => {
 
   it("Graph Explorer table matches graph node labels for accessibility parity", async () => {
     trackFetch({
-      "/api/projects/project-1/blackboard/graph-explorer": graphExplorer,
+      "/api/v2/projects/project-1/blackboard/snapshot": runtimeSnapshotV2,
       "/api/projects/project-1": project,
     });
 
     renderBlackboard("/projects/project-1/blackboard/explorer");
 
-    const table = await screen.findByRole("table", { name: /Graph Explorer table/i });
-    expect(within(table).getByText("Admin panel exposed")).toBeInTheDocument();
+    const table = await screen.findByRole("table", { name: /Graph Explorer records/i });
+    expect(within(table).getAllByText("Admin panel exposed").length).toBeGreaterThan(0);
     expect(within(table).getByText("finding:admin-exposed")).toBeInTheDocument();
+    expect(screen.getByRole("table", { name: /Graph Explorer relationships/i })).toBeInTheDocument();
   });
 });
