@@ -220,6 +220,12 @@ func (s *GrantStore) Issue(ctx context.Context, req IssueGrantRequest) (string, 
 	return plaintext, grant, nil
 }
 
+// IssueInTx inserts a Continuation Interface Grant inside an existing
+// transaction so launch/pin/grant authority can commit atomically.
+func (s *GrantStore) IssueInTx(ctx context.Context, tx *sql.Tx, req IssueGrantRequest) (string, Grant, error) {
+	return s.issueTx(ctx, tx, req)
+}
+
 func (s *GrantStore) issueTx(ctx context.Context, tx *sql.Tx, req IssueGrantRequest) (string, Grant, error) {
 	if err := validateIssueRequest(req); err != nil {
 		return "", Grant{}, err

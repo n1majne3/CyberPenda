@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"pentest/internal/projectinterface"
 	"pentest/internal/store"
 	"pentest/internal/task"
 )
@@ -53,9 +54,12 @@ type ContinuationLaunchProjection struct {
 type ContinuationLaunch struct {
 	RuntimeConfig task.RuntimeConfigVersion
 	Continuation  task.TaskContinuation
-	Snapshot      []byte
-	Schema        string
-	Revision      int
+	// Token is the one-time opaque Continuation Interface capability bound to
+	// this Project/Task/Continuation. Callers must treat it as a secret.
+	Token    string
+	Snapshot []byte
+	Schema   string
+	Revision int
 }
 
 type LaunchPin struct {
@@ -98,49 +102,88 @@ type ContinuityService struct {
 	db          *store.DB
 	board       *Service
 	tasks       *task.Service
+	grants      *projectinterface.GrantStore
 	runtimeRoot string
 	fail        ContinuityFailureInjector
 }
 
 func NewContinuityService(db *store.DB, board *Service, tasks *task.Service, runtimeRoot string) *ContinuityService {
 	board.runtimeRoot = runtimeRoot
-	return &ContinuityService{db: db, board: board, tasks: tasks, runtimeRoot: runtimeRoot}
+	return &ContinuityService{
+		db: db, board: board, tasks: tasks, runtimeRoot: runtimeRoot,
+		grants: projectinterface.NewGrantStore(db, projectinterface.SystemClock{}, projectinterface.RandomIDSource{}, projectinterface.RandomTokenSource{}),
+	}
 }
 
 func (s *ContinuityService) SetFailureInjector(injector ContinuityFailureInjector) {
 	s.fail = injector
 }
 
-// InspectContinuationSynchronization validates the Project, Task, and
-// Continuation binding before an adapter decodes or executes semantic input.
-// An empty taskID is accepted for adapters whose authenticated principal has
-// already bound the Task outside this service call.
-func (s *Service) InspectContinuationSynchronization(ctx context.Context, projectID, taskID, continuationID string) (ContinuationSynchronizationState, error) {
+// ContinuationAuthority is the race-safe Project/Task/Continuation binding an
+// offline or transport adapter must establish before service access.
+type ContinuationAuthority struct {
+	ProjectID      string
+	TaskID         string
+	ContinuationID string
+	Status         string
+	// Live is true when the Continuation is open and still owns the Task's
+	// current Working Snapshot (active/latest). Closed or superseded
+	// Continuations lose offline read, history, and synchronization authority.
+	Live bool
+	Sync ContinuationSynchronizationState
+}
+
+// AuthorizeContinuationBinding validates Project, Task, and Continuation
+// identity before any offline Runtime mutation or read. When requireLive is
+// true, closed or superseded Continuations are rejected before service access.
+func (s *Service) AuthorizeContinuationBinding(ctx context.Context, projectID, taskID, continuationID string, requireLive bool) (ContinuationAuthority, error) {
 	if strings.TrimSpace(projectID) == "" || strings.TrimSpace(continuationID) == "" {
-		return ContinuationSynchronizationState{}, semanticError("authority_denied", "trusted Continuation identity is required", "", nil)
+		return ContinuationAuthority{}, semanticError("authority_denied", "trusted Continuation identity is required", "", nil)
 	}
-	var boundTaskID string
-	var acknowledged, revision int
+	var boundTaskID, status string
+	var number, acknowledged, revision, newer int
 	err := s.db.QueryRowContext(ctx, `
-		SELECT continuation.task_id,state.last_acknowledged_revision,
-		       COALESCE(project_state.revision,0)
+		SELECT continuation.task_id,continuation.status,continuation.number,
+		       state.last_acknowledged_revision,COALESCE(project_state.revision,0),
+		       (SELECT COUNT(*) FROM task_continuations AS newer
+		         WHERE newer.task_id=continuation.task_id AND newer.number>continuation.number)
 		FROM task_continuations AS continuation
 		JOIN tasks AS task ON task.id=continuation.task_id
 		JOIN blackboard_v2_continuation_pins AS pin ON pin.continuation_id=continuation.id
 		JOIN blackboard_v2_continuation_state AS state ON state.continuation_id=continuation.id
 		LEFT JOIN blackboard_v2_project_state AS project_state ON project_state.project_id=task.project_id
 		WHERE continuation.id=? AND task.project_id=?`, continuationID, projectID,
-	).Scan(&boundTaskID, &acknowledged, &revision)
+	).Scan(&boundTaskID, &status, &number, &acknowledged, &revision, &newer)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ContinuationSynchronizationState{}, semanticError("authority_denied", "trusted Continuation does not own this Project interface", "", nil)
+		return ContinuationAuthority{}, semanticError("authority_denied", "trusted Continuation does not own this Project interface", "", nil)
 	}
 	if err != nil {
-		return ContinuationSynchronizationState{}, fmt.Errorf("inspect trusted Continuation synchronization: %w", err)
+		return ContinuationAuthority{}, fmt.Errorf("authorize trusted Continuation binding: %w", err)
 	}
 	if taskID != "" && taskID != boundTaskID {
-		return ContinuationSynchronizationState{}, semanticError("authority_denied", "trusted Continuation does not own this Task interface", "", nil)
+		return ContinuationAuthority{}, semanticError("authority_denied", "trusted Continuation does not own this Task interface", "", nil)
 	}
-	return ContinuationSynchronizationState{FromRevision: acknowledged, Revision: revision, Pending: revision > acknowledged}, nil
+	live := continuationCanWrite(status) && newer == 0
+	if requireLive && !live {
+		return ContinuationAuthority{}, semanticError("closed_continuation", "trusted Continuation is closed for offline Blackboard access", "", nil)
+	}
+	return ContinuationAuthority{
+		ProjectID: projectID, TaskID: boundTaskID, ContinuationID: continuationID, Status: status, Live: live,
+		Sync: ContinuationSynchronizationState{FromRevision: acknowledged, Revision: revision, Pending: live && revision > acknowledged},
+	}, nil
+}
+
+// InspectContinuationSynchronization validates the Project, Task, and
+// Continuation binding before an adapter decodes or executes semantic input.
+// An empty taskID is accepted for adapters whose authenticated principal has
+// already bound the Task outside this service call. Closed or superseded
+// Continuations retain identity checks but report no pending live sync.
+func (s *Service) InspectContinuationSynchronization(ctx context.Context, projectID, taskID, continuationID string) (ContinuationSynchronizationState, error) {
+	authority, err := s.AuthorizeContinuationBinding(ctx, projectID, taskID, continuationID, false)
+	if err != nil {
+		return ContinuationSynchronizationState{}, err
+	}
+	return authority.Sync, nil
 }
 
 // SynchronizeContinuation advances the authenticated Working Snapshot to the
@@ -160,14 +203,18 @@ func (s *Service) SynchronizeContinuation(ctx context.Context, projectID, taskID
 	defer func() { _ = tx.Rollback() }()
 	var boundTaskID string
 	var acknowledged int
+	var status string
+	var newer int
 	err = tx.QueryRowContext(ctx, `
-		SELECT continuation.task_id,state.last_acknowledged_revision
+		SELECT continuation.task_id,continuation.status,state.last_acknowledged_revision,
+		       (SELECT COUNT(*) FROM task_continuations AS newer
+		         WHERE newer.task_id=continuation.task_id AND newer.number>continuation.number)
 		FROM task_continuations AS continuation
 		JOIN tasks AS task ON task.id=continuation.task_id
 		JOIN blackboard_v2_continuation_pins AS pin ON pin.continuation_id=continuation.id
 		JOIN blackboard_v2_continuation_state AS state ON state.continuation_id=continuation.id
 		WHERE continuation.id=? AND task.project_id=?`, continuationID, projectID,
-	).Scan(&boundTaskID, &acknowledged)
+	).Scan(&boundTaskID, &status, &acknowledged, &newer)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SynchronizationAttachment{}, semanticError("authority_denied", "trusted Continuation does not own this Project interface", "", nil)
 	}
@@ -176,6 +223,9 @@ func (s *Service) SynchronizeContinuation(ctx context.Context, projectID, taskID
 	}
 	if taskID != "" && taskID != boundTaskID {
 		return SynchronizationAttachment{}, semanticError("authority_denied", "trusted Continuation does not own this Task interface", "", nil)
+	}
+	if !continuationCanWrite(status) || newer != 0 {
+		return SynchronizationAttachment{}, semanticError("closed_continuation", "trusted Continuation is closed for synchronization", "", nil)
 	}
 	projection, err := s.ProjectRuntimeSnapshotTx(ctx, tx, projectID)
 	if err != nil {
@@ -278,6 +328,18 @@ func (s *ContinuityService) CreateContinuation(ctx context.Context, req Continua
 	); err != nil {
 		return ContinuationLaunch{}, fmt.Errorf("store initial Working Blackboard Snapshot: %w", err)
 	}
+	token := ""
+	if s.grants != nil {
+		plaintext, _, grantErr := s.grants.IssueInTx(ctx, tx, projectinterface.IssueGrantRequest{
+			ProjectID: req.ProjectID, TaskID: req.TaskID, ContinuationID: continuation.ID,
+			RuntimeConfigVersionID: config.ID, RuntimeProfileID: req.RuntimeProfileID,
+			RuntimePluginID: req.RuntimeProvider, Runner: string(req.Runner),
+		})
+		if grantErr != nil {
+			return ContinuationLaunch{}, fmt.Errorf("issue Continuation Interface capability: %w", grantErr)
+		}
+		token = plaintext
+	}
 	if s.fail != nil {
 		if err := s.fail(ContinuityFailureBeforeCommit); err != nil {
 			return ContinuationLaunch{}, err
@@ -304,7 +366,7 @@ func (s *ContinuityService) CreateContinuation(ctx context.Context, req Continua
 		return ContinuationLaunch{}, fmt.Errorf("commit atomic Blackboard v2 Continuation launch: %w", err)
 	}
 	return ContinuationLaunch{
-		RuntimeConfig: config, Continuation: continuation,
+		RuntimeConfig: config, Continuation: continuation, Token: token,
 		Snapshot: append([]byte(nil), projection.Bytes...), Schema: snapshotSchema, Revision: projection.Snapshot.Revision,
 	}, nil
 }

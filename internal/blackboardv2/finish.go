@@ -113,15 +113,10 @@ func (s *Service) FinishContinuation(ctx context.Context, projectID, continuatio
 		if revision != stored.result.Revision || stored.result.WorkingSnapshot.Revision != revision {
 			return FinishContinuationResult{}, fmt.Errorf("stored Finish result does not match acknowledged Working Snapshot")
 		}
-		var newer int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM task_continuations WHERE task_id=? AND number>?`, taskID, number).Scan(&newer); err != nil {
-			return FinishContinuationResult{}, fmt.Errorf("validate replayed Finish Working Snapshot owner: %w", err)
-		}
-		if newer == 0 && s.runtimeRoot != "" {
-			if err := materializeWorkingSnapshot(s.runtimeRoot, taskID, workingBytes); err != nil {
-				return FinishContinuationResult{}, fmt.Errorf("publish replayed closed Working Snapshot: %w", err)
-			}
-		}
+		// Exact Finish replay returns the original result only. It must not
+		// attach live synchronization or rematerialize a closed Working Snapshot.
+		_ = taskID
+		_ = workingBytes
 		if err := tx.Commit(); err != nil {
 			return FinishContinuationResult{}, fmt.Errorf("commit Blackboard v2 Finish replay: %w", err)
 		}

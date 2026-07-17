@@ -287,7 +287,9 @@ func NewServer(config Config) (*Server, error) {
 			return nil, err
 		}
 	} else if epoch == store.CanonicalStoreBlackboardV2 {
-		server.blackboardV2 = blackboardv2.NewService(db)
+		server.projectInterfaceGrants = projectinterface.NewGrantStore(db, projectinterface.SystemClock{}, projectinterface.RandomIDSource{}, projectinterface.RandomTokenSource{})
+		server.tasks.SetContinuationTerminalMarker(server.projectInterfaceGrants)
+		server.blackboardV2 = blackboardv2.NewServiceWithEvidence(db, blackboardv2.EvidenceConfig{ArtifactRoot: artifactRoot, RuntimeRoot: runtimeRoot})
 		server.tasks.SetContinuationReconciler(server.blackboardV2)
 		server.blackboardV2Continuity = blackboardv2.NewContinuityService(db, server.blackboardV2, server.tasks, runtimeRoot)
 		if err := server.recoverBlackboardV2ContinuationFiles(context.Background()); err != nil {
@@ -410,10 +412,11 @@ func runtimeProfileProviders(registry *runtimeplugin.Registry) []runtimeprofile.
 func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) {
 	if server.authToken != "" && !server.publicPath(request) {
 		if !server.authorized(request) {
-			// Project-interface HTTP handlers own their structured credential
-			// errors. Let those narrow routes classify a missing/invalid grant;
-			// every other API and MCP route remains behind the daemon middleware.
-			if server.projectInterfaceHTTP == nil || !isProjectInterfaceHTTPTransport(request) {
+			// Project-interface and Blackboard v2 HTTP handlers own their structured
+			// credential errors. Let those narrow routes classify a missing/invalid
+			// grant; every other API and MCP route remains behind the daemon middleware.
+			if !((server.projectInterfaceHTTP != nil && isProjectInterfaceHTTPTransport(request)) ||
+				(server.blackboardV2 != nil && isBlackboardV2HTTPTransport(request))) {
 				writeError(response, http.StatusUnauthorized, "unauthorized")
 				return
 			}
@@ -461,11 +464,15 @@ func (server *Server) authorized(request *http.Request) bool {
 		}
 	}
 	// A Continuation Interface Grant is a separate, narrower credential from
-	// the daemon operator token. Accept it only on the trusted project-interface
-	// transports; the adapter then enforces the bound Project and capability.
-	if server.projectInterface != nil && (isProjectInterfaceTransport(request) || (server.compatibility != nil && isCompatibilityWriteHTTPTransport(request))) {
-		if token := projectinterface.BearerToken(request); token != "" {
+	// the daemon operator token. Accept it only on trusted project-interface and
+	// Blackboard v2 transports; the adapter then enforces the bound Project and capability.
+	if token := projectinterface.BearerToken(request); token != "" {
+		if server.projectInterface != nil && (isProjectInterfaceTransport(request) || (server.compatibility != nil && isCompatibilityWriteHTTPTransport(request))) {
 			_, err := server.projectInterface.Authenticate(request.Context(), token, "")
+			return err == nil
+		}
+		if server.blackboardV2 != nil && server.projectInterfaceGrants != nil && isBlackboardV2HTTPTransport(request) {
+			_, err := server.projectInterfaceGrants.Resolve(request.Context(), token)
 			return err == nil
 		}
 	}
@@ -671,6 +678,7 @@ func (server *Server) routes() {
 	// while the store epoch has activated BlackboardReadService (graph_v1).
 	server.mux.HandleFunc("GET /api/projects/{id}/reports/pentest", server.handlePentestReport)
 	server.mux.HandleFunc("GET /api/projects/{id}/reports/ctf-solution", server.handleCTFSolution)
+	server.registerBlackboardV2Routes()
 	server.registerMCP()
 	server.registerSPA()
 }
