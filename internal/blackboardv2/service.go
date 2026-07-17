@@ -171,6 +171,15 @@ func (change *Change) UnmarshalJSON(raw []byte) error {
 			return err
 		}
 		*change = decoded
+	case "unrelate":
+		if err := rejectUnknownFields(fields, map[string]bool{"op": true, "from": true, "relation": true, "to": true, "version": true}); err != nil {
+			return err
+		}
+		decoded, err := decodeUnrelateChange(fields)
+		if err != nil {
+			return err
+		}
+		*change = decoded
 	case "transition":
 		if err := rejectUnknownFields(fields, map[string]bool{"op": true, "key": true, "version": true, "status": true, "summary": true, "resolution_summary": true, "verification_summary": true}); err != nil {
 			return err
@@ -485,6 +494,7 @@ type SemanticHistory struct {
 // HistoryItem is a record Semantic History item.
 type HistoryItem struct {
 	Kind     string  `json:"kind"`
+	Key      string  `json:"key,omitempty"`
 	Version  int     `json:"version"`
 	Type     string  `json:"type,omitempty"`
 	Record   *Record `json:"record,omitempty"`
@@ -787,6 +797,13 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 	if continuationID != "" && !continuationCanWrite(continuationStatus) {
 		return ChangeResult{}, semanticError("closed_continuation", "trusted Continuation is closed for new Blackboard writes", "", nil)
 	}
+	if continuationID != "" {
+		for index, change := range batch.Changes {
+			if change.Op == "merge" {
+				return ChangeResult{}, semanticError("authority_denied", "governed Record Merge requires explicit operator approval", fmt.Sprintf("changes[%d].op", index), nil)
+			}
+		}
+	}
 
 	revision, err := currentRevision(ctx, tx, projectID)
 	if err != nil {
@@ -822,6 +839,16 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 		}
 		if change.Op == "supersede" {
 			if err := collectEvidenceDependentConfirmedFacts(ctx, tx, projectID, change.Replaced, fmt.Sprintf("changes[%d].replaced", index), evidenceDependentFacts); err != nil {
+				return ChangeResult{}, err
+			}
+		}
+		if change.Op == "merge" {
+			if err := collectEvidenceDependentConfirmedFacts(ctx, tx, projectID, change.Source, fmt.Sprintf("changes[%d].source", index), evidenceDependentFacts); err != nil {
+				return ChangeResult{}, err
+			}
+		}
+		if change.Op == "unrelate" && change.Relation == "evidences" {
+			if err := collectEvidenceDependentConfirmedFacts(ctx, tx, projectID, change.From, fmt.Sprintf("changes[%d].relation", index), evidenceDependentFacts); err != nil {
 				return ChangeResult{}, err
 			}
 		}
@@ -869,6 +896,13 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 				revision = newRevision
 				changedRelations[relationKey(tuple)] = tuple
 			}
+		case "unrelate":
+			newRevision, tuple, err := applyUnrelate(ctx, tx, projectID, revision, index, change, now)
+			if err != nil {
+				return ChangeResult{}, err
+			}
+			revision = newRevision
+			changedRelations[relationKey(tuple)] = tuple
 		case "transition":
 			newRevision, key, version, changed, err := applyTransition(ctx, tx, projectID, revision, index, change, now)
 			if err != nil {
@@ -1093,7 +1127,7 @@ func (s *Service) ReadHistory(ctx context.Context, projectID, key string, option
 	}
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT kind, version, type, record_json, from_key, relation, to_key, reason
+		SELECT identity_key, kind, version, type, record_json, from_key, relation, to_key, reason
 		FROM (
 			SELECT 0 AS sort_group, recorded_at AS sort_time, key AS identity_key, 'record' AS kind, version, type, record_json,
 			       '' AS from_key, '' AS relation, '' AS to_key, '' AS reason
@@ -1132,8 +1166,8 @@ func (s *Service) ReadHistory(ctx context.Context, projectID, key string, option
 	items := make([]HistoryItem, 0, limit)
 	for rows.Next() {
 		var version int
-		var kind, typ, raw, from, relation, to, reason string
-		if err := rows.Scan(&kind, &version, &typ, &raw, &from, &relation, &to, &reason); err != nil {
+		var identityKey, kind, typ, raw, from, relation, to, reason string
+		if err := rows.Scan(&identityKey, &kind, &version, &typ, &raw, &from, &relation, &to, &reason); err != nil {
 			return SemanticHistory{}, fmt.Errorf("scan Blackboard v2 history: %w", err)
 		}
 		if len(items) < limit {
@@ -1142,7 +1176,7 @@ func (s *Service) ReadHistory(ctx context.Context, projectID, key string, option
 				if err != nil {
 					return SemanticHistory{}, fmt.Errorf("decode Blackboard v2 history record: %w", err)
 				}
-				items = append(items, HistoryItem{Kind: kind, Version: version, Type: typ, Record: &record})
+				items = append(items, HistoryItem{Kind: kind, Key: identityKey, Version: version, Type: typ, Record: &record})
 			} else {
 				items = append(items, HistoryItem{Kind: kind, Version: version, From: from, Relation: relation, To: to, Reason: reason})
 			}
@@ -2776,7 +2810,7 @@ func resolveChangeRedirects(ctx context.Context, tx *sql.Tx, projectID string, c
 	switch change.Op {
 	case "update", "transition":
 		change.Key, err = resolve(change.Key)
-	case "relate":
+	case "relate", "unrelate":
 		if change.From, err = resolve(change.From); err == nil {
 			change.To, err = resolve(change.To)
 		}
@@ -2940,7 +2974,7 @@ func validateContinuationChangeOwnership(ctx context.Context, tx *sql.Tx, projec
 	switch change.Op {
 	case "update", "transition":
 		keys = append(keys, change.Key)
-	case "relate":
+	case "relate", "unrelate":
 		keys = append(keys, change.From)
 	case "supersede":
 		keys = append(keys, change.Replacement, change.Replaced)
@@ -3177,6 +3211,34 @@ func decodeRelateChange(fields map[string]json.RawMessage) (Change, error) {
 	return Change{Op: "relate", From: from, Relation: relation, To: to, Version: version, Reason: reason}, nil
 }
 
+func decodeUnrelateChange(fields map[string]json.RawMessage) (Change, error) {
+	from, err := decodeRequiredString(fields, "from")
+	if err != nil {
+		return Change{}, err
+	}
+	relation, err := decodeRequiredString(fields, "relation")
+	if err != nil {
+		return Change{}, err
+	}
+	to, err := decodeRequiredString(fields, "to")
+	if err != nil {
+		return Change{}, err
+	}
+	if !isOrdinaryRelation(relation) && !isReasonRelation(relation) {
+		return Change{}, fmt.Errorf("unsupported mutable relationship type %q", relation)
+	}
+	var version int
+	if raw, ok := fields["version"]; !ok {
+		return Change{}, fmt.Errorf("unrelate version is required")
+	} else if err := json.Unmarshal(raw, &version); err != nil {
+		return Change{}, fmt.Errorf("decode unrelate version: %w", err)
+	}
+	if version < 1 {
+		return Change{}, fmt.Errorf("unrelate version must be a positive integer")
+	}
+	return Change{Op: "unrelate", From: from, Relation: relation, To: to, Version: version}, nil
+}
+
 func decodeTransitionChange(fields map[string]json.RawMessage) (Change, error) {
 	key, err := decodeRequiredString(fields, "key")
 	if err != nil {
@@ -3294,8 +3356,18 @@ func decodeMergeChange(fields map[string]json.RawMessage) (Change, error) {
 	}
 	var clear []string
 	if raw, ok := fields["clear"]; ok {
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return Change{}, fmt.Errorf("merge clear must be an array")
+		}
 		if err := json.Unmarshal(raw, &clear); err != nil {
 			return Change{}, fmt.Errorf("decode merge clear: %w", err)
+		}
+		seen := make(map[string]bool, len(clear))
+		for _, field := range clear {
+			if seen[field] {
+				return Change{}, fmt.Errorf("merge clear fields must be unique")
+			}
+			seen[field] = true
 		}
 	}
 	return Change{Op: "merge", Source: source, SourceVersion: sourceVersion, Canonical: canonical, CanonicalVersion: canonicalVersion, CanonicalRecord: canonicalRecord, Clear: clear}, nil
@@ -3493,6 +3565,8 @@ func validateChangeShape(change Change, index int) error {
 		allowedFields = map[string]bool{"key": true, "version": true, "type": true, "record": true, "clear": true}
 	case "relate":
 		allowedFields = map[string]bool{"version": true, "from": true, "relation": true, "to": true, "reason": true}
+	case "unrelate":
+		allowedFields = map[string]bool{"version": true, "from": true, "relation": true, "to": true}
 	case "transition":
 		allowedFields = map[string]bool{"key": true, "version": true, "status": true, "summary": true, "resolution_summary": true, "verification_summary": true}
 	case "supersede":
@@ -3553,6 +3627,19 @@ func validateChangeShape(change Change, index int) error {
 		}
 		if change.To == "" {
 			return semanticError("semantic_validation", "relate to is required", fmt.Sprintf("changes[%d].to", index), nil)
+		}
+	case "unrelate":
+		if change.From == "" {
+			return semanticError("semantic_validation", "unrelate from is required", fmt.Sprintf("changes[%d].from", index), nil)
+		}
+		if change.Relation == "" {
+			return semanticError("semantic_validation", "unrelate relation is required", fmt.Sprintf("changes[%d].relation", index), nil)
+		}
+		if change.To == "" {
+			return semanticError("semantic_validation", "unrelate to is required", fmt.Sprintf("changes[%d].to", index), nil)
+		}
+		if change.Version < 1 {
+			return semanticError("semantic_validation", "unrelate requires the current relationship version", fmt.Sprintf("changes[%d].version", index), nil)
 		}
 	case "transition":
 		if change.Key == "" {

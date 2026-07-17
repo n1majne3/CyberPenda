@@ -333,8 +333,8 @@
     },
     "recordHistoryItem": {
       "type": "object", "additionalProperties": false,
-      "required": ["kind", "version", "type", "record"],
-      "properties": {"kind": {"const": "record"}, "version": {"$ref": "#/$defs/version"}, "type": {"$ref": "#/$defs/recordType"}, "record": {"type": "object"}},
+      "required": ["kind", "key", "version", "type", "record"],
+      "properties": {"kind": {"const": "record"}, "key": {"$ref": "#/$defs/blackboardKey"}, "version": {"$ref": "#/$defs/version"}, "type": {"$ref": "#/$defs/recordType"}, "record": {"type": "object"}},
       "allOf": [
         {"if": {"properties": {"type": {"const": "entity"}}}, "then": {"properties": {"record": {"$ref": "#/$defs/historicalEntityRecord"}}}},
         {"if": {"properties": {"type": {"const": "objective"}}}, "then": {"properties": {"record": {"$ref": "#/$defs/historicalObjectiveRecord"}}}},

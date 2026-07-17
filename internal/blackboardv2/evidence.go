@@ -369,6 +369,11 @@ func (s *Service) resolveRetainedEvidenceRedirects(ctx context.Context, projectI
 	if err := ensureProjectExists(ctx, tx, projectID); err != nil {
 		return RetainEvidenceRequest{}, err
 	}
+	return resolveRetainedEvidenceRedirectsTx(ctx, tx, projectID, request)
+}
+
+func resolveRetainedEvidenceRedirectsTx(ctx context.Context, tx *sql.Tx, projectID string, request RetainEvidenceRequest) (RetainEvidenceRequest, error) {
+	var err error
 	request.Key, _, err = resolveKeyRedirect(ctx, tx, projectID, request.Key)
 	if err != nil {
 		return RetainEvidenceRequest{}, err
@@ -2295,6 +2300,10 @@ func (s *Service) applyRetainedEvidence(ctx context.Context, projectID, continua
 			return ChangeResult{}, fmt.Errorf("commit retained Evidence replay: %w", err)
 		}
 		return replay, nil
+	}
+	request, err = resolveRetainedEvidenceRedirectsTx(ctx, tx, projectID, request)
+	if err != nil {
+		return ChangeResult{}, err
 	}
 	if durablyReserved {
 		internalPath, err := plannedEvidenceInternalPath(projectID, metadata.sha256, filepath.Base(managedPath))

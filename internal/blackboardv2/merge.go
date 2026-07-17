@@ -21,6 +21,73 @@ type mergeRelationship struct {
 	version                                          int
 }
 
+func applyUnrelate(ctx context.Context, tx *sql.Tx, projectID string, revision, index int, change Change, now string) (int, RelationVersionTuple, error) {
+	path := fmt.Sprintf("changes[%d]", index)
+	if err := validateKey(change.From, path+".from"); err != nil {
+		return revision, RelationVersionTuple{}, err
+	}
+	if err := validateKey(change.To, path+".to"); err != nil {
+		return revision, RelationVersionTuple{}, err
+	}
+	if change.From == change.To {
+		return revision, RelationVersionTuple{}, semanticError("semantic_validation", "relationship self-links are invalid", path+".to", nil)
+	}
+	if !isOrdinaryRelation(change.Relation) && !isReasonRelation(change.Relation) {
+		return revision, RelationVersionTuple{}, semanticError("semantic_validation", "relationship type cannot be removed", path+".relation", map[string]any{"relation": change.Relation})
+	}
+	for _, endpoint := range []struct{ key, field string }{{change.From, "from"}, {change.To, "to"}} {
+		if _, err := loadCurrentRecordDirect(ctx, tx, projectID, endpoint.key); errors.Is(err, sql.ErrNoRows) {
+			return revision, RelationVersionTuple{}, semanticError("not_found", fmt.Sprintf("%s was not found", endpoint.key), path+"."+endpoint.field, map[string]any{"key": endpoint.key})
+		} else if err != nil {
+			return revision, RelationVersionTuple{}, err
+		}
+	}
+	var currentVersion int
+	var reason string
+	err := tx.QueryRowContext(ctx, `
+		SELECT version,reason
+		FROM blackboard_v2_relationships
+		WHERE project_id=? AND from_key=? AND relation=? AND to_key=?`,
+		projectID, change.From, change.Relation, change.To,
+	).Scan(&currentVersion, &reason)
+	if errors.Is(err, sql.ErrNoRows) {
+		return revision, RelationVersionTuple{}, semanticError("not_found", "current relationship was not found", path+".relation", map[string]any{"from": change.From, "relation": change.Relation, "to": change.To})
+	}
+	if err != nil {
+		return revision, RelationVersionTuple{}, fmt.Errorf("read relationship for unrelate: %w", err)
+	}
+	if change.Version != currentVersion {
+		return revision, RelationVersionTuple{}, semanticError("version_conflict", "relationship changed", path+".version", map[string]any{
+			"from": change.From, "relation": change.Relation, "to": change.To, "expected_version": float64(change.Version), "current_version": float64(currentVersion), "next_action": "read_current_record",
+		})
+	}
+	nextRevision, err := incrementRevision(ctx, tx, projectID, revision)
+	if err != nil {
+		return revision, RelationVersionTuple{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO blackboard_v2_relationship_history(project_id,from_key,relation,to_key,version,reason,recorded_at)
+		VALUES(?,?,?,?,?,?,?)`, projectID, change.From, change.Relation, change.To, currentVersion, reason, now); err != nil {
+		return revision, RelationVersionTuple{}, fmt.Errorf("store unrelate relationship history: %w", err)
+	}
+	result, err := tx.ExecContext(ctx, `
+		DELETE FROM blackboard_v2_relationships
+		WHERE project_id=? AND from_key=? AND relation=? AND to_key=? AND version=?`,
+		projectID, change.From, change.Relation, change.To, currentVersion,
+	)
+	if err != nil {
+		return revision, RelationVersionTuple{}, fmt.Errorf("remove current relationship: %w", err)
+	}
+	removed, err := result.RowsAffected()
+	if err != nil {
+		return revision, RelationVersionTuple{}, fmt.Errorf("count removed relationship: %w", err)
+	}
+	if removed != 1 {
+		return revision, RelationVersionTuple{}, semanticError("version_conflict", "relationship changed", path+".version", map[string]any{"next_action": "read_current_record"})
+	}
+	return nextRevision, RelationVersionTuple{change.From, change.Relation, change.To, currentVersion}, nil
+}
+
 func applyMerge(ctx context.Context, tx *sql.Tx, projectID string, revision, index int, change Change, now string) (int, string, int, []RelationVersionTuple, error) {
 	path := fmt.Sprintf("changes[%d]", index)
 	if err := validateKey(change.Source, path+".source"); err != nil {

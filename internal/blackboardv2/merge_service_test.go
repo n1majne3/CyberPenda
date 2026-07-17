@@ -113,6 +113,45 @@ func TestMergeRejectsInvalidOrUnapprovedRequestsWithoutPartialMutation(t *testin
 	assertMergeErrorCode(t, err, "key_conflict")
 }
 
+func TestRuntimeMergeRequiresGovernedOperatorApprovalBeforeTargetLookup(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	projects := project.NewService(db)
+	createdProject, err := projects.Create("Runtime merge approval", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	tasks := task.NewService(db, projects)
+	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "Attempt unapproved merge", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	continuation, err := tasks.CreateContinuation(createdTask.ID, "profile-runtime-merge", "codex", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create continuation: %v", err)
+	}
+	service := blackboardv2.NewService(db)
+	_, err = service.ApplyForContinuation(ctx, createdProject.ID, continuation.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "runtime-merge-with-missing-targets",
+		Changes: []blackboardv2.Change{{Op: "merge", Source: "evidence:missing-source", SourceVersion: 1, Canonical: "evidence:missing-canonical", CanonicalVersion: 1}},
+	})
+	var semanticErr *blackboardv2.Error
+	if !errors.As(err, &semanticErr) || semanticErr.Code != "authority_denied" || semanticErr.Path != "changes[0].op" {
+		t.Fatalf("runtime merge error = %#v, want authority_denied before target lookup", err)
+	}
+	snapshot, err := service.RuntimeSnapshot(ctx, createdProject.ID)
+	if err != nil {
+		t.Fatalf("read snapshot after rejected runtime merge: %v", err)
+	}
+	if snapshot.Revision != 0 {
+		t.Fatalf("rejected runtime merge revision = %d, want 0", snapshot.Revision)
+	}
+}
+
 func assertMergeErrorCode(t *testing.T, err error, code string) {
 	t.Helper()
 	var semanticErr *blackboardv2.Error
@@ -294,6 +333,115 @@ func TestMergeAcceptsClearOnlyCanonicalUpdate(t *testing.T) {
 	}
 }
 
+func TestMergeWireRejectsNullOrDuplicateClearFields(t *testing.T) {
+	for name, raw := range map[string]string{
+		"null clear":      `{"schema":"semantic-change-batch/v2","idempotency_key":"merge-null-clear","changes":[{"op":"merge","source":"fact:source","source_version":1,"canonical":"fact:canonical","canonical_version":1,"clear":null}]}`,
+		"duplicate clear": `{"schema":"semantic-change-batch/v2","idempotency_key":"merge-duplicate-clear","changes":[{"op":"merge","source":"fact:source","source_version":1,"canonical":"fact:canonical","canonical_version":1,"clear":["body","body"]}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var batch blackboardv2.ChangeBatch
+			if err := json.Unmarshal([]byte(raw), &batch); err == nil {
+				t.Fatalf("decoded invalid merge clear payload: %s", raw)
+			}
+		})
+	}
+}
+
+func TestUnrelateThroughRedirectUsesCanonicalIdentityAndExactVersion(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	projects := project.NewService(db)
+	createdProject, err := projects.Create("Redirected unrelate", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	foreignProject, err := projects.Create("Foreign redirected unrelate", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create foreign project: %v", err)
+	}
+	service := blackboardv2.NewService(db)
+	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "seed-redirected-unrelate",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "entity:unrelate-source", Type: "entity", Record: blackboardv2.EntityRecord{Status: "active", Kind: "host", Name: "Source", Locator: "unrelate.example", ScopeStatus: "in_scope"}},
+			{Op: "create", Key: "entity:unrelate-canonical", Type: "entity", Record: blackboardv2.EntityRecord{Status: "active", Kind: "host", Name: "Canonical", Locator: "UNRELATE.EXAMPLE.", ScopeStatus: "in_scope"}},
+			{Op: "create", Key: "entity:unrelate-parent", Type: "entity", Record: blackboardv2.EntityRecord{Status: "active", Kind: "host", Name: "Parent", Locator: "parent-unrelate.example", ScopeStatus: "in_scope"}},
+			{Op: "relate", From: "entity:unrelate-canonical", Relation: "part_of", To: "entity:unrelate-parent"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed redirected unrelate: %v", err)
+	}
+	_, err = service.Apply(ctx, foreignProject.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "seed-foreign-unrelate",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "entity:unrelate-source", Type: "entity", Record: blackboardv2.EntityRecord{Status: "active", Kind: "host", Name: "Foreign source", Locator: "foreign-unrelate.example", ScopeStatus: "in_scope"}},
+			{Op: "create", Key: "entity:unrelate-parent", Type: "entity", Record: blackboardv2.EntityRecord{Status: "active", Kind: "host", Name: "Foreign parent", Locator: "foreign-parent-unrelate.example", ScopeStatus: "in_scope"}},
+			{Op: "relate", From: "entity:unrelate-source", Relation: "part_of", To: "entity:unrelate-parent"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed foreign unrelate relationship: %v", err)
+	}
+	merged, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "merge-before-unrelate",
+		Changes: []blackboardv2.Change{{Op: "merge", Source: "entity:unrelate-source", SourceVersion: 1, Canonical: "entity:unrelate-canonical", CanonicalVersion: 1}},
+	})
+	if err != nil {
+		t.Fatalf("merge before redirected unrelate: %v", err)
+	}
+	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "stale-redirected-unrelate",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "entity:unrelate-rollback", Type: "entity", Record: blackboardv2.EntityRecord{Status: "active", Kind: "host", Name: "Must roll back", ScopeStatus: "unknown"}},
+			{Op: "unrelate", From: "entity:unrelate-source", Relation: "part_of", To: "entity:unrelate-parent", Version: 2},
+		},
+	})
+	assertMergeErrorCode(t, err, "version_conflict")
+	if _, err := service.ReadCurrent(ctx, createdProject.ID, "entity:unrelate-rollback"); err == nil {
+		t.Fatal("stale redirected unrelate retained a partial record")
+	}
+
+	var batch blackboardv2.ChangeBatch
+	if err := json.Unmarshal([]byte(`{"schema":"semantic-change-batch/v2","idempotency_key":"remove-through-redirect","changes":[{"op":"unrelate","from":"entity:unrelate-source","relation":"part_of","to":"entity:unrelate-parent","version":1}]}`), &batch); err != nil {
+		t.Fatalf("decode redirected unrelate: %v", err)
+	}
+	removed, err := service.Apply(ctx, createdProject.ID, batch)
+	if err != nil {
+		t.Fatalf("unrelate through redirect: %v", err)
+	}
+	if removed.Revision != merged.Revision+1 || len(removed.Relations) != 1 || removed.Relations[0][0] != "entity:unrelate-canonical" || removed.Relations[0][1] != "part_of" || removed.Relations[0][2] != "entity:unrelate-parent" || removed.Relations[0][3] != 1 {
+		t.Fatalf("redirected unrelate result = %#v", removed)
+	}
+	replay, err := service.Apply(ctx, createdProject.ID, batch)
+	if err != nil {
+		t.Fatalf("replay redirected unrelate: %v", err)
+	}
+	if !reflect.DeepEqual(replay, removed) {
+		t.Fatalf("redirected unrelate replay = %#v, want %#v", replay, removed)
+	}
+	detail, err := service.ReadCurrent(ctx, createdProject.ID, "entity:unrelate-source")
+	if err != nil {
+		t.Fatalf("read canonical after redirected unrelate: %v", err)
+	}
+	for _, relationship := range detail.Relationships {
+		if relationship[0] == "entity:unrelate-canonical" && relationship[1] == "part_of" && relationship[2] == "entity:unrelate-parent" {
+			t.Fatalf("redirected unrelate left current relationship: %#v", detail.Relationships)
+		}
+	}
+	foreign, err := service.ReadCurrent(ctx, foreignProject.ID, "entity:unrelate-source")
+	if err != nil {
+		t.Fatalf("read foreign relationship after redirected unrelate: %v", err)
+	}
+	if len(foreign.Relationships) != 1 || foreign.Relationships[0][0] != "entity:unrelate-source" || foreign.Relationships[0][1] != "part_of" || foreign.Relationships[0][2] != "entity:unrelate-parent" {
+		t.Fatalf("redirected unrelate crossed Projects: %#v", foreign.Relationships)
+	}
+}
+
 func historyContainsMergeSource(items []blackboardv2.HistoryItem, sourceName, sourceKey string) bool {
 	hasMeaning, hasIncoming, hasOutgoing := false, false, false
 	for _, item := range items {
@@ -454,7 +602,7 @@ func TestMergeEvidenceAndRetainThroughRedirect(t *testing.T) {
 			t.Fatalf("retain %s: %v", evidence.key, err)
 		}
 	}
-	merged, err := service.ApplyForContinuation(ctx, createdProject.ID, continuation.ID, blackboardv2.ChangeBatch{
+	merged, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
 		Schema: "semantic-change-batch/v2", IdempotencyKey: "merge-evidence-type",
 		Changes: []blackboardv2.Change{{Op: "merge", Source: "evidence:source", SourceVersion: 1, Canonical: "evidence:canonical", CanonicalVersion: 1}},
 	})
@@ -555,6 +703,48 @@ func TestMergePreservesRelationshipVersionsReasonsAndSelfLinkContext(t *testing.
 		if !found {
 			t.Errorf("source Semantic History did not preserve %q: %#v", reason, history.Items)
 		}
+	}
+}
+
+func TestRelationlessMergedFactHistoryNamesOriginalSourceKey(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	createdProject, err := project.NewService(db).Create("Relationless merge history", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	service := blackboardv2.NewService(db)
+	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "seed-relationless-fact-merge",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "fact:relationless-source", Type: "fact", Record: blackboardv2.FactRecord{Category: "service", Summary: "Relationless duplicate", Body: "Original source meaning", Confidence: "tentative", ScopeStatus: "in_scope"}},
+			{Op: "create", Key: "fact:relationless-canonical", Type: "fact", Record: blackboardv2.FactRecord{Category: "service", Summary: "relationless duplicate", Body: "Canonical meaning", Confidence: "tentative", ScopeStatus: "in_scope"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed relationless Fact merge: %v", err)
+	}
+	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "merge-relationless-fact",
+		Changes: []blackboardv2.Change{{Op: "merge", Source: "fact:relationless-source", SourceVersion: 1, Canonical: "fact:relationless-canonical", CanonicalVersion: 1}},
+	})
+	if err != nil {
+		t.Fatalf("merge relationless Fact: %v", err)
+	}
+	history, err := service.ReadHistory(ctx, createdProject.ID, "fact:relationless-source", blackboardv2.HistoryOptions{})
+	if err != nil {
+		t.Fatalf("read relationless merged Fact history: %v", err)
+	}
+	if history.Key != "fact:relationless-canonical" || len(history.Items) != 1 {
+		t.Fatalf("relationless merged Fact history = %#v", history)
+	}
+	item := history.Items[0]
+	if item.Kind != "record" || item.Key != "fact:relationless-source" || item.Record == nil || item.Record.Body != "Original source meaning" {
+		t.Fatalf("relationless source identity was not preserved: %#v", item)
 	}
 }
 
