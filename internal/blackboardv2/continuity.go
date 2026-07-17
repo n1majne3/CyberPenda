@@ -206,6 +206,13 @@ func (s *Service) InspectContinuationSynchronization(ctx context.Context, projec
 
 // SynchronizeContinuation advances the authenticated Working Snapshot to the
 // exact current Runtime Snapshot and returns the common response attachment.
+// Delivery is crash/retry safe: the Working Snapshot is published before the
+// acknowledgement commits when advancing, and an already-acknowledged retry
+// republishes the exact committed Working Snapshot bytes so a lost response or
+// interrupted materialization can recover without leaving a live pending notice.
+// If publication or commit fails after the filesystem advances, the prior
+// Working Snapshot file bytes (or absence) are restored so durable state and
+// disk stay aligned for the next retry.
 func (s *Service) SynchronizeContinuation(ctx context.Context, projectID, taskID, continuationID string, fromRevision int) (SynchronizationAttachment, error) {
 	if fromRevision < 0 {
 		return SynchronizationAttachment{}, semanticError("semantic_validation", "synchronization revision must not be negative", "from_revision", nil)
@@ -223,8 +230,9 @@ func (s *Service) SynchronizeContinuation(ctx context.Context, projectID, taskID
 	var acknowledged int
 	var status string
 	var newer int
+	var workingBytes []byte
 	err = tx.QueryRowContext(ctx, `
-		SELECT continuation.task_id,continuation.status,state.last_acknowledged_revision,
+		SELECT continuation.task_id,continuation.status,state.last_acknowledged_revision,state.working_snapshot_bytes,
 		       (SELECT COUNT(*) FROM task_continuations AS newer
 		         WHERE newer.task_id=continuation.task_id AND newer.number>continuation.number)
 		FROM task_continuations AS continuation
@@ -232,7 +240,7 @@ func (s *Service) SynchronizeContinuation(ctx context.Context, projectID, taskID
 		JOIN blackboard_v2_continuation_pins AS pin ON pin.continuation_id=continuation.id
 		JOIN blackboard_v2_continuation_state AS state ON state.continuation_id=continuation.id
 		WHERE continuation.id=? AND task.project_id=?`, continuationID, projectID,
-	).Scan(&boundTaskID, &status, &acknowledged, &newer)
+	).Scan(&boundTaskID, &status, &acknowledged, &workingBytes, &newer)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SynchronizationAttachment{}, semanticError("authority_denied", "trusted Continuation does not own this Project interface", "", nil)
 	}
@@ -252,6 +260,13 @@ func (s *Service) SynchronizeContinuation(ctx context.Context, projectID, taskID
 	if projection.Snapshot.Revision < acknowledged {
 		return SynchronizationAttachment{}, fmt.Errorf("acknowledged Blackboard revision moved beyond current Project state")
 	}
+	// from_revision is the last acknowledged revision the adapter observed. Prefer
+	// the caller's observed from when it still describes this notice; otherwise
+	// report the server-side acknowledgement observed in this transaction.
+	deliveredFrom := acknowledged
+	if fromRevision >= 0 && fromRevision <= acknowledged {
+		deliveredFrom = fromRevision
+	}
 	if projection.Snapshot.Revision > acknowledged {
 		result, err := tx.ExecContext(ctx, `
 			UPDATE blackboard_v2_continuation_state
@@ -267,19 +282,52 @@ func (s *Service) SynchronizeContinuation(ctx context.Context, projectID, taskID
 		} else if changed != 1 {
 			return SynchronizationAttachment{}, fmt.Errorf("stale Working Blackboard Snapshot synchronization")
 		}
+		workingBytes = append([]byte(nil), projection.Bytes...)
+	}
+	// Capture prior on-disk Working Snapshot before publication so a failed
+	// materialization or commit can restore exact prior bytes (or absence).
+	// Publish-before-commit remains crash-safe when the process dies after disk
+	// replace: Pending stays true when advancing, and retries republish.
+	workingPath := filepath.Join(s.runtimeRoot, boundTaskID, "workdir", ".pentest", "blackboard.json")
+	previousBytes, previousErr := os.ReadFile(workingPath)
+	previousExists := previousErr == nil
+	if previousErr != nil && !errors.Is(previousErr, os.ErrNotExist) {
+		return SynchronizationAttachment{}, fmt.Errorf("read prior Working Snapshot before synchronized publication: %w", previousErr)
+	}
+	restoreWorkingSnapshot := func() {
+		restorePriorWorkingSnapshotFile(s.runtimeRoot, boundTaskID, workingPath, previousBytes, previousExists)
+	}
+	// Publish exact Snapshot bytes before commit so a crash after disk replace
+	// and before commit leaves Pending true (when advancing) and retries safely.
+	// Already-acknowledged retries republish committed Working Snapshot bytes so
+	// lost materialization or a deleted file recovers without reopening Pending.
+	if err := materializeWorkingSnapshot(s.runtimeRoot, boundTaskID, workingBytes); err != nil {
+		restoreWorkingSnapshot()
+		return SynchronizationAttachment{}, fmt.Errorf("publish synchronized Working Blackboard Snapshot: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
+		restoreWorkingSnapshot()
 		return SynchronizationAttachment{}, fmt.Errorf("commit trusted Continuation synchronization: %w", err)
 	}
-	if projection.Snapshot.Revision > acknowledged {
-		if err := materializeWorkingSnapshot(s.runtimeRoot, boundTaskID, projection.Bytes); err != nil {
-			return SynchronizationAttachment{}, fmt.Errorf("publish synchronized Working Blackboard Snapshot: %w", err)
-		}
+	var snapshot RuntimeSnapshot
+	if err := json.Unmarshal(workingBytes, &snapshot); err != nil {
+		return SynchronizationAttachment{}, fmt.Errorf("decode synchronized Working Blackboard Snapshot: %w", err)
 	}
 	return SynchronizationAttachment{
-		Reason: "another_task_changed_shared_project_knowledge", FromRevision: fromRevision,
-		Revision: projection.Snapshot.Revision, Snapshot: projection.Snapshot,
+		Reason: "another_task_changed_shared_project_knowledge", FromRevision: deliveredFrom,
+		Revision: snapshot.Revision, Snapshot: snapshot,
 	}, nil
+}
+
+// restorePriorWorkingSnapshotFile restores exact prior Working Snapshot file
+// state after a failed publish-before-commit attempt. Errors from restore are
+// ignored so callers can preserve and return the primary failure.
+func restorePriorWorkingSnapshotFile(runtimeRoot, taskID, workingPath string, previousBytes []byte, previousExists bool) {
+	if previousExists {
+		_ = materializeWorkingSnapshot(runtimeRoot, taskID, previousBytes)
+		return
+	}
+	_ = os.Remove(workingPath)
 }
 
 func (s *ContinuityService) CreateContinuation(ctx context.Context, req ContinuationLaunchRequest) (ContinuationLaunch, error) {
@@ -373,11 +421,7 @@ func (s *ContinuityService) CreateContinuation(ctx context.Context, req Continua
 		return ContinuationLaunch{}, fmt.Errorf("read prior Working Snapshot before resume publication: %w", previousErr)
 	}
 	restoreWorkingSnapshot := func() {
-		if previousExists {
-			_ = materializeWorkingSnapshot(s.runtimeRoot, req.TaskID, previousBytes)
-		} else {
-			_ = os.Remove(workingPath)
-		}
+		restorePriorWorkingSnapshotFile(s.runtimeRoot, req.TaskID, workingPath, previousBytes, previousExists)
 	}
 	if err := materializeWorkingSnapshot(s.runtimeRoot, req.TaskID, projection.Bytes); err != nil {
 		return ContinuationLaunch{}, fmt.Errorf("publish initial Working Blackboard Snapshot: %w", err)

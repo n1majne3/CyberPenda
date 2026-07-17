@@ -666,6 +666,81 @@ func TestBlackboardV2HTTPAuthenticatedErrorCarriesSameProjectSyncOnly(t *testing
 	}
 }
 
+// Issue #117 — parallel Task notice delivers once on the next trusted response,
+// then later responses stay ordinary delta/detail only.
+func TestBlackboardV2HTTPParallelTaskSyncDeliversOnceThenOrdinaryResponses(t *testing.T) {
+	fixture := newV2HTTPFixture(t)
+	// Owner advances shared Project knowledge; peer Continuation stays behind.
+	mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.continuation.Token, "", "parallel-owner-entity",
+		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"entity:parallel-http","type":"entity","record":{"status":"active","kind":"host","name":"Parallel","scope_status":"in_scope"}}]}`)
+	want, err := fixture.server.blackboardV2.ProjectRuntimeSnapshot(context.Background(), fixture.project.ID)
+	if err != nil {
+		t.Fatalf("project expected Snapshot: %v", err)
+	}
+
+	// Next trusted read piggybacks exact current Snapshot + reason, no Task identity.
+	first := mustV2HTTP(t, http.MethodGet, fixture.base+"/blackboard/records/entity:parallel-http", fixture.peer.Token, "", "", "")
+	var synchronized struct {
+		Schema string                                 `json:"schema"`
+		Key    string                                 `json:"key"`
+		Sync   *blackboardv2.SynchronizationAttachment `json:"sync"`
+	}
+	if err := json.Unmarshal(first, &synchronized); err != nil {
+		t.Fatalf("decode synchronized read: %v", err)
+	}
+	if synchronized.Schema != "blackboard-record/v2" || synchronized.Key != "entity:parallel-http" || synchronized.Sync == nil {
+		t.Fatalf("first peer read = %s", first)
+	}
+	if synchronized.Sync.Reason != "another_task_changed_shared_project_knowledge" || synchronized.Sync.Revision != want.Snapshot.Revision {
+		t.Fatalf("sync attachment = %#v", synchronized.Sync)
+	}
+	gotSnapshot, err := json.Marshal(synchronized.Sync.Snapshot)
+	if err != nil {
+		t.Fatalf("marshal sync snapshot: %v", err)
+	}
+	if !bytes.Equal(gotSnapshot, want.Bytes) {
+		t.Fatalf("HTTP sync Snapshot is not exact canonical bytes\ngot=%s\nwant=%s", gotSnapshot, want.Bytes)
+	}
+	for _, leak := range []string{fixture.task.ID, fixture.peerTask.ID, fixture.continuation.Continuation.ID, fixture.peer.Continuation.ID, fixture.project.ID} {
+		if leak != "" && bytes.Contains(first, []byte(leak)) {
+			t.Fatalf("synchronized read leaked identity %q: %s", leak, first)
+		}
+	}
+	onDisk, err := os.ReadFile(filepath.Join(fixture.runtimeRoot, fixture.peerTask.ID, "workdir", ".pentest", "blackboard.json"))
+	if err != nil {
+		t.Fatalf("read peer Working Snapshot after delivery: %v", err)
+	}
+	if !bytes.Equal(onDisk, want.Bytes) {
+		t.Fatalf("peer Working Snapshot not replaced on delivery\ngot=%s\nwant=%s", onDisk, want.Bytes)
+	}
+
+	// Later read returns ordinary detail only.
+	second := mustV2HTTP(t, http.MethodGet, fixture.base+"/blackboard/records/entity:parallel-http", fixture.peer.Token, "", "", "")
+	if bytes.Contains(second, []byte(`"sync"`)) {
+		t.Fatalf("later peer read reattached sync: %s", second)
+	}
+	if !bytes.Contains(second, []byte(`"schema":"blackboard-record/v2"`)) {
+		t.Fatalf("later peer read = %s", second)
+	}
+
+	// Peer opens work, then another external advance, then checkpoint carries sync once.
+	mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.peer.Token, "", "parallel-peer-open",
+		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"objective:parallel","type":"objective","record":{"status":"open","objective":"Observe parallel sync"}},{"op":"create","key":"attempt:parallel","type":"attempt","record":{"status":"open","summary":"Watching"}},{"op":"relate","from":"attempt:parallel","relation":"tests","to":"objective:parallel"}]}`)
+	mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.operator, "operator", "parallel-external-again",
+		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"entity:parallel-again","type":"entity","record":{"status":"active","kind":"host","name":"Again","scope_status":"in_scope"}}]}`)
+	checkpoint := mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/attempts/attempt:parallel:checkpoint", fixture.peer.Token, "", "parallel-checkpoint-sync",
+		`{"version":1,"summary":"Checkpoint after external change"}`)
+	if !bytes.Contains(checkpoint, []byte(`"schema":"semantic-change-result/v2"`)) || !bytes.Contains(checkpoint, []byte(`"sync"`)) || !bytes.Contains(checkpoint, []byte(`another_task_changed_shared_project_knowledge`)) {
+		t.Fatalf("checkpoint while pending must attach sync: %s", checkpoint)
+	}
+	// Exact checkpoint replay stays ordinary (no reattached live sync).
+	checkpointReplay := mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/attempts/attempt:parallel:checkpoint", fixture.peer.Token, "", "parallel-checkpoint-sync",
+		`{"version":1,"summary":"Checkpoint after external change"}`)
+	if bytes.Contains(checkpointReplay, []byte(`"sync"`)) {
+		t.Fatalf("checkpoint replay reattached sync: %s", checkpointReplay)
+	}
+}
+
 func TestBlackboardV2HTTPStatusMappingStorageBusyInternalAndAuth(t *testing.T) {
 	// Closed mapping table: transport never invents 200 error bodies.
 	cases := []struct {
