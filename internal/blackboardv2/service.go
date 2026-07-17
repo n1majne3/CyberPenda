@@ -66,7 +66,7 @@ func NewService(db *store.DB) *Service {
 // NewServiceWithEvidence configures the confined filesystem roots used by
 // Runtime Evidence retention.
 func NewServiceWithEvidence(db *store.DB, config EvidenceConfig) *Service {
-	return &Service{db: db, evidenceConfig: config}
+	return &Service{db: db, evidenceConfig: config, runtimeRoot: config.RuntimeRoot}
 }
 
 // ChangeBatch is the semantic-change-batch/v2 envelope.

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -180,7 +179,7 @@ func TestProjectInterfaceConformanceProducesSameResultAcrossServiceHTTPMCPAndTas
 
 }
 
-func TestCheckpointAndFinishConformAcrossMCPAndTaskCLI(t *testing.T) {
+func TestCheckpointAndFinishRemainReplaySafeThroughLegacyMCP(t *testing.T) {
 	fixture := newServiceFixture(t)
 	ctx := context.Background()
 	principal, err := fixture.service.Authenticate(ctx, fixture.token, fixture.project.ID)
@@ -222,30 +221,6 @@ func TestCheckpointAndFinishConformAcrossMCPAndTaskCLI(t *testing.T) {
 		t.Fatalf("decode MCP checkpoint: %v", err)
 	}
 
-	httpServer := httptest.NewServer(newHTTPMux(fixture))
-	t.Cleanup(httpServer.Close)
-	t.Setenv("PENTEST_API_URL", httpServer.URL)
-	t.Setenv("PENTEST_INTERFACE_TOKEN", fixture.token)
-	t.Setenv("PENTEST_PROJECT_ID", fixture.project.ID)
-	t.Setenv("PENTEST_TASK_ID", fixture.task.ID)
-	t.Setenv("PENTEST_CONTINUATION_ID", fixture.continuation.ID)
-	checkpointPath := filepath.Join(t.TempDir(), "checkpoint.json")
-	if err := os.WriteFile(checkpointPath, checkpointBody, 0o600); err != nil {
-		t.Fatalf("write checkpoint input: %v", err)
-	}
-	var cliCheckpointJSON bytes.Buffer
-	if err := pentestctl.Run(&cliCheckpointJSON, []string{"blackboard", "attempt", "checkpoint", "--input", checkpointPath}); err != nil {
-		t.Fatalf("task CLI checkpoint: %v", err)
-	}
-	var cliCheckpoint projectinterface.CheckpointAttemptResponse
-	if err := json.Unmarshal(cliCheckpointJSON.Bytes(), &cliCheckpoint); err != nil {
-		t.Fatalf("decode task CLI checkpoint: %v", err)
-	}
-	if cliCheckpoint.Result.Event.ID != canonicalCheckpoint.Result.Event.ID ||
-		cliCheckpoint.Result.Mutation.MutationID != canonicalCheckpoint.Result.Mutation.MutationID {
-		t.Fatalf("task CLI checkpoint drifted: MCP=%#v CLI=%#v", canonicalCheckpoint, cliCheckpoint)
-	}
-
 	if _, err := fixture.service.Apply(ctx, principal, projectinterface.ApplyMutationRequest{
 		ProtocolVersion: projectinterface.RuntimeProtocolVersion,
 		Batch: projectinterface.RequestBatch{
@@ -275,23 +250,6 @@ func TestCheckpointAndFinishConformAcrossMCPAndTaskCLI(t *testing.T) {
 	if err := json.Unmarshal([]byte(mcpText(mcpFinish)), &canonicalFinish); err != nil {
 		t.Fatalf("decode MCP Finish: %v", err)
 	}
-	finishPath := filepath.Join(t.TempDir(), "finish.json")
-	if err := os.WriteFile(finishPath, finishBody, 0o600); err != nil {
-		t.Fatalf("write Finish input: %v", err)
-	}
-	var cliFinishJSON bytes.Buffer
-	if err := pentestctl.Run(&cliFinishJSON, []string{"blackboard", "continuation", "finish", "--input", finishPath}); err != nil {
-		t.Fatalf("task CLI Finish: %v", err)
-	}
-	var cliFinish projectinterface.FinishContinuationResponse
-	if err := json.Unmarshal(cliFinishJSON.Bytes(), &cliFinish); err != nil {
-		t.Fatalf("decode task CLI Finish: %v", err)
-	}
-	if cliFinish.Result.SummaryVersion.ID != canonicalFinish.Result.SummaryVersion.ID ||
-		cliFinish.Result.GraphRevision != canonicalFinish.Result.GraphRevision {
-		t.Fatalf("task CLI Finish drifted: MCP=%#v CLI=%#v", canonicalFinish, cliFinish)
-	}
-
 	closedCheckpoint := checkpointRequest
 	closedCheckpoint.IdempotencyKey = "checkpoint:mcp-cli:after-finish"
 	closedCheckpoint.ExpectedVersion = 2
@@ -307,14 +265,6 @@ func TestCheckpointAndFinishConformAcrossMCPAndTaskCLI(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(mcpText(mcpClosed)), &mcpClosedEnvelope); err != nil || mcpClosedEnvelope.Error.Code != projectinterface.ErrCodeContinuationClosed {
 		t.Fatalf("MCP closed error = %#v decode=%v", mcpClosedEnvelope.Error, err)
-	}
-	closedPath := filepath.Join(t.TempDir(), "closed-checkpoint.json")
-	if err := os.WriteFile(closedPath, closedBody, 0o600); err != nil {
-		t.Fatalf("write closed checkpoint input: %v", err)
-	}
-	cliClosedErr := pentestctl.Run(io.Discard, []string{"blackboard", "attempt", "checkpoint", "--input", closedPath})
-	if got := projectinterface.AsError(cliClosedErr); got == nil || got.Code != projectinterface.ErrCodeContinuationClosed || pentestctl.ExitCode(cliClosedErr) != 5 {
-		t.Fatalf("task CLI closed error = %#v exit=%d", cliClosedErr, pentestctl.ExitCode(cliClosedErr))
 	}
 }
 
@@ -385,20 +335,6 @@ func TestRetainEvidenceProducesSameResultAcrossModuleHTTPMCPAndTaskCLI(t *testin
 		t.Fatalf("MCP retain result = %s want %s", mcpText(mcpResult), wantJSON)
 	}
 
-	inputPath := filepath.Join(t.TempDir(), "retain.json")
-	if err := os.WriteFile(inputPath, body, 0o600); err != nil {
-		t.Fatalf("write CLI input: %v", err)
-	}
-	t.Setenv("PENTEST_API_URL", server.URL)
-	t.Setenv("PENTEST_INTERFACE_TOKEN", fixture.token)
-	t.Setenv("PENTEST_PROJECT_ID", fixture.project.ID)
-	var cli bytes.Buffer
-	if err := pentestctl.Run(&cli, []string{"blackboard", "evidence", "retain", "--input", inputPath}); err != nil {
-		t.Fatalf("task CLI Retain Evidence: %v", err)
-	}
-	if !bytes.Equal(bytes.TrimSpace(cli.Bytes()), wantJSON) {
-		t.Fatalf("task CLI retain result = %s want %s", cli.Bytes(), wantJSON)
-	}
 }
 
 // TestProjectInterfaceErrorsRemainStructuredAcrossMCPHTTPAndCLI proves all

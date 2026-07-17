@@ -125,15 +125,25 @@ Auth (when configured): `Authorization: Bearer <token>` or `?token=` on API/MCP 
 
 ## CLI fallback (`pentestctl`)
 
-Uses the same SQLite store as the daemon (not HTTP):
+Blackboard v2 exposes the same closed semantic requests in offline Store mode
+or through the daemon with `--api` and `--token`:
 
 ```sh
-pentestctl --db pentest.db fact upsert --project <id> --key ... --category ... --summary ...
-pentestctl --db pentest.db finding upsert --project <id> ...
-pentestctl --db pentest.db evidence attach --project <id> ...
-pentestctl --db pentest.db task summary put --project <id> --task <id> ...
-pentestctl --db pentest.db report generate --project <id> ...
+pentestctl --db pentest.db blackboard change --project <id> --actor-id <actor> --input change.json
+pentestctl --db pentest.db blackboard read --project <id> --actor-id <actor> --key entity:example
+pentestctl --db pentest.db blackboard history --project <id> --actor-id <actor> --key entity:example --limit 20
+pentestctl blackboard evidence retain --input evidence.json
+pentestctl blackboard attempt checkpoint --input checkpoint.json
+pentestctl blackboard continuation finish --input finish.json
 ```
+
+`--input -` reads one UTF-8 JSON request from stdin. Operator Project and
+actor selection stay in flags, outside semantic JSON. Evidence retention,
+Attempt checkpoint, and Continuation Finish require task context from the
+`PENTEST_PROJECT_ID`, `PENTEST_TASK_ID`, and `PENTEST_CONTINUATION_ID`
+environment. Daemon-backed task calls additionally use
+`PENTEST_INTERFACE_TOKEN`; credentials are sent only in the Authorization
+header. Run `pentestctl blackboard --help` for the compact command catalog.
 
 ## Project layout
 

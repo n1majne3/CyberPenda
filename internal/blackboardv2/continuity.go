@@ -69,6 +69,22 @@ type WorkingSnapshotState struct {
 	Bytes                    []byte
 }
 
+// ContinuationSynchronizationState is the authenticated revision state an
+// adapter observes before serving one trusted Continuation response.
+type ContinuationSynchronizationState struct {
+	FromRevision int
+	Revision     int
+	Pending      bool
+}
+
+// SynchronizationAttachment is the common optional trusted-response sibling.
+type SynchronizationAttachment struct {
+	Reason       string          `json:"reason"`
+	FromRevision int             `json:"from_revision"`
+	Revision     int             `json:"revision"`
+	Snapshot     RuntimeSnapshot `json:"snapshot"`
+}
+
 type ActiveSnapshot struct {
 	ContinuationID  string
 	TaskID          string
@@ -93,6 +109,109 @@ func NewContinuityService(db *store.DB, board *Service, tasks *task.Service, run
 
 func (s *ContinuityService) SetFailureInjector(injector ContinuityFailureInjector) {
 	s.fail = injector
+}
+
+// InspectContinuationSynchronization validates the Project, Task, and
+// Continuation binding before an adapter decodes or executes semantic input.
+// An empty taskID is accepted for adapters whose authenticated principal has
+// already bound the Task outside this service call.
+func (s *Service) InspectContinuationSynchronization(ctx context.Context, projectID, taskID, continuationID string) (ContinuationSynchronizationState, error) {
+	if strings.TrimSpace(projectID) == "" || strings.TrimSpace(continuationID) == "" {
+		return ContinuationSynchronizationState{}, semanticError("authority_denied", "trusted Continuation identity is required", "", nil)
+	}
+	var boundTaskID string
+	var acknowledged, revision int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT continuation.task_id,state.last_acknowledged_revision,
+		       COALESCE(project_state.revision,0)
+		FROM task_continuations AS continuation
+		JOIN tasks AS task ON task.id=continuation.task_id
+		JOIN blackboard_v2_continuation_pins AS pin ON pin.continuation_id=continuation.id
+		JOIN blackboard_v2_continuation_state AS state ON state.continuation_id=continuation.id
+		LEFT JOIN blackboard_v2_project_state AS project_state ON project_state.project_id=task.project_id
+		WHERE continuation.id=? AND task.project_id=?`, continuationID, projectID,
+	).Scan(&boundTaskID, &acknowledged, &revision)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ContinuationSynchronizationState{}, semanticError("authority_denied", "trusted Continuation does not own this Project interface", "", nil)
+	}
+	if err != nil {
+		return ContinuationSynchronizationState{}, fmt.Errorf("inspect trusted Continuation synchronization: %w", err)
+	}
+	if taskID != "" && taskID != boundTaskID {
+		return ContinuationSynchronizationState{}, semanticError("authority_denied", "trusted Continuation does not own this Task interface", "", nil)
+	}
+	return ContinuationSynchronizationState{FromRevision: acknowledged, Revision: revision, Pending: revision > acknowledged}, nil
+}
+
+// SynchronizeContinuation advances the authenticated Working Snapshot to the
+// exact current Runtime Snapshot and returns the common response attachment.
+func (s *Service) SynchronizeContinuation(ctx context.Context, projectID, taskID, continuationID string, fromRevision int) (SynchronizationAttachment, error) {
+	if fromRevision < 0 {
+		return SynchronizationAttachment{}, semanticError("semantic_validation", "synchronization revision must not be negative", "from_revision", nil)
+	}
+	s.snapshotMu.Lock()
+	defer s.snapshotMu.Unlock()
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return SynchronizationAttachment{}, fmt.Errorf("begin trusted Continuation synchronization: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var boundTaskID string
+	var acknowledged int
+	err = tx.QueryRowContext(ctx, `
+		SELECT continuation.task_id,state.last_acknowledged_revision
+		FROM task_continuations AS continuation
+		JOIN tasks AS task ON task.id=continuation.task_id
+		JOIN blackboard_v2_continuation_pins AS pin ON pin.continuation_id=continuation.id
+		JOIN blackboard_v2_continuation_state AS state ON state.continuation_id=continuation.id
+		WHERE continuation.id=? AND task.project_id=?`, continuationID, projectID,
+	).Scan(&boundTaskID, &acknowledged)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SynchronizationAttachment{}, semanticError("authority_denied", "trusted Continuation does not own this Project interface", "", nil)
+	}
+	if err != nil {
+		return SynchronizationAttachment{}, fmt.Errorf("validate trusted Continuation synchronization: %w", err)
+	}
+	if taskID != "" && taskID != boundTaskID {
+		return SynchronizationAttachment{}, semanticError("authority_denied", "trusted Continuation does not own this Task interface", "", nil)
+	}
+	projection, err := s.ProjectRuntimeSnapshotTx(ctx, tx, projectID)
+	if err != nil {
+		return SynchronizationAttachment{}, err
+	}
+	if projection.Snapshot.Revision < acknowledged {
+		return SynchronizationAttachment{}, fmt.Errorf("acknowledged Blackboard revision moved beyond current Project state")
+	}
+	if projection.Snapshot.Revision > acknowledged {
+		result, err := tx.ExecContext(ctx, `
+			UPDATE blackboard_v2_continuation_state
+			SET last_acknowledged_revision=?,working_snapshot_bytes=?,updated_at=?
+			WHERE continuation_id=? AND last_acknowledged_revision=?`,
+			projection.Snapshot.Revision, projection.Bytes, time.Now().UTC().Format(time.RFC3339Nano), continuationID, acknowledged,
+		)
+		if err != nil {
+			return SynchronizationAttachment{}, fmt.Errorf("advance synchronized Working Blackboard Snapshot: %w", err)
+		}
+		if changed, err := result.RowsAffected(); err != nil {
+			return SynchronizationAttachment{}, err
+		} else if changed != 1 {
+			return SynchronizationAttachment{}, fmt.Errorf("stale Working Blackboard Snapshot synchronization")
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return SynchronizationAttachment{}, fmt.Errorf("commit trusted Continuation synchronization: %w", err)
+	}
+	if projection.Snapshot.Revision > acknowledged {
+		if err := materializeWorkingSnapshot(s.runtimeRoot, boundTaskID, projection.Bytes); err != nil {
+			return SynchronizationAttachment{}, fmt.Errorf("publish synchronized Working Blackboard Snapshot: %w", err)
+		}
+	}
+	return SynchronizationAttachment{
+		Reason: "another_task_changed_shared_project_knowledge", FromRevision: fromRevision,
+		Revision: projection.Snapshot.Revision, Snapshot: projection.Snapshot,
+	}, nil
 }
 
 func (s *ContinuityService) CreateContinuation(ctx context.Context, req ContinuationLaunchRequest) (ContinuationLaunch, error) {
