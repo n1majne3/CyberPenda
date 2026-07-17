@@ -539,6 +539,159 @@ func TestBlackboardV2MCPPeerReadAttachesSynchronization(t *testing.T) {
 	}
 }
 
+// Issue #117 P1 — MCP response-loss retry redelivers the exact sync attachment
+// for the same idempotency key; later operations stay ordinary.
+func TestBlackboardV2MCPResponseLossRetryRedeliversExactSyncAttachment(t *testing.T) {
+	fixture := newV2MCPFixture(t)
+	owner := fixture.session(t, &fixture.ownerGrant, nil)
+	peerGrant, err := projectinterface.NewGrantStore(fixture.db, projectinterface.SystemClock{}, projectinterface.RandomIDSource{}, projectinterface.RandomTokenSource{}).
+		Resolve(context.Background(), fixture.peerToken)
+	if err != nil {
+		t.Fatalf("resolve peer grant: %v", err)
+	}
+	peer := fixture.session(t, &peerGrant, nil)
+	open := blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "mcp-loss-open",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "objective:mcp-loss", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Loss"}},
+			{Op: "create", Key: "attempt:mcp-loss", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Watching"}},
+			{Op: "relate", From: "attempt:mcp-loss", Relation: "tests", To: "objective:mcp-loss"},
+		},
+	}
+	if result, raw := callV2Tool(t, peer, "blackboard_change", open); result.IsError {
+		t.Fatalf("peer open: %s", raw)
+	}
+	external := blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "mcp-loss-external",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "entity:mcp-loss", Type: "entity",
+			Record: blackboardv2.EntityRecord{Status: "active", Kind: "host", Name: "MCP loss", ScopeStatus: "in_scope"},
+		}},
+	}
+	if result, raw := callV2Tool(t, owner, "blackboard_change", external); result.IsError {
+		t.Fatalf("owner external: %s", raw)
+	}
+	checkpoint := blackboardv2.CheckpointAttemptRequest{
+		IdempotencyKey: "mcp-loss-checkpoint", Key: "attempt:mcp-loss", Version: 1, Summary: "Pending sync checkpoint",
+	}
+	firstResult, firstRaw := callV2Tool(t, peer, "blackboard_checkpoint_attempt", checkpoint)
+	if firstResult.IsError {
+		t.Fatalf("first checkpoint: %s", firstRaw)
+	}
+	var delivered struct {
+		Schema string                                 `json:"schema"`
+		Sync   *blackboardv2.SynchronizationAttachment `json:"sync"`
+	}
+	if err := json.Unmarshal(firstRaw, &delivered); err != nil || delivered.Schema != "semantic-change-result/v2" || delivered.Sync == nil {
+		t.Fatalf("first checkpoint body=%s err=%v", firstRaw, err)
+	}
+	// Post-action current Snapshot (checkpoint write + sync) is the delivery contract.
+	want, err := fixture.board.ProjectRuntimeSnapshot(context.Background(), fixture.project.ID)
+	if err != nil {
+		t.Fatalf("project Snapshot: %v", err)
+	}
+	if delivered.Sync.Reason != "another_task_changed_shared_project_knowledge" || delivered.Sync.Revision != want.Snapshot.Revision {
+		t.Fatalf("sync attachment = %#v want revision %d", delivered.Sync, want.Snapshot.Revision)
+	}
+	gotSnapshot, err := json.Marshal(delivered.Sync.Snapshot)
+	if err != nil || !bytes.Equal(gotSnapshot, want.Bytes) {
+		t.Fatalf("sync Snapshot drifted\ngot=%s\nwant=%s err=%v", gotSnapshot, want.Bytes, err)
+	}
+	retryResult, retryRaw := callV2Tool(t, peer, "blackboard_checkpoint_attempt", checkpoint)
+	if retryResult.IsError || !bytes.Equal(firstRaw, retryRaw) {
+		t.Fatalf("response-loss retry drifted: isError=%v\nfirst=%s\nretry=%s", retryResult.IsError, firstRaw, retryRaw)
+	}
+	later := blackboardv2.CheckpointAttemptRequest{
+		IdempotencyKey: "mcp-loss-later", Key: "attempt:mcp-loss", Version: 2, Summary: "Later ordinary",
+	}
+	laterResult, laterRaw := callV2Tool(t, peer, "blackboard_checkpoint_attempt", later)
+	if laterResult.IsError {
+		t.Fatalf("later checkpoint: %s", laterRaw)
+	}
+	if bytes.Contains(laterRaw, []byte(`"sync"`)) {
+		t.Fatalf("later checkpoint reattached sync: %s", laterRaw)
+	}
+}
+
+// Issue #117 P1 — initial live MCP Finish carries exact sync when pending.
+func TestBlackboardV2MCPFinishCarriesSyncWhenPendingAndExactReplayStable(t *testing.T) {
+	fixture := newV2MCPFixture(t)
+	owner := fixture.session(t, &fixture.ownerGrant, nil)
+	peerGrant, err := projectinterface.NewGrantStore(fixture.db, projectinterface.SystemClock{}, projectinterface.RandomIDSource{}, projectinterface.RandomTokenSource{}).
+		Resolve(context.Background(), fixture.peerToken)
+	if err != nil {
+		t.Fatalf("resolve peer grant: %v", err)
+	}
+	peer := fixture.session(t, &peerGrant, nil)
+	open := blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "mcp-finish-sync-open",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "objective:mcp-finish-sync", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Finish sync"}},
+			{Op: "create", Key: "attempt:mcp-finish-sync", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Work"}},
+			{Op: "relate", From: "attempt:mcp-finish-sync", Relation: "tests", To: "objective:mcp-finish-sync"},
+		},
+	}
+	if result, raw := callV2Tool(t, peer, "blackboard_change", open); result.IsError {
+		t.Fatalf("peer open: %s", raw)
+	}
+	terminal := blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "mcp-finish-sync-terminal",
+		Changes: []blackboardv2.Change{{Op: "transition", Key: "attempt:mcp-finish-sync", Version: 1, Status: "failed", Summary: "Done without reusable outcome"}},
+	}
+	if result, raw := callV2Tool(t, peer, "blackboard_change", terminal); result.IsError {
+		t.Fatalf("terminalize: %s", raw)
+	}
+	// External advance after the Runtime's own terminal write so Finish itself
+	// carries the pending synchronization attachment.
+	external := blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "mcp-finish-sync-external",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "entity:mcp-finish-sync", Type: "entity",
+			Record: blackboardv2.EntityRecord{Status: "active", Kind: "host", Name: "Finish sync", ScopeStatus: "in_scope"},
+		}},
+	}
+	if result, raw := callV2Tool(t, owner, "blackboard_change", external); result.IsError {
+		t.Fatalf("owner external: %s", raw)
+	}
+	want, err := fixture.board.ProjectRuntimeSnapshot(context.Background(), fixture.project.ID)
+	if err != nil {
+		t.Fatalf("project Snapshot: %v", err)
+	}
+	finish := blackboardv2.FinishContinuationRequest{IdempotencyKey: "mcp-finish-with-sync"}
+	finishResult, finishRaw := callV2Tool(t, peer, "blackboard_finish", finish)
+	if finishResult.IsError {
+		t.Fatalf("finish: %s", finishRaw)
+	}
+	var envelope struct {
+		Schema   string                                 `json:"schema"`
+		Status   string                                 `json:"status"`
+		Revision int                                    `json:"revision"`
+		Sync     *blackboardv2.SynchronizationAttachment `json:"sync"`
+	}
+	if err := json.Unmarshal(finishRaw, &envelope); err != nil {
+		t.Fatalf("decode finish: %v body=%s", err, finishRaw)
+	}
+	if envelope.Schema != "continuation-finish/v2" || envelope.Status != "finished" || envelope.Sync == nil {
+		t.Fatalf("finish while pending must carry sync: %s", finishRaw)
+	}
+	if envelope.Sync.Reason != "another_task_changed_shared_project_knowledge" || envelope.Sync.Revision != want.Snapshot.Revision {
+		t.Fatalf("finish sync = %#v", envelope.Sync)
+	}
+	gotSnapshot, err := json.Marshal(envelope.Sync.Snapshot)
+	if err != nil || !bytes.Equal(gotSnapshot, want.Bytes) {
+		t.Fatalf("finish sync Snapshot drifted\ngot=%s\nwant=%s err=%v", gotSnapshot, want.Bytes, err)
+	}
+	for _, leak := range []string{fixture.task.ID, fixture.peer.ID, `"task_id"`, `"project_id"`, `"continuation_id"`} {
+		if leak != "" && bytes.Contains(finishRaw, []byte(leak)) {
+			t.Fatalf("finish sync leaked %q: %s", leak, finishRaw)
+		}
+	}
+	replayResult, replayRaw := callV2Tool(t, peer, "blackboard_finish", finish)
+	if replayResult.IsError || !bytes.Equal(finishRaw, replayRaw) {
+		t.Fatalf("exact Finish replay drifted: isError=%v\nfirst=%s\nreplay=%s", replayResult.IsError, finishRaw, replayRaw)
+	}
+}
+
 func assertV2InvalidSchemaEnvelope(t *testing.T, raw []byte) {
 	t.Helper()
 	var envelope struct {

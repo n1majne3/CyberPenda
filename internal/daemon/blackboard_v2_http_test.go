@@ -733,11 +733,190 @@ func TestBlackboardV2HTTPParallelTaskSyncDeliversOnceThenOrdinaryResponses(t *te
 	if !bytes.Contains(checkpoint, []byte(`"schema":"semantic-change-result/v2"`)) || !bytes.Contains(checkpoint, []byte(`"sync"`)) || !bytes.Contains(checkpoint, []byte(`another_task_changed_shared_project_knowledge`)) {
 		t.Fatalf("checkpoint while pending must attach sync: %s", checkpoint)
 	}
-	// Exact checkpoint replay stays ordinary (no reattached live sync).
+	// Exact checkpoint response-loss replay redelivers the same sync attachment.
 	checkpointReplay := mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/attempts/attempt:parallel:checkpoint", fixture.peer.Token, "", "parallel-checkpoint-sync",
 		`{"version":1,"summary":"Checkpoint after external change"}`)
-	if bytes.Contains(checkpointReplay, []byte(`"sync"`)) {
-		t.Fatalf("checkpoint replay reattached sync: %s", checkpointReplay)
+	if !bytes.Equal(checkpoint, checkpointReplay) {
+		t.Fatalf("checkpoint response-loss replay drifted\nfirst=%s\nreplay=%s", checkpoint, checkpointReplay)
+	}
+	// A different later trusted mutation stays ordinary (no sticky sync).
+	later := mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/attempts/attempt:parallel:checkpoint", fixture.peer.Token, "", "parallel-checkpoint-later",
+		`{"version":2,"summary":"Later ordinary checkpoint"}`)
+	if bytes.Contains(later, []byte(`"sync"`)) {
+		t.Fatalf("later peer checkpoint reattached sync: %s", later)
+	}
+}
+
+// Issue #117 P1 — lost authenticated HTTP response must redeliver the exact
+// synchronization attachment on Idempotency-Key retry; later keys must not.
+func TestBlackboardV2HTTPResponseLossRetryRedeliversExactSyncAttachment(t *testing.T) {
+	fixture := newV2HTTPFixture(t)
+	mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.peer.Token, "", "loss-open-work",
+		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"objective:loss","type":"objective","record":{"status":"open","objective":"Loss retry"}},{"op":"create","key":"attempt:loss","type":"attempt","record":{"status":"open","summary":"Watching"}},{"op":"relate","from":"attempt:loss","relation":"tests","to":"objective:loss"}]}`)
+	mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.operator, "operator", "loss-external",
+		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"entity:loss-http","type":"entity","record":{"status":"active","kind":"host","name":"Loss","scope_status":"in_scope"}}]}`)
+	first := mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/attempts/attempt:loss:checkpoint", fixture.peer.Token, "", "loss-checkpoint",
+		`{"version":1,"summary":"Checkpoint with pending sync"}`)
+	var delivered struct {
+		Schema string                                 `json:"schema"`
+		Sync   *blackboardv2.SynchronizationAttachment `json:"sync"`
+	}
+	if err := json.Unmarshal(first, &delivered); err != nil || delivered.Schema != "semantic-change-result/v2" || delivered.Sync == nil {
+		t.Fatalf("first checkpoint = %s err=%v", first, err)
+	}
+	// Capture after the checkpoint write so the attachment matches the exact
+	// post-action current Snapshot that was delivered and acknowledged.
+	want, err := fixture.server.blackboardV2.ProjectRuntimeSnapshot(context.Background(), fixture.project.ID)
+	if err != nil {
+		t.Fatalf("project Snapshot: %v", err)
+	}
+	if delivered.Sync.Reason != "another_task_changed_shared_project_knowledge" || delivered.Sync.Revision != want.Snapshot.Revision {
+		t.Fatalf("sync attachment = %#v want revision %d", delivered.Sync, want.Snapshot.Revision)
+	}
+	gotSnapshot, err := json.Marshal(delivered.Sync.Snapshot)
+	if err != nil || !bytes.Equal(gotSnapshot, want.Bytes) {
+		t.Fatalf("sync Snapshot drifted\ngot=%s\nwant=%s err=%v", gotSnapshot, want.Bytes, err)
+	}
+	for _, leak := range []string{fixture.task.ID, fixture.peerTask.ID, fixture.continuation.Continuation.ID, fixture.peer.Continuation.ID, `"task_id"`, `"project_id"`, `"continuation_id"`} {
+		if leak != "" && bytes.Contains(first, []byte(leak)) {
+			t.Fatalf("sync attachment leaked %q: %s", leak, first)
+		}
+	}
+	// Simulate transport loss: client never observed first body; exact retry must match.
+	retry := mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/attempts/attempt:loss:checkpoint", fixture.peer.Token, "", "loss-checkpoint",
+		`{"version":1,"summary":"Checkpoint with pending sync"}`)
+	if !bytes.Equal(first, retry) {
+		t.Fatalf("response-loss retry drifted\nfirst=%s\nretry=%s", first, retry)
+	}
+	// Ordinary later response without Pending does not keep receiving sync.
+	later := mustV2HTTP(t, http.MethodGet, fixture.base+"/blackboard/records/entity:loss-http", fixture.peer.Token, "", "", "")
+	if bytes.Contains(later, []byte(`"sync"`)) {
+		t.Fatalf("later read reattached sync: %s", later)
+	}
+}
+
+// Issue #117 — conditional GET must not acknowledge-then-discard a pending sync
+// via 304 empty body. When sync is delivered, the response must carry a body.
+func TestBlackboardV2HTTPConditionalDoesNotDiscardAcknowledgedSyncAttachment(t *testing.T) {
+	fixture := newV2HTTPFixture(t)
+	// External write creates a pending notice for the peer Continuation.
+	mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.operator, "operator", "cond-sync-external",
+		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"entity:cond-sync","type":"entity","record":{"status":"active","kind":"host","name":"Cond","scope_status":"in_scope"}}]}`)
+	want, err := fixture.server.blackboardV2.ProjectRuntimeSnapshot(context.Background(), fixture.project.ID)
+	if err != nil {
+		t.Fatalf("project Snapshot: %v", err)
+	}
+	// Client presents If-None-Match for the current Project revision (the same
+	// value the snapshot action would use for ETag). Capture would acknowledge
+	// then a naive 304 would discard the only Pending-only delivery.
+	matchingETag := `"` + strconv.Itoa(want.Snapshot.Revision) + `"`
+	withSync := doV2HTTP(t, http.MethodGet, fixture.base+"/blackboard/snapshot", fixture.peer.Token, "", "", "", v2HTTPOptions{ifNoneMatch: matchingETag})
+	if withSync.status != http.StatusOK {
+		t.Fatalf("pending sync conditional = %d, want 200 body (not 304 discard)", withSync.status)
+	}
+	if !bytes.Contains(withSync.body, []byte(`"sync"`)) || !bytes.Contains(withSync.body, []byte(`another_task_changed_shared_project_knowledge`)) {
+		t.Fatalf("pending sync conditional missing attachment: %s", withSync.body)
+	}
+	// After acknowledgement, ordinary matching ETag may 304 with empty body.
+	newETag := withSync.header.Get("ETag")
+	if newETag == "" {
+		t.Fatalf("missing ETag after sync delivery")
+	}
+	after := doV2HTTP(t, http.MethodGet, fixture.base+"/blackboard/snapshot", fixture.peer.Token, "", "", "", v2HTTPOptions{ifNoneMatch: newETag})
+	if after.status != http.StatusNotModified || len(bytes.TrimSpace(after.body)) != 0 {
+		t.Fatalf("post-sync ordinary 304 = %d %q", after.status, after.body)
+	}
+}
+
+// Issue #117 — semantic error responses must keep a finalized sync attachment
+// in the body (never ack then strip the only delivery).
+func TestBlackboardV2HTTPErrorDoesNotDiscardAcknowledgedSyncAttachment(t *testing.T) {
+	fixture := newV2HTTPFixture(t)
+	mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.peer.Token, "", "err-sync-open",
+		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"objective:err-sync","type":"objective","record":{"status":"open","objective":"Err sync"}},{"op":"create","key":"attempt:err-sync","type":"attempt","record":{"status":"open","summary":"Watch"}},{"op":"relate","from":"attempt:err-sync","relation":"tests","to":"objective:err-sync"}]}`)
+	mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.operator, "operator", "err-sync-external",
+		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"entity:err-sync","type":"entity","record":{"status":"active","kind":"host","name":"Err","scope_status":"in_scope"}}]}`)
+	// Version conflict on checkpoint while Pending: error envelope must include sync.
+	conflict := doV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/attempts/attempt:err-sync:checkpoint", fixture.peer.Token, "", "err-sync-checkpoint",
+		`{"version":99,"summary":"Stale version while pending sync"}`)
+	if conflict.status == http.StatusOK {
+		t.Fatalf("expected semantic error, got 200: %s", conflict.body)
+	}
+	if !bytes.Contains(conflict.body, []byte(`"error"`)) || !bytes.Contains(conflict.body, []byte(`"sync"`)) {
+		t.Fatalf("semantic error discarded sync after delivery: %d %s", conflict.status, conflict.body)
+	}
+	if !bytes.Contains(conflict.body, []byte(`another_task_changed_shared_project_knowledge`)) {
+		t.Fatalf("semantic error sync missing reason: %s", conflict.body)
+	}
+	// Exact response-loss retry of the same erroring key redelivers identical sync.
+	retry := doV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/attempts/attempt:err-sync:checkpoint", fixture.peer.Token, "", "err-sync-checkpoint",
+		`{"version":99,"summary":"Stale version while pending sync"}`)
+	if !bytes.Contains(retry.body, []byte(`"sync"`)) {
+		t.Fatalf("error response-loss retry lost sync: %d %s", retry.status, retry.body)
+	}
+	var first, second struct {
+		Sync *blackboardv2.SynchronizationAttachment `json:"sync"`
+	}
+	if err := json.Unmarshal(conflict.body, &first); err != nil || first.Sync == nil {
+		t.Fatalf("decode first error sync: %v body=%s", err, conflict.body)
+	}
+	if err := json.Unmarshal(retry.body, &second); err != nil || second.Sync == nil {
+		t.Fatalf("decode retry error sync: %v body=%s", err, retry.body)
+	}
+	a, _ := json.Marshal(first.Sync)
+	b, _ := json.Marshal(second.Sync)
+	if !bytes.Equal(a, b) {
+		t.Fatalf("error sync replay drifted\nfirst=%s\nretry=%s", a, b)
+	}
+}
+
+// Issue #117 P1 — initial live Finish carries exact sync when pending; closed
+// exact Finish replay stays byte-stable (including the original attachment).
+func TestBlackboardV2HTTPFinishCarriesSyncWhenPendingAndExactReplayStable(t *testing.T) {
+	fixture := newV2HTTPFixture(t)
+	mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.peer.Token, "", "finish-sync-open",
+		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"objective:finish-sync","type":"objective","record":{"status":"open","objective":"Finish sync"}},{"op":"create","key":"attempt:finish-sync","type":"attempt","record":{"status":"open","summary":"Work"}},{"op":"relate","from":"attempt:finish-sync","relation":"tests","to":"objective:finish-sync"}]}`)
+	mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.peer.Token, "", "finish-sync-terminal",
+		`{"schema":"semantic-change-batch/v2","changes":[{"op":"transition","key":"attempt:finish-sync","version":1,"status":"failed","summary":"Done without reusable outcome"}]}`)
+	// External advance after the Runtime's own terminal write so Finish itself is
+	// the next trusted response that must carry the pending synchronization.
+	mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.operator, "operator", "finish-sync-external",
+		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"entity:finish-sync","type":"entity","record":{"status":"active","kind":"host","name":"Finish sync","scope_status":"in_scope"}}]}`)
+	want, err := fixture.server.blackboardV2.ProjectRuntimeSnapshot(context.Background(), fixture.project.ID)
+	if err != nil {
+		t.Fatalf("project Snapshot: %v", err)
+	}
+	finished := mustV2HTTP(t, http.MethodPost, fixture.base+"/continuation:finish", fixture.peer.Token, "", "finish-with-sync", `{}`)
+	var envelope struct {
+		Schema          string                                 `json:"schema"`
+		Status          string                                 `json:"status"`
+		Revision        int                                    `json:"revision"`
+		WorkingSnapshot blackboardv2.WorkingSnapshot           `json:"working_snapshot"`
+		Sync            *blackboardv2.SynchronizationAttachment `json:"sync"`
+	}
+	if err := json.Unmarshal(finished, &envelope); err != nil {
+		t.Fatalf("decode finish: %v body=%s", err, finished)
+	}
+	if envelope.Schema != "continuation-finish/v2" || envelope.Status != "finished" || envelope.Sync == nil {
+		t.Fatalf("finish while pending must carry sync: %s", finished)
+	}
+	if envelope.Sync.Reason != "another_task_changed_shared_project_knowledge" ||
+		envelope.Sync.FromRevision < 0 || envelope.Sync.Revision != want.Snapshot.Revision ||
+		envelope.Sync.Revision != envelope.Revision {
+		t.Fatalf("finish sync attachment = %#v want revision %d", envelope.Sync, want.Snapshot.Revision)
+	}
+	gotSnapshot, err := json.Marshal(envelope.Sync.Snapshot)
+	if err != nil || !bytes.Equal(gotSnapshot, want.Bytes) {
+		t.Fatalf("finish sync Snapshot drifted\ngot=%s\nwant=%s err=%v", gotSnapshot, want.Bytes, err)
+	}
+	for _, leak := range []string{fixture.task.ID, fixture.peerTask.ID, fixture.continuation.Continuation.ID, fixture.peer.Continuation.ID, `"task_id"`, `"project_id"`, `"continuation_id"`} {
+		if leak != "" && bytes.Contains(finished, []byte(leak)) {
+			t.Fatalf("finish sync leaked %q: %s", leak, finished)
+		}
+	}
+	replayed := mustV2HTTP(t, http.MethodPost, fixture.base+"/continuation:finish", fixture.peer.Token, "", "finish-with-sync", `{}`)
+	if !bytes.Equal(finished, replayed) {
+		t.Fatalf("exact Finish replay drifted\nfirst=%s\nreplay=%s", finished, replayed)
 	}
 }
 

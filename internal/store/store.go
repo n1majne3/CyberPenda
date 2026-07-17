@@ -808,7 +808,39 @@ func migrations() []migration {
 		newMigration(29, "blackboard_v2_key_redirects", migration29SQL, migration29Up),
 		newMigration(30, "blackboard_v2_continuation_snapshots", migration30SQL, migration30Up),
 		newMigration(31, "blackboard_v2_continuation_finish", migration31SQL, migration31Up),
+		newMigration(32, "blackboard_v2_sync_delivery_receipts", migration32SQL, migration32Up),
 	}
+}
+
+// migration32 installs request-scoped sync delivery receipts. Each
+// (continuation_id, request_fingerprint) preserves its own attachment so
+// response-loss retries redeliver the original sync even after later
+// deliveries. At most one open claim per Continuation reserves the pending
+// notice before the trusted action runs.
+const migration32SQL = `
+CREATE TABLE IF NOT EXISTS blackboard_v2_sync_delivery_receipts (
+	continuation_id TEXT NOT NULL REFERENCES blackboard_v2_continuation_pins(continuation_id) ON DELETE RESTRICT,
+	request_fingerprint TEXT NOT NULL,
+	status TEXT NOT NULL CHECK (status IN ('claimed', 'finalized')),
+	from_revision INTEGER NOT NULL,
+	revision INTEGER NOT NULL DEFAULT 0,
+	attachment_json TEXT NOT NULL DEFAULT '',
+	working_snapshot_bytes BLOB NOT NULL DEFAULT x'',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (continuation_id, request_fingerprint),
+	CHECK (
+		(status = 'claimed' AND revision = 0 AND attachment_json = '')
+		OR (status = 'finalized' AND attachment_json <> '')
+	)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_blackboard_v2_sync_delivery_open_claim
+	ON blackboard_v2_sync_delivery_receipts (continuation_id)
+	WHERE status = 'claimed';
+`
+
+func migration32Up(tx *sql.Tx) error {
+	return execStatements(tx, migration32SQL)
 }
 
 const migration31SQL = `

@@ -354,7 +354,7 @@ func TestCrashRecoveryReusesExactPinWhileResumePinsFreshCurrentState(t *testing.
 	}
 }
 
-func TestRecoveryVerifiesAndMaterializesImmutablePinInsteadOfMutableWorkingState(t *testing.T) {
+func TestRecoveryMaterializesPersistedWorkingSnapshotNotLaunchPin(t *testing.T) {
 	fixture := newContinuityFixture(t)
 	t.Cleanup(func() { _ = fixture.db.Close() })
 	launch := fixture.launch(t)
@@ -378,6 +378,13 @@ func TestRecoveryVerifiesAndMaterializesImmutablePinInsteadOfMutableWorkingState
 	if bytes.Equal(working.Bytes, launch.Snapshot) {
 		t.Fatal("test did not advance mutable Working Snapshot beyond Launch Pin")
 	}
+	pin, err := fixture.continuity.ReadLaunchPin(context.Background(), launch.Continuation.ID)
+	if err != nil {
+		t.Fatalf("read Launch Pin before recovery: %v", err)
+	}
+	if !bytes.Equal(pin.Bytes, launch.Snapshot) {
+		t.Fatalf("Launch Pin drifted before recovery")
+	}
 	path := filepath.Join(fixture.runtimeRoot, fixture.task.ID, "workdir", ".pentest", "blackboard.json")
 	if err := os.Remove(path); err != nil {
 		t.Fatalf("remove Working Snapshot before recovery: %v", err)
@@ -389,18 +396,79 @@ func TestRecoveryVerifiesAndMaterializesImmutablePinInsteadOfMutableWorkingState
 	if err != nil {
 		t.Fatalf("read recovered Snapshot: %v", err)
 	}
-	if !bytes.Equal(recovered, launch.Snapshot) {
-		t.Fatalf("recovery trusted mutable Working Snapshot\ngot=%s\npin=%s\nworking=%s", recovered, launch.Snapshot, working.Bytes)
+	// Recovery must rematerialize persisted working_snapshot_bytes, not overwrite
+	// with immutable Launch Pin bytes after a successful Working Snapshot advance.
+	if !bytes.Equal(recovered, working.Bytes) {
+		t.Fatalf("recovery did not restore exact Working Snapshot\ngot=%s\nwant=%s\npin=%s", recovered, working.Bytes, launch.Snapshot)
+	}
+	pinAfter, err := fixture.continuity.ReadLaunchPin(context.Background(), launch.Continuation.ID)
+	if err != nil {
+		t.Fatalf("read Launch Pin after recovery: %v", err)
+	}
+	if !bytes.Equal(pinAfter.Bytes, launch.Snapshot) {
+		t.Fatalf("recovery mutated immutable Launch Pin")
 	}
 }
 
-func TestRecoveryRejectsCorruptLaunchPinBeforeProjectingAnyBytes(t *testing.T) {
+// Issue #117 — restart after trusted synchronization must restore the exact
+// acknowledged Working Snapshot bytes, never the stale Launch Pin.
+func TestRecoveryAfterSynchronizationRestoresExactWorkingSnapshotBytes(t *testing.T) {
+	fixture := newContinuityFixture(t)
+	t.Cleanup(func() { _ = fixture.db.Close() })
+	owner := fixture.launch(t)
+	if err := fixture.continuity.MaterializeWorkingSnapshot(context.Background(), owner.Continuation.ID); err != nil {
+		t.Fatalf("materialize owner Working Snapshot: %v", err)
+	}
+	seedCurrentEntity(t, fixture.board, fixture.project.ID, "entity:restart-after-sync", "Restart after sync")
+	pending, err := fixture.board.InspectContinuationSynchronization(context.Background(), fixture.project.ID, owner.Continuation.TaskID, owner.Continuation.ID)
+	if err != nil || !pending.Pending {
+		t.Fatalf("expected pending before sync delivery: %#v, %v", pending, err)
+	}
+	attachment, err := fixture.board.SynchronizeContinuation(context.Background(), fixture.project.ID, owner.Continuation.TaskID, owner.Continuation.ID, pending.FromRevision)
+	if err != nil {
+		t.Fatalf("SynchronizeContinuation: %v", err)
+	}
+	want, err := fixture.continuity.ReadWorkingSnapshot(context.Background(), owner.Continuation.ID)
+	if err != nil {
+		t.Fatalf("read synchronized Working Snapshot: %v", err)
+	}
+	if want.LastAcknowledgedRevision != attachment.Revision || bytes.Equal(want.Bytes, owner.Snapshot) {
+		t.Fatalf("synchronized Working Snapshot not advanced: %#v pin=%s", want, owner.Snapshot)
+	}
+	path := filepath.Join(fixture.runtimeRoot, fixture.task.ID, "workdir", ".pentest", "blackboard.json")
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove Working Snapshot before restart recovery: %v", err)
+	}
+	if err := fixture.continuity.RecoverActiveWorkingSnapshots(context.Background()); err != nil {
+		t.Fatalf("recover after synchronization: %v", err)
+	}
+	recovered, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read recovered post-sync Working Snapshot: %v", err)
+	}
+	if !bytes.Equal(recovered, want.Bytes) {
+		t.Fatalf("restart recovery lost synchronized Working Snapshot\ngot=%s\nwant=%s\npin=%s", recovered, want.Bytes, owner.Snapshot)
+	}
+	pin, err := fixture.continuity.ReadLaunchPin(context.Background(), owner.Continuation.ID)
+	if err != nil {
+		t.Fatalf("read Launch Pin after post-sync recovery: %v", err)
+	}
+	if !bytes.Equal(pin.Bytes, owner.Snapshot) {
+		t.Fatalf("post-sync recovery mutated immutable Launch Pin")
+	}
+}
+
+func TestRecoveryDoesNotProjectCorruptLaunchPinAndStillRestoresWorkingSnapshot(t *testing.T) {
 	fixture := newContinuityFixture(t)
 	t.Cleanup(func() { _ = fixture.db.Close() })
 	launch := fixture.launch(t)
 	path := filepath.Join(fixture.runtimeRoot, fixture.task.ID, "workdir", ".pentest", "blackboard.json")
 	if err := fixture.continuity.MaterializeWorkingSnapshot(context.Background(), launch.Continuation.ID); err != nil {
 		t.Fatalf("materialize initial Snapshot: %v", err)
+	}
+	working, err := fixture.continuity.ReadWorkingSnapshot(context.Background(), launch.Continuation.ID)
+	if err != nil {
+		t.Fatalf("read Working Snapshot: %v", err)
 	}
 	if err := os.Remove(path); err != nil {
 		t.Fatalf("remove projected Snapshot: %v", err)
@@ -411,12 +479,20 @@ func TestRecoveryRejectsCorruptLaunchPinBeforeProjectingAnyBytes(t *testing.T) {
 	if _, err := fixture.db.Exec(`UPDATE blackboard_v2_continuation_pins SET snapshot_bytes=? WHERE continuation_id=?`, []byte(`{"schema":"runtime-blackboard/v2","revision":999}`), launch.Continuation.ID); err != nil {
 		t.Fatalf("inject corrupt Launch Pin: %v", err)
 	}
-	err := fixture.continuity.RecoverActiveWorkingSnapshots(context.Background())
-	if !errors.Is(err, blackboardv2.ErrLaunchPinIntegrity) {
-		t.Fatalf("recovery error = %v, want ErrLaunchPinIntegrity", err)
+	// Recovery projects Working Snapshot state, not Launch Pin bytes. Corrupt pin
+	// remains rejected by explicit pin reads while restart recovery stays available.
+	if err := fixture.continuity.RecoverActiveWorkingSnapshots(context.Background()); err != nil {
+		t.Fatalf("recover Working Snapshot with corrupt Launch Pin: %v", err)
 	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("corrupt Launch Pin projected bytes at %s: %v", path, err)
+	recovered, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read recovered Working Snapshot: %v", err)
+	}
+	if !bytes.Equal(recovered, working.Bytes) {
+		t.Fatalf("recovery did not restore Working Snapshot with corrupt pin present\ngot=%s\nwant=%s", recovered, working.Bytes)
+	}
+	if _, err := fixture.continuity.ReadLaunchPin(context.Background(), launch.Continuation.ID); !errors.Is(err, blackboardv2.ErrLaunchPinIntegrity) {
+		t.Fatalf("corrupt Launch Pin read error = %v, want integrity failure", err)
 	}
 }
 

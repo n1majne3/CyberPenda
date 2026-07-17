@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -75,9 +76,9 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps V2Deps) {
 				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, req.Params.Arguments, &args); decodeErr != nil {
 					return toolBlackboardV2ErrorResult(decodeErr)
 				}
-				// Exact replay remains available after Finish/supersession; only live
-				// Continuations may attach synchronization.
-				return deps.callV2(ctx, false, true, func(ctx context.Context, projectID, continuationID string) (any, error) {
+				// Exact replay remains available after Finish/supersession; response-loss
+				// retries redeliver the same sync attachment via idempotency fingerprint.
+				return deps.callV2WithFingerprint(ctx, false, true, blackboardv2.SynchronizationDeliveryFingerprint("change", args.IdempotencyKey), func(ctx context.Context, projectID, continuationID string) (any, error) {
 					return deps.BlackboardV2.ApplyForContinuation(ctx, projectID, continuationID, args)
 				})
 			})
@@ -91,7 +92,8 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps V2Deps) {
 				}
 				// Live read/current knowledge authority only; closed Continuations
 				// keep exact write/finish replay but not current knowledge reads.
-				return deps.callV2(ctx, true, true, func(ctx context.Context, projectID, _ string) (any, error) {
+				// Reads are Pending-only (no durable request fingerprint).
+				return deps.callV2WithFingerprint(ctx, true, true, "", func(ctx context.Context, projectID, _ string) (any, error) {
 					return deps.BlackboardV2.ReadCurrent(ctx, projectID, args.Key)
 				})
 			})
@@ -103,7 +105,7 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps V2Deps) {
 				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, req.Params.Arguments, &args); decodeErr != nil {
 					return toolBlackboardV2ErrorResult(decodeErr)
 				}
-				return deps.callV2(ctx, true, true, func(ctx context.Context, projectID, _ string) (any, error) {
+				return deps.callV2WithFingerprint(ctx, true, true, "", func(ctx context.Context, projectID, _ string) (any, error) {
 					return deps.BlackboardV2.ReadHistory(ctx, projectID, args.Key, blackboardv2.HistoryOptions{
 						Cursor: args.Cursor, Limit: args.Limit,
 					})
@@ -117,7 +119,7 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps V2Deps) {
 				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, req.Params.Arguments, &args); decodeErr != nil {
 					return toolBlackboardV2ErrorResult(decodeErr)
 				}
-				return deps.callV2(ctx, false, true, func(ctx context.Context, projectID, continuationID string) (any, error) {
+				return deps.callV2WithFingerprint(ctx, false, true, blackboardv2.SynchronizationDeliveryFingerprint("evidence", args.IdempotencyKey), func(ctx context.Context, projectID, continuationID string) (any, error) {
 					return deps.BlackboardV2.RetainEvidenceForContinuation(ctx, projectID, continuationID, args)
 				})
 			})
@@ -129,7 +131,7 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps V2Deps) {
 				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, req.Params.Arguments, &args); decodeErr != nil {
 					return toolBlackboardV2ErrorResult(decodeErr)
 				}
-				return deps.callV2(ctx, false, true, func(ctx context.Context, projectID, continuationID string) (any, error) {
+				return deps.callV2WithFingerprint(ctx, false, true, blackboardv2.SynchronizationDeliveryFingerprint("checkpoint", args.IdempotencyKey), func(ctx context.Context, projectID, continuationID string) (any, error) {
 					return deps.BlackboardV2.CheckpointAttemptForContinuation(ctx, projectID, continuationID, args)
 				})
 			})
@@ -141,8 +143,9 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps V2Deps) {
 				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, req.Params.Arguments, &args); decodeErr != nil {
 					return toolBlackboardV2ErrorResult(decodeErr)
 				}
-				// Exact Finish results never attach a new live synchronization sibling.
-				return deps.callV2(ctx, false, false, func(ctx context.Context, projectID, continuationID string) (any, error) {
+				// Initial live Finish may carry pending synchronization; exact replay
+				// redelivers via the finish idempotency fingerprint.
+				return deps.callV2WithFingerprint(ctx, false, true, blackboardv2.SynchronizationDeliveryFingerprint("finish", args.IdempotencyKey), func(ctx context.Context, projectID, continuationID string) (any, error) {
 					return deps.BlackboardV2.FinishContinuation(ctx, projectID, continuationID, args)
 				})
 			})
@@ -189,7 +192,11 @@ func decodeV2ToolArgs(harness *blackboardv2contract.Harness, schemaName string, 
 }
 
 func (deps V2Deps) callV2(ctx context.Context, requireLive, attachSync bool, action func(context.Context, string, string) (any, error)) (*sdkmcp.CallToolResult, error) {
-	result, _, err := deps.serveV2(ctx, requireLive, attachSync, action)
+	return deps.callV2WithFingerprint(ctx, requireLive, attachSync, "", action)
+}
+
+func (deps V2Deps) callV2WithFingerprint(ctx context.Context, requireLive, attachSync bool, requestFingerprint string, action func(context.Context, string, string) (any, error)) (*sdkmcp.CallToolResult, error) {
+	result, _, err := deps.serveV2(ctx, requireLive, attachSync, requestFingerprint, action)
 	return result, err
 }
 
@@ -198,7 +205,7 @@ func toolBlackboardV2ErrorResult(err *blackboardv2.Error) (*sdkmcp.CallToolResul
 	return result, callErr
 }
 
-func (deps V2Deps) serveV2(ctx context.Context, requireLive, attachSync bool, action func(context.Context, string, string) (any, error)) (*sdkmcp.CallToolResult, any, error) {
+func (deps V2Deps) serveV2(ctx context.Context, requireLive, attachSync bool, requestFingerprint string, action func(context.Context, string, string) (any, error)) (*sdkmcp.CallToolResult, any, error) {
 	grant, authErr := deps.requireGrant()
 	if authErr != nil {
 		return toolBlackboardV2Error(authErr, nil)
@@ -214,22 +221,28 @@ func (deps V2Deps) serveV2(ctx context.Context, requireLive, attachSync bool, ac
 	if err != nil {
 		return toolBlackboardV2Error(asBlackboardV2Error(err), nil)
 	}
+	// Reserve the pending notice before the action when a stable fingerprint exists.
+	if attachSync && strings.TrimSpace(requestFingerprint) != "" && authority.Sync.Pending {
+		if _, claimErr := deps.BlackboardV2.ClaimTrustedSynchronization(ctx, grant.ProjectID, grant.TaskID, grant.ContinuationID, requestFingerprint, authority.Sync); claimErr != nil {
+			return toolBlackboardV2Error(asBlackboardV2Error(claimErr), nil)
+		}
+	}
 	result, err := action(ctx, grant.ProjectID, grant.ContinuationID)
 	if err != nil {
 		var sync *blackboardv2.SynchronizationAttachment
-		if authority.Live && authority.Sync.Pending && attachSync {
-			if attachment, syncErr := deps.BlackboardV2.SynchronizeContinuation(ctx, grant.ProjectID, grant.TaskID, grant.ContinuationID, authority.Sync.FromRevision); syncErr == nil {
-				sync = &attachment
+		if attachSync {
+			if attachment, syncErr := deps.BlackboardV2.CaptureTrustedSynchronization(ctx, grant.ProjectID, grant.TaskID, grant.ContinuationID, authority.Sync, authority.Live, requestFingerprint); syncErr == nil {
+				sync = attachment
 			}
 		}
 		return toolBlackboardV2Error(asBlackboardV2Error(err), sync)
 	}
-	if authority.Live && authority.Sync.Pending && attachSync {
-		attachment, syncErr := deps.BlackboardV2.SynchronizeContinuation(ctx, grant.ProjectID, grant.TaskID, grant.ContinuationID, authority.Sync.FromRevision)
+	if attachSync {
+		attachment, syncErr := deps.BlackboardV2.CaptureTrustedSynchronization(ctx, grant.ProjectID, grant.TaskID, grant.ContinuationID, authority.Sync, authority.Live, requestFingerprint)
 		if syncErr != nil {
 			return toolBlackboardV2Error(asBlackboardV2Error(syncErr), nil)
 		}
-		return toolBlackboardV2JSON(result, &attachment)
+		return toolBlackboardV2JSON(result, attachment)
 	}
 	return toolBlackboardV2JSON(result, nil)
 }

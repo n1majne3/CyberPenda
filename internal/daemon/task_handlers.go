@@ -307,7 +307,10 @@ func (server *Server) recoverBlackboardV2ContinuationFiles(ctx context.Context) 
 		if err != nil {
 			return fmt.Errorf("recover Blackboard v2 layout: %w", err)
 		}
-		if err := server.blackboardV2Continuity.MaterializeLaunchPin(ctx, snapshot.ContinuationID); err != nil {
+		// Restart recovery must rematerialize persisted Working Snapshot bytes
+		// (last acknowledged revision), never overwrite a synchronized working
+		// file with immutable Launch Pin bytes.
+		if err := server.blackboardV2Continuity.MaterializeWorkingSnapshot(ctx, snapshot.ContinuationID); err != nil {
 			return fmt.Errorf("recover Blackboard v2 Working Snapshot: %w", err)
 		}
 		header := blackboardv2.LaunchHeader{
