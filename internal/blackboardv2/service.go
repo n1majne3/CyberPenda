@@ -251,6 +251,33 @@ type FactPatch struct {
 	ScopeStatus *string `json:"scope_status,omitempty"`
 }
 
+// FindingRecord is the complete caller-writable Finding DTO. Severity and
+// CVSSPending are deliberately absent because the service derives them.
+type FindingRecord struct {
+	Status         string `json:"status"`
+	Title          string `json:"title"`
+	Target         string `json:"target,omitempty"`
+	Description    string `json:"description,omitempty"`
+	Proof          string `json:"proof,omitempty"`
+	Impact         string `json:"impact,omitempty"`
+	Recommendation string `json:"recommendation,omitempty"`
+	CVSSVersion    string `json:"cvss_version,omitempty"`
+	CVSSVector     string `json:"cvss_vector,omitempty"`
+}
+
+// FindingPatch is the closed partial update shape for Findings. Lifecycle
+// state changes use transition; derived scoring fields are never writable.
+type FindingPatch struct {
+	Title          *string `json:"title,omitempty"`
+	Target         *string `json:"target,omitempty"`
+	Description    *string `json:"description,omitempty"`
+	Proof          *string `json:"proof,omitempty"`
+	Impact         *string `json:"impact,omitempty"`
+	Recommendation *string `json:"recommendation,omitempty"`
+	CVSSVersion    *string `json:"cvss_version,omitempty"`
+	CVSSVector     *string `json:"cvss_vector,omitempty"`
+}
+
 // EvidenceRecord is the complete semantic Evidence detail DTO. Filesystem and
 // integrity fields are server-derived by RetainEvidenceForContinuation.
 type EvidenceRecord struct {
@@ -289,6 +316,15 @@ type Record struct {
 	Summary           string `json:"summary,omitempty"`
 	Body              string `json:"body,omitempty"`
 	Confidence        string `json:"confidence,omitempty"`
+	Title             string `json:"title,omitempty"`
+	Target            string `json:"target,omitempty"`
+	Proof             string `json:"proof,omitempty"`
+	Impact            string `json:"impact,omitempty"`
+	Recommendation    string `json:"recommendation,omitempty"`
+	CVSSVersion       string `json:"cvss_version,omitempty"`
+	CVSSVector        string `json:"cvss_vector,omitempty"`
+	Severity          string `json:"severity,omitempty"`
+	CVSSPending       bool   `json:"cvss_pending,omitempty"`
 	ArtifactType      string `json:"artifact_type,omitempty"`
 	MediaType         string `json:"media_type,omitempty"`
 	SourcePath        string `json:"source_path,omitempty"`
@@ -301,6 +337,9 @@ type Record struct {
 // MarshalJSON keeps Evidence's required zero size while preserving the
 // existing closed DTO shape for every other record type.
 func (record Record) MarshalJSON() ([]byte, error) {
+	if record.Title != "" && isOneOf(record.Status, "unconfirmed", "confirmed", "false_positive", "superseded") {
+		return json.Marshal(record.findingOutputRecord())
+	}
 	if record.ArtifactType != "" && record.ManagedPath != "" && record.SHA256 != "" {
 		return json.Marshal(record.evidenceRecord())
 	}
@@ -452,6 +491,7 @@ type SnapshotAttempt struct {
 type SnapshotKnowledge struct {
 	Entities map[string]SnapshotEntity   `json:"entities,omitempty"`
 	Facts    map[string]SnapshotFact     `json:"facts,omitempty"`
+	Findings map[string]SnapshotFinding  `json:"findings,omitempty"`
 	Evidence map[string]SnapshotEvidence `json:"evidence,omitempty"`
 }
 
@@ -474,6 +514,17 @@ type SnapshotFact struct {
 	Summary     string `json:"summary"`
 	Confidence  string `json:"confidence"`
 	ScopeStatus string `json:"scope_status"`
+}
+
+// SnapshotFinding is the Runtime Snapshot allowlist for current Findings.
+type SnapshotFinding struct {
+	Version     int    `json:"version"`
+	Status      string `json:"status"`
+	Title       string `json:"title"`
+	Target      string `json:"target,omitempty"`
+	Description string `json:"description,omitempty"`
+	Severity    string `json:"severity,omitempty"`
+	CVSSPending bool   `json:"cvss_pending"`
 }
 
 // SnapshotEvidence is the Runtime Snapshot allowlist for Evidence.
@@ -847,6 +898,9 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 	if err := s.validateEvidenceDependentFactBases(ctx, tx, projectID, evidenceDependentFacts); err != nil {
 		return ChangeResult{}, err
 	}
+	if err := validateAllConfirmedFindings(ctx, tx, projectID); err != nil {
+		return ChangeResult{}, err
+	}
 
 	result := makeChangeResult(revision, changedRecords, changedRelations)
 	resultJSON, err := json.Marshal(result)
@@ -1041,7 +1095,7 @@ func (s *Service) RuntimeSnapshot(ctx context.Context, projectID string) (Runtim
 	rows, err := tx.QueryContext(ctx, `
 		SELECT key, type, version, record_json
 		FROM blackboard_v2_records
-		WHERE project_id = ? AND type IN ('entity', 'objective', 'attempt', 'fact', 'evidence')
+		WHERE project_id = ? AND type IN ('entity', 'objective', 'attempt', 'fact', 'finding', 'evidence')
 		ORDER BY key ASC`, projectID,
 	)
 	if err != nil {
@@ -1053,6 +1107,7 @@ func (s *Service) RuntimeSnapshot(ctx context.Context, projectID string) (Runtim
 	objectives := make(map[string]SnapshotObjective)
 	attempts := make(map[string]SnapshotAttempt)
 	facts := make(map[string]SnapshotFact)
+	findings := make(map[string]SnapshotFinding)
 	evidence := make(map[string]SnapshotEvidence)
 	for rows.Next() {
 		var key, typ, raw string
@@ -1092,6 +1147,13 @@ func (s *Service) RuntimeSnapshot(ctx context.Context, projectID string) (Runtim
 				Confidence:  fact.Confidence,
 				ScopeStatus: fact.ScopeStatus,
 			}
+		case "finding":
+			finding := record.findingOutputRecord()
+			findings[key] = SnapshotFinding{
+				Version: version, Status: finding.Status, Title: finding.Title,
+				Target: finding.Target, Description: finding.Description,
+				Severity: finding.Severity, CVSSPending: finding.CVSSPending,
+			}
 		case "evidence":
 			item := record.evidenceRecord()
 			evidence[key] = SnapshotEvidence{
@@ -1121,6 +1183,9 @@ func (s *Service) RuntimeSnapshot(ctx context.Context, projectID string) (Runtim
 	if len(facts) != 0 {
 		knowledge.Facts = facts
 	}
+	if len(findings) != 0 {
+		knowledge.Findings = findings
+	}
 	if len(evidence) != 0 {
 		knowledge.Evidence = evidence
 	}
@@ -1148,6 +1213,8 @@ func applyCreateRecord(ctx context.Context, tx *sql.Tx, projectID string, revisi
 		return applyCreateAttempt(ctx, tx, projectID, revision, index, change, now)
 	case "fact":
 		return applyCreateFact(ctx, tx, projectID, revision, index, change, now)
+	case "finding":
+		return applyCreateFinding(ctx, tx, projectID, revision, index, change, now)
 	default:
 		return revision, "", 0, false, semanticError("semantic_validation", "unsupported Blackboard v2 record type in this slice", fmt.Sprintf("changes[%d].type", index), nil)
 	}
@@ -1163,6 +1230,8 @@ func applyUpdateRecord(ctx context.Context, tx *sql.Tx, projectID string, revisi
 		return applyUpdateAttempt(ctx, tx, projectID, revision, index, change, now)
 	case "fact":
 		return applyUpdateFact(ctx, tx, projectID, revision, index, change, now)
+	case "finding":
+		return applyUpdateFinding(ctx, tx, projectID, revision, index, change, now)
 	case "evidence":
 		return applyUpdateEvidence(ctx, tx, projectID, revision, index, change, now)
 	default:
@@ -1841,6 +1910,39 @@ func applyTransition(ctx context.Context, tx *sql.Tx, projectID string, revision
 			return revision, "", 0, false, err
 		}
 		return replaceCurrentWorkRecord(ctx, tx, projectID, revision, existing, next, now)
+	case "finding":
+		if change.Status == "false_positive" {
+			if err := validateConciseText(change.ResolutionSummary, path+".resolution_summary"); err != nil {
+				return revision, "", 0, false, err
+			}
+			hasMeaning, err := hasCurrentFindingInvalidationMeaning(ctx, tx, projectID, change.Key)
+			if err != nil {
+				return revision, "", 0, false, err
+			}
+			if !hasMeaning {
+				return revision, "", 0, false, semanticError("semantic_validation", "false-positive Finding requires a current contradicting Fact that preserves reusable invalidation meaning", path+".status", nil)
+			}
+			terminal := existing.record.findingOutputRecord()
+			terminal.Status = "false_positive"
+			terminal.ResolutionSummary = change.ResolutionSummary
+			return terminalizeRecord(ctx, tx, projectID, revision, existing, terminal, now)
+		}
+		if change.Status != "confirmed" {
+			return revision, "", 0, false, semanticError("semantic_validation", "Finding transition status must be confirmed or false_positive", path+".status", nil)
+		}
+		current := existing.record.findingOutputRecord()
+		if current.Status == "confirmed" {
+			return revision, change.Key, existing.version, false, nil
+		}
+		if current.Status != "unconfirmed" {
+			return revision, "", 0, false, semanticError("semantic_validation", "only an unconfirmed Finding can be confirmed", path+".status", nil)
+		}
+		next := current
+		next.Status = "confirmed"
+		if err := validateFindingOutputRecord(next, path+".status"); err != nil {
+			return revision, "", 0, false, err
+		}
+		return replaceCurrentWorkRecord(ctx, tx, projectID, revision, existing, next, now)
 	case "evidence":
 		if change.Status != "missing" {
 			return revision, "", 0, false, semanticError("semantic_validation", "Evidence lifecycle transition must be missing", path+".status", nil)
@@ -2177,7 +2279,7 @@ func applySupersede(ctx context.Context, tx *sql.Tx, projectID string, revision,
 		}
 		return revision, "", 0, RelationVersionTuple{}, false, err
 	}
-	if replacement.typ != replaced.typ || !isOneOf(replacement.typ, "entity", "objective", "evidence") {
+	if replacement.typ != replaced.typ || !isOneOf(replacement.typ, "entity", "objective", "finding", "evidence") {
 		return revision, "", 0, RelationVersionTuple{}, false, semanticError("semantic_validation", "supersede requires two current records of the same supersedable type", path, map[string]any{"replacement_type": replacement.typ, "replaced_type": replaced.typ})
 	}
 	replacementVersion := change.ReplacementVersion
@@ -2217,6 +2319,10 @@ func applySupersede(ctx context.Context, tx *sql.Tx, projectID string, revision,
 		record := replaced.record.evidenceRecord()
 		record.Status = "superseded"
 		terminal = record
+	case "finding":
+		record := replaced.record.findingOutputRecord()
+		record.Status = "superseded"
+		terminal = record
 	}
 	nextRevision, key, nextVersion, changed, err := terminalizeRecord(ctx, tx, projectID, revision, replaced, terminal, now)
 	if err != nil {
@@ -2239,7 +2345,7 @@ func validateRelationshipEndpoint(relation, fromType, toType, path string) error
 	// their owning tickets alongside their complete record schemas.
 	switch relation {
 	case "about":
-		if toType == "entity" && isOneOf(fromType, "objective", "attempt", "fact", "evidence") {
+		if toType == "entity" && isOneOf(fromType, "objective", "attempt", "fact", "finding", "evidence") {
 			return nil
 		}
 		return semanticError("semantic_validation", "about must connect an allowed record to an Entity", path, map[string]any{"from_type": fromType, "to_type": toType})
@@ -2249,27 +2355,27 @@ func validateRelationshipEndpoint(relation, fromType, toType, path string) error
 		}
 		return semanticError("semantic_validation", "part_of must stay within the Entity or Objective endpoint family", path, map[string]any{"from_type": fromType, "to_type": toType})
 	case "tests":
-		if fromType == "attempt" && isOneOf(toType, "objective", "entity", "fact") {
+		if fromType == "attempt" && isOneOf(toType, "objective", "entity", "fact", "finding") {
 			return nil
 		}
 		return semanticError("semantic_validation", "tests must point from an Attempt to an approved tested target", path, map[string]any{"from_type": fromType, "to_type": toType})
 	case "produced":
-		if fromType == "attempt" && isOneOf(toType, "entity", "objective", "fact", "evidence") {
+		if fromType == "attempt" && isOneOf(toType, "entity", "objective", "fact", "finding", "evidence") {
 			return nil
 		}
 		return semanticError("semantic_validation", "produced must point from an Attempt to a reusable outcome", path, map[string]any{"from_type": fromType, "to_type": toType})
 	case "evidences":
-		if fromType == "evidence" && toType == "fact" {
+		if fromType == "evidence" && isOneOf(toType, "fact", "finding") {
 			return nil
 		}
 		return semanticError("semantic_validation", "evidences must point from Evidence to supported Project Knowledge", path, map[string]any{"from_type": fromType, "to_type": toType})
 	case "derived_from":
-		if (fromType == "objective" && toType == "fact") || (fromType == "fact" && toType == "fact") || (fromType == "evidence" && toType == "evidence") {
+		if (fromType == "objective" && isOneOf(toType, "fact", "finding")) || (fromType == "fact" && toType == "fact") || (fromType == "evidence" && toType == "evidence") {
 			return nil
 		}
 		return semanticError("semantic_validation", "derived_from endpoint types are not allowed", path, map[string]any{"from_type": fromType, "to_type": toType})
 	case "supports", "contradicts":
-		if fromType == "fact" && toType == "fact" {
+		if fromType == "fact" && isOneOf(toType, "fact", "finding") {
 			return nil
 		}
 		return semanticError("semantic_validation", fmt.Sprintf("%s must connect supported semantic knowledge", relation), path, map[string]any{"from_type": fromType, "to_type": toType})
@@ -2279,7 +2385,7 @@ func validateRelationshipEndpoint(relation, fromType, toType, path string) error
 		}
 		return semanticError("semantic_validation", "depends_on must point from an Objective to a prerequisite Objective", path, map[string]any{"from_type": fromType, "to_type": toType})
 	case "satisfies":
-		if fromType == "fact" && toType == "objective" {
+		if isOneOf(fromType, "fact", "finding") && toType == "objective" {
 			return nil
 		}
 		return semanticError("semantic_validation", "satisfies must point from current knowledge to an Objective", path, map[string]any{"from_type": fromType, "to_type": toType})
@@ -2547,6 +2653,12 @@ func decodeStoredRecord(typ, raw string) (Record, error) {
 			return Record{}, err
 		}
 		return recordFromFact(record), nil
+	case "finding":
+		var record findingOutputRecord
+		if err := json.Unmarshal([]byte(raw), &record); err != nil {
+			return Record{}, err
+		}
+		return recordFromFindingOutput(record), nil
 	case "evidence":
 		var record EvidenceRecord
 		if err := json.Unmarshal([]byte(raw), &record); err != nil {
@@ -2977,6 +3089,8 @@ func decodeCompleteRecord(typ string, raw json.RawMessage) (any, error) {
 		return decodeAttemptRecord(raw)
 	case "fact":
 		return decodeFactRecord(raw)
+	case "finding":
+		return decodeFindingRecord(raw)
 	default:
 		return nil, fmt.Errorf("unsupported Blackboard v2 record type %q in this slice", typ)
 	}
@@ -2992,6 +3106,8 @@ func decodePartialRecord(typ string, raw json.RawMessage) (any, error) {
 		return decodeAttemptPatch(raw)
 	case "fact":
 		return decodeFactPatch(raw)
+	case "finding":
+		return decodeFindingPatch(raw)
 	case "evidence":
 		return decodeEvidencePatch(raw)
 	default:
@@ -3083,6 +3199,25 @@ func decodeFactPatch(raw json.RawMessage) (FactPatch, error) {
 	}
 	if factPatchEmpty(patch) {
 		return FactPatch{}, fmt.Errorf("Fact partial record requires at least one property")
+	}
+	return patch, nil
+}
+
+func decodeFindingRecord(raw json.RawMessage) (FindingRecord, error) {
+	var record FindingRecord
+	if err := strictDecodeJSON(raw, &record); err != nil {
+		return FindingRecord{}, fmt.Errorf("decode Finding record: %w", err)
+	}
+	return record, nil
+}
+
+func decodeFindingPatch(raw json.RawMessage) (FindingPatch, error) {
+	var patch FindingPatch
+	if err := strictDecodeJSON(raw, &patch); err != nil {
+		return FindingPatch{}, fmt.Errorf("decode Finding patch: %w", err)
+	}
+	if findingPatchEmpty(patch) {
+		return FindingPatch{}, fmt.Errorf("Finding partial record requires at least one property")
 	}
 	return patch, nil
 }
@@ -3239,6 +3374,9 @@ func validateChangeDTOShape(change Change, index int) error {
 		case "fact":
 			_, err := completeFactRecord(change.Record, path)
 			return err
+		case "finding":
+			_, err := completeFindingRecord(change.Record, path)
+			return err
 		}
 	}
 	if change.Op == "update" {
@@ -3254,6 +3392,9 @@ func validateChangeDTOShape(change Change, index int) error {
 			return err
 		case "fact":
 			_, err := partialFactRecord(change.Record, path)
+			return err
+		case "finding":
+			_, err := partialFindingRecord(change.Record, path)
 			return err
 		case "evidence":
 			_, err := partialEvidenceRecord(change.Record, path)
@@ -3487,6 +3628,49 @@ func partialFactRecord(value any, path string) (FactPatch, error) {
 	}
 }
 
+func completeFindingRecord(value any, path string) (FindingRecord, error) {
+	switch record := value.(type) {
+	case FindingRecord:
+		return record, nil
+	case *FindingRecord:
+		if record == nil {
+			return FindingRecord{}, semanticError("semantic_validation", "Finding record is required", path, nil)
+		}
+		return *record, nil
+	case json.RawMessage:
+		decoded, err := decodeFindingRecord(record)
+		if err != nil {
+			return FindingRecord{}, semanticError("semantic_validation", err.Error(), path, nil)
+		}
+		return decoded, nil
+	default:
+		return FindingRecord{}, semanticError("semantic_validation", "Finding create requires a complete closed Finding record", path, nil)
+	}
+}
+
+func partialFindingRecord(value any, path string) (FindingPatch, error) {
+	switch patch := value.(type) {
+	case FindingPatch:
+		if findingPatchEmpty(patch) {
+			return FindingPatch{}, semanticError("semantic_validation", "Finding partial record requires at least one property", path, nil)
+		}
+		return patch, nil
+	case *FindingPatch:
+		if patch == nil || findingPatchEmpty(*patch) {
+			return FindingPatch{}, semanticError("semantic_validation", "Finding update requires a non-empty Finding partial record", path, nil)
+		}
+		return *patch, nil
+	case json.RawMessage:
+		decoded, err := decodeFindingPatch(patch)
+		if err != nil {
+			return FindingPatch{}, semanticError("semantic_validation", err.Error(), path, nil)
+		}
+		return decoded, nil
+	default:
+		return FindingPatch{}, semanticError("semantic_validation", "Finding update requires a closed Finding partial record", path, nil)
+	}
+}
+
 func partialEvidenceRecord(value any, path string) (EvidencePatch, error) {
 	switch patch := value.(type) {
 	case EvidencePatch:
@@ -3551,6 +3735,11 @@ func entityPatchEmpty(patch EntityPatch) bool {
 
 func factPatchEmpty(patch FactPatch) bool {
 	return patch.Category == nil && patch.Summary == nil && patch.Body == nil && patch.ScopeStatus == nil
+}
+
+func findingPatchEmpty(patch FindingPatch) bool {
+	return patch.Title == nil && patch.Target == nil && patch.Description == nil && patch.Proof == nil &&
+		patch.Impact == nil && patch.Recommendation == nil && patch.CVSSVersion == nil && patch.CVSSVector == nil
 }
 
 func evidencePatchEmpty(patch EvidencePatch) bool {
@@ -3869,6 +4058,15 @@ func recordFromFact(record FactRecord) Record {
 	}
 }
 
+func recordFromFindingOutput(record findingOutputRecord) Record {
+	return Record{
+		Status: record.Status, ResolutionSummary: record.ResolutionSummary, Title: record.Title, Target: record.Target, Description: record.Description,
+		Proof: record.Proof, Impact: record.Impact, Recommendation: record.Recommendation,
+		CVSSVersion: record.CVSSVersion, CVSSVector: record.CVSSVector,
+		Severity: record.Severity, CVSSPending: record.CVSSPending,
+	}
+}
+
 func recordFromEvidence(record EvidenceRecord) Record {
 	return Record{
 		Status:       record.Status,
@@ -3910,6 +4108,15 @@ func (record Record) factRecord() FactRecord {
 		Body:        record.Body,
 		Confidence:  record.Confidence,
 		ScopeStatus: record.ScopeStatus,
+	}
+}
+
+func (record Record) findingOutputRecord() findingOutputRecord {
+	return findingOutputRecord{
+		Status: record.Status, ResolutionSummary: record.ResolutionSummary, Title: record.Title, Target: record.Target, Description: record.Description,
+		Proof: record.Proof, Impact: record.Impact, Recommendation: record.Recommendation,
+		CVSSVersion: record.CVSSVersion, CVSSVector: record.CVSSVector,
+		Severity: record.Severity, CVSSPending: record.CVSSPending,
 	}
 }
 
