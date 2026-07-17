@@ -171,6 +171,38 @@ func (h *Harness) Baseline() (Baseline, error) {
 	return baseline, nil
 }
 
+// ToolInputSchema returns a closed object JSON Schema for one named trusted-tool
+// input definition from the frozen Blackboard v2 schema bundle. Nested $ref
+// targets resolve against the embedded $defs. The result is suitable for MCP
+// tool InputSchema advertisement (type object at the root).
+func (h *Harness) ToolInputSchema(schemaName string) (*jsonschema.Schema, error) {
+	var root jsonschema.Schema
+	if err := json.Unmarshal(h.schemaBytes, &root); err != nil {
+		return nil, fmt.Errorf("decode Blackboard v2 schema: %w", err)
+	}
+	def, ok := root.Defs[schemaName]
+	if !ok || def == nil {
+		return nil, fmt.Errorf("unknown Blackboard v2 schema %q", schemaName)
+	}
+	// Clone the definition so callers can own the advertised schema without
+	// mutating the harness document, then attach the full $defs set so nested
+	// refs such as #/$defs/change resolve during MCP validation.
+	raw, err := json.Marshal(def)
+	if err != nil {
+		return nil, fmt.Errorf("encode Blackboard v2 schema %q: %w", schemaName, err)
+	}
+	var schema jsonschema.Schema
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		return nil, fmt.Errorf("clone Blackboard v2 schema %q: %w", schemaName, err)
+	}
+	if schema.Type != "object" {
+		return nil, fmt.Errorf("Blackboard v2 schema %q is not a root object", schemaName)
+	}
+	schema.Defs = root.Defs
+	schema.ID = root.ID
+	return &schema, nil
+}
+
 // TrustedTools returns the six trusted Runtime tools in canonical order.
 func (h *Harness) TrustedTools() ([]TrustedTool, error) {
 	raw, err := contractFiles.ReadFile("contractdata/trusted-tools.json")

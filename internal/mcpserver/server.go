@@ -413,7 +413,7 @@ func New(deps Deps) *sdkmcp.Server {
 func registerProjectInterfaceTools(server *sdkmcp.Server, deps Deps) {
 	sdkmcp.AddTool(server, &sdkmcp.Tool{
 		Name:        "blackboard_checkpoint_attempt",
-		Description: projectinterface.TrustedToolDescription("blackboard_checkpoint_attempt"),
+		Description: "Append one compact Attempt-bound Task Event and update the open Attempt summary with that Event as provenance.",
 	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args blackboardCheckpointAttemptArgs) (*sdkmcp.CallToolResult, any, error) {
 		_ = req
 		principal, principalErr := deps.requirePrincipal()
@@ -429,7 +429,7 @@ func registerProjectInterfaceTools(server *sdkmcp.Server, deps Deps) {
 
 	sdkmcp.AddTool(server, &sdkmcp.Tool{
 		Name:        "blackboard_finish_continuation",
-		Description: projectinterface.TrustedToolDescription("blackboard_finish_continuation"),
+		Description: "Finish the bound Continuation after every current-Continuation Attempt is terminal, store its Task Summary, and close later writes.",
 	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args blackboardFinishContinuationArgs) (*sdkmcp.CallToolResult, any, error) {
 		_ = req
 		principal, principalErr := deps.requirePrincipal()
@@ -445,7 +445,7 @@ func registerProjectInterfaceTools(server *sdkmcp.Server, deps Deps) {
 
 	sdkmcp.AddTool(server, &sdkmcp.Tool{
 		Name:        "blackboard_retain_evidence",
-		Description: projectinterface.TrustedToolDescription("blackboard_retain_evidence"),
+		Description: "Retain one confined payload under the managed Artifact Root, compute its digest and size, and represent it with matching Attempt provenance.",
 	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args blackboardRetainEvidenceArgs) (*sdkmcp.CallToolResult, any, error) {
 		_ = req
 		principal, principalErr := deps.requirePrincipal()
@@ -461,7 +461,7 @@ func registerProjectInterfaceTools(server *sdkmcp.Server, deps Deps) {
 
 	sdkmcp.AddTool(server, &sdkmcp.Tool{
 		Name:        "blackboard_apply",
-		Description: projectinterface.TrustedToolDescription("blackboard_apply"),
+		Description: "Apply one atomic typed graph mutation batch to the Blackboard. Project and provenance are bound from the Continuation Interface Grant; do not supply them.",
 	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args blackboardApplyArgs) (*sdkmcp.CallToolResult, any, error) {
 		_ = req
 		principal, principalErr := deps.requirePrincipal()
@@ -481,7 +481,7 @@ func registerProjectInterfaceTools(server *sdkmcp.Server, deps Deps) {
 
 	sdkmcp.AddTool(server, &sdkmcp.Tool{
 		Name:        "blackboard_resolve_records",
-		Description: projectinterface.TrustedToolDescription("blackboard_resolve_records"),
+		Description: "Resolve graph nodes and edges by stable key or immutable ID at one observed graph revision.",
 	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args blackboardResolveRecordsArgs) (*sdkmcp.CallToolResult, any, error) {
 		_ = req
 		principal, principalErr := deps.requirePrincipal()
@@ -501,7 +501,7 @@ func registerProjectInterfaceTools(server *sdkmcp.Server, deps Deps) {
 
 	sdkmcp.AddTool(server, &sdkmcp.Tool{
 		Name:        "blackboard_get_current_graph",
-		Description: projectinterface.TrustedToolDescription("blackboard_get_current_graph"),
+		Description: "Return the exact current CanonicalMainGraphV1 projection and metadata for the bound Project.",
 	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args blackboardCurrentGraphArgs) (*sdkmcp.CallToolResult, any, error) {
 		_ = req
 		principal, principalErr := deps.requirePrincipal()

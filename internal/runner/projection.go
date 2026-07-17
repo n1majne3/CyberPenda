@@ -381,6 +381,10 @@ func projectClaudeSettings(layout Layout, profile runtimeprofile.Profile, req Pr
 	}
 
 	settings := map[string]any{"env": env}
+	allowedTools := claudeTrustedMCPAllowedTools(mcpServers)
+	if len(allowedTools) > 0 {
+		settings["permissions"] = map[string]any{"allow": allowedTools}
+	}
 	// Catalog-sourced plugins (install refs from claude-plugins-official) are
 	// installed and enabled by Claude Code when listed under enabledPlugins.
 	installRefs := enabledExtensionInstallRefs(profile)
@@ -420,6 +424,9 @@ func projectClaudeSettings(layout Layout, profile runtimeprofile.Profile, req Pr
 	if servers := mcpPreview(mcpServers); len(servers) > 0 {
 		preview["mcp_servers"] = servers
 		preview["mcp_config_path"] = filepath.Join(layout.Workdir, ".mcp.json")
+	}
+	if len(allowedTools) > 0 {
+		preview["allowed_tools"] = allowedTools
 	}
 	if len(installRefs) > 0 {
 		preview["enabled_plugins"] = installRefs

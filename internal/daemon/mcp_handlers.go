@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"net/http"
 
+	"pentest/internal/blackboardv2"
 	"pentest/internal/mcpserver"
 	"pentest/internal/projectinterface"
 	"pentest/internal/store"
@@ -14,10 +15,27 @@ import (
 func (server *Server) registerMCP() {
 	handler := sdkmcp.NewStreamableHTTPHandler(func(request *http.Request) *sdkmcp.Server {
 		if server.canonicalStore == store.CanonicalStoreBlackboardV2 {
-			return sdkmcp.NewServer(&sdkmcp.Implementation{
-				Name:    "pentest-agent",
-				Version: "0.1.0",
-			}, nil)
+			deps := mcpserver.V2Deps{BlackboardV2: server.blackboardV2}
+			// Resolve the Continuation Interface capability for Runtime MCP.
+			// The endpoint has no path Project; the grant's bound Project is the
+			// sole authority. A presented-but-invalid token is captured so tools
+			// report authority_denied rather than conflating it with "no grant".
+			if server.projectInterfaceGrants != nil {
+				if token := projectinterface.BearerToken(request); token != "" &&
+					(server.authToken == "" || subtle.ConstantTimeCompare([]byte(token), []byte(server.authToken)) != 1) {
+					grant, err := server.projectInterfaceGrants.Resolve(request.Context(), token)
+					switch {
+					case err == nil:
+						deps.Grant = &grant
+					default:
+						deps.GrantError = &blackboardv2.Error{
+							Code: "authority_denied", Message: "Continuation Interface capability is invalid",
+							Path: "authorization", Retryable: false,
+						}
+					}
+				}
+			}
+			return mcpserver.NewV2(deps)
 		}
 		deps := mcpserver.Deps{
 			Projects:      server.projects,

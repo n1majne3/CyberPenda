@@ -464,14 +464,16 @@ func (server *Server) authorized(request *http.Request) bool {
 		}
 	}
 	// A Continuation Interface Grant is a separate, narrower credential from
-	// the daemon operator token. Accept it only on trusted project-interface and
-	// Blackboard v2 transports; the adapter then enforces the bound Project and capability.
+	// the daemon operator token. Accept it only on trusted project-interface,
+	// Blackboard v2 HTTP, and trusted MCP transports; the adapter then enforces
+	// the bound Project and capability.
 	if token := projectinterface.BearerToken(request); token != "" {
 		if server.projectInterface != nil && (isProjectInterfaceTransport(request) || (server.compatibility != nil && isCompatibilityWriteHTTPTransport(request))) {
 			_, err := server.projectInterface.Authenticate(request.Context(), token, "")
 			return err == nil
 		}
-		if server.blackboardV2 != nil && server.projectInterfaceGrants != nil && isBlackboardV2HTTPTransport(request) {
+		if server.blackboardV2 != nil && server.projectInterfaceGrants != nil &&
+			(isBlackboardV2HTTPTransport(request) || request.URL.Path == "/mcp") {
 			_, err := server.projectInterfaceGrants.Resolve(request.Context(), token)
 			return err == nil
 		}

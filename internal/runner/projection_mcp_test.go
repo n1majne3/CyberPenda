@@ -288,6 +288,56 @@ func TestProjectRuntimeConfigAutoInjectsTrustedMCP(t *testing.T) {
 	}
 }
 
+func TestProjectClaudeSettingsAllowsCanonicalTrustedMCPTools(t *testing.T) {
+	layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-mcp-permissions", runtimeprofile.ProviderClaudeCode)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+
+	profile := runtimeprofile.Profile{
+		Provider: runtimeprofile.ProviderClaudeCode,
+		Fields:   runtimeprofile.Fields{Model: "claude-sonnet-4"},
+	}
+	if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		ProjectID:  "project-1",
+		TaskID:     "task-mcp-permissions",
+		DaemonAddr: "127.0.0.1:8787",
+	}); err != nil {
+		t.Fatalf("project config: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(layout.ProviderHome, "settings.json"))
+	if err != nil {
+		t.Fatalf("read Claude settings: %v", err)
+	}
+	var settings struct {
+		Permissions struct {
+			Allow []string `json:"allow"`
+		} `json:"permissions"`
+	}
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		t.Fatalf("decode Claude settings: %v", err)
+	}
+
+	want := map[string]bool{
+		"mcp__pentest__blackboard_change":             true,
+		"mcp__pentest__blackboard_read":               true,
+		"mcp__pentest__blackboard_history":            true,
+		"mcp__pentest__blackboard_retain_evidence":    true,
+		"mcp__pentest__blackboard_checkpoint_attempt": true,
+		"mcp__pentest__blackboard_finish":             true,
+	}
+	for _, allowed := range settings.Permissions.Allow {
+		if !want[allowed] {
+			t.Fatalf("Claude settings unexpectedly pre-authorize %q: %s", allowed, raw)
+		}
+		delete(want, allowed)
+	}
+	if len(want) != 0 {
+		t.Fatalf("Claude settings do not pre-authorize canonical trusted tools %#v: %s", want, raw)
+	}
+}
+
 func TestProjectCodexConfigAppendsTrustedMCPTOML(t *testing.T) {
 	root := t.TempDir()
 	layout, err := runner.PrepareTaskLayout(root, "task-codex-mcp", runtimeprofile.ProviderCodex)

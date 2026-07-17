@@ -115,6 +115,21 @@ func collectMCPServers(profile runtimeprofile.Profile, req ProjectionRequest) []
 	}}, servers...)
 }
 
+func claudeTrustedMCPAllowedTools(servers []runtimeprofile.MCPServer) []string {
+	for _, server := range servers {
+		if strings.TrimSpace(server.Name) != trustedMCPServerName || server.Mode != runtimeprofile.MCPServerTrusted {
+			continue
+		}
+		definitions := projectinterface.TrustedToolDefinitions()
+		allowed := make([]string, 0, len(definitions))
+		for _, definition := range definitions {
+			allowed = append(allowed, "mcp__"+trustedMCPServerName+"__"+definition.Name)
+		}
+		return allowed
+	}
+	return nil
+}
+
 func hasMCPServerURL(servers []runtimeprofile.MCPServer, url string) bool {
 	normalized := strings.TrimRight(strings.TrimSpace(url), "/")
 	for _, server := range servers {

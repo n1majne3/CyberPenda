@@ -15,13 +15,16 @@ type TrustedToolDefinition struct {
 	Description     string
 }
 
+// Canonical Blackboard v2 trusted tools (trusted-blackboard-tools/v2). Project,
+// Task, Continuation, and origin identity are bound only by the Continuation
+// Interface Grant — never by model-facing arguments.
 var trustedToolDefinitions = []TrustedToolDefinition{
-	{RuntimeProtocolVersion, "blackboard_apply", "Apply one atomic typed graph mutation batch to the Blackboard. Project and provenance are bound from the Continuation Interface Grant; do not supply them."},
-	{RuntimeProtocolVersion, "blackboard_resolve_records", "Resolve graph nodes and edges by stable key or immutable ID at one observed graph revision."},
-	{RuntimeProtocolVersion, "blackboard_get_current_graph", "Return the exact current CanonicalMainGraphV1 projection and metadata for the bound Project."},
-	{RuntimeProtocolVersion, "blackboard_retain_evidence", "Retain one confined payload under the managed Artifact Root, compute its digest and size, and represent it with matching Attempt provenance."},
-	{RuntimeProtocolVersion, "blackboard_checkpoint_attempt", "Append one compact Attempt-bound Task Event and update the open Attempt summary with that Event as provenance."},
-	{RuntimeProtocolVersion, "blackboard_finish_continuation", "Finish the bound Continuation after every current-Continuation Attempt is terminal, store its Task Summary, and close later writes."},
+	{RuntimeProtocolVersion, "blackboard_change", "Apply one atomic semantic-change-batch/v2 to the bound Project. Reuse the same idempotency key after an uncertain retry."},
+	{RuntimeProtocolVersion, "blackboard_read", "Read the current complete semantic record and its current relationships by Blackboard Key."},
+	{RuntimeProtocolVersion, "blackboard_history", "Read explicit cursor-paginated Semantic History by Blackboard Key; default limit 20 and maximum 100."},
+	{RuntimeProtocolVersion, "blackboard_retain_evidence", "Retain one confined Evidence payload produced by an open Attempt and derive managed integrity fields server-side."},
+	{RuntimeProtocolVersion, "blackboard_checkpoint_attempt", "Version the compact summary of an owned open Attempt and participate in pending Blackboard synchronization."},
+	{RuntimeProtocolVersion, "blackboard_finish", "Finish the bound Continuation after all of its Attempts are terminal; accepts no Task Summary or outcome copy."},
 }
 
 // TrustedToolDefinitions returns a copy in canonical protocol order.

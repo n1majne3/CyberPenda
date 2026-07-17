@@ -215,7 +215,20 @@ func assertMCPBootstrapHasNoLegacyTools(t *testing.T, endpoint string) {
 	if err != nil {
 		t.Fatalf("list v2 bootstrap MCP tools: %v", err)
 	}
-	if len(listed.Tools) != 0 {
-		t.Fatalf("v2 bootstrap MCP tools = %#v, want an empty catalog until #114", listed.Tools)
+	want := map[string]bool{
+		"blackboard_change": true, "blackboard_read": true, "blackboard_history": true,
+		"blackboard_retain_evidence": true, "blackboard_checkpoint_attempt": true, "blackboard_finish": true,
+	}
+	if len(listed.Tools) != len(want) {
+		t.Fatalf("v2 bootstrap MCP tools = %#v, want exactly the six trusted v2 tools", listed.Tools)
+	}
+	for _, tool := range listed.Tools {
+		if !want[tool.Name] {
+			t.Fatalf("v2 bootstrap MCP exposed unexpected tool %q", tool.Name)
+		}
+		delete(want, tool.Name)
+	}
+	if len(want) != 0 {
+		t.Fatalf("v2 bootstrap MCP missing tools %#v", want)
 	}
 }

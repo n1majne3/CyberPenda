@@ -46,6 +46,7 @@
       }
     },
     "objectiveRecord": {
+      "description": "objective record: objective (required), status (open only)",
       "type": "object",
       "additionalProperties": false,
       "required": ["status", "objective"],
@@ -55,6 +56,7 @@
       }
     },
     "attemptRecord": {
+      "description": "attempt record: summary (required), status (open only)",
       "type": "object",
       "additionalProperties": false,
       "required": ["status", "summary"],
@@ -382,6 +384,7 @@
     },
 
     "createChange": {
+      "description": "create requires key, type, and record; node types such as objective and attempt belong in type, never op",
       "type": "object", "additionalProperties": false,
       "required": ["op", "key", "type", "record"],
       "properties": {"op": {"const": "create"}, "key": {"$ref": "#/$defs/blackboardKey"}, "type": {"$ref": "#/$defs/recordType"}, "record": {"type": "object"}},
@@ -466,8 +469,12 @@
       "required": ["op", "replacement", "replaced", "replaced_version"],
       "properties": {"op": {"const": "supersede"}, "replacement": {"$ref": "#/$defs/blackboardKey"}, "replacement_version": {"$ref": "#/$defs/version"}, "replaced": {"$ref": "#/$defs/blackboardKey"}, "replaced_version": {"$ref": "#/$defs/version"}}
     },
-    "change": {"oneOf": [{"$ref": "#/$defs/createChange"}, {"$ref": "#/$defs/updateChange"}, {"$ref": "#/$defs/transitionChange"}, {"$ref": "#/$defs/relateChange"}, {"$ref": "#/$defs/unrelateChange"}, {"$ref": "#/$defs/mergeChange"}, {"$ref": "#/$defs/supersedeChange"}]},
+    "change": {
+      "description": "operation kind is a verb: create creates a record; update patches a record; transition changes lifecycle status; supported ops are create, update, transition, relate, unrelate, merge, and supersede; record types such as objective and attempt belong in type, never op",
+      "oneOf": [{"$ref": "#/$defs/createChange"}, {"$ref": "#/$defs/updateChange"}, {"$ref": "#/$defs/transitionChange"}, {"$ref": "#/$defs/relateChange"}, {"$ref": "#/$defs/unrelateChange"}, {"$ref": "#/$defs/mergeChange"}, {"$ref": "#/$defs/supersedeChange"}]
+    },
     "changeBatch": {
+      "description": "Atomic semantic-change-batch/v2: schema is always semantic-change-batch/v2; idempotency_key is required for exact replay; changes is a closed list of semantic ops. op is a verb: create creates a record; update patches a record; transition changes lifecycle status; relate/unrelate manage relationships; merge and supersede rewrite knowledge. Record types such as objective and attempt belong in type, never op. create requires key, type, and record.",
       "type": "object", "additionalProperties": false,
       "required": ["schema", "idempotency_key", "changes"],
       "properties": {"schema": {"const": "semantic-change-batch/v2"}, "idempotency_key": {"type": "string", "minLength": 1}, "changes": {"type": "array", "items": {"$ref": "#/$defs/change"}}}

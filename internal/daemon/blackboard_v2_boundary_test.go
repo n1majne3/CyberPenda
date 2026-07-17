@@ -243,13 +243,26 @@ func assertV2BootstrapMCPHasNoLegacyTools(t *testing.T, server *daemon.Server) {
 	if err != nil {
 		t.Fatalf("list v2 bootstrap MCP tools: %v", err)
 	}
-	if len(listed.Tools) != 0 {
-		t.Fatalf("v2 bootstrap MCP tools = %#v, want an empty catalog until #114", listed.Tools)
+	wantTools := map[string]bool{
+		"blackboard_change": true, "blackboard_read": true, "blackboard_history": true,
+		"blackboard_retain_evidence": true, "blackboard_checkpoint_attempt": true, "blackboard_finish": true,
+	}
+	if len(listed.Tools) != len(wantTools) {
+		t.Fatalf("v2 bootstrap MCP tools = %#v, want exactly the six trusted v2 tools", listed.Tools)
+	}
+	for _, tool := range listed.Tools {
+		if !wantTools[tool.Name] {
+			t.Fatalf("v2 bootstrap MCP exposed unexpected tool %q", tool.Name)
+		}
+		delete(wantTools, tool.Name)
+	}
+	if len(wantTools) != 0 {
+		t.Fatalf("v2 bootstrap MCP missing tools %#v", wantTools)
 	}
 	retiredTools := []string{
 		"upsert_project_fact", "deprecate_project_fact", "upsert_fact_relation",
 		"record_vulnerability", "attach_evidence", "generate_report", "submit_task_summary",
-		"blackboard_apply", "blackboard_retain_evidence", "blackboard_checkpoint_attempt",
+		"blackboard_apply", "blackboard_resolve_records", "blackboard_get_current_graph",
 		"blackboard_finish_continuation", "blackboard_reconcile_attempts", "blackboard_reconcile_interruption",
 	}
 	for _, tool := range listed.Tools {
