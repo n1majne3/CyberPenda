@@ -40,6 +40,7 @@ const (
 type Service struct {
 	db             *store.DB
 	evidenceConfig EvidenceConfig
+	runtimeRoot    string
 }
 
 // NewService returns a Blackboard v2 semantic service backed by the Store.
@@ -794,6 +795,11 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 		if err := tx.Commit(); err != nil {
 			return ChangeResult{}, fmt.Errorf("commit Blackboard v2 replay: %w", err)
 		}
+		if continuationID != "" {
+			if err := s.rematerializeContinuationWorkingSnapshot(ctx, continuationID); err != nil {
+				return ChangeResult{}, fmt.Errorf("recover acknowledged Working Blackboard Snapshot: %w", err)
+			}
+		}
 		return replay, nil
 	}
 	if continuationID != "" && !continuationCanWrite(continuationStatus) {
@@ -1024,6 +1030,13 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 		return ChangeResult{}, err
 	}
 
+	workingAdvanced := false
+	if continuationID != "" {
+		_, _, workingAdvanced, err = s.advanceContinuationWorkingSnapshotTx(ctx, tx, projectID, continuationID)
+		if err != nil {
+			return ChangeResult{}, err
+		}
+	}
 	result := makeChangeResult(revision, changedRecords, changedRelations)
 	resultJSON, err := json.Marshal(result)
 	if err != nil {
@@ -1038,6 +1051,11 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 	}
 	if err := tx.Commit(); err != nil {
 		return ChangeResult{}, fmt.Errorf("commit Blackboard v2 change: %w", err)
+	}
+	if workingAdvanced {
+		if err := s.rematerializeContinuationWorkingSnapshot(ctx, continuationID); err != nil {
+			return ChangeResult{}, fmt.Errorf("replace acknowledged Working Blackboard Snapshot: %w", err)
+		}
 	}
 	return result, nil
 }
@@ -1259,6 +1277,10 @@ func (s *Service) RuntimeSnapshot(ctx context.Context, projectID string) (Runtim
 		return RuntimeSnapshot{}, fmt.Errorf("begin Blackboard v2 snapshot: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	return s.runtimeSnapshotTx(ctx, tx, projectID)
+}
+
+func (s *Service) runtimeSnapshotTx(ctx context.Context, tx *sql.Tx, projectID string) (RuntimeSnapshot, error) {
 	if err := ensureProjectExists(ctx, tx, projectID); err != nil {
 		return RuntimeSnapshot{}, err
 	}

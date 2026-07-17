@@ -22,9 +22,10 @@ import (
 // reachable for every provider without exposing the retired v1 tool catalog.
 func TestTrustedMCPProjectionSmoke(t *testing.T) {
 	providers := []struct {
-		name     string
-		provider runtimeprofile.Provider
-		verify   func(t *testing.T, layoutRoot string)
+		name            string
+		provider        runtimeprofile.Provider
+		compactV2Launch bool
+		verify          func(t *testing.T, layoutRoot string)
 	}{
 		{
 			name:     "claude_code",
@@ -41,8 +42,9 @@ func TestTrustedMCPProjectionSmoke(t *testing.T) {
 			},
 		},
 		{
-			name:     "codex",
-			provider: runtimeprofile.ProviderCodex,
+			name:            "codex",
+			provider:        runtimeprofile.ProviderCodex,
+			compactV2Launch: true,
 			verify: func(t *testing.T, layoutRoot string) {
 				t.Helper()
 				raw, err := os.ReadFile(filepath.Join(layoutRoot, "runtime-home", "codex", "config.toml"))
@@ -94,15 +96,21 @@ func TestTrustedMCPProjectionSmoke(t *testing.T) {
 			layoutRoot := filepath.Join(runtimeRoot, taskID)
 			tc.verify(t, layoutRoot)
 
-			ctx := readTaskMCPContext(t, layoutRoot)
-			if ctx.ProjectID != projectID || ctx.TaskID != taskID {
-				t.Fatalf("unexpected task context: %#v", ctx)
+			mcpURL := daemonBase + "/mcp"
+			if tc.compactV2Launch {
+				if _, err := os.Stat(filepath.Join(layoutRoot, "workdir", ".pentest", "context.json")); !os.IsNotExist(err) {
+					t.Fatalf("Codex v2 launch exposed legacy identity context: %v", err)
+				}
+			} else {
+				ctx := readTaskMCPContext(t, layoutRoot)
+				if ctx.ProjectID != projectID || ctx.TaskID != taskID {
+					t.Fatalf("unexpected task context: %#v", ctx)
+				}
+				if !strings.Contains(ctx.MCPURL, "/mcp") {
+					t.Fatalf("expected mcp url in context, got %q", ctx.MCPURL)
+				}
+				mcpURL = normalizeMCPURLForHost(ctx.MCPURL, daemonBase)
 			}
-			if !strings.Contains(ctx.MCPURL, "/mcp") {
-				t.Fatalf("expected mcp url in context, got %q", ctx.MCPURL)
-			}
-
-			mcpURL := normalizeMCPURLForHost(ctx.MCPURL, daemonBase)
 			assertMCPBootstrapHasNoLegacyTools(t, mcpURL)
 		})
 	}

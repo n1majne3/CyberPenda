@@ -806,7 +806,41 @@ func migrations() []migration {
 		newMigration(27, "blackboard_v2_private_evidence_staging", migration27SQL, migration27Up),
 		newMigration(28, "blackboard_v2_fixed_evidence_staging_scope", migration28SQL, migration28Up),
 		newMigration(29, "blackboard_v2_key_redirects", migration29SQL, migration29Up),
+		newMigration(30, "blackboard_v2_continuation_snapshots", migration30SQL, migration30Up),
 	}
+}
+
+const migration30SQL = `
+CREATE TABLE IF NOT EXISTS blackboard_v2_continuation_pins (
+	continuation_id TEXT PRIMARY KEY REFERENCES task_continuations(id) ON DELETE RESTRICT,
+	snapshot_schema TEXT NOT NULL CHECK (snapshot_schema = 'runtime-blackboard/v2'),
+	snapshot_revision INTEGER NOT NULL CHECK (snapshot_revision >= 0),
+	snapshot_bytes BLOB NOT NULL CHECK (length(snapshot_bytes) > 0),
+	integrity_sha256 TEXT NOT NULL CHECK (length(integrity_sha256) = 64),
+	created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS blackboard_v2_continuation_state (
+	continuation_id TEXT PRIMARY KEY REFERENCES blackboard_v2_continuation_pins(continuation_id) ON DELETE RESTRICT,
+	last_acknowledged_revision INTEGER NOT NULL CHECK (last_acknowledged_revision >= 0),
+	working_snapshot_bytes BLOB NOT NULL CHECK (length(working_snapshot_bytes) > 0),
+	updated_at TEXT NOT NULL
+);
+`
+
+func migration30Up(tx *sql.Tx) error {
+	if err := execStatements(tx, migration30SQL); err != nil {
+		return err
+	}
+	for _, statement := range []string{
+		`CREATE TRIGGER IF NOT EXISTS blackboard_v2_continuation_pins_no_update BEFORE UPDATE ON blackboard_v2_continuation_pins BEGIN SELECT RAISE(ABORT, 'Blackboard v2 Launch Pin is immutable'); END`,
+		`CREATE TRIGGER IF NOT EXISTS blackboard_v2_continuation_pins_no_delete BEFORE DELETE ON blackboard_v2_continuation_pins BEGIN SELECT RAISE(ABORT, 'Blackboard v2 Launch Pin is immutable'); END`,
+		`CREATE TRIGGER IF NOT EXISTS blackboard_v2_continuation_state_monotonic BEFORE UPDATE ON blackboard_v2_continuation_state WHEN NEW.continuation_id <> OLD.continuation_id OR NEW.last_acknowledged_revision < OLD.last_acknowledged_revision BEGIN SELECT RAISE(ABORT, 'Blackboard v2 acknowledged revision cannot move backwards'); END`,
+	} {
+		if _, err := tx.Exec(statement); err != nil {
+			return fmt.Errorf("install Blackboard v2 Continuation snapshot guard: %w", err)
+		}
+	}
+	return nil
 }
 
 const migration29SQL = `

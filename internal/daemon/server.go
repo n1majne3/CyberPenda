@@ -22,6 +22,7 @@ import (
 	"pentest/internal/blackboard"
 	"pentest/internal/blackboardcompat"
 	"pentest/internal/blackboardmigration"
+	"pentest/internal/blackboardv2"
 	"pentest/internal/credential"
 	"pentest/internal/modelprovider"
 	"pentest/internal/preflight"
@@ -84,26 +85,28 @@ type Config struct {
 }
 
 type Server struct {
-	mux                *http.ServeMux
-	version            string
-	logger             *log.Logger
-	db                 *store.DB
-	projects           *project.Service
-	runtimePlugins     *runtimeplugin.Registry
-	runtimeExtensions  *runtimeextension.Registry
-	profiles           *runtimeprofile.Service
-	modelProviders     *modelprovider.Service
-	skills             *skill.Service
-	creds              *credential.Service
-	modelRefreshClient *http.Client
-	preflight          *preflight.Service
-	tasks              *task.Service
-	harness            *runtime.Harness
-	canonicalStore     string
-	facts              *blackboard.Service
-	reads              *blackboard.BlackboardReadService
-	graph              *blackboard.GraphService
-	compatibility      *blackboardcompat.Service
+	mux                    *http.ServeMux
+	version                string
+	logger                 *log.Logger
+	db                     *store.DB
+	projects               *project.Service
+	runtimePlugins         *runtimeplugin.Registry
+	runtimeExtensions      *runtimeextension.Registry
+	profiles               *runtimeprofile.Service
+	modelProviders         *modelprovider.Service
+	skills                 *skill.Service
+	creds                  *credential.Service
+	modelRefreshClient     *http.Client
+	preflight              *preflight.Service
+	tasks                  *task.Service
+	harness                *runtime.Harness
+	canonicalStore         string
+	facts                  *blackboard.Service
+	reads                  *blackboard.BlackboardReadService
+	graph                  *blackboard.GraphService
+	blackboardV2           *blackboardv2.Service
+	blackboardV2Continuity *blackboardv2.ContinuityService
+	compatibility          *blackboardcompat.Service
 	// projectInterface is the graph-native Runtime project-interface module
 	// (runtime protocol §1). It is wired only while the store epoch has
 	// activated the graph Blackboard (graph_v1), so graph data stays dark
@@ -280,6 +283,13 @@ func NewServer(config Config) (*Server, error) {
 		}
 		server.tasks.SetGoalProjector(graph)
 		if err := server.recoverPinnedContinuationFiles(); err != nil {
+			_ = server.Close()
+			return nil, err
+		}
+	} else if epoch == store.CanonicalStoreBlackboardV2 {
+		server.blackboardV2 = blackboardv2.NewService(db)
+		server.blackboardV2Continuity = blackboardv2.NewContinuityService(db, server.blackboardV2, server.tasks, runtimeRoot)
+		if err := server.recoverBlackboardV2ContinuationFiles(context.Background()); err != nil {
 			_ = server.Close()
 			return nil, err
 		}

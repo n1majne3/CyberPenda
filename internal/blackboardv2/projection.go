@@ -2,6 +2,7 @@ package blackboardv2
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 )
@@ -53,6 +54,20 @@ func (s *Service) ProjectRuntimeSnapshot(ctx context.Context, projectID string) 
 	if err != nil {
 		return RuntimeSnapshotProjection{}, err
 	}
+	return projectRuntimeSnapshot(snapshot)
+}
+
+// ProjectRuntimeSnapshotTx encodes the exact current Snapshot observed by a
+// caller-owned transaction so a Continuation pin can bind those same bytes.
+func (s *Service) ProjectRuntimeSnapshotTx(ctx context.Context, tx *sql.Tx, projectID string) (RuntimeSnapshotProjection, error) {
+	snapshot, err := s.runtimeSnapshotTx(ctx, tx, projectID)
+	if err != nil {
+		return RuntimeSnapshotProjection{}, err
+	}
+	return projectRuntimeSnapshot(snapshot)
+}
+
+func projectRuntimeSnapshot(snapshot RuntimeSnapshot) (RuntimeSnapshotProjection, error) {
 	data, err := json.Marshal(snapshot)
 	if err != nil {
 		return RuntimeSnapshotProjection{}, fmt.Errorf("encode canonical Runtime Snapshot: %w", err)
