@@ -250,7 +250,7 @@ func assertV2BootstrapMCPHasNoLegacyTools(t *testing.T, server *daemon.Server) {
 		"upsert_project_fact", "deprecate_project_fact", "upsert_fact_relation",
 		"record_vulnerability", "attach_evidence", "generate_report", "submit_task_summary",
 		"blackboard_apply", "blackboard_retain_evidence", "blackboard_checkpoint_attempt",
-		"blackboard_finish_continuation",
+		"blackboard_finish_continuation", "blackboard_reconcile_attempts", "blackboard_reconcile_interruption",
 	}
 	for _, tool := range listed.Tools {
 		for _, retired := range retiredTools {

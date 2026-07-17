@@ -288,6 +288,7 @@ func NewServer(config Config) (*Server, error) {
 		}
 	} else if epoch == store.CanonicalStoreBlackboardV2 {
 		server.blackboardV2 = blackboardv2.NewService(db)
+		server.tasks.SetContinuationReconciler(server.blackboardV2)
 		server.blackboardV2Continuity = blackboardv2.NewContinuityService(db, server.blackboardV2, server.tasks, runtimeRoot)
 		if err := server.recoverBlackboardV2ContinuationFiles(context.Background()); err != nil {
 			_ = server.Close()
@@ -332,6 +333,17 @@ func (server *Server) reconcileInterruptedTasks() {
 		}
 		for _, continuation := range continuations {
 			if _, reconcileErr := server.projectInterface.ReconcileContinuation(context.Background(), continuation.ID, "daemon_restart"); reconcileErr != nil {
+				server.logger.Printf("task reconcile: failed to reconcile Continuation %s: %v", continuation.ID, reconcileErr)
+			}
+		}
+	} else if server.blackboardV2 != nil {
+		continuations, listErr := server.tasks.TerminalContinuations()
+		if listErr != nil {
+			server.logger.Printf("task reconcile: failed to list terminal Continuations: %v", listErr)
+			return
+		}
+		for _, continuation := range continuations {
+			if reconcileErr := server.blackboardV2.ReconcileTerminalContinuation(context.Background(), continuation.ID, "daemon_restart"); reconcileErr != nil {
 				server.logger.Printf("task reconcile: failed to reconcile Continuation %s: %v", continuation.ID, reconcileErr)
 			}
 		}

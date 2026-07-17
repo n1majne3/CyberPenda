@@ -642,6 +642,30 @@ func (s *Service) ApplyForContinuation(ctx context.Context, projectID, continuat
 	return s.apply(ctx, projectID, continuationID, batch)
 }
 
+// ReconcileTerminalContinuation implements the server-owned Task lifecycle
+// callback without accepting a Runtime-supplied Project identity.
+func (s *Service) ReconcileTerminalContinuation(ctx context.Context, continuationID, reason string) error {
+	_ = reason
+	if strings.TrimSpace(continuationID) == "" {
+		return semanticError("authority_denied", "trusted Continuation identity is required", "", nil)
+	}
+	var projectID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT task.project_id
+		FROM task_continuations AS continuation
+		JOIN tasks AS task ON task.id = continuation.task_id
+		WHERE continuation.id = ?`, continuationID,
+	).Scan(&projectID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return semanticError("authority_denied", "trusted Continuation does not exist", "", nil)
+	}
+	if err != nil {
+		return fmt.Errorf("resolve terminal Continuation Project: %w", err)
+	}
+	_, err = s.ReconcileContinuationAttempts(ctx, projectID, continuationID)
+	return err
+}
+
 // ReconcileContinuationAttempts is a server-only control path that records an
 // unexpected Continuation end by moving its valid open Attempts to interrupted
 // history. Clean completion is audited elsewhere and never guesses an outcome.
@@ -739,6 +763,9 @@ func (s *Service) ReconcileContinuationAttempts(ctx context.Context, projectID, 
 	for _, existing := range owned {
 		terminal := existing.record.attemptRecord()
 		terminal.Status = "interrupted"
+		if validateSemanticText(terminal.Summary, "summary") != nil {
+			terminal.Summary = "Runtime Continuation ended unexpectedly before this Attempt was concluded."
+		}
 		nextRevision, key, version, changed, err := terminalizeRecord(ctx, tx, projectID, revision, existing, terminal, now)
 		if err != nil {
 			return ChangeResult{}, err
@@ -749,10 +776,33 @@ func (s *Service) ReconcileContinuationAttempts(ctx context.Context, projectID, 
 		}
 	}
 	result := makeChangeResult(revision, changedRecords, nil)
+	if err := markContinuationReconciled(ctx, tx, continuationID, status); err != nil {
+		return ChangeResult{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return ChangeResult{}, fmt.Errorf("commit Attempt reconciliation: %w", err)
 	}
 	return result, nil
+}
+
+func markContinuationReconciled(ctx context.Context, tx *sql.Tx, continuationID, status string) error {
+	result, err := tx.ExecContext(ctx, `
+		UPDATE task_continuations
+		SET blackboard_reconciliation_status='completed',
+		    blackboard_reconciliation_mutation_id='',
+		    blackboard_reconciled_at=?
+		WHERE id=? AND status=?`,
+		time.Now().UTC().Format(time.RFC3339Nano), continuationID, status,
+	)
+	if err != nil {
+		return fmt.Errorf("mark Blackboard v2 Continuation reconciliation: %w", err)
+	}
+	if changed, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("count Blackboard v2 Continuation reconciliation marker: %w", err)
+	} else if changed != 1 {
+		return semanticError("continuation_not_closed", "Attempt reconciliation requires the current terminal Continuation state", "", nil)
+	}
+	return nil
 }
 
 func (s *Service) apply(ctx context.Context, projectID, continuationID string, batch ChangeBatch) (ChangeResult, error) {

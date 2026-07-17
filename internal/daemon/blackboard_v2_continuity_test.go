@@ -129,6 +129,103 @@ func TestCodexV2ContinuationLaunchAndRestartConformanceKeepsSnapshotRereadable(t
 	}
 }
 
+func TestBlackboardV2DaemonOwnsUnexpectedAttemptReconciliationAcrossRestart(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "daemon-reconciliation.db")
+	server, err := NewServer(Config{Version: "test", DBPath: dbPath, RuntimeRoot: filepath.Join(root, "runs"), DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatalf("start Blackboard v2 daemon: %v", err)
+	}
+	createdProject, err := server.projects.Create("Daemon reconciliation", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		_ = server.Close()
+		t.Fatalf("create Project: %v", err)
+	}
+	profile, err := server.profiles.Create("Codex reconciliation", runtimeprofile.ProviderCodex, runtimeprofile.Fields{Model: "gpt-test"})
+	if err != nil {
+		_ = server.Close()
+		t.Fatalf("create Runtime Profile: %v", err)
+	}
+	createdTask, err := server.tasks.Create(task.CreateRequest{
+		ProjectID: createdProject.ID, Goal: "exercise daemon reconciliation", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+	})
+	if err != nil {
+		_ = server.Close()
+		t.Fatalf("create Task: %v", err)
+	}
+	launch, err := server.blackboardV2Continuity.CreateContinuation(context.Background(), blackboardv2.ContinuationLaunchRequest{
+		ProjectID: createdProject.ID, TaskID: createdTask.ID, RuntimeProfileID: profile.ID,
+		RuntimeProvider: string(runtimeprofile.ProviderCodex), Runner: task.RunnerSandbox,
+		RuntimeConfig: map[string]any{"provider": "codex", "model": "gpt-test"},
+	})
+	if err != nil {
+		_ = server.Close()
+		t.Fatalf("create Continuation: %v", err)
+	}
+	if _, err := server.tasks.UpdateContinuationStatus(launch.Continuation.ID, task.StatusRunning); err != nil {
+		_ = server.Close()
+		t.Fatalf("start Continuation: %v", err)
+	}
+	if _, err := server.blackboardV2.ApplyForContinuation(context.Background(), createdProject.ID, launch.Continuation.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "daemon-reconciliation-work",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "objective:daemon-reconciliation", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Prove daemon authority"}},
+			{Op: "create", Key: "attempt:daemon-reconciliation", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Runtime work remained open"}},
+			{Op: "relate", From: "attempt:daemon-reconciliation", Relation: "tests", To: "objective:daemon-reconciliation"},
+		},
+	}); err != nil {
+		_ = server.Close()
+		t.Fatalf("create owned Attempt: %v", err)
+	}
+	if _, err := server.blackboardV2.CheckpointAttemptForContinuation(context.Background(), createdProject.ID, launch.Continuation.ID, blackboardv2.CheckpointAttemptRequest{
+		IdempotencyKey: "daemon-reconciliation-checkpoint", Key: "attempt:daemon-reconciliation", Version: 1,
+		Summary: "Checkpoint retained before daemon-observed failure",
+	}); err != nil {
+		_ = server.Close()
+		t.Fatalf("checkpoint Attempt: %v", err)
+	}
+	if _, err := server.tasks.UpdateContinuationStatus(launch.Continuation.ID, task.StatusFailed); err != nil {
+		_ = server.Close()
+		t.Fatalf("reconcile unexpected Continuation end: %v", err)
+	}
+	before, err := server.blackboardV2.ReadHistory(context.Background(), createdProject.ID, "attempt:daemon-reconciliation", blackboardv2.HistoryOptions{})
+	if err != nil {
+		_ = server.Close()
+		t.Fatalf("read reconciled Attempt: %v", err)
+	}
+	if err := server.Close(); err != nil {
+		t.Fatalf("close daemon before restart: %v", err)
+	}
+
+	restarted, err := NewServer(Config{Version: "test", DBPath: dbPath, RuntimeRoot: filepath.Join(root, "runs"), DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatalf("restart Blackboard v2 daemon: %v", err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	after, err := restarted.blackboardV2.ReadHistory(context.Background(), createdProject.ID, "attempt:daemon-reconciliation", blackboardv2.HistoryOptions{})
+	if err != nil {
+		t.Fatalf("read reconciled Attempt after restart: %v", err)
+	}
+	beforeJSON, err := json.Marshal(before)
+	if err != nil {
+		t.Fatalf("encode pre-restart history: %v", err)
+	}
+	afterJSON, err := json.Marshal(after)
+	if err != nil {
+		t.Fatalf("encode post-restart history: %v", err)
+	}
+	if !bytes.Equal(beforeJSON, afterJSON) {
+		t.Fatalf("restart changed reconciled Attempt history\nbefore=%s\nafter=%s", beforeJSON, afterJSON)
+	}
+	marked, err := restarted.tasks.Continuation(launch.Continuation.ID)
+	if err != nil {
+		t.Fatalf("read reconciliation marker after restart: %v", err)
+	}
+	if marked.BlackboardReconciliationStatus != task.ReconciliationCompleted {
+		t.Fatalf("reconciliation marker after restart = %q", marked.BlackboardReconciliationStatus)
+	}
+}
+
 func TestCodexV2LaunchExcludesIdentityMetadataAndOperatorCredentialSurface(t *testing.T) {
 	root := t.TempDir()
 	const operatorToken = "operator-token-must-never-reach-codex"
