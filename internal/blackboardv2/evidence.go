@@ -938,7 +938,45 @@ func collectEvidenceDependentConfirmedFacts(ctx context.Context, tx *sql.Tx, pro
 	return nil
 }
 
-func (s *Service) validateEvidenceDependentFactBases(ctx context.Context, tx *sql.Tx, projectID string, dependent map[string]string) error {
+func collectSupportingFactDependentConfirmedFacts(ctx context.Context, tx *sql.Tx, projectID, supportKey, path string, dependent map[string]string) error {
+	record, err := loadCurrentRecord(ctx, tx, projectID, supportKey)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && record.typ != "fact") {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT target.key, target.record_json
+		FROM blackboard_v2_relationships AS rel
+		JOIN blackboard_v2_records AS target
+		  ON target.project_id=rel.project_id AND target.key=rel.to_key AND target.type='fact'
+		WHERE rel.project_id=? AND rel.from_key=? AND rel.relation='supports'
+		ORDER BY target.key`, projectID, supportKey)
+	if err != nil {
+		return fmt.Errorf("read supporting-Fact-dependent Facts: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key, raw string
+		if err := rows.Scan(&key, &raw); err != nil {
+			return fmt.Errorf("scan supporting-Fact-dependent Fact: %w", err)
+		}
+		var fact FactRecord
+		if err := json.Unmarshal([]byte(raw), &fact); err != nil {
+			return fmt.Errorf("decode supporting-Fact-dependent Fact: %w", err)
+		}
+		if fact.Confidence == "confirmed" {
+			dependent[key] = path
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate supporting-Fact-dependent Facts: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) validateDependentConfirmedFactBases(ctx context.Context, tx *sql.Tx, projectID string, dependent map[string]string) error {
 	keys := make([]string, 0, len(dependent))
 	for key := range dependent {
 		keys = append(keys, key)
@@ -960,7 +998,7 @@ func (s *Service) validateEvidenceDependentFactBases(ctx context.Context, tx *sq
 			return err
 		}
 		if !valid {
-			return semanticError("semantic_validation", "Evidence lifecycle change would leave a confirmed Fact without a valid basis", dependent[key], map[string]any{"fact": key})
+			return semanticError("semantic_validation", "relationship or lifecycle change would leave a confirmed Fact without a valid basis", dependent[key], map[string]any{"fact": key})
 		}
 	}
 	return nil

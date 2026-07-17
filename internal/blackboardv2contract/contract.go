@@ -12,6 +12,8 @@ import (
 	"sort"
 
 	"github.com/google/jsonschema-go/jsonschema"
+
+	"pentest/internal/blackboardv2grammar"
 )
 
 //go:embed contractdata
@@ -27,20 +29,6 @@ type fixtureDefinition struct {
 type manifest struct {
 	Schema   string              `json:"schema"`
 	Fixtures []fixtureDefinition `json:"fixtures"`
-}
-
-type relationshipTable struct {
-	Schema      string                   `json:"schema"`
-	RecordTypes []string                 `json:"record_types"`
-	Relations   []relationshipDefinition `json:"relations"`
-}
-
-type relationshipDefinition struct {
-	Relation       string   `json:"relation"`
-	ReasonPolicy   string   `json:"reason_policy"`
-	SelfLinkPolicy string   `json:"self_link_policy"`
-	CyclePolicy    string   `json:"cycle_policy"`
-	Matrix         [][]bool `json:"matrix"`
 }
 
 // RelationshipCase is one explicit source-type/target-type conformance case.
@@ -409,52 +397,17 @@ func validateUTF8ByteLimits(value any, path, recordType string) error {
 // RelationshipCases expands the frozen 11-by-7-by-7 endpoint matrices into
 // explicit allowed and rejected conformance cases.
 func (h *Harness) RelationshipCases() ([]RelationshipCase, error) {
-	raw, err := contractFiles.ReadFile("contractdata/relationships.json")
-	if err != nil {
-		return nil, fmt.Errorf("read relationship table: %w", err)
-	}
-	var table relationshipTable
-	if err := json.Unmarshal(raw, &table); err != nil {
-		return nil, fmt.Errorf("decode relationship table: %w", err)
-	}
-	if table.Schema != "blackboard-v2-relationship-matrix/v1" {
-		return nil, fmt.Errorf("unsupported relationship table schema %q", table.Schema)
-	}
-	if len(table.RecordTypes) != 7 {
-		return nil, fmt.Errorf("relationship table has %d record types, want 7", len(table.RecordTypes))
-	}
-	if len(table.Relations) != 11 {
-		return nil, fmt.Errorf("relationship table has %d relations, want 11", len(table.Relations))
-	}
-
-	cases := make([]RelationshipCase, 0, len(table.Relations)*len(table.RecordTypes)*len(table.RecordTypes))
-	seenRelations := make(map[string]bool, len(table.Relations))
-	for _, relation := range table.Relations {
-		if relation.Relation == "" || relation.ReasonPolicy == "" || relation.SelfLinkPolicy == "" || relation.CyclePolicy == "" {
-			return nil, fmt.Errorf("relationship table contains an incomplete policy")
-		}
-		if seenRelations[relation.Relation] {
-			return nil, fmt.Errorf("relationship table repeats %q", relation.Relation)
-		}
-		seenRelations[relation.Relation] = true
-		if len(relation.Matrix) != len(table.RecordTypes) {
-			return nil, fmt.Errorf("relationship %q has %d source rows, want %d", relation.Relation, len(relation.Matrix), len(table.RecordTypes))
-		}
-		for fromIndex, row := range relation.Matrix {
-			if len(row) != len(table.RecordTypes) {
-				return nil, fmt.Errorf("relationship %q source %q has %d target columns, want %d", relation.Relation, table.RecordTypes[fromIndex], len(row), len(table.RecordTypes))
-			}
-			for toIndex, allowed := range row {
-				cases = append(cases, RelationshipCase{
-					Relation:       relation.Relation,
-					From:           table.RecordTypes[fromIndex],
-					To:             table.RecordTypes[toIndex],
-					Allowed:        allowed,
-					ReasonPolicy:   relation.ReasonPolicy,
-					SelfLinkPolicy: relation.SelfLinkPolicy,
-					CyclePolicy:    relation.CyclePolicy,
-				})
-			}
+	grammarCases := blackboardv2grammar.Cases()
+	cases := make([]RelationshipCase, len(grammarCases))
+	for index, grammarCase := range grammarCases {
+		cases[index] = RelationshipCase{
+			Relation:       grammarCase.Relation,
+			From:           grammarCase.From,
+			To:             grammarCase.To,
+			Allowed:        grammarCase.Allowed,
+			ReasonPolicy:   grammarCase.ReasonPolicy,
+			SelfLinkPolicy: grammarCase.SelfLinkPolicy,
+			CyclePolicy:    grammarCase.CyclePolicy,
 		}
 	}
 	return cases, nil

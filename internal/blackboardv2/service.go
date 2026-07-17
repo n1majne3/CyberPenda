@@ -21,6 +21,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"pentest/internal/blackboardv2grammar"
 	"pentest/internal/store"
 )
 
@@ -815,7 +816,7 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 	runtimeConfirmedFacts := make(map[string]string)
 	runtimeCreatedAttempts := make(map[string]string)
 	terminalAttempts := make(map[string]terminalAttemptValidation)
-	evidenceDependentFacts := make(map[string]string)
+	dependentConfirmedFacts := make(map[string]string)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for index, change := range batch.Changes {
 		change, err = resolveChangeRedirects(ctx, tx, projectID, change)
@@ -833,22 +834,33 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 			}
 		}
 		if change.Op == "transition" && change.Status == "missing" {
-			if err := collectEvidenceDependentConfirmedFacts(ctx, tx, projectID, change.Key, fmt.Sprintf("changes[%d].status", index), evidenceDependentFacts); err != nil {
+			if err := collectEvidenceDependentConfirmedFacts(ctx, tx, projectID, change.Key, fmt.Sprintf("changes[%d].status", index), dependentConfirmedFacts); err != nil {
 				return ChangeResult{}, err
 			}
 		}
 		if change.Op == "supersede" {
-			if err := collectEvidenceDependentConfirmedFacts(ctx, tx, projectID, change.Replaced, fmt.Sprintf("changes[%d].replaced", index), evidenceDependentFacts); err != nil {
+			if err := collectEvidenceDependentConfirmedFacts(ctx, tx, projectID, change.Replaced, fmt.Sprintf("changes[%d].replaced", index), dependentConfirmedFacts); err != nil {
+				return ChangeResult{}, err
+			}
+			if err := collectSupportingFactDependentConfirmedFacts(ctx, tx, projectID, change.Replaced, fmt.Sprintf("changes[%d].replaced", index), dependentConfirmedFacts); err != nil {
 				return ChangeResult{}, err
 			}
 		}
 		if change.Op == "merge" {
-			if err := collectEvidenceDependentConfirmedFacts(ctx, tx, projectID, change.Source, fmt.Sprintf("changes[%d].source", index), evidenceDependentFacts); err != nil {
+			if err := collectEvidenceDependentConfirmedFacts(ctx, tx, projectID, change.Source, fmt.Sprintf("changes[%d].source", index), dependentConfirmedFacts); err != nil {
+				return ChangeResult{}, err
+			}
+			if err := collectSupportingFactDependentConfirmedFacts(ctx, tx, projectID, change.Source, fmt.Sprintf("changes[%d].source", index), dependentConfirmedFacts); err != nil {
 				return ChangeResult{}, err
 			}
 		}
 		if change.Op == "unrelate" && change.Relation == "evidences" {
-			if err := collectEvidenceDependentConfirmedFacts(ctx, tx, projectID, change.From, fmt.Sprintf("changes[%d].relation", index), evidenceDependentFacts); err != nil {
+			if err := collectEvidenceDependentConfirmedFacts(ctx, tx, projectID, change.From, fmt.Sprintf("changes[%d].relation", index), dependentConfirmedFacts); err != nil {
+				return ChangeResult{}, err
+			}
+		}
+		if change.Op == "unrelate" && change.Relation == "supports" {
+			if err := collectSupportingFactDependentConfirmedFacts(ctx, tx, projectID, change.From, fmt.Sprintf("changes[%d].relation", index), dependentConfirmedFacts); err != nil {
 				return ChangeResult{}, err
 			}
 		}
@@ -996,7 +1008,7 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 			}
 		}
 	}
-	if err := s.validateEvidenceDependentFactBases(ctx, tx, projectID, evidenceDependentFacts); err != nil {
+	if err := s.validateDependentConfirmedFactBases(ctx, tx, projectID, dependentConfirmedFacts); err != nil {
 		return ChangeResult{}, err
 	}
 	if err := validateAllConfirmedFindings(ctx, tx, projectID); err != nil {
@@ -1883,7 +1895,8 @@ func applyRelate(ctx context.Context, tx *sql.Tx, projectID string, revision, in
 	if err := validateRelationshipEndpoint(change.Relation, fromRecord.typ, toRecord.typ, path+".relation"); err != nil {
 		return revision, RelationVersionTuple{}, false, err
 	}
-	if change.Relation == "supports" && fromRecord.typ == "fact" && toRecord.typ == "fact" {
+	rule, _ := blackboardv2grammar.Lookup(change.Relation)
+	if rule.CyclePolicy == "project_fact_to_project_fact_acyclic" && fromRecord.typ == "fact" && toRecord.typ == "fact" {
 		wouldCycle, err := factSupportsWouldCycle(ctx, tx, projectID, change.From, change.To)
 		if err != nil {
 			return revision, RelationVersionTuple{}, false, err
@@ -1892,7 +1905,7 @@ func applyRelate(ctx context.Context, tx *sql.Tx, projectID string, revision, in
 			return revision, RelationVersionTuple{}, false, semanticError("semantic_validation", "Fact supports relationships must be acyclic", path+".to", nil)
 		}
 	}
-	if change.Relation == "part_of" || change.Relation == "derived_from" || change.Relation == "depends_on" {
+	if isOneOf(rule.CyclePolicy, "acyclic_per_endpoint_family", "acyclic") {
 		wouldCycle, err := relationshipWouldCycle(ctx, tx, projectID, change.Relation, change.From, change.To)
 		if err != nil {
 			return revision, RelationVersionTuple{}, false, err
@@ -2425,7 +2438,8 @@ func applySupersede(ctx context.Context, tx *sql.Tx, projectID string, revision,
 		}
 		return revision, "", 0, RelationVersionTuple{}, false, err
 	}
-	if replacement.typ != replaced.typ || !isOneOf(replacement.typ, "entity", "objective", "finding", "solution", "evidence") {
+	supersedesRule, _ := blackboardv2grammar.Lookup("supersedes")
+	if !supersedesRule.Allows(replacement.typ, replaced.typ) {
 		return revision, "", 0, RelationVersionTuple{}, false, semanticError("semantic_validation", "supersede requires two current records of the same supersedable type", path, map[string]any{"replacement_type": replacement.typ, "replaced_type": replaced.typ})
 	}
 	replacementVersion := change.ReplacementVersion
@@ -2465,6 +2479,10 @@ func applySupersede(ctx context.Context, tx *sql.Tx, projectID string, revision,
 		record := replaced.record.evidenceRecord()
 		record.Status = "superseded"
 		terminal = record
+	case "fact":
+		record := replaced.record.factRecord()
+		record.Confidence = "deprecated"
+		terminal = record
 	case "finding":
 		record := replaced.record.findingOutputRecord()
 		record.Status = "superseded"
@@ -2490,60 +2508,17 @@ func applySupersede(ctx context.Context, tx *sql.Tx, projectID string, revision,
 }
 
 func validateRelationshipEndpoint(relation, fromType, toType, path string) error {
-	// This semantic kernel admits only endpoint types whose records are fully
-	// decodable in the current slice. Finding and Solution endpoints are added by
-	// their owning tickets alongside their complete record schemas.
-	switch relation {
-	case "about":
-		if toType == "entity" && isOneOf(fromType, "objective", "attempt", "fact", "finding", "solution", "evidence") {
-			return nil
-		}
-		return semanticError("semantic_validation", "about must connect an allowed record to an Entity", path, map[string]any{"from_type": fromType, "to_type": toType})
-	case "part_of":
-		if (fromType == "entity" && toType == "entity") || (fromType == "objective" && toType == "objective") {
-			return nil
-		}
-		return semanticError("semantic_validation", "part_of must stay within the Entity or Objective endpoint family", path, map[string]any{"from_type": fromType, "to_type": toType})
-	case "tests":
-		if fromType == "attempt" && isOneOf(toType, "objective", "entity", "fact", "finding", "solution") {
-			return nil
-		}
-		return semanticError("semantic_validation", "tests must point from an Attempt to an approved tested target", path, map[string]any{"from_type": fromType, "to_type": toType})
-	case "produced":
-		if fromType == "attempt" && isOneOf(toType, "entity", "objective", "fact", "finding", "solution", "evidence") {
-			return nil
-		}
-		return semanticError("semantic_validation", "produced must point from an Attempt to a reusable outcome", path, map[string]any{"from_type": fromType, "to_type": toType})
-	case "evidences":
-		if fromType == "evidence" && isOneOf(toType, "fact", "finding", "solution") {
-			return nil
-		}
-		return semanticError("semantic_validation", "evidences must point from Evidence to supported Project Knowledge", path, map[string]any{"from_type": fromType, "to_type": toType})
-	case "derived_from":
-		if (fromType == "objective" && isOneOf(toType, "fact", "finding", "solution")) || (fromType == "fact" && toType == "fact") || (fromType == "evidence" && toType == "evidence") {
-			return nil
-		}
-		return semanticError("semantic_validation", "derived_from endpoint types are not allowed", path, map[string]any{"from_type": fromType, "to_type": toType})
-	case "supports", "contradicts":
-		if fromType == "fact" && isOneOf(toType, "fact", "finding", "solution") {
-			return nil
-		}
-		return semanticError("semantic_validation", fmt.Sprintf("%s must connect supported semantic knowledge", relation), path, map[string]any{"from_type": fromType, "to_type": toType})
-	case "depends_on":
-		if fromType == "objective" && toType == "objective" {
-			return nil
-		}
-		return semanticError("semantic_validation", "depends_on must point from an Objective to a prerequisite Objective", path, map[string]any{"from_type": fromType, "to_type": toType})
-	case "satisfies":
-		if isOneOf(fromType, "fact", "finding", "solution") && toType == "objective" {
-			return nil
-		}
-		return semanticError("semantic_validation", "satisfies must point from current knowledge to an Objective", path, map[string]any{"from_type": fromType, "to_type": toType})
-	case "supersedes":
-		return semanticError("semantic_validation", "supersedes is created only by the supersede operation", path, nil)
-	default:
-		return semanticError("semantic_validation", "unsupported relationship type in this slice", path, nil)
+	rule, ok := blackboardv2grammar.Lookup(relation)
+	if !ok {
+		return semanticError("semantic_validation", "unsupported Blackboard v2 relationship type", path, map[string]any{"relation": relation})
 	}
+	if relation == "supersedes" {
+		return semanticError("semantic_validation", "supersedes is created only by the supersede operation", path, nil)
+	}
+	if rule.Allows(fromType, toType) {
+		return nil
+	}
+	return semanticError("semantic_validation", rule.EndpointError, path, map[string]any{"relation": relation, "from_type": fromType, "to_type": toType})
 }
 
 func isOneOf(value string, allowed ...string) bool {
@@ -2886,10 +2861,14 @@ func decodeStoredRecord(typ, raw string) (Record, error) {
 
 func loadCurrentRelationshipsForKey(ctx context.Context, tx *sql.Tx, projectID, key string) ([]RelationshipTuple, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT from_key, relation, to_key, reason
-		FROM blackboard_v2_relationships
-		WHERE project_id = ? AND (from_key = ? OR to_key = ?)
-		ORDER BY from_key ASC, relation ASC, to_key ASC, reason ASC`,
+		SELECT rel.from_key, rel.relation, rel.to_key, rel.reason, source.type, target.type
+		FROM blackboard_v2_relationships AS rel
+		LEFT JOIN blackboard_v2_records AS source
+		  ON source.project_id=rel.project_id AND source.key=rel.from_key
+		LEFT JOIN blackboard_v2_records AS target
+		  ON target.project_id=rel.project_id AND target.key=rel.to_key
+		WHERE rel.project_id = ? AND (rel.from_key = ? OR rel.to_key = ?)
+		ORDER BY rel.from_key ASC, rel.relation ASC, rel.to_key ASC, rel.reason ASC`,
 		projectID, key, key,
 	)
 	if err != nil {
@@ -2901,10 +2880,14 @@ func loadCurrentRelationshipsForKey(ctx context.Context, tx *sql.Tx, projectID, 
 
 func loadAllCurrentRelationships(ctx context.Context, tx *sql.Tx, projectID string) ([]RelationshipTuple, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT from_key, relation, to_key, reason
-		FROM blackboard_v2_relationships
-		WHERE project_id = ?
-		ORDER BY from_key ASC, relation ASC, to_key ASC, reason ASC`,
+		SELECT rel.from_key, rel.relation, rel.to_key, rel.reason, source.type, target.type
+		FROM blackboard_v2_relationships AS rel
+		LEFT JOIN blackboard_v2_records AS source
+		  ON source.project_id=rel.project_id AND source.key=rel.from_key
+		LEFT JOIN blackboard_v2_records AS target
+		  ON target.project_id=rel.project_id AND target.key=rel.to_key
+		WHERE rel.project_id = ?
+		ORDER BY rel.from_key ASC, rel.relation ASC, rel.to_key ASC, rel.reason ASC`,
 		projectID,
 	)
 	if err != nil {
@@ -2924,8 +2907,13 @@ func scanRelationshipTuples(rows relationshipRows) ([]RelationshipTuple, error) 
 	relationships := []RelationshipTuple{}
 	for rows.Next() {
 		var from, relation, to, reason string
-		if err := rows.Scan(&from, &relation, &to, &reason); err != nil {
+		var fromType, toType sql.NullString
+		if err := rows.Scan(&from, &relation, &to, &reason, &fromType, &toType); err != nil {
 			return nil, fmt.Errorf("scan Blackboard v2 relationship: %w", err)
+		}
+		rule, known := blackboardv2grammar.Lookup(relation)
+		if !known || relation == "supersedes" || from == to || !fromType.Valid || !toType.Valid || !rule.Allows(fromType.String, toType.String) || (reason != "" && rule.ReasonPolicy != blackboardv2grammar.ReasonOptional) {
+			return nil, fmt.Errorf("persisted relationship %q %s %q is outside Blackboard v2 relationship grammar", from, relation, to)
 		}
 		if reason == "" {
 			relationships = append(relationships, RelationshipTuple{from, relation, to})
@@ -3790,11 +3778,13 @@ func populatedChangeFields(change Change) []populatedChangeField {
 }
 
 func isOrdinaryRelation(relation string) bool {
-	return isOneOf(relation, "about", "part_of", "tests", "produced", "evidences", "derived_from", "satisfies")
+	rule, ok := blackboardv2grammar.Lookup(relation)
+	return ok && relation != "supersedes" && rule.ReasonPolicy == blackboardv2grammar.ReasonForbidden
 }
 
 func isReasonRelation(relation string) bool {
-	return isOneOf(relation, "supports", "contradicts", "depends_on")
+	rule, ok := blackboardv2grammar.Lookup(relation)
+	return ok && rule.ReasonPolicy == blackboardv2grammar.ReasonOptional
 }
 
 func completeEntityRecord(value any, path string) (EntityRecord, error) {
