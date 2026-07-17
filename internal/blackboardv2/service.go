@@ -103,23 +103,24 @@ func (batch *ChangeBatch) UnmarshalJSON(raw []byte) error {
 
 // Change is the closed operation shape subset owned by #100.
 type Change struct {
-	Op                 string   `json:"op"`
-	Key                string   `json:"key,omitempty"`
-	Version            int      `json:"version,omitempty"`
-	Type               string   `json:"type,omitempty"`
-	Record             any      `json:"record,omitempty"`
-	Clear              []string `json:"clear,omitempty"`
-	From               string   `json:"from,omitempty"`
-	Relation           string   `json:"relation,omitempty"`
-	To                 string   `json:"to,omitempty"`
-	Reason             string   `json:"reason,omitempty"`
-	Status             string   `json:"status,omitempty"`
-	Summary            string   `json:"summary,omitempty"`
-	ResolutionSummary  string   `json:"resolution_summary,omitempty"`
-	Replacement        string   `json:"replacement,omitempty"`
-	ReplacementVersion int      `json:"replacement_version,omitempty"`
-	Replaced           string   `json:"replaced,omitempty"`
-	ReplacedVersion    int      `json:"replaced_version,omitempty"`
+	Op                  string   `json:"op"`
+	Key                 string   `json:"key,omitempty"`
+	Version             int      `json:"version,omitempty"`
+	Type                string   `json:"type,omitempty"`
+	Record              any      `json:"record,omitempty"`
+	Clear               []string `json:"clear,omitempty"`
+	From                string   `json:"from,omitempty"`
+	Relation            string   `json:"relation,omitempty"`
+	To                  string   `json:"to,omitempty"`
+	Reason              string   `json:"reason,omitempty"`
+	Status              string   `json:"status,omitempty"`
+	Summary             string   `json:"summary,omitempty"`
+	ResolutionSummary   string   `json:"resolution_summary,omitempty"`
+	VerificationSummary string   `json:"verification_summary,omitempty"`
+	Replacement         string   `json:"replacement,omitempty"`
+	ReplacementVersion  int      `json:"replacement_version,omitempty"`
+	Replaced            string   `json:"replaced,omitempty"`
+	ReplacedVersion     int      `json:"replaced_version,omitempty"`
 }
 
 // UnmarshalJSON enforces the closed semantic-change item shapes at the service
@@ -166,7 +167,7 @@ func (change *Change) UnmarshalJSON(raw []byte) error {
 		}
 		*change = decoded
 	case "transition":
-		if err := rejectUnknownFields(fields, map[string]bool{"op": true, "key": true, "version": true, "status": true, "summary": true, "resolution_summary": true}); err != nil {
+		if err := rejectUnknownFields(fields, map[string]bool{"op": true, "key": true, "version": true, "status": true, "summary": true, "resolution_summary": true, "verification_summary": true}); err != nil {
 			return err
 		}
 		decoded, err := decodeTransitionChange(fields)
@@ -278,6 +279,23 @@ type FindingPatch struct {
 	CVSSVector     *string `json:"cvss_vector,omitempty"`
 }
 
+// SolutionRecord is the complete semantic CTF Solution DTO.
+type SolutionRecord struct {
+	Status              string `json:"status"`
+	Kind                string `json:"kind"`
+	Summary             string `json:"summary"`
+	Value               string `json:"value,omitempty"`
+	VerificationSummary string `json:"verification_summary,omitempty"`
+}
+
+// SolutionPatch is the closed partial update shape for current Solutions.
+type SolutionPatch struct {
+	Kind                *string `json:"kind,omitempty"`
+	Summary             *string `json:"summary,omitempty"`
+	Value               *string `json:"value,omitempty"`
+	VerificationSummary *string `json:"verification_summary,omitempty"`
+}
+
 // EvidenceRecord is the complete semantic Evidence detail DTO. Filesystem and
 // integrity fields are server-derived by RetainEvidenceForContinuation.
 type EvidenceRecord struct {
@@ -303,40 +321,45 @@ type EvidencePatch struct {
 // records. Empty fields are omitted so each type still serializes to its closed
 // contract allowlist.
 type Record struct {
-	Status            string `json:"status,omitempty"`
-	Objective         string `json:"objective,omitempty"`
-	ResolutionSummary string `json:"resolution_summary,omitempty"`
-	Kind              string `json:"kind,omitempty"`
-	Name              string `json:"name,omitempty"`
-	Locator           string `json:"locator,omitempty"`
-	Description       string `json:"description,omitempty"`
-	ScopeStatus       string `json:"scope_status,omitempty"`
-	CredentialRef     string `json:"credential_ref,omitempty"`
-	Category          string `json:"category,omitempty"`
-	Summary           string `json:"summary,omitempty"`
-	Body              string `json:"body,omitempty"`
-	Confidence        string `json:"confidence,omitempty"`
-	Title             string `json:"title,omitempty"`
-	Target            string `json:"target,omitempty"`
-	Proof             string `json:"proof,omitempty"`
-	Impact            string `json:"impact,omitempty"`
-	Recommendation    string `json:"recommendation,omitempty"`
-	CVSSVersion       string `json:"cvss_version,omitempty"`
-	CVSSVector        string `json:"cvss_vector,omitempty"`
-	Severity          string `json:"severity,omitempty"`
-	CVSSPending       bool   `json:"cvss_pending,omitempty"`
-	ArtifactType      string `json:"artifact_type,omitempty"`
-	MediaType         string `json:"media_type,omitempty"`
-	SourcePath        string `json:"source_path,omitempty"`
-	ManagedPath       string `json:"managed_path,omitempty"`
-	SHA256            string `json:"sha256,omitempty"`
-	Size              int64  `json:"size,omitempty"`
-	CapturedAt        string `json:"captured_at,omitempty"`
+	Status              string `json:"status,omitempty"`
+	Objective           string `json:"objective,omitempty"`
+	ResolutionSummary   string `json:"resolution_summary,omitempty"`
+	Kind                string `json:"kind,omitempty"`
+	Name                string `json:"name,omitempty"`
+	Locator             string `json:"locator,omitempty"`
+	Description         string `json:"description,omitempty"`
+	ScopeStatus         string `json:"scope_status,omitempty"`
+	CredentialRef       string `json:"credential_ref,omitempty"`
+	Category            string `json:"category,omitempty"`
+	Summary             string `json:"summary,omitempty"`
+	Body                string `json:"body,omitempty"`
+	Confidence          string `json:"confidence,omitempty"`
+	Title               string `json:"title,omitempty"`
+	Target              string `json:"target,omitempty"`
+	Proof               string `json:"proof,omitempty"`
+	Impact              string `json:"impact,omitempty"`
+	Recommendation      string `json:"recommendation,omitempty"`
+	CVSSVersion         string `json:"cvss_version,omitempty"`
+	CVSSVector          string `json:"cvss_vector,omitempty"`
+	Severity            string `json:"severity,omitempty"`
+	CVSSPending         bool   `json:"cvss_pending,omitempty"`
+	Value               string `json:"value,omitempty"`
+	VerificationSummary string `json:"verification_summary,omitempty"`
+	ArtifactType        string `json:"artifact_type,omitempty"`
+	MediaType           string `json:"media_type,omitempty"`
+	SourcePath          string `json:"source_path,omitempty"`
+	ManagedPath         string `json:"managed_path,omitempty"`
+	SHA256              string `json:"sha256,omitempty"`
+	Size                int64  `json:"size,omitempty"`
+	CapturedAt          string `json:"captured_at,omitempty"`
 }
 
 // MarshalJSON keeps Evidence's required zero size while preserving the
 // existing closed DTO shape for every other record type.
 func (record Record) MarshalJSON() ([]byte, error) {
+	if isOneOf(record.Status, "candidate", "verified", "rejected", "superseded") && isOneOf(record.Kind, "answer", "flag", "procedure") {
+		return json.Marshal(record.solutionRecord())
+	}
 	if record.Title != "" && isOneOf(record.Status, "unconfirmed", "confirmed", "false_positive", "superseded") {
 		return json.Marshal(record.findingOutputRecord())
 	}
@@ -489,10 +512,21 @@ type SnapshotAttempt struct {
 
 // SnapshotKnowledge groups current Project Knowledge records.
 type SnapshotKnowledge struct {
-	Entities map[string]SnapshotEntity   `json:"entities,omitempty"`
-	Facts    map[string]SnapshotFact     `json:"facts,omitempty"`
-	Findings map[string]SnapshotFinding  `json:"findings,omitempty"`
-	Evidence map[string]SnapshotEvidence `json:"evidence,omitempty"`
+	Entities  map[string]SnapshotEntity   `json:"entities,omitempty"`
+	Facts     map[string]SnapshotFact     `json:"facts,omitempty"`
+	Findings  map[string]SnapshotFinding  `json:"findings,omitempty"`
+	Solutions map[string]SnapshotSolution `json:"solutions,omitempty"`
+	Evidence  map[string]SnapshotEvidence `json:"evidence,omitempty"`
+}
+
+// SnapshotSolution is the Runtime Snapshot allowlist for current Solutions.
+type SnapshotSolution struct {
+	Version             int    `json:"version"`
+	Status              string `json:"status"`
+	Kind                string `json:"kind"`
+	Summary             string `json:"summary"`
+	Value               string `json:"value,omitempty"`
+	VerificationSummary string `json:"verification_summary,omitempty"`
 }
 
 // SnapshotEntity is the runtime allowlist for Entities.
@@ -901,6 +935,9 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 	if err := validateAllConfirmedFindings(ctx, tx, projectID); err != nil {
 		return ChangeResult{}, err
 	}
+	if err := validateAllVerifiedSolutions(ctx, tx, projectID); err != nil {
+		return ChangeResult{}, err
+	}
 
 	result := makeChangeResult(revision, changedRecords, changedRelations)
 	resultJSON, err := json.Marshal(result)
@@ -1095,7 +1132,7 @@ func (s *Service) RuntimeSnapshot(ctx context.Context, projectID string) (Runtim
 	rows, err := tx.QueryContext(ctx, `
 		SELECT key, type, version, record_json
 		FROM blackboard_v2_records
-		WHERE project_id = ? AND type IN ('entity', 'objective', 'attempt', 'fact', 'finding', 'evidence')
+		WHERE project_id = ? AND type IN ('entity', 'objective', 'attempt', 'fact', 'finding', 'solution', 'evidence')
 		ORDER BY key ASC`, projectID,
 	)
 	if err != nil {
@@ -1108,6 +1145,7 @@ func (s *Service) RuntimeSnapshot(ctx context.Context, projectID string) (Runtim
 	attempts := make(map[string]SnapshotAttempt)
 	facts := make(map[string]SnapshotFact)
 	findings := make(map[string]SnapshotFinding)
+	solutions := make(map[string]SnapshotSolution)
 	evidence := make(map[string]SnapshotEvidence)
 	for rows.Next() {
 		var key, typ, raw string
@@ -1154,6 +1192,9 @@ func (s *Service) RuntimeSnapshot(ctx context.Context, projectID string) (Runtim
 				Target: finding.Target, Description: finding.Description,
 				Severity: finding.Severity, CVSSPending: finding.CVSSPending,
 			}
+		case "solution":
+			solution := record.solutionRecord()
+			solutions[key] = SnapshotSolution{Version: version, Status: solution.Status, Kind: solution.Kind, Summary: solution.Summary, Value: solution.Value, VerificationSummary: solution.VerificationSummary}
 		case "evidence":
 			item := record.evidenceRecord()
 			evidence[key] = SnapshotEvidence{
@@ -1186,6 +1227,9 @@ func (s *Service) RuntimeSnapshot(ctx context.Context, projectID string) (Runtim
 	if len(findings) != 0 {
 		knowledge.Findings = findings
 	}
+	if len(solutions) != 0 {
+		knowledge.Solutions = solutions
+	}
 	if len(evidence) != 0 {
 		knowledge.Evidence = evidence
 	}
@@ -1215,6 +1259,8 @@ func applyCreateRecord(ctx context.Context, tx *sql.Tx, projectID string, revisi
 		return applyCreateFact(ctx, tx, projectID, revision, index, change, now)
 	case "finding":
 		return applyCreateFinding(ctx, tx, projectID, revision, index, change, now)
+	case "solution":
+		return applyCreateSolution(ctx, tx, projectID, revision, index, change, now)
 	default:
 		return revision, "", 0, false, semanticError("semantic_validation", "unsupported Blackboard v2 record type in this slice", fmt.Sprintf("changes[%d].type", index), nil)
 	}
@@ -1232,6 +1278,8 @@ func applyUpdateRecord(ctx context.Context, tx *sql.Tx, projectID string, revisi
 		return applyUpdateFact(ctx, tx, projectID, revision, index, change, now)
 	case "finding":
 		return applyUpdateFinding(ctx, tx, projectID, revision, index, change, now)
+	case "solution":
+		return applyUpdateSolution(ctx, tx, projectID, revision, index, change, now)
 	case "evidence":
 		return applyUpdateEvidence(ctx, tx, projectID, revision, index, change, now)
 	default:
@@ -1943,6 +1991,8 @@ func applyTransition(ctx context.Context, tx *sql.Tx, projectID string, revision
 			return revision, "", 0, false, err
 		}
 		return replaceCurrentWorkRecord(ctx, tx, projectID, revision, existing, next, now)
+	case "solution":
+		return applySolutionTransition(ctx, tx, projectID, revision, path, existing, change, now)
 	case "evidence":
 		if change.Status != "missing" {
 			return revision, "", 0, false, semanticError("semantic_validation", "Evidence lifecycle transition must be missing", path+".status", nil)
@@ -2279,7 +2329,7 @@ func applySupersede(ctx context.Context, tx *sql.Tx, projectID string, revision,
 		}
 		return revision, "", 0, RelationVersionTuple{}, false, err
 	}
-	if replacement.typ != replaced.typ || !isOneOf(replacement.typ, "entity", "objective", "finding", "evidence") {
+	if replacement.typ != replaced.typ || !isOneOf(replacement.typ, "entity", "objective", "finding", "solution", "evidence") {
 		return revision, "", 0, RelationVersionTuple{}, false, semanticError("semantic_validation", "supersede requires two current records of the same supersedable type", path, map[string]any{"replacement_type": replacement.typ, "replaced_type": replaced.typ})
 	}
 	replacementVersion := change.ReplacementVersion
@@ -2323,6 +2373,10 @@ func applySupersede(ctx context.Context, tx *sql.Tx, projectID string, revision,
 		record := replaced.record.findingOutputRecord()
 		record.Status = "superseded"
 		terminal = record
+	case "solution":
+		record := replaced.record.solutionRecord()
+		record.Status = "superseded"
+		terminal = record
 	}
 	nextRevision, key, nextVersion, changed, err := terminalizeRecord(ctx, tx, projectID, revision, replaced, terminal, now)
 	if err != nil {
@@ -2345,7 +2399,7 @@ func validateRelationshipEndpoint(relation, fromType, toType, path string) error
 	// their owning tickets alongside their complete record schemas.
 	switch relation {
 	case "about":
-		if toType == "entity" && isOneOf(fromType, "objective", "attempt", "fact", "finding", "evidence") {
+		if toType == "entity" && isOneOf(fromType, "objective", "attempt", "fact", "finding", "solution", "evidence") {
 			return nil
 		}
 		return semanticError("semantic_validation", "about must connect an allowed record to an Entity", path, map[string]any{"from_type": fromType, "to_type": toType})
@@ -2355,27 +2409,27 @@ func validateRelationshipEndpoint(relation, fromType, toType, path string) error
 		}
 		return semanticError("semantic_validation", "part_of must stay within the Entity or Objective endpoint family", path, map[string]any{"from_type": fromType, "to_type": toType})
 	case "tests":
-		if fromType == "attempt" && isOneOf(toType, "objective", "entity", "fact", "finding") {
+		if fromType == "attempt" && isOneOf(toType, "objective", "entity", "fact", "finding", "solution") {
 			return nil
 		}
 		return semanticError("semantic_validation", "tests must point from an Attempt to an approved tested target", path, map[string]any{"from_type": fromType, "to_type": toType})
 	case "produced":
-		if fromType == "attempt" && isOneOf(toType, "entity", "objective", "fact", "finding", "evidence") {
+		if fromType == "attempt" && isOneOf(toType, "entity", "objective", "fact", "finding", "solution", "evidence") {
 			return nil
 		}
 		return semanticError("semantic_validation", "produced must point from an Attempt to a reusable outcome", path, map[string]any{"from_type": fromType, "to_type": toType})
 	case "evidences":
-		if fromType == "evidence" && isOneOf(toType, "fact", "finding") {
+		if fromType == "evidence" && isOneOf(toType, "fact", "finding", "solution") {
 			return nil
 		}
 		return semanticError("semantic_validation", "evidences must point from Evidence to supported Project Knowledge", path, map[string]any{"from_type": fromType, "to_type": toType})
 	case "derived_from":
-		if (fromType == "objective" && isOneOf(toType, "fact", "finding")) || (fromType == "fact" && toType == "fact") || (fromType == "evidence" && toType == "evidence") {
+		if (fromType == "objective" && isOneOf(toType, "fact", "finding", "solution")) || (fromType == "fact" && toType == "fact") || (fromType == "evidence" && toType == "evidence") {
 			return nil
 		}
 		return semanticError("semantic_validation", "derived_from endpoint types are not allowed", path, map[string]any{"from_type": fromType, "to_type": toType})
 	case "supports", "contradicts":
-		if fromType == "fact" && isOneOf(toType, "fact", "finding") {
+		if fromType == "fact" && isOneOf(toType, "fact", "finding", "solution") {
 			return nil
 		}
 		return semanticError("semantic_validation", fmt.Sprintf("%s must connect supported semantic knowledge", relation), path, map[string]any{"from_type": fromType, "to_type": toType})
@@ -2385,7 +2439,7 @@ func validateRelationshipEndpoint(relation, fromType, toType, path string) error
 		}
 		return semanticError("semantic_validation", "depends_on must point from an Objective to a prerequisite Objective", path, map[string]any{"from_type": fromType, "to_type": toType})
 	case "satisfies":
-		if isOneOf(fromType, "fact", "finding") && toType == "objective" {
+		if isOneOf(fromType, "fact", "finding", "solution") && toType == "objective" {
 			return nil
 		}
 		return semanticError("semantic_validation", "satisfies must point from current knowledge to an Objective", path, map[string]any{"from_type": fromType, "to_type": toType})
@@ -2659,6 +2713,12 @@ func decodeStoredRecord(typ, raw string) (Record, error) {
 			return Record{}, err
 		}
 		return recordFromFindingOutput(record), nil
+	case "solution":
+		var record SolutionRecord
+		if err := json.Unmarshal([]byte(raw), &record); err != nil {
+			return Record{}, err
+		}
+		return recordFromSolution(record), nil
 	case "evidence":
 		var record EvidenceRecord
 		if err := json.Unmarshal([]byte(raw), &record); err != nil {
@@ -3014,9 +3074,24 @@ func decodeTransitionChange(fields map[string]json.RawMessage) (Change, error) {
 	}
 	change := Change{Op: "transition", Key: key, Version: version, Status: status}
 	switch status {
+	case "verified", "rejected":
+		if _, ok := fields["summary"]; ok {
+			return Change{}, fmt.Errorf("transition summary is not allowed for status %s", status)
+		}
+		if _, ok := fields["resolution_summary"]; ok {
+			return Change{}, fmt.Errorf("transition resolution_summary is not allowed for status %s", status)
+		}
+		verificationSummary, err := decodeRequiredString(fields, "verification_summary")
+		if err != nil {
+			return Change{}, err
+		}
+		change.VerificationSummary = verificationSummary
 	case "resolved", "abandoned", "retired", "false_positive":
 		if _, ok := fields["summary"]; ok {
 			return Change{}, fmt.Errorf("transition summary is not allowed for status %s", status)
+		}
+		if _, ok := fields["verification_summary"]; ok {
+			return Change{}, fmt.Errorf("transition verification_summary is not allowed for status %s", status)
 		}
 		resolutionSummary, err := decodeRequiredString(fields, "resolution_summary")
 		if err != nil {
@@ -3026,6 +3101,9 @@ func decodeTransitionChange(fields map[string]json.RawMessage) (Change, error) {
 	case "succeeded", "failed", "blocked", "inconclusive", "interrupted", "deprecated", "missing":
 		if _, ok := fields["resolution_summary"]; ok {
 			return Change{}, fmt.Errorf("transition resolution_summary is not allowed for status %s", status)
+		}
+		if _, ok := fields["verification_summary"]; ok {
+			return Change{}, fmt.Errorf("transition verification_summary is not allowed for status %s", status)
 		}
 		summary, err := decodeRequiredString(fields, "summary")
 		if err != nil {
@@ -3038,6 +3116,9 @@ func decodeTransitionChange(fields map[string]json.RawMessage) (Change, error) {
 		}
 		if _, ok := fields["resolution_summary"]; ok {
 			return Change{}, fmt.Errorf("transition resolution_summary is not allowed for status %s", status)
+		}
+		if _, ok := fields["verification_summary"]; ok {
+			return Change{}, fmt.Errorf("transition verification_summary is not allowed for status %s", status)
 		}
 	}
 	return change, nil
@@ -3091,6 +3172,8 @@ func decodeCompleteRecord(typ string, raw json.RawMessage) (any, error) {
 		return decodeFactRecord(raw)
 	case "finding":
 		return decodeFindingRecord(raw)
+	case "solution":
+		return decodeSolutionRecord(raw)
 	default:
 		return nil, fmt.Errorf("unsupported Blackboard v2 record type %q in this slice", typ)
 	}
@@ -3108,6 +3191,8 @@ func decodePartialRecord(typ string, raw json.RawMessage) (any, error) {
 		return decodeFactPatch(raw)
 	case "finding":
 		return decodeFindingPatch(raw)
+	case "solution":
+		return decodeSolutionPatch(raw)
 	case "evidence":
 		return decodeEvidencePatch(raw)
 	default:
@@ -3256,7 +3341,7 @@ func validateChangeShape(change Change, index int) error {
 	case "relate":
 		allowedFields = map[string]bool{"version": true, "from": true, "relation": true, "to": true, "reason": true}
 	case "transition":
-		allowedFields = map[string]bool{"key": true, "version": true, "status": true, "summary": true, "resolution_summary": true}
+		allowedFields = map[string]bool{"key": true, "version": true, "status": true, "summary": true, "resolution_summary": true, "verification_summary": true}
 	case "supersede":
 		allowedFields = map[string]bool{"replacement": true, "replacement_version": true, "replaced": true, "replaced_version": true}
 	}
@@ -3326,15 +3411,22 @@ func validateChangeShape(change Change, index int) error {
 		}
 		switch change.Status {
 		case "resolved", "abandoned", "retired", "false_positive":
-			if change.Summary != "" {
-				return semanticError("semantic_validation", "transition summary is not allowed for this status", fmt.Sprintf("changes[%d].summary", index), nil)
+			if change.Summary != "" || change.VerificationSummary != "" {
+				return semanticError("semantic_validation", "transition accepts only resolution_summary for this status", fmt.Sprintf("changes[%d].status", index), nil)
 			}
 		case "succeeded", "failed", "blocked", "inconclusive", "interrupted", "deprecated", "missing":
-			if change.ResolutionSummary != "" {
-				return semanticError("semantic_validation", "transition resolution_summary is not allowed for this status", fmt.Sprintf("changes[%d].resolution_summary", index), nil)
+			if change.ResolutionSummary != "" || change.VerificationSummary != "" {
+				return semanticError("semantic_validation", "transition accepts only summary for this status", fmt.Sprintf("changes[%d].status", index), nil)
+			}
+		case "verified", "rejected":
+			if change.Summary != "" || change.ResolutionSummary != "" {
+				return semanticError("semantic_validation", "Solution transition accepts only verification_summary", fmt.Sprintf("changes[%d].status", index), nil)
+			}
+			if change.VerificationSummary == "" {
+				return semanticError("semantic_validation", "Solution transition requires verification_summary", fmt.Sprintf("changes[%d].verification_summary", index), nil)
 			}
 		default:
-			if change.Summary != "" || change.ResolutionSummary != "" {
+			if change.Summary != "" || change.ResolutionSummary != "" || change.VerificationSummary != "" {
 				return semanticError("semantic_validation", "transition summary field is not allowed for this status", fmt.Sprintf("changes[%d].status", index), nil)
 			}
 		}
@@ -3377,6 +3469,9 @@ func validateChangeDTOShape(change Change, index int) error {
 		case "finding":
 			_, err := completeFindingRecord(change.Record, path)
 			return err
+		case "solution":
+			_, err := completeSolutionRecord(change.Record, path)
+			return err
 		}
 	}
 	if change.Op == "update" {
@@ -3395,6 +3490,9 @@ func validateChangeDTOShape(change Change, index int) error {
 			return err
 		case "finding":
 			_, err := partialFindingRecord(change.Record, path)
+			return err
+		case "solution":
+			_, err := partialSolutionRecord(change.Record, path)
 			return err
 		case "evidence":
 			_, err := partialEvidenceRecord(change.Record, path)
@@ -3423,6 +3521,7 @@ func populatedChangeFields(change Change) []populatedChangeField {
 		{name: "status", populated: change.Status != ""},
 		{name: "summary", populated: change.Summary != ""},
 		{name: "resolution_summary", populated: change.ResolutionSummary != ""},
+		{name: "verification_summary", populated: change.VerificationSummary != ""},
 		{name: "replacement", populated: change.Replacement != ""},
 		{name: "replacement_version", populated: change.ReplacementVersion != 0},
 		{name: "replaced", populated: change.Replaced != ""},
