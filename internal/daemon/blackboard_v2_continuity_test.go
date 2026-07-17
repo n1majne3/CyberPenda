@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -190,14 +191,30 @@ func TestBlackboardV2FinishThenResumeUsesFreshPinAndOnlyUnconsumedHarnessSteerin
 	if _, err := server.tasks.AppendEvent(createdTask.ID, task.EventKindSteering, task.EventPayload{"phase": "steering_applied", "directive": "already consumed", "requested_event_id": consumed.ID}); err != nil {
 		t.Fatalf("mark steering consumed: %v", err)
 	}
+	var unconsumedIDs []string
 	for _, directive := range []string{"first unconsumed", "second unconsumed"} {
-		if _, err := server.tasks.AppendEvent(createdTask.ID, task.EventKindSteering, task.EventPayload{"phase": "steering_requested", "directive": directive}); err != nil {
+		event, err := server.tasks.AppendEvent(createdTask.ID, task.EventKindSteering, task.EventPayload{"phase": "steering_requested", "directive": directive})
+		if err != nil {
 			t.Fatalf("append unconsumed steering: %v", err)
 		}
+		unconsumedIDs = append(unconsumedIDs, event.ID)
 	}
 
+	if !server.acquireTaskControl(createdTask.ID) {
+		t.Fatal("acquire resume task control")
+	}
+	queueWhileSelected := httptest.NewRecorder()
+	queueRequest := httptest.NewRequest(http.MethodPost, "/api/projects/"+createdProject.ID+"/tasks/"+createdTask.ID+"/steer/queue", strings.NewReader(`{"directive":"must wait for next resume"}`))
+	queueRequest.SetPathValue("id", createdProject.ID)
+	queueRequest.SetPathValue("task_id", createdTask.ID)
+	server.handleQueueSteerTask(queueWhileSelected, queueRequest)
+	if queueWhileSelected.Code != http.StatusConflict {
+		server.releaseTaskControl(createdTask.ID)
+		t.Fatalf("queue during resume selection status = %d, body=%s", queueWhileSelected.Code, queueWhileSelected.Body.String())
+	}
 	found, resumeGoal, resumePlan, err := server.prepareHandoffResumeContinuation(createdTask)
 	if err != nil {
+		server.releaseTaskControl(createdTask.ID)
 		t.Fatalf("prepare v2 resume: %v", err)
 	}
 	for _, required := range []string{createdTask.Goal, "first unconsumed", "second unconsumed"} {
@@ -215,11 +232,40 @@ func TestBlackboardV2FinishThenResumeUsesFreshPinAndOnlyUnconsumedHarnessSteerin
 	}
 	current, err := server.blackboardV2.ProjectRuntimeSnapshot(context.Background(), createdProject.ID)
 	if err != nil {
+		server.releaseTaskControl(createdTask.ID)
 		t.Fatalf("project current resume state: %v", err)
 	}
-	resumed, _, err := server.prepareBlackboardV2ContinuationLaunch(found, resumePlan, resumeGoal)
+	publicationFailure := errors.New("injected resumed publication failure")
+	failedOnce := false
+	server.blackboardV2Continuity.SetFailureInjector(func(point blackboardv2.ContinuityFailurePoint) error {
+		if point == blackboardv2.ContinuityFailureBeforeWorkingSnapshotPublication && !failedOnce {
+			failedOnce = true
+			return publicationFailure
+		}
+		return nil
+	})
+	if _, _, err := server.prepareBlackboardV2ContinuationLaunch(found, resumePlan, resumeGoal); !errors.Is(err, publicationFailure) {
+		server.releaseTaskControl(createdTask.ID)
+		t.Fatalf("failed resumed launch error = %v", err)
+	}
+	server.releaseTaskControl(createdTask.ID)
+	stillUnconsumed, err := server.tasks.UnconsumedHarnessSteering(context.Background(), createdTask.ID)
+	if err != nil || len(stillUnconsumed) != 2 {
+		t.Fatalf("failed launch consumed steering: %#v, %v", stillUnconsumed, err)
+	}
+
+	if !server.acquireTaskControl(createdTask.ID) {
+		t.Fatal("reacquire resume task control")
+	}
+	found, resumeGoal, resumePlan, err = server.prepareHandoffResumeContinuation(createdTask)
 	if err != nil {
-		t.Fatalf("create resumed Continuation: %v", err)
+		server.releaseTaskControl(createdTask.ID)
+		t.Fatalf("retry prepare v2 resume: %v", err)
+	}
+	resumed, _, err := server.prepareBlackboardV2ContinuationLaunch(found, resumePlan, resumeGoal)
+	server.releaseTaskControl(createdTask.ID)
+	if err != nil {
+		t.Fatalf("retry create resumed Continuation: %v", err)
 	}
 	resumedPin, err := server.blackboardV2Continuity.ReadLaunchPin(context.Background(), resumed.ID)
 	if err != nil {
@@ -236,8 +282,50 @@ func TestBlackboardV2FinishThenResumeUsesFreshPinAndOnlyUnconsumedHarnessSteerin
 	if err != nil {
 		t.Fatalf("read Task surfaces after resume: %v", err)
 	}
-	if len(events) != 5 || events[0].ID != conversation.ID {
+	if len(events) != 7 || events[0].ID != conversation.ID {
 		t.Fatalf("resume changed Task Conversation or steering events: %#v", events)
+	}
+	for index, requestedID := range unconsumedIDs {
+		applied := events[5+index]
+		if applied.Kind != task.EventKindSteering || applied.ContinuationID != resumed.ID || applied.Payload["phase"] != "steering_applied" || applied.Payload["requested_event_id"] != requestedID {
+			t.Errorf("applied steering %d = %#v", index, applied)
+		}
+	}
+	remaining, err := server.tasks.UnconsumedHarnessSteering(context.Background(), createdTask.ID)
+	if err != nil || len(remaining) != 0 {
+		t.Fatalf("successful resume left duplicate steering: %#v, %v", remaining, err)
+	}
+	queueNext := httptest.NewRecorder()
+	queueNextRequest := httptest.NewRequest(http.MethodPost, "/api/projects/"+createdProject.ID+"/tasks/"+createdTask.ID+"/steer/queue", strings.NewReader(`{"directive":"next resume only"}`))
+	queueNextRequest.SetPathValue("id", createdProject.ID)
+	queueNextRequest.SetPathValue("task_id", createdTask.ID)
+	server.handleQueueSteerTask(queueNext, queueNextRequest)
+	if queueNext.Code != http.StatusOK {
+		t.Fatalf("queue after successful resume status = %d, body=%s", queueNext.Code, queueNext.Body.String())
+	}
+	if _, err := server.blackboardV2.FinishContinuation(context.Background(), createdProject.ID, resumed.ID, blackboardv2.FinishContinuationRequest{IdempotencyKey: "finish-second-resume"}); err != nil {
+		t.Fatalf("Finish resumed Continuation: %v", err)
+	}
+	if !server.acquireTaskControl(createdTask.ID) {
+		t.Fatal("acquire second resume task control")
+	}
+	found, secondGoal, secondPlan, err := server.prepareHandoffResumeContinuation(createdTask)
+	if err != nil {
+		server.releaseTaskControl(createdTask.ID)
+		t.Fatalf("prepare second resume: %v", err)
+	}
+	if !strings.Contains(secondGoal, "next resume only") || strings.Contains(secondGoal, "first unconsumed") || strings.Contains(secondGoal, "second unconsumed") {
+		server.releaseTaskControl(createdTask.ID)
+		t.Fatalf("second resume steering selection = %s", secondGoal)
+	}
+	if _, _, err := server.prepareBlackboardV2ContinuationLaunch(found, secondPlan, secondGoal); err != nil {
+		server.releaseTaskControl(createdTask.ID)
+		t.Fatalf("create second resumed Continuation: %v", err)
+	}
+	server.releaseTaskControl(createdTask.ID)
+	remaining, err = server.tasks.UnconsumedHarnessSteering(context.Background(), createdTask.ID)
+	if err != nil || len(remaining) != 0 {
+		t.Fatalf("second successful resume left steering: %#v, %v", remaining, err)
 	}
 	for _, table := range []string{"task_summary_versions", "blackboard_graph_mutations", "blackboard_graph_operations"} {
 		var count int

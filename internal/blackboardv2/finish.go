@@ -69,6 +69,8 @@ func (s *Service) FinishContinuation(ctx context.Context, projectID, continuatio
 	if request.IdempotencyKey == "" {
 		return FinishContinuationResult{}, semanticError("semantic_validation", "idempotency_key is required", "idempotency_key", nil)
 	}
+	s.snapshotMu.Lock()
+	defer s.snapshotMu.Unlock()
 	requestHash := finishRequestHash(request)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -101,6 +103,19 @@ func (s *Service) FinishContinuation(ctx context.Context, projectID, continuatio
 		if stored.idempotencyKey != request.IdempotencyKey || stored.requestHash != requestHash {
 			return FinishContinuationResult{}, semanticError("finish_conflict", "Continuation was already finished with different semantics", "idempotency_key", nil)
 		}
+		var revision int
+		var workingBytes []byte
+		if err := tx.QueryRowContext(ctx, `SELECT last_acknowledged_revision,working_snapshot_bytes FROM blackboard_v2_continuation_state WHERE continuation_id=?`, continuationID).Scan(&revision, &workingBytes); err != nil {
+			return FinishContinuationResult{}, fmt.Errorf("read replayed Finish Working Snapshot: %w", err)
+		}
+		if revision != stored.result.Revision || stored.result.WorkingSnapshot.Revision != revision {
+			return FinishContinuationResult{}, fmt.Errorf("stored Finish result does not match acknowledged Working Snapshot")
+		}
+		if s.runtimeRoot != "" {
+			if err := materializeWorkingSnapshot(s.runtimeRoot, taskID, workingBytes); err != nil {
+				return FinishContinuationResult{}, fmt.Errorf("publish replayed closed Working Snapshot: %w", err)
+			}
+		}
 		if err := tx.Commit(); err != nil {
 			return FinishContinuationResult{}, fmt.Errorf("commit Blackboard v2 Finish replay: %w", err)
 		}
@@ -127,6 +142,16 @@ func (s *Service) FinishContinuation(ctx context.Context, projectID, continuatio
 	}
 	if newer != 0 {
 		return FinishContinuationResult{}, semanticError("closed_continuation", "trusted Continuation no longer owns the Task Working Snapshot", "", nil)
+	}
+	var pendingEvidence int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM blackboard_v2_evidence_requests
+		WHERE project_id=? AND continuation_id=? AND status<>'completed'`, projectID, continuationID,
+	).Scan(&pendingEvidence); err != nil {
+		return FinishContinuationResult{}, fmt.Errorf("read pending Evidence writes for Finish: %w", err)
+	}
+	if pendingEvidence != 0 {
+		return FinishContinuationResult{}, semanticError("continuation_pending_writes", "Finish requires pending Evidence writes to complete", "", map[string]any{"pending_evidence": pendingEvidence})
 	}
 
 	openAttempts, err := openAttemptsForContinuation(ctx, tx, projectID, continuationID)
@@ -189,6 +214,9 @@ func (s *Service) FinishContinuation(ctx context.Context, projectID, continuatio
 		if err := s.finishFail(FinishFailureBeforeCommit); err != nil {
 			return FinishContinuationResult{}, err
 		}
+	}
+	if err := materializeWorkingSnapshot(s.runtimeRoot, taskID, workingBytes); err != nil {
+		return FinishContinuationResult{}, fmt.Errorf("publish closed Working Snapshot: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return FinishContinuationResult{}, fmt.Errorf("commit Blackboard v2 Finish: %w", err)

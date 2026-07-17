@@ -138,19 +138,20 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 }
 
 type taskLaunchPlan struct {
-	Adapter               runtime.Adapter
-	RuntimeConfig         map[string]any
-	CapturedRuntimeConfig map[string]any
-	Metadata              func() (runtime.NativeSessionMetadata, error)
-	StopConfirmation      runtime.StopConfirmation
-	LaunchModelOverride   string
-	NativeResumeSessionID string
-	ResolvedProfile       runtimeprofile.Profile
-	ModelSnapshot         *modelprovider.Snapshot
-	SkillBundles          []skill.Bundle
-	LaunchGoal            string
-	BlackboardV2Codex     bool
-	ValidatedLayout       *runner.Layout
+	Adapter                      runtime.Adapter
+	RuntimeConfig                map[string]any
+	CapturedRuntimeConfig        map[string]any
+	Metadata                     func() (runtime.NativeSessionMetadata, error)
+	StopConfirmation             runtime.StopConfirmation
+	LaunchModelOverride          string
+	NativeResumeSessionID        string
+	ResolvedProfile              runtimeprofile.Profile
+	ModelSnapshot                *modelprovider.Snapshot
+	SkillBundles                 []skill.Bundle
+	LaunchGoal                   string
+	BlackboardV2Codex            bool
+	ValidatedLayout              *runner.Layout
+	BlackboardV2SteeringEventIDs []string
 }
 
 type continuationLaunchBinding struct {
@@ -224,12 +225,10 @@ func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, p
 	launch, err := server.blackboardV2Continuity.CreateContinuation(context.Background(), blackboardv2.ContinuationLaunchRequest{
 		ProjectID: created.ProjectID, TaskID: created.ID, RuntimeProfileID: created.RuntimeProfileID,
 		RuntimeProvider: string(runtimeprofile.ProviderCodex), Runner: created.Runner, RuntimeConfig: plan.CapturedRuntimeConfig,
+		SteeringEventIDs: plan.BlackboardV2SteeringEventIDs,
 	})
 	if err != nil {
 		return task.TaskContinuation{}, taskLaunchPlan{}, err
-	}
-	if err := server.blackboardV2Continuity.MaterializeWorkingSnapshot(context.Background(), launch.Continuation.ID); err != nil {
-		return task.TaskContinuation{}, taskLaunchPlan{}, fmt.Errorf("materialize initial Working Blackboard Snapshot: %w", err)
 	}
 	header := blackboardv2.LaunchHeader{
 		Runner: string(created.Runner), ScopePath: ".pentest/scope.json", BlackboardPath: ".pentest/blackboard.json",
@@ -1260,10 +1259,18 @@ func (server *Server) prepareNativeResumeContinuation(found task.Task, resumedMe
 	if err != nil {
 		return task.Task{}, "", taskLaunchPlan{}, err
 	}
+	var steeringEventIDs []string
+	if server.canonicalStore == store.CanonicalStoreBlackboardV2 && server.isCodexTask(found) {
+		resumedMessage, steeringEventIDs, err = server.blackboardV2ResumeContext(found)
+		if err != nil {
+			return task.Task{}, "", taskLaunchPlan{}, err
+		}
+	}
 	plan, err := server.buildTaskLaunchPlan(found, resumedMessage, "", nativeResumeSessionID)
 	if err != nil {
 		return task.Task{}, "", taskLaunchPlan{}, err
 	}
+	plan.BlackboardV2SteeringEventIDs = steeringEventIDs
 	return found, resumedMessage, plan, nil
 }
 
@@ -1287,7 +1294,13 @@ func (server *Server) prepareHandoffResumeContinuation(found task.Task) (task.Ta
 	}
 	found.RuntimeProfileID = effectiveProfile.ID
 
-	resumeGoal, err := server.buildResumeGoal(found)
+	resumeGoal := ""
+	var steeringEventIDs []string
+	if server.canonicalStore == store.CanonicalStoreBlackboardV2 && effectiveProfile.Provider == runtimeprofile.ProviderCodex {
+		resumeGoal, steeringEventIDs, err = server.blackboardV2ResumeContext(found)
+	} else {
+		resumeGoal, err = server.buildResumeGoal(found)
+	}
 	if err != nil {
 		return task.Task{}, "", taskLaunchPlan{}, err
 	}
@@ -1295,6 +1308,7 @@ func (server *Server) prepareHandoffResumeContinuation(found task.Task) (task.Ta
 	if err != nil {
 		return task.Task{}, "", taskLaunchPlan{}, err
 	}
+	plan.BlackboardV2SteeringEventIDs = steeringEventIDs
 	return found, resumeGoal, plan, nil
 }
 
@@ -1304,7 +1318,12 @@ func (server *Server) buildResumeGoal(found task.Task) (string, error) {
 		return "", err
 	}
 	if server.canonicalStore == store.CanonicalStoreBlackboardV2 {
-		return adapters.BuildBlackboardV2ResumePrompt(found.Goal, unconsumedHarnessSteering(events)), nil
+		if server.isCodexTask(found) {
+			goal, _, err := server.blackboardV2ResumeContext(found)
+			return goal, err
+		}
+		directives := unconsumedHarnessSteering(events)
+		return adapters.BuildBlackboardV2ResumePrompt(adapters.BlackboardV2ResumeRequest{TaskGoal: found.Goal, Steering: directives}), nil
 	}
 
 	var factLines, progressFacts, findingLines []string
@@ -1343,6 +1362,38 @@ func (server *Server) buildResumeGoal(found task.Task) (string, error) {
 		ProgressFacts:     progressFacts,
 		SteeringDirective: steeringDirective,
 	}), nil
+}
+
+func (server *Server) isCodexTask(found task.Task) bool {
+	profile, err := server.profiles.Get(found.RuntimeProfileID)
+	return err == nil && profile.Provider == runtimeprofile.ProviderCodex
+}
+
+func (server *Server) blackboardV2ResumeContext(found task.Task) (string, []string, error) {
+	steering, err := server.tasks.UnconsumedHarnessSteering(context.Background(), found.ID)
+	if err != nil {
+		return "", nil, err
+	}
+	latest, err := server.tasks.LatestContinuation(found.ID)
+	if err != nil {
+		return "", nil, err
+	}
+	if latest == nil {
+		return "", nil, task.ErrNotFound
+	}
+	checkpoints, err := server.blackboardV2.InterruptedAttemptCheckpoints(context.Background(), found.ProjectID, latest.ID)
+	if err != nil {
+		return "", nil, err
+	}
+	directives := make([]string, len(steering))
+	eventIDs := make([]string, len(steering))
+	for index, directive := range steering {
+		directives[index] = directive.Directive
+		eventIDs[index] = directive.EventID
+	}
+	return adapters.BuildBlackboardV2ResumePrompt(adapters.BlackboardV2ResumeRequest{
+		TaskGoal: found.Goal, Steering: directives, InterruptedAttempts: checkpoints,
+	}), eventIDs, nil
 }
 
 func unconsumedHarnessSteering(events []task.Event) []string {
@@ -1402,12 +1453,19 @@ func (server *Server) resumeGoalBlackboardLinesLegacy(projectID string) (factLin
 }
 
 func (server *Server) writeResumePreparationError(response http.ResponseWriter, err error) {
+	var boardErr *blackboardv2.Error
+	if errors.As(err, &boardErr) && boardErr.Code == "reconciliation_incomplete" {
+		writeError(response, http.StatusConflict, boardErr.Message)
+		return
+	}
 	switch {
 	case errors.Is(err, runtimeprofile.ErrNotFound):
 		writeError(response, http.StatusBadRequest, "runtime profile not found")
 	case errors.Is(err, errNativeResumeUnavailable):
 		writeError(response, http.StatusBadRequest, err.Error())
 	case errors.Is(err, errNativeSessionUnavailable):
+		writeError(response, http.StatusConflict, err.Error())
+	case errors.Is(err, task.ErrContinuationReconciliationIncomplete), errors.Is(err, task.ErrSteeringSelectionConflict):
 		writeError(response, http.StatusConflict, err.Error())
 	default:
 		writeTaskAdapterError(response, err)
@@ -1445,6 +1503,11 @@ func (server *Server) handleQueueSteerTask(response http.ResponseWriter, request
 		writeError(response, http.StatusBadRequest, "steering directive is required")
 		return
 	}
+	if !server.acquireTaskControl(taskID) {
+		writeError(response, http.StatusConflict, "task control operation already active")
+		return
+	}
+	defer server.releaseTaskControl(taskID)
 	payload := task.EventPayload{
 		"directive": input.Directive,
 		"phase":     "steering_requested",
@@ -1516,13 +1579,11 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 	}
 
 	activeSteer := found.Status == task.StatusRunning || found.Status == task.StatusPaused
-	if activeSteer {
-		if !server.acquireTaskControl(taskID) {
-			writeError(response, http.StatusConflict, "task control operation already active")
-			return
-		}
-		defer server.releaseTaskControl(taskID)
+	if !server.acquireTaskControl(taskID) {
+		writeError(response, http.StatusConflict, "task control operation already active")
+		return
 	}
+	defer server.releaseTaskControl(taskID)
 
 	payload := task.EventPayload{
 		"directive": input.Directive,
@@ -2047,7 +2108,7 @@ func writeTaskAdapterError(response http.ResponseWriter, err error) {
 }
 
 func writeTaskLaunchError(response http.ResponseWriter, err error) {
-	if errors.Is(err, task.ErrActiveContinuation) {
+	if errors.Is(err, task.ErrActiveContinuation) || errors.Is(err, task.ErrContinuationReconciliationIncomplete) || errors.Is(err, task.ErrSteeringSelectionConflict) {
 		writeError(response, http.StatusConflict, err.Error())
 		return
 	}

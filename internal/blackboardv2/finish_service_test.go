@@ -9,9 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 
+	"pentest/internal/adapters"
 	"pentest/internal/blackboardv2"
 	"pentest/internal/store"
 	"pentest/internal/task"
@@ -269,6 +271,162 @@ func TestFinishRacesWithEveryRuntimeWriteAsOneAtomicWinner(t *testing.T) {
 	}
 }
 
+func TestFinishPublishesExactCommittedWorkingSnapshotBeforeClosing(t *testing.T) {
+	fixture := newContinuityFixture(t)
+	t.Cleanup(func() { _ = fixture.db.Close() })
+	launch := fixture.launch(t)
+	if _, err := fixture.tasks.UpdateContinuationStatus(launch.Continuation.ID, task.StatusRunning); err != nil {
+		t.Fatalf("start Continuation: %v", err)
+	}
+	if err := fixture.continuity.MaterializeWorkingSnapshot(context.Background(), launch.Continuation.ID); err != nil {
+		t.Fatalf("materialize initial Working Snapshot: %v", err)
+	}
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	fixture.board.SetSnapshotPublicationInjector(func(point blackboardv2.SnapshotPublicationPoint, continuationID string) error {
+		if point == blackboardv2.SnapshotPublicationAfterCommit && continuationID == launch.Continuation.ID {
+			once.Do(func() { close(reached) })
+			<-release
+		}
+		return nil
+	})
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := fixture.board.ApplyForContinuation(context.Background(), fixture.project.ID, launch.Continuation.ID, blackboardv2.ChangeBatch{
+			Schema: "semantic-change-batch/v2", IdempotencyKey: "pending-publication-write",
+			Changes: []blackboardv2.Change{{Op: "create", Key: "entity:pending-publication", Type: "entity", Record: blackboardv2.EntityRecord{Status: "active", Kind: "host", Name: "Committed current bytes", ScopeStatus: "in_scope"}}},
+		})
+		writeDone <- err
+	}()
+	<-reached
+	finished, err := fixture.board.FinishContinuation(context.Background(), fixture.project.ID, launch.Continuation.ID, blackboardv2.FinishContinuationRequest{IdempotencyKey: "finish-pending-publication"})
+	if err != nil {
+		close(release)
+		t.Fatalf("Finish while publication pending: %v", err)
+	}
+	close(release)
+	if err := <-writeDone; err != nil {
+		t.Fatalf("committed writer publication: %v", err)
+	}
+	current, err := fixture.board.ProjectRuntimeSnapshot(context.Background(), fixture.project.ID)
+	if err != nil {
+		t.Fatalf("project current Snapshot: %v", err)
+	}
+	onDisk, err := os.ReadFile(filepath.Join(fixture.runtimeRoot, fixture.task.ID, "workdir", ".pentest", "blackboard.json"))
+	if err != nil {
+		t.Fatalf("read closed Working Snapshot: %v", err)
+	}
+	if finished.Revision != current.Snapshot.Revision || finished.WorkingSnapshot.Revision != current.Snapshot.Revision || !bytes.Equal(onDisk, current.Bytes) {
+		t.Fatalf("Finish closed stale publication: finish=%#v current=%d\ndisk=%s\ncurrent=%s", finished, current.Snapshot.Revision, onDisk, current.Bytes)
+	}
+}
+
+type finishEvidenceBarrier struct {
+	point   blackboardv2.EvidenceFailurePoint
+	reached chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (barrier *finishEvidenceBarrier) FailAfter(point blackboardv2.EvidenceFailurePoint) error {
+	if point != barrier.point {
+		return nil
+	}
+	barrier.once.Do(func() { close(barrier.reached) })
+	<-barrier.release
+	return nil
+}
+
+func TestFinishAndEvidenceReservationHaveOneAtomicWinner(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		point blackboardv2.EvidenceFailurePoint
+	}{
+		{name: "Finish wins before reservation", point: blackboardv2.EvidenceFailureBeforeReservation},
+		{name: "reservation wins before Finish", point: blackboardv2.EvidenceFailureBeforeFilePublish},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newContinuityFixture(t)
+			t.Cleanup(func() { _ = fixture.db.Close() })
+			barrier := &finishEvidenceBarrier{point: test.point, reached: make(chan struct{}), release: make(chan struct{})}
+			artifactRoot := filepath.Join(filepath.Dir(fixture.runtimeRoot), "retained")
+			if err := os.MkdirAll(artifactRoot, 0o700); err != nil {
+				t.Fatalf("create Artifact Root: %v", err)
+			}
+			fixture.board = blackboardv2.NewServiceWithEvidence(fixture.db, blackboardv2.EvidenceConfig{RuntimeRoot: fixture.runtimeRoot, ArtifactRoot: artifactRoot, Failures: barrier})
+			fixture.continuity = blackboardv2.NewContinuityService(fixture.db, fixture.board, fixture.tasks, fixture.runtimeRoot)
+			launch := fixture.launch(t)
+			if _, err := fixture.tasks.UpdateContinuationStatus(launch.Continuation.ID, task.StatusRunning); err != nil {
+				t.Fatalf("start Continuation: %v", err)
+			}
+			seedCheckpointAttempt(t, fixture.board, fixture.project.ID, launch.Continuation.ID, "attempt:evidence-finish-race", "Retaining proof")
+			workdir := filepath.Join(fixture.runtimeRoot, fixture.task.ID, "workdir")
+			if err := os.MkdirAll(workdir, 0o700); err != nil {
+				t.Fatalf("create workdir: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(workdir, "proof.txt"), []byte("race proof"), 0o600); err != nil {
+				t.Fatalf("write proof: %v", err)
+			}
+			request := blackboardv2.RetainEvidenceRequest{IdempotencyKey: "finish-evidence-race", Key: "evidence:finish-race", Attempt: "attempt:evidence-finish-race", SourcePath: "proof.txt", ArtifactType: "text", Summary: "Retained race proof"}
+			retainDone := make(chan struct {
+				result blackboardv2.ChangeResult
+				err    error
+			}, 1)
+			go func() {
+				result, err := fixture.board.RetainEvidenceForContinuation(context.Background(), fixture.project.ID, launch.Continuation.ID, request)
+				retainDone <- struct {
+					result blackboardv2.ChangeResult
+					err    error
+				}{result: result, err: err}
+			}()
+			select {
+			case <-barrier.reached:
+			case retained := <-retainDone:
+				t.Fatalf("retain exited before %s barrier: %v", test.point, retained.err)
+			}
+			terminal, err := fixture.board.ApplyForContinuation(context.Background(), fixture.project.ID, launch.Continuation.ID, blackboardv2.ChangeBatch{
+				Schema: "semantic-change-batch/v2", IdempotencyKey: "terminalize-evidence-finish-race",
+				Changes: []blackboardv2.Change{{Op: "transition", Key: "attempt:evidence-finish-race", Version: 1, Status: "failed", Summary: "Retention race concluded"}},
+			})
+			if err != nil {
+				close(barrier.release)
+				t.Fatalf("terminalize producing Attempt: %v", err)
+			}
+			finish, finishErr := fixture.board.FinishContinuation(context.Background(), fixture.project.ID, launch.Continuation.ID, blackboardv2.FinishContinuationRequest{IdempotencyKey: "finish-evidence-atomic"})
+			if test.point == blackboardv2.EvidenceFailureBeforeReservation {
+				if finishErr != nil || finish.Revision != terminal.Revision {
+					close(barrier.release)
+					t.Fatalf("Finish winner = %#v, %v; terminal revision=%d", finish, finishErr, terminal.Revision)
+				}
+				close(barrier.release)
+				retained := <-retainDone
+				if !isV2ErrorCode(retained.err, "closed_continuation") {
+					t.Fatalf("paused retain after Finish = %#v", retained.err)
+				}
+				var reservations int
+				if err := fixture.db.QueryRow(`SELECT COUNT(*) FROM blackboard_v2_evidence_requests WHERE continuation_id=?`, launch.Continuation.ID).Scan(&reservations); err != nil || reservations != 0 {
+					t.Fatalf("retain reserved after Finish: count=%d err=%v", reservations, err)
+				}
+				return
+			}
+			if !isV2ErrorCode(finishErr, "continuation_pending_writes") {
+				close(barrier.release)
+				t.Fatalf("Finish with reserved Evidence = %#v", finishErr)
+			}
+			close(barrier.release)
+			retained := <-retainDone
+			if retained.err != nil {
+				t.Fatalf("reserved Evidence completion: %v", retained.err)
+			}
+			finish, err = fixture.board.FinishContinuation(context.Background(), fixture.project.ID, launch.Continuation.ID, blackboardv2.FinishContinuationRequest{IdempotencyKey: "finish-evidence-atomic"})
+			if err != nil || finish.Revision != retained.result.Revision {
+				t.Fatalf("Finish after Evidence completion = %#v, %v; Evidence revision=%d", finish, err, retained.result.Revision)
+			}
+		})
+	}
+}
+
 func TestFinishRacesWithAttemptTerminalizationWithoutClosingOpenWork(t *testing.T) {
 	for iteration := 0; iteration < 20; iteration++ {
 		fixture := newContinuityFixture(t)
@@ -385,6 +543,101 @@ func TestResumePinsCurrentTruthWithoutLegacyConclusionOrHandoffState(t *testing.
 		if bytes.Contains(bytes.ToLower(resumed.Snapshot), []byte(forbidden)) {
 			t.Errorf("resume Snapshot copied forbidden %q state: %s", forbidden, resumed.Snapshot)
 		}
+	}
+}
+
+type failingResumeReconciler struct{ err error }
+
+func (reconciler failingResumeReconciler) ReconcileTerminalContinuation(context.Context, string, string) error {
+	return reconciler.err
+}
+
+func TestResumeRequiresDurableReconciliationAndExposesBoundedInterruptedCheckpoints(t *testing.T) {
+	fixture := newContinuityFixture(t)
+	t.Cleanup(func() { _ = fixture.db.Close() })
+	first := fixture.launch(t)
+	if _, err := fixture.tasks.UpdateContinuationStatus(first.Continuation.ID, task.StatusRunning); err != nil {
+		t.Fatalf("start first Continuation: %v", err)
+	}
+	seedCheckpointAttempt(t, fixture.board, fixture.project.ID, first.Continuation.ID, "attempt:interrupted-resume", "Initial interrupted work")
+	checkpointSummary := "Mapped two reachable paths before interruption"
+	if _, err := fixture.board.CheckpointAttemptForContinuation(context.Background(), fixture.project.ID, first.Continuation.ID, blackboardv2.CheckpointAttemptRequest{
+		IdempotencyKey: "checkpoint-before-failed-reconciliation", Key: "attempt:interrupted-resume", Version: 1, Summary: checkpointSummary,
+	}); err != nil {
+		t.Fatalf("checkpoint before interruption: %v", err)
+	}
+	reconcileFailure := errors.New("injected reconciliation failure")
+	fixture.tasks.SetContinuationReconciler(failingResumeReconciler{err: reconcileFailure})
+	if _, err := fixture.tasks.UpdateContinuationStatus(first.Continuation.ID, task.StatusInterrupted); !errors.Is(err, reconcileFailure) {
+		t.Fatalf("interruption reconciliation error = %v", err)
+	}
+	request := blackboardv2.ContinuationLaunchRequest{
+		ProjectID: fixture.project.ID, TaskID: fixture.task.ID, RuntimeProfileID: fixture.profile.ID,
+		RuntimeProvider: "codex", Runner: task.RunnerSandbox, RuntimeConfig: map[string]any{"provider": "codex", "resume": true},
+	}
+	if _, err := fixture.continuity.CreateContinuation(context.Background(), request); !errors.Is(err, task.ErrContinuationReconciliationIncomplete) {
+		t.Fatalf("resume before reconciliation = %v, want prerequisite error", err)
+	}
+	var continuationCount int
+	if err := fixture.db.QueryRow(`SELECT COUNT(*) FROM task_continuations WHERE task_id=?`, fixture.task.ID).Scan(&continuationCount); err != nil || continuationCount != 1 {
+		t.Fatalf("failed prerequisite created Continuation: count=%d err=%v", continuationCount, err)
+	}
+
+	fixture.tasks.SetContinuationReconciler(fixture.board)
+	if _, err := fixture.tasks.UpdateContinuationStatus(first.Continuation.ID, task.StatusInterrupted); err != nil {
+		t.Fatalf("retry interruption reconciliation: %v", err)
+	}
+	checkpoints, err := fixture.board.InterruptedAttemptCheckpoints(context.Background(), fixture.project.ID, first.Continuation.ID)
+	if err != nil {
+		t.Fatalf("read interrupted checkpoints: %v", err)
+	}
+	if len(checkpoints) != 1 || checkpoints[0].Key != "attempt:interrupted-resume" || checkpoints[0].Summary != checkpointSummary {
+		t.Fatalf("interrupted checkpoint DTOs = %#v", checkpoints)
+	}
+	encoded, err := json.Marshal(checkpoints[0])
+	if err != nil || string(encoded) != `{"key":"attempt:interrupted-resume","summary":"Mapped two reachable paths before interruption"}` {
+		t.Fatalf("closed checkpoint DTO = %s, %v", encoded, err)
+	}
+	current, err := fixture.board.ProjectRuntimeSnapshot(context.Background(), fixture.project.ID)
+	if err != nil {
+		t.Fatalf("project fresh current Snapshot: %v", err)
+	}
+	var currentSnapshot blackboardv2.RuntimeSnapshot
+	if err := json.Unmarshal(current.Bytes, &currentSnapshot); err != nil {
+		t.Fatalf("decode fresh current Snapshot: %v", err)
+	}
+	if len(currentSnapshot.Work.Attempts) != 0 || bytes.Contains(current.Bytes, []byte(checkpointSummary)) {
+		t.Fatalf("fresh current Snapshot included terminal Attempt: %s", current.Bytes)
+	}
+	prompt := adapters.BuildBlackboardV2ResumePrompt(adapters.BlackboardV2ResumeRequest{
+		TaskGoal: fixture.task.Goal, InterruptedAttempts: checkpoints,
+	})
+	for _, required := range []string{"attempt:interrupted-resume", checkpointSummary} {
+		if !strings.Contains(prompt, required) {
+			t.Errorf("resume prompt omitted %q: %s", required, prompt)
+		}
+	}
+	for _, forbidden := range []string{"provenance", "continuation_id", "raw", "mechanical handoff", "objective outcome"} {
+		if strings.Contains(strings.ToLower(prompt), forbidden) {
+			t.Errorf("resume prompt leaked forbidden %q: %s", forbidden, prompt)
+		}
+	}
+	if strings.Count(prompt, fixture.task.Goal) != 1 {
+		t.Fatalf("Task Goal duplicated in resume prompt: %s", prompt)
+	}
+
+	resumed, err := fixture.continuity.CreateContinuation(context.Background(), request)
+	if err != nil {
+		t.Fatalf("resume after reconciliation: %v", err)
+	}
+	if _, err := fixture.board.ApplyForContinuation(context.Background(), fixture.project.ID, resumed.Continuation.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "recreate-interrupted-work",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "attempt:interrupted-resume-continued", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: checkpointSummary}},
+			{Op: "relate", From: "attempt:interrupted-resume-continued", Relation: "tests", To: "objective:interrupted-resume"},
+		},
+	}); err != nil {
+		t.Fatalf("new principal recreates interrupted work: %v", err)
 	}
 }
 

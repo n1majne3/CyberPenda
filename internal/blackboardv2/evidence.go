@@ -796,6 +796,20 @@ func (s *Service) reserveEvidenceRequest(ctx context.Context, projectID, continu
 		return evidenceRequestRow{}, false, fmt.Errorf("begin Evidence reservation: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	status, err := continuationProjectStatus(ctx, tx, projectID, continuationID)
+	if err != nil {
+		return evidenceRequestRow{}, false, err
+	}
+	if !continuationCanWrite(status) {
+		return evidenceRequestRow{}, false, semanticError("closed_continuation", "trusted Continuation is closed for new Blackboard writes", "", nil)
+	}
+	currentOwner, pinned, err := continuationOwnsCurrentWorkingPath(ctx, tx, continuationID)
+	if err != nil {
+		return evidenceRequestRow{}, false, err
+	}
+	if pinned && !currentOwner {
+		return evidenceRequestRow{}, false, semanticError("closed_continuation", "trusted Continuation no longer owns the Task Working Snapshot", "", nil)
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO blackboard_v2_evidence_requests(project_id,continuation_id,idempotency_key,request_hash,source_identity,source_sha256,source_size_bytes,managed_internal_path,temp_internal_path,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?, 'reserved',?,?)`, projectID, continuationID, key, requestHash, source.identity, source.sha256, source.size, internalPath, tempPath, now, now)
 	if err != nil {
@@ -2337,6 +2351,9 @@ func (s *Service) applyRetainedEvidence(ctx context.Context, projectID, continua
 		if err := tx.Commit(); err != nil {
 			return ChangeResult{}, fmt.Errorf("commit retained Evidence replay: %w", err)
 		}
+		if err := s.rematerializeContinuationWorkingSnapshot(ctx, continuationID); err != nil {
+			return ChangeResult{}, fmt.Errorf("recover retained Evidence Working Snapshot: %w", err)
+		}
 		return replay, nil
 	}
 	request, err = resolveRetainedEvidenceRedirectsTx(ctx, tx, projectID, request)
@@ -2497,6 +2514,10 @@ func (s *Service) applyRetainedEvidence(ctx context.Context, projectID, continua
 			changedRelations[relationKey(tuple)] = tuple
 		}
 	}
+	_, _, workingAdvanced, err := s.advanceContinuationWorkingSnapshotTx(ctx, tx, projectID, continuationID)
+	if err != nil {
+		return ChangeResult{}, err
+	}
 	result := makeChangeResult(revision, changedRecords, changedRelations)
 	resultJSON, err := json.Marshal(result)
 	if err != nil {
@@ -2507,6 +2528,11 @@ func (s *Service) applyRetainedEvidence(ctx context.Context, projectID, continua
 	}
 	if err := tx.Commit(); err != nil {
 		return ChangeResult{}, fmt.Errorf("commit retained Evidence semantic change: %w", err)
+	}
+	if workingAdvanced {
+		if err := s.rematerializeContinuationWorkingSnapshot(ctx, continuationID); err != nil {
+			return ChangeResult{}, fmt.Errorf("replace retained Evidence Working Snapshot: %w", err)
+		}
 	}
 	return result, nil
 }

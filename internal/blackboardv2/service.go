@@ -39,11 +39,22 @@ const (
 
 // Service applies and reads Blackboard v2 semantic state for one Project.
 type Service struct {
-	db             *store.DB
-	evidenceConfig EvidenceConfig
-	runtimeRoot    string
-	snapshotMu     sync.Mutex
-	finishFail     FinishFailureInjector
+	db              *store.DB
+	evidenceConfig  EvidenceConfig
+	runtimeRoot     string
+	snapshotMu      sync.Mutex
+	finishFail      FinishFailureInjector
+	publicationFail SnapshotPublicationInjector
+}
+
+type SnapshotPublicationPoint string
+
+const SnapshotPublicationAfterCommit SnapshotPublicationPoint = "after_commit"
+
+type SnapshotPublicationInjector func(SnapshotPublicationPoint, string) error
+
+func (s *Service) SetSnapshotPublicationInjector(injector SnapshotPublicationInjector) {
+	s.publicationFail = injector
 }
 
 // NewService returns a Blackboard v2 semantic service backed by the Store.
@@ -695,6 +706,9 @@ func (s *Service) ReconcileContinuationAttempts(ctx context.Context, projectID, 
 	}
 	if !isUnexpectedTerminalContinuationStatus(status) {
 		result := makeChangeResult(revision, nil, nil)
+		if err := markContinuationReconciled(ctx, tx, continuationID, status); err != nil {
+			return ChangeResult{}, err
+		}
 		if err := tx.Commit(); err != nil {
 			return ChangeResult{}, fmt.Errorf("commit clean Continuation reconciliation audit: %w", err)
 		}
@@ -1115,6 +1129,11 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 		return ChangeResult{}, fmt.Errorf("commit Blackboard v2 change: %w", err)
 	}
 	if workingAdvanced {
+		if s.publicationFail != nil {
+			if err := s.publicationFail(SnapshotPublicationAfterCommit, continuationID); err != nil {
+				return ChangeResult{}, err
+			}
+		}
 		if err := s.rematerializeContinuationWorkingSnapshot(ctx, continuationID); err != nil {
 			return ChangeResult{}, fmt.Errorf("replace acknowledged Working Blackboard Snapshot: %w", err)
 		}

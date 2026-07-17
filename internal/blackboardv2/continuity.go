@@ -26,7 +26,10 @@ var ErrLaunchPinIntegrity = errors.New("Launch Blackboard Pin integrity check fa
 
 type ContinuityFailurePoint string
 
-const ContinuityFailureBeforeCommit ContinuityFailurePoint = "before_commit"
+const (
+	ContinuityFailureBeforeCommit                     ContinuityFailurePoint = "before_commit"
+	ContinuityFailureBeforeWorkingSnapshotPublication ContinuityFailurePoint = "before_working_snapshot_publication"
+)
 
 type ContinuityFailureInjector func(ContinuityFailurePoint) error
 
@@ -37,6 +40,7 @@ type ContinuationLaunchRequest struct {
 	RuntimeProvider  string
 	Runner           task.Runner
 	RuntimeConfig    map[string]any
+	SteeringEventIDs []string
 }
 
 type ContinuationLaunch struct {
@@ -88,6 +92,8 @@ func (s *ContinuityService) CreateContinuation(ctx context.Context, req Continua
 	if s.db == nil || s.board == nil || s.tasks == nil {
 		return ContinuationLaunch{}, fmt.Errorf("Blackboard v2 Continuation launch is unavailable")
 	}
+	s.board.snapshotMu.Lock()
+	defer s.board.snapshotMu.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ContinuationLaunch{}, fmt.Errorf("begin atomic Blackboard v2 Continuation launch: %w", err)
@@ -101,6 +107,7 @@ func (s *ContinuityService) CreateContinuation(ctx context.Context, req Continua
 	config, continuation, err := s.tasks.CreateContinuationLaunchTx(ctx, tx, task.ContinuationLaunchRequest{
 		ProjectID: req.ProjectID, TaskID: req.TaskID, RuntimeProfileID: req.RuntimeProfileID,
 		RuntimeProvider: req.RuntimeProvider, Runner: req.Runner, RuntimeConfig: req.RuntimeConfig,
+		SteeringEventIDs: req.SteeringEventIDs,
 		SnapshotPin: task.ContinuationSnapshotPin{
 			BlackboardGraphRevision:             projection.Snapshot.Revision,
 			BlackboardRendererVersion:           snapshotSchema,
@@ -133,8 +140,25 @@ func (s *ContinuityService) CreateContinuation(ctx context.Context, req Continua
 		if err := s.fail(ContinuityFailureBeforeCommit); err != nil {
 			return ContinuationLaunch{}, err
 		}
+		if err := s.fail(ContinuityFailureBeforeWorkingSnapshotPublication); err != nil {
+			return ContinuationLaunch{}, err
+		}
+	}
+	workingPath := filepath.Join(s.runtimeRoot, req.TaskID, "workdir", ".pentest", "blackboard.json")
+	previousBytes, previousErr := os.ReadFile(workingPath)
+	previousExists := previousErr == nil
+	if previousErr != nil && !errors.Is(previousErr, os.ErrNotExist) {
+		return ContinuationLaunch{}, fmt.Errorf("read prior Working Snapshot before resume publication: %w", previousErr)
+	}
+	if err := materializeWorkingSnapshot(s.runtimeRoot, req.TaskID, projection.Bytes); err != nil {
+		return ContinuationLaunch{}, fmt.Errorf("publish initial Working Blackboard Snapshot: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
+		if previousExists {
+			_ = materializeWorkingSnapshot(s.runtimeRoot, req.TaskID, previousBytes)
+		} else {
+			_ = os.Remove(workingPath)
+		}
 		return ContinuationLaunch{}, fmt.Errorf("commit atomic Blackboard v2 Continuation launch: %w", err)
 	}
 	return ContinuationLaunch{

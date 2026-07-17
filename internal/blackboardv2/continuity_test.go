@@ -144,6 +144,65 @@ func TestContinuationCreationRollsBackEveryBindingOnInjectedPrecommitCrash(t *te
 	}
 }
 
+func TestResumePublicationFailureRollsBackPinAndRetriesWithoutDeletingPriorContinuation(t *testing.T) {
+	fixture := newContinuityFixture(t)
+	first := fixture.launch(t)
+	if _, err := fixture.board.FinishContinuation(context.Background(), fixture.project.ID, first.Continuation.ID, blackboardv2.FinishContinuationRequest{IdempotencyKey: "finish-before-publication-failure"}); err != nil {
+		_ = fixture.db.Close()
+		t.Fatalf("Finish prior Continuation: %v", err)
+	}
+	injected := errors.New("injected Working Snapshot publication failure")
+	failedOnce := false
+	fixture.continuity.SetFailureInjector(func(point blackboardv2.ContinuityFailurePoint) error {
+		if point == blackboardv2.ContinuityFailureBeforeWorkingSnapshotPublication && !failedOnce {
+			failedOnce = true
+			return injected
+		}
+		return nil
+	})
+	request := blackboardv2.ContinuationLaunchRequest{
+		ProjectID: fixture.project.ID, TaskID: fixture.task.ID, RuntimeProfileID: fixture.profile.ID,
+		RuntimeProvider: "codex", Runner: task.RunnerSandbox, RuntimeConfig: map[string]any{"provider": "codex", "resume": true},
+	}
+	if _, err := fixture.continuity.CreateContinuation(context.Background(), request); !errors.Is(err, injected) {
+		_ = fixture.db.Close()
+		t.Fatalf("injected resume publication error = %v", err)
+	}
+	latest, err := fixture.tasks.LatestContinuation(fixture.task.ID)
+	if err != nil || latest == nil || latest.ID != first.Continuation.ID {
+		_ = fixture.db.Close()
+		t.Fatalf("failed publication replaced prior Continuation: %#v, %v", latest, err)
+	}
+	for _, table := range []string{"task_continuations", "blackboard_v2_continuation_pins", "blackboard_v2_continuation_state"} {
+		var count int
+		if err := fixture.db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&count); err != nil || count != 1 {
+			_ = fixture.db.Close()
+			t.Fatalf("%s after failed publication = %d, %v", table, count, err)
+		}
+	}
+	resumed, err := fixture.continuity.CreateContinuation(context.Background(), request)
+	if err != nil {
+		_ = fixture.db.Close()
+		t.Fatalf("retry resume publication: %v", err)
+	}
+	if resumed.Continuation.Number != first.Continuation.Number+1 {
+		_ = fixture.db.Close()
+		t.Fatalf("retry Continuation number = %d", resumed.Continuation.Number)
+	}
+	if err := fixture.db.Close(); err != nil {
+		t.Fatalf("close before restart: %v", err)
+	}
+	reopened, err := store.Open(fixture.dbPath)
+	if err != nil {
+		t.Fatalf("restart Store: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	pin, err := blackboardv2.NewContinuityService(reopened, blackboardv2.NewService(reopened), task.NewService(reopened, project.NewService(reopened)), fixture.runtimeRoot).ReadLaunchPin(context.Background(), resumed.Continuation.ID)
+	if err != nil || !bytes.Equal(pin.Bytes, resumed.Snapshot) {
+		t.Fatalf("retry pin after restart = %#v, %v", pin, err)
+	}
+}
+
 func TestRuntimeAcknowledgedWriteAtomicallyAdvancesOnlyOwningWorkingSnapshot(t *testing.T) {
 	fixture := newContinuityFixture(t)
 	t.Cleanup(func() { _ = fixture.db.Close() })
@@ -274,6 +333,7 @@ func TestCrashRecoveryReusesExactPinWhileResumePinsFreshCurrentState(t *testing.
 	}
 
 	seedCurrentEntity(t, board, fixture.project.ID, "entity:resume", "Fresh resume state")
+	tasks.SetContinuationReconciler(board)
 	if _, err := tasks.UpdateContinuationStatus(first.Continuation.ID, task.StatusInterrupted); err != nil {
 		t.Fatalf("close recovered Continuation before resume: %v", err)
 	}

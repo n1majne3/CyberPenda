@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"pentest/internal/project"
@@ -228,6 +229,13 @@ var ErrContinuationStatusConflict = errors.New("continuation status conflicts wi
 // ErrActiveContinuation prevents Resume from creating a second current pin
 // before the previous Continuation reaches a terminal state.
 var ErrActiveContinuation = errors.New("task already has an active continuation")
+
+// ErrContinuationReconciliationIncomplete prevents Resume from bypassing
+// durable interruption reconciliation owned by the prior Continuation.
+var ErrContinuationReconciliationIncomplete = errors.New("prior continuation reconciliation is incomplete")
+
+// ErrSteeringSelectionConflict reports a stale or foreign steering selection.
+var ErrSteeringSelectionConflict = errors.New("Harness Steering selection is stale or invalid")
 
 var ErrMissingSummary = errors.New("task summary is required")
 
@@ -593,6 +601,43 @@ func (s *Service) Events(taskID string) ([]Event, error) {
 	return events, nil
 }
 
+// HarnessSteeringDirective is one unconsumed task-local directive selected in
+// Task Event order. EventID remains server authority and is never projected.
+type HarnessSteeringDirective struct {
+	EventID   string
+	Directive string
+}
+
+// UnconsumedHarnessSteering returns requested directives that have no durable
+// steering_applied marker yet.
+func (s *Service) UnconsumedHarnessSteering(ctx context.Context, taskID string) ([]HarnessSteeringDirective, error) {
+	_ = ctx
+	events, err := s.Events(taskID)
+	if err != nil {
+		return nil, err
+	}
+	consumed := make(map[string]bool)
+	for _, event := range events {
+		if event.Kind != EventKindSteering || event.Payload["phase"] != "steering_applied" {
+			continue
+		}
+		if requestedID, ok := event.Payload["requested_event_id"].(string); ok && requestedID != "" {
+			consumed[requestedID] = true
+		}
+	}
+	directives := make([]HarnessSteeringDirective, 0)
+	for _, event := range events {
+		if event.Kind != EventKindSteering || event.Payload["phase"] != "steering_requested" || consumed[event.ID] {
+			continue
+		}
+		directive, _ := event.Payload["directive"].(string)
+		if strings.TrimSpace(directive) != "" {
+			directives = append(directives, HarnessSteeringDirective{EventID: event.ID, Directive: directive})
+		}
+	}
+	return directives, nil
+}
+
 // RecordRuntimeConfig captures a new task runtime configuration version. The
 // first call for a task is version 1; each subsequent call (e.g. after a profile
 // switch) increments the version. This models a runtime continuation, not a new
@@ -651,6 +696,7 @@ type ContinuationLaunchRequest struct {
 	Runner           Runner
 	RuntimeConfig    map[string]any
 	SnapshotPin      ContinuationSnapshotPin
+	SteeringEventIDs []string
 }
 
 // CreateContinuationLaunchTx stores the runtime configuration version and its
@@ -669,13 +715,16 @@ func (s *Service) CreateContinuationLaunchTx(ctx context.Context, tx *sql.Tx, re
 	if projectID != req.ProjectID {
 		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("launch task does not belong to project")
 	}
-	var latestStatus string
+	var latestStatus, latestReconciliation string
 	err := tx.QueryRowContext(ctx, `
-		SELECT status FROM task_continuations
+		SELECT status,blackboard_reconciliation_status FROM task_continuations
 		WHERE task_id=? ORDER BY number DESC LIMIT 1`, req.TaskID,
-	).Scan(&latestStatus)
+	).Scan(&latestStatus, &latestReconciliation)
 	if err == nil && !isTerminalStatus(Status(latestStatus)) {
 		return RuntimeConfigVersion{}, TaskContinuation{}, ErrActiveContinuation
+	}
+	if err == nil && (Status(latestStatus) == StatusFailed || Status(latestStatus) == StatusStopped || Status(latestStatus) == StatusInterrupted) && latestReconciliation != string(ReconciliationCompleted) {
+		return RuntimeConfigVersion{}, TaskContinuation{}, ErrContinuationReconciliationIncomplete
 	}
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("read current Continuation before launch: %w", err)
@@ -731,7 +780,65 @@ func (s *Service) CreateContinuationLaunchTx(ctx context.Context, tx *sql.Tx, re
 	); err != nil {
 		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("store launch continuation: %w", err)
 	}
+	if err := consumeHarnessSteeringTx(ctx, tx, req.TaskID, continuation.ID, req.SteeringEventIDs, now); err != nil {
+		return RuntimeConfigVersion{}, TaskContinuation{}, err
+	}
 	return config, continuation, nil
+}
+
+func consumeHarnessSteeringTx(ctx context.Context, tx *sql.Tx, taskID, continuationID string, eventIDs []string, now time.Time) error {
+	if len(eventIDs) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(eventIDs))
+	var maxSeq sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT MAX(seq) FROM task_events WHERE task_id=?`, taskID).Scan(&maxSeq); err != nil {
+		return fmt.Errorf("read steering Event sequence: %w", err)
+	}
+	seq := int(maxSeq.Int64)
+	for _, eventID := range eventIDs {
+		if eventID == "" || seen[eventID] {
+			return ErrSteeringSelectionConflict
+		}
+		seen[eventID] = true
+		var kind, payloadJSON string
+		if err := tx.QueryRowContext(ctx, `SELECT kind,payload_json FROM task_events WHERE id=? AND task_id=?`, eventID, taskID).Scan(&kind, &payloadJSON); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrSteeringSelectionConflict
+			}
+			return fmt.Errorf("read selected Harness Steering: %w", err)
+		}
+		var payload EventPayload
+		if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+			return fmt.Errorf("decode selected Harness Steering: %w", err)
+		}
+		if kind != string(EventKindSteering) || payload["phase"] != "steering_requested" {
+			return ErrSteeringSelectionConflict
+		}
+		var consumed int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM task_events
+			WHERE task_id=? AND kind=? AND json_extract(payload_json,'$.phase')='steering_applied'
+			  AND json_extract(payload_json,'$.requested_event_id')=?`, taskID, string(EventKindSteering), eventID,
+		).Scan(&consumed); err != nil {
+			return fmt.Errorf("validate selected Harness Steering: %w", err)
+		}
+		if consumed != 0 {
+			return ErrSteeringSelectionConflict
+		}
+		appliedJSON, err := json.Marshal(EventPayload{"phase": "steering_applied", "requested_event_id": eventID})
+		if err != nil {
+			return fmt.Errorf("encode applied Harness Steering: %w", err)
+		}
+		seq++
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO task_events (id,task_id,continuation_id,seq,kind,payload_json,created_at)
+			VALUES (?,?,?,?,?,?,?)`, newID(), taskID, continuationID, seq, string(EventKindSteering), string(appliedJSON), now.UTC().Format(time.RFC3339Nano),
+		); err != nil {
+			return fmt.Errorf("mark Harness Steering applied: %w", err)
+		}
+	}
+	return nil
 }
 
 // CreateContinuation records the next legacy Runtime Continuation for a Task
