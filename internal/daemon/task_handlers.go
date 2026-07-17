@@ -236,6 +236,7 @@ func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, p
 	plan.ValidatedLayout = &layout
 	var boundPlan taskLaunchPlan
 	var launchHeader blackboardv2.LaunchHeader
+	usesTrustedMCP := runner.BlackboardV2UsesTrustedMCP(provider)
 	launch, err := server.blackboardV2Continuity.CreateContinuation(context.Background(), blackboardv2.ContinuationLaunchRequest{
 		ProjectID: created.ProjectID, TaskID: created.ID, RuntimeProfileID: created.RuntimeProfileID,
 		RuntimeProvider: string(provider), Runner: created.Runner, RuntimeConfig: plan.CapturedRuntimeConfig,
@@ -245,25 +246,47 @@ func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, p
 				Runner: string(created.Runner), ScopePath: ".pentest/scope.json", BlackboardPath: ".pentest/blackboard.json",
 				Schema: projection.Schema, Revision: projection.Revision,
 			}
+			// Codex completes projection here (networkless). Claude/Pi project
+			// grant-less layout/config first; BindGrant re-projects with the
+			// Continuation grant before the launch transaction commits.
 			binding := &continuationLaunchBinding{V2Header: &launchHeader}
 			var err error
 			boundPlan, err = server.buildTaskLaunchPlanWithBinding(created, goal, plan.LaunchModelOverride, plan.NativeResumeSessionID, binding, &plan)
 			return err
 		},
+		BindGrant: func(plaintextGrant string) error {
+			if !usesTrustedMCP || strings.TrimSpace(plaintextGrant) == "" {
+				return nil
+			}
+			binding := &continuationLaunchBinding{V2Header: &launchHeader, InterfaceToken: plaintextGrant}
+			var err error
+			boundPlan, err = server.buildTaskLaunchPlanWithBinding(created, goal, plan.LaunchModelOverride, plan.NativeResumeSessionID, binding, &plan)
+			if err != nil {
+				scrubBlackboardV2GrantBearingProjection(layout, provider)
+			}
+			return err
+		},
+		UnbindGrant: func() {
+			if usesTrustedMCP {
+				scrubBlackboardV2GrantBearingProjection(layout, provider)
+			}
+		},
 	})
 	if err != nil {
 		return task.TaskContinuation{}, taskLaunchPlan{}, err
 	}
-	// Claude/Pi need the Continuation grant on the trusted MCP URL. The grant
-	// is issued only inside CreateContinuation, so re-project after success.
-	if runner.BlackboardV2UsesTrustedMCP(provider) && strings.TrimSpace(launch.Token) != "" {
-		binding := &continuationLaunchBinding{V2Header: &launchHeader, InterfaceToken: launch.Token}
-		boundPlan, err = server.buildTaskLaunchPlanWithBinding(created, goal, plan.LaunchModelOverride, plan.NativeResumeSessionID, binding, &plan)
-		if err != nil {
-			return task.TaskContinuation{}, taskLaunchPlan{}, err
-		}
-	}
 	return launch.Continuation, boundPlan, nil
+}
+
+// scrubBlackboardV2GrantBearingProjection removes trusted MCP config that may
+// embed a Continuation grant token after a failed atomic launch.
+func scrubBlackboardV2GrantBearingProjection(layout runner.Layout, provider runtimeprofile.Provider) {
+	switch provider {
+	case runtimeprofile.ProviderClaudeCode:
+		_ = os.Remove(filepath.Join(layout.Workdir, ".mcp.json"))
+	case runtimeprofile.ProviderPi:
+		_ = os.Remove(filepath.Join(layout.ProviderHome, "agent", "mcp.json"))
+	}
 }
 
 func (server *Server) recoverBlackboardV2ContinuationFiles(ctx context.Context) error {

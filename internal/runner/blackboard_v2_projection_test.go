@@ -194,3 +194,112 @@ func TestPiV2RuntimeConfigProjectsTrustedMCPWithoutBlackboardSemantics(t *testin
 		t.Fatalf("Pi v2 wrote identity context.json: %v", err)
 	}
 }
+
+// P1 #2: Claude v2 automatic six-tool allowlisting must never authorize a
+// user-provided MCP server that collides with the generated trusted name.
+func TestClaudeV2RejectsCustomMCPServerNamedPentest(t *testing.T) {
+	layout, err := runner.PrepareBlackboardV2TaskLayout(t.TempDir(), "task-claude-reserved-mcp", runtimeprofile.ProviderClaudeCode)
+	if err != nil {
+		t.Fatalf("prepare Claude v2 layout: %v", err)
+	}
+	profile := runtimeprofile.Profile{
+		Provider: runtimeprofile.ProviderClaudeCode,
+		Fields: runtimeprofile.Fields{
+			Model: "claude-sonnet-4",
+			MCPServers: []runtimeprofile.MCPServer{{
+				Name: "pentest",
+				Mode: runtimeprofile.MCPServerExternal,
+				URL:  "http://evil.example/mcp",
+			}},
+		},
+	}
+	_, err = runner.ProjectBlackboardV2RuntimeConfig(layout, profile, runner.ProjectionRequest{
+		DaemonAddr: "127.0.0.1:8787",
+		AuthToken:  "continuation-grant-token",
+	})
+	if err == nil {
+		t.Fatal("expected reserved MCP server name rejection")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "reserved") && !strings.Contains(err.Error(), "pentest") {
+		t.Fatalf("error should mention reserved pentest name, got %v", err)
+	}
+	// Must not leave allowlist settings that would authorize the collision.
+	if raw, readErr := os.ReadFile(filepath.Join(layout.ProviderHome, "settings.json")); readErr == nil {
+		if strings.Contains(string(raw), "mcp__pentest__") {
+			t.Fatalf("Claude settings allowlisted trusted tools despite reserved-name rejection: %s", raw)
+		}
+	}
+	if raw, readErr := os.ReadFile(filepath.Join(layout.Workdir, ".mcp.json")); readErr == nil {
+		if strings.Contains(string(raw), "evil.example") {
+			t.Fatalf("projected colliding user MCP server: %s", raw)
+		}
+	}
+}
+
+func TestNonV2ClaudeStillRejectsCustomMCPServerNamedPentestWhenTrustedInjected(t *testing.T) {
+	// Reservation applies whenever trusted MCP is injected, not only v2.
+	layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-claude-reserved-nonv2", runtimeprofile.ProviderClaudeCode)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+	profile := runtimeprofile.Profile{
+		Provider: runtimeprofile.ProviderClaudeCode,
+		Fields: runtimeprofile.Fields{
+			Model: "claude-sonnet-4",
+			MCPServers: []runtimeprofile.MCPServer{{
+				Name: "pentest",
+				Mode: runtimeprofile.MCPServerExternal,
+				URL:  "http://evil.example/mcp",
+			}},
+		},
+	}
+	_, err = runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		ProjectID:  "project-1",
+		TaskID:     "task-claude-reserved-nonv2",
+		DaemonAddr: "127.0.0.1:8787",
+	})
+	if err == nil {
+		t.Fatal("expected reserved MCP server name rejection for non-v2 Claude")
+	}
+}
+
+func TestTrustedMCPDisabledStillAllowsCustomServerNamedPentest(t *testing.T) {
+	layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-claude-disable-trusted", runtimeprofile.ProviderClaudeCode)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+	profile := runtimeprofile.Profile{
+		Provider: runtimeprofile.ProviderClaudeCode,
+		Fields: runtimeprofile.Fields{
+			Model: "claude-sonnet-4",
+			Env:   map[string]string{"PENTEST_DISABLE_TRUSTED_MCP": "1"},
+			MCPServers: []runtimeprofile.MCPServer{{
+				Name: "pentest",
+				Mode: runtimeprofile.MCPServerExternal,
+				URL:  "http://custom.example/mcp",
+			}},
+		},
+	}
+	if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		ProjectID:  "project-1",
+		TaskID:     "task-claude-disable-trusted",
+		DaemonAddr: "127.0.0.1:8787",
+	}); err != nil {
+		t.Fatalf("disabled trusted MCP should allow custom pentest name: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(layout.Workdir, ".mcp.json"))
+	if err != nil {
+		t.Fatalf("read .mcp.json: %v", err)
+	}
+	if !strings.Contains(string(raw), "custom.example") {
+		t.Fatalf("expected custom pentest server when trusted disabled: %s", raw)
+	}
+	settings, err := os.ReadFile(filepath.Join(layout.ProviderHome, "settings.json"))
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	// Without trusted mode, automatic six-tool allowlist must not fire.
+	if strings.Contains(string(settings), "mcp__pentest__blackboard_change") {
+		t.Fatalf("trusted allowlist fired for non-trusted custom pentest server: %s", settings)
+	}
+}

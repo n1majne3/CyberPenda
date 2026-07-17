@@ -523,6 +523,97 @@ func TestTrustedMCPEmbedsAuthTokenWhenConfigured(t *testing.T) {
 	}
 }
 
+// Regression: an existing trusted "pentest" profile entry (stale URL / old grant)
+// must be replaced by the daemon-owned URL that embeds the current Continuation
+// grant token. Other custom MCP servers must be preserved; URL coincidence with
+// the daemon base must not suppress injection.
+func TestTrustedMCPUpgradesExistingTrustedPentestWithContinuationToken(t *testing.T) {
+	root := t.TempDir()
+	layout, err := runner.PrepareTaskLayout(root, "task-upgrade-trusted", runtimeprofile.ProviderClaudeCode)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+
+	profile := runtimeprofile.Profile{
+		Provider: runtimeprofile.ProviderClaudeCode,
+		Fields: runtimeprofile.Fields{
+			Model: "claude-sonnet-4",
+			MCPServers: []runtimeprofile.MCPServer{
+				{
+					Name: "pentest",
+					Mode: runtimeprofile.MCPServerTrusted,
+					// Stale: daemon base without the current Continuation grant.
+					URL: "http://127.0.0.1:8787/mcp?token=stale-grant",
+				},
+				{
+					Name: "custom-tools",
+					Mode: runtimeprofile.MCPServerExternal,
+					URL:  "http://custom.example/mcp",
+				},
+				{
+					// Same daemon base URL under a different name must not
+					// suppress the authoritative trusted projection.
+					Name: "mirror",
+					Mode: runtimeprofile.MCPServerExternal,
+					URL:  "http://127.0.0.1:8787/mcp",
+				},
+			},
+		},
+	}
+
+	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		ProjectID:  "project-1",
+		TaskID:     "task-upgrade-trusted",
+		DaemonAddr: "127.0.0.1:8787",
+		AuthToken:  "continuation-grant-token",
+		Sandbox:    false,
+	})
+	if err != nil {
+		t.Fatalf("project config: %v", err)
+	}
+
+	servers, ok := projection.Config["mcp_servers"].([]map[string]any)
+	if !ok {
+		t.Fatalf("expected mcp_servers preview, got %#v", projection.Config["mcp_servers"])
+	}
+	if len(servers) != 3 {
+		t.Fatalf("expected upgraded pentest + two custom servers, got %#v", servers)
+	}
+	wantTrustedURL := "http://127.0.0.1:8787/mcp?token=continuation-grant-token"
+	if servers[0]["name"] != "pentest" || servers[0]["mode"] != "trusted" || servers[0]["url"] != wantTrustedURL {
+		t.Fatalf("expected authoritative trusted pentest first, got %#v", servers[0])
+	}
+	if url, _ := servers[0]["url"].(string); strings.Contains(url, "stale-grant") {
+		t.Fatalf("stale grant token leaked into trusted URL: %#v", servers[0])
+	}
+
+	byName := map[string]map[string]any{}
+	for _, server := range servers {
+		name, _ := server["name"].(string)
+		byName[name] = server
+	}
+	if byName["custom-tools"]["url"] != "http://custom.example/mcp" {
+		t.Fatalf("expected custom-tools preserved, got %#v", byName["custom-tools"])
+	}
+	if byName["mirror"]["url"] != "http://127.0.0.1:8787/mcp" {
+		t.Fatalf("expected mirror server preserved, got %#v", byName["mirror"])
+	}
+
+	mcpRaw, err := os.ReadFile(filepath.Join(layout.Workdir, ".mcp.json"))
+	if err != nil {
+		t.Fatalf("read .mcp.json: %v", err)
+	}
+	if !strings.Contains(string(mcpRaw), "continuation-grant-token") {
+		t.Fatalf(".mcp.json missing current grant token: %s", mcpRaw)
+	}
+	if strings.Contains(string(mcpRaw), "stale-grant") {
+		t.Fatalf(".mcp.json retained stale grant: %s", mcpRaw)
+	}
+	if !strings.Contains(string(mcpRaw), "custom.example") {
+		t.Fatalf(".mcp.json dropped custom server: %s", mcpRaw)
+	}
+}
+
 func TestAGENTSMDDocumentsLoopbackRewriteInSandbox(t *testing.T) {
 	root := t.TempDir()
 	layout, err := runner.PrepareTaskLayout(root, "task-agents", runtimeprofile.ProviderClaudeCode)

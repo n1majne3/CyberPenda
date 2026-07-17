@@ -92,11 +92,16 @@ func trustedMCPDisabled(profile runtimeprofile.Profile) bool {
 	return strings.EqualFold(value, "1") || strings.EqualFold(value, "true") || strings.EqualFold(value, "yes")
 }
 
-func collectMCPServers(profile runtimeprofile.Profile, req ProjectionRequest) []runtimeprofile.MCPServer {
+func collectMCPServers(profile runtimeprofile.Profile, req ProjectionRequest) ([]runtimeprofile.MCPServer, error) {
 	servers := append([]runtimeprofile.MCPServer{}, profile.Fields.MCPServers...)
 	if trustedMCPDisabled(profile) {
-		return servers
+		return servers, nil
 	}
+	// The generated trusted server identity is always "pentest". When trusted MCP
+	// is enabled, that daemon-owned entry is authoritative: replace any profile
+	// trusted "pentest" with the current Continuation grant URL, reject an
+	// external server using the reserved name, and always inject even when
+	// another custom server happens to share the daemon base URL.
 	trustedURL := MCPEndpointURL(req.DaemonAddr, req.Sandbox)
 	if token := strings.TrimSpace(req.AuthToken); token != "" {
 		// The runtime MCP transports cannot always attach per-request headers,
@@ -105,14 +110,24 @@ func collectMCPServers(profile runtimeprofile.Profile, req ProjectionRequest) []
 		// header plumbing.
 		trustedURL = trustedURL + "?token=" + token
 	}
-	if hasMCPServerURL(servers, MCPEndpointURL(req.DaemonAddr, req.Sandbox)) {
-		return servers
+	kept := make([]runtimeprofile.MCPServer, 0, len(servers))
+	for _, server := range servers {
+		name := strings.TrimSpace(server.Name)
+		if !strings.EqualFold(name, trustedMCPServerName) {
+			kept = append(kept, server)
+			continue
+		}
+		if server.Mode == runtimeprofile.MCPServerTrusted {
+			// Drop the stale profile entry; the generated URL below wins.
+			continue
+		}
+		return nil, fmt.Errorf("MCP server name %q is reserved for the trusted Project Interface", trustedMCPServerName)
 	}
 	return append([]runtimeprofile.MCPServer{{
 		Name: trustedMCPServerName,
 		Mode: runtimeprofile.MCPServerTrusted,
 		URL:  trustedURL,
-	}}, servers...)
+	}}, kept...), nil
 }
 
 func claudeTrustedMCPAllowedTools(servers []runtimeprofile.MCPServer) []string {
@@ -128,16 +143,6 @@ func claudeTrustedMCPAllowedTools(servers []runtimeprofile.MCPServer) []string {
 		return allowed
 	}
 	return nil
-}
-
-func hasMCPServerURL(servers []runtimeprofile.MCPServer, url string) bool {
-	normalized := strings.TrimRight(strings.TrimSpace(url), "/")
-	for _, server := range servers {
-		if strings.TrimRight(strings.TrimSpace(server.URL), "/") == normalized {
-			return true
-		}
-	}
-	return false
 }
 
 func writeTaskContextFiles(layout Layout, ctx TaskContext) error {

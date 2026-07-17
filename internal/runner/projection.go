@@ -369,7 +369,10 @@ func projectClaudeSettings(layout Layout, profile runtimeprofile.Profile, req Pr
 		return ConfigProjection{}, err
 	}
 
-	mcpServers := collectMCPServers(profile, req)
+	mcpServers, err := collectMCPServers(profile, req)
+	if err != nil {
+		return ConfigProjection{}, err
+	}
 	mcpURL := MCPEndpointURL(req.DaemonAddr, req.Sandbox)
 	if err := writeTaskContextFiles(layout, taskContextFromProjection(req, profile.Provider, mcpURL)); err != nil {
 		return ConfigProjection{}, err
@@ -453,7 +456,10 @@ func projectCodexConfig(layout Layout, profile runtimeprofile.Profile, req Proje
 		}
 	}
 
-	mcpServers := collectMCPServers(profile, req)
+	mcpServers, err := collectMCPServers(profile, req)
+	if err != nil {
+		return ConfigProjection{}, err
+	}
 	mcpURL := MCPEndpointURL(req.DaemonAddr, req.Sandbox)
 	if err := writeTaskContextFiles(layout, taskContextFromProjection(req, profile.Provider, mcpURL)); err != nil {
 		return ConfigProjection{}, err
@@ -521,7 +527,10 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 		return ConfigProjection{}, err
 	}
 
-	mcpServers := collectMCPServers(profile, req)
+	mcpServers, err := collectMCPServers(profile, req)
+	if err != nil {
+		return ConfigProjection{}, err
+	}
 	mcpURL := MCPEndpointURL(req.DaemonAddr, req.Sandbox)
 
 	agentDir := filepath.Join(layout.ProviderHome, "agent")

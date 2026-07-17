@@ -45,6 +45,26 @@ func NewDockerSandboxAdapter(config DockerSandboxConfig) Adapter {
 	return &dockerSandboxAdapter{config: config}
 }
 
+// DockerSandboxCreateArgs returns the docker create argv (excluding the
+// container CLI) for adapters built by NewDockerSandboxAdapter. Security
+// regression tests use this to inspect sandbox launch argv and process env
+// without executing containers. Pi session-tail wrappers are unwrapped.
+func DockerSandboxCreateArgs(adapter Adapter) ([]string, bool) {
+	for adapter != nil {
+		switch a := adapter.(type) {
+		case *dockerSandboxAdapter:
+			out := make([]string, len(a.config.CreateArgs))
+			copy(out, a.config.CreateArgs)
+			return out, true
+		case *piSessionTailAdapter:
+			adapter = a.inner
+		default:
+			return nil, false
+		}
+	}
+	return nil, false
+}
+
 func (a *dockerSandboxAdapter) Name() string {
 	if strings.TrimSpace(a.config.Name) != "" {
 		return a.config.Name

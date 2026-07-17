@@ -31,6 +31,10 @@ type ContinuityFailurePoint string
 const (
 	ContinuityFailureBeforeCommit                     ContinuityFailurePoint = "before_commit"
 	ContinuityFailureBeforeWorkingSnapshotPublication ContinuityFailurePoint = "before_working_snapshot_publication"
+	// ContinuityFailureAfterBindGrant runs after BindGrant succeeds and before
+	// the launch transaction commits. Injectors use it to prove grant-bearing
+	// projection rolls back atomically with durable Continuation state.
+	ContinuityFailureAfterBindGrant ContinuityFailurePoint = "after_bind_grant"
 )
 
 type ContinuityFailureInjector func(ContinuityFailurePoint) error
@@ -43,7 +47,21 @@ type ContinuationLaunchRequest struct {
 	Runner           task.Runner
 	RuntimeConfig    map[string]any
 	SteeringEventIDs []string
-	Precommit        func(ContinuationLaunchProjection) error
+	// Precommit runs before the launch transaction with staged Snapshot
+	// metadata only (no Continuation grant). Codex uses this for full
+	// projection; Claude/Pi use it for grant-less layout projection.
+	Precommit func(ContinuationLaunchProjection) error
+	// BindGrant runs after the Continuation grant plaintext is available
+	// (empty when grants are disabled), after the Working Snapshot is
+	// published, and still before the launch transaction commits. Failure
+	// aborts the launch: durable rows roll back and the prior Working
+	// Snapshot is restored. Callers that write grant-bearing config must
+	// scrub it before returning an error from BindGrant, or via UnbindGrant
+	// when the service aborts after a successful BindGrant.
+	BindGrant func(plaintextGrant string) error
+	// UnbindGrant is invoked when BindGrant returned nil but the launch still
+	// aborts before success (failure injection or commit failure). Optional.
+	UnbindGrant func()
 }
 
 type ContinuationLaunchProjection struct {
@@ -354,14 +372,37 @@ func (s *ContinuityService) CreateContinuation(ctx context.Context, req Continua
 	if previousErr != nil && !errors.Is(previousErr, os.ErrNotExist) {
 		return ContinuationLaunch{}, fmt.Errorf("read prior Working Snapshot before resume publication: %w", previousErr)
 	}
-	if err := materializeWorkingSnapshot(s.runtimeRoot, req.TaskID, projection.Bytes); err != nil {
-		return ContinuationLaunch{}, fmt.Errorf("publish initial Working Blackboard Snapshot: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
+	restoreWorkingSnapshot := func() {
 		if previousExists {
 			_ = materializeWorkingSnapshot(s.runtimeRoot, req.TaskID, previousBytes)
 		} else {
 			_ = os.Remove(workingPath)
+		}
+	}
+	if err := materializeWorkingSnapshot(s.runtimeRoot, req.TaskID, projection.Bytes); err != nil {
+		return ContinuationLaunch{}, fmt.Errorf("publish initial Working Blackboard Snapshot: %w", err)
+	}
+	grantBound := false
+	if req.BindGrant != nil {
+		if err := req.BindGrant(token); err != nil {
+			restoreWorkingSnapshot()
+			return ContinuationLaunch{}, err
+		}
+		grantBound = true
+	}
+	if s.fail != nil {
+		if err := s.fail(ContinuityFailureAfterBindGrant); err != nil {
+			restoreWorkingSnapshot()
+			if grantBound && req.UnbindGrant != nil {
+				req.UnbindGrant()
+			}
+			return ContinuationLaunch{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		restoreWorkingSnapshot()
+		if grantBound && req.UnbindGrant != nil {
+			req.UnbindGrant()
 		}
 		return ContinuationLaunch{}, fmt.Errorf("commit atomic Blackboard v2 Continuation launch: %w", err)
 	}
