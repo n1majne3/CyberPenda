@@ -3,6 +3,7 @@ import { Link, NavLink, useParams } from "react-router-dom";
 import { Compass, History, Layers3, Library, Radar } from "lucide-react";
 import { apiGet, type Project } from "@/lib/api";
 import {
+  attentionLabel,
   blackboardHref,
   buildGraphExplorer,
   formatBlackboardV2Error,
@@ -11,13 +12,17 @@ import {
   missingEvidenceEntries,
   primaryLabelForDetail,
   readCurrentDetail,
+  readSemanticHealth,
   readSemanticHistory,
   readSnapshot,
   recordHref,
   type CurrentDetail,
+  type HealthAnomaly,
+  type HealthProposal,
   type HistoryItem,
   type KnowledgeGroup,
   type RuntimeSnapshot,
+  type SemanticHealth,
   type SnapshotListEntry,
 } from "@/lib/blackboardv2";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
@@ -115,6 +120,7 @@ function BlackboardSubnav({
 
 function useSnapshotAndProject(projectId: string) {
   const [snapshot, setSnapshot] = useState<RuntimeSnapshot | null>(null);
+  const [health, setHealth] = useState<SemanticHealth | null>(null);
   const [project, setProject] = useState<Project | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -124,12 +130,14 @@ function useSnapshotAndProject(projectId: string) {
     (async () => {
       setLoading(true);
       try {
-        const [snap, proj] = await Promise.all([
+        const [snap, healthDto, proj] = await Promise.all([
           readSnapshot(projectId),
+          readSemanticHealth(projectId),
           apiGet<Project>(`/api/projects/${projectId}`),
         ]);
         if (cancelled) return;
         setSnapshot(snap);
+        setHealth(healthDto);
         setProject(proj);
         setError(null);
       } catch (e) {
@@ -143,7 +151,7 @@ function useSnapshotAndProject(projectId: string) {
     };
   }, [projectId]);
 
-  return { snapshot, project, error, loading };
+  return { snapshot, health, project, error, loading };
 }
 
 function BoardPanel({
@@ -153,10 +161,10 @@ function BoardPanel({
   projectId: string;
   focus: "work" | "knowledge";
 }) {
-  const { snapshot, project, error, loading } = useSnapshotAndProject(projectId);
+  const { snapshot, health, project, error, loading } = useSnapshotAndProject(projectId);
 
   if (error) return <ErrorBanner message={error} />;
-  if (loading || !snapshot) {
+  if (loading || !snapshot || !health) {
     return (
       <Card role="status" className="m-4 min-h-24 items-center justify-center text-sm text-muted-foreground">
         Loading Blackboard
@@ -170,10 +178,16 @@ function BoardPanel({
   const knowledgeEntries = entries.filter((e) => e.section === "knowledge");
   const missingEvidence = missingEvidenceEntries(snapshot);
   const groups = knowledgeGroupsForProjectKind(kind);
+  const revisionMismatch = health.revision !== snapshot.revision;
 
   return (
     <div className="min-w-0 space-y-0">
-      <StatusStrip revision={snapshot.revision} kind={kind} entries={entries} />
+      <StatusStrip revision={snapshot.revision} kind={kind} entries={entries} health={health} />
+      {revisionMismatch ? (
+        <RevisionMismatchBanner snapshotRevision={snapshot.revision} healthRevision={health.revision} />
+      ) : (
+        <HealthPanel projectId={projectId} health={health} />
+      )}
       {focus === "work" && (
         <>
           <WorkSection projectId={projectId} entries={workEntries} />
@@ -202,16 +216,20 @@ function StatusStrip({
   revision,
   kind,
   entries,
+  health,
 }: {
   revision: number;
   kind: string;
   entries: SnapshotListEntry[];
+  health: SemanticHealth;
 }) {
   const openWork = entries.filter((e) => e.section === "work").length;
   const knowledge = entries.filter((e) => e.section === "knowledge").length;
   const cells = [
     { label: "Revision", value: String(revision) },
     { label: "Kind", value: kind === "ctf_challenge" ? "CTF" : "Pentest" },
+    { label: "Health", value: health.status },
+    { label: "Attention", value: attentionLabel(health.attention.state) },
     { label: "Current Work", value: String(openWork) },
     { label: "Knowledge", value: String(knowledge) },
   ];
@@ -219,7 +237,7 @@ function StatusStrip({
   return (
     <section
       aria-label="Blackboard status"
-      className="grid grid-cols-2 gap-px border-b border-border bg-border sm:grid-cols-4"
+      className="grid grid-cols-2 gap-px border-b border-border bg-border sm:grid-cols-3 lg:grid-cols-6"
     >
       {cells.map((cell) => (
         <div key={cell.label} className="bg-muted/30 px-3 py-2">
@@ -239,6 +257,181 @@ function StatusStrip({
       ))}
     </section>
   );
+}
+
+function RevisionMismatchBanner({
+  snapshotRevision,
+  healthRevision,
+}: {
+  snapshotRevision: number;
+  healthRevision: number;
+}) {
+  return (
+    <section
+      role="status"
+      aria-label="Stale health"
+      className="border-b border-border bg-warning/10 p-4 text-sm text-foreground"
+      data-testid="blackboard-health-stale"
+    >
+      <p className="font-medium">Semantic health is stale due to a revision mismatch.</p>
+      <p className="mt-1 text-muted-foreground">
+        Snapshot revision {snapshotRevision} and health revision {healthRevision} disagree. Refresh
+        to load a consistent pair instead of mixing diagnoses across revisions.
+      </p>
+    </section>
+  );
+}
+
+function HealthPanel({
+  projectId,
+  health,
+}: {
+  projectId: string;
+  health: SemanticHealth;
+}) {
+  const anomalies = health.anomalies;
+  const tokens = health.attention.estimated_tokens;
+  const proposals = health.proposals;
+
+  return (
+    <section
+      className="min-w-0 space-y-3 border-b border-border p-4"
+      aria-label="Semantic health"
+      data-testid="blackboard-health"
+    >
+      <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <SectionHeading
+            title="Semantic health"
+            detail={`${health.status} · ${tokens.toLocaleString()} tokens`}
+          />
+          <p className="mt-1 text-sm text-muted-foreground">
+            {health.attention.complete
+              ? "Complete Snapshot remains launchable."
+              : "Canonical Runtime Snapshot is unavailable; diagnostic attention remains launchable."}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-1">
+          <Badge
+            variant="outline"
+            className={
+              health.status === "critical"
+                ? "border-destructive/30 bg-destructive/10"
+                : health.status === "warning"
+                  ? "border-warning/25 bg-warning/10"
+                  : undefined
+            }
+          >
+            {health.status}
+          </Badge>
+          <Badge variant="outline">{attentionLabel(health.attention.state)}</Badge>
+        </div>
+      </div>
+
+      {proposals.length > 0 && (
+        <ul
+          className="divide-y divide-border border border-border"
+          role="list"
+          aria-label="Health proposals"
+        >
+          {proposals.map((proposal) => (
+            <HealthProposalRow key={`${proposal.code}:${proposal.required}`} proposal={proposal} />
+          ))}
+        </ul>
+      )}
+
+      {anomalies.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No actionable anomalies.</p>
+      ) : (
+        <ul className="divide-y divide-border border-y border-border" role="list" aria-label="Health anomalies">
+          {anomalies.map((anomaly) => (
+            <HealthAnomalyRow key={`${anomaly.code}:${anomaly.subject_key ?? ""}:${anomaly.message}`} projectId={projectId} anomaly={anomaly} />
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function HealthProposalRow({ proposal }: { proposal: HealthProposal }) {
+  return (
+    <li className="flex min-w-0 flex-col gap-1 p-3 sm:flex-row sm:items-start sm:justify-between">
+      <div className="min-w-0 space-y-1">
+        <p className="text-sm font-medium text-foreground">
+          Approval-required Reason Task proposal
+          {proposal.required ? " (required at 64K)" : " (offered at 32K)"}.
+        </p>
+        <p className="font-mono text-xs text-muted-foreground break-all">
+          {proposal.code} · {proposal.action} · approval_required=
+          {String(proposal.approval_required)}
+          {proposal.required ? " · required=true" : " · required=false"}
+        </p>
+        <p className="text-sm text-muted-foreground">
+          Start an approval-required Reason Task for consolidation. Health does not mutate the
+          Blackboard or schedule work.
+        </p>
+      </div>
+      <Badge variant="outline" className="border-warning/25 bg-warning/10">
+        proposal
+      </Badge>
+    </li>
+  );
+}
+
+function HealthAnomalyRow({
+  projectId,
+  anomaly,
+}: {
+  projectId: string;
+  anomaly: HealthAnomaly;
+}) {
+  const linkKeys = anomalyLinkKeys(anomaly);
+  return (
+    <li className="flex min-w-0 flex-col gap-1 p-3 sm:flex-row sm:items-start sm:justify-between">
+      <div className="min-w-0 space-y-1">
+        <p className="text-sm font-medium text-foreground">{anomaly.message}</p>
+        <p className="font-mono text-xs text-muted-foreground break-all">
+          {anomaly.code}
+          {anomaly.subject_key ? ` · ${anomaly.subject_key}` : ""}
+        </p>
+        {linkKeys.length > 0 && (
+          <div className="flex min-w-0 flex-col gap-1">
+            {linkKeys.map((key) => (
+              <Link
+                key={key}
+                to={recordHref(projectId, key)}
+                className="inline-flex min-w-0 max-w-full text-sm text-muted-foreground underline-offset-4 hover:underline break-all"
+              >
+                Open {key}
+              </Link>
+            ))}
+          </div>
+        )}
+      </div>
+      <Badge
+        variant="outline"
+        className={
+          anomaly.severity === "critical"
+            ? "border-destructive/30 bg-destructive/10"
+            : anomaly.severity === "warning"
+              ? "border-warning/25 bg-warning/10"
+              : undefined
+        }
+      >
+        {anomaly.severity}
+      </Badge>
+    </li>
+  );
+}
+
+/** Prefer subject_key, then related_keys, so dangling subjects still surface surviving links. */
+function anomalyLinkKeys(anomaly: HealthAnomaly): string[] {
+  const keys: string[] = [];
+  if (anomaly.subject_key) keys.push(anomaly.subject_key);
+  for (const key of anomaly.related_keys ?? []) {
+    if (!keys.includes(key)) keys.push(key);
+  }
+  return keys;
 }
 
 function WorkSection({

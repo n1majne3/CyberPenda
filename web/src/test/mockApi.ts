@@ -13,6 +13,23 @@ import { vi } from "vitest";
  */
 type Routes = Record<string, unknown>;
 
+const defaultSemanticHealth = {
+  schema: "blackboard-health/v2",
+  revision: 0,
+  status: "healthy",
+  attention: {
+    bytes: 128,
+    estimated_tokens: 32,
+    state: "within_target",
+    complete: true,
+    launchable: true,
+    consolidation_offered: false,
+    consolidation_required: false,
+  },
+  anomalies: [],
+  proposals: [],
+};
+
 export function mockApi(routes: Routes) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = typeof input === "string" ? input : input.toString();
@@ -24,6 +41,13 @@ export function mockApi(routes: Routes) {
           headers: { "Content-Type": "application/json" },
         });
       }
+    }
+    // Blackboard v2 health is required by ordinary Blackboard surfaces.
+    if (url.includes("/api/v2/") && url.includes("/blackboard/health")) {
+      return new Response(JSON.stringify(defaultSemanticHealth), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
     }
     // Default: empty object so unconfigured endpoints don't crash the page.
     return new Response(JSON.stringify({}), {

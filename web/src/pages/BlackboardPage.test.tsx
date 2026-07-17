@@ -206,8 +206,100 @@ const historyPage2 = {
   ],
 };
 
+const healthyHealth = {
+  schema: "blackboard-health/v2",
+  revision: 24,
+  status: "healthy",
+  attention: {
+    bytes: 1200,
+    estimated_tokens: 300,
+    state: "within_target",
+    complete: true,
+    launchable: true,
+    consolidation_offered: false,
+    consolidation_required: false,
+  },
+  anomalies: [],
+  proposals: [],
+};
+
+const actionableHealth = {
+  schema: "blackboard-health/v2",
+  revision: 24,
+  status: "critical",
+  attention: {
+    bytes: 140000,
+    estimated_tokens: 35000,
+    state: "warning",
+    complete: true,
+    launchable: true,
+    consolidation_offered: true,
+    consolidation_required: false,
+  },
+  anomalies: [
+    {
+      code: "missing_evidence",
+      severity: "critical",
+      message: "Missing Evidence currently supports a confirmed or verified conclusion.",
+      subject_key: "evidence:missing",
+      related_keys: ["finding:admin"],
+    },
+    {
+      code: "stranded_objective",
+      severity: "warning",
+      message: "Open Objective has no open Attempt currently testing it.",
+      subject_key: "objective:admin",
+    },
+    {
+      code: "attention_warning",
+      severity: "warning",
+      message:
+        "Runtime Snapshot reached the 32K warning threshold (35000 estimated tokens). Offer an approval-required Reason Task for consolidation; do not truncate or auto-merge.",
+    },
+  ],
+  proposals: [
+    {
+      code: "consolidation_reason_task",
+      action: "start_reason_task",
+      approval_required: true,
+      required: false,
+    },
+  ],
+};
+
+const danglingHealth = {
+  schema: "blackboard-health/v2",
+  revision: 24,
+  status: "critical",
+  attention: {
+    bytes: 2400,
+    estimated_tokens: 600,
+    state: "within_target",
+    complete: false,
+    launchable: true,
+    consolidation_offered: false,
+    consolidation_required: false,
+  },
+  anomalies: [
+    {
+      code: "dangling_relationship",
+      severity: "critical",
+      message: "Current part_of relationship references a non-current endpoint.",
+      subject_key: "entity:surviving-very-long-key-that-should-wrap-on-narrow-viewports-without-overflow",
+      related_keys: ["entity:missing-endpoint"],
+    },
+  ],
+  proposals: [],
+};
+
+const mismatchedHealth = {
+  ...healthyHealth,
+  revision: 99,
+};
+
 function trackFetch(handlers: {
   snapshot?: unknown;
+  health?: unknown;
   detail?: unknown;
   history?: (url: string) => unknown;
   project?: unknown;
@@ -227,6 +319,9 @@ function trackFetch(handlers: {
       }
     }
 
+    if (url.includes("/api/v2/projects/") && url.includes("/blackboard/health")) {
+      return json(handlers.health ?? healthyHealth);
+    }
     if (url.includes("/api/v2/projects/") && url.includes("/blackboard/snapshot")) {
       return json(handlers.snapshot ?? pentestSnapshot);
     }
@@ -284,9 +379,70 @@ describe("Blackboard UI v2 workflows", () => {
     expect(requests.some((url) => url.includes("/api/v2/projects/project-1/blackboard/snapshot"))).toBe(
       true,
     );
+    expect(requests.some((url) => url.includes("/api/v2/projects/project-1/blackboard/health"))).toBe(
+      true,
+    );
     expect(requests.some((url) => url.includes("/work-view"))).toBe(false);
     expect(requests.some((url) => url.includes("/graph-explorer"))).toBe(false);
     expect(requests.some((url) => url.includes("/provenance"))).toBe(false);
+  });
+
+  it("surfaces concise semantic health and attention without audit noise", async () => {
+    const { requests } = trackFetch({ health: actionableHealth });
+    renderBlackboard("/projects/project-1/blackboard");
+
+    const health = await screen.findByRole("region", { name: /Semantic health/i });
+    expect(within(health).getByText(/Complete Snapshot remains launchable/i)).toBeInTheDocument();
+    expect(within(health).getByText(/Missing Evidence currently supports a confirmed/i)).toBeInTheDocument();
+    expect(within(health).getByText(/Open Objective has no open Attempt/i)).toBeInTheDocument();
+    expect(
+      within(health).getByText(/Runtime Snapshot reached the 32K warning threshold/i),
+    ).toBeInTheDocument();
+    expect(within(health).getByText(/Approval-required Reason Task proposal/i)).toBeInTheDocument();
+    expect(within(health).getByText(/consolidation_reason_task/i)).toBeInTheDocument();
+    expect(within(health).getByText(/start_reason_task/i)).toBeInTheDocument();
+
+    const status = screen.getByRole("region", { name: /Blackboard status/i });
+    expect(within(status).getByText("critical")).toBeInTheDocument();
+    expect(within(status).getByText(/32K warning — offer Reason Task/i)).toBeInTheDocument();
+
+    const body = health.textContent ?? "";
+    for (const forbidden of FORBIDDEN_ORDINARY_UI_TERMS) {
+      expect(body.toLowerCase()).not.toContain(forbidden.toLowerCase());
+    }
+    expect(body).not.toMatch(/state_hash|projection_hash|health_run|checker_version|provenance/i);
+    expect(requests.every((url) => !url.includes("/api/projects/project-1/blackboard/health"))).toBe(
+      true,
+    );
+    expect(requests.some((url) => url.includes("/api/v2/projects/project-1/blackboard/health"))).toBe(
+      true,
+    );
+  });
+
+  it("keeps dangling anomaly links actionable and wraps long keys", async () => {
+    trackFetch({ health: danglingHealth });
+    renderBlackboard("/projects/project-1/blackboard");
+
+    const health = await screen.findByRole("region", { name: /Semantic health/i });
+    const surviving =
+      "entity:surviving-very-long-key-that-should-wrap-on-narrow-viewports-without-overflow";
+    const link = within(health).getByRole("link", { name: new RegExp(surviving, "i") });
+    expect(link).toHaveAttribute(
+      "href",
+      `/projects/project-1/blackboard/records/${encodeURIComponent(surviving)}`,
+    );
+    expect(link.className).toMatch(/break-all/);
+  });
+
+  it("detects snapshot/health revision mismatch instead of mixing revisions", async () => {
+    trackFetch({ health: mismatchedHealth });
+    renderBlackboard("/projects/project-1/blackboard");
+
+    const stale = await screen.findByRole("status", { name: /stale health/i });
+    expect(stale).toHaveTextContent(/revision mismatch/i);
+    expect(stale).toHaveTextContent(/snapshot revision 24/i);
+    expect(stale).toHaveTextContent(/health revision 99/i);
+    expect(screen.queryByRole("region", { name: /Semantic health/i })).not.toBeInTheDocument();
   });
 
   it("selecting a Blackboard Key loads current semantic detail without auto history", async () => {
@@ -501,6 +657,7 @@ describe("Blackboard UI v2 workflows", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/blackboard/health")) return json(healthyHealth);
       if (url.includes("/blackboard/snapshot")) return json(pentestSnapshot);
       if (url.match(/\/api\/projects\/[^/]+$/)) return json(project);
       if (url.includes("/history")) return json(historyPage1);
@@ -566,6 +723,7 @@ describe("Blackboard UI v2 workflows", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
       requested.push(url);
+      if (url.includes("/blackboard/health")) return json(healthyHealth);
       if (url.includes("/blackboard/snapshot")) return json(pentestSnapshot);
       if (url.match(/\/api\/projects\/[^/]+$/)) return json(project);
       if (url.includes("/history") && (url.includes("finding%3A") || url.includes("finding:"))) {

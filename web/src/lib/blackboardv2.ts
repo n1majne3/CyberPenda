@@ -237,6 +237,52 @@ export interface SemanticHistory {
   next_cursor?: string;
 }
 
+/** blackboard-health/v2 schema identifier. */
+export const HEALTH_SCHEMA = "blackboard-health/v2" as const;
+
+export type HealthStatus = "healthy" | "attention" | "warning" | "critical";
+export type HealthSeverity = "info" | "warning" | "critical";
+export type AttentionBudgetState =
+  | "within_target"
+  | "above_target"
+  | "warning"
+  | "required";
+
+export interface HealthAttention {
+  bytes: number;
+  estimated_tokens: number;
+  state: AttentionBudgetState;
+  complete: boolean;
+  launchable: boolean;
+  consolidation_offered: boolean;
+  consolidation_required: boolean;
+}
+
+export interface HealthAnomaly {
+  code: string;
+  severity: HealthSeverity;
+  message: string;
+  subject_key?: string;
+  related_keys?: string[];
+}
+
+/** Approval-required operator proposal suggested by health (no mutation/scheduler). */
+export interface HealthProposal {
+  code: "consolidation_reason_task";
+  action: "start_reason_task";
+  approval_required: true;
+  required: boolean;
+}
+
+export interface SemanticHealth {
+  schema: typeof HEALTH_SCHEMA;
+  revision: number;
+  status: HealthStatus;
+  attention: HealthAttention;
+  anomalies: HealthAnomaly[];
+  proposals: HealthProposal[];
+}
+
 export interface BlackboardV2Error {
   code: string;
   message: string;
@@ -271,6 +317,9 @@ export const FORBIDDEN_ORDINARY_UI_TERMS = [
   "semantic_hash",
   "Frontier",
   "Current Truth",
+  "health_run",
+  "checker_version",
+  "graph hash",
 ] as const;
 
 export function projectBlackboardV2Base(projectId: string): string {
@@ -321,8 +370,40 @@ function requireNumber(value: unknown, path: string): number {
   return value;
 }
 
+function requireNonNegativeInteger(value: unknown, path: string): number {
+  const number = requireNumber(value, path);
+  if (!Number.isInteger(number) || number < 0) {
+    throw new Error(`${path} must be a non-negative integer`);
+  }
+  return number;
+}
+
+function requireBoolean(value: unknown, path: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new Error(`${path} must be a boolean`);
+  }
+  return value;
+}
+
+/** Closed blackboardKey: printable ASCII, 1..96 code units. */
+export function requireBlackboardKey(value: unknown, path: string): string {
+  const key = requireString(value, path);
+  if (key.length > 96) {
+    throw new Error(`${path} exceeds 96 character blackboardKey limit`);
+  }
+  if (!/^[\x20-\x7e]+$/.test(key)) {
+    throw new Error(`${path} is not a printable ASCII blackboardKey`);
+  }
+  return key;
+}
+
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+function optionalBlackboardKey(value: unknown, path: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  return requireBlackboardKey(value, path);
 }
 
 const RELATIONSHIP_SET = new Set<string>(RELATIONSHIP_TYPES);
@@ -603,6 +684,164 @@ export function parseCurrentDetail(raw: unknown): CurrentDetail {
       parseRelationship(item, `relationships[${index}]`),
     ),
   };
+}
+
+const ATTENTION_STATES = new Set<string>([
+  "within_target",
+  "above_target",
+  "warning",
+  "required",
+]);
+const HEALTH_STATUSES = new Set<string>(["healthy", "attention", "warning", "critical"]);
+const HEALTH_SEVERITIES = new Set<string>(["info", "warning", "critical"]);
+const HEALTH_ROOT_FIELDS = [
+  "schema",
+  "revision",
+  "status",
+  "attention",
+  "anomalies",
+  "proposals",
+  "sync",
+] as const;
+const HEALTH_ATTENTION_FIELDS = [
+  "bytes",
+  "estimated_tokens",
+  "state",
+  "complete",
+  "launchable",
+  "consolidation_offered",
+  "consolidation_required",
+] as const;
+const HEALTH_ANOMALY_FIELDS = [
+  "code",
+  "severity",
+  "message",
+  "subject_key",
+  "related_keys",
+] as const;
+const HEALTH_PROPOSAL_FIELDS = [
+  "code",
+  "action",
+  "approval_required",
+  "required",
+] as const;
+
+/** Parse blackboard-health/v2 with closed schema and typed field rules. */
+export function parseSemanticHealth(raw: unknown): SemanticHealth {
+  if (!isPlainObject(raw)) throw new Error("health must be an object");
+  assertAllowlist(raw, HEALTH_ROOT_FIELDS, "health");
+  const schema = requireString(raw.schema, "schema");
+  if (schema !== HEALTH_SCHEMA) {
+    throw new Error(`schema must be ${HEALTH_SCHEMA}`);
+  }
+  const status = requireString(raw.status, "status");
+  if (!HEALTH_STATUSES.has(status)) {
+    throw new Error(`status is not a closed health status: ${status}`);
+  }
+  if (!isPlainObject(raw.attention)) {
+    throw new Error("attention must be an object");
+  }
+  const attentionRaw = raw.attention;
+  assertAllowlist(attentionRaw, HEALTH_ATTENTION_FIELDS, "attention");
+  const state = requireString(attentionRaw.state, "attention.state");
+  if (!ATTENTION_STATES.has(state)) {
+    throw new Error(`attention.state is not a closed budget state: ${state}`);
+  }
+  if (!Array.isArray(raw.anomalies)) {
+    throw new Error("anomalies must be an array");
+  }
+  if (!Array.isArray(raw.proposals)) {
+    throw new Error("proposals must be an array");
+  }
+  const anomalies: HealthAnomaly[] = raw.anomalies.map((item, index) => {
+    if (!isPlainObject(item)) {
+      throw new Error(`anomalies[${index}] must be an object`);
+    }
+    assertAllowlist(item, HEALTH_ANOMALY_FIELDS, `anomalies[${index}]`);
+    const severity = requireString(item.severity, `anomalies[${index}].severity`);
+    if (!HEALTH_SEVERITIES.has(severity)) {
+      throw new Error(`anomalies[${index}].severity is not closed: ${severity}`);
+    }
+    const related =
+      item.related_keys === undefined
+        ? undefined
+        : Array.isArray(item.related_keys)
+          ? item.related_keys.map((key, keyIndex) =>
+              requireBlackboardKey(key, `anomalies[${index}].related_keys[${keyIndex}]`),
+            )
+          : (() => {
+              throw new Error(`anomalies[${index}].related_keys must be an array`);
+            })();
+    return {
+      code: requireString(item.code, `anomalies[${index}].code`),
+      severity: severity as HealthSeverity,
+      message: requireString(item.message, `anomalies[${index}].message`),
+      subject_key: optionalBlackboardKey(item.subject_key, `anomalies[${index}].subject_key`),
+      ...(related !== undefined ? { related_keys: related } : {}),
+    };
+  });
+  const proposals: HealthProposal[] = raw.proposals.map((item, index) => {
+    if (!isPlainObject(item)) {
+      throw new Error(`proposals[${index}] must be an object`);
+    }
+    assertAllowlist(item, HEALTH_PROPOSAL_FIELDS, `proposals[${index}]`);
+    const code = requireString(item.code, `proposals[${index}].code`);
+    if (code !== "consolidation_reason_task") {
+      throw new Error(`proposals[${index}].code is not a closed proposal code: ${code}`);
+    }
+    const action = requireString(item.action, `proposals[${index}].action`);
+    if (action !== "start_reason_task") {
+      throw new Error(`proposals[${index}].action is not a closed proposal action: ${action}`);
+    }
+    if (item.approval_required !== true) {
+      throw new Error(`proposals[${index}].approval_required must be true`);
+    }
+    return {
+      code: "consolidation_reason_task",
+      action: "start_reason_task",
+      approval_required: true,
+      required: requireBoolean(item.required, `proposals[${index}].required`),
+    };
+  });
+  return {
+    schema: HEALTH_SCHEMA,
+    revision: requireNonNegativeInteger(raw.revision, "revision"),
+    status: status as HealthStatus,
+    attention: {
+      bytes: requireNonNegativeInteger(attentionRaw.bytes, "attention.bytes"),
+      estimated_tokens: requireNonNegativeInteger(
+        attentionRaw.estimated_tokens,
+        "attention.estimated_tokens",
+      ),
+      state: state as AttentionBudgetState,
+      complete: requireBoolean(attentionRaw.complete, "attention.complete"),
+      launchable: requireBoolean(attentionRaw.launchable, "attention.launchable"),
+      consolidation_offered: requireBoolean(
+        attentionRaw.consolidation_offered,
+        "attention.consolidation_offered",
+      ),
+      consolidation_required: requireBoolean(
+        attentionRaw.consolidation_required,
+        "attention.consolidation_required",
+      ),
+    },
+    anomalies,
+    proposals,
+  };
+}
+
+/** Human-readable attention budget label for the ordinary UI. */
+export function attentionLabel(state: AttentionBudgetState): string {
+  switch (state) {
+    case "within_target":
+      return "Within 16K target";
+    case "above_target":
+      return "Above 16K target";
+    case "warning":
+      return "32K warning — offer Reason Task";
+    case "required":
+      return "64K consolidation required";
+  }
 }
 
 /** Parse semantic-history/v2. */
@@ -934,6 +1173,11 @@ export function missingEvidenceEntries(snapshot: RuntimeSnapshot): SnapshotListE
 export async function readSnapshot(projectId: string): Promise<RuntimeSnapshot> {
   const raw = await apiGet<unknown>(`${projectBlackboardV2Base(projectId)}/snapshot`);
   return parseRuntimeSnapshot(raw);
+}
+
+export async function readSemanticHealth(projectId: string): Promise<SemanticHealth> {
+  const raw = await apiGet<unknown>(`${projectBlackboardV2Base(projectId)}/health`);
+  return parseSemanticHealth(raw);
 }
 
 export async function readCurrentDetail(projectId: string, key: string): Promise<CurrentDetail> {

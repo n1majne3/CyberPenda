@@ -25,33 +25,92 @@
         "revision": 42,
         "work": {
           "objectives": {
-            "objective:admin": {"version": 1, "status": "open", "objective": "Locate the authenticated admin surface"}
+            "objective:admin": {
+              "version": 1,
+              "status": "open",
+              "objective": "Locate the authenticated admin surface"
+            }
           },
           "attempts": {
-            "attempt:admin": {"version": 2, "status": "open", "summary": "Testing the candidate admin endpoint"}
+            "attempt:admin": {
+              "version": 2,
+              "status": "open",
+              "summary": "Testing the candidate admin endpoint"
+            }
           }
         },
         "knowledge": {
           "entities": {
-            "service:admin": {"version": 1, "status": "active", "kind": "service", "name": "Admin", "locator": "https://example.test/admin", "scope_status": "in_scope"}
+            "service:admin": {
+              "version": 1,
+              "status": "active",
+              "kind": "service",
+              "name": "Admin",
+              "locator": "https://example.test/admin",
+              "scope_status": "in_scope"
+            }
           },
           "facts": {
-            "fact:admin": {"version": 3, "category": "service", "summary": "An admin endpoint is exposed", "confidence": "confirmed", "scope_status": "in_scope"}
+            "fact:admin": {
+              "version": 3,
+              "category": "service",
+              "summary": "An admin endpoint is exposed",
+              "confidence": "confirmed",
+              "scope_status": "in_scope"
+            }
           },
           "findings": {
-            "finding:admin": {"version": 2, "status": "confirmed", "title": "Admin access control bypass", "target": "https://example.test/admin", "severity": "high", "cvss_pending": false}
+            "finding:admin": {
+              "version": 2,
+              "status": "confirmed",
+              "title": "Admin access control bypass",
+              "target": "https://example.test/admin",
+              "severity": "high",
+              "cvss_pending": false
+            }
           },
           "evidence": {
-            "evidence:admin": {"version": 1, "status": "available", "artifact_type": "http_exchange", "summary": "Captured admin response", "media_type": "message/http"}
+            "evidence:admin": {
+              "version": 1,
+              "status": "available",
+              "artifact_type": "http_exchange",
+              "summary": "Captured admin response",
+              "media_type": "message/http"
+            }
           }
         },
         "relations": [
-          ["attempt:admin", "about", "service:admin"],
-          ["attempt:admin", "produced", "evidence:admin"],
-          ["attempt:admin", "tests", "objective:admin"],
-          ["evidence:admin", "evidences", "finding:admin"],
-          ["fact:admin", "satisfies", "objective:admin"],
-          ["fact:admin", "supports", "finding:admin", "The endpoint behavior establishes the bypass"]
+          [
+            "attempt:admin",
+            "about",
+            "service:admin"
+          ],
+          [
+            "attempt:admin",
+            "produced",
+            "evidence:admin"
+          ],
+          [
+            "attempt:admin",
+            "tests",
+            "objective:admin"
+          ],
+          [
+            "evidence:admin",
+            "evidences",
+            "finding:admin"
+          ],
+          [
+            "fact:admin",
+            "satisfies",
+            "objective:admin"
+          ],
+          [
+            "fact:admin",
+            "supports",
+            "finding:admin",
+            "The endpoint behavior establishes the bypass"
+          ]
         ]
       }
     },
@@ -65,54 +124,735 @@
         "work": {},
         "knowledge": {
           "solutions": {
-            "solution:flag": {"version": 2, "status": "verified", "kind": "flag", "summary": "Recovered the challenge flag", "value": "FLAG{accepted}", "verification_summary": "Accepted by the challenge"}
+            "solution:flag": {
+              "version": 2,
+              "status": "verified",
+              "kind": "flag",
+              "summary": "Recovered the challenge flag",
+              "value": "FLAG{accepted}",
+              "verification_summary": "Accepted by the challenge"
+            }
           }
         },
         "relations": []
       }
     },
-
-    {"name": "record.entity", "schema": "currentDetail", "value": {"schema": "blackboard-record/v2", "revision": 9, "key": "entity:login", "type": "entity", "version": 1, "record": {"status": "active", "kind": "service", "name": "Login", "locator": "https://example.test/login", "scope_status": "in_scope"}, "relationships": []}},
-    {"name": "record.objective", "schema": "currentDetail", "value": {"schema": "blackboard-record/v2", "revision": 9, "key": "objective:login", "type": "objective", "version": 1, "record": {"status": "open", "objective": "Determine whether login can be bypassed"}, "relationships": []}},
-    {"name": "record.attempt", "schema": "currentDetail", "value": {"schema": "blackboard-record/v2", "revision": 9, "key": "attempt:login", "type": "attempt", "version": 2, "record": {"status": "open", "summary": "Testing parameterized login requests"}, "relationships": [["attempt:login", "tests", "objective:login"]]}},
-    {"name": "record.fact", "schema": "currentDetail", "value": {"schema": "blackboard-record/v2", "revision": 9, "key": "fact:login", "type": "fact", "version": 3, "record": {"category": "authentication", "summary": "The login endpoint accepts JSON", "body": "POST /login accepts an application/json body.", "confidence": "confirmed", "scope_status": "in_scope"}, "relationships": [["fact:login", "about", "entity:login"]]}},
-    {"name": "record.finding", "schema": "currentDetail", "value": {"schema": "blackboard-record/v2", "revision": 9, "key": "finding:sqli", "type": "finding", "version": 2, "record": {"status": "confirmed", "title": "SQL injection in login", "target": "https://example.test/login", "description": "The username field is injectable", "proof": "A boolean payload changed the response", "impact": "Authentication can be bypassed", "recommendation": "Use parameterized queries", "cvss_version": "4.0", "cvss_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:N/SC:N/SI:N/SA:N", "severity": "high", "cvss_pending": false}, "relationships": []}},
-    {"name": "record.solution", "schema": "currentDetail", "value": {"schema": "blackboard-record/v2", "revision": 9, "key": "solution:flag", "type": "solution", "version": 2, "record": {"status": "verified", "kind": "flag", "summary": "Recovered the challenge flag", "value": "FLAG{accepted}", "verification_summary": "Accepted by the challenge"}, "relationships": []}},
-    {"name": "record.evidence", "schema": "currentDetail", "value": {"schema": "blackboard-record/v2", "revision": 9, "key": "evidence:login", "type": "evidence", "version": 1, "record": {"status": "available", "artifact_type": "http_exchange", "summary": "Captured login exchange", "media_type": "message/http", "source_path": "captures/login.http", "managed_path": "evidence/login.http", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "size": 128, "captured_at": "2026-07-15T12:00:00Z"}, "relationships": []}},
-
-    {"name": "relationship.about", "schema": "relationshipTuple", "value": ["fact:login", "about", "entity:login"]},
-    {"name": "relationship.part_of", "schema": "relationshipTuple", "value": ["entity:login", "part_of", "entity:web"]},
-    {"name": "relationship.tests", "schema": "relationshipTuple", "value": ["attempt:login", "tests", "objective:login"]},
-    {"name": "relationship.produced", "schema": "relationshipTuple", "value": ["attempt:login", "produced", "evidence:login"]},
-    {"name": "relationship.evidences", "schema": "relationshipTuple", "value": ["evidence:login", "evidences", "finding:sqli"]},
-    {"name": "relationship.supports", "schema": "relationshipTuple", "value": ["fact:login", "supports", "finding:sqli", "The response establishes exploitability"]},
-    {"name": "relationship.contradicts", "schema": "relationshipTuple", "value": ["fact:waf", "contradicts", "fact:direct", "The WAF changes the observed response"]},
-    {"name": "relationship.derived_from", "schema": "relationshipTuple", "value": ["fact:login", "derived_from", "evidence:login"]},
-    {"name": "relationship.depends_on", "schema": "relationshipTuple", "value": ["objective:exploit", "depends_on", "objective:login", "Login behavior must be known first"]},
-    {"name": "relationship.satisfies", "schema": "relationshipTuple", "value": ["finding:sqli", "satisfies", "objective:login"]},
-    {"name": "relationship.supersedes", "schema": "relationshipTuple", "value": ["fact:login-v2", "supersedes", "fact:login"]},
-
-    {"name": "change.create", "schema": "changeBatch", "value": {"schema": "semantic-change-batch/v2", "idempotency_key": "fixture-create", "changes": [{"op": "create", "key": "entity:api", "type": "entity", "record": {"status": "active", "kind": "service", "name": "API", "scope_status": "in_scope"}}]}},
-    {"name": "change.update", "schema": "changeBatch", "value": {"schema": "semantic-change-batch/v2", "idempotency_key": "fixture-update", "changes": [{"op": "update", "key": "entity:api", "version": 1, "type": "entity", "record": {"description": "Primary JSON API"}, "clear": ["credential_ref"]}]}},
-    {"name": "change.transition", "schema": "changeBatch", "value": {"schema": "semantic-change-batch/v2", "idempotency_key": "fixture-transition", "changes": [{"op": "transition", "key": "attempt:login", "version": 2, "status": "failed", "summary": "The tested payloads did not bypass login"}, {"op": "transition", "key": "fact:login", "version": 3, "status": "confirmed"}, {"op": "transition", "key": "finding:sqli", "version": 1, "status": "confirmed"}, {"op": "transition", "key": "solution:flag", "version": 1, "status": "verified", "verification_summary": "Accepted by the challenge"}]}},
-    {"name": "change.relate", "schema": "changeBatch", "value": {"schema": "semantic-change-batch/v2", "idempotency_key": "fixture-relate", "changes": [{"op": "relate", "from": "fact:login", "relation": "supports", "to": "finding:sqli", "reason": "The observed response supports the finding"}]}},
-    {"name": "change.unrelate", "schema": "changeBatch", "value": {"schema": "semantic-change-batch/v2", "idempotency_key": "fixture-unrelate", "changes": [{"op": "unrelate", "from": "fact:login", "relation": "supports", "to": "finding:sqli", "version": 1}]}},
-    {"name": "change.merge", "schema": "changeBatch", "value": {"schema": "semantic-change-batch/v2", "idempotency_key": "fixture-merge", "changes": [{"op": "merge", "source": "fact:login-copy", "source_version": 1, "canonical": "fact:login", "canonical_version": 3, "canonical_record": {"summary": "The login endpoint accepts JSON"}, "clear": ["body"]}]}},
-    {"name": "change.supersede", "schema": "changeBatch", "value": {"schema": "semantic-change-batch/v2", "idempotency_key": "fixture-supersede", "changes": [{"op": "supersede", "replacement": "fact:login-v2", "replacement_version": 1, "replaced": "fact:login", "replaced_version": 3}]}},
-    {"name": "change.result", "schema": "changeResult", "value": {"schema": "semantic-change-result/v2", "revision": 10, "records": [["fact:login", 4]], "relations": [["fact:login", "supports", "finding:sqli", 1]], "working_snapshot": {"path": ".pentest/blackboard.json", "revision": 10}}},
-
-    {"name": "read.current", "schema": "currentDetail", "value": {"schema": "blackboard-record/v2", "revision": 10, "key": "fact:login", "type": "fact", "version": 4, "record": {"category": "authentication", "summary": "The login endpoint accepts JSON", "body": "POST /login accepts an application/json body.", "confidence": "confirmed", "scope_status": "in_scope"}, "relationships": [["fact:login", "supports", "finding:sqli", "The response establishes exploitability"]]}},
-    {"name": "read.history.page", "schema": "semanticHistory", "value": {"schema": "semantic-history/v2", "revision": 10, "key": "fact:login", "items": [{"kind": "record", "key": "fact:login", "version": 1, "type": "fact", "record": {"category": "authentication", "summary": "Login probably accepts JSON", "confidence": "tentative", "scope_status": "in_scope"}}], "next_cursor": "opaque:page-2"}},
-    {"name": "read.history.relationship_page", "schema": "semanticHistory", "value": {"schema": "semantic-history/v2", "revision": 10, "key": "fact:login", "items": [{"kind": "relationship", "version": 2, "from": "fact:login", "relation": "supports", "to": "finding:sqli", "reason": "The response establishes exploitability"}]}},
-    {"name": "response.error", "schema": "errorEnvelope", "value": {"error": {"code": "version_conflict", "message": "fact:login changed", "path": "changes[0].version", "retryable": false, "details": {"key": "fact:login", "expected_version": 3, "current_version": 4, "next_action": "read_current_record"}}}},
-    {"name": "response.sync", "schema": "syncResponse", "value": {"sync": {"reason": "another_task_changed_shared_project_knowledge", "from_revision": 40, "revision": 42, "snapshot": {"schema": "runtime-blackboard/v2", "semantics": "work is active; knowledge is current; history and details are available by key", "revision": 42, "work": {}, "knowledge": {}, "relations": []}}}},
-
-    {"name": "evidence.retain", "schema": "retainEvidenceRequest", "value": {"idempotency_key": "fixture-evidence", "key": "evidence:login", "attempt": "attempt:login", "source_path": "captures/login.http", "artifact_type": "http_exchange", "summary": "Captured login exchange", "media_type": "message/http", "captured_at": "2026-07-15T12:00:00Z", "links": [["evidences", "finding:sqli"], ["about", "entity:login"]]}},
-    {"name": "attempt.checkpoint", "schema": "checkpointAttemptRequest", "value": {"idempotency_key": "fixture-checkpoint", "key": "attempt:login", "version": 2, "summary": "Login payload matrix is half complete"}},
-    {"name": "continuation.finish.request", "schema": "finishRequest", "value": {"idempotency_key": "fixture-finish"}},
-    {"name": "continuation.finish.result", "schema": "finishResult", "value": {"schema": "continuation-finish/v2", "status": "finished", "revision": 10, "working_snapshot": {"path": ".pentest/blackboard.json", "revision": 10}}},
-
-    {"name": "migration.plan", "schema": "migrationPlan", "value": {"schema": "blackboard-v2-migration-plan/v1", "source_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "projects": [{"project": "example-pentest", "mappings": [{"source_type": "project_fact", "source_key": "fact:login", "action": "retain", "target_key": "fact:login"}]}], "validation_blockers": [], "required_decisions": [{"source": {"project": "example-pentest", "type": "hypothesis", "key": "hypothesis:sqli"}, "allowed_actions": ["objective", "tentative_fact", "discard"], "decision": "tentative_fact", "target_key": "fact:sqli-candidate"}]}},
-    {"name": "migration.result", "schema": "migrationResult", "value": {"schema": "blackboard-v2-migration-result/v1", "status": "migrated", "verified_backup_path": "/backups/pentest-before-v2.db", "project_count": 1, "projects": [{"project": "example-pentest", "revision": 1}], "validation": {"status": "passed", "snapshots_validated": 1}, "store_epoch": "blackboard_v2"}}
+    {
+      "name": "record.entity",
+      "schema": "currentDetail",
+      "value": {
+        "schema": "blackboard-record/v2",
+        "revision": 9,
+        "key": "entity:login",
+        "type": "entity",
+        "version": 1,
+        "record": {
+          "status": "active",
+          "kind": "service",
+          "name": "Login",
+          "locator": "https://example.test/login",
+          "scope_status": "in_scope"
+        },
+        "relationships": []
+      }
+    },
+    {
+      "name": "record.objective",
+      "schema": "currentDetail",
+      "value": {
+        "schema": "blackboard-record/v2",
+        "revision": 9,
+        "key": "objective:login",
+        "type": "objective",
+        "version": 1,
+        "record": {
+          "status": "open",
+          "objective": "Determine whether login can be bypassed"
+        },
+        "relationships": []
+      }
+    },
+    {
+      "name": "record.attempt",
+      "schema": "currentDetail",
+      "value": {
+        "schema": "blackboard-record/v2",
+        "revision": 9,
+        "key": "attempt:login",
+        "type": "attempt",
+        "version": 2,
+        "record": {
+          "status": "open",
+          "summary": "Testing parameterized login requests"
+        },
+        "relationships": [
+          [
+            "attempt:login",
+            "tests",
+            "objective:login"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "record.fact",
+      "schema": "currentDetail",
+      "value": {
+        "schema": "blackboard-record/v2",
+        "revision": 9,
+        "key": "fact:login",
+        "type": "fact",
+        "version": 3,
+        "record": {
+          "category": "authentication",
+          "summary": "The login endpoint accepts JSON",
+          "body": "POST /login accepts an application/json body.",
+          "confidence": "confirmed",
+          "scope_status": "in_scope"
+        },
+        "relationships": [
+          [
+            "fact:login",
+            "about",
+            "entity:login"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "record.finding",
+      "schema": "currentDetail",
+      "value": {
+        "schema": "blackboard-record/v2",
+        "revision": 9,
+        "key": "finding:sqli",
+        "type": "finding",
+        "version": 2,
+        "record": {
+          "status": "confirmed",
+          "title": "SQL injection in login",
+          "target": "https://example.test/login",
+          "description": "The username field is injectable",
+          "proof": "A boolean payload changed the response",
+          "impact": "Authentication can be bypassed",
+          "recommendation": "Use parameterized queries",
+          "cvss_version": "4.0",
+          "cvss_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:N/SC:N/SI:N/SA:N",
+          "severity": "high",
+          "cvss_pending": false
+        },
+        "relationships": []
+      }
+    },
+    {
+      "name": "record.solution",
+      "schema": "currentDetail",
+      "value": {
+        "schema": "blackboard-record/v2",
+        "revision": 9,
+        "key": "solution:flag",
+        "type": "solution",
+        "version": 2,
+        "record": {
+          "status": "verified",
+          "kind": "flag",
+          "summary": "Recovered the challenge flag",
+          "value": "FLAG{accepted}",
+          "verification_summary": "Accepted by the challenge"
+        },
+        "relationships": []
+      }
+    },
+    {
+      "name": "record.evidence",
+      "schema": "currentDetail",
+      "value": {
+        "schema": "blackboard-record/v2",
+        "revision": 9,
+        "key": "evidence:login",
+        "type": "evidence",
+        "version": 1,
+        "record": {
+          "status": "available",
+          "artifact_type": "http_exchange",
+          "summary": "Captured login exchange",
+          "media_type": "message/http",
+          "source_path": "captures/login.http",
+          "managed_path": "evidence/login.http",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "size": 128,
+          "captured_at": "2026-07-15T12:00:00Z"
+        },
+        "relationships": []
+      }
+    },
+    {
+      "name": "relationship.about",
+      "schema": "relationshipTuple",
+      "value": [
+        "fact:login",
+        "about",
+        "entity:login"
+      ]
+    },
+    {
+      "name": "relationship.part_of",
+      "schema": "relationshipTuple",
+      "value": [
+        "entity:login",
+        "part_of",
+        "entity:web"
+      ]
+    },
+    {
+      "name": "relationship.tests",
+      "schema": "relationshipTuple",
+      "value": [
+        "attempt:login",
+        "tests",
+        "objective:login"
+      ]
+    },
+    {
+      "name": "relationship.produced",
+      "schema": "relationshipTuple",
+      "value": [
+        "attempt:login",
+        "produced",
+        "evidence:login"
+      ]
+    },
+    {
+      "name": "relationship.evidences",
+      "schema": "relationshipTuple",
+      "value": [
+        "evidence:login",
+        "evidences",
+        "finding:sqli"
+      ]
+    },
+    {
+      "name": "relationship.supports",
+      "schema": "relationshipTuple",
+      "value": [
+        "fact:login",
+        "supports",
+        "finding:sqli",
+        "The response establishes exploitability"
+      ]
+    },
+    {
+      "name": "relationship.contradicts",
+      "schema": "relationshipTuple",
+      "value": [
+        "fact:waf",
+        "contradicts",
+        "fact:direct",
+        "The WAF changes the observed response"
+      ]
+    },
+    {
+      "name": "relationship.derived_from",
+      "schema": "relationshipTuple",
+      "value": [
+        "fact:login",
+        "derived_from",
+        "evidence:login"
+      ]
+    },
+    {
+      "name": "relationship.depends_on",
+      "schema": "relationshipTuple",
+      "value": [
+        "objective:exploit",
+        "depends_on",
+        "objective:login",
+        "Login behavior must be known first"
+      ]
+    },
+    {
+      "name": "relationship.satisfies",
+      "schema": "relationshipTuple",
+      "value": [
+        "finding:sqli",
+        "satisfies",
+        "objective:login"
+      ]
+    },
+    {
+      "name": "relationship.supersedes",
+      "schema": "relationshipTuple",
+      "value": [
+        "fact:login-v2",
+        "supersedes",
+        "fact:login"
+      ]
+    },
+    {
+      "name": "change.create",
+      "schema": "changeBatch",
+      "value": {
+        "schema": "semantic-change-batch/v2",
+        "idempotency_key": "fixture-create",
+        "changes": [
+          {
+            "op": "create",
+            "key": "entity:api",
+            "type": "entity",
+            "record": {
+              "status": "active",
+              "kind": "service",
+              "name": "API",
+              "scope_status": "in_scope"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "change.update",
+      "schema": "changeBatch",
+      "value": {
+        "schema": "semantic-change-batch/v2",
+        "idempotency_key": "fixture-update",
+        "changes": [
+          {
+            "op": "update",
+            "key": "entity:api",
+            "version": 1,
+            "type": "entity",
+            "record": {
+              "description": "Primary JSON API"
+            },
+            "clear": [
+              "credential_ref"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "change.transition",
+      "schema": "changeBatch",
+      "value": {
+        "schema": "semantic-change-batch/v2",
+        "idempotency_key": "fixture-transition",
+        "changes": [
+          {
+            "op": "transition",
+            "key": "attempt:login",
+            "version": 2,
+            "status": "failed",
+            "summary": "The tested payloads did not bypass login"
+          },
+          {
+            "op": "transition",
+            "key": "fact:login",
+            "version": 3,
+            "status": "confirmed"
+          },
+          {
+            "op": "transition",
+            "key": "finding:sqli",
+            "version": 1,
+            "status": "confirmed"
+          },
+          {
+            "op": "transition",
+            "key": "solution:flag",
+            "version": 1,
+            "status": "verified",
+            "verification_summary": "Accepted by the challenge"
+          }
+        ]
+      }
+    },
+    {
+      "name": "change.relate",
+      "schema": "changeBatch",
+      "value": {
+        "schema": "semantic-change-batch/v2",
+        "idempotency_key": "fixture-relate",
+        "changes": [
+          {
+            "op": "relate",
+            "from": "fact:login",
+            "relation": "supports",
+            "to": "finding:sqli",
+            "reason": "The observed response supports the finding"
+          }
+        ]
+      }
+    },
+    {
+      "name": "change.unrelate",
+      "schema": "changeBatch",
+      "value": {
+        "schema": "semantic-change-batch/v2",
+        "idempotency_key": "fixture-unrelate",
+        "changes": [
+          {
+            "op": "unrelate",
+            "from": "fact:login",
+            "relation": "supports",
+            "to": "finding:sqli",
+            "version": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "change.merge",
+      "schema": "changeBatch",
+      "value": {
+        "schema": "semantic-change-batch/v2",
+        "idempotency_key": "fixture-merge",
+        "changes": [
+          {
+            "op": "merge",
+            "source": "fact:login-copy",
+            "source_version": 1,
+            "canonical": "fact:login",
+            "canonical_version": 3,
+            "canonical_record": {
+              "summary": "The login endpoint accepts JSON"
+            },
+            "clear": [
+              "body"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "change.supersede",
+      "schema": "changeBatch",
+      "value": {
+        "schema": "semantic-change-batch/v2",
+        "idempotency_key": "fixture-supersede",
+        "changes": [
+          {
+            "op": "supersede",
+            "replacement": "fact:login-v2",
+            "replacement_version": 1,
+            "replaced": "fact:login",
+            "replaced_version": 3
+          }
+        ]
+      }
+    },
+    {
+      "name": "change.result",
+      "schema": "changeResult",
+      "value": {
+        "schema": "semantic-change-result/v2",
+        "revision": 10,
+        "records": [
+          [
+            "fact:login",
+            4
+          ]
+        ],
+        "relations": [
+          [
+            "fact:login",
+            "supports",
+            "finding:sqli",
+            1
+          ]
+        ],
+        "working_snapshot": {
+          "path": ".pentest/blackboard.json",
+          "revision": 10
+        }
+      }
+    },
+    {
+      "name": "read.current",
+      "schema": "currentDetail",
+      "value": {
+        "schema": "blackboard-record/v2",
+        "revision": 10,
+        "key": "fact:login",
+        "type": "fact",
+        "version": 4,
+        "record": {
+          "category": "authentication",
+          "summary": "The login endpoint accepts JSON",
+          "body": "POST /login accepts an application/json body.",
+          "confidence": "confirmed",
+          "scope_status": "in_scope"
+        },
+        "relationships": [
+          [
+            "fact:login",
+            "supports",
+            "finding:sqli",
+            "The response establishes exploitability"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "read.history.page",
+      "schema": "semanticHistory",
+      "value": {
+        "schema": "semantic-history/v2",
+        "revision": 10,
+        "key": "fact:login",
+        "items": [
+          {
+            "kind": "record",
+            "key": "fact:login",
+            "version": 1,
+            "type": "fact",
+            "record": {
+              "category": "authentication",
+              "summary": "Login probably accepts JSON",
+              "confidence": "tentative",
+              "scope_status": "in_scope"
+            }
+          }
+        ],
+        "next_cursor": "opaque:page-2"
+      }
+    },
+    {
+      "name": "read.history.relationship_page",
+      "schema": "semanticHistory",
+      "value": {
+        "schema": "semantic-history/v2",
+        "revision": 10,
+        "key": "fact:login",
+        "items": [
+          {
+            "kind": "relationship",
+            "version": 2,
+            "from": "fact:login",
+            "relation": "supports",
+            "to": "finding:sqli",
+            "reason": "The response establishes exploitability"
+          }
+        ]
+      }
+    },
+    {
+      "name": "response.error",
+      "schema": "errorEnvelope",
+      "value": {
+        "error": {
+          "code": "version_conflict",
+          "message": "fact:login changed",
+          "path": "changes[0].version",
+          "retryable": false,
+          "details": {
+            "key": "fact:login",
+            "expected_version": 3,
+            "current_version": 4,
+            "next_action": "read_current_record"
+          }
+        }
+      }
+    },
+    {
+      "name": "response.sync",
+      "schema": "syncResponse",
+      "value": {
+        "sync": {
+          "reason": "another_task_changed_shared_project_knowledge",
+          "from_revision": 40,
+          "revision": 42,
+          "snapshot": {
+            "schema": "runtime-blackboard/v2",
+            "semantics": "work is active; knowledge is current; history and details are available by key",
+            "revision": 42,
+            "work": {},
+            "knowledge": {},
+            "relations": []
+          }
+        }
+      }
+    },
+    {
+      "name": "evidence.retain",
+      "schema": "retainEvidenceRequest",
+      "value": {
+        "idempotency_key": "fixture-evidence",
+        "key": "evidence:login",
+        "attempt": "attempt:login",
+        "source_path": "captures/login.http",
+        "artifact_type": "http_exchange",
+        "summary": "Captured login exchange",
+        "media_type": "message/http",
+        "captured_at": "2026-07-15T12:00:00Z",
+        "links": [
+          [
+            "evidences",
+            "finding:sqli"
+          ],
+          [
+            "about",
+            "entity:login"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "attempt.checkpoint",
+      "schema": "checkpointAttemptRequest",
+      "value": {
+        "idempotency_key": "fixture-checkpoint",
+        "key": "attempt:login",
+        "version": 2,
+        "summary": "Login payload matrix is half complete"
+      }
+    },
+    {
+      "name": "continuation.finish.request",
+      "schema": "finishRequest",
+      "value": {
+        "idempotency_key": "fixture-finish"
+      }
+    },
+    {
+      "name": "continuation.finish.result",
+      "schema": "finishResult",
+      "value": {
+        "schema": "continuation-finish/v2",
+        "status": "finished",
+        "revision": 10,
+        "working_snapshot": {
+          "path": ".pentest/blackboard.json",
+          "revision": 10
+        }
+      }
+    },
+    {
+      "name": "migration.plan",
+      "schema": "migrationPlan",
+      "value": {
+        "schema": "blackboard-v2-migration-plan/v1",
+        "source_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "projects": [
+          {
+            "project": "example-pentest",
+            "mappings": [
+              {
+                "source_type": "project_fact",
+                "source_key": "fact:login",
+                "action": "retain",
+                "target_key": "fact:login"
+              }
+            ]
+          }
+        ],
+        "validation_blockers": [],
+        "required_decisions": [
+          {
+            "source": {
+              "project": "example-pentest",
+              "type": "hypothesis",
+              "key": "hypothesis:sqli"
+            },
+            "allowed_actions": [
+              "objective",
+              "tentative_fact",
+              "discard"
+            ],
+            "decision": "tentative_fact",
+            "target_key": "fact:sqli-candidate"
+          }
+        ]
+      }
+    },
+    {
+      "name": "migration.result",
+      "schema": "migrationResult",
+      "value": {
+        "schema": "blackboard-v2-migration-result/v1",
+        "status": "migrated",
+        "verified_backup_path": "/backups/pentest-before-v2.db",
+        "project_count": 1,
+        "projects": [
+          {
+            "project": "example-pentest",
+            "revision": 1
+          }
+        ],
+        "validation": {
+          "status": "passed",
+          "snapshots_validated": 1
+        },
+        "store_epoch": "blackboard_v2"
+      }
+    },
+    {
+      "name": "semantic_health.healthy_empty",
+      "schema": "semanticHealth",
+      "value": {
+        "schema": "blackboard-health/v2",
+        "revision": 0,
+        "status": "healthy",
+        "attention": {
+          "bytes": 128,
+          "estimated_tokens": 32,
+          "state": "within_target",
+          "complete": true,
+          "launchable": true,
+          "consolidation_offered": false,
+          "consolidation_required": false
+        },
+        "anomalies": [],
+        "proposals": []
+      }
+    },
+    {
+      "name": "semantic_health.with_anomalies",
+      "schema": "semanticHealth",
+      "value": {
+        "schema": "blackboard-health/v2",
+        "revision": 12,
+        "status": "critical",
+        "attention": {
+          "bytes": 260000,
+          "estimated_tokens": 65000,
+          "state": "required",
+          "complete": true,
+          "launchable": true,
+          "consolidation_offered": true,
+          "consolidation_required": true
+        },
+        "anomalies": [
+          {
+            "code": "attention_required",
+            "severity": "critical",
+            "message": "Runtime Snapshot reached the 64K consolidation-required threshold (65000 estimated tokens). Start an approval-required Reason Task for consolidation; complete Snapshot remains launchable."
+          },
+          {
+            "code": "missing_evidence",
+            "severity": "critical",
+            "message": "Missing Evidence currently supports a confirmed or verified conclusion.",
+            "subject_key": "evidence:missing",
+            "related_keys": [
+              "finding:confirmed"
+            ]
+          },
+          {
+            "code": "stranded_objective",
+            "severity": "warning",
+            "message": "Open Objective has no open Attempt currently testing it.",
+            "subject_key": "objective:stranded"
+          }
+        ],
+        "proposals": [
+          {
+            "code": "consolidation_reason_task",
+            "action": "start_reason_task",
+            "approval_required": true,
+            "required": true
+          }
+        ]
+      }
+    }
   ]
 }

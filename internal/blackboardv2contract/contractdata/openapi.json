@@ -6,16 +6,31 @@
     "description": "Frozen Blackboard v2 Project Interface. Runtime requests use a Continuation Interface Grant; operator/UI requests use daemon authentication. Project and execution identity are server-owned."
   },
   "security": [
-    {"continuationGrant": []},
-    {"daemonAuth": []}
+    {
+      "continuationGrant": []
+    },
+    {
+      "daemonAuth": []
+    }
   ],
   "paths": {
     "/api/v2/projects/{project_id}/blackboard/changes": {
       "post": {
         "operationId": "blackboardChangeV2",
         "parameters": [
-          {"$ref": "#/components/parameters/ProjectID"},
-          {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 1}, "description": "Mapped to the canonical semantic request; reuse after an uncertain retry."}
+          {
+            "$ref": "#/components/parameters/ProjectID"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Mapped to the canonical semantic request; reuse after an uncertain retry."
+          }
         ],
         "requestBody": {
           "required": true,
@@ -24,26 +39,63 @@
               "schema": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["schema", "changes"],
+                "required": [
+                  "schema",
+                  "changes"
+                ],
                 "properties": {
-                  "schema": {"const": "semantic-change-batch/v2"},
-                  "changes": {"type": "array", "items": {"$ref": "./schemas/blackboard-v2.schema.json#/$defs/change"}}
+                  "schema": {
+                    "const": "semantic-change-batch/v2"
+                  },
+                  "changes": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "./schemas/blackboard-v2.schema.json#/$defs/change"
+                    }
+                  }
                 }
               }
             }
           }
         },
         "responses": {
-          "200": {"description": "Atomic semantic result", "content": {"application/json": {"schema": {"$ref": "./schemas/blackboard-v2.schema.json#/$defs/changeResult"}}}},
-          "400": {"$ref": "#/components/responses/BadRequest"},
-          "401": {"$ref": "#/components/responses/Unauthenticated"},
-          "403": {"$ref": "#/components/responses/Forbidden"},
-          "404": {"$ref": "#/components/responses/NotFound"},
-          "409": {"$ref": "#/components/responses/Conflict"},
-          "410": {"$ref": "#/components/responses/ClosedContinuation"},
-          "422": {"$ref": "#/components/responses/Unprocessable"},
-          "500": {"$ref": "#/components/responses/InternalError"},
-          "503": {"$ref": "#/components/responses/Unavailable"}
+          "200": {
+            "description": "Atomic semantic result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/blackboard-v2.schema.json#/$defs/changeResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "410": {
+            "$ref": "#/components/responses/ClosedContinuation"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
         }
       }
     },
@@ -51,19 +103,117 @@
       "get": {
         "operationId": "blackboardSnapshotV2",
         "parameters": [
-          {"$ref": "#/components/parameters/ProjectID"},
-          {"name": "If-None-Match", "in": "header", "required": false, "schema": {"type": "string"}}
+          {
+            "$ref": "#/components/parameters/ProjectID"
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
         ],
         "responses": {
-          "200": {"description": "Complete unpaginated Runtime Snapshot", "headers": {"ETag": {"$ref": "#/components/headers/RevisionETag"}}, "content": {"application/json": {"schema": {"$ref": "./schemas/blackboard-v2.schema.json#/$defs/runtimeSnapshot"}}}},
-          "304": {"description": "Revision ETag still current"},
-          "400": {"$ref": "#/components/responses/BadRequest"},
-          "401": {"$ref": "#/components/responses/Unauthenticated"},
-          "403": {"$ref": "#/components/responses/Forbidden"},
-          "404": {"$ref": "#/components/responses/NotFound"},
-          "410": {"$ref": "#/components/responses/ClosedContinuation"},
-          "500": {"$ref": "#/components/responses/InternalError"},
-          "503": {"$ref": "#/components/responses/Unavailable"}
+          "200": {
+            "description": "Complete unpaginated Runtime Snapshot",
+            "headers": {
+              "ETag": {
+                "$ref": "#/components/headers/RevisionETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/blackboard-v2.schema.json#/$defs/runtimeSnapshot"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Revision ETag still current"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "410": {
+            "$ref": "#/components/responses/ClosedContinuation"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/api/v2/projects/{project_id}/blackboard/health": {
+      "get": {
+        "operationId": "blackboardHealthV2",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectID"
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deterministic semantic health and attention budget for one Project",
+            "headers": {
+              "ETag": {
+                "$ref": "#/components/headers/RevisionETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/blackboard-v2.schema.json#/$defs/semanticHealth"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Revision ETag still current"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "410": {
+            "$ref": "#/components/responses/ClosedContinuation"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
         }
       }
     },
@@ -71,20 +221,61 @@
       "get": {
         "operationId": "blackboardReadV2",
         "parameters": [
-          {"$ref": "#/components/parameters/ProjectID"},
-          {"$ref": "#/components/parameters/BlackboardKey"},
-          {"name": "If-None-Match", "in": "header", "required": false, "schema": {"type": "string"}}
+          {
+            "$ref": "#/components/parameters/ProjectID"
+          },
+          {
+            "$ref": "#/components/parameters/BlackboardKey"
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
         ],
         "responses": {
-          "200": {"description": "Current semantic record detail", "headers": {"ETag": {"$ref": "#/components/headers/RevisionETag"}}, "content": {"application/json": {"schema": {"$ref": "./schemas/blackboard-v2.schema.json#/$defs/currentDetail"}}}},
-          "304": {"description": "Revision ETag still current"},
-          "400": {"$ref": "#/components/responses/BadRequest"},
-          "401": {"$ref": "#/components/responses/Unauthenticated"},
-          "403": {"$ref": "#/components/responses/Forbidden"},
-          "404": {"$ref": "#/components/responses/NotFound"},
-          "410": {"$ref": "#/components/responses/ClosedContinuation"},
-          "500": {"$ref": "#/components/responses/InternalError"},
-          "503": {"$ref": "#/components/responses/Unavailable"}
+          "200": {
+            "description": "Current semantic record detail",
+            "headers": {
+              "ETag": {
+                "$ref": "#/components/headers/RevisionETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/blackboard-v2.schema.json#/$defs/currentDetail"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Revision ETag still current"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "410": {
+            "$ref": "#/components/responses/ClosedContinuation"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
         }
       }
     },
@@ -92,20 +283,66 @@
       "get": {
         "operationId": "blackboardHistoryV2",
         "parameters": [
-          {"$ref": "#/components/parameters/ProjectID"},
-          {"$ref": "#/components/parameters/BlackboardKey"},
-          {"name": "cursor", "in": "query", "required": false, "schema": {"type": "string", "minLength": 1}, "description": "Opaque cursor returned by the preceding history page."},
-          {"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}
+          {
+            "$ref": "#/components/parameters/ProjectID"
+          },
+          {
+            "$ref": "#/components/parameters/BlackboardKey"
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Opaque cursor returned by the preceding history page."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          }
         ],
         "responses": {
-          "200": {"description": "Explicit Semantic History page", "content": {"application/json": {"schema": {"$ref": "./schemas/blackboard-v2.schema.json#/$defs/semanticHistory"}}}},
-          "400": {"$ref": "#/components/responses/BadRequest"},
-          "401": {"$ref": "#/components/responses/Unauthenticated"},
-          "403": {"$ref": "#/components/responses/Forbidden"},
-          "404": {"$ref": "#/components/responses/NotFound"},
-          "410": {"$ref": "#/components/responses/ClosedContinuation"},
-          "500": {"$ref": "#/components/responses/InternalError"},
-          "503": {"$ref": "#/components/responses/Unavailable"}
+          "200": {
+            "description": "Explicit Semantic History page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/blackboard-v2.schema.json#/$defs/semanticHistory"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "410": {
+            "$ref": "#/components/responses/ClosedContinuation"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
         }
       }
     },
@@ -113,8 +350,18 @@
       "post": {
         "operationId": "blackboardRetainEvidenceV2",
         "parameters": [
-          {"$ref": "#/components/parameters/ProjectID"},
-          {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 1}}
+          {
+            "$ref": "#/components/parameters/ProjectID"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
         ],
         "requestBody": {
           "required": true,
@@ -123,33 +370,89 @@
               "schema": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["key", "attempt", "source_path", "artifact_type", "summary"],
+                "required": [
+                  "key",
+                  "attempt",
+                  "source_path",
+                  "artifact_type",
+                  "summary"
+                ],
                 "properties": {
-                  "key": {"$ref": "./schemas/blackboard-v2.schema.json#/$defs/blackboardKey"},
-                  "version": {"$ref": "./schemas/blackboard-v2.schema.json#/$defs/version"},
-                  "attempt": {"$ref": "./schemas/blackboard-v2.schema.json#/$defs/blackboardKey"},
-                  "source_path": {"type": "string", "minLength": 1},
-                  "artifact_type": {"$ref": "./schemas/blackboard-v2.schema.json#/$defs/conciseText"},
-                  "summary": {"$ref": "./schemas/blackboard-v2.schema.json#/$defs/semanticText"},
-                  "media_type": {"$ref": "./schemas/blackboard-v2.schema.json#/$defs/conciseText"},
-                  "captured_at": {"type": "string", "format": "date-time"},
-                  "links": {"type": "array", "items": {"$ref": "./schemas/blackboard-v2.schema.json#/$defs/evidenceLink"}}
+                  "key": {
+                    "$ref": "./schemas/blackboard-v2.schema.json#/$defs/blackboardKey"
+                  },
+                  "version": {
+                    "$ref": "./schemas/blackboard-v2.schema.json#/$defs/version"
+                  },
+                  "attempt": {
+                    "$ref": "./schemas/blackboard-v2.schema.json#/$defs/blackboardKey"
+                  },
+                  "source_path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "artifact_type": {
+                    "$ref": "./schemas/blackboard-v2.schema.json#/$defs/conciseText"
+                  },
+                  "summary": {
+                    "$ref": "./schemas/blackboard-v2.schema.json#/$defs/semanticText"
+                  },
+                  "media_type": {
+                    "$ref": "./schemas/blackboard-v2.schema.json#/$defs/conciseText"
+                  },
+                  "captured_at": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "links": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "./schemas/blackboard-v2.schema.json#/$defs/evidenceLink"
+                    }
+                  }
                 }
               }
             }
           }
         },
         "responses": {
-          "200": {"description": "Evidence semantic change result", "content": {"application/json": {"schema": {"$ref": "./schemas/blackboard-v2.schema.json#/$defs/changeResult"}}}},
-          "400": {"$ref": "#/components/responses/BadRequest"},
-          "401": {"$ref": "#/components/responses/Unauthenticated"},
-          "403": {"$ref": "#/components/responses/Forbidden"},
-          "404": {"$ref": "#/components/responses/NotFound"},
-          "409": {"$ref": "#/components/responses/Conflict"},
-          "410": {"$ref": "#/components/responses/ClosedContinuation"},
-          "422": {"$ref": "#/components/responses/Unprocessable"},
-          "500": {"$ref": "#/components/responses/InternalError"},
-          "503": {"$ref": "#/components/responses/Unavailable"}
+          "200": {
+            "description": "Evidence semantic change result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/blackboard-v2.schema.json#/$defs/changeResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "410": {
+            "$ref": "#/components/responses/ClosedContinuation"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
         }
       }
     },
@@ -157,9 +460,21 @@
       "post": {
         "operationId": "blackboardCheckpointAttemptV2",
         "parameters": [
-          {"$ref": "#/components/parameters/ProjectID"},
-          {"$ref": "#/components/parameters/BlackboardKey"},
-          {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 1}}
+          {
+            "$ref": "#/components/parameters/ProjectID"
+          },
+          {
+            "$ref": "#/components/parameters/BlackboardKey"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
         ],
         "requestBody": {
           "required": true,
@@ -168,26 +483,60 @@
               "schema": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["version", "summary"],
+                "required": [
+                  "version",
+                  "summary"
+                ],
                 "properties": {
-                  "version": {"$ref": "./schemas/blackboard-v2.schema.json#/$defs/version"},
-                  "summary": {"$ref": "./schemas/blackboard-v2.schema.json#/$defs/semanticText"}
+                  "version": {
+                    "$ref": "./schemas/blackboard-v2.schema.json#/$defs/version"
+                  },
+                  "summary": {
+                    "$ref": "./schemas/blackboard-v2.schema.json#/$defs/semanticText"
+                  }
                 }
               }
             }
           }
         },
         "responses": {
-          "200": {"description": "Attempt checkpoint semantic change result", "content": {"application/json": {"schema": {"$ref": "./schemas/blackboard-v2.schema.json#/$defs/changeResult"}}}},
-          "400": {"$ref": "#/components/responses/BadRequest"},
-          "401": {"$ref": "#/components/responses/Unauthenticated"},
-          "403": {"$ref": "#/components/responses/Forbidden"},
-          "404": {"$ref": "#/components/responses/NotFound"},
-          "409": {"$ref": "#/components/responses/Conflict"},
-          "410": {"$ref": "#/components/responses/ClosedContinuation"},
-          "422": {"$ref": "#/components/responses/Unprocessable"},
-          "500": {"$ref": "#/components/responses/InternalError"},
-          "503": {"$ref": "#/components/responses/Unavailable"}
+          "200": {
+            "description": "Attempt checkpoint semantic change result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/blackboard-v2.schema.json#/$defs/changeResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "410": {
+            "$ref": "#/components/responses/ClosedContinuation"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
         }
       }
     },
@@ -195,51 +544,218 @@
       "post": {
         "operationId": "blackboardFinishContinuationV2",
         "parameters": [
-          {"$ref": "#/components/parameters/ProjectID"},
-          {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 1}}
+          {
+            "$ref": "#/components/parameters/ProjectID"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
         ],
         "requestBody": {
           "required": true,
-          "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "maxProperties": 0}}}
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "maxProperties": 0
+              }
+            }
+          }
         },
         "responses": {
-          "200": {"description": "Continuation finished", "content": {"application/json": {"schema": {"$ref": "./schemas/blackboard-v2.schema.json#/$defs/finishResult"}}}},
-          "400": {"$ref": "#/components/responses/BadRequest"},
-          "401": {"$ref": "#/components/responses/Unauthenticated"},
-          "403": {"$ref": "#/components/responses/Forbidden"},
-          "404": {"$ref": "#/components/responses/NotFound"},
-          "409": {"$ref": "#/components/responses/Conflict"},
-          "410": {"$ref": "#/components/responses/ClosedContinuation"},
-          "422": {"$ref": "#/components/responses/Unprocessable"},
-          "500": {"$ref": "#/components/responses/InternalError"},
-          "503": {"$ref": "#/components/responses/Unavailable"}
+          "200": {
+            "description": "Continuation finished",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/blackboard-v2.schema.json#/$defs/finishResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "410": {
+            "$ref": "#/components/responses/ClosedContinuation"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
         }
       }
     }
   },
   "components": {
     "securitySchemes": {
-      "continuationGrant": {"type": "http", "scheme": "bearer", "bearerFormat": "Continuation Interface Grant"},
-      "daemonAuth": {"type": "apiKey", "in": "header", "name": "Authorization", "description": "Daemon-authenticated operator/UI identity."}
+      "continuationGrant": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "Continuation Interface Grant"
+      },
+      "daemonAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Authorization",
+        "description": "Daemon-authenticated operator/UI identity."
+      }
     },
     "parameters": {
-      "ProjectID": {"name": "project_id", "in": "path", "required": true, "schema": {"type": "string", "minLength": 1}, "description": "Must match the authenticated grant Project for Runtime calls."},
-      "BlackboardKey": {"name": "key", "in": "path", "required": true, "schema": {"$ref": "./schemas/blackboard-v2.schema.json#/$defs/blackboardKey"}}
+      "ProjectID": {
+        "name": "project_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": "Must match the authenticated grant Project for Runtime calls."
+      },
+      "BlackboardKey": {
+        "name": "key",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "$ref": "./schemas/blackboard-v2.schema.json#/$defs/blackboardKey"
+        }
+      }
     },
     "headers": {
-      "RevisionETag": {"description": "ETag derived from the observed Blackboard revision.", "schema": {"type": "string"}},
-      "RetryAfter": {"description": "Seconds before retrying storage contention.", "schema": {"type": "integer", "minimum": 1}}
+      "RevisionETag": {
+        "description": "ETag derived from the observed Blackboard revision.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "RetryAfter": {
+        "description": "Seconds before retrying storage contention.",
+        "schema": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
     },
     "responses": {
-      "BadRequest": {"description": "Malformed JSON or schema", "content": {"application/json": {"schema": {"$ref": "./schemas/blackboard-v2.schema.json#/$defs/errorEnvelope"}}}},
-      "Unauthenticated": {"description": "Missing or invalid authentication; never carries sync", "content": {"application/json": {"schema": {"$ref": "./schemas/blackboard-v2.schema.json#/$defs/unauthenticatedErrorEnvelope"}}}},
-      "Forbidden": {"description": "Authenticated authority failure", "content": {"application/json": {"schema": {"$ref": "./schemas/blackboard-v2.schema.json#/$defs/errorEnvelope"}}}},
-      "NotFound": {"description": "Project or Blackboard Key absent", "content": {"application/json": {"schema": {"$ref": "./schemas/blackboard-v2.schema.json#/$defs/errorEnvelope"}}}},
-      "Conflict": {"description": "Version, key, relationship, or idempotency conflict", "content": {"application/json": {"schema": {"$ref": "./schemas/blackboard-v2.schema.json#/$defs/errorEnvelope"}}}},
-      "ClosedContinuation": {"description": "Continuation is closed", "content": {"application/json": {"schema": {"$ref": "./schemas/blackboard-v2.schema.json#/$defs/errorEnvelope"}}}},
-      "Unprocessable": {"description": "Semantic validation, lifecycle, endpoint, cycle, or size failure", "content": {"application/json": {"schema": {"$ref": "./schemas/blackboard-v2.schema.json#/$defs/errorEnvelope"}}}},
-      "InternalError": {"description": "Unexpected fault", "content": {"application/json": {"schema": {"$ref": "./schemas/blackboard-v2.schema.json#/$defs/errorEnvelope"}}}},
-      "Unavailable": {"description": "Retryable storage contention", "headers": {"Retry-After": {"$ref": "#/components/headers/RetryAfter"}}, "content": {"application/json": {"schema": {"$ref": "./schemas/blackboard-v2.schema.json#/$defs/errorEnvelope"}}}}
+      "BadRequest": {
+        "description": "Malformed JSON or schema",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "./schemas/blackboard-v2.schema.json#/$defs/errorEnvelope"
+            }
+          }
+        }
+      },
+      "Unauthenticated": {
+        "description": "Missing or invalid authentication; never carries sync",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "./schemas/blackboard-v2.schema.json#/$defs/unauthenticatedErrorEnvelope"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Authenticated authority failure",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "./schemas/blackboard-v2.schema.json#/$defs/errorEnvelope"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Project or Blackboard Key absent",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "./schemas/blackboard-v2.schema.json#/$defs/errorEnvelope"
+            }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "Version, key, relationship, or idempotency conflict",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "./schemas/blackboard-v2.schema.json#/$defs/errorEnvelope"
+            }
+          }
+        }
+      },
+      "ClosedContinuation": {
+        "description": "Continuation is closed",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "./schemas/blackboard-v2.schema.json#/$defs/errorEnvelope"
+            }
+          }
+        }
+      },
+      "Unprocessable": {
+        "description": "Semantic validation, lifecycle, endpoint, cycle, or size failure",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "./schemas/blackboard-v2.schema.json#/$defs/errorEnvelope"
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "Unexpected fault",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "./schemas/blackboard-v2.schema.json#/$defs/errorEnvelope"
+            }
+          }
+        }
+      },
+      "Unavailable": {
+        "description": "Retryable storage contention",
+        "headers": {
+          "Retry-After": {
+            "$ref": "#/components/headers/RetryAfter"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "./schemas/blackboard-v2.schema.json#/$defs/errorEnvelope"
+            }
+          }
+        }
+      }
     }
   }
 }

@@ -462,6 +462,7 @@ func TestOpenAPIAndTrustedToolsFreezeTheAcceptedV2Adapters(t *testing.T) {
 	wantOperations := map[string]string{
 		"/api/v2/projects/{project_id}/blackboard/changes":                   "post",
 		"/api/v2/projects/{project_id}/blackboard/snapshot":                  "get",
+		"/api/v2/projects/{project_id}/blackboard/health":                    "get",
 		"/api/v2/projects/{project_id}/blackboard/records/{key}":             "get",
 		"/api/v2/projects/{project_id}/blackboard/records/{key}/history":     "get",
 		"/api/v2/projects/{project_id}/blackboard/evidence:retain":           "post",
@@ -684,6 +685,8 @@ func TestFixtureCorpusCoversEveryFrozenV2WireShape(t *testing.T) {
 		"runtime_snapshot.pentest",
 		"runtime_snapshot.pentest_complete",
 		"runtime_snapshot.solution",
+		"semantic_health.healthy_empty",
+		"semantic_health.with_anomalies",
 	}
 	if got := harness.FixtureNames(); !slices.Equal(got, want) {
 		t.Fatalf("fixture names = %v, want %v", got, want)

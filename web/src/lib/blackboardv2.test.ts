@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   FORBIDDEN_ORDINARY_UI_TERMS,
+  attentionLabel,
   buildGraphExplorer,
   knowledgeGroupsForProjectKind,
   listSnapshotEntries,
@@ -8,6 +9,7 @@ import {
   parseCurrentDetail,
   parseRelationship,
   parseRuntimeSnapshot,
+  parseSemanticHealth,
   parseSemanticHistory,
   RELATIONSHIP_TYPES,
   RECORD_TYPES,
@@ -232,6 +234,159 @@ describe("blackboard v2 data contracts", () => {
     expect(missing).toHaveLength(1);
     expect(missing[0].key).toBe("evidence:missing");
     expect(missing[0].status).toBe("missing");
+  });
+
+  it("parses semantic health with attention thresholds and closed anomalies", () => {
+    const health = parseSemanticHealth({
+      schema: "blackboard-health/v2",
+      revision: 12,
+      status: "critical",
+      attention: {
+        bytes: 260000,
+        estimated_tokens: 65000,
+        state: "required",
+        complete: true,
+        launchable: true,
+        consolidation_offered: true,
+        consolidation_required: true,
+      },
+      anomalies: [
+        {
+          code: "attention_required",
+          severity: "critical",
+          message:
+            "Runtime Snapshot reached the 64K consolidation-required threshold (65000 estimated tokens). Start an approval-required Reason Task for consolidation; complete Snapshot remains launchable.",
+        },
+        {
+          code: "stranded_objective",
+          severity: "warning",
+          message: "Open Objective has no open Attempt currently testing it.",
+          subject_key: "objective:admin",
+        },
+      ],
+      proposals: [
+        {
+          code: "consolidation_reason_task",
+          action: "start_reason_task",
+          approval_required: true,
+          required: true,
+        },
+      ],
+    });
+    expect(health.status).toBe("critical");
+    expect(health.attention.consolidation_required).toBe(true);
+    expect(health.attention.launchable).toBe(true);
+    expect(attentionLabel(health.attention.state)).toMatch(/64K consolidation required/i);
+    expect(health.anomalies[0].code).toBe("attention_required");
+    expect(health.anomalies[1].subject_key).toBe("objective:admin");
+    expect(health.proposals).toEqual([
+      {
+        code: "consolidation_reason_task",
+        action: "start_reason_task",
+        approval_required: true,
+        required: true,
+      },
+    ]);
+  });
+
+  it("rejects semantic health payloads that violate the closed schema", () => {
+    const valid = {
+      schema: "blackboard-health/v2",
+      revision: 1,
+      status: "healthy",
+      attention: {
+        bytes: 10,
+        estimated_tokens: 3,
+        state: "within_target",
+        complete: true,
+        launchable: true,
+        consolidation_offered: false,
+        consolidation_required: false,
+      },
+      anomalies: [],
+      proposals: [],
+    };
+
+    expect(() =>
+      parseSemanticHealth({
+        ...valid,
+        attention: { ...valid.attention, complete: "true" },
+      }),
+    ).toThrow(/attention\.complete must be a boolean/i);
+
+    expect(() =>
+      parseSemanticHealth({
+        ...valid,
+        attention: { ...valid.attention, launchable: undefined },
+      }),
+    ).toThrow(/attention\.launchable must be a boolean/i);
+
+    expect(() =>
+      parseSemanticHealth({
+        ...valid,
+        attention: { ...valid.attention, bytes: -1 },
+      }),
+    ).toThrow(/attention\.bytes must be a non-negative integer/i);
+
+    expect(() =>
+      parseSemanticHealth({
+        ...valid,
+        attention: { ...valid.attention, estimated_tokens: 1.5 },
+      }),
+    ).toThrow(/attention\.estimated_tokens must be a non-negative integer/i);
+
+    expect(() =>
+      parseSemanticHealth({
+        ...valid,
+        revision: -3,
+      }),
+    ).toThrow(/revision must be a non-negative integer/i);
+
+    expect(() =>
+      parseSemanticHealth({
+        ...valid,
+        extra: true,
+      }),
+    ).toThrow(/health has non-allowlisted field extra/i);
+
+    expect(() =>
+      parseSemanticHealth({
+        ...valid,
+        attention: { ...valid.attention, checker_version: 1 },
+      }),
+    ).toThrow(/attention has non-allowlisted field checker_version/i);
+
+    expect(() =>
+      parseSemanticHealth({
+        ...valid,
+        anomalies: [
+          {
+            code: "stranded_objective",
+            severity: "warning",
+            message: "Open Objective has no open Attempt currently testing it.",
+            subject_key: "objective:bad\nkey",
+          },
+        ],
+      }),
+    ).toThrow(/subject_key is not a printable ASCII blackboardKey/i);
+
+    expect(() =>
+      parseSemanticHealth({
+        ...valid,
+        proposals: [
+          {
+            code: "consolidation_reason_task",
+            action: "start_reason_task",
+            approval_required: false,
+            required: false,
+          },
+        ],
+      }),
+    ).toThrow(/approval_required must be true/i);
+
+    expect(() => parseSemanticHealth({ ...valid, proposals: undefined })).toThrow(
+      /proposals must be an array/i,
+    );
   });
 
   it("parses current detail and paginated Semantic History", () => {

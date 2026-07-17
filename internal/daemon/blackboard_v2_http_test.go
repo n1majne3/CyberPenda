@@ -152,6 +152,100 @@ func TestBlackboardV2HTTPRoutesServeAllSixCLICommandsWithTrustedContinuation(t *
 	if !bytes.Contains(snapshot, []byte(`"schema":"runtime-blackboard/v2"`)) {
 		t.Fatalf("snapshot = %s", snapshot)
 	}
+
+	// Semantic health is a live operator/UI read under the same v2 surface.
+	health := mustV2HTTP(t, http.MethodGet, base+"/blackboard/health", operatorToken, "operator", "", "")
+	if !bytes.Contains(health, []byte(`"schema":"blackboard-health/v2"`)) || !bytes.Contains(health, []byte(`"attention"`)) {
+		t.Fatalf("health = %s", health)
+	}
+	if bytes.Contains(bytes.ToLower(health), []byte("provenance")) || bytes.Contains(health, []byte("state_hash")) || bytes.Contains(health, []byte("health_run")) {
+		t.Fatalf("health leaked audit noise: %s", health)
+	}
+}
+
+func TestBlackboardV2HTTPHealthIsProjectIsolatedDeterministicAndActionable(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "v2-health-http.db")
+	runtimeRoot := filepath.Join(root, "runs")
+	const operatorToken = "operator-health-secret"
+	server, err := NewServer(Config{
+		Version: "test", DBPath: dbPath, RuntimeRoot: runtimeRoot,
+		AuthToken: operatorToken, DisableBuiltinSkills: true,
+	})
+	if err != nil {
+		t.Fatalf("start daemon: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	alpha, err := server.projects.Create("Health Alpha", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create alpha: %v", err)
+	}
+	beta, err := server.projects.Create("Health Beta", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create beta: %v", err)
+	}
+	httpServer := httptest.NewServer(server)
+	t.Cleanup(httpServer.Close)
+	alphaBase := httpServer.URL + "/api/v2/projects/" + alpha.ID
+	betaBase := httpServer.URL + "/api/v2/projects/" + beta.ID
+
+	mustV2HTTP(t, http.MethodPost, alphaBase+"/blackboard/changes", operatorToken, "operator", "alpha-stranded",
+		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"objective:alpha-stranded","type":"objective","record":{"status":"open","objective":"Alpha stranded work"}},{"op":"create","key":"attempt:alpha-orphan","type":"attempt","record":{"status":"open","summary":"Alpha attempt without tests"}}]}`)
+	mustV2HTTP(t, http.MethodPost, betaBase+"/blackboard/changes", operatorToken, "operator", "beta-entity",
+		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"entity:beta-only","type":"entity","record":{"status":"active","kind":"host","name":"Beta host","scope_status":"in_scope"}}]}`)
+
+	first := mustV2HTTP(t, http.MethodGet, alphaBase+"/blackboard/health", operatorToken, "operator", "", "")
+	if !bytes.Contains(first, []byte(`"schema":"blackboard-health/v2"`)) || !bytes.Contains(first, []byte(`"stranded_objective"`)) || !bytes.Contains(first, []byte(`"stranded_attempt"`)) {
+		t.Fatalf("alpha health missing stranded work: %s", first)
+	}
+	if bytes.Contains(first, []byte("entity:beta-only")) || bytes.Contains(first, []byte(beta.ID)) {
+		t.Fatalf("alpha health leaked beta state: %s", first)
+	}
+	betaHealth := mustV2HTTP(t, http.MethodGet, betaBase+"/blackboard/health", operatorToken, "operator", "", "")
+	if !bytes.Contains(betaHealth, []byte(`"status":"healthy"`)) || bytes.Contains(betaHealth, []byte("objective:alpha-stranded")) {
+		t.Fatalf("beta health not isolated/healthy: %s", betaHealth)
+	}
+	// Deterministic repeated read + ETag conditional.
+	second := mustV2HTTP(t, http.MethodGet, alphaBase+"/blackboard/health", operatorToken, "operator", "", "")
+	if !bytes.Equal(first, second) {
+		t.Fatalf("health not deterministic\nfirst=%s\nsecond=%s", first, second)
+	}
+	etagResult := doV2HTTP(t, http.MethodGet, alphaBase+"/blackboard/health", operatorToken, "operator", "", "")
+	etag := etagResult.header.Get("ETag")
+	if etag == "" {
+		t.Fatalf("health response missing ETag: %#v", etagResult.header)
+	}
+	notModified := doV2HTTP(t, http.MethodGet, alphaBase+"/blackboard/health", operatorToken, "operator", "", "", v2HTTPOptions{ifNoneMatch: etag})
+	if notModified.status != http.StatusNotModified {
+		t.Fatalf("If-None-Match health = %d %s", notModified.status, notModified.body)
+	}
+	// Foreign Project path with mismatched capability is denied.
+	profile, err := server.profiles.Create("Health Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{Model: "gpt-test"})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	taskRow, err := server.tasks.Create(task.CreateRequest{
+		ProjectID: alpha.ID, Goal: "health isolation", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	launch, err := server.blackboardV2Continuity.CreateContinuation(context.Background(), blackboardv2.ContinuationLaunchRequest{
+		ProjectID: alpha.ID, TaskID: taskRow.ID, RuntimeProfileID: profile.ID,
+		RuntimeProvider: string(runtimeprofile.ProviderCodex), Runner: task.RunnerSandbox,
+		RuntimeConfig: map[string]any{"provider": "codex", "model": "gpt-test"},
+	})
+	if err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	foreign := doV2HTTP(t, http.MethodGet, betaBase+"/blackboard/health", launch.Token, "", "", "")
+	if foreign.status != http.StatusForbidden && foreign.status != http.StatusUnauthorized {
+		t.Fatalf("foreign health status = %d %s", foreign.status, foreign.body)
+	}
+	if !bytes.Contains(foreign.body, []byte(`"code":"authority_denied"`)) {
+		t.Fatalf("foreign health body = %s", foreign.body)
+	}
 }
 
 func TestBlackboardV2HTTPRejectsQueryCredentialAndMissingIdempotency(t *testing.T) {

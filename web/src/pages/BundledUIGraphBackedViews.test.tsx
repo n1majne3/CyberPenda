@@ -537,6 +537,27 @@ const historyV2 = {
 function routeBody(url: string, routes: Record<string, unknown>): unknown {
   // Loose graph-route matching first so short keys like /api/projects/{id} never
   // shadow blackboard/report projections (URLSearchParams reorders query args).
+  if (url.includes("/api/v2/") && url.includes("/blackboard/health")) {
+    return (
+      routes["__health_v2__"] ??
+      routes["/api/v2/projects/project-1/blackboard/health"] ?? {
+        schema: "blackboard-health/v2",
+        revision: 3,
+        status: "healthy",
+        attention: {
+          bytes: 1024,
+          estimated_tokens: 256,
+          state: "within_target",
+          complete: true,
+          launchable: true,
+          consolidation_offered: false,
+          consolidation_required: false,
+        },
+        anomalies: [],
+        proposals: [],
+      }
+    );
+  }
   if (url.includes("/api/v2/") && url.includes("/blackboard/snapshot")) {
     return routes["__snapshot__"] ?? runtimeSnapshotV2;
   }
@@ -606,7 +627,10 @@ function routeBody(url: string, routes: Record<string, unknown>): unknown {
   if (url.includes("/blackboard/work-view")) return routes["__work__"] ?? workViewEnvelope;
   if (url.includes("/blackboard/entities")) return routes["__entities__"] ?? entityCollection;
   if (url.includes("/blackboard/graph-explorer")) return routes["__explorer__"] ?? graphExplorer;
-  if (url.includes("/blackboard/health")) return routes["__health__"] ?? healthSummary;
+  // v1 audit health only — v2 semantic health is handled above.
+  if (url.includes("/blackboard/health") && !url.includes("/api/v2/")) {
+    return routes["__health__"] ?? healthSummary;
+  }
   if (url.includes("/reports/pentest")) return routes["__pentest_report__"] ?? pentestReport;
   if (url.includes("/reports/ctf-solution")) return routes["__ctf_solution__"] ?? ctfSolution;
   if (url.includes("/dashboard")) return routes["__dashboard__"] ?? dashboard;

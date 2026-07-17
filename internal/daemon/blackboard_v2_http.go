@@ -31,6 +31,7 @@ func (server *Server) registerBlackboardV2Routes() {
 	}
 	server.mux.HandleFunc("POST /api/v2/projects/{id}/blackboard/changes", server.handleBlackboardV2Change)
 	server.mux.HandleFunc("GET /api/v2/projects/{id}/blackboard/snapshot", server.handleBlackboardV2Snapshot)
+	server.mux.HandleFunc("GET /api/v2/projects/{id}/blackboard/health", server.handleBlackboardV2Health)
 	server.mux.HandleFunc("GET /api/v2/projects/{id}/blackboard/records/{key}", server.handleBlackboardV2Read)
 	server.mux.HandleFunc("GET /api/v2/projects/{id}/blackboard/records/{key}/history", server.handleBlackboardV2History)
 	server.mux.HandleFunc("POST /api/v2/projects/{id}/blackboard/evidence:retain", server.handleBlackboardV2EvidenceRetain)
@@ -133,6 +134,23 @@ func (server *Server) handleBlackboardV2Snapshot(response http.ResponseWriter, r
 			return nil, 0, err
 		}
 		return projection.Snapshot, projection.Snapshot.Revision, nil
+	})
+}
+
+func (server *Server) handleBlackboardV2Health(response http.ResponseWriter, request *http.Request) {
+	principal, authErr := server.authenticateBlackboardV2(request, false)
+	if authErr != nil {
+		writeBlackboardV2Error(response, authErr, nil)
+		return
+	}
+	// Operator/UI semantic health is a live current-state read, same authority
+	// model as Snapshot/detail. Closed Continuations lose live read access.
+	server.serveBlackboardV2Conditional(response, request, principal, true, true, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, int, error) {
+		health, err := server.blackboardV2.ProjectSemanticHealth(ctx, principal.projectID)
+		if err != nil {
+			return nil, 0, err
+		}
+		return health, health.Revision, nil
 	})
 }
 
