@@ -47,6 +47,10 @@ type MigrationRequest struct {
 	MappingDigest            string        `json:"mapping_digest,omitempty"`
 	BackupAcknowledged       bool          `json:"backup_acknowledged,omitempty"`
 	MigrationSummaryExported bool          `json:"migration_summary_exported,omitempty"`
+	// SourceDigest binds operator decisions to the inspect plan digest for
+	// rebuild/migrate. Required whenever Decisions are supplied or required.
+	SourceDigest string              `json:"source_digest,omitempty"`
+	Decisions    []MigrationDecision `json:"decisions,omitempty"`
 }
 
 type MigrationResult struct {
@@ -330,7 +334,7 @@ func (s *Service) Execute(ctx context.Context, request MigrationRequest) (Migrat
 	case MigrationKindFinalizeLegacy:
 		return s.finalizeLegacy(ctx, request)
 	case MigrationKindRebuildUnambiguous:
-		rebuild, err := s.rebuildUnambiguousHeads(ctx)
+		rebuild, err := s.rebuildUnambiguousHeads(ctx, request)
 		result := MigrationResult{Kind: request.Kind, Rebuild: &rebuild}
 		if err != nil {
 			return result, err
@@ -497,7 +501,7 @@ func (s *Service) committedCutoverResult(ctx context.Context) (MigrationResult, 
 	if err != nil {
 		return MigrationResult{}, true, err
 	}
-	currentDigest, digestErr := sourceDigestInTransaction(ctx, tx)
+	currentDigest, digestErr := legacySourceDigestInTransaction(ctx, tx)
 	_ = tx.Rollback()
 	if digestErr != nil {
 		return MigrationResult{}, true, digestErr
@@ -605,9 +609,29 @@ func installLegacyWriteGuards(ctx context.Context, tx *sql.Tx) error {
 }
 
 func sourceDigestInTransaction(ctx context.Context, tx *sql.Tx) (string, error) {
+	return sourceDigestFromTables(ctx, tx, migrationSourceTables)
+}
+
+func legacySourceDigestInTransaction(ctx context.Context, tx *sql.Tx) (string, error) {
+	return sourceDigestFromTables(ctx, tx, func(ctx context.Context, tx *sql.Tx) ([]string, error) {
+		tables := append([]string(nil), legacySourceTables...)
+		for _, table := range []string{"legacy_observations", "legacy_hypotheses", "legacy_project_directives"} {
+			exists, err := tableExists(ctx, tx, table)
+			if err != nil {
+				return nil, err
+			}
+			if exists {
+				tables = append(tables, table)
+			}
+		}
+		return tables, nil
+	})
+}
+
+func sourceDigestFromTables(ctx context.Context, tx *sql.Tx, list func(context.Context, *sql.Tx) ([]string, error)) (string, error) {
 	hash := sha256.New()
 	writeFrame(hash, []byte("legacy_blackboard_source_v1"))
-	tables, err := migrationSourceTables(ctx, tx)
+	tables, err := list(ctx, tx)
 	if err != nil {
 		return "", err
 	}
@@ -832,7 +856,19 @@ func inspectLegacyDatabase(ctx context.Context, db legacyInspectionDB, artifactR
 
 func migrationSourceTables(ctx context.Context, tx *sql.Tx) ([]string, error) {
 	tables := append([]string(nil), legacySourceTables...)
-	for _, table := range []string{"legacy_observations", "legacy_hypotheses", "legacy_project_directives"} {
+	optional := []string{"legacy_observations", "legacy_hypotheses", "legacy_project_directives"}
+	var epoch string
+	if err := tx.QueryRowContext(ctx, `SELECT canonical_store FROM blackboard_store_state WHERE id=1`).Scan(&epoch); err != nil {
+		return nil, fmt.Errorf("inspect source store epoch: %w", err)
+	}
+	if epoch == store.CanonicalStoreGraphV1 || epoch == store.CanonicalStoreGraphV1Finalized {
+		optional = append(optional,
+			"blackboard_nodes", "blackboard_node_versions", "blackboard_node_heads",
+			"blackboard_edges", "blackboard_edge_versions", "blackboard_edge_heads",
+			"blackboard_key_registry",
+		)
+	}
+	for _, table := range optional {
 		exists, err := tableExists(ctx, tx, table)
 		if err != nil {
 			return nil, err
@@ -945,12 +981,81 @@ func inspectRequiredDecisions(ctx context.Context, tx *sql.Tx) ([]MigrationDecis
 	if err := addOptionalRows("legacy_observations", "observation_key", "observation", ` WHERE confidence NOT IN ('tentative','confirmed')`, []string{"tentative_fact", "confirmed_fact"}); err != nil {
 		return nil, err
 	}
+	// Graph_v1 heads requiring operator classification use the same decision shape.
+	graphDecisions, err := inspectGraphRequiredDecisions(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	decisions = append(decisions, graphDecisions...)
 	sort.Slice(decisions, func(i, j int) bool {
 		left := decisions[i].Source.Project + "\x00" + decisions[i].Source.Type + "\x00" + decisions[i].Source.Key
 		right := decisions[j].Source.Project + "\x00" + decisions[j].Source.Type + "\x00" + decisions[j].Source.Key
 		return left < right
 	})
 	return decisions, nil
+}
+
+func inspectGraphRequiredDecisions(ctx context.Context, tx *sql.Tx) ([]MigrationDecision, error) {
+	exists, err := tableExists(ctx, tx, "blackboard_node_heads")
+	if err != nil || !exists {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT h.project_id, h.node_type, n.original_stable_key, v.properties_json
+		FROM blackboard_node_heads h
+		JOIN blackboard_nodes n ON n.project_id=h.project_id AND n.id=h.node_id
+		JOIN blackboard_node_versions v ON v.project_id=h.project_id AND v.node_id=h.node_id AND v.version=h.version
+		WHERE h.disposition='main'
+		  AND h.node_type IN ('observation','hypothesis','project_directive')
+		ORDER BY h.project_id, h.node_type, n.original_stable_key`)
+	if err != nil {
+		return nil, fmt.Errorf("inspect graph required decisions: %w", err)
+	}
+	defer rows.Close()
+	decisions := make([]MigrationDecision, 0)
+	for rows.Next() {
+		var projectID, nodeType, key, propsRaw string
+		if err := rows.Scan(&projectID, &nodeType, &key, &propsRaw); err != nil {
+			return nil, err
+		}
+		var props map[string]any
+		if err := json.Unmarshal([]byte(propsRaw), &props); err != nil {
+			return nil, err
+		}
+		status, _ := props["status"].(string)
+		confidence, _ := props["confidence"].(string)
+		switch nodeType {
+		case "observation":
+			if status == "superseded" {
+				continue
+			}
+			confidence = strings.TrimSpace(confidence)
+			if confidence != "" && confidence != "tentative" && confidence != "confirmed" {
+				decisions = append(decisions, MigrationDecision{
+					Source:         MigrationSourceRef{Project: projectID, Type: "observation", Key: key},
+					AllowedActions: []string{"tentative_fact", "confirmed_fact"},
+				})
+			}
+		case "hypothesis":
+			if status == "" {
+				status = "open"
+			}
+			if status == "open" || status == "supported" || status == "contradicted" || status == "inconclusive" {
+				decisions = append(decisions, MigrationDecision{
+					Source:         MigrationSourceRef{Project: projectID, Type: "hypothesis", Key: key},
+					AllowedActions: []string{"objective", "tentative_fact", "discard"},
+				})
+			}
+		case "project_directive":
+			if status == "active" {
+				decisions = append(decisions, MigrationDecision{
+					Source:         MigrationSourceRef{Project: projectID, Type: "project_directive", Key: key},
+					AllowedActions: []string{"scope_limit", "objective"},
+				})
+			}
+		}
+	}
+	return decisions, rows.Err()
 }
 
 func diagnosticBlockers(diagnostics []Diagnostic) []MigrationBlocker {

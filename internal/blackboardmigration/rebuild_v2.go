@@ -122,7 +122,7 @@ type rebuildHistoryItem struct {
 	at      string
 }
 
-func (s *Service) rebuildUnambiguousHeads(ctx context.Context) (RebuildResultV1, error) {
+func (s *Service) rebuildUnambiguousHeads(ctx context.Context, request MigrationRequest) (RebuildResultV1, error) {
 	epoch, err := s.db.CanonicalStore()
 	if err != nil {
 		return RebuildResultV1{}, err
@@ -164,10 +164,39 @@ func (s *Service) rebuildUnambiguousHeads(ctx context.Context) (RebuildResultV1,
 		return RebuildResultV1{}, err
 	}
 
+	requiredDecisions, err := collectRequiredRebuildDecisions(records)
+	if err != nil {
+		return RebuildResultV1{}, err
+	}
+	decisionIndex, decisionBlockers := indexRebuildDecisions(request.Decisions, requiredDecisions)
 	blockers := append([]MigrationBlocker{}, edgeBlockers...)
+	blockers = append(blockers, decisionBlockers...)
+
+	if len(requiredDecisions) > 0 || len(request.Decisions) > 0 || strings.TrimSpace(request.SourceDigest) != "" {
+		currentDigest, err := sourceDigestInTransaction(ctx, tx)
+		if err != nil {
+			return RebuildResultV1{}, err
+		}
+		if strings.TrimSpace(request.SourceDigest) == "" {
+			blockers = append(blockers, MigrationBlocker{
+				Code:    "missing_source_digest",
+				Message: "Source-digest-bound operator decisions require the inspect plan source_digest.",
+				Path:    "source_digest",
+			})
+		} else if request.SourceDigest != currentDigest {
+			blockers = append(blockers, MigrationBlocker{
+				Code:    "stale_source_digest",
+				Message: "The supplied source_digest does not match the current v1 source.",
+				Path:    "source_digest",
+			})
+		}
+	}
+
 	assignments := make(map[string]map[string]*assignedKey) // project -> nodeID -> assignment
 	mappings := make([]MigrationMapping, 0)
 	projectMappings := make(map[string][]MigrationMapping)
+	scopeLimits := make(map[string][]string)        // project -> testing limit texts
+	goalNodeIDs := make(map[string]map[string]bool) // project -> nodeID
 
 	for _, projectID := range projects {
 		kind, err := loadProjectKind(ctx, tx, projectID)
@@ -176,42 +205,51 @@ func (s *Service) rebuildUnambiguousHeads(ctx context.Context) (RebuildResultV1,
 		}
 
 		projectRecords := filterRecordsForProject(records, projectID)
-		projectAssignments, mapped, projectBlockers := assignProjectKeys(projectID, kind, projectRecords)
+		projectEdges := filterEdgesForProject(edges, projectID)
+		projectAssignments, mapped, projectScopeLimits, goals, projectBlockers := assignProjectKeys(
+			projectID, kind, projectRecords, projectEdges, decisionIndex,
+		)
 		blockers = append(blockers, projectBlockers...)
 		assignments[projectID] = projectAssignments
 		projectMappings[projectID] = mapped
 		mappings = append(mappings, mapped...)
+		if len(projectScopeLimits) > 0 {
+			scopeLimits[projectID] = append(scopeLimits[projectID], projectScopeLimits...)
+		}
+		goalNodeIDs[projectID] = goals
 	}
 
 	// Map relationships after keys are assigned so endpoints resolve.
 	now := s.clock().UTC().Format(time.RFC3339Nano)
-	type pendingRelation struct {
-		projectID string
-		fromKey   string
-		relation  string
-		toKey     string
-		version   int
-		reason    string
-		history   []rebuildRelationHistory
-	}
-	relations := make([]pendingRelation, 0)
+	relations := make([]rebuildPendingRelation, 0)
 	redirects := make([]struct {
 		projectID, source, canonical string
 	}, 0)
 
 	for _, edge := range edges {
+		// Goal endpoints never contribute edges to v2.
+		if goalNodeIDs[edge.projectID][edge.fromID] || goalNodeIDs[edge.projectID][edge.toID] {
+			continue
+		}
 		fromAssign, fromOK := assignments[edge.projectID][edge.fromID]
 		toAssign, toOK := assignments[edge.projectID][edge.toID]
 		if !fromOK || !toOK {
-			// Endpoints that are removed types or non-imported heads are #122 /
-			// non-reusable and are skipped without guessing.
+			// Non-imported / discarded endpoints are skipped without guessing.
 			continue
 		}
 		relation := string(edge.edgeType)
+		fromKey, toKey := fromAssign.targetKey, toAssign.targetKey
+		fromType, toType := fromAssign.v2Type, toAssign.v2Type
 		switch relation {
-		case "blocks", "leads_to":
-			// Explicitly owned by #122; do not map or invent replacements here.
+		case "leads_to":
+			// Vague attack-chain edges are retired; narrative lives outside v2.
 			continue
+		case "blocks":
+			// A blocks B => B depends_on A (dependent points to prerequisite).
+			relation = "depends_on"
+			fromKey, toKey = toAssign.targetKey, fromAssign.targetKey
+			fromType, toType = toAssign.v2Type, fromAssign.v2Type
+			fromAssign, toAssign = toAssign, fromAssign
 		}
 		if !isV2Relation(relation) {
 			blockers = append(blockers, MigrationBlocker{
@@ -222,19 +260,19 @@ func (s *Service) rebuildUnambiguousHeads(ctx context.Context) (RebuildResultV1,
 			continue
 		}
 		rule, ok := relationRule(relation)
-		if !ok || !rule.Allows(fromAssign.v2Type, toAssign.v2Type) {
+		if !ok || !rule.Allows(fromType, toType) {
 			blockers = append(blockers, MigrationBlocker{
 				Code:    "invalid_relationship_endpoints",
 				Message: "Relationship endpoints are not valid under the v2 grammar.",
-				Path:    edge.projectID + "/" + fromAssign.targetKey + "/" + relation + "/" + toAssign.targetKey,
+				Path:    edge.projectID + "/" + fromKey + "/" + relation + "/" + toKey,
 			})
 			continue
 		}
-		if fromAssign.targetKey == toAssign.targetKey {
+		if fromKey == toKey {
 			blockers = append(blockers, MigrationBlocker{
 				Code:    "invalid_relationship_self_link",
 				Message: "Self-linked relationships are rejected.",
-				Path:    edge.projectID + "/" + fromAssign.targetKey + "/" + relation,
+				Path:    edge.projectID + "/" + fromKey + "/" + relation,
 			})
 			continue
 		}
@@ -247,11 +285,11 @@ func (s *Service) rebuildUnambiguousHeads(ctx context.Context) (RebuildResultV1,
 		// except supersedes which is historical once applied. Keep supersedes
 		// out of current relations when the replaced record is historical.
 		if relation == "supersedes" {
-			relations = append(relations, pendingRelation{
+			relations = append(relations, rebuildPendingRelation{
 				projectID: edge.projectID,
-				fromKey:   fromAssign.targetKey,
+				fromKey:   fromKey,
 				relation:  relation,
-				toKey:     toAssign.targetKey,
+				toKey:     toKey,
 				version:   max(1, edge.version),
 				history: []rebuildRelationHistory{{
 					version:    max(1, edge.version),
@@ -268,26 +306,29 @@ func (s *Service) rebuildUnambiguousHeads(ctx context.Context) (RebuildResultV1,
 		if rule.ReasonPolicy == blackboardv2grammar.ReasonOptional {
 			reason = strings.TrimSpace(edge.summary)
 			if reason != "" {
-				if errCode := validateReason(reason, fromAssign.targetKey, toAssign.targetKey); errCode != "" {
+				if errCode := validateReason(reason, fromKey, toKey); errCode != "" {
 					blockers = append(blockers, MigrationBlocker{
 						Code:    errCode,
 						Message: "Relationship reason is invalid under the v2 contract.",
-						Path:    edge.projectID + "/" + fromAssign.targetKey + "/" + relation + "/" + toAssign.targetKey,
+						Path:    edge.projectID + "/" + fromKey + "/" + relation + "/" + toKey,
 					})
 					continue
 				}
 			}
 		}
-		relations = append(relations, pendingRelation{
+		relations = append(relations, rebuildPendingRelation{
 			projectID: edge.projectID,
-			fromKey:   fromAssign.targetKey,
+			fromKey:   fromKey,
 			relation:  relation,
-			toKey:     toAssign.targetKey,
+			toKey:     toKey,
 			version:   max(1, edge.version),
 			reason:    reason,
 			history:   rebuildRelationHistoryFor(edge),
 		})
 	}
+
+	// Validate acyclic depends_on (and other acyclic) subgraphs before commit.
+	blockers = append(blockers, detectRebuildRelationCycles(relations)...)
 
 	// Key redirects from v1 aliases and merges (project-local only).
 	for _, alias := range aliases {
@@ -384,12 +425,14 @@ func (s *Service) rebuildUnambiguousHeads(ctx context.Context) (RebuildResultV1,
 			if rel.projectID != projectID {
 				continue
 			}
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO blackboard_v2_relationships (project_id, from_key, relation, to_key, version, reason, created_at, updated_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-				projectID, rel.fromKey, rel.relation, rel.toKey, rel.version, rel.reason, now, now,
-			); err != nil {
-				return RebuildResultV1{}, fmt.Errorf("store rebuilt relationship %s %s %s: %w", rel.fromKey, rel.relation, rel.toKey, err)
+			if rel.relation != "supersedes" {
+				if _, err := tx.ExecContext(ctx, `
+					INSERT INTO blackboard_v2_relationships (project_id, from_key, relation, to_key, version, reason, created_at, updated_at)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+					projectID, rel.fromKey, rel.relation, rel.toKey, rel.version, rel.reason, now, now,
+				); err != nil {
+					return RebuildResultV1{}, fmt.Errorf("store rebuilt relationship %s %s %s: %w", rel.fromKey, rel.relation, rel.toKey, err)
+				}
 			}
 			for _, historical := range rel.history {
 				if _, err := tx.ExecContext(ctx, `
@@ -415,6 +458,12 @@ func (s *Service) rebuildUnambiguousHeads(ctx context.Context) (RebuildResultV1,
 				projectID, redirect.source, redirect.canonical, now,
 			); err != nil {
 				return RebuildResultV1{}, fmt.Errorf("store rebuilt key redirect %s -> %s: %w", redirect.source, redirect.canonical, err)
+			}
+		}
+
+		if limits := scopeLimits[projectID]; len(limits) > 0 {
+			if err := persistRebuildScopeLimits(ctx, tx, projectID, limits, now); err != nil {
+				return RebuildResultV1{}, err
 			}
 		}
 
@@ -552,8 +601,15 @@ func validateSnapshotContract(raw []byte) error {
 	return harness.Validate("runtimeSnapshot", raw)
 }
 
-func assignProjectKeys(projectID, projectKind string, records []rebuildSourceRecord) (map[string]*assignedKey, []MigrationMapping, []MigrationBlocker) {
+func assignProjectKeys(
+	projectID, projectKind string,
+	records []rebuildSourceRecord,
+	edges []rebuildEdge,
+	decisions map[string]MigrationDecision,
+) (map[string]*assignedKey, []MigrationMapping, []string, map[string]bool, []MigrationBlocker) {
 	blockers := make([]MigrationBlocker, 0)
+	scopeLimits := make([]string, 0)
+	goalIDs := make(map[string]bool)
 	// Stable ordering for collision ownership.
 	sort.Slice(records, func(i, j int) bool {
 		if records[i].nodeType != records[j].nodeType {
@@ -565,14 +621,73 @@ func assignProjectKeys(projectID, projectKind string, records []rebuildSourceRec
 		return records[i].nodeID < records[j].nodeID
 	})
 
+	// Index node types for observation support detection.
+	nodeTypeByID := make(map[string]blackboard.NodeType, len(records))
+	propsByID := make(map[string]map[string]any, len(records))
+	for _, record := range records {
+		nodeTypeByID[record.nodeID] = record.nodeType
+		propsByID[record.nodeID] = record.properties
+	}
+	supportedObservations := observationSupportSet(edges, nodeTypeByID, propsByID)
+	producedTargets := producedTargetSet(edges)
+
 	usedKeys := make(map[string]string) // targetKey -> nodeID
 	assignments := make(map[string]*assignedKey, len(records))
 	mappings := make([]MigrationMapping, 0, len(records))
 
 	for _, record := range records {
+		if record.nodeType == blackboard.NodeTypeGoal {
+			goalIDs[record.nodeID] = true
+			continue // Goals and Goal-only edges are omitted; Task Goal stays on Task.
+		}
+
+		// Removed workflow types with explicit mapping rules.
+		switch record.nodeType {
+		case blackboard.NodeTypeObservation:
+			assign, mapping, blocker := mapObservationRecord(projectID, record, supportedObservations[record.nodeID], decisions, usedKeys)
+			if blocker != nil {
+				blockers = append(blockers, *blocker)
+				continue
+			}
+			if assign == nil {
+				continue
+			}
+			assignments[record.nodeID] = assign
+			mappings = append(mappings, mapping)
+			continue
+		case blackboard.NodeTypeHypothesis:
+			assign, mapping, blocker := mapHypothesisRecord(projectID, record, decisions, usedKeys)
+			if blocker != nil {
+				blockers = append(blockers, *blocker)
+				continue
+			}
+			if assign == nil {
+				continue
+			}
+			assignments[record.nodeID] = assign
+			mappings = append(mappings, mapping)
+			continue
+		case blackboard.NodeTypeProjectDirective:
+			assign, mapping, limits, blocker := mapDirectiveRecord(projectID, record, decisions, usedKeys)
+			if blocker != nil {
+				blockers = append(blockers, *blocker)
+				continue
+			}
+			scopeLimits = append(scopeLimits, limits...)
+			if assign == nil {
+				if mapping.Action != "" {
+					mappings = append(mappings, mapping)
+				}
+				continue
+			}
+			assignments[record.nodeID] = assign
+			mappings = append(mappings, mapping)
+			continue
+		}
+
 		v2Type, ok := mapNodeType(record.nodeType)
 		if !ok {
-			continue // goals / removed types are #122
+			continue
 		}
 		if projectKind != "ctf_challenge" && v2Type == "solution" {
 			blockers = append(blockers, MigrationBlocker{
@@ -599,24 +714,7 @@ func assignProjectKeys(projectID, projectKind string, records []rebuildSourceRec
 		targetKey, action := chooseTargetKey(projectID, v2Type, record.sourceKey, usedKeys)
 		usedKeys[targetKey] = record.nodeID
 
-		history := make([]rebuildHistoryItem, 0, len(record.priorVersions))
-		for _, prior := range record.priorVersions {
-			if prior.version >= record.version {
-				continue
-			}
-			priorSemantic, _, priorErr := mapSemanticRecord(v2Type, prior.properties)
-			if priorErr != nil {
-				// Prior versions that are not reusable under closed fields are
-				// skipped rather than failing the whole rebuild when the head is good.
-				continue
-			}
-			history = append(history, rebuildHistoryItem{
-				version: prior.version,
-				record:  priorSemantic,
-				at:      coalesceString(prior.updatedAt, record.updatedAt),
-			})
-		}
-		sort.Slice(history, func(i, j int) bool { return history[i].version < history[j].version })
+		history := rebuildHistoryForType(v2Type, record)
 
 		assignments[record.nodeID] = &assignedKey{
 			targetKey:  targetKey,
@@ -637,8 +735,595 @@ func assignProjectKeys(projectID, projectKind string, records []rebuildSourceRec
 			Action:     action,
 			TargetKey:  targetKey,
 		})
+
+		// Reusable terminal summaries lacking outcomes become conservative Facts.
+		if !current && record.disposition == string(blackboard.DispositionMain) {
+			if factAssign, factMapping, ok := mapTerminalSummaryFact(projectID, record, v2Type, semantic, producedTargets, usedKeys); ok {
+				// Synthetic key under a non-colliding assignment id.
+				syntheticID := "terminal-summary:" + record.nodeID
+				assignments[syntheticID] = factAssign
+				// Mapping uses a distinct source_key so the rebuild mapping index
+				// can retain both the terminal Attempt history and the Fact.
+				factMapping.SourceKey = "terminal-summary:" + record.sourceKey
+				mappings = append(mappings, factMapping)
+			}
+		}
 	}
-	return assignments, mappings, blockers
+	return assignments, mappings, scopeLimits, goalIDs, blockers
+}
+
+func rebuildHistoryForType(v2Type string, record rebuildSourceRecord) []rebuildHistoryItem {
+	history := make([]rebuildHistoryItem, 0, len(record.priorVersions))
+	for _, prior := range record.priorVersions {
+		if prior.version >= record.version {
+			continue
+		}
+		priorSemantic, _, priorErr := mapSemanticRecord(v2Type, prior.properties)
+		if priorErr != nil {
+			continue
+		}
+		history = append(history, rebuildHistoryItem{
+			version: prior.version,
+			record:  priorSemantic,
+			at:      coalesceString(prior.updatedAt, record.updatedAt),
+		})
+	}
+	sort.Slice(history, func(i, j int) bool { return history[i].version < history[j].version })
+	return history
+}
+
+func mapObservationRecord(
+	projectID string,
+	record rebuildSourceRecord,
+	hasSupport bool,
+	decisions map[string]MigrationDecision,
+	usedKeys map[string]string,
+) (*assignedKey, MigrationMapping, *MigrationBlocker) {
+	if record.disposition != string(blackboard.DispositionMain) {
+		return nil, MigrationMapping{}, nil
+	}
+	status := stringProp(record.properties, "status")
+	if status == "" {
+		status = "recorded"
+	}
+	if status == "superseded" {
+		return nil, MigrationMapping{}, nil
+	}
+	summary := stringProp(record.properties, "summary")
+	if strings.TrimSpace(summary) == "" {
+		return nil, MigrationMapping{}, nil // meaningless without summary
+	}
+	scope := stringProp(record.properties, "scope_status")
+	if scope == "" {
+		scope = "unknown"
+	}
+	rawConfidence := strings.TrimSpace(stringProp(record.properties, "confidence"))
+	confidence := ""
+	preferredKey := record.sourceKey
+	switch rawConfidence {
+	case "tentative":
+		confidence = "tentative"
+	case "confirmed":
+		confidence = "confirmed"
+	case "":
+		// Graph observations without confidence map by support state.
+		if hasSupport {
+			confidence = "confirmed"
+		} else {
+			confidence = "tentative"
+		}
+	default:
+		// Ambiguous confidence requires an accepted operator decision.
+		decision, ok := decisions[decisionLookupKey(projectID, "observation", record.sourceKey)]
+		if !ok || strings.TrimSpace(decision.Decision) == "" {
+			return nil, MigrationMapping{}, &MigrationBlocker{
+				Code:    "missing_decision",
+				Message: "Ambiguous Observation confidence requires a source-digest-bound operator decision.",
+				Path:    projectID + "/observation/" + record.sourceKey,
+			}
+		}
+		switch decision.Decision {
+		case "tentative_fact":
+			confidence = "tentative"
+		case "confirmed_fact":
+			confidence = "confirmed"
+		default:
+			return nil, MigrationMapping{}, &MigrationBlocker{
+				Code:    "disallowed_decision",
+				Message: "Observation decision must be tentative_fact or confirmed_fact.",
+				Path:    projectID + "/observation/" + record.sourceKey,
+			}
+		}
+		if decision.TargetKey != "" {
+			preferredKey = decision.TargetKey
+		}
+	}
+
+	targetKey, action := chooseTargetKey(projectID, "fact", preferredKey, usedKeys)
+	if preferredKey != record.sourceKey && isConformingV2Key(preferredKey) {
+		if _, taken := usedKeys[preferredKey]; !taken {
+			targetKey = preferredKey
+			action = "retain"
+		}
+	}
+	usedKeys[targetKey] = record.nodeID
+	fact := blackboardv2.FactRecord{
+		Category:    "observation",
+		Summary:     summary,
+		Body:        stringProp(record.properties, "detail"),
+		Confidence:  confidence,
+		ScopeStatus: scope,
+	}
+	return &assignedKey{
+		targetKey: targetKey, sourceType: "observation", sourceKey: record.sourceKey,
+		v2Type: "fact", action: action, current: true, record: fact,
+		version: max(1, record.version), nodeID: record.nodeID,
+	}, MigrationMapping{Project: projectID, SourceType: "observation", SourceKey: record.sourceKey, Action: action, TargetKey: targetKey}, nil
+}
+
+func mapHypothesisRecord(
+	projectID string,
+	record rebuildSourceRecord,
+	decisions map[string]MigrationDecision,
+	usedKeys map[string]string,
+) (*assignedKey, MigrationMapping, *MigrationBlocker) {
+	if record.disposition != string(blackboard.DispositionMain) {
+		return nil, MigrationMapping{}, nil
+	}
+	status := stringProp(record.properties, "status")
+	if status == "" {
+		status = "open"
+	}
+	if status == "superseded" {
+		return nil, MigrationMapping{}, nil
+	}
+	// Active hypotheses require decisions.
+	if status != "open" && status != "supported" && status != "contradicted" && status != "inconclusive" {
+		return nil, MigrationMapping{}, nil
+	}
+	statement := stringProp(record.properties, "statement")
+	if strings.TrimSpace(statement) == "" {
+		return nil, MigrationMapping{}, nil
+	}
+	decision, ok := decisions[decisionLookupKey(projectID, "hypothesis", record.sourceKey)]
+	if !ok || strings.TrimSpace(decision.Decision) == "" {
+		return nil, MigrationMapping{}, &MigrationBlocker{
+			Code:    "missing_decision",
+			Message: "Active Hypothesis requires a source-digest-bound operator decision.",
+			Path:    projectID + "/hypothesis/" + record.sourceKey,
+		}
+	}
+	switch decision.Decision {
+	case "discard":
+		return nil, MigrationMapping{Project: projectID, SourceType: "hypothesis", SourceKey: record.sourceKey, Action: "discard"}, nil
+	case "objective":
+		targetKey, action := chooseTargetKey(projectID, "objective", firstNonEmpty(decision.TargetKey, record.sourceKey), usedKeys)
+		if decision.TargetKey != "" && isConformingV2Key(decision.TargetKey) {
+			if _, taken := usedKeys[decision.TargetKey]; !taken {
+				targetKey = decision.TargetKey
+				action = "retain"
+			}
+		}
+		usedKeys[targetKey] = record.nodeID
+		obj := blackboardv2.ObjectiveRecord{Status: "open", Objective: statement}
+		return &assignedKey{
+			targetKey: targetKey, sourceType: "hypothesis", sourceKey: record.sourceKey,
+			v2Type: "objective", action: action, current: true, record: obj,
+			version: max(1, record.version), nodeID: record.nodeID,
+		}, MigrationMapping{Project: projectID, SourceType: "hypothesis", SourceKey: record.sourceKey, Action: action, TargetKey: targetKey}, nil
+	case "tentative_fact":
+		targetKey, action := chooseTargetKey(projectID, "fact", firstNonEmpty(decision.TargetKey, record.sourceKey), usedKeys)
+		if decision.TargetKey != "" && isConformingV2Key(decision.TargetKey) {
+			if _, taken := usedKeys[decision.TargetKey]; !taken {
+				targetKey = decision.TargetKey
+				action = "retain"
+			}
+		}
+		usedKeys[targetKey] = record.nodeID
+		fact := blackboardv2.FactRecord{
+			Category: "hypothesis", Summary: statement, Body: stringProp(record.properties, "rationale"),
+			Confidence: "tentative", ScopeStatus: "unknown",
+		}
+		return &assignedKey{
+			targetKey: targetKey, sourceType: "hypothesis", sourceKey: record.sourceKey,
+			v2Type: "fact", action: action, current: true, record: fact,
+			version: max(1, record.version), nodeID: record.nodeID,
+		}, MigrationMapping{Project: projectID, SourceType: "hypothesis", SourceKey: record.sourceKey, Action: action, TargetKey: targetKey}, nil
+	default:
+		return nil, MigrationMapping{}, &MigrationBlocker{
+			Code:    "disallowed_decision",
+			Message: "Hypothesis decision must be objective, tentative_fact, or discard.",
+			Path:    projectID + "/hypothesis/" + record.sourceKey,
+		}
+	}
+}
+
+func mapDirectiveRecord(
+	projectID string,
+	record rebuildSourceRecord,
+	decisions map[string]MigrationDecision,
+	usedKeys map[string]string,
+) (*assignedKey, MigrationMapping, []string, *MigrationBlocker) {
+	if record.disposition != string(blackboard.DispositionMain) {
+		return nil, MigrationMapping{}, nil, nil
+	}
+	status := stringProp(record.properties, "status")
+	// proposed, retired, superseded, and other non-active states are discarded.
+	if status != "active" {
+		return nil, MigrationMapping{}, nil, nil
+	}
+	directive := stringProp(record.properties, "directive")
+	if strings.TrimSpace(directive) == "" {
+		return nil, MigrationMapping{}, nil, nil
+	}
+	decision, ok := decisions[decisionLookupKey(projectID, "project_directive", record.sourceKey)]
+	if !ok || strings.TrimSpace(decision.Decision) == "" {
+		return nil, MigrationMapping{}, nil, &MigrationBlocker{
+			Code:    "missing_decision",
+			Message: "Active Project Directive requires a source-digest-bound operator decision.",
+			Path:    projectID + "/project_directive/" + record.sourceKey,
+		}
+	}
+	switch decision.Decision {
+	case "scope_limit":
+		return nil, MigrationMapping{
+			Project: projectID, SourceType: "project_directive", SourceKey: record.sourceKey,
+			Action: "scope_limit",
+		}, []string{directive}, nil
+	case "objective":
+		targetKey, action := chooseTargetKey(projectID, "objective", firstNonEmpty(decision.TargetKey, record.sourceKey), usedKeys)
+		if decision.TargetKey != "" && isConformingV2Key(decision.TargetKey) {
+			if _, taken := usedKeys[decision.TargetKey]; !taken {
+				targetKey = decision.TargetKey
+				action = "retain"
+			}
+		}
+		usedKeys[targetKey] = record.nodeID
+		obj := blackboardv2.ObjectiveRecord{Status: "open", Objective: directive}
+		return &assignedKey{
+			targetKey: targetKey, sourceType: "project_directive", sourceKey: record.sourceKey,
+			v2Type: "objective", action: action, current: true, record: obj,
+			version: max(1, record.version), nodeID: record.nodeID,
+		}, MigrationMapping{Project: projectID, SourceType: "project_directive", SourceKey: record.sourceKey, Action: action, TargetKey: targetKey}, nil, nil
+	default:
+		return nil, MigrationMapping{}, nil, &MigrationBlocker{
+			Code:    "disallowed_decision",
+			Message: "Project Directive decision must be scope_limit or objective.",
+			Path:    projectID + "/project_directive/" + record.sourceKey,
+		}
+	}
+}
+
+func mapTerminalSummaryFact(
+	projectID string,
+	record rebuildSourceRecord,
+	v2Type string,
+	semantic any,
+	producedTargets map[string]bool,
+	usedKeys map[string]string,
+) (*assignedKey, MigrationMapping, bool) {
+	if v2Type != "attempt" {
+		return nil, MigrationMapping{}, false
+	}
+	if producedTargets[record.nodeID] {
+		return nil, MigrationMapping{}, false
+	}
+	summary := ""
+	if attempt, ok := semantic.(blackboardv2.AttemptRecord); ok {
+		summary = strings.TrimSpace(attempt.Summary)
+	}
+	if summary == "" {
+		return nil, MigrationMapping{}, false
+	}
+	sourceKey := "fact:from-" + record.sourceKey
+	targetKey, _ := chooseTargetKey(projectID, "fact", sourceKey, usedKeys)
+	usedKeys[targetKey] = "terminal-summary:" + record.nodeID
+	fact := blackboardv2.FactRecord{
+		Category:    "progress",
+		Summary:     summary,
+		Confidence:  "tentative",
+		ScopeStatus: "unknown",
+	}
+	return &assignedKey{
+			targetKey: targetKey, sourceType: "attempt", sourceKey: record.sourceKey,
+			v2Type: "fact", action: "terminal_summary_fact", current: true, record: fact,
+			version: 1, nodeID: record.nodeID,
+		}, MigrationMapping{
+			Project: projectID, SourceType: "attempt", SourceKey: record.sourceKey,
+			Action: "terminal_summary_fact", TargetKey: targetKey,
+		}, true
+}
+
+func observationSupportSet(edges []rebuildEdge, nodeTypeByID map[string]blackboard.NodeType, propsByID map[string]map[string]any) map[string]bool {
+	supported := make(map[string]bool)
+	// First pass: identify confirmed facts and succeeded attempts.
+	confirmedFacts := make(map[string]bool)
+	succeededAttempts := make(map[string]bool)
+	for id, nodeType := range nodeTypeByID {
+		props := propsByID[id]
+		switch nodeType {
+		case blackboard.NodeTypeProjectFact:
+			if stringProp(props, "confidence") == "confirmed" {
+				confirmedFacts[id] = true
+			}
+		case blackboard.NodeTypeAttempt:
+			if stringProp(props, "status") == "succeeded" {
+				succeededAttempts[id] = true
+			}
+		}
+	}
+	for _, edge := range edges {
+		switch edge.edgeType {
+		case blackboard.EdgeTypeEvidences:
+			if nodeTypeByID[edge.toID] == blackboard.NodeTypeObservation && nodeTypeByID[edge.fromID] == blackboard.NodeTypeEvidenceArtifact {
+				supported[edge.toID] = true
+			}
+		case blackboard.EdgeTypeSupports:
+			if nodeTypeByID[edge.toID] == blackboard.NodeTypeObservation && confirmedFacts[edge.fromID] {
+				supported[edge.toID] = true
+			}
+		case blackboard.EdgeTypeProduced:
+			// Production alone is not confirmation support; only succeeded Attempt production counts
+			// when paired with other proof, but ADR says "supported state" — evidences is primary.
+			if nodeTypeByID[edge.toID] == blackboard.NodeTypeObservation && succeededAttempts[edge.fromID] {
+				// Succeeded production is weak support; keep as non-confirming unless evidences present.
+				_ = edge
+			}
+		}
+	}
+	return supported
+}
+
+func producedTargetSet(edges []rebuildEdge) map[string]bool {
+	// Map attempt nodeID -> true when it produced any semantic outcome.
+	produced := make(map[string]bool)
+	for _, edge := range edges {
+		if edge.edgeType == blackboard.EdgeTypeProduced {
+			produced[edge.fromID] = true
+		}
+	}
+	return produced
+}
+
+func collectRequiredRebuildDecisions(records []rebuildSourceRecord) ([]MigrationDecision, error) {
+	decisions := make([]MigrationDecision, 0)
+	for _, record := range records {
+		if record.disposition != string(blackboard.DispositionMain) {
+			continue
+		}
+		switch record.nodeType {
+		case blackboard.NodeTypeObservation:
+			status := stringProp(record.properties, "status")
+			if status == "superseded" {
+				continue
+			}
+			confidence := strings.TrimSpace(stringProp(record.properties, "confidence"))
+			if confidence != "" && confidence != "tentative" && confidence != "confirmed" {
+				decisions = append(decisions, MigrationDecision{
+					Source:         MigrationSourceRef{Project: record.projectID, Type: "observation", Key: record.sourceKey},
+					AllowedActions: []string{"tentative_fact", "confirmed_fact"},
+				})
+			}
+		case blackboard.NodeTypeHypothesis:
+			status := stringProp(record.properties, "status")
+			if status == "" {
+				status = "open"
+			}
+			if status == "open" || status == "supported" || status == "contradicted" || status == "inconclusive" {
+				decisions = append(decisions, MigrationDecision{
+					Source:         MigrationSourceRef{Project: record.projectID, Type: "hypothesis", Key: record.sourceKey},
+					AllowedActions: []string{"objective", "tentative_fact", "discard"},
+				})
+			}
+		case blackboard.NodeTypeProjectDirective:
+			if stringProp(record.properties, "status") == "active" {
+				decisions = append(decisions, MigrationDecision{
+					Source:         MigrationSourceRef{Project: record.projectID, Type: "project_directive", Key: record.sourceKey},
+					AllowedActions: []string{"scope_limit", "objective"},
+				})
+			}
+		}
+	}
+	sort.Slice(decisions, func(i, j int) bool {
+		left := decisions[i].Source.Project + "\x00" + decisions[i].Source.Type + "\x00" + decisions[i].Source.Key
+		right := decisions[j].Source.Project + "\x00" + decisions[j].Source.Type + "\x00" + decisions[j].Source.Key
+		return left < right
+	})
+	return decisions, nil
+}
+
+func indexRebuildDecisions(supplied []MigrationDecision, required []MigrationDecision) (map[string]MigrationDecision, []MigrationBlocker) {
+	blockers := make([]MigrationBlocker, 0)
+	requiredByKey := make(map[string]MigrationDecision, len(required))
+	for _, item := range required {
+		requiredByKey[decisionLookupKey(item.Source.Project, item.Source.Type, item.Source.Key)] = item
+	}
+	index := make(map[string]MigrationDecision)
+	seen := make(map[string]bool)
+	for _, decision := range supplied {
+		key := decisionLookupKey(decision.Source.Project, decision.Source.Type, decision.Source.Key)
+		if seen[key] {
+			blockers = append(blockers, MigrationBlocker{
+				Code:    "duplicate_decision",
+				Message: "Duplicate operator decision for the same migration source.",
+				Path:    decision.Source.Project + "/" + decision.Source.Type + "/" + decision.Source.Key,
+			})
+			continue
+		}
+		seen[key] = true
+		req, ok := requiredByKey[key]
+		if !ok {
+			// Distinguish unknown source key vs wrong project/type.
+			code := "unknown_decision"
+			if decision.Source.Project != "" && decision.Source.Type != "" {
+				// wrong_source when type is known but key/project is not required.
+				code = "wrong_source"
+				if decision.Source.Type != "observation" && decision.Source.Type != "hypothesis" && decision.Source.Type != "project_directive" {
+					code = "unknown_decision"
+				}
+			}
+			blockers = append(blockers, MigrationBlocker{
+				Code:    code,
+				Message: "Operator decision does not match a required migration source.",
+				Path:    decision.Source.Project + "/" + decision.Source.Type + "/" + decision.Source.Key,
+			})
+			continue
+		}
+		if !stringListContains(req.AllowedActions, decision.Decision) {
+			blockers = append(blockers, MigrationBlocker{
+				Code:    "disallowed_decision",
+				Message: "Operator decision is not in the closed allowed action set.",
+				Path:    decision.Source.Project + "/" + decision.Source.Type + "/" + decision.Source.Key,
+			})
+			continue
+		}
+		// Preserve allowed actions from required set for diagnostics.
+		decision.AllowedActions = append([]string(nil), req.AllowedActions...)
+		index[key] = decision
+	}
+	for key, req := range requiredByKey {
+		if _, ok := index[key]; !ok {
+			// Missing is also reported when mapping tries to use the decision;
+			// still surface a stable missing_decision here for complete diagnostics.
+			if _, supplied := seen[key]; !supplied {
+				blockers = append(blockers, MigrationBlocker{
+					Code:    "missing_decision",
+					Message: "Required operator decision is missing.",
+					Path:    req.Source.Project + "/" + req.Source.Type + "/" + req.Source.Key,
+				})
+			}
+		}
+	}
+	return index, blockers
+}
+
+func decisionLookupKey(project, sourceType, key string) string {
+	return project + "\x00" + sourceType + "\x00" + key
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func stringListContains(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func filterEdgesForProject(edges []rebuildEdge, projectID string) []rebuildEdge {
+	out := make([]rebuildEdge, 0)
+	for _, edge := range edges {
+		if edge.projectID == projectID {
+			out = append(out, edge)
+		}
+	}
+	return out
+}
+
+type rebuildPendingRelation struct {
+	projectID string
+	fromKey   string
+	relation  string
+	toKey     string
+	version   int
+	reason    string
+	history   []rebuildRelationHistory
+}
+
+type rebuildCycleEdge struct{ from, to string }
+
+func detectRebuildRelationCycles(relations []rebuildPendingRelation) []MigrationBlocker {
+	// Acyclic policies match v2 grammar: part_of, derived_from, depends_on, supersedes,
+	// and Project-Fact-to-Project-Fact supports. Rebuild only needs cycle detection for
+	// relations it writes; endpoint types already passed grammar checks.
+	blockers := make([]MigrationBlocker, 0)
+	byProjectRelation := make(map[string][]rebuildCycleEdge)
+	for _, rel := range relations {
+		switch rel.relation {
+		case "part_of", "derived_from", "depends_on", "supersedes", "supports":
+			key := rel.projectID + "\x00" + rel.relation
+			byProjectRelation[key] = append(byProjectRelation[key], rebuildCycleEdge{from: rel.fromKey, to: rel.toKey})
+		}
+	}
+	for key, edges := range byProjectRelation {
+		parts := strings.SplitN(key, "\x00", 2)
+		projectID, relation := parts[0], parts[1]
+		if relationWouldCycle(edges) {
+			blockers = append(blockers, MigrationBlocker{
+				Code:    "relationship_cycle",
+				Message: "Rebuilt " + relation + " relationships form a cycle under the v2 grammar.",
+				Path:    projectID + "/relationship/" + relation,
+			})
+		}
+	}
+	return blockers
+}
+
+func relationWouldCycle(edges []rebuildCycleEdge) bool {
+	adj := make(map[string][]string)
+	nodes := make(map[string]bool)
+	for _, edge := range edges {
+		adj[edge.from] = append(adj[edge.from], edge.to)
+		nodes[edge.from] = true
+		nodes[edge.to] = true
+	}
+	const (
+		white = 0
+		gray  = 1
+		black = 2
+	)
+	color := make(map[string]int, len(nodes))
+	var visit func(string) bool
+	visit = func(node string) bool {
+		color[node] = gray
+		for _, next := range adj[node] {
+			switch color[next] {
+			case gray:
+				return true
+			case white:
+				if visit(next) {
+					return true
+				}
+			}
+		}
+		color[node] = black
+		return false
+	}
+	for node := range nodes {
+		if color[node] == white && visit(node) {
+			return true
+		}
+	}
+	return false
+}
+
+func persistRebuildScopeLimits(ctx context.Context, tx *sql.Tx, projectID string, limits []string, now string) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM blackboard_v2_rebuild_scope_limits WHERE project_id=?`, projectID); err != nil {
+		return fmt.Errorf("clear staged scope limits for %s: %w", projectID, err)
+	}
+	seen := make(map[string]bool)
+	for _, limit := range limits {
+		limit = strings.TrimSpace(limit)
+		if limit == "" || seen[limit] {
+			continue
+		}
+		seen[limit] = true
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO blackboard_v2_rebuild_scope_limits(project_id, limit_text, created_at)
+			VALUES (?, ?, ?)`, projectID, limit, now); err != nil {
+			return fmt.Errorf("stage scope limit for %s: %w", projectID, err)
+		}
+	}
+	return nil
 }
 
 func chooseTargetKey(projectID, v2Type, sourceKey string, usedKeys map[string]string) (string, string) {
@@ -758,6 +1443,14 @@ func v2TypeOrder(nodeType blackboard.NodeType) int {
 		return 5
 	case blackboard.NodeTypeEvidenceArtifact:
 		return 6
+	case blackboard.NodeTypeObservation:
+		return 7
+	case blackboard.NodeTypeHypothesis:
+		return 8
+	case blackboard.NodeTypeProjectDirective:
+		return 9
+	case blackboard.NodeTypeGoal:
+		return 10
 	default:
 		return 100
 	}
@@ -1040,7 +1733,10 @@ func loadRebuildSourceRecords(ctx context.Context, tx *sql.Tx) ([]rebuildSourceR
 		FROM blackboard_node_heads h
 		JOIN blackboard_nodes n ON n.project_id=h.project_id AND n.id=h.node_id
 		JOIN blackboard_node_versions v ON v.project_id=h.project_id AND v.node_id=h.node_id AND v.version=h.version
-		WHERE h.node_type IN ('entity','exploration_objective','attempt','project_fact','finding','solution','evidence_artifact')
+		WHERE h.node_type IN (
+			'entity','exploration_objective','attempt','project_fact','finding','solution','evidence_artifact',
+			'goal','observation','hypothesis','project_directive'
+		)
 		ORDER BY h.project_id, h.node_type, n.original_stable_key, h.node_id`)
 	if err != nil {
 		return nil, fmt.Errorf("load graph_v1 heads for rebuild: %w", err)
@@ -1255,6 +1951,7 @@ func clearDisposableV2State(ctx context.Context, tx *sql.Tx, projects []string) 
 		"blackboard_v2_key_redirects",
 		"blackboard_v2_project_state",
 		"blackboard_v2_idempotency_receipts",
+		"blackboard_v2_rebuild_scope_limits",
 	}
 	for _, projectID := range projects {
 		for _, table := range tables {
@@ -1339,6 +2036,12 @@ func ensureDisposableV2Tables(ctx context.Context, tx *sql.Tx) error {
 			target_key TEXT NOT NULL,
 			created_at TEXT NOT NULL,
 			PRIMARY KEY (project_id, source_type, source_key)
+		)`,
+		`CREATE TABLE IF NOT EXISTS blackboard_v2_rebuild_scope_limits (
+			project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+			limit_text TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			PRIMARY KEY (project_id, limit_text)
 		)`,
 	}
 	for _, statement := range statements {

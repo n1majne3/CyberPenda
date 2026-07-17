@@ -340,6 +340,337 @@ func TestRebuildLeavesTerminalWorkInHistoryAndSkipsRemovedWorkflowTypes(t *testi
 	}
 }
 
+func TestRebuildOmitsGoalsAndGoalOnlyEdges(t *testing.T) {
+	t.Parallel()
+
+	db, service, artifactRoot := newGraphV1RebuildService(t)
+	seedGoalsAndGoalOnlyEdges(t, db, artifactRoot)
+
+	rebuildResult, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindRebuildUnambiguous})
+	if err != nil {
+		t.Fatalf("Execute(rebuild): %v", err)
+	}
+	for _, mapping := range rebuildResult.Rebuild.Mappings {
+		if mapping.SourceType == "goal" {
+			t.Fatalf("Goal was copied into v2 mappings: %#v", mapping)
+		}
+	}
+
+	v2 := blackboardv2.NewServiceWithEvidence(db, blackboardv2.EvidenceConfig{ArtifactRoot: artifactRoot})
+	if _, err := v2.ReadCurrent(context.Background(), "project-rebuild", "task:task-1:goal"); err == nil {
+		t.Fatal("Task Goal must not become a current v2 record")
+	}
+	projection, err := v2.ProjectRuntimeSnapshot(context.Background(), "project-rebuild")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range projection.Snapshot.Relations {
+		if len(rel) < 3 {
+			continue
+		}
+		from, _ := rel[0].(string)
+		to, _ := rel[2].(string)
+		if strings.Contains(from, "goal") || strings.Contains(to, "goal") {
+			t.Fatalf("Goal-only edge leaked into v2 relations: %#v", rel)
+		}
+	}
+	// Unrelated reusable state still rebuilds.
+	if _, err := v2.ReadCurrent(context.Background(), "project-rebuild", "objective:open"); err != nil {
+		t.Fatalf("open objective should rebuild: %v", err)
+	}
+}
+
+func TestRebuildMapsObservationsByConfidenceAndSupport(t *testing.T) {
+	t.Parallel()
+
+	db, service, artifactRoot := newGraphV1RebuildService(t)
+	seedObservationMappingGraph(t, db, artifactRoot)
+
+	result, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindRebuildUnambiguous})
+	if err != nil {
+		t.Fatalf("Execute(rebuild): %v", err)
+	}
+	if result.Rebuild.Status != "rebuilt" {
+		t.Fatalf("rebuild = %#v", result.Rebuild)
+	}
+
+	v2 := blackboardv2.NewServiceWithEvidence(db, blackboardv2.EvidenceConfig{ArtifactRoot: artifactRoot})
+	tentative, err := v2.ReadCurrent(context.Background(), "project-rebuild", "observation:plain")
+	if err != nil {
+		t.Fatalf("plain observation as fact: %v", err)
+	}
+	if tentative.Type != "fact" || tentative.Record.Confidence != "tentative" || tentative.Record.Summary != "Plain observed result" {
+		t.Fatalf("tentative observation mapping = %#v", tentative)
+	}
+	confirmed, err := v2.ReadCurrent(context.Background(), "project-rebuild", "observation:supported")
+	if err != nil {
+		t.Fatalf("supported observation as fact: %v", err)
+	}
+	if confirmed.Type != "fact" || confirmed.Record.Confidence != "confirmed" {
+		t.Fatalf("supported observation should confirm: %#v", confirmed)
+	}
+	// Superseded observation is discarded from current knowledge.
+	if _, err := v2.ReadCurrent(context.Background(), "project-rebuild", "observation:old"); err == nil {
+		t.Fatal("superseded observation must not be current")
+	}
+}
+
+func TestRebuildRequiresSourceDigestBoundDecisionsForAmbiguousAndActiveWorkflow(t *testing.T) {
+	t.Parallel()
+
+	db, service, artifactRoot := newGraphV1RebuildService(t)
+	seedDecisionBoundWorkflowGraph(t, db, artifactRoot)
+
+	// Without decisions, rebuild blocks and leaves disposable v2 empty.
+	blocked, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindRebuildUnambiguous})
+	if !errors.Is(err, ErrRebuildBlocked) {
+		t.Fatalf("error = %v, want ErrRebuildBlocked", err)
+	}
+	assertRebuildBlockerCodes(t, blocked.Rebuild.Blockers,
+		"missing_decision",
+	)
+	assertNoDisposableV2Commit(t, db, "project-rebuild")
+
+	inspect, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindInspect})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := inspect.Plan.SourceDigest
+	if digest == "" {
+		t.Fatal("inspect source digest required")
+	}
+
+	// Stale digest blocks.
+	stale, err := service.Execute(context.Background(), MigrationRequest{
+		Kind:         MigrationKindRebuildUnambiguous,
+		SourceDigest: "sha256:" + strings.Repeat("0", 64),
+		Decisions: []MigrationDecision{
+			{Source: MigrationSourceRef{Project: "project-rebuild", Type: "observation", Key: "observation:ambiguous"}, Decision: "tentative_fact"},
+			{Source: MigrationSourceRef{Project: "project-rebuild", Type: "hypothesis", Key: "hypothesis:active"}, Decision: "objective"},
+			{Source: MigrationSourceRef{Project: "project-rebuild", Type: "project_directive", Key: "directive:active"}, Decision: "objective"},
+		},
+	})
+	if !errors.Is(err, ErrRebuildBlocked) {
+		t.Fatalf("stale digest error = %v", err)
+	}
+	assertRebuildBlockerCodes(t, stale.Rebuild.Blockers, "stale_source_digest")
+	assertNoDisposableV2Commit(t, db, "project-rebuild")
+
+	// Disallowed / unknown / duplicate / wrong-source decisions block.
+	invalid, err := service.Execute(context.Background(), MigrationRequest{
+		Kind:         MigrationKindRebuildUnambiguous,
+		SourceDigest: digest,
+		Decisions: []MigrationDecision{
+			{Source: MigrationSourceRef{Project: "project-rebuild", Type: "observation", Key: "observation:ambiguous"}, Decision: "discard"},
+			{Source: MigrationSourceRef{Project: "project-rebuild", Type: "hypothesis", Key: "hypothesis:active"}, Decision: "objective"},
+			{Source: MigrationSourceRef{Project: "project-rebuild", Type: "hypothesis", Key: "hypothesis:active"}, Decision: "tentative_fact"},
+			{Source: MigrationSourceRef{Project: "project-rebuild", Type: "project_directive", Key: "directive:active"}, Decision: "objective"},
+			{Source: MigrationSourceRef{Project: "project-rebuild", Type: "hypothesis", Key: "hypothesis:missing"}, Decision: "discard"},
+			{Source: MigrationSourceRef{Project: "project-other", Type: "hypothesis", Key: "hypothesis:active"}, Decision: "discard"},
+			{Source: MigrationSourceRef{Project: "project-rebuild", Type: "legacy_unknown", Key: "x"}, Decision: "discard"},
+		},
+	})
+	if !errors.Is(err, ErrRebuildBlocked) {
+		t.Fatalf("invalid decisions error = %v", err)
+	}
+	assertRebuildBlockerCodes(t, invalid.Rebuild.Blockers,
+		"disallowed_decision", "duplicate_decision", "unknown_decision", "wrong_source",
+	)
+	assertNoDisposableV2Commit(t, db, "project-rebuild")
+
+	// The digest covers graph-v1 semantic rows, not only legacy source tables.
+	var hypothesisID string
+	if err := db.QueryRow(`SELECT id FROM blackboard_nodes WHERE project_id='project-rebuild' AND original_stable_key='hypothesis:active'`).Scan(&hypothesisID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO blackboard_node_versions(
+			project_id,node_id,version,result_graph_revision,mutation_seq,operation_index,
+			schema_version,disposition,merge_target_id,properties_json,semantic_hash,updated_at
+		)
+		SELECT project_id,node_id,2,result_graph_revision,mutation_seq,operation_index,
+			schema_version,disposition,merge_target_id,?,semantic_hash,'2026-01-03T00:00:00Z'
+		FROM blackboard_node_versions
+		WHERE project_id='project-rebuild' AND node_id=? AND version=1`,
+		`{"statement":"Login may be injectable after source mutation","status":"open"}`,
+		hypothesisID,
+	); err != nil {
+		t.Fatalf("append graph-v1 decision source version: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE blackboard_node_heads SET version=2 WHERE project_id='project-rebuild' AND node_id=?`, hypothesisID); err != nil {
+		t.Fatalf("advance graph-v1 decision source head: %v", err)
+	}
+	mutated, err := service.Execute(context.Background(), MigrationRequest{
+		Kind:         MigrationKindRebuildUnambiguous,
+		SourceDigest: digest,
+		Decisions: []MigrationDecision{
+			{Source: MigrationSourceRef{Project: "project-rebuild", Type: "observation", Key: "observation:ambiguous"}, Decision: "confirmed_fact", TargetKey: "fact:from-obs"},
+			{Source: MigrationSourceRef{Project: "project-rebuild", Type: "hypothesis", Key: "hypothesis:active"}, Decision: "objective"},
+			{Source: MigrationSourceRef{Project: "project-rebuild", Type: "project_directive", Key: "directive:active"}, Decision: "scope_limit"},
+			{Source: MigrationSourceRef{Project: "project-rebuild", Type: "hypothesis", Key: "hypothesis:noise"}, Decision: "discard"},
+		},
+	})
+	if !errors.Is(err, ErrRebuildBlocked) {
+		t.Fatalf("mutated source digest error = %v", err)
+	}
+	assertRebuildBlockerCodes(t, mutated.Rebuild.Blockers, "stale_source_digest")
+	inspect, err = service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindInspect})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest = inspect.Plan.SourceDigest
+
+	// Accepted decisions rebuild successfully.
+	ok, err := service.Execute(context.Background(), MigrationRequest{
+		Kind:         MigrationKindRebuildUnambiguous,
+		SourceDigest: digest,
+		Decisions: []MigrationDecision{
+			{Source: MigrationSourceRef{Project: "project-rebuild", Type: "observation", Key: "observation:ambiguous"}, Decision: "confirmed_fact", TargetKey: "fact:from-obs"},
+			{Source: MigrationSourceRef{Project: "project-rebuild", Type: "hypothesis", Key: "hypothesis:active"}, Decision: "objective"},
+			{Source: MigrationSourceRef{Project: "project-rebuild", Type: "project_directive", Key: "directive:active"}, Decision: "scope_limit"},
+			{Source: MigrationSourceRef{Project: "project-rebuild", Type: "hypothesis", Key: "hypothesis:noise"}, Decision: "discard"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("accepted decisions rebuild: %v blockers=%#v", err, ok.Rebuild)
+	}
+	if ok.Rebuild.Status != "rebuilt" {
+		t.Fatalf("rebuild status = %#v", ok.Rebuild)
+	}
+
+	v2 := blackboardv2.NewServiceWithEvidence(db, blackboardv2.EvidenceConfig{ArtifactRoot: artifactRoot})
+	fact, err := v2.ReadCurrent(context.Background(), "project-rebuild", "fact:from-obs")
+	if err != nil {
+		t.Fatalf("ambiguous observation decision target: %v", err)
+	}
+	if fact.Type != "fact" || fact.Record.Confidence != "confirmed" {
+		t.Fatalf("confirmed_fact decision = %#v", fact)
+	}
+	objective, err := v2.ReadCurrent(context.Background(), "project-rebuild", "hypothesis:active")
+	if err != nil {
+		t.Fatalf("hypothesis->objective: %v", err)
+	}
+	if objective.Type != "objective" || objective.Record.Status != "open" || objective.Record.Objective != "Login may be injectable after source mutation" {
+		t.Fatalf("hypothesis objective mapping = %#v", objective)
+	}
+	// scope_limit never creates a v2 Directive/Objective record from that key.
+	if _, err := v2.ReadCurrent(context.Background(), "project-rebuild", "directive:active"); err == nil {
+		t.Fatal("scope_limit must not create a v2 semantic Directive record")
+	}
+	var scopeJSON string
+	if err := db.QueryRow(`SELECT scope_json FROM projects WHERE id='project-rebuild'`).Scan(&scopeJSON); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(scopeJSON, "Keep admin testing bounded") {
+		t.Fatalf("disposable rebuild mutated authoritative Project Scope: %s", scopeJSON)
+	}
+	var stagedLimit string
+	if err := db.QueryRow(`SELECT limit_text FROM blackboard_v2_rebuild_scope_limits WHERE project_id='project-rebuild'`).Scan(&stagedLimit); err != nil {
+		t.Fatal(err)
+	}
+	if stagedLimit != "Keep admin testing bounded" {
+		t.Fatalf("staged scope limit = %q", stagedLimit)
+	}
+	if _, err := v2.ReadCurrent(context.Background(), "project-rebuild", "hypothesis:noise"); err == nil {
+		t.Fatal("discarded hypothesis must not be current")
+	}
+	// proposed / retired directives discarded without decision.
+	if _, err := v2.ReadCurrent(context.Background(), "project-rebuild", "directive:proposed"); err == nil {
+		t.Fatal("proposed directive must be discarded")
+	}
+	if _, err := v2.ReadCurrent(context.Background(), "project-rebuild", "directive:retired"); err == nil {
+		t.Fatal("retired directive must be discarded")
+	}
+}
+
+func TestRebuildReversesBlocksDropsLeadsToAndRejectsCycles(t *testing.T) {
+	t.Parallel()
+
+	db, service, artifactRoot := newGraphV1RebuildService(t)
+	seedBlocksAndLeadsToGraph(t, db, artifactRoot, false)
+
+	if _, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindRebuildUnambiguous}); err != nil {
+		t.Fatalf("Execute(rebuild): %v", err)
+	}
+	v2 := blackboardv2.NewServiceWithEvidence(db, blackboardv2.EvidenceConfig{ArtifactRoot: artifactRoot})
+	projection, err := v2.ProjectRuntimeSnapshot(context.Background(), "project-rebuild")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A blocks B => B depends_on A
+	if !snapshotHasRelation(projection.Snapshot, "objective:blocked", "depends_on", "objective:blocker") {
+		t.Fatalf("blocks was not reversed into depends_on: %s", projection.Bytes)
+	}
+	if snapshotHasRelation(projection.Snapshot, "objective:blocker", "blocks", "objective:blocked") {
+		t.Fatal("blocks must not remain as a v2 relation type")
+	}
+	for _, rel := range projection.Snapshot.Relations {
+		if len(rel) >= 2 {
+			if got, _ := rel[1].(string); got == "leads_to" {
+				t.Fatalf("leads_to must be removed: %#v", rel)
+			}
+		}
+	}
+
+	// Cycle through blocks + depends_on is a blocker with no commit.
+	db2, service2, artifactRoot2 := newGraphV1RebuildService(t)
+	seedBlocksAndLeadsToGraph(t, db2, artifactRoot2, true)
+	cycled, err := service2.Execute(context.Background(), MigrationRequest{Kind: MigrationKindRebuildUnambiguous})
+	if !errors.Is(err, ErrRebuildBlocked) {
+		t.Fatalf("cycle error = %v, want ErrRebuildBlocked", err)
+	}
+	assertRebuildBlockerCodes(t, cycled.Rebuild.Blockers, "relationship_cycle")
+	assertNoDisposableV2Commit(t, db2, "project-rebuild")
+}
+
+func TestRebuildMapsReusableTerminalSummariesWithoutOutcomesToTentativeFacts(t *testing.T) {
+	t.Parallel()
+
+	db, service, artifactRoot := newGraphV1RebuildService(t)
+	seedTerminalSummariesWithoutOutcomes(t, db, artifactRoot)
+
+	result, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindRebuildUnambiguous})
+	if err != nil {
+		t.Fatalf("Execute(rebuild): %v", err)
+	}
+	if result.Rebuild.Status != "rebuilt" {
+		t.Fatalf("rebuild = %#v", result.Rebuild)
+	}
+
+	v2 := blackboardv2.NewServiceWithEvidence(db, blackboardv2.EvidenceConfig{ArtifactRoot: artifactRoot})
+	// Terminal Attempt summary without produced outcomes becomes a conservative Fact.
+	found := false
+	for _, mapping := range result.Rebuild.Mappings {
+		if mapping.Action == "terminal_summary_fact" && strings.Contains(mapping.SourceKey, "attempt:dead-end") {
+			found = true
+			detail, err := v2.ReadCurrent(context.Background(), "project-rebuild", mapping.TargetKey)
+			if err != nil {
+				t.Fatalf("terminal summary fact: %v", err)
+			}
+			if detail.Type != "fact" || detail.Record.Confidence != "tentative" || detail.Record.Summary != "Attempt concluded without durable outcome records" {
+				t.Fatalf("terminal summary fact detail = %#v", detail)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected terminal_summary_fact mapping, got %#v", result.Rebuild.Mappings)
+	}
+	// Terminal workflow Attempt itself is history-only, not current work.
+	projection, err := v2.ProjectRuntimeSnapshot(context.Background(), "project-rebuild")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.Snapshot.Work.Attempts != nil {
+		if _, ok := projection.Snapshot.Work.Attempts["attempt:dead-end"]; ok {
+			t.Fatal("terminal attempt must not remain current work")
+		}
+	}
+	history, err := v2.ReadHistory(context.Background(), "project-rebuild", "attempt:dead-end", blackboardv2.HistoryOptions{Limit: 10})
+	if err != nil || len(history.Items) == 0 {
+		t.Fatalf("terminal attempt should be in Semantic History: err=%v history=%#v", err, history)
+	}
+}
+
 func newGraphV1RebuildService(t *testing.T) (*store.DB, *Service, string) {
 	t.Helper()
 	root := t.TempDir()
@@ -361,6 +692,44 @@ func newGraphV1RebuildService(t *testing.T) (*store.DB, *Service, string) {
 		t.Fatal(err)
 	}
 	return db, NewService(db, databasePath, artifactRoot), artifactRoot
+}
+
+func assertRebuildBlockerCodes(t *testing.T, blockers []MigrationBlocker, want ...string) {
+	t.Helper()
+	got := map[string]bool{}
+	for _, blocker := range blockers {
+		got[blocker.Code] = true
+	}
+	for _, code := range want {
+		if !got[code] {
+			t.Fatalf("missing blocker %q in %#v", code, blockers)
+		}
+	}
+}
+
+func assertNoDisposableV2Commit(t *testing.T, db *store.DB, projectID string) {
+	t.Helper()
+	var records, relations int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM blackboard_v2_records WHERE project_id=?`, projectID).Scan(&records); err != nil {
+		// Table may not exist if ensure never committed; treat as empty.
+		if !strings.Contains(err.Error(), "no such table") {
+			t.Fatal(err)
+		}
+		return
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM blackboard_v2_relationships WHERE project_id=?`, projectID).Scan(&relations); err != nil {
+		t.Fatal(err)
+	}
+	if records != 0 || relations != 0 {
+		t.Fatalf("blocked rebuild committed disposable v2 state: records=%d relations=%d", records, relations)
+	}
+	epoch, err := db.CanonicalStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if epoch != store.CanonicalStoreGraphV1 {
+		t.Fatalf("blocked rebuild mutated epoch to %q", epoch)
+	}
 }
 
 func seedUnambiguousGraphHeads(t *testing.T, db *store.DB, artifactRoot string) {
@@ -618,4 +987,371 @@ func snapshotHasRelation(snapshot blackboardv2.RuntimeSnapshot, from, relation, 
 		}
 	}
 	return false
+}
+
+func seedGoalsAndGoalOnlyEdges(t *testing.T, db *store.DB, artifactRoot string) {
+	t.Helper()
+	if _, err := db.Exec(`
+		INSERT INTO projects(id,name,description,scope_json,defaults_json,kind,created_at,updated_at)
+		VALUES('project-rebuild','Rebuild','','{}','{}','pentest','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO tasks(id,project_id,goal,status,runner,runtime_profile_id,run_controls_json,scope_snapshot_json,created_at,updated_at)
+		VALUES('task-1','project-rebuild','Do work','running','local','profile','{}','{}','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	graph := blackboard.NewGraphService(db, nil, nil).WithArtifactRoot(artifactRoot)
+	ctx := blackboard.SystemExecutionContext("project-rebuild", "pentest", "rebuild-test")
+	if _, err := graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion:  blackboard.GraphMutationSchemaVersion,
+		IdempotencyKey: "goal-seed-objective",
+		Context:        ctx,
+		Operations: []blackboard.Operation{{
+			OpID: "objective", Kind: blackboard.OpCreateNode,
+			Node:   blackboard.NodeRef{NodeType: blackboard.NodeTypeExplorationObjective, StableKey: "objective:open"},
+			Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"objective": "Open work", "status": "open"}},
+		}},
+	}); err != nil {
+		t.Fatalf("seed objective: %v", err)
+	}
+	// Goals are system-owned Task projections; insert the v1 Goal head directly.
+	goalID := "node-goal-1"
+	objID := ""
+	if err := db.QueryRow(`SELECT id FROM blackboard_nodes WHERE project_id='project-rebuild' AND original_stable_key='objective:open'`).Scan(&objID); err != nil {
+		t.Fatal(err)
+	}
+	statements := []string{
+		`INSERT INTO blackboard_nodes(project_id,id,node_type,original_stable_key,created_mutation_seq,created_operation_index,created_at)
+		 VALUES('project-rebuild','` + goalID + `','goal','task:task-1:goal',50,0,'2026-01-01T00:00:00Z')`,
+		`INSERT INTO blackboard_node_versions(project_id,node_id,version,result_graph_revision,mutation_seq,operation_index,schema_version,disposition,merge_target_id,properties_json,semantic_hash,updated_at)
+		 VALUES('project-rebuild','` + goalID + `',1,50,50,0,1,'main',NULL,'{"task_id":"task-1","text":"Do work","task_status":"running"}','00','2026-01-01T00:00:00Z')`,
+		`INSERT INTO blackboard_node_heads(project_id,node_id,node_type,version,graph_revision,disposition,semantic_hash)
+		 VALUES('project-rebuild','` + goalID + `','goal',1,50,'main','00')`,
+		`INSERT INTO blackboard_edges(project_id,id,edge_type,created_mutation_seq,created_operation_index,created_at)
+		 VALUES('project-rebuild','edge-part-goal','part_of',51,0,'2026-01-01T00:00:00Z')`,
+		`INSERT INTO blackboard_edge_versions(project_id,edge_id,version,result_graph_revision,mutation_seq,operation_index,from_node_id,to_node_id,state,summary,semantic_hash,updated_at)
+		 VALUES('project-rebuild','edge-part-goal',1,51,51,0,'` + objID + `','` + goalID + `','active','','00','2026-01-01T00:00:00Z')`,
+		`INSERT INTO blackboard_edge_heads(project_id,edge_id,edge_type,from_node_id,to_node_id,version,graph_revision,state,semantic_hash)
+		 VALUES('project-rebuild','edge-part-goal','part_of','` + objID + `','` + goalID + `',1,51,'active','00')`,
+	}
+	if _, err := db.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("seed goal sql: %v\n%s", err, statement)
+		}
+	}
+	if _, err := db.Exec(`PRAGMA foreign_keys=ON`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func seedObservationMappingGraph(t *testing.T, db *store.DB, artifactRoot string) {
+	t.Helper()
+	if _, err := db.Exec(`
+		INSERT INTO projects(id,name,description,scope_json,defaults_json,kind,created_at,updated_at)
+		VALUES('project-rebuild','Rebuild','','{}','{}','pentest','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	graph := blackboard.NewGraphService(db, nil, nil).WithArtifactRoot(artifactRoot)
+	ctx := blackboard.SystemExecutionContext("project-rebuild", "pentest", "rebuild-test")
+	if _, err := graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion:  blackboard.GraphMutationSchemaVersion,
+		IdempotencyKey: "obs-seed",
+		Context:        ctx,
+		Operations: []blackboard.Operation{
+			{
+				OpID: "attempt", Kind: blackboard.OpCreateNode,
+				Node:   blackboard.NodeRef{NodeType: blackboard.NodeTypeAttempt, StableKey: "attempt:obs"},
+				Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"status": "open", "summary": "Collect observations"}},
+			},
+			{
+				OpID: "objective", Kind: blackboard.OpCreateNode,
+				Node:   blackboard.NodeRef{NodeType: blackboard.NodeTypeExplorationObjective, StableKey: "objective:obs"},
+				Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"objective": "Observe auth", "status": "open"}},
+			},
+			{
+				OpID: "tests", Kind: blackboard.OpPutEdge,
+				PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypeTests, From: blackboard.NodeRef{OpID: "attempt"}, To: blackboard.NodeRef{OpID: "objective"}},
+			},
+			{
+				OpID: "plain", Kind: blackboard.OpCreateNode,
+				Node:   blackboard.NodeRef{NodeType: blackboard.NodeTypeObservation, StableKey: "observation:plain"},
+				Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"summary": "Plain observed result", "scope_status": "in_scope"}},
+			},
+			{
+				OpID: "produced-plain", Kind: blackboard.OpPutEdge,
+				PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypeProduced, From: blackboard.NodeRef{OpID: "attempt"}, To: blackboard.NodeRef{OpID: "plain"}},
+			},
+			{
+				OpID: "supported", Kind: blackboard.OpCreateNode,
+				Node:   blackboard.NodeRef{NodeType: blackboard.NodeTypeObservation, StableKey: "observation:supported"},
+				Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"summary": "Supported observed result", "scope_status": "in_scope"}},
+			},
+			{
+				OpID: "produced-supported", Kind: blackboard.OpPutEdge,
+				PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypeProduced, From: blackboard.NodeRef{OpID: "attempt"}, To: blackboard.NodeRef{OpID: "supported"}},
+			},
+			{
+				OpID: "evidence", Kind: blackboard.OpCreateNode,
+				Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeEvidenceArtifact, StableKey: "evidence:support"},
+				Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{
+					"artifact_type": "http_exchange", "summary": "Proof", "managed_path": "evidence/support.html",
+					"sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "size_bytes": float64(4), "status": "available",
+				}},
+			},
+			{
+				OpID: "evidences", Kind: blackboard.OpPutEdge,
+				PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypeEvidences, From: blackboard.NodeRef{OpID: "evidence"}, To: blackboard.NodeRef{OpID: "supported"}},
+			},
+			{
+				OpID: "old", Kind: blackboard.OpCreateNode,
+				Node:   blackboard.NodeRef{NodeType: blackboard.NodeTypeObservation, StableKey: "observation:old"},
+				Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"summary": "Old observation", "scope_status": "in_scope", "status": "recorded"}},
+			},
+			{
+				OpID: "produced-old", Kind: blackboard.OpPutEdge,
+				PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypeProduced, From: blackboard.NodeRef{OpID: "attempt"}, To: blackboard.NodeRef{OpID: "old"}},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("seed observations: %v", err)
+	}
+	// Observations do not support transition_node; mark retired/superseded state
+	// by archiving the head (discarded by migration disposition rules).
+	if _, err := db.Exec(`
+		UPDATE blackboard_node_heads SET disposition='archived'
+		WHERE project_id='project-rebuild'
+		  AND node_id=(SELECT id FROM blackboard_nodes WHERE project_id='project-rebuild' AND original_stable_key='observation:old')`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func seedDecisionBoundWorkflowGraph(t *testing.T, db *store.DB, artifactRoot string) {
+	t.Helper()
+	if _, err := db.Exec(`
+		INSERT INTO projects(id,name,description,scope_json,defaults_json,kind,created_at,updated_at)
+		VALUES('project-rebuild','Rebuild','','{}','{}','pentest','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	graph := blackboard.NewGraphService(db, nil, nil).WithArtifactRoot(artifactRoot)
+	ctx := blackboard.SystemExecutionContext("project-rebuild", "pentest", "rebuild-test")
+	if _, err := graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion:  blackboard.GraphMutationSchemaVersion,
+		IdempotencyKey: "decision-seed",
+		Context:        ctx,
+		Operations: []blackboard.Operation{
+			{
+				OpID: "obs", Kind: blackboard.OpCreateNode,
+				Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeObservation, StableKey: "observation:ambiguous"},
+				Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{
+					"summary": "Ambiguous confidence observation", "scope_status": "in_scope",
+				}},
+			},
+			{
+				OpID: "hyp", Kind: blackboard.OpCreateNode,
+				Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeHypothesis, StableKey: "hypothesis:active"},
+				Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{
+					"statement": "Login may be injectable", "status": "open",
+				}},
+			},
+			{
+				OpID: "hyp-noise", Kind: blackboard.OpCreateNode,
+				Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeHypothesis, StableKey: "hypothesis:noise"},
+				Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{
+					"statement": "No reusable meaning", "status": "inconclusive",
+				}},
+			},
+			{
+				OpID: "dir", Kind: blackboard.OpCreateNode,
+				Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectDirective, StableKey: "directive:active"},
+				Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{
+					"directive": "Keep admin testing bounded", "status": "active",
+				}},
+			},
+			{
+				OpID: "dir-proposed", Kind: blackboard.OpCreateNode,
+				Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectDirective, StableKey: "directive:proposed"},
+				Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{
+					"directive": "Proposed only", "status": "proposed",
+				}},
+			},
+			{
+				OpID: "dir-retired", Kind: blackboard.OpCreateNode,
+				Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectDirective, StableKey: "directive:retired"},
+				Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{
+					"directive": "Retired steer", "status": "retired",
+				}},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("seed decision graph: %v", err)
+	}
+	// Graph schema rejects unknown Observation confidence; inject ambiguous
+	// confidence through a new append-only version for the migration decision path.
+	var nodeID string
+	if err := db.QueryRow(`SELECT id FROM blackboard_nodes WHERE project_id='project-rebuild' AND original_stable_key='observation:ambiguous'`).Scan(&nodeID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO blackboard_node_versions(
+			project_id,node_id,version,result_graph_revision,mutation_seq,operation_index,
+			schema_version,disposition,merge_target_id,properties_json,semantic_hash,updated_at
+		)
+		SELECT project_id,node_id,2,result_graph_revision,mutation_seq,operation_index,
+			schema_version,disposition,merge_target_id,?,semantic_hash,'2026-01-02T00:00:00Z'
+		FROM blackboard_node_versions
+		WHERE project_id='project-rebuild' AND node_id=? AND version=1`,
+		`{"summary":"Ambiguous confidence observation","scope_status":"in_scope","status":"recorded","confidence":"ambiguous"}`,
+		nodeID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		UPDATE blackboard_node_heads SET version=2
+		WHERE project_id='project-rebuild' AND node_id=?`, nodeID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`PRAGMA foreign_keys=ON`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func seedBlocksAndLeadsToGraph(t *testing.T, db *store.DB, artifactRoot string, withCycle bool) {
+	t.Helper()
+	if _, err := db.Exec(`
+		INSERT INTO projects(id,name,description,scope_json,defaults_json,kind,created_at,updated_at)
+		VALUES('project-rebuild','Rebuild','','{}','{}','pentest','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	graph := blackboard.NewGraphService(db, nil, nil).WithArtifactRoot(artifactRoot)
+	ctx := blackboard.SystemExecutionContext("project-rebuild", "pentest", "rebuild-test")
+	ops := []blackboard.Operation{
+		{
+			OpID: "blocker", Kind: blackboard.OpCreateNode,
+			Node:   blackboard.NodeRef{NodeType: blackboard.NodeTypeExplorationObjective, StableKey: "objective:blocker"},
+			Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"objective": "Blocker objective", "status": "open"}},
+		},
+		{
+			OpID: "blocked", Kind: blackboard.OpCreateNode,
+			Node:   blackboard.NodeRef{NodeType: blackboard.NodeTypeExplorationObjective, StableKey: "objective:blocked"},
+			Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"objective": "Blocked objective", "status": "open"}},
+		},
+		{
+			OpID: "blocks", Kind: blackboard.OpPutEdge,
+			PutEdge: blackboard.PutEdgeInput{
+				EdgeType: blackboard.EdgeTypeBlocks,
+				From:     blackboard.NodeRef{OpID: "blocker"},
+				To:       blackboard.NodeRef{OpID: "blocked"},
+			},
+		},
+		{
+			OpID: "leads", Kind: blackboard.OpPutEdge,
+			PutEdge: blackboard.PutEdgeInput{
+				EdgeType: blackboard.EdgeTypeLeadsTo,
+				From:     blackboard.NodeRef{OpID: "blocker"},
+				To:       blackboard.NodeRef{OpID: "blocked"},
+				Summary:  "vague chain",
+			},
+		},
+	}
+	if _, err := graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion:  blackboard.GraphMutationSchemaVersion,
+		IdempotencyKey: "blocks-seed",
+		Context:        ctx,
+		Operations:     ops,
+	}); err != nil {
+		t.Fatalf("seed blocks graph: %v", err)
+	}
+	if withCycle {
+		// Graph service rejects cycles; inject a depends_on that closes the
+		// cycle with reversed blocks for rebuild validation.
+		var blockerID, blockedID string
+		if err := db.QueryRow(`SELECT id FROM blackboard_nodes WHERE project_id='project-rebuild' AND original_stable_key='objective:blocker'`).Scan(&blockerID); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.QueryRow(`SELECT id FROM blackboard_nodes WHERE project_id='project-rebuild' AND original_stable_key='objective:blocked'`).Scan(&blockedID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`
+			INSERT INTO blackboard_edges(project_id,id,edge_type,created_mutation_seq,created_operation_index,created_at)
+			VALUES('project-rebuild','edge-cycle-depends','depends_on',80,0,'2026-01-01T00:00:00Z')`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`
+			INSERT INTO blackboard_edge_versions(project_id,edge_id,version,result_graph_revision,mutation_seq,operation_index,from_node_id,to_node_id,state,summary,semantic_hash,updated_at)
+			VALUES('project-rebuild','edge-cycle-depends',1,80,80,0,?,?, 'active','','00','2026-01-01T00:00:00Z')`, blockerID, blockedID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`
+			INSERT INTO blackboard_edge_heads(project_id,edge_id,edge_type,from_node_id,to_node_id,version,graph_revision,state,semantic_hash)
+			VALUES('project-rebuild','edge-cycle-depends','depends_on',?,?,1,80,'active','00')`, blockerID, blockedID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`PRAGMA foreign_keys=ON`); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func seedTerminalSummariesWithoutOutcomes(t *testing.T, db *store.DB, artifactRoot string) {
+	t.Helper()
+	if _, err := db.Exec(`
+		INSERT INTO projects(id,name,description,scope_json,defaults_json,kind,created_at,updated_at)
+		VALUES('project-rebuild','Rebuild','','{}','{}','pentest','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	graph := blackboard.NewGraphService(db, nil, nil).WithArtifactRoot(artifactRoot)
+	ctx := blackboard.SystemExecutionContext("project-rebuild", "pentest", "rebuild-test")
+	if _, err := graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion:  blackboard.GraphMutationSchemaVersion,
+		IdempotencyKey: "terminal-summary-seed",
+		Context:        ctx,
+		Operations: []blackboard.Operation{
+			{
+				OpID: "objective", Kind: blackboard.OpCreateNode,
+				Node:   blackboard.NodeRef{NodeType: blackboard.NodeTypeExplorationObjective, StableKey: "objective:probe"},
+				Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"objective": "Probe without outcome", "status": "open"}},
+			},
+			{
+				OpID: "attempt", Kind: blackboard.OpCreateNode,
+				Node:   blackboard.NodeRef{NodeType: blackboard.NodeTypeAttempt, StableKey: "attempt:dead-end"},
+				Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"status": "open", "summary": "Open probe"}},
+			},
+			{
+				OpID: "tests", Kind: blackboard.OpPutEdge,
+				PutEdge: blackboard.PutEdgeInput{
+					EdgeType: blackboard.EdgeTypeTests,
+					From:     blackboard.NodeRef{OpID: "attempt"},
+					To:       blackboard.NodeRef{OpID: "objective"},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("seed terminal summary open: %v", err)
+	}
+	if _, err := graph.Apply(context.Background(), blackboard.MutationBatch{
+		SchemaVersion:  blackboard.GraphMutationSchemaVersion,
+		IdempotencyKey: "terminal-summary-fail",
+		Context:        ctx,
+		Operations: []blackboard.Operation{{
+			OpID: "fail", Kind: blackboard.OpTransitionNode,
+			Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeAttempt, StableKey: "attempt:dead-end"},
+			Transition: blackboard.TransitionNodeInput{
+				ExpectedVersion: 1,
+				Status:          "failed",
+				Summary:         "Attempt concluded without durable outcome records",
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("terminal attempt fail: %v", err)
+	}
 }
