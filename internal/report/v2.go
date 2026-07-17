@@ -40,12 +40,17 @@ func (g *V2Generator) Generate(ctx context.Context, request V2Request) (Report, 
 
 func renderV2Markdown(projection blackboardv2.PentestReportProjection) string {
 	var output strings.Builder
-	output.WriteString("# ")
-	output.WriteString(escapeV2Markdown(projection.Project.Name))
-	output.WriteString(" Pentest Report\n\n")
+	if isV2Multiline(projection.Project.Name) {
+		output.WriteString("# Pentest Report\n\n")
+		writeV2NamedValue(&output, "Project", projection.Project.Name)
+	} else {
+		output.WriteString("# ")
+		output.WriteString(escapeV2Markdown(projection.Project.Name))
+		output.WriteString(" Pentest Report\n\n")
+	}
 	if projection.Project.Description != "" {
-		output.WriteString(escapeV2Markdown(projection.Project.Description))
-		output.WriteString("\n\n")
+		writeV2Paragraph(&output, projection.Project.Description)
+		output.WriteString("\n")
 	}
 	writeV2Findings(&output, "Confirmed Findings", projection.ConfirmedFindings)
 	writeV2Findings(&output, "Unconfirmed Findings", projection.UnconfirmedFindings)
@@ -63,9 +68,14 @@ func writeV2Findings(output *strings.Builder, heading string, findings []blackbo
 		return
 	}
 	for _, finding := range findings {
-		output.WriteString("### ")
-		output.WriteString(escapeV2Markdown(finding.Title))
-		output.WriteString("\n\n")
+		if isV2Multiline(finding.Title) {
+			output.WriteString("### Finding\n\n")
+			writeV2NamedValue(output, "Title", finding.Title)
+		} else {
+			output.WriteString("### ")
+			output.WriteString(escapeV2Markdown(finding.Title))
+			output.WriteString("\n\n")
+		}
 		writeV2Label(output, "Status", finding.Status)
 		if finding.CVSSPending {
 			writeV2Label(output, "CVSS", "pending")
@@ -83,6 +93,13 @@ func writeV2Findings(output *strings.Builder, heading string, findings []blackbo
 		if len(finding.Evidence) != 0 {
 			output.WriteString("\n**Evidence**\n\n")
 			for _, evidence := range finding.Evidence {
+				if isV2Multiline(evidence.Summary) || isV2Multiline(evidence.ArtifactType) || isV2Multiline(evidence.Status) {
+					output.WriteString("#### Evidence\n\n")
+					writeV2NamedValue(output, "Summary", evidence.Summary)
+					writeV2NamedValue(output, "Artifact Type", evidence.ArtifactType)
+					writeV2NamedValue(output, "Status", evidence.Status)
+					continue
+				}
 				output.WriteString("- ")
 				output.WriteString(escapeV2Markdown(evidence.Summary))
 				output.WriteString(" (")
@@ -105,6 +122,16 @@ func writeV2Facts(output *strings.Builder, heading string, facts []blackboardv2.
 		return
 	}
 	for _, fact := range facts {
+		if isV2Multiline(fact.Summary) || isV2Multiline(fact.Category) || isV2Multiline(fact.ScopeStatus) || isV2Multiline(fact.Body) {
+			output.WriteString("### Fact\n\n")
+			writeV2NamedValue(output, "Summary", fact.Summary)
+			writeV2NamedValue(output, "Category", fact.Category)
+			writeV2NamedValue(output, "Scope Status", fact.ScopeStatus)
+			if fact.Body != "" {
+				writeV2NamedValue(output, "Detail", fact.Body)
+			}
+			continue
+		}
 		output.WriteString("- **")
 		output.WriteString(escapeV2Markdown(fact.Summary))
 		output.WriteString("** (")
@@ -129,6 +156,12 @@ func writeV2FactList(output *strings.Builder, heading string, facts []blackboard
 	output.WriteString(heading)
 	output.WriteString("**\n\n")
 	for _, fact := range facts {
+		if isV2Multiline(fact.Summary) || isV2Multiline(fact.Confidence) {
+			output.WriteString("#### Fact\n\n")
+			writeV2NamedValue(output, "Summary", fact.Summary)
+			writeV2NamedValue(output, "Confidence", fact.Confidence)
+			continue
+		}
 		output.WriteString("- ")
 		output.WriteString(escapeV2Markdown(fact.Summary))
 		output.WriteString(" (")
@@ -138,6 +171,10 @@ func writeV2FactList(output *strings.Builder, heading string, facts []blackboard
 }
 
 func writeV2Label(output *strings.Builder, label, value string) {
+	if isV2Multiline(value) {
+		writeV2NamedValue(output, label, value)
+		return
+	}
 	output.WriteString("- **")
 	output.WriteString(label)
 	output.WriteString(":** ")
@@ -154,15 +191,48 @@ func writeV2OptionalLabel(output *strings.Builder, label, value string) {
 func writeV2Paragraph(output *strings.Builder, value string) {
 	if value != "" {
 		output.WriteString("\n")
-		output.WriteString(escapeV2Markdown(value))
+		if isV2Multiline(value) {
+			writeV2LiteralBlock(output, value)
+		} else {
+			output.WriteString(escapeV2Markdown(value))
+			output.WriteString("\n")
+		}
+	}
+}
+
+func writeV2NamedValue(output *strings.Builder, label, value string) {
+	output.WriteString("**")
+	output.WriteString(label)
+	output.WriteString(":**")
+	if isV2Multiline(value) {
+		output.WriteString("\n")
+		writeV2LiteralBlock(output, value)
+		output.WriteString("\n")
+		return
+	}
+	output.WriteString(" ")
+	output.WriteString(escapeV2Markdown(value))
+	output.WriteString("\n\n")
+}
+
+func writeV2LiteralBlock(output *strings.Builder, value string) {
+	normalized := strings.ReplaceAll(strings.ReplaceAll(value, "\r\n", "\n"), "\r", "\n")
+	for _, line := range strings.Split(normalized, "\n") {
+		output.WriteString("    ")
+		output.WriteString(line)
 		output.WriteString("\n")
 	}
+}
+
+func isV2Multiline(value string) bool {
+	return strings.ContainsAny(value, "\r\n")
 }
 
 func escapeV2Markdown(value string) string {
 	replacer := strings.NewReplacer(
 		"\\", "\\\\", "`", "\\`", "*", "\\*", "_", "\\_", "[", "\\[", "]", "\\]",
-		"<", "&lt;", ">", "&gt;", "#", "\\#", "|", "\\|",
+		"<", "\\<", ">", "\\>", "#", "\\#", "|", "\\|", "!", "\\!", "-", "\\-",
+		"+", "\\+", ".", "\\.", "=", "\\=", "~", "\\~", "(", "\\(", ")", "\\)",
 	)
 	return replacer.Replace(value)
 }

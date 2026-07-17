@@ -81,10 +81,27 @@ func TestFindingConfirmationAndPentestReportEndToEnd(t *testing.T) {
 		t.Fatalf("report Finding support = %#v", projection.ConfirmedFindings[0])
 	}
 	raw := string(mustJSON(t, projection))
-	for _, forbidden := range []string{alpha.ID, "finding:login-sqli", "fact:confirmed-support", "trusted_origin", "origin", "sha256", "source_hash", "managed_path", "task_id", "continuation_id", "history", "created_at", "updated_at"} {
+	for _, forbidden := range []string{alpha.ID, "finding:login-sqli", "fact:confirmed-support", "trusted_origin", "origin", "sha256", "source_hash", "managed_path", "task_id", "continuation_id", "history", "created_at", "updated_at", "revision"} {
 		if strings.Contains(strings.ToLower(raw), strings.ToLower(forbidden)) {
 			t.Fatalf("report leaked forbidden storage/execution content %q: %s", forbidden, raw)
 		}
+	}
+	_, err = service.Apply(ctx, alpha.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "unrelated-report-revision",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "entity:report-unrelated", Type: "entity",
+			Record: blackboardv2.EntityRecord{Status: "active", Kind: "host", Name: "unrelated.example", ScopeStatus: "in_scope"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("advance unrelated graph state: %v", err)
+	}
+	afterUnrelatedChange, err := service.PentestReport(ctx, alpha.ID)
+	if err != nil {
+		t.Fatalf("project report after unrelated graph change: %v", err)
+	}
+	if afterRaw := string(mustJSON(t, afterUnrelatedChange)); afterRaw != raw {
+		t.Fatalf("unrelated graph revision changed report content\nbefore=%s\nafter=%s", raw, afterRaw)
 	}
 
 	generator := report.NewV2Generator(service)

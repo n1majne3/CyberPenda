@@ -15,7 +15,6 @@ const pentestReportSchema = "pentest-report/v2"
 // Trusted Origin, and execution history.
 type PentestReportProjection struct {
 	Schema              string          `json:"schema"`
-	Revision            int             `json:"revision"`
 	Project             ReportProject   `json:"project"`
 	ConfirmedFindings   []ReportFinding `json:"confirmed_findings"`
 	UnconfirmedFindings []ReportFinding `json:"unconfirmed_findings"`
@@ -92,16 +91,12 @@ func (s *Service) PentestReport(ctx context.Context, projectID string) (PentestR
 	if projectKind != "pentest" {
 		return PentestReportProjection{}, semanticError("project_kind_mismatch", "Pentest reports require a Pentest Project", "", nil)
 	}
-	revision, err := currentRevisionOrZero(ctx, tx, projectID)
-	if err != nil {
-		return PentestReportProjection{}, err
-	}
 	if err := validateAllConfirmedFindings(ctx, tx, projectID); err != nil {
 		return PentestReportProjection{}, err
 	}
 
 	report := PentestReportProjection{
-		Schema: pentestReportSchema, Revision: revision,
+		Schema:            pentestReportSchema,
 		Project:           ReportProject{Name: projectName, Description: projectDescription},
 		ConfirmedFindings: []ReportFinding{}, UnconfirmedFindings: []ReportFinding{},
 		ConfirmedFacts: []ReportFact{}, TentativeFacts: []ReportFact{},
