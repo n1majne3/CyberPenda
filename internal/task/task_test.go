@@ -371,6 +371,40 @@ func TestContinuationLifecycleTracksLatestAndActiveRun(t *testing.T) {
 	}
 }
 
+func TestTerminalContinuationStatusCannotBeOverwrittenByLateReconciliation(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	createdProject, err := projects.Create("Terminal monotonicity", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create Project: %v", err)
+	}
+	created, err := svc.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "finish once", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatalf("create Task: %v", err)
+	}
+	continuation, err := svc.CreateContinuation(created.ID, "profile", "codex", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create Continuation: %v", err)
+	}
+	if _, err := svc.UpdateContinuationStatus(continuation.ID, task.StatusRunning); err != nil {
+		t.Fatalf("start Continuation: %v", err)
+	}
+	if _, err := svc.UpdateContinuationStatus(continuation.ID, task.StatusCompleted); err != nil {
+		t.Fatalf("complete Continuation: %v", err)
+	}
+	if _, err := svc.UpdateContinuationStatus(continuation.ID, task.StatusInterrupted); !errors.Is(err, task.ErrContinuationStatusConflict) {
+		t.Fatalf("late reconciliation error = %v, want status conflict", err)
+	}
+	stored, err := svc.Continuation(continuation.ID)
+	if err != nil {
+		t.Fatalf("read terminal Continuation: %v", err)
+	}
+	if stored.Status != task.StatusCompleted {
+		t.Fatalf("late reconciliation overwrote terminal status with %q", stored.Status)
+	}
+}
+
 func TestContinuationRuntimeMetadataIsPersisted(t *testing.T) {
 	db := newStore(t)
 	projects := project.NewService(db)

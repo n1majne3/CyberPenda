@@ -241,6 +241,9 @@ func (s *Service) RetainEvidenceForContinuation(ctx context.Context, projectID, 
 	if err != nil {
 		return ChangeResult{}, err
 	}
+	if !exists && !continuationCanWrite(status) {
+		return ChangeResult{}, semanticError("closed_continuation", "trusted Continuation is closed for new Blackboard writes", "", nil)
+	}
 	if strings.TrimSpace(s.evidenceConfig.RuntimeRoot) == "" || strings.TrimSpace(s.evidenceConfig.ArtifactRoot) == "" {
 		return ChangeResult{}, fmt.Errorf("Evidence Runtime Root and Artifact Root must be configured")
 	}
@@ -256,9 +259,6 @@ func (s *Service) RetainEvidenceForContinuation(ctx context.Context, projectID, 
 	}
 	var source *evidenceSource
 	if !exists {
-		if !continuationCanWrite(status) {
-			return ChangeResult{}, semanticError("closed_continuation", "trusted Continuation is closed for new Blackboard writes", "", nil)
-		}
 		if err := s.validateRetainedEvidencePreconditions(ctx, projectID, continuationID, request); err != nil {
 			return ChangeResult{}, err
 		}

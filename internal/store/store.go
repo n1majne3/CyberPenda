@@ -807,7 +807,35 @@ func migrations() []migration {
 		newMigration(28, "blackboard_v2_fixed_evidence_staging_scope", migration28SQL, migration28Up),
 		newMigration(29, "blackboard_v2_key_redirects", migration29SQL, migration29Up),
 		newMigration(30, "blackboard_v2_continuation_snapshots", migration30SQL, migration30Up),
+		newMigration(31, "blackboard_v2_continuation_finish", migration31SQL, migration31Up),
 	}
+}
+
+const migration31SQL = `
+CREATE TABLE IF NOT EXISTS blackboard_v2_continuation_finishes (
+	continuation_id TEXT PRIMARY KEY REFERENCES blackboard_v2_continuation_pins(continuation_id) ON DELETE RESTRICT,
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+	idempotency_key TEXT NOT NULL,
+	request_hash TEXT NOT NULL CHECK (length(request_hash) = 64),
+	result_json TEXT NOT NULL,
+	finished_at TEXT NOT NULL,
+	UNIQUE (project_id, idempotency_key)
+);
+`
+
+func migration31Up(tx *sql.Tx) error {
+	if err := execStatements(tx, migration31SQL); err != nil {
+		return err
+	}
+	for _, statement := range []string{
+		`CREATE TRIGGER IF NOT EXISTS blackboard_v2_continuation_finishes_no_update BEFORE UPDATE ON blackboard_v2_continuation_finishes BEGIN SELECT RAISE(ABORT, 'Blackboard v2 Finish receipt is immutable'); END`,
+		`CREATE TRIGGER IF NOT EXISTS blackboard_v2_continuation_finishes_no_delete BEFORE DELETE ON blackboard_v2_continuation_finishes BEGIN SELECT RAISE(ABORT, 'Blackboard v2 Finish receipt is immutable'); END`,
+	} {
+		if _, err := tx.Exec(statement); err != nil {
+			return fmt.Errorf("install Blackboard v2 Finish receipt guard: %w", err)
+		}
+	}
+	return nil
 }
 
 const migration30SQL = `

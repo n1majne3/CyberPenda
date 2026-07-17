@@ -43,6 +43,7 @@ type Service struct {
 	evidenceConfig EvidenceConfig
 	runtimeRoot    string
 	snapshotMu     sync.Mutex
+	finishFail     FinishFailureInjector
 }
 
 // NewService returns a Blackboard v2 semantic service backed by the Store.

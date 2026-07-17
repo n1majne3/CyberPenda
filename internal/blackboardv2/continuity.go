@@ -88,9 +88,6 @@ func (s *ContinuityService) CreateContinuation(ctx context.Context, req Continua
 	if s.db == nil || s.board == nil || s.tasks == nil {
 		return ContinuationLaunch{}, fmt.Errorf("Blackboard v2 Continuation launch is unavailable")
 	}
-	if err := s.tasks.PrepareContinuationLaunch(req.TaskID); err != nil {
-		return ContinuationLaunch{}, err
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ContinuationLaunch{}, fmt.Errorf("begin atomic Blackboard v2 Continuation launch: %w", err)

@@ -1299,31 +1299,32 @@ func (server *Server) prepareHandoffResumeContinuation(found task.Task) (task.Ta
 }
 
 func (server *Server) buildResumeGoal(found task.Task) (string, error) {
+	events, err := server.tasks.Events(found.ID)
+	if err != nil {
+		return "", err
+	}
+	if server.canonicalStore == store.CanonicalStoreBlackboardV2 {
+		return adapters.BuildBlackboardV2ResumePrompt(found.Goal, unconsumedHarnessSteering(events)), nil
+	}
+
 	var factLines, progressFacts, findingLines []string
-	if server.canonicalStore != store.CanonicalStoreBlackboardV2 && server.reads == nil {
-		var err error
+	if server.reads == nil {
 		factLines, progressFacts, findingLines, err = server.resumeGoalBlackboardLinesLegacy(found.ProjectID)
 		if err != nil {
 			return "", err
 		}
 	}
 
-	taskSummary := ""
-	if server.canonicalStore != store.CanonicalStoreBlackboardV2 {
-		summaries, err := server.tasks.SummaryVersions(found.ID)
-		if err != nil {
-			return "", err
-		}
-		if len(summaries) > 0 {
-			taskSummary = summaries[len(summaries)-1].Summary
-		}
-	}
-
-	steeringDirective := ""
-	events, err := server.tasks.Events(found.ID)
+	summaries, err := server.tasks.SummaryVersions(found.ID)
 	if err != nil {
 		return "", err
 	}
+	taskSummary := ""
+	if len(summaries) > 0 {
+		taskSummary = summaries[len(summaries)-1].Summary
+	}
+
+	steeringDirective := ""
 	for i := len(events) - 1; i >= 0; i-- {
 		if events[i].Kind != task.EventKindSteering {
 			continue
@@ -1342,6 +1343,28 @@ func (server *Server) buildResumeGoal(found task.Task) (string, error) {
 		ProgressFacts:     progressFacts,
 		SteeringDirective: steeringDirective,
 	}), nil
+}
+
+func unconsumedHarnessSteering(events []task.Event) []string {
+	consumed := make(map[string]bool)
+	for _, event := range events {
+		if event.Kind != task.EventKindSteering || event.Payload["phase"] != "steering_applied" {
+			continue
+		}
+		if requestedID, ok := event.Payload["requested_event_id"].(string); ok && requestedID != "" {
+			consumed[requestedID] = true
+		}
+	}
+	directives := make([]string, 0)
+	for _, event := range events {
+		if event.Kind != task.EventKindSteering || event.Payload["phase"] != "steering_requested" || consumed[event.ID] {
+			continue
+		}
+		if directive, ok := event.Payload["directive"].(string); ok && strings.TrimSpace(directive) != "" {
+			directives = append(directives, directive)
+		}
+	}
+	return directives
 }
 
 func (server *Server) resumeGoalBlackboardLinesLegacy(projectID string) (factLines, progressFacts, findingLines []string, err error) {
@@ -2024,6 +2047,10 @@ func writeTaskAdapterError(response http.ResponseWriter, err error) {
 }
 
 func writeTaskLaunchError(response http.ResponseWriter, err error) {
+	if errors.Is(err, task.ErrActiveContinuation) {
+		writeError(response, http.StatusConflict, err.Error())
+		return
+	}
 	var interfaceErr *projectinterface.Error
 	if errors.As(err, &interfaceErr) {
 		status := http.StatusInternalServerError

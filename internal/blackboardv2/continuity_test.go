@@ -274,6 +274,9 @@ func TestCrashRecoveryReusesExactPinWhileResumePinsFreshCurrentState(t *testing.
 	}
 
 	seedCurrentEntity(t, board, fixture.project.ID, "entity:resume", "Fresh resume state")
+	if _, err := tasks.UpdateContinuationStatus(first.Continuation.ID, task.StatusInterrupted); err != nil {
+		t.Fatalf("close recovered Continuation before resume: %v", err)
+	}
 	resumed, err := continuity.CreateContinuation(context.Background(), blackboardv2.ContinuationLaunchRequest{
 		ProjectID: fixture.project.ID, TaskID: fixture.task.ID, RuntimeProfileID: fixture.profile.ID,
 		RuntimeProvider: string(runtimeprofile.ProviderCodex), Runner: task.RunnerSandbox,

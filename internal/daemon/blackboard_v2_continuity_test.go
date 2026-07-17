@@ -129,6 +129,127 @@ func TestCodexV2ContinuationLaunchAndRestartConformanceKeepsSnapshotRereadable(t
 	}
 }
 
+func TestBlackboardV2FinishThenResumeUsesFreshPinAndOnlyUnconsumedHarnessSteering(t *testing.T) {
+	root := t.TempDir()
+	server, err := NewServer(Config{
+		Version: "test", DBPath: filepath.Join(root, "finish-resume.db"),
+		RuntimeRoot: filepath.Join(root, "runs"), DisableBuiltinSkills: true,
+	})
+	if err != nil {
+		t.Fatalf("start v2 daemon: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	createdProject, err := server.projects.Create("Finish resume", "", project.Scope{Domains: []string{"resume.test"}}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create Project: %v", err)
+	}
+	profile, err := server.profiles.Create("Codex resume", runtimeprofile.ProviderCodex, runtimeprofile.Fields{Model: "gpt-test"})
+	if err != nil {
+		t.Fatalf("create Runtime Profile: %v", err)
+	}
+	createdTask, err := server.tasks.Create(task.CreateRequest{
+		ProjectID: createdProject.ID, Goal: "inspect resume.test", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+	})
+	if err != nil {
+		t.Fatalf("create Task: %v", err)
+	}
+	plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "")
+	if err != nil {
+		t.Fatalf("build first plan: %v", err)
+	}
+	first, _, err := server.prepareBlackboardV2ContinuationLaunch(createdTask, plan, createdTask.Goal)
+	if err != nil {
+		t.Fatalf("prepare first Continuation: %v", err)
+	}
+	if _, err := server.tasks.UpdateContinuationStatus(first.ID, task.StatusRunning); err != nil {
+		t.Fatalf("start first Continuation: %v", err)
+	}
+	if _, err := server.blackboardV2.ApplyForContinuation(context.Background(), createdProject.ID, first.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "finish-resume-state",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "entity:finish-resume", Type: "entity",
+			Record: blackboardv2.EntityRecord{Status: "active", Kind: "host", Name: "Fresh resume state", ScopeStatus: "in_scope"},
+		}},
+	}); err != nil {
+		t.Fatalf("write before Finish: %v", err)
+	}
+	if _, err := server.blackboardV2.FinishContinuation(context.Background(), createdProject.ID, first.ID, blackboardv2.FinishContinuationRequest{IdempotencyKey: "daemon-finish"}); err != nil {
+		t.Fatalf("Finish first Continuation: %v", err)
+	}
+	if _, err := server.tasks.UpdateStatus(createdTask.ID, task.StatusCompleted); err != nil {
+		t.Fatalf("record normal terminal Task state: %v", err)
+	}
+	conversation, err := server.tasks.AppendEvent(createdTask.ID, task.EventKindConversation, task.EventPayload{"message": "normal Task Conversation"})
+	if err != nil {
+		t.Fatalf("append Task Conversation: %v", err)
+	}
+	consumed, err := server.tasks.AppendEvent(createdTask.ID, task.EventKindSteering, task.EventPayload{"phase": "steering_requested", "directive": "already consumed"})
+	if err != nil {
+		t.Fatalf("append consumed steering: %v", err)
+	}
+	if _, err := server.tasks.AppendEvent(createdTask.ID, task.EventKindSteering, task.EventPayload{"phase": "steering_applied", "directive": "already consumed", "requested_event_id": consumed.ID}); err != nil {
+		t.Fatalf("mark steering consumed: %v", err)
+	}
+	for _, directive := range []string{"first unconsumed", "second unconsumed"} {
+		if _, err := server.tasks.AppendEvent(createdTask.ID, task.EventKindSteering, task.EventPayload{"phase": "steering_requested", "directive": directive}); err != nil {
+			t.Fatalf("append unconsumed steering: %v", err)
+		}
+	}
+
+	found, resumeGoal, resumePlan, err := server.prepareHandoffResumeContinuation(createdTask)
+	if err != nil {
+		t.Fatalf("prepare v2 resume: %v", err)
+	}
+	for _, required := range []string{createdTask.Goal, "first unconsumed", "second unconsumed"} {
+		if !strings.Contains(resumeGoal, required) {
+			t.Errorf("v2 resume omitted %q: %s", required, resumeGoal)
+		}
+	}
+	if strings.Index(resumeGoal, "first unconsumed") > strings.Index(resumeGoal, "second unconsumed") {
+		t.Errorf("v2 resume changed steering order: %s", resumeGoal)
+	}
+	for _, forbidden := range []string{"already consumed", "task summary", "objective outcome", "mechanical handoff", "conclusion"} {
+		if strings.Contains(strings.ToLower(resumeGoal), forbidden) {
+			t.Errorf("v2 resume copied forbidden %q: %s", forbidden, resumeGoal)
+		}
+	}
+	current, err := server.blackboardV2.ProjectRuntimeSnapshot(context.Background(), createdProject.ID)
+	if err != nil {
+		t.Fatalf("project current resume state: %v", err)
+	}
+	resumed, _, err := server.prepareBlackboardV2ContinuationLaunch(found, resumePlan, resumeGoal)
+	if err != nil {
+		t.Fatalf("create resumed Continuation: %v", err)
+	}
+	resumedPin, err := server.blackboardV2Continuity.ReadLaunchPin(context.Background(), resumed.ID)
+	if err != nil {
+		t.Fatalf("read resumed pin: %v", err)
+	}
+	if resumed.ID == first.ID || resumed.Number != first.Number+1 || !bytes.Equal(resumedPin.Bytes, current.Bytes) {
+		t.Fatalf("resume did not create fresh current pin: first=%#v resumed=%#v", first, resumed)
+	}
+	terminalTask, err := server.tasks.Get(createdTask.ID)
+	if err != nil || terminalTask.Status != task.StatusCompleted {
+		t.Fatalf("resume preparation changed normal terminal Task state: %#v, %v", terminalTask, err)
+	}
+	events, err := server.tasks.Events(createdTask.ID)
+	if err != nil {
+		t.Fatalf("read Task surfaces after resume: %v", err)
+	}
+	if len(events) != 5 || events[0].ID != conversation.ID {
+		t.Fatalf("resume changed Task Conversation or steering events: %#v", events)
+	}
+	for _, table := range []string{"task_summary_versions", "blackboard_graph_mutations", "blackboard_graph_operations"} {
+		var count int
+		if err := server.db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&count); err != nil {
+			t.Fatalf("count forbidden table %s: %v", table, err)
+		}
+		if count != 0 {
+			t.Errorf("v2 finish/resume touched forbidden table %s (%d rows)", table, count)
+		}
+	}
+}
+
 func TestBlackboardV2DaemonOwnsUnexpectedAttemptReconciliationAcrossRestart(t *testing.T) {
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "daemon-reconciliation.db")

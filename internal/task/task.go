@@ -221,6 +221,14 @@ var ErrActiveTask = errors.New("active task cannot be deleted")
 // ErrUnsupportedRunner is returned when the runner is neither sandbox nor host.
 var ErrUnsupportedRunner = errors.New("runner must be sandbox or host")
 
+// ErrContinuationStatusConflict prevents a late lifecycle observer from
+// overwriting a Continuation that already reached a different terminal state.
+var ErrContinuationStatusConflict = errors.New("continuation status conflicts with its terminal state")
+
+// ErrActiveContinuation prevents Resume from creating a second current pin
+// before the previous Continuation reaches a terminal state.
+var ErrActiveContinuation = errors.New("task already has an active continuation")
+
 var ErrMissingSummary = errors.New("task summary is required")
 
 // Service implements task business rules against SQLite. It depends on the
@@ -661,6 +669,17 @@ func (s *Service) CreateContinuationLaunchTx(ctx context.Context, tx *sql.Tx, re
 	if projectID != req.ProjectID {
 		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("launch task does not belong to project")
 	}
+	var latestStatus string
+	err := tx.QueryRowContext(ctx, `
+		SELECT status FROM task_continuations
+		WHERE task_id=? ORDER BY number DESC LIMIT 1`, req.TaskID,
+	).Scan(&latestStatus)
+	if err == nil && !isTerminalStatus(Status(latestStatus)) {
+		return RuntimeConfigVersion{}, TaskContinuation{}, ErrActiveContinuation
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("read current Continuation before launch: %w", err)
+	}
 
 	configJSON, err := json.Marshal(req.RuntimeConfig)
 	if err != nil {
@@ -999,8 +1018,15 @@ func (s *Service) UpdateContinuationStatus(continuationID string, status Status)
 	if err != nil {
 		return TaskContinuation{}, err
 	}
+	if isTerminalStatus(found.Status) {
+		if found.Status != status {
+			return found, ErrContinuationStatusConflict
+		}
+		return s.notifyTerminalContinuation(found, string(status))
+	}
 
 	now := time.Now().UTC()
+	previousStatus := found.Status
 	found.Status = status
 	found.UpdatedAt = now
 	endedAt := ""
@@ -1011,12 +1037,24 @@ func (s *Service) UpdateContinuationStatus(continuationID string, status Status)
 		found.EndedAt = nil
 	}
 
-	_, err = s.db.Exec(
-		`UPDATE task_continuations SET status = ?, updated_at = ?, ended_at = ? WHERE id = ?`,
-		string(found.Status), found.UpdatedAt.Format(time.RFC3339Nano), endedAt, found.ID,
+	result, err := s.db.Exec(
+		`UPDATE task_continuations SET status = ?, updated_at = ?, ended_at = ? WHERE id = ? AND status = ?`,
+		string(found.Status), found.UpdatedAt.Format(time.RFC3339Nano), endedAt, found.ID, string(previousStatus),
 	)
 	if err != nil {
 		return TaskContinuation{}, fmt.Errorf("update continuation status: %w", err)
+	}
+	if changed, err := result.RowsAffected(); err != nil {
+		return TaskContinuation{}, fmt.Errorf("count continuation status update: %w", err)
+	} else if changed != 1 {
+		current, readErr := s.Continuation(continuationID)
+		if readErr != nil {
+			return TaskContinuation{}, readErr
+		}
+		if current.Status == status {
+			return current, nil
+		}
+		return current, ErrContinuationStatusConflict
 	}
 	if isTerminalStatus(status) {
 		return s.notifyTerminalContinuation(found, string(status))
