@@ -404,3 +404,217 @@ func TestSolutionEvidenceEndpointAndSupersessionControlSolvedState(t *testing.T)
 		t.Fatalf("superseded Solution history = %#v", history.Items)
 	}
 }
+
+func TestVerifiedSolutionCannotForgeFlagOrRewriteVerificationThroughUpdate(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	createdProject, err := project.NewService(db).CreateWithKind("Challenge", "", project.KindCTFChallenge, project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create CTF Project: %v", err)
+	}
+	service := blackboardv2.NewService(db)
+	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "verified-answer",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "solution:answer", Type: "solution",
+			Record: blackboardv2.SolutionRecord{Status: "verified", Kind: "answer", Summary: "Verified answer", Value: "42", VerificationSummary: "Accepted by the challenge"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create verified answer: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name  string
+		patch blackboardv2.SolutionPatch
+		clear []string
+	}{
+		{name: "kind", patch: blackboardv2.SolutionPatch{Kind: strPtr("flag")}},
+		{name: "value", patch: blackboardv2.SolutionPatch{Value: strPtr("FLAG{forged}")}},
+		{name: "verification summary", patch: blackboardv2.SolutionPatch{VerificationSummary: strPtr("Forged verification")}},
+		{name: "clear value", patch: blackboardv2.SolutionPatch{Summary: strPtr("Verified answer")}, clear: []string{"value"}},
+		{name: "clear verification summary", patch: blackboardv2.SolutionPatch{Summary: strPtr("Verified answer")}, clear: []string{"verification_summary"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			marker := "fact:rollback-" + strings.ReplaceAll(tt.name, " ", "-")
+			_, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+				Schema: "semantic-change-batch/v2", IdempotencyKey: "rewrite-verified-" + tt.name,
+				Changes: []blackboardv2.Change{
+					{Op: "create", Key: marker, Type: "fact", Record: blackboardv2.FactRecord{Category: "test", Summary: "must roll back", Confidence: "tentative", ScopeStatus: "unknown"}},
+					{Op: "update", Key: "solution:answer", Version: 1, Type: "solution", Record: tt.patch, Clear: tt.clear},
+				},
+			})
+			if !isSemanticCode(err, "semantic_validation") {
+				t.Fatalf("verified %s update error = %#v", tt.name, err)
+			}
+			if _, err := service.ReadCurrent(ctx, createdProject.ID, marker); !isSemanticCode(err, "not_found") {
+				t.Fatalf("failed verified update retained marker: %#v", err)
+			}
+		})
+	}
+
+	detail, err := service.ReadCurrent(ctx, createdProject.ID, "solution:answer")
+	if err != nil {
+		t.Fatalf("read verified answer: %v", err)
+	}
+	if detail.Version != 1 || detail.Record.Kind != "answer" || detail.Record.Value != "42" || detail.Record.VerificationSummary != "Accepted by the challenge" {
+		t.Fatalf("verified answer changed through rejected update: %#v", detail)
+	}
+	state, err := service.CTFSolvedState(ctx, createdProject.ID)
+	if err != nil {
+		t.Fatalf("read solved state: %v", err)
+	}
+	if state.Solved || len(state.VerifiedFlags) != 0 {
+		t.Fatalf("forged verified flag changed solved state: %#v", state)
+	}
+}
+
+func TestSolutionCreateRejectsTerminalStateBeforeSameBatchHistoryLaundering(t *testing.T) {
+	for _, status := range []string{"rejected", "superseded"} {
+		t.Run(status, func(t *testing.T) {
+			ctx := context.Background()
+			db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+			if err != nil {
+				t.Fatalf("open store: %v", err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			createdProject, err := project.NewService(db).CreateWithKind("Challenge", "", project.KindCTFChallenge, project.Scope{}, project.Defaults{})
+			if err != nil {
+				t.Fatalf("create CTF Project: %v", err)
+			}
+			service := blackboardv2.NewService(db)
+			_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+				Schema: "semantic-change-batch/v2", IdempotencyKey: "launder-terminal-" + status,
+				Changes: []blackboardv2.Change{
+					{Op: "create", Key: "solution:replacement", Type: "solution", Record: blackboardv2.SolutionRecord{Status: "candidate", Kind: "flag", Summary: "Current replacement", Value: "FLAG{replacement}"}},
+					{Op: "create", Key: "solution:terminal", Type: "solution", Record: blackboardv2.SolutionRecord{Status: status, Kind: "flag", Summary: "Illegal initial lifecycle", Value: "FLAG{terminal}", VerificationSummary: "Terminal at creation"}},
+					{Op: "supersede", Replacement: "solution:replacement", Replaced: "solution:terminal", ReplacedVersion: 1},
+				},
+			})
+			if !isSemanticCode(err, "semantic_validation") {
+				t.Fatalf("terminal create laundering error = %#v", err)
+			}
+			if _, err := service.ReadCurrent(ctx, createdProject.ID, "solution:replacement"); !isSemanticCode(err, "not_found") {
+				t.Fatalf("failed laundering batch retained replacement: %#v", err)
+			}
+			if _, err := service.ReadHistory(ctx, createdProject.ID, "solution:terminal", blackboardv2.HistoryOptions{}); !isSemanticCode(err, "not_found") {
+				t.Fatalf("failed laundering batch retained terminal history: %#v", err)
+			}
+		})
+	}
+}
+
+func TestCandidateSolutionPatchRequiresNonEmptyValuesAndExplicitClear(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	createdProject, err := project.NewService(db).CreateWithKind("Challenge", "", project.KindCTFChallenge, project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create CTF Project: %v", err)
+	}
+	service := blackboardv2.NewService(db)
+	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "candidate-patch-seed",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "solution:candidate", Type: "solution",
+			Record: blackboardv2.SolutionRecord{Status: "candidate", Kind: "answer", Summary: "Candidate answer", Value: "42", VerificationSummary: "Preliminary checker response"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create candidate Solution: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name  string
+		patch blackboardv2.SolutionPatch
+	}{
+		{name: "kind", patch: blackboardv2.SolutionPatch{Kind: strPtr("")}},
+		{name: "value", patch: blackboardv2.SolutionPatch{Value: strPtr("")}},
+		{name: "verification summary", patch: blackboardv2.SolutionPatch{VerificationSummary: strPtr("")}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+				Schema: "semantic-change-batch/v2", IdempotencyKey: "empty-candidate-" + tt.name,
+				Changes: []blackboardv2.Change{{Op: "update", Key: "solution:candidate", Version: 1, Type: "solution", Record: tt.patch}},
+			})
+			if !isSemanticCode(err, "semantic_validation") {
+				t.Fatalf("empty %s patch error = %#v", tt.name, err)
+			}
+		})
+	}
+
+	updated, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "explicitly-clear-candidate",
+		Changes: []blackboardv2.Change{{
+			Op: "update", Key: "solution:candidate", Version: 1, Type: "solution",
+			Record: blackboardv2.SolutionPatch{Summary: strPtr("Candidate answer without retained optional values")},
+			Clear:  []string{"value", "verification_summary"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("explicitly clear candidate fields: %v", err)
+	}
+	if len(updated.Records) != 1 || updated.Records[0][1] != 2 {
+		t.Fatalf("explicit clear result = %#v", updated)
+	}
+	detail, err := service.ReadCurrent(ctx, createdProject.ID, "solution:candidate")
+	if err != nil {
+		t.Fatalf("read cleared candidate: %v", err)
+	}
+	if detail.Record.Kind != "answer" || detail.Record.Value != "" || detail.Record.VerificationSummary != "" {
+		t.Fatalf("explicit clear did not preserve kind and clear optional fields: %#v", detail.Record)
+	}
+}
+
+func TestPentestSolutionTransitionsReturnProjectKindMismatchBeforeTargetLookup(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	createdProject, err := project.NewService(db).Create("Pentest", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create Pentest Project: %v", err)
+	}
+	service := blackboardv2.NewService(db)
+	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "pentest-transition-target",
+		Changes: []blackboardv2.Change{{Op: "create", Key: "fact:not-a-solution", Type: "fact", Record: blackboardv2.FactRecord{Category: "test", Summary: "Not a Solution", Confidence: "tentative", ScopeStatus: "unknown"}}},
+	})
+	if err != nil {
+		t.Fatalf("create Pentest target: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name, status, key string
+	}{
+		{name: "verified missing target", status: "verified", key: "solution:missing"},
+		{name: "rejected wrong type and stale version", status: "rejected", key: "fact:not-a-solution"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			marker := "fact:transition-rollback-" + tt.status
+			_, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+				Schema: "semantic-change-batch/v2", IdempotencyKey: "pentest-" + tt.status,
+				Changes: []blackboardv2.Change{
+					{Op: "create", Key: marker, Type: "fact", Record: blackboardv2.FactRecord{Category: "test", Summary: "must roll back", Confidence: "tentative", ScopeStatus: "unknown"}},
+					{Op: "transition", Key: tt.key, Version: 99, Status: tt.status, VerificationSummary: "must reject by Project kind"},
+				},
+			})
+			var semanticErr *blackboardv2.Error
+			if !errors.As(err, &semanticErr) || semanticErr.Code != "project_kind_mismatch" || semanticErr.Message != "Solutions require a CTF Challenge Project" {
+				t.Fatalf("Pentest %s transition error = %#v", tt.status, err)
+			}
+			if _, err := service.ReadCurrent(ctx, createdProject.ID, marker); !isSemanticCode(err, "not_found") {
+				t.Fatalf("Pentest transition retained earlier batch write: %#v", err)
+			}
+		})
+	}
+}

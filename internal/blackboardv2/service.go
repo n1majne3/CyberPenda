@@ -1870,6 +1870,11 @@ func applyRelate(ctx context.Context, tx *sql.Tx, projectID string, revision, in
 
 func applyTransition(ctx context.Context, tx *sql.Tx, projectID string, revision, index int, change Change, now string) (int, string, int, bool, error) {
 	path := fmt.Sprintf("changes[%d]", index)
+	if isOneOf(change.Status, "verified", "rejected") {
+		if err := ensureCTFProject(ctx, tx, projectID, path+".status"); err != nil {
+			return revision, "", 0, false, err
+		}
+	}
 	if err := validateKey(change.Key, path+".key"); err != nil {
 		return revision, "", 0, false, err
 	}

@@ -62,6 +62,9 @@ func applyCreateSolution(ctx context.Context, tx *sql.Tx, projectID string, revi
 	if err != nil {
 		return revision, "", 0, false, err
 	}
+	if !isOneOf(record.Status, "candidate", "verified") {
+		return revision, "", 0, false, semanticError("semantic_validation", "Solution creation status must be candidate or verified", path+".record.status", nil)
+	}
 	if err := validateSolutionRecord(record, path+".record"); err != nil {
 		return revision, "", 0, false, err
 	}
@@ -96,7 +99,11 @@ func applyUpdateSolution(ctx context.Context, tx *sql.Tx, projectID string, revi
 	if err != nil {
 		return revision, "", 0, false, err
 	}
-	next := existing.record.solutionRecord()
+	current := existing.record.solutionRecord()
+	if current.Status != "candidate" && (patch.Kind != nil || patch.Value != nil || patch.VerificationSummary != nil || solutionClearChangesVerification(change.Clear)) {
+		return revision, "", 0, false, semanticError("semantic_validation", "verified Solution kind, value, and verification_summary are immutable", path+".record", nil)
+	}
+	next := current
 	if patch.Kind != nil {
 		next.Kind = *patch.Kind
 	}
@@ -117,8 +124,14 @@ func applyUpdateSolution(ctx context.Context, tx *sql.Tx, projectID string, revi
 		seen[field] = true
 		switch field {
 		case "value":
+			if patch.Value != nil {
+				return revision, "", 0, false, semanticError("semantic_validation", "Solution value cannot be patched and cleared together", path+".clear", map[string]any{"field": field})
+			}
 			next.Value = ""
 		case "verification_summary":
+			if patch.VerificationSummary != nil {
+				return revision, "", 0, false, semanticError("semantic_validation", "Solution verification_summary cannot be patched and cleared together", path+".clear", map[string]any{"field": field})
+			}
 			next.VerificationSummary = ""
 		default:
 			return revision, "", 0, false, semanticError("semantic_validation", "unsupported Solution clear field", path+".clear", map[string]any{"field": field})
@@ -131,6 +144,15 @@ func applyUpdateSolution(ctx context.Context, tx *sql.Tx, projectID string, revi
 		return revision, change.Key, existing.version, false, nil
 	}
 	return replaceCurrentWorkRecord(ctx, tx, projectID, revision, existing, next, now)
+}
+
+func solutionClearChangesVerification(clear []string) bool {
+	for _, field := range clear {
+		if field == "value" || field == "verification_summary" {
+			return true
+		}
+	}
+	return false
 }
 
 func applySolutionTransition(ctx context.Context, tx *sql.Tx, projectID string, revision int, path string, existing storedRecord, change Change, now string) (int, string, int, bool, error) {
@@ -291,6 +313,24 @@ func partialSolutionRecord(value any, path string) (SolutionPatch, error) {
 	}
 	if solutionPatchEmpty(patch) {
 		return SolutionPatch{}, semanticError("semantic_validation", "Solution update requires at least one field", path, nil)
+	}
+	if patch.Kind != nil && strings.TrimSpace(*patch.Kind) == "" {
+		return SolutionPatch{}, semanticError("semantic_validation", "Solution kind patch must be non-empty", path+".kind", nil)
+	}
+	if patch.Summary != nil {
+		if err := validateSemanticText(*patch.Summary, path+".summary"); err != nil {
+			return SolutionPatch{}, err
+		}
+	}
+	if patch.Value != nil {
+		if *patch.Value == "" || !utf8.ValidString(*patch.Value) || *patch.Value != strings.TrimSpace(*patch.Value) {
+			return SolutionPatch{}, semanticError("semantic_validation", "Solution value patch must be non-empty valid UTF-8 without surrounding whitespace", path+".value", nil)
+		}
+	}
+	if patch.VerificationSummary != nil {
+		if err := validateConciseText(*patch.VerificationSummary, path+".verification_summary"); err != nil {
+			return SolutionPatch{}, err
+		}
 	}
 	return patch, nil
 }
