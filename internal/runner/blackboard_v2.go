@@ -13,32 +13,40 @@ import (
 
 	"pentest/internal/blackboardv2"
 	"pentest/internal/project"
+	"pentest/internal/runtimeprofile"
 )
 
 // ProjectCodexBlackboardV2Files installs Codex's one persistent checklist and
 // immutable Scope projection. The compact launch header travels in argv once.
 func ProjectCodexBlackboardV2Files(layout Layout, header blackboardv2.LaunchHeader, scope project.Scope) error {
+	return ProjectBlackboardV2Files(layout, runtimeprofile.ProviderCodex, header, scope)
+}
+
+// ProjectBlackboardV2Files installs the shared one-time checklist and immutable
+// Scope Snapshot for any supported Blackboard v2 Runtime. Instruction channel
+// is provider-native; content is identical across adapters.
+func ProjectBlackboardV2Files(layout Layout, provider runtimeprofile.Provider, header blackboardv2.LaunchHeader, scope project.Scope) error {
 	if err := validateBlackboardV2Header(header); err != nil {
 		return err
 	}
 	info, err := os.Lstat(layout.Workdir)
 	if err != nil {
-		return fmt.Errorf("inspect Codex workdir: %w", err)
+		return fmt.Errorf("inspect Runtime workdir: %w", err)
 	}
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("Codex workdir must be a real directory")
+		return fmt.Errorf("Runtime workdir must be a real directory")
 	}
 	root, err := os.OpenRoot(layout.Workdir)
 	if err != nil {
-		return fmt.Errorf("open Codex workdir: %w", err)
+		return fmt.Errorf("open Runtime workdir: %w", err)
 	}
 	defer root.Close()
 	if err := root.Mkdir(".pentest", 0o700); err != nil && !errors.Is(err, os.ErrExist) {
-		return fmt.Errorf("prepare Codex task context directory: %w", err)
+		return fmt.Errorf("prepare task context directory: %w", err)
 	}
 	pentestRoot, err := root.OpenRoot(".pentest")
 	if err != nil {
-		return fmt.Errorf("open confined Codex task context directory: %w", err)
+		return fmt.Errorf("open confined task context directory: %w", err)
 	}
 	defer pentestRoot.Close()
 
@@ -50,40 +58,62 @@ func ProjectCodexBlackboardV2Files(layout Layout, header blackboardv2.LaunchHead
 		return fmt.Errorf("project Scope Snapshot: %w", err)
 	}
 	instructions := []byte("# Blackboard workflow\n\n" + blackboardv2.CodexChecklist() + "\n")
-	if err := writeRootFileAtomically(root, "AGENTS.md", instructions); err != nil {
-		return fmt.Errorf("project Codex checklist: %w", err)
+	instructionName := blackboardV2InstructionFile(provider)
+	if err := writeRootFileAtomically(root, instructionName, instructions); err != nil {
+		return fmt.Errorf("project Runtime checklist: %w", err)
 	}
-	for _, obsolete := range []struct {
-		root *os.Root
-		name string
-	}{{root, "CLAUDE.md"}, {pentestRoot, "context.json"}} {
-		if err := obsolete.root.Remove(obsolete.name); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove duplicate Runtime context %s: %w", obsolete.name, err)
+	// Keep the checklist on exactly one discovery path per adapter.
+	for _, obsolete := range blackboardV2ObsoleteInstructionFiles(provider) {
+		if err := root.Remove(obsolete); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove duplicate Runtime context %s: %w", obsolete, err)
 		}
+	}
+	if err := pentestRoot.Remove("context.json"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove legacy Runtime context.json: %w", err)
 	}
 	entries, err := pentestRoot.Open(".")
 	if err != nil {
-		return fmt.Errorf("inspect Codex task context directory: %w", err)
+		return fmt.Errorf("inspect task context directory: %w", err)
 	}
 	defer entries.Close()
 	contents, err := entries.ReadDir(-1)
 	if err != nil {
-		return fmt.Errorf("list Codex task context directory: %w", err)
+		return fmt.Errorf("list task context directory: %w", err)
 	}
 	for _, entry := range contents {
 		if entry.Name() != "blackboard.json" && entry.Name() != "scope.json" {
-			return fmt.Errorf("Codex task context directory contains unapproved file %q", entry.Name())
+			return fmt.Errorf("task context directory contains unapproved file %q", entry.Name())
 		}
 		if entry.Type()&os.ModeSymlink != 0 || entry.IsDir() {
-			return fmt.Errorf("Codex task context file %q is not a confined regular file", entry.Name())
+			return fmt.Errorf("task context file %q is not a confined regular file", entry.Name())
 		}
 	}
 	return nil
 }
 
+func blackboardV2InstructionFile(provider runtimeprofile.Provider) string {
+	if provider == runtimeprofile.ProviderClaudeCode {
+		return "CLAUDE.md"
+	}
+	return "AGENTS.md"
+}
+
+func blackboardV2ObsoleteInstructionFiles(provider runtimeprofile.Provider) []string {
+	if provider == runtimeprofile.ProviderClaudeCode {
+		return []string{"AGENTS.md"}
+	}
+	return []string{"CLAUDE.md"}
+}
+
 // CodexV2ProcessEnv removes legacy project-interface identity and network
 // credentials while retaining runtime/model credentials required by Codex.
 func CodexV2ProcessEnv(env map[string]string, layout Layout, sandbox bool) map[string]string {
+	return BlackboardV2ProcessEnv(env, layout, sandbox)
+}
+
+// BlackboardV2ProcessEnv strips model-visible Project Interface identity and
+// transport credentials while retaining runtime/model credentials.
+func BlackboardV2ProcessEnv(env map[string]string, layout Layout, sandbox bool) map[string]string {
 	clean := make(map[string]string, len(env))
 	for key, value := range env {
 		switch key {
@@ -104,6 +134,28 @@ func CodexV2ProcessEnv(env map[string]string, layout Layout, sandbox bool) map[s
 		clean["PWD"] = "."
 	}
 	return clean
+}
+
+// BlackboardV2SupportsProvider reports whether the provider participates in the
+// shared Blackboard v2 Launch Pin / Working Snapshot contract.
+func BlackboardV2SupportsProvider(provider runtimeprofile.Provider) bool {
+	switch provider {
+	case runtimeprofile.ProviderCodex, runtimeprofile.ProviderClaudeCode, runtimeprofile.ProviderPi:
+		return true
+	default:
+		return false
+	}
+}
+
+// BlackboardV2UsesTrustedMCP reports whether the provider receives the trusted
+// MCP Project Interface for v2 writes (Claude and Pi). Codex remains networkless.
+func BlackboardV2UsesTrustedMCP(provider runtimeprofile.Provider) bool {
+	switch provider {
+	case runtimeprofile.ProviderClaudeCode, runtimeprofile.ProviderPi:
+		return true
+	default:
+		return false
+	}
 }
 
 func validateBlackboardV2Header(header blackboardv2.LaunchHeader) error {

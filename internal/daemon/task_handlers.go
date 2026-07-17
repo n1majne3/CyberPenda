@@ -149,7 +149,7 @@ type taskLaunchPlan struct {
 	ModelSnapshot                *modelprovider.Snapshot
 	SkillBundles                 []skill.Bundle
 	LaunchGoal                   string
-	BlackboardV2Codex            bool
+	BlackboardV2                 bool
 	ValidatedLayout              *runner.Layout
 	BlackboardV2SteeringEventIDs []string
 }
@@ -163,7 +163,7 @@ type continuationLaunchBinding struct {
 
 func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchPlan, goal string) error {
 	var continuation task.TaskContinuation
-	if plan.BlackboardV2Codex {
+	if plan.BlackboardV2 {
 		prepared, boundPlan, err := server.prepareBlackboardV2ContinuationLaunch(created, plan, goal)
 		if err != nil {
 			return err
@@ -215,24 +215,37 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 
 func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, plan taskLaunchPlan, goal string) (task.TaskContinuation, taskLaunchPlan, error) {
 	if plan.ValidatedLayout == nil {
-		return task.TaskContinuation{}, taskLaunchPlan{}, fmt.Errorf("Blackboard v2 Codex layout was not validated")
+		return task.TaskContinuation{}, taskLaunchPlan{}, fmt.Errorf("Blackboard v2 layout was not validated")
 	}
-	layout, err := runner.PrepareCodexV2TaskLayout(server.runtimeRoot, created.ID)
+	provider := plan.ResolvedProfile.Provider
+	if provider == "" {
+		profile, err := server.profiles.Get(created.RuntimeProfileID)
+		if err != nil {
+			return task.TaskContinuation{}, taskLaunchPlan{}, err
+		}
+		provider = profile.Provider
+		plan.ResolvedProfile = profile
+	}
+	if !runner.BlackboardV2SupportsProvider(provider) {
+		return task.TaskContinuation{}, taskLaunchPlan{}, fmt.Errorf("Blackboard v2 launch projection is unsupported for provider %q", provider)
+	}
+	layout, err := runner.PrepareBlackboardV2TaskLayout(server.runtimeRoot, created.ID, provider)
 	if err != nil {
 		return task.TaskContinuation{}, taskLaunchPlan{}, err
 	}
 	plan.ValidatedLayout = &layout
 	var boundPlan taskLaunchPlan
+	var launchHeader blackboardv2.LaunchHeader
 	launch, err := server.blackboardV2Continuity.CreateContinuation(context.Background(), blackboardv2.ContinuationLaunchRequest{
 		ProjectID: created.ProjectID, TaskID: created.ID, RuntimeProfileID: created.RuntimeProfileID,
-		RuntimeProvider: string(runtimeprofile.ProviderCodex), Runner: created.Runner, RuntimeConfig: plan.CapturedRuntimeConfig,
+		RuntimeProvider: string(provider), Runner: created.Runner, RuntimeConfig: plan.CapturedRuntimeConfig,
 		SteeringEventIDs: plan.BlackboardV2SteeringEventIDs,
 		Precommit: func(projection blackboardv2.ContinuationLaunchProjection) error {
-			header := blackboardv2.LaunchHeader{
+			launchHeader = blackboardv2.LaunchHeader{
 				Runner: string(created.Runner), ScopePath: ".pentest/scope.json", BlackboardPath: ".pentest/blackboard.json",
 				Schema: projection.Schema, Revision: projection.Revision,
 			}
-			binding := &continuationLaunchBinding{V2Header: &header}
+			binding := &continuationLaunchBinding{V2Header: &launchHeader}
 			var err error
 			boundPlan, err = server.buildTaskLaunchPlanWithBinding(created, goal, plan.LaunchModelOverride, plan.NativeResumeSessionID, binding, &plan)
 			return err
@@ -240,6 +253,15 @@ func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, p
 	})
 	if err != nil {
 		return task.TaskContinuation{}, taskLaunchPlan{}, err
+	}
+	// Claude/Pi need the Continuation grant on the trusted MCP URL. The grant
+	// is issued only inside CreateContinuation, so re-project after success.
+	if runner.BlackboardV2UsesTrustedMCP(provider) && strings.TrimSpace(launch.Token) != "" {
+		binding := &continuationLaunchBinding{V2Header: &launchHeader, InterfaceToken: launch.Token}
+		boundPlan, err = server.buildTaskLaunchPlanWithBinding(created, goal, plan.LaunchModelOverride, plan.NativeResumeSessionID, binding, &plan)
+		if err != nil {
+			return task.TaskContinuation{}, taskLaunchPlan{}, err
+		}
 	}
 	return launch.Continuation, boundPlan, nil
 }
@@ -250,16 +272,17 @@ func (server *Server) recoverBlackboardV2ContinuationFiles(ctx context.Context) 
 		return err
 	}
 	for _, snapshot := range active {
-		if snapshot.RuntimeProvider != string(runtimeprofile.ProviderCodex) {
+		provider := runtimeprofile.Provider(snapshot.RuntimeProvider)
+		if !runner.BlackboardV2SupportsProvider(provider) {
 			continue
 		}
 		created, err := server.tasks.Get(snapshot.TaskID)
 		if err != nil {
 			return fmt.Errorf("recover Blackboard v2 Continuation Task: %w", err)
 		}
-		layout, err := runner.PrepareTaskLayout(server.runtimeRoot, snapshot.TaskID, runtimeprofile.ProviderCodex)
+		layout, err := runner.PrepareBlackboardV2TaskLayout(server.runtimeRoot, snapshot.TaskID, provider)
 		if err != nil {
-			return fmt.Errorf("recover Blackboard v2 Codex layout: %w", err)
+			return fmt.Errorf("recover Blackboard v2 layout: %w", err)
 		}
 		if err := server.blackboardV2Continuity.MaterializeLaunchPin(ctx, snapshot.ContinuationID); err != nil {
 			return fmt.Errorf("recover Blackboard v2 Working Snapshot: %w", err)
@@ -268,8 +291,8 @@ func (server *Server) recoverBlackboardV2ContinuationFiles(ctx context.Context) 
 			Runner: string(snapshot.Runner), ScopePath: ".pentest/scope.json", BlackboardPath: ".pentest/blackboard.json",
 			Schema: snapshot.Schema, Revision: snapshot.Revision,
 		}
-		if err := runner.ProjectCodexBlackboardV2Files(layout, header, created.ScopeSnapshot); err != nil {
-			return fmt.Errorf("recover Blackboard v2 Codex context: %w", err)
+		if err := runner.ProjectBlackboardV2Files(layout, provider, header, created.ScopeSnapshot); err != nil {
+			return fmt.Errorf("recover Blackboard v2 context: %w", err)
 		}
 	}
 	return nil
@@ -427,14 +450,14 @@ func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launch
 	if err != nil {
 		return taskLaunchPlan{}, err
 	}
-	if server.blackboardV2Continuity != nil && profile.Provider == runtimeprofile.ProviderCodex {
-		return server.prepareCodexV2TaskLaunchPlan(created, goal, launchModelOverride, nativeResumeSessionID, profile)
+	if server.blackboardV2Continuity != nil && runner.BlackboardV2SupportsProvider(profile.Provider) {
+		return server.prepareBlackboardV2TaskLaunchPlan(created, goal, launchModelOverride, nativeResumeSessionID, profile)
 	}
 	return server.buildTaskLaunchPlanWithBinding(created, goal, launchModelOverride, nativeResumeSessionID, nil, nil)
 }
 
-func (server *Server) prepareCodexV2TaskLaunchPlan(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, profile runtimeprofile.Profile) (taskLaunchPlan, error) {
-	layout, err := runner.PrepareCodexV2TaskLayout(server.runtimeRoot, created.ID)
+func (server *Server) prepareBlackboardV2TaskLaunchPlan(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, profile runtimeprofile.Profile) (taskLaunchPlan, error) {
+	layout, err := runner.PrepareBlackboardV2TaskLayout(server.runtimeRoot, created.ID, profile.Provider)
 	if err != nil {
 		return taskLaunchPlan{}, err
 	}
@@ -454,10 +477,10 @@ func (server *Server) prepareCodexV2TaskLaunchPlan(created task.Task, goal strin
 		}
 		if resolved.ModelProviderID != "" {
 			modelSnapshot = &resolved
-			profile = runner.CodexV2ProfileWithModelSnapshot(profile, resolved)
+			profile = runner.BlackboardV2ProfileWithModelSnapshot(profile, resolved)
 		}
 	}
-	capturedRuntimeConfig := capturedTaskRuntimeConfig(created, profile, runtimeprofile.GeneratedConfig(profile), codexV2ModelSnapshotPreview(modelSnapshot), launchModelOverride)
+	capturedRuntimeConfig := capturedTaskRuntimeConfig(created, profile, runtimeprofile.GeneratedConfig(profile), blackboardV2ModelSnapshotPreview(modelSnapshot), launchModelOverride)
 	return taskLaunchPlan{
 		CapturedRuntimeConfig: capturedRuntimeConfig,
 		LaunchModelOverride:   launchModelOverride,
@@ -466,13 +489,13 @@ func (server *Server) prepareCodexV2TaskLaunchPlan(created task.Task, goal strin
 		ModelSnapshot:         modelSnapshot,
 		SkillBundles:          append([]skill.Bundle(nil), skillBundles...),
 		LaunchGoal:            goal,
-		BlackboardV2Codex:     true,
+		BlackboardV2:          true,
 		ValidatedLayout:       &layout,
 	}, nil
 }
 
 func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, binding *continuationLaunchBinding, captured *taskLaunchPlan) (taskLaunchPlan, error) {
-	v2Codex := binding != nil && binding.V2Header != nil
+	v2 := binding != nil && binding.V2Header != nil
 	runtimeConfig := map[string]any{
 		"runtime_profile_id": created.RuntimeProfileID,
 		"runner":             created.Runner,
@@ -521,11 +544,11 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 
 	var layout runner.Layout
 	var err error
-	if v2Codex {
+	if v2 {
 		if captured == nil || captured.ValidatedLayout == nil {
-			return taskLaunchPlan{}, fmt.Errorf("Blackboard v2 Codex layout was not validated")
+			return taskLaunchPlan{}, fmt.Errorf("Blackboard v2 layout was not validated")
 		}
-		layout, err = runner.PrepareCodexV2TaskLayout(server.runtimeRoot, created.ID)
+		layout, err = runner.PrepareBlackboardV2TaskLayout(server.runtimeRoot, created.ID, profile.Provider)
 	} else {
 		layout, err = runner.PrepareTaskLayout(server.runtimeRoot, created.ID, profile.Provider)
 	}
@@ -536,9 +559,20 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	mcpURL := runner.MCPEndpointURL(server.listenAddr, sandbox)
 	authToken := server.authToken
 	projectionProfile := profile
-	if v2Codex {
-		projectionProfile = codexV2ProjectionProfile(profile)
-		authToken = ""
+	if v2 {
+		if profile.Provider == runtimeprofile.ProviderCodex {
+			// Codex v2 stays networkless for Project Interface writes.
+			projectionProfile = codexV2ProjectionProfile(profile)
+			authToken = ""
+		} else if runner.BlackboardV2UsesTrustedMCP(profile.Provider) {
+			// Claude/Pi use the Continuation grant, never the operator token.
+			authToken = ""
+			if binding != nil {
+				authToken = binding.InterfaceToken
+			}
+		} else {
+			return taskLaunchPlan{}, fmt.Errorf("Blackboard v2 launch projection is unsupported for provider %q", profile.Provider)
+		}
 	}
 	var runtimeContext *projectinterface.RuntimeBlackboardContextV1
 	if binding != nil && binding.V2Header == nil {
@@ -562,8 +596,8 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		RuntimeContext:      runtimeContext,
 	}
 	var projection runner.ConfigProjection
-	if v2Codex {
-		projection, err = runner.ProjectCodexV2RuntimeConfig(layout, projectionProfile, projectionRequest)
+	if v2 {
+		projection, err = runner.ProjectBlackboardV2RuntimeConfig(layout, projectionProfile, projectionRequest)
 	} else {
 		projection, err = runner.ProjectRuntimeConfig(layout, projectionProfile, projectionRequest)
 	}
@@ -571,15 +605,20 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		return taskLaunchPlan{}, err
 	}
 	if binding != nil && binding.V2Header != nil {
-		if profile.Provider != runtimeprofile.ProviderCodex {
-			return taskLaunchPlan{}, fmt.Errorf("Blackboard v2 launch projection is supported only for Codex")
+		if !runner.BlackboardV2SupportsProvider(profile.Provider) {
+			return taskLaunchPlan{}, fmt.Errorf("Blackboard v2 launch projection is unsupported for provider %q", profile.Provider)
 		}
-		if err := runner.ProjectCodexBlackboardV2Files(layout, *binding.V2Header, created.ScopeSnapshot); err != nil {
+		if err := runner.ProjectBlackboardV2Files(layout, profile.Provider, *binding.V2Header, created.ScopeSnapshot); err != nil {
 			return taskLaunchPlan{}, err
 		}
 	}
 	configPath := runner.LaunchConfigPath(layout, profile.Provider, projection.ConfigPath, sandbox)
 	mcpConfigPath := runner.LaunchMCPConfigPath(layout, profile.Provider, sandbox, projection)
+	if v2 && !sandbox {
+		// Host argv must not embed TaskRoot absolute paths (they contain the Task ID).
+		configPath = blackboardV2HostRelativePath(layout.Workdir, configPath)
+		mcpConfigPath = blackboardV2HostRelativePath(layout.Workdir, mcpConfigPath)
+	}
 	launchProfile := profile
 	if projection.ResolvedProfile.Provider != "" {
 		launchProfile = projection.ResolvedProfile
@@ -619,15 +658,15 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		Sandbox:        sandbox,
 		RuntimeContext: runtimeContext,
 	}
-	if !v2Codex {
+	if !v2 {
 		launchCtx.ProjectID = created.ProjectID
 		launchCtx.TaskID = created.ID
 		launchCtx.MCPURL = mcpURL
 	}
-	if binding != nil && !v2Codex {
+	if binding != nil && !v2 {
 		launchCtx.APIURL = binding.Context.APIURL
 		launchCtx.InterfaceToken = binding.InterfaceToken
-	} else if !v2Codex {
+	} else if !v2 {
 		launchCtx.AuthToken = server.authToken
 	}
 	processEnv, err := runner.LaunchProcessEnvWithCredentials(layout, launchProfile, sandbox, launchCtx, runner.ProjectionRequest{
@@ -648,8 +687,8 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	if err != nil {
 		return taskLaunchPlan{}, err
 	}
-	if v2Codex {
-		processEnv = runner.CodexV2ProcessEnv(processEnv, layout, sandbox)
+	if v2 {
+		processEnv = runner.BlackboardV2ProcessEnv(processEnv, layout, sandbox)
 	}
 	if sandbox {
 		sandboxNetwork = sandboxNetworkMode(created.RunControls)
@@ -671,7 +710,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		}
 		var readOnlyTaskFiles, readOnlyTaskDirs []string
 		if binding != nil {
-			if v2Codex {
+			if v2 {
 				readOnlyTaskDirs = []string{"workdir/.pentest"}
 			} else {
 				readOnlyTaskFiles = []string{"workdir/.pentest/blackboard.json", "workdir/.pentest/scope.json"}
@@ -713,7 +752,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		"program": commandProgram,
 		"args":    commandArgs,
 	})
-	if v2Codex {
+	if v2 {
 		runtimeConfig = map[string]any{}
 	}
 	capturedRuntimeConfig := capturedTaskRuntimeConfig(created, launchProfile, runtimeprofile.GeneratedConfig(launchProfile), projection.Config["model_provider_snapshot"], launchModelOverride)
@@ -802,12 +841,12 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		ModelSnapshot:         projection.ModelSnapshot,
 		SkillBundles:          append([]skill.Bundle(nil), skillBundles...),
 		LaunchGoal:            launchGoal,
-		BlackboardV2Codex:     v2Codex,
+		BlackboardV2:          v2,
 		ValidatedLayout:       &layout,
 	}, nil
 }
 
-func codexV2ModelSnapshotPreview(snapshot *modelprovider.Snapshot) any {
+func blackboardV2ModelSnapshotPreview(snapshot *modelprovider.Snapshot) any {
 	if snapshot == nil || snapshot.ModelProviderID == "" {
 		return nil
 	}
@@ -817,6 +856,21 @@ func codexV2ModelSnapshotPreview(snapshot *modelprovider.Snapshot) any {
 		"protocol": string(snapshot.Protocol), "model": snapshot.Model, "api_key_env": snapshot.APIKeyEnv,
 		"api_key_source": snapshot.APIKeySource, "projection_target": snapshot.ProjectionTarget,
 	}
+}
+
+// blackboardV2HostRelativePath rewrites task-local host paths to workdir-relative
+// form so model-visible argv never embeds the Task ID from TaskRoot. Paths under
+// runtime-home become "../runtime-home/..." which is intentional and ID-free.
+func blackboardV2HostRelativePath(workdir, path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return path
+	}
+	relative, err := filepath.Rel(workdir, path)
+	if err != nil {
+		return path
+	}
+	return filepath.ToSlash(relative)
 }
 
 func codexV2ProjectionProfile(profile runtimeprofile.Profile) runtimeprofile.Profile {
@@ -1262,7 +1316,7 @@ func (server *Server) prepareNativeResumeContinuation(found task.Task, resumedMe
 		return task.Task{}, "", taskLaunchPlan{}, err
 	}
 	var steeringEventIDs []string
-	if server.canonicalStore == store.CanonicalStoreBlackboardV2 && server.isCodexTask(found) {
+	if server.canonicalStore == store.CanonicalStoreBlackboardV2 && server.isBlackboardV2Task(found) {
 		resumedMessage, steeringEventIDs, err = server.blackboardV2ResumeContext(found)
 		if err != nil {
 			return task.Task{}, "", taskLaunchPlan{}, err
@@ -1298,7 +1352,7 @@ func (server *Server) prepareHandoffResumeContinuation(found task.Task) (task.Ta
 
 	resumeGoal := ""
 	var steeringEventIDs []string
-	if server.canonicalStore == store.CanonicalStoreBlackboardV2 && effectiveProfile.Provider == runtimeprofile.ProviderCodex {
+	if server.canonicalStore == store.CanonicalStoreBlackboardV2 && runner.BlackboardV2SupportsProvider(effectiveProfile.Provider) {
 		resumeGoal, steeringEventIDs, err = server.blackboardV2ResumeContext(found)
 	} else {
 		resumeGoal, err = server.buildResumeGoal(found)
@@ -1320,7 +1374,7 @@ func (server *Server) buildResumeGoal(found task.Task) (string, error) {
 		return "", err
 	}
 	if server.canonicalStore == store.CanonicalStoreBlackboardV2 {
-		if server.isCodexTask(found) {
+		if server.isBlackboardV2Task(found) {
 			goal, _, err := server.blackboardV2ResumeContext(found)
 			return goal, err
 		}
@@ -1371,21 +1425,26 @@ func (server *Server) isCodexTask(found task.Task) bool {
 	return err == nil && profile.Provider == runtimeprofile.ProviderCodex
 }
 
+func (server *Server) isBlackboardV2Task(found task.Task) bool {
+	profile, err := server.profiles.Get(found.RuntimeProfileID)
+	return err == nil && runner.BlackboardV2SupportsProvider(profile.Provider)
+}
+
 func (server *Server) blackboardV2ResumeContext(found task.Task) (string, []string, error) {
 	steering, err := server.tasks.UnconsumedHarnessSteering(context.Background(), found.ID)
 	if err != nil {
 		return "", nil, err
 	}
+	var checkpoints []blackboardv2.InterruptedAttemptCheckpoint
 	latest, err := server.tasks.LatestContinuation(found.ID)
 	if err != nil {
 		return "", nil, err
 	}
-	if latest == nil {
-		return "", nil, task.ErrNotFound
-	}
-	checkpoints, err := server.blackboardV2.InterruptedAttemptCheckpoints(context.Background(), found.ProjectID, latest.ID)
-	if err != nil {
-		return "", nil, err
+	if latest != nil {
+		checkpoints, err = server.blackboardV2.InterruptedAttemptCheckpoints(context.Background(), found.ProjectID, latest.ID)
+		if err != nil {
+			return "", nil, err
+		}
 	}
 	directives := make([]string, len(steering))
 	eventIDs := make([]string, len(steering))
@@ -1655,7 +1714,7 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 			writeTaskLaunchError(response, err)
 			return
 		}
-		if !plan.BlackboardV2Codex {
+		if !plan.BlackboardV2 {
 			_, _ = server.tasks.AppendEvent(taskID, task.EventKindSteering, task.EventPayload{
 				"phase":              "steering_applied",
 				"directive":          input.Directive,
@@ -1854,8 +1913,8 @@ func (server *Server) discoverProviderNativeSession(taskID string, provider runt
 	}
 	var layout runner.Layout
 	var err error
-	if server.blackboardV2Continuity != nil && provider == runtimeprofile.ProviderCodex {
-		layout, err = runner.PrepareCodexV2TaskLayout(server.runtimeRoot, taskID)
+	if server.blackboardV2Continuity != nil && runner.BlackboardV2SupportsProvider(provider) {
+		layout, err = runner.PrepareBlackboardV2TaskLayout(server.runtimeRoot, taskID, provider)
 	} else {
 		layout, err = runner.PrepareTaskLayout(server.runtimeRoot, taskID, provider)
 	}
@@ -2126,5 +2185,7 @@ func writeTaskLaunchError(response http.ResponseWriter, err error) {
 		}{Error: interfaceErr})
 		return
 	}
-	writeError(response, http.StatusInternalServerError, err.Error())
+	// Skill/model-provider adapter failures can surface during v2 Continuation
+	// Precommit after plan capture; map them like resume-prepare errors.
+	writeTaskAdapterError(response, err)
 }

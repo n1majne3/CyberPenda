@@ -26,11 +26,14 @@ func TestTrustedMCPProjectionSmoke(t *testing.T) {
 		provider        runtimeprofile.Provider
 		compactV2Launch bool
 		networklessV2   bool
+		mcpConfigPath   string
 		verify          func(t *testing.T, layoutRoot string)
 	}{
 		{
-			name:     "claude_code",
-			provider: runtimeprofile.ProviderClaudeCode,
+			name:            "claude_code",
+			provider:        runtimeprofile.ProviderClaudeCode,
+			compactV2Launch: true,
+			mcpConfigPath:   filepath.Join("workdir", ".mcp.json"),
 			verify: func(t *testing.T, layoutRoot string) {
 				t.Helper()
 				raw, err := os.ReadFile(filepath.Join(layoutRoot, "workdir", ".mcp.json"))
@@ -39,6 +42,22 @@ func TestTrustedMCPProjectionSmoke(t *testing.T) {
 				}
 				if !strings.Contains(string(raw), `"pentest"`) || !strings.Contains(string(raw), `"type": "http"`) {
 					t.Fatalf("expected claude mcp config, got %s", string(raw))
+				}
+				if !strings.Contains(string(raw), "/mcp?token=") {
+					t.Fatalf("expected Claude trusted MCP grant URL, got %s", string(raw))
+				}
+				settingsRaw, err := os.ReadFile(filepath.Join(layoutRoot, "runtime-home", "claude", "settings.json"))
+				if err != nil {
+					t.Fatalf("read Claude settings: %v", err)
+				}
+				for _, tool := range []string{
+					"mcp__pentest__blackboard_change", "mcp__pentest__blackboard_read",
+					"mcp__pentest__blackboard_history", "mcp__pentest__blackboard_retain_evidence",
+					"mcp__pentest__blackboard_checkpoint_attempt", "mcp__pentest__blackboard_finish",
+				} {
+					if !strings.Contains(string(settingsRaw), tool) {
+						t.Fatalf("Claude settings missing trusted allowlist entry %q: %s", tool, settingsRaw)
+					}
 				}
 			},
 		},
@@ -62,8 +81,10 @@ func TestTrustedMCPProjectionSmoke(t *testing.T) {
 			},
 		},
 		{
-			name:     "pi",
-			provider: runtimeprofile.ProviderPi,
+			name:            "pi",
+			provider:        runtimeprofile.ProviderPi,
+			compactV2Launch: true,
+			mcpConfigPath:   filepath.Join("runtime-home", "pi", "agent", "mcp.json"),
 			verify: func(t *testing.T, layoutRoot string) {
 				t.Helper()
 				raw, err := os.ReadFile(filepath.Join(layoutRoot, "runtime-home", "pi", "agent", "mcp.json"))
@@ -72,6 +93,9 @@ func TestTrustedMCPProjectionSmoke(t *testing.T) {
 				}
 				if !strings.Contains(string(raw), `"pentest"`) || !strings.Contains(string(raw), `"streamable-http"`) {
 					t.Fatalf("expected pi mcp config, got %s", string(raw))
+				}
+				if !strings.Contains(string(raw), "/mcp?token=") {
+					t.Fatalf("expected Pi trusted MCP grant URL, got %s", string(raw))
 				}
 			},
 		},
@@ -101,7 +125,10 @@ func TestTrustedMCPProjectionSmoke(t *testing.T) {
 			mcpURL := daemonBase + "/mcp"
 			if tc.compactV2Launch {
 				if _, err := os.Stat(filepath.Join(layoutRoot, "workdir", ".pentest", "context.json")); !os.IsNotExist(err) {
-					t.Fatalf("Codex v2 launch exposed legacy identity context: %v", err)
+					t.Fatalf("v2 launch exposed legacy identity context: %v", err)
+				}
+				if tc.mcpConfigPath != "" {
+					mcpURL = normalizeMCPURLForHost(readProjectedTrustedMCPURL(t, filepath.Join(layoutRoot, tc.mcpConfigPath)), daemonBase)
 				}
 			} else {
 				ctx := readTaskMCPContext(t, layoutRoot)
@@ -180,6 +207,27 @@ func readTaskMCPContext(t *testing.T, layoutRoot string) taskMCPContext {
 		t.Fatalf("decode context.json: %v", err)
 	}
 	return ctx
+}
+
+func readProjectedTrustedMCPURL(t *testing.T, path string) string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read projected MCP config: %v", err)
+	}
+	var doc struct {
+		MCPServers map[string]struct {
+			URL string `json:"url"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("decode projected MCP config: %v", err)
+	}
+	server, ok := doc.MCPServers["pentest"]
+	if !ok || strings.TrimSpace(server.URL) == "" {
+		t.Fatalf("projected MCP config missing trusted pentest URL: %s", raw)
+	}
+	return server.URL
 }
 
 // normalizeMCPURLForHost rewrites sandbox-only hostnames so the test process on
