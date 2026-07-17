@@ -8,6 +8,7 @@ import { FactsPage } from "./FactsPage";
 import { FindingsPage } from "./FindingsPage";
 import { ReportPage } from "./ReportPage";
 import { ScopeEditorPage } from "./ScopeEditorPage";
+import { SolutionPage } from "./SolutionPage";
 
 function renderRoute(path: string, element: React.ReactElement, routePath: string) {
   return render(
@@ -44,54 +45,6 @@ const project = {
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-02T00:00:00Z",
 };
-
-function nodeRow(overrides: {
-  id: string;
-  node_type: string;
-  stable_key: string;
-  label: string;
-  secondary?: string;
-  scope_status?: string;
-  severity?: string;
-  lifecycle?: string;
-}) {
-  return {
-    ref: {
-      id: overrides.id,
-      node_type: overrides.node_type,
-      stable_key: overrides.stable_key,
-      label: overrides.label,
-    },
-    version: 1,
-    disposition: "main",
-    lifecycle: overrides.lifecycle
-      ? { field: "status", value: overrides.lifecycle }
-      : { field: "confidence", value: "confirmed" },
-    scope_status: overrides.scope_status ?? "in_scope",
-    severity: overrides.severity ?? null,
-    secondary: overrides.secondary ?? overrides.stable_key,
-    updated_at: "2026-01-02T00:00:00Z",
-    about_entities: [],
-    relationship_counts: {
-      about_entities: 0,
-      incoming: 0,
-      outgoing: 0,
-      evidence: 0,
-      contradictions: 0,
-    },
-    updated_provenance: {
-      actor_type: "operator",
-      actor_id: "tester",
-      task_id: null,
-      continuation_id: null,
-      runtime_profile_id: null,
-      runner: null,
-      source_event_count: 0,
-      migration_source: null,
-      recorded_at: "2026-01-02T00:00:00Z",
-    },
-  };
-}
 
 describe("knowledge and reporting views", () => {
   it("renders the Scope editor with Geist hierarchy and explicit safety states", async () => {
@@ -162,31 +115,33 @@ describe("knowledge and reporting views", () => {
     expect(screen.getByText("out-of-scope")).toHaveClass("border-warning/25", "bg-warning/10");
   });
 
-  it("renders Findings as graph-backed ledger rows with severity labels", async () => {
+  it("renders Findings from the v2 Snapshot with severity preserved per identity", async () => {
     mockApi({
-      "/api/projects/project-1/blackboard/records": {
-        protocol_version: 1,
-        projection: "record_collection_v1",
-        project_id: "project-1",
-        project_kind: "pentest",
-        observed_graph_revision: 1,
-        observed_state_hash: "hash",
-        projection_hash: "findings",
-        result: {
-          items: [
-            nodeRow({
-              id: "node-finding-1",
-              node_type: "finding",
-              stable_key: "finding:admin-exposed",
-              label: "Admin panel exposed",
-              secondary: "https://acme.test/admin",
+      "/api/v2/projects/project-1/blackboard/snapshot": {
+        schema: "runtime-blackboard/v2",
+        semantics: "work is active; knowledge is current; history and details are available by key",
+        revision: 2,
+        work: {},
+        knowledge: {
+          findings: {
+            "finding:admin-exposed": {
+              version: 1,
+              status: "confirmed",
+              title: "Admin panel exposed",
+              target: "https://acme.test/admin",
               severity: "high",
-              lifecycle: "confirmed",
-            }),
-          ],
-          facets: {},
-          page: { limit: 100, total_items: 1 },
+              cvss_pending: false,
+            },
+            "finding:verbose": {
+              version: 1,
+              status: "unconfirmed",
+              title: "Verbose errors",
+              severity: "low",
+              cvss_pending: true,
+            },
+          },
         },
+        relations: [],
       },
       "/api/projects/project-1": project,
     });
@@ -194,40 +149,35 @@ describe("knowledge and reporting views", () => {
     renderRoute("/projects/project-1/findings", <FindingsPage />, "/projects/:projectId/findings");
 
     expect(await screen.findByText("Confirmed (1)")).toHaveClass("tracking-tight");
+    expect(screen.getByText("Unconfirmed (1)")).toBeInTheDocument();
     const findingLink = screen.getByRole("link", { name: /Admin panel exposed/i });
-    // Must use stable Blackboard key for v2 record detail — never the v1 node id.
     expect(findingLink).toHaveAttribute(
       "href",
       "/projects/project-1/blackboard/records/finding%3Aadmin-exposed",
     );
-    expect(findingLink.getAttribute("href")).not.toContain("node-finding-1");
     expect(screen.getByText("high")).toBeInTheDocument();
+    expect(screen.getByText("low")).toBeInTheDocument();
   });
 
-  it("Findings row link uses stable key distinct from v1 node id", async () => {
+  it("Findings row link uses Blackboard Key only", async () => {
     mockApi({
-      "/api/projects/project-1/blackboard/records": {
-        protocol_version: 1,
-        projection: "record_collection_v1",
-        project_id: "project-1",
-        project_kind: "pentest",
-        observed_graph_revision: 1,
-        observed_state_hash: "hash",
-        projection_hash: "findings",
-        result: {
-          items: [
-            nodeRow({
-              id: "uuid-v1-node-abc",
-              node_type: "finding",
-              stable_key: "finding:sqli-login",
-              label: "SQL injection on login",
+      "/api/v2/projects/project-1/blackboard/snapshot": {
+        schema: "runtime-blackboard/v2",
+        semantics: "work is active; knowledge is current; history and details are available by key",
+        revision: 1,
+        work: {},
+        knowledge: {
+          findings: {
+            "finding:sqli-login": {
+              version: 1,
+              status: "confirmed",
+              title: "SQL injection on login",
               severity: "critical",
-              lifecycle: "confirmed",
-            }),
-          ],
-          facets: {},
-          page: { limit: 100, total_items: 1 },
+              cvss_pending: false,
+            },
+          },
         },
+        relations: [],
       },
       "/api/projects/project-1": project,
     });
@@ -239,34 +189,28 @@ describe("knowledge and reporting views", () => {
       "href",
       "/projects/project-1/blackboard/records/finding%3Asqli-login",
     );
-    expect(link.getAttribute("href")).not.toContain("uuid-v1-node-abc");
+    expect(link.getAttribute("href")).not.toContain("uuid");
     expect(link.getAttribute("href")).not.toMatch(/node-/);
   });
 
-  it("renders Evidence artifacts as graph-backed ledger rows", async () => {
+  it("renders Evidence from the v2 Snapshot by Blackboard Key", async () => {
     mockApi({
-      "/api/projects/project-1/blackboard/records": {
-        protocol_version: 1,
-        projection: "record_collection_v1",
-        project_id: "project-1",
-        project_kind: "pentest",
-        observed_graph_revision: 1,
-        observed_state_hash: "hash",
-        projection_hash: "evidence",
-        result: {
-          items: [
-            nodeRow({
-              id: "node-evidence-1",
-              node_type: "evidence_artifact",
-              stable_key: "evidence:http-admin",
-              label: "Admin response capture",
-              secondary: "http-response",
-              lifecycle: "available",
-            }),
-          ],
-          facets: {},
-          page: { limit: 100, total_items: 1 },
+      "/api/v2/projects/project-1/blackboard/snapshot": {
+        schema: "runtime-blackboard/v2",
+        semantics: "work is active; knowledge is current; history and details are available by key",
+        revision: 1,
+        work: {},
+        knowledge: {
+          evidence: {
+            "evidence:http-admin": {
+              version: 1,
+              status: "available",
+              artifact_type: "http-response",
+              summary: "Admin response capture",
+            },
+          },
         },
+        relations: [],
       },
       "/api/projects/project-1": project,
     });
@@ -278,34 +222,27 @@ describe("knowledge and reporting views", () => {
       "href",
       "/projects/project-1/blackboard/records/evidence%3Ahttp-admin",
     );
-    expect(artifact.getAttribute("href")).not.toContain("node-evidence-1");
     expect(screen.getByText("available")).toBeInTheDocument();
   });
 
-  it("Evidence row link uses stable key distinct from v1 node id", async () => {
+  it("Evidence row link uses Blackboard Key only", async () => {
     mockApi({
-      "/api/projects/project-1/blackboard/records": {
-        protocol_version: 1,
-        projection: "record_collection_v1",
-        project_id: "project-1",
-        project_kind: "pentest",
-        observed_graph_revision: 1,
-        observed_state_hash: "hash",
-        projection_hash: "evidence",
-        result: {
-          items: [
-            nodeRow({
-              id: "uuid-v1-ev-xyz",
-              node_type: "evidence_artifact",
-              stable_key: "evidence:pcap-1",
-              label: "Traffic capture",
-              secondary: "pcap",
-              lifecycle: "available",
-            }),
-          ],
-          facets: {},
-          page: { limit: 100, total_items: 1 },
+      "/api/v2/projects/project-1/blackboard/snapshot": {
+        schema: "runtime-blackboard/v2",
+        semantics: "work is active; knowledge is current; history and details are available by key",
+        revision: 1,
+        work: {},
+        knowledge: {
+          evidence: {
+            "evidence:pcap-1": {
+              version: 1,
+              status: "available",
+              artifact_type: "pcap",
+              summary: "Traffic capture",
+            },
+          },
         },
+        relations: [],
       },
       "/api/projects/project-1": project,
     });
@@ -317,30 +254,72 @@ describe("knowledge and reporting views", () => {
       "href",
       "/projects/project-1/blackboard/records/evidence%3Apcap-1",
     );
-    expect(link.getAttribute("href")).not.toContain("uuid-v1-ev-xyz");
+    expect(link.getAttribute("href")).not.toContain("uuid");
   });
 
-  it("renders Report as a deterministic graph deliverable preview", async () => {
+  it("renders Report from v2 JSON with Blackboard Key links and markdown preview", async () => {
     mockApi({
-      "/api/projects/project-1/reports/pentest": {
-        protocol_version: 1,
-        projection: "pentest_report_v1",
-        project_id: "project-1",
-        project_kind: "pentest",
-        observed_graph_revision: 1,
-        observed_state_hash: "hash",
-        projection_hash: "report",
-        result: {
-          source: {
-            project_id: "project-1",
-            project_name: "Acme External",
-            graph_revision: 1,
-            state_hash: "hash",
-            source_hash: "source",
-            renderer_version: "pentest_markdown_v1",
+      "/api/v2/projects/project-1/reports/pentest?format=json": {
+        schema: "pentest-report/v2",
+        project: { name: "Acme External", description: "External assessment" },
+        confirmed_findings: [
+          {
+            key: "finding:admin-exposed",
+            title: "Admin panel exposed",
+            status: "confirmed",
+            severity: "high",
+            cvss_pending: false,
+            supporting_facts: [
+              {
+                key: "fact:admin-facing",
+                category: "exposure",
+                summary: "Admin is internet-facing",
+                confidence: "confirmed",
+                scope_status: "in_scope",
+              },
+            ],
+            contradictions: [
+              {
+                key: "fact:maybe-internal",
+                category: "recon",
+                summary: "May only be internal",
+                confidence: "tentative",
+                scope_status: "unknown",
+              },
+            ],
+            evidence: [
+              {
+                key: "evidence:http-admin",
+                status: "available",
+                artifact_type: "http-response",
+                summary: "Admin response capture",
+              },
+            ],
           },
-          markdown: "# Acme External\n\n## Confirmed findings\n",
-        },
+        ],
+        unconfirmed_findings: [],
+        confirmed_facts: [
+          {
+            key: "fact:admin-facing",
+            category: "exposure",
+            summary: "Admin is internet-facing",
+            confidence: "confirmed",
+            scope_status: "in_scope",
+          },
+        ],
+        tentative_facts: [
+          {
+            key: "fact:maybe-internal",
+            category: "recon",
+            summary: "May only be internal",
+            confidence: "tentative",
+            scope_status: "unknown",
+          },
+        ],
+      },
+      "/api/v2/projects/project-1/reports/pentest?format=markdown": {
+        schema: "report-markdown/v2",
+        markdown: "# Acme External Pentest Report\n\n## Confirmed Findings\n\n_No records._\n",
       },
       "/api/projects/project-1": project,
     });
@@ -348,6 +327,99 @@ describe("knowledge and reporting views", () => {
     renderRoute("/projects/project-1/report", <ReportPage />, "/projects/:projectId/report");
 
     expect(await screen.findByText("Deterministic Pentest report")).toBeInTheDocument();
-    expect(screen.getByText(/Confirmed findings/i)).toBeInTheDocument();
+    const findingLink = await screen.findByRole("link", { name: /Admin panel exposed/i });
+    expect(findingLink).toHaveAttribute(
+      "href",
+      "/projects/project-1/blackboard/records/finding%3Aadmin-exposed",
+    );
+    expect(screen.getByRole("link", { name: /evidence:http-admin/i })).toHaveAttribute(
+      "href",
+      "/projects/project-1/blackboard/records/evidence%3Ahttp-admin",
+    );
+    const confirmedFactLinks = await screen.findAllByRole("link", {
+      name: /Admin is internet-facing/i,
+    });
+    expect(confirmedFactLinks.length).toBeGreaterThanOrEqual(1);
+    for (const link of confirmedFactLinks) {
+      expect(link).toHaveAttribute(
+        "href",
+        "/projects/project-1/blackboard/records/fact%3Aadmin-facing",
+      );
+    }
+    const tentativeFactLinks = screen.getAllByRole("link", { name: /May only be internal/i });
+    expect(tentativeFactLinks.length).toBeGreaterThanOrEqual(1);
+    for (const link of tentativeFactLinks) {
+      expect(link).toHaveAttribute(
+        "href",
+        "/projects/project-1/blackboard/records/fact%3Amaybe-internal",
+      );
+    }
+    expect(screen.getByRole("heading", { name: /Report preview/i })).toBeInTheDocument();
+    expect(screen.getByText(/Acme External Pentest Report/i)).toBeInTheDocument();
+  });
+
+  it("renders CTF Solution Facts with Blackboard Key links", async () => {
+    mockApi({
+      "/api/v2/projects/ctf-1/reports/ctf-solution?format=json": {
+        schema: "ctf-solution/v2",
+        project: { name: "Flag CTF" },
+        solved: true,
+        verified_flags: [
+          {
+            key: "solution:flag",
+            kind: "flag",
+            status: "verified",
+            summary: "Recovered flag",
+            value: "FLAG{ok}",
+          },
+        ],
+        candidate_flags: [],
+        answers: [],
+        procedures: [],
+        confirmed_facts: [
+          {
+            key: "fact:parser-clue",
+            category: "challenge",
+            summary: "Parser accepts reversed hex",
+            confidence: "confirmed",
+            scope_status: "in_scope",
+          },
+        ],
+        tentative_facts: [
+          {
+            key: "fact:maybe-token",
+            category: "challenge",
+            summary: "Maybe another token exists",
+            confidence: "tentative",
+            scope_status: "unknown",
+          },
+        ],
+        evidence: [],
+      },
+      "/api/v2/projects/ctf-1/reports/ctf-solution?format=markdown": {
+        schema: "report-markdown/v2",
+        markdown: "# Flag CTF CTF Solution\n\n## Solved Status\n\nSolved: yes\n",
+      },
+      "/api/projects/ctf-1": {
+        ...project,
+        id: "ctf-1",
+        name: "Flag CTF",
+        kind: "ctf_challenge",
+      },
+    });
+
+    renderRoute("/projects/ctf-1/solution", <SolutionPage />, "/projects/:projectId/solution");
+
+    expect(
+      await screen.findByRole("heading", { name: /Flag CTF — Solved: yes/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Parser accepts reversed hex/i })).toHaveAttribute(
+      "href",
+      "/projects/ctf-1/blackboard/records/fact%3Aparser-clue",
+    );
+    expect(screen.getByRole("link", { name: /Maybe another token exists/i })).toHaveAttribute(
+      "href",
+      "/projects/ctf-1/blackboard/records/fact%3Amaybe-token",
+    );
   });
 });

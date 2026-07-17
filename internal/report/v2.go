@@ -13,6 +13,11 @@ type V2Reader interface {
 	PentestReport(context.Context, string) (blackboardv2.PentestReportProjection, error)
 }
 
+// CTFV2Reader is the semantic v2 CTF solution seam used by the renderer.
+type CTFV2Reader interface {
+	CTFSolution(context.Context, string) (blackboardv2.CTFSolutionProjection, error)
+}
+
 // V2Request selects the Project whose current v2 conclusions are rendered.
 type V2Request struct {
 	ProjectID string
@@ -23,9 +28,19 @@ type V2Generator struct {
 	reader V2Reader
 }
 
+// CTFV2Generator renders the deterministic Blackboard v2 CTF solution projection.
+type CTFV2Generator struct {
+	reader CTFV2Reader
+}
+
 // NewV2Generator returns a report generator backed by current v2 semantics.
 func NewV2Generator(reader V2Reader) *V2Generator {
 	return &V2Generator{reader: reader}
+}
+
+// NewCTFV2Generator returns a CTF solution generator backed by current v2 semantics.
+func NewCTFV2Generator(reader CTFV2Reader) *CTFV2Generator {
+	return &CTFV2Generator{reader: reader}
 }
 
 // Generate renders current confirmed conclusions separately from tentative
@@ -35,7 +50,27 @@ func (g *V2Generator) Generate(ctx context.Context, request V2Request) (Report, 
 	if err != nil {
 		return Report{}, fmt.Errorf("project v2 Pentest report: %w", err)
 	}
-	return Report{Status: "generated", Format: "markdown", Markdown: renderV2Markdown(projection)}, nil
+	return Report{Status: "generated", Format: "markdown", Markdown: RenderV2Markdown(projection)}, nil
+}
+
+// Generate renders CTF solved state from verified flag Solutions only. It adds
+// no Trusted Origin, internal IDs, hashes, or provenance appendices.
+func (g *CTFV2Generator) Generate(ctx context.Context, request V2Request) (Report, error) {
+	projection, err := g.reader.CTFSolution(ctx, request.ProjectID)
+	if err != nil {
+		return Report{}, fmt.Errorf("project v2 CTF solution: %w", err)
+	}
+	return Report{Status: "generated", Format: "markdown", Markdown: RenderCTFV2Markdown(projection)}, nil
+}
+
+// RenderV2Markdown turns a current semantic Pentest projection into Markdown.
+func RenderV2Markdown(projection blackboardv2.PentestReportProjection) string {
+	return renderV2Markdown(projection)
+}
+
+// RenderCTFV2Markdown turns a current semantic CTF solution projection into Markdown.
+func RenderCTFV2Markdown(projection blackboardv2.CTFSolutionProjection) string {
+	return renderCTFV2Markdown(projection)
 }
 
 func renderV2Markdown(projection blackboardv2.PentestReportProjection) string {
@@ -76,6 +111,7 @@ func writeV2Findings(output *strings.Builder, heading string, findings []blackbo
 			output.WriteString(escapeV2Markdown(finding.Title))
 			output.WriteString("\n\n")
 		}
+		writeV2Label(output, "Key", finding.Key)
 		writeV2Label(output, "Status", finding.Status)
 		if finding.CVSSPending {
 			writeV2Label(output, "CVSS", "pending")
@@ -95,6 +131,7 @@ func writeV2Findings(output *strings.Builder, heading string, findings []blackbo
 			for _, evidence := range finding.Evidence {
 				if isV2Multiline(evidence.Summary) || isV2Multiline(evidence.ArtifactType) || isV2Multiline(evidence.Status) {
 					output.WriteString("#### Evidence\n\n")
+					writeV2NamedValue(output, "Key", evidence.Key)
 					writeV2NamedValue(output, "Summary", evidence.Summary)
 					writeV2NamedValue(output, "Artifact Type", evidence.ArtifactType)
 					writeV2NamedValue(output, "Status", evidence.Status)
@@ -102,7 +139,9 @@ func writeV2Findings(output *strings.Builder, heading string, findings []blackbo
 				}
 				output.WriteString("- ")
 				output.WriteString(escapeV2Markdown(evidence.Summary))
-				output.WriteString(" (")
+				output.WriteString(" (`")
+				output.WriteString(escapeV2Markdown(evidence.Key))
+				output.WriteString("`, ")
 				output.WriteString(escapeV2Markdown(evidence.ArtifactType))
 				output.WriteString(", ")
 				output.WriteString(escapeV2Markdown(evidence.Status))
@@ -122,8 +161,9 @@ func writeV2Facts(output *strings.Builder, heading string, facts []blackboardv2.
 		return
 	}
 	for _, fact := range facts {
-		if isV2Multiline(fact.Summary) || isV2Multiline(fact.Category) || isV2Multiline(fact.ScopeStatus) || isV2Multiline(fact.Body) {
+		if isV2Multiline(fact.Summary) || isV2Multiline(fact.Category) || isV2Multiline(fact.ScopeStatus) || isV2Multiline(fact.Body) || isV2Multiline(fact.Key) {
 			output.WriteString("### Fact\n\n")
+			writeV2NamedValue(output, "Key", fact.Key)
 			writeV2NamedValue(output, "Summary", fact.Summary)
 			writeV2NamedValue(output, "Category", fact.Category)
 			writeV2NamedValue(output, "Scope Status", fact.ScopeStatus)
@@ -134,7 +174,9 @@ func writeV2Facts(output *strings.Builder, heading string, facts []blackboardv2.
 		}
 		output.WriteString("- **")
 		output.WriteString(escapeV2Markdown(fact.Summary))
-		output.WriteString("** (")
+		output.WriteString("** (`")
+		output.WriteString(escapeV2Markdown(fact.Key))
+		output.WriteString("`, ")
 		output.WriteString(escapeV2Markdown(fact.Category))
 		output.WriteString(", ")
 		output.WriteString(escapeV2Markdown(fact.ScopeStatus))
@@ -156,15 +198,18 @@ func writeV2FactList(output *strings.Builder, heading string, facts []blackboard
 	output.WriteString(heading)
 	output.WriteString("**\n\n")
 	for _, fact := range facts {
-		if isV2Multiline(fact.Summary) || isV2Multiline(fact.Confidence) {
+		if isV2Multiline(fact.Summary) || isV2Multiline(fact.Confidence) || isV2Multiline(fact.Key) {
 			output.WriteString("#### Fact\n\n")
+			writeV2NamedValue(output, "Key", fact.Key)
 			writeV2NamedValue(output, "Summary", fact.Summary)
 			writeV2NamedValue(output, "Confidence", fact.Confidence)
 			continue
 		}
 		output.WriteString("- ")
 		output.WriteString(escapeV2Markdown(fact.Summary))
-		output.WriteString(" (")
+		output.WriteString(" (`")
+		output.WriteString(escapeV2Markdown(fact.Key))
+		output.WriteString("`, ")
 		output.WriteString(escapeV2Markdown(fact.Confidence))
 		output.WriteString(")\n")
 	}
@@ -236,4 +281,88 @@ func escapeV2Markdown(value string) string {
 		"+", "\\+", ".", "\\.", "=", "\\=", "~", "\\~", "(", "\\(", ")", "\\)",
 	)
 	return replacer.Replace(value)
+}
+
+func renderCTFV2Markdown(projection blackboardv2.CTFSolutionProjection) string {
+	var output strings.Builder
+	if isV2Multiline(projection.Project.Name) {
+		output.WriteString("# CTF Solution\n\n")
+		writeV2NamedValue(&output, "Challenge", projection.Project.Name)
+	} else {
+		output.WriteString("# ")
+		output.WriteString(escapeV2Markdown(projection.Project.Name))
+		output.WriteString(" CTF Solution\n\n")
+	}
+	if projection.Project.Description != "" {
+		writeV2Paragraph(&output, projection.Project.Description)
+		output.WriteString("\n")
+	}
+	output.WriteString("## Solved Status\n\n")
+	if projection.Solved {
+		output.WriteString("Solved: yes\n\n")
+	} else {
+		output.WriteString("Solved: no\n\n")
+	}
+	writeV2Solutions(&output, "Verified Flags", projection.VerifiedFlags)
+	writeV2Solutions(&output, "Candidate Flags", projection.CandidateFlags)
+	writeV2Solutions(&output, "Answers", projection.Answers)
+	writeV2Solutions(&output, "Procedures", projection.Procedures)
+	writeV2Facts(&output, "Confirmed Facts", projection.ConfirmedFacts)
+	writeV2Facts(&output, "Tentative Facts", projection.TentativeFacts)
+	writeV2EvidenceList(&output, projection.Evidence)
+	return strings.TrimRight(output.String(), "\n") + "\n"
+}
+
+func writeV2Solutions(output *strings.Builder, heading string, solutions []blackboardv2.ReportSolution) {
+	output.WriteString("## ")
+	output.WriteString(heading)
+	output.WriteString("\n\n")
+	if len(solutions) == 0 {
+		output.WriteString("_No records._\n\n")
+		return
+	}
+	for _, solution := range solutions {
+		if isV2Multiline(solution.Summary) {
+			output.WriteString("### Solution\n\n")
+			writeV2NamedValue(output, "Summary", solution.Summary)
+		} else {
+			output.WriteString("### ")
+			output.WriteString(escapeV2Markdown(solution.Summary))
+			output.WriteString("\n\n")
+		}
+		writeV2Label(output, "Key", solution.Key)
+		writeV2Label(output, "Status", solution.Status)
+		writeV2Label(output, "Kind", solution.Kind)
+		writeV2OptionalLabel(output, "Value", solution.Value)
+		writeV2OptionalLabel(output, "Verification", solution.VerificationSummary)
+		output.WriteString("\n")
+	}
+}
+
+func writeV2EvidenceList(output *strings.Builder, evidence []blackboardv2.ReportEvidence) {
+	output.WriteString("## Evidence\n\n")
+	if len(evidence) == 0 {
+		output.WriteString("_No records._\n\n")
+		return
+	}
+	for _, item := range evidence {
+		if isV2Multiline(item.Summary) || isV2Multiline(item.ArtifactType) || isV2Multiline(item.Status) {
+			output.WriteString("### Evidence\n\n")
+			writeV2NamedValue(output, "Key", item.Key)
+			writeV2NamedValue(output, "Summary", item.Summary)
+			writeV2NamedValue(output, "Artifact Type", item.ArtifactType)
+			writeV2NamedValue(output, "Status", item.Status)
+			continue
+		}
+		output.WriteString("- ")
+		output.WriteString(escapeV2Markdown(item.Summary))
+		output.WriteString(" (`")
+		output.WriteString(escapeV2Markdown(item.Key))
+		output.WriteString("`, ")
+		output.WriteString(escapeV2Markdown(item.ArtifactType))
+		output.WriteString(", ")
+		output.WriteString(escapeV2Markdown(item.Status))
+		output.WriteString(")\n")
+	}
+	output.WriteString("\n")
 }

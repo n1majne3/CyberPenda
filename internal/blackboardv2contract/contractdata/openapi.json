@@ -609,6 +609,172 @@
           }
         }
       }
+    },
+    "/api/v2/projects/{project_id}/reports/pentest": {
+      "get": {
+        "operationId": "blackboardPentestReportV2",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectID"
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "markdown",
+                "json"
+              ],
+              "default": "markdown"
+            },
+            "description": "markdown returns report-markdown/v2; json returns the semantic projection"
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deterministic Pentest report projection or markdown deliverable",
+            "headers": {
+              "ETag": {
+                "$ref": "#/components/headers/RevisionETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "./schemas/blackboard-v2.schema.json#/$defs/pentestReport"
+                    },
+                    {
+                      "$ref": "./schemas/blackboard-v2.schema.json#/$defs/reportMarkdown"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Revision ETag still current"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "410": {
+            "$ref": "#/components/responses/ClosedContinuation"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/api/v2/projects/{project_id}/reports/ctf-solution": {
+      "get": {
+        "operationId": "blackboardCTFSolutionV2",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectID"
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "markdown",
+                "json"
+              ],
+              "default": "markdown"
+            },
+            "description": "markdown returns report-markdown/v2; json returns the semantic projection"
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deterministic CTF solution projection or markdown deliverable; solved derives from verified flags only",
+            "headers": {
+              "ETag": {
+                "$ref": "#/components/headers/RevisionETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "./schemas/blackboard-v2.schema.json#/$defs/ctfSolution"
+                    },
+                    {
+                      "$ref": "./schemas/blackboard-v2.schema.json#/$defs/reportMarkdown"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Revision ETag still current"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "410": {
+            "$ref": "#/components/responses/ClosedContinuation"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
     }
   },
   "components": {

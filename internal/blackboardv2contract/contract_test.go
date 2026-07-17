@@ -468,6 +468,8 @@ func TestOpenAPIAndTrustedToolsFreezeTheAcceptedV2Adapters(t *testing.T) {
 		"/api/v2/projects/{project_id}/blackboard/evidence:retain":           "post",
 		"/api/v2/projects/{project_id}/blackboard/attempts/{key}:checkpoint": "post",
 		"/api/v2/projects/{project_id}/continuation:finish":                  "post",
+		"/api/v2/projects/{project_id}/reports/pentest":                      "get",
+		"/api/v2/projects/{project_id}/reports/ctf-solution":                 "get",
 	}
 	if len(openAPI.Paths) != len(wantOperations) {
 		t.Fatalf("OpenAPI paths = %d, want exactly %d v2 paths", len(openAPI.Paths), len(wantOperations))

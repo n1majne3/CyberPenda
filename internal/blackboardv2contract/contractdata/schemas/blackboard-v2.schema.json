@@ -3428,6 +3428,359 @@
           "$ref": "#/$defs/syncAttachment"
         }
       }
+    },
+    "reportProject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "reportFact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "category",
+        "summary",
+        "confidence",
+        "scope_status"
+      ],
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/blackboardKey"
+        },
+        "category": {
+          "type": "string",
+          "minLength": 1
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1
+        },
+        "confidence": {
+          "type": "string",
+          "enum": [
+            "tentative",
+            "confirmed"
+          ]
+        },
+        "scope_status": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "reportEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "status",
+        "artifact_type",
+        "summary"
+      ],
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/blackboardKey"
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "media_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "captured_at": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "reportFinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "title",
+        "status",
+        "cvss_pending",
+        "supporting_facts",
+        "contradictions",
+        "evidence"
+      ],
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/blackboardKey"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "unconfirmed",
+            "confirmed"
+          ]
+        },
+        "severity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cvss_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cvss_vector": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cvss_pending": {
+          "type": "boolean"
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "proof": {
+          "type": "string",
+          "minLength": 1
+        },
+        "impact": {
+          "type": "string",
+          "minLength": 1
+        },
+        "recommendation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "supporting_facts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reportFact"
+          }
+        },
+        "contradictions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reportFact"
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reportEvidence"
+          }
+        }
+      }
+    },
+    "reportSolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "kind",
+        "status",
+        "summary"
+      ],
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/blackboardKey"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "flag",
+            "answer",
+            "procedure"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "candidate",
+            "verified"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1
+        },
+        "verification_summary": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "pentestReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "project",
+        "confirmed_findings",
+        "unconfirmed_findings",
+        "confirmed_facts",
+        "tentative_facts"
+      ],
+      "properties": {
+        "schema": {
+          "const": "pentest-report/v2"
+        },
+        "project": {
+          "$ref": "#/$defs/reportProject"
+        },
+        "confirmed_findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reportFinding"
+          }
+        },
+        "unconfirmed_findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reportFinding"
+          }
+        },
+        "confirmed_facts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reportFact"
+          }
+        },
+        "tentative_facts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reportFact"
+          }
+        },
+        "sync": {
+          "$ref": "#/$defs/syncAttachment"
+        }
+      }
+    },
+    "ctfSolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "project",
+        "solved",
+        "verified_flags",
+        "candidate_flags",
+        "answers",
+        "procedures",
+        "confirmed_facts",
+        "tentative_facts",
+        "evidence"
+      ],
+      "properties": {
+        "schema": {
+          "const": "ctf-solution/v2"
+        },
+        "project": {
+          "$ref": "#/$defs/reportProject"
+        },
+        "solved": {
+          "type": "boolean"
+        },
+        "verified_flags": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reportSolution"
+          }
+        },
+        "candidate_flags": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reportSolution"
+          }
+        },
+        "answers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reportSolution"
+          }
+        },
+        "procedures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reportSolution"
+          }
+        },
+        "confirmed_facts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reportFact"
+          }
+        },
+        "tentative_facts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reportFact"
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reportEvidence"
+          }
+        },
+        "sync": {
+          "$ref": "#/$defs/syncAttachment"
+        }
+      }
+    },
+    "reportMarkdown": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "markdown"
+      ],
+      "properties": {
+        "schema": {
+          "const": "report-markdown/v2"
+        },
+        "markdown": {
+          "type": "string"
+        },
+        "sync": {
+          "$ref": "#/$defs/syncAttachment"
+        }
+      }
     }
   }
 }

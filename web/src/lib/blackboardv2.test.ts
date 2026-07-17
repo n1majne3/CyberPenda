@@ -4,10 +4,15 @@ import {
   attentionLabel,
   buildGraphExplorer,
   knowledgeGroupsForProjectKind,
+  listEvidenceEntries,
+  listFindingEntries,
   listSnapshotEntries,
   missingEvidenceEntries,
+  parseCTFSolution,
   parseCurrentDetail,
+  parsePentestReport,
   parseRelationship,
+  parseReportMarkdown,
   parseRuntimeSnapshot,
   parseSemanticHealth,
   parseSemanticHistory,
@@ -434,5 +439,204 @@ describe("blackboard v2 data contracts", () => {
         "Frontier",
       ]),
     );
+  });
+
+  it("lists Finding and Evidence rows from Snapshot without merging identities", () => {
+    const snapshot = parseRuntimeSnapshot({
+      ...pentestSnapshot,
+      knowledge: {
+        ...pentestSnapshot.knowledge,
+        findings: {
+          "finding:b": {
+            version: 1,
+            status: "confirmed",
+            title: "Same title",
+            target: "https://b.example",
+            severity: "high",
+            cvss_pending: false,
+          },
+          "finding:a": {
+            version: 1,
+            status: "confirmed",
+            title: "Same title",
+            target: "https://a.example",
+            severity: "high",
+            cvss_pending: false,
+          },
+        },
+      },
+    });
+    const findings = listFindingEntries(snapshot);
+    expect(findings.map((row) => row.key)).toEqual(["finding:a", "finding:b"]);
+    expect(findings.every((row) => row.fields.severity === "high")).toBe(true);
+    expect(listEvidenceEntries(snapshot).map((row) => row.key)).toEqual([
+      "evidence:admin",
+      "evidence:missing",
+    ]);
+  });
+
+  it("parses report-markdown/v2 deliverables with closed shape", () => {
+    const report = parseReportMarkdown({
+      schema: "report-markdown/v2",
+      markdown: "# Report\n\n## Confirmed Findings\n",
+    });
+    expect(report.markdown).toContain("Confirmed Findings");
+    // Schema permits empty markdown string.
+    expect(
+      parseReportMarkdown({
+        schema: "report-markdown/v2",
+        markdown: "",
+      }).markdown,
+    ).toBe("");
+    expect(() =>
+      parseReportMarkdown({
+        schema: "pentest_report_v1",
+        markdown: "legacy",
+      }),
+    ).toThrow(/report-markdown\/v2/);
+    expect(() =>
+      parseReportMarkdown({
+        schema: "report-markdown/v2",
+        markdown: "ok",
+        extra: true,
+      }),
+    ).toThrow(/non-allowlisted field extra/);
+    expect(() =>
+      parseReportMarkdown({
+        schema: "report-markdown/v2",
+        markdown: 12,
+      }),
+    ).toThrow(/markdown must be a string/);
+  });
+
+  it("parses pentest-report/v2 and ctf-solution/v2 with Blackboard Keys", () => {
+    const pentest = parsePentestReport({
+      schema: "pentest-report/v2",
+      project: { name: "Acme" },
+      confirmed_findings: [
+        {
+          key: "finding:admin",
+          title: "Admin exposed",
+          status: "confirmed",
+          severity: "high",
+          cvss_pending: false,
+          supporting_facts: [],
+          contradictions: [],
+          evidence: [
+            {
+              key: "evidence:http",
+              status: "available",
+              artifact_type: "http-response",
+              summary: "Admin response",
+            },
+          ],
+        },
+      ],
+      unconfirmed_findings: [],
+      confirmed_facts: [
+        {
+          key: "fact:admin-exposed",
+          category: "exposure",
+          summary: "Admin is internet-facing",
+          confidence: "confirmed",
+          scope_status: "in_scope",
+        },
+      ],
+      tentative_facts: [
+        {
+          key: "fact:maybe-related",
+          category: "recon",
+          summary: "A second host may share the panel",
+          confidence: "tentative",
+          scope_status: "unknown",
+        },
+      ],
+    });
+    expect(pentest.confirmed_findings[0]?.key).toBe("finding:admin");
+    expect(pentest.confirmed_findings[0]?.evidence[0]?.key).toBe("evidence:http");
+    expect(pentest.confirmed_facts[0]?.key).toBe("fact:admin-exposed");
+    expect(pentest.tentative_facts[0]?.key).toBe("fact:maybe-related");
+    expect(() =>
+      parsePentestReport({
+        schema: "pentest-report/v2",
+        project: { name: "Acme" },
+        confirmed_findings: [
+          {
+            title: "missing key",
+            status: "confirmed",
+            cvss_pending: false,
+            supporting_facts: [],
+            contradictions: [],
+            evidence: [],
+          },
+        ],
+        unconfirmed_findings: [],
+        confirmed_facts: [],
+        tentative_facts: [],
+      }),
+    ).toThrow(/key/);
+    expect(() =>
+      parsePentestReport({
+        schema: "pentest-report/v2",
+        project: { name: "Acme" },
+        confirmed_findings: [],
+        unconfirmed_findings: [],
+        confirmed_facts: [
+          {
+            category: "exposure",
+            summary: "missing fact key",
+            confidence: "confirmed",
+            scope_status: "in_scope",
+          },
+        ],
+        tentative_facts: [],
+      }),
+    ).toThrow(/key/);
+
+    const ctf = parseCTFSolution({
+      schema: "ctf-solution/v2",
+      project: { name: "Flag CTF" },
+      solved: true,
+      verified_flags: [
+        {
+          key: "solution:flag",
+          kind: "flag",
+          status: "verified",
+          summary: "Recovered flag",
+          value: "FLAG{ok}",
+        },
+      ],
+      candidate_flags: [],
+      answers: [],
+      procedures: [],
+      confirmed_facts: [
+        {
+          key: "fact:parser-clue",
+          category: "challenge",
+          summary: "Parser accepts reversed hex",
+          confidence: "confirmed",
+          scope_status: "in_scope",
+        },
+      ],
+      tentative_facts: [],
+      evidence: [],
+    });
+    expect(ctf.verified_flags[0]?.key).toBe("solution:flag");
+    expect(ctf.confirmed_facts[0]?.key).toBe("fact:parser-clue");
+    expect(() =>
+      parseCTFSolution({
+        schema: "ctf-solution/v2",
+        project: { name: "Flag CTF" },
+        solved: true,
+        verified_flags: [],
+        candidate_flags: [],
+        answers: [],
+        procedures: [],
+        confirmed_facts: [],
+        tentative_facts: [],
+        evidence: [],
+        provenance: {},
+      }),
+    ).toThrow(/non-allowlisted field provenance/);
   });
 });

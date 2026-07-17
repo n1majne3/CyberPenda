@@ -1295,3 +1295,182 @@ func TestBlackboardV2HTTPExactReplayAfterFinishForChangeRetainCheckpoint(t *test
 		t.Fatalf("peer principal received owner exact change replay")
 	}
 }
+
+func TestBlackboardV2HTTPReportAndCTFSolutionConsumers(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "v2-report-http.db")
+	const operatorToken = "operator-report-secret"
+	server, err := NewServer(Config{
+		Version: "test", DBPath: dbPath, RuntimeRoot: filepath.Join(root, "runs"),
+		AuthToken: operatorToken, DisableBuiltinSkills: true,
+	})
+	if err != nil {
+		t.Fatalf("start v2 daemon: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	pentestProject, err := server.projects.Create("Alpha External", "External assessment", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create pentest Project: %v", err)
+	}
+	ctfProject, err := server.projects.CreateWithKind("Flag CTF", "Challenge", project.KindCTFChallenge, project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create CTF Project: %v", err)
+	}
+	httpServer := httptest.NewServer(server)
+	t.Cleanup(httpServer.Close)
+	pentestBase := httpServer.URL + "/api/v2/projects/" + pentestProject.ID
+	ctfBase := httpServer.URL + "/api/v2/projects/" + ctfProject.ID
+
+	const criticalCVSS40 = "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H"
+	seedBody := `{"schema":"semantic-change-batch/v2","changes":[` +
+		`{"op":"create","key":"fact:support","type":"fact","record":{"category":"auth","summary":"Bypass confirmed","body":"Reproduced","confidence":"confirmed","scope_status":"in_scope"}},` +
+		`{"op":"create","key":"fact:tentative","type":"fact","record":{"category":"recon","summary":"Maybe related endpoint","confidence":"tentative","scope_status":"unknown"}},` +
+		`{"op":"create","key":"finding:sqli","type":"finding","record":{"status":"unconfirmed","title":"SQL injection in login","target":"https://alpha.example/login","description":"Attacker-controlled SQL","proof":"Boolean payload worked","impact":"Account access","recommendation":"Parameterize","cvss_version":"4.0","cvss_vector":"` + criticalCVSS40 + `"}},` +
+		`{"op":"create","key":"finding:verbose","type":"finding","record":{"status":"unconfirmed","title":"Verbose errors"}},` +
+		`{"op":"transition","key":"finding:sqli","version":1,"status":"confirmed"},` +
+		`{"op":"relate","from":"fact:support","relation":"supports","to":"finding:sqli","reason":"Independent reproduction"}` +
+		`]}`
+	mustV2HTTP(t, http.MethodPost, pentestBase+"/blackboard/changes", operatorToken, "operator", "report-seed", seedBody)
+
+	jsonReport := mustV2HTTP(t, http.MethodGet, pentestBase+"/reports/pentest?format=json", operatorToken, "operator", "", "")
+	if !bytes.Contains(jsonReport, []byte(`"schema":"pentest-report/v2"`)) ||
+		!bytes.Contains(jsonReport, []byte(`"confirmed_findings"`)) ||
+		!bytes.Contains(jsonReport, []byte(`"unconfirmed_findings"`)) ||
+		!bytes.Contains(jsonReport, []byte(`"tentative_facts"`)) ||
+		!bytes.Contains(jsonReport, []byte(`"key":"finding:sqli"`)) {
+		t.Fatalf("pentest json report = %s", jsonReport)
+	}
+	for _, forbidden := range []string{pentestProject.ID, "trusted_origin", "state_hash", "projection_hash", "provenance"} {
+		if bytes.Contains(bytes.ToLower(jsonReport), bytes.ToLower([]byte(forbidden))) {
+			t.Fatalf("pentest json leaked %q: %s", forbidden, jsonReport)
+		}
+	}
+
+	mdResult := doV2HTTP(t, http.MethodGet, pentestBase+"/reports/pentest?format=markdown", operatorToken, "operator", "", "")
+	if mdResult.status != http.StatusOK {
+		t.Fatalf("pentest markdown status = %d %s", mdResult.status, mdResult.body)
+	}
+	if mdResult.header.Get("ETag") == "" {
+		t.Fatalf("pentest report missing ETag: %#v", mdResult.header)
+	}
+	if !bytes.Contains(mdResult.body, []byte(`"schema":"report-markdown/v2"`)) ||
+		!bytes.Contains(mdResult.body, []byte("Confirmed Findings")) ||
+		!bytes.Contains(mdResult.body, []byte("Unconfirmed Findings")) ||
+		!bytes.Contains(mdResult.body, []byte("Tentative Facts")) {
+		t.Fatalf("pentest markdown report = %s", mdResult.body)
+	}
+	notModified := doV2HTTP(t, http.MethodGet, pentestBase+"/reports/pentest?format=markdown", operatorToken, "operator", "", "", v2HTTPOptions{ifNoneMatch: mdResult.header.Get("ETag")})
+	if notModified.status != http.StatusNotModified {
+		t.Fatalf("pentest report If-None-Match = %d %s", notModified.status, notModified.body)
+	}
+
+	// CTF Project cannot use Pentest report.
+	wrongKind := doV2HTTP(t, http.MethodGet, ctfBase+"/reports/pentest?format=json", operatorToken, "operator", "", "")
+	if wrongKind.status != http.StatusUnprocessableEntity && wrongKind.status != http.StatusConflict && wrongKind.status != http.StatusBadRequest {
+		// project_kind_mismatch maps through blackboardV2HTTPStatus
+		if !bytes.Contains(wrongKind.body, []byte("project_kind_mismatch")) {
+			t.Fatalf("CTF pentest report error = %d %s", wrongKind.status, wrongKind.body)
+		}
+	}
+
+	ctfSeed := `{"schema":"semantic-change-batch/v2","changes":[` +
+		`{"op":"create","key":"solution:flag","type":"solution","record":{"status":"candidate","kind":"flag","summary":"Recovered flag","value":"FLAG{accepted}"}},` +
+		`{"op":"transition","key":"solution:flag","version":1,"status":"verified","verification_summary":"Accepted by the challenge"}` +
+		`]}`
+	mustV2HTTP(t, http.MethodPost, ctfBase+"/blackboard/changes", operatorToken, "operator", "ctf-seed", ctfSeed)
+
+	ctfJSON := mustV2HTTP(t, http.MethodGet, ctfBase+"/reports/ctf-solution?format=json", operatorToken, "operator", "", "")
+	if !bytes.Contains(ctfJSON, []byte(`"schema":"ctf-solution/v2"`)) ||
+		!bytes.Contains(ctfJSON, []byte(`"solved":true`)) ||
+		!bytes.Contains(ctfJSON, []byte(`FLAG{accepted}`)) ||
+		!bytes.Contains(ctfJSON, []byte(`"key":"solution:flag"`)) {
+		t.Fatalf("ctf json = %s", ctfJSON)
+	}
+	for _, forbidden := range []string{ctfProject.ID, "provenance", "state_hash", "source_hash", "goal"} {
+		if bytes.Contains(bytes.ToLower(ctfJSON), bytes.ToLower([]byte(forbidden))) {
+			t.Fatalf("ctf json leaked %q: %s", forbidden, ctfJSON)
+		}
+	}
+	ctfMD := mustV2HTTP(t, http.MethodGet, ctfBase+"/reports/ctf-solution?format=markdown", operatorToken, "operator", "", "")
+	if !bytes.Contains(ctfMD, []byte("Solved: yes")) || !bytes.Contains(ctfMD, []byte("Verified Flags")) {
+		t.Fatalf("ctf markdown = %s", ctfMD)
+	}
+
+	// Reverse solved state when no verified flags remain.
+	unsolve := `{"schema":"semantic-change-batch/v2","changes":[` +
+		`{"op":"create","key":"solution:next","type":"solution","record":{"status":"candidate","kind":"flag","summary":"Replacement","value":"FLAG{next}"}},` +
+		`{"op":"supersede","replacement":"solution:next","replacement_version":1,"replaced":"solution:flag","replaced_version":2}` +
+		`]}`
+	mustV2HTTP(t, http.MethodPost, ctfBase+"/blackboard/changes", operatorToken, "operator", "ctf-unsolve", unsolve)
+	unsolved := mustV2HTTP(t, http.MethodGet, ctfBase+"/reports/ctf-solution?format=json", operatorToken, "operator", "", "")
+	if !bytes.Contains(unsolved, []byte(`"solved":false`)) {
+		t.Fatalf("ctf solved did not reverse: %s", unsolved)
+	}
+}
+
+// Report/CTF HTTP reads must not attach the trusted-continuation sync sibling
+// even when another Task advanced the Project and a Snapshot read would sync.
+func TestBlackboardV2HTTPReportAndCTFOmitTrustedContinuationSync(t *testing.T) {
+	fixture := newV2HTTPFixture(t)
+
+	// External operator advance creates pending synchronization for peers.
+	mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.operator, "operator", "report-sync-external",
+		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"entity:report-sync","type":"entity","record":{"status":"active","kind":"host","name":"Sync","scope_status":"in_scope"}}]}`)
+
+	// Control: peer snapshot still attaches sync when pending.
+	snapshot := mustV2HTTP(t, http.MethodGet, fixture.base+"/blackboard/snapshot", fixture.peer.Token, "", "", "")
+	if !bytes.Contains(snapshot, []byte(`"sync"`)) || !bytes.Contains(snapshot, []byte(`another_task_changed_shared_project_knowledge`)) {
+		t.Fatalf("expected pending sync on snapshot control: %s", snapshot)
+	}
+
+	// Report-only responses must never reattach the full Runtime Snapshot sync.
+	reportBody := mustV2HTTP(t, http.MethodGet, fixture.base+"/reports/pentest?format=json", fixture.peer.Token, "", "", "")
+	if !bytes.Contains(reportBody, []byte(`"schema":"pentest-report/v2"`)) {
+		t.Fatalf("pentest report = %s", reportBody)
+	}
+	if bytes.Contains(reportBody, []byte(`"sync"`)) || bytes.Contains(reportBody, []byte(`runtime-blackboard/v2`)) {
+		t.Fatalf("pentest report attached sync sibling: %s", reportBody)
+	}
+	reportMD := mustV2HTTP(t, http.MethodGet, fixture.base+"/reports/pentest?format=markdown", fixture.peer.Token, "", "", "")
+	if bytes.Contains(reportMD, []byte(`"sync"`)) || bytes.Contains(reportMD, []byte(`runtime-blackboard/v2`)) {
+		t.Fatalf("pentest markdown attached sync sibling: %s", reportMD)
+	}
+
+	// CTF Project with a trusted continuation must also omit sync on solution reads.
+	ctfProject, err := fixture.server.projects.CreateWithKind("CTF sync omit", "Challenge", project.KindCTFChallenge, project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create CTF Project: %v", err)
+	}
+	ctfTask, err := fixture.server.tasks.Create(task.CreateRequest{
+		ProjectID: ctfProject.ID, Goal: "Solve", RuntimeProfileID: fixture.profile.ID, Runner: task.RunnerSandbox,
+	})
+	if err != nil {
+		t.Fatalf("create CTF Task: %v", err)
+	}
+	ctfLaunch, err := fixture.server.blackboardV2Continuity.CreateContinuation(context.Background(), blackboardv2.ContinuationLaunchRequest{
+		ProjectID: ctfProject.ID, TaskID: ctfTask.ID, RuntimeProfileID: fixture.profile.ID,
+		RuntimeProvider: string(runtimeprofile.ProviderCodex), Runner: task.RunnerSandbox,
+		RuntimeConfig: map[string]any{"provider": "codex", "model": "gpt-test"},
+	})
+	if err != nil {
+		t.Fatalf("launch CTF Continuation: %v", err)
+	}
+	ctfBase := fixture.httpServer.URL + "/api/v2/projects/" + ctfProject.ID
+	mustV2HTTP(t, http.MethodPost, ctfBase+"/blackboard/changes", fixture.operator, "operator", "ctf-sync-seed",
+		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"solution:flag","type":"solution","record":{"status":"candidate","kind":"flag","summary":"Flag","value":"FLAG{x}"}},{"op":"transition","key":"solution:flag","version":1,"status":"verified","verification_summary":"ok"}]}`)
+	// Second external advance so the CTF continuation has pending sync.
+	mustV2HTTP(t, http.MethodPost, ctfBase+"/blackboard/changes", fixture.operator, "operator", "ctf-sync-external",
+		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"fact:extra","type":"fact","record":{"category":"challenge","summary":"Extra","confidence":"tentative","scope_status":"unknown"}}]}`)
+	ctfSnap := mustV2HTTP(t, http.MethodGet, ctfBase+"/blackboard/snapshot", ctfLaunch.Token, "", "", "")
+	if !bytes.Contains(ctfSnap, []byte(`"sync"`)) {
+		t.Fatalf("expected pending sync on CTF snapshot control: %s", ctfSnap)
+	}
+	ctfSolution := mustV2HTTP(t, http.MethodGet, ctfBase+"/reports/ctf-solution?format=json", ctfLaunch.Token, "", "", "")
+	if !bytes.Contains(ctfSolution, []byte(`"schema":"ctf-solution/v2"`)) || !bytes.Contains(ctfSolution, []byte(`"solved":true`)) {
+		t.Fatalf("ctf solution = %s", ctfSolution)
+	}
+	if bytes.Contains(ctfSolution, []byte(`"sync"`)) || bytes.Contains(ctfSolution, []byte(`runtime-blackboard/v2`)) {
+		t.Fatalf("ctf solution attached sync sibling: %s", ctfSolution)
+	}
+}

@@ -77,11 +77,21 @@ func TestFindingConfirmationAndPentestReportEndToEnd(t *testing.T) {
 	if len(projection.ConfirmedFindings) != 1 || len(projection.UnconfirmedFindings) != 1 || len(projection.ConfirmedFacts) != 1 || len(projection.TentativeFacts) != 1 {
 		t.Fatalf("report sections = %#v", projection)
 	}
+	if projection.ConfirmedFindings[0].Key != "finding:login-sqli" || projection.UnconfirmedFindings[0].Key != "finding:verbose-errors" {
+		t.Fatalf("report Finding keys = %#v", projection)
+	}
 	if len(projection.ConfirmedFindings[0].SupportingFacts) != 1 || len(projection.ConfirmedFindings[0].Contradictions) != 1 {
 		t.Fatalf("report Finding support = %#v", projection.ConfirmedFindings[0])
 	}
+	if projection.ConfirmedFacts[0].Key != "fact:confirmed-support" || projection.TentativeFacts[0].Key != "fact:tentative-context" {
+		t.Fatalf("report Fact keys = %#v", projection)
+	}
+	if projection.ConfirmedFindings[0].SupportingFacts[0].Key != "fact:confirmed-support" ||
+		projection.ConfirmedFindings[0].Contradictions[0].Key != "fact:tentative-context" {
+		t.Fatalf("report Finding Fact keys = %#v", projection.ConfirmedFindings[0])
+	}
 	raw := string(mustJSON(t, projection))
-	for _, forbidden := range []string{alpha.ID, "finding:login-sqli", "fact:confirmed-support", "trusted_origin", "origin", "sha256", "source_hash", "managed_path", "task_id", "continuation_id", "history", "created_at", "updated_at", "revision"} {
+	for _, forbidden := range []string{alpha.ID, "trusted_origin", "origin", "sha256", "source_hash", "managed_path", "task_id", "continuation_id", "history", "created_at", "updated_at", "revision"} {
 		if strings.Contains(strings.ToLower(raw), strings.ToLower(forbidden)) {
 			t.Fatalf("report leaked forbidden storage/execution content %q: %s", forbidden, raw)
 		}
@@ -119,8 +129,15 @@ func TestFindingConfirmationAndPentestReportEndToEnd(t *testing.T) {
 	if !strings.HasSuffix(first.Markdown, "\n") || strings.HasSuffix(first.Markdown, "\n\n") {
 		t.Fatalf("report Markdown must end with exactly one LF:\n%q", first.Markdown)
 	}
-	if strings.Contains(first.Markdown, "_Generated:") || strings.Contains(first.Markdown, alpha.ID) || strings.Contains(first.Markdown, "finding:login-sqli") {
-		t.Fatalf("report Markdown leaked time or identifiers:\n%s", first.Markdown)
+	if strings.Contains(first.Markdown, "_Generated:") || strings.Contains(first.Markdown, alpha.ID) {
+		t.Fatalf("report Markdown leaked time or project identity:\n%s", first.Markdown)
+	}
+	if !strings.Contains(first.Markdown, "Key:** finding:login") {
+		t.Fatalf("report Markdown omitted Blackboard Key for navigation:\n%s", first.Markdown)
+	}
+	// Markdown escapes hyphens in keys (fact:confirmed\-support).
+	if !strings.Contains(first.Markdown, "fact:confirmed\\-support") || !strings.Contains(first.Markdown, "fact:tentative\\-context") {
+		t.Fatalf("report Markdown omitted Fact Blackboard Keys for navigation:\n%s", first.Markdown)
 	}
 
 	_, err = service.Apply(ctx, beta.ID, blackboardv2.ChangeBatch{
@@ -407,7 +424,9 @@ func TestFindingCanBeConfirmedByCurrentEvidenceAndNotByMissingEvidence(t *testin
 	if err != nil {
 		t.Fatalf("report Evidence-backed Finding: %v", err)
 	}
-	if len(projection.ConfirmedFindings) != 1 || len(projection.ConfirmedFindings[0].Evidence) != 1 || projection.ConfirmedFindings[0].Evidence[0].Summary != "Captured proof" {
+	if len(projection.ConfirmedFindings) != 1 || len(projection.ConfirmedFindings[0].Evidence) != 1 ||
+		projection.ConfirmedFindings[0].Evidence[0].Summary != "Captured proof" ||
+		projection.ConfirmedFindings[0].Evidence[0].Key != "evidence:finding" {
 		t.Fatalf("report Evidence projection = %#v", projection.ConfirmedFindings)
 	}
 	reportJSON := string(mustJSON(t, projection))
@@ -426,5 +445,279 @@ func TestFindingCanBeConfirmedByCurrentEvidenceAndNotByMissingEvidence(t *testin
 	evidence, err := service.ReadCurrent(ctx, createdProject.ID, "evidence:finding")
 	if err != nil || evidence.Record.Status != "available" {
 		t.Fatalf("broken Evidence support was not rolled back: %#v, %v", evidence, err)
+	}
+}
+
+func TestCTFSolutionProjectionDerivesSolvedStateAndOmitsAuditSurfaces(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "ctf-report.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	createdProject, err := project.NewService(db).CreateWithKind("Flag CTF", "Recover the flag", project.KindCTFChallenge, project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create CTF Project: %v", err)
+	}
+	service := blackboardv2.NewService(db)
+
+	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "ctf-report-seed",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "fact:confirmed-clue", Type: "fact", Record: blackboardv2.FactRecord{Category: "challenge", Summary: "Parser accepts reversed hex", Body: "Confirmed behavior", Confidence: "confirmed", ScopeStatus: "in_scope"}},
+			{Op: "create", Key: "fact:tentative-clue", Type: "fact", Record: blackboardv2.FactRecord{Category: "challenge", Summary: "Maybe another token exists", Confidence: "tentative", ScopeStatus: "unknown"}},
+			{Op: "create", Key: "solution:flag", Type: "solution", Record: blackboardv2.SolutionRecord{Status: "candidate", Kind: "flag", Summary: "Recovered flag", Value: "FLAG{accepted}"}},
+			{Op: "create", Key: "solution:answer", Type: "solution", Record: blackboardv2.SolutionRecord{Status: "verified", Kind: "answer", Summary: "Challenge answer", Value: "42", VerificationSummary: "Accepted answer"}},
+			{Op: "create", Key: "solution:procedure", Type: "solution", Record: blackboardv2.SolutionRecord{Status: "verified", Kind: "procedure", Summary: "Decode then reverse", VerificationSummary: "Worked"}},
+			{Op: "transition", Key: "solution:flag", Version: 1, Status: "verified", VerificationSummary: "Accepted by the challenge"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed CTF solution: %v", err)
+	}
+
+	projection, revision, err := service.ProjectCTFSolution(ctx, createdProject.ID)
+	if err != nil {
+		t.Fatalf("project CTF solution: %v", err)
+	}
+	if revision < 1 {
+		t.Fatalf("CTF solution revision = %d, want >= 1", revision)
+	}
+	if !projection.Solved || len(projection.VerifiedFlags) != 1 || projection.VerifiedFlags[0].Value != "FLAG{accepted}" {
+		t.Fatalf("verified flag projection = %#v", projection)
+	}
+	if projection.VerifiedFlags[0].Key != "solution:flag" || projection.Answers[0].Key != "solution:answer" || projection.Procedures[0].Key != "solution:procedure" {
+		t.Fatalf("CTF solution keys = %#v", projection)
+	}
+	if len(projection.Answers) != 1 || len(projection.Procedures) != 1 || len(projection.ConfirmedFacts) != 1 || len(projection.TentativeFacts) != 1 {
+		t.Fatalf("CTF sections = %#v", projection)
+	}
+	if projection.ConfirmedFacts[0].Key != "fact:confirmed-clue" || projection.TentativeFacts[0].Key != "fact:tentative-clue" {
+		t.Fatalf("CTF Fact keys = %#v", projection)
+	}
+	raw := string(mustJSON(t, projection))
+	for _, forbidden := range []string{
+		createdProject.ID, "trusted_origin", "origin",
+		"sha256", "source_hash", "state_hash", "projection_hash", "task_id", "continuation_id",
+		"provenance", "history", "created_at", "updated_at", "revision", "goal",
+	} {
+		if strings.Contains(strings.ToLower(raw), strings.ToLower(forbidden)) {
+			t.Fatalf("CTF solution leaked forbidden content %q: %s", forbidden, raw)
+		}
+	}
+
+	generator := report.NewCTFV2Generator(service)
+	first, err := generator.Generate(ctx, report.V2Request{ProjectID: createdProject.ID})
+	if err != nil {
+		t.Fatalf("render CTF markdown: %v", err)
+	}
+	second, err := generator.Generate(ctx, report.V2Request{ProjectID: createdProject.ID})
+	if err != nil {
+		t.Fatalf("render CTF markdown again: %v", err)
+	}
+	if first.Markdown != second.Markdown || !strings.Contains(first.Markdown, "Solved: yes") || !strings.Contains(first.Markdown, "Verified Flags") {
+		t.Fatalf("CTF markdown not deterministic or clearly sectioned:\n%s", first.Markdown)
+	}
+	if strings.Contains(first.Markdown, createdProject.ID) || strings.Contains(first.Markdown, "state_hash") {
+		t.Fatalf("CTF markdown leaked project identity/hashes:\n%s", first.Markdown)
+	}
+	if !strings.Contains(first.Markdown, "Key:** solution:flag") {
+		t.Fatalf("CTF markdown omitted Blackboard Key for navigation:\n%s", first.Markdown)
+	}
+	// Markdown escapes hyphens in keys (fact:confirmed\-clue).
+	if !strings.Contains(first.Markdown, "fact:confirmed\\-clue") || !strings.Contains(first.Markdown, "fact:tentative\\-clue") {
+		t.Fatalf("CTF markdown omitted Fact Blackboard Keys for navigation:\n%s", first.Markdown)
+	}
+
+	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "ctf-unsolve",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "solution:flag-next", Type: "solution", Record: blackboardv2.SolutionRecord{Status: "candidate", Kind: "flag", Summary: "Replacement", Value: "FLAG{next}"}},
+			{Op: "supersede", Replacement: "solution:flag-next", ReplacementVersion: 1, Replaced: "solution:flag", ReplacedVersion: 2},
+		},
+	})
+	if err != nil {
+		t.Fatalf("supersede verified flag: %v", err)
+	}
+	unsolved, err := service.CTFSolution(ctx, createdProject.ID)
+	if err != nil {
+		t.Fatalf("project unsolved CTF: %v", err)
+	}
+	if unsolved.Solved || len(unsolved.VerifiedFlags) != 0 {
+		t.Fatalf("solved state did not reverse: %#v", unsolved)
+	}
+	md, err := generator.Generate(ctx, report.V2Request{ProjectID: createdProject.ID})
+	if err != nil || !strings.Contains(md.Markdown, "Solved: no") {
+		t.Fatalf("unsolved markdown = %v\n%s", err, md.Markdown)
+	}
+}
+
+func TestReportAndCTFEvidenceIsRelationshipDerived(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "evidence-selection.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	projects := project.NewService(db)
+	pentestProject, err := projects.Create("Evidence selection", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create pentest Project: %v", err)
+	}
+	ctfProject, err := projects.CreateWithKind("CTF evidence selection", "", project.KindCTFChallenge, project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create CTF Project: %v", err)
+	}
+	tasks := task.NewService(db, projects)
+	runtimeRoot := filepath.Join(root, "runtime")
+	service := blackboardv2.NewServiceWithEvidence(db, blackboardv2.EvidenceConfig{RuntimeRoot: runtimeRoot, ArtifactRoot: runtimeRoot})
+
+	seedPentest := func() {
+		t.Helper()
+		// Operator creates confirmed conclusions; Continuation owns the Attempt for Evidence retain.
+		_, err = service.Apply(ctx, pentestProject.ID, blackboardv2.ChangeBatch{
+			Schema: "semantic-change-batch/v2", IdempotencyKey: "evidence-selection-seed",
+			Changes: []blackboardv2.Change{
+				{Op: "create", Key: "fact:support", Type: "fact", Record: blackboardv2.FactRecord{Category: "auth", Summary: "Bypass confirmed", Confidence: "confirmed", ScopeStatus: "in_scope"}},
+				{Op: "create", Key: "fact:unrelated", Type: "fact", Record: blackboardv2.FactRecord{Category: "recon", Summary: "Unrelated host", Confidence: "confirmed", ScopeStatus: "in_scope"}},
+				{Op: "create", Key: "finding:target", Type: "finding", Record: blackboardv2.FindingRecord{Status: "unconfirmed", Title: "Auth bypass", Target: "https://example.test", Proof: "Worked", Impact: "Access", Recommendation: "Fix", CVSSVersion: "4.0", CVSSVector: criticalCVSS40}},
+				{Op: "transition", Key: "finding:target", Version: 1, Status: "confirmed"},
+				{Op: "relate", From: "fact:support", Relation: "supports", To: "finding:target", Reason: "Independent reproduction"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("seed pentest graph: %v", err)
+		}
+		createdTask, err := tasks.Create(task.CreateRequest{ProjectID: pentestProject.ID, Goal: "Capture proof", Runner: task.RunnerSandbox})
+		if err != nil {
+			t.Fatalf("create pentest Task: %v", err)
+		}
+		continuation, err := tasks.CreateContinuation(createdTask.ID, "profile", "codex", task.RunnerSandbox)
+		if err != nil {
+			t.Fatalf("create pentest Continuation: %v", err)
+		}
+		_, err = service.ApplyForContinuation(ctx, pentestProject.ID, continuation.ID, blackboardv2.ChangeBatch{
+			Schema: "semantic-change-batch/v2", IdempotencyKey: "evidence-selection-attempt",
+			Changes: []blackboardv2.Change{
+				{Op: "create", Key: "objective:capture", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Capture evidence"}},
+				{Op: "create", Key: "attempt:capture", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Retain proofs"}},
+				{Op: "relate", From: "attempt:capture", Relation: "tests", To: "finding:target"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("seed pentest Attempt: %v", err)
+		}
+		workdir := filepath.Join(runtimeRoot, createdTask.ID, "workdir")
+		if err := os.MkdirAll(workdir, 0o700); err != nil {
+			t.Fatalf("create workdir: %v", err)
+		}
+		for name, body := range map[string]string{
+			"direct.txt":    "direct\n",
+			"indirect.txt":  "indirect\n",
+			"unrelated.txt": "unrelated\n",
+		} {
+			if err := os.WriteFile(filepath.Join(workdir, name), []byte(body), 0o600); err != nil {
+				t.Fatalf("write %s: %v", name, err)
+			}
+		}
+		retain := func(key, path, summary, target string) {
+			t.Helper()
+			if _, err := service.RetainEvidenceForContinuation(ctx, pentestProject.ID, continuation.ID, blackboardv2.RetainEvidenceRequest{
+				IdempotencyKey: "retain-" + key, Key: key, Attempt: "attempt:capture", SourcePath: path,
+				ArtifactType: "http_exchange", Summary: summary, Links: []blackboardv2.EvidenceLink{{"evidences", target}},
+			}); err != nil {
+				t.Fatalf("retain %s: %v", key, err)
+			}
+		}
+		retain("evidence:direct", "direct.txt", "Direct finding proof", "finding:target")
+		retain("evidence:indirect", "indirect.txt", "Supporting fact proof", "fact:support")
+		retain("evidence:unrelated", "unrelated.txt", "Unrelated host capture", "fact:unrelated")
+	}
+	seedPentest()
+
+	reportProjection, err := service.PentestReport(ctx, pentestProject.ID)
+	if err != nil {
+		t.Fatalf("project pentest report: %v", err)
+	}
+	if len(reportProjection.ConfirmedFindings) != 1 {
+		t.Fatalf("confirmed findings = %#v", reportProjection.ConfirmedFindings)
+	}
+	keys := make([]string, 0, len(reportProjection.ConfirmedFindings[0].Evidence))
+	for _, item := range reportProjection.ConfirmedFindings[0].Evidence {
+		keys = append(keys, item.Key)
+	}
+	if strings.Join(keys, ",") != "evidence:direct,evidence:indirect" {
+		t.Fatalf("report Evidence keys = %v, want direct+indirect only", keys)
+	}
+
+	// CTF: only Evidence reachable via relevant Solutions/confirmed Facts.
+	_, err = service.Apply(ctx, ctfProject.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "ctf-evidence-seed",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "fact:clue", Type: "fact", Record: blackboardv2.FactRecord{Category: "challenge", Summary: "Parser clue", Confidence: "confirmed", ScopeStatus: "in_scope"}},
+			{Op: "create", Key: "fact:noise", Type: "fact", Record: blackboardv2.FactRecord{Category: "challenge", Summary: "Noise", Confidence: "tentative", ScopeStatus: "unknown"}},
+			{Op: "create", Key: "solution:flag", Type: "solution", Record: blackboardv2.SolutionRecord{Status: "candidate", Kind: "flag", Summary: "Flag", Value: "FLAG{ok}"}},
+			{Op: "transition", Key: "solution:flag", Version: 1, Status: "verified", VerificationSummary: "Accepted"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed CTF graph: %v", err)
+	}
+	createdCTFTask, err := tasks.Create(task.CreateRequest{ProjectID: ctfProject.ID, Goal: "Solve", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatalf("create CTF Task: %v", err)
+	}
+	ctfContinuation, err := tasks.CreateContinuation(createdCTFTask.ID, "profile", "codex", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create CTF Continuation: %v", err)
+	}
+	_, err = service.ApplyForContinuation(ctx, ctfProject.ID, ctfContinuation.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "ctf-evidence-attempt",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "objective:solve", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Recover flag"}},
+			{Op: "create", Key: "attempt:solve", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Solve challenge"}},
+			{Op: "relate", From: "attempt:solve", Relation: "tests", To: "objective:solve"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed CTF Attempt: %v", err)
+	}
+	ctfWorkdir := filepath.Join(runtimeRoot, createdCTFTask.ID, "workdir")
+	if err := os.MkdirAll(ctfWorkdir, 0o700); err != nil {
+		t.Fatalf("create CTF workdir: %v", err)
+	}
+	for name, body := range map[string]string{
+		"flag.txt":  "flag\n",
+		"clue.txt":  "clue\n",
+		"noise.txt": "noise\n",
+	} {
+		if err := os.WriteFile(filepath.Join(ctfWorkdir, name), []byte(body), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	retainCTF := func(key, path, summary, target string) {
+		t.Helper()
+		if _, err := service.RetainEvidenceForContinuation(ctx, ctfProject.ID, ctfContinuation.ID, blackboardv2.RetainEvidenceRequest{
+			IdempotencyKey: "ctf-retain-" + key, Key: key, Attempt: "attempt:solve", SourcePath: path,
+			ArtifactType: "file", Summary: summary, Links: []blackboardv2.EvidenceLink{{"evidences", target}},
+		}); err != nil {
+			t.Fatalf("retain CTF %s: %v", key, err)
+		}
+	}
+	retainCTF("evidence:flag", "flag.txt", "Flag capture", "solution:flag")
+	retainCTF("evidence:clue", "clue.txt", "Clue capture", "fact:clue")
+	retainCTF("evidence:noise", "noise.txt", "Noise capture", "fact:noise")
+
+	ctfProjection, err := service.CTFSolution(ctx, ctfProject.ID)
+	if err != nil {
+		t.Fatalf("project CTF solution: %v", err)
+	}
+	ctfKeys := make([]string, 0, len(ctfProjection.Evidence))
+	for _, item := range ctfProjection.Evidence {
+		ctfKeys = append(ctfKeys, item.Key)
+	}
+	if strings.Join(ctfKeys, ",") != "evidence:clue,evidence:flag" {
+		t.Fatalf("CTF Evidence keys = %v, want clue+flag only (not noise)", ctfKeys)
 	}
 }

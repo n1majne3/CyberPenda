@@ -12,6 +12,7 @@ import (
 
 	"pentest/internal/blackboardv2"
 	"pentest/internal/projectinterface"
+	"pentest/internal/report"
 )
 
 const blackboardV2HTTPInputLimit = 4 << 20
@@ -39,6 +40,9 @@ func (server *Server) registerBlackboardV2Routes() {
 	// final segment and validate/remove that exact suffix in the handler.
 	server.mux.HandleFunc("POST /api/v2/projects/{id}/blackboard/attempts/{attempt_action}", server.handleBlackboardV2Checkpoint)
 	server.mux.HandleFunc("POST /api/v2/projects/{id}/continuation:finish", server.handleBlackboardV2Finish)
+	// Operator report/CTF consumers (#120): semantic DTOs only, no v1 envelopes.
+	server.mux.HandleFunc("GET /api/v2/projects/{id}/reports/pentest", server.handleBlackboardV2PentestReport)
+	server.mux.HandleFunc("GET /api/v2/projects/{id}/reports/ctf-solution", server.handleBlackboardV2CTFSolution)
 }
 
 func isBlackboardV2HTTPTransport(request *http.Request) bool {
@@ -261,6 +265,66 @@ func (server *Server) handleBlackboardV2Checkpoint(response http.ResponseWriter,
 	server.serveBlackboardV2(response, request, principal, false, true, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, error) {
 		return server.blackboardV2.CheckpointAttemptForContinuation(ctx, principal.projectID, principal.continuationID, req)
 	})
+}
+
+func (server *Server) handleBlackboardV2PentestReport(response http.ResponseWriter, request *http.Request) {
+	principal, authErr := server.authenticateBlackboardV2(request, false)
+	if authErr != nil {
+		writeBlackboardV2Error(response, authErr, nil)
+		return
+	}
+	format, formatErr := blackboardV2ReportFormat(request)
+	if formatErr != nil {
+		writeBlackboardV2Error(response, formatErr, nil)
+		return
+	}
+	// Report-only response: conditional/auth + revision ETag, but never attach
+	// continuation synchronization / full Runtime Snapshot sibling.
+	server.serveBlackboardV2Conditional(response, request, principal, true, false, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, int, error) {
+		projection, revision, err := server.blackboardV2.ProjectPentestReport(ctx, principal.projectID)
+		if err != nil {
+			return nil, 0, err
+		}
+		if format == "json" {
+			return projection, revision, nil
+		}
+		return blackboardv2.NewReportMarkdown(report.RenderV2Markdown(projection)), revision, nil
+	})
+}
+
+func (server *Server) handleBlackboardV2CTFSolution(response http.ResponseWriter, request *http.Request) {
+	principal, authErr := server.authenticateBlackboardV2(request, false)
+	if authErr != nil {
+		writeBlackboardV2Error(response, authErr, nil)
+		return
+	}
+	format, formatErr := blackboardV2ReportFormat(request)
+	if formatErr != nil {
+		writeBlackboardV2Error(response, formatErr, nil)
+		return
+	}
+	// CTF solution is report-only: never attach sync / full Runtime Snapshot.
+	server.serveBlackboardV2Conditional(response, request, principal, true, false, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, int, error) {
+		projection, revision, err := server.blackboardV2.ProjectCTFSolution(ctx, principal.projectID)
+		if err != nil {
+			return nil, 0, err
+		}
+		if format == "json" {
+			return projection, revision, nil
+		}
+		return blackboardv2.NewReportMarkdown(report.RenderCTFV2Markdown(projection)), revision, nil
+	})
+}
+
+func blackboardV2ReportFormat(request *http.Request) (string, *blackboardv2.Error) {
+	format := strings.TrimSpace(request.URL.Query().Get("format"))
+	if format == "" {
+		format = "markdown"
+	}
+	if format != "markdown" && format != "json" {
+		return "", blackboardV2HTTPError("invalid_schema", "format must be markdown or json", "format")
+	}
+	return format, nil
 }
 
 func (server *Server) handleBlackboardV2Finish(response http.ResponseWriter, request *http.Request) {

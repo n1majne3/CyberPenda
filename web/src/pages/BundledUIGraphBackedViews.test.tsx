@@ -144,57 +144,6 @@ const workViewEnvelope = {
   },
 };
 
-const recordCollectionFinding = {
-  protocol_version: 1,
-  projection: "record_collection_v1",
-  project_id: "project-1",
-  project_kind: "pentest",
-  observed_graph_revision: 3,
-  observed_state_hash: "hash",
-  source_pins: {},
-  projection_hash: "findings-hash",
-  result: {
-    items: [
-      nodeRow({
-        id: "node-finding-1",
-        node_type: "finding",
-        stable_key: "finding:admin-exposed",
-        label: "Admin panel exposed",
-        secondary: "https://acme.test/admin",
-        severity: "high",
-        lifecycle: "confirmed",
-      }),
-    ],
-    facets: { severity: { high: 1 } },
-    page: { limit: 50, total_items: 1 },
-  },
-};
-
-const recordCollectionEvidence = {
-  protocol_version: 1,
-  projection: "record_collection_v1",
-  project_id: "project-1",
-  project_kind: "pentest",
-  observed_graph_revision: 3,
-  observed_state_hash: "hash",
-  source_pins: {},
-  projection_hash: "evidence-hash",
-  result: {
-    items: [
-      nodeRow({
-        id: "node-evidence-1",
-        node_type: "evidence_artifact",
-        stable_key: "evidence:resp",
-        label: "Captured HTTP exchange",
-        secondary: "http_exchange",
-        lifecycle: "available",
-      }),
-    ],
-    facets: {},
-    page: { limit: 50, total_items: 1 },
-  },
-};
-
 const entityCollection = {
   protocol_version: 1,
   projection: "entity_collection_v1",
@@ -338,51 +287,6 @@ const recordDetail = {
       satisfies: { items: [], total_items: 0, traversal_href: "" },
     },
     capabilities: {},
-  },
-};
-
-const pentestReport = {
-  protocol_version: 1,
-  projection: "pentest_report_v1",
-  project_id: "project-1",
-  project_kind: "pentest",
-  observed_graph_revision: 3,
-  observed_state_hash: "hash",
-  source_pins: {},
-  projection_hash: "report-hash",
-  result: {
-    source: {
-      project_id: "project-1",
-      project_name: "Acme External",
-      graph_revision: 3,
-      state_hash: "hash",
-      source_hash: "source",
-      renderer_version: "pentest_markdown_v1",
-    },
-    markdown: "# Acme External\n\n## Confirmed findings\n\n- Admin panel exposed\n",
-  },
-};
-
-const ctfSolution = {
-  protocol_version: 1,
-  projection: "ctf_solution_v1",
-  project_id: "ctf-1",
-  project_kind: "ctf_challenge",
-  observed_graph_revision: 2,
-  observed_state_hash: "hash",
-  source_pins: {},
-  projection_hash: "solution-hash",
-  result: {
-    source: {
-      project_id: "ctf-1",
-      project_name: "Flag CTF",
-      graph_revision: 2,
-      state_hash: "hash",
-      source_hash: "source",
-      renderer_version: "ctf_solution_markdown_v1",
-    },
-    solved: true,
-    markdown: "# Flag CTF\n\nSolved: yes\n",
   },
 };
 
@@ -567,46 +471,16 @@ function routeBody(url: string, routes: Record<string, unknown>): unknown {
   if (url.includes("/api/v2/") && /\/blackboard\/records\//.test(url)) {
     return routes["__detail_v2__"] ?? recordDetailV2;
   }
-  if (url.includes("/blackboard/records") && url.includes("node_type=finding") && !/\/records\/[^?]+/.test(url)) {
-    return routes["__findings__"] ?? recordCollectionFinding;
-  }
+  // Retired v1 record-collection reads must fail for Finding/Evidence/Fact consumers.
   if (
     url.includes("/blackboard/records") &&
-    url.includes("node_type=evidence_artifact") &&
+    (url.includes("node_type=finding") ||
+      url.includes("node_type=evidence_artifact") ||
+      url.includes("node_type=project_fact")) &&
+    !url.includes("/api/v2/") &&
     !/\/records\/[^?]+/.test(url)
   ) {
-    return routes["__evidence__"] ?? recordCollectionEvidence;
-  }
-  if (
-    url.includes("/blackboard/records") &&
-    url.includes("node_type=project_fact") &&
-    !/\/records\/[^?]+/.test(url)
-  ) {
-    return (
-      routes["__facts__"] ?? {
-        protocol_version: 1,
-        projection: "record_collection_v1",
-        project_id: "project-1",
-        project_kind: "pentest",
-        observed_graph_revision: 3,
-        observed_state_hash: "hash",
-        source_pins: {},
-        projection_hash: "facts-hash",
-        result: {
-          items: [
-            nodeRow({
-              id: "node-fact-1",
-              node_type: "project_fact",
-              stable_key: "fact:admin",
-              label: "Admin panel exposed",
-              secondary: "service",
-            }),
-          ],
-          facets: {},
-          page: { limit: 50, total_items: 1 },
-        },
-      }
-    );
+    return { error: { code: "not_found", message: "retired v1 record collection route" } };
   }
   if (url.includes("/history")) {
     for (const [key, body] of Object.entries(routes)) {
@@ -631,8 +505,77 @@ function routeBody(url: string, routes: Record<string, unknown>): unknown {
   if (url.includes("/blackboard/health") && !url.includes("/api/v2/")) {
     return routes["__health__"] ?? healthSummary;
   }
-  if (url.includes("/reports/pentest")) return routes["__pentest_report__"] ?? pentestReport;
-  if (url.includes("/reports/ctf-solution")) return routes["__ctf_solution__"] ?? ctfSolution;
+  if (url.includes("/api/v2/") && url.includes("/reports/pentest")) {
+    if (url.includes("format=json")) {
+      return (
+        routes["__pentest_report_json__"] ??
+        routes["/api/v2/projects/project-1/reports/pentest?format=json"] ?? {
+          schema: "pentest-report/v2",
+          project: { name: "Acme External" },
+          confirmed_findings: [
+            {
+              key: "finding:admin-exposed",
+              title: "Admin panel exposed",
+              status: "confirmed",
+              severity: "high",
+              cvss_pending: false,
+              supporting_facts: [],
+              contradictions: [],
+              evidence: [],
+            },
+          ],
+          unconfirmed_findings: [],
+          confirmed_facts: [],
+          tentative_facts: [],
+        }
+      );
+    }
+    return (
+      routes["__pentest_report__"] ??
+      routes["/api/v2/projects/project-1/reports/pentest?format=markdown"] ?? {
+        schema: "report-markdown/v2",
+        markdown: "# Acme External Pentest Report\n\n## Confirmed Findings\n\n- Admin panel exposed\n",
+      }
+    );
+  }
+  if (url.includes("/api/v2/") && url.includes("/reports/ctf-solution")) {
+    if (url.includes("format=json")) {
+      return (
+        routes["__ctf_solution_json__"] ??
+        routes["/api/v2/projects/ctf-1/reports/ctf-solution?format=json"] ?? {
+          schema: "ctf-solution/v2",
+          project: { name: "Flag CTF" },
+          solved: true,
+          verified_flags: [
+            {
+              key: "solution:flag",
+              kind: "flag",
+              status: "verified",
+              summary: "Recovered flag",
+              value: "FLAG{accepted}",
+            },
+          ],
+          candidate_flags: [],
+          answers: [],
+          procedures: [],
+          confirmed_facts: [],
+          tentative_facts: [],
+          evidence: [],
+        }
+      );
+    }
+    return (
+      routes["__ctf_solution__"] ??
+      routes["/api/v2/projects/ctf-1/reports/ctf-solution?format=markdown"] ?? {
+        schema: "report-markdown/v2",
+        markdown: "# Flag CTF CTF Solution\n\n## Solved Status\n\nSolved: yes\n",
+      }
+    );
+  }
+  // Retired v1 report routes must not be served to production consumers.
+  if (url.includes("/reports/pentest") || url.includes("/reports/ctf-solution")) {
+    return { error: { code: "not_found", message: "retired v1 report route" } };
+  }
   if (url.includes("/dashboard")) return routes["__dashboard__"] ?? dashboard;
 
   // Prefer the most specific registered key for remaining project/meta routes.
@@ -698,11 +641,54 @@ describe("U06 bundled UI graph-backed focused views", () => {
       "/api/v2/projects/project-1/blackboard/snapshot": runtimeSnapshotV2,
       "/api/v2/projects/project-1/blackboard/records/finding%3Aadmin-exposed": recordDetailV2,
       "/api/v2/projects/project-1/blackboard/records/finding:admin-exposed": recordDetailV2,
-      "/api/projects/project-1/blackboard/records?node_type=finding": recordCollectionFinding,
-      "/api/projects/project-1/blackboard/records?node_type=evidence_artifact": recordCollectionEvidence,
-      "/api/projects/project-1/reports/pentest": pentestReport,
+      "/api/v2/projects/project-1/reports/pentest?format=json": {
+        schema: "pentest-report/v2",
+        project: { name: "Acme External" },
+        confirmed_findings: [
+          {
+            key: "finding:admin-exposed",
+            title: "Admin panel exposed",
+            status: "confirmed",
+            severity: "high",
+            cvss_pending: false,
+            supporting_facts: [],
+            contradictions: [],
+            evidence: [],
+          },
+        ],
+        unconfirmed_findings: [],
+        confirmed_facts: [],
+        tentative_facts: [],
+      },
+      "/api/v2/projects/project-1/reports/pentest?format=markdown": {
+        schema: "report-markdown/v2",
+        markdown: "# Acme External Pentest Report\n\n## Confirmed Findings\n\n- Admin panel exposed\n",
+      },
       "/api/projects/project-1": project,
-      "/api/projects/ctf-1/reports/ctf-solution": ctfSolution,
+      "/api/v2/projects/ctf-1/reports/ctf-solution?format=json": {
+        schema: "ctf-solution/v2",
+        project: { name: "Flag CTF" },
+        solved: true,
+        verified_flags: [
+          {
+            key: "solution:flag",
+            kind: "flag",
+            status: "verified",
+            summary: "Recovered flag",
+            value: "FLAG{accepted}",
+          },
+        ],
+        candidate_flags: [],
+        answers: [],
+        procedures: [],
+        confirmed_facts: [],
+        tentative_facts: [],
+        evidence: [],
+      },
+      "/api/v2/projects/ctf-1/reports/ctf-solution?format=markdown": {
+        schema: "report-markdown/v2",
+        markdown: "# Flag CTF CTF Solution\n\n## Solved Status\n\nSolved: yes\n",
+      },
       "/api/projects/ctf-1": ctfProject,
       "/api/projects": { projects: [project] },
     });
@@ -730,7 +716,7 @@ describe("U06 bundled UI graph-backed focused views", () => {
     );
     cleanup();
 
-    // Focused Finding/Evidence bookmarks remain and use RecordCollectionV1 until #120.
+    // Focused Finding/Evidence bookmarks read the v2 Snapshot and key-based detail.
     renderAt(
       "/projects/project-1/findings",
       <FindingsPage />,
@@ -748,18 +734,27 @@ describe("U06 bundled UI graph-backed focused views", () => {
     expect(await screen.findByText("Captured HTTP exchange")).toBeInTheDocument();
     cleanup();
 
-    // Report uses the deterministic graph deliverable route.
+    // Report uses structured v2 JSON (keys) plus markdown deliverable.
     renderAt("/projects/project-1/report", <ReportPage />, "/projects/:projectId/report");
-    expect(await screen.findByText(/Confirmed findings/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Confirmed Findings \(1\)/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Admin panel exposed/i })).toHaveAttribute(
+      "href",
+      "/projects/project-1/blackboard/records/finding%3Aadmin-exposed",
+    );
     cleanup();
 
-    // CTF Solution is only for CTF Projects.
+    // CTF Solution is only for CTF Projects and uses verified-flag solved state.
     renderAt(
       "/projects/ctf-1/solution",
       <SolutionPage />,
       "/projects/:projectId/solution",
     );
-    expect(await screen.findByText(/Solved: yes/i)).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: /Flag CTF — Solved: yes/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /Recovered flag/i }),
+    ).toHaveAttribute("href", "/projects/ctf-1/blackboard/records/solution%3Aflag");
     cleanup();
 
     // Legacy Facts bookmark redirects into Blackboard Knowledge.
@@ -778,13 +773,15 @@ describe("U06 bundled UI graph-backed focused views", () => {
 
     const blackboardHits = requests.filter(
       (url) =>
-        url.includes("/api/v2/") && url.includes("/blackboard/") ||
-        url.includes("/reports/pentest") ||
-        url.includes("/reports/ctf-solution") ||
-        url.includes("/dashboard") ||
-        (url.includes("/blackboard/records") && url.includes("node_type=")),
+        (url.includes("/api/v2/") && url.includes("/blackboard/")) ||
+        (url.includes("/api/v2/") && url.includes("/reports/")) ||
+        url.includes("/dashboard"),
     );
     expect(blackboardHits.length).toBeGreaterThan(0);
+    expect(requests.some((url) => url.includes("node_type="))).toBe(false);
+    expect(requests.some((url) => url.includes("/api/projects/") && url.includes("/reports/"))).toBe(
+      false,
+    );
 
     // Dense ledger rows remain keyboard reachable (link/row semantics).
     renderAt(
