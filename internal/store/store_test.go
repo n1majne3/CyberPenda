@@ -261,6 +261,7 @@ func TestOpenDefaultsCanonicalStoreToBlackboardV2(t *testing.T) {
 		"blackboard_v2_attempt_origins",
 		"blackboard_v2_evidence_requests",
 		"blackboard_v2_evidence_payloads",
+		"blackboard_v2_key_redirects",
 	} {
 		if !tableExists(t, db.DB, table) {
 			t.Fatalf("expected table %s", table)

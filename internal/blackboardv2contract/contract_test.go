@@ -255,6 +255,7 @@ func TestRecordWireSchemasExposeLegalPositiveTransitionsAndServerOwnedEvidence(t
 		`{"schema":"semantic-change-batch/v2","idempotency_key":"confirm-finding","changes":[{"op":"transition","key":"finding:a","version":1,"status":"confirmed"}]}`,
 		`{"schema":"semantic-change-batch/v2","idempotency_key":"verify-solution","changes":[{"op":"transition","key":"solution:a","version":1,"status":"verified","verification_summary":"Accepted by the challenge"}]}`,
 		`{"schema":"semantic-change-batch/v2","idempotency_key":"create-evidence","changes":[{"op":"create","key":"evidence:a","type":"evidence","record":{"status":"available","artifact_type":"file","summary":"Captured response","source_path":"captures/response.txt"}}]}`,
+		`{"schema":"semantic-change-batch/v2","idempotency_key":"merge-facts","changes":[{"op":"merge","source":"fact:duplicate","source_version":2,"canonical":"fact:canonical","canonical_version":3,"canonical_record":{"summary":"Approved consolidated fact"},"clear":["body"]}]}`,
 	}
 	for _, raw := range accepted {
 		if err := harness.Validate("changeBatch", []byte(raw)); err != nil {

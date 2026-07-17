@@ -233,6 +233,10 @@ func (s *Service) RetainEvidenceForContinuation(ctx context.Context, projectID, 
 			return replay, nil
 		}
 	}
+	request, err = s.resolveRetainedEvidenceRedirects(ctx, projectID, request)
+	if err != nil {
+		return ChangeResult{}, err
+	}
 	taskID, status, err := s.continuationTaskStatus(ctx, projectID, continuationID)
 	if err != nil {
 		return ChangeResult{}, err
@@ -335,7 +339,7 @@ func (s *Service) RetainEvidenceForContinuation(ctx context.Context, projectID, 
 	if !payloadReady {
 		return ChangeResult{}, semanticError("evidence_integrity_failed", "managed Evidence payload failed integrity verification before semantic commit", "key", nil)
 	}
-	result, err := s.applyRetainedEvidence(ctx, projectID, continuationID, request, semanticPath, retainedEvidenceMetadata{sha256: row.sha256, size: row.size}, true)
+	result, err := s.applyRetainedEvidence(ctx, projectID, continuationID, request, requestHash, semanticPath, retainedEvidenceMetadata{sha256: row.sha256, size: row.size}, true)
 	if err != nil {
 		s.cleanupDefinitiveEvidenceFailure(ctx, projectID, continuationID, request.IdempotencyKey, row, err)
 		return ChangeResult{}, err
@@ -354,6 +358,28 @@ func (s *Service) RetainEvidenceForContinuation(ctx context.Context, projectID, 
 		return ChangeResult{}, err
 	}
 	return result, nil
+}
+
+func (s *Service) resolveRetainedEvidenceRedirects(ctx context.Context, projectID string, request RetainEvidenceRequest) (RetainEvidenceRequest, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return RetainEvidenceRequest{}, fmt.Errorf("begin Evidence redirect resolution: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := ensureProjectExists(ctx, tx, projectID); err != nil {
+		return RetainEvidenceRequest{}, err
+	}
+	request.Key, _, err = resolveKeyRedirect(ctx, tx, projectID, request.Key)
+	if err != nil {
+		return RetainEvidenceRequest{}, err
+	}
+	for index := range request.Links {
+		request.Links[index][1], _, err = resolveKeyRedirect(ctx, tx, projectID, request.Links[index][1])
+		if err != nil {
+			return RetainEvidenceRequest{}, err
+		}
+	}
+	return request, nil
 }
 
 func (s *Service) readRetainedEvidenceSemanticReplay(ctx context.Context, projectID, continuationID, idempotencyKey, requestHash string) (ChangeResult, bool, error) {
@@ -2252,11 +2278,7 @@ func openSecureDirectoryDurable(root *os.Root, relative string, checkpoint func(
 	return current, nil
 }
 
-func (s *Service) applyRetainedEvidence(ctx context.Context, projectID, continuationID string, request RetainEvidenceRequest, managedPath string, metadata retainedEvidenceMetadata, durablyReserved bool) (ChangeResult, error) {
-	requestHash, err := retainedEvidenceRequestHash(request)
-	if err != nil {
-		return ChangeResult{}, err
-	}
+func (s *Service) applyRetainedEvidence(ctx context.Context, projectID, continuationID string, request RetainEvidenceRequest, requestHash, managedPath string, metadata retainedEvidenceMetadata, durablyReserved bool) (ChangeResult, error) {
 	receiptKey := "retain-evidence-v2:" + continuationID + ":" + request.IdempotencyKey
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

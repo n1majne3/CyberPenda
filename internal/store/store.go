@@ -805,8 +805,24 @@ func migrations() []migration {
 		newMigration(26, "blackboard_v2_evidence_publisher_claims", migration26SQL, migration26Up),
 		newMigration(27, "blackboard_v2_private_evidence_staging", migration27SQL, migration27Up),
 		newMigration(28, "blackboard_v2_fixed_evidence_staging_scope", migration28SQL, migration28Up),
+		newMigration(29, "blackboard_v2_key_redirects", migration29SQL, migration29Up),
 	}
 }
+
+const migration29SQL = `
+CREATE TABLE IF NOT EXISTS blackboard_v2_key_redirects (
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+	source_key TEXT NOT NULL,
+	canonical_key TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (project_id, source_key),
+	CHECK (source_key <> canonical_key)
+);
+CREATE INDEX IF NOT EXISTS idx_blackboard_v2_key_redirects_canonical
+	ON blackboard_v2_key_redirects (project_id, canonical_key);
+`
+
+func migration29Up(tx *sql.Tx) error { return execStatements(tx, migration29SQL) }
 
 const migration28SQL = `SELECT 1;`
 

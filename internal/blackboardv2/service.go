@@ -101,7 +101,7 @@ func (batch *ChangeBatch) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
-// Change is the closed operation shape subset owned by #100.
+// Change is the closed semantic operation union for a ChangeBatch.
 type Change struct {
 	Op                  string   `json:"op"`
 	Key                 string   `json:"key,omitempty"`
@@ -121,6 +121,11 @@ type Change struct {
 	ReplacementVersion  int      `json:"replacement_version,omitempty"`
 	Replaced            string   `json:"replaced,omitempty"`
 	ReplacedVersion     int      `json:"replaced_version,omitempty"`
+	Source              string   `json:"source,omitempty"`
+	SourceVersion       int      `json:"source_version,omitempty"`
+	Canonical           string   `json:"canonical,omitempty"`
+	CanonicalVersion    int      `json:"canonical_version,omitempty"`
+	CanonicalRecord     any      `json:"canonical_record,omitempty"`
 }
 
 // UnmarshalJSON enforces the closed semantic-change item shapes at the service
@@ -180,6 +185,15 @@ func (change *Change) UnmarshalJSON(raw []byte) error {
 			return err
 		}
 		decoded, err := decodeSupersedeChange(fields)
+		if err != nil {
+			return err
+		}
+		*change = decoded
+	case "merge":
+		if err := rejectUnknownFields(fields, map[string]bool{"op": true, "source": true, "source_version": true, "canonical": true, "canonical_version": true, "canonical_record": true, "clear": true}); err != nil {
+			return err
+		}
+		decoded, err := decodeMergeChange(fields)
 		if err != nil {
 			return err
 		}
@@ -787,6 +801,10 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 	evidenceDependentFacts := make(map[string]string)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for index, change := range batch.Changes {
+		change, err = resolveChangeRedirects(ctx, tx, projectID, change)
+		if err != nil {
+			return ChangeResult{}, err
+		}
 		if change.Op == "transition" && isOneOf(change.Status, "verified", "rejected") {
 			if err := ensureCTFProject(ctx, tx, projectID, fmt.Sprintf("changes[%d].status", index)); err != nil {
 				return ChangeResult{}, err
@@ -874,6 +892,16 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 			if changed {
 				revision = newRevision
 				changedRecords[key] = version
+				changedRelations[relationKey(tuple)] = tuple
+			}
+		case "merge":
+			newRevision, key, version, tuples, err := applyMerge(ctx, tx, projectID, revision, index, change, now)
+			if err != nil {
+				return ChangeResult{}, err
+			}
+			revision = newRevision
+			changedRecords[key] = version
+			for _, tuple := range tuples {
 				changedRelations[relationKey(tuple)] = tuple
 			}
 		default:
@@ -1032,8 +1060,13 @@ func (s *Service) ReadHistory(ctx context.Context, projectID, key string, option
 		})
 	}
 	offset := cursor.offset
+	canonicalKey, _, err := resolveKeyRedirect(ctx, tx, projectID, key)
+	if err != nil {
+		return SemanticHistory{}, err
+	}
+	key = canonicalKey
 	hasCurrent := true
-	if _, err := loadCurrentRecord(ctx, tx, projectID, key); err != nil {
+	if _, err := loadCurrentRecord(ctx, tx, projectID, canonicalKey); err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
 			return SemanticHistory{}, err
 		}
@@ -1044,7 +1077,12 @@ func (s *Service) ReadHistory(ctx context.Context, projectID, key string, option
 		err := tx.QueryRowContext(ctx, `
 			SELECT COUNT(*)
 			FROM blackboard_v2_record_history
-			WHERE project_id = ? AND key = ?`, projectID, key,
+			WHERE project_id = ? AND (
+				key = ? OR key IN (
+					SELECT source_key FROM blackboard_v2_key_redirects
+					WHERE project_id = ? AND canonical_key = ?
+				)
+			)`, projectID, key, projectID, key,
 		).Scan(&historyCount)
 		if err != nil {
 			return SemanticHistory{}, fmt.Errorf("check Blackboard v2 history: %w", err)
@@ -1057,22 +1095,34 @@ func (s *Service) ReadHistory(ctx context.Context, projectID, key string, option
 	rows, err := tx.QueryContext(ctx, `
 		SELECT kind, version, type, record_json, from_key, relation, to_key, reason
 		FROM (
-			SELECT 0 AS sort_group, recorded_at AS sort_time, 'record' AS kind, version, type, record_json,
+			SELECT 0 AS sort_group, recorded_at AS sort_time, key AS identity_key, 'record' AS kind, version, type, record_json,
 			       '' AS from_key, '' AS relation, '' AS to_key, '' AS reason
 			FROM blackboard_v2_record_history
-			WHERE project_id = ? AND key = ?
+			WHERE project_id = ? AND (
+				key = ? OR key IN (
+					SELECT source_key FROM blackboard_v2_key_redirects
+					WHERE project_id = ? AND canonical_key = ?
+				)
+			)
 			UNION ALL
-			SELECT 1 AS sort_group, recorded_at AS sort_time, 'relationship' AS kind, version, '' AS type, '' AS record_json,
+			SELECT 1 AS sort_group, recorded_at AS sort_time, from_key || char(0) || relation || char(0) || to_key AS identity_key, 'relationship' AS kind, version, '' AS type, '' AS record_json,
 			       from_key, relation, to_key, reason
 			FROM blackboard_v2_relationship_history
-			WHERE project_id = ? AND (from_key = ? OR to_key = ?)
+			WHERE project_id = ? AND (
+				from_key = ? OR to_key = ? OR
+				from_key IN (SELECT source_key FROM blackboard_v2_key_redirects WHERE project_id = ? AND canonical_key = ?) OR
+				to_key IN (SELECT source_key FROM blackboard_v2_key_redirects WHERE project_id = ? AND canonical_key = ?)
+			)
 		)
 		ORDER BY sort_group ASC,
 		         CASE WHEN sort_group = 0 THEN sort_time ELSE '' END ASC,
 		         CASE WHEN sort_group = 0 THEN version ELSE 0 END ASC,
+		         CASE WHEN sort_group = 0 THEN identity_key ELSE '' END ASC,
 		         relation ASC, from_key ASC, to_key ASC, version ASC
 		LIMIT ? OFFSET ?`,
-		projectID, key, projectID, key, key, limit+1, offset,
+		projectID, key, projectID, key,
+		projectID, key, key, projectID, key, projectID, key,
+		limit+1, offset,
 	)
 	if err != nil {
 		return SemanticHistory{}, fmt.Errorf("read Blackboard v2 history: %w", err)
@@ -1106,9 +1156,16 @@ func (s *Service) ReadHistory(ctx context.Context, projectID, key string, option
 		var extra int
 		err := tx.QueryRowContext(ctx, `
 			SELECT
-				(SELECT COUNT(*) FROM blackboard_v2_record_history WHERE project_id = ? AND key = ?) +
-				(SELECT COUNT(*) FROM blackboard_v2_relationship_history WHERE project_id = ? AND (from_key = ? OR to_key = ?))`,
-			projectID, key, projectID, key, key,
+				(SELECT COUNT(*) FROM blackboard_v2_record_history WHERE project_id = ? AND (
+					key = ? OR key IN (SELECT source_key FROM blackboard_v2_key_redirects WHERE project_id = ? AND canonical_key = ?)
+				)) +
+				(SELECT COUNT(*) FROM blackboard_v2_relationship_history WHERE project_id = ? AND (
+					from_key = ? OR to_key = ? OR
+					from_key IN (SELECT source_key FROM blackboard_v2_key_redirects WHERE project_id = ? AND canonical_key = ?) OR
+					to_key IN (SELECT source_key FROM blackboard_v2_key_redirects WHERE project_id = ? AND canonical_key = ?)
+				))`,
+			projectID, key, projectID, key,
+			projectID, key, key, projectID, key, projectID, key,
 		).Scan(&extra)
 		if err != nil {
 			return SemanticHistory{}, fmt.Errorf("count Blackboard v2 history: %w", err)
@@ -1117,7 +1174,7 @@ func (s *Service) ReadHistory(ctx context.Context, projectID, key string, option
 			next = makeCursor(revision, offset+limit)
 		}
 	}
-	return SemanticHistory{Schema: historySchema, Revision: revision, Key: key, Items: items, NextCursor: next}, nil
+	return SemanticHistory{Schema: historySchema, Revision: revision, Key: canonicalKey, Items: items, NextCursor: next}, nil
 }
 
 // RuntimeSnapshot returns the complete current runtime-blackboard/v2 snapshot.
@@ -2654,6 +2711,14 @@ func incrementRevision(ctx context.Context, tx *sql.Tx, projectID string, curren
 }
 
 func loadCurrentRecord(ctx context.Context, tx *sql.Tx, projectID, key string) (storedRecord, error) {
+	canonicalKey, _, err := resolveKeyRedirect(ctx, tx, projectID, key)
+	if err != nil {
+		return storedRecord{}, err
+	}
+	return loadCurrentRecordDirect(ctx, tx, projectID, canonicalKey)
+}
+
+func loadCurrentRecordDirect(ctx context.Context, tx *sql.Tx, projectID, key string) (storedRecord, error) {
 	var found storedRecord
 	var raw string
 	err := tx.QueryRowContext(ctx, `
@@ -2671,6 +2736,56 @@ func loadCurrentRecord(ctx context.Context, tx *sql.Tx, projectID, key string) (
 	}
 	found.record = record
 	return found, nil
+}
+
+func resolveKeyRedirect(ctx context.Context, tx *sql.Tx, projectID, key string) (string, bool, error) {
+	var canonical string
+	err := tx.QueryRowContext(ctx, `
+		SELECT canonical_key
+		FROM blackboard_v2_key_redirects
+		WHERE project_id = ? AND source_key = ?`,
+		projectID, key,
+	).Scan(&canonical)
+	if errors.Is(err, sql.ErrNoRows) {
+		return key, false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("resolve Blackboard v2 key redirect: %w", err)
+	}
+	var chained int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM blackboard_v2_key_redirects
+			WHERE project_id = ? AND source_key = ?
+		)`, projectID, canonical,
+	).Scan(&chained); err != nil {
+		return "", false, fmt.Errorf("validate Blackboard v2 key redirect: %w", err)
+	}
+	if chained != 0 {
+		return "", false, fmt.Errorf("invalid Blackboard v2 key redirect chain for %q", key)
+	}
+	return canonical, true, nil
+}
+
+func resolveChangeRedirects(ctx context.Context, tx *sql.Tx, projectID string, change Change) (Change, error) {
+	resolve := func(key string) (string, error) {
+		canonical, _, err := resolveKeyRedirect(ctx, tx, projectID, key)
+		return canonical, err
+	}
+	var err error
+	switch change.Op {
+	case "update", "transition":
+		change.Key, err = resolve(change.Key)
+	case "relate":
+		if change.From, err = resolve(change.From); err == nil {
+			change.To, err = resolve(change.To)
+		}
+	case "supersede":
+		if change.Replacement, err = resolve(change.Replacement); err == nil {
+			change.Replaced, err = resolve(change.Replaced)
+		}
+	}
+	return change, err
 }
 
 func historicalKeyExists(ctx context.Context, tx *sql.Tx, projectID, key string) (bool, error) {
@@ -3153,6 +3268,39 @@ func decodeSupersedeChange(fields map[string]json.RawMessage) (Change, error) {
 	return Change{Op: "supersede", Replacement: replacement, ReplacementVersion: replacementVersion, Replaced: replaced, ReplacedVersion: replacedVersion}, nil
 }
 
+func decodeMergeChange(fields map[string]json.RawMessage) (Change, error) {
+	source, err := decodeRequiredString(fields, "source")
+	if err != nil {
+		return Change{}, err
+	}
+	canonical, err := decodeRequiredString(fields, "canonical")
+	if err != nil {
+		return Change{}, err
+	}
+	var sourceVersion, canonicalVersion int
+	if raw, ok := fields["source_version"]; !ok {
+		return Change{}, fmt.Errorf("merge source_version is required")
+	} else if err := json.Unmarshal(raw, &sourceVersion); err != nil {
+		return Change{}, fmt.Errorf("decode merge source_version: %w", err)
+	}
+	if raw, ok := fields["canonical_version"]; !ok {
+		return Change{}, fmt.Errorf("merge canonical_version is required")
+	} else if err := json.Unmarshal(raw, &canonicalVersion); err != nil {
+		return Change{}, fmt.Errorf("decode merge canonical_version: %w", err)
+	}
+	var canonicalRecord any
+	if raw, ok := fields["canonical_record"]; ok {
+		canonicalRecord = json.RawMessage(append([]byte(nil), raw...))
+	}
+	var clear []string
+	if raw, ok := fields["clear"]; ok {
+		if err := json.Unmarshal(raw, &clear); err != nil {
+			return Change{}, fmt.Errorf("decode merge clear: %w", err)
+		}
+	}
+	return Change{Op: "merge", Source: source, SourceVersion: sourceVersion, Canonical: canonical, CanonicalVersion: canonicalVersion, CanonicalRecord: canonicalRecord, Clear: clear}, nil
+}
+
 func decodeRequiredString(fields map[string]json.RawMessage, field string) (string, error) {
 	raw, ok := fields[field]
 	if !ok {
@@ -3349,6 +3497,8 @@ func validateChangeShape(change Change, index int) error {
 		allowedFields = map[string]bool{"key": true, "version": true, "status": true, "summary": true, "resolution_summary": true, "verification_summary": true}
 	case "supersede":
 		allowedFields = map[string]bool{"replacement": true, "replacement_version": true, "replaced": true, "replaced_version": true}
+	case "merge":
+		allowedFields = map[string]bool{"source": true, "source_version": true, "canonical": true, "canonical_version": true, "canonical_record": true, "clear": true}
 	}
 	if len(allowedFields) != 0 {
 		for _, field := range populatedChangeFields(change) {
@@ -3448,6 +3598,19 @@ func validateChangeShape(change Change, index int) error {
 		if change.ReplacedVersion < 1 {
 			return semanticError("semantic_validation", "supersede requires the current replaced version", fmt.Sprintf("changes[%d].replaced_version", index), nil)
 		}
+	case "merge":
+		if change.Source == "" {
+			return semanticError("semantic_validation", "merge source is required", fmt.Sprintf("changes[%d].source", index), nil)
+		}
+		if change.SourceVersion < 1 {
+			return semanticError("semantic_validation", "merge requires the current source version", fmt.Sprintf("changes[%d].source_version", index), nil)
+		}
+		if change.Canonical == "" {
+			return semanticError("semantic_validation", "merge canonical is required", fmt.Sprintf("changes[%d].canonical", index), nil)
+		}
+		if change.CanonicalVersion < 1 {
+			return semanticError("semantic_validation", "merge requires the current canonical version", fmt.Sprintf("changes[%d].canonical_version", index), nil)
+		}
 	}
 	return nil
 }
@@ -3531,6 +3694,11 @@ func populatedChangeFields(change Change) []populatedChangeField {
 		{name: "replacement_version", populated: change.ReplacementVersion != 0},
 		{name: "replaced", populated: change.Replaced != ""},
 		{name: "replaced_version", populated: change.ReplacedVersion != 0},
+		{name: "source", populated: change.Source != ""},
+		{name: "source_version", populated: change.SourceVersion != 0},
+		{name: "canonical", populated: change.Canonical != ""},
+		{name: "canonical_version", populated: change.CanonicalVersion != 0},
+		{name: "canonical_record", populated: change.CanonicalRecord != nil},
 	}
 }
 
