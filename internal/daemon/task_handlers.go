@@ -1081,7 +1081,7 @@ func (server *Server) runtimeControlsForTask(found task.Task, latest *task.TaskC
 	sessionCaptured := latest != nil && strings.TrimSpace(latest.NativeSessionID) != ""
 
 	controls := task.RuntimeControls{
-		HandoffResumeAvailable:  !active,
+		ResumeAvailable:         !active,
 		QueueSteerAvailable:     true,
 		NativeSessionCaptured:   sessionCaptured,
 		SameRuntimeProviderOnly: true,
@@ -1273,7 +1273,7 @@ func (server *Server) handleResumeTask(response http.ResponseWriter, request *ht
 		}
 		found = refreshed
 	}
-	found, resumeGoal, plan, err := server.prepareNativeResumeContinuation(found, "")
+	found, resumeGoal, plan, err := server.prepareResumeContinuation(found, "")
 	if err != nil {
 		server.writeResumePreparationError(response, err)
 		return
@@ -1283,51 +1283,6 @@ func (server *Server) handleResumeTask(response http.ResponseWriter, request *ht
 		return
 	}
 
-	updated, err := server.taskDetail(found.ID)
-	if err != nil {
-		writeTaskError(response, err)
-		return
-	}
-	writeJSON(response, http.StatusAccepted, updated)
-}
-
-func (server *Server) handleResumeHandoffTask(response http.ResponseWriter, request *http.Request) {
-	projectID := request.PathValue("id")
-	taskID := request.PathValue("task_id")
-	if !server.requireProject(response, projectID) {
-		return
-	}
-	if taskID == "" {
-		writeError(response, http.StatusNotFound, "task not found")
-		return
-	}
-	found, err := server.tasks.Get(taskID)
-	if err != nil {
-		writeTaskError(response, err)
-		return
-	}
-	if found.ProjectID != projectID {
-		writeError(response, http.StatusNotFound, "task not found")
-		return
-	}
-	if server.harness.IsActive(taskID) || found.Status == task.StatusRunning {
-		writeError(response, http.StatusConflict, "task is already running")
-		return
-	}
-	if !server.acquireTaskControl(taskID) {
-		writeError(response, http.StatusConflict, "task control operation already active")
-		return
-	}
-	defer server.releaseTaskControl(taskID)
-	found, resumeGoal, plan, err := server.prepareHandoffResumeContinuation(found)
-	if err != nil {
-		server.writeResumePreparationError(response, err)
-		return
-	}
-	if err := server.launchTaskInBackground(found, plan, resumeGoal); err != nil {
-		writeTaskLaunchError(response, err)
-		return
-	}
 	updated, err := server.taskDetail(found.ID)
 	if err != nil {
 		writeTaskError(response, err)
@@ -1356,6 +1311,21 @@ func (server *Server) prepareNativeResumeContinuation(found task.Task, resumedMe
 	return found, resumedMessage, plan, nil
 }
 
+// prepareResumeContinuation prefers a provider-native session when one is
+// available. Otherwise it creates a fresh continuation from Task-owned Goal,
+// interrupted Attempt checkpoints, unconsumed Harness Steering, and the new
+// Working Snapshot. No summary or synthetic handoff packet is consulted.
+func (server *Server) prepareResumeContinuation(found task.Task, resumedMessage string) (task.Task, string, taskLaunchPlan, error) {
+	prepared, goal, plan, err := server.prepareNativeResumeContinuation(found, resumedMessage)
+	if err == nil {
+		return prepared, goal, plan, nil
+	}
+	if !errors.Is(err, errNativeSessionUnavailable) && !errors.Is(err, errNativeResumeUnavailable) {
+		return task.Task{}, "", taskLaunchPlan{}, err
+	}
+	return server.prepareFreshResumeContinuation(found)
+}
+
 func (server *Server) prepareNativeResumeRequest(found task.Task, resumedMessage string) (task.Task, string, string, error) {
 	effectiveProfile, err := server.resolveTaskRuntimeProfile(found)
 	if err != nil {
@@ -1369,7 +1339,7 @@ func (server *Server) prepareNativeResumeRequest(found task.Task, resumedMessage
 	return found, resumedMessage, nativeResumeSessionID, nil
 }
 
-func (server *Server) prepareHandoffResumeContinuation(found task.Task) (task.Task, string, taskLaunchPlan, error) {
+func (server *Server) prepareFreshResumeContinuation(found task.Task) (task.Task, string, taskLaunchPlan, error) {
 	effectiveProfile, err := server.resolveTaskRuntimeProfile(found)
 	if err != nil {
 		return task.Task{}, "", taskLaunchPlan{}, err
@@ -1408,41 +1378,8 @@ func (server *Server) buildResumeGoal(found task.Task) (string, error) {
 		return adapters.BuildBlackboardV2ResumePrompt(adapters.BlackboardV2ResumeRequest{TaskGoal: found.Goal, Steering: directives}), nil
 	}
 
-	var factLines, progressFacts, findingLines []string
-	if server.reads == nil {
-		factLines, progressFacts, findingLines, err = server.resumeGoalBlackboardLinesLegacy(found.ProjectID)
-		if err != nil {
-			return "", err
-		}
-	}
-
-	summaries, err := server.tasks.SummaryVersions(found.ID)
-	if err != nil {
-		return "", err
-	}
-	taskSummary := ""
-	if len(summaries) > 0 {
-		taskSummary = summaries[len(summaries)-1].Summary
-	}
-
-	steeringDirective := ""
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Kind != task.EventKindSteering {
-			continue
-		}
-		if directive, ok := events[i].Payload["directive"].(string); ok {
-			steeringDirective = directive
-			break
-		}
-	}
-
-	return adapters.BuildResumePrompt(adapters.ResumeRequest{
-		Goal:              found.Goal,
-		TaskSummary:       taskSummary,
-		FactIndex:         factLines,
-		FindingIndex:      findingLines,
-		ProgressFacts:     progressFacts,
-		SteeringDirective: steeringDirective,
+	return adapters.BuildBlackboardV2ResumePrompt(adapters.BlackboardV2ResumeRequest{
+		TaskGoal: found.Goal, Steering: unconsumedHarnessSteering(events),
 	}), nil
 }
 

@@ -55,7 +55,7 @@ When trusted MCP tools are available, use them:
 - `upsert_project_fact` for `progress:scoreboard`, `progress:<batch>`, `api:<endpoint>`, `route:<name>`, `credential:<label>`.
 - `record_vulnerability` only when the task wants vulnerability records, not for every challenge clue.
 - `attach_evidence` for reproducible proof or screenshots worth preserving.
-- `submit_task_summary` before every pause, interruption, or handoff.
+- Finish the bound Blackboard Continuation after every Attempt is terminal.
 
 No scoreboard-driven run is complete if the solved count changed but durable progress state was not updated.
 </state_contract>

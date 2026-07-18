@@ -35,9 +35,6 @@ func (s *Service) CreateContinuationLaunch(ctx context.Context, req Continuation
 	if s.db == nil || s.graph == nil || s.grants == nil || s.tasks == nil {
 		return ContinuationLaunch{}, fmt.Errorf("graph-native Continuation launch is unavailable")
 	}
-	if err := s.tasks.PrepareContinuationLaunch(req.TaskID); err != nil {
-		return ContinuationLaunch{}, err
-	}
 	if err := s.graph.PrepareContinuationSnapshot(ctx, req.ProjectID); err != nil {
 		return ContinuationLaunch{}, ValidationError(ErrCodeSnapshotUnavailable, "prepare current full Blackboard snapshot: "+err.Error(), "blackboard")
 	}

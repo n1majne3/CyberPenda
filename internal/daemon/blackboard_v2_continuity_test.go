@@ -212,7 +212,7 @@ func TestBlackboardV2FinishThenResumeUsesFreshPinAndOnlyUnconsumedHarnessSteerin
 		server.releaseTaskControl(createdTask.ID)
 		t.Fatalf("queue during resume selection status = %d, body=%s", queueWhileSelected.Code, queueWhileSelected.Body.String())
 	}
-	found, resumeGoal, resumePlan, err := server.prepareHandoffResumeContinuation(createdTask)
+	found, resumeGoal, resumePlan, err := server.prepareFreshResumeContinuation(createdTask)
 	if err != nil {
 		server.releaseTaskControl(createdTask.ID)
 		t.Fatalf("prepare v2 resume: %v", err)
@@ -257,7 +257,7 @@ func TestBlackboardV2FinishThenResumeUsesFreshPinAndOnlyUnconsumedHarnessSteerin
 	if !server.acquireTaskControl(createdTask.ID) {
 		t.Fatal("reacquire resume task control")
 	}
-	found, resumeGoal, resumePlan, err = server.prepareHandoffResumeContinuation(createdTask)
+	found, resumeGoal, resumePlan, err = server.prepareFreshResumeContinuation(createdTask)
 	if err != nil {
 		server.releaseTaskControl(createdTask.ID)
 		t.Fatalf("retry prepare v2 resume: %v", err)
@@ -309,7 +309,7 @@ func TestBlackboardV2FinishThenResumeUsesFreshPinAndOnlyUnconsumedHarnessSteerin
 	if !server.acquireTaskControl(createdTask.ID) {
 		t.Fatal("acquire second resume task control")
 	}
-	found, secondGoal, secondPlan, err := server.prepareHandoffResumeContinuation(createdTask)
+	found, secondGoal, secondPlan, err := server.prepareFreshResumeContinuation(createdTask)
 	if err != nil {
 		server.releaseTaskControl(createdTask.ID)
 		t.Fatalf("prepare second resume: %v", err)
@@ -327,7 +327,7 @@ func TestBlackboardV2FinishThenResumeUsesFreshPinAndOnlyUnconsumedHarnessSteerin
 	if err != nil || len(remaining) != 0 {
 		t.Fatalf("second successful resume left steering: %#v, %v", remaining, err)
 	}
-	for _, table := range []string{"task_summary_versions", "blackboard_graph_mutations", "blackboard_graph_operations"} {
+	for _, table := range []string{"blackboard_graph_mutations", "blackboard_graph_operations"} {
 		var count int
 		if err := server.db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&count); err != nil {
 			t.Fatalf("count forbidden table %s: %v", table, err)
@@ -384,7 +384,7 @@ func TestBlackboardV2ResumeProjectionFailureLeavesNoContinuationPinOrSteeringCon
 		_ = server.Close()
 		t.Fatalf("queue steering: %v", err)
 	}
-	found, resumeGoal, resumePlan, err := server.prepareHandoffResumeContinuation(createdTask)
+	found, resumeGoal, resumePlan, err := server.prepareFreshResumeContinuation(createdTask)
 	if err != nil {
 		_ = server.Close()
 		t.Fatalf("prepare handoff resume: %v", err)
@@ -445,7 +445,7 @@ func TestBlackboardV2ResumeProjectionFailureLeavesNoContinuationPinOrSteeringCon
 	if err != nil {
 		t.Fatalf("read Task after restart: %v", err)
 	}
-	found, resumeGoal, resumePlan, err = restarted.prepareHandoffResumeContinuation(found)
+	found, resumeGoal, resumePlan, err = restarted.prepareFreshResumeContinuation(found)
 	if err != nil {
 		t.Fatalf("retry resume preparation: %v", err)
 	}

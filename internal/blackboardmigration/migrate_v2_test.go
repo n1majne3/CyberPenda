@@ -208,6 +208,7 @@ func TestMigrateV2RejectsMissingBackupAndBackupMismatch(t *testing.T) {
 		WHERE id=1`); err != nil {
 		t.Fatal(err)
 	}
+	installLegacyWorkflowStateFixture(t, otherDB)
 	if _, err := otherDB.Exec(`
 		INSERT INTO projects(id,name,description,scope_json,defaults_json,kind,created_at,updated_at)
 		VALUES('other','Other','','{}','{}','pentest','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
@@ -494,6 +495,7 @@ func newGraphV1MigrateFixture(t *testing.T) (*store.DB, *Service, string, string
 		WHERE id=1`); err != nil {
 		t.Fatal(err)
 	}
+	installLegacyWorkflowStateFixture(t, db)
 	return db, NewService(db, databasePath, artifactRoot), artifactRoot, databasePath
 }
 

@@ -272,7 +272,7 @@ func writeRuntimeSmokeInstructions(workdir string, ctx TaskContext) error {
 	b.WriteString("1. After each recon phase, upsert durable facts with `upsert_project_fact` (API maps, endpoints, credentials found, progress snapshots under `progress:*` keys).\n")
 	b.WriteString("2. When you confirm or strongly suspect a vulnerability, record it with `record_vulnerability` (start `unconfirmed`, move to `confirmed` once proof is solid).\n")
 	b.WriteString("3. Attach proof with `attach_evidence` when you have HTTP captures, screenshots, or command output worth keeping.\n")
-	b.WriteString("4. Before ending a continuation, call `submit_task_summary` with what you accomplished, what remains, and the next focus.\n")
+	b.WriteString("4. Before ending a continuation, finish the bound Blackboard Continuation after every Attempt is terminal.\n")
 	b.WriteString("5. For black-box web targets, discover APIs with `curl`/httpx first (including frontend bundles); use `agent-browser` when you need DOM, cookies, or interactive flows.\n")
 	b.WriteString("\n## Authorized scope\n\n")
 	b.WriteString("Read `.pentest/scope.json` for the task scope snapshot captured at launch. ")

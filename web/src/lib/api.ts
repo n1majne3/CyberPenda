@@ -606,7 +606,7 @@ export interface Task {
 export interface RuntimeControls {
   native_resume_available: boolean;
   native_resume_reason?: string;
-  handoff_resume_available: boolean;
+  resume_available: boolean;
   queue_steer_available: boolean;
   interrupt_steer_available: boolean;
   interrupt_steer_reason?: string;
@@ -771,20 +771,6 @@ export interface FindingVersion {
   cvss_pending: boolean;
   severity: string;
   created_at: string;
-}
-
-export interface TaskSummaryVersion {
-  id: string;
-  task_id: string;
-  version: number;
-  summary: string;
-  submitted_by?: string;
-  created_at: string;
-}
-
-export interface TaskSummaryResponse {
-  summary?: TaskSummaryVersion;
-  versions: TaskSummaryVersion[];
 }
 
 export interface Finding {

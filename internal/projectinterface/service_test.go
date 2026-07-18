@@ -84,6 +84,7 @@ func newServiceFixture(t *testing.T) serviceFixture {
 	); err != nil {
 		t.Fatalf("enable graph epoch: %v", err)
 	}
+	installLegacyFinishFixture(t, db)
 
 	projects := project.NewService(db)
 	proj, err := projects.Create("I01 project", "", project.Scope{}, project.Defaults{})
@@ -137,6 +138,38 @@ func newServiceFixture(t *testing.T) serviceFixture {
 		token: token, grant: grant, runtimeProfile: runtimeProfile,
 		runtimePlugin: runtimePlugin, runner: string(runner),
 		artifactRoot: artifactRoot, runtimeRoot: runtimeRoot,
+	}
+}
+
+// installLegacyFinishFixture restores only the v1 Finish tables used by this
+// graph_v1 project-interface test suite. Fresh active stores intentionally
+// remove these duplicate workflow columns and table in migration 33.
+func installLegacyFinishFixture(t *testing.T, db *store.DB) {
+	t.Helper()
+	for _, statement := range []string{
+		`ALTER TABLE task_continuations ADD COLUMN blackboard_finish_summary_version_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE task_continuations ADD COLUMN blackboard_finish_graph_revision INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE task_continuations ADD COLUMN blackboard_finish_mutation_sequence INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE task_continuations ADD COLUMN blackboard_finished_at TEXT NOT NULL DEFAULT ''`,
+		`CREATE TABLE task_summary_versions (
+			id TEXT PRIMARY KEY,
+			task_id TEXT NOT NULL,
+			continuation_id TEXT,
+			version INTEGER NOT NULL,
+			summary TEXT NOT NULL,
+			objective_outcome_json TEXT NOT NULL DEFAULT '',
+			blackboard_graph_revision INTEGER NOT NULL DEFAULT 0,
+			blackboard_mutation_sequence INTEGER NOT NULL DEFAULT 0,
+			finish_idempotency_key TEXT NOT NULL DEFAULT '',
+			finish_request_hash TEXT NOT NULL DEFAULT '',
+			submitted_by TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			UNIQUE(task_id, version)
+		)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("install legacy Finish fixture schema: %v", err)
+		}
 	}
 }
 
@@ -262,11 +295,10 @@ func TestFinishRejectsOpenAttemptsThenStoresSummaryAndClosesGrantAfterTerminalCh
 	}
 	continuation, err := fixture.tasks.LatestContinuation(fixture.task.ID)
 	if err != nil {
-		t.Fatalf("read Continuation Finish marker: %v", err)
+		t.Fatalf("read Continuation after Finish: %v", err)
 	}
-	if continuation == nil || continuation.BlackboardFinishSummaryVersionID != summaries[0].ID ||
-		continuation.BlackboardFinishGraphRevision != 2 || continuation.BlackboardFinishedAt == nil {
-		t.Fatalf("Continuation Finish marker = %#v", continuation)
+	if continuation == nil {
+		t.Fatalf("Continuation status after Finish = %#v", continuation)
 	}
 
 	replay, err := fixture.service.FinishContinuation(ctx, principal, request)

@@ -231,7 +231,7 @@ func TestClaudeAndPiV2ResumeUsesFreshPinAndSharedSnapshotBytes(t *testing.T) {
 			if !server.acquireTaskControl(createdTask.ID) {
 				t.Fatal("acquire resume task control")
 			}
-			found, resumeGoal, resumePlan, err := server.prepareHandoffResumeContinuation(createdTask)
+			found, resumeGoal, resumePlan, err := server.prepareFreshResumeContinuation(createdTask)
 			if err != nil {
 				server.releaseTaskControl(createdTask.ID)
 				t.Fatalf("prepare v2 resume: %v", err)

@@ -56,12 +56,13 @@ func TestCompatibilityWritesReturnStable410OnlyAfterEveryRetirementGatePasses(t 
 			}
 		}},
 		{name: "failed latest Blackboard Health scan", arrange: func(db *store.DB, _ *blackboardcompat.WriteRetirementPolicy) {
-			if _, err := db.Exec(`INSERT INTO blackboard_health_runs(project_id,run_id,checked_graph_revision,checked_state_hash,checked_projection_hash,checker_version,status,artifact_scan_status,started_at,completed_at,metrics_json,run_status,overall,artifact_scan_fingerprint) SELECT id,'health:m06-failed',0,'state','projection','fixture','unknown','failed',? ,?,'{}','failed','unknown','failed-scan' FROM projects LIMIT 1`, now.Add(time.Minute).Format(time.RFC3339Nano), now.Add(2*time.Minute).Format(time.RFC3339Nano)); err != nil {
+			startedAt := time.Now().UTC().Add(time.Minute)
+			if _, err := db.Exec(`INSERT INTO blackboard_health_runs(project_id,run_id,checked_graph_revision,checked_state_hash,checked_projection_hash,checker_version,status,artifact_scan_status,started_at,completed_at,metrics_json,run_status,overall,artifact_scan_fingerprint) SELECT id,'health:m06-failed',0,'state','projection','fixture','unknown','failed',? ,?,'{}','failed','unknown','failed-scan' FROM projects LIMIT 1`, startedAt.Format(time.RFC3339Nano), startedAt.Add(time.Minute).Format(time.RFC3339Nano)); err != nil {
 				t.Fatalf("record failed latest Blackboard Health scan: %v", err)
 			}
 		}},
 		{name: "equal-timestamp newer failed Blackboard Health scan", arrange: func(db *store.DB, _ *blackboardcompat.WriteRetirementPolicy) {
-			startedAt := now.Add(time.Minute).Format(time.RFC3339Nano)
+			startedAt := time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano)
 			if _, err := db.Exec(`INSERT INTO blackboard_health_runs(project_id,run_id,checked_graph_revision,checked_state_hash,checked_projection_hash,checker_version,status,artifact_scan_status,started_at,completed_at,metrics_json,run_status,overall,artifact_scan_fingerprint) SELECT id,'z-health-older',0,'state','projection','fixture','healthy','ok',?,?,'{}','completed','healthy','older-healthy' FROM projects LIMIT 1`, startedAt, startedAt); err != nil {
 				t.Fatalf("record older healthy Blackboard Health scan: %v", err)
 			}
@@ -1004,6 +1005,7 @@ func newCompatibilityFixture(t *testing.T) (*store.DB, *blackboardcompat.Service
 	if _, err := db.Exec(`UPDATE blackboard_store_state SET canonical_store=?,cutover_state='graph' WHERE id=1`, store.CanonicalStoreGraphV1); err != nil {
 		t.Fatalf("activate disposable graph epoch: %v", err)
 	}
+	installLegacySummaryFixture(t, db)
 
 	graph := blackboard.NewGraphService(db, blackboard.SystemClock{}, blackboard.RandomIDSource{})
 	tasks := task.NewService(db)
@@ -1025,4 +1027,33 @@ func newCompatibilityFixture(t *testing.T) (*store.DB, *blackboardcompat.Service
 	}
 
 	return db, compatibility, graph, projectRow, principal, root
+}
+
+func installLegacySummaryFixture(t *testing.T, db *store.DB) {
+	t.Helper()
+	for _, statement := range []string{
+		`ALTER TABLE task_continuations ADD COLUMN blackboard_finish_summary_version_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE task_continuations ADD COLUMN blackboard_finish_graph_revision INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE task_continuations ADD COLUMN blackboard_finish_mutation_sequence INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE task_continuations ADD COLUMN blackboard_finished_at TEXT NOT NULL DEFAULT ''`,
+		`CREATE TABLE task_summary_versions (
+			id TEXT PRIMARY KEY,
+			task_id TEXT NOT NULL,
+			continuation_id TEXT,
+			version INTEGER NOT NULL,
+			summary TEXT NOT NULL,
+			objective_outcome_json TEXT NOT NULL DEFAULT '',
+			blackboard_graph_revision INTEGER NOT NULL DEFAULT 0,
+			blackboard_mutation_sequence INTEGER NOT NULL DEFAULT 0,
+			finish_idempotency_key TEXT NOT NULL DEFAULT '',
+			finish_request_hash TEXT NOT NULL DEFAULT '',
+			submitted_by TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			UNIQUE(task_id, version)
+		)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("install legacy Summary fixture schema: %v", err)
+		}
+	}
 }

@@ -215,18 +215,7 @@ func (s *GraphService) ExplorationFrontier(ctx context.Context, projectID string
 	if err := rows.Close(); err != nil {
 		return FrontierResult{}, fmt.Errorf("close exploration objective rows: %w", err)
 	}
-	for i := range candidates {
-		parents, goalRank, err := s.frontierParentGoals(ctx, projectID, candidates[i].ID)
-		if err != nil {
-			return FrontierResult{}, err
-		}
-		candidates[i].ParentGoals = parents
-		candidates[i].goalRank = goalRank
-	}
 	sort.SliceStable(candidates, func(i, j int) bool {
-		if candidates[i].goalRank != candidates[j].goalRank {
-			return candidates[i].goalRank < candidates[j].goalRank
-		}
 		if candidates[i].CreatedAt != candidates[j].CreatedAt {
 			return candidates[i].CreatedAt < candidates[j].CreatedAt
 		}

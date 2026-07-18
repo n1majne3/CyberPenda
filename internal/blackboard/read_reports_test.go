@@ -380,7 +380,7 @@ func TestPentestReportRejectsCTFProjectsAndCTFRejectsPentest(t *testing.T) {
 
 func TestCTFSolutionIncludesVerifiedCandidatesEvidenceAndNoRedaction(t *testing.T) {
 	graph, projects := newReportGraphServices(t)
-	ctfProject, ctfTask, ctfCtx := createCTFTaskContext(t, graph, projects, "Recover the challenge flag")
+	ctfProject, _, ctfCtx := createCTFTaskContext(t, graph, projects, "Recover the challenge flag")
 	_, err := graph.Apply(context.Background(), blackboard.MutationBatch{
 		SchemaVersion:  blackboard.GraphMutationSchemaVersion,
 		IdempotencyKey: "u04:ctf-seed",
@@ -414,15 +414,6 @@ func TestCTFSolutionIncludesVerifiedCandidatesEvidenceAndNoRedaction(t *testing.
 				Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{
 					"kind": "flag", "summary": "Primary flag", "value": "FLAG{correct}", "status": "verified", "verification_summary": "accepted",
 				}},
-			},
-			{
-				OpID: "satisfies", Kind: blackboard.OpPutEdge,
-				PutEdge: blackboard.PutEdgeInput{
-					EdgeType: blackboard.EdgeTypeSatisfies,
-					From:     blackboard.NodeRef{OpID: "flag"},
-					To:       solutionGoalRef(ctfTask.ID),
-					Summary:  "solves challenge",
-				},
 			},
 			{
 				OpID: "evidences", Kind: blackboard.OpPutEdge,
@@ -600,7 +591,7 @@ func TestPentestReportTaskScopeContextPinsSnapshotAndMarksCrossTask(t *testing.T
 
 func TestCTFSolutionDefaultsIncludeCandidatesWhenOnlyFormatSet(t *testing.T) {
 	graph, projects := newReportGraphServices(t)
-	ctfProject, ctfTask, ctfCtx := createCTFTaskContext(t, graph, projects, "Recover the challenge flag")
+	ctfProject, _, ctfCtx := createCTFTaskContext(t, graph, projects, "Recover the challenge flag")
 	_, err := graph.Apply(context.Background(), blackboard.MutationBatch{
 		SchemaVersion:  blackboard.GraphMutationSchemaVersion,
 		IdempotencyKey: "u04:ctf-defaults",
@@ -609,7 +600,6 @@ func TestCTFSolutionDefaultsIncludeCandidatesWhenOnlyFormatSet(t *testing.T) {
 			{OpID: "candidate", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeSolution, StableKey: "solution:candidate"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "flag", "summary": "Candidate", "value": "FLAG{cand}"}}},
 			{OpID: "flag", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeSolution, StableKey: "solution:flag"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "flag", "summary": "Primary", "value": "FLAG{ok}", "status": "verified", "verification_summary": "accepted"}}},
 			{OpID: "procedure", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeSolution, StableKey: "solution:procedure"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "procedure", "summary": "Steps", "status": "verified", "verification_summary": "worked"}}},
-			{OpID: "satisfies", Kind: blackboard.OpPutEdge, PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypeSatisfies, From: blackboard.NodeRef{OpID: "flag"}, To: solutionGoalRef(ctfTask.ID)}},
 		},
 	})
 	if err != nil {

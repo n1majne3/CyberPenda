@@ -1,6 +1,7 @@
 package blackboardfixture
 
 import (
+	"errors"
 	"testing"
 
 	"pentest/internal/blackboard"
@@ -35,7 +36,7 @@ func SeedLegacyState(t testing.TB, db *store.DB, projectID, taskID string) {
 	}); err != nil {
 		t.Fatalf("seed v1 Evidence: %v", err)
 	}
-	if _, err := task.NewService(db).PutSummary(taskID, SentinelSummary, "v1-sentinel"); err != nil {
+	if _, err := task.NewService(db).PutSummary(taskID, SentinelSummary, "v1-sentinel"); err != nil && !errors.Is(err, task.ErrRemovedWorkflowState) {
 		t.Fatalf("seed v1 Task Summary: %v", err)
 	}
 }

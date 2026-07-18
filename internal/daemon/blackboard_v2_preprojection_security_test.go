@@ -22,7 +22,7 @@ import (
 
 const codexV2SymlinkOperatorSecret = "operator-secret-must-not-be-projected"
 
-func TestCodexV2HandoffResumeRejectsWorkdirSymlinkBeforeProjection(t *testing.T) {
+func TestCodexV2FreshResumeRejectsWorkdirSymlinkBeforeProjection(t *testing.T) {
 	fixture := newCodexV2ResumeSecurityFixture(t)
 	attackerRoot := t.TempDir()
 	writeTestFile(t, filepath.Join(attackerRoot, "keep.txt"), []byte("attacker tree must remain unchanged"))
@@ -35,7 +35,7 @@ func TestCodexV2HandoffResumeRejectsWorkdirSymlinkBeforeProjection(t *testing.T)
 		t.Fatalf("replace task workdir with symlink: %v", err)
 	}
 
-	assertCodexV2ResumeRejectedWithoutSideEffects(t, fixture, "/resume/handoff", attackerRoot)
+	assertCodexV2ResumeRejectedWithoutSideEffects(t, fixture, "/resume", attackerRoot)
 }
 
 func TestCodexV2NativeResumeRejectsProviderHomeSymlinkBeforeDiscoveryOrProjection(t *testing.T) {
@@ -55,9 +55,9 @@ func TestCodexV2NativeResumeRejectsProviderHomeSymlinkBeforeDiscoveryOrProjectio
 	assertCodexV2ResumeRejectedWithoutSideEffects(t, fixture, "/resume", attackerRoot)
 }
 
-func TestCodexV2ValidHandoffLaunchStillSucceeds(t *testing.T) {
+func TestCodexV2ValidFreshResumeStillSucceeds(t *testing.T) {
 	fixture := newCodexV2ResumeSecurityFixture(t)
-	response := fixture.resume("/resume/handoff")
+	response := fixture.resume("/resume")
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("valid Codex v2 handoff status = %d, want 202; body=%s", response.Code, response.Body.String())
 	}

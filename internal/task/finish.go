@@ -90,6 +90,13 @@ type FinishContinuationResult struct {
 // the current graph position, and closes the grant in one immediate SQLite
 // writer transaction. It checks an exact replay before any new-write gate.
 func (s *Service) FinishContinuation(ctx context.Context, req FinishContinuationRequest) (FinishContinuationResult, error) {
+	available, err := s.legacySummaryTableAvailable()
+	if err != nil {
+		return FinishContinuationResult{}, err
+	}
+	if !available {
+		return FinishContinuationResult{}, ErrRemovedWorkflowState
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return FinishContinuationResult{}, fmt.Errorf("begin Continuation Finish: %w", err)
@@ -216,6 +223,13 @@ func (s *Service) FinishContinuation(ctx context.Context, req FinishContinuation
 // mutation sequence recorded by a valid Finish before clean completion is
 // acknowledged.
 func (s *Service) VerifyContinuationFinishMarker(ctx context.Context, continuationID string) error {
+	available, err := s.legacySummaryTableAvailable()
+	if err != nil {
+		return err
+	}
+	if !available {
+		return ErrRemovedWorkflowState
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin Continuation Finish audit: %w", err)

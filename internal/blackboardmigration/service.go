@@ -55,14 +55,14 @@ type MigrationRequest struct {
 }
 
 type MigrationResult struct {
-	Kind         MigrationKind               `json:"kind"`
-	Plan         LegacyMigrationPlanV1       `json:"plan"`
-	Backup       *VerifiedBackup             `json:"backup,omitempty"`
-	Import       *LegacyImportResultV1       `json:"import,omitempty"`
-	Rebuild      *RebuildResultV1            `json:"rebuild,omitempty"`
-	Migrate      *CutoverMigrationResultV1   `json:"migrate,omitempty"`
-	Verification *CutoverVerificationV1      `json:"verification,omitempty"`
-	Recovery     *RecoveryGuidanceV1         `json:"recovery,omitempty"`
+	Kind         MigrationKind             `json:"kind"`
+	Plan         LegacyMigrationPlanV1     `json:"plan"`
+	Backup       *VerifiedBackup           `json:"backup,omitempty"`
+	Import       *LegacyImportResultV1     `json:"import,omitempty"`
+	Rebuild      *RebuildResultV1          `json:"rebuild,omitempty"`
+	Migrate      *CutoverMigrationResultV1 `json:"migrate,omitempty"`
+	Verification *CutoverVerificationV1    `json:"verification,omitempty"`
+	Recovery     *RecoveryGuidanceV1       `json:"recovery,omitempty"`
 }
 
 // CutoverMigrationResultV1 is the operator-visible offline v1→v2 migrate/verify
@@ -880,6 +880,19 @@ func inspectLegacyDatabase(ctx context.Context, db legacyInspectionDB, artifactR
 
 func migrationSourceTables(ctx context.Context, tx *sql.Tx) ([]string, error) {
 	tables := append([]string(nil), legacySourceTables...)
+	if exists, err := tableExists(ctx, tx, "task_summary_versions"); err != nil {
+		return nil, err
+	} else if !exists {
+		// Fresh v2-derived test/source images may already have contracted this
+		// optional historical surface. Treat it as an empty legacy history.
+		filtered := tables[:0]
+		for _, table := range tables {
+			if table != "task_summary_versions" {
+				filtered = append(filtered, table)
+			}
+		}
+		tables = filtered
+	}
 	optional := []string{"legacy_observations", "legacy_hypotheses", "legacy_project_directives"}
 	var epoch string
 	if err := tx.QueryRowContext(ctx, `SELECT canonical_store FROM blackboard_store_state WHERE id=1`).Scan(&epoch); err != nil {

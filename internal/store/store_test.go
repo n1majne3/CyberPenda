@@ -40,6 +40,28 @@ func TestOpenRunsMigrationsIdempotently(t *testing.T) {
 	}
 }
 
+func TestOpenActiveV2StoreDoesNotRetainRemovedWorkflowState(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "contracted.db"))
+	if err != nil {
+		t.Fatalf("open contracted store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if tableExists(t, db.DB, "task_summary_versions") {
+		t.Fatal("active v2 store retains removed task_summary_versions table")
+	}
+	for _, column := range []string{
+		"blackboard_finish_summary_version_id",
+		"blackboard_finish_graph_revision",
+		"blackboard_finish_mutation_sequence",
+		"blackboard_finished_at",
+	} {
+		if columnExists(t, db.DB, "task_continuations", column) {
+			t.Fatalf("active v2 store retains removed task_continuations.%s column", column)
+		}
+	}
+}
+
 // TestOpenRefusalDoesNotUpgradePreNumberedLegacyDatabase simulates a database
 // created before numbered migrations and proves ordinary daemon/runtime open
 // leaves it untouched for the offline migrator.
@@ -288,12 +310,6 @@ func TestOpenDefaultsCanonicalStoreToBlackboardV2(t *testing.T) {
 		{"projects", "kind"},
 		{"task_events", "continuation_id"},
 		{"task_events", "attempt_node_id"},
-		{"task_summary_versions", "continuation_id"},
-		{"task_summary_versions", "objective_outcome_json"},
-		{"task_summary_versions", "blackboard_graph_revision"},
-		{"task_summary_versions", "blackboard_mutation_sequence"},
-		{"task_summary_versions", "finish_idempotency_key"},
-		{"task_summary_versions", "finish_request_hash"},
 		{"task_continuations", "runtime_config_version_id"},
 		{"task_continuations", "blackboard_graph_revision"},
 		{"task_continuations", "blackboard_renderer_version"},
@@ -304,10 +320,6 @@ func TestOpenDefaultsCanonicalStoreToBlackboardV2(t *testing.T) {
 		{"task_continuations", "blackboard_reconciliation_status"},
 		{"task_continuations", "blackboard_reconciliation_mutation_id"},
 		{"task_continuations", "blackboard_reconciled_at"},
-		{"task_continuations", "blackboard_finish_summary_version_id"},
-		{"task_continuations", "blackboard_finish_graph_revision"},
-		{"task_continuations", "blackboard_finish_mutation_sequence"},
-		{"task_continuations", "blackboard_finished_at"},
 		{"blackboard_v2_idempotency_receipts", "continuation_id"},
 		{"blackboard_v2_evidence_requests", "temp_internal_path"},
 		{"blackboard_v2_evidence_requests", "publisher_token"},

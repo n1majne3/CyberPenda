@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -357,48 +356,6 @@ func New(deps Deps) *sdkmcp.Server {
 		})
 	}
 
-	sdkmcp.AddTool(server, deps.legacyTool("submit_task_summary", "Submit a task summary before ending a continuation so the next resume carries compact handoff context.", "blackboard_finish_continuation"), func(ctx context.Context, req *sdkmcp.CallToolRequest, args submitTaskSummaryArgs) (*sdkmcp.CallToolResult, any, error) {
-		_ = req
-		if deps.Compatibility != nil {
-			principal, err := deps.compatibilityPrincipal(args.ProjectID)
-			if err != nil {
-				return toolProjectInterfaceError(projectinterface.AsError(err))
-			}
-			result, err := deps.Compatibility.Call(ctx, blackboardcompat.LegacyCall{
-				Kind: blackboardcompat.CallPutTaskSummary, Transport: blackboardcompat.TransportMCP,
-				ProjectID: args.ProjectID, Principal: principal, IdempotencyKey: args.IdempotencyKey,
-				TaskSummary: &blackboardcompat.TaskSummaryWrite{TaskID: args.TaskID, Summary: args.Summary, SubmittedBy: args.SubmittedBy},
-			})
-			if err != nil {
-				return toolProjectInterfaceError(projectinterface.AsError(err))
-			}
-			return toolJSON(result.Payload)
-		}
-		_ = ctx
-		if deps.Tasks == nil {
-			return toolError(fmt.Errorf("task service unavailable"))
-		}
-		if _, err := deps.Projects.Get(args.ProjectID); err != nil {
-			return toolError(err)
-		}
-		found, err := deps.Tasks.Get(args.TaskID)
-		if err != nil {
-			return toolError(err)
-		}
-		if found.ProjectID != args.ProjectID {
-			return toolError(fmt.Errorf("task not found"))
-		}
-		submittedBy := strings.TrimSpace(args.SubmittedBy)
-		if submittedBy == "" {
-			submittedBy = "runtime"
-		}
-		version, err := deps.Tasks.PutSummary(args.TaskID, args.Summary, submittedBy)
-		if err != nil {
-			return toolError(err)
-		}
-		return toolJSON(version)
-	})
-
 	if deps.ProjectInterface != nil {
 		registerProjectInterfaceTools(server, deps)
 	}
@@ -429,7 +386,7 @@ func registerProjectInterfaceTools(server *sdkmcp.Server, deps Deps) {
 
 	sdkmcp.AddTool(server, &sdkmcp.Tool{
 		Name:        "blackboard_finish_continuation",
-		Description: "Finish the bound Continuation after every current-Continuation Attempt is terminal, store its Task Summary, and close later writes.",
+		Description: "Finish the bound Continuation after every current-Continuation Attempt is terminal and close later writes.",
 	}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args blackboardFinishContinuationArgs) (*sdkmcp.CallToolResult, any, error) {
 		_ = req
 		principal, principalErr := deps.requirePrincipal()
@@ -678,14 +635,6 @@ type generateReportArgs struct {
 	ProjectID      string `json:"project_id" jsonschema:"project id"`
 	TaskID         string `json:"task_id,omitempty" jsonschema:"task id for runner and scope context"`
 	IdempotencyKey string `json:"idempotency_key,omitempty" jsonschema:"optional compatibility use key"`
-}
-
-type submitTaskSummaryArgs struct {
-	ProjectID      string `json:"project_id" jsonschema:"project id"`
-	TaskID         string `json:"task_id" jsonschema:"task id"`
-	Summary        string `json:"summary" jsonschema:"compact handoff summary for the next continuation"`
-	SubmittedBy    string `json:"submitted_by,omitempty" jsonschema:"runtime identifier"`
-	IdempotencyKey string `json:"idempotency_key,omitempty" jsonschema:"optional exact Finish replay key"`
 }
 
 func toolJSON(payload any) (*sdkmcp.CallToolResult, any, error) {

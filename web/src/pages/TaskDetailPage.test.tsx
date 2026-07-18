@@ -65,7 +65,7 @@ function stubTaskDetailApi(taskOverrides: Record<string, unknown> = {}) {
       scope_snapshot: {},
       runtime_controls: {
         native_resume_available: true,
-        handoff_resume_available: true,
+        resume_available: true,
         queue_steer_available: true,
         interrupt_steer_available: false,
         native_session_captured: true,
@@ -219,13 +219,13 @@ describe("TaskDetailPage", () => {
     expect(screen.getByText("same runtime only")).toBeInTheDocument();
   });
 
-  it("separates native resume, handoff resume, and queue steering controls", async () => {
+  it("shows native resume and queue steering controls", async () => {
     stubTaskDetailApi();
 
     renderPage();
 
     expect(await screen.findByRole("button", { name: /Resume$/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Resume with handoff/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Resume with handoff/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Queue steer/ })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Continuation model provider" })).toHaveClass("focus-visible:ring-2");
     expect(screen.getByRole("combobox", { name: "Continuation model" })).toHaveClass("focus-visible:ring-2");

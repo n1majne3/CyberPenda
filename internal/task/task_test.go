@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"pentest/internal/blackboard"
 	"pentest/internal/project"
 	"pentest/internal/store"
 	"pentest/internal/task"
@@ -737,6 +738,26 @@ func TestCreateReturnsPersistedTaskWhenGoalProjectionFails(t *testing.T) {
 	}
 	if len(projector.calls) != 1 || projector.calls[0] != created.ID {
 		t.Fatalf("projection calls: %+v", projector.calls)
+	}
+}
+
+func TestTaskCreateDoesNotProjectTaskGoalIntoBlackboard(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	graph := blackboard.NewGraphService(db, blackboard.SystemClock{}, blackboard.RandomIDSource{})
+	proj, err := projects.Create("No copied goals", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	svc := task.NewService(db, projects)
+	created, err := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "remain task-owned", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := graph.ReadNode(context.Background(), blackboard.ReadNodeRequest{
+		ProjectID: proj.ID, NodeType: blackboard.NodeTypeGoal, Key: "task:" + created.ID,
+	}); err == nil {
+		t.Fatal("Task Goal was projected into the active Blackboard")
 	}
 }
 

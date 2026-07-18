@@ -33,7 +33,6 @@ func createCTFTaskContext(t *testing.T, graph *blackboard.GraphService, projects
 		t.Fatalf("create CTF Project: %v", err)
 	}
 	tasks := task.NewService(graph.DBForTesting(), projects)
-	tasks.SetGoalProjector(graph)
 	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: goal, Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create CTF Task: %v", err)
@@ -41,10 +40,6 @@ func createCTFTaskContext(t *testing.T, graph *blackboard.GraphService, projects
 	ctx := blackboard.SystemExecutionContext(createdProject.ID, createdProject.Kind, "c06-solution-test")
 	ctx.TaskID = createdTask.ID
 	return createdProject, createdTask, ctx
-}
-
-func solutionGoalRef(taskID string) blackboard.NodeRef {
-	return blackboard.NodeRef{NodeType: blackboard.NodeTypeGoal, StableKey: "task:" + taskID + ":goal"}
 }
 
 // TestVerifiedFlagSolvesOnlyCTFProjectAndRejectionReversesSolvedState is C06's
@@ -70,7 +65,7 @@ func TestVerifiedFlagSolvesOnlyCTFProjectAndRejectionReversesSolvedState(t *test
 	})
 	assertGraphErrorCode(t, err, blackboard.ErrCodeProjectKindViolation)
 
-	ctfProject, ctfTask, ctfCtx := createCTFTaskContext(t, graph, projects, "Recover the challenge flag")
+	ctfProject, _, ctfCtx := createCTFTaskContext(t, graph, projects, "Recover the challenge flag")
 	state, err := graph.ReadCTFSolvedState(context.Background(), ctfProject.ID)
 	if err != nil {
 		t.Fatalf("read initial CTF solved state: %v", err)
@@ -102,7 +97,6 @@ func TestVerifiedFlagSolvesOnlyCTFProjectAndRejectionReversesSolvedState(t *test
 		SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "c06:verify", Context: ctfCtx,
 		Operations: []blackboard.Operation{
 			{OpID: "verify", Kind: blackboard.OpTransitionNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeSolution, StableKey: "solution:flag"}, Transition: blackboard.TransitionNodeInput{ExpectedVersion: candidate.Node.Version, Status: "verified", VerificationSummary: "The challenge accepted the flag"}},
-			{OpID: "satisfies", Kind: blackboard.OpPutEdge, PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypeSatisfies, From: blackboard.NodeRef{NodeType: blackboard.NodeTypeSolution, StableKey: "solution:flag"}, To: solutionGoalRef(ctfTask.ID)}},
 		},
 	})
 	if err != nil {
@@ -119,8 +113,8 @@ func TestVerifiedFlagSolvesOnlyCTFProjectAndRejectionReversesSolvedState(t *test
 	if state.PrimaryVerifiedFlag.StableKey != "solution:flag" {
 		t.Fatalf("primary verified flag = %q", state.PrimaryVerifiedFlag.StableKey)
 	}
-	if len(state.PrimaryVerifiedFlag.SatisfyingGoals) != 1 || state.PrimaryVerifiedFlag.SatisfyingGoals[0].TaskID != ctfTask.ID {
-		t.Fatalf("verified flag must report its satisfying Task Goal, got %+v", state.PrimaryVerifiedFlag.SatisfyingGoals)
+	if len(state.PrimaryVerifiedFlag.SatisfyingGoals) != 0 {
+		t.Fatalf("verified flag must not report copied Task Goals, got %+v", state.PrimaryVerifiedFlag.SatisfyingGoals)
 	}
 
 	verified, err := graph.ReadNode(context.Background(), blackboard.ReadNodeRequest{ProjectID: ctfProject.ID, NodeType: blackboard.NodeTypeSolution, Key: "solution:flag"})
@@ -175,37 +169,30 @@ func TestVerifiedFlagSolvesOnlyCTFProjectAndRejectionReversesSolvedState(t *test
 	}
 }
 
-func TestVerifiedFlagRequiresItsProducingTaskGoalAndVerificationSummary(t *testing.T) {
+func TestVerifiedFlagRequiresVerificationSummaryButNotTaskGoal(t *testing.T) {
 	graph, projects := newSolutionGraphServices(t)
-	ctfProject, producingTask, ctx := createCTFTaskContext(t, graph, projects, "Produce the flag")
-	tasks := task.NewService(graph.DBForTesting(), projects)
-	tasks.SetGoalProjector(graph)
-	otherTask, err := tasks.Create(task.CreateRequest{ProjectID: ctfProject.ID, Goal: "Unrelated work", Runner: task.RunnerSandbox})
-	if err != nil {
-		t.Fatalf("create unrelated Task: %v", err)
-	}
+	_, _, ctx := createCTFTaskContext(t, graph, projects, "Produce the flag")
 
 	base := blackboard.MutationBatch{
 		SchemaVersion: blackboard.GraphMutationSchemaVersion, Context: ctx,
 		Operations: []blackboard.Operation{
 			{OpID: "flag", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeSolution, StableKey: "solution:guarded"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "flag", "summary": "Guarded flag", "value": "FLAG{guarded}", "status": "verified", "verification_summary": "accepted"}}},
-			{OpID: "satisfies", Kind: blackboard.OpPutEdge, PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypeSatisfies, From: blackboard.NodeRef{OpID: "flag"}, To: solutionGoalRef(otherTask.ID)}},
 		},
 	}
 	base.IdempotencyKey = "c06:wrong-goal"
-	_, err = graph.Apply(context.Background(), base)
-	assertGraphErrorCode(t, err, blackboard.ErrCodeTransitionGuardFailed)
+	if _, err := graph.Apply(context.Background(), base); err != nil {
+		t.Fatalf("verified flag should not require a Task Goal: %v", err)
+	}
 
 	base.IdempotencyKey = "c06:missing-verification"
 	base.Operations[0].Create.PropertyMap["verification_summary"] = ""
-	base.Operations[1].PutEdge.To = solutionGoalRef(producingTask.ID)
-	_, err = graph.Apply(context.Background(), base)
+	_, err := graph.Apply(context.Background(), base)
 	assertGraphErrorCode(t, err, blackboard.ErrCodeMissingProperty)
 }
 
 func TestCTFSolvedStateOrdersVerifiedFlagsAndReportsDistinctValueConflict(t *testing.T) {
 	graph, projects := newSolutionGraphServices(t)
-	ctfProject, ctfTask, ctx := createCTFTaskContext(t, graph, projects, "Find every accepted flag")
+	ctfProject, _, ctx := createCTFTaskContext(t, graph, projects, "Find every accepted flag")
 
 	createVerified := func(idempotencyKey, stableKey, value string) {
 		t.Helper()
@@ -213,7 +200,6 @@ func TestCTFSolvedStateOrdersVerifiedFlagsAndReportsDistinctValueConflict(t *tes
 			SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: idempotencyKey, Context: ctx,
 			Operations: []blackboard.Operation{
 				{OpID: "flag", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeSolution, StableKey: stableKey}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "flag", "summary": "Accepted flag", "value": value, "status": "verified", "verification_summary": "accepted"}}},
-				{OpID: "satisfies", Kind: blackboard.OpPutEdge, PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypeSatisfies, From: blackboard.NodeRef{OpID: "flag"}, To: solutionGoalRef(ctfTask.ID)}},
 			},
 		})
 		if err != nil {
@@ -252,12 +238,11 @@ func TestCTFSolvedStateOrdersVerifiedFlagsAndReportsDistinctValueConflict(t *tes
 
 func TestSupersedingEveryVerifiedFlagReversesSolvedState(t *testing.T) {
 	graph, projects := newSolutionGraphServices(t)
-	ctfProject, ctfTask, ctx := createCTFTaskContext(t, graph, projects, "Find and replace the flag")
+	ctfProject, _, ctx := createCTFTaskContext(t, graph, projects, "Find and replace the flag")
 	_, err := graph.Apply(context.Background(), blackboard.MutationBatch{
 		SchemaVersion: blackboard.GraphMutationSchemaVersion, IdempotencyKey: "c06:verified-old", Context: ctx,
 		Operations: []blackboard.Operation{
 			{OpID: "old", Kind: blackboard.OpCreateNode, Node: blackboard.NodeRef{NodeType: blackboard.NodeTypeSolution, StableKey: "solution:old"}, Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"kind": "flag", "summary": "Old flag", "value": "FLAG{old}", "status": "verified", "verification_summary": "accepted"}}},
-			{OpID: "satisfies", Kind: blackboard.OpPutEdge, PutEdge: blackboard.PutEdgeInput{EdgeType: blackboard.EdgeTypeSatisfies, From: blackboard.NodeRef{OpID: "old"}, To: solutionGoalRef(ctfTask.ID)}},
 		},
 	})
 	if err != nil {

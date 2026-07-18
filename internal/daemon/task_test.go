@@ -130,7 +130,7 @@ func TestGetTaskIncludesLatestContinuation(t *testing.T) {
 		RuntimeControls struct {
 			NativeResumeAvailable   bool   `json:"native_resume_available"`
 			NativeResumeReason      string `json:"native_resume_reason"`
-			HandoffResumeAvailable  bool   `json:"handoff_resume_available"`
+			ResumeAvailable         bool   `json:"resume_available"`
 			QueueSteerAvailable     bool   `json:"queue_steer_available"`
 			SameRuntimeProviderOnly bool   `json:"same_runtime_provider_only"`
 			RuntimeProvider         string `json:"runtime_provider"`
@@ -162,8 +162,8 @@ func TestGetTaskIncludesLatestContinuation(t *testing.T) {
 	if !strings.Contains(found.RuntimeControls.NativeResumeReason, "unsupported") {
 		t.Fatalf("expected unsupported native resume reason, got %q", found.RuntimeControls.NativeResumeReason)
 	}
-	if !found.RuntimeControls.HandoffResumeAvailable || !found.RuntimeControls.QueueSteerAvailable {
-		t.Fatalf("expected handoff resume and queue steer available, got %#v", found.RuntimeControls)
+	if !found.RuntimeControls.ResumeAvailable || !found.RuntimeControls.QueueSteerAvailable {
+		t.Fatalf("expected fresh resume and queue steer available, got %#v", found.RuntimeControls)
 	}
 	if !found.RuntimeControls.SameRuntimeProviderOnly || found.RuntimeControls.RuntimeProvider != "fake" {
 		t.Fatalf("expected same-provider fake controls, got %#v", found.RuntimeControls)
@@ -886,7 +886,7 @@ func TestSandboxResumeRebuildsContainerWithPersistentTaskMountAndRuntimeHome(t *
 	waitForTaskStatus(t, server, projectID, taskID, "completed")
 
 	resp := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/resume/handoff", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/resume", nil)
 	server.ServeHTTP(resp, req)
 	if resp.Code != http.StatusAccepted {
 		t.Fatalf("expected resume status 202, got %d with body %s", resp.Code, resp.Body.String())
@@ -1032,7 +1032,7 @@ func TestTaskRoutesRejectUnknownProject(t *testing.T) {
 		{"task events", http.MethodGet, "/api/projects/" + bogus + "/tasks/anything/events", ""},
 		{"stop task", http.MethodPost, "/api/projects/" + bogus + "/tasks/anything/stop", ""},
 		{"steer task", http.MethodPost, "/api/projects/" + bogus + "/tasks/anything/steer", `{"directive":"focus"}`},
-		{"resume handoff", http.MethodPost, "/api/projects/" + bogus + "/tasks/anything/resume/handoff", `{}`},
+		{"resume", http.MethodPost, "/api/projects/" + bogus + "/tasks/anything/resume", `{}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1054,7 +1054,7 @@ func TestTaskRoutesRejectUnknownProject(t *testing.T) {
 	}
 }
 
-func TestHandoffResumeRejectsCrossProjectTaskWithoutEffect(t *testing.T) {
+func TestFreshResumeRejectsCrossProjectTaskWithoutEffect(t *testing.T) {
 	server := newDaemon(t)
 	sourceProjectID := createProject(t, server, `{"name":"Source","scope":{"domains":["source.example"]}}`)
 	otherProjectID := createProject(t, server, `{"name":"Other","scope":{"domains":["other.example"]}}`)
@@ -1068,11 +1068,11 @@ func TestHandoffResumeRejectsCrossProjectTaskWithoutEffect(t *testing.T) {
 	eventsBefore := getTaskEvents(t, server, sourceProjectID, taskID)
 
 	resp := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+otherProjectID+"/tasks/"+taskID+"/resume/handoff", bytes.NewReader([]byte(`{}`)))
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+otherProjectID+"/tasks/"+taskID+"/resume", bytes.NewReader([]byte(`{}`)))
 	req.Header.Set("Content-Type", "application/json")
 	server.ServeHTTP(resp, req)
 	if resp.Code != http.StatusNotFound {
-		t.Fatalf("cross-Project handoff resume status = %d, want 404; body=%s", resp.Code, resp.Body.String())
+		t.Fatalf("cross-Project fresh resume status = %d, want 404; body=%s", resp.Code, resp.Body.String())
 	}
 
 	eventsAfter := getTaskEvents(t, server, sourceProjectID, taskID)
@@ -1396,7 +1396,7 @@ func TestResumeTaskUsesSteeredRuntimeProfileWhenProviderMatches(t *testing.T) {
 	}
 
 	resp := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/resume/handoff", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/resume", nil)
 	server.ServeHTTP(resp, req)
 	if resp.Code != http.StatusAccepted {
 		t.Fatalf("expected resume status 202, got %d with body %s", resp.Code, resp.Body.String())
@@ -1454,7 +1454,7 @@ func TestQueueSteerRecordsSameProviderRuntimeProfileForNextContinuation(t *testi
 	}
 
 	resumeResp := httptest.NewRecorder()
-	resumeReq := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/resume/handoff", nil)
+	resumeReq := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/resume", nil)
 	server.ServeHTTP(resumeResp, resumeReq)
 	if resumeResp.Code != http.StatusAccepted {
 		t.Fatalf("expected resume status 202, got %d with body %s", resumeResp.Code, resumeResp.Body.String())
@@ -1713,7 +1713,7 @@ func TestResumeTaskUsesContinuationModelSelectionWithoutDroppingRuntimeFields(t 
 	}
 }
 
-func TestResumeTaskFailsWhenNativeSessionIsMissing(t *testing.T) {
+func TestResumeTaskFallsBackToFreshContinuationWhenNativeSessionIsMissing(t *testing.T) {
 	runtimeRoot := t.TempDir()
 	server := newDaemonWithConfig(t, daemon.Config{
 		Version:              "test-version",
@@ -1743,11 +1743,19 @@ func TestResumeTaskFailsWhenNativeSessionIsMissing(t *testing.T) {
 	resp := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/resume", nil)
 	server.ServeHTTP(resp, req)
-	if resp.Code != http.StatusConflict {
-		t.Fatalf("expected resume status 409 without native session, got %d with body %s", resp.Code, resp.Body.String())
+	if resp.Code != http.StatusAccepted {
+		t.Fatalf("expected fresh resume status 202 without native session, got %d with body %s", resp.Code, resp.Body.String())
 	}
-	if !strings.Contains(resp.Body.String(), "native session") {
-		t.Fatalf("expected native session error, got %s", resp.Body.String())
+	var resumed struct {
+		LatestContinuation *struct {
+			Number int `json:"number"`
+		} `json:"latest_continuation"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&resumed); err != nil {
+		t.Fatalf("decode fresh resume response: %v", err)
+	}
+	if resumed.LatestContinuation == nil || resumed.LatestContinuation.Number != 2 {
+		t.Fatalf("fresh resume continuation = %#v", resumed.LatestContinuation)
 	}
 }
 

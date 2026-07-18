@@ -277,11 +277,6 @@ func NewServer(config Config) (*Server, error) {
 		server.tasks.SetContinuationReconciler(server.projectInterface)
 		server.projectInterfaceHTTP = projectinterface.NewHTTPHandler(server.projectInterface).
 			WithOperatorAuth(server.authToken, server.authToken == "")
-		if err := graph.RepairTaskGoals(context.Background()); err != nil {
-			_ = server.Close()
-			return nil, fmt.Errorf("repair Task Goals at graph startup: %w", err)
-		}
-		server.tasks.SetGoalProjector(graph)
 		if err := server.recoverPinnedContinuationFiles(); err != nil {
 			_ = server.Close()
 			return nil, err
@@ -656,12 +651,8 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/timeline", server.handleTaskTimeline)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/stop", server.handleStopTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/resume", server.handleResumeTask)
-	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/resume/handoff", server.handleResumeHandoffTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/steer/queue", server.handleQueueSteerTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/steer", server.handleSteerTask)
-	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/continuation", server.handleTaskContinuation)
-	server.mux.HandleFunc("PUT /api/projects/{id}/tasks/{task_id}/summary", server.handlePutTaskSummary)
-	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/summary", server.handleGetTaskSummary)
 	server.mux.HandleFunc("PUT /api/projects/{id}/facts/{fact_key}", server.handleUpsertProjectFact)
 	server.mux.HandleFunc("GET /api/projects/{id}/facts/{fact_key}/versions", server.handleProjectFactVersions)
 	server.mux.HandleFunc("PUT /api/projects/{id}/facts/{fact_key}/relations", server.handleUpsertFactRelation)

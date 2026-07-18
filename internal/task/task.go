@@ -124,10 +124,6 @@ type TaskContinuation struct {
 	StartedAt                          time.Time            `json:"started_at"`
 	UpdatedAt                          time.Time            `json:"updated_at"`
 	EndedAt                            *time.Time           `json:"ended_at,omitempty"`
-	BlackboardFinishSummaryVersionID   string               `json:"blackboard_finish_summary_version_id,omitempty"`
-	BlackboardFinishGraphRevision      int                  `json:"blackboard_finish_graph_revision,omitempty"`
-	BlackboardFinishMutationSequence   int                  `json:"blackboard_finish_mutation_sequence,omitempty"`
-	BlackboardFinishedAt               *time.Time           `json:"blackboard_finished_at,omitempty"`
 	BlackboardReconciliationStatus     ReconciliationStatus `json:"blackboard_reconciliation_status"`
 	BlackboardReconciliationMutationID string               `json:"blackboard_reconciliation_mutation_id,omitempty"`
 	BlackboardReconciledAt             *time.Time           `json:"blackboard_reconciled_at,omitempty"`
@@ -143,12 +139,12 @@ const (
 	ReconciliationFailed    ReconciliationStatus = "failed"
 )
 
-const continuationSelectColumns = `id, task_id, number, runtime_profile_id, runtime_provider, runner, status, container_id, native_session_id, native_session_path, started_at, updated_at, ended_at, runtime_config_version_id, blackboard_graph_revision, blackboard_renderer_version, blackboard_estimator_version, blackboard_projection_hash, blackboard_projection_bytes, blackboard_projection_estimated_tokens, blackboard_finish_summary_version_id, blackboard_finish_graph_revision, blackboard_finish_mutation_sequence, blackboard_finished_at, blackboard_reconciliation_status, blackboard_reconciliation_mutation_id, blackboard_reconciled_at`
+const continuationSelectColumns = `id, task_id, number, runtime_profile_id, runtime_provider, runner, status, container_id, native_session_id, native_session_path, started_at, updated_at, ended_at, runtime_config_version_id, blackboard_graph_revision, blackboard_renderer_version, blackboard_estimator_version, blackboard_projection_hash, blackboard_projection_bytes, blackboard_projection_estimated_tokens, blackboard_reconciliation_status, blackboard_reconciliation_mutation_id, blackboard_reconciled_at`
 
 type RuntimeControls struct {
 	NativeResumeAvailable   bool   `json:"native_resume_available"`
 	NativeResumeReason      string `json:"native_resume_reason,omitempty"`
-	HandoffResumeAvailable  bool   `json:"handoff_resume_available"`
+	ResumeAvailable         bool   `json:"resume_available"`
 	QueueSteerAvailable     bool   `json:"queue_steer_available"`
 	InterruptSteerAvailable bool   `json:"interrupt_steer_available"`
 	InterruptSteerReason    string `json:"interrupt_steer_reason,omitempty"`
@@ -238,6 +234,10 @@ var ErrContinuationReconciliationIncomplete = errors.New("prior continuation rec
 var ErrSteeringSelectionConflict = errors.New("Harness Steering selection is stale or invalid")
 
 var ErrMissingSummary = errors.New("task summary is required")
+
+// ErrRemovedWorkflowState marks retired Task Summary storage. Historical v1
+// decoding lives in blackboardmigration and does not call the live Task API.
+var ErrRemovedWorkflowState = errors.New("duplicate workflow state is retired")
 
 // Service implements task business rules against SQLite. It depends on the
 // project service only to read the scope at launch; it does not mutate projects.
@@ -1257,6 +1257,13 @@ func (s *Service) RuntimeConfigVersions(taskID string) ([]RuntimeConfigVersion, 
 }
 
 func (s *Service) PutSummary(taskID, summary, submittedBy string) (SummaryVersion, error) {
+	available, err := s.legacySummaryTableAvailable()
+	if err != nil {
+		return SummaryVersion{}, err
+	}
+	if !available {
+		return SummaryVersion{}, ErrRemovedWorkflowState
+	}
 	if _, err := s.Get(taskID); err != nil {
 		return SummaryVersion{}, err
 	}
@@ -1298,6 +1305,13 @@ func (s *Service) PutSummary(taskID, summary, submittedBy string) (SummaryVersio
 }
 
 func (s *Service) SummaryVersions(taskID string) ([]SummaryVersion, error) {
+	available, err := s.legacySummaryTableAvailable()
+	if err != nil {
+		return nil, err
+	}
+	if !available {
+		return nil, ErrRemovedWorkflowState
+	}
 	if _, err := s.Get(taskID); err != nil {
 		return nil, err
 	}
@@ -1341,6 +1355,14 @@ func (s *Service) SummaryVersions(taskID string) ([]SummaryVersion, error) {
 		return nil, fmt.Errorf("list task summaries: %w", err)
 	}
 	return versions, nil
+}
+
+func (s *Service) legacySummaryTableAvailable() (bool, error) {
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='task_summary_versions'`).Scan(&count); err != nil {
+		return false, fmt.Errorf("inspect legacy Task Summary state: %w", err)
+	}
+	return count == 1, nil
 }
 
 // UpdateStatus sets the task lifecycle status and bumps updated_at. Steering
@@ -1574,7 +1596,6 @@ func scanContinuation(row scanner) (TaskContinuation, error) {
 	var startedAt string
 	var updatedAt string
 	var endedAt string
-	var blackboardFinishedAt string
 	var blackboardReconciledAt string
 	var runtimeConfigVersionID sql.NullString
 	var graphRevision, projectionBytes, estimatedTokens sql.NullInt64
@@ -1600,10 +1621,6 @@ func scanContinuation(row scanner) (TaskContinuation, error) {
 		&found.BlackboardProjectionHash,
 		&projectionBytes,
 		&estimatedTokens,
-		&found.BlackboardFinishSummaryVersionID,
-		&found.BlackboardFinishGraphRevision,
-		&found.BlackboardFinishMutationSequence,
-		&blackboardFinishedAt,
 		&found.BlackboardReconciliationStatus,
 		&found.BlackboardReconciliationMutationID,
 		&blackboardReconciledAt,
@@ -1640,13 +1657,6 @@ func scanContinuation(row scanner) (TaskContinuation, error) {
 			return TaskContinuation{}, fmt.Errorf("parse ended_at: %w", err)
 		}
 		found.EndedAt = &parsed
-	}
-	if blackboardFinishedAt != "" {
-		parsed, err := time.Parse(time.RFC3339Nano, blackboardFinishedAt)
-		if err != nil {
-			return TaskContinuation{}, fmt.Errorf("parse blackboard_finished_at: %w", err)
-		}
-		found.BlackboardFinishedAt = &parsed
 	}
 	if blackboardReconciledAt != "" {
 		parsed, err := time.Parse(time.RFC3339Nano, blackboardReconciledAt)

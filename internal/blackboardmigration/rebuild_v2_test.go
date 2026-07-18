@@ -694,6 +694,7 @@ func newGraphV1RebuildService(t *testing.T) (*store.DB, *Service, string) {
 		WHERE id=1`); err != nil {
 		t.Fatal(err)
 	}
+	installLegacyWorkflowStateFixture(t, db)
 	return db, NewService(db, databasePath, artifactRoot), artifactRoot
 }
 

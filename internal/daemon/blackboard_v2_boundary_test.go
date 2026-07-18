@@ -153,10 +153,10 @@ func TestBlackboardV2DaemonRefusesEveryLegacyBlackboardSurface(t *testing.T) {
 	}
 }
 
-// TestBlackboardV2HandoffResumeIgnoresLegacyRows keeps the Task/Runner resume
+// TestBlackboardV2FreshResumeIgnoresLegacyRows keeps the Task/Runner resume
 // seam alive while proving its prompt is rebuilt without the retired Fact,
 // Finding, or Task Summary fallbacks.
-func TestBlackboardV2HandoffResumeIgnoresLegacyRows(t *testing.T) {
+func TestBlackboardV2FreshResumeIgnoresLegacyRows(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "handoff-v2.db")
 	server, err := daemon.NewServer(daemon.Config{Version: "v", DBPath: dbPath, DisableBuiltinSkills: true})
 	if err != nil {
@@ -183,11 +183,11 @@ func TestBlackboardV2HandoffResumeIgnoresLegacyRows(t *testing.T) {
 	eventCountBefore := len(getTaskEvents(t, server, projectID, taskID))
 
 	response := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/resume/handoff", strings.NewReader(`{}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/resume", strings.NewReader(`{}`))
 	request.Header.Set("Content-Type", "application/json")
 	server.ServeHTTP(response, request)
 	if response.Code != http.StatusAccepted {
-		t.Fatalf("handoff resume status = %d, want 202; body=%s", response.Code, response.Body.String())
+		t.Fatalf("fresh resume status = %d, want 202; body=%s", response.Code, response.Body.String())
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	var resumedGoals []string
@@ -217,14 +217,14 @@ func TestBlackboardV2HandoffResumeIgnoresLegacyRows(t *testing.T) {
 	for _, goal := range resumedGoals {
 		for _, forbidden := range []string{blackboardfixture.SentinelSummary, "fact:v1-sentinel", "finding:v1-sentinel"} {
 			if strings.Contains(goal, forbidden) {
-				t.Fatalf("handoff resume prompt exposed retired v1 state %q: %s", forbidden, goal)
+				t.Fatalf("fresh resume prompt exposed retired v1 state %q: %s", forbidden, goal)
 			}
 		}
 	}
 	waitForTaskStatus(t, server, projectID, taskID, "completed")
 	after := blackboardfixture.CaptureLegacyState(t, inspectionDB)
 	if !reflect.DeepEqual(after, before) {
-		t.Fatalf("handoff resume mutated legacy Blackboard state\nbefore: %#v\nafter:  %#v", before, after)
+		t.Fatalf("fresh resume mutated legacy Blackboard state\nbefore: %#v\nafter:  %#v", before, after)
 	}
 }
 

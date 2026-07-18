@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, type RefObject } from "react";
 import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, FileText, Shield, ChevronRight, Wrench, User, Bot, ArrowDown, ArrowUp, CheckCircle2, Trash2 } from "lucide-react";
+import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, Shield, FileText, ChevronRight, Wrench, User, Bot, ArrowDown, ArrowUp, CheckCircle2, Trash2 } from "lucide-react";
 import { apiDelete, apiGet, apiPost, type ModelProvider, type RuntimePlugin, type RuntimeProfile, type Task, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Card, Input, Badge, Select } from "@/components/ui";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
@@ -186,15 +186,6 @@ export function TaskDetailPage() {
     }
   }
 
-  async function resumeHandoff() {
-    try {
-      await apiPost(`${base}/resume/handoff`, {});
-      loadAll();
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }
-
   async function queueSteer() {
     try {
       await apiPost(`${base}/steer/queue`, {
@@ -270,7 +261,7 @@ export function TaskDetailPage() {
   const currentContinuation = task.active_continuation ?? task.latest_continuation;
   const controls = task.runtime_controls;
   const nativeResumeAvailable = controls?.native_resume_available ?? Boolean(currentContinuation?.native_session_id);
-  const handoffResumeAvailable = controls?.handoff_resume_available ?? !ACTIVE.has(task.status);
+  const resumeAvailable = controls?.resume_available ?? !ACTIVE.has(task.status);
   const queueSteerAvailable = controls?.queue_steer_available ?? true;
   const interruptSteerAvailable = controls?.interrupt_steer_available ?? nativeResumeAvailable;
   const nativeResumeReason = controls?.native_resume_reason ?? "Native resume unavailable";
@@ -284,13 +275,8 @@ export function TaskDetailPage() {
       actions={
         <div className="flex flex-wrap gap-2 sm:justify-end">
           {!running && (
-            <Button size="sm" variant="outline" onClick={resumeNative} disabled={!nativeResumeAvailable} title={nativeResumeAvailable ? "Resume native session" : nativeResumeReason}>
+            <Button size="sm" variant="outline" onClick={resumeNative} disabled={!resumeAvailable} title={nativeResumeAvailable ? "Resume native session" : "Start a fresh continuation from the current Task state"}>
               <Play className="h-4 w-4" /> Resume
-            </Button>
-          )}
-          {!running && (
-            <Button size="sm" variant="outline" onClick={resumeHandoff} disabled={!handoffResumeAvailable}>
-              <FileText className="h-4 w-4" /> Resume with handoff
             </Button>
           )}
           {running && (

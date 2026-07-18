@@ -688,6 +688,9 @@ func (s *Service) callReport(ctx context.Context, call LegacyCall) (LegacyResult
 }
 
 func (s *Service) callTaskSummary(ctx context.Context, call LegacyCall) (LegacyResult, error) {
+	if !s.legacyTaskSummaryAvailable(ctx) {
+		return LegacyResult{}, compatibilityRemovedError(call)
+	}
 	if call.TaskSummary == nil || strings.TrimSpace(call.TaskSummary.TaskID) == "" {
 		return LegacyResult{}, projectinterface.ValidationError(projectinterface.ErrCodeInvalidRequest, "Task Summary request and task_id are required", "task_summary")
 	}
@@ -786,6 +789,14 @@ func (s *Service) putOperatorTaskSummary(ctx context.Context, call LegacyCall, s
 		return task.SummaryVersion{}, projectinterface.InternalError("commit operator Task Summary: " + err.Error())
 	}
 	return version, nil
+}
+
+func (s *Service) legacyTaskSummaryAvailable(ctx context.Context) bool {
+	if s == nil || s.deps.DB == nil {
+		return false
+	}
+	var count int
+	return s.deps.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='task_summary_versions'`).Scan(&count) == nil && count == 1
 }
 
 func (s *Service) callEvidence(ctx context.Context, call LegacyCall) (LegacyResult, error) {

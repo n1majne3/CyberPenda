@@ -230,7 +230,10 @@ func applyOfflineV2SchemaWithoutEpochFlip(db *sql.DB) error {
 		return err
 	}
 	for _, definition := range migrations() {
-		if definition.version < 21 {
+		// Migration 33 is a post-cutover contraction. The v1 source decoder
+		// must see Task Summary rows and legacy Finish columns intact while it
+		// rebuilds the v2 store.
+		if definition.version < 21 || definition.version >= 33 {
 			continue
 		}
 		if _, ok := applied[definition.version]; ok {
@@ -891,7 +894,37 @@ func migrations() []migration {
 		newMigration(30, "blackboard_v2_continuation_snapshots", migration30SQL, migration30Up),
 		newMigration(31, "blackboard_v2_continuation_finish", migration31SQL, migration31Up),
 		newMigration(32, "blackboard_v2_sync_delivery_receipts", migration32SQL, migration32Up),
+		newMigration(33, "remove_duplicate_workflow_state", migration33SQL, migration33Up),
 	}
+}
+
+// migration33 contracts the active v2 store after the offline source decoder
+// has had its last chance to read historical Task Summary state. The v2 Finish
+// receipt and Working Snapshot now own continuation close/replay, so the old
+// Task Summary table and its continuation marker columns are dead state.
+const migration33SQL = `
+DROP TABLE IF EXISTS task_summary_versions;
+ALTER TABLE task_continuations DROP COLUMN blackboard_finish_summary_version_id;
+ALTER TABLE task_continuations DROP COLUMN blackboard_finish_graph_revision;
+ALTER TABLE task_continuations DROP COLUMN blackboard_finish_mutation_sequence;
+ALTER TABLE task_continuations DROP COLUMN blackboard_finished_at;
+`
+
+func migration33Up(tx *sql.Tx) error {
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS task_summary_versions`); err != nil {
+		return fmt.Errorf("drop task_summary_versions: %w", err)
+	}
+	for _, column := range []string{
+		"blackboard_finish_summary_version_id",
+		"blackboard_finish_graph_revision",
+		"blackboard_finish_mutation_sequence",
+		"blackboard_finished_at",
+	} {
+		if err := dropColumnIfPresent(tx, "task_continuations", column); err != nil {
+			return fmt.Errorf("drop task_continuations.%s: %w", column, err)
+		}
+	}
+	return nil
 }
 
 // migration32 installs request-scoped sync delivery receipts. Each
@@ -1830,6 +1863,38 @@ func ensureColumn(tx *sql.Tx, table, column, definition string) error {
 	}
 
 	_, err = tx.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition))
+	return err
+}
+
+func dropColumnIfPresent(tx *sql.Tx, table, column string) error {
+	rows, err := tx.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return err
+	}
+	present := false
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if name == column {
+			present = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if !present {
+		return nil
+	}
+	_, err = tx.Exec(fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", table, column))
 	return err
 }
 

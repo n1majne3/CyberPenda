@@ -847,6 +847,16 @@ func validateLegacyEvidenceSourceParity(ctx context.Context, tx *sql.Tx, project
 }
 
 func legacyTaskSummaryDigests(ctx context.Context, tx *sql.Tx, projectID string) (string, string, int, error) {
+	var tableCount int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='task_summary_versions'`).Scan(&tableCount); err != nil {
+		return "", "", 0, err
+	}
+	if tableCount == 0 {
+		hash := sha256.New()
+		writeFrame(hash, []byte("legacy_task_summary_versions_v1"))
+		empty := hex.EncodeToString(hash.Sum(nil))
+		return empty, empty, 0, nil
+	}
 	allDigest, count, err := taskSummaryQueryDigest(ctx, tx, `SELECT s.* FROM task_summary_versions s JOIN tasks t ON t.id=s.task_id WHERE t.project_id=? ORDER BY s.task_id,s.version,s.id`, projectID)
 	if err != nil {
 		return "", "", 0, err

@@ -58,10 +58,8 @@ func (s *Service) ReconcileContinuation(ctx context.Context, continuationID, rea
 	}
 
 	if continuation.Status == task.StatusCompleted {
-		if strings.TrimSpace(continuation.BlackboardFinishSummaryVersionID) != "" {
-			if err := s.tasks.VerifyContinuationFinishMarker(ctx, continuation.ID); err != nil {
-				return ReconcileContinuationResult{}, err
-			}
+		if err := s.verifyLegacyFinishMarkerIfPresent(ctx, continuation.ID); err != nil {
+			return ReconcileContinuationResult{}, err
 		}
 		attempts, err := s.graph.OpenAttemptsForContinuation(ctx, owner.ProjectID, owner.ID, continuation.ID)
 		if err != nil {
@@ -78,8 +76,8 @@ func (s *Service) ReconcileContinuation(ctx context.Context, continuationID, rea
 			event = task.EventPayload{"phase": "reconciliation_failed", "attempt_node_ids": attemptIDs}
 		} else if continuation.BlackboardReconciliationStatus == task.ReconciliationCompleted {
 			return ReconcileContinuationResult{Continuation: continuation}, nil
-		} else if strings.TrimSpace(continuation.BlackboardFinishSummaryVersionID) == "" {
-			event = task.EventPayload{"phase": "reconciliation_completed", "finish_omitted": true}
+		} else {
+			event = task.EventPayload{"phase": "reconciliation_completed"}
 		}
 		marked, err := s.tasks.MarkContinuationReconciliationWithEvent(ctx, continuation.ID, marker, "", s.clock.Now(), event)
 		if err != nil {
@@ -116,4 +114,23 @@ func (s *Service) ReconcileContinuation(ctx context.Context, continuationID, rea
 	return ReconcileContinuationResult{
 		Continuation: marked, MutationID: reconciled.MutationID, Attempts: reconciled.Attempts,
 	}, nil
+}
+
+func (s *Service) verifyLegacyFinishMarkerIfPresent(ctx context.Context, continuationID string) error {
+	var columnCount int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('task_continuations') WHERE name='blackboard_finish_summary_version_id'`).Scan(&columnCount); err != nil {
+		return err
+	}
+	if columnCount == 0 {
+		return nil
+	}
+	var marker string
+	err := s.db.QueryRowContext(ctx, `SELECT blackboard_finish_summary_version_id FROM task_continuations WHERE id=?`, continuationID).Scan(&marker)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(marker) == "" {
+		return nil
+	}
+	return s.tasks.VerifyContinuationFinishMarker(ctx, continuationID)
 }

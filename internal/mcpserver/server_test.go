@@ -130,7 +130,7 @@ func TestLegacyMCPWriteUsesGraphCompatibilityAndDeprecationMetadata(t *testing.T
 	for _, name := range []string{
 		"upsert_project_fact", "get_project_fact", "list_project_facts", "search_project_facts",
 		"deprecate_project_fact", "upsert_fact_relation", "record_vulnerability", "list_vulnerabilities",
-		"attach_evidence", "generate_report", "submit_task_summary",
+		"attach_evidence", "generate_report",
 	} {
 		if !deprecatedTools[name] {
 			t.Errorf("%s missing MCP deprecation metadata", name)
@@ -387,7 +387,7 @@ func TestMCPFindingEvidenceAndReportFlow(t *testing.T) {
 	}
 }
 
-func TestMCPSubmitTaskSummaryWritesEquivalentState(t *testing.T) {
+func TestMCPDoesNotExposeTaskSummaryTool(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -395,36 +395,14 @@ func TestMCPSubmitTaskSummaryWritesEquivalentState(t *testing.T) {
 	defer db.Close()
 
 	projects := project.NewService(db)
-	tasks := task.NewService(db, projects)
 	proj, err := projects.Create("Acme", "", project.Scope{}, project.Defaults{})
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	launched, err := tasks.Create(task.CreateRequest{
-		ProjectID: proj.ID,
-		Goal:      "enumerate example.com",
-		Runner:    task.RunnerSandbox,
-	})
-	if err != nil {
-		t.Fatalf("create task: %v", err)
-	}
-
-	session := connectMCP(t, mcpserver.Deps{Projects: projects, Tasks: tasks})
-	body := callTool(t, session, "submit_task_summary", map[string]any{
-		"project_id":   proj.ID,
-		"task_id":      launched.ID,
-		"summary":      "Mapped APIs and solved 10 easy challenges.",
-		"submitted_by": "claude_code",
-	})
-	if !strings.Contains(body, `"version":1`) {
-		t.Fatalf("expected versioned summary response, got %s", body)
-	}
-
-	versions, err := tasks.SummaryVersions(launched.ID)
-	if err != nil {
-		t.Fatalf("list summary versions: %v", err)
-	}
-	if len(versions) != 1 || versions[0].Summary != "Mapped APIs and solved 10 easy challenges." {
-		t.Fatalf("unexpected stored summary: %#v", versions)
+	session := connectMCP(t, mcpserver.Deps{Projects: projects})
+	if _, err := session.CallTool(context.Background(), &sdkmcp.CallToolParams{Name: "submit_task_summary", Arguments: map[string]any{
+		"project_id": proj.ID,
+	}}); err == nil {
+		t.Fatal("retired submit_task_summary tool unexpectedly remained available")
 	}
 }

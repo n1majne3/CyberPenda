@@ -627,7 +627,7 @@ func TestResumePinsCurrentTruthWithoutLegacyConclusionOrHandoffState(t *testing.
 	if len(events) != 2 || events[0].Kind != task.EventKindConversation || events[1].Kind != task.EventKindSteering || events[1].Payload["directive"] != "retain unconsumed steering" {
 		t.Fatalf("resume changed Task-local surfaces: %#v", events)
 	}
-	for _, table := range []string{"task_summary_versions", "blackboard_graph_mutations", "blackboard_graph_operations"} {
+	for _, table := range []string{"blackboard_graph_mutations", "blackboard_graph_operations"} {
 		var count int
 		if err := fixture.db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&count); err != nil {
 			t.Fatalf("count forbidden table %s: %v", table, err)
