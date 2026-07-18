@@ -34,7 +34,7 @@ func TestReleaseBinaryTargetsCoverSupportedPlatforms(t *testing.T) {
 	}
 }
 
-func TestReleaseWorkflowPublishesBinariesAndSandboxImage(t *testing.T) {
+func TestReleaseWorkflowPublishesBinariesAndAppImageWithoutSandboxBuild(t *testing.T) {
 	repoRoot := repoRoot(t)
 	workflowPath := filepath.Join(repoRoot, ".github", "workflows", "release.yml")
 	workflowBytes, err := os.ReadFile(workflowPath)
@@ -60,12 +60,19 @@ func TestReleaseWorkflowPublishesBinariesAndSandboxImage(t *testing.T) {
 	assertContains(t, workflow, `docker/setup-buildx-action@v4`)
 	assertContains(t, workflow, `docker/metadata-action@v6`)
 	assertContains(t, workflow, `docker/build-push-action@v7`)
-	assertContains(t, workflow, `file: docker/pentest-sandbox/Dockerfile`)
-	assertContains(t, workflow, `platforms: ${{ matrix.platform }}`)
-	assertContains(t, workflow, `outputs: type=image,push-by-digest=true,name-canonical=true,push=true`)
-	assertContains(t, workflow, `steps.build.outputs.digest`)
-	assertContains(t, workflow, `docker buildx imagetools create`)
 	assertContains(t, workflow, `ghcr.io/${image_name}`)
+
+	for _, forbidden := range []string{
+		"publish-sandbox-image:",
+		"publish-sandbox-manifest:",
+		"docker/pentest-sandbox/Dockerfile",
+		"sandbox-image-digest-",
+		"docker buildx imagetools create",
+	} {
+		if strings.Contains(workflow, forbidden) {
+			t.Fatalf("ordinary release workflow must not contain sandbox publication detail %q", forbidden)
+		}
+	}
 }
 
 func assertContains(t *testing.T, value string, want string) {

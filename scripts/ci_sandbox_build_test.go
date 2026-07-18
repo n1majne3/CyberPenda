@@ -93,15 +93,25 @@ func TestSandboxDockerfileKeepsKaliLinuxHeadlessMetaPackage(t *testing.T) {
 	}
 }
 
-func TestReleaseWorkflowBuildsSandboxImagePerPlatform(t *testing.T) {
+func TestManualSandboxWorkflowBuildsAndPublishesImagePerPlatform(t *testing.T) {
 	repoRoot := repoRoot(t)
-	workflowPath := filepath.Join(repoRoot, ".github", "workflows", "release.yml")
+	workflowPath := filepath.Join(repoRoot, ".github", "workflows", "publish-sandbox.yml")
 	workflowBytes, err := os.ReadFile(workflowPath)
 	if err != nil {
-		t.Fatalf("read release workflow: %v", err)
+		t.Fatalf("read sandbox publication workflow: %v", err)
 	}
 	workflow := string(workflowBytes)
 
+	assertContains(t, workflow, "workflow_dispatch:")
+	assertContains(t, workflow, "image_tag:")
+	assertContains(t, workflow, "Sandbox image tag to publish")
+	assertContains(t, workflow, "default: latest")
+	assertContains(t, workflow, "ghcr.io/${image_name}")
+	assertContains(t, workflow, "docker/metadata-action@v6")
+	assertContains(t, workflow, "type=raw,value=${{ inputs.image_tag }}")
+	assertContains(t, workflow, "publish-sandbox-image:")
+	assertContains(t, workflow, "publish-sandbox-manifest:")
+	assertContains(t, workflow, "file: docker/pentest-sandbox/Dockerfile")
 	assertContains(t, workflow, "Free disk space for sandbox image")
 	assertContains(t, workflow, "/usr/share/dotnet")
 	assertContains(t, workflow, "/usr/local/lib/android")
@@ -120,21 +130,21 @@ func TestReleaseWorkflowBuildsSandboxImagePerPlatform(t *testing.T) {
 	assertContains(t, workflow, "docker buildx imagetools create")
 
 	if strings.Contains(workflow, "file: docker/pentest-sandbox/Dockerfile\n          platforms: linux/amd64,linux/arm64") {
-		t.Fatal("release workflow must not build both sandbox platforms in one Buildx invocation")
+		t.Fatal("manual sandbox workflow must not build both sandbox platforms in one Buildx invocation")
 	}
 
 	sandboxStart := strings.Index(workflow, "publish-sandbox-image:")
 	manifestStart := strings.Index(workflow, "publish-sandbox-manifest:")
 	if sandboxStart == -1 || manifestStart == -1 || manifestStart <= sandboxStart {
-		t.Fatal("release workflow must include sandbox image and manifest jobs")
+		t.Fatal("manual sandbox workflow must include sandbox image and manifest jobs")
 	}
 	sandboxJob := workflow[sandboxStart:manifestStart]
 	cleanupIndex := strings.Index(sandboxJob, "Free disk space for sandbox image")
 	buildxIndex := strings.Index(sandboxJob, "docker/setup-buildx-action@v4")
 	if cleanupIndex == -1 || buildxIndex == -1 {
-		t.Fatal("release workflow must include disk cleanup and Buildx setup")
+		t.Fatal("manual sandbox workflow must include disk cleanup and Buildx setup")
 	}
 	if cleanupIndex > buildxIndex {
-		t.Fatal("release workflow must free disk before setting up Buildx")
+		t.Fatal("manual sandbox workflow must free disk before setting up Buildx")
 	}
 }
