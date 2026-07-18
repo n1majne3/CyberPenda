@@ -80,7 +80,7 @@ func TestBuildCodexLaunchArgsDefaultsToExecForPrompt(t *testing.T) {
 		t.Fatalf("build args: %v", err)
 	}
 
-	want := []string{"codex", "exec", "--model", "gpt-5.5", "--skip-git-repo-check", goal}
+	want := []string{"codex", "exec", "--model", "gpt-5.5", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", goal}
 	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v, want %#v", args, want)
 	}
@@ -107,6 +107,27 @@ func TestBuildCodexLaunchArgsDoesNotDuplicateExplicitSkipGitRepoCheck(t *testing
 	}
 }
 
+func TestBuildCodexLaunchArgsDoesNotDuplicateExplicitNonInteractiveBypass(t *testing.T) {
+	args, err := adapters.BuildLaunchArgs(adapters.LaunchArgsRequest{
+		Provider: runtimeprofile.ProviderCodex,
+		Profile: runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderCodex,
+			Fields: runtimeprofile.Fields{
+				Model:      "gpt-5.5",
+				CustomArgs: []string{"--dangerously-bypass-approvals-and-sandbox"},
+			},
+		},
+		Goal: "scan target",
+	})
+	if err != nil {
+		t.Fatalf("build args: %v", err)
+	}
+
+	if strings.Count(strings.Join(args, " "), "--dangerously-bypass-approvals-and-sandbox") != 1 {
+		t.Fatalf("expected one permission bypass flag, got %#v", args)
+	}
+}
+
 func TestBuildNativeResumeArgsUsesRuntimePluginContract(t *testing.T) {
 	args, err := adapters.BuildNativeResumeArgs(adapters.NativeResumeArgsRequest{
 		Provider: runtimeprofile.ProviderCodex,
@@ -123,7 +144,7 @@ func TestBuildNativeResumeArgsUsesRuntimePluginContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build native resume args: %v", err)
 	}
-	want := []string{"/usr/local/bin/codex", "exec", "--model", "gpt-5", "--skip-git-repo-check", "resume", "sess-123", "focus admin"}
+	want := []string{"/usr/local/bin/codex", "exec", "--model", "gpt-5", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "resume", "sess-123", "focus admin"}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("unexpected native resume args:\nwant %#v\ngot  %#v", want, args)
 	}
@@ -158,11 +179,30 @@ func TestBuildNativeResumeArgsUsesClaudeCodeRuntimePluginContract(t *testing.T) 
 		"--output-format", "stream-json",
 		"--verbose",
 		"--permission-mode", "bypassPermissions",
+		"--dangerously-skip-permissions",
 		"--",
 		"focus admin",
 	}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("unexpected claude native resume args:\nwant %#v\ngot  %#v", want, args)
+	}
+}
+
+func TestBuildNativeResumeArgsUsesClaudeNonInteractiveDefaultsOnHost(t *testing.T) {
+	args, err := adapters.BuildNativeResumeArgs(adapters.NativeResumeArgsRequest{
+		Provider: runtimeprofile.ProviderClaudeCode,
+		Profile: runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderClaudeCode,
+			Fields:   runtimeprofile.Fields{Model: "claude-sonnet-4"},
+		},
+		NativeSessionID: "sess-123",
+		ResumedMessage:  "focus admin",
+	})
+	if err != nil {
+		t.Fatalf("build native resume args: %v", err)
+	}
+	if !strings.Contains(strings.Join(args, " "), "--dangerously-skip-permissions") {
+		t.Fatalf("expected host resume to include bypass args, got %#v", args)
 	}
 }
 
@@ -261,7 +301,7 @@ func TestBuildClaudeCodeLaunchArgsKeepsExplicitOutputFormat(t *testing.T) {
 	}
 }
 
-func TestBuildClaudeCodeLaunchArgsAddsBypassInSandbox(t *testing.T) {
+func TestBuildClaudeCodeLaunchArgsUsesNonInteractiveDefaultsInSandbox(t *testing.T) {
 	args, err := adapters.BuildLaunchArgs(adapters.LaunchArgsRequest{
 		Provider: runtimeprofile.ProviderClaudeCode,
 		Profile: runtimeprofile.Profile{
@@ -282,7 +322,7 @@ func TestBuildClaudeCodeLaunchArgsAddsBypassInSandbox(t *testing.T) {
 	}
 }
 
-func TestBuildClaudeCodeLaunchArgsSkipsBypassOutsideSandbox(t *testing.T) {
+func TestBuildClaudeCodeLaunchArgsUsesNonInteractiveDefaultsOnHost(t *testing.T) {
 	args, err := adapters.BuildLaunchArgs(adapters.LaunchArgsRequest{
 		Provider: runtimeprofile.ProviderClaudeCode,
 		Profile: runtimeprofile.Profile{
@@ -296,8 +336,8 @@ func TestBuildClaudeCodeLaunchArgsSkipsBypassOutsideSandbox(t *testing.T) {
 		t.Fatalf("build args: %v", err)
 	}
 	joined := strings.Join(args, " ")
-	if strings.Contains(joined, "--dangerously-skip-permissions") {
-		t.Fatalf("expected host runner to skip bypass args, got %q", joined)
+	if !strings.Contains(joined, "--dangerously-skip-permissions") {
+		t.Fatalf("expected host runner to include bypass args, got %q", joined)
 	}
 }
 

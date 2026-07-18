@@ -84,6 +84,7 @@ func BuildNativeResumeArgs(req NativeResumeArgsRequest) ([]string, error) {
 		return nil, fmt.Errorf("no binary path configured for provider %q", req.Provider)
 	}
 	extra := append([]string{}, req.Profile.Fields.CustomArgs...)
+	extra = appendRuntimeNonInteractiveArgs(req.Provider, extra)
 	lists := map[string][]string{
 		"custom_args": extra,
 	}
@@ -116,15 +117,19 @@ func hasCLIOption(args []string, option string) bool {
 	return runtimeplugin.HasCLIOption(args, option)
 }
 
-func appendSandboxProviderArgs(provider runtimeprofile.Provider, sandbox bool, args []string) []string {
-	if !sandbox || provider != runtimeprofile.ProviderClaudeCode {
-		return args
-	}
-	if !hasCLIOption(args, "--dangerously-skip-permissions") {
-		args = append(args, "--dangerously-skip-permissions")
-	}
-	if !hasCLIOption(args, "--permission-mode") {
-		args = append(args, "--permission-mode", "bypassPermissions")
+func appendRuntimeNonInteractiveArgs(provider runtimeprofile.Provider, args []string) []string {
+	switch provider {
+	case runtimeprofile.ProviderCodex:
+		if !hasCLIOption(args, "--dangerously-bypass-approvals-and-sandbox") {
+			args = append(args, "--dangerously-bypass-approvals-and-sandbox")
+		}
+	case runtimeprofile.ProviderClaudeCode:
+		if !hasCLIOption(args, "--dangerously-skip-permissions") {
+			args = append(args, "--dangerously-skip-permissions")
+		}
+		if !hasCLIOption(args, "--permission-mode") {
+			args = append(args, "--permission-mode", "bypassPermissions")
+		}
 	}
 	return args
 }
@@ -140,7 +145,7 @@ func defaultBinary(provider runtimeprofile.Provider) string {
 
 func launchRenderContext(req LaunchArgsRequest, binary string) runtimeplugin.RenderContext {
 	extra := append([]string{}, req.Profile.Fields.CustomArgs...)
-	extra = appendSandboxProviderArgs(req.Provider, req.Sandbox, extra)
+	extra = appendRuntimeNonInteractiveArgs(req.Provider, extra)
 	subcommand := strings.TrimSpace(req.Profile.Fields.Env["PENTEST_CODEX_SUBCOMMAND"])
 	if subcommand == "" {
 		subcommand = "exec"

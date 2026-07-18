@@ -100,6 +100,10 @@ _Avoid_: direct tool control, hidden prompt mutation, new task
 The next unit of runtime progress after launch, user input, checkpoint, interrupt, or resume.
 _Avoid_: live thought editing, new task
 
+**Runtime Non-Interactive Defaults**:
+Provider-native arguments required for a **Runtime** to operate without interactive approval or permission prompts. The **Runtime Harness** adds them to every launch and **Runtime Continuation**: Codex receives `--dangerously-bypass-approvals-and-sandbox`; Claude Code receives `--dangerously-skip-permissions` and `--permission-mode bypassPermissions`. These defaults apply to both **Sandbox Runner** and **Host Runner** execution, and are not duplicated when the **Runtime Profile** already supplies them.
+_Avoid_: permission grant, Scope authorization, **Host Runner Activation**, **Project Interface** authority, runner policy
+
 **Runtime Profile**:
 A global user-editable configuration that chooses how a **Runtime** should run for a task without storing secret values.
 _Avoid_: account, credential bundle, secret store
@@ -822,6 +826,8 @@ _Avoid_: transcript, export, source of truth
 - A **Runtime Continuation** after a runtime-profile switch does not inherit the prior runtime's **Runtime Workdir** by default.
 - A **Task** may override its **Runtime Profile**'s default **Runner**, and that override is recorded as a task event.
 - A **Task** uses **Config Projection** to prepare runtime configuration without mutating host runtime configuration.
+- Every **Runtime** operates non-interactively; the **Runtime Harness** applies **Runtime Non-Interactive Defaults** to every Codex and Claude Code launch and continuation, regardless of whether the selected **Runner** is a **Sandbox Runner** or **Host Runner**.
+- **Runtime Non-Interactive Defaults** control provider CLI interaction only; they do not expand **Scope**, replace **Host Runner Activation**, grant **Project Interface** authority, or bypass **Credential Reference** and **Preflight** checks.
 - A **Config Projection** failure belongs to the affected **Task** unless the **Runtime Profile** itself is explicitly invalid.
 - A **Task** passes **Preflight** before its **Runtime** starts.
 - A **Credential Reference** that cannot be resolved during **Preflight** prevents **Runtime** launch.
