@@ -121,7 +121,7 @@ func newV2MCPFixture(t *testing.T) v2MCPFixture {
 
 func (f v2MCPFixture) session(t *testing.T, grant *projectinterface.Grant, grantErr *blackboardv2.Error) *sdkmcp.ClientSession {
 	t.Helper()
-	return connectMCPV2(t, mcpserver.V2Deps{BlackboardV2: f.board, Grant: grant, GrantError: grantErr})
+	return connectMCPV2(t, mcpserver.Deps{BlackboardV2: f.board, Grant: grant, GrantError: grantErr})
 }
 
 func keys(values map[string]bool) []string {
@@ -579,7 +579,7 @@ func TestBlackboardV2MCPResponseLossRetryRedeliversExactSyncAttachment(t *testin
 		t.Fatalf("first checkpoint: %s", firstRaw)
 	}
 	var delivered struct {
-		Schema string                                 `json:"schema"`
+		Schema string                                  `json:"schema"`
 		Sync   *blackboardv2.SynchronizationAttachment `json:"sync"`
 	}
 	if err := json.Unmarshal(firstRaw, &delivered); err != nil || delivered.Schema != "semantic-change-result/v2" || delivered.Sync == nil {
@@ -663,9 +663,9 @@ func TestBlackboardV2MCPFinishCarriesSyncWhenPendingAndExactReplayStable(t *test
 		t.Fatalf("finish: %s", finishRaw)
 	}
 	var envelope struct {
-		Schema   string                                 `json:"schema"`
-		Status   string                                 `json:"status"`
-		Revision int                                    `json:"revision"`
+		Schema   string                                  `json:"schema"`
+		Status   string                                  `json:"status"`
+		Revision int                                     `json:"revision"`
 		Sync     *blackboardv2.SynchronizationAttachment `json:"sync"`
 	}
 	if err := json.Unmarshal(finishRaw, &envelope); err != nil {

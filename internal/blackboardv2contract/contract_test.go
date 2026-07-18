@@ -221,31 +221,6 @@ func TestHarnessRejectsAuthoritySmugglingUnknownFieldsAndUTF8Oversize(t *testing
 	}
 }
 
-func TestBaselineSeparatesExistingFailuresFromTheIntentionalV2Red(t *testing.T) {
-	harness := mustHarness(t)
-	baseline, err := harness.Baseline()
-	if err != nil {
-		t.Fatalf("load implementation baseline: %v", err)
-	}
-	if baseline.FixedPoint != "61d07e44a71e25d8392d95afb998d7171b4fe37b" {
-		t.Fatalf("baseline fixed point = %q", baseline.FixedPoint)
-	}
-	if baseline.Command != "rtk go test ./..." || baseline.Passed != 944 || baseline.Failed != 3 {
-		t.Fatalf("baseline result = command %q, %d passed, %d failed", baseline.Command, baseline.Passed, baseline.Failed)
-	}
-	if len(baseline.PreExistingFailures) != 3 {
-		t.Fatalf("pre-existing failures = %d, want 3", len(baseline.PreExistingFailures))
-	}
-	for _, failure := range baseline.PreExistingFailures {
-		if failure.Package != "pentest/internal/blackboardcompat" {
-			t.Errorf("pre-existing failure package = %q", failure.Package)
-		}
-	}
-	if baseline.IntentionalV2Red.Test != "TestEmptyRuntimeSnapshotFixtureIsExactAndConformant" || baseline.IntentionalV2Red.Failure != "package has no non-test Go files" {
-		t.Fatalf("intentional v2 red = %+v", baseline.IntentionalV2Red)
-	}
-}
-
 func TestFixturesReturnStableCompactJSONBytes(t *testing.T) {
 	harness := mustHarness(t)
 	for _, name := range harness.FixtureNames() {

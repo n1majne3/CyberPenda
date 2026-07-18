@@ -647,9 +647,9 @@ func TestAGENTSMDDocumentsLoopbackRewriteInSandbox(t *testing.T) {
 	if !strings.Contains(string(agents), "## Required workflow") {
 		t.Fatalf("expected AGENTS.md to document required workflow, got:\n%s", agents)
 	}
-	if !strings.Contains(string(agents), "upsert_project_fact") ||
-		!strings.Contains(string(agents), "record_vulnerability") ||
-		strings.Contains(string(agents), "submit_task_summary") {
+	if !strings.Contains(string(agents), "blackboard_change") ||
+		!strings.Contains(string(agents), "blackboard_finish") ||
+		strings.Contains(string(agents), "upsert_project_fact") {
 		t.Fatalf("expected AGENTS.md to document MCP workflow tools, got:\n%s", agents)
 	}
 }

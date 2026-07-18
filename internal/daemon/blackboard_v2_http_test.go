@@ -299,6 +299,25 @@ type v2HTTPOptions struct {
 	headers     map[string]string
 }
 
+func TestBlackboardV2HTTPDoesNotRegisterRetiredGraphRoutes(t *testing.T) {
+	fixture := newV2HTTPFixture(t)
+	legacyBase := fixture.httpServer.URL + "/api/projects/" + fixture.project.ID
+	for _, endpoint := range []string{
+		"/blackboard/runtime-graph",
+		"/blackboard/records",
+		"/blackboard/work",
+		"/blackboard/current-truth",
+		"/blackboard/frontier",
+		"/reports/pentest",
+		"/reports/ctf-solution",
+	} {
+		result := doV2HTTP(t, http.MethodGet, legacyBase+endpoint, fixture.operator, "operator", "", "")
+		if result.status != http.StatusNotFound {
+			t.Errorf("retired route GET %s = %d, want 404; body=%s", endpoint, result.status, result.body)
+		}
+	}
+}
+
 func mustV2HTTP(t *testing.T, method, url, token, actor, idempotencyKey, body string) []byte {
 	t.Helper()
 	result := doV2HTTP(t, method, url, token, actor, idempotencyKey, body)
@@ -775,8 +794,8 @@ func TestBlackboardV2HTTPParallelTaskSyncDeliversOnceThenOrdinaryResponses(t *te
 	// Next trusted read piggybacks exact current Snapshot + reason, no Task identity.
 	first := mustV2HTTP(t, http.MethodGet, fixture.base+"/blackboard/records/entity:parallel-http", fixture.peer.Token, "", "", "")
 	var synchronized struct {
-		Schema string                                 `json:"schema"`
-		Key    string                                 `json:"key"`
+		Schema string                                  `json:"schema"`
+		Key    string                                  `json:"key"`
 		Sync   *blackboardv2.SynchronizationAttachment `json:"sync"`
 	}
 	if err := json.Unmarshal(first, &synchronized); err != nil {
@@ -852,7 +871,7 @@ func TestBlackboardV2HTTPResponseLossRetryRedeliversExactSyncAttachment(t *testi
 	first := mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/attempts/attempt:loss:checkpoint", fixture.peer.Token, "", "loss-checkpoint",
 		`{"version":1,"summary":"Checkpoint with pending sync"}`)
 	var delivered struct {
-		Schema string                                 `json:"schema"`
+		Schema string                                  `json:"schema"`
 		Sync   *blackboardv2.SynchronizationAttachment `json:"sync"`
 	}
 	if err := json.Unmarshal(first, &delivered); err != nil || delivered.Schema != "semantic-change-result/v2" || delivered.Sync == nil {
@@ -982,10 +1001,10 @@ func TestBlackboardV2HTTPFinishCarriesSyncWhenPendingAndExactReplayStable(t *tes
 	}
 	finished := mustV2HTTP(t, http.MethodPost, fixture.base+"/continuation:finish", fixture.peer.Token, "", "finish-with-sync", `{}`)
 	var envelope struct {
-		Schema          string                                 `json:"schema"`
-		Status          string                                 `json:"status"`
-		Revision        int                                    `json:"revision"`
-		WorkingSnapshot blackboardv2.WorkingSnapshot           `json:"working_snapshot"`
+		Schema          string                                  `json:"schema"`
+		Status          string                                  `json:"status"`
+		Revision        int                                     `json:"revision"`
+		WorkingSnapshot blackboardv2.WorkingSnapshot            `json:"working_snapshot"`
 		Sync            *blackboardv2.SynchronizationAttachment `json:"sync"`
 	}
 	if err := json.Unmarshal(finished, &envelope); err != nil {

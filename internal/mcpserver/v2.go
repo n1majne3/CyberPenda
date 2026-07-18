@@ -16,10 +16,10 @@ import (
 	"pentest/internal/projectinterface"
 )
 
-// V2Deps are the domain services and trusted session for Blackboard v2 MCP tools.
+// Deps are the domain services and trusted session for Blackboard v2 MCP tools.
 // Project, Task, and Continuation identity come only from the Continuation
 // Interface Grant resolved into Grant; model-facing arguments never carry them.
-type V2Deps struct {
+type Deps struct {
 	BlackboardV2 *blackboardv2.Service
 	// Grant is the Continuation Interface capability bound to this MCP session.
 	Grant *projectinterface.Grant
@@ -28,10 +28,10 @@ type V2Deps struct {
 	GrantError *blackboardv2.Error
 }
 
-// NewV2 builds an MCP server that registers exactly the six Blackboard v2
+// New builds an MCP server that registers exactly the six Blackboard v2
 // trusted tools. Input schemas are closed objects generated from the frozen
 // v2 contract definitions.
-func NewV2(deps V2Deps) *sdkmcp.Server {
+func New(deps Deps) *sdkmcp.Server {
 	server := sdkmcp.NewServer(&sdkmcp.Implementation{
 		Name:    "pentest-agent",
 		Version: "0.1.0",
@@ -43,7 +43,7 @@ func NewV2(deps V2Deps) *sdkmcp.Server {
 	return server
 }
 
-func registerBlackboardV2Tools(server *sdkmcp.Server, deps V2Deps) {
+func registerBlackboardV2Tools(server *sdkmcp.Server, deps Deps) {
 	harness, err := blackboardv2contract.NewHarness()
 	if err != nil {
 		panic(fmt.Errorf("load Blackboard v2 contract for trusted MCP: %w", err))
@@ -191,11 +191,11 @@ func decodeV2ToolArgs(harness *blackboardv2contract.Harness, schemaName string, 
 	return nil
 }
 
-func (deps V2Deps) callV2(ctx context.Context, requireLive, attachSync bool, action func(context.Context, string, string) (any, error)) (*sdkmcp.CallToolResult, error) {
+func (deps Deps) callV2(ctx context.Context, requireLive, attachSync bool, action func(context.Context, string, string) (any, error)) (*sdkmcp.CallToolResult, error) {
 	return deps.callV2WithFingerprint(ctx, requireLive, attachSync, "", action)
 }
 
-func (deps V2Deps) callV2WithFingerprint(ctx context.Context, requireLive, attachSync bool, requestFingerprint string, action func(context.Context, string, string) (any, error)) (*sdkmcp.CallToolResult, error) {
+func (deps Deps) callV2WithFingerprint(ctx context.Context, requireLive, attachSync bool, requestFingerprint string, action func(context.Context, string, string) (any, error)) (*sdkmcp.CallToolResult, error) {
 	result, _, err := deps.serveV2(ctx, requireLive, attachSync, requestFingerprint, action)
 	return result, err
 }
@@ -205,7 +205,7 @@ func toolBlackboardV2ErrorResult(err *blackboardv2.Error) (*sdkmcp.CallToolResul
 	return result, callErr
 }
 
-func (deps V2Deps) serveV2(ctx context.Context, requireLive, attachSync bool, requestFingerprint string, action func(context.Context, string, string) (any, error)) (*sdkmcp.CallToolResult, any, error) {
+func (deps Deps) serveV2(ctx context.Context, requireLive, attachSync bool, requestFingerprint string, action func(context.Context, string, string) (any, error)) (*sdkmcp.CallToolResult, any, error) {
 	grant, authErr := deps.requireGrant()
 	if authErr != nil {
 		return toolBlackboardV2Error(authErr, nil)
@@ -247,7 +247,7 @@ func (deps V2Deps) serveV2(ctx context.Context, requireLive, attachSync bool, re
 	return toolBlackboardV2JSON(result, nil)
 }
 
-func (deps V2Deps) requireGrant() (projectinterface.Grant, *blackboardv2.Error) {
+func (deps Deps) requireGrant() (projectinterface.Grant, *blackboardv2.Error) {
 	if deps.Grant != nil {
 		return *deps.Grant, nil
 	}
@@ -275,6 +275,16 @@ func toolBlackboardV2JSON(payload any, sync *blackboardv2.SynchronizationAttachm
 	}
 	object["sync"] = syncRaw
 	return toolJSON(object)
+}
+
+func toolJSON(payload any) (*sdkmcp.CallToolResult, any, error) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &sdkmcp.CallToolResult{
+		Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: string(data)}},
+	}, payload, nil
 }
 
 func toolBlackboardV2Error(err *blackboardv2.Error, sync *blackboardv2.SynchronizationAttachment) (*sdkmcp.CallToolResult, any, error) {

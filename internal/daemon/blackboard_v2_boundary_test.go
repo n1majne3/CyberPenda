@@ -20,12 +20,10 @@ import (
 	"pentest/internal/testsupport/blackboardfixture"
 )
 
-const retiredBlackboardV1Message = "legacy Blackboard v1 interface is unavailable for blackboard_v2; use the Blackboard v2 semantic interface"
-
-// TestBlackboardV2DaemonRefusesEveryLegacyBlackboardSurface proves that a
-// fresh v2 daemon cannot fall through any retained HTTP or MCP route into the
-// v1 tables while the later v2 transport tickets are still pending.
-func TestBlackboardV2DaemonRefusesEveryLegacyBlackboardSurface(t *testing.T) {
+// TestBlackboardV2DaemonDoesNotRegisterLegacyBlackboardSurfaces proves that a
+// fresh v2 daemon exposes no compatibility route or response for retired v1
+// HTTP and MCP paths.
+func TestBlackboardV2DaemonDoesNotRegisterLegacyBlackboardSurfaces(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "blackboard-v2.db")
 	db, err := store.Open(dbPath)
 	if err != nil {
@@ -91,7 +89,7 @@ func TestBlackboardV2DaemonRefusesEveryLegacyBlackboardSurface(t *testing.T) {
 			request.Header.Set("Accept", "application/json, text/event-stream")
 			response := httptest.NewRecorder()
 			server.ServeHTTP(response, request)
-			assertRetiredBlackboardV1Response(t, response)
+			assertBlackboardV1RouteNotFound(t, response)
 		})
 	}
 
@@ -141,7 +139,7 @@ func TestBlackboardV2DaemonRefusesEveryLegacyBlackboardSurface(t *testing.T) {
 		t.Run("read/"+path, func(t *testing.T) {
 			response := httptest.NewRecorder()
 			server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
-			assertRetiredBlackboardV1Response(t, response)
+			assertBlackboardV1RouteNotFound(t, response)
 		})
 	}
 
@@ -280,13 +278,14 @@ func assertV2BootstrapMCPHasNoLegacyTools(t *testing.T, server *daemon.Server) {
 	}
 }
 
-func assertRetiredBlackboardV1Response(t *testing.T, response *httptest.ResponseRecorder) {
+func assertBlackboardV1RouteNotFound(t *testing.T, response *httptest.ResponseRecorder) {
 	t.Helper()
-	if response.Code != http.StatusGone {
-		t.Fatalf("status = %d, want 410; body=%s", response.Code, response.Body.String())
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", response.Code, response.Body.String())
 	}
-	want := fmt.Sprintf("{\"error\":%q}\n", retiredBlackboardV1Message)
-	if response.Body.String() != want {
-		t.Fatalf("body = %q, want %q", response.Body.String(), want)
+	for _, header := range []string{"Deprecation", "Link", "CyberPenda-Compatibility"} {
+		if value := response.Header().Get(header); value != "" {
+			t.Fatalf("removed route returned compatibility header %s=%q", header, value)
+		}
 	}
 }

@@ -14,7 +14,6 @@ import (
 
 	"pentest/internal/adapters"
 	"pentest/internal/blackboard"
-	"pentest/internal/blackboardcompat"
 	"pentest/internal/blackboardv2"
 
 	"pentest/internal/modelprovider"
@@ -1442,40 +1441,6 @@ func unconsumedHarnessSteering(events []task.Event) []string {
 	return directives
 }
 
-func (server *Server) resumeGoalBlackboardLinesLegacy(projectID string) (factLines, progressFacts, findingLines []string, err error) {
-	factIndex, err := server.facts.FactIndex(projectID, blackboard.FactIndexOptions{})
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	factLines = make([]string, 0, len(factIndex))
-	progressFacts = make([]string, 0)
-	for _, entry := range factIndex {
-		factLines = append(factLines, entry.FactKey+": "+entry.Summary)
-		if !strings.HasPrefix(entry.FactKey, "progress:") {
-			continue
-		}
-		fact, err := server.facts.GetFact(projectID, entry.FactKey)
-		if err != nil || strings.TrimSpace(fact.Body) == "" {
-			continue
-		}
-		progressFacts = append(progressFacts, entry.FactKey+":\n"+fact.Body)
-	}
-
-	findings, err := server.facts.ListFindings(projectID)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	findingLines = make([]string, 0, len(findings))
-	start := 0
-	if len(findings) > adapters.MaxResumeFindings {
-		start = len(findings) - adapters.MaxResumeFindings
-	}
-	for _, finding := range findings[start:] {
-		findingLines = append(findingLines, finding.FindingKey+": "+finding.Title+" ("+string(finding.Status)+")")
-	}
-	return factLines, progressFacts, findingLines, nil
-}
-
 func (server *Server) writeResumePreparationError(response http.ResponseWriter, err error) {
 	var boardErr *blackboardv2.Error
 	if errors.As(err, &boardErr) && boardErr.Code == "reconciliation_incomplete" {
@@ -1976,117 +1941,6 @@ func (server *Server) handleTaskContinuation(response http.ResponseWriter, reque
 			EventCount:       len(events),
 			ConfigVersions:   len(configVersions),
 		},
-	})
-}
-
-func (server *Server) handlePutTaskSummary(response http.ResponseWriter, request *http.Request) {
-	projectID := request.PathValue("id")
-	taskID := request.PathValue("task_id")
-	if !server.requireCompatibilityProject(response, request, projectID) {
-		return
-	}
-	if taskID == "" {
-		writeError(response, http.StatusNotFound, "task not found")
-		return
-	}
-	found, err := server.tasks.Get(taskID)
-	if err != nil {
-		writeTaskError(response, err)
-		return
-	}
-	if found.ProjectID != projectID {
-		writeError(response, http.StatusNotFound, "task not found")
-		return
-	}
-
-	var input struct {
-		Summary        string `json:"summary"`
-		SubmittedBy    string `json:"submitted_by"`
-		IdempotencyKey string `json:"idempotency_key,omitempty"`
-	}
-	if !server.decodeCompatibilityJSON(response, request, &input) {
-		return
-	}
-	if server.compatibility != nil {
-		setCompatibilityHeaders(response)
-		principal, err := server.requestCompatibilityPrincipal(request, projectID)
-		if err != nil {
-			writeCompatibilityError(response, err)
-			return
-		}
-		key := request.Header.Get("Idempotency-Key")
-		if key == "" {
-			key = input.IdempotencyKey
-		}
-		result, err := server.compatibility.Call(request.Context(), blackboardcompat.LegacyCall{
-			Kind: blackboardcompat.CallPutTaskSummary, Transport: blackboardcompat.TransportHTTP,
-			ProjectID: projectID, Principal: principal, IdempotencyKey: key,
-			TaskSummary: &blackboardcompat.TaskSummaryWrite{TaskID: taskID, Summary: input.Summary, SubmittedBy: input.SubmittedBy},
-		})
-		if err != nil {
-			writeCompatibilityError(response, err)
-			return
-		}
-		writeJSON(response, http.StatusOK, result.Payload)
-		return
-	}
-	summary, err := server.tasks.PutSummary(taskID, input.Summary, input.SubmittedBy)
-	if err != nil {
-		writeTaskError(response, err)
-		return
-	}
-	writeJSON(response, http.StatusOK, summary)
-}
-
-func (server *Server) handleGetTaskSummary(response http.ResponseWriter, request *http.Request) {
-	projectID := request.PathValue("id")
-	taskID := request.PathValue("task_id")
-	if !server.requireProject(response, projectID) {
-		return
-	}
-	if taskID == "" {
-		writeError(response, http.StatusNotFound, "task not found")
-		return
-	}
-	if server.compatibility != nil {
-		setCompatibilityHeaders(response)
-		if err := server.compatibility.RejectRetiredRead(request.Context(), blackboardcompat.CallReadTaskSummary); err != nil {
-			writeCompatibilityError(response, err)
-			return
-		}
-		if err := server.compatibility.RecordUse(request.Context(), blackboardcompat.Use{ProjectID: projectID, Transport: blackboardcompat.TransportHTTP, Kind: blackboardcompat.CallReadTaskSummary, Mode: blackboardcompat.UseModeRead}); err != nil {
-			writeCompatibilityError(response, err)
-			return
-		}
-	}
-	found, err := server.tasks.Get(taskID)
-	if err != nil {
-		writeTaskError(response, err)
-		return
-	}
-	if found.ProjectID != projectID {
-		writeError(response, http.StatusNotFound, "task not found")
-		return
-	}
-
-	versions, err := server.tasks.SummaryVersions(taskID)
-	if err != nil {
-		writeTaskError(response, err)
-		return
-	}
-	if versions == nil {
-		versions = []task.SummaryVersion{}
-	}
-	var latest *task.SummaryVersion
-	if len(versions) > 0 {
-		latest = &versions[len(versions)-1]
-	}
-	writeJSON(response, http.StatusOK, struct {
-		Summary  *task.SummaryVersion  `json:"summary"`
-		Versions []task.SummaryVersion `json:"versions"`
-	}{
-		Summary:  latest,
-		Versions: versions,
 	})
 }
 

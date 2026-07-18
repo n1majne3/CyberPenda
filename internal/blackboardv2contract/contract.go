@@ -62,32 +62,6 @@ type TrustedTool struct {
 	ResultSchema   string `json:"result_schema"`
 }
 
-// Baseline captures the observed pre-implementation suite separately from the
-// first intentional v2 red test.
-type Baseline struct {
-	Schema              string            `json:"schema"`
-	FixedPoint          string            `json:"fixed_point"`
-	Command             string            `json:"command"`
-	Passed              int               `json:"passed"`
-	Failed              int               `json:"failed"`
-	PreExistingFailures []BaselineFailure `json:"pre_existing_failures"`
-	IntentionalV2Red    IntentionalRed    `json:"intentional_v2_red"`
-}
-
-// BaselineFailure names one failure observed before #98's first red test.
-type BaselineFailure struct {
-	Package string `json:"package"`
-	Test    string `json:"test"`
-	Failure string `json:"failure"`
-}
-
-// IntentionalRed records the first behavior test's expected red result.
-type IntentionalRed struct {
-	Command string `json:"command"`
-	Test    string `json:"test"`
-	Failure string `json:"failure"`
-}
-
 // Harness validates producer or adapter output against the same contract
 // artifacts used by the golden corpus.
 type Harness struct {
@@ -147,29 +121,6 @@ func (h *Harness) OpenAPI() ([]byte, error) {
 		return nil, fmt.Errorf("read Blackboard v2 OpenAPI: %w", err)
 	}
 	return bytes.TrimSpace(raw), nil
-}
-
-// Baseline returns the frozen test observation captured before #98's first
-// intentional red test.
-func (h *Harness) Baseline() (Baseline, error) {
-	raw, err := contractFiles.ReadFile("contractdata/baseline.json")
-	if err != nil {
-		return Baseline{}, fmt.Errorf("read implementation baseline: %w", err)
-	}
-	var baseline Baseline
-	if err := json.Unmarshal(raw, &baseline); err != nil {
-		return Baseline{}, fmt.Errorf("decode implementation baseline: %w", err)
-	}
-	if baseline.Schema != "blackboard-v2-implementation-baseline/v1" {
-		return Baseline{}, fmt.Errorf("unsupported implementation baseline schema %q", baseline.Schema)
-	}
-	if baseline.FixedPoint == "" || baseline.Command == "" || baseline.Failed != len(baseline.PreExistingFailures) {
-		return Baseline{}, fmt.Errorf("implementation baseline is internally inconsistent")
-	}
-	if baseline.IntentionalV2Red.Command == "" || baseline.IntentionalV2Red.Test == "" || baseline.IntentionalV2Red.Failure == "" {
-		return Baseline{}, fmt.Errorf("implementation baseline omitted the intentional v2 red")
-	}
-	return baseline, nil
 }
 
 // ToolInputSchema returns a closed object JSON Schema for one named trusted-tool

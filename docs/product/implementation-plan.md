@@ -1,5 +1,7 @@
 # Implementation Plan
 
+> **Historical MVP implementation record.** This document predates the Blackboard v2 replacement and does not define a current public Blackboard route, tool, CLI, or DTO. The current contract is [Blackboard v2](../specs/blackboard-v2-spec.md).
+
 ## Reader And Action
 
 Reader: the engineer implementing the MVP.
@@ -372,35 +374,19 @@ checks is covered by an existing test or React view:
 - Slice E (React shell): the daemon embeds and serves the SPA, and all listed
   views exist.
 
-Slice 5 MCP transport is now wired: the daemon serves a built-in trusted MCP
-server at `/mcp` with all MVP tools (`upsert_project_fact` through
-`request_scope_expansion`). MCP and CLI writes still call the same domain
-services. Approval and scope-expansion requests persist as pending approvals
-with audit-log entries.
+The daemon now serves the accepted Blackboard v2 interface: semantic HTTP
+routes under `/api/v2`, exactly six trusted MCP tools at `/mcp`, and the same
+six semantic operations through `pentestctl`. Project, Task, and Continuation
+authority are bound by the Continuation capability rather than model-facing
+arguments.
 
 The only remaining out-of-band work is real-runtime smoke validation (running
 the actual Codex/Claude/Pi binaries against the adapter logic).
 
-Slice 6/7 UI wiring note: the blackboard and findings React views originally
-exposed the fact index and finding cards but left several declared features
-stubbed while the backing HTTP endpoints already existed. Those are now wired:
-
-- Fact detail now expands to show the full body, fact versions
-  (`GET .../facts/{key}/versions`), and fact relations
-  (`GET .../facts/{key}/relations`).
-- The "show deprecated" toggle now works end to end: `FactIndex` takes an
-  `IncludeDeprecated` option and `GET .../facts/index?include_deprecated=1`
-  surfaces deprecated facts (badged, struck through) alongside Current Truth.
-  The default still excludes them so dashboards, reports, and runtime context
-  are unaffected.
-- The blackboard view surfaces a task summary panel
-  (`GET .../tasks/{id}/summary`), since task summaries are project memory.
-- The findings view shows per-finding version history
-  (`GET .../findings/{key}/versions`).
-
-Each behavior is covered by `blackboard_test.go` (deprecated default vs
-include) and the React build. Fact and finding merge UI are wired to the
-existing merge endpoints.
+The React Blackboard, Findings, Evidence, Report, and Solution views consume
+only runtime Snapshot, key-based detail/history, semantic health, and v2
+deliverable DTOs. Bookmark routes remain UI navigation aliases and never fall
+back to Blackboard v1 HTTP shapes.
 
 ## Implementation Notes
 

@@ -52,9 +52,9 @@ Defer challenges that require:
 
 <state_contract>
 When trusted MCP tools are available, use them:
-- `upsert_project_fact` for `progress:scoreboard`, `progress:<batch>`, `api:<endpoint>`, `route:<name>`, `credential:<label>`.
-- `record_vulnerability` only when the task wants vulnerability records, not for every challenge clue.
-- `attach_evidence` for reproducible proof or screenshots worth preserving.
+- `blackboard_change` for durable progress, API, route, credential, Fact, and Finding records.
+- Create Finding records only when the task needs vulnerability records, not for every challenge clue.
+- `blackboard_retain_evidence` for reproducible proof or screenshots worth preserving.
 - Finish the bound Blackboard Continuation after every Attempt is terminal.
 
 No scoreboard-driven run is complete if the solved count changed but durable progress state was not updated.

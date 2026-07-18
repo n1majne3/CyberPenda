@@ -21,5 +21,5 @@ func TestRetiredV1ProjectInterfaceRouteReturnsStableGoneOnFreshV2(t *testing.T) 
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/any/blackboard/mutations", nil)
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
-	assertRetiredBlackboardV1Response(t, response)
+	assertBlackboardV1RouteNotFound(t, response)
 }

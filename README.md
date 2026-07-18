@@ -2,7 +2,7 @@
 
 CyberPenda is a **local-first pentest agent** for coordinating **authorized** security testing inside a scoped project.
 
-It combines a Go daemon, React dashboard, sandboxed agent runtimes (Codex, Claude Code, Pi), project scope controls, a project blackboard (facts / findings / evidence), skills and runtime extensions, and Markdown report generation.
+It combines a Go daemon, React dashboard, sandboxed agent runtimes (Codex, Claude Code, Pi), project scope controls, a semantic Blackboard v2, skills and runtime extensions, and Markdown report generation.
 
 The daemon is the control plane, memory plane, task lifecycle plane, and reporting plane. Pentest tools run inside the selected runtime environment — not as a tool proxy through the daemon.
 
@@ -16,8 +16,8 @@ The daemon is the control plane, memory plane, task lifecycle plane, and reporti
 | React dashboard | Project dashboard, launch controls, blackboard, findings, settings |
 | Sandbox runner | Default runner — isolates runtime home, workdir, and process env (Docker/Podman) |
 | Host runner | Explicit opt-in; never an automatic fallback from sandbox |
-| Trusted MCP (`/mcp`) | Project interface for facts, findings, evidence, task summaries, reports |
-| `pentestctl` | CLI fallback for the same trusted project interfaces |
+| Trusted MCP (`/mcp`) | Exactly six Blackboard v2 semantic tools bound to a trusted Continuation |
+| `pentestctl` | CLI access to the same Blackboard v2 semantic operations |
 | Runtime plugins | Declarative adapters (Codex, Claude Code, Pi, fake) |
 | Skills / extensions | Runtime-agnostic skill bundles + runtime-specific extension packs |
 
@@ -83,8 +83,8 @@ Override with `SANDBOX_IMAGE=...` or `PENTEST_SANDBOX_IMAGE=...`.
 3. Optionally configure **Runtime Profile Presets**, credentials, MCP, and **Skills**.
 4. Launch a **Task** with a natural-language goal via **Launch Selection** (runtime + model provider + model) or an advanced preset.
 5. Default path uses the **Sandbox Runner**; steer / continue the same task as work progresses.
-6. Runtimes write durable **Facts**, **Findings**, and **Evidence** through trusted project interfaces (MCP / CLI).
-7. Generate a **Markdown report** from stored project state.
+6. Runtimes record durable semantic Blackboard knowledge and retain evidence through trusted interfaces (MCP / CLI).
+7. Generate a **Markdown report** from the semantic Blackboard snapshot.
 
 Domain terms are defined in [CONTEXT.md](CONTEXT.md).
 
@@ -100,7 +100,7 @@ Domain terms are defined in [CONTEXT.md](CONTEXT.md).
 | `make build-sandbox-image` | Build local sandbox container image |
 | `make test` / `make test-backend` | Go unit and integration tests |
 | `make test-ci` | CI-safe tests (no Docker, no LLM credentials) |
-| `make smoke-sandbox-mcp` | Live smoke: sandbox → daemon MCP fact write |
+| `make smoke-sandbox-mcp` | Live smoke: sandbox → daemon Blackboard v2 MCP change |
 | `make smoke-runtime-tasks` | Live smoke for Codex / Claude / Pi (needs Docker + provider creds) |
 | `make clean` | Remove built UI artifacts and `pentestd` binary |
 
@@ -118,8 +118,6 @@ Common `pentestd` options (flags or env):
 | `-auth-token` | `PENTEST_AUTH_TOKEN` | (required for non-loopback binds) |
 | `-runtime-plugin-dirs` | `PENTEST_RUNTIME_PLUGIN_DIRS` | trusted plugin dirs |
 | `-runtime-extension-dirs` | `PENTEST_RUNTIME_EXTENSION_DIRS` | trusted extension dirs |
-| `-blackboard-write-waiver-operator` | `PENTEST_BLACKBOARD_WRITE_WAIVER_OPERATOR` | (empty) |
-| `-blackboard-write-waiver-reason` | `PENTEST_BLACKBOARD_WRITE_WAIVER_REASON` | (empty) |
 
 Auth (when configured): `Authorization: Bearer <token>` or `?token=` on API/MCP routes.
 
@@ -163,7 +161,7 @@ scripts/               Release builds and live smokes
 
 - [Product docs index](docs/README.md) — PRD, MVP scope, implementation plan
 - [Domain glossary](CONTEXT.md) — shared product language
-- [Graph Blackboard compatibility retirement](docs/blackboard-graph-migration.md) — Release C gates, replacements, and stable 410 guidance
+- [Blackboard v2 specification](docs/specs/blackboard-v2-spec.md) — semantic records, trusted tools, and public routes
 - [ADRs](docs/adr/) — architecture decisions (skills default-on, model providers vs profiles)
 
 ## License / authorization
