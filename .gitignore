@@ -17,6 +17,7 @@ pentest.db
 pentest.db-shm
 pentest.db-wal
 pentest.db.pre-graph-v1.*.bak
+pentest.db.pre-blackboard-v2.*.bak
 /pentestd
 runs/
 __pycache__/
