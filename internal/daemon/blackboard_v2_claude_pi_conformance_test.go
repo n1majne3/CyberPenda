@@ -21,6 +21,60 @@ import (
 // Snapshot bytes, compact header, one-time checklist, recovery pin, resume
 // fresh pin, and long-run reread semantics must match the Codex contract.
 
+func firstBlackboardV2ProcessLeak(args, env []byte, argvOnly, argvOrEnv []string) string {
+	argv, environment := string(args), string(env)
+	for _, marker := range argvOnly {
+		if marker != "" && strings.Contains(argv, marker) {
+			return marker
+		}
+	}
+	for _, marker := range argvOrEnv {
+		if marker != "" && (strings.Contains(argv, marker) || strings.Contains(environment, marker)) {
+			return marker
+		}
+	}
+	return ""
+}
+
+func TestBlackboardV2ProcessLeak(t *testing.T) {
+	const opaqueID = "project-opaque-123"
+	tests := []struct {
+		name       string
+		args, env  []byte
+		argvOnly   []string
+		argvOrEnv  []string
+		wantMarker string
+	}{
+		{
+			name: "opaque ID in unrelated inherited env is ignored",
+			args: []byte("--goal inspect\n"), env: []byte("CI_PROJECT_ID=" + opaqueID + "\n"),
+			argvOnly: []string{opaqueID},
+		},
+		{
+			name: "opaque ID in argv is caught",
+			args: []byte("--project " + opaqueID + "\n"), env: []byte("CI=true\n"),
+			argvOnly: []string{opaqueID}, wantMarker: opaqueID,
+		},
+		{
+			name: "reserved PENTEST identity credential marker in env is caught",
+			args: []byte("--goal inspect\n"), env: []byte("PENTEST_AUTH_TOKEN=secret\n"),
+			argvOrEnv: []string{"PENTEST_AUTH_TOKEN="}, wantMarker: "PENTEST_AUTH_TOKEN=",
+		},
+		{
+			name: "clean args and env pass",
+			args: []byte("--goal inspect\n"), env: []byte("CI=true\n"),
+			argvOnly: []string{opaqueID}, argvOrEnv: []string{"PENTEST_AUTH_TOKEN="},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := firstBlackboardV2ProcessLeak(tc.args, tc.env, tc.argvOnly, tc.argvOrEnv); got != tc.wantMarker {
+				t.Fatalf("first process leak = %q, want %q", got, tc.wantMarker)
+			}
+		})
+	}
+}
+
 func TestClaudeAndPiV2LaunchHeaderChecklistAndExactSharedSnapshotBytes(t *testing.T) {
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "claude-pi-v2.db")
@@ -407,13 +461,11 @@ cat .pentest/blackboard.json
 			if strings.Count(string(args)+string(instructions), blackboardv2.CodexChecklist()) != 1 {
 				t.Fatalf("checklist repeated across argv/instructions\nargs=%s\ninstructions=%s", args, instructions)
 			}
-			for _, forbidden := range []string{
-				createdProject.ID, createdTask.ID, continuation.ID, profile.ID,
-				"PENTEST_PROJECT_ID=", "PENTEST_TASK_ID=", "PENTEST_AUTH_TOKEN=",
-			} {
-				if strings.Contains(string(args)+string(env), forbidden) {
-					t.Fatalf("process received forbidden metadata %q\nargs=%s\nenv=%s", forbidden, args, env)
-				}
+			if leak := firstBlackboardV2ProcessLeak(args, env,
+				[]string{createdProject.ID, createdTask.ID, continuation.ID, profile.ID},
+				[]string{"PENTEST_PROJECT_ID=", "PENTEST_TASK_ID=", "PENTEST_AUTH_TOKEN="},
+			); leak != "" {
+				t.Fatalf("process received forbidden metadata %q\nargs=%s\nenv=%s", leak, args, env)
 			}
 		})
 	}

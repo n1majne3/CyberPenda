@@ -29,6 +29,49 @@ func TestSandboxShellScriptsAreExecutable(t *testing.T) {
 	}
 }
 
+func TestSandboxMCPLiveSmokeUsesBlackboardV2Boundaries(t *testing.T) {
+	repoRoot := repoRoot(t)
+	scriptPath := filepath.Join(repoRoot, "scripts", "smoke-sandbox-mcp-live.sh")
+	scriptBytes, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read sandbox MCP smoke script: %v", err)
+	}
+	script := string(scriptBytes)
+
+	for _, tool := range []string{
+		"blackboard_change",
+		"blackboard_read",
+		"blackboard_history",
+		"blackboard_retain_evidence",
+		"blackboard_checkpoint_attempt",
+		"blackboard_finish",
+	} {
+		assertContains(t, script, tool)
+	}
+	for _, required := range []string{
+		`"method":"tools/list"`,
+		"/api/v2/projects/",
+		"/blackboard/changes",
+		"/blackboard/records/",
+		"Authorization: Bearer",
+		"Idempotency-Key",
+		"semantic-change-batch/v2",
+	} {
+		assertContains(t, script, required)
+	}
+
+	for _, retired := range []string{
+		"upsert_project_fact",
+		`"method":"tools/call"`,
+		"/api/projects/",
+		"/facts/",
+	} {
+		if strings.Contains(script, retired) {
+			t.Fatalf("sandbox MCP smoke script still contains retired boundary %q", retired)
+		}
+	}
+}
+
 func TestSandboxDockerfileKeepsKaliLinuxHeadlessMetaPackage(t *testing.T) {
 	repoRoot := repoRoot(t)
 	dockerfilePath := filepath.Join(repoRoot, "docker", "pentest-sandbox", "Dockerfile")

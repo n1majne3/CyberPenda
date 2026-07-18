@@ -881,13 +881,11 @@ cat .pentest/blackboard.json
 	if strings.Count(string(args)+string(agents), blackboardv2.CodexChecklist()) != 1 {
 		t.Fatalf("checklist repeated across Codex argv/instructions\nargs=%s\nagents=%s", args, agents)
 	}
-	for _, forbidden := range []string{
-		createdProject.ID, createdTask.ID, continuation.ID, profile.ID,
-		"PENTEST_PROJECT_ID=", "PENTEST_TASK_ID=", "PENTEST_MCP_URL=", "PENTEST_AUTH_TOKEN=", "/mcp?token=",
-	} {
-		if strings.Contains(string(args)+string(env), forbidden) {
-			t.Fatalf("production Codex process received forbidden metadata %q\nargs=%s\nenv=%s", forbidden, args, env)
-		}
+	if leak := firstBlackboardV2ProcessLeak(args, env,
+		[]string{createdProject.ID, createdTask.ID, continuation.ID, profile.ID},
+		[]string{"PENTEST_PROJECT_ID=", "PENTEST_TASK_ID=", "PENTEST_MCP_URL=", "PENTEST_AUTH_TOKEN=", "/mcp?token="},
+	); leak != "" {
+		t.Fatalf("production Codex process received forbidden metadata %q\nargs=%s\nenv=%s", leak, args, env)
 	}
 }
 
