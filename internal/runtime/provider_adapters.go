@@ -30,6 +30,7 @@ type ProviderSessionEventHandler interface {
 type providerWireMethods struct {
 	send       string
 	interrupt  string
+	steer      string
 	permission string
 	params     func(string, string, ProviderSessionRequest) map[string]any
 	turnID     func(map[string]any) string
@@ -67,6 +68,9 @@ type providerSessionAdapter struct {
 }
 
 func newProviderSessionAdapter(provider string, transport ProviderSessionTransport, sessionID, activeTurnID string, capabilities runtimeplugin.Capabilities, methods providerWireMethods) *providerSessionAdapter {
+	if strings.TrimSpace(methods.steer) == "" {
+		capabilities.InTurnSteer = false
+	}
 	return &providerSessionAdapter{
 		transport: transport, provider: provider, methods: methods,
 		capabilities: capabilities, sessionID: strings.TrimSpace(sessionID),
@@ -158,7 +162,7 @@ func (s *providerSessionAdapter) InterruptThenReplace(ctx context.Context, reque
 }
 
 func (s *providerSessionAdapter) SteerInTurn(ctx context.Context, request ProviderSessionRequest, emit ProviderSessionEmit) (ProviderSessionResult, error) {
-	return s.run(ctx, ProviderSessionModeInTurnSteer, ProviderSessionCapabilityInTurnSteer, request, emit, "")
+	return s.run(ctx, ProviderSessionModeInTurnSteer, ProviderSessionCapabilityInTurnSteer, request, emit, s.methods.steer)
 }
 
 func (s *providerSessionAdapter) RespondPermission(ctx context.Context, request ProviderSessionRequest, emit ProviderSessionEmit) (ProviderSessionResult, error) {
@@ -261,6 +265,9 @@ func (s *providerSessionAdapter) native(ctx context.Context, mode ProviderSessio
 	if len(response.Result) > 0 {
 		_ = json.Unmarshal(response.Result, &metadata)
 	}
+	if (mode == ProviderSessionModeInterruptTurn || mode == ProviderSessionModeInterruptThenReplace && strings.HasSuffix(wireID, ":interrupt")) && !providerTurnSettled(metadata) {
+		return ProviderSessionResult{}, &ProviderSessionOperationError{Mode: mode, Cause: errors.New("provider interrupt was acknowledged without settlement")}
+	}
 	turnID := s.methods.turnID(metadata)
 	if turnID == "" {
 		turnID = strings.TrimSpace(request.ProviderTurnID)
@@ -276,6 +283,16 @@ func (s *providerSessionAdapter) native(ctx context.Context, mode ProviderSessio
 	s.sessionID, s.activeTurnID = newSessionID, turnID
 	s.mu.Unlock()
 	return ProviderSessionResult{RequestID: request.RequestID, SessionID: newSessionID, ProviderTurnID: turnID, Mode: mode, Outcome: "acknowledged"}, nil
+}
+
+func providerTurnSettled(metadata map[string]any) bool {
+	status := strings.ToLower(providerJSONValue(metadata, "status", "turn_status", "turnStatus"))
+	switch status {
+	case "aborted", "cancelled", "canceled", "completed", "interrupted", "stopped":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *providerSessionAdapter) require(capability ProviderSessionCapability) error {
@@ -505,7 +522,14 @@ func NewCodexProviderSession(config CodexProviderSessionConfig) *CodexProviderSe
 	methods := providerWireMethods{
 		send: "turn/start", interrupt: "turn/interrupt", permission: "item/permission/respond",
 		params: func(sessionID, turnID string, request ProviderSessionRequest) map[string]any {
-			params := map[string]any{"threadId": sessionID, "turnId": turnID, "input": request.Message}
+			params := map[string]any{
+				"threadId": sessionID,
+				"turnId":   turnID,
+				"input": []any{map[string]any{
+					"type": "text",
+					"text": request.Message,
+				}},
+			}
 			if request.PermissionRequestID != "" {
 				params["permissionRequestId"] = request.PermissionRequestID
 			}

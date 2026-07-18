@@ -390,3 +390,53 @@ func TestStopClosesBoundProviderSession(t *testing.T) {
 		t.Fatalf("session after stop error = %v, want closed", err)
 	}
 }
+
+func TestServerCloseDrainsInFlightProviderSteerBeforeClosingDatabase(t *testing.T) {
+	server, err := NewServer(Config{DBPath: filepath.Join(t.TempDir(), "pentest.db"), DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := server.projects.Create("Project", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		_ = server.Close()
+		t.Fatal(err)
+	}
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: "inspect target", RuntimeProfileID: "profile", Runner: task.RunnerSandbox})
+	if err != nil {
+		_ = server.Close()
+		t.Fatal(err)
+	}
+	if _, err := server.tasks.UpdateStatus(created.ID, task.StatusRunning); err != nil {
+		_ = server.Close()
+		t.Fatal(err)
+	}
+	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "session-close", ManualAcknowledge: true,
+		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InTurnSteer: true},
+	})
+	if err := server.BindProviderSession(created.ID, session); err != nil {
+		_ = server.Close()
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/projects/"+project.ID+"/tasks/"+created.ID+"/steer", bytes.NewBufferString(`{"request_id":"close-1","message":"stop"}`))
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		_ = server.Close()
+		t.Fatalf("steer status = %d, body=%s", response.Code, response.Body.String())
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- server.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server close did not drain provider control")
+	}
+	if _, err := session.SendTurn(context.Background(), runtime.ProviderSessionRequest{RequestID: "after-close", Message: "must fail"}, nil); !errors.Is(err, runtime.ErrProviderSessionClosed) {
+		t.Fatalf("session after close error = %v, want closed", err)
+	}
+}

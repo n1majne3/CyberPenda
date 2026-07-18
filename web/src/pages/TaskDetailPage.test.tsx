@@ -281,7 +281,7 @@ describe("TaskDetailPage", () => {
 
     await screen.findByText("Timeline opened first");
     await user.type(screen.getByPlaceholderText("Focus on admin.example.com next…"), "focus on admin");
-    await user.click(screen.getByRole("button", { name: /Interrupt & Steer/ }));
+    await user.click(screen.getByRole("button", { name: /Native interrupt & send/ }));
 
     const steerCall = fetchMock.mock.calls.find(([input]) =>
       String(input).endsWith("/api/projects/project-1/tasks/task-1/steer"),

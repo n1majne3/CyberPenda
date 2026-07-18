@@ -107,6 +107,10 @@ type Server struct {
 	tempSkillsRoot         string
 	controlMu              sync.Mutex
 	activeControls         map[string]bool
+	providerControlCtx     context.Context
+	providerControlCancel  context.CancelFunc
+	providerControlWG      sync.WaitGroup
+	closing                bool
 	providerSessions       *providerSessionRegistry
 	providerSessionFactory ProviderSessionFactory
 }
@@ -185,6 +189,7 @@ func NewServer(config Config) (*Server, error) {
 		}
 		return nil, err
 	}
+	providerControlCtx, providerControlCancel := context.WithCancel(context.Background())
 	server := &Server{
 		mux:                http.NewServeMux(),
 		version:            config.Version,
@@ -211,6 +216,8 @@ func NewServer(config Config) (*Server, error) {
 		authToken:              authToken,
 		tempSkillsRoot:         tempSkillsRoot,
 		activeControls:         map[string]bool{},
+		providerControlCtx:     providerControlCtx,
+		providerControlCancel:  providerControlCancel,
 		providerSessions:       newProviderSessionRegistry(),
 		providerSessionFactory: config.ProviderSessionFactory,
 	}
@@ -351,6 +358,11 @@ func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Requ
 }
 
 func (server *Server) Close() error {
+	server.controlMu.Lock()
+	server.closing = true
+	server.providerControlCancel()
+	server.controlMu.Unlock()
+	server.providerControlWG.Wait()
 	err := server.providerSessions.closeAll(context.Background())
 	if dbErr := server.db.Close(); err == nil {
 		err = dbErr

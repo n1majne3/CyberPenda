@@ -385,7 +385,7 @@ export function TaskDetailPage() {
           </Button>
           {running && (
             <Button size="sm" onClick={interruptSteer} disabled={!steering.trim() || !steerAvailable} title={nativeSteerAvailable ? "Send through the provider-native session" : interruptSteerAvailable ? "Interrupt and resume native session" : controls?.native_steer_reason ?? interruptSteerReason}>
-              <GitBranch className="h-4 w-4 mr-1" /> {nativeSteerAvailable && nativeSteerMode === "in_turn_steer" ? "Steer natively" : "Interrupt & Steer"}
+              <GitBranch className="h-4 w-4 mr-1" /> {nativeSteerAvailable && nativeSteerMode === "in_turn_steer" ? "Steer natively" : nativeSteerAvailable ? "Native interrupt & send" : "Recovery interrupt & resume"}
             </Button>
           )}
         </div>

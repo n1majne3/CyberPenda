@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"pentest/internal/runtimeplugin"
 	"pentest/internal/task"
 )
 
@@ -92,8 +93,13 @@ func TestCodexProviderSessionMapsTurnStartAndInterrupt(t *testing.T) {
 	if err := json.Unmarshal(requests[0].Params, &startParams); err != nil {
 		t.Fatal(err)
 	}
-	if startParams["threadId"] != "thread-1" || startParams["input"] != "inspect the target" {
+	input, ok := startParams["input"].([]any)
+	if startParams["threadId"] != "thread-1" || !ok || len(input) != 1 {
 		t.Fatalf("start params = %#v", startParams)
+	}
+	inputItem, ok := input[0].(map[string]any)
+	if !ok || inputItem["type"] != "text" || inputItem["text"] != "inspect the target" {
+		t.Fatalf("structured start input = %#v", input)
 	}
 	if len(emits) < 4 || emits[0]["outcome"] != "requested" || emits[len(emits)-1]["outcome"] != "settled" {
 		t.Fatalf("events = %#v", emits)
@@ -173,7 +179,10 @@ func TestProviderSessionAdapterErrorsAreTypedAndCapabilitiesAreHonest(t *testing
 	if !errors.As(err, &operationErr) || operationErr.Mode != ProviderSessionModeSendTurn {
 		t.Fatalf("error = %v, want typed send error", err)
 	}
-	noSteer := NewCodexProviderSession(CodexProviderSessionConfig{Transport: &fakeProviderTransport{}, SessionID: "thread-1"})
+	noSteer := NewCodexProviderSession(CodexProviderSessionConfig{
+		Transport: &fakeProviderTransport{}, SessionID: "thread-1",
+		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InTurnSteer: true},
+	})
 	if noSteer.Capabilities().InTurnSteer {
 		t.Fatal("codex should not claim direct in-turn steer")
 	}

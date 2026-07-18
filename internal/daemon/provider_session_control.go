@@ -102,10 +102,6 @@ func (server *Server) BindProviderSession(taskID string, session runtime.Provide
 	return server.providerSessions.bind(taskID, session)
 }
 
-// UnbindProviderSession removes daemon ownership of a Task session. It does
-// not close the provider process; the adapter/bridge owns that lifecycle.
-func (server *Server) UnbindProviderSession(taskID string) { server.providerSessions.remove(taskID) }
-
 func (server *Server) closeProviderSession(taskID string) error {
 	return server.providerSessions.closeTask(context.Background(), taskID)
 }

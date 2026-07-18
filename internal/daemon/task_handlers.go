@@ -1207,11 +1207,27 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 func (server *Server) acquireTaskControl(taskID string) bool {
 	server.controlMu.Lock()
 	defer server.controlMu.Unlock()
-	if server.activeControls[taskID] {
+	if server.closing || server.activeControls[taskID] {
 		return false
 	}
 	server.activeControls[taskID] = true
 	return true
+}
+
+func (server *Server) acquireProviderTaskControl(taskID string) bool {
+	server.controlMu.Lock()
+	defer server.controlMu.Unlock()
+	if server.closing || server.activeControls[taskID] {
+		return false
+	}
+	server.activeControls[taskID] = true
+	server.providerControlWG.Add(1)
+	return true
+}
+
+func (server *Server) releaseProviderTaskControl(taskID string) {
+	server.releaseTaskControl(taskID)
+	server.providerControlWG.Done()
 }
 
 func (server *Server) releaseTaskControl(taskID string) {
@@ -1737,14 +1753,14 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		writeError(response, http.StatusConflict, "provider session does not support native steer")
 		return
 	}
-	if !server.acquireTaskControl(found.ID) {
+	if !server.acquireProviderTaskControl(found.ID) {
 		writeError(response, http.StatusConflict, "task control operation already active")
 		return
 	}
 
 	active, err := server.tasks.ActiveContinuation(found.ID)
 	if err != nil {
-		server.releaseTaskControl(found.ID)
+		server.releaseProviderTaskControl(found.ID)
 		writeTaskError(response, err)
 		return
 	}
@@ -1760,7 +1776,7 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		conversation, err = server.tasks.AppendEvent(found.ID, task.EventKindConversation, conversationPayload)
 	}
 	if err != nil {
-		server.releaseTaskControl(found.ID)
+		server.releaseProviderTaskControl(found.ID)
 		writeTaskError(response, err)
 		return
 	}
@@ -1795,8 +1811,8 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		}
 	}
 	go func() {
-		defer server.releaseTaskControl(found.ID)
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer server.releaseProviderTaskControl(found.ID)
+		ctx, cancel := context.WithTimeout(server.providerControlCtx, 30*time.Second)
 		defer cancel()
 		result, operationErr := operation(ctx, runtime.ProviderSessionRequest{RequestID: input.RequestID, Message: input.Message}, emit)
 		if operationErr != nil {
@@ -1804,6 +1820,8 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 			switch {
 			case errors.Is(operationErr, context.DeadlineExceeded):
 				errorCode = "timeout"
+			case errors.Is(operationErr, context.Canceled):
+				errorCode = "server_closing"
 			case errors.Is(operationErr, runtime.ErrProviderSessionClosed):
 				errorCode = "session_closed"
 			case errors.Is(operationErr, runtime.ErrProviderSessionControlConflict):
