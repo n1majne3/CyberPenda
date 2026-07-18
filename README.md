@@ -71,10 +71,13 @@ Compose mounts Docker socket so the app container can launch sandbox task contai
 ### Sandbox image (from source)
 
 ```sh
-make build-sandbox-image   # tags pentest-sandbox:latest by default
+make build-sandbox-image   # tags ghcr.io/n1majne3/cyberpenda-sandbox:latest by default
+
+# Opt into a local development tag.
+SANDBOX_IMAGE=pentest-sandbox:dev make build-sandbox-image
 ```
 
-Override with `SANDBOX_IMAGE=...` or `PENTEST_SANDBOX_IMAGE=...`.
+Override the source-build tag with `SANDBOX_IMAGE=...`. The source-smoke Make targets use that tag; direct daemon and script invocations use the published GHCR image unless `PENTEST_SANDBOX_IMAGE=...` is set.
 
 ## Typical workflow
 
@@ -113,7 +116,7 @@ Common `pentestd` options (flags or env):
 | `-addr` | `PENTEST_LISTEN_ADDR` | `127.0.0.1:8787` |
 | `-db` | `PENTEST_DB` | `pentest.db` |
 | `-runtime-root` | `PENTEST_RUNTIME_ROOT` | (empty → daemon default) |
-| `-sandbox-image` | `PENTEST_SANDBOX_IMAGE` | `pentest-sandbox:latest` |
+| `-sandbox-image` | `PENTEST_SANDBOX_IMAGE` | `ghcr.io/n1majne3/cyberpenda-sandbox:latest` |
 | `-container-cli` | `PENTEST_CONTAINER_CLI` | `docker` |
 | `-auth-token` | `PENTEST_AUTH_TOKEN` | (required for non-loopback binds) |
 | `-runtime-plugin-dirs` | `PENTEST_RUNTIME_PLUGIN_DIRS` | trusted plugin dirs |

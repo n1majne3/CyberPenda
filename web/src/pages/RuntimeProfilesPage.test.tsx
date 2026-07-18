@@ -93,6 +93,47 @@ describe("RuntimeProfilesPage", () => {
     ).toHaveLength(1);
   });
 
+  it("shows the published sandbox image in the sandbox profile guidance", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.includes("/api/runtime-profiles")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                profiles: [
+                  {
+                    id: "profile-1",
+                    name: "Pi Sandbox",
+                    provider: "pi",
+                    fields: { default_runner: "sandbox" },
+                    created_at: "",
+                    updated_at: "2026-07-18T00:00:00Z",
+                  },
+                ],
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url.includes("/api/runtime-plugins")) {
+          return Promise.resolve(new Response(JSON.stringify({ plugins: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        if (url.includes("/api/runtime-extensions") || url.includes("/api/runtime-extension-catalog")) {
+          return Promise.resolve(new Response(JSON.stringify(url.includes("catalog") ? { items: [] } : { extensions: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        return Promise.resolve(new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }),
+    );
+
+    renderPage();
+
+    await userEvent.click(await screen.findByRole("button", { name: /Pi Sandbox/i }));
+    expect(screen.getByPlaceholderText("ghcr.io/n1majne3/cyberpenda-sandbox:latest...")).toBeInTheDocument();
+    expect(screen.getByText("ghcr.io/n1majne3/cyberpenda-sandbox:latest")).toBeInTheDocument();
+  });
+
   it("uses the shared Geist settings layout for profile selection and details", async () => {
     vi.stubGlobal(
       "fetch",

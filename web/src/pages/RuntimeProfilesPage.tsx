@@ -1055,7 +1055,7 @@ function ProfileEditor({
             name="sandbox_image"
             value={form.sandbox_image}
             onChange={(e) => onChange({ ...form, sandbox_image: e.target.value })}
-            placeholder="gemini_kali-gemini-kali:latest…"
+            placeholder="ghcr.io/n1majne3/cyberpenda-sandbox:latest..."
             autoComplete="off"
             spellCheck={false}
           />
@@ -1239,7 +1239,7 @@ function ProfileEditor({
       )}
       {form.provider === "pi" && form.default_runner === "sandbox" && (
         <p className="text-[11px] text-muted-foreground">
-          Pi sandbox sets <code>PI_CODING_AGENT_DIR=/task/runtime-home/pi/agent</code>; pi is preinstalled in <code>pentest-sandbox:latest</code>.
+          Pi sandbox sets <code>PI_CODING_AGENT_DIR=/task/runtime-home/pi/agent</code>; pi is preinstalled in <code>ghcr.io/n1majne3/cyberpenda-sandbox:latest</code>.
         </p>
       )}
       {!hideActions && (

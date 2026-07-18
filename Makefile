@@ -2,7 +2,7 @@
 
 # Run the daemon and the Vite dev server together for local development.
 # The Vite proxy forwards /api and /health to the daemon on :8787.
-SANDBOX_IMAGE ?= pentest-sandbox:latest
+SANDBOX_IMAGE ?= ghcr.io/n1majne3/cyberpenda-sandbox:latest
 
 # macOS /bin/sh (bash 3.2) has no `wait -n`, so poll: if either child dies,
 # surface the failure instead of silently running the other alone (which hid
@@ -46,13 +46,13 @@ build-sandbox-image:
 
 # Prove the configured sandbox image can reach daemon MCP and write a fact.
 smoke-sandbox-mcp:
-	@bash scripts/smoke-sandbox-mcp-live.sh
+	@PENTEST_SANDBOX_IMAGE=$(SANDBOX_IMAGE) bash scripts/smoke-sandbox-mcp-live.sh
 
 smoke-runtime-tasks:
-	@python3 scripts/smoke-runtime-tasks-live.py
+	@PENTEST_SANDBOX_IMAGE=$(SANDBOX_IMAGE) python3 scripts/smoke-runtime-tasks-live.py
 
 juice-shop-live:
-	@python3 scripts/run-juice-shop-live.py
+	@PENTEST_SANDBOX_IMAGE=$(SANDBOX_IMAGE) python3 scripts/run-juice-shop-live.py
 
 # Repair first-checkout, stale-lockfile, and npm optional-native-dependency
 # installs before starting Vite or building the embedded UI.

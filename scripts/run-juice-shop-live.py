@@ -144,7 +144,7 @@ def main() -> int:
             "model": "glm-5.2",
             "endpoint": zhipu,
             "default_runner": "sandbox",
-            "sandbox_image": os.environ.get("PENTEST_SANDBOX_IMAGE", "pentest-sandbox:latest"),
+            "sandbox_image": os.environ.get("PENTEST_SANDBOX_IMAGE", "ghcr.io/n1majne3/cyberpenda-sandbox:latest"),
             "env": {"ANTHROPIC_BASE_URL": zhipu},
             "custom_args": [
                 "-p",

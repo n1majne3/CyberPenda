@@ -86,14 +86,6 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Build sandbox image
-        run: |
-          docker pull kalilinux/kali-rolling:latest || true
-          docker build -t gemini_kali-gemini-kali:latest -f - . <<'EOF'
-          FROM kalilinux/kali-rolling:latest
-          RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs npm curl && rm -rf /var/lib/apt/lists/*
-          RUN npm install -g @anthropic-ai/claude-code @openai/codex
-          WORKDIR /workspace
-          EOF
-          make build-sandbox-image
+        run: make build-sandbox-image
       - name: Smoke sandbox MCP (no LLM)
         run: scripts/with-pentestd-live.sh make smoke-sandbox-mcp

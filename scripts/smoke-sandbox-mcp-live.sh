@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Live smoke: prove gemini_kali (or PENTEST_SANDBOX_IMAGE) can reach the pentest
+# Live smoke: prove the CyberPenda sandbox image (or PENTEST_SANDBOX_IMAGE) can reach the pentest
 # daemon MCP endpoint and the Blackboard v2 HTTP semantic-record boundary.
 set -euo pipefail
 
 DAEMON_URL="${PENTEST_DAEMON_URL:-http://127.0.0.1:8787}"
-IMAGE="${PENTEST_SANDBOX_IMAGE:-gemini_kali-gemini-kali:latest}"
+IMAGE="${PENTEST_SANDBOX_IMAGE:-ghcr.io/n1majne3/cyberpenda-sandbox:latest}"
 CONTAINER_CLI="${PENTEST_CONTAINER_CLI:-docker}"
 SEMANTIC_RECORD_KEY="${PENTEST_SMOKE_RECORD_KEY:-live:sandbox-smoke}"
 SEMANTIC_CHANGE_IDEMPOTENCY_KEY="${PENTEST_SMOKE_IDEMPOTENCY_KEY:-sandbox-mcp-live}"
