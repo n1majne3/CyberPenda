@@ -1,12 +1,7 @@
 // Package projectinterface owns the trusted Runtime and operator boundary to
-// the graph-first Blackboard. It binds a daemon-issued Continuation Interface
-// Grant to server-side trusted execution context and exposes the six semantic
-// Runtime capabilities as transport-neutral orchestration over the graph and
-// read services (runtime protocol §1).
-//
-// While the store epoch is legacy_v1 the graph data stays dark: no production
-// daemon route wires this module. It is exercised by tests and, after the M05
-// cutover, by graph-native MCP/HTTP/CLI adapters.
+// Blackboard v2. It binds a daemon-issued Continuation Interface Grant to
+// server-side trusted execution context and exposes the semantic Runtime
+// capabilities without storing semantic Blackboard data itself.
 package projectinterface
 
 import (

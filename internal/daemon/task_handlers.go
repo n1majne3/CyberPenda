@@ -303,7 +303,6 @@ func (server *Server) recoverBlackboardV2ContinuationFiles(ctx context.Context) 
 	return nil
 }
 
-
 type taskLaunchDefaults struct {
 	runtimeProfileID string
 	runner           task.Runner
@@ -1754,24 +1753,6 @@ func (server *Server) handleTaskContinuation(response http.ResponseWriter, reque
 		return
 	}
 
-	if server.canonicalStore != store.CanonicalStoreBlackboardV2 {
-		versions, err := server.tasks.SummaryVersions(taskID)
-		if err != nil {
-			writeTaskError(response, err)
-			return
-		}
-		if len(versions) > 0 {
-			writeJSON(response, http.StatusOK, struct {
-				Mode    string              `json:"mode"`
-				Summary task.SummaryVersion `json:"summary"`
-			}{
-				Mode:    "summary",
-				Summary: versions[len(versions)-1],
-			})
-			return
-		}
-	}
-
 	configVersions, err := server.tasks.RuntimeConfigVersions(taskID)
 	if err != nil {
 		writeTaskError(response, err)
@@ -1797,12 +1778,10 @@ func (server *Server) handleTaskContinuation(response http.ResponseWriter, reque
 	}
 
 	writeJSON(response, http.StatusOK, struct {
-		Mode    string               `json:"mode"`
-		Summary *task.SummaryVersion `json:"summary"`
-		Handoff handoffPayload       `json:"handoff"`
+		Mode    string         `json:"mode"`
+		Handoff handoffPayload `json:"handoff"`
 	}{
-		Mode:    "mechanical_handoff",
-		Summary: nil,
+		Mode: "mechanical_handoff",
 		Handoff: handoffPayload{
 			TaskID:           found.ID,
 			ProjectID:        found.ProjectID,
@@ -1836,7 +1815,7 @@ func (server *Server) requireProject(response http.ResponseWriter, projectID str
 
 func writeTaskError(response http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, task.ErrMissingGoal), errors.Is(err, task.ErrUnsupportedRunner), errors.Is(err, task.ErrMissingSummary):
+	case errors.Is(err, task.ErrMissingGoal), errors.Is(err, task.ErrUnsupportedRunner):
 		writeError(response, http.StatusBadRequest, err.Error())
 	case errors.Is(err, task.ErrProjectNotFound), errors.Is(err, task.ErrNotFound), errors.Is(err, project.ErrNotFound):
 		writeError(response, http.StatusNotFound, err.Error())

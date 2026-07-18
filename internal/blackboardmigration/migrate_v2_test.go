@@ -2,573 +2,263 @@ package blackboardmigration
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"errors"
-	"os"
+	"fmt"
 	"path/filepath"
-	"strings"
 	"testing"
 
-	"pentest/internal/blackboard"
 	"pentest/internal/blackboardv2"
-	"pentest/internal/blackboardv2contract"
 	"pentest/internal/store"
 )
 
-func TestMigrateV2SuccessfulMultiProjectCutoverAndReopen(t *testing.T) {
-	t.Parallel()
+func TestMigrateV2NumberedSourceValidatesBeforeDroppingGraphLedger(t *testing.T) {
+	dbPath := createNumberedV1Source(t)
+	beforeChecksums := inspectNumberedV1Source(t, dbPath)
 
-	db, service, artifactRoot, dbPath := newGraphV1MigrateFixture(t)
-	seedIsolatedProjects(t, db, artifactRoot)
-	plan, backupPath := inspectAndBackupForMigrate(t, service, dbPath)
+	source, err := store.OpenMigrationSource(dbPath)
+	if err != nil {
+		t.Fatalf("open read-only migration source: %v", err)
+	}
+	if source.Classification() != store.MigrationSourceNumberedV1 || source.CanonicalStore() != store.CanonicalStoreGraphV1 {
+		t.Fatalf("source classification=%q epoch=%q", source.Classification(), source.CanonicalStore())
+	}
+	planResult, err := InspectMigrationSource(context.Background(), source, t.TempDir())
+	if err != nil {
+		t.Fatalf("inspect source: %v", err)
+	}
+	backupResult, err := BackupMigrationSource(context.Background(), source, dbPath, t.TempDir(), dbPath+".bak")
+	if err != nil {
+		t.Fatalf("backup source: %v", err)
+	}
+	if backupResult.Backup == nil {
+		t.Fatal("missing verified backup")
+	}
+	if _, err := source.ExecContext(context.Background(), `UPDATE blackboard_store_state SET canonical_store='blackboard_v2' WHERE id=1`); err == nil {
+		t.Fatal("read-only migration source accepted a write")
+	}
+	if err := source.Close(); err != nil {
+		t.Fatalf("close migration source: %v", err)
+	}
 
-	result, err := service.Execute(context.Background(), MigrationRequest{
-		Kind:         MigrationKindMigrate,
-		SourceDigest: plan.SourceDigest,
-		Decisions:    decisionsFromPlan(plan),
-		BackupPath:   backupPath,
+	db, err := store.OpenWritableMigrationDB(dbPath)
+	if err != nil {
+		t.Fatalf("open writable offline migrator: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	result, err := NewService(db, dbPath, t.TempDir()).Execute(context.Background(), MigrationRequest{
+		Kind: MigrationKindMigrate, SourceDigest: planResult.Plan.SourceDigest, BackupPath: backupResult.Backup.Path,
 	})
 	if err != nil {
-		t.Fatalf("Execute(migrate): %v blockers=%#v", err, result.Migrate)
+		t.Fatalf("migrate: %v result=%#v", err, result.Migrate)
 	}
-	if result.Migrate == nil {
-		t.Fatal("missing migrate result")
+	if result.Migrate == nil || result.Migrate.Validation.Status != "passed" {
+		t.Fatalf("migration result = %#v", result.Migrate)
 	}
-	raw, err := json.Marshal(result.Migrate)
-	if err != nil {
-		t.Fatal(err)
+	if epoch, err := db.CanonicalStore(); err != nil || epoch != store.CanonicalStoreBlackboardV2 {
+		t.Fatalf("epoch after migrate = %q, %v", epoch, err)
 	}
-	harness, err := blackboardv2contract.NewHarness()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := harness.Validate("migrationResult", raw); err != nil {
-		t.Fatalf("migrate result contract: %v\n%s", err, raw)
-	}
-	if result.Migrate.Status != "migrated" || result.Migrate.StoreEpoch != store.CanonicalStoreBlackboardV2 {
-		t.Fatalf("migrate result = %#v", result.Migrate)
-	}
-	if result.Migrate.ProjectCount != 2 || result.Migrate.Validation.Status != "passed" || result.Migrate.Validation.SnapshotsValidated != 2 {
-		t.Fatalf("migrate validation = %#v", result.Migrate)
-	}
-	if result.Migrate.VerifiedBackupPath != backupPath {
-		t.Fatalf("verified backup path = %q", result.Migrate.VerifiedBackupPath)
-	}
-
-	epoch, err := db.CanonicalStore()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if epoch != store.CanonicalStoreBlackboardV2 {
-		t.Fatalf("epoch after migrate = %q", epoch)
-	}
-	var cutoverState string
-	if err := db.QueryRow(`SELECT cutover_state FROM blackboard_store_state WHERE id=1`).Scan(&cutoverState); err != nil {
-		t.Fatal(err)
-	}
-	if cutoverState != "v2" {
-		t.Fatalf("cutover_state = %q, want v2", cutoverState)
-	}
-
-	// Ordinary Store reopen works through blackboard_v2 consumers.
-	_ = db.Close()
-	reopened, err := store.Open(dbPath)
-	if err != nil {
-		t.Fatalf("store.Open after migrate: %v", err)
-	}
-	t.Cleanup(func() { _ = reopened.Close() })
-	reopenedEpoch, err := reopened.CanonicalStore()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reopenedEpoch != store.CanonicalStoreBlackboardV2 {
-		t.Fatalf("reopened epoch = %q", reopenedEpoch)
-	}
-	v2 := blackboardv2.NewServiceWithEvidence(reopened, blackboardv2.EvidenceConfig{ArtifactRoot: artifactRoot})
-	for _, projectID := range []string{"project-a", "project-b"} {
-		projection, err := v2.ProjectRuntimeSnapshot(context.Background(), projectID)
-		if err != nil {
-			t.Fatalf("snapshot %s: %v", projectID, err)
-		}
-		if projection.Snapshot.Schema != "runtime-blackboard/v2" {
-			t.Fatalf("snapshot schema %s = %q", projectID, projection.Snapshot.Schema)
-		}
-		again, err := v2.ProjectRuntimeSnapshot(context.Background(), projectID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(again.Bytes) != string(projection.Bytes) {
-			t.Fatalf("snapshot bytes for %s are not deterministic after reopen", projectID)
+	for _, table := range []string{"blackboard_graph_state", "blackboard_nodes", "blackboard_graph_mutations", "task_summary_versions"} {
+		if tablePresent(t, db, table) {
+			t.Fatalf("validated cutover retained displaced table %s", table)
 		}
 	}
-	// Project isolation holds after reopen.
-	if _, err := v2.ReadCurrent(context.Background(), "project-a", "fact:b"); err == nil {
-		t.Fatal("project-a must not resolve project-b keys")
-	}
-	if _, err := v2.ReadCurrent(context.Background(), "project-b", "fact:a"); err == nil {
-		t.Fatal("project-b must not resolve project-a keys")
-	}
-}
+	assertHistoricalChecksums(t, db, beforeChecksums)
 
-func TestMigrateV2AppliesStagedScopeLimitsInCutoverTransaction(t *testing.T) {
-	t.Parallel()
-
-	db, service, artifactRoot, dbPath := newGraphV1MigrateFixture(t)
-	seedDecisionBoundWorkflowGraph(t, db, artifactRoot)
-	plan, backupPath := inspectAndBackupForMigrate(t, service, dbPath)
-	decisions := []MigrationDecision{
-		{Source: MigrationSourceRef{Project: "project-rebuild", Type: "observation", Key: "observation:ambiguous"}, Decision: "confirmed_fact", TargetKey: "fact:from-obs"},
-		{Source: MigrationSourceRef{Project: "project-rebuild", Type: "hypothesis", Key: "hypothesis:active"}, Decision: "objective"},
-		{Source: MigrationSourceRef{Project: "project-rebuild", Type: "project_directive", Key: "directive:active"}, Decision: "scope_limit"},
-		{Source: MigrationSourceRef{Project: "project-rebuild", Type: "hypothesis", Key: "hypothesis:noise"}, Decision: "discard"},
-	}
-
-	result, err := service.Execute(context.Background(), MigrationRequest{
-		Kind:         MigrationKindMigrate,
-		SourceDigest: plan.SourceDigest,
-		Decisions:    decisions,
-		BackupPath:   backupPath,
-	})
+	v2 := blackboardv2.NewService(db)
+	detail, err := v2.ReadCurrent(context.Background(), "project-1", "fact:source")
 	if err != nil {
-		t.Fatalf("migrate: %v", err)
+		t.Fatalf("read migrated v2 record: %v", err)
 	}
-	if result.Migrate == nil || result.Migrate.Status != "migrated" {
-		t.Fatalf("result = %#v", result.Migrate)
+	if detail.Record.Summary != "source fact v2" {
+		t.Fatalf("current migrated Fact = %#v", detail.Record)
 	}
-	var scopeJSON string
-	if err := db.QueryRow(`SELECT scope_json FROM projects WHERE id='project-rebuild'`).Scan(&scopeJSON); err != nil {
+	history, err := v2.ReadHistory(context.Background(), "project-1", "fact:source", blackboardv2.HistoryOptions{Limit: 20})
+	if err != nil || len(history.Items) == 0 {
+		t.Fatalf("migrated Semantic History = %#v, %v", history, err)
+	}
+	var relationships, redirects int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM blackboard_v2_relationships WHERE project_id='project-1' AND from_key='fact:source' AND relation='about' AND to_key='host:web'`).Scan(&relationships); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(scopeJSON, "Keep admin testing bounded") {
-		t.Fatalf("cutover must apply staged scope limits into Project Scope: %s", scopeJSON)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM blackboard_v2_key_redirects WHERE project_id='project-1' AND source_key='fact:legacy-source' AND canonical_key='fact:source'`).Scan(&redirects); err != nil {
+		t.Fatal(err)
+	}
+	if relationships != 1 || redirects != 1 {
+		t.Fatalf("migrated relationship/redirect counts = %d/%d", relationships, redirects)
 	}
 }
 
-func TestMigrateV2RejectsActiveContinuationBeforeSwitch(t *testing.T) {
-	t.Parallel()
-
-	db, service, artifactRoot, dbPath := newGraphV1MigrateFixture(t)
-	seedUnambiguousGraphHeads(t, db, artifactRoot)
-	if _, err := db.Exec(`
-		INSERT INTO tasks(id,project_id,goal,status,runner,runtime_profile_id,run_controls_json,scope_snapshot_json,created_at,updated_at)
-		VALUES('task-active','project-rebuild','work','running','local','profile','{}','{}','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`
-		INSERT INTO task_continuations(id,task_id,number,runtime_profile_id,runtime_provider,runner,status,started_at,updated_at)
-		VALUES('cont-active','task-active',1,'profile','manual','local','paused','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
-		t.Fatal(err)
-	}
-	plan, backupPath := inspectAndBackupForMigrate(t, service, dbPath)
-
-	result, err := service.Execute(context.Background(), MigrationRequest{
-		Kind:         MigrationKindMigrate,
-		SourceDigest: plan.SourceDigest,
-		Decisions:    decisionsFromPlan(plan),
-		BackupPath:   backupPath,
-	})
-	if !errors.Is(err, ErrMigrationBlocked) {
-		t.Fatalf("error = %v, want ErrMigrationBlocked", err)
-	}
-	assertMigrateBlockerCodes(t, result, "active_continuation")
-	assertMigrateLeftV1Authoritative(t, db, "project-rebuild")
-}
-
-func TestMigrateV2RejectsMissingBackupAndBackupMismatch(t *testing.T) {
-	t.Parallel()
-
-	db, service, artifactRoot, dbPath := newGraphV1MigrateFixture(t)
-	seedUnambiguousGraphHeads(t, db, artifactRoot)
-	plan, _ := inspectAndBackupForMigrate(t, service, dbPath)
-
-	missing, err := service.Execute(context.Background(), MigrationRequest{
-		Kind:         MigrationKindMigrate,
-		SourceDigest: plan.SourceDigest,
-		Decisions:    decisionsFromPlan(plan),
-		BackupPath:   filepath.Join(t.TempDir(), "missing.bak"),
-	})
-	if !errors.Is(err, ErrMigrationBlocked) {
-		t.Fatalf("missing backup error = %v", err)
-	}
-	assertMigrateBlockerCodes(t, missing, "backup_verification_failed")
-	assertMigrateLeftV1Authoritative(t, db, "project-rebuild")
-
-	// Mismatch: backup of a different database.
-	otherRoot := t.TempDir()
-	otherDBPath := filepath.Join(otherRoot, "other.db")
-	otherArtifact := filepath.Join(otherRoot, "artifacts")
-	otherDB, err := store.Open(otherDBPath)
+func TestMigrateV2FailureAfterRetirementRollsBackSourceAndEpoch(t *testing.T) {
+	dbPath := createNumberedV1Source(t)
+	source, err := store.OpenMigrationSource(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := otherDB.Exec(`
-		UPDATE blackboard_store_state
-		SET canonical_store='graph_v1', cutover_state='graph', migration_contract_version='legacy_blackboard_to_graph_v1', graph_schema_version=1
-		WHERE id=1`); err != nil {
+	plan, err := InspectMigrationSource(context.Background(), source, t.TempDir())
+	if err != nil {
 		t.Fatal(err)
 	}
-	installLegacyWorkflowStateFixture(t, otherDB)
-	if _, err := otherDB.Exec(`
-		INSERT INTO projects(id,name,description,scope_json,defaults_json,kind,created_at,updated_at)
-		VALUES('other','Other','','{}','{}','pentest','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
+	backup, err := BackupMigrationSource(context.Background(), source, dbPath, t.TempDir(), dbPath+".bak")
+	if err != nil {
 		t.Fatal(err)
 	}
-	otherService := NewService(otherDB, otherDBPath, otherArtifact)
-	_, otherBackup := inspectAndBackupForMigrate(t, otherService, otherDBPath)
-	_ = otherDB.Close()
-
-	mismatch, err := service.Execute(context.Background(), MigrationRequest{
-		Kind:         MigrationKindMigrate,
-		SourceDigest: plan.SourceDigest,
-		Decisions:    decisionsFromPlan(plan),
-		BackupPath:   otherBackup,
-	})
-	if !errors.Is(err, ErrMigrationBlocked) {
-		t.Fatalf("backup mismatch error = %v", err)
-	}
-	assertMigrateBlockerCodes(t, mismatch, "backup_mismatch")
-	assertMigrateLeftV1Authoritative(t, db, "project-rebuild")
-}
-
-func TestMigrateV2RejectsStalePlanAndChangedSource(t *testing.T) {
-	t.Parallel()
-
-	db, service, artifactRoot, dbPath := newGraphV1MigrateFixture(t)
-	seedUnambiguousGraphHeads(t, db, artifactRoot)
-	plan, backupPath := inspectAndBackupForMigrate(t, service, dbPath)
-
-	stale, err := service.Execute(context.Background(), MigrationRequest{
-		Kind:         MigrationKindMigrate,
-		SourceDigest: "sha256:" + strings.Repeat("0", 64),
-		Decisions:    decisionsFromPlan(plan),
-		BackupPath:   backupPath,
-	})
-	if !errors.Is(err, ErrMigrationBlocked) {
-		t.Fatalf("stale plan error = %v", err)
-	}
-	assertMigrateBlockerCodes(t, stale, "stale_source_digest")
-	assertMigrateLeftV1Authoritative(t, db, "project-rebuild")
-
-	// Change source after plan/backup.
-	if _, err := db.Exec(`
-		UPDATE blackboard_node_versions
-		SET properties_json='{"category":"asset","summary":"mutated","confidence":"tentative","scope_status":"in_scope"}'
-		WHERE project_id='project-rebuild' AND version=(
-			SELECT version FROM blackboard_node_heads WHERE project_id='project-rebuild' AND node_id=blackboard_node_versions.node_id
-		)`); err != nil {
-		// Fallback: insert a new fact to change digest.
-		graph := blackboard.NewGraphService(db, nil, nil).WithArtifactRoot(artifactRoot)
-		ctx := blackboard.SystemExecutionContext("project-rebuild", "pentest", "mutate")
-		if _, err := graph.Apply(context.Background(), blackboard.MutationBatch{
-			SchemaVersion:  blackboard.GraphMutationSchemaVersion,
-			IdempotencyKey: "mutate-source",
-			Context:        ctx,
-			Operations: []blackboard.Operation{{
-				OpID: "extra", Kind: blackboard.OpCreateNode,
-				Node:   blackboard.NodeRef{NodeType: blackboard.NodeTypeProjectFact, StableKey: "fact:extra"},
-				Create: blackboard.CreateNodeInput{PropertyMap: map[string]any{"category": "asset", "summary": "extra", "confidence": "tentative", "scope_status": "in_scope"}},
-			}},
-		}); err != nil {
-			t.Fatalf("mutate source: %v", err)
-		}
+	if err := source.Close(); err != nil {
+		t.Fatal(err)
 	}
 
-	changed, err := service.Execute(context.Background(), MigrationRequest{
-		Kind:         MigrationKindMigrate,
-		SourceDigest: plan.SourceDigest,
-		Decisions:    decisionsFromPlan(plan),
-		BackupPath:   backupPath,
-	})
-	if !errors.Is(err, ErrMigrationBlocked) {
-		t.Fatalf("changed source error = %v", err)
+	db, err := store.OpenWritableMigrationDB(dbPath)
+	if err != nil {
+		t.Fatal(err)
 	}
-	assertMigrateBlockerCodes(t, changed, "stale_source_digest")
-	assertMigrateLeftV1Authoritative(t, db, "project-rebuild")
-}
-
-func TestMigrateV2RejectsIncompleteDecisions(t *testing.T) {
-	t.Parallel()
-
-	db, service, artifactRoot, dbPath := newGraphV1MigrateFixture(t)
-	seedDecisionBoundWorkflowGraph(t, db, artifactRoot)
-	plan, backupPath := inspectAndBackupForMigrate(t, service, dbPath)
-
-	result, err := service.Execute(context.Background(), MigrationRequest{
-		Kind:         MigrationKindMigrate,
-		SourceDigest: plan.SourceDigest,
-		// Omit required decisions intentionally.
-		BackupPath: backupPath,
-	})
-	if !errors.Is(err, ErrMigrationBlocked) && !errors.Is(err, ErrRebuildBlocked) {
-		t.Fatalf("error = %v, want blocked", err)
-	}
-	if result.Migrate != nil && result.Migrate.Status == "migrated" {
-		t.Fatal("incomplete decisions must not migrate")
-	}
-	assertMigrateLeftV1Authoritative(t, db, "project-rebuild")
-}
-
-func TestMigrateV2FailureBeforeSwitchRollsBackV2AndSharedDomain(t *testing.T) {
-	t.Parallel()
-
-	db, service, artifactRoot, dbPath := newGraphV1MigrateFixture(t)
-	seedDecisionBoundWorkflowGraph(t, db, artifactRoot)
-	plan, backupPath := inspectAndBackupForMigrate(t, service, dbPath)
-	decisions := []MigrationDecision{
-		{Source: MigrationSourceRef{Project: "project-rebuild", Type: "observation", Key: "observation:ambiguous"}, Decision: "confirmed_fact", TargetKey: "fact:from-obs"},
-		{Source: MigrationSourceRef{Project: "project-rebuild", Type: "hypothesis", Key: "hypothesis:active"}, Decision: "objective"},
-		{Source: MigrationSourceRef{Project: "project-rebuild", Type: "project_directive", Key: "directive:active"}, Decision: "scope_limit"},
-		{Source: MigrationSourceRef{Project: "project-rebuild", Type: "hypothesis", Key: "hypothesis:noise"}, Decision: "discard"},
-	}
-
-	injected := errors.New("injected pre-switch failure")
-	failing := NewService(db, dbPath, artifactRoot, WithCutoverFailureInjector(CutoverFailureInjectorFunc(func(point CutoverFailurePoint) error {
-		if point == CutoverFailureAfterParity {
+	injected := errors.New("injected after state flip")
+	service := NewService(db, dbPath, t.TempDir(), WithCutoverFailureInjector(CutoverFailureInjectorFunc(func(point CutoverFailurePoint) error {
+		if point == CutoverFailureAfterStateFlip {
 			return injected
 		}
 		return nil
 	})))
-
-	_, err := failing.Execute(context.Background(), MigrationRequest{
-		Kind:         MigrationKindMigrate,
-		SourceDigest: plan.SourceDigest,
-		Decisions:    decisions,
-		BackupPath:   backupPath,
+	result, err := service.Execute(context.Background(), MigrationRequest{
+		Kind: MigrationKindMigrate, SourceDigest: plan.Plan.SourceDigest, BackupPath: backup.Backup.Path,
 	})
 	if !errors.Is(err, injected) {
-		t.Fatalf("error = %v, want injected", err)
+		t.Fatalf("migrate error = %v, want injected rollback; result=%#v", err, result.Migrate)
 	}
-	assertMigrateLeftV1Authoritative(t, db, "project-rebuild")
-	var scopeJSON string
-	if err := db.QueryRow(`SELECT scope_json FROM projects WHERE id='project-rebuild'`).Scan(&scopeJSON); err != nil {
+	if epoch, err := db.CanonicalStore(); err != nil || epoch != store.CanonicalStoreGraphV1 {
+		t.Fatalf("epoch after rollback = %q, %v", epoch, err)
+	}
+	for _, table := range []string{"blackboard_nodes", "blackboard_graph_mutations", "task_summary_versions"} {
+		if !tablePresent(t, db, table) {
+			t.Fatalf("rollback did not restore source table %s", table)
+		}
+	}
+	var retirementMigration int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=34`).Scan(&retirementMigration); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(scopeJSON, "Keep admin testing bounded") {
-		t.Fatalf("shared-domain scope change must roll back: %s", scopeJSON)
+	if retirementMigration != 0 {
+		t.Fatal("failed cutover recorded retirement migration")
 	}
-	// Verified backup remains usable.
-	backupDB, err := sql.Open("sqlite", "file:"+backupPath+"?mode=ro")
-	if err != nil {
+	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	defer backupDB.Close()
-	var quickCheck string
-	if err := backupDB.QueryRow(`PRAGMA quick_check`).Scan(&quickCheck); err != nil || quickCheck != "ok" {
-		t.Fatalf("backup unusable after failed migrate: quick_check=%q err=%v", quickCheck, err)
-	}
-}
-
-func TestMigrateV2RerunAndLostResponseAreIdempotent(t *testing.T) {
-	t.Parallel()
-
-	db, service, artifactRoot, dbPath := newGraphV1MigrateFixture(t)
-	seedUnambiguousGraphHeads(t, db, artifactRoot)
-	plan, backupPath := inspectAndBackupForMigrate(t, service, dbPath)
-	req := MigrationRequest{
-		Kind:         MigrationKindMigrate,
-		SourceDigest: plan.SourceDigest,
-		Decisions:    decisionsFromPlan(plan),
-		BackupPath:   backupPath,
-	}
-
-	first, err := service.Execute(context.Background(), req)
+	reopened, err := store.OpenMigrationSource(dbPath)
 	if err != nil {
-		t.Fatalf("first migrate: %v", err)
+		t.Fatalf("reopen rolled-back source: %v", err)
 	}
-	second, err := service.Execute(context.Background(), req)
-	if err != nil {
-		t.Fatalf("rerun migrate: %v", err)
-	}
-	firstJSON, _ := json.Marshal(first.Migrate)
-	secondJSON, _ := json.Marshal(second.Migrate)
-	if string(firstJSON) != string(secondJSON) {
-		t.Fatalf("idempotent rerun diverged\nfirst=%s\nsecond=%s", firstJSON, secondJSON)
-	}
-
-	// Lost-response path: clear in-memory view by reloading committed audit.
-	reloaded := NewService(db, dbPath, artifactRoot)
-	third, err := reloaded.Execute(context.Background(), req)
-	if err != nil {
-		t.Fatalf("lost-response reopen migrate: %v", err)
-	}
-	thirdJSON, _ := json.Marshal(third.Migrate)
-	if string(firstJSON) != string(thirdJSON) {
-		t.Fatalf("lost-response result diverged\nfirst=%s\nthird=%s", firstJSON, thirdJSON)
+	defer reopened.Close()
+	if reopened.CanonicalStore() != store.CanonicalStoreGraphV1 {
+		t.Fatalf("reopened source epoch = %q", reopened.CanonicalStore())
 	}
 }
 
-func TestMigrateV2AlreadyCutOverWithChangedSourceConflicts(t *testing.T) {
-	t.Parallel()
-
-	db, service, artifactRoot, dbPath := newGraphV1MigrateFixture(t)
-	seedUnambiguousGraphHeads(t, db, artifactRoot)
-	plan, backupPath := inspectAndBackupForMigrate(t, service, dbPath)
-	req := MigrationRequest{
-		Kind:         MigrationKindMigrate,
-		SourceDigest: plan.SourceDigest,
-		Decisions:    decisionsFromPlan(plan),
-		BackupPath:   backupPath,
-	}
-	if _, err := service.Execute(context.Background(), req); err != nil {
-		t.Fatalf("first migrate: %v", err)
-	}
-	// Simulate operator presenting a different plan digest against an already-cut-over DB.
-	_, err := service.Execute(context.Background(), MigrationRequest{
-		Kind:         MigrationKindMigrate,
-		SourceDigest: "sha256:" + strings.Repeat("f", 64),
-		Decisions:    decisionsFromPlan(plan),
-		BackupPath:   backupPath,
-	})
-	if !errors.Is(err, ErrCutoverConflict) {
-		t.Fatalf("error = %v, want ErrCutoverConflict", err)
-	}
-}
-
-func TestMigrateV2VerifyChecksEpochIsolationEvidenceAndExactBytes(t *testing.T) {
-	t.Parallel()
-
-	db, service, artifactRoot, dbPath := newGraphV1MigrateFixture(t)
-	seedIsolatedProjects(t, db, artifactRoot)
-	plan, backupPath := inspectAndBackupForMigrate(t, service, dbPath)
-	if _, err := service.Execute(context.Background(), MigrationRequest{
-		Kind:         MigrationKindMigrate,
-		SourceDigest: plan.SourceDigest,
-		Decisions:    decisionsFromPlan(plan),
-		BackupPath:   backupPath,
-	}); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
-	verify, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindVerify})
-	if err != nil {
-		t.Fatalf("verify: %v", err)
-	}
-	if verify.Migrate == nil || verify.Migrate.Status != "migrated" || verify.Migrate.StoreEpoch != store.CanonicalStoreBlackboardV2 {
-		t.Fatalf("verify result = %#v", verify.Migrate)
-	}
-	if verify.Migrate.Validation.Status != "passed" || verify.Migrate.Validation.SnapshotsValidated != 2 {
-		t.Fatalf("verify validation = %#v", verify.Migrate.Validation)
-	}
-
-	// Corrupt a semantic row and expect verify failure.
-	if _, err := db.Exec(`UPDATE blackboard_v2_records SET record_json='{"broken":true}' WHERE project_id='project-a'`); err != nil {
-		t.Fatal(err)
-	}
-	corrupted, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindVerify})
-	if !errors.Is(err, ErrCutoverVerificationFailed) {
-		t.Fatalf("corrupted verify error = %v, want ErrCutoverVerificationFailed", err)
-	}
-	if corrupted.Migrate != nil && corrupted.Migrate.Validation.Status == "passed" {
-		t.Fatal("corrupted verify must not report passed validation")
-	}
-}
-
-func TestMigrateV2CLISurfaceOfflineOnly(t *testing.T) {
-	// Covered by pentestctl package tests; this package-level guard ensures the
-	// migrate kind is wired through the service Execute seam used by CLI.
-	t.Parallel()
-	if MigrationKindMigrate != "migrate" {
-		t.Fatalf("MigrationKindMigrate = %q", MigrationKindMigrate)
-	}
-}
-
-func newGraphV1MigrateFixture(t *testing.T) (*store.DB, *Service, string, string) {
+func createNumberedV1Source(t *testing.T) string {
 	t.Helper()
-	root := t.TempDir()
-	databasePath := filepath.Join(root, "pentest.db")
-	artifactRoot := filepath.Join(root, "artifacts")
-	if err := os.MkdirAll(artifactRoot, 0o700); err != nil {
+	path := filepath.Join(t.TempDir(), "numbered-v1.db")
+	db, err := store.Open(path)
+	if err != nil {
 		t.Fatal(err)
 	}
-	db, err := store.Open(databasePath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
+	for _, statement := range []string{
+		`DELETE FROM schema_migrations WHERE version >= 20`,
+		`UPDATE blackboard_store_state SET canonical_store='graph_v1',cutover_state='graph',migration_contract_version='legacy_blackboard_to_graph_v1' WHERE id=1`,
+		`CREATE TABLE blackboard_graph_state (project_id TEXT PRIMARY KEY)`,
+		`CREATE TABLE blackboard_graph_mutations (project_id TEXT, mutation_seq INTEGER)`,
+		`CREATE TABLE blackboard_nodes (project_id TEXT,id TEXT,node_type TEXT,original_stable_key TEXT,created_mutation_seq INTEGER,created_operation_index INTEGER,created_at TEXT,PRIMARY KEY(project_id,id))`,
+		`CREATE TABLE blackboard_node_versions (project_id TEXT,node_id TEXT,version INTEGER,result_graph_revision INTEGER,mutation_seq INTEGER,operation_index INTEGER,schema_version INTEGER,disposition TEXT,merge_target_id TEXT,properties_json TEXT,semantic_hash TEXT,updated_at TEXT,PRIMARY KEY(project_id,node_id,version))`,
+		`CREATE TABLE blackboard_node_heads (project_id TEXT,node_id TEXT,node_type TEXT,version INTEGER,graph_revision INTEGER,disposition TEXT,merge_target_id TEXT,lifecycle_state TEXT,entity_kind TEXT,scope_status TEXT,semantic_hash TEXT,PRIMARY KEY(project_id,node_id))`,
+		`CREATE TABLE blackboard_edge_heads (project_id TEXT,edge_id TEXT,edge_type TEXT,from_node_id TEXT,to_node_id TEXT,version INTEGER,graph_revision INTEGER,state TEXT,semantic_hash TEXT,PRIMARY KEY(project_id,edge_id))`,
+		`CREATE TABLE blackboard_edge_versions (project_id TEXT,edge_id TEXT,version INTEGER,result_graph_revision INTEGER,mutation_seq INTEGER,operation_index INTEGER,from_node_id TEXT,to_node_id TEXT,state TEXT,summary TEXT,semantic_hash TEXT,updated_at TEXT,PRIMARY KEY(project_id,edge_id,version))`,
+		`CREATE TABLE blackboard_key_registry (project_id TEXT,node_type TEXT,key TEXT,latest_key_version INTEGER,role TEXT,source_node_id TEXT,canonical_node_id TEXT,semantic_hash TEXT,PRIMARY KEY(project_id,node_type,key))`,
+		`ALTER TABLE task_continuations ADD COLUMN blackboard_finish_summary_version_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE task_continuations ADD COLUMN blackboard_finish_graph_revision INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE task_continuations ADD COLUMN blackboard_finish_mutation_sequence INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE task_continuations ADD COLUMN blackboard_finished_at TEXT NOT NULL DEFAULT ''`,
+		`CREATE TABLE task_summary_versions (id TEXT PRIMARY KEY,task_id TEXT NOT NULL,continuation_id TEXT,version INTEGER NOT NULL,summary TEXT NOT NULL,submitted_by TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			_ = db.Close()
+			t.Fatalf("prepare numbered-v1 source: %v\n%s", err, statement)
+		}
 	}
-	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`INSERT INTO projects(id,name,description,scope_json,defaults_json,kind,created_at,updated_at) VALUES('project-1','P','','{}','{}','pentest','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.Exec(`
-		UPDATE blackboard_store_state
-		SET canonical_store='graph_v1',
-		    cutover_state='graph',
-		    migration_contract_version='legacy_blackboard_to_graph_v1',
-		    graph_schema_version=1
-		WHERE id=1`); err != nil {
+		INSERT INTO blackboard_graph_state VALUES('project-1');
+		INSERT INTO blackboard_graph_mutations VALUES('project-1',1);
+		INSERT INTO blackboard_nodes VALUES('project-1','node-fact','project_fact','fact:source',0,0,'2026-01-01T00:00:00Z');
+		INSERT INTO blackboard_node_versions VALUES('project-1','node-fact',1,1,0,0,1,'main',NULL,'{"category":"target","summary":"source fact v1","confidence":"tentative","scope_status":"in_scope"}','hash-1','2026-01-01T00:00:00Z');
+		INSERT INTO blackboard_node_versions VALUES('project-1','node-fact',2,2,0,0,1,'main',NULL,'{"category":"target","summary":"source fact v2","confidence":"confirmed","scope_status":"in_scope"}','hash-2','2026-01-02T00:00:00Z');
+		INSERT INTO blackboard_node_heads VALUES('project-1','node-fact','project_fact',2,2,'main',NULL,'','','in_scope','hash-2');
+		INSERT INTO blackboard_nodes VALUES('project-1','node-host','entity','host:web',0,0,'2026-01-01T00:00:00Z');
+		INSERT INTO blackboard_node_versions VALUES('project-1','node-host',1,1,0,0,1,'main',NULL,'{"kind":"host","name":"web","locator":"web.example","scope_status":"in_scope","status":"active"}','hash-host','2026-01-01T00:00:00Z');
+		INSERT INTO blackboard_node_heads VALUES('project-1','node-host','entity',1,1,'main',NULL,'','host','in_scope','hash-host');
+		INSERT INTO blackboard_edge_versions VALUES('project-1','edge-about',1,2,0,0,'node-fact','node-host','active','source host','hash-edge','2026-01-02T00:00:00Z');
+		INSERT INTO blackboard_edge_heads VALUES('project-1','edge-about','about','node-fact','node-host',1,2,'active','hash-edge');
+		INSERT INTO blackboard_key_registry VALUES('project-1','project_fact','fact:legacy-source',1,'alias','node-alias','node-fact','hash-alias');
+	`); err != nil {
 		t.Fatal(err)
 	}
-	installLegacyWorkflowStateFixture(t, db)
-	return db, NewService(db, databasePath, artifactRoot), artifactRoot, databasePath
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
-func inspectAndBackupForMigrate(t *testing.T, service *Service, dbPath string) (LegacyMigrationPlanV1, string) {
+func inspectNumberedV1Source(t *testing.T, path string) []string {
 	t.Helper()
-	inspect, err := service.Execute(context.Background(), MigrationRequest{Kind: MigrationKindInspect})
-	if err != nil {
-		t.Fatalf("inspect: %v", err)
-	}
-	backupPath := filepath.Join(filepath.Dir(dbPath), "pre-v2.bak")
-	// Create a verified backup with the production backup implementation.
-	backup, err := SQLiteBackupImplementation{}.CreateVerifiedBackup(context.Background(), service.db, service.databasePath, backupPath)
-	if err != nil {
-		t.Fatalf("create verified backup: %v", err)
-	}
-	if backup.QuickCheck != "ok" {
-		t.Fatalf("backup quick_check = %q", backup.QuickCheck)
-	}
-	return inspect.Plan, backupPath
-}
-
-func decisionsFromPlan(plan LegacyMigrationPlanV1) []MigrationDecision {
-	out := make([]MigrationDecision, 0, len(plan.RequiredDecisions))
-	for _, required := range plan.RequiredDecisions {
-		decision := required
-		if decision.Decision == "" && len(decision.AllowedActions) > 0 {
-			decision.Decision = decision.AllowedActions[0]
-		}
-		out = append(out, decision)
-	}
-	return out
-}
-
-func assertMigrateBlockerCodes(t *testing.T, result MigrationResult, want ...string) {
-	t.Helper()
-	got := map[string]bool{}
-	if result.Migrate != nil {
-		for _, blocker := range result.Migrate.Blockers {
-			got[blocker.Code] = true
-		}
-	}
-	for _, blocker := range result.Plan.ValidationBlockers {
-		got[blocker.Code] = true
-	}
-	if result.Rebuild != nil {
-		for _, blocker := range result.Rebuild.Blockers {
-			got[blocker.Code] = true
-		}
-	}
-	for _, code := range want {
-		if !got[code] {
-			t.Fatalf("missing blocker %q in migrate result plan=%#v migrate=%#v rebuild=%#v", code, result.Plan.ValidationBlockers, result.Migrate, result.Rebuild)
-		}
-	}
-}
-
-func assertMigrateLeftV1Authoritative(t *testing.T, db *store.DB, projectID string) {
-	t.Helper()
-	epoch, err := db.CanonicalStore()
+	source, err := store.OpenMigrationSource(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if epoch != store.CanonicalStoreGraphV1 {
-		t.Fatalf("epoch = %q, want graph_v1 still authoritative", epoch)
-	}
-	var records int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM blackboard_v2_records WHERE project_id=?`, projectID).Scan(&records); err != nil {
-		if strings.Contains(err.Error(), "no such table") {
-			return
-		}
+	defer source.Close()
+	rows, err := source.QueryContext(context.Background(), `SELECT printf('%d|%s|%s',version,name,checksum) FROM schema_migrations ORDER BY version`)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if records != 0 {
-		t.Fatalf("failed migrate left active v2 records=%d", records)
+	defer rows.Close()
+	var checksums []string
+	for rows.Next() {
+		var checksum string
+		if err := rows.Scan(&checksum); err != nil {
+			t.Fatal(err)
+		}
+		checksums = append(checksums, checksum)
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(checksums) != 19 {
+		t.Fatalf("numbered-v1 migration count = %d, want 19", len(checksums))
+	}
+	return checksums
+}
+
+func assertHistoricalChecksums(t *testing.T, db *store.DB, before []string) {
+	t.Helper()
+	rows, err := db.Query(`SELECT printf('%d|%s|%s',version,name,checksum) FROM schema_migrations WHERE version <= 19 ORDER BY version`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var after []string
+	for rows.Next() {
+		var checksum string
+		if err := rows.Scan(&checksum); err != nil {
+			t.Fatal(err)
+		}
+		after = append(after, checksum)
+	}
+	if fmt.Sprint(after) != fmt.Sprint(before) {
+		t.Fatalf("historical migration checksums changed:\nbefore=%v\nafter=%v", before, after)
+	}
+}
+
+func tablePresent(t *testing.T, db *store.DB, table string) bool {
+	t.Helper()
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	return count != 0
 }

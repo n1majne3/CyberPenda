@@ -895,7 +895,99 @@ func migrations() []migration {
 		newMigration(31, "blackboard_v2_continuation_finish", migration31SQL, migration31Up),
 		newMigration(32, "blackboard_v2_sync_delivery_receipts", migration32SQL, migration32Up),
 		newMigration(33, "remove_duplicate_workflow_state", migration33SQL, migration33Up),
+		newMigration(34, "retire_blackboard_v1_graph_ledger", migration34SQL, migration34Up),
+		newMigration(35, "remove_task_graph_snapshot_pin", migration35SQL, migration35Up),
 	}
+}
+
+// migration34 retires every displaced Blackboard v1 data and compatibility
+// table. It runs only after v2 is already valid on ordinary upgrades; the
+// offline migrator calls CompleteBlackboardV2Cutover after transaction-local
+// v2 validation and before it activates the v2 epoch.
+const migration34SQL = `
+-- Blackboard v1 graph ledger and compatibility retirement.
+`
+
+func migration34Up(tx *sql.Tx) error { return retireBlackboardV1Tables(tx) }
+
+const migration35SQL = `
+-- Task continuations no longer duplicate Blackboard v2 launch pins.
+`
+
+func migration35Up(tx *sql.Tx) error { return dropTaskGraphSnapshotColumns(tx) }
+
+var retiredBlackboardV1Tables = []string{
+	"blackboard_health_run_requests", "blackboard_health_results", "blackboard_health_runs",
+	"blackboard_restore_manifests", "blackboard_compactions", "blackboard_projection_metrics",
+	"blackboard_attempt_checkpoint_requests", "blackboard_interface_requests",
+	"blackboard_compatibility_task_summaries", "blackboard_compatibility_results",
+	"blackboard_compatibility_use", "blackboard_compatibility_requests",
+	"blackboard_compatibility_read_retirement", "blackboard_compatibility_write_retirement",
+	"blackboard_graph_legacy_record_anchors", "blackboard_graph_integrity_cutovers",
+	"blackboard_edge_heads", "blackboard_edge_versions", "blackboard_edges",
+	"blackboard_key_registry", "blackboard_key_events", "blackboard_node_heads", "blackboard_graph_state",
+	"blackboard_node_versions", "blackboard_nodes", "blackboard_graph_operations",
+	"blackboard_graph_provenance_events", "blackboard_graph_provenance", "blackboard_graph_mutations",
+	"blackboard_legacy_mappings", "blackboard_migration_runs",
+	"project_fact_relations", "project_fact_versions", "project_facts", "fact_key_aliases",
+	"finding_key_aliases", "finding_versions", "findings", "evidence_artifacts",
+}
+
+func retireBlackboardV1Tables(tx *sql.Tx) error {
+	for _, view := range []string{"blackboard_graph_legacy_current_records"} {
+		if _, err := tx.Exec(`DROP VIEW IF EXISTS ` + view); err != nil {
+			return fmt.Errorf("drop retired Blackboard v1 view %s: %w", view, err)
+		}
+	}
+	for _, table := range retiredBlackboardV1Tables {
+		if _, err := tx.Exec(`DROP TABLE IF EXISTS ` + table); err != nil {
+			return fmt.Errorf("drop retired Blackboard v1 table %s: %w", table, err)
+		}
+	}
+	if err := dropTaskGraphSnapshotColumns(tx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func dropTaskGraphSnapshotColumns(tx *sql.Tx) error {
+	for _, column := range []string{
+		"blackboard_graph_revision",
+		"blackboard_renderer_version",
+		"blackboard_estimator_version",
+		"blackboard_projection_hash",
+		"blackboard_projection_bytes",
+		"blackboard_projection_estimated_tokens",
+	} {
+		if err := dropColumnIfPresent(tx, "task_continuations", column); err != nil {
+			return fmt.Errorf("drop retired task_continuations.%s: %w", column, err)
+		}
+	}
+	return nil
+}
+
+// CompleteBlackboardV2Cutover performs the destructive portion of an offline
+// migration only after the caller has validated v2 records in the same
+// transaction. It records the new numbered migration without changing any
+// historical migration checksum.
+func CompleteBlackboardV2Cutover(ctx context.Context, tx *sql.Tx, appliedAt string) error {
+	definitions := migrations()
+	for _, definition := range definitions[32:] {
+		var applied int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version=?`, definition.version).Scan(&applied); err != nil {
+			return fmt.Errorf("check post-validation migration %d: %w", definition.version, err)
+		}
+		if applied != 0 {
+			continue
+		}
+		if err := definition.up(tx); err != nil {
+			return fmt.Errorf("apply post-validation migration %d: %w", definition.version, err)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version,name,checksum,applied_at) VALUES(?,?,?,?)`, definition.version, definition.name, definition.checksum, appliedAt); err != nil {
+			return fmt.Errorf("record post-validation migration %d: %w", definition.version, err)
+		}
+	}
+	return nil
 }
 
 // migration33 contracts the active v2 store after the offline source decoder

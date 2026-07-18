@@ -1,12 +1,9 @@
 package blackboardfixture
 
 import (
-	"errors"
 	"testing"
 
-	"pentest/internal/blackboard"
 	"pentest/internal/store"
-	"pentest/internal/task"
 )
 
 const SentinelSummary = "v1 sentinel must stay invisible to blackboard_v2"
@@ -16,28 +13,14 @@ const SentinelSummary = "v1 sentinel must stay invisible to blackboard_v2"
 // accidental fallback observable in tests.
 func SeedLegacyState(t testing.TB, db *store.DB, projectID, taskID string) {
 	t.Helper()
-	facts := blackboard.NewService(db)
-	if _, err := facts.UpsertFact(blackboard.UpsertFactRequest{
-		ProjectID: projectID, FactKey: "fact:v1-sentinel", Category: "test",
-		Summary: SentinelSummary, Confidence: blackboard.ConfidenceConfirmed,
-	}); err != nil {
-		t.Fatalf("seed v1 Fact: %v", err)
-	}
-	if _, err := facts.UpsertFinding(blackboard.UpsertFindingRequest{
-		ProjectID: projectID, FindingKey: "finding:v1-sentinel", Title: SentinelSummary,
-		Status: blackboard.FindingStatusUnconfirmed,
-	}); err != nil {
-		t.Fatalf("seed v1 Finding: %v", err)
-	}
-	if _, err := facts.AttachEvidence(blackboard.AttachEvidenceRequest{
-		ProjectID: projectID, EvidenceKey: "evidence:v1-sentinel",
-		AttachToType: blackboard.EvidenceAttachFact, AttachToKey: "fact:v1-sentinel",
-		ArtifactType: "text", SourcePath: "sentinel.txt", Summary: SentinelSummary,
-	}); err != nil {
-		t.Fatalf("seed v1 Evidence: %v", err)
-	}
-	if _, err := task.NewService(db).PutSummary(taskID, SentinelSummary, "v1-sentinel"); err != nil && !errors.Is(err, task.ErrRemovedWorkflowState) {
-		t.Fatalf("seed v1 Task Summary: %v", err)
+	for _, table := range []string{"project_facts", "findings", "evidence_artifacts", "task_summary_versions"} {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&count); err != nil {
+			t.Fatalf("inspect retired table %s: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("active v2 fixture unexpectedly contains retired table %s", table)
+		}
 	}
 }
 
@@ -59,10 +42,14 @@ func CaptureLegacyState(t testing.TB, db *store.DB) LegacyState {
 		SELECT name
 		FROM sqlite_master
 		WHERE type='table'
-		  AND (name LIKE 'blackboard_%'
+		  AND (name LIKE 'blackboard_graph_%'
 		       OR name IN ('task_summary_versions','project_facts','project_fact_versions',
 		                   'project_fact_relations','fact_key_aliases','finding_key_aliases',
-		                   'findings','finding_versions','evidence_artifacts'))
+		                   'findings','finding_versions','evidence_artifacts',
+		                   'blackboard_nodes','blackboard_node_versions','blackboard_node_heads',
+		                   'blackboard_edges','blackboard_edge_versions','blackboard_edge_heads',
+		                   'blackboard_key_registry','blackboard_key_events',
+		                   'blackboard_legacy_mappings','blackboard_migration_runs'))
 		ORDER BY name`)
 	if err != nil {
 		t.Fatalf("list legacy Blackboard tables: %v", err)

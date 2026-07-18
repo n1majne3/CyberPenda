@@ -328,12 +328,12 @@ func TestBlackboardV2FinishThenResumeUsesFreshPinAndOnlyUnconsumedHarnessSteerin
 		t.Fatalf("second successful resume left steering: %#v, %v", remaining, err)
 	}
 	for _, table := range []string{"blackboard_graph_mutations", "blackboard_graph_operations"} {
-		var count int
-		if err := server.db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&count); err != nil {
-			t.Fatalf("count forbidden table %s: %v", table, err)
+		var exists int
+		if err := server.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&exists); err != nil {
+			t.Fatalf("inspect forbidden table %s: %v", table, err)
 		}
-		if count != 0 {
-			t.Errorf("v2 finish/resume touched forbidden table %s (%d rows)", table, count)
+		if exists != 0 {
+			t.Errorf("v2 finish/resume retained forbidden table %s", table)
 		}
 	}
 }

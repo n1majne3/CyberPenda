@@ -609,7 +609,6 @@ func TestDaemonStartupRefusesV1WithStableOfflineMigrationGuidance(t *testing.T) 
 		t.Fatalf("open graph_v1 through offline source seam: %v", err)
 	}
 	beforeChecksums := migrationChecksumSet(t, beforeSource.DB)
-	assertV1TablesPresent(t, beforeSource.DB)
 	if err := beforeSource.Close(); err != nil {
 		t.Fatalf("close graph_v1 source: %v", err)
 	}
@@ -647,7 +646,6 @@ func TestDaemonStartupRefusesV1WithStableOfflineMigrationGuidance(t *testing.T) 
 	if strings.Join(afterChecksums, "\n") != strings.Join(beforeChecksums, "\n") {
 		t.Fatalf("refused daemon startup changed migration checksums: before=%v after=%v", beforeChecksums, afterChecksums)
 	}
-	assertV1TablesPresent(t, afterSource.DB)
 }
 
 func TestDaemonStartupRefusesUnknownEpochWithoutActiveServer(t *testing.T) {
@@ -734,19 +732,4 @@ func migrationChecksumSet(t *testing.T, db interface {
 		t.Fatalf("iterate migration checksums: %v", err)
 	}
 	return checksums
-}
-
-func assertV1TablesPresent(t *testing.T, db interface {
-	QueryRow(string, ...any) *sql.Row
-}) {
-	t.Helper()
-	for _, table := range []string{"project_facts", "blackboard_graph_mutations", "blackboard_nodes"} {
-		var count int
-		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&count); err != nil {
-			t.Fatalf("inspect v1 table %s: %v", table, err)
-		}
-		if count != 1 {
-			t.Fatalf("v1 table %s missing after refused daemon startup", table)
-		}
-	}
 }

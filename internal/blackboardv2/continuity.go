@@ -797,14 +797,6 @@ func (s *ContinuityService) CreateContinuation(ctx context.Context, req Continua
 		ProjectID: req.ProjectID, TaskID: req.TaskID, RuntimeProfileID: req.RuntimeProfileID,
 		RuntimeProvider: req.RuntimeProvider, Runner: req.Runner, RuntimeConfig: req.RuntimeConfig,
 		SteeringEventIDs: req.SteeringEventIDs,
-		SnapshotPin: task.ContinuationSnapshotPin{
-			BlackboardGraphRevision:             projection.Snapshot.Revision,
-			BlackboardRendererVersion:           snapshotSchema,
-			BlackboardEstimatorVersion:          snapshotEstimatorVersion,
-			BlackboardProjectionHash:            hex.EncodeToString(digest[:]),
-			BlackboardProjectionBytes:           len(projection.Bytes),
-			BlackboardProjectionEstimatedTokens: projection.EstimatedTokens,
-		},
 	})
 	if err != nil {
 		return ContinuationLaunch{}, err

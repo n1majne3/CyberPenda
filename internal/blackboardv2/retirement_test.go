@@ -7,6 +7,80 @@ import (
 	"testing"
 )
 
+// TestBlackboardV2RuntimeHasNoGraphV1Ledger is the repository boundary for
+// #127. Historical v1 decoding is deliberately isolated to the offline
+// migration package; the active daemon/runtime path must be v2-only.
+func TestBlackboardV2RuntimeHasNoGraphV1Ledger(t *testing.T) {
+	root := repositoryRoot(t)
+	for _, relativePath := range []string{
+		"internal/blackboard/graph.go",
+		"internal/blackboard/graph_integrity.go",
+		"internal/blackboard/graph_reconstruction.go",
+		"internal/blackboard/graph_compaction.go",
+		"internal/blackboard/graph_projection.go",
+		"internal/blackboard/graph_disposition.go",
+		"internal/blackboard/legacy_import.go",
+		"internal/blackboard/graph_budget.go",
+		"internal/blackboard/graph_result_decode.go",
+		"internal/blackboardmigration/import.go",
+	} {
+		if _, err := os.Stat(filepath.Join(root, relativePath)); err == nil {
+			t.Errorf("retired Blackboard v1 ledger implementation remains at %s", relativePath)
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("stat %s: %v", relativePath, err)
+		}
+	}
+
+	allowedProductionPaths := map[string]bool{
+		// Historical migrations must retain exact SQL/checksums, and this seam
+		// classifies v1 files without activating them.
+		"internal/store/store.go": true,
+		// This user-owned file cannot be moved in the current shared worktree.
+		"internal/blackboard/graph_types.go":          true,
+		"internal/blackboard/retired_graph_compat.go": true,
+	}
+	forbidden := []string{
+		"GraphService", "blackboard_graph_", "graph_v1", "legacy_v1",
+		"CanonicalStoreGraphV1", "CanonicalStoreLegacyV1", "CanonicalStoreGraphV1Finalized",
+		"history_head_hash", "current_semantic_state_hash", "current_main_projection_hash",
+	}
+	err := filepath.WalkDir(filepath.Join(root, "internal"), func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relativePath, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		relativePath = filepath.ToSlash(relativePath)
+		if entry.IsDir() {
+			if relativePath == "internal/blackboardmigration" || relativePath == "internal/testsupport" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") || allowedProductionPaths[relativePath] {
+			return nil
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, term := range forbidden {
+			if strings.Contains(string(body), term) {
+				t.Errorf("production path %s references retired %q", relativePath, term)
+			}
+		}
+		if strings.Contains(string(body), `"pentest/internal/blackboardmigration"`) && relativePath != "internal/pentestctl/pentestctl.go" {
+			t.Errorf("production path %s imports the offline-only v1 decoder", relativePath)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scan production Blackboard boundary: %v", err)
+	}
+}
+
 // TestBlackboardV2HasNoCurrentGraphV1ReadOrAuditProjection is the repository
 // boundary for #126. Historical decoding is an offline migration concern; no
 // current daemon, runtime, transport, or CLI package may register or invoke it.
@@ -60,8 +134,8 @@ func TestBlackboardV2HasNoCurrentGraphV1ReadOrAuditProjection(t *testing.T) {
 	if strings.Contains(string(server), "NewGraphService(") {
 		t.Fatal("daemon still creates a graph-v1 service")
 	}
-	if !strings.Contains(string(server), "offline migration inputs") {
-		t.Fatal("daemon no longer makes graph-v1 stores offline-only")
+	if strings.Contains(string(server), "CanonicalStoreGraphV1") {
+		t.Fatal("daemon still recognizes a graph-v1 epoch")
 	}
 	migration, err := os.ReadFile(filepath.Join(root, "internal/blackboardmigration/service.go"))
 	if err != nil {
@@ -69,15 +143,6 @@ func TestBlackboardV2HasNoCurrentGraphV1ReadOrAuditProjection(t *testing.T) {
 	}
 	if strings.Contains(string(migration), ".RunHealth(") {
 		t.Fatal("offline migration verification still runs retired graph audit health")
-	}
-	importer, err := os.ReadFile(filepath.Join(root, "internal/blackboardmigration/import.go"))
-	if err != nil {
-		t.Fatalf("read migration importer: %v", err)
-	}
-	for _, forbidden := range []string{"BlackboardReadService", "NewBlackboardReadService", "ReadKind"} {
-		if strings.Contains(string(importer), forbidden) {
-			t.Errorf("offline migration decoder still imports retired Blackboard read API %q", forbidden)
-		}
 	}
 }
 

@@ -136,6 +136,12 @@ func (s *Service) migrateToBlackboardV2(ctx context.Context, request MigrationRe
 	}
 
 	now := s.clock().UTC().Format(time.RFC3339Nano)
+	// The source ledger remains available through validation above. Retire it
+	// only after the rebuilt v2 state has passed every check, in this same
+	// transaction, so a failure leaves the source authoritative.
+	if err := store.CompleteBlackboardV2Cutover(ctx, tx, now); err != nil {
+		return result, err
+	}
 	cutoverID := "migrate_v2_" + shortHash(request.SourceDigest+"\x00"+now)
 	backup := result.Backup
 	if _, err := tx.ExecContext(ctx, `
@@ -181,29 +187,6 @@ func (s *Service) migrateToBlackboardV2(ctx context.Context, request MigrationRe
 		Validation:         MigrationValidationV1{Status: "passed", SnapshotsValidated: validated},
 		StoreEpoch:         store.CanonicalStoreBlackboardV2,
 	}
-	body, err := json.Marshal(MigrationResult{Kind: request.Kind, Plan: LegacyMigrationPlanV1{SourceDigest: request.SourceDigest}, Backup: backup, Rebuild: &rebuild, Migrate: migrateResult})
-	if err != nil {
-		return result, fmt.Errorf("encode migrate audit: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO blackboard_migration_runs(
-			id,kind,state,source_digest,mapping_digest,backup_path,backup_sha256,counts_json,created_at,updated_at,finished_at
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(id) DO UPDATE SET
-			state=excluded.state,
-			source_digest=excluded.source_digest,
-			mapping_digest=excluded.mapping_digest,
-			backup_path=excluded.backup_path,
-			backup_sha256=excluded.backup_sha256,
-			counts_json=excluded.counts_json,
-			updated_at=excluded.updated_at,
-			finished_at=excluded.finished_at`,
-		cutoverID, migrateResultAuditKind, "committed", request.SourceDigest, rebuildMappingDigest(rebuild),
-		backup.Path, backup.SHA256, string(body), now, now, now,
-	); err != nil {
-		return result, fmt.Errorf("persist migrate audit: %w", err)
-	}
-
 	if err := s.failCutover(CutoverFailureAfterStateFlip); err != nil {
 		return result, err
 	}
@@ -316,12 +299,8 @@ func (s *Service) committedMigrateResult(ctx context.Context, request MigrationR
 			Plan: LegacyMigrationPlanV1{SourceDigest: storedDigest},
 		}, true, fmt.Errorf("%w: cutover_id=%s committed=%s requested=%s", ErrCutoverConflict, cutoverID, storedDigest, request.SourceDigest)
 	}
-	if stored, ok, err := s.loadMigrateResult(ctx, cutoverID); err != nil {
-		return MigrationResult{}, true, err
-	} else if ok {
-		return stored, true, nil
-	}
-	// Rebuild a stable result from live post-cutover state when audit is missing.
+	// Rebuild a stable result from live post-cutover state. The v1 migration
+	// audit table is deliberately retired with the source ledger.
 	verify, err := s.verifyBlackboardV2(ctx, MigrationRequest{Kind: MigrationKindVerify})
 	if err != nil {
 		return MigrationResult{Kind: MigrationKindMigrate, Plan: LegacyMigrationPlanV1{SourceDigest: storedDigest}}, true, err
@@ -332,25 +311,6 @@ func (s *Service) committedMigrateResult(ctx context.Context, request MigrationR
 	}
 	verify.Backup = &VerifiedBackup{Path: backupPath, SHA256: backupSHA, QuickCheck: "ok"}
 	return verify, true, nil
-}
-
-func (s *Service) loadMigrateResult(ctx context.Context, cutoverID string) (MigrationResult, bool, error) {
-	var body string
-	err := s.db.QueryRowContext(ctx, `
-		SELECT counts_json FROM blackboard_migration_runs
-		WHERE id=? AND kind=? AND state='committed'`, cutoverID, migrateResultAuditKind).Scan(&body)
-	if errors.Is(err, sql.ErrNoRows) {
-		return MigrationResult{}, false, nil
-	}
-	if err != nil {
-		return MigrationResult{}, false, err
-	}
-	var result MigrationResult
-	if err := json.Unmarshal([]byte(body), &result); err != nil {
-		return MigrationResult{}, false, fmt.Errorf("decode committed migrate result: %w", err)
-	}
-	result.Kind = MigrationKindMigrate
-	return result, true, nil
 }
 
 func blockedMigrateResult(epoch, backupPath string, blockers []MigrationBlocker) *CutoverMigrationResultV1 {

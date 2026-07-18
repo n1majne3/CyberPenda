@@ -628,12 +628,12 @@ func TestResumePinsCurrentTruthWithoutLegacyConclusionOrHandoffState(t *testing.
 		t.Fatalf("resume changed Task-local surfaces: %#v", events)
 	}
 	for _, table := range []string{"blackboard_graph_mutations", "blackboard_graph_operations"} {
-		var count int
-		if err := fixture.db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&count); err != nil {
-			t.Fatalf("count forbidden table %s: %v", table, err)
+		var exists int
+		if err := fixture.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&exists); err != nil {
+			t.Fatalf("inspect forbidden table %s: %v", table, err)
 		}
-		if count != 0 {
-			t.Errorf("resume/Finish v2 touched forbidden legacy table %s (%d rows)", table, count)
+		if exists != 0 {
+			t.Errorf("resume/Finish v2 retained forbidden legacy table %s", table)
 		}
 	}
 	for _, forbidden := range []string{"goal", "conclusion", "handoff", "task_summary", "objective_outcome", "mechanical_handoff"} {

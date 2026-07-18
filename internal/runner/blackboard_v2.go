@@ -140,7 +140,7 @@ func BlackboardV2ProcessEnv(env map[string]string, layout Layout, sandbox bool) 
 // shared Blackboard v2 Launch Pin / Working Snapshot contract.
 func BlackboardV2SupportsProvider(provider runtimeprofile.Provider) bool {
 	switch provider {
-	case runtimeprofile.ProviderCodex, runtimeprofile.ProviderClaudeCode, runtimeprofile.ProviderPi:
+	case runtimeprofile.ProviderFake, runtimeprofile.ProviderCodex, runtimeprofile.ProviderClaudeCode, runtimeprofile.ProviderPi:
 		return true
 	default:
 		return false

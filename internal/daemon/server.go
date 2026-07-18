@@ -210,19 +210,18 @@ func NewServer(config Config) (*Server, error) {
 		server.logger = log.Default()
 	}
 	server.tasks.SetProjectService(server.projects)
-	if epoch == store.CanonicalStoreGraphV1 || epoch == store.CanonicalStoreGraphV1Finalized {
+	if epoch != store.CanonicalStoreBlackboardV2 {
 		_ = server.Close()
-		return nil, fmt.Errorf("Blackboard v1 stores are offline migration inputs; run blackboard migrate before starting the daemon")
-	} else if epoch == store.CanonicalStoreBlackboardV2 {
-		server.projectInterfaceGrants = projectinterface.NewGrantStore(db, projectinterface.SystemClock{}, projectinterface.RandomIDSource{}, projectinterface.RandomTokenSource{})
-		server.tasks.SetContinuationTerminalMarker(server.projectInterfaceGrants)
-		server.blackboardV2 = blackboardv2.NewServiceWithEvidence(db, blackboardv2.EvidenceConfig{ArtifactRoot: artifactRoot, RuntimeRoot: runtimeRoot})
-		server.tasks.SetContinuationReconciler(server.blackboardV2)
-		server.blackboardV2Continuity = blackboardv2.NewContinuityService(db, server.blackboardV2, server.tasks, runtimeRoot)
-		if err := server.recoverBlackboardV2ContinuationFiles(context.Background()); err != nil {
-			_ = server.Close()
-			return nil, err
-		}
+		return nil, fmt.Errorf("daemon requires canonical store %q, got %q", store.CanonicalStoreBlackboardV2, epoch)
+	}
+	server.projectInterfaceGrants = projectinterface.NewGrantStore(db, projectinterface.SystemClock{}, projectinterface.RandomIDSource{}, projectinterface.RandomTokenSource{})
+	server.tasks.SetContinuationTerminalMarker(server.projectInterfaceGrants)
+	server.blackboardV2 = blackboardv2.NewServiceWithEvidence(db, blackboardv2.EvidenceConfig{ArtifactRoot: artifactRoot, RuntimeRoot: runtimeRoot})
+	server.tasks.SetContinuationReconciler(server.blackboardV2)
+	server.blackboardV2Continuity = blackboardv2.NewContinuityService(db, server.blackboardV2, server.tasks, runtimeRoot)
+	if err := server.recoverBlackboardV2ContinuationFiles(context.Background()); err != nil {
+		_ = server.Close()
+		return nil, err
 	}
 	server.routes()
 	server.reconcileInterruptedTasks()

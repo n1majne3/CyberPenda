@@ -136,22 +136,14 @@ func TestOpenRejectsMigrationChecksumDriftWithoutChangingLegacyBlackboard(t *tes
 	}
 
 	const (
-		projectID = "proj-1"
-		factKey   = "legacy-fact"
-		summary   = "must-survive-checksum-drift"
+		projectID   = "proj-1"
+		projectName = "must-survive-checksum-drift"
 	)
 	_, err = db.Exec(`INSERT INTO projects (id, name, description, scope_json, defaults_json, created_at, updated_at)
 		VALUES (?, ?, '', '{}', '{}', ?, ?)`,
-		projectID, "P", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z")
+		projectID, projectName, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z")
 	if err != nil {
 		t.Fatalf("insert project: %v", err)
-	}
-	_, err = db.Exec(`INSERT INTO project_facts (
-		id, project_id, fact_key, category, summary, body, confidence, scope_status, created_at, updated_at
-	) VALUES (?, ?, ?, '', ?, '', 'tentative', '', ?, ?)`,
-		"fact-1", projectID, factKey, summary, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z")
-	if err != nil {
-		t.Fatalf("insert fact: %v", err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatalf("close: %v", err)
@@ -184,23 +176,22 @@ func TestOpenRejectsMigrationChecksumDriftWithoutChangingLegacyBlackboard(t *tes
 		t.Fatalf("expected checksum error, got: %v", err)
 	}
 
-	// Fail-closed must not rewrite or drop legacy Blackboard rows.
+	// Fail-closed must not rewrite active rows.
 	verify, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatalf("open verify: %v", err)
 	}
 	t.Cleanup(func() { _ = verify.Close() })
 
-	var gotSummary string
+	var gotName string
 	err = verify.QueryRow(
-		`SELECT summary FROM project_facts WHERE project_id = ? AND fact_key = ?`,
-		projectID, factKey,
-	).Scan(&gotSummary)
+		`SELECT name FROM projects WHERE id = ?`, projectID,
+	).Scan(&gotName)
 	if err != nil {
-		t.Fatalf("legacy fact after failed open: %v", err)
+		t.Fatalf("project after failed open: %v", err)
 	}
-	if gotSummary != summary {
-		t.Fatalf("legacy fact changed: got %q want %q", gotSummary, summary)
+	if gotName != projectName {
+		t.Fatalf("project changed: got %q want %q", gotName, projectName)
 	}
 }
 
@@ -261,25 +252,18 @@ func TestOpenDefaultsCanonicalStoreToBlackboardV2(t *testing.T) {
 		t.Fatalf("canonical store: got %q want %q", epoch, store.CanonicalStoreBlackboardV2)
 	}
 
-	// Control tables and the C02 graph ledger core now exist (the full graph
-	// schema lands across C03+ slices). Production graph writes stay dark
-	// while the store epoch is legacy_v1.
+	// A fresh active store contains only v2 semantic state and trusted control
+	// records; the historical v1 graph ledger is not installed.
 	for _, table := range []string{
 		"schema_migrations",
 		"blackboard_store_state",
-		"blackboard_migration_runs",
-		"blackboard_legacy_mappings",
-		"blackboard_graph_mutations",
-		"blackboard_nodes",
-		"blackboard_node_versions",
-		"blackboard_key_events",
-		"blackboard_key_registry",
-		"blackboard_node_heads",
-		"blackboard_graph_state",
-		"blackboard_edges",
-		"blackboard_edge_versions",
-		"blackboard_edge_heads",
-		"blackboard_attempt_checkpoint_requests",
+		"blackboard_read_state",
+		"blackboard_v2_project_state",
+		"blackboard_v2_records",
+		"blackboard_v2_record_history",
+		"blackboard_v2_relationships",
+		"blackboard_v2_relationship_history",
+		"blackboard_v2_idempotency_receipts",
 		"blackboard_v2_attempt_origins",
 		"blackboard_v2_evidence_requests",
 		"blackboard_v2_evidence_payloads",
@@ -289,21 +273,13 @@ func TestOpenDefaultsCanonicalStoreToBlackboardV2(t *testing.T) {
 			t.Fatalf("expected table %s", table)
 		}
 	}
-	// C10 owns the rebuildable projection cache, append-only maintenance manifests,
-	// and derived Blackboard Health persistence.
-	for _, table := range []string{
-		"blackboard_compactions",
-		"blackboard_restore_manifests",
-		"blackboard_projection_metrics",
-		"blackboard_health_runs",
-		"blackboard_health_results",
-	} {
-		if !tableExists(t, db.DB, table) {
-			t.Fatalf("expected C10 graph table %s", table)
+	for _, table := range []string{"blackboard_graph_mutations", "blackboard_nodes", "blackboard_migration_runs"} {
+		if tableExists(t, db.DB, table) {
+			t.Fatalf("retired table %s remains", table)
 		}
 	}
 
-	// Graph-support surrounding columns are present.
+	// Trusted runtime and v2 evidence columns are present.
 	for _, col := range []struct {
 		table, column string
 	}{
@@ -311,12 +287,6 @@ func TestOpenDefaultsCanonicalStoreToBlackboardV2(t *testing.T) {
 		{"task_events", "continuation_id"},
 		{"task_events", "attempt_node_id"},
 		{"task_continuations", "runtime_config_version_id"},
-		{"task_continuations", "blackboard_graph_revision"},
-		{"task_continuations", "blackboard_renderer_version"},
-		{"task_continuations", "blackboard_estimator_version"},
-		{"task_continuations", "blackboard_projection_hash"},
-		{"task_continuations", "blackboard_projection_bytes"},
-		{"task_continuations", "blackboard_projection_estimated_tokens"},
 		{"task_continuations", "blackboard_reconciliation_status"},
 		{"task_continuations", "blackboard_reconciliation_mutation_id"},
 		{"task_continuations", "blackboard_reconciled_at"},

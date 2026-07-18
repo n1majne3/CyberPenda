@@ -740,60 +740,6 @@ func TestCreateReturnsPersistedTaskWhenGoalProjectionFails(t *testing.T) {
 	}
 }
 
-func TestContinuationSnapshotPinIsPersistedAndSurvivesLifecycleUpdates(t *testing.T) {
-	db := newStore(t)
-	projects := project.NewService(db)
-	svc := task.NewService(db, projects)
-	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
-	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "g", RuntimeProfileID: "prof-a", Runner: task.RunnerSandbox})
-
-	runtimeConfig, err := svc.RecordRuntimeConfig(created.ID, "prof-a", map[string]any{"model": "test"})
-	if err != nil {
-		t.Fatalf("record runtime config: %v", err)
-	}
-	pin := task.ContinuationSnapshotPin{
-		RuntimeConfigVersionID:              runtimeConfig.ID,
-		BlackboardGraphRevision:             42,
-		BlackboardRendererVersion:           "canonical_main_graph_v1",
-		BlackboardEstimatorVersion:          "utf8_bytes_div_4_v1",
-		BlackboardProjectionHash:            "abc123",
-		BlackboardProjectionBytes:           2048,
-		BlackboardProjectionEstimatedTokens: 512,
-	}
-	continuation, err := svc.CreateContinuationWithSnapshotPin(created.ID, "prof-a", "codex", task.RunnerSandbox, pin)
-	if err != nil {
-		t.Fatalf("create pinned continuation: %v", err)
-	}
-	if continuation.ContinuationSnapshotPin != pin {
-		t.Fatalf("created pin: got %+v want %+v", continuation.ContinuationSnapshotPin, pin)
-	}
-
-	updated, err := svc.UpdateContinuationStatus(continuation.ID, task.StatusRunning)
-	if err != nil {
-		t.Fatalf("update pinned continuation: %v", err)
-	}
-	if updated.ContinuationSnapshotPin != pin {
-		t.Fatalf("lifecycle update changed pin: got %+v want %+v", updated.ContinuationSnapshotPin, pin)
-	}
-	latest, err := svc.LatestContinuation(created.ID)
-	if err != nil {
-		t.Fatalf("read pinned continuation: %v", err)
-	}
-	if latest == nil || latest.ContinuationSnapshotPin != pin {
-		t.Fatalf("persisted pin: got %+v want %+v", latest, pin)
-	}
-
-	otherConfig, err := svc.RecordRuntimeConfig(created.ID, "prof-b", map[string]any{"model": "other"})
-	if err != nil {
-		t.Fatalf("record mismatched runtime config: %v", err)
-	}
-	mismatched := pin
-	mismatched.RuntimeConfigVersionID = otherConfig.ID
-	if _, err := svc.CreateContinuationWithSnapshotPin(created.ID, "prof-a", "codex", task.RunnerSandbox, mismatched); err == nil {
-		t.Fatal("expected runtime config profile mismatch to fail")
-	}
-}
-
 func TestTerminalContinuationClosesBoundCapabilities(t *testing.T) {
 	db := newStore(t)
 	projects := project.NewService(db)
