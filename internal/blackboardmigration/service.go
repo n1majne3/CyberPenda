@@ -719,21 +719,20 @@ func (s *Service) verifyCommittedCutover(ctx context.Context) (CutoverVerificati
 	if err := projectRows.Close(); err != nil {
 		return verification, err
 	}
-	parityHash := sha256.New()
-	writeFrame(parityHash, []byte("legacy_blackboard_parity_v1"))
+	decoderHash := sha256.New()
+	writeFrame(decoderHash, []byte("legacy_blackboard_offline_decoder_v1"))
 	for _, projectID := range projectIDs {
-		var digest string
-		if postCutoverWrites == 0 {
-			digest, _, err = validateProjectImportParity(ctx, tx, projectID, s.artifactRoot)
-		} else {
-			digest, _, err = validateProjectPostCutoverCompatibility(ctx, tx, projectID)
-		}
+		plan, _, err := s.buildProjectImportPlan(ctx, tx, projectID, verification.SourceDigest)
 		if err != nil {
-			return verification, fmt.Errorf("verify compatibility parity for Project %s: %w", projectID, err)
+			return verification, fmt.Errorf("decode offline migration source for Project %s: %w", projectID, err)
 		}
-		writeFrame(parityHash, []byte(digest))
+		digest, err := importPlanDigest(plan)
+		if err != nil {
+			return verification, fmt.Errorf("digest offline migration source for Project %s: %w", projectID, err)
+		}
+		writeFrame(decoderHash, []byte(digest))
 	}
-	verification.ParityDigest = hex.EncodeToString(parityHash.Sum(nil))
+	verification.ParityDigest = hex.EncodeToString(decoderHash.Sum(nil))
 	if err := tx.Commit(); err != nil {
 		return verification, err
 	}
@@ -759,9 +758,6 @@ func (s *Service) verifyCommittedCutover(ctx context.Context) (CutoverVerificati
 		projection, err := graph.RemeasureCanonicalMainGraph(ctx, projectID)
 		if err != nil {
 			return verification, fmt.Errorf("verify canonical projection for Project %s: %w", projectID, err)
-		}
-		if _, err := graph.RunHealth(ctx, projectID); err != nil {
-			return verification, fmt.Errorf("verify Blackboard Health for Project %s: %w", projectID, err)
 		}
 		verification.ProjectHashes[projectID] = projection.Hash
 	}

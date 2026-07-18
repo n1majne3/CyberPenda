@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"pentest/internal/project"
-	"pentest/internal/projectinterface"
 	"pentest/internal/runtimeprofile"
 )
 
@@ -26,7 +25,6 @@ type TaskContext struct {
 	Provider       runtimeprofile.Provider
 	Sandbox        bool
 	ScopeSnapshot  project.Scope
-	RuntimeContext *projectinterface.RuntimeBlackboardContextV1
 }
 
 func taskContextFromProjection(req ProjectionRequest, provider runtimeprofile.Provider, mcpURL string) TaskContext {
@@ -38,13 +36,6 @@ func taskContextFromProjection(req ProjectionRequest, provider runtimeprofile.Pr
 		Provider:       provider,
 		Sandbox:        req.Sandbox,
 		ScopeSnapshot:  req.ScopeSnapshot,
-		RuntimeContext: req.RuntimeContext,
-	}
-	if req.RuntimeContext != nil {
-		ctx.APIURL = req.RuntimeContext.APIURL
-		ctx.MCPURL = req.RuntimeContext.MCPURL
-		ctx.InterfaceToken = req.AuthToken
-		ctx.AuthToken = ""
 	}
 	return ctx
 }
@@ -135,10 +126,13 @@ func claudeTrustedMCPAllowedTools(servers []runtimeprofile.MCPServer) []string {
 		if strings.TrimSpace(server.Name) != trustedMCPServerName || server.Mode != runtimeprofile.MCPServerTrusted {
 			continue
 		}
-		definitions := projectinterface.TrustedToolDefinitions()
-		allowed := make([]string, 0, len(definitions))
-		for _, definition := range definitions {
-			allowed = append(allowed, "mcp__"+trustedMCPServerName+"__"+definition.Name)
+		tools := []string{
+			"blackboard_change", "blackboard_read", "blackboard_history",
+			"blackboard_retain_evidence", "blackboard_checkpoint_attempt", "blackboard_finish",
+		}
+		allowed := make([]string, 0, len(tools))
+		for _, name := range tools {
+			allowed = append(allowed, "mcp__"+trustedMCPServerName+"__"+name)
 		}
 		return allowed
 	}
@@ -152,9 +146,6 @@ func writeTaskContextFiles(layout Layout, ctx TaskContext) error {
 	dir := filepath.Join(layout.Workdir, ".pentest")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("prepare task context dir: %w", err)
-	}
-	if ctx.RuntimeContext != nil {
-		return ProjectRuntimeBlackboardFiles(layout, *ctx.RuntimeContext, ctx.ScopeSnapshot)
 	}
 	payload := map[string]string{}
 	if ctx.ProjectID != "" {
@@ -179,35 +170,6 @@ func writeTaskContextFiles(layout Layout, ctx TaskContext) error {
 	}
 	if err := writeRuntimeSmokeInstructions(layout.Workdir, ctx); err != nil {
 		return err
-	}
-	return nil
-}
-
-// ProjectRuntimeBlackboardFiles atomically installs the non-secret context,
-// immutable Scope Snapshot, and the same canonical protocol block for all
-// built-in Runtime instruction discovery paths.
-func ProjectRuntimeBlackboardFiles(layout Layout, ctx projectinterface.RuntimeBlackboardContextV1, scope project.Scope) error {
-	ctx.ProtocolVersion = projectinterface.RuntimeProtocolVersion
-	ctx.ProtocolRuleDigest = projectinterface.RuntimeProtocolRuleDigest()
-	dir := filepath.Join(layout.Workdir, ".pentest")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("prepare Runtime Blackboard context: %w", err)
-	}
-	raw, err := json.MarshalIndent(ctx, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode Runtime Blackboard context: %w", err)
-	}
-	if err := writeOwnerOnlyFile(filepath.Join(dir, "context.json"), raw); err != nil {
-		return fmt.Errorf("write Runtime Blackboard context: %w", err)
-	}
-	if err := writeTaskScopeFile(dir, scope); err != nil {
-		return err
-	}
-	instructions := []byte("# Pentest task context\n\n" + projectinterface.CanonicalRuntimeProtocolBlock(ctx))
-	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
-		if err := writeOwnerOnlyFile(filepath.Join(layout.Workdir, name), instructions); err != nil {
-			return fmt.Errorf("write %s: %w", name, err)
-		}
 	}
 	return nil
 }

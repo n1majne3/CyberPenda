@@ -211,7 +211,6 @@ func projectClaudeV2RuntimeConfig(layout Layout, profile runtimeprofile.Profile,
 	projectionRequest := req
 	projectionRequest.ProjectID = ""
 	projectionRequest.TaskID = ""
-	projectionRequest.RuntimeContext = nil
 	projection, err := projectClaudeSettings(layout, profile, projectionRequest)
 	if err != nil {
 		return ConfigProjection{}, err
@@ -237,7 +236,6 @@ func projectPiV2RuntimeConfig(layout Layout, profile runtimeprofile.Profile, req
 	projectionRequest := req
 	projectionRequest.ProjectID = ""
 	projectionRequest.TaskID = ""
-	projectionRequest.RuntimeContext = nil
 	projection, err := projectPiConfig(layout, profile, projectionRequest)
 	if err != nil {
 		return ConfigProjection{}, err

@@ -12,7 +12,6 @@ import (
 	"pentest/internal/credential"
 	"pentest/internal/modelprovider"
 	"pentest/internal/project"
-	"pentest/internal/projectinterface"
 	"pentest/internal/runtimeextension"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
@@ -36,7 +35,6 @@ type ProjectionRequest struct {
 	ModelSnapshot       *modelprovider.Snapshot
 	LaunchModelOverride string
 	SkillBundles        []skill.Bundle
-	RuntimeContext      *projectinterface.RuntimeBlackboardContextV1
 }
 
 // ProjectRuntimeConfig writes provider-specific runtime files into the task-local
@@ -999,9 +997,6 @@ func launchProcessEnv(layout Layout, profile runtimeprofile.Profile, sandbox boo
 	}
 	if ctx.APIURL != "" {
 		env["PENTEST_API_URL"] = ctx.APIURL
-	}
-	if ctx.RuntimeContext != nil && ctx.RuntimeContext.ContinuationID != "" {
-		env["PENTEST_CONTINUATION_ID"] = ctx.RuntimeContext.ContinuationID
 	}
 	manifestEnvRendered := false
 	if plugin, ok := runtimePluginForProvider(profile.Provider, registry); ok {

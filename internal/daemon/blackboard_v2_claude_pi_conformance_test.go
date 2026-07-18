@@ -12,7 +12,6 @@ import (
 
 	"pentest/internal/blackboardv2"
 	"pentest/internal/project"
-	"pentest/internal/projectinterface"
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
@@ -466,9 +465,10 @@ func TestClaudeV2SettingsAllowExactlySixTrustedMCPToolsAndPiProjectsTrustedServe
 		if err := json.Unmarshal(settingsRaw, &settings); err != nil {
 			t.Fatalf("decode Claude settings: %v", err)
 		}
-		want := map[string]bool{}
-		for _, definition := range projectinterface.TrustedToolDefinitions() {
-			want["mcp__pentest__"+definition.Name] = true
+		want := map[string]bool{
+			"mcp__pentest__blackboard_change": true, "mcp__pentest__blackboard_read": true,
+			"mcp__pentest__blackboard_history": true, "mcp__pentest__blackboard_retain_evidence": true,
+			"mcp__pentest__blackboard_checkpoint_attempt": true, "mcp__pentest__blackboard_finish": true,
 		}
 		if len(want) != 6 {
 			t.Fatalf("canonical trusted tools = %d, want 6", len(want))

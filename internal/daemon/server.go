@@ -17,8 +17,6 @@ import (
 	"sync"
 	"time"
 
-	"pentest/internal/blackboard"
-	"pentest/internal/blackboardmigration"
 	"pentest/internal/blackboardv2"
 	"pentest/internal/credential"
 	"pentest/internal/modelprovider"
@@ -94,14 +92,8 @@ type Server struct {
 	tasks                  *task.Service
 	harness                *runtime.Harness
 	canonicalStore         string
-	graph                  *blackboard.GraphService
 	blackboardV2           *blackboardv2.Service
 	blackboardV2Continuity *blackboardv2.ContinuityService
-	// projectInterface is the graph-native Runtime project-interface module
-	// (runtime protocol §1). It is wired only while the store epoch has
-	// activated the graph Blackboard (graph_v1), so graph data stays dark
-	// before the M05 cutover.
-	projectInterface       *projectinterface.Service
 	projectInterfaceGrants *projectinterface.GrantStore
 	runtimeRoot            string
 	sandboxImage           string
@@ -219,36 +211,8 @@ func NewServer(config Config) (*Server, error) {
 	}
 	server.tasks.SetProjectService(server.projects)
 	if epoch == store.CanonicalStoreGraphV1 || epoch == store.CanonicalStoreGraphV1Finalized {
-		storeState, stateErr := db.BlackboardStoreState()
-		if stateErr != nil {
-			_ = server.Close()
-			return nil, stateErr
-		}
-		if epoch == store.CanonicalStoreGraphV1 && storeState.CutoverState != "graph" {
-			_ = server.Close()
-			return nil, fmt.Errorf("graph Blackboard activation refused while cutover_state=%s; run migration verify or explicit backup recovery for cutover %s", storeState.CutoverState, storeState.CutoverID)
-		}
-		if epoch == store.CanonicalStoreGraphV1 && storeState.CutoverID != "" && storeState.LatestVerificationHash == "" {
-			migration := blackboardmigration.NewService(db, config.DBPath, artifactRoot)
-			if _, verifyErr := migration.Execute(context.Background(), blackboardmigration.MigrationRequest{Kind: blackboardmigration.MigrationKindVerify}); verifyErr != nil {
-				_ = server.Close()
-				return nil, fmt.Errorf("verify committed graph Blackboard cutover before activation: %w", verifyErr)
-			}
-		}
-		graph := blackboard.NewGraphService(db, blackboard.SystemClock{}, blackboard.RandomIDSource{}).WithArtifactRoot(artifactRoot)
-		server.graph = graph
-		server.projectInterfaceGrants = projectinterface.NewGrantStore(db, projectinterface.SystemClock{}, projectinterface.RandomIDSource{}, projectinterface.RandomTokenSource{})
-		server.tasks.SetContinuationTerminalMarker(server.projectInterfaceGrants)
-		server.projectInterface = projectinterface.NewService(projectinterface.Deps{
-			DB: db, Graph: graph, Grants: server.projectInterfaceGrants, Tasks: server.tasks,
-			ArtifactRoot: artifactRoot, RuntimeRoot: runtimeRoot,
-			OperatorRoots: config.EvidenceSourceRoots,
-		})
-		server.tasks.SetContinuationReconciler(server.projectInterface)
-		if err := server.recoverPinnedContinuationFiles(); err != nil {
-			_ = server.Close()
-			return nil, err
-		}
+		_ = server.Close()
+		return nil, fmt.Errorf("Blackboard v1 stores are offline migration inputs; run blackboard migrate before starting the daemon")
 	} else if epoch == store.CanonicalStoreBlackboardV2 {
 		server.projectInterfaceGrants = projectinterface.NewGrantStore(db, projectinterface.SystemClock{}, projectinterface.RandomIDSource{}, projectinterface.RandomTokenSource{})
 		server.tasks.SetContinuationTerminalMarker(server.projectInterfaceGrants)
@@ -290,18 +254,7 @@ func (server *Server) reconcileInterruptedTasks() {
 	if len(reconciled.Tasks) > 0 {
 		server.logger.Printf("task reconcile: %d task(s) interrupted on daemon restart", len(reconciled.Tasks))
 	}
-	if server.projectInterface != nil {
-		continuations, listErr := server.tasks.TerminalContinuations()
-		if listErr != nil {
-			server.logger.Printf("task reconcile: failed to list terminal Continuations: %v", listErr)
-			return
-		}
-		for _, continuation := range continuations {
-			if _, reconcileErr := server.projectInterface.ReconcileContinuation(context.Background(), continuation.ID, "daemon_restart"); reconcileErr != nil {
-				server.logger.Printf("task reconcile: failed to reconcile Continuation %s: %v", continuation.ID, reconcileErr)
-			}
-		}
-	} else if server.blackboardV2 != nil {
+	if server.blackboardV2 != nil {
 		continuations, listErr := server.tasks.TerminalContinuations()
 		if listErr != nil {
 			server.logger.Printf("task reconcile: failed to list terminal Continuations: %v", listErr)

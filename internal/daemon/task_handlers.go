@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"pentest/internal/adapters"
-	"pentest/internal/blackboard"
 	"pentest/internal/blackboardv2"
 
 	"pentest/internal/modelprovider"
@@ -154,38 +153,19 @@ type taskLaunchPlan struct {
 }
 
 type continuationLaunchBinding struct {
-	Context        projectinterface.RuntimeBlackboardContextV1
 	V2Header       *blackboardv2.LaunchHeader
 	InterfaceToken string
-	Snapshot       []byte
 }
 
 func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchPlan, goal string) error {
-	var continuation task.TaskContinuation
-	if plan.BlackboardV2 {
-		prepared, boundPlan, err := server.prepareBlackboardV2ContinuationLaunch(created, plan, goal)
-		if err != nil {
-			return err
-		}
-		continuation = prepared
-		plan = boundPlan
-	} else if server.projectInterface != nil {
-		prepared, boundPlan, err := server.prepareGraphNativeContinuationLaunch(created, plan, goal)
-		if err != nil {
-			return err
-		}
-		continuation = prepared
-		plan = boundPlan
-	} else {
-		if _, err := server.tasks.RecordRuntimeConfig(created.ID, created.RuntimeProfileID, plan.RuntimeConfig); err != nil {
-			return err
-		}
-		var err error
-		continuation, err = server.tasks.CreateContinuation(created.ID, created.RuntimeProfileID, plan.Adapter.Name(), created.Runner)
-		if err != nil {
-			return err
-		}
+	if !plan.BlackboardV2 {
+		return fmt.Errorf("Blackboard v2 launch projection is required")
 	}
+	continuation, boundPlan, err := server.prepareBlackboardV2ContinuationLaunch(created, plan, goal)
+	if err != nil {
+		return err
+	}
+	plan = boundPlan
 	server.logTask(created, "launched", "")
 	go func() {
 		launchGoal := plan.LaunchGoal
@@ -323,88 +303,6 @@ func (server *Server) recoverBlackboardV2ContinuationFiles(ctx context.Context) 
 	return nil
 }
 
-func (server *Server) prepareGraphNativeContinuationLaunch(created task.Task, plan taskLaunchPlan, goal string) (task.TaskContinuation, taskLaunchPlan, error) {
-	launch, err := server.projectInterface.CreateContinuationLaunch(context.Background(), projectinterface.ContinuationLaunchRequest{
-		ProjectID: created.ProjectID, TaskID: created.ID, RuntimeProfileID: created.RuntimeProfileID,
-		RuntimePluginID: plan.Adapter.Name(), Runner: created.Runner, RuntimeConfig: plan.CapturedRuntimeConfig,
-	})
-	if err != nil {
-		return task.TaskContinuation{}, taskLaunchPlan{}, err
-	}
-	layout, err := runner.PrepareTaskLayout(server.runtimeRoot, created.ID, plan.ResolvedProfile.Provider)
-	if err != nil {
-		return task.TaskContinuation{}, taskLaunchPlan{}, err
-	}
-	ctx, pin := server.runtimeBlackboardContext(created, launch.Continuation)
-	snapshotPath := filepath.Join(layout.Workdir, filepath.FromSlash(ctx.BlackboardPath))
-	if err := server.graph.MaterializeCanonicalMainGraphSnapshot(context.Background(), pin, snapshotPath); err != nil {
-		return task.TaskContinuation{}, taskLaunchPlan{}, projectinterface.ValidationError(projectinterface.ErrCodeSnapshotUnavailable, "materialize pinned full Blackboard snapshot: "+err.Error(), "blackboard_path")
-	}
-	if err := blackboard.VerifyCanonicalMainGraphSnapshot(pin, snapshotPath); err != nil {
-		return task.TaskContinuation{}, taskLaunchPlan{}, projectinterface.ValidationError(projectinterface.ErrCodeSnapshotUnavailable, "verify pinned full Blackboard snapshot: "+err.Error(), "blackboard_path")
-	}
-	if err := runner.ProjectRuntimeBlackboardFiles(layout, ctx, created.ScopeSnapshot); err != nil {
-		return task.TaskContinuation{}, taskLaunchPlan{}, projectinterface.ValidationError(projectinterface.ErrCodeSnapshotUnavailable, "materialize Runtime Blackboard context: "+err.Error(), "context")
-	}
-	binding := &continuationLaunchBinding{Context: ctx, InterfaceToken: launch.Token, Snapshot: append([]byte(nil), launch.Projection.Bytes...)}
-	boundPlan, err := server.buildTaskLaunchPlanWithBinding(created, goal, plan.LaunchModelOverride, plan.NativeResumeSessionID, binding, &plan)
-	if err != nil {
-		return task.TaskContinuation{}, taskLaunchPlan{}, err
-	}
-	return launch.Continuation, boundPlan, nil
-}
-
-func (server *Server) recoverPinnedContinuationFiles() error {
-	continuations, err := server.tasks.ActivePinnedContinuations()
-	if err != nil {
-		return err
-	}
-	for _, continuation := range continuations {
-		created, err := server.tasks.Get(continuation.TaskID)
-		if err != nil {
-			return fmt.Errorf("recover pinned Continuation %s Task: %w", continuation.ID, err)
-		}
-		layout, err := runner.PrepareTaskLayout(server.runtimeRoot, created.ID, runtimeprofile.Provider(continuation.RuntimeProvider))
-		if err != nil {
-			return fmt.Errorf("recover pinned Continuation %s layout: %w", continuation.ID, err)
-		}
-		ctx, pin := server.runtimeBlackboardContext(created, continuation)
-		if err := server.graph.MaterializeCanonicalMainGraphSnapshot(context.Background(), pin, filepath.Join(layout.Workdir, filepath.FromSlash(ctx.BlackboardPath))); err != nil {
-			return projectinterface.ValidationError(projectinterface.ErrCodeSnapshotUnavailable, "recover pinned full Blackboard snapshot: "+err.Error(), "blackboard_path")
-		}
-		if err := blackboard.VerifyCanonicalMainGraphSnapshot(pin, filepath.Join(layout.Workdir, filepath.FromSlash(ctx.BlackboardPath))); err != nil {
-			return projectinterface.ValidationError(projectinterface.ErrCodeSnapshotUnavailable, "verify recovered full Blackboard snapshot: "+err.Error(), "blackboard_path")
-		}
-		if err := runner.ProjectRuntimeBlackboardFiles(layout, ctx, created.ScopeSnapshot); err != nil {
-			return projectinterface.ValidationError(projectinterface.ErrCodeSnapshotUnavailable, "recover Runtime Blackboard context: "+err.Error(), "context")
-		}
-	}
-	return nil
-}
-
-func (server *Server) runtimeBlackboardContext(created task.Task, continuation task.TaskContinuation) (projectinterface.RuntimeBlackboardContextV1, blackboard.CanonicalMainGraphPin) {
-	sandbox := continuation.Runner == task.RunnerSandbox
-	ctx := projectinterface.RuntimeBlackboardContextV1{
-		ProjectID: created.ProjectID, TaskID: created.ID, ContinuationID: continuation.ID,
-		RuntimeConfigVersionID: continuation.RuntimeConfigVersionID, RuntimeProfileID: continuation.RuntimeProfileID,
-		RuntimePluginID: continuation.RuntimeProvider, Runner: string(continuation.Runner),
-		APIURL: runner.APIEndpointURL(server.listenAddr, sandbox), MCPURL: runner.MCPEndpointURL(server.listenAddr, sandbox),
-		ScopePath: ".pentest/scope.json", BlackboardPath: ".pentest/blackboard.json",
-		BlackboardGraphRevision:    continuation.BlackboardGraphRevision,
-		BlackboardRendererVersion:  continuation.BlackboardRendererVersion,
-		BlackboardEstimatorVersion: continuation.BlackboardEstimatorVersion,
-		BlackboardProjectionHash:   continuation.BlackboardProjectionHash,
-		BlackboardProjectionBytes:  continuation.BlackboardProjectionBytes,
-		BlackboardEstimatedTokens:  continuation.BlackboardProjectionEstimatedTokens,
-	}
-	pin := blackboard.CanonicalMainGraphPin{
-		ProjectID: created.ProjectID, GraphRevision: continuation.BlackboardGraphRevision,
-		RendererVersion: continuation.BlackboardRendererVersion, EstimatorVersion: continuation.BlackboardEstimatorVersion,
-		ProjectionHash: continuation.BlackboardProjectionHash, ProjectionBytes: continuation.BlackboardProjectionBytes,
-		EstimatedTokens: continuation.BlackboardProjectionEstimatedTokens,
-	}
-	return ctx, pin
-}
 
 type taskLaunchDefaults struct {
 	runtimeProfileID string
@@ -546,8 +444,6 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	if binding != nil {
 		if binding.V2Header != nil {
 			launchGoal = blackboardv2.RenderLaunchHeader(*binding.V2Header) + "\n\nTASK GOAL:\n" + goal
-		} else {
-			launchGoal = projectinterface.CanonicalRuntimeLaunchContext(binding.Context, binding.Snapshot, nativeResumeSessionID != "") + "\n\nTASK GOAL:\n" + goal
 		}
 	}
 	if profile.Provider == runtimeprofile.ProviderFake {
@@ -581,7 +477,6 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		return taskLaunchPlan{}, err
 	}
 
-	mcpURL := runner.MCPEndpointURL(server.listenAddr, sandbox)
 	authToken := server.authToken
 	projectionProfile := profile
 	if v2 {
@@ -599,11 +494,6 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 			return taskLaunchPlan{}, fmt.Errorf("Blackboard v2 launch projection is unsupported for provider %q", profile.Provider)
 		}
 	}
-	var runtimeContext *projectinterface.RuntimeBlackboardContextV1
-	if binding != nil && binding.V2Header == nil {
-		authToken = binding.InterfaceToken
-		runtimeContext = &binding.Context
-	}
 	projectionRequest := runner.ProjectionRequest{
 		ProjectID:           created.ProjectID,
 		TaskID:              created.ID,
@@ -618,7 +508,6 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		ModelSnapshot:       capturedModelSnapshot,
 		LaunchModelOverride: launchModelOverride,
 		SkillBundles:        skillBundles,
-		RuntimeContext:      runtimeContext,
 	}
 	var projection runner.ConfigProjection
 	if v2 {
@@ -679,21 +568,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	workdir := layout.Workdir
 	containerIDFile := ""
 	sandboxNetwork := runner.SandboxNetworkDefault
-	launchCtx := runner.TaskContext{
-		Sandbox:        sandbox,
-		RuntimeContext: runtimeContext,
-	}
-	if !v2 {
-		launchCtx.ProjectID = created.ProjectID
-		launchCtx.TaskID = created.ID
-		launchCtx.MCPURL = mcpURL
-	}
-	if binding != nil && !v2 {
-		launchCtx.APIURL = binding.Context.APIURL
-		launchCtx.InterfaceToken = binding.InterfaceToken
-	} else if !v2 {
-		launchCtx.AuthToken = server.authToken
-	}
+	launchCtx := runner.TaskContext{Sandbox: sandbox}
 	processEnv, err := runner.LaunchProcessEnvWithCredentials(layout, launchProfile, sandbox, launchCtx, runner.ProjectionRequest{
 		ProjectID:         created.ProjectID,
 		TaskID:            created.ID,
@@ -707,7 +582,6 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		ModelProviders:    server.modelProviders,
 		ModelSnapshot:     projection.ModelSnapshot,
 		SkillBundles:      skillBundles,
-		RuntimeContext:    runtimeContext,
 	})
 	if err != nil {
 		return taskLaunchPlan{}, err
