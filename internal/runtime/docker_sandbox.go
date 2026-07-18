@@ -1,9 +1,11 @@
 package runtime
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"sync"
@@ -20,8 +22,19 @@ const dockerStopGrace = 2 * time.Second
 type DockerSandboxConfig struct {
 	Name            string
 	ContainerCLI    string
+	Image           string
 	CreateArgs      []string
 	RequiredNetwork *DockerNetworkRequirement
+	Log             func(DockerSandboxLogEvent)
+}
+
+// DockerSandboxLogEvent mirrors image-pull lifecycle and progress to the
+// daemon without coupling the runtime package to a concrete logger.
+type DockerSandboxLogEvent struct {
+	Phase  string
+	Image  string
+	Stream string
+	Text   string
 }
 
 // DockerNetworkRequirement describes a daemon-managed Docker network that
@@ -92,6 +105,12 @@ func (a *dockerSandboxAdapter) recordRuntimeLineMetadata(line string) {
 }
 
 func (a *dockerSandboxAdapter) Run(ctx context.Context, goal string, emit func(task.EventKind, task.EventPayload)) error {
+	var emitMu sync.Mutex
+	safeEmit := func(kind task.EventKind, payload task.EventPayload) {
+		emitMu.Lock()
+		defer emitMu.Unlock()
+		emit(kind, payload)
+	}
 	cli := strings.TrimSpace(a.config.ContainerCLI)
 	if cli == "" {
 		cli = "docker"
@@ -100,6 +119,9 @@ func (a *dockerSandboxAdapter) Run(ctx context.Context, goal string, emit func(t
 		return fmt.Errorf("docker sandbox adapter requires docker create args")
 	}
 	if err := ensureDockerNetwork(ctx, cli, a.config.RequiredNetwork); err != nil {
+		return err
+	}
+	if err := a.ensureDockerImage(ctx, cli, safeEmit); err != nil {
 		return err
 	}
 
@@ -121,7 +143,7 @@ func (a *dockerSandboxAdapter) Run(ctx context.Context, goal string, emit func(t
 			return fmt.Errorf("record sandbox container id: %w", err)
 		}
 	}
-	emit(task.EventKindLifecycle, task.EventPayload{
+	safeEmit(task.EventKindLifecycle, task.EventPayload{
 		"phase":        "container_created",
 		"adapter":      a.Name(),
 		"container_id": containerID,
@@ -137,7 +159,7 @@ func (a *dockerSandboxAdapter) Run(ctx context.Context, goal string, emit func(t
 			return
 		}
 		if err := StopDockerContainer(cli, containerID, dockerStopGrace); err != nil {
-			emit(task.EventKindLifecycle, task.EventPayload{
+			safeEmit(task.EventKindLifecycle, task.EventPayload{
 				"phase":        "stop_failed",
 				"adapter":      a.Name(),
 				"container_id": containerID,
@@ -153,7 +175,7 @@ func (a *dockerSandboxAdapter) Run(ctx context.Context, goal string, emit func(t
 			<-stopDone
 		}
 		if err := RemoveDockerContainer(cli, containerID); err != nil {
-			emit(task.EventKindLifecycle, task.EventPayload{
+			safeEmit(task.EventKindLifecycle, task.EventPayload{
 				"phase":        "cleanup_failed",
 				"adapter":      a.Name(),
 				"container_id": containerID,
@@ -171,7 +193,7 @@ func (a *dockerSandboxAdapter) Run(ctx context.Context, goal string, emit func(t
 	if err != nil {
 		return fmt.Errorf("open sandbox stderr: %w", err)
 	}
-	emit(task.EventKindLifecycle, adapters.Redact(task.EventPayload{
+	safeEmit(task.EventKindLifecycle, adapters.Redact(task.EventPayload{
 		"phase":        "container_starting",
 		"adapter":      a.Name(),
 		"container_id": containerID,
@@ -186,11 +208,11 @@ func (a *dockerSandboxAdapter) Run(ctx context.Context, goal string, emit func(t
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		ScanOutputWithObserver(stdout, "stdout", maxRuntimeOutputLineBytes, a.recordRuntimeLineMetadata, emit)
+		ScanOutputWithObserver(stdout, "stdout", maxRuntimeOutputLineBytes, a.recordRuntimeLineMetadata, safeEmit)
 	}()
 	go func() {
 		defer wg.Done()
-		ScanOutputWithObserver(stderr, "stderr", maxRuntimeOutputLineBytes, a.recordRuntimeLineMetadata, emit)
+		ScanOutputWithObserver(stderr, "stderr", maxRuntimeOutputLineBytes, a.recordRuntimeLineMetadata, safeEmit)
 	}()
 	wg.Wait()
 	waitErr := start.Wait()
@@ -201,6 +223,138 @@ func (a *dockerSandboxAdapter) Run(ctx context.Context, goal string, emit func(t
 		return fmt.Errorf("sandbox container failed: %w", waitErr)
 	}
 	return nil
+}
+
+func (a *dockerSandboxAdapter) ensureDockerImage(ctx context.Context, cli string, emit func(task.EventKind, task.EventPayload)) error {
+	image := strings.TrimSpace(a.config.Image)
+	if image == "" {
+		return fmt.Errorf("docker sandbox adapter requires an explicit image")
+	}
+	inspectOutput, inspectErr := exec.CommandContext(ctx, cli, "image", "inspect", image).CombinedOutput()
+	if inspectErr == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !dockerImageInspectReportsMissing(inspectOutput) {
+		return nil
+	}
+
+	a.emitImagePullLifecycle(emit, "image_pull_started", image, "")
+	pull := exec.CommandContext(ctx, cli, "pull", image)
+	stdout, err := pull.StdoutPipe()
+	if err != nil {
+		return a.failImagePull(emit, image, fmt.Errorf("open docker pull stdout: %w", err))
+	}
+	stderr, err := pull.StderrPipe()
+	if err != nil {
+		return a.failImagePull(emit, image, fmt.Errorf("open docker pull stderr: %w", err))
+	}
+	if err := pull.Start(); err != nil {
+		return a.failImagePull(emit, image, fmt.Errorf("start docker pull: %w", err))
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		a.scanImagePullOutput(stdout, "stdout", emit)
+	}()
+	go func() {
+		defer wg.Done()
+		a.scanImagePullOutput(stderr, "stderr", emit)
+	}()
+	wg.Wait()
+	waitErr := pull.Wait()
+	if err := ctx.Err(); err != nil {
+		return a.failImagePull(emit, image, err)
+	}
+	if waitErr != nil {
+		return a.failImagePull(emit, image, fmt.Errorf("docker pull failed: %w", waitErr))
+	}
+	a.emitImagePullLifecycle(emit, "image_pull_completed", image, "")
+	return nil
+}
+
+func dockerImageInspectReportsMissing(output []byte) bool {
+	text := strings.ToLower(string(output))
+	return strings.Contains(text, "no such image") || strings.Contains(text, "no such object")
+}
+
+func (a *dockerSandboxAdapter) scanImagePullOutput(reader io.Reader, stream string, emit func(task.EventKind, task.EventPayload)) {
+	br := bufio.NewReader(reader)
+	for {
+		line, truncated, err := ReadBoundedLine(br, maxRuntimeOutputLineBytes)
+		if line != "" {
+			payload := task.EventPayload{
+				"stream": stream,
+				"text":   line,
+			}
+			if truncated {
+				payload["truncated"] = true
+			}
+			a.emitImagePullProgress(emit, payload)
+		}
+		if err != nil {
+			if err != io.EOF {
+				a.emitImagePullProgress(emit, task.EventPayload{
+					"stream": stream,
+					"text":   "read docker pull " + stream + ": " + err.Error(),
+				})
+			}
+			return
+		}
+	}
+}
+
+func (a *dockerSandboxAdapter) emitImagePullProgress(emit func(task.EventKind, task.EventPayload), payload task.EventPayload) {
+	safe := adapters.Redact(payload)
+	emit(task.EventKindRuntimeOutput, safe)
+	if a.config.Log != nil {
+		a.config.Log(DockerSandboxLogEvent{
+			Phase:  "image_pull_progress",
+			Image:  redactedDockerString(a.config.Image),
+			Stream: payloadString(safe, "stream"),
+			Text:   payloadString(safe, "text"),
+		})
+	}
+}
+
+func (a *dockerSandboxAdapter) emitImagePullLifecycle(emit func(task.EventKind, task.EventPayload), phase, image, detail string) {
+	payload := task.EventPayload{
+		"phase":   phase,
+		"adapter": a.Name(),
+		"image":   image,
+	}
+	if detail != "" {
+		payload["error"] = detail
+	}
+	safe := adapters.Redact(payload)
+	emit(task.EventKindLifecycle, safe)
+	if a.config.Log != nil {
+		a.config.Log(DockerSandboxLogEvent{
+			Phase: phase,
+			Image: payloadString(safe, "image"),
+			Text:  payloadString(safe, "error"),
+		})
+	}
+}
+
+func (a *dockerSandboxAdapter) failImagePull(emit func(task.EventKind, task.EventPayload), image string, err error) error {
+	safeImage := redactedDockerString(image)
+	wrapped := fmt.Errorf("pull sandbox image %q: %w", safeImage, err)
+	a.emitImagePullLifecycle(emit, "image_pull_failed", image, wrapped.Error())
+	return wrapped
+}
+
+func redactedDockerString(value string) string {
+	return payloadString(adapters.Redact(task.EventPayload{"value": value}), "value")
+}
+
+func payloadString(payload task.EventPayload, key string) string {
+	value, _ := payload[key].(string)
+	return value
 }
 
 func ensureDockerNetwork(ctx context.Context, cli string, requirement *DockerNetworkRequirement) error {

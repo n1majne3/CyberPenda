@@ -459,6 +459,7 @@ func TestDockerSandboxAdapterRecordsContainerAndStopsByID(t *testing.T) {
 	script := "#!/bin/sh\n" +
 		"echo \"$*\" >> " + shellQuote(logPath) + "\n" +
 		"case \"$1\" in\n" +
+		"  image) exit 0 ;;\n" +
 		"  create) echo ctr-owned ;;\n" +
 		"  start) echo sandbox-started; while [ ! -f " + shellQuote(stoppedPath) + " ]; do sleep 0.05; done ;;\n" +
 		"  stop) touch " + shellQuote(stoppedPath) + " ;;\n" +
@@ -478,6 +479,7 @@ func TestDockerSandboxAdapterRecordsContainerAndStopsByID(t *testing.T) {
 			Adapter: runtime.NewDockerSandboxAdapter(runtime.DockerSandboxConfig{
 				Name:         "codex",
 				ContainerCLI: docker,
+				Image:        "image",
 				CreateArgs:   []string{"create", "-i", "image", "codex", "run"},
 			}),
 		})
@@ -535,6 +537,7 @@ func TestDockerSandboxAdapterCreatesMissingRequiredBridgeNetworkBeforeContainerS
 		"fi\n" +
 		"if [ \"$1 $2\" = \"network create\" ]; then touch " + shellQuote(networkPath) + "; echo network-id; exit 0; fi\n" +
 		"case \"$1\" in\n" +
+		"  image) exit 0 ;;\n" +
 		"  create) echo ctr-owned ;;\n" +
 		"  start) echo sandbox-started ;;\n" +
 		"  rm) exit 0 ;;\n" +
@@ -547,6 +550,7 @@ func TestDockerSandboxAdapterCreatesMissingRequiredBridgeNetworkBeforeContainerS
 	adapter := runtime.NewDockerSandboxAdapter(runtime.DockerSandboxConfig{
 		Name:         "codex",
 		ContainerCLI: docker,
+		Image:        "image",
 		CreateArgs:   []string{"create", "--network", "pentest-host-proxy-only", "image", "codex", "run"},
 		RequiredNetwork: &runtime.DockerNetworkRequirement{
 			Name:     "pentest-host-proxy-only",
@@ -588,6 +592,7 @@ func TestDockerSandboxAdapterRejectsRequiredNetworkWithUnsafeConfiguration(t *te
 	adapter := runtime.NewDockerSandboxAdapter(runtime.DockerSandboxConfig{
 		Name:         "codex",
 		ContainerCLI: docker,
+		Image:        "image",
 		CreateArgs:   []string{"create", "--network", "pentest-host-proxy-only", "image", "codex", "run"},
 		RequiredNetwork: &runtime.DockerNetworkRequirement{
 			Name:     "pentest-host-proxy-only",
@@ -616,6 +621,7 @@ func TestDockerSandboxAdapterRemovesContainerWhenCanceledBeforeStart(t *testing.
 	script := "#!/bin/sh\n" +
 		"echo \"$*\" >> " + shellQuote(logPath) + "\n" +
 		"case \"$1\" in\n" +
+		"  image) exit 0 ;;\n" +
 		"  create) echo ctr-owned ;;\n" +
 		"  start) echo unexpected-start ;;\n" +
 		"  stop) exit 0 ;;\n" +
@@ -630,6 +636,7 @@ func TestDockerSandboxAdapterRemovesContainerWhenCanceledBeforeStart(t *testing.
 	adapter := runtime.NewDockerSandboxAdapter(runtime.DockerSandboxConfig{
 		Name:         "codex",
 		ContainerCLI: docker,
+		Image:        "image",
 		CreateArgs:   []string{"create", "-i", "image", "codex", "run"},
 	})
 	recorder, ok := adapter.(interface {

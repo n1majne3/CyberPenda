@@ -570,6 +570,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 			ResumedMessage:  launchGoal,
 			ConfigPath:      configPath,
 			MCPConfigPath:   mcpConfigPath,
+			Sandbox:         sandbox,
 		})
 		if err != nil {
 			return taskLaunchPlan{}, err
@@ -582,6 +583,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	workdir := layout.Workdir
 	containerIDFile := ""
 	sandboxNetwork := runner.SandboxNetworkDefault
+	sandboxImage := ""
 	launchCtx := runner.TaskContext{Sandbox: sandbox}
 	processEnv, err := runner.LaunchProcessEnvWithCredentials(layout, launchProfile, sandbox, launchCtx, runner.ProjectionRequest{
 		ProjectID:               created.ProjectID,
@@ -606,7 +608,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	}
 	if sandbox {
 		sandboxNetwork = sandboxNetworkMode(created.RunControls)
-		sandboxImage := strings.TrimSpace(profile.Fields.SandboxImage)
+		sandboxImage = strings.TrimSpace(profile.Fields.SandboxImage)
 		if sandboxImage == "" {
 			sandboxImage = server.sandboxImage
 		}
@@ -679,7 +681,11 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		sandboxConfig := runtime.DockerSandboxConfig{
 			Name:         string(profile.Provider),
 			ContainerCLI: commandProgram,
+			Image:        sandboxImage,
 			CreateArgs:   commandArgs,
+			Log: func(event runtime.DockerSandboxLogEvent) {
+				server.logDockerSandboxEvent(created, event)
+			},
 		}
 		if sandboxNetwork == runner.SandboxNetworkHostProxyOnly {
 			sandboxConfig.RequiredNetwork = &runtime.DockerNetworkRequirement{
