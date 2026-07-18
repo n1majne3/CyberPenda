@@ -2,8 +2,11 @@ package blackboardmigration
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -734,6 +737,14 @@ func assertNoDisposableV2Commit(t *testing.T, db *store.DB, projectID string) {
 
 func seedUnambiguousGraphHeads(t *testing.T, db *store.DB, artifactRoot string) {
 	t.Helper()
+	payload := []byte("hello world\n")
+	if err := os.MkdirAll(filepath.Join(artifactRoot, "evidence"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactRoot, "evidence", "login.html"), payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payloadHash := sha256.Sum256(payload)
 	projectID := "project-rebuild"
 	if _, err := db.Exec(`
 		INSERT INTO projects(id,name,description,scope_json,defaults_json,kind,created_at,updated_at)
@@ -807,8 +818,8 @@ func seedUnambiguousGraphHeads(t *testing.T, db *store.DB, artifactRoot string) 
 					"artifact_type": "http_exchange",
 					"summary":       "Login response HTML",
 					"managed_path":  "evidence/login.html",
-					"sha256":        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-					"size_bytes":    float64(12),
+					"sha256":        hex.EncodeToString(payloadHash[:]),
+					"size_bytes":    float64(len(payload)),
 					"status":        "available",
 				}},
 			},

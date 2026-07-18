@@ -161,6 +161,88 @@ func rejectV1BeforeActiveOpen(path string) (returnErr error) {
 	return rejectV1ActiveOpen(inspection.db)
 }
 
+// OpenWritableMigrationDB opens an existing Blackboard v1 database for the
+// offline migrate cutover. Unlike Open, it does not refuse v1 epochs. Unlike
+// OpenMigrationSource, the connection is writable so rebuild/cutover can run
+// in one transaction. It never flips the store epoch and never activates the
+// database for ordinary daemon use.
+func OpenWritableMigrationDB(path string) (*DB, error) {
+	if path == "" || path == ":memory:" {
+		return nil, fmt.Errorf("offline Blackboard migration database must be an existing file-backed database")
+	}
+	// Classify first through the read-only seam so we never write to an unknown file.
+	source, err := OpenMigrationSource(path)
+	if err != nil {
+		return nil, err
+	}
+	classification := source.Classification()
+	epoch := source.CanonicalStore()
+	if err := source.Close(); err != nil {
+		return nil, err
+	}
+	if classification != MigrationSourceNumberedV1 {
+		return nil, fmt.Errorf("offline writable migrate requires numbered v1 migration history, got %q", classification)
+	}
+	switch epoch {
+	case CanonicalStoreLegacyV1, CanonicalStoreGraphV1, CanonicalStoreGraphV1Finalized:
+	default:
+		return nil, fmt.Errorf("offline writable migrate requires a v1 store epoch, got %q", epoch)
+	}
+	dsn, err := buildDSN(path)
+	if err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	// Confirm the live epoch still matches the read-only classification.
+	var liveEpoch string
+	if err := db.QueryRow(`SELECT canonical_store FROM blackboard_store_state WHERE id=1`).Scan(&liveEpoch); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("read offline migrator store epoch: %w", err)
+	}
+	if liveEpoch != epoch {
+		_ = db.Close()
+		return nil, fmt.Errorf("offline migrator epoch changed during open: classified=%s live=%s", epoch, liveEpoch)
+	}
+	// Apply additive v2 table migrations without migration 20's epoch flip so
+	// rebuild/cutover still sees a v1-authoritative store until the explicit switch.
+	if err := applyOfflineV2SchemaWithoutEpochFlip(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return &DB{db}, nil
+}
+
+func applyOfflineV2SchemaWithoutEpochFlip(db *sql.DB) error {
+	if _, err := db.Exec(schemaMigrationsDDL); err != nil {
+		return fmt.Errorf("ensure schema_migrations for offline migrate: %w", err)
+	}
+	applied, err := loadAppliedMigrations(db)
+	if err != nil {
+		return err
+	}
+	for _, definition := range migrations() {
+		if definition.version < 21 {
+			continue
+		}
+		if _, ok := applied[definition.version]; ok {
+			continue
+		}
+		if err := applyMigration(db, definition); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // OpenMigrationSource opens an existing Blackboard v1 database read-only for
 // offline inspection and migration. It never applies migrations or changes the
 // canonical Store epoch.

@@ -31,6 +31,7 @@ const (
 	MigrationKindVerify             MigrationKind = "verify"
 	MigrationKindFinalizeLegacy     MigrationKind = "finalize_legacy"
 	MigrationKindRebuildUnambiguous MigrationKind = "rebuild_unambiguous"
+	MigrationKindMigrate            MigrationKind = "migrate"
 )
 
 var ErrUnsupportedMigrationKind = errors.New("unsupported Blackboard migration request kind")
@@ -54,13 +55,27 @@ type MigrationRequest struct {
 }
 
 type MigrationResult struct {
-	Kind         MigrationKind          `json:"kind"`
-	Plan         LegacyMigrationPlanV1  `json:"plan"`
-	Backup       *VerifiedBackup        `json:"backup,omitempty"`
-	Import       *LegacyImportResultV1  `json:"import,omitempty"`
-	Rebuild      *RebuildResultV1       `json:"rebuild,omitempty"`
-	Verification *CutoverVerificationV1 `json:"verification,omitempty"`
-	Recovery     *RecoveryGuidanceV1    `json:"recovery,omitempty"`
+	Kind         MigrationKind               `json:"kind"`
+	Plan         LegacyMigrationPlanV1       `json:"plan"`
+	Backup       *VerifiedBackup             `json:"backup,omitempty"`
+	Import       *LegacyImportResultV1       `json:"import,omitempty"`
+	Rebuild      *RebuildResultV1            `json:"rebuild,omitempty"`
+	Migrate      *CutoverMigrationResultV1   `json:"migrate,omitempty"`
+	Verification *CutoverVerificationV1      `json:"verification,omitempty"`
+	Recovery     *RecoveryGuidanceV1         `json:"recovery,omitempty"`
+}
+
+// CutoverMigrationResultV1 is the operator-visible offline v1→v2 migrate/verify
+// envelope (schema blackboard-v2-migration-result/v1).
+type CutoverMigrationResultV1 struct {
+	Schema             string                   `json:"schema"`
+	Status             string                   `json:"status"`
+	VerifiedBackupPath string                   `json:"verified_backup_path"`
+	ProjectCount       int                      `json:"project_count"`
+	Projects           []RebuildProjectResultV1 `json:"projects"`
+	Validation         MigrationValidationV1    `json:"validation"`
+	StoreEpoch         string                   `json:"store_epoch"`
+	Blockers           []MigrationBlocker       `json:"validation_blockers,omitempty"`
 }
 
 type CutoverVerificationV1 struct {
@@ -323,6 +338,13 @@ func (s *Service) Execute(ctx context.Context, request MigrationRequest) (Migrat
 		}
 		return result, nil
 	case MigrationKindVerify:
+		epoch, err := s.db.CanonicalStore()
+		if err != nil {
+			return MigrationResult{Kind: request.Kind}, err
+		}
+		if epoch == store.CanonicalStoreBlackboardV2 {
+			return s.verifyBlackboardV2(ctx, request)
+		}
 		verification, err := s.verifyCommittedCutover(ctx)
 		result := MigrationResult{Kind: request.Kind, Verification: &verification}
 		if err != nil {
@@ -340,6 +362,8 @@ func (s *Service) Execute(ctx context.Context, request MigrationRequest) (Migrat
 			return result, err
 		}
 		return result, nil
+	case MigrationKindMigrate:
+		return s.migrateToBlackboardV2(ctx, request)
 	default:
 		return MigrationResult{}, fmt.Errorf("%w: %q", ErrUnsupportedMigrationKind, request.Kind)
 	}

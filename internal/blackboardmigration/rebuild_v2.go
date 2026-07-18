@@ -122,6 +122,12 @@ type rebuildHistoryItem struct {
 	at      string
 }
 
+type rebuildWriteState struct {
+	assignments map[string]map[string]*assignedKey
+	scopeLimits map[string][]string
+	projects    []RebuildProjectResultV1
+}
+
 func (s *Service) rebuildUnambiguousHeads(ctx context.Context, request MigrationRequest) (RebuildResultV1, error) {
 	epoch, err := s.db.CanonicalStore()
 	if err != nil {
@@ -137,36 +143,50 @@ func (s *Service) rebuildUnambiguousHeads(ctx context.Context, request Migration
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	result, state, err := s.rebuildUnambiguousHeadsWithTx(ctx, tx, request, epoch)
+	if err != nil {
+		return result, err
+	}
+	if err := tx.Commit(); err != nil {
+		return RebuildResultV1{}, fmt.Errorf("commit disposable v2 rebuild: %w", err)
+	}
+	return s.finalizeRebuildValidation(ctx, result, state)
+}
+
+// rebuildUnambiguousHeadsWithTx rebuilds disposable v2 state inside a caller-owned
+// transaction and never commits. Callers that need atomic cutover validate and
+// commit themselves.
+func (s *Service) rebuildUnambiguousHeadsWithTx(ctx context.Context, tx *sql.Tx, request MigrationRequest, epoch string) (RebuildResultV1, rebuildWriteState, error) {
 	if err := ensureDisposableV2Tables(ctx, tx); err != nil {
-		return RebuildResultV1{}, err
+		return RebuildResultV1{}, rebuildWriteState{}, err
 	}
 
 	records, err := loadRebuildSourceRecords(ctx, tx)
 	if err != nil {
-		return RebuildResultV1{}, err
+		return RebuildResultV1{}, rebuildWriteState{}, err
 	}
 	edges, edgeBlockers, err := loadRebuildSourceEdges(ctx, tx)
 	if err != nil {
-		return RebuildResultV1{}, err
+		return RebuildResultV1{}, rebuildWriteState{}, err
 	}
 	aliases, err := loadRebuildSourceAliases(ctx, tx)
 	if err != nil {
-		return RebuildResultV1{}, err
+		return RebuildResultV1{}, rebuildWriteState{}, err
 	}
 
 	projects, err := listProjectIDs(ctx, tx)
 	if err != nil {
-		return RebuildResultV1{}, err
+		return RebuildResultV1{}, rebuildWriteState{}, err
 	}
 
 	// Clear disposable v2 state only (never touch v1 graph/legacy tables).
 	if err := clearDisposableV2State(ctx, tx, projects); err != nil {
-		return RebuildResultV1{}, err
+		return RebuildResultV1{}, rebuildWriteState{}, err
 	}
 
 	requiredDecisions, err := collectRequiredRebuildDecisions(records)
 	if err != nil {
-		return RebuildResultV1{}, err
+		return RebuildResultV1{}, rebuildWriteState{}, err
 	}
 	decisionIndex, decisionBlockers := indexRebuildDecisions(request.Decisions, requiredDecisions)
 	blockers := append([]MigrationBlocker{}, edgeBlockers...)
@@ -175,7 +195,7 @@ func (s *Service) rebuildUnambiguousHeads(ctx context.Context, request Migration
 	if len(requiredDecisions) > 0 || len(request.Decisions) > 0 || strings.TrimSpace(request.SourceDigest) != "" {
 		currentDigest, err := sourceDigestInTransaction(ctx, tx)
 		if err != nil {
-			return RebuildResultV1{}, err
+			return RebuildResultV1{}, rebuildWriteState{}, err
 		}
 		if strings.TrimSpace(request.SourceDigest) == "" {
 			blockers = append(blockers, MigrationBlocker{
@@ -201,7 +221,7 @@ func (s *Service) rebuildUnambiguousHeads(ctx context.Context, request Migration
 	for _, projectID := range projects {
 		kind, err := loadProjectKind(ctx, tx, projectID)
 		if err != nil {
-			return RebuildResultV1{}, err
+			return RebuildResultV1{}, rebuildWriteState{}, err
 		}
 
 		projectRecords := filterRecordsForProject(records, projectID)
@@ -366,7 +386,7 @@ func (s *Service) rebuildUnambiguousHeads(ctx context.Context, request Migration
 			Blockers:   blockers,
 			Mappings:   mappings,
 			Validation: MigrationValidationV1{Status: "passed", SnapshotsValidated: 0},
-		}, ErrRebuildBlocked
+		}, rebuildWriteState{}, ErrRebuildBlocked
 	}
 
 	projectResults := make([]RebuildProjectResultV1, 0, len(projects))
@@ -395,7 +415,7 @@ func (s *Service) rebuildUnambiguousHeads(ctx context.Context, request Migration
 					VALUES (?, ?, ?, ?, ?, ?)`,
 					projectID, assign.targetKey, item.version, assign.v2Type, mustJSON(item.record), item.at,
 				); err != nil {
-					return RebuildResultV1{}, fmt.Errorf("store rebuilt history for %s/%s@%d: %w", projectID, assign.targetKey, item.version, err)
+					return RebuildResultV1{}, rebuildWriteState{}, fmt.Errorf("store rebuilt history for %s/%s@%d: %w", projectID, assign.targetKey, item.version, err)
 				}
 			}
 			if !assign.current {
@@ -406,7 +426,7 @@ func (s *Service) rebuildUnambiguousHeads(ctx context.Context, request Migration
 					ON CONFLICT(project_id, key, version) DO NOTHING`,
 					projectID, assign.targetKey, assign.version, assign.v2Type, mustJSON(assign.record), coalesceTime(assign.history, now),
 				); err != nil {
-					return RebuildResultV1{}, fmt.Errorf("store terminal rebuilt history for %s/%s: %w", projectID, assign.targetKey, err)
+					return RebuildResultV1{}, rebuildWriteState{}, fmt.Errorf("store terminal rebuilt history for %s/%s: %w", projectID, assign.targetKey, err)
 				}
 				continue
 			}
@@ -415,7 +435,7 @@ func (s *Service) rebuildUnambiguousHeads(ctx context.Context, request Migration
 				VALUES (?, ?, ?, ?, ?, ?, ?)`,
 				projectID, assign.targetKey, assign.v2Type, assign.version, mustJSON(assign.record), now, now,
 			); err != nil {
-				return RebuildResultV1{}, fmt.Errorf("store rebuilt record %s/%s: %w", projectID, assign.targetKey, err)
+				return RebuildResultV1{}, rebuildWriteState{}, fmt.Errorf("store rebuilt record %s/%s: %w", projectID, assign.targetKey, err)
 			}
 			revision++
 		}
@@ -431,7 +451,7 @@ func (s *Service) rebuildUnambiguousHeads(ctx context.Context, request Migration
 					VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 					projectID, rel.fromKey, rel.relation, rel.toKey, rel.version, rel.reason, now, now,
 				); err != nil {
-					return RebuildResultV1{}, fmt.Errorf("store rebuilt relationship %s %s %s: %w", rel.fromKey, rel.relation, rel.toKey, err)
+					return RebuildResultV1{}, rebuildWriteState{}, fmt.Errorf("store rebuilt relationship %s %s %s: %w", rel.fromKey, rel.relation, rel.toKey, err)
 				}
 			}
 			for _, historical := range rel.history {
@@ -441,7 +461,7 @@ func (s *Service) rebuildUnambiguousHeads(ctx context.Context, request Migration
 					ON CONFLICT(project_id, from_key, relation, to_key, version) DO NOTHING`,
 					projectID, rel.fromKey, rel.relation, rel.toKey, historical.version, historical.reason, historical.recordedAt,
 				); err != nil {
-					return RebuildResultV1{}, fmt.Errorf("store rebuilt relationship history %s %s %s@%d: %w", rel.fromKey, rel.relation, rel.toKey, historical.version, err)
+					return RebuildResultV1{}, rebuildWriteState{}, fmt.Errorf("store rebuilt relationship history %s %s %s@%d: %w", rel.fromKey, rel.relation, rel.toKey, historical.version, err)
 				}
 			}
 			revision++
@@ -457,13 +477,13 @@ func (s *Service) rebuildUnambiguousHeads(ctx context.Context, request Migration
 				ON CONFLICT(project_id, source_key) DO UPDATE SET canonical_key=excluded.canonical_key`,
 				projectID, redirect.source, redirect.canonical, now,
 			); err != nil {
-				return RebuildResultV1{}, fmt.Errorf("store rebuilt key redirect %s -> %s: %w", redirect.source, redirect.canonical, err)
+				return RebuildResultV1{}, rebuildWriteState{}, fmt.Errorf("store rebuilt key redirect %s -> %s: %w", redirect.source, redirect.canonical, err)
 			}
 		}
 
 		if limits := scopeLimits[projectID]; len(limits) > 0 {
 			if err := persistRebuildScopeLimits(ctx, tx, projectID, limits, now); err != nil {
-				return RebuildResultV1{}, err
+				return RebuildResultV1{}, rebuildWriteState{}, err
 			}
 		}
 
@@ -473,7 +493,7 @@ func (s *Service) rebuildUnambiguousHeads(ctx context.Context, request Migration
 			ON CONFLICT(project_id) DO UPDATE SET revision=excluded.revision`,
 			projectID, revision,
 		); err != nil {
-			return RebuildResultV1{}, fmt.Errorf("store rebuilt project revision for %s: %w", projectID, err)
+			return RebuildResultV1{}, rebuildWriteState{}, fmt.Errorf("store rebuilt project revision for %s: %w", projectID, err)
 		}
 		projectResults = append(projectResults, RebuildProjectResultV1{Project: projectID, Revision: revision})
 	}
@@ -482,28 +502,46 @@ func (s *Service) rebuildUnambiguousHeads(ctx context.Context, request Migration
 	// into semantic payloads.
 	for _, projectID := range projects {
 		if err := persistRebuildMappings(ctx, tx, projectID, projectMappings[projectID], now); err != nil {
-			return RebuildResultV1{}, err
+			return RebuildResultV1{}, rebuildWriteState{}, err
 		}
 	}
 
-	// Epoch must remain v1.
+	// Epoch must remain v1 until the later atomic cutover.
 	var committedEpoch string
 	if err := tx.QueryRowContext(ctx, `SELECT canonical_store FROM blackboard_store_state WHERE id=1`).Scan(&committedEpoch); err != nil {
-		return RebuildResultV1{}, err
+		return RebuildResultV1{}, rebuildWriteState{}, err
 	}
 	if committedEpoch != epoch {
-		return RebuildResultV1{}, fmt.Errorf("rebuild mutated store epoch from %s to %s", epoch, committedEpoch)
+		return RebuildResultV1{}, rebuildWriteState{}, fmt.Errorf("rebuild mutated store epoch from %s to %s", epoch, committedEpoch)
 	}
 
-	if err := tx.Commit(); err != nil {
-		return RebuildResultV1{}, fmt.Errorf("commit disposable v2 rebuild: %w", err)
-	}
+	sort.Slice(mappings, func(i, j int) bool {
+		left := mappings[i].SourceType + "\x00" + mappings[i].SourceKey + "\x00" + mappings[i].TargetKey
+		right := mappings[j].SourceType + "\x00" + mappings[j].SourceKey + "\x00" + mappings[j].TargetKey
+		return left < right
+	})
+	sort.Slice(projectResults, func(i, j int) bool { return projectResults[i].Project < projectResults[j].Project })
 
-	// Validate exact conforming snapshots and detail/history through the public
-	// v2 service contracts after commit.
+	state := rebuildWriteState{
+		assignments: assignments,
+		scopeLimits: scopeLimits,
+		projects:    projectResults,
+	}
+	return RebuildResultV1{
+		Schema:      rebuildResultSchema,
+		Status:      "rebuilt",
+		StoreEpoch:  epoch,
+		Projects:    projectResults,
+		Mappings:    mappings,
+		Validation:  MigrationValidationV1{Status: "passed", SnapshotsValidated: 0},
+		SourceCount: len(records),
+	}, state, nil
+}
+
+func (s *Service) finalizeRebuildValidation(ctx context.Context, result RebuildResultV1, state rebuildWriteState) (RebuildResultV1, error) {
 	v2 := blackboardv2.NewServiceWithEvidence(s.db, blackboardv2.EvidenceConfig{ArtifactRoot: s.artifactRoot})
 	validated := 0
-	for _, project := range projectResults {
+	for _, project := range state.projects {
 		projection, err := v2.ProjectRuntimeSnapshot(ctx, project.Project)
 		if err != nil {
 			return RebuildResultV1{}, fmt.Errorf("project Runtime Snapshot for %s: %w", project.Project, err)
@@ -514,7 +552,6 @@ func (s *Service) rebuildUnambiguousHeads(ctx context.Context, request Migration
 		if err := validateSnapshotContract(projection.Bytes); err != nil {
 			return RebuildResultV1{}, fmt.Errorf("snapshot contract for %s: %w", project.Project, err)
 		}
-		// Re-encode and require exact stable bytes.
 		again, err := v2.ProjectRuntimeSnapshot(ctx, project.Project)
 		if err != nil {
 			return RebuildResultV1{}, err
@@ -522,28 +559,13 @@ func (s *Service) rebuildUnambiguousHeads(ctx context.Context, request Migration
 		if string(again.Bytes) != string(projection.Bytes) {
 			return RebuildResultV1{}, fmt.Errorf("snapshot bytes for %s are not deterministic", project.Project)
 		}
-		if err := validateDetailAndHistoryReads(ctx, v2, project.Project, assignments[project.Project]); err != nil {
+		if err := validateDetailAndHistoryReads(ctx, v2, project.Project, state.assignments[project.Project]); err != nil {
 			return RebuildResultV1{}, err
 		}
 		validated++
 	}
-
-	sort.Slice(mappings, func(i, j int) bool {
-		left := mappings[i].SourceType + "\x00" + mappings[i].SourceKey + "\x00" + mappings[i].TargetKey
-		right := mappings[j].SourceType + "\x00" + mappings[j].SourceKey + "\x00" + mappings[j].TargetKey
-		return left < right
-	})
-	sort.Slice(projectResults, func(i, j int) bool { return projectResults[i].Project < projectResults[j].Project })
-
-	return RebuildResultV1{
-		Schema:      rebuildResultSchema,
-		Status:      "rebuilt",
-		StoreEpoch:  epoch,
-		Projects:    projectResults,
-		Mappings:    mappings,
-		Validation:  MigrationValidationV1{Status: "passed", SnapshotsValidated: validated},
-		SourceCount: len(records),
-	}, nil
+	result.Validation = MigrationValidationV1{Status: "passed", SnapshotsValidated: validated}
+	return result, nil
 }
 
 func validateDetailAndHistoryReads(ctx context.Context, v2 *blackboardv2.Service, projectID string, assigns map[string]*assignedKey) error {
