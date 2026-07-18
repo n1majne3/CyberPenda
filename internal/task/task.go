@@ -132,6 +132,11 @@ const continuationSelectColumns = `id, task_id, number, runtime_profile_id, runt
 type RuntimeControls struct {
 	NativeResumeAvailable   bool   `json:"native_resume_available"`
 	NativeResumeReason      string `json:"native_resume_reason,omitempty"`
+	NativeSteerAvailable    bool   `json:"native_steer_available"`
+	NativeSteerMode         string `json:"native_steer_mode,omitempty"`
+	NativeSteerState        string `json:"native_steer_state,omitempty"`
+	NativeSteerRequestID    string `json:"native_steer_request_id,omitempty"`
+	NativeSteerReason       string `json:"native_steer_reason,omitempty"`
 	ResumeAvailable         bool   `json:"resume_available"`
 	QueueSteerAvailable     bool   `json:"queue_steer_available"`
 	InterruptSteerAvailable bool   `json:"interrupt_steer_available"`
@@ -773,6 +778,23 @@ func consumeHarnessSteeringTx(ctx context.Context, tx *sql.Tx, taskID, continuat
 // Runtime. Production launch uses the Blackboard v2 continuity coordinator.
 func (s *Service) CreateContinuation(taskID, runtimeProfileID, runtimeProvider string, runner Runner) (TaskContinuation, error) {
 	return s.createContinuation(taskID, runtimeProfileID, runtimeProvider, runner, "")
+}
+
+// CreateReplacementContinuation creates a new turn boundary for a persistent
+// Task session while retaining the prior runtime configuration pin and any
+// discovered provider/container metadata.
+func (s *Service) CreateReplacementContinuation(previous TaskContinuation) (TaskContinuation, error) {
+	next, err := s.createContinuation(previous.TaskID, previous.RuntimeProfileID, previous.RuntimeProvider, previous.Runner, previous.RuntimeConfigVersionID)
+	if err != nil {
+		return TaskContinuation{}, err
+	}
+	if previous.ContainerID != "" || previous.NativeSessionID != "" || previous.NativeSessionPath != "" {
+		next, err = s.UpdateContinuationRuntimeMetadata(next.ID, previous.ContainerID, previous.NativeSessionID, previous.NativeSessionPath)
+		if err != nil {
+			return TaskContinuation{}, err
+		}
+	}
+	return next, nil
 }
 
 func (s *Service) createContinuation(taskID, runtimeProfileID, runtimeProvider string, runner Runner, runtimeConfigVersionID string) (TaskContinuation, error) {

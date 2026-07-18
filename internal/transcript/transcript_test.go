@@ -46,6 +46,51 @@ func TestBuildIncludesGoalContinuationsSteeringAndFallback(t *testing.T) {
 	requireEntry(t, got, "ev-3-steering", "message", "user", "Focus admin")
 }
 
+func TestBuildProjectsNativeSteerControlsWithoutDuplicatingConversationMessage(t *testing.T) {
+	subject := task.Task{ID: "task-1", Goal: "Inspect target", CreatedAt: time.Now().UTC()}
+	events := []task.Event{
+		{ID: "conv-1", Seq: 1, Kind: task.EventKindConversation, Payload: task.EventPayload{
+			"role": "user", "text": "focus on admin", "request_id": "req-1", "delivery": "native_steer",
+		}},
+		{ID: "steer-1", Seq: 2, Kind: task.EventKindSteering, Payload: task.EventPayload{
+			"request_id": "req-1", "session_id": "session-1", "mode": "interrupt_then_replace", "outcome": "requested",
+		}},
+		{ID: "steer-2", Seq: 3, Kind: task.EventKindSteering, Payload: task.EventPayload{
+			"request_id": "req-1", "session_id": "session-1", "mode": "interrupt_then_replace", "outcome": "acknowledged",
+		}},
+		{ID: "steer-3", Seq: 4, Kind: task.EventKindSteering, Payload: task.EventPayload{
+			"request_id": "req-1", "session_id": "session-1", "mode": "interrupt_then_replace", "outcome": "settled",
+		}},
+		{ID: "steer-4", Seq: 5, Kind: task.EventKindSteering, Payload: task.EventPayload{
+			"request_id": "req-1", "session_id": "session-1", "mode": "interrupt_then_replace", "outcome": "started",
+		}},
+		{ID: "steer-5", Seq: 6, Kind: task.EventKindSteering, Payload: task.EventPayload{
+			"request_id": "req-1", "session_id": "session-1", "mode": "interrupt_then_replace", "outcome": "applied", "phase": "steering_applied",
+		}},
+	}
+
+	got := transcript.Build(subject, events)
+	var userMessages []transcript.Entry
+	var controls []transcript.Entry
+	for _, entry := range got {
+		if entry.Role == transcript.RoleUser && entry.Text == "focus on admin" {
+			userMessages = append(userMessages, entry)
+		}
+		if entry.Kind == transcript.KindContinuation && entry.Role == transcript.RoleSystem && entry.Seq >= 2 {
+			controls = append(controls, entry)
+		}
+	}
+	if len(userMessages) != 1 {
+		t.Fatalf("native steer user messages = %#v, want one", userMessages)
+	}
+	if len(controls) != 5 {
+		t.Fatalf("native steer control entries = %#v, want five", controls)
+	}
+	if controls[0].Text != "Native steer requested" || controls[1].Text != "Provider acknowledged native steer" || controls[2].Text != "Previous provider turn settled" || controls[3].Text != "Replacement provider turn started" || controls[4].Text != "Native steer applied" {
+		t.Fatalf("native steer control order = %#v", controls)
+	}
+}
+
 func TestBuildParsesOpenAIToolCallAndResult(t *testing.T) {
 	subject := task.Task{ID: "task-1", Goal: "Do work", CreatedAt: time.Now().UTC()}
 	events := []task.Event{

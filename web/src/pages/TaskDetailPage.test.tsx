@@ -259,6 +259,40 @@ describe("TaskDetailPage", () => {
     });
   });
 
+  it("sends native steer as one idempotent Task Conversation message", async () => {
+    const { fetchMock } = stubTaskDetailApi({
+      status: "running",
+      runtime_controls: {
+        native_resume_available: false,
+        resume_available: false,
+        queue_steer_available: true,
+        interrupt_steer_available: false,
+        native_steer_available: true,
+        native_steer_mode: "interrupt_then_replace",
+        native_steer_state: "idle",
+        native_session_captured: true,
+        same_runtime_provider_only: true,
+        runtime_provider: "codex",
+      },
+    });
+    const user = userEvent.setup();
+
+    renderPage();
+
+    await screen.findByText("Timeline opened first");
+    await user.type(screen.getByPlaceholderText("Focus on admin.example.com next…"), "focus on admin");
+    await user.click(screen.getByRole("button", { name: /Interrupt & Steer/ }));
+
+    const steerCall = fetchMock.mock.calls.find(([input]) =>
+      String(input).endsWith("/api/projects/project-1/tasks/task-1/steer"),
+    );
+    expect(steerCall?.[1]?.method).toBe("POST");
+    const body = JSON.parse(String(steerCall?.[1]?.body));
+    expect(body.message).toBe("focus on admin");
+    expect(typeof body.request_id).toBe("string");
+    expect(body.request_id.length).toBeGreaterThan(8);
+  });
+
   it("requires confirmation before stopping a running task", async () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     const { fetchMock } = stubTaskDetailApi({ status: "running" });

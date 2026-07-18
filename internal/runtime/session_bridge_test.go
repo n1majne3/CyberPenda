@@ -160,6 +160,48 @@ func TestSandboxSessionBridgeKeepsOneTaskContainerAcrossContinuations(t *testing
 	}
 }
 
+func TestFirstProviderAdaptersShareOneNonPTYBridgeTransport(t *testing.T) {
+	docker := newFakeBridgeDocker()
+	bridge := newStartedBridge(t, docker)
+	if err := bridge.BindContinuation("continuation-1"); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		scanner := bufio.NewScanner(docker.requestR)
+		for scanner.Scan() {
+			var request runtime.SandboxBridgeRequest
+			if json.Unmarshal(scanner.Bytes(), &request) != nil {
+				continue
+			}
+			result := `{"session_id":"session-1","turn_id":"turn-1"}`
+			switch request.Method {
+			case "turn/start":
+				result = `{"threadId":"session-1","turn":{"id":"turn-1"}}`
+			}
+			_, _ = docker.outputW.Write([]byte(`{"jsonrpc":"2.0","id":"` + request.ID + `","result":` + result + "}\n"))
+		}
+	}()
+
+	providers := []runtime.ProviderSession{
+		runtime.NewCodexProviderSession(runtime.CodexProviderSessionConfig{Transport: bridge, SessionID: "session-1"}),
+		runtime.NewClaudeCodeProviderSession(runtime.ClaudeCodeProviderSessionConfig{Transport: bridge, SessionID: "session-1"}),
+		runtime.NewPiProviderSession(runtime.PiProviderSessionConfig{Transport: bridge, SessionID: "session-1"}),
+	}
+	for index, provider := range providers {
+		result, err := provider.SendTurn(context.Background(), runtime.ProviderSessionRequest{RequestID: "provider-send-" + string(rune('1'+index)), Message: "inspect"}, nil)
+		if err != nil {
+			t.Fatalf("provider %d send through bridge: %v", index, err)
+		}
+		if result.SessionID == "" || result.ProviderTurnID == "" {
+			t.Fatalf("provider %d result lost identity: %#v", index, result)
+		}
+	}
+	creates, starts, _, _ := docker.counts()
+	if creates != 1 || starts != 1 {
+		t.Fatalf("provider adapter bridge lifecycle = %d creates, %d starts", creates, starts)
+	}
+}
+
 func TestSandboxSessionBridgeUsesBoundContinuationAndRejectsRequestIDReuse(t *testing.T) {
 	docker := newFakeBridgeDocker()
 	bridge := newStartedBridge(t, docker)

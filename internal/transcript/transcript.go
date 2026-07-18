@@ -133,6 +133,9 @@ func lifecycleEntry(event task.Event, continuation int) (Entry, bool) {
 func entriesForEvent(event task.Event, continuation int, adapter string) []Entry {
 	switch event.Kind {
 	case task.EventKindSteering:
+		if entry, ok := nativeSteeringEntry(event, continuation); ok {
+			return []Entry{entry}
+		}
 		directive := stringValue(event.Payload, "directive")
 		if directive == "" {
 			return nil
@@ -184,6 +187,40 @@ func entriesForEvent(event task.Event, continuation int, adapter string) []Entry
 	default:
 		return nil
 	}
+}
+
+func nativeSteeringEntry(event task.Event, continuation int) (Entry, bool) {
+	if strings.TrimSpace(stringValue(event.Payload, "request_id")) == "" {
+		return Entry{}, false
+	}
+	outcome := strings.TrimSpace(stringValue(event.Payload, "outcome"))
+	if outcome == "" {
+		return Entry{}, false
+	}
+	labels := map[string]string{
+		"requested":    "Native steer requested",
+		"acknowledged": "Provider acknowledged native steer",
+		"settled":      "Previous provider turn settled",
+		"started":      "Replacement provider turn started",
+		"applied":      "Native steer applied",
+		"failed":       "Native steer failed",
+		"unsupported":  "Native steer unsupported",
+	}
+	text := labels[outcome]
+	if text == "" {
+		text = "Native steer: " + outcome
+	}
+	return Entry{
+		ID:           event.ID + "-native-steer",
+		Seq:          event.Seq,
+		Continuation: continuation,
+		Kind:         KindContinuation,
+		Role:         RoleSystem,
+		Text:         text,
+		Details:      compactPayload(event.Payload, "outcome"),
+		Status:       outcome,
+		CreatedAt:    event.CreatedAt,
+	}, true
 }
 
 func parseRuntimeOutput(event task.Event, continuation int, adapter, text string) []Entry {
@@ -424,5 +461,3 @@ func nilIfEmpty(values map[string]any) map[string]any {
 	}
 	return values
 }
-
-

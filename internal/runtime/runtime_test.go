@@ -104,6 +104,63 @@ func TestRuntimeEventsAreBoundToTheLaunchedContinuation(t *testing.T) {
 	}
 }
 
+func TestHarnessRebindContinuationFinalizesReplacementTurn(t *testing.T) {
+	harness, tasks, projects := newServices(t)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "long task", RuntimeProfileID: "codex", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := tasks.CreateContinuation(created.ID, "codex", "codex", task.RunnerSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- harness.Launch(context.Background(), runtime.LaunchRequest{
+			TaskID: created.ID, ContinuationID: first.ID, Adapter: slowFakeAdapter{},
+		})
+	}()
+	waitForActive(t, harness, created.ID)
+	first, err = tasks.Continuation(first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := tasks.CreateReplacementContinuation(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateContinuationStatus(replacement.ID, task.StatusRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := harness.RebindContinuation(created.ID, replacement.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateContinuationStatus(first.ID, task.StatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if !harness.StopAndWait(created.ID, 2*time.Second) {
+		t.Fatal("replacement turn did not stop")
+	}
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("launch error = %v, want canceled", err)
+	}
+	firstAfter, err := tasks.Continuation(first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacementAfter, err := tasks.Continuation(replacement.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstAfter.Status != task.StatusCompleted {
+		t.Fatalf("first status = %q, want completed", firstAfter.Status)
+	}
+	if replacementAfter.Status != task.StatusStopped {
+		t.Fatalf("replacement status = %q, want stopped", replacementAfter.Status)
+	}
+}
+
 func TestCommandRuntimeAdapterExecutesProviderProcessAndStreamsOutput(t *testing.T) {
 	harness, tasks, projects := newServices(t)
 	proj, _ := projects.Create("P", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})

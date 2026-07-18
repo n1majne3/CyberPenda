@@ -201,9 +201,12 @@ export function TaskDetailPage() {
   }
 
   async function interruptSteer() {
+    const requestID = newSteerRequestID();
     try {
       await apiPost(`${base}/steer`, {
-        directive: steering,
+        ...(task?.runtime_controls?.native_steer_available
+          ? { request_id: requestID, message: steering }
+          : { directive: steering }),
         ...continuationModelPayload(),
       });
       setSteering("");
@@ -212,6 +215,13 @@ export function TaskDetailPage() {
     } catch (e) {
       setError((e as Error).message);
     }
+  }
+
+  function newSteerRequestID() {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+    return `steer-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   }
 
   function continuationModelPayload() {
@@ -266,6 +276,10 @@ export function TaskDetailPage() {
   const interruptSteerAvailable = controls?.interrupt_steer_available ?? nativeResumeAvailable;
   const nativeResumeReason = controls?.native_resume_reason ?? "Native resume unavailable";
   const interruptSteerReason = controls?.interrupt_steer_reason ?? nativeResumeReason;
+  const nativeSteerAvailable = controls?.native_steer_available ?? false;
+  const nativeSteerMode = controls?.native_steer_mode;
+  const nativeSteerState = controls?.native_steer_state;
+  const steerAvailable = nativeSteerAvailable || interruptSteerAvailable;
   const running = ACTIVE.has(task.status);
 
   return (
@@ -306,6 +320,8 @@ export function TaskDetailPage() {
           <Badge variant="outline">continuation status: {currentContinuation.status}</Badge>
           {(controls?.native_session_captured || currentContinuation.native_session_id) && <Badge variant="outline">native session: captured</Badge>}
           {controls?.same_runtime_provider_only && <Badge variant="outline">same runtime only</Badge>}
+          {nativeSteerMode && <Badge variant="outline">steer: {nativeSteerMode === "in_turn_steer" ? "direct native" : "interrupt then replace"}</Badge>}
+          {nativeSteerState && nativeSteerState !== "idle" && <Badge variant={nativeSteerState === "failed" ? "destructive" : "outline"}>steer: {nativeSteerState}</Badge>}
         </div>
       )}
 
@@ -368,8 +384,8 @@ export function TaskDetailPage() {
             <Send className="h-4 w-4 mr-1" /> Queue steer
           </Button>
           {running && (
-            <Button size="sm" onClick={interruptSteer} disabled={!steering.trim() || !interruptSteerAvailable} title={interruptSteerAvailable ? "Interrupt and resume native session" : interruptSteerReason}>
-              <GitBranch className="h-4 w-4 mr-1" /> Interrupt & Steer
+            <Button size="sm" onClick={interruptSteer} disabled={!steering.trim() || !steerAvailable} title={nativeSteerAvailable ? "Send through the provider-native session" : interruptSteerAvailable ? "Interrupt and resume native session" : controls?.native_steer_reason ?? interruptSteerReason}>
+              <GitBranch className="h-4 w-4 mr-1" /> {nativeSteerAvailable && nativeSteerMode === "in_turn_steer" ? "Steer natively" : "Interrupt & Steer"}
             </Button>
           )}
         </div>

@@ -73,6 +73,10 @@ type Config struct {
 	// production behavior; tests inject a stubbed transport so the refresh API
 	// can be exercised end to end without real network traffic.
 	ModelRefreshClient *http.Client
+	// ProviderSessionFactory is optional. When nil, launches retain the legacy
+	// one-shot Adapter path and native session controls remain unavailable until
+	// a real bridge factory is configured.
+	ProviderSessionFactory ProviderSessionFactory
 }
 
 type Server struct {
@@ -103,6 +107,8 @@ type Server struct {
 	tempSkillsRoot         string
 	controlMu              sync.Mutex
 	activeControls         map[string]bool
+	providerSessions       *providerSessionRegistry
+	providerSessionFactory ProviderSessionFactory
 }
 
 func NewServer(config Config) (*Server, error) {
@@ -195,16 +201,18 @@ func NewServer(config Config) (*Server, error) {
 		preflight: preflight.NewService(profiles, creds, skills).
 			WithModelProviders(modelProviders, runtimePlugins).
 			WithRuntimeExtensions(runtimeExtensions),
-		tasks:          tasks,
-		harness:        runtime.NewHarness(tasks),
-		canonicalStore: epoch,
-		runtimeRoot:    runtimeRoot,
-		sandboxImage:   config.SandboxImage,
-		containerCLI:   config.ContainerCLI,
-		listenAddr:     listenAddr,
-		authToken:      authToken,
-		tempSkillsRoot: tempSkillsRoot,
-		activeControls: map[string]bool{},
+		tasks:                  tasks,
+		harness:                runtime.NewHarness(tasks),
+		canonicalStore:         epoch,
+		runtimeRoot:            runtimeRoot,
+		sandboxImage:           config.SandboxImage,
+		containerCLI:           config.ContainerCLI,
+		listenAddr:             listenAddr,
+		authToken:              authToken,
+		tempSkillsRoot:         tempSkillsRoot,
+		activeControls:         map[string]bool{},
+		providerSessions:       newProviderSessionRegistry(),
+		providerSessionFactory: config.ProviderSessionFactory,
 	}
 	if server.logger == nil {
 		server.logger = log.Default()
@@ -343,7 +351,10 @@ func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Requ
 }
 
 func (server *Server) Close() error {
-	err := server.db.Close()
+	err := server.providerSessions.closeAll(context.Background())
+	if dbErr := server.db.Close(); err == nil {
+		err = dbErr
+	}
 	if server.tempSkillsRoot != "" {
 		if removeErr := os.RemoveAll(server.tempSkillsRoot); err == nil {
 			err = removeErr

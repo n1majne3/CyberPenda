@@ -103,6 +103,19 @@ func lifecycleItem(event task.Event) (Item, bool) {
 }
 
 func steeringItem(event task.Event) (Item, bool) {
+	if requestID := stringValue(event.Payload, "request_id"); strings.TrimSpace(requestID) != "" {
+		outcome := stringValue(event.Payload, "outcome")
+		if outcome == "" {
+			outcome = "pending"
+		}
+		content := "Steering: " + outcome
+		if mode := stringValue(event.Payload, "mode"); mode != "" {
+			content += " (" + mode + ")"
+		} else if errorCode := stringValue(event.Payload, "error_code"); errorCode != "" {
+			content += " (" + errorCode + ")"
+		}
+		return Item{Type: "steering", Content: content, CreatedAt: event.CreatedAt}, true
+	}
 	phase := stringValue(event.Payload, "phase")
 	if phase == "" {
 		phase = "steering"

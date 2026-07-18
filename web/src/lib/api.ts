@@ -352,6 +352,11 @@ export interface Task {
 export interface RuntimeControls {
   native_resume_available: boolean;
   native_resume_reason?: string;
+  native_steer_available?: boolean;
+  native_steer_mode?: "in_turn_steer" | "interrupt_then_replace" | string;
+  native_steer_state?: "idle" | "requested" | "acknowledged" | "settled" | "started" | "applied" | "failed" | string;
+  native_steer_request_id?: string;
+  native_steer_reason?: string;
   resume_available: boolean;
   queue_steer_available: boolean;
   interrupt_steer_available: boolean;

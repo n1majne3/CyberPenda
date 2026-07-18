@@ -149,6 +149,41 @@ func TestFakeProviderSessionDuplicateRequestIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestFakeProviderSessionLocalTimeoutCanRetrySameRequest(t *testing.T) {
+	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID:         "session-1",
+		ActiveTurnID:      "turn-1",
+		Capabilities:      interactiveCapabilities(),
+		ManualAcknowledge: true,
+	})
+	request := runtime.ProviderSessionRequest{RequestID: "request-1", Message: "redirect"}
+	recorder := &sessionEventRecorder{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	if _, err := session.InterruptThenReplace(ctx, request, recorder.emit); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("first request error = %v, want deadline", err)
+	}
+
+	result := make(chan runtime.ProviderSessionResult, 1)
+	errs := make(chan error, 1)
+	go func() {
+		got, err := session.InterruptThenReplace(context.Background(), request, recorder.emit)
+		result <- got
+		errs <- err
+	}()
+	waitForSessionEvents(t, recorder, 2)
+	if err := session.Acknowledge(request.RequestID); err != nil {
+		t.Fatalf("acknowledge retry: %v", err)
+	}
+	if err := <-errs; err != nil {
+		t.Fatalf("retry request: %v", err)
+	}
+	if got := <-result; got.Outcome != "started" {
+		t.Fatalf("retry result = %#v", got)
+	}
+}
+
 func TestFakeProviderSessionSerializesConcurrentControls(t *testing.T) {
 	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
 		SessionID:         "session-1",

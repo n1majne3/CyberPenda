@@ -49,18 +49,20 @@ type LaunchRequest struct {
 type Harness struct {
 	tasks  *task.Service
 	mu     sync.Mutex
-	active map[string]activeRun // taskID -> cancel + completion
+	active map[string]*activeRun // taskID -> cancel + completion
 }
 
 type activeRun struct {
+	mu               sync.RWMutex
 	cancel           context.CancelFunc
 	done             chan struct{}
 	stopConfirmation StopConfirmation
+	continuationID   string
 }
 
 // NewHarness returns a Harness that records events through the task service.
 func NewHarness(tasks *task.Service) *Harness {
-	return &Harness{tasks: tasks, active: map[string]activeRun{}}
+	return &Harness{tasks: tasks, active: map[string]*activeRun{}}
 }
 
 // Launch starts one runtime continuation for a task. It marks the task running,
@@ -77,7 +79,7 @@ func (h *Harness) Launch(ctx context.Context, req LaunchRequest) error {
 
 	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
-	h.register(req.TaskID, cancel, done, req.StopConfirmation)
+	run := h.register(req.TaskID, cancel, done, req.StopConfirmation, req.ContinuationID)
 	defer func() {
 		close(done)
 		h.unregister(req.TaskID)
@@ -85,8 +87,9 @@ func (h *Harness) Launch(ctx context.Context, req LaunchRequest) error {
 
 	emit := func(kind task.EventKind, payload task.EventPayload) {
 		var err error
-		if req.ContinuationID != "" {
-			_, err = h.tasks.AppendContinuationEvent(req.TaskID, req.ContinuationID, kind, payload)
+		continuationID := run.currentContinuationID()
+		if continuationID != "" {
+			_, err = h.tasks.AppendContinuationEvent(req.TaskID, continuationID, kind, payload)
 		} else {
 			_, err = h.tasks.AppendEvent(req.TaskID, kind, payload)
 		}
@@ -112,7 +115,11 @@ func (h *Harness) Launch(ctx context.Context, req LaunchRequest) error {
 				if metadata.ContainerID == "" && metadata.NativeSessionID == "" && metadata.NativeSessionPath == "" {
 					return nil
 				}
-				_, err := h.tasks.UpdateContinuationRuntimeMetadata(req.ContinuationID, metadata.ContainerID, metadata.NativeSessionID, metadata.NativeSessionPath)
+				continuationID := run.currentContinuationID()
+				if continuationID == "" {
+					return nil
+				}
+				_, err := h.tasks.UpdateContinuationRuntimeMetadata(continuationID, metadata.ContainerID, metadata.NativeSessionID, metadata.NativeSessionPath)
 				return err
 			})
 		}
@@ -131,11 +138,12 @@ func (h *Harness) Launch(ctx context.Context, req LaunchRequest) error {
 		finalPhase = "stopped"
 	}
 	emit(task.EventKindLifecycle, task.EventPayload{"phase": finalPhase, "adapter": req.Adapter.Name()})
-	if req.ContinuationID != "" && req.Metadata != nil {
+	finalContinuationID := run.currentContinuationID()
+	if finalContinuationID != "" && req.Metadata != nil {
 		metadata, err := req.Metadata()
 		if err == nil {
 			if metadata.ContainerID != "" || metadata.NativeSessionID != "" || metadata.NativeSessionPath != "" {
-				if _, err := h.tasks.UpdateContinuationRuntimeMetadata(req.ContinuationID, metadata.ContainerID, metadata.NativeSessionID, metadata.NativeSessionPath); err != nil {
+				if _, err := h.tasks.UpdateContinuationRuntimeMetadata(finalContinuationID, metadata.ContainerID, metadata.NativeSessionID, metadata.NativeSessionPath); err != nil {
 					return fmt.Errorf("record continuation metadata: %w", err)
 				}
 			}
@@ -144,8 +152,8 @@ func (h *Harness) Launch(ctx context.Context, req LaunchRequest) error {
 	if _, err := h.tasks.UpdateStatus(req.TaskID, finalStatus); err != nil {
 		return fmt.Errorf("mark %s: %w", finalStatus, err)
 	}
-	if req.ContinuationID != "" {
-		if _, err := h.tasks.UpdateContinuationStatus(req.ContinuationID, finalStatus); err != nil {
+	if finalContinuationID != "" {
+		if _, err := h.tasks.UpdateContinuationStatus(finalContinuationID, finalStatus); err != nil {
 			return fmt.Errorf("mark continuation %s: %w", finalStatus, err)
 		}
 	}
@@ -202,16 +210,39 @@ func (h *Harness) StopAndWait(taskID string, timeout time.Duration) bool {
 	}
 }
 
-func (h *Harness) register(taskID string, cancel context.CancelFunc, done chan struct{}, stopConfirmation StopConfirmation) {
+// RebindContinuation moves the active run's event/metadata/finalization pin to
+// a replacement provider turn without restarting the Task-owned process.
+func (h *Harness) RebindContinuation(taskID, continuationID string) error {
+	h.mu.Lock()
+	run := h.active[taskID]
+	h.mu.Unlock()
+	if run == nil || continuationID == "" {
+		return fmt.Errorf("active runtime continuation is unavailable")
+	}
+	run.mu.Lock()
+	run.continuationID = continuationID
+	run.mu.Unlock()
+	return nil
+}
+
+func (h *Harness) register(taskID string, cancel context.CancelFunc, done chan struct{}, stopConfirmation StopConfirmation, continuationID string) *activeRun {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.active[taskID] = activeRun{cancel: cancel, done: done, stopConfirmation: stopConfirmation}
+	run := &activeRun{cancel: cancel, done: done, stopConfirmation: stopConfirmation, continuationID: continuationID}
+	h.active[taskID] = run
+	return run
 }
 
 func (h *Harness) unregister(taskID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	delete(h.active, taskID)
+}
+
+func (r *activeRun) currentContinuationID() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.continuationID
 }
 
 // fakeGoalKey holds the task id the fake adapter is running, used only to keep

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"pentest/internal/adapters"
@@ -168,6 +169,28 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 		return err
 	}
 	plan = boundPlan
+	if server.providerSessionFactory != nil && created.Runner == task.RunnerSandbox && supportedProviderSessionFactoryProvider(plan.ResolvedProfile.Provider) {
+		binding, factoryErr := server.providerSessionFactory.Open(context.Background(), ProviderSessionLaunchRequest{
+			Task: created, Continuation: continuation, Provider: plan.ResolvedProfile.Provider,
+			Runner: created.Runner, LaunchGoal: plan.LaunchGoal, RuntimeConfig: plan.CapturedRuntimeConfig,
+			LegacyAdapter: plan.Adapter,
+		})
+		if factoryErr == nil {
+			factoryErr = validateProviderSessionBinding(binding)
+		}
+		if factoryErr != nil {
+			redactedErr := &providerSessionFactoryError{cause: factoryErr}
+			server.failProviderSessionLaunch(created.ID, continuation.ID, redactedErr)
+			return redactedErr
+		}
+		if bindErr := server.BindProviderSession(created.ID, binding.Session); bindErr != nil {
+			_ = binding.Session.Close(context.Background())
+			redactedErr := &providerSessionFactoryError{cause: bindErr}
+			server.failProviderSessionLaunch(created.ID, continuation.ID, redactedErr)
+			return redactedErr
+		}
+		plan.Adapter = binding.Adapter
+	}
 	server.logTask(created, "launched", "")
 	go func() {
 		launchGoal := plan.LaunchGoal
@@ -192,6 +215,17 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 		}
 	}()
 	return nil
+}
+
+func (server *Server) failProviderSessionLaunch(taskID, continuationID string, cause error) {
+	// The durable Continuation already exists at this point. Marking both
+	// records terminal prevents an unbound pending Continuation from looking
+	// resumable after a factory crash or setup rejection.
+	_, _ = server.tasks.AppendContinuationEvent(taskID, continuationID, task.EventKindLifecycle, task.EventPayload{
+		"phase": "provider_session_setup_failed", "error": "provider session setup failed",
+	})
+	_, _ = server.tasks.UpdateContinuationStatus(continuationID, task.StatusFailed)
+	_, _ = server.tasks.UpdateStatus(taskID, task.StatusFailed)
 }
 
 func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, plan taskLaunchPlan, goal string) (task.TaskContinuation, taskLaunchPlan, error) {
@@ -973,6 +1007,7 @@ func (server *Server) runtimeControlsForTask(found task.Task, latest *task.TaskC
 	nativeResumeSupported := ok && plugin.NativeResume.Supported
 	active := found.Status == task.StatusRunning || found.Status == task.StatusPaused
 	sessionCaptured := latest != nil && strings.TrimSpace(latest.NativeSessionID) != ""
+	_, providerSessionBound := server.providerSessions.get(found.ID)
 
 	controls := task.RuntimeControls{
 		ResumeAvailable:         !active,
@@ -981,9 +1016,40 @@ func (server *Server) runtimeControlsForTask(found task.Task, latest *task.TaskC
 		SameRuntimeProviderOnly: true,
 		RuntimeProvider:         string(profile.Provider),
 	}
+	if session, bound := server.providerSessions.get(found.ID); bound {
+		_, outcome, _ := nativeSteerStateForTask(found.ID, server.tasks)
+		if selectedMode, modeErr := nativeSteerMode(session.Capabilities()); modeErr == nil {
+			controls.NativeSteerAvailable = active
+			controls.NativeSteerMode = string(selectedMode)
+			controls.NativeSteerState = outcome
+			if outcome == "requested" || outcome == "acknowledged" || outcome == "settled" || outcome == "started" {
+				controls.NativeSteerAvailable = false
+			}
+			controls.InterruptSteerAvailable = controls.NativeSteerAvailable
+			if !controls.NativeSteerAvailable && active {
+				controls.InterruptSteerReason = "native steer request is already in progress"
+			}
+		} else {
+			controls.NativeSteerReason = modeErr.Error()
+			controls.InterruptSteerReason = controls.NativeSteerReason
+		}
+		if events, eventsErr := server.tasks.Events(found.ID); eventsErr == nil {
+			for index := len(events) - 1; index >= 0; index-- {
+				if requestID, ok := events[index].Payload["request_id"].(string); ok && requestID != "" && events[index].Kind == task.EventKindConversation && events[index].Payload["delivery"] == "native_steer" {
+					controls.NativeSteerRequestID = requestID
+					break
+				}
+			}
+		}
+		if controls.NativeSteerState == "" && active {
+			controls.NativeSteerState = "idle"
+		}
+	}
 	if nativeResumeSupported {
 		controls.NativeResumeAvailable = !active && sessionCaptured
-		controls.InterruptSteerAvailable = active && sessionCaptured
+		if !providerSessionBound {
+			controls.InterruptSteerAvailable = active && sessionCaptured
+		}
 	} else {
 		controls.NativeResumeReason = fmt.Sprintf("native resume unsupported for provider %s", profile.Provider)
 		controls.InterruptSteerReason = controls.NativeResumeReason
@@ -993,6 +1059,25 @@ func (server *Server) runtimeControlsForTask(found task.Task, latest *task.TaskC
 		controls.InterruptSteerReason = controls.NativeResumeReason
 	}
 	return controls, nil
+}
+
+func nativeSteerStateForTask(taskID string, tasks *task.Service) (runtime.ProviderSessionMode, string, string) {
+	events, err := tasks.Events(taskID)
+	if err != nil {
+		return "", "", ""
+	}
+	var requestID string
+	for _, event := range events {
+		if event.Kind != task.EventKindConversation || event.Payload["delivery"] != "native_steer" {
+			continue
+		}
+		requestID, _ = event.Payload["request_id"].(string)
+	}
+	if requestID == "" {
+		return "", "", ""
+	}
+	mode, outcome, sessionID := nativeSteerState(events, requestID)
+	return mode, outcome, sessionID
 }
 
 func (server *Server) handleTaskEvents(response http.ResponseWriter, request *http.Request) {
@@ -1084,10 +1169,19 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 		writeError(response, http.StatusNotFound, "task not found")
 		return
 	}
+	if !server.acquireTaskControl(taskID) {
+		writeError(response, http.StatusConflict, "task control operation already active")
+		return
+	}
+	defer server.releaseTaskControl(taskID)
 
 	if found.Status == task.StatusRunning || found.Status == task.StatusPaused {
 		if ok := server.harness.StopAndWait(taskID, 10*time.Second); !ok {
 			writeError(response, http.StatusConflict, "runtime did not stop in time")
+			return
+		}
+		if err := server.closeProviderSession(taskID); err != nil && !errors.Is(err, runtime.ErrProviderSessionClosed) {
+			writeError(response, http.StatusConflict, "provider session did not close")
 			return
 		}
 		stopped, err := server.taskDetail(taskID)
@@ -1096,6 +1190,10 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 			return
 		}
 		writeJSON(response, http.StatusOK, stopped)
+		return
+	}
+	if err := server.closeProviderSession(taskID); err != nil && !errors.Is(err, runtime.ErrProviderSessionClosed) {
+		writeError(response, http.StatusConflict, "provider session did not close")
 		return
 	}
 	stopped, err := server.tasks.UpdateStatus(taskID, task.StatusStopped)
@@ -1448,6 +1546,10 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 		writeError(response, http.StatusNotFound, "task not found")
 		return
 	}
+	if session, ok := server.providerSessions.get(taskID); ok {
+		server.handleProviderSessionSteer(response, request, found, session)
+		return
+	}
 
 	var input struct {
 		Directive string `json:"directive"`
@@ -1570,6 +1672,174 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 	})
 }
 
+func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, request *http.Request, found task.Task, session runtime.ProviderSession) {
+	var input nativeSteerRequest
+	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	input.RequestID = strings.TrimSpace(input.RequestID)
+	if input.RequestID == "" {
+		input.RequestID = strings.TrimSpace(request.Header.Get("Idempotency-Key"))
+	}
+	if input.RequestID == "" {
+		input.RequestID = newNativeSteerRequestID()
+	}
+	input.Message = strings.TrimSpace(input.Message)
+	if input.Message == "" {
+		input.Message = strings.TrimSpace(input.Directive)
+	}
+	if input.Message == "" {
+		writeError(response, http.StatusBadRequest, "steer message is required")
+		return
+	}
+
+	events, err := server.tasks.Events(found.ID)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "list task events")
+		return
+	}
+	for _, event := range events {
+		if event.Kind != task.EventKindConversation || event.Payload["request_id"] != input.RequestID || event.Payload["delivery"] != "native_steer" {
+			continue
+		}
+		if prior, _ := event.Payload["text"].(string); prior != input.Message {
+			writeError(response, http.StatusConflict, "steer request id already belongs to a different message")
+			return
+		}
+		mode, outcome, sessionID := nativeSteerState(events, input.RequestID)
+		if outcome == "" {
+			outcome = "pending"
+		}
+		if sessionID == "" {
+			sessionID = session.SessionID()
+		}
+		writeJSON(response, http.StatusAccepted, struct {
+			RequestID string                      `json:"request_id"`
+			SessionID string                      `json:"session_id"`
+			Mode      runtime.ProviderSessionMode `json:"mode"`
+			Outcome   string                      `json:"outcome"`
+		}{RequestID: input.RequestID, SessionID: sessionID, Mode: mode, Outcome: outcome})
+		return
+	}
+
+	if found.Status != task.StatusRunning && found.Status != task.StatusPaused {
+		writeError(response, http.StatusConflict, "native steer requires an active Task")
+		return
+	}
+	mode, err := nativeSteerMode(session.Capabilities())
+	if err != nil {
+		writeError(response, http.StatusConflict, err.Error())
+		return
+	}
+	operation := nativeSteerOperation(session, mode)
+	if operation == nil {
+		writeError(response, http.StatusConflict, "provider session does not support native steer")
+		return
+	}
+	if !server.acquireTaskControl(found.ID) {
+		writeError(response, http.StatusConflict, "task control operation already active")
+		return
+	}
+
+	active, err := server.tasks.ActiveContinuation(found.ID)
+	if err != nil {
+		server.releaseTaskControl(found.ID)
+		writeTaskError(response, err)
+		return
+	}
+	conversationPayload := task.EventPayload{
+		"role": "user", "text": input.Message, "request_id": input.RequestID,
+		"delivery": "native_steer", "outcome": "pending", "mode": string(mode),
+		"session_id": session.SessionID(),
+	}
+	var conversation task.Event
+	if active != nil {
+		conversation, err = server.tasks.AppendContinuationEvent(found.ID, active.ID, task.EventKindConversation, conversationPayload)
+	} else {
+		conversation, err = server.tasks.AppendEvent(found.ID, task.EventKindConversation, conversationPayload)
+	}
+	if err != nil {
+		server.releaseTaskControl(found.ID)
+		writeTaskError(response, err)
+		return
+	}
+
+	continuationID := ""
+	if active != nil {
+		continuationID = active.ID
+	}
+	var continuationMu sync.Mutex
+	var continuationTransitionErr error
+	emit := func(kind task.EventKind, payload task.EventPayload) {
+		payload["conversation_event_id"] = conversation.ID
+		continuationMu.Lock()
+		currentContinuationID := continuationID
+		if currentContinuationID != "" {
+			_, _ = server.tasks.AppendContinuationEvent(found.ID, currentContinuationID, kind, payload)
+		}
+		if mode == runtime.ProviderSessionModeInterruptThenReplace && kind == task.EventKindSteering && payload["outcome"] == "settled" && currentContinuationID != "" {
+			if transitionErr := server.advanceNativeSteerContinuation(currentContinuationID, session, &continuationID); transitionErr != nil {
+				continuationTransitionErr = transitionErr
+				failure := task.EventPayload{
+					"request_id": payload["request_id"], "session_id": payload["session_id"],
+					"mode": string(mode), "outcome": "failed", "phase": "replacement_continuation_failed",
+					"error_code": "continuation_transition_failed",
+				}
+				_, _ = server.tasks.AppendContinuationEvent(found.ID, currentContinuationID, task.EventKindSteering, failure)
+			}
+		}
+		continuationMu.Unlock()
+		if currentContinuationID == "" {
+			_, _ = server.tasks.AppendEvent(found.ID, kind, payload)
+		}
+	}
+	go func() {
+		defer server.releaseTaskControl(found.ID)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		result, operationErr := operation(ctx, runtime.ProviderSessionRequest{RequestID: input.RequestID, Message: input.Message}, emit)
+		if operationErr != nil {
+			errorCode := "provider_rejected"
+			switch {
+			case errors.Is(operationErr, context.DeadlineExceeded):
+				errorCode = "timeout"
+			case errors.Is(operationErr, runtime.ErrProviderSessionClosed):
+				errorCode = "session_closed"
+			case errors.Is(operationErr, runtime.ErrProviderSessionControlConflict):
+				errorCode = "control_conflict"
+			}
+			emit(task.EventKindSteering, task.EventPayload{
+				"request_id": input.RequestID, "session_id": session.SessionID(), "mode": string(mode),
+				"outcome": "failed", "phase": "steering_failed", "error_code": errorCode,
+			})
+			return
+		}
+		continuationMu.Lock()
+		transitionErr := continuationTransitionErr
+		continuationMu.Unlock()
+		if transitionErr != nil {
+			_ = server.closeProviderSession(found.ID)
+			if current, _ := server.tasks.ActiveContinuation(found.ID); current != nil {
+				_, _ = server.tasks.UpdateContinuationStatus(current.ID, task.StatusFailed)
+			}
+			_, _ = server.tasks.UpdateStatus(found.ID, task.StatusFailed)
+			return
+		}
+		payload := result.Payload()
+		payload["outcome"] = "applied"
+		payload["phase"] = "steering_applied"
+		emit(task.EventKindSteering, payload)
+	}()
+
+	writeJSON(response, http.StatusAccepted, struct {
+		RequestID string                      `json:"request_id"`
+		SessionID string                      `json:"session_id"`
+		Mode      runtime.ProviderSessionMode `json:"mode"`
+		Outcome   string                      `json:"outcome"`
+	}{RequestID: input.RequestID, SessionID: session.SessionID(), Mode: mode, Outcome: "accepted"})
+}
+
 func decodeOptionalJSON(request *http.Request, target any) error {
 	if request.Body == nil {
 		return nil
@@ -1579,6 +1849,43 @@ func decodeOptionalJSON(request *http.Request, target any) error {
 		return nil
 	}
 	return err
+}
+
+// advanceNativeSteerContinuation performs the old-turn settlement boundary
+// while the provider control operation is still serialized. The adapter emits
+// settled before sending the replacement turn, so the next provider event is
+// guaranteed to land on the fresh Continuation.
+func (server *Server) advanceNativeSteerContinuation(currentID string, session runtime.ProviderSession, continuationID *string) error {
+	old, err := server.tasks.Continuation(currentID)
+	if err != nil {
+		return fmt.Errorf("load old continuation: %w", err)
+	}
+	next, err := server.tasks.CreateReplacementContinuation(old)
+	if err != nil {
+		return fmt.Errorf("create replacement continuation: %w", err)
+	}
+	if binder, ok := session.(runtime.ProviderSessionContinuationBinder); ok {
+		if err := binder.BindContinuation(next.ID); err != nil {
+			_, _ = server.tasks.UpdateContinuationStatus(next.ID, task.StatusFailed)
+			return fmt.Errorf("bind provider continuation: %w", err)
+		}
+	}
+	if _, err := server.tasks.UpdateContinuationStatus(next.ID, task.StatusRunning); err != nil {
+		_, _ = server.tasks.UpdateContinuationStatus(next.ID, task.StatusFailed)
+		return fmt.Errorf("start replacement continuation: %w", err)
+	}
+	if server.harness.IsActive(old.TaskID) {
+		if err := server.harness.RebindContinuation(old.TaskID, next.ID); err != nil {
+			_, _ = server.tasks.UpdateContinuationStatus(next.ID, task.StatusFailed)
+			return fmt.Errorf("rebind runtime continuation: %w", err)
+		}
+	}
+	if _, err := server.tasks.UpdateContinuationStatus(old.ID, task.StatusCompleted); err != nil {
+		_, _ = server.tasks.UpdateContinuationStatus(next.ID, task.StatusFailed)
+		return fmt.Errorf("settle old continuation: %w", err)
+	}
+	*continuationID = next.ID
+	return nil
 }
 
 func (server *Server) recordSelectedRuntimeConfig(response http.ResponseWriter, found task.Task, steeringEventID string, input taskContinuationSelectionInput) (task.RuntimeConfigVersion, bool) {

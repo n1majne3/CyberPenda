@@ -90,6 +90,19 @@ func TestBuildIncludesSteeringAndNativeResumeLifecycle(t *testing.T) {
 	requireItem(t, got, 3, "steering", "", "Steering: steering_applied - focus admin")
 }
 
+func TestBuildNamesNativeSteerControlOutcomes(t *testing.T) {
+	events := []task.Event{
+		{ID: "ev-1", Seq: 1, Kind: task.EventKindSteering, Payload: task.EventPayload{"request_id": "req-1", "outcome": "requested", "mode": "interrupt_then_replace"}},
+		{ID: "ev-2", Seq: 2, Kind: task.EventKindSteering, Payload: task.EventPayload{"request_id": "req-1", "outcome": "settled", "mode": "interrupt_then_replace"}},
+		{ID: "ev-3", Seq: 3, Kind: task.EventKindSteering, Payload: task.EventPayload{"request_id": "req-1", "outcome": "failed", "error_code": "timeout"}},
+	}
+
+	got := timeline.Build(events)
+	requireItem(t, got, 0, "steering", "", "Steering: requested (interrupt_then_replace)")
+	requireItem(t, got, 1, "steering", "", "Steering: settled (interrupt_then_replace)")
+	requireItem(t, got, 2, "steering", "", "Steering: failed (timeout)")
+}
+
 func TestBuildKeepsControlEventsBetweenRuntimeOutput(t *testing.T) {
 	events := []task.Event{
 		{ID: "ev-1", Seq: 1, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"assistant","message":{"content":[{"type":"text","text":"before"}]}}`}},

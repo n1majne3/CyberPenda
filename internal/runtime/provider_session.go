@@ -45,7 +45,24 @@ var (
 	ErrProviderSessionClosed = errors.New("provider session is closed")
 	// ErrInvalidProviderSessionRequest reports missing stable request identity.
 	ErrInvalidProviderSessionRequest = errors.New("invalid provider session request")
+	// ErrProviderSessionRequestConflict reports reuse of a request id with a
+	// different operation payload.
+	ErrProviderSessionRequestConflict = errors.New("provider session request id is already bound to different content")
 )
+
+// ProviderSessionRequestConflictError identifies an idempotency-key payload
+// mismatch without exposing the payload itself.
+type ProviderSessionRequestConflictError struct {
+	RequestID string
+}
+
+func (e *ProviderSessionRequestConflictError) Error() string {
+	return fmt.Sprintf("provider session request %q conflicts with prior content", e.RequestID)
+}
+
+func (e *ProviderSessionRequestConflictError) Is(target error) bool {
+	return target == ErrProviderSessionRequestConflict || target == ErrProviderSessionControlConflict
+}
 
 // UnsupportedProviderSessionCapabilityError makes unsupported interactive
 // controls distinguishable from provider or transport failures.
@@ -119,6 +136,12 @@ type ProviderSession interface {
 	Close(context.Context) error
 }
 
+// ProviderSessionContinuationBinder updates the request-level Continuation pin
+// on a Task-owned transport without replacing the provider session.
+type ProviderSessionContinuationBinder interface {
+	BindContinuation(string) error
+}
+
 // FakeProviderSessionConfig controls deterministic fake provider behavior.
 type FakeProviderSessionConfig struct {
 	SessionID         string
@@ -147,6 +170,7 @@ type FakeProviderSession struct {
 	failures     map[ProviderSessionMode]error
 	calls        map[string]*providerSessionCall
 	activeCall   string
+	continuation string
 	acknowledge  map[string]chan struct{}
 	closed       bool
 }
@@ -168,6 +192,16 @@ func NewFakeProviderSession(config FakeProviderSessionConfig) *FakeProviderSessi
 func (s *FakeProviderSession) ID() string { return s.id }
 
 func (s *FakeProviderSession) SessionID() string { return s.id }
+
+func (s *FakeProviderSession) BindContinuation(continuationID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return ErrProviderSessionClosed
+	}
+	s.continuation = strings.TrimSpace(continuationID)
+	return nil
+}
 
 func (s *FakeProviderSession) Capabilities() runtimeplugin.Capabilities { return s.capabilities }
 
@@ -270,13 +304,20 @@ func (s *FakeProviderSession) operate(ctx context.Context, mode ProviderSessionM
 	failure := s.failures[mode]
 	s.mu.Unlock()
 
-	finish := func(result ProviderSessionResult, err error) (ProviderSessionResult, error) {
+	finish := func(result ProviderSessionResult, err error, retryable bool) (ProviderSessionResult, error) {
 		s.mu.Lock()
 		call.result, call.err = result, err
 		if s.activeCall == request.RequestID {
 			s.activeCall = ""
 		}
 		delete(s.acknowledge, request.RequestID)
+		// A caller-local cancellation only means that this wait ended; the
+		// provider operation may still be replayed by the Task bridge. Keep
+		// provider rejections terminal, but allow the same idempotency key to
+		// observe a later acknowledgement after a local timeout.
+		if retryable {
+			delete(s.calls, request.RequestID)
+		}
 		close(call.done)
 		s.mu.Unlock()
 		return result, err
@@ -285,13 +326,13 @@ func (s *FakeProviderSession) operate(ctx context.Context, mode ProviderSessionM
 	emitSessionEvent(emit, mode, "requested", request.RequestID, s.id, turnID)
 	if failure != nil {
 		emitSessionEvent(emit, mode, "failed", request.RequestID, s.id, turnID)
-		return finish(ProviderSessionResult{}, &ProviderSessionOperationError{Mode: mode, Cause: failure})
+		return finish(ProviderSessionResult{}, &ProviderSessionOperationError{Mode: mode, Cause: failure}, false)
 	}
 	if ack != nil {
 		select {
 		case <-ack:
 		case <-ctx.Done():
-			return finish(ProviderSessionResult{}, ctx.Err())
+			return finish(ProviderSessionResult{}, ctx.Err(), true)
 		}
 	}
 
@@ -312,7 +353,11 @@ func (s *FakeProviderSession) operate(ctx context.Context, mode ProviderSessionM
 	case ProviderSessionModeInTurnSteer, ProviderSessionModePermissionResponse:
 		emitSessionEvent(emit, mode, "acknowledged", request.RequestID, s.id, turnID)
 	}
-	return finish(ProviderSessionResult{RequestID: request.RequestID, SessionID: s.id, ProviderTurnID: turnID, Mode: mode, Outcome: sessionResultOutcome(mode)}, nil)
+	return finish(ProviderSessionResult{RequestID: request.RequestID, SessionID: s.id, ProviderTurnID: turnID, Mode: mode, Outcome: sessionResultOutcome(mode)}, nil, false)
+}
+
+func providerSessionContextError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func (s *FakeProviderSession) nextTurnIDLocked() string {
