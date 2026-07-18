@@ -16,7 +16,6 @@ import (
 	"reflect"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"pentest/internal/store"
@@ -1585,16 +1584,6 @@ func (publisher *evidencePublisher) close() {
 	unlockAndCloseEvidencePublisher(publisher.file)
 }
 
-func lockEvidencePublisherFile(file *os.File) error {
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
-			return &Error{Code: "evidence_publication_in_progress", Message: "Evidence publication is already in progress", Path: "idempotency_key", Retryable: true}
-		}
-		return fmt.Errorf("lock Evidence publisher inode: %w", err)
-	}
-	return nil
-}
-
 func openLockedEvidenceFile(root *os.Root, name, description string) (*os.File, error) {
 	info, err := root.Lstat(name)
 	if err != nil {
@@ -1634,11 +1623,6 @@ func removeInactiveJournaledEvidenceTemp(root *os.Root, name string) error {
 		return fmt.Errorf("remove stale journaled Evidence temp: %w", err)
 	}
 	return syncEvidenceDirectory(root)
-}
-
-func unlockAndCloseEvidencePublisher(file *os.File) {
-	_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
-	_ = file.Close()
 }
 
 func verifyOpenEvidenceFile(file *os.File, digest string, size int64) (bool, error) {
