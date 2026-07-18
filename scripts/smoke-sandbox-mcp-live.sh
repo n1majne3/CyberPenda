@@ -30,13 +30,15 @@ mcp_port="$(DAEMON_URL="${DAEMON_URL}" python3 -c 'import os; from urllib.parse 
 mcp_url="http://host.docker.internal:${mcp_port}/mcp"
 tools_list_payload='{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 
-# tools/list is discovery only. Do not send the operator token to MCP: trusted
-# MCP writes require a Continuation Grant and this smoke must not impersonate one.
+# Authenticate the MCP HTTP route with the operator token when daemon auth
+# requires it. This is route authentication only: trusted MCP writes still
+# require a Continuation Grant, and this smoke performs no tool calls.
 echo "==> listing Blackboard v2 MCP tools from ${IMAGE} via ${mcp_url}"
 mcp_response="$("${CONTAINER_CLI}" run --rm \
   --add-host=host.docker.internal:host-gateway \
   "${IMAGE}" \
   curl -sf -X POST "${mcp_url}" \
+    "${auth_args[@]}" \
     -H 'Content-Type: application/json' \
     -H 'Accept: application/json, text/event-stream' \
     -d "${tools_list_payload}")"
