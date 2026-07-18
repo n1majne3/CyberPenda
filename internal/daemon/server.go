@@ -263,6 +263,24 @@ func (server *Server) reconcileInterruptedTasks() {
 			"phase":  "interrupted",
 			"reason": "daemon_restart",
 		})
+		// The old in-memory bridge cannot be safely reopened after daemon
+		// restart. Keep durable provider metadata on the interrupted
+		// Continuation and make the required explicit recovery state visible;
+		// Resume will create the fresh Continuation pin.
+		latest, latestErr := server.tasks.LatestContinuation(t.ID)
+		if latestErr == nil && latest != nil && supportedProviderSessionFactoryProvider(runtimeprofile.Provider(latest.RuntimeProvider)) {
+			recovery := task.EventPayload{
+				"phase": "provider_session_recovery_required", "reason": "daemon_restart",
+				"recovery_state": "failed_closed", "next_action": "resume_creates_fresh_continuation",
+			}
+			if latest.NativeSessionID != "" {
+				recovery["native_session_id"] = latest.NativeSessionID
+			}
+			if latest.NativeSessionPath != "" {
+				recovery["native_session_path"] = latest.NativeSessionPath
+			}
+			_, _ = server.tasks.AppendEvent(t.ID, task.EventKindLifecycle, recovery)
+		}
 		server.logTask(t, "interrupted", "daemon restart orphaned this task")
 	}
 	if len(reconciled.Tasks) > 0 {
@@ -516,6 +534,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/resume", server.handleResumeTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/steer/queue", server.handleQueueSteerTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/steer", server.handleSteerTask)
+	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/permissions/{permission_id}/respond", server.handleProviderPermissionResponse)
 	server.registerBlackboardV2Routes()
 	server.registerMCP()
 	server.registerSPA()

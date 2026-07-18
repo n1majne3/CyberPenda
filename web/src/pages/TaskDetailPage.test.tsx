@@ -234,6 +234,35 @@ describe("TaskDetailPage", () => {
     expect(screen.queryByRole("option", { name: /Use Codex/ })).not.toBeInTheDocument();
   });
 
+  it("shows pending provider permissions and answers on the Task session route", async () => {
+    const { fetchMock } = stubTaskDetailApi({
+      status: "running",
+      runtime_controls: {
+        native_resume_available: false,
+        resume_available: false,
+        queue_steer_available: true,
+        interrupt_steer_available: false,
+        native_steer_available: false,
+        native_session_captured: true,
+        same_runtime_provider: true,
+        runtime_provider: "claude_code",
+        provider_permissions: [{ permission_request_id: "perm-1", provider: "claude_code" }],
+      },
+    });
+    const user = userEvent.setup();
+
+    renderPage();
+
+    expect(await screen.findByText("perm-1")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Allow provider permission perm-1" }));
+
+    const permissionCall = fetchMock.mock.calls.find(([input]) =>
+      String(input).includes("/permissions/perm-1/respond"),
+    );
+    expect(permissionCall?.[1]?.method).toBe("POST");
+    expect(JSON.parse(String(permissionCall?.[1]?.body))).toMatchObject({ decision: "allow" });
+  });
+
   it("queues steering with a continuation model selection", async () => {
     const { fetchMock } = stubTaskDetailApi();
     const user = userEvent.setup();

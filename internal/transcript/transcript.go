@@ -122,6 +122,31 @@ func lifecycleEntry(event task.Event, continuation int) (Entry, bool) {
 		entry.Text = "Runtime process started"
 		entry.Details = compactPayload(event.Payload, "phase")
 		return entry, true
+	case "provider_permission_requested":
+		entry.Text = "Provider permission requested"
+		entry.Status = "pending"
+		entry.Details = compactPayload(event.Payload, "phase")
+		return entry, true
+	case "provider_permission_response_requested":
+		entry.Text = "Provider permission response requested"
+		entry.Status = "pending"
+		entry.Details = compactPayload(event.Payload, "phase")
+		return entry, true
+	case "provider_permission_response_acknowledged":
+		entry.Text = "Provider acknowledged permission response"
+		entry.Status = "acknowledged"
+		entry.Details = compactPayload(event.Payload, "phase")
+		return entry, true
+	case "provider_permission_response_applied":
+		entry.Text = "Provider permission response applied"
+		entry.Status = "applied"
+		entry.Details = compactPayload(event.Payload, "phase")
+		return entry, true
+	case "provider_permission_response_failed":
+		entry.Text = "Provider permission response failed"
+		entry.Status = "failed"
+		entry.Details = compactPayload(event.Payload, "phase")
+		return entry, true
 	default:
 		entry.Text = "Runtime lifecycle: " + phase
 		entry.Status = StatusCollapsed

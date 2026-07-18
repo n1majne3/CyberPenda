@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +20,31 @@ import (
 
 type failingContinuationBindSession struct {
 	runtime.ProviderSession
+}
+
+type permissionProviderTransport struct {
+	mu        sync.Mutex
+	responses map[string]runtime.SandboxBridgeResponse
+	requests  []runtime.SandboxBridgeRequest
+}
+
+func (t *permissionProviderTransport) Send(_ context.Context, request runtime.SandboxBridgeRequest) (runtime.SandboxBridgeResponse, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.requests = append(t.requests, request)
+	if response, ok := t.responses[request.Method]; ok {
+		response.ID = request.ID
+		return response, nil
+	}
+	return runtime.SandboxBridgeResponse{ID: request.ID, Result: []byte(`{"status":"completed"}`)}, nil
+}
+
+func (*permissionProviderTransport) Close(context.Context) error { return nil }
+
+func (t *permissionProviderTransport) snapshot() []runtime.SandboxBridgeRequest {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]runtime.SandboxBridgeRequest(nil), t.requests...)
 }
 
 func (failingContinuationBindSession) BindContinuation(string) error {
@@ -388,6 +414,146 @@ func TestStopClosesBoundProviderSession(t *testing.T) {
 	}
 	if _, err := session.SendTurn(context.Background(), runtime.ProviderSessionRequest{RequestID: "after-stop", Message: "should fail"}, nil); !errors.Is(err, runtime.ErrProviderSessionClosed) {
 		t.Fatalf("session after stop error = %v, want closed", err)
+	}
+}
+
+func TestProviderPermissionRequestIsPersistedAndCanBeAnsweredThroughTaskRoute(t *testing.T) {
+	server, err := NewServer(Config{DBPath: filepath.Join(t.TempDir(), "pentest.db"), DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	project, err := server.projects.Create("Project", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: "inspect target", RuntimeProfileID: "profile", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation, err := server.tasks.CreateContinuation(created.ID, "profile", "claude_code", task.RunnerSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.tasks.UpdateStatus(created.ID, task.StatusRunning); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.tasks.UpdateContinuationStatus(continuation.ID, task.StatusRunning); err != nil {
+		t.Fatal(err)
+	}
+	transport := &permissionProviderTransport{responses: map[string]runtime.SandboxBridgeResponse{
+		"claude/permission/respond": {Result: []byte(`{"session_id":"session-perm","permission_request_id":"perm-1","decision":"allow"}`)},
+	}}
+	session := runtime.NewClaudeCodeProviderSession(runtime.ClaudeCodeProviderSessionConfig{Transport: transport, SessionID: "session-perm", ActiveTurnID: "turn-1"})
+	if err := server.BindProviderSession(created.ID, session); err != nil {
+		t.Fatal(err)
+	}
+	session.HandleEvent(runtime.SandboxBridgeEvent{Method: "claude/permission/requested", Params: []byte(`{"session_id":"session-perm","turn_id":"turn-1","permission_request_id":"perm-1","tool_input":{"token":"secret"}}`)}, nil)
+	waitForTaskEvent(t, server, created.ID, func(events []task.Event) bool {
+		for _, event := range events {
+			if event.Payload["phase"] == "provider_permission_requested" && event.Payload["permission_request_id"] == "perm-1" {
+				return true
+			}
+		}
+		return false
+	})
+	request := httptest.NewRequest(http.MethodPost, "/api/projects/"+project.ID+"/tasks/"+created.ID+"/permissions/perm-1/respond", bytes.NewBufferString(`{"request_id":"permission-1","decision":"allow"}`))
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("permission response status = %d, body=%s", response.Code, response.Body.String())
+	}
+	waitForTaskEvent(t, server, created.ID, func(events []task.Event) bool {
+		for _, event := range events {
+			if event.Payload["phase"] == "provider_permission_response_applied" && event.Payload["permission_request_id"] == "perm-1" {
+				return true
+			}
+		}
+		return false
+	})
+	if len(transport.snapshot()) != 1 || transport.snapshot()[0].Method != "claude/permission/respond" {
+		t.Fatalf("permission frames = %#v", transport.snapshot())
+	}
+	events, err := server.tasks.Events(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Payload["permission_request_id"] == "perm-1" && event.Payload["tool_input"] != nil {
+			t.Fatalf("permission event persisted raw tool payload: %#v", event.Payload)
+		}
+	}
+	retry := httptest.NewRecorder()
+	server.ServeHTTP(retry, httptest.NewRequest(http.MethodPost, "/api/projects/"+project.ID+"/tasks/"+created.ID+"/permissions/perm-1/respond", bytes.NewBufferString(`{"request_id":"permission-1","decision":"allow"}`)))
+	if retry.Code != http.StatusAccepted {
+		t.Fatalf("idempotent permission response status = %d, body=%s", retry.Code, retry.Body.String())
+	}
+	if len(transport.snapshot()) != 1 {
+		t.Fatalf("idempotent permission response sent %d frames, want 1", len(transport.snapshot()))
+	}
+}
+
+func TestRestartMarksProviderSessionRecoveryExplicitlyAndPreservesMetadata(t *testing.T) {
+	root := t.TempDir()
+	server, err := NewServer(Config{DBPath: filepath.Join(root, "pentest.db"), DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := server.projects.Create("Project", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: "inspect target", RuntimeProfileID: "profile", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation, err := server.tasks.CreateContinuation(created.ID, "profile", "codex", task.RunnerSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.tasks.UpdateContinuationRuntimeMetadata(continuation.ID, "container-1", "thread-1", "/sessions/thread-1.jsonl"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.tasks.UpdateStatus(created.ID, task.StatusRunning); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.tasks.UpdateContinuationStatus(continuation.ID, task.StatusRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewServer(Config{DBPath: filepath.Join(root, "pentest.db"), DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	found, err := restarted.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found.Status != task.StatusInterrupted {
+		t.Fatalf("restarted task status = %q, want interrupted", found.Status)
+	}
+	latest, err := restarted.tasks.LatestContinuation(created.ID)
+	if err != nil || latest == nil {
+		t.Fatalf("latest continuation = %#v, err=%v", latest, err)
+	}
+	if latest.NativeSessionID != "thread-1" || latest.NativeSessionPath != "/sessions/thread-1.jsonl" {
+		t.Fatalf("restart lost durable provider metadata: %#v", latest)
+	}
+	events, err := restarted.tasks.Events(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recovery bool
+	for _, event := range events {
+		if event.Payload["phase"] == "provider_session_recovery_required" && event.Payload["recovery_state"] == "failed_closed" {
+			recovery = true
+		}
+	}
+	if !recovery {
+		t.Fatalf("restart did not record explicit fail-closed recovery event: %#v", events)
 	}
 }
 

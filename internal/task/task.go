@@ -130,20 +130,34 @@ const (
 const continuationSelectColumns = `id, task_id, number, runtime_profile_id, runtime_provider, runner, status, container_id, native_session_id, native_session_path, started_at, updated_at, ended_at, runtime_config_version_id, blackboard_reconciliation_status, blackboard_reconciliation_mutation_id, blackboard_reconciled_at`
 
 type RuntimeControls struct {
-	NativeResumeAvailable   bool   `json:"native_resume_available"`
-	NativeResumeReason      string `json:"native_resume_reason,omitempty"`
-	NativeSteerAvailable    bool   `json:"native_steer_available"`
-	NativeSteerMode         string `json:"native_steer_mode,omitempty"`
-	NativeSteerState        string `json:"native_steer_state,omitempty"`
-	NativeSteerRequestID    string `json:"native_steer_request_id,omitempty"`
-	NativeSteerReason       string `json:"native_steer_reason,omitempty"`
-	ResumeAvailable         bool   `json:"resume_available"`
-	QueueSteerAvailable     bool   `json:"queue_steer_available"`
-	InterruptSteerAvailable bool   `json:"interrupt_steer_available"`
-	InterruptSteerReason    string `json:"interrupt_steer_reason,omitempty"`
-	NativeSessionCaptured   bool   `json:"native_session_captured"`
-	SameRuntimeProviderOnly bool   `json:"same_runtime_provider_only"`
-	RuntimeProvider         string `json:"runtime_provider,omitempty"`
+	NativeResumeAvailable   bool                        `json:"native_resume_available"`
+	NativeResumeReason      string                      `json:"native_resume_reason,omitempty"`
+	NativeSteerAvailable    bool                        `json:"native_steer_available"`
+	NativeSteerMode         string                      `json:"native_steer_mode,omitempty"`
+	NativeSteerState        string                      `json:"native_steer_state,omitempty"`
+	NativeSteerRequestID    string                      `json:"native_steer_request_id,omitempty"`
+	NativeSteerReason       string                      `json:"native_steer_reason,omitempty"`
+	ResumeAvailable         bool                        `json:"resume_available"`
+	QueueSteerAvailable     bool                        `json:"queue_steer_available"`
+	InterruptSteerAvailable bool                        `json:"interrupt_steer_available"`
+	InterruptSteerReason    string                      `json:"interrupt_steer_reason,omitempty"`
+	NativeSessionCaptured   bool                        `json:"native_session_captured"`
+	SameRuntimeProviderOnly bool                        `json:"same_runtime_provider_only"`
+	RuntimeProvider         string                      `json:"runtime_provider,omitempty"`
+	ProviderPermissions     []ProviderPermissionRequest `json:"provider_permissions,omitempty"`
+	RecoveryState           string                      `json:"recovery_state,omitempty"`
+	RecoveryReason          string                      `json:"recovery_reason,omitempty"`
+}
+
+// ProviderPermissionRequest is a redacted pending approval exposed to the
+// authenticated Task UI. Provider wire details never cross this boundary.
+type ProviderPermissionRequest struct {
+	RequestID           string    `json:"request_id"`
+	PermissionRequestID string    `json:"permission_request_id"`
+	SessionID           string    `json:"session_id,omitempty"`
+	ProviderTurnID      string    `json:"provider_turn_id,omitempty"`
+	Provider            string    `json:"provider,omitempty"`
+	CreatedAt           time.Time `json:"created_at"`
 }
 
 // ReconcileInterruptedResult describes active runtime state interrupted during

@@ -91,6 +91,25 @@ func TestBuildProjectsNativeSteerControlsWithoutDuplicatingConversationMessage(t
 	}
 }
 
+func TestBuildProjectsRedactedProviderPermissionLifecycle(t *testing.T) {
+	subject := task.Task{ID: "task-1", Goal: "Inspect target", CreatedAt: time.Now().UTC()}
+	events := []task.Event{
+		{ID: "perm-1", Seq: 1, Kind: task.EventKindLifecycle, Payload: task.EventPayload{
+			"phase": "provider_permission_requested", "permission_request_id": "permission-1", "provider": "claude_code",
+		}},
+		{ID: "perm-2", Seq: 2, Kind: task.EventKindLifecycle, Payload: task.EventPayload{
+			"phase": "provider_permission_response_applied", "permission_request_id": "permission-1", "outcome": "applied",
+		}},
+	}
+
+	got := transcript.Build(subject, events)
+	requested := requireEntry(t, got, "perm-1-continuation", "continuation", "system", "Provider permission requested")
+	if requested.Details["permission_request_id"] != "permission-1" || requested.Details["tool_input"] != nil {
+		t.Fatalf("permission request projection = %#v", requested)
+	}
+	requireEntry(t, got, "perm-2-continuation", "continuation", "system", "Provider permission response applied")
+}
+
 func TestBuildParsesOpenAIToolCallAndResult(t *testing.T) {
 	subject := task.Task{ID: "task-1", Goal: "Do work", CreatedAt: time.Now().UTC()}
 	events := []task.Event{

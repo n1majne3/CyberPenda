@@ -364,6 +364,18 @@ export interface RuntimeControls {
   native_session_captured: boolean;
   same_runtime_provider_only: boolean;
   runtime_provider?: string;
+  provider_permissions?: ProviderPermissionRequest[];
+  recovery_state?: string;
+  recovery_reason?: string;
+}
+
+export interface ProviderPermissionRequest {
+  request_id?: string;
+  permission_request_id: string;
+  session_id?: string;
+  provider_turn_id?: string;
+  provider?: string;
+  created_at?: string;
 }
 
 export interface TaskContinuation {

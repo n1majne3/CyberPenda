@@ -65,6 +65,7 @@ type providerSessionAdapter struct {
 	activeFingerprint string
 	calls             map[string]providerSessionCallResult
 	requests          map[string]providerSessionRequestIdentity
+	eventSink         ProviderSessionEmit
 }
 
 func newProviderSessionAdapter(provider string, transport ProviderSessionTransport, sessionID, activeTurnID string, capabilities runtimeplugin.Capabilities, methods providerWireMethods) *providerSessionAdapter {
@@ -104,6 +105,12 @@ func (s *providerSessionAdapter) BindContinuation(continuationID string) error {
 }
 
 func (s *providerSessionAdapter) Capabilities() runtimeplugin.Capabilities { return s.capabilities }
+
+func (s *providerSessionAdapter) SetEventSink(sink ProviderSessionEmit) {
+	s.mu.Lock()
+	s.eventSink = sink
+	s.mu.Unlock()
+}
 
 func (s *providerSessionAdapter) SendTurn(ctx context.Context, request ProviderSessionRequest, emit ProviderSessionEmit) (ProviderSessionResult, error) {
 	return s.run(ctx, ProviderSessionModeSendTurn, ProviderSessionCapabilitySendTurn, request, emit, s.methods.send)
@@ -396,7 +403,12 @@ func (s *providerSessionAdapter) currentTurn() string {
 
 func (s *providerSessionAdapter) emit(emit ProviderSessionEmit, mode ProviderSessionMode, outcome, requestID, turnID string) {
 	if emit == nil {
-		return
+		s.mu.Lock()
+		emit = s.eventSink
+		s.mu.Unlock()
+		if emit == nil {
+			return
+		}
 	}
 	kind := task.EventKindLifecycle
 	if mode == ProviderSessionModeInterruptTurn || mode == ProviderSessionModeInterruptThenReplace || mode == ProviderSessionModeInTurnSteer {
@@ -412,8 +424,16 @@ func (s *providerSessionAdapter) emit(emit ProviderSessionEmit, mode ProviderSes
 // Providers use different event names, but all first-release adapters expose
 // the same started/completed/interrupted/permission state vocabulary.
 func (s *providerSessionAdapter) HandleEvent(event SandboxBridgeEvent, emit ProviderSessionEmit) {
-	if emit == nil || strings.TrimSpace(event.Method) == "" {
+	if strings.TrimSpace(event.Method) == "" {
 		return
+	}
+	if emit == nil {
+		s.mu.Lock()
+		emit = s.eventSink
+		s.mu.Unlock()
+		if emit == nil {
+			return
+		}
 	}
 	params := map[string]any{}
 	if len(event.Params) > 0 && json.Unmarshal(event.Params, &params) != nil {
@@ -452,10 +472,15 @@ func (s *providerSessionAdapter) HandleEvent(event SandboxBridgeEvent, emit Prov
 	if mode == ProviderSessionModeInterruptTurn {
 		kind = task.EventKindSteering
 	}
-	emit(kind, task.EventPayload{
+	payload := task.EventPayload{
 		"provider": s.provider, "provider_event": event.Method, "request_id": requestID,
 		"session_id": sessionID, "provider_turn_id": turnID, "mode": string(mode), "outcome": outcome,
-	})
+	}
+	if mode == ProviderSessionModePermissionResponse {
+		payload["permission_request_id"] = providerJSONValue(params, "permission_request_id", "permissionRequestId", "permission_id", "permissionId")
+		payload["phase"] = "provider_permission_requested"
+	}
+	emit(kind, payload)
 }
 
 func defaultProviderCapabilities() runtimeplugin.Capabilities {

@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, type RefObject } from "react";
 import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, Shield, FileText, ChevronRight, Wrench, User, Bot, ArrowDown, ArrowUp, CheckCircle2, Trash2 } from "lucide-react";
+import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, Shield, FileText, ChevronRight, Wrench, User, Bot, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound } from "lucide-react";
 import { apiDelete, apiGet, apiPost, type ModelProvider, type RuntimePlugin, type RuntimeProfile, type Task, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Card, Input, Badge, Select } from "@/components/ui";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
@@ -31,6 +31,7 @@ export function TaskDetailPage() {
   const [profiles, setProfiles] = useState<RuntimeProfile[]>([]);
   const [modelProviders, setModelProviders] = useState<ModelProvider[]>([]);
   const [runtimePlugins, setRuntimePlugins] = useState<RuntimePlugin[]>([]);
+  const [permissionBusy, setPermissionBusy] = useState("");
   const pageRef = useRef<HTMLDivElement>(null);
   const timelineEnd = useRef<HTMLDivElement>(null);
   const autoFollowRef = useRef(true);
@@ -217,6 +218,21 @@ export function TaskDetailPage() {
     }
   }
 
+  async function respondToPermission(permissionRequestID: string, decision: "allow" | "deny") {
+    setPermissionBusy(permissionRequestID);
+    try {
+      await apiPost(`${base}/permissions/${encodeURIComponent(permissionRequestID)}/respond`, {
+        request_id: `permission-${newSteerRequestID()}`,
+        decision,
+      });
+      loadAll();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setPermissionBusy("");
+    }
+  }
+
   function newSteerRequestID() {
     if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
       return crypto.randomUUID();
@@ -279,6 +295,7 @@ export function TaskDetailPage() {
   const nativeSteerAvailable = controls?.native_steer_available ?? false;
   const nativeSteerMode = controls?.native_steer_mode;
   const nativeSteerState = controls?.native_steer_state;
+  const providerPermissions = controls?.provider_permissions ?? [];
   const steerAvailable = nativeSteerAvailable || interruptSteerAvailable;
   const running = ACTIVE.has(task.status);
 
@@ -322,7 +339,43 @@ export function TaskDetailPage() {
           {controls?.same_runtime_provider_only && <Badge variant="outline">same runtime only</Badge>}
           {nativeSteerMode && <Badge variant="outline">steer: {nativeSteerMode === "in_turn_steer" ? "direct native" : "interrupt then replace"}</Badge>}
           {nativeSteerState && nativeSteerState !== "idle" && <Badge variant={nativeSteerState === "failed" ? "destructive" : "outline"}>steer: {nativeSteerState}</Badge>}
+          {controls?.recovery_state && <Badge variant={controls.recovery_state === "failed_closed" ? "warning" : "outline"}>session recovery: {controls.recovery_state.replaceAll("_", " ")}</Badge>}
         </div>
+      )}
+
+      {providerPermissions.length > 0 && (
+        <Card className="space-y-3" aria-label="Provider permission requests">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <KeyRound className="h-4 w-4" /> Provider permission
+          </div>
+          {providerPermissions.map((permission) => (
+            <div key={permission.permission_request_id} className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3">
+              <div className="min-w-0">
+                <div className="text-sm">Permission request</div>
+                <code className="block max-w-full truncate text-xs text-muted-foreground">{permission.permission_request_id}</code>
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  onClick={() => respondToPermission(permission.permission_request_id, "allow")}
+                  disabled={permissionBusy !== ""}
+                  aria-label={`Allow provider permission ${permission.permission_request_id}`}
+                >
+                  <CheckCircle2 className="h-4 w-4" /> Allow
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => respondToPermission(permission.permission_request_id, "deny")}
+                  disabled={permissionBusy !== ""}
+                  aria-label={`Deny provider permission ${permission.permission_request_id}`}
+                >
+                  <CircleX className="h-4 w-4" /> Deny
+                </Button>
+              </div>
+            </div>
+          ))}
+        </Card>
       )}
 
       <div className="mb-6 flex flex-wrap gap-2 text-sm">

@@ -408,11 +408,27 @@ func TestProviderSessionAdaptersParseProtocolNotificationsAsRedactedEvents(t *te
 			if len(events) != 1 || events[0]["outcome"] != tt.want {
 				t.Fatalf("events = %#v", events)
 			}
+			if tt.name == "claude permission request" && events[0]["permission_request_id"] != "perm-1" {
+				t.Fatalf("permission correlation = %#v", events[0])
+			}
 			for _, forbidden := range []string{"message", "text", "tool_input", "params", "raw"} {
 				if _, leaked := events[0][forbidden]; leaked {
 					t.Fatalf("event leaked %s: %#v", forbidden, events[0])
 				}
 			}
 		})
+	}
+}
+
+func TestProviderSessionAdapterUsesDaemonEventSinkForUnsolicitedPermission(t *testing.T) {
+	var events []task.EventPayload
+	session := NewPiProviderSession(PiProviderSessionConfig{Transport: &fakeProviderTransport{}, SessionID: "pi-1", ActiveTurnID: "turn-1"})
+	session.SetEventSink(func(_ task.EventKind, payload task.EventPayload) { events = append(events, payload) })
+	session.HandleEvent(SandboxBridgeEvent{Method: "pi/permission/requested", Params: json.RawMessage(`{"session_id":"pi-1","turn_id":"turn-1","permission_request_id":"perm-2","tool_input":{"secret":"do-not-store"}}`)}, nil)
+	if len(events) != 1 || events[0]["permission_request_id"] != "perm-2" || events[0]["outcome"] != "requested" {
+		t.Fatalf("sink events = %#v", events)
+	}
+	if _, leaked := events[0]["tool_input"]; leaked {
+		t.Fatalf("sink event leaked provider wire details: %#v", events[0])
 	}
 }

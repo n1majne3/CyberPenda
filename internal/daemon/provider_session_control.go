@@ -99,7 +99,40 @@ func (server *Server) BindProviderSession(taskID string, session runtime.Provide
 	if _, err := server.tasks.Get(taskID); err != nil {
 		return err
 	}
-	return server.providerSessions.bind(taskID, session)
+	if err := server.providerSessions.bind(taskID, session); err != nil {
+		return err
+	}
+	if sink, ok := session.(runtime.ProviderSessionEventSink); ok {
+		sink.SetEventSink(func(kind task.EventKind, payload task.EventPayload) {
+			server.persistProviderSessionEvent(taskID, kind, payload)
+		})
+	}
+	return nil
+}
+
+// persistProviderSessionEvent is the only daemon entry point for unsolicited
+// provider notifications. It copies a fixed correlation allowlist and chooses
+// the current Continuation at receipt time, so raw protocol payload cannot be
+// persisted or leak into the Task Conversation.
+func (server *Server) persistProviderSessionEvent(taskID string, kind task.EventKind, payload task.EventPayload) {
+	redacted := task.EventPayload{}
+	for _, key := range []string{"provider", "provider_event", "request_id", "session_id", "provider_turn_id", "mode", "outcome", "permission_request_id"} {
+		if value, ok := payload[key]; ok {
+			redacted[key] = value
+		}
+	}
+	if redacted["mode"] == string(runtime.ProviderSessionModePermissionResponse) && redacted["outcome"] == "requested" {
+		redacted["phase"] = "provider_permission_requested"
+	}
+	continuation, err := server.tasks.ActiveContinuation(taskID)
+	if err != nil {
+		return
+	}
+	if continuation != nil {
+		_, _ = server.tasks.AppendContinuationEvent(taskID, continuation.ID, kind, redacted)
+		return
+	}
+	_, _ = server.tasks.AppendEvent(taskID, kind, redacted)
 }
 
 func (server *Server) closeProviderSession(taskID string) error {

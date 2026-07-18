@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -1016,6 +1017,23 @@ func (server *Server) runtimeControlsForTask(found task.Task, latest *task.TaskC
 		SameRuntimeProviderOnly: true,
 		RuntimeProvider:         string(profile.Provider),
 	}
+	if events, eventsErr := server.tasks.Events(found.ID); eventsErr == nil {
+		if providerSessionBound {
+			controls.ProviderPermissions = providerPermissionRequestsForTask(events)
+		}
+		for index := len(events) - 1; index >= 0; index-- {
+			phase, _ := events[index].Payload["phase"].(string)
+			if phase == "started" {
+				break
+			}
+			if phase != "provider_session_recovery_required" {
+				continue
+			}
+			controls.RecoveryState, _ = events[index].Payload["recovery_state"].(string)
+			controls.RecoveryReason, _ = events[index].Payload["reason"].(string)
+			break
+		}
+	}
 	if session, bound := server.providerSessions.get(found.ID); bound {
 		_, outcome, _ := nativeSteerStateForTask(found.ID, server.tasks)
 		if selectedMode, modeErr := nativeSteerMode(session.Capabilities()); modeErr == nil {
@@ -1059,6 +1077,36 @@ func (server *Server) runtimeControlsForTask(found task.Task, latest *task.TaskC
 		controls.InterruptSteerReason = controls.NativeResumeReason
 	}
 	return controls, nil
+}
+
+func providerPermissionRequestsForTask(events []task.Event) []task.ProviderPermissionRequest {
+	requests := make(map[string]task.ProviderPermissionRequest)
+	for _, event := range events {
+		permissionID, _ := event.Payload["permission_request_id"].(string)
+		if permissionID == "" {
+			continue
+		}
+		phase, _ := event.Payload["phase"].(string)
+		switch phase {
+		case "provider_permission_requested":
+			request := task.ProviderPermissionRequest{PermissionRequestID: permissionID, CreatedAt: event.CreatedAt}
+			request.RequestID, _ = event.Payload["request_id"].(string)
+			request.SessionID, _ = event.Payload["session_id"].(string)
+			request.ProviderTurnID, _ = event.Payload["provider_turn_id"].(string)
+			request.Provider, _ = event.Payload["provider"].(string)
+			requests[permissionID] = request
+		case "provider_permission_response_applied":
+			delete(requests, permissionID)
+		}
+	}
+	result := make([]task.ProviderPermissionRequest, 0, len(requests))
+	for _, request := range requests {
+		result = append(result, request)
+	}
+	slices.SortFunc(result, func(left, right task.ProviderPermissionRequest) int {
+		return left.CreatedAt.Compare(right.CreatedAt)
+	})
+	return result
 }
 
 func nativeSteerStateForTask(taskID string, tasks *task.Service) (runtime.ProviderSessionMode, string, string) {
@@ -1856,6 +1904,216 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		Mode      runtime.ProviderSessionMode `json:"mode"`
 		Outcome   string                      `json:"outcome"`
 	}{RequestID: input.RequestID, SessionID: session.SessionID(), Mode: mode, Outcome: "accepted"})
+}
+
+type providerPermissionResponseRequest struct {
+	RequestID string `json:"request_id"`
+	Decision  string `json:"decision"`
+}
+
+// handleProviderPermissionResponse answers one provider permission request on
+// the same Task-owned session. It is authenticated by ServeHTTP's daemon
+// middleware and never exposes provider wire payloads.
+func (server *Server) handleProviderPermissionResponse(response http.ResponseWriter, request *http.Request) {
+	found, ok := server.requireProjectTask(response, request)
+	if !ok {
+		return
+	}
+	session, bound := server.providerSessions.get(found.ID)
+	if !bound || session == nil {
+		writeError(response, http.StatusConflict, "provider session is unavailable")
+		return
+	}
+	permissionID := strings.TrimSpace(request.PathValue("permission_id"))
+	if permissionID == "" {
+		writeError(response, http.StatusBadRequest, "permission request id is required")
+		return
+	}
+	var input providerPermissionResponseRequest
+	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	input.Decision = normalizePermissionDecision(input.Decision)
+	if input.Decision == "" {
+		writeError(response, http.StatusBadRequest, "permission decision must be allow or deny")
+		return
+	}
+	input.RequestID = strings.TrimSpace(input.RequestID)
+	if input.RequestID == "" {
+		input.RequestID = strings.TrimSpace(request.Header.Get("Idempotency-Key"))
+	}
+	if input.RequestID == "" {
+		input.RequestID = "permission-" + permissionID + "-" + input.Decision
+	}
+
+	events, err := server.tasks.Events(found.ID)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "list task events")
+		return
+	}
+	pending, priorOutcome, priorDecision := providerPermissionStatus(events, permissionID, input.RequestID)
+	if priorDecision != "" && priorDecision != input.Decision {
+		writeError(response, http.StatusConflict, "permission request id already belongs to a different decision")
+		return
+	}
+	if priorOutcome != "" {
+		writeJSON(response, http.StatusAccepted, map[string]any{
+			"request_id": input.RequestID, "permission_request_id": permissionID,
+			"session_id": session.SessionID(), "decision": input.Decision, "outcome": priorOutcome,
+		})
+		return
+	}
+	if !pending {
+		writeError(response, http.StatusNotFound, "provider permission request is no longer pending")
+		return
+	}
+	if found.Status != task.StatusRunning && found.Status != task.StatusPaused {
+		writeError(response, http.StatusConflict, "provider permission requires an active Task")
+		return
+	}
+	if !session.Capabilities().PermissionResponse {
+		writeError(response, http.StatusConflict, "provider session does not support permission responses")
+		return
+	}
+	if !server.acquireProviderTaskControl(found.ID) {
+		writeError(response, http.StatusConflict, "task control operation already active")
+		return
+	}
+	active, err := server.tasks.ActiveContinuation(found.ID)
+	if err != nil {
+		server.releaseProviderTaskControl(found.ID)
+		writeTaskError(response, err)
+		return
+	}
+	continuationID := ""
+	if active != nil {
+		continuationID = active.ID
+	}
+	requestedPayload := task.EventPayload{
+		"phase": "provider_permission_response_requested", "mode": string(runtime.ProviderSessionModePermissionResponse),
+		"outcome": "pending", "request_id": input.RequestID, "permission_request_id": permissionID,
+		"permission_decision": input.Decision, "session_id": session.SessionID(),
+	}
+	if continuationID != "" {
+		_, err = server.tasks.AppendContinuationEvent(found.ID, continuationID, task.EventKindLifecycle, requestedPayload)
+	} else {
+		_, err = server.tasks.AppendEvent(found.ID, task.EventKindLifecycle, requestedPayload)
+	}
+	if err != nil {
+		server.releaseProviderTaskControl(found.ID)
+		writeTaskError(response, err)
+		return
+	}
+	emit := func(kind task.EventKind, payload task.EventPayload) {
+		redacted := task.EventPayload{}
+		for _, key := range []string{"provider", "request_id", "session_id", "provider_turn_id", "mode", "outcome", "permission_request_id", "error_code"} {
+			if value, ok := payload[key]; ok {
+				redacted[key] = value
+			}
+		}
+		if redacted["request_id"] == nil {
+			redacted["request_id"] = input.RequestID
+		}
+		redacted["permission_request_id"] = permissionID
+		if redacted["mode"] == nil {
+			redacted["mode"] = string(runtime.ProviderSessionModePermissionResponse)
+		}
+		switch redacted["outcome"] {
+		case "requested":
+			redacted["phase"] = "provider_permission_response_requested"
+		case "acknowledged":
+			redacted["phase"] = "provider_permission_response_acknowledged"
+		case "failed":
+			redacted["phase"] = "provider_permission_response_failed"
+		}
+		if continuationID != "" {
+			_, _ = server.tasks.AppendContinuationEvent(found.ID, continuationID, kind, redacted)
+		} else {
+			_, _ = server.tasks.AppendEvent(found.ID, kind, redacted)
+		}
+	}
+	go func() {
+		defer server.releaseProviderTaskControl(found.ID)
+		ctx, cancel := context.WithTimeout(server.providerControlCtx, 30*time.Second)
+		defer cancel()
+		result, operationErr := session.RespondPermission(ctx, runtime.ProviderSessionRequest{
+			RequestID: input.RequestID, PermissionRequestID: permissionID, PermissionDecision: input.Decision,
+		}, emit)
+		if operationErr != nil {
+			errorCode := "provider_rejected"
+			switch {
+			case errors.Is(operationErr, context.DeadlineExceeded):
+				errorCode = "timeout"
+			case errors.Is(operationErr, context.Canceled):
+				errorCode = "server_closing"
+			case errors.Is(operationErr, runtime.ErrProviderSessionClosed):
+				errorCode = "session_closed"
+			case errors.Is(operationErr, runtime.ErrProviderSessionControlConflict):
+				errorCode = "control_conflict"
+			}
+			emit(task.EventKindLifecycle, task.EventPayload{"outcome": "failed", "phase": "provider_permission_response_failed", "error_code": errorCode})
+			return
+		}
+		payload := result.Payload()
+		payload["phase"] = "provider_permission_response_applied"
+		payload["outcome"] = "applied"
+		payload["permission_request_id"] = permissionID
+		if continuationID != "" {
+			_, _ = server.tasks.AppendContinuationEvent(found.ID, continuationID, task.EventKindLifecycle, payload)
+		} else {
+			_, _ = server.tasks.AppendEvent(found.ID, task.EventKindLifecycle, payload)
+		}
+	}()
+	writeJSON(response, http.StatusAccepted, map[string]any{
+		"request_id": input.RequestID, "permission_request_id": permissionID,
+		"session_id": session.SessionID(), "decision": input.Decision, "outcome": "accepted",
+	})
+}
+
+func normalizePermissionDecision(decision string) string {
+	switch strings.ToLower(strings.TrimSpace(decision)) {
+	case "allow", "approve", "approved", "yes":
+		return "allow"
+	case "deny", "reject", "rejected", "no":
+		return "deny"
+	default:
+		return ""
+	}
+}
+
+func providerPermissionStatus(events []task.Event, permissionID, requestID string) (pending bool, outcome, decision string) {
+	for _, event := range events {
+		if event.Payload["permission_request_id"] != permissionID {
+			continue
+		}
+		rid, _ := event.Payload["request_id"].(string)
+		if rid == requestID {
+			if value, ok := event.Payload["permission_decision"].(string); ok && value != "" {
+				decision = normalizePermissionDecision(value)
+			}
+		}
+		phase, _ := event.Payload["phase"].(string)
+		switch phase {
+		case "provider_permission_requested":
+			pending = true
+		case "provider_permission_response_requested", "provider_permission_response_acknowledged":
+			if rid == requestID {
+				outcome = "pending"
+			}
+		case "provider_permission_response_applied":
+			pending = false
+			if rid == requestID {
+				outcome = "applied"
+			}
+		case "provider_permission_response_failed":
+			pending = true
+			if rid == requestID {
+				outcome = "failed"
+			}
+		}
+	}
+	return pending, outcome, decision
 }
 
 func decodeOptionalJSON(request *http.Request, target any) error {

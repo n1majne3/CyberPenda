@@ -122,6 +122,13 @@ func (r ProviderSessionResult) Payload() task.EventPayload {
 // wire data and message content are deliberately outside this callback.
 type ProviderSessionEmit func(task.EventKind, task.EventPayload)
 
+// ProviderSessionEventSink lets the daemon attach durable handling for
+// unsolicited provider notifications. Operation-local callbacks still take
+// precedence, so one native control cannot be projected twice.
+type ProviderSessionEventSink interface {
+	SetEventSink(ProviderSessionEmit)
+}
+
 // ProviderSession is the long-lived provider control boundary beside the
 // existing one-shot Adapter. Implementations keep provider process/session
 // identity stable while turns change inside it.
