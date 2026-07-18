@@ -45,11 +45,18 @@ type Binary struct {
 }
 
 type Capabilities struct {
-	Sandbox             bool `json:"sandbox"`
-	Host                bool `json:"host"`
-	MCPConfig           bool `json:"mcp_config"`
-	StreamingTranscript bool `json:"streaming_transcript"`
-	Resume              bool `json:"resume"`
+	Sandbox              bool `json:"sandbox"`
+	Host                 bool `json:"host"`
+	MCPConfig            bool `json:"mcp_config"`
+	StreamingTranscript  bool `json:"streaming_transcript"`
+	Resume               bool `json:"resume"`
+	PersistentSession    bool `json:"persistent_session"`
+	SendTurn             bool `json:"send_turn"`
+	InterruptTurn        bool `json:"interrupt_turn"`
+	InterruptThenReplace bool `json:"interrupt_then_replace"`
+	InTurnSteer          bool `json:"in_turn_steer"`
+	PermissionResponse   bool `json:"permission_response"`
+	ResumeSession        bool `json:"resume_session"`
 }
 
 type ProfileSchema struct {

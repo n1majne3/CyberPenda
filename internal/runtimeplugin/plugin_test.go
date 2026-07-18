@@ -121,6 +121,41 @@ func TestBuiltinPluginsDeclareModelProviderProtocols(t *testing.T) {
 	}
 }
 
+func TestBuiltinPluginsDeclareIndependentProviderSessionCapabilities(t *testing.T) {
+	registry, err := runtimeplugin.BuiltinRegistry()
+	if err != nil {
+		t.Fatalf("builtin registry: %v", err)
+	}
+
+	fake, ok := registry.Get("fake")
+	if !ok {
+		t.Fatal("missing fake plugin")
+	}
+	if !fake.Capabilities.PersistentSession || !fake.Capabilities.SendTurn ||
+		!fake.Capabilities.InterruptTurn || !fake.Capabilities.InterruptThenReplace ||
+		!fake.Capabilities.InTurnSteer || !fake.Capabilities.PermissionResponse ||
+		!fake.Capabilities.ResumeSession {
+		t.Fatalf("fake provider-session capabilities = %#v", fake.Capabilities)
+	}
+
+	for _, id := range []string{"claude_code", "codex", "pi"} {
+		t.Run(id, func(t *testing.T) {
+			plugin, ok := registry.Get(id)
+			if !ok {
+				t.Fatalf("missing plugin %q", id)
+			}
+			if !plugin.Capabilities.PersistentSession || !plugin.Capabilities.SendTurn ||
+				!plugin.Capabilities.InterruptTurn || !plugin.Capabilities.InterruptThenReplace ||
+				!plugin.Capabilities.PermissionResponse || !plugin.Capabilities.ResumeSession {
+				t.Fatalf("provider-session capabilities = %#v", plugin.Capabilities)
+			}
+			if plugin.Capabilities.InTurnSteer {
+				t.Fatal("first provider slice uses interrupt-then-replace, not direct in-turn steer")
+			}
+		})
+	}
+}
+
 func TestClaudeCodeBuiltinDeclaresNativeResume(t *testing.T) {
 	registry, err := runtimeplugin.BuiltinRegistry()
 	if err != nil {
