@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"pentest/internal/blackboard"
 	"pentest/internal/blackboardv2"
 	"pentest/internal/blackboardv2contract"
 	"pentest/internal/blackboardv2grammar"
@@ -55,7 +54,7 @@ type MigrationValidationV1 struct {
 type rebuildSourceRecord struct {
 	projectID     string
 	nodeID        string
-	nodeType      blackboard.NodeType
+	nodeType      NodeType
 	sourceKey     string
 	version       int
 	disposition   string
@@ -73,7 +72,7 @@ type rebuildVersion struct {
 type rebuildEdge struct {
 	projectID string
 	edgeID    string
-	edgeType  blackboard.EdgeType
+	edgeType  EdgeType
 	fromID    string
 	toID      string
 	version   int
@@ -97,7 +96,7 @@ type rebuildRelationHistory struct {
 
 type rebuildAlias struct {
 	projectID    string
-	nodeType     blackboard.NodeType
+	nodeType     NodeType
 	aliasKey     string
 	canonicalID  string
 	sourceNodeID string
@@ -644,7 +643,7 @@ func assignProjectKeys(
 	})
 
 	// Index node types for observation support detection.
-	nodeTypeByID := make(map[string]blackboard.NodeType, len(records))
+	nodeTypeByID := make(map[string]NodeType, len(records))
 	propsByID := make(map[string]map[string]any, len(records))
 	for _, record := range records {
 		nodeTypeByID[record.nodeID] = record.nodeType
@@ -658,14 +657,14 @@ func assignProjectKeys(
 	mappings := make([]MigrationMapping, 0, len(records))
 
 	for _, record := range records {
-		if record.nodeType == blackboard.NodeTypeGoal {
+		if record.nodeType == NodeTypeGoal {
 			goalIDs[record.nodeID] = true
 			continue // Goals and Goal-only edges are omitted; Task Goal stays on Task.
 		}
 
 		// Removed workflow types with explicit mapping rules.
 		switch record.nodeType {
-		case blackboard.NodeTypeObservation:
+		case NodeTypeObservation:
 			assign, mapping, blocker := mapObservationRecord(projectID, record, supportedObservations[record.nodeID], decisions, usedKeys)
 			if blocker != nil {
 				blockers = append(blockers, *blocker)
@@ -677,7 +676,7 @@ func assignProjectKeys(
 			assignments[record.nodeID] = assign
 			mappings = append(mappings, mapping)
 			continue
-		case blackboard.NodeTypeHypothesis:
+		case NodeTypeHypothesis:
 			assign, mapping, blocker := mapHypothesisRecord(projectID, record, decisions, usedKeys)
 			if blocker != nil {
 				blockers = append(blockers, *blocker)
@@ -689,7 +688,7 @@ func assignProjectKeys(
 			assignments[record.nodeID] = assign
 			mappings = append(mappings, mapping)
 			continue
-		case blackboard.NodeTypeProjectDirective:
+		case NodeTypeProjectDirective:
 			assign, mapping, limits, blocker := mapDirectiveRecord(projectID, record, decisions, usedKeys)
 			if blocker != nil {
 				blockers = append(blockers, *blocker)
@@ -729,7 +728,7 @@ func assignProjectKeys(
 			continue
 		}
 		// disposition merged/archived is never current.
-		if record.disposition != string(blackboard.DispositionMain) {
+		if record.disposition != string(DispositionMain) {
 			current = false
 		}
 
@@ -759,7 +758,7 @@ func assignProjectKeys(
 		})
 
 		// Reusable terminal summaries lacking outcomes become conservative Facts.
-		if !current && record.disposition == string(blackboard.DispositionMain) {
+		if !current && record.disposition == string(DispositionMain) {
 			if factAssign, factMapping, ok := mapTerminalSummaryFact(projectID, record, v2Type, semantic, producedTargets, usedKeys); ok {
 				// Synthetic key under a non-colliding assignment id.
 				syntheticID := "terminal-summary:" + record.nodeID
@@ -801,7 +800,7 @@ func mapObservationRecord(
 	decisions map[string]MigrationDecision,
 	usedKeys map[string]string,
 ) (*assignedKey, MigrationMapping, *MigrationBlocker) {
-	if record.disposition != string(blackboard.DispositionMain) {
+	if record.disposition != string(DispositionMain) {
 		return nil, MigrationMapping{}, nil
 	}
 	status := stringProp(record.properties, "status")
@@ -889,7 +888,7 @@ func mapHypothesisRecord(
 	decisions map[string]MigrationDecision,
 	usedKeys map[string]string,
 ) (*assignedKey, MigrationMapping, *MigrationBlocker) {
-	if record.disposition != string(blackboard.DispositionMain) {
+	if record.disposition != string(DispositionMain) {
 		return nil, MigrationMapping{}, nil
 	}
 	status := stringProp(record.properties, "status")
@@ -966,7 +965,7 @@ func mapDirectiveRecord(
 	decisions map[string]MigrationDecision,
 	usedKeys map[string]string,
 ) (*assignedKey, MigrationMapping, []string, *MigrationBlocker) {
-	if record.disposition != string(blackboard.DispositionMain) {
+	if record.disposition != string(DispositionMain) {
 		return nil, MigrationMapping{}, nil, nil
 	}
 	status := stringProp(record.properties, "status")
@@ -1056,7 +1055,7 @@ func mapTerminalSummaryFact(
 		}, true
 }
 
-func observationSupportSet(edges []rebuildEdge, nodeTypeByID map[string]blackboard.NodeType, propsByID map[string]map[string]any) map[string]bool {
+func observationSupportSet(edges []rebuildEdge, nodeTypeByID map[string]NodeType, propsByID map[string]map[string]any) map[string]bool {
 	supported := make(map[string]bool)
 	// First pass: identify confirmed facts and succeeded attempts.
 	confirmedFacts := make(map[string]bool)
@@ -1064,11 +1063,11 @@ func observationSupportSet(edges []rebuildEdge, nodeTypeByID map[string]blackboa
 	for id, nodeType := range nodeTypeByID {
 		props := propsByID[id]
 		switch nodeType {
-		case blackboard.NodeTypeProjectFact:
+		case NodeTypeProjectFact:
 			if stringProp(props, "confidence") == "confirmed" {
 				confirmedFacts[id] = true
 			}
-		case blackboard.NodeTypeAttempt:
+		case NodeTypeAttempt:
 			if stringProp(props, "status") == "succeeded" {
 				succeededAttempts[id] = true
 			}
@@ -1076,18 +1075,18 @@ func observationSupportSet(edges []rebuildEdge, nodeTypeByID map[string]blackboa
 	}
 	for _, edge := range edges {
 		switch edge.edgeType {
-		case blackboard.EdgeTypeEvidences:
-			if nodeTypeByID[edge.toID] == blackboard.NodeTypeObservation && nodeTypeByID[edge.fromID] == blackboard.NodeTypeEvidenceArtifact {
+		case EdgeTypeEvidences:
+			if nodeTypeByID[edge.toID] == NodeTypeObservation && nodeTypeByID[edge.fromID] == NodeTypeEvidenceArtifact {
 				supported[edge.toID] = true
 			}
-		case blackboard.EdgeTypeSupports:
-			if nodeTypeByID[edge.toID] == blackboard.NodeTypeObservation && confirmedFacts[edge.fromID] {
+		case EdgeTypeSupports:
+			if nodeTypeByID[edge.toID] == NodeTypeObservation && confirmedFacts[edge.fromID] {
 				supported[edge.toID] = true
 			}
-		case blackboard.EdgeTypeProduced:
+		case EdgeTypeProduced:
 			// Production alone is not confirmation support; only succeeded Attempt production counts
 			// when paired with other proof, but ADR says "supported state" — evidences is primary.
-			if nodeTypeByID[edge.toID] == blackboard.NodeTypeObservation && succeededAttempts[edge.fromID] {
+			if nodeTypeByID[edge.toID] == NodeTypeObservation && succeededAttempts[edge.fromID] {
 				// Succeeded production is weak support; keep as non-confirming unless evidences present.
 				_ = edge
 			}
@@ -1100,7 +1099,7 @@ func producedTargetSet(edges []rebuildEdge) map[string]bool {
 	// Map attempt nodeID -> true when it produced any semantic outcome.
 	produced := make(map[string]bool)
 	for _, edge := range edges {
-		if edge.edgeType == blackboard.EdgeTypeProduced {
+		if edge.edgeType == EdgeTypeProduced {
 			produced[edge.fromID] = true
 		}
 	}
@@ -1110,11 +1109,11 @@ func producedTargetSet(edges []rebuildEdge) map[string]bool {
 func collectRequiredRebuildDecisions(records []rebuildSourceRecord) ([]MigrationDecision, error) {
 	decisions := make([]MigrationDecision, 0)
 	for _, record := range records {
-		if record.disposition != string(blackboard.DispositionMain) {
+		if record.disposition != string(DispositionMain) {
 			continue
 		}
 		switch record.nodeType {
-		case blackboard.NodeTypeObservation:
+		case NodeTypeObservation:
 			status := stringProp(record.properties, "status")
 			if status == "superseded" {
 				continue
@@ -1126,7 +1125,7 @@ func collectRequiredRebuildDecisions(records []rebuildSourceRecord) ([]Migration
 					AllowedActions: []string{"tentative_fact", "confirmed_fact"},
 				})
 			}
-		case blackboard.NodeTypeHypothesis:
+		case NodeTypeHypothesis:
 			status := stringProp(record.properties, "status")
 			if status == "" {
 				status = "open"
@@ -1137,7 +1136,7 @@ func collectRequiredRebuildDecisions(records []rebuildSourceRecord) ([]Migration
 					AllowedActions: []string{"objective", "tentative_fact", "discard"},
 				})
 			}
-		case blackboard.NodeTypeProjectDirective:
+		case NodeTypeProjectDirective:
 			if stringProp(record.properties, "status") == "active" {
 				decisions = append(decisions, MigrationDecision{
 					Source:         MigrationSourceRef{Project: record.projectID, Type: "project_directive", Key: record.sourceKey},
@@ -1417,61 +1416,61 @@ func normalizeAliasKey(projectID, sourceType, aliasKey string, assigns map[strin
 
 func mapSourceTypeName(sourceType string) string {
 	switch sourceType {
-	case string(blackboard.NodeTypeExplorationObjective):
+	case string(NodeTypeExplorationObjective):
 		return "objective"
-	case string(blackboard.NodeTypeProjectFact):
+	case string(NodeTypeProjectFact):
 		return "fact"
-	case string(blackboard.NodeTypeEvidenceArtifact):
+	case string(NodeTypeEvidenceArtifact):
 		return "evidence"
 	default:
 		return sourceType
 	}
 }
 
-func mapNodeType(nodeType blackboard.NodeType) (string, bool) {
+func mapNodeType(nodeType NodeType) (string, bool) {
 	switch nodeType {
-	case blackboard.NodeTypeEntity:
+	case NodeTypeEntity:
 		return "entity", true
-	case blackboard.NodeTypeExplorationObjective:
+	case NodeTypeExplorationObjective:
 		return "objective", true
-	case blackboard.NodeTypeAttempt:
+	case NodeTypeAttempt:
 		return "attempt", true
-	case blackboard.NodeTypeProjectFact:
+	case NodeTypeProjectFact:
 		return "fact", true
-	case blackboard.NodeTypeFinding:
+	case NodeTypeFinding:
 		return "finding", true
-	case blackboard.NodeTypeSolution:
+	case NodeTypeSolution:
 		return "solution", true
-	case blackboard.NodeTypeEvidenceArtifact:
+	case NodeTypeEvidenceArtifact:
 		return "evidence", true
 	default:
 		return "", false
 	}
 }
 
-func v2TypeOrder(nodeType blackboard.NodeType) int {
+func v2TypeOrder(nodeType NodeType) int {
 	switch nodeType {
-	case blackboard.NodeTypeEntity:
+	case NodeTypeEntity:
 		return 0
-	case blackboard.NodeTypeExplorationObjective:
+	case NodeTypeExplorationObjective:
 		return 1
-	case blackboard.NodeTypeAttempt:
+	case NodeTypeAttempt:
 		return 2
-	case blackboard.NodeTypeProjectFact:
+	case NodeTypeProjectFact:
 		return 3
-	case blackboard.NodeTypeFinding:
+	case NodeTypeFinding:
 		return 4
-	case blackboard.NodeTypeSolution:
+	case NodeTypeSolution:
 		return 5
-	case blackboard.NodeTypeEvidenceArtifact:
+	case NodeTypeEvidenceArtifact:
 		return 6
-	case blackboard.NodeTypeObservation:
+	case NodeTypeObservation:
 		return 7
-	case blackboard.NodeTypeHypothesis:
+	case NodeTypeHypothesis:
 		return 8
-	case blackboard.NodeTypeProjectDirective:
+	case NodeTypeProjectDirective:
 		return 9
-	case blackboard.NodeTypeGoal:
+	case NodeTypeGoal:
 		return 10
 	default:
 		return 100
@@ -1772,7 +1771,7 @@ func loadRebuildSourceRecords(ctx context.Context, tx *sql.Tx) ([]rebuildSourceR
 		if err := rows.Scan(&record.projectID, &record.nodeID, &nodeType, &record.sourceKey, &record.version, &record.disposition, &propsRaw, &record.updatedAt); err != nil {
 			return nil, err
 		}
-		record.nodeType = blackboard.NodeType(nodeType)
+		record.nodeType = NodeType(nodeType)
 		if err := json.Unmarshal([]byte(propsRaw), &record.properties); err != nil {
 			return nil, fmt.Errorf("decode node properties for %s: %w", record.nodeID, err)
 		}
@@ -1831,7 +1830,7 @@ func loadRebuildSourceEdges(ctx context.Context, tx *sql.Tx) ([]rebuildEdge, []M
 		if err := rows.Scan(&edge.projectID, &edge.edgeID, &edgeType, &edge.fromID, &edge.toID, &edge.version, &edge.summary, &edge.updatedAt); err != nil {
 			return nil, nil, err
 		}
-		edge.edgeType = blackboard.EdgeType(edgeType)
+		edge.edgeType = EdgeType(edgeType)
 		prior, err := loadPriorEdgeVersions(ctx, tx, edge.projectID, edge.edgeID, edge.version)
 		if err != nil {
 			return nil, nil, err
@@ -1919,7 +1918,7 @@ func loadRebuildSourceAliases(ctx context.Context, tx *sql.Tx) ([]rebuildAlias, 
 		if err := rows.Scan(&alias.projectID, &nodeType, &alias.aliasKey, &alias.canonicalID, &alias.sourceNodeID); err != nil {
 			return nil, err
 		}
-		alias.nodeType = blackboard.NodeType(nodeType)
+		alias.nodeType = NodeType(nodeType)
 		aliases = append(aliases, alias)
 	}
 	return aliases, rows.Err()

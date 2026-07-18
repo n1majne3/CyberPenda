@@ -35,9 +35,6 @@ func TestBlackboardV2RuntimeHasNoGraphV1Ledger(t *testing.T) {
 		// Historical migrations must retain exact SQL/checksums, and this seam
 		// classifies v1 files without activating them.
 		"internal/store/store.go": true,
-		// This user-owned file cannot be moved in the current shared worktree.
-		"internal/blackboard/graph_types.go":          true,
-		"internal/blackboard/retired_graph_compat.go": true,
 	}
 	forbidden := []string{
 		"GraphService", "blackboard_graph_", "graph_v1", "legacy_v1",

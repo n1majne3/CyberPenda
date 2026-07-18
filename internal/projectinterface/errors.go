@@ -5,27 +5,23 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-
-	"pentest/internal/blackboard"
 )
 
 // tokenEncoding is unpadded base64url: safe in Authorization headers, query
 // strings, and environment variables, and round-trips without escaping.
 var tokenEncoding = base64.RawURLEncoding
 
-// Project-interface error codes (runtime protocol §3). The graph contract's
-// domain error codes remain canonical and are passed through from the graph
-// service; these codes are owned by this module.
+// Project-interface error codes are owned by this module.
 const (
 	// ErrCodeInvalidRequest is a malformed request envelope, unsupported
-	// protocol version, or structural problem that never reaches the graph.
+	// protocol version, or structural problem rejected at the interface.
 	ErrCodeInvalidRequest = "invalid_request"
 	// ErrCodeProvenanceSpoofed is a request-body attempt to supply Project,
 	// Task, Continuation, Runtime Profile, Runner, actor, or timestamp fields
-	// that the trusted grant owns (runtime protocol §4.1).
+	// that the trusted grant owns.
 	ErrCodeProvenanceSpoofed = "provenance_spoofed"
 	// ErrCodeProjectMismatch is a path or declared Project that disagrees with
-	// the grant's bound Project (runtime protocol §12.4).
+	// the grant's bound Project.
 	ErrCodeProjectMismatch = "project_mismatch"
 	// ErrCodeProjectNotFound is a bound Project that does not exist.
 	ErrCodeProjectNotFound = "project_not_found"
@@ -45,8 +41,7 @@ const (
 	// ErrCodeContinuationContextRequired is a task-only operation lacking a
 	// valid Continuation grant.
 	ErrCodeContinuationContextRequired = "continuation_context_required"
-	// ErrCodeActorForbidden is a bound actor not permitted to request the
-	// operation (runtime protocol §5).
+	// ErrCodeActorForbidden is a bound actor not permitted to request the operation.
 	ErrCodeActorForbidden = "actor_forbidden"
 	// ErrCodeStorageBusy is retryable SQLite writer lock exhaustion that
 	// consumes no idempotency key.
@@ -67,7 +62,7 @@ const (
 	ErrCodeSnapshotUnavailable = "snapshot_unavailable"
 )
 
-// Error is the stable ProjectInterfaceErrorV1 shape (runtime protocol §3). It is
+// Error is the stable Project Interface failure shape. It is
 // the only failure envelope returned by the project-interface module; transport
 // adapters map it to their status/exit conventions without reclassification.
 type Error struct {
@@ -89,16 +84,14 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }
 
-// ValidationError builds a non-retryable ProjectInterfaceErrorV1 at the given
-// path. Operation-scoped fields are filled by the graph service for domain
-// errors and by the module for envelope-level errors.
+// ValidationError builds a non-retryable Project Interface error at the given
+// path.
 func ValidationError(code, message, path string) *Error {
 	return &Error{ProtocolVersion: RuntimeProtocolVersion, Code: code, Message: message, Path: path}
 }
 
-// InternalError builds a 500-mapped ProjectInterfaceErrorV1 for an unexpected
-// failure that is not a domain or envelope validation error (runtime protocol
-// §12.4: 500 is reserved for unexpected internal/integrity failures).
+// InternalError builds a 500-mapped Project Interface error for an unexpected
+// failure that is not a domain or envelope validation error.
 func InternalError(message string) *Error {
 	return &Error{ProtocolVersion: RuntimeProtocolVersion, Code: ErrCodeInternal, Message: message, Path: "internal"}
 }
@@ -120,14 +113,12 @@ func persistenceError(action string, err error) *Error {
 }
 
 // ErrCodeInternal is the interface code for unexpected internal/integrity
-// failures that are not graph domain validation or request-envelope errors. It
-// maps to HTTP 500 (runtime protocol §12.4).
+// failures that are not semantic validation or request-envelope errors. It
+// maps to HTTP 500.
 const ErrCodeInternal = "internal"
 
 // AsError extracts a project-interface *Error from err, returning nil when err
-// is not one. Graph-service domain errors are converted by mapProjectError
-// before they reach callers, so a non-Error here is treated as an internal
-// failure by the caller.
+// is not one.
 func AsError(err error) *Error {
 	if err == nil {
 		return nil
@@ -135,14 +126,6 @@ func AsError(err error) *Error {
 	var e *Error
 	if errors.As(err, &e) {
 		return e
-	}
-	var validation *blackboard.ValidationError
-	if errors.As(err, &validation) {
-		return &Error{
-			ProtocolVersion: RuntimeProtocolVersion,
-			Code:            validation.Code, Message: validation.Message, Path: validation.Path,
-			Retryable: false, Details: validation.Details,
-		}
 	}
 	return nil
 }

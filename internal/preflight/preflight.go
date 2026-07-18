@@ -2,7 +2,7 @@
 // task can launch its runtime. Preflight fails before runtime execution when a
 // required runtime profile, configuration, sandbox, or credential resolution is
 // missing. A preflight failure prevents runtime launch and is recorded in the
-// audit log (by the caller, not here).
+// Task timeline by the caller.
 package preflight
 
 import (

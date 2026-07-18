@@ -20,14 +20,12 @@ import (
 )
 
 // RuntimeProtocolVersion versions the project-interface request and response
-// contract (runtime protocol §3). It is independent of the graph mutation
-// schema version.
+// contract. It is independent of the Blackboard v2 semantic schema version.
 const RuntimeProtocolVersion = 1
 
 // Clock is the injected time source for grant issuance and lifecycle events.
 // The issued_at, finished_at, revoked_at, and terminal_at timestamps are always
-// server-generated; callers cannot supply them (runtime protocol §4.1,
-// slices §2.1).
+// server-generated; callers cannot supply them.
 type Clock interface {
 	Now() time.Time
 }
@@ -51,7 +49,7 @@ func (RandomIDSource) NextID() string { return newID() }
 
 // TokenSource generates cryptographically random bearer tokens. The plaintext
 // is projected only to the task-local Runtime environment and trusted MCP
-// configuration; the grant store keeps a SHA-256 hash (runtime protocol §4.1).
+// configuration; the grant store keeps a SHA-256 hash.
 type TokenSource interface {
 	NewToken() (plaintext string, err error)
 }
@@ -87,8 +85,8 @@ func hashToken(plaintext string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// GrantStatus names the lifecycle state of a Continuation Interface Grant
-// (runtime protocol §4.2). New writes are allowed only while the grant is open;
+// GrantStatus names the lifecycle state of a Continuation Interface Grant.
+// New writes are allowed only while the grant is open;
 // reads and exact replay remain available in every state.
 type GrantStatus string
 
@@ -103,7 +101,7 @@ const (
 	// GrantStatusRevoked is set by explicit operator revocation or Task deletion.
 	GrantStatusRevoked GrantStatus = "revoked"
 	// GrantStatusTerminal is set when the bound Continuation becomes terminal
-	// without Finish; the system reconciler owns later graph changes.
+	// without Finish; the system reconciler owns later semantic changes.
 	GrantStatusTerminal GrantStatus = "terminal"
 )
 
@@ -112,11 +110,11 @@ func (s GrantStatus) IsWriteable() bool { return s == GrantStatusOpen }
 
 // IsReadable reports whether a grant in this state admits reads and exact
 // idempotent replay. Finish and a terminal Continuation close only new writes;
-// revocation rejects every use (runtime protocol §4.2).
+// revocation rejects every use.
 func (s GrantStatus) IsReadable() bool { return s != GrantStatusRevoked }
 
 // Grant is the stored Continuation Interface Grant. It never carries the
-// plaintext bearer token, only its SHA-256 hash (runtime protocol §4.1).
+// plaintext bearer token, only its SHA-256 hash.
 type Grant struct {
 	ID                     string `json:"id"`
 	ProjectID              string `json:"project_id"`
@@ -127,7 +125,7 @@ type Grant struct {
 	RuntimePluginID        string `json:"runtime_plugin_id"`
 	Runner                 string `json:"runner"`
 	// ActorID is server-derived as runtime:<runtime_plugin_id>:<continuation_id>
-	// (runtime protocol §4.1 provenance table).
+	// and is never accepted from a Runtime request.
 	ActorID    string `json:"actor_id"`
 	TokenHash  string `json:"-"`
 	IssuedAt   string `json:"issued_at"`
@@ -152,7 +150,7 @@ func (g Grant) Status() GrantStatus {
 
 // IssueGrantRequest carries the trusted, server-bound context for a new
 // Continuation Interface Grant. The daemon assembles these fields during
-// Continuation pinning (runtime protocol §4.1, §13.1); a Runtime request never
+// Continuation pinning; a Runtime request never
 // supplies them.
 type IssueGrantRequest struct {
 	ProjectID              string
@@ -165,7 +163,7 @@ type IssueGrantRequest struct {
 }
 
 // GrantStore owns Continuation Interface Grant persistence and trusted context
-// resolution (runtime protocol §4). It is the only authority that turns a
+// resolution. It is the only authority that turns a
 // bearer token into trusted execution context; transport adapters never inspect
 // or fabricate Runtime provenance.
 type GrantStore struct {
@@ -305,8 +303,7 @@ func (s *GrantStore) Resolve(ctx context.Context, plaintext string) (Grant, erro
 
 // Get returns the current state of a grant by ID. Write capabilities re-read the
 // grant this way to revalidate lifecycle authoritatively at request time rather
-// than trusting a principal snapshot cached at authentication (runtime protocol
-// §11.2: Apply revalidates the grant).
+// than trusting a principal snapshot cached at authentication.
 func (s *GrantStore) Get(ctx context.Context, grantID string) (Grant, error) {
 	if grantID == "" {
 		return Grant{}, ErrGrantNotFound
@@ -319,9 +316,8 @@ func (s *GrantStore) Get(ctx context.Context, grantID string) (Grant, error) {
 }
 
 // Finish closes the grant to new project-interface mutations. Exact idempotent
-// replay and read operations remain allowed (runtime protocol §4.2). The full
-// Finish capability, which also stores a Task Summary Version, is owned by I04;
-// this method is the grant-store-level close used by reconciliation and tests.
+// replay and read operations remain allowed. This method is the grant-store
+// lifecycle close used by Blackboard v2 Finish, reconciliation, and tests.
 func (s *GrantStore) Finish(ctx context.Context, grantID string) (Grant, error) {
 	return s.setLifecycleTimestamp(ctx, grantID, "finished_at", ErrGrantAlreadyFinished)
 }
@@ -335,8 +331,8 @@ func (s *GrantStore) Revoke(ctx context.Context, grantID string) (Grant, error) 
 
 // MarkContinuationTerminal marks every open grant bound to the given
 // Continuation terminal. It is called when a Continuation becomes terminal
-// without Finish so the reconciler owns later graph changes (runtime protocol
-// §4.2, §16.3). Already-closed grants are left unchanged.
+// without Finish so the reconciler owns later semantic changes. Already-closed
+// grants are left unchanged.
 func (s *GrantStore) MarkContinuationTerminal(ctx context.Context, continuationID string) error {
 	if continuationID == "" {
 		return ErrGrantNotFound
@@ -432,7 +428,7 @@ func validateIssueRequest(req IssueGrantRequest) error {
 
 // validateBoundRows verifies the durable Task and Continuation rows agree with
 // the requested bound context so a grant never binds provenance the daemon no
-// longer trusts (runtime protocol §4.1, graph contract §3.3).
+// longer trusts.
 func validateBoundRows(tx *sql.Tx, req IssueGrantRequest) error {
 	var taskProjectID string
 	if err := tx.QueryRow(`SELECT project_id FROM tasks WHERE id=?`, req.TaskID).Scan(&taskProjectID); err != nil {
@@ -463,8 +459,7 @@ func validateBoundRows(tx *sql.Tx, req IssueGrantRequest) error {
 	return nil
 }
 
-// runtimeActorID derives the stable Runtime actor identifier (runtime protocol
-// §4.1 provenance table: runtime:<runtime_plugin_id>:<continuation_id>).
+// runtimeActorID derives the stable Runtime actor identifier.
 func runtimeActorID(pluginID, continuationID string) string {
 	return "runtime:" + pluginID + ":" + continuationID
 }
@@ -488,8 +483,7 @@ func scanGrant(row scanner) (Grant, error) {
 	return g, nil
 }
 
-// Sentinel grant errors. These wrap a ProjectInterfaceErrorV1 so transport
-// adapters can map them without reclassification.
+// Sentinel grant errors let transports map failures without reclassification.
 var (
 	ErrGrantNotFound        = ValidationError(ErrCodeGrantNotFound, "continuation grant is missing or invalid", "authorization")
 	ErrGrantAlreadyFinished = ValidationError(ErrCodeContinuationClosed, "continuation grant is already finished", "authorization")

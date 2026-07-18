@@ -738,26 +738,6 @@ func TestResumeRequiresDurableReconciliationAndExposesBoundedInterruptedCheckpoi
 	}
 }
 
-type forbiddenGoalProjector struct{ calls int }
-
-func (projector *forbiddenGoalProjector) ProjectTaskGoal(string) error {
-	projector.calls++
-	return errors.New("Blackboard v2 must not project Goal records")
-}
-
-func TestBlackboardV2ContinuationLaunchNeverProjectsLegacyGoal(t *testing.T) {
-	fixture := newContinuityFixture(t)
-	t.Cleanup(func() { _ = fixture.db.Close() })
-	projector := &forbiddenGoalProjector{}
-	fixture.tasks.SetGoalProjector(projector)
-	if launch := fixture.launch(t); launch.Continuation.ID == "" {
-		t.Fatal("v2 Continuation launch returned no Continuation")
-	}
-	if projector.calls != 0 {
-		t.Fatalf("v2 Continuation launch projected Goal %d times", projector.calls)
-	}
-}
-
 func TestFinishImplementationHasNoForbiddenLegacyStateDependency(t *testing.T) {
 	_, testFile, _, ok := runtime.Caller(0)
 	if !ok {

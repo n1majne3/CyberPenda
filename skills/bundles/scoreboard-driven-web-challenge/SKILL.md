@@ -9,7 +9,7 @@ Solve scoreboard-backed black-box web challenges by keeping the scoreboard as th
 
 <quick_start>
 1. Open the scoreboard and record `total`, `solved`, and the visible remaining challenge names.
-2. Create or update `progress:scoreboard` with solved/remaining counts and the next target set.
+2. Create or update `fact:progress-scoreboard` with solved/remaining counts and the next target set.
 3. Work in small batches: choose 3-5 remaining challenges with shared evidence, endpoint, or vulnerability class.
 4. For each challenge, run the smallest black-box probe that can change scoreboard state.
 5. Re-read the scoreboard after each solve attempt and persist the delta before moving on.
@@ -29,12 +29,12 @@ Forbidden unless the task scope explicitly allows it:
 
 <workflow>
 1. **Scoreboard baseline**: Capture the current scoreboard state. If only counts are visible, record counts and any visible challenge names. If categories are visible, group remaining challenges by category.
-2. **Evidence map**: Build a map of endpoints, forms, routes, client hints, auth roles, and known accounts. Store it as `api:*`, `route:*`, `credential:*`, or `progress:*` facts when a trusted MCP is available.
+2. **Evidence map**: Build a map of endpoints, forms, routes, client hints, auth roles, and known accounts. Store it as `fact:api-*`, `fact:route-*`, `fact:credential-*`, or `fact:progress-*` records when a trusted MCP is available.
 3. **Batch selection**: Pick a narrow batch with one shared mechanism, for example login flaws, basket/order APIs, redirects, upload handling, XSS, JWT, or privacy endpoints.
 4. **Probe loop**: For each candidate, run one bounded probe, observe HTTP/UI output, then refresh the scoreboard. Do not keep brute-forcing a candidate after 2-3 non-progress attempts; mark the hypothesis and move to the next batch.
-5. **Persistence checkpoint**: After each solved challenge or failed batch, update `progress:scoreboard` and a `progress:<challenge-or-batch>` fact with attempted payloads, endpoint, result, and next action.
+5. **Persistence checkpoint**: After each solved challenge or failed batch, version `fact:progress-scoreboard`, update a `fact:progress-<challenge-or-batch>` record with attempted payloads, endpoint, result, and next action, and checkpoint the owned open Attempt.
 6. **Evidence capture**: Attach evidence for solved challenges when the proof is useful for resumption: HTTP request/response, screenshot, command output, or exact payload.
-7. **Continuation summary**: Before stopping or handing off, submit a task summary with solved count, unsolved count, solved names if known, failed hypotheses, and the next 3 targets.
+7. **Continuation checkpoint**: Before stopping or handing off, checkpoint the open Attempt with solved count, unsolved count, solved names if known, failed hypotheses, and the next 3 targets. Before a clean Finish, make every owned Attempt terminal and call `blackboard_finish`.
 </workflow>
 
 <challenge_prioritization>
@@ -52,10 +52,10 @@ Defer challenges that require:
 
 <state_contract>
 When trusted MCP tools are available, use them:
-- `upsert_project_fact` for `progress:scoreboard`, `progress:<batch>`, `api:<endpoint>`, `route:<name>`, `credential:<label>`.
-- `record_vulnerability` only when the task wants vulnerability records, not for every challenge clue.
-- `attach_evidence` for reproducible proof or screenshots worth preserving.
-- `submit_task_summary` before every pause, interruption, or handoff.
+- `blackboard_change` for durable progress, API, route, credential, Fact, and Finding records.
+- Create Finding records only when the task needs vulnerability records, not for every challenge clue.
+- `blackboard_retain_evidence` for reproducible proof or screenshots worth preserving.
+- `blackboard_checkpoint_attempt` before a pause or handoff, and `blackboard_finish` only after every owned Attempt is terminal.
 
 No scoreboard-driven run is complete if the solved count changed but durable progress state was not updated.
 </state_contract>
@@ -65,13 +65,13 @@ No scoreboard-driven run is complete if the solved count changed but durable pro
 - Reading online solutions or the target source tree after a black-box-only instruction.
 - Running generic scanners before mapping the scoreboard and target routes.
 - Repeating the same failed payload family without a new observation.
-- Reporting progress only in chat while leaving facts, evidence, and task summary empty.
+- Reporting progress only in chat while leaving semantic Facts, Evidence, and the Attempt checkpoint stale.
 </anti_patterns>
 
 <success_criteria>
 - Scoreboard count and remaining target set are known or explicitly marked as not visible.
 - Each attempted challenge has an endpoint/action, payload or UI step, observed result, and next decision.
 - Solves are verified by a fresh scoreboard read, not inferred from a 200 response.
-- Durable progress facts and task summary are updated before stopping.
+- Durable progress Facts and the owned Attempt checkpoint are updated before stopping.
 - Black-box boundaries are respected.
 </success_criteria>

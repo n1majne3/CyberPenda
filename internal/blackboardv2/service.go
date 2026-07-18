@@ -681,7 +681,7 @@ func (s *Service) ReconcileTerminalContinuation(ctx context.Context, continuatio
 
 // ReconcileContinuationAttempts is a server-only control path that records an
 // unexpected Continuation end by moving its valid open Attempts to interrupted
-// history. Clean completion is audited elsewhere and never guesses an outcome.
+// history. Clean completion records no inferred outcome.
 func (s *Service) ReconcileContinuationAttempts(ctx context.Context, projectID, continuationID string) (ChangeResult, error) {
 	if continuationID == "" {
 		return ChangeResult{}, semanticError("authority_denied", "trusted Continuation identity is required", "", nil)
@@ -711,7 +711,7 @@ func (s *Service) ReconcileContinuationAttempts(ctx context.Context, projectID, 
 			return ChangeResult{}, err
 		}
 		if err := tx.Commit(); err != nil {
-			return ChangeResult{}, fmt.Errorf("commit clean Continuation reconciliation audit: %w", err)
+			return ChangeResult{}, fmt.Errorf("commit clean Continuation reconciliation: %w", err)
 		}
 		return result, nil
 	}

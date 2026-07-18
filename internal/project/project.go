@@ -51,11 +51,11 @@ type Defaults struct {
 
 // KindPentest is the default Project kind: a bounded security-testing
 // engagement. Tasks complete against their Task Goals; the Project has no
-// automatic solved state. See the Blackboard graph contract §2.
+// automatic solved state.
 const KindPentest = "pentest"
 
 // KindCTFChallenge is the Project kind for a single CTF challenge whose
-// Project is solved when the current graph contains a verified flag Solution.
+// Project is solved when the current Blackboard contains a verified flag Solution.
 const KindCTFChallenge = "ctf_challenge"
 
 // Project is a bounded security-testing engagement with its own scope, tasks,

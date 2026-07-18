@@ -141,3 +141,29 @@ The replacement is complete only when all are true:
 - repository search finds no production v1 protocol/store/type references;
 - the current five user-authored changes are either preserved unchanged or explicitly ported with equivalent v2 tests;
 - the seven v1 specifications remain historical and no implementation entry point links to them as normative.
+
+### 6.1 T30 executable proof matrix
+
+T30 (#128) closes only after these commands pass together from one worktree state:
+
+| Gate | Command |
+| --- | --- |
+| Full Go suites | `go test ./...` |
+| Race-capable synchronization and lifecycle suites | `go test -race ./internal/blackboardv2 ./internal/daemon ./internal/store ./internal/task -run 'Test(Concurrent|.*Race|.*Parallel|.*Synchronization|.*Atomic)' -count=1` |
+| Migration inspect/backup/failure/cutover/reopen fixtures | `go test ./internal/blackboardmigration ./internal/pentestctl ./internal/store -run 'Test.*(Migration|Migrate|Backup|Cutover|Reopen|Rollback|Source)' -count=1` |
+| Deterministic Snapshot, service, transport, launch/resume, synchronization, UI/health/report, and CTF groups | `go test ./internal/blackboardv2contract ./internal/blackboardv2 ./internal/daemon ./internal/mcpserver ./internal/pentestctl ./internal/runner ./internal/report` |
+| Web unit suite | `cd web && npm test` |
+| Production Web build | `cd web && npm run build` |
+| Embedded asset parity | `make check-ui-sync` |
+
+The repository retirement test owns the narrow source allowlist: the offline migration package and exact historical migration SQL in `internal/store/store.go`. Normal daemon, Runtime, HTTP, MCP, CLI semantic commands, and Web production paths may not import or advertise a v1 schema, tool, route, epoch, type, relationship, Task Summary, or audit projection.
+
+The five pre-existing user changes map to v2 proof as follows:
+
+| Original file | Preserved v2 intent and regression |
+| --- | --- |
+| `internal/blackboard/graph_types.go` | Closed objective/Attempt create guidance is ported to `TestBlackboardChangeMCPSchemaAdvertisesObjectiveAndAttemptCreateEnvelope`; the obsolete v1 source is deleted. |
+| `internal/mcpserver/server_test.go` | The v1 schema test is replaced in place by `TestBlackboardChangeMCPSchemaAdvertisesObjectiveAndAttemptCreateEnvelope`. |
+| `internal/runner/mcp.go` | The reusable trusted-MCP allowlist mechanism remains, with v2 names covered by `TestClaudeV2RuntimeConfigPreservesTrustedMCPAllowlistWithoutIdentityContext`. |
+| `internal/runner/projection.go` | Claude settings projection remains the shared production path exercised by the same allowlist regression. |
+| `internal/runner/projection_mcp_test.go` | Its behavioral intent moved to `internal/runner/blackboard_v2_projection_test.go`, including exact six-tool names and reserved-server isolation. |

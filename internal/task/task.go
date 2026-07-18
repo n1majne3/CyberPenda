@@ -208,28 +208,22 @@ var ErrSteeringSelectionConflict = errors.New("Harness Steering selection is sta
 
 // Service implements task business rules against SQLite. It depends on the
 // project service only to read the scope at launch; it does not mutate projects.
-type GoalProjector interface {
-	ProjectTaskGoal(taskID string) error
-}
-
 // ContinuationTerminalMarker closes capabilities whose lifecycle is bound to
 // a Continuation when that Continuation reaches a terminal Task status.
 type ContinuationTerminalMarker interface {
 	MarkContinuationTerminal(context.Context, string) error
 }
 
-// ContinuationReconciler runs the graph normal-audit or unexpected-end
-// recovery after the Task domain has durably made a Continuation terminal.
+// ContinuationReconciler closes open semantic work after the Task domain has
+// durably made a Continuation terminal.
 type ContinuationReconciler interface {
 	ReconcileTerminalContinuation(context.Context, string, string) error
 }
 
-// Service owns durable Task state. Goal projection is an optional system
-// adapter so graph data can remain dark until the graph store cutover.
+// Service owns durable Task state.
 type Service struct {
 	db             *store.DB
 	projects       *project.Service
-	goalProjector  GoalProjector
 	terminalMarker ContinuationTerminalMarker
 	reconciler     ContinuationReconciler
 }
@@ -260,32 +254,10 @@ func (s *Service) SetContinuationTerminalMarker(marker ContinuationTerminalMarke
 	s.terminalMarker = marker
 }
 
-// SetContinuationReconciler wires the post-terminal graph reconciliation
+// SetContinuationReconciler wires post-terminal semantic reconciliation.
 // adapter. The Task domain still owns the Continuation status transition.
 func (s *Service) SetContinuationReconciler(reconciler ContinuationReconciler) {
 	s.reconciler = reconciler
-}
-
-// SetGoalProjector wires the system-owned Task Goal projection. Production
-// leaves this unset until graph cutover; graph tests and migration wiring set it.
-func (s *Service) SetGoalProjector(projector GoalProjector) {
-	s.goalProjector = projector
-}
-
-func (s *Service) projectGoal(taskID string) error {
-	if s.goalProjector == nil {
-		return nil
-	}
-	if err := s.goalProjector.ProjectTaskGoal(taskID); err != nil {
-		return fmt.Errorf("project task goal: %w", err)
-	}
-	return nil
-}
-
-// PrepareContinuationLaunch reconciles the Task-owned Goal before the atomic
-// Continuation pin transaction begins.
-func (s *Service) PrepareContinuationLaunch(taskID string) error {
-	return s.projectGoal(taskID)
 }
 
 // Create launches a new task: it validates the goal and runner, captures an
@@ -345,9 +317,6 @@ func (s *Service) Create(req CreateRequest) (Task, error) {
 	)
 	if err != nil {
 		return Task{}, fmt.Errorf("store task: %w", err)
-	}
-	if err := s.projectGoal(created.ID); err != nil {
-		return created, err
 	}
 	return created, nil
 }
@@ -652,9 +621,9 @@ func (s *Service) RecordRuntimeConfig(taskID, runtimeProfileID string, config ma
 	return version, nil
 }
 
-// ContinuationLaunchRequest is the Task-domain portion of one graph-native
-// atomic Continuation launch. The project-interface coordinator supplies the
-// current graph pin and owns the surrounding transaction.
+// ContinuationLaunchRequest is the Task-domain portion of one atomic
+// Continuation launch. The Blackboard v2 coordinator owns the surrounding
+// transaction and Snapshot pin.
 type ContinuationLaunchRequest struct {
 	ProjectID        string
 	TaskID           string
@@ -800,9 +769,8 @@ func consumeHarnessSteeringTx(ctx context.Context, tx *sql.Tx, taskID, continuat
 	return nil
 }
 
-// CreateContinuation records the next legacy Runtime Continuation for a Task
-// before the harness launches it. Graph-native launch uses
-// CreateContinuationWithSnapshotPin.
+// CreateContinuation records a Task-domain Continuation without launching a
+// Runtime. Production launch uses the Blackboard v2 continuity coordinator.
 func (s *Service) CreateContinuation(taskID, runtimeProfileID, runtimeProvider string, runner Runner) (TaskContinuation, error) {
 	return s.createContinuation(taskID, runtimeProfileID, runtimeProvider, runner, "")
 }
@@ -811,10 +779,6 @@ func (s *Service) createContinuation(taskID, runtimeProfileID, runtimeProvider s
 	if _, err := s.Get(taskID); err != nil {
 		return TaskContinuation{}, err
 	}
-	if err := s.projectGoal(taskID); err != nil {
-		return TaskContinuation{}, err
-	}
-
 	now := time.Now().UTC()
 	continuation := TaskContinuation{
 		RuntimeConfigVersionID:         runtimeConfigVersionID,
@@ -922,7 +886,7 @@ func (s *Service) Continuation(continuationID string) (TaskContinuation, error) 
 }
 
 // TerminalContinuations returns every durably terminal Continuation so daemon
-// startup can audit/recover graph reconciliation crash windows idempotently.
+// startup can recover semantic reconciliation crash windows idempotently.
 func (s *Service) TerminalContinuations() ([]TaskContinuation, error) {
 	rows, err := s.db.Query(
 		`SELECT `+continuationSelectColumns+`
@@ -949,7 +913,7 @@ func (s *Service) TerminalContinuations() ([]TaskContinuation, error) {
 	return continuations, nil
 }
 
-// ActivePinnedContinuations returns graph-native Continuations whose committed
+// ActivePinnedContinuations returns Snapshot-pinned Continuations whose committed
 // task-local files may need regeneration after a daemon crash.
 func (s *Service) ActivePinnedContinuations() ([]TaskContinuation, error) {
 	rows, err := s.db.Query(
@@ -978,7 +942,7 @@ func (s *Service) ActivePinnedContinuations() ([]TaskContinuation, error) {
 }
 
 // MarkContinuationReconciliation stores the durable outcome only after the
-// owning normal audit or unexpected graph recovery has completed.
+// owning semantic reconciliation has completed.
 func (s *Service) MarkContinuationReconciliation(ctx context.Context, continuationID string, status ReconciliationStatus, mutationID string, reconciledAt time.Time) (TaskContinuation, error) {
 	return s.markContinuationReconciliation(ctx, continuationID, status, mutationID, reconciledAt, nil)
 }
@@ -1022,7 +986,7 @@ func (s *Service) markContinuationReconciliation(ctx context.Context, continuati
 				ORDER BY seq DESC,id DESC LIMIT 1`, continuationID, string(EventKindLifecycle), phase).Scan(&storedPayloadJSON)
 			if err == nil && storedPayloadJSON == string(payloadJSON) {
 				if err := tx.Commit(); err != nil {
-					return TaskContinuation{}, fmt.Errorf("commit repeated Continuation reconciliation audit: %w", err)
+					return TaskContinuation{}, fmt.Errorf("commit repeated Continuation reconciliation: %w", err)
 				}
 				return s.Continuation(continuationID)
 			}
@@ -1215,9 +1179,6 @@ func (s *Service) UpdateStatus(taskID string, status Status) (Task, error) {
 		string(found.Status), found.UpdatedAt.Format(time.RFC3339Nano), found.ID)
 	if err != nil {
 		return Task{}, fmt.Errorf("update status: %w", err)
-	}
-	if err := s.projectGoal(found.ID); err != nil {
-		return found, err
 	}
 	return found, nil
 }
