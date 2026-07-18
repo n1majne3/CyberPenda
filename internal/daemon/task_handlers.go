@@ -570,7 +570,6 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 			ResumedMessage:  launchGoal,
 			ConfigPath:      configPath,
 			MCPConfigPath:   mcpConfigPath,
-			Sandbox:         sandbox,
 		})
 		if err != nil {
 			return taskLaunchPlan{}, err
