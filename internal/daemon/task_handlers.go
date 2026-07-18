@@ -139,6 +139,7 @@ type taskLaunchPlan struct {
 	Adapter                      runtime.Adapter
 	RuntimeConfig                map[string]any
 	CapturedRuntimeConfig        map[string]any
+	MaterializedCredentials      map[string]string
 	Metadata                     func() (runtime.NativeSessionMetadata, error)
 	StopConfirmation             runtime.StopConfirmation
 	LaunchModelOverride          string
@@ -161,6 +162,7 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 	if !plan.BlackboardV2 {
 		return fmt.Errorf("Blackboard v2 launch projection is required")
 	}
+	server.logTaskLaunchStage(created, "prepare_continuation")
 	continuation, boundPlan, err := server.prepareBlackboardV2ContinuationLaunch(created, plan, goal)
 	if err != nil {
 		return err
@@ -368,6 +370,7 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string, la
 }
 
 func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string) (taskLaunchPlan, error) {
+	server.logTaskLaunchStage(created, "build_plan")
 	profile, err := server.profiles.Get(created.RuntimeProfileID)
 	if err != nil {
 		return taskLaunchPlan{}, err
@@ -402,17 +405,26 @@ func (server *Server) prepareBlackboardV2TaskLaunchPlan(created task.Task, goal 
 			profile = runner.BlackboardV2ProfileWithModelSnapshot(profile, resolved)
 		}
 	}
+	materializedCredentials, err := runner.MaterializeLaunchCredentials(profile, runner.ProjectionRequest{
+		ProjectID:     created.ProjectID,
+		Credentials:   server.creds,
+		ModelSnapshot: modelSnapshot,
+	})
+	if err != nil {
+		return taskLaunchPlan{}, err
+	}
 	capturedRuntimeConfig := capturedTaskRuntimeConfig(created, profile, runtimeprofile.GeneratedConfig(profile), blackboardV2ModelSnapshotPreview(modelSnapshot), launchModelOverride)
 	return taskLaunchPlan{
-		CapturedRuntimeConfig: capturedRuntimeConfig,
-		LaunchModelOverride:   launchModelOverride,
-		NativeResumeSessionID: nativeResumeSessionID,
-		ResolvedProfile:       profile,
-		ModelSnapshot:         modelSnapshot,
-		SkillBundles:          append([]skill.Bundle(nil), skillBundles...),
-		LaunchGoal:            goal,
-		BlackboardV2:          true,
-		ValidatedLayout:       &layout,
+		CapturedRuntimeConfig:   capturedRuntimeConfig,
+		MaterializedCredentials: materializedCredentials,
+		LaunchModelOverride:     launchModelOverride,
+		NativeResumeSessionID:   nativeResumeSessionID,
+		ResolvedProfile:         profile,
+		ModelSnapshot:           modelSnapshot,
+		SkillBundles:            append([]skill.Bundle(nil), skillBundles...),
+		LaunchGoal:              goal,
+		BlackboardV2:            true,
+		ValidatedLayout:         &layout,
 	}, nil
 }
 
@@ -426,10 +438,12 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	var profile runtimeprofile.Profile
 	var skillBundles []skill.Bundle
 	var capturedModelSnapshot *modelprovider.Snapshot
+	var materializedCredentials map[string]string
 	if captured != nil {
 		profile = captured.ResolvedProfile
 		skillBundles = append([]skill.Bundle(nil), captured.SkillBundles...)
 		capturedModelSnapshot = captured.ModelSnapshot
+		materializedCredentials = captured.MaterializedCredentials
 	} else {
 		var err error
 		profile, err = server.profiles.Get(created.RuntimeProfileID)
@@ -494,19 +508,20 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		}
 	}
 	projectionRequest := runner.ProjectionRequest{
-		ProjectID:           created.ProjectID,
-		TaskID:              created.ID,
-		ScopeSnapshot:       created.ScopeSnapshot,
-		Credentials:         server.creds,
-		DaemonAddr:          server.listenAddr,
-		AuthToken:           authToken,
-		Sandbox:             sandbox,
-		RuntimePlugins:      server.runtimePlugins,
-		RuntimeExtensions:   server.runtimeExtensions,
-		ModelProviders:      server.modelProviders,
-		ModelSnapshot:       capturedModelSnapshot,
-		LaunchModelOverride: launchModelOverride,
-		SkillBundles:        skillBundles,
+		ProjectID:               created.ProjectID,
+		TaskID:                  created.ID,
+		ScopeSnapshot:           created.ScopeSnapshot,
+		Credentials:             server.creds,
+		MaterializedCredentials: materializedCredentials,
+		DaemonAddr:              server.listenAddr,
+		AuthToken:               authToken,
+		Sandbox:                 sandbox,
+		RuntimePlugins:          server.runtimePlugins,
+		RuntimeExtensions:       server.runtimeExtensions,
+		ModelProviders:          server.modelProviders,
+		ModelSnapshot:           capturedModelSnapshot,
+		LaunchModelOverride:     launchModelOverride,
+		SkillBundles:            skillBundles,
 	}
 	var projection runner.ConfigProjection
 	if v2 {
@@ -569,18 +584,19 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	sandboxNetwork := runner.SandboxNetworkDefault
 	launchCtx := runner.TaskContext{Sandbox: sandbox}
 	processEnv, err := runner.LaunchProcessEnvWithCredentials(layout, launchProfile, sandbox, launchCtx, runner.ProjectionRequest{
-		ProjectID:         created.ProjectID,
-		TaskID:            created.ID,
-		ScopeSnapshot:     created.ScopeSnapshot,
-		Credentials:       server.creds,
-		DaemonAddr:        server.listenAddr,
-		AuthToken:         authToken,
-		Sandbox:           sandbox,
-		RuntimePlugins:    server.runtimePlugins,
-		RuntimeExtensions: server.runtimeExtensions,
-		ModelProviders:    server.modelProviders,
-		ModelSnapshot:     projection.ModelSnapshot,
-		SkillBundles:      skillBundles,
+		ProjectID:               created.ProjectID,
+		TaskID:                  created.ID,
+		ScopeSnapshot:           created.ScopeSnapshot,
+		Credentials:             server.creds,
+		MaterializedCredentials: materializedCredentials,
+		DaemonAddr:              server.listenAddr,
+		AuthToken:               authToken,
+		Sandbox:                 sandbox,
+		RuntimePlugins:          server.runtimePlugins,
+		RuntimeExtensions:       server.runtimeExtensions,
+		ModelProviders:          server.modelProviders,
+		ModelSnapshot:           projection.ModelSnapshot,
+		SkillBundles:            skillBundles,
 	})
 	if err != nil {
 		return taskLaunchPlan{}, err
@@ -728,19 +744,20 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	}
 
 	return taskLaunchPlan{
-		Adapter:               adapter,
-		RuntimeConfig:         runtimeConfig,
-		CapturedRuntimeConfig: capturedRuntimeConfig,
-		Metadata:              metadata,
-		StopConfirmation:      stopConfirmation,
-		LaunchModelOverride:   launchModelOverride,
-		NativeResumeSessionID: nativeResumeSessionID,
-		ResolvedProfile:       launchProfile,
-		ModelSnapshot:         projection.ModelSnapshot,
-		SkillBundles:          append([]skill.Bundle(nil), skillBundles...),
-		LaunchGoal:            launchGoal,
-		BlackboardV2:          v2,
-		ValidatedLayout:       &layout,
+		Adapter:                 adapter,
+		RuntimeConfig:           runtimeConfig,
+		CapturedRuntimeConfig:   capturedRuntimeConfig,
+		MaterializedCredentials: materializedCredentials,
+		Metadata:                metadata,
+		StopConfirmation:        stopConfirmation,
+		LaunchModelOverride:     launchModelOverride,
+		NativeResumeSessionID:   nativeResumeSessionID,
+		ResolvedProfile:         launchProfile,
+		ModelSnapshot:           projection.ModelSnapshot,
+		SkillBundles:            append([]skill.Bundle(nil), skillBundles...),
+		LaunchGoal:              launchGoal,
+		BlackboardV2:            v2,
+		ValidatedLayout:         &layout,
 	}, nil
 }
 

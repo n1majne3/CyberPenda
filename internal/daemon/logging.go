@@ -97,3 +97,13 @@ func (server *Server) logTask(t task.Task, phase, detail string) {
 	}
 	server.logger.Printf("task %s runner=%s provider=%s id=%s goal=%q detail=%q", phase, t.Runner, t.RuntimeProfileID, t.ID, goal, detail)
 }
+
+// logTaskLaunchStage records the synchronous preparation boundary entered by a
+// task launch. If one of these operations stalls, the last stage remains
+// visible even though the enclosing HTTP request has not returned yet.
+func (server *Server) logTaskLaunchStage(t task.Task, stage string) {
+	if server.logger == nil {
+		return
+	}
+	server.logger.Printf("task launch stage=%s runner=%s profile=%s id=%s", stage, t.Runner, t.RuntimeProfileID, t.ID)
+}

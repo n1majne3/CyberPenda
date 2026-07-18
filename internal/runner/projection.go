@@ -22,19 +22,22 @@ var secretEnvKeyPattern = regexp.MustCompile(`(?i)(token|api[_-]?key|secret|pass
 
 // ProjectionRequest supplies task and daemon context for launch projection.
 type ProjectionRequest struct {
-	ProjectID           string
-	TaskID              string
-	ScopeSnapshot       project.Scope
-	Credentials         *credential.Service
-	DaemonAddr          string
-	AuthToken           string
-	Sandbox             bool
-	RuntimePlugins      *runtimeplugin.Registry
-	RuntimeExtensions   *runtimeextension.Registry
-	ModelProviders      modelprovider.ProviderGetter
-	ModelSnapshot       *modelprovider.Snapshot
-	LaunchModelOverride string
-	SkillBundles        []skill.Bundle
+	ProjectID     string
+	TaskID        string
+	ScopeSnapshot project.Scope
+	Credentials   *credential.Service
+	// MaterializedCredentials is an in-memory launch snapshot. A non-nil map
+	// prevents projection from resolving credentials through the Store again.
+	MaterializedCredentials map[string]string
+	DaemonAddr              string
+	AuthToken               string
+	Sandbox                 bool
+	RuntimePlugins          *runtimeplugin.Registry
+	RuntimeExtensions       *runtimeextension.Registry
+	ModelProviders          modelprovider.ProviderGetter
+	ModelSnapshot           *modelprovider.Snapshot
+	LaunchModelOverride     string
+	SkillBundles            []skill.Bundle
 }
 
 // ProjectRuntimeConfig writes provider-specific runtime files into the task-local
@@ -666,6 +669,13 @@ func enabledExtensionInstallRefs(profile runtimeprofile.Profile) []string {
 }
 
 func resolveMaterializedCredentials(profile runtimeprofile.Profile, req ProjectionRequest) (map[string]string, error) {
+	if req.MaterializedCredentials != nil {
+		materialized := cloneMaterializedCredentials(req.MaterializedCredentials)
+		if req.ModelSnapshot != nil && req.ModelSnapshot.APIKeyEnv != "" && strings.TrimSpace(materialized[req.ModelSnapshot.APIKeyEnv]) == "" {
+			return nil, fmt.Errorf("model provider API key env %s is not configured", req.ModelSnapshot.APIKeyEnv)
+		}
+		return materialized, nil
+	}
 	if req.ModelSnapshot != nil && req.ModelSnapshot.APIKeyEnv != "" {
 		if value, ok := materializeModelProviderAPIKey(req); ok {
 			return map[string]string{req.ModelSnapshot.APIKeyEnv: value}, nil
@@ -684,6 +694,28 @@ func resolveMaterializedCredentials(profile runtimeprofile.Profile, req Projecti
 		return nil, nil
 	}
 	return req.Credentials.ResolveMaterializedEnv(req.ProjectID, profile.Fields.CredentialRefs)
+}
+
+// MaterializeLaunchCredentials resolves every credential needed by one launch
+// before callers enter a Store transaction. The returned values are secret and
+// must remain in memory; they are never part of generated config previews.
+func MaterializeLaunchCredentials(profile runtimeprofile.Profile, req ProjectionRequest) (map[string]string, error) {
+	materialized, err := resolveMaterializedCredentials(profile, req)
+	if err != nil {
+		return nil, err
+	}
+	if materialized == nil {
+		return map[string]string{}, nil
+	}
+	return cloneMaterializedCredentials(materialized), nil
+}
+
+func cloneMaterializedCredentials(source map[string]string) map[string]string {
+	cloned := make(map[string]string, len(source))
+	for key, value := range source {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func buildCodexConfigTOML(profile runtimeprofile.Profile, mcpServers []runtimeprofile.MCPServer) string {
@@ -1066,7 +1098,14 @@ func LaunchProcessEnvWithCredentials(layout Layout, profile runtimeprofile.Profi
 }
 
 func materializeModelProviderAPIKey(req ProjectionRequest) (string, bool) {
-	if req.Credentials == nil || req.ModelSnapshot == nil || strings.TrimSpace(req.ModelSnapshot.APIKeyEnv) == "" {
+	if req.ModelSnapshot == nil || strings.TrimSpace(req.ModelSnapshot.APIKeyEnv) == "" {
+		return "", false
+	}
+	if req.MaterializedCredentials != nil {
+		value := strings.TrimSpace(req.MaterializedCredentials[req.ModelSnapshot.APIKeyEnv])
+		return value, value != ""
+	}
+	if req.Credentials == nil {
 		return "", false
 	}
 	resolution, err := req.Credentials.Resolve(req.ModelSnapshot.APIKeyEnv, req.ProjectID)

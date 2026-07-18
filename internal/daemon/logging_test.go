@@ -106,6 +106,11 @@ func TestTaskLifecycleLogsLaunchAndCompletion(t *testing.T) {
 	if !strings.Contains(output, "task launched") || !strings.Contains(output, "task completed") {
 		t.Fatalf("expected launch and completion log lines, got:\n%s", output)
 	}
+	for _, stage := range []string{"build_plan", "prepare_continuation"} {
+		if !strings.Contains(output, "task launch stage="+stage) {
+			t.Fatalf("expected task launch stage %q in logs, got:\n%s", stage, output)
+		}
+	}
 	if !strings.Contains(output, taskID) {
 		t.Fatalf("expected task id %q in logs, got:\n%s", taskID, output)
 	}
