@@ -118,9 +118,12 @@ func TestManualSandboxWorkflowBuildsAndPublishesImagePerPlatform(t *testing.T) {
 	assertContains(t, workflow, "${AGENT_TOOLSDIRECTORY:-}")
 	assertContains(t, workflow, "docker system prune -af")
 	assertContains(t, workflow, "matrix:")
-	assertContains(t, workflow, "platform:")
+	assertContains(t, workflow, "include:")
 	assertContains(t, workflow, "linux/amd64")
 	assertContains(t, workflow, "linux/arm64")
+	assertContains(t, workflow, "runner: ubuntu-latest")
+	assertContains(t, workflow, "runner: ubuntu-24.04-arm")
+	assertContains(t, workflow, "runs-on: ${{ matrix.runner }}")
 	assertContains(t, workflow, "platforms: ${{ matrix.platform }}")
 	assertContains(t, workflow, "push-by-digest=true")
 	assertContains(t, workflow, "steps.build.outputs.digest")
@@ -131,6 +134,9 @@ func TestManualSandboxWorkflowBuildsAndPublishesImagePerPlatform(t *testing.T) {
 
 	if strings.Contains(workflow, "file: docker/pentest-sandbox/Dockerfile\n          platforms: linux/amd64,linux/arm64") {
 		t.Fatal("manual sandbox workflow must not build both sandbox platforms in one Buildx invocation")
+	}
+	if strings.Contains(workflow, "docker/setup-qemu-action") {
+		t.Fatal("manual sandbox workflow must use native per-platform runners instead of QEMU")
 	}
 
 	sandboxStart := strings.Index(workflow, "publish-sandbox-image:")
