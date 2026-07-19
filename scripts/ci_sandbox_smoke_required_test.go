@@ -33,6 +33,11 @@ func TestCISandboxSmokeRequired(t *testing.T) {
 			wantOut: "required=true",
 		},
 		{
+			name:    "requires smoke for provider bridge changes",
+			files:   "cmd/pentest-claude-sdk-bridge/bridge.mjs\n",
+			wantOut: "required=true",
+		},
+		{
 			name:    "requires smoke for runner sandbox command changes",
 			files:   "internal/runner/runner.go\n",
 			wantOut: "required=true",

@@ -51,6 +51,51 @@ func (failingContinuationBindSession) BindContinuation(string) error {
 	return errors.New("continuation bind rejected")
 }
 
+func TestProviderRuntimeOutputPersistsOnlyTranscriptFields(t *testing.T) {
+	server, err := NewServer(Config{DBPath: filepath.Join(t.TempDir(), "pentest.db"), DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	projectRecord, err := server.projects.Create("Project", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: projectRecord.ID, Goal: "inspect target", RuntimeProfileID: "profile", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation, err := server.tasks.CreateContinuation(created.ID, "profile", "claude_code", task.RunnerSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.tasks.UpdateContinuationStatus(continuation.ID, task.StatusRunning); err != nil {
+		t.Fatal(err)
+	}
+
+	server.persistProviderSessionEvent(created.ID, task.EventKindRuntimeOutput, task.EventPayload{
+		"provider": "claude_code", "provider_event": "claude/runtime_output",
+		"session_id": "claude-1", "provider_turn_id": "turn-1",
+		"stream": "assistant", "text": `{"type":"assistant","message":{"content":[{"type":"text","text":"ready"}]}}`,
+		"raw": "must not persist",
+	})
+
+	events, err := server.tasks.Events(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Kind != task.EventKindRuntimeOutput {
+		t.Fatalf("events = %#v", events)
+	}
+	if events[0].Payload["stream"] != "assistant" || events[0].Payload["text"] == "" {
+		t.Fatalf("runtime output payload = %#v", events[0].Payload)
+	}
+	if _, leaked := events[0].Payload["raw"]; leaked {
+		t.Fatalf("runtime output leaked raw provider payload: %#v", events[0].Payload)
+	}
+}
+
 func TestNativeSteerRecordsCanonicalConversationAndOrderedProviderEvents(t *testing.T) {
 	server, err := NewServer(Config{DBPath: filepath.Join(t.TempDir(), "pentest.db"), DisableBuiltinSkills: true})
 	if err != nil {

@@ -28,7 +28,20 @@ function LocationProbe({ onChange }: { onChange: (search: string) => void }) {
   return null;
 }
 
-function stubTaskDetailApi(taskOverrides: Record<string, unknown> = {}) {
+function stubTaskDetailApi(
+  taskOverrides: Record<string, unknown> = {},
+  transcriptEntries: Record<string, unknown>[] = [
+    {
+      id: "entry-1",
+      seq: 1,
+      continuation: 1,
+      kind: "message",
+      role: "assistant",
+      text: "Conversation should be hidden by default",
+      created_at: "2026-01-01T00:00:00Z",
+    },
+  ],
+) {
   const scrollIntoView = vi.fn();
   Object.defineProperty(Element.prototype, "scrollIntoView", {
     value: scrollIntoView,
@@ -42,17 +55,7 @@ function stubTaskDetailApi(taskOverrides: Record<string, unknown> = {}) {
     },
     "/api/projects/project-1/tasks/task-1/transcript": {
       task_id: "task-1",
-      entries: [
-        {
-          id: "entry-1",
-          seq: 1,
-          continuation: 1,
-          kind: "message",
-          role: "assistant",
-          text: "Conversation should be hidden by default",
-          created_at: "2026-01-01T00:00:00Z",
-        },
-      ],
+      entries: transcriptEntries,
     },
     "/api/projects/project-1/tasks/task-1": {
       id: "task-1",
@@ -145,17 +148,22 @@ describe("TaskDetailPage", () => {
     vi.restoreAllMocks();
   });
 
-  it("opens on the timeline tab before conversation", async () => {
+  it("opens on the interactive conversation by default", async () => {
     stubTaskDetailApi();
 
     renderPage();
 
     const tabs = await screen.findAllByRole("button", { name: /^(Timeline|Conversation)$/ });
-    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(["Timeline", "Conversation"]);
+    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(["Conversation", "Timeline"]);
     expect(tabs[0]).toHaveAttribute("aria-pressed", "true");
     expect(tabs[1]).toHaveAttribute("aria-pressed", "false");
-    expect(await screen.findByText("Timeline opened first")).toBeInTheDocument();
-    expect(screen.queryByText("Conversation should be hidden by default")).not.toBeInTheDocument();
+    expect(await screen.findByText("Conversation should be hidden by default")).toBeInTheDocument();
+    expect(screen.getByTestId("conversation-workspace")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Task message" })).toBeInTheDocument();
+    expect(screen.getByTestId("task-workspace")).toHaveClass("overflow-visible", "md:overflow-hidden");
+    expect(screen.getByTestId("task-composer")).toHaveClass("fixed", "inset-x-0", "bottom-0", "md:static");
+    expect(screen.getByTestId("conversation-workspace")).toHaveClass("pb-44", "md:pb-5");
+    expect(screen.queryByText("Timeline opened first")).not.toBeInTheDocument();
   });
 
   it("deep-links and updates the task view tab", async () => {
@@ -183,10 +191,34 @@ describe("TaskDetailPage", () => {
     expect(message).toHaveClass("rounded-lg");
   });
 
+  it("renders safe Claude runtime text as a visible assistant message", async () => {
+    stubTaskDetailApi({}, [
+      {
+        id: "runtime-entry",
+        seq: 2,
+        continuation: 1,
+        kind: "runtime_output",
+        role: "runtime",
+        text: JSON.stringify({
+          type: "assistant",
+          message: { role: "assistant", content: [{ type: "text", text: "Inspecting the scoreboard now." }] },
+        }),
+        stream: "assistant",
+        created_at: "2026-01-01T00:00:01Z",
+      },
+    ]);
+
+    renderPage();
+
+    expect(await screen.findByText("Inspecting the scoreboard now.")).toBeInTheDocument();
+    expect(screen.getByTestId("transcript-message-bubble")).toBeInTheDocument();
+    expect(screen.queryByText(/"type":"assistant"/)).not.toBeInTheDocument();
+  });
+
   it("does not auto-scroll the default timeline view to the bottom", async () => {
     const { scrollIntoView } = stubTaskDetailApi();
 
-    renderPage();
+    renderPage("/projects/project-1/tasks/task-1?view=timeline");
 
     expect(await screen.findByText("Timeline opened first")).toBeInTheDocument();
     expect(scrollIntoView).not.toHaveBeenCalled();
@@ -197,7 +229,7 @@ describe("TaskDetailPage", () => {
 
     renderPage();
 
-    expect(await screen.findByText("Timeline opened first")).toBeInTheDocument();
+    expect(await screen.findByText("Conversation should be hidden by default")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Timeline" })).toHaveClass("focus-visible:ring-2");
     expect(screen.getByRole("button", { name: "Conversation" })).toHaveClass("focus-visible:ring-2");
     expect(screen.getByRole("button", { name: "Scroll to top" })).toHaveClass("focus-visible:ring-2");
@@ -226,7 +258,7 @@ describe("TaskDetailPage", () => {
 
     expect(await screen.findByRole("button", { name: /Resume$/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Resume with handoff/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Queue steer/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Resume and send/ })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Continuation model provider" })).toHaveClass("focus-visible:ring-2");
     expect(screen.getByRole("combobox", { name: "Continuation model" })).toHaveClass("focus-visible:ring-2");
     expect(screen.getByRole("option", { name: "MiMo" })).toBeInTheDocument();
@@ -254,6 +286,9 @@ describe("TaskDetailPage", () => {
     renderPage();
 
     expect(await screen.findByText("perm-1")).toBeInTheDocument();
+    expect(screen.getByTestId("conversation-workspace")).toContainElement(
+      screen.getByRole("region", { name: "Provider permission requests" }),
+    );
     await user.click(screen.getByRole("button", { name: "Allow provider permission perm-1" }));
 
     const permissionCall = fetchMock.mock.calls.find(([input]) =>
@@ -269,23 +304,88 @@ describe("TaskDetailPage", () => {
 
     renderPage();
 
-    await screen.findByText("Timeline opened first");
+    await screen.findByText("Conversation should be hidden by default");
     await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model provider" }), "mimo");
     await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model" }), "mimo-v2-pro");
     await user.type(screen.getByPlaceholderText("Focus on admin.example.com next…"), "continue with mimo");
-    await user.click(screen.getByRole("button", { name: /Queue steer/ }));
+    await user.click(screen.getByRole("button", { name: /Resume and send/ }));
 
     const steerCall = fetchMock.mock.calls.find(([input]) =>
       String(input).includes("/api/projects/project-1/tasks/task-1/steer/queue"),
     );
     expect(steerCall?.[1]).toMatchObject({
       method: "POST",
-      body: JSON.stringify({
-        directive: "continue with mimo",
-        model_provider_id: "mimo",
-        model_override: "mimo-v2-pro",
-      }),
+      body: JSON.stringify({ directive: "continue with mimo", model_provider_id: "mimo", model_override: "mimo-v2-pro" }),
     });
+    expect(fetchMock.mock.calls.some(([input, init]) =>
+      String(input).endsWith("/api/projects/project-1/tasks/task-1/resume") && init?.method === "POST",
+    )).toBe(true);
+  });
+
+  it("sends an active Task message through the native conversation route", async () => {
+    const { fetchMock } = stubTaskDetailApi({
+      status: "running",
+      runtime_controls: {
+        native_resume_available: false,
+        resume_available: false,
+        queue_steer_available: true,
+        interrupt_steer_available: false,
+        native_steer_available: true,
+        native_steer_mode: "in_turn_steer",
+        native_session_captured: true,
+        same_runtime_provider_only: true,
+        runtime_provider: "codex",
+      },
+    });
+    const user = userEvent.setup();
+
+    renderPage();
+
+    const input = await screen.findByRole("textbox", { name: "Task message" });
+    await user.type(input, "check the admin route");
+    await user.keyboard("{Enter}");
+
+    const steerCall = fetchMock.mock.calls.find(([input]) =>
+      String(input).endsWith("/api/projects/project-1/tasks/task-1/steer"),
+    );
+    expect(steerCall?.[1]?.method).toBe("POST");
+    expect(JSON.parse(String(steerCall?.[1]?.body))).toMatchObject({ message: "check the admin route" });
+  });
+
+  it("keeps Shift+Enter as a newline and sends the composed message on Enter", async () => {
+    const { fetchMock } = stubTaskDetailApi({
+      status: "running",
+      runtime_controls: {
+        native_resume_available: false,
+        resume_available: false,
+        queue_steer_available: true,
+        interrupt_steer_available: false,
+        native_steer_available: true,
+        native_steer_mode: "in_turn_steer",
+        native_session_captured: true,
+        same_runtime_provider_only: true,
+        runtime_provider: "codex",
+      },
+    });
+    const user = userEvent.setup();
+
+    renderPage();
+
+    const input = await screen.findByRole("textbox", { name: "Task message" });
+    await user.type(input, "line one");
+    await user.keyboard("{Shift>}{Enter}{/Shift}line two");
+
+    expect(input).toHaveValue("line one\nline two");
+    expect(fetchMock.mock.calls.some(([request]) =>
+      String(request).endsWith("/api/projects/project-1/tasks/task-1/steer"),
+    )).toBe(false);
+
+    await user.keyboard("{Enter}");
+
+    const steerCall = fetchMock.mock.calls.find(([request]) =>
+      String(request).endsWith("/api/projects/project-1/tasks/task-1/steer"),
+    );
+    expect(JSON.parse(String(steerCall?.[1]?.body))).toMatchObject({ message: "line one\nline two" });
   });
 
   it("sends native steer as one idempotent Task Conversation message", async () => {
@@ -308,7 +408,7 @@ describe("TaskDetailPage", () => {
 
     renderPage();
 
-    await screen.findByText("Timeline opened first");
+    await screen.findByText("Conversation should be hidden by default");
     await user.type(screen.getByPlaceholderText("Focus on admin.example.com next…"), "focus on admin");
     await user.click(screen.getByRole("button", { name: /Native interrupt & send/ }));
 

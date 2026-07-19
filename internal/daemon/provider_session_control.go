@@ -121,6 +121,13 @@ func (server *Server) persistProviderSessionEvent(taskID string, kind task.Event
 			redacted[key] = value
 		}
 	}
+	if kind == task.EventKindRuntimeOutput {
+		for _, key := range []string{"stream", "text"} {
+			if value, ok := payload[key]; ok {
+				redacted[key] = value
+			}
+		}
+	}
 	if redacted["mode"] == string(runtime.ProviderSessionModePermissionResponse) && redacted["outcome"] == "requested" {
 		redacted["phase"] = "provider_permission_requested"
 	}

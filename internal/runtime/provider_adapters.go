@@ -507,6 +507,28 @@ func (s *providerSessionAdapter) HandleEvent(event SandboxBridgeEvent, emit Prov
 		return
 	}
 	method := strings.ToLower(event.Method)
+	if method == "claude/runtime_output" {
+		text := providerJSONValue(params, "text")
+		if text == "" {
+			return
+		}
+		sessionID := providerJSONValue(params, "session_id", "sessionId")
+		if sessionID == "" {
+			sessionID = s.SessionID()
+		}
+		turnID := providerJSONValue(params, "turn_id", "turnId")
+		if turnID == "" {
+			turnID = s.currentTurn()
+		}
+		if emit != nil {
+			emit(task.EventKindRuntimeOutput, task.EventPayload{
+				"provider": s.provider, "provider_event": event.Method,
+				"session_id": sessionID, "provider_turn_id": turnID,
+				"stream": providerJSONValue(params, "stream"), "text": text,
+			})
+		}
+		return
+	}
 	mode := ProviderSessionModeSendTurn
 	outcome := ""
 	switch {

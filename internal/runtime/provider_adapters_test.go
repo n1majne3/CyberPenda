@@ -503,6 +503,30 @@ func TestProviderSessionAdaptersParseProtocolNotificationsAsRedactedEvents(t *te
 	}
 }
 
+func TestClaudeProviderSessionProjectsVisibleRuntimeOutput(t *testing.T) {
+	var kinds []task.EventKind
+	var events []task.EventPayload
+	session := NewClaudeCodeProviderSession(ClaudeCodeProviderSessionConfig{
+		Transport: &fakeProviderTransport{}, SessionID: "claude-1", ActiveTurnID: "turn-1",
+	})
+	session.HandleEvent(SandboxBridgeEvent{
+		Method: "claude/runtime_output",
+		Params: json.RawMessage(`{"session_id":"claude-1","turn_id":"turn-1","stream":"assistant","text":"{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"ready\"}]}}"}`),
+	}, func(kind task.EventKind, payload task.EventPayload) {
+		kinds = append(kinds, kind)
+		events = append(events, payload)
+	})
+	if len(events) != 1 || len(kinds) != 1 || kinds[0] != task.EventKindRuntimeOutput {
+		t.Fatalf("events = %#v kinds = %#v", events, kinds)
+	}
+	if events[0]["stream"] != "assistant" || events[0]["text"] == "" {
+		t.Fatalf("runtime output = %#v", events[0])
+	}
+	if _, leaked := events[0]["params"]; leaked {
+		t.Fatalf("runtime output leaked protocol params: %#v", events[0])
+	}
+}
+
 func TestProviderSessionAdapterUsesDaemonEventSinkForUnsolicitedPermission(t *testing.T) {
 	var events []task.EventPayload
 	session := NewPiProviderSession(PiProviderSessionConfig{Transport: &fakeProviderTransport{}, SessionID: "pi-1", ActiveTurnID: "turn-1"})

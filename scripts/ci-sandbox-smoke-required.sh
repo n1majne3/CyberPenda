@@ -22,6 +22,8 @@ while IFS= read -r path; do
   case "$path" in
     .github/workflows/ci.yml|\
     Makefile|\
+    cmd/pentest-provider-bridge/*|\
+    cmd/pentest-claude-sdk-bridge/*|\
     docker/pentest-sandbox/*|\
     scripts/ci-sandbox-smoke-required.sh|\
     scripts/smoke-sandbox-mcp-live.sh|\

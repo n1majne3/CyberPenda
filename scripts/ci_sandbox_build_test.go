@@ -93,6 +93,28 @@ func TestSandboxDockerfileKeepsKaliLinuxHeadlessMetaPackage(t *testing.T) {
 	}
 }
 
+func TestSandboxDockerfileKeepsProviderBridgeSourceInLateCacheLayer(t *testing.T) {
+	repoRoot := repoRoot(t)
+	dockerfileBytes, err := os.ReadFile(filepath.Join(repoRoot, "docker", "pentest-sandbox", "Dockerfile"))
+	if err != nil {
+		t.Fatalf("read sandbox Dockerfile: %v", err)
+	}
+	dockerfile := string(dockerfileBytes)
+
+	sdkInstall := strings.Index(dockerfile, "npm install --prefix /opt/pentest/claude-sdk-bridge")
+	hostEntrypoint := strings.Index(dockerfile, "COPY docker/pentest-sandbox/host-proxy-only-entrypoint.sh")
+	bridgeSource := strings.Index(dockerfile, "COPY cmd/pentest-claude-sdk-bridge/bridge.mjs")
+	if sdkInstall == -1 || hostEntrypoint == -1 || bridgeSource == -1 {
+		t.Fatalf("sandbox Dockerfile is missing Claude bridge build steps")
+	}
+	if sdkInstall > hostEntrypoint {
+		t.Fatal("Claude Agent SDK dependency layer should remain before heavyweight sandbox tools")
+	}
+	if bridgeSource < hostEntrypoint {
+		t.Fatal("Claude bridge source should be copied after heavyweight sandbox layers for cache reuse")
+	}
+}
+
 func TestManualSandboxWorkflowBuildsAndPublishesImagePerPlatform(t *testing.T) {
 	repoRoot := repoRoot(t)
 	workflowPath := filepath.Join(repoRoot, ".github", "workflows", "publish-sandbox.yml")
