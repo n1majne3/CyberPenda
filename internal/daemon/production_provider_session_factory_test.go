@@ -192,7 +192,7 @@ func TestProductionProviderSessionFactoryFailsClosedOnChangedDurableThread(t *te
 func TestProductionProviderSessionFactoryOpensClaudeAgentSDKBridge(t *testing.T) {
 	docker := newProductionFactoryDocker()
 	factory := NewProductionProviderSessionFactory(ProductionProviderSessionFactoryConfig{Docker: docker})
-	legacy := runtime.NewDockerSandboxAdapter(runtime.DockerSandboxConfig{Name: "claude_code", Image: "sandbox:test", CreateArgs: []string{"create", "sandbox:test", "claude", "--print", "goal"}})
+	legacy := runtime.NewDockerSandboxAdapter(runtime.DockerSandboxConfig{Name: "claude_code", Image: "sandbox:test", CreateArgs: []string{"create", "sandbox:test", "claude", "--model", "claude-test", "--settings", "/task/runtime-home/claude/settings.json", "--print", "goal"}})
 	methods := make(chan string, 2)
 	go func() {
 		scanner := bufio.NewScanner(docker.inputR)
@@ -205,7 +205,7 @@ func TestProductionProviderSessionFactoryOpensClaudeAgentSDKBridge(t *testing.T)
 	}()
 	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
 		Task: task.Task{ID: "task-claude"}, Continuation: task.TaskContinuation{ID: "continuation-claude", NativeSessionID: "claude-durable"},
-		Provider: runtimeprofile.ProviderClaudeCode, Runner: task.RunnerSandbox, LegacyAdapter: legacy, RuntimeConfig: map[string]any{"launch_model_override": "claude-test"},
+		Provider: runtimeprofile.ProviderClaudeCode, Runner: task.RunnerSandbox, LegacyAdapter: legacy,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -225,7 +225,7 @@ func TestProductionProviderSessionFactoryOpensClaudeAgentSDKBridge(t *testing.T)
 	docker.mu.Lock()
 	joined := strings.Join(docker.createArgs, " ")
 	docker.mu.Unlock()
-	if !strings.Contains(joined, "sandbox:test /usr/local/bin/pentest-claude-sdk-bridge --cwd /task/workdir --model claude-test --resume claude-durable") {
+	if !strings.Contains(joined, "sandbox:test /usr/local/bin/pentest-claude-sdk-bridge --cwd /task/workdir --model claude-test --settings /task/runtime-home/claude/settings.json --resume claude-durable") {
 		t.Fatalf("Claude create args = %q", joined)
 	}
 	if strings.Contains(joined, " -t ") || strings.Contains(joined, " --tty ") {

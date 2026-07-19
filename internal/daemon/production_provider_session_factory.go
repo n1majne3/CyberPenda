@@ -128,6 +128,9 @@ func (f *ProductionProviderSessionFactory) Open(ctx context.Context, request Pro
 		// long-lived Query and does not invoke the Claude CLI's private protocol.
 		bridgeCommand = []string{"/usr/local/bin/pentest-claude-sdk-bridge", "--cwd", "/task/workdir"}
 		model, _ := request.RuntimeConfig["launch_model_override"].(string)
+		if strings.TrimSpace(model) == "" {
+			model = argValue(legacyArgs, "--model")
+		}
 		if model = strings.TrimSpace(model); model != "" {
 			bridgeCommand = append(bridgeCommand, "--model", model)
 		}
