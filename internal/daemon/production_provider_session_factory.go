@@ -15,9 +15,9 @@ import (
 )
 
 // ProductionProviderSessionFactory is the daemon's concrete non-PTY bridge
-// assembly. Codex App Server and Pi headless RPC are wired end-to-end. Claude
-// Code remains fail-closed until its installed transport exposes the required
-// native interrupt and settlement protocol.
+// assembly. Codex App Server, Claude Agent SDK, and Pi headless RPC are wired
+// end-to-end. Claude is launched through the version-pinned SDK bridge rather
+// than the interactive CLI, so interrupt and settlement stay provider-native.
 type ProductionProviderSessionFactoryConfig struct {
 	Docker        runtime.SandboxBridgeDocker
 	BridgeCommand string
@@ -74,10 +74,7 @@ func (f *ProductionProviderSessionFactory) Open(ctx context.Context, request Pro
 	if request.Runner != task.RunnerSandbox {
 		return ProviderSessionBinding{}, fmt.Errorf("provider session factory requires sandbox runner")
 	}
-	if request.Provider == runtimeprofile.ProviderClaudeCode {
-		return ProviderSessionBinding{}, &runtime.UnsupportedProviderSessionCapabilityError{Capability: runtime.ProviderSessionCapabilityInterruptThenReplace}
-	}
-	if request.Provider != runtimeprofile.ProviderCodex && request.Provider != runtimeprofile.ProviderPi {
+	if request.Provider != runtimeprofile.ProviderClaudeCode && request.Provider != runtimeprofile.ProviderCodex && request.Provider != runtimeprofile.ProviderPi {
 		return ProviderSessionBinding{}, fmt.Errorf("provider %q is not supported by production provider session factory", request.Provider)
 	}
 	if f.config.Docker == nil {
@@ -107,6 +104,9 @@ func (f *ProductionProviderSessionFactory) Open(ctx context.Context, request Pro
 		return ProviderSessionBinding{}, fmt.Errorf("provider session bridge requires Docker sandbox adapter")
 	}
 	providerBinary := "codex"
+	if request.Provider == runtimeprofile.ProviderClaudeCode {
+		providerBinary = "claude"
+	}
 	for _, arg := range legacyArgs {
 		if !strings.Contains(arg, "=") && filepath.Base(arg) == filepath.Base(providerBinary) {
 			providerBinary = arg
@@ -123,7 +123,21 @@ func (f *ProductionProviderSessionFactory) Open(ctx context.Context, request Pro
 		}
 	}
 	bridgeCommand := []string{f.config.BridgeCommand, "--provider", string(request.Provider), "--", providerBinary}
-	if request.Provider == runtimeprofile.ProviderCodex {
+	if request.Provider == runtimeprofile.ProviderClaudeCode {
+		// The SDK bridge is an executable in the sandbox image. It owns the
+		// long-lived Query and does not invoke the Claude CLI's private protocol.
+		bridgeCommand = []string{"/usr/local/bin/pentest-claude-sdk-bridge", "--cwd", "/task/workdir"}
+		model, _ := request.RuntimeConfig["launch_model_override"].(string)
+		if model = strings.TrimSpace(model); model != "" {
+			bridgeCommand = append(bridgeCommand, "--model", model)
+		}
+		if settings := argValue(legacyArgs, "--settings"); settings != "" {
+			bridgeCommand = append(bridgeCommand, "--settings", settings)
+		}
+		if durableSessionID := strings.TrimSpace(request.Continuation.NativeSessionID); durableSessionID != "" {
+			bridgeCommand = append(bridgeCommand, "--resume", durableSessionID)
+		}
+	} else if request.Provider == runtimeprofile.ProviderCodex {
 		bridgeCommand = append(bridgeCommand, "app-server")
 	} else {
 		bridgeCommand = append(bridgeCommand, "--mode", "rpc")
@@ -181,6 +195,9 @@ func (f *ProductionProviderSessionFactory) Open(ctx context.Context, request Pro
 		}
 	}
 	setupMethod, setupID, setupParams := "pi/get_state", "setup:state", json.RawMessage(`{}`)
+	if request.Provider == runtimeprofile.ProviderClaudeCode {
+		setupMethod, setupID, setupParams = "claude/initialize", "setup:initialize", json.RawMessage(`{}`)
+	}
 	if request.Provider == runtimeprofile.ProviderCodex {
 		setupMethod, setupID, setupParams = "thread/start", "setup:thread", json.RawMessage(`{"cwd":"/task/workdir"}`)
 		if durableThreadID := strings.TrimSpace(request.Continuation.NativeSessionID); durableThreadID != "" {
@@ -192,7 +209,20 @@ func (f *ProductionProviderSessionFactory) Open(ctx context.Context, request Pro
 		_ = f.bridges.CloseTask(ctx, taskID)
 		return ProviderSessionBinding{}, err
 	}
-	if request.Provider == runtimeprofile.ProviderPi {
+	if request.Provider == runtimeprofile.ProviderClaudeCode {
+		var state struct {
+			SessionID string `json:"session_id"`
+		}
+		if err := json.Unmarshal(setupResponse.Result, &state); err != nil || strings.TrimSpace(state.SessionID) == "" {
+			_ = f.bridges.CloseTask(ctx, taskID)
+			return ProviderSessionBinding{}, fmt.Errorf("provider session identity unavailable")
+		}
+		sessionID = strings.TrimSpace(state.SessionID)
+		if durable := strings.TrimSpace(request.Continuation.NativeSessionID); durable != "" && durable != sessionID {
+			_ = f.bridges.CloseTask(ctx, taskID)
+			return ProviderSessionBinding{}, fmt.Errorf("provider session resume identity changed")
+		}
+	} else if request.Provider == runtimeprofile.ProviderPi {
 		var state struct {
 			SessionID   string `json:"session_id"`
 			SessionPath string `json:"session_path"`
@@ -236,7 +266,9 @@ func (f *ProductionProviderSessionFactory) Open(ctx context.Context, request Pro
 	}
 	capabilities := runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptTurn: true, InterruptThenReplace: true, PermissionResponse: true, ResumeSession: true, InTurnSteer: request.Provider == runtimeprofile.ProviderPi}
 	var nativeSession runtime.ProviderSession
-	if request.Provider == runtimeprofile.ProviderPi {
+	if request.Provider == runtimeprofile.ProviderClaudeCode {
+		nativeSession = runtime.NewClaudeCodeProviderSession(runtime.ClaudeCodeProviderSessionConfig{Transport: bridge, SessionID: sessionID, Capabilities: capabilities})
+	} else if request.Provider == runtimeprofile.ProviderPi {
 		nativeSession = runtime.NewPiProviderSession(runtime.PiProviderSessionConfig{Transport: bridge, SessionID: sessionID, Capabilities: capabilities})
 	} else {
 		nativeSession = runtime.NewCodexProviderSession(runtime.CodexProviderSessionConfig{Transport: bridge, SessionID: sessionID, Capabilities: capabilities})
@@ -260,4 +292,13 @@ func (f *ProductionProviderSessionFactory) Open(ctx context.Context, request Pro
 	binding := ProviderSessionBinding{Session: session, Adapter: runAdapter}
 	f.bounds[taskID] = binding
 	return binding, nil
+}
+
+func argValue(args []string, option string) string {
+	for index := 0; index+1 < len(args); index++ {
+		if args[index] == option {
+			return strings.TrimSpace(args[index+1])
+		}
+	}
+	return ""
 }

@@ -189,16 +189,47 @@ func TestProductionProviderSessionFactoryFailsClosedOnChangedDurableThread(t *te
 	}
 }
 
-func TestProductionProviderSessionFactoryRejectsProvidersWithoutNativeSettlement(t *testing.T) {
-	for _, provider := range []runtimeprofile.Provider{runtimeprofile.ProviderClaudeCode} {
-		t.Run(string(provider), func(t *testing.T) {
-			factory := NewProductionProviderSessionFactory(ProductionProviderSessionFactoryConfig{Docker: newProductionFactoryDocker()})
-			_, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{Task: task.Task{ID: "task-1"}, Continuation: task.TaskContinuation{ID: "c-1"}, Provider: provider, Runner: task.RunnerSandbox})
-			var unsupported *runtime.UnsupportedProviderSessionCapabilityError
-			if !errors.As(err, &unsupported) || unsupported.Capability != runtime.ProviderSessionCapabilityInterruptThenReplace {
-				t.Fatalf("error = %v, want interrupt_then_replace capability error", err)
-			}
-		})
+func TestProductionProviderSessionFactoryOpensClaudeAgentSDKBridge(t *testing.T) {
+	docker := newProductionFactoryDocker()
+	factory := NewProductionProviderSessionFactory(ProductionProviderSessionFactoryConfig{Docker: docker})
+	legacy := runtime.NewDockerSandboxAdapter(runtime.DockerSandboxConfig{Name: "claude_code", Image: "sandbox:test", CreateArgs: []string{"create", "sandbox:test", "claude", "--print", "goal"}})
+	methods := make(chan string, 2)
+	go func() {
+		scanner := bufio.NewScanner(docker.inputR)
+		for scanner.Scan() {
+			var request runtime.SandboxBridgeRequest
+			_ = json.Unmarshal(scanner.Bytes(), &request)
+			methods <- request.Method
+			_, _ = io.WriteString(docker.outputW, `{"jsonrpc":"2.0","id":"`+request.ID+`","result":{"session_id":"claude-durable","status":"ready"}}`+"\n")
+		}
+	}()
+	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
+		Task: task.Task{ID: "task-claude"}, Continuation: task.TaskContinuation{ID: "continuation-claude", NativeSessionID: "claude-durable"},
+		Provider: runtimeprofile.ProviderClaudeCode, Runner: task.RunnerSandbox, LegacyAdapter: legacy, RuntimeConfig: map[string]any{"launch_model_override": "claude-test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer binding.Session.Close(context.Background())
+	if binding.Session.SessionID() != "claude-durable" || !binding.Session.Capabilities().InterruptThenReplace || binding.Session.Capabilities().InTurnSteer {
+		t.Fatalf("Claude binding = %#v capabilities=%#v", binding, binding.Session.Capabilities())
+	}
+	select {
+	case method := <-methods:
+		if method != "claude/initialize" {
+			t.Fatalf("Claude setup method = %q", method)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Claude setup")
+	}
+	docker.mu.Lock()
+	joined := strings.Join(docker.createArgs, " ")
+	docker.mu.Unlock()
+	if !strings.Contains(joined, "sandbox:test /usr/local/bin/pentest-claude-sdk-bridge --cwd /task/workdir --model claude-test --resume claude-durable") {
+		t.Fatalf("Claude create args = %q", joined)
+	}
+	if strings.Contains(joined, " -t ") || strings.Contains(joined, " --tty ") {
+		t.Fatalf("Claude bridge allocated a terminal: %q", joined)
 	}
 }
 
