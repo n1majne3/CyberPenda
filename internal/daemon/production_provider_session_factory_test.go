@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeprofile"
@@ -102,6 +103,86 @@ func TestProductionProviderSessionFactoryOpensCodexAppServerBridgeWithoutPTY(t *
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("persistent adapter Run error = %v", err)
+	}
+}
+
+func TestProductionProviderSessionFactoryResumesDurableCodexThread(t *testing.T) {
+	docker := newProductionFactoryDocker()
+	factory := NewProductionProviderSessionFactory(ProductionProviderSessionFactoryConfig{Docker: docker})
+	legacy := runtime.NewDockerSandboxAdapter(runtime.DockerSandboxConfig{Name: "codex", Image: "sandbox:test", CreateArgs: []string{"create", "sandbox:test", "codex", "exec", "goal"}})
+	methods := make(chan string, 4)
+	go func() {
+		scanner := bufio.NewScanner(docker.inputR)
+		for scanner.Scan() {
+			var request runtime.SandboxBridgeRequest
+			_ = json.Unmarshal(scanner.Bytes(), &request)
+			methods <- request.Method
+			result := `{"ok":true}`
+			if request.Method == "thread/resume" {
+				result = `{"thread":{"id":"thread-durable"}}`
+			}
+			_, _ = io.WriteString(docker.outputW, `{"jsonrpc":"2.0","id":"`+request.ID+`","result":`+result+"}\n")
+		}
+	}()
+	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
+		Task:         task.Task{ID: "task-restart"},
+		Continuation: task.TaskContinuation{ID: "continuation-fresh", NativeSessionID: "thread-durable", NativeSessionPath: "/sessions/thread-durable.jsonl"},
+		Provider:     runtimeprofile.ProviderCodex, Runner: task.RunnerSandbox, LegacyAdapter: legacy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer binding.Session.Close(context.Background())
+	if binding.Session.SessionID() != "thread-durable" {
+		t.Fatalf("resumed session id = %q", binding.Session.SessionID())
+	}
+	select {
+	case method := <-methods:
+		if method != "initialize" {
+			t.Fatalf("first setup method = %q, want initialize", method)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initialize")
+	}
+	select {
+	case method := <-methods:
+		if method != "thread/resume" {
+			t.Fatalf("second setup method = %q, want thread/resume", method)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for thread/resume")
+	}
+}
+
+func TestProductionProviderSessionFactoryFailsClosedOnChangedDurableThread(t *testing.T) {
+	docker := newProductionFactoryDocker()
+	factory := NewProductionProviderSessionFactory(ProductionProviderSessionFactoryConfig{Docker: docker})
+	legacy := runtime.NewDockerSandboxAdapter(runtime.DockerSandboxConfig{Name: "codex", Image: "sandbox:test", CreateArgs: []string{"create", "sandbox:test", "codex", "exec", "goal"}})
+	go func() {
+		scanner := bufio.NewScanner(docker.inputR)
+		for scanner.Scan() {
+			var request runtime.SandboxBridgeRequest
+			_ = json.Unmarshal(scanner.Bytes(), &request)
+			result := `{"ok":true}`
+			if request.Method == "thread/resume" {
+				result = `{"thread":{"id":"thread-other"}}`
+			}
+			_, _ = io.WriteString(docker.outputW, `{"jsonrpc":"2.0","id":"`+request.ID+`","result":`+result+"}\n")
+		}
+	}()
+	_, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
+		Task:         task.Task{ID: "task-restart-mismatch"},
+		Continuation: task.TaskContinuation{ID: "continuation-fresh", NativeSessionID: "thread-durable"},
+		Provider:     runtimeprofile.ProviderCodex, Runner: task.RunnerSandbox, LegacyAdapter: legacy,
+	})
+	if err == nil || !strings.Contains(err.Error(), "resume identity changed") {
+		t.Fatalf("resume mismatch error = %v", err)
+	}
+	docker.mu.Lock()
+	created := docker.createArgs
+	docker.mu.Unlock()
+	if len(created) == 0 {
+		t.Fatal("expected bridge container to be created before fail-closed cleanup")
 	}
 }
 

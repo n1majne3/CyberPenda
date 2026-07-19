@@ -148,7 +148,15 @@ func (f *ProductionProviderSessionFactory) Open(ctx context.Context, request Pro
 		_ = bridge.Close(ctx)
 		return ProviderSessionBinding{}, err
 	}
-	threadResponse, err := bridge.Send(ctx, runtime.SandboxBridgeRequest{ID: "setup:thread", Method: "thread/start", Params: json.RawMessage(`{"cwd":"/task/workdir"}`)})
+	threadMethod := "thread/start"
+	threadRequestID := "setup:thread"
+	threadParams := json.RawMessage(`{"cwd":"/task/workdir"}`)
+	if durableThreadID := strings.TrimSpace(request.Continuation.NativeSessionID); durableThreadID != "" {
+		threadMethod = "thread/resume"
+		threadRequestID = "setup:thread-resume"
+		threadParams = json.RawMessage(fmt.Sprintf(`{"threadId":%q,"cwd":"/task/workdir"}`, durableThreadID))
+	}
+	threadResponse, err := bridge.Send(ctx, runtime.SandboxBridgeRequest{ID: threadRequestID, Method: threadMethod, Params: threadParams})
 	if err != nil {
 		_ = bridge.Close(ctx)
 		return ProviderSessionBinding{}, err
@@ -166,6 +174,10 @@ func (f *ProductionProviderSessionFactory) Open(ctx context.Context, request Pro
 	threadID := strings.TrimSpace(threadResult.Thread.ID)
 	if threadID == "" {
 		threadID = strings.TrimSpace(threadResult.ID)
+	}
+	if durableThreadID := strings.TrimSpace(request.Continuation.NativeSessionID); durableThreadID != "" && threadID != durableThreadID {
+		_ = bridge.Close(ctx)
+		return ProviderSessionBinding{}, fmt.Errorf("provider session resume identity changed")
 	}
 	if threadID == "" {
 		_ = bridge.Close(ctx)
