@@ -18,31 +18,53 @@ type providerTransportCall struct {
 }
 
 type fakeProviderTransport struct {
-	mu        sync.Mutex
-	calls     []providerTransportCall
-	responses map[string]SandboxBridgeResponse
-	err       error
-	send      func(context.Context, SandboxBridgeRequest) (SandboxBridgeResponse, error)
-	closed    bool
+	mu            sync.Mutex
+	calls         []providerTransportCall
+	responses     map[string]SandboxBridgeResponse
+	notifications map[string]SandboxBridgeEvent
+	emitEvent     func(SandboxBridgeEvent)
+	err           error
+	send          func(context.Context, SandboxBridgeRequest) (SandboxBridgeResponse, error)
+	closed        bool
 }
 
 func (t *fakeProviderTransport) Send(ctx context.Context, request SandboxBridgeRequest) (SandboxBridgeResponse, error) {
 	t.mu.Lock()
 	t.calls = append(t.calls, providerTransportCall{request: request})
 	send := t.send
+	notification, hasNotification := t.notifications[request.Method]
+	emitEvent := t.emitEvent
 	if send != nil {
 		t.mu.Unlock()
-		return send(ctx, request)
+		response, err := send(ctx, request)
+		if err == nil && hasNotification && emitEvent != nil {
+			emitEvent(notification)
+		}
+		return response, err
 	}
-	defer t.mu.Unlock()
 	if t.err != nil {
+		t.mu.Unlock()
 		return SandboxBridgeResponse{}, t.err
 	}
 	if response, ok := t.responses[request.Method]; ok {
 		response.ID = request.ID
+		t.mu.Unlock()
+		if hasNotification && emitEvent != nil {
+			emitEvent(notification)
+		}
 		return response, nil
 	}
+	t.mu.Unlock()
+	if hasNotification && emitEvent != nil {
+		emitEvent(notification)
+	}
 	return SandboxBridgeResponse{JSONRPC: "2.0", ID: request.ID, Result: json.RawMessage(`{"ok":true}`)}, nil
+}
+
+func bindFakeProviderEvents(transport *fakeProviderTransport, session ProviderSessionEventHandler) {
+	transport.mu.Lock()
+	transport.emitEvent = func(event SandboxBridgeEvent) { session.HandleEvent(event, nil) }
+	transport.mu.Unlock()
 }
 
 func (t *fakeProviderTransport) Close(context.Context) error {
@@ -65,9 +87,12 @@ func (t *fakeProviderTransport) snapshot() []SandboxBridgeRequest {
 func TestCodexProviderSessionMapsTurnStartAndInterrupt(t *testing.T) {
 	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
 		"turn/start":     {Result: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-2"}}`)},
-		"turn/interrupt": {Result: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-2","status":"interrupted"}`)},
+		"turn/interrupt": {Result: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-2"}`)},
+	}, notifications: map[string]SandboxBridgeEvent{
+		"turn/interrupt": {Method: "turn/completed", Params: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-2","status":"interrupted"}}`)},
 	}}
 	session := NewCodexProviderSession(CodexProviderSessionConfig{Transport: transport, SessionID: "thread-1", ThreadID: "thread-1"})
+	bindFakeProviderEvents(transport, session)
 	emits := []task.EventPayload{}
 	emit := func(_ task.EventKind, payload task.EventPayload) { emits = append(emits, payload) }
 
@@ -113,10 +138,13 @@ func TestCodexProviderSessionMapsTurnStartAndInterrupt(t *testing.T) {
 
 func TestCodexProviderSessionInterruptThenReplaceUsesSameThread(t *testing.T) {
 	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
-		"turn/interrupt": {Result: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-old","status":"interrupted"}`)},
+		"turn/interrupt": {Result: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-old"}`)},
 		"turn/start":     {Result: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-new"}}`)},
+	}, notifications: map[string]SandboxBridgeEvent{
+		"turn/interrupt": {Method: "turn/completed", Params: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-old","status":"interrupted"}}`)},
 	}}
 	session := NewCodexProviderSession(CodexProviderSessionConfig{Transport: transport, SessionID: "thread-1", ThreadID: "thread-1", ActiveTurnID: "turn-old"})
+	bindFakeProviderEvents(transport, session)
 	result, err := session.InterruptThenReplace(context.Background(), ProviderSessionRequest{RequestID: "replace-1", Message: "stop and focus on auth"}, nil)
 	if err != nil {
 		t.Fatalf("replace: %v", err)
@@ -130,13 +158,62 @@ func TestCodexProviderSessionInterruptThenReplaceUsesSameThread(t *testing.T) {
 	}
 }
 
+func TestProviderSessionInterruptThenReplaceWaitsForMatchingTerminalNotification(t *testing.T) {
+	interruptAcknowledged := make(chan struct{})
+	releaseInterruptResponse := make(chan struct{})
+	transport := &fakeProviderTransport{send: func(_ context.Context, request SandboxBridgeRequest) (SandboxBridgeResponse, error) {
+		switch request.Method {
+		case "turn/interrupt":
+			close(interruptAcknowledged)
+			<-releaseInterruptResponse
+			return SandboxBridgeResponse{Result: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-old"}`)}, nil
+		case "turn/start":
+			return SandboxBridgeResponse{Result: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-new"}}`)}, nil
+		default:
+			return SandboxBridgeResponse{}, errors.New("unexpected method")
+		}
+	}}
+	session := NewCodexProviderSession(CodexProviderSessionConfig{Transport: transport, SessionID: "thread-1", ThreadID: "thread-1", ActiveTurnID: "turn-old"})
+	done := make(chan error, 1)
+	go func() {
+		_, err := session.InterruptThenReplace(context.Background(), ProviderSessionRequest{RequestID: "replace-wait", Message: "new direction"}, nil)
+		done <- err
+	}()
+	<-interruptAcknowledged
+
+	// A terminal event may race ahead of the interrupt response. Events for a
+	// different provider session or turn must not release the replacement.
+	session.HandleEvent(SandboxBridgeEvent{Method: "turn/completed", Params: json.RawMessage(`{"threadId":"thread-other","turn":{"id":"turn-old","status":"interrupted"}}`)}, nil)
+	session.HandleEvent(SandboxBridgeEvent{Method: "turn/completed", Params: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-other","status":"interrupted"}}`)}, nil)
+	close(releaseInterruptResponse)
+	select {
+	case err := <-done:
+		t.Fatalf("replacement completed before matching settlement: %v", err)
+	case <-time.After(10 * time.Millisecond):
+	}
+	if requests := transport.snapshot(); len(requests) != 1 || requests[0].Method != "turn/interrupt" {
+		t.Fatalf("replacement started before matching settlement: %#v", requests)
+	}
+
+	session.HandleEvent(SandboxBridgeEvent{Method: "turn/completed", Params: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-old","status":"interrupted"}}`)}, nil)
+	if err := <-done; err != nil {
+		t.Fatalf("replacement after settlement: %v", err)
+	}
+	if requests := transport.snapshot(); len(requests) != 2 || requests[1].Method != "turn/start" {
+		t.Fatalf("replacement requests = %#v", requests)
+	}
+}
+
 func TestClaudeProviderSessionMapsInputInterruptAndPermission(t *testing.T) {
 	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
 		"claude/input":              {Result: json.RawMessage(`{"session_id":"claude-1","turn_id":"turn-1"}`)},
-		"claude/interrupt":          {Result: json.RawMessage(`{"session_id":"claude-1","turn_id":"turn-1","status":"interrupted"}`)},
+		"claude/interrupt":          {Result: json.RawMessage(`{"session_id":"claude-1","turn_id":"turn-1"}`)},
 		"claude/permission/respond": {Result: json.RawMessage(`{"session_id":"claude-1","permission_request_id":"perm-1","decision":"allow"}`)},
+	}, notifications: map[string]SandboxBridgeEvent{
+		"claude/interrupt": {Method: "claude/turn/completed", Params: json.RawMessage(`{"session_id":"claude-1","turn_id":"turn-1","status":"interrupted"}`)},
 	}}
 	session := NewClaudeCodeProviderSession(ClaudeCodeProviderSessionConfig{Transport: transport, SessionID: "claude-1", ActiveTurnID: "turn-1"})
+	bindFakeProviderEvents(transport, session)
 	if _, err := session.SendTurn(context.Background(), ProviderSessionRequest{RequestID: "send-1", Message: "continue"}, nil); err != nil {
 		t.Fatalf("send: %v", err)
 	}
@@ -155,9 +232,12 @@ func TestClaudeProviderSessionMapsInputInterruptAndPermission(t *testing.T) {
 func TestPiProviderSessionMapsPromptAbortAndReplacement(t *testing.T) {
 	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
 		"pi/prompt": {Result: json.RawMessage(`{"session_id":"pi-1","turn_id":"turn-new"}`)},
-		"pi/abort":  {Result: json.RawMessage(`{"session_id":"pi-1","turn_id":"turn-old","status":"aborted"}`)},
+		"pi/abort":  {Result: json.RawMessage(`{"session_id":"pi-1","turn_id":"turn-old"}`)},
+	}, notifications: map[string]SandboxBridgeEvent{
+		"pi/abort": {Method: "pi/turn/aborted", Params: json.RawMessage(`{"session_id":"pi-1","turn_id":"turn-old","status":"aborted"}`)},
 	}}
 	session := NewPiProviderSession(PiProviderSessionConfig{Transport: transport, SessionID: "pi-1", ActiveTurnID: "turn-old"})
+	bindFakeProviderEvents(transport, session)
 	result, err := session.InterruptThenReplace(context.Background(), ProviderSessionRequest{RequestID: "replace-1", Message: "continue with evidence"}, nil)
 	if err != nil {
 		t.Fatalf("replace: %v", err)
@@ -224,14 +304,17 @@ func TestProviderSessionAdapterRejectTimeoutAndDuplicateAreTruthful(t *testing.T
 
 	t.Run("timeout", func(t *testing.T) {
 		var attempts atomic.Int32
-		transport := &fakeProviderTransport{send: func(ctx context.Context, _ SandboxBridgeRequest) (SandboxBridgeResponse, error) {
+		transport := &fakeProviderTransport{notifications: map[string]SandboxBridgeEvent{
+			"pi/abort": {Method: "pi/turn/aborted", Params: json.RawMessage(`{"session_id":"pi-1","turn_id":"turn-1","status":"aborted"}`)},
+		}, send: func(ctx context.Context, _ SandboxBridgeRequest) (SandboxBridgeResponse, error) {
 			if attempts.Add(1) == 1 {
 				<-ctx.Done()
 				return SandboxBridgeResponse{}, ctx.Err()
 			}
-			return SandboxBridgeResponse{Result: json.RawMessage(`{"session_id":"pi-1","turn_id":"turn-1","status":"interrupted"}`)}, nil
+			return SandboxBridgeResponse{Result: json.RawMessage(`{"session_id":"pi-1","turn_id":"turn-1"}`)}, nil
 		}}
 		session := NewPiProviderSession(PiProviderSessionConfig{Transport: transport, SessionID: "pi-1"})
+		bindFakeProviderEvents(transport, session)
 		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 		defer cancel()
 		request := ProviderSessionRequest{RequestID: "timeout-1", ProviderTurnID: "turn-1"}

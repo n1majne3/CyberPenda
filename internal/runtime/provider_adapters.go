@@ -48,6 +48,10 @@ type providerSessionRequestIdentity struct {
 	fingerprint string
 }
 
+type providerSettlement struct {
+	seq uint64
+}
+
 // providerSessionAdapter implements the shared lifecycle, idempotency, and
 // event semantics. Provider wrappers below only supply native wire mappings.
 type providerSessionAdapter struct {
@@ -66,6 +70,9 @@ type providerSessionAdapter struct {
 	calls             map[string]providerSessionCallResult
 	requests          map[string]providerSessionRequestIdentity
 	eventSink         ProviderSessionEmit
+	settlements       map[string]providerSettlement
+	settlementSeq     uint64
+	settlementChanged chan struct{}
 }
 
 func newProviderSessionAdapter(provider string, transport ProviderSessionTransport, sessionID, activeTurnID string, capabilities runtimeplugin.Capabilities, methods providerWireMethods) *providerSessionAdapter {
@@ -76,7 +83,8 @@ func newProviderSessionAdapter(provider string, transport ProviderSessionTranspo
 		transport: transport, provider: provider, methods: methods,
 		capabilities: capabilities, sessionID: strings.TrimSpace(sessionID),
 		activeTurnID: strings.TrimSpace(activeTurnID), calls: map[string]providerSessionCallResult{},
-		requests: map[string]providerSessionRequestIdentity{},
+		requests: map[string]providerSessionRequestIdentity{}, settlements: map[string]providerSettlement{},
+		settlementChanged: make(chan struct{}),
 	}
 }
 
@@ -146,6 +154,7 @@ func (s *providerSessionAdapter) InterruptThenReplace(ctx context.Context, reque
 	defer s.end(request.RequestID, ProviderSessionModeInterruptThenReplace)
 
 	s.emit(emit, ProviderSessionModeInterruptThenReplace, "requested", request.RequestID, s.currentTurn())
+	settlementSession, settlementTurn, baseline := s.settlementTarget(request)
 	interruptResult, err := s.native(ctx, ProviderSessionModeInterruptThenReplace, request, s.methods.interrupt, request.RequestID+":interrupt")
 	if err != nil {
 		s.storeFailure(request.RequestID, ProviderSessionModeInterruptThenReplace, fingerprint, err)
@@ -153,7 +162,18 @@ func (s *providerSessionAdapter) InterruptThenReplace(ctx context.Context, reque
 		return ProviderSessionResult{}, err
 	}
 	s.emit(emit, ProviderSessionModeInterruptThenReplace, "acknowledged", request.RequestID, interruptResult.ProviderTurnID)
-	s.emit(emit, ProviderSessionModeInterruptThenReplace, "settled", request.RequestID, interruptResult.ProviderTurnID)
+	if settlementSession == "" {
+		settlementSession = interruptResult.SessionID
+	}
+	if settlementTurn == "" {
+		settlementTurn = interruptResult.ProviderTurnID
+	}
+	if err := s.waitForSettlement(ctx, ProviderSessionModeInterruptThenReplace, settlementSession, settlementTurn, baseline); err != nil {
+		s.storeFailure(request.RequestID, ProviderSessionModeInterruptThenReplace, fingerprint, err)
+		s.emit(emit, ProviderSessionModeInterruptThenReplace, "failed", request.RequestID, settlementTurn)
+		return ProviderSessionResult{}, err
+	}
+	s.emit(emit, ProviderSessionModeInterruptThenReplace, "settled", request.RequestID, settlementTurn)
 
 	replacement, err := s.native(ctx, ProviderSessionModeInterruptThenReplace, request, s.methods.send, request.RequestID+":replace")
 	if err != nil {
@@ -218,6 +238,7 @@ func (s *providerSessionAdapter) run(ctx context.Context, mode ProviderSessionMo
 	}
 	defer s.end(request.RequestID, mode)
 	s.emit(emit, mode, "requested", request.RequestID, s.currentTurn())
+	settlementSession, settlementTurn, baseline := s.settlementTarget(request)
 	result, err := s.native(ctx, mode, request, method, request.RequestID)
 	if err != nil {
 		s.storeFailure(request.RequestID, mode, fingerprint, err)
@@ -229,8 +250,19 @@ func (s *providerSessionAdapter) run(ctx context.Context, mode ProviderSessionMo
 		outcome = "started"
 		s.emit(emit, mode, "started", request.RequestID, result.ProviderTurnID)
 	} else if mode == ProviderSessionModeInterruptTurn {
-		outcome = "settled"
 		s.emit(emit, mode, "acknowledged", request.RequestID, result.ProviderTurnID)
+		if settlementSession == "" {
+			settlementSession = result.SessionID
+		}
+		if settlementTurn == "" {
+			settlementTurn = result.ProviderTurnID
+		}
+		if err := s.waitForSettlement(ctx, mode, settlementSession, settlementTurn, baseline); err != nil {
+			s.storeFailure(request.RequestID, mode, fingerprint, err)
+			s.emit(emit, mode, "failed", request.RequestID, settlementTurn)
+			return ProviderSessionResult{}, err
+		}
+		outcome = "settled"
 		s.emit(emit, mode, "settled", request.RequestID, result.ProviderTurnID)
 	} else {
 		s.emit(emit, mode, "acknowledged", request.RequestID, result.ProviderTurnID)
@@ -272,9 +304,6 @@ func (s *providerSessionAdapter) native(ctx context.Context, mode ProviderSessio
 	if len(response.Result) > 0 {
 		_ = json.Unmarshal(response.Result, &metadata)
 	}
-	if (mode == ProviderSessionModeInterruptTurn || mode == ProviderSessionModeInterruptThenReplace && strings.HasSuffix(wireID, ":interrupt")) && !providerTurnSettled(metadata) {
-		return ProviderSessionResult{}, &ProviderSessionOperationError{Mode: mode, Cause: errors.New("provider interrupt was acknowledged without settlement")}
-	}
 	turnID := s.methods.turnID(metadata)
 	if turnID == "" {
 		turnID = strings.TrimSpace(request.ProviderTurnID)
@@ -294,11 +323,53 @@ func (s *providerSessionAdapter) native(ctx context.Context, mode ProviderSessio
 
 func providerTurnSettled(metadata map[string]any) bool {
 	status := strings.ToLower(providerJSONValue(metadata, "status", "turn_status", "turnStatus"))
+	if status == "" {
+		if turn, ok := metadata["turn"].(map[string]any); ok {
+			status = strings.ToLower(providerJSONValue(turn, "status", "turn_status", "turnStatus"))
+		}
+	}
 	switch status {
-	case "aborted", "cancelled", "canceled", "completed", "interrupted", "stopped":
+	case "aborted", "cancelled", "canceled", "completed", "failed", "interrupted", "rejected", "stopped":
 		return true
 	default:
 		return false
+	}
+}
+
+func (s *providerSessionAdapter) settlementTarget(request ProviderSessionRequest) (sessionID, turnID string, baseline uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sessionID, turnID = s.sessionID, strings.TrimSpace(request.ProviderTurnID)
+	if turnID == "" {
+		turnID = s.activeTurnID
+	}
+	baseline = s.settlementSeq
+	return
+}
+
+func providerSettlementKey(sessionID, turnID string) string {
+	return strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(turnID)
+}
+
+func (s *providerSessionAdapter) waitForSettlement(ctx context.Context, mode ProviderSessionMode, sessionID, turnID string, baseline uint64) error {
+	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(turnID) == "" {
+		return &ProviderSessionOperationError{Mode: mode, Cause: errors.New("provider settlement correlation is incomplete")}
+	}
+	key := providerSettlementKey(sessionID, turnID)
+	for {
+		s.mu.Lock()
+		if settlement, ok := s.settlements[key]; ok && settlement.seq > baseline {
+			delete(s.settlements, key)
+			s.mu.Unlock()
+			return nil
+		}
+		changed := s.settlementChanged
+		s.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return &ProviderSessionOperationError{Mode: mode, Cause: ctx.Err()}
+		case <-changed:
+		}
 	}
 }
 
@@ -406,9 +477,6 @@ func (s *providerSessionAdapter) emit(emit ProviderSessionEmit, mode ProviderSes
 		s.mu.Lock()
 		emit = s.eventSink
 		s.mu.Unlock()
-		if emit == nil {
-			return
-		}
 	}
 	kind := task.EventKindLifecycle
 	if mode == ProviderSessionModeInterruptTurn || mode == ProviderSessionModeInterruptThenReplace || mode == ProviderSessionModeInTurnSteer {
@@ -417,7 +485,9 @@ func (s *providerSessionAdapter) emit(emit ProviderSessionEmit, mode ProviderSes
 	if strings.TrimSpace(turnID) == "" {
 		turnID = s.currentTurn()
 	}
-	emit(kind, task.EventPayload{"provider": s.provider, "request_id": requestID, "session_id": s.SessionID(), "provider_turn_id": turnID, "mode": string(mode), "outcome": outcome})
+	if emit != nil {
+		emit(kind, task.EventPayload{"provider": s.provider, "request_id": requestID, "session_id": s.SessionID(), "provider_turn_id": turnID, "mode": string(mode), "outcome": outcome})
+	}
 }
 
 // HandleEvent maps provider notifications to the normalized lifecycle channel.
@@ -431,9 +501,6 @@ func (s *providerSessionAdapter) HandleEvent(event SandboxBridgeEvent, emit Prov
 		s.mu.Lock()
 		emit = s.eventSink
 		s.mu.Unlock()
-		if emit == nil {
-			return
-		}
 	}
 	params := map[string]any{}
 	if len(event.Params) > 0 && json.Unmarshal(event.Params, &params) != nil {
@@ -443,10 +510,12 @@ func (s *providerSessionAdapter) HandleEvent(event SandboxBridgeEvent, emit Prov
 	mode := ProviderSessionModeSendTurn
 	outcome := ""
 	switch {
-	case strings.Contains(method, "permission"):
+	case strings.Contains(method, "permission") || strings.Contains(method, "extension_ui"):
 		mode, outcome = ProviderSessionModePermissionResponse, "requested"
 	case strings.Contains(method, "interrupt") || strings.Contains(method, "abort") || strings.Contains(method, "cancel"):
 		mode, outcome = ProviderSessionModeInterruptTurn, "settled"
+	case strings.Contains(method, "agent_end") || strings.Contains(method, "turn_end") || strings.HasSuffix(method, "/end"):
+		mode, outcome = ProviderSessionModeSendTurn, "completed"
 	case strings.Contains(method, "completed") || strings.Contains(method, "complete"):
 		mode, outcome = ProviderSessionModeSendTurn, "completed"
 	case strings.Contains(method, "started") || strings.Contains(method, "start"):
@@ -464,8 +533,25 @@ func (s *providerSessionAdapter) HandleEvent(event SandboxBridgeEvent, emit Prov
 	if turnID == "" {
 		turnID = s.currentTurn()
 	}
+	terminal := outcome == "settled" || outcome == "completed" || outcome == "failed" || providerTurnSettled(params)
 	s.mu.Lock()
-	s.sessionID, s.activeTurnID = sessionID, turnID
+	currentSession := s.sessionID
+	currentTurn := s.activeTurnID
+	if currentSession == "" || currentSession == sessionID {
+		s.sessionID = sessionID
+		if !terminal || currentTurn == "" || currentTurn == turnID {
+			s.activeTurnID = turnID
+		}
+	}
+	interruptActive := s.active && (s.activeMode == ProviderSessionModeInterruptTurn || s.activeMode == ProviderSessionModeInterruptThenReplace)
+	matchingSession := currentSession == "" || currentSession == sessionID
+	matchingTurn := currentTurn == "" || currentTurn == turnID
+	if terminal && interruptActive && matchingSession && matchingTurn && sessionID != "" && turnID != "" {
+		s.settlementSeq++
+		s.settlements[providerSettlementKey(sessionID, turnID)] = providerSettlement{seq: s.settlementSeq}
+		close(s.settlementChanged)
+		s.settlementChanged = make(chan struct{})
+	}
 	s.mu.Unlock()
 	requestID := providerJSONValue(params, "request_id", "requestId", "control_id", "controlId")
 	kind := task.EventKindLifecycle
@@ -480,7 +566,9 @@ func (s *providerSessionAdapter) HandleEvent(event SandboxBridgeEvent, emit Prov
 		payload["permission_request_id"] = providerJSONValue(params, "permission_request_id", "permissionRequestId", "permission_id", "permissionId")
 		payload["phase"] = "provider_permission_requested"
 	}
-	emit(kind, payload)
+	if emit != nil {
+		emit(kind, payload)
+	}
 }
 
 func defaultProviderCapabilities() runtimeplugin.Capabilities {
@@ -601,7 +689,7 @@ type PiProviderSession struct{ *providerSessionAdapter }
 
 func NewPiProviderSession(config PiProviderSessionConfig) *PiProviderSession {
 	methods := providerWireMethods{
-		send: "pi/prompt", interrupt: "pi/abort", permission: "pi/permission/respond",
+		send: "pi/prompt", interrupt: "pi/abort", steer: "pi/steer", permission: "pi/permission/respond",
 		params: providerParams, turnID: func(record map[string]any) string { return providerJSONValue(record, "turn_id", "turnId", "id") }, sessionID: identitySession,
 	}
 	return &PiProviderSession{newProviderSessionAdapter("pi", config.Transport, config.SessionID, config.ActiveTurnID, providerCapabilities(config.Capabilities), methods)}
