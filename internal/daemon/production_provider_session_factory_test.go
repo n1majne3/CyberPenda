@@ -184,6 +184,9 @@ func TestProductionProviderSessionFactoryFailsClosedOnChangedDurableThread(t *te
 	if len(created) == 0 {
 		t.Fatal("expected bridge container to be created before fail-closed cleanup")
 	}
+	if _, ok := factory.bridges.Get("task-restart-mismatch"); ok {
+		t.Fatal("failed resume retained stale bridge registry ownership")
+	}
 }
 
 func TestProductionProviderSessionFactoryRejectsProvidersWithoutNativeSettlement(t *testing.T) {
