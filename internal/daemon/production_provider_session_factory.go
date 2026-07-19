@@ -145,7 +145,7 @@ func (f *ProductionProviderSessionFactory) Open(ctx context.Context, request Pro
 	// session is exposed to the daemon. The bridge forwards these frames over
 	// its private stdin/stdout channel; no provider payload is persisted.
 	if _, err := bridge.Send(ctx, runtime.SandboxBridgeRequest{ID: "setup:initialize", Method: "initialize", Params: json.RawMessage(`{"clientInfo":{"name":"cyberpenda","version":"dev"}}`)}); err != nil {
-		_ = bridge.Close(ctx)
+		_ = f.bridges.CloseTask(ctx, taskID)
 		return ProviderSessionBinding{}, err
 	}
 	threadMethod := "thread/start"
@@ -158,7 +158,7 @@ func (f *ProductionProviderSessionFactory) Open(ctx context.Context, request Pro
 	}
 	threadResponse, err := bridge.Send(ctx, runtime.SandboxBridgeRequest{ID: threadRequestID, Method: threadMethod, Params: threadParams})
 	if err != nil {
-		_ = bridge.Close(ctx)
+		_ = f.bridges.CloseTask(ctx, taskID)
 		return ProviderSessionBinding{}, err
 	}
 	var threadResult struct {
@@ -168,7 +168,7 @@ func (f *ProductionProviderSessionFactory) Open(ctx context.Context, request Pro
 		ID string `json:"id"`
 	}
 	if err := json.Unmarshal(threadResponse.Result, &threadResult); err != nil {
-		_ = bridge.Close(ctx)
+		_ = f.bridges.CloseTask(ctx, taskID)
 		return ProviderSessionBinding{}, fmt.Errorf("provider session thread response invalid")
 	}
 	threadID := strings.TrimSpace(threadResult.Thread.ID)
@@ -176,11 +176,11 @@ func (f *ProductionProviderSessionFactory) Open(ctx context.Context, request Pro
 		threadID = strings.TrimSpace(threadResult.ID)
 	}
 	if durableThreadID := strings.TrimSpace(request.Continuation.NativeSessionID); durableThreadID != "" && threadID != durableThreadID {
-		_ = bridge.Close(ctx)
+		_ = f.bridges.CloseTask(ctx, taskID)
 		return ProviderSessionBinding{}, fmt.Errorf("provider session resume identity changed")
 	}
 	if threadID == "" {
-		_ = bridge.Close(ctx)
+		_ = f.bridges.CloseTask(ctx, taskID)
 		return ProviderSessionBinding{}, fmt.Errorf("provider session thread identity unavailable")
 	}
 	nativeSession := runtime.NewCodexProviderSession(runtime.CodexProviderSessionConfig{
