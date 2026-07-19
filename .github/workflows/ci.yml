@@ -29,6 +29,8 @@ jobs:
       - name: Install web dependencies
         working-directory: web
         run: npm ci
+      - name: Claude SDK bridge tests
+        run: node --test cmd/pentest-claude-sdk-bridge/bridge.test.mjs
       - name: Lint
         working-directory: web
         run: npm run lint
