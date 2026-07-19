@@ -13,6 +13,13 @@ import { formatDateTime } from "@/lib/format";
 const ACTIVE = new Set(["running", "paused"]);
 const DELETABLE = new Set(["completed", "failed", "stopped", "interrupted"]);
 
+function newSteerRequestID() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `steer-${Math.random().toString(36).slice(2)}-${performance.now().toString(36)}`;
+}
+
 export function TaskDetailPage() {
   const { projectId, taskId } = useParams<{ projectId: string; taskId: string }>();
   const navigate = useNavigate();
@@ -231,13 +238,6 @@ export function TaskDetailPage() {
     } finally {
       setPermissionBusy("");
     }
-  }
-
-  function newSteerRequestID() {
-    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-      return crypto.randomUUID();
-    }
-    return `steer-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   }
 
   function continuationModelPayload() {
