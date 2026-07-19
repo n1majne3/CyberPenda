@@ -28,8 +28,8 @@ Sources:
 | Provider | Next turn | Native steer | Persistence/resume | First-release assessment |
 | --- | --- | --- | --- | --- |
 | Codex App Server | JSON-RPC `turn/start` on the current thread | JSON-RPC `turn/interrupt` with `threadId` and active `turnId`; requires `turn/started` | `thread/start` and `thread/resume`; durable thread id; JSONL stdin/stdout app-server transport | Strongest first tracer bullet |
-| Claude Code | SDK async input (`push(SDKUserMessage)`) on the long-lived Query | SDK `query.interrupt()`; permission denial can also request interrupt | SDK session id/native handle; provider session persistence and construction-time resume | Supported in first release, adapter-specific transport |
-| Pi | RPC `prompt` on the long-lived RPC child | RPC `abort` command | Session id plus durable session file; native resume requires the handle/session file | Supported in first release |
+| Claude Code | SDK async input (`push(SDKUserMessage)`) on the long-lived Query | SDK `query.interrupt()`; permission denial can also request interrupt | SDK session id/native handle; provider session persistence and construction-time resume | Blocked pending explicit SDK bridge |
+| Pi | RPC `prompt` on the long-lived RPC child | Current Pi RPC exposes direct `steer`; `abort` remains the native interrupt primitive | Session id plus durable session file; native resume requires the handle/session file | Strong direct-steer tracer bullet |
 | ACP-compatible | ACP `connection.prompt({sessionId,...})` | ACP `connection.cancel({sessionId})` | `session/new`; `session/load` or unstable resume only when advertised by provider capabilities | Supported only after capability negotiation; no unconditional resume |
 
 ## Source details
@@ -63,6 +63,13 @@ Sources:
 - `packages/server/src/server/agent/providers/pi/agent.ts:1377-1388,2334-2365`
   persists and resumes through a native session file.
 
+The installed Pi `0.80.6` contract is stronger than the Paseo adapter snapshot:
+its documented non-PTY RPC mode accepts JSONL `prompt`, `steer`, `follow_up`,
+and `abort` commands over stdin/stdout. CyberPenda therefore advertises
+`in_turn_steer` for Pi and uses `abort` only when an explicit interrupt is
+requested. Evidence is in the installed package's `docs/rpc.md`,
+`dist/modes/rpc/rpc-types.d.ts`, and `dist/modes/rpc/rpc-mode.js`.
+
 ### ACP
 
 - `packages/server/src/server/agent/providers/acp-agent.ts:1462-1507`
@@ -87,14 +94,19 @@ independent, runtime-negotiated capabilities:
 - `resume_session`
 
 For CyberPenda's first release, the selected provider set is Claude Code,
-Codex, and Pi. Current Paseo source shows these three (and generic ACP) expose
-`interrupt/cancel/abort` plus a next-turn operation, not a direct
-`in_turn_steer(message)` call. They therefore use the selected
-`interrupt_then_replace` fallback: provider-native interrupt, acknowledged
-settlement, then new prompt on the same Task-owned session. A future provider
-with `in_turn_steer` gets the preferred direct path. If a provider cannot even
-interrupt or cannot keep a session, the operation must fail explicitly rather
-than silently becoming a process kill or mechanical handoff.
+Codex, and Pi. Pi uses its documented direct `in_turn_steer` RPC. Codex and
+Claude Code use `interrupt_then_replace`: provider-native interrupt,
+acknowledged settlement, then a new prompt on the same Task-owned session. If
+a provider cannot interrupt or cannot keep a session, the operation must fail
+explicitly rather than silently becoming a process kill or mechanical handoff.
+
+Production transport support is capability-driven rather than aspirational.
+Codex App Server and Pi RPC expose stable non-PTY control protocols. Claude
+Code CLI exposes long-lived stream JSON input/output, but its public CLI
+contract does not expose a stable interrupt command; production Claude native
+interrupt therefore requires an explicit Claude Agent SDK bridge using
+`Query.interrupt()`. Until that bridge is present, Claude must remain typed
+unsupported instead of borrowing process signals or guessing internal frames.
 
 ## CyberPenda gap confirmed
 

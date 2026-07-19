@@ -149,8 +149,11 @@ func TestBuiltinPluginsDeclareIndependentProviderSessionCapabilities(t *testing.
 				!plugin.Capabilities.PermissionResponse || !plugin.Capabilities.ResumeSession {
 				t.Fatalf("provider-session capabilities = %#v", plugin.Capabilities)
 			}
-			if plugin.Capabilities.InTurnSteer {
-				t.Fatal("first provider slice uses interrupt-then-replace, not direct in-turn steer")
+			if id == "pi" && !plugin.Capabilities.InTurnSteer {
+				t.Fatal("Pi RPC should advertise direct in-turn steer")
+			}
+			if id != "pi" && plugin.Capabilities.InTurnSteer {
+				t.Fatal("provider lacks a verified direct in-turn steer transport")
 			}
 		})
 	}

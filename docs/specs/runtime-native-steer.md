@@ -84,12 +84,16 @@ and mechanical handoff are outside this feature.
   protocol; diagnostics use redacted stderr/runtime events.
 - A bridge process owns the provider child process. The daemon owns bridge
   lifecycle, Task binding, request ids, provider turn ids, and event persistence.
-- Direct `in_turn_steer` is preferred. The fallback is provider-native
+- Direct `in_turn_steer` is preferred and is used by Pi RPC. The fallback is provider-native
   interrupt/cancel/abort, acknowledged settlement, then same-session
   replacement prompt. Process cancellation, PTY input, and raw stdin injection
   are not steer implementations.
-- The first provider adapters are Claude Code, Codex, and Pi. ACP is deferred
-  until provider handshake capability negotiation is implemented.
+- The first provider adapters are Claude Code, Codex, and Pi. Production
+  capability advertisement is gated by a verified transport: Codex App Server
+  and Pi RPC are stable non-PTY protocols; Claude native interrupt requires an
+  explicit Claude Agent SDK `Query` bridge and remains typed unsupported until
+  that bridge is installed. ACP is deferred until provider handshake
+  capability negotiation is implemented.
 - The canonical user message is a Task Conversation event. Control/provider
   lifecycle events are correlated typed Task Events and are projected once into
   the transcript without duplicating the user message.
@@ -114,7 +118,7 @@ and mechanical handoff are outside this feature.
   acknowledgement gating, idempotency, unsupported capability errors,
   concurrent control conflicts, and truthful failure states.
 - Add provider contract tests for Codex App Server JSON-RPC, Claude Code SDK
-  input/interrupt, and Pi RPC prompt/abort. Tests must not require live model
+  input/interrupt, and Pi RPC prompt/steer/abort. Tests must not require live model
   credentials for the core contract.
 - Add sandbox lifecycle tests proving bidirectional non-PTY protocol input,
   `-i` without `-t`, cancellation cleanup, and no duplicate containers during
