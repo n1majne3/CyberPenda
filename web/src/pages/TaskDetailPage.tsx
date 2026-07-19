@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, type KeyboardEvent, type RefObject } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, ChevronRight, Wrench, User, Bot, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2 } from "lucide-react";
+import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, ChevronRight, Wrench, User, Bot, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2, Maximize2, Minimize2 } from "lucide-react";
 import { apiDelete, apiGet, apiPost, type ModelProvider, type ProviderPermissionRequest, type RuntimePlugin, type RuntimeProfile, type Task, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Badge, Select, Textarea } from "@/components/ui";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
@@ -304,6 +304,16 @@ export function TaskDetailPage() {
     setSearchParams(next, { replace: true });
   }
 
+  function selectFocus(focused: boolean) {
+    const next = new URLSearchParams(searchParams);
+    if (focused) {
+      next.set("focus", "1");
+    } else {
+      next.delete("focus");
+    }
+    setSearchParams(next, { replace: true });
+  }
+
   function selectContinuationModelProvider(providerID: string) {
     setContinuationModelProvider(providerID);
     const provider = continuationModelProviders.find((item) => item.id === providerID) ??
@@ -333,7 +343,6 @@ export function TaskDetailPage() {
   const interruptSteerAvailable = controls?.interrupt_steer_available ?? nativeResumeAvailable;
   const nativeSteerAvailable = controls?.native_steer_available ?? false;
   const nativeSteerMode = controls?.native_steer_mode;
-  const nativeSteerState = controls?.native_steer_state;
   const providerPermissions = controls?.provider_permissions ?? [];
   const running = ACTIVE.has(task.status);
   const sendMode = resolveConversationSendMode({
@@ -344,52 +353,58 @@ export function TaskDetailPage() {
     resumeAvailable,
   });
   const sendActionLabel = conversationSendLabel(sendMode, nativeSteerMode);
+  const focusMode = searchParams.get("focus") === "1";
 
   return (
     <ProjectPageShell
-      className="flex min-h-full flex-col"
-      title={
-        <h2
-          className="line-clamp-2 min-w-0 break-words text-lg font-semibold leading-6 tracking-tight"
-          title={task.goal}
-        >
-          {task.goal}
-        </h2>
-      }
-      bodyClassName="flex min-h-[32rem] flex-1 flex-col gap-2 pb-0 lg:min-h-0"
+      hideChrome={focusMode}
+      data-testid="task-detail-shell"
+      className={focusMode ? "h-[calc(100dvh-3.5rem)] max-w-none p-0 md:h-dvh lg:p-0" : "flex min-h-full flex-col"}
+      bodyClassName={focusMode ? "flex h-full min-h-0 flex-col" : "flex min-h-[32rem] flex-1 flex-col pb-0 lg:min-h-0"}
     >
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border pb-2">
+      <div data-testid="task-session-header" className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-2 sm:px-3">
         <StatusBadge status={task.status} />
-        <Badge variant={task.runner === "host" ? "destructive" : "outline"}>
-          runner: {task.runner}
-        </Badge>
+        <h1 className="min-w-0 flex-1 truncate text-sm font-medium" title={task.goal}>{task.goal}</h1>
         {currentContinuation && (
-          <>
-          <Badge variant="outline">continuation #{currentContinuation.number}</Badge>
-          <Badge variant="outline">runtime: {currentContinuation.runtime_provider}</Badge>
-          <Badge variant="outline" className="hidden sm:inline-flex">continuation status: {currentContinuation.status}</Badge>
-          {(controls?.native_session_captured || currentContinuation.native_session_id) && <Badge variant="outline" className="hidden xl:inline-flex">native session: captured</Badge>}
-          {controls?.same_runtime_provider_only && <Badge variant="outline" className="hidden xl:inline-flex">same runtime only</Badge>}
-          {nativeSteerMode && <Badge variant="outline">steer: {nativeSteerMode === "in_turn_steer" ? "direct native" : "interrupt then replace"}</Badge>}
-          {nativeSteerState && nativeSteerState !== "idle" && <Badge variant={nativeSteerState === "failed" ? "destructive" : "outline"}>steer: {nativeSteerState}</Badge>}
-          {controls?.recovery_state && <Badge variant={controls.recovery_state === "failed_closed" ? "warning" : "outline"}>session recovery: {controls.recovery_state.replaceAll("_", " ")}</Badge>}
-          </>
+          <div className="hidden shrink-0 items-center gap-1 text-xs text-muted-foreground md:flex">
+            <span>continuation #{currentContinuation.number}</span>
+            <span aria-hidden="true">·</span>
+            <span>runtime: {currentContinuation.runtime_provider}</span>
+            <span aria-hidden="true">·</span>
+            <span>runner: {task.runner}</span>
+            <span className="hidden xl:inline" aria-hidden="true">·</span>
+            <span className="hidden xl:inline">continuation status: {currentContinuation.status}</span>
+            {(controls?.native_session_captured || currentContinuation.native_session_id) && (
+              <span className="hidden 2xl:inline">native session: captured</span>
+            )}
+            {controls?.same_runtime_provider_only && <span className="hidden 2xl:inline">same runtime only</span>}
+          </div>
         )}
-        <div className="ml-auto flex shrink-0 items-center gap-2">
+        <div className="flex shrink-0 items-center gap-1">
           {!running && (
-            <Button size="sm" variant="outline" onClick={resumeNative} disabled={!resumeAvailable} title={nativeResumeAvailable ? "Resume native session" : "Start a fresh continuation from the current Task state"}>
-              <Play className="h-4 w-4" /> Resume
+            <Button size="sm" variant="ghost" onClick={resumeNative} disabled={!resumeAvailable} title={nativeResumeAvailable ? "Resume native session" : "Start a fresh continuation from the current Task state"}>
+              <Play className="h-4 w-4" /> <span className="hidden sm:inline">Resume</span>
             </Button>
           )}
           {DELETABLE.has(task.status) && (
-            <Button size="sm" variant="destructive" onClick={deleteTask}>
-              <Trash2 className="h-4 w-4" /> Delete
+            <Button size="icon" variant="ghost" onClick={deleteTask} aria-label="Delete task" title="Delete task" className="h-8 w-8 text-destructive hover:text-destructive">
+              <Trash2 className="h-4 w-4" />
             </Button>
           )}
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={() => selectFocus(!focusMode)}
+            aria-label={focusMode ? "Exit focus view" : "Enter focus view"}
+            title={focusMode ? "Exit focus view" : "Enter focus view"}
+            className="h-8 w-8"
+          >
+            {focusMode ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+          </Button>
         </div>
       </div>
 
-      <div className="flex shrink-0 items-center gap-1 border-b border-border">
+      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border px-2 sm:px-3">
         <button
           type="button"
           className={tabClass(activeView === "conversation")}
@@ -413,7 +428,7 @@ export function TaskDetailPage() {
 
       <div
         data-testid="task-workspace"
-        className="flex min-h-[28rem] min-w-0 flex-1 flex-col overflow-visible rounded-lg border border-border bg-card/30 md:overflow-hidden lg:min-h-0"
+        className={`flex min-h-[28rem] min-w-0 flex-1 flex-col overflow-visible bg-card/30 md:overflow-hidden lg:min-h-0 ${focusMode ? "border-0" : "rounded-b-lg border-x border-b border-border"}`}
       >
         {activeView === "timeline" ? (
           <div className="min-h-0 flex-1 overflow-y-auto p-2 pb-44 sm:p-3 md:pb-5">
@@ -780,9 +795,15 @@ function TranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
     );
   }
 
-  const visibleRuntimeMessage = projectVisibleRuntimeMessage(entry);
-  if (visibleRuntimeMessage) {
-    return <TranscriptRow entry={visibleRuntimeMessage} />;
+  const projectedRuntimeEntries = projectRuntimeOutput(entry);
+  if (projectedRuntimeEntries) {
+    return (
+      <div className="space-y-3">
+        {projectedRuntimeEntries.map((projectedEntry) => (
+          <TranscriptRow key={projectedEntry.id} entry={projectedEntry} />
+        ))}
+      </div>
+    );
   }
 
   if (isCollapsedTranscriptEntry(entry)) {
@@ -816,28 +837,88 @@ function TranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
   );
 }
 
-function projectVisibleRuntimeMessage(entry: TaskTranscriptEntry): TaskTranscriptEntry | null {
+function projectRuntimeOutput(entry: TaskTranscriptEntry): TaskTranscriptEntry[] | null {
   if (entry.kind !== "runtime_output" || !entry.text) return null;
   try {
     const record = JSON.parse(entry.text) as {
       type?: unknown;
       message?: { content?: unknown };
     };
-    if (record.type !== "assistant" || !Array.isArray(record.message?.content)) return null;
-    const text = record.message.content
-      .filter((block): block is { type: "text"; text: string } => (
-        typeof block === "object" && block !== null &&
-        (block as { type?: unknown }).type === "text" &&
-        typeof (block as { text?: unknown }).text === "string"
-      ))
-      .map((block) => block.text.trim())
-      .filter(Boolean)
-      .join("\n\n");
-    if (!text) return null;
-    return { ...entry, kind: "message", role: "assistant", text, stream: undefined, status: undefined };
+    if ((record.type !== "assistant" && record.type !== "user") || !Array.isArray(record.message?.content)) return null;
+
+    const projected = record.message.content.flatMap((rawBlock, index): TaskTranscriptEntry[] => {
+      if (typeof rawBlock !== "object" || rawBlock === null) return [];
+      const block = rawBlock as Record<string, unknown>;
+      const id = `${entry.id}-${index}`;
+
+      if (block.type === "text" && typeof block.text === "string" && block.text.trim()) {
+        return [{
+          ...entry,
+          id,
+          kind: "message",
+          role: record.type === "assistant" ? "assistant" : "user",
+          text: block.text.trim(),
+          stream: undefined,
+          status: undefined,
+        }];
+      }
+
+      if (record.type === "assistant" && block.type === "tool_use") {
+        const toolCallID = typeof block.id === "string" ? block.id : undefined;
+        const toolName = typeof block.name === "string" ? block.name : undefined;
+        if (!toolCallID && !toolName) return [];
+        return [{
+          ...entry,
+          id,
+          kind: "tool_call",
+          role: "assistant",
+          text: undefined,
+          tool_call_id: toolCallID,
+          tool_name: toolName,
+          details: { input: block.input ?? {} },
+          stream: undefined,
+          status: undefined,
+        }];
+      }
+
+      if (record.type === "user" && block.type === "tool_result") {
+        const toolCallID = typeof block.tool_use_id === "string" ? block.tool_use_id : undefined;
+        if (!toolCallID) return [];
+        return [{
+          ...entry,
+          id,
+          kind: "tool_result",
+          role: "tool",
+          text: runtimeContentText(block.content),
+          tool_call_id: toolCallID,
+          details: typeof block.is_error === "boolean" ? { is_error: block.is_error } : undefined,
+          stream: undefined,
+          status: undefined,
+        }];
+      }
+
+      return [];
+    });
+
+    return projected.length > 0 ? projected : null;
   } catch {
     return null;
   }
+}
+
+function runtimeContentText(content: unknown): string | undefined {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return undefined;
+  const text = content
+    .flatMap((part) => (
+      typeof part === "object" && part !== null &&
+      (part as { type?: unknown }).type === "text" &&
+      typeof (part as { text?: unknown }).text === "string"
+        ? [(part as { text: string }).text]
+        : []
+    ))
+    .join("\n");
+  return text || undefined;
 }
 
 function CollapsedTranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
@@ -863,6 +944,8 @@ function isCollapsedTranscriptEntry(entry: TaskTranscriptEntry) {
 }
 
 function collapsedBody(entry: TaskTranscriptEntry) {
+  if (entry.kind === "tool_result") return entry.text || "(empty)";
+
   const parts: string[] = [];
   if (entry.text) parts.push(entry.text);
   if (entry.tool_call_id) parts.push(`tool_call_id: ${entry.tool_call_id}`);

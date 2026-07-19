@@ -10,6 +10,7 @@ export type ProjectPageShellProps = {
   children?: ReactNode;
   className?: string;
   bodyClassName?: string;
+  hideChrome?: boolean;
 } & Omit<HTMLAttributes<HTMLDivElement>, "title">;
 
 /**
@@ -25,6 +26,7 @@ export const ProjectPageShell = forwardRef<HTMLDivElement, ProjectPageShellProps
       children,
       className,
       bodyClassName,
+      hideChrome = false,
       ...props
     },
     ref,
@@ -37,15 +39,17 @@ export const ProjectPageShell = forwardRef<HTMLDivElement, ProjectPageShellProps
         className={cn("mx-auto w-full max-w-6xl", className)}
         {...props}
       >
-        <div
-          data-testid="project-page-shell-chrome"
-          className="sticky top-0 z-20 -mx-6 mb-6 w-[calc(100%+3rem)] max-w-none space-y-3 border-b border-border bg-background/90 px-6 pb-3 backdrop-blur-sm supports-[backdrop-filter]:bg-background/80 lg:-mx-8 lg:w-[calc(100%+4rem)] lg:px-8"
-        >
-          <BackLink to="/" className="mb-0">
-            All projects
-          </BackLink>
-          <ProjectNav />
-        </div>
+        {!hideChrome && (
+          <div
+            data-testid="project-page-shell-chrome"
+            className="sticky top-0 z-20 -mx-6 mb-6 w-[calc(100%+3rem)] max-w-none space-y-3 border-b border-border bg-background/90 px-6 pb-3 backdrop-blur-sm supports-[backdrop-filter]:bg-background/80 lg:-mx-8 lg:w-[calc(100%+4rem)] lg:px-8"
+          >
+            <BackLink to="/" className="mb-0">
+              All projects
+            </BackLink>
+            <ProjectNav />
+          </div>
+        )}
 
         {hasHeader && (
           <div

@@ -215,6 +215,77 @@ describe("TaskDetailPage", () => {
     expect(screen.queryByText(/"type":"assistant"/)).not.toBeInTheDocument();
   });
 
+  it("projects Claude tool calls and results into readable transcript rows", async () => {
+    stubTaskDetailApi({}, [
+      {
+        id: "assistant-runtime-entry",
+        seq: 7,
+        continuation: 1,
+        kind: "runtime_output",
+        role: "runtime",
+        text: JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "text", text: "I will inspect the target now." },
+              { type: "tool_use", id: "call-1", name: "Bash", input: { command: "curl http://localhost:3000" } },
+            ],
+          },
+        }),
+        stream: "assistant",
+        created_at: "2026-01-01T00:00:01Z",
+      },
+      {
+        id: "user-runtime-entry",
+        seq: 8,
+        continuation: 1,
+        kind: "runtime_output",
+        role: "runtime",
+        text: JSON.stringify({
+          type: "user",
+          message: {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: "call-1", content: "HTTP/1.1 200 OK\\nbody" }],
+          },
+        }),
+        stream: "user",
+        created_at: "2026-01-01T00:00:02Z",
+      },
+    ]);
+
+    renderPage();
+
+    expect(await screen.findByText("I will inspect the target now.")).toBeInTheDocument();
+    expect(screen.getByText("Tool call · Bash")).toBeInTheDocument();
+    expect(screen.getByText(/Tool result · call-1: HTTP\/1\.1 200 OK/)).toBeInTheDocument();
+    expect(screen.getAllByText(/HTTP\/1\.1 200 OK/)).toHaveLength(2);
+    expect(screen.queryByText(/"type":"assistant"/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/"type":"user"/)).not.toBeInTheDocument();
+    const resultBody = screen.getAllByText(/HTTP\/1\.1 200 OK/).find((element) => element.tagName === "PRE");
+    expect(resultBody).toBeDefined();
+    expect(resultBody?.textContent).not.toContain("tool_call_id: call-1");
+  });
+
+  it("switches into a compact focus view without project chrome", async () => {
+    const searches: string[] = [];
+    const user = userEvent.setup();
+    stubTaskDetailApi();
+
+    renderPage("/projects/project-1/tasks/task-1", (search) => searches.push(search));
+
+    expect(await screen.findByText("Conversation should be hidden by default")).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Project sections" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Enter focus view" }));
+
+    expect(searches.at(-1)).toBe("?focus=1");
+    expect(screen.queryByRole("navigation", { name: "Project sections" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Exit focus view" })).toBeInTheDocument();
+    expect(screen.getByTestId("task-session-header")).toHaveClass("h-12");
+    expect(screen.getByTestId("task-detail-shell")).toHaveClass("h-[calc(100dvh-3.5rem)]", "md:h-dvh");
+  });
+
   it("does not auto-scroll the default timeline view to the bottom", async () => {
     const { scrollIntoView } = stubTaskDetailApi();
 
