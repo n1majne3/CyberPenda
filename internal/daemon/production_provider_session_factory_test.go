@@ -190,7 +190,7 @@ func TestProductionProviderSessionFactoryFailsClosedOnChangedDurableThread(t *te
 }
 
 func TestProductionProviderSessionFactoryRejectsProvidersWithoutNativeSettlement(t *testing.T) {
-	for _, provider := range []runtimeprofile.Provider{runtimeprofile.ProviderClaudeCode, runtimeprofile.ProviderPi} {
+	for _, provider := range []runtimeprofile.Provider{runtimeprofile.ProviderClaudeCode} {
 		t.Run(string(provider), func(t *testing.T) {
 			factory := NewProductionProviderSessionFactory(ProductionProviderSessionFactoryConfig{Docker: newProductionFactoryDocker()})
 			_, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{Task: task.Task{ID: "task-1"}, Continuation: task.TaskContinuation{ID: "c-1"}, Provider: provider, Runner: task.RunnerSandbox})
@@ -199,5 +199,50 @@ func TestProductionProviderSessionFactoryRejectsProvidersWithoutNativeSettlement
 				t.Fatalf("error = %v, want interrupt_then_replace capability error", err)
 			}
 		})
+	}
+}
+
+func TestProductionProviderSessionFactoryOpensPiRPCBridge(t *testing.T) {
+	docker := newProductionFactoryDocker()
+	factory := NewProductionProviderSessionFactory(ProductionProviderSessionFactoryConfig{Docker: docker})
+	legacy := runtime.NewDockerSandboxAdapter(runtime.DockerSandboxConfig{Name: "pi", Image: "sandbox:test", CreateArgs: []string{"create", "sandbox:test", "pi", "--mode", "json", "goal"}})
+	methods := make(chan string, 4)
+	go func() {
+		scanner := bufio.NewScanner(docker.inputR)
+		for scanner.Scan() {
+			var request runtime.SandboxBridgeRequest
+			_ = json.Unmarshal(scanner.Bytes(), &request)
+			methods <- request.Method
+			result := `{"session_id":"pi-session","session_path":"/sessions/pi-session.jsonl"}`
+			_, _ = io.WriteString(docker.outputW, `{"jsonrpc":"2.0","id":"`+request.ID+`","result":`+result+"}\n")
+		}
+	}()
+	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
+		Task: task.Task{ID: "task-pi"}, Continuation: task.TaskContinuation{ID: "continuation-pi"},
+		Provider: runtimeprofile.ProviderPi, Runner: task.RunnerSandbox, LegacyAdapter: legacy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer binding.Session.Close(context.Background())
+	if binding.Session.SessionID() != "pi-session" || !binding.Session.Capabilities().InTurnSteer {
+		t.Fatalf("Pi binding = %#v capabilities=%#v", binding, binding.Session.Capabilities())
+	}
+	select {
+	case method := <-methods:
+		if method != "pi/get_state" {
+			t.Fatalf("Pi setup method = %q, want pi/get_state", method)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Pi setup")
+	}
+	docker.mu.Lock()
+	joined := strings.Join(docker.createArgs, " ")
+	docker.mu.Unlock()
+	if !strings.Contains(joined, "sandbox:test /usr/local/bin/pentest-provider-bridge --provider pi -- pi --mode rpc") {
+		t.Fatalf("Pi create args = %q", joined)
+	}
+	if strings.Contains(joined, " -t ") || strings.Contains(joined, " --tty ") {
+		t.Fatalf("Pi bridge allocated a terminal: %q", joined)
 	}
 }

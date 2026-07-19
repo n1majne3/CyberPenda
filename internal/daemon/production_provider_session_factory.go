@@ -15,10 +15,9 @@ import (
 )
 
 // ProductionProviderSessionFactory is the daemon's concrete non-PTY bridge
-// assembly. Codex App Server is wired end-to-end; Claude Code and Pi are
-// rejected until their CLI transports expose a provider-native interrupt and
-// settlement protocol (their SDK/RPC implementations are not the installed
-// one-shot CLI contract).
+// assembly. Codex App Server and Pi headless RPC are wired end-to-end. Claude
+// Code remains fail-closed until its installed transport exposes the required
+// native interrupt and settlement protocol.
 type ProductionProviderSessionFactoryConfig struct {
 	Docker        runtime.SandboxBridgeDocker
 	BridgeCommand string
@@ -75,8 +74,11 @@ func (f *ProductionProviderSessionFactory) Open(ctx context.Context, request Pro
 	if request.Runner != task.RunnerSandbox {
 		return ProviderSessionBinding{}, fmt.Errorf("provider session factory requires sandbox runner")
 	}
-	if request.Provider != runtimeprofile.ProviderCodex {
+	if request.Provider == runtimeprofile.ProviderClaudeCode {
 		return ProviderSessionBinding{}, &runtime.UnsupportedProviderSessionCapabilityError{Capability: runtime.ProviderSessionCapabilityInterruptThenReplace}
+	}
+	if request.Provider != runtimeprofile.ProviderCodex && request.Provider != runtimeprofile.ProviderPi {
+		return ProviderSessionBinding{}, fmt.Errorf("provider %q is not supported by production provider session factory", request.Provider)
 	}
 	if f.config.Docker == nil {
 		return ProviderSessionBinding{}, fmt.Errorf("provider session bridge docker transport is unavailable")
@@ -106,12 +108,39 @@ func (f *ProductionProviderSessionFactory) Open(ctx context.Context, request Pro
 	}
 	providerBinary := "codex"
 	for _, arg := range legacyArgs {
-		if !strings.Contains(arg, "=") && filepath.Base(arg) == "codex" {
+		if !strings.Contains(arg, "=") && filepath.Base(arg) == filepath.Base(providerBinary) {
 			providerBinary = arg
 			break
 		}
 	}
-	createArgs, err := runtime.RewriteDockerCreateCommand(legacyArgs, string(request.Provider), []string{f.config.BridgeCommand, "--provider", "codex", "--", providerBinary, "app-server"})
+	if request.Provider == runtimeprofile.ProviderPi {
+		providerBinary = "pi"
+		for _, arg := range legacyArgs {
+			if !strings.Contains(arg, "=") && filepath.Base(arg) == "pi" {
+				providerBinary = arg
+				break
+			}
+		}
+	}
+	bridgeCommand := []string{f.config.BridgeCommand, "--provider", string(request.Provider), "--", providerBinary}
+	if request.Provider == runtimeprofile.ProviderCodex {
+		bridgeCommand = append(bridgeCommand, "app-server")
+	} else {
+		bridgeCommand = append(bridgeCommand, "--mode", "rpc")
+		if sessionPath := strings.TrimSpace(request.Continuation.NativeSessionPath); sessionPath != "" {
+			bridgeCommand = append(bridgeCommand, "--session", sessionPath)
+		} else {
+			// Pi creates its durable session lazily. Supplying a stable Task-scoped
+			// id makes the pre-launch get_state handshake deterministic and keeps
+			// later Continuations on the same native session.
+			sessionID := strings.TrimSpace(request.Continuation.NativeSessionID)
+			if sessionID == "" {
+				sessionID = taskID
+			}
+			bridgeCommand = append(bridgeCommand, "--session-id", sessionID)
+		}
+	}
+	createArgs, err := runtime.RewriteDockerCreateCommand(legacyArgs, string(request.Provider), bridgeCommand)
 	if err != nil {
 		return ProviderSessionBinding{}, err
 	}
@@ -141,52 +170,77 @@ func (f *ProductionProviderSessionFactory) Open(ctx context.Context, request Pro
 	if err != nil {
 		return ProviderSessionBinding{}, err
 	}
-	// Establish the App Server protocol and a real provider thread before the
+	// Establish the provider protocol and a real provider session before the
 	// session is exposed to the daemon. The bridge forwards these frames over
 	// its private stdin/stdout channel; no provider payload is persisted.
-	if _, err := bridge.Send(ctx, runtime.SandboxBridgeRequest{ID: "setup:initialize", Method: "initialize", Params: json.RawMessage(`{"clientInfo":{"name":"cyberpenda","version":"dev"}}`)}); err != nil {
-		_ = f.bridges.CloseTask(ctx, taskID)
-		return ProviderSessionBinding{}, err
+	var sessionID, sessionPath string
+	if request.Provider == runtimeprofile.ProviderCodex {
+		if _, err := bridge.Send(ctx, runtime.SandboxBridgeRequest{ID: "setup:initialize", Method: "initialize", Params: json.RawMessage(`{"clientInfo":{"name":"cyberpenda","version":"dev"}}`)}); err != nil {
+			_ = f.bridges.CloseTask(ctx, taskID)
+			return ProviderSessionBinding{}, err
+		}
 	}
-	threadMethod := "thread/start"
-	threadRequestID := "setup:thread"
-	threadParams := json.RawMessage(`{"cwd":"/task/workdir"}`)
-	if durableThreadID := strings.TrimSpace(request.Continuation.NativeSessionID); durableThreadID != "" {
-		threadMethod = "thread/resume"
-		threadRequestID = "setup:thread-resume"
-		threadParams = json.RawMessage(fmt.Sprintf(`{"threadId":%q,"cwd":"/task/workdir"}`, durableThreadID))
+	setupMethod, setupID, setupParams := "pi/get_state", "setup:state", json.RawMessage(`{}`)
+	if request.Provider == runtimeprofile.ProviderCodex {
+		setupMethod, setupID, setupParams = "thread/start", "setup:thread", json.RawMessage(`{"cwd":"/task/workdir"}`)
+		if durableThreadID := strings.TrimSpace(request.Continuation.NativeSessionID); durableThreadID != "" {
+			setupMethod, setupID, setupParams = "thread/resume", "setup:thread-resume", json.RawMessage(fmt.Sprintf(`{"threadId":%q,"cwd":"/task/workdir"}`, durableThreadID))
+		}
 	}
-	threadResponse, err := bridge.Send(ctx, runtime.SandboxBridgeRequest{ID: threadRequestID, Method: threadMethod, Params: threadParams})
+	setupResponse, err := bridge.Send(ctx, runtime.SandboxBridgeRequest{ID: setupID, Method: setupMethod, Params: setupParams})
 	if err != nil {
 		_ = f.bridges.CloseTask(ctx, taskID)
 		return ProviderSessionBinding{}, err
 	}
-	var threadResult struct {
-		Thread struct {
+	if request.Provider == runtimeprofile.ProviderPi {
+		var state struct {
+			SessionID   string `json:"session_id"`
+			SessionPath string `json:"session_path"`
+		}
+		if err := json.Unmarshal(setupResponse.Result, &state); err == nil {
+			sessionID, sessionPath = strings.TrimSpace(state.SessionID), strings.TrimSpace(state.SessionPath)
+		}
+		if durable := strings.TrimSpace(request.Continuation.NativeSessionID); durable != "" && sessionID != "" && durable != sessionID {
+			_ = f.bridges.CloseTask(ctx, taskID)
+			return ProviderSessionBinding{}, fmt.Errorf("provider session resume identity changed")
+		}
+		if sessionID == "" {
+			_ = f.bridges.CloseTask(ctx, taskID)
+			return ProviderSessionBinding{}, fmt.Errorf("provider session identity unavailable")
+		}
+	} else {
+		threadResponse := setupResponse
+		var threadResult struct {
+			Thread struct {
+				ID string `json:"id"`
+			} `json:"thread"`
 			ID string `json:"id"`
-		} `json:"thread"`
-		ID string `json:"id"`
+		}
+		if err := json.Unmarshal(threadResponse.Result, &threadResult); err != nil {
+			_ = f.bridges.CloseTask(ctx, taskID)
+			return ProviderSessionBinding{}, fmt.Errorf("provider session thread response invalid")
+		}
+		threadID := strings.TrimSpace(threadResult.Thread.ID)
+		if threadID == "" {
+			threadID = strings.TrimSpace(threadResult.ID)
+		}
+		if durableThreadID := strings.TrimSpace(request.Continuation.NativeSessionID); durableThreadID != "" && threadID != durableThreadID {
+			_ = f.bridges.CloseTask(ctx, taskID)
+			return ProviderSessionBinding{}, fmt.Errorf("provider session resume identity changed")
+		}
+		if threadID == "" {
+			_ = f.bridges.CloseTask(ctx, taskID)
+			return ProviderSessionBinding{}, fmt.Errorf("provider session thread identity unavailable")
+		}
+		sessionID = threadID
 	}
-	if err := json.Unmarshal(threadResponse.Result, &threadResult); err != nil {
-		_ = f.bridges.CloseTask(ctx, taskID)
-		return ProviderSessionBinding{}, fmt.Errorf("provider session thread response invalid")
+	capabilities := runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptTurn: true, InterruptThenReplace: true, PermissionResponse: true, ResumeSession: true, InTurnSteer: request.Provider == runtimeprofile.ProviderPi}
+	var nativeSession runtime.ProviderSession
+	if request.Provider == runtimeprofile.ProviderPi {
+		nativeSession = runtime.NewPiProviderSession(runtime.PiProviderSessionConfig{Transport: bridge, SessionID: sessionID, Capabilities: capabilities})
+	} else {
+		nativeSession = runtime.NewCodexProviderSession(runtime.CodexProviderSessionConfig{Transport: bridge, SessionID: sessionID, Capabilities: capabilities})
 	}
-	threadID := strings.TrimSpace(threadResult.Thread.ID)
-	if threadID == "" {
-		threadID = strings.TrimSpace(threadResult.ID)
-	}
-	if durableThreadID := strings.TrimSpace(request.Continuation.NativeSessionID); durableThreadID != "" && threadID != durableThreadID {
-		_ = f.bridges.CloseTask(ctx, taskID)
-		return ProviderSessionBinding{}, fmt.Errorf("provider session resume identity changed")
-	}
-	if threadID == "" {
-		_ = f.bridges.CloseTask(ctx, taskID)
-		return ProviderSessionBinding{}, fmt.Errorf("provider session thread identity unavailable")
-	}
-	nativeSession := runtime.NewCodexProviderSession(runtime.CodexProviderSessionConfig{
-		Transport: bridge, SessionID: threadID,
-		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptTurn: true, InterruptThenReplace: true, PermissionResponse: true, ResumeSession: true},
-	})
 	var session *productionBoundSession
 	session = &productionBoundSession{ProviderSession: nativeSession, onClose: func(closeCtx context.Context) {
 		f.mu.Lock()
@@ -201,7 +255,7 @@ func (f *ProductionProviderSessionFactory) Open(ctx context.Context, request Pro
 	runAdapterMu.Unlock()
 	runAdapter.BindContinuation(request.Continuation.ID)
 	runAdapter.SetSessionMetadata(func() runtime.NativeSessionMetadata {
-		return runtime.NativeSessionMetadata{ContainerID: bridge.ContainerID(), NativeSessionID: threadID}
+		return runtime.NativeSessionMetadata{ContainerID: bridge.ContainerID(), NativeSessionID: sessionID, NativeSessionPath: sessionPath}
 	})
 	binding := ProviderSessionBinding{Session: session, Adapter: runAdapter}
 	f.bounds[taskID] = binding
