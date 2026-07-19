@@ -347,7 +347,7 @@ export function TaskDetailPage() {
   const currentContinuation = task.active_continuation ?? task.latest_continuation;
   const controls = task.runtime_controls;
   const nativeResumeAvailable = controls?.native_resume_available ?? Boolean(currentContinuation?.native_session_id);
-  const resumeAvailable = controls?.resume_available ?? !ACTIVE.has(task.status);
+  const resumeAvailable = !ACTIVE.has(task.status) || controls?.resume_available === true;
   const queueSteerAvailable = controls?.queue_steer_available ?? true;
   const interruptSteerAvailable = controls?.interrupt_steer_available ?? nativeResumeAvailable;
   const nativeSteerAvailable = controls?.native_steer_available ?? false;

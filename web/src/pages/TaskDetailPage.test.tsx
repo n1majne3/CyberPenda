@@ -337,6 +337,26 @@ describe("TaskDetailPage", () => {
     expect(screen.queryByRole("option", { name: /Use Codex/ })).not.toBeInTheDocument();
   });
 
+  it("keeps Resume enabled when a stopped task has stale runtime controls", async () => {
+    stubTaskDetailApi({
+      status: "stopped",
+      runtime_controls: {
+        native_resume_available: false,
+        resume_available: false,
+        queue_steer_available: true,
+        interrupt_steer_available: false,
+        native_session_captured: true,
+        same_runtime_provider_only: true,
+        runtime_provider: "claude_code",
+      },
+    });
+
+    renderPage();
+
+    const resume = await screen.findByRole("button", { name: /Resume$/ });
+    expect(resume).toBeEnabled();
+  });
+
   it("shows pending provider permissions and answers on the Task session route", async () => {
     const { fetchMock } = stubTaskDetailApi({
       status: "running",
