@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -221,6 +222,69 @@ func TestNativeSteerRecordsCanonicalConversationAndOrderedProviderEvents(t *test
 	}
 	if conversation != 1 {
 		t.Fatalf("retry created %d canonical messages, want 1", conversation)
+	}
+}
+
+func TestNativeSteerRejectsModelProviderSelectionInsteadOfIgnoringIt(t *testing.T) {
+	server, err := NewServer(Config{DBPath: filepath.Join(t.TempDir(), "pentest.db"), DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	createdProject, err := server.projects.Create("Project", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := server.tasks.Create(task.CreateRequest{
+		ProjectID: createdProject.ID, Goal: "inspect target", RuntimeProfileID: "profile", Runner: task.RunnerSandbox,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation, err := server.tasks.CreateContinuation(created.ID, "profile", "claude_code", task.RunnerSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.tasks.UpdateStatus(created.ID, task.StatusRunning); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.tasks.UpdateContinuationStatus(continuation.ID, task.StatusRunning); err != nil {
+		t.Fatal(err)
+	}
+
+	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "claude-session-1",
+		Capabilities: runtimeplugin.Capabilities{
+			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
+		},
+	})
+	if err := server.BindProviderSession(created.ID, session); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/projects/"+createdProject.ID+"/tasks/"+created.ID+"/steer", bytes.NewBufferString(`{
+		"request_id":"req-provider-switch",
+		"message":"continue with the alternate provider",
+		"model_provider_id":"alternate"
+	}`))
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+
+	if response.Code != http.StatusConflict {
+		t.Fatalf("steer status = %d, body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "restart the continuation") {
+		t.Fatalf("steer body = %s", response.Body.String())
+	}
+	events, err := server.tasks.Events(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Kind == task.EventKindConversation && event.Payload["request_id"] == "req-provider-switch" {
+			t.Fatalf("native steer recorded a conversation before rejecting provider selection: %#v", event)
+		}
 	}
 }
 

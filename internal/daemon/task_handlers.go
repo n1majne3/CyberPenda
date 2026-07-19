@@ -1757,6 +1757,10 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		writeError(response, http.StatusBadRequest, "steer message is required")
 		return
 	}
+	if input.hasSelection() {
+		writeError(response, http.StatusConflict, "native steer cannot change runtime or model provider; restart the continuation")
+		return
+	}
 
 	events, err := server.tasks.Events(found.ID)
 	if err != nil {

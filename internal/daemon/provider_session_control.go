@@ -150,6 +150,7 @@ type nativeSteerRequest struct {
 	RequestID string `json:"request_id"`
 	Message   string `json:"message"`
 	Directive string `json:"directive"` // backwards-compatible alias
+	taskContinuationSelectionInput
 }
 
 func newNativeSteerRequestID() string {

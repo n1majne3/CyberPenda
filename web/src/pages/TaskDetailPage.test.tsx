@@ -493,6 +493,47 @@ describe("TaskDetailPage", () => {
     expect(body.request_id.length).toBeGreaterThan(8);
   });
 
+  it("restarts native steer when switching the model provider", async () => {
+    const { fetchMock } = stubTaskDetailApi({
+      status: "running",
+      runtime_controls: {
+        native_resume_available: false,
+        resume_available: false,
+        queue_steer_available: true,
+        interrupt_steer_available: false,
+        native_steer_available: true,
+        native_steer_mode: "in_turn_steer",
+        native_session_captured: true,
+        same_runtime_provider_only: true,
+        runtime_provider: "codex",
+      },
+    });
+    const user = userEvent.setup();
+
+    renderPage();
+
+    await screen.findByText("Conversation should be hidden by default");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model provider" }), "mimo");
+    await user.type(screen.getByPlaceholderText("Focus on admin.example.com next…"), "continue with mimo");
+    expect(screen.getByRole("button", { name: "Switch provider and resume" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "Switch provider and resume" }));
+
+    const postPaths = fetchMock.mock.calls
+      .filter(([, init]) => init?.method === "POST")
+      .map(([input]) => String(input));
+    expect(postPaths).toEqual([
+      "/api/projects/project-1/tasks/task-1/steer/queue",
+      "/api/projects/project-1/tasks/task-1/stop",
+      "/api/projects/project-1/tasks/task-1/resume",
+    ]);
+    const queueCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/steer/queue"));
+    expect(queueCall?.[1]).toMatchObject({
+      body: JSON.stringify({ directive: "continue with mimo", model_provider_id: "mimo", model_override: "mimo-v2-flash" }),
+    });
+    expect(postPaths.some((path) => path.endsWith("/steer"))).toBe(false);
+  });
+
   it("requires confirmation before stopping a running task", async () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     const { fetchMock } = stubTaskDetailApi({ status: "running" });

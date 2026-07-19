@@ -232,8 +232,17 @@ export function TaskDetailPage() {
       const queueNow = currentControls?.queue_steer_available ?? true;
       const resumeNow = currentControls?.resume_available ?? !runningNow;
       const modelPayload = continuationModelPayload();
+      const switchingModelProvider = runningNow && continuationModelProvider.trim() !== "";
 
-      if (runningNow && (nativeNow || interruptNow)) {
+      if (switchingModelProvider) {
+        if (!queueNow) throw new Error("Model provider switching is unavailable for this Task");
+        // A live provider session cannot change its endpoint or credentials.
+        // Persist the message/config first, then restart the Continuation so a
+        // failed stop or resume never drops the operator's request.
+        await apiPost(`${base}/steer/queue`, { directive: message, ...modelPayload });
+        await apiPost(`${base}/stop`, {});
+        await apiPost(`${base}/resume`, {});
+      } else if (runningNow && (nativeNow || interruptNow)) {
         await apiPost(`${base}/steer`, {
           ...(nativeNow ? { request_id: requestID, message } : { directive: message }),
           ...modelPayload,
@@ -352,7 +361,10 @@ export function TaskDetailPage() {
     queueSteerAvailable,
     resumeAvailable,
   });
-  const sendActionLabel = conversationSendLabel(sendMode, nativeSteerMode);
+  const providerSwitchRequested = running && continuationModelProvider.trim() !== "";
+  const sendActionLabel = providerSwitchRequested
+    ? queueSteerAvailable ? "Switch provider and resume" : "Provider switch unavailable"
+    : conversationSendLabel(sendMode, nativeSteerMode);
   const focusMode = searchParams.get("focus") === "1";
 
   return (
@@ -475,6 +487,7 @@ export function TaskDetailPage() {
           sending={sending}
           running={running}
           queueAvailable={queueSteerAvailable}
+          providerSwitchRequested={providerSwitchRequested}
           sendMode={sendMode}
           sendActionLabel={sendActionLabel}
           actionError={actionError}
@@ -641,6 +654,7 @@ function TaskComposer({
   sending,
   running,
   queueAvailable,
+  providerSwitchRequested,
   sendMode,
   sendActionLabel,
   actionError,
@@ -660,6 +674,7 @@ function TaskComposer({
   sending: boolean;
   running: boolean;
   queueAvailable: boolean;
+  providerSwitchRequested: boolean;
   sendMode: ConversationSendMode;
   sendActionLabel: string;
   actionError: string | null;
@@ -717,7 +732,7 @@ function TaskComposer({
                 ))}
               </Select>
               <Badge variant={sendMode === "unavailable" ? "warning" : "outline"} size="sm">
-                {conversationModeText(sendMode)}
+                {providerSwitchRequested ? "switch provider" : conversationModeText(sendMode)}
               </Badge>
             </div>
             <div className="ml-auto flex shrink-0 items-center gap-1">
@@ -741,7 +756,7 @@ function TaskComposer({
               <Button
                 size="icon-lg"
                 onClick={onSend}
-                disabled={!value.trim() || sending || sendMode === "unavailable"}
+                disabled={!value.trim() || sending || sendMode === "unavailable" || (providerSwitchRequested && !queueAvailable)}
                 aria-label={sendActionLabel}
                 title={sendActionLabel}
               >
