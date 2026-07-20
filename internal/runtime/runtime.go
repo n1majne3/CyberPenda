@@ -291,6 +291,32 @@ func NewCommandAdapter(config CommandAdapterConfig) Adapter {
 	return &commandAdapter{config: config}
 }
 
+// CommandAdapterLaunch returns the host launch config for adapters built by
+// NewCommandAdapter. Provider-session assembly uses this to start a Task-owned
+// host bridge without re-deriving program, workdir, or env.
+func CommandAdapterLaunch(adapter Adapter) (CommandAdapterConfig, bool) {
+	if adapter == nil {
+		return CommandAdapterConfig{}, false
+	}
+	a, ok := adapter.(*commandAdapter)
+	if !ok {
+		return CommandAdapterConfig{}, false
+	}
+	out := CommandAdapterConfig{
+		Name:    a.config.Name,
+		Program: a.config.Program,
+		Args:    append([]string(nil), a.config.Args...),
+		Workdir: a.config.Workdir,
+	}
+	if len(a.config.Env) > 0 {
+		out.Env = make(map[string]string, len(a.config.Env))
+		for key, value := range a.config.Env {
+			out.Env[key] = value
+		}
+	}
+	return out, true
+}
+
 func (a *commandAdapter) Name() string {
 	if a.config.Name != "" {
 		return a.config.Name

@@ -197,7 +197,7 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 		return err
 	}
 	plan = boundPlan
-	if server.providerSessionFactory != nil && created.Runner == task.RunnerSandbox && supportedProviderSessionFactoryProvider(plan.ResolvedProfile.Provider) {
+	if server.providerSessionFactory != nil && supportsPersistentProviderSession(created.Runner, plan.ResolvedProfile.Provider) {
 		binding, factoryErr := server.providerSessionFactory.Open(context.Background(), ProviderSessionLaunchRequest{
 			Task: created, Continuation: continuation, Provider: plan.ResolvedProfile.Provider,
 			Runner: created.Runner, LaunchGoal: plan.LaunchGoal, RuntimeConfig: plan.CapturedRuntimeConfig,
@@ -1978,7 +1978,7 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 	conversationPayload := task.EventPayload{
 		"role": "user", "text": input.Message, "request_id": input.RequestID,
 		"delivery": "native_steer", "outcome": "pending", "mode": string(mode),
-		"session_id": session.SessionID(),
+		"session_id":        session.SessionID(),
 		"model_provider_id": selection.ModelProviderID, "model": selection.Model,
 		"requested_reasoning_effort": selection.RequestedReasoningEffort,
 	}
@@ -2042,7 +2042,7 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 			failure := task.EventPayload{
 				"request_id": input.RequestID, "session_id": session.SessionID(), "mode": string(mode),
 				"outcome": "failed", "phase": "steering_failed", "error_code": errorCode,
-				"error": errorMessage,
+				"error":             errorMessage,
 				"model_provider_id": selection.ModelProviderID, "model": selection.Model,
 				"requested_reasoning_effort": selection.RequestedReasoningEffort,
 			}

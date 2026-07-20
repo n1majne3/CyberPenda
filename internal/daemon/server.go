@@ -303,10 +303,30 @@ func (server *Server) reconcileInterruptedTasks() {
 }
 
 func (server *Server) cleanupStaleContinuationContainer(continuation task.TaskContinuation) {
-	if continuation.Runner != task.RunnerSandbox || strings.TrimSpace(continuation.ContainerID) == "" {
+	identity := strings.TrimSpace(continuation.ContainerID)
+	if identity == "" {
 		return
 	}
-	containerID := strings.TrimSpace(continuation.ContainerID)
+	if continuation.Runner == task.RunnerHost {
+		pgid, ok := runtime.ParseHostProcessGroupID(identity)
+		if !ok {
+			return
+		}
+		if err := runtime.KillHostProcessGroup(context.Background(), pgid); err != nil {
+			server.logger.Printf("task reconcile: failed to kill host process group %d for task %s: %v", pgid, continuation.TaskID, err)
+			return
+		}
+		_, _ = server.tasks.AppendEvent(continuation.TaskID, task.EventKindLifecycle, task.EventPayload{
+			"phase":  "host_process_group_cleaned",
+			"reason": "daemon_restart",
+			"pgid":   pgid,
+		})
+		return
+	}
+	if continuation.Runner != task.RunnerSandbox {
+		return
+	}
+	containerID := identity
 	if err := runtime.StopDockerContainer(server.containerCLI, containerID, 2*time.Second); err != nil {
 		server.logger.Printf("task reconcile: failed to stop stale container %s for task %s: %v", containerID, continuation.TaskID, err)
 		return
