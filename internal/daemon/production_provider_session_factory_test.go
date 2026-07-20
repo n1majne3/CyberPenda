@@ -957,9 +957,12 @@ func TestProductionProviderSessionFactoryHostPiCloseCleansProcessGroupAndArtifac
 	if !ok {
 		t.Fatalf("adapter type = %T", binding.Adapter)
 	}
+	var recordedMu sync.Mutex
 	var recorded runtime.NativeSessionMetadata
 	adapter.SetMetadataRecorder(func(meta runtime.NativeSessionMetadata) error {
+		recordedMu.Lock()
 		recorded = meta
+		recordedMu.Unlock()
 		return nil
 	})
 	runCtx, cancel := context.WithCancel(context.Background())
@@ -967,15 +970,21 @@ func TestProductionProviderSessionFactoryHostPiCloseCleansProcessGroupAndArtifac
 	go func() { done <- adapter.Run(runCtx, "goal", func(task.EventKind, task.EventPayload) {}) }()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if recorded.NativeSessionID == "pi-clean" && recorded.ContainerID == "host-pgid:4242" {
+		recordedMu.Lock()
+		gotID, gotContainer := recorded.NativeSessionID, recorded.ContainerID
+		recordedMu.Unlock()
+		if gotID == "pi-clean" && gotContainer == "host-pgid:4242" {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	cancel()
 	<-done
-	if recorded.NativeSessionID != "pi-clean" || recorded.ContainerID != "host-pgid:4242" {
-		t.Fatalf("host pi metadata = %#v", recorded)
+	recordedMu.Lock()
+	finalMetadata := recorded
+	recordedMu.Unlock()
+	if finalMetadata.NativeSessionID != "pi-clean" || finalMetadata.ContainerID != "host-pgid:4242" {
+		t.Fatalf("host pi metadata = %#v", finalMetadata)
 	}
 	if err := binding.Session.Close(context.Background()); err != nil {
 		t.Fatal(err)
