@@ -111,6 +111,7 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		Runner:              string(input.Runner),
 		HostActivated:       input.RunControls.HostActivated,
 	})
+	server.logPreflightCustomArgConflict(input.RuntimeProfileID, preflightResult)
 	if !preflightResult.Pass {
 		writeJSON(response, http.StatusBadRequest, struct {
 			Error     string           `json:"error"`

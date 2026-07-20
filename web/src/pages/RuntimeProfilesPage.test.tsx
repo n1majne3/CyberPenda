@@ -793,4 +793,75 @@ describe("RuntimeProfilesPage", () => {
       ),
     ).toBe(false);
   });
+
+  it("surfaces daemon custom args conflict 400 without cleaning draft values", async () => {
+    const serverConflict =
+      'custom argument "--model other" redefines structured field model (model); use the Runtime Profile model instead';
+    const profilePayload = {
+      id: "profile-1",
+      name: "Codex Clean",
+      provider: "codex",
+      fields: { model: "gpt-5", custom_args: ["--strict"] },
+      created_at: "",
+      updated_at: "2026-07-21T00:00:00Z",
+    };
+    let patchBodies: unknown[] = [];
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.includes("/api/runtime-profiles") && method === "GET") {
+        return Promise.resolve(
+          new Response(JSON.stringify({ profiles: [profilePayload] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/runtime-profiles/profile-1") && method === "PATCH") {
+        if (init?.body) {
+          patchBodies.push(JSON.parse(String(init.body)));
+        }
+        return Promise.resolve(
+          new Response(JSON.stringify({ error: serverConflict }), {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/runtime-plugins")) {
+        return Promise.resolve(new Response(JSON.stringify({ plugins: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.includes("/api/runtime-extensions") || url.includes("/api/runtime-extension-catalog") || url.includes("/api/model-providers")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify(url.includes("catalog") ? { items: [] } : url.includes("model-providers") ? { providers: [] } : { extensions: [] }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: /Codex Clean/i }));
+    const customArgs = await screen.findByLabelText(/Custom args/i);
+    expect(customArgs).toHaveValue("--strict");
+    await userEvent.clear(customArgs);
+    await userEvent.type(customArgs, "--model other");
+    await userEvent.click(await screen.findByRole("button", { name: "Save" }));
+
+    // Daemon is the authoritative seam: UI shows the 400 conflict message.
+    expect(await screen.findByRole("alert")).toHaveTextContent(serverConflict);
+    // Draft Custom Args are not stripped, reordered, or rewritten after failure.
+    expect(screen.getByLabelText(/Custom args/i)).toHaveValue("--model other");
+    // PATCH was attempted with the conflicting payload (no client-side rewrite).
+    expect(patchBodies).toHaveLength(1);
+    expect(patchBodies[0]).toMatchObject({
+      fields: { custom_args: ["--model other"] },
+    });
+    // Failure does not clear the draft or rewrite Custom Args after the 400.
+    expect(screen.getByDisplayValue("--model other")).toBeInTheDocument();
+  });
 });
+

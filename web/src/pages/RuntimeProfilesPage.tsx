@@ -269,6 +269,8 @@ export function RuntimeProfilesPage() {
     setError(null);
     setSavedNotice(false);
     try {
+      // Custom Args conflicts are rejected by Runtime Profile validation on the
+      // daemon; the UI surfaces that 400 without stripping or rewriting draft values.
       const created = await apiPost<RuntimeProfile>("/api/runtime-profiles", {
         name: form.name,
         provider: form.provider,
@@ -320,6 +322,8 @@ export function RuntimeProfilesPage() {
     setError(null);
     setSavedNotice(false);
     try {
+      // Authoritative conflict rejection lives in daemon Runtime Profile
+      // validation. A 400 leaves the draft (including Custom Args) intact.
       await apiPatch(`/api/runtime-profiles/${selected.id}`, {
         name: draft.name,
         provider: draft.provider,

@@ -215,7 +215,9 @@ func TestBuildNativeResumeArgsUsesPiRuntimePluginContract(t *testing.T) {
 				BinaryPath: "/usr/local/bin/pi",
 				Model:      "DeepSeek-V4-Pro",
 				Endpoint:   "https://api.edgefn.net/v1",
-				CustomArgs: []string{"--thinking", "medium"},
+				// Non-conflicting advanced options only; --thinking/--model/--provider
+				// are structured-field aliases and rejected at Profile validation.
+				CustomArgs: []string{"--debug", "--strict-mode"},
 			},
 		},
 		NativeSessionID: "sess-pi",
@@ -230,7 +232,8 @@ func TestBuildNativeResumeArgsUsesPiRuntimePluginContract(t *testing.T) {
 		"--model", "DeepSeek-V4-Pro",
 		"--mode", "json",
 		"--session", "sess-pi",
-		"--thinking", "medium",
+		"--debug",
+		"--strict-mode",
 		"focus admin",
 	}
 	if !reflect.DeepEqual(args, want) {
@@ -397,7 +400,10 @@ func TestBuildPiLaunchArgsSelectsGeneratedCustomProvider(t *testing.T) {
 	}
 }
 
-func TestBuildPiLaunchArgsPreservesExplicitProviderArg(t *testing.T) {
+func TestBuildPiLaunchArgsUsesPIProviderIDForStructuredProvider(t *testing.T) {
+	// Structured Model Provider / PI_PROVIDER_ID is authoritative. --provider in
+	// Custom Args is a conflict rejected at Profile validation/Preflight; launch
+	// assembly projects provider only from structured fields.
 	args, err := adapters.BuildLaunchArgs(adapters.LaunchArgsRequest{
 		Provider: runtimeprofile.ProviderPi,
 		Profile: runtimeprofile.Profile{
@@ -405,8 +411,8 @@ func TestBuildPiLaunchArgsPreservesExplicitProviderArg(t *testing.T) {
 			Fields: runtimeprofile.Fields{
 				Model:      "mimo-v2.5-pro",
 				Endpoint:   "https://api.example.test/v1",
-				CustomArgs: []string{"--provider", "xiaomi-token-plan-cn"},
-				Env:        map[string]string{"PI_PROVIDER_ID": "custom"},
+				CustomArgs: []string{"--debug", "--strict-mode"},
+				Env:        map[string]string{"PI_PROVIDER_ID": "xiaomi-token-plan-cn"},
 			},
 		},
 		Goal: "test authorized target",
@@ -417,10 +423,42 @@ func TestBuildPiLaunchArgsPreservesExplicitProviderArg(t *testing.T) {
 
 	joined := strings.Join(args, " ")
 	if strings.Count(joined, "--provider") != 1 {
-		t.Fatalf("expected one explicit provider argument, got %q", joined)
+		t.Fatalf("expected one structured provider argument, got %q", joined)
 	}
 	if !strings.Contains(joined, "--provider xiaomi-token-plan-cn") {
-		t.Fatalf("expected explicit provider to win, got %q", joined)
+		t.Fatalf("expected PI_PROVIDER_ID projection, got %q", joined)
+	}
+	if !strings.Contains(joined, "--debug") || !strings.Contains(joined, "--strict-mode") {
+		t.Fatalf("expected non-conflicting custom args preserved, got %q", joined)
+	}
+}
+
+func TestBuildPiLaunchArgsDoesNotDoubleInjectWhenLegacyProviderCustomArgPresent(t *testing.T) {
+	// Defensive only: legacy/invalid profiles that somehow still carry
+	// --provider in Custom Args must not get a second injected --provider.
+	// Domain validation rejects this at Create/Update/Preflight.
+	args, err := adapters.BuildLaunchArgs(adapters.LaunchArgsRequest{
+		Provider: runtimeprofile.ProviderPi,
+		Profile: runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderPi,
+			Fields: runtimeprofile.Fields{
+				Model:      "mimo-v2.5-pro",
+				Endpoint:   "https://api.example.test/v1",
+				CustomArgs: []string{"--provider", "legacy-explicit"},
+				Env:        map[string]string{"PI_PROVIDER_ID": "custom"},
+			},
+		},
+		Goal: "test authorized target",
+	})
+	if err != nil {
+		t.Fatalf("build args: %v", err)
+	}
+	joined := strings.Join(args, " ")
+	if strings.Count(joined, "--provider") != 1 {
+		t.Fatalf("expected no double-inject of --provider, got %q", joined)
+	}
+	if !strings.Contains(joined, "--provider legacy-explicit") {
+		t.Fatalf("expected legacy custom --provider token preserved as-is, got %q", joined)
 	}
 }
 
@@ -472,5 +510,54 @@ func TestDetectBinaryReportsMissingWhenAbsent(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected detection error for missing binary")
+	}
+}
+
+func TestBuildLaunchArgsPreservesNonConflictingCustomArgsOrder(t *testing.T) {
+	custom := []string{"--strict", "--flag=value", "keep-me"}
+	args, err := adapters.BuildLaunchArgs(adapters.LaunchArgsRequest{
+		Provider: runtimeprofile.ProviderCodex,
+		Profile: runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderCodex,
+			Fields: runtimeprofile.Fields{
+				Model:      "gpt-5",
+				CustomArgs: append([]string(nil), custom...),
+			},
+		},
+		Goal: "goal",
+	})
+	if err != nil {
+		t.Fatalf("build args: %v", err)
+	}
+	// Non-conflicting custom args must appear byte/order-equivalently before the goal.
+	// Runtime non-interactive defaults may append after them.
+	joined := strings.Join(args, "\x00")
+	wantSeq := strings.Join(custom, "\x00")
+	if !strings.Contains(joined, wantSeq) {
+		t.Fatalf("custom args order not preserved:\nargs=%#v\nwant contiguous %#v", args, custom)
+	}
+}
+
+func TestBuildNativeResumeArgsPreservesNonConflictingCustomArgsOrder(t *testing.T) {
+	custom := []string{"--strict", "--flag=value"}
+	args, err := adapters.BuildNativeResumeArgs(adapters.NativeResumeArgsRequest{
+		Provider: runtimeprofile.ProviderCodex,
+		Profile: runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderCodex,
+			Fields: runtimeprofile.Fields{
+				Model:      "gpt-5",
+				CustomArgs: append([]string(nil), custom...),
+			},
+		},
+		NativeSessionID: "sess-1",
+		ResumedMessage:  "continue",
+	})
+	if err != nil {
+		t.Fatalf("build native resume: %v", err)
+	}
+	joined := strings.Join(args, "\x00")
+	wantSeq := strings.Join(custom, "\x00")
+	if !strings.Contains(joined, wantSeq) {
+		t.Fatalf("custom args order not preserved on resume:\nargs=%#v\nwant contiguous %#v", args, custom)
 	}
 }

@@ -175,7 +175,7 @@ func (s *Service) create(name string, provider Provider, fields Fields, kind Pro
 	if err := s.validate(name, provider); err != nil {
 		return Profile{}, err
 	}
-	normalizedFields, err := normalizeFields(fields)
+	normalizedFields, err := normalizeFields(provider, fields)
 	if err != nil {
 		return Profile{}, err
 	}
@@ -263,7 +263,7 @@ func (s *Service) Update(id, name string, provider Provider, fields Fields, fiel
 		return Profile{}, err
 	}
 	if fieldsTouched {
-		normalizedFields, err := normalizeFields(fields)
+		normalizedFields, err := normalizeFields(existing.Provider, fields)
 		if err != nil {
 			return Profile{}, err
 		}
@@ -274,6 +274,10 @@ func (s *Service) Update(id, name string, provider Provider, fields Fields, fiel
 		} else {
 			existing.Fields.APIKeys = nil
 		}
+	} else if err := ValidateCustomArgs(existing.Provider, existing.Fields.CustomArgs); err != nil {
+		// Provider-only edits still reject Custom Args that conflict under the
+		// resolved provider family. Args are not rewritten.
+		return Profile{}, err
 	}
 	existing.UpdatedAt = time.Now().UTC()
 
@@ -303,7 +307,7 @@ func (s *Service) ReplaceFields(id string, fields Fields) (Profile, error) {
 	if err := s.validate(existing.Name, existing.Provider); err != nil {
 		return Profile{}, err
 	}
-	normalizedFields, err := normalizeFields(fields)
+	normalizedFields, err := normalizeFields(existing.Provider, fields)
 	if err != nil {
 		return Profile{}, err
 	}
@@ -441,9 +445,15 @@ func (s *Service) validate(name string, provider Provider) error {
 	return nil
 }
 
-// normalizeFields validates structured fields that have closed vocabularies.
-// Empty ReasoningEffort is preserved so existing Profiles are not rewritten.
-func normalizeFields(fields Fields) (Fields, error) {
+// normalizeFields validates structured fields that have closed vocabularies and
+// rejects Custom Args that redefine structured Model Provider, model, or
+// Reasoning Effort controls. Empty ReasoningEffort is preserved so existing
+// Profiles are not rewritten. Custom Args are never migrated, stripped, or
+// reordered.
+func normalizeFields(provider Provider, fields Fields) (Fields, error) {
+	if err := ValidateCustomArgs(provider, fields.CustomArgs); err != nil {
+		return Fields{}, err
+	}
 	if strings.TrimSpace(fields.ReasoningEffort) == "" {
 		fields.ReasoningEffort = ""
 		return fields, nil

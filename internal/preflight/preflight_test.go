@@ -895,3 +895,74 @@ func checkFailed(result preflight.Result, name string) bool {
 	}
 	return false
 }
+
+func TestRunRejectsConflictingCustomArgs(t *testing.T) {
+	svc := newTestServices(t)
+
+	// Seed a legacy profile with conflicting Custom Args that bypass domain
+	// validation (profiles stored before structured-field authority).
+	profileID := insertLegacyProfile(t, svc.db, "codex-conflict", "codex", `{"model":"gpt-5","custom_args":["--model","other","--strict"]}`)
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profileID,
+		ProjectID:        "p1",
+	})
+	if result.Pass {
+		t.Fatal("expected preflight to fail for conflicting custom args")
+	}
+	if !checkFailed(result, "custom_args") {
+		t.Fatalf("expected custom_args check to fail, got %#v", result.Checks)
+	}
+	detail := checkDetail(result, "custom_args")
+	if !strings.Contains(detail, "--model") {
+		t.Fatalf("detail must name offending argument --model, got %q", detail)
+	}
+	if !strings.Contains(detail, "model") {
+		t.Fatalf("detail must name structured field model, got %q", detail)
+	}
+}
+
+func TestRunPassesNonConflictingCustomArgs(t *testing.T) {
+	svc := newTestServices(t)
+	profile, err := svc.profiles.Create("codex-ok", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		Model:      "gpt-5",
+		CustomArgs: []string{"--strict", "--skip-git-repo-check"},
+		APIKeys:    map[string]string{"OPENAI_API_KEY": "sk-test"},
+	})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+	})
+	if !result.Pass {
+		t.Fatalf("expected preflight to pass, got %#v", result.Checks)
+	}
+	if !checkPassed(result, "custom_args") {
+		t.Fatalf("expected custom_args check to pass, got %#v", result.Checks)
+	}
+}
+
+func insertLegacyProfile(t *testing.T, db *store.DB, name, provider, fieldsJSON string) string {
+	t.Helper()
+	id := "legacy-" + name
+	_, err := db.Exec(
+		`INSERT INTO runtime_profiles (id, name, provider, kind, fields_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id, name, provider, "manual", fieldsJSON, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z",
+	)
+	if err != nil {
+		t.Fatalf("insert legacy profile: %v", err)
+	}
+	return id
+}
+
+func checkDetail(result preflight.Result, name string) string {
+	for _, check := range result.Checks {
+		if check.Name == name {
+			return check.Detail
+		}
+	}
+	return ""
+}

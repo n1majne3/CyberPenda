@@ -740,7 +740,9 @@ func (server *Server) handleCreateRuntimeProfile(response http.ResponseWriter, r
 		case errors.Is(err, runtimeprofile.ErrMissingName),
 			errors.Is(err, runtimeprofile.ErrMissingProvider),
 			errors.Is(err, runtimeprofile.ErrUnknownProvider),
-			errors.Is(err, runtimeprofile.ErrInvalidReasoningEffort):
+			errors.Is(err, runtimeprofile.ErrInvalidReasoningEffort),
+			errors.Is(err, runtimeprofile.ErrCustomArgConflict):
+			server.logCustomArgConflict(input.Provider, input.Fields.CustomArgs, err)
 			writeError(response, http.StatusBadRequest, err.Error())
 		default:
 			writeError(response, http.StatusInternalServerError, "store runtime profile")
@@ -809,7 +811,21 @@ func (server *Server) handleUpdateRuntimeProfile(response http.ResponseWriter, r
 		case errors.Is(err, runtimeprofile.ErrNotFound):
 			writeError(response, http.StatusNotFound, err.Error())
 		case errors.Is(err, runtimeprofile.ErrUnknownProvider),
-			errors.Is(err, runtimeprofile.ErrInvalidReasoningEffort):
+			errors.Is(err, runtimeprofile.ErrInvalidReasoningEffort),
+			errors.Is(err, runtimeprofile.ErrCustomArgConflict):
+			logProvider := provider
+			if logProvider == "" {
+				if existing, getErr := server.profiles.Get(id); getErr == nil {
+					logProvider = existing.Provider
+				}
+			}
+			logArgs := fields.CustomArgs
+			if !fieldsTouched {
+				if existing, getErr := server.profiles.Get(id); getErr == nil {
+					logArgs = existing.Fields.CustomArgs
+				}
+			}
+			server.logCustomArgConflict(logProvider, logArgs, err)
 			writeError(response, http.StatusBadRequest, err.Error())
 		default:
 			writeError(response, http.StatusInternalServerError, "store runtime profile update")
@@ -1006,6 +1022,7 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 		Runner:                  string(defaulted.runner),
 		HostActivated:           hostActivated,
 	})
+	server.logPreflightCustomArgConflict(defaulted.runtimeProfileID, result)
 
 	// A preflight result is always 200: the body reports pass/fail per check.
 	writeJSON(response, http.StatusOK, result)
