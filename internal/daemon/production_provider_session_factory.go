@@ -451,66 +451,56 @@ func argValue(args []string, option string) string {
 	return ""
 }
 
-// hostCodexCustomArgs extracts non-conflicting Custom Args from a one-shot host
-// Codex launch argv (after the binary). Structured model/effort flags, the
-// exec subcommand, non-interactive defaults, and the trailing goal are skipped
-// so advanced provider options survive app-server assembly without redefining
-// structured controls.
+// hostCodexCustomArgs extracts Custom Args from a one-shot host Codex launch
+// argv (after the binary) for app-server assembly.
+//
+// Only these tokens are dropped:
+//   - one-shot subcommands (exec/resume)
+//   - structured launch-template model flags (--model/-m and values)
+//   - Runtime Non-Interactive Defaults and harness-injected exec helpers
+//     (--dangerously-bypass-approvals-and-sandbox, --skip-git-repo-check)
+//   - the trailing Task goal
+//
+// User Custom Args are never silently stripped here — including -c/--config
+// KEY=VALUE, --config-file, and --profile. Reserved model/provider/effort
+// aliases are rejected by runtimeprofile.ValidateCustomArgs before launch
+// (#148); this helper does not reimplement or weaken that seam.
 func hostCodexCustomArgs(args []string) []string {
 	if len(args) == 0 {
 		return nil
 	}
+	// Value-bearing flags injected by structured launch, not Custom Args.
 	skipNext := map[string]bool{
-		"--model": true, "-m": true, "--profile": true, "-c": true,
-		"--config": true, "--config-file": true,
+		"--model": true,
+		"-m":      true,
 	}
 	dropExact := map[string]bool{
-		// One-shot subcommands and harness-owned non-interactive defaults are
-		// not Custom Args; they must not be re-emitted on app-server.
 		"exec": true, "resume": true, "app-server": true,
 		"--dangerously-bypass-approvals-and-sandbox": true,
 		"--skip-git-repo-check":                      true,
-		"--full-auto":                                true,
 	}
-	var custom []string
 	// Final positional is the goal when present.
 	end := len(args)
 	if end > 0 && !strings.HasPrefix(args[end-1], "-") && args[end-1] != "exec" && args[end-1] != "resume" && args[end-1] != "app-server" {
-		// Treat last non-flag as goal only when something precedes it.
 		if end > 1 {
 			end--
 		}
 	}
+	var custom []string
 	for i := 0; i < end; i++ {
 		arg := args[i]
 		if dropExact[arg] {
 			continue
 		}
 		if skipNext[arg] {
-			i++
+			i++ // drop structured model value
 			continue
 		}
-		if strings.HasPrefix(arg, "--model=") || (strings.HasPrefix(arg, "-c") && strings.Contains(arg, "model")) {
+		if strings.HasPrefix(arg, "--model=") || strings.HasPrefix(arg, "-m=") {
 			continue
 		}
+		// Preserve everything else: -c/--config/--config-file/--profile/--json/…
 		custom = append(custom, arg)
 	}
-	// Second pass: drop reserved structured aliases that validation should already reject.
-	filtered := custom[:0]
-	for i := 0; i < len(custom); i++ {
-		arg := custom[i]
-		lower := strings.ToLower(arg)
-		if lower == "--model" || lower == "-m" || strings.HasPrefix(lower, "--model=") ||
-			lower == "--effort" || strings.HasPrefix(lower, "--effort=") ||
-			lower == "--thinking" || strings.HasPrefix(lower, "--thinking=") ||
-			strings.Contains(lower, "model_reasoning_effort") ||
-			lower == "--provider" || strings.HasPrefix(lower, "--provider=") {
-			if !strings.Contains(arg, "=") && i+1 < len(custom) {
-				i++
-			}
-			continue
-		}
-		filtered = append(filtered, arg)
-	}
-	return filtered
+	return custom
 }

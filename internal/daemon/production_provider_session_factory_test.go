@@ -540,3 +540,103 @@ func TestHostCodexCustomArgsPreservesNonConflicting(t *testing.T) {
 		t.Fatalf("custom args = %#v, want %#v", got, want)
 	}
 }
+
+func TestHostCodexCustomArgsPreservesNonConflictingConfigOverrides(t *testing.T) {
+	// One-shot host argv includes structured --model plus user Custom Args.
+	// -c/--config/--config-file/--profile are not harness-owned; non-conflicting
+	// forms must survive app-server assembly. Only one-shot subcommands,
+	// structured model flags, non-interactive defaults, and the goal drop.
+	got := hostCodexCustomArgs([]string{
+		"exec", "--model", "gpt-test",
+		"--dangerously-bypass-approvals-and-sandbox",
+		"--skip-git-repo-check",
+		"-c", "foo=bar",
+		"--config", "features.foo=true",
+		"--config-file", "/tmp/extra.toml",
+		"--profile", "operator-profile",
+		"-c", "sandbox_workspace_write.network_access=true",
+		"--json",
+		"--full-auto",
+		"inspect goal",
+	})
+	want := []string{
+		"-c", "foo=bar",
+		"--config", "features.foo=true",
+		"--config-file", "/tmp/extra.toml",
+		"--profile", "operator-profile",
+		"-c", "sandbox_workspace_write.network_access=true",
+		"--json",
+		"--full-auto",
+	}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("custom args = %#v, want %#v", got, want)
+	}
+}
+
+func TestHostCodexAppServerAssemblyPreservesDashCCustomArgs(t *testing.T) {
+	starter := newProductionFactoryHostStarter()
+	factory := NewProductionProviderSessionFactory(ProductionProviderSessionFactoryConfig{HostStarter: starter})
+	legacy := runtime.NewCommandAdapter(runtime.CommandAdapterConfig{
+		Name: "codex", Program: "/opt/codex",
+		Args: []string{
+			"exec", "--model", "gpt-test",
+			"--dangerously-bypass-approvals-and-sandbox",
+			"-c", "foo=bar", "--json",
+			"inspect target",
+		},
+		Workdir: "/tmp/task-workdir",
+	})
+	go func() {
+		scanner := bufio.NewScanner(starter.inputR)
+		for scanner.Scan() {
+			var request runtime.SandboxBridgeRequest
+			_ = json.Unmarshal(scanner.Bytes(), &request)
+			result := `{"ok":true}`
+			if request.Method == "thread/start" {
+				result = `{"thread":{"id":"host-thread-c"}}`
+			}
+			_, _ = io.WriteString(starter.outputW, `{"jsonrpc":"2.0","id":"`+request.ID+`","result":`+result+"}\n")
+		}
+	}()
+	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
+		Task: task.Task{ID: "host-task-c"}, Continuation: task.TaskContinuation{ID: "c1"},
+		Provider: runtimeprofile.ProviderCodex, Runner: task.RunnerHost, LegacyAdapter: legacy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer binding.Session.Close(context.Background())
+	spec := starter.lastSpec()
+	joined := strings.Join(append([]string{spec.Program}, spec.Args...), " ")
+	if !strings.Contains(joined, "app-server") || !strings.Contains(joined, "-c foo=bar") {
+		t.Fatalf("host app-server argv lost non-conflicting -c: %q", joined)
+	}
+	if strings.Contains(joined, "gpt-test") || strings.Contains(joined, "inspect target") {
+		t.Fatalf("structured model/goal leaked into app-server argv: %q", joined)
+	}
+}
+
+func TestHostCodexReservedConfigOverridesStayRejectedByValidateCustomArgs(t *testing.T) {
+	// Assembly must not reimplement #148. Reserved model/provider/effort config
+	// forms remain fail-closed at the existing validation seam.
+	reserved := [][]string{
+		{"-c", "model=gpt-5"},
+		{"-c", "model_provider=custom"},
+		{"-c", "model_reasoning_effort=high"},
+		{"--config", "model_reasoning_effort=xhigh"},
+	}
+	for _, args := range reserved {
+		err := runtimeprofile.ValidateCustomArgs(runtimeprofile.ProviderCodex, args)
+		if err == nil {
+			t.Fatalf("ValidateCustomArgs must reject %v", args)
+		}
+		var conflict *runtimeprofile.CustomArgConflictError
+		if !errors.As(err, &conflict) {
+			t.Fatalf("ValidateCustomArgs(%v) = %T %v, want CustomArgConflictError", args, err, err)
+		}
+	}
+	// Non-conflicting -c is accepted by the same seam.
+	if err := runtimeprofile.ValidateCustomArgs(runtimeprofile.ProviderCodex, []string{"-c", "foo=bar", "--json"}); err != nil {
+		t.Fatalf("ValidateCustomArgs must allow non-conflicting -c foo=bar: %v", err)
+	}
+}
