@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -146,6 +147,7 @@ func TestCodexProviderSessionMapsModelAndRequestedReasoningEffortOnTurnStart(t *
 	_, err := session.SendTurn(context.Background(), ProviderSessionRequest{
 		RequestID:                "send-effort",
 		Message:                  "inspect the target",
+		ModelProviderID:          "primary",
 		Model:                    "gpt-test",
 		RequestedReasoningEffort: "xhigh",
 	}, nil)
@@ -160,11 +162,88 @@ func TestCodexProviderSessionMapsModelAndRequestedReasoningEffortOnTurnStart(t *
 	if err := json.Unmarshal(requests[0].Params, &startParams); err != nil {
 		t.Fatal(err)
 	}
+	if startParams["threadId"] != "thread-1" {
+		t.Fatalf("threadId = %#v, want thread-1 (same Codex thread)", startParams["threadId"])
+	}
 	if startParams["model"] != "gpt-test" {
 		t.Fatalf("model param = %#v, want gpt-test", startParams["model"])
 	}
 	if startParams["effort"] != "xhigh" {
 		t.Fatalf("effort param = %#v, want xhigh", startParams["effort"])
+	}
+}
+
+func TestCodexProviderSessionInterruptThenReplaceMapsModelAndEffortOnSameThread(t *testing.T) {
+	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
+		"turn/interrupt": {Result: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-old"}`)},
+		"turn/start":     {Result: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-new"}}`)},
+	}, notifications: map[string]SandboxBridgeEvent{
+		"turn/interrupt": {Method: "turn/completed", Params: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-old","status":"interrupted"}}`)},
+	}}
+	session := NewCodexProviderSession(CodexProviderSessionConfig{
+		Transport: transport, SessionID: "thread-1", ThreadID: "thread-1", ActiveTurnID: "turn-old",
+	})
+	bindFakeProviderEvents(transport, session)
+
+	result, err := session.InterruptThenReplace(context.Background(), ProviderSessionRequest{
+		RequestID:                "replace-effort",
+		Message:                  "switch model mid-task",
+		ModelProviderID:          "primary",
+		Model:                    "gpt-strong",
+		RequestedReasoningEffort: "max",
+	}, nil)
+	if err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	if result.SessionID != "thread-1" {
+		t.Fatalf("session moved to %q; want same thread", result.SessionID)
+	}
+	requests := transport.snapshot()
+	if len(requests) != 2 || requests[0].Method != "turn/interrupt" || requests[1].Method != "turn/start" {
+		t.Fatalf("requests = %#v", requests)
+	}
+	var startParams map[string]any
+	if err := json.Unmarshal(requests[1].Params, &startParams); err != nil {
+		t.Fatal(err)
+	}
+	if startParams["threadId"] != "thread-1" {
+		t.Fatalf("replacement threadId = %#v", startParams["threadId"])
+	}
+	if startParams["model"] != "gpt-strong" || startParams["effort"] != "max" {
+		t.Fatalf("replacement selection = %#v", startParams)
+	}
+}
+
+func TestCodexProviderSessionSurfacesUnsupportedEffortWithoutRewriting(t *testing.T) {
+	transport := &fakeProviderTransport{send: func(_ context.Context, request SandboxBridgeRequest) (SandboxBridgeResponse, error) {
+		if request.Method != "turn/start" {
+			return SandboxBridgeResponse{}, errors.New("unexpected method")
+		}
+		var params map[string]any
+		if err := json.Unmarshal(request.Params, &params); err != nil {
+			t.Fatal(err)
+		}
+		if params["effort"] != "max" {
+			t.Fatalf("effort rewritten before provider saw it: %#v", params["effort"])
+		}
+		return SandboxBridgeResponse{}, errors.New("unsupported reasoning effort: max")
+	}}
+	session := NewCodexProviderSession(CodexProviderSessionConfig{Transport: transport, SessionID: "thread-1", ThreadID: "thread-1"})
+	_, err := session.SendTurn(context.Background(), ProviderSessionRequest{
+		RequestID:                "effort-reject",
+		Message:                  "try max",
+		Model:                    "gpt-test",
+		RequestedReasoningEffort: "max",
+	}, nil)
+	if err == nil {
+		t.Fatal("expected provider effort rejection")
+	}
+	var opErr *ProviderSessionOperationError
+	if !errors.As(err, &opErr) {
+		t.Fatalf("error type = %T (%v), want ProviderSessionOperationError", err, err)
+	}
+	if !strings.Contains(opErr.Cause.Error(), "unsupported reasoning effort") {
+		t.Fatalf("cause = %v", opErr.Cause)
 	}
 }
 

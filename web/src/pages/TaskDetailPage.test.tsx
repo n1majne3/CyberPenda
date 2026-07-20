@@ -405,15 +405,20 @@ describe("TaskDetailPage", () => {
     await screen.findByText("Conversation should be hidden by default");
     await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model provider" }), "mimo");
     await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model" }), "mimo-v2-pro");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Continuation reasoning effort" }), "xhigh");
     await user.type(screen.getByPlaceholderText("Focus on admin.example.com next…"), "continue with mimo");
     await user.click(screen.getByRole("button", { name: /Resume and send/ }));
 
     const steerCall = fetchMock.mock.calls.find(([input]) =>
       String(input).includes("/api/projects/project-1/tasks/task-1/steer/queue"),
     );
-    expect(steerCall?.[1]).toMatchObject({
-      method: "POST",
-      body: JSON.stringify({ directive: "continue with mimo", model_provider_id: "mimo", model_override: "mimo-v2-pro" }),
+    expect(steerCall?.[1]?.method).toBe("POST");
+    expect(JSON.parse(String(steerCall?.[1]?.body))).toMatchObject({
+      directive: "continue with mimo",
+      model_provider_id: "mimo",
+      model: "mimo-v2-pro",
+      model_override: "mimo-v2-pro",
+      reasoning_effort: "xhigh",
     });
     expect(fetchMock.mock.calls.some(([input, init]) =>
       String(input).endsWith("/api/projects/project-1/tasks/task-1/resume") && init?.method === "POST",
@@ -433,6 +438,11 @@ describe("TaskDetailPage", () => {
         native_session_captured: true,
         same_runtime_provider_only: true,
         runtime_provider: "codex",
+        turn_selection: {
+          model_provider_id: "mimo",
+          model: "mimo-v2-flash",
+          reasoning_effort: "medium",
+        },
       },
     });
     const user = userEvent.setup();
@@ -447,7 +457,68 @@ describe("TaskDetailPage", () => {
       String(input).endsWith("/api/projects/project-1/tasks/task-1/steer"),
     );
     expect(steerCall?.[1]?.method).toBe("POST");
-    expect(JSON.parse(String(steerCall?.[1]?.body))).toMatchObject({ message: "check the admin route" });
+    expect(JSON.parse(String(steerCall?.[1]?.body))).toMatchObject({
+      message: "check the admin route",
+      model_provider_id: "mimo",
+      model: "mimo-v2-flash",
+      reasoning_effort: "medium",
+    });
+  });
+
+  it("keeps same-provider model and effort changes on the native steer route", async () => {
+    const { fetchMock } = stubTaskDetailApi({
+      status: "running",
+      runtime_controls: {
+        native_resume_available: false,
+        resume_available: false,
+        queue_steer_available: true,
+        interrupt_steer_available: false,
+        native_steer_available: true,
+        native_steer_mode: "interrupt_then_replace",
+        native_session_captured: true,
+        same_runtime_provider_only: true,
+        runtime_provider: "codex",
+        turn_selection: {
+          model_provider_id: "mimo",
+          model: "mimo-v2-flash",
+          reasoning_effort: "medium",
+        },
+      },
+    });
+    const user = userEvent.setup();
+
+    renderPage();
+
+    await screen.findByText("Conversation should be hidden by default");
+    expect(screen.getByRole("combobox", { name: "Continuation model provider" })).toHaveValue("mimo");
+    expect(screen.getByRole("combobox", { name: "Continuation model" })).toHaveValue("mimo-v2-flash");
+    expect(screen.getByRole("combobox", { name: "Continuation reasoning effort" })).toHaveValue("medium");
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model" }), "mimo-v2-pro");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Continuation reasoning effort" }), "xhigh");
+    await user.type(screen.getByPlaceholderText("Focus on admin.example.com next…"), "stronger turn");
+    await user.click(screen.getByRole("button", { name: /Native interrupt & send/ }));
+
+    const postPaths = fetchMock.mock.calls
+      .filter(([, init]) => init?.method === "POST")
+      .map(([input]) => String(input));
+    expect(postPaths.some((path) => path.endsWith("/steer"))).toBe(true);
+    expect(postPaths.some((path) => path.endsWith("/steer/queue"))).toBe(false);
+    expect(postPaths.some((path) => path.endsWith("/stop"))).toBe(false);
+
+    const steerCall = fetchMock.mock.calls.find(([input]) =>
+      String(input).endsWith("/api/projects/project-1/tasks/task-1/steer"),
+    );
+    expect(JSON.parse(String(steerCall?.[1]?.body))).toMatchObject({
+      message: "stronger turn",
+      model_provider_id: "mimo",
+      model: "mimo-v2-pro",
+      reasoning_effort: "xhigh",
+    });
+    // Composer retains the submitted selection for the next turn.
+    expect(screen.getByRole("combobox", { name: "Continuation model provider" })).toHaveValue("mimo");
+    expect(screen.getByRole("combobox", { name: "Continuation model" })).toHaveValue("mimo-v2-pro");
+    expect(screen.getByRole("combobox", { name: "Continuation reasoning effort" })).toHaveValue("xhigh");
   });
 
   it("keeps Shift+Enter as a newline and sends the composed message on Enter", async () => {
@@ -533,6 +604,11 @@ describe("TaskDetailPage", () => {
         native_session_captured: true,
         same_runtime_provider_only: true,
         runtime_provider: "codex",
+        turn_selection: {
+          model_provider_id: "anthropic",
+          model: "claude-sonnet",
+          reasoning_effort: "high",
+        },
       },
     });
     const user = userEvent.setup();
@@ -540,6 +616,7 @@ describe("TaskDetailPage", () => {
     renderPage();
 
     await screen.findByText("Conversation should be hidden by default");
+    expect(screen.getByRole("combobox", { name: "Continuation model provider" })).toHaveValue("anthropic");
     await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model provider" }), "mimo");
     await user.type(screen.getByPlaceholderText("Focus on admin.example.com next…"), "continue with mimo");
     expect(screen.getByRole("button", { name: "Switch provider and resume" })).toBeEnabled();
@@ -555,8 +632,11 @@ describe("TaskDetailPage", () => {
       "/api/projects/project-1/tasks/task-1/resume",
     ]);
     const queueCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/steer/queue"));
-    expect(queueCall?.[1]).toMatchObject({
-      body: JSON.stringify({ directive: "continue with mimo", model_provider_id: "mimo", model_override: "mimo-v2-flash" }),
+    expect(JSON.parse(String(queueCall?.[1]?.body))).toMatchObject({
+      directive: "continue with mimo",
+      model_provider_id: "mimo",
+      model: "mimo-v2-flash",
+      reasoning_effort: "high",
     });
     expect(postPaths.some((path) => path.endsWith("/steer"))).toBe(false);
   });

@@ -6,7 +6,7 @@ import { Button, Badge, Select, Textarea } from "@/components/ui";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { AgentTranscriptView } from "@/components/task-transcript/AgentTranscriptView";
 import { collapsedTranscriptTitle } from "./taskDetailView";
-import { selectableModelProviders } from "./runtimeProfileForm";
+import { displayReasoningEffort, REASONING_EFFORT_VALUES, selectableModelProviders } from "./runtimeProfileForm";
 import { modelsForProvider } from "./taskLaunchForm";
 import { formatDateTime } from "@/lib/format";
 
@@ -37,6 +37,8 @@ export function TaskDetailPage() {
   const [steering, setSteering] = useState("");
   const [continuationModelProvider, setContinuationModelProvider] = useState("");
   const [continuationModelOverride, setContinuationModelOverride] = useState("");
+  const [continuationReasoningEffort, setContinuationReasoningEffort] = useState("high");
+  const [turnSelectionSeeded, setTurnSelectionSeeded] = useState(false);
   const [profiles, setProfiles] = useState<RuntimeProfile[]>([]);
   const [modelProviders, setModelProviders] = useState<ModelProvider[]>([]);
   const [runtimePlugins, setRuntimePlugins] = useState<RuntimePlugin[]>([]);
@@ -68,6 +70,7 @@ export function TaskDetailPage() {
   useEffect(() => {
     // Initial load on mount/task change. loadAll() is reused by the poll loop
     // and event handlers.
+    setTurnSelectionSeeded(false);
     loadAll();
     Promise.all([
       apiGet<{ profiles: RuntimeProfile[] }>("/api/runtime-profiles").then((d) => setProfiles(d.profiles ?? [])),
@@ -76,6 +79,23 @@ export function TaskDetailPage() {
     ]).catch(() => {});
   }, [projectId, taskId]);
   /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
+
+  // Seed the composer once from the preceding Runtime Turn Selection. Later
+  // submits retain the operator's choice instead of resetting.
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    if (turnSelectionSeeded || !task) return;
+    const preceding = task.runtime_controls?.turn_selection;
+    if (!preceding) {
+      setTurnSelectionSeeded(true);
+      return;
+    }
+    setContinuationModelProvider(preceding.model_provider_id?.trim() ?? "");
+    setContinuationModelOverride(preceding.model?.trim() ?? "");
+    setContinuationReasoningEffort(displayReasoningEffort(preceding.reasoning_effort));
+    setTurnSelectionSeeded(true);
+  }, [task, turnSelectionSeeded]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   /* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
   useEffect(() => {
@@ -191,7 +211,6 @@ export function TaskDetailPage() {
   async function resumeNative() {
     try {
       await apiPost(`${base}/resume`, continuationModelPayload());
-      resetContinuationModelSelection();
       setActionError(null);
       loadAll();
     } catch (e) {
@@ -209,7 +228,6 @@ export function TaskDetailPage() {
         ...continuationModelPayload(),
       });
       setSteering("");
-      resetContinuationModelSelection();
       setActionError(null);
       await loadAll();
     } catch (e) {
@@ -232,7 +250,12 @@ export function TaskDetailPage() {
       const queueNow = currentControls?.queue_steer_available ?? true;
       const resumeNow = currentControls?.resume_available ?? !runningNow;
       const modelPayload = continuationModelPayload();
-      const switchingModelProvider = runningNow && continuationModelProvider.trim() !== "";
+      const precedingProvider = currentControls?.turn_selection?.model_provider_id?.trim() ?? "";
+      const selectedProvider = continuationModelProvider.trim();
+      // Only a Model Provider change requires Config Projection + restart.
+      // Same-provider model/effort changes stay on the native session.
+      const switchingModelProvider =
+        runningNow && selectedProvider !== "" && precedingProvider !== "" && selectedProvider !== precedingProvider;
 
       if (switchingModelProvider) {
         if (!queueNow) throw new Error("Model provider switching is unavailable for this Task");
@@ -258,7 +281,7 @@ export function TaskDetailPage() {
         throw new Error("Task conversation is unavailable for this runtime state");
       }
       setSteering("");
-      resetContinuationModelSelection();
+      // Retain Runtime Turn Selection for the next turn.
       setActionError(null);
       await loadAll();
     } catch (e) {
@@ -292,18 +315,24 @@ export function TaskDetailPage() {
 
   function continuationModelPayload() {
     const providerID = continuationModelProvider.trim();
-    if (!providerID) return {};
-    const payload: { model_provider_id: string; model_override?: string } = {
-      model_provider_id: providerID,
+    const model = continuationModelOverride.trim();
+    const effort = displayReasoningEffort(continuationReasoningEffort);
+    // Every Runtime Turn sends the complete resolved selection. `model` is the
+    // canonical field; model_override is kept as a compatibility alias.
+    const payload: {
+      model_provider_id?: string;
+      model?: string;
+      model_override?: string;
+      reasoning_effort: string;
+    } = {
+      reasoning_effort: effort,
     };
-    const modelOverride = continuationModelOverride.trim();
-    if (modelOverride) payload.model_override = modelOverride;
+    if (providerID) payload.model_provider_id = providerID;
+    if (model) {
+      payload.model = model;
+      payload.model_override = model;
+    }
     return payload;
-  }
-
-  function resetContinuationModelSelection() {
-    setContinuationModelProvider("");
-    setContinuationModelOverride("");
   }
 
   function selectView(view: "conversation" | "timeline") {
@@ -361,7 +390,13 @@ export function TaskDetailPage() {
     queueSteerAvailable,
     resumeAvailable,
   });
-  const providerSwitchRequested = running && continuationModelProvider.trim() !== "";
+  const precedingProviderID = controls?.turn_selection?.model_provider_id?.trim() ?? "";
+  const selectedProviderID = continuationModelProvider.trim();
+  const providerSwitchRequested =
+    running &&
+    selectedProviderID !== "" &&
+    precedingProviderID !== "" &&
+    selectedProviderID !== precedingProviderID;
   const sendActionLabel = providerSwitchRequested
     ? queueSteerAvailable ? "Switch provider and resume" : "Provider switch unavailable"
     : conversationSendLabel(sendMode, nativeSteerMode);
@@ -495,8 +530,10 @@ export function TaskDetailPage() {
           continuationModelProvider={continuationModelProvider}
           continuationModelOverride={continuationModelOverride}
           continuationModelOptions={continuationModelOptions}
+          continuationReasoningEffort={continuationReasoningEffort}
           onSelectProvider={selectContinuationModelProvider}
           onSelectModel={setContinuationModelOverride}
+          onSelectReasoningEffort={setContinuationReasoningEffort}
         />
       </div>
     </ProjectPageShell>
@@ -662,8 +699,10 @@ function TaskComposer({
   continuationModelProvider,
   continuationModelOverride,
   continuationModelOptions,
+  continuationReasoningEffort,
   onSelectProvider,
   onSelectModel,
+  onSelectReasoningEffort,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -682,8 +721,10 @@ function TaskComposer({
   continuationModelProvider: string;
   continuationModelOverride: string;
   continuationModelOptions: string[];
+  continuationReasoningEffort: string;
   onSelectProvider: (providerID: string) => void;
   onSelectModel: (model: string) => void;
+  onSelectReasoningEffort: (effort: string) => void;
 }) {
   return (
     <div data-testid="task-composer" className="fixed inset-x-0 bottom-0 z-30 shrink-0 border-t border-border bg-background/95 px-3 py-2 shadow-[0_-8px_24px_rgba(0,0,0,0.12)] backdrop-blur-sm sm:px-4 md:static md:z-10 md:shadow-none">
@@ -711,7 +752,7 @@ function TaskComposer({
                 onChange={(event) => onSelectProvider(event.target.value)}
                 aria-label="Continuation model provider"
               >
-                <option value="">Keep current model provider</option>
+                <option value="">Select model provider</option>
                 {continuationModelProviders.map((provider) => (
                   <option key={provider.id} value={provider.id}>{provider.name}</option>
                 ))}
@@ -729,6 +770,18 @@ function TaskComposer({
                   <option value="">Default model</option>
                 ) : continuationModelOptions.map((model) => (
                   <option key={model} value={model}>{model}</option>
+                ))}
+              </Select>
+              <Select
+                size="sm"
+                className="h-7 min-w-0 w-auto max-w-full border-0 bg-muted/60 px-2 text-xs shadow-none sm:max-w-[9rem]"
+                name="continuation_reasoning_effort"
+                value={displayReasoningEffort(continuationReasoningEffort)}
+                onChange={(event) => onSelectReasoningEffort(event.target.value)}
+                aria-label="Continuation reasoning effort"
+              >
+                {REASONING_EFFORT_VALUES.map((effort) => (
+                  <option key={effort} value={effort}>{effort}</option>
                 ))}
               </Select>
               <Badge variant={sendMode === "unavailable" ? "warning" : "outline"} size="sm">

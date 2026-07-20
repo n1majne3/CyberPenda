@@ -350,6 +350,12 @@ export interface Task {
   updated_at: string;
 }
 
+export interface RuntimeTurnSelection {
+  model_provider_id?: string;
+  model?: string;
+  reasoning_effort?: string;
+}
+
 export interface RuntimeControls {
   native_resume_available: boolean;
   native_resume_reason?: string;
@@ -365,6 +371,8 @@ export interface RuntimeControls {
   native_session_captured: boolean;
   same_runtime_provider_only: boolean;
   runtime_provider?: string;
+  /** Preceding Runtime Turn Selection retained for the conversation composer. */
+  turn_selection?: RuntimeTurnSelection;
   provider_permissions?: ProviderPermissionRequest[];
   recovery_state?: string;
   recovery_reason?: string;

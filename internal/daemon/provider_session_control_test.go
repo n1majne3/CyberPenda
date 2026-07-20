@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"pentest/internal/modelprovider"
 	"pentest/internal/project"
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeplugin"
@@ -162,11 +163,12 @@ func TestNativeSteerRecordsCanonicalConversationAndOrderedProviderEvents(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: "inspect target", RuntimeProfileID: "profile", Runner: task.RunnerSandbox})
+	profile := createTestRuntimeProfile(t, server)
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatal(err)
 	}
-	continuation, err := server.tasks.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
+	continuation, err := server.tasks.CreateContinuation(created.ID, profile.ID, "fake", task.RunnerSandbox)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,13 +292,27 @@ func TestNativeSteerRejectsModelProviderSelectionInsteadOfIgnoringIt(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: createdProject.ID, Goal: "inspect target", RuntimeProfileID: "profile", Runner: task.RunnerSandbox,
+	primary, err := server.modelProviders.Create(modelprovider.CreateRequest{
+		Name: "Primary", BaseURL: "https://a.example/v1",
+		Protocols: []modelprovider.Protocol{modelprovider.ProtocolOpenAIResponses},
+		Catalog:   modelprovider.Catalog{Manual: []string{"m1"}, DefaultModel: "m1"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	continuation, err := server.tasks.CreateContinuation(created.ID, "profile", "claude_code", task.RunnerSandbox)
+	profile, err := server.profiles.Create("Claude", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{
+		ModelProviderID: primary.ID, ModelOverride: "m1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := server.tasks.Create(task.CreateRequest{
+		ProjectID: createdProject.ID, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation, err := server.tasks.CreateContinuation(created.ID, profile.ID, "claude_code", task.RunnerSandbox)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,6 +372,19 @@ func waitForTaskEvent(t *testing.T, server *Server, taskID string, predicate fun
 	t.Fatalf("timed out waiting for task event; events=%#v", events)
 }
 
+// createTestRuntimeProfile stores a minimal profile so native steer can resolve
+// Runtime Turn Selection without depending on launch projection.
+func createTestRuntimeProfile(t *testing.T, server *Server) runtimeprofile.Profile {
+	t.Helper()
+	profile, err := server.profiles.Create("Test Runtime", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		Model: "gpt-test", ReasoningEffort: "high",
+	})
+	if err != nil {
+		t.Fatalf("create runtime profile: %v", err)
+	}
+	return profile
+}
+
 func TestNativeSteerRejectsUnsupportedSessionWithoutConversation(t *testing.T) {
 	server, err := NewServer(Config{DBPath: filepath.Join(t.TempDir(), "pentest.db"), DisableBuiltinSkills: true})
 	if err != nil {
@@ -366,7 +395,8 @@ func TestNativeSteerRejectsUnsupportedSessionWithoutConversation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: "inspect target", RuntimeProfileID: "profile", Runner: task.RunnerSandbox})
+	profile := createTestRuntimeProfile(t, server)
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +430,8 @@ func TestNativeSteerProviderFailureIsAcceptedThenProjectedAsFailed(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: "inspect target", RuntimeProfileID: "profile", Runner: task.RunnerSandbox})
+	profile := createTestRuntimeProfile(t, server)
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -443,11 +474,12 @@ func TestNativeSteerReplacementContinuationFailureFailsClosedWithoutApplied(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: "inspect target", RuntimeProfileID: "profile", Runner: task.RunnerSandbox})
+	profile := createTestRuntimeProfile(t, server)
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatal(err)
 	}
-	continuation, err := server.tasks.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
+	continuation, err := server.tasks.CreateContinuation(created.ID, profile.ID, "fake", task.RunnerSandbox)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -861,7 +893,8 @@ func TestServerCloseDrainsInFlightProviderSteerBeforeClosingDatabase(t *testing.
 		_ = server.Close()
 		t.Fatal(err)
 	}
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: "inspect target", RuntimeProfileID: "profile", Runner: task.RunnerSandbox})
+	profile := createTestRuntimeProfile(t, server)
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
 	if err != nil {
 		_ = server.Close()
 		t.Fatal(err)

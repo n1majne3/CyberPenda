@@ -37,15 +37,32 @@ var (
 )
 
 type taskContinuationSelectionInput struct {
-	RuntimeProfileID string         `json:"runtime_profile_id"`
-	ModelProviderID  string         `json:"model_provider_id"`
-	ModelOverride    string         `json:"model_override"`
-	SubmittedBy      string         `json:"submitted_by"`
-	Config           map[string]any `json:"config"`
+	RuntimeProfileID string `json:"runtime_profile_id"`
+	ModelProviderID  string `json:"model_provider_id"`
+	// Model is the preferred Runtime Turn Selection field. model_override remains
+	// accepted as a backwards-compatible alias used by older clients.
+	Model           string         `json:"model"`
+	ModelOverride   string         `json:"model_override"`
+	ReasoningEffort string         `json:"reasoning_effort"`
+	SubmittedBy     string         `json:"submitted_by"`
+	Config          map[string]any `json:"config"`
 }
 
 func (input taskContinuationSelectionInput) hasSelection() bool {
 	return strings.TrimSpace(input.RuntimeProfileID) != "" || strings.TrimSpace(input.ModelProviderID) != ""
+}
+
+func (input taskContinuationSelectionInput) hasRuntimeProfileSelection() bool {
+	return strings.TrimSpace(input.RuntimeProfileID) != ""
+}
+
+// selectedModel returns the explicit model for this turn. Prefer `model`, then
+// the legacy `model_override` alias.
+func (input taskContinuationSelectionInput) selectedModel() string {
+	if model := strings.TrimSpace(input.Model); model != "" {
+		return model
+	}
+	return strings.TrimSpace(input.ModelOverride)
 }
 
 func (server *Server) handleCreateTask(response http.ResponseWriter, request *http.Request) {
@@ -1112,6 +1129,13 @@ func (server *Server) runtimeControlsForTask(found task.Task, latest *task.TaskC
 		SameRuntimeProviderOnly: true,
 		RuntimeProvider:         string(profile.Provider),
 	}
+	if selection, selectionErr := server.currentTurnSelection(found); selectionErr == nil {
+		controls.TurnSelection = &task.TurnSelection{
+			ModelProviderID: selection.ModelProviderID,
+			Model:           selection.Model,
+			ReasoningEffort: selection.RequestedReasoningEffort,
+		}
+	}
 	if events, eventsErr := server.tasks.Events(found.ID); eventsErr == nil {
 		if providerSessionBound {
 			controls.ProviderPermissions = providerPermissionRequestsForTask(events)
@@ -1462,7 +1486,8 @@ func (server *Server) prepareNativeResumeContinuation(found task.Task, resumedMe
 			return task.Task{}, "", taskLaunchPlan{}, err
 		}
 	}
-	plan, err := server.buildTaskLaunchPlan(found, resumedMessage, "", nativeResumeSessionID, "")
+	modelOverride, reasoningEffort := server.resumeTurnSelectionOverrides(found)
+	plan, err := server.buildTaskLaunchPlan(found, resumedMessage, modelOverride, nativeResumeSessionID, reasoningEffort)
 	if err != nil {
 		return task.Task{}, "", taskLaunchPlan{}, err
 	}
@@ -1515,12 +1540,23 @@ func (server *Server) prepareFreshResumeContinuation(found task.Task) (task.Task
 	if err != nil {
 		return task.Task{}, "", taskLaunchPlan{}, err
 	}
-	plan, err := server.buildTaskLaunchPlan(found, resumeGoal, "", "", "")
+	modelOverride, reasoningEffort := server.resumeTurnSelectionOverrides(found)
+	plan, err := server.buildTaskLaunchPlan(found, resumeGoal, modelOverride, "", reasoningEffort)
 	if err != nil {
 		return task.Task{}, "", taskLaunchPlan{}, err
 	}
 	plan.BlackboardV2SteeringEventIDs = steeringEventIDs
 	return found, resumeGoal, plan, nil
+}
+
+// resumeTurnSelectionOverrides carries the preceding Runtime Turn Selection into
+// a restart/resume launch so provider-switch paths do not drop model or effort.
+func (server *Server) resumeTurnSelectionOverrides(found task.Task) (modelOverride, reasoningEffort string) {
+	selection, err := server.currentTurnSelection(found)
+	if err != nil {
+		return "", ""
+	}
+	return strings.TrimSpace(selection.Model), strings.TrimSpace(selection.RequestedReasoningEffort)
 }
 
 func (server *Server) buildResumeGoal(found task.Task) (string, error) {
@@ -1671,14 +1707,21 @@ func (server *Server) handleQueueSteerTask(response http.ResponseWriter, request
 	if input.ModelProviderID != "" {
 		payload["model_provider_id"] = input.ModelProviderID
 	}
-	if input.ModelOverride != "" {
-		payload["model_override"] = input.ModelOverride
+	if model := input.selectedModel(); model != "" {
+		payload["model"] = model
+		payload["model_override"] = model
+	}
+	if input.ReasoningEffort != "" {
+		payload["reasoning_effort"] = input.ReasoningEffort
 	}
 	event, err := server.tasks.AppendEvent(taskID, task.EventKindSteering, payload)
 	if err != nil {
 		writeTaskError(response, err)
 		return
 	}
+	// Config Projection / Runtime Config Version is only for profile or Model
+	// Provider changes. Same-provider model/effort stay on the event payload
+	// (and on native turns) without minting a new version.
 	var configVersion *task.RuntimeConfigVersion
 	if input.hasSelection() {
 		recorded, ok := server.recordSelectedRuntimeConfig(response, found, event.ID, input.taskContinuationSelectionInput)
@@ -1751,8 +1794,12 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 	if input.ModelProviderID != "" {
 		payload["model_provider_id"] = input.ModelProviderID
 	}
-	if input.ModelOverride != "" {
-		payload["model_override"] = input.ModelOverride
+	if model := input.selectedModel(); model != "" {
+		payload["model"] = model
+		payload["model_override"] = model
+	}
+	if input.ReasoningEffort != "" {
+		payload["reasoning_effort"] = input.ReasoningEffort
 	}
 
 	event, err := server.tasks.AppendEvent(taskID, task.EventKindSteering, payload)
@@ -1860,8 +1907,14 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		writeError(response, http.StatusBadRequest, "steer message is required")
 		return
 	}
-	if input.hasSelection() {
-		writeError(response, http.StatusConflict, "native steer cannot change runtime or model provider; restart the continuation")
+	// Runtime Plugin / Runtime Profile switches and Model Provider changes need
+	// Config Projection and a restart. Same-provider model/effort stay native.
+	if input.hasRuntimeProfileSelection() {
+		writeError(response, http.StatusConflict, "native steer cannot change runtime profile; restart the continuation")
+		return
+	}
+	selection, ok := server.resolveNativeTurnSelection(response, found, input.taskContinuationSelectionInput)
+	if !ok {
 		return
 	}
 
@@ -1874,8 +1927,8 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		if event.Kind != task.EventKindConversation || event.Payload["request_id"] != input.RequestID || event.Payload["delivery"] != "native_steer" {
 			continue
 		}
-		if prior, _ := event.Payload["text"].(string); prior != input.Message {
-			writeError(response, http.StatusConflict, "steer request id already belongs to a different message")
+		if conflict := nativeSteerIdempotencyConflict(event, input.Message, selection); conflict != "" {
+			writeError(response, http.StatusConflict, conflict)
 			return
 		}
 		mode, outcome, sessionID := nativeSteerState(events, input.RequestID)
@@ -1923,6 +1976,8 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		"role": "user", "text": input.Message, "request_id": input.RequestID,
 		"delivery": "native_steer", "outcome": "pending", "mode": string(mode),
 		"session_id": session.SessionID(),
+		"model_provider_id": selection.ModelProviderID, "model": selection.Model,
+		"requested_reasoning_effort": selection.RequestedReasoningEffort,
 	}
 	var conversation task.Event
 	if active != nil {
@@ -1965,27 +2020,30 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 			_, _ = server.tasks.AppendEvent(found.ID, kind, payload)
 		}
 	}
+	providerRequest := runtime.ProviderSessionRequest{
+		RequestID:                input.RequestID,
+		Message:                  input.Message,
+		ModelProviderID:          selection.ModelProviderID,
+		Model:                    selection.Model,
+		RequestedReasoningEffort: selection.RequestedReasoningEffort,
+	}
 	go func() {
 		defer server.releaseProviderTaskControl(found.ID)
 		ctx, cancel := context.WithTimeout(server.providerControlCtx, 30*time.Second)
 		defer cancel()
-		result, operationErr := operation(ctx, runtime.ProviderSessionRequest{RequestID: input.RequestID, Message: input.Message}, emit)
+		result, operationErr := operation(ctx, providerRequest, emit)
 		if operationErr != nil {
-			errorCode := "provider_rejected"
-			switch {
-			case errors.Is(operationErr, context.DeadlineExceeded):
-				errorCode = "timeout"
-			case errors.Is(operationErr, context.Canceled):
-				errorCode = "server_closing"
-			case errors.Is(operationErr, runtime.ErrProviderSessionClosed):
-				errorCode = "session_closed"
-			case errors.Is(operationErr, runtime.ErrProviderSessionControlConflict):
-				errorCode = "control_conflict"
-			}
-			emit(task.EventKindSteering, task.EventPayload{
+			errorCode, errorMessage := nativeSteerFailurePresentation(operationErr)
+			// Public Task Events carry only redacted, stable failure fields.
+			// Raw provider text stays out of the conversation surface.
+			failure := task.EventPayload{
 				"request_id": input.RequestID, "session_id": session.SessionID(), "mode": string(mode),
 				"outcome": "failed", "phase": "steering_failed", "error_code": errorCode,
-			})
+				"error": errorMessage,
+				"model_provider_id": selection.ModelProviderID, "model": selection.Model,
+				"requested_reasoning_effort": selection.RequestedReasoningEffort,
+			}
+			emit(task.EventKindSteering, failure)
 			return
 		}
 		continuationMu.Lock()
@@ -2289,8 +2347,27 @@ func (server *Server) recordSelectedRuntimeConfig(response http.ResponseWriter, 
 	if requestedProfile.Fields.ModelProviderID != "" {
 		config["model_provider_id"] = requestedProfile.Fields.ModelProviderID
 	}
-	if requestedProfile.Fields.ModelOverride != "" {
+	if model := input.selectedModel(); model != "" {
+		config["model"] = model
+		config["model_override"] = model
+	} else if requestedProfile.Fields.ModelOverride != "" {
+		config["model"] = requestedProfile.Fields.ModelOverride
 		config["model_override"] = requestedProfile.Fields.ModelOverride
+	}
+	// Capture the explicit turn/queue Requested Reasoning Effort so resume
+	// reuses the operator's selection without re-inferring Effective Effort.
+	requestedEffort, err := runtimeprofile.ResolveRequestedReasoningEffort(
+		input.ReasoningEffort,
+		configString(config, "launch_reasoning_effort_override"),
+		requestedProfile.Fields.ReasoningEffort,
+	)
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err.Error())
+		return task.RuntimeConfigVersion{}, false
+	}
+	config["requested_reasoning_effort"] = string(requestedEffort)
+	if strings.TrimSpace(input.ReasoningEffort) != "" {
+		config["reasoning_effort"] = string(requestedEffort)
 	}
 	recorded, err := server.tasks.RecordRuntimeConfig(found.ID, requestedProfile.ID, config)
 	if err != nil {
@@ -2298,6 +2375,239 @@ func (server *Server) recordSelectedRuntimeConfig(response http.ResponseWriter, 
 		return task.RuntimeConfigVersion{}, false
 	}
 	return recorded, true
+}
+
+// resolveNativeTurnSelection resolves the complete Runtime Turn Selection for a
+// native steer. Same-provider model/effort changes are allowed; a Model
+// Provider change is rejected so the client restarts through Config Projection.
+func (server *Server) resolveNativeTurnSelection(response http.ResponseWriter, found task.Task, input taskContinuationSelectionInput) (runtime.ProviderSessionRequest, bool) {
+	current, err := server.currentTurnSelection(found)
+	if err != nil {
+		if errors.Is(err, runtimeprofile.ErrNotFound) {
+			writeError(response, http.StatusBadRequest, "runtime profile not found")
+			return runtime.ProviderSessionRequest{}, false
+		}
+		writeError(response, http.StatusInternalServerError, "resolve turn selection")
+		return runtime.ProviderSessionRequest{}, false
+	}
+	requestedProvider := strings.TrimSpace(input.ModelProviderID)
+	if requestedProvider != "" && requestedProvider != current.ModelProviderID {
+		// Includes the empty-current case: introducing a provider requires
+		// credential re-resolution and Config Projection via restart.
+		writeError(response, http.StatusConflict, "native steer cannot change model provider; restart the continuation")
+		return runtime.ProviderSessionRequest{}, false
+	}
+
+	selection := current
+	if requestedProvider != "" {
+		selection.ModelProviderID = requestedProvider
+	}
+	if model := input.selectedModel(); model != "" {
+		selection.Model = model
+	}
+	requested, err := runtimeprofile.ResolveRequestedReasoningEffort(input.ReasoningEffort, current.RequestedReasoningEffort, "")
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err.Error())
+		return runtime.ProviderSessionRequest{}, false
+	}
+	selection.RequestedReasoningEffort = string(requested)
+	return selection, true
+}
+
+func (server *Server) currentTurnSelection(found task.Task) (runtime.ProviderSessionRequest, error) {
+	// Prefer the last turn's attached selection so the composer retains what
+	// the operator actually submitted, not a profile default.
+	if selection, ok := server.precedingConversationTurnSelection(found.ID); ok {
+		return selection, nil
+	}
+	return server.selectionFromCapturedRuntimeConfig(found)
+}
+
+// selectionFromCapturedRuntimeConfig resolves Model Provider / model / effort
+// from the latest Task Runtime Configuration Version and model_provider_snapshot.
+// Profile fields are only a fallback — launch-resolved and legacy profiles may
+// leave provider/model empty on the Profile while the captured snapshot is true.
+func (server *Server) selectionFromCapturedRuntimeConfig(found task.Task) (runtime.ProviderSessionRequest, error) {
+	profile, err := server.resolveTaskRuntimeProfile(found)
+	if err != nil {
+		return runtime.ProviderSessionRequest{}, err
+	}
+	modelProviderID := strings.TrimSpace(profile.Fields.ModelProviderID)
+	model := strings.TrimSpace(profile.Fields.ModelOverride)
+	if model == "" {
+		model = strings.TrimSpace(profile.Fields.Model)
+	}
+	launchEffort := ""
+	versions, err := server.tasks.RuntimeConfigVersions(found.ID)
+	if err != nil {
+		return runtime.ProviderSessionRequest{}, err
+	}
+	if len(versions) > 0 {
+		latest := versions[len(versions)-1].Config
+		// Snapshot first (actual projected provider/model), then explicit
+		// captured overrides from launch or later continuation selection.
+		if snapshotProvider, snapshotModel := modelProviderSnapshotFields(latest["model_provider_snapshot"]); true {
+			if snapshotProvider != "" {
+				modelProviderID = snapshotProvider
+			}
+			if snapshotModel != "" {
+				model = snapshotModel
+			}
+		}
+		if value := configString(latest, "model_provider_id"); value != "" {
+			modelProviderID = value
+		}
+		if value := configString(latest, "launch_model_override"); value != "" {
+			model = value
+		}
+		if value := configString(latest, "model_override"); value != "" {
+			model = value
+		}
+		if value := configString(latest, "model"); value != "" {
+			model = value
+		}
+		if value := configString(latest, "launch_reasoning_effort_override"); value != "" {
+			launchEffort = value
+		}
+		if value := configString(latest, "requested_reasoning_effort"); value != "" {
+			launchEffort = value
+		}
+	}
+	if model == "" && server.modelProviders != nil && modelProviderID != "" {
+		if provider, getErr := server.modelProviders.Get(modelProviderID); getErr == nil {
+			model = strings.TrimSpace(provider.Catalog.DefaultModel)
+		}
+	}
+	requested, err := runtimeprofile.ResolveRequestedReasoningEffort("", launchEffort, profile.Fields.ReasoningEffort)
+	if err != nil {
+		return runtime.ProviderSessionRequest{}, err
+	}
+	return runtime.ProviderSessionRequest{
+		ModelProviderID:          modelProviderID,
+		Model:                    model,
+		RequestedReasoningEffort: string(requested),
+	}, nil
+}
+
+func modelProviderSnapshotFields(raw any) (providerID, model string) {
+	switch snapshot := raw.(type) {
+	case map[string]any:
+		providerID = configString(snapshot, "model_provider_id")
+		model = configString(snapshot, "model")
+	case modelprovider.Snapshot:
+		providerID = strings.TrimSpace(snapshot.ModelProviderID)
+		model = strings.TrimSpace(snapshot.Model)
+	case *modelprovider.Snapshot:
+		if snapshot != nil {
+			providerID = strings.TrimSpace(snapshot.ModelProviderID)
+			model = strings.TrimSpace(snapshot.Model)
+		}
+	}
+	return providerID, model
+}
+
+func (server *Server) precedingConversationTurnSelection(taskID string) (runtime.ProviderSessionRequest, bool) {
+	events, err := server.tasks.Events(taskID)
+	if err != nil {
+		return runtime.ProviderSessionRequest{}, false
+	}
+	for index := len(events) - 1; index >= 0; index-- {
+		event := events[index]
+		// Selection is only read from existing conversation / steering turn
+		// records — never from a separate selection Task Event.
+		if event.Kind != task.EventKindConversation && event.Kind != task.EventKindSteering {
+			continue
+		}
+		providerID, _ := event.Payload["model_provider_id"].(string)
+		model, _ := event.Payload["model"].(string)
+		if model == "" {
+			model, _ = event.Payload["model_override"].(string)
+		}
+		effort, _ := event.Payload["requested_reasoning_effort"].(string)
+		if effort == "" {
+			effort, _ = event.Payload["reasoning_effort"].(string)
+		}
+		if strings.TrimSpace(providerID) == "" && strings.TrimSpace(model) == "" && strings.TrimSpace(effort) == "" {
+			continue
+		}
+		// Prefer a complete conversation turn; skip incomplete steering noise.
+		if event.Kind == task.EventKindSteering && strings.TrimSpace(providerID) == "" && strings.TrimSpace(model) == "" {
+			continue
+		}
+		requested, err := runtimeprofile.NormalizeReasoningEffort(effort)
+		if err != nil {
+			return runtime.ProviderSessionRequest{}, false
+		}
+		return runtime.ProviderSessionRequest{
+			ModelProviderID:          strings.TrimSpace(providerID),
+			Model:                    strings.TrimSpace(model),
+			RequestedReasoningEffort: string(requested),
+		}, true
+	}
+	return runtime.ProviderSessionRequest{}, false
+}
+
+func nativeSteerIdempotencyConflict(prior task.Event, message string, selection runtime.ProviderSessionRequest) string {
+	if priorText, _ := prior.Payload["text"].(string); priorText != message {
+		return "steer request id already belongs to a different message"
+	}
+	priorProvider, _ := prior.Payload["model_provider_id"].(string)
+	priorModel, _ := prior.Payload["model"].(string)
+	if priorModel == "" {
+		priorModel, _ = prior.Payload["model_override"].(string)
+	}
+	priorEffort, _ := prior.Payload["requested_reasoning_effort"].(string)
+	if priorEffort == "" {
+		priorEffort, _ = prior.Payload["reasoning_effort"].(string)
+	}
+	if strings.TrimSpace(priorProvider) != strings.TrimSpace(selection.ModelProviderID) ||
+		strings.TrimSpace(priorModel) != strings.TrimSpace(selection.Model) ||
+		strings.TrimSpace(priorEffort) != strings.TrimSpace(selection.RequestedReasoningEffort) {
+		return "steer request id already belongs to a different turn selection"
+	}
+	return ""
+}
+
+// nativeSteerFailurePresentation maps provider operation failures to stable,
+// redacted public codes/messages. Raw provider text never crosses this seam.
+func nativeSteerFailurePresentation(operationErr error) (code, message string) {
+	switch {
+	case errors.Is(operationErr, context.DeadlineExceeded):
+		return "timeout", "native steer timed out"
+	case errors.Is(operationErr, context.Canceled):
+		return "server_closing", "native steer canceled"
+	case errors.Is(operationErr, runtime.ErrProviderSessionClosed):
+		return "session_closed", "provider session is closed"
+	case errors.Is(operationErr, runtime.ErrProviderSessionControlConflict):
+		return "control_conflict", "provider session control conflict"
+	}
+	raw := ""
+	if cause := errors.Unwrap(operationErr); cause != nil {
+		raw = cause.Error()
+	} else if operationErr != nil {
+		raw = operationErr.Error()
+	}
+	lower := strings.ToLower(raw)
+	if strings.Contains(lower, "effort") || strings.Contains(lower, "reasoning") {
+		return "unsupported_reasoning_effort", "requested reasoning effort is not supported"
+	}
+	return "provider_rejected", "provider rejected the turn"
+}
+
+func configString(config map[string]any, key string) string {
+	if config == nil {
+		return ""
+	}
+	value, ok := config[key]
+	if !ok || value == nil {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	default:
+		return strings.TrimSpace(fmt.Sprint(typed))
+	}
 }
 
 func (server *Server) resolveTaskContinuationRuntimeProfile(response http.ResponseWriter, found task.Task, input taskContinuationSelectionInput) (runtimeprofile.Profile, bool) {
@@ -2354,14 +2664,29 @@ func (server *Server) resolveSelectedRuntimeProfile(response http.ResponseWriter
 		providerName = provider.Name
 	}
 
-	modelOverride := strings.TrimSpace(input.ModelOverride)
-	if strings.TrimSpace(currentProfile.Fields.ModelProviderID) == modelProviderID &&
-		strings.TrimSpace(currentProfile.Fields.ModelOverride) == modelOverride {
+	modelOverride := input.selectedModel()
+	requestedEffort := ""
+	if effort := strings.TrimSpace(input.ReasoningEffort); effort != "" {
+		normalized, err := runtimeprofile.NormalizeReasoningEffort(effort)
+		if err != nil {
+			writeError(response, http.StatusBadRequest, err.Error())
+			return runtimeprofile.Profile{}, false
+		}
+		requestedEffort = string(normalized)
+	}
+	currentEffort, _ := runtimeprofile.NormalizeReasoningEffort(currentProfile.Fields.ReasoningEffort)
+	sameSelection := strings.TrimSpace(currentProfile.Fields.ModelProviderID) == modelProviderID &&
+		strings.TrimSpace(currentProfile.Fields.ModelOverride) == modelOverride &&
+		(requestedEffort == "" || string(currentEffort) == requestedEffort)
+	if sameSelection {
 		return currentProfile, true
 	}
 	fields := currentProfile.Fields
 	fields.ModelProviderID = modelProviderID
 	fields.ModelOverride = modelOverride
+	if requestedEffort != "" {
+		fields.ReasoningEffort = requestedEffort
+	}
 	fields.ModelProviderProtocol = ""
 	fields.Model = ""
 	fields.Endpoint = ""

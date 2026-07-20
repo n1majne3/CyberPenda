@@ -144,9 +144,20 @@ type RuntimeControls struct {
 	NativeSessionCaptured   bool                        `json:"native_session_captured"`
 	SameRuntimeProviderOnly bool                        `json:"same_runtime_provider_only"`
 	RuntimeProvider         string                      `json:"runtime_provider,omitempty"`
-	ProviderPermissions     []ProviderPermissionRequest `json:"provider_permissions,omitempty"`
-	RecoveryState           string                      `json:"recovery_state,omitempty"`
-	RecoveryReason          string                      `json:"recovery_reason,omitempty"`
+	// TurnSelection is the preceding Runtime Turn Selection retained for the
+	// Task Conversation composer. Every turn still sends a complete selection.
+	TurnSelection       *TurnSelection              `json:"turn_selection,omitempty"`
+	ProviderPermissions []ProviderPermissionRequest `json:"provider_permissions,omitempty"`
+	RecoveryState       string                      `json:"recovery_state,omitempty"`
+	RecoveryReason      string                      `json:"recovery_reason,omitempty"`
+}
+
+// TurnSelection is the Model Provider, model, and Requested Reasoning Effort
+// resolved for a Runtime Turn.
+type TurnSelection struct {
+	ModelProviderID string `json:"model_provider_id,omitempty"`
+	Model           string `json:"model,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // ProviderPermissionRequest is a redacted pending approval exposed to the
