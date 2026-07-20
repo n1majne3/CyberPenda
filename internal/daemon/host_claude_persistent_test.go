@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -21,27 +20,32 @@ import (
 	"pentest/internal/task"
 )
 
-// #149 primary seam: Host Codex binds one Task-scoped provider session across
-// turns, carries complete Runtime Turn Selection, and cleans up on Stop.
+// #151 primary seam: Host Claude binds one Task-scoped Query session across
+// turns, applies Runtime Turn Selection without replacing Query when the
+// provider is unchanged, and cleans up process groups on Stop.
 
-type hostCodexSessionFactory struct {
+type hostClaudeSessionFactory struct {
 	mu       sync.Mutex
 	requests []ProviderSessionLaunchRequest
 	session  runtime.ProviderSession
 	adapter  runtime.Adapter
 	opens    int
+	failOpen error
 }
 
-func (f *hostCodexSessionFactory) Open(_ context.Context, request ProviderSessionLaunchRequest) (ProviderSessionBinding, error) {
+func (f *hostClaudeSessionFactory) Open(_ context.Context, request ProviderSessionLaunchRequest) (ProviderSessionBinding, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.requests = append(f.requests, request)
 	f.opens++
-	if request.Runner != task.RunnerHost {
-		return ProviderSessionBinding{}, errHostFactoryRunner
+	if f.failOpen != nil {
+		return ProviderSessionBinding{}, f.failOpen
 	}
-	if request.Provider != runtimeprofile.ProviderCodex {
-		return ProviderSessionBinding{}, errHostFactoryProvider
+	if request.Runner != task.RunnerHost {
+		return ProviderSessionBinding{}, errString("host Claude factory requires host runner")
+	}
+	if request.Provider != runtimeprofile.ProviderClaudeCode {
+		return ProviderSessionBinding{}, errString("host Claude factory requires claude_code")
 	}
 	if binder, ok := f.session.(runtime.ProviderSessionContinuationBinder); ok {
 		_ = binder.BindContinuation(request.Continuation.ID)
@@ -52,28 +56,19 @@ func (f *hostCodexSessionFactory) Open(_ context.Context, request ProviderSessio
 	return ProviderSessionBinding{Session: f.session, Adapter: f.adapter}, nil
 }
 
-func (f *hostCodexSessionFactory) openCount() int {
+func (f *hostClaudeSessionFactory) openCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.opens
 }
 
-func (f *hostCodexSessionFactory) allRequests() []ProviderSessionLaunchRequest {
+func (f *hostClaudeSessionFactory) allRequests() []ProviderSessionLaunchRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]ProviderSessionLaunchRequest(nil), f.requests...)
 }
 
-var (
-	errHostFactoryRunner   = errString("host factory requires host runner")
-	errHostFactoryProvider = errString("host factory requires codex")
-)
-
-type errString string
-
-func (e errString) Error() string { return string(e) }
-
-func newHostCodexPersistentFixture(t *testing.T, factory ProviderSessionFactory) (*Server, task.Task, modelprovider.Provider, runtimeprofile.Profile) {
+func newHostClaudePersistentFixture(t *testing.T, factory ProviderSessionFactory) (*Server, task.Task, modelprovider.Provider, runtimeprofile.Profile) {
 	t.Helper()
 	root := t.TempDir()
 	server, err := NewServer(Config{
@@ -91,23 +86,23 @@ func newHostCodexPersistentFixture(t *testing.T, factory ProviderSessionFactory)
 	}
 	provider, err := server.modelProviders.Create(modelprovider.CreateRequest{
 		Name: "Primary", BaseURL: "https://api.example.test/v1",
-		Protocols: []modelprovider.Protocol{modelprovider.ProtocolOpenAIResponses},
-		Catalog:   modelprovider.Catalog{Manual: []string{"gpt-test", "gpt-strong"}, DefaultModel: "gpt-test"},
+		Protocols: []modelprovider.Protocol{modelprovider.ProtocolAnthropicMessages},
+		Catalog:   modelprovider.Catalog{Manual: []string{"claude-test", "claude-strong"}, DefaultModel: "claude-test"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv(provider.APIKeyEnv, "sk-test")
-	profile, err := server.profiles.Create("Codex Host", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
-		ModelProviderID: provider.ID, ModelOverride: "gpt-test", ReasoningEffort: "medium",
-		BinaryPath: filepath.Join(root, "codex"), CustomArgs: []string{"--strict-mode"},
+	profile, err := server.profiles.Create("Claude Host", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{
+		ModelProviderID: provider.ID, ModelOverride: "claude-test", ReasoningEffort: "medium",
+		BinaryPath: filepath.Join(root, "claude"), CustomArgs: []string{"--add-dir", "/tmp/extra"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Host one-shot fallback still needs an executable binary path on disk for
-	// launch plan assembly when the factory is not used.
-	if err := writeExecutable(filepath.Join(root, "codex"), "#!/bin/sh\necho ok\n"); err != nil {
+	// Legacy launch plan still needs a binary path on disk for projection assembly
+	// even when the provider-session factory supplies the persistent adapter.
+	if err := writeExecutable(filepath.Join(root, "claude"), "#!/bin/sh\necho ok\n"); err != nil {
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
@@ -121,21 +116,17 @@ func newHostCodexPersistentFixture(t *testing.T, factory ProviderSessionFactory)
 	return server, created, provider, profile
 }
 
-func writeExecutable(path, body string) error {
-	return os.WriteFile(path, []byte(body), 0o700)
-}
-
-func TestHostCodexLaunchBindsPersistentSessionAcrossTurns(t *testing.T) {
+func TestHostClaudeLaunchBindsPersistentQueryAcrossTurns(t *testing.T) {
 	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
-		SessionID: "host-codex-thread-1",
+		SessionID: "host-claude-session-1",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true, ResumeSession: true,
 		},
 	})
 	closed := make(chan struct{})
 	adapter := runtime.NewProviderSessionRunAdapter(session, closed)
-	factory := &hostCodexSessionFactory{session: session, adapter: adapter}
-	server, created, provider, _ := newHostCodexPersistentFixture(t, factory)
+	factory := &hostClaudeSessionFactory{session: session, adapter: adapter}
+	server, created, provider, _ := newHostClaudePersistentFixture(t, factory)
 
 	plan, err := server.buildTaskLaunchPlan(created, created.Goal, "", "", "medium")
 	if err != nil {
@@ -147,29 +138,28 @@ func TestHostCodexLaunchBindsPersistentSessionAcrossTurns(t *testing.T) {
 	waitForHarnessActive(t, server, created.ID, true)
 	waitForProviderRequests(t, session, 1)
 
-	// Initial launch must carry complete Runtime Turn Selection.
 	first := session.LastRequests()[0]
-	if first.ModelProviderID != provider.ID || first.Model != "gpt-test" || first.RequestedReasoningEffort != "medium" {
+	if first.ModelProviderID != provider.ID || first.Model != "claude-test" || first.RequestedReasoningEffort != "medium" {
 		t.Fatalf("initial turn selection = %#v", first)
 	}
 	bound, ok := server.providerSessions.get(created.ID)
-	if !ok || bound.SessionID() != "host-codex-thread-1" {
+	if !ok || bound.SessionID() != "host-claude-session-1" {
 		t.Fatalf("bound session = ok=%v id=%q", ok, sessionIDOf(bound))
 	}
 	if factory.openCount() != 1 {
 		t.Fatalf("factory opens = %d, want 1", factory.openCount())
 	}
 	req0 := factory.allRequests()[0]
-	if req0.Runner != task.RunnerHost || req0.Provider != runtimeprofile.ProviderCodex {
+	if req0.Runner != task.RunnerHost || req0.Provider != runtimeprofile.ProviderClaudeCode {
 		t.Fatalf("factory request identity = %#v", req0)
 	}
 
-	// Same-provider second turn reuses the session/thread.
+	// Same-provider second turn reuses the Query session without factory re-open.
 	body := `{
-		"request_id":"host-turn-2",
+		"request_id":"host-claude-turn-2",
 		"message":"continue deeper",
 		"model_provider_id":` + quoteJSON(provider.ID) + `,
-		"model":"gpt-strong",
+		"model":"claude-strong",
 		"reasoning_effort":"xhigh"
 	}`
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+created.ProjectID+"/tasks/"+created.ID+"/steer", strings.NewReader(body))
@@ -181,19 +171,18 @@ func TestHostCodexLaunchBindsPersistentSessionAcrossTurns(t *testing.T) {
 	}
 	waitForProviderRequests(t, session, 2)
 	second := session.LastRequests()[1]
-	if second.Model != "gpt-strong" || second.RequestedReasoningEffort != "xhigh" || second.ModelProviderID != provider.ID {
+	if second.Model != "claude-strong" || second.RequestedReasoningEffort != "xhigh" || second.ModelProviderID != provider.ID {
 		t.Fatalf("second turn selection = %#v", second)
 	}
 	if factory.openCount() != 1 {
 		t.Fatalf("same-provider turn opened a new session: opens=%d", factory.openCount())
 	}
-	if session.SessionID() != "host-codex-thread-1" {
-		t.Fatalf("thread identity changed to %q", session.SessionID())
+	if session.SessionID() != "host-claude-session-1" {
+		t.Fatalf("Query session identity changed to %q", session.SessionID())
 	}
-	// Wait for native steer control to release before Stop.
 	waitForTaskEvent(t, server, created.ID, func(events []task.Event) bool {
 		for _, event := range events {
-			if event.Payload["request_id"] == "host-turn-2" && (event.Payload["phase"] == "steering_applied" || event.Payload["outcome"] == "settled" || event.Kind == task.EventKindConversation) {
+			if event.Payload["request_id"] == "host-claude-turn-2" && (event.Payload["phase"] == "steering_applied" || event.Payload["outcome"] == "settled" || event.Kind == task.EventKindConversation) {
 				return true
 			}
 		}
@@ -232,21 +221,21 @@ func TestHostCodexLaunchBindsPersistentSessionAcrossTurns(t *testing.T) {
 	}
 }
 
-func TestHostCodexProviderChangeQueuesMessageAndCreatesConfigVersion(t *testing.T) {
+func TestHostClaudeProviderChangeQueuesMessageAndCreatesConfigVersion(t *testing.T) {
 	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
-		SessionID: "host-codex-thread-a",
+		SessionID: "host-claude-session-a",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
 		},
 	})
 	closed := make(chan struct{})
 	adapter := runtime.NewProviderSessionRunAdapter(session, closed)
-	factory := &hostCodexSessionFactory{session: session, adapter: adapter}
-	server, created, provider, _ := newHostCodexPersistentFixture(t, factory)
+	factory := &hostClaudeSessionFactory{session: session, adapter: adapter}
+	server, created, provider, _ := newHostClaudePersistentFixture(t, factory)
 
 	alternate, err := server.modelProviders.Create(modelprovider.CreateRequest{
 		Name: "Alternate", BaseURL: "https://b.example/v1",
-		Protocols: []modelprovider.Protocol{modelprovider.ProtocolOpenAIResponses},
+		Protocols: []modelprovider.Protocol{modelprovider.ProtocolAnthropicMessages},
 		Catalog:   modelprovider.Catalog{Manual: []string{"m2"}, DefaultModel: "m2"},
 	})
 	if err != nil {
@@ -292,23 +281,20 @@ func TestHostCodexProviderChangeQueuesMessageAndCreatesConfigVersion(t *testing.
 		t.Fatalf("queued message dropped: %#v", queued.Event.Payload)
 	}
 	if queued.RuntimeConfigVersion == nil {
-		t.Fatal("provider change must create Runtime Config Version for host Codex")
+		t.Fatal("provider change must create Runtime Config Version for host Claude")
 	}
 	if queued.RuntimeConfigVersion.Config["model_provider_id"] != alternate.ID {
 		t.Fatalf("config = %#v", queued.RuntimeConfigVersion.Config)
 	}
-	// First launch used primary provider; no second factory open from queue alone.
 	if factory.openCount() != 1 {
 		t.Fatalf("queue path opened unexpected sessions: %d", factory.openCount())
 	}
 	_ = provider
 }
 
-func TestHostCodexMissingNativeMetadataFallsBackToFreshContinuation(t *testing.T) {
-	// No provider session factory: exercise resume path that prefers native
-	// metadata and falls back to fresh continuation without dropping the task.
+func TestHostClaudeMissingNativeMetadataFallsBackToFreshContinuation(t *testing.T) {
 	root := t.TempDir()
-	binary := filepath.Join(root, "codex")
+	binary := filepath.Join(root, "claude")
 	if err := writeExecutable(binary, "#!/bin/sh\necho ok\n"); err != nil {
 		t.Fatal(err)
 	}
@@ -324,8 +310,8 @@ func TestHostCodexMissingNativeMetadataFallsBackToFreshContinuation(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err := server.profiles.Create("Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
-		Model: "gpt-test", BinaryPath: binary, ReasoningEffort: "high",
+	profile, err := server.profiles.Create("Claude", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{
+		Model: "claude-test", BinaryPath: binary, ReasoningEffort: "high",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -337,11 +323,10 @@ func TestHostCodexMissingNativeMetadataFallsBackToFreshContinuation(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Mark task stopped with a continuation that has no native session metadata.
 	if _, err := server.tasks.UpdateStatus(created.ID, task.StatusStopped); err != nil {
 		t.Fatal(err)
 	}
-	continuation, err := server.tasks.CreateContinuation(created.ID, profile.ID, "codex", task.RunnerHost)
+	continuation, err := server.tasks.CreateContinuation(created.ID, profile.ID, "claude_code", task.RunnerHost)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +334,6 @@ func TestHostCodexMissingNativeMetadataFallsBackToFreshContinuation(t *testing.T
 		t.Fatal(err)
 	}
 
-	// Resume with a new message should produce a fresh plan (empty native resume id).
 	found, err := server.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -369,51 +353,30 @@ func TestHostCodexMissingNativeMetadataFallsBackToFreshContinuation(t *testing.T
 	}
 }
 
-func TestHostRunnerStillRequiresExplicitActivation(t *testing.T) {
-	root := t.TempDir()
-	binary := filepath.Join(root, "codex")
-	if err := writeExecutable(binary, "#!/bin/sh\necho ok\n"); err != nil {
-		t.Fatal(err)
-	}
-	server, err := NewServer(Config{
-		DBPath: filepath.Join(root, "pentest.db"), RuntimeRoot: filepath.Join(root, "runs"),
-		DisableBuiltinSkills: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer server.Close()
-	projectRecord, err := server.projects.Create("Project", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	profile, err := server.profiles.Create("Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
-		Model: "gpt-test", BinaryPath: binary,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	body := `{"goal":"inspect","runtime_profile_id":"` + profile.ID + `","runner":"host","run_controls":{"host_activated":false}}`
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectRecord.ID+"/tasks", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	resp := httptest.NewRecorder()
-	server.ServeHTTP(resp, req)
-	if resp.Code == http.StatusOK || resp.Code == http.StatusCreated || resp.Code == http.StatusAccepted {
-		t.Fatalf("host launch without activation must fail, status=%d body=%s", resp.Code, resp.Body.String())
-	}
-}
+func TestHostClaudeBridgeSetupFailureDoesNotOneShotFallback(t *testing.T) {
+	// Once the persistent path is selected, a missing packaged bridge must fail
+	// the launch with a clear factory error and must not run the legacy CLI adapter.
+	factory := &hostClaudeSessionFactory{failOpen: errString("Claude SDK bridge unavailable at /opt/missing-bridge: executable file not found")}
+	server, created, _, _ := newHostClaudePersistentFixture(t, factory)
 
-func TestSupportsPersistentProviderSessionHostCodexAndClaude(t *testing.T) {
-	if !supportsPersistentProviderSession(task.RunnerHost, runtimeprofile.ProviderCodex) {
-		t.Fatal("host codex must use persistent sessions")
+	plan, err := server.buildTaskLaunchPlan(created, created.Goal, "", "", "medium")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !supportsPersistentProviderSession(task.RunnerHost, runtimeprofile.ProviderClaudeCode) {
-		t.Fatal("host claude must use persistent sessions (#151)")
+	err = server.launchTaskInBackground(created, plan, created.Goal)
+	if err == nil {
+		t.Fatal("expected launch failure when Claude SDK bridge is unavailable")
 	}
-	if supportsPersistentProviderSession(task.RunnerHost, runtimeprofile.ProviderPi) {
-		t.Fatal("host pi must remain one-shot until #152")
+	if !strings.Contains(err.Error(), "provider session setup failed") {
+		t.Fatalf("error = %v, want provider session setup failed", err)
 	}
-	if !supportsPersistentProviderSession(task.RunnerSandbox, runtimeprofile.ProviderClaudeCode) {
-		t.Fatal("sandbox claude must remain persistent")
+	if factory.openCount() != 1 {
+		t.Fatalf("factory opens = %d, want 1 (persistent path selected)", factory.openCount())
+	}
+	if _, ok := server.providerSessions.get(created.ID); ok {
+		t.Fatal("failed launch must not leave a bound session")
+	}
+	if server.harness.IsActive(created.ID) {
+		t.Fatal("failed launch must not leave an active harness (no one-shot fallback)")
 	}
 }

@@ -233,8 +233,18 @@ func TestRuntimeActivityLiveIdleAndBusyForSandboxProviders(t *testing.T) {
 }
 
 func TestRuntimeActivityHostCodexHealthTransitions(t *testing.T) {
+	testRuntimeActivityHostHealthTransitions(t, runtimeprofile.ProviderCodex)
+}
+
+func TestRuntimeActivityHostClaudeHealthTransitions(t *testing.T) {
+	// #151: Host Claude uses the same truthful Runtime Activity contract as Host Codex.
+	testRuntimeActivityHostHealthTransitions(t, runtimeprofile.ProviderClaudeCode)
+}
+
+func testRuntimeActivityHostHealthTransitions(t *testing.T, provider runtimeprofile.Provider) {
+	t.Helper()
 	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
-		SessionID: "host-activity-1",
+		SessionID: "host-activity-" + string(provider),
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
 		},
@@ -243,9 +253,9 @@ func TestRuntimeActivityHostCodexHealthTransitions(t *testing.T) {
 	adapter := runtime.NewProviderSessionRunAdapter(session, closed)
 	factory := &activitySessionFactory{
 		session: session, adapter: adapter,
-		provider: runtimeprofile.ProviderCodex, runner: task.RunnerHost,
+		provider: provider, runner: task.RunnerHost,
 	}
-	server, created, _ := newRuntimeActivityFixture(t, runtimeprofile.ProviderCodex, task.RunnerHost, factory)
+	server, created, _ := newRuntimeActivityFixture(t, provider, task.RunnerHost, factory)
 	launchActivityTask(t, server, created)
 
 	body := getTaskActivity(t, server, created.ProjectID, created.ID)
@@ -330,7 +340,7 @@ func TestRuntimeActivityOrphanedInterruptsWithoutStoredSessionAuthority(t *testi
 
 func TestRuntimeActivityLostSessionOwnershipIsOrphanedNotLive(t *testing.T) {
 	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
-		SessionID: "session-lost",
+		SessionID:    "session-lost",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptThenReplace: true},
 	})
 	closed := make(chan struct{})
@@ -357,7 +367,7 @@ func TestRuntimeActivityLostSessionOwnershipIsOrphanedNotLive(t *testing.T) {
 
 func TestRuntimeActivityExplicitStopIsNotUnexpectedOffline(t *testing.T) {
 	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
-		SessionID: "session-stop",
+		SessionID:    "session-stop",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptThenReplace: true},
 	})
 	closed := make(chan struct{})
@@ -402,7 +412,7 @@ func TestRuntimeActivityExplicitStopIsNotUnexpectedOffline(t *testing.T) {
 
 func TestRuntimeActivityUnknownDoesNotMutateLifecycle(t *testing.T) {
 	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
-		SessionID: "session-unknown",
+		SessionID:    "session-unknown",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptThenReplace: true},
 	})
 	session.MarkHealthUnknown()
@@ -427,7 +437,7 @@ func TestRuntimeActivityUnknownDoesNotMutateLifecycle(t *testing.T) {
 
 func TestRuntimeActivityListDecoratesSeparatelyFromStatus(t *testing.T) {
 	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
-		SessionID: "session-list",
+		SessionID:    "session-list",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptThenReplace: true},
 	})
 	closed := make(chan struct{})
@@ -463,7 +473,7 @@ func TestRuntimeActivityListDecoratesSeparatelyFromStatus(t *testing.T) {
 
 func TestRuntimeActivityOrphanCleanupBeforeReplacementLaunch(t *testing.T) {
 	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
-		SessionID: "session-replace",
+		SessionID:    "session-replace",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptThenReplace: true, ResumeSession: true},
 	})
 	closed := make(chan struct{})
@@ -501,7 +511,7 @@ func TestRuntimeActivityOrphanCleanupBeforeReplacementLaunch(t *testing.T) {
 
 func TestRuntimeActivityNoExtraAuditRecords(t *testing.T) {
 	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
-		SessionID: "session-audit",
+		SessionID:    "session-audit",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptThenReplace: true},
 	})
 	closed := make(chan struct{})
@@ -532,5 +542,3 @@ func TestRuntimeActivityNoExtraAuditRecords(t *testing.T) {
 	}
 	close(closed)
 }
-
-

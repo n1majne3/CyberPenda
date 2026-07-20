@@ -16,14 +16,17 @@ import (
 
 // ProductionProviderSessionFactory is the daemon's concrete non-PTY bridge
 // assembly. Codex App Server, Claude Agent SDK, and Pi headless RPC are wired
-// end-to-end on Sandbox. Host Runner currently supports Codex App Server only
-// (#149); Claude Code and Pi host persistence are separate slices.
+// end-to-end on Sandbox. Host Runner supports Codex App Server and Claude Agent
+// SDK (#149, #151); Pi host persistence is a separate slice.
 // Claude is launched through the version-pinned SDK bridge rather than the
 // interactive CLI, so interrupt and settlement stay provider-native.
 type ProductionProviderSessionFactoryConfig struct {
 	Docker        runtime.SandboxBridgeDocker
 	BridgeCommand string
-	Diagnostics   func(string)
+	// ClaudeSDKBridgeCommand is the host/sandbox Claude Agent SDK bridge
+	// executable. Empty defaults to /usr/local/bin/pentest-claude-sdk-bridge.
+	ClaudeSDKBridgeCommand string
+	Diagnostics            func(string)
 	// HostStarter is an optional process seam for Host Runner tests. Production
 	// uses the real local process-group starter when nil.
 	HostStarter runtime.HostProcessStarter
@@ -108,6 +111,9 @@ func NewProductionProviderSessionFactory(config ProductionProviderSessionFactory
 	if strings.TrimSpace(config.BridgeCommand) == "" {
 		config.BridgeCommand = "/usr/local/bin/pentest-provider-bridge"
 	}
+	if strings.TrimSpace(config.ClaudeSDKBridgeCommand) == "" {
+		config.ClaudeSDKBridgeCommand = "/usr/local/bin/pentest-claude-sdk-bridge"
+	}
 	return &ProductionProviderSessionFactory{
 		config:      config,
 		bridges:     runtime.NewSandboxSessionBridgeRegistry(),
@@ -128,11 +134,19 @@ func (f *ProductionProviderSessionFactory) Open(ctx context.Context, request Pro
 }
 
 func (f *ProductionProviderSessionFactory) openHost(ctx context.Context, request ProviderSessionLaunchRequest) (ProviderSessionBinding, error) {
-	// Host persistence is Codex-only in this slice. Explicit activation and
-	// one-shot fallback for other providers remain unchanged.
-	if request.Provider != runtimeprofile.ProviderCodex {
-		return ProviderSessionBinding{}, fmt.Errorf("host provider session factory supports codex only")
+	// Host persistence is Codex App Server and Claude Agent SDK. Explicit Host
+	// activation and one-shot fallback for unsupported providers remain unchanged.
+	switch request.Provider {
+	case runtimeprofile.ProviderCodex:
+		return f.openHostCodex(ctx, request)
+	case runtimeprofile.ProviderClaudeCode:
+		return f.openHostClaude(ctx, request)
+	default:
+		return ProviderSessionBinding{}, fmt.Errorf("host provider session factory supports codex and claude_code only")
 	}
+}
+
+func (f *ProductionProviderSessionFactory) openHostCodex(ctx context.Context, request ProviderSessionLaunchRequest) (ProviderSessionBinding, error) {
 	taskID := strings.TrimSpace(request.Task.ID)
 	if taskID == "" || strings.TrimSpace(request.Continuation.ID) == "" {
 		return ProviderSessionBinding{}, fmt.Errorf("provider session bridge requires Task and Continuation identity")
@@ -200,6 +214,70 @@ func (f *ProductionProviderSessionFactory) openHost(ctx context.Context, request
 	}, processIdentity)
 }
 
+func (f *ProductionProviderSessionFactory) openHostClaude(ctx context.Context, request ProviderSessionLaunchRequest) (ProviderSessionBinding, error) {
+	taskID := strings.TrimSpace(request.Task.ID)
+	if taskID == "" || strings.TrimSpace(request.Continuation.ID) == "" {
+		return ProviderSessionBinding{}, fmt.Errorf("provider session bridge requires Task and Continuation identity")
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if prior, ok := f.bounds[taskID]; ok {
+		return f.rebindPrior(prior, request.Continuation.ID)
+	}
+
+	launch, ok := runtime.CommandAdapterLaunch(request.LegacyAdapter)
+	if !ok {
+		return ProviderSessionBinding{}, fmt.Errorf("host provider session bridge requires host command adapter")
+	}
+	workdir := strings.TrimSpace(launch.Workdir)
+	if workdir == "" {
+		return ProviderSessionBinding{}, fmt.Errorf("host provider session bridge requires Task workdir")
+	}
+
+	// Claude's durable process is the version-pinned packaged SDK bridge (one
+	// Query), never repo-relative Node sources or an on-demand npm install, and
+	// never the interactive CLI. Projected CLAUDE_HOME/settings/MCP/env come
+	// from the host launch adapter; non-conflicting Custom Args survive argv
+	// assembly. A missing bridge fails closed with no one-shot CLI fallback.
+	program := strings.TrimSpace(f.config.ClaudeSDKBridgeCommand)
+	if program == "" {
+		return ProviderSessionBinding{}, fmt.Errorf("Claude SDK bridge command is not configured")
+	}
+	args := hostClaudeSDKBridgeArgs(workdir, launch.Args, request)
+	var runAdapter *runtime.ProviderSessionRunAdapter
+	var runAdapterMu sync.RWMutex
+	bridge, err := f.hostBridges.Bind(ctx, taskID, request.Continuation.ID, func() (*runtime.HostSessionBridge, error) {
+		bridge, err := runtime.NewHostSessionBridge(runtime.HostSessionBridgeConfig{
+			TaskID: taskID, Program: program, Args: args, Workdir: workdir, Env: launch.Env,
+			Diagnostics: f.config.Diagnostics, Starter: f.config.HostStarter,
+			ProtocolEmit: func(event runtime.SandboxBridgeEvent) {
+				runAdapterMu.RLock()
+				adapter := runAdapter
+				runAdapterMu.RUnlock()
+				if adapter != nil {
+					adapter.HandleBridgeEvent(event)
+				}
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		if err := bridge.Start(ctx); err != nil {
+			_ = bridge.Close(ctx)
+			return nil, fmt.Errorf("Claude SDK bridge unavailable at %s: %w", program, err)
+		}
+		return bridge, nil
+	})
+	if err != nil {
+		return ProviderSessionBinding{}, err
+	}
+	processIdentity := runtime.FormatHostProcessGroupID(bridge.ProcessGroupID())
+	return f.finishNonCodexBinding(ctx, request, taskID, bridge, &runAdapter, &runAdapterMu, func(closeCtx context.Context) {
+		_ = f.hostBridges.CloseTask(closeCtx, taskID)
+	}, processIdentity)
+}
+
 func (f *ProductionProviderSessionFactory) openSandbox(ctx context.Context, request ProviderSessionLaunchRequest) (ProviderSessionBinding, error) {
 	if request.Provider != runtimeprofile.ProviderClaudeCode && request.Provider != runtimeprofile.ProviderCodex && request.Provider != runtimeprofile.ProviderPi {
 		return ProviderSessionBinding{}, fmt.Errorf("provider %q is not supported by production provider session factory", request.Provider)
@@ -245,20 +323,7 @@ func (f *ProductionProviderSessionFactory) openSandbox(ctx context.Context, requ
 	if request.Provider == runtimeprofile.ProviderClaudeCode {
 		// The SDK bridge is an executable in the sandbox image. It owns the
 		// long-lived Query and does not invoke the Claude CLI's private protocol.
-		bridgeCommand = []string{"/usr/local/bin/pentest-claude-sdk-bridge", "--cwd", "/task/workdir"}
-		model, _ := request.RuntimeConfig["launch_model_override"].(string)
-		if strings.TrimSpace(model) == "" {
-			model = argValue(legacyArgs, "--model")
-		}
-		if model = strings.TrimSpace(model); model != "" {
-			bridgeCommand = append(bridgeCommand, "--model", model)
-		}
-		if settings := argValue(legacyArgs, "--settings"); settings != "" {
-			bridgeCommand = append(bridgeCommand, "--settings", settings)
-		}
-		if durableSessionID := strings.TrimSpace(request.Continuation.NativeSessionID); durableSessionID != "" {
-			bridgeCommand = append(bridgeCommand, "--resume", durableSessionID)
-		}
+		bridgeCommand = append([]string{f.config.ClaudeSDKBridgeCommand}, hostClaudeSDKBridgeArgs("/task/workdir", legacyArgs, request)...)
 	} else if request.Provider == runtimeprofile.ProviderCodex {
 		bridgeCommand = append(bridgeCommand, "app-server")
 	} else {
@@ -311,7 +376,9 @@ func (f *ProductionProviderSessionFactory) openSandbox(ctx context.Context, requ
 			_ = f.bridges.CloseTask(closeCtx, taskID)
 		}, bridge.ContainerID())
 	}
-	return f.finishNonCodexSandboxBinding(ctx, request, taskID, bridge, &runAdapter, &runAdapterMu)
+	return f.finishNonCodexBinding(ctx, request, taskID, bridge, &runAdapter, &runAdapterMu, func(closeCtx context.Context) {
+		_ = f.bridges.CloseTask(closeCtx, taskID)
+	}, bridge.ContainerID())
 }
 
 func (f *ProductionProviderSessionFactory) rebindPrior(prior ProviderSessionBinding, continuationID string) (ProviderSessionBinding, error) {
@@ -397,13 +464,18 @@ func (f *ProductionProviderSessionFactory) finishCodexBinding(
 	return binding, nil
 }
 
-func (f *ProductionProviderSessionFactory) finishNonCodexSandboxBinding(
+// finishNonCodexBinding establishes Claude Agent SDK or Pi RPC session identity
+// on a sandbox or host bridge, then binds the long-lived adapter. processIdentity
+// is the durable ContainerID/host-pgid metadata used for restart cleanup.
+func (f *ProductionProviderSessionFactory) finishNonCodexBinding(
 	ctx context.Context,
 	request ProviderSessionLaunchRequest,
 	taskID string,
-	bridge *runtime.SandboxSessionBridge,
+	bridge productionBridgeTransport,
 	runAdapter **runtime.ProviderSessionRunAdapter,
 	runAdapterMu *sync.RWMutex,
+	closeBridge func(context.Context),
+	processIdentity string,
 ) (ProviderSessionBinding, error) {
 	setupMethod, setupID, setupParams := "pi/get_state", "setup:state", json.RawMessage(`{}`)
 	if request.Provider == runtimeprofile.ProviderClaudeCode {
@@ -411,7 +483,7 @@ func (f *ProductionProviderSessionFactory) finishNonCodexSandboxBinding(
 	}
 	setupResponse, err := bridge.Send(ctx, runtime.SandboxBridgeRequest{ID: setupID, Method: setupMethod, Params: setupParams})
 	if err != nil {
-		_ = f.bridges.CloseTask(ctx, taskID)
+		closeBridge(ctx)
 		return ProviderSessionBinding{}, err
 	}
 	var sessionID, sessionPath string
@@ -420,12 +492,12 @@ func (f *ProductionProviderSessionFactory) finishNonCodexSandboxBinding(
 			SessionID string `json:"session_id"`
 		}
 		if err := json.Unmarshal(setupResponse.Result, &state); err != nil || strings.TrimSpace(state.SessionID) == "" {
-			_ = f.bridges.CloseTask(ctx, taskID)
+			closeBridge(ctx)
 			return ProviderSessionBinding{}, fmt.Errorf("provider session identity unavailable")
 		}
 		sessionID = strings.TrimSpace(state.SessionID)
 		if durable := strings.TrimSpace(request.Continuation.NativeSessionID); durable != "" && durable != sessionID {
-			_ = f.bridges.CloseTask(ctx, taskID)
+			closeBridge(ctx)
 			return ProviderSessionBinding{}, fmt.Errorf("provider session resume identity changed")
 		}
 	} else {
@@ -437,11 +509,11 @@ func (f *ProductionProviderSessionFactory) finishNonCodexSandboxBinding(
 			sessionID, sessionPath = strings.TrimSpace(state.SessionID), strings.TrimSpace(state.SessionPath)
 		}
 		if durable := strings.TrimSpace(request.Continuation.NativeSessionID); durable != "" && sessionID != "" && durable != sessionID {
-			_ = f.bridges.CloseTask(ctx, taskID)
+			closeBridge(ctx)
 			return ProviderSessionBinding{}, fmt.Errorf("provider session resume identity changed")
 		}
 		if sessionID == "" {
-			_ = f.bridges.CloseTask(ctx, taskID)
+			closeBridge(ctx)
 			return ProviderSessionBinding{}, fmt.Errorf("provider session identity unavailable")
 		}
 	}
@@ -459,14 +531,14 @@ func (f *ProductionProviderSessionFactory) finishNonCodexSandboxBinding(
 			delete(f.bounds, taskID)
 		}
 		f.mu.Unlock()
-		_ = f.bridges.CloseTask(closeCtx, taskID)
+		closeBridge(closeCtx)
 	}}
 	runAdapterMu.Lock()
 	*runAdapter = runtime.NewProviderSessionRunAdapter(session, runtime.FirstSignal(bridge.Closed(), bridge.Terminated()))
 	runAdapterMu.Unlock()
 	(*runAdapter).BindContinuation(request.Continuation.ID)
 	(*runAdapter).SetSessionMetadata(func() runtime.NativeSessionMetadata {
-		return runtime.NativeSessionMetadata{ContainerID: bridge.ContainerID(), NativeSessionID: sessionID, NativeSessionPath: sessionPath}
+		return runtime.NativeSessionMetadata{ContainerID: processIdentity, NativeSessionID: sessionID, NativeSessionPath: sessionPath}
 	})
 	binding := ProviderSessionBinding{Session: session, Adapter: *runAdapter}
 	f.bounds[taskID] = binding
@@ -480,6 +552,86 @@ func argValue(args []string, option string) string {
 		}
 	}
 	return ""
+}
+
+// hostClaudeSDKBridgeArgs builds Claude Agent SDK bridge argv for sandbox or
+// host. Structured model/settings/resume are projected explicitly; non-conflicting
+// Custom Args from the one-shot launch survive assembly.
+func hostClaudeSDKBridgeArgs(workdir string, launchArgs []string, request ProviderSessionLaunchRequest) []string {
+	args := []string{"--cwd", workdir}
+	model, _ := request.RuntimeConfig["launch_model_override"].(string)
+	if strings.TrimSpace(model) == "" {
+		model = argValue(launchArgs, "--model")
+	}
+	if model = strings.TrimSpace(model); model != "" {
+		args = append(args, "--model", model)
+	}
+	if settings := argValue(launchArgs, "--settings"); settings != "" {
+		args = append(args, "--settings", settings)
+	}
+	if durableSessionID := strings.TrimSpace(request.Continuation.NativeSessionID); durableSessionID != "" {
+		args = append(args, "--resume", durableSessionID)
+	}
+	if custom := hostClaudeCustomArgs(launchArgs); len(custom) > 0 {
+		args = append(args, custom...)
+	}
+	return args
+}
+
+// hostClaudeCustomArgs extracts Custom Args from a one-shot Claude launch argv
+// (after the binary) for SDK bridge assembly.
+//
+// Only these tokens are dropped:
+//   - structured launch-template model/settings/resume flags and values
+//   - MCP config injection (--strict-mcp-config, --mcp-config)
+//   - one-shot print/stream helpers (-p/--print, --output-format, --verbose)
+//   - Runtime Non-Interactive Defaults (--dangerously-skip-permissions,
+//     --permission-mode)
+//   - the goal separator (--) and trailing Task goal
+//
+// User Custom Args are never silently stripped here. Reserved model/effort
+// aliases are rejected by runtimeprofile.ValidateCustomArgs before launch
+// (#148); this helper does not reimplement or weaken that seam.
+func hostClaudeCustomArgs(args []string) []string {
+	if len(args) == 0 {
+		return nil
+	}
+	skipNext := map[string]bool{
+		"--model": true, "--settings": true, "--mcp-config": true,
+		"--output-format": true, "--permission-mode": true, "--resume": true,
+		"--cwd": true, "--effort": true,
+	}
+	dropExact := map[string]bool{
+		"-p": true, "--print": true, "--verbose": true,
+		"--strict-mcp-config": true, "--dangerously-skip-permissions": true,
+		"--": true,
+	}
+	end := len(args)
+	if end > 0 && !strings.HasPrefix(args[end-1], "-") && args[end-1] != "--" {
+		// Drop trailing goal when present (final non-flag positional).
+		if end > 1 {
+			end--
+		}
+	}
+	var custom []string
+	for i := 0; i < end; i++ {
+		arg := args[i]
+		if dropExact[arg] {
+			continue
+		}
+		if skipNext[arg] {
+			i++ // drop structured value
+			continue
+		}
+		if strings.HasPrefix(arg, "--model=") || strings.HasPrefix(arg, "--settings=") ||
+			strings.HasPrefix(arg, "--mcp-config=") || strings.HasPrefix(arg, "--output-format=") ||
+			strings.HasPrefix(arg, "--permission-mode=") || strings.HasPrefix(arg, "--resume=") ||
+			strings.HasPrefix(arg, "--cwd=") || strings.HasPrefix(arg, "--effort=") {
+			continue
+		}
+		custom = append(custom, arg)
+	}
+	return custom
 }
 
 // hostCodexCustomArgs extracts Custom Args from a one-shot host Codex launch
