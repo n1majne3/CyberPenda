@@ -48,6 +48,10 @@ _Avoid_: runtime profile picker, MCP preset, profile name
 A task-only model choice applied at launch that may differ from the selected **Runtime Profile**'s **Model Override** without editing that profile.
 _Avoid_: profile edit, model provider edit, catalog refresh
 
+**Launch Reasoning Effort Override**:
+A task-only **Reasoning Effort** choice applied at launch that may differ from the selected **Runtime Profile** default without editing that profile.
+_Avoid_: profile edit, runtime flag, model override
+
 **Launch Profile Resolution**:
 The daemon step that turns **Run Controls** into the **Runtime Profile** used for a **Task**, either by reusing an explicitly selected **Runtime Profile Preset** or by finding or creating a minimal matching **Runtime Profile** from a **Launch Selection**.
 _Avoid_: live profile mutation, project-local profile fork
@@ -63,6 +67,14 @@ _Avoid_: audit log entry, transcript line, raw output dump
 **Task Conversation**:
 The user-runtime interaction that continues inside one **Task** after launch.
 _Avoid_: new task per reply, detached chat
+
+**Runtime Turn**:
+A single provider response cycle initiated by one user message within a **Task Conversation**. It retains the **Task** identity while using its own **Runtime Turn Selection**.
+_Avoid_: task, continuation, internal reasoning step
+
+**Runtime Turn Selection**:
+The effective model and **Reasoning Effort** selected for one **Runtime Turn**, independently of adjacent turns and without editing the selected **Runtime Profile**.
+_Avoid_: profile switch, session-wide setting, global default
 
 **Task Deletion**:
 Operator removal of a terminal **Task** from normal task surfaces and counts while retaining the minimum durable state required for historical **Blackboard** and **Trusted Origin** integrity.
@@ -199,6 +211,10 @@ _Avoid_: semantic URL repair, proxy route, operation suffix
 **Model Override**:
 A **Runtime Profile** field that replaces the selected **Model Provider**'s default model when that profile is used without a **Launch Model Override**.
 _Avoid_: provider edit, endpoint fork, hidden model switch, launch-only override
+
+**Reasoning Effort**:
+An optional **Runtime Profile** default for how much model reasoning a **Runtime** should request for a **Task**, using `low`, `medium`, `high`, `xhigh`, or `max`; when absent, the **Runtime** keeps its native default.
+_Avoid_: thinking mode, token budget, custom runtime flag
 
 **Model Provider Protocol**:
 The model-service API contract a **Model Provider Endpoint** supports and a **Runtime Plugin** knows how to project for a **Runtime**.
@@ -774,6 +790,9 @@ _Avoid_: transcript, export, source of truth
 - A **Launch Model Override** may still be chosen at launch when a **Runtime Profile Preset** is selected.
 - A selected **Runtime Profile Preset** keeps its **Runtime Profile** identity for the **Task** even when a **Launch Model Override** is used.
 - A **Launch Model Override** affects only the launching **Task** and its captured **Task Runtime Configuration**; it does not edit the selected **Runtime Profile**.
+- A **Launch Reasoning Effort Override** may be chosen with or without a **Runtime Profile Preset** and affects only the launching **Task**.
+- Effective **Reasoning Effort** resolves in this order: **Launch Reasoning Effort Override**, **Runtime Profile** default, then the **Runtime**'s native default.
+- Effective **Reasoning Effort** is captured in the **Task Runtime Configuration** and does not edit the selected **Runtime Profile**.
 - Changing the selected **Runtime Plugin** family during launch clears an incompatible **Runtime Profile Preset** selection.
 - **Launch Profile Resolution** reuses an explicitly selected **Runtime Profile Preset** when one is chosen.
 - **Launch Profile Resolution** otherwise finds or creates a minimal **Runtime Profile** that matches the **Launch Selection** runtime, **Model Provider**, and model choice.
@@ -815,6 +834,10 @@ _Avoid_: transcript, export, source of truth
 - **Task Deletion** excludes the **Task** from normal task lists, detail routes, and dashboard counts while retaining only the durable state required for historical **Blackboard** and **Trusted Origin** integrity.
 - A pending, running, or paused **Task** cannot undergo **Task Deletion**.
 - A **Task Conversation** belongs to exactly one **Task**.
+- Each user message in a **Task Conversation** initiates one **Runtime Turn**.
+- Every **Runtime Turn** may select its model and **Reasoning Effort** independently of the preceding turn.
+- A **Runtime Turn Selection** applies at a provider-defined turn boundary and never changes an already-running internal reasoning step.
+- A **Runtime Turn Selection** does not edit the selected **Runtime Profile** or another **Runtime Turn**.
 - User messages and runtime replies in a **Task Conversation** are represented as **Task Events**.
 - **Harness Steering** actions are represented as **Task Events**.
 - A **Runtime Continuation** resumes from its **Task Goal**, **Scope**, current **Working Blackboard Snapshot**, open **Attempt** checkpoints, and any unconsumed **Harness Steering** without a separate summary or mechanical handoff packet.
