@@ -182,6 +182,19 @@ type ReconcileInterruptedResult struct {
 	Continuations []TaskContinuation
 }
 
+// RuntimeActivity is the operator-visible current Runtime health, independent
+// of durable Task lifecycle. It is computed from daemon-owned process/session
+// health and terminal notifications, not from stored session identity, Task
+// Events, or elapsed time.
+type RuntimeActivity struct {
+	// Liveness is one of live, offline, orphaned, or unknown.
+	Liveness string `json:"liveness"`
+	// TurnActivity is busy or idle while Liveness is live; empty otherwise.
+	TurnActivity string `json:"turn_activity,omitempty"`
+	// Warning explains unknown liveness without mutating Task lifecycle.
+	Warning string `json:"warning,omitempty"`
+}
+
 // Task is a single user-goal-driven run within a project.
 type Task struct {
 	ID                 string            `json:"id"`
@@ -193,6 +206,8 @@ type Task struct {
 	RunControls        RunControls       `json:"run_controls"`
 	ScopeSnapshot      ScopeSnapshot     `json:"scope_snapshot"`
 	RuntimeControls    RuntimeControls   `json:"runtime_controls"`
+	// RuntimeActivity is current process/session health, not Task status.
+	RuntimeActivity    RuntimeActivity   `json:"runtime_activity"`
 	ActiveContinuation *TaskContinuation `json:"active_continuation,omitempty"`
 	LatestContinuation *TaskContinuation `json:"latest_continuation,omitempty"`
 	CreatedAt          time.Time         `json:"created_at"`

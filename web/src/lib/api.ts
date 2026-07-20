@@ -80,8 +80,8 @@ function dashboardAuthToken(): string {
   }
 }
 
-export function apiGet<T>(path: string) {
-  return request<T>(path);
+export function apiGet<T>(path: string, init?: RequestInit) {
+  return request<T>(path, init);
 }
 export function apiPost<T>(path: string, body?: unknown) {
   return request<T>(path, { method: "POST", body: body ? JSON.stringify(body) : undefined });
@@ -334,6 +334,16 @@ export interface Skill {
   updated_at: string;
 }
 
+/** Current Runtime health, independent of durable Task lifecycle. */
+export interface RuntimeActivity {
+  /** live | offline | orphaned | unknown */
+  liveness: string;
+  /** busy | idle while live */
+  turn_activity?: string;
+  /** Explains unknown without inventing failure */
+  warning?: string;
+}
+
 export interface Task {
   id: string;
   project_id: string;
@@ -344,6 +354,8 @@ export interface Task {
   run_controls: { host_activated?: boolean; sandbox_network?: string; notes?: string; extras?: Record<string, string> };
   scope_snapshot: Scope;
   runtime_controls?: RuntimeControls;
+  /** Current process/session health — not Task status. */
+  runtime_activity?: RuntimeActivity;
   active_continuation?: TaskContinuation;
   latest_continuation?: TaskContinuation;
   created_at: string;

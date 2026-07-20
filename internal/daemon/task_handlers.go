@@ -194,6 +194,11 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 	if !plan.BlackboardV2 {
 		return fmt.Errorf("Blackboard v2 launch projection is required")
 	}
+	// Replacement launches must not start while a prior Runtime is still owned
+	// or not proven absent.
+	if err := server.ensureRuntimeAbsentBeforeLaunch(created.ID); err != nil {
+		return err
+	}
 	server.logTaskLaunchStage(created, "prepare_continuation")
 	continuation, boundPlan, err := server.prepareBlackboardV2ContinuationLaunch(created, plan, goal)
 	if err != nil {
@@ -250,9 +255,13 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 		switch {
 		case err == nil:
 			server.logTask(created, "completed", "")
+			// Persistent sessions that end cleanly still release ownership.
+			_ = server.closeProviderSession(created.ID)
 		case errors.Is(err, context.Canceled):
 			server.logTask(created, "stopped", "")
 		default:
+			// Unexpected persistent Runtime exit: ownership must not linger.
+			_ = server.closeProviderSession(created.ID)
 			server.logTask(created, "failed", err.Error())
 		}
 	}()
@@ -1058,6 +1067,10 @@ func (server *Server) handleListTasks(response http.ResponseWriter, request *htt
 	if tasks == nil {
 		tasks = []task.Task{}
 	}
+	// Decorate list entries with current Runtime Activity (not Task status).
+	for index := range tasks {
+		tasks[index] = server.attachRuntimeActivity(tasks[index])
+	}
 	writeJSON(response, http.StatusOK, struct {
 		Tasks []task.Task `json:"tasks"`
 	}{
@@ -1122,6 +1135,9 @@ func (server *Server) taskDetail(taskID string) (task.Task, error) {
 }
 
 func (server *Server) decorateTask(found task.Task) (task.Task, error) {
+	// Runtime Activity is attached first so unexpected offline/orphaned health
+	// can reconcile durable lifecycle before controls are computed.
+	found = server.attachRuntimeActivity(found)
 	active, err := server.tasks.ActiveContinuation(found.ID)
 	if err != nil {
 		return task.Task{}, err

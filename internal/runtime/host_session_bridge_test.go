@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -187,5 +188,92 @@ func TestHostProcessGroupMetadataRoundTrip(t *testing.T) {
 	}
 	if runtime.FormatHostProcessGroupID(0) != "" {
 		t.Fatal("zero pgid must not emit durable token")
+	}
+}
+
+type terminalHostStarter struct {
+	stdout *io.PipeWriter
+	stdin  *io.PipeReader
+}
+
+func (s *terminalHostStarter) Start(context.Context, runtime.HostProcessSpec) (runtime.HostProcessHandle, error) {
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	s.stdin, s.stdout = stdinR, stdoutW
+	return runtime.HostProcessHandle{
+		IO:             runtime.SandboxBridgeIO{Stdin: stdinW, Stdout: stdoutR},
+		ProcessGroupID: 4242,
+		KillProcessGroup: func(context.Context) error {
+			_ = stdinR.Close()
+			_ = stdoutW.Close()
+			return nil
+		},
+	}, nil
+}
+
+func TestHostSessionBridgeProtocolExitSignalsTerminatedWithoutClosing(t *testing.T) {
+	starter := &terminalHostStarter{}
+	bridge, err := runtime.NewHostSessionBridge(runtime.HostSessionBridgeConfig{
+		TaskID:  "task-host-term",
+		Program: "host-provider",
+		Starter: starter,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bridge.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Unexpected protocol stream end (process death) without explicit Close.
+	_ = starter.stdout.Close()
+
+	select {
+	case <-bridge.Terminated():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Terminated did not fire after host process exit")
+	}
+
+	select {
+	case <-bridge.Closed():
+		t.Fatal("Closed fired on unexpected process exit; only Terminated should fire")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	if err := bridge.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-bridge.Closed():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Closed did not fire after explicit Close")
+	}
+}
+
+func TestHostSessionBridgeExplicitCloseDoesNotSignalTerminated(t *testing.T) {
+	starter := &terminalHostStarter{}
+	bridge, err := runtime.NewHostSessionBridge(runtime.HostSessionBridgeConfig{
+		TaskID:  "task-host-close",
+		Program: "host-provider",
+		Starter: starter,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bridge.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := bridge.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-bridge.Closed():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Closed did not fire after explicit Close")
+	}
+	select {
+	case <-bridge.Terminated():
+		t.Fatal("Terminated fired on explicit Close; Stop/Close must not be unexpected exit")
+	case <-time.After(100 * time.Millisecond):
 	}
 }

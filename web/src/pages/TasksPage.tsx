@@ -29,12 +29,35 @@ export function TasksPage() {
 
   useEffect(() => {
     if (!projectId) return;
-    apiGet<{ tasks: Task[] }>(`/api/projects/${projectId}/tasks`)
-      .then((d) => {
+    let cancelled = false;
+    let generation = 0;
+    let controller: AbortController | null = null;
+
+    async function loadTasks() {
+      controller?.abort();
+      controller = new AbortController();
+      const current = ++generation;
+      try {
+        const d = await apiGet<{ tasks: Task[] }>(`/api/projects/${projectId}/tasks`, {
+          signal: controller.signal,
+        });
+        if (cancelled || current !== generation) return;
         setTasks(d.tasks ?? []);
         setError(null);
-      })
-      .catch((e) => setError((e as Error).message));
+      } catch (e) {
+        if (cancelled || current !== generation || controller?.signal.aborted) return;
+        setError((e as Error).message);
+      }
+    }
+
+    loadTasks();
+    // Poll while any task may still have live Runtime Activity.
+    const id = setInterval(loadTasks, 2000);
+    return () => {
+      cancelled = true;
+      controller?.abort();
+      clearInterval(id);
+    };
   }, [projectId]);
 
   const base = `/projects/${projectId}`;
@@ -84,6 +107,7 @@ export function TasksPage() {
                 </div>
                 <div className="flex shrink-0 flex-wrap gap-1 sm:justify-end">
                   <TaskStatusBadge status={task.status} />
+                  <RuntimeActivityBadge activity={task.runtime_activity} />
                 </div>
               </div>
             </Card>
@@ -101,6 +125,25 @@ function TaskStatusBadge({ status }: { status: string }) {
     <Badge variant={meta.variant}>
       <Icon className={`h-3 w-3 ${status === "running" ? "animate-spin motion-reduce:animate-none" : ""}`} />
       {status}
+    </Badge>
+  );
+}
+
+function RuntimeActivityBadge({ activity }: { activity?: Task["runtime_activity"] }) {
+  if (!activity?.liveness) return null;
+  const liveness = activity.liveness;
+  const turn = activity.turn_activity;
+  const label =
+    liveness === "live" && turn
+      ? `runtime ${liveness} · ${turn}`
+      : `runtime ${liveness}`;
+  const variant =
+    liveness === "live" ? "primary" :
+    liveness === "offline" ? "outline" :
+    liveness === "orphaned" || liveness === "unknown" ? "warning" : "outline";
+  return (
+    <Badge variant={variant} data-testid="runtime-activity" title={activity.warning || label}>
+      {label}
     </Badge>
   );
 }

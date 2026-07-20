@@ -116,10 +116,12 @@ type SandboxSessionBridge struct {
 	pending      map[string]*bridgePending
 	completed    map[string]bridgeCompletion
 	requests     map[string][sha256.Size]byte
-	continuation string
-	closed       chan struct{}
-	closeOnce    sync.Once
-	cleanupErr   error
+	continuation   string
+	closed         chan struct{}
+	terminated     chan struct{}
+	terminateOnce  sync.Once
+	closeOnce      sync.Once
+	cleanupErr     error
 }
 
 // DockerCLISandboxBridgeDocker is the production Docker CLI transport. The
@@ -285,7 +287,12 @@ func NewSandboxSessionBridge(docker SandboxBridgeDocker, config SandboxBridgeCon
 	}
 	args := append([]string(nil), config.CreateArgs...)
 	config.CreateArgs = args
-	return &SandboxSessionBridge{docker: docker, config: config, state: "idle", pending: map[string]*bridgePending{}, completed: map[string]bridgeCompletion{}, requests: map[string][sha256.Size]byte{}, closed: make(chan struct{})}, nil
+	return &SandboxSessionBridge{
+		docker: docker, config: config, state: "idle",
+		pending: map[string]*bridgePending{}, completed: map[string]bridgeCompletion{},
+		requests: map[string][sha256.Size]byte{},
+		closed: make(chan struct{}), terminated: make(chan struct{}),
+	}, nil
 }
 
 // Start creates and attaches the one container. A failed attach removes the
@@ -461,7 +468,11 @@ func (b *SandboxSessionBridge) readLoop(reader io.Reader) {
 		err = io.EOF
 	}
 	b.mu.Lock()
-	if b.state == "running" {
+	// Only unexpected protocol/process exit signals Terminated. Explicit Close
+	// sets state to closed first; the resulting stream end must not look like
+	// an unexpected exit.
+	unexpected := b.state == "running"
+	if unexpected {
 		b.state = "failed"
 	}
 	ids := make([]string, 0, len(b.pending))
@@ -471,6 +482,9 @@ func (b *SandboxSessionBridge) readLoop(reader io.Reader) {
 	b.mu.Unlock()
 	for _, id := range ids {
 		b.finish(id, SandboxBridgeResponse{}, fmt.Errorf("sandbox bridge protocol closed: %w", err))
+	}
+	if unexpected {
+		b.signalTerminated()
 	}
 }
 
@@ -525,8 +539,19 @@ func (b *SandboxSessionBridge) Close(ctx context.Context) error {
 	return b.cleanupErr
 }
 
-// Closed is closed when cleanup has completed.
+// Closed is closed when explicit cleanup has completed.
 func (b *SandboxSessionBridge) Closed() <-chan struct{} { return b.closed }
+
+// Terminated is closed once when the protocol stream ends unexpectedly. It is
+// distinct from Closed: Terminated does not perform container cleanup and does
+// not fire solely because Close was invoked.
+func (b *SandboxSessionBridge) Terminated() <-chan struct{} { return b.terminated }
+
+func (b *SandboxSessionBridge) signalTerminated() {
+	b.terminateOnce.Do(func() {
+		close(b.terminated)
+	})
+}
 
 func validateSandboxBridgeCreateArgs(args []string) error {
 	if len(args) == 0 {

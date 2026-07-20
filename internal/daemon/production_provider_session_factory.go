@@ -69,10 +69,39 @@ func (s *productionBoundSession) Close(ctx context.Context) error {
 	return err
 }
 
+func (s *productionBoundSession) ControlBusy() bool {
+	if reporter, ok := s.ProviderSession.(interface{ ControlBusy() bool }); ok {
+		return reporter.ControlBusy()
+	}
+	return false
+}
+
+func (s *productionBoundSession) SessionClosed() bool {
+	if reporter, ok := s.ProviderSession.(interface{ SessionClosed() bool }); ok {
+		return reporter.SessionClosed()
+	}
+	return false
+}
+
+func (s *productionBoundSession) SessionOffline() bool {
+	if reporter, ok := s.ProviderSession.(interface{ SessionOffline() bool }); ok {
+		return reporter.SessionOffline()
+	}
+	return s.SessionClosed()
+}
+
+func (s *productionBoundSession) SessionUnexpectedOffline() bool {
+	if reporter, ok := s.ProviderSession.(interface{ SessionUnexpectedOffline() bool }); ok {
+		return reporter.SessionUnexpectedOffline()
+	}
+	return false
+}
+
 // productionBridgeTransport is the shared protocol surface for sandbox and host bridges.
 type productionBridgeTransport interface {
 	runtime.ProviderSessionTransport
 	Closed() <-chan struct{}
+	Terminated() <-chan struct{}
 }
 
 func NewProductionProviderSessionFactory(config ProductionProviderSessionFactoryConfig) *ProductionProviderSessionFactory {
@@ -355,7 +384,9 @@ func (f *ProductionProviderSessionFactory) finishCodexBinding(
 		closeBridge(closeCtx)
 	}}
 	runAdapterMu.Lock()
-	*runAdapter = runtime.NewProviderSessionRunAdapter(session, bridge.Closed())
+	// Unexpected process/protocol exit (Terminated) and explicit cleanup
+	// (Closed) both end the harness wait; they remain distinct bridge signals.
+	*runAdapter = runtime.NewProviderSessionRunAdapter(session, runtime.FirstSignal(bridge.Closed(), bridge.Terminated()))
 	runAdapterMu.Unlock()
 	(*runAdapter).BindContinuation(request.Continuation.ID)
 	(*runAdapter).SetSessionMetadata(func() runtime.NativeSessionMetadata {
@@ -431,7 +462,7 @@ func (f *ProductionProviderSessionFactory) finishNonCodexSandboxBinding(
 		_ = f.bridges.CloseTask(closeCtx, taskID)
 	}}
 	runAdapterMu.Lock()
-	*runAdapter = runtime.NewProviderSessionRunAdapter(session, bridge.Closed())
+	*runAdapter = runtime.NewProviderSessionRunAdapter(session, runtime.FirstSignal(bridge.Closed(), bridge.Terminated()))
 	runAdapterMu.Unlock()
 	(*runAdapter).BindContinuation(request.Continuation.ID)
 	(*runAdapter).SetSessionMetadata(func() runtime.NativeSessionMetadata {

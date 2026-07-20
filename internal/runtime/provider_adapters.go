@@ -218,6 +218,67 @@ func (s *providerSessionAdapter) Close(ctx context.Context) error {
 	return transport.Close(ctx)
 }
 
+// ControlBusy reports whether a native control operation is in flight.
+func (s *providerSessionAdapter) ControlBusy() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.active
+}
+
+// SessionClosed reports whether Close has completed on this handle.
+func (s *providerSessionAdapter) SessionClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
+}
+
+// SessionOffline reports confirmed offline health from the current process or
+// protocol terminal signal, never from stored session identity or elapsed time.
+func (s *providerSessionAdapter) SessionOffline() bool {
+	s.mu.Lock()
+	closed := s.closed
+	transport := s.transport
+	s.mu.Unlock()
+	if closed {
+		return true
+	}
+	if source, ok := transport.(interface{ Terminated() <-chan struct{} }); ok {
+		select {
+		case <-source.Terminated():
+			return true
+		default:
+		}
+	}
+	if source, ok := transport.(interface{ Closed() <-chan struct{} }); ok {
+		select {
+		case <-source.Closed():
+			return true
+		default:
+		}
+	}
+	return false
+}
+
+// SessionUnexpectedOffline is true only when the process/protocol ended without
+// an explicit Close. Operator Stop must not be treated as unexpected exit.
+func (s *providerSessionAdapter) SessionUnexpectedOffline() bool {
+	s.mu.Lock()
+	closed := s.closed
+	transport := s.transport
+	s.mu.Unlock()
+	if closed {
+		return false
+	}
+	if source, ok := transport.(interface{ Terminated() <-chan struct{} }); ok {
+		select {
+		case <-source.Terminated():
+			return true
+		default:
+		}
+	}
+	return false
+}
+
 func (s *providerSessionAdapter) run(ctx context.Context, mode ProviderSessionMode, capability ProviderSessionCapability, request ProviderSessionRequest, emit ProviderSessionEmit, method string) (ProviderSessionResult, error) {
 	request.RequestID = strings.TrimSpace(request.RequestID)
 	if request.RequestID == "" {

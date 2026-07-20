@@ -187,7 +187,15 @@ type FakeProviderSession struct {
 	activeCall   string
 	continuation string
 	acknowledge  map[string]chan struct{}
-	closed       bool
+	closed bool
+	// offline is true when current process/session health is confirmed dead
+	// without requiring durable Task status or elapsed time.
+	offline bool
+	// unexpectedOffline is true only for non-Close process death (MarkOffline).
+	// Explicit Close/Stop must not look like unexpected exit.
+	unexpectedOffline bool
+	// healthUnknown forces indeterminate health for activity tests.
+	healthUnknown bool
 	// lastRequests records each operation request for acceptance tests.
 	lastRequests []ProviderSessionRequest
 }
@@ -261,7 +269,61 @@ func (s *FakeProviderSession) Close(context.Context) error {
 		return ErrProviderSessionControlConflict
 	}
 	s.closed = true
+	s.offline = true
+	// Explicit Close is operator Stop/cleanup, not unexpected exit.
+	s.unexpectedOffline = false
 	return nil
+}
+
+// MarkOffline records confirmed unexpected process/session exit without Close.
+func (s *FakeProviderSession) MarkOffline() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.offline = true
+	s.unexpectedOffline = true
+}
+
+// MarkHealthUnknown forces indeterminate health for Runtime Activity tests.
+func (s *FakeProviderSession) MarkHealthUnknown() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.healthUnknown = true
+}
+
+// ControlBusy reports whether a native control operation is in flight.
+func (s *FakeProviderSession) ControlBusy() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.activeCall != ""
+}
+
+// SessionClosed reports whether Close has completed on this handle.
+func (s *FakeProviderSession) SessionClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
+}
+
+// SessionOffline reports confirmed offline health from the current process.
+func (s *FakeProviderSession) SessionOffline() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.offline || s.closed
+}
+
+// SessionUnexpectedOffline reports offline caused by process/protocol death,
+// not by explicit Close/Stop.
+func (s *FakeProviderSession) SessionUnexpectedOffline() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.unexpectedOffline
+}
+
+// SessionHealthUnknown reports indeterminate health without inventing failure.
+func (s *FakeProviderSession) SessionHealthUnknown() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.healthUnknown && !s.offline && !s.closed
 }
 
 // Acknowledge releases a manually gated fake provider acknowledgement.

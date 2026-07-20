@@ -957,4 +957,106 @@ describe("TaskDetailPage", () => {
     ).toBe(true);
     expect(await screen.findByText("Task list")).toBeInTheDocument();
   });
+
+  it("shows Runtime Activity separately from Task lifecycle", async () => {
+    stubTaskDetailApi({
+      status: "running",
+      runtime_activity: { liveness: "live", turn_activity: "busy" },
+    });
+
+    renderPage();
+
+    expect(await screen.findByTestId("runtime-activity")).toHaveTextContent(/runtime live · busy/i);
+    expect(screen.getByText("running")).toBeInTheDocument();
+  });
+
+  it("ignores stale out-of-order poll responses", async () => {
+    type Parked = { resolve: (value: Response) => void; signal?: AbortSignal };
+    const parked: Parked[] = [];
+    const taskPayload = (liveness: string, turn: string) =>
+      new Response(
+        JSON.stringify({
+          id: "task-1",
+          project_id: "project-1",
+          goal: "Inspect task view",
+          status: "running",
+          runner: "sandbox",
+          runtime_profile_id: "profile-1",
+          run_controls: {},
+          scope_snapshot: {},
+          runtime_activity: { liveness, turn_activity: turn },
+          runtime_controls: {
+            native_resume_available: false,
+            resume_available: false,
+            queue_steer_available: true,
+            interrupt_steer_available: true,
+            native_session_captured: true,
+            same_runtime_provider_only: true,
+            runtime_provider: "codex",
+          },
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:05Z",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/timeline")) {
+        return new Response(JSON.stringify({ task_id: "task-1", items: [] }), {
+          status: 200, headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.includes("/transcript")) {
+        return new Response(JSON.stringify({ task_id: "task-1", entries: [] }), {
+          status: 200, headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.includes("/api/runtime-profiles") || url.includes("/api/model-providers") || url.includes("/api/runtime-plugins")) {
+        return new Response(JSON.stringify({ profiles: [], providers: [], plugins: [] }), {
+          status: 200, headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.match(/\/api\/projects\/project-1\/tasks\/task-1$/)) {
+        return new Promise<Response>((resolve, reject) => {
+          const signal = init?.signal;
+          const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+          if (signal?.aborted) {
+            onAbort();
+            return;
+          }
+          signal?.addEventListener("abort", onAbort, { once: true });
+          parked.push({
+            signal,
+            resolve: (response) => {
+              signal?.removeEventListener("abort", onAbort);
+              resolve(response);
+            },
+          });
+        });
+      }
+      return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+
+    // StrictMode double-mounts: first load is aborted when the second starts.
+    renderPage();
+    await waitFor(() => expect(parked.length).toBeGreaterThanOrEqual(1));
+
+    const stale = parked[0];
+    const latest = parked[parked.length - 1];
+
+    // Newer generation wins with idle; later stale busy must not overwrite.
+    latest.resolve(taskPayload("live", "idle"));
+    expect(await screen.findByTestId("runtime-activity")).toHaveTextContent(/runtime live · idle/i);
+
+    if (stale !== latest && !stale.signal?.aborted) {
+      stale.resolve(taskPayload("live", "busy"));
+      await waitFor(() =>
+        expect(screen.getByTestId("runtime-activity")).toHaveTextContent(/runtime live · idle/i),
+      );
+    } else if (stale !== latest) {
+      // Aborted stale request rejects; UI must remain on the latest idle value.
+      expect(screen.getByTestId("runtime-activity")).toHaveTextContent(/runtime live · idle/i);
+    }
+  });
 });

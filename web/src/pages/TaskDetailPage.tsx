@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, type KeyboardEvent, type RefObject } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, ChevronRight, Wrench, User, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2, Maximize2, Minimize2 } from "lucide-react";
-import { apiDelete, apiGet, apiPost, type ModelProvider, type ProviderPermissionRequest, type RuntimePlugin, type RuntimeProfile, type Task, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
+import { apiDelete, apiGet, apiPost, type ModelProvider, type ProviderPermissionRequest, type RuntimeActivity, type RuntimePlugin, type RuntimeProfile, type Task, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Badge, Select, Textarea } from "@/components/ui";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { AgentTranscriptView } from "@/components/task-transcript/AgentTranscriptView";
@@ -46,22 +46,35 @@ export function TaskDetailPage() {
   const conversationViewport = useRef<HTMLDivElement>(null);
   const conversationEnd = useRef<HTMLDivElement>(null);
   const autoFollowRef = useRef(true);
+  // Monotonic generation so slower in-flight polls cannot overwrite newer data.
+  const loadGeneration = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
 
   const base = `/api/projects/${projectId}/tasks/${taskId}`;
 
   async function loadAll() {
     if (!projectId || !taskId) return;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const generation = ++loadGeneration.current;
     try {
       const [t, tl, tr] = await Promise.all([
-        apiGet<Task>(`${base}`),
-        apiGet<TaskTimeline>(`${base}/timeline`),
-        apiGet<TaskTranscript>(`${base}/transcript`),
+        apiGet<Task>(`${base}`, { signal: controller.signal }),
+        apiGet<TaskTimeline>(`${base}/timeline`, { signal: controller.signal }),
+        apiGet<TaskTranscript>(`${base}/transcript`, { signal: controller.signal }),
       ]);
+      if (generation !== loadGeneration.current || controller.signal.aborted) {
+        return;
+      }
       setTask(t);
       setTimeline(tl.items ?? []);
       setTranscript(tr.entries ?? []);
       setError(null);
     } catch (e) {
+      if (controller.signal.aborted || generation !== loadGeneration.current) {
+        return;
+      }
       setError((e as Error).message);
     }
   }
@@ -77,6 +90,9 @@ export function TaskDetailPage() {
       apiGet<{ providers: ModelProvider[] }>("/api/model-providers").then((d) => setModelProviders(d.providers ?? [])),
       apiGet<{ plugins: RuntimePlugin[] }>("/api/runtime-plugins").then((d) => setRuntimePlugins(d.plugins ?? [])),
     ]).catch(() => {});
+    return () => {
+      abortRef.current?.abort();
+    };
   }, [projectId, taskId]);
   /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
 
@@ -437,6 +453,7 @@ export function TaskDetailPage() {
     >
       <div data-testid="task-session-header" className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-2 sm:px-3">
         <StatusBadge status={task.status} />
+        <RuntimeActivityBadge activity={task.runtime_activity} />
         <h1 className="min-w-0 flex-1 truncate text-sm font-medium" title={task.goal}>{task.goal}</h1>
         {currentContinuation && (
           <div className="hidden shrink-0 items-center gap-1 text-xs text-muted-foreground md:flex">
@@ -881,6 +898,30 @@ function StatusBadge({ status }: { status: string }) {
     status === "stopped" ? "warning" :
     status === "interrupted" ? "warning" : "outline";
   return <Badge variant={variant}>{status}</Badge>;
+}
+
+function RuntimeActivityBadge({ activity }: { activity?: RuntimeActivity }) {
+  if (!activity?.liveness) return null;
+  const liveness = activity.liveness;
+  const turn = activity.turn_activity;
+  const label =
+    liveness === "live" && turn
+      ? `runtime ${liveness} · ${turn}`
+      : `runtime ${liveness}`;
+  const variant =
+    liveness === "live" ? "primary" :
+    liveness === "offline" ? "outline" :
+    liveness === "orphaned" ? "warning" :
+    liveness === "unknown" ? "warning" : "outline";
+  return (
+    <Badge
+      variant={variant}
+      data-testid="runtime-activity"
+      title={activity.warning || label}
+    >
+      {label}
+    </Badge>
+  );
 }
 
 function TranscriptList({ entries, endRef }: { entries: TaskTranscriptEntry[]; endRef: RefObject<HTMLDivElement | null> }) {

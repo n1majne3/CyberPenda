@@ -76,10 +76,12 @@ type HostSessionBridge struct {
 	pending      map[string]*bridgePending
 	completed    map[string]bridgeCompletion
 	requests     map[string][sha256.Size]byte
-	continuation string
-	closed       chan struct{}
-	closeOnce    sync.Once
-	cleanupErr   error
+	continuation  string
+	closed        chan struct{}
+	terminated    chan struct{}
+	terminateOnce sync.Once
+	closeOnce     sync.Once
+	cleanupErr    error
 }
 
 // HostSessionBridgeRegistry owns at most one host bridge per Task.
@@ -179,6 +181,7 @@ func NewHostSessionBridge(config HostSessionBridgeConfig) (*HostSessionBridge, e
 		completed: map[string]bridgeCompletion{},
 		requests:  map[string][sha256.Size]byte{},
 		closed:    make(chan struct{}),
+		terminated: make(chan struct{}),
 	}, nil
 }
 
@@ -337,7 +340,19 @@ func (b *HostSessionBridge) readLoop(reader io.Reader) {
 			b.config.ProtocolEmit(event)
 		}
 	}
+	b.mu.Lock()
+	// Only unexpected process/protocol exit signals Terminated. Explicit Close
+	// sets state to closed first; the resulting stream end must not look like
+	// an unexpected exit.
+	unexpected := b.state == "running"
+	if unexpected {
+		b.state = "failed"
+	}
+	b.mu.Unlock()
 	b.failPending(fmt.Errorf("host bridge protocol stream ended"))
+	if unexpected {
+		b.signalTerminated()
+	}
 }
 
 func (b *HostSessionBridge) diagnosticLoop(reader io.Reader) {
@@ -405,6 +420,17 @@ func (b *HostSessionBridge) Close(ctx context.Context) error {
 }
 
 func (b *HostSessionBridge) Closed() <-chan struct{} { return b.closed }
+
+// Terminated is closed once when the host process protocol stream ends
+// unexpectedly. It is distinct from Closed, which fires only after explicit
+// process-group cleanup.
+func (b *HostSessionBridge) Terminated() <-chan struct{} { return b.terminated }
+
+func (b *HostSessionBridge) signalTerminated() {
+	b.terminateOnce.Do(func() {
+		close(b.terminated)
+	})
+}
 
 // HostProcessGroupMetadataPrefix marks a durable Host process-group identity
 // stored in NativeSessionMetadata.ContainerID so daemon restart can reap the

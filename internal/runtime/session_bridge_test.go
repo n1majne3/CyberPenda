@@ -372,3 +372,96 @@ func TestSandboxSessionBridgeRegistryBindsByTaskNotContinuation(t *testing.T) {
 		t.Fatal("closed task still owns bridge")
 	}
 }
+
+func TestSandboxSessionBridgeProtocolExitSignalsTerminatedWithoutClosing(t *testing.T) {
+	docker := newFakeBridgeDocker()
+	bridge := newStartedBridge(t, docker)
+
+	// Unexpected protocol stream end must fire Terminated without Close cleanup.
+	_ = docker.outputW.Close()
+
+	select {
+	case <-bridge.Terminated():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Terminated did not fire after protocol stream end")
+	}
+
+	select {
+	case <-bridge.Closed():
+		t.Fatal("Closed fired on unexpected protocol exit; only Terminated should fire")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	creates, starts, stops, removes := docker.counts()
+	if creates != 1 || starts != 1 || stops != 0 || removes != 0 {
+		t.Fatalf("unexpected cleanup on protocol exit: create %d start %d stop %d remove %d", creates, starts, stops, removes)
+	}
+
+	// Explicit Close still performs cleanup and is distinct from Terminated.
+	if err := bridge.Close(context.Background()); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	select {
+	case <-bridge.Closed():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Closed did not fire after explicit Close")
+	}
+	_, _, stops, removes = docker.counts()
+	if stops != 1 || removes != 1 {
+		t.Fatalf("explicit close cleanup = stop %d remove %d", stops, removes)
+	}
+}
+
+func TestSandboxSessionBridgeExplicitCloseDoesNotSignalTerminated(t *testing.T) {
+	docker := newFakeBridgeDocker()
+	bridge := newStartedBridge(t, docker)
+
+	if err := bridge.Close(context.Background()); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	select {
+	case <-bridge.Closed():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Closed did not fire after explicit Close")
+	}
+	// Stream end from Close must not look like unexpected process death.
+	select {
+	case <-bridge.Terminated():
+		t.Fatal("Terminated fired on explicit Close; Stop/Close must not be unexpected exit")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestSandboxSessionBridgeTerminatedIsOneShot(t *testing.T) {
+	docker := newFakeBridgeDocker()
+	bridge := newStartedBridge(t, docker)
+	_ = docker.outputW.Close()
+	select {
+	case <-bridge.Terminated():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Terminated did not fire")
+	}
+	// Re-reading Terminated remains closed (one-shot channel).
+	select {
+	case <-bridge.Terminated():
+	default:
+		t.Fatal("Terminated is not latched closed")
+	}
+}
+
+func TestFirstSignalFiresOnEitherClosedOrTerminated(t *testing.T) {
+	closed := make(chan struct{})
+	terminated := make(chan struct{})
+	done := runtime.FirstSignal(closed, terminated)
+	select {
+	case <-done:
+		t.Fatal("FirstSignal fired before either input")
+	default:
+	}
+	close(terminated)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("FirstSignal did not fire on Terminated")
+	}
+}
