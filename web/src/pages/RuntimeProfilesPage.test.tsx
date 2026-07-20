@@ -864,4 +864,3 @@ describe("RuntimeProfilesPage", () => {
     expect(screen.getByDisplayValue("--model other")).toBeInTheDocument();
   });
 });
-
