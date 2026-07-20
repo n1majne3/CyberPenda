@@ -1804,8 +1804,9 @@ func (server *Server) handleResumeTask(response http.ResponseWriter, request *ht
 	}
 	// Terminal Tasks may still show a brief harness window while Launch releases
 	// ownership. Wait for absence rather than rejecting a legitimate resume.
+	// Budget is server.runtimeStopTimeout (not a hardcoded constant).
 	if server.harness != nil && server.harness.IsActive(taskID) {
-		if !server.waitHarnessInactive(taskID, 10*time.Second) {
+		if !server.waitRuntimeHarnessInactive(taskID) {
 			writeError(response, http.StatusConflict, "runtime harness is still active")
 			return
 		}
@@ -1837,7 +1838,7 @@ func (server *Server) handleResumeTask(response http.ResponseWriter, request *ht
 		return
 	}
 	if server.harness != nil && server.harness.IsActive(taskID) {
-		if !server.waitHarnessInactive(taskID, 10*time.Second) {
+		if !server.waitRuntimeHarnessInactive(taskID) {
 			writeError(response, http.StatusConflict, "runtime harness is still active")
 			return
 		}

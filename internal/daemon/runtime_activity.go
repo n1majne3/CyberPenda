@@ -216,6 +216,21 @@ func (server *Server) waitForHarnessInactive(taskID string, timeout time.Duratio
 	_ = server.waitHarnessInactive(taskID, timeout)
 }
 
+// runtimeHarnessWaitTimeout is the operator-facing wait budget for harness
+// release (Resume, etc.). Tests set server.runtimeStopTimeout to a short value.
+func (server *Server) runtimeHarnessWaitTimeout() time.Duration {
+	if server != nil && server.runtimeStopTimeout > 0 {
+		return server.runtimeStopTimeout
+	}
+	return 10 * time.Second
+}
+
+// waitRuntimeHarnessInactive waits up to runtimeStopTimeout for IsActive to
+// clear without cancelling the run.
+func (server *Server) waitRuntimeHarnessInactive(taskID string) bool {
+	return server.waitHarnessInactive(taskID, server.runtimeHarnessWaitTimeout())
+}
+
 // waitHarnessInactive polls until the harness is inactive or timeout elapses.
 // It does not cancel the run (unlike StopAndWait).
 func (server *Server) waitHarnessInactive(taskID string, timeout time.Duration) bool {
@@ -226,11 +241,19 @@ func (server *Server) waitHarnessInactive(taskID string, timeout time.Duration) 
 		return true
 	}
 	deadline := time.Now().Add(timeout)
+	// Poll frequently enough that short test timeouts (tens of ms) still observe release.
+	interval := 5 * time.Millisecond
+	if timeout < interval {
+		interval = timeout / 2
+		if interval < time.Millisecond {
+			interval = time.Millisecond
+		}
+	}
 	for time.Now().Before(deadline) {
 		if !server.harness.IsActive(taskID) {
 			return true
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(interval)
 	}
 	return !server.harness.IsActive(taskID)
 }
