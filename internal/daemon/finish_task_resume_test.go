@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +22,39 @@ import (
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
 )
+
+// failingFinishReconciler injects Continuation reconciliation failure so Finish
+// cannot claim Task completed without a durable recon marker.
+type failingFinishReconciler struct {
+	err error
+}
+
+func (f failingFinishReconciler) ReconcileTerminalContinuation(context.Context, string, string) error {
+	return f.err
+}
+
+// countingFinishReconciler records successful recon for order assertions.
+type countingFinishReconciler struct {
+	mu    sync.Mutex
+	calls int
+	inner task.ContinuationReconciler
+}
+
+func (c *countingFinishReconciler) ReconcileTerminalContinuation(ctx context.Context, continuationID, reason string) error {
+	c.mu.Lock()
+	c.calls++
+	c.mu.Unlock()
+	if c.inner != nil {
+		return c.inner.ReconcileTerminalContinuation(ctx, continuationID, reason)
+	}
+	return nil
+}
+
+func (c *countingFinishReconciler) callCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
 
 // #153: operator Finish Task + resumable terminal conversations.
 // Seam: daemon Task HTTP + Runtime Activity gate + Continuation close.
@@ -266,6 +300,69 @@ func TestFinishTaskCompletesLiveIdleRuntimeAndClosesResources(t *testing.T) {
 	if !sawOperatorFinish {
 		t.Fatal("expected lifecycle completed reason=operator_finish")
 	}
+	// Operator finish is the sole completed lifecycle claim (no harness duplicate).
+	var completedPhases int
+	for _, event := range events {
+		if event.Kind == task.EventKindLifecycle && event.Payload["phase"] == "completed" {
+			completedPhases++
+			if event.Payload["reason"] != "operator_finish" {
+				t.Fatalf("unexpected completed lifecycle without operator_finish: %#v", event.Payload)
+			}
+		}
+	}
+	if completedPhases != 1 {
+		t.Fatalf("completed lifecycle events = %d, want exactly 1 operator_finish", completedPhases)
+	}
+}
+
+func TestFinishTaskRejectsWhenContinuationReconciliationFails(t *testing.T) {
+	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "finish-recon-fail",
+		Capabilities: runtimeplugin.Capabilities{
+			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
+		},
+	})
+	closed := make(chan struct{})
+	adapter := runtime.NewProviderSessionRunAdapter(session, closed)
+	factory := &finishSessionFactory{session: session, adapter: adapter}
+	server, created, _ := newFinishTaskFixture(t, factory)
+	// Inject failing reconciler after server assembly (replaces blackboardv2).
+	server.tasks.SetContinuationReconciler(failingFinishReconciler{err: errors.New("injected recon failure")})
+	launchFinishTask(t, server, created)
+
+	resp := postFinish(server, created.ProjectID, created.ID)
+	if resp.Code == http.StatusOK {
+		t.Fatalf("finish must not succeed when reconciliation fails, body %s", resp.Body.String())
+	}
+	if resp.Code != http.StatusConflict && resp.Code != http.StatusInternalServerError {
+		t.Fatalf("finish recon failure status = %d body %s, want 409 or 500", resp.Code, resp.Body.String())
+	}
+	lower := strings.ToLower(resp.Body.String())
+	if !strings.Contains(lower, "reconcil") {
+		t.Fatalf("error should mention reconciliation: %s", resp.Body.String())
+	}
+
+	found, err := server.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found.Status == task.StatusCompleted {
+		t.Fatal("Task must not be completed when Continuation reconciliation fails")
+	}
+
+	events, err := server.tasks.Events(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Payload["kind"] == "runtime_activity" || event.Payload["phase"] == "runtime_activity" {
+			t.Fatalf("runtime_activity audit event leaked: %#v", event)
+		}
+		if event.Kind == task.EventKindLifecycle && event.Payload["phase"] == "completed" && event.Payload["reason"] == "operator_finish" {
+			t.Fatal("operator_finish must not be recorded when finish is rejected")
+		}
+	}
+	_ = closed
 }
 
 func TestFinishTaskRejectsBusyRuntime(t *testing.T) {
@@ -613,4 +710,192 @@ func TestBlackboardFinishDoesNotCompleteTask(t *testing.T) {
 		t.Fatal("Blackboard Finish must not close Runtime ownership by itself")
 	}
 	_ = closed
+}
+
+// delayedFinishCloseSession blocks inside Close so Finish cannot complete
+// reconciliation before provider resources shut down.
+type delayedFinishCloseSession struct {
+	*runtime.FakeProviderSession
+	closed       chan struct{}
+	closeEntered chan struct{}
+	allowClose   chan struct{}
+	once         sync.Once
+}
+
+func (s *delayedFinishCloseSession) Close(ctx context.Context) error {
+	select {
+	case <-s.closeEntered:
+	default:
+		close(s.closeEntered)
+	}
+	select {
+	case <-s.allowClose:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	err := s.FakeProviderSession.Close(ctx)
+	s.once.Do(func() { close(s.closed) })
+	return err
+}
+
+func TestFinishTaskShutdownHappensBeforeReconciliation(t *testing.T) {
+	inner := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "finish-order",
+		Capabilities: runtimeplugin.Capabilities{
+			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
+		},
+	})
+	session := &delayedFinishCloseSession{
+		FakeProviderSession: inner,
+		closed:              make(chan struct{}),
+		closeEntered:        make(chan struct{}),
+		allowClose:          make(chan struct{}),
+	}
+	adapter := runtime.NewProviderSessionRunAdapter(session, session.closed)
+	factory := &finishSessionFactory{session: session, adapter: adapter}
+	server, created, _ := newFinishTaskFixture(t, factory)
+
+	counter := &countingFinishReconciler{inner: nil}
+	// Preserve production recon when present; still count calls for order.
+	if server.blackboardV2 != nil {
+		counter.inner = server.blackboardV2
+	}
+	server.tasks.SetContinuationReconciler(counter)
+	launchFinishTask(t, server, created)
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		done <- postFinish(server, created.ProjectID, created.ID)
+	}()
+
+	select {
+	case <-session.closeEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Finish did not enter provider session Close")
+	}
+	// While Close is blocked, reconciliation and Task completed must not run.
+	if counter.callCount() != 0 {
+		t.Fatalf("reconciliation ran before session Close completed: calls=%d", counter.callCount())
+	}
+	found, err := server.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found.Status == task.StatusCompleted {
+		t.Fatal("Task completed before provider resources closed")
+	}
+
+	close(session.allowClose)
+	var resp *httptest.ResponseRecorder
+	select {
+	case resp = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Finish did not return after Close released")
+	}
+	if resp.Code != http.StatusOK {
+		t.Fatalf("finish status = %d body %s", resp.Code, resp.Body.String())
+	}
+	if counter.callCount() < 1 {
+		t.Fatal("expected reconciliation after resource close")
+	}
+	found, err = server.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found.Status != task.StatusCompleted {
+		t.Fatalf("status after ordered finish = %q", found.Status)
+	}
+}
+
+func TestConcurrentResumeSecondConflictsWithoutStoppingFirst(t *testing.T) {
+	newSession := func(open int) (runtime.ProviderSession, runtime.Adapter) {
+		session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+			SessionID: fmt.Sprintf("resume-race-%d", open),
+			Capabilities: runtimeplugin.Capabilities{
+				PersistentSession: true, SendTurn: true, InterruptThenReplace: true, ResumeSession: true,
+			},
+		})
+		closed := make(chan struct{})
+		adapter := runtime.NewProviderSessionRunAdapter(session, closed)
+		return session, adapter
+	}
+	seedSession, seedAdapter := newSession(0)
+	factory := &finishSessionFactory{session: seedSession, adapter: seedAdapter, newSession: newSession}
+	server, created, _ := newFinishTaskFixture(t, factory)
+	launchFinishTask(t, server, created)
+
+	// Finish so Task is terminal and resumable.
+	finishResp := postFinish(server, created.ProjectID, created.ID)
+	if finishResp.Code != http.StatusOK {
+		t.Fatalf("finish status = %d body %s", finishResp.Code, finishResp.Body.String())
+	}
+	beforeLatest, err := server.tasks.LatestContinuation(created.ID)
+	if err != nil || beforeLatest == nil {
+		t.Fatalf("latest continuation before resume: %v %#v", err, beforeLatest)
+	}
+	beforeNumber := beforeLatest.Number
+	opensBefore := factory.openCount()
+
+	const n = 8
+	type result struct {
+		code int
+		body string
+	}
+	results := make(chan result, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodPost, "/api/projects/"+created.ProjectID+"/tasks/"+created.ID+"/resume", bytes.NewReader([]byte(`{}`)))
+			req.Header.Set("Content-Type", "application/json")
+			resp := httptest.NewRecorder()
+			server.ServeHTTP(resp, req)
+			results <- result{code: resp.Code, body: resp.Body.String()}
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	var accepted, conflicted int
+	for r := range results {
+		switch r.code {
+		case http.StatusAccepted:
+			accepted++
+		case http.StatusConflict:
+			conflicted++
+		default:
+			t.Fatalf("unexpected resume status %d body %s", r.code, r.body)
+		}
+	}
+	if accepted != 1 {
+		t.Fatalf("accepted resumes = %d, want 1 (rest conflict)", accepted)
+	}
+	if conflicted != n-1 {
+		t.Fatalf("conflicted resumes = %d, want %d", conflicted, n-1)
+	}
+	// Exactly one replacement Runtime — second must not stop/replace the first.
+	if factory.openCount() != opensBefore+1 {
+		t.Fatalf("opens before=%d after=%d, want exactly one new Runtime", opensBefore, factory.openCount())
+	}
+	waitForHarnessActive(t, server, created.ID, true)
+	if _, ok := server.providerSessions.get(created.ID); !ok {
+		t.Fatal("first resume Runtime ownership lost after concurrent resumes")
+	}
+	latest, err := server.tasks.LatestContinuation(created.ID)
+	if err != nil || latest == nil {
+		t.Fatalf("latest continuation: %v %#v", err, latest)
+	}
+	// At most one new Continuation beyond the finished one.
+	if latest.Number > beforeNumber+1 {
+		t.Fatalf("continuation number jumped from %d to %d after concurrent resumes", beforeNumber, latest.Number)
+	}
+}
+
+func postResume(server *Server, projectID, taskID string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/resume", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	return resp
 }

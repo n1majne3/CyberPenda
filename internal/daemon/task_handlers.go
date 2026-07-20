@@ -1495,9 +1495,9 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 }
 
 // handleFinishTask is operator-controlled Task completion. It requires current
-// Runtime Activity live+idle (not durable Task status), closes Runtime
-// resources, finalizes the active Continuation (triggering required
-// reconciliation), and marks the Task completed. Busy Runtimes must use Stop.
+// Runtime Activity live+idle, closes Runtime resources before harness exit so
+// shutdown happens-before Continuation reconciliation, verifies the durable
+// reconciliation marker, then marks the Task completed. Busy Runtimes use Stop.
 // There is no MCP/Runtime path that invokes this handler.
 func (server *Server) handleFinishTask(response http.ResponseWriter, request *http.Request) {
 	projectID := request.PathValue("id")
@@ -1541,56 +1541,80 @@ func (server *Server) handleFinishTask(response http.ResponseWriter, request *ht
 	stopContext, cancelStop := context.WithDeadline(context.Background(), deadline)
 	defer cancelStop()
 
-	// RequestFinish cancels the harness so Launch finalizes completed (not stopped).
+	// 1) Finish intent only — do not cancel harness yet so reconciliation cannot
+	// run before provider/session/process resources are closed.
 	if server.harness != nil {
-		server.harness.RequestFinish(taskID)
+		server.harness.MarkFinishRequested(taskID)
 	}
+	// 2) Close provider session/bridge/process and wait for control to settle.
 	if err := server.closeProviderSessionForStop(stopContext, taskID); err != nil {
-		writeError(response, http.StatusConflict, "provider session did not close")
+		server.finishDiagnostic(taskID, "provider_session_close", "provider session did not close")
+		writeError(response, http.StatusConflict, "finish failed at provider_session_close: provider session did not close")
 		return
 	}
+	// 3) Allow harness exit (cancel residual wait) and wait for Launch finalize.
 	remaining := time.Until(deadline)
 	if remaining < 0 {
 		remaining = 0
 	}
 	if server.harness != nil {
 		if ok := server.harness.StopAndWait(taskID, remaining); !ok {
-			writeError(response, http.StatusConflict, "runtime did not stop in time")
+			server.finishDiagnostic(taskID, "runtime_shutdown", "runtime did not stop in time")
+			writeError(response, http.StatusConflict, "finish failed at runtime_shutdown: runtime did not stop in time")
 			return
 		}
 	}
 
-	// After harness exit, the Continuation may already be terminal. Prefer
-	// LatestContinuation so we still verify completed + reconciliation.
+	// 4) Fail-closed: Continuation must exist, be completed, and reconcilied
+	// before Task may be marked completed. No silent fallbacks.
 	cont, contErr := server.tasks.LatestContinuation(taskID)
 	if contErr != nil {
-		writeTaskError(response, contErr)
+		server.finishDiagnostic(taskID, "continuation_lookup", contErr.Error())
+		writeError(response, http.StatusInternalServerError, "finish failed at continuation_lookup: "+contErr.Error())
 		return
 	}
-	if cont != nil {
-		if cont.Status != task.StatusCompleted {
-			if _, err := server.tasks.UpdateContinuationStatus(cont.ID, task.StatusCompleted); err != nil {
-				// Launch with RequestFinish should already have set completed.
-				// A different terminal status means finish cannot claim success.
-				if errors.Is(err, task.ErrContinuationStatusConflict) {
-					writeError(response, http.StatusConflict, "continuation did not complete for finish")
-					return
-				}
-				writeTaskError(response, err)
+	if cont == nil {
+		server.finishDiagnostic(taskID, "continuation_missing", "no Continuation for Task")
+		writeError(response, http.StatusConflict, "finish failed at continuation_missing: no Continuation for Task")
+		return
+	}
+	// Complete Continuation and/or retry terminal reconciliation when the
+	// durable marker is not yet completed (fail-closed, no silent skip).
+	if cont.Status != task.StatusCompleted || cont.BlackboardReconciliationStatus != task.ReconciliationCompleted {
+		if _, err := server.tasks.UpdateContinuationStatus(cont.ID, task.StatusCompleted); err != nil {
+			server.finishDiagnostic(taskID, "continuation_complete", err.Error())
+			if errors.Is(err, task.ErrContinuationStatusConflict) {
+				writeError(response, http.StatusConflict, "finish failed at continuation_complete: continuation did not complete")
 				return
 			}
-		}
-		// Re-read so reconciliation side effects from notifyTerminalContinuation
-		// are visible before we mark the Task completed.
-		if refreshed, refErr := server.tasks.Continuation(cont.ID); refErr == nil {
-			if refreshed.Status != task.StatusCompleted {
-				writeError(response, http.StatusConflict, "continuation did not complete for finish")
+			if strings.Contains(err.Error(), "reconcil") {
+				writeError(response, http.StatusConflict, "finish failed at continuation_reconciliation: "+err.Error())
 				return
 			}
+			writeError(response, http.StatusInternalServerError, "finish failed at continuation_complete: "+err.Error())
+			return
 		}
 	}
+	refreshed, refErr := server.tasks.Continuation(cont.ID)
+	if refErr != nil {
+		server.finishDiagnostic(taskID, "continuation_reread", refErr.Error())
+		writeError(response, http.StatusInternalServerError, "finish failed at continuation_reread: "+refErr.Error())
+		return
+	}
+	if refreshed.Status != task.StatusCompleted {
+		server.finishDiagnostic(taskID, "continuation_status", "status="+string(refreshed.Status))
+		writeError(response, http.StatusConflict, "finish failed at continuation_status: continuation is "+string(refreshed.Status))
+		return
+	}
+	if refreshed.BlackboardReconciliationStatus != task.ReconciliationCompleted {
+		server.finishDiagnostic(taskID, "continuation_reconciliation", "marker="+string(refreshed.BlackboardReconciliationStatus))
+		writeError(response, http.StatusConflict, "finish failed at continuation_reconciliation: reconciliation is "+string(refreshed.BlackboardReconciliationStatus))
+		return
+	}
 
+	// 5) Only after durable recon marker is completed may the Task be completed.
 	if _, err := server.tasks.UpdateStatus(taskID, task.StatusCompleted); err != nil {
+		server.finishDiagnostic(taskID, "task_complete", err.Error())
 		writeTaskError(response, err)
 		return
 	}
@@ -1605,6 +1629,19 @@ func (server *Server) handleFinishTask(response http.ResponseWriter, request *ht
 		return
 	}
 	writeJSON(response, http.StatusOK, finished)
+}
+
+// finishDiagnostic records a fail-closed Finish diagnostic without inventing
+// Runtime Activity audit history.
+func (server *Server) finishDiagnostic(taskID, stage, detail string) {
+	if found, err := server.tasks.Get(taskID); err == nil {
+		server.logTask(found, "finish_failed", stage+": "+detail)
+	} else if server.logger != nil {
+		server.logger.Printf("task finish_failed id=%s detail=%q", taskID, stage+": "+detail)
+	}
+	_, _ = server.tasks.AppendEvent(taskID, task.EventKindLifecycle, task.EventPayload{
+		"phase": "finish_failed", "stage": stage, "detail": detail,
+	})
 }
 
 func finishRejectedMessage(activity task.RuntimeActivity) string {
@@ -1691,6 +1728,30 @@ func (server *Server) handleResumeTask(response http.ResponseWriter, request *ht
 		return
 	}
 	defer server.releaseTaskControl(taskID)
+	// Re-validate under the control lock: a concurrent resume may have already
+	// launched. Using stale terminal Task state here would call
+	// ensureRuntimeAbsentBeforeLaunch and stop the first Runtime.
+	found, err = server.tasks.Get(taskID)
+	if err != nil {
+		writeTaskError(response, err)
+		return
+	}
+	if found.ProjectID != projectID {
+		writeError(response, http.StatusNotFound, "task not found")
+		return
+	}
+	if server.harness != nil && server.harness.IsActive(taskID) {
+		writeError(response, http.StatusConflict, "task is already running")
+		return
+	}
+	if found.Status == task.StatusRunning || found.Status == task.StatusPaused {
+		writeError(response, http.StatusConflict, "task is already running")
+		return
+	}
+	if _, bound := server.providerSessions.get(taskID); bound {
+		writeError(response, http.StatusConflict, "task already has a live Runtime")
+		return
+	}
 	if input.hasSelection() {
 		if _, ok := server.recordSelectedRuntimeConfig(response, found, "", input); !ok {
 			return

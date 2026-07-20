@@ -58,8 +58,8 @@ type activeRun struct {
 	done             chan struct{}
 	stopConfirmation StopConfirmation
 	continuationID   string
-	// finishRequested is set by operator Task Finish so Launch finalizes as
-	// completed rather than stopped when the context is cancelled.
+	// finishRequested is operator Task Finish intent. Set before provider
+	// resource close; Launch finalizes Continuation (not Task) after Run exits.
 	finishRequested bool
 }
 
@@ -130,24 +130,6 @@ func (h *Harness) Launch(ctx context.Context, req LaunchRequest) error {
 
 	runErr := req.Adapter.Run(ctx, req.Goal, emit)
 
-	finalStatus := task.StatusCompleted
-	finalPhase := "completed"
-	if runErr != nil {
-		finalStatus = task.StatusFailed
-		finalPhase = "failed"
-	}
-	if ctx.Err() != nil {
-		// Operator Finish cancels the harness context after RequestFinish; that
-		// must finalize completed, not the stopped interrupt path used by Stop.
-		if run.finishWasRequested() {
-			finalStatus = task.StatusCompleted
-			finalPhase = "completed"
-		} else {
-			finalStatus = task.StatusStopped
-			finalPhase = "stopped"
-		}
-	}
-	emit(task.EventKindLifecycle, task.EventPayload{"phase": finalPhase, "adapter": req.Adapter.Name()})
 	finalContinuationID := run.currentContinuationID()
 	if finalContinuationID != "" && req.Metadata != nil {
 		metadata, err := req.Metadata()
@@ -159,6 +141,31 @@ func (h *Harness) Launch(ctx context.Context, req LaunchRequest) error {
 			}
 		}
 	}
+
+	// Operator Finish: Run returns only after provider resources closed (or cancel
+	// after close). Finalize Continuation terminal + reconciliation here, but
+	// leave Task lifecycle to handleFinishTask after recon verification.
+	if run.finishWasRequested() {
+		emit(task.EventKindLifecycle, task.EventPayload{"phase": "finish_shutdown", "adapter": req.Adapter.Name()})
+		if finalContinuationID != "" {
+			if _, err := h.tasks.UpdateContinuationStatus(finalContinuationID, task.StatusCompleted); err != nil {
+				return fmt.Errorf("mark continuation completed for finish: %w", err)
+			}
+		}
+		return nil
+	}
+
+	finalStatus := task.StatusCompleted
+	finalPhase := "completed"
+	if runErr != nil {
+		finalStatus = task.StatusFailed
+		finalPhase = "failed"
+	}
+	if ctx.Err() != nil {
+		finalStatus = task.StatusStopped
+		finalPhase = "stopped"
+	}
+	emit(task.EventKindLifecycle, task.EventPayload{"phase": finalPhase, "adapter": req.Adapter.Name()})
 	if _, err := h.tasks.UpdateStatus(req.TaskID, finalStatus); err != nil {
 		return fmt.Errorf("mark %s: %w", finalStatus, err)
 	}
@@ -167,11 +174,6 @@ func (h *Harness) Launch(ctx context.Context, req LaunchRequest) error {
 			return fmt.Errorf("mark continuation %s: %w", finalStatus, err)
 		}
 	}
-	if run.finishWasRequested() {
-		// Operator Finish cancelled the context on purpose; treat the exit as
-		// successful completion so callers log completed rather than stopped.
-		return nil
-	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -179,7 +181,7 @@ func (h *Harness) Launch(ctx context.Context, req LaunchRequest) error {
 }
 
 // Stop requests the active continuation for a task to stop. It is a no-op if no
-// continuation is active.
+// continuation is active. Stop cancels immediately (interrupt path).
 func (h *Harness) Stop(taskID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -188,10 +190,10 @@ func (h *Harness) Stop(taskID string) {
 	}
 }
 
-// RequestFinish marks the active run for operator Task Finish and cancels it.
-// Launch finalizes the Task/Continuation as completed instead of stopped.
-// It is a no-op when no continuation is active.
-func (h *Harness) RequestFinish(taskID string) {
+// MarkFinishRequested records operator Task Finish intent without cancelling
+// the harness context. Finish closes provider/session resources first so
+// shutdown happens-before Continuation reconciliation in Launch.
+func (h *Harness) MarkFinishRequested(taskID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	run, ok := h.active[taskID]
@@ -201,7 +203,13 @@ func (h *Harness) RequestFinish(taskID string) {
 	run.mu.Lock()
 	run.finishRequested = true
 	run.mu.Unlock()
-	run.cancel()
+}
+
+// RequestFinish marks finish intent and cancels. Prefer MarkFinishRequested
+// then resource close then StopAndWait for operator Finish ordering.
+func (h *Harness) RequestFinish(taskID string) {
+	h.MarkFinishRequested(taskID)
+	h.Stop(taskID)
 }
 
 // IsActive reports whether a continuation is currently running for the task.
