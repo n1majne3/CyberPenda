@@ -130,20 +130,24 @@ const (
 const continuationSelectColumns = `id, task_id, number, runtime_profile_id, runtime_provider, runner, status, container_id, native_session_id, native_session_path, started_at, updated_at, ended_at, runtime_config_version_id, blackboard_reconciliation_status, blackboard_reconciliation_mutation_id, blackboard_reconciled_at`
 
 type RuntimeControls struct {
-	NativeResumeAvailable   bool                        `json:"native_resume_available"`
-	NativeResumeReason      string                      `json:"native_resume_reason,omitempty"`
-	NativeSteerAvailable    bool                        `json:"native_steer_available"`
-	NativeSteerMode         string                      `json:"native_steer_mode,omitempty"`
-	NativeSteerState        string                      `json:"native_steer_state,omitempty"`
-	NativeSteerRequestID    string                      `json:"native_steer_request_id,omitempty"`
-	NativeSteerReason       string                      `json:"native_steer_reason,omitempty"`
-	ResumeAvailable         bool                        `json:"resume_available"`
-	QueueSteerAvailable     bool                        `json:"queue_steer_available"`
-	InterruptSteerAvailable bool                        `json:"interrupt_steer_available"`
-	InterruptSteerReason    string                      `json:"interrupt_steer_reason,omitempty"`
-	NativeSessionCaptured   bool                        `json:"native_session_captured"`
-	SameRuntimeProviderOnly bool                        `json:"same_runtime_provider_only"`
-	RuntimeProvider         string                      `json:"runtime_provider,omitempty"`
+	NativeResumeAvailable   bool   `json:"native_resume_available"`
+	NativeResumeReason      string `json:"native_resume_reason,omitempty"`
+	NativeSteerAvailable    bool   `json:"native_steer_available"`
+	NativeSteerMode         string `json:"native_steer_mode,omitempty"`
+	NativeSteerState        string `json:"native_steer_state,omitempty"`
+	NativeSteerRequestID    string `json:"native_steer_request_id,omitempty"`
+	NativeSteerReason       string `json:"native_steer_reason,omitempty"`
+	ResumeAvailable         bool   `json:"resume_available"`
+	QueueSteerAvailable     bool   `json:"queue_steer_available"`
+	InterruptSteerAvailable bool   `json:"interrupt_steer_available"`
+	InterruptSteerReason    string `json:"interrupt_steer_reason,omitempty"`
+	NativeSessionCaptured   bool   `json:"native_session_captured"`
+	SameRuntimeProviderOnly bool   `json:"same_runtime_provider_only"`
+	RuntimeProvider         string `json:"runtime_provider,omitempty"`
+	// ProjectedModelProviderIDs is the fixed-at-launch set of global Model
+	// Providers projected into a Pi runtime (ADR 0015). Empty/omitted means
+	// native cross-provider is fail-closed; operator must restart.
+	ProjectedModelProviderIDs []string `json:"projected_model_provider_ids,omitempty"`
 	// TurnSelection is the preceding Runtime Turn Selection retained for the
 	// Task Conversation composer. Every turn still sends a complete selection.
 	TurnSelection       *TurnSelection              `json:"turn_selection,omitempty"`

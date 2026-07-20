@@ -371,6 +371,11 @@ export interface RuntimeControls {
   native_session_captured: boolean;
   same_runtime_provider_only: boolean;
   runtime_provider?: string;
+  /**
+   * Fixed-at-launch Pi projected Model Provider IDs (ADR 0015).
+   * Missing/empty → fail closed for native cross-provider (restart path).
+   */
+  projected_model_provider_ids?: string[];
   /** Preceding Runtime Turn Selection retained for the conversation composer. */
   turn_selection?: RuntimeTurnSelection;
   provider_permissions?: ProviderPermissionRequest[];

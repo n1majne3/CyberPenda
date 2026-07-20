@@ -252,12 +252,28 @@ export function TaskDetailPage() {
       const modelPayload = continuationModelPayload();
       const precedingProvider = currentControls?.turn_selection?.model_provider_id?.trim() ?? "";
       const selectedProvider = continuationModelProvider.trim();
-      // Model Provider introduction or change requires Config Projection + restart.
-      // An empty preceding provider with a newly selected provider is a switch
-      // (do not send native steer only to receive 409). Same-provider model/effort
-      // changes stay on the native session.
+      const runtimeProvider =
+        currentControls?.runtime_provider ??
+        task.active_continuation?.runtime_provider ??
+        task.latest_continuation?.runtime_provider ??
+        "";
+      // Pi native cross-provider only when Runtime Config explicitly lists the
+      // target in projected_model_provider_ids (fixed-at-launch set). Missing or
+      // empty metadata fails closed → queue/reproject/restart (no 409 surprise).
+      const piNativeCrossProvider = canPiNativeCrossProvider({
+        runtimeProvider,
+        nativeSteerAvailable: nativeNow || interruptNow,
+        projectedModelProviderIDs: currentControls?.projected_model_provider_ids,
+        targetProviderID: selectedProvider,
+      });
+      // Model Provider introduction or change requires Config Projection + restart
+      // when not covered by Pi's projected set. An empty preceding provider with a
+      // newly selected provider is a switch (do not send native and get 409).
       const switchingModelProvider =
-        runningNow && selectedProvider !== "" && selectedProvider !== precedingProvider;
+        runningNow &&
+        selectedProvider !== "" &&
+        selectedProvider !== precedingProvider &&
+        !piNativeCrossProvider;
 
       if (switchingModelProvider) {
         if (!queueNow) throw new Error("Model provider switching is unavailable for this Task");
@@ -394,9 +410,19 @@ export function TaskDetailPage() {
   });
   const precedingProviderID = controls?.turn_selection?.model_provider_id?.trim() ?? "";
   const selectedProviderID = continuationModelProvider.trim();
-  // Empty preceding + any selected provider is also a switch (introducing a provider).
+  // Pi native cross-provider only with explicit projected set membership.
+  // Codex/Claude and legacy Pi (missing ids) restart; empty preceding is a switch.
+  const piNativeCrossProvider = canPiNativeCrossProvider({
+    runtimeProvider: currentRuntimeProvider ?? "",
+    nativeSteerAvailable: nativeSteerAvailable || interruptSteerAvailable,
+    projectedModelProviderIDs: controls?.projected_model_provider_ids,
+    targetProviderID: selectedProviderID,
+  });
   const providerSwitchRequested =
-    running && selectedProviderID !== "" && selectedProviderID !== precedingProviderID;
+    running &&
+    selectedProviderID !== "" &&
+    selectedProviderID !== precedingProviderID &&
+    !piNativeCrossProvider;
   const sendActionLabel = providerSwitchRequested
     ? queueSteerAvailable ? "Switch provider and resume" : "Provider switch unavailable"
     : conversationSendLabel(sendMode, nativeSteerMode);
@@ -552,6 +578,30 @@ function isNearScrollBottom(container: HTMLElement, threshold = 160) {
 }
 
 type ConversationSendMode = "native" | "interrupt" | "queue" | "resume" | "unavailable";
+
+/** Pi native cross-provider only when target is in the fixed projected set. */
+export function canPiNativeCrossProvider(input: {
+  runtimeProvider: string;
+  nativeSteerAvailable: boolean;
+  projectedModelProviderIDs?: string[] | null;
+  targetProviderID: string;
+}): boolean {
+  if (input.runtimeProvider !== "pi" || !input.nativeSteerAvailable) {
+    return false;
+  }
+  const target = input.targetProviderID.trim();
+  if (!target) {
+    return false;
+  }
+  const projected = (input.projectedModelProviderIDs ?? [])
+    .map((id) => id.trim())
+    .filter(Boolean);
+  // Fail closed: missing/empty projected set requires Config Projection restart.
+  if (projected.length === 0) {
+    return false;
+  }
+  return projected.includes(target);
+}
 
 function resolveConversationSendMode(input: {
   running: boolean;

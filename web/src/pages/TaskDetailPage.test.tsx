@@ -136,6 +136,31 @@ function stubTaskDetailApi(
           launch: { args: [] },
           transcript: { parser: "codex" },
         },
+        {
+          schema_version: 1,
+          id: "pi",
+          name: "Pi",
+          binary: { default: "pi" },
+          capabilities: {
+            sandbox: true,
+            host: true,
+            mcp_config: true,
+            streaming_transcript: true,
+            resume: true,
+            persistent_session: true,
+            send_turn: true,
+            in_turn_steer: true,
+          },
+          model_provider: {
+            requirement: "required",
+            supported_protocols: ["openai_chat_completions", "openai_responses", "anthropic_messages"],
+            protocol_preference: ["openai_chat_completions", "openai_responses", "anthropic_messages"],
+          },
+          profile_schema: { fields: [] },
+          config_projection: { primitive: "pi_agent" },
+          launch: { args: [] },
+          transcript: { parser: "pi" },
+        },
       ],
     },
   });
@@ -712,6 +737,150 @@ describe("TaskDetailPage", () => {
       model: "mimo-v2-flash",
       reasoning_effort: "high",
     });
+    expect(postPaths.some((path) => path.endsWith("/steer"))).toBe(false);
+  });
+
+  it("uses native steer for Pi when switching to a projected model provider", async () => {
+    // ADR 0015: Pi already projected launch-ready providers; cross-provider
+    // turns stay on /steer without stop/resume when the target is in the set.
+    const { fetchMock } = stubTaskDetailApi({
+      status: "running",
+      runtime_controls: {
+        native_resume_available: false,
+        resume_available: false,
+        queue_steer_available: true,
+        interrupt_steer_available: false,
+        native_steer_available: true,
+        native_steer_mode: "in_turn_steer",
+        native_session_captured: true,
+        same_runtime_provider_only: true,
+        runtime_provider: "pi",
+        projected_model_provider_ids: ["anthropic", "mimo"],
+        turn_selection: {
+          model_provider_id: "anthropic",
+          model: "claude-sonnet",
+          reasoning_effort: "high",
+        },
+      },
+    });
+    const user = userEvent.setup();
+
+    renderPage();
+
+    await screen.findByText("Conversation should be hidden by default");
+    await waitFor(() => {
+      expect(screen.getByRole("combobox", { name: "Continuation model provider" })).toHaveValue("anthropic");
+    });
+    await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model provider" }), "mimo");
+    await user.type(screen.getByPlaceholderText("Focus on admin.example.com next…"), "continue with mimo on pi");
+    // Pi must not present the restart-oriented provider-switch label.
+    expect(screen.queryByRole("button", { name: "Switch provider and resume" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    const postPaths = fetchMock.mock.calls
+      .filter(([, init]) => init?.method === "POST")
+      .map(([input]) => String(input));
+    expect(postPaths).toEqual(["/api/projects/project-1/tasks/task-1/steer"]);
+    const steerCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/steer"));
+    expect(JSON.parse(String(steerCall?.[1]?.body))).toMatchObject({
+      message: "continue with mimo on pi",
+      model_provider_id: "mimo",
+      model: "mimo-v2-flash",
+      reasoning_effort: "high",
+    });
+    expect(postPaths.some((path) => path.endsWith("/stop") || path.endsWith("/resume"))).toBe(false);
+  });
+
+  it("restarts Pi provider switch when projected_model_provider_ids is missing (legacy)", async () => {
+    // Fail closed: legacy tasks without projected set metadata must not send
+    // native cross-provider and surface 409 — use queue/stop/resume instead.
+    const { fetchMock } = stubTaskDetailApi({
+      status: "running",
+      runtime_controls: {
+        native_resume_available: false,
+        resume_available: false,
+        queue_steer_available: true,
+        interrupt_steer_available: false,
+        native_steer_available: true,
+        native_steer_mode: "in_turn_steer",
+        native_session_captured: true,
+        same_runtime_provider_only: true,
+        runtime_provider: "pi",
+        // projected_model_provider_ids intentionally omitted
+        turn_selection: {
+          model_provider_id: "anthropic",
+          model: "claude-sonnet",
+          reasoning_effort: "high",
+        },
+      },
+    });
+    const user = userEvent.setup();
+
+    renderPage();
+
+    await screen.findByText("Conversation should be hidden by default");
+    await waitFor(() => {
+      expect(screen.getByRole("combobox", { name: "Continuation model provider" })).toHaveValue("anthropic");
+    });
+    await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model provider" }), "mimo");
+    await user.type(screen.getByPlaceholderText("Focus on admin.example.com next…"), "legacy pi switch");
+    expect(screen.getByRole("button", { name: "Switch provider and resume" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "Switch provider and resume" }));
+
+    const postPaths = fetchMock.mock.calls
+      .filter(([, init]) => init?.method === "POST")
+      .map(([input]) => String(input));
+    expect(postPaths).toEqual([
+      "/api/projects/project-1/tasks/task-1/steer/queue",
+      "/api/projects/project-1/tasks/task-1/stop",
+      "/api/projects/project-1/tasks/task-1/resume",
+    ]);
+    expect(postPaths.some((path) => path.endsWith("/steer"))).toBe(false);
+  });
+
+  it("restarts Pi provider switch when target is outside projected_model_provider_ids", async () => {
+    const { fetchMock } = stubTaskDetailApi({
+      status: "running",
+      runtime_controls: {
+        native_resume_available: false,
+        resume_available: false,
+        queue_steer_available: true,
+        interrupt_steer_available: false,
+        native_steer_available: true,
+        native_steer_mode: "in_turn_steer",
+        native_session_captured: true,
+        same_runtime_provider_only: true,
+        runtime_provider: "pi",
+        projected_model_provider_ids: ["anthropic"],
+        turn_selection: {
+          model_provider_id: "anthropic",
+          model: "claude-sonnet",
+          reasoning_effort: "high",
+        },
+      },
+    });
+    const user = userEvent.setup();
+
+    renderPage();
+
+    await screen.findByText("Conversation should be hidden by default");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model provider" }), "mimo");
+    await user.type(screen.getByPlaceholderText("Focus on admin.example.com next…"), "outside projected set");
+    expect(screen.getByRole("button", { name: "Switch provider and resume" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "Switch provider and resume" }));
+
+    const postPaths = fetchMock.mock.calls
+      .filter(([, init]) => init?.method === "POST")
+      .map(([input]) => String(input));
+    expect(postPaths).toEqual([
+      "/api/projects/project-1/tasks/task-1/steer/queue",
+      "/api/projects/project-1/tasks/task-1/stop",
+      "/api/projects/project-1/tasks/task-1/resume",
+    ]);
     expect(postPaths.some((path) => path.endsWith("/steer"))).toBe(false);
   });
 

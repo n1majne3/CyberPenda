@@ -15,6 +15,13 @@ type ProviderGetter interface {
 	Get(id string) (Provider, error)
 }
 
+// ProviderLister lists every global Model Provider. Used by Pi Config
+// Projection to project all launch-ready providers into one runtime.
+type ProviderLister interface {
+	ProviderGetter
+	List() ([]Provider, error)
+}
+
 type ResolveRequest struct {
 	Profile             runtimeprofile.Profile
 	Providers           ProviderGetter

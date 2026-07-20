@@ -164,17 +164,20 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 }
 
 type taskLaunchPlan struct {
-	Adapter                      runtime.Adapter
-	RuntimeConfig                map[string]any
-	CapturedRuntimeConfig        map[string]any
-	MaterializedCredentials      map[string]string
-	Metadata                     func() (runtime.NativeSessionMetadata, error)
-	StopConfirmation             runtime.StopConfirmation
-	LaunchModelOverride          string
-	LaunchReasoningEffort        string
-	NativeResumeSessionID        string
-	ResolvedProfile              runtimeprofile.Profile
-	ModelSnapshot                *modelprovider.Snapshot
+	Adapter                 runtime.Adapter
+	RuntimeConfig           map[string]any
+	CapturedRuntimeConfig   map[string]any
+	MaterializedCredentials map[string]string
+	Metadata                func() (runtime.NativeSessionMetadata, error)
+	StopConfirmation        runtime.StopConfirmation
+	LaunchModelOverride     string
+	LaunchReasoningEffort   string
+	NativeResumeSessionID   string
+	ResolvedProfile         runtimeprofile.Profile
+	ModelSnapshot           *modelprovider.Snapshot
+	// GlobalModelProviderSnapshot is listed before CreateContinuation so
+	// precommit/BindGrant projection never queries modelProviders.Service.
+	GlobalModelProviderSnapshot  *runner.GlobalModelProviderSnapshot
 	SkillBundles                 []skill.Bundle
 	LaunchGoal                   string
 	BlackboardV2                 bool
@@ -282,6 +285,16 @@ func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, p
 	}
 	if !runner.BlackboardV2SupportsProvider(provider) {
 		return task.TaskContinuation{}, taskLaunchPlan{}, fmt.Errorf("Blackboard v2 launch projection is unsupported for provider %q", provider)
+	}
+	// Always resolve the global provider snapshot before CreateContinuation so
+	// Precommit/BindGrant projection never re-enters modelProviders.Service
+	// while the continuity transaction holds SQLite locks.
+	if plan.GlobalModelProviderSnapshot == nil {
+		snapshot, err := server.snapshotGlobalModelProviders()
+		if err != nil {
+			return task.TaskContinuation{}, taskLaunchPlan{}, err
+		}
+		plan.GlobalModelProviderSnapshot = snapshot
 	}
 	layout, err := runner.PrepareBlackboardV2TaskLayout(server.runtimeRoot, created.ID, provider)
 	if err != nil {
@@ -478,10 +491,18 @@ func (server *Server) prepareBlackboardV2TaskLaunchPlan(created task.Task, goal 
 			profile = runner.BlackboardV2ProfileWithModelSnapshot(profile, resolved)
 		}
 	}
+	// List globals before CreateContinuation; precommit projection must use
+	// this immutable snapshot only (ADR 0015 fixed set, no SQLite re-entry).
+	globalSnapshot, err := server.snapshotGlobalModelProviders()
+	if err != nil {
+		return taskLaunchPlan{}, err
+	}
 	materializedCredentials, err := runner.MaterializeLaunchCredentials(profile, runner.ProjectionRequest{
-		ProjectID:     created.ProjectID,
-		Credentials:   server.creds,
-		ModelSnapshot: modelSnapshot,
+		ProjectID:                   created.ProjectID,
+		Credentials:                 server.creds,
+		ModelProviders:              server.modelProviders,
+		GlobalModelProviderSnapshot: globalSnapshot,
+		ModelSnapshot:               modelSnapshot,
 	})
 	if err != nil {
 		return taskLaunchPlan{}, err
@@ -491,18 +512,32 @@ func (server *Server) prepareBlackboardV2TaskLaunchPlan(created task.Task, goal 
 		return taskLaunchPlan{}, err
 	}
 	return taskLaunchPlan{
-		CapturedRuntimeConfig:   capturedRuntimeConfig,
-		MaterializedCredentials: materializedCredentials,
-		LaunchModelOverride:     launchModelOverride,
-		LaunchReasoningEffort:   launchReasoningEffort,
-		NativeResumeSessionID:   nativeResumeSessionID,
-		ResolvedProfile:         profile,
-		ModelSnapshot:           modelSnapshot,
-		SkillBundles:            append([]skill.Bundle(nil), skillBundles...),
-		LaunchGoal:              goal,
-		BlackboardV2:            true,
-		ValidatedLayout:         &layout,
+		CapturedRuntimeConfig:       capturedRuntimeConfig,
+		MaterializedCredentials:     materializedCredentials,
+		LaunchModelOverride:         launchModelOverride,
+		LaunchReasoningEffort:       launchReasoningEffort,
+		NativeResumeSessionID:       nativeResumeSessionID,
+		ResolvedProfile:             profile,
+		ModelSnapshot:               modelSnapshot,
+		GlobalModelProviderSnapshot: globalSnapshot,
+		SkillBundles:                append([]skill.Bundle(nil), skillBundles...),
+		LaunchGoal:                  goal,
+		BlackboardV2:                true,
+		ValidatedLayout:             &layout,
 	}, nil
+}
+
+// snapshotGlobalModelProviders lists every global Model Provider outside any
+// Store transaction and returns an immutable snapshot for Pi projection.
+func (server *Server) snapshotGlobalModelProviders() (*runner.GlobalModelProviderSnapshot, error) {
+	if server.modelProviders == nil {
+		return runner.CloneGlobalModelProviderSnapshot(nil), nil
+	}
+	listed, err := server.modelProviders.List()
+	if err != nil {
+		return nil, fmt.Errorf("list model providers for launch snapshot: %w", err)
+	}
+	return runner.CloneGlobalModelProviderSnapshot(listed), nil
 }
 
 func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, launchReasoningEffort string, binding *continuationLaunchBinding, captured *taskLaunchPlan) (taskLaunchPlan, error) {
@@ -519,14 +554,22 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	var skillBundles []skill.Bundle
 	var capturedModelSnapshot *modelprovider.Snapshot
 	var materializedCredentials map[string]string
+	var globalSnapshot *runner.GlobalModelProviderSnapshot
 	if captured != nil {
 		profile = captured.ResolvedProfile
 		skillBundles = append([]skill.Bundle(nil), captured.SkillBundles...)
 		capturedModelSnapshot = captured.ModelSnapshot
 		materializedCredentials = captured.MaterializedCredentials
+		globalSnapshot = captured.GlobalModelProviderSnapshot
 	} else {
 		var err error
 		profile, err = server.profiles.Get(created.RuntimeProfileID)
+		if err != nil {
+			return taskLaunchPlan{}, err
+		}
+		// Non-v2 / first-pass path: list before any projection so Pi never
+		// re-enters modelProviders.Service mid-transaction.
+		globalSnapshot, err = server.snapshotGlobalModelProviders()
 		if err != nil {
 			return taskLaunchPlan{}, err
 		}
@@ -591,20 +634,21 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		}
 	}
 	projectionRequest := runner.ProjectionRequest{
-		ProjectID:               created.ProjectID,
-		TaskID:                  created.ID,
-		ScopeSnapshot:           created.ScopeSnapshot,
-		Credentials:             server.creds,
-		MaterializedCredentials: materializedCredentials,
-		DaemonAddr:              server.listenAddr,
-		AuthToken:               authToken,
-		Sandbox:                 sandbox,
-		RuntimePlugins:          server.runtimePlugins,
-		RuntimeExtensions:       server.runtimeExtensions,
-		ModelProviders:          server.modelProviders,
-		ModelSnapshot:           capturedModelSnapshot,
-		LaunchModelOverride:     launchModelOverride,
-		SkillBundles:            skillBundles,
+		ProjectID:                   created.ProjectID,
+		TaskID:                      created.ID,
+		ScopeSnapshot:               created.ScopeSnapshot,
+		Credentials:                 server.creds,
+		MaterializedCredentials:     materializedCredentials,
+		DaemonAddr:                  server.listenAddr,
+		AuthToken:                   authToken,
+		Sandbox:                     sandbox,
+		RuntimePlugins:              server.runtimePlugins,
+		RuntimeExtensions:           server.runtimeExtensions,
+		ModelProviders:              server.modelProviders,
+		GlobalModelProviderSnapshot: globalSnapshot,
+		ModelSnapshot:               capturedModelSnapshot,
+		LaunchModelOverride:         launchModelOverride,
+		SkillBundles:                skillBundles,
 	}
 	var projection runner.ConfigProjection
 	if v2 {
@@ -668,19 +712,20 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	sandboxImage := ""
 	launchCtx := runner.TaskContext{Sandbox: sandbox}
 	processEnv, err := runner.LaunchProcessEnvWithCredentials(layout, launchProfile, sandbox, launchCtx, runner.ProjectionRequest{
-		ProjectID:               created.ProjectID,
-		TaskID:                  created.ID,
-		ScopeSnapshot:           created.ScopeSnapshot,
-		Credentials:             server.creds,
-		MaterializedCredentials: materializedCredentials,
-		DaemonAddr:              server.listenAddr,
-		AuthToken:               authToken,
-		Sandbox:                 sandbox,
-		RuntimePlugins:          server.runtimePlugins,
-		RuntimeExtensions:       server.runtimeExtensions,
-		ModelProviders:          server.modelProviders,
-		ModelSnapshot:           projection.ModelSnapshot,
-		SkillBundles:            skillBundles,
+		ProjectID:                   created.ProjectID,
+		TaskID:                      created.ID,
+		ScopeSnapshot:               created.ScopeSnapshot,
+		Credentials:                 server.creds,
+		MaterializedCredentials:     materializedCredentials,
+		DaemonAddr:                  server.listenAddr,
+		AuthToken:                   authToken,
+		Sandbox:                     sandbox,
+		RuntimePlugins:              server.runtimePlugins,
+		RuntimeExtensions:           server.runtimeExtensions,
+		ModelProviders:              server.modelProviders,
+		GlobalModelProviderSnapshot: globalSnapshot,
+		ModelSnapshot:               projection.ModelSnapshot,
+		SkillBundles:                skillBundles,
 	})
 	if err != nil {
 		return taskLaunchPlan{}, err
@@ -760,8 +805,20 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	if err != nil {
 		return taskLaunchPlan{}, err
 	}
-	if captured != nil {
-		capturedRuntimeConfig = captured.CapturedRuntimeConfig
+	if captured != nil && captured.CapturedRuntimeConfig != nil {
+		// Preserve the pre-TX captured baseline, then overlay fixed-at-launch
+		// fields from the actual Config Projection (projected provider set).
+		merged := make(map[string]any, len(captured.CapturedRuntimeConfig)+2)
+		for key, value := range captured.CapturedRuntimeConfig {
+			merged[key] = value
+		}
+		capturedRuntimeConfig = merged
+	}
+	if capturedRuntimeConfig != nil {
+		// Pi multi-provider projection set is fixed for this runtime lifetime.
+		if ids, ok := projection.Config["projected_model_provider_ids"]; ok {
+			capturedRuntimeConfig["projected_model_provider_ids"] = ids
+		}
 	}
 
 	var adapter runtime.Adapter
@@ -838,21 +895,22 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	}
 
 	return taskLaunchPlan{
-		Adapter:                 adapter,
-		RuntimeConfig:           runtimeConfig,
-		CapturedRuntimeConfig:   capturedRuntimeConfig,
-		MaterializedCredentials: materializedCredentials,
-		Metadata:                metadata,
-		StopConfirmation:        stopConfirmation,
-		LaunchModelOverride:     launchModelOverride,
-		LaunchReasoningEffort:   launchReasoningEffort,
-		NativeResumeSessionID:   nativeResumeSessionID,
-		ResolvedProfile:         launchProfile,
-		ModelSnapshot:           projection.ModelSnapshot,
-		SkillBundles:            append([]skill.Bundle(nil), skillBundles...),
-		LaunchGoal:              launchGoal,
-		BlackboardV2:            v2,
-		ValidatedLayout:         &layout,
+		Adapter:                     adapter,
+		RuntimeConfig:               runtimeConfig,
+		CapturedRuntimeConfig:       capturedRuntimeConfig,
+		MaterializedCredentials:     materializedCredentials,
+		Metadata:                    metadata,
+		StopConfirmation:            stopConfirmation,
+		LaunchModelOverride:         launchModelOverride,
+		LaunchReasoningEffort:       launchReasoningEffort,
+		NativeResumeSessionID:       nativeResumeSessionID,
+		ResolvedProfile:             launchProfile,
+		ModelSnapshot:               projection.ModelSnapshot,
+		GlobalModelProviderSnapshot: globalSnapshot,
+		SkillBundles:                append([]skill.Bundle(nil), skillBundles...),
+		LaunchGoal:                  launchGoal,
+		BlackboardV2:                v2,
+		ValidatedLayout:             &layout,
 	}, nil
 }
 
@@ -1131,6 +1189,13 @@ func (server *Server) runtimeControlsForTask(found task.Task, latest *task.TaskC
 		NativeSessionCaptured:   sessionCaptured,
 		SameRuntimeProviderOnly: true,
 		RuntimeProvider:         string(profile.Provider),
+	}
+	if profile.Provider == runtimeprofile.ProviderPi {
+		// Expose the fixed projected set so Task Conversation UI can fail closed
+		// when metadata is missing (legacy) or the target is outside the set.
+		if ids := server.projectedPiModelProviderIDs(found); len(ids) > 0 {
+			controls.ProjectedModelProviderIDs = ids
+		}
 	}
 	if selection, selectionErr := server.currentTurnSelection(found); selectionErr == nil {
 		controls.TurnSelection = &task.TurnSelection{
@@ -1910,8 +1975,9 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		writeError(response, http.StatusBadRequest, "steer message is required")
 		return
 	}
-	// Runtime Plugin / Runtime Profile switches and Model Provider changes need
-	// Config Projection and a restart. Same-provider model/effort stay native.
+	// Runtime Plugin / Runtime Profile switches need Config Projection and a
+	// restart. Model Provider changes stay native for Pi when the provider was
+	// projected at startup (ADR 0015); Codex/Claude still restart.
 	if input.hasRuntimeProfileSelection() {
 		writeError(response, http.StatusConflict, "native steer cannot change runtime profile; restart the continuation")
 		return
@@ -2381,8 +2447,9 @@ func (server *Server) recordSelectedRuntimeConfig(response http.ResponseWriter, 
 }
 
 // resolveNativeTurnSelection resolves the complete Runtime Turn Selection for a
-// native steer. Same-provider model/effort changes are allowed; a Model
-// Provider change is rejected so the client restarts through Config Projection.
+// native steer. Same-provider model/effort changes are always allowed. A Model
+// Provider change is native for Pi when the target was projected at Config
+// Projection time; Codex/Claude reject it so the client restarts.
 func (server *Server) resolveNativeTurnSelection(response http.ResponseWriter, found task.Task, input taskContinuationSelectionInput) (runtime.ProviderSessionRequest, bool) {
 	current, err := server.currentTurnSelection(found)
 	if err != nil {
@@ -2395,10 +2462,21 @@ func (server *Server) resolveNativeTurnSelection(response http.ResponseWriter, f
 	}
 	requestedProvider := strings.TrimSpace(input.ModelProviderID)
 	if requestedProvider != "" && requestedProvider != current.ModelProviderID {
-		// Includes the empty-current case: introducing a provider requires
-		// credential re-resolution and Config Projection via restart.
-		writeError(response, http.StatusConflict, "native steer cannot change model provider; restart the continuation")
-		return runtime.ProviderSessionRequest{}, false
+		profile, profileErr := server.resolveTaskRuntimeProfile(found)
+		if profileErr != nil {
+			if errors.Is(profileErr, runtimeprofile.ErrNotFound) {
+				writeError(response, http.StatusBadRequest, "runtime profile not found")
+				return runtime.ProviderSessionRequest{}, false
+			}
+			writeError(response, http.StatusInternalServerError, "resolve turn selection")
+			return runtime.ProviderSessionRequest{}, false
+		}
+		if profile.Provider != runtimeprofile.ProviderPi || !server.piProjectedProviderAllowed(found, requestedProvider) {
+			// Codex/Claude (and Pi targets outside the projected set) require
+			// credential re-resolution and Config Projection via restart.
+			writeError(response, http.StatusConflict, "native steer cannot change model provider; restart the continuation")
+			return runtime.ProviderSessionRequest{}, false
+		}
 	}
 
 	selection := current
@@ -2415,6 +2493,60 @@ func (server *Server) resolveNativeTurnSelection(response http.ResponseWriter, f
 	}
 	selection.RequestedReasoningEffort = string(requested)
 	return selection, true
+}
+
+// piProjectedProviderAllowed reports whether providerID was included in the Pi
+// runtime's Config Projection set. ADR 0015 fixes that set until the next
+// projection/restart: missing or empty projected_model_provider_ids fails
+// closed so legacy tasks cannot perform arbitrary native cross-provider turns
+// without a fresh Config Projection that records the set.
+func (server *Server) piProjectedProviderAllowed(found task.Task, providerID string) bool {
+	providerID = strings.TrimSpace(providerID)
+	if providerID == "" {
+		return false
+	}
+	ids := server.projectedPiModelProviderIDs(found)
+	if len(ids) == 0 {
+		return false
+	}
+	for _, id := range ids {
+		if id == providerID {
+			return true
+		}
+	}
+	return false
+}
+
+func (server *Server) projectedPiModelProviderIDs(found task.Task) []string {
+	versions, err := server.tasks.RuntimeConfigVersions(found.ID)
+	if err != nil || len(versions) == 0 {
+		return nil
+	}
+	latest := versions[len(versions)-1].Config
+	return stringSliceFromConfig(latest["projected_model_provider_ids"])
+}
+
+func stringSliceFromConfig(value any) []string {
+	switch typed := value.(type) {
+	case []string:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if id := strings.TrimSpace(item); id != "" {
+				out = append(out, id)
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if id := strings.TrimSpace(fmt.Sprint(item)); id != "" && id != "<nil>" {
+				out = append(out, id)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func (server *Server) currentTurnSelection(found task.Task) (runtime.ProviderSessionRequest, error) {

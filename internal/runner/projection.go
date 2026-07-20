@@ -20,6 +20,13 @@ import (
 
 var secretEnvKeyPattern = regexp.MustCompile(`(?i)(token|api[_-]?key|secret|password|auth)`)
 
+// GlobalModelProviderSnapshot is an immutable List() result captured before any
+// Store transaction that projects runtime config. Projection filters this list
+// for Pi launch-ready providers and never re-queries ModelProviders.Service.
+type GlobalModelProviderSnapshot struct {
+	Providers []modelprovider.Provider
+}
+
 // ProjectionRequest supplies task and daemon context for launch projection.
 type ProjectionRequest struct {
 	ProjectID     string
@@ -35,9 +42,14 @@ type ProjectionRequest struct {
 	RuntimePlugins          *runtimeplugin.Registry
 	RuntimeExtensions       *runtimeextension.Registry
 	ModelProviders          modelprovider.ProviderGetter
-	ModelSnapshot           *modelprovider.Snapshot
-	LaunchModelOverride     string
-	SkillBundles            []skill.Bundle
+	// GlobalModelProviderSnapshot is an immutable pre-TX List() snapshot.
+	// When non-nil (including empty Providers), Pi global projection uses only
+	// this list and never calls ModelProviders.List(). Daemon launch paths that
+	// project inside CreateContinuation precommit/BindGrant must set this.
+	GlobalModelProviderSnapshot *GlobalModelProviderSnapshot
+	ModelSnapshot               *modelprovider.Snapshot
+	LaunchModelOverride         string
+	SkillBundles                []skill.Bundle
 }
 
 // ProjectRuntimeConfig writes provider-specific runtime files into the task-local
@@ -527,6 +539,19 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 	if err != nil {
 		return ConfigProjection{}, err
 	}
+	// ADR 0015: every launch-ready global Model Provider is projected into
+	// each Pi runtime with its models and credentials. Initial selection is
+	// only the starting provider, not a credential boundary.
+	projected, err := listPiLaunchReadyProviders(profile, req)
+	if err != nil {
+		return ConfigProjection{}, err
+	}
+	if len(projected) > 0 {
+		materialized, err = mergePiProjectedCredentials(materialized, projected, req)
+		if err != nil {
+			return ConfigProjection{}, err
+		}
+	}
 
 	mcpServers, err := collectMCPServers(profile, req)
 	if err != nil {
@@ -547,11 +572,37 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 		}
 	}
 
-	modelsDoc := buildPiModels(profile, materialized)
+	var modelsDoc map[string]any
+	var authDoc map[string]map[string]string
+	if len(projected) > 0 {
+		modelsDoc = buildPiModelsFromProjected(projected)
+		authDoc = buildPiAuthFromProjected(projected, materialized)
+	} else {
+		modelsDoc = buildPiModels(profile, materialized)
+		authDoc = buildPiAuth(profile, materialized)
+	}
 	modelsPath := filepath.Join(agentDir, "models.json")
-	if copiedModels, err := copyHostPiModels(agentDir); err != nil {
-		return ConfigProjection{}, err
-	} else if !copiedModels {
+	// ADR 0015: when CyberPenda can list global Model Providers, the projected
+	// set is exclusively those launch-ready globals (plus the single-provider
+	// profile fallback when none are ready). Host ~/.pi/agent files must not
+	// inject non-global / non-launch-ready providers into that runtime.
+	// Host models/auth remain a fallback only when ModelProviders is unavailable
+	// (legacy host-config launches without global projection).
+	globalProjection := piGlobalProjectionAvailable(req)
+	hostModelsFallback := !globalProjection && len(projected) == 0
+	if hostModelsFallback {
+		if copiedModels, err := copyHostPiModels(agentDir); err != nil {
+			return ConfigProjection{}, err
+		} else if !copiedModels {
+			modelsRaw, err := json.MarshalIndent(modelsDoc, "", "  ")
+			if err != nil {
+				return ConfigProjection{}, fmt.Errorf("encode pi models: %w", err)
+			}
+			if err := os.WriteFile(modelsPath, modelsRaw, 0o600); err != nil {
+				return ConfigProjection{}, fmt.Errorf("write pi models: %w", err)
+			}
+		}
+	} else {
 		modelsRaw, err := json.MarshalIndent(modelsDoc, "", "  ")
 		if err != nil {
 			return ConfigProjection{}, fmt.Errorf("encode pi models: %w", err)
@@ -563,9 +614,8 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 
 	authPath := ""
 	var authPreview map[string]any
-	if len(materialized) > 0 {
+	if len(authDoc) > 0 {
 		authPath = filepath.Join(agentDir, "auth.json")
-		authDoc := buildPiAuth(profile, materialized)
 		authRaw, err := json.MarshalIndent(authDoc, "", "  ")
 		if err != nil {
 			return ConfigProjection{}, fmt.Errorf("encode pi auth: %w", err)
@@ -574,11 +624,13 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 			return ConfigProjection{}, fmt.Errorf("write pi auth: %w", err)
 		}
 		authPreview = redactPiAuth(authDoc)
-	} else if copied, err := copyHostPiAuth(agentDir); err != nil {
-		return ConfigProjection{}, err
-	} else if copied {
-		authPath = filepath.Join(agentDir, "auth.json")
-		authPreview = map[string]any{"source": "host_pi_auth"}
+	} else if hostModelsFallback {
+		if copied, err := copyHostPiAuth(agentDir); err != nil {
+			return ConfigProjection{}, err
+		} else if copied {
+			authPath = filepath.Join(agentDir, "auth.json")
+			authPreview = map[string]any{"source": "host_pi_auth"}
+		}
 	}
 
 	// Catalog-sourced runtime extensions (npm: install refs) are installed by
@@ -625,9 +677,55 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 	if len(packages) > 0 {
 		preview["packages"] = packages
 	}
+	// Always record the evaluated projected set when global projection ran,
+	// including an empty list. Daemon native cross-provider turns fail closed
+	// without this field (fixed-at-restart semantics).
+	if globalProjection {
+		ids := make([]string, 0, len(projected))
+		for _, entry := range projected {
+			ids = append(ids, entry.Provider.ID)
+		}
+		preview["projected_model_provider_ids"] = ids
+	}
 	addModelSnapshotPreview(preview, req.ModelSnapshot)
 
 	return ConfigProjection{ConfigPath: modelsPath, Config: preview}, nil
+}
+
+// piGlobalProjectionAvailable is true when Config Projection owns the global
+// Model Provider set for Pi — either via a pre-TX snapshot or a lister used
+// only outside Store transactions (unit tests).
+func piGlobalProjectionAvailable(req ProjectionRequest) bool {
+	if req.GlobalModelProviderSnapshot != nil {
+		return true
+	}
+	if req.ModelProviders == nil {
+		return false
+	}
+	_, ok := req.ModelProviders.(modelprovider.ProviderLister)
+	return ok
+}
+
+// CloneGlobalModelProviderSnapshot returns a deep-enough copy of providers so
+// later store mutations cannot change a launch's fixed projected set.
+func CloneGlobalModelProviderSnapshot(providers []modelprovider.Provider) *GlobalModelProviderSnapshot {
+	cloned := make([]modelprovider.Provider, len(providers))
+	for i, provider := range providers {
+		cloned[i] = provider
+		if len(provider.Protocols) > 0 {
+			cloned[i].Protocols = append([]modelprovider.Protocol(nil), provider.Protocols...)
+		}
+		if len(provider.Endpoints) > 0 {
+			cloned[i].Endpoints = append([]modelprovider.Endpoint(nil), provider.Endpoints...)
+		}
+		if len(provider.Catalog.Manual) > 0 {
+			cloned[i].Catalog.Manual = append([]string(nil), provider.Catalog.Manual...)
+		}
+		if len(provider.Catalog.Refreshed) > 0 {
+			cloned[i].Catalog.Refreshed = append([]string(nil), provider.Catalog.Refreshed...)
+		}
+	}
+	return &GlobalModelProviderSnapshot{Providers: cloned}
 }
 
 func addModelSnapshotPreview(preview map[string]any, snapshot *modelprovider.Snapshot) {
@@ -699,10 +797,22 @@ func resolveMaterializedCredentials(profile runtimeprofile.Profile, req Projecti
 // MaterializeLaunchCredentials resolves every credential needed by one launch
 // before callers enter a Store transaction. The returned values are secret and
 // must remain in memory; they are never part of generated config previews.
+// For Pi, this includes API keys for every launch-ready global Model Provider
+// so cross-provider turns can authenticate without restart.
 func MaterializeLaunchCredentials(profile runtimeprofile.Profile, req ProjectionRequest) (map[string]string, error) {
 	materialized, err := resolveMaterializedCredentials(profile, req)
 	if err != nil {
 		return nil, err
+	}
+	if profile.Provider == runtimeprofile.ProviderPi {
+		projected, err := listPiLaunchReadyProviders(profile, req)
+		if err != nil {
+			return nil, err
+		}
+		materialized, err = mergePiProjectedCredentials(materialized, projected, req)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if materialized == nil {
 		return map[string]string{}, nil
@@ -803,6 +913,221 @@ func buildPiModels(profile runtimeprofile.Profile, materialized map[string]strin
 			providerID: provider,
 		},
 	}
+}
+
+// piProjectedProvider is one launch-ready Model Provider prepared for Pi
+// models.json / auth.json projection.
+type piProjectedProvider struct {
+	Provider modelprovider.Provider
+	Protocol modelprovider.Protocol
+	Endpoint modelprovider.Endpoint
+	Models   []string
+	APIKey   string
+}
+
+func listPiLaunchReadyProviders(profile runtimeprofile.Profile, req ProjectionRequest) ([]piProjectedProvider, error) {
+	if profile.Provider != runtimeprofile.ProviderPi {
+		return nil, nil
+	}
+	plugin, ok := runtimePluginForProvider(profile.Provider, req.RuntimePlugins)
+	if !ok {
+		return nil, nil
+	}
+	all, err := globalModelProvidersForProjection(req)
+	if err != nil {
+		return nil, err
+	}
+	if all == nil {
+		// Global projection not available for this request.
+		return nil, nil
+	}
+	// Stable order by ID so models.json is deterministic across launches.
+	sort.Slice(all, func(i, j int) bool { return all[i].ID < all[j].ID })
+	out := make([]piProjectedProvider, 0, len(all))
+	for _, provider := range all {
+		entry, ready := piLaunchReadyProvider(provider, plugin, req)
+		if !ready {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out, nil
+}
+
+// globalModelProvidersForProjection returns the global provider list for Pi
+// projection. Prefer the immutable pre-TX snapshot. List() is only a fallback
+// for unit tests that project outside Store transactions; daemon launch paths
+// must set GlobalModelProviderSnapshot so precommit never touches the Service.
+func globalModelProvidersForProjection(req ProjectionRequest) ([]modelprovider.Provider, error) {
+	if req.GlobalModelProviderSnapshot != nil {
+		// Non-nil snapshot owns the set (may be empty). Copy so callers cannot
+		// mutate the request snapshot while filtering.
+		return append([]modelprovider.Provider(nil), req.GlobalModelProviderSnapshot.Providers...), nil
+	}
+	if req.ModelProviders == nil {
+		return nil, nil
+	}
+	lister, ok := req.ModelProviders.(modelprovider.ProviderLister)
+	if !ok {
+		return nil, nil
+	}
+	all, err := lister.List()
+	if err != nil {
+		return nil, fmt.Errorf("list model providers for pi projection: %w", err)
+	}
+	return all, nil
+}
+
+// piLaunchReadyProvider returns true when a global Model Provider has a
+// Pi-compatible endpoint, at least one configured catalog model, and a
+// configured API key. Drafts and incomplete providers are skipped.
+func piLaunchReadyProvider(provider modelprovider.Provider, plugin runtimeplugin.Plugin, req ProjectionRequest) (piProjectedProvider, bool) {
+	models := provider.Catalog.Models()
+	if len(models) == 0 {
+		return piProjectedProvider{}, false
+	}
+	protocol, err := resolvePiProtocol(provider, plugin)
+	if err != nil {
+		return piProjectedProvider{}, false
+	}
+	endpoint, ok := provider.EndpointFor(protocol)
+	if !ok || strings.TrimSpace(endpoint.BaseURL) == "" {
+		return piProjectedProvider{}, false
+	}
+	apiKey, ok := resolveModelProviderAPIKeyValue(provider.APIKeyEnv, req)
+	if !ok || strings.TrimSpace(apiKey) == "" {
+		return piProjectedProvider{}, false
+	}
+	return piProjectedProvider{
+		Provider: provider,
+		Protocol: protocol,
+		Endpoint: endpoint,
+		Models:   models,
+		APIKey:   apiKey,
+	}, true
+}
+
+func resolvePiProtocol(provider modelprovider.Provider, plugin runtimeplugin.Plugin) (modelprovider.Protocol, error) {
+	supported := map[modelprovider.Protocol]bool{}
+	for _, protocol := range plugin.ModelProvider.SupportedProtocols {
+		supported[modelprovider.Protocol(protocol)] = true
+	}
+	for _, preferred := range plugin.ModelProvider.ProtocolPreference {
+		protocol := modelprovider.Protocol(preferred)
+		if supported[protocol] && provider.Supports(protocol) {
+			if _, ok := provider.EndpointFor(protocol); ok {
+				return protocol, nil
+			}
+		}
+	}
+	return "", modelprovider.ErrIncompatibleProtocol
+}
+
+func resolveModelProviderAPIKeyValue(envName string, req ProjectionRequest) (string, bool) {
+	envName = strings.TrimSpace(envName)
+	if envName == "" {
+		return "", false
+	}
+	if req.MaterializedCredentials != nil {
+		if value := strings.TrimSpace(req.MaterializedCredentials[envName]); value != "" {
+			return value, true
+		}
+	}
+	if value := strings.TrimSpace(os.Getenv(envName)); value != "" {
+		return value, true
+	}
+	if req.Credentials == nil {
+		return "", false
+	}
+	resolution, err := req.Credentials.Resolve(envName, req.ProjectID)
+	if err != nil || !resolution.Found || resolution.Disabled || resolution.Source == nil {
+		return "", false
+	}
+	value, err := credential.Materialize(*resolution.Source)
+	if err != nil {
+		return "", false
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", false
+	}
+	return value, true
+}
+
+func mergePiProjectedCredentials(materialized map[string]string, projected []piProjectedProvider, req ProjectionRequest) (map[string]string, error) {
+	if len(projected) == 0 {
+		return materialized, nil
+	}
+	out := cloneMaterializedCredentials(materialized)
+	if out == nil {
+		out = map[string]string{}
+	}
+	for _, entry := range projected {
+		envName := strings.TrimSpace(entry.Provider.APIKeyEnv)
+		if envName == "" {
+			continue
+		}
+		if strings.TrimSpace(out[envName]) != "" {
+			continue
+		}
+		value := strings.TrimSpace(entry.APIKey)
+		if value == "" {
+			resolved, ok := resolveModelProviderAPIKeyValue(envName, req)
+			if !ok {
+				// Non-initial providers are skipped earlier; keep defensive.
+				continue
+			}
+			value = resolved
+		}
+		out[envName] = value
+	}
+	return out, nil
+}
+
+func buildPiModelsFromProjected(projected []piProjectedProvider) map[string]any {
+	providers := make(map[string]any, len(projected))
+	for _, entry := range projected {
+		models := make([]map[string]any, 0, len(entry.Models))
+		for _, modelID := range entry.Models {
+			models = append(models, map[string]any{"id": modelID})
+		}
+		provider := map[string]any{
+			"baseUrl": strings.TrimRight(entry.Endpoint.BaseURL, "/"),
+			"api":     piAPIForProtocol(entry.Protocol),
+			"models":  models,
+		}
+		if envName := strings.TrimSpace(entry.Provider.APIKeyEnv); envName != "" {
+			provider["apiKey"] = "$" + envName
+		}
+		providers[entry.Provider.ID] = provider
+	}
+	return map[string]any{"providers": providers}
+}
+
+func buildPiAuthFromProjected(projected []piProjectedProvider, materialized map[string]string) map[string]map[string]string {
+	if len(projected) == 0 {
+		return nil
+	}
+	auth := make(map[string]map[string]string, len(projected))
+	for _, entry := range projected {
+		key := strings.TrimSpace(entry.APIKey)
+		if key == "" {
+			if envName := strings.TrimSpace(entry.Provider.APIKeyEnv); envName != "" {
+				key = strings.TrimSpace(materialized[envName])
+			}
+		}
+		if key == "" {
+			continue
+		}
+		auth[entry.Provider.ID] = map[string]string{
+			"type": "api_key",
+			"key":  key,
+		}
+	}
+	if len(auth) == 0 {
+		return nil
+	}
+	return auth
 }
 
 func buildPiAuth(profile runtimeprofile.Profile, materialized map[string]string) map[string]map[string]string {

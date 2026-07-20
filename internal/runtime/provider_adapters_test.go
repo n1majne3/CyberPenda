@@ -489,6 +489,149 @@ func TestPiProviderSessionMapsPromptAbortAndReplacement(t *testing.T) {
 	}
 }
 
+// TestPiProviderSessionAppliesModelThenEffortThenPrompt proves Pi native
+// controls are issued in mandatory order: set_model → set_thinking_level → prompt.
+func TestPiProviderSessionAppliesModelThenEffortThenPrompt(t *testing.T) {
+	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
+		"pi/set_model":          {Result: json.RawMessage(`{"ok":true}`)},
+		"pi/set_thinking_level": {Result: json.RawMessage(`{"ok":true}`)},
+		"pi/prompt":             {Result: json.RawMessage(`{"session_id":"pi-1","turn_id":"turn-2"}`)},
+	}}
+	session := NewPiProviderSession(PiProviderSessionConfig{Transport: transport, SessionID: "pi-1"})
+	_, err := session.SendTurn(context.Background(), ProviderSessionRequest{
+		RequestID:                "send-selection",
+		Message:                  "inspect with alternate",
+		ModelProviderID:          "alternate",
+		Model:                    "claude-alt",
+		RequestedReasoningEffort: "xhigh",
+	}, nil)
+	if err != nil {
+		t.Fatalf("send turn: %v", err)
+	}
+	requests := transport.snapshot()
+	if len(requests) != 3 {
+		t.Fatalf("wire requests = %#v", requests)
+	}
+	if requests[0].Method != "pi/set_model" || requests[1].Method != "pi/set_thinking_level" || requests[2].Method != "pi/prompt" {
+		t.Fatalf("order = %q, %q, %q", requests[0].Method, requests[1].Method, requests[2].Method)
+	}
+	var setModel map[string]any
+	if err := json.Unmarshal(requests[0].Params, &setModel); err != nil {
+		t.Fatal(err)
+	}
+	if setModel["provider"] != "alternate" || setModel["modelId"] != "claude-alt" {
+		t.Fatalf("set_model params = %#v", setModel)
+	}
+	var setThinking map[string]any
+	if err := json.Unmarshal(requests[1].Params, &setThinking); err != nil {
+		t.Fatal(err)
+	}
+	if setThinking["level"] != "xhigh" {
+		t.Fatalf("thinking level rewritten or missing: %#v", setThinking)
+	}
+	var prompt map[string]any
+	if err := json.Unmarshal(requests[2].Params, &prompt); err != nil {
+		t.Fatal(err)
+	}
+	if prompt["message"] != "inspect with alternate" {
+		t.Fatalf("prompt params = %#v", prompt)
+	}
+}
+
+func TestPiProviderSessionInterruptThenReplaceAppliesSelectionBeforePrompt(t *testing.T) {
+	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
+		"pi/abort":              {Result: json.RawMessage(`{"session_id":"pi-1","turn_id":"turn-old"}`)},
+		"pi/set_model":          {Result: json.RawMessage(`{"ok":true}`)},
+		"pi/set_thinking_level": {Result: json.RawMessage(`{"ok":true}`)},
+		"pi/prompt":             {Result: json.RawMessage(`{"session_id":"pi-1","turn_id":"turn-new"}`)},
+	}, notifications: map[string]SandboxBridgeEvent{
+		"pi/abort": {Method: "pi/turn/aborted", Params: json.RawMessage(`{"session_id":"pi-1","turn_id":"turn-old","status":"aborted"}`)},
+	}}
+	session := NewPiProviderSession(PiProviderSessionConfig{Transport: transport, SessionID: "pi-1", ActiveTurnID: "turn-old"})
+	bindFakeProviderEvents(transport, session)
+	_, err := session.InterruptThenReplace(context.Background(), ProviderSessionRequest{
+		RequestID:                "replace-selection",
+		Message:                  "switch mid-task",
+		ModelProviderID:          "primary",
+		Model:                    "gpt-strong",
+		RequestedReasoningEffort: "max",
+	}, nil)
+	if err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	requests := transport.snapshot()
+	if len(requests) != 4 {
+		t.Fatalf("requests = %#v", requests)
+	}
+	if requests[0].Method != "pi/abort" ||
+		requests[1].Method != "pi/set_model" ||
+		requests[2].Method != "pi/set_thinking_level" ||
+		requests[3].Method != "pi/prompt" {
+		t.Fatalf("order = %#v", []string{requests[0].Method, requests[1].Method, requests[2].Method, requests[3].Method})
+	}
+}
+
+func TestPiProviderSessionSurfacesUnsupportedEffortWithoutRewriting(t *testing.T) {
+	transport := &fakeProviderTransport{send: func(_ context.Context, request SandboxBridgeRequest) (SandboxBridgeResponse, error) {
+		switch request.Method {
+		case "pi/set_model":
+			return SandboxBridgeResponse{Result: json.RawMessage(`{"ok":true}`)}, nil
+		case "pi/set_thinking_level":
+			var params map[string]any
+			if err := json.Unmarshal(request.Params, &params); err != nil {
+				t.Fatal(err)
+			}
+			if params["level"] != "max" {
+				t.Fatalf("effort rewritten before provider saw it: %#v", params["level"])
+			}
+			return SandboxBridgeResponse{}, errors.New("unsupported thinking level: max")
+		default:
+			return SandboxBridgeResponse{}, errors.New("unexpected method " + request.Method)
+		}
+	}}
+	session := NewPiProviderSession(PiProviderSessionConfig{Transport: transport, SessionID: "pi-1"})
+	_, err := session.SendTurn(context.Background(), ProviderSessionRequest{
+		RequestID:                "effort-reject",
+		Message:                  "try max",
+		ModelProviderID:          "primary",
+		Model:                    "gpt-test",
+		RequestedReasoningEffort: "max",
+	}, nil)
+	if err == nil {
+		t.Fatal("expected provider effort rejection")
+	}
+	var opErr *ProviderSessionOperationError
+	if !errors.As(err, &opErr) {
+		t.Fatalf("error type = %T (%v)", err, err)
+	}
+	if !strings.Contains(opErr.Cause.Error(), "unsupported thinking level") {
+		t.Fatalf("cause = %v", opErr.Cause)
+	}
+	// Prompt must not run when thinking level was rejected.
+	for _, req := range transport.snapshot() {
+		if req.Method == "pi/prompt" {
+			t.Fatalf("prompt issued after thinking rejection: %#v", transport.snapshot())
+		}
+	}
+}
+
+func TestPiProviderSessionOmitsSelectionControlsWhenUnset(t *testing.T) {
+	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
+		"pi/prompt": {Result: json.RawMessage(`{"session_id":"pi-1","turn_id":"turn-1"}`)},
+	}}
+	session := NewPiProviderSession(PiProviderSessionConfig{Transport: transport, SessionID: "pi-1"})
+	if _, err := session.SendTurn(context.Background(), ProviderSessionRequest{
+		RequestID: "send-plain",
+		Message:   "hello",
+	}, nil); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	requests := transport.snapshot()
+	if len(requests) != 1 || requests[0].Method != "pi/prompt" {
+		t.Fatalf("expected only prompt when selection unset, got %#v", requests)
+	}
+}
+
 func TestProviderSessionAdapterErrorsAreTypedAndCapabilitiesAreHonest(t *testing.T) {
 	transport := &fakeProviderTransport{err: errors.New("wire unavailable")}
 	session := NewPiProviderSession(PiProviderSessionConfig{Transport: transport, SessionID: "pi-1"})
