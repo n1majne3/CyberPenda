@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode, useEffect } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
@@ -490,9 +490,11 @@ describe("TaskDetailPage", () => {
     renderPage();
 
     await screen.findByText("Conversation should be hidden by default");
-    expect(screen.getByRole("combobox", { name: "Continuation model provider" })).toHaveValue("mimo");
-    expect(screen.getByRole("combobox", { name: "Continuation model" })).toHaveValue("mimo-v2-flash");
-    expect(screen.getByRole("combobox", { name: "Continuation reasoning effort" })).toHaveValue("medium");
+    await waitFor(() => {
+      expect(screen.getByRole("combobox", { name: "Continuation model provider" })).toHaveValue("mimo");
+      expect(screen.getByRole("combobox", { name: "Continuation model" })).toHaveValue("mimo-v2-flash");
+      expect(screen.getByRole("combobox", { name: "Continuation reasoning effort" })).toHaveValue("medium");
+    });
 
     await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model" }), "mimo-v2-pro");
     await user.selectOptions(screen.getByRole("combobox", { name: "Continuation reasoning effort" }), "xhigh");
@@ -616,7 +618,9 @@ describe("TaskDetailPage", () => {
     renderPage();
 
     await screen.findByText("Conversation should be hidden by default");
-    expect(screen.getByRole("combobox", { name: "Continuation model provider" })).toHaveValue("anthropic");
+    await waitFor(() => {
+      expect(screen.getByRole("combobox", { name: "Continuation model provider" })).toHaveValue("anthropic");
+    });
     await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model provider" }), "mimo");
     await user.type(screen.getByPlaceholderText("Focus on admin.example.com next…"), "continue with mimo");
     expect(screen.getByRole("button", { name: "Switch provider and resume" })).toBeEnabled();
