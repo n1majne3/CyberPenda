@@ -193,6 +193,8 @@ func (h *Harness) Stop(taskID string) {
 // MarkFinishRequested records operator Task Finish intent without cancelling
 // the harness context. Finish closes provider/session resources first so
 // shutdown happens-before Continuation reconciliation in Launch.
+// Concurrent visibility is serialized with ClearFinishIntent and Launch finalization
+// through activeRun.mu.
 func (h *Harness) MarkFinishRequested(taskID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -205,11 +207,31 @@ func (h *Harness) MarkFinishRequested(taskID string) {
 	run.mu.Unlock()
 }
 
-// RequestFinish marks finish intent and cancels. Prefer MarkFinishRequested
-// then resource close then StopAndWait for operator Finish ordering.
-func (h *Harness) RequestFinish(taskID string) {
-	h.MarkFinishRequested(taskID)
-	h.Stop(taskID)
+// ClearFinishIntent aborts operator Finish intent so a later Stop or abnormal
+// exit finalizes stopped/failed rather than Continuation completed. Call this
+// before any force-cancel when Finish resource close or wait fails.
+func (h *Harness) ClearFinishIntent(taskID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	run, ok := h.active[taskID]
+	if !ok {
+		return
+	}
+	run.mu.Lock()
+	run.finishRequested = false
+	run.mu.Unlock()
+}
+
+// FinishIntentActive reports whether operator Finish intent is currently set.
+// Tests and diagnostics use this; production Finish clears on abort paths.
+func (h *Harness) FinishIntentActive(taskID string) bool {
+	h.mu.Lock()
+	run, ok := h.active[taskID]
+	h.mu.Unlock()
+	if !ok {
+		return false
+	}
+	return run.finishWasRequested()
 }
 
 // IsActive reports whether a continuation is currently running for the task.

@@ -213,16 +213,26 @@ func (server *Server) reconcileRuntimeActivity(found task.Task, activity task.Ru
 }
 
 func (server *Server) waitForHarnessInactive(taskID string, timeout time.Duration) {
+	_ = server.waitHarnessInactive(taskID, timeout)
+}
+
+// waitHarnessInactive polls until the harness is inactive or timeout elapses.
+// It does not cancel the run (unlike StopAndWait).
+func (server *Server) waitHarnessInactive(taskID string, timeout time.Duration) bool {
 	if server.harness == nil {
-		return
+		return true
+	}
+	if !server.harness.IsActive(taskID) {
+		return true
 	}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if !server.harness.IsActive(taskID) {
-			return
+			return true
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	return !server.harness.IsActive(taskID)
 }
 
 // ensureRuntimeAbsentBeforeLaunch cleans up or proves absence of a prior
