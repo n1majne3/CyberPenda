@@ -187,7 +187,7 @@ type FakeProviderSession struct {
 	activeCall   string
 	continuation string
 	acknowledge  map[string]chan struct{}
-	closed bool
+	closed       bool
 	// offline is true when current process/session health is confirmed dead
 	// without requiring durable Task status or elapsed time.
 	offline bool

@@ -106,22 +106,22 @@ type SandboxSessionBridge struct {
 	docker SandboxBridgeDocker
 	config SandboxBridgeConfig
 
-	mu           sync.Mutex
-	writeMu      sync.Mutex
-	state        string
-	containerID  string
-	stdin        io.WriteCloser
-	stdout       io.ReadCloser
-	wait         func() error
-	pending      map[string]*bridgePending
-	completed    map[string]bridgeCompletion
-	requests     map[string][sha256.Size]byte
-	continuation   string
-	closed         chan struct{}
-	terminated     chan struct{}
-	terminateOnce  sync.Once
-	closeOnce      sync.Once
-	cleanupErr     error
+	mu            sync.Mutex
+	writeMu       sync.Mutex
+	state         string
+	containerID   string
+	stdin         io.WriteCloser
+	stdout        io.ReadCloser
+	wait          func() error
+	pending       map[string]*bridgePending
+	completed     map[string]bridgeCompletion
+	requests      map[string][sha256.Size]byte
+	continuation  string
+	closed        chan struct{}
+	terminated    chan struct{}
+	terminateOnce sync.Once
+	closeOnce     sync.Once
+	cleanupErr    error
 }
 
 // DockerCLISandboxBridgeDocker is the production Docker CLI transport. The
@@ -291,7 +291,7 @@ func NewSandboxSessionBridge(docker SandboxBridgeDocker, config SandboxBridgeCon
 		docker: docker, config: config, state: "idle",
 		pending: map[string]*bridgePending{}, completed: map[string]bridgeCompletion{},
 		requests: map[string][sha256.Size]byte{},
-		closed: make(chan struct{}), terminated: make(chan struct{}),
+		closed:   make(chan struct{}), terminated: make(chan struct{}),
 	}, nil
 }
 

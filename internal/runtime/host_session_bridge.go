@@ -65,17 +65,17 @@ var (
 type HostSessionBridge struct {
 	config HostSessionBridgeConfig
 
-	mu           sync.Mutex
-	writeMu      sync.Mutex
-	state        string
-	pgid         int
-	stdin        io.WriteCloser
-	stdout       io.ReadCloser
-	wait         func() error
-	killGroup    func(context.Context) error
-	pending      map[string]*bridgePending
-	completed    map[string]bridgeCompletion
-	requests     map[string][sha256.Size]byte
+	mu            sync.Mutex
+	writeMu       sync.Mutex
+	state         string
+	pgid          int
+	stdin         io.WriteCloser
+	stdout        io.ReadCloser
+	wait          func() error
+	killGroup     func(context.Context) error
+	pending       map[string]*bridgePending
+	completed     map[string]bridgeCompletion
+	requests      map[string][sha256.Size]byte
 	continuation  string
 	closed        chan struct{}
 	terminated    chan struct{}
@@ -175,12 +175,12 @@ func NewHostSessionBridge(config HostSessionBridgeConfig) (*HostSessionBridge, e
 	}
 	config.Args = append([]string(nil), config.Args...)
 	return &HostSessionBridge{
-		config:    config,
-		state:     "idle",
-		pending:   map[string]*bridgePending{},
-		completed: map[string]bridgeCompletion{},
-		requests:  map[string][sha256.Size]byte{},
-		closed:    make(chan struct{}),
+		config:     config,
+		state:      "idle",
+		pending:    map[string]*bridgePending{},
+		completed:  map[string]bridgeCompletion{},
+		requests:   map[string][sha256.Size]byte{},
+		closed:     make(chan struct{}),
 		terminated: make(chan struct{}),
 	}, nil
 }
