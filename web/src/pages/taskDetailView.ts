@@ -56,14 +56,26 @@ export function summarizeTaskEvent(event: TaskEvent): string {
 
 export function collapsedTranscriptTitle(entry: TaskTranscriptEntry): string {
   if (entry.kind === "tool_call") {
-    return entry.tool_name ? `Tool call · ${entry.tool_name}` : "Tool call";
+    const toolName = entry.tool_name || "Tool";
+    const preview = toolInputPreview(entry);
+    return preview ? `${toolName} · ${preview}` : toolName;
   }
   if (entry.kind === "tool_result") {
-    const preview = entry.text ? `: ${firstLine(entry.text)}` : "";
-    return entry.tool_name ? `Tool result · ${entry.tool_name}${preview}` : entry.tool_call_id ? `Tool result · ${entry.tool_call_id}${preview}` : `Tool result${preview}`;
+    const preview = entry.text ? ` · ${firstLine(entry.text)}` : "";
+    return `Result${preview}`;
   }
   const prefix = entry.stream ? `Runtime output (${entry.stream})` : "Runtime output";
   return entry.text ? `${prefix}: ${firstLine(entry.text)}` : prefix;
+}
+
+function toolInputPreview(entry: TaskTranscriptEntry): string {
+  const input = asRecord(asRecord(entry.details)?.input);
+  if (!input) return "";
+  for (const key of ["command", "file_path", "path", "query", "url", "pattern"]) {
+    const value = stringValue(input[key]);
+    if (value) return firstLine(value);
+  }
+  return "";
 }
 
 type SummarizeRuntimeOptions = {

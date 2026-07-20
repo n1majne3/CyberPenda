@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, type KeyboardEvent, type RefObject } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, ChevronRight, Wrench, User, Bot, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2, Maximize2, Minimize2 } from "lucide-react";
+import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, ChevronRight, Wrench, User, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2, Maximize2, Minimize2 } from "lucide-react";
 import { apiDelete, apiGet, apiPost, type ModelProvider, type ProviderPermissionRequest, type RuntimePlugin, type RuntimeProfile, type Task, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Badge, Select, Textarea } from "@/components/ui";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
@@ -813,7 +813,7 @@ function TranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
   const projectedRuntimeEntries = projectRuntimeOutput(entry);
   if (projectedRuntimeEntries) {
     return (
-      <div className="space-y-3">
+      <div className="space-y-1">
         {projectedRuntimeEntries.map((projectedEntry) => (
           <TranscriptRow key={projectedEntry.id} entry={projectedEntry} />
         ))}
@@ -826,10 +826,11 @@ function TranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
   }
 
   const isUser = entry.role === "user";
-  const Icon = isUser ? User : entry.role === "assistant" ? Bot : MessageSquare;
+  const isAssistant = entry.role === "assistant";
+  const Icon = isUser ? User : MessageSquare;
   return (
     <div className={`flex gap-3 text-sm ${isUser ? "justify-end pl-8 sm:pl-16" : "justify-start pr-2 sm:pr-8"}`}>
-      {!isUser && (
+      {!isUser && !isAssistant && (
         <span className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-muted/60 text-muted-foreground">
           <Icon className="h-4 w-4" />
         </span>
@@ -939,16 +940,16 @@ function runtimeContentText(content: unknown): string | undefined {
 function CollapsedTranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
   const Icon = entry.kind === "runtime_output" ? Terminal : Wrench;
   return (
-    <details className="group rounded-md border border-border bg-card/60">
-      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm [&::-webkit-details-marker]:hidden">
-        <ChevronRight className="h-3.5 w-3.5 text-muted-foreground transition-transform group-open:rotate-90" />
-        <Icon className="h-4 w-4 text-muted-foreground" />
-        <span className="text-xs text-muted-foreground shrink-0">#{entry.seq}</span>
-        <span className="truncate">{collapsedTranscriptTitle(entry)}</span>
-        {entry.created_at && <span className="text-xs text-muted-foreground ml-auto shrink-0">{formatDateTime(entry.created_at)}</span>}
+    <details data-testid="transcript-tool-row" className="group border-b border-border/50 last:border-b-0">
+      <summary className="-mx-1 flex min-h-9 cursor-pointer list-none items-center gap-2 rounded-sm px-1 py-1.5 text-sm transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+        <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+        <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">#{entry.seq}</span>
+        <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground transition-colors group-hover:text-foreground group-open:text-foreground">{collapsedTranscriptTitle(entry)}</span>
+        {entry.created_at && <span className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground">{formatDateTime(entry.created_at)}</span>}
       </summary>
-      <div className="border-t border-border px-3 py-2">
-        <pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">{collapsedBody(entry)}</pre>
+      <div className="ml-[1.625rem] border-l border-border/60 pb-3 pl-4 pr-2 pt-1">
+        <pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs leading-5 text-foreground/80">{collapsedBody(entry)}</pre>
       </div>
     </details>
   );

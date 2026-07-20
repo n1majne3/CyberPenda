@@ -211,7 +211,9 @@ describe("TaskDetailPage", () => {
     renderPage();
 
     expect(await screen.findByText("Inspecting the scoreboard now.")).toBeInTheDocument();
-    expect(screen.getByTestId("transcript-message-bubble")).toBeInTheDocument();
+    const assistantMessage = screen.getByTestId("transcript-message-bubble");
+    expect(assistantMessage).toBeInTheDocument();
+    expect(assistantMessage.previousElementSibling).toBeNull();
     expect(screen.queryByText(/"type":"assistant"/)).not.toBeInTheDocument();
   });
 
@@ -257,11 +259,16 @@ describe("TaskDetailPage", () => {
     renderPage();
 
     expect(await screen.findByText("I will inspect the target now.")).toBeInTheDocument();
-    expect(screen.getByText("Tool call · Bash")).toBeInTheDocument();
-    expect(screen.getByText(/Tool result · call-1: HTTP\/1\.1 200 OK/)).toBeInTheDocument();
+    expect(screen.getByText("Bash · curl http://localhost:3000")).toBeInTheDocument();
+    expect(screen.getByText(/Result · HTTP\/1\.1 200 OK/)).toBeInTheDocument();
     expect(screen.getAllByText(/HTTP\/1\.1 200 OK/)).toHaveLength(2);
     expect(screen.queryByText(/"type":"assistant"/)).not.toBeInTheDocument();
     expect(screen.queryByText(/"type":"user"/)).not.toBeInTheDocument();
+    const toolRows = screen.getAllByTestId("transcript-tool-row");
+    expect(toolRows).toHaveLength(2);
+    expect(toolRows[0]).toHaveClass("border-b");
+    expect(toolRows[0]).not.toHaveClass("rounded-md");
+    expect(toolRows[0]).not.toHaveClass("bg-card/60");
     const resultBody = screen.getAllByText(/HTTP\/1\.1 200 OK/).find((element) => element.tagName === "PRE");
     expect(resultBody).toBeDefined();
     expect(resultBody?.textContent).not.toContain("tool_call_id: call-1");
