@@ -130,14 +130,17 @@ const (
 const continuationSelectColumns = `id, task_id, number, runtime_profile_id, runtime_provider, runner, status, container_id, native_session_id, native_session_path, started_at, updated_at, ended_at, runtime_config_version_id, blackboard_reconciliation_status, blackboard_reconciliation_mutation_id, blackboard_reconciled_at`
 
 type RuntimeControls struct {
-	NativeResumeAvailable   bool   `json:"native_resume_available"`
-	NativeResumeReason      string `json:"native_resume_reason,omitempty"`
-	NativeSteerAvailable    bool   `json:"native_steer_available"`
-	NativeSteerMode         string `json:"native_steer_mode,omitempty"`
-	NativeSteerState        string `json:"native_steer_state,omitempty"`
-	NativeSteerRequestID    string `json:"native_steer_request_id,omitempty"`
-	NativeSteerReason       string `json:"native_steer_reason,omitempty"`
-	ResumeAvailable         bool   `json:"resume_available"`
+	NativeResumeAvailable bool   `json:"native_resume_available"`
+	NativeResumeReason    string `json:"native_resume_reason,omitempty"`
+	NativeSteerAvailable  bool   `json:"native_steer_available"`
+	NativeSteerMode       string `json:"native_steer_mode,omitempty"`
+	NativeSteerState      string `json:"native_steer_state,omitempty"`
+	NativeSteerRequestID  string `json:"native_steer_request_id,omitempty"`
+	NativeSteerReason     string `json:"native_steer_reason,omitempty"`
+	ResumeAvailable       bool   `json:"resume_available"`
+	// FinishAvailable is true only when Runtime Activity is live and idle.
+	// Operator Task Finish is gated by current session health, not Task status.
+	FinishAvailable         bool   `json:"finish_available"`
 	QueueSteerAvailable     bool   `json:"queue_steer_available"`
 	InterruptSteerAvailable bool   `json:"interrupt_steer_available"`
 	InterruptSteerReason    string `json:"interrupt_steer_reason,omitempty"`
@@ -197,15 +200,15 @@ type RuntimeActivity struct {
 
 // Task is a single user-goal-driven run within a project.
 type Task struct {
-	ID                 string            `json:"id"`
-	ProjectID          string            `json:"project_id"`
-	Goal               string            `json:"goal"`
-	Status             Status            `json:"status"`
-	Runner             Runner            `json:"runner"`
-	RuntimeProfileID   string            `json:"runtime_profile_id"`
-	RunControls        RunControls       `json:"run_controls"`
-	ScopeSnapshot      ScopeSnapshot     `json:"scope_snapshot"`
-	RuntimeControls    RuntimeControls   `json:"runtime_controls"`
+	ID               string          `json:"id"`
+	ProjectID        string          `json:"project_id"`
+	Goal             string          `json:"goal"`
+	Status           Status          `json:"status"`
+	Runner           Runner          `json:"runner"`
+	RuntimeProfileID string          `json:"runtime_profile_id"`
+	RunControls      RunControls     `json:"run_controls"`
+	ScopeSnapshot    ScopeSnapshot   `json:"scope_snapshot"`
+	RuntimeControls  RuntimeControls `json:"runtime_controls"`
 	// RuntimeActivity is current process/session health, not Task status.
 	RuntimeActivity    RuntimeActivity   `json:"runtime_activity"`
 	ActiveContinuation *TaskContinuation `json:"active_continuation,omitempty"`

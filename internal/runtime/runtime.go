@@ -58,6 +58,9 @@ type activeRun struct {
 	done             chan struct{}
 	stopConfirmation StopConfirmation
 	continuationID   string
+	// finishRequested is set by operator Task Finish so Launch finalizes as
+	// completed rather than stopped when the context is cancelled.
+	finishRequested bool
 }
 
 // NewHarness returns a Harness that records events through the task service.
@@ -134,8 +137,15 @@ func (h *Harness) Launch(ctx context.Context, req LaunchRequest) error {
 		finalPhase = "failed"
 	}
 	if ctx.Err() != nil {
-		finalStatus = task.StatusStopped
-		finalPhase = "stopped"
+		// Operator Finish cancels the harness context after RequestFinish; that
+		// must finalize completed, not the stopped interrupt path used by Stop.
+		if run.finishWasRequested() {
+			finalStatus = task.StatusCompleted
+			finalPhase = "completed"
+		} else {
+			finalStatus = task.StatusStopped
+			finalPhase = "stopped"
+		}
 	}
 	emit(task.EventKindLifecycle, task.EventPayload{"phase": finalPhase, "adapter": req.Adapter.Name()})
 	finalContinuationID := run.currentContinuationID()
@@ -157,6 +167,11 @@ func (h *Harness) Launch(ctx context.Context, req LaunchRequest) error {
 			return fmt.Errorf("mark continuation %s: %w", finalStatus, err)
 		}
 	}
+	if run.finishWasRequested() {
+		// Operator Finish cancelled the context on purpose; treat the exit as
+		// successful completion so callers log completed rather than stopped.
+		return nil
+	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -171,6 +186,22 @@ func (h *Harness) Stop(taskID string) {
 	if run, ok := h.active[taskID]; ok {
 		run.cancel()
 	}
+}
+
+// RequestFinish marks the active run for operator Task Finish and cancels it.
+// Launch finalizes the Task/Continuation as completed instead of stopped.
+// It is a no-op when no continuation is active.
+func (h *Harness) RequestFinish(taskID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	run, ok := h.active[taskID]
+	if !ok {
+		return
+	}
+	run.mu.Lock()
+	run.finishRequested = true
+	run.mu.Unlock()
+	run.cancel()
 }
 
 // IsActive reports whether a continuation is currently running for the task.
@@ -243,6 +274,12 @@ func (r *activeRun) currentContinuationID() string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.continuationID
+}
+
+func (r *activeRun) finishWasRequested() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.finishRequested
 }
 
 // fakeGoalKey holds the task id the fake adapter is running, used only to keep

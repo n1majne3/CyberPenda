@@ -377,6 +377,8 @@ export interface RuntimeControls {
   native_steer_request_id?: string;
   native_steer_reason?: string;
   resume_available: boolean;
+  /** True only when Runtime Activity is live and idle. */
+  finish_available?: boolean;
   queue_steer_available: boolean;
   interrupt_steer_available: boolean;
   interrupt_steer_reason?: string;

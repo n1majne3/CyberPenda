@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, type KeyboardEvent, type RefObject } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, ChevronRight, Wrench, User, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2, Maximize2, Minimize2 } from "lucide-react";
+import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, ChevronRight, Wrench, User, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2, Maximize2, Minimize2, Flag } from "lucide-react";
 import { apiDelete, apiGet, apiPost, type ModelProvider, type ProviderPermissionRequest, type RuntimeActivity, type RuntimePlugin, type RuntimeProfile, type Task, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Badge, Select, Textarea } from "@/components/ui";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
@@ -214,6 +214,17 @@ export function TaskDetailPage() {
     }
   }
 
+  async function finishTask() {
+    if (!task || !window.confirm(`Finish task ${task.goal}? This marks the Task completed after closing the Runtime.`)) return;
+    try {
+      await apiPost(`${base}/finish`, {});
+      setActionError(null);
+      loadAll();
+    } catch (e) {
+      setActionError((e as Error).message);
+    }
+  }
+
   async function deleteTask() {
     if (!task || !window.confirm(`Delete task ${task.goal}?`)) return;
     try {
@@ -417,6 +428,10 @@ export function TaskDetailPage() {
   const nativeSteerMode = controls?.native_steer_mode;
   const providerPermissions = controls?.provider_permissions ?? [];
   const running = ACTIVE.has(task.status);
+  // Finish is gated by current Runtime Activity live+idle (server authority).
+  const finishAvailable =
+    controls?.finish_available === true ||
+    (task.runtime_activity?.liveness === "live" && task.runtime_activity?.turn_activity === "idle");
   const sendMode = resolveConversationSendMode({
     running,
     nativeSteerAvailable,
@@ -471,6 +486,17 @@ export function TaskDetailPage() {
           </div>
         )}
         <div className="flex shrink-0 items-center gap-1">
+          {running && finishAvailable && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => void finishTask()}
+              title="Finish Task: close Runtime and mark completed"
+              data-testid="finish-task"
+            >
+              <Flag className="h-4 w-4" /> <span className="hidden sm:inline">Finish</span>
+            </Button>
+          )}
           {!running && (
             <Button size="sm" variant="ghost" onClick={resumeNative} disabled={!resumeAvailable} title={nativeResumeAvailable ? "Resume native session" : "Start a fresh continuation from the current Task state"}>
               <Play className="h-4 w-4" /> <span className="hidden sm:inline">Resume</span>
@@ -562,6 +588,8 @@ export function TaskDetailPage() {
           onSend={() => void sendConversationMessage()}
           onQueue={() => void queueSteer()}
           onStop={stop}
+          onFinish={() => void finishTask()}
+          finishAvailable={finishAvailable}
           sending={sending}
           running={running}
           queueAvailable={queueSteerAvailable}
@@ -755,6 +783,8 @@ function TaskComposer({
   onSend,
   onQueue,
   onStop,
+  onFinish,
+  finishAvailable,
   sending,
   running,
   queueAvailable,
@@ -777,6 +807,8 @@ function TaskComposer({
   onSend: () => void;
   onQueue: () => void;
   onStop: () => void;
+  onFinish: () => void;
+  finishAvailable: boolean;
   sending: boolean;
   running: boolean;
   queueAvailable: boolean;
@@ -866,6 +898,19 @@ function TaskComposer({
                   title="Queue message"
                 >
                   <ListPlus className="h-4 w-4" />
+                </Button>
+              )}
+              {running && finishAvailable && (
+                <Button
+                  size="icon-lg"
+                  variant="ghost"
+                  onClick={onFinish}
+                  disabled={sending}
+                  aria-label="Finish task"
+                  title="Finish Task: close Runtime and mark completed"
+                  data-testid="finish-task-composer"
+                >
+                  <Flag className="h-4 w-4" />
                 </Button>
               )}
               {running && (

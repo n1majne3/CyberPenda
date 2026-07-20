@@ -1228,8 +1228,10 @@ func (server *Server) runtimeControlsForTask(found task.Task, latest *task.TaskC
 	sessionCaptured := latest != nil && strings.TrimSpace(latest.NativeSessionID) != ""
 	_, providerSessionBound := server.providerSessions.get(found.ID)
 
+	activity := server.computeRuntimeActivity(found)
 	controls := task.RuntimeControls{
 		ResumeAvailable:         !active,
+		FinishAvailable:         activity.Liveness == runtimeLivenessLive && activity.TurnActivity == runtimeTurnIdle,
 		QueueSteerAvailable:     true,
 		NativeSessionCaptured:   sessionCaptured,
 		SameRuntimeProviderOnly: true,
@@ -1490,6 +1492,137 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 		return
 	}
 	writeJSON(response, http.StatusOK, stopped)
+}
+
+// handleFinishTask is operator-controlled Task completion. It requires current
+// Runtime Activity live+idle (not durable Task status), closes Runtime
+// resources, finalizes the active Continuation (triggering required
+// reconciliation), and marks the Task completed. Busy Runtimes must use Stop.
+// There is no MCP/Runtime path that invokes this handler.
+func (server *Server) handleFinishTask(response http.ResponseWriter, request *http.Request) {
+	projectID := request.PathValue("id")
+	taskID := request.PathValue("task_id")
+	if !server.requireProject(response, projectID) {
+		return
+	}
+	if taskID == "" {
+		writeError(response, http.StatusNotFound, "task not found")
+		return
+	}
+
+	found, err := server.tasks.Get(taskID)
+	if err != nil {
+		writeTaskError(response, err)
+		return
+	}
+	if found.ProjectID != projectID {
+		writeError(response, http.StatusNotFound, "task not found")
+		return
+	}
+	if !server.acquireTaskControl(taskID) {
+		writeError(response, http.StatusConflict, "task control operation already active")
+		return
+	}
+	defer server.releaseTaskControl(taskID)
+
+	// Re-read under the control lock so concurrent Stop/steer cannot race the gate.
+	found, err = server.tasks.Get(taskID)
+	if err != nil {
+		writeTaskError(response, err)
+		return
+	}
+	activity := server.computeRuntimeActivity(found)
+	if activity.Liveness != runtimeLivenessLive || activity.TurnActivity != runtimeTurnIdle {
+		writeError(response, http.StatusConflict, finishRejectedMessage(activity))
+		return
+	}
+
+	deadline := time.Now().Add(server.runtimeStopTimeout)
+	stopContext, cancelStop := context.WithDeadline(context.Background(), deadline)
+	defer cancelStop()
+
+	// RequestFinish cancels the harness so Launch finalizes completed (not stopped).
+	if server.harness != nil {
+		server.harness.RequestFinish(taskID)
+	}
+	if err := server.closeProviderSessionForStop(stopContext, taskID); err != nil {
+		writeError(response, http.StatusConflict, "provider session did not close")
+		return
+	}
+	remaining := time.Until(deadline)
+	if remaining < 0 {
+		remaining = 0
+	}
+	if server.harness != nil {
+		if ok := server.harness.StopAndWait(taskID, remaining); !ok {
+			writeError(response, http.StatusConflict, "runtime did not stop in time")
+			return
+		}
+	}
+
+	// After harness exit, the Continuation may already be terminal. Prefer
+	// LatestContinuation so we still verify completed + reconciliation.
+	cont, contErr := server.tasks.LatestContinuation(taskID)
+	if contErr != nil {
+		writeTaskError(response, contErr)
+		return
+	}
+	if cont != nil {
+		if cont.Status != task.StatusCompleted {
+			if _, err := server.tasks.UpdateContinuationStatus(cont.ID, task.StatusCompleted); err != nil {
+				// Launch with RequestFinish should already have set completed.
+				// A different terminal status means finish cannot claim success.
+				if errors.Is(err, task.ErrContinuationStatusConflict) {
+					writeError(response, http.StatusConflict, "continuation did not complete for finish")
+					return
+				}
+				writeTaskError(response, err)
+				return
+			}
+		}
+		// Re-read so reconciliation side effects from notifyTerminalContinuation
+		// are visible before we mark the Task completed.
+		if refreshed, refErr := server.tasks.Continuation(cont.ID); refErr == nil {
+			if refreshed.Status != task.StatusCompleted {
+				writeError(response, http.StatusConflict, "continuation did not complete for finish")
+				return
+			}
+		}
+	}
+
+	if _, err := server.tasks.UpdateStatus(taskID, task.StatusCompleted); err != nil {
+		writeTaskError(response, err)
+		return
+	}
+	// Lifecycle only — never a Runtime Activity audit/history record.
+	_, _ = server.tasks.AppendEvent(taskID, task.EventKindLifecycle, task.EventPayload{
+		"phase": "completed", "reason": "operator_finish",
+	})
+
+	finished, err := server.taskDetail(taskID)
+	if err != nil {
+		writeTaskError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, finished)
+}
+
+func finishRejectedMessage(activity task.RuntimeActivity) string {
+	switch activity.Liveness {
+	case runtimeLivenessLive:
+		if activity.TurnActivity == runtimeTurnBusy {
+			return "finish requires a live idle Runtime; Stop interrupts a busy Runtime"
+		}
+		return "finish requires a live idle Runtime"
+	case runtimeLivenessOffline:
+		return "finish requires a live idle Runtime; runtime is offline"
+	case runtimeLivenessOrphaned:
+		return "finish requires a live idle Runtime; runtime ownership is orphaned"
+	case runtimeLivenessUnknown:
+		return "finish requires a live idle Runtime; runtime health is unknown"
+	default:
+		return "finish requires a live idle Runtime"
+	}
 }
 
 func (server *Server) acquireTaskControl(taskID string) bool {
