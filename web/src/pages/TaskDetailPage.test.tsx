@@ -114,7 +114,7 @@ function stubTaskDetailApi(
           base_url: "https://api.anthropic.test/v1",
           protocols: ["anthropic_messages"],
           api_key_env: "ANTHROPIC_API_KEY",
-          catalog: { manual: ["claude-sonnet"], default_model: "claude-sonnet" },
+          catalog: { manual: ["claude-sonnet", "claude-opus"], default_model: "claude-sonnet" },
         },
       ],
     },
@@ -520,6 +520,76 @@ describe("TaskDetailPage", () => {
     // Composer retains the submitted selection for the next turn.
     expect(screen.getByRole("combobox", { name: "Continuation model provider" })).toHaveValue("mimo");
     expect(screen.getByRole("combobox", { name: "Continuation model" })).toHaveValue("mimo-v2-pro");
+    expect(screen.getByRole("combobox", { name: "Continuation reasoning effort" })).toHaveValue("xhigh");
+  });
+
+  // #146: Claude Code shares the same Task Conversation turn-selection contract.
+  it("keeps Claude same-provider model and effort changes on the native steer route", async () => {
+    const { fetchMock } = stubTaskDetailApi({
+      status: "running",
+      runtime_controls: {
+        native_resume_available: false,
+        resume_available: false,
+        queue_steer_available: true,
+        interrupt_steer_available: false,
+        native_steer_available: true,
+        native_steer_mode: "interrupt_then_replace",
+        native_session_captured: true,
+        same_runtime_provider_only: true,
+        runtime_provider: "claude_code",
+        turn_selection: {
+          model_provider_id: "anthropic",
+          model: "claude-sonnet",
+          reasoning_effort: "medium",
+        },
+      },
+      latest_continuation: {
+        id: "cont-1",
+        task_id: "task-1",
+        number: 1,
+        runtime_profile_id: "profile-1",
+        runtime_provider: "claude_code",
+        runner: "sandbox",
+        status: "running",
+        native_session_id: "claude-sess-1",
+        started_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:00:05Z",
+      },
+    });
+    const user = userEvent.setup();
+
+    renderPage();
+
+    await screen.findByText("Conversation should be hidden by default");
+    await waitFor(() => {
+      expect(screen.getByRole("combobox", { name: "Continuation model provider" })).toHaveValue("anthropic");
+      expect(screen.getByRole("combobox", { name: "Continuation model" })).toHaveValue("claude-sonnet");
+      expect(screen.getByRole("combobox", { name: "Continuation reasoning effort" })).toHaveValue("medium");
+    });
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model" }), "claude-opus");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Continuation reasoning effort" }), "xhigh");
+    await user.type(screen.getByPlaceholderText("Focus on admin.example.com next…"), "claude stronger turn");
+    await user.click(screen.getByRole("button", { name: /Native interrupt & send/ }));
+
+    const postPaths = fetchMock.mock.calls
+      .filter(([, init]) => init?.method === "POST")
+      .map(([input]) => String(input));
+    expect(postPaths.some((path) => path.endsWith("/steer"))).toBe(true);
+    expect(postPaths.some((path) => path.endsWith("/steer/queue"))).toBe(false);
+    expect(postPaths.some((path) => path.endsWith("/stop"))).toBe(false);
+
+    const steerCall = fetchMock.mock.calls.find(([input]) =>
+      String(input).endsWith("/api/projects/project-1/tasks/task-1/steer"),
+    );
+    expect(JSON.parse(String(steerCall?.[1]?.body))).toMatchObject({
+      message: "claude stronger turn",
+      model_provider_id: "anthropic",
+      model: "claude-opus",
+      reasoning_effort: "xhigh",
+    });
+    expect(screen.getByRole("combobox", { name: "Continuation model provider" })).toHaveValue("anthropic");
+    expect(screen.getByRole("combobox", { name: "Continuation model" })).toHaveValue("claude-opus");
     expect(screen.getByRole("combobox", { name: "Continuation reasoning effort" })).toHaveValue("xhigh");
   });
 

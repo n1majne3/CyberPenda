@@ -340,6 +340,133 @@ func TestClaudeProviderSessionMapsInputInterruptAndPermission(t *testing.T) {
 	}
 }
 
+// #146: Claude Code maps the complete Runtime Turn Selection onto claude/input
+// so the long-lived Query can apply model and Requested Reasoning Effort before
+// the turn without recreating the session.
+func TestClaudeProviderSessionMapsModelProviderModelAndEffortOnInput(t *testing.T) {
+	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
+		"claude/input": {Result: json.RawMessage(`{"session_id":"claude-1","turn_id":"turn-effort"}`)},
+	}}
+	session := NewClaudeCodeProviderSession(ClaudeCodeProviderSessionConfig{Transport: transport, SessionID: "claude-1"})
+	bindFakeProviderEvents(transport, session)
+
+	_, err := session.SendTurn(context.Background(), ProviderSessionRequest{
+		RequestID:                "send-effort",
+		Message:                  "inspect auth",
+		ModelProviderID:          "anthropic-primary",
+		Model:                    "claude-opus-strong",
+		RequestedReasoningEffort: "xhigh",
+	}, nil)
+	if err != nil {
+		t.Fatalf("send turn: %v", err)
+	}
+	requests := transport.snapshot()
+	if len(requests) != 1 || requests[0].Method != "claude/input" {
+		t.Fatalf("wire requests = %#v", requests)
+	}
+	var params map[string]any
+	if err := json.Unmarshal(requests[0].Params, &params); err != nil {
+		t.Fatal(err)
+	}
+	if params["session_id"] != "claude-1" {
+		t.Fatalf("session_id = %#v, want claude-1 (same Query session)", params["session_id"])
+	}
+	if params["message"] != "inspect auth" {
+		t.Fatalf("message = %#v", params["message"])
+	}
+	if params["model_provider_id"] != "anthropic-primary" {
+		t.Fatalf("model_provider_id = %#v, want anthropic-primary", params["model_provider_id"])
+	}
+	if params["model"] != "claude-opus-strong" {
+		t.Fatalf("model = %#v, want claude-opus-strong", params["model"])
+	}
+	if params["requested_reasoning_effort"] != "xhigh" {
+		t.Fatalf("requested_reasoning_effort = %#v, want xhigh", params["requested_reasoning_effort"])
+	}
+	// Effective effort is never inferred onto the wire from the request.
+	if _, ok := params["effective_reasoning_effort"]; ok {
+		t.Fatalf("must not send effective_reasoning_effort: %#v", params)
+	}
+}
+
+func TestClaudeProviderSessionInterruptThenReplaceMapsSelectionOnSameSession(t *testing.T) {
+	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
+		"claude/interrupt": {Result: json.RawMessage(`{"session_id":"claude-1","turn_id":"turn-old"}`)},
+		"claude/input":     {Result: json.RawMessage(`{"session_id":"claude-1","turn_id":"turn-new"}`)},
+	}, notifications: map[string]SandboxBridgeEvent{
+		"claude/interrupt": {Method: "claude/turn/completed", Params: json.RawMessage(`{"session_id":"claude-1","turn_id":"turn-old","status":"interrupted"}`)},
+	}}
+	session := NewClaudeCodeProviderSession(ClaudeCodeProviderSessionConfig{
+		Transport: transport, SessionID: "claude-1", ActiveTurnID: "turn-old",
+	})
+	bindFakeProviderEvents(transport, session)
+
+	result, err := session.InterruptThenReplace(context.Background(), ProviderSessionRequest{
+		RequestID:                "replace-effort",
+		Message:                  "switch model mid-task",
+		ModelProviderID:          "anthropic-primary",
+		Model:                    "claude-sonnet-fast",
+		RequestedReasoningEffort: "max",
+	}, nil)
+	if err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	if result.SessionID != "claude-1" {
+		t.Fatalf("session moved to %q; want same Query session", result.SessionID)
+	}
+	requests := transport.snapshot()
+	if len(requests) != 2 || requests[0].Method != "claude/interrupt" || requests[1].Method != "claude/input" {
+		t.Fatalf("requests = %#v", requests)
+	}
+	var params map[string]any
+	if err := json.Unmarshal(requests[1].Params, &params); err != nil {
+		t.Fatal(err)
+	}
+	if params["session_id"] != "claude-1" {
+		t.Fatalf("replacement session_id = %#v", params["session_id"])
+	}
+	if params["model_provider_id"] != "anthropic-primary" || params["model"] != "claude-sonnet-fast" || params["requested_reasoning_effort"] != "max" {
+		t.Fatalf("replacement selection = %#v", params)
+	}
+}
+
+func TestClaudeProviderSessionSurfacesUnsupportedEffortWithoutRewriting(t *testing.T) {
+	transport := &fakeProviderTransport{send: func(_ context.Context, request SandboxBridgeRequest) (SandboxBridgeResponse, error) {
+		if request.Method != "claude/input" {
+			return SandboxBridgeResponse{}, errors.New("unexpected method")
+		}
+		var params map[string]any
+		if err := json.Unmarshal(request.Params, &params); err != nil {
+			t.Fatal(err)
+		}
+		if params["requested_reasoning_effort"] != "max" {
+			t.Fatalf("effort rewritten before provider saw it: %#v", params["requested_reasoning_effort"])
+		}
+		if params["model"] != "claude-haiku" {
+			t.Fatalf("model rewritten: %#v", params["model"])
+		}
+		return SandboxBridgeResponse{}, errors.New("unsupported reasoning effort: max")
+	}}
+	session := NewClaudeCodeProviderSession(ClaudeCodeProviderSessionConfig{Transport: transport, SessionID: "claude-1"})
+	_, err := session.SendTurn(context.Background(), ProviderSessionRequest{
+		RequestID:                "effort-reject",
+		Message:                  "try max",
+		ModelProviderID:          "anthropic-primary",
+		Model:                    "claude-haiku",
+		RequestedReasoningEffort: "max",
+	}, nil)
+	if err == nil {
+		t.Fatal("expected provider effort rejection")
+	}
+	var opErr *ProviderSessionOperationError
+	if !errors.As(err, &opErr) {
+		t.Fatalf("error type = %T (%v), want ProviderSessionOperationError", err, err)
+	}
+	if !strings.Contains(opErr.Cause.Error(), "unsupported reasoning effort") {
+		t.Fatalf("cause = %v", opErr.Cause)
+	}
+}
+
 func TestPiProviderSessionMapsPromptAbortAndReplacement(t *testing.T) {
 	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
 		"pi/prompt": {Result: json.RawMessage(`{"session_id":"pi-1","turn_id":"turn-new"}`)},
