@@ -2,6 +2,22 @@ import type { ModelProvider, RuntimePlugin, RuntimeProfile } from "@/lib/api";
 
 type RuntimeProfileFields = RuntimeProfile["fields"];
 
+/** Exact Reasoning Effort vocabulary. There is no Auto or Runtime Default value. */
+export const REASONING_EFFORT_VALUES = ["low", "medium", "high", "xhigh", "max"] as const;
+export type ReasoningEffortValue = (typeof REASONING_EFFORT_VALUES)[number];
+
+/**
+ * Display value for a stored or inherited Reasoning Effort.
+ * Missing storage shows high without rewriting storage until the user saves.
+ */
+export function displayReasoningEffort(stored?: string | null): ReasoningEffortValue {
+  const trimmed = stored?.trim() ?? "";
+  if ((REASONING_EFFORT_VALUES as readonly string[]).includes(trimmed)) {
+    return trimmed as ReasoningEffortValue;
+  }
+  return "high";
+}
+
 export type RuntimeProfileFormInput = {
   name: string;
   provider: string;
@@ -11,6 +27,7 @@ export type RuntimeProfileFormInput = {
   model_provider_id: string;
   model_provider_protocol: string;
   model_override: string;
+  reasoning_effort: string;
   custom_args: string;
   env: string;
   api_key_env: string;
@@ -150,6 +167,8 @@ export function buildProfileFields(form: RuntimeProfileFormInput, plugins: Runti
   if (modelProviderID) fields.model_provider_id = modelProviderID;
   if (modelProviderProtocol) fields.model_provider_protocol = modelProviderProtocol;
   if (modelOverride) fields.model_override = modelOverride;
+  // Form control always holds one of the five values; persist that explicit choice.
+  fields.reasoning_effort = displayReasoningEffort(form.reasoning_effort);
   if (customArgs.length > 0) fields.custom_args = customArgs;
   if (Object.keys(env).length > 0) fields.env = env;
   if (mcpServers && mcpServers.length > 0) fields.mcp_servers = mcpServers;

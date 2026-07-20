@@ -163,6 +163,7 @@ export interface RuntimeProfile {
     model_provider_id?: string;
     model_provider_protocol?: string;
     model_override?: string;
+    reasoning_effort?: string;
     custom_args?: string[];
     env?: Record<string, string>;
     api_keys?: Record<string, string>;

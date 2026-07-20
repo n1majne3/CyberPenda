@@ -13,7 +13,7 @@ import {
 } from "@/lib/api";
 import { Button, Card, Label, Textarea, Select } from "@/components/ui";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
-import { selectableModelProviders } from "@/pages/runtimeProfileForm";
+import { displayReasoningEffort, REASONING_EFFORT_VALUES, selectableModelProviders } from "@/pages/runtimeProfileForm";
 import {
   canLaunch,
   findLaunchProfileForSelection,
@@ -21,6 +21,7 @@ import {
   initialLaunchState,
   launchRuntimes,
   launchModelOverridePayload,
+  launchReasoningEffortPayload,
   launchRuntimeProfileId,
   modelsForProvider,
   presetMatchesRuntime,
@@ -47,6 +48,7 @@ export function TaskLaunchPage() {
     runtime: "",
     modelProviderId: "",
     modelOverride: "",
+    reasoningEffort: "high",
     runner: "sandbox",
   });
   const [presetId, setPresetId] = useState("");
@@ -232,12 +234,14 @@ export function TaskLaunchPage() {
       profileId = launchRuntimeProfileId(presetId, profileId);
 
       const launchOverride = launchModelOverridePayload(presetId, form);
+      const reasoningOverride = launchReasoningEffortPayload(form);
       const runControls = launchRunControls(hostActivated, form.runner, sandboxNetwork);
       const checked = await apiPost<PreflightResult>(`/api/projects/${projectId}/preflight`, {
         runtime_profile_id: profileId,
         runner: form.runner,
         run_controls: runControls,
         ...launchOverride,
+        ...reasoningOverride,
       });
       setPreflight(checked);
       if (!checked.pass) {
@@ -250,6 +254,7 @@ export function TaskLaunchPage() {
         runner: form.runner,
         run_controls: runControls,
         ...launchOverride,
+        ...reasoningOverride,
       });
       navigate(`/projects/${projectId}/tasks/${created.id}`);
     } catch (e) {
@@ -386,6 +391,24 @@ export function TaskLaunchPage() {
                   ))}
                 </>
               )}
+            </Select>
+          </div>
+          <div>
+            <Label htmlFor="launch-reasoning-effort">Reasoning effort</Label>
+            <Select
+              id="launch-reasoning-effort"
+              name="reasoning_effort"
+              value={displayReasoningEffort(form.reasoningEffort)}
+              onChange={(e) => {
+                setForm((current) => ({ ...current, reasoningEffort: e.target.value }));
+                setPreflight(null);
+              }}
+            >
+              {REASONING_EFFORT_VALUES.map((effort) => (
+                <option key={effort} value={effort}>
+                  {effort}
+                </option>
+              ))}
             </Select>
           </div>
         </div>

@@ -68,7 +68,7 @@ func TestClaudeAndPiV2PostGrantProjectionFailureRollsBackDurableLaunchAndGrantCo
 			if err != nil {
 				t.Fatalf("create Task: %v", err)
 			}
-			plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "")
+			plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "", "")
 			if err != nil {
 				t.Fatalf("build launch plan: %v", err)
 			}
@@ -178,7 +178,7 @@ func TestCodexV2LaunchStillSucceedsWithoutBindGrantSideEffects(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "")
+	plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "", "")
 	if err != nil {
 		t.Fatalf("build plan: %v", err)
 	}
@@ -243,7 +243,7 @@ func TestClaudeAndPiV2SandboxArgvAndEnvOmitIdentityAndHostTaskRoots(t *testing.T
 			if err != nil {
 				t.Fatalf("create Task: %v", err)
 			}
-			plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "")
+			plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "", "")
 			if err != nil {
 				t.Fatalf("build plan: %v", err)
 			}

@@ -453,15 +453,21 @@ func (s *providerSessionAdapter) storeFailure(requestID string, mode ProviderSes
 
 func providerSessionRequestFingerprint(request ProviderSessionRequest) string {
 	encoded, _ := json.Marshal(struct {
-		Message             string `json:"message"`
-		ProviderTurnID      string `json:"provider_turn_id"`
-		PermissionRequestID string `json:"permission_request_id"`
-		PermissionDecision  string `json:"permission_decision"`
+		Message                  string `json:"message"`
+		ProviderTurnID           string `json:"provider_turn_id"`
+		PermissionRequestID      string `json:"permission_request_id"`
+		PermissionDecision       string `json:"permission_decision"`
+		ModelProviderID          string `json:"model_provider_id"`
+		Model                    string `json:"model"`
+		RequestedReasoningEffort string `json:"requested_reasoning_effort"`
 	}{
-		Message:             request.Message,
-		ProviderTurnID:      request.ProviderTurnID,
-		PermissionRequestID: request.PermissionRequestID,
-		PermissionDecision:  request.PermissionDecision,
+		Message:                  request.Message,
+		ProviderTurnID:           request.ProviderTurnID,
+		PermissionRequestID:      request.PermissionRequestID,
+		PermissionDecision:       request.PermissionDecision,
+		ModelProviderID:          request.ModelProviderID,
+		Model:                    request.Model,
+		RequestedReasoningEffort: request.RequestedReasoningEffort,
 	})
 	return string(encoded)
 }
@@ -664,6 +670,14 @@ func NewCodexProviderSession(config CodexProviderSessionConfig) *CodexProviderSe
 					"type": "text",
 					"text": request.Message,
 				}},
+			}
+			if model := strings.TrimSpace(request.Model); model != "" {
+				params["model"] = model
+			}
+			// Codex App Server accepts effort on turn/start. CyberPenda always
+			// sends the resolved Requested Reasoning Effort explicitly.
+			if effort := strings.TrimSpace(request.RequestedReasoningEffort); effort != "" {
+				params["effort"] = effort
 			}
 			if request.PermissionRequestID != "" {
 				params["permissionRequestId"] = request.PermissionRequestID

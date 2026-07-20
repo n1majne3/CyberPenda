@@ -97,6 +97,14 @@ type ProviderSessionRequest struct {
 	ProviderTurnID      string
 	PermissionRequestID string
 	PermissionDecision  string
+	// ModelProviderID, Model, and RequestedReasoningEffort are the resolved
+	// Runtime Turn Selection for this request. Every turn sends them explicitly.
+	ModelProviderID          string
+	Model                    string
+	RequestedReasoningEffort string
+	// EffectiveReasoningEffort is set only when a Runtime reports the level it
+	// actually applied. It is never inferred from the request.
+	EffectiveReasoningEffort string
 }
 
 // ProviderSessionResult is the stable correlation result for one provider
@@ -180,6 +188,8 @@ type FakeProviderSession struct {
 	continuation string
 	acknowledge  map[string]chan struct{}
 	closed       bool
+	// lastRequests records each operation request for acceptance tests.
+	lastRequests []ProviderSessionRequest
 }
 
 // NewFakeProviderSession returns an idle or active deterministic session.
@@ -214,6 +224,13 @@ func (s *FakeProviderSession) Capabilities() runtimeplugin.Capabilities { return
 
 func (s *FakeProviderSession) SendTurn(ctx context.Context, request ProviderSessionRequest, emit ProviderSessionEmit) (ProviderSessionResult, error) {
 	return s.operate(ctx, ProviderSessionModeSendTurn, ProviderSessionCapabilitySendTurn, request, emit)
+}
+
+// LastRequests returns a copy of recorded provider control requests.
+func (s *FakeProviderSession) LastRequests() []ProviderSessionRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]ProviderSessionRequest(nil), s.lastRequests...)
 }
 
 func (s *FakeProviderSession) InterruptTurn(ctx context.Context, request ProviderSessionRequest, emit ProviderSessionEmit) (ProviderSessionResult, error) {
@@ -265,6 +282,9 @@ func (s *FakeProviderSession) operate(ctx context.Context, mode ProviderSessionM
 	if request.RequestID == "" {
 		return ProviderSessionResult{}, ErrInvalidProviderSessionRequest
 	}
+	s.mu.Lock()
+	s.lastRequests = append(s.lastRequests, request)
+	s.mu.Unlock()
 	if !hasProviderSessionCapability(s.capabilities, capability) {
 		s.mu.Lock()
 		turnID := s.activeTurnID

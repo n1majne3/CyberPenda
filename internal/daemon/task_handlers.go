@@ -58,6 +58,7 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		Goal             string            `json:"goal"`
 		RuntimeProfileID string            `json:"runtime_profile_id"`
 		ModelOverride    string            `json:"model_override,omitempty"`
+		ReasoningEffort  string            `json:"reasoning_effort,omitempty"`
 		Runner           task.Runner       `json:"runner"`
 		RunControls      task.RunControls  `json:"run_controls"`
 		Extras           map[string]string `json:"extras"`
@@ -79,6 +80,11 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 	input.Runner = defaulted.runner
 
 	launchModelOverride := strings.TrimSpace(input.ModelOverride)
+	launchReasoningEffort, err := normalizeLaunchReasoningEffort(input.ReasoningEffort)
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err.Error())
+		return
+	}
 	preflightResult := server.preflight.Run(request.Context(), preflight.Request{
 		RuntimeProfileID:    input.RuntimeProfileID,
 		LaunchModelOverride: launchModelOverride,
@@ -116,7 +122,7 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		return
 	}
 
-	plan, err := server.buildTaskLaunchPlan(created, created.Goal, launchModelOverride, "")
+	plan, err := server.buildTaskLaunchPlan(created, created.Goal, launchModelOverride, "", launchReasoningEffort)
 	if err != nil {
 		writeTaskAdapterError(response, err)
 		return
@@ -145,6 +151,7 @@ type taskLaunchPlan struct {
 	Metadata                     func() (runtime.NativeSessionMetadata, error)
 	StopConfirmation             runtime.StopConfirmation
 	LaunchModelOverride          string
+	LaunchReasoningEffort        string
 	NativeResumeSessionID        string
 	ResolvedProfile              runtimeprofile.Profile
 	ModelSnapshot                *modelprovider.Snapshot
@@ -189,6 +196,17 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 			redactedErr := &providerSessionFactoryError{cause: bindErr}
 			server.failProviderSessionLaunch(created.ID, continuation.ID, redactedErr)
 			return redactedErr
+		}
+		if adapter, ok := binding.Adapter.(*runtime.ProviderSessionRunAdapter); ok {
+			selection, selectionErr := initialProviderTurnSelection(plan)
+			if selectionErr != nil {
+				_ = binding.Session.Close(context.Background())
+				server.providerSessions.remove(created.ID)
+				redactedErr := &providerSessionFactoryError{cause: selectionErr}
+				server.failProviderSessionLaunch(created.ID, continuation.ID, redactedErr)
+				return redactedErr
+			}
+			adapter.SetInitialTurnSelection(selection)
 		}
 		plan.Adapter = binding.Adapter
 	}
@@ -267,7 +285,7 @@ func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, p
 			// Continuation grant before the launch transaction commits.
 			binding := &continuationLaunchBinding{V2Header: &launchHeader}
 			var err error
-			boundPlan, err = server.buildTaskLaunchPlanWithBinding(created, goal, plan.LaunchModelOverride, plan.NativeResumeSessionID, binding, &plan)
+			boundPlan, err = server.buildTaskLaunchPlanWithBinding(created, goal, plan.LaunchModelOverride, plan.NativeResumeSessionID, plan.LaunchReasoningEffort, binding, &plan)
 			return err
 		},
 		BindGrant: func(plaintextGrant string) error {
@@ -276,7 +294,7 @@ func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, p
 			}
 			binding := &continuationLaunchBinding{V2Header: &launchHeader, InterfaceToken: plaintextGrant}
 			var err error
-			boundPlan, err = server.buildTaskLaunchPlanWithBinding(created, goal, plan.LaunchModelOverride, plan.NativeResumeSessionID, binding, &plan)
+			boundPlan, err = server.buildTaskLaunchPlanWithBinding(created, goal, plan.LaunchModelOverride, plan.NativeResumeSessionID, plan.LaunchReasoningEffort, binding, &plan)
 			if err != nil {
 				scrubBlackboardV2GrantBearingProjection(layout, provider)
 			}
@@ -389,7 +407,7 @@ func (server *Server) recordLoopbackRewriteEvent(created task.Task) {
 }
 
 func (server *Server) buildTaskAdapter(created task.Task, launchModelOverride string) (runtime.Adapter, map[string]any, error) {
-	plan, err := server.buildTaskLaunchPlanWithBinding(created, created.Goal, launchModelOverride, "", nil, nil)
+	plan, err := server.buildTaskLaunchPlanWithBinding(created, created.Goal, launchModelOverride, "", "", nil, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -397,26 +415,26 @@ func (server *Server) buildTaskAdapter(created task.Task, launchModelOverride st
 }
 
 func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string, launchModelOverride string) (runtime.Adapter, map[string]any, error) {
-	plan, err := server.buildTaskLaunchPlanWithBinding(created, goal, launchModelOverride, "", nil, nil)
+	plan, err := server.buildTaskLaunchPlanWithBinding(created, goal, launchModelOverride, "", "", nil, nil)
 	if err != nil {
 		return nil, nil, err
 	}
 	return plan.Adapter, plan.RuntimeConfig, nil
 }
 
-func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string) (taskLaunchPlan, error) {
+func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, launchReasoningEffort string) (taskLaunchPlan, error) {
 	server.logTaskLaunchStage(created, "build_plan")
 	profile, err := server.profiles.Get(created.RuntimeProfileID)
 	if err != nil {
 		return taskLaunchPlan{}, err
 	}
 	if server.blackboardV2Continuity != nil && runner.BlackboardV2SupportsProvider(profile.Provider) {
-		return server.prepareBlackboardV2TaskLaunchPlan(created, goal, launchModelOverride, nativeResumeSessionID, profile)
+		return server.prepareBlackboardV2TaskLaunchPlan(created, goal, launchModelOverride, nativeResumeSessionID, launchReasoningEffort, profile)
 	}
-	return server.buildTaskLaunchPlanWithBinding(created, goal, launchModelOverride, nativeResumeSessionID, nil, nil)
+	return server.buildTaskLaunchPlanWithBinding(created, goal, launchModelOverride, nativeResumeSessionID, launchReasoningEffort, nil, nil)
 }
 
-func (server *Server) prepareBlackboardV2TaskLaunchPlan(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, profile runtimeprofile.Profile) (taskLaunchPlan, error) {
+func (server *Server) prepareBlackboardV2TaskLaunchPlan(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, launchReasoningEffort string, profile runtimeprofile.Profile) (taskLaunchPlan, error) {
 	layout, err := runner.PrepareBlackboardV2TaskLayout(server.runtimeRoot, created.ID, profile.Provider)
 	if err != nil {
 		return taskLaunchPlan{}, err
@@ -448,11 +466,15 @@ func (server *Server) prepareBlackboardV2TaskLaunchPlan(created task.Task, goal 
 	if err != nil {
 		return taskLaunchPlan{}, err
 	}
-	capturedRuntimeConfig := capturedTaskRuntimeConfig(created, profile, runtimeprofile.GeneratedConfig(profile), blackboardV2ModelSnapshotPreview(modelSnapshot), launchModelOverride)
+	capturedRuntimeConfig, err := capturedTaskRuntimeConfig(created, profile, runtimeprofile.GeneratedConfig(profile), blackboardV2ModelSnapshotPreview(modelSnapshot), launchModelOverride, launchReasoningEffort)
+	if err != nil {
+		return taskLaunchPlan{}, err
+	}
 	return taskLaunchPlan{
 		CapturedRuntimeConfig:   capturedRuntimeConfig,
 		MaterializedCredentials: materializedCredentials,
 		LaunchModelOverride:     launchModelOverride,
+		LaunchReasoningEffort:   launchReasoningEffort,
 		NativeResumeSessionID:   nativeResumeSessionID,
 		ResolvedProfile:         profile,
 		ModelSnapshot:           modelSnapshot,
@@ -463,7 +485,10 @@ func (server *Server) prepareBlackboardV2TaskLaunchPlan(created task.Task, goal 
 	}, nil
 }
 
-func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, binding *continuationLaunchBinding, captured *taskLaunchPlan) (taskLaunchPlan, error) {
+func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, launchReasoningEffort string, binding *continuationLaunchBinding, captured *taskLaunchPlan) (taskLaunchPlan, error) {
+	if captured != nil && strings.TrimSpace(launchReasoningEffort) == "" {
+		launchReasoningEffort = captured.LaunchReasoningEffort
+	}
 	v2 := binding != nil && binding.V2Header != nil
 	runtimeConfig := map[string]any{
 		"runtime_profile_id": created.RuntimeProfileID,
@@ -497,11 +522,14 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	if profile.Provider == runtimeprofile.ProviderFake {
 		runtimeConfig["provider"] = string(runtimeprofile.ProviderFake)
 		runtimeConfig["generated_config"] = runtimeprofile.GeneratedConfig(profile)
-		capturedRuntimeConfig := capturedTaskRuntimeConfig(created, profile, runtimeConfig["generated_config"], nil, launchModelOverride)
+		capturedRuntimeConfig, err := capturedTaskRuntimeConfig(created, profile, runtimeConfig["generated_config"], nil, launchModelOverride, launchReasoningEffort)
+		if err != nil {
+			return taskLaunchPlan{}, err
+		}
 		if captured != nil {
 			capturedRuntimeConfig = captured.CapturedRuntimeConfig
 		}
-		return taskLaunchPlan{Adapter: runtime.NewFakeAdapter(), RuntimeConfig: runtimeConfig, CapturedRuntimeConfig: capturedRuntimeConfig, LaunchModelOverride: launchModelOverride, NativeResumeSessionID: nativeResumeSessionID, ResolvedProfile: profile, LaunchGoal: launchGoal}, nil
+		return taskLaunchPlan{Adapter: runtime.NewFakeAdapter(), RuntimeConfig: runtimeConfig, CapturedRuntimeConfig: capturedRuntimeConfig, LaunchModelOverride: launchModelOverride, LaunchReasoningEffort: launchReasoningEffort, NativeResumeSessionID: nativeResumeSessionID, ResolvedProfile: profile, LaunchGoal: launchGoal}, nil
 	}
 	if captured == nil {
 		var err error
@@ -694,6 +722,9 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	if launchModelOverride != "" {
 		runtimeConfig["launch_model_override"] = launchModelOverride
 	}
+	if launchReasoningEffort != "" {
+		runtimeConfig["launch_reasoning_effort_override"] = launchReasoningEffort
+	}
 	runtimeConfig["layout"] = layout
 	if containerIDFile != "" {
 		runtimeConfig["container_id_file"] = containerIDFile
@@ -705,7 +736,10 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	if v2 {
 		runtimeConfig = map[string]any{}
 	}
-	capturedRuntimeConfig := capturedTaskRuntimeConfig(created, launchProfile, runtimeprofile.GeneratedConfig(launchProfile), projection.Config["model_provider_snapshot"], launchModelOverride)
+	capturedRuntimeConfig, err := capturedTaskRuntimeConfig(created, launchProfile, runtimeprofile.GeneratedConfig(launchProfile), projection.Config["model_provider_snapshot"], launchModelOverride, launchReasoningEffort)
+	if err != nil {
+		return taskLaunchPlan{}, err
+	}
 	if captured != nil {
 		capturedRuntimeConfig = captured.CapturedRuntimeConfig
 	}
@@ -791,6 +825,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		Metadata:                metadata,
 		StopConfirmation:        stopConfirmation,
 		LaunchModelOverride:     launchModelOverride,
+		LaunchReasoningEffort:   launchReasoningEffort,
 		NativeResumeSessionID:   nativeResumeSessionID,
 		ResolvedProfile:         launchProfile,
 		ModelSnapshot:           projection.ModelSnapshot,
@@ -839,7 +874,7 @@ func codexV2ProjectionProfile(profile runtimeprofile.Profile) runtimeprofile.Pro
 	return projected
 }
 
-func capturedTaskRuntimeConfig(created task.Task, profile runtimeprofile.Profile, generatedConfig any, modelSnapshot any, launchModelOverride string) map[string]any {
+func capturedTaskRuntimeConfig(created task.Task, profile runtimeprofile.Profile, generatedConfig any, modelSnapshot any, launchModelOverride string, launchReasoningEffort string) (map[string]any, error) {
 	captured := map[string]any{
 		"runtime_profile_id": created.RuntimeProfileID,
 		"runtime_plugin_id":  string(profile.Provider),
@@ -852,7 +887,67 @@ func capturedTaskRuntimeConfig(created task.Task, profile runtimeprofile.Profile
 	if launchModelOverride != "" {
 		captured["launch_model_override"] = launchModelOverride
 	}
-	return captured
+	if launchReasoningEffort != "" {
+		captured["launch_reasoning_effort_override"] = launchReasoningEffort
+	}
+	// Always capture the resolved Requested Reasoning Effort for the initial
+	// turn so historical views show the explicit request without inferring
+	// Effective Reasoning Effort.
+	requested, err := runtimeprofile.ResolveRequestedReasoningEffort(
+		"",
+		launchReasoningEffort,
+		profile.Fields.ReasoningEffort,
+	)
+	if err != nil {
+		return nil, err
+	}
+	captured["requested_reasoning_effort"] = string(requested)
+	return captured, nil
+}
+
+func normalizeLaunchReasoningEffort(value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", nil
+	}
+	effort, err := runtimeprofile.NormalizeReasoningEffort(trimmed)
+	if err != nil {
+		return "", err
+	}
+	return string(effort), nil
+}
+
+func initialProviderTurnSelection(plan taskLaunchPlan) (runtime.ProviderSessionRequest, error) {
+	model := ""
+	modelProviderID := strings.TrimSpace(plan.ResolvedProfile.Fields.ModelProviderID)
+	if plan.ModelSnapshot != nil {
+		model = strings.TrimSpace(plan.ModelSnapshot.Model)
+		if modelProviderID == "" {
+			modelProviderID = strings.TrimSpace(plan.ModelSnapshot.ModelProviderID)
+		}
+	}
+	if model == "" {
+		model = strings.TrimSpace(plan.LaunchModelOverride)
+	}
+	if model == "" {
+		model = strings.TrimSpace(plan.ResolvedProfile.Fields.ModelOverride)
+	}
+	if model == "" {
+		model = strings.TrimSpace(plan.ResolvedProfile.Fields.Model)
+	}
+	requested, err := runtimeprofile.ResolveRequestedReasoningEffort(
+		"",
+		plan.LaunchReasoningEffort,
+		plan.ResolvedProfile.Fields.ReasoningEffort,
+	)
+	if err != nil {
+		return runtime.ProviderSessionRequest{}, err
+	}
+	return runtime.ProviderSessionRequest{
+		ModelProviderID:          modelProviderID,
+		Model:                    model,
+		RequestedReasoningEffort: string(requested),
+	}, nil
 }
 
 func sandboxNetworkMode(runControls task.RunControls) runner.SandboxNetworkMode {
@@ -1367,7 +1462,7 @@ func (server *Server) prepareNativeResumeContinuation(found task.Task, resumedMe
 			return task.Task{}, "", taskLaunchPlan{}, err
 		}
 	}
-	plan, err := server.buildTaskLaunchPlan(found, resumedMessage, "", nativeResumeSessionID)
+	plan, err := server.buildTaskLaunchPlan(found, resumedMessage, "", nativeResumeSessionID, "")
 	if err != nil {
 		return task.Task{}, "", taskLaunchPlan{}, err
 	}
@@ -1420,7 +1515,7 @@ func (server *Server) prepareFreshResumeContinuation(found task.Task) (task.Task
 	if err != nil {
 		return task.Task{}, "", taskLaunchPlan{}, err
 	}
-	plan, err := server.buildTaskLaunchPlan(found, resumeGoal, "", "")
+	plan, err := server.buildTaskLaunchPlan(found, resumeGoal, "", "", "")
 	if err != nil {
 		return task.Task{}, "", taskLaunchPlan{}, err
 	}

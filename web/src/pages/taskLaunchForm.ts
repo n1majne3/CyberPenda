@@ -1,6 +1,6 @@
 import type { ModelProvider, RuntimePlugin, RuntimeProfile } from "@/lib/api";
 import { isManualRuntimeProfile } from "@/pages/runtimeProfileKind";
-import { selectableModelProviders } from "@/pages/runtimeProfileForm";
+import { displayReasoningEffort, selectableModelProviders } from "@/pages/runtimeProfileForm";
 
 export const LAUNCH_RUNTIME_IDS = ["codex", "claude_code", "pi"] as const;
 
@@ -8,6 +8,7 @@ export type LaunchForm = {
   runtime: string;
   modelProviderId: string;
   modelOverride: string;
+  reasoningEffort: string;
   runner: string;
 };
 
@@ -49,6 +50,8 @@ export function launchSelectionFromProfile(profile: RuntimeProfile): Partial<Lau
     runtime: profile.provider,
     modelProviderId: profile.fields.model_provider_id?.trim() ?? "",
     modelOverride: profile.fields.model_override?.trim() ?? "",
+    // Inheritance: missing profile storage displays as high outside any sixth option.
+    reasoningEffort: displayReasoningEffort(profile.fields.reasoning_effort),
     runner: profile.fields.default_runner?.trim() || "sandbox",
   };
 }
@@ -128,6 +131,7 @@ export function formFromPreset(
     runtime: selection.runtime ?? "",
     modelProviderId: selection.modelProviderId ?? "",
     modelOverride,
+    reasoningEffort: displayReasoningEffort(selection.reasoningEffort),
     runner: projectRunner?.trim() || selection.runner || "sandbox",
   };
 }
@@ -166,6 +170,17 @@ export function launchModelOverridePayload(
   return { model_override: modelOverride };
 }
 
+/**
+ * Launch always sends an explicit Requested Reasoning Effort (one of five).
+ * Inheritance from Profile / high is applied when initializing the form, not
+ * via an extra select option.
+ */
+export function launchReasoningEffortPayload(
+  form: Pick<LaunchForm, "reasoningEffort">,
+): { reasoning_effort: string } {
+  return { reasoning_effort: displayReasoningEffort(form.reasoningEffort) };
+}
+
 type InitialLaunchStateInput = {
   plugins: RuntimePlugin[];
   modelProviders: ModelProvider[];
@@ -188,6 +203,7 @@ export function simpleLaunchFormForRuntime(
     runtime,
     modelProviderId: provider?.id ?? "",
     modelOverride: models[0] ?? "",
+    reasoningEffort: "high",
     runner: projectRunner?.trim() || "sandbox",
   };
 }
@@ -242,6 +258,7 @@ export function defaultLaunchForm(input: DefaultLaunchFormInput): LaunchForm {
     runtime,
     modelProviderId,
     modelOverride,
+    reasoningEffort: displayReasoningEffort(fromProfile.reasoningEffort),
     runner: input.projectRunner?.trim() || fromProfile.runner || "sandbox",
   };
 }

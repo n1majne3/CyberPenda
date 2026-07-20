@@ -136,6 +136,38 @@ func TestCodexProviderSessionMapsTurnStartAndInterrupt(t *testing.T) {
 	}
 }
 
+func TestCodexProviderSessionMapsModelAndRequestedReasoningEffortOnTurnStart(t *testing.T) {
+	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
+		"turn/start": {Result: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-effort"}}`)},
+	}}
+	session := NewCodexProviderSession(CodexProviderSessionConfig{Transport: transport, SessionID: "thread-1", ThreadID: "thread-1"})
+	bindFakeProviderEvents(transport, session)
+
+	_, err := session.SendTurn(context.Background(), ProviderSessionRequest{
+		RequestID:                "send-effort",
+		Message:                  "inspect the target",
+		Model:                    "gpt-test",
+		RequestedReasoningEffort: "xhigh",
+	}, nil)
+	if err != nil {
+		t.Fatalf("send turn: %v", err)
+	}
+	requests := transport.snapshot()
+	if len(requests) != 1 || requests[0].Method != "turn/start" {
+		t.Fatalf("wire requests = %#v", requests)
+	}
+	var startParams map[string]any
+	if err := json.Unmarshal(requests[0].Params, &startParams); err != nil {
+		t.Fatal(err)
+	}
+	if startParams["model"] != "gpt-test" {
+		t.Fatalf("model param = %#v, want gpt-test", startParams["model"])
+	}
+	if startParams["effort"] != "xhigh" {
+		t.Fatalf("effort param = %#v, want xhigh", startParams["effort"])
+	}
+}
+
 func TestCodexProviderSessionInterruptThenReplaceUsesSameThread(t *testing.T) {
 	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
 		"turn/interrupt": {Result: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-old"}`)},

@@ -739,7 +739,8 @@ func (server *Server) handleCreateRuntimeProfile(response http.ResponseWriter, r
 		switch {
 		case errors.Is(err, runtimeprofile.ErrMissingName),
 			errors.Is(err, runtimeprofile.ErrMissingProvider),
-			errors.Is(err, runtimeprofile.ErrUnknownProvider):
+			errors.Is(err, runtimeprofile.ErrUnknownProvider),
+			errors.Is(err, runtimeprofile.ErrInvalidReasoningEffort):
 			writeError(response, http.StatusBadRequest, err.Error())
 		default:
 			writeError(response, http.StatusInternalServerError, "store runtime profile")
@@ -807,7 +808,8 @@ func (server *Server) handleUpdateRuntimeProfile(response http.ResponseWriter, r
 		switch {
 		case errors.Is(err, runtimeprofile.ErrNotFound):
 			writeError(response, http.StatusNotFound, err.Error())
-		case errors.Is(err, runtimeprofile.ErrUnknownProvider):
+		case errors.Is(err, runtimeprofile.ErrUnknownProvider),
+			errors.Is(err, runtimeprofile.ErrInvalidReasoningEffort):
 			writeError(response, http.StatusBadRequest, err.Error())
 		default:
 			writeError(response, http.StatusInternalServerError, "store runtime profile update")
@@ -971,6 +973,7 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 	var input struct {
 		RuntimeProfileID        string           `json:"runtime_profile_id"`
 		ModelOverride           string           `json:"model_override,omitempty"`
+		ReasoningEffort         string           `json:"reasoning_effort,omitempty"`
 		Runner                  string           `json:"runner"`
 		RunControls             task.RunControls `json:"run_controls"`
 		CredentialRefsToResolve []string         `json:"credential_refs"`
@@ -991,6 +994,10 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 	}
 
 	hostActivated := input.RunControls.HostActivated || input.HostActivated
+	if _, err := normalizeLaunchReasoningEffort(input.ReasoningEffort); err != nil {
+		writeError(response, http.StatusBadRequest, err.Error())
+		return
+	}
 	result := server.preflight.Run(request.Context(), preflight.Request{
 		RuntimeProfileID:        defaulted.runtimeProfileID,
 		LaunchModelOverride:     strings.TrimSpace(input.ModelOverride),

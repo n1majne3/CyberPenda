@@ -7,6 +7,8 @@ import { enrichPreviewWithModelProvider } from "@/pages/runtimeProfilePreview";
 import {
   applyModelProviderSelection,
   buildProfileFields,
+  displayReasoningEffort,
+  REASONING_EFFORT_VALUES,
   compatibleProtocolsForRuntime,
   isModelProviderCompatibleWithRuntime,
   modelProviderSupportedProtocols,
@@ -82,6 +84,7 @@ type ProfileForm = {
   model_provider_id: string;
   model_provider_protocol: string;
   model_override: string;
+  reasoning_effort: string;
   custom_args: string;
   env: string;
   api_key_env: string;
@@ -102,6 +105,7 @@ const emptyForm: ProfileForm = {
   model_provider_id: "",
   model_provider_protocol: "",
   model_override: "",
+  reasoning_effort: "high",
   custom_args: "",
   env: "",
   api_key_env: "",
@@ -928,6 +932,19 @@ function ProfileEditor({
             )}
           </Select>
         </div>
+        <div>
+          <Label htmlFor="profile-reasoning-effort">Reasoning effort</Label>
+          <Select
+            id="profile-reasoning-effort"
+            name="reasoning_effort"
+            value={displayReasoningEffort(form.reasoning_effort)}
+            onChange={(e) => onChange({ ...form, reasoning_effort: e.target.value })}
+          >
+            {REASONING_EFFORT_VALUES.map((effort) => (
+              <option key={effort} value={effort}>{effort}</option>
+            ))}
+          </Select>
+        </div>
         {has("binary_path") && <div>
           <Label htmlFor="profile-binary-path">Binary path</Label>
           <Input
@@ -1273,6 +1290,7 @@ function profileToForm(profile: RuntimeProfile, plugins: RuntimePlugin[]): Profi
     model_provider_id: profile.fields.model_provider_id ?? "",
     model_provider_protocol: profile.fields.model_provider_protocol ?? "",
     model_override: profile.fields.model_override ?? "",
+    reasoning_effort: displayReasoningEffort(profile.fields.reasoning_effort),
     custom_args: (profile.fields.custom_args ?? []).join("\n"),
     env: formatEnv(profile.fields.env),
     api_key_env: profile.fields.model_provider_id ? "" : (apiKeyEnv || defaultAPIKeyEnv(profile.provider, plugins) || ""),
