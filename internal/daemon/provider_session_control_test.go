@@ -23,6 +23,60 @@ type failingContinuationBindSession struct {
 	runtime.ProviderSession
 }
 
+type stopRaceProviderSession struct {
+	runtime.ProviderSession
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (s *stopRaceProviderSession) Close(ctx context.Context) error {
+	err := s.ProviderSession.Close(ctx)
+	if err == nil || errors.Is(err, runtime.ErrProviderSessionClosed) {
+		s.once.Do(func() { close(s.closed) })
+	}
+	return err
+}
+
+type delayedStopProviderSession struct {
+	runtime.ProviderSession
+	mu      sync.Mutex
+	active  bool
+	started chan struct{}
+	closed  chan struct{}
+	once    sync.Once
+}
+
+func (s *delayedStopProviderSession) SendTurn(ctx context.Context, _ runtime.ProviderSessionRequest, _ runtime.ProviderSessionEmit) (runtime.ProviderSessionResult, error) {
+	s.mu.Lock()
+	s.active = true
+	s.once.Do(func() { close(s.started) })
+	s.mu.Unlock()
+	<-ctx.Done()
+	time.Sleep(20 * time.Millisecond)
+	s.mu.Lock()
+	s.active = false
+	s.mu.Unlock()
+	return runtime.ProviderSessionResult{}, ctx.Err()
+}
+
+func (s *delayedStopProviderSession) Close(ctx context.Context) error {
+	s.mu.Lock()
+	active := s.active
+	s.mu.Unlock()
+	if active {
+		return runtime.ErrProviderSessionControlConflict
+	}
+	err := s.ProviderSession.Close(ctx)
+	if err == nil || errors.Is(err, runtime.ErrProviderSessionClosed) {
+		select {
+		case <-s.closed:
+		default:
+			close(s.closed)
+		}
+	}
+	return err
+}
+
 type permissionProviderTransport struct {
 	mu        sync.Mutex
 	responses map[string]runtime.SandboxBridgeResponse
@@ -523,6 +577,137 @@ func TestStopClosesBoundProviderSession(t *testing.T) {
 	}
 	if _, err := session.SendTurn(context.Background(), runtime.ProviderSessionRequest{RequestID: "after-stop", Message: "should fail"}, nil); !errors.Is(err, runtime.ErrProviderSessionClosed) {
 		t.Fatalf("session after stop error = %v, want closed", err)
+	}
+}
+
+func TestStopClosesProviderSessionBeforeWaitingForRuntimeResources(t *testing.T) {
+	server, err := NewServer(Config{DBPath: filepath.Join(t.TempDir(), "pentest.db"), DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	server.runtimeStopTimeout = 50 * time.Millisecond
+
+	projectRecord, err := server.projects.Create("Project", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := server.profiles.Create("Fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: projectRecord.ID, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation, err := server.tasks.CreateContinuation(created.ID, profile.ID, "claude_code", task.RunnerSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := &stopRaceProviderSession{
+		ProviderSession: runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+			SessionID:    "session-stop-race",
+			Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true},
+		}),
+		closed: make(chan struct{}),
+	}
+	if err := server.BindProviderSession(created.ID, session); err != nil {
+		t.Fatal(err)
+	}
+	adapter := runtime.NewProviderSessionRunAdapter(session, session.closed)
+	adapter.BindContinuation(continuation.ID)
+	launchDone := make(chan error, 1)
+	go func() {
+		launchDone <- server.harness.Launch(context.Background(), runtime.LaunchRequest{
+			TaskID: created.ID, Goal: created.Goal, ContinuationID: continuation.ID, Adapter: adapter,
+			StopConfirmation: func(timeout time.Duration) error {
+				select {
+				case <-session.closed:
+					return nil
+				case <-time.After(timeout):
+					return errors.New("provider bridge still running")
+				}
+			},
+		})
+	}()
+	waitForHarnessActive(t, server, created.ID, true)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectRecord.ID+"/tasks/"+created.ID+"/stop", nil)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("stop status = %d, body=%s", response.Code, response.Body.String())
+	}
+	if _, ok := server.providerSessions.get(created.ID); ok {
+		t.Fatal("stop retained provider session binding")
+	}
+	if _, err := session.SendTurn(context.Background(), runtime.ProviderSessionRequest{RequestID: "after-race-stop", Message: "must fail"}, nil); !errors.Is(err, runtime.ErrProviderSessionClosed) {
+		t.Fatalf("session after stop error = %v, want closed", err)
+	}
+	select {
+	case <-launchDone:
+	case <-time.After(time.Second):
+		t.Fatal("runtime launch did not exit after provider session close")
+	}
+}
+
+func TestStopWaitsForActiveProviderControlBeforeClosingSession(t *testing.T) {
+	server, err := NewServer(Config{DBPath: filepath.Join(t.TempDir(), "pentest.db"), DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	server.runtimeStopTimeout = 100 * time.Millisecond
+
+	projectRecord, err := server.projects.Create("Project", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := server.profiles.Create("Fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: projectRecord.ID, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation, err := server.tasks.CreateContinuation(created.ID, profile.ID, "claude_code", task.RunnerSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := &delayedStopProviderSession{
+		ProviderSession: runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+			SessionID:    "session-active-stop",
+			Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true},
+		}),
+		started: make(chan struct{}),
+		closed:  make(chan struct{}),
+	}
+	if err := server.BindProviderSession(created.ID, session); err != nil {
+		t.Fatal(err)
+	}
+	adapter := runtime.NewProviderSessionRunAdapter(session, session.closed)
+	adapter.BindContinuation(continuation.ID)
+	go func() {
+		_ = server.harness.Launch(context.Background(), runtime.LaunchRequest{
+			TaskID: created.ID, Goal: created.Goal, ContinuationID: continuation.ID, Adapter: adapter,
+		})
+	}()
+	waitForHarnessActive(t, server, created.ID, true)
+	select {
+	case <-session.started:
+	case <-time.After(time.Second):
+		t.Fatal("provider control did not start")
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectRecord.ID+"/tasks/"+created.ID+"/stop", nil)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("stop status = %d, body=%s", response.Code, response.Body.String())
+	}
+	if _, ok := server.providerSessions.get(created.ID); ok {
+		t.Fatal("stop retained provider session after active control settled")
 	}
 }
 

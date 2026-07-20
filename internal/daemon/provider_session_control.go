@@ -146,6 +146,25 @@ func (server *Server) closeProviderSession(taskID string) error {
 	return server.providerSessions.closeTask(context.Background(), taskID)
 }
 
+func (server *Server) closeProviderSessionForStop(ctx context.Context, taskID string) error {
+	for {
+		err := server.providerSessions.closeTask(ctx, taskID)
+		if err == nil || errors.Is(err, runtime.ErrProviderSessionClosed) {
+			return nil
+		}
+		if !errors.Is(err, runtime.ErrProviderSessionControlConflict) {
+			return err
+		}
+		timer := time.NewTimer(5 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
 type nativeSteerRequest struct {
 	RequestID string `json:"request_id"`
 	Message   string `json:"message"`

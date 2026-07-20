@@ -113,6 +113,7 @@ type Server struct {
 	closing                bool
 	providerSessions       *providerSessionRegistry
 	providerSessionFactory ProviderSessionFactory
+	runtimeStopTimeout     time.Duration
 }
 
 func NewServer(config Config) (*Server, error) {
@@ -220,6 +221,7 @@ func NewServer(config Config) (*Server, error) {
 		providerControlCancel:  providerControlCancel,
 		providerSessions:       newProviderSessionRegistry(),
 		providerSessionFactory: config.ProviderSessionFactory,
+		runtimeStopTimeout:     10 * time.Second,
 	}
 	if server.logger == nil {
 		server.logger = log.Default()

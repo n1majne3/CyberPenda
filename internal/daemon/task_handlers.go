@@ -1224,12 +1224,20 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 	defer server.releaseTaskControl(taskID)
 
 	if found.Status == task.StatusRunning || found.Status == task.StatusPaused {
-		if ok := server.harness.StopAndWait(taskID, 10*time.Second); !ok {
-			writeError(response, http.StatusConflict, "runtime did not stop in time")
+		deadline := time.Now().Add(server.runtimeStopTimeout)
+		stopContext, cancelStop := context.WithDeadline(context.Background(), deadline)
+		defer cancelStop()
+		server.harness.Stop(taskID)
+		if err := server.closeProviderSessionForStop(stopContext, taskID); err != nil {
+			writeError(response, http.StatusConflict, "provider session did not close")
 			return
 		}
-		if err := server.closeProviderSession(taskID); err != nil && !errors.Is(err, runtime.ErrProviderSessionClosed) {
-			writeError(response, http.StatusConflict, "provider session did not close")
+		remaining := time.Until(deadline)
+		if remaining < 0 {
+			remaining = 0
+		}
+		if ok := server.harness.StopAndWait(taskID, remaining); !ok {
+			writeError(response, http.StatusConflict, "runtime did not stop in time")
 			return
 		}
 		stopped, err := server.taskDetail(taskID)
