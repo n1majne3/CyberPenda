@@ -525,11 +525,32 @@ func TestRuntimeActivityNoExtraAuditRecords(t *testing.T) {
 	server, created, _ := newRuntimeActivityFixture(t, runtimeprofile.ProviderCodex, task.RunnerSandbox, factory)
 	launchActivityTask(t, server, created)
 
+	// Wait until the Runtime is live/idle and launch event writes have settled so
+	// concurrent initial-turn timeline records are not mistaken for GET side effects.
+	deadline := time.Now().Add(3 * time.Second)
+	var settled int
+	for time.Now().Before(deadline) {
+		body := getTaskActivity(t, server, created.ProjectID, created.ID)
+		events, err := server.tasks.Events(created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if body.RuntimeActivity.Liveness == "live" && body.RuntimeActivity.TurnActivity == "idle" &&
+			body.Status == "running" && len(events) == settled && settled > 0 {
+			break
+		}
+		settled = len(events)
+		time.Sleep(10 * time.Millisecond)
+	}
+
 	before, err := server.tasks.Events(created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = getTaskActivity(t, server, created.ProjectID, created.ID)
+	body := getTaskActivity(t, server, created.ProjectID, created.ID)
+	if body.RuntimeActivity.Liveness != "live" {
+		t.Fatalf("setup activity = %#v status %q, want live running", body.RuntimeActivity, body.Status)
+	}
 	after, err := server.tasks.Events(created.ID)
 	if err != nil {
 		t.Fatal(err)

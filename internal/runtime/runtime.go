@@ -161,6 +161,9 @@ func (h *Harness) Launch(ctx context.Context, req LaunchRequest) error {
 		finalPhase = "stopped"
 	}
 	emit(task.EventKindLifecycle, task.EventPayload{"phase": finalPhase, "adapter": req.Adapter.Name()})
+	// Write terminal status before unregister so StopAndWait observers see the
+	// settled lifecycle. Resume waits for harness inactivity when status is
+	// already terminal, covering the brief completed+IsActive window.
 	if _, err := h.tasks.UpdateStatus(req.TaskID, finalStatus); err != nil {
 		return fmt.Errorf("mark %s: %w", finalStatus, err)
 	}

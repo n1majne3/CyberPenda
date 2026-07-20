@@ -1798,9 +1798,17 @@ func (server *Server) handleResumeTask(response http.ResponseWriter, request *ht
 		writeError(response, http.StatusNotFound, "task not found")
 		return
 	}
-	if server.harness.IsActive(taskID) || found.Status == task.StatusRunning {
+	if durableTaskActive(found.Status) {
 		writeError(response, http.StatusConflict, "task is already running")
 		return
+	}
+	// Terminal Tasks may still show a brief harness window while Launch releases
+	// ownership. Wait for absence rather than rejecting a legitimate resume.
+	if server.harness != nil && server.harness.IsActive(taskID) {
+		if !server.waitHarnessInactive(taskID, 10*time.Second) {
+			writeError(response, http.StatusConflict, "runtime harness is still active")
+			return
+		}
 	}
 	var input taskContinuationSelectionInput
 	if err := decodeOptionalJSON(request, &input); err != nil {
@@ -1824,13 +1832,15 @@ func (server *Server) handleResumeTask(response http.ResponseWriter, request *ht
 		writeError(response, http.StatusNotFound, "task not found")
 		return
 	}
-	if server.harness != nil && server.harness.IsActive(taskID) {
+	if durableTaskActive(found.Status) {
 		writeError(response, http.StatusConflict, "task is already running")
 		return
 	}
-	if found.Status == task.StatusRunning || found.Status == task.StatusPaused {
-		writeError(response, http.StatusConflict, "task is already running")
-		return
+	if server.harness != nil && server.harness.IsActive(taskID) {
+		if !server.waitHarnessInactive(taskID, 10*time.Second) {
+			writeError(response, http.StatusConflict, "runtime harness is still active")
+			return
+		}
 	}
 	if _, bound := server.providerSessions.get(taskID); bound {
 		writeError(response, http.StatusConflict, "task already has a live Runtime")
