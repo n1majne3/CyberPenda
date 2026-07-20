@@ -354,7 +354,7 @@ func TestFinishTaskCompletesLiveIdleRuntimeAndClosesResources(t *testing.T) {
 func TestFinishTaskRejectsWhenContinuationReconciliationFails(t *testing.T) {
 	session, adapter := newFinishSessionPair("finish-recon-fail")
 	factory := &finishSessionFactory{session: session, adapter: adapter}
-	server, created, _ := newFinishTaskFixture(t, factory)
+	server, created, mp := newFinishTaskFixture(t, factory)
 	// Inject failing reconciler after server assembly (replaces blackboardv2).
 	server.tasks.SetContinuationReconciler(failingFinishReconciler{err: errors.New("injected recon failure")})
 	launchFinishTask(t, server, created)
@@ -366,9 +366,12 @@ func TestFinishTaskRejectsWhenContinuationReconciliationFails(t *testing.T) {
 	if resp.Code != http.StatusConflict && resp.Code != http.StatusInternalServerError {
 		t.Fatalf("finish recon failure status = %d body %s, want 409 or 500", resp.Code, resp.Body.String())
 	}
-	lower := strings.ToLower(resp.Body.String())
-	if !strings.Contains(lower, "reconcil") {
-		t.Fatalf("error should mention reconciliation: %s", resp.Body.String())
+	// Stable public stage only — no raw injected error in body.
+	if !strings.Contains(resp.Body.String(), "finish failed at continuation_") {
+		t.Fatalf("expected stable stage error, got %s", resp.Body.String())
+	}
+	if strings.Contains(resp.Body.String(), "injected recon failure") {
+		t.Fatalf("raw error leaked in HTTP body: %s", resp.Body.String())
 	}
 
 	found, err := server.tasks.Get(created.ID)
@@ -378,11 +381,19 @@ func TestFinishTaskRejectsWhenContinuationReconciliationFails(t *testing.T) {
 	if found.Status == task.StatusCompleted {
 		t.Fatal("Task must not be completed when Continuation reconciliation fails")
 	}
+	if found.Status == task.StatusRunning || found.Status == task.StatusPaused {
+		t.Fatalf("Task left durable active %q after post-runtime finish failure", found.Status)
+	}
+	if found.Status != task.StatusFailed {
+		// Prefer failed; allow already-settled non-active terminals if domain diverged.
+		t.Fatalf("Task status = %q, want failed after recon failure settle", found.Status)
+	}
 
 	events, err := server.tasks.Events(created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
+	var sawFinishFailed bool
 	for _, event := range events {
 		if event.Payload["kind"] == "runtime_activity" || event.Payload["phase"] == "runtime_activity" {
 			t.Fatalf("runtime_activity audit event leaked: %#v", event)
@@ -390,6 +401,65 @@ func TestFinishTaskRejectsWhenContinuationReconciliationFails(t *testing.T) {
 		if event.Kind == task.EventKindLifecycle && event.Payload["phase"] == "completed" && event.Payload["reason"] == "operator_finish" {
 			t.Fatal("operator_finish must not be recorded when finish is rejected")
 		}
+		if event.Kind == task.EventKindLifecycle && event.Payload["phase"] == "finish_failed" {
+			sawFinishFailed = true
+		}
+	}
+	if !sawFinishFailed {
+		t.Fatal("expected finish_failed lifecycle diagnostic")
+	}
+
+	// Resume after recon-fail settle: restore reconciler, queue once, HTTP resume.
+	if server.blackboardV2 != nil {
+		server.tasks.SetContinuationReconciler(server.blackboardV2)
+	} else {
+		server.tasks.SetContinuationReconciler(nil)
+	}
+	// Ensure latest Continuation is reconcilable for replacement launch.
+	latest, err := server.tasks.LatestContinuation(created.ID)
+	if err != nil || latest == nil {
+		t.Fatalf("latest: %v %#v", err, latest)
+	}
+	if latest.BlackboardReconciliationStatus != task.ReconciliationCompleted {
+		if _, err := server.tasks.MarkContinuationReconciliation(context.Background(), latest.ID, task.ReconciliationCompleted, "post-finish-abort", time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	queueBody := `{"directive":"recover after recon fail","model_provider_id":` + quoteJSON(mp.ID) + `,"model":"gpt-test","reasoning_effort":"high"}`
+	queueReq := httptest.NewRequest(http.MethodPost, "/api/projects/"+created.ProjectID+"/tasks/"+created.ID+"/steer/queue", bytes.NewReader([]byte(queueBody)))
+	queueReq.Header.Set("Content-Type", "application/json")
+	queueResp := httptest.NewRecorder()
+	server.ServeHTTP(queueResp, queueReq)
+	if queueResp.Code != http.StatusOK {
+		t.Fatalf("queue status = %d body %s", queueResp.Code, queueResp.Body.String())
+	}
+
+	// Fresh session for resume launch.
+	resumeSession, resumeAdapter := newFinishSessionPair("finish-recon-resume")
+	factory.session, factory.adapter = resumeSession, resumeAdapter
+	factory.newSession = func(open int) (runtime.ProviderSession, runtime.Adapter) {
+		return newFinishSessionPair(fmt.Sprintf("finish-recon-resume-%d", open))
+	}
+	opensBefore := factory.openCount()
+
+	resumeReq := httptest.NewRequest(http.MethodPost, "/api/projects/"+created.ProjectID+"/tasks/"+created.ID+"/resume", bytes.NewReader([]byte(`{}`)))
+	resumeReq.Header.Set("Content-Type", "application/json")
+	resumeResp := httptest.NewRecorder()
+	server.ServeHTTP(resumeResp, resumeReq)
+	if resumeResp.Code != http.StatusAccepted {
+		t.Fatalf("resume status = %d body %s", resumeResp.Code, resumeResp.Body.String())
+	}
+	waitForHarnessActive(t, server, created.ID, true)
+	if factory.openCount() != opensBefore+1 {
+		t.Fatalf("opens before=%d after=%d", opensBefore, factory.openCount())
+	}
+	running, err := server.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if running.ID != created.ID || running.Status != task.StatusRunning {
+		t.Fatalf("resume task = %#v", running)
 	}
 }
 
@@ -599,37 +669,21 @@ func TestCompletedTaskMessageQueuesOnceAndResumesSameTask(t *testing.T) {
 	}
 }
 
-func TestFailedTaskResumeFallsBackWithoutDroppingMessage(t *testing.T) {
-	root := t.TempDir()
-	binary := filepath.Join(root, "codex")
-	if err := writeExecutable(binary, "#!/bin/sh\necho ok\n"); err != nil {
-		t.Fatal(err)
+func TestFailedTaskHTTPResumeQueuesOnceAndLaunchesFreshRuntime(t *testing.T) {
+	// Real HTTP queue + resume + launch for failed Task without native session.
+	newSession := func(open int) (runtime.ProviderSession, runtime.Adapter) {
+		return newFinishSessionPair(fmt.Sprintf("failed-resume-%d", open))
 	}
-	server, err := NewServer(Config{
-		DBPath: filepath.Join(root, "pentest.db"), RuntimeRoot: filepath.Join(root, "runs"),
-		DisableBuiltinSkills: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = server.Close() })
-	projectRecord, err := server.projects.Create("Project", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	profile, err := server.profiles.Create("Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
-		Model: "gpt-test", BinaryPath: binary, ReasoningEffort: "high",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	seed, seedAdapter := newSession(0)
+	factory := &finishSessionFactory{session: seed, adapter: seedAdapter, newSession: newSession}
+	server, created, mp := newFinishTaskFixture(t, factory)
+
+	// Durable failed Task + Continuation (no native session → fresh fallback).
 	if _, err := server.tasks.UpdateStatus(created.ID, task.StatusFailed); err != nil {
+		t.Fatal(err)
+	}
+	profile, err := server.profiles.Get(created.RuntimeProfileID)
+	if err != nil {
 		t.Fatal(err)
 	}
 	continuation, err := server.tasks.CreateContinuation(created.ID, profile.ID, "codex", task.RunnerSandbox)
@@ -643,8 +697,13 @@ func TestFailedTaskResumeFallsBackWithoutDroppingMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	queueReq := httptest.NewRequest(http.MethodPost, "/api/projects/"+created.ProjectID+"/tasks/"+created.ID+"/steer/queue",
-		strings.NewReader(`{"directive":"recover after failure","reasoning_effort":"max"}`))
+	queueBody := `{
+		"directive":"recover after failure",
+		"model_provider_id":` + quoteJSON(mp.ID) + `,
+		"model":"gpt-test",
+		"reasoning_effort":"max"
+	}`
+	queueReq := httptest.NewRequest(http.MethodPost, "/api/projects/"+created.ProjectID+"/tasks/"+created.ID+"/steer/queue", bytes.NewReader([]byte(queueBody)))
 	queueReq.Header.Set("Content-Type", "application/json")
 	queueResp := httptest.NewRecorder()
 	server.ServeHTTP(queueResp, queueReq)
@@ -652,6 +711,7 @@ func TestFailedTaskResumeFallsBackWithoutDroppingMessage(t *testing.T) {
 		t.Fatalf("queue status = %d body %s", queueResp.Code, queueResp.Body.String())
 	}
 
+	// Capture prepare plan shape before launch (fresh, no native id).
 	found, err := server.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -663,14 +723,143 @@ func TestFailedTaskResumeFallsBackWithoutDroppingMessage(t *testing.T) {
 	if prepared.ID != created.ID {
 		t.Fatal("resume replaced Task identity")
 	}
-	if strings.TrimSpace(goal) == "" {
-		t.Fatal("fresh fallback dropped resume goal/context")
+	if !strings.Contains(goal, "recover after failure") && !strings.Contains(goal, created.Goal) {
+		// Resume goal builds from Task goal + steering; steering is consumed at launch.
+		if strings.TrimSpace(goal) == "" {
+			t.Fatal("fresh fallback dropped resume goal/context")
+		}
 	}
 	if plan.NativeResumeSessionID != "" {
 		t.Fatalf("missing native metadata must not invent resume id %q", plan.NativeResumeSessionID)
 	}
+
+	opensBefore := factory.openCount()
+	resumeReq := httptest.NewRequest(http.MethodPost, "/api/projects/"+created.ProjectID+"/tasks/"+created.ID+"/resume", bytes.NewReader([]byte(`{}`)))
+	resumeReq.Header.Set("Content-Type", "application/json")
+	resumeResp := httptest.NewRecorder()
+	server.ServeHTTP(resumeResp, resumeReq)
+	if resumeResp.Code != http.StatusAccepted {
+		t.Fatalf("resume status = %d body %s", resumeResp.Code, resumeResp.Body.String())
+	}
+	waitForHarnessActive(t, server, created.ID, true)
+	if factory.openCount() != opensBefore+1 {
+		t.Fatalf("expected single Runtime open, before=%d after=%d", opensBefore, factory.openCount())
+	}
+	running, err := server.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if running.ID != created.ID || running.Status != task.StatusRunning {
+		t.Fatalf("running after resume = %#v", running)
+	}
+
+	events, err := server.tasks.Events(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var queued int
+	var sawEffort bool
+	for _, event := range events {
+		if event.Kind == task.EventKindSteering && event.Payload["phase"] == "steering_requested" && event.Payload["directive"] == "recover after failure" {
+			queued++
+			if event.Payload["reasoning_effort"] == "max" {
+				sawEffort = true
+			}
+		}
+	}
+	if queued != 1 {
+		t.Fatalf("canonical queued messages = %d, want 1", queued)
+	}
+	if !sawEffort {
+		t.Fatal("queued selection effort not retained")
+	}
+}
+
+func TestStopSettlesRunningTaskWhenHarnessAndSessionAlreadyGone(t *testing.T) {
+	server, created, _ := newFinishTaskFixture(t, nil)
+	if _, err := server.tasks.UpdateStatus(created.ID, task.StatusRunning); err != nil {
+		t.Fatal(err)
+	}
+	// No harness activity, no bound session — Stop must still write stopped.
+	resp := postStop(server, created.ProjectID, created.ID)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("stop status = %d body %s", resp.Code, resp.Body.String())
+	}
+	var body struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Status != "stopped" {
+		t.Fatalf("stop body status = %q, want stopped", body.Status)
+	}
+	found, err := server.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found.Status != task.StatusStopped {
+		t.Fatalf("durable status = %q, want stopped", found.Status)
+	}
+}
+
+func TestOrphanOwnershipResolvedBeforeReplacementLaunch(t *testing.T) {
+	session, adapter := newFinishSessionPair("orphan-cleanup")
+	factory := &finishSessionFactory{session: session, adapter: adapter}
+	server, created, _ := newFinishTaskFixture(t, factory)
+	launchFinishTask(t, server, created)
+	if !server.harness.IsActive(created.ID) {
+		t.Fatal("setup: harness should be active")
+	}
+	if _, ok := server.providerSessions.get(created.ID); !ok {
+		t.Fatal("setup: session should be bound")
+	}
+
+	// ensureRuntimeAbsentBeforeLaunch must stop harness and unbind session.
 	if err := server.ensureRuntimeAbsentBeforeLaunch(created.ID); err != nil {
 		t.Fatalf("orphan resolve: %v", err)
+	}
+	if server.harness.IsActive(created.ID) {
+		t.Fatal("harness still active after ensureRuntimeAbsentBeforeLaunch")
+	}
+	if _, ok := server.providerSessions.get(created.ID); ok {
+		t.Fatal("provider session still bound after ensureRuntimeAbsentBeforeLaunch")
+	}
+	// Second call is safe (proven absence).
+	if err := server.ensureRuntimeAbsentBeforeLaunch(created.ID); err != nil {
+		t.Fatalf("second orphan resolve: %v", err)
+	}
+
+	// Replacement launch succeeds without dual ownership.
+	replacement, repAdapter := newFinishSessionPair("orphan-replacement")
+	factory.session, factory.adapter = replacement, repAdapter
+	// Mark prior cont terminal so CreateContinuation can proceed.
+	if cont, err := server.tasks.LatestContinuation(created.ID); err == nil && cont != nil {
+		if cont.Status == task.StatusRunning || cont.Status == task.StatusPending {
+			_, _ = server.tasks.UpdateContinuationStatus(cont.ID, task.StatusStopped)
+		}
+		if cont.BlackboardReconciliationStatus != task.ReconciliationCompleted {
+			_, _ = server.tasks.MarkContinuationReconciliation(context.Background(), cont.ID, task.ReconciliationCompleted, "orphan", time.Now().UTC())
+		}
+	}
+	if _, err := server.tasks.UpdateStatus(created.ID, task.StatusStopped); err != nil {
+		t.Fatal(err)
+	}
+	found, err := server.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, goal, plan, err := server.prepareResumeContinuation(found, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opensBefore := factory.openCount()
+	if err := server.launchTaskInBackground(found, plan, goal); err != nil {
+		t.Fatal(err)
+	}
+	waitForHarnessActive(t, server, created.ID, true)
+	if factory.openCount() != opensBefore+1 {
+		t.Fatalf("replacement opens before=%d after=%d", opensBefore, factory.openCount())
 	}
 }
 

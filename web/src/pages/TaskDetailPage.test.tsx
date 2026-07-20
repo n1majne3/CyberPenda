@@ -970,9 +970,10 @@ describe("TaskDetailPage", () => {
     expect(screen.getByText("running")).toBeInTheDocument();
   });
 
-  it("offers Finish Task only when Runtime Activity is live and idle", async () => {
+  it("offers Finish Task only when controls.finish_available is true", async () => {
     stubTaskDetailApi({
       status: "running",
+      // Live idle alone must NOT enable Finish without finish_available.
       runtime_activity: { liveness: "live", turn_activity: "idle" },
       runtime_controls: {
         native_resume_available: false,
@@ -989,6 +990,28 @@ describe("TaskDetailPage", () => {
     renderPage();
     expect(await screen.findByTestId("finish-task")).toBeInTheDocument();
     expect(screen.getByTestId("finish-task-composer")).toBeInTheDocument();
+  });
+
+  it("does not offer Finish from runtime_activity alone without finish_available", async () => {
+    stubTaskDetailApi({
+      status: "running",
+      runtime_activity: { liveness: "live", turn_activity: "idle" },
+      runtime_controls: {
+        native_resume_available: false,
+        resume_available: false,
+        finish_available: false,
+        queue_steer_available: true,
+        interrupt_steer_available: true,
+        native_session_captured: true,
+        same_runtime_provider_only: true,
+        runtime_provider: "codex",
+      },
+    });
+
+    renderPage();
+    await screen.findByTestId("runtime-activity");
+    expect(screen.queryByTestId("finish-task")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("finish-task-composer")).not.toBeInTheDocument();
   });
 
   it("hides Finish Task when Runtime is live and busy", async () => {
@@ -1079,36 +1102,39 @@ describe("TaskDetailPage", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/live idle|busy/i);
   });
 
-  it("queues one message and resumes a completed task conversation", async () => {
-    const { fetchMock } = stubTaskDetailApi({
-      status: "completed",
-      runtime_activity: { liveness: "offline" },
-      runtime_controls: {
-        native_resume_available: true,
-        resume_available: true,
-        finish_available: false,
-        queue_steer_available: true,
-        interrupt_steer_available: false,
-        native_session_captured: true,
-        same_runtime_provider_only: true,
-        runtime_provider: "codex",
-      },
-    });
-    const user = userEvent.setup();
-    renderPage();
-    await user.type(await screen.findByPlaceholderText("Focus on admin.example.com next…"), "continue work");
-    await user.click(screen.getByRole("button", { name: /Resume and send/i }));
+  it.each(["completed", "failed", "interrupted", "stopped"] as const)(
+    "queues one message and resumes a %s task conversation",
+    async (status) => {
+      const { fetchMock } = stubTaskDetailApi({
+        status,
+        runtime_activity: { liveness: "offline" },
+        runtime_controls: {
+          native_resume_available: true,
+          resume_available: true,
+          finish_available: false,
+          queue_steer_available: true,
+          interrupt_steer_available: false,
+          native_session_captured: true,
+          same_runtime_provider_only: true,
+          runtime_provider: "codex",
+        },
+      });
+      const user = userEvent.setup();
+      renderPage();
+      await user.type(await screen.findByPlaceholderText("Focus on admin.example.com next…"), "continue work");
+      await user.click(screen.getByRole("button", { name: /Resume and send/i }));
 
-    const postPaths = fetchMock.mock.calls
-      .filter(([, init]) => init?.method === "POST")
-      .map(([input]) => String(input));
-    expect(postPaths).toEqual([
-      "/api/projects/project-1/tasks/task-1/steer/queue",
-      "/api/projects/project-1/tasks/task-1/resume",
-    ]);
-    // Exactly one queue — no second message invent on resume.
-    expect(postPaths.filter((path) => path.endsWith("/steer/queue"))).toHaveLength(1);
-  });
+      const postPaths = fetchMock.mock.calls
+        .filter(([, init]) => init?.method === "POST")
+        .map(([input]) => String(input));
+      expect(postPaths).toEqual([
+        "/api/projects/project-1/tasks/task-1/steer/queue",
+        "/api/projects/project-1/tasks/task-1/resume",
+      ]);
+      // Exactly one queue — no second message invent on resume.
+      expect(postPaths.filter((path) => path.endsWith("/steer/queue"))).toHaveLength(1);
+    },
+  );
 
   it("ignores stale out-of-order poll responses", async () => {
     type Parked = { resolve: (value: Response) => void; signal?: AbortSignal };

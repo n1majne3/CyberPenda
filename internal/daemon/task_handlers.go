@@ -1457,11 +1457,20 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 	}
 	defer server.releaseTaskControl(taskID)
 
+	// Re-read under control lock so concurrent Finish/resume cannot race settle.
+	found, err = server.tasks.Get(taskID)
+	if err != nil {
+		writeTaskError(response, err)
+		return
+	}
+
 	if found.Status == task.StatusRunning || found.Status == task.StatusPaused {
 		deadline := time.Now().Add(server.runtimeStopTimeout)
 		stopContext, cancelStop := context.WithDeadline(context.Background(), deadline)
 		defer cancelStop()
-		server.harness.Stop(taskID)
+		if server.harness != nil {
+			server.harness.Stop(taskID)
+		}
 		if err := server.closeProviderSessionForStop(stopContext, taskID); err != nil {
 			writeError(response, http.StatusConflict, "provider session did not close")
 			return
@@ -1470,8 +1479,16 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 		if remaining < 0 {
 			remaining = 0
 		}
-		if ok := server.harness.StopAndWait(taskID, remaining); !ok {
-			writeError(response, http.StatusConflict, "runtime did not stop in time")
+		if server.harness != nil && server.harness.IsActive(taskID) {
+			if ok := server.harness.StopAndWait(taskID, remaining); !ok {
+				writeError(response, http.StatusConflict, "runtime did not stop in time")
+				return
+			}
+		}
+		// Durable Task may still be running when harness/session already gone
+		// (finish abort, orphan cleanup). Always settle stopped after cleanup.
+		if err := server.settleTaskStopped(taskID); err != nil {
+			writeTaskError(response, err)
 			return
 		}
 		stopped, err := server.taskDetail(taskID)
@@ -1486,12 +1503,38 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 		writeError(response, http.StatusConflict, "provider session did not close")
 		return
 	}
-	stopped, err := server.tasks.UpdateStatus(taskID, task.StatusStopped)
+	if err := server.settleTaskStopped(taskID); err != nil {
+		writeTaskError(response, err)
+		return
+	}
+	stopped, err := server.taskDetail(taskID)
 	if err != nil {
 		writeTaskError(response, err)
 		return
 	}
 	writeJSON(response, http.StatusOK, stopped)
+}
+
+// settleTaskStopped marks Task and any non-terminal Continuation as stopped.
+// Does not overwrite an existing different terminal Continuation status.
+func (server *Server) settleTaskStopped(taskID string) error {
+	if cont, err := server.tasks.LatestContinuation(taskID); err == nil && cont != nil {
+		if cont.Status == task.StatusRunning || cont.Status == task.StatusPaused || cont.Status == task.StatusPending {
+			if _, err := server.tasks.UpdateContinuationStatus(cont.ID, task.StatusStopped); err != nil && !errors.Is(err, task.ErrContinuationStatusConflict) {
+				return err
+			}
+		}
+	}
+	found, err := server.tasks.Get(taskID)
+	if err != nil {
+		return err
+	}
+	if found.Status == task.StatusRunning || found.Status == task.StatusPaused || found.Status == task.StatusPending {
+		if _, err := server.tasks.UpdateStatus(taskID, task.StatusStopped); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // handleFinishTask is operator-controlled Task completion. It requires current
@@ -1574,68 +1617,52 @@ func (server *Server) handleFinishTask(response http.ResponseWriter, request *ht
 
 	// 4) Sole owner: mark Continuation completed (triggers recon), verify
 	// durable marker, then Task completed. Fail-closed — no silent fallbacks.
+	// After runtime is already closed, any failure here must settle Task to a
+	// recoverable terminal (failed) so it does not remain durable running.
 	cont, contErr := server.tasks.LatestContinuation(taskID)
 	if contErr != nil {
-		server.finishDiagnostic(taskID, "continuation_lookup", contErr.Error())
-		writeError(response, http.StatusInternalServerError, "finish failed at continuation_lookup: "+contErr.Error())
+		server.finishFailClosed(response, taskID, "continuation_lookup", contErr.Error(), http.StatusInternalServerError)
 		return
 	}
 	if cont == nil {
-		server.finishDiagnostic(taskID, "continuation_missing", "no Continuation for Task")
-		writeError(response, http.StatusConflict, "finish failed at continuation_missing: no Continuation for Task")
+		server.finishFailClosed(response, taskID, "continuation_missing", "no Continuation for Task", http.StatusConflict)
 		return
 	}
 	// Complete Continuation and/or retry terminal reconciliation when the
 	// durable marker is not yet completed (fail-closed, no silent skip).
 	if cont.Status != task.StatusCompleted || cont.BlackboardReconciliationStatus != task.ReconciliationCompleted {
-		preStatus := cont.Status
-		preRecon := cont.BlackboardReconciliationStatus
 		if _, err := server.tasks.UpdateContinuationStatus(cont.ID, task.StatusCompleted); err != nil {
-			// Classify from pre-state + durable re-read, never string-matching.
+			// Classify from durable re-read, never string-matching.
 			refreshed, refErr := server.tasks.Continuation(cont.ID)
-			if refErr == nil {
-				if refreshed.Status == task.StatusCompleted && refreshed.BlackboardReconciliationStatus != task.ReconciliationCompleted {
-					server.finishDiagnostic(taskID, "continuation_reconciliation", "marker="+string(refreshed.BlackboardReconciliationStatus))
-					writeError(response, http.StatusConflict, "finish failed at continuation_reconciliation: reconciliation is "+string(refreshed.BlackboardReconciliationStatus))
-					return
-				}
-				if preStatus == task.StatusCompleted && preRecon != task.ReconciliationCompleted &&
-					refreshed.BlackboardReconciliationStatus != task.ReconciliationCompleted {
-					server.finishDiagnostic(taskID, "continuation_reconciliation", "marker="+string(refreshed.BlackboardReconciliationStatus))
-					writeError(response, http.StatusConflict, "finish failed at continuation_reconciliation: reconciliation is "+string(refreshed.BlackboardReconciliationStatus))
-					return
-				}
-			}
-			server.finishDiagnostic(taskID, "continuation_complete", err.Error())
-			if errors.Is(err, task.ErrContinuationStatusConflict) {
-				writeError(response, http.StatusConflict, "finish failed at continuation_complete: continuation did not complete")
+			if refErr == nil && refreshed.Status == task.StatusCompleted && refreshed.BlackboardReconciliationStatus != task.ReconciliationCompleted {
+				server.finishFailClosed(response, taskID, "continuation_reconciliation", "marker="+string(refreshed.BlackboardReconciliationStatus), http.StatusConflict)
 				return
 			}
-			writeError(response, http.StatusInternalServerError, "finish failed at continuation_complete: "+err.Error())
+			if errors.Is(err, task.ErrContinuationStatusConflict) {
+				server.finishFailClosed(response, taskID, "continuation_complete", "continuation status conflict", http.StatusConflict)
+				return
+			}
+			server.finishFailClosed(response, taskID, "continuation_complete", err.Error(), http.StatusInternalServerError)
 			return
 		}
 	}
 	refreshed, refErr := server.tasks.Continuation(cont.ID)
 	if refErr != nil {
-		server.finishDiagnostic(taskID, "continuation_reread", refErr.Error())
-		writeError(response, http.StatusInternalServerError, "finish failed at continuation_reread: "+refErr.Error())
+		server.finishFailClosed(response, taskID, "continuation_reread", refErr.Error(), http.StatusInternalServerError)
 		return
 	}
 	if refreshed.Status != task.StatusCompleted {
-		server.finishDiagnostic(taskID, "continuation_status", "status="+string(refreshed.Status))
-		writeError(response, http.StatusConflict, "finish failed at continuation_status: continuation is "+string(refreshed.Status))
+		server.finishFailClosed(response, taskID, "continuation_status", "status="+string(refreshed.Status), http.StatusConflict)
 		return
 	}
 	if refreshed.BlackboardReconciliationStatus != task.ReconciliationCompleted {
-		server.finishDiagnostic(taskID, "continuation_reconciliation", "marker="+string(refreshed.BlackboardReconciliationStatus))
-		writeError(response, http.StatusConflict, "finish failed at continuation_reconciliation: reconciliation is "+string(refreshed.BlackboardReconciliationStatus))
+		server.finishFailClosed(response, taskID, "continuation_reconciliation", "marker="+string(refreshed.BlackboardReconciliationStatus), http.StatusConflict)
 		return
 	}
 
 	// 5) Only after durable recon marker is completed may the Task be completed.
 	if _, err := server.tasks.UpdateStatus(taskID, task.StatusCompleted); err != nil {
-		server.finishDiagnostic(taskID, "task_complete", err.Error())
-		writeTaskError(response, err)
+		server.finishFailClosed(response, taskID, "task_complete", err.Error(), http.StatusInternalServerError)
 		return
 	}
 	// Lifecycle only — never a Runtime Activity audit/history record.
@@ -1651,8 +1678,45 @@ func (server *Server) handleFinishTask(response http.ResponseWriter, request *ht
 	writeJSON(response, http.StatusOK, finished)
 }
 
+// finishFailClosed settles a post-runtime Finish failure: Task must not stay
+// durable running. Prefer failed (resumable). Public HTTP uses stable stage
+// messages; raw detail stays in logs/events only.
+func (server *Server) finishFailClosed(response http.ResponseWriter, taskID, stage, detail string, status int) {
+	server.finishDiagnostic(taskID, stage, detail)
+	server.settleTaskFailedAfterFinishAbort(taskID)
+	writeError(response, status, "finish failed at "+stage)
+}
+
+// settleTaskFailedAfterFinishAbort marks Task failed when still active after
+// runtime close. Non-terminal Continuations become failed; existing different
+// terminal Continuation statuses are left unchanged.
+func (server *Server) settleTaskFailedAfterFinishAbort(taskID string) {
+	if cont, err := server.tasks.LatestContinuation(taskID); err == nil && cont != nil {
+		switch cont.Status {
+		case task.StatusRunning, task.StatusPaused, task.StatusPending:
+			if _, err := server.tasks.UpdateContinuationStatus(cont.ID, task.StatusFailed); err != nil {
+				// Status may already be terminal from a partial write; re-read.
+				if refreshed, refErr := server.tasks.Continuation(cont.ID); refErr == nil {
+					if refreshed.Status == task.StatusRunning || refreshed.Status == task.StatusPaused || refreshed.Status == task.StatusPending {
+						server.finishDiagnostic(taskID, "settle_continuation", err.Error())
+					}
+				}
+			}
+		}
+	}
+	found, err := server.tasks.Get(taskID)
+	if err != nil {
+		return
+	}
+	if found.Status == task.StatusRunning || found.Status == task.StatusPaused || found.Status == task.StatusPending {
+		if _, err := server.tasks.UpdateStatus(taskID, task.StatusFailed); err != nil {
+			server.finishDiagnostic(taskID, "settle_task", err.Error())
+		}
+	}
+}
+
 // finishDiagnostic records a fail-closed Finish diagnostic without inventing
-// Runtime Activity audit history.
+// Runtime Activity audit history. detail may include raw errors for operators.
 func (server *Server) finishDiagnostic(taskID, stage, detail string) {
 	if found, err := server.tasks.Get(taskID); err == nil {
 		server.logTask(found, "finish_failed", stage+": "+detail)

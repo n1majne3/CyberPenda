@@ -428,10 +428,8 @@ export function TaskDetailPage() {
   const nativeSteerMode = controls?.native_steer_mode;
   const providerPermissions = controls?.provider_permissions ?? [];
   const running = ACTIVE.has(task.status);
-  // Finish is gated by current Runtime Activity live+idle (server authority).
-  const finishAvailable =
-    controls?.finish_available === true ||
-    (task.runtime_activity?.liveness === "live" && task.runtime_activity?.turn_activity === "idle");
+  // Finish gate trusts server RuntimeControls only (live+idle already applied).
+  const finishAvailable = controls?.finish_available === true;
   const sendMode = resolveConversationSendMode({
     running,
     nativeSteerAvailable,
