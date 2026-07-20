@@ -67,14 +67,14 @@ func supportedProviderSessionFactoryProvider(provider runtimeprofile.Provider) b
 }
 
 // supportsPersistentProviderSession reports whether the runner/provider pair
-// uses Task-scoped provider-session assembly. Host supports Codex and Claude
-// Code; Pi host persistence is a separate slice.
+// uses Task-scoped provider-session assembly. Host supports Codex, Claude Code,
+// and Pi; unsupported plugins retain the legacy one-shot path.
 func supportsPersistentProviderSession(runner task.Runner, provider runtimeprofile.Provider) bool {
 	switch runner {
 	case task.RunnerSandbox:
 		return supportedProviderSessionFactoryProvider(provider)
 	case task.RunnerHost:
-		return provider == runtimeprofile.ProviderCodex || provider == runtimeprofile.ProviderClaudeCode
+		return provider == runtimeprofile.ProviderCodex || provider == runtimeprofile.ProviderClaudeCode || provider == runtimeprofile.ProviderPi
 	default:
 		return false
 	}

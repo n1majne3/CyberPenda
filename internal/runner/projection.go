@@ -1028,10 +1028,13 @@ func resolveModelProviderAPIKeyValue(envName string, req ProjectionRequest) (str
 	if envName == "" {
 		return "", false
 	}
+	// A non-nil MaterializedCredentials map is the complete launch snapshot.
+	// Missing keys mean "not configured" without re-entering the credential
+	// service — BindGrant runs under CreateContinuation's open SQLite TX, so
+	// Resolve would deadlock and draft/non-ready providers must stay skippable.
 	if req.MaterializedCredentials != nil {
-		if value := strings.TrimSpace(req.MaterializedCredentials[envName]); value != "" {
-			return value, true
-		}
+		value := strings.TrimSpace(req.MaterializedCredentials[envName])
+		return value, value != ""
 	}
 	if value := strings.TrimSpace(os.Getenv(envName)); value != "" {
 		return value, true

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -16,17 +17,24 @@ import (
 
 // ProductionProviderSessionFactory is the daemon's concrete non-PTY bridge
 // assembly. Codex App Server, Claude Agent SDK, and Pi headless RPC are wired
-// end-to-end on Sandbox. Host Runner supports Codex App Server and Claude Agent
-// SDK (#149, #151); Pi host persistence is a separate slice.
+// end-to-end on Sandbox and Host. Host Pi keeps the explicit piWire translation
+// boundary through pentest-provider-bridge; Host Claude uses the packaged SDK
+// Query bridge.
 // Claude is launched through the version-pinned SDK bridge rather than the
 // interactive CLI, so interrupt and settlement stay provider-native.
 type ProductionProviderSessionFactoryConfig struct {
-	Docker        runtime.SandboxBridgeDocker
+	Docker runtime.SandboxBridgeDocker
+	// BridgeCommand is the sandbox-local provider-bridge path used inside
+	// container create argv (default /usr/local/bin/pentest-provider-bridge).
 	BridgeCommand string
 	// ClaudeSDKBridgeCommand is the host/sandbox Claude Agent SDK bridge
 	// executable. Empty defaults to /usr/local/bin/pentest-claude-sdk-bridge.
 	ClaudeSDKBridgeCommand string
-	Diagnostics            func(string)
+	// HostBridgeCommand is the host-side piWire translation executable for
+	// Host Pi. Empty falls back to BridgeCommand. Tests set this explicitly so
+	// process-spec assertions do not depend on sandbox image layout.
+	HostBridgeCommand string
+	Diagnostics       func(string)
 	// HostStarter is an optional process seam for Host Runner tests. Production
 	// uses the real local process-group starter when nil.
 	HostStarter runtime.HostProcessStarter
@@ -134,15 +142,15 @@ func (f *ProductionProviderSessionFactory) Open(ctx context.Context, request Pro
 }
 
 func (f *ProductionProviderSessionFactory) openHost(ctx context.Context, request ProviderSessionLaunchRequest) (ProviderSessionBinding, error) {
-	// Host persistence is Codex App Server and Claude Agent SDK. Explicit Host
-	// activation and one-shot fallback for unsupported providers remain unchanged.
 	switch request.Provider {
 	case runtimeprofile.ProviderCodex:
 		return f.openHostCodex(ctx, request)
 	case runtimeprofile.ProviderClaudeCode:
 		return f.openHostClaude(ctx, request)
+	case runtimeprofile.ProviderPi:
+		return f.openHostPi(ctx, request)
 	default:
-		return ProviderSessionBinding{}, fmt.Errorf("host provider session factory supports codex and claude_code only")
+		return ProviderSessionBinding{}, fmt.Errorf("host provider session factory supports codex, claude_code, and pi only")
 	}
 }
 
@@ -273,9 +281,148 @@ func (f *ProductionProviderSessionFactory) openHostClaude(ctx context.Context, r
 		return ProviderSessionBinding{}, err
 	}
 	processIdentity := runtime.FormatHostProcessGroupID(bridge.ProcessGroupID())
-	return f.finishNonCodexBinding(ctx, request, taskID, bridge, &runAdapter, &runAdapterMu, func(closeCtx context.Context) {
+	return f.finishClaudeBinding(ctx, request, taskID, bridge, &runAdapter, &runAdapterMu, func(closeCtx context.Context) {
 		_ = f.hostBridges.CloseTask(closeCtx, taskID)
 	}, processIdentity)
+}
+
+func (f *ProductionProviderSessionFactory) openHostPi(ctx context.Context, request ProviderSessionLaunchRequest) (ProviderSessionBinding, error) {
+	taskID := strings.TrimSpace(request.Task.ID)
+	if taskID == "" || strings.TrimSpace(request.Continuation.ID) == "" {
+		return ProviderSessionBinding{}, fmt.Errorf("provider session bridge requires Task and Continuation identity")
+	}
+
+	// HostSessionBridge speaks CyberPenda JSON-RPC; Pi speaks native headless
+	// RPC. Host Pi must retain the piWire translation boundary rather than
+	// connect Pi stdin/stdout directly.
+	bridgeProgram, err := f.resolveHostBridgeCommand()
+	if err != nil {
+		return ProviderSessionBinding{}, err
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if prior, ok := f.bounds[taskID]; ok {
+		return f.rebindPrior(prior, request.Continuation.ID)
+	}
+
+	launch, ok := runtime.CommandAdapterLaunch(request.LegacyAdapter)
+	if !ok {
+		return ProviderSessionBinding{}, fmt.Errorf("host provider session bridge requires host command adapter")
+	}
+	providerBinary := strings.TrimSpace(launch.Program)
+	if providerBinary == "" {
+		providerBinary = "pi"
+	}
+	workdir := strings.TrimSpace(launch.Workdir)
+	if workdir == "" {
+		return ProviderSessionBinding{}, fmt.Errorf("host provider session bridge requires Task workdir")
+	}
+	// Preserve projected PI_CODING_AGENT_DIR / session dir and every launch-ready
+	// credential env from Config Projection. Missing agent dir fails clearly.
+	if err := requireHostPiProjectedEnv(launch.Env); err != nil {
+		return ProviderSessionBinding{}, err
+	}
+
+	// Program is the explicit host bridge executable; Pi is the child after "--".
+	args := []string{"--provider", "pi", "--", providerBinary, "--mode", "rpc"}
+	if sessionPath := strings.TrimSpace(request.Continuation.NativeSessionPath); sessionPath != "" {
+		args = append(args, "--session", sessionPath)
+	} else {
+		sessionID := strings.TrimSpace(request.Continuation.NativeSessionID)
+		if sessionID == "" {
+			sessionID = taskID
+		}
+		args = append(args, "--session-id", sessionID)
+	}
+	if custom := hostPiCustomArgs(launch.Args); len(custom) > 0 {
+		args = append(args, custom...)
+	}
+
+	var runAdapter *runtime.ProviderSessionRunAdapter
+	var runAdapterMu sync.RWMutex
+	bridge, err := f.hostBridges.Bind(ctx, taskID, request.Continuation.ID, func() (*runtime.HostSessionBridge, error) {
+		bridge, err := runtime.NewHostSessionBridge(runtime.HostSessionBridgeConfig{
+			TaskID: taskID, Program: bridgeProgram, Args: args, Workdir: workdir, Env: launch.Env,
+			Diagnostics: f.config.Diagnostics, Starter: f.config.HostStarter,
+			ProtocolEmit: func(event runtime.SandboxBridgeEvent) {
+				runAdapterMu.RLock()
+				adapter := runAdapter
+				runAdapterMu.RUnlock()
+				if adapter != nil {
+					adapter.HandleBridgeEvent(event)
+				}
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		if err := bridge.Start(ctx); err != nil {
+			_ = bridge.Close(ctx)
+			return nil, err
+		}
+		return bridge, nil
+	})
+	if err != nil {
+		return ProviderSessionBinding{}, err
+	}
+	processIdentity := runtime.FormatHostProcessGroupID(bridge.ProcessGroupID())
+	agentDir := strings.TrimSpace(launch.Env["PI_CODING_AGENT_DIR"])
+	return f.finishPiBinding(ctx, request, taskID, bridge, &runAdapter, &runAdapterMu, func(closeCtx context.Context) {
+		_ = f.hostBridges.CloseTask(closeCtx, taskID)
+		cleanupHostPiArtifacts(agentDir)
+	}, processIdentity)
+}
+
+// resolveHostBridgeCommand returns the explicit host piWire bridge path and
+// fails clearly when it is missing. Production requires a real executable;
+// HostStarter tests still resolve the path so process specs stay observable.
+func (f *ProductionProviderSessionFactory) resolveHostBridgeCommand() (string, error) {
+	path := strings.TrimSpace(f.config.HostBridgeCommand)
+	if path == "" {
+		path = strings.TrimSpace(f.config.BridgeCommand)
+	}
+	if path == "" {
+		path = "/usr/local/bin/pentest-provider-bridge"
+	}
+	if f.config.HostStarter != nil {
+		// Test seam: HostStarter intercepts Start, so the path need only be
+		// explicit and non-empty for process-spec assertions.
+		return path, nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("host pi provider bridge is unavailable at %q: %w", path, err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("host pi provider bridge is unavailable at %q: path is a directory", path)
+	}
+	if info.Mode()&0o111 == 0 {
+		return "", fmt.Errorf("host pi provider bridge is unavailable at %q: not executable", path)
+	}
+	return path, nil
+}
+
+func requireHostPiProjectedEnv(env map[string]string) error {
+	if strings.TrimSpace(env["PI_CODING_AGENT_DIR"]) == "" {
+		return fmt.Errorf("host pi requires projected PI_CODING_AGENT_DIR")
+	}
+	if strings.TrimSpace(env["PI_CODING_AGENT_SESSION_DIR"]) == "" {
+		return fmt.Errorf("host pi requires projected PI_CODING_AGENT_SESSION_DIR")
+	}
+	return nil
+}
+
+// cleanupHostPiArtifacts removes Task-scoped Pi session files and projected
+// credentials after process-group teardown on Stop, failure, and daemon shutdown.
+// models.json (non-secret) is retained for diagnostics until the next projection.
+func cleanupHostPiArtifacts(agentDir string) {
+	agentDir = strings.TrimSpace(agentDir)
+	if agentDir == "" {
+		return
+	}
+	_ = os.Remove(filepath.Join(agentDir, "auth.json"))
+	_ = os.RemoveAll(filepath.Join(agentDir, "sessions"))
 }
 
 func (f *ProductionProviderSessionFactory) openSandbox(ctx context.Context, request ProviderSessionLaunchRequest) (ProviderSessionBinding, error) {
@@ -376,7 +523,12 @@ func (f *ProductionProviderSessionFactory) openSandbox(ctx context.Context, requ
 			_ = f.bridges.CloseTask(closeCtx, taskID)
 		}, bridge.ContainerID())
 	}
-	return f.finishNonCodexBinding(ctx, request, taskID, bridge, &runAdapter, &runAdapterMu, func(closeCtx context.Context) {
+	if request.Provider == runtimeprofile.ProviderPi {
+		return f.finishPiBinding(ctx, request, taskID, bridge, &runAdapter, &runAdapterMu, func(closeCtx context.Context) {
+			_ = f.bridges.CloseTask(closeCtx, taskID)
+		}, bridge.ContainerID())
+	}
+	return f.finishClaudeBinding(ctx, request, taskID, bridge, &runAdapter, &runAdapterMu, func(closeCtx context.Context) {
 		_ = f.bridges.CloseTask(closeCtx, taskID)
 	}, bridge.ContainerID())
 }
@@ -464,10 +616,10 @@ func (f *ProductionProviderSessionFactory) finishCodexBinding(
 	return binding, nil
 }
 
-// finishNonCodexBinding establishes Claude Agent SDK or Pi RPC session identity
-// on a sandbox or host bridge, then binds the long-lived adapter. processIdentity
+// finishClaudeBinding establishes Claude Agent SDK session identity on a
+// sandbox or host bridge, then binds the long-lived adapter. processIdentity
 // is the durable ContainerID/host-pgid metadata used for restart cleanup.
-func (f *ProductionProviderSessionFactory) finishNonCodexBinding(
+func (f *ProductionProviderSessionFactory) finishClaudeBinding(
 	ctx context.Context,
 	request ProviderSessionLaunchRequest,
 	taskID string,
@@ -477,53 +629,84 @@ func (f *ProductionProviderSessionFactory) finishNonCodexBinding(
 	closeBridge func(context.Context),
 	processIdentity string,
 ) (ProviderSessionBinding, error) {
-	setupMethod, setupID, setupParams := "pi/get_state", "setup:state", json.RawMessage(`{}`)
-	if request.Provider == runtimeprofile.ProviderClaudeCode {
-		setupMethod, setupID, setupParams = "claude/initialize", "setup:initialize", json.RawMessage(`{}`)
-	}
-	setupResponse, err := bridge.Send(ctx, runtime.SandboxBridgeRequest{ID: setupID, Method: setupMethod, Params: setupParams})
+	setupResponse, err := bridge.Send(ctx, runtime.SandboxBridgeRequest{ID: "setup:initialize", Method: "claude/initialize", Params: json.RawMessage(`{}`)})
 	if err != nil {
 		closeBridge(ctx)
 		return ProviderSessionBinding{}, err
 	}
-	var sessionID, sessionPath string
-	if request.Provider == runtimeprofile.ProviderClaudeCode {
-		var state struct {
-			SessionID string `json:"session_id"`
-		}
-		if err := json.Unmarshal(setupResponse.Result, &state); err != nil || strings.TrimSpace(state.SessionID) == "" {
-			closeBridge(ctx)
-			return ProviderSessionBinding{}, fmt.Errorf("provider session identity unavailable")
-		}
-		sessionID = strings.TrimSpace(state.SessionID)
-		if durable := strings.TrimSpace(request.Continuation.NativeSessionID); durable != "" && durable != sessionID {
-			closeBridge(ctx)
-			return ProviderSessionBinding{}, fmt.Errorf("provider session resume identity changed")
-		}
-	} else {
-		var state struct {
-			SessionID   string `json:"session_id"`
-			SessionPath string `json:"session_path"`
-		}
-		if err := json.Unmarshal(setupResponse.Result, &state); err == nil {
-			sessionID, sessionPath = strings.TrimSpace(state.SessionID), strings.TrimSpace(state.SessionPath)
-		}
-		if durable := strings.TrimSpace(request.Continuation.NativeSessionID); durable != "" && sessionID != "" && durable != sessionID {
-			closeBridge(ctx)
-			return ProviderSessionBinding{}, fmt.Errorf("provider session resume identity changed")
-		}
-		if sessionID == "" {
-			closeBridge(ctx)
-			return ProviderSessionBinding{}, fmt.Errorf("provider session identity unavailable")
-		}
+	var state struct {
+		SessionID string `json:"session_id"`
 	}
-	capabilities := runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptTurn: true, InterruptThenReplace: true, PermissionResponse: true, ResumeSession: true, InTurnSteer: request.Provider == runtimeprofile.ProviderPi}
-	var nativeSession runtime.ProviderSession
-	if request.Provider == runtimeprofile.ProviderClaudeCode {
-		nativeSession = runtime.NewClaudeCodeProviderSession(runtime.ClaudeCodeProviderSessionConfig{Transport: bridge, SessionID: sessionID, Capabilities: capabilities})
-	} else {
-		nativeSession = runtime.NewPiProviderSession(runtime.PiProviderSessionConfig{Transport: bridge, SessionID: sessionID, Capabilities: capabilities})
+	if err := json.Unmarshal(setupResponse.Result, &state); err != nil || strings.TrimSpace(state.SessionID) == "" {
+		closeBridge(ctx)
+		return ProviderSessionBinding{}, fmt.Errorf("provider session identity unavailable")
 	}
+	sessionID := strings.TrimSpace(state.SessionID)
+	if durable := strings.TrimSpace(request.Continuation.NativeSessionID); durable != "" && durable != sessionID {
+		closeBridge(ctx)
+		return ProviderSessionBinding{}, fmt.Errorf("provider session resume identity changed")
+	}
+	capabilities := runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptTurn: true, InterruptThenReplace: true, PermissionResponse: true, ResumeSession: true}
+	nativeSession := runtime.NewClaudeCodeProviderSession(runtime.ClaudeCodeProviderSessionConfig{Transport: bridge, SessionID: sessionID, Capabilities: capabilities})
+	var session *productionBoundSession
+	session = &productionBoundSession{ProviderSession: nativeSession, onClose: func(closeCtx context.Context) {
+		f.mu.Lock()
+		if current, ok := f.bounds[taskID]; ok && current.Session == session {
+			delete(f.bounds, taskID)
+		}
+		f.mu.Unlock()
+		closeBridge(closeCtx)
+	}}
+	runAdapterMu.Lock()
+	*runAdapter = runtime.NewProviderSessionRunAdapter(session, runtime.FirstSignal(bridge.Closed(), bridge.Terminated()))
+	runAdapterMu.Unlock()
+	(*runAdapter).BindContinuation(request.Continuation.ID)
+	(*runAdapter).SetSessionMetadata(func() runtime.NativeSessionMetadata {
+		return runtime.NativeSessionMetadata{ContainerID: processIdentity, NativeSessionID: sessionID}
+	})
+	binding := ProviderSessionBinding{Session: session, Adapter: *runAdapter}
+	f.bounds[taskID] = binding
+	return binding, nil
+}
+
+// finishPiBinding completes Pi RPC setup for sandbox or host after the piWire
+// translation process is running. Host and sandbox share get_state + Pi session.
+func (f *ProductionProviderSessionFactory) finishPiBinding(
+	ctx context.Context,
+	request ProviderSessionLaunchRequest,
+	taskID string,
+	bridge productionBridgeTransport,
+	runAdapter **runtime.ProviderSessionRunAdapter,
+	runAdapterMu *sync.RWMutex,
+	closeBridge func(context.Context),
+	processIdentity string,
+) (ProviderSessionBinding, error) {
+	setupResponse, err := bridge.Send(ctx, runtime.SandboxBridgeRequest{ID: "setup:state", Method: "pi/get_state", Params: json.RawMessage(`{}`)})
+	if err != nil {
+		closeBridge(ctx)
+		return ProviderSessionBinding{}, err
+	}
+	var state struct {
+		SessionID   string `json:"session_id"`
+		SessionPath string `json:"session_path"`
+	}
+	if err := json.Unmarshal(setupResponse.Result, &state); err == nil {
+		// ok
+	}
+	sessionID, sessionPath := strings.TrimSpace(state.SessionID), strings.TrimSpace(state.SessionPath)
+	if durable := strings.TrimSpace(request.Continuation.NativeSessionID); durable != "" && sessionID != "" && durable != sessionID {
+		closeBridge(ctx)
+		return ProviderSessionBinding{}, fmt.Errorf("provider session resume identity changed")
+	}
+	if sessionID == "" {
+		closeBridge(ctx)
+		return ProviderSessionBinding{}, fmt.Errorf("provider session identity unavailable")
+	}
+	capabilities := runtimeplugin.Capabilities{
+		PersistentSession: true, SendTurn: true, InterruptTurn: true, InterruptThenReplace: true,
+		PermissionResponse: true, ResumeSession: true, InTurnSteer: true,
+	}
+	nativeSession := runtime.NewPiProviderSession(runtime.PiProviderSessionConfig{Transport: bridge, SessionID: sessionID, Capabilities: capabilities})
 	var session *productionBoundSession
 	session = &productionBoundSession{ProviderSession: nativeSession, onClose: func(closeCtx context.Context) {
 		f.mu.Lock()
@@ -627,6 +810,43 @@ func hostClaudeCustomArgs(args []string) []string {
 			strings.HasPrefix(arg, "--mcp-config=") || strings.HasPrefix(arg, "--output-format=") ||
 			strings.HasPrefix(arg, "--permission-mode=") || strings.HasPrefix(arg, "--resume=") ||
 			strings.HasPrefix(arg, "--cwd=") || strings.HasPrefix(arg, "--effort=") {
+			continue
+		}
+		custom = append(custom, arg)
+	}
+	return custom
+}
+
+// hostPiCustomArgs extracts Custom Args from a one-shot host Pi launch argv
+// (after the binary) for RPC assembly via the piWire bridge.
+//
+// Dropped tokens are structured launch-template fields and one-shot mode/session
+// flags that persistent RPC replaces. Non-conflicting Custom Args are preserved.
+func hostPiCustomArgs(args []string) []string {
+	if len(args) == 0 {
+		return nil
+	}
+	skipNext := map[string]bool{
+		"--model": true, "--provider": true, "--mode": true,
+		"--session": true, "--session-id": true,
+	}
+	end := len(args)
+	if end > 0 && !strings.HasPrefix(args[end-1], "-") {
+		// Trailing goal positional from one-shot launch template.
+		if end > 1 {
+			end--
+		}
+	}
+	var custom []string
+	for i := 0; i < end; i++ {
+		arg := args[i]
+		if skipNext[arg] {
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "--model=") || strings.HasPrefix(arg, "--provider=") ||
+			strings.HasPrefix(arg, "--mode=") || strings.HasPrefix(arg, "--session=") ||
+			strings.HasPrefix(arg, "--session-id=") {
 			continue
 		}
 		custom = append(custom, arg)

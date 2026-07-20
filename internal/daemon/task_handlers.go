@@ -206,6 +206,9 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 	}
 	plan = boundPlan
 	if server.providerSessionFactory != nil && supportsPersistentProviderSession(created.Runner, plan.ResolvedProfile.Provider) {
+		// Persistent selection with a factory is fail-closed: factory/bridge errors
+		// never fall back to the legacy one-shot Adapter. Production always installs
+		// the factory; unit tests without one still exercise one-shot host paths.
 		binding, factoryErr := server.providerSessionFactory.Open(context.Background(), ProviderSessionLaunchRequest{
 			Task: created, Continuation: continuation, Provider: plan.ResolvedProfile.Provider,
 			Runner: created.Runner, LaunchGoal: plan.LaunchGoal, RuntimeConfig: plan.CapturedRuntimeConfig,
@@ -328,7 +331,16 @@ func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, p
 			binding := &continuationLaunchBinding{V2Header: &launchHeader}
 			var err error
 			boundPlan, err = server.buildTaskLaunchPlanWithBinding(created, goal, plan.LaunchModelOverride, plan.NativeResumeSessionID, plan.LaunchReasoningEffort, binding, &plan)
-			return err
+			if err != nil {
+				return err
+			}
+			// Precommit runs before CreateContinuationLaunchTx stores RuntimeConfig.
+			// Copy only non-secret fixed-at-launch fields (Pi projected set) into
+			// the map CreateContinuation will persist so native turn selection
+			// can fail closed against the real projected set. Never copy auth,
+			// env, or credential material from projection previews.
+			mergeFixedAtLaunchRuntimeConfig(plan.CapturedRuntimeConfig, boundPlan.CapturedRuntimeConfig)
+			return nil
 		},
 		BindGrant: func(plaintextGrant string) error {
 			if !usesTrustedMCP || strings.TrimSpace(plaintextGrant) == "" {
@@ -339,8 +351,12 @@ func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, p
 			boundPlan, err = server.buildTaskLaunchPlanWithBinding(created, goal, plan.LaunchModelOverride, plan.NativeResumeSessionID, plan.LaunchReasoningEffort, binding, &plan)
 			if err != nil {
 				scrubBlackboardV2GrantBearingProjection(layout, provider)
+				return err
 			}
-			return err
+			// BindGrant runs after the config version is stored; still keep the
+			// in-memory plan consistent for the returned boundPlan path.
+			mergeFixedAtLaunchRuntimeConfig(plan.CapturedRuntimeConfig, boundPlan.CapturedRuntimeConfig)
+			return nil
 		},
 		UnbindGrant: func() {
 			if usesTrustedMCP {
@@ -352,6 +368,19 @@ func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, p
 		return task.TaskContinuation{}, taskLaunchPlan{}, err
 	}
 	return launch.Continuation, boundPlan, nil
+}
+
+// mergeFixedAtLaunchRuntimeConfig copies only non-secret fixed-at-launch fields
+// from source into dest so CreateContinuationLaunchTx can persist Precommit
+// projection results without a second config version. Credential values, auth
+// previews, and env maps must never enter stored Task Runtime Configuration.
+func mergeFixedAtLaunchRuntimeConfig(dest, source map[string]any) {
+	if dest == nil || source == nil {
+		return
+	}
+	if ids, ok := source["projected_model_provider_ids"]; ok {
+		dest["projected_model_provider_ids"] = ids
+	}
 }
 
 // scrubBlackboardV2GrantBearingProjection removes trusted MCP config that may

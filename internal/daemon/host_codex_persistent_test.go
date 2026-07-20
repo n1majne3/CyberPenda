@@ -403,15 +403,15 @@ func TestHostRunnerStillRequiresExplicitActivation(t *testing.T) {
 	}
 }
 
-func TestSupportsPersistentProviderSessionHostCodexAndClaude(t *testing.T) {
+func TestSupportsPersistentProviderSessionHostBuiltins(t *testing.T) {
 	if !supportsPersistentProviderSession(task.RunnerHost, runtimeprofile.ProviderCodex) {
 		t.Fatal("host codex must use persistent sessions")
 	}
 	if !supportsPersistentProviderSession(task.RunnerHost, runtimeprofile.ProviderClaudeCode) {
 		t.Fatal("host claude must use persistent sessions (#151)")
 	}
-	if supportsPersistentProviderSession(task.RunnerHost, runtimeprofile.ProviderPi) {
-		t.Fatal("host pi must remain one-shot until #152")
+	if !supportsPersistentProviderSession(task.RunnerHost, runtimeprofile.ProviderPi) {
+		t.Fatal("host pi must use persistent sessions")
 	}
 	if !supportsPersistentProviderSession(task.RunnerSandbox, runtimeprofile.ProviderClaudeCode) {
 		t.Fatal("sandbox claude must remain persistent")

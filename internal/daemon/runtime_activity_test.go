@@ -241,12 +241,17 @@ func TestRuntimeActivityHostClaudeHealthTransitions(t *testing.T) {
 	testRuntimeActivityHostHealthTransitions(t, runtimeprofile.ProviderClaudeCode)
 }
 
+func TestRuntimeActivityHostPiHealthTransitions(t *testing.T) {
+	testRuntimeActivityHostHealthTransitions(t, runtimeprofile.ProviderPi)
+}
+
 func testRuntimeActivityHostHealthTransitions(t *testing.T, provider runtimeprofile.Provider) {
 	t.Helper()
 	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
 		SessionID: "host-activity-" + string(provider),
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
+			InTurnSteer: provider == runtimeprofile.ProviderPi,
 		},
 	})
 	closed := make(chan struct{})
