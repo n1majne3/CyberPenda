@@ -142,16 +142,11 @@ func (h *Harness) Launch(ctx context.Context, req LaunchRequest) error {
 		}
 	}
 
-	// Operator Finish: Run returns only after provider resources closed (or cancel
-	// after close). Finalize Continuation terminal + reconciliation here, but
-	// leave Task lifecycle to handleFinishTask after recon verification.
+	// Operator Finish: single owner of terminal Task/Continuation status is
+	// handleFinishTask. With finish intent set, only release the active run —
+	// never write completed/stopped/failed here (avoids races with StopAndWait).
 	if run.finishWasRequested() {
 		emit(task.EventKindLifecycle, task.EventPayload{"phase": "finish_shutdown", "adapter": req.Adapter.Name()})
-		if finalContinuationID != "" {
-			if _, err := h.tasks.UpdateContinuationStatus(finalContinuationID, task.StatusCompleted); err != nil {
-				return fmt.Errorf("mark continuation completed for finish: %w", err)
-			}
-		}
 		return nil
 	}
 
@@ -191,10 +186,9 @@ func (h *Harness) Stop(taskID string) {
 }
 
 // MarkFinishRequested records operator Task Finish intent without cancelling
-// the harness context. Finish closes provider/session resources first so
-// shutdown happens-before Continuation reconciliation in Launch.
-// Concurrent visibility is serialized with ClearFinishIntent and Launch finalization
-// through activeRun.mu.
+// the harness context. While set, Launch exits without writing terminal Task
+// or Continuation status — handleFinishTask is the sole terminal owner.
+// Concurrent visibility is serialized with ClearFinishIntent via activeRun.mu.
 func (h *Harness) MarkFinishRequested(taskID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -208,8 +202,8 @@ func (h *Harness) MarkFinishRequested(taskID string) {
 }
 
 // ClearFinishIntent aborts operator Finish intent so a later Stop or abnormal
-// exit finalizes stopped/failed rather than Continuation completed. Call this
-// before any force-cancel when Finish resource close or wait fails.
+// exit may finalize stopped/failed through the normal Launch path. Call when
+// Finish aborts before claiming terminal status.
 func (h *Harness) ClearFinishIntent(taskID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

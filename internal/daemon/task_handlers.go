@@ -1541,14 +1541,13 @@ func (server *Server) handleFinishTask(response http.ResponseWriter, request *ht
 	stopContext, cancelStop := context.WithDeadline(context.Background(), deadline)
 	defer cancelStop()
 
-	// 1) Finish intent only — do not cancel harness yet so reconciliation cannot
-	// run before provider/session/process resources are closed.
+	// 1) Finish intent: Launch will exit without writing terminal status.
+	// handleFinishTask is the sole owner of Continuation/Task completed.
 	if server.harness != nil {
 		server.harness.MarkFinishRequested(taskID)
 	}
-	// 2) Close provider session/bridge/process first (happens-before cancel).
+	// 2) Close provider session/bridge/process (production Closed() on Close).
 	if err := server.closeProviderSessionForStop(stopContext, taskID); err != nil {
-		// Abort intent before any later cancel so residual exit is stop/fail.
 		if server.harness != nil {
 			server.harness.ClearFinishIntent(taskID)
 		}
@@ -1556,24 +1555,25 @@ func (server *Server) handleFinishTask(response http.ResponseWriter, request *ht
 		writeError(response, http.StatusConflict, "finish failed at provider_session_close: provider session did not close")
 		return
 	}
-	// 3) Cancel residual harness wait with finish intent still set so Launch
-	// finalizes Continuation (not Task). Close already completed above.
+	// 3) Wait for harness exit (cancel residual wait is safe: finish path does
+	// not write terminal status). On timeout, clear intent then force-stop so a
+	// late exit uses stop/fail rather than hang with residual intent.
 	remaining := time.Until(deadline)
 	if remaining < 0 {
 		remaining = 0
 	}
 	if server.harness != nil {
 		if ok := server.harness.StopAndWait(taskID, remaining); !ok {
-			// Abort intent before leaving so a late exit cannot claim completed.
 			server.harness.ClearFinishIntent(taskID)
+			_ = server.harness.StopAndWait(taskID, 0)
 			server.finishDiagnostic(taskID, "runtime_shutdown", "runtime did not stop in time")
 			writeError(response, http.StatusConflict, "finish failed at runtime_shutdown: runtime did not stop in time")
 			return
 		}
 	}
 
-	// 4) Fail-closed: Continuation must exist, be completed, and reconciled
-	// before Task may be marked completed. No silent fallbacks.
+	// 4) Sole owner: mark Continuation completed (triggers recon), verify
+	// durable marker, then Task completed. Fail-closed — no silent fallbacks.
 	cont, contErr := server.tasks.LatestContinuation(taskID)
 	if contErr != nil {
 		server.finishDiagnostic(taskID, "continuation_lookup", contErr.Error())

@@ -94,10 +94,55 @@ func (f *finishSessionFactory) openCount() int {
 	return f.opens
 }
 
+// finishBoundSession mirrors production bridges: session Close signals the run
+// adapter closed channel so Finish can waitHarnessInactive without cancel.
+type finishBoundSession struct {
+	*runtime.FakeProviderSession
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (s *finishBoundSession) Close(ctx context.Context) error {
+	err := s.FakeProviderSession.Close(ctx)
+	if err == nil || errors.Is(err, runtime.ErrProviderSessionClosed) {
+		s.signalClosed()
+	}
+	return err
+}
+
+func (s *finishBoundSession) signalClosed() {
+	if s.closed == nil {
+		return
+	}
+	s.once.Do(func() {
+		select {
+		case <-s.closed:
+		default:
+			close(s.closed)
+		}
+	})
+}
+
+func newFinishSessionPair(sessionID string) (runtime.ProviderSession, runtime.Adapter) {
+	return newFinishSessionPairWithCaps(sessionID, runtimeplugin.Capabilities{
+		PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
+	})
+}
+
+func newFinishSessionPairWithCaps(sessionID string, caps runtimeplugin.Capabilities) (runtime.ProviderSession, runtime.Adapter) {
+	closed := make(chan struct{})
+	fake := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: sessionID, Capabilities: caps,
+	})
+	session := &finishBoundSession{FakeProviderSession: fake, closed: closed}
+	adapter := runtime.NewProviderSessionRunAdapter(session, closed)
+	return session, adapter
+}
+
 // forceBusySession reports busy turn activity without holding the daemon
 // control lock (native steer holds the lock for the whole operation).
 type forceBusySession struct {
-	runtime.ProviderSession
+	*finishBoundSession
 	busy bool
 }
 
@@ -105,10 +150,7 @@ func (s *forceBusySession) ControlBusy() bool {
 	if s.busy {
 		return true
 	}
-	if reporter, ok := s.ProviderSession.(interface{ ControlBusy() bool }); ok {
-		return reporter.ControlBusy()
-	}
-	return false
+	return s.finishBoundSession.ControlBusy()
 }
 
 func newFinishTaskFixture(t *testing.T, factory ProviderSessionFactory) (*Server, task.Task, modelprovider.Provider) {
@@ -200,14 +242,7 @@ func postStop(server *Server, projectID, taskID string) *httptest.ResponseRecord
 }
 
 func TestFinishTaskCompletesLiveIdleRuntimeAndClosesResources(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
-		SessionID: "finish-session",
-		Capabilities: runtimeplugin.Capabilities{
-			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
-		},
-	})
-	closed := make(chan struct{})
-	adapter := runtime.NewProviderSessionRunAdapter(session, closed)
+	session, adapter := newFinishSessionPair("finish-session")
 	factory := &finishSessionFactory{session: session, adapter: adapter}
 	server, created, _ := newFinishTaskFixture(t, factory)
 	launchFinishTask(t, server, created)
@@ -317,14 +352,7 @@ func TestFinishTaskCompletesLiveIdleRuntimeAndClosesResources(t *testing.T) {
 }
 
 func TestFinishTaskRejectsWhenContinuationReconciliationFails(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
-		SessionID: "finish-recon-fail",
-		Capabilities: runtimeplugin.Capabilities{
-			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
-		},
-	})
-	closed := make(chan struct{})
-	adapter := runtime.NewProviderSessionRunAdapter(session, closed)
+	session, adapter := newFinishSessionPair("finish-recon-fail")
 	factory := &finishSessionFactory{session: session, adapter: adapter}
 	server, created, _ := newFinishTaskFixture(t, factory)
 	// Inject failing reconciler after server assembly (replaces blackboardv2).
@@ -363,19 +391,11 @@ func TestFinishTaskRejectsWhenContinuationReconciliationFails(t *testing.T) {
 			t.Fatal("operator_finish must not be recorded when finish is rejected")
 		}
 	}
-	_ = closed
 }
 
 func TestFinishTaskRejectsBusyRuntime(t *testing.T) {
-	inner := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
-		SessionID: "finish-busy",
-		Capabilities: runtimeplugin.Capabilities{
-			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
-		},
-	})
-	session := &forceBusySession{ProviderSession: inner}
-	closed := make(chan struct{})
-	adapter := runtime.NewProviderSessionRunAdapter(session, closed)
+	bound, adapter := newFinishSessionPair("finish-busy")
+	session := &forceBusySession{finishBoundSession: bound.(*finishBoundSession)}
 	factory := &finishSessionFactory{session: session, adapter: adapter}
 	server, created, _ := newFinishTaskFixture(t, factory)
 	launchFinishTask(t, server, created)
@@ -435,18 +455,10 @@ func TestFinishTaskRejectsBusyRuntime(t *testing.T) {
 	if !detailed.RuntimeControls.ResumeAvailable {
 		t.Fatal("stopped task must be resumable")
 	}
-	_ = closed
 }
 
 func TestFinishTaskControlLockConflictsWithConcurrentStop(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
-		SessionID: "finish-lock",
-		Capabilities: runtimeplugin.Capabilities{
-			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
-		},
-	})
-	closed := make(chan struct{})
-	adapter := runtime.NewProviderSessionRunAdapter(session, closed)
+	session, adapter := newFinishSessionPair("finish-lock")
 	factory := &finishSessionFactory{session: session, adapter: adapter}
 	server, created, _ := newFinishTaskFixture(t, factory)
 	launchFinishTask(t, server, created)
@@ -474,18 +486,10 @@ func TestFinishTaskControlLockConflictsWithConcurrentStop(t *testing.T) {
 	if found.Status != task.StatusRunning {
 		t.Fatalf("status = %q after rejected concurrent controls", found.Status)
 	}
-	_ = closed
 }
 
 func TestFinishTaskIdempotentSecondFinishConflicts(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
-		SessionID: "finish-idem",
-		Capabilities: runtimeplugin.Capabilities{
-			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
-		},
-	})
-	closed := make(chan struct{})
-	adapter := runtime.NewProviderSessionRunAdapter(session, closed)
+	session, adapter := newFinishSessionPair("finish-idem")
 	factory := &finishSessionFactory{session: session, adapter: adapter}
 	server, created, _ := newFinishTaskFixture(t, factory)
 	launchFinishTask(t, server, created)
@@ -505,20 +509,13 @@ func TestFinishTaskIdempotentSecondFinishConflicts(t *testing.T) {
 	if found.Status != task.StatusCompleted {
 		t.Fatalf("status after second finish = %q", found.Status)
 	}
-	_ = closed
 }
 
 func TestCompletedTaskMessageQueuesOnceAndResumesSameTask(t *testing.T) {
 	newSession := func(open int) (runtime.ProviderSession, runtime.Adapter) {
-		session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
-			SessionID: fmt.Sprintf("resume-completed-%d", open),
-			Capabilities: runtimeplugin.Capabilities{
-				PersistentSession: true, SendTurn: true, InterruptThenReplace: true, ResumeSession: true,
-			},
+		return newFinishSessionPairWithCaps(fmt.Sprintf("resume-completed-%d", open), runtimeplugin.Capabilities{
+			PersistentSession: true, SendTurn: true, InterruptThenReplace: true, ResumeSession: true,
 		})
-		closed := make(chan struct{})
-		adapter := runtime.NewProviderSessionRunAdapter(session, closed)
-		return session, adapter
 	}
 	seedSession, seedAdapter := newSession(0)
 	factory := &finishSessionFactory{
@@ -678,14 +675,7 @@ func TestFailedTaskResumeFallsBackWithoutDroppingMessage(t *testing.T) {
 }
 
 func TestBlackboardFinishDoesNotCompleteTask(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
-		SessionID: "bb-finish-guard",
-		Capabilities: runtimeplugin.Capabilities{
-			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
-		},
-	})
-	closed := make(chan struct{})
-	adapter := runtime.NewProviderSessionRunAdapter(session, closed)
+	session, adapter := newFinishSessionPair("bb-finish-guard")
 	factory := &finishSessionFactory{session: session, adapter: adapter}
 	server, created, _ := newFinishTaskFixture(t, factory)
 	launchFinishTask(t, server, created)
@@ -710,7 +700,6 @@ func TestBlackboardFinishDoesNotCompleteTask(t *testing.T) {
 	if _, ok := server.providerSessions.get(created.ID); !ok {
 		t.Fatal("Blackboard Finish must not close Runtime ownership by itself")
 	}
-	_ = closed
 }
 
 // delayedFinishCloseSession blocks inside Close so Finish cannot complete
@@ -810,15 +799,9 @@ func TestFinishTaskShutdownHappensBeforeReconciliation(t *testing.T) {
 
 func TestConcurrentResumeSecondConflictsWithoutStoppingFirst(t *testing.T) {
 	newSession := func(open int) (runtime.ProviderSession, runtime.Adapter) {
-		session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
-			SessionID: fmt.Sprintf("resume-race-%d", open),
-			Capabilities: runtimeplugin.Capabilities{
-				PersistentSession: true, SendTurn: true, InterruptThenReplace: true, ResumeSession: true,
-			},
+		return newFinishSessionPairWithCaps(fmt.Sprintf("resume-race-%d", open), runtimeplugin.Capabilities{
+			PersistentSession: true, SendTurn: true, InterruptThenReplace: true, ResumeSession: true,
 		})
-		closed := make(chan struct{})
-		adapter := runtime.NewProviderSessionRunAdapter(session, closed)
-		return session, adapter
 	}
 	seedSession, seedAdapter := newSession(0)
 	factory := &finishSessionFactory{session: seedSession, adapter: seedAdapter, newSession: newSession}
@@ -921,6 +904,76 @@ func (s *failingCloseSession) Close(ctx context.Context) error {
 		close(s.closed)
 	}
 	return err
+}
+
+// silentCloseSession closes the provider handle but never signals the run
+// adapter closed channel. Harness exit is then driven only by StopAndWait cancel
+// under finish intent — which must not write terminal status (sole owner is
+// handleFinishTask after harness exit).
+type silentCloseSession struct {
+	*runtime.FakeProviderSession
+}
+
+func (s *silentCloseSession) Close(ctx context.Context) error {
+	return s.FakeProviderSession.Close(ctx)
+}
+
+func TestFinishTaskSoleOwnerAfterCancelDrivenHarnessExit(t *testing.T) {
+	neverClosed := make(chan struct{})
+	fake := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "finish-silent-close",
+		Capabilities: runtimeplugin.Capabilities{
+			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
+		},
+	})
+	session := &silentCloseSession{FakeProviderSession: fake}
+	adapter := runtime.NewProviderSessionRunAdapter(session, neverClosed)
+	factory := &finishSessionFactory{session: session, adapter: adapter}
+	server, created, _ := newFinishTaskFixture(t, factory)
+	launchFinishTask(t, server, created)
+
+	before, err := server.tasks.LatestContinuation(created.ID)
+	if err != nil || before == nil {
+		t.Fatalf("before continuation: %v %#v", err, before)
+	}
+
+	resp := postFinish(server, created.ProjectID, created.ID)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("finish status = %d body %s", resp.Code, resp.Body.String())
+	}
+
+	events, err := server.tasks.Events(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawShutdown, sawOperatorFinish bool
+	for _, event := range events {
+		if event.Kind != task.EventKindLifecycle {
+			continue
+		}
+		switch event.Payload["phase"] {
+		case "finish_shutdown":
+			sawShutdown = true
+		case "completed":
+			if event.Payload["reason"] != "operator_finish" {
+				t.Fatalf("completed lifecycle without operator_finish: %#v", event.Payload)
+			}
+			sawOperatorFinish = true
+		}
+	}
+	if !sawShutdown {
+		t.Fatal("expected finish_shutdown from harness exit-without-terminal-write")
+	}
+	if !sawOperatorFinish {
+		t.Fatal("expected operator_finish from handleFinishTask sole owner")
+	}
+	cont, err := server.tasks.Continuation(before.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cont.Status != task.StatusCompleted || cont.BlackboardReconciliationStatus != task.ReconciliationCompleted {
+		t.Fatalf("continuation after sole-owner finish = %#v", cont)
+	}
 }
 
 func TestFinishTaskClearsIntentWhenProviderCloseFails(t *testing.T) {
