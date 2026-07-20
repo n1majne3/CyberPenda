@@ -578,6 +578,97 @@ func TestCurrentTurnSelectionUsesCapturedSnapshotNotEmptyProfileFields(t *testin
 	}
 }
 
+func TestNativeSteerIdempotencyTreatsMissingPriorEffortAsHigh(t *testing.T) {
+	// Legacy conversation events may omit effort. A retry that resolves to high
+	// must not false-conflict.
+	prior := task.Event{
+		Kind: task.EventKindConversation,
+		Payload: task.EventPayload{
+			"text": "continue", "model_provider_id": "p1", "model": "m1",
+			// no requested_reasoning_effort
+		},
+	}
+	if conflict := nativeSteerIdempotencyConflict(prior, "continue", runtime.ProviderSessionRequest{
+		ModelProviderID: "p1", Model: "m1", RequestedReasoningEffort: "high",
+	}); conflict != "" {
+		t.Fatalf("unexpected conflict for legacy high default: %s", conflict)
+	}
+	if conflict := nativeSteerIdempotencyConflict(prior, "continue", runtime.ProviderSessionRequest{
+		ModelProviderID: "p1", Model: "m1", RequestedReasoningEffort: "max",
+	}); conflict == "" {
+		t.Fatal("expected conflict when retrying with different effort")
+	}
+}
+
+func TestQueueSteerModelOnlySelectionCreatesConfigVersion(t *testing.T) {
+	// hasSelection must include selectedModel(), not only provider/profile.
+	root := t.TempDir()
+	binary := filepath.Join(root, "codex")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\necho ok\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(Config{
+		DBPath: filepath.Join(root, "pentest.db"), RuntimeRoot: filepath.Join(root, "runs"),
+		DisableBuiltinSkills: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	projectRecord, err := server.projects.Create("Project", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := server.profiles.Create("Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		Model: "gpt-old", ReasoningEffort: "high", BinaryPath: binary,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := server.tasks.Create(task.CreateRequest{
+		ProjectID: projectRecord.ID, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerHost,
+		RunControls: task.RunControls{HostActivated: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	versionsBefore, err := server.tasks.RuntimeConfigVersions(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{"directive":"use stronger model","model":"gpt-new"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectRecord.ID+"/tasks/"+created.ID+"/steer/queue", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("queue status = %d body %s", resp.Code, resp.Body.String())
+	}
+	var queued struct {
+		RuntimeConfigVersion *struct {
+			Config map[string]any `json:"config"`
+		} `json:"runtime_config_version"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&queued); err != nil {
+		t.Fatal(err)
+	}
+	if queued.RuntimeConfigVersion == nil {
+		t.Fatal("model-only selection must create Runtime Config Version")
+	}
+	if queued.RuntimeConfigVersion.Config["model"] != "gpt-new" && queued.RuntimeConfigVersion.Config["model_override"] != "gpt-new" {
+		t.Fatalf("config model = %#v", queued.RuntimeConfigVersion.Config)
+	}
+	versionsAfter, err := server.tasks.RuntimeConfigVersions(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(versionsAfter) <= len(versionsBefore) {
+		t.Fatalf("expected new config version for model-only selection")
+	}
+}
+
 func TestQueueSteerProviderChangeCreatesConfigVersionAndKeepsMessage(t *testing.T) {
 	root := t.TempDir()
 	binary := filepath.Join(root, "codex")

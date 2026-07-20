@@ -49,7 +49,9 @@ type taskContinuationSelectionInput struct {
 }
 
 func (input taskContinuationSelectionInput) hasSelection() bool {
-	return strings.TrimSpace(input.RuntimeProfileID) != "" || strings.TrimSpace(input.ModelProviderID) != ""
+	return strings.TrimSpace(input.RuntimeProfileID) != "" ||
+		strings.TrimSpace(input.ModelProviderID) != "" ||
+		input.selectedModel() != ""
 }
 
 func (input taskContinuationSelectionInput) hasRuntimeProfileSelection() bool {
@@ -2560,9 +2562,13 @@ func nativeSteerIdempotencyConflict(prior task.Event, message string, selection 
 	if priorEffort == "" {
 		priorEffort, _ = prior.Payload["reasoning_effort"].(string)
 	}
+	// Legacy conversation events may omit effort; treat missing as high so a
+	// retry that resolves to the default does not false-conflict.
+	priorEffortNormalized, _ := runtimeprofile.NormalizeReasoningEffort(priorEffort)
+	requestedEffortNormalized, _ := runtimeprofile.NormalizeReasoningEffort(selection.RequestedReasoningEffort)
 	if strings.TrimSpace(priorProvider) != strings.TrimSpace(selection.ModelProviderID) ||
 		strings.TrimSpace(priorModel) != strings.TrimSpace(selection.Model) ||
-		strings.TrimSpace(priorEffort) != strings.TrimSpace(selection.RequestedReasoningEffort) {
+		priorEffortNormalized != requestedEffortNormalized {
 		return "steer request id already belongs to a different turn selection"
 	}
 	return ""

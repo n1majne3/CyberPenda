@@ -252,10 +252,12 @@ export function TaskDetailPage() {
       const modelPayload = continuationModelPayload();
       const precedingProvider = currentControls?.turn_selection?.model_provider_id?.trim() ?? "";
       const selectedProvider = continuationModelProvider.trim();
-      // Only a Model Provider change requires Config Projection + restart.
-      // Same-provider model/effort changes stay on the native session.
+      // Model Provider introduction or change requires Config Projection + restart.
+      // An empty preceding provider with a newly selected provider is a switch
+      // (do not send native steer only to receive 409). Same-provider model/effort
+      // changes stay on the native session.
       const switchingModelProvider =
-        runningNow && selectedProvider !== "" && precedingProvider !== "" && selectedProvider !== precedingProvider;
+        runningNow && selectedProvider !== "" && selectedProvider !== precedingProvider;
 
       if (switchingModelProvider) {
         if (!queueNow) throw new Error("Model provider switching is unavailable for this Task");
@@ -392,11 +394,9 @@ export function TaskDetailPage() {
   });
   const precedingProviderID = controls?.turn_selection?.model_provider_id?.trim() ?? "";
   const selectedProviderID = continuationModelProvider.trim();
+  // Empty preceding + any selected provider is also a switch (introducing a provider).
   const providerSwitchRequested =
-    running &&
-    selectedProviderID !== "" &&
-    precedingProviderID !== "" &&
-    selectedProviderID !== precedingProviderID;
+    running && selectedProviderID !== "" && selectedProviderID !== precedingProviderID;
   const sendActionLabel = providerSwitchRequested
     ? queueSteerAvailable ? "Switch provider and resume" : "Provider switch unavailable"
     : conversationSendLabel(sendMode, nativeSteerMode);
