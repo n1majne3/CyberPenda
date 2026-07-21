@@ -170,11 +170,15 @@ func TestRuntimeActivityLiveIdleAndBusyForSandboxProviders(t *testing.T) {
 			launchActivityTask(t, server, created)
 
 			// After launch turn settles, health is live/idle independent of Task status.
-			deadline := time.Now().Add(2 * time.Second)
+			// Wait for status to leave pending — harness mark-running can lag under
+			// package-parallel load (CI: status=pending for Pi).
+			deadline := time.Now().Add(5 * time.Second)
 			var body runtimeActivityBody
 			for time.Now().Before(deadline) {
 				body = getTaskActivity(t, server, created.ProjectID, created.ID)
-				if body.RuntimeActivity.Liveness == "live" && body.RuntimeActivity.TurnActivity == "idle" {
+				if body.Status == "running" &&
+					body.RuntimeActivity.Liveness == "live" &&
+					body.RuntimeActivity.TurnActivity == "idle" {
 					break
 				}
 				time.Sleep(10 * time.Millisecond)
