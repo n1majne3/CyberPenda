@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -37,6 +38,34 @@ func TestOpenRunsMigrationsIdempotently(t *testing.T) {
 
 	if err := second.Ping(); err != nil {
 		t.Fatalf("ping after reopen: %v", err)
+	}
+}
+
+// TestOpenRestrictsDatabaseFilePermissions pins issue #160: the database stores
+// plaintext "literal" credential secrets in credential_bindings.source_json, so
+// the main file and its WAL/SHM sidecars must be owner-only (0600) rather than
+// the umask default (typically 0644) that other local OS users could read.
+func TestOpenRestrictsDatabaseFilePermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pentest.db")
+
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		candidate := path + suffix
+		info, err := os.Stat(candidate)
+		if err != nil {
+			if os.IsNotExist(err) && suffix != "" {
+				continue // sidecar not present; nothing to assert
+			}
+			t.Fatalf("stat %s: %v", candidate, err)
+		}
+		if mode := info.Mode().Perm(); mode != 0o600 {
+			t.Fatalf("expected %s mode 0600, got %04o", filepath.Base(candidate), mode)
+		}
 	}
 }
 

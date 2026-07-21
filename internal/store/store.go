@@ -121,6 +121,10 @@ func Open(path string) (*DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := restrictStoreFilePermissions(path); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := rejectV1ActiveOpen(db); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -132,6 +136,25 @@ func Open(path string) (*DB, error) {
 	}
 
 	return &DB{db}, nil
+}
+
+// restrictStoreFilePermissions locks the SQLite database file and its WAL/SHM
+// sidecars down to owner-only (0o600). The database persists plaintext "literal"
+// credential secrets in credential_bindings.source_json, so it must not be
+// readable by other local OS users. SQLite creates these files using the process
+// umask (typically 0644); we tighten them explicitly once the connection exists.
+// Sidecars that do not exist yet are skipped: a clean database has no WAL/SHM
+// until the first write, and SQLite recreates them inheriting the main file mode.
+func restrictStoreFilePermissions(path string) error {
+	if path == "" || path == ":memory:" {
+		return nil
+	}
+	for _, candidate := range []string{path, path + "-wal", path + "-shm"} {
+		if err := os.Chmod(candidate, 0o600); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("restrict store file permissions %s: %w", filepath.Base(candidate), err)
+		}
+	}
+	return nil
 }
 
 // rejectV1BeforeActiveOpen classifies an existing file without letting SQLite
