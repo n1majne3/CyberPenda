@@ -363,15 +363,26 @@ func piAPIForProtocol(protocol modelprovider.Protocol) string {
 	}
 }
 
+// writeJSONConfigFile encodes doc as indented JSON and writes it with 0o600
+// permissions. Projected runtime config files can carry resolved model
+// credentials, so every JSON config is persisted owner-read/write only through
+// this single audited path.
+func writeJSONConfigFile(path string, doc any) error {
+	raw, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode runtime config: %w", err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		return fmt.Errorf("write runtime config: %w", err)
+	}
+	return nil
+}
+
 func projectGenericConfig(layout Layout, profile runtimeprofile.Profile) (ConfigProjection, error) {
 	config := runtimeprofile.GeneratedConfig(profile)
 	configPath := filepath.Join(layout.ProviderHome, "config.json")
-	raw, err := json.MarshalIndent(config, "", "  ")
-	if err != nil {
-		return ConfigProjection{}, fmt.Errorf("encode runtime config: %w", err)
-	}
-	if err := os.WriteFile(configPath, raw, 0o600); err != nil {
-		return ConfigProjection{}, fmt.Errorf("write runtime config: %w", err)
+	if err := writeJSONConfigFile(configPath, config); err != nil {
+		return ConfigProjection{}, err
 	}
 	return ConfigProjection{ConfigPath: configPath, Config: config}, nil
 }
@@ -412,12 +423,8 @@ func projectClaudeSettings(layout Layout, profile runtimeprofile.Profile, req Pr
 		settings["enabledPlugins"] = enabled
 	}
 	settingsPath := filepath.Join(layout.ProviderHome, "settings.json")
-	raw, err := json.MarshalIndent(settings, "", "  ")
-	if err != nil {
-		return ConfigProjection{}, fmt.Errorf("encode claude settings: %w", err)
-	}
-	if err := os.WriteFile(settingsPath, raw, 0o600); err != nil {
-		return ConfigProjection{}, fmt.Errorf("write claude settings: %w", err)
+	if err := writeJSONConfigFile(settingsPath, settings); err != nil {
+		return ConfigProjection{}, err
 	}
 
 	preview := map[string]any{
@@ -489,12 +496,8 @@ func projectCodexConfig(layout Layout, profile runtimeprofile.Profile, req Proje
 	if len(materialized) > 0 {
 		authPath = filepath.Join(layout.ProviderHome, "auth.json")
 		authDoc := buildCodexAuth(materialized)
-		raw, err := json.MarshalIndent(authDoc, "", "  ")
-		if err != nil {
-			return ConfigProjection{}, fmt.Errorf("encode codex auth: %w", err)
-		}
-		if err := os.WriteFile(authPath, raw, 0o600); err != nil {
-			return ConfigProjection{}, fmt.Errorf("write codex auth: %w", err)
+		if err := writeJSONConfigFile(authPath, authDoc); err != nil {
+			return ConfigProjection{}, err
 		}
 		authPreview = redactCodexAuth(authDoc)
 	} else if copied, err := copyHostCodexAuth(layout.ProviderHome); err != nil {
@@ -594,21 +597,13 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 		if copiedModels, err := copyHostPiModels(agentDir); err != nil {
 			return ConfigProjection{}, err
 		} else if !copiedModels {
-			modelsRaw, err := json.MarshalIndent(modelsDoc, "", "  ")
-			if err != nil {
-				return ConfigProjection{}, fmt.Errorf("encode pi models: %w", err)
-			}
-			if err := os.WriteFile(modelsPath, modelsRaw, 0o600); err != nil {
-				return ConfigProjection{}, fmt.Errorf("write pi models: %w", err)
+			if err := writeJSONConfigFile(modelsPath, modelsDoc); err != nil {
+				return ConfigProjection{}, err
 			}
 		}
 	} else {
-		modelsRaw, err := json.MarshalIndent(modelsDoc, "", "  ")
-		if err != nil {
-			return ConfigProjection{}, fmt.Errorf("encode pi models: %w", err)
-		}
-		if err := os.WriteFile(modelsPath, modelsRaw, 0o600); err != nil {
-			return ConfigProjection{}, fmt.Errorf("write pi models: %w", err)
+		if err := writeJSONConfigFile(modelsPath, modelsDoc); err != nil {
+			return ConfigProjection{}, err
 		}
 	}
 
@@ -616,12 +611,8 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 	var authPreview map[string]any
 	if len(authDoc) > 0 {
 		authPath = filepath.Join(agentDir, "auth.json")
-		authRaw, err := json.MarshalIndent(authDoc, "", "  ")
-		if err != nil {
-			return ConfigProjection{}, fmt.Errorf("encode pi auth: %w", err)
-		}
-		if err := os.WriteFile(authPath, authRaw, 0o600); err != nil {
-			return ConfigProjection{}, fmt.Errorf("write pi auth: %w", err)
+		if err := writeJSONConfigFile(authPath, authDoc); err != nil {
+			return ConfigProjection{}, err
 		}
 		authPreview = redactPiAuth(authDoc)
 	} else if hostModelsFallback {
@@ -640,12 +631,8 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 	if len(packages) > 0 {
 		settings := map[string]any{"packages": packages}
 		settingsPath := filepath.Join(agentDir, "settings.json")
-		settingsRaw, err := json.MarshalIndent(settings, "", "  ")
-		if err != nil {
-			return ConfigProjection{}, fmt.Errorf("encode pi settings: %w", err)
-		}
-		if err := os.WriteFile(settingsPath, settingsRaw, 0o600); err != nil {
-			return ConfigProjection{}, fmt.Errorf("write pi settings: %w", err)
+		if err := writeJSONConfigFile(settingsPath, settings); err != nil {
+			return ConfigProjection{}, err
 		}
 	}
 
