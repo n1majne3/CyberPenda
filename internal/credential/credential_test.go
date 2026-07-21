@@ -239,3 +239,25 @@ func TestDeleteRemovesBinding(t *testing.T) {
 		t.Fatalf("expected no bindings after delete, got %d", len(globals))
 	}
 }
+
+// TestUpsertRejectsCommandSourceByDefault pins issue #159: a command credential
+// source runs arbitrary shell on the host, so it is refused unless the operator
+// explicitly opts in.
+func TestUpsertRejectsCommandSourceByDefault(t *testing.T) {
+	t.Setenv("PENTEST_ALLOW_COMMAND_CREDENTIALS", "")
+	service := newTestService(t)
+
+	_, err := service.Upsert("api-key", credential.ScopeGlobal, "", credential.Source{Kind: credential.SourceCommand, Value: "printf secret", DestinationEnv: "API_KEY"}, false)
+	if !errors.Is(err, credential.ErrCommandSourceDisabled) {
+		t.Fatalf("expected ErrCommandSourceDisabled, got %v", err)
+	}
+}
+
+func TestUpsertAllowsCommandSourceWhenOptedIn(t *testing.T) {
+	t.Setenv("PENTEST_ALLOW_COMMAND_CREDENTIALS", "1")
+	service := newTestService(t)
+
+	if _, err := service.Upsert("api-key", credential.ScopeGlobal, "", credential.Source{Kind: credential.SourceCommand, Value: "printf secret", DestinationEnv: "API_KEY"}, false); err != nil {
+		t.Fatalf("expected command source to be accepted when opted in, got %v", err)
+	}
+}

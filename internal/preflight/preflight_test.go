@@ -221,6 +221,7 @@ func TestRunFailsWhenFileCredentialUnreadable(t *testing.T) {
 }
 
 func TestRunFailsWhenCommandCredentialExitsNonZero(t *testing.T) {
+	t.Setenv("PENTEST_ALLOW_COMMAND_CREDENTIALS", "1")
 	svc := newTestServices(t)
 	profile, err := svc.profiles.Create(
 		"codex",

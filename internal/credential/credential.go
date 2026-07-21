@@ -105,6 +105,11 @@ var ErrNotFound = errors.New("credential binding not found")
 var (
 	ErrMissingCredentialRef = errors.New("credential_ref is required")
 	ErrInvalidSourceKind    = errors.New("source kind is not supported")
+	// ErrCommandSourceDisabled is returned when a command credential source is
+	// rejected because the operator has not opted in. A command source runs
+	// arbitrary shell on the host (effectively host RCE for anyone who can write
+	// a binding), so it is disabled by default; see commandSourceEnabled.
+	ErrCommandSourceDisabled = errors.New("command credential source is disabled")
 )
 
 // Service implements credential binding business rules against SQLite.
@@ -304,6 +309,9 @@ func (s *Service) findOptional(credentialRef string, scope Scope, scopeID string
 func validateSource(source Source) error {
 	if !sourceKinds[source.Kind] {
 		return fmt.Errorf("%w: %q", ErrInvalidSourceKind, source.Kind)
+	}
+	if source.Kind == SourceCommand && !commandSourceEnabled() {
+		return fmt.Errorf("%w; set %s=1 to enable", ErrCommandSourceDisabled, commandSourceOptInEnv)
 	}
 	if strings.TrimSpace(source.Value) == "" {
 		return errors.New("source value is required")

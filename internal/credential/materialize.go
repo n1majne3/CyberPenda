@@ -7,6 +7,24 @@ import (
 	"strings"
 )
 
+// commandSourceOptInEnv is the environment variable that re-enables the
+// high-privilege "command" credential source.
+const commandSourceOptInEnv = "PENTEST_ALLOW_COMMAND_CREDENTIALS"
+
+// commandSourceEnabled reports whether the "command" credential source is
+// permitted. Materializing a command source runs arbitrary shell on the host
+// (effectively host RCE for anyone who can write a binding), so it is disabled
+// by default. Operators who genuinely need password-store integration re-enable
+// it explicitly by setting PENTEST_ALLOW_COMMAND_CREDENTIALS to a truthy value.
+func commandSourceEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(commandSourceOptInEnv))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 // Materialize reads the secret value described by a binding source.
 func Materialize(source Source) (string, error) {
 	switch source.Kind {
@@ -31,6 +49,9 @@ func Materialize(source Source) (string, error) {
 		}
 		return strings.TrimSpace(string(raw)), nil
 	case SourceCommand:
+		if !commandSourceEnabled() {
+			return "", fmt.Errorf("%w; set %s=1 to enable", ErrCommandSourceDisabled, commandSourceOptInEnv)
+		}
 		command := strings.TrimSpace(source.Value)
 		if command == "" {
 			return "", fmt.Errorf("command source is required")

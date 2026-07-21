@@ -1,6 +1,7 @@
 package credential_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -77,6 +78,7 @@ func TestResolveMaterializedEnvUsesDestinationEnvForFileSource(t *testing.T) {
 }
 
 func TestResolveMaterializedEnvUsesDestinationEnvForCommandSource(t *testing.T) {
+	t.Setenv("PENTEST_ALLOW_COMMAND_CREDENTIALS", "1")
 	service := newTestService(t)
 	source := credential.Source{Kind: credential.SourceCommand, Value: "printf cmd-secret", DestinationEnv: "API_KEY"}
 	if _, err := service.Upsert("codex-api-key", credential.ScopeGlobal, "", source, false); err != nil {
@@ -139,5 +141,29 @@ func TestResolveMaterializedEnvErrorsWhenFileSourceHasNoDestination(t *testing.T
 	_, err := service.ResolveMaterializedEnv("project-1", []string{"codex-api-key"})
 	if err == nil {
 		t.Fatal("expected error when file source has no destination_env")
+	}
+}
+
+// TestMaterializeRejectsCommandSourceByDefault pins issue #159 at the execution
+// chokepoint: even a command binding that already exists (or was injected
+// directly into the store) must not run unless the operator opted in.
+func TestMaterializeRejectsCommandSourceByDefault(t *testing.T) {
+	t.Setenv("PENTEST_ALLOW_COMMAND_CREDENTIALS", "")
+
+	_, err := credential.Materialize(credential.Source{Kind: credential.SourceCommand, Value: "printf secret", DestinationEnv: "API_KEY"})
+	if !errors.Is(err, credential.ErrCommandSourceDisabled) {
+		t.Fatalf("expected ErrCommandSourceDisabled, got %v", err)
+	}
+}
+
+func TestMaterializeAllowsCommandSourceWhenOptedIn(t *testing.T) {
+	t.Setenv("PENTEST_ALLOW_COMMAND_CREDENTIALS", "1")
+
+	got, err := credential.Materialize(credential.Source{Kind: credential.SourceCommand, Value: "printf cmd-secret", DestinationEnv: "API_KEY"})
+	if err != nil {
+		t.Fatalf("materialize opted-in command: %v", err)
+	}
+	if got != "cmd-secret" {
+		t.Fatalf("expected cmd-secret, got %q", got)
 	}
 }
