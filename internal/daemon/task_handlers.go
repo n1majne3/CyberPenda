@@ -265,7 +265,17 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 		default:
 			// Unexpected persistent Runtime exit: ownership must not linger.
 			_ = server.closeProviderSession(created.ID)
-			server.logTask(created, "failed", err.Error())
+			// HTTP-facing error text stays redacted; log the unwrap chain for
+			// operator diagnostics (bridge RPC failures, selection rejections).
+			root := err
+			for {
+				unwrapped := errors.Unwrap(root)
+				if unwrapped == nil {
+					break
+				}
+				root = unwrapped
+			}
+			server.logTask(created, "failed", fmt.Sprintf("%v root=%v", err, root))
 		}
 	}()
 	return nil
@@ -275,6 +285,19 @@ func (server *Server) failProviderSessionLaunch(taskID, continuationID string, c
 	// The durable Continuation already exists at this point. Marking both
 	// records terminal prevents an unbound pending Continuation from looking
 	// resumable after a factory crash or setup rejection.
+	// HTTP and persisted lifecycle payloads stay redacted; the unwrapped cause
+	// is server-only diagnostics so operators can fix setup failures.
+	if server.logger != nil && cause != nil {
+		root := cause
+		for {
+			unwrapped := errors.Unwrap(root)
+			if unwrapped == nil {
+				break
+			}
+			root = unwrapped
+		}
+		server.logger.Printf("provider session setup failed task=%s continuation=%s cause=%v root=%v", taskID, continuationID, cause, root)
+	}
 	_, _ = server.tasks.AppendContinuationEvent(taskID, continuationID, task.EventKindLifecycle, task.EventPayload{
 		"phase": "provider_session_setup_failed", "error": "provider session setup failed",
 	})
@@ -782,12 +805,20 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 			return taskLaunchPlan{}, err
 		}
 		sandboxRuntime := runtimeCommand
+		// One-shot Pi sandbox installs pi via an sh -c bootstrap wrapper. The
+		// persistent provider-session path rewrites the image command to the
+		// bridge and therefore needs a bare "pi" token in docker create argv.
+		// Skip the wrapper whenever this launch will open a provider session.
 		if profile.Provider == runtimeprofile.ProviderPi {
-			wrapped, err := runner.WrapSandboxPiCommand(runtimeCommand, launchProfile.Fields.Env)
-			if err != nil {
-				return taskLaunchPlan{}, err
+			usePersistentSession := server.providerSessionFactory != nil &&
+				supportsPersistentProviderSession(created.Runner, profile.Provider)
+			if !usePersistentSession {
+				wrapped, err := runner.WrapSandboxPiCommand(runtimeCommand, launchProfile.Fields.Env)
+				if err != nil {
+					return taskLaunchPlan{}, err
+				}
+				sandboxRuntime = wrapped
 			}
-			sandboxRuntime = wrapped
 		}
 		var readOnlyTaskFiles, readOnlyTaskDirs []string
 		if binding != nil {
