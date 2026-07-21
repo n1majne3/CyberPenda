@@ -805,7 +805,7 @@ describe("RuntimeProfilesPage", () => {
       created_at: "",
       updated_at: "2026-07-21T00:00:00Z",
     };
-    let patchBodies: unknown[] = [];
+    const patchBodies: unknown[] = [];
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
       const method = init?.method ?? "GET";

@@ -623,7 +623,7 @@ function isNearScrollBottom(container: HTMLElement, threshold = 160) {
 type ConversationSendMode = "native" | "interrupt" | "queue" | "resume" | "unavailable";
 
 /** Pi native cross-provider only when target is in the fixed projected set. */
-export function canPiNativeCrossProvider(input: {
+function canPiNativeCrossProvider(input: {
   runtimeProvider: string;
   nativeSteerAvailable: boolean;
   projectedModelProviderIDs?: string[] | null;
