@@ -130,23 +130,41 @@ const (
 const continuationSelectColumns = `id, task_id, number, runtime_profile_id, runtime_provider, runner, status, container_id, native_session_id, native_session_path, started_at, updated_at, ended_at, runtime_config_version_id, blackboard_reconciliation_status, blackboard_reconciliation_mutation_id, blackboard_reconciled_at`
 
 type RuntimeControls struct {
-	NativeResumeAvailable   bool                        `json:"native_resume_available"`
-	NativeResumeReason      string                      `json:"native_resume_reason,omitempty"`
-	NativeSteerAvailable    bool                        `json:"native_steer_available"`
-	NativeSteerMode         string                      `json:"native_steer_mode,omitempty"`
-	NativeSteerState        string                      `json:"native_steer_state,omitempty"`
-	NativeSteerRequestID    string                      `json:"native_steer_request_id,omitempty"`
-	NativeSteerReason       string                      `json:"native_steer_reason,omitempty"`
-	ResumeAvailable         bool                        `json:"resume_available"`
-	QueueSteerAvailable     bool                        `json:"queue_steer_available"`
-	InterruptSteerAvailable bool                        `json:"interrupt_steer_available"`
-	InterruptSteerReason    string                      `json:"interrupt_steer_reason,omitempty"`
-	NativeSessionCaptured   bool                        `json:"native_session_captured"`
-	SameRuntimeProviderOnly bool                        `json:"same_runtime_provider_only"`
-	RuntimeProvider         string                      `json:"runtime_provider,omitempty"`
-	ProviderPermissions     []ProviderPermissionRequest `json:"provider_permissions,omitempty"`
-	RecoveryState           string                      `json:"recovery_state,omitempty"`
-	RecoveryReason          string                      `json:"recovery_reason,omitempty"`
+	NativeResumeAvailable bool   `json:"native_resume_available"`
+	NativeResumeReason    string `json:"native_resume_reason,omitempty"`
+	NativeSteerAvailable  bool   `json:"native_steer_available"`
+	NativeSteerMode       string `json:"native_steer_mode,omitempty"`
+	NativeSteerState      string `json:"native_steer_state,omitempty"`
+	NativeSteerRequestID  string `json:"native_steer_request_id,omitempty"`
+	NativeSteerReason     string `json:"native_steer_reason,omitempty"`
+	ResumeAvailable       bool   `json:"resume_available"`
+	// FinishAvailable is true only when Runtime Activity is live and idle.
+	// Operator Task Finish is gated by current session health, not Task status.
+	FinishAvailable         bool   `json:"finish_available"`
+	QueueSteerAvailable     bool   `json:"queue_steer_available"`
+	InterruptSteerAvailable bool   `json:"interrupt_steer_available"`
+	InterruptSteerReason    string `json:"interrupt_steer_reason,omitempty"`
+	NativeSessionCaptured   bool   `json:"native_session_captured"`
+	SameRuntimeProviderOnly bool   `json:"same_runtime_provider_only"`
+	RuntimeProvider         string `json:"runtime_provider,omitempty"`
+	// ProjectedModelProviderIDs is the fixed-at-launch set of global Model
+	// Providers projected into a Pi runtime (ADR 0015). Empty/omitted means
+	// native cross-provider is fail-closed; operator must restart.
+	ProjectedModelProviderIDs []string `json:"projected_model_provider_ids,omitempty"`
+	// TurnSelection is the preceding Runtime Turn Selection retained for the
+	// Task Conversation composer. Every turn still sends a complete selection.
+	TurnSelection       *TurnSelection              `json:"turn_selection,omitempty"`
+	ProviderPermissions []ProviderPermissionRequest `json:"provider_permissions,omitempty"`
+	RecoveryState       string                      `json:"recovery_state,omitempty"`
+	RecoveryReason      string                      `json:"recovery_reason,omitempty"`
+}
+
+// TurnSelection is the Model Provider, model, and Requested Reasoning Effort
+// resolved for a Runtime Turn.
+type TurnSelection struct {
+	ModelProviderID string `json:"model_provider_id,omitempty"`
+	Model           string `json:"model,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // ProviderPermissionRequest is a redacted pending approval exposed to the
@@ -167,17 +185,32 @@ type ReconcileInterruptedResult struct {
 	Continuations []TaskContinuation
 }
 
+// RuntimeActivity is the operator-visible current Runtime health, independent
+// of durable Task lifecycle. It is computed from daemon-owned process/session
+// health and terminal notifications, not from stored session identity, Task
+// Events, or elapsed time.
+type RuntimeActivity struct {
+	// Liveness is one of live, offline, orphaned, or unknown.
+	Liveness string `json:"liveness"`
+	// TurnActivity is busy or idle while Liveness is live; empty otherwise.
+	TurnActivity string `json:"turn_activity,omitempty"`
+	// Warning explains unknown liveness without mutating Task lifecycle.
+	Warning string `json:"warning,omitempty"`
+}
+
 // Task is a single user-goal-driven run within a project.
 type Task struct {
-	ID                 string            `json:"id"`
-	ProjectID          string            `json:"project_id"`
-	Goal               string            `json:"goal"`
-	Status             Status            `json:"status"`
-	Runner             Runner            `json:"runner"`
-	RuntimeProfileID   string            `json:"runtime_profile_id"`
-	RunControls        RunControls       `json:"run_controls"`
-	ScopeSnapshot      ScopeSnapshot     `json:"scope_snapshot"`
-	RuntimeControls    RuntimeControls   `json:"runtime_controls"`
+	ID               string          `json:"id"`
+	ProjectID        string          `json:"project_id"`
+	Goal             string          `json:"goal"`
+	Status           Status          `json:"status"`
+	Runner           Runner          `json:"runner"`
+	RuntimeProfileID string          `json:"runtime_profile_id"`
+	RunControls      RunControls     `json:"run_controls"`
+	ScopeSnapshot    ScopeSnapshot   `json:"scope_snapshot"`
+	RuntimeControls  RuntimeControls `json:"runtime_controls"`
+	// RuntimeActivity is current process/session health, not Task status.
+	RuntimeActivity    RuntimeActivity   `json:"runtime_activity"`
 	ActiveContinuation *TaskContinuation `json:"active_continuation,omitempty"`
 	LatestContinuation *TaskContinuation `json:"latest_continuation,omitempty"`
 	CreatedAt          time.Time         `json:"created_at"`

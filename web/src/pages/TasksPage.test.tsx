@@ -69,4 +69,29 @@ describe("TasksPage", () => {
       "focus-visible:ring-2",
     );
   });
+
+  it("shows Runtime Activity separately from Task lifecycle", async () => {
+    mockApi({
+      "/api/projects/project-1/tasks": {
+        tasks: [
+          {
+            ...task("running-live", "Live runtime task", "running", "2026-01-04T00:00:00Z"),
+            runtime_activity: { liveness: "live", turn_activity: "idle" },
+          },
+          {
+            ...task("running-orphan", "Orphaned runtime task", "running", "2026-01-03T00:00:00Z"),
+            runtime_activity: { liveness: "orphaned" },
+          },
+        ],
+      },
+    });
+
+    renderPage();
+
+    const badges = await screen.findAllByTestId("runtime-activity");
+    expect(badges.map((el) => el.textContent)).toEqual(
+      expect.arrayContaining(["runtime live · idle", "runtime orphaned"]),
+    );
+    expect(screen.getAllByText("running").length).toBeGreaterThanOrEqual(2);
+  });
 });

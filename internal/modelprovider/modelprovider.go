@@ -719,10 +719,26 @@ func (p Provider) EndpointFor(protocol Protocol) (Endpoint, bool) {
 
 func (c Catalog) Contains(model string) bool {
 	model = strings.TrimSpace(model)
-	for _, candidate := range append(append([]string{}, c.Manual...), c.Refreshed...) {
+	for _, candidate := range c.Models() {
 		if candidate == model {
 			return true
 		}
 	}
 	return false
+}
+
+// Models returns the configured catalog models in Manual-then-Refreshed order
+// with duplicates removed. Used by Pi multi-provider projection.
+func (c Catalog) Models() []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(c.Manual)+len(c.Refreshed))
+	for _, candidate := range append(append([]string{}, c.Manual...), c.Refreshed...) {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" || seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		out = append(out, candidate)
+	}
+	return out
 }

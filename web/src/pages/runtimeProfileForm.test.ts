@@ -3,6 +3,8 @@ import type { ModelProvider, RuntimePlugin } from "@/lib/api";
 import {
   applyModelProviderSelection,
   buildProfileFields,
+  displayReasoningEffort,
+  REASONING_EFFORT_VALUES,
   isModelProviderCompatibleWithRuntime,
   profileListModelHint,
   selectableModelProviders,
@@ -90,6 +92,7 @@ describe("runtimeProfileForm", () => {
         model_provider_id: "mimo",
         model_provider_protocol: "",
         model_override: "",
+        reasoning_effort: "xhigh",
         custom_args: "",
         env: "",
         api_key_env: "OPENAI_API_KEY",
@@ -108,6 +111,7 @@ describe("runtimeProfileForm", () => {
     expect(fields.endpoint).toBeUndefined();
     expect(fields.api_keys).toBeUndefined();
     expect(fields.credential_refs).toEqual(["codex-api-key"]);
+    expect(fields.reasoning_effort).toBe("xhigh");
   });
 
   it("persists catalog extension install metadata in profile fields", () => {
@@ -121,6 +125,7 @@ describe("runtimeProfileForm", () => {
         model_provider_id: "",
         model_provider_protocol: "",
         model_override: "",
+        reasoning_effort: "high",
         custom_args: "",
         env: "",
         api_key_env: "ANTHROPIC_API_KEY",
@@ -164,6 +169,7 @@ describe("runtimeProfileForm", () => {
           api_key: "sk-secret",
           model_provider_protocol: "",
           model_override: "",
+          reasoning_effort: "medium",
         },
         "mimo",
       ),
@@ -175,7 +181,42 @@ describe("runtimeProfileForm", () => {
       api_key: "",
       model_provider_protocol: "",
       model_override: "",
+      reasoning_effort: "medium",
     });
+  });
+
+  it("exposes exactly five reasoning effort values and displays high for missing storage", () => {
+    expect([...REASONING_EFFORT_VALUES]).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(displayReasoningEffort("")).toBe("high");
+    expect(displayReasoningEffort(undefined)).toBe("high");
+    expect(displayReasoningEffort("xhigh")).toBe("xhigh");
+  });
+
+  it("persists explicit high when the form shows the default for a missing stored value", () => {
+    const fields = buildProfileFields(
+      {
+        name: "codex",
+        provider: "codex",
+        binary_path: "",
+        model: "",
+        endpoint: "",
+        model_provider_id: "mimo",
+        model_provider_protocol: "",
+        model_override: "",
+        reasoning_effort: "high",
+        custom_args: "",
+        env: "",
+        api_key_env: "",
+        api_key: "",
+        runtime_extensions: [],
+        mcp_servers: "",
+        default_runner: "sandbox",
+        sandbox_image: "",
+        credential_refs: "",
+      },
+      plugins,
+    );
+    expect(fields.reasoning_effort).toBe("high");
   });
 
   it("shows provider model hint in profile list when model provider is bound", () => {

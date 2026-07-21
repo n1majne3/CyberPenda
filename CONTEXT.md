@@ -48,6 +48,10 @@ _Avoid_: runtime profile picker, MCP preset, profile name
 A task-only model choice applied at launch that may differ from the selected **Runtime Profile**'s **Model Override** without editing that profile.
 _Avoid_: profile edit, model provider edit, catalog refresh
 
+**Launch Reasoning Effort Override**:
+A task-only **Reasoning Effort** choice applied at launch that may differ from the selected **Runtime Profile** default without editing that profile.
+_Avoid_: profile edit, runtime flag, model override
+
 **Launch Profile Resolution**:
 The daemon step that turns **Run Controls** into the **Runtime Profile** used for a **Task**, either by reusing an explicitly selected **Runtime Profile Preset** or by finding or creating a minimal matching **Runtime Profile** from a **Launch Selection**.
 _Avoid_: live profile mutation, project-local profile fork
@@ -64,9 +68,21 @@ _Avoid_: audit log entry, transcript line, raw output dump
 The user-runtime interaction that continues inside one **Task** after launch.
 _Avoid_: new task per reply, detached chat
 
+**Runtime Turn**:
+A single provider response cycle initiated by one user message within a **Task Conversation**. It retains the **Task** identity while using its own **Runtime Turn Selection**.
+_Avoid_: task, continuation, internal reasoning step
+
+**Runtime Turn Selection**:
+The **Model Provider**, model, and **Requested Reasoning Effort** resolved for one **Runtime Turn**, independently of adjacent turns and without editing the selected **Runtime Profile**.
+_Avoid_: profile switch, session-wide setting, global default
+
 **Task Deletion**:
 Operator removal of a terminal **Task** from normal task surfaces and counts while retaining the minimum durable state required for historical **Blackboard** and **Trusted Origin** integrity.
 _Avoid_: active task cancellation, provenance erasure, hard deletion
+
+**Task Finish**:
+An operator action confirming that a **Task** is complete, which closes its Runtime after required reconciliation and marks the Task completed; it is distinct from **Stop** and **Blackboard Finish**.
+_Avoid_: stop, auto-complete, **Blackboard Finish**
 
 **Scope**:
 The asset boundaries and testing limits that define what the **Pentest Agent** is authorized to do within a **Project**.
@@ -88,6 +104,10 @@ _Avoid_: current scope, cached target list
 The local agent CLI or assistant process scheduled to perform one **Task**.
 _Avoid_: pentest agent, model, provider, worker
 
+**Task-Scoped Persistent Runtime**:
+A **Runtime** process or native session that remains available across **Runtime Turns** within one **Task** and closes only at explicit Task completion, stop, failure, or a required **Config Projection** restart.
+_Avoid_: daemon-global session, infinite process, session-wide setting
+
 **Runtime Harness**:
 The daemon-managed control wrapper that launches, resumes, steers, and stops a **Runtime** for one **Task**.
 _Avoid_: pentest tool executor, agent brain, sandbox
@@ -100,6 +120,10 @@ _Avoid_: direct tool control, hidden prompt mutation, new task
 The next unit of runtime progress after launch, user input, checkpoint, interrupt, or resume.
 _Avoid_: live thought editing, new task
 
+**Runtime Activity Indicator**:
+An operator-visible current-state view with Runtime liveness (`live`, `offline`, `orphaned`, or `unknown`) and, while live, turn activity (`busy` or `idle`), independently of the durable **Task** lifecycle.
+_Avoid_: Task status, audit record, activity history
+
 **Runtime Non-Interactive Defaults**:
 Provider-native arguments required for a **Runtime** to operate without interactive approval or permission prompts. The **Runtime Harness** adds them to every launch and **Runtime Continuation**: Codex receives `--dangerously-bypass-approvals-and-sandbox`; Claude Code receives `--dangerously-skip-permissions` and `--permission-mode bypassPermissions`. These defaults apply to both **Sandbox Runner** and **Host Runner** execution, and are not duplicated when the **Runtime Profile** already supplies them.
 _Avoid_: permission grant, Scope authorization, **Host Runner Activation**, **Project Interface** authority, runner policy
@@ -107,6 +131,10 @@ _Avoid_: permission grant, Scope authorization, **Host Runner Activation**, **Pr
 **Runtime Profile**:
 A global user-editable configuration that chooses how a **Runtime** should run for a task without storing secret values.
 _Avoid_: account, credential bundle, secret store
+
+**Runtime Custom Arguments**:
+Advanced **Runtime Profile** command arguments for provider-native options that have no structured CyberPenda field.
+_Avoid_: Model Provider override, model override, reasoning-effort override, structured-field duplicate
 
 **Runtime Profile Preset**:
 A **Runtime Profile** saved for reuse because it carries advanced launch configuration such as **MCP Configuration**, **Runtime Extension Enablement**, binary paths, or runner defaults beyond a minimal **Launch Selection**.
@@ -119,6 +147,10 @@ _Avoid_: preset, project-local profile, launch-time copy
 **Model Provider**:
 A global reusable non-secret configuration for a model service that a **Runtime Profile** can use when a **Runtime** needs model access.
 _Avoid_: runtime profile, runtime plugin, model only, credential value
+
+**Launch-Ready Model Provider**:
+A **Model Provider** that resolves a protocol endpoint, catalog model, and configured API key compatible with the selected **Runtime Plugin**. Readiness is runtime-specific and checked by **Preflight**.
+_Avoid_: saved provider, valid draft, globally ready provider
 
 **Model Provider ID**:
 The immutable identifier for a **Model Provider**, used to derive its **Model API Key Environment Variable**.
@@ -200,6 +232,18 @@ _Avoid_: semantic URL repair, proxy route, operation suffix
 A **Runtime Profile** field that replaces the selected **Model Provider**'s default model when that profile is used without a **Launch Model Override**.
 _Avoid_: provider edit, endpoint fork, hidden model switch, launch-only override
 
+**Reasoning Effort**:
+An optional **Runtime Profile** default for how much model reasoning a **Runtime** should request for a **Runtime Turn**, using `low`, `medium`, `high`, `xhigh`, or `max`; when absent, CyberPenda defaults to `high`.
+_Avoid_: thinking mode, token budget, custom runtime flag, auto effort
+
+**Requested Reasoning Effort**:
+The **Reasoning Effort** CyberPenda asks a **Runtime** to use for one **Runtime Turn**. It is a request, not proof of the level the model actually used.
+_Avoid_: effective effort, supported effort, reasoning token count
+
+**Effective Reasoning Effort**:
+The reasoning level a **Runtime** reports that it actually applied after any native validation or downgrade. It remains unknown when the **Runtime** does not report it.
+_Avoid_: requested effort, assumed effort, profile default
+
 **Model Provider Protocol**:
 The model-service API contract a **Model Provider Endpoint** supports and a **Runtime Plugin** knows how to project for a **Runtime**.
 _Avoid_: runtime provider, endpoint URL, model name
@@ -215,6 +259,10 @@ _Avoid_: separate credential, runtime profile credential, endpoint secret
 **Model Runtime Projection**:
 The **Config Projection** step that derives and passes the runtime-specific model URL, protocol, model, and credential to a **Runtime** without proxying model traffic.
 _Avoid_: LLM proxy, gateway request, daemon model call
+
+**Pi Global Model Projection**:
+The Pi-specific **Config Projection** that makes every global **Launch-Ready Model Provider**, its model configuration, and its configured model API credential available to a Pi **Runtime** when the task starts, so later **Runtime Turns** can switch providers natively.
+_Avoid_: selected-provider-only projection, project allowlist, on-demand credential injection
 
 **Model API Key Source**:
 The required single source for the API key used by a **Model Provider**.
@@ -774,6 +822,9 @@ _Avoid_: transcript, export, source of truth
 - A **Launch Model Override** may still be chosen at launch when a **Runtime Profile Preset** is selected.
 - A selected **Runtime Profile Preset** keeps its **Runtime Profile** identity for the **Task** even when a **Launch Model Override** is used.
 - A **Launch Model Override** affects only the launching **Task** and its captured **Task Runtime Configuration**; it does not edit the selected **Runtime Profile**.
+- A **Launch Reasoning Effort Override** may be chosen with or without a **Runtime Profile Preset** and affects only the launching **Task**.
+- **Requested Reasoning Effort** resolves in this order: the current **Runtime Turn Selection**, **Launch Reasoning Effort Override** for the initial turn, the **Runtime Profile** default, then CyberPenda's `high` default.
+- **Requested Reasoning Effort** belongs to its **Runtime Turn** and does not edit the selected **Runtime Profile**.
 - Changing the selected **Runtime Plugin** family during launch clears an incompatible **Runtime Profile Preset** selection.
 - **Launch Profile Resolution** reuses an explicitly selected **Runtime Profile Preset** when one is chosen.
 - **Launch Profile Resolution** otherwise finds or creates a minimal **Runtime Profile** that matches the **Launch Selection** runtime, **Model Provider**, and model choice.
@@ -804,6 +855,10 @@ _Avoid_: transcript, export, source of truth
 - A **Model Provider Snapshot** does not include the full **Model Catalog** or any credential value.
 - A **Task Runtime Configuration** may include **Credential References** but not credential values.
 - Editing a **Runtime Profile** does not change existing **Task Runtime Configurations**.
+- **Runtime Custom Arguments** cannot declare a **Model Provider**, model, or **Reasoning Effort** through any runtime-native alias; Profile validation and **Preflight** reject such conflicts with a clear offending-argument error and diagnostic log instead of relying on CLI argument order.
+- CyberPenda does not migrate, remove, reinterpret, or otherwise fall back around conflicting **Runtime Custom Arguments**.
+- Structured Profile, launch, and **Runtime Turn Selection** fields are authoritative for **Model Provider**, model, and **Reasoning Effort**.
+- Non-conflicting **Runtime Custom Arguments** continue to apply to both **Sandbox Runner** and **Host Runner** launches, including **Task-Scoped Persistent Runtime** bridges.
 - Editing a **Model Provider** does not change existing **Task Runtime Configurations** or an active **Runtime Continuation**.
 - A **Model Provider** cannot be deleted while any **Runtime Profile** still references it.
 - Historical task views read captured **Task Runtime Configurations** and **Model Provider Snapshots**, not live **Runtime Profiles** or live **Model Providers**.
@@ -815,6 +870,29 @@ _Avoid_: transcript, export, source of truth
 - **Task Deletion** excludes the **Task** from normal task lists, detail routes, and dashboard counts while retaining only the durable state required for historical **Blackboard** and **Trusted Origin** integrity.
 - A pending, running, or paused **Task** cannot undergo **Task Deletion**.
 - A **Task Conversation** belongs to exactly one **Task**.
+- Each user message in a **Task Conversation** initiates one **Runtime Turn**.
+- Every **Runtime Turn** may select its **Model Provider**, model, and **Reasoning Effort** independently of the preceding turn.
+- When preparing a subsequent **Runtime Turn**, its selection starts from the preceding **Runtime Turn Selection**; the initial turn starts from the launch-resolved selection.
+- A **Runtime Turn Selection** applies at a provider-defined turn boundary and never changes an already-running internal reasoning step.
+- A **Runtime Turn Selection** does not edit the selected **Runtime Profile** or another **Runtime Turn**.
+- A **Runtime Turn Selection** applied through native Runtime controls is part of its **Runtime Turn** request and does not create a separate **Task Event**, audit record, or **Task Runtime Configuration Version**.
+- A **Model Provider** and **Model Catalog** do not store model effort capability metadata; effort capability is treated as unknown before a **Runtime Turn**.
+- CyberPenda passes **Requested Reasoning Effort** to the **Runtime** without pre-validating whether the selected model supports it.
+- A **Runtime** rejection of **Requested Reasoning Effort** fails the affected **Runtime Turn** with an explicit error.
+- A runtime-native effort downgrade is accepted; CyberPenda records **Effective Reasoning Effort** only when the **Runtime** reports it, otherwise the effective value remains unknown.
+- **Reasoning Effort** has exactly five user-selectable values: `low`, `medium`, `high`, `xhigh`, and `max`; there is no Auto or Runtime Default choice.
+- A missing stored **Reasoning Effort** resolves to `high` without requiring existing **Runtime Profiles** to be rewritten.
+- Every **Runtime Turn** sends its resolved **Requested Reasoning Effort** explicitly instead of inheriting sticky effort state from the **Runtime**.
+- A **Task** keeps one **Runtime Plugin** family; changing from Codex, Claude Code, or Pi requires a different **Task**.
+- Codex and Claude Code apply model and **Reasoning Effort** changes natively when the **Model Provider** is unchanged.
+- Native **Runtime Turn Selection** changes do not create a **Task Runtime Configuration Version**.
+- A **Task Runtime Configuration Version** is created only when a later turn requires new **Config Projection**, such as a Codex or Claude Code **Model Provider** change.
+- Changing the **Model Provider** for a Codex or Claude Code **Runtime Turn** creates a new **Task Runtime Configuration Version**, re-resolves credentials, repeats **Config Projection**, and restarts the **Runtime** before resuming the **Task Conversation**.
+- Every Pi task uses **Pi Global Model Projection** rather than limiting model configuration or credentials to its initially selected **Model Provider**.
+- A Pi **Runtime Turn** switches **Model Provider**, model, and **Reasoning Effort** through Pi-native controls without restarting the **Runtime**.
+- Every Pi **Runtime** can access every global **Launch-Ready Model Provider** API credential; **Project**, **Task**, and **Runtime Profile** boundaries do not reduce that credential set.
+- **Pi Global Model Projection** excludes Model Provider drafts and other providers that are not launch-ready for Pi; those exclusions do not fail Pi **Preflight** unless the excluded provider is the task's initial selection.
+- **Pi Global Model Projection** is resolved when the Runtime starts and does not hot-reload later Model Provider, catalog, or credential changes; the next required projection and Runtime restart refreshes that set.
 - User messages and runtime replies in a **Task Conversation** are represented as **Task Events**.
 - **Harness Steering** actions are represented as **Task Events**.
 - A **Runtime Continuation** resumes from its **Task Goal**, **Scope**, current **Working Blackboard Snapshot**, open **Attempt** checkpoints, and any unconsumed **Harness Steering** without a separate summary or mechanical handoff packet.
@@ -838,6 +916,22 @@ _Avoid_: transcript, export, source of truth
 - A **Scope Snapshot** records historical authorization and does not change when current **Scope** later changes.
 - A **Runtime** performs a **Task** but is not the whole **Pentest Agent**.
 - A **Runtime Harness** launches, resumes, steers, and stops a **Runtime** without executing pentest tools itself.
+- Built-in Codex, Claude Code, and Pi **Runtimes** use a **Task-Scoped Persistent Runtime** on both **Sandbox Runner** and **Host Runner** when their native session bridge is available.
+- **Task-Scoped Persistent Runtime** does not remove **Host Runner Activation** or weaken the separate Sandbox and Host execution boundaries.
+- A plugin without a usable native session bridge may retain one-shot Runtime execution; normal process exit completes that one-shot **Task**.
+- A **Task-Scoped Persistent Runtime** remains active until the operator invokes **Task Finish** or **Stop**, a required **Config Projection** restart replaces it, it fails, or daemon shutdown closes it.
+- A **Runtime** cannot autonomously complete its **Task** through a **Project Interface**; **Blackboard Finish** closes only the current Continuation's Blackboard write protocol.
+- A **Runtime Activity Indicator** reflects current Runtime liveness without creating a separate **Task Event**, audit record, or historical status.
+- Runtime liveness has exactly four states: `live`, `offline`, `orphaned`, and `unknown`; a live Runtime separately reports turn activity as `busy` or `idle`.
+- `orphaned` means the durable **Task** appears active but the current daemon cannot prove ownership of a live Runtime; `unknown` means liveness cannot currently be determined.
+- **Runtime Activity Indicator** state comes from the daemon's current Runtime process or session ownership and health, not from durable Task status, native session identity, historical **Task Events**, or elapsed time.
+- The operator interface displays durable **Task** lifecycle and the **Runtime Activity Indicator** as separate states.
+- **Task Finish** marks the **Task** completed after Runtime shutdown and required Continuation reconciliation; **Stop** marks it stopped and remains resumable.
+- **Task Finish** is available only when the **Runtime Activity Indicator** reports `live` with turn activity `idle`; an operator uses **Stop** to interrupt a `busy` Runtime.
+- A durable active **Task** whose Runtime is confirmed `offline` becomes failed; one whose Runtime is `orphaned` becomes interrupted; `unknown` liveness warns the operator without changing Task lifecycle.
+- Sending a new user message to a completed, failed, interrupted, or stopped **Task** resumes that Task and launches a replacement **Task-Scoped Persistent Runtime**, preferring provider-native session recovery and otherwise rebuilding a fresh **Runtime Continuation** from Task-owned continuity state.
+- **Task Finish** releases Runtime resources and records a completed lifecycle state without sealing the **Task Conversation**; a later user message may resume the same **Task**.
+- An `orphaned` Runtime must be closed or proven absent before a replacement Runtime starts, preventing two live Runtimes from owning one **Task**.
 - **Harness Steering** changes the next runtime continuation, not the **Task** identity.
 - **Harness Steering** affects a **Runtime Continuation**, not an already-running internal reasoning step.
 - A **Runtime** uses **Project Interfaces** to read or write **Project** state.

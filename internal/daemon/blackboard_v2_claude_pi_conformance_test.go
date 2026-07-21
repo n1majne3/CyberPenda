@@ -124,7 +124,7 @@ func TestClaudeAndPiV2LaunchHeaderChecklistAndExactSharedSnapshotBytes(t *testin
 			if err != nil {
 				t.Fatalf("create Task: %v", err)
 			}
-			plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "")
+			plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "", "")
 			if err != nil {
 				t.Fatalf("build launch plan: %v", err)
 			}
@@ -254,7 +254,7 @@ func TestClaudeAndPiV2ResumeUsesFreshPinAndSharedSnapshotBytes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("create Task: %v", err)
 			}
-			plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "")
+			plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "", "")
 			if err != nil {
 				t.Fatalf("build first plan: %v", err)
 			}
@@ -392,7 +392,7 @@ cat .pentest/blackboard.json
 			if err != nil {
 				t.Fatalf("create Task: %v", err)
 			}
-			plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "")
+			plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "", "")
 			if err != nil {
 				t.Fatalf("build plan: %v", err)
 			}
@@ -497,7 +497,7 @@ func TestClaudeV2SettingsAllowExactlySixTrustedMCPToolsAndPiProjectsTrustedServe
 		if err != nil {
 			t.Fatalf("create Task: %v", err)
 		}
-		plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "")
+		plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "", "")
 		if err != nil {
 			t.Fatalf("build plan: %v", err)
 		}
@@ -560,7 +560,7 @@ func TestClaudeV2SettingsAllowExactlySixTrustedMCPToolsAndPiProjectsTrustedServe
 		if err != nil {
 			t.Fatalf("create Task: %v", err)
 		}
-		plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "")
+		plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "", "")
 		if err != nil {
 			t.Fatalf("build plan: %v", err)
 		}

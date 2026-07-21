@@ -61,7 +61,7 @@ func TestCodexV2ContinuationLaunchAndRestartConformanceKeepsSnapshotRereadable(t
 		_ = server.Close()
 		t.Fatalf("project expected Snapshot: %v", err)
 	}
-	plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "")
+	plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "", "")
 	if err != nil {
 		_ = server.Close()
 		t.Fatalf("build Codex launch plan: %v", err)
@@ -154,7 +154,7 @@ func TestBlackboardV2FinishThenResumeUsesFreshPinAndOnlyUnconsumedHarnessSteerin
 	if err != nil {
 		t.Fatalf("create Task: %v", err)
 	}
-	plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "")
+	plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "", "")
 	if err != nil {
 		t.Fatalf("build first plan: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestBlackboardV2ResumeProjectionFailureLeavesNoContinuationPinOrSteeringCon
 		_ = server.Close()
 		t.Fatalf("create Task: %v", err)
 	}
-	plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "")
+	plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "", "")
 	if err != nil {
 		_ = server.Close()
 		t.Fatalf("build first plan: %v", err)
@@ -492,7 +492,7 @@ func TestBlackboardV2InterruptSteerUsesReconciledResumeContextAndAtomicSteeringC
 	if err != nil {
 		t.Fatalf("create Task: %v", err)
 	}
-	plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "")
+	plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "", "")
 	if err != nil {
 		t.Fatalf("build initial plan: %v", err)
 	}
@@ -723,7 +723,7 @@ func TestCodexV2LaunchExcludesIdentityMetadataAndOperatorCredentialSurface(t *te
 	if err != nil {
 		t.Fatalf("create Task: %v", err)
 	}
-	plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "")
+	plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "", "")
 	if err != nil {
 		t.Fatalf("build initial plan: %v", err)
 	}
@@ -808,7 +808,7 @@ cat .pentest/blackboard.json
 	if err != nil {
 		t.Fatalf("create Task: %v", err)
 	}
-	plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "")
+	plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "", "")
 	if err != nil {
 		t.Fatalf("build Codex plan: %v", err)
 	}

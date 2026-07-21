@@ -66,6 +66,20 @@ func supportedProviderSessionFactoryProvider(provider runtimeprofile.Provider) b
 	}
 }
 
+// supportsPersistentProviderSession reports whether the runner/provider pair
+// uses Task-scoped provider-session assembly. Host supports Codex, Claude Code,
+// and Pi; unsupported plugins retain the legacy one-shot path.
+func supportsPersistentProviderSession(runner task.Runner, provider runtimeprofile.Provider) bool {
+	switch runner {
+	case task.RunnerSandbox:
+		return supportedProviderSessionFactoryProvider(provider)
+	case task.RunnerHost:
+		return provider == runtimeprofile.ProviderCodex || provider == runtimeprofile.ProviderClaudeCode || provider == runtimeprofile.ProviderPi
+	default:
+		return false
+	}
+}
+
 func validateProviderSessionBinding(binding ProviderSessionBinding) error {
 	if binding.Session == nil || strings.TrimSpace(binding.Session.SessionID()) == "" {
 		return fmt.Errorf("provider session factory returned no session identity")

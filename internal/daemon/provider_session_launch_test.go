@@ -79,7 +79,7 @@ func TestLaunchAssemblyBindsAndReusesTaskOwnedProviderSessionAcrossContinuations
 	server, created := newProviderSessionLaunchFixture(t, factory)
 	defer server.Close()
 
-	plan, err := server.buildTaskLaunchPlan(created, created.Goal, "", "")
+	plan, err := server.buildTaskLaunchPlan(created, created.Goal, "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestLaunchAssemblyBindsAndReusesTaskOwnedProviderSessionAcrossContinuations
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondPlan, err := server.buildTaskLaunchPlan(updated, "continue", "", "")
+	secondPlan, err := server.buildTaskLaunchPlan(updated, "continue", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestLaunchAssemblyFactoryFailureFailsClosedAfterContinuationCreation(t *tes
 	server, created := newProviderSessionLaunchFixture(t, factory)
 	defer server.Close()
 
-	plan, err := server.buildTaskLaunchPlan(created, created.Goal, "", "")
+	plan, err := server.buildTaskLaunchPlan(created, created.Goal, "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestLaunchBoundNativeSteerRebindsHarnessAndFinalizesReplacement(t *testing.
 	factory := &recordingProviderSessionFactory{session: session, adapter: &persistentTestAdapter{}}
 	server, created := newProviderSessionLaunchFixture(t, factory)
 	defer server.Close()
-	plan, err := server.buildTaskLaunchPlan(created, created.Goal, "", "")
+	plan, err := server.buildTaskLaunchPlan(created, created.Goal, "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

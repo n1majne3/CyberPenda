@@ -113,6 +113,7 @@ type Server struct {
 	closing                bool
 	providerSessions       *providerSessionRegistry
 	providerSessionFactory ProviderSessionFactory
+	runtimeStopTimeout     time.Duration
 }
 
 func NewServer(config Config) (*Server, error) {
@@ -220,6 +221,7 @@ func NewServer(config Config) (*Server, error) {
 		providerControlCancel:  providerControlCancel,
 		providerSessions:       newProviderSessionRegistry(),
 		providerSessionFactory: config.ProviderSessionFactory,
+		runtimeStopTimeout:     10 * time.Second,
 	}
 	if server.logger == nil {
 		server.logger = log.Default()
@@ -301,10 +303,30 @@ func (server *Server) reconcileInterruptedTasks() {
 }
 
 func (server *Server) cleanupStaleContinuationContainer(continuation task.TaskContinuation) {
-	if continuation.Runner != task.RunnerSandbox || strings.TrimSpace(continuation.ContainerID) == "" {
+	identity := strings.TrimSpace(continuation.ContainerID)
+	if identity == "" {
 		return
 	}
-	containerID := strings.TrimSpace(continuation.ContainerID)
+	if continuation.Runner == task.RunnerHost {
+		pgid, ok := runtime.ParseHostProcessGroupID(identity)
+		if !ok {
+			return
+		}
+		if err := runtime.KillHostProcessGroup(context.Background(), pgid); err != nil {
+			server.logger.Printf("task reconcile: failed to kill host process group %d for task %s: %v", pgid, continuation.TaskID, err)
+			return
+		}
+		_, _ = server.tasks.AppendEvent(continuation.TaskID, task.EventKindLifecycle, task.EventPayload{
+			"phase":  "host_process_group_cleaned",
+			"reason": "daemon_restart",
+			"pgid":   pgid,
+		})
+		return
+	}
+	if continuation.Runner != task.RunnerSandbox {
+		return
+	}
+	containerID := identity
 	if err := runtime.StopDockerContainer(server.containerCLI, containerID, 2*time.Second); err != nil {
 		server.logger.Printf("task reconcile: failed to stop stale container %s for task %s: %v", containerID, continuation.TaskID, err)
 		return
@@ -531,6 +553,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/transcript", server.handleTaskTranscript)
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/timeline", server.handleTaskTimeline)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/stop", server.handleStopTask)
+	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/finish", server.handleFinishTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/resume", server.handleResumeTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/steer/queue", server.handleQueueSteerTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/steer", server.handleSteerTask)
@@ -737,7 +760,10 @@ func (server *Server) handleCreateRuntimeProfile(response http.ResponseWriter, r
 		switch {
 		case errors.Is(err, runtimeprofile.ErrMissingName),
 			errors.Is(err, runtimeprofile.ErrMissingProvider),
-			errors.Is(err, runtimeprofile.ErrUnknownProvider):
+			errors.Is(err, runtimeprofile.ErrUnknownProvider),
+			errors.Is(err, runtimeprofile.ErrInvalidReasoningEffort),
+			errors.Is(err, runtimeprofile.ErrCustomArgConflict):
+			server.logCustomArgConflict(input.Provider, input.Fields.CustomArgs, err)
 			writeError(response, http.StatusBadRequest, err.Error())
 		default:
 			writeError(response, http.StatusInternalServerError, "store runtime profile")
@@ -805,7 +831,22 @@ func (server *Server) handleUpdateRuntimeProfile(response http.ResponseWriter, r
 		switch {
 		case errors.Is(err, runtimeprofile.ErrNotFound):
 			writeError(response, http.StatusNotFound, err.Error())
-		case errors.Is(err, runtimeprofile.ErrUnknownProvider):
+		case errors.Is(err, runtimeprofile.ErrUnknownProvider),
+			errors.Is(err, runtimeprofile.ErrInvalidReasoningEffort),
+			errors.Is(err, runtimeprofile.ErrCustomArgConflict):
+			logProvider := provider
+			if logProvider == "" {
+				if existing, getErr := server.profiles.Get(id); getErr == nil {
+					logProvider = existing.Provider
+				}
+			}
+			logArgs := fields.CustomArgs
+			if !fieldsTouched {
+				if existing, getErr := server.profiles.Get(id); getErr == nil {
+					logArgs = existing.Fields.CustomArgs
+				}
+			}
+			server.logCustomArgConflict(logProvider, logArgs, err)
 			writeError(response, http.StatusBadRequest, err.Error())
 		default:
 			writeError(response, http.StatusInternalServerError, "store runtime profile update")
@@ -969,6 +1010,7 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 	var input struct {
 		RuntimeProfileID        string           `json:"runtime_profile_id"`
 		ModelOverride           string           `json:"model_override,omitempty"`
+		ReasoningEffort         string           `json:"reasoning_effort,omitempty"`
 		Runner                  string           `json:"runner"`
 		RunControls             task.RunControls `json:"run_controls"`
 		CredentialRefsToResolve []string         `json:"credential_refs"`
@@ -989,6 +1031,10 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 	}
 
 	hostActivated := input.RunControls.HostActivated || input.HostActivated
+	if _, err := normalizeLaunchReasoningEffort(input.ReasoningEffort); err != nil {
+		writeError(response, http.StatusBadRequest, err.Error())
+		return
+	}
 	result := server.preflight.Run(request.Context(), preflight.Request{
 		RuntimeProfileID:        defaulted.runtimeProfileID,
 		LaunchModelOverride:     strings.TrimSpace(input.ModelOverride),
@@ -997,6 +1043,7 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 		Runner:                  string(defaulted.runner),
 		HostActivated:           hostActivated,
 	})
+	server.logPreflightCustomArgConflict(defaulted.runtimeProfileID, result)
 
 	// A preflight result is always 200: the body reports pass/fail per check.
 	writeJSON(response, http.StatusOK, result)

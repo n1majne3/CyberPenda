@@ -37,15 +37,34 @@ var (
 )
 
 type taskContinuationSelectionInput struct {
-	RuntimeProfileID string         `json:"runtime_profile_id"`
-	ModelProviderID  string         `json:"model_provider_id"`
-	ModelOverride    string         `json:"model_override"`
-	SubmittedBy      string         `json:"submitted_by"`
-	Config           map[string]any `json:"config"`
+	RuntimeProfileID string `json:"runtime_profile_id"`
+	ModelProviderID  string `json:"model_provider_id"`
+	// Model is the preferred Runtime Turn Selection field. model_override remains
+	// accepted as a backwards-compatible alias used by older clients.
+	Model           string         `json:"model"`
+	ModelOverride   string         `json:"model_override"`
+	ReasoningEffort string         `json:"reasoning_effort"`
+	SubmittedBy     string         `json:"submitted_by"`
+	Config          map[string]any `json:"config"`
 }
 
 func (input taskContinuationSelectionInput) hasSelection() bool {
-	return strings.TrimSpace(input.RuntimeProfileID) != "" || strings.TrimSpace(input.ModelProviderID) != ""
+	return strings.TrimSpace(input.RuntimeProfileID) != "" ||
+		strings.TrimSpace(input.ModelProviderID) != "" ||
+		input.selectedModel() != ""
+}
+
+func (input taskContinuationSelectionInput) hasRuntimeProfileSelection() bool {
+	return strings.TrimSpace(input.RuntimeProfileID) != ""
+}
+
+// selectedModel returns the explicit model for this turn. Prefer `model`, then
+// the legacy `model_override` alias.
+func (input taskContinuationSelectionInput) selectedModel() string {
+	if model := strings.TrimSpace(input.Model); model != "" {
+		return model
+	}
+	return strings.TrimSpace(input.ModelOverride)
 }
 
 func (server *Server) handleCreateTask(response http.ResponseWriter, request *http.Request) {
@@ -58,6 +77,7 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		Goal             string            `json:"goal"`
 		RuntimeProfileID string            `json:"runtime_profile_id"`
 		ModelOverride    string            `json:"model_override,omitempty"`
+		ReasoningEffort  string            `json:"reasoning_effort,omitempty"`
 		Runner           task.Runner       `json:"runner"`
 		RunControls      task.RunControls  `json:"run_controls"`
 		Extras           map[string]string `json:"extras"`
@@ -79,6 +99,11 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 	input.Runner = defaulted.runner
 
 	launchModelOverride := strings.TrimSpace(input.ModelOverride)
+	launchReasoningEffort, err := normalizeLaunchReasoningEffort(input.ReasoningEffort)
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err.Error())
+		return
+	}
 	preflightResult := server.preflight.Run(request.Context(), preflight.Request{
 		RuntimeProfileID:    input.RuntimeProfileID,
 		LaunchModelOverride: launchModelOverride,
@@ -86,6 +111,7 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		Runner:              string(input.Runner),
 		HostActivated:       input.RunControls.HostActivated,
 	})
+	server.logPreflightCustomArgConflict(input.RuntimeProfileID, preflightResult)
 	if !preflightResult.Pass {
 		writeJSON(response, http.StatusBadRequest, struct {
 			Error     string           `json:"error"`
@@ -116,7 +142,7 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		return
 	}
 
-	plan, err := server.buildTaskLaunchPlan(created, created.Goal, launchModelOverride, "")
+	plan, err := server.buildTaskLaunchPlan(created, created.Goal, launchModelOverride, "", launchReasoningEffort)
 	if err != nil {
 		writeTaskAdapterError(response, err)
 		return
@@ -138,16 +164,20 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 }
 
 type taskLaunchPlan struct {
-	Adapter                      runtime.Adapter
-	RuntimeConfig                map[string]any
-	CapturedRuntimeConfig        map[string]any
-	MaterializedCredentials      map[string]string
-	Metadata                     func() (runtime.NativeSessionMetadata, error)
-	StopConfirmation             runtime.StopConfirmation
-	LaunchModelOverride          string
-	NativeResumeSessionID        string
-	ResolvedProfile              runtimeprofile.Profile
-	ModelSnapshot                *modelprovider.Snapshot
+	Adapter                 runtime.Adapter
+	RuntimeConfig           map[string]any
+	CapturedRuntimeConfig   map[string]any
+	MaterializedCredentials map[string]string
+	Metadata                func() (runtime.NativeSessionMetadata, error)
+	StopConfirmation        runtime.StopConfirmation
+	LaunchModelOverride     string
+	LaunchReasoningEffort   string
+	NativeResumeSessionID   string
+	ResolvedProfile         runtimeprofile.Profile
+	ModelSnapshot           *modelprovider.Snapshot
+	// GlobalModelProviderSnapshot is listed before CreateContinuation so
+	// precommit/BindGrant projection never queries modelProviders.Service.
+	GlobalModelProviderSnapshot  *runner.GlobalModelProviderSnapshot
 	SkillBundles                 []skill.Bundle
 	LaunchGoal                   string
 	BlackboardV2                 bool
@@ -164,13 +194,21 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 	if !plan.BlackboardV2 {
 		return fmt.Errorf("Blackboard v2 launch projection is required")
 	}
+	// Replacement launches must not start while a prior Runtime is still owned
+	// or not proven absent.
+	if err := server.ensureRuntimeAbsentBeforeLaunch(created.ID); err != nil {
+		return err
+	}
 	server.logTaskLaunchStage(created, "prepare_continuation")
 	continuation, boundPlan, err := server.prepareBlackboardV2ContinuationLaunch(created, plan, goal)
 	if err != nil {
 		return err
 	}
 	plan = boundPlan
-	if server.providerSessionFactory != nil && created.Runner == task.RunnerSandbox && supportedProviderSessionFactoryProvider(plan.ResolvedProfile.Provider) {
+	if server.providerSessionFactory != nil && supportsPersistentProviderSession(created.Runner, plan.ResolvedProfile.Provider) {
+		// Persistent selection with a factory is fail-closed: factory/bridge errors
+		// never fall back to the legacy one-shot Adapter. Production always installs
+		// the factory; unit tests without one still exercise one-shot host paths.
 		binding, factoryErr := server.providerSessionFactory.Open(context.Background(), ProviderSessionLaunchRequest{
 			Task: created, Continuation: continuation, Provider: plan.ResolvedProfile.Provider,
 			Runner: created.Runner, LaunchGoal: plan.LaunchGoal, RuntimeConfig: plan.CapturedRuntimeConfig,
@@ -189,6 +227,17 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 			redactedErr := &providerSessionFactoryError{cause: bindErr}
 			server.failProviderSessionLaunch(created.ID, continuation.ID, redactedErr)
 			return redactedErr
+		}
+		if adapter, ok := binding.Adapter.(*runtime.ProviderSessionRunAdapter); ok {
+			selection, selectionErr := initialProviderTurnSelection(plan)
+			if selectionErr != nil {
+				_ = binding.Session.Close(context.Background())
+				server.providerSessions.remove(created.ID)
+				redactedErr := &providerSessionFactoryError{cause: selectionErr}
+				server.failProviderSessionLaunch(created.ID, continuation.ID, redactedErr)
+				return redactedErr
+			}
+			adapter.SetInitialTurnSelection(selection)
 		}
 		plan.Adapter = binding.Adapter
 	}
@@ -209,10 +258,24 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 		switch {
 		case err == nil:
 			server.logTask(created, "completed", "")
+			// Persistent sessions that end cleanly still release ownership.
+			_ = server.closeProviderSession(created.ID)
 		case errors.Is(err, context.Canceled):
 			server.logTask(created, "stopped", "")
 		default:
-			server.logTask(created, "failed", err.Error())
+			// Unexpected persistent Runtime exit: ownership must not linger.
+			_ = server.closeProviderSession(created.ID)
+			// HTTP-facing error text stays redacted; log the unwrap chain for
+			// operator diagnostics (bridge RPC failures, selection rejections).
+			root := err
+			for {
+				unwrapped := errors.Unwrap(root)
+				if unwrapped == nil {
+					break
+				}
+				root = unwrapped
+			}
+			server.logTask(created, "failed", fmt.Sprintf("%v root=%v", err, root))
 		}
 	}()
 	return nil
@@ -222,6 +285,19 @@ func (server *Server) failProviderSessionLaunch(taskID, continuationID string, c
 	// The durable Continuation already exists at this point. Marking both
 	// records terminal prevents an unbound pending Continuation from looking
 	// resumable after a factory crash or setup rejection.
+	// HTTP and persisted lifecycle payloads stay redacted; the unwrapped cause
+	// is server-only diagnostics so operators can fix setup failures.
+	if server.logger != nil && cause != nil {
+		root := cause
+		for {
+			unwrapped := errors.Unwrap(root)
+			if unwrapped == nil {
+				break
+			}
+			root = unwrapped
+		}
+		server.logger.Printf("provider session setup failed task=%s continuation=%s cause=%v root=%v", taskID, continuationID, cause, root)
+	}
 	_, _ = server.tasks.AppendContinuationEvent(taskID, continuationID, task.EventKindLifecycle, task.EventPayload{
 		"phase": "provider_session_setup_failed", "error": "provider session setup failed",
 	})
@@ -245,6 +321,16 @@ func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, p
 	if !runner.BlackboardV2SupportsProvider(provider) {
 		return task.TaskContinuation{}, taskLaunchPlan{}, fmt.Errorf("Blackboard v2 launch projection is unsupported for provider %q", provider)
 	}
+	// Always resolve the global provider snapshot before CreateContinuation so
+	// Precommit/BindGrant projection never re-enters modelProviders.Service
+	// while the continuity transaction holds SQLite locks.
+	if plan.GlobalModelProviderSnapshot == nil {
+		snapshot, err := server.snapshotGlobalModelProviders()
+		if err != nil {
+			return task.TaskContinuation{}, taskLaunchPlan{}, err
+		}
+		plan.GlobalModelProviderSnapshot = snapshot
+	}
 	layout, err := runner.PrepareBlackboardV2TaskLayout(server.runtimeRoot, created.ID, provider)
 	if err != nil {
 		return task.TaskContinuation{}, taskLaunchPlan{}, err
@@ -267,8 +353,17 @@ func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, p
 			// Continuation grant before the launch transaction commits.
 			binding := &continuationLaunchBinding{V2Header: &launchHeader}
 			var err error
-			boundPlan, err = server.buildTaskLaunchPlanWithBinding(created, goal, plan.LaunchModelOverride, plan.NativeResumeSessionID, binding, &plan)
-			return err
+			boundPlan, err = server.buildTaskLaunchPlanWithBinding(created, goal, plan.LaunchModelOverride, plan.NativeResumeSessionID, plan.LaunchReasoningEffort, binding, &plan)
+			if err != nil {
+				return err
+			}
+			// Precommit runs before CreateContinuationLaunchTx stores RuntimeConfig.
+			// Copy only non-secret fixed-at-launch fields (Pi projected set) into
+			// the map CreateContinuation will persist so native turn selection
+			// can fail closed against the real projected set. Never copy auth,
+			// env, or credential material from projection previews.
+			mergeFixedAtLaunchRuntimeConfig(plan.CapturedRuntimeConfig, boundPlan.CapturedRuntimeConfig)
+			return nil
 		},
 		BindGrant: func(plaintextGrant string) error {
 			if !usesTrustedMCP || strings.TrimSpace(plaintextGrant) == "" {
@@ -276,11 +371,15 @@ func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, p
 			}
 			binding := &continuationLaunchBinding{V2Header: &launchHeader, InterfaceToken: plaintextGrant}
 			var err error
-			boundPlan, err = server.buildTaskLaunchPlanWithBinding(created, goal, plan.LaunchModelOverride, plan.NativeResumeSessionID, binding, &plan)
+			boundPlan, err = server.buildTaskLaunchPlanWithBinding(created, goal, plan.LaunchModelOverride, plan.NativeResumeSessionID, plan.LaunchReasoningEffort, binding, &plan)
 			if err != nil {
 				scrubBlackboardV2GrantBearingProjection(layout, provider)
+				return err
 			}
-			return err
+			// BindGrant runs after the config version is stored; still keep the
+			// in-memory plan consistent for the returned boundPlan path.
+			mergeFixedAtLaunchRuntimeConfig(plan.CapturedRuntimeConfig, boundPlan.CapturedRuntimeConfig)
+			return nil
 		},
 		UnbindGrant: func() {
 			if usesTrustedMCP {
@@ -292,6 +391,19 @@ func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, p
 		return task.TaskContinuation{}, taskLaunchPlan{}, err
 	}
 	return launch.Continuation, boundPlan, nil
+}
+
+// mergeFixedAtLaunchRuntimeConfig copies only non-secret fixed-at-launch fields
+// from source into dest so CreateContinuationLaunchTx can persist Precommit
+// projection results without a second config version. Credential values, auth
+// previews, and env maps must never enter stored Task Runtime Configuration.
+func mergeFixedAtLaunchRuntimeConfig(dest, source map[string]any) {
+	if dest == nil || source == nil {
+		return
+	}
+	if ids, ok := source["projected_model_provider_ids"]; ok {
+		dest["projected_model_provider_ids"] = ids
+	}
 }
 
 // scrubBlackboardV2GrantBearingProjection removes trusted MCP config that may
@@ -389,7 +501,7 @@ func (server *Server) recordLoopbackRewriteEvent(created task.Task) {
 }
 
 func (server *Server) buildTaskAdapter(created task.Task, launchModelOverride string) (runtime.Adapter, map[string]any, error) {
-	plan, err := server.buildTaskLaunchPlanWithBinding(created, created.Goal, launchModelOverride, "", nil, nil)
+	plan, err := server.buildTaskLaunchPlanWithBinding(created, created.Goal, launchModelOverride, "", "", nil, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -397,26 +509,26 @@ func (server *Server) buildTaskAdapter(created task.Task, launchModelOverride st
 }
 
 func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string, launchModelOverride string) (runtime.Adapter, map[string]any, error) {
-	plan, err := server.buildTaskLaunchPlanWithBinding(created, goal, launchModelOverride, "", nil, nil)
+	plan, err := server.buildTaskLaunchPlanWithBinding(created, goal, launchModelOverride, "", "", nil, nil)
 	if err != nil {
 		return nil, nil, err
 	}
 	return plan.Adapter, plan.RuntimeConfig, nil
 }
 
-func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string) (taskLaunchPlan, error) {
+func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, launchReasoningEffort string) (taskLaunchPlan, error) {
 	server.logTaskLaunchStage(created, "build_plan")
 	profile, err := server.profiles.Get(created.RuntimeProfileID)
 	if err != nil {
 		return taskLaunchPlan{}, err
 	}
 	if server.blackboardV2Continuity != nil && runner.BlackboardV2SupportsProvider(profile.Provider) {
-		return server.prepareBlackboardV2TaskLaunchPlan(created, goal, launchModelOverride, nativeResumeSessionID, profile)
+		return server.prepareBlackboardV2TaskLaunchPlan(created, goal, launchModelOverride, nativeResumeSessionID, launchReasoningEffort, profile)
 	}
-	return server.buildTaskLaunchPlanWithBinding(created, goal, launchModelOverride, nativeResumeSessionID, nil, nil)
+	return server.buildTaskLaunchPlanWithBinding(created, goal, launchModelOverride, nativeResumeSessionID, launchReasoningEffort, nil, nil)
 }
 
-func (server *Server) prepareBlackboardV2TaskLaunchPlan(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, profile runtimeprofile.Profile) (taskLaunchPlan, error) {
+func (server *Server) prepareBlackboardV2TaskLaunchPlan(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, launchReasoningEffort string, profile runtimeprofile.Profile) (taskLaunchPlan, error) {
 	layout, err := runner.PrepareBlackboardV2TaskLayout(server.runtimeRoot, created.ID, profile.Provider)
 	if err != nil {
 		return taskLaunchPlan{}, err
@@ -440,30 +552,59 @@ func (server *Server) prepareBlackboardV2TaskLaunchPlan(created task.Task, goal 
 			profile = runner.BlackboardV2ProfileWithModelSnapshot(profile, resolved)
 		}
 	}
+	// List globals before CreateContinuation; precommit projection must use
+	// this immutable snapshot only (ADR 0015 fixed set, no SQLite re-entry).
+	globalSnapshot, err := server.snapshotGlobalModelProviders()
+	if err != nil {
+		return taskLaunchPlan{}, err
+	}
 	materializedCredentials, err := runner.MaterializeLaunchCredentials(profile, runner.ProjectionRequest{
-		ProjectID:     created.ProjectID,
-		Credentials:   server.creds,
-		ModelSnapshot: modelSnapshot,
+		ProjectID:                   created.ProjectID,
+		Credentials:                 server.creds,
+		ModelProviders:              server.modelProviders,
+		GlobalModelProviderSnapshot: globalSnapshot,
+		ModelSnapshot:               modelSnapshot,
 	})
 	if err != nil {
 		return taskLaunchPlan{}, err
 	}
-	capturedRuntimeConfig := capturedTaskRuntimeConfig(created, profile, runtimeprofile.GeneratedConfig(profile), blackboardV2ModelSnapshotPreview(modelSnapshot), launchModelOverride)
+	capturedRuntimeConfig, err := capturedTaskRuntimeConfig(created, profile, runtimeprofile.GeneratedConfig(profile), blackboardV2ModelSnapshotPreview(modelSnapshot), launchModelOverride, launchReasoningEffort)
+	if err != nil {
+		return taskLaunchPlan{}, err
+	}
 	return taskLaunchPlan{
-		CapturedRuntimeConfig:   capturedRuntimeConfig,
-		MaterializedCredentials: materializedCredentials,
-		LaunchModelOverride:     launchModelOverride,
-		NativeResumeSessionID:   nativeResumeSessionID,
-		ResolvedProfile:         profile,
-		ModelSnapshot:           modelSnapshot,
-		SkillBundles:            append([]skill.Bundle(nil), skillBundles...),
-		LaunchGoal:              goal,
-		BlackboardV2:            true,
-		ValidatedLayout:         &layout,
+		CapturedRuntimeConfig:       capturedRuntimeConfig,
+		MaterializedCredentials:     materializedCredentials,
+		LaunchModelOverride:         launchModelOverride,
+		LaunchReasoningEffort:       launchReasoningEffort,
+		NativeResumeSessionID:       nativeResumeSessionID,
+		ResolvedProfile:             profile,
+		ModelSnapshot:               modelSnapshot,
+		GlobalModelProviderSnapshot: globalSnapshot,
+		SkillBundles:                append([]skill.Bundle(nil), skillBundles...),
+		LaunchGoal:                  goal,
+		BlackboardV2:                true,
+		ValidatedLayout:             &layout,
 	}, nil
 }
 
-func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, binding *continuationLaunchBinding, captured *taskLaunchPlan) (taskLaunchPlan, error) {
+// snapshotGlobalModelProviders lists every global Model Provider outside any
+// Store transaction and returns an immutable snapshot for Pi projection.
+func (server *Server) snapshotGlobalModelProviders() (*runner.GlobalModelProviderSnapshot, error) {
+	if server.modelProviders == nil {
+		return runner.CloneGlobalModelProviderSnapshot(nil), nil
+	}
+	listed, err := server.modelProviders.List()
+	if err != nil {
+		return nil, fmt.Errorf("list model providers for launch snapshot: %w", err)
+	}
+	return runner.CloneGlobalModelProviderSnapshot(listed), nil
+}
+
+func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, launchReasoningEffort string, binding *continuationLaunchBinding, captured *taskLaunchPlan) (taskLaunchPlan, error) {
+	if captured != nil && strings.TrimSpace(launchReasoningEffort) == "" {
+		launchReasoningEffort = captured.LaunchReasoningEffort
+	}
 	v2 := binding != nil && binding.V2Header != nil
 	runtimeConfig := map[string]any{
 		"runtime_profile_id": created.RuntimeProfileID,
@@ -474,14 +615,22 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	var skillBundles []skill.Bundle
 	var capturedModelSnapshot *modelprovider.Snapshot
 	var materializedCredentials map[string]string
+	var globalSnapshot *runner.GlobalModelProviderSnapshot
 	if captured != nil {
 		profile = captured.ResolvedProfile
 		skillBundles = append([]skill.Bundle(nil), captured.SkillBundles...)
 		capturedModelSnapshot = captured.ModelSnapshot
 		materializedCredentials = captured.MaterializedCredentials
+		globalSnapshot = captured.GlobalModelProviderSnapshot
 	} else {
 		var err error
 		profile, err = server.profiles.Get(created.RuntimeProfileID)
+		if err != nil {
+			return taskLaunchPlan{}, err
+		}
+		// Non-v2 / first-pass path: list before any projection so Pi never
+		// re-enters modelProviders.Service mid-transaction.
+		globalSnapshot, err = server.snapshotGlobalModelProviders()
 		if err != nil {
 			return taskLaunchPlan{}, err
 		}
@@ -497,11 +646,14 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	if profile.Provider == runtimeprofile.ProviderFake {
 		runtimeConfig["provider"] = string(runtimeprofile.ProviderFake)
 		runtimeConfig["generated_config"] = runtimeprofile.GeneratedConfig(profile)
-		capturedRuntimeConfig := capturedTaskRuntimeConfig(created, profile, runtimeConfig["generated_config"], nil, launchModelOverride)
+		capturedRuntimeConfig, err := capturedTaskRuntimeConfig(created, profile, runtimeConfig["generated_config"], nil, launchModelOverride, launchReasoningEffort)
+		if err != nil {
+			return taskLaunchPlan{}, err
+		}
 		if captured != nil {
 			capturedRuntimeConfig = captured.CapturedRuntimeConfig
 		}
-		return taskLaunchPlan{Adapter: runtime.NewFakeAdapter(), RuntimeConfig: runtimeConfig, CapturedRuntimeConfig: capturedRuntimeConfig, LaunchModelOverride: launchModelOverride, NativeResumeSessionID: nativeResumeSessionID, ResolvedProfile: profile, LaunchGoal: launchGoal}, nil
+		return taskLaunchPlan{Adapter: runtime.NewFakeAdapter(), RuntimeConfig: runtimeConfig, CapturedRuntimeConfig: capturedRuntimeConfig, LaunchModelOverride: launchModelOverride, LaunchReasoningEffort: launchReasoningEffort, NativeResumeSessionID: nativeResumeSessionID, ResolvedProfile: profile, LaunchGoal: launchGoal}, nil
 	}
 	if captured == nil {
 		var err error
@@ -543,20 +695,21 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		}
 	}
 	projectionRequest := runner.ProjectionRequest{
-		ProjectID:               created.ProjectID,
-		TaskID:                  created.ID,
-		ScopeSnapshot:           created.ScopeSnapshot,
-		Credentials:             server.creds,
-		MaterializedCredentials: materializedCredentials,
-		DaemonAddr:              server.listenAddr,
-		AuthToken:               authToken,
-		Sandbox:                 sandbox,
-		RuntimePlugins:          server.runtimePlugins,
-		RuntimeExtensions:       server.runtimeExtensions,
-		ModelProviders:          server.modelProviders,
-		ModelSnapshot:           capturedModelSnapshot,
-		LaunchModelOverride:     launchModelOverride,
-		SkillBundles:            skillBundles,
+		ProjectID:                   created.ProjectID,
+		TaskID:                      created.ID,
+		ScopeSnapshot:               created.ScopeSnapshot,
+		Credentials:                 server.creds,
+		MaterializedCredentials:     materializedCredentials,
+		DaemonAddr:                  server.listenAddr,
+		AuthToken:                   authToken,
+		Sandbox:                     sandbox,
+		RuntimePlugins:              server.runtimePlugins,
+		RuntimeExtensions:           server.runtimeExtensions,
+		ModelProviders:              server.modelProviders,
+		GlobalModelProviderSnapshot: globalSnapshot,
+		ModelSnapshot:               capturedModelSnapshot,
+		LaunchModelOverride:         launchModelOverride,
+		SkillBundles:                skillBundles,
 	}
 	var projection runner.ConfigProjection
 	if v2 {
@@ -620,19 +773,20 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	sandboxImage := ""
 	launchCtx := runner.TaskContext{Sandbox: sandbox}
 	processEnv, err := runner.LaunchProcessEnvWithCredentials(layout, launchProfile, sandbox, launchCtx, runner.ProjectionRequest{
-		ProjectID:               created.ProjectID,
-		TaskID:                  created.ID,
-		ScopeSnapshot:           created.ScopeSnapshot,
-		Credentials:             server.creds,
-		MaterializedCredentials: materializedCredentials,
-		DaemonAddr:              server.listenAddr,
-		AuthToken:               authToken,
-		Sandbox:                 sandbox,
-		RuntimePlugins:          server.runtimePlugins,
-		RuntimeExtensions:       server.runtimeExtensions,
-		ModelProviders:          server.modelProviders,
-		ModelSnapshot:           projection.ModelSnapshot,
-		SkillBundles:            skillBundles,
+		ProjectID:                   created.ProjectID,
+		TaskID:                      created.ID,
+		ScopeSnapshot:               created.ScopeSnapshot,
+		Credentials:                 server.creds,
+		MaterializedCredentials:     materializedCredentials,
+		DaemonAddr:                  server.listenAddr,
+		AuthToken:                   authToken,
+		Sandbox:                     sandbox,
+		RuntimePlugins:              server.runtimePlugins,
+		RuntimeExtensions:           server.runtimeExtensions,
+		ModelProviders:              server.modelProviders,
+		GlobalModelProviderSnapshot: globalSnapshot,
+		ModelSnapshot:               projection.ModelSnapshot,
+		SkillBundles:                skillBundles,
 	})
 	if err != nil {
 		return taskLaunchPlan{}, err
@@ -651,12 +805,20 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 			return taskLaunchPlan{}, err
 		}
 		sandboxRuntime := runtimeCommand
+		// One-shot Pi sandbox installs pi via an sh -c bootstrap wrapper. The
+		// persistent provider-session path rewrites the image command to the
+		// bridge and therefore needs a bare "pi" token in docker create argv.
+		// Skip the wrapper whenever this launch will open a provider session.
 		if profile.Provider == runtimeprofile.ProviderPi {
-			wrapped, err := runner.WrapSandboxPiCommand(runtimeCommand, launchProfile.Fields.Env)
-			if err != nil {
-				return taskLaunchPlan{}, err
+			usePersistentSession := server.providerSessionFactory != nil &&
+				supportsPersistentProviderSession(created.Runner, profile.Provider)
+			if !usePersistentSession {
+				wrapped, err := runner.WrapSandboxPiCommand(runtimeCommand, launchProfile.Fields.Env)
+				if err != nil {
+					return taskLaunchPlan{}, err
+				}
+				sandboxRuntime = wrapped
 			}
-			sandboxRuntime = wrapped
 		}
 		var readOnlyTaskFiles, readOnlyTaskDirs []string
 		if binding != nil {
@@ -694,6 +856,9 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	if launchModelOverride != "" {
 		runtimeConfig["launch_model_override"] = launchModelOverride
 	}
+	if launchReasoningEffort != "" {
+		runtimeConfig["launch_reasoning_effort_override"] = launchReasoningEffort
+	}
 	runtimeConfig["layout"] = layout
 	if containerIDFile != "" {
 		runtimeConfig["container_id_file"] = containerIDFile
@@ -705,9 +870,24 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	if v2 {
 		runtimeConfig = map[string]any{}
 	}
-	capturedRuntimeConfig := capturedTaskRuntimeConfig(created, launchProfile, runtimeprofile.GeneratedConfig(launchProfile), projection.Config["model_provider_snapshot"], launchModelOverride)
-	if captured != nil {
-		capturedRuntimeConfig = captured.CapturedRuntimeConfig
+	capturedRuntimeConfig, err := capturedTaskRuntimeConfig(created, launchProfile, runtimeprofile.GeneratedConfig(launchProfile), projection.Config["model_provider_snapshot"], launchModelOverride, launchReasoningEffort)
+	if err != nil {
+		return taskLaunchPlan{}, err
+	}
+	if captured != nil && captured.CapturedRuntimeConfig != nil {
+		// Preserve the pre-TX captured baseline, then overlay fixed-at-launch
+		// fields from the actual Config Projection (projected provider set).
+		merged := make(map[string]any, len(captured.CapturedRuntimeConfig)+2)
+		for key, value := range captured.CapturedRuntimeConfig {
+			merged[key] = value
+		}
+		capturedRuntimeConfig = merged
+	}
+	if capturedRuntimeConfig != nil {
+		// Pi multi-provider projection set is fixed for this runtime lifetime.
+		if ids, ok := projection.Config["projected_model_provider_ids"]; ok {
+			capturedRuntimeConfig["projected_model_provider_ids"] = ids
+		}
 	}
 
 	var adapter runtime.Adapter
@@ -784,20 +964,22 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	}
 
 	return taskLaunchPlan{
-		Adapter:                 adapter,
-		RuntimeConfig:           runtimeConfig,
-		CapturedRuntimeConfig:   capturedRuntimeConfig,
-		MaterializedCredentials: materializedCredentials,
-		Metadata:                metadata,
-		StopConfirmation:        stopConfirmation,
-		LaunchModelOverride:     launchModelOverride,
-		NativeResumeSessionID:   nativeResumeSessionID,
-		ResolvedProfile:         launchProfile,
-		ModelSnapshot:           projection.ModelSnapshot,
-		SkillBundles:            append([]skill.Bundle(nil), skillBundles...),
-		LaunchGoal:              launchGoal,
-		BlackboardV2:            v2,
-		ValidatedLayout:         &layout,
+		Adapter:                     adapter,
+		RuntimeConfig:               runtimeConfig,
+		CapturedRuntimeConfig:       capturedRuntimeConfig,
+		MaterializedCredentials:     materializedCredentials,
+		Metadata:                    metadata,
+		StopConfirmation:            stopConfirmation,
+		LaunchModelOverride:         launchModelOverride,
+		LaunchReasoningEffort:       launchReasoningEffort,
+		NativeResumeSessionID:       nativeResumeSessionID,
+		ResolvedProfile:             launchProfile,
+		ModelSnapshot:               projection.ModelSnapshot,
+		GlobalModelProviderSnapshot: globalSnapshot,
+		SkillBundles:                append([]skill.Bundle(nil), skillBundles...),
+		LaunchGoal:                  launchGoal,
+		BlackboardV2:                v2,
+		ValidatedLayout:             &layout,
 	}, nil
 }
 
@@ -839,7 +1021,7 @@ func codexV2ProjectionProfile(profile runtimeprofile.Profile) runtimeprofile.Pro
 	return projected
 }
 
-func capturedTaskRuntimeConfig(created task.Task, profile runtimeprofile.Profile, generatedConfig any, modelSnapshot any, launchModelOverride string) map[string]any {
+func capturedTaskRuntimeConfig(created task.Task, profile runtimeprofile.Profile, generatedConfig any, modelSnapshot any, launchModelOverride string, launchReasoningEffort string) (map[string]any, error) {
 	captured := map[string]any{
 		"runtime_profile_id": created.RuntimeProfileID,
 		"runtime_plugin_id":  string(profile.Provider),
@@ -852,7 +1034,67 @@ func capturedTaskRuntimeConfig(created task.Task, profile runtimeprofile.Profile
 	if launchModelOverride != "" {
 		captured["launch_model_override"] = launchModelOverride
 	}
-	return captured
+	if launchReasoningEffort != "" {
+		captured["launch_reasoning_effort_override"] = launchReasoningEffort
+	}
+	// Always capture the resolved Requested Reasoning Effort for the initial
+	// turn so historical views show the explicit request without inferring
+	// Effective Reasoning Effort.
+	requested, err := runtimeprofile.ResolveRequestedReasoningEffort(
+		"",
+		launchReasoningEffort,
+		profile.Fields.ReasoningEffort,
+	)
+	if err != nil {
+		return nil, err
+	}
+	captured["requested_reasoning_effort"] = string(requested)
+	return captured, nil
+}
+
+func normalizeLaunchReasoningEffort(value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", nil
+	}
+	effort, err := runtimeprofile.NormalizeReasoningEffort(trimmed)
+	if err != nil {
+		return "", err
+	}
+	return string(effort), nil
+}
+
+func initialProviderTurnSelection(plan taskLaunchPlan) (runtime.ProviderSessionRequest, error) {
+	model := ""
+	modelProviderID := strings.TrimSpace(plan.ResolvedProfile.Fields.ModelProviderID)
+	if plan.ModelSnapshot != nil {
+		model = strings.TrimSpace(plan.ModelSnapshot.Model)
+		if modelProviderID == "" {
+			modelProviderID = strings.TrimSpace(plan.ModelSnapshot.ModelProviderID)
+		}
+	}
+	if model == "" {
+		model = strings.TrimSpace(plan.LaunchModelOverride)
+	}
+	if model == "" {
+		model = strings.TrimSpace(plan.ResolvedProfile.Fields.ModelOverride)
+	}
+	if model == "" {
+		model = strings.TrimSpace(plan.ResolvedProfile.Fields.Model)
+	}
+	requested, err := runtimeprofile.ResolveRequestedReasoningEffort(
+		"",
+		plan.LaunchReasoningEffort,
+		plan.ResolvedProfile.Fields.ReasoningEffort,
+	)
+	if err != nil {
+		return runtime.ProviderSessionRequest{}, err
+	}
+	return runtime.ProviderSessionRequest{
+		ModelProviderID:          modelProviderID,
+		Model:                    model,
+		RequestedReasoningEffort: string(requested),
+	}, nil
 }
 
 func sandboxNetworkMode(runControls task.RunControls) runner.SandboxNetworkMode {
@@ -884,6 +1126,10 @@ func (server *Server) handleListTasks(response http.ResponseWriter, request *htt
 	}
 	if tasks == nil {
 		tasks = []task.Task{}
+	}
+	// Decorate list entries with current Runtime Activity (not Task status).
+	for index := range tasks {
+		tasks[index] = server.attachRuntimeActivity(tasks[index])
 	}
 	writeJSON(response, http.StatusOK, struct {
 		Tasks []task.Task `json:"tasks"`
@@ -949,6 +1195,9 @@ func (server *Server) taskDetail(taskID string) (task.Task, error) {
 }
 
 func (server *Server) decorateTask(found task.Task) (task.Task, error) {
+	// Runtime Activity is attached first so unexpected offline/orphaned health
+	// can reconcile durable lifecycle before controls are computed.
+	found = server.attachRuntimeActivity(found)
 	active, err := server.tasks.ActiveContinuation(found.ID)
 	if err != nil {
 		return task.Task{}, err
@@ -1010,12 +1259,28 @@ func (server *Server) runtimeControlsForTask(found task.Task, latest *task.TaskC
 	sessionCaptured := latest != nil && strings.TrimSpace(latest.NativeSessionID) != ""
 	_, providerSessionBound := server.providerSessions.get(found.ID)
 
+	activity := server.computeRuntimeActivity(found)
 	controls := task.RuntimeControls{
 		ResumeAvailable:         !active,
+		FinishAvailable:         activity.Liveness == runtimeLivenessLive && activity.TurnActivity == runtimeTurnIdle,
 		QueueSteerAvailable:     true,
 		NativeSessionCaptured:   sessionCaptured,
 		SameRuntimeProviderOnly: true,
 		RuntimeProvider:         string(profile.Provider),
+	}
+	if profile.Provider == runtimeprofile.ProviderPi {
+		// Expose the fixed projected set so Task Conversation UI can fail closed
+		// when metadata is missing (legacy) or the target is outside the set.
+		if ids := server.projectedPiModelProviderIDs(found); len(ids) > 0 {
+			controls.ProjectedModelProviderIDs = ids
+		}
+	}
+	if selection, selectionErr := server.currentTurnSelection(found); selectionErr == nil {
+		controls.TurnSelection = &task.TurnSelection{
+			ModelProviderID: selection.ModelProviderID,
+			Model:           selection.Model,
+			ReasoningEffort: selection.RequestedReasoningEffort,
+		}
 	}
 	if events, eventsErr := server.tasks.Events(found.ID); eventsErr == nil {
 		if providerSessionBound {
@@ -1223,13 +1488,38 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 	}
 	defer server.releaseTaskControl(taskID)
 
+	// Re-read under control lock so concurrent Finish/resume cannot race settle.
+	found, err = server.tasks.Get(taskID)
+	if err != nil {
+		writeTaskError(response, err)
+		return
+	}
+
 	if found.Status == task.StatusRunning || found.Status == task.StatusPaused {
-		if ok := server.harness.StopAndWait(taskID, 10*time.Second); !ok {
-			writeError(response, http.StatusConflict, "runtime did not stop in time")
+		deadline := time.Now().Add(server.runtimeStopTimeout)
+		stopContext, cancelStop := context.WithDeadline(context.Background(), deadline)
+		defer cancelStop()
+		if server.harness != nil {
+			server.harness.Stop(taskID)
+		}
+		if err := server.closeProviderSessionForStop(stopContext, taskID); err != nil {
+			writeError(response, http.StatusConflict, "provider session did not close")
 			return
 		}
-		if err := server.closeProviderSession(taskID); err != nil && !errors.Is(err, runtime.ErrProviderSessionClosed) {
-			writeError(response, http.StatusConflict, "provider session did not close")
+		remaining := time.Until(deadline)
+		if remaining < 0 {
+			remaining = 0
+		}
+		if server.harness != nil && server.harness.IsActive(taskID) {
+			if ok := server.harness.StopAndWait(taskID, remaining); !ok {
+				writeError(response, http.StatusConflict, "runtime did not stop in time")
+				return
+			}
+		}
+		// Durable Task may still be running when harness/session already gone
+		// (finish abort, orphan cleanup). Always settle stopped after cleanup.
+		if err := server.settleTaskStopped(taskID); err != nil {
+			writeTaskError(response, err)
 			return
 		}
 		stopped, err := server.taskDetail(taskID)
@@ -1244,12 +1534,247 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 		writeError(response, http.StatusConflict, "provider session did not close")
 		return
 	}
-	stopped, err := server.tasks.UpdateStatus(taskID, task.StatusStopped)
+	if err := server.settleTaskStopped(taskID); err != nil {
+		writeTaskError(response, err)
+		return
+	}
+	stopped, err := server.taskDetail(taskID)
 	if err != nil {
 		writeTaskError(response, err)
 		return
 	}
 	writeJSON(response, http.StatusOK, stopped)
+}
+
+// settleTaskStopped marks Task and any non-terminal Continuation as stopped.
+// Does not overwrite an existing different terminal Continuation status.
+func (server *Server) settleTaskStopped(taskID string) error {
+	if cont, err := server.tasks.LatestContinuation(taskID); err == nil && cont != nil {
+		if cont.Status == task.StatusRunning || cont.Status == task.StatusPaused || cont.Status == task.StatusPending {
+			if _, err := server.tasks.UpdateContinuationStatus(cont.ID, task.StatusStopped); err != nil && !errors.Is(err, task.ErrContinuationStatusConflict) {
+				return err
+			}
+		}
+	}
+	found, err := server.tasks.Get(taskID)
+	if err != nil {
+		return err
+	}
+	if found.Status == task.StatusRunning || found.Status == task.StatusPaused || found.Status == task.StatusPending {
+		if _, err := server.tasks.UpdateStatus(taskID, task.StatusStopped); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// handleFinishTask is operator-controlled Task completion. It requires current
+// Runtime Activity live+idle, closes Runtime resources before harness exit so
+// shutdown happens-before Continuation reconciliation, verifies the durable
+// reconciliation marker, then marks the Task completed. Busy Runtimes use Stop.
+// There is no MCP/Runtime path that invokes this handler.
+func (server *Server) handleFinishTask(response http.ResponseWriter, request *http.Request) {
+	projectID := request.PathValue("id")
+	taskID := request.PathValue("task_id")
+	if !server.requireProject(response, projectID) {
+		return
+	}
+	if taskID == "" {
+		writeError(response, http.StatusNotFound, "task not found")
+		return
+	}
+
+	found, err := server.tasks.Get(taskID)
+	if err != nil {
+		writeTaskError(response, err)
+		return
+	}
+	if found.ProjectID != projectID {
+		writeError(response, http.StatusNotFound, "task not found")
+		return
+	}
+	if !server.acquireTaskControl(taskID) {
+		writeError(response, http.StatusConflict, "task control operation already active")
+		return
+	}
+	defer server.releaseTaskControl(taskID)
+
+	// Re-read under the control lock so concurrent Stop/steer cannot race the gate.
+	found, err = server.tasks.Get(taskID)
+	if err != nil {
+		writeTaskError(response, err)
+		return
+	}
+	activity := server.computeRuntimeActivity(found)
+	if activity.Liveness != runtimeLivenessLive || activity.TurnActivity != runtimeTurnIdle {
+		writeError(response, http.StatusConflict, finishRejectedMessage(activity))
+		return
+	}
+
+	deadline := time.Now().Add(server.runtimeStopTimeout)
+	stopContext, cancelStop := context.WithDeadline(context.Background(), deadline)
+	defer cancelStop()
+
+	// 1) Finish intent: Launch will exit without writing terminal status.
+	// handleFinishTask is the sole owner of Continuation/Task completed.
+	if server.harness != nil {
+		server.harness.MarkFinishRequested(taskID)
+	}
+	// 2) Close provider session/bridge/process (production Closed() on Close).
+	if err := server.closeProviderSessionForStop(stopContext, taskID); err != nil {
+		if server.harness != nil {
+			server.harness.ClearFinishIntent(taskID)
+		}
+		server.finishDiagnostic(taskID, "provider_session_close", "provider session did not close")
+		writeError(response, http.StatusConflict, "finish failed at provider_session_close: provider session did not close")
+		return
+	}
+	// 3) Wait for harness exit (cancel residual wait is safe: finish path does
+	// not write terminal status). On timeout, clear intent then force-stop so a
+	// late exit uses stop/fail rather than hang with residual intent.
+	remaining := time.Until(deadline)
+	if remaining < 0 {
+		remaining = 0
+	}
+	if server.harness != nil {
+		if ok := server.harness.StopAndWait(taskID, remaining); !ok {
+			server.harness.ClearFinishIntent(taskID)
+			_ = server.harness.StopAndWait(taskID, 0)
+			server.finishDiagnostic(taskID, "runtime_shutdown", "runtime did not stop in time")
+			writeError(response, http.StatusConflict, "finish failed at runtime_shutdown: runtime did not stop in time")
+			return
+		}
+	}
+
+	// 4) Sole owner: mark Continuation completed (triggers recon), verify
+	// durable marker, then Task completed. Fail-closed — no silent fallbacks.
+	// After runtime is already closed, any failure here must settle Task to a
+	// recoverable terminal (failed) so it does not remain durable running.
+	cont, contErr := server.tasks.LatestContinuation(taskID)
+	if contErr != nil {
+		server.finishFailClosed(response, taskID, "continuation_lookup", contErr.Error(), http.StatusInternalServerError)
+		return
+	}
+	if cont == nil {
+		server.finishFailClosed(response, taskID, "continuation_missing", "no Continuation for Task", http.StatusConflict)
+		return
+	}
+	// Complete Continuation and/or retry terminal reconciliation when the
+	// durable marker is not yet completed (fail-closed, no silent skip).
+	if cont.Status != task.StatusCompleted || cont.BlackboardReconciliationStatus != task.ReconciliationCompleted {
+		if _, err := server.tasks.UpdateContinuationStatus(cont.ID, task.StatusCompleted); err != nil {
+			// Classify from durable re-read, never string-matching.
+			refreshed, refErr := server.tasks.Continuation(cont.ID)
+			if refErr == nil && refreshed.Status == task.StatusCompleted && refreshed.BlackboardReconciliationStatus != task.ReconciliationCompleted {
+				server.finishFailClosed(response, taskID, "continuation_reconciliation", "marker="+string(refreshed.BlackboardReconciliationStatus), http.StatusConflict)
+				return
+			}
+			if errors.Is(err, task.ErrContinuationStatusConflict) {
+				server.finishFailClosed(response, taskID, "continuation_complete", "continuation status conflict", http.StatusConflict)
+				return
+			}
+			server.finishFailClosed(response, taskID, "continuation_complete", err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	refreshed, refErr := server.tasks.Continuation(cont.ID)
+	if refErr != nil {
+		server.finishFailClosed(response, taskID, "continuation_reread", refErr.Error(), http.StatusInternalServerError)
+		return
+	}
+	if refreshed.Status != task.StatusCompleted {
+		server.finishFailClosed(response, taskID, "continuation_status", "status="+string(refreshed.Status), http.StatusConflict)
+		return
+	}
+	if refreshed.BlackboardReconciliationStatus != task.ReconciliationCompleted {
+		server.finishFailClosed(response, taskID, "continuation_reconciliation", "marker="+string(refreshed.BlackboardReconciliationStatus), http.StatusConflict)
+		return
+	}
+
+	// 5) Only after durable recon marker is completed may the Task be completed.
+	if _, err := server.tasks.UpdateStatus(taskID, task.StatusCompleted); err != nil {
+		server.finishFailClosed(response, taskID, "task_complete", err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Lifecycle only — never a Runtime Activity audit/history record.
+	_, _ = server.tasks.AppendEvent(taskID, task.EventKindLifecycle, task.EventPayload{
+		"phase": "completed", "reason": "operator_finish",
+	})
+
+	finished, err := server.taskDetail(taskID)
+	if err != nil {
+		writeTaskError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, finished)
+}
+
+// finishFailClosed settles a post-runtime Finish failure: Task must not stay
+// durable running. Prefer failed (resumable). Public HTTP uses stable stage
+// messages; raw detail stays in logs/events only.
+func (server *Server) finishFailClosed(response http.ResponseWriter, taskID, stage, detail string, status int) {
+	server.finishDiagnostic(taskID, stage, detail)
+	server.settleTaskFailedAfterFinishAbort(taskID)
+	writeError(response, status, "finish failed at "+stage)
+}
+
+// settleTaskFailedAfterFinishAbort marks Task failed when still active after
+// runtime close. Non-terminal Continuations become failed; existing different
+// terminal Continuation statuses are left unchanged.
+func (server *Server) settleTaskFailedAfterFinishAbort(taskID string) {
+	if cont, err := server.tasks.LatestContinuation(taskID); err == nil && cont != nil {
+		switch cont.Status {
+		case task.StatusRunning, task.StatusPaused, task.StatusPending:
+			if _, err := server.tasks.UpdateContinuationStatus(cont.ID, task.StatusFailed); err != nil {
+				// Status may already be terminal from a partial write; re-read.
+				if refreshed, refErr := server.tasks.Continuation(cont.ID); refErr == nil {
+					if refreshed.Status == task.StatusRunning || refreshed.Status == task.StatusPaused || refreshed.Status == task.StatusPending {
+						server.finishDiagnostic(taskID, "settle_continuation", err.Error())
+					}
+				}
+			}
+		}
+	}
+	found, err := server.tasks.Get(taskID)
+	if err != nil {
+		return
+	}
+	if found.Status == task.StatusRunning || found.Status == task.StatusPaused || found.Status == task.StatusPending {
+		if _, err := server.tasks.UpdateStatus(taskID, task.StatusFailed); err != nil {
+			server.finishDiagnostic(taskID, "settle_task", err.Error())
+		}
+	}
+}
+
+// finishDiagnostic records a fail-closed Finish diagnostic without inventing
+// Runtime Activity audit history. detail may include raw errors for operators.
+func (server *Server) finishDiagnostic(taskID, stage, detail string) {
+	if found, err := server.tasks.Get(taskID); err == nil {
+		server.logTask(found, "finish_failed", stage+": "+detail)
+	} else if server.logger != nil {
+		server.logger.Printf("task finish_failed id=%s detail=%q", taskID, stage+": "+detail)
+	}
+	_, _ = server.tasks.AppendEvent(taskID, task.EventKindLifecycle, task.EventPayload{
+		"phase": "finish_failed", "stage": stage, "detail": detail,
+	})
+}
+
+func finishRejectedMessage(activity task.RuntimeActivity) string {
+	switch activity.Liveness {
+	case runtimeLivenessLive:
+		if activity.TurnActivity == runtimeTurnBusy {
+			return "finish requires a live idle Runtime; Stop interrupts a busy Runtime"
+		}
+		return "finish requires a live idle Runtime"
+	case runtimeLivenessOffline:
+		return "finish requires a live idle Runtime; runtime is offline"
+	case runtimeLivenessOrphaned:
+		return "finish requires a live idle Runtime; runtime ownership is orphaned"
+	case runtimeLivenessUnknown:
+		return "finish requires a live idle Runtime; runtime health is unknown"
+	default:
+		return "finish requires a live idle Runtime"
+	}
 }
 
 func (server *Server) acquireTaskControl(taskID string) bool {
@@ -1304,9 +1829,18 @@ func (server *Server) handleResumeTask(response http.ResponseWriter, request *ht
 		writeError(response, http.StatusNotFound, "task not found")
 		return
 	}
-	if server.harness.IsActive(taskID) || found.Status == task.StatusRunning {
+	if durableTaskActive(found.Status) {
 		writeError(response, http.StatusConflict, "task is already running")
 		return
+	}
+	// Terminal Tasks may still show a brief harness window while Launch releases
+	// ownership. Wait for absence rather than rejecting a legitimate resume.
+	// Budget is server.runtimeStopTimeout (not a hardcoded constant).
+	if server.harness != nil && server.harness.IsActive(taskID) {
+		if !server.waitRuntimeHarnessInactive(taskID) {
+			writeError(response, http.StatusConflict, "runtime harness is still active")
+			return
+		}
 	}
 	var input taskContinuationSelectionInput
 	if err := decodeOptionalJSON(request, &input); err != nil {
@@ -1318,6 +1852,32 @@ func (server *Server) handleResumeTask(response http.ResponseWriter, request *ht
 		return
 	}
 	defer server.releaseTaskControl(taskID)
+	// Re-validate under the control lock: a concurrent resume may have already
+	// launched. Using stale terminal Task state here would call
+	// ensureRuntimeAbsentBeforeLaunch and stop the first Runtime.
+	found, err = server.tasks.Get(taskID)
+	if err != nil {
+		writeTaskError(response, err)
+		return
+	}
+	if found.ProjectID != projectID {
+		writeError(response, http.StatusNotFound, "task not found")
+		return
+	}
+	if durableTaskActive(found.Status) {
+		writeError(response, http.StatusConflict, "task is already running")
+		return
+	}
+	if server.harness != nil && server.harness.IsActive(taskID) {
+		if !server.waitRuntimeHarnessInactive(taskID) {
+			writeError(response, http.StatusConflict, "runtime harness is still active")
+			return
+		}
+	}
+	if _, bound := server.providerSessions.get(taskID); bound {
+		writeError(response, http.StatusConflict, "task already has a live Runtime")
+		return
+	}
 	if input.hasSelection() {
 		if _, ok := server.recordSelectedRuntimeConfig(response, found, "", input); !ok {
 			return
@@ -1359,7 +1919,8 @@ func (server *Server) prepareNativeResumeContinuation(found task.Task, resumedMe
 			return task.Task{}, "", taskLaunchPlan{}, err
 		}
 	}
-	plan, err := server.buildTaskLaunchPlan(found, resumedMessage, "", nativeResumeSessionID)
+	modelOverride, reasoningEffort := server.resumeTurnSelectionOverrides(found)
+	plan, err := server.buildTaskLaunchPlan(found, resumedMessage, modelOverride, nativeResumeSessionID, reasoningEffort)
 	if err != nil {
 		return task.Task{}, "", taskLaunchPlan{}, err
 	}
@@ -1412,12 +1973,23 @@ func (server *Server) prepareFreshResumeContinuation(found task.Task) (task.Task
 	if err != nil {
 		return task.Task{}, "", taskLaunchPlan{}, err
 	}
-	plan, err := server.buildTaskLaunchPlan(found, resumeGoal, "", "")
+	modelOverride, reasoningEffort := server.resumeTurnSelectionOverrides(found)
+	plan, err := server.buildTaskLaunchPlan(found, resumeGoal, modelOverride, "", reasoningEffort)
 	if err != nil {
 		return task.Task{}, "", taskLaunchPlan{}, err
 	}
 	plan.BlackboardV2SteeringEventIDs = steeringEventIDs
 	return found, resumeGoal, plan, nil
+}
+
+// resumeTurnSelectionOverrides carries the preceding Runtime Turn Selection into
+// a restart/resume launch so provider-switch paths do not drop model or effort.
+func (server *Server) resumeTurnSelectionOverrides(found task.Task) (modelOverride, reasoningEffort string) {
+	selection, err := server.currentTurnSelection(found)
+	if err != nil {
+		return "", ""
+	}
+	return strings.TrimSpace(selection.Model), strings.TrimSpace(selection.RequestedReasoningEffort)
 }
 
 func (server *Server) buildResumeGoal(found task.Task) (string, error) {
@@ -1568,14 +2140,21 @@ func (server *Server) handleQueueSteerTask(response http.ResponseWriter, request
 	if input.ModelProviderID != "" {
 		payload["model_provider_id"] = input.ModelProviderID
 	}
-	if input.ModelOverride != "" {
-		payload["model_override"] = input.ModelOverride
+	if model := input.selectedModel(); model != "" {
+		payload["model"] = model
+		payload["model_override"] = model
+	}
+	if input.ReasoningEffort != "" {
+		payload["reasoning_effort"] = input.ReasoningEffort
 	}
 	event, err := server.tasks.AppendEvent(taskID, task.EventKindSteering, payload)
 	if err != nil {
 		writeTaskError(response, err)
 		return
 	}
+	// Config Projection / Runtime Config Version is only for profile or Model
+	// Provider changes. Same-provider model/effort stay on the event payload
+	// (and on native turns) without minting a new version.
 	var configVersion *task.RuntimeConfigVersion
 	if input.hasSelection() {
 		recorded, ok := server.recordSelectedRuntimeConfig(response, found, event.ID, input.taskContinuationSelectionInput)
@@ -1648,8 +2227,12 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 	if input.ModelProviderID != "" {
 		payload["model_provider_id"] = input.ModelProviderID
 	}
-	if input.ModelOverride != "" {
-		payload["model_override"] = input.ModelOverride
+	if model := input.selectedModel(); model != "" {
+		payload["model"] = model
+		payload["model_override"] = model
+	}
+	if input.ReasoningEffort != "" {
+		payload["reasoning_effort"] = input.ReasoningEffort
 	}
 
 	event, err := server.tasks.AppendEvent(taskID, task.EventKindSteering, payload)
@@ -1757,6 +2340,17 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		writeError(response, http.StatusBadRequest, "steer message is required")
 		return
 	}
+	// Runtime Plugin / Runtime Profile switches need Config Projection and a
+	// restart. Model Provider changes stay native for Pi when the provider was
+	// projected at startup (ADR 0015); Codex/Claude still restart.
+	if input.hasRuntimeProfileSelection() {
+		writeError(response, http.StatusConflict, "native steer cannot change runtime profile; restart the continuation")
+		return
+	}
+	selection, ok := server.resolveNativeTurnSelection(response, found, input.taskContinuationSelectionInput)
+	if !ok {
+		return
+	}
 
 	events, err := server.tasks.Events(found.ID)
 	if err != nil {
@@ -1767,8 +2361,8 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		if event.Kind != task.EventKindConversation || event.Payload["request_id"] != input.RequestID || event.Payload["delivery"] != "native_steer" {
 			continue
 		}
-		if prior, _ := event.Payload["text"].(string); prior != input.Message {
-			writeError(response, http.StatusConflict, "steer request id already belongs to a different message")
+		if conflict := nativeSteerIdempotencyConflict(event, input.Message, selection); conflict != "" {
+			writeError(response, http.StatusConflict, conflict)
 			return
 		}
 		mode, outcome, sessionID := nativeSteerState(events, input.RequestID)
@@ -1815,7 +2409,9 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 	conversationPayload := task.EventPayload{
 		"role": "user", "text": input.Message, "request_id": input.RequestID,
 		"delivery": "native_steer", "outcome": "pending", "mode": string(mode),
-		"session_id": session.SessionID(),
+		"session_id":        session.SessionID(),
+		"model_provider_id": selection.ModelProviderID, "model": selection.Model,
+		"requested_reasoning_effort": selection.RequestedReasoningEffort,
 	}
 	var conversation task.Event
 	if active != nil {
@@ -1858,27 +2454,30 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 			_, _ = server.tasks.AppendEvent(found.ID, kind, payload)
 		}
 	}
+	providerRequest := runtime.ProviderSessionRequest{
+		RequestID:                input.RequestID,
+		Message:                  input.Message,
+		ModelProviderID:          selection.ModelProviderID,
+		Model:                    selection.Model,
+		RequestedReasoningEffort: selection.RequestedReasoningEffort,
+	}
 	go func() {
 		defer server.releaseProviderTaskControl(found.ID)
 		ctx, cancel := context.WithTimeout(server.providerControlCtx, 30*time.Second)
 		defer cancel()
-		result, operationErr := operation(ctx, runtime.ProviderSessionRequest{RequestID: input.RequestID, Message: input.Message}, emit)
+		result, operationErr := operation(ctx, providerRequest, emit)
 		if operationErr != nil {
-			errorCode := "provider_rejected"
-			switch {
-			case errors.Is(operationErr, context.DeadlineExceeded):
-				errorCode = "timeout"
-			case errors.Is(operationErr, context.Canceled):
-				errorCode = "server_closing"
-			case errors.Is(operationErr, runtime.ErrProviderSessionClosed):
-				errorCode = "session_closed"
-			case errors.Is(operationErr, runtime.ErrProviderSessionControlConflict):
-				errorCode = "control_conflict"
-			}
-			emit(task.EventKindSteering, task.EventPayload{
+			errorCode, errorMessage := nativeSteerFailurePresentation(operationErr)
+			// Public Task Events carry only redacted, stable failure fields.
+			// Raw provider text stays out of the conversation surface.
+			failure := task.EventPayload{
 				"request_id": input.RequestID, "session_id": session.SessionID(), "mode": string(mode),
 				"outcome": "failed", "phase": "steering_failed", "error_code": errorCode,
-			})
+				"error":             errorMessage,
+				"model_provider_id": selection.ModelProviderID, "model": selection.Model,
+				"requested_reasoning_effort": selection.RequestedReasoningEffort,
+			}
+			emit(task.EventKindSteering, failure)
 			return
 		}
 		continuationMu.Lock()
@@ -2182,8 +2781,27 @@ func (server *Server) recordSelectedRuntimeConfig(response http.ResponseWriter, 
 	if requestedProfile.Fields.ModelProviderID != "" {
 		config["model_provider_id"] = requestedProfile.Fields.ModelProviderID
 	}
-	if requestedProfile.Fields.ModelOverride != "" {
+	if model := input.selectedModel(); model != "" {
+		config["model"] = model
+		config["model_override"] = model
+	} else if requestedProfile.Fields.ModelOverride != "" {
+		config["model"] = requestedProfile.Fields.ModelOverride
 		config["model_override"] = requestedProfile.Fields.ModelOverride
+	}
+	// Capture the explicit turn/queue Requested Reasoning Effort so resume
+	// reuses the operator's selection without re-inferring Effective Effort.
+	requestedEffort, err := runtimeprofile.ResolveRequestedReasoningEffort(
+		input.ReasoningEffort,
+		configString(config, "launch_reasoning_effort_override"),
+		requestedProfile.Fields.ReasoningEffort,
+	)
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err.Error())
+		return task.RuntimeConfigVersion{}, false
+	}
+	config["requested_reasoning_effort"] = string(requestedEffort)
+	if strings.TrimSpace(input.ReasoningEffort) != "" {
+		config["reasoning_effort"] = string(requestedEffort)
 	}
 	recorded, err := server.tasks.RecordRuntimeConfig(found.ID, requestedProfile.ID, config)
 	if err != nil {
@@ -2191,6 +2809,309 @@ func (server *Server) recordSelectedRuntimeConfig(response http.ResponseWriter, 
 		return task.RuntimeConfigVersion{}, false
 	}
 	return recorded, true
+}
+
+// resolveNativeTurnSelection resolves the complete Runtime Turn Selection for a
+// native steer. Same-provider model/effort changes are always allowed. A Model
+// Provider change is native for Pi when the target was projected at Config
+// Projection time; Codex/Claude reject it so the client restarts.
+func (server *Server) resolveNativeTurnSelection(response http.ResponseWriter, found task.Task, input taskContinuationSelectionInput) (runtime.ProviderSessionRequest, bool) {
+	current, err := server.currentTurnSelection(found)
+	if err != nil {
+		if errors.Is(err, runtimeprofile.ErrNotFound) {
+			writeError(response, http.StatusBadRequest, "runtime profile not found")
+			return runtime.ProviderSessionRequest{}, false
+		}
+		writeError(response, http.StatusInternalServerError, "resolve turn selection")
+		return runtime.ProviderSessionRequest{}, false
+	}
+	requestedProvider := strings.TrimSpace(input.ModelProviderID)
+	if requestedProvider != "" && requestedProvider != current.ModelProviderID {
+		profile, profileErr := server.resolveTaskRuntimeProfile(found)
+		if profileErr != nil {
+			if errors.Is(profileErr, runtimeprofile.ErrNotFound) {
+				writeError(response, http.StatusBadRequest, "runtime profile not found")
+				return runtime.ProviderSessionRequest{}, false
+			}
+			writeError(response, http.StatusInternalServerError, "resolve turn selection")
+			return runtime.ProviderSessionRequest{}, false
+		}
+		if profile.Provider != runtimeprofile.ProviderPi || !server.piProjectedProviderAllowed(found, requestedProvider) {
+			// Codex/Claude (and Pi targets outside the projected set) require
+			// credential re-resolution and Config Projection via restart.
+			writeError(response, http.StatusConflict, "native steer cannot change model provider; restart the continuation")
+			return runtime.ProviderSessionRequest{}, false
+		}
+	}
+
+	selection := current
+	if requestedProvider != "" {
+		selection.ModelProviderID = requestedProvider
+	}
+	if model := input.selectedModel(); model != "" {
+		selection.Model = model
+	}
+	requested, err := runtimeprofile.ResolveRequestedReasoningEffort(input.ReasoningEffort, current.RequestedReasoningEffort, "")
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err.Error())
+		return runtime.ProviderSessionRequest{}, false
+	}
+	selection.RequestedReasoningEffort = string(requested)
+	return selection, true
+}
+
+// piProjectedProviderAllowed reports whether providerID was included in the Pi
+// runtime's Config Projection set. ADR 0015 fixes that set until the next
+// projection/restart: missing or empty projected_model_provider_ids fails
+// closed so legacy tasks cannot perform arbitrary native cross-provider turns
+// without a fresh Config Projection that records the set.
+func (server *Server) piProjectedProviderAllowed(found task.Task, providerID string) bool {
+	providerID = strings.TrimSpace(providerID)
+	if providerID == "" {
+		return false
+	}
+	ids := server.projectedPiModelProviderIDs(found)
+	if len(ids) == 0 {
+		return false
+	}
+	for _, id := range ids {
+		if id == providerID {
+			return true
+		}
+	}
+	return false
+}
+
+func (server *Server) projectedPiModelProviderIDs(found task.Task) []string {
+	versions, err := server.tasks.RuntimeConfigVersions(found.ID)
+	if err != nil || len(versions) == 0 {
+		return nil
+	}
+	latest := versions[len(versions)-1].Config
+	return stringSliceFromConfig(latest["projected_model_provider_ids"])
+}
+
+func stringSliceFromConfig(value any) []string {
+	switch typed := value.(type) {
+	case []string:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if id := strings.TrimSpace(item); id != "" {
+				out = append(out, id)
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if id := strings.TrimSpace(fmt.Sprint(item)); id != "" && id != "<nil>" {
+				out = append(out, id)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func (server *Server) currentTurnSelection(found task.Task) (runtime.ProviderSessionRequest, error) {
+	// Prefer the last turn's attached selection so the composer retains what
+	// the operator actually submitted, not a profile default.
+	if selection, ok := server.precedingConversationTurnSelection(found.ID); ok {
+		return selection, nil
+	}
+	return server.selectionFromCapturedRuntimeConfig(found)
+}
+
+// selectionFromCapturedRuntimeConfig resolves Model Provider / model / effort
+// from the latest Task Runtime Configuration Version and model_provider_snapshot.
+// Profile fields are only a fallback — launch-resolved and legacy profiles may
+// leave provider/model empty on the Profile while the captured snapshot is true.
+func (server *Server) selectionFromCapturedRuntimeConfig(found task.Task) (runtime.ProviderSessionRequest, error) {
+	profile, err := server.resolveTaskRuntimeProfile(found)
+	if err != nil {
+		return runtime.ProviderSessionRequest{}, err
+	}
+	modelProviderID := strings.TrimSpace(profile.Fields.ModelProviderID)
+	model := strings.TrimSpace(profile.Fields.ModelOverride)
+	if model == "" {
+		model = strings.TrimSpace(profile.Fields.Model)
+	}
+	launchEffort := ""
+	versions, err := server.tasks.RuntimeConfigVersions(found.ID)
+	if err != nil {
+		return runtime.ProviderSessionRequest{}, err
+	}
+	if len(versions) > 0 {
+		latest := versions[len(versions)-1].Config
+		// Snapshot first (actual projected provider/model), then explicit
+		// captured overrides from launch or later continuation selection.
+		if snapshotProvider, snapshotModel := modelProviderSnapshotFields(latest["model_provider_snapshot"]); true {
+			if snapshotProvider != "" {
+				modelProviderID = snapshotProvider
+			}
+			if snapshotModel != "" {
+				model = snapshotModel
+			}
+		}
+		if value := configString(latest, "model_provider_id"); value != "" {
+			modelProviderID = value
+		}
+		if value := configString(latest, "launch_model_override"); value != "" {
+			model = value
+		}
+		if value := configString(latest, "model_override"); value != "" {
+			model = value
+		}
+		if value := configString(latest, "model"); value != "" {
+			model = value
+		}
+		if value := configString(latest, "launch_reasoning_effort_override"); value != "" {
+			launchEffort = value
+		}
+		if value := configString(latest, "requested_reasoning_effort"); value != "" {
+			launchEffort = value
+		}
+	}
+	if model == "" && server.modelProviders != nil && modelProviderID != "" {
+		if provider, getErr := server.modelProviders.Get(modelProviderID); getErr == nil {
+			model = strings.TrimSpace(provider.Catalog.DefaultModel)
+		}
+	}
+	requested, err := runtimeprofile.ResolveRequestedReasoningEffort("", launchEffort, profile.Fields.ReasoningEffort)
+	if err != nil {
+		return runtime.ProviderSessionRequest{}, err
+	}
+	return runtime.ProviderSessionRequest{
+		ModelProviderID:          modelProviderID,
+		Model:                    model,
+		RequestedReasoningEffort: string(requested),
+	}, nil
+}
+
+func modelProviderSnapshotFields(raw any) (providerID, model string) {
+	switch snapshot := raw.(type) {
+	case map[string]any:
+		providerID = configString(snapshot, "model_provider_id")
+		model = configString(snapshot, "model")
+	case modelprovider.Snapshot:
+		providerID = strings.TrimSpace(snapshot.ModelProviderID)
+		model = strings.TrimSpace(snapshot.Model)
+	case *modelprovider.Snapshot:
+		if snapshot != nil {
+			providerID = strings.TrimSpace(snapshot.ModelProviderID)
+			model = strings.TrimSpace(snapshot.Model)
+		}
+	}
+	return providerID, model
+}
+
+func (server *Server) precedingConversationTurnSelection(taskID string) (runtime.ProviderSessionRequest, bool) {
+	events, err := server.tasks.Events(taskID)
+	if err != nil {
+		return runtime.ProviderSessionRequest{}, false
+	}
+	for index := len(events) - 1; index >= 0; index-- {
+		event := events[index]
+		// Selection is only read from existing conversation / steering turn
+		// records — never from a separate selection Task Event.
+		if event.Kind != task.EventKindConversation && event.Kind != task.EventKindSteering {
+			continue
+		}
+		providerID, _ := event.Payload["model_provider_id"].(string)
+		model, _ := event.Payload["model"].(string)
+		if model == "" {
+			model, _ = event.Payload["model_override"].(string)
+		}
+		effort, _ := event.Payload["requested_reasoning_effort"].(string)
+		if effort == "" {
+			effort, _ = event.Payload["reasoning_effort"].(string)
+		}
+		if strings.TrimSpace(providerID) == "" && strings.TrimSpace(model) == "" && strings.TrimSpace(effort) == "" {
+			continue
+		}
+		// Prefer a complete conversation turn; skip incomplete steering noise.
+		if event.Kind == task.EventKindSteering && strings.TrimSpace(providerID) == "" && strings.TrimSpace(model) == "" {
+			continue
+		}
+		requested, err := runtimeprofile.NormalizeReasoningEffort(effort)
+		if err != nil {
+			return runtime.ProviderSessionRequest{}, false
+		}
+		return runtime.ProviderSessionRequest{
+			ModelProviderID:          strings.TrimSpace(providerID),
+			Model:                    strings.TrimSpace(model),
+			RequestedReasoningEffort: string(requested),
+		}, true
+	}
+	return runtime.ProviderSessionRequest{}, false
+}
+
+func nativeSteerIdempotencyConflict(prior task.Event, message string, selection runtime.ProviderSessionRequest) string {
+	if priorText, _ := prior.Payload["text"].(string); priorText != message {
+		return "steer request id already belongs to a different message"
+	}
+	priorProvider, _ := prior.Payload["model_provider_id"].(string)
+	priorModel, _ := prior.Payload["model"].(string)
+	if priorModel == "" {
+		priorModel, _ = prior.Payload["model_override"].(string)
+	}
+	priorEffort, _ := prior.Payload["requested_reasoning_effort"].(string)
+	if priorEffort == "" {
+		priorEffort, _ = prior.Payload["reasoning_effort"].(string)
+	}
+	// Legacy conversation events may omit effort; treat missing as high so a
+	// retry that resolves to the default does not false-conflict.
+	priorEffortNormalized, _ := runtimeprofile.NormalizeReasoningEffort(priorEffort)
+	requestedEffortNormalized, _ := runtimeprofile.NormalizeReasoningEffort(selection.RequestedReasoningEffort)
+	if strings.TrimSpace(priorProvider) != strings.TrimSpace(selection.ModelProviderID) ||
+		strings.TrimSpace(priorModel) != strings.TrimSpace(selection.Model) ||
+		priorEffortNormalized != requestedEffortNormalized {
+		return "steer request id already belongs to a different turn selection"
+	}
+	return ""
+}
+
+// nativeSteerFailurePresentation maps provider operation failures to stable,
+// redacted public codes/messages. Raw provider text never crosses this seam.
+func nativeSteerFailurePresentation(operationErr error) (code, message string) {
+	switch {
+	case errors.Is(operationErr, context.DeadlineExceeded):
+		return "timeout", "native steer timed out"
+	case errors.Is(operationErr, context.Canceled):
+		return "server_closing", "native steer canceled"
+	case errors.Is(operationErr, runtime.ErrProviderSessionClosed):
+		return "session_closed", "provider session is closed"
+	case errors.Is(operationErr, runtime.ErrProviderSessionControlConflict):
+		return "control_conflict", "provider session control conflict"
+	}
+	raw := ""
+	if cause := errors.Unwrap(operationErr); cause != nil {
+		raw = cause.Error()
+	} else if operationErr != nil {
+		raw = operationErr.Error()
+	}
+	lower := strings.ToLower(raw)
+	if strings.Contains(lower, "effort") || strings.Contains(lower, "reasoning") {
+		return "unsupported_reasoning_effort", "requested reasoning effort is not supported"
+	}
+	return "provider_rejected", "provider rejected the turn"
+}
+
+func configString(config map[string]any, key string) string {
+	if config == nil {
+		return ""
+	}
+	value, ok := config[key]
+	if !ok || value == nil {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	default:
+		return strings.TrimSpace(fmt.Sprint(typed))
+	}
 }
 
 func (server *Server) resolveTaskContinuationRuntimeProfile(response http.ResponseWriter, found task.Task, input taskContinuationSelectionInput) (runtimeprofile.Profile, bool) {
@@ -2247,14 +3168,29 @@ func (server *Server) resolveSelectedRuntimeProfile(response http.ResponseWriter
 		providerName = provider.Name
 	}
 
-	modelOverride := strings.TrimSpace(input.ModelOverride)
-	if strings.TrimSpace(currentProfile.Fields.ModelProviderID) == modelProviderID &&
-		strings.TrimSpace(currentProfile.Fields.ModelOverride) == modelOverride {
+	modelOverride := input.selectedModel()
+	requestedEffort := ""
+	if effort := strings.TrimSpace(input.ReasoningEffort); effort != "" {
+		normalized, err := runtimeprofile.NormalizeReasoningEffort(effort)
+		if err != nil {
+			writeError(response, http.StatusBadRequest, err.Error())
+			return runtimeprofile.Profile{}, false
+		}
+		requestedEffort = string(normalized)
+	}
+	currentEffort, _ := runtimeprofile.NormalizeReasoningEffort(currentProfile.Fields.ReasoningEffort)
+	sameSelection := strings.TrimSpace(currentProfile.Fields.ModelProviderID) == modelProviderID &&
+		strings.TrimSpace(currentProfile.Fields.ModelOverride) == modelOverride &&
+		(requestedEffort == "" || string(currentEffort) == requestedEffort)
+	if sameSelection {
 		return currentProfile, true
 	}
 	fields := currentProfile.Fields
 	fields.ModelProviderID = modelProviderID
 	fields.ModelOverride = modelOverride
+	if requestedEffort != "" {
+		fields.ReasoningEffort = requestedEffort
+	}
 	fields.ModelProviderProtocol = ""
 	fields.Model = ""
 	fields.Endpoint = ""

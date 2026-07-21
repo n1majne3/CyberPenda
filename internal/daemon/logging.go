@@ -1,12 +1,15 @@
 package daemon
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"time"
 
 	"pentest/internal/adapters"
+	"pentest/internal/preflight"
 	"pentest/internal/runtime"
+	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
 )
 
@@ -129,4 +132,76 @@ func (server *Server) logDockerSandboxEvent(t task.Task, event runtime.DockerSan
 		return
 	}
 	server.logger.Printf("task sandbox phase=%s runner=%s profile=%s id=%s image=%q stream=%s detail=%q", phase, t.Runner, t.RuntimeProfileID, t.ID, image, stream, detail)
+}
+
+// logCustomArgConflict writes a diagnostic line naming the complete offending
+// Custom Arg (flag/key, value redacted when secret-shaped) and structured field.
+// Raw secrets from the original Custom Args list never appear in the log.
+func (server *Server) logCustomArgConflict(provider runtimeprofile.Provider, customArgs []string, err error) {
+	if server.logger == nil || err == nil {
+		return
+	}
+	argument := ""
+	flag := ""
+	field := ""
+	var conflict *runtimeprofile.CustomArgConflictError
+	if errors.As(err, &conflict) {
+		// Argument is already secret-safe (values redacted at construction).
+		argument = conflict.Argument
+		flag = conflict.Flag
+		field = conflict.Field
+		if len(customArgs) == 0 {
+			customArgs = conflict.CustomArgs
+		}
+		if provider == "" {
+			provider = conflict.Provider
+		}
+	}
+	redactedArgs := adapters.Redact(map[string]any{"custom_args": customArgs})
+	server.logger.Printf(
+		"runtime profile custom_args conflict provider=%s argument=%q flag=%q structured_field=%s custom_args=%v detail=%q",
+		provider,
+		argument,
+		flag,
+		field,
+		redactedArgs["custom_args"],
+		err.Error(),
+	)
+}
+
+// logPreflightCustomArgConflict emits the same diagnostic when Preflight rejects
+// conflicting Custom Args on a stored Runtime Profile.
+func (server *Server) logPreflightCustomArgConflict(profileID string, result preflight.Result) {
+	if server.logger == nil {
+		return
+	}
+	var detail string
+	for _, check := range result.Checks {
+		if check.Name == "custom_args" && check.Status == preflight.CheckFail {
+			detail = check.Detail
+			break
+		}
+	}
+	if detail == "" {
+		return
+	}
+	provider := runtimeprofile.Provider("")
+	var customArgs []string
+	if profile, err := server.profiles.Get(profileID); err == nil {
+		provider = profile.Provider
+		customArgs = profile.Fields.CustomArgs
+	}
+	// Rebuild a typed error so logCustomArgConflict can name argument/field.
+	if err := runtimeprofile.ValidateCustomArgs(provider, customArgs); err != nil {
+		server.logCustomArgConflict(provider, customArgs, err)
+		return
+	}
+	redactedArgs := adapters.Redact(map[string]any{"custom_args": customArgs})
+	server.logger.Printf(
+		"runtime profile custom_args conflict provider=%s profile=%s custom_args=%v detail=%q",
+		provider,
+		profileID,
+		redactedArgs["custom_args"],
+		detail,
+	)
 }

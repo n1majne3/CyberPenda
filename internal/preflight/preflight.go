@@ -146,6 +146,21 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 		result.add(Check{Name: "runtime_profile", Status: CheckPass})
 	}
 
+	// Structured Model Provider, model, and Reasoning Effort fields are
+	// authoritative. Reject Custom Args that redefine them; do not migrate or
+	// strip the conflicting values.
+	if profileLoaded {
+		if err := runtimeprofile.ValidateCustomArgs(profile.Provider, profile.Fields.CustomArgs); err != nil {
+			result.add(Check{
+				Name:   "custom_args",
+				Status: CheckFail,
+				Detail: err.Error(),
+			})
+		} else {
+			result.add(Check{Name: "custom_args", Status: CheckPass})
+		}
+	}
+
 	if profileLoaded && s.skills != nil {
 		enabledSkills, err := s.skills.EnabledSkills(profile.ID)
 		if err != nil {

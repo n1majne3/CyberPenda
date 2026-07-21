@@ -167,7 +167,7 @@ describe("summarizeTaskEvent", () => {
 });
 
 describe("collapsedTranscriptTitle", () => {
-  it("includes tool names in collapsed titles", () => {
+  it("includes tool names and useful input previews in collapsed titles", () => {
     const entry: TaskTranscriptEntry = {
       id: "x",
       seq: 1,
@@ -175,22 +175,23 @@ describe("collapsedTranscriptTitle", () => {
       kind: "tool_call",
       role: "assistant",
       tool_name: "Bash",
+      details: { input: { command: "curl http://localhost:3000\necho done" } },
       created_at: "",
     };
-    expect(collapsedTranscriptTitle(entry)).toBe("Tool call · Bash");
+    expect(collapsedTranscriptTitle(entry)).toBe("Bash · curl http://localhost:3000");
   });
 
-  it("includes tool name for tool results", () => {
+  it("summarizes tool results without exposing transport call ids", () => {
     const entry: TaskTranscriptEntry = {
       id: "x",
       seq: 2,
       continuation: 1,
       kind: "tool_result",
       role: "tool",
-      tool_name: "Bash",
+      tool_call_id: "call-1",
       text: "ECONNREFUSED",
       created_at: "",
     };
-    expect(collapsedTranscriptTitle(entry)).toBe("Tool result · Bash: ECONNREFUSED");
+    expect(collapsedTranscriptTitle(entry)).toBe("Result · ECONNREFUSED");
   });
 });

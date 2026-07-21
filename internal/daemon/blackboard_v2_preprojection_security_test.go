@@ -121,6 +121,9 @@ func newCodexV2ResumeSecurityFixture(t *testing.T) codexV2ResumeSecurityFixture 
 		t.Fatalf("decode initial Task: %v", err)
 	}
 	waitForSecurityFixtureTaskStatus(t, server, created.ID, task.StatusCompleted)
+	// Resume waits for harness release on terminal Tasks. Assert ownership is
+	// gone so the valid handoff is not flaky under package-wide CPU contention.
+	waitForHarnessActive(t, server, created.ID, false)
 	found, err := server.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatalf("read initial Task: %v", err)

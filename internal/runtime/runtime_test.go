@@ -436,6 +436,114 @@ func TestHarnessStopAndWaitEndsActiveRun(t *testing.T) {
 	}
 }
 
+// Finish intent path must not write Task/Continuation terminal status — sole
+// owner is handleFinishTask after close + harness exit.
+func TestHarnessFinishIntentDoesNotWriteTerminalStatus(t *testing.T) {
+	harness, tasks, projects := newServices(t)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "finish owner", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cont, err := tasks.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- harness.Launch(context.Background(), runtime.LaunchRequest{
+			TaskID:         created.ID,
+			ContinuationID: cont.ID,
+			Adapter:        slowFakeAdapter{},
+		})
+	}()
+	waitForActive(t, harness, created.ID)
+
+	harness.MarkFinishRequested(created.ID)
+	if !harness.StopAndWait(created.ID, 2*time.Second) {
+		t.Fatal("StopAndWait under finish intent")
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("finish-intent Launch error = %v, want nil (exit without terminal write)", err)
+	}
+
+	updated, err := tasks.Continuation(cont.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status == task.StatusCompleted || updated.Status == task.StatusStopped || updated.Status == task.StatusFailed {
+		t.Fatalf("harness finish path must not write terminal status, got %q", updated.Status)
+	}
+	fetched, _ := tasks.Get(created.ID)
+	// May still be running (Launch marked running at start) — never completed by harness finish.
+	if fetched.Status == task.StatusCompleted || fetched.Status == task.StatusStopped || fetched.Status == task.StatusFailed {
+		t.Fatalf("Task terminal status written by harness finish path: %q", fetched.Status)
+	}
+
+	events, err := tasks.Events(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawFinishShutdown bool
+	for _, event := range events {
+		if event.Kind == task.EventKindLifecycle && event.Payload["phase"] == "finish_shutdown" {
+			sawFinishShutdown = true
+		}
+		if event.Kind == task.EventKindLifecycle && event.Payload["phase"] == "completed" {
+			t.Fatalf("unexpected completed lifecycle from harness finish: %#v", event.Payload)
+		}
+	}
+	if !sawFinishShutdown {
+		t.Fatal("expected finish_shutdown lifecycle without terminal status write")
+	}
+}
+
+// After ClearFinishIntent, cancel settles through normal stop path.
+func TestHarnessClearFinishIntentThenCancelSettlesStopped(t *testing.T) {
+	harness, tasks, projects := newServices(t)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "finish clear", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cont, err := tasks.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- harness.Launch(context.Background(), runtime.LaunchRequest{
+			TaskID:         created.ID,
+			ContinuationID: cont.ID,
+			Adapter:        slowFakeAdapter{},
+		})
+	}()
+	waitForActive(t, harness, created.ID)
+
+	harness.MarkFinishRequested(created.ID)
+	harness.ClearFinishIntent(created.ID)
+	if harness.FinishIntentActive(created.ID) {
+		t.Fatal("expected finish intent cleared")
+	}
+	if !harness.StopAndWait(created.ID, 2*time.Second) {
+		t.Fatal("StopAndWait after clear")
+	}
+	<-done
+
+	updated, err := tasks.Continuation(cont.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != task.StatusStopped {
+		t.Fatalf("continuation status = %q, want stopped after clear→cancel", updated.Status)
+	}
+	if updated.Status == task.StatusCompleted {
+		t.Fatal("Continuation completed after clear")
+	}
+}
+
 func TestHarnessStopAndWaitConfirmsRuntimeResourcesExited(t *testing.T) {
 	harness, tasks, projects := newServices(t)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})

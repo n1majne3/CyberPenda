@@ -73,19 +73,22 @@ type RuntimeExtensionRef struct {
 // and redacted in API responses; legacy CredentialRefs still resolve through
 // global credential bindings when present.
 type Fields struct {
-	BinaryPath            string                `json:"binary_path,omitempty"`
-	Model                 string                `json:"model,omitempty"`
-	Endpoint              string                `json:"endpoint,omitempty"`
-	ModelProviderID       string                `json:"model_provider_id,omitempty"`
-	ModelProviderProtocol string                `json:"model_provider_protocol,omitempty"`
-	ModelOverride         string                `json:"model_override,omitempty"`
-	CustomArgs            []string              `json:"custom_args,omitempty"`
-	Env                   map[string]string     `json:"env,omitempty"`
-	APIKeys               map[string]string     `json:"api_keys,omitempty"`
-	CredentialRefs        []string              `json:"credential_refs,omitempty"`
-	RuntimeExtensions     []RuntimeExtensionRef `json:"runtime_extensions,omitempty"`
-	MCPServers            []MCPServer           `json:"mcp_servers,omitempty"`
-	DefaultRunner         string                `json:"default_runner,omitempty"`
+	BinaryPath            string `json:"binary_path,omitempty"`
+	Model                 string `json:"model,omitempty"`
+	Endpoint              string `json:"endpoint,omitempty"`
+	ModelProviderID       string `json:"model_provider_id,omitempty"`
+	ModelProviderProtocol string `json:"model_provider_protocol,omitempty"`
+	ModelOverride         string `json:"model_override,omitempty"`
+	// ReasoningEffort is the optional Profile default for Requested Reasoning
+	// Effort. When empty, resolution yields high without rewriting storage.
+	ReasoningEffort   string                `json:"reasoning_effort,omitempty"`
+	CustomArgs        []string              `json:"custom_args,omitempty"`
+	Env               map[string]string     `json:"env,omitempty"`
+	APIKeys           map[string]string     `json:"api_keys,omitempty"`
+	CredentialRefs    []string              `json:"credential_refs,omitempty"`
+	RuntimeExtensions []RuntimeExtensionRef `json:"runtime_extensions,omitempty"`
+	MCPServers        []MCPServer           `json:"mcp_servers,omitempty"`
+	DefaultRunner     string                `json:"default_runner,omitempty"`
 	// SandboxImage overrides the daemon default sandbox image for tasks using
 	// this profile. Leave empty to use the daemon-wide setting.
 	SandboxImage string `json:"sandbox_image,omitempty"`
@@ -172,6 +175,10 @@ func (s *Service) create(name string, provider Provider, fields Fields, kind Pro
 	if err := s.validate(name, provider); err != nil {
 		return Profile{}, err
 	}
+	normalizedFields, err := normalizeFields(provider, fields)
+	if err != nil {
+		return Profile{}, err
+	}
 
 	now := time.Now().UTC()
 	created := Profile{
@@ -179,7 +186,7 @@ func (s *Service) create(name string, provider Provider, fields Fields, kind Pro
 		Name:      strings.TrimSpace(name),
 		Provider:  provider,
 		Kind:      kind,
-		Fields:    fields,
+		Fields:    normalizedFields,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -256,13 +263,21 @@ func (s *Service) Update(id, name string, provider Provider, fields Fields, fiel
 		return Profile{}, err
 	}
 	if fieldsTouched {
-		mergedAPIKeys := MergeAPIKeys(existing.Fields.APIKeys, fields.APIKeys)
-		existing.Fields = fields
+		normalizedFields, err := normalizeFields(existing.Provider, fields)
+		if err != nil {
+			return Profile{}, err
+		}
+		mergedAPIKeys := MergeAPIKeys(existing.Fields.APIKeys, normalizedFields.APIKeys)
+		existing.Fields = normalizedFields
 		if strings.TrimSpace(existing.Fields.ModelProviderID) == "" {
 			existing.Fields.APIKeys = mergedAPIKeys
 		} else {
 			existing.Fields.APIKeys = nil
 		}
+	} else if err := ValidateCustomArgs(existing.Provider, existing.Fields.CustomArgs); err != nil {
+		// Provider-only edits still reject Custom Args that conflict under the
+		// resolved provider family. Args are not rewritten.
+		return Profile{}, err
 	}
 	existing.UpdatedAt = time.Now().UTC()
 
@@ -292,7 +307,11 @@ func (s *Service) ReplaceFields(id string, fields Fields) (Profile, error) {
 	if err := s.validate(existing.Name, existing.Provider); err != nil {
 		return Profile{}, err
 	}
-	existing.Fields = fields
+	normalizedFields, err := normalizeFields(existing.Provider, fields)
+	if err != nil {
+		return Profile{}, err
+	}
+	existing.Fields = normalizedFields
 	existing.UpdatedAt = time.Now().UTC()
 
 	fieldsJSON, err := json.Marshal(existing.Fields)
@@ -350,6 +369,9 @@ func GeneratedConfig(profile Profile) map[string]any {
 	}
 	if profile.Fields.ModelOverride != "" {
 		cfg["model_override"] = profile.Fields.ModelOverride
+	}
+	if profile.Fields.ReasoningEffort != "" {
+		cfg["reasoning_effort"] = profile.Fields.ReasoningEffort
 	}
 	if len(profile.Fields.CustomArgs) > 0 {
 		cfg["custom_args"] = profile.Fields.CustomArgs
@@ -421,6 +443,27 @@ func (s *Service) validate(name string, provider Provider) error {
 		return fmt.Errorf("%w: %q", ErrUnknownProvider, provider)
 	}
 	return nil
+}
+
+// normalizeFields validates structured fields that have closed vocabularies and
+// rejects Custom Args that redefine structured Model Provider, model, or
+// Reasoning Effort controls. Empty ReasoningEffort is preserved so existing
+// Profiles are not rewritten. Custom Args are never migrated, stripped, or
+// reordered.
+func normalizeFields(provider Provider, fields Fields) (Fields, error) {
+	if err := ValidateCustomArgs(provider, fields.CustomArgs); err != nil {
+		return Fields{}, err
+	}
+	if strings.TrimSpace(fields.ReasoningEffort) == "" {
+		fields.ReasoningEffort = ""
+		return fields, nil
+	}
+	effort, err := NormalizeReasoningEffort(fields.ReasoningEffort)
+	if err != nil {
+		return Fields{}, err
+	}
+	fields.ReasoningEffort = string(effort)
+	return fields, nil
 }
 
 func defaultProviderSet() map[Provider]bool {

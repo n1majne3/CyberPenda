@@ -58,6 +58,9 @@ type activeRun struct {
 	done             chan struct{}
 	stopConfirmation StopConfirmation
 	continuationID   string
+	// finishRequested is operator Task Finish intent. Set before provider
+	// resource close; Launch finalizes Continuation (not Task) after Run exits.
+	finishRequested bool
 }
 
 // NewHarness returns a Harness that records events through the task service.
@@ -127,17 +130,6 @@ func (h *Harness) Launch(ctx context.Context, req LaunchRequest) error {
 
 	runErr := req.Adapter.Run(ctx, req.Goal, emit)
 
-	finalStatus := task.StatusCompleted
-	finalPhase := "completed"
-	if runErr != nil {
-		finalStatus = task.StatusFailed
-		finalPhase = "failed"
-	}
-	if ctx.Err() != nil {
-		finalStatus = task.StatusStopped
-		finalPhase = "stopped"
-	}
-	emit(task.EventKindLifecycle, task.EventPayload{"phase": finalPhase, "adapter": req.Adapter.Name()})
 	finalContinuationID := run.currentContinuationID()
 	if finalContinuationID != "" && req.Metadata != nil {
 		metadata, err := req.Metadata()
@@ -149,6 +141,29 @@ func (h *Harness) Launch(ctx context.Context, req LaunchRequest) error {
 			}
 		}
 	}
+
+	// Operator Finish: single owner of terminal Task/Continuation status is
+	// handleFinishTask. With finish intent set, only release the active run —
+	// never write completed/stopped/failed here (avoids races with StopAndWait).
+	if run.finishWasRequested() {
+		emit(task.EventKindLifecycle, task.EventPayload{"phase": "finish_shutdown", "adapter": req.Adapter.Name()})
+		return nil
+	}
+
+	finalStatus := task.StatusCompleted
+	finalPhase := "completed"
+	if runErr != nil {
+		finalStatus = task.StatusFailed
+		finalPhase = "failed"
+	}
+	if ctx.Err() != nil {
+		finalStatus = task.StatusStopped
+		finalPhase = "stopped"
+	}
+	emit(task.EventKindLifecycle, task.EventPayload{"phase": finalPhase, "adapter": req.Adapter.Name()})
+	// Write terminal status before unregister so StopAndWait observers see the
+	// settled lifecycle. Resume waits for harness inactivity when status is
+	// already terminal, covering the brief completed+IsActive window.
 	if _, err := h.tasks.UpdateStatus(req.TaskID, finalStatus); err != nil {
 		return fmt.Errorf("mark %s: %w", finalStatus, err)
 	}
@@ -164,13 +179,56 @@ func (h *Harness) Launch(ctx context.Context, req LaunchRequest) error {
 }
 
 // Stop requests the active continuation for a task to stop. It is a no-op if no
-// continuation is active.
+// continuation is active. Stop cancels immediately (interrupt path).
 func (h *Harness) Stop(taskID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if run, ok := h.active[taskID]; ok {
 		run.cancel()
 	}
+}
+
+// MarkFinishRequested records operator Task Finish intent without cancelling
+// the harness context. While set, Launch exits without writing terminal Task
+// or Continuation status — handleFinishTask is the sole terminal owner.
+// Concurrent visibility is serialized with ClearFinishIntent via activeRun.mu.
+func (h *Harness) MarkFinishRequested(taskID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	run, ok := h.active[taskID]
+	if !ok {
+		return
+	}
+	run.mu.Lock()
+	run.finishRequested = true
+	run.mu.Unlock()
+}
+
+// ClearFinishIntent aborts operator Finish intent so a later Stop or abnormal
+// exit may finalize stopped/failed through the normal Launch path. Call when
+// Finish aborts before claiming terminal status.
+func (h *Harness) ClearFinishIntent(taskID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	run, ok := h.active[taskID]
+	if !ok {
+		return
+	}
+	run.mu.Lock()
+	run.finishRequested = false
+	run.mu.Unlock()
+}
+
+// FinishIntentActive reports whether operator Finish intent is currently set.
+// Tests and diagnostics use this; production Finish clears on abort paths.
+func (h *Harness) FinishIntentActive(taskID string) bool {
+	h.mu.Lock()
+	run, ok := h.active[taskID]
+	h.mu.Unlock()
+	if !ok {
+		return false
+	}
+	return run.finishWasRequested()
 }
 
 // IsActive reports whether a continuation is currently running for the task.
@@ -245,6 +303,12 @@ func (r *activeRun) currentContinuationID() string {
 	return r.continuationID
 }
 
+func (r *activeRun) finishWasRequested() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.finishRequested
+}
+
 // fakeGoalKey holds the task id the fake adapter is running, used only to keep
 // Run non-trivial. The fake adapter simulates a runtime that reports progress.
 type fakeAdapter struct{}
@@ -289,6 +353,32 @@ type commandAdapter struct {
 // adapters package and runner-specific wrapping belongs to the runner package.
 func NewCommandAdapter(config CommandAdapterConfig) Adapter {
 	return &commandAdapter{config: config}
+}
+
+// CommandAdapterLaunch returns the host launch config for adapters built by
+// NewCommandAdapter. Provider-session assembly uses this to start a Task-owned
+// host bridge without re-deriving program, workdir, or env.
+func CommandAdapterLaunch(adapter Adapter) (CommandAdapterConfig, bool) {
+	if adapter == nil {
+		return CommandAdapterConfig{}, false
+	}
+	a, ok := adapter.(*commandAdapter)
+	if !ok {
+		return CommandAdapterConfig{}, false
+	}
+	out := CommandAdapterConfig{
+		Name:    a.config.Name,
+		Program: a.config.Program,
+		Args:    append([]string(nil), a.config.Args...),
+		Workdir: a.config.Workdir,
+	}
+	if len(a.config.Env) > 0 {
+		out.Env = make(map[string]string, len(a.config.Env))
+		for key, value := range a.config.Env {
+			out.Env[key] = value
+		}
+	}
+	return out, true
 }
 
 func (a *commandAdapter) Name() string {

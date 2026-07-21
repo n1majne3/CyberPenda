@@ -97,6 +97,14 @@ type ProviderSessionRequest struct {
 	ProviderTurnID      string
 	PermissionRequestID string
 	PermissionDecision  string
+	// ModelProviderID, Model, and RequestedReasoningEffort are the resolved
+	// Runtime Turn Selection for this request. Every turn sends them explicitly.
+	ModelProviderID          string
+	Model                    string
+	RequestedReasoningEffort string
+	// EffectiveReasoningEffort is set only when a Runtime reports the level it
+	// actually applied. It is never inferred from the request.
+	EffectiveReasoningEffort string
 }
 
 // ProviderSessionResult is the stable correlation result for one provider
@@ -180,6 +188,16 @@ type FakeProviderSession struct {
 	continuation string
 	acknowledge  map[string]chan struct{}
 	closed       bool
+	// offline is true when current process/session health is confirmed dead
+	// without requiring durable Task status or elapsed time.
+	offline bool
+	// unexpectedOffline is true only for non-Close process death (MarkOffline).
+	// Explicit Close/Stop must not look like unexpected exit.
+	unexpectedOffline bool
+	// healthUnknown forces indeterminate health for activity tests.
+	healthUnknown bool
+	// lastRequests records each operation request for acceptance tests.
+	lastRequests []ProviderSessionRequest
 }
 
 // NewFakeProviderSession returns an idle or active deterministic session.
@@ -216,6 +234,13 @@ func (s *FakeProviderSession) SendTurn(ctx context.Context, request ProviderSess
 	return s.operate(ctx, ProviderSessionModeSendTurn, ProviderSessionCapabilitySendTurn, request, emit)
 }
 
+// LastRequests returns a copy of recorded provider control requests.
+func (s *FakeProviderSession) LastRequests() []ProviderSessionRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]ProviderSessionRequest(nil), s.lastRequests...)
+}
+
 func (s *FakeProviderSession) InterruptTurn(ctx context.Context, request ProviderSessionRequest, emit ProviderSessionEmit) (ProviderSessionResult, error) {
 	return s.operate(ctx, ProviderSessionModeInterruptTurn, ProviderSessionCapabilityInterruptTurn, request, emit)
 }
@@ -244,7 +269,61 @@ func (s *FakeProviderSession) Close(context.Context) error {
 		return ErrProviderSessionControlConflict
 	}
 	s.closed = true
+	s.offline = true
+	// Explicit Close is operator Stop/cleanup, not unexpected exit.
+	s.unexpectedOffline = false
 	return nil
+}
+
+// MarkOffline records confirmed unexpected process/session exit without Close.
+func (s *FakeProviderSession) MarkOffline() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.offline = true
+	s.unexpectedOffline = true
+}
+
+// MarkHealthUnknown forces indeterminate health for Runtime Activity tests.
+func (s *FakeProviderSession) MarkHealthUnknown() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.healthUnknown = true
+}
+
+// ControlBusy reports whether a native control operation is in flight.
+func (s *FakeProviderSession) ControlBusy() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.activeCall != ""
+}
+
+// SessionClosed reports whether Close has completed on this handle.
+func (s *FakeProviderSession) SessionClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
+}
+
+// SessionOffline reports confirmed offline health from the current process.
+func (s *FakeProviderSession) SessionOffline() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.offline || s.closed
+}
+
+// SessionUnexpectedOffline reports offline caused by process/protocol death,
+// not by explicit Close/Stop.
+func (s *FakeProviderSession) SessionUnexpectedOffline() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.unexpectedOffline
+}
+
+// SessionHealthUnknown reports indeterminate health without inventing failure.
+func (s *FakeProviderSession) SessionHealthUnknown() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.healthUnknown && !s.offline && !s.closed
 }
 
 // Acknowledge releases a manually gated fake provider acknowledgement.
@@ -265,6 +344,9 @@ func (s *FakeProviderSession) operate(ctx context.Context, mode ProviderSessionM
 	if request.RequestID == "" {
 		return ProviderSessionResult{}, ErrInvalidProviderSessionRequest
 	}
+	s.mu.Lock()
+	s.lastRequests = append(s.lastRequests, request)
+	s.mu.Unlock()
 	if !hasProviderSessionCapability(s.capabilities, capability) {
 		s.mu.Lock()
 		turnID := s.activeTurnID

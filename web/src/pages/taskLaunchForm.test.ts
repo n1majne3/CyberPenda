@@ -7,6 +7,7 @@ import {
   initialLaunchState,
   launchRuntimes,
   launchModelOverridePayload,
+  launchReasoningEffortPayload,
   launchRuntimeProfileId,
   modelsForProvider,
   presetMatchesRuntime,
@@ -137,6 +138,7 @@ describe("taskLaunchForm", () => {
       fields: {
         model_provider_id: "mimo",
         model_override: "mimo-v2-pro",
+        reasoning_effort: "xhigh",
         default_runner: "host",
       },
       created_at: "",
@@ -146,8 +148,32 @@ describe("taskLaunchForm", () => {
       runtime: "codex",
       modelProviderId: "mimo",
       modelOverride: "mimo-v2-pro",
+      reasoningEffort: "xhigh",
       runner: "host",
     });
+  });
+
+  it("always sends an explicit launch reasoning effort from the five values", () => {
+    // Empty inheritance resolves to high outside the select (no sixth option).
+    expect(launchReasoningEffortPayload({ reasoningEffort: "" })).toEqual({
+      reasoning_effort: "high",
+    });
+    expect(launchReasoningEffortPayload({ reasoningEffort: "max" })).toEqual({
+      reasoning_effort: "max",
+    });
+  });
+
+  it("inherits profile reasoning effort or high when building launch form", () => {
+    const missingEffort: RuntimeProfile = {
+      id: "profile-missing",
+      name: "Codex",
+      provider: "codex",
+      fields: { model_provider_id: "mimo" },
+      created_at: "",
+      updated_at: "",
+    };
+    expect(launchSelectionFromProfile(missingEffort).reasoningEffort).toBe("high");
+    expect(formFromPreset(missingEffort, [mimoProvider], "sandbox").reasoningEffort).toBe("high");
   });
 
   it("filters runtime profile presets by runtime", () => {
@@ -224,6 +250,7 @@ describe("taskLaunchForm", () => {
       runtime: "codex",
       modelProviderId: "mimo",
       modelOverride: "mimo-v2-pro",
+      reasoningEffort: "high",
       runner: "sandbox",
     });
   });

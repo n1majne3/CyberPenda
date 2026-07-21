@@ -33,8 +33,11 @@ type providerWireMethods struct {
 	steer      string
 	permission string
 	params     func(string, string, ProviderSessionRequest) map[string]any
-	turnID     func(map[string]any) string
-	sessionID  func(map[string]any) string
+	// prepareSend optionally issues setup wire methods before the primary send
+	// method (for example Pi set_model → set_thinking_level before prompt).
+	prepareSend func(context.Context, ProviderSessionTransport, string, string, string, ProviderSessionRequest) error
+	turnID      func(map[string]any) string
+	sessionID   func(map[string]any) string
 }
 
 type providerSessionCallResult struct {
@@ -215,6 +218,67 @@ func (s *providerSessionAdapter) Close(ctx context.Context) error {
 	return transport.Close(ctx)
 }
 
+// ControlBusy reports whether a native control operation is in flight.
+func (s *providerSessionAdapter) ControlBusy() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.active
+}
+
+// SessionClosed reports whether Close has completed on this handle.
+func (s *providerSessionAdapter) SessionClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
+}
+
+// SessionOffline reports confirmed offline health from the current process or
+// protocol terminal signal, never from stored session identity or elapsed time.
+func (s *providerSessionAdapter) SessionOffline() bool {
+	s.mu.Lock()
+	closed := s.closed
+	transport := s.transport
+	s.mu.Unlock()
+	if closed {
+		return true
+	}
+	if source, ok := transport.(interface{ Terminated() <-chan struct{} }); ok {
+		select {
+		case <-source.Terminated():
+			return true
+		default:
+		}
+	}
+	if source, ok := transport.(interface{ Closed() <-chan struct{} }); ok {
+		select {
+		case <-source.Closed():
+			return true
+		default:
+		}
+	}
+	return false
+}
+
+// SessionUnexpectedOffline is true only when the process/protocol ended without
+// an explicit Close. Operator Stop must not be treated as unexpected exit.
+func (s *providerSessionAdapter) SessionUnexpectedOffline() bool {
+	s.mu.Lock()
+	closed := s.closed
+	transport := s.transport
+	s.mu.Unlock()
+	if closed {
+		return false
+	}
+	if source, ok := transport.(interface{ Terminated() <-chan struct{} }); ok {
+		select {
+		case <-source.Terminated():
+			return true
+		default:
+		}
+	}
+	return false
+}
+
 func (s *providerSessionAdapter) run(ctx context.Context, mode ProviderSessionMode, capability ProviderSessionCapability, request ProviderSessionRequest, emit ProviderSessionEmit, method string) (ProviderSessionResult, error) {
 	request.RequestID = strings.TrimSpace(request.RequestID)
 	if request.RequestID == "" {
@@ -281,6 +345,13 @@ func (s *providerSessionAdapter) native(ctx context.Context, mode ProviderSessio
 	s.mu.Unlock()
 	if transport == nil {
 		return ProviderSessionResult{}, &ProviderSessionOperationError{Mode: mode, Cause: errors.New("provider session transport is required")}
+	}
+	// Selection setup runs only for the primary send path (SendTurn and the
+	// replacement half of InterruptThenReplace), never for interrupt itself.
+	if method == s.methods.send && s.methods.prepareSend != nil {
+		if err := s.methods.prepareSend(ctx, transport, wireID, sessionID, activeTurnID, request); err != nil {
+			return ProviderSessionResult{}, &ProviderSessionOperationError{Mode: mode, Cause: err}
+		}
 	}
 	params := s.methods.params(sessionID, activeTurnID, request)
 	if mode == ProviderSessionModeInterruptTurn || mode == ProviderSessionModeInterruptThenReplace && strings.HasSuffix(wireID, ":interrupt") {
@@ -453,15 +524,21 @@ func (s *providerSessionAdapter) storeFailure(requestID string, mode ProviderSes
 
 func providerSessionRequestFingerprint(request ProviderSessionRequest) string {
 	encoded, _ := json.Marshal(struct {
-		Message             string `json:"message"`
-		ProviderTurnID      string `json:"provider_turn_id"`
-		PermissionRequestID string `json:"permission_request_id"`
-		PermissionDecision  string `json:"permission_decision"`
+		Message                  string `json:"message"`
+		ProviderTurnID           string `json:"provider_turn_id"`
+		PermissionRequestID      string `json:"permission_request_id"`
+		PermissionDecision       string `json:"permission_decision"`
+		ModelProviderID          string `json:"model_provider_id"`
+		Model                    string `json:"model"`
+		RequestedReasoningEffort string `json:"requested_reasoning_effort"`
 	}{
-		Message:             request.Message,
-		ProviderTurnID:      request.ProviderTurnID,
-		PermissionRequestID: request.PermissionRequestID,
-		PermissionDecision:  request.PermissionDecision,
+		Message:                  request.Message,
+		ProviderTurnID:           request.ProviderTurnID,
+		PermissionRequestID:      request.PermissionRequestID,
+		PermissionDecision:       request.PermissionDecision,
+		ModelProviderID:          request.ModelProviderID,
+		Model:                    request.Model,
+		RequestedReasoningEffort: request.RequestedReasoningEffort,
 	})
 	return string(encoded)
 }
@@ -507,6 +584,28 @@ func (s *providerSessionAdapter) HandleEvent(event SandboxBridgeEvent, emit Prov
 		return
 	}
 	method := strings.ToLower(event.Method)
+	if method == "claude/runtime_output" {
+		text := providerJSONValue(params, "text")
+		if text == "" {
+			return
+		}
+		sessionID := providerJSONValue(params, "session_id", "sessionId")
+		if sessionID == "" {
+			sessionID = s.SessionID()
+		}
+		turnID := providerJSONValue(params, "turn_id", "turnId")
+		if turnID == "" {
+			turnID = s.currentTurn()
+		}
+		if emit != nil {
+			emit(task.EventKindRuntimeOutput, task.EventPayload{
+				"provider": s.provider, "provider_event": event.Method,
+				"session_id": sessionID, "provider_turn_id": turnID,
+				"stream": providerJSONValue(params, "stream"), "text": text,
+			})
+		}
+		return
+	}
 	mode := ProviderSessionModeSendTurn
 	outcome := ""
 	switch {
@@ -643,6 +742,14 @@ func NewCodexProviderSession(config CodexProviderSessionConfig) *CodexProviderSe
 					"text": request.Message,
 				}},
 			}
+			if model := strings.TrimSpace(request.Model); model != "" {
+				params["model"] = model
+			}
+			// Codex App Server accepts effort on turn/start. CyberPenda always
+			// sends the resolved Requested Reasoning Effort explicitly.
+			if effort := strings.TrimSpace(request.RequestedReasoningEffort); effort != "" {
+				params["effort"] = effort
+			}
 			if request.PermissionRequestID != "" {
 				params["permissionRequestId"] = request.PermissionRequestID
 			}
@@ -672,9 +779,27 @@ type ClaudeCodeProviderSession struct{ *providerSessionAdapter }
 func NewClaudeCodeProviderSession(config ClaudeCodeProviderSessionConfig) *ClaudeCodeProviderSession {
 	methods := providerWireMethods{
 		send: "claude/input", interrupt: "claude/interrupt", permission: "claude/permission/respond",
-		params: providerParams, turnID: func(record map[string]any) string { return providerJSONValue(record, "turn_id", "turnId", "id") }, sessionID: identitySession,
+		params: claudeCodeParams, turnID: func(record map[string]any) string { return providerJSONValue(record, "turn_id", "turnId", "id") }, sessionID: identitySession,
 	}
 	return &ClaudeCodeProviderSession{newProviderSessionAdapter("claude_code", config.Transport, config.SessionID, config.ActiveTurnID, providerCapabilities(config.Capabilities), methods)}
+}
+
+// claudeCodeParams maps the complete Runtime Turn Selection onto claude/input.
+// The long-lived Claude Query applies model and Requested Reasoning Effort
+// before the turn; model_provider_id is delivered for wire completeness but a
+// provider change still restarts through Config Projection.
+func claudeCodeParams(sessionID, turnID string, request ProviderSessionRequest) map[string]any {
+	params := providerParams(sessionID, turnID, request)
+	if providerID := strings.TrimSpace(request.ModelProviderID); providerID != "" {
+		params["model_provider_id"] = providerID
+	}
+	if model := strings.TrimSpace(request.Model); model != "" {
+		params["model"] = model
+	}
+	if effort := strings.TrimSpace(request.RequestedReasoningEffort); effort != "" {
+		params["requested_reasoning_effort"] = effort
+	}
+	return params
 }
 
 // PiProviderSessionConfig configures one long-lived Pi RPC child.
@@ -690,9 +815,73 @@ type PiProviderSession struct{ *providerSessionAdapter }
 func NewPiProviderSession(config PiProviderSessionConfig) *PiProviderSession {
 	methods := providerWireMethods{
 		send: "pi/prompt", interrupt: "pi/abort", steer: "pi/steer", permission: "pi/permission/respond",
-		params: providerParams, turnID: func(record map[string]any) string { return providerJSONValue(record, "turn_id", "turnId", "id") }, sessionID: identitySession,
+		params: providerParams,
+		// Pi applies Runtime Turn Selection through discrete RPC commands.
+		// Order is mandatory: model → thinking level → prompt, because
+		// set_model can reset thinking level on the provider side.
+		prepareSend: piPrepareSendSelection,
+		turnID:      func(record map[string]any) string { return providerJSONValue(record, "turn_id", "turnId", "id") },
+		sessionID:   identitySession,
 	}
 	return &PiProviderSession{newProviderSessionAdapter("pi", config.Transport, config.SessionID, config.ActiveTurnID, providerCapabilities(config.Capabilities), methods)}
+}
+
+// piPrepareSendSelection issues set_model then set_thinking_level before prompt
+// when Model / ModelProviderID / RequestedReasoningEffort are present. Effort
+// vocabulary is passed through 1:1; unsupported values surface as provider errors.
+func piPrepareSendSelection(ctx context.Context, transport ProviderSessionTransport, wireBaseID, sessionID, turnID string, request ProviderSessionRequest) error {
+	if transport == nil {
+		return errors.New("provider session transport is required")
+	}
+	providerID := strings.TrimSpace(request.ModelProviderID)
+	model := strings.TrimSpace(request.Model)
+	effort := strings.TrimSpace(request.RequestedReasoningEffort)
+
+	if providerID != "" || model != "" {
+		params := map[string]any{"session_id": sessionID, "turn_id": turnID}
+		if providerID != "" {
+			params["provider"] = providerID
+		}
+		if model != "" {
+			params["modelId"] = model
+			params["model"] = model
+		}
+		encoded, err := json.Marshal(params)
+		if err != nil {
+			return err
+		}
+		response, err := transport.Send(ctx, SandboxBridgeRequest{
+			ID: wireBaseID + ":set_model", Method: "pi/set_model", Params: encoded,
+		})
+		if err != nil {
+			return err
+		}
+		if len(response.Error) > 0 && string(response.Error) != "null" {
+			return &SandboxBridgeRPCError{RequestID: wireBaseID + ":set_model"}
+		}
+	}
+	if effort != "" {
+		// Do not rewrite or downgrade client vocabulary; Pi rejects unsupported levels.
+		params := map[string]any{
+			"session_id": sessionID,
+			"turn_id":    turnID,
+			"level":      effort,
+		}
+		encoded, err := json.Marshal(params)
+		if err != nil {
+			return err
+		}
+		response, err := transport.Send(ctx, SandboxBridgeRequest{
+			ID: wireBaseID + ":set_thinking_level", Method: "pi/set_thinking_level", Params: encoded,
+		})
+		if err != nil {
+			return err
+		}
+		if len(response.Error) > 0 && string(response.Error) != "null" {
+			return &SandboxBridgeRPCError{RequestID: wireBaseID + ":set_thinking_level"}
+		}
+	}
+	return nil
 }
 
 var (

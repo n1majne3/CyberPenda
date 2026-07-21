@@ -80,8 +80,8 @@ function dashboardAuthToken(): string {
   }
 }
 
-export function apiGet<T>(path: string) {
-  return request<T>(path);
+export function apiGet<T>(path: string, init?: RequestInit) {
+  return request<T>(path, init);
 }
 export function apiPost<T>(path: string, body?: unknown) {
   return request<T>(path, { method: "POST", body: body ? JSON.stringify(body) : undefined });
@@ -163,6 +163,7 @@ export interface RuntimeProfile {
     model_provider_id?: string;
     model_provider_protocol?: string;
     model_override?: string;
+    reasoning_effort?: string;
     custom_args?: string[];
     env?: Record<string, string>;
     api_keys?: Record<string, string>;
@@ -333,6 +334,16 @@ export interface Skill {
   updated_at: string;
 }
 
+/** Current Runtime health, independent of durable Task lifecycle. */
+export interface RuntimeActivity {
+  /** live | offline | orphaned | unknown */
+  liveness: string;
+  /** busy | idle while live */
+  turn_activity?: string;
+  /** Explains unknown without inventing failure */
+  warning?: string;
+}
+
 export interface Task {
   id: string;
   project_id: string;
@@ -343,10 +354,18 @@ export interface Task {
   run_controls: { host_activated?: boolean; sandbox_network?: string; notes?: string; extras?: Record<string, string> };
   scope_snapshot: Scope;
   runtime_controls?: RuntimeControls;
+  /** Current process/session health — not Task status. */
+  runtime_activity?: RuntimeActivity;
   active_continuation?: TaskContinuation;
   latest_continuation?: TaskContinuation;
   created_at: string;
   updated_at: string;
+}
+
+export interface RuntimeTurnSelection {
+  model_provider_id?: string;
+  model?: string;
+  reasoning_effort?: string;
 }
 
 export interface RuntimeControls {
@@ -358,12 +377,21 @@ export interface RuntimeControls {
   native_steer_request_id?: string;
   native_steer_reason?: string;
   resume_available: boolean;
+  /** True only when Runtime Activity is live and idle. */
+  finish_available?: boolean;
   queue_steer_available: boolean;
   interrupt_steer_available: boolean;
   interrupt_steer_reason?: string;
   native_session_captured: boolean;
   same_runtime_provider_only: boolean;
   runtime_provider?: string;
+  /**
+   * Fixed-at-launch Pi projected Model Provider IDs (ADR 0015).
+   * Missing/empty → fail closed for native cross-provider (restart path).
+   */
+  projected_model_provider_ids?: string[];
+  /** Preceding Runtime Turn Selection retained for the conversation composer. */
+  turn_selection?: RuntimeTurnSelection;
   provider_permissions?: ProviderPermissionRequest[];
   recovery_state?: string;
   recovery_reason?: string;

@@ -22,6 +22,9 @@ type ProviderSessionRunAdapter struct {
 	emit         func(task.EventKind, task.EventPayload)
 	record       func(NativeSessionMetadata) error
 	metadata     func() NativeSessionMetadata
+	// initialTurn carries resolved Runtime Turn Selection fields for the
+	// launch turn. Message is still supplied by the Harness goal.
+	initialTurn ProviderSessionRequest
 }
 
 // SetMetadataRecorder lets the Harness persist the bridge/container and
@@ -56,19 +59,35 @@ func (a *ProviderSessionRunAdapter) BindContinuation(id string) {
 	a.mu.Unlock()
 }
 
+// SetInitialTurnSelection records the resolved Model Provider, model, and
+// Requested Reasoning Effort for the launch Runtime Turn.
+func (a *ProviderSessionRunAdapter) SetInitialTurnSelection(selection ProviderSessionRequest) {
+	a.mu.Lock()
+	a.initialTurn = selection
+	a.mu.Unlock()
+}
+
 func (a *ProviderSessionRunAdapter) Run(ctx context.Context, goal string, emit func(task.EventKind, task.EventPayload)) error {
 	if a.session == nil {
 		return fmt.Errorf("provider session is required")
 	}
 	a.mu.Lock()
 	continuation := a.continuation
+	selection := a.initialTurn
 	a.emit = emit
 	a.mu.Unlock()
 	if continuation == "" {
 		return fmt.Errorf("provider session continuation is required")
 	}
 	requestID := "launch:" + continuation
-	_, err := a.session.SendTurn(ctx, ProviderSessionRequest{RequestID: requestID, Message: goal}, emit)
+	request := ProviderSessionRequest{
+		RequestID:                requestID,
+		Message:                  goal,
+		ModelProviderID:          selection.ModelProviderID,
+		Model:                    selection.Model,
+		RequestedReasoningEffort: selection.RequestedReasoningEffort,
+	}
+	_, err := a.session.SendTurn(ctx, request, emit)
 	if err != nil {
 		return err
 	}
