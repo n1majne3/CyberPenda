@@ -49,9 +49,12 @@ type taskContinuationSelectionInput struct {
 }
 
 func (input taskContinuationSelectionInput) hasSelection() bool {
+	// Effort-only changes are real Runtime Turn Selection. Resume/queue must
+	// record them; otherwise turn_selection stays stuck on the prior default.
 	return strings.TrimSpace(input.RuntimeProfileID) != "" ||
 		strings.TrimSpace(input.ModelProviderID) != "" ||
-		input.selectedModel() != ""
+		input.selectedModel() != "" ||
+		strings.TrimSpace(input.ReasoningEffort) != ""
 }
 
 func (input taskContinuationSelectionInput) hasRuntimeProfileSelection() bool {
@@ -2915,12 +2918,24 @@ func stringSliceFromConfig(value any) []string {
 }
 
 func (server *Server) currentTurnSelection(found task.Task) (runtime.ProviderSessionRequest, error) {
-	// Prefer the last turn's attached selection so the composer retains what
-	// the operator actually submitted, not a profile default.
-	if selection, ok := server.precedingConversationTurnSelection(found.ID); ok {
-		return selection, nil
+	// Prefer the most recent applied selection:
+	// - Conversation / steering events capture native same-session turns
+	//   (no Configuration Version).
+	// - Runtime Config Versions capture launch / resume / queue / restart
+	//   selections. After resume records xhigh, config must win over an older
+	//   conversation that still says high.
+	convSelection, convAt, convOK := server.precedingConversationTurnSelectionTimed(found.ID)
+	configSelection, configAt, configErr := server.selectionFromCapturedRuntimeConfigTimed(found)
+	if configErr != nil {
+		if convOK {
+			return convSelection, nil
+		}
+		return runtime.ProviderSessionRequest{}, configErr
 	}
-	return server.selectionFromCapturedRuntimeConfig(found)
+	if convOK && !convAt.IsZero() && (configAt.IsZero() || convAt.After(configAt)) {
+		return convSelection, nil
+	}
+	return configSelection, nil
 }
 
 // selectionFromCapturedRuntimeConfig resolves Model Provider / model / effort
@@ -2928,9 +2943,14 @@ func (server *Server) currentTurnSelection(found task.Task) (runtime.ProviderSes
 // Profile fields are only a fallback — launch-resolved and legacy profiles may
 // leave provider/model empty on the Profile while the captured snapshot is true.
 func (server *Server) selectionFromCapturedRuntimeConfig(found task.Task) (runtime.ProviderSessionRequest, error) {
+	selection, _, err := server.selectionFromCapturedRuntimeConfigTimed(found)
+	return selection, err
+}
+
+func (server *Server) selectionFromCapturedRuntimeConfigTimed(found task.Task) (runtime.ProviderSessionRequest, time.Time, error) {
 	profile, err := server.resolveTaskRuntimeProfile(found)
 	if err != nil {
-		return runtime.ProviderSessionRequest{}, err
+		return runtime.ProviderSessionRequest{}, time.Time{}, err
 	}
 	modelProviderID := strings.TrimSpace(profile.Fields.ModelProviderID)
 	model := strings.TrimSpace(profile.Fields.ModelOverride)
@@ -2938,12 +2958,15 @@ func (server *Server) selectionFromCapturedRuntimeConfig(found task.Task) (runti
 		model = strings.TrimSpace(profile.Fields.Model)
 	}
 	launchEffort := ""
+	var configAt time.Time
 	versions, err := server.tasks.RuntimeConfigVersions(found.ID)
 	if err != nil {
-		return runtime.ProviderSessionRequest{}, err
+		return runtime.ProviderSessionRequest{}, time.Time{}, err
 	}
 	if len(versions) > 0 {
-		latest := versions[len(versions)-1].Config
+		latestVersion := versions[len(versions)-1]
+		configAt = latestVersion.CreatedAt
+		latest := latestVersion.Config
 		// Snapshot first (actual projected provider/model), then explicit
 		// captured overrides from launch or later continuation selection.
 		if snapshotProvider, snapshotModel := modelProviderSnapshotFields(latest["model_provider_snapshot"]); true {
@@ -2980,13 +3003,13 @@ func (server *Server) selectionFromCapturedRuntimeConfig(found task.Task) (runti
 	}
 	requested, err := runtimeprofile.ResolveRequestedReasoningEffort("", launchEffort, profile.Fields.ReasoningEffort)
 	if err != nil {
-		return runtime.ProviderSessionRequest{}, err
+		return runtime.ProviderSessionRequest{}, time.Time{}, err
 	}
 	return runtime.ProviderSessionRequest{
 		ModelProviderID:          modelProviderID,
 		Model:                    model,
 		RequestedReasoningEffort: string(requested),
-	}, nil
+	}, configAt, nil
 }
 
 func modelProviderSnapshotFields(raw any) (providerID, model string) {
@@ -3007,9 +3030,14 @@ func modelProviderSnapshotFields(raw any) (providerID, model string) {
 }
 
 func (server *Server) precedingConversationTurnSelection(taskID string) (runtime.ProviderSessionRequest, bool) {
+	selection, _, ok := server.precedingConversationTurnSelectionTimed(taskID)
+	return selection, ok
+}
+
+func (server *Server) precedingConversationTurnSelectionTimed(taskID string) (runtime.ProviderSessionRequest, time.Time, bool) {
 	events, err := server.tasks.Events(taskID)
 	if err != nil {
-		return runtime.ProviderSessionRequest{}, false
+		return runtime.ProviderSessionRequest{}, time.Time{}, false
 	}
 	for index := len(events) - 1; index >= 0; index-- {
 		event := events[index]
@@ -3036,15 +3064,15 @@ func (server *Server) precedingConversationTurnSelection(taskID string) (runtime
 		}
 		requested, err := runtimeprofile.NormalizeReasoningEffort(effort)
 		if err != nil {
-			return runtime.ProviderSessionRequest{}, false
+			return runtime.ProviderSessionRequest{}, time.Time{}, false
 		}
 		return runtime.ProviderSessionRequest{
 			ModelProviderID:          strings.TrimSpace(providerID),
 			Model:                    strings.TrimSpace(model),
 			RequestedReasoningEffort: string(requested),
-		}, true
+		}, event.CreatedAt, true
 	}
-	return runtime.ProviderSessionRequest{}, false
+	return runtime.ProviderSessionRequest{}, time.Time{}, false
 }
 
 func nativeSteerIdempotencyConflict(prior task.Event, message string, selection runtime.ProviderSessionRequest) string {
