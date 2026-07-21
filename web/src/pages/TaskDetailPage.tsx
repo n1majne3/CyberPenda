@@ -5,7 +5,7 @@ import { apiDelete, apiGet, apiPost, type ModelProvider, type ProviderPermission
 import { Button, Badge, Select, Textarea } from "@/components/ui";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { AgentTranscriptView } from "@/components/task-transcript/AgentTranscriptView";
-import { collapsedTranscriptTitle } from "./taskDetailView";
+import { collapsedTranscriptTitle, toolCallFields } from "./taskDetailView";
 import { displayReasoningEffort, REASONING_EFFORT_VALUES, selectableModelProviders } from "./runtimeProfileForm";
 import { modelsForProvider } from "./taskLaunchForm";
 import { formatDateTime } from "@/lib/format";
@@ -1015,6 +1015,7 @@ function TranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
   const isUser = entry.role === "user";
   const isAssistant = entry.role === "assistant";
   const Icon = isUser ? User : MessageSquare;
+  const roleLabel = isUser ? "You" : isAssistant ? "Agent" : entry.role;
   return (
     <div className={`flex gap-3 text-sm ${isUser ? "justify-end pl-8 sm:pl-16" : "justify-start pr-2 sm:pr-8"}`}>
       {!isUser && !isAssistant && (
@@ -1026,9 +1027,14 @@ function TranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
         data-testid="transcript-message-bubble"
         className={`min-w-0 max-w-[88%] rounded-lg px-3 py-2.5 sm:px-4 sm:py-3 ${isUser ? "border border-info/20 bg-info/10 shadow-sm" : "border border-transparent bg-transparent px-0 shadow-none"}`}
       >
-        <div className="mb-1 text-[11px] text-muted-foreground">
-          #{entry.seq} {entry.role}{entry.created_at && ` · ${formatDateTime(entry.created_at)}`}
-        </div>
+        {!isAssistant && (
+          <div className="mb-1 text-[11px] font-medium text-muted-foreground">
+            {roleLabel}
+            {entry.created_at && (
+              <span className="font-normal text-muted-foreground/70"> · {formatDateTime(entry.created_at)}</span>
+            )}
+          </div>
+        )}
         <div className="whitespace-pre-wrap break-words leading-6 text-foreground">{entry.text}</div>
       </div>
       {isUser && (
@@ -1125,20 +1131,57 @@ function runtimeContentText(content: unknown): string | undefined {
 }
 
 function CollapsedTranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
-  const Icon = entry.kind === "runtime_output" ? Terminal : Wrench;
+  const isError = entry.kind === "tool_result" && (entry.details as { is_error?: boolean } | undefined)?.is_error === true;
+  const Icon =
+    entry.kind === "runtime_output"
+      ? Terminal
+      : entry.kind === "tool_result"
+        ? isError
+          ? CircleX
+          : CheckCircle2
+        : Wrench;
   return (
     <details data-testid="transcript-tool-row" className="group border-b border-border/50 last:border-b-0">
       <summary className="-mx-1 flex min-h-9 cursor-pointer list-none items-center gap-2 rounded-sm px-1 py-1.5 text-sm transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
         <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
-        <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
-        <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">#{entry.seq}</span>
+        <Icon className={`h-4 w-4 shrink-0 ${isError ? "text-destructive" : "text-muted-foreground"}`} />
         <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground transition-colors group-hover:text-foreground group-open:text-foreground">{collapsedTranscriptTitle(entry)}</span>
-        {entry.created_at && <span className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground">{formatDateTime(entry.created_at)}</span>}
+        {entry.created_at && <span className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground/70">{formatDateTime(entry.created_at)}</span>}
       </summary>
-      <div className="ml-[1.625rem] border-l border-border/60 pb-3 pl-4 pr-2 pt-1">
-        <pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs leading-5 text-foreground/80">{collapsedBody(entry)}</pre>
+      <div className="ml-[1.625rem] border-l border-border/60 pb-3 pl-4 pr-2 pt-2">
+        {entry.kind === "tool_call" ? (
+          <ToolCallDetails entry={entry} />
+        ) : (
+          <pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs leading-5 text-foreground/80">{collapsedBody(entry)}</pre>
+        )}
       </div>
     </details>
+  );
+}
+
+function ToolCallDetails({ entry }: { entry: TaskTranscriptEntry }) {
+  const fields = toolCallFields(entry);
+  if (fields.length === 0) {
+    return <p className="text-xs text-muted-foreground">No arguments.</p>;
+  }
+  return (
+    <dl className="space-y-2">
+      {fields.map((field) => (
+        <div
+          key={field.label}
+          className={field.block ? "space-y-1" : "flex flex-wrap items-baseline gap-x-2 gap-y-0.5"}
+        >
+          <dt className="shrink-0 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">{field.label}</dt>
+          {field.block ? (
+            <dd>
+              <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-muted/50 px-2.5 py-1.5 font-mono text-xs leading-5 text-foreground/90">{field.value}</pre>
+            </dd>
+          ) : (
+            <dd className="min-w-0 break-words text-xs text-foreground/90">{field.value}</dd>
+          )}
+        </div>
+      ))}
+    </dl>
   );
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TaskEvent, TaskTranscriptEntry } from "@/lib/api";
-import { collapsedTranscriptTitle, shouldShowInTimeline, summarizeTaskEvent } from "./taskDetailView";
+import { collapsedTranscriptTitle, shouldShowInTimeline, summarizeTaskEvent, toolCallFields } from "./taskDetailView";
 
 describe("summarizeTaskEvent", () => {
   it("summarizes lifecycle phases", () => {
@@ -193,5 +193,67 @@ describe("collapsedTranscriptTitle", () => {
       created_at: "",
     };
     expect(collapsedTranscriptTitle(entry)).toBe("Result · ECONNREFUSED");
+  });
+});
+
+describe("toolCallFields", () => {
+  it("parses tool input into labeled fields instead of a raw JSON envelope", () => {
+    const entry: TaskTranscriptEntry = {
+      id: "x",
+      seq: 1,
+      continuation: 1,
+      kind: "tool_call",
+      role: "assistant",
+      tool_name: "Bash",
+      details: { input: { command: "curl http://localhost:3000", timeout: 30 } },
+      created_at: "",
+    };
+    expect(toolCallFields(entry)).toEqual([
+      { label: "Command", value: "curl http://localhost:3000", block: true },
+      { label: "Timeout", value: "30", block: false },
+    ]);
+  });
+
+  it("humanizes snake_case and camelCase argument keys", () => {
+    const entry: TaskTranscriptEntry = {
+      id: "x",
+      seq: 1,
+      continuation: 1,
+      kind: "tool_call",
+      role: "assistant",
+      details: { input: { file_path: "/etc/hosts", maxResults: 5 } },
+      created_at: "",
+    };
+    expect(toolCallFields(entry).map((field) => field.label)).toEqual(["File Path", "Max Results"]);
+  });
+
+  it("pretty-prints nested objects as expandable blocks", () => {
+    const entry: TaskTranscriptEntry = {
+      id: "x",
+      seq: 1,
+      continuation: 1,
+      kind: "tool_call",
+      role: "assistant",
+      details: { input: { headers: { Accept: "application/json" } } },
+      created_at: "",
+    };
+    const [field] = toolCallFields(entry);
+    expect(field?.label).toBe("Headers");
+    expect(field?.block).toBe(true);
+    expect(field?.value).toContain('"Accept": "application/json"');
+  });
+
+  it("skips empty values and returns nothing when there is no input", () => {
+    const entry: TaskTranscriptEntry = {
+      id: "x",
+      seq: 1,
+      continuation: 1,
+      kind: "tool_call",
+      role: "assistant",
+      details: { input: { command: "", note: null } },
+      created_at: "",
+    };
+    expect(toolCallFields(entry)).toEqual([]);
+    expect(toolCallFields({ ...entry, details: {} })).toEqual([]);
   });
 });

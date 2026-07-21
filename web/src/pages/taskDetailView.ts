@@ -78,6 +78,66 @@ function toolInputPreview(entry: TaskTranscriptEntry): string {
   return "";
 }
 
+export interface ToolCallField {
+  label: string;
+  value: string;
+  // block fields render as multi-line code surfaces; the rest render inline.
+  block: boolean;
+}
+
+// Argument keys that are almost always code/commands and read best in a
+// monospaced block regardless of length.
+const CODE_INPUT_KEYS = new Set([
+  "command",
+  "cmd",
+  "code",
+  "script",
+  "content",
+  "body",
+  "payload",
+  "stdin",
+  "sql",
+  "diff",
+  "patch",
+]);
+
+// toolCallFields turns a tool call's raw JSON input into a flat, labeled list so
+// the UI can render friendly key/value rows instead of a raw JSON envelope.
+export function toolCallFields(entry: TaskTranscriptEntry): ToolCallField[] {
+  const input = asRecord(asRecord(entry.details)?.input);
+  if (!input) return [];
+  const fields: ToolCallField[] = [];
+  for (const [key, raw] of Object.entries(input)) {
+    const value = formatToolValue(raw);
+    if (value === "") continue;
+    const block = CODE_INPUT_KEYS.has(key.toLowerCase()) || value.includes("\n") || value.length > 80;
+    fields.push({ label: humanizeKey(key), value, block });
+  }
+  return fields;
+}
+
+function formatToolValue(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return "";
+  }
+}
+
+function humanizeKey(key: string): string {
+  const spaced = key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .trim();
+  return spaced
+    .split(/\s+/)
+    .map((word) => (word ? word[0]!.toUpperCase() + word.slice(1) : word))
+    .join(" ");
+}
+
 type SummarizeRuntimeOptions = {
   omitTools?: boolean;
 };

@@ -299,6 +299,36 @@ describe("TaskDetailPage", () => {
     expect(resultBody?.textContent).not.toContain("tool_call_id: call-1");
   });
 
+  it("renders tool call arguments as labeled fields rather than a raw JSON envelope", async () => {
+    stubTaskDetailApi({}, [
+      {
+        id: "assistant-runtime-entry",
+        seq: 7,
+        continuation: 1,
+        kind: "runtime_output",
+        role: "runtime",
+        text: JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "tool_use", id: "call-1", name: "Bash", input: { command: "curl http://localhost:3000", timeout: 30 } },
+            ],
+          },
+        }),
+        stream: "assistant",
+        created_at: "2026-01-01T00:00:01Z",
+      },
+    ]);
+
+    renderPage();
+
+    expect(await screen.findByText("Command")).toBeInTheDocument();
+    expect(screen.getByText("Timeout")).toBeInTheDocument();
+    expect(screen.getByText("30")).toBeInTheDocument();
+    expect(screen.queryByText(/"input":/)).not.toBeInTheDocument();
+  });
+
   it("switches into a compact focus view without project chrome", async () => {
     const searches: string[] = [];
     const user = userEvent.setup();
