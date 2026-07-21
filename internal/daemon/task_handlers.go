@@ -900,6 +900,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 			ContainerCLI: commandProgram,
 			Image:        sandboxImage,
 			CreateArgs:   commandArgs,
+			SecretValues: runtime.EnvSecretValues(processEnv),
 			Log: func(event runtime.DockerSandboxLogEvent) {
 				server.logDockerSandboxEvent(created, event)
 			},

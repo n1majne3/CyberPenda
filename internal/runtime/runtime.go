@@ -355,6 +355,21 @@ func NewCommandAdapter(config CommandAdapterConfig) Adapter {
 	return &commandAdapter{config: config}
 }
 
+// EnvSecretValues returns the secret values from a resolved runtime env map so a
+// Redactor can mask them by exact match. Keys are ignored: only the resolved
+// values are sensitive. Used to seed output redaction with the credentials a
+// runtime actually launches with.
+func EnvSecretValues(env map[string]string) []string {
+	if len(env) == 0 {
+		return nil
+	}
+	values := make([]string, 0, len(env))
+	for _, value := range env {
+		values = append(values, value)
+	}
+	return values
+}
+
 // CommandAdapterLaunch returns the host launch config for adapters built by
 // NewCommandAdapter. Provider-session assembly uses this to start a Task-owned
 // host bridge without re-deriving program, workdir, or env.
@@ -411,11 +426,12 @@ func (a *commandAdapter) Run(ctx context.Context, goal string, emit func(task.Ev
 	if a.config.Program == "" {
 		return fmt.Errorf("runtime command program is required")
 	}
+	redactor := adapters.NewRedactor(EnvSecretValues(a.config.Env))
 	var emitMu sync.Mutex
 	safeEmit := func(kind task.EventKind, payload task.EventPayload) {
 		emitMu.Lock()
 		defer emitMu.Unlock()
-		emit(kind, payload)
+		emit(kind, redactor.Redact(payload))
 	}
 
 	cmd := exec.CommandContext(ctx, a.config.Program, a.config.Args...)

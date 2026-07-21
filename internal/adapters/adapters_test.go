@@ -500,6 +500,52 @@ func TestRedactSecretsFromEventPayload(t *testing.T) {
 	}
 }
 
+// TestRedactorMasksKnownSecretWithoutRecognizedPrefix pins issue #161: the
+// shape-based patterns only catch tokens with a recognized prefix/shape
+// (sk-, bearer, NAME_KEY=...). A Redactor seeded with the resolved secret values
+// also masks them by exact match, so an opaque custom token that lacks any
+// recognized shape never reaches task events.
+func TestRedactorMasksKnownSecretWithoutRecognizedPrefix(t *testing.T) {
+	const opaque = "correct-horse-battery-staple-42" // no sk-/bearer/=_KEY shape
+	payload := map[string]any{
+		"text": "the token is " + opaque + " right now",
+		"args": []string{"--token", opaque},
+		"env":  map[string]string{"CUSTOM_TOKEN": opaque},
+	}
+
+	// Sanity: the shape-based redactor alone does NOT catch this opaque value,
+	// proving the test genuinely exercises value-based redaction below.
+	shapeOnly := adapters.Redact(payload)
+	if shapeText, _ := shapeOnly["text"].(string); !strings.Contains(shapeText, opaque) {
+		t.Fatalf("test premise broken: shape redaction already caught %q -> %q", opaque, shapeText)
+	}
+
+	redacted := adapters.NewRedactor([]string{opaque}).Redact(payload)
+
+	text, _ := redacted["text"].(string)
+	if strings.Contains(text, opaque) {
+		t.Fatalf("expected opaque secret redacted by value, got %q", text)
+	}
+	args, _ := redacted["args"].([]string)
+	if len(args) != 2 || strings.Contains(args[1], opaque) {
+		t.Fatalf("expected slice secret redacted by value, got %#v", args)
+	}
+	env, _ := redacted["env"].(map[string]string)
+	if strings.Contains(env["CUSTOM_TOKEN"], opaque) {
+		t.Fatalf("expected env secret redacted by value, got %#v", env)
+	}
+}
+
+// TestRedactorIgnoresTriviallyShortSecrets guards against over-redaction: a
+// very short "secret" (e.g. a single letter) would otherwise mask ordinary text.
+func TestRedactorIgnoresTriviallyShortSecrets(t *testing.T) {
+	redacted := adapters.NewRedactor([]string{"x"}).Redact(map[string]any{"text": "x marks the spot"})
+	text, _ := redacted["text"].(string)
+	if text != "x marks the spot" {
+		t.Fatalf("expected trivially short secret ignored, got %q", text)
+	}
+}
+
 // TestDetectBinaryReportsMissingWhenAbsent proves binary detection fails
 // cleanly when the configured binary does not exist, preserving the error for
 // the harness (Slice 9: adapter failure preserves error).

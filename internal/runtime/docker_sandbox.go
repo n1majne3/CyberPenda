@@ -26,6 +26,10 @@ type DockerSandboxConfig struct {
 	CreateArgs      []string
 	RequiredNetwork *DockerNetworkRequirement
 	Log             func(DockerSandboxLogEvent)
+	// SecretValues holds resolved credential values (e.g. from the launch env)
+	// used only to redact runtime output by exact match. It is never passed to
+	// the container; the container receives credentials via CreateArgs -e flags.
+	SecretValues []string
 }
 
 // DockerSandboxLogEvent mirrors image-pull lifecycle and progress to the
@@ -105,11 +109,12 @@ func (a *dockerSandboxAdapter) recordRuntimeLineMetadata(line string) {
 }
 
 func (a *dockerSandboxAdapter) Run(ctx context.Context, goal string, emit func(task.EventKind, task.EventPayload)) error {
+	redactor := adapters.NewRedactor(a.config.SecretValues)
 	var emitMu sync.Mutex
 	safeEmit := func(kind task.EventKind, payload task.EventPayload) {
 		emitMu.Lock()
 		defer emitMu.Unlock()
-		emit(kind, payload)
+		emit(kind, redactor.Redact(payload))
 	}
 	cli := strings.TrimSpace(a.config.ContainerCLI)
 	if cli == "" {

@@ -277,42 +277,78 @@ var secretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)([A-Z0-9_]{4,}_KEY|_TOKEN|_SECRET|_PASSWORD)=([A-Za-z0-9/+=\-_.]{12,})`),
 }
 
-// Redact returns a copy of payload with secret-shaped values replaced by a
-// placeholder. Variable names are retained so context is not lost; only the
-// resolved secret value is stripped.
-func Redact(payload map[string]any) map[string]any {
+// minRedactableSecretLen is the shortest known secret value a Redactor will mask
+// by exact match. Very short values are ignored so ordinary text (e.g. a single
+// letter that happens to equal a credential) is not mangled.
+const minRedactableSecretLen = 8
+
+// Redactor masks secret values in event payloads. It always applies the
+// shape-based secretPatterns; when seeded with known secret values it also masks
+// those values by exact match, closing the gap for opaque tokens that lack a
+// recognized prefix/shape (issue #161).
+type Redactor struct {
+	secrets []string
+}
+
+// shapeOnlyRedactor backs the package-level Redact: shape/regex redaction only.
+var shapeOnlyRedactor = NewRedactor(nil)
+
+// NewRedactor returns a Redactor that masks any occurrence of the given secret
+// values in addition to the shape-based patterns. Empty, duplicate, and
+// trivially short values are dropped to avoid over-redaction.
+func NewRedactor(secrets []string) *Redactor {
+	seen := make(map[string]struct{}, len(secrets))
+	kept := make([]string, 0, len(secrets))
+	for _, secret := range secrets {
+		secret = strings.TrimSpace(secret)
+		if len(secret) < minRedactableSecretLen {
+			continue
+		}
+		if _, dup := seen[secret]; dup {
+			continue
+		}
+		seen[secret] = struct{}{}
+		kept = append(kept, secret)
+	}
+	return &Redactor{secrets: kept}
+}
+
+// Redact returns a copy of payload with secret-shaped values and any known secret
+// values replaced by a placeholder. Variable names are retained so context is not
+// lost; only the resolved secret value is stripped.
+func (r *Redactor) Redact(payload map[string]any) map[string]any {
 	if payload == nil {
 		return nil
 	}
 	out := make(map[string]any, len(payload))
 	for k, v := range payload {
-		out[k] = redactValue(v)
+		out[k] = r.redactValue(v)
 	}
 	return out
 }
 
-func redactValue(v any) any {
+func (r *Redactor) redactValue(v any) any {
 	switch val := v.(type) {
 	case string:
-		return redactString(val)
+		return r.redactString(val)
 	case map[string]any:
-		return Redact(val)
+		return r.Redact(val)
 	case []any:
 		out := make([]any, len(val))
 		for i, item := range val {
-			out[i] = redactValue(item)
+			out[i] = r.redactValue(item)
 		}
 		return out
 	case []string:
 		out := make([]string, len(val))
 		for i, item := range val {
-			out[i] = redactString(item)
+			out[i] = r.redactString(item)
 		}
 		return out
 	case map[string]string:
 		out := make(map[string]string, len(val))
 		for k, item := range val {
-			out[k] = redactString(item)
+			out[k] = r.redactString(item)
 		}
 		return out
 	default:
@@ -320,13 +356,24 @@ func redactValue(v any) any {
 	}
 }
 
-func redactString(s string) string {
+func (r *Redactor) redactString(s string) string {
+	for _, secret := range r.secrets {
+		s = strings.ReplaceAll(s, secret, "[REDACTED]")
+	}
 	for _, pat := range secretPatterns {
 		s = pat.ReplaceAllStringFunc(s, func(match string) string {
 			return redactMatch(match)
 		})
 	}
 	return s
+}
+
+// Redact returns a copy of payload with secret-shaped values replaced by a
+// placeholder using the shape-based patterns only. Callers that know the resolved
+// secret values should prefer NewRedactor(...).Redact so opaque tokens without a
+// recognized shape are masked too.
+func Redact(payload map[string]any) map[string]any {
+	return shapeOnlyRedactor.Redact(payload)
 }
 
 // redactMatch keeps human-readable prefixes (env var names, the word 'bearer')
