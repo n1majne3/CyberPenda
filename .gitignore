@@ -27,3 +27,4 @@ __pycache__/
 .DS_Store
 pentest 2.db-shm
 pentest 2.db-wal
+.playwright-cli/
