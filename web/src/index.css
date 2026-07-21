@@ -59,8 +59,12 @@
     --font-geist-sans: "Geist";
     --font-geist-mono: "Geist Mono";
 
-    --shadow-card: 0 1px 2px 0 hsl(0 0% 0% / 0.05);
-    --shadow-popover: 0 8px 30px hsl(0 0% 0% / 0.12);
+    --shadow-card: 0 2px 2px hsl(0 0% 0% / 0.04);
+    --shadow-md: 0 1px 1px hsl(0 0% 0% / 0.02), 0 4px 8px -4px hsl(0 0% 0% / 0.04),
+      0 16px 24px -8px hsl(0 0% 0% / 0.06);
+    --shadow-lg: 0 1px 1px hsl(0 0% 0% / 0.02), 0 8px 16px -4px hsl(0 0% 0% / 0.04),
+      0 24px 32px -8px hsl(0 0% 0% / 0.06);
+    --shadow-popover: var(--shadow-md);
   }
 
   .dark {
@@ -106,6 +110,14 @@
     --sidebar-accent-foreground: 0 0% 93%;
     --sidebar-border: 0 0% 18%;
     --sidebar-ring: 0 0% 64%;
+
+    /* Dark surfaces swallow faint light-theme shadows, so lift the alpha. */
+    --shadow-card: 0 2px 2px hsl(0 0% 0% / 0.4);
+    --shadow-md: 0 1px 1px hsl(0 0% 0% / 0.2), 0 4px 8px -4px hsl(0 0% 0% / 0.4),
+      0 16px 24px -8px hsl(0 0% 0% / 0.5);
+    --shadow-lg: 0 1px 1px hsl(0 0% 0% / 0.2), 0 8px 16px -4px hsl(0 0% 0% / 0.5),
+      0 24px 32px -8px hsl(0 0% 0% / 0.6);
+    --shadow-popover: var(--shadow-md);
   }
 }
 

@@ -101,4 +101,21 @@ describe("index.css design tokens", () => {
     expect(css).toContain("-webkit-tap-highlight-color");
     expect(css).toContain("overflow-x: hidden");
   });
+
+  it("defines the Geist layered elevation scale", () => {
+    const light = tokenBlock(":root");
+    // Raised cards use Geist's 2px/2px tonal lift, not a flat 1px drop.
+    expect(light).toMatch(/--shadow-card:\s*0 2px 2px/);
+    // Menus and modals layer multiple offsets for depth.
+    expect(light).toContain("--shadow-md");
+    expect(light).toContain("--shadow-lg");
+    expect(tokenBlock(":root").match(/--shadow-md:[^;]*,/)).not.toBeNull();
+  });
+
+  it("gives the dark theme its own stronger elevation", () => {
+    const dark = tokenBlock(".dark");
+    expect(dark).toContain("--shadow-card");
+    expect(dark).toContain("--shadow-md");
+    expect(dark).toContain("--shadow-lg");
+  });
 });

@@ -143,7 +143,7 @@ function ProjectCard({ project }: { project: Project }) {
       aria-label={`Open ${project.name} project dashboard`}
       className="group block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
     >
-      <Card className="h-full transition-[border-color,box-shadow,background-color] group-hover:border-foreground/20 group-hover:bg-accent/40 group-hover:shadow-md">
+      <Card className="h-full transition-[border-color,box-shadow,background-color,transform] duration-150 ease-geist group-hover:-translate-y-0.5 group-hover:border-foreground/20 group-hover:bg-accent/40 group-hover:shadow-md motion-reduce:transition-none motion-reduce:group-hover:translate-y-0">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">

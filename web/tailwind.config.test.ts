@@ -53,4 +53,17 @@ describe("tailwind config design tokens", () => {
     expect(fontFamily.sans[0]).toBe("var(--font-geist-sans)");
     expect(fontFamily.mono[0]).toBe("var(--font-geist-mono)");
   });
+
+  it("wires the layered elevation scale to CSS tokens", () => {
+    const boxShadow = config.theme.extend.boxShadow as Record<string, string>;
+    expect(boxShadow.sm).toBe("var(--shadow-card)");
+    expect(boxShadow.md).toBe("var(--shadow-md)");
+    expect(boxShadow.lg).toBe("var(--shadow-lg)");
+    expect(boxShadow.popover).toBe("var(--shadow-popover)");
+  });
+
+  it("exposes the Geist spring easing", () => {
+    const easing = config.theme.extend.transitionTimingFunction as Record<string, string>;
+    expect(easing.geist).toBe("cubic-bezier(0.175, 0.885, 0.32, 1.1)");
+  });
 });

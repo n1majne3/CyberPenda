@@ -173,7 +173,7 @@ function CountCard({ icon, label, n, to }: { icon: React.ReactNode; label: strin
     <Link
       to={to}
       aria-label={`View ${n} ${countLabel(label, n)}`}
-      className="group flex min-h-28 flex-col justify-between rounded-lg border border-border bg-card p-4 text-card-foreground shadow-sm transition-[border-color,box-shadow,background-color] hover:border-foreground/20 hover:bg-accent/40 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+      className="group flex min-h-28 flex-col justify-between rounded-lg border border-border bg-card p-4 text-card-foreground shadow-sm transition-[border-color,box-shadow,background-color,transform] duration-150 ease-geist hover:-translate-y-0.5 hover:border-foreground/20 hover:bg-accent/40 hover:shadow-md motion-reduce:transition-none motion-reduce:hover:translate-y-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
     >
       <span className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground group-hover:text-foreground">
         {icon}
