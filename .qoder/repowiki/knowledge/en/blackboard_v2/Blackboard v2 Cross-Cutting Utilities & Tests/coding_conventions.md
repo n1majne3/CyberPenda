@@ -1,0 +1,2 @@
+- Semantic errors are surfaced as typed `*blackboardv2.Error` values carrying a `Code` string (e.g. `semantic_validation`, `evidence_publication_in_progress`) plus a `Path` selector and optional `Details` map, rather than wrapped fmt errors.
+- Platform-specific behavior is split by filename suffix (e.g. `_windows.go`) so non-Windows builds compile without the OS-dependent code path.

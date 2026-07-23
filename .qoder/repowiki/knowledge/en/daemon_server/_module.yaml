@@ -1,0 +1,9 @@
+schema_version: 1
+module_path: daemon_server
+title: daemon_server
+scope:
+    - internal/daemon/
+    - internal/mcpserver/
+source_files: []
+depends_on: []
+related_to: []

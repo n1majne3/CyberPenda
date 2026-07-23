@@ -1,0 +1,5 @@
+- Server-derived fields (`severity`, `cvss_pending`) are never accepted from callers — they are computed in `scoreFindingCVSS` and enforced by `validateFindingOutputRecord`, which rejects any caller-supplied value.
+- Semantic errors use `semanticError("semantic_validation", message, path, hints)` so tests can assert error codes via `isSemanticCode` rather than string matching.
+- Report projection functions open a read-only transaction (`sql.TxOptions{ReadOnly: true}`), scan all relevant records into maps keyed by Blackboard Key, then join relationships in a second pass to build deterministic, deduplicated output.
+- Consumer-facing structs are narrow allowlists that deliberately omit storage identity, hashes, Trusted Origin, and execution history; keys are included only for navigation.
+- Cross-project isolation is enforced at the boundary by checking `projects.kind` before processing Findings/Pentest reports and returning `project_kind_mismatch` for non-matching projects.

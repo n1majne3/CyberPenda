@@ -1,0 +1,1 @@
+CVSS scoring via `github.com/pandatix/go-cvss/31` and `/40`; SQL persistence through `database/sql` against `blackboard_v2_records`/`blackboard_v2_relationships`; report schemas declared as constants `pentest-report/v2`, `ctf-solution/v2`, `report-markdown/v2`.

@@ -1,0 +1,1 @@
+HTTP handlers exposing runtime plugin and extension catalogs plus provider-session launch orchestration for the daemon's REST API.

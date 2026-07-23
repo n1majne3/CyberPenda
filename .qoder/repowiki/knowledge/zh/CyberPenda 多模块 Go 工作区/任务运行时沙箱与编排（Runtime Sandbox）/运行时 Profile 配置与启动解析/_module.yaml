@@ -1,0 +1,9 @@
+schema_version: 1
+module_path: runtime_sandbox/runtime_profile_config
+title: 运行时 Profile 配置与启动解析
+scope:
+    - internal/runtimeprofile/
+source_files: []
+depends_on: []
+related_to:
+    - path: model_provider

@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: runtime_sandbox
+title: 任务运行时沙箱与编排（Runtime Sandbox）
+scope:
+    - internal/runtime/
+    - internal/runner/
+    - internal/runtimeprofile/
+source_files: []
+depends_on: []
+related_to: []

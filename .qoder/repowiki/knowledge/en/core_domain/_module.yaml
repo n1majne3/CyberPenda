@@ -1,0 +1,14 @@
+schema_version: 1
+module_path: core_domain
+title: core_domain
+scope:
+    - internal/credential/
+    - internal/task/
+    - internal/timeline/
+    - internal/transcript/
+    - internal/report/
+    - internal/project/
+    - internal/adapters/
+source_files: []
+depends_on: []
+related_to: []

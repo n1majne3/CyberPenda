@@ -1,0 +1,1 @@
+Implements idempotent retention of task-produced evidence payloads and enforces the semantic rules governing Fact and Entity records, including confidence transitions, support DAG acyclicity, and runtime confirmation basis.

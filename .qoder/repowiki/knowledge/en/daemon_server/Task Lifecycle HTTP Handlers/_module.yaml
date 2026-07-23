@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: daemon_server/task_lifecycle
+title: Task Lifecycle HTTP Handlers
+scope:
+    - internal/daemon/task_handlers.go
+    - internal/daemon/launch_handlers.go
+    - internal/daemon/test_helpers.go
+source_files: []
+depends_on: []
+related_to: []

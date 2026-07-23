@@ -1,0 +1,4 @@
+- All validation failures are returned as `semanticError(...)` values carrying a machine-readable `code` string (e.g. `semantic_validation`, `version_conflict`, `key_conflict`, `not_found`) plus a dot-path `path` and optional metadata map, instead of plain errors.
+- Every mutating operation runs inside a single `sql.Tx`; when a merge also updates the canonical record, it delegates to `applyUpdateRecord` and chains the resulting revision/key/version rather than duplicating transaction logic.
+- Redirected reads/writes are handled transparently: callers address a source key and the service resolves it through `blackboard_v2_key_redirects` before performing the actual operation, keeping callers unaware of the indirection.
+- Type-specific behavior is dispatched via `switch record.typ` over the five Project Knowledge kinds (`entity`, `fact`, `finding`, `solution`, `evidence`) with a `default` branch returning a sentinel error or empty value.

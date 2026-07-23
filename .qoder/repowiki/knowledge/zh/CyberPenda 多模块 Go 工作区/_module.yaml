@@ -1,0 +1,16 @@
+schema_version: 1
+module_path: ""
+title: CyberPenda 多模块 Go 工作区
+scope:
+    - .dockerignore
+    - .gitignore
+    - AGENTS.md
+    - CONTEXT.md
+    - Makefile
+    - README.md
+    - docker-compose.yaml
+    - go.mod
+    - go.sum
+source_files: []
+depends_on: []
+related_to: []

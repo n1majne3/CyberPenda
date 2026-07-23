@@ -1,0 +1,5 @@
+- Read paths use `s.db.QueryRowContext` / `QueryContext` inside a `defer tx.Rollback()` block and wrap errors with a `fmt.Errorf("read ...: %w")` prefix naming the operation.
+- Write paths acquire both `s.snapshotMu` and `s.writeMu` before starting a transaction, ensuring Finish cannot race with concurrent snapshot projections.
+- Idempotency keys are deduplicated by persisting a SHA-256 hash of the marshaled request body alongside the result JSON, so re-plays must match both key and semantics.
+- Authority checks validate ownership by joining `task_continuations` with `tasks` (and where relevant `blackboard_v2_continuation_pins`) and return `semanticError("authority_denied", ...)` on mismatch rather than generic errors.
+- Anomaly emission follows a fixed shape: construct a `HealthAnomaly` with a stable `code` string, a `severity` from the `HealthSeverity` enum, a human-readable `message`, and optional `subject_key`/`related_keys`, then run through `dedupeHealthAnomalies` and `sortHealthAnomalies` before returning.

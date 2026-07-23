@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: runtime_sandbox/runner_integration/blackboard_v2
+title: Blackboard v2 运行时上下文投影与任务布局
+scope:
+    - internal/runner/blackboard_v2.go
+    - internal/runner/blackboard_v2_layout.go
+    - internal/runner/blackboard_v2_mount_test.go
+    - internal/runner/blackboard_v2_projection_test.go
+source_files: []
+depends_on: []
+related_to: []

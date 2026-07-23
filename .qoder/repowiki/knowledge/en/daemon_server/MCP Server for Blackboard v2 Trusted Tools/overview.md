@@ -1,0 +1,1 @@
+Exposes the Model Context Protocol (MCP) streamable-HTTP endpoint at /mcp that registers six frozen Blackboard v2 trusted tools gated by Continuation Interface capability grants.

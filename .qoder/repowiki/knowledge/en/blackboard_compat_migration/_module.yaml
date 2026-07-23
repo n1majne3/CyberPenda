@@ -1,0 +1,9 @@
+schema_version: 1
+module_path: blackboard_compat_migration
+title: blackboard_compat_migration
+scope:
+    - internal/blackboardmigration/
+    - internal/store/
+source_files: []
+depends_on: []
+related_to: []

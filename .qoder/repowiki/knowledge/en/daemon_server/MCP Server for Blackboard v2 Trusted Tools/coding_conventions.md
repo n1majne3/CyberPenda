@@ -1,0 +1,4 @@
+- Every tool handler validates raw `json.RawMessage` arguments through `decodeV2ToolArgs` against the harness's frozen schema before decoding into a typed DTO, returning a uniform `invalid_schema` error instead of leaking SDK validation text.
+- Mutating tools route through `callV2WithFingerprint` with a `SynchronizationDeliveryFingerprint` keyed on the request's `IdempotencyKey`; read-only tools pass an empty fingerprint so they remain Pending-only and do not participate in sync replay.
+- All tool responses are produced through `toolBlackboardV2JSON` / `toolBlackboardV2Error` helpers that wrap payloads into a consistent `{... , "sync": ...}` envelope rather than building `CallToolResult` inline.
+- Authorization failures are surfaced as `blackboardv2.Error` values with explicit `Code`/`Path`/`Retryable` fields via `blackboardV2AuthError`, never as raw Go errors.

@@ -1,0 +1,9 @@
+schema_version: 1
+module_path: docs_and_specs
+title: docs_and_specs
+scope:
+    - docs/
+    - plan/
+source_files: []
+depends_on: []
+related_to: []

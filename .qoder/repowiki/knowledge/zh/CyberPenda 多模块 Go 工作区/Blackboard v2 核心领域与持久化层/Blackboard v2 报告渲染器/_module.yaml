@@ -1,0 +1,9 @@
+schema_version: 1
+module_path: core_domain/reporting
+title: Blackboard v2 报告渲染器
+scope:
+    - internal/report/
+source_files: []
+depends_on: []
+related_to:
+    - path: daemon_server/task_handlers

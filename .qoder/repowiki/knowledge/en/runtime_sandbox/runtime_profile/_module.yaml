@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: runtime_sandbox/runtime_profile
+title: runtime_profile
+scope:
+    - internal/runtimeprofile/
+source_files: []
+depends_on: []
+related_to: []

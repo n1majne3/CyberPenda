@@ -1,0 +1,430 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: en-US
+branch: main
+nodes_managed: true
+exported_at: "2026-07-21T14:23:28Z"
+modules:
+    blackboard_compat_migration:
+        dir_name: blackboard_compat_migration
+        title: blackboard_compat_migration
+        scope:
+            - internal/blackboardmigration/
+            - internal/store/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    blackboard_v2:
+        dir_name: blackboard_v2
+        title: blackboard_v2
+        scope:
+            - internal/blackboardv2/
+            - internal/blackboardv2contract/
+            - internal/blackboardv2grammar/
+        source_files: []
+        children:
+            - blackboard_v2/blackboard_contract
+            - blackboard_v2/entity_domain
+            - blackboard_v2/finding_and_report
+            - blackboard_v2/lifecycle_and_health
+            - blackboard_v2/projection_merge
+            - blackboard_v2/relationship_grammar
+            - blackboard_v2/runtime_core
+            - blackboard_v2/solution_and_objective
+            - blackboard_v2/support_utils
+        depends_on: []
+        related_to: []
+    blackboard_v2/blackboard_contract:
+        dir_name: blackboard_contract
+        title: blackboard_contract
+        scope:
+            - internal/blackboardv2contract/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    blackboard_v2/entity_domain:
+        dir_name: Evidence Retention & Fact_Entity Domain Semantics
+        title: Evidence Retention & Fact/Entity Domain Semantics
+        scope:
+            - internal/blackboardv2/fact_service_test.go
+            - internal/blackboardv2/evidence.go
+            - internal/blackboardv2/evidence_lock_unix.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    blackboard_v2/finding_and_report:
+        dir_name: Finding Lifecycle & Report Projections
+        title: Finding Lifecycle & Report Projections
+        scope:
+            - internal/blackboardv2/finding.go
+            - internal/blackboardv2/report.go
+            - internal/blackboardv2/finding_report_service_test.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    blackboard_v2/lifecycle_and_health:
+        dir_name: Continuation Lifecycle & Semantic Health Diagnostics
+        title: Continuation Lifecycle & Semantic Health Diagnostics
+        scope:
+            - internal/blackboardv2/finish.go
+            - internal/blackboardv2/resume.go
+            - internal/blackboardv2/health.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    blackboard_v2/projection_merge:
+        dir_name: Runtime Snapshot Projection & Project Knowledge Merge
+        title: Runtime Snapshot Projection & Project Knowledge Merge
+        scope:
+            - internal/blackboardv2/projection.go
+            - internal/blackboardv2/merge.go
+            - internal/blackboardv2/merge_service_test.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    blackboard_v2/relationship_grammar:
+        dir_name: Blackboard v2 Relationship Grammar & Service Tests
+        title: Blackboard v2 Relationship Grammar & Service Tests
+        scope:
+            - internal/blackboardv2/relationship_read_internal_test.go
+            - internal/blackboardv2/relationship_service_test.go
+            - internal/blackboardv2/relationship_grammar_internal_test.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    blackboard_v2/runtime_core:
+        dir_name: Blackboard v2 Semantic Service & Continuity
+        title: Blackboard v2 Semantic Service & Continuity
+        scope:
+            - internal/blackboardv2/service.go
+            - internal/blackboardv2/checkpoint.go
+            - internal/blackboardv2/continuity.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    blackboard_v2/solution_and_objective:
+        dir_name: CTF Solution & Objective_Attempt Semantic Change Handlers
+        title: CTF Solution & Objective/Attempt Semantic Change Handlers
+        scope:
+            - internal/blackboardv2/solution.go
+            - internal/blackboardv2/objective_attempt_service_test.go
+            - internal/blackboardv2/solution_service_test.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    blackboard_v2/support_utils:
+        dir_name: Blackboard v2 Cross-Cutting Utilities & Tests
+        title: Blackboard v2 Cross-Cutting Utilities & Tests
+        scope:
+            - internal/blackboardv2/json_decode.go
+            - internal/blackboardv2/evidence_lock_windows.go
+            - internal/blackboardv2/change_batch_history_service_test.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    cmd_binaries:
+        dir_name: Executable Entrypoints & Provider Bridges
+        title: Executable Entrypoints & Provider Bridges
+        scope:
+            - cmd/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    core_domain:
+        dir_name: core_domain
+        title: core_domain
+        scope:
+            - internal/credential/
+            - internal/task/
+            - internal/timeline/
+            - internal/transcript/
+            - internal/report/
+            - internal/project/
+            - internal/adapters/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    daemon_server:
+        dir_name: daemon_server
+        title: daemon_server
+        scope:
+            - internal/daemon/
+            - internal/mcpserver/
+        source_files: []
+        children:
+            - daemon_server/auth_and_session
+            - daemon_server/blackboard_v2
+            - daemon_server/core_server
+            - daemon_server/mcp_integration
+            - daemon_server/model_provider
+            - daemon_server/runtime_plugin_extension
+            - daemon_server/skill
+            - daemon_server/task_lifecycle
+        depends_on: []
+        related_to: []
+    daemon_server/auth_and_session:
+        dir_name: Provider Session Lifecycle & Daemon Auth Gate
+        title: Provider Session Lifecycle & Daemon Auth Gate
+        scope:
+            - internal/daemon/auth_test.go
+            - internal/daemon/provider_session_control.go
+            - internal/daemon/provider_session_factory.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    daemon_server/blackboard_v2:
+        dir_name: Blackboard v2 HTTP Transport & Cross-Provider Conformance
+        title: Blackboard v2 HTTP Transport & Cross-Provider Conformance
+        scope:
+            - internal/daemon/blackboard_v2_http.go
+            - internal/daemon/blackboard_v2_boundary_test.go
+            - internal/daemon/blackboard_v2_claude_pi_conformance_test.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    daemon_server/core_server:
+        dir_name: Daemon HTTP Server & Runtime Activity Reconciliation
+        title: Daemon HTTP Server & Runtime Activity Reconciliation
+        scope:
+            - internal/daemon/server.go
+            - internal/daemon/logging.go
+            - internal/daemon/runtime_activity.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    daemon_server/mcp_integration:
+        dir_name: MCP Server for Blackboard v2 Trusted Tools
+        title: MCP Server for Blackboard v2 Trusted Tools
+        scope:
+            - internal/daemon/mcp_handlers.go
+            - internal/daemon/mcp_test.go
+            - internal/mcpserver/v2.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    daemon_server/model_provider:
+        dir_name: Model Provider HTTP Handlers & Production Session Factory
+        title: Model Provider HTTP Handlers & Production Session Factory
+        scope:
+            - internal/daemon/modelprovider_handlers.go
+            - internal/daemon/modelprovider_migration_handlers.go
+            - internal/daemon/production_provider_session_factory.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    daemon_server/runtime_plugin_extension:
+        dir_name: Runtime Plugin & Extension HTTP Handlers
+        title: Runtime Plugin & Extension HTTP Handlers
+        scope:
+            - internal/daemon/runtime_plugin_handlers.go
+            - internal/daemon/runtime_extension_handlers.go
+            - internal/daemon/provider_session_launch_test.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    daemon_server/skill:
+        dir_name: Skill Registry & Blackboard v2 HTTP Transport
+        title: Skill Registry & Blackboard v2 HTTP Transport
+        scope:
+            - internal/daemon/skill_handlers.go
+            - internal/daemon/skill_test.go
+            - internal/daemon/blackboard_v2_http.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    daemon_server/task_lifecycle:
+        dir_name: Task Lifecycle HTTP Handlers
+        title: Task Lifecycle HTTP Handlers
+        scope:
+            - internal/daemon/task_handlers.go
+            - internal/daemon/launch_handlers.go
+            - internal/daemon/test_helpers.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    docs_and_specs:
+        dir_name: docs_and_specs
+        title: docs_and_specs
+        scope:
+            - docs/
+            - plan/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    model_provider:
+        dir_name: model_provider
+        title: model_provider
+        scope:
+            - internal/modelprovider/
+            - internal/modelprovidermigrate/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    pentestctl_cli:
+        dir_name: pentestctl_cli
+        title: pentestctl_cli
+        scope:
+            - internal/pentestctl/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    runner_integration:
+        dir_name: runner_integration
+        title: runner_integration
+        scope:
+            - internal/runner/
+            - internal/integration/
+            - internal/preflight/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    runtime_sandbox:
+        dir_name: runtime_sandbox
+        title: runtime_sandbox
+        scope:
+            - internal/runtime/
+            - internal/runtimeplugin/
+            - internal/runtimeextension/
+            - internal/runtimeoutput/
+            - internal/runtimeprofile/
+        source_files: []
+        children:
+            - runtime_sandbox/extension_loader
+            - runtime_sandbox/output_parser
+            - runtime_sandbox/plugin_loader
+            - runtime_sandbox/provider_bridge_session
+            - runtime_sandbox/runtime_core
+            - runtime_sandbox/runtime_profile
+            - runtime_sandbox/sandbox_container
+        depends_on: []
+        related_to: []
+    runtime_sandbox/extension_loader:
+        dir_name: extension_loader
+        title: extension_loader
+        scope:
+            - internal/runtimeextension/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    runtime_sandbox/output_parser:
+        dir_name: output_parser
+        title: output_parser
+        scope:
+            - internal/runtimeoutput/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    runtime_sandbox/plugin_loader:
+        dir_name: plugin_loader
+        title: plugin_loader
+        scope:
+            - internal/runtimeplugin/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    runtime_sandbox/provider_bridge_session:
+        dir_name: provider_bridge_session
+        title: provider_bridge_session
+        scope:
+            - internal/runtime/codex_session.go
+            - internal/runtime/provider_adapters.go
+            - internal/runtime/provider_bridge_adapter.go
+            - internal/runtime/provider_bridge_command.go
+            - internal/runtime/provider_session.go
+            - internal/runtime/session_bridge.go
+            - internal/runtime/host_session_bridge.go
+            - internal/runtime/pi_session_discovery.go
+            - internal/runtime/pi_session_tail.go
+            - internal/runtime/session_metadata.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    runtime_sandbox/runtime_core:
+        dir_name: runtime_core
+        title: runtime_core
+        scope:
+            - internal/runtime/runtime.go
+            - internal/runtime/output_reader.go
+            - internal/runtime/done_signal.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    runtime_sandbox/runtime_profile:
+        dir_name: runtime_profile
+        title: runtime_profile
+        scope:
+            - internal/runtimeprofile/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    runtime_sandbox/sandbox_container:
+        dir_name: sandbox_container
+        title: sandbox_container
+        scope:
+            - internal/runtime/container.go
+            - internal/runtime/docker_sandbox.go
+            - internal/runtime/host_process_unix.go
+            - internal/runtime/host_process_windows.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    scripts_and_ci:
+        dir_name: scripts_and_ci
+        title: scripts_and_ci
+        scope:
+            - scripts/
+            - .github/workflows/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    skills_system:
+        dir_name: skills_system
+        title: skills_system
+        scope:
+            - internal/skill/
+            - skills/bundles/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    web_frontend:
+        dir_name: web_frontend
+        title: web_frontend
+        scope:
+            - web/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []

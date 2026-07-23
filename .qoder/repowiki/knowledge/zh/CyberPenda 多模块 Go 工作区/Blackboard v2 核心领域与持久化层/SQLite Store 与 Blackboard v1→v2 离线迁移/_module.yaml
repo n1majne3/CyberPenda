@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: core_domain/persistence_and_migration
+title: SQLite Store 与 Blackboard v1→v2 离线迁移
+scope:
+    - internal/store/
+    - internal/blackboardmigration/
+source_files: []
+depends_on: []
+related_to:
+    - path: blackboard_v2
+    - path: pentestctl_cli

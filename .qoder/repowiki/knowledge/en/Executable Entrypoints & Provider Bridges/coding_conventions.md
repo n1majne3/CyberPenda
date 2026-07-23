@@ -1,0 +1,4 @@
+- Every binary exposes a single `main` that delegates to an exported `Run*` function in an `internal/` package, keeping flag parsing / signal handling separate from core logic.
+- Configuration is read through a uniform `envOr(key, fallback)` helper so flags are always overridable by `PENTEST_*` environment variables.
+- Cross-language JSON field access uses a variadic `stringValue(map[string]any, keys...)` helper that tries multiple key aliases before returning empty string, applied consistently across both Go and JS bridges.
+- Protocol frames are emitted as newline-delimited JSON written directly to stdout; diagnostics go exclusively to stderr and are never mixed into the protocol stream.

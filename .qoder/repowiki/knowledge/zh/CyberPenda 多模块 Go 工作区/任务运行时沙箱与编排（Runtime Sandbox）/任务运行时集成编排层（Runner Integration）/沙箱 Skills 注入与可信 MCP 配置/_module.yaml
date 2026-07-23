@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: runtime_sandbox/runner_integration/sandbox_skills_and_mcp
+title: 沙箱 Skills 注入与可信 MCP 配置
+scope:
+    - internal/runner/sandbox_skills.go
+    - internal/runner/sandbox_skills_test.go
+    - internal/runner/mcp.go
+source_files: []
+depends_on: []
+related_to: []

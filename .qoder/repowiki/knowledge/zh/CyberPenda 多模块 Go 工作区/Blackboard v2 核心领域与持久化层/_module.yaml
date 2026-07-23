@@ -1,0 +1,16 @@
+schema_version: 1
+module_path: core_domain
+title: Blackboard v2 核心领域与持久化层
+scope:
+    - internal/store/
+    - internal/project/
+    - internal/task/
+    - internal/timeline/
+    - internal/transcript/
+    - internal/report/
+    - internal/credential/
+    - internal/adapters/
+    - internal/blackboardmigration/
+source_files: []
+depends_on: []
+related_to: []

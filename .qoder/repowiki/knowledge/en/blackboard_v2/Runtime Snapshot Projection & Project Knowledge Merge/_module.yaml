@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: blackboard_v2/projection_merge
+title: Runtime Snapshot Projection & Project Knowledge Merge
+scope:
+    - internal/blackboardv2/projection.go
+    - internal/blackboardv2/merge.go
+    - internal/blackboardv2/merge_service_test.go
+source_files: []
+depends_on: []
+related_to: []

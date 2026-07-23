@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: blackboard_v2/finding_and_report
+title: Finding Lifecycle & Report Projections
+scope:
+    - internal/blackboardv2/finding.go
+    - internal/blackboardv2/report.go
+    - internal/blackboardv2/finding_report_service_test.go
+source_files: []
+depends_on: []
+related_to: []

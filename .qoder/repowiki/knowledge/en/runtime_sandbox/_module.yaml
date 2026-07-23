@@ -1,0 +1,12 @@
+schema_version: 1
+module_path: runtime_sandbox
+title: runtime_sandbox
+scope:
+    - internal/runtime/
+    - internal/runtimeplugin/
+    - internal/runtimeextension/
+    - internal/runtimeoutput/
+    - internal/runtimeprofile/
+source_files: []
+depends_on: []
+related_to: []

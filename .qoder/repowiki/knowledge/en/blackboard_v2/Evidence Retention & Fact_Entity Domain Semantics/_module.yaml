@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: blackboard_v2/entity_domain
+title: Evidence Retention & Fact/Entity Domain Semantics
+scope:
+    - internal/blackboardv2/fact_service_test.go
+    - internal/blackboardv2/evidence.go
+    - internal/blackboardv2/evidence_lock_unix.go
+source_files: []
+depends_on: []
+related_to: []

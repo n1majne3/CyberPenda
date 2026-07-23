@@ -1,0 +1,13 @@
+schema_version: 1
+module_path: core_domain/core_entities
+title: 核心领域实体与持久化服务（Project/Task/Timeline/Transcript）
+scope:
+    - internal/project/
+    - internal/task/
+    - internal/timeline/
+    - internal/transcript/
+source_files: []
+depends_on: []
+related_to:
+    - path: daemon_server/task_handlers
+    - path: pentestctl_cli

@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: daemon_server/model_provider
+title: Model Provider HTTP Handlers & Production Session Factory
+scope:
+    - internal/daemon/modelprovider_handlers.go
+    - internal/daemon/modelprovider_migration_handlers.go
+    - internal/daemon/production_provider_session_factory.go
+source_files: []
+depends_on: []
+related_to: []

@@ -1,0 +1,1 @@
+Go standard library with `os.Root` (Go 1.22+) for chroot-style confinement of Evidence sources, SQLite via `database/sql` for the change log, and `syscall.Flock` for non-blocking inter-process publication locks on Unix.

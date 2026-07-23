@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: daemon_server/runtime_plugin_extension
+title: Runtime Plugin & Extension HTTP Handlers
+scope:
+    - internal/daemon/runtime_plugin_handlers.go
+    - internal/daemon/runtime_extension_handlers.go
+    - internal/daemon/provider_session_launch_test.go
+source_files: []
+depends_on: []
+related_to: []

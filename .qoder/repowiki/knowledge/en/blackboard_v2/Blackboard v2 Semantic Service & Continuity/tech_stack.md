@@ -1,0 +1,1 @@
+Go standard library `database/sql` with direct SQL against tables `blackboard_v2_records`, `blackboard_v2_project_state`, `blackboard_v2_sync_delivery_receipts`, `blackboard_v2_continuation_pins`, `blackboard_v2_continuation_state`; SHA-256 integrity checks on persisted snapshots; HMAC-based idempotency hashing of canonicalized `ChangeBatch` payloads.

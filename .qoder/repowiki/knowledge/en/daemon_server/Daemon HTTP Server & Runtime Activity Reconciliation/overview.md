@@ -1,0 +1,1 @@
+HTTP daemon entry point that wires services, enforces origin/auth middleware, serves the REST API and SPA, and reconciles task runtime liveness into lifecycle mutations.

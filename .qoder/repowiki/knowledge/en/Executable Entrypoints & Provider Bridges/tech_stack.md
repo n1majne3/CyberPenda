@@ -1,0 +1,1 @@
+Go 1.x for `pentestd`, `pentestctl`, and `pentest-provider-bridge`; Node.js ESM (`*.mjs`) for `pentest-claude-sdk-bridge`, which depends on `@anthropic-ai/claude-agent-sdk`'s streaming `query()` iterator and its `applyFlagSettings`/`setModel` control methods.

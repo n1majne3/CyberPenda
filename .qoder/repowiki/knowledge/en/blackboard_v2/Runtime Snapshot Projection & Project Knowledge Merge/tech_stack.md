@@ -1,0 +1,1 @@
+Go with `golang.org/x/text/unicode/norm` (NFKC) for deterministic duplicate-fingerprint normalization and `crypto/sha256` over a typed prefix `CyberPenda.BlackboardV2.Duplicate.v1\0` to compute per-type fingerprints.

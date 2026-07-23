@@ -1,0 +1,1 @@
+Uses `golang.org/x/sys/windows` for native `LockFileEx`/`UnlockFileEx` calls; relies on the project's embedded SQLite-backed `store` and `project` services for test fixtures.

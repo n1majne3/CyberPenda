@@ -1,0 +1,27 @@
+version: 1
+
+scope:
+  include: []
+  exclude:
+    - "web/dist/**"
+    - "internal/daemon/webfs/dist/**"
+    - "runs/**"
+    - ".playwright-cli/**"
+    - ".playwright/**"
+    - "web/node_modules/**"
+
+repowiki:
+  template: architecture
+  notes:
+    - text: "本项目是本地优先的渗透测试代理（Go daemon + React dashboard + sandboxed runtimes）。文档语言使用英文。"
+    - text: "核心三大子系统需重点分析：Blackboard v2 语义系统、Daemon HTTP 服务层、Runtime/Sandbox 运行时。其余模块（skills、model provider、CLI、web frontend）均衡覆盖。"
+    - text: "Blackboard v2 是系统的记忆平面：实体/关系/证据/发现/Continuation 生命周期/健康诊断/投影合并。分析时关注 semantic change 流水线和 trusted tool 边界。"
+    - text: "Daemon 是控制平面：HTTP API、MCP Server（六个 Blackboard v2 工具）、Task 启动与生命周期、Auth Gate。关注路由组织和 provider session 工厂模式。"
+    - text: "Runtime/Sandbox 是执行平面：Docker/Podman 容器隔离、Runtime Plugin 声明式适配器（Codex/Claude Code/Pi）、Profile 解析、Extension Pack 加载。关注 sandbox vs host runner 的安全边界。"
+  documents: []
+
+knowledgecard:
+  notes:
+    - text: "保持现有模块划分：blackboard_v2（含 9 子模块）、daemon_server（含 8 子模块）、runtime_sandbox（含 7 子模块）为三个顶级模块，各自内部子模块边界已稳定。"
+    - text: "core_domain、runner_integration、skills_system、model_provider、pentestctl_cli、web_frontend、scripts_and_ci 作为独立顶级模块，不合并。"
+    - text: "知识卡应关注模块间接口契约（如 Blackboard v2 Contract、MCP tool schema、Provider Session 接口），而非实现细节。"

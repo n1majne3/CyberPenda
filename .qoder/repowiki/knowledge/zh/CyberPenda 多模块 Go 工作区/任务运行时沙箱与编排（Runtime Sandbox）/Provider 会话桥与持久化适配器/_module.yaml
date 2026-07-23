@@ -1,0 +1,17 @@
+schema_version: 1
+module_path: runtime_sandbox/provider_bridge_session
+title: Provider 会话桥与持久化适配器
+scope:
+    - internal/runtime/session_bridge.go
+    - internal/runtime/provider_bridge_adapter.go
+    - internal/runtime/provider_bridge_command.go
+    - internal/runtime/provider_adapters.go
+    - internal/runtime/provider_session.go
+    - internal/runtime/host_session_bridge.go
+    - internal/runtime/pi_session_discovery.go
+    - internal/runtime/pi_session_tail.go
+    - internal/runtime/session_metadata.go
+source_files: []
+depends_on: []
+related_to:
+    - path: daemon_server/provider_session_control

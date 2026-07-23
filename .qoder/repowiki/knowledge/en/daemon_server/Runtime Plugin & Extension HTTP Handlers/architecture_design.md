@@ -1,0 +1,6 @@
+Three files in package `daemon` that attach to the central `Server` struct:
+- `runtime_plugin_handlers.go`: GET `/api/runtime-plugins` (list) and GET `/api/runtime-plugins/{plugin_id}` (get), delegating read-only access to `server.runtimePlugins` (`runtimeplugin.Plugin` store).
+- `runtime_extension_handlers.go`: GET `/api/runtime-extensions`, GET `/api/runtime-extension-catalog`, and GET `/api/runtime-extensions/{extension_id}`, delegating to `server.runtimeExtensions` (`runtimeextension.Extension` store) and calling `runtimeextension.FetchDefaultCatalog` for the catalog endpoint.
+- `provider_session_launch_test.go`: end-to-end tests exercising the provider-session launch flow — building a `ProviderSessionLaunchRequest`, opening a `ProviderSessionFactory`, binding a `ProviderSessionBinding`, and asserting harness lifecycle, continuation replacement, and native steer rebinding via `httptest` against `server.ServeHTTP`.
+
+Dependency direction is one-way: these handlers call into `internal/runtimeplugin`, `internal/runtimeextension`, `internal/runtime`, `internal/task`, and `internal/runtimeprofile` but are not imported by them. The test file constructs a full `Server` via `NewServer(Config{...})` with a fake `ProviderSessionFactory` and `persistentTestAdapter` implementing `runtime.Adapter` to drive the persistent session lifecycle.

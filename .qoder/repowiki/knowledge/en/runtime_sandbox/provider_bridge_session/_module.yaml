@@ -1,0 +1,17 @@
+schema_version: 1
+module_path: runtime_sandbox/provider_bridge_session
+title: provider_bridge_session
+scope:
+    - internal/runtime/codex_session.go
+    - internal/runtime/provider_adapters.go
+    - internal/runtime/provider_bridge_adapter.go
+    - internal/runtime/provider_bridge_command.go
+    - internal/runtime/provider_session.go
+    - internal/runtime/session_bridge.go
+    - internal/runtime/host_session_bridge.go
+    - internal/runtime/pi_session_discovery.go
+    - internal/runtime/pi_session_tail.go
+    - internal/runtime/session_metadata.go
+source_files: []
+depends_on: []
+related_to: []

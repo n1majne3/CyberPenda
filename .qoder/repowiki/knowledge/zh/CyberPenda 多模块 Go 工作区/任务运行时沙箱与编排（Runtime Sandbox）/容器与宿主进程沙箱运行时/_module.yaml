@@ -1,0 +1,14 @@
+schema_version: 1
+module_path: runtime_sandbox/runtime_container_host
+title: 容器与宿主进程沙箱运行时
+scope:
+    - internal/runtime/container.go
+    - internal/runtime/docker_sandbox.go
+    - internal/runtime/host_process_unix.go
+    - internal/runtime/host_process_windows.go
+    - internal/runtime/codex_session.go
+    - internal/runtime/done_signal.go
+source_files: []
+depends_on: []
+related_to:
+    - path: runtime_sandbox/runner_integration

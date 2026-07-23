@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: daemon_server/core_server
+title: Daemon HTTP Server & Runtime Activity Reconciliation
+scope:
+    - internal/daemon/server.go
+    - internal/daemon/logging.go
+    - internal/daemon/runtime_activity.go
+source_files: []
+depends_on: []
+related_to: []

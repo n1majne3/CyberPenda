@@ -1,0 +1,1 @@
+Small cross-cutting helpers for the blackboardv2 package: strict UTF-8 JSON decoding, Windows exclusive-file locking for evidence publication, and integration tests for change-batch history semantics.

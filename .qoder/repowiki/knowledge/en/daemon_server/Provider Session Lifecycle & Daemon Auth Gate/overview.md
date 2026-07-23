@@ -1,0 +1,1 @@
+In-memory registry and factory seam for Task-scoped persistent provider sessions, plus the daemon's HTTP auth gate that enforces Bearer tokens on API routes.

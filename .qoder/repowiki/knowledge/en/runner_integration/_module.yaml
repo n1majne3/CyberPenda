@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: runner_integration
+title: runner_integration
+scope:
+    - internal/runner/
+    - internal/integration/
+    - internal/preflight/
+source_files: []
+depends_on: []
+related_to: []

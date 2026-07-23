@@ -1,0 +1,9 @@
+schema_version: 1
+module_path: skills_system
+title: skills_system
+scope:
+    - internal/skill/
+    - skills/bundles/
+source_files: []
+depends_on: []
+related_to: []

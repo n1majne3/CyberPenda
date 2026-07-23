@@ -1,0 +1,1 @@
+Standalone binaries that bootstrap the daemon, CLI, and JSONL protocol bridges between CyberPenda's runtime and external AI providers (Claude SDK, Codex, Pi).

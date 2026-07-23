@@ -1,0 +1,1 @@
+HTTP transport for the Blackboard v2 API plus conformance tests ensuring Claude Code and Pi providers receive identical launch headers, snapshots, and MCP tool allowlists.

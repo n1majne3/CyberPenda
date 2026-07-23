@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: runtime_sandbox/runtime_core
+title: runtime_core
+scope:
+    - internal/runtime/runtime.go
+    - internal/runtime/output_reader.go
+    - internal/runtime/done_signal.go
+source_files: []
+depends_on: []
+related_to: []

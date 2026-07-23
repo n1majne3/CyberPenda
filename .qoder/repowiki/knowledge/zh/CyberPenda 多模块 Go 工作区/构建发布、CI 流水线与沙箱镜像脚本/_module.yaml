@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: scripts_and_ci
+title: 构建发布、CI 流水线与沙箱镜像脚本
+scope:
+    - scripts/
+    - .github/workflows/
+    - docker/
+source_files: []
+depends_on: []
+related_to: []

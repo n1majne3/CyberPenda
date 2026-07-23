@@ -1,0 +1,436 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: zh-CN
+branch: main
+nodes_managed: true
+exported_at: "2026-07-23T11:31:12Z"
+modules:
+    "":
+        dir_name: CyberPenda 多模块 Go 工作区
+        title: CyberPenda 多模块 Go 工作区
+        scope:
+            - .dockerignore
+            - .gitignore
+            - AGENTS.md
+            - CONTEXT.md
+            - Makefile
+            - README.md
+            - docker-compose.yaml
+            - go.mod
+            - go.sum
+        source_files: []
+        children:
+            - blackboard_v2
+            - core_domain
+            - daemon_server
+            - model_provider
+            - pentestctl_cli
+            - runtime_sandbox
+            - scripts_and_ci
+            - skills_system
+            - web_frontend
+        depends_on: []
+        related_to: []
+    blackboard_v2:
+        dir_name: Blackboard v2 语义服务与契约
+        title: Blackboard v2 语义服务与契约
+        scope:
+            - internal/blackboardv2/
+            - internal/blackboardv2contract/
+            - internal/blackboardv2grammar/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: core_domain/persistence_and_migration
+            - path: daemon_server/blackboard_v2
+            - path: daemon_server/mcp_integration
+    core_domain:
+        dir_name: Blackboard v2 核心领域与持久化层
+        title: Blackboard v2 核心领域与持久化层
+        scope:
+            - internal/store/
+            - internal/project/
+            - internal/task/
+            - internal/timeline/
+            - internal/transcript/
+            - internal/report/
+            - internal/credential/
+            - internal/adapters/
+            - internal/blackboardmigration/
+        source_files: []
+        children:
+            - core_domain/adapters
+            - core_domain/core_entities
+            - core_domain/credential_management
+            - core_domain/persistence_and_migration
+            - core_domain/reporting
+        depends_on: []
+        related_to: []
+    core_domain/adapters:
+        dir_name: Provider 运行时适配与纯函数工具集
+        title: Provider 运行时适配与纯函数工具集
+        scope:
+            - internal/adapters/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: runtime_sandbox/runner_integration
+    core_domain/core_entities:
+        dir_name: 核心领域实体与持久化服务（Project_Task_Timeline_Transcript）
+        title: 核心领域实体与持久化服务（Project/Task/Timeline/Transcript）
+        scope:
+            - internal/project/
+            - internal/task/
+            - internal/timeline/
+            - internal/transcript/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: daemon_server/task_handlers
+            - path: pentestctl_cli
+    core_domain/credential_management:
+        dir_name: 凭据引用与绑定解析服务
+        title: 凭据引用与绑定解析服务
+        scope:
+            - internal/credential/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    core_domain/persistence_and_migration:
+        dir_name: SQLite Store 与 Blackboard v1→v2 离线迁移
+        title: SQLite Store 与 Blackboard v1→v2 离线迁移
+        scope:
+            - internal/store/
+            - internal/blackboardmigration/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: blackboard_v2
+            - path: pentestctl_cli
+    core_domain/reporting:
+        dir_name: Blackboard v2 报告渲染器
+        title: Blackboard v2 报告渲染器
+        scope:
+            - internal/report/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: daemon_server/task_handlers
+    daemon_server:
+        dir_name: pentestd 守护进程与 MCP 服务编排层
+        title: pentestd 守护进程与 MCP 服务编排层
+        scope:
+            - internal/daemon/
+            - cmd/pentestd/
+            - internal/mcpserver/
+        source_files: []
+        children:
+            - daemon_server/blackboard_v2
+            - daemon_server/daemon_core
+            - daemon_server/mcp_integration
+            - daemon_server/model_provider_handlers
+            - daemon_server/provider_session_control
+            - daemon_server/runtime_subsystem
+            - daemon_server/skill_handlers
+            - daemon_server/task_handlers
+            - daemon_server/webfs_and_auth
+        depends_on: []
+        related_to:
+            - path: pentestctl_cli
+    daemon_server/blackboard_v2:
+        dir_name: Blackboard v2 HTTP 传输与 Continuation 连续性保障
+        title: Blackboard v2 HTTP 传输与 Continuation 连续性保障
+        scope:
+            - internal/daemon/blackboard_v2_http.go
+            - internal/daemon/blackboard_v2_boundary_test.go
+            - internal/daemon/blackboard_v2_continuity_test.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: blackboard_v2
+    daemon_server/daemon_core:
+        dir_name: 守护进程 HTTP 服务与请求路由
+        title: 守护进程 HTTP 服务与请求路由
+        scope:
+            - internal/daemon/server.go
+            - internal/daemon/logging.go
+            - internal/daemon/test_helpers.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    daemon_server/mcp_integration:
+        dir_name: MCP 可信工具桥接层（Blackboard v2）
+        title: MCP 可信工具桥接层（Blackboard v2）
+        scope:
+            - internal/daemon/mcp_handlers.go
+            - internal/mcpserver/v2.go
+            - internal/mcpserver/server_test.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: blackboard_v2
+    daemon_server/model_provider_handlers:
+        dir_name: 模型提供者与迁移 HTTP 处理器
+        title: 模型提供者与迁移 HTTP 处理器
+        scope:
+            - internal/daemon/modelprovider_handlers.go
+            - internal/daemon/modelprovider_migration_handlers.go
+            - internal/daemon/modelprovider_migration_test.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    daemon_server/provider_session_control:
+        dir_name: Provider Session 控制与生产环境桥接装配
+        title: Provider Session 控制与生产环境桥接装配
+        scope:
+            - internal/daemon/provider_session_control.go
+            - internal/daemon/production_provider_session_factory.go
+            - internal/daemon/provider_session_control_test.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: runtime_sandbox/provider_bridge_session
+    daemon_server/runtime_subsystem:
+        dir_name: 运行时活动计算与扩展_插件 HTTP 处理器
+        title: 运行时活动计算与扩展/插件 HTTP 处理器
+        scope:
+            - internal/daemon/runtime_activity.go
+            - internal/daemon/runtime_extension_handlers.go
+            - internal/daemon/runtime_plugin_handlers.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    daemon_server/skill_handlers:
+        dir_name: 技能（Skill）HTTP 处理器
+        title: 技能（Skill）HTTP 处理器
+        scope:
+            - internal/daemon/skill_handlers.go
+            - internal/daemon/skill_test.go
+            - internal/daemon/custom_args_conflict_test.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: skills_system
+    daemon_server/task_handlers:
+        dir_name: 任务生命周期与启动处理器
+        title: 任务生命周期与启动处理器
+        scope:
+            - internal/daemon/task_handlers.go
+            - internal/daemon/launch_handlers.go
+            - internal/daemon/task_launch_deadlock_test.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: core_domain/core_entities
+            - path: core_domain/reporting
+    daemon_server/webfs_and_auth:
+        dir_name: Web 静态资源嵌入与守护进程鉴权_同源防护
+        title: Web 静态资源嵌入与守护进程鉴权/同源防护
+        scope:
+            - internal/daemon/webfs/
+            - internal/daemon/auth_test.go
+            - internal/daemon/origin_guard_test.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: web_frontend
+    model_provider:
+        dir_name: 模型服务提供者配置与迁移
+        title: 模型服务提供者配置与迁移
+        scope:
+            - internal/modelprovider/
+            - internal/modelprovidermigrate/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: runtime_sandbox/runtime_profile_config
+    pentestctl_cli:
+        dir_name: Blackboard v2 语义 CLI（pentestctl）
+        title: Blackboard v2 语义 CLI（pentestctl）
+        scope:
+            - cmd/pentestctl/
+            - internal/pentestctl/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: core_domain/core_entities
+            - path: core_domain/persistence_and_migration
+            - path: daemon_server
+    runtime_sandbox:
+        dir_name: 任务运行时沙箱与编排（Runtime Sandbox）
+        title: 任务运行时沙箱与编排（Runtime Sandbox）
+        scope:
+            - internal/runtime/
+            - internal/runner/
+            - internal/runtimeprofile/
+        source_files: []
+        children:
+            - runtime_sandbox/provider_bridge_session
+            - runtime_sandbox/runner_integration
+            - runtime_sandbox/runtime_container_host
+            - runtime_sandbox/runtime_profile_config
+        depends_on: []
+        related_to: []
+    runtime_sandbox/provider_bridge_session:
+        dir_name: Provider 会话桥与持久化适配器
+        title: Provider 会话桥与持久化适配器
+        scope:
+            - internal/runtime/session_bridge.go
+            - internal/runtime/provider_bridge_adapter.go
+            - internal/runtime/provider_bridge_command.go
+            - internal/runtime/provider_adapters.go
+            - internal/runtime/provider_session.go
+            - internal/runtime/host_session_bridge.go
+            - internal/runtime/pi_session_discovery.go
+            - internal/runtime/pi_session_tail.go
+            - internal/runtime/session_metadata.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: daemon_server/provider_session_control
+    runtime_sandbox/runner_integration:
+        dir_name: 任务运行时集成编排层（Runner Integration）
+        title: 任务运行时集成编排层（Runner Integration）
+        scope:
+            - internal/runner/
+        source_files: []
+        children:
+            - runtime_sandbox/runner_integration/blackboard_v2
+            - runtime_sandbox/runner_integration/projection_layer
+            - runtime_sandbox/runner_integration/runner_orchestration
+            - runtime_sandbox/runner_integration/sandbox_skills_and_mcp
+        depends_on: []
+        related_to:
+            - path: core_domain/adapters
+            - path: runtime_sandbox/runtime_container_host
+    runtime_sandbox/runner_integration/blackboard_v2:
+        dir_name: Blackboard v2 运行时上下文投影与任务布局
+        title: Blackboard v2 运行时上下文投影与任务布局
+        scope:
+            - internal/runner/blackboard_v2.go
+            - internal/runner/blackboard_v2_layout.go
+            - internal/runner/blackboard_v2_mount_test.go
+            - internal/runner/blackboard_v2_projection_test.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    runtime_sandbox/runner_integration/projection_layer:
+        dir_name: 运行时配置投影层（Provider 配置生成与沙箱隔离）
+        title: 运行时配置投影层（Provider 配置生成与沙箱隔离）
+        scope:
+            - internal/runner/projection.go
+            - internal/runner/projection_apikeys_test.go
+            - internal/runner/projection_claude_test.go
+            - internal/runner/projection_codex_test.go
+            - internal/runner/projection_endpoint_test.go
+            - internal/runner/projection_extension_test.go
+            - internal/runner/projection_modelprovider_test.go
+            - internal/runner/projection_pi_test.go
+            - internal/runner/projection_writefile_test.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    runtime_sandbox/runner_integration/runner_orchestration:
+        dir_name: 任务运行时编排与沙箱命令构建
+        title: 任务运行时编排与沙箱命令构建
+        scope:
+            - internal/runner/target.go
+            - internal/runner/target_test.go
+            - internal/runner/runner.go
+            - internal/runner/runner_test.go
+            - internal/runner/pi_sandbox.go
+            - internal/runner/pi_sandbox_test.go
+            - internal/runner/scope_projection_test.go
+            - internal/runner/skill_projection_test.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    runtime_sandbox/runner_integration/sandbox_skills_and_mcp:
+        dir_name: 沙箱 Skills 注入与可信 MCP 配置
+        title: 沙箱 Skills 注入与可信 MCP 配置
+        scope:
+            - internal/runner/sandbox_skills.go
+            - internal/runner/sandbox_skills_test.go
+            - internal/runner/mcp.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    runtime_sandbox/runtime_container_host:
+        dir_name: 容器与宿主进程沙箱运行时
+        title: 容器与宿主进程沙箱运行时
+        scope:
+            - internal/runtime/container.go
+            - internal/runtime/docker_sandbox.go
+            - internal/runtime/host_process_unix.go
+            - internal/runtime/host_process_windows.go
+            - internal/runtime/codex_session.go
+            - internal/runtime/done_signal.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: runtime_sandbox/runner_integration
+    runtime_sandbox/runtime_profile_config:
+        dir_name: 运行时 Profile 配置与启动解析
+        title: 运行时 Profile 配置与启动解析
+        scope:
+            - internal/runtimeprofile/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: model_provider
+    scripts_and_ci:
+        dir_name: 构建发布、CI 流水线与沙箱镜像脚本
+        title: 构建发布、CI 流水线与沙箱镜像脚本
+        scope:
+            - scripts/
+            - .github/workflows/
+            - docker/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    skills_system:
+        dir_name: Skill 包管理与内置库分发
+        title: Skill 包管理与内置库分发
+        scope:
+            - internal/skill/
+            - skills/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: daemon_server/skill_handlers
+    web_frontend:
+        dir_name: CyberPenda Web 前端（React + Vite）
+        title: CyberPenda Web 前端（React + Vite）
+        scope:
+            - web/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: daemon_server/webfs_and_auth

@@ -1,0 +1,3 @@
+- Public-facing error messages hide internal transport details while preserving an `Unwrap()` chain for tests/diagnostics (see `providerSessionFactoryError`).
+- Provider session events are persisted through a strict allowlist of payload keys rather than forwarding raw frames, keeping the Task Conversation free of protocol noise.
+- Daemon-owned state that cannot be safely recovered across restarts is kept in-memory and fails closed on bind/close rather than attempting reattachment.

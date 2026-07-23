@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: runtime_sandbox/runner_integration
+title: 任务运行时集成编排层（Runner Integration）
+scope:
+    - internal/runner/
+source_files: []
+depends_on: []
+related_to:
+    - path: core_domain/adapters
+    - path: runtime_sandbox/runtime_container_host

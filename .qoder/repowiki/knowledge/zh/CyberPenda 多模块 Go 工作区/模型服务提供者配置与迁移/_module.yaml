@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: model_provider
+title: 模型服务提供者配置与迁移
+scope:
+    - internal/modelprovider/
+    - internal/modelprovidermigrate/
+source_files: []
+depends_on: []
+related_to:
+    - path: runtime_sandbox/runtime_profile_config

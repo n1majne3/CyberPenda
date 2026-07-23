@@ -1,0 +1,1 @@
+Internal and integration tests validating the Blackboard v2 relationship grammar, persistence contract enforcement, and service-level semantics such as supersession, merging, cycles, and reason validation.

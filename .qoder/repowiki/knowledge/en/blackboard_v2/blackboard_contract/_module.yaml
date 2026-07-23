@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: blackboard_v2/blackboard_contract
+title: blackboard_contract
+scope:
+    - internal/blackboardv2contract/
+source_files: []
+depends_on: []
+related_to: []

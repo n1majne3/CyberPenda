@@ -1,0 +1,5 @@
+- HTTP handlers validate JSON bodies with `json.NewDecoder(request.Body).Decode` and immediately return `writeError(response, http.StatusBadRequest, ...)` on decode failure.
+- Errors are surfaced to clients through typed helpers (`writeError`, `writeJSON`, `writeTaskError`, `writeTaskAdapterError`, `writeTaskLaunchError`) rather than raw `http.Error` calls.
+- Sensitive command lines and secrets are redacted before being stored in `runtimeConfig` via `adapters.Redact` and `runtime.EnvSecretValues` instead of logging raw values.
+- Blackboard v2 launches go through `prepareBlackboardV2ContinuationLaunch` with `Precommit`/`BindGrant`/`UnbindGrant` callbacks to keep projection state consistent across the atomic Continuation transaction.
+- Persistent provider sessions are opened via `providerSessionFactory.Open` with fail-closed semantics: any factory or bind error marks both Continuation and Task terminal via `failProviderSessionLaunch`.

@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: blackboard_v2/relationship_grammar
+title: Blackboard v2 Relationship Grammar & Service Tests
+scope:
+    - internal/blackboardv2/relationship_read_internal_test.go
+    - internal/blackboardv2/relationship_service_test.go
+    - internal/blackboardv2/relationship_grammar_internal_test.go
+source_files: []
+depends_on: []
+related_to: []

@@ -1,0 +1,6 @@
+- Every handler calls `authenticateBlackboardV2` first, returns early via `writeBlackboardV2Error` on failure, and never inspects request body before authentication.
+- Mutating POST handlers require an `Idempotency-Key` header and pass it through as `IdempotencyKey`; GET handlers never carry one and get an empty sync fingerprint.
+- Domain actions are invoked inside `serveBlackboardV2` / `serveBlackboardV2Result` closures rather than directly, centralizing continuation binding, sync claim/capture, and response marshalling.
+- JSON bodies are decoded through `decodeBlackboardV2JSON` which enforces a 4 MiB cap, rejects unknown fields, and forbids trailing data after the top-level value.
+- Errors are returned as `*blackboardv2.Error` values and translated to HTTP status via `blackboardV2HTTPStatus`, with retryable codes carrying a `Retry-After: 1` header.
+- Test assertions use `httptest.NewRecorder` against `server.ServeHTTP` and assert both status code and absence of deprecated compatibility headers rather than inspecting internal state.

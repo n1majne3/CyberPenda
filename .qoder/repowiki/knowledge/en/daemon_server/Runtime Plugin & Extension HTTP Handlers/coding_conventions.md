@@ -1,0 +1,3 @@
+- List handlers return an empty slice instead of nil when the underlying store has no entries, so JSON marshals to `[]` rather than `null`.
+- GET-by-id handlers extract the id from `request.PathValue(...)` and respond with `http.StatusNotFound` + `writeError` when missing or not found.
+- Handler methods are defined as `(server *Server)` receivers on the daemon server, keeping routing logic separate from business logic stored in injected subsystems.

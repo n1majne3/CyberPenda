@@ -1,0 +1,9 @@
+schema_version: 1
+module_path: core_domain/adapters
+title: Provider 运行时适配与纯函数工具集
+scope:
+    - internal/adapters/
+source_files: []
+depends_on: []
+related_to:
+    - path: runtime_sandbox/runner_integration

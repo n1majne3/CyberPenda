@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: blackboard_v2/runtime_core
+title: Blackboard v2 Semantic Service & Continuity
+scope:
+    - internal/blackboardv2/service.go
+    - internal/blackboardv2/checkpoint.go
+    - internal/blackboardv2/continuity.go
+source_files: []
+depends_on: []
+related_to: []

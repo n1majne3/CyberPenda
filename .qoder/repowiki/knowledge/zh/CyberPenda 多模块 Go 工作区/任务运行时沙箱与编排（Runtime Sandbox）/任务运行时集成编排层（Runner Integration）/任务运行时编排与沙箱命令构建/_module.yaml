@@ -1,0 +1,15 @@
+schema_version: 1
+module_path: runtime_sandbox/runner_integration/runner_orchestration
+title: 任务运行时编排与沙箱命令构建
+scope:
+    - internal/runner/target.go
+    - internal/runner/target_test.go
+    - internal/runner/runner.go
+    - internal/runner/runner_test.go
+    - internal/runner/pi_sandbox.go
+    - internal/runner/pi_sandbox_test.go
+    - internal/runner/scope_projection_test.go
+    - internal/runner/skill_projection_test.go
+source_files: []
+depends_on: []
+related_to: []

@@ -1,0 +1,4 @@
+- HTTP error mapping uses a top-level `writeXxxError` helper that switches on `errors.Is(err, <package>.Err*)` sentinel values and maps each group to a single HTTP status code.
+- Optional update fields are decoded into pointer-typed structs (`*string`, `*[]T`, `*modelprovider.Catalog`) so callers can distinguish unset from empty.
+- Per-task session bindings are stored in a `map[string]...` guarded by a `sync.Mutex`, with `rebindPrior` used to attach new continuations to an existing binding instead of relaunching.
+- Long-lived child processes are launched through `runtime.New(Sandbox|Host)SessionBridge`, started inside a closure passed to a registry's `Bind`, and closed via a per-provider `closeBridge` callback registered on the bound session's `onClose`.

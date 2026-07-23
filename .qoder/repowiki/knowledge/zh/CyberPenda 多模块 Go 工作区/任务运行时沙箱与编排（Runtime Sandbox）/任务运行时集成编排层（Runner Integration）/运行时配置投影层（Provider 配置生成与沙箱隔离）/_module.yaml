@@ -1,0 +1,16 @@
+schema_version: 1
+module_path: runtime_sandbox/runner_integration/projection_layer
+title: 运行时配置投影层（Provider 配置生成与沙箱隔离）
+scope:
+    - internal/runner/projection.go
+    - internal/runner/projection_apikeys_test.go
+    - internal/runner/projection_claude_test.go
+    - internal/runner/projection_codex_test.go
+    - internal/runner/projection_endpoint_test.go
+    - internal/runner/projection_extension_test.go
+    - internal/runner/projection_modelprovider_test.go
+    - internal/runner/projection_pi_test.go
+    - internal/runner/projection_writefile_test.go
+source_files: []
+depends_on: []
+related_to: []

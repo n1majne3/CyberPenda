@@ -1,0 +1,5 @@
+- Closed JSON shapes are enforced by implementing a custom `UnmarshalJSON` that first decodes into `map[string]json.RawMessage`, validates each field against an `allowed` whitelist via `rejectUnknownFields`, then populates the struct — used for both `RetainEvidenceRequest` and `Change`.
+- Semantic errors are surfaced as typed `*Error` values produced by the `semanticError(code, message, path, details)` helper rather than plain `fmt.Errorf`, so callers can distinguish domain violations from transport failures.
+- Idempotent mutations use `INSERT OR IGNORE` followed by a read-back of the winning row and a hash/status comparison to detect conflicting retries, instead of relying on unique constraints alone.
+- Filesystem paths are validated with a two-stage guard: `relativeWithinRoot` checks containment against configured roots, and `openSecureRegularFile` / `openExistingSecureDirectory` walk components with `Lstat`+`OpenRoot` while rejecting symlinks and verifying `os.SameFile` after open.
+- Cross-platform behavior is split by Go build tags (e.g. `//go:build !windows`) with platform-specific implementations of the same function signature, keeping callers agnostic.

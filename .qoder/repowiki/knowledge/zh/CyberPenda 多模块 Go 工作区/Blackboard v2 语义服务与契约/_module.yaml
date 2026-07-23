@@ -1,0 +1,13 @@
+schema_version: 1
+module_path: blackboard_v2
+title: Blackboard v2 语义服务与契约
+scope:
+    - internal/blackboardv2/
+    - internal/blackboardv2contract/
+    - internal/blackboardv2grammar/
+source_files: []
+depends_on: []
+related_to:
+    - path: core_domain/persistence_and_migration
+    - path: daemon_server/blackboard_v2
+    - path: daemon_server/mcp_integration

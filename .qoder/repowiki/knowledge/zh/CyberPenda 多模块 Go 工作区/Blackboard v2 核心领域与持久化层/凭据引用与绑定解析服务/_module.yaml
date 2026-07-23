@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: core_domain/credential_management
+title: 凭据引用与绑定解析服务
+scope:
+    - internal/credential/
+source_files: []
+depends_on: []
+related_to: []

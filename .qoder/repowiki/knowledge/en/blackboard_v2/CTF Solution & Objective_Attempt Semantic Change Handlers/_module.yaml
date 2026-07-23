@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: blackboard_v2/solution_and_objective
+title: CTF Solution & Objective/Attempt Semantic Change Handlers
+scope:
+    - internal/blackboardv2/solution.go
+    - internal/blackboardv2/objective_attempt_service_test.go
+    - internal/blackboardv2/solution_service_test.go
+source_files: []
+depends_on: []
+related_to: []

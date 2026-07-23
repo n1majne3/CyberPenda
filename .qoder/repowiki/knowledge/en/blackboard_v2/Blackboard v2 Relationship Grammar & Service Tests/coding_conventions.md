@@ -1,0 +1,4 @@
+- Test cases seed state via `service.Apply` with `Schema: "semantic-change-batch/v2"` and an `IdempotencyKey`, then assert outcomes by inspecting returned `Relations`/`Records` tuples rather than querying the DB directly.
+- Semantic failures are asserted by casting to `*blackboardv2.Error` with `errors.As` and checking `Code == "semantic_validation"` (or `"version_conflict"`) together with the expected `Path` and `Details` map entries, instead of string-matching error messages.
+- Persistence-contract violations are injected by writing raw SQL into `blackboard_v2_relationships` after seeding entities/facts through the normal API, then verifying that both `RuntimeSnapshot` and `ReadCurrent` surface the same violation code.
+- Each scenario is wrapped in a named subtest using `t.Run(testCase.name, ...)` driven by a struct slice, so individual grammar triples and persisted-violation variants can be executed in isolation.

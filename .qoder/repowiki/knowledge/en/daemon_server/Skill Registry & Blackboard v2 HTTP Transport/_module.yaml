@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: daemon_server/skill
+title: Skill Registry & Blackboard v2 HTTP Transport
+scope:
+    - internal/daemon/skill_handlers.go
+    - internal/daemon/skill_test.go
+    - internal/daemon/blackboard_v2_http.go
+source_files: []
+depends_on: []
+related_to: []

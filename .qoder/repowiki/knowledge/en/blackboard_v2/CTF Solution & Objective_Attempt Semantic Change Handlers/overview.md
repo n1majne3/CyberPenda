@@ -1,0 +1,1 @@
+Implements the create/update/transition/supersede handlers and CTF solved-state derivation for Solution records, plus ownership/reconciliation rules for Objective and Attempt current-work records.
