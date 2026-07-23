@@ -742,6 +742,22 @@ func TestFailedTaskHTTPResumeQueuesOnceAndLaunchesFreshRuntime(t *testing.T) {
 		t.Fatalf("resume status = %d body %s", resumeResp.Code, resumeResp.Body.String())
 	}
 	waitForHarnessActive(t, server, created.ID, true)
+	// Harness registration precedes the durable status write; poll until the
+	// Task is durably running to avoid a race with the background Launch goroutine.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		got, err := server.tasks.Get(created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status == task.StatusRunning {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("task never reached running after resume, last status = %q", got.Status)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	if factory.openCount() != opensBefore+1 {
 		t.Fatalf("expected single Runtime open, before=%d after=%d", opensBefore, factory.openCount())
 	}

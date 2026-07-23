@@ -40,7 +40,7 @@ func TestBlackboardV2ReplacementRetiresEveryIndependentProductionV1Path(t *testi
 		relative = filepath.ToSlash(relative)
 		if entry.IsDir() {
 			switch relative {
-			case ".git", "runs", "web/node_modules", "web/dist", "internal/daemon/webfs/dist", "docs":
+			case ".git", ".qoder", "runs", "web/node_modules", "web/dist", "internal/daemon/webfs/dist", "docs":
 				return filepath.SkipDir
 			}
 			return nil
