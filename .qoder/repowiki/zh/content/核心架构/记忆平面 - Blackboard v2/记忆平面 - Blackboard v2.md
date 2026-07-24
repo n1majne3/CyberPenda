@@ -12,7 +12,14 @@
 - [resume.go](file://internal/blackboardv2/resume.go)
 - [finish.go](file://internal/blackboardv2/finish.go)
 - [grammar.go](file://internal/blackboardv2grammar/grammar.go)
+- [replacement_proof_test.go](file://internal/blackboardv2/replacement_proof_test.go)
 </cite>
+
+## 更新摘要
+**所做更改**   
+- 更新了测试环境隔离机制，添加了.qoder目录过滤以防止IDE特定文件干扰测试执行
+- 增强了替换证明测试的可靠性，确保测试环境的纯净性
+- 改进了测试扫描逻辑，排除开发工具生成的临时文件
 
 ## 目录
 1. [引言](#引言)
@@ -28,6 +35,8 @@
 
 ## 引言
 本文件系统性阐述 Blackboard v2 语义化记忆平面的设计与实现，覆盖实体关系模型、版本控制、原子性变更批处理、快照恢复、Continuation 生命周期管理、健康诊断、投影合并与证据归档。文档同时给出数据一致性保证、并发控制与性能优化策略，并提供语义查询示例与扩展开发指南，帮助读者快速理解并安全扩展该子系统。
+
+**更新** 增强了测试环境隔离机制，通过添加.qoder目录过滤确保测试执行的稳定性和可重复性。
 
 ## 项目结构
 Blackboard v2 位于 internal/blackboardv2 包内，围绕 Service 提供统一的语义写入与读取能力；continuity 负责 Continuation 的创建、同步与终止；projection 提供运行时快照投影与注意力预算度量；evidence 负责受管证据文件的保留与完整性校验；health 提供只读健康诊断；merge 支持记录合并与键重定向；checkpoint/resume/finish 构成任务中断恢复与收尾流程；blackboardv2grammar 定义关系词汇与端点矩阵。
@@ -47,6 +56,7 @@ K["Checkpoint<br/>尝试摘要检查点"]
 end
 subgraph "领域规则"
 G["Grammar<br/>关系词汇/端点矩阵"]
+T["TestIsolation<br/>测试环境隔离"]
 end
 S --> G
 C --> S
@@ -57,6 +67,7 @@ M --> S
 F --> S
 R --> S
 K --> S
+T --> S
 ```
 
 图表来源
@@ -70,6 +81,7 @@ K --> S
 - [resume.go:21-81](file://internal/blackboardv2/resume.go#L21-L81)
 - [checkpoint.go:71-98](file://internal/blackboardv2/checkpoint.go#L71-L98)
 - [grammar.go:58-83](file://internal/blackboardv2grammar/grammar.go#L58-L83)
+- [replacement_proof_test.go:42-44](file://internal/blackboardv2/replacement_proof_test.go#L42-L44)
 
 章节来源
 - [service.go:40-70](file://internal/blackboardv2/service.go#L40-L70)
@@ -84,6 +96,7 @@ K --> S
 - 合并与键重定向：Record Merge 将源记录合并到规范记录，迁移关系并建立 Key Redirect，保持历史完整。
 - Continuation 生命周期：Create/Authorize/Inspect/Synchronize/Capture/Finalize/Finish 形成可信运行时会话的端到端协议，确保工作快照与数据库一致。
 - 检查点与恢复：CheckpointAttemptForContinuation 对 Attempt 摘要做版本化检查点；InterruptedAttemptCheckpoints 读取已终态 Continuation 的最终摘要用于恢复。
+- **测试环境隔离**：通过目录过滤机制排除IDE特定文件和临时文件，确保测试环境的纯净性和可重复性。
 
 章节来源
 - [service.go:72-147](file://internal/blackboardv2/service.go#L72-L147)
@@ -121,14 +134,20 @@ class Grammar {
 +ReasonViolation(relation, reason) string
 +Cases() []Case
 }
+class TestIsolation {
++SkipDirectories() []string
++FilterIDEFiles() bool
+}
 Service --> Grammar : "使用关系规则"
 ContinuityService --> Service : "委托语义操作"
+TestIsolation --> Service : "确保测试环境纯净"
 ```
 
 图表来源
 - [service.go:644-656](file://internal/blackboardv2/service.go#L644-L656)
 - [continuity.go:764-800](file://internal/blackboardv2/continuity.go#L764-L800)
 - [grammar.go:121-154](file://internal/blackboardv2grammar/grammar.go#L121-L154)
+- [replacement_proof_test.go:42-44](file://internal/blackboardv2/replacement_proof_test.go#L42-L44)
 
 ## 详细组件分析
 
@@ -209,7 +228,7 @@ RECORD ||--o{ KEY_REDIRECT : "canonical_key"
 ### 运行时快照与注意力预算
 - 快照结构：RuntimeSnapshot 仅包含最小必要字段，Work 聚合 open Objective/Attempt，Knowledge 聚合当前 Entity/Fact/Finding/Solution/Evidence，Relations 为三元组（含可选 reason）。
 - 注意力预算：MeasureRuntimeSnapshot 基于 UTF-8 字节估算 token 数，划分 within_target(≤16K)/above_target(>16K)/warning(≥32K)/required(≥64K)，Complete/Launchable 指示是否可启动。
-- 健康诊断：当快照不可用时降级为“健康安全”的诊断编码，仍报告 attention 与 anomalies，但不阻断 launch。
+- 健康诊断：当快照不可用时降级为"健康安全"的诊断编码，仍报告 attention 与 anomalies，但不阻断 launch。
 
 ```mermaid
 flowchart TD
@@ -344,6 +363,40 @@ RD --> OK["返回变更结果"]
 - [checkpoint.go:71-98](file://internal/blackboardv2/checkpoint.go#L71-L98)
 - [resume.go:21-81](file://internal/blackboardv2/resume.go#L21-L81)
 
+### 测试环境隔离与替换证明
+**新增** 测试环境隔离机制确保替换证明测试的稳定性和可重复性，通过目录过滤排除IDE特定文件和临时文件。
+
+- **目录过滤策略**：在替换证明测试中，明确跳过 `.git`、`.qoder`、`runs`、`web/node_modules`、`web/dist`、`internal/daemon/webfs/dist`、`docs` 等目录，防止IDE配置和构建产物干扰测试执行。
+- **IDE文件防护**：特别添加 `.qoder` 目录过滤，防止Qoder IDE生成的配置文件和缓存文件影响测试结果的准确性。
+- **测试扫描增强**：改进文件扫描逻辑，确保只分析生产代码和相关测试文件，排除开发工具和临时文件。
+- **环境纯净性保证**：通过严格的目录过滤，确保测试在不同开发环境和CI环境中具有一致的行为。
+
+```mermaid
+flowchart TD
+A["替换证明测试启动"] --> B["遍历仓库目录"]
+B --> C{"是否为跳过目录?"}
+C --> |是| D["跳过目录扫描"]
+C --> |否| E{"是否为测试文件?"}
+E --> |是| F["跳过分析"]
+E --> |否| G{"是否为允许的文件类型?"}
+G --> |否| H["跳过文件"]
+G --> |是| I["读取文件内容"]
+I --> J["检查废弃的v1引用"]
+J --> K["报告违规引用"]
+D --> B
+F --> B
+H --> B
+K --> B
+```
+
+图表来源
+- [replacement_proof_test.go:32-81](file://internal/blackboardv2/replacement_proof_test.go#L32-L81)
+- [replacement_proof_test.go:42-44](file://internal/blackboardv2/replacement_proof_test.go#L42-L44)
+
+章节来源
+- [replacement_proof_test.go:32-81](file://internal/blackboardv2/replacement_proof_test.go#L32-L81)
+- [replacement_proof_test.go:42-44](file://internal/blackboardv2/replacement_proof_test.go#L42-L44)
+
 ## 依赖关系分析
 - 内部依赖：Service 依赖 store.DB 与 blackboardv2grammar；ContinuityService 依赖 Service、task.Service 与 grantStore；Evidence 依赖受限文件系统根与配置。
 - 外部集成：HTTP/MCP/CLI/Runner 通过 Service 接口访问语义状态；Web UI 通过 API 消费 Health/Snapshot/History。
@@ -363,12 +416,14 @@ Service --> Merge
 Service --> Finish
 Service --> Resume
 Service --> Checkpoint
+TestIsolation["测试环境隔离"] --> Service
 ```
 
 图表来源
 - [service.go:40-70](file://internal/blackboardv2/service.go#L40-L70)
 - [continuity.go:119-134](file://internal/blackboardv2/continuity.go#L119-L134)
 - [grammar.go:121-154](file://internal/blackboardv2grammar/grammar.go#L121-L154)
+- [replacement_proof_test.go:42-44](file://internal/blackboardv2/replacement_proof_test.go#L42-L44)
 
 章节来源
 - [service.go:40-70](file://internal/blackboardv2/service.go#L40-L70)
@@ -379,6 +434,7 @@ Service --> Checkpoint
 - 批量写入：ChangeBatch 支持多变更原子提交，减少往返与锁竞争；避免在单批次中包含超大文本字段导致整体超限。
 - 证据 I/O：RetainEvidenceForContinuation 采用预分配临时路径与幂等回执，避免重复拷贝；尽量在沙箱内就近产出证据以减少跨卷移动。
 - 健康诊断：ProjectSemanticHealth 优先使用规范快照，否则退化为诊断编码；避免频繁全量扫描大快照。
+- **测试性能优化**：通过目录过滤减少不必要的文件扫描，提高替换证明测试的执行效率。
 
 [本节为通用指导，无需源码引用]
 
@@ -395,14 +451,16 @@ Service --> Checkpoint
   - 使用 ReadHistory 对比变更前后记录与关系。
   - 使用 ProjectSemanticHealth 获取异常与建议。
   - 使用 InterruptedAttemptCheckpoints 确认中断前的最终摘要。
+- **测试环境问题**：如果替换证明测试失败，检查是否有IDE配置文件（如.qoder目录）未被正确过滤，确保测试环境的纯净性。
 
 章节来源
 - [service.go:616-630](file://internal/blackboardv2/service.go#L616-L630)
 - [health.go:84-183](file://internal/blackboardv2/health.go#L84-L183)
 - [resume.go:21-81](file://internal/blackboardv2/resume.go#L21-L81)
+- [replacement_proof_test.go:42-44](file://internal/blackboardv2/replacement_proof_test.go#L42-L44)
 
 ## 结论
-Blackboard v2 以强契约的语义变更、严格的版本控制与关系语法、可靠的 Continuation 同步与收尾、完备的证据归档与健康诊断，构建了稳定可扩展的记忆平面。通过注意力预算与合并机制，系统在大上下文场景下仍能保持可观测性与可控性。遵循本文档的设计与最佳实践，可在保证一致性的前提下高效扩展新的记录类型与关系。
+Blackboard v2 以强契约的语义变更、严格的版本控制与关系语法、可靠的 Continuation 同步与收尾、完备的证据归档与健康诊断，构建了稳定可扩展的记忆平面。通过注意力预算与合并机制，系统在大上下文场景下仍能保持可观测性与可控性。**新增的测试环境隔离机制进一步确保了测试的稳定性和可重复性**。遵循本文档的设计与最佳实践，可在保证一致性的前提下高效扩展新的记录类型与关系。
 
 [本节为总结，无需源码引用]
 
@@ -436,6 +494,9 @@ Blackboard v2 以强契约的语义变更、严格的版本控制与关系语法
   - 在 health.go 中补充证据完整性检查与告警等级。
 - 扩展 Continuation 钩子：
   - 在 continuity.go 的 CreateContinuation 中使用 Precommit/BindGrant/UnbindGrant 注入额外投影或凭据绑定。
+- **测试环境配置**：
+  - 在替换证明测试中，确保新的IDE目录被添加到跳过列表，防止干扰测试执行。
+  - 定期审查测试环境隔离策略，适应新的开发工具和IDE需求。
 
 章节来源
 - [service.go:234-396](file://internal/blackboardv2/service.go#L234-L396)
@@ -443,3 +504,4 @@ Blackboard v2 以强契约的语义变更、严格的版本控制与关系语法
 - [health.go:190-289](file://internal/blackboardv2/health.go#L190-L289)
 - [evidence.go:194-360](file://internal/blackboardv2/evidence.go#L194-L360)
 - [continuity.go:764-800](file://internal/blackboardv2/continuity.go#L764-L800)
+- [replacement_proof_test.go:42-44](file://internal/blackboardv2/replacement_proof_test.go#L42-L44)

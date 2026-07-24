@@ -3,11 +3,11 @@ schema_version: 1
 locale: zh-CN
 branch: main
 nodes_managed: true
-exported_at: "2026-07-23T11:31:12Z"
+exported_at: "2026-07-23T13:37:36Z"
 modules:
     "":
-        dir_name: CyberPenda 多模块 Go 工作区
-        title: CyberPenda 多模块 Go 工作区
+        dir_name: CyberPenda 多模块 Go 工作区（pentest）
+        title: CyberPenda 多模块 Go 工作区（pentest）
         scope:
             - .dockerignore
             - .gitignore
@@ -32,8 +32,8 @@ modules:
         depends_on: []
         related_to: []
     blackboard_v2:
-        dir_name: Blackboard v2 语义服务与契约
-        title: Blackboard v2 语义服务与契约
+        dir_name: Blackboard v2 语义服务与契约工件
+        title: Blackboard v2 语义服务与契约工件
         scope:
             - internal/blackboardv2/
             - internal/blackboardv2contract/
@@ -123,8 +123,8 @@ modules:
         related_to:
             - path: daemon_server/task_handlers
     daemon_server:
-        dir_name: pentestd 守护进程与 MCP 服务编排层
-        title: pentestd 守护进程与 MCP 服务编排层
+        dir_name: pentestd 守护进程装配与运行时编排
+        title: pentestd 守护进程装配与运行时编排
         scope:
             - internal/daemon/
             - cmd/pentestd/
