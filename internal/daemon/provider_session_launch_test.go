@@ -112,7 +112,15 @@ func TestLaunchAssemblyBindsAndReusesTaskOwnedProviderSessionAcrossContinuations
 		t.Fatal(err)
 	}
 	waitForHarnessActive(t, server, created.ID, true)
-	second, err := server.tasks.ActiveContinuation(created.ID)
+	var second *task.TaskContinuation
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		second, err = server.tasks.ActiveContinuation(created.ID)
+		if err == nil && second != nil && second.ContainerID == "container-1" && second.NativeSessionID == "native-session-1" && second.NativeSessionPath == "/sessions/one.jsonl" {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	if err != nil || second == nil {
 		t.Fatalf("second active Continuation = %#v, err=%v", second, err)
 	}

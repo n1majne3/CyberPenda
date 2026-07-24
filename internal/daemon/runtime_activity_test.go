@@ -267,7 +267,15 @@ func testRuntimeActivityHostHealthTransitions(t *testing.T, provider runtimeprof
 	server, created, _ := newRuntimeActivityFixture(t, provider, task.RunnerHost, factory)
 	launchActivityTask(t, server, created)
 
-	body := getTaskActivity(t, server, created.ProjectID, created.ID)
+	var body runtimeActivityBody
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		body = getTaskActivity(t, server, created.ProjectID, created.ID)
+		if body.Status == "running" && body.RuntimeActivity.Liveness == "live" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if body.Status != "running" || body.RuntimeActivity.Liveness != "live" {
 		t.Fatalf("host live activity = status %q activity %#v", body.Status, body.RuntimeActivity)
 	}
@@ -279,7 +287,7 @@ func testRuntimeActivityHostHealthTransitions(t *testing.T, provider runtimeprof
 	session.MarkOffline()
 	close(closed)
 
-	deadline := time.Now().Add(3 * time.Second)
+	deadline = time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		body = getTaskActivity(t, server, created.ProjectID, created.ID)
 		if body.Status == "failed" && body.RuntimeActivity.Liveness == "offline" {
@@ -358,10 +366,23 @@ func TestRuntimeActivityLostSessionOwnershipIsOrphanedNotLive(t *testing.T) {
 	server, created, _ := newRuntimeActivityFixture(t, runtimeprofile.ProviderCodex, task.RunnerSandbox, factory)
 	launchActivityTask(t, server, created)
 
+	var body runtimeActivityBody
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		body = getTaskActivity(t, server, created.ProjectID, created.ID)
+		if body.Status == "running" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if body.Status != "running" {
+		t.Fatalf("status before ownership loss = %q, want running", body.Status)
+	}
+
 	// Drop daemon session ownership while the Task is still durable-active.
 	// Persistent Runtime must report orphaned, never live, without a bound session.
 	_ = server.providerSessions.remove(created.ID)
-	body := getTaskActivity(t, server, created.ProjectID, created.ID)
+	body = getTaskActivity(t, server, created.ProjectID, created.ID)
 	if body.RuntimeActivity.Liveness == "live" {
 		t.Fatalf("lost session ownership reported live: %#v", body.RuntimeActivity)
 	}
