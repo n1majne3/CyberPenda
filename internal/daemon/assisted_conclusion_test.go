@@ -1189,7 +1189,7 @@ func TestDuplicateAssistedTurnCompletionCreatesOnePendingMarker(t *testing.T) {
 	}
 }
 
-func TestPendingBlackboardConclusionSurvivesDaemonRestart(t *testing.T) {
+func TestUncertainBlackboardConclusionRequiresActionAfterDaemonRestart(t *testing.T) {
 	root := t.TempDir()
 	server, projectID, profileID, session := newAssistedConclusionFixtureAt(t, root, true, true)
 	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
@@ -1219,9 +1219,10 @@ func TestPendingBlackboardConclusionSurvivesDaemonRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
-	found := waitForBlackboardConclusionState(t, reopened, projectID, created.ID, task.BlackboardConclusionStateConcluding)
+	found := waitForBlackboardConclusionState(t, reopened, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
 	if found.BlackboardConclusion.SourceTurnID != "work-turn-1" || found.BlackboardConclusion.SourceWorkWatermark != 1 ||
-		found.BlackboardConclusion.SemanticPersistenceWatermark != 0 {
+		found.BlackboardConclusion.SemanticPersistenceWatermark != 0 ||
+		found.BlackboardConclusion.ErrorCode != task.BlackboardConclusionErrorRuntimeRecoveryRequired {
 		t.Fatalf("restarted conclusion view = %#v", found.BlackboardConclusion)
 	}
 	var pending task.Event
@@ -1256,16 +1257,13 @@ func TestRecoveryGenerationAwaitingResultBecomesActionRequiredAfterRestart(t *te
 				t.Fatal(err)
 			}
 			waitForAssistedProviderRequests(t, session, 2)
-			var wantCode task.BlackboardConclusionErrorCode
 			switch generation {
 			case "repair":
-				wantCode = task.BlackboardConclusionErrorInvalidResult
 				if err := emitAttemptResultAndComplete(t, session, []byte(`{"schema":"runtime-attempt-result/v1","base_revision":0,"unexpected":true}`)); err == nil {
 					t.Fatal("invalid result unexpectedly decoded")
 				}
 				waitForAssistedProviderRequests(t, session, 3)
 			case "retry":
-				wantCode = task.BlackboardConclusionErrorToolUseForbidden
 				if err := session.EmitObservation(runtime.ProviderSessionObservation{
 					Kind: runtime.ProviderSessionObservationToolUse, ToolCallID: "force-restart-retry", ToolName: "shell",
 				}); err != nil {
@@ -1298,7 +1296,7 @@ func TestRecoveryGenerationAwaitingResultBecomesActionRequiredAfterRestart(t *te
 			}
 			t.Cleanup(func() { _ = reopened.Close() })
 			found := waitForBlackboardConclusionState(t, reopened, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
-			if found.BlackboardConclusion.ErrorCode != wantCode {
+			if found.BlackboardConclusion.ErrorCode != task.BlackboardConclusionErrorRuntimeRecoveryRequired {
 				t.Fatalf("restarted %s conclusion = %#v", generation, found.BlackboardConclusion)
 			}
 		})
@@ -1804,9 +1802,7 @@ func TestAssistedConclusionForbiddenFailureDominatesInvalidInEitherCallbackOrder
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server, projectID, created, session := prepareAssistedConclusionAwaiting(t)
-			if !server.acquireProviderTaskControl(created.ID) {
-				t.Fatal("acquire provider task control")
-			}
+			waitForProviderTaskControl(t, server, created.ID)
 			invalid := func() {
 				if err := session.EmitAttemptResult([]byte(`{"schema":"runtime-attempt-result/v1","base_revision":0,"unexpected":true}`)); err == nil {
 					t.Error("invalid result unexpectedly decoded")
@@ -2057,7 +2053,7 @@ func TestAssistedConclusionRepairDispatchFailureBecomesActionRequired(t *testing
 		t.Fatal("invalid result unexpectedly decoded")
 	}
 	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
-	if found.BlackboardConclusion.ErrorCode != task.BlackboardConclusionErrorInvalidResult || len(session.LastRequests()) != 2 {
+	if found.BlackboardConclusion.ErrorCode != task.BlackboardConclusionErrorRuntimeRecoveryRequired || len(session.LastRequests()) != 2 {
 		t.Fatalf("dispatch recovery = %#v requests=%d", found.BlackboardConclusion, len(session.LastRequests()))
 	}
 	recoveryEvents := 0
@@ -2099,7 +2095,7 @@ func TestAssistedConclusionRetryDispatchFailureBecomesActionRequired(t *testing.
 	}); err != nil {
 		t.Fatal(err)
 	}
-	initial := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
+	waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
 	retry := httptest.NewRequest(http.MethodPost,
 		"/api/projects/"+projectID+"/tasks/"+created.ID+"/blackboard-conclusion/retry", bytes.NewBufferString(`{}`))
 	retry.Header.Set("Idempotency-Key", "dispatch-failure-retry")
@@ -2109,7 +2105,7 @@ func TestAssistedConclusionRetryDispatchFailureBecomesActionRequired(t *testing.
 		t.Fatalf("retry status = %d body %s", response.Code, response.Body.String())
 	}
 	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
-	if found.BlackboardConclusion.ErrorCode != initial.BlackboardConclusion.ErrorCode || len(session.LastRequests()) != 2 {
+	if found.BlackboardConclusion.ErrorCode != task.BlackboardConclusionErrorRuntimeRecoveryRequired || len(session.LastRequests()) != 2 {
 		t.Fatalf("retry dispatch recovery = %#v requests=%d", found.BlackboardConclusion, len(session.LastRequests()))
 	}
 }

@@ -114,6 +114,8 @@ type Server struct {
 	closing                bool
 	providerSessions       *providerSessionRegistry
 	providerSessionFactory ProviderSessionFactory
+	runtimeRecoveryMu      sync.RWMutex
+	runtimeRecovery        map[string]task.RuntimeActivity
 	blackboardConclusions  *blackboardConclusionTracker
 	runtimeStopTimeout     time.Duration
 }
@@ -223,6 +225,7 @@ func NewServer(config Config) (*Server, error) {
 		providerControlCancel:  providerControlCancel,
 		providerSessions:       newProviderSessionRegistry(),
 		providerSessionFactory: config.ProviderSessionFactory,
+		runtimeRecovery:        map[string]task.RuntimeActivity{},
 		blackboardConclusions:  newBlackboardConclusionTracker(),
 		runtimeStopTimeout:     10 * time.Second,
 	}
@@ -245,8 +248,9 @@ func NewServer(config Config) (*Server, error) {
 	}
 	server.routes()
 	server.reconcileValidatedBlackboardConclusionApplies()
-	server.reconcileInterruptedTasks()
-	server.reconcileStrandedBlackboardConclusionRecoveries()
+	recovery := server.recoverBlackboardConclusionReceipts(context.Background())
+	server.reconcileInterruptedTasks(recovery.ReconciliationExcludedTaskIDs)
+	server.applyProviderSessionRecoveryLifecycle(recovery.Outcomes)
 
 	return server, nil
 }
@@ -256,8 +260,8 @@ func NewServer(config Config) (*Server, error) {
 // restart no task can actually be executing; mark them interrupted and emit a
 // lifecycle event so the timeline and logs explain the gap. Failures are
 // logged but never block startup.
-func (server *Server) reconcileInterruptedTasks() {
-	reconciled, err := server.tasks.ReconcileInterruptedState()
+func (server *Server) reconcileInterruptedTasks(lifecycleProtectedTaskIDs []string) {
+	reconciled, err := server.tasks.ReconcileInterruptedStateExcept(lifecycleProtectedTaskIDs)
 	if err != nil {
 		server.logger.Printf("task reconcile: failed to interrupt stale tasks: %v", err)
 		return

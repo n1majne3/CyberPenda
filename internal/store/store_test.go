@@ -287,21 +287,21 @@ func TestMigration43AddsVersionRegenerationStateAndPreservesReceipts(t *testing.
 	}
 	hash := strings.Repeat("a", 64)
 	if _, err := db.Exec(`INSERT INTO assisted_conclusion_receipts
-		(id,task_id,continuation_id,source_session_id,source_turn_id,state,source_work_watermark,
+		(id,task_id,continuation_id,source_request_id,source_request_correlation_exact,source_session_id,source_turn_id,state,source_work_watermark,
 		 semantic_persistence_watermark,dispatch_request_id,control_turn_id,base_revision,source_model_provider_id,
 		 source_model,source_reasoning_effort,canonical_result_json,canonical_result_sha256,apply_idempotency_key,
-		 automatic_turn_count,repair_count,explicit_retry_count,created_at,updated_at)
-		VALUES ('receipt-validated','task-1','continuation-1','session-1','turn-1','validated',3,1,
+		 automatic_turn_count,repair_count,explicit_retry_count,send_attempt_count,send_started_at,created_at,updated_at)
+		VALUES ('receipt-validated','task-1','continuation-1','source-request-1',1,'session-1','turn-1','validated',3,1,
 		 'request-validated','control-validated',7,'provider-1','model-1','high',X'7B7D',?,'apply-validated',
-		 1,0,0,'2026-07-27T12:00:00Z','2026-07-27T12:01:00Z');
+		 1,0,0,1,'2026-07-27T12:00:30Z','2026-07-27T12:00:00Z','2026-07-27T12:01:00Z');
 		INSERT INTO assisted_conclusion_receipts
-		(id,task_id,continuation_id,source_session_id,source_turn_id,state,source_work_watermark,
+		(id,task_id,continuation_id,source_request_id,source_request_correlation_exact,source_session_id,source_turn_id,state,source_work_watermark,
 		 semantic_persistence_watermark,dispatch_request_id,base_revision,source_model_provider_id,source_model,
 		 source_reasoning_effort,apply_idempotency_key,automatic_turn_count,repair_count,explicit_retry_count,
-		 operator_retry_key,next_eligible_at,error_code,created_at,updated_at)
-		VALUES ('receipt-action','task-1','continuation-1','session-1','turn-2','action_required',4,1,
+		 operator_retry_key,send_attempt_count,send_started_at,next_eligible_at,error_code,created_at,updated_at)
+		VALUES ('receipt-action','task-1','continuation-1','source-request-2',1,'session-1','turn-2','action_required',4,1,
 		 'request-action',8,'provider-1','model-1','high','apply-action',2,1,1,'retry-1',
-		 '2026-07-27T12:03:00Z','semantic_conclusion_repair_exhausted','2026-07-27T12:00:30Z','2026-07-27T12:02:00Z');
+		 1,'2026-07-27T12:01:00Z','2026-07-27T12:03:00Z','semantic_conclusion_repair_exhausted','2026-07-27T12:00:30Z','2026-07-27T12:02:00Z');
 		INSERT INTO assisted_conclusion_retry_keys
 		(task_id,receipt_id,idempotency_key,dispatch_request_id,created_at)
 		VALUES ('task-1','receipt-action','retry-1','request-action','2026-07-27T12:02:00Z');
@@ -415,6 +415,77 @@ func TestMigration43AddsVersionRegenerationStateAndPreservesReceipts(t *testing.
 	}
 }
 
+func TestMigration44PreservesV43RecoveryLineageAndMarksExistingDispatchAttempted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pentest.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := strings.Repeat("b", 64)
+	if _, err := db.Exec(`
+		DROP INDEX assisted_conclusion_receipts_task_created;
+		DROP TABLE assisted_conclusion_receipts;
+		CREATE TABLE assisted_conclusion_receipts (
+		 id TEXT PRIMARY KEY, task_id TEXT NOT NULL, continuation_id TEXT NOT NULL,
+		 source_session_id TEXT NOT NULL, source_turn_id TEXT NOT NULL, state TEXT NOT NULL,
+		 source_work_watermark INTEGER NOT NULL, semantic_persistence_watermark INTEGER NOT NULL,
+		 dispatch_request_id TEXT UNIQUE, control_turn_id TEXT, base_revision INTEGER,
+		 source_model_provider_id TEXT NOT NULL, source_model TEXT NOT NULL, source_reasoning_effort TEXT NOT NULL,
+		 canonical_result_json BLOB, canonical_result_sha256 TEXT, apply_idempotency_key TEXT UNIQUE,
+		 applied_revision INTEGER, automatic_turn_count INTEGER NOT NULL, repair_count INTEGER NOT NULL,
+		 version_regeneration_count INTEGER NOT NULL, explicit_retry_count INTEGER NOT NULL,
+		 operator_retry_key TEXT, next_eligible_at TEXT, error_code TEXT,
+		 created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+		 UNIQUE(task_id,continuation_id,source_turn_id)
+		);
+		CREATE INDEX assisted_conclusion_receipts_task_created ON assisted_conclusion_receipts(task_id,created_at DESC);
+		INSERT INTO assisted_conclusion_receipts VALUES
+		 ('receipt-v43','task-v43','continuation-v43','session-v43','turn-v43','version_sync_requested',5,2,
+		  'request-v43','control-v43',9,'provider-v43','model-v43','high',X'7B7D',?,'apply-v43',NULL,
+		  2,0,0,1,'operator-v43','2026-07-27T12:30:00Z','semantic_conclusion_version_conflict',
+		  '2026-07-27T12:00:00Z','2026-07-27T12:10:00Z');
+		DELETE FROM schema_migrations WHERE version=44;
+	`, hash); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("upgrade v43 Store: %v", err)
+	}
+	defer reopened.Close()
+	var sourceRequestID, state, dispatchID, controlID, providerID, model, effort, resultHash, applyKey string
+	var canonical []byte
+	var baseRevision, automaticTurns, repairCount, versionCount, retryCount, sendCount, sourceCorrelationExact int
+	var synchronizedRevision sql.NullInt64
+	var sendStartedAt, nextEligible, errorCode string
+	if err := reopened.QueryRow(`SELECT source_request_id,source_request_correlation_exact,state,dispatch_request_id,control_turn_id,base_revision,
+		synchronized_revision,source_model_provider_id,source_model,source_reasoning_effort,canonical_result_json,
+		canonical_result_sha256,apply_idempotency_key,automatic_turn_count,repair_count,version_regeneration_count,
+		explicit_retry_count,send_attempt_count,send_started_at,next_eligible_at,error_code
+		FROM assisted_conclusion_receipts WHERE id='receipt-v43'`).Scan(&sourceRequestID, &sourceCorrelationExact, &state, &dispatchID,
+		&controlID, &baseRevision, &synchronizedRevision, &providerID, &model, &effort, &canonical, &resultHash,
+		&applyKey, &automaticTurns, &repairCount, &versionCount, &retryCount, &sendCount, &sendStartedAt,
+		&nextEligible, &errorCode); err != nil {
+		t.Fatal(err)
+	}
+	if sourceRequestID != "legacy:session-v43:turn-v43" || sourceCorrelationExact != 0 || state != "version_sync_requested" ||
+		dispatchID != "request-v43" || controlID != "control-v43" || baseRevision != 9 || synchronizedRevision.Valid ||
+		providerID != "provider-v43" || model != "model-v43" || effort != "high" ||
+		!bytes.Equal(canonical, []byte("{}")) || resultHash != hash || applyKey != "apply-v43" ||
+		automaticTurns != 2 || repairCount != 0 || versionCount != 0 || retryCount != 1 || sendCount != 1 ||
+		sendStartedAt != "2026-07-27T12:10:00Z" || nextEligible != "2026-07-27T12:30:00Z" ||
+		errorCode != "semantic_conclusion_version_conflict" {
+		t.Fatalf("migrated v43 receipt lost recovery lineage: source=%q state=%q request=%q control=%q base=%d sync=%v provider=%q model=%q effort=%q canonical=%q hash=%q apply=%q counts=(%d,%d,%d,%d,%d) send_at=%q eligible=%q error=%q",
+			sourceRequestID, state, dispatchID, controlID, baseRevision, synchronizedRevision, providerID, model, effort,
+			canonical, resultHash, applyKey, automaticTurns, repairCount, versionCount, retryCount, sendCount,
+			sendStartedAt, nextEligible, errorCode)
+	}
+}
+
 func TestOpenRepairsMissingMigrationRowsForCurrentWatermarkSchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pentest.db")
 	db, err := store.Open(path)
@@ -423,9 +494,9 @@ func TestOpenRepairsMissingMigrationRowsForCurrentWatermarkSchema(t *testing.T) 
 	}
 	if _, err := db.Exec(`
 		INSERT INTO assisted_conclusion_receipts
-			(id,task_id,continuation_id,source_session_id,source_turn_id,state,source_work_watermark,
+			(id,task_id,continuation_id,source_request_id,source_request_correlation_exact,source_session_id,source_turn_id,state,source_work_watermark,
 			 semantic_persistence_watermark,source_model_provider_id,source_model,source_reasoning_effort,created_at,updated_at)
-		VALUES ('receipt-current','task-1','continuation-1','session-1','turn-1','clean',5,5,
+		VALUES ('receipt-current','task-1','continuation-1','source-request-1',1,'session-1','turn-1','clean',5,5,
 			'provider-1','model-1','high','2026-07-27T00:00:00Z','2026-07-27T00:00:00Z');
 		DELETE FROM schema_migrations WHERE version>=37;
 	`); err != nil {

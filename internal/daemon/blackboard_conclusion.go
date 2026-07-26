@@ -235,7 +235,7 @@ func (server *Server) observeProviderSession(taskID, continuationID, sessionID s
 		return
 	}
 	receipt, inserted, err := server.tasks.RecordBlackboardConclusionCheckpoint(
-		taskID, continuationID, key.sessionID, turnID, task.TurnSelection{
+		taskID, continuationID, lineage.RequestID, key.sessionID, turnID, task.TurnSelection{
 			ModelProviderID: lineage.ModelProviderID,
 			Model:           lineage.Model,
 			ReasoningEffort: lineage.RequestedReasoningEffort,
@@ -258,11 +258,15 @@ func (server *Server) observeProviderSession(taskID, continuationID, sessionID s
 }
 
 func (server *Server) scheduleBlackboardConclusionDispatch(receipt task.BlackboardConclusionReceipt) {
-	server.enqueueProviderTaskControl(receipt.TaskID, func(ctx context.Context) {
+	queued := server.enqueueProviderTaskControl(receipt.TaskID, func(ctx context.Context) {
 		if err := server.dispatchBlackboardConclusion(ctx, receipt); err != nil {
+			server.requireBlackboardConclusionRecovery(receipt, err)
 			server.logger.Printf("assisted conclusion: dispatch Task %s receipt %s: %v", receipt.TaskID, receipt.ID, err)
 		}
 	})
+	if !queued {
+		server.requireBlackboardConclusionRecovery(receipt, fmt.Errorf("provider control queue is closed"))
+	}
 }
 
 func (server *Server) dispatchBlackboardConclusion(ctx context.Context, pending task.BlackboardConclusionReceipt) error {
@@ -285,26 +289,7 @@ func (server *Server) dispatchBlackboardConclusion(ctx context.Context, pending 
 	if !won {
 		return nil
 	}
-	result, err := session.SendTurn(ctx, runtime.ProviderSessionRequest{
-		RequestID:                receipt.DispatchRequestID,
-		Message:                  concludeBlackboardDirective(snapshot.Revision),
-		ModelProviderID:          receipt.SourceSelection.ModelProviderID,
-		Model:                    receipt.SourceSelection.Model,
-		RequestedReasoningEffort: receipt.SourceSelection.ReasoningEffort,
-		TurnKind:                 runtime.RuntimeTurnKindControl,
-	}, nil)
-	if err != nil {
-		return err
-	}
-	if result.RequestID != receipt.DispatchRequestID || result.SessionID != receipt.SourceSessionID || strings.TrimSpace(result.ProviderTurnID) == "" {
-		return fmt.Errorf("provider returned mismatched Conclude Turn correlation")
-	}
-	_, _, err = server.tasks.MarkBlackboardConclusionAwaiting(receipt.DispatchRequestID, result.ProviderTurnID)
-	if err != nil {
-		return err
-	}
-	server.drainBlackboardConclusionCallbacks(ctx, receipt.TaskID, receipt.DispatchRequestID)
-	return nil
+	return server.sendBlackboardConclusionTurn(ctx, receipt, concludeBlackboardDirective(snapshot.Revision))
 }
 
 func concludeBlackboardDirective(baseRevision int) string {
@@ -422,32 +407,10 @@ func (server *Server) handleBlackboardConclusionFailure(taskID, requestID string
 }
 
 func (server *Server) dispatchBlackboardConclusionRepair(ctx context.Context, receipt task.BlackboardConclusionReceipt) error {
-	session, ok := server.providerSessions.get(receipt.TaskID)
-	if !ok || session.SessionID() != receipt.SourceSessionID || receipt.BaseRevision == nil {
-		return fmt.Errorf("source provider session is not live")
+	if receipt.BaseRevision == nil {
+		return fmt.Errorf("Blackboard conclusion repair has no base revision")
 	}
-	if err := waitForBlackboardConclusionEligibility(ctx, receipt.NextEligibleAt, time.Now); err != nil {
-		return err
-	}
-	result, err := session.SendTurn(ctx, runtime.ProviderSessionRequest{
-		RequestID:                receipt.DispatchRequestID,
-		Message:                  repairBlackboardDirective(*receipt.BaseRevision),
-		ModelProviderID:          receipt.SourceSelection.ModelProviderID,
-		Model:                    receipt.SourceSelection.Model,
-		RequestedReasoningEffort: receipt.SourceSelection.ReasoningEffort,
-		TurnKind:                 runtime.RuntimeTurnKindControl,
-	}, nil)
-	if err != nil {
-		return err
-	}
-	if result.RequestID != receipt.DispatchRequestID || result.SessionID != receipt.SourceSessionID || strings.TrimSpace(result.ProviderTurnID) == "" {
-		return fmt.Errorf("provider returned mismatched Repair Turn correlation")
-	}
-	_, _, err = server.tasks.MarkBlackboardConclusionAwaiting(receipt.DispatchRequestID, result.ProviderTurnID)
-	if err == nil {
-		server.drainBlackboardConclusionCallbacks(ctx, receipt.TaskID, receipt.DispatchRequestID)
-	}
-	return err
+	return server.sendBlackboardConclusionTurn(ctx, receipt, repairBlackboardDirective(*receipt.BaseRevision))
 }
 
 func waitForBlackboardConclusionEligibility(ctx context.Context, eligibleAt *time.Time, now func() time.Time) error {
@@ -494,13 +457,17 @@ func (server *Server) handleRetryBlackboardConclusion(response http.ResponseWrit
 		return
 	}
 	if won {
-		queued := server.enqueueProviderTaskControl(taskID, func(ctx context.Context) {
-			if err := server.dispatchBlackboardConclusionRepair(ctx, retried); err != nil {
-				server.recoverBlackboardConclusionDispatchFailure(retried, err)
+		if retried.InternalState == task.BlackboardConclusionReceiptPending {
+			server.scheduleBlackboardConclusionDispatch(retried)
+		} else {
+			queued := server.enqueueProviderTaskControl(taskID, func(ctx context.Context) {
+				if err := server.dispatchBlackboardConclusionRepair(ctx, retried); err != nil {
+					server.recoverBlackboardConclusionDispatchFailure(retried, err)
+				}
+			})
+			if !queued {
+				server.recoverBlackboardConclusionDispatchFailure(retried, fmt.Errorf("provider control queue is closed"))
 			}
-		})
-		if !queued {
-			server.recoverBlackboardConclusionDispatchFailure(retried, fmt.Errorf("provider control queue is closed"))
 		}
 	}
 	detailed, err := server.taskDetail(taskID)
@@ -524,19 +491,6 @@ func (server *Server) recoverBlackboardConclusionDispatchFailure(receipt task.Bl
 		return
 	}
 	server.logger.Printf("assisted conclusion: dispatch requires operator action Task %s receipt %s: %v", receipt.TaskID, receipt.ID, cause)
-}
-
-func (server *Server) reconcileStrandedBlackboardConclusionRecoveries() {
-	receipts, err := server.tasks.ReconcileStrandedBlackboardConclusionRecoveries(
-		time.Now().UTC(), blackboardConclusionRetryCooldown,
-	)
-	if err != nil {
-		server.logger.Printf("assisted conclusion: reconcile stranded dispatches: %v", err)
-		return
-	}
-	if len(receipts) > 0 {
-		server.logger.Printf("assisted conclusion: %d stranded dispatch(es) require operator action", len(receipts))
-	}
 }
 
 func (server *Server) reconcileValidatedBlackboardConclusionApplies() {
@@ -745,16 +699,32 @@ func (server *Server) regenerateBlackboardConclusionAfterVersionConflict(ctx con
 }
 
 func (server *Server) dispatchBlackboardConclusionVersionRegeneration(ctx context.Context, receipt task.BlackboardConclusionReceipt) error {
+	if receipt.BaseRevision == nil {
+		return fmt.Errorf("Blackboard conclusion regeneration has no base revision")
+	}
+	return server.sendBlackboardConclusionTurn(ctx, receipt, regenerateBlackboardDirective(*receipt.BaseRevision))
+}
+
+func (server *Server) sendBlackboardConclusionTurn(ctx context.Context, receipt task.BlackboardConclusionReceipt, directive string) error {
 	session, ok := server.providerSessions.get(receipt.TaskID)
-	if !ok || session.SessionID() != receipt.SourceSessionID || receipt.BaseRevision == nil {
+	if !ok || session.SessionID() != receipt.SourceSessionID {
 		return fmt.Errorf("source provider session is not live")
 	}
 	if err := waitForBlackboardConclusionEligibility(ctx, receipt.NextEligibleAt, time.Now); err != nil {
 		return err
 	}
+	var won bool
+	var err error
+	receipt, won, err = server.tasks.MarkBlackboardConclusionSendStarted(receipt.DispatchRequestID, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	if !won {
+		return fmt.Errorf("Blackboard conclusion provider send was already started")
+	}
 	result, err := session.SendTurn(ctx, runtime.ProviderSessionRequest{
 		RequestID:                receipt.DispatchRequestID,
-		Message:                  regenerateBlackboardDirective(*receipt.BaseRevision),
+		Message:                  directive,
 		ModelProviderID:          receipt.SourceSelection.ModelProviderID,
 		Model:                    receipt.SourceSelection.Model,
 		RequestedReasoningEffort: receipt.SourceSelection.ReasoningEffort,
@@ -764,7 +734,7 @@ func (server *Server) dispatchBlackboardConclusionVersionRegeneration(ctx contex
 		return err
 	}
 	if result.RequestID != receipt.DispatchRequestID || result.SessionID != receipt.SourceSessionID || strings.TrimSpace(result.ProviderTurnID) == "" {
-		return fmt.Errorf("provider returned mismatched Blackboard regeneration Turn correlation")
+		return fmt.Errorf("provider returned mismatched Blackboard conclusion Turn correlation")
 	}
 	_, _, err = server.tasks.MarkBlackboardConclusionAwaiting(receipt.DispatchRequestID, result.ProviderTurnID)
 	if err == nil {

@@ -102,6 +102,7 @@ func (server *Server) BindProviderSession(taskID string, session runtime.Provide
 	if err := server.providerSessions.bind(taskID, session); err != nil {
 		return err
 	}
+	server.clearRecoveredRuntimeActivity(taskID)
 	if sink, ok := session.(runtime.ProviderSessionEventSink); ok {
 		sink.SetEventSink(func(kind task.EventKind, payload task.EventPayload) {
 			server.persistProviderSessionEvent(taskID, kind, payload)

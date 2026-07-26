@@ -48,6 +48,23 @@ pending conclusion or be mistaken for operator work.
   idempotency, and revision preconditions before applying it through Blackboard
   v2. Control Turns remain non-recursive and never create assisted conclusion
   debt of their own.
+- The durable receipt is also the daemon-restart recovery record. It retains
+  source correlation, semantic-debt watermarks, deterministic request and apply
+  lineage, canonical validated bytes and hash, revisions, bounded counters,
+  stable errors, and timestamps, but never raw tool output or model reasoning.
+- Immediately before every provider `SendTurn`, the Harness durably records a
+  one-way send-start fence. A pre-fence request may be replayed only after a
+  non-spawning recovery capability proves ownership of the exact existing
+  Runtime and session. A post-fence request with no persisted result is
+  acceptance-ambiguous and becomes operator-actionable instead of being sent
+  again. Providers whose bridge transport cannot be reattached after daemon
+  restart fail closed through the same path; native session metadata alone is
+  not ownership proof and cannot authorize a replacement Runtime.
+- Persisted canonical results resume Blackboard application without another
+  model Turn. Replaying an already committed apply uses the same Service
+  idempotency key and recovers the original revision before completing the
+  receipt. Restart recovery preserves automatic-turn limits and an existing
+  retry cooldown.
 - The control directive and structured result remain outside Task Conversation
   messages and cannot invoke Task Finish or infer Facts/Evidence from raw output.
 
@@ -58,4 +75,7 @@ provider output or trusting model-authored metadata. Providers must implement
 the bounded observation capability before assisted mode is offered. Automatic
 dispatch is bounded and non-recursive; exhausting recovery requires operator
 action while the Task remains live and operator control of Task completion
-remains unchanged.
+remains unchanged. Daemon restart cannot turn native session metadata into
+Runtime ownership or silently launch a second Runtime; deployments that need
+automatic pre-send replay must provide a reconnectable, non-spawning ownership
+recovery capability.
