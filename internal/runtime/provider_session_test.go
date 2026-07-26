@@ -85,6 +85,125 @@ func TestFakeProviderSessionDefaultsRequestTurnKindToWork(t *testing.T) {
 	}
 }
 
+func TestFakeProviderSessionFreezesCompleteTurnLineage(t *testing.T) {
+	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "session-1", Capabilities: runtimeplugin.Capabilities{SendTurn: true},
+	})
+	request := runtime.ProviderSessionRequest{
+		RequestID: "control-1", Message: "conclude prior work", TurnKind: runtime.RuntimeTurnKindControl,
+		ModelProviderID: "provider-1", Model: "model-1", RequestedReasoningEffort: "high",
+		EffectiveReasoningEffort: "medium",
+	}
+	result, err := session.SendTurn(context.Background(), request, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := runtime.ProviderSessionTurnLineage{
+		Kind:            runtime.RuntimeTurnKindControl,
+		ModelProviderID: "provider-1", Model: "model-1", RequestedReasoningEffort: "high",
+		EffectiveReasoningEffort: "medium",
+	}
+	for _, correlation := range []struct {
+		requestID, providerTurnID string
+	}{
+		{requestID: "control-1"},
+		{providerTurnID: result.ProviderTurnID},
+	} {
+		got, ok := session.ResolveProviderSessionTurnLineage(correlation.requestID, correlation.providerTurnID)
+		if !ok || got != want {
+			t.Fatalf("lineage for request=%q turn=%q = %#v, %v; want %#v", correlation.requestID, correlation.providerTurnID, got, ok, want)
+		}
+	}
+}
+
+func TestFakeProviderSessionMintsNewTurnAfterValidatedCompletion(t *testing.T) {
+	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "session-1", ActiveTurnID: "work-turn-1",
+		Capabilities: runtimeplugin.Capabilities{SendTurn: true},
+	})
+	work, err := session.SendTurn(context.Background(), runtime.ProviderSessionRequest{
+		RequestID: "work-1", Message: "inspect", TurnKind: runtime.RuntimeTurnKindWork,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: "work-1",
+		ProviderTurnID: work.ProviderTurnID, Status: "completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	control, err := session.SendTurn(context.Background(), runtime.ProviderSessionRequest{
+		RequestID: "control-1", Message: "conclude", TurnKind: runtime.RuntimeTurnKindControl,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if control.ProviderTurnID == "" || control.ProviderTurnID == work.ProviderTurnID {
+		t.Fatalf("control Turn ID = %q, want distinct from completed work Turn %q", control.ProviderTurnID, work.ProviderTurnID)
+	}
+	if lineage, ok := session.ResolveProviderSessionTurnLineage("", control.ProviderTurnID); !ok || lineage.Kind != runtime.RuntimeTurnKindControl {
+		t.Fatalf("control lineage = %#v, %v", lineage, ok)
+	}
+}
+
+func TestFakeProviderSessionEmitsTypedCanonicalAttemptResult(t *testing.T) {
+	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "session-1", Capabilities: runtimeplugin.Capabilities{SendTurn: true},
+	})
+	turn, err := session.SendTurn(context.Background(), runtime.ProviderSessionRequest{
+		RequestID: "conclude-1", Message: "conclude", TurnKind: runtime.RuntimeTurnKindControl,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got runtime.ProviderSessionAttemptResult
+	session.SetAttemptResultSink(func(result runtime.ProviderSessionAttemptResult) { got = result })
+	raw := []byte(`{
+		"tested_targets":[{"key":"objective:search","create_objective":{"objective":"Test the search endpoint."}}],
+		"attempt":{"outcome":"failed","summary":"The endpoint rejected the tested payloads.","create":true,"key":"attempt:search"},
+		"base_revision":0,
+		"schema":"runtime-attempt-result/v1",
+		"produced_targets":[]
+	}`)
+	if err := session.EmitAttemptResult(raw); err != nil {
+		t.Fatal(err)
+	}
+	if got.RequestID != "conclude-1" || got.SessionID != "session-1" || got.ProviderTurnID != turn.ProviderTurnID {
+		t.Fatalf("attempt result correlation = %#v", got)
+	}
+	wantCanonical := `{"schema":"runtime-attempt-result/v1","base_revision":0,"attempt":{"key":"attempt:search","create":true,"summary":"The endpoint rejected the tested payloads.","outcome":"failed"},"tested_targets":[{"key":"objective:search","create_objective":{"objective":"Test the search endpoint."}}],"produced_targets":[]}`
+	if string(got.Validated.CanonicalJSON) != wantCanonical || got.Validated.SHA256 == "" {
+		t.Fatalf("validated result = %#v", got.Validated)
+	}
+}
+
+func TestFakeProviderSessionRejectsUnknownAttemptResultBeforeCallback(t *testing.T) {
+	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "session-1", Capabilities: runtimeplugin.Capabilities{SendTurn: true},
+	})
+	if _, err := session.SendTurn(context.Background(), runtime.ProviderSessionRequest{
+		RequestID: "conclude-1", Message: "conclude", TurnKind: runtime.RuntimeTurnKindControl,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	callbacks := 0
+	session.SetAttemptResultSink(func(runtime.ProviderSessionAttemptResult) { callbacks++ })
+	raw := []byte(`{
+		"schema":"runtime-attempt-result/v1","base_revision":0,
+		"attempt":{"key":"attempt:search","create":true,"summary":"Tested search.","outcome":"failed"},
+		"tested_targets":[{"key":"objective:search","create_objective":{"objective":"Test search."}}],
+		"produced_targets":[],"task_id":"model-supplied-identity"
+	}`)
+	if err := session.EmitAttemptResult(raw); err == nil {
+		t.Fatal("EmitAttemptResult accepted an unknown identity field")
+	}
+	if callbacks != 0 {
+		t.Fatalf("attempt result callbacks = %d, want zero", callbacks)
+	}
+}
+
 type sessionEventRecorder struct {
 	mu     sync.Mutex
 	events []task.EventPayload

@@ -1825,6 +1825,47 @@ func (server *Server) acquireProviderTaskControl(taskID string) bool {
 	return true
 }
 
+// enqueueProviderTaskControl waits behind the existing per-Task owner without
+// losing durable Harness work. Registration is synchronized with Close so the
+// shutdown wait group cannot race a newly started coordinator goroutine.
+func (server *Server) enqueueProviderTaskControl(taskID string, operation func(context.Context)) bool {
+	server.controlMu.Lock()
+	if server.closing {
+		server.controlMu.Unlock()
+		return false
+	}
+	server.providerControlWG.Add(1)
+	server.controlMu.Unlock()
+
+	go func() {
+		defer server.providerControlWG.Done()
+		for {
+			server.controlMu.Lock()
+			if server.closing {
+				server.controlMu.Unlock()
+				return
+			}
+			if !server.activeControls[taskID] {
+				server.activeControls[taskID] = true
+				server.controlMu.Unlock()
+				break
+			}
+			server.controlMu.Unlock()
+
+			timer := time.NewTimer(5 * time.Millisecond)
+			select {
+			case <-server.providerControlCtx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+		}
+		defer server.releaseTaskControl(taskID)
+		operation(server.providerControlCtx)
+	}()
+	return true
+}
+
 func (server *Server) releaseProviderTaskControl(taskID string) {
 	server.releaseTaskControl(taskID)
 	server.providerControlWG.Done()

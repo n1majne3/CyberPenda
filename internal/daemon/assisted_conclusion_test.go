@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"pentest/internal/blackboardv2"
 	"pentest/internal/modelprovider"
 	"pentest/internal/project"
 	"pentest/internal/runtime"
@@ -61,7 +63,8 @@ func TestAssistedWorkTurnWithTerminalToolResultBecomesPending(t *testing.T) {
 		}
 	}
 
-	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStatePending)
+	waitForAssistedProviderRequests(t, session, 2)
+	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateConcluding)
 	if found.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeAssisted {
 		t.Fatalf("stored conclusion mode = %q, want assisted", found.RunControls.BlackboardConclusionMode)
 	}
@@ -78,8 +81,11 @@ func TestAssistedWorkTurnWithTerminalToolResultBecomesPending(t *testing.T) {
 		if event.Kind != task.EventKindBlackboardConclusion {
 			continue
 		}
+		if event.Payload["phase"] != "pending_detected" {
+			continue
+		}
 		pendingEvents++
-		if event.ContinuationID == "" || event.Payload["phase"] != "pending_detected" || event.Payload["source_turn_id"] != "work-turn-1" {
+		if event.ContinuationID == "" || event.Payload["source_turn_id"] != "work-turn-1" {
 			t.Fatalf("pending Harness event = %#v", event)
 		}
 		for _, forbidden := range []string{"args", "input", "output", "text", "raw", "message", "reasoning"} {
@@ -107,17 +113,14 @@ func TestAssistedWorkTurnWithTerminalToolResultBecomesPending(t *testing.T) {
 	if err := json.NewDecoder(timelineResponse.Body).Decode(&timelineBody); err != nil {
 		t.Fatalf("decode Timeline: %v", err)
 	}
-	harnessItems := 0
+	pendingHarnessItems := 0
 	for _, item := range timelineBody.Items {
-		if item.Type == "harness" {
-			harnessItems++
-			if !strings.Contains(item.Content, "Blackboard conclusion pending") {
-				t.Fatalf("Harness Timeline item = %#v", item)
-			}
+		if item.Type == "harness" && strings.Contains(item.Content, "Blackboard conclusion pending") {
+			pendingHarnessItems++
 		}
 	}
-	if harnessItems != 1 {
-		t.Fatalf("Harness Timeline items = %d, want 1; items=%#v", harnessItems, timelineBody.Items)
+	if pendingHarnessItems != 1 {
+		t.Fatalf("pending Harness Timeline items = %d, want 1; items=%#v", pendingHarnessItems, timelineBody.Items)
 	}
 
 	transcriptRequest := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+created.ID+"/transcript", nil)
@@ -129,9 +132,265 @@ func TestAssistedWorkTurnWithTerminalToolResultBecomesPending(t *testing.T) {
 	if strings.Contains(strings.ToLower(transcriptResponse.Body.String()), "pending_detected") {
 		t.Fatalf("Harness pending marker leaked into Task Conversation: %s", transcriptResponse.Body.String())
 	}
-	if requests := session.LastRequests(); len(requests) != 1 {
-		t.Fatalf("provider requests = %d, want initial work Turn only", len(requests))
+	if requests := session.LastRequests(); len(requests) != 2 {
+		t.Fatalf("provider requests = %d, want work and Conclude Turns", len(requests))
 	}
+}
+
+func TestAssistedWorkTurnDispatchesControlTurnAndAppliesClosedResult(t *testing.T) {
+	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
+	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
+	workRequest := session.LastRequests()[0]
+	sourceContinuation, err := server.tasks.LatestContinuation(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, observation := range []runtime.ProviderSessionObservation{
+		{Kind: runtime.ProviderSessionObservationToolResult, ProviderTurnID: "work-turn-1", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded"},
+		{Kind: runtime.ProviderSessionObservationTurnCompleted, ProviderTurnID: "work-turn-1", Status: "completed"},
+	} {
+		if err := session.EmitObservation(observation); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	waitForAssistedProviderRequests(t, session, 2)
+	requests := session.LastRequests()
+	controlRequest := requests[1]
+	if !strings.HasPrefix(controlRequest.RequestID, "conclude:v1:") || controlRequest.RequestID == workRequest.RequestID {
+		t.Fatalf("control request identity = %q after work %q", controlRequest.RequestID, workRequest.RequestID)
+	}
+	if controlRequest.TurnKind != runtime.RuntimeTurnKindControl {
+		t.Fatalf("control Turn kind = %q", controlRequest.TurnKind)
+	}
+	if controlRequest.ModelProviderID != workRequest.ModelProviderID || controlRequest.Model != workRequest.Model ||
+		controlRequest.RequestedReasoningEffort != workRequest.RequestedReasoningEffort {
+		t.Fatalf("control selection = %#v, want source selection %#v", controlRequest, workRequest)
+	}
+	if !strings.Contains(controlRequest.Message, "runtime-attempt-result/v1") || !strings.Contains(strings.ToLower(controlRequest.Message), "stop") {
+		t.Fatalf("control directive does not require a bounded result: %q", controlRequest.Message)
+	}
+	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateConcluding)
+	if found.Status != task.StatusRunning || found.RuntimeActivity.Liveness != "live" || found.RuntimeActivity.TurnActivity != "idle" {
+		t.Fatalf("Conclude Turn changed Task lifecycle/activity: status=%q activity=%#v", found.Status, found.RuntimeActivity)
+	}
+	receipt, err := server.tasks.LatestBlackboardConclusion(created.ID)
+	if err != nil || receipt == nil {
+		t.Fatalf("load concluding receipt: %#v, %v", receipt, err)
+	}
+	if receipt.ControlTurnID == "" || receipt.ControlTurnID == receipt.SourceTurnID || receipt.BaseRevision == nil || *receipt.BaseRevision != 0 {
+		t.Fatalf("Conclude Turn durable lineage = %#v", receipt)
+	}
+
+	result := `{
+		"schema":"runtime-attempt-result/v1",
+		"base_revision":0,
+		"attempt":{"key":"attempt:juice-shop-search-sqli","create":true,"summary":"Tested search SQL injection; exploitability remained unproven.","outcome":"inconclusive"},
+		"tested_targets":[{"key":"objective:juice-shop-search-sqli","create_objective":{"objective":"Determine whether search is vulnerable to SQL injection."}}],
+		"produced_targets":[]
+	}`
+	if err := session.EmitAttemptResult([]byte(result)); err != nil {
+		t.Fatal(err)
+	}
+	found = waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateClean)
+	if found.BlackboardConclusion.AppliedRevision == nil || *found.BlackboardConclusion.AppliedRevision == 0 {
+		t.Fatalf("applied conclusion view = %#v", found.BlackboardConclusion)
+	}
+	snapshot, err := server.blackboardV2.RuntimeSnapshot(context.Background(), projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Revision != *found.BlackboardConclusion.AppliedRevision || snapshot.Work.Objectives["objective:juice-shop-search-sqli"].Status != "open" {
+		t.Fatalf("applied Blackboard snapshot = %#v", snapshot)
+	}
+	history, err := server.blackboardV2.ReadHistory(context.Background(), projectID, "attempt:juice-shop-search-sqli", blackboardv2.HistoryOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := 0
+	for _, item := range history.Items {
+		if item.Record != nil && item.Record.Status == "inconclusive" {
+			terminal++
+		}
+	}
+	if terminal != 1 {
+		t.Fatalf("terminal Attempt history entries = %d, want 1; history=%#v", terminal, history)
+	}
+
+	beforeRevision := snapshot.Revision
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: workRequest.RequestID,
+		ProviderTurnID: "work-turn-1", Status: "completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.EmitAttemptResult([]byte(result)); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if got := len(session.LastRequests()); got != 2 {
+		t.Fatalf("provider requests after duplicate delivery = %d, want 2", got)
+	}
+	after, err := server.blackboardV2.RuntimeSnapshot(context.Background(), projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Revision != beforeRevision {
+		t.Fatalf("duplicate result advanced revision from %d to %d", beforeRevision, after.Revision)
+	}
+	latestContinuation, err := server.tasks.LatestContinuation(created.ID)
+	if err != nil || latestContinuation.ID != sourceContinuation.ID {
+		t.Fatalf("Conclude Turn created a Runtime Continuation: before=%#v after=%#v err=%v", sourceContinuation, latestContinuation, err)
+	}
+	phases := map[string]int{}
+	events := assistedTaskEvents(t, server, projectID, created.ID)
+	encodedEvents, err := json.Marshal(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encodedEvents), "runtime-attempt-result/v1") || strings.Contains(string(encodedEvents), "exploitability remained unproven") {
+		t.Fatalf("structured directive/result leaked into Task Events: %s", encodedEvents)
+	}
+	for _, event := range events {
+		if event.Kind == task.EventKindBlackboardConclusion {
+			phases[fmt.Sprint(event.Payload["phase"])]++
+		}
+	}
+	if phases["dispatch_requested"] != 1 || phases["applied"] != 1 {
+		t.Fatalf("idempotent conclusion phases = %#v", phases)
+	}
+	transcriptRequest := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+created.ID+"/transcript", nil)
+	transcriptResponse := httptest.NewRecorder()
+	server.ServeHTTP(transcriptResponse, transcriptRequest)
+	if transcriptResponse.Code != http.StatusOK || strings.Contains(transcriptResponse.Body.String(), "runtime-attempt-result/v1") || strings.Contains(transcriptResponse.Body.String(), "exploitability remained unproven") {
+		t.Fatalf("structured directive/result leaked into Conversation: status=%d body=%s", transcriptResponse.Code, transcriptResponse.Body.String())
+	}
+}
+
+func TestAssistedConclusionQueuesResultEmittedBeforeSendTurnReturns(t *testing.T) {
+	raw := []byte(`{
+		"schema":"runtime-attempt-result/v1","base_revision":0,
+		"attempt":{"key":"attempt:eager-result","create":true,"summary":"Recorded an eager control result.","outcome":"inconclusive"},
+		"tested_targets":[{"key":"objective:eager-result","create_objective":{"objective":"Exercise eager provider result delivery."}}],
+		"produced_targets":[]
+	}`)
+	server, projectID, profileID, session := newAssistedConclusionFixtureAtWithDecorator(
+		t, t.TempDir(), true, true,
+		func(fake *runtime.FakeProviderSession) runtime.ProviderSession {
+			return &eagerAttemptResultSession{FakeProviderSession: fake, raw: raw}
+		},
+	)
+	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
+	for _, observation := range []runtime.ProviderSessionObservation{
+		{Kind: runtime.ProviderSessionObservationToolResult, ProviderTurnID: "work-turn-1", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded"},
+		{Kind: runtime.ProviderSessionObservationTurnCompleted, ProviderTurnID: "work-turn-1", Status: "completed"},
+	} {
+		if err := session.EmitObservation(observation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateClean)
+	if found.BlackboardConclusion.AppliedRevision == nil {
+		t.Fatalf("eager result was not applied: %#v", found.BlackboardConclusion)
+	}
+}
+
+func TestAssistedConclusionWaitsForBusyTaskControlWithoutLosingDispatch(t *testing.T) {
+	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
+	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
+	if !server.acquireProviderTaskControl(created.ID) {
+		t.Fatal("acquire competing provider task control")
+	}
+	for _, observation := range []runtime.ProviderSessionObservation{
+		{Kind: runtime.ProviderSessionObservationToolResult, ProviderTurnID: "work-turn-1", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded"},
+		{Kind: runtime.ProviderSessionObservationTurnCompleted, ProviderTurnID: "work-turn-1", Status: "completed"},
+	} {
+		if err := session.EmitObservation(observation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStatePending)
+	if got := len(session.LastRequests()); got != 1 {
+		t.Fatalf("Conclude Turn ran through competing control: requests=%d", got)
+	}
+	server.releaseProviderTaskControl(created.ID)
+	waitForAssistedProviderRequests(t, session, 2)
+}
+
+func TestAssistedConclusionWaitsForBusyTaskControlWithoutLosingResult(t *testing.T) {
+	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
+	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
+	for _, observation := range []runtime.ProviderSessionObservation{
+		{Kind: runtime.ProviderSessionObservationToolResult, ProviderTurnID: "work-turn-1", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded"},
+		{Kind: runtime.ProviderSessionObservationTurnCompleted, ProviderTurnID: "work-turn-1", Status: "completed"},
+	} {
+		if err := session.EmitObservation(observation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateConcluding)
+	waitForProviderTaskControl(t, server, created.ID)
+	result := []byte(`{
+		"schema":"runtime-attempt-result/v1","base_revision":0,
+		"attempt":{"key":"attempt:queued-result","create":true,"summary":"Queued result under control contention.","outcome":"inconclusive"},
+		"tested_targets":[{"key":"objective:queued-result","create_objective":{"objective":"Exercise queued result delivery."}}],
+		"produced_targets":[]
+	}`)
+	if err := session.EmitAttemptResult(result); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	found := getConclusionTask(t, server, projectID, created.ID)
+	if found.BlackboardConclusion.State != task.BlackboardConclusionStateConcluding {
+		t.Fatalf("result ignored competing control: %#v", found.BlackboardConclusion)
+	}
+	server.releaseProviderTaskControl(created.ID)
+	waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateClean)
+}
+
+func waitForProviderTaskControl(t *testing.T, server *Server, taskID string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if server.acquireProviderTaskControl(taskID) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("provider task control did not become available")
+}
+
+func getConclusionTask(t *testing.T, server *Server, projectID, taskID string) task.Task {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID, nil)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("get Task status=%d body=%s", response.Code, response.Body.String())
+	}
+	var found task.Task
+	if err := json.NewDecoder(response.Body).Decode(&found); err != nil {
+		t.Fatal(err)
+	}
+	return found
+}
+
+type eagerAttemptResultSession struct {
+	*runtime.FakeProviderSession
+	raw []byte
+}
+
+func (session *eagerAttemptResultSession) SendTurn(ctx context.Context, request runtime.ProviderSessionRequest, emit runtime.ProviderSessionEmit) (runtime.ProviderSessionResult, error) {
+	result, err := session.FakeProviderSession.SendTurn(ctx, request, emit)
+	if err == nil && request.TurnKind == runtime.RuntimeTurnKindControl {
+		err = session.EmitAttemptResult(session.raw)
+	}
+	return result, err
 }
 
 func TestAssistedLaunchRejectsProviderWithoutConclusionObservations(t *testing.T) {
@@ -306,10 +565,10 @@ func TestDuplicateAssistedTurnCompletionCreatesOnePendingMarker(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStatePending)
+	waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateConcluding)
 	markers := 0
 	for _, event := range assistedTaskEvents(t, server, projectID, created.ID) {
-		if event.Kind == task.EventKindBlackboardConclusion {
+		if event.Kind == task.EventKindBlackboardConclusion && event.Payload["phase"] == "pending_detected" {
 			markers++
 		}
 	}
@@ -331,7 +590,7 @@ func TestPendingBlackboardConclusionSurvivesDaemonRestart(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStatePending)
+	waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateConcluding)
 	if err := server.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +603,7 @@ func TestPendingBlackboardConclusionSurvivesDaemonRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
-	found := waitForBlackboardConclusionState(t, reopened, projectID, created.ID, task.BlackboardConclusionStatePending)
+	found := waitForBlackboardConclusionState(t, reopened, projectID, created.ID, task.BlackboardConclusionStateConcluding)
 	if found.BlackboardConclusion.SourceTurnID != "work-turn-1" {
 		t.Fatalf("restarted conclusion view = %#v", found.BlackboardConclusion)
 	}
@@ -401,14 +660,16 @@ func launchConclusionTask(t *testing.T, server *Server, projectID, profileID, mo
 }
 
 type assistedConclusionSessionFactory struct {
-	session *runtime.FakeProviderSession
+	session runtime.ProviderSession
 	adapter *runtime.ProviderSessionRunAdapter
 	support bool
 }
 
 func (factory *assistedConclusionSessionFactory) Open(_ context.Context, request ProviderSessionLaunchRequest) (ProviderSessionBinding, error) {
-	if err := factory.session.BindContinuation(request.Continuation.ID); err != nil {
-		return ProviderSessionBinding{}, err
+	if binder, ok := factory.session.(runtime.ProviderSessionContinuationBinder); ok {
+		if err := binder.BindContinuation(request.Continuation.ID); err != nil {
+			return ProviderSessionBinding{}, err
+		}
 	}
 	factory.adapter.BindContinuation(request.Continuation.ID)
 	return ProviderSessionBinding{Session: factory.session, Adapter: factory.adapter}, nil
@@ -428,13 +689,21 @@ func newAssistedConclusionFixtureWithCapabilities(t *testing.T, reporterSupport,
 }
 
 func newAssistedConclusionFixtureAt(t *testing.T, root string, reporterSupport, sessionSupport bool) (*Server, string, string, *runtime.FakeProviderSession) {
+	return newAssistedConclusionFixtureAtWithDecorator(t, root, reporterSupport, sessionSupport, nil)
+}
+
+func newAssistedConclusionFixtureAtWithDecorator(t *testing.T, root string, reporterSupport, sessionSupport bool, decorate func(*runtime.FakeProviderSession) runtime.ProviderSession) (*Server, string, string, *runtime.FakeProviderSession) {
 	t.Helper()
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	fake := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
 		SessionID: "assisted-session", ActiveTurnID: "work-turn-1",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, AssistedConclusion: sessionSupport,
 		},
 	})
+	var session runtime.ProviderSession = fake
+	if decorate != nil {
+		session = decorate(fake)
+	}
 	adapter := runtime.NewProviderSessionRunAdapter(session, make(chan struct{}))
 	factory := &assistedConclusionSessionFactory{session: session, adapter: adapter, support: reporterSupport}
 	server, err := NewServer(Config{
@@ -469,7 +738,7 @@ func newAssistedConclusionFixtureAt(t *testing.T, root string, reporterSupport, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return server, createdProject.ID, profile.ID, session
+	return server, createdProject.ID, profile.ID, fake
 }
 
 func waitForAssistedProviderRequests(t *testing.T, session *runtime.FakeProviderSession, count int) {

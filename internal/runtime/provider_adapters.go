@@ -76,6 +76,8 @@ type providerSessionAdapter struct {
 	observationSink   ProviderSessionObserve
 	requestTurnKind   map[string]RuntimeTurnKind
 	providerTurnKind  map[string]RuntimeTurnKind
+	requestLineage    map[string]ProviderSessionTurnLineage
+	providerLineage   map[string]ProviderSessionTurnLineage
 	settlements       map[string]providerSettlement
 	settlementSeq     uint64
 	settlementChanged chan struct{}
@@ -91,6 +93,7 @@ func newProviderSessionAdapter(provider string, transport ProviderSessionTranspo
 		activeTurnID: strings.TrimSpace(activeTurnID), calls: map[string]providerSessionCallResult{},
 		requests: map[string]providerSessionRequestIdentity{}, settlements: map[string]providerSettlement{},
 		requestTurnKind: map[string]RuntimeTurnKind{}, providerTurnKind: map[string]RuntimeTurnKind{},
+		requestLineage: map[string]ProviderSessionTurnLineage{}, providerLineage: map[string]ProviderSessionTurnLineage{},
 		settlementChanged: make(chan struct{}),
 	}
 }
@@ -143,11 +146,31 @@ func (s *providerSessionAdapter) ResolveProviderSessionTurnKind(requestID, provi
 	return kind, ok
 }
 
+func (s *providerSessionAdapter) ResolveProviderSessionTurnLineage(requestID, providerTurnID string) (ProviderSessionTurnLineage, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if lineage, ok := s.requestLineage[strings.TrimSpace(requestID)]; ok {
+		return lineage, true
+	}
+	lineage, ok := s.providerLineage[strings.TrimSpace(providerTurnID)]
+	return lineage, ok
+}
+
 func (s *providerSessionAdapter) recordProviderSessionTurnKind(requestID, providerTurnID string, kind RuntimeTurnKind) {
 	s.mu.Lock()
 	s.requestTurnKind[strings.TrimSpace(requestID)] = kind
 	if providerTurnID = strings.TrimSpace(providerTurnID); providerTurnID != "" {
 		s.providerTurnKind[providerTurnID] = kind
+	}
+	s.mu.Unlock()
+}
+
+func (s *providerSessionAdapter) recordProviderSessionTurnLineage(request ProviderSessionRequest, providerTurnID string) {
+	s.mu.Lock()
+	lineage := providerSessionTurnLineage(request)
+	s.requestLineage[strings.TrimSpace(request.RequestID)] = lineage
+	if providerTurnID = strings.TrimSpace(providerTurnID); providerTurnID != "" {
+		s.providerLineage[providerTurnID] = lineage
 	}
 	s.mu.Unlock()
 }
@@ -185,6 +208,7 @@ func (s *providerSessionAdapter) InterruptThenReplace(ctx context.Context, reque
 		return ProviderSessionResult{}, err
 	}
 	s.recordProviderSessionTurnKind(request.RequestID, "", request.TurnKind)
+	s.recordProviderSessionTurnLineage(request, "")
 	defer s.end(request.RequestID, ProviderSessionModeInterruptThenReplace)
 
 	s.emit(emit, ProviderSessionModeInterruptThenReplace, "requested", request.RequestID, s.currentTurn())
@@ -216,6 +240,7 @@ func (s *providerSessionAdapter) InterruptThenReplace(ctx context.Context, reque
 		return ProviderSessionResult{}, err
 	}
 	s.recordProviderSessionTurnKind(request.RequestID, replacement.ProviderTurnID, request.TurnKind)
+	s.recordProviderSessionTurnLineage(request, replacement.ProviderTurnID)
 	s.emit(emit, ProviderSessionModeInterruptThenReplace, "started", request.RequestID, replacement.ProviderTurnID)
 	replacement.Mode = ProviderSessionModeInterruptThenReplace
 	replacement.Outcome = "started"
@@ -334,6 +359,7 @@ func (s *providerSessionAdapter) run(ctx context.Context, mode ProviderSessionMo
 		return ProviderSessionResult{}, err
 	}
 	s.recordProviderSessionTurnKind(request.RequestID, "", request.TurnKind)
+	s.recordProviderSessionTurnLineage(request, "")
 	defer s.end(request.RequestID, mode)
 	s.emit(emit, mode, "requested", request.RequestID, s.currentTurn())
 	settlementSession, settlementTurn, baseline := s.settlementTarget(request)
@@ -344,6 +370,7 @@ func (s *providerSessionAdapter) run(ctx context.Context, mode ProviderSessionMo
 		return ProviderSessionResult{}, err
 	}
 	s.recordProviderSessionTurnKind(request.RequestID, result.ProviderTurnID, request.TurnKind)
+	s.recordProviderSessionTurnLineage(request, result.ProviderTurnID)
 	outcome := "acknowledged"
 	if mode == ProviderSessionModeSendTurn {
 		outcome = "started"

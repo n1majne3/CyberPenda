@@ -237,12 +237,13 @@ export interface RuntimePluginCapabilities {
 }
 
 export type BlackboardConclusionMode = "interactive" | "assisted";
-export type BlackboardConclusionState = "clean" | "pending";
+export type BlackboardConclusionState = "clean" | "pending" | "concluding";
 
 export interface BlackboardConclusionView {
   mode: BlackboardConclusionMode;
   state: BlackboardConclusionState;
   source_turn_id?: string;
+  applied_revision?: number;
 }
 
 export interface RuntimePluginProfileField {

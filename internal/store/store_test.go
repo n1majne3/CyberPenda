@@ -41,6 +41,70 @@ func TestOpenRunsMigrationsIdempotently(t *testing.T) {
 	}
 }
 
+func TestMigration37PreservesPendingAssistedConclusionReceipts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pentest.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var migration36Checksum string
+	if err := db.QueryRow(`SELECT checksum FROM schema_migrations WHERE version=36`).Scan(&migration36Checksum); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		DROP INDEX assisted_conclusion_receipts_task_created;
+		DROP TABLE assisted_conclusion_receipts;
+		CREATE TABLE assisted_conclusion_receipts (
+			id TEXT PRIMARY KEY,
+			task_id TEXT NOT NULL,
+			continuation_id TEXT NOT NULL,
+			source_session_id TEXT NOT NULL,
+			source_turn_id TEXT NOT NULL,
+			state TEXT NOT NULL CHECK (state = 'pending'),
+			terminal_tool_result_count INTEGER NOT NULL CHECK (terminal_tool_result_count > 0),
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			UNIQUE (task_id, continuation_id, source_turn_id)
+		);
+		CREATE INDEX assisted_conclusion_receipts_task_created
+			ON assisted_conclusion_receipts(task_id, created_at DESC);
+		INSERT INTO assisted_conclusion_receipts VALUES
+			('receipt-1','task-1','continuation-1','session-1','turn-1','pending',2,'2026-07-27T00:00:00Z','2026-07-27T00:00:00Z');
+		DELETE FROM schema_migrations WHERE version=37;
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("upgrade v36 Store: %v", err)
+	}
+	defer reopened.Close()
+	var state, sourceModelProviderID string
+	var dispatchRequestID sql.NullString
+	if err := reopened.QueryRow(`SELECT state,source_model_provider_id,dispatch_request_id
+		FROM assisted_conclusion_receipts WHERE id='receipt-1'`).Scan(&state, &sourceModelProviderID, &dispatchRequestID); err != nil {
+		t.Fatal(err)
+	}
+	if state != "pending" || sourceModelProviderID != "" || dispatchRequestID.Valid {
+		t.Fatalf("migrated receipt = state %q provider %q dispatch %#v", state, sourceModelProviderID, dispatchRequestID)
+	}
+	var preservedChecksum string
+	if err := reopened.QueryRow(`SELECT checksum FROM schema_migrations WHERE version=36`).Scan(&preservedChecksum); err != nil {
+		t.Fatal(err)
+	}
+	if preservedChecksum != migration36Checksum {
+		t.Fatalf("migration 36 checksum changed: before %q after %q", migration36Checksum, preservedChecksum)
+	}
+	var migration37 int
+	if err := reopened.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=37`).Scan(&migration37); err != nil || migration37 != 1 {
+		t.Fatalf("migration 37 count = %d, err=%v", migration37, err)
+	}
+}
+
 // TestOpenRestrictsDatabaseFilePermissions pins issue #160: the database stores
 // plaintext "literal" credential secrets in credential_bindings.source_json, so
 // the main file and its WAL/SHM sidecars must be owner-only (0600) rather than

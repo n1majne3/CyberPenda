@@ -159,7 +159,7 @@ describe("TaskLaunchPage", () => {
     const mode = await screen.findByLabelText("Blackboard conclusions");
     expect(mode).toHaveValue("interactive");
     await userEvent.selectOptions(mode, "assisted");
-		expect(screen.getByText(/does not add a model Turn or write Blackboard records automatically/i)).toBeInTheDocument();
+    expect(screen.getByText(/runs a bounded Conclude Turn and applies its validated Attempt result/i)).toBeInTheDocument();
     await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
 

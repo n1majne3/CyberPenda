@@ -108,7 +108,7 @@ func (server *Server) BindProviderSession(taskID string, session runtime.Provide
 		})
 	}
 	if source, ok := session.(runtime.ProviderSessionObservationSink); ok {
-		lineage, lineageOK := session.(runtime.ProviderSessionTurnLineageResolver)
+		lineage, lineageOK := session.(runtime.ProviderSessionCompleteTurnLineageResolver)
 		continuationID := ""
 		if active, activeErr := server.tasks.ActiveContinuation(taskID); activeErr == nil && active != nil {
 			continuationID = active.ID
@@ -117,12 +117,17 @@ func (server *Server) BindProviderSession(taskID string, session runtime.Provide
 			if !lineageOK {
 				return
 			}
-			turnKind, resolved := lineage.ResolveProviderSessionTurnKind(observation.RequestID, observation.ProviderTurnID)
+			turnLineage, resolved := lineage.ResolveProviderSessionTurnLineage(observation.RequestID, observation.ProviderTurnID)
 			if !resolved {
 				server.logger.Printf("provider session observation: ignore unowned Turn %s for Task %s", observation.ProviderTurnID, taskID)
 				return
 			}
-			server.observeProviderSession(taskID, continuationID, session.SessionID(), turnKind, observation)
+			server.observeProviderSession(taskID, continuationID, session.SessionID(), turnLineage, observation)
+		})
+	}
+	if source, ok := session.(runtime.ProviderSessionAttemptResultSource); ok {
+		source.SetAttemptResultSink(func(result runtime.ProviderSessionAttemptResult) {
+			server.acceptBlackboardConclusionResult(taskID, result)
 		})
 	}
 	return nil

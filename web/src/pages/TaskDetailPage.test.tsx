@@ -207,6 +207,29 @@ describe("TaskDetailPage", () => {
     expect(badge).toHaveAttribute("title", expect.stringContaining("turn-7"));
   });
 
+  it("shows an assisted Conclude Turn in the Task header", async () => {
+	stubTaskDetailApi({
+	  blackboard_conclusion: {
+		mode: "assisted",
+		state: "concluding",
+		source_turn_id: "turn-7",
+	  },
+	});
+
+	renderPage();
+	expect(await screen.findByTestId("blackboard-conclusion-state")).toHaveTextContent("Blackboard · assisted · concluding");
+  });
+
+  it("shows the applied Blackboard revision in the Task header", async () => {
+	stubTaskDetailApi({
+	  blackboard_conclusion: { mode: "assisted", state: "clean", source_turn_id: "turn-7", applied_revision: 9 },
+	});
+	renderPage();
+	const badge = await screen.findByTestId("blackboard-conclusion-state");
+	expect(badge).toHaveTextContent("applied revision 9");
+	expect(badge).toHaveAttribute("title", expect.stringContaining("revision 9"));
+  });
+
   it("deep-links and updates the task view tab", async () => {
     const searches: string[] = [];
     const user = userEvent.setup();

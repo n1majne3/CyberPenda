@@ -921,6 +921,7 @@ func migrations() []migration {
 		newMigration(34, "retire_blackboard_v1_graph_ledger", migration34SQL, migration34Up),
 		newMigration(35, "remove_task_graph_snapshot_pin", migration35SQL, migration35Up),
 		newMigration(36, "assisted_conclusion_receipts", migration36SQL, migration36Up),
+		newMigration(37, "assisted_conclusion_dispatch_state", migration37SQL, migration37Up),
 	}
 }
 
@@ -942,6 +943,48 @@ CREATE INDEX IF NOT EXISTS assisted_conclusion_receipts_task_created
 `
 
 func migration36Up(tx *sql.Tx) error { return execStatements(tx, migration36SQL) }
+
+const migration37SQL = `
+CREATE TABLE assisted_conclusion_receipts_v37 (
+	id TEXT PRIMARY KEY,
+	task_id TEXT NOT NULL,
+	continuation_id TEXT NOT NULL,
+	source_session_id TEXT NOT NULL,
+	source_turn_id TEXT NOT NULL,
+	state TEXT NOT NULL CHECK (state IN ('pending','dispatch_requested','awaiting_result','validated','applied')),
+	terminal_tool_result_count INTEGER NOT NULL CHECK (terminal_tool_result_count > 0),
+	dispatch_request_id TEXT UNIQUE,
+	control_turn_id TEXT,
+	base_revision INTEGER CHECK (base_revision >= 0),
+	source_model_provider_id TEXT NOT NULL DEFAULT '',
+	source_model TEXT NOT NULL DEFAULT '',
+	source_reasoning_effort TEXT NOT NULL DEFAULT '',
+	canonical_result_json BLOB,
+	canonical_result_sha256 TEXT,
+	apply_idempotency_key TEXT UNIQUE,
+	applied_revision INTEGER CHECK (applied_revision >= 0),
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	UNIQUE (task_id, continuation_id, source_turn_id),
+	CHECK (
+		(state = 'pending' AND dispatch_request_id IS NULL AND control_turn_id IS NULL AND base_revision IS NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NULL AND applied_revision IS NULL) OR
+		(state = 'dispatch_requested' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NULL AND base_revision IS NOT NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		(state = 'awaiting_result' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		(state = 'validated' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NOT NULL AND length(canonical_result_json) > 0 AND canonical_result_sha256 IS NOT NULL AND length(canonical_result_sha256) = 64 AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		(state = 'applied' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NOT NULL AND length(canonical_result_json) > 0 AND canonical_result_sha256 IS NOT NULL AND length(canonical_result_sha256) = 64 AND apply_idempotency_key IS NOT NULL AND applied_revision IS NOT NULL)
+	)
+);
+INSERT INTO assisted_conclusion_receipts_v37
+	(id,task_id,continuation_id,source_session_id,source_turn_id,state,terminal_tool_result_count,created_at,updated_at)
+	SELECT id,task_id,continuation_id,source_session_id,source_turn_id,state,terminal_tool_result_count,created_at,updated_at
+	FROM assisted_conclusion_receipts;
+DROP TABLE assisted_conclusion_receipts;
+ALTER TABLE assisted_conclusion_receipts_v37 RENAME TO assisted_conclusion_receipts;
+CREATE INDEX assisted_conclusion_receipts_task_created
+	ON assisted_conclusion_receipts(task_id, created_at DESC);
+`
+
+func migration37Up(tx *sql.Tx) error { return execStatements(tx, migration37SQL) }
 
 // migration34 retires every displaced Blackboard v1 data and compatibility
 // table. It runs only after v2 is already valid on ordinary upgrades; the

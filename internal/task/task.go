@@ -7,6 +7,7 @@ package task
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -76,16 +77,18 @@ func normalizeBlackboardConclusionMode(mode BlackboardConclusionMode) (Blackboar
 type BlackboardConclusionState string
 
 const (
-	BlackboardConclusionStateClean   BlackboardConclusionState = "clean"
-	BlackboardConclusionStatePending BlackboardConclusionState = "pending"
+	BlackboardConclusionStateClean      BlackboardConclusionState = "clean"
+	BlackboardConclusionStatePending    BlackboardConclusionState = "pending"
+	BlackboardConclusionStateConcluding BlackboardConclusionState = "concluding"
 )
 
 // BlackboardConclusion is the compact Task read view. Receipt identity and
 // source Turn correlation appear only while semantic work is pending.
 type BlackboardConclusion struct {
-	Mode         BlackboardConclusionMode  `json:"mode"`
-	State        BlackboardConclusionState `json:"state"`
-	SourceTurnID string                    `json:"source_turn_id,omitempty"`
+	Mode            BlackboardConclusionMode  `json:"mode"`
+	State           BlackboardConclusionState `json:"state"`
+	SourceTurnID    string                    `json:"source_turn_id,omitempty"`
+	AppliedRevision *int                      `json:"applied_revision,omitempty"`
 }
 
 // ScopeSnapshot is an immutable copy of the project scope captured when a task
@@ -122,18 +125,57 @@ type Event struct {
 	CreatedAt      time.Time    `json:"created_at"`
 }
 
-// BlackboardConclusionReceipt is the durable record that one completed work
-// Runtime Turn has semantic work awaiting a Harness-assisted conclusion.
+// BlackboardConclusionReceiptState is the internal durable state machine. It
+// is projected to the smaller operator-facing BlackboardConclusionState.
+type BlackboardConclusionReceiptState string
+
+const (
+	BlackboardConclusionReceiptPending           BlackboardConclusionReceiptState = "pending"
+	BlackboardConclusionReceiptDispatchRequested BlackboardConclusionReceiptState = "dispatch_requested"
+	BlackboardConclusionReceiptAwaitingResult    BlackboardConclusionReceiptState = "awaiting_result"
+	BlackboardConclusionReceiptValidated         BlackboardConclusionReceiptState = "validated"
+	BlackboardConclusionReceiptApplied           BlackboardConclusionReceiptState = "applied"
+)
+
+// BlackboardConclusionReceipt is the durable coordinator record for one
+// completed assisted work Runtime Turn. Structured result bytes remain
+// internal and are never projected on Task APIs.
 type BlackboardConclusionReceipt struct {
-	ID                      string                    `json:"id"`
-	TaskID                  string                    `json:"task_id"`
-	ContinuationID          string                    `json:"continuation_id"`
-	SourceSessionID         string                    `json:"source_session_id"`
-	SourceTurnID            string                    `json:"source_turn_id"`
-	State                   BlackboardConclusionState `json:"state"`
-	TerminalToolResultCount int                       `json:"terminal_tool_result_count"`
-	CreatedAt               time.Time                 `json:"created_at"`
-	UpdatedAt               time.Time                 `json:"updated_at"`
+	ID                      string                           `json:"id"`
+	TaskID                  string                           `json:"task_id"`
+	ContinuationID          string                           `json:"continuation_id"`
+	SourceSessionID         string                           `json:"source_session_id"`
+	SourceTurnID            string                           `json:"source_turn_id"`
+	InternalState           BlackboardConclusionReceiptState `json:"internal_state"`
+	TerminalToolResultCount int                              `json:"terminal_tool_result_count"`
+	DispatchRequestID       string                           `json:"dispatch_request_id,omitempty"`
+	ControlTurnID           string                           `json:"control_turn_id,omitempty"`
+	BaseRevision            *int                             `json:"base_revision,omitempty"`
+	SourceSelection         TurnSelection                    `json:"source_selection"`
+	CanonicalResultJSON     []byte                           `json:"-"`
+	CanonicalResultSHA256   string                           `json:"canonical_result_sha256,omitempty"`
+	ApplyIdempotencyKey     string                           `json:"apply_idempotency_key,omitempty"`
+	AppliedRevision         *int                             `json:"applied_revision,omitempty"`
+	CreatedAt               time.Time                        `json:"created_at"`
+	UpdatedAt               time.Time                        `json:"updated_at"`
+}
+
+// View projects internal coordinator progress into the compact Task API
+// vocabulary. Canonical result bytes and dispatch idempotency stay private.
+func (receipt BlackboardConclusionReceipt) View(mode BlackboardConclusionMode) BlackboardConclusion {
+	view := BlackboardConclusion{Mode: mode, SourceTurnID: receipt.SourceTurnID}
+	switch receipt.InternalState {
+	case BlackboardConclusionReceiptPending:
+		view.State = BlackboardConclusionStatePending
+	case BlackboardConclusionReceiptApplied:
+		view.State = BlackboardConclusionStateClean
+		if receipt.AppliedRevision != nil {
+			view.AppliedRevision = intPointer(*receipt.AppliedRevision)
+		}
+	default:
+		view.State = BlackboardConclusionStateConcluding
+	}
+	return view
 }
 
 // RuntimeConfigVersion is a historical task-specific runtime configuration
@@ -662,12 +704,16 @@ func (s *Service) Events(taskID string) ([]Event, error) {
 // RecordPendingBlackboardConclusion creates the one durable pending receipt
 // for a completed assisted work Runtime Turn. The receipt and its compact Task
 // Event are committed together; replay returns the original receipt.
-func (s *Service) RecordPendingBlackboardConclusion(taskID, continuationID, sourceSessionID, sourceTurnID string, terminalToolResultCount int) (BlackboardConclusionReceipt, bool, error) {
+func (s *Service) RecordPendingBlackboardConclusion(taskID, continuationID, sourceSessionID, sourceTurnID string, sourceSelection TurnSelection, terminalToolResultCount int) (BlackboardConclusionReceipt, bool, error) {
 	taskID = strings.TrimSpace(taskID)
 	continuationID = strings.TrimSpace(continuationID)
 	sourceSessionID = strings.TrimSpace(sourceSessionID)
 	sourceTurnID = strings.TrimSpace(sourceTurnID)
-	if taskID == "" || continuationID == "" || sourceSessionID == "" || sourceTurnID == "" || terminalToolResultCount <= 0 {
+	sourceSelection.ModelProviderID = strings.TrimSpace(sourceSelection.ModelProviderID)
+	sourceSelection.Model = strings.TrimSpace(sourceSelection.Model)
+	sourceSelection.ReasoningEffort = strings.TrimSpace(sourceSelection.ReasoningEffort)
+	if taskID == "" || continuationID == "" || sourceSessionID == "" || sourceTurnID == "" ||
+		sourceSelection.ModelProviderID == "" || sourceSelection.Model == "" || terminalToolResultCount <= 0 {
 		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
 	}
 	found, err := s.Get(taskID)
@@ -696,7 +742,7 @@ func (s *Service) RecordPendingBlackboardConclusion(taskID, continuationID, sour
 	}
 
 	prior, err := scanBlackboardConclusionReceipt(tx.QueryRow(`
-		SELECT id,task_id,continuation_id,source_session_id,source_turn_id,state,terminal_tool_result_count,created_at,updated_at
+		SELECT `+blackboardConclusionReceiptColumns+`
 		FROM assisted_conclusion_receipts WHERE task_id=? AND continuation_id=? AND source_turn_id=?`, taskID, continuationID, sourceTurnID))
 	if err == nil {
 		return prior, false, nil
@@ -709,14 +755,17 @@ func (s *Service) RecordPendingBlackboardConclusion(taskID, continuationID, sour
 	receipt := BlackboardConclusionReceipt{
 		ID: newID(), TaskID: taskID, ContinuationID: continuationID,
 		SourceSessionID: sourceSessionID, SourceTurnID: sourceTurnID,
-		State: BlackboardConclusionStatePending, TerminalToolResultCount: terminalToolResultCount,
-		CreatedAt: now, UpdatedAt: now,
+		InternalState: BlackboardConclusionReceiptPending, TerminalToolResultCount: terminalToolResultCount,
+		SourceSelection: sourceSelection,
+		CreatedAt:       now, UpdatedAt: now,
 	}
 	if _, err := tx.Exec(`
 		INSERT INTO assisted_conclusion_receipts
-		(id,task_id,continuation_id,source_session_id,source_turn_id,state,terminal_tool_result_count,created_at,updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?)`, receipt.ID, receipt.TaskID, receipt.ContinuationID, receipt.SourceSessionID,
-		receipt.SourceTurnID, string(receipt.State), receipt.TerminalToolResultCount,
+		(id,task_id,continuation_id,source_session_id,source_turn_id,state,terminal_tool_result_count,
+		 source_model_provider_id,source_model,source_reasoning_effort,created_at,updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, receipt.ID, receipt.TaskID, receipt.ContinuationID, receipt.SourceSessionID,
+		receipt.SourceTurnID, string(receipt.InternalState), receipt.TerminalToolResultCount,
+		receipt.SourceSelection.ModelProviderID, receipt.SourceSelection.Model, receipt.SourceSelection.ReasoningEffort,
 		receipt.CreatedAt.Format(time.RFC3339Nano), receipt.UpdatedAt.Format(time.RFC3339Nano)); err != nil {
 		return BlackboardConclusionReceipt{}, false, fmt.Errorf("store pending Blackboard conclusion receipt: %w", err)
 	}
@@ -725,18 +774,7 @@ func (s *Service) RecordPendingBlackboardConclusion(taskID, continuationID, sour
 		"phase": "pending_detected", "receipt_id": receipt.ID, "source_turn_id": receipt.SourceTurnID,
 		"terminal_tool_result_count": receipt.TerminalToolResultCount,
 	}
-	payloadJSON, err := json.Marshal(payload)
-	if err != nil {
-		return BlackboardConclusionReceipt{}, false, fmt.Errorf("encode Blackboard conclusion Event: %w", err)
-	}
-	var maxSeq sql.NullInt64
-	if err := tx.QueryRow(`SELECT MAX(seq) FROM task_events WHERE task_id=?`, taskID).Scan(&maxSeq); err != nil {
-		return BlackboardConclusionReceipt{}, false, fmt.Errorf("read Blackboard conclusion Event sequence: %w", err)
-	}
-	if _, err := tx.Exec(`
-		INSERT INTO task_events (id,task_id,continuation_id,seq,kind,payload_json,created_at)
-		VALUES (?,?,?,?,?,?,?)`, newID(), taskID, continuationID, int(maxSeq.Int64)+1,
-		string(EventKindBlackboardConclusion), string(payloadJSON), now.Format(time.RFC3339Nano)); err != nil {
+	if err := appendBlackboardConclusionEventTx(tx, receipt, payload, now); err != nil {
 		return BlackboardConclusionReceipt{}, false, fmt.Errorf("store Blackboard conclusion Event: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -745,13 +783,162 @@ func (s *Service) RecordPendingBlackboardConclusion(taskID, continuationID, sour
 	return receipt, true, nil
 }
 
+// ClaimBlackboardConclusionDispatch atomically persists deterministic provider
+// and Blackboard idempotency lineage before any external SendTurn. Won is true
+// only for the caller that moved the receipt out of pending.
+func (s *Service) ClaimBlackboardConclusionDispatch(receiptID string, baseRevision int) (BlackboardConclusionReceipt, bool, error) {
+	receiptID = strings.TrimSpace(receiptID)
+	if receiptID == "" || baseRevision < 0 {
+		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return BlackboardConclusionReceipt{}, false, fmt.Errorf("begin Blackboard conclusion dispatch: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	receipt, err := loadBlackboardConclusionReceiptByID(tx, receiptID)
+	if err != nil {
+		return BlackboardConclusionReceipt{}, false, blackboardConclusionLookupError(err)
+	}
+	dispatchID, applyKey := blackboardConclusionRequestLineage(receipt.ContinuationID, receipt.SourceTurnID)
+	if receipt.InternalState != BlackboardConclusionReceiptPending {
+		if receipt.DispatchRequestID == dispatchID && receipt.ApplyIdempotencyKey == applyKey && receipt.BaseRevision != nil && *receipt.BaseRevision == baseRevision {
+			return receipt, false, nil
+		}
+		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
+	}
+	now := time.Now().UTC()
+	result, err := tx.Exec(`UPDATE assisted_conclusion_receipts
+		SET state=?,dispatch_request_id=?,base_revision=?,apply_idempotency_key=?,updated_at=?
+		WHERE id=? AND state=?`, string(BlackboardConclusionReceiptDispatchRequested), dispatchID, baseRevision, applyKey,
+		now.Format(time.RFC3339Nano), receipt.ID, string(BlackboardConclusionReceiptPending))
+	if err != nil {
+		return BlackboardConclusionReceipt{}, false, fmt.Errorf("claim Blackboard conclusion dispatch: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil || changed != 1 {
+		return BlackboardConclusionReceipt{}, false, fmt.Errorf("claim Blackboard conclusion dispatch lost update")
+	}
+	receipt.InternalState = BlackboardConclusionReceiptDispatchRequested
+	receipt.DispatchRequestID = dispatchID
+	receipt.ApplyIdempotencyKey = applyKey
+	receipt.BaseRevision = intPointer(baseRevision)
+	receipt.UpdatedAt = now
+	if err := appendBlackboardConclusionEventTx(tx, receipt, EventPayload{
+		"phase": "dispatch_requested", "receipt_id": receipt.ID, "source_turn_id": receipt.SourceTurnID,
+		"request_id": dispatchID, "base_revision": baseRevision, "turn_kind": "control",
+	}, now); err != nil {
+		return BlackboardConclusionReceipt{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return BlackboardConclusionReceipt{}, false, fmt.Errorf("commit Blackboard conclusion dispatch: %w", err)
+	}
+	return receipt, true, nil
+}
+
+// MarkBlackboardConclusionAwaiting records provider acceptance of the Conclude
+// Turn. Replaying the same correlation is idempotent.
+func (s *Service) MarkBlackboardConclusionAwaiting(dispatchRequestID, controlTurnID string) (BlackboardConclusionReceipt, bool, error) {
+	dispatchRequestID = strings.TrimSpace(dispatchRequestID)
+	controlTurnID = strings.TrimSpace(controlTurnID)
+	if dispatchRequestID == "" || controlTurnID == "" {
+		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
+	}
+	return s.advanceBlackboardConclusion(dispatchRequestID, BlackboardConclusionReceiptDispatchRequested, BlackboardConclusionReceiptAwaitingResult,
+		func(receipt BlackboardConclusionReceipt) bool { return receipt.ControlTurnID == controlTurnID },
+		func(tx *sql.Tx, receipt *BlackboardConclusionReceipt, now time.Time) error {
+			if _, err := tx.Exec(`UPDATE assisted_conclusion_receipts SET state=?,control_turn_id=?,updated_at=? WHERE id=? AND state=?`,
+				string(BlackboardConclusionReceiptAwaitingResult), controlTurnID, now.Format(time.RFC3339Nano), receipt.ID,
+				string(BlackboardConclusionReceiptDispatchRequested)); err != nil {
+				return err
+			}
+			receipt.InternalState = BlackboardConclusionReceiptAwaitingResult
+			receipt.ControlTurnID = controlTurnID
+			return appendBlackboardConclusionEventTx(tx, *receipt, EventPayload{
+				"phase": "awaiting_result", "receipt_id": receipt.ID, "request_id": dispatchRequestID,
+				"source_turn_id": receipt.SourceTurnID, "control_turn_id": controlTurnID, "turn_kind": "control",
+			}, now)
+		})
+}
+
+// BlackboardConclusionByDispatchRequestID resolves durable coordinator state
+// from the provider request correlation.
+func (s *Service) BlackboardConclusionByDispatchRequestID(dispatchRequestID string) (BlackboardConclusionReceipt, error) {
+	dispatchRequestID = strings.TrimSpace(dispatchRequestID)
+	if dispatchRequestID == "" {
+		return BlackboardConclusionReceipt{}, ErrInvalidBlackboardConclusionReceipt
+	}
+	receipt, err := scanBlackboardConclusionReceipt(s.db.QueryRow(`SELECT `+blackboardConclusionReceiptColumns+`
+		FROM assisted_conclusion_receipts WHERE dispatch_request_id=?`, dispatchRequestID))
+	if err != nil {
+		return BlackboardConclusionReceipt{}, blackboardConclusionLookupError(err)
+	}
+	return receipt, nil
+}
+
+// MarkBlackboardConclusionValidated persists canonical closed result bytes
+// before Blackboard application. The hash is computed by the Service.
+func (s *Service) MarkBlackboardConclusionValidated(dispatchRequestID string, canonicalResult []byte) (BlackboardConclusionReceipt, bool, error) {
+	dispatchRequestID = strings.TrimSpace(dispatchRequestID)
+	if dispatchRequestID == "" || len(canonicalResult) == 0 {
+		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
+	}
+	canonicalResult = append([]byte(nil), canonicalResult...)
+	sum := sha256.Sum256(canonicalResult)
+	hash := hex.EncodeToString(sum[:])
+	return s.advanceBlackboardConclusion(dispatchRequestID, BlackboardConclusionReceiptAwaitingResult, BlackboardConclusionReceiptValidated,
+		func(receipt BlackboardConclusionReceipt) bool {
+			return receipt.CanonicalResultSHA256 == hash && string(receipt.CanonicalResultJSON) == string(canonicalResult)
+		}, func(tx *sql.Tx, receipt *BlackboardConclusionReceipt, now time.Time) error {
+			if _, err := tx.Exec(`UPDATE assisted_conclusion_receipts
+				SET state=?,canonical_result_json=?,canonical_result_sha256=?,updated_at=? WHERE id=? AND state=?`,
+				string(BlackboardConclusionReceiptValidated), canonicalResult, hash, now.Format(time.RFC3339Nano), receipt.ID,
+				string(BlackboardConclusionReceiptAwaitingResult)); err != nil {
+				return err
+			}
+			receipt.InternalState = BlackboardConclusionReceiptValidated
+			receipt.CanonicalResultJSON = canonicalResult
+			receipt.CanonicalResultSHA256 = hash
+			return appendBlackboardConclusionEventTx(tx, *receipt, EventPayload{
+				"phase": "result_validated", "receipt_id": receipt.ID, "request_id": dispatchRequestID,
+				"source_turn_id": receipt.SourceTurnID, "control_turn_id": receipt.ControlTurnID, "result_hash": hash,
+			}, now)
+		})
+}
+
+// MarkBlackboardConclusionApplied completes the receipt with the exact
+// Blackboard revision returned by ApplyForContinuation.
+func (s *Service) MarkBlackboardConclusionApplied(dispatchRequestID string, appliedRevision int) (BlackboardConclusionReceipt, bool, error) {
+	dispatchRequestID = strings.TrimSpace(dispatchRequestID)
+	if dispatchRequestID == "" || appliedRevision < 0 {
+		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
+	}
+	return s.advanceBlackboardConclusion(dispatchRequestID, BlackboardConclusionReceiptValidated, BlackboardConclusionReceiptApplied,
+		func(receipt BlackboardConclusionReceipt) bool {
+			return receipt.AppliedRevision != nil && *receipt.AppliedRevision == appliedRevision
+		},
+		func(tx *sql.Tx, receipt *BlackboardConclusionReceipt, now time.Time) error {
+			if _, err := tx.Exec(`UPDATE assisted_conclusion_receipts SET state=?,applied_revision=?,updated_at=? WHERE id=? AND state=?`,
+				string(BlackboardConclusionReceiptApplied), appliedRevision, now.Format(time.RFC3339Nano), receipt.ID,
+				string(BlackboardConclusionReceiptValidated)); err != nil {
+				return err
+			}
+			receipt.InternalState = BlackboardConclusionReceiptApplied
+			receipt.AppliedRevision = intPointer(appliedRevision)
+			return appendBlackboardConclusionEventTx(tx, *receipt, EventPayload{
+				"phase": "applied", "receipt_id": receipt.ID, "request_id": dispatchRequestID,
+				"source_turn_id": receipt.SourceTurnID, "control_turn_id": receipt.ControlTurnID, "applied_revision": appliedRevision,
+			}, now)
+		})
+}
+
 // LatestBlackboardConclusion returns the newest durable receipt for a Task.
 func (s *Service) LatestBlackboardConclusion(taskID string) (*BlackboardConclusionReceipt, error) {
 	if _, err := s.Get(taskID); err != nil {
 		return nil, err
 	}
 	receipt, err := scanBlackboardConclusionReceipt(s.db.QueryRow(`
-		SELECT id,task_id,continuation_id,source_session_id,source_turn_id,state,terminal_tool_result_count,created_at,updated_at
+		SELECT `+blackboardConclusionReceiptColumns+`
 		FROM assisted_conclusion_receipts WHERE task_id=? ORDER BY created_at DESC,id DESC LIMIT 1`, taskID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -765,11 +952,27 @@ func (s *Service) LatestBlackboardConclusion(taskID string) (*BlackboardConclusi
 func scanBlackboardConclusionReceipt(row scanner) (BlackboardConclusionReceipt, error) {
 	var receipt BlackboardConclusionReceipt
 	var state, createdAt, updatedAt string
+	var dispatchRequestID, controlTurnID, applyKey, resultHash sql.NullString
+	var baseRevision, appliedRevision sql.NullInt64
+	var canonicalResult []byte
 	if err := row.Scan(&receipt.ID, &receipt.TaskID, &receipt.ContinuationID, &receipt.SourceSessionID,
-		&receipt.SourceTurnID, &state, &receipt.TerminalToolResultCount, &createdAt, &updatedAt); err != nil {
+		&receipt.SourceTurnID, &state, &receipt.TerminalToolResultCount, &dispatchRequestID, &controlTurnID,
+		&baseRevision, &receipt.SourceSelection.ModelProviderID, &receipt.SourceSelection.Model, &receipt.SourceSelection.ReasoningEffort,
+		&canonicalResult, &resultHash, &applyKey, &appliedRevision, &createdAt, &updatedAt); err != nil {
 		return BlackboardConclusionReceipt{}, err
 	}
-	receipt.State = BlackboardConclusionState(state)
+	receipt.InternalState = BlackboardConclusionReceiptState(state)
+	receipt.DispatchRequestID = dispatchRequestID.String
+	receipt.ControlTurnID = controlTurnID.String
+	receipt.CanonicalResultJSON = append([]byte(nil), canonicalResult...)
+	receipt.CanonicalResultSHA256 = resultHash.String
+	receipt.ApplyIdempotencyKey = applyKey.String
+	if baseRevision.Valid {
+		receipt.BaseRevision = intPointer(int(baseRevision.Int64))
+	}
+	if appliedRevision.Valid {
+		receipt.AppliedRevision = intPointer(int(appliedRevision.Int64))
+	}
 	var err error
 	if receipt.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt); err != nil {
 		return BlackboardConclusionReceipt{}, fmt.Errorf("parse Blackboard conclusion created_at: %w", err)
@@ -779,6 +982,90 @@ func scanBlackboardConclusionReceipt(row scanner) (BlackboardConclusionReceipt, 
 	}
 	return receipt, nil
 }
+
+const blackboardConclusionReceiptColumns = `id,task_id,continuation_id,source_session_id,source_turn_id,state,
+	terminal_tool_result_count,dispatch_request_id,control_turn_id,base_revision,source_model_provider_id,source_model,
+	source_reasoning_effort,canonical_result_json,canonical_result_sha256,apply_idempotency_key,applied_revision,created_at,updated_at`
+
+func (s *Service) advanceBlackboardConclusion(dispatchRequestID string, from, to BlackboardConclusionReceiptState,
+	replayMatches func(BlackboardConclusionReceipt) bool,
+	advance func(*sql.Tx, *BlackboardConclusionReceipt, time.Time) error,
+) (BlackboardConclusionReceipt, bool, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return BlackboardConclusionReceipt{}, false, fmt.Errorf("begin Blackboard conclusion %s: %w", to, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	receipt, err := scanBlackboardConclusionReceipt(tx.QueryRow(`SELECT `+blackboardConclusionReceiptColumns+`
+		FROM assisted_conclusion_receipts WHERE dispatch_request_id=?`, dispatchRequestID))
+	if err != nil {
+		return BlackboardConclusionReceipt{}, false, blackboardConclusionLookupError(err)
+	}
+	if receipt.InternalState != from {
+		if receipt.InternalState == to || receiptStateAfter(receipt.InternalState, to) {
+			if replayMatches(receipt) {
+				return receipt, false, nil
+			}
+		}
+		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
+	}
+	now := time.Now().UTC()
+	if err := advance(tx, &receipt, now); err != nil {
+		return BlackboardConclusionReceipt{}, false, fmt.Errorf("mark Blackboard conclusion %s: %w", to, err)
+	}
+	receipt.UpdatedAt = now
+	if err := tx.Commit(); err != nil {
+		return BlackboardConclusionReceipt{}, false, fmt.Errorf("commit Blackboard conclusion %s: %w", to, err)
+	}
+	return receipt, true, nil
+}
+
+func receiptStateAfter(current, target BlackboardConclusionReceiptState) bool {
+	order := map[BlackboardConclusionReceiptState]int{
+		BlackboardConclusionReceiptPending: 0, BlackboardConclusionReceiptDispatchRequested: 1,
+		BlackboardConclusionReceiptAwaitingResult: 2, BlackboardConclusionReceiptValidated: 3,
+		BlackboardConclusionReceiptApplied: 4,
+	}
+	return order[current] > order[target]
+}
+
+func loadBlackboardConclusionReceiptByID(tx *sql.Tx, receiptID string) (BlackboardConclusionReceipt, error) {
+	return scanBlackboardConclusionReceipt(tx.QueryRow(`SELECT `+blackboardConclusionReceiptColumns+`
+		FROM assisted_conclusion_receipts WHERE id=?`, receiptID))
+}
+
+func blackboardConclusionLookupError(err error) error {
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	return fmt.Errorf("load Blackboard conclusion receipt: %w", err)
+}
+
+func blackboardConclusionRequestLineage(continuationID, sourceTurnID string) (string, string) {
+	lineage := fmt.Sprintf("%d:%s%d:%s", len(continuationID), continuationID, len(sourceTurnID), sourceTurnID)
+	sum := sha256.Sum256([]byte(lineage))
+	digest := hex.EncodeToString(sum[:])
+	return "conclude:v1:" + digest, "assisted-apply:v1:" + digest
+}
+
+func appendBlackboardConclusionEventTx(tx *sql.Tx, receipt BlackboardConclusionReceipt, payload EventPayload, now time.Time) error {
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("encode Blackboard conclusion Event: %w", err)
+	}
+	var maxSeq sql.NullInt64
+	if err := tx.QueryRow(`SELECT MAX(seq) FROM task_events WHERE task_id=?`, receipt.TaskID).Scan(&maxSeq); err != nil {
+		return fmt.Errorf("read Blackboard conclusion Event sequence: %w", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO task_events (id,task_id,continuation_id,seq,kind,payload_json,created_at)
+		VALUES (?,?,?,?,?,?,?)`, newID(), receipt.TaskID, receipt.ContinuationID, int(maxSeq.Int64)+1,
+		string(EventKindBlackboardConclusion), string(payloadJSON), now.Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("store Blackboard conclusion Event: %w", err)
+	}
+	return nil
+}
+
+func intPointer(value int) *int { return &value }
 
 // HarnessSteeringDirective is one unconsumed task-local directive selected in
 // Task Event order. EventID remains server authority and is never projected.

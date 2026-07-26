@@ -435,7 +435,7 @@ export function TaskLaunchPage() {
             </Select>
 			<p className="mt-1 text-xs text-muted-foreground">
 			  {blackboardConclusionMode === "assisted"
-				? "Surfaces a pending Blackboard conclusion after tool-producing work. This release does not add a model Turn or write Blackboard records automatically."
+				? "After tool-producing work, the Harness runs a bounded Conclude Turn and applies its validated Attempt result to the Blackboard."
                 : assistedConclusionSupported
                   ? "The operator decides when Runtime work is written to the Blackboard."
                   : "Assisted mode requires a Runtime with assisted conclusion support; interactive launch remains available."}

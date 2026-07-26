@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"pentest/internal/project"
@@ -217,14 +218,15 @@ func TestRecordPendingBlackboardConclusionIsDurableAndIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	first, inserted, err := svc.RecordPendingBlackboardConclusion(created.ID, continuation.ID, "session-1", "turn-1", 1)
+	selection := task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1", ReasoningEffort: "high"}
+	first, inserted, err := svc.RecordPendingBlackboardConclusion(created.ID, continuation.ID, "session-1", "turn-1", selection, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !inserted || first.ID == "" || first.State != task.BlackboardConclusionStatePending || first.TerminalToolResultCount != 1 {
+	if !inserted || first.ID == "" || first.InternalState != task.BlackboardConclusionReceiptPending || first.TerminalToolResultCount != 1 || first.SourceSelection != selection {
 		t.Fatalf("first receipt = %#v, inserted=%v", first, inserted)
 	}
-	replayed, inserted, err := svc.RecordPendingBlackboardConclusion(created.ID, continuation.ID, "session-1", "turn-1", 9)
+	replayed, inserted, err := svc.RecordPendingBlackboardConclusion(created.ID, continuation.ID, "session-1", "turn-1", task.TurnSelection{ModelProviderID: "provider-drift", Model: "model-drift"}, 9)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,6 +252,102 @@ func TestRecordPendingBlackboardConclusionIsDurableAndIdempotent(t *testing.T) {
 		conclusions[0].Payload["phase"] != "pending_detected" || conclusions[0].Payload["receipt_id"] != first.ID ||
 		conclusions[0].Payload["source_turn_id"] != "turn-1" {
 		t.Fatalf("conclusion events = %#v", conclusions)
+	}
+}
+
+func TestBlackboardConclusionReceiptAdvancesDurablyAndIdempotently(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, err := svc.Create(task.CreateRequest{
+		ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation, err := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection := task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1", ReasoningEffort: "high"}
+	receipt, _, err := svc.RecordPendingBlackboardConclusion(created.ID, continuation.ID, "session-1", "turn-1", selection, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view := receipt.View(task.BlackboardConclusionModeAssisted); view.State != task.BlackboardConclusionStatePending || view.SourceTurnID != "turn-1" || view.AppliedRevision != nil {
+		t.Fatalf("pending view = %#v", view)
+	}
+
+	dispatched, won, err := svc.ClaimBlackboardConclusionDispatch(receipt.ID, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !won || dispatched.InternalState != task.BlackboardConclusionReceiptDispatchRequested ||
+		dispatched.DispatchRequestID == "" || dispatched.ApplyIdempotencyKey == "" || dispatched.BaseRevision == nil || *dispatched.BaseRevision != 7 {
+		t.Fatalf("dispatch claim = %#v, won=%v", dispatched, won)
+	}
+	replayedDispatch, won, err := svc.ClaimBlackboardConclusionDispatch(receipt.ID, 7)
+	if err != nil || won || replayedDispatch.DispatchRequestID != dispatched.DispatchRequestID || replayedDispatch.ApplyIdempotencyKey != dispatched.ApplyIdempotencyKey {
+		t.Fatalf("dispatch replay = %#v, won=%v, err=%v", replayedDispatch, won, err)
+	}
+
+	awaiting, won, err := svc.MarkBlackboardConclusionAwaiting(dispatched.DispatchRequestID, "control-turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !won || awaiting.InternalState != task.BlackboardConclusionReceiptAwaitingResult || awaiting.ControlTurnID != "control-turn-1" {
+		t.Fatalf("awaiting = %#v, won=%v", awaiting, won)
+	}
+	if replay, replayWon, replayErr := svc.MarkBlackboardConclusionAwaiting(dispatched.DispatchRequestID, "control-turn-1"); replayErr != nil || replayWon || replay.ID != receipt.ID {
+		t.Fatalf("awaiting replay = %#v, won=%v, err=%v", replay, replayWon, replayErr)
+	}
+
+	lookedUp, err := svc.BlackboardConclusionByDispatchRequestID(dispatched.DispatchRequestID)
+	if err != nil || lookedUp.ID != receipt.ID {
+		t.Fatalf("lookup = %#v, err=%v", lookedUp, err)
+	}
+	canonical := []byte(`{"schema":"runtime-attempt-result/v1","base_revision":7}`)
+	validated, won, err := svc.MarkBlackboardConclusionValidated(dispatched.DispatchRequestID, canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !won || validated.InternalState != task.BlackboardConclusionReceiptValidated || string(validated.CanonicalResultJSON) != string(canonical) || validated.CanonicalResultSHA256 == "" {
+		t.Fatalf("validated = %#v, won=%v", validated, won)
+	}
+	if replay, replayWon, replayErr := svc.MarkBlackboardConclusionValidated(dispatched.DispatchRequestID, canonical); replayErr != nil || replayWon || replay.CanonicalResultSHA256 != validated.CanonicalResultSHA256 {
+		t.Fatalf("validated replay = %#v, won=%v, err=%v", replay, replayWon, replayErr)
+	}
+
+	applied, won, err := svc.MarkBlackboardConclusionApplied(dispatched.DispatchRequestID, 11)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !won || applied.InternalState != task.BlackboardConclusionReceiptApplied || applied.AppliedRevision == nil || *applied.AppliedRevision != 11 {
+		t.Fatalf("applied = %#v, won=%v", applied, won)
+	}
+	if view := applied.View(task.BlackboardConclusionModeAssisted); view.State != task.BlackboardConclusionStateClean || view.AppliedRevision == nil || *view.AppliedRevision != 11 {
+		t.Fatalf("applied view = %#v", view)
+	}
+	if replay, replayWon, replayErr := svc.MarkBlackboardConclusionApplied(dispatched.DispatchRequestID, 11); replayErr != nil || replayWon || replay.ID != receipt.ID {
+		t.Fatalf("applied replay = %#v, won=%v, err=%v", replay, replayWon, replayErr)
+	}
+
+	events, err := svc.Events(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	phases := []string{}
+	for _, event := range events {
+		if event.Kind == task.EventKindBlackboardConclusion {
+			phase, _ := event.Payload["phase"].(string)
+			phases = append(phases, phase)
+		}
+	}
+	wantPhases := []string{"pending_detected", "dispatch_requested", "awaiting_result", "result_validated", "applied"}
+	if !reflect.DeepEqual(phases, wantPhases) {
+		t.Fatalf("conclusion phases = %#v, want %#v", phases, wantPhases)
 	}
 }
 

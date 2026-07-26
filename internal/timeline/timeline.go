@@ -3,6 +3,7 @@
 package timeline
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -85,12 +86,26 @@ func Build(events []task.Event) []Item {
 }
 
 func blackboardConclusionItem(event task.Event) (Item, bool) {
-	if stringValue(event.Payload, "phase") != "pending_detected" {
+	var content string
+	switch stringValue(event.Payload, "phase") {
+	case "pending_detected":
+		content = "Blackboard conclusion pending"
+		if sourceTurnID := strings.TrimSpace(stringValue(event.Payload, "source_turn_id")); sourceTurnID != "" {
+			content += " for work Turn " + sourceTurnID
+		}
+	case "dispatch_requested":
+		content = "Blackboard Conclude Turn dispatch requested"
+	case "awaiting_result":
+		content = "Blackboard Conclude Turn started"
+	case "result_validated":
+		content = "Blackboard conclusion result validated"
+	case "applied":
+		content = "Blackboard conclusion applied"
+		if revision, ok := event.Payload["applied_revision"]; ok {
+			content += " at revision " + fmt.Sprint(revision)
+		}
+	default:
 		return Item{}, false
-	}
-	content := "Blackboard conclusion pending"
-	if sourceTurnID := strings.TrimSpace(stringValue(event.Payload, "source_turn_id")); sourceTurnID != "" {
-		content += " for work Turn " + sourceTurnID
 	}
 	return Item{Type: "harness", Content: content, CreatedAt: event.CreatedAt}, true
 }

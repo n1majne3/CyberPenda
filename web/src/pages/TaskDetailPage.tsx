@@ -972,12 +972,16 @@ function BlackboardConclusionBadge({ task }: { task: Task }) {
   const mode = task.blackboard_conclusion?.mode ?? task.run_controls.blackboard_conclusion_mode ?? "interactive";
   const state = task.blackboard_conclusion?.state ?? "clean";
   const sourceTurn = task.blackboard_conclusion?.source_turn_id;
-  const label = `Blackboard · ${mode} · ${state}`;
+  const appliedRevision = task.blackboard_conclusion?.applied_revision;
+  const label = `Blackboard · ${mode} · ${state}${appliedRevision !== undefined ? ` · applied revision ${appliedRevision}` : ""}`;
+  const details = [label];
+  if (sourceTurn) details.push(`source Turn ${sourceTurn}`);
+  if (appliedRevision !== undefined) details.push(`applied revision ${appliedRevision}`);
   return (
     <Badge
-      variant={state === "pending" ? "warning" : "outline"}
+      variant={state === "pending" || state === "concluding" ? "warning" : "outline"}
       data-testid="blackboard-conclusion-state"
-      title={sourceTurn ? `${label} · source Turn ${sourceTurn}` : label}
+      title={details.join(" · ")}
     >
       {label}
     </Badge>

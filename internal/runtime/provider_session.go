@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"pentest/internal/blackboardconclusion"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/task"
 )
@@ -200,10 +201,13 @@ type FakeProviderSession struct {
 	// healthUnknown forces indeterminate health for activity tests.
 	healthUnknown bool
 	// lastRequests records each operation request for acceptance tests.
-	lastRequests     []ProviderSessionRequest
-	observationSink  ProviderSessionObserve
-	requestTurnKind  map[string]RuntimeTurnKind
-	providerTurnKind map[string]RuntimeTurnKind
+	lastRequests      []ProviderSessionRequest
+	observationSink   ProviderSessionObserve
+	attemptResultSink ProviderSessionAttemptResultSink
+	requestTurnKind   map[string]RuntimeTurnKind
+	providerTurnKind  map[string]RuntimeTurnKind
+	requestLineage    map[string]ProviderSessionTurnLineage
+	providerLineage   map[string]ProviderSessionTurnLineage
 }
 
 // NewFakeProviderSession returns an idle or active deterministic session.
@@ -218,6 +222,7 @@ func NewFakeProviderSession(config FakeProviderSessionConfig) *FakeProviderSessi
 		manualAck: config.ManualAcknowledge, failures: config.Failures,
 		calls: map[string]*providerSessionCall{}, acknowledge: map[string]chan struct{}{},
 		requestTurnKind: map[string]RuntimeTurnKind{}, providerTurnKind: map[string]RuntimeTurnKind{},
+		requestLineage: map[string]ProviderSessionTurnLineage{}, providerLineage: map[string]ProviderSessionTurnLineage{},
 	}
 }
 
@@ -243,6 +248,51 @@ func (s *FakeProviderSession) SetObservationSink(sink ProviderSessionObserve) {
 	s.mu.Unlock()
 }
 
+func (s *FakeProviderSession) SetAttemptResultSink(sink ProviderSessionAttemptResultSink) {
+	s.mu.Lock()
+	s.attemptResultSink = sink
+	s.mu.Unlock()
+}
+
+// EmitAttemptResult strictly decodes provider output before exposing a typed,
+// canonical semantic result to the Harness. Raw bytes are never forwarded.
+func (s *FakeProviderSession) EmitAttemptResult(raw []byte) error {
+	validated, err := blackboardconclusion.Decode(raw)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return ErrProviderSessionClosed
+	}
+	if len(s.lastRequests) == 0 {
+		s.mu.Unlock()
+		return ErrInvalidProviderSessionRequest
+	}
+	requestID := s.lastRequests[len(s.lastRequests)-1].RequestID
+	providerTurnID := s.activeTurnID
+	if call := s.calls[requestID]; call != nil && strings.TrimSpace(call.result.ProviderTurnID) != "" {
+		providerTurnID = call.result.ProviderTurnID
+	}
+	if strings.TrimSpace(providerTurnID) == "" {
+		s.mu.Unlock()
+		return ErrInvalidProviderSessionRequest
+	}
+	result := ProviderSessionAttemptResult{
+		RequestID:      requestID,
+		SessionID:      s.id,
+		ProviderTurnID: providerTurnID,
+		Validated:      validated,
+	}
+	sink := s.attemptResultSink
+	s.mu.Unlock()
+	if sink != nil {
+		sink(result)
+	}
+	return nil
+}
+
 func (s *FakeProviderSession) ResolveProviderSessionTurnKind(requestID, providerTurnID string) (RuntimeTurnKind, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -251,6 +301,16 @@ func (s *FakeProviderSession) ResolveProviderSessionTurnKind(requestID, provider
 	}
 	kind, ok := s.providerTurnKind[strings.TrimSpace(providerTurnID)]
 	return kind, ok
+}
+
+func (s *FakeProviderSession) ResolveProviderSessionTurnLineage(requestID, providerTurnID string) (ProviderSessionTurnLineage, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if lineage, ok := s.requestLineage[strings.TrimSpace(requestID)]; ok {
+		return lineage, true
+	}
+	lineage, ok := s.providerLineage[strings.TrimSpace(providerTurnID)]
+	return lineage, ok
 }
 
 // EmitObservation deterministically projects bounded provider metadata for
@@ -271,11 +331,15 @@ func (s *FakeProviderSession) EmitObservation(observation ProviderSessionObserva
 	if strings.TrimSpace(observation.RequestID) == "" && len(s.lastRequests) > 0 {
 		observation.RequestID = s.lastRequests[len(s.lastRequests)-1].RequestID
 	}
-	sink := s.observationSink
-	s.mu.Unlock()
 	if err := observation.Validate(); err != nil {
+		s.mu.Unlock()
 		return err
 	}
+	if observation.Kind == ProviderSessionObservationTurnCompleted && observation.ProviderTurnID == s.activeTurnID {
+		s.activeTurnID = ""
+	}
+	sink := s.observationSink
+	s.mu.Unlock()
 	if sink != nil {
 		sink(observation)
 	}
@@ -440,6 +504,9 @@ func (s *FakeProviderSession) operate(ctx context.Context, mode ProviderSessionM
 	}
 	s.requestTurnKind[request.RequestID] = request.TurnKind
 	s.providerTurnKind[turnID] = request.TurnKind
+	lineage := providerSessionTurnLineage(request)
+	s.requestLineage[request.RequestID] = lineage
+	s.providerLineage[turnID] = lineage
 	var ack chan struct{}
 	if s.manualAck && modeNeedsAcknowledgement(mode) {
 		ack = make(chan struct{})

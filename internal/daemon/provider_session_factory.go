@@ -107,7 +107,10 @@ func validateAssistedConclusionBinding(binding ProviderSessionBinding) error {
 	if _, ok := binding.Session.(runtime.ProviderSessionObservationSink); !ok {
 		return errAssistedConclusionUnsupported
 	}
-	if _, ok := binding.Session.(runtime.ProviderSessionTurnLineageResolver); !ok {
+	if _, ok := binding.Session.(runtime.ProviderSessionCompleteTurnLineageResolver); !ok {
+		return errAssistedConclusionUnsupported
+	}
+	if _, ok := binding.Session.(runtime.ProviderSessionAttemptResultSource); !ok {
 		return errAssistedConclusionUnsupported
 	}
 	return nil

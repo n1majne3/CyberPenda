@@ -643,7 +643,7 @@ type terminalAttemptValidation struct {
 
 // Apply atomically applies a semantic-change-batch/v2 to one Project.
 func (s *Service) Apply(ctx context.Context, projectID string, batch ChangeBatch) (ChangeResult, error) {
-	return s.apply(ctx, projectID, "", batch)
+	return s.apply(ctx, projectID, "", batch, nil)
 }
 
 // ApplyForContinuation applies a trusted Runtime batch using server-bound
@@ -652,7 +652,21 @@ func (s *Service) ApplyForContinuation(ctx context.Context, projectID, continuat
 	if continuationID == "" {
 		return ChangeResult{}, semanticError("authority_denied", "trusted Continuation identity is required", "", nil)
 	}
-	return s.apply(ctx, projectID, continuationID, batch)
+	return s.apply(ctx, projectID, continuationID, batch, nil)
+}
+
+// ApplyForContinuationAtRevision applies a trusted Runtime batch only when the
+// current Project Blackboard still matches the supplied Runtime Snapshot. An
+// exact idempotency replay is resolved before the revision precondition so a
+// caller can recover an acknowledged commit after the revision advances.
+func (s *Service) ApplyForContinuationAtRevision(ctx context.Context, projectID, continuationID string, expectedBaseRevision int, batch ChangeBatch) (ChangeResult, error) {
+	if continuationID == "" {
+		return ChangeResult{}, semanticError("authority_denied", "trusted Continuation identity is required", "", nil)
+	}
+	if expectedBaseRevision < 0 {
+		return ChangeResult{}, semanticError("semantic_validation", "base_revision must not be negative", "base_revision", nil)
+	}
+	return s.apply(ctx, projectID, continuationID, batch, &expectedBaseRevision)
 }
 
 // ReconcileTerminalContinuation implements the server-owned Task lifecycle
@@ -821,7 +835,7 @@ func markContinuationReconciled(ctx context.Context, tx *sql.Tx, continuationID,
 	return nil
 }
 
-func (s *Service) apply(ctx context.Context, projectID, continuationID string, batch ChangeBatch) (ChangeResult, error) {
+func (s *Service) apply(ctx context.Context, projectID, continuationID string, batch ChangeBatch, expectedBaseRevision *int) (ChangeResult, error) {
 	s.writeMu.Lock()
 	writeLocked := true
 	defer func() {
@@ -902,6 +916,13 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 	revision, err := currentRevision(ctx, tx, projectID)
 	if err != nil {
 		return ChangeResult{}, err
+	}
+	if expectedBaseRevision != nil && revision != *expectedBaseRevision {
+		return ChangeResult{}, semanticError("version_conflict", "Blackboard revision changed", "base_revision", map[string]any{
+			"expected_revision": float64(*expectedBaseRevision),
+			"current_revision":  float64(revision),
+			"next_action":       "synchronize_runtime_blackboard",
+		})
 	}
 	changedRecords := make(map[string]int)
 	changedRelations := make(map[string]RelationVersionTuple)

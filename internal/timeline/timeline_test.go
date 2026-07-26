@@ -1,6 +1,7 @@
 package timeline_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -115,6 +116,28 @@ func TestBuildKeepsControlEventsBetweenRuntimeOutput(t *testing.T) {
 	requireItem(t, got, 0, "text", "", "before")
 	requireItem(t, got, 1, "steering", "", "Steering: steering_requested - focus admin")
 	requireItem(t, got, 2, "text", "", "after")
+}
+
+func TestBuildProjectsAssistedConclusionPhasesWithoutStructuredResult(t *testing.T) {
+	events := []task.Event{
+		{Seq: 1, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "pending_detected", "source_turn_id": "work-1"}},
+		{Seq: 2, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "dispatch_requested", "source_turn_id": "work-1", "request_id": "conclude-secret"}},
+		{Seq: 3, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "awaiting_result", "control_turn_id": "control-1"}},
+		{Seq: 4, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "result_validated", "result_hash": "secret-hash"}},
+		{Seq: 5, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "applied", "applied_revision": 4}},
+	}
+
+	got := timeline.Build(events)
+	requireItem(t, got, 0, "harness", "", "Blackboard conclusion pending for work Turn work-1")
+	requireItem(t, got, 1, "harness", "", "Blackboard Conclude Turn dispatch requested")
+	requireItem(t, got, 2, "harness", "", "Blackboard Conclude Turn started")
+	requireItem(t, got, 3, "harness", "", "Blackboard conclusion result validated")
+	requireItem(t, got, 4, "harness", "", "Blackboard conclusion applied at revision 4")
+	for _, item := range got {
+		if strings.Contains(item.Content, "secret") || strings.Contains(item.Content, "control-1") {
+			t.Fatalf("Harness item leaked correlation/result detail: %#v", item)
+		}
+	}
 }
 
 func requireItem(t *testing.T, items []timeline.Item, index int, typ, tool, content string) {

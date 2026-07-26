@@ -829,6 +829,38 @@ func TestProviderSessionAdapterRejectsRequestPayloadDrift(t *testing.T) {
 	})
 }
 
+func TestProviderSessionAdapterFreezesCompleteTurnLineage(t *testing.T) {
+	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
+		"turn/start": {Result: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-control"}}`)},
+	}}
+	session := NewCodexProviderSession(CodexProviderSessionConfig{Transport: transport, SessionID: "thread-1"})
+	request := ProviderSessionRequest{
+		RequestID: "conclude-1", Message: "return the closed conclusion", TurnKind: RuntimeTurnKindControl,
+		ModelProviderID: "provider-1", Model: "gpt-test", RequestedReasoningEffort: "high",
+		EffectiveReasoningEffort: "medium",
+	}
+	result, err := session.SendTurn(context.Background(), request, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := ProviderSessionTurnLineage{
+		Kind:            RuntimeTurnKindControl,
+		ModelProviderID: "provider-1", Model: "gpt-test", RequestedReasoningEffort: "high",
+		EffectiveReasoningEffort: "medium",
+	}
+	for _, correlation := range []struct {
+		requestID, providerTurnID string
+	}{
+		{requestID: request.RequestID},
+		{providerTurnID: result.ProviderTurnID},
+	} {
+		got, ok := session.ResolveProviderSessionTurnLineage(correlation.requestID, correlation.providerTurnID)
+		if !ok || got != want {
+			t.Fatalf("lineage for request=%q turn=%q = %#v, %v; want %#v", correlation.requestID, correlation.providerTurnID, got, ok, want)
+		}
+	}
+}
+
 func TestProviderSessionAdaptersParseProtocolNotificationsAsRedactedEvents(t *testing.T) {
 	tests := []struct {
 		name    string

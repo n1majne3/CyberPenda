@@ -12,10 +12,10 @@ orchestration contract: their raw payloads vary by provider, may contain
 sensitive tool input and output, and cannot prove whether a Turn was initiated
 by the operator or by the Harness.
 
-The first assisted workflow only surfaces a pending conclusion. Later work may
-dispatch a separate Harness-owned Turn to reconcile semantic conclusions into
-Blackboard v2. That control Turn must not recursively create another pending
-conclusion or be mistaken for operator work.
+The first assisted workflow only surfaced a pending conclusion. The next slice
+dispatches a separate Harness-owned Turn to reconcile a closed semantic result
+into Blackboard v2. That control Turn must not recursively create another
+pending conclusion or be mistaken for operator work.
 
 ## Decision
 
@@ -34,8 +34,12 @@ conclusion or be mistaken for operator work.
   Blackboard records.
 - A pending receipt does not stop, complete, or finish a Task. Task Finish
   remains an explicit operator action.
-- Dispatching and reconciling a `control` Turn is out of scope for the initial
-  pending-state slice.
+- A durable pending receipt may dispatch one deterministic `control` Turn in
+  the same persistent Runtime and Runtime Continuation. The Harness validates
+  the closed result and supplies trusted identity, idempotency, and revision
+  preconditions before applying it through Blackboard v2.
+- The control directive and structured result remain outside Task Conversation
+  messages and cannot invoke Task Finish or infer Facts/Evidence from raw output.
 
 ## Consequences
 
