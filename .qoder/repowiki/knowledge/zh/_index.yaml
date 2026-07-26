@@ -3,7 +3,7 @@ schema_version: 1
 locale: zh-CN
 branch: main
 nodes_managed: true
-exported_at: "2026-07-23T13:37:36Z"
+exported_at: "2026-07-24T01:37:49Z"
 modules:
     "":
         dir_name: CyberPenda 多模块 Go 工作区（pentest）
@@ -123,8 +123,8 @@ modules:
         related_to:
             - path: daemon_server/task_handlers
     daemon_server:
-        dir_name: pentestd 守护进程装配与运行时编排
-        title: pentestd 守护进程装配与运行时编排
+        dir_name: pentestd 守护进程装配层
+        title: pentestd 守护进程装配层
         scope:
             - internal/daemon/
             - cmd/pentestd/
