@@ -550,6 +550,214 @@ func TestBlackboardConclusionForbiddenControlToolUseRequiresAction(t *testing.T)
 	}
 }
 
+func TestBlackboardConclusionVersionConflictRegeneratesOnceThenRequiresAction(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
+	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
+	selection := task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1", ReasoningEffort: "high"}
+	receipt, _, _ := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID, "session-1", "turn-1",
+		selection, task.SemanticDebtWatermarks{SourceWork: 1})
+	initial, _, _ := svc.ClaimBlackboardConclusionDispatch(receipt.ID, 3)
+	_, _, _ = svc.MarkBlackboardConclusionAwaiting(initial.DispatchRequestID, "control-initial")
+	canonicalInitial := []byte(`{"schema":"runtime-attempt-result/v1","base_revision":3}`)
+	validated, _, _ := svc.MarkBlackboardConclusionValidated(initial.DispatchRequestID, canonicalInitial)
+	syncRequested, won, err := svc.ClaimBlackboardConclusionVersionSync(validated.DispatchRequestID)
+	if err != nil || !won || syncRequested.InternalState != task.BlackboardConclusionReceiptVersionSyncRequested ||
+		syncRequested.DispatchRequestID != validated.DispatchRequestID ||
+		string(syncRequested.CanonicalResultJSON) != string(canonicalInitial) ||
+		syncRequested.ErrorCode != task.BlackboardConclusionErrorVersionConflict {
+		t.Fatalf("claim version sync = %#v, won=%v, err=%v", syncRequested, won, err)
+	}
+
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	regeneration, changed, err := svc.HandleBlackboardConclusionVersionConflict(
+		syncRequested.DispatchRequestID, 4, now, time.Minute)
+	if err != nil || !changed {
+		t.Fatalf("claim version regeneration = %#v, changed=%v, err=%v", regeneration, changed, err)
+	}
+	if regeneration.InternalState != task.BlackboardConclusionReceiptVersionRegenerationDispatchRequested ||
+		regeneration.AutomaticTurnCount != task.BlackboardConclusionAutomaticTurnLimit || regeneration.VersionRegenerationCount != 1 ||
+		regeneration.BaseRevision == nil || *regeneration.BaseRevision != 4 ||
+		regeneration.DispatchRequestID == initial.DispatchRequestID || regeneration.ControlTurnID != "" ||
+		len(regeneration.CanonicalResultJSON) != 0 || regeneration.CanonicalResultSHA256 != "" ||
+		regeneration.ApplyIdempotencyKey != initial.ApplyIdempotencyKey || regeneration.ContinuationID != continuation.ID ||
+		regeneration.SourceSelection != selection || regeneration.ErrorCode != task.BlackboardConclusionErrorVersionConflict ||
+		regeneration.NextEligibleAt == nil || !regeneration.NextEligibleAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("version regeneration lost lineage or retained stale result: %#v", regeneration)
+	}
+	if _, err := svc.BlackboardConclusionByDispatchRequestID(initial.DispatchRequestID); !errors.Is(err, task.ErrNotFound) {
+		t.Fatalf("stale version correlation remained live: %v", err)
+	}
+	if _, _, err := svc.MarkBlackboardConclusionAwaiting(regeneration.DispatchRequestID, "control-regenerated"); err != nil {
+		t.Fatal(err)
+	}
+	canonicalRegenerated := []byte(`{"schema":"runtime-attempt-result/v1","base_revision":4}`)
+	regenerated, won, err := svc.MarkBlackboardConclusionValidated(regeneration.DispatchRequestID, canonicalRegenerated)
+	if err != nil || !won || regenerated.VersionRegenerationCount != 1 || regenerated.ErrorCode != "" {
+		t.Fatalf("validate regenerated result = %#v, won=%v, err=%v", regenerated, won, err)
+	}
+	regeneratedSync, _, _ := svc.ClaimBlackboardConclusionVersionSync(regenerated.DispatchRequestID)
+	action, changed, err := svc.HandleBlackboardConclusionVersionConflict(
+		regeneratedSync.DispatchRequestID, 5, now.Add(time.Minute), time.Minute)
+	if err != nil || !changed || action.InternalState != task.BlackboardConclusionReceiptActionRequired ||
+		action.ErrorCode != task.BlackboardConclusionErrorVersionConflict || action.BaseRevision == nil || *action.BaseRevision != 5 ||
+		action.VersionRegenerationCount != 1 || len(action.CanonicalResultJSON) != 0 || action.CanonicalResultSHA256 != "" ||
+		action.NextEligibleAt == nil || !action.NextEligibleAt.Equal(now.Add(2*time.Minute)) {
+		t.Fatalf("second version conflict = %#v, changed=%v, err=%v", action, changed, err)
+	}
+	view := action.ViewAt(task.BlackboardConclusionModeAssisted, now.Add(time.Minute))
+	if view.State != task.BlackboardConclusionStateActionRequired ||
+		view.ErrorCode != task.BlackboardConclusionErrorVersionConflict || view.RetryAvailable {
+		t.Fatalf("version conflict action view = %#v", view)
+	}
+}
+
+func TestBlackboardConclusionVersionRegenerationFailsClosed(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
+	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
+	makeValidated := func(turn string, base int) task.BlackboardConclusionReceipt {
+		receipt, _, _ := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID, "session-1", turn,
+			task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1"}, task.SemanticDebtWatermarks{SourceWork: 1})
+		dispatched, _, _ := svc.ClaimBlackboardConclusionDispatch(receipt.ID, base)
+		_, _, _ = svc.MarkBlackboardConclusionAwaiting(dispatched.DispatchRequestID, "control-"+turn)
+		validated, _, _ := svc.MarkBlackboardConclusionValidated(dispatched.DispatchRequestID, []byte(`{"schema":"runtime-attempt-result/v1"}`))
+		return validated
+	}
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+
+	validated := makeValidated("same-revision", 7)
+	if _, _, err := svc.HandleBlackboardConclusionVersionConflict(validated.DispatchRequestID, 8, now, 0); !errors.Is(err, task.ErrInvalidBlackboardConclusionReceipt) {
+		t.Fatalf("version regeneration without durable sync intent: %v", err)
+	}
+	validatedSync, _, _ := svc.ClaimBlackboardConclusionVersionSync(validated.DispatchRequestID)
+	if _, _, err := svc.HandleBlackboardConclusionVersionConflict(validatedSync.DispatchRequestID, 7, now, 0); !errors.Is(err, task.ErrInvalidBlackboardConclusionReceipt) {
+		t.Fatalf("same revision accepted as real conflict: %v", err)
+	}
+	stillValidated, _ := svc.BlackboardConclusionByDispatchRequestID(validated.DispatchRequestID)
+	if stillValidated.InternalState != task.BlackboardConclusionReceiptVersionSyncRequested || len(stillValidated.CanonicalResultJSON) == 0 {
+		t.Fatalf("rejected conflict mutated receipt: %#v", stillValidated)
+	}
+	syncFailure, changed, err := svc.MarkBlackboardConclusionApplyActionRequired(
+		validatedSync.DispatchRequestID, task.BlackboardConclusionErrorInvalidResult, now, time.Minute)
+	if err != nil || !changed || syncFailure.InternalState != task.BlackboardConclusionReceiptActionRequired ||
+		syncFailure.ErrorCode != task.BlackboardConclusionErrorInvalidResult || len(syncFailure.CanonicalResultJSON) != 0 {
+		t.Fatalf("version sync failure = %#v, changed=%v, err=%v", syncFailure, changed, err)
+	}
+	incompatible := makeValidated("incompatible-version", 8)
+	incompatibleAction, changed, err := svc.MarkBlackboardConclusionVersionConflictActionRequired(
+		incompatible.DispatchRequestID, now, time.Minute)
+	if err != nil || !changed || incompatibleAction.InternalState != task.BlackboardConclusionReceiptActionRequired ||
+		incompatibleAction.ErrorCode != task.BlackboardConclusionErrorVersionConflict ||
+		incompatibleAction.BaseRevision == nil || *incompatibleAction.BaseRevision != 8 ||
+		len(incompatibleAction.CanonicalResultJSON) != 0 || incompatibleAction.CanonicalResultSHA256 != "" {
+		t.Fatalf("incompatible semantic version = %#v, changed=%v, err=%v", incompatibleAction, changed, err)
+	}
+	if replay, replayChanged, replayErr := svc.MarkBlackboardConclusionVersionConflictActionRequired(
+		incompatible.DispatchRequestID, now, time.Minute); replayErr != nil || replayChanged || replay.ID != incompatible.ID {
+		t.Fatalf("incompatible semantic version replay = %#v, changed=%v, err=%v", replay, replayChanged, replayErr)
+	}
+	retry, _, _ := svc.RetryBlackboardConclusion(incompatible.ID, "version-retry", now.Add(time.Minute))
+	_, _, _ = svc.MarkBlackboardConclusionAwaiting(retry.DispatchRequestID, "control-version-retry")
+	retryValidated, _, _ := svc.MarkBlackboardConclusionValidated(retry.DispatchRequestID, []byte(`{"schema":"runtime-attempt-result/v1"}`))
+	retrySync, _, _ := svc.ClaimBlackboardConclusionVersionSync(retryValidated.DispatchRequestID)
+	retryAction, changed, err := svc.HandleBlackboardConclusionVersionConflict(
+		retrySync.DispatchRequestID, 9, now.Add(time.Minute), 0)
+	if err != nil || !changed || retryAction.InternalState != task.BlackboardConclusionReceiptActionRequired ||
+		retryAction.VersionRegenerationCount != 0 || retryAction.ExplicitRetryCount != 1 ||
+		retryAction.ErrorCode != task.BlackboardConclusionErrorVersionConflict {
+		t.Fatalf("operator retry reopened automatic version regeneration = %#v, changed=%v, err=%v", retryAction, changed, err)
+	}
+
+	repairReceipt, _, _ := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID, "session-1", "repair-then-conflict",
+		task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1"}, task.SemanticDebtWatermarks{SourceWork: 1})
+	repairInitial, _, _ := svc.ClaimBlackboardConclusionDispatch(repairReceipt.ID, 20)
+	_, _, _ = svc.MarkBlackboardConclusionAwaiting(repairInitial.DispatchRequestID, "control-repair-source")
+	repair, _, _ := svc.HandleBlackboardConclusionFailure(repairInitial.DispatchRequestID,
+		task.BlackboardConclusionErrorInvalidResult, now, 0)
+	_, _, _ = svc.MarkBlackboardConclusionAwaiting(repair.DispatchRequestID, "control-repair-result")
+	repairValidated, _, _ := svc.MarkBlackboardConclusionValidated(repair.DispatchRequestID, []byte(`{"schema":"runtime-attempt-result/v1"}`))
+	repairSync, _, _ := svc.ClaimBlackboardConclusionVersionSync(repairValidated.DispatchRequestID)
+	repairAction, changed, err := svc.HandleBlackboardConclusionVersionConflict(
+		repairSync.DispatchRequestID, 21, now, 0)
+	if err != nil || !changed || repairAction.InternalState != task.BlackboardConclusionReceiptActionRequired ||
+		repairAction.AutomaticTurnCount != task.BlackboardConclusionAutomaticTurnLimit ||
+		repairAction.VersionRegenerationCount != 0 || repairAction.ErrorCode != task.BlackboardConclusionErrorVersionConflict {
+		t.Fatalf("repair exceeded automatic turn limit = %#v, changed=%v, err=%v", repairAction, changed, err)
+	}
+
+	invalidSource := makeValidated("invalid-regeneration", 1)
+	invalidSync, _, _ := svc.ClaimBlackboardConclusionVersionSync(invalidSource.DispatchRequestID)
+	regeneration, _, _ := svc.HandleBlackboardConclusionVersionConflict(invalidSync.DispatchRequestID, 2, now, 0)
+	_, _, _ = svc.MarkBlackboardConclusionAwaiting(regeneration.DispatchRequestID, "control-invalid-regeneration")
+	action, changed, err := svc.HandleBlackboardConclusionFailure(regeneration.DispatchRequestID,
+		task.BlackboardConclusionErrorInvalidResult, now, time.Minute)
+	if err != nil || !changed || action.InternalState != task.BlackboardConclusionReceiptActionRequired ||
+		action.VersionRegenerationCount != 1 || action.ErrorCode != task.BlackboardConclusionErrorInvalidResult {
+		t.Fatalf("invalid regeneration = %#v, changed=%v, err=%v", action, changed, err)
+	}
+
+	strandedSource := makeValidated("stranded-regeneration", 10)
+	stranded, _, _ := svc.ClaimBlackboardConclusionVersionSync(strandedSource.DispatchRequestID)
+	reconciled, err := svc.ReconcileStrandedBlackboardConclusionRecoveries(now, time.Minute)
+	if err != nil || len(reconciled) != 1 || reconciled[0].ID != stranded.ID ||
+		reconciled[0].InternalState != task.BlackboardConclusionReceiptActionRequired ||
+		reconciled[0].ErrorCode != task.BlackboardConclusionErrorVersionConflict {
+		t.Fatalf("stranded version regeneration = %#v, err=%v", reconciled, err)
+	}
+}
+
+func TestValidatedBlackboardConclusionsReturnsDurableApplyIntentsInOrder(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
+	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
+	makeValidated := func(turn string, base int, canonical []byte) task.BlackboardConclusionReceipt {
+		receipt, _, _ := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID, "session-1", turn,
+			task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1"}, task.SemanticDebtWatermarks{SourceWork: 1})
+		dispatched, _, _ := svc.ClaimBlackboardConclusionDispatch(receipt.ID, base)
+		_, _, _ = svc.MarkBlackboardConclusionAwaiting(dispatched.DispatchRequestID, "control-"+turn)
+		validated, _, _ := svc.MarkBlackboardConclusionValidated(dispatched.DispatchRequestID, canonical)
+		return validated
+	}
+	first := makeValidated("turn-first", 3, []byte(`{"schema":"runtime-attempt-result/v1","base_revision":3}`))
+	second := makeValidated("turn-second", 4, []byte(`{"schema":"runtime-attempt-result/v1","base_revision":4}`))
+	nonValidated := makeValidated("turn-syncing", 5, []byte(`{"schema":"runtime-attempt-result/v1","base_revision":5}`))
+	_, _, _ = svc.ClaimBlackboardConclusionVersionSync(nonValidated.DispatchRequestID)
+
+	intents, err := svc.ValidatedBlackboardConclusions()
+	if err != nil || len(intents) != 2 {
+		t.Fatalf("validated apply intents = %#v, err=%v", intents, err)
+	}
+	if intents[0].ID != first.ID || intents[1].ID != second.ID {
+		t.Fatalf("validated apply intent order = [%q,%q], want [%q,%q]", intents[0].ID, intents[1].ID, first.ID, second.ID)
+	}
+	for index, want := range []task.BlackboardConclusionReceipt{first, second} {
+		got := intents[index]
+		if got.InternalState != task.BlackboardConclusionReceiptValidated || got.DispatchRequestID != want.DispatchRequestID ||
+			got.BaseRevision == nil || want.BaseRevision == nil || *got.BaseRevision != *want.BaseRevision ||
+			got.ApplyIdempotencyKey != want.ApplyIdempotencyKey || string(got.CanonicalResultJSON) != string(want.CanonicalResultJSON) ||
+			got.CanonicalResultSHA256 != want.CanonicalResultSHA256 {
+			t.Fatalf("validated apply intent %d lost persisted lineage: got=%#v want=%#v", index, got, want)
+		}
+	}
+	again, err := svc.ValidatedBlackboardConclusions()
+	if err != nil || len(again) != 2 || again[0].InternalState != task.BlackboardConclusionReceiptValidated {
+		t.Fatalf("read-only apply intent query mutated state: %#v, err=%v", again, err)
+	}
+}
+
 func TestBlackboardConclusionRetryRemembersEveryOperatorIdempotencyKey(t *testing.T) {
 	db := newStore(t)
 	projects := project.NewService(db)

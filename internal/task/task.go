@@ -89,6 +89,7 @@ const (
 	BlackboardConclusionErrorInvalidResult    BlackboardConclusionErrorCode = "semantic_conclusion_invalid_result"
 	BlackboardConclusionErrorToolUseForbidden BlackboardConclusionErrorCode = "conclude_tool_use_forbidden"
 	BlackboardConclusionErrorRepairExhausted  BlackboardConclusionErrorCode = "semantic_conclusion_repair_exhausted"
+	BlackboardConclusionErrorVersionConflict  BlackboardConclusionErrorCode = "semantic_conclusion_version_conflict"
 	BlackboardConclusionAutomaticTurnLimit                                  = 2
 )
 
@@ -144,14 +145,16 @@ type Event struct {
 type BlackboardConclusionReceiptState string
 
 const (
-	BlackboardConclusionReceiptClean                   BlackboardConclusionReceiptState = "clean"
-	BlackboardConclusionReceiptPending                 BlackboardConclusionReceiptState = "pending"
-	BlackboardConclusionReceiptDispatchRequested       BlackboardConclusionReceiptState = "dispatch_requested"
-	BlackboardConclusionReceiptAwaitingResult          BlackboardConclusionReceiptState = "awaiting_result"
-	BlackboardConclusionReceiptRepairDispatchRequested BlackboardConclusionReceiptState = "repair_dispatch_requested"
-	BlackboardConclusionReceiptActionRequired          BlackboardConclusionReceiptState = "action_required"
-	BlackboardConclusionReceiptValidated               BlackboardConclusionReceiptState = "validated"
-	BlackboardConclusionReceiptApplied                 BlackboardConclusionReceiptState = "applied"
+	BlackboardConclusionReceiptClean                                BlackboardConclusionReceiptState = "clean"
+	BlackboardConclusionReceiptPending                              BlackboardConclusionReceiptState = "pending"
+	BlackboardConclusionReceiptDispatchRequested                    BlackboardConclusionReceiptState = "dispatch_requested"
+	BlackboardConclusionReceiptAwaitingResult                       BlackboardConclusionReceiptState = "awaiting_result"
+	BlackboardConclusionReceiptRepairDispatchRequested              BlackboardConclusionReceiptState = "repair_dispatch_requested"
+	BlackboardConclusionReceiptVersionSyncRequested                 BlackboardConclusionReceiptState = "version_sync_requested"
+	BlackboardConclusionReceiptVersionRegenerationDispatchRequested BlackboardConclusionReceiptState = "version_regeneration_dispatch_requested"
+	BlackboardConclusionReceiptActionRequired                       BlackboardConclusionReceiptState = "action_required"
+	BlackboardConclusionReceiptValidated                            BlackboardConclusionReceiptState = "validated"
+	BlackboardConclusionReceiptApplied                              BlackboardConclusionReceiptState = "applied"
 )
 
 // SemanticDebtWatermarks compare terminal Work Tool Results with the latest
@@ -187,6 +190,7 @@ type BlackboardConclusionReceipt struct {
 	AppliedRevision              *int                             `json:"applied_revision,omitempty"`
 	AutomaticTurnCount           int                              `json:"automatic_turn_count"`
 	RepairCount                  int                              `json:"repair_count"`
+	VersionRegenerationCount     int                              `json:"version_regeneration_count"`
 	ExplicitRetryCount           int                              `json:"explicit_retry_count"`
 	OperatorRetryKey             string                           `json:"-"`
 	NextEligibleAt               *time.Time                       `json:"next_eligible_at,omitempty"`
@@ -915,6 +919,8 @@ func (s *Service) MarkBlackboardConclusionAwaiting(dispatchRequestID, controlTur
 	}
 	if current.InternalState == BlackboardConclusionReceiptRepairDispatchRequested {
 		from = BlackboardConclusionReceiptRepairDispatchRequested
+	} else if current.InternalState == BlackboardConclusionReceiptVersionRegenerationDispatchRequested {
+		from = BlackboardConclusionReceiptVersionRegenerationDispatchRequested
 	}
 	return s.advanceBlackboardConclusion(dispatchRequestID, from, BlackboardConclusionReceiptAwaitingResult,
 		func(receipt BlackboardConclusionReceipt) bool { return receipt.ControlTurnID == controlTurnID },
@@ -958,7 +964,7 @@ func (s *Service) HandleBlackboardConclusionFailure(dispatchRequestID string, co
 	if receipt.InternalState != BlackboardConclusionReceiptAwaitingResult {
 		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
 	}
-	if code == BlackboardConclusionErrorInvalidResult && receipt.AutomaticTurnCount < BlackboardConclusionAutomaticTurnLimit && receipt.RepairCount == 0 && receipt.ExplicitRetryCount == 0 {
+	if code == BlackboardConclusionErrorInvalidResult && receipt.AutomaticTurnCount < BlackboardConclusionAutomaticTurnLimit && receipt.RepairCount == 0 && receipt.VersionRegenerationCount == 0 && receipt.ExplicitRetryCount == 0 {
 		repairNumber := receipt.RepairCount + 1
 		requestID := blackboardConclusionAttemptRequestID("repair", receipt.ContinuationID, receipt.SourceTurnID, repairNumber, "")
 		nextEligible := now.Add(cooldown)
@@ -989,7 +995,7 @@ func (s *Service) HandleBlackboardConclusionFailure(dispatchRequestID string, co
 		return receipt, true, nil
 	}
 	actionCode := code
-	if code == BlackboardConclusionErrorInvalidResult && receipt.RepairCount > 0 {
+	if code == BlackboardConclusionErrorInvalidResult && receipt.RepairCount > 0 && receipt.VersionRegenerationCount == 0 {
 		actionCode = BlackboardConclusionErrorRepairExhausted
 	}
 	nextEligible := now.Add(cooldown)
@@ -1015,10 +1021,198 @@ func (s *Service) HandleBlackboardConclusionFailure(dispatchRequestID string, co
 	return receipt, true, nil
 }
 
-// MarkBlackboardConclusionRecoveryActionRequired closes a crash window after
-// a repair or operator-authorized retry was durably claimed but could not be
-// dispatched. Initial conclusion dispatches are deliberately excluded because
-// their independent #164 recovery policy cannot be inferred from this state.
+// ClaimBlackboardConclusionVersionSync records the intent to synchronize the
+// continuation before any version-regeneration Turn can be dispatched. The
+// validated canonical result remains available until synchronization resolves.
+func (s *Service) ClaimBlackboardConclusionVersionSync(dispatchRequestID string) (BlackboardConclusionReceipt, bool, error) {
+	dispatchRequestID = strings.TrimSpace(dispatchRequestID)
+	if dispatchRequestID == "" {
+		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
+	}
+	return s.advanceBlackboardConclusion(dispatchRequestID, BlackboardConclusionReceiptValidated, BlackboardConclusionReceiptVersionSyncRequested,
+		func(BlackboardConclusionReceipt) bool { return true },
+		func(tx *sql.Tx, receipt *BlackboardConclusionReceipt, now time.Time) error {
+			if _, err := tx.Exec(`UPDATE assisted_conclusion_receipts SET state=?,error_code=?,updated_at=? WHERE id=? AND state=?`,
+				string(BlackboardConclusionReceiptVersionSyncRequested), string(BlackboardConclusionErrorVersionConflict),
+				now.Format(time.RFC3339Nano), receipt.ID, string(BlackboardConclusionReceiptValidated)); err != nil {
+				return err
+			}
+			receipt.InternalState = BlackboardConclusionReceiptVersionSyncRequested
+			receipt.ErrorCode = BlackboardConclusionErrorVersionConflict
+			return appendBlackboardConclusionEventTx(tx, *receipt, EventPayload{
+				"phase": "version_sync_requested", "receipt_id": receipt.ID, "request_id": dispatchRequestID,
+				"base_revision": receipt.BaseRevision, "turn_kind": "control",
+			}, now)
+		})
+}
+
+// HandleBlackboardConclusionVersionConflict discards a validated result whose
+// revision guard lost a real race and claims one fresh semantic generation.
+// It never rewrites the old result's claimed base revision.
+func (s *Service) HandleBlackboardConclusionVersionConflict(dispatchRequestID string, currentRevision int, now time.Time, cooldown time.Duration) (BlackboardConclusionReceipt, bool, error) {
+	dispatchRequestID = strings.TrimSpace(dispatchRequestID)
+	if dispatchRequestID == "" || currentRevision < 0 || cooldown < 0 {
+		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
+	}
+	now = now.UTC()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return BlackboardConclusionReceipt{}, false, fmt.Errorf("begin Blackboard conclusion version conflict: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	receipt, err := scanBlackboardConclusionReceipt(tx.QueryRow(`SELECT `+blackboardConclusionReceiptColumns+`
+		FROM assisted_conclusion_receipts WHERE dispatch_request_id=?`, dispatchRequestID))
+	if err != nil {
+		return BlackboardConclusionReceipt{}, false, blackboardConclusionLookupError(err)
+	}
+	if receipt.InternalState == BlackboardConclusionReceiptActionRequired &&
+		receipt.ErrorCode == BlackboardConclusionErrorVersionConflict && receipt.BaseRevision != nil && *receipt.BaseRevision == currentRevision {
+		return receipt, false, nil
+	}
+	if receipt.InternalState != BlackboardConclusionReceiptVersionSyncRequested || receipt.BaseRevision == nil || currentRevision <= *receipt.BaseRevision {
+		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
+	}
+	nextEligible := now.Add(cooldown)
+	if receipt.VersionRegenerationCount == 0 && receipt.AutomaticTurnCount < BlackboardConclusionAutomaticTurnLimit && receipt.ExplicitRetryCount == 0 {
+		requestID := blackboardConclusionAttemptRequestID("version", receipt.ContinuationID, receipt.SourceTurnID, 1, fmt.Sprintf("%d", currentRevision))
+		result, err := tx.Exec(`UPDATE assisted_conclusion_receipts SET state=?,dispatch_request_id=?,control_turn_id=NULL,
+			base_revision=?,canonical_result_json=NULL,canonical_result_sha256=NULL,automatic_turn_count=automatic_turn_count+1,
+			version_regeneration_count=1,error_code=?,next_eligible_at=?,updated_at=? WHERE id=? AND state=?`,
+			string(BlackboardConclusionReceiptVersionRegenerationDispatchRequested), requestID, currentRevision,
+			string(BlackboardConclusionErrorVersionConflict), nextEligible.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano),
+			receipt.ID, string(BlackboardConclusionReceiptVersionSyncRequested))
+		if err != nil {
+			return BlackboardConclusionReceipt{}, false, fmt.Errorf("claim Blackboard conclusion version regeneration: %w", err)
+		}
+		changed, _ := result.RowsAffected()
+		if changed != 1 {
+			return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
+		}
+		receipt.InternalState = BlackboardConclusionReceiptVersionRegenerationDispatchRequested
+		receipt.DispatchRequestID = requestID
+		receipt.ControlTurnID = ""
+		receipt.BaseRevision = intPointer(currentRevision)
+		receipt.CanonicalResultJSON = nil
+		receipt.CanonicalResultSHA256 = ""
+		receipt.AutomaticTurnCount++
+		receipt.VersionRegenerationCount = 1
+		receipt.ErrorCode = BlackboardConclusionErrorVersionConflict
+		receipt.NextEligibleAt = &nextEligible
+		receipt.UpdatedAt = now
+		if err := appendBlackboardConclusionEventTx(tx, receipt, EventPayload{
+			"phase": "version_regeneration_requested", "receipt_id": receipt.ID, "request_id": requestID,
+			"base_revision": currentRevision, "error_code": string(BlackboardConclusionErrorVersionConflict),
+			"automatic_turn_count": receipt.AutomaticTurnCount, "version_regeneration_count": receipt.VersionRegenerationCount,
+			"turn_kind": "control",
+		}, now); err != nil {
+			return BlackboardConclusionReceipt{}, false, err
+		}
+		if err := tx.Commit(); err != nil {
+			return BlackboardConclusionReceipt{}, false, err
+		}
+		return receipt, true, nil
+	}
+
+	result, err := tx.Exec(`UPDATE assisted_conclusion_receipts SET state=?,base_revision=?,canonical_result_json=NULL,
+		canonical_result_sha256=NULL,error_code=?,next_eligible_at=?,updated_at=? WHERE id=? AND state=?`,
+		string(BlackboardConclusionReceiptActionRequired), currentRevision, string(BlackboardConclusionErrorVersionConflict),
+		nextEligible.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), receipt.ID, string(BlackboardConclusionReceiptVersionSyncRequested))
+	if err != nil {
+		return BlackboardConclusionReceipt{}, false, fmt.Errorf("require Blackboard conclusion version-conflict action: %w", err)
+	}
+	changed, _ := result.RowsAffected()
+	if changed != 1 {
+		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
+	}
+	receipt.InternalState = BlackboardConclusionReceiptActionRequired
+	receipt.BaseRevision = intPointer(currentRevision)
+	receipt.CanonicalResultJSON = nil
+	receipt.CanonicalResultSHA256 = ""
+	receipt.ErrorCode = BlackboardConclusionErrorVersionConflict
+	receipt.NextEligibleAt = &nextEligible
+	receipt.UpdatedAt = now
+	if err := appendBlackboardConclusionEventTx(tx, receipt, EventPayload{
+		"phase": "action_required", "receipt_id": receipt.ID, "request_id": dispatchRequestID,
+		"base_revision": currentRevision, "error_code": string(BlackboardConclusionErrorVersionConflict),
+		"next_eligible_at": nextEligible.Format(time.RFC3339Nano), "reason": "version_regeneration_exhausted",
+	}, now); err != nil {
+		return BlackboardConclusionReceipt{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return BlackboardConclusionReceipt{}, false, err
+	}
+	return receipt, true, nil
+}
+
+// MarkBlackboardConclusionVersionConflictActionRequired rejects a validated
+// result whose record or change versions are semantically incompatible with
+// the apply contract. Unlike a real base-revision race, it cannot safely claim
+// a newer base and therefore requires operator action immediately.
+func (s *Service) MarkBlackboardConclusionVersionConflictActionRequired(dispatchRequestID string, now time.Time, cooldown time.Duration) (BlackboardConclusionReceipt, bool, error) {
+	return s.MarkBlackboardConclusionApplyActionRequired(dispatchRequestID, BlackboardConclusionErrorVersionConflict, now, cooldown)
+}
+
+// MarkBlackboardConclusionApplyActionRequired fails closed when a validated
+// result cannot be applied or its pre-regeneration synchronization fails. The
+// caller supplies only a stable public code; raw apply errors are never stored.
+func (s *Service) MarkBlackboardConclusionApplyActionRequired(dispatchRequestID string, code BlackboardConclusionErrorCode, now time.Time, cooldown time.Duration) (BlackboardConclusionReceipt, bool, error) {
+	dispatchRequestID = strings.TrimSpace(dispatchRequestID)
+	if dispatchRequestID == "" || cooldown < 0 || !validBlackboardConclusionErrorCode(code) {
+		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
+	}
+	now = now.UTC()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return BlackboardConclusionReceipt{}, false, fmt.Errorf("begin incompatible Blackboard conclusion version: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	receipt, err := scanBlackboardConclusionReceipt(tx.QueryRow(`SELECT `+blackboardConclusionReceiptColumns+`
+		FROM assisted_conclusion_receipts WHERE dispatch_request_id=?`, dispatchRequestID))
+	if err != nil {
+		return BlackboardConclusionReceipt{}, false, blackboardConclusionLookupError(err)
+	}
+	if receipt.InternalState == BlackboardConclusionReceiptActionRequired && receipt.ErrorCode == code {
+		return receipt, false, nil
+	}
+	from := receipt.InternalState
+	if from != BlackboardConclusionReceiptValidated && from != BlackboardConclusionReceiptVersionSyncRequested {
+		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
+	}
+	nextEligible := now.Add(cooldown)
+	result, err := tx.Exec(`UPDATE assisted_conclusion_receipts SET state=?,canonical_result_json=NULL,
+		canonical_result_sha256=NULL,error_code=?,next_eligible_at=?,updated_at=? WHERE id=? AND state=?`,
+		string(BlackboardConclusionReceiptActionRequired), string(code),
+		nextEligible.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), receipt.ID, string(from))
+	if err != nil {
+		return BlackboardConclusionReceipt{}, false, fmt.Errorf("require incompatible Blackboard conclusion version action: %w", err)
+	}
+	changed, _ := result.RowsAffected()
+	if changed != 1 {
+		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
+	}
+	receipt.InternalState = BlackboardConclusionReceiptActionRequired
+	receipt.CanonicalResultJSON = nil
+	receipt.CanonicalResultSHA256 = ""
+	receipt.ErrorCode = code
+	receipt.NextEligibleAt = &nextEligible
+	receipt.UpdatedAt = now
+	if err := appendBlackboardConclusionEventTx(tx, receipt, EventPayload{
+		"phase": "action_required", "receipt_id": receipt.ID, "request_id": dispatchRequestID,
+		"base_revision": receipt.BaseRevision, "error_code": string(code),
+		"next_eligible_at": nextEligible.Format(time.RFC3339Nano), "reason": "apply_failed",
+	}, now); err != nil {
+		return BlackboardConclusionReceipt{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return BlackboardConclusionReceipt{}, false, err
+	}
+	return receipt, true, nil
+}
+
+// MarkBlackboardConclusionRecoveryActionRequired closes crash windows after a
+// repair, version sync/regeneration, or operator-authorized retry was durably
+// claimed but could not finish. Initial conclusion dispatches are deliberately
+// excluded because their independent #164 recovery policy cannot be inferred.
 func (s *Service) MarkBlackboardConclusionRecoveryActionRequired(dispatchRequestID string, now time.Time, cooldown time.Duration) (BlackboardConclusionReceipt, bool, error) {
 	dispatchRequestID = strings.TrimSpace(dispatchRequestID)
 	if dispatchRequestID == "" || cooldown < 0 {
@@ -1039,10 +1233,12 @@ func (s *Service) MarkBlackboardConclusionRecoveryActionRequired(dispatchRequest
 		return receipt, false, nil
 	}
 	eligibleRepair := receipt.InternalState == BlackboardConclusionReceiptRepairDispatchRequested
+	eligibleVersionSync := receipt.InternalState == BlackboardConclusionReceiptVersionSyncRequested
+	eligibleVersionRegeneration := receipt.InternalState == BlackboardConclusionReceiptVersionRegenerationDispatchRequested
 	eligibleRetry := receipt.InternalState == BlackboardConclusionReceiptDispatchRequested && receipt.ExplicitRetryCount > 0
 	eligibleAwaiting := receipt.InternalState == BlackboardConclusionReceiptAwaitingResult &&
-		(receipt.RepairCount > 0 || receipt.ExplicitRetryCount > 0)
-	if !eligibleRepair && !eligibleRetry && !eligibleAwaiting {
+		(receipt.RepairCount > 0 || receipt.VersionRegenerationCount > 0 || receipt.ExplicitRetryCount > 0)
+	if !eligibleRepair && !eligibleVersionSync && !eligibleVersionRegeneration && !eligibleRetry && !eligibleAwaiting {
 		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
 	}
 	errorCode := receipt.ErrorCode
@@ -1051,7 +1247,7 @@ func (s *Service) MarkBlackboardConclusionRecoveryActionRequired(dispatchRequest
 	}
 	nextEligible := now.Add(cooldown)
 	result, err := tx.Exec(`UPDATE assisted_conclusion_receipts
-		SET state=?,error_code=?,next_eligible_at=?,updated_at=? WHERE id=? AND state=?`,
+		SET state=?,canonical_result_json=NULL,canonical_result_sha256=NULL,error_code=?,next_eligible_at=?,updated_at=? WHERE id=? AND state=?`,
 		string(BlackboardConclusionReceiptActionRequired), string(errorCode), nextEligible.Format(time.RFC3339Nano),
 		now.Format(time.RFC3339Nano), receipt.ID, string(receipt.InternalState))
 	if err != nil {
@@ -1062,6 +1258,8 @@ func (s *Service) MarkBlackboardConclusionRecoveryActionRequired(dispatchRequest
 		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
 	}
 	receipt.InternalState = BlackboardConclusionReceiptActionRequired
+	receipt.CanonicalResultJSON = nil
+	receipt.CanonicalResultSHA256 = ""
 	receipt.ErrorCode = errorCode
 	receipt.NextEligibleAt = &nextEligible
 	receipt.UpdatedAt = now
@@ -1078,16 +1276,16 @@ func (s *Service) MarkBlackboardConclusionRecoveryActionRequired(dispatchRequest
 	return receipt, true, nil
 }
 
-// ReconcileStrandedBlackboardConclusionRecoveries makes durably claimed repair
-// and explicit retry work operator-actionable after daemon restart. It excludes
-// indistinguishable initial #164 dispatch claims.
+// ReconcileStrandedBlackboardConclusionRecoveries makes durably claimed repair,
+// version sync/regeneration, and explicit retry work operator-actionable after
+// daemon restart. It excludes indistinguishable initial #164 dispatch claims.
 func (s *Service) ReconcileStrandedBlackboardConclusionRecoveries(now time.Time, cooldown time.Duration) ([]BlackboardConclusionReceipt, error) {
 	if cooldown < 0 {
 		return nil, ErrInvalidBlackboardConclusionReceipt
 	}
 	rows, err := s.db.Query(`SELECT dispatch_request_id FROM assisted_conclusion_receipts
-		WHERE state=? OR (state=? AND explicit_retry_count>0) OR (state=? AND (repair_count>0 OR explicit_retry_count>0))
-		ORDER BY created_at,id`, string(BlackboardConclusionReceiptRepairDispatchRequested), string(BlackboardConclusionReceiptDispatchRequested),
+		WHERE state IN (?,?,?) OR (state=? AND explicit_retry_count>0) OR (state=? AND (repair_count>0 OR version_regeneration_count>0 OR explicit_retry_count>0))
+		ORDER BY created_at,id`, string(BlackboardConclusionReceiptRepairDispatchRequested), string(BlackboardConclusionReceiptVersionSyncRequested), string(BlackboardConclusionReceiptVersionRegenerationDispatchRequested), string(BlackboardConclusionReceiptDispatchRequested),
 		string(BlackboardConclusionReceiptAwaitingResult))
 	if err != nil {
 		return nil, fmt.Errorf("list stranded Blackboard conclusion recoveries: %w", err)
@@ -1124,7 +1322,8 @@ func (s *Service) ReconcileStrandedBlackboardConclusionRecoveries(now time.Time,
 func validBlackboardConclusionErrorCode(code BlackboardConclusionErrorCode) bool {
 	return code == BlackboardConclusionErrorInvalidResult ||
 		code == BlackboardConclusionErrorToolUseForbidden ||
-		code == BlackboardConclusionErrorRepairExhausted
+		code == BlackboardConclusionErrorRepairExhausted ||
+		code == BlackboardConclusionErrorVersionConflict
 }
 
 // RetryBlackboardConclusion atomically claims one operator-authorized retry.
@@ -1336,6 +1535,30 @@ func (s *Service) LatestBlackboardConclusion(taskID string) (*BlackboardConclusi
 	return &receipt, nil
 }
 
+// ValidatedBlackboardConclusions returns durable apply intents for daemon
+// startup replay. It is read-only and preserves canonical and idempotency
+// lineage exactly as stored.
+func (s *Service) ValidatedBlackboardConclusions() ([]BlackboardConclusionReceipt, error) {
+	rows, err := s.db.Query(`SELECT `+blackboardConclusionReceiptColumns+`
+		FROM assisted_conclusion_receipts WHERE state=? ORDER BY created_at,id`, string(BlackboardConclusionReceiptValidated))
+	if err != nil {
+		return nil, fmt.Errorf("list validated Blackboard conclusions: %w", err)
+	}
+	defer rows.Close()
+	receipts := make([]BlackboardConclusionReceipt, 0)
+	for rows.Next() {
+		receipt, err := scanBlackboardConclusionReceipt(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan validated Blackboard conclusion: %w", err)
+		}
+		receipts = append(receipts, receipt)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate validated Blackboard conclusions: %w", err)
+	}
+	return receipts, nil
+}
+
 func scanBlackboardConclusionReceipt(row scanner) (BlackboardConclusionReceipt, error) {
 	var receipt BlackboardConclusionReceipt
 	var state, createdAt, updatedAt string
@@ -1345,7 +1568,7 @@ func scanBlackboardConclusionReceipt(row scanner) (BlackboardConclusionReceipt, 
 	if err := row.Scan(&receipt.ID, &receipt.TaskID, &receipt.ContinuationID, &receipt.SourceSessionID,
 		&receipt.SourceTurnID, &state, &receipt.SourceWorkWatermark, &receipt.SemanticPersistenceWatermark, &dispatchRequestID, &controlTurnID,
 		&baseRevision, &receipt.SourceSelection.ModelProviderID, &receipt.SourceSelection.Model, &receipt.SourceSelection.ReasoningEffort,
-		&canonicalResult, &resultHash, &applyKey, &appliedRevision, &receipt.AutomaticTurnCount, &receipt.RepairCount,
+		&canonicalResult, &resultHash, &applyKey, &appliedRevision, &receipt.AutomaticTurnCount, &receipt.RepairCount, &receipt.VersionRegenerationCount,
 		&receipt.ExplicitRetryCount, &operatorRetryKey, &nextEligibleAt, &errorCode, &createdAt, &updatedAt); err != nil {
 		return BlackboardConclusionReceipt{}, err
 	}
@@ -1383,7 +1606,7 @@ func scanBlackboardConclusionReceipt(row scanner) (BlackboardConclusionReceipt, 
 const blackboardConclusionReceiptColumns = `id,task_id,continuation_id,source_session_id,source_turn_id,state,
 	source_work_watermark,semantic_persistence_watermark,dispatch_request_id,control_turn_id,base_revision,source_model_provider_id,source_model,
 	source_reasoning_effort,canonical_result_json,canonical_result_sha256,apply_idempotency_key,applied_revision,automatic_turn_count,
-	repair_count,explicit_retry_count,operator_retry_key,next_eligible_at,error_code,created_at,updated_at`
+	repair_count,version_regeneration_count,explicit_retry_count,operator_retry_key,next_eligible_at,error_code,created_at,updated_at`
 
 func (s *Service) advanceBlackboardConclusion(dispatchRequestID string, from, to BlackboardConclusionReceiptState,
 	replayMatches func(BlackboardConclusionReceipt) bool,

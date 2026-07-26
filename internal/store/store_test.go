@@ -279,6 +279,142 @@ func TestMigration42ChecksumCoversCompleteDeterministicMutation(t *testing.T) {
 	}
 }
 
+func TestMigration43AddsVersionRegenerationStateAndPreservesReceipts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pentest.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := strings.Repeat("a", 64)
+	if _, err := db.Exec(`INSERT INTO assisted_conclusion_receipts
+		(id,task_id,continuation_id,source_session_id,source_turn_id,state,source_work_watermark,
+		 semantic_persistence_watermark,dispatch_request_id,control_turn_id,base_revision,source_model_provider_id,
+		 source_model,source_reasoning_effort,canonical_result_json,canonical_result_sha256,apply_idempotency_key,
+		 automatic_turn_count,repair_count,explicit_retry_count,created_at,updated_at)
+		VALUES ('receipt-validated','task-1','continuation-1','session-1','turn-1','validated',3,1,
+		 'request-validated','control-validated',7,'provider-1','model-1','high',X'7B7D',?,'apply-validated',
+		 1,0,0,'2026-07-27T12:00:00Z','2026-07-27T12:01:00Z');
+		INSERT INTO assisted_conclusion_receipts
+		(id,task_id,continuation_id,source_session_id,source_turn_id,state,source_work_watermark,
+		 semantic_persistence_watermark,dispatch_request_id,base_revision,source_model_provider_id,source_model,
+		 source_reasoning_effort,apply_idempotency_key,automatic_turn_count,repair_count,explicit_retry_count,
+		 operator_retry_key,next_eligible_at,error_code,created_at,updated_at)
+		VALUES ('receipt-action','task-1','continuation-1','session-1','turn-2','action_required',4,1,
+		 'request-action',8,'provider-1','model-1','high','apply-action',2,1,1,'retry-1',
+		 '2026-07-27T12:03:00Z','semantic_conclusion_repair_exhausted','2026-07-27T12:00:30Z','2026-07-27T12:02:00Z');
+		INSERT INTO assisted_conclusion_retry_keys
+		(task_id,receipt_id,idempotency_key,dispatch_request_id,created_at)
+		VALUES ('task-1','receipt-action','retry-1','request-action','2026-07-27T12:02:00Z');
+
+		CREATE TABLE assisted_conclusion_receipts_v42_fixture (
+		 id TEXT PRIMARY KEY, task_id TEXT NOT NULL, continuation_id TEXT NOT NULL,
+		 source_session_id TEXT NOT NULL, source_turn_id TEXT NOT NULL,
+		 state TEXT NOT NULL CHECK (state IN ('clean','pending','dispatch_requested','repair_dispatch_requested','awaiting_result','action_required','validated','applied')),
+		 source_work_watermark INTEGER NOT NULL CHECK (source_work_watermark >= 0),
+		 semantic_persistence_watermark INTEGER NOT NULL CHECK (semantic_persistence_watermark >= 0),
+		 dispatch_request_id TEXT UNIQUE, control_turn_id TEXT,
+		 base_revision INTEGER CHECK (base_revision >= 0),
+		 source_model_provider_id TEXT NOT NULL DEFAULT '', source_model TEXT NOT NULL DEFAULT '',
+		 source_reasoning_effort TEXT NOT NULL DEFAULT '', canonical_result_json BLOB,
+		 canonical_result_sha256 TEXT, apply_idempotency_key TEXT UNIQUE,
+		 applied_revision INTEGER CHECK (applied_revision >= 0),
+		 automatic_turn_count INTEGER NOT NULL DEFAULT 0 CHECK (automatic_turn_count >= 0),
+		 repair_count INTEGER NOT NULL DEFAULT 0 CHECK (repair_count >= 0),
+		 explicit_retry_count INTEGER NOT NULL DEFAULT 0 CHECK (explicit_retry_count >= 0),
+		 operator_retry_key TEXT, next_eligible_at TEXT, error_code TEXT,
+		 created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+		 UNIQUE (task_id,continuation_id,source_turn_id),
+		 CHECK ((state = 'clean' AND source_work_watermark = semantic_persistence_watermark) OR
+		        (state <> 'clean' AND source_work_watermark > semantic_persistence_watermark)),
+		 CHECK (
+		  (state IN ('clean','pending') AND dispatch_request_id IS NULL AND control_turn_id IS NULL AND base_revision IS NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NULL AND applied_revision IS NULL) OR
+		  (state IN ('dispatch_requested','repair_dispatch_requested') AND dispatch_request_id IS NOT NULL AND control_turn_id IS NULL AND base_revision IS NOT NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		  (state = 'awaiting_result' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		  (state = 'action_required' AND dispatch_request_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		  (state = 'validated' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NOT NULL AND length(canonical_result_json) > 0 AND canonical_result_sha256 IS NOT NULL AND length(canonical_result_sha256) = 64 AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		  (state = 'applied' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NOT NULL AND length(canonical_result_json) > 0 AND canonical_result_sha256 IS NOT NULL AND length(canonical_result_sha256) = 64 AND apply_idempotency_key IS NOT NULL AND applied_revision IS NOT NULL)
+		 ),
+		 CHECK ((state = 'action_required' AND error_code IS NOT NULL AND next_eligible_at IS NOT NULL) OR state <> 'action_required')
+		);
+		INSERT INTO assisted_conclusion_receipts_v42_fixture
+		 SELECT id,task_id,continuation_id,source_session_id,source_turn_id,state,source_work_watermark,
+		 semantic_persistence_watermark,dispatch_request_id,control_turn_id,base_revision,source_model_provider_id,
+		 source_model,source_reasoning_effort,canonical_result_json,canonical_result_sha256,apply_idempotency_key,
+		 applied_revision,automatic_turn_count,repair_count,explicit_retry_count,operator_retry_key,next_eligible_at,
+		 error_code,created_at,updated_at FROM assisted_conclusion_receipts;
+		DROP INDEX assisted_conclusion_receipts_task_created;
+		DROP TABLE assisted_conclusion_receipts;
+		ALTER TABLE assisted_conclusion_receipts_v42_fixture RENAME TO assisted_conclusion_receipts;
+		CREATE INDEX assisted_conclusion_receipts_task_created ON assisted_conclusion_receipts(task_id,created_at DESC);
+		DELETE FROM schema_migrations WHERE version=43;
+	`, hash); err != nil {
+		t.Fatalf("build migration 42 fixture: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("upgrade v42 assisted conclusion receipts: %v", err)
+	}
+	defer reopened.Close()
+	var migrationCount int
+	if err := reopened.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=43`).Scan(&migrationCount); err != nil || migrationCount != 1 {
+		t.Fatalf("migration 43 count = %d, err=%v", migrationCount, err)
+	}
+	var state, dispatchID, controlTurnID, providerID, model, effort, resultHash, applyKey string
+	var canonical []byte
+	var baseRevision, automaticTurns, repairCount, retryCount, versionRegenerationCount int
+	if err := reopened.QueryRow(`SELECT state,dispatch_request_id,control_turn_id,base_revision,
+		source_model_provider_id,source_model,source_reasoning_effort,canonical_result_json,
+		canonical_result_sha256,apply_idempotency_key,automatic_turn_count,repair_count,
+		explicit_retry_count,version_regeneration_count FROM assisted_conclusion_receipts WHERE id='receipt-validated'`).Scan(
+		&state, &dispatchID, &controlTurnID, &baseRevision, &providerID, &model, &effort, &canonical,
+		&resultHash, &applyKey, &automaticTurns, &repairCount, &retryCount, &versionRegenerationCount); err != nil {
+		t.Fatal(err)
+	}
+	if state != "validated" || dispatchID != "request-validated" || controlTurnID != "control-validated" ||
+		baseRevision != 7 || providerID != "provider-1" || model != "model-1" || effort != "high" ||
+		!bytes.Equal(canonical, []byte("{}")) || resultHash != hash || applyKey != "apply-validated" ||
+		automaticTurns != 1 || repairCount != 0 || retryCount != 0 || versionRegenerationCount != 0 {
+		t.Fatalf("migrated validated receipt lost lineage: state=%q request=%q control=%q base=%d provider=%q model=%q effort=%q canonical=%q hash=%q apply=%q counts=(%d,%d,%d,%d)",
+			state, dispatchID, controlTurnID, baseRevision, providerID, model, effort, canonical, resultHash, applyKey,
+			automaticTurns, repairCount, retryCount, versionRegenerationCount)
+	}
+	var operatorKey, nextEligible, errorCode string
+	if err := reopened.QueryRow(`SELECT state,dispatch_request_id,base_revision,apply_idempotency_key,
+		automatic_turn_count,repair_count,explicit_retry_count,version_regeneration_count,operator_retry_key,
+		next_eligible_at,error_code FROM assisted_conclusion_receipts WHERE id='receipt-action'`).Scan(
+		&state, &dispatchID, &baseRevision, &applyKey, &automaticTurns, &repairCount, &retryCount,
+		&versionRegenerationCount, &operatorKey, &nextEligible, &errorCode); err != nil {
+		t.Fatal(err)
+	}
+	if state != "action_required" || dispatchID != "request-action" || baseRevision != 8 || applyKey != "apply-action" ||
+		automaticTurns != 2 || repairCount != 1 || retryCount != 1 || versionRegenerationCount != 0 ||
+		operatorKey != "retry-1" || nextEligible != "2026-07-27T12:03:00Z" || errorCode != "semantic_conclusion_repair_exhausted" {
+		t.Fatalf("migrated action receipt lost recovery state: state=%q request=%q base=%d apply=%q counts=(%d,%d,%d,%d) operator=%q next=%q error=%q",
+			state, dispatchID, baseRevision, applyKey, automaticTurns, repairCount, retryCount, versionRegenerationCount,
+			operatorKey, nextEligible, errorCode)
+	}
+	var retryReceiptID string
+	if err := reopened.QueryRow(`SELECT receipt_id FROM assisted_conclusion_retry_keys WHERE task_id='task-1' AND idempotency_key='retry-1'`).Scan(&retryReceiptID); err != nil || retryReceiptID != "receipt-action" {
+		t.Fatalf("retry lineage = %q, err=%v", retryReceiptID, err)
+	}
+	if _, err := reopened.Exec(`INSERT INTO assisted_conclusion_receipts
+		(id,task_id,continuation_id,source_session_id,source_turn_id,state,source_work_watermark,
+		 semantic_persistence_watermark,dispatch_request_id,base_revision,source_model_provider_id,source_model,
+		 source_reasoning_effort,apply_idempotency_key,version_regeneration_count,error_code,next_eligible_at,created_at,updated_at)
+		VALUES ('receipt-version','task-1','continuation-1','session-1','turn-3','version_regeneration_dispatch_requested',5,
+		 1,'request-version',9,'provider-1','model-1','high','apply-version',1,'semantic_conclusion_version_conflict',
+		 '2026-07-27T12:04:00Z','2026-07-27T12:03:00Z','2026-07-27T12:03:00Z')`); err != nil {
+		t.Fatalf("insert migrated version regeneration state: %v", err)
+	}
+	if _, err := reopened.Exec(`UPDATE assisted_conclusion_receipts SET version_regeneration_count=2 WHERE id='receipt-version'`); err == nil {
+		t.Fatal("schema accepted more than one automatic version regeneration")
+	}
+}
+
 func TestOpenRepairsMissingMigrationRowsForCurrentWatermarkSchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pentest.db")
 	db, err := store.Open(path)

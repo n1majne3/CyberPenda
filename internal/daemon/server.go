@@ -244,6 +244,7 @@ func NewServer(config Config) (*Server, error) {
 		return nil, err
 	}
 	server.routes()
+	server.reconcileValidatedBlackboardConclusionApplies()
 	server.reconcileInterruptedTasks()
 	server.reconcileStrandedBlackboardConclusionRecoveries()
 

@@ -38,10 +38,16 @@ pending conclusion or be mistaken for operator work.
   Blackboard records.
 - A pending receipt does not stop, complete, or finish a Task. Task Finish
   remains an explicit operator action.
-- A durable pending receipt may dispatch one deterministic `control` Turn in
-  the same persistent Runtime and Runtime Continuation. The Harness validates
-  the closed result and supplies trusted identity, idempotency, and revision
-  preconditions before applying it through Blackboard v2.
+- A durable pending receipt dispatches one initial Conclude `control` Turn and
+  may dispatch at most one automatic follow-up: either a schema repair or a
+  version-aware regeneration after synchronizing Current Truth. Both stay on
+  the same receipt, Runtime Continuation, source provider/model/reasoning
+  selection, and apply-idempotency lineage. An explicit operator retry does not
+  reopen this automatic budget.
+- The Harness validates each closed result and supplies trusted identity,
+  idempotency, and revision preconditions before applying it through Blackboard
+  v2. Control Turns remain non-recursive and never create assisted conclusion
+  debt of their own.
 - The control directive and structured result remain outside Task Conversation
   messages and cannot invoke Task Finish or infer Facts/Evidence from raw output.
 
@@ -49,6 +55,7 @@ pending conclusion or be mistaken for operator work.
 
 The daemon can enforce assisted workflow state without parsing unbounded
 provider output or trusting model-authored metadata. Providers must implement
-the bounded observation capability before assisted mode is offered. Future
-automatic dispatch has a non-recursive control lineage, while operator control
-of Task completion remains unchanged.
+the bounded observation capability before assisted mode is offered. Automatic
+dispatch is bounded and non-recursive; exhausting recovery requires operator
+action while the Task remains live and operator control of Task completion
+remains unchanged.

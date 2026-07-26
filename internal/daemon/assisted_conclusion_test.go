@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -271,6 +272,502 @@ func TestAssistedWorkTurnDispatchesControlTurnAndAppliesClosedResult(t *testing.
 	}
 }
 
+func TestAssistedConclusionRegeneratesOnceAfterConcurrentContinuationAdvancesProject(t *testing.T) {
+	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
+	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
+	workRequest := session.LastRequests()[0]
+	for _, observation := range []runtime.ProviderSessionObservation{
+		{Kind: runtime.ProviderSessionObservationToolResult, RequestID: workRequest.RequestID, ProviderTurnID: "work-turn-version-conflict", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded"},
+		{Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: workRequest.RequestID, ProviderTurnID: "work-turn-version-conflict", Status: "completed"},
+	} {
+		if err := session.EmitObservation(observation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForAssistedProviderRequests(t, session, 2)
+	concludeRequest := session.LastRequests()[1]
+
+	peerRevision := advanceProjectFromPeerContinuation(t, server, projectID, profileID)
+	initial := assistedAttemptResultJSON(0, "attempt:version-conflict", "objective:version-conflict")
+	if err := emitAttemptResultAndComplete(t, session, []byte(initial)); err != nil {
+		t.Fatal(err)
+	}
+	waitForAssistedProviderRequests(t, session, 3)
+
+	regenerateRequest := session.LastRequests()[2]
+	if regenerateRequest.RequestID == concludeRequest.RequestID || !strings.Contains(regenerateRequest.RequestID, "version") {
+		t.Fatalf("regeneration request ID = %q after Conclude %q", regenerateRequest.RequestID, concludeRequest.RequestID)
+	}
+	if regenerateRequest.TurnKind != runtime.RuntimeTurnKindControl ||
+		regenerateRequest.ModelProviderID != concludeRequest.ModelProviderID ||
+		regenerateRequest.Model != concludeRequest.Model ||
+		regenerateRequest.RequestedReasoningEffort != concludeRequest.RequestedReasoningEffort {
+		t.Fatalf("regeneration selection = %#v, Conclude selection = %#v", regenerateRequest, concludeRequest)
+	}
+	directive := strings.ToLower(regenerateRequest.Message)
+	for _, required := range []string{".pentest/blackboard.json", "reread", "regenerate", "do not call tools", fmt.Sprintf("base_revision %d", peerRevision)} {
+		if !strings.Contains(directive, required) {
+			t.Fatalf("regeneration directive missing %q: %s", required, regenerateRequest.Message)
+		}
+	}
+	continuation, err := server.tasks.LatestContinuation(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	working, err := server.blackboardV2Continuity.ReadWorkingSnapshot(context.Background(), continuation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	onDisk, err := os.ReadFile(filepath.Join(server.runtimeRoot, created.ID, "workdir", ".pentest", "blackboard.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if working.LastAcknowledgedRevision != peerRevision || !bytes.Equal(working.Bytes, onDisk) {
+		t.Fatalf("synchronized working snapshot revision=%d disk_equal=%v want revision=%d", working.LastAcknowledgedRevision, bytes.Equal(working.Bytes, onDisk), peerRevision)
+	}
+
+	regenerated := assistedAttemptResultJSON(peerRevision, "attempt:version-conflict", "objective:version-conflict")
+	if err := emitAttemptResultAndComplete(t, session, []byte(regenerated)); err != nil {
+		t.Fatal(err)
+	}
+	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateClean)
+	if found.BlackboardConclusion.AppliedRevision == nil || *found.BlackboardConclusion.AppliedRevision <= peerRevision {
+		t.Fatalf("regenerated conclusion view = %#v", found.BlackboardConclusion)
+	}
+	if len(session.LastRequests()) != 3 {
+		t.Fatalf("provider requests = %d, want work, Conclude, regeneration", len(session.LastRequests()))
+	}
+	snapshot, err := server.blackboardV2.RuntimeSnapshot(context.Background(), projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Work.Objectives["objective:version-conflict"].Status != "open" {
+		t.Fatalf("conclusion implicitly closed objective: %#v", snapshot.Work.Objectives["objective:version-conflict"])
+	}
+	for _, relation := range snapshot.Relations {
+		if len(relation) > 1 && relation[1] == "satisfies" {
+			t.Fatalf("conclusion inferred objective satisfaction: %#v", relation)
+		}
+	}
+}
+
+func TestAssistedConclusionSecondProjectRevisionConflictRequiresAction(t *testing.T) {
+	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
+	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
+	work := session.LastRequests()[0]
+	for _, observation := range []runtime.ProviderSessionObservation{
+		{Kind: runtime.ProviderSessionObservationToolResult, RequestID: work.RequestID, ProviderTurnID: "work-turn-second-version-conflict", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded"},
+		{Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: work.RequestID, ProviderTurnID: "work-turn-second-version-conflict", Status: "completed"},
+	} {
+		if err := session.EmitObservation(observation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForAssistedProviderRequests(t, session, 2)
+	firstPeerRevision := advanceProjectFromPeerContinuation(t, server, projectID, profileID)
+	if err := emitAttemptResultAndComplete(t, session, []byte(assistedAttemptResultJSON(0, "attempt:second-version-conflict", "objective:second-version-conflict"))); err != nil {
+		t.Fatal(err)
+	}
+	waitForAssistedProviderRequests(t, session, 3)
+	secondPeerRevision := advanceProjectFromPeerContinuation(t, server, projectID, profileID)
+	if secondPeerRevision <= firstPeerRevision {
+		t.Fatalf("second peer revision = %d after %d", secondPeerRevision, firstPeerRevision)
+	}
+	if err := emitAttemptResultAndComplete(t, session, []byte(assistedAttemptResultJSON(firstPeerRevision, "attempt:second-version-conflict", "objective:second-version-conflict"))); err != nil {
+		t.Fatal(err)
+	}
+	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
+	if found.BlackboardConclusion.ErrorCode != task.BlackboardConclusionErrorVersionConflict || len(session.LastRequests()) != 3 {
+		t.Fatalf("second version conflict = %#v requests=%d", found.BlackboardConclusion, len(session.LastRequests()))
+	}
+}
+
+func TestAssistedConclusionQueuesRegeneratedResultBeforeSendTurnReturns(t *testing.T) {
+	regenerated := assistedAttemptResultJSON(1, "attempt:eager-version", "objective:eager-version")
+	server, projectID, profileID, session := newAssistedConclusionFixtureAtWithDecorator(
+		t, t.TempDir(), true, true,
+		func(fake *runtime.FakeProviderSession) runtime.ProviderSession {
+			return &eagerVersionRegenerationSession{FakeProviderSession: fake, raw: []byte(regenerated)}
+		},
+	)
+	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
+	work := session.LastRequests()[0]
+	for _, observation := range []runtime.ProviderSessionObservation{
+		{Kind: runtime.ProviderSessionObservationToolResult, RequestID: work.RequestID, ProviderTurnID: "work-turn-eager-version", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded"},
+		{Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: work.RequestID, ProviderTurnID: "work-turn-eager-version", Status: "completed"},
+	} {
+		if err := session.EmitObservation(observation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForAssistedProviderRequests(t, session, 2)
+	if revision := advanceProjectFromPeerContinuation(t, server, projectID, profileID); revision != 1 {
+		t.Fatalf("peer revision = %d, want 1", revision)
+	}
+	if err := emitAttemptResultAndComplete(t, session, []byte(assistedAttemptResultJSON(0, "attempt:eager-version", "objective:eager-version"))); err != nil {
+		t.Fatal(err)
+	}
+	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateClean)
+	if found.BlackboardConclusion.AppliedRevision == nil || *found.BlackboardConclusion.AppliedRevision <= 1 || len(session.LastRequests()) != 3 {
+		t.Fatalf("eager regenerated conclusion = %#v requests=%d", found.BlackboardConclusion, len(session.LastRequests()))
+	}
+}
+
+func TestAssistedConclusionIgnoresOtherProjectRevisionProgress(t *testing.T) {
+	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
+	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
+	work := session.LastRequests()[0]
+	for _, observation := range []runtime.ProviderSessionObservation{
+		{Kind: runtime.ProviderSessionObservationToolResult, RequestID: work.RequestID, ProviderTurnID: "work-turn-other-project", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded"},
+		{Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: work.RequestID, ProviderTurnID: "work-turn-other-project", Status: "completed"},
+	} {
+		if err := session.EmitObservation(observation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForAssistedProviderRequests(t, session, 2)
+	otherProject, err := server.projects.Create("Other Project", "", project.Scope{Domains: []string{"other.example"}}, project.Defaults{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revision := advanceProjectFromPeerContinuation(t, server, otherProject.ID, profileID); revision != 1 {
+		t.Fatalf("other Project revision = %d, want 1", revision)
+	}
+	if err := emitAttemptResultAndComplete(t, session, []byte(assistedAttemptResultJSON(0, "attempt:project-isolation", "objective:project-isolation"))); err != nil {
+		t.Fatal(err)
+	}
+	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateClean)
+	if found.BlackboardConclusion.AppliedRevision == nil || len(session.LastRequests()) != 2 {
+		t.Fatalf("other Project progress affected conclusion = %#v requests=%d", found.BlackboardConclusion, len(session.LastRequests()))
+	}
+}
+
+func TestAssistedConclusionStartupReplaysCommittedValidatedApplyWithoutProviderTurn(t *testing.T) {
+	root := t.TempDir()
+	server, projectID, profileID, session := newAssistedConclusionFixtureAt(t, root, true, true)
+	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
+	work := session.LastRequests()[0]
+	for _, observation := range []runtime.ProviderSessionObservation{
+		{Kind: runtime.ProviderSessionObservationToolResult, RequestID: work.RequestID, ProviderTurnID: "work-turn-startup-replay", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded"},
+		{Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: work.RequestID, ProviderTurnID: "work-turn-startup-replay", Status: "completed"},
+	} {
+		if err := session.EmitObservation(observation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForAssistedProviderRequests(t, session, 2)
+	receipt, err := server.tasks.LatestBlackboardConclusion(created.ID)
+	if err != nil || receipt == nil || receipt.BaseRevision == nil {
+		t.Fatalf("load awaiting receipt: %#v, %v", receipt, err)
+	}
+	decoded, err := blackboardconclusion.Decode([]byte(assistedAttemptResultJSON(*receipt.BaseRevision, "attempt:startup-replay", "objective:startup-replay")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	validated, won, err := server.tasks.MarkBlackboardConclusionValidated(receipt.DispatchRequestID, decoded.CanonicalJSON)
+	if err != nil || !won {
+		t.Fatalf("persist validated apply intent: won=%v receipt=%#v err=%v", won, validated, err)
+	}
+	batch, err := blackboardconclusion.Compile(decoded.Result, validated.ApplyIdempotencyKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed, err := server.blackboardV2.ApplyForContinuationAtRevision(
+		context.Background(), projectID, validated.ContinuationID, *validated.BaseRevision, batch,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restartSession := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "restart-session", Capabilities: runtimeplugin.Capabilities{
+			PersistentSession: true, SendTurn: true, AssistedConclusion: true,
+		},
+	})
+	restartAdapter := runtime.NewProviderSessionRunAdapter(restartSession, make(chan struct{}))
+	restarted, err := NewServer(Config{
+		DBPath: filepath.Join(root, "pentest.db"), RuntimeRoot: filepath.Join(root, "runs"),
+		SandboxImage: "cyberpenda:test", DisableBuiltinSkills: true,
+		ProviderSessionFactory: &assistedConclusionSessionFactory{session: restartSession, adapter: restartAdapter, support: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	replayed, err := restarted.tasks.LatestBlackboardConclusion(created.ID)
+	if err != nil || replayed == nil {
+		t.Fatalf("load replayed receipt: %#v, %v", replayed, err)
+	}
+	if replayed.InternalState != task.BlackboardConclusionReceiptApplied || replayed.AppliedRevision == nil ||
+		*replayed.AppliedRevision != committed.Revision || replayed.ApplyIdempotencyKey != validated.ApplyIdempotencyKey ||
+		replayed.CanonicalResultSHA256 != validated.CanonicalResultSHA256 {
+		t.Fatalf("startup replay receipt = %#v, committed revision=%d", replayed, committed.Revision)
+	}
+	if len(restartSession.LastRequests()) != 0 {
+		t.Fatalf("startup replay dispatched %d provider Turn(s)", len(restartSession.LastRequests()))
+	}
+}
+
+func TestAssistedConclusionReplaysValidatedIntentOnceAfterCommittedPublicationError(t *testing.T) {
+	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
+	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
+	work := session.LastRequests()[0]
+	for _, observation := range []runtime.ProviderSessionObservation{
+		{Kind: runtime.ProviderSessionObservationToolResult, RequestID: work.RequestID, ProviderTurnID: "work-turn-publication-replay", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded"},
+		{Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: work.RequestID, ProviderTurnID: "work-turn-publication-replay", Status: "completed"},
+	} {
+		if err := session.EmitObservation(observation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForAssistedProviderRequests(t, session, 2)
+	injections := 0
+	server.blackboardV2.SetSnapshotPublicationInjector(func(point blackboardv2.SnapshotPublicationPoint, _ string) error {
+		if point == blackboardv2.SnapshotPublicationAfterCommit {
+			injections++
+			return errors.New("injected committed publication loss")
+		}
+		return nil
+	})
+	defer server.blackboardV2.SetSnapshotPublicationInjector(nil)
+	if err := emitAttemptResultAndComplete(t, session, []byte(assistedAttemptResultJSON(0, "attempt:publication-replay", "objective:publication-replay"))); err != nil {
+		t.Fatal(err)
+	}
+	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateClean)
+	if injections != 1 || found.BlackboardConclusion.AppliedRevision == nil || len(session.LastRequests()) != 2 {
+		t.Fatalf("publication replay injections=%d conclusion=%#v requests=%d", injections, found.BlackboardConclusion, len(session.LastRequests()))
+	}
+	receipt, err := server.tasks.LatestBlackboardConclusion(created.ID)
+	if err != nil || receipt == nil || receipt.CanonicalResultSHA256 == "" || receipt.ApplyIdempotencyKey == "" {
+		t.Fatalf("publication replay durable lineage = %#v, %v", receipt, err)
+	}
+}
+
+func TestAssistedConclusionStartupFailsClosedWhenValidatedBaseAdvancedWithoutLiveSession(t *testing.T) {
+	root := t.TempDir()
+	server, projectID, profileID, session := newAssistedConclusionFixtureAt(t, root, true, true)
+	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
+	work := session.LastRequests()[0]
+	for _, observation := range []runtime.ProviderSessionObservation{
+		{Kind: runtime.ProviderSessionObservationToolResult, RequestID: work.RequestID, ProviderTurnID: "work-turn-startup-conflict", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded"},
+		{Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: work.RequestID, ProviderTurnID: "work-turn-startup-conflict", Status: "completed"},
+	} {
+		if err := session.EmitObservation(observation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForAssistedProviderRequests(t, session, 2)
+	receipt, err := server.tasks.LatestBlackboardConclusion(created.ID)
+	if err != nil || receipt == nil || receipt.BaseRevision == nil {
+		t.Fatalf("load awaiting receipt: %#v, %v", receipt, err)
+	}
+	decoded, err := blackboardconclusion.Decode([]byte(assistedAttemptResultJSON(*receipt.BaseRevision, "attempt:startup-conflict", "objective:startup-conflict")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, won, err := server.tasks.MarkBlackboardConclusionValidated(receipt.DispatchRequestID, decoded.CanonicalJSON); err != nil || !won {
+		t.Fatalf("persist validated conflict intent: won=%v err=%v", won, err)
+	}
+	if revision := advanceProjectFromPeerContinuation(t, server, projectID, profileID); revision != 1 {
+		t.Fatalf("peer revision = %d, want 1", revision)
+	}
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restartSession := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "restart-conflict-session", Capabilities: runtimeplugin.Capabilities{
+			PersistentSession: true, SendTurn: true, AssistedConclusion: true,
+		},
+	})
+	restarted, err := NewServer(Config{
+		DBPath: filepath.Join(root, "pentest.db"), RuntimeRoot: filepath.Join(root, "runs"),
+		SandboxImage: "cyberpenda:test", DisableBuiltinSkills: true,
+		ProviderSessionFactory: &assistedConclusionSessionFactory{
+			session: restartSession, adapter: runtime.NewProviderSessionRunAdapter(restartSession, make(chan struct{})), support: true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	failedClosed, err := restarted.tasks.LatestBlackboardConclusion(created.ID)
+	if err != nil || failedClosed == nil {
+		t.Fatalf("load startup conflict receipt: %#v, %v", failedClosed, err)
+	}
+	if failedClosed.InternalState != task.BlackboardConclusionReceiptActionRequired ||
+		failedClosed.ErrorCode != task.BlackboardConclusionErrorVersionConflict || len(restartSession.LastRequests()) != 0 {
+		t.Fatalf("startup conflict recovery = %#v requests=%d", failedClosed, len(restartSession.LastRequests()))
+	}
+}
+
+func TestAssistedConclusionSynchronizationFilesystemFailureSurvivesRestart(t *testing.T) {
+	root := t.TempDir()
+	server, projectID, profileID, session := newAssistedConclusionFixtureAt(t, root, true, true)
+	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
+	work := session.LastRequests()[0]
+	for _, observation := range []runtime.ProviderSessionObservation{
+		{Kind: runtime.ProviderSessionObservationToolResult, RequestID: work.RequestID, ProviderTurnID: "work-turn-sync-filesystem", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded"},
+		{Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: work.RequestID, ProviderTurnID: "work-turn-sync-filesystem", Status: "completed"},
+	} {
+		if err := session.EmitObservation(observation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForAssistedProviderRequests(t, session, 2)
+	if revision := advanceProjectFromPeerContinuation(t, server, projectID, profileID); revision != 1 {
+		t.Fatalf("peer revision = %d, want 1", revision)
+	}
+	workdir := filepath.Join(root, "runs", created.ID, "workdir")
+	if err := os.RemoveAll(workdir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(workdir, []byte("blocks working snapshot publication"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := emitAttemptResultAndComplete(t, session, []byte(assistedAttemptResultJSON(0, "attempt:sync-filesystem", "objective:sync-filesystem"))); err != nil {
+		t.Fatal(err)
+	}
+	var failed *task.BlackboardConclusionReceipt
+	var pollErr error
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		failed, pollErr = server.tasks.LatestBlackboardConclusion(created.ID)
+		if pollErr == nil && failed != nil && failed.InternalState == task.BlackboardConclusionReceiptActionRequired {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if failed == nil || failed.InternalState != task.BlackboardConclusionReceiptActionRequired ||
+		failed.ErrorCode != task.BlackboardConclusionErrorInvalidResult || len(session.LastRequests()) != 2 {
+		t.Fatalf("synchronization failure = %#v err=%v requests=%d", failed, pollErr, len(session.LastRequests()))
+	}
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(workdir); err != nil {
+		t.Fatal(err)
+	}
+
+	restartSession := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "restart-sync-session", Capabilities: runtimeplugin.Capabilities{
+			PersistentSession: true, SendTurn: true, AssistedConclusion: true,
+		},
+	})
+	restarted, err := NewServer(Config{
+		DBPath: filepath.Join(root, "pentest.db"), RuntimeRoot: filepath.Join(root, "runs"),
+		SandboxImage: "cyberpenda:test", DisableBuiltinSkills: true,
+		ProviderSessionFactory: &assistedConclusionSessionFactory{
+			session: restartSession, adapter: runtime.NewProviderSessionRunAdapter(restartSession, make(chan struct{})), support: true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	persisted, err := restarted.tasks.LatestBlackboardConclusion(created.ID)
+	if err != nil || persisted == nil || persisted.InternalState != task.BlackboardConclusionReceiptActionRequired ||
+		persisted.ErrorCode != task.BlackboardConclusionErrorInvalidResult || len(restartSession.LastRequests()) != 0 {
+		t.Fatalf("restarted synchronization failure = %#v err=%v requests=%d", persisted, err, len(restartSession.LastRequests()))
+	}
+}
+
+func TestAssistedConclusionIncompatibleSemanticResultRequiresActionWithoutRegeneration(t *testing.T) {
+	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
+	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	seed, err := server.blackboardV2.Apply(context.Background(), projectID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "seed-incompatible-objective",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "objective:incompatible", Type: "objective",
+			Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Existing objective"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForAssistedProviderRequests(t, session, 1)
+	work := session.LastRequests()[0]
+	for _, observation := range []runtime.ProviderSessionObservation{
+		{Kind: runtime.ProviderSessionObservationToolResult, RequestID: work.RequestID, ProviderTurnID: "work-turn-incompatible", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded"},
+		{Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: work.RequestID, ProviderTurnID: "work-turn-incompatible", Status: "completed"},
+	} {
+		if err := session.EmitObservation(observation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForAssistedProviderRequests(t, session, 2)
+	if err := emitAttemptResultAndComplete(t, session, []byte(assistedAttemptResultJSON(seed.Revision, "attempt:incompatible", "objective:incompatible"))); err != nil {
+		t.Fatal(err)
+	}
+	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
+	if found.BlackboardConclusion.ErrorCode != task.BlackboardConclusionErrorInvalidResult || len(session.LastRequests()) != 2 {
+		t.Fatalf("incompatible semantic result = %#v requests=%d", found.BlackboardConclusion, len(session.LastRequests()))
+	}
+}
+
+func TestAssistedConclusionRecordVersionMismatchRequiresActionWithoutOverwrite(t *testing.T) {
+	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
+	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	continuation, err := server.tasks.LatestContinuation(created.ID)
+	if err != nil || continuation == nil {
+		t.Fatalf("load source Continuation: %#v, %v", continuation, err)
+	}
+	seeded, err := server.blackboardV2.ApplyForContinuation(context.Background(), projectID, continuation.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "seed-record-version-mismatch",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "objective:record-version", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Check record version handling"}},
+			{Op: "create", Key: "attempt:record-version", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Initial attempt"}},
+			{Op: "relate", From: "attempt:record-version", Relation: "tests", To: "objective:record-version"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForAssistedProviderRequests(t, session, 1)
+	work := session.LastRequests()[0]
+	for _, observation := range []runtime.ProviderSessionObservation{
+		{Kind: runtime.ProviderSessionObservationToolResult, RequestID: work.RequestID, ProviderTurnID: "work-turn-record-version", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded"},
+		{Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: work.RequestID, ProviderTurnID: "work-turn-record-version", Status: "completed"},
+	} {
+		if err := session.EmitObservation(observation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForAssistedProviderRequests(t, session, 2)
+	result := fmt.Sprintf(`{
+		"schema":"runtime-attempt-result/v1",
+		"base_revision":%d,
+		"attempt":{"key":"attempt:record-version","expected_version":99,"summary":"Stale semantic update.","outcome":"inconclusive"},
+		"tested_targets":[{"key":"objective:record-version","expected_version":1}],
+		"produced_targets":[]
+	}`, seeded.Revision)
+	if err := emitAttemptResultAndComplete(t, session, []byte(result)); err != nil {
+		t.Fatal(err)
+	}
+	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
+	if found.BlackboardConclusion.ErrorCode != task.BlackboardConclusionErrorVersionConflict || len(session.LastRequests()) != 2 {
+		t.Fatalf("record-version mismatch = %#v requests=%d", found.BlackboardConclusion, len(session.LastRequests()))
+	}
+	detail, err := server.blackboardV2.ReadCurrent(context.Background(), projectID, "attempt:record-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Version != 1 || detail.Record.Status != "open" || detail.Record.Summary != "Initial attempt" {
+		t.Fatalf("record-version mismatch overwrote Attempt: %#v", detail)
+	}
+}
+
 func TestAssistedConclusionQueuesResultEmittedBeforeSendTurnReturns(t *testing.T) {
 	raw := []byte(`{
 		"schema":"runtime-attempt-result/v1","base_revision":0,
@@ -437,6 +934,29 @@ type eagerAttemptResultSession struct {
 	*runtime.FakeProviderSession
 	raw               []byte
 	ignoreResultError bool
+}
+
+type eagerVersionRegenerationSession struct {
+	*runtime.FakeProviderSession
+	raw []byte
+}
+
+func (session *eagerVersionRegenerationSession) SendTurn(ctx context.Context, request runtime.ProviderSessionRequest, emit runtime.ProviderSessionEmit) (runtime.ProviderSessionResult, error) {
+	result, err := session.FakeProviderSession.SendTurn(ctx, request, emit)
+	if err == nil && strings.Contains(request.RequestID, "version") {
+		resultErr := session.EmitAttemptResult(session.raw)
+		terminalErr := session.EmitObservation(runtime.ProviderSessionObservation{
+			Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: request.RequestID,
+			ProviderTurnID: result.ProviderTurnID, Status: "completed",
+		})
+		if resultErr != nil {
+			return runtime.ProviderSessionResult{}, resultErr
+		}
+		if terminalErr != nil {
+			return runtime.ProviderSessionResult{}, terminalErr
+		}
+	}
+	return result, err
 }
 
 func (session *eagerAttemptResultSession) SendTurn(ctx context.Context, request runtime.ProviderSessionRequest, emit runtime.ProviderSessionEmit) (runtime.ProviderSessionResult, error) {
@@ -1677,6 +2197,26 @@ func TestBlackboardConclusionEligibilityUsesInjectedClockAndCancellation(t *test
 	}
 }
 
+func TestBlackboardConclusionRegenerationRecognizesOnlyBaseRevisionConflict(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "exact wrapped conflict", err: fmt.Errorf("apply: %w", &blackboardv2.Error{Code: "version_conflict", Path: "base_revision"}), want: true},
+		{name: "record version conflict", err: &blackboardv2.Error{Code: "version_conflict", Path: "changes[0].version"}},
+		{name: "different semantic error", err: &blackboardv2.Error{Code: "key_conflict", Path: "changes[0].key"}},
+		{name: "matching text is not typed", err: errors.New("version_conflict at base_revision")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := isBlackboardConclusionBaseRevisionConflict(test.err); got != test.want {
+				t.Fatalf("isBlackboardConclusionBaseRevisionConflict(%#v) = %v, want %v", test.err, got, test.want)
+			}
+		})
+	}
+}
+
 func launchConclusionTask(t *testing.T, server *Server, projectID, profileID, mode string) task.Task {
 	t.Helper()
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks", bytes.NewBufferString(`{
@@ -1696,6 +2236,45 @@ func launchConclusionTask(t *testing.T, server *Server, projectID, profileID, mo
 		t.Fatal(err)
 	}
 	return created
+}
+
+func advanceProjectFromPeerContinuation(t *testing.T, server *Server, projectID, profileID string) int {
+	t.Helper()
+	peer, err := server.tasks.Create(task.CreateRequest{
+		ProjectID: projectID, Goal: "advance the shared Project Blackboard", RuntimeProfileID: profileID, Runner: task.RunnerSandbox,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	launch, err := server.blackboardV2Continuity.CreateContinuation(context.Background(), blackboardv2.ContinuationLaunchRequest{
+		ProjectID: projectID, TaskID: peer.ID, RuntimeProfileID: profileID,
+		RuntimeProvider: string(runtimeprofile.ProviderCodex), Runner: task.RunnerSandbox,
+		RuntimeConfig: map[string]any{"provider": "codex", "model": "gpt-test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := server.blackboardV2.ApplyForContinuation(context.Background(), projectID, launch.Continuation.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "peer-version-conflict-advance-" + peer.ID,
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "entity:peer-progress-" + peer.ID, Type: "entity",
+			Record: blackboardv2.EntityRecord{Status: "active", Kind: "host", Name: "Peer progress", ScopeStatus: "in_scope"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result.Revision
+}
+
+func assistedAttemptResultJSON(baseRevision int, attemptKey, objectiveKey string) string {
+	return fmt.Sprintf(`{
+		"schema":"runtime-attempt-result/v1",
+		"base_revision":%d,
+		"attempt":{"key":%q,"create":true,"summary":"Tested the target after synchronizing concurrent Project progress.","outcome":"inconclusive"},
+		"tested_targets":[{"key":%q,"create_objective":{"objective":"Determine whether the synchronized target is vulnerable."}}],
+		"produced_targets":[]
+	}`, baseRevision, attemptKey, objectiveKey)
 }
 
 type assistedConclusionSessionFactory struct {

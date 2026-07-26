@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"pentest/internal/blackboardconclusion"
+	"pentest/internal/blackboardv2"
 	"pentest/internal/runtime"
 	"pentest/internal/task"
 )
@@ -320,6 +321,13 @@ Return exactly one JSON object with schema runtime-attempt-result/v1 and base_re
 Do not call tools, continue testing, include raw tool output or reasoning, finish the Task, or write the Blackboard directly.`, baseRevision)
 }
 
+func regenerateBlackboardDirective(baseRevision int) string {
+	return fmt.Sprintf(`The Project Blackboard changed after your previous semantic result was produced.
+Reread the current .pentest/blackboard.json and regenerate the semantic result against base_revision %d.
+Return exactly one JSON object with schema runtime-attempt-result/v1.
+Do not call tools, continue testing, include raw tool output or reasoning, finish the Task, or write the Blackboard directly.`, baseRevision)
+}
+
 func (server *Server) acceptBlackboardConclusionValidationFailure(taskID string, failure runtime.ProviderSessionAttemptResultValidationFailure) {
 	if !server.isCanonicalBlackboardConclusionCallback(taskID, failure.RequestID, failure.SessionID, failure.ProviderTurnID) {
 		return
@@ -360,6 +368,7 @@ func (server *Server) acceptBlackboardConclusionControlTerminal(taskID, sessionI
 	}
 	stateAllowsTerminal := receipt.InternalState == task.BlackboardConclusionReceiptDispatchRequested ||
 		receipt.InternalState == task.BlackboardConclusionReceiptRepairDispatchRequested ||
+		receipt.InternalState == task.BlackboardConclusionReceiptVersionRegenerationDispatchRequested ||
 		receipt.InternalState == task.BlackboardConclusionReceiptAwaitingResult
 	if !stateAllowsTerminal || (receipt.ControlTurnID != "" && receipt.ControlTurnID != lineage.ProviderTurnID) {
 		return
@@ -530,6 +539,66 @@ func (server *Server) reconcileStrandedBlackboardConclusionRecoveries() {
 	}
 }
 
+func (server *Server) reconcileValidatedBlackboardConclusionApplies() {
+	receipts, err := server.tasks.ValidatedBlackboardConclusions()
+	if err != nil {
+		server.logger.Printf("assisted conclusion: list validated apply intents: %v", err)
+		return
+	}
+	for _, receipt := range receipts {
+		if err := server.reconcileValidatedBlackboardConclusionApply(context.Background(), receipt); err != nil {
+			server.logger.Printf("assisted conclusion: reconcile validated apply Task %s receipt %s: %v", receipt.TaskID, receipt.ID, err)
+		}
+	}
+}
+
+func (server *Server) reconcileValidatedBlackboardConclusionApply(ctx context.Context, receipt task.BlackboardConclusionReceipt) error {
+	if receipt.BaseRevision == nil || len(receipt.CanonicalResultJSON) == 0 || strings.TrimSpace(receipt.ApplyIdempotencyKey) == "" {
+		return server.failValidatedBlackboardConclusionApply(receipt, task.BlackboardConclusionErrorInvalidResult)
+	}
+	validated, err := blackboardconclusion.Decode(receipt.CanonicalResultJSON)
+	if err != nil || validated.Result.BaseRevision != *receipt.BaseRevision ||
+		validated.SHA256 != receipt.CanonicalResultSHA256 {
+		return server.failValidatedBlackboardConclusionApply(receipt, task.BlackboardConclusionErrorInvalidResult)
+	}
+	batch, err := blackboardconclusion.Compile(validated.Result, receipt.ApplyIdempotencyKey)
+	if err != nil {
+		return server.failValidatedBlackboardConclusionApply(receipt, task.BlackboardConclusionErrorInvalidResult)
+	}
+	found, err := server.tasks.Get(receipt.TaskID)
+	if err != nil || found.ProjectID == "" {
+		return server.failValidatedBlackboardConclusionApply(receipt, task.BlackboardConclusionErrorInvalidResult)
+	}
+	applied, err := server.blackboardV2.ApplyForContinuationAtRevision(
+		ctx, found.ProjectID, receipt.ContinuationID, *receipt.BaseRevision, batch,
+	)
+	if err == nil {
+		_, _, markErr := server.tasks.MarkBlackboardConclusionApplied(receipt.DispatchRequestID, applied.Revision)
+		if markErr == nil {
+			server.blackboardConclusions.clearRequest(receipt.DispatchRequestID)
+		}
+		return markErr
+	}
+	if isBlackboardConclusionBaseRevisionConflict(err) {
+		if session, live := server.providerSessions.get(receipt.TaskID); live && session.SessionID() == receipt.SourceSessionID {
+			return server.regenerateBlackboardConclusionAfterVersionConflict(ctx, found.ProjectID, receipt)
+		}
+		return server.failValidatedBlackboardConclusionApply(receipt, task.BlackboardConclusionErrorVersionConflict)
+	}
+	var semanticErr *blackboardv2.Error
+	if errors.As(err, &semanticErr) && semanticErr.Code == "version_conflict" {
+		return server.failValidatedBlackboardConclusionApply(receipt, task.BlackboardConclusionErrorVersionConflict)
+	}
+	return server.failValidatedBlackboardConclusionApply(receipt, task.BlackboardConclusionErrorInvalidResult)
+}
+
+func (server *Server) failValidatedBlackboardConclusionApply(receipt task.BlackboardConclusionReceipt, code task.BlackboardConclusionErrorCode) error {
+	_, _, err := server.tasks.MarkBlackboardConclusionApplyActionRequired(
+		receipt.DispatchRequestID, code, time.Now().UTC(), blackboardConclusionRetryCooldown,
+	)
+	return err
+}
+
 func (server *Server) acceptBlackboardConclusionResult(taskID string, result runtime.ProviderSessionAttemptResult) {
 	if !server.isCanonicalBlackboardConclusionCallback(taskID, result.RequestID, result.SessionID, result.ProviderTurnID) {
 		return
@@ -548,6 +617,7 @@ func (server *Server) acceptBlackboardConclusionResult(taskID string, result run
 func blackboardConclusionReceiptAcceptsCallback(receipt task.BlackboardConclusionReceipt) bool {
 	return receipt.InternalState == task.BlackboardConclusionReceiptDispatchRequested ||
 		receipt.InternalState == task.BlackboardConclusionReceiptRepairDispatchRequested ||
+		receipt.InternalState == task.BlackboardConclusionReceiptVersionRegenerationDispatchRequested ||
 		receipt.InternalState == task.BlackboardConclusionReceiptAwaitingResult
 }
 
@@ -599,11 +669,106 @@ func (server *Server) applyBlackboardConclusionResult(ctx context.Context, taskI
 	}
 	applied, err := server.blackboardV2.ApplyForContinuationAtRevision(ctx, found.ProjectID, receipt.ContinuationID, *receipt.BaseRevision, batch)
 	if err != nil {
-		return err
+		if isBlackboardConclusionBaseRevisionConflict(err) {
+			return server.regenerateBlackboardConclusionAfterVersionConflict(ctx, found.ProjectID, receipt)
+		}
+		var semanticErr *blackboardv2.Error
+		if errors.As(err, &semanticErr) {
+			code := task.BlackboardConclusionErrorInvalidResult
+			if semanticErr.Code == "version_conflict" {
+				code = task.BlackboardConclusionErrorVersionConflict
+			}
+			_, _, actionErr := server.tasks.MarkBlackboardConclusionApplyActionRequired(
+				receipt.DispatchRequestID, code, time.Now().UTC(), blackboardConclusionRetryCooldown,
+			)
+			if actionErr == nil {
+				server.blackboardConclusions.clearRequest(receipt.DispatchRequestID)
+			}
+			return actionErr
+		}
+		// A non-semantic error may be publication loss after the Blackboard
+		// transaction committed. Replay the durable validated intent exactly
+		// once so service idempotency can recover that acknowledgement window.
+		return server.reconcileValidatedBlackboardConclusionApply(ctx, receipt)
 	}
 	_, _, err = server.tasks.MarkBlackboardConclusionApplied(result.RequestID, applied.Revision)
 	if err == nil {
 		server.blackboardConclusions.clearRequest(result.RequestID)
+	}
+	return err
+}
+
+func isBlackboardConclusionBaseRevisionConflict(err error) bool {
+	var semanticErr *blackboardv2.Error
+	return errors.As(err, &semanticErr) && semanticErr.Code == "version_conflict" && semanticErr.Path == "base_revision"
+}
+
+func (server *Server) regenerateBlackboardConclusionAfterVersionConflict(ctx context.Context, projectID string, receipt task.BlackboardConclusionReceipt) error {
+	syncIntent, won, err := server.tasks.ClaimBlackboardConclusionVersionSync(receipt.DispatchRequestID)
+	if err != nil {
+		return err
+	}
+	if !won && syncIntent.InternalState != task.BlackboardConclusionReceiptVersionSyncRequested {
+		return nil
+	}
+	attachment, err := server.blackboardV2.SynchronizeContinuation(
+		ctx, projectID, syncIntent.TaskID, syncIntent.ContinuationID, *syncIntent.BaseRevision,
+	)
+	if err != nil {
+		if _, _, actionErr := server.tasks.MarkBlackboardConclusionApplyActionRequired(
+			syncIntent.DispatchRequestID, task.BlackboardConclusionErrorInvalidResult, time.Now().UTC(), blackboardConclusionRetryCooldown,
+		); actionErr != nil {
+			return fmt.Errorf("synchronize Working Blackboard Snapshot for conclusion regeneration: %v; require operator action: %w", err, actionErr)
+		}
+		server.blackboardConclusions.clearRequest(syncIntent.DispatchRequestID)
+		return fmt.Errorf("synchronize Working Blackboard Snapshot for conclusion regeneration: %w", err)
+	}
+	regeneration, won, err := server.tasks.HandleBlackboardConclusionVersionConflict(
+		syncIntent.DispatchRequestID, attachment.Revision, time.Now().UTC(), blackboardConclusionRetryCooldown,
+	)
+	if err != nil {
+		return err
+	}
+	server.blackboardConclusions.clearRequest(syncIntent.DispatchRequestID)
+	if !won || regeneration.InternalState != task.BlackboardConclusionReceiptVersionRegenerationDispatchRequested {
+		return nil
+	}
+	queued := server.enqueueProviderTaskControl(receipt.TaskID, func(dispatchCtx context.Context) {
+		if dispatchErr := server.dispatchBlackboardConclusionVersionRegeneration(dispatchCtx, regeneration); dispatchErr != nil {
+			server.recoverBlackboardConclusionDispatchFailure(regeneration, dispatchErr)
+		}
+	})
+	if !queued {
+		server.recoverBlackboardConclusionDispatchFailure(regeneration, fmt.Errorf("provider control queue is closed"))
+	}
+	return nil
+}
+
+func (server *Server) dispatchBlackboardConclusionVersionRegeneration(ctx context.Context, receipt task.BlackboardConclusionReceipt) error {
+	session, ok := server.providerSessions.get(receipt.TaskID)
+	if !ok || session.SessionID() != receipt.SourceSessionID || receipt.BaseRevision == nil {
+		return fmt.Errorf("source provider session is not live")
+	}
+	if err := waitForBlackboardConclusionEligibility(ctx, receipt.NextEligibleAt, time.Now); err != nil {
+		return err
+	}
+	result, err := session.SendTurn(ctx, runtime.ProviderSessionRequest{
+		RequestID:                receipt.DispatchRequestID,
+		Message:                  regenerateBlackboardDirective(*receipt.BaseRevision),
+		ModelProviderID:          receipt.SourceSelection.ModelProviderID,
+		Model:                    receipt.SourceSelection.Model,
+		RequestedReasoningEffort: receipt.SourceSelection.ReasoningEffort,
+		TurnKind:                 runtime.RuntimeTurnKindControl,
+	}, nil)
+	if err != nil {
+		return err
+	}
+	if result.RequestID != receipt.DispatchRequestID || result.SessionID != receipt.SourceSessionID || strings.TrimSpace(result.ProviderTurnID) == "" {
+		return fmt.Errorf("provider returned mismatched Blackboard regeneration Turn correlation")
+	}
+	_, _, err = server.tasks.MarkBlackboardConclusionAwaiting(receipt.DispatchRequestID, result.ProviderTurnID)
+	if err == nil {
+		server.drainBlackboardConclusionCallbacks(ctx, receipt.TaskID, receipt.DispatchRequestID)
 	}
 	return err
 }
