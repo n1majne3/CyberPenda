@@ -19,7 +19,9 @@ type blackboardConclusionTurnKey struct {
 }
 
 type blackboardConclusionObservedTurn struct {
-	terminalToolResults int
+	sourceWorkWatermark          int
+	semanticPersistenceWatermark int
+	completedToolCalls           map[string]struct{}
 }
 
 // blackboardConclusionTracker retains only in-flight, bounded observation
@@ -104,8 +106,21 @@ func (server *Server) observeProviderSession(taskID, continuationID, sessionID s
 	state := server.blackboardConclusions.turns[key]
 	switch observation.Kind {
 	case runtime.ProviderSessionObservationToolResult:
-		if !isTrustedBlackboardTool(observation.ToolName) {
-			state.terminalToolResults++
+		if state.completedToolCalls == nil {
+			state.completedToolCalls = make(map[string]struct{})
+		}
+		toolCallID := strings.TrimSpace(observation.ToolCallID)
+		if _, duplicate := state.completedToolCalls[toolCallID]; !duplicate {
+			state.completedToolCalls[toolCallID] = struct{}{}
+			toolSemantics, trusted := classifyTrustedBlackboardTool(observation.ToolName)
+			switch {
+			case !trusted:
+				// Failed work still changes what the runtime learned and must be
+				// represented by a later semantic conclusion.
+				state.sourceWorkWatermark++
+			case observation.Status == "succeeded" && toolSemantics == blackboardToolSemanticPersistence:
+				state.semanticPersistenceWatermark = state.sourceWorkWatermark
+			}
 			server.blackboardConclusions.turns[key] = state
 		}
 		server.blackboardConclusions.mu.Unlock()
@@ -117,18 +132,20 @@ func (server *Server) observeProviderSession(taskID, continuationID, sessionID s
 	}
 	server.blackboardConclusions.mu.Unlock()
 
-	if observation.Status != "completed" || state.terminalToolResults == 0 {
+	if observation.Status != "completed" || len(state.completedToolCalls) == 0 {
 		server.blackboardConclusions.mu.Lock()
 		delete(server.blackboardConclusions.turns, key)
 		server.blackboardConclusions.mu.Unlock()
 		return
 	}
-	receipt, inserted, err := server.tasks.RecordPendingBlackboardConclusion(
+	receipt, inserted, err := server.tasks.RecordBlackboardConclusionCheckpoint(
 		taskID, continuationID, key.sessionID, turnID, task.TurnSelection{
 			ModelProviderID: lineage.ModelProviderID,
 			Model:           lineage.Model,
 			ReasoningEffort: lineage.RequestedReasoningEffort,
-		}, state.terminalToolResults,
+		}, task.SemanticDebtWatermarks{
+			SourceWork: state.sourceWorkWatermark, SemanticPersistence: state.semanticPersistenceWatermark,
+		},
 	)
 	if err != nil {
 		// Retain the bounded watermark so duplicate provider completion delivery
@@ -139,7 +156,7 @@ func (server *Server) observeProviderSession(taskID, continuationID, sessionID s
 	server.blackboardConclusions.mu.Lock()
 	delete(server.blackboardConclusions.turns, key)
 	server.blackboardConclusions.mu.Unlock()
-	if inserted {
+	if inserted && receipt.InternalState == task.BlackboardConclusionReceiptPending {
 		server.scheduleBlackboardConclusionDispatch(receipt)
 	}
 }
@@ -255,13 +272,26 @@ func (server *Server) applyBlackboardConclusionResult(ctx context.Context, taskI
 	return err
 }
 
-func isTrustedBlackboardTool(name string) bool {
-	switch strings.TrimSpace(name) {
-	case "blackboard_change", "blackboard_read", "blackboard_history", "blackboard_retain_evidence", "blackboard_checkpoint_attempt", "blackboard_finish":
-		return true
-	default:
-		return false
-	}
+func classifyTrustedBlackboardTool(name string) (blackboardToolSemantics, bool) {
+	semantics, trusted := trustedBlackboardToolSemantics[strings.TrimSpace(name)]
+	return semantics, trusted
+}
+
+type blackboardToolSemantics uint8
+
+const (
+	blackboardToolReadOnly blackboardToolSemantics = iota
+	blackboardToolEvidenceRetention
+	blackboardToolSemanticPersistence
+)
+
+var trustedBlackboardToolSemantics = map[string]blackboardToolSemantics{
+	"blackboard_change":             blackboardToolSemanticPersistence,
+	"blackboard_read":               blackboardToolReadOnly,
+	"blackboard_history":            blackboardToolReadOnly,
+	"blackboard_retain_evidence":    blackboardToolEvidenceRetention,
+	"blackboard_checkpoint_attempt": blackboardToolSemanticPersistence,
+	"blackboard_finish":             blackboardToolSemanticPersistence,
 }
 
 func (server *Server) attachBlackboardConclusion(found task.Task) (task.Task, error) {

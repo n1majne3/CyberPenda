@@ -82,13 +82,15 @@ const (
 	BlackboardConclusionStateConcluding BlackboardConclusionState = "concluding"
 )
 
-// BlackboardConclusion is the compact Task read view. Receipt identity and
-// source Turn correlation appear only while semantic work is pending.
+// BlackboardConclusion is the compact Task read view for the latest assisted
+// Work Turn checkpoint and any conclusion progress it triggered.
 type BlackboardConclusion struct {
-	Mode            BlackboardConclusionMode  `json:"mode"`
-	State           BlackboardConclusionState `json:"state"`
-	SourceTurnID    string                    `json:"source_turn_id,omitempty"`
-	AppliedRevision *int                      `json:"applied_revision,omitempty"`
+	Mode                         BlackboardConclusionMode  `json:"mode"`
+	State                        BlackboardConclusionState `json:"state"`
+	SourceTurnID                 string                    `json:"source_turn_id,omitempty"`
+	SourceWorkWatermark          int                       `json:"source_work_watermark"`
+	SemanticPersistenceWatermark int                       `json:"semantic_persistence_watermark"`
+	AppliedRevision              *int                      `json:"applied_revision,omitempty"`
 }
 
 // ScopeSnapshot is an immutable copy of the project scope captured when a task
@@ -106,7 +108,6 @@ const (
 	EventKindSteering             EventKind = "steering"
 	EventKindConversation         EventKind = "conversation"
 	EventKindLifecycle            EventKind = "lifecycle"
-	EventKindBlackboardCheckpoint EventKind = "blackboard_checkpoint"
 	EventKindBlackboardConclusion EventKind = "blackboard_conclusion"
 )
 
@@ -130,6 +131,7 @@ type Event struct {
 type BlackboardConclusionReceiptState string
 
 const (
+	BlackboardConclusionReceiptClean             BlackboardConclusionReceiptState = "clean"
 	BlackboardConclusionReceiptPending           BlackboardConclusionReceiptState = "pending"
 	BlackboardConclusionReceiptDispatchRequested BlackboardConclusionReceiptState = "dispatch_requested"
 	BlackboardConclusionReceiptAwaitingResult    BlackboardConclusionReceiptState = "awaiting_result"
@@ -137,34 +139,52 @@ const (
 	BlackboardConclusionReceiptApplied           BlackboardConclusionReceiptState = "applied"
 )
 
+// SemanticDebtWatermarks compare terminal Work Tool Results with the latest
+// successful semantic persistence that covers them.
+type SemanticDebtWatermarks struct {
+	SourceWork          int
+	SemanticPersistence int
+}
+
+func (watermarks SemanticDebtWatermarks) valid() bool {
+	return watermarks.SemanticPersistence >= 0 && watermarks.SourceWork >= watermarks.SemanticPersistence
+}
+
 // BlackboardConclusionReceipt is the durable coordinator record for one
 // completed assisted work Runtime Turn. Structured result bytes remain
 // internal and are never projected on Task APIs.
 type BlackboardConclusionReceipt struct {
-	ID                      string                           `json:"id"`
-	TaskID                  string                           `json:"task_id"`
-	ContinuationID          string                           `json:"continuation_id"`
-	SourceSessionID         string                           `json:"source_session_id"`
-	SourceTurnID            string                           `json:"source_turn_id"`
-	InternalState           BlackboardConclusionReceiptState `json:"internal_state"`
-	TerminalToolResultCount int                              `json:"terminal_tool_result_count"`
-	DispatchRequestID       string                           `json:"dispatch_request_id,omitempty"`
-	ControlTurnID           string                           `json:"control_turn_id,omitempty"`
-	BaseRevision            *int                             `json:"base_revision,omitempty"`
-	SourceSelection         TurnSelection                    `json:"source_selection"`
-	CanonicalResultJSON     []byte                           `json:"-"`
-	CanonicalResultSHA256   string                           `json:"canonical_result_sha256,omitempty"`
-	ApplyIdempotencyKey     string                           `json:"apply_idempotency_key,omitempty"`
-	AppliedRevision         *int                             `json:"applied_revision,omitempty"`
-	CreatedAt               time.Time                        `json:"created_at"`
-	UpdatedAt               time.Time                        `json:"updated_at"`
+	ID                           string                           `json:"id"`
+	TaskID                       string                           `json:"task_id"`
+	ContinuationID               string                           `json:"continuation_id"`
+	SourceSessionID              string                           `json:"source_session_id"`
+	SourceTurnID                 string                           `json:"source_turn_id"`
+	InternalState                BlackboardConclusionReceiptState `json:"internal_state"`
+	SourceWorkWatermark          int                              `json:"source_work_watermark"`
+	SemanticPersistenceWatermark int                              `json:"semantic_persistence_watermark"`
+	DispatchRequestID            string                           `json:"dispatch_request_id,omitempty"`
+	ControlTurnID                string                           `json:"control_turn_id,omitempty"`
+	BaseRevision                 *int                             `json:"base_revision,omitempty"`
+	SourceSelection              TurnSelection                    `json:"source_selection"`
+	CanonicalResultJSON          []byte                           `json:"-"`
+	CanonicalResultSHA256        string                           `json:"canonical_result_sha256,omitempty"`
+	ApplyIdempotencyKey          string                           `json:"apply_idempotency_key,omitempty"`
+	AppliedRevision              *int                             `json:"applied_revision,omitempty"`
+	CreatedAt                    time.Time                        `json:"created_at"`
+	UpdatedAt                    time.Time                        `json:"updated_at"`
 }
 
 // View projects internal coordinator progress into the compact Task API
 // vocabulary. Canonical result bytes and dispatch idempotency stay private.
 func (receipt BlackboardConclusionReceipt) View(mode BlackboardConclusionMode) BlackboardConclusion {
-	view := BlackboardConclusion{Mode: mode, SourceTurnID: receipt.SourceTurnID}
+	view := BlackboardConclusion{
+		Mode: mode, SourceTurnID: receipt.SourceTurnID,
+		SourceWorkWatermark:          receipt.SourceWorkWatermark,
+		SemanticPersistenceWatermark: receipt.SemanticPersistenceWatermark,
+	}
 	switch receipt.InternalState {
+	case BlackboardConclusionReceiptClean:
+		view.State = BlackboardConclusionStateClean
 	case BlackboardConclusionReceiptPending:
 		view.State = BlackboardConclusionStatePending
 	case BlackboardConclusionReceiptApplied:
@@ -341,7 +361,7 @@ var ErrUnsupportedRunner = errors.New("runner must be sandbox or host")
 
 var ErrInvalidBlackboardConclusionMode = errors.New("Blackboard conclusion mode must be interactive or assisted")
 
-var ErrInvalidBlackboardConclusionReceipt = errors.New("invalid pending Blackboard conclusion receipt")
+var ErrInvalidBlackboardConclusionReceipt = errors.New("invalid Blackboard conclusion checkpoint receipt")
 
 // ErrContinuationStatusConflict prevents a late lifecycle observer from
 // overwriting a Continuation that already reached a different terminal state.
@@ -701,10 +721,10 @@ func (s *Service) Events(taskID string) ([]Event, error) {
 	return events, nil
 }
 
-// RecordPendingBlackboardConclusion creates the one durable pending receipt
-// for a completed assisted work Runtime Turn. The receipt and its compact Task
-// Event are committed together; replay returns the original receipt.
-func (s *Service) RecordPendingBlackboardConclusion(taskID, continuationID, sourceSessionID, sourceTurnID string, sourceSelection TurnSelection, terminalToolResultCount int) (BlackboardConclusionReceipt, bool, error) {
+// RecordBlackboardConclusionCheckpoint creates the one durable semantic-debt
+// receipt for a completed assisted Work Runtime Turn. The receipt and its
+// compact Task Event are committed together; replay returns the original.
+func (s *Service) RecordBlackboardConclusionCheckpoint(taskID, continuationID, sourceSessionID, sourceTurnID string, sourceSelection TurnSelection, watermarks SemanticDebtWatermarks) (BlackboardConclusionReceipt, bool, error) {
 	taskID = strings.TrimSpace(taskID)
 	continuationID = strings.TrimSpace(continuationID)
 	sourceSessionID = strings.TrimSpace(sourceSessionID)
@@ -713,7 +733,7 @@ func (s *Service) RecordPendingBlackboardConclusion(taskID, continuationID, sour
 	sourceSelection.Model = strings.TrimSpace(sourceSelection.Model)
 	sourceSelection.ReasoningEffort = strings.TrimSpace(sourceSelection.ReasoningEffort)
 	if taskID == "" || continuationID == "" || sourceSessionID == "" || sourceTurnID == "" ||
-		sourceSelection.ModelProviderID == "" || sourceSelection.Model == "" || terminalToolResultCount <= 0 {
+		sourceSelection.ModelProviderID == "" || sourceSelection.Model == "" || !watermarks.valid() {
 		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
 	}
 	found, err := s.Get(taskID)
@@ -748,37 +768,45 @@ func (s *Service) RecordPendingBlackboardConclusion(taskID, continuationID, sour
 		return prior, false, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return BlackboardConclusionReceipt{}, false, fmt.Errorf("load pending Blackboard conclusion receipt: %w", err)
+		return BlackboardConclusionReceipt{}, false, fmt.Errorf("load Blackboard conclusion checkpoint receipt: %w", err)
 	}
 
 	now := time.Now().UTC()
+	receiptState := BlackboardConclusionReceiptPending
+	phase := "pending_detected"
+	if watermarks.SourceWork <= watermarks.SemanticPersistence {
+		receiptState = BlackboardConclusionReceiptClean
+		phase = "persistence_current"
+	}
 	receipt := BlackboardConclusionReceipt{
 		ID: newID(), TaskID: taskID, ContinuationID: continuationID,
 		SourceSessionID: sourceSessionID, SourceTurnID: sourceTurnID,
-		InternalState: BlackboardConclusionReceiptPending, TerminalToolResultCount: terminalToolResultCount,
-		SourceSelection: sourceSelection,
-		CreatedAt:       now, UpdatedAt: now,
+		InternalState: receiptState, SourceWorkWatermark: watermarks.SourceWork,
+		SemanticPersistenceWatermark: watermarks.SemanticPersistence,
+		SourceSelection:              sourceSelection,
+		CreatedAt:                    now, UpdatedAt: now,
 	}
 	if _, err := tx.Exec(`
 		INSERT INTO assisted_conclusion_receipts
-		(id,task_id,continuation_id,source_session_id,source_turn_id,state,terminal_tool_result_count,
+		(id,task_id,continuation_id,source_session_id,source_turn_id,state,source_work_watermark,semantic_persistence_watermark,
 		 source_model_provider_id,source_model,source_reasoning_effort,created_at,updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, receipt.ID, receipt.TaskID, receipt.ContinuationID, receipt.SourceSessionID,
-		receipt.SourceTurnID, string(receipt.InternalState), receipt.TerminalToolResultCount,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, receipt.ID, receipt.TaskID, receipt.ContinuationID, receipt.SourceSessionID,
+		receipt.SourceTurnID, string(receipt.InternalState), receipt.SourceWorkWatermark, receipt.SemanticPersistenceWatermark,
 		receipt.SourceSelection.ModelProviderID, receipt.SourceSelection.Model, receipt.SourceSelection.ReasoningEffort,
 		receipt.CreatedAt.Format(time.RFC3339Nano), receipt.UpdatedAt.Format(time.RFC3339Nano)); err != nil {
-		return BlackboardConclusionReceipt{}, false, fmt.Errorf("store pending Blackboard conclusion receipt: %w", err)
+		return BlackboardConclusionReceipt{}, false, fmt.Errorf("store Blackboard conclusion checkpoint receipt: %w", err)
 	}
 
 	payload := EventPayload{
-		"phase": "pending_detected", "receipt_id": receipt.ID, "source_turn_id": receipt.SourceTurnID,
-		"terminal_tool_result_count": receipt.TerminalToolResultCount,
+		"phase": phase, "receipt_id": receipt.ID, "source_turn_id": receipt.SourceTurnID,
+		"source_work_watermark":          receipt.SourceWorkWatermark,
+		"semantic_persistence_watermark": receipt.SemanticPersistenceWatermark,
 	}
 	if err := appendBlackboardConclusionEventTx(tx, receipt, payload, now); err != nil {
 		return BlackboardConclusionReceipt{}, false, fmt.Errorf("store Blackboard conclusion Event: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return BlackboardConclusionReceipt{}, false, fmt.Errorf("commit pending Blackboard conclusion receipt: %w", err)
+		return BlackboardConclusionReceipt{}, false, fmt.Errorf("commit Blackboard conclusion checkpoint receipt: %w", err)
 	}
 	return receipt, true, nil
 }
@@ -956,7 +984,7 @@ func scanBlackboardConclusionReceipt(row scanner) (BlackboardConclusionReceipt, 
 	var baseRevision, appliedRevision sql.NullInt64
 	var canonicalResult []byte
 	if err := row.Scan(&receipt.ID, &receipt.TaskID, &receipt.ContinuationID, &receipt.SourceSessionID,
-		&receipt.SourceTurnID, &state, &receipt.TerminalToolResultCount, &dispatchRequestID, &controlTurnID,
+		&receipt.SourceTurnID, &state, &receipt.SourceWorkWatermark, &receipt.SemanticPersistenceWatermark, &dispatchRequestID, &controlTurnID,
 		&baseRevision, &receipt.SourceSelection.ModelProviderID, &receipt.SourceSelection.Model, &receipt.SourceSelection.ReasoningEffort,
 		&canonicalResult, &resultHash, &applyKey, &appliedRevision, &createdAt, &updatedAt); err != nil {
 		return BlackboardConclusionReceipt{}, err
@@ -984,7 +1012,7 @@ func scanBlackboardConclusionReceipt(row scanner) (BlackboardConclusionReceipt, 
 }
 
 const blackboardConclusionReceiptColumns = `id,task_id,continuation_id,source_session_id,source_turn_id,state,
-	terminal_tool_result_count,dispatch_request_id,control_turn_id,base_revision,source_model_provider_id,source_model,
+	source_work_watermark,semantic_persistence_watermark,dispatch_request_id,control_turn_id,base_revision,source_model_provider_id,source_model,
 	source_reasoning_effort,canonical_result_json,canonical_result_sha256,apply_idempotency_key,applied_revision,created_at,updated_at`
 
 func (s *Service) advanceBlackboardConclusion(dispatchRequestID string, from, to BlackboardConclusionReceiptState,

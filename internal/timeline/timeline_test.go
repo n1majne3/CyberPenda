@@ -120,7 +120,10 @@ func TestBuildKeepsControlEventsBetweenRuntimeOutput(t *testing.T) {
 
 func TestBuildProjectsAssistedConclusionPhasesWithoutStructuredResult(t *testing.T) {
 	events := []task.Event{
-		{Seq: 1, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "pending_detected", "source_turn_id": "work-1"}},
+		{Seq: 1, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{
+			"phase": "pending_detected", "source_turn_id": "work-1",
+			"source_work_watermark": 47, "semantic_persistence_watermark": 23,
+		}},
 		{Seq: 2, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "dispatch_requested", "source_turn_id": "work-1", "request_id": "conclude-secret"}},
 		{Seq: 3, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "awaiting_result", "control_turn_id": "control-1"}},
 		{Seq: 4, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "result_validated", "result_hash": "secret-hash"}},
@@ -134,7 +137,8 @@ func TestBuildProjectsAssistedConclusionPhasesWithoutStructuredResult(t *testing
 	requireItem(t, got, 3, "harness", "", "Blackboard conclusion result validated")
 	requireItem(t, got, 4, "harness", "", "Blackboard conclusion applied at revision 4")
 	for _, item := range got {
-		if strings.Contains(item.Content, "secret") || strings.Contains(item.Content, "control-1") {
+		if strings.Contains(item.Content, "secret") || strings.Contains(item.Content, "control-1") ||
+			strings.Contains(item.Content, "47") || strings.Contains(item.Content, "23") {
 			t.Fatalf("Harness item leaked correlation/result detail: %#v", item)
 		}
 	}

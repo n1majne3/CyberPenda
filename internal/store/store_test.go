@@ -41,7 +41,7 @@ func TestOpenRunsMigrationsIdempotently(t *testing.T) {
 	}
 }
 
-func TestMigration37PreservesPendingAssistedConclusionReceipts(t *testing.T) {
+func TestMigrations37And38PreservePendingAssistedConclusionReceipts(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pentest.db")
 	db, err := store.Open(path)
 	if err != nil {
@@ -70,7 +70,7 @@ func TestMigration37PreservesPendingAssistedConclusionReceipts(t *testing.T) {
 			ON assisted_conclusion_receipts(task_id, created_at DESC);
 		INSERT INTO assisted_conclusion_receipts VALUES
 			('receipt-1','task-1','continuation-1','session-1','turn-1','pending',2,'2026-07-27T00:00:00Z','2026-07-27T00:00:00Z');
-		DELETE FROM schema_migrations WHERE version=37;
+		DELETE FROM schema_migrations WHERE version>=37;
 	`); err != nil {
 		t.Fatal(err)
 	}
@@ -84,13 +84,14 @@ func TestMigration37PreservesPendingAssistedConclusionReceipts(t *testing.T) {
 	}
 	defer reopened.Close()
 	var state, sourceModelProviderID string
+	var sourceWorkWatermark, semanticPersistenceWatermark int
 	var dispatchRequestID sql.NullString
-	if err := reopened.QueryRow(`SELECT state,source_model_provider_id,dispatch_request_id
-		FROM assisted_conclusion_receipts WHERE id='receipt-1'`).Scan(&state, &sourceModelProviderID, &dispatchRequestID); err != nil {
+	if err := reopened.QueryRow(`SELECT state,source_model_provider_id,dispatch_request_id,source_work_watermark,semantic_persistence_watermark
+		FROM assisted_conclusion_receipts WHERE id='receipt-1'`).Scan(&state, &sourceModelProviderID, &dispatchRequestID, &sourceWorkWatermark, &semanticPersistenceWatermark); err != nil {
 		t.Fatal(err)
 	}
-	if state != "pending" || sourceModelProviderID != "" || dispatchRequestID.Valid {
-		t.Fatalf("migrated receipt = state %q provider %q dispatch %#v", state, sourceModelProviderID, dispatchRequestID)
+	if state != "pending" || sourceModelProviderID != "" || dispatchRequestID.Valid || sourceWorkWatermark != 2 || semanticPersistenceWatermark != 0 {
+		t.Fatalf("migrated receipt = state %q provider %q dispatch %#v watermarks=(%d,%d)", state, sourceModelProviderID, dispatchRequestID, sourceWorkWatermark, semanticPersistenceWatermark)
 	}
 	var preservedChecksum string
 	if err := reopened.QueryRow(`SELECT checksum FROM schema_migrations WHERE version=36`).Scan(&preservedChecksum); err != nil {
@@ -102,6 +103,164 @@ func TestMigration37PreservesPendingAssistedConclusionReceipts(t *testing.T) {
 	var migration37 int
 	if err := reopened.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=37`).Scan(&migration37); err != nil || migration37 != 1 {
 		t.Fatalf("migration 37 count = %d, err=%v", migration37, err)
+	}
+	var migration38 int
+	if err := reopened.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=38`).Scan(&migration38); err != nil || migration38 != 1 {
+		t.Fatalf("migration 38 count = %d, err=%v", migration38, err)
+	}
+	if _, err := reopened.Query(`SELECT terminal_tool_result_count FROM assisted_conclusion_receipts`); err == nil {
+		t.Fatal("legacy terminal_tool_result_count column still exists after migration 38")
+	}
+}
+
+func TestMigration38PreservesValidatedAssistedConclusionReceipt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pentest.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var migration37Checksum string
+	if err := db.QueryRow(`SELECT checksum FROM schema_migrations WHERE version=37`).Scan(&migration37Checksum); err != nil {
+		t.Fatal(err)
+	}
+	hash := strings.Repeat("a", 64)
+	if _, err := db.Exec(`
+		DROP INDEX assisted_conclusion_receipts_task_created;
+		DROP TABLE assisted_conclusion_receipts;
+		CREATE TABLE assisted_conclusion_receipts (
+			id TEXT PRIMARY KEY,
+			task_id TEXT NOT NULL,
+			continuation_id TEXT NOT NULL,
+			source_session_id TEXT NOT NULL,
+			source_turn_id TEXT NOT NULL,
+			state TEXT NOT NULL,
+			terminal_tool_result_count INTEGER NOT NULL,
+			dispatch_request_id TEXT,
+			control_turn_id TEXT,
+			base_revision INTEGER,
+			source_model_provider_id TEXT NOT NULL,
+			source_model TEXT NOT NULL,
+			source_reasoning_effort TEXT NOT NULL,
+			canonical_result_json BLOB,
+			canonical_result_sha256 TEXT,
+			apply_idempotency_key TEXT,
+			applied_revision INTEGER,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);
+		CREATE INDEX assisted_conclusion_receipts_task_created
+			ON assisted_conclusion_receipts(task_id, created_at DESC);
+		INSERT INTO assisted_conclusion_receipts VALUES
+			('receipt-v37','task-1','continuation-1','session-1','turn-1','validated',4,
+			 'dispatch-1','control-1',7,'provider-1','model-1','high',X'7B7D',?,
+			 'apply-1',NULL,'2026-07-27T00:00:00Z','2026-07-27T00:01:00Z');
+		DELETE FROM schema_migrations WHERE version=38;
+	`, hash); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("upgrade v37 Store: %v", err)
+	}
+	defer reopened.Close()
+	var state, dispatchID, controlTurnID, providerID, model, effort, resultHash, applyKey string
+	var workWatermark, semanticWatermark, baseRevision int
+	var canonical []byte
+	if err := reopened.QueryRow(`SELECT state,source_work_watermark,semantic_persistence_watermark,
+		dispatch_request_id,control_turn_id,base_revision,source_model_provider_id,source_model,
+		source_reasoning_effort,canonical_result_json,canonical_result_sha256,apply_idempotency_key
+		FROM assisted_conclusion_receipts WHERE id='receipt-v37'`).Scan(
+		&state, &workWatermark, &semanticWatermark, &dispatchID, &controlTurnID, &baseRevision,
+		&providerID, &model, &effort, &canonical, &resultHash, &applyKey); err != nil {
+		t.Fatal(err)
+	}
+	if state != "validated" || workWatermark != 4 || semanticWatermark != 0 || dispatchID != "dispatch-1" ||
+		controlTurnID != "control-1" || baseRevision != 7 || providerID != "provider-1" || model != "model-1" ||
+		effort != "high" || !bytes.Equal(canonical, []byte("{}")) || resultHash != hash || applyKey != "apply-1" {
+		t.Fatalf("migrated validated receipt lost state: state=%q watermarks=(%d,%d) dispatch=%q control=%q base=%d provider=%q model=%q effort=%q canonical=%q hash=%q apply=%q",
+			state, workWatermark, semanticWatermark, dispatchID, controlTurnID, baseRevision, providerID, model, effort, canonical, resultHash, applyKey)
+	}
+	var preservedChecksum string
+	if err := reopened.QueryRow(`SELECT checksum FROM schema_migrations WHERE version=37`).Scan(&preservedChecksum); err != nil {
+		t.Fatal(err)
+	}
+	if preservedChecksum != migration37Checksum {
+		t.Fatalf("migration 37 checksum changed: before %q after %q", migration37Checksum, preservedChecksum)
+	}
+}
+
+func TestOpenRepairsMissingMigrationRowsForCurrentWatermarkSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pentest.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO assisted_conclusion_receipts
+			(id,task_id,continuation_id,source_session_id,source_turn_id,state,source_work_watermark,
+			 semantic_persistence_watermark,source_model_provider_id,source_model,source_reasoning_effort,created_at,updated_at)
+		VALUES ('receipt-current','task-1','continuation-1','session-1','turn-1','clean',5,5,
+			'provider-1','model-1','high','2026-07-27T00:00:00Z','2026-07-27T00:00:00Z');
+		DELETE FROM schema_migrations WHERE version>=37;
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("repair current receipt schema migration ledger: %v", err)
+	}
+	defer reopened.Close()
+	var work, semantic, migrationRows int
+	if err := reopened.QueryRow(`SELECT source_work_watermark,semantic_persistence_watermark
+		FROM assisted_conclusion_receipts WHERE id='receipt-current'`).Scan(&work, &semantic); err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version IN (37,38)`).Scan(&migrationRows); err != nil {
+		t.Fatal(err)
+	}
+	if work != 5 || semantic != 5 || migrationRows != 2 {
+		t.Fatalf("repaired Store = watermarks (%d,%d), migration rows %d", work, semantic, migrationRows)
+	}
+}
+
+func TestOpenDoesNotBlessPartialWatermarkSchemaAsMigration38(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pentest.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		DROP INDEX assisted_conclusion_receipts_task_created;
+		DROP TABLE assisted_conclusion_receipts;
+		CREATE TABLE assisted_conclusion_receipts (
+			id TEXT PRIMARY KEY,
+			source_work_watermark INTEGER NOT NULL,
+			semantic_persistence_watermark INTEGER NOT NULL
+		);
+		CREATE INDEX assisted_conclusion_receipts_task_created
+			ON assisted_conclusion_receipts(id);
+		DELETE FROM schema_migrations WHERE version>=37;
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := store.Open(path)
+	if reopened != nil {
+		_ = reopened.Close()
+	}
+	if err == nil {
+		t.Fatal("partial watermark table was blessed as the current migration 38 schema")
 	}
 }
 

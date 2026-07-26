@@ -590,7 +590,11 @@ func TestPendingBlackboardConclusionSurvivesDaemonRestart(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateConcluding)
+	before := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateConcluding)
+	if before.BlackboardConclusion.SourceTurnID != "work-turn-1" || before.BlackboardConclusion.SourceWorkWatermark != 1 ||
+		before.BlackboardConclusion.SemanticPersistenceWatermark != 0 {
+		t.Fatalf("pending checkpoint before restart = %#v", before.BlackboardConclusion)
+	}
 	if err := server.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -604,8 +608,66 @@ func TestPendingBlackboardConclusionSurvivesDaemonRestart(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
 	found := waitForBlackboardConclusionState(t, reopened, projectID, created.ID, task.BlackboardConclusionStateConcluding)
-	if found.BlackboardConclusion.SourceTurnID != "work-turn-1" {
+	if found.BlackboardConclusion.SourceTurnID != "work-turn-1" || found.BlackboardConclusion.SourceWorkWatermark != 1 ||
+		found.BlackboardConclusion.SemanticPersistenceWatermark != 0 {
 		t.Fatalf("restarted conclusion view = %#v", found.BlackboardConclusion)
+	}
+	var pending task.Event
+	for _, event := range assistedTaskEvents(t, reopened, projectID, created.ID) {
+		if event.Kind == task.EventKindBlackboardConclusion && event.Payload["phase"] == "pending_detected" {
+			pending = event
+		}
+	}
+	if pending.Payload["source_work_watermark"] != float64(1) || pending.Payload["semantic_persistence_watermark"] != float64(0) {
+		t.Fatalf("restarted semantic-debt projection = %#v", pending)
+	}
+}
+
+func TestCleanBlackboardConclusionCheckpointSurvivesDaemonRestart(t *testing.T) {
+	root := t.TempDir()
+	server, projectID, profileID, session := newAssistedConclusionFixtureAt(t, root, true, true)
+	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
+	requestID := session.LastRequests()[0].RequestID
+	for index, observation := range []runtime.ProviderSessionObservation{
+		{ToolName: "shell", Status: "failed"},
+		{ToolName: "blackboard_change", Status: "succeeded"},
+	} {
+		observation.Kind = runtime.ProviderSessionObservationToolResult
+		observation.RequestID = requestID
+		observation.ProviderTurnID = "work-turn-clean"
+		observation.ToolCallID = fmt.Sprintf("tool-%d", index+1)
+		if err := session.EmitObservation(observation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: requestID,
+		ProviderTurnID: "work-turn-clean", Status: "completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateClean)
+	if before.BlackboardConclusion.SourceTurnID != "work-turn-clean" || before.BlackboardConclusion.SourceWorkWatermark != 1 ||
+		before.BlackboardConclusion.SemanticPersistenceWatermark != 1 || len(session.LastRequests()) != 1 {
+		t.Fatalf("clean checkpoint before restart = %#v; requests=%d", before.BlackboardConclusion, len(session.LastRequests()))
+	}
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := NewServer(Config{
+		DBPath: filepath.Join(root, "pentest.db"), RuntimeRoot: filepath.Join(root, "runs"),
+		SandboxImage: "cyberpenda:test", DisableBuiltinSkills: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	after := waitForBlackboardConclusionState(t, reopened, projectID, created.ID, task.BlackboardConclusionStateClean)
+	if after.BlackboardConclusion.SourceTurnID != "work-turn-clean" || after.BlackboardConclusion.SourceWorkWatermark != 1 ||
+		after.BlackboardConclusion.SemanticPersistenceWatermark != 1 {
+		t.Fatalf("clean checkpoint after restart = %#v", after.BlackboardConclusion)
 	}
 }
 
@@ -632,9 +694,220 @@ func TestAssistedConclusionIgnoresControlTurnsAndTrustedBlackboardTools(t *testi
 	}
 	waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateClean)
 	for _, event := range assistedTaskEvents(t, server, projectID, created.ID) {
-		if event.Kind == task.EventKindBlackboardConclusion {
-			t.Fatalf("control or trusted Blackboard Tool created conclusion Event: %#v", event)
+		if event.Kind == task.EventKindBlackboardConclusion && event.Payload["phase"] != "persistence_current" {
+			t.Fatalf("control or trusted Blackboard Tool created semantic debt: %#v", event)
 		}
+	}
+}
+
+func TestAssistedConclusionTracksSemanticPersistenceInToolResultOrder(t *testing.T) {
+	tests := []struct {
+		name        string
+		results     []runtime.ProviderSessionObservation
+		wantDebt    bool
+		wantWork    int
+		wantPersist int
+	}{
+		{
+			name: "successful semantic mutations clear earlier work",
+			results: []runtime.ProviderSessionObservation{
+				{ToolName: "shell", Status: "failed"},
+				{ToolName: "blackboard_change", Status: "succeeded"},
+				{ToolName: "blackboard_checkpoint_attempt", Status: "succeeded"},
+				{ToolName: "blackboard_finish", Status: "succeeded"},
+			},
+			wantWork: 1, wantPersist: 1,
+		},
+		{
+			name: "reads evidence retention and failed mutations do not clear work",
+			results: []runtime.ProviderSessionObservation{
+				{ToolName: "shell", Status: "succeeded"},
+				{ToolName: "blackboard_read", Status: "succeeded"},
+				{ToolName: "blackboard_history", Status: "succeeded"},
+				{ToolName: "blackboard_retain_evidence", Status: "succeeded"},
+				{ToolName: "blackboard_change", Status: "failed"},
+				{ToolName: "blackboard_checkpoint_attempt", Status: "failed"},
+				{ToolName: "blackboard_finish", Status: "failed"},
+			},
+			wantDebt: true, wantWork: 1, wantPersist: 0,
+		},
+		{
+			name: "later failed non Blackboard result restores debt",
+			results: []runtime.ProviderSessionObservation{
+				{ToolName: "http", Status: "succeeded"},
+				{ToolName: "blackboard_change", Status: "succeeded"},
+				{ToolName: "shell", Status: "failed"},
+			},
+			wantDebt: true, wantWork: 2, wantPersist: 1,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
+			created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+			waitForAssistedProviderRequests(t, session, 1)
+			requestID := session.LastRequests()[0].RequestID
+			for index, result := range test.results {
+				result.Kind = runtime.ProviderSessionObservationToolResult
+				result.RequestID = requestID
+				result.ProviderTurnID = "work-turn-watermark"
+				result.ToolCallID = fmt.Sprintf("tool-%d", index+1)
+				if err := session.EmitObservation(result); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := session.EmitObservation(runtime.ProviderSessionObservation{
+				Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: requestID,
+				ProviderTurnID: "work-turn-watermark", Status: "completed",
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			if !test.wantDebt {
+				found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateClean)
+				if len(session.LastRequests()) != 1 || found.BlackboardConclusion.SourceTurnID != "work-turn-watermark" ||
+					found.BlackboardConclusion.SourceWorkWatermark != test.wantWork ||
+					found.BlackboardConclusion.SemanticPersistenceWatermark != test.wantPersist {
+					t.Fatalf("persisted Work Turn scheduled conclusion: requests=%d view=%#v", len(session.LastRequests()), found.BlackboardConclusion)
+				}
+				return
+			}
+
+			waitForAssistedProviderRequests(t, session, 2)
+			receipt, err := server.tasks.LatestBlackboardConclusion(created.ID)
+			if err != nil || receipt == nil {
+				t.Fatalf("load semantic-debt receipt: %#v, %v", receipt, err)
+			}
+			if receipt.SourceWorkWatermark != test.wantWork || receipt.SemanticPersistenceWatermark != test.wantPersist {
+				t.Fatalf("receipt watermarks = work %d persistence %d, want %d/%d", receipt.SourceWorkWatermark, receipt.SemanticPersistenceWatermark, test.wantWork, test.wantPersist)
+			}
+		})
+	}
+}
+
+func TestAssistedConclusionSchedulesOnlyAtCompletedWorkTurnBoundary(t *testing.T) {
+	for _, terminalStatus := range []string{"failed", "interrupted"} {
+		t.Run(terminalStatus, func(t *testing.T) {
+			server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
+			created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+			waitForAssistedProviderRequests(t, session, 1)
+			requestID := session.LastRequests()[0].RequestID
+			if err := session.EmitObservation(runtime.ProviderSessionObservation{
+				Kind: runtime.ProviderSessionObservationToolResult, RequestID: requestID,
+				ProviderTurnID: "work-turn-boundary", ToolCallID: "tool-1", ToolName: "shell", Status: "failed",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if len(session.LastRequests()) != 1 {
+				t.Fatalf("Tool Result scheduled before Turn boundary: requests=%d", len(session.LastRequests()))
+			}
+			if err := session.EmitObservation(runtime.ProviderSessionObservation{
+				Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: requestID,
+				ProviderTurnID: "work-turn-boundary", Status: terminalStatus,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateClean)
+			if len(session.LastRequests()) != 1 || found.BlackboardConclusion.SourceTurnID != "" {
+				t.Fatalf("%s Work Turn scheduled conclusion: requests=%d view=%#v", terminalStatus, len(session.LastRequests()), found.BlackboardConclusion)
+			}
+		})
+	}
+}
+
+func TestAssistedConclusionTrustsOnlyTheSixExactBlackboardToolNames(t *testing.T) {
+	trusted := []string{
+		"blackboard_change", "blackboard_read", "blackboard_history", "blackboard_retain_evidence",
+		"blackboard_checkpoint_attempt", "blackboard_finish",
+	}
+	for _, toolName := range trusted {
+		t.Run(toolName, func(t *testing.T) {
+			server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
+			created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+			waitForAssistedProviderRequests(t, session, 1)
+			requestID := session.LastRequests()[0].RequestID
+			if err := session.EmitObservation(runtime.ProviderSessionObservation{
+				Kind: runtime.ProviderSessionObservationToolResult, RequestID: requestID,
+				ProviderTurnID: "work-turn-trusted", ToolCallID: "tool-1", ToolName: toolName, Status: "succeeded",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := session.EmitObservation(runtime.ProviderSessionObservation{
+				Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: requestID,
+				ProviderTurnID: "work-turn-trusted", Status: "completed",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateClean)
+			if len(session.LastRequests()) != 1 || found.BlackboardConclusion.SourceTurnID != "work-turn-trusted" ||
+				found.BlackboardConclusion.SourceWorkWatermark != 0 || found.BlackboardConclusion.SemanticPersistenceWatermark != 0 {
+				t.Fatalf("trusted tool %q checkpoint = %#v; requests=%d", toolName, found.BlackboardConclusion, len(session.LastRequests()))
+			}
+		})
+	}
+
+	for _, toolName := range []string{"blackboard_changes", "mcp__pentest__blackboard_change"} {
+		t.Run(toolName, func(t *testing.T) {
+			server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
+			created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+			waitForAssistedProviderRequests(t, session, 1)
+			requestID := session.LastRequests()[0].RequestID
+			if err := session.EmitObservation(runtime.ProviderSessionObservation{
+				Kind: runtime.ProviderSessionObservationToolResult, RequestID: requestID,
+				ProviderTurnID: "work-turn-untrusted", ToolCallID: "tool-1", ToolName: toolName, Status: "succeeded",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := session.EmitObservation(runtime.ProviderSessionObservation{
+				Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: requestID,
+				ProviderTurnID: "work-turn-untrusted", Status: "completed",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			waitForAssistedProviderRequests(t, session, 2)
+			found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateConcluding)
+			if found.BlackboardConclusion.SourceWorkWatermark != 1 || found.BlackboardConclusion.SemanticPersistenceWatermark != 0 {
+				t.Fatalf("near-match tool %q checkpoint = %#v", toolName, found.BlackboardConclusion)
+			}
+		})
+	}
+}
+
+func TestAssistedConclusionPromptsOnceAfterManyResultsAndCompletedBoundary(t *testing.T) {
+	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
+	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
+	requestID := session.LastRequests()[0].RequestID
+	for index := 0; index < 100; index++ {
+		if err := session.EmitObservation(runtime.ProviderSessionObservation{
+			Kind: runtime.ProviderSessionObservationToolResult, RequestID: requestID,
+			ProviderTurnID: "work-turn-many", ToolCallID: fmt.Sprintf("tool-%d", index), ToolName: "shell", Status: "succeeded",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if len(session.LastRequests()) != 1 {
+			t.Fatalf("result %d triggered a mid-Turn prompt: requests=%d", index, len(session.LastRequests()))
+		}
+	}
+	completed := runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: requestID,
+		ProviderTurnID: "work-turn-many", Status: "completed",
+	}
+	if err := session.EmitObservation(completed); err != nil {
+		t.Fatal(err)
+	}
+	waitForAssistedProviderRequests(t, session, 2)
+	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateConcluding)
+	if found.BlackboardConclusion.SourceWorkWatermark != 100 || found.BlackboardConclusion.SemanticPersistenceWatermark != 0 {
+		t.Fatalf("many-result checkpoint = %#v", found.BlackboardConclusion)
+	}
+	if err := session.EmitObservation(completed); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if len(session.LastRequests()) != 2 {
+		t.Fatalf("duplicate completed prompts = %d, want work plus one Conclude Turn", len(session.LastRequests()))
 	}
 }
 

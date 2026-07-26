@@ -516,6 +516,10 @@ _Avoid_: autonomous Task completion, transcript parsing mode, Blackboard write p
 A durable, idempotent Harness receipt indicating that a completed **Work Runtime Turn** used at least one non-Blackboard tool and needs semantic reconciliation. It owns deterministic Conclude dispatch and Blackboard apply lineage while remaining Task Timeline state, not a **Task Conversation** message, semantic Blackboard record, or authority to perform **Task Finish**.
 _Avoid_: finding, fact, task completion, model lifecycle authority
 
+**Semantic Debt Watermarks**:
+The ordered counts persisted for a completed **Work Runtime Turn**: source work advances for each terminal non-Blackboard Tool Result, while semantic persistence advances only when a later successful semantic Blackboard change, Attempt checkpoint, or Blackboard Finish covers the work observed so far. The conclusion is pending only while source work is ahead of semantic persistence.
+_Avoid_: raw Tool output, transcript offset, proof that a read or Evidence retention persisted semantics
+
 **Blackboard Key**:
 A stable, human-readable semantic identifier that is unique across every record in one **Blackboard** and resolves only within its **Project**. It identifies a record without requiring its type or a database ID and does not embed internal Project, Task, Continuation, Runtime, generated-ID, or hash values.
 _Avoid_: database ID, globally unique ID, type-scoped key

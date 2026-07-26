@@ -201,7 +201,7 @@ func TestCreateRejectsInvalidBlackboardConclusionMode(t *testing.T) {
 	}
 }
 
-func TestRecordPendingBlackboardConclusionIsDurableAndIdempotent(t *testing.T) {
+func TestRecordBlackboardConclusionCheckpointPersistsPendingDebtIdempotently(t *testing.T) {
 	db := newStore(t)
 	projects := project.NewService(db)
 	svc := task.NewService(db, projects)
@@ -219,18 +219,19 @@ func TestRecordPendingBlackboardConclusionIsDurableAndIdempotent(t *testing.T) {
 	}
 
 	selection := task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1", ReasoningEffort: "high"}
-	first, inserted, err := svc.RecordPendingBlackboardConclusion(created.ID, continuation.ID, "session-1", "turn-1", selection, 1)
+	first, inserted, err := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID, "session-1", "turn-1", selection, task.SemanticDebtWatermarks{SourceWork: 3, SemanticPersistence: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !inserted || first.ID == "" || first.InternalState != task.BlackboardConclusionReceiptPending || first.TerminalToolResultCount != 1 || first.SourceSelection != selection {
+	if !inserted || first.ID == "" || first.InternalState != task.BlackboardConclusionReceiptPending ||
+		first.SourceWorkWatermark != 3 || first.SemanticPersistenceWatermark != 1 || first.SourceSelection != selection {
 		t.Fatalf("first receipt = %#v, inserted=%v", first, inserted)
 	}
-	replayed, inserted, err := svc.RecordPendingBlackboardConclusion(created.ID, continuation.ID, "session-1", "turn-1", task.TurnSelection{ModelProviderID: "provider-drift", Model: "model-drift"}, 9)
+	replayed, inserted, err := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID, "session-1", "turn-1", task.TurnSelection{ModelProviderID: "provider-drift", Model: "model-drift"}, task.SemanticDebtWatermarks{SourceWork: 9, SemanticPersistence: 8})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inserted || replayed.ID != first.ID || replayed.TerminalToolResultCount != 1 {
+	if inserted || replayed.ID != first.ID || replayed.SourceWorkWatermark != 3 || replayed.SemanticPersistenceWatermark != 1 {
 		t.Fatalf("replayed receipt = %#v, inserted=%v", replayed, inserted)
 	}
 	latest, err := svc.LatestBlackboardConclusion(created.ID)
@@ -250,8 +251,91 @@ func TestRecordPendingBlackboardConclusionIsDurableAndIdempotent(t *testing.T) {
 	}
 	if len(conclusions) != 1 || conclusions[0].ContinuationID != continuation.ID ||
 		conclusions[0].Payload["phase"] != "pending_detected" || conclusions[0].Payload["receipt_id"] != first.ID ||
-		conclusions[0].Payload["source_turn_id"] != "turn-1" {
+		conclusions[0].Payload["source_turn_id"] != "turn-1" || conclusions[0].Payload["source_work_watermark"] != float64(3) ||
+		conclusions[0].Payload["semantic_persistence_watermark"] != float64(1) {
 		t.Fatalf("conclusion events = %#v", conclusions)
+	}
+	if _, present := conclusions[0].Payload["terminal_tool_result_count"]; present {
+		t.Fatalf("legacy tool-result count leaked into conclusion event: %#v", conclusions[0].Payload)
+	}
+}
+
+func TestRecordBlackboardConclusionCheckpointRejectsInvalidWatermarks(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, err := svc.Create(task.CreateRequest{
+		ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation, err := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection := task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1"}
+
+	for _, watermarks := range [][2]int{{-1, 0}, {2, 3}, {2, -1}} {
+		_, _, err := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID, "session-1", "turn-invalid", selection, task.SemanticDebtWatermarks{SourceWork: watermarks[0], SemanticPersistence: watermarks[1]})
+		if !errors.Is(err, task.ErrInvalidBlackboardConclusionReceipt) {
+			t.Fatalf("watermarks work=%d semantic=%d: error = %v", watermarks[0], watermarks[1], err)
+		}
+	}
+}
+
+func TestRecordBlackboardConclusionCheckpointPersistsCleanWatermarks(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, err := svc.Create(task.CreateRequest{
+		ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation, err := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection := task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1", ReasoningEffort: "high"}
+	first, inserted, err := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID, "session-1", "turn-clean", selection, task.SemanticDebtWatermarks{SourceWork: 2, SemanticPersistence: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inserted || first.InternalState != task.BlackboardConclusionReceiptClean || first.SourceWorkWatermark != 2 || first.SemanticPersistenceWatermark != 2 {
+		t.Fatalf("clean receipt = %#v, inserted=%v", first, inserted)
+	}
+	view := first.View(task.BlackboardConclusionModeAssisted)
+	if view.State != task.BlackboardConclusionStateClean || view.SourceWorkWatermark != 2 || view.SemanticPersistenceWatermark != 2 {
+		t.Fatalf("clean view = %#v", view)
+	}
+	replayed, inserted, err := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID, "session-1", "turn-clean", selection, task.SemanticDebtWatermarks{SourceWork: 5, SemanticPersistence: 5})
+	if err != nil || inserted || replayed.ID != first.ID || replayed.SourceWorkWatermark != 2 || replayed.SemanticPersistenceWatermark != 2 {
+		t.Fatalf("clean replay = %#v, inserted=%v, err=%v", replayed, inserted, err)
+	}
+
+	reopened := task.NewService(db, projects)
+	latest, err := reopened.LatestBlackboardConclusion(created.ID)
+	if err != nil || latest == nil || latest.InternalState != task.BlackboardConclusionReceiptClean || latest.SourceWorkWatermark != 2 || latest.SemanticPersistenceWatermark != 2 {
+		t.Fatalf("reopened clean receipt = %#v, err=%v", latest, err)
+	}
+	events, err := reopened.Events(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var phases []any
+	for _, event := range events {
+		if event.Kind == task.EventKindBlackboardConclusion {
+			phases = append(phases, event.Payload["phase"])
+		}
+	}
+	if !reflect.DeepEqual(phases, []any{"persistence_current"}) {
+		t.Fatalf("clean phases = %#v", phases)
 	}
 }
 
@@ -272,7 +356,7 @@ func TestBlackboardConclusionReceiptAdvancesDurablyAndIdempotently(t *testing.T)
 		t.Fatal(err)
 	}
 	selection := task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1", ReasoningEffort: "high"}
-	receipt, _, err := svc.RecordPendingBlackboardConclusion(created.ID, continuation.ID, "session-1", "turn-1", selection, 2)
+	receipt, _, err := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID, "session-1", "turn-1", selection, task.SemanticDebtWatermarks{SourceWork: 2})
 	if err != nil {
 		t.Fatal(err)
 	}

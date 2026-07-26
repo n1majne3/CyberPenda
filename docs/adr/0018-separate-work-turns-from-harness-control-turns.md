@@ -26,9 +26,13 @@ pending conclusion or be mistaken for operator work.
   Tool Use, terminal Tool Result, and Turn completion. The observation contract
   has correlation and status metadata only; it has no tool arguments, raw
   output, message text, or reasoning fields.
-- In `assisted` mode, a completed `work` Turn with at least one terminal
-  non-Blackboard Tool Result creates one durable pending Blackboard conclusion
-  receipt. Duplicate completion delivery is idempotent.
+- In `assisted` mode, a completed `work` Turn persists ordered semantic-debt
+  watermarks. Every terminal non-Blackboard Tool Result advances work; a later
+  successful `blackboard_change`, `blackboard_checkpoint_attempt`, or
+  `blackboard_finish` covers work observed before it. Reads, history, Evidence
+  retention, and failed mutations do not cover work. The checkpoint is pending
+  only when work remains beyond semantic persistence. Duplicate Tool Results
+  and completion delivery are idempotent.
 - A pending receipt is projected as Harness state in the Task API and Timeline.
   It is not a Task Conversation message and does not itself write semantic
   Blackboard records.
