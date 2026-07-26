@@ -920,8 +920,28 @@ func migrations() []migration {
 		newMigration(33, "remove_duplicate_workflow_state", migration33SQL, migration33Up),
 		newMigration(34, "retire_blackboard_v1_graph_ledger", migration34SQL, migration34Up),
 		newMigration(35, "remove_task_graph_snapshot_pin", migration35SQL, migration35Up),
+		newMigration(36, "assisted_conclusion_receipts", migration36SQL, migration36Up),
 	}
 }
+
+const migration36SQL = `
+CREATE TABLE IF NOT EXISTS assisted_conclusion_receipts (
+	id TEXT PRIMARY KEY,
+	task_id TEXT NOT NULL,
+	continuation_id TEXT NOT NULL,
+	source_session_id TEXT NOT NULL,
+	source_turn_id TEXT NOT NULL,
+	state TEXT NOT NULL CHECK (state = 'pending'),
+	terminal_tool_result_count INTEGER NOT NULL CHECK (terminal_tool_result_count > 0),
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	UNIQUE (task_id, continuation_id, source_turn_id)
+);
+CREATE INDEX IF NOT EXISTS assisted_conclusion_receipts_task_created
+	ON assisted_conclusion_receipts(task_id, created_at DESC);
+`
+
+func migration36Up(tx *sql.Tx) error { return execStatements(tx, migration36SQL) }
 
 // migration34 retires every displaced Blackboard v1 data and compatibility
 // table. It runs only after v2 is already valid on ordinary upgrades; the

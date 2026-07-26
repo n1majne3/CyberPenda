@@ -100,6 +100,17 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 	}
 	input.RuntimeProfileID = defaulted.runtimeProfileID
 	input.Runner = defaulted.runner
+	if input.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeAssisted {
+		profile, profileErr := server.profiles.Get(input.RuntimeProfileID)
+		if profileErr != nil {
+			writeError(response, http.StatusBadRequest, "runtime profile not found")
+			return
+		}
+		if !server.supportsAssistedConclusion(profile.Provider) {
+			writeError(response, http.StatusBadRequest, errAssistedConclusionUnsupported.Error())
+			return
+		}
+	}
 
 	launchModelOverride := strings.TrimSpace(input.ModelOverride)
 	launchReasoningEffort, err := normalizeLaunchReasoningEffort(input.ReasoningEffort)
@@ -219,6 +230,9 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 		})
 		if factoryErr == nil {
 			factoryErr = validateProviderSessionBinding(binding)
+		}
+		if factoryErr == nil && created.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeAssisted {
+			factoryErr = validateAssistedConclusionBinding(binding)
 		}
 		if factoryErr != nil {
 			redactedErr := &providerSessionFactoryError{cause: factoryErr}
@@ -1134,6 +1148,11 @@ func (server *Server) handleListTasks(response http.ResponseWriter, request *htt
 	// Decorate list entries with current Runtime Activity (not Task status).
 	for index := range tasks {
 		tasks[index] = server.attachRuntimeActivity(tasks[index])
+		tasks[index], err = server.attachBlackboardConclusion(tasks[index])
+		if err != nil {
+			writeError(response, http.StatusInternalServerError, "load Blackboard conclusion")
+			return
+		}
 	}
 	writeJSON(response, http.StatusOK, struct {
 		Tasks []task.Task `json:"tasks"`
@@ -1202,6 +1221,10 @@ func (server *Server) decorateTask(found task.Task) (task.Task, error) {
 	// Runtime Activity is attached first so unexpected offline/orphaned health
 	// can reconcile durable lifecycle before controls are computed.
 	found = server.attachRuntimeActivity(found)
+	found, err := server.attachBlackboardConclusion(found)
+	if err != nil {
+		return task.Task{}, err
+	}
 	active, err := server.tasks.ActiveContinuation(found.ID)
 	if err != nil {
 		return task.Task{}, err
@@ -3385,7 +3408,7 @@ func (server *Server) requireProject(response http.ResponseWriter, projectID str
 
 func writeTaskError(response http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, task.ErrMissingGoal), errors.Is(err, task.ErrUnsupportedRunner):
+	case errors.Is(err, task.ErrMissingGoal), errors.Is(err, task.ErrUnsupportedRunner), errors.Is(err, task.ErrInvalidBlackboardConclusionMode):
 		writeError(response, http.StatusBadRequest, err.Error())
 	case errors.Is(err, task.ErrProjectNotFound), errors.Is(err, task.ErrNotFound), errors.Is(err, project.ErrNotFound):
 		writeError(response, http.StatusNotFound, err.Error())
@@ -3398,6 +3421,8 @@ func writeTaskError(response http.ResponseWriter, err error) {
 
 func writeTaskAdapterError(response http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, errAssistedConclusionUnsupported):
+		writeError(response, http.StatusBadRequest, errAssistedConclusionUnsupported.Error())
 	case errors.Is(err, skill.ErrInvalidSkill),
 		errors.Is(err, modelprovider.ErrMissingAPIKeyEnv),
 		errors.Is(err, modelprovider.ErrMissingProvider),

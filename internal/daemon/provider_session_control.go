@@ -107,6 +107,24 @@ func (server *Server) BindProviderSession(taskID string, session runtime.Provide
 			server.persistProviderSessionEvent(taskID, kind, payload)
 		})
 	}
+	if source, ok := session.(runtime.ProviderSessionObservationSink); ok {
+		lineage, lineageOK := session.(runtime.ProviderSessionTurnLineageResolver)
+		continuationID := ""
+		if active, activeErr := server.tasks.ActiveContinuation(taskID); activeErr == nil && active != nil {
+			continuationID = active.ID
+		}
+		source.SetObservationSink(func(observation runtime.ProviderSessionObservation) {
+			if !lineageOK {
+				return
+			}
+			turnKind, resolved := lineage.ResolveProviderSessionTurnKind(observation.RequestID, observation.ProviderTurnID)
+			if !resolved {
+				server.logger.Printf("provider session observation: ignore unowned Turn %s for Task %s", observation.ProviderTurnID, taskID)
+				return
+			}
+			server.observeProviderSession(taskID, continuationID, session.SessionID(), turnKind, observation)
+		})
+	}
 	return nil
 }
 
@@ -143,13 +161,18 @@ func (server *Server) persistProviderSessionEvent(taskID string, kind task.Event
 }
 
 func (server *Server) closeProviderSession(taskID string) error {
-	return server.providerSessions.closeTask(context.Background(), taskID)
+	err := server.providerSessions.closeTask(context.Background(), taskID)
+	if err == nil || errors.Is(err, runtime.ErrProviderSessionClosed) {
+		server.blackboardConclusions.deleteTask(taskID)
+	}
+	return err
 }
 
 func (server *Server) closeProviderSessionForStop(ctx context.Context, taskID string) error {
 	for {
 		err := server.providerSessions.closeTask(ctx, taskID)
 		if err == nil || errors.Is(err, runtime.ErrProviderSessionClosed) {
+			server.blackboardConclusions.deleteTask(taskID)
 			return nil
 		}
 		if !errors.Is(err, runtime.ErrProviderSessionControlConflict) {

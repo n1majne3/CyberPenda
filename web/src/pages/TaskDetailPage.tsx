@@ -467,6 +467,7 @@ export function TaskDetailPage() {
       <div data-testid="task-session-header" className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-2 sm:px-3">
         <StatusBadge status={task.status} />
         <RuntimeActivityBadge activity={task.runtime_activity} />
+        <BlackboardConclusionBadge task={task} />
         <h1 className="min-w-0 flex-1 truncate text-sm font-medium" title={task.goal}>{task.goal}</h1>
         {currentContinuation && (
           <div className="hidden shrink-0 items-center gap-1 font-mono text-xs text-muted-foreground md:flex">
@@ -961,6 +962,22 @@ function RuntimeActivityBadge({ activity }: { activity?: RuntimeActivity }) {
       variant={variant}
       data-testid="runtime-activity"
       title={activity.warning || label}
+    >
+      {label}
+    </Badge>
+  );
+}
+
+function BlackboardConclusionBadge({ task }: { task: Task }) {
+  const mode = task.blackboard_conclusion?.mode ?? task.run_controls.blackboard_conclusion_mode ?? "interactive";
+  const state = task.blackboard_conclusion?.state ?? "clean";
+  const sourceTurn = task.blackboard_conclusion?.source_turn_id;
+  const label = `Blackboard · ${mode} · ${state}`;
+  return (
+    <Badge
+      variant={state === "pending" ? "warning" : "outline"}
+      data-testid="blackboard-conclusion-state"
+      title={sourceTurn ? `${label} · source Turn ${sourceTurn}` : label}
     >
       {label}
     </Badge>

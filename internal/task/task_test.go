@@ -150,6 +150,109 @@ func TestCreateRejectsUnsupportedRunner(t *testing.T) {
 	}
 }
 
+func TestCreateDefaultsAndPersistsBlackboardConclusionMode(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+
+	interactive, err := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if interactive.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeInteractive ||
+		interactive.BlackboardConclusion.Mode != task.BlackboardConclusionModeInteractive ||
+		interactive.BlackboardConclusion.State != task.BlackboardConclusionStateClean {
+		t.Fatalf("interactive Task = %#v", interactive)
+	}
+	fetched, err := svc.Get(interactive.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fetched.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeInteractive {
+		t.Fatalf("persisted mode = %q", fetched.RunControls.BlackboardConclusionMode)
+	}
+
+	assisted, err := svc.Create(task.CreateRequest{
+		ProjectID: proj.ID, Goal: "inspect with help", Runner: task.RunnerSandbox,
+		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assisted.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeAssisted || assisted.BlackboardConclusion.Mode != task.BlackboardConclusionModeAssisted {
+		t.Fatalf("assisted Task = %#v", assisted)
+	}
+}
+
+func TestCreateRejectsInvalidBlackboardConclusionMode(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+
+	_, err := svc.Create(task.CreateRequest{
+		ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+		RunControls: task.RunControls{BlackboardConclusionMode: "automatic"},
+	})
+	if !errors.Is(err, task.ErrInvalidBlackboardConclusionMode) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRecordPendingBlackboardConclusionIsDurableAndIdempotent(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, err := svc.Create(task.CreateRequest{
+		ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation, err := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, inserted, err := svc.RecordPendingBlackboardConclusion(created.ID, continuation.ID, "session-1", "turn-1", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inserted || first.ID == "" || first.State != task.BlackboardConclusionStatePending || first.TerminalToolResultCount != 1 {
+		t.Fatalf("first receipt = %#v, inserted=%v", first, inserted)
+	}
+	replayed, inserted, err := svc.RecordPendingBlackboardConclusion(created.ID, continuation.ID, "session-1", "turn-1", 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inserted || replayed.ID != first.ID || replayed.TerminalToolResultCount != 1 {
+		t.Fatalf("replayed receipt = %#v, inserted=%v", replayed, inserted)
+	}
+	latest, err := svc.LatestBlackboardConclusion(created.ID)
+	if err != nil || latest == nil || latest.ID != first.ID {
+		t.Fatalf("latest receipt = %#v, err=%v", latest, err)
+	}
+
+	events, err := svc.Events(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var conclusions []task.Event
+	for _, event := range events {
+		if event.Kind == task.EventKindBlackboardConclusion {
+			conclusions = append(conclusions, event)
+		}
+	}
+	if len(conclusions) != 1 || conclusions[0].ContinuationID != continuation.ID ||
+		conclusions[0].Payload["phase"] != "pending_detected" || conclusions[0].Payload["receipt_id"] != first.ID ||
+		conclusions[0].Payload["source_turn_id"] != "turn-1" {
+		t.Fatalf("conclusion events = %#v", conclusions)
+	}
+}
+
 func TestCreateRejectsUnknownProject(t *testing.T) {
 	db := newStore(t)
 	projects := project.NewService(db)

@@ -18,6 +18,23 @@ const task: Task = {
 };
 
 describe("AgentTranscriptView", () => {
+  it("renders pending Blackboard conclusion markers as Harness activity", () => {
+    render(
+      <AgentTranscriptView
+        task={task}
+        items={[{
+          seq: 1,
+          type: "harness",
+          content: "Blackboard conclusion pending · source Turn turn-7",
+        }]}
+      />,
+    );
+
+    expect(screen.getAllByText("Harness")).not.toHaveLength(0);
+    expect(screen.getByRole("button", { name: /Blackboard conclusion pending/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Jump to Harness event/i })).toBeInTheDocument();
+  });
+
   it("defaults to newest events first", () => {
     render(
       <AgentTranscriptView

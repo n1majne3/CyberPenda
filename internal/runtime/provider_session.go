@@ -105,6 +105,9 @@ type ProviderSessionRequest struct {
 	// EffectiveReasoningEffort is set only when a Runtime reports the level it
 	// actually applied. It is never inferred from the request.
 	EffectiveReasoningEffort string
+	// TurnKind is server-owned. Missing values retain compatibility by
+	// normalizing to an operator work Runtime Turn.
+	TurnKind RuntimeTurnKind
 }
 
 // ProviderSessionResult is the stable correlation result for one provider
@@ -197,7 +200,10 @@ type FakeProviderSession struct {
 	// healthUnknown forces indeterminate health for activity tests.
 	healthUnknown bool
 	// lastRequests records each operation request for acceptance tests.
-	lastRequests []ProviderSessionRequest
+	lastRequests     []ProviderSessionRequest
+	observationSink  ProviderSessionObserve
+	requestTurnKind  map[string]RuntimeTurnKind
+	providerTurnKind map[string]RuntimeTurnKind
 }
 
 // NewFakeProviderSession returns an idle or active deterministic session.
@@ -211,6 +217,7 @@ func NewFakeProviderSession(config FakeProviderSessionConfig) *FakeProviderSessi
 		activeTurnID: strings.TrimSpace(config.ActiveTurnID), turnNumber: 1,
 		manualAck: config.ManualAcknowledge, failures: config.Failures,
 		calls: map[string]*providerSessionCall{}, acknowledge: map[string]chan struct{}{},
+		requestTurnKind: map[string]RuntimeTurnKind{}, providerTurnKind: map[string]RuntimeTurnKind{},
 	}
 }
 
@@ -229,6 +236,51 @@ func (s *FakeProviderSession) BindContinuation(continuationID string) error {
 }
 
 func (s *FakeProviderSession) Capabilities() runtimeplugin.Capabilities { return s.capabilities }
+
+func (s *FakeProviderSession) SetObservationSink(sink ProviderSessionObserve) {
+	s.mu.Lock()
+	s.observationSink = sink
+	s.mu.Unlock()
+}
+
+func (s *FakeProviderSession) ResolveProviderSessionTurnKind(requestID, providerTurnID string) (RuntimeTurnKind, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if kind, ok := s.requestTurnKind[strings.TrimSpace(requestID)]; ok {
+		return kind, true
+	}
+	kind, ok := s.providerTurnKind[strings.TrimSpace(providerTurnID)]
+	return kind, ok
+}
+
+// EmitObservation deterministically projects bounded provider metadata for
+// acceptance tests. Fake-owned session and active Turn correlation fill only
+// missing values; all kind-specific fields remain explicitly validated.
+func (s *FakeProviderSession) EmitObservation(observation ProviderSessionObservation) error {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return ErrProviderSessionClosed
+	}
+	if strings.TrimSpace(observation.SessionID) == "" {
+		observation.SessionID = s.id
+	}
+	if strings.TrimSpace(observation.ProviderTurnID) == "" {
+		observation.ProviderTurnID = s.activeTurnID
+	}
+	if strings.TrimSpace(observation.RequestID) == "" && len(s.lastRequests) > 0 {
+		observation.RequestID = s.lastRequests[len(s.lastRequests)-1].RequestID
+	}
+	sink := s.observationSink
+	s.mu.Unlock()
+	if err := observation.Validate(); err != nil {
+		return err
+	}
+	if sink != nil {
+		sink(observation)
+	}
+	return nil
+}
 
 func (s *FakeProviderSession) SendTurn(ctx context.Context, request ProviderSessionRequest, emit ProviderSessionEmit) (ProviderSessionResult, error) {
 	return s.operate(ctx, ProviderSessionModeSendTurn, ProviderSessionCapabilitySendTurn, request, emit)
@@ -341,6 +393,7 @@ func (s *FakeProviderSession) Acknowledge(requestID string) error {
 
 func (s *FakeProviderSession) operate(ctx context.Context, mode ProviderSessionMode, capability ProviderSessionCapability, request ProviderSessionRequest, emit ProviderSessionEmit) (ProviderSessionResult, error) {
 	request.RequestID = strings.TrimSpace(request.RequestID)
+	request.TurnKind = normalizeRuntimeTurnKind(request.TurnKind)
 	if request.RequestID == "" {
 		return ProviderSessionResult{}, ErrInvalidProviderSessionRequest
 	}
@@ -385,6 +438,8 @@ func (s *FakeProviderSession) operate(ctx context.Context, mode ProviderSessionM
 		turnID = s.nextTurnIDLocked()
 		s.activeTurnID = turnID
 	}
+	s.requestTurnKind[request.RequestID] = request.TurnKind
+	s.providerTurnKind[turnID] = request.TurnKind
 	var ack chan struct{}
 	if s.manualAck && modeNeedsAcknowledgement(mode) {
 		ack = make(chan struct{})
@@ -432,6 +487,7 @@ func (s *FakeProviderSession) operate(ctx context.Context, mode ProviderSessionM
 		s.mu.Lock()
 		turnID = s.nextTurnIDLocked()
 		s.activeTurnID = turnID
+		s.providerTurnKind[turnID] = request.TurnKind
 		s.mu.Unlock()
 		emitSessionEvent(emit, mode, "started", request.RequestID, s.id, turnID)
 	case ProviderSessionModeInterruptTurn:

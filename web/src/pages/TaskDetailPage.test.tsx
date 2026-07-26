@@ -191,6 +191,22 @@ describe("TaskDetailPage", () => {
     expect(screen.queryByText("Timeline opened first")).not.toBeInTheDocument();
   });
 
+  it("shows assisted pending Blackboard conclusion state in the Task header", async () => {
+    stubTaskDetailApi({
+      blackboard_conclusion: {
+        mode: "assisted",
+        state: "pending",
+        source_turn_id: "turn-7",
+      },
+    });
+
+    renderPage();
+
+    const badge = await screen.findByTestId("blackboard-conclusion-state");
+    expect(badge).toHaveTextContent("Blackboard · assisted · pending");
+    expect(badge).toHaveAttribute("title", expect.stringContaining("turn-7"));
+  });
+
   it("deep-links and updates the task view tab", async () => {
     const searches: string[] = [];
     const user = userEvent.setup();

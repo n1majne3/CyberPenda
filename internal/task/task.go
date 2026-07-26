@@ -44,10 +44,48 @@ const (
 // RunControls are the structured task launch settings: runner is stored
 // separately because it gates execution boundary visibility.
 type RunControls struct {
-	HostActivated  bool              `json:"host_activated,omitempty"`
-	SandboxNetwork string            `json:"sandbox_network,omitempty"`
-	Notes          string            `json:"notes,omitempty"`
-	Extras         map[string]string `json:"extras,omitempty"`
+	HostActivated            bool                     `json:"host_activated,omitempty"`
+	SandboxNetwork           string                   `json:"sandbox_network,omitempty"`
+	Notes                    string                   `json:"notes,omitempty"`
+	Extras                   map[string]string        `json:"extras,omitempty"`
+	BlackboardConclusionMode BlackboardConclusionMode `json:"blackboard_conclusion_mode"`
+}
+
+// BlackboardConclusionMode selects whether the operator alone prompts the
+// Runtime to persist conclusions or the Harness assists at work-Turn bounds.
+type BlackboardConclusionMode string
+
+const (
+	BlackboardConclusionModeInteractive BlackboardConclusionMode = "interactive"
+	BlackboardConclusionModeAssisted    BlackboardConclusionMode = "assisted"
+)
+
+func normalizeBlackboardConclusionMode(mode BlackboardConclusionMode) (BlackboardConclusionMode, error) {
+	switch mode {
+	case "", BlackboardConclusionModeInteractive:
+		return BlackboardConclusionModeInteractive, nil
+	case BlackboardConclusionModeAssisted:
+		return BlackboardConclusionModeAssisted, nil
+	default:
+		return "", ErrInvalidBlackboardConclusionMode
+	}
+}
+
+// BlackboardConclusionState is the durable semantic-debt projection for a
+// Task. Later orchestration slices add concluding and action-required states.
+type BlackboardConclusionState string
+
+const (
+	BlackboardConclusionStateClean   BlackboardConclusionState = "clean"
+	BlackboardConclusionStatePending BlackboardConclusionState = "pending"
+)
+
+// BlackboardConclusion is the compact Task read view. Receipt identity and
+// source Turn correlation appear only while semantic work is pending.
+type BlackboardConclusion struct {
+	Mode         BlackboardConclusionMode  `json:"mode"`
+	State        BlackboardConclusionState `json:"state"`
+	SourceTurnID string                    `json:"source_turn_id,omitempty"`
 }
 
 // ScopeSnapshot is an immutable copy of the project scope captured when a task
@@ -66,6 +104,7 @@ const (
 	EventKindConversation         EventKind = "conversation"
 	EventKindLifecycle            EventKind = "lifecycle"
 	EventKindBlackboardCheckpoint EventKind = "blackboard_checkpoint"
+	EventKindBlackboardConclusion EventKind = "blackboard_conclusion"
 )
 
 // EventPayload is the structured payload of a task event. Keep it compact.
@@ -81,6 +120,20 @@ type Event struct {
 	Kind           EventKind    `json:"kind"`
 	Payload        EventPayload `json:"payload"`
 	CreatedAt      time.Time    `json:"created_at"`
+}
+
+// BlackboardConclusionReceipt is the durable record that one completed work
+// Runtime Turn has semantic work awaiting a Harness-assisted conclusion.
+type BlackboardConclusionReceipt struct {
+	ID                      string                    `json:"id"`
+	TaskID                  string                    `json:"task_id"`
+	ContinuationID          string                    `json:"continuation_id"`
+	SourceSessionID         string                    `json:"source_session_id"`
+	SourceTurnID            string                    `json:"source_turn_id"`
+	State                   BlackboardConclusionState `json:"state"`
+	TerminalToolResultCount int                       `json:"terminal_tool_result_count"`
+	CreatedAt               time.Time                 `json:"created_at"`
+	UpdatedAt               time.Time                 `json:"updated_at"`
 }
 
 // RuntimeConfigVersion is a historical task-specific runtime configuration
@@ -210,11 +263,12 @@ type Task struct {
 	ScopeSnapshot    ScopeSnapshot   `json:"scope_snapshot"`
 	RuntimeControls  RuntimeControls `json:"runtime_controls"`
 	// RuntimeActivity is current process/session health, not Task status.
-	RuntimeActivity    RuntimeActivity   `json:"runtime_activity"`
-	ActiveContinuation *TaskContinuation `json:"active_continuation,omitempty"`
-	LatestContinuation *TaskContinuation `json:"latest_continuation,omitempty"`
-	CreatedAt          time.Time         `json:"created_at"`
-	UpdatedAt          time.Time         `json:"updated_at"`
+	RuntimeActivity      RuntimeActivity      `json:"runtime_activity"`
+	BlackboardConclusion BlackboardConclusion `json:"blackboard_conclusion"`
+	ActiveContinuation   *TaskContinuation    `json:"active_continuation,omitempty"`
+	LatestContinuation   *TaskContinuation    `json:"latest_continuation,omitempty"`
+	CreatedAt            time.Time            `json:"created_at"`
+	UpdatedAt            time.Time            `json:"updated_at"`
 }
 
 // CreateRequest is the input to Service.Create.
@@ -242,6 +296,10 @@ var ErrActiveTask = errors.New("active task cannot be deleted")
 
 // ErrUnsupportedRunner is returned when the runner is neither sandbox nor host.
 var ErrUnsupportedRunner = errors.New("runner must be sandbox or host")
+
+var ErrInvalidBlackboardConclusionMode = errors.New("Blackboard conclusion mode must be interactive or assisted")
+
+var ErrInvalidBlackboardConclusionReceipt = errors.New("invalid pending Blackboard conclusion receipt")
 
 // ErrContinuationStatusConflict prevents a late lifecycle observer from
 // overwriting a Continuation that already reached a different terminal state.
@@ -321,6 +379,11 @@ func (s *Service) Create(req CreateRequest) (Task, error) {
 	if req.Runner != RunnerSandbox && req.Runner != RunnerHost {
 		return Task{}, ErrUnsupportedRunner
 	}
+	mode, err := normalizeBlackboardConclusionMode(req.RunControls.BlackboardConclusionMode)
+	if err != nil {
+		return Task{}, err
+	}
+	req.RunControls.BlackboardConclusionMode = mode
 
 	// Capture the scope snapshot from the live project. If a project service is
 	// wired, read it; otherwise the snapshot is empty (caller is responsible for
@@ -339,16 +402,17 @@ func (s *Service) Create(req CreateRequest) (Task, error) {
 
 	now := time.Now().UTC()
 	created := Task{
-		ID:               newID(),
-		ProjectID:        req.ProjectID,
-		Goal:             req.Goal,
-		Status:           StatusPending,
-		Runner:           req.Runner,
-		RuntimeProfileID: req.RuntimeProfileID,
-		RunControls:      req.RunControls,
-		ScopeSnapshot:    snapshot,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		ID:                   newID(),
+		ProjectID:            req.ProjectID,
+		Goal:                 req.Goal,
+		Status:               StatusPending,
+		Runner:               req.Runner,
+		RuntimeProfileID:     req.RuntimeProfileID,
+		RunControls:          req.RunControls,
+		BlackboardConclusion: BlackboardConclusion{Mode: mode, State: BlackboardConclusionStateClean},
+		ScopeSnapshot:        snapshot,
+		CreatedAt:            now,
+		UpdatedAt:            now,
 	}
 
 	runControlsJSON, err := json.Marshal(created.RunControls)
@@ -466,6 +530,12 @@ func scanTask(row scanner) (Task, error) {
 	if err := json.Unmarshal([]byte(runControlsJSON), &found.RunControls); err != nil {
 		return Task{}, fmt.Errorf("decode run controls: %w", err)
 	}
+	mode, err := normalizeBlackboardConclusionMode(found.RunControls.BlackboardConclusionMode)
+	if err != nil {
+		return Task{}, err
+	}
+	found.RunControls.BlackboardConclusionMode = mode
+	found.BlackboardConclusion = BlackboardConclusion{Mode: mode, State: BlackboardConclusionStateClean}
 	if err := json.Unmarshal([]byte(scopeJSON), &found.ScopeSnapshot); err != nil {
 		return Task{}, fmt.Errorf("decode scope snapshot: %w", err)
 	}
@@ -587,6 +657,127 @@ func (s *Service) Events(taskID string) ([]Event, error) {
 		return nil, fmt.Errorf("list events: %w", err)
 	}
 	return events, nil
+}
+
+// RecordPendingBlackboardConclusion creates the one durable pending receipt
+// for a completed assisted work Runtime Turn. The receipt and its compact Task
+// Event are committed together; replay returns the original receipt.
+func (s *Service) RecordPendingBlackboardConclusion(taskID, continuationID, sourceSessionID, sourceTurnID string, terminalToolResultCount int) (BlackboardConclusionReceipt, bool, error) {
+	taskID = strings.TrimSpace(taskID)
+	continuationID = strings.TrimSpace(continuationID)
+	sourceSessionID = strings.TrimSpace(sourceSessionID)
+	sourceTurnID = strings.TrimSpace(sourceTurnID)
+	if taskID == "" || continuationID == "" || sourceSessionID == "" || sourceTurnID == "" || terminalToolResultCount <= 0 {
+		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
+	}
+	found, err := s.Get(taskID)
+	if err != nil {
+		return BlackboardConclusionReceipt{}, false, err
+	}
+	if found.RunControls.BlackboardConclusionMode != BlackboardConclusionModeAssisted {
+		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return BlackboardConclusionReceipt{}, false, fmt.Errorf("begin Blackboard conclusion receipt: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var ownerTaskID string
+	if err := tx.QueryRow(`SELECT task_id FROM task_continuations WHERE id=?`, continuationID).Scan(&ownerTaskID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return BlackboardConclusionReceipt{}, false, ErrNotFound
+		}
+		return BlackboardConclusionReceipt{}, false, fmt.Errorf("load Blackboard conclusion Continuation: %w", err)
+	}
+	if ownerTaskID != taskID {
+		return BlackboardConclusionReceipt{}, false, ErrNotFound
+	}
+
+	prior, err := scanBlackboardConclusionReceipt(tx.QueryRow(`
+		SELECT id,task_id,continuation_id,source_session_id,source_turn_id,state,terminal_tool_result_count,created_at,updated_at
+		FROM assisted_conclusion_receipts WHERE task_id=? AND continuation_id=? AND source_turn_id=?`, taskID, continuationID, sourceTurnID))
+	if err == nil {
+		return prior, false, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return BlackboardConclusionReceipt{}, false, fmt.Errorf("load pending Blackboard conclusion receipt: %w", err)
+	}
+
+	now := time.Now().UTC()
+	receipt := BlackboardConclusionReceipt{
+		ID: newID(), TaskID: taskID, ContinuationID: continuationID,
+		SourceSessionID: sourceSessionID, SourceTurnID: sourceTurnID,
+		State: BlackboardConclusionStatePending, TerminalToolResultCount: terminalToolResultCount,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO assisted_conclusion_receipts
+		(id,task_id,continuation_id,source_session_id,source_turn_id,state,terminal_tool_result_count,created_at,updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?)`, receipt.ID, receipt.TaskID, receipt.ContinuationID, receipt.SourceSessionID,
+		receipt.SourceTurnID, string(receipt.State), receipt.TerminalToolResultCount,
+		receipt.CreatedAt.Format(time.RFC3339Nano), receipt.UpdatedAt.Format(time.RFC3339Nano)); err != nil {
+		return BlackboardConclusionReceipt{}, false, fmt.Errorf("store pending Blackboard conclusion receipt: %w", err)
+	}
+
+	payload := EventPayload{
+		"phase": "pending_detected", "receipt_id": receipt.ID, "source_turn_id": receipt.SourceTurnID,
+		"terminal_tool_result_count": receipt.TerminalToolResultCount,
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return BlackboardConclusionReceipt{}, false, fmt.Errorf("encode Blackboard conclusion Event: %w", err)
+	}
+	var maxSeq sql.NullInt64
+	if err := tx.QueryRow(`SELECT MAX(seq) FROM task_events WHERE task_id=?`, taskID).Scan(&maxSeq); err != nil {
+		return BlackboardConclusionReceipt{}, false, fmt.Errorf("read Blackboard conclusion Event sequence: %w", err)
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO task_events (id,task_id,continuation_id,seq,kind,payload_json,created_at)
+		VALUES (?,?,?,?,?,?,?)`, newID(), taskID, continuationID, int(maxSeq.Int64)+1,
+		string(EventKindBlackboardConclusion), string(payloadJSON), now.Format(time.RFC3339Nano)); err != nil {
+		return BlackboardConclusionReceipt{}, false, fmt.Errorf("store Blackboard conclusion Event: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return BlackboardConclusionReceipt{}, false, fmt.Errorf("commit pending Blackboard conclusion receipt: %w", err)
+	}
+	return receipt, true, nil
+}
+
+// LatestBlackboardConclusion returns the newest durable receipt for a Task.
+func (s *Service) LatestBlackboardConclusion(taskID string) (*BlackboardConclusionReceipt, error) {
+	if _, err := s.Get(taskID); err != nil {
+		return nil, err
+	}
+	receipt, err := scanBlackboardConclusionReceipt(s.db.QueryRow(`
+		SELECT id,task_id,continuation_id,source_session_id,source_turn_id,state,terminal_tool_result_count,created_at,updated_at
+		FROM assisted_conclusion_receipts WHERE task_id=? ORDER BY created_at DESC,id DESC LIMIT 1`, taskID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load latest Blackboard conclusion receipt: %w", err)
+	}
+	return &receipt, nil
+}
+
+func scanBlackboardConclusionReceipt(row scanner) (BlackboardConclusionReceipt, error) {
+	var receipt BlackboardConclusionReceipt
+	var state, createdAt, updatedAt string
+	if err := row.Scan(&receipt.ID, &receipt.TaskID, &receipt.ContinuationID, &receipt.SourceSessionID,
+		&receipt.SourceTurnID, &state, &receipt.TerminalToolResultCount, &createdAt, &updatedAt); err != nil {
+		return BlackboardConclusionReceipt{}, err
+	}
+	receipt.State = BlackboardConclusionState(state)
+	var err error
+	if receipt.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt); err != nil {
+		return BlackboardConclusionReceipt{}, fmt.Errorf("parse Blackboard conclusion created_at: %w", err)
+	}
+	if receipt.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt); err != nil {
+		return BlackboardConclusionReceipt{}, fmt.Errorf("parse Blackboard conclusion updated_at: %w", err)
+	}
+	return receipt, nil
 }
 
 // HarnessSteeringDirective is one unconsumed task-local directive selected in

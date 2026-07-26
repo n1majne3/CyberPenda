@@ -10,6 +10,7 @@ import {
   type RuntimePlugin,
   type RuntimeProfile,
   type Skill,
+  type BlackboardConclusionMode,
 } from "@/lib/api";
 import { Button, Card, Label, Textarea, Select } from "@/components/ui";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
@@ -57,6 +58,7 @@ export function TaskLaunchPage() {
   const [goal, setGoal] = useState("");
   const [hostActivated, setHostActivated] = useState(false);
   const [sandboxNetwork, setSandboxNetwork] = useState("");
+  const [blackboardConclusionMode, setBlackboardConclusionMode] = useState<BlackboardConclusionMode>("interactive");
   const [launching, setLaunching] = useState(false);
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [skillsPreview, setSkillsPreview] = useState<Skill[] | null>(null);
@@ -93,6 +95,7 @@ export function TaskLaunchPage() {
     [compatibleProviders, form.modelProviderId],
   );
   const modelOptions = useMemo(() => modelsForProvider(selectedProvider), [selectedProvider]);
+  const assistedConclusionSupported = selectedPlugin?.capabilities.assisted_conclusion === true;
 
   useEffect(() => {
     (async () => {
@@ -235,7 +238,7 @@ export function TaskLaunchPage() {
 
       const launchOverride = launchModelOverridePayload(presetId, form);
       const reasoningOverride = launchReasoningEffortPayload(form);
-      const runControls = launchRunControls(hostActivated, form.runner, sandboxNetwork);
+      const runControls = launchRunControls(hostActivated, form.runner, sandboxNetwork, blackboardConclusionMode);
       const checked = await apiPost<PreflightResult>(`/api/projects/${projectId}/preflight`, {
         runtime_profile_id: profileId,
         runner: form.runner,
@@ -266,10 +269,15 @@ export function TaskLaunchPage() {
 
   const hostRunner = form.runner === "host";
   const hostBlocked = hostRunner && !hostActivated;
+  const assistedConclusionUnsupported = blackboardConclusionMode === "assisted" && !assistedConclusionSupported;
   const launchReady =
-    canLaunch(goal, form, { presetId }) && (presetMode || compatibleProviders.length > 0);
+    canLaunch(goal, form, { presetId }) &&
+    (presetMode || compatibleProviders.length > 0) &&
+    !assistedConclusionUnsupported;
   const launchDisabledReason = launching
     ? null
+    : assistedConclusionUnsupported
+      ? "Assisted Blackboard conclusions are unavailable for the selected Runtime."
     : launchUnavailableReason({
       goal,
       form,
@@ -410,6 +418,28 @@ export function TaskLaunchPage() {
                 </option>
               ))}
             </Select>
+          </div>
+          <div>
+            <Label htmlFor="launch-blackboard-conclusions">Blackboard conclusions</Label>
+            <Select
+              id="launch-blackboard-conclusions"
+              name="blackboard_conclusion_mode"
+              value={blackboardConclusionMode}
+              onChange={(event) => {
+                setBlackboardConclusionMode(event.target.value as BlackboardConclusionMode);
+                setPreflight(null);
+              }}
+            >
+              <option value="interactive">Interactive</option>
+              <option value="assisted" disabled={!assistedConclusionSupported}>Assisted</option>
+            </Select>
+			<p className="mt-1 text-xs text-muted-foreground">
+			  {blackboardConclusionMode === "assisted"
+				? "Surfaces a pending Blackboard conclusion after tool-producing work. This release does not add a model Turn or write Blackboard records automatically."
+                : assistedConclusionSupported
+                  ? "The operator decides when Runtime work is written to the Blackboard."
+                  : "Assisted mode requires a Runtime with assisted conclusion support; interactive launch remains available."}
+            </p>
           </div>
         </div>
 
@@ -600,10 +630,12 @@ function launchRunControls(
   hostActivated: boolean,
   runner: string,
   sandboxNetwork: string,
+  blackboardConclusionMode: BlackboardConclusionMode,
 ) {
   return {
     ...(runner === "host" ? { host_activated: hostActivated } : {}),
     ...(runner === "sandbox" && sandboxNetwork ? { sandbox_network: sandboxNetwork } : {}),
+    blackboard_conclusion_mode: blackboardConclusionMode,
   };
 }
 

@@ -40,6 +40,15 @@ func Build(events []task.Event) []Item {
 		turns = turns[:0]
 	}
 	for _, event := range events {
+		if event.Kind == task.EventKindBlackboardConclusion {
+			flushTurns()
+			if item, ok := blackboardConclusionItem(event); ok {
+				item.Seq = nextSeq
+				nextSeq++
+				items = append(items, item)
+			}
+			continue
+		}
 		if event.Kind == task.EventKindLifecycle {
 			flushTurns()
 			if item, ok := lifecycleItem(event); ok {
@@ -73,6 +82,17 @@ func Build(events []task.Event) []Item {
 	}
 	flushTurns()
 	return items
+}
+
+func blackboardConclusionItem(event task.Event) (Item, bool) {
+	if stringValue(event.Payload, "phase") != "pending_detected" {
+		return Item{}, false
+	}
+	content := "Blackboard conclusion pending"
+	if sourceTurnID := strings.TrimSpace(stringValue(event.Payload, "source_turn_id")); sourceTurnID != "" {
+		content += " for work Turn " + sourceTurnID
+	}
+	return Item{Type: "harness", Content: content, CreatedAt: event.CreatedAt}, true
 }
 
 func turnsToItems(turns []runtimeoutput.Turn) []Item {

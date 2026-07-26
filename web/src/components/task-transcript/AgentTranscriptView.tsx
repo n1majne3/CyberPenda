@@ -420,6 +420,7 @@ function TranscriptEventRow({
     (item.type === "tool_result" && item.output && item.output.length > 0) ||
     (item.type === "thinking" && item.content && item.content.length > 0) ||
     (item.type === "text" && item.content && item.content.length > 0) ||
+    (item.type === "harness" && item.content && item.content.length > 0) ||
     (item.type === "error" && item.content && item.content.length > 0);
 
   return (
@@ -511,6 +512,7 @@ function EventDetailContent({ item }: { item: TimelineItem }) {
     }
     case "thinking":
     case "text":
+    case "harness":
       return (
         <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words p-3 text-[11px] text-muted-foreground">
           {item.content ?? ""}

@@ -14,6 +14,7 @@ export function getEventColor(item: TimelineItem): EventColor {
       return "error";
     case "lifecycle":
     case "steering":
+    case "harness":
       return "result";
     default:
       return "result";
@@ -44,6 +45,8 @@ export function getEventLabel(item: TimelineItem): string {
       return "Lifecycle";
     case "steering":
       return "Steering";
+    case "harness":
+      return "Harness";
     default:
       return "Event";
   }
@@ -83,6 +86,7 @@ export function getEventSummary(item: TimelineItem): string {
       return item.content ?? "";
     case "lifecycle":
     case "steering":
+    case "harness":
       return item.content ?? "";
     default:
       return "";

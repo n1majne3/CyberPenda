@@ -3,6 +3,7 @@ package runtime_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -21,6 +22,66 @@ func interactiveCapabilities() runtimeplugin.Capabilities {
 		InTurnSteer:          true,
 		PermissionResponse:   true,
 		ResumeSession:        true,
+	}
+}
+
+func TestFakeProviderSessionEmitsBoundedObservations(t *testing.T) {
+	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "session-1", ActiveTurnID: "turn-1",
+	})
+	var observed []runtime.ProviderSessionObservation
+	session.SetObservationSink(func(observation runtime.ProviderSessionObservation) {
+		observed = append(observed, observation)
+	})
+
+	for _, observation := range []runtime.ProviderSessionObservation{
+		{Kind: runtime.ProviderSessionObservationToolUse, RequestID: "request-1", ToolCallID: "call-1", ToolName: "curl"},
+		{Kind: runtime.ProviderSessionObservationToolResult, RequestID: "request-1", ToolCallID: "call-1", ToolName: "curl", Status: "succeeded"},
+		{Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: "request-1", Status: "completed"},
+	} {
+		if err := session.EmitObservation(observation); err != nil {
+			t.Fatalf("emit observation: %v", err)
+		}
+	}
+
+	if len(observed) != 3 {
+		t.Fatalf("observations = %#v", observed)
+	}
+	for _, observation := range observed {
+		if observation.SessionID != "session-1" || observation.ProviderTurnID != "turn-1" {
+			t.Fatalf("observation lost bounded correlation: %#v", observation)
+		}
+	}
+}
+
+func TestFakeProviderSessionRejectsMalformedObservations(t *testing.T) {
+	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{SessionID: "session-1", ActiveTurnID: "turn-1"})
+	for _, observation := range []runtime.ProviderSessionObservation{
+		{Kind: "raw_output"},
+		{Kind: runtime.ProviderSessionObservationToolUse, ToolCallID: "call-1"},
+		{Kind: runtime.ProviderSessionObservationToolResult, ToolCallID: "call-1", ToolName: "curl"},
+		{Kind: runtime.ProviderSessionObservationTurnCompleted, Status: "completed", ToolName: "curl"},
+		{Kind: runtime.ProviderSessionObservationToolUse, ToolCallID: "call-1", ToolName: strings.Repeat("x", 257)},
+	} {
+		if err := session.EmitObservation(observation); !errors.Is(err, runtime.ErrInvalidProviderSessionObservation) {
+			t.Fatalf("observation %#v error = %v", observation, err)
+		}
+	}
+}
+
+func TestFakeProviderSessionDefaultsRequestTurnKindToWork(t *testing.T) {
+	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "session-1", Capabilities: runtimeplugin.Capabilities{SendTurn: true},
+	})
+	if _, err := session.SendTurn(context.Background(), runtime.ProviderSessionRequest{RequestID: "request-1", Message: "inspect"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	requests := session.LastRequests()
+	if len(requests) != 1 || requests[0].TurnKind != runtime.RuntimeTurnKindWork {
+		t.Fatalf("requests = %#v", requests)
+	}
+	if kind, ok := session.ResolveProviderSessionTurnKind("request-1", ""); !ok || kind != runtime.RuntimeTurnKindWork {
+		t.Fatalf("Harness Turn lineage = %q, resolved=%v", kind, ok)
 	}
 }
 

@@ -34,6 +34,7 @@ func BuiltinPlugins() []Plugin {
 				InTurnSteer:          true,
 				PermissionResponse:   true,
 				ResumeSession:        true,
+				AssistedConclusion:   true,
 			},
 			ModelProvider:    ModelProvider{Requirement: "none"},
 			ProfileSchema:    ProfileSchema{Fields: commonFields},

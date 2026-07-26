@@ -114,6 +114,7 @@ type Server struct {
 	closing                bool
 	providerSessions       *providerSessionRegistry
 	providerSessionFactory ProviderSessionFactory
+	blackboardConclusions  *blackboardConclusionTracker
 	runtimeStopTimeout     time.Duration
 }
 
@@ -222,6 +223,7 @@ func NewServer(config Config) (*Server, error) {
 		providerControlCancel:  providerControlCancel,
 		providerSessions:       newProviderSessionRegistry(),
 		providerSessionFactory: config.ProviderSessionFactory,
+		blackboardConclusions:  newBlackboardConclusionTracker(),
 		runtimeStopTimeout:     10 * time.Second,
 	}
 	if server.logger == nil {

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -9,6 +10,8 @@ import (
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
 )
+
+var errAssistedConclusionUnsupported = errors.New("assisted_conclusion_unsupported")
 
 // ProviderSessionLaunchRequest is the launch-assembly seam for a persistent
 // provider session. The request is deliberately Task/Continuation scoped;
@@ -38,6 +41,13 @@ type ProviderSessionBinding struct {
 // private transport before returning.
 type ProviderSessionFactory interface {
 	Open(context.Context, ProviderSessionLaunchRequest) (ProviderSessionBinding, error)
+}
+
+// ProviderSessionAssistedConclusionReporter is the additive capability seam
+// used before Task creation. Persistent SendTurn alone is insufficient: the
+// factory must also promise bounded Tool/Turn observations for this provider.
+type ProviderSessionAssistedConclusionReporter interface {
+	SupportsAssistedConclusion(runtimeprofile.Provider) bool
 }
 
 type ProviderSessionFactoryFunc func(context.Context, ProviderSessionLaunchRequest) (ProviderSessionBinding, error)
@@ -88,4 +98,26 @@ func validateProviderSessionBinding(binding ProviderSessionBinding) error {
 		return fmt.Errorf("provider session factory returned no session adapter")
 	}
 	return nil
+}
+
+func validateAssistedConclusionBinding(binding ProviderSessionBinding) error {
+	if !binding.Session.Capabilities().AssistedConclusion {
+		return errAssistedConclusionUnsupported
+	}
+	if _, ok := binding.Session.(runtime.ProviderSessionObservationSink); !ok {
+		return errAssistedConclusionUnsupported
+	}
+	if _, ok := binding.Session.(runtime.ProviderSessionTurnLineageResolver); !ok {
+		return errAssistedConclusionUnsupported
+	}
+	return nil
+}
+
+func (server *Server) supportsAssistedConclusion(provider runtimeprofile.Provider) bool {
+	plugin, ok := server.runtimePlugins.Get(string(provider))
+	if !ok || !plugin.Capabilities.PersistentSession || !plugin.Capabilities.SendTurn {
+		return false
+	}
+	reporter, ok := server.providerSessionFactory.(ProviderSessionAssistedConclusionReporter)
+	return ok && reporter.SupportsAssistedConclusion(provider)
 }
