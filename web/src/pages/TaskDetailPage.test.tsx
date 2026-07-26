@@ -230,6 +230,59 @@ describe("TaskDetailPage", () => {
 	expect(badge).toHaveAttribute("title", expect.stringContaining("revision 9"));
   });
 
+  it("surfaces action-required Blackboard recovery without blocking manual conversation", async () => {
+    const user = userEvent.setup();
+    const { fetchMock } = stubTaskDetailApi({
+      status: "running",
+      blackboard_conclusion: {
+        mode: "assisted",
+        state: "action_required",
+        source_turn_id: "turn-7",
+        error_code: "semantic_conclusion_invalid_result",
+        retry_available: true,
+      },
+    });
+
+    renderPage();
+
+    expect(await screen.findByTestId("blackboard-conclusion-state")).toHaveTextContent(
+      "Blackboard · assisted · action required",
+    );
+    const recovery = screen.getByRole("alert", { name: "Blackboard conclusion requires attention" });
+    expect(recovery).toHaveTextContent("The runtime returned an invalid Blackboard conclusion.");
+    expect(recovery).toHaveTextContent("semantic_conclusion_invalid_result");
+    expect(screen.getByRole("textbox", { name: "Task message" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "Retry Blackboard conclusion" }));
+
+    await waitFor(() => {
+      const retryCall = fetchMock.mock.calls.find(([input]) =>
+        String(input).endsWith("/api/projects/project-1/tasks/task-1/blackboard-conclusion/retry"),
+      );
+      expect(retryCall).toBeDefined();
+      const headers = new Headers((retryCall?.[1] as RequestInit | undefined)?.headers);
+      expect(headers.get("Idempotency-Key")).toMatch(/^blackboard-retry-/);
+    });
+  });
+
+  it("maps forbidden Conclude tool use to bounded operator copy", async () => {
+    stubTaskDetailApi({
+      status: "running",
+      blackboard_conclusion: {
+        mode: "assisted",
+        state: "action_required",
+        error_code: "conclude_tool_use_forbidden",
+      },
+    });
+
+    renderPage();
+
+    expect(await screen.findByRole("alert", { name: "Blackboard conclusion requires attention" })).toHaveTextContent(
+      "The runtime attempted to use a tool while concluding Blackboard state.",
+    );
+    expect(screen.getByRole("button", { name: "Retry Blackboard conclusion" })).toBeDisabled();
+  });
+
   it("deep-links and updates the task view tab", async () => {
     const searches: string[] = [];
     const user = userEvent.setup();

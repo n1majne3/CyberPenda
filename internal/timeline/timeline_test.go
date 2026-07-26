@@ -128,6 +128,9 @@ func TestBuildProjectsAssistedConclusionPhasesWithoutStructuredResult(t *testing
 		{Seq: 3, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "awaiting_result", "control_turn_id": "control-1"}},
 		{Seq: 4, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "result_validated", "result_hash": "secret-hash"}},
 		{Seq: 5, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "applied", "applied_revision": 4}},
+		{Seq: 6, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "repair_requested", "request_id": "repair-secret", "error_code": "semantic_conclusion_invalid_result"}},
+		{Seq: 7, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "action_required", "request_id": "failed-secret", "error_code": "conclude_tool_use_forbidden"}},
+		{Seq: 8, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "retry_requested", "request_id": "retry-secret"}},
 	}
 
 	got := timeline.Build(events)
@@ -136,6 +139,9 @@ func TestBuildProjectsAssistedConclusionPhasesWithoutStructuredResult(t *testing
 	requireItem(t, got, 2, "harness", "", "Blackboard Conclude Turn started")
 	requireItem(t, got, 3, "harness", "", "Blackboard conclusion result validated")
 	requireItem(t, got, 4, "harness", "", "Blackboard conclusion applied at revision 4")
+	requireItem(t, got, 5, "harness", "", "Blackboard conclusion repair requested")
+	requireItem(t, got, 6, "harness", "", "Blackboard conclusion requires action (conclude_tool_use_forbidden)")
+	requireItem(t, got, 7, "harness", "", "Blackboard conclusion retry requested")
 	for _, item := range got {
 		if strings.Contains(item.Content, "secret") || strings.Contains(item.Content, "control-1") ||
 			strings.Contains(item.Content, "47") || strings.Contains(item.Content, "23") {

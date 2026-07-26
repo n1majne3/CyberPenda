@@ -83,8 +83,12 @@ function dashboardAuthToken(): string {
 export function apiGet<T>(path: string, init?: RequestInit) {
   return request<T>(path, init);
 }
-export function apiPost<T>(path: string, body?: unknown) {
-  return request<T>(path, { method: "POST", body: body ? JSON.stringify(body) : undefined });
+export function apiPost<T>(path: string, body?: unknown, init?: RequestInit) {
+  return request<T>(path, {
+    ...init,
+    method: "POST",
+    body: body ? JSON.stringify(body) : undefined,
+  });
 }
 export function apiPut<T>(path: string, body?: unknown) {
   return request<T>(path, { method: "PUT", body: body ? JSON.stringify(body) : undefined });
@@ -237,13 +241,16 @@ export interface RuntimePluginCapabilities {
 }
 
 export type BlackboardConclusionMode = "interactive" | "assisted";
-export type BlackboardConclusionState = "clean" | "pending" | "concluding";
+export type BlackboardConclusionState = "clean" | "pending" | "concluding" | "action_required";
 
 export interface BlackboardConclusionView {
   mode: BlackboardConclusionMode;
   state: BlackboardConclusionState;
   source_turn_id?: string;
   applied_revision?: number;
+  error_code?: string;
+  retry_available?: boolean;
+  next_eligible_at?: string;
 }
 
 export interface RuntimePluginProfileField {

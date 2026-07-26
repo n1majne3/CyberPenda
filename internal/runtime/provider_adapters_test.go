@@ -844,6 +844,7 @@ func TestProviderSessionAdapterFreezesCompleteTurnLineage(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := ProviderSessionTurnLineage{
+		RequestID: request.RequestID, ProviderTurnID: result.ProviderTurnID,
 		Kind:            RuntimeTurnKindControl,
 		ModelProviderID: "provider-1", Model: "gpt-test", RequestedReasoningEffort: "high",
 		EffectiveReasoningEffort: "medium",
@@ -853,6 +854,7 @@ func TestProviderSessionAdapterFreezesCompleteTurnLineage(t *testing.T) {
 	}{
 		{requestID: request.RequestID},
 		{providerTurnID: result.ProviderTurnID},
+		{requestID: request.RequestID, providerTurnID: "provider-spoofed-turn"},
 	} {
 		got, ok := session.ResolveProviderSessionTurnLineage(correlation.requestID, correlation.providerTurnID)
 		if !ok || got != want {

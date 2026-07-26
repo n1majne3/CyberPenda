@@ -3,7 +3,9 @@ package store_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -154,7 +156,7 @@ func TestMigration38PreservesValidatedAssistedConclusionReceipt(t *testing.T) {
 			('receipt-v37','task-1','continuation-1','session-1','turn-1','validated',4,
 			 'dispatch-1','control-1',7,'provider-1','model-1','high',X'7B7D',?,
 			 'apply-1',NULL,'2026-07-27T00:00:00Z','2026-07-27T00:01:00Z');
-		DELETE FROM schema_migrations WHERE version=38;
+		DELETE FROM schema_migrations WHERE version>=38;
 	`, hash); err != nil {
 		t.Fatal(err)
 	}
@@ -190,6 +192,90 @@ func TestMigration38PreservesValidatedAssistedConclusionReceipt(t *testing.T) {
 	}
 	if preservedChecksum != migration37Checksum {
 		t.Fatalf("migration 37 checksum changed: before %q after %q", migration37Checksum, preservedChecksum)
+	}
+}
+
+func TestMigration39AddsDurableAssistedConclusionRecoveryState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pentest.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var automaticTurns, repairCount, retryCount int
+	var nextEligible, errorCode sql.NullString
+	if err := db.QueryRow(`SELECT automatic_turn_count,repair_count,explicit_retry_count,next_eligible_at,error_code
+		FROM assisted_conclusion_receipts LIMIT 1`).Scan(&automaticTurns, &repairCount, &retryCount, &nextEligible, &errorCode); err != sql.ErrNoRows {
+		t.Fatalf("migration 39 columns unavailable: %v", err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=39`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("migration 39 count = %d, err=%v", count, err)
+	}
+	_ = db.Close()
+	reopened, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+}
+
+func TestMigration40AddsAssistedConclusionRetryIdempotencyHistory(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var migrationCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=40`).Scan(&migrationCount); err != nil || migrationCount != 1 {
+		t.Fatalf("migration 40 count = %d, err=%v", migrationCount, err)
+	}
+	if _, err := db.Exec(`INSERT INTO assisted_conclusion_retry_keys
+		(task_id,receipt_id,idempotency_key,dispatch_request_id,created_at) VALUES ('task-1','receipt-1','key-1','request-1','2026-07-27T00:00:00Z')`); err != nil {
+		t.Fatalf("insert retry history: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO assisted_conclusion_retry_keys
+		(task_id,receipt_id,idempotency_key,dispatch_request_id,created_at) VALUES ('task-1','receipt-1','key-1','request-2','2026-07-27T00:01:00Z')`); err == nil {
+		t.Fatal("duplicate per-receipt retry key was accepted")
+	}
+}
+
+func TestMigration41ScopesAssistedConclusionRetryKeysToTask(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var migrationCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=41`).Scan(&migrationCount); err != nil || migrationCount != 1 {
+		t.Fatalf("migration 41 count = %d, err=%v", migrationCount, err)
+	}
+	if _, err := db.Exec(`INSERT INTO assisted_conclusion_retry_keys
+		(task_id,receipt_id,idempotency_key,dispatch_request_id,created_at) VALUES ('task-1','receipt-1','key-1','request-1','2026-07-27T00:00:00Z')`); err != nil {
+		t.Fatalf("insert task retry history: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO assisted_conclusion_retry_keys
+		(task_id,receipt_id,idempotency_key,dispatch_request_id,created_at) VALUES ('task-1','receipt-2','key-1','request-2','2026-07-27T00:01:00Z')`); err == nil {
+		t.Fatal("duplicate task-scoped retry key was accepted on a newer receipt")
+	}
+}
+
+func TestMigration42ChecksumCoversCompleteDeterministicMutation(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var checksum string
+	if err := db.QueryRow(`SELECT checksum FROM schema_migrations WHERE version=42`).Scan(&checksum); err != nil {
+		t.Fatal(err)
+	}
+	oldCommentOnly := "\n-- action_required may precede provider acceptance for a claimed repair/retry.\n"
+	sum := sha256.Sum256([]byte(oldCommentOnly))
+	if checksum == hex.EncodeToString(sum[:]) {
+		t.Fatal("migration 42 checksum still covers only its descriptive comment")
+	}
+	if len(checksum) != 64 {
+		t.Fatalf("migration 42 checksum = %q", checksum)
 	}
 }
 

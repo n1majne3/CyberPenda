@@ -245,6 +245,7 @@ func NewServer(config Config) (*Server, error) {
 	}
 	server.routes()
 	server.reconcileInterruptedTasks()
+	server.reconcileStrandedBlackboardConclusionRecoveries()
 
 	return server, nil
 }
@@ -635,6 +636,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/timeline", server.handleTaskTimeline)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/stop", server.handleStopTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/finish", server.handleFinishTask)
+	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/blackboard-conclusion/retry", server.handleRetryBlackboardConclusion)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/resume", server.handleResumeTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/steer/queue", server.handleQueueSteerTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/steer", server.handleSteerTask)

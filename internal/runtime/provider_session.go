@@ -201,13 +201,14 @@ type FakeProviderSession struct {
 	// healthUnknown forces indeterminate health for activity tests.
 	healthUnknown bool
 	// lastRequests records each operation request for acceptance tests.
-	lastRequests      []ProviderSessionRequest
-	observationSink   ProviderSessionObserve
-	attemptResultSink ProviderSessionAttemptResultSink
-	requestTurnKind   map[string]RuntimeTurnKind
-	providerTurnKind  map[string]RuntimeTurnKind
-	requestLineage    map[string]ProviderSessionTurnLineage
-	providerLineage   map[string]ProviderSessionTurnLineage
+	lastRequests                       []ProviderSessionRequest
+	observationSink                    ProviderSessionObserve
+	attemptResultSink                  ProviderSessionAttemptResultSink
+	attemptResultValidationFailureSink ProviderSessionAttemptResultValidationFailureSink
+	requestTurnKind                    map[string]RuntimeTurnKind
+	providerTurnKind                   map[string]RuntimeTurnKind
+	requestLineage                     map[string]ProviderSessionTurnLineage
+	providerLineage                    map[string]ProviderSessionTurnLineage
 }
 
 // NewFakeProviderSession returns an idle or active deterministic session.
@@ -254,30 +255,34 @@ func (s *FakeProviderSession) SetAttemptResultSink(sink ProviderSessionAttemptRe
 	s.mu.Unlock()
 }
 
+func (s *FakeProviderSession) SetAttemptResultValidationFailureSink(sink ProviderSessionAttemptResultValidationFailureSink) {
+	s.mu.Lock()
+	s.attemptResultValidationFailureSink = sink
+	s.mu.Unlock()
+}
+
 // EmitAttemptResult strictly decodes provider output before exposing a typed,
 // canonical semantic result to the Harness. Raw bytes are never forwarded.
 func (s *FakeProviderSession) EmitAttemptResult(raw []byte) error {
 	validated, err := blackboardconclusion.Decode(raw)
 	if err != nil {
+		s.mu.Lock()
+		requestID, providerTurnID, correlationErr := s.attemptResultCorrelationLocked()
+		sink := s.attemptResultValidationFailureSink
+		s.mu.Unlock()
+		if correlationErr == nil && sink != nil {
+			sink(ProviderSessionAttemptResultValidationFailure{
+				RequestID: requestID, SessionID: s.id, ProviderTurnID: providerTurnID,
+				ValidationErrorCode: ProviderSessionAttemptResultInvalid,
+			})
+		}
 		return err
 	}
 	s.mu.Lock()
-	if s.closed {
+	requestID, providerTurnID, err := s.attemptResultCorrelationLocked()
+	if err != nil {
 		s.mu.Unlock()
-		return ErrProviderSessionClosed
-	}
-	if len(s.lastRequests) == 0 {
-		s.mu.Unlock()
-		return ErrInvalidProviderSessionRequest
-	}
-	requestID := s.lastRequests[len(s.lastRequests)-1].RequestID
-	providerTurnID := s.activeTurnID
-	if call := s.calls[requestID]; call != nil && strings.TrimSpace(call.result.ProviderTurnID) != "" {
-		providerTurnID = call.result.ProviderTurnID
-	}
-	if strings.TrimSpace(providerTurnID) == "" {
-		s.mu.Unlock()
-		return ErrInvalidProviderSessionRequest
+		return err
 	}
 	result := ProviderSessionAttemptResult{
 		RequestID:      requestID,
@@ -291,6 +296,24 @@ func (s *FakeProviderSession) EmitAttemptResult(raw []byte) error {
 		sink(result)
 	}
 	return nil
+}
+
+func (s *FakeProviderSession) attemptResultCorrelationLocked() (string, string, error) {
+	if s.closed {
+		return "", "", ErrProviderSessionClosed
+	}
+	if len(s.lastRequests) == 0 {
+		return "", "", ErrInvalidProviderSessionRequest
+	}
+	requestID := s.lastRequests[len(s.lastRequests)-1].RequestID
+	providerTurnID := s.activeTurnID
+	if call := s.calls[requestID]; call != nil && strings.TrimSpace(call.result.ProviderTurnID) != "" {
+		providerTurnID = call.result.ProviderTurnID
+	}
+	if strings.TrimSpace(providerTurnID) == "" {
+		return "", "", ErrInvalidProviderSessionRequest
+	}
+	return requestID, providerTurnID, nil
 }
 
 func (s *FakeProviderSession) ResolveProviderSessionTurnKind(requestID, providerTurnID string) (RuntimeTurnKind, bool) {
@@ -504,7 +527,7 @@ func (s *FakeProviderSession) operate(ctx context.Context, mode ProviderSessionM
 	}
 	s.requestTurnKind[request.RequestID] = request.TurnKind
 	s.providerTurnKind[turnID] = request.TurnKind
-	lineage := providerSessionTurnLineage(request)
+	lineage := providerSessionTurnLineage(request, turnID)
 	s.requestLineage[request.RequestID] = lineage
 	s.providerLineage[turnID] = lineage
 	var ack chan struct{}

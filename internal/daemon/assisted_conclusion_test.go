@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"pentest/internal/blackboardconclusion"
 	"pentest/internal/blackboardv2"
 	"pentest/internal/modelprovider"
 	"pentest/internal/project"
@@ -191,7 +193,7 @@ func TestAssistedWorkTurnDispatchesControlTurnAndAppliesClosedResult(t *testing.
 		"tested_targets":[{"key":"objective:juice-shop-search-sqli","create_objective":{"objective":"Determine whether search is vulnerable to SQL injection."}}],
 		"produced_targets":[]
 	}`
-	if err := session.EmitAttemptResult([]byte(result)); err != nil {
+	if err := emitAttemptResultAndComplete(t, session, []byte(result)); err != nil {
 		t.Fatal(err)
 	}
 	found = waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateClean)
@@ -298,6 +300,57 @@ func TestAssistedConclusionQueuesResultEmittedBeforeSendTurnReturns(t *testing.T
 	}
 }
 
+func TestAssistedConclusionQueuesInvalidResultEmittedBeforeSendTurnReturns(t *testing.T) {
+	server, projectID, profileID, session := newAssistedConclusionFixtureAtWithDecorator(
+		t, t.TempDir(), true, true,
+		func(fake *runtime.FakeProviderSession) runtime.ProviderSession {
+			return &eagerAttemptResultSession{
+				FakeProviderSession: fake,
+				raw:                 []byte(`{"schema":"runtime-attempt-result/v1","base_revision":0,"unexpected":true}`),
+				ignoreResultError:   true,
+			}
+		},
+	)
+	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
+	for _, observation := range []runtime.ProviderSessionObservation{
+		{Kind: runtime.ProviderSessionObservationToolResult, ProviderTurnID: "work-turn-1", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded"},
+		{Kind: runtime.ProviderSessionObservationTurnCompleted, ProviderTurnID: "work-turn-1", Status: "completed"},
+	} {
+		if err := session.EmitObservation(observation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForAssistedProviderRequests(t, session, 3)
+	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
+	if found.BlackboardConclusion.ErrorCode != task.BlackboardConclusionErrorRepairExhausted {
+		t.Fatalf("eager invalid result state = %#v", found.BlackboardConclusion)
+	}
+}
+
+func TestAssistedConclusionQueuesForbiddenToolUseEmittedBeforeSendTurnReturns(t *testing.T) {
+	server, projectID, profileID, session := newAssistedConclusionFixtureAtWithDecorator(
+		t, t.TempDir(), true, true,
+		func(fake *runtime.FakeProviderSession) runtime.ProviderSession {
+			return &eagerControlToolSession{FakeProviderSession: fake}
+		},
+	)
+	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
+	for _, observation := range []runtime.ProviderSessionObservation{
+		{Kind: runtime.ProviderSessionObservationToolResult, ProviderTurnID: "work-turn-1", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded"},
+		{Kind: runtime.ProviderSessionObservationTurnCompleted, ProviderTurnID: "work-turn-1", Status: "completed"},
+	} {
+		if err := session.EmitObservation(observation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
+	if found.BlackboardConclusion.ErrorCode != task.BlackboardConclusionErrorToolUseForbidden || len(session.LastRequests()) != 2 {
+		t.Fatalf("eager forbidden tool result = %#v requests=%d", found.BlackboardConclusion, len(session.LastRequests()))
+	}
+}
+
 func TestAssistedConclusionWaitsForBusyTaskControlWithoutLosingDispatch(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
 	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
@@ -341,7 +394,7 @@ func TestAssistedConclusionWaitsForBusyTaskControlWithoutLosingResult(t *testing
 		"tested_targets":[{"key":"objective:queued-result","create_objective":{"objective":"Exercise queued result delivery."}}],
 		"produced_targets":[]
 	}`)
-	if err := session.EmitAttemptResult(result); err != nil {
+	if err := emitAttemptResultAndComplete(t, session, result); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(20 * time.Millisecond)
@@ -382,13 +435,52 @@ func getConclusionTask(t *testing.T, server *Server, projectID, taskID string) t
 
 type eagerAttemptResultSession struct {
 	*runtime.FakeProviderSession
-	raw []byte
+	raw               []byte
+	ignoreResultError bool
 }
 
 func (session *eagerAttemptResultSession) SendTurn(ctx context.Context, request runtime.ProviderSessionRequest, emit runtime.ProviderSessionEmit) (runtime.ProviderSessionResult, error) {
 	result, err := session.FakeProviderSession.SendTurn(ctx, request, emit)
 	if err == nil && request.TurnKind == runtime.RuntimeTurnKindControl {
-		err = session.EmitAttemptResult(session.raw)
+		resultErr := session.EmitAttemptResult(session.raw)
+		if completeErr := session.EmitObservation(runtime.ProviderSessionObservation{
+			Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: request.RequestID,
+			ProviderTurnID: result.ProviderTurnID, Status: "completed",
+		}); completeErr != nil {
+			return result, completeErr
+		}
+		if !session.ignoreResultError {
+			err = resultErr
+		}
+	}
+	return result, err
+}
+
+type eagerControlToolSession struct {
+	*runtime.FakeProviderSession
+}
+
+type failingConclusionDispatchSession struct {
+	*runtime.FakeProviderSession
+	requestKind string
+}
+
+func (session *failingConclusionDispatchSession) SendTurn(ctx context.Context, request runtime.ProviderSessionRequest, emit runtime.ProviderSessionEmit) (runtime.ProviderSessionResult, error) {
+	if request.TurnKind == runtime.RuntimeTurnKindControl && strings.Contains(request.RequestID, session.requestKind) {
+		return runtime.ProviderSessionResult{}, &runtime.ProviderSessionOperationError{
+			Mode: runtime.ProviderSessionModeSendTurn, Cause: errors.New("injected control dispatch failure"),
+		}
+	}
+	return session.FakeProviderSession.SendTurn(ctx, request, emit)
+}
+
+func (session *eagerControlToolSession) SendTurn(ctx context.Context, request runtime.ProviderSessionRequest, emit runtime.ProviderSessionEmit) (runtime.ProviderSessionResult, error) {
+	result, err := session.FakeProviderSession.SendTurn(ctx, request, emit)
+	if err == nil && request.TurnKind == runtime.RuntimeTurnKindControl {
+		err = session.EmitObservation(runtime.ProviderSessionObservation{
+			Kind: runtime.ProviderSessionObservationToolUse, RequestID: request.RequestID,
+			ProviderTurnID: "provider-spoofed-turn", ToolCallID: "eager-control-tool", ToolName: "shell",
+		})
 	}
 	return result, err
 }
@@ -620,6 +712,76 @@ func TestPendingBlackboardConclusionSurvivesDaemonRestart(t *testing.T) {
 	}
 	if pending.Payload["source_work_watermark"] != float64(1) || pending.Payload["semantic_persistence_watermark"] != float64(0) {
 		t.Fatalf("restarted semantic-debt projection = %#v", pending)
+	}
+}
+
+func TestRecoveryGenerationAwaitingResultBecomesActionRequiredAfterRestart(t *testing.T) {
+	for _, generation := range []string{"repair", "retry"} {
+		t.Run(generation, func(t *testing.T) {
+			root := t.TempDir()
+			server, projectID, profileID, session := newAssistedConclusionFixtureAt(t, root, true, true)
+			created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+			waitForAssistedProviderRequests(t, session, 1)
+			workRequest := session.LastRequests()[0]
+			if err := session.EmitObservation(runtime.ProviderSessionObservation{
+				Kind: runtime.ProviderSessionObservationToolResult, RequestID: workRequest.RequestID,
+				ProviderTurnID: "work-turn-restart-" + generation, ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := session.EmitObservation(runtime.ProviderSessionObservation{
+				Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: workRequest.RequestID,
+				ProviderTurnID: "work-turn-restart-" + generation, Status: "completed",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			waitForAssistedProviderRequests(t, session, 2)
+			var wantCode task.BlackboardConclusionErrorCode
+			switch generation {
+			case "repair":
+				wantCode = task.BlackboardConclusionErrorInvalidResult
+				if err := emitAttemptResultAndComplete(t, session, []byte(`{"schema":"runtime-attempt-result/v1","base_revision":0,"unexpected":true}`)); err == nil {
+					t.Fatal("invalid result unexpectedly decoded")
+				}
+				waitForAssistedProviderRequests(t, session, 3)
+			case "retry":
+				wantCode = task.BlackboardConclusionErrorToolUseForbidden
+				if err := session.EmitObservation(runtime.ProviderSessionObservation{
+					Kind: runtime.ProviderSessionObservationToolUse, ToolCallID: "force-restart-retry", ToolName: "shell",
+				}); err != nil {
+					t.Fatal(err)
+				}
+				waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
+				retry := httptest.NewRequest(http.MethodPost,
+					"/api/projects/"+projectID+"/tasks/"+created.ID+"/blackboard-conclusion/retry", bytes.NewBufferString(`{}`))
+				retry.Header.Set("Idempotency-Key", "restart-awaiting-retry")
+				response := httptest.NewRecorder()
+				server.ServeHTTP(response, retry)
+				if response.Code != http.StatusAccepted {
+					t.Fatalf("retry status = %d body %s", response.Code, response.Body.String())
+				}
+				waitForAssistedProviderRequests(t, session, 3)
+			}
+			if receipt, err := server.tasks.LatestBlackboardConclusion(created.ID); err != nil || receipt == nil || receipt.InternalState != task.BlackboardConclusionReceiptAwaitingResult {
+				t.Fatalf("pre-restart %s receipt = %#v, %v", generation, receipt, err)
+			}
+			if err := server.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			reopened, err := NewServer(Config{
+				DBPath: filepath.Join(root, "pentest.db"), RuntimeRoot: filepath.Join(root, "runs"),
+				SandboxImage: "cyberpenda:test", DisableBuiltinSkills: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = reopened.Close() })
+			found := waitForBlackboardConclusionState(t, reopened, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
+			if found.BlackboardConclusion.ErrorCode != wantCode {
+				t.Fatalf("restarted %s conclusion = %#v", generation, found.BlackboardConclusion)
+			}
+		})
 	}
 }
 
@@ -911,6 +1073,610 @@ func TestAssistedConclusionPromptsOnceAfterManyResultsAndCompletedBoundary(t *te
 	}
 }
 
+func TestAssistedConclusionInvalidResultDispatchesOneBoundedRepairTurn(t *testing.T) {
+	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
+	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
+	workRequest := session.LastRequests()[0]
+
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationToolResult, RequestID: workRequest.RequestID,
+		ProviderTurnID: "work-turn-repair", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: workRequest.RequestID,
+		ProviderTurnID: "work-turn-repair", Status: "completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForAssistedProviderRequests(t, session, 2)
+	concludeRequest := session.LastRequests()[1]
+
+	if err := emitAttemptResultAndComplete(t, session, []byte(`{"schema":"runtime-attempt-result/v1","base_revision":0,"unexpected":true}`)); err == nil {
+		t.Fatal("invalid semantic result unexpectedly decoded")
+	}
+	waitForAssistedProviderRequests(t, session, 3)
+
+	requests := session.LastRequests()
+	repairRequest := requests[2]
+	if repairRequest.TurnKind != runtime.RuntimeTurnKindControl {
+		t.Fatalf("repair Turn kind = %q", repairRequest.TurnKind)
+	}
+	if repairRequest.RequestID == concludeRequest.RequestID || !strings.Contains(repairRequest.RequestID, "repair") {
+		t.Fatalf("repair request ID = %q after Conclude %q", repairRequest.RequestID, concludeRequest.RequestID)
+	}
+	if repairRequest.ModelProviderID != concludeRequest.ModelProviderID || repairRequest.Model != concludeRequest.Model ||
+		repairRequest.RequestedReasoningEffort != concludeRequest.RequestedReasoningEffort {
+		t.Fatalf("repair selection = %#v, Conclude selection = %#v", repairRequest, concludeRequest)
+	}
+	directive := strings.ToLower(repairRequest.Message)
+	for _, required := range []string{"previous", "invalid", "runtime-attempt-result/v1", "do not call tools"} {
+		if !strings.Contains(directive, required) {
+			t.Fatalf("repair directive missing %q: %s", required, repairRequest.Message)
+		}
+	}
+	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateConcluding)
+	if found.Status != task.StatusRunning || found.RuntimeActivity.Liveness != "live" {
+		t.Fatalf("repair changed Task lifecycle/activity: status=%q activity=%#v", found.Status, found.RuntimeActivity)
+	}
+}
+
+func TestAssistedConclusionSecondInvalidResultRequiresActionWithoutAnotherTurn(t *testing.T) {
+	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
+	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
+	workRequest := session.LastRequests()[0]
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationToolResult, RequestID: workRequest.RequestID,
+		ProviderTurnID: "work-turn-exhausted", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: workRequest.RequestID,
+		ProviderTurnID: "work-turn-exhausted", Status: "completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForAssistedProviderRequests(t, session, 2)
+	invalid := []byte(`{"schema":"runtime-attempt-result/v1","base_revision":0,"unexpected":true}`)
+	if err := emitAttemptResultAndComplete(t, session, invalid); err == nil {
+		t.Fatal("invalid Conclude result unexpectedly decoded")
+	}
+	waitForAssistedProviderRequests(t, session, 3)
+	if err := emitAttemptResultAndComplete(t, session, invalid); err == nil {
+		t.Fatal("invalid repair result unexpectedly decoded")
+	}
+
+	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
+	if found.BlackboardConclusion.ErrorCode != task.BlackboardConclusionErrorRepairExhausted {
+		t.Fatalf("action-required code = %q", found.BlackboardConclusion.ErrorCode)
+	}
+	if len(session.LastRequests()) != 3 {
+		t.Fatalf("automatic provider requests = %d, want work, Conclude, repair", len(session.LastRequests()))
+	}
+	if found.Status != task.StatusRunning || found.RuntimeActivity.Liveness != "live" {
+		t.Fatalf("action-required changed Task lifecycle/activity: status=%q activity=%#v", found.Status, found.RuntimeActivity)
+	}
+	manualRequest := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+created.ID+"/steer/queue", bytes.NewBufferString(`{
+		"directive":"I will provide recovery context manually."
+	}`))
+	manualRequest.Header.Set("Content-Type", "application/json")
+	manualResponse := httptest.NewRecorder()
+	server.ServeHTTP(manualResponse, manualRequest)
+	if manualResponse.Code != http.StatusOK {
+		t.Fatalf("manual recovery message status = %d body %s", manualResponse.Code, manualResponse.Body.String())
+	}
+	if len(session.LastRequests()) != 3 {
+		t.Fatalf("queued manual recovery unexpectedly dispatched: requests=%d", len(session.LastRequests()))
+	}
+
+	transcriptRequest := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+created.ID+"/transcript", nil)
+	transcriptResponse := httptest.NewRecorder()
+	server.ServeHTTP(transcriptResponse, transcriptRequest)
+	for _, hidden := range []string{"unexpected", "previous Blackboard conclusion result", "runtime-attempt-result/v1"} {
+		if strings.Contains(transcriptResponse.Body.String(), hidden) {
+			t.Fatalf("hidden repair content leaked into Conversation: %s", transcriptResponse.Body.String())
+		}
+	}
+}
+
+func TestAssistedConclusionControlToolResultRequiresActionWithoutRecursion(t *testing.T) {
+	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
+	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
+	workRequest := session.LastRequests()[0]
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationToolResult, RequestID: workRequest.RequestID,
+		ProviderTurnID: "work-turn-forbidden", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: workRequest.RequestID,
+		ProviderTurnID: "work-turn-forbidden", Status: "completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForAssistedProviderRequests(t, session, 2)
+
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationToolUse, ToolCallID: "control-tool-1", ToolName: "shell",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
+	if found.BlackboardConclusion.ErrorCode != task.BlackboardConclusionErrorToolUseForbidden {
+		t.Fatalf("forbidden control tool code = %q", found.BlackboardConclusion.ErrorCode)
+	}
+	if len(session.LastRequests()) != 2 {
+		t.Fatalf("forbidden control tool dispatched recursively: requests=%d", len(session.LastRequests()))
+	}
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationToolResult, ToolCallID: "control-tool-1", ToolName: "shell", Status: "succeeded",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	receipts := 0
+	for _, event := range assistedTaskEvents(t, server, projectID, created.ID) {
+		if event.Kind == task.EventKindBlackboardConclusion && event.Payload["phase"] == "pending_detected" {
+			receipts++
+		}
+		if event.Payload["tool_name"] != nil || event.Payload["output"] != nil {
+			t.Fatalf("forbidden tool detail leaked into Task Event: %#v", event)
+		}
+	}
+	if receipts != 1 {
+		t.Fatalf("pending receipts = %d, want only source Work Turn receipt", receipts)
+	}
+}
+
+func TestAssistedConclusionControlTurnCannotUseTrustedBlackboardTool(t *testing.T) {
+	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
+	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
+	workRequest := session.LastRequests()[0]
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationToolResult, RequestID: workRequest.RequestID,
+		ProviderTurnID: "work-turn-trusted-control", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: workRequest.RequestID,
+		ProviderTurnID: "work-turn-trusted-control", Status: "completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForAssistedProviderRequests(t, session, 2)
+	before, err := server.blackboardV2.RuntimeSnapshot(context.Background(), projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationToolUse, ToolCallID: "control-blackboard-1", ToolName: "blackboard_change",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
+	if found.BlackboardConclusion.ErrorCode != task.BlackboardConclusionErrorToolUseForbidden || len(session.LastRequests()) != 2 {
+		t.Fatalf("trusted control tool result = %#v requests=%d", found.BlackboardConclusion, len(session.LastRequests()))
+	}
+	after, err := server.blackboardV2.RuntimeSnapshot(context.Background(), projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Revision != before.Revision {
+		t.Fatalf("control Blackboard tool mutated revision: before=%d after=%d", before.Revision, after.Revision)
+	}
+}
+
+func TestAssistedConclusionForbiddenFailureDominatesInvalidInEitherCallbackOrder(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		invalidThenTool bool
+	}{
+		{name: "invalid then forbidden tool", invalidThenTool: true},
+		{name: "forbidden tool then invalid", invalidThenTool: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server, projectID, created, session := prepareAssistedConclusionAwaiting(t)
+			if !server.acquireProviderTaskControl(created.ID) {
+				t.Fatal("acquire provider task control")
+			}
+			invalid := func() {
+				if err := session.EmitAttemptResult([]byte(`{"schema":"runtime-attempt-result/v1","base_revision":0,"unexpected":true}`)); err == nil {
+					t.Error("invalid result unexpectedly decoded")
+				}
+			}
+			forbidden := func() {
+				if err := session.EmitObservation(runtime.ProviderSessionObservation{
+					Kind: runtime.ProviderSessionObservationToolUse, ToolCallID: "forbidden-order", ToolName: "shell",
+				}); err != nil {
+					t.Error(err)
+				}
+			}
+			if test.invalidThenTool {
+				invalid()
+				forbidden()
+			} else {
+				forbidden()
+				invalid()
+			}
+			server.releaseProviderTaskControl(created.ID)
+
+			found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
+			if found.BlackboardConclusion.ErrorCode != task.BlackboardConclusionErrorToolUseForbidden || len(session.LastRequests()) != 2 {
+				t.Fatalf("ordered failures = %#v requests=%d", found.BlackboardConclusion, len(session.LastRequests()))
+			}
+		})
+	}
+}
+
+func TestAssistedConclusionForbiddenDominatesAfterInvalidDrainOpportunity(t *testing.T) {
+	server, projectID, created, session := prepareAssistedConclusionAwaiting(t)
+	if err := session.EmitAttemptResult([]byte(`{"schema":"runtime-attempt-result/v1","base_revision":0,"unexpected":true}`)); err == nil {
+		t.Fatal("invalid result unexpectedly decoded")
+	}
+	server.providerControlWG.Wait()
+	if len(session.LastRequests()) != 2 {
+		t.Fatalf("invalid candidate dispatched before terminal boundary: requests=%d", len(session.LastRequests()))
+	}
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationToolUse, ToolCallID: "late-forbidden", ToolName: "shell",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
+	if found.BlackboardConclusion.ErrorCode != task.BlackboardConclusionErrorToolUseForbidden || len(session.LastRequests()) != 2 {
+		t.Fatalf("late forbidden arbitration = %#v requests=%d", found.BlackboardConclusion, len(session.LastRequests()))
+	}
+}
+
+func TestAssistedConclusionForbiddenSuppressesValidResultBeforeTerminal(t *testing.T) {
+	server, projectID, created, session := prepareAssistedConclusionAwaiting(t)
+	requestID := session.LastRequests()[1].RequestID
+	before, err := server.blackboardV2.RuntimeSnapshot(context.Background(), projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := []byte(`{
+		"schema":"runtime-attempt-result/v1","base_revision":0,
+		"attempt":{"key":"attempt:suppressed-valid","create":true,"summary":"Must be suppressed by forbidden tool use.","outcome":"inconclusive"},
+		"tested_targets":[{"key":"objective:suppressed-valid","create_objective":{"objective":"Must not be applied."}}],
+		"produced_targets":[]
+	}`)
+	if err := session.EmitAttemptResult(valid); err != nil {
+		t.Fatal(err)
+	}
+	server.providerControlWG.Wait()
+	if found := getConclusionTask(t, server, projectID, created.ID); found.BlackboardConclusion.State != task.BlackboardConclusionStateConcluding {
+		t.Fatalf("valid result applied before terminal: %#v", found.BlackboardConclusion)
+	}
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationToolUse, ToolCallID: "forbidden-after-valid", ToolName: "shell",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationTurnCompleted, Status: "completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
+	after, err := server.blackboardV2.RuntimeSnapshot(context.Background(), projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found.BlackboardConclusion.ErrorCode != task.BlackboardConclusionErrorToolUseForbidden || after.Revision != before.Revision || len(session.LastRequests()) != 2 {
+		t.Fatalf("forbidden/valid arbitration = %#v revisions=%d/%d requests=%d", found.BlackboardConclusion, before.Revision, after.Revision, len(session.LastRequests()))
+	}
+	server.blackboardConclusions.mu.Lock()
+	_, hasResult := server.blackboardConclusions.results[requestID]
+	_, hasFailure := server.blackboardConclusions.failures[requestID]
+	_, hasTerminal := server.blackboardConclusions.terminal[requestID]
+	server.blackboardConclusions.mu.Unlock()
+	if hasResult || hasFailure || hasTerminal {
+		t.Fatalf("resolved callback state retained: result=%t failure=%t terminal=%t", hasResult, hasFailure, hasTerminal)
+	}
+}
+
+func TestAssistedConclusionAppliesValidResultAfterTerminalArrivesFirst(t *testing.T) {
+	server, projectID, created, session := prepareAssistedConclusionAwaiting(t)
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationTurnCompleted, Status: "completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server.providerControlWG.Wait()
+	if found := getConclusionTask(t, server, projectID, created.ID); found.BlackboardConclusion.State != task.BlackboardConclusionStateConcluding {
+		t.Fatalf("terminal without result changed conclusion: %#v", found.BlackboardConclusion)
+	}
+	valid := []byte(`{
+		"schema":"runtime-attempt-result/v1","base_revision":0,
+		"attempt":{"key":"attempt:terminal-first","create":true,"summary":"Apply after the canonical terminal arrived first.","outcome":"inconclusive"},
+		"tested_targets":[{"key":"objective:terminal-first","create_objective":{"objective":"Accept either canonical callback order."}}],
+		"produced_targets":[]
+	}`)
+	if err := session.EmitAttemptResult(valid); err != nil {
+		t.Fatal(err)
+	}
+	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateClean)
+	if found.BlackboardConclusion.AppliedRevision == nil || found.BlackboardConclusion.ErrorCode != "" {
+		t.Fatalf("terminal-first conclusion = %#v", found.BlackboardConclusion)
+	}
+}
+
+func TestAssistedConclusionMismatchedDuplicateCannotDisplaceCanonicalValidResult(t *testing.T) {
+	server, projectID, created, session := prepareAssistedConclusionAwaiting(t)
+	if !server.acquireProviderTaskControl(created.ID) {
+		t.Fatal("acquire provider task control")
+	}
+	canonicalRaw := []byte(`{
+		"schema":"runtime-attempt-result/v1","base_revision":0,
+		"attempt":{"key":"attempt:canonical-first","create":true,"summary":"Canonical first result.","outcome":"inconclusive"},
+		"tested_targets":[{"key":"objective:canonical-first","create_objective":{"objective":"Keep the canonical first callback."}}],
+		"produced_targets":[]
+	}`)
+	if err := session.EmitAttemptResult(canonicalRaw); err != nil {
+		t.Fatal(err)
+	}
+	duplicate, err := blackboardconclusion.Decode([]byte(`{
+		"schema":"runtime-attempt-result/v1","base_revision":0,
+		"attempt":{"key":"attempt:spoofed-second","create":true,"summary":"Spoofed second result.","outcome":"inconclusive"},
+		"tested_targets":[{"key":"objective:spoofed-second","create_objective":{"objective":"Must not displace canonical callback."}}],
+		"produced_targets":[]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := session.LastRequests()[1]
+	server.acceptBlackboardConclusionResult(created.ID, runtime.ProviderSessionAttemptResult{
+		RequestID: request.RequestID, SessionID: session.SessionID(), ProviderTurnID: "spoofed-provider-turn", Validated: duplicate,
+	})
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationTurnCompleted, Status: "completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server.releaseProviderTaskControl(created.ID)
+
+	waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateClean)
+	snapshot, err := server.blackboardV2.RuntimeSnapshot(context.Background(), projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encoded, []byte("objective:canonical-first")) || bytes.Contains(encoded, []byte("objective:spoofed-second")) {
+		t.Fatalf("Blackboard accepted displaced callback: %s", encoded)
+	}
+}
+
+func TestAssistedConclusionWrongBaseRevisionUsesBoundedRepairBudget(t *testing.T) {
+	server, projectID, created, session := prepareAssistedConclusionAwaiting(t)
+	wrongBase := []byte(`{
+		"schema":"runtime-attempt-result/v1","base_revision":99,
+		"attempt":{"key":"attempt:wrong-base","create":true,"summary":"Wrong base revision.","outcome":"inconclusive"},
+		"tested_targets":[{"key":"objective:wrong-base","create_objective":{"objective":"Reject wrong base revision."}}],
+		"produced_targets":[]
+	}`)
+	if err := emitAttemptResultAndComplete(t, session, wrongBase); err != nil {
+		t.Fatal(err)
+	}
+	waitForAssistedProviderRequests(t, session, 3)
+	if err := emitAttemptResultAndComplete(t, session, wrongBase); err != nil {
+		t.Fatal(err)
+	}
+	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
+	if found.BlackboardConclusion.ErrorCode != task.BlackboardConclusionErrorRepairExhausted || len(session.LastRequests()) != 3 {
+		t.Fatalf("wrong-base repair budget = %#v requests=%d", found.BlackboardConclusion, len(session.LastRequests()))
+	}
+}
+
+func TestAssistedConclusionWrongBaseRevisionAfterExplicitRetryRequiresAction(t *testing.T) {
+	server, projectID, created, session := prepareAssistedConclusionAwaiting(t)
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationToolUse, ToolCallID: "force-retry", ToolName: "shell",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
+	retry := httptest.NewRequest(http.MethodPost,
+		"/api/projects/"+projectID+"/tasks/"+created.ID+"/blackboard-conclusion/retry", bytes.NewBufferString(`{}`))
+	retry.Header.Set("Idempotency-Key", "wrong-base-retry")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, retry)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("retry status = %d body %s", response.Code, response.Body.String())
+	}
+	waitForAssistedProviderRequests(t, session, 3)
+	if err := emitAttemptResultAndComplete(t, session, []byte(`{
+		"schema":"runtime-attempt-result/v1","base_revision":99,
+		"attempt":{"key":"attempt:retry-wrong-base","create":true,"summary":"Retry wrong base.","outcome":"inconclusive"},
+		"tested_targets":[{"key":"objective:retry-wrong-base","create_objective":{"objective":"Reject retry wrong base."}}],
+		"produced_targets":[]
+	}`)); err != nil {
+		t.Fatal(err)
+	}
+	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
+	if len(session.LastRequests()) != 3 || found.BlackboardConclusion.ErrorCode == "" {
+		t.Fatalf("wrong-base retry = %#v requests=%d", found.BlackboardConclusion, len(session.LastRequests()))
+	}
+}
+
+func TestAssistedConclusionRepairDispatchFailureBecomesActionRequired(t *testing.T) {
+	server, projectID, profileID, session := newAssistedConclusionFixtureAtWithDecorator(
+		t, t.TempDir(), true, true,
+		func(fake *runtime.FakeProviderSession) runtime.ProviderSession {
+			return &failingConclusionDispatchSession{FakeProviderSession: fake, requestKind: "repair"}
+		},
+	)
+	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
+	workRequest := session.LastRequests()[0]
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationToolResult, RequestID: workRequest.RequestID,
+		ProviderTurnID: "work-turn-dispatch-failure", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: workRequest.RequestID,
+		ProviderTurnID: "work-turn-dispatch-failure", Status: "completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForAssistedProviderRequests(t, session, 2)
+	if err := emitAttemptResultAndComplete(t, session, []byte(`{"schema":"runtime-attempt-result/v1","base_revision":0,"unexpected":true}`)); err == nil {
+		t.Fatal("invalid result unexpectedly decoded")
+	}
+	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
+	if found.BlackboardConclusion.ErrorCode != task.BlackboardConclusionErrorInvalidResult || len(session.LastRequests()) != 2 {
+		t.Fatalf("dispatch recovery = %#v requests=%d", found.BlackboardConclusion, len(session.LastRequests()))
+	}
+	recoveryEvents := 0
+	for _, event := range assistedTaskEvents(t, server, projectID, created.ID) {
+		if event.Kind == task.EventKindBlackboardConclusion && event.Payload["phase"] == "action_required" && event.Payload["reason"] == "dispatch_recovery" {
+			recoveryEvents++
+		}
+	}
+	if recoveryEvents != 1 || found.Status != task.StatusRunning {
+		t.Fatalf("dispatch recovery events=%d task status=%q", recoveryEvents, found.Status)
+	}
+}
+
+func TestAssistedConclusionRetryDispatchFailureBecomesActionRequired(t *testing.T) {
+	server, projectID, profileID, session := newAssistedConclusionFixtureAtWithDecorator(
+		t, t.TempDir(), true, true,
+		func(fake *runtime.FakeProviderSession) runtime.ProviderSession {
+			return &failingConclusionDispatchSession{FakeProviderSession: fake, requestKind: "retry"}
+		},
+	)
+	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
+	workRequest := session.LastRequests()[0]
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationToolResult, RequestID: workRequest.RequestID,
+		ProviderTurnID: "work-turn-retry-failure", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: workRequest.RequestID,
+		ProviderTurnID: "work-turn-retry-failure", Status: "completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForAssistedProviderRequests(t, session, 2)
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationToolUse, ToolCallID: "force-retry-failure", ToolName: "shell",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	initial := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
+	retry := httptest.NewRequest(http.MethodPost,
+		"/api/projects/"+projectID+"/tasks/"+created.ID+"/blackboard-conclusion/retry", bytes.NewBufferString(`{}`))
+	retry.Header.Set("Idempotency-Key", "dispatch-failure-retry")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, retry)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("retry status = %d body %s", response.Code, response.Body.String())
+	}
+	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
+	if found.BlackboardConclusion.ErrorCode != initial.BlackboardConclusion.ErrorCode || len(session.LastRequests()) != 2 {
+		t.Fatalf("retry dispatch recovery = %#v requests=%d", found.BlackboardConclusion, len(session.LastRequests()))
+	}
+}
+
+func TestAssistedConclusionRetryIsIdempotentAndValidResultRecovers(t *testing.T) {
+	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
+	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
+	workRequest := session.LastRequests()[0]
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationToolResult, RequestID: workRequest.RequestID,
+		ProviderTurnID: "work-turn-retry", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: workRequest.RequestID,
+		ProviderTurnID: "work-turn-retry", Status: "completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForAssistedProviderRequests(t, session, 2)
+	invalid := []byte(`{"schema":"runtime-attempt-result/v1","base_revision":0,"unexpected":true}`)
+	if err := emitAttemptResultAndComplete(t, session, invalid); err == nil {
+		t.Fatal("invalid Conclude result unexpectedly decoded")
+	}
+	waitForAssistedProviderRequests(t, session, 3)
+	if err := emitAttemptResultAndComplete(t, session, invalid); err == nil {
+		t.Fatal("invalid repair result unexpectedly decoded")
+	}
+	waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
+
+	retryURL := "/api/projects/" + projectID + "/tasks/" + created.ID + "/blackboard-conclusion/retry"
+	for attempt := 0; attempt < 2; attempt++ {
+		request := httptest.NewRequest(http.MethodPost, retryURL, bytes.NewBufferString(`{}`))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Idempotency-Key", "operator-retry-1")
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, request)
+		if response.Code != http.StatusAccepted && response.Code != http.StatusOK {
+			t.Fatalf("retry attempt %d status = %d body %s", attempt+1, response.Code, response.Body.String())
+		}
+	}
+	waitForAssistedProviderRequests(t, session, 4)
+	if len(session.LastRequests()) != 4 {
+		t.Fatalf("duplicate Retry provider requests = %d, want one retry", len(session.LastRequests()))
+	}
+	retryRequest := session.LastRequests()[3]
+	if retryRequest.TurnKind != runtime.RuntimeTurnKindControl || !strings.Contains(retryRequest.RequestID, "retry") {
+		t.Fatalf("retry request = %#v", retryRequest)
+	}
+
+	receipt, err := server.tasks.LatestBlackboardConclusion(created.ID)
+	if err != nil || receipt == nil || receipt.BaseRevision == nil {
+		t.Fatalf("load retry receipt: %#v, %v", receipt, err)
+	}
+	result := fmt.Sprintf(`{
+		"schema":"runtime-attempt-result/v1",
+		"base_revision":%d,
+		"attempt":{"key":"attempt:retry","create":true,"summary":"Retried semantic conclusion.","outcome":"inconclusive"},
+		"tested_targets":[{"key":"objective:retry","create_objective":{"objective":"Retain retry result."}}],
+		"produced_targets":[]
+	}`, *receipt.BaseRevision)
+	if err := emitAttemptResultAndComplete(t, session, []byte(result)); err != nil {
+		t.Fatal(err)
+	}
+	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateClean)
+	if found.BlackboardConclusion.AppliedRevision == nil || found.BlackboardConclusion.ErrorCode != "" {
+		t.Fatalf("recovered conclusion view = %#v", found.BlackboardConclusion)
+	}
+}
+
+func TestBlackboardConclusionEligibilityUsesInjectedClockAndCancellation(t *testing.T) {
+	now := time.Date(2026, 7, 27, 2, 0, 0, 0, time.UTC)
+	eligible := now.Add(-time.Second)
+	if err := waitForBlackboardConclusionEligibility(context.Background(), &eligible, func() time.Time { return now }); err != nil {
+		t.Fatalf("already eligible: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	eligible = now.Add(time.Hour)
+	if err := waitForBlackboardConclusionEligibility(ctx, &eligible, func() time.Time { return now }); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled eligibility wait = %v", err)
+	}
+}
+
 func launchConclusionTask(t *testing.T, server *Server, projectID, profileID, mode string) task.Task {
 	t.Helper()
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks", bytes.NewBufferString(`{
@@ -950,6 +1716,39 @@ func (factory *assistedConclusionSessionFactory) Open(_ context.Context, request
 
 func (factory *assistedConclusionSessionFactory) SupportsAssistedConclusion(provider runtimeprofile.Provider) bool {
 	return factory.support && provider == runtimeprofile.ProviderCodex
+}
+
+func prepareAssistedConclusionAwaiting(t *testing.T) (*Server, string, task.Task, *runtime.FakeProviderSession) {
+	t.Helper()
+	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
+	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
+	workRequest := session.LastRequests()[0]
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationToolResult, RequestID: workRequest.RequestID,
+		ProviderTurnID: "work-turn-callback-order", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: workRequest.RequestID,
+		ProviderTurnID: "work-turn-callback-order", Status: "completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForAssistedProviderRequests(t, session, 2)
+	return server, projectID, created, session
+}
+
+func emitAttemptResultAndComplete(t *testing.T, session *runtime.FakeProviderSession, raw []byte) error {
+	t.Helper()
+	resultErr := session.EmitAttemptResult(raw)
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationTurnCompleted, Status: "completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return resultErr
 }
 
 func newAssistedConclusionFixture(t *testing.T, support bool) (*Server, string, string, *runtime.FakeProviderSession) {

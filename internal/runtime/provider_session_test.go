@@ -3,6 +3,7 @@ package runtime_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -100,6 +101,7 @@ func TestFakeProviderSessionFreezesCompleteTurnLineage(t *testing.T) {
 	}
 
 	want := runtime.ProviderSessionTurnLineage{
+		RequestID: "control-1", ProviderTurnID: result.ProviderTurnID,
 		Kind:            runtime.RuntimeTurnKindControl,
 		ModelProviderID: "provider-1", Model: "model-1", RequestedReasoningEffort: "high",
 		EffectiveReasoningEffort: "medium",
@@ -109,6 +111,7 @@ func TestFakeProviderSessionFreezesCompleteTurnLineage(t *testing.T) {
 	}{
 		{requestID: "control-1"},
 		{providerTurnID: result.ProviderTurnID},
+		{requestID: "control-1", providerTurnID: "provider-spoofed-turn"},
 	} {
 		got, ok := session.ResolveProviderSessionTurnLineage(correlation.requestID, correlation.providerTurnID)
 		if !ok || got != want {
@@ -201,6 +204,83 @@ func TestFakeProviderSessionRejectsUnknownAttemptResultBeforeCallback(t *testing
 	}
 	if callbacks != 0 {
 		t.Fatalf("attempt result callbacks = %d, want zero", callbacks)
+	}
+}
+
+func TestFakeProviderSessionEmitsBoundedInvalidAttemptResultNotification(t *testing.T) {
+	valid := `{"schema":"runtime-attempt-result/v1","base_revision":0,"attempt":{"key":"attempt:search","create":true,"summary":"Tested search.","outcome":"failed"},"tested_targets":[{"key":"objective:search","create_objective":{"objective":"Test search."}}],"produced_targets":[]}`
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "malformed", raw: `{"schema":`},
+		{name: "unknown field", raw: strings.Replace(valid, `"schema":`, `"surprise":"do-not-leak-unknown","schema":`, 1)},
+		{name: "interrupted outcome", raw: strings.Replace(valid, `"outcome":"failed"`, `"outcome":"interrupted"`, 1)},
+		{name: "model supplied identity", raw: strings.Replace(valid, `"schema":`, `"task_id":"do-not-leak-identity","schema":`, 1)},
+		{name: "empty tested targets", raw: strings.Replace(valid, `"tested_targets":[{"key":"objective:search","create_objective":{"objective":"Test search."}}]`, `"tested_targets":[]`, 1)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+				SessionID: "session-1", Capabilities: runtimeplugin.Capabilities{SendTurn: true},
+			})
+			turn, err := session.SendTurn(context.Background(), runtime.ProviderSessionRequest{
+				RequestID: "conclude-1", Message: "conclude", TurnKind: runtime.RuntimeTurnKindControl,
+			}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			validCallbacks := 0
+			invalidCallbacks := 0
+			var got runtime.ProviderSessionAttemptResultValidationFailure
+			session.SetAttemptResultSink(func(runtime.ProviderSessionAttemptResult) { validCallbacks++ })
+			session.SetAttemptResultValidationFailureSink(func(failure runtime.ProviderSessionAttemptResultValidationFailure) {
+				invalidCallbacks++
+				got = failure
+			})
+
+			err = session.EmitAttemptResult([]byte(test.raw))
+			if err == nil {
+				t.Fatal("EmitAttemptResult accepted an invalid result")
+			}
+			if validCallbacks != 0 || invalidCallbacks != 1 {
+				t.Fatalf("callbacks = valid %d, invalid %d; want valid 0, invalid 1", validCallbacks, invalidCallbacks)
+			}
+			if got.RequestID != "conclude-1" || got.SessionID != "session-1" || got.ProviderTurnID != turn.ProviderTurnID {
+				t.Fatalf("invalid result correlation = %#v", got)
+			}
+			if got.ValidationErrorCode != runtime.ProviderSessionAttemptResultInvalid {
+				t.Fatalf("validation error code = %q", got.ValidationErrorCode)
+			}
+			bounded := fmt.Sprintf("%#v", got)
+			for _, forbidden := range []string{test.raw, err.Error(), "do-not-leak"} {
+				if forbidden != "" && strings.Contains(bounded, forbidden) {
+					t.Fatalf("invalid notification leaked %q: %s", forbidden, bounded)
+				}
+			}
+		})
+	}
+}
+
+func TestFakeProviderSessionValidAttemptResultDoesNotEmitValidationFailure(t *testing.T) {
+	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "session-1", Capabilities: runtimeplugin.Capabilities{SendTurn: true},
+	})
+	if _, err := session.SendTurn(context.Background(), runtime.ProviderSessionRequest{
+		RequestID: "conclude-1", Message: "conclude", TurnKind: runtime.RuntimeTurnKindControl,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	validCallbacks := 0
+	invalidCallbacks := 0
+	session.SetAttemptResultSink(func(runtime.ProviderSessionAttemptResult) { validCallbacks++ })
+	session.SetAttemptResultValidationFailureSink(func(runtime.ProviderSessionAttemptResultValidationFailure) { invalidCallbacks++ })
+	raw := []byte(`{"schema":"runtime-attempt-result/v1","base_revision":0,"attempt":{"key":"attempt:search","create":true,"summary":"Tested search.","outcome":"failed"},"tested_targets":[{"key":"objective:search","create_objective":{"objective":"Test search."}}],"produced_targets":[]}`)
+	if err := session.EmitAttemptResult(raw); err != nil {
+		t.Fatal(err)
+	}
+	if validCallbacks != 1 || invalidCallbacks != 0 {
+		t.Fatalf("callbacks = valid %d, invalid %d; want valid 1, invalid 0", validCallbacks, invalidCallbacks)
 	}
 }
 

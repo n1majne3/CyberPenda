@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"pentest/internal/project"
 	"pentest/internal/store"
@@ -432,6 +433,311 @@ func TestBlackboardConclusionReceiptAdvancesDurablyAndIdempotently(t *testing.T)
 	wantPhases := []string{"pending_detected", "dispatch_requested", "awaiting_result", "result_validated", "applied"}
 	if !reflect.DeepEqual(phases, wantPhases) {
 		t.Fatalf("conclusion phases = %#v, want %#v", phases, wantPhases)
+	}
+}
+
+func TestBlackboardConclusionInvalidResultRepairsOnceThenRequiresOperatorRetry(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, err := svc.Create(task.CreateRequest{
+		ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation, err := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, _, err := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID, "session-1", "turn-1",
+		task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1"}, task.SemanticDebtWatermarks{SourceWork: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, _, err := svc.ClaimBlackboardConclusionDispatch(receipt.ID, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.AutomaticTurnCount != 1 {
+		t.Fatalf("initial automatic turns = %d", initial.AutomaticTurnCount)
+	}
+	if _, _, err = svc.MarkBlackboardConclusionAwaiting(initial.DispatchRequestID, "control-initial"); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)
+	repair, won, err := svc.HandleBlackboardConclusionFailure(initial.DispatchRequestID,
+		task.BlackboardConclusionErrorInvalidResult, now, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !won || repair.InternalState != task.BlackboardConclusionReceiptRepairDispatchRequested ||
+		repair.AutomaticTurnCount != task.BlackboardConclusionAutomaticTurnLimit || repair.RepairCount != 1 ||
+		repair.DispatchRequestID == initial.DispatchRequestID || repair.NextEligibleAt == nil || !repair.NextEligibleAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("repair claim = %#v, won=%v", repair, won)
+	}
+	if _, _, replayErr := svc.HandleBlackboardConclusionFailure(initial.DispatchRequestID,
+		task.BlackboardConclusionErrorInvalidResult, now, time.Minute); !errors.Is(replayErr, task.ErrNotFound) {
+		t.Fatalf("stale failure did not fail closed: %v", replayErr)
+	}
+	if _, _, err = svc.MarkBlackboardConclusionAwaiting(repair.DispatchRequestID, "control-repair"); err != nil {
+		t.Fatal(err)
+	}
+	action, changed, err := svc.HandleBlackboardConclusionFailure(repair.DispatchRequestID,
+		task.BlackboardConclusionErrorInvalidResult, now, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed || action.InternalState != task.BlackboardConclusionReceiptActionRequired ||
+		action.ErrorCode != task.BlackboardConclusionErrorRepairExhausted || action.NextEligibleAt == nil ||
+		!action.NextEligibleAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("action required = %#v, changed=%v", action, changed)
+	}
+	view := action.ViewAt(task.BlackboardConclusionModeAssisted, now)
+	if view.State != task.BlackboardConclusionStateActionRequired || view.ErrorCode != task.BlackboardConclusionErrorRepairExhausted || view.RetryAvailable {
+		t.Fatalf("cooldown view = %#v", view)
+	}
+	if _, _, err := svc.RetryBlackboardConclusion(receipt.ID, "retry-key-1", now.Add(30*time.Second)); !errors.Is(err, task.ErrBlackboardConclusionRetryCooldown) {
+		t.Fatalf("retry during cooldown = %v", err)
+	}
+	retry, won, err := svc.RetryBlackboardConclusion(receipt.ID, "retry-key-1", now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !won || retry.InternalState != task.BlackboardConclusionReceiptDispatchRequested || retry.ExplicitRetryCount != 1 ||
+		retry.AutomaticTurnCount != task.BlackboardConclusionAutomaticTurnLimit || retry.DispatchRequestID == repair.DispatchRequestID {
+		t.Fatalf("operator retry = %#v, won=%v", retry, won)
+	}
+	if replay, replayWon, replayErr := svc.RetryBlackboardConclusion(receipt.ID, "retry-key-1", now.Add(2*time.Minute)); replayErr != nil || replayWon || replay.DispatchRequestID != retry.DispatchRequestID {
+		t.Fatalf("operator retry replay = %#v, won=%v, err=%v", replay, replayWon, replayErr)
+	}
+	if _, _, err = svc.MarkBlackboardConclusionAwaiting(retry.DispatchRequestID, "control-retry"); err != nil {
+		t.Fatal(err)
+	}
+	validated, won, err := svc.MarkBlackboardConclusionValidated(retry.DispatchRequestID, []byte(`{"schema":"runtime-attempt-result/v1"}`))
+	if err != nil || !won {
+		t.Fatalf("newer result = %#v, won=%v, err=%v", validated, won, err)
+	}
+	if validated.ErrorCode != "" || validated.NextEligibleAt != nil {
+		t.Fatalf("validated debt not cleared = %#v", validated)
+	}
+	if _, err := svc.BlackboardConclusionByDispatchRequestID(repair.DispatchRequestID); !errors.Is(err, task.ErrNotFound) {
+		t.Fatalf("stale repair correlation remained live: %v", err)
+	}
+}
+
+func TestBlackboardConclusionForbiddenControlToolUseRequiresAction(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
+	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
+	receipt, _, _ := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID, "session-1", "turn-1",
+		task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1"}, task.SemanticDebtWatermarks{SourceWork: 1})
+	dispatched, _, _ := svc.ClaimBlackboardConclusionDispatch(receipt.ID, 0)
+	_, _, _ = svc.MarkBlackboardConclusionAwaiting(dispatched.DispatchRequestID, "control-1")
+	now := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)
+	action, changed, err := svc.HandleBlackboardConclusionFailure(dispatched.DispatchRequestID,
+		task.BlackboardConclusionErrorToolUseForbidden, now, 0)
+	if err != nil || !changed || action.InternalState != task.BlackboardConclusionReceiptActionRequired ||
+		action.ErrorCode != task.BlackboardConclusionErrorToolUseForbidden || action.RepairCount != 0 {
+		t.Fatalf("forbidden tool action = %#v, changed=%v, err=%v", action, changed, err)
+	}
+}
+
+func TestBlackboardConclusionRetryRemembersEveryOperatorIdempotencyKey(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
+	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
+	receipt, _, _ := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID, "session-1", "turn-1",
+		task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1"}, task.SemanticDebtWatermarks{SourceWork: 1})
+	dispatched, _, _ := svc.ClaimBlackboardConclusionDispatch(receipt.ID, 0)
+	_, _, _ = svc.MarkBlackboardConclusionAwaiting(dispatched.DispatchRequestID, "control-1")
+	now := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)
+	_, _, _ = svc.HandleBlackboardConclusionFailure(dispatched.DispatchRequestID, task.BlackboardConclusionErrorToolUseForbidden, now, 0)
+
+	retry1, won, err := svc.RetryBlackboardConclusion(receipt.ID, "retry-key-1", now)
+	if err != nil || !won {
+		t.Fatalf("retry 1 = %#v, won=%v, err=%v", retry1, won, err)
+	}
+	_, _, _ = svc.MarkBlackboardConclusionAwaiting(retry1.DispatchRequestID, "control-retry-1")
+	_, _, _ = svc.HandleBlackboardConclusionFailure(retry1.DispatchRequestID, task.BlackboardConclusionErrorInvalidResult, now, 0)
+	retry2, won, err := svc.RetryBlackboardConclusion(receipt.ID, "retry-key-2", now)
+	if err != nil || !won || retry2.ExplicitRetryCount != 2 {
+		t.Fatalf("retry 2 = %#v, won=%v, err=%v", retry2, won, err)
+	}
+	_, _, _ = svc.MarkBlackboardConclusionAwaiting(retry2.DispatchRequestID, "control-retry-2")
+	action, _, _ := svc.HandleBlackboardConclusionFailure(retry2.DispatchRequestID, task.BlackboardConclusionErrorInvalidResult, now, 0)
+
+	replayed, replayWon, replayErr := svc.RetryBlackboardConclusion(receipt.ID, "retry-key-1", now)
+	if replayErr != nil || replayWon || replayed.ID != receipt.ID || replayed.ExplicitRetryCount != 2 ||
+		replayed.InternalState != task.BlackboardConclusionReceiptActionRequired || replayed.DispatchRequestID != action.DispatchRequestID {
+		t.Fatalf("old retry key replay = %#v, won=%v, err=%v", replayed, replayWon, replayErr)
+	}
+}
+
+func TestRetryLatestBlackboardConclusionIsAtomicAndTaskIdempotentAcrossReceipts(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
+	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
+	now := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)
+	makeActionRequired := func(sourceTurnID string) task.BlackboardConclusionReceipt {
+		receipt, _, err := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID, "session-1", sourceTurnID,
+			task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1"}, task.SemanticDebtWatermarks{SourceWork: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		dispatched, _, err := svc.ClaimBlackboardConclusionDispatch(receipt.ID, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _, _ = svc.MarkBlackboardConclusionAwaiting(dispatched.DispatchRequestID, "control-"+sourceTurnID)
+		action, _, err := svc.HandleBlackboardConclusionFailure(dispatched.DispatchRequestID,
+			task.BlackboardConclusionErrorToolUseForbidden, now, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return action
+	}
+
+	receiptA := makeActionRequired("turn-a")
+	retryA, won, err := svc.RetryLatestBlackboardConclusion(created.ID, "task-retry-key", now)
+	if err != nil || !won || retryA.ID != receiptA.ID {
+		t.Fatalf("retry A = %#v, won=%v, err=%v", retryA, won, err)
+	}
+	_, _, _ = svc.MarkBlackboardConclusionAwaiting(retryA.DispatchRequestID, "control-retry-a")
+	_, _, _ = svc.HandleBlackboardConclusionFailure(retryA.DispatchRequestID, task.BlackboardConclusionErrorInvalidResult, now, 0)
+	receiptB := makeActionRequired("turn-b")
+
+	replayed, replayWon, replayErr := svc.RetryLatestBlackboardConclusion(created.ID, "task-retry-key", now)
+	if replayErr != nil || replayWon || replayed.ID != receiptA.ID {
+		t.Fatalf("cross-receipt replay = %#v, won=%v, err=%v", replayed, replayWon, replayErr)
+	}
+	latestB, err := svc.BlackboardConclusionByDispatchRequestID(receiptB.DispatchRequestID)
+	if err != nil || latestB.InternalState != task.BlackboardConclusionReceiptActionRequired || latestB.ExplicitRetryCount != 0 {
+		t.Fatalf("newer receipt mutated by delayed replay = %#v, err=%v", latestB, err)
+	}
+	retryB, won, err := svc.RetryLatestBlackboardConclusion(created.ID, "task-retry-key-2", now)
+	if err != nil || !won || retryB.ID != receiptB.ID || retryB.ExplicitRetryCount != 1 {
+		t.Fatalf("latest atomic retry = %#v, won=%v, err=%v", retryB, won, err)
+	}
+}
+
+func TestBlackboardConclusionRecoveryDispatchFailureRequiresActionIdempotently(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
+	_, _ = svc.UpdateStatus(created.ID, task.StatusRunning)
+	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
+	now := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)
+	receipt, _, _ := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID, "session-1", "turn-repair",
+		task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1"}, task.SemanticDebtWatermarks{SourceWork: 1})
+	initial, _, _ := svc.ClaimBlackboardConclusionDispatch(receipt.ID, 0)
+	_, _, _ = svc.MarkBlackboardConclusionAwaiting(initial.DispatchRequestID, "control-initial")
+	repair, _, _ := svc.HandleBlackboardConclusionFailure(initial.DispatchRequestID,
+		task.BlackboardConclusionErrorInvalidResult, now, 0)
+
+	action, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequired(repair.DispatchRequestID, now, time.Minute)
+	if err != nil || !changed || action.InternalState != task.BlackboardConclusionReceiptActionRequired ||
+		action.ErrorCode != task.BlackboardConclusionErrorInvalidResult || action.AutomaticTurnCount != 2 || action.RepairCount != 1 {
+		t.Fatalf("repair dispatch recovery = %#v, changed=%v, err=%v", action, changed, err)
+	}
+	replay, replayChanged, replayErr := svc.MarkBlackboardConclusionRecoveryActionRequired(repair.DispatchRequestID, now, time.Minute)
+	if replayErr != nil || replayChanged || replay.ID != receipt.ID || replay.RepairCount != 1 {
+		t.Fatalf("repair recovery replay = %#v, changed=%v, err=%v", replay, replayChanged, replayErr)
+	}
+	events, _ := svc.Events(created.ID)
+	recoveryEvents := 0
+	for _, event := range events {
+		if event.Kind == task.EventKindBlackboardConclusion && event.Payload["reason"] == "dispatch_recovery" {
+			recoveryEvents++
+		}
+	}
+	if recoveryEvents != 1 {
+		t.Fatalf("dispatch recovery events = %d, want 1", recoveryEvents)
+	}
+	found, _ := svc.Get(created.ID)
+	if found.Status != task.StatusRunning {
+		t.Fatalf("recovery changed Task status to %q", found.Status)
+	}
+}
+
+func TestReconcileStrandedBlackboardConclusionRecoveriesExcludesInitialDispatch(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
+	_, _ = svc.UpdateStatus(created.ID, task.StatusRunning)
+	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
+	now := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)
+	makePending := func(turn string) task.BlackboardConclusionReceipt {
+		r, _, _ := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID, "session-1", turn,
+			task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1"}, task.SemanticDebtWatermarks{SourceWork: 1})
+		r, _, _ = svc.ClaimBlackboardConclusionDispatch(r.ID, 0)
+		return r
+	}
+	initialOnly := makePending("turn-initial-only")
+	_, _, _ = svc.MarkBlackboardConclusionAwaiting(initialOnly.DispatchRequestID, "control-initial-only")
+
+	repairSource := makePending("turn-repair")
+	_, _, _ = svc.MarkBlackboardConclusionAwaiting(repairSource.DispatchRequestID, "control-repair-source")
+	repair, _, _ := svc.HandleBlackboardConclusionFailure(repairSource.DispatchRequestID, task.BlackboardConclusionErrorInvalidResult, now, 0)
+	_, _, _ = svc.MarkBlackboardConclusionAwaiting(repair.DispatchRequestID, "control-repair")
+
+	retrySource := makePending("turn-retry")
+	_, _, _ = svc.MarkBlackboardConclusionAwaiting(retrySource.DispatchRequestID, "control-retry-source")
+	_, _, _ = svc.HandleBlackboardConclusionFailure(retrySource.DispatchRequestID, task.BlackboardConclusionErrorToolUseForbidden, now, 0)
+	retry, _, _ := svc.RetryBlackboardConclusion(retrySource.ID, "retry-key", now)
+	_, _, _ = svc.MarkBlackboardConclusionAwaiting(retry.DispatchRequestID, "control-retry")
+
+	reconciled, err := svc.ReconcileStrandedBlackboardConclusionRecoveries(now, time.Minute)
+	if err != nil || len(reconciled) != 2 {
+		t.Fatalf("startup reconciliation = %#v, err=%v", reconciled, err)
+	}
+	for _, dispatchID := range []string{repair.DispatchRequestID, retry.DispatchRequestID} {
+		got, lookupErr := svc.BlackboardConclusionByDispatchRequestID(dispatchID)
+		if lookupErr != nil || got.InternalState != task.BlackboardConclusionReceiptActionRequired {
+			t.Fatalf("reconciled %q = %#v, err=%v", dispatchID, got, lookupErr)
+		}
+	}
+	untouched, err := svc.BlackboardConclusionByDispatchRequestID(initialOnly.DispatchRequestID)
+	if err != nil || untouched.InternalState != task.BlackboardConclusionReceiptAwaitingResult || untouched.ExplicitRetryCount != 0 || untouched.RepairCount != 0 {
+		t.Fatalf("initial dispatch was reconciled = %#v, err=%v", untouched, err)
+	}
+	if _, _, err := svc.MarkBlackboardConclusionRecoveryActionRequired(initialOnly.DispatchRequestID, now, time.Minute); !errors.Is(err, task.ErrInvalidBlackboardConclusionReceipt) {
+		t.Fatalf("initial dispatch accepted by recovery seam: %v", err)
+	}
+	again, err := svc.ReconcileStrandedBlackboardConclusionRecoveries(now, time.Minute)
+	if err != nil || len(again) != 0 {
+		t.Fatalf("duplicate startup reconciliation = %#v, err=%v", again, err)
+	}
+	gotRepair, _ := svc.BlackboardConclusionByDispatchRequestID(repair.DispatchRequestID)
+	gotRetry, _ := svc.BlackboardConclusionByDispatchRequestID(retry.DispatchRequestID)
+	if gotRepair.AutomaticTurnCount != 2 || gotRepair.RepairCount != 1 || gotRepair.ErrorCode != task.BlackboardConclusionErrorInvalidResult ||
+		gotRetry.ExplicitRetryCount != 1 || gotRetry.ErrorCode != task.BlackboardConclusionErrorToolUseForbidden {
+		t.Fatalf("reconciliation changed counters: repair=%#v retry=%#v", gotRepair, gotRetry)
+	}
+	found, _ := svc.Get(created.ID)
+	if found.Status != task.StatusRunning {
+		t.Fatalf("startup reconciliation changed Task status to %q", found.Status)
 	}
 }
 

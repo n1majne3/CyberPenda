@@ -129,6 +129,9 @@ func (server *Server) BindProviderSession(taskID string, session runtime.Provide
 		source.SetAttemptResultSink(func(result runtime.ProviderSessionAttemptResult) {
 			server.acceptBlackboardConclusionResult(taskID, result)
 		})
+		source.SetAttemptResultValidationFailureSink(func(failure runtime.ProviderSessionAttemptResultValidationFailure) {
+			server.acceptBlackboardConclusionValidationFailure(taskID, failure)
+		})
 	}
 	return nil
 }

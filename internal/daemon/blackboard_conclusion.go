@@ -2,9 +2,12 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"pentest/internal/blackboardconclusion"
 	"pentest/internal/runtime"
@@ -28,9 +31,11 @@ type blackboardConclusionObservedTurn struct {
 // watermarks. The durable receipt created at the completed Turn boundary is
 // the source of truth exposed by Task APIs.
 type blackboardConclusionTracker struct {
-	mu      sync.Mutex
-	turns   map[blackboardConclusionTurnKey]blackboardConclusionObservedTurn
-	results map[string]queuedBlackboardConclusionResult
+	mu       sync.Mutex
+	turns    map[blackboardConclusionTurnKey]blackboardConclusionObservedTurn
+	results  map[string]queuedBlackboardConclusionResult
+	failures map[string]queuedBlackboardConclusionFailure
+	terminal map[string]queuedBlackboardConclusionTerminal
 }
 
 type queuedBlackboardConclusionResult struct {
@@ -38,10 +43,27 @@ type queuedBlackboardConclusionResult struct {
 	result runtime.ProviderSessionAttemptResult
 }
 
+type queuedBlackboardConclusionFailure struct {
+	taskID         string
+	sessionID      string
+	providerTurnID string
+	code           task.BlackboardConclusionErrorCode
+}
+
+type queuedBlackboardConclusionTerminal struct {
+	taskID         string
+	sessionID      string
+	providerTurnID string
+}
+
+const blackboardConclusionRetryCooldown time.Duration = 0
+
 func newBlackboardConclusionTracker() *blackboardConclusionTracker {
 	return &blackboardConclusionTracker{
-		turns:   make(map[blackboardConclusionTurnKey]blackboardConclusionObservedTurn),
-		results: make(map[string]queuedBlackboardConclusionResult),
+		turns:    make(map[blackboardConclusionTurnKey]blackboardConclusionObservedTurn),
+		results:  make(map[string]queuedBlackboardConclusionResult),
+		failures: make(map[string]queuedBlackboardConclusionFailure),
+		terminal: make(map[string]queuedBlackboardConclusionTerminal),
 	}
 }
 
@@ -58,23 +80,84 @@ func (tracker *blackboardConclusionTracker) deleteTask(taskID string) {
 			delete(tracker.results, requestID)
 		}
 	}
+	for requestID, queued := range tracker.failures {
+		if queued.taskID == taskID {
+			delete(tracker.failures, requestID)
+		}
+	}
+	for requestID, queued := range tracker.terminal {
+		if queued.taskID == taskID {
+			delete(tracker.terminal, requestID)
+		}
+	}
 }
 
 func (tracker *blackboardConclusionTracker) queueResult(taskID string, result runtime.ProviderSessionAttemptResult) {
 	tracker.mu.Lock()
-	tracker.results[result.RequestID] = queuedBlackboardConclusionResult{taskID: taskID, result: result}
+	if _, exists := tracker.results[result.RequestID]; !exists {
+		tracker.results[result.RequestID] = queuedBlackboardConclusionResult{taskID: taskID, result: result}
+	}
 	tracker.mu.Unlock()
 }
 
-func (tracker *blackboardConclusionTracker) takeResult(taskID, requestID string) (runtime.ProviderSessionAttemptResult, bool) {
+func (tracker *blackboardConclusionTracker) takeActionableResult(taskID, requestID string) (runtime.ProviderSessionAttemptResult, bool) {
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
 	queued, ok := tracker.results[requestID]
 	if !ok || queued.taskID != taskID {
 		return runtime.ProviderSessionAttemptResult{}, false
 	}
+	terminal := tracker.terminal[requestID]
+	if terminal.taskID != taskID || terminal.sessionID != queued.result.SessionID || terminal.providerTurnID != queued.result.ProviderTurnID {
+		return runtime.ProviderSessionAttemptResult{}, false
+	}
 	delete(tracker.results, requestID)
 	return queued.result, true
+}
+
+func (tracker *blackboardConclusionTracker) queueFailure(requestID string, failure queuedBlackboardConclusionFailure) {
+	tracker.mu.Lock()
+	prior, exists := tracker.failures[requestID]
+	if !exists || prior == failure || blackboardConclusionFailurePriority(failure.code) > blackboardConclusionFailurePriority(prior.code) {
+		tracker.failures[requestID] = failure
+	}
+	tracker.mu.Unlock()
+}
+
+func blackboardConclusionFailurePriority(code task.BlackboardConclusionErrorCode) int {
+	if code == task.BlackboardConclusionErrorToolUseForbidden {
+		return 2
+	}
+	return 1
+}
+
+func (tracker *blackboardConclusionTracker) takeActionableFailure(taskID, requestID string) (queuedBlackboardConclusionFailure, bool) {
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	queued, ok := tracker.failures[requestID]
+	if !ok || queued.taskID != taskID {
+		return queuedBlackboardConclusionFailure{}, false
+	}
+	terminal := tracker.terminal[requestID]
+	terminalMatches := terminal.taskID == queued.taskID && terminal.sessionID == queued.sessionID && terminal.providerTurnID == queued.providerTurnID
+	if queued.code != task.BlackboardConclusionErrorToolUseForbidden && !terminalMatches {
+		return queuedBlackboardConclusionFailure{}, false
+	}
+	return queued, true
+}
+
+func (tracker *blackboardConclusionTracker) markTerminal(requestID string, terminal queuedBlackboardConclusionTerminal) {
+	tracker.mu.Lock()
+	tracker.terminal[requestID] = terminal
+	tracker.mu.Unlock()
+}
+
+func (tracker *blackboardConclusionTracker) clearRequest(requestID string) {
+	tracker.mu.Lock()
+	delete(tracker.results, requestID)
+	delete(tracker.failures, requestID)
+	delete(tracker.terminal, requestID)
+	tracker.mu.Unlock()
 }
 
 func (server *Server) observeProviderSession(taskID, continuationID, sessionID string, lineage runtime.ProviderSessionTurnLineage, observation runtime.ProviderSessionObservation) {
@@ -82,7 +165,19 @@ func (server *Server) observeProviderSession(taskID, continuationID, sessionID s
 	if err != nil || found.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeAssisted {
 		return
 	}
-	if strings.TrimSpace(continuationID) == "" || lineage.Kind != runtime.RuntimeTurnKindWork {
+	if strings.TrimSpace(continuationID) == "" {
+		return
+	}
+	if lineage.Kind == runtime.RuntimeTurnKindControl {
+		switch observation.Kind {
+		case runtime.ProviderSessionObservationToolUse, runtime.ProviderSessionObservationToolResult:
+			server.acceptBlackboardConclusionControlFailure(taskID, sessionID, lineage)
+		case runtime.ProviderSessionObservationTurnCompleted:
+			server.acceptBlackboardConclusionControlTerminal(taskID, sessionID, lineage)
+		}
+		return
+	}
+	if lineage.Kind != runtime.RuntimeTurnKindWork {
 		return
 	}
 	turnID := strings.TrimSpace(observation.ProviderTurnID)
@@ -207,9 +302,7 @@ func (server *Server) dispatchBlackboardConclusion(ctx context.Context, pending 
 	if err != nil {
 		return err
 	}
-	if queued, ok := server.blackboardConclusions.takeResult(receipt.TaskID, receipt.DispatchRequestID); ok {
-		return server.applyBlackboardConclusionResult(ctx, receipt.TaskID, queued)
-	}
+	server.drainBlackboardConclusionCallbacks(ctx, receipt.TaskID, receipt.DispatchRequestID)
 	return nil
 }
 
@@ -220,21 +313,256 @@ Describe one Attempt, at least one tested target, and only reusable produced tar
 Do not call tools, continue testing, include raw tool output or reasoning, finish the Task, or write the Blackboard directly.`, baseRevision)
 }
 
+func repairBlackboardDirective(baseRevision int) string {
+	return fmt.Sprintf(`Your previous Blackboard conclusion result was invalid.
+Stop security testing and correct only that semantic result.
+Return exactly one JSON object with schema runtime-attempt-result/v1 and base_revision %d.
+Do not call tools, continue testing, include raw tool output or reasoning, finish the Task, or write the Blackboard directly.`, baseRevision)
+}
+
+func (server *Server) acceptBlackboardConclusionValidationFailure(taskID string, failure runtime.ProviderSessionAttemptResultValidationFailure) {
+	if !server.isCanonicalBlackboardConclusionCallback(taskID, failure.RequestID, failure.SessionID, failure.ProviderTurnID) {
+		return
+	}
+	receipt, err := server.tasks.BlackboardConclusionByDispatchRequestID(failure.RequestID)
+	if err != nil || receipt.TaskID != taskID || receipt.SourceSessionID != failure.SessionID ||
+		failure.ValidationErrorCode != runtime.ProviderSessionAttemptResultInvalid || !blackboardConclusionReceiptAcceptsCallback(receipt) {
+		return
+	}
+	server.blackboardConclusions.queueFailure(failure.RequestID, queuedBlackboardConclusionFailure{
+		taskID: taskID, sessionID: failure.SessionID, providerTurnID: failure.ProviderTurnID,
+		code: task.BlackboardConclusionErrorInvalidResult,
+	})
+	server.enqueueProviderTaskControl(taskID, func(ctx context.Context) {
+		server.drainBlackboardConclusionCallbacks(ctx, taskID, failure.RequestID)
+	})
+}
+
+func (server *Server) acceptBlackboardConclusionControlFailure(taskID, sessionID string, lineage runtime.ProviderSessionTurnLineage) {
+	receipt, err := server.tasks.BlackboardConclusionByDispatchRequestID(lineage.RequestID)
+	if err != nil || receipt.TaskID != taskID || receipt.SourceSessionID != strings.TrimSpace(sessionID) ||
+		!blackboardConclusionReceiptAcceptsCallback(receipt) {
+		return
+	}
+	server.blackboardConclusions.queueFailure(lineage.RequestID, queuedBlackboardConclusionFailure{
+		taskID: taskID, sessionID: sessionID, providerTurnID: lineage.ProviderTurnID,
+		code: task.BlackboardConclusionErrorToolUseForbidden,
+	})
+	server.enqueueProviderTaskControl(taskID, func(ctx context.Context) {
+		server.drainBlackboardConclusionCallbacks(ctx, taskID, lineage.RequestID)
+	})
+}
+
+func (server *Server) acceptBlackboardConclusionControlTerminal(taskID, sessionID string, lineage runtime.ProviderSessionTurnLineage) {
+	receipt, err := server.tasks.BlackboardConclusionByDispatchRequestID(lineage.RequestID)
+	if err != nil || receipt.TaskID != taskID || receipt.SourceSessionID != strings.TrimSpace(sessionID) {
+		return
+	}
+	stateAllowsTerminal := receipt.InternalState == task.BlackboardConclusionReceiptDispatchRequested ||
+		receipt.InternalState == task.BlackboardConclusionReceiptRepairDispatchRequested ||
+		receipt.InternalState == task.BlackboardConclusionReceiptAwaitingResult
+	if !stateAllowsTerminal || (receipt.ControlTurnID != "" && receipt.ControlTurnID != lineage.ProviderTurnID) {
+		return
+	}
+	server.blackboardConclusions.markTerminal(lineage.RequestID, queuedBlackboardConclusionTerminal{
+		taskID: taskID, sessionID: sessionID, providerTurnID: lineage.ProviderTurnID,
+	})
+	server.enqueueProviderTaskControl(taskID, func(ctx context.Context) {
+		server.drainBlackboardConclusionCallbacks(ctx, taskID, lineage.RequestID)
+	})
+}
+
+func (server *Server) drainBlackboardConclusionCallbacks(ctx context.Context, taskID, requestID string) {
+	if failure, ok := server.blackboardConclusions.takeActionableFailure(taskID, requestID); ok {
+		receipt, err := server.tasks.BlackboardConclusionByDispatchRequestID(requestID)
+		if err == nil && receipt.TaskID == taskID && receipt.SourceSessionID == failure.sessionID &&
+			receipt.ControlTurnID == failure.providerTurnID {
+			if handleErr := server.handleBlackboardConclusionFailure(taskID, requestID, failure.code); handleErr != nil {
+				server.logger.Printf("assisted conclusion: record failure Task %s request %s: %v", taskID, requestID, handleErr)
+			} else {
+				server.blackboardConclusions.clearRequest(requestID)
+			}
+		}
+		return
+	}
+	if result, ok := server.blackboardConclusions.takeActionableResult(taskID, requestID); ok {
+		if err := server.applyBlackboardConclusionResult(ctx, taskID, result); err != nil {
+			server.logger.Printf("assisted conclusion: apply Task %s request %s: %v", taskID, requestID, err)
+		}
+	}
+}
+
+func (server *Server) handleBlackboardConclusionFailure(taskID, requestID string, code task.BlackboardConclusionErrorCode) error {
+	receipt, dispatchRepair, err := server.tasks.HandleBlackboardConclusionFailure(
+		requestID, code, time.Now().UTC(), blackboardConclusionRetryCooldown,
+	)
+	if err != nil {
+		return err
+	}
+	if dispatchRepair && receipt.InternalState == task.BlackboardConclusionReceiptRepairDispatchRequested {
+		queued := server.enqueueProviderTaskControl(taskID, func(ctx context.Context) {
+			if err := server.dispatchBlackboardConclusionRepair(ctx, receipt); err != nil {
+				server.recoverBlackboardConclusionDispatchFailure(receipt, err)
+			}
+		})
+		if !queued {
+			server.recoverBlackboardConclusionDispatchFailure(receipt, fmt.Errorf("provider control queue is closed"))
+		}
+	}
+	return nil
+}
+
+func (server *Server) dispatchBlackboardConclusionRepair(ctx context.Context, receipt task.BlackboardConclusionReceipt) error {
+	session, ok := server.providerSessions.get(receipt.TaskID)
+	if !ok || session.SessionID() != receipt.SourceSessionID || receipt.BaseRevision == nil {
+		return fmt.Errorf("source provider session is not live")
+	}
+	if err := waitForBlackboardConclusionEligibility(ctx, receipt.NextEligibleAt, time.Now); err != nil {
+		return err
+	}
+	result, err := session.SendTurn(ctx, runtime.ProviderSessionRequest{
+		RequestID:                receipt.DispatchRequestID,
+		Message:                  repairBlackboardDirective(*receipt.BaseRevision),
+		ModelProviderID:          receipt.SourceSelection.ModelProviderID,
+		Model:                    receipt.SourceSelection.Model,
+		RequestedReasoningEffort: receipt.SourceSelection.ReasoningEffort,
+		TurnKind:                 runtime.RuntimeTurnKindControl,
+	}, nil)
+	if err != nil {
+		return err
+	}
+	if result.RequestID != receipt.DispatchRequestID || result.SessionID != receipt.SourceSessionID || strings.TrimSpace(result.ProviderTurnID) == "" {
+		return fmt.Errorf("provider returned mismatched Repair Turn correlation")
+	}
+	_, _, err = server.tasks.MarkBlackboardConclusionAwaiting(receipt.DispatchRequestID, result.ProviderTurnID)
+	if err == nil {
+		server.drainBlackboardConclusionCallbacks(ctx, receipt.TaskID, receipt.DispatchRequestID)
+	}
+	return err
+}
+
+func waitForBlackboardConclusionEligibility(ctx context.Context, eligibleAt *time.Time, now func() time.Time) error {
+	if eligibleAt == nil {
+		return nil
+	}
+	delay := eligibleAt.Sub(now().UTC())
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func (server *Server) handleRetryBlackboardConclusion(response http.ResponseWriter, request *http.Request) {
+	projectID := request.PathValue("id")
+	taskID := request.PathValue("task_id")
+	if !server.requireProject(response, projectID) {
+		return
+	}
+	found, err := server.tasks.Get(taskID)
+	if err != nil || found.ProjectID != projectID {
+		writeError(response, http.StatusNotFound, "task not found")
+		return
+	}
+	idempotencyKey := strings.TrimSpace(request.Header.Get("Idempotency-Key"))
+	if idempotencyKey == "" {
+		writeError(response, http.StatusBadRequest, "Idempotency-Key is required")
+		return
+	}
+	retried, won, err := server.tasks.RetryLatestBlackboardConclusion(taskID, idempotencyKey, time.Now().UTC())
+	if err != nil {
+		if errors.Is(err, task.ErrBlackboardConclusionRetryCooldown) {
+			writeError(response, http.StatusConflict, "Blackboard conclusion retry is not yet available")
+			return
+		}
+		writeError(response, http.StatusConflict, "Blackboard conclusion cannot be retried")
+		return
+	}
+	if won {
+		queued := server.enqueueProviderTaskControl(taskID, func(ctx context.Context) {
+			if err := server.dispatchBlackboardConclusionRepair(ctx, retried); err != nil {
+				server.recoverBlackboardConclusionDispatchFailure(retried, err)
+			}
+		})
+		if !queued {
+			server.recoverBlackboardConclusionDispatchFailure(retried, fmt.Errorf("provider control queue is closed"))
+		}
+	}
+	detailed, err := server.taskDetail(taskID)
+	if err != nil {
+		writeTaskError(response, err)
+		return
+	}
+	status := http.StatusOK
+	if won {
+		status = http.StatusAccepted
+	}
+	writeJSON(response, status, detailed)
+}
+
+func (server *Server) recoverBlackboardConclusionDispatchFailure(receipt task.BlackboardConclusionReceipt, cause error) {
+	_, _, err := server.tasks.MarkBlackboardConclusionRecoveryActionRequired(
+		receipt.DispatchRequestID, time.Now().UTC(), blackboardConclusionRetryCooldown,
+	)
+	if err != nil {
+		server.logger.Printf("assisted conclusion: recover failed dispatch Task %s receipt %s: %v (dispatch error: %v)", receipt.TaskID, receipt.ID, err, cause)
+		return
+	}
+	server.logger.Printf("assisted conclusion: dispatch requires operator action Task %s receipt %s: %v", receipt.TaskID, receipt.ID, cause)
+}
+
+func (server *Server) reconcileStrandedBlackboardConclusionRecoveries() {
+	receipts, err := server.tasks.ReconcileStrandedBlackboardConclusionRecoveries(
+		time.Now().UTC(), blackboardConclusionRetryCooldown,
+	)
+	if err != nil {
+		server.logger.Printf("assisted conclusion: reconcile stranded dispatches: %v", err)
+		return
+	}
+	if len(receipts) > 0 {
+		server.logger.Printf("assisted conclusion: %d stranded dispatch(es) require operator action", len(receipts))
+	}
+}
+
 func (server *Server) acceptBlackboardConclusionResult(taskID string, result runtime.ProviderSessionAttemptResult) {
+	if !server.isCanonicalBlackboardConclusionCallback(taskID, result.RequestID, result.SessionID, result.ProviderTurnID) {
+		return
+	}
 	receipt, err := server.tasks.BlackboardConclusionByDispatchRequestID(result.RequestID)
-	if err != nil || receipt.TaskID != taskID || receipt.SourceSessionID != result.SessionID {
+	if err != nil || receipt.TaskID != taskID || receipt.SourceSessionID != result.SessionID ||
+		!blackboardConclusionReceiptAcceptsCallback(receipt) {
 		return
 	}
 	server.blackboardConclusions.queueResult(taskID, result)
 	server.enqueueProviderTaskControl(taskID, func(ctx context.Context) {
-		queued, ok := server.blackboardConclusions.takeResult(taskID, result.RequestID)
-		if !ok {
-			return
-		}
-		if err := server.applyBlackboardConclusionResult(ctx, taskID, queued); err != nil {
-			server.logger.Printf("assisted conclusion: apply Task %s request %s: %v", taskID, queued.RequestID, err)
-		}
+		server.drainBlackboardConclusionCallbacks(ctx, taskID, result.RequestID)
 	})
+}
+
+func blackboardConclusionReceiptAcceptsCallback(receipt task.BlackboardConclusionReceipt) bool {
+	return receipt.InternalState == task.BlackboardConclusionReceiptDispatchRequested ||
+		receipt.InternalState == task.BlackboardConclusionReceiptRepairDispatchRequested ||
+		receipt.InternalState == task.BlackboardConclusionReceiptAwaitingResult
+}
+
+func (server *Server) isCanonicalBlackboardConclusionCallback(taskID, requestID, sessionID, providerTurnID string) bool {
+	session, ok := server.providerSessions.get(taskID)
+	if !ok || session.SessionID() != strings.TrimSpace(sessionID) {
+		return false
+	}
+	resolver, ok := session.(runtime.ProviderSessionCompleteTurnLineageResolver)
+	if !ok {
+		return false
+	}
+	lineage, resolved := resolver.ResolveProviderSessionTurnLineage(requestID, providerTurnID)
+	return resolved && lineage.Kind == runtime.RuntimeTurnKindControl &&
+		lineage.RequestID == strings.TrimSpace(requestID) && lineage.ProviderTurnID == strings.TrimSpace(providerTurnID)
 }
 
 func (server *Server) applyBlackboardConclusionResult(ctx context.Context, taskID string, result runtime.ProviderSessionAttemptResult) error {
@@ -246,7 +574,12 @@ func (server *Server) applyBlackboardConclusionResult(ctx context.Context, taskI
 		return fmt.Errorf("Conclude Turn result correlation mismatch")
 	}
 	if result.Validated.Result.BaseRevision != *receipt.BaseRevision {
-		return fmt.Errorf("Conclude Turn result base revision mismatch")
+		server.blackboardConclusions.queueFailure(result.RequestID, queuedBlackboardConclusionFailure{
+			taskID: taskID, sessionID: result.SessionID, providerTurnID: result.ProviderTurnID,
+			code: task.BlackboardConclusionErrorInvalidResult,
+		})
+		server.drainBlackboardConclusionCallbacks(ctx, taskID, result.RequestID)
+		return nil
 	}
 	receipt, _, err = server.tasks.MarkBlackboardConclusionValidated(result.RequestID, result.Validated.CanonicalJSON)
 	if err != nil {
@@ -269,6 +602,9 @@ func (server *Server) applyBlackboardConclusionResult(ctx context.Context, taskI
 		return err
 	}
 	_, _, err = server.tasks.MarkBlackboardConclusionApplied(result.RequestID, applied.Revision)
+	if err == nil {
+		server.blackboardConclusions.clearRequest(result.RequestID)
+	}
 	return err
 }
 

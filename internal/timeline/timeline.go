@@ -104,6 +104,15 @@ func blackboardConclusionItem(event task.Event) (Item, bool) {
 		if revision, ok := event.Payload["applied_revision"]; ok {
 			content += " at revision " + fmt.Sprint(revision)
 		}
+	case "repair_requested":
+		content = "Blackboard conclusion repair requested"
+	case "action_required":
+		content = "Blackboard conclusion requires action"
+		if code := strings.TrimSpace(stringValue(event.Payload, "error_code")); code != "" {
+			content += " (" + code + ")"
+		}
+	case "retry_requested":
+		content = "Blackboard conclusion retry requested"
 	default:
 		return Item{}, false
 	}

@@ -167,7 +167,7 @@ func (s *providerSessionAdapter) recordProviderSessionTurnKind(requestID, provid
 
 func (s *providerSessionAdapter) recordProviderSessionTurnLineage(request ProviderSessionRequest, providerTurnID string) {
 	s.mu.Lock()
-	lineage := providerSessionTurnLineage(request)
+	lineage := providerSessionTurnLineage(request, providerTurnID)
 	s.requestLineage[strings.TrimSpace(request.RequestID)] = lineage
 	if providerTurnID = strings.TrimSpace(providerTurnID); providerTurnID != "" {
 		s.providerLineage[providerTurnID] = lineage

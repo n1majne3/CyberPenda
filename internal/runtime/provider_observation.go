@@ -99,10 +99,13 @@ type ProviderSessionTurnLineageResolver interface {
 	ResolveProviderSessionTurnKind(requestID, providerTurnID string) (RuntimeTurnKind, bool)
 }
 
-// ProviderSessionTurnLineage freezes the Harness-owned kind and explicit
-// Runtime Turn Selection that were sent for one provider request. Provider
-// notifications may supply correlation, but never choose or rewrite lineage.
+// ProviderSessionTurnLineage freezes canonical request/Turn correlation, the
+// Harness-owned kind, and the explicit Runtime Turn Selection sent for one
+// provider request. Provider notifications may supply lookup keys, but never
+// choose or rewrite the returned lineage.
 type ProviderSessionTurnLineage struct {
+	RequestID                string
+	ProviderTurnID           string
 	Kind                     RuntimeTurnKind
 	ModelProviderID          string
 	Model                    string
@@ -116,8 +119,10 @@ type ProviderSessionCompleteTurnLineageResolver interface {
 	ResolveProviderSessionTurnLineage(requestID, providerTurnID string) (ProviderSessionTurnLineage, bool)
 }
 
-func providerSessionTurnLineage(request ProviderSessionRequest) ProviderSessionTurnLineage {
+func providerSessionTurnLineage(request ProviderSessionRequest, providerTurnID string) ProviderSessionTurnLineage {
 	return ProviderSessionTurnLineage{
+		RequestID:                strings.TrimSpace(request.RequestID),
+		ProviderTurnID:           strings.TrimSpace(providerTurnID),
 		Kind:                     normalizeRuntimeTurnKind(request.TurnKind),
 		ModelProviderID:          strings.TrimSpace(request.ModelProviderID),
 		Model:                    strings.TrimSpace(request.Model),

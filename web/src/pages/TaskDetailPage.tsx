@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, type KeyboardEvent, type RefObject } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, ChevronRight, Wrench, User, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2, Maximize2, Minimize2, Flag } from "lucide-react";
+import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, ChevronRight, Wrench, User, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2, Maximize2, Minimize2, Flag, RefreshCcw, TriangleAlert } from "lucide-react";
 import { apiDelete, apiGet, apiPost, type ModelProvider, type ProviderPermissionRequest, type RuntimeActivity, type RuntimePlugin, type RuntimeProfile, type Task, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Badge, Select, Textarea } from "@/components/ui";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
@@ -18,6 +18,10 @@ function newSteerRequestID() {
     return crypto.randomUUID();
   }
   return `steer-${Math.random().toString(36).slice(2)}-${performance.now().toString(36)}`;
+}
+
+function newBlackboardRetryID() {
+  return `blackboard-retry-${newSteerRequestID()}`;
 }
 
 export function TaskDetailPage() {
@@ -43,6 +47,7 @@ export function TaskDetailPage() {
   const [modelProviders, setModelProviders] = useState<ModelProvider[]>([]);
   const [runtimePlugins, setRuntimePlugins] = useState<RuntimePlugin[]>([]);
   const [permissionBusy, setPermissionBusy] = useState("");
+  const [retryingConclusion, setRetryingConclusion] = useState(false);
   const conversationViewport = useRef<HTMLDivElement>(null);
   const conversationEnd = useRef<HTMLDivElement>(null);
   const autoFollowRef = useRef(true);
@@ -222,6 +227,22 @@ export function TaskDetailPage() {
       loadAll();
     } catch (e) {
       setActionError((e as Error).message);
+    }
+  }
+
+  async function retryBlackboardConclusion() {
+    if (retryingConclusion) return;
+    setRetryingConclusion(true);
+    try {
+      const retried = await apiPost<Task>(`${base}/blackboard-conclusion/retry`, {}, {
+        headers: { "Idempotency-Key": newBlackboardRetryID() },
+      });
+      setTask(retried);
+      setActionError(null);
+    } catch (e) {
+      setActionError((e as Error).message);
+    } finally {
+      setRetryingConclusion(false);
     }
   }
 
@@ -518,6 +539,16 @@ export function TaskDetailPage() {
           </Button>
         </div>
       </div>
+
+      {task.blackboard_conclusion?.state === "action_required" && (
+        <BlackboardConclusionRecovery
+          errorCode={task.blackboard_conclusion.error_code}
+          retryAvailable={task.blackboard_conclusion.retry_available === true}
+          nextEligibleAt={task.blackboard_conclusion.next_eligible_at}
+          retrying={retryingConclusion}
+          onRetry={() => void retryBlackboardConclusion()}
+        />
+      )}
 
       <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border px-2 sm:px-3">
         <button
@@ -973,18 +1004,67 @@ function BlackboardConclusionBadge({ task }: { task: Task }) {
   const state = task.blackboard_conclusion?.state ?? "clean";
   const sourceTurn = task.blackboard_conclusion?.source_turn_id;
   const appliedRevision = task.blackboard_conclusion?.applied_revision;
-  const label = `Blackboard · ${mode} · ${state}${appliedRevision !== undefined ? ` · applied revision ${appliedRevision}` : ""}`;
+  const stateLabel = state === "action_required" ? "action required" : state;
+  const label = `Blackboard · ${mode} · ${stateLabel}${appliedRevision !== undefined ? ` · applied revision ${appliedRevision}` : ""}`;
   const details = [label];
   if (sourceTurn) details.push(`source Turn ${sourceTurn}`);
   if (appliedRevision !== undefined) details.push(`applied revision ${appliedRevision}`);
   return (
     <Badge
-      variant={state === "pending" || state === "concluding" ? "warning" : "outline"}
+      variant={state === "action_required" ? "destructive" : state === "pending" || state === "concluding" ? "warning" : "outline"}
       data-testid="blackboard-conclusion-state"
       title={details.join(" · ")}
     >
       {label}
     </Badge>
+  );
+}
+
+const blackboardConclusionErrorCopy: Record<string, string> = {
+  semantic_conclusion_invalid_result: "The runtime returned an invalid Blackboard conclusion.",
+  semantic_conclusion_repair_exhausted: "The runtime could not produce a valid Blackboard conclusion after one repair attempt.",
+  conclude_tool_use_forbidden: "The runtime attempted to use a tool while concluding Blackboard state.",
+};
+
+function BlackboardConclusionRecovery({
+  errorCode,
+  retryAvailable,
+  nextEligibleAt,
+  retrying,
+  onRetry,
+}: {
+  errorCode?: string;
+  retryAvailable: boolean;
+  nextEligibleAt?: string;
+  retrying: boolean;
+  onRetry: () => void;
+}) {
+  const code = errorCode?.trim() || "conclusion_action_required";
+  const message = blackboardConclusionErrorCopy[code] ?? "Blackboard conclusion requires operator attention.";
+  return (
+    <div
+      role="alert"
+      aria-label="Blackboard conclusion requires attention"
+      className="flex shrink-0 flex-col gap-2 border-b border-destructive/30 bg-destructive/5 px-3 py-2 text-sm sm:flex-row sm:items-center"
+    >
+      <TriangleAlert className="h-4 w-4 shrink-0 text-destructive" aria-hidden="true" />
+      <div className="min-w-0 flex-1">
+        <p className="text-foreground">{message}</p>
+        <p className="break-all font-mono text-xs text-muted-foreground">{code}</p>
+      </div>
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        onClick={onRetry}
+        disabled={retrying || !retryAvailable}
+        aria-label="Retry Blackboard conclusion"
+        title={!retryAvailable && nextEligibleAt ? `Retry available after ${formatDateTime(nextEligibleAt)}` : "Retry Blackboard conclusion"}
+      >
+        <RefreshCcw className={`h-4 w-4 ${retrying ? "animate-spin motion-reduce:animate-none" : ""}`} />
+        Retry
+      </Button>
+    </div>
   );
 }
 
