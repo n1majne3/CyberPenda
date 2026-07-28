@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -9,6 +10,8 @@ import (
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
 )
+
+var errAssistedConclusionUnsupported = errors.New("assisted_conclusion_unsupported: Runtime does not expose the complete persistent SendTurn, normalized Tool/Turn event, and closed AttemptResult contract")
 
 // ProviderSessionLaunchRequest is the launch-assembly seam for a persistent
 // provider session. The request is deliberately Task/Continuation scoped;
@@ -38,6 +41,75 @@ type ProviderSessionBinding struct {
 // private transport before returning.
 type ProviderSessionFactory interface {
 	Open(context.Context, ProviderSessionLaunchRequest) (ProviderSessionBinding, error)
+}
+
+// ProviderSessionRecoveryLiveness is the closed result of a non-spawning
+// ownership probe. It deliberately matches Runtime Activity liveness.
+type ProviderSessionRecoveryLiveness string
+
+const (
+	ProviderSessionRecoveryLive     ProviderSessionRecoveryLiveness = "live"
+	ProviderSessionRecoveryOffline  ProviderSessionRecoveryLiveness = "offline"
+	ProviderSessionRecoveryOrphaned ProviderSessionRecoveryLiveness = "orphaned"
+	ProviderSessionRecoveryUnknown  ProviderSessionRecoveryLiveness = "unknown"
+)
+
+// ProviderSessionRecoveryRequest identifies one exact durable Runtime and the
+// control request whose callbacks the daemon needs to recover. Metadata is
+// copied from the supplied Continuation so a factory never needs to query Task
+// storage or infer identity from provider output.
+type ProviderSessionRecoveryRequest struct {
+	Task              task.Task
+	Continuation      task.TaskContinuation
+	ReceiptID         string
+	SourceSessionID   string
+	SourceRequestID   string
+	DispatchRequestID string
+	ContainerID       string
+	NativeSessionID   string
+	NativeSessionPath string
+}
+
+// ProviderSessionRecoveryResult returns a binding only when ownership of the
+// exact existing Runtime is proven live. Non-live results must not carry a
+// binding.
+type ProviderSessionRecoveryResult struct {
+	Liveness ProviderSessionRecoveryLiveness
+	Binding  ProviderSessionBinding
+}
+
+// ProviderSessionRecoveryFactory is an optional restart capability. Recover
+// MUST only probe or attach to the exact Runtime named by the request. It MUST
+// NOT call Open, launch a process/container, create a Continuation, or resume a
+// provider-native session in a replacement Runtime.
+type ProviderSessionRecoveryFactory interface {
+	Recover(context.Context, ProviderSessionRecoveryRequest) (ProviderSessionRecoveryResult, error)
+}
+
+// ProviderSessionRecoveryOutcome is safe coordinator input. It exposes no raw
+// provider data and distinguishes successful adoption from a liveness probe.
+type ProviderSessionRecoveryOutcome struct {
+	TaskID   string
+	Liveness ProviderSessionRecoveryLiveness
+	Adopted  bool
+	Warning  string
+	Activity task.RuntimeActivity
+}
+
+// ProviderSessionRecoveryReport exposes the proven-live exclusion set used by
+// startup lifecycle reconciliation together with every closed probe outcome.
+type ProviderSessionRecoveryReport struct {
+	LiveTaskIDs                   []string
+	LifecycleProtectedTaskIDs     []string
+	ReconciliationExcludedTaskIDs []string
+	Outcomes                      []ProviderSessionRecoveryOutcome
+}
+
+// ProviderSessionAssistedConclusionReporter is the additive capability seam
+// used before Task creation. Persistent SendTurn alone is insufficient: the
+// factory must also promise bounded Tool/Turn observations for this provider.
+type ProviderSessionAssistedConclusionReporter interface {
+	SupportsAssistedConclusion(runtimeprofile.Provider) bool
 }
 
 type ProviderSessionFactoryFunc func(context.Context, ProviderSessionLaunchRequest) (ProviderSessionBinding, error)
@@ -88,4 +160,29 @@ func validateProviderSessionBinding(binding ProviderSessionBinding) error {
 		return fmt.Errorf("provider session factory returned no session adapter")
 	}
 	return nil
+}
+
+func validateAssistedConclusionBinding(binding ProviderSessionBinding) error {
+	if !binding.Session.Capabilities().AssistedConclusion {
+		return errAssistedConclusionUnsupported
+	}
+	if _, ok := binding.Session.(runtime.ProviderSessionObservationSink); !ok {
+		return errAssistedConclusionUnsupported
+	}
+	if _, ok := binding.Session.(runtime.ProviderSessionCompleteTurnLineageResolver); !ok {
+		return errAssistedConclusionUnsupported
+	}
+	if _, ok := binding.Session.(runtime.ProviderSessionAttemptResultSource); !ok {
+		return errAssistedConclusionUnsupported
+	}
+	return nil
+}
+
+func (server *Server) supportsAssistedConclusion(provider runtimeprofile.Provider) bool {
+	plugin, ok := server.runtimePlugins.Get(string(provider))
+	if !ok || !plugin.Capabilities.PersistentSession || !plugin.Capabilities.SendTurn {
+		return false
+	}
+	reporter, ok := server.providerSessionFactory.(ProviderSessionAssistedConclusionReporter)
+	return ok && reporter.SupportsAssistedConclusion(provider)
 }

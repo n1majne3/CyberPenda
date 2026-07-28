@@ -73,6 +73,11 @@ type providerSessionAdapter struct {
 	calls             map[string]providerSessionCallResult
 	requests          map[string]providerSessionRequestIdentity
 	eventSink         ProviderSessionEmit
+	observationSink   ProviderSessionObserve
+	requestTurnKind   map[string]RuntimeTurnKind
+	providerTurnKind  map[string]RuntimeTurnKind
+	requestLineage    map[string]ProviderSessionTurnLineage
+	providerLineage   map[string]ProviderSessionTurnLineage
 	settlements       map[string]providerSettlement
 	settlementSeq     uint64
 	settlementChanged chan struct{}
@@ -87,6 +92,8 @@ func newProviderSessionAdapter(provider string, transport ProviderSessionTranspo
 		capabilities: capabilities, sessionID: strings.TrimSpace(sessionID),
 		activeTurnID: strings.TrimSpace(activeTurnID), calls: map[string]providerSessionCallResult{},
 		requests: map[string]providerSessionRequestIdentity{}, settlements: map[string]providerSettlement{},
+		requestTurnKind: map[string]RuntimeTurnKind{}, providerTurnKind: map[string]RuntimeTurnKind{},
+		requestLineage: map[string]ProviderSessionTurnLineage{}, providerLineage: map[string]ProviderSessionTurnLineage{},
 		settlementChanged: make(chan struct{}),
 	}
 }
@@ -123,6 +130,63 @@ func (s *providerSessionAdapter) SetEventSink(sink ProviderSessionEmit) {
 	s.mu.Unlock()
 }
 
+func (s *providerSessionAdapter) SetObservationSink(sink ProviderSessionObserve) {
+	s.mu.Lock()
+	s.observationSink = sink
+	s.mu.Unlock()
+}
+
+func (s *providerSessionAdapter) emitObservation(observation ProviderSessionObservation) {
+	if observation.Validate() != nil {
+		return
+	}
+	s.mu.Lock()
+	sink := s.observationSink
+	s.mu.Unlock()
+	if sink != nil {
+		sink(observation)
+	}
+}
+
+func (s *providerSessionAdapter) ResolveProviderSessionTurnKind(requestID, providerTurnID string) (RuntimeTurnKind, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if kind, ok := s.requestTurnKind[strings.TrimSpace(requestID)]; ok {
+		return kind, true
+	}
+	kind, ok := s.providerTurnKind[strings.TrimSpace(providerTurnID)]
+	return kind, ok
+}
+
+func (s *providerSessionAdapter) ResolveProviderSessionTurnLineage(requestID, providerTurnID string) (ProviderSessionTurnLineage, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if lineage, ok := s.requestLineage[strings.TrimSpace(requestID)]; ok {
+		return lineage, true
+	}
+	lineage, ok := s.providerLineage[strings.TrimSpace(providerTurnID)]
+	return lineage, ok
+}
+
+func (s *providerSessionAdapter) recordProviderSessionTurnKind(requestID, providerTurnID string, kind RuntimeTurnKind) {
+	s.mu.Lock()
+	s.requestTurnKind[strings.TrimSpace(requestID)] = kind
+	if providerTurnID = strings.TrimSpace(providerTurnID); providerTurnID != "" {
+		s.providerTurnKind[providerTurnID] = kind
+	}
+	s.mu.Unlock()
+}
+
+func (s *providerSessionAdapter) recordProviderSessionTurnLineage(request ProviderSessionRequest, providerTurnID string) {
+	s.mu.Lock()
+	lineage := providerSessionTurnLineage(request, providerTurnID)
+	s.requestLineage[strings.TrimSpace(request.RequestID)] = lineage
+	if providerTurnID = strings.TrimSpace(providerTurnID); providerTurnID != "" {
+		s.providerLineage[providerTurnID] = lineage
+	}
+	s.mu.Unlock()
+}
+
 func (s *providerSessionAdapter) SendTurn(ctx context.Context, request ProviderSessionRequest, emit ProviderSessionEmit) (ProviderSessionResult, error) {
 	return s.run(ctx, ProviderSessionModeSendTurn, ProviderSessionCapabilitySendTurn, request, emit, s.methods.send)
 }
@@ -133,6 +197,7 @@ func (s *providerSessionAdapter) InterruptTurn(ctx context.Context, request Prov
 
 func (s *providerSessionAdapter) InterruptThenReplace(ctx context.Context, request ProviderSessionRequest, emit ProviderSessionEmit) (ProviderSessionResult, error) {
 	request.RequestID = strings.TrimSpace(request.RequestID)
+	request.TurnKind = normalizeRuntimeTurnKind(request.TurnKind)
 	if request.RequestID == "" {
 		return ProviderSessionResult{}, ErrInvalidProviderSessionRequest
 	}
@@ -154,6 +219,8 @@ func (s *providerSessionAdapter) InterruptThenReplace(ctx context.Context, reque
 	if err := s.begin(request.RequestID, ProviderSessionModeInterruptThenReplace, fingerprint); err != nil {
 		return ProviderSessionResult{}, err
 	}
+	s.recordProviderSessionTurnKind(request.RequestID, "", request.TurnKind)
+	s.recordProviderSessionTurnLineage(request, "")
 	defer s.end(request.RequestID, ProviderSessionModeInterruptThenReplace)
 
 	s.emit(emit, ProviderSessionModeInterruptThenReplace, "requested", request.RequestID, s.currentTurn())
@@ -184,6 +251,8 @@ func (s *providerSessionAdapter) InterruptThenReplace(ctx context.Context, reque
 		s.emit(emit, ProviderSessionModeInterruptThenReplace, "failed", request.RequestID, s.currentTurn())
 		return ProviderSessionResult{}, err
 	}
+	s.recordProviderSessionTurnKind(request.RequestID, replacement.ProviderTurnID, request.TurnKind)
+	s.recordProviderSessionTurnLineage(request, replacement.ProviderTurnID)
 	s.emit(emit, ProviderSessionModeInterruptThenReplace, "started", request.RequestID, replacement.ProviderTurnID)
 	replacement.Mode = ProviderSessionModeInterruptThenReplace
 	replacement.Outcome = "started"
@@ -281,6 +350,7 @@ func (s *providerSessionAdapter) SessionUnexpectedOffline() bool {
 
 func (s *providerSessionAdapter) run(ctx context.Context, mode ProviderSessionMode, capability ProviderSessionCapability, request ProviderSessionRequest, emit ProviderSessionEmit, method string) (ProviderSessionResult, error) {
 	request.RequestID = strings.TrimSpace(request.RequestID)
+	request.TurnKind = normalizeRuntimeTurnKind(request.TurnKind)
 	if request.RequestID == "" {
 		return ProviderSessionResult{}, ErrInvalidProviderSessionRequest
 	}
@@ -300,6 +370,8 @@ func (s *providerSessionAdapter) run(ctx context.Context, mode ProviderSessionMo
 	if err := s.begin(request.RequestID, mode, fingerprint); err != nil {
 		return ProviderSessionResult{}, err
 	}
+	s.recordProviderSessionTurnKind(request.RequestID, "", request.TurnKind)
+	s.recordProviderSessionTurnLineage(request, "")
 	defer s.end(request.RequestID, mode)
 	s.emit(emit, mode, "requested", request.RequestID, s.currentTurn())
 	settlementSession, settlementTurn, baseline := s.settlementTarget(request)
@@ -309,6 +381,8 @@ func (s *providerSessionAdapter) run(ctx context.Context, mode ProviderSessionMo
 		s.emit(emit, mode, "failed", request.RequestID, s.currentTurn())
 		return ProviderSessionResult{}, err
 	}
+	s.recordProviderSessionTurnKind(request.RequestID, result.ProviderTurnID, request.TurnKind)
+	s.recordProviderSessionTurnLineage(request, result.ProviderTurnID)
 	outcome := "acknowledged"
 	if mode == ProviderSessionModeSendTurn {
 		outcome = "started"
@@ -531,6 +605,7 @@ func providerSessionRequestFingerprint(request ProviderSessionRequest) string {
 		ModelProviderID          string `json:"model_provider_id"`
 		Model                    string `json:"model"`
 		RequestedReasoningEffort string `json:"requested_reasoning_effort"`
+		TurnKind                 string `json:"turn_kind"`
 	}{
 		Message:                  request.Message,
 		ProviderTurnID:           request.ProviderTurnID,
@@ -539,6 +614,7 @@ func providerSessionRequestFingerprint(request ProviderSessionRequest) string {
 		ModelProviderID:          request.ModelProviderID,
 		Model:                    request.Model,
 		RequestedReasoningEffort: request.RequestedReasoningEffort,
+		TurnKind:                 string(normalizeRuntimeTurnKind(request.TurnKind)),
 	})
 	return string(encoded)
 }
@@ -724,7 +800,10 @@ type CodexProviderSessionConfig struct {
 	Capabilities runtimeplugin.Capabilities
 }
 
-type CodexProviderSession struct{ *providerSessionAdapter }
+type CodexProviderSession struct {
+	*providerSessionAdapter
+	assisted *codexAssistedSession
+}
 
 func NewCodexProviderSession(config CodexProviderSessionConfig) *CodexProviderSession {
 	threadID := strings.TrimSpace(config.ThreadID)
@@ -762,7 +841,14 @@ func NewCodexProviderSession(config CodexProviderSessionConfig) *CodexProviderSe
 			return providerJSONValue(record, "threadId", "thread_id", "sessionId", "session_id")
 		},
 	}
-	return &CodexProviderSession{newProviderSessionAdapter("codex", config.Transport, threadID, config.ActiveTurnID, providerCapabilities(config.Capabilities), methods)}
+	capabilities := providerCapabilities(config.Capabilities)
+	if !capabilities.PersistentSession || !capabilities.SendTurn {
+		capabilities.AssistedConclusion = false
+	}
+	return &CodexProviderSession{
+		providerSessionAdapter: newProviderSessionAdapter("codex", config.Transport, threadID, config.ActiveTurnID, capabilities, methods),
+		assisted:               newCodexAssistedSession(),
+	}
 }
 
 // ClaudeCodeProviderSessionConfig configures one long-lived Claude Code SDK
@@ -774,14 +860,24 @@ type ClaudeCodeProviderSessionConfig struct {
 	Capabilities runtimeplugin.Capabilities
 }
 
-type ClaudeCodeProviderSession struct{ *providerSessionAdapter }
+type ClaudeCodeProviderSession struct {
+	*providerSessionAdapter
+	assisted *claudeAssistedSession
+}
 
 func NewClaudeCodeProviderSession(config ClaudeCodeProviderSessionConfig) *ClaudeCodeProviderSession {
 	methods := providerWireMethods{
 		send: "claude/input", interrupt: "claude/interrupt", permission: "claude/permission/respond",
 		params: claudeCodeParams, turnID: func(record map[string]any) string { return providerJSONValue(record, "turn_id", "turnId", "id") }, sessionID: identitySession,
 	}
-	return &ClaudeCodeProviderSession{newProviderSessionAdapter("claude_code", config.Transport, config.SessionID, config.ActiveTurnID, providerCapabilities(config.Capabilities), methods)}
+	capabilities := providerCapabilities(config.Capabilities)
+	if !capabilities.PersistentSession || !capabilities.SendTurn {
+		capabilities.AssistedConclusion = false
+	}
+	return &ClaudeCodeProviderSession{
+		providerSessionAdapter: newProviderSessionAdapter("claude_code", config.Transport, config.SessionID, config.ActiveTurnID, capabilities, methods),
+		assisted:               newClaudeAssistedSession(),
+	}
 }
 
 // claudeCodeParams maps the complete Runtime Turn Selection onto claude/input.
@@ -790,6 +886,7 @@ func NewClaudeCodeProviderSession(config ClaudeCodeProviderSessionConfig) *Claud
 // provider change still restarts through Config Projection.
 func claudeCodeParams(sessionID, turnID string, request ProviderSessionRequest) map[string]any {
 	params := providerParams(sessionID, turnID, request)
+	params["turn_kind"] = string(normalizeRuntimeTurnKind(request.TurnKind))
 	if providerID := strings.TrimSpace(request.ModelProviderID); providerID != "" {
 		params["model_provider_id"] = providerID
 	}

@@ -83,8 +83,12 @@ function dashboardAuthToken(): string {
 export function apiGet<T>(path: string, init?: RequestInit) {
   return request<T>(path, init);
 }
-export function apiPost<T>(path: string, body?: unknown) {
-  return request<T>(path, { method: "POST", body: body ? JSON.stringify(body) : undefined });
+export function apiPost<T>(path: string, body?: unknown, init?: RequestInit) {
+  return request<T>(path, {
+    ...init,
+    method: "POST",
+    body: body ? JSON.stringify(body) : undefined,
+  });
 }
 export function apiPut<T>(path: string, body?: unknown) {
   return request<T>(path, { method: "PUT", body: body ? JSON.stringify(body) : undefined });
@@ -233,6 +237,20 @@ export interface RuntimePluginCapabilities {
   mcp_config: boolean;
   streaming_transcript: boolean;
   resume: boolean;
+  assisted_conclusion?: boolean;
+}
+
+export type BlackboardConclusionMode = "interactive" | "assisted";
+export type BlackboardConclusionState = "clean" | "pending" | "concluding" | "action_required";
+
+export interface BlackboardConclusionView {
+  mode: BlackboardConclusionMode;
+  state: BlackboardConclusionState;
+  source_turn_id?: string;
+  applied_revision?: number;
+  error_code?: string;
+  retry_available?: boolean;
+  next_eligible_at?: string;
 }
 
 export interface RuntimePluginProfileField {
@@ -351,7 +369,8 @@ export interface Task {
   status: string;
   runner: string;
   runtime_profile_id: string;
-  run_controls: { host_activated?: boolean; sandbox_network?: string; notes?: string; extras?: Record<string, string> };
+  run_controls: { host_activated?: boolean; sandbox_network?: string; blackboard_conclusion_mode?: BlackboardConclusionMode; notes?: string; extras?: Record<string, string> };
+  blackboard_conclusion?: BlackboardConclusionView;
   scope_snapshot: Scope;
   runtime_controls?: RuntimeControls;
   /** Current process/session health — not Task status. */
@@ -453,7 +472,7 @@ export interface TaskTranscript {
 
 export interface TaskTimelineItem {
   seq: number;
-  type: "tool_use" | "tool_result" | "thinking" | "text" | "error" | "lifecycle" | "steering";
+  type: "tool_use" | "tool_result" | "thinking" | "text" | "error" | "lifecycle" | "steering" | "harness";
   tool?: string;
   content?: string;
   input?: Record<string, unknown>;

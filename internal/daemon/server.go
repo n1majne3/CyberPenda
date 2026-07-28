@@ -111,9 +111,16 @@ type Server struct {
 	providerControlCtx     context.Context
 	providerControlCancel  context.CancelFunc
 	providerControlWG      sync.WaitGroup
+	providerTaskContexts   map[string]context.Context
+	providerTaskCancels    map[string]context.CancelFunc
+	activeProviderControls map[string]bool
+	queuedProviderControls map[string]int
 	closing                bool
 	providerSessions       *providerSessionRegistry
 	providerSessionFactory ProviderSessionFactory
+	runtimeRecoveryMu      sync.RWMutex
+	runtimeRecovery        map[string]task.RuntimeActivity
+	blackboardConclusions  *blackboardConclusionTracker
 	runtimeStopTimeout     time.Duration
 }
 
@@ -220,8 +227,14 @@ func NewServer(config Config) (*Server, error) {
 		activeControls:         map[string]bool{},
 		providerControlCtx:     providerControlCtx,
 		providerControlCancel:  providerControlCancel,
+		providerTaskContexts:   map[string]context.Context{},
+		providerTaskCancels:    map[string]context.CancelFunc{},
+		activeProviderControls: map[string]bool{},
+		queuedProviderControls: map[string]int{},
 		providerSessions:       newProviderSessionRegistry(),
 		providerSessionFactory: config.ProviderSessionFactory,
+		runtimeRecovery:        map[string]task.RuntimeActivity{},
+		blackboardConclusions:  newBlackboardConclusionTracker(),
 		runtimeStopTimeout:     10 * time.Second,
 	}
 	if server.logger == nil {
@@ -242,7 +255,10 @@ func NewServer(config Config) (*Server, error) {
 		return nil, err
 	}
 	server.routes()
-	server.reconcileInterruptedTasks()
+	server.reconcileValidatedBlackboardConclusionApplies()
+	recovery := server.recoverBlackboardConclusionReceipts(context.Background())
+	server.reconcileInterruptedTasks(recovery.ReconciliationExcludedTaskIDs)
+	server.applyProviderSessionRecoveryLifecycle(recovery.Outcomes)
 
 	return server, nil
 }
@@ -252,8 +268,8 @@ func NewServer(config Config) (*Server, error) {
 // restart no task can actually be executing; mark them interrupted and emit a
 // lifecycle event so the timeline and logs explain the gap. Failures are
 // logged but never block startup.
-func (server *Server) reconcileInterruptedTasks() {
-	reconciled, err := server.tasks.ReconcileInterruptedState()
+func (server *Server) reconcileInterruptedTasks(lifecycleProtectedTaskIDs []string) {
+	reconciled, err := server.tasks.ReconcileInterruptedStateExcept(lifecycleProtectedTaskIDs)
 	if err != nil {
 		server.logger.Printf("task reconcile: failed to interrupt stale tasks: %v", err)
 		return
@@ -633,6 +649,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/timeline", server.handleTaskTimeline)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/stop", server.handleStopTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/finish", server.handleFinishTask)
+	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/blackboard-conclusion/retry", server.handleRetryBlackboardConclusion)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/resume", server.handleResumeTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/steer/queue", server.handleQueueSteerTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/steer", server.handleSteerTask)

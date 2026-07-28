@@ -3,6 +3,7 @@
 package timeline
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -40,6 +41,15 @@ func Build(events []task.Event) []Item {
 		turns = turns[:0]
 	}
 	for _, event := range events {
+		if event.Kind == task.EventKindBlackboardConclusion {
+			flushTurns()
+			if item, ok := blackboardConclusionItem(event); ok {
+				item.Seq = nextSeq
+				nextSeq++
+				items = append(items, item)
+			}
+			continue
+		}
 		if event.Kind == task.EventKindLifecycle {
 			flushTurns()
 			if item, ok := lifecycleItem(event); ok {
@@ -73,6 +83,40 @@ func Build(events []task.Event) []Item {
 	}
 	flushTurns()
 	return items
+}
+
+func blackboardConclusionItem(event task.Event) (Item, bool) {
+	var content string
+	switch stringValue(event.Payload, "phase") {
+	case "pending_detected":
+		content = "Blackboard conclusion pending"
+		if sourceTurnID := strings.TrimSpace(stringValue(event.Payload, "source_turn_id")); sourceTurnID != "" {
+			content += " for work Turn " + sourceTurnID
+		}
+	case "dispatch_requested":
+		content = "Blackboard Conclude Turn dispatch requested"
+	case "awaiting_result":
+		content = "Blackboard Conclude Turn started"
+	case "result_validated":
+		content = "Blackboard conclusion result validated"
+	case "applied":
+		content = "Blackboard conclusion applied"
+		if revision, ok := event.Payload["applied_revision"]; ok {
+			content += " at revision " + fmt.Sprint(revision)
+		}
+	case "repair_requested":
+		content = "Blackboard conclusion repair requested"
+	case "action_required":
+		content = "Blackboard conclusion requires action"
+		if code := strings.TrimSpace(stringValue(event.Payload, "error_code")); code != "" {
+			content += " (" + code + ")"
+		}
+	case "retry_requested":
+		content = "Blackboard conclusion retry requested"
+	default:
+		return Item{}, false
+	}
+	return Item{Type: "harness", Content: content, CreatedAt: event.CreatedAt}, true
 }
 
 func turnsToItems(turns []runtimeoutput.Turn) []Item {

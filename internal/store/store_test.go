@@ -3,7 +3,9 @@ package store_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,6 +40,520 @@ func TestOpenRunsMigrationsIdempotently(t *testing.T) {
 
 	if err := second.Ping(); err != nil {
 		t.Fatalf("ping after reopen: %v", err)
+	}
+}
+
+func TestMigrations37And38PreservePendingAssistedConclusionReceipts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pentest.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var migration36Checksum string
+	if err := db.QueryRow(`SELECT checksum FROM schema_migrations WHERE version=36`).Scan(&migration36Checksum); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		DROP INDEX assisted_conclusion_receipts_task_created;
+		DROP TABLE assisted_conclusion_receipts;
+		CREATE TABLE assisted_conclusion_receipts (
+			id TEXT PRIMARY KEY,
+			task_id TEXT NOT NULL,
+			continuation_id TEXT NOT NULL,
+			source_session_id TEXT NOT NULL,
+			source_turn_id TEXT NOT NULL,
+			state TEXT NOT NULL CHECK (state = 'pending'),
+			terminal_tool_result_count INTEGER NOT NULL CHECK (terminal_tool_result_count > 0),
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			UNIQUE (task_id, continuation_id, source_turn_id)
+		);
+		CREATE INDEX assisted_conclusion_receipts_task_created
+			ON assisted_conclusion_receipts(task_id, created_at DESC);
+		INSERT INTO assisted_conclusion_receipts VALUES
+			('receipt-1','task-1','continuation-1','session-1','turn-1','pending',2,'2026-07-27T00:00:00Z','2026-07-27T00:00:00Z');
+		DELETE FROM schema_migrations WHERE version>=37;
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("upgrade v36 Store: %v", err)
+	}
+	defer reopened.Close()
+	var state, sourceModelProviderID string
+	var sourceWorkWatermark, semanticPersistenceWatermark int
+	var dispatchRequestID sql.NullString
+	if err := reopened.QueryRow(`SELECT state,source_model_provider_id,dispatch_request_id,source_work_watermark,semantic_persistence_watermark
+		FROM assisted_conclusion_receipts WHERE id='receipt-1'`).Scan(&state, &sourceModelProviderID, &dispatchRequestID, &sourceWorkWatermark, &semanticPersistenceWatermark); err != nil {
+		t.Fatal(err)
+	}
+	if state != "pending" || sourceModelProviderID != "" || dispatchRequestID.Valid || sourceWorkWatermark != 2 || semanticPersistenceWatermark != 0 {
+		t.Fatalf("migrated receipt = state %q provider %q dispatch %#v watermarks=(%d,%d)", state, sourceModelProviderID, dispatchRequestID, sourceWorkWatermark, semanticPersistenceWatermark)
+	}
+	var preservedChecksum string
+	if err := reopened.QueryRow(`SELECT checksum FROM schema_migrations WHERE version=36`).Scan(&preservedChecksum); err != nil {
+		t.Fatal(err)
+	}
+	if preservedChecksum != migration36Checksum {
+		t.Fatalf("migration 36 checksum changed: before %q after %q", migration36Checksum, preservedChecksum)
+	}
+	var migration37 int
+	if err := reopened.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=37`).Scan(&migration37); err != nil || migration37 != 1 {
+		t.Fatalf("migration 37 count = %d, err=%v", migration37, err)
+	}
+	var migration38 int
+	if err := reopened.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=38`).Scan(&migration38); err != nil || migration38 != 1 {
+		t.Fatalf("migration 38 count = %d, err=%v", migration38, err)
+	}
+	if _, err := reopened.Query(`SELECT terminal_tool_result_count FROM assisted_conclusion_receipts`); err == nil {
+		t.Fatal("legacy terminal_tool_result_count column still exists after migration 38")
+	}
+}
+
+func TestMigration38PreservesValidatedAssistedConclusionReceipt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pentest.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var migration37Checksum string
+	if err := db.QueryRow(`SELECT checksum FROM schema_migrations WHERE version=37`).Scan(&migration37Checksum); err != nil {
+		t.Fatal(err)
+	}
+	hash := strings.Repeat("a", 64)
+	if _, err := db.Exec(`
+		DROP INDEX assisted_conclusion_receipts_task_created;
+		DROP TABLE assisted_conclusion_receipts;
+		CREATE TABLE assisted_conclusion_receipts (
+			id TEXT PRIMARY KEY,
+			task_id TEXT NOT NULL,
+			continuation_id TEXT NOT NULL,
+			source_session_id TEXT NOT NULL,
+			source_turn_id TEXT NOT NULL,
+			state TEXT NOT NULL,
+			terminal_tool_result_count INTEGER NOT NULL,
+			dispatch_request_id TEXT,
+			control_turn_id TEXT,
+			base_revision INTEGER,
+			source_model_provider_id TEXT NOT NULL,
+			source_model TEXT NOT NULL,
+			source_reasoning_effort TEXT NOT NULL,
+			canonical_result_json BLOB,
+			canonical_result_sha256 TEXT,
+			apply_idempotency_key TEXT,
+			applied_revision INTEGER,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);
+		CREATE INDEX assisted_conclusion_receipts_task_created
+			ON assisted_conclusion_receipts(task_id, created_at DESC);
+		INSERT INTO assisted_conclusion_receipts VALUES
+			('receipt-v37','task-1','continuation-1','session-1','turn-1','validated',4,
+			 'dispatch-1','control-1',7,'provider-1','model-1','high',X'7B7D',?,
+			 'apply-1',NULL,'2026-07-27T00:00:00Z','2026-07-27T00:01:00Z');
+		DELETE FROM schema_migrations WHERE version>=38;
+	`, hash); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("upgrade v37 Store: %v", err)
+	}
+	defer reopened.Close()
+	var state, dispatchID, controlTurnID, providerID, model, effort, resultHash, applyKey string
+	var workWatermark, semanticWatermark, baseRevision int
+	var canonical []byte
+	if err := reopened.QueryRow(`SELECT state,source_work_watermark,semantic_persistence_watermark,
+		dispatch_request_id,control_turn_id,base_revision,source_model_provider_id,source_model,
+		source_reasoning_effort,canonical_result_json,canonical_result_sha256,apply_idempotency_key
+		FROM assisted_conclusion_receipts WHERE id='receipt-v37'`).Scan(
+		&state, &workWatermark, &semanticWatermark, &dispatchID, &controlTurnID, &baseRevision,
+		&providerID, &model, &effort, &canonical, &resultHash, &applyKey); err != nil {
+		t.Fatal(err)
+	}
+	if state != "validated" || workWatermark != 4 || semanticWatermark != 0 || dispatchID != "dispatch-1" ||
+		controlTurnID != "control-1" || baseRevision != 7 || providerID != "provider-1" || model != "model-1" ||
+		effort != "high" || !bytes.Equal(canonical, []byte("{}")) || resultHash != hash || applyKey != "apply-1" {
+		t.Fatalf("migrated validated receipt lost state: state=%q watermarks=(%d,%d) dispatch=%q control=%q base=%d provider=%q model=%q effort=%q canonical=%q hash=%q apply=%q",
+			state, workWatermark, semanticWatermark, dispatchID, controlTurnID, baseRevision, providerID, model, effort, canonical, resultHash, applyKey)
+	}
+	var preservedChecksum string
+	if err := reopened.QueryRow(`SELECT checksum FROM schema_migrations WHERE version=37`).Scan(&preservedChecksum); err != nil {
+		t.Fatal(err)
+	}
+	if preservedChecksum != migration37Checksum {
+		t.Fatalf("migration 37 checksum changed: before %q after %q", migration37Checksum, preservedChecksum)
+	}
+}
+
+func TestMigration39AddsDurableAssistedConclusionRecoveryState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pentest.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var automaticTurns, repairCount, retryCount int
+	var nextEligible, errorCode sql.NullString
+	if err := db.QueryRow(`SELECT automatic_turn_count,repair_count,explicit_retry_count,next_eligible_at,error_code
+		FROM assisted_conclusion_receipts LIMIT 1`).Scan(&automaticTurns, &repairCount, &retryCount, &nextEligible, &errorCode); err != sql.ErrNoRows {
+		t.Fatalf("migration 39 columns unavailable: %v", err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=39`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("migration 39 count = %d, err=%v", count, err)
+	}
+	_ = db.Close()
+	reopened, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+}
+
+func TestMigration40AddsAssistedConclusionRetryIdempotencyHistory(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var migrationCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=40`).Scan(&migrationCount); err != nil || migrationCount != 1 {
+		t.Fatalf("migration 40 count = %d, err=%v", migrationCount, err)
+	}
+	if _, err := db.Exec(`INSERT INTO assisted_conclusion_retry_keys
+		(task_id,receipt_id,idempotency_key,dispatch_request_id,created_at) VALUES ('task-1','receipt-1','key-1','request-1','2026-07-27T00:00:00Z')`); err != nil {
+		t.Fatalf("insert retry history: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO assisted_conclusion_retry_keys
+		(task_id,receipt_id,idempotency_key,dispatch_request_id,created_at) VALUES ('task-1','receipt-1','key-1','request-2','2026-07-27T00:01:00Z')`); err == nil {
+		t.Fatal("duplicate per-receipt retry key was accepted")
+	}
+}
+
+func TestMigration41ScopesAssistedConclusionRetryKeysToTask(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var migrationCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=41`).Scan(&migrationCount); err != nil || migrationCount != 1 {
+		t.Fatalf("migration 41 count = %d, err=%v", migrationCount, err)
+	}
+	if _, err := db.Exec(`INSERT INTO assisted_conclusion_retry_keys
+		(task_id,receipt_id,idempotency_key,dispatch_request_id,created_at) VALUES ('task-1','receipt-1','key-1','request-1','2026-07-27T00:00:00Z')`); err != nil {
+		t.Fatalf("insert task retry history: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO assisted_conclusion_retry_keys
+		(task_id,receipt_id,idempotency_key,dispatch_request_id,created_at) VALUES ('task-1','receipt-2','key-1','request-2','2026-07-27T00:01:00Z')`); err == nil {
+		t.Fatal("duplicate task-scoped retry key was accepted on a newer receipt")
+	}
+}
+
+func TestMigration42ChecksumCoversCompleteDeterministicMutation(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var checksum string
+	if err := db.QueryRow(`SELECT checksum FROM schema_migrations WHERE version=42`).Scan(&checksum); err != nil {
+		t.Fatal(err)
+	}
+	oldCommentOnly := "\n-- action_required may precede provider acceptance for a claimed repair/retry.\n"
+	sum := sha256.Sum256([]byte(oldCommentOnly))
+	if checksum == hex.EncodeToString(sum[:]) {
+		t.Fatal("migration 42 checksum still covers only its descriptive comment")
+	}
+	if len(checksum) != 64 {
+		t.Fatalf("migration 42 checksum = %q", checksum)
+	}
+}
+
+func TestMigration43AddsVersionRegenerationStateAndPreservesReceipts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pentest.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := strings.Repeat("a", 64)
+	if _, err := db.Exec(`INSERT INTO assisted_conclusion_receipts
+		(id,task_id,continuation_id,source_request_id,source_request_correlation_exact,source_session_id,source_turn_id,state,source_work_watermark,
+		 semantic_persistence_watermark,dispatch_request_id,control_turn_id,base_revision,source_model_provider_id,
+		 source_model,source_reasoning_effort,canonical_result_json,canonical_result_sha256,apply_idempotency_key,
+		 automatic_turn_count,repair_count,explicit_retry_count,send_attempt_count,send_started_at,created_at,updated_at)
+		VALUES ('receipt-validated','task-1','continuation-1','source-request-1',1,'session-1','turn-1','validated',3,1,
+		 'request-validated','control-validated',7,'provider-1','model-1','high',X'7B7D',?,'apply-validated',
+		 1,0,0,1,'2026-07-27T12:00:30Z','2026-07-27T12:00:00Z','2026-07-27T12:01:00Z');
+		INSERT INTO assisted_conclusion_receipts
+		(id,task_id,continuation_id,source_request_id,source_request_correlation_exact,source_session_id,source_turn_id,state,source_work_watermark,
+		 semantic_persistence_watermark,dispatch_request_id,base_revision,source_model_provider_id,source_model,
+		 source_reasoning_effort,apply_idempotency_key,automatic_turn_count,repair_count,explicit_retry_count,
+		 operator_retry_key,send_attempt_count,send_started_at,next_eligible_at,error_code,created_at,updated_at)
+		VALUES ('receipt-action','task-1','continuation-1','source-request-2',1,'session-1','turn-2','action_required',4,1,
+		 'request-action',8,'provider-1','model-1','high','apply-action',2,1,1,'retry-1',
+		 1,'2026-07-27T12:01:00Z','2026-07-27T12:03:00Z','semantic_conclusion_repair_exhausted','2026-07-27T12:00:30Z','2026-07-27T12:02:00Z');
+		INSERT INTO assisted_conclusion_retry_keys
+		(task_id,receipt_id,idempotency_key,dispatch_request_id,created_at)
+		VALUES ('task-1','receipt-action','retry-1','request-action','2026-07-27T12:02:00Z');
+
+		CREATE TABLE assisted_conclusion_receipts_v42_fixture (
+		 id TEXT PRIMARY KEY, task_id TEXT NOT NULL, continuation_id TEXT NOT NULL,
+		 source_session_id TEXT NOT NULL, source_turn_id TEXT NOT NULL,
+		 state TEXT NOT NULL CHECK (state IN ('clean','pending','dispatch_requested','repair_dispatch_requested','awaiting_result','action_required','validated','applied')),
+		 source_work_watermark INTEGER NOT NULL CHECK (source_work_watermark >= 0),
+		 semantic_persistence_watermark INTEGER NOT NULL CHECK (semantic_persistence_watermark >= 0),
+		 dispatch_request_id TEXT UNIQUE, control_turn_id TEXT,
+		 base_revision INTEGER CHECK (base_revision >= 0),
+		 source_model_provider_id TEXT NOT NULL DEFAULT '', source_model TEXT NOT NULL DEFAULT '',
+		 source_reasoning_effort TEXT NOT NULL DEFAULT '', canonical_result_json BLOB,
+		 canonical_result_sha256 TEXT, apply_idempotency_key TEXT UNIQUE,
+		 applied_revision INTEGER CHECK (applied_revision >= 0),
+		 automatic_turn_count INTEGER NOT NULL DEFAULT 0 CHECK (automatic_turn_count >= 0),
+		 repair_count INTEGER NOT NULL DEFAULT 0 CHECK (repair_count >= 0),
+		 explicit_retry_count INTEGER NOT NULL DEFAULT 0 CHECK (explicit_retry_count >= 0),
+		 operator_retry_key TEXT, next_eligible_at TEXT, error_code TEXT,
+		 created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+		 UNIQUE (task_id,continuation_id,source_turn_id),
+		 CHECK ((state = 'clean' AND source_work_watermark = semantic_persistence_watermark) OR
+		        (state <> 'clean' AND source_work_watermark > semantic_persistence_watermark)),
+		 CHECK (
+		  (state IN ('clean','pending') AND dispatch_request_id IS NULL AND control_turn_id IS NULL AND base_revision IS NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NULL AND applied_revision IS NULL) OR
+		  (state IN ('dispatch_requested','repair_dispatch_requested') AND dispatch_request_id IS NOT NULL AND control_turn_id IS NULL AND base_revision IS NOT NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		  (state = 'awaiting_result' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		  (state = 'action_required' AND dispatch_request_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		  (state = 'validated' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NOT NULL AND length(canonical_result_json) > 0 AND canonical_result_sha256 IS NOT NULL AND length(canonical_result_sha256) = 64 AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		  (state = 'applied' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NOT NULL AND length(canonical_result_json) > 0 AND canonical_result_sha256 IS NOT NULL AND length(canonical_result_sha256) = 64 AND apply_idempotency_key IS NOT NULL AND applied_revision IS NOT NULL)
+		 ),
+		 CHECK ((state = 'action_required' AND error_code IS NOT NULL AND next_eligible_at IS NOT NULL) OR state <> 'action_required')
+		);
+		INSERT INTO assisted_conclusion_receipts_v42_fixture
+		 SELECT id,task_id,continuation_id,source_session_id,source_turn_id,state,source_work_watermark,
+		 semantic_persistence_watermark,dispatch_request_id,control_turn_id,base_revision,source_model_provider_id,
+		 source_model,source_reasoning_effort,canonical_result_json,canonical_result_sha256,apply_idempotency_key,
+		 applied_revision,automatic_turn_count,repair_count,explicit_retry_count,operator_retry_key,next_eligible_at,
+		 error_code,created_at,updated_at FROM assisted_conclusion_receipts;
+		DROP INDEX assisted_conclusion_receipts_task_created;
+		DROP TABLE assisted_conclusion_receipts;
+		ALTER TABLE assisted_conclusion_receipts_v42_fixture RENAME TO assisted_conclusion_receipts;
+		CREATE INDEX assisted_conclusion_receipts_task_created ON assisted_conclusion_receipts(task_id,created_at DESC);
+		DELETE FROM schema_migrations WHERE version=43;
+	`, hash); err != nil {
+		t.Fatalf("build migration 42 fixture: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("upgrade v42 assisted conclusion receipts: %v", err)
+	}
+	defer reopened.Close()
+	var migrationCount int
+	if err := reopened.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=43`).Scan(&migrationCount); err != nil || migrationCount != 1 {
+		t.Fatalf("migration 43 count = %d, err=%v", migrationCount, err)
+	}
+	var state, dispatchID, controlTurnID, providerID, model, effort, resultHash, applyKey string
+	var canonical []byte
+	var baseRevision, automaticTurns, repairCount, retryCount, versionRegenerationCount int
+	if err := reopened.QueryRow(`SELECT state,dispatch_request_id,control_turn_id,base_revision,
+		source_model_provider_id,source_model,source_reasoning_effort,canonical_result_json,
+		canonical_result_sha256,apply_idempotency_key,automatic_turn_count,repair_count,
+		explicit_retry_count,version_regeneration_count FROM assisted_conclusion_receipts WHERE id='receipt-validated'`).Scan(
+		&state, &dispatchID, &controlTurnID, &baseRevision, &providerID, &model, &effort, &canonical,
+		&resultHash, &applyKey, &automaticTurns, &repairCount, &retryCount, &versionRegenerationCount); err != nil {
+		t.Fatal(err)
+	}
+	if state != "validated" || dispatchID != "request-validated" || controlTurnID != "control-validated" ||
+		baseRevision != 7 || providerID != "provider-1" || model != "model-1" || effort != "high" ||
+		!bytes.Equal(canonical, []byte("{}")) || resultHash != hash || applyKey != "apply-validated" ||
+		automaticTurns != 1 || repairCount != 0 || retryCount != 0 || versionRegenerationCount != 0 {
+		t.Fatalf("migrated validated receipt lost lineage: state=%q request=%q control=%q base=%d provider=%q model=%q effort=%q canonical=%q hash=%q apply=%q counts=(%d,%d,%d,%d)",
+			state, dispatchID, controlTurnID, baseRevision, providerID, model, effort, canonical, resultHash, applyKey,
+			automaticTurns, repairCount, retryCount, versionRegenerationCount)
+	}
+	var operatorKey, nextEligible, errorCode string
+	if err := reopened.QueryRow(`SELECT state,dispatch_request_id,base_revision,apply_idempotency_key,
+		automatic_turn_count,repair_count,explicit_retry_count,version_regeneration_count,operator_retry_key,
+		next_eligible_at,error_code FROM assisted_conclusion_receipts WHERE id='receipt-action'`).Scan(
+		&state, &dispatchID, &baseRevision, &applyKey, &automaticTurns, &repairCount, &retryCount,
+		&versionRegenerationCount, &operatorKey, &nextEligible, &errorCode); err != nil {
+		t.Fatal(err)
+	}
+	if state != "action_required" || dispatchID != "request-action" || baseRevision != 8 || applyKey != "apply-action" ||
+		automaticTurns != 2 || repairCount != 1 || retryCount != 1 || versionRegenerationCount != 0 ||
+		operatorKey != "retry-1" || nextEligible != "2026-07-27T12:03:00Z" || errorCode != "semantic_conclusion_repair_exhausted" {
+		t.Fatalf("migrated action receipt lost recovery state: state=%q request=%q base=%d apply=%q counts=(%d,%d,%d,%d) operator=%q next=%q error=%q",
+			state, dispatchID, baseRevision, applyKey, automaticTurns, repairCount, retryCount, versionRegenerationCount,
+			operatorKey, nextEligible, errorCode)
+	}
+	var retryReceiptID string
+	if err := reopened.QueryRow(`SELECT receipt_id FROM assisted_conclusion_retry_keys WHERE task_id='task-1' AND idempotency_key='retry-1'`).Scan(&retryReceiptID); err != nil || retryReceiptID != "receipt-action" {
+		t.Fatalf("retry lineage = %q, err=%v", retryReceiptID, err)
+	}
+	if _, err := reopened.Exec(`INSERT INTO assisted_conclusion_receipts
+		(id,task_id,continuation_id,source_session_id,source_turn_id,state,source_work_watermark,
+		 semantic_persistence_watermark,dispatch_request_id,base_revision,source_model_provider_id,source_model,
+		 source_reasoning_effort,apply_idempotency_key,version_regeneration_count,error_code,next_eligible_at,created_at,updated_at)
+		VALUES ('receipt-version','task-1','continuation-1','session-1','turn-3','version_regeneration_dispatch_requested',5,
+		 1,'request-version',9,'provider-1','model-1','high','apply-version',1,'semantic_conclusion_version_conflict',
+		 '2026-07-27T12:04:00Z','2026-07-27T12:03:00Z','2026-07-27T12:03:00Z')`); err != nil {
+		t.Fatalf("insert migrated version regeneration state: %v", err)
+	}
+	if _, err := reopened.Exec(`UPDATE assisted_conclusion_receipts SET version_regeneration_count=2 WHERE id='receipt-version'`); err == nil {
+		t.Fatal("schema accepted more than one automatic version regeneration")
+	}
+}
+
+func TestMigration44PreservesV43RecoveryLineageAndMarksExistingDispatchAttempted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pentest.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := strings.Repeat("b", 64)
+	if _, err := db.Exec(`
+		DROP INDEX assisted_conclusion_receipts_task_created;
+		DROP TABLE assisted_conclusion_receipts;
+		CREATE TABLE assisted_conclusion_receipts (
+		 id TEXT PRIMARY KEY, task_id TEXT NOT NULL, continuation_id TEXT NOT NULL,
+		 source_session_id TEXT NOT NULL, source_turn_id TEXT NOT NULL, state TEXT NOT NULL,
+		 source_work_watermark INTEGER NOT NULL, semantic_persistence_watermark INTEGER NOT NULL,
+		 dispatch_request_id TEXT UNIQUE, control_turn_id TEXT, base_revision INTEGER,
+		 source_model_provider_id TEXT NOT NULL, source_model TEXT NOT NULL, source_reasoning_effort TEXT NOT NULL,
+		 canonical_result_json BLOB, canonical_result_sha256 TEXT, apply_idempotency_key TEXT UNIQUE,
+		 applied_revision INTEGER, automatic_turn_count INTEGER NOT NULL, repair_count INTEGER NOT NULL,
+		 version_regeneration_count INTEGER NOT NULL, explicit_retry_count INTEGER NOT NULL,
+		 operator_retry_key TEXT, next_eligible_at TEXT, error_code TEXT,
+		 created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+		 UNIQUE(task_id,continuation_id,source_turn_id)
+		);
+		CREATE INDEX assisted_conclusion_receipts_task_created ON assisted_conclusion_receipts(task_id,created_at DESC);
+		INSERT INTO assisted_conclusion_receipts VALUES
+		 ('receipt-v43','task-v43','continuation-v43','session-v43','turn-v43','version_sync_requested',5,2,
+		  'request-v43','control-v43',9,'provider-v43','model-v43','high',X'7B7D',?,'apply-v43',NULL,
+		  2,0,0,1,'operator-v43','2026-07-27T12:30:00Z','semantic_conclusion_version_conflict',
+		  '2026-07-27T12:00:00Z','2026-07-27T12:10:00Z');
+		DELETE FROM schema_migrations WHERE version=44;
+	`, hash); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("upgrade v43 Store: %v", err)
+	}
+	defer reopened.Close()
+	var sourceRequestID, state, dispatchID, controlID, providerID, model, effort, resultHash, applyKey string
+	var canonical []byte
+	var baseRevision, automaticTurns, repairCount, versionCount, retryCount, sendCount, sourceCorrelationExact int
+	var synchronizedRevision sql.NullInt64
+	var sendStartedAt, nextEligible, errorCode string
+	if err := reopened.QueryRow(`SELECT source_request_id,source_request_correlation_exact,state,dispatch_request_id,control_turn_id,base_revision,
+		synchronized_revision,source_model_provider_id,source_model,source_reasoning_effort,canonical_result_json,
+		canonical_result_sha256,apply_idempotency_key,automatic_turn_count,repair_count,version_regeneration_count,
+		explicit_retry_count,send_attempt_count,send_started_at,next_eligible_at,error_code
+		FROM assisted_conclusion_receipts WHERE id='receipt-v43'`).Scan(&sourceRequestID, &sourceCorrelationExact, &state, &dispatchID,
+		&controlID, &baseRevision, &synchronizedRevision, &providerID, &model, &effort, &canonical, &resultHash,
+		&applyKey, &automaticTurns, &repairCount, &versionCount, &retryCount, &sendCount, &sendStartedAt,
+		&nextEligible, &errorCode); err != nil {
+		t.Fatal(err)
+	}
+	if sourceRequestID != "legacy:session-v43:turn-v43" || sourceCorrelationExact != 0 || state != "version_sync_requested" ||
+		dispatchID != "request-v43" || controlID != "control-v43" || baseRevision != 9 || synchronizedRevision.Valid ||
+		providerID != "provider-v43" || model != "model-v43" || effort != "high" ||
+		!bytes.Equal(canonical, []byte("{}")) || resultHash != hash || applyKey != "apply-v43" ||
+		automaticTurns != 2 || repairCount != 0 || versionCount != 0 || retryCount != 1 || sendCount != 1 ||
+		sendStartedAt != "2026-07-27T12:10:00Z" || nextEligible != "2026-07-27T12:30:00Z" ||
+		errorCode != "semantic_conclusion_version_conflict" {
+		t.Fatalf("migrated v43 receipt lost recovery lineage: source=%q state=%q request=%q control=%q base=%d sync=%v provider=%q model=%q effort=%q canonical=%q hash=%q apply=%q counts=(%d,%d,%d,%d,%d) send_at=%q eligible=%q error=%q",
+			sourceRequestID, state, dispatchID, controlID, baseRevision, synchronizedRevision, providerID, model, effort,
+			canonical, resultHash, applyKey, automaticTurns, repairCount, versionCount, retryCount, sendCount,
+			sendStartedAt, nextEligible, errorCode)
+	}
+}
+
+func TestOpenRepairsMissingMigrationRowsForCurrentWatermarkSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pentest.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO assisted_conclusion_receipts
+			(id,task_id,continuation_id,source_request_id,source_request_correlation_exact,source_session_id,source_turn_id,state,source_work_watermark,
+			 semantic_persistence_watermark,source_model_provider_id,source_model,source_reasoning_effort,created_at,updated_at)
+		VALUES ('receipt-current','task-1','continuation-1','source-request-1',1,'session-1','turn-1','clean',5,5,
+			'provider-1','model-1','high','2026-07-27T00:00:00Z','2026-07-27T00:00:00Z');
+		DELETE FROM schema_migrations WHERE version>=37;
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("repair current receipt schema migration ledger: %v", err)
+	}
+	defer reopened.Close()
+	var work, semantic, migrationRows int
+	if err := reopened.QueryRow(`SELECT source_work_watermark,semantic_persistence_watermark
+		FROM assisted_conclusion_receipts WHERE id='receipt-current'`).Scan(&work, &semantic); err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version IN (37,38)`).Scan(&migrationRows); err != nil {
+		t.Fatal(err)
+	}
+	if work != 5 || semantic != 5 || migrationRows != 2 {
+		t.Fatalf("repaired Store = watermarks (%d,%d), migration rows %d", work, semantic, migrationRows)
+	}
+}
+
+func TestOpenDoesNotBlessPartialWatermarkSchemaAsMigration38(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pentest.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		DROP INDEX assisted_conclusion_receipts_task_created;
+		DROP TABLE assisted_conclusion_receipts;
+		CREATE TABLE assisted_conclusion_receipts (
+			id TEXT PRIMARY KEY,
+			source_work_watermark INTEGER NOT NULL,
+			semantic_persistence_watermark INTEGER NOT NULL
+		);
+		CREATE INDEX assisted_conclusion_receipts_task_created
+			ON assisted_conclusion_receipts(id);
+		DELETE FROM schema_migrations WHERE version>=37;
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := store.Open(path)
+	if reopened != nil {
+		_ = reopened.Close()
+	}
+	if err == nil {
+		t.Fatal("partial watermark table was blessed as the current migration 38 schema")
 	}
 }
 

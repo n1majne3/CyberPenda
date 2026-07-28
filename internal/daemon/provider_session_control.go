@@ -102,9 +102,36 @@ func (server *Server) BindProviderSession(taskID string, session runtime.Provide
 	if err := server.providerSessions.bind(taskID, session); err != nil {
 		return err
 	}
+	server.clearRecoveredRuntimeActivity(taskID)
 	if sink, ok := session.(runtime.ProviderSessionEventSink); ok {
 		sink.SetEventSink(func(kind task.EventKind, payload task.EventPayload) {
 			server.persistProviderSessionEvent(taskID, kind, payload)
+		})
+	}
+	if source, ok := session.(runtime.ProviderSessionObservationSink); ok {
+		lineage, lineageOK := session.(runtime.ProviderSessionCompleteTurnLineageResolver)
+		continuationID := ""
+		if active, activeErr := server.tasks.ActiveContinuation(taskID); activeErr == nil && active != nil {
+			continuationID = active.ID
+		}
+		source.SetObservationSink(func(observation runtime.ProviderSessionObservation) {
+			if !lineageOK {
+				return
+			}
+			turnLineage, resolved := lineage.ResolveProviderSessionTurnLineage(observation.RequestID, observation.ProviderTurnID)
+			if !resolved {
+				server.logger.Printf("provider session observation: ignore unowned Turn %s for Task %s", observation.ProviderTurnID, taskID)
+				return
+			}
+			server.observeProviderSession(taskID, continuationID, session.SessionID(), turnLineage, observation)
+		})
+	}
+	if source, ok := session.(runtime.ProviderSessionAttemptResultSource); ok {
+		source.SetAttemptResultSink(func(result runtime.ProviderSessionAttemptResult) {
+			server.acceptBlackboardConclusionResult(taskID, result)
+		})
+		source.SetAttemptResultValidationFailureSink(func(failure runtime.ProviderSessionAttemptResultValidationFailure) {
+			server.acceptBlackboardConclusionValidationFailure(taskID, failure)
 		})
 	}
 	return nil
@@ -143,13 +170,18 @@ func (server *Server) persistProviderSessionEvent(taskID string, kind task.Event
 }
 
 func (server *Server) closeProviderSession(taskID string) error {
-	return server.providerSessions.closeTask(context.Background(), taskID)
+	err := server.providerSessions.closeTask(context.Background(), taskID)
+	if err == nil || errors.Is(err, runtime.ErrProviderSessionClosed) {
+		server.blackboardConclusions.deleteTask(taskID)
+	}
+	return err
 }
 
 func (server *Server) closeProviderSessionForStop(ctx context.Context, taskID string) error {
 	for {
 		err := server.providerSessions.closeTask(ctx, taskID)
 		if err == nil || errors.Is(err, runtime.ErrProviderSessionClosed) {
+			server.blackboardConclusions.deleteTask(taskID)
 			return nil
 		}
 		if !errors.Is(err, runtime.ErrProviderSessionControlConflict) {

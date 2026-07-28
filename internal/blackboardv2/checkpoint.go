@@ -94,5 +94,5 @@ func (s *Service) CheckpointAttemptForContinuation(ctx context.Context, projectI
 			Type:    "attempt",
 			Record:  AttemptPatch{Summary: &request.Summary},
 		}},
-	})
+	}, nil)
 }

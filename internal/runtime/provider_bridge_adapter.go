@@ -83,6 +83,7 @@ func (a *ProviderSessionRunAdapter) Run(ctx context.Context, goal string, emit f
 	request := ProviderSessionRequest{
 		RequestID:                requestID,
 		Message:                  goal,
+		TurnKind:                 RuntimeTurnKindWork,
 		ModelProviderID:          selection.ModelProviderID,
 		Model:                    selection.Model,
 		RequestedReasoningEffort: selection.RequestedReasoningEffort,

@@ -69,8 +69,20 @@ The user-runtime interaction that continues inside one **Task** after launch.
 _Avoid_: new task per reply, detached chat
 
 **Runtime Turn**:
-A single provider response cycle initiated by one user message within a **Task Conversation**. It retains the **Task** identity while using its own **Runtime Turn Selection**.
+A single provider response cycle initiated by operator input within a **Task Conversation** or by a bounded **Harness Control Turn**. It retains the **Task** identity while using its own **Runtime Turn Selection**.
 _Avoid_: task, continuation, internal reasoning step
+
+**Work Runtime Turn**:
+A **Runtime Turn** initiated by the operator's Task Goal or Task Conversation input. The **Runtime Harness** assigns this kind from request lineage; provider output cannot claim it. In assisted Blackboard mode, bounded Tool and Turn observations from this kind may create a **Pending Blackboard Conclusion**.
+_Avoid_: harness control turn, provider-classified turn, task
+
+**Harness Control Turn**:
+A **Runtime Turn** initiated by the **Runtime Harness** for a bounded control purpose such as Blackboard conclusion reconciliation. The Harness assigns this kind from request lineage so it cannot recursively trigger assisted conclusion detection.
+_Avoid_: operator message, autonomous task, provider-classified turn
+
+**Conclude Runtime Turn**:
+A **Harness Control Turn** dispatched for one **Pending Blackboard Conclusion** in the same Task-scoped persistent Runtime and **Runtime Continuation**. It reuses the source **Runtime Turn Selection**, forbids further testing, and returns one closed semantic Attempt result for Harness validation and application.
+_Avoid_: user message, new continuation, task finish turn, unrestricted agent turn
 
 **Runtime Turn Selection**:
 The **Model Provider**, model, and **Requested Reasoning Effort** resolved for one **Runtime Turn**, independently of adjacent turns and without editing the selected **Runtime Profile**.
@@ -495,6 +507,18 @@ _Avoid_: bypass, debug-only path
 **Blackboard**:
 The project-local memory that stores durable semantic records and relationships for one **Project**, including **Entities**, **Exploration Objectives**, **Attempts**, **Project Facts**, **Findings**, **Solutions**, and **Evidence Artifacts**.
 _Avoid_: chat history, notes database
+
+**Blackboard Conclusion Mode**:
+A **Run Controls** choice of `interactive` or `assisted`. Interactive mode leaves conclusion coordination to the operator and Runtime. Assisted mode allows the Harness to detect bounded semantic debt after a completed **Work Runtime Turn**, dispatch a **Conclude Runtime Turn**, validate its closed Attempt result, and apply that result through trusted Blackboard authority.
+_Avoid_: autonomous Task completion, transcript parsing mode, Blackboard write permission
+
+**Pending Blackboard Conclusion**:
+A durable, idempotent Harness receipt indicating that a completed **Work Runtime Turn** used at least one non-Blackboard tool and needs semantic reconciliation. It owns deterministic Conclude dispatch and Blackboard apply lineage while remaining Task Timeline state, not a **Task Conversation** message, semantic Blackboard record, or authority to perform **Task Finish**.
+_Avoid_: finding, fact, task completion, model lifecycle authority
+
+**Semantic Debt Watermarks**:
+The ordered counts persisted for a completed **Work Runtime Turn**: source work advances for each terminal non-Blackboard Tool Result, while semantic persistence advances only when a later successful semantic Blackboard change, Attempt checkpoint, or Blackboard Finish covers the work observed so far. The conclusion is pending only while source work is ahead of semantic persistence.
+_Avoid_: raw Tool output, transcript offset, proof that a read or Evidence retention persisted semantics
 
 **Blackboard Key**:
 A stable, human-readable semantic identifier that is unique across every record in one **Blackboard** and resolves only within its **Project**. It identifies a record without requiring its type or a database ID and does not embed internal Project, Task, Continuation, Runtime, generated-ID, or hash values.

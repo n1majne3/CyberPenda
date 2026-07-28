@@ -77,6 +77,98 @@ function renderPage() {
 }
 
 describe("TaskLaunchPage", () => {
+  it("launches with an explicit assisted Blackboard conclusion mode", async () => {
+    const assistedPlugin = {
+      ...codexPlugin,
+      capabilities: { ...codexPlugin.capabilities, assisted_conclusion: true },
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.includes("/api/runtime-plugins")) {
+        return Promise.resolve(new Response(JSON.stringify({ plugins: [assistedPlugin] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }));
+      }
+      if (url.includes("/api/model-providers")) {
+        return Promise.resolve(new Response(JSON.stringify({ providers: [mimoProvider] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }));
+      }
+      if (url.includes("/api/runtime-profiles/resolve-launch") && method === "POST") {
+        return Promise.resolve(new Response(JSON.stringify({
+          profile_id: "resolved-profile",
+          created: true,
+          profile: autoResolvedProfile,
+        }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.includes("/api/runtime-profiles")) {
+        return Promise.resolve(new Response(JSON.stringify({ profiles: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }));
+      }
+      if (url.includes("/api/skills?")) {
+        return Promise.resolve(new Response(JSON.stringify({ skills: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }));
+      }
+      if (url.includes("/api/projects/project-1/preflight") && method === "POST") {
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          run_controls?: { blackboard_conclusion_mode?: string };
+        };
+        expect(body.run_controls?.blackboard_conclusion_mode).toBe("assisted");
+        return Promise.resolve(new Response(JSON.stringify({ pass: true, checks: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }));
+      }
+      if (url.includes("/api/projects/project-1/tasks") && method === "POST") {
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          run_controls?: { blackboard_conclusion_mode?: string };
+        };
+        expect(body.run_controls?.blackboard_conclusion_mode).toBe("assisted");
+        return Promise.resolve(new Response(JSON.stringify({ id: "task-1" }), {
+          status: 201,
+          headers: { "Content-Type": "application/json" },
+        }));
+      }
+      if (url.includes("/api/projects/project-1")) {
+        return Promise.resolve(new Response(JSON.stringify({
+          id: "project-1",
+          name: "Acme",
+          description: "",
+          scope: {},
+          defaults: { runner: "sandbox" },
+          created_at: "",
+          updated_at: "",
+        }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+
+    const mode = await screen.findByLabelText("Blackboard conclusions");
+    expect(mode).toHaveValue("interactive");
+    await userEvent.selectOptions(mode, "assisted");
+    expect(screen.getByText(/runs a bounded Conclude Turn and applies its validated Attempt result/i)).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
+    await userEvent.click(screen.getByRole("button", { name: /launch/i }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/projects/project-1/tasks"),
+      expect.objectContaining({ method: "POST" }),
+    ));
+  });
+
   it("shows runtime and model provider controls instead of profile picker", async () => {
     vi.stubGlobal(
       "fetch",
@@ -138,6 +230,51 @@ describe("TaskLaunchPage", () => {
     expect(screen.getByLabelText("Model")).toBeInTheDocument();
     expect(screen.queryByLabelText("Runtime profile")).not.toBeInTheDocument();
     expect(screen.getByRole("option", { name: "MiMo" })).toBeInTheDocument();
+  });
+
+  it("keeps interactive launch available when assisted conclusions are unsupported", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.includes("/api/runtime-plugins")) {
+          return Promise.resolve(new Response(JSON.stringify({ plugins: [codexPlugin] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }));
+        }
+        if (url.includes("/api/model-providers")) {
+          return Promise.resolve(new Response(JSON.stringify({ providers: [mimoProvider] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }));
+        }
+        if (url.includes("/api/runtime-profiles")) {
+          return Promise.resolve(new Response(JSON.stringify({ profiles: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }));
+        }
+        if (url.includes("/api/projects/project-1")) {
+          return Promise.resolve(new Response(JSON.stringify({
+            id: "project-1", name: "Acme", scope: {}, defaults: { runner: "sandbox" },
+            created_at: "", updated_at: "",
+          }), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        return Promise.resolve(new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }));
+      }),
+    );
+
+    renderPage();
+
+    expect(await screen.findByLabelText("Blackboard conclusions")).toHaveValue("interactive");
+    expect(screen.getByRole("option", { name: "Assisted" })).toBeDisabled();
+    expect(screen.getByText(/does not expose the complete persistent Turn, normalized Tool\/Turn event, and closed AttemptResult contract/i)).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
+    expect(screen.getByRole("button", { name: /launch/i })).toBeEnabled();
   });
 
   it("shows enabled skills before launch for preset path", async () => {

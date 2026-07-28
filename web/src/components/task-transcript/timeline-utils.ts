@@ -14,6 +14,7 @@ export function getEventColor(item: TimelineItem): EventColor {
       return "error";
     case "lifecycle":
     case "steering":
+    case "harness":
       return "result";
     default:
       return "result";
@@ -44,6 +45,23 @@ export function getEventLabel(item: TimelineItem): string {
       return "Lifecycle";
     case "steering":
       return "Steering";
+    case "harness": {
+      const content = item.content ?? "";
+      if (content.startsWith("Blackboard conclusion pending for work Turn ")) {
+        return "Work Turn";
+      }
+      if (content.startsWith("Blackboard Conclude Turn") || content === "Blackboard conclusion result validated") {
+        return "Harness Conclude Turn";
+      }
+      if (content.startsWith("Blackboard conclusion repair") || content.startsWith("Blackboard conclusion retry")) {
+        return "Harness repair/retry";
+      }
+      const applied = /^Blackboard conclusion applied at revision (\d+)$/.exec(content);
+      if (applied) {
+        return `Blackboard revision ${applied[1]} applied`;
+      }
+      return "Harness";
+    }
     default:
       return "Event";
   }
@@ -83,6 +101,7 @@ export function getEventSummary(item: TimelineItem): string {
       return item.content ?? "";
     case "lifecycle":
     case "steering":
+    case "harness":
       return item.content ?? "";
     default:
       return "";

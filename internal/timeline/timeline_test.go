@@ -1,6 +1,7 @@
 package timeline_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -115,6 +116,38 @@ func TestBuildKeepsControlEventsBetweenRuntimeOutput(t *testing.T) {
 	requireItem(t, got, 0, "text", "", "before")
 	requireItem(t, got, 1, "steering", "", "Steering: steering_requested - focus admin")
 	requireItem(t, got, 2, "text", "", "after")
+}
+
+func TestBuildProjectsAssistedConclusionPhasesWithoutStructuredResult(t *testing.T) {
+	events := []task.Event{
+		{Seq: 1, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{
+			"phase": "pending_detected", "source_turn_id": "work-1",
+			"source_work_watermark": 47, "semantic_persistence_watermark": 23,
+		}},
+		{Seq: 2, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "dispatch_requested", "source_turn_id": "work-1", "request_id": "conclude-secret"}},
+		{Seq: 3, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "awaiting_result", "control_turn_id": "control-1"}},
+		{Seq: 4, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "result_validated", "result_hash": "secret-hash"}},
+		{Seq: 5, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "applied", "applied_revision": 4}},
+		{Seq: 6, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "repair_requested", "request_id": "repair-secret", "error_code": "semantic_conclusion_invalid_result"}},
+		{Seq: 7, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "action_required", "request_id": "failed-secret", "error_code": "conclude_tool_use_forbidden"}},
+		{Seq: 8, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "retry_requested", "request_id": "retry-secret"}},
+	}
+
+	got := timeline.Build(events)
+	requireItem(t, got, 0, "harness", "", "Blackboard conclusion pending for work Turn work-1")
+	requireItem(t, got, 1, "harness", "", "Blackboard Conclude Turn dispatch requested")
+	requireItem(t, got, 2, "harness", "", "Blackboard Conclude Turn started")
+	requireItem(t, got, 3, "harness", "", "Blackboard conclusion result validated")
+	requireItem(t, got, 4, "harness", "", "Blackboard conclusion applied at revision 4")
+	requireItem(t, got, 5, "harness", "", "Blackboard conclusion repair requested")
+	requireItem(t, got, 6, "harness", "", "Blackboard conclusion requires action (conclude_tool_use_forbidden)")
+	requireItem(t, got, 7, "harness", "", "Blackboard conclusion retry requested")
+	for _, item := range got {
+		if strings.Contains(item.Content, "secret") || strings.Contains(item.Content, "control-1") ||
+			strings.Contains(item.Content, "47") || strings.Contains(item.Content, "23") {
+			t.Fatalf("Harness item leaked correlation/result detail: %#v", item)
+		}
+	}
 }
 
 func requireItem(t *testing.T, items []timeline.Item, index int, typ, tool, content string) {

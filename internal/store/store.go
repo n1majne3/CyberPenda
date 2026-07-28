@@ -920,7 +920,677 @@ func migrations() []migration {
 		newMigration(33, "remove_duplicate_workflow_state", migration33SQL, migration33Up),
 		newMigration(34, "retire_blackboard_v1_graph_ledger", migration34SQL, migration34Up),
 		newMigration(35, "remove_task_graph_snapshot_pin", migration35SQL, migration35Up),
+		newMigration(36, "assisted_conclusion_receipts", migration36SQL, migration36Up),
+		newMigration(37, "assisted_conclusion_dispatch_state", migration37SQL, migration37Up),
+		newMigration(38, "assisted_conclusion_persistence_watermarks", migration38SQL, migration38Up),
+		newMigration(39, "assisted_conclusion_recovery_state", migration39SQL, migration39Up),
+		newMigration(40, "assisted_conclusion_retry_idempotency_history", migration40SQL, migration40Up),
+		newMigration(41, "task_scoped_assisted_conclusion_retry_keys", migration41SQL, migration41Up),
+		newMigration(42, "assisted_conclusion_pre_dispatch_action_required", migration42SQL, migration42Up),
+		newMigration(43, "assisted_conclusion_version_regeneration", migration43SQL, migration43Up),
+		newMigration(44, "assisted_conclusion_exactly_once_recovery", migration44SQL, migration44Up),
 	}
+}
+
+const migration44TableSQL = `
+CREATE TABLE assisted_conclusion_receipts_v44 (
+	id TEXT PRIMARY KEY,
+	task_id TEXT NOT NULL,
+	continuation_id TEXT NOT NULL,
+	source_request_id TEXT NOT NULL CHECK (length(trim(source_request_id)) > 0),
+	source_request_correlation_exact INTEGER NOT NULL CHECK (source_request_correlation_exact IN (0,1)),
+	source_session_id TEXT NOT NULL,
+	source_turn_id TEXT NOT NULL,
+	state TEXT NOT NULL CHECK (state IN ('clean','pending','dispatch_requested','repair_dispatch_requested','version_sync_requested','version_regeneration_dispatch_requested','awaiting_result','action_required','validated','applied')),
+	source_work_watermark INTEGER NOT NULL CHECK (source_work_watermark >= 0),
+	semantic_persistence_watermark INTEGER NOT NULL CHECK (semantic_persistence_watermark >= 0),
+	dispatch_request_id TEXT UNIQUE,
+	control_turn_id TEXT,
+	base_revision INTEGER CHECK (base_revision >= 0),
+	synchronized_revision INTEGER CHECK (synchronized_revision >= 0),
+	source_model_provider_id TEXT NOT NULL DEFAULT '',
+	source_model TEXT NOT NULL DEFAULT '',
+	source_reasoning_effort TEXT NOT NULL DEFAULT '',
+	canonical_result_json BLOB,
+	canonical_result_sha256 TEXT,
+	apply_idempotency_key TEXT UNIQUE,
+	applied_revision INTEGER CHECK (applied_revision >= 0),
+	automatic_turn_count INTEGER NOT NULL DEFAULT 0 CHECK (automatic_turn_count >= 0),
+	repair_count INTEGER NOT NULL DEFAULT 0 CHECK (repair_count >= 0),
+	version_regeneration_count INTEGER NOT NULL DEFAULT 0 CHECK (version_regeneration_count IN (0,1)),
+	explicit_retry_count INTEGER NOT NULL DEFAULT 0 CHECK (explicit_retry_count >= 0),
+	operator_retry_key TEXT,
+	send_attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (send_attempt_count IN (0,1)),
+	send_started_at TEXT,
+	next_eligible_at TEXT,
+	error_code TEXT,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	UNIQUE (task_id, continuation_id, source_turn_id),
+	CHECK ((send_attempt_count = 0 AND send_started_at IS NULL) OR (send_attempt_count = 1 AND send_started_at IS NOT NULL)),
+	CHECK (
+		(state = 'clean' AND source_work_watermark = semantic_persistence_watermark) OR
+		(state <> 'clean' AND source_work_watermark > semantic_persistence_watermark)
+	),
+	CHECK (
+		(state IN ('clean','pending') AND dispatch_request_id IS NULL AND control_turn_id IS NULL AND base_revision IS NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NULL AND applied_revision IS NULL) OR
+		(state IN ('dispatch_requested','repair_dispatch_requested','version_regeneration_dispatch_requested') AND dispatch_request_id IS NOT NULL AND control_turn_id IS NULL AND base_revision IS NOT NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		(state = 'awaiting_result' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		(state = 'action_required' AND applied_revision IS NULL AND ((dispatch_request_id IS NULL AND control_turn_id IS NULL AND base_revision IS NULL AND apply_idempotency_key IS NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL) OR (dispatch_request_id IS NOT NULL AND base_revision IS NOT NULL AND apply_idempotency_key IS NOT NULL AND ((canonical_result_json IS NULL AND canonical_result_sha256 IS NULL) OR (control_turn_id IS NOT NULL AND canonical_result_json IS NOT NULL AND length(canonical_result_json) > 0 AND canonical_result_sha256 IS NOT NULL AND length(canonical_result_sha256) = 64))))) OR
+		(state IN ('validated','version_sync_requested') AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NOT NULL AND length(canonical_result_json) > 0 AND canonical_result_sha256 IS NOT NULL AND length(canonical_result_sha256) = 64 AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		(state = 'applied' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NOT NULL AND length(canonical_result_json) > 0 AND canonical_result_sha256 IS NOT NULL AND length(canonical_result_sha256) = 64 AND apply_idempotency_key IS NOT NULL AND applied_revision IS NOT NULL)
+	),
+	CHECK ((state = 'action_required' AND error_code IS NOT NULL AND next_eligible_at IS NOT NULL) OR state <> 'action_required'),
+	CHECK ((state = 'version_regeneration_dispatch_requested' AND version_regeneration_count = 1 AND error_code = 'semantic_conclusion_version_conflict' AND next_eligible_at IS NOT NULL) OR state <> 'version_regeneration_dispatch_requested')
+);
+`
+
+const migration44SQL = migration44TableSQL + `
+INSERT INTO assisted_conclusion_receipts_v44
+	(id,task_id,continuation_id,source_request_id,source_request_correlation_exact,source_session_id,source_turn_id,state,source_work_watermark,
+	 semantic_persistence_watermark,dispatch_request_id,control_turn_id,base_revision,synchronized_revision,
+	 source_model_provider_id,source_model,source_reasoning_effort,canonical_result_json,canonical_result_sha256,
+	 apply_idempotency_key,applied_revision,automatic_turn_count,repair_count,version_regeneration_count,
+	 explicit_retry_count,operator_retry_key,send_attempt_count,send_started_at,next_eligible_at,error_code,created_at,updated_at)
+	SELECT id,task_id,continuation_id,'legacy:' || source_session_id || ':' || source_turn_id,0,source_session_id,source_turn_id,
+	 state,source_work_watermark,semantic_persistence_watermark,dispatch_request_id,control_turn_id,base_revision,
+	 CASE WHEN version_regeneration_count=1 THEN base_revision ELSE NULL END,source_model_provider_id,source_model,
+	 source_reasoning_effort,canonical_result_json,canonical_result_sha256,apply_idempotency_key,applied_revision,
+	 automatic_turn_count,repair_count,version_regeneration_count,explicit_retry_count,operator_retry_key,
+	 CASE WHEN state IN ('clean','pending') THEN 0 ELSE 1 END,
+	 CASE WHEN state IN ('clean','pending') THEN NULL ELSE updated_at END,next_eligible_at,error_code,created_at,updated_at
+	FROM assisted_conclusion_receipts;
+DROP TABLE assisted_conclusion_receipts;
+ALTER TABLE assisted_conclusion_receipts_v44 RENAME TO assisted_conclusion_receipts;
+CREATE INDEX assisted_conclusion_receipts_task_created
+	ON assisted_conclusion_receipts(task_id, created_at DESC);
+`
+
+func migration44Up(tx *sql.Tx) error {
+	current, err := assistedConclusionExactlyOnceSchemaPresent(tx)
+	if err != nil || current {
+		return err
+	}
+	return execStatements(tx, migration44SQL)
+}
+
+func assistedConclusionExactlyOnceSchemaPresent(tx *sql.Tx) (bool, error) {
+	var tableSQL string
+	if err := tx.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='assisted_conclusion_receipts'`).Scan(&tableSQL); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	expected := strings.Replace(migration44TableSQL, "CREATE TABLE assisted_conclusion_receipts_v44", `CREATE TABLE "assisted_conclusion_receipts"`, 1)
+	expected = strings.TrimSuffix(strings.TrimSpace(expected), ";")
+	return strings.Join(strings.Fields(tableSQL), " ") == strings.Join(strings.Fields(expected), " "), nil
+}
+
+const migration43TableSQL = `
+CREATE TABLE assisted_conclusion_receipts_v43 (
+	id TEXT PRIMARY KEY,
+	task_id TEXT NOT NULL,
+	continuation_id TEXT NOT NULL,
+	source_session_id TEXT NOT NULL,
+	source_turn_id TEXT NOT NULL,
+	state TEXT NOT NULL CHECK (state IN ('clean','pending','dispatch_requested','repair_dispatch_requested','version_sync_requested','version_regeneration_dispatch_requested','awaiting_result','action_required','validated','applied')),
+	source_work_watermark INTEGER NOT NULL CHECK (source_work_watermark >= 0),
+	semantic_persistence_watermark INTEGER NOT NULL CHECK (semantic_persistence_watermark >= 0),
+	dispatch_request_id TEXT UNIQUE,
+	control_turn_id TEXT,
+	base_revision INTEGER CHECK (base_revision >= 0),
+	source_model_provider_id TEXT NOT NULL DEFAULT '',
+	source_model TEXT NOT NULL DEFAULT '',
+	source_reasoning_effort TEXT NOT NULL DEFAULT '',
+	canonical_result_json BLOB,
+	canonical_result_sha256 TEXT,
+	apply_idempotency_key TEXT UNIQUE,
+	applied_revision INTEGER CHECK (applied_revision >= 0),
+	automatic_turn_count INTEGER NOT NULL DEFAULT 0 CHECK (automatic_turn_count >= 0),
+	repair_count INTEGER NOT NULL DEFAULT 0 CHECK (repair_count >= 0),
+	version_regeneration_count INTEGER NOT NULL DEFAULT 0 CHECK (version_regeneration_count IN (0,1)),
+	explicit_retry_count INTEGER NOT NULL DEFAULT 0 CHECK (explicit_retry_count >= 0),
+	operator_retry_key TEXT,
+	next_eligible_at TEXT,
+	error_code TEXT,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	UNIQUE (task_id, continuation_id, source_turn_id),
+	CHECK (
+		(state = 'clean' AND source_work_watermark = semantic_persistence_watermark) OR
+		(state <> 'clean' AND source_work_watermark > semantic_persistence_watermark)
+	),
+	CHECK (
+		(state IN ('clean','pending') AND dispatch_request_id IS NULL AND control_turn_id IS NULL AND base_revision IS NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NULL AND applied_revision IS NULL) OR
+		(state IN ('dispatch_requested','repair_dispatch_requested','version_regeneration_dispatch_requested') AND dispatch_request_id IS NOT NULL AND control_turn_id IS NULL AND base_revision IS NOT NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		(state = 'awaiting_result' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		(state = 'action_required' AND dispatch_request_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		(state IN ('validated','version_sync_requested') AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NOT NULL AND length(canonical_result_json) > 0 AND canonical_result_sha256 IS NOT NULL AND length(canonical_result_sha256) = 64 AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		(state = 'applied' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NOT NULL AND length(canonical_result_json) > 0 AND canonical_result_sha256 IS NOT NULL AND length(canonical_result_sha256) = 64 AND apply_idempotency_key IS NOT NULL AND applied_revision IS NOT NULL)
+	),
+	CHECK ((state = 'action_required' AND error_code IS NOT NULL AND next_eligible_at IS NOT NULL) OR state <> 'action_required'),
+	CHECK ((state = 'version_regeneration_dispatch_requested' AND version_regeneration_count = 1 AND error_code = 'semantic_conclusion_version_conflict' AND next_eligible_at IS NOT NULL) OR state <> 'version_regeneration_dispatch_requested')
+);
+`
+
+const migration43SQL = migration43TableSQL + `
+INSERT INTO assisted_conclusion_receipts_v43
+	(id,task_id,continuation_id,source_session_id,source_turn_id,state,source_work_watermark,
+	 semantic_persistence_watermark,dispatch_request_id,control_turn_id,base_revision,source_model_provider_id,
+	 source_model,source_reasoning_effort,canonical_result_json,canonical_result_sha256,apply_idempotency_key,
+	 applied_revision,automatic_turn_count,repair_count,version_regeneration_count,explicit_retry_count,operator_retry_key,
+	 next_eligible_at,error_code,created_at,updated_at)
+	SELECT id,task_id,continuation_id,source_session_id,source_turn_id,state,source_work_watermark,
+	 semantic_persistence_watermark,dispatch_request_id,control_turn_id,base_revision,source_model_provider_id,
+	 source_model,source_reasoning_effort,canonical_result_json,canonical_result_sha256,apply_idempotency_key,
+	 applied_revision,automatic_turn_count,repair_count,0,explicit_retry_count,operator_retry_key,
+	 next_eligible_at,error_code,created_at,updated_at
+	FROM assisted_conclusion_receipts;
+DROP TABLE assisted_conclusion_receipts;
+ALTER TABLE assisted_conclusion_receipts_v43 RENAME TO assisted_conclusion_receipts;
+CREATE INDEX assisted_conclusion_receipts_task_created
+	ON assisted_conclusion_receipts(task_id, created_at DESC);
+`
+
+func migration43Up(tx *sql.Tx) error {
+	current, err := assistedConclusionVersionRegenerationSchemaPresent(tx)
+	if err != nil || current {
+		return err
+	}
+	return execStatements(tx, migration43SQL)
+}
+
+const migration40SQL = `
+CREATE TABLE IF NOT EXISTS assisted_conclusion_retry_keys (
+	receipt_id TEXT NOT NULL,
+	idempotency_key TEXT NOT NULL CHECK (length(idempotency_key) > 0),
+	dispatch_request_id TEXT NOT NULL CHECK (length(dispatch_request_id) > 0),
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (receipt_id, idempotency_key)
+);
+`
+
+func migration40Up(tx *sql.Tx) error { return execStatements(tx, migration40SQL) }
+
+const migration41SQL = `
+CREATE TABLE assisted_conclusion_retry_keys_v41 (
+	task_id TEXT NOT NULL,
+	receipt_id TEXT NOT NULL,
+	idempotency_key TEXT NOT NULL CHECK (length(idempotency_key) > 0),
+	dispatch_request_id TEXT NOT NULL CHECK (length(dispatch_request_id) > 0),
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (receipt_id, idempotency_key),
+	UNIQUE (task_id, idempotency_key)
+);
+INSERT INTO assisted_conclusion_retry_keys_v41
+	(task_id,receipt_id,idempotency_key,dispatch_request_id,created_at)
+	SELECT receipts.task_id,keys.receipt_id,keys.idempotency_key,keys.dispatch_request_id,keys.created_at
+	FROM assisted_conclusion_retry_keys AS keys
+	JOIN assisted_conclusion_receipts AS receipts ON receipts.id=keys.receipt_id;
+DROP TABLE assisted_conclusion_retry_keys;
+ALTER TABLE assisted_conclusion_retry_keys_v41 RENAME TO assisted_conclusion_retry_keys;
+`
+
+func migration41Up(tx *sql.Tx) error { return execStatements(tx, migration41SQL) }
+
+const migration42TableSQL = `
+CREATE TABLE assisted_conclusion_receipts_v42 (
+	id TEXT PRIMARY KEY,
+	task_id TEXT NOT NULL,
+	continuation_id TEXT NOT NULL,
+	source_session_id TEXT NOT NULL,
+	source_turn_id TEXT NOT NULL,
+	state TEXT NOT NULL CHECK (state IN ('clean','pending','dispatch_requested','repair_dispatch_requested','awaiting_result','action_required','validated','applied')),
+	source_work_watermark INTEGER NOT NULL CHECK (source_work_watermark >= 0),
+	semantic_persistence_watermark INTEGER NOT NULL CHECK (semantic_persistence_watermark >= 0),
+	dispatch_request_id TEXT UNIQUE,
+	control_turn_id TEXT,
+	base_revision INTEGER CHECK (base_revision >= 0),
+	source_model_provider_id TEXT NOT NULL DEFAULT '',
+	source_model TEXT NOT NULL DEFAULT '',
+	source_reasoning_effort TEXT NOT NULL DEFAULT '',
+	canonical_result_json BLOB,
+	canonical_result_sha256 TEXT,
+	apply_idempotency_key TEXT UNIQUE,
+	applied_revision INTEGER CHECK (applied_revision >= 0),
+	automatic_turn_count INTEGER NOT NULL DEFAULT 0 CHECK (automatic_turn_count >= 0),
+	repair_count INTEGER NOT NULL DEFAULT 0 CHECK (repair_count >= 0),
+	explicit_retry_count INTEGER NOT NULL DEFAULT 0 CHECK (explicit_retry_count >= 0),
+	operator_retry_key TEXT,
+	next_eligible_at TEXT,
+	error_code TEXT,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	UNIQUE (task_id, continuation_id, source_turn_id),
+	CHECK (
+		(state = 'clean' AND source_work_watermark = semantic_persistence_watermark) OR
+		(state <> 'clean' AND source_work_watermark > semantic_persistence_watermark)
+	),
+	CHECK (
+		(state IN ('clean','pending') AND dispatch_request_id IS NULL AND control_turn_id IS NULL AND base_revision IS NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NULL AND applied_revision IS NULL) OR
+		(state IN ('dispatch_requested','repair_dispatch_requested') AND dispatch_request_id IS NOT NULL AND control_turn_id IS NULL AND base_revision IS NOT NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		(state = 'awaiting_result' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		(state = 'action_required' AND dispatch_request_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		(state = 'validated' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NOT NULL AND length(canonical_result_json) > 0 AND canonical_result_sha256 IS NOT NULL AND length(canonical_result_sha256) = 64 AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		(state = 'applied' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NOT NULL AND length(canonical_result_json) > 0 AND canonical_result_sha256 IS NOT NULL AND length(canonical_result_sha256) = 64 AND apply_idempotency_key IS NOT NULL AND applied_revision IS NOT NULL)
+	),
+	CHECK ((state = 'action_required' AND error_code IS NOT NULL AND next_eligible_at IS NOT NULL) OR state <> 'action_required')
+);
+`
+
+const migration42SQL = migration42TableSQL + `
+INSERT INTO assisted_conclusion_receipts_v42
+	(id,task_id,continuation_id,source_session_id,source_turn_id,state,source_work_watermark,
+	 semantic_persistence_watermark,dispatch_request_id,control_turn_id,base_revision,source_model_provider_id,
+	 source_model,source_reasoning_effort,canonical_result_json,canonical_result_sha256,apply_idempotency_key,
+	 applied_revision,automatic_turn_count,repair_count,explicit_retry_count,operator_retry_key,next_eligible_at,error_code,
+	 created_at,updated_at)
+	SELECT id,task_id,continuation_id,source_session_id,source_turn_id,state,source_work_watermark,
+	 semantic_persistence_watermark,dispatch_request_id,control_turn_id,base_revision,source_model_provider_id,
+	 source_model,source_reasoning_effort,canonical_result_json,canonical_result_sha256,apply_idempotency_key,
+	 applied_revision,automatic_turn_count,repair_count,explicit_retry_count,operator_retry_key,next_eligible_at,error_code,
+	 created_at,updated_at
+	FROM assisted_conclusion_receipts;
+DROP TABLE assisted_conclusion_receipts;
+ALTER TABLE assisted_conclusion_receipts_v42 RENAME TO assisted_conclusion_receipts;
+CREATE INDEX assisted_conclusion_receipts_task_created
+	ON assisted_conclusion_receipts(task_id, created_at DESC);
+`
+
+func migration42Up(tx *sql.Tx) error {
+	current, err := assistedConclusionDispatchFailureSchemaPresent(tx)
+	if err != nil || current {
+		return err
+	}
+	return execStatements(tx, migration42SQL)
+}
+
+const migration36SQL = `
+CREATE TABLE IF NOT EXISTS assisted_conclusion_receipts (
+	id TEXT PRIMARY KEY,
+	task_id TEXT NOT NULL,
+	continuation_id TEXT NOT NULL,
+	source_session_id TEXT NOT NULL,
+	source_turn_id TEXT NOT NULL,
+	state TEXT NOT NULL CHECK (state = 'pending'),
+	terminal_tool_result_count INTEGER NOT NULL CHECK (terminal_tool_result_count > 0),
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	UNIQUE (task_id, continuation_id, source_turn_id)
+);
+CREATE INDEX IF NOT EXISTS assisted_conclusion_receipts_task_created
+	ON assisted_conclusion_receipts(task_id, created_at DESC);
+`
+
+func migration36Up(tx *sql.Tx) error { return execStatements(tx, migration36SQL) }
+
+const migration37SQL = `
+CREATE TABLE assisted_conclusion_receipts_v37 (
+	id TEXT PRIMARY KEY,
+	task_id TEXT NOT NULL,
+	continuation_id TEXT NOT NULL,
+	source_session_id TEXT NOT NULL,
+	source_turn_id TEXT NOT NULL,
+	state TEXT NOT NULL CHECK (state IN ('pending','dispatch_requested','awaiting_result','validated','applied')),
+	terminal_tool_result_count INTEGER NOT NULL CHECK (terminal_tool_result_count > 0),
+	dispatch_request_id TEXT UNIQUE,
+	control_turn_id TEXT,
+	base_revision INTEGER CHECK (base_revision >= 0),
+	source_model_provider_id TEXT NOT NULL DEFAULT '',
+	source_model TEXT NOT NULL DEFAULT '',
+	source_reasoning_effort TEXT NOT NULL DEFAULT '',
+	canonical_result_json BLOB,
+	canonical_result_sha256 TEXT,
+	apply_idempotency_key TEXT UNIQUE,
+	applied_revision INTEGER CHECK (applied_revision >= 0),
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	UNIQUE (task_id, continuation_id, source_turn_id),
+	CHECK (
+		(state = 'pending' AND dispatch_request_id IS NULL AND control_turn_id IS NULL AND base_revision IS NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NULL AND applied_revision IS NULL) OR
+		(state = 'dispatch_requested' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NULL AND base_revision IS NOT NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		(state = 'awaiting_result' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		(state = 'validated' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NOT NULL AND length(canonical_result_json) > 0 AND canonical_result_sha256 IS NOT NULL AND length(canonical_result_sha256) = 64 AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		(state = 'applied' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NOT NULL AND length(canonical_result_json) > 0 AND canonical_result_sha256 IS NOT NULL AND length(canonical_result_sha256) = 64 AND apply_idempotency_key IS NOT NULL AND applied_revision IS NOT NULL)
+	)
+);
+INSERT INTO assisted_conclusion_receipts_v37
+	(id,task_id,continuation_id,source_session_id,source_turn_id,state,terminal_tool_result_count,created_at,updated_at)
+	SELECT id,task_id,continuation_id,source_session_id,source_turn_id,state,terminal_tool_result_count,created_at,updated_at
+	FROM assisted_conclusion_receipts;
+DROP TABLE assisted_conclusion_receipts;
+ALTER TABLE assisted_conclusion_receipts_v37 RENAME TO assisted_conclusion_receipts;
+CREATE INDEX assisted_conclusion_receipts_task_created
+	ON assisted_conclusion_receipts(task_id, created_at DESC);
+`
+
+func migration37Up(tx *sql.Tx) error {
+	if current, err := assistedConclusionDispatchFailureSchemaPresent(tx); err != nil || current {
+		return err
+	}
+	if current, err := assistedConclusionRecoverySchemaPresent(tx); err != nil || current {
+		return err
+	}
+	current, err := assistedConclusionWatermarkSchemaPresent(tx)
+	if err != nil {
+		return err
+	}
+	if current {
+		return nil
+	}
+	return execStatements(tx, migration37SQL)
+}
+
+const migration38TableSQL = `
+CREATE TABLE assisted_conclusion_receipts_v38 (
+	id TEXT PRIMARY KEY,
+	task_id TEXT NOT NULL,
+	continuation_id TEXT NOT NULL,
+	source_session_id TEXT NOT NULL,
+	source_turn_id TEXT NOT NULL,
+	state TEXT NOT NULL CHECK (state IN ('clean','pending','dispatch_requested','awaiting_result','validated','applied')),
+	source_work_watermark INTEGER NOT NULL CHECK (source_work_watermark >= 0),
+	semantic_persistence_watermark INTEGER NOT NULL CHECK (semantic_persistence_watermark >= 0),
+	dispatch_request_id TEXT UNIQUE,
+	control_turn_id TEXT,
+	base_revision INTEGER CHECK (base_revision >= 0),
+	source_model_provider_id TEXT NOT NULL DEFAULT '',
+	source_model TEXT NOT NULL DEFAULT '',
+	source_reasoning_effort TEXT NOT NULL DEFAULT '',
+	canonical_result_json BLOB,
+	canonical_result_sha256 TEXT,
+	apply_idempotency_key TEXT UNIQUE,
+	applied_revision INTEGER CHECK (applied_revision >= 0),
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	UNIQUE (task_id, continuation_id, source_turn_id),
+	CHECK (
+		(state = 'clean' AND source_work_watermark = semantic_persistence_watermark) OR
+		(state <> 'clean' AND source_work_watermark > semantic_persistence_watermark)
+	),
+	CHECK (
+		(state = 'clean' AND dispatch_request_id IS NULL AND control_turn_id IS NULL AND base_revision IS NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NULL AND applied_revision IS NULL) OR
+		(state = 'pending' AND dispatch_request_id IS NULL AND control_turn_id IS NULL AND base_revision IS NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NULL AND applied_revision IS NULL) OR
+		(state = 'dispatch_requested' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NULL AND base_revision IS NOT NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		(state = 'awaiting_result' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		(state = 'validated' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NOT NULL AND length(canonical_result_json) > 0 AND canonical_result_sha256 IS NOT NULL AND length(canonical_result_sha256) = 64 AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		(state = 'applied' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NOT NULL AND length(canonical_result_json) > 0 AND canonical_result_sha256 IS NOT NULL AND length(canonical_result_sha256) = 64 AND apply_idempotency_key IS NOT NULL AND applied_revision IS NOT NULL)
+	)
+);
+`
+
+const migration38SQL = migration38TableSQL + `
+INSERT INTO assisted_conclusion_receipts_v38
+	(id,task_id,continuation_id,source_session_id,source_turn_id,state,source_work_watermark,
+	 semantic_persistence_watermark,dispatch_request_id,control_turn_id,base_revision,source_model_provider_id,
+	 source_model,source_reasoning_effort,canonical_result_json,canonical_result_sha256,apply_idempotency_key,
+	 applied_revision,created_at,updated_at)
+	SELECT id,task_id,continuation_id,source_session_id,source_turn_id,state,terminal_tool_result_count,
+	 0,dispatch_request_id,control_turn_id,base_revision,source_model_provider_id,source_model,
+	 source_reasoning_effort,canonical_result_json,canonical_result_sha256,apply_idempotency_key,
+	 applied_revision,created_at,updated_at
+	FROM assisted_conclusion_receipts;
+DROP TABLE assisted_conclusion_receipts;
+ALTER TABLE assisted_conclusion_receipts_v38 RENAME TO assisted_conclusion_receipts;
+CREATE INDEX assisted_conclusion_receipts_task_created
+	ON assisted_conclusion_receipts(task_id, created_at DESC);
+`
+
+func migration38Up(tx *sql.Tx) error {
+	if current, err := assistedConclusionDispatchFailureSchemaPresent(tx); err != nil || current {
+		return err
+	}
+	if current, err := assistedConclusionRecoverySchemaPresent(tx); err != nil || current {
+		return err
+	}
+	current, err := assistedConclusionWatermarkSchemaPresent(tx)
+	if err != nil {
+		return err
+	}
+	if current {
+		return nil
+	}
+	return execStatements(tx, migration38SQL)
+}
+
+const migration39TableSQL = `
+CREATE TABLE assisted_conclusion_receipts_v39 (
+	id TEXT PRIMARY KEY,
+	task_id TEXT NOT NULL,
+	continuation_id TEXT NOT NULL,
+	source_session_id TEXT NOT NULL,
+	source_turn_id TEXT NOT NULL,
+	state TEXT NOT NULL CHECK (state IN ('clean','pending','dispatch_requested','repair_dispatch_requested','awaiting_result','action_required','validated','applied')),
+	source_work_watermark INTEGER NOT NULL CHECK (source_work_watermark >= 0),
+	semantic_persistence_watermark INTEGER NOT NULL CHECK (semantic_persistence_watermark >= 0),
+	dispatch_request_id TEXT UNIQUE,
+	control_turn_id TEXT,
+	base_revision INTEGER CHECK (base_revision >= 0),
+	source_model_provider_id TEXT NOT NULL DEFAULT '',
+	source_model TEXT NOT NULL DEFAULT '',
+	source_reasoning_effort TEXT NOT NULL DEFAULT '',
+	canonical_result_json BLOB,
+	canonical_result_sha256 TEXT,
+	apply_idempotency_key TEXT UNIQUE,
+	applied_revision INTEGER CHECK (applied_revision >= 0),
+	automatic_turn_count INTEGER NOT NULL DEFAULT 0 CHECK (automatic_turn_count >= 0),
+	repair_count INTEGER NOT NULL DEFAULT 0 CHECK (repair_count >= 0),
+	explicit_retry_count INTEGER NOT NULL DEFAULT 0 CHECK (explicit_retry_count >= 0),
+	operator_retry_key TEXT,
+	next_eligible_at TEXT,
+	error_code TEXT,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	UNIQUE (task_id, continuation_id, source_turn_id),
+	CHECK (
+		(state = 'clean' AND source_work_watermark = semantic_persistence_watermark) OR
+		(state <> 'clean' AND source_work_watermark > semantic_persistence_watermark)
+	),
+	CHECK (
+		(state IN ('clean','pending') AND dispatch_request_id IS NULL AND control_turn_id IS NULL AND base_revision IS NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NULL AND applied_revision IS NULL) OR
+		(state IN ('dispatch_requested','repair_dispatch_requested') AND dispatch_request_id IS NOT NULL AND control_turn_id IS NULL AND base_revision IS NOT NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		(state IN ('awaiting_result','action_required') AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		(state = 'validated' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NOT NULL AND length(canonical_result_json) > 0 AND canonical_result_sha256 IS NOT NULL AND length(canonical_result_sha256) = 64 AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+		(state = 'applied' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NOT NULL AND length(canonical_result_json) > 0 AND canonical_result_sha256 IS NOT NULL AND length(canonical_result_sha256) = 64 AND apply_idempotency_key IS NOT NULL AND applied_revision IS NOT NULL)
+	),
+	CHECK ((state = 'action_required' AND error_code IS NOT NULL AND next_eligible_at IS NOT NULL) OR state <> 'action_required')
+);
+`
+
+const migration39SQL = migration39TableSQL + `
+INSERT INTO assisted_conclusion_receipts_v39
+	(id,task_id,continuation_id,source_session_id,source_turn_id,state,source_work_watermark,
+	 semantic_persistence_watermark,dispatch_request_id,control_turn_id,base_revision,source_model_provider_id,
+	 source_model,source_reasoning_effort,canonical_result_json,canonical_result_sha256,apply_idempotency_key,
+	 applied_revision,automatic_turn_count,repair_count,explicit_retry_count,created_at,updated_at)
+	SELECT id,task_id,continuation_id,source_session_id,source_turn_id,state,source_work_watermark,
+	 semantic_persistence_watermark,dispatch_request_id,control_turn_id,base_revision,source_model_provider_id,
+	 source_model,source_reasoning_effort,canonical_result_json,canonical_result_sha256,apply_idempotency_key,
+	 applied_revision,CASE WHEN state IN ('clean','pending') THEN 0 ELSE 1 END,0,0,created_at,updated_at
+	FROM assisted_conclusion_receipts;
+DROP TABLE assisted_conclusion_receipts;
+ALTER TABLE assisted_conclusion_receipts_v39 RENAME TO assisted_conclusion_receipts;
+CREATE INDEX assisted_conclusion_receipts_task_created
+	ON assisted_conclusion_receipts(task_id, created_at DESC);
+`
+
+func migration39Up(tx *sql.Tx) error {
+	if current, err := assistedConclusionDispatchFailureSchemaPresent(tx); err != nil || current {
+		return err
+	}
+	current, err := assistedConclusionRecoverySchemaPresent(tx)
+	if err != nil || current {
+		return err
+	}
+	return execStatements(tx, migration39SQL)
+}
+
+func assistedConclusionRecoverySchemaPresent(tx *sql.Tx) (bool, error) {
+	rows, err := tx.Query(`PRAGMA table_info(assisted_conclusion_receipts)`)
+	if err != nil {
+		return false, fmt.Errorf("inspect assisted conclusion recovery schema: %w", err)
+	}
+	defer rows.Close()
+	want := []string{
+		"id", "task_id", "continuation_id", "source_session_id", "source_turn_id", "state",
+		"source_work_watermark", "semantic_persistence_watermark", "dispatch_request_id", "control_turn_id",
+		"base_revision", "source_model_provider_id", "source_model", "source_reasoning_effort",
+		"canonical_result_json", "canonical_result_sha256", "apply_idempotency_key", "applied_revision",
+		"automatic_turn_count", "repair_count", "explicit_retry_count", "operator_retry_key", "next_eligible_at", "error_code",
+		"created_at", "updated_at",
+	}
+	var got []string
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, fmt.Errorf("scan assisted conclusion recovery schema: %w", err)
+		}
+		got = append(got, name)
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	if len(got) != len(want) {
+		return false, nil
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false, nil
+		}
+	}
+	var tableSQL, indexSQL string
+	if err := tx.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='assisted_conclusion_receipts'`).Scan(&tableSQL); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("inspect assisted conclusion recovery table contract: %w", err)
+	}
+	if err := tx.QueryRow(`SELECT sql FROM sqlite_master WHERE type='index' AND name='assisted_conclusion_receipts_task_created' AND tbl_name='assisted_conclusion_receipts'`).Scan(&indexSQL); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("inspect assisted conclusion recovery index contract: %w", err)
+	}
+	expectedTableSQL := strings.Replace(migration39TableSQL,
+		"CREATE TABLE assisted_conclusion_receipts_v39", `CREATE TABLE "assisted_conclusion_receipts"`, 1)
+	expectedTableSQL = strings.TrimSuffix(strings.TrimSpace(expectedTableSQL), ";")
+	if strings.Join(strings.Fields(tableSQL), " ") != strings.Join(strings.Fields(expectedTableSQL), " ") {
+		return false, nil
+	}
+	return strings.Join(strings.Fields(indexSQL), " ") == "CREATE INDEX assisted_conclusion_receipts_task_created ON assisted_conclusion_receipts(task_id, created_at DESC)", nil
+}
+
+func assistedConclusionDispatchFailureSchemaPresent(tx *sql.Tx) (bool, error) {
+	if current, err := assistedConclusionVersionRegenerationSchemaPresent(tx); err != nil || current {
+		return current, err
+	}
+	var tableSQL, indexSQL string
+	if err := tx.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='assisted_conclusion_receipts'`).Scan(&tableSQL); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("inspect assisted conclusion dispatch failure table: %w", err)
+	}
+	expected := strings.Replace(migration42TableSQL,
+		"CREATE TABLE assisted_conclusion_receipts_v42", `CREATE TABLE "assisted_conclusion_receipts"`, 1)
+	expected = strings.TrimSuffix(strings.TrimSpace(expected), ";")
+	if strings.Join(strings.Fields(tableSQL), " ") != strings.Join(strings.Fields(expected), " ") {
+		return false, nil
+	}
+	if err := tx.QueryRow(`SELECT sql FROM sqlite_master WHERE type='index' AND name='assisted_conclusion_receipts_task_created' AND tbl_name='assisted_conclusion_receipts'`).Scan(&indexSQL); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("inspect assisted conclusion dispatch failure index: %w", err)
+	}
+	return strings.Join(strings.Fields(indexSQL), " ") == "CREATE INDEX assisted_conclusion_receipts_task_created ON assisted_conclusion_receipts(task_id, created_at DESC)", nil
+}
+
+func assistedConclusionVersionRegenerationSchemaPresent(tx *sql.Tx) (bool, error) {
+	if current, err := assistedConclusionExactlyOnceSchemaPresent(tx); err != nil || current {
+		return current, err
+	}
+	var tableSQL, indexSQL string
+	if err := tx.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='assisted_conclusion_receipts'`).Scan(&tableSQL); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("inspect assisted conclusion version regeneration table: %w", err)
+	}
+	expected := strings.Replace(migration43TableSQL,
+		"CREATE TABLE assisted_conclusion_receipts_v43", `CREATE TABLE "assisted_conclusion_receipts"`, 1)
+	expected = strings.TrimSuffix(strings.TrimSpace(expected), ";")
+	if strings.Join(strings.Fields(tableSQL), " ") != strings.Join(strings.Fields(expected), " ") {
+		return false, nil
+	}
+	if err := tx.QueryRow(`SELECT sql FROM sqlite_master WHERE type='index' AND name='assisted_conclusion_receipts_task_created' AND tbl_name='assisted_conclusion_receipts'`).Scan(&indexSQL); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("inspect assisted conclusion version regeneration index: %w", err)
+	}
+	return strings.Join(strings.Fields(indexSQL), " ") == "CREATE INDEX assisted_conclusion_receipts_task_created ON assisted_conclusion_receipts(task_id, created_at DESC)", nil
+}
+
+func assistedConclusionWatermarkSchemaPresent(tx *sql.Tx) (bool, error) {
+	rows, err := tx.Query(`PRAGMA table_info(assisted_conclusion_receipts)`)
+	if err != nil {
+		return false, fmt.Errorf("inspect assisted conclusion receipt watermark schema: %w", err)
+	}
+	defer rows.Close()
+	wantColumns := []string{
+		"id", "task_id", "continuation_id", "source_session_id", "source_turn_id", "state",
+		"source_work_watermark", "semantic_persistence_watermark", "dispatch_request_id", "control_turn_id",
+		"base_revision", "source_model_provider_id", "source_model", "source_reasoning_effort",
+		"canonical_result_json", "canonical_result_sha256", "apply_idempotency_key", "applied_revision",
+		"created_at", "updated_at",
+	}
+	columns := make([]string, 0, len(wantColumns))
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, fmt.Errorf("scan assisted conclusion receipt watermark schema: %w", err)
+		}
+		columns = append(columns, name)
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate assisted conclusion receipt watermark schema: %w", err)
+	}
+	if len(columns) != len(wantColumns) {
+		return false, nil
+	}
+	for index := range wantColumns {
+		if columns[index] != wantColumns[index] {
+			return false, nil
+		}
+	}
+
+	var tableSQL, indexSQL string
+	if err := tx.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='assisted_conclusion_receipts'`).Scan(&tableSQL); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("inspect assisted conclusion receipt table contract: %w", err)
+	}
+	if err := tx.QueryRow(`SELECT sql FROM sqlite_master WHERE type='index' AND name='assisted_conclusion_receipts_task_created' AND tbl_name='assisted_conclusion_receipts'`).Scan(&indexSQL); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("inspect assisted conclusion receipt index contract: %w", err)
+	}
+	expectedTableSQL := strings.Replace(migration38TableSQL,
+		"CREATE TABLE assisted_conclusion_receipts_v38", `CREATE TABLE "assisted_conclusion_receipts"`, 1)
+	expectedTableSQL = strings.TrimSuffix(strings.TrimSpace(expectedTableSQL), ";")
+	if strings.Join(strings.Fields(tableSQL), " ") != strings.Join(strings.Fields(expectedTableSQL), " ") {
+		return false, nil
+	}
+	normalizedIndexSQL := strings.Join(strings.Fields(indexSQL), " ")
+	return normalizedIndexSQL == "CREATE INDEX assisted_conclusion_receipts_task_created ON assisted_conclusion_receipts(task_id, created_at DESC)", nil
 }
 
 // migration34 retires every displaced Blackboard v1 data and compatibility

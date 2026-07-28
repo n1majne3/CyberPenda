@@ -41,12 +41,44 @@ type ProductionProviderSessionFactoryConfig struct {
 }
 
 type ProductionProviderSessionFactory struct {
-	config      ProductionProviderSessionFactoryConfig
-	bridges     *runtime.SandboxSessionBridgeRegistry
-	hostBridges *runtime.HostSessionBridgeRegistry
+	config               ProductionProviderSessionFactoryConfig
+	bridges              *runtime.SandboxSessionBridgeRegistry
+	hostBridges          *runtime.HostSessionBridgeRegistry
+	claudeAssistedStatic bool
 
 	mu     sync.Mutex
 	bounds map[string]ProviderSessionBinding
+}
+
+// SupportsAssistedConclusion reports the production implementations whose
+// bridge + adapter chain exposes normalized observations and a closed Attempt
+// result seam. A concrete Claude session still verifies the SDK bridge
+// handshake below and fails closed if an older/incomplete bridge is active.
+func (f *ProductionProviderSessionFactory) SupportsAssistedConclusion(provider runtimeprofile.Provider) bool {
+	switch provider {
+	case runtimeprofile.ProviderCodex, runtimeprofile.ProviderPi:
+		return true
+	case runtimeprofile.ProviderClaudeCode:
+		return f.claudeAssistedStatic
+	default:
+		return false
+	}
+}
+
+type claudeBridgeCapabilities struct {
+	PersistentSession    bool `json:"persistent_session"`
+	SendTurn             bool `json:"send_turn"`
+	InterruptTurn        bool `json:"interrupt_turn"`
+	NormalizedToolEvents bool `json:"normalized_tool_events"`
+	NormalizedTurnEvents bool `json:"normalized_turn_events"`
+	AttemptResult        bool `json:"attempt_result"`
+	AssistedConclusion   bool `json:"assisted_conclusion"`
+}
+
+func (capabilities claudeBridgeCapabilities) supportsAssistedConclusion() bool {
+	return capabilities.PersistentSession && capabilities.SendTurn && capabilities.InterruptTurn &&
+		capabilities.NormalizedToolEvents && capabilities.NormalizedTurnEvents &&
+		capabilities.AttemptResult && capabilities.AssistedConclusion
 }
 
 type productionBoundSession struct {
@@ -116,6 +148,7 @@ type productionBridgeTransport interface {
 }
 
 func NewProductionProviderSessionFactory(config ProductionProviderSessionFactoryConfig) *ProductionProviderSessionFactory {
+	claudeAssistedStatic := strings.TrimSpace(config.ClaudeSDKBridgeCommand) == ""
 	if strings.TrimSpace(config.BridgeCommand) == "" {
 		config.BridgeCommand = "/usr/local/bin/pentest-provider-bridge"
 	}
@@ -123,10 +156,11 @@ func NewProductionProviderSessionFactory(config ProductionProviderSessionFactory
 		config.ClaudeSDKBridgeCommand = "/usr/local/bin/pentest-claude-sdk-bridge"
 	}
 	return &ProductionProviderSessionFactory{
-		config:      config,
-		bridges:     runtime.NewSandboxSessionBridgeRegistry(),
-		hostBridges: runtime.NewHostSessionBridgeRegistry(),
-		bounds:      map[string]ProviderSessionBinding{},
+		config:               config,
+		bridges:              runtime.NewSandboxSessionBridgeRegistry(),
+		hostBridges:          runtime.NewHostSessionBridgeRegistry(),
+		claudeAssistedStatic: claudeAssistedStatic,
+		bounds:               map[string]ProviderSessionBinding{},
 	}
 }
 
@@ -591,17 +625,21 @@ func (f *ProductionProviderSessionFactory) finishCodexBinding(
 		return ProviderSessionBinding{}, fmt.Errorf("provider session thread identity unavailable")
 	}
 	sessionPath := strings.TrimSpace(request.Continuation.NativeSessionPath)
-	capabilities := runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptTurn: true, InterruptThenReplace: true, PermissionResponse: true, ResumeSession: true}
+	capabilities := runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptTurn: true, InterruptThenReplace: true, PermissionResponse: true, ResumeSession: true, AssistedConclusion: true}
 	nativeSession := runtime.NewCodexProviderSession(runtime.CodexProviderSessionConfig{Transport: bridge, SessionID: threadID, Capabilities: capabilities})
-	var session *productionBoundSession
-	session = &productionBoundSession{ProviderSession: nativeSession, onClose: func(closeCtx context.Context) {
+	var session runtime.ProviderSession
+	session, err = newProductionBoundProviderSession(nativeSession, func(closeCtx context.Context) {
 		f.mu.Lock()
 		if current, ok := f.bounds[taskID]; ok && current.Session == session {
 			delete(f.bounds, taskID)
 		}
 		f.mu.Unlock()
 		closeBridge(closeCtx)
-	}}
+	})
+	if err != nil {
+		closeBridge(ctx)
+		return ProviderSessionBinding{}, err
+	}
 	runAdapterMu.Lock()
 	// Unexpected process/protocol exit (Terminated) and explicit cleanup
 	// (Closed) both end the harness wait; they remain distinct bridge signals.
@@ -635,7 +673,8 @@ func (f *ProductionProviderSessionFactory) finishClaudeBinding(
 		return ProviderSessionBinding{}, err
 	}
 	var state struct {
-		SessionID string `json:"session_id"`
+		SessionID    string                   `json:"session_id"`
+		Capabilities claudeBridgeCapabilities `json:"capabilities"`
 	}
 	if err := json.Unmarshal(setupResponse.Result, &state); err != nil || strings.TrimSpace(state.SessionID) == "" {
 		closeBridge(ctx)
@@ -646,17 +685,25 @@ func (f *ProductionProviderSessionFactory) finishClaudeBinding(
 		closeBridge(ctx)
 		return ProviderSessionBinding{}, fmt.Errorf("provider session resume identity changed")
 	}
-	capabilities := runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptTurn: true, InterruptThenReplace: true, PermissionResponse: true, ResumeSession: true}
+	capabilities := runtimeplugin.Capabilities{
+		PersistentSession: true, SendTurn: true, InterruptTurn: true, InterruptThenReplace: true,
+		PermissionResponse: true, ResumeSession: true,
+		AssistedConclusion: state.Capabilities.supportsAssistedConclusion(),
+	}
 	nativeSession := runtime.NewClaudeCodeProviderSession(runtime.ClaudeCodeProviderSessionConfig{Transport: bridge, SessionID: sessionID, Capabilities: capabilities})
-	var session *productionBoundSession
-	session = &productionBoundSession{ProviderSession: nativeSession, onClose: func(closeCtx context.Context) {
+	var session runtime.ProviderSession
+	session, err = newProductionBoundProviderSession(nativeSession, func(closeCtx context.Context) {
 		f.mu.Lock()
 		if current, ok := f.bounds[taskID]; ok && current.Session == session {
 			delete(f.bounds, taskID)
 		}
 		f.mu.Unlock()
 		closeBridge(closeCtx)
-	}}
+	})
+	if err != nil {
+		closeBridge(ctx)
+		return ProviderSessionBinding{}, err
+	}
 	runAdapterMu.Lock()
 	*runAdapter = runtime.NewProviderSessionRunAdapter(session, runtime.FirstSignal(bridge.Closed(), bridge.Terminated()))
 	runAdapterMu.Unlock()
@@ -704,18 +751,22 @@ func (f *ProductionProviderSessionFactory) finishPiBinding(
 	}
 	capabilities := runtimeplugin.Capabilities{
 		PersistentSession: true, SendTurn: true, InterruptTurn: true, InterruptThenReplace: true,
-		PermissionResponse: true, ResumeSession: true, InTurnSteer: true,
+		PermissionResponse: true, ResumeSession: true, InTurnSteer: true, AssistedConclusion: true,
 	}
 	nativeSession := runtime.NewPiProviderSession(runtime.PiProviderSessionConfig{Transport: bridge, SessionID: sessionID, Capabilities: capabilities})
-	var session *productionBoundSession
-	session = &productionBoundSession{ProviderSession: nativeSession, onClose: func(closeCtx context.Context) {
+	var session runtime.ProviderSession
+	session, err = newProductionBoundProviderSession(nativeSession, func(closeCtx context.Context) {
 		f.mu.Lock()
 		if current, ok := f.bounds[taskID]; ok && current.Session == session {
 			delete(f.bounds, taskID)
 		}
 		f.mu.Unlock()
 		closeBridge(closeCtx)
-	}}
+	})
+	if err != nil {
+		closeBridge(ctx)
+		return ProviderSessionBinding{}, err
+	}
 	runAdapterMu.Lock()
 	*runAdapter = runtime.NewProviderSessionRunAdapter(session, runtime.FirstSignal(bridge.Closed(), bridge.Terminated()))
 	runAdapterMu.Unlock()
