@@ -43,6 +43,9 @@
     --warning: 38 92% 45%;
     --warning-foreground: 0 0% 9%;
 
+    /* Desaturated teal used sparingly as the interactive/identity signal. */
+    --signal: 187 42% 38%;
+
     --border: 0 0% 90%;
     --input: 0 0% 90%;
     --ring: 0 0% 9%;
@@ -99,6 +102,9 @@
 
     --warning: 38 92% 54%;
     --warning-foreground: 0 0% 9%;
+
+    /* Dark surfaces need a lighter, slightly cooler signal to stay legible. */
+    --signal: 186 48% 58%;
 
     --border: 0 0% 18%;
     --input: 0 0% 20%;
@@ -185,6 +191,30 @@
 }
 
 @layer utilities {
+  /*
+   * Faint monochrome grain overlay for identity surfaces. Rendered as a
+   * pointer-events-none pseudo element so it never intercepts clicks and
+   * inherits the host element's border-radius. Opacity stays extremely low
+   * so it reads as texture, not noise.
+   */
+  .surface-grain {
+    position: relative;
+    isolation: isolate;
+  }
+  .surface-grain::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    opacity: 0.02;
+  }
+  .dark .surface-grain::after {
+    opacity: 0.035;
+  }
+
   /* One-time 360 degree spin used by the logo on first mount. */
   @keyframes logo-spin {
     from {

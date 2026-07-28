@@ -165,6 +165,7 @@ export function CredentialBindingsPage() {
       <SettingsPageHeader
         className="mb-4 shrink-0"
         title="Credential bindings"
+        eyebrow="Configuration"
         description="Global credential sources. Project overrides stay on project dashboards; model provider API keys usually live with Model providers."
         actions={
           <div className="flex flex-wrap items-center gap-2">

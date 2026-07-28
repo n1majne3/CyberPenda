@@ -72,16 +72,16 @@ function FindingSection({
       >
         {title} ({items.length})
       </h3>
-      <ul className="divide-y divide-slate-300 border-y border-slate-300" role="list">
+      <ul className="divide-y divide-border border-y border-border" role="list">
         {items.map((row) => (
           <li key={row.key}>
             <Link
               to={recordHref(projectId, row.key)}
-              className="flex w-full flex-col gap-1 border-b border-slate-300 bg-transparent p-4 text-left transition-colors hover:bg-white/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:flex-row sm:items-center sm:justify-between"
+              className="flex w-full flex-col gap-1 border-b border-border bg-transparent p-4 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:flex-row sm:items-center sm:justify-between"
             >
               <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-slate-950">{row.primary}</p>
-                <p className="truncate font-mono text-xs text-slate-500">
+                <p className="truncate text-sm font-medium text-foreground">{row.primary}</p>
+                <p className="truncate font-mono text-xs text-muted-foreground">
                   {row.secondary || row.key}
                 </p>
               </div>

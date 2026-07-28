@@ -48,11 +48,13 @@ export function SettingsPageHeader({
   title,
   description,
   actions,
+  eyebrow,
   className,
 }: {
   title: string;
   description: ReactNode;
   actions?: ReactNode;
+  eyebrow?: string;
   className?: string;
 }) {
   return (
@@ -63,6 +65,11 @@ export function SettingsPageHeader({
       )}
     >
       <div className="min-w-0">
+        {eyebrow && (
+          <p className="mb-1 font-mono text-xs uppercase tracking-[0.14em] text-muted-foreground">
+            {eyebrow}
+          </p>
+        )}
         <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
         <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{description}</p>
       </div>

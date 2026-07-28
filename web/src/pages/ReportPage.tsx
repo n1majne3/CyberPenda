@@ -172,13 +172,13 @@ function FindingSection({
       {items.length === 0 ? (
         <p className="text-sm text-muted-foreground">_No records._</p>
       ) : (
-        <ul className="divide-y divide-slate-300 border-y border-slate-300" role="list">
+        <ul className="divide-y divide-border border-y border-border" role="list">
           {items.map((finding) => (
             <li key={finding.key} className="space-y-1 p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <Link
                   to={recordHref(projectId, finding.key)}
-                  className="text-sm font-medium text-slate-950 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="text-sm font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   {finding.title}
                 </Link>
@@ -187,7 +187,7 @@ function FindingSection({
                   <Badge variant="outline">{finding.status}</Badge>
                 </div>
               </div>
-              <p className="font-mono text-xs text-slate-500">{finding.key}</p>
+              <p className="font-mono text-xs text-muted-foreground">{finding.key}</p>
               {finding.supporting_facts.length > 0 && (
                 <ul className="mt-1 space-y-0.5 text-xs text-muted-foreground">
                   {finding.supporting_facts.map((fact) => (
@@ -265,13 +265,13 @@ function FactSection({
       {items.length === 0 ? (
         <p className="text-sm text-muted-foreground">_No records._</p>
       ) : (
-        <ul className="divide-y divide-slate-300 border-y border-slate-300" role="list">
+        <ul className="divide-y divide-border border-y border-border" role="list">
           {items.map((fact) => (
             <li key={fact.key} className="space-y-1 p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <Link
                   to={recordHref(projectId, fact.key)}
-                  className="text-sm font-medium text-slate-950 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="text-sm font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   {fact.summary}
                 </Link>
@@ -280,7 +280,7 @@ function FactSection({
                   <Badge variant="outline">{fact.confidence}</Badge>
                 </div>
               </div>
-              <p className="font-mono text-xs text-slate-500">{fact.key}</p>
+              <p className="font-mono text-xs text-muted-foreground">{fact.key}</p>
             </li>
           ))}
         </ul>

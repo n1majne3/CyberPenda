@@ -240,6 +240,7 @@ export function SkillsPage() {
       <SettingsPageHeader
         className="mb-4 shrink-0"
         title="Skills"
+        eyebrow="Library"
         description="Global runtime-agnostic Skill bundles. Skills are default-on unless a profile opts out."
         actions={
           <div className="flex flex-wrap items-center gap-2">

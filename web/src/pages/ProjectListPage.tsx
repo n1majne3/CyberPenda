@@ -46,10 +46,13 @@ export function ProjectListPage() {
   }
 
   return (
-    <PageContainer className="mx-auto max-w-6xl space-y-6">
+    <PageContainer className="mx-auto max-w-6xl space-y-8">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="max-w-2xl">
-          <h1 className="text-2xl font-semibold tracking-tight">Projects</h1>
+          <p className="mb-1 font-mono text-xs uppercase tracking-[0.14em] text-muted-foreground">
+            Workspace
+          </p>
+          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Projects</h1>
           <p className="mt-2 text-sm leading-6 text-muted-foreground">
             Bounded security-testing engagements, each with its own scope, tasks, and memory.
           </p>
@@ -125,7 +128,7 @@ export function ProjectListPage() {
         </Card>
       )}
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {sortNewestFirst(projects).map((p) => (
           <ProjectCard key={p.id} project={p} />
         ))}
@@ -143,11 +146,11 @@ function ProjectCard({ project }: { project: Project }) {
       aria-label={`Open ${project.name} project dashboard`}
       className="group block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
     >
-      <Card className="h-full transition-[border-color,box-shadow,background-color,transform] duration-150 ease-geist group-hover:-translate-y-0.5 group-hover:border-foreground/20 group-hover:bg-accent/40 group-hover:shadow-md motion-reduce:transition-none motion-reduce:group-hover:translate-y-0">
+      <Card className="h-full transition-[border-color,box-shadow,background-color,transform] duration-150 ease-geist group-hover:-translate-y-0.5 group-hover:border-signal/40 group-hover:bg-accent/40 group-hover:shadow-md motion-reduce:transition-none motion-reduce:group-hover:translate-y-0">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border bg-muted text-muted-foreground">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border bg-muted text-muted-foreground transition-colors group-hover:border-signal/40 group-hover:text-signal">
                 <FolderOpen className="h-4 w-4" />
               </span>
               <div className="min-w-0">

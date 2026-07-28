@@ -357,6 +357,7 @@ export function RuntimeProfilesPage() {
       <SettingsPageHeader
         className="mb-4 shrink-0"
         title="Runtime profiles"
+        eyebrow="Configuration"
         description="Advanced presets for MCP servers, skills, binary paths, runner defaults, and extension hooks."
         actions={
           <Button

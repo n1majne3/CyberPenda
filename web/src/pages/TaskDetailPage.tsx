@@ -469,7 +469,7 @@ export function TaskDetailPage() {
         <RuntimeActivityBadge activity={task.runtime_activity} />
         <h1 className="min-w-0 flex-1 truncate text-sm font-medium" title={task.goal}>{task.goal}</h1>
         {currentContinuation && (
-          <div className="hidden shrink-0 items-center gap-1 text-xs text-muted-foreground md:flex">
+          <div className="hidden shrink-0 items-center gap-1 font-mono text-xs text-muted-foreground md:flex">
             <span>continuation #{currentContinuation.number}</span>
             <span aria-hidden="true">·</span>
             <span>runtime: {currentContinuation.runtime_provider}</span>
@@ -612,7 +612,7 @@ export function TaskDetailPage() {
 function tabClass(active: boolean) {
   return [
     "inline-flex items-center gap-1.5 rounded-t-md border-b-2 px-3 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-    active ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
+    active ? "border-signal text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
   ].join(" ");
 }
 
@@ -720,7 +720,7 @@ function FloatingScrollControls({
       >
         <ArrowDown className="h-4 w-4" />
         {autoFollow && (
-          <CheckCircle2 className="absolute right-0.5 top-0.5 h-3 w-3 text-primary" aria-hidden="true" />
+          <CheckCircle2 className="absolute right-0.5 top-0.5 h-3 w-3 text-signal" aria-hidden="true" />
         )}
       </Button>
     </div>

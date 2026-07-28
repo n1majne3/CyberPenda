@@ -83,24 +83,37 @@ export function ProjectDashboardPage() {
 
   return (
     <ProjectPageShell
-      title={<h1 className="text-2xl font-semibold tracking-tight">{project.name}</h1>}
+      title={
+        <div>
+          <p className="mb-1 font-mono text-xs uppercase tracking-[0.14em] text-muted-foreground">
+            Engagement
+          </p>
+          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">{project.name}</h1>
+        </div>
+      }
       description={project.description || undefined}
       actions={
         <Link to={`${base}/tasks/new`} className={buttonVariants()}>
           <Rocket className="h-4 w-4" /> Launch task
         </Link>
       }
-      bodyClassName="space-y-6"
+      bodyClassName="space-y-8"
     >
       <Card
         role="region"
         aria-labelledby="scope-readiness-title"
-        className={cn("gap-5", !scopeReady && "border-warning/40 ring-1 ring-warning/20")}
+        className={cn(
+          "surface-grain gap-5",
+          !scopeReady && "border-warning/40 ring-1 ring-warning/20",
+        )}
       >
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <CardTitle id="scope-readiness-title" className="flex items-center gap-2">
-              <Target className="h-4 w-4 text-muted-foreground" /> Scope readiness
+              <Target
+                className={cn("h-4 w-4", scopeReady ? "text-signal" : "text-muted-foreground")}
+              />{" "}
+              Scope readiness
             </CardTitle>
             <CardDescription className="mt-1">
               {scopeReady
@@ -151,7 +164,7 @@ export function ProjectDashboardPage() {
         <CountCard icon={<FolderLock className="h-4 w-4" />} label="Evidence" n={dash.counts.evidence} to={`${base}/evidence`} />
       </div>
 
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-2 border-t border-border/60 pt-6">
         <Link to={`${base}/report`} className={buttonVariants({ variant: "secondary", size: "sm" })}>
           <ClipboardList className="h-4 w-4" /> Open report
         </Link>
@@ -161,9 +174,25 @@ export function ProjectDashboardPage() {
 }
 
 function ScopeChip({ label, n }: { label: "domain" | "IP" | "CIDR" | "URL" | "port" | "excluded"; n: number }) {
+  const empty = n === 0;
   return (
-    <div className="rounded-md border border-border bg-background px-3 py-2">
-      <p className="text-xs font-medium text-muted-foreground">{pluralize(n, label)}</p>
+    <div
+      className={cn(
+        "rounded-md border bg-background/50 px-3 py-2.5",
+        empty ? "border-border/60" : "border-border",
+      )}
+    >
+      <p className="flex items-baseline gap-1.5">
+        <span
+          className={cn(
+            "font-mono text-lg tabular-nums leading-none",
+            empty ? "text-muted-foreground/40" : "text-foreground",
+          )}
+        >
+          {n}
+        </span>{" "}
+        <span className="text-xs text-muted-foreground">{unitLabel(n, label)}</span>
+      </p>
     </div>
   );
 }
@@ -173,23 +202,25 @@ function CountCard({ icon, label, n, to }: { icon: React.ReactNode; label: strin
     <Link
       to={to}
       aria-label={`View ${n} ${countLabel(label, n)}`}
-      className="group flex min-h-28 flex-col justify-between rounded-lg border border-border bg-card p-4 text-card-foreground shadow-sm transition-[border-color,box-shadow,background-color,transform] duration-150 ease-geist hover:-translate-y-0.5 hover:border-foreground/20 hover:bg-accent/40 hover:shadow-md motion-reduce:transition-none motion-reduce:hover:translate-y-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+      className="group flex min-h-28 flex-col justify-between rounded-lg border border-border bg-card p-4 text-card-foreground shadow-sm transition-[border-color,box-shadow,background-color,transform] duration-150 ease-geist hover:-translate-y-0.5 hover:border-signal/40 hover:bg-accent/40 hover:shadow-md motion-reduce:transition-none motion-reduce:hover:translate-y-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
     >
-      <span className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground group-hover:text-foreground">
+      <span className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground transition-colors group-hover:text-foreground">
         {icon}
         {label}
       </span>
-      <span className="text-3xl font-semibold tracking-tight">{n}</span>
+      <span className="font-mono text-3xl font-semibold tabular-nums tracking-tight transition-colors group-hover:text-signal">
+        {n}
+      </span>
     </Link>
   );
 }
 
-function pluralize(count: number, singular: "domain" | "IP" | "CIDR" | "URL" | "port" | "excluded") {
-  if (singular === "IP" || singular === "CIDR" || singular === "URL") {
-    return `${count} ${count === 1 ? singular : `${singular}s`}`;
-  }
-  if (singular === "excluded") return `${count} excluded`;
-  return `${count} ${count === 1 ? singular : `${singular}s`}`;
+function unitLabel(
+  count: number,
+  singular: "domain" | "IP" | "CIDR" | "URL" | "port" | "excluded",
+) {
+  if (singular === "excluded") return "excluded";
+  return count === 1 ? singular : `${singular}s`;
 }
 
 function countLabel(label: string, count: number) {

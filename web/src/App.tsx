@@ -300,7 +300,7 @@ function SideLink({
           <span
             aria-hidden="true"
             data-nav-indicator={isActive ? "active" : undefined}
-            className={`absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-sidebar-accent-foreground transition-opacity ${
+            className={`absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-signal transition-opacity ${
               isActive ? "opacity-100" : "opacity-0"
             }`}
           />

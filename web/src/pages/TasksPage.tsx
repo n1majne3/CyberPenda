@@ -66,7 +66,7 @@ export function TasksPage() {
     <ProjectPageShell
       title={
         <h2 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
-          <ListChecks className="h-5 w-5 text-primary" /> Tasks
+          <ListChecks className="h-5 w-5 text-signal" /> Tasks
         </h2>
       }
       actions={
@@ -94,14 +94,17 @@ export function TasksPage() {
             to={`${base}/tasks/${task.id}`}
             className="group block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           >
-            <Card className="transition-[background-color,box-shadow] hover:bg-accent/40 hover:ring-foreground/20">
+            <Card className="transition-[border-color,background-color] hover:border-signal/40 hover:bg-accent/40">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div className="min-w-0 flex-1">
                   <p className="break-words font-medium leading-snug group-hover:text-foreground">
                     {task.goal || "(no goal)"}
                   </p>
-                  <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-                    <span>{formatDateTime(task.created_at)}</span>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-xs text-muted-foreground">
+                    <span className="tabular-nums">{formatDateTime(task.created_at)}</span>
+                    <span aria-hidden="true" className="text-muted-foreground/40">
+                      ·
+                    </span>
                     <span>runner {task.runner}</span>
                   </div>
                 </div>

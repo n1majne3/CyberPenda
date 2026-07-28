@@ -227,6 +227,7 @@ export function ModelProvidersPage() {
       <SettingsPageHeader
         className="mb-4 shrink-0"
         title="Model providers"
+        eyebrow="Configuration"
         description="Reusable model endpoints, supported protocols, catalogs, and generated API key env vars."
         actions={
           <div className="flex flex-wrap items-center gap-2">
