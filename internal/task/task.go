@@ -997,7 +997,8 @@ func (s *Service) MarkBlackboardConclusionAwaiting(dispatchRequestID, controlTur
 // tool use and every later invalid result require explicit operator action.
 func (s *Service) HandleBlackboardConclusionFailure(dispatchRequestID string, code BlackboardConclusionErrorCode, now time.Time, cooldown time.Duration) (BlackboardConclusionReceipt, bool, error) {
 	dispatchRequestID = strings.TrimSpace(dispatchRequestID)
-	if dispatchRequestID == "" || cooldown < 0 || (code != BlackboardConclusionErrorInvalidResult && code != BlackboardConclusionErrorToolUseForbidden) {
+	if dispatchRequestID == "" || cooldown < 0 ||
+		(code != BlackboardConclusionErrorInvalidResult && code != BlackboardConclusionErrorToolUseForbidden && code != BlackboardConclusionErrorRuntimeRecoveryRequired) {
 		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
 	}
 	now = now.UTC()

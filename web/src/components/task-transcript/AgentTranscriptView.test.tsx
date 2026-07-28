@@ -18,6 +18,26 @@ const task: Task = {
 };
 
 describe("AgentTranscriptView", () => {
+  it("distinguishes assisted Work, Conclude, retry, and applied revision events", () => {
+    render(
+      <AgentTranscriptView
+        task={task}
+        items={[
+          { seq: 1, type: "harness", content: "Blackboard conclusion pending for work Turn work-7" },
+          { seq: 2, type: "harness", content: "Blackboard Conclude Turn started" },
+          { seq: 3, type: "harness", content: "Blackboard conclusion repair requested" },
+          { seq: 4, type: "harness", content: "Blackboard conclusion retry requested" },
+          { seq: 5, type: "harness", content: "Blackboard conclusion applied at revision 12" },
+        ]}
+      />,
+    );
+
+    expect(screen.getAllByText("Work Turn").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Harness Conclude Turn").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Harness repair/retry").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Blackboard revision 12 applied").length).toBeGreaterThan(0);
+  });
+
   it("renders pending Blackboard conclusion markers as Harness activity", () => {
     render(
       <AgentTranscriptView

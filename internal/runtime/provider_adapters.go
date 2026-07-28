@@ -136,6 +136,18 @@ func (s *providerSessionAdapter) SetObservationSink(sink ProviderSessionObserve)
 	s.mu.Unlock()
 }
 
+func (s *providerSessionAdapter) emitObservation(observation ProviderSessionObservation) {
+	if observation.Validate() != nil {
+		return
+	}
+	s.mu.Lock()
+	sink := s.observationSink
+	s.mu.Unlock()
+	if sink != nil {
+		sink(observation)
+	}
+}
+
 func (s *providerSessionAdapter) ResolveProviderSessionTurnKind(requestID, providerTurnID string) (RuntimeTurnKind, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -788,7 +800,10 @@ type CodexProviderSessionConfig struct {
 	Capabilities runtimeplugin.Capabilities
 }
 
-type CodexProviderSession struct{ *providerSessionAdapter }
+type CodexProviderSession struct {
+	*providerSessionAdapter
+	assisted *codexAssistedSession
+}
 
 func NewCodexProviderSession(config CodexProviderSessionConfig) *CodexProviderSession {
 	threadID := strings.TrimSpace(config.ThreadID)
@@ -826,7 +841,14 @@ func NewCodexProviderSession(config CodexProviderSessionConfig) *CodexProviderSe
 			return providerJSONValue(record, "threadId", "thread_id", "sessionId", "session_id")
 		},
 	}
-	return &CodexProviderSession{newProviderSessionAdapter("codex", config.Transport, threadID, config.ActiveTurnID, providerCapabilities(config.Capabilities), methods)}
+	capabilities := providerCapabilities(config.Capabilities)
+	if !capabilities.PersistentSession || !capabilities.SendTurn {
+		capabilities.AssistedConclusion = false
+	}
+	return &CodexProviderSession{
+		providerSessionAdapter: newProviderSessionAdapter("codex", config.Transport, threadID, config.ActiveTurnID, capabilities, methods),
+		assisted:               newCodexAssistedSession(),
+	}
 }
 
 // ClaudeCodeProviderSessionConfig configures one long-lived Claude Code SDK
@@ -838,14 +860,24 @@ type ClaudeCodeProviderSessionConfig struct {
 	Capabilities runtimeplugin.Capabilities
 }
 
-type ClaudeCodeProviderSession struct{ *providerSessionAdapter }
+type ClaudeCodeProviderSession struct {
+	*providerSessionAdapter
+	assisted *claudeAssistedSession
+}
 
 func NewClaudeCodeProviderSession(config ClaudeCodeProviderSessionConfig) *ClaudeCodeProviderSession {
 	methods := providerWireMethods{
 		send: "claude/input", interrupt: "claude/interrupt", permission: "claude/permission/respond",
 		params: claudeCodeParams, turnID: func(record map[string]any) string { return providerJSONValue(record, "turn_id", "turnId", "id") }, sessionID: identitySession,
 	}
-	return &ClaudeCodeProviderSession{newProviderSessionAdapter("claude_code", config.Transport, config.SessionID, config.ActiveTurnID, providerCapabilities(config.Capabilities), methods)}
+	capabilities := providerCapabilities(config.Capabilities)
+	if !capabilities.PersistentSession || !capabilities.SendTurn {
+		capabilities.AssistedConclusion = false
+	}
+	return &ClaudeCodeProviderSession{
+		providerSessionAdapter: newProviderSessionAdapter("claude_code", config.Transport, config.SessionID, config.ActiveTurnID, capabilities, methods),
+		assisted:               newClaudeAssistedSession(),
+	}
 }
 
 // claudeCodeParams maps the complete Runtime Turn Selection onto claude/input.
@@ -854,6 +886,7 @@ func NewClaudeCodeProviderSession(config ClaudeCodeProviderSessionConfig) *Claud
 // provider change still restarts through Config Projection.
 func claudeCodeParams(sessionID, turnID string, request ProviderSessionRequest) map[string]any {
 	params := providerParams(sessionID, turnID, request)
+	params["turn_kind"] = string(normalizeRuntimeTurnKind(request.TurnKind))
 	if providerID := strings.TrimSpace(request.ModelProviderID); providerID != "" {
 		params["model_provider_id"] = providerID
 	}

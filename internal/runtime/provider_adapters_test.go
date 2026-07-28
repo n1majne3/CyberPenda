@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -383,9 +384,29 @@ func TestClaudeProviderSessionMapsModelProviderModelAndEffortOnInput(t *testing.
 	if params["requested_reasoning_effort"] != "xhigh" {
 		t.Fatalf("requested_reasoning_effort = %#v, want xhigh", params["requested_reasoning_effort"])
 	}
+	if params["turn_kind"] != "work" {
+		t.Fatalf("turn_kind = %#v, want work", params["turn_kind"])
+	}
 	// Effective effort is never inferred onto the wire from the request.
 	if _, ok := params["effective_reasoning_effort"]; ok {
 		t.Fatalf("must not send effective_reasoning_effort: %#v", params)
+	}
+}
+
+func TestClaudeProviderSessionMapsHarnessControlTurnKindOnInput(t *testing.T) {
+	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
+		"claude/input": {Result: json.RawMessage(`{"session_id":"claude-1","turn_id":"turn-control"}`)},
+	}}
+	session := NewClaudeCodeProviderSession(ClaudeCodeProviderSessionConfig{Transport: transport, SessionID: "claude-1"})
+	if _, err := session.SendTurn(context.Background(), ProviderSessionRequest{
+		RequestID: "conclude-1", Message: "return conclusion", TurnKind: RuntimeTurnKindControl,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	requests := transport.snapshot()
+	var params map[string]any
+	if len(requests) != 1 || json.Unmarshal(requests[0].Params, &params) != nil || params["turn_kind"] != "control" {
+		t.Fatalf("control wire params = %#v", requests)
 	}
 }
 
@@ -464,6 +485,66 @@ func TestClaudeProviderSessionSurfacesUnsupportedEffortWithoutRewriting(t *testi
 	}
 	if !strings.Contains(opErr.Cause.Error(), "unsupported reasoning effort") {
 		t.Fatalf("cause = %v", opErr.Cause)
+	}
+}
+
+func TestClaudeProviderSessionEmitsAssistedObservationsAndValidatedControlResult(t *testing.T) {
+	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
+		"claude/input": {Result: json.RawMessage(`{"session_id":"claude-1","turn_id":"control-1"}`)},
+	}}
+	session := NewClaudeCodeProviderSession(ClaudeCodeProviderSessionConfig{
+		Transport: transport, SessionID: "claude-1",
+		Capabilities: runtimeplugin.Capabilities{
+			PersistentSession: true, SendTurn: true, InterruptTurn: true,
+			InterruptThenReplace: true, PermissionResponse: true, ResumeSession: true,
+			AssistedConclusion: true,
+		},
+	})
+	var observations []ProviderSessionObservation
+	session.SetObservationSink(func(observation ProviderSessionObservation) {
+		observations = append(observations, observation)
+	})
+	var results []ProviderSessionAttemptResult
+	session.SetAttemptResultSink(func(result ProviderSessionAttemptResult) { results = append(results, result) })
+
+	_, err := session.SendTurn(context.Background(), ProviderSessionRequest{
+		RequestID: "control-1", Message: "conclude", TurnKind: RuntimeTurnKindControl,
+		ModelProviderID: "anthropic-primary", Model: "claude-sonnet", RequestedReasoningEffort: "high",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.HandleEvent(SandboxBridgeEvent{Method: "claude/tool/used", Params: json.RawMessage(
+		`{"request_id":"control-1","session_id":"claude-1","turn_id":"control-1","tool_call_id":"tool-1","tool_name":"Read","input":{"secret":"never-store"}}`,
+	)}, nil)
+	session.HandleEvent(SandboxBridgeEvent{Method: "claude/tool/result", Params: json.RawMessage(
+		`{"request_id":"control-1","session_id":"claude-1","turn_id":"control-1","tool_call_id":"tool-1","tool_name":"Read","status":"succeeded","content":"never-store"}`,
+	)}, nil)
+	raw := `{"schema":"runtime-attempt-result/v1","base_revision":0,"attempt":{"key":"attempt:claude","create":true,"summary":"No reusable result","outcome":"failed"},"tested_targets":[{"key":"objective:auth","create_objective":{"objective":"Inspect authentication"}}],"produced_targets":[]}`
+	session.HandleEvent(SandboxBridgeEvent{Method: "claude/attempt_result", Params: json.RawMessage(
+		`{"request_id":"control-1","session_id":"claude-1","turn_id":"control-1","result":` + strconv.Quote(raw) + `}`,
+	)}, nil)
+	session.HandleEvent(SandboxBridgeEvent{Method: "claude/turn/completed", Params: json.RawMessage(
+		`{"request_id":"control-1","session_id":"claude-1","turn_id":"control-1","status":"completed"}`,
+	)}, nil)
+
+	wantKinds := []ProviderSessionObservationKind{
+		ProviderSessionObservationToolUse,
+		ProviderSessionObservationToolResult,
+		ProviderSessionObservationTurnCompleted,
+	}
+	if len(observations) != len(wantKinds) {
+		t.Fatalf("observations = %#v", observations)
+	}
+	for index, wantKind := range wantKinds {
+		if observations[index].Kind != wantKind || observations[index].RequestID != "control-1" ||
+			observations[index].SessionID != "claude-1" || observations[index].ProviderTurnID != "control-1" {
+			t.Fatalf("observation %d = %#v", index, observations[index])
+		}
+	}
+	if len(results) != 1 || results[0].RequestID != "control-1" || results[0].SessionID != "claude-1" ||
+		results[0].ProviderTurnID != "control-1" || results[0].Validated.Result.Attempt.Key != "attempt:claude" {
+		t.Fatalf("results = %#v", results)
 	}
 }
 

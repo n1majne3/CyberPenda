@@ -96,6 +96,7 @@ export function TaskLaunchPage() {
   );
   const modelOptions = useMemo(() => modelsForProvider(selectedProvider), [selectedProvider]);
   const assistedConclusionSupported = selectedPlugin?.capabilities.assisted_conclusion === true;
+  const assistedConclusionUnavailableReason = `${selectedPlugin?.name ?? "Selected Runtime"} does not expose the complete persistent Turn, normalized Tool/Turn event, and closed AttemptResult contract required by assisted conclusions.`;
 
   useEffect(() => {
     (async () => {
@@ -277,7 +278,7 @@ export function TaskLaunchPage() {
   const launchDisabledReason = launching
     ? null
     : assistedConclusionUnsupported
-      ? "Assisted Blackboard conclusions are unavailable for the selected Runtime."
+      ? assistedConclusionUnavailableReason
     : launchUnavailableReason({
       goal,
       form,
@@ -438,7 +439,7 @@ export function TaskLaunchPage() {
 				? "After tool-producing work, the Harness runs a bounded Conclude Turn and applies its validated Attempt result to the Blackboard."
                 : assistedConclusionSupported
                   ? "The operator decides when Runtime work is written to the Blackboard."
-                  : "Assisted mode requires a Runtime with assisted conclusion support; interactive launch remains available."}
+                  : `${assistedConclusionUnavailableReason} Interactive launch remains available.`}
             </p>
           </div>
         </div>

@@ -1509,9 +1509,28 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 		writeError(response, http.StatusNotFound, "task not found")
 		return
 	}
+	deadline := time.Now().Add(server.runtimeStopTimeout)
+	stopContext, cancelStop := context.WithDeadline(context.Background(), deadline)
+	defer cancelStop()
 	if !server.acquireTaskControl(taskID) {
-		writeError(response, http.StatusConflict, "task control operation already active")
-		return
+		// Stop is the preemptive control. Cancel every queued or active provider
+		// operation for this Task, then take ownership after it unwinds.
+		if !server.cancelProviderTaskControls(taskID) {
+			writeError(response, http.StatusConflict, "task control operation already active")
+			return
+		}
+		if server.harness != nil {
+			server.harness.Stop(taskID)
+		}
+		if !server.waitAcquireTaskControl(stopContext, taskID) {
+			writeError(response, http.StatusConflict, "task control operation did not stop in time")
+			return
+		}
+	} else {
+		// A provider operation may be queued with no active owner yet. Cancel it
+		// after Stop acquires the Task boundary so it cannot dispatch once Stop
+		// releases the boundary.
+		server.cancelProviderTaskControls(taskID)
 	}
 	defer server.releaseTaskControl(taskID)
 
@@ -1523,9 +1542,6 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 	}
 
 	if found.Status == task.StatusRunning || found.Status == task.StatusPaused {
-		deadline := time.Now().Add(server.runtimeStopTimeout)
-		stopContext, cancelStop := context.WithDeadline(context.Background(), deadline)
-		defer cancelStop()
 		if server.harness != nil {
 			server.harness.Stop(taskID)
 		}
@@ -1542,6 +1558,10 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 				writeError(response, http.StatusConflict, "runtime did not stop in time")
 				return
 			}
+		}
+		if err := server.markStoppedBlackboardConclusionsRecoveryRequired(taskID); err != nil {
+			writeError(response, http.StatusInternalServerError, "record stopped Blackboard conclusion recovery")
+			return
 		}
 		// Durable Task may still be running when harness/session already gone
 		// (finish abort, orphan cleanup). Always settle stopped after cleanup.
@@ -1561,6 +1581,10 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 		writeError(response, http.StatusConflict, "provider session did not close")
 		return
 	}
+	if err := server.markStoppedBlackboardConclusionsRecoveryRequired(taskID); err != nil {
+		writeError(response, http.StatusInternalServerError, "record stopped Blackboard conclusion recovery")
+		return
+	}
 	if err := server.settleTaskStopped(taskID); err != nil {
 		writeTaskError(response, err)
 		return
@@ -1571,6 +1595,28 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 		return
 	}
 	writeJSON(response, http.StatusOK, stopped)
+}
+
+// markStoppedBlackboardConclusionsRecoveryRequired closes the durable semantic
+// coordinator after Stop has canceled every provider control. A later Resume
+// therefore sees explicit operator-recoverable debt instead of waiting forever
+// on a Conclude Turn whose provider session was intentionally closed.
+func (server *Server) markStoppedBlackboardConclusionsRecoveryRequired(taskID string) error {
+	receipts, err := server.tasks.BlackboardConclusionRecoveryCandidates()
+	if err != nil {
+		return err
+	}
+	for _, receipt := range receipts {
+		if receipt.TaskID != taskID {
+			continue
+		}
+		if _, _, err := server.tasks.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(
+			receipt.ID, time.Now().UTC(), blackboardConclusionRetryCooldown,
+		); err != nil && !errors.Is(err, task.ErrInvalidBlackboardConclusionReceipt) {
+			return err
+		}
+	}
+	return nil
 }
 
 // settleTaskStopped marks Task and any non-terminal Continuation as stopped.
@@ -1620,7 +1666,20 @@ func (server *Server) handleFinishTask(response http.ResponseWriter, request *ht
 		writeError(response, http.StatusNotFound, "task not found")
 		return
 	}
-	if !server.acquireTaskControl(taskID) {
+	if found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeAssisted {
+		if err := server.acquireTaskControlAfterAssistedSettlement(request.Context(), found, false, false); err != nil {
+			if errors.Is(err, errSemanticConclusionActionRequired) {
+				writeError(response, http.StatusConflict, "semantic_conclusion_action_required")
+				return
+			}
+			if errors.Is(err, errTaskControlOperationActive) {
+				writeError(response, http.StatusConflict, "task control operation already active")
+				return
+			}
+			writeError(response, http.StatusConflict, err.Error())
+			return
+		}
+	} else if !server.acquireTaskControl(taskID) {
 		writeError(response, http.StatusConflict, "task control operation already active")
 		return
 	}
@@ -1736,6 +1795,127 @@ func (server *Server) handleFinishTask(response http.ResponseWriter, request *ht
 	writeJSON(response, http.StatusOK, finished)
 }
 
+var errSemanticConclusionActionRequired = errors.New("semantic_conclusion_action_required")
+var errTaskControlOperationActive = errors.New("task control operation already active")
+
+func (server *Server) waitForAssistedConclusionDrain(ctx context.Context, found task.Task) error {
+	return server.waitForAssistedConclusionSettlement(ctx, found, false)
+}
+
+func (server *Server) waitForAssistedConclusionSettlement(ctx context.Context, found task.Task, allowActionRequired bool) error {
+	for {
+		receipt, err := server.tasks.LatestBlackboardConclusion(found.ID)
+		if err != nil {
+			return err
+		}
+		if receipt == nil {
+			return nil
+		}
+		switch receipt.View(found.RunControls.BlackboardConclusionMode).State {
+		case task.BlackboardConclusionStateClean:
+			return nil
+		case task.BlackboardConclusionStateActionRequired:
+			if allowActionRequired {
+				return nil
+			}
+			return errSemanticConclusionActionRequired
+		}
+		timer := time.NewTimer(5 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+// acquireTaskControlAfterAssistedSettlement closes the drain/acquire race:
+// after taking Task control it rechecks the durable receipt. If a conclusion
+// became pending between the optimistic drain and acquisition, it releases
+// control so the Harness coordinator can run, drains again, and retries.
+func (server *Server) acquireTaskControlAfterAssistedSettlement(ctx context.Context, found task.Task, allowActionRequired, providerControl bool) error {
+	waitedForConclusion := false
+	for {
+		before, err := server.tasks.LatestBlackboardConclusion(found.ID)
+		if err != nil {
+			return err
+		}
+		if before != nil {
+			switch before.View(found.RunControls.BlackboardConclusionMode).State {
+			case task.BlackboardConclusionStatePending, task.BlackboardConclusionStateConcluding:
+				waitedForConclusion = true
+			}
+		}
+		if err := server.waitForAssistedConclusionSettlement(ctx, found, allowActionRequired); err != nil {
+			return err
+		}
+		acquired := false
+		if providerControl {
+			acquired = server.acquireProviderTaskControl(found.ID)
+		} else {
+			acquired = server.acquireTaskControl(found.ID)
+		}
+		if !acquired {
+			receipt, err := server.tasks.LatestBlackboardConclusion(found.ID)
+			if err != nil {
+				return err
+			}
+			if receipt != nil {
+				state := receipt.View(found.RunControls.BlackboardConclusionMode).State
+				if state == task.BlackboardConclusionStatePending || state == task.BlackboardConclusionStateConcluding {
+					waitedForConclusion = true
+					continue
+				}
+			}
+			if waitedForConclusion {
+				timer := time.NewTimer(5 * time.Millisecond)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return ctx.Err()
+				case <-timer.C:
+					continue
+				}
+			}
+			return errTaskControlOperationActive
+		}
+
+		receipt, err := server.tasks.LatestBlackboardConclusion(found.ID)
+		if err != nil {
+			if providerControl {
+				server.releaseProviderTaskControl(found.ID)
+			} else {
+				server.releaseTaskControl(found.ID)
+			}
+			return err
+		}
+		if receipt == nil {
+			return nil
+		}
+		switch receipt.View(found.RunControls.BlackboardConclusionMode).State {
+		case task.BlackboardConclusionStateClean:
+			return nil
+		case task.BlackboardConclusionStateActionRequired:
+			if allowActionRequired {
+				return nil
+			}
+			if providerControl {
+				server.releaseProviderTaskControl(found.ID)
+			} else {
+				server.releaseTaskControl(found.ID)
+			}
+			return errSemanticConclusionActionRequired
+		default:
+			if providerControl {
+				server.releaseProviderTaskControl(found.ID)
+			} else {
+				server.releaseTaskControl(found.ID)
+			}
+		}
+	}
+}
+
 // finishFailClosed settles a post-runtime Finish failure: Task must not stay
 // durable running. Prefer failed (resumable). Public HTTP uses stable stage
 // messages; raw detail stays in logs/events only.
@@ -1821,32 +2001,134 @@ func (server *Server) acquireProviderTaskControl(taskID string) bool {
 		return false
 	}
 	server.activeControls[taskID] = true
+	server.activeProviderControls[taskID] = true
+	server.providerTaskContextLocked(taskID)
 	server.providerControlWG.Add(1)
 	return true
+}
+
+func (server *Server) providerTaskContextLocked(taskID string) context.Context {
+	if existing := server.providerTaskContexts[taskID]; existing != nil && existing.Err() == nil {
+		return existing
+	}
+	ctx, cancel := context.WithCancel(server.providerControlCtx)
+	server.providerTaskContexts[taskID] = ctx
+	server.providerTaskCancels[taskID] = cancel
+	return ctx
+}
+
+func (server *Server) providerTaskContext(taskID string) context.Context {
+	server.controlMu.Lock()
+	defer server.controlMu.Unlock()
+	return server.providerTaskContextLocked(taskID)
+}
+
+func (server *Server) hasLiveProviderTaskContext(taskID string) bool {
+	server.controlMu.Lock()
+	defer server.controlMu.Unlock()
+	ctx := server.providerTaskContexts[taskID]
+	return ctx != nil && ctx.Err() == nil
+}
+
+func (server *Server) cancelProviderTaskControls(taskID string) bool {
+	server.controlMu.Lock()
+	if !server.activeProviderControls[taskID] && server.queuedProviderControls[taskID] == 0 {
+		server.controlMu.Unlock()
+		return false
+	}
+	cancel := server.providerTaskCancels[taskID]
+	delete(server.providerTaskContexts, taskID)
+	delete(server.providerTaskCancels, taskID)
+	server.controlMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return true
+}
+
+func (server *Server) decrementQueuedProviderControlLocked(taskID string) {
+	queued := server.queuedProviderControls[taskID]
+	if queued <= 1 {
+		delete(server.queuedProviderControls, taskID)
+		return
+	}
+	server.queuedProviderControls[taskID] = queued - 1
+}
+
+func (server *Server) waitAcquireTaskControl(ctx context.Context, taskID string) bool {
+	for {
+		if server.acquireTaskControl(taskID) {
+			return true
+		}
+		timer := time.NewTimer(5 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return false
+		case <-timer.C:
+		}
+	}
 }
 
 // enqueueProviderTaskControl waits behind the existing per-Task owner without
 // losing durable Harness work. Registration is synchronized with Close so the
 // shutdown wait group cannot race a newly started coordinator goroutine.
 func (server *Server) enqueueProviderTaskControl(taskID string, operation func(context.Context)) bool {
+	return server.enqueueProviderTaskControlWithContext(taskID, false, operation)
+}
+
+// enqueueExistingProviderTaskControl queues provider callbacks only while the
+// originating provider operation still owns a live Task context. Stop removes
+// and cancels that context before provider interruption can be observed.
+func (server *Server) enqueueExistingProviderTaskControl(taskID string, operation func(context.Context)) bool {
+	return server.enqueueProviderTaskControlWithContext(taskID, true, operation)
+}
+
+func (server *Server) enqueueProviderTaskControlWithContext(taskID string, requireExisting bool, operation func(context.Context)) bool {
 	server.controlMu.Lock()
 	if server.closing {
 		server.controlMu.Unlock()
 		return false
 	}
+	taskCtx := server.providerTaskContexts[taskID]
+	if requireExisting && (taskCtx == nil || taskCtx.Err() != nil) {
+		server.controlMu.Unlock()
+		return false
+	}
+	if taskCtx == nil || taskCtx.Err() != nil {
+		taskCtx = server.providerTaskContextLocked(taskID)
+	}
+	server.queuedProviderControls[taskID]++
 	server.providerControlWG.Add(1)
 	server.controlMu.Unlock()
 
 	go func() {
-		defer server.providerControlWG.Done()
+		ownsControl := false
+		queued := true
+		defer func() {
+			server.controlMu.Lock()
+			if queued {
+				server.decrementQueuedProviderControlLocked(taskID)
+			}
+			if ownsControl {
+				delete(server.activeControls, taskID)
+				delete(server.activeProviderControls, taskID)
+			}
+			server.controlMu.Unlock()
+			server.providerControlWG.Done()
+		}()
 		for {
 			server.controlMu.Lock()
-			if server.closing {
+			if server.closing || taskCtx.Err() != nil {
 				server.controlMu.Unlock()
 				return
 			}
 			if !server.activeControls[taskID] {
 				server.activeControls[taskID] = true
+				server.activeProviderControls[taskID] = true
+				server.decrementQueuedProviderControlLocked(taskID)
+				queued = false
+				ownsControl = true
 				server.controlMu.Unlock()
 				break
 			}
@@ -1854,20 +2136,22 @@ func (server *Server) enqueueProviderTaskControl(taskID string, operation func(c
 
 			timer := time.NewTimer(5 * time.Millisecond)
 			select {
-			case <-server.providerControlCtx.Done():
+			case <-taskCtx.Done():
 				timer.Stop()
 				return
 			case <-timer.C:
 			}
 		}
-		defer server.releaseTaskControl(taskID)
-		operation(server.providerControlCtx)
+		operation(taskCtx)
 	}()
 	return true
 }
 
 func (server *Server) releaseProviderTaskControl(taskID string) {
-	server.releaseTaskControl(taskID)
+	server.controlMu.Lock()
+	delete(server.activeControls, taskID)
+	delete(server.activeProviderControls, taskID)
+	server.controlMu.Unlock()
 	server.providerControlWG.Done()
 }
 
@@ -2463,8 +2747,24 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		writeError(response, http.StatusConflict, "provider session does not support native steer")
 		return
 	}
-	if !server.acquireProviderTaskControl(found.ID) {
+	if found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeAssisted {
+		if err := server.acquireTaskControlAfterAssistedSettlement(request.Context(), found, true, true); err != nil {
+			writeError(response, http.StatusConflict, err.Error())
+			return
+		}
+	} else if !server.acquireProviderTaskControl(found.ID) {
 		writeError(response, http.StatusConflict, "task control operation already active")
+		return
+	}
+	// Stop may have completed while an assisted steer was waiting for semantic
+	// settlement. Revalidate durable Task and registry ownership only after this
+	// operation owns Task control; never dispatch through the stale session
+	// pointer captured before the wait.
+	currentTask, currentErr := server.tasks.Get(found.ID)
+	currentSession, stillBound := server.providerSessions.get(found.ID)
+	if currentErr != nil || (currentTask.Status != task.StatusRunning && currentTask.Status != task.StatusPaused) || !stillBound || currentSession != session {
+		server.releaseProviderTaskControl(found.ID)
+		writeError(response, http.StatusConflict, "native steer requires an active Task-owned provider session")
 		return
 	}
 
@@ -2529,9 +2829,10 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		Model:                    selection.Model,
 		RequestedReasoningEffort: selection.RequestedReasoningEffort,
 	}
+	taskCtx := server.providerTaskContext(found.ID)
 	go func() {
 		defer server.releaseProviderTaskControl(found.ID)
-		ctx, cancel := context.WithTimeout(server.providerControlCtx, 30*time.Second)
+		ctx, cancel := context.WithTimeout(taskCtx, 30*time.Second)
 		defer cancel()
 		result, operationErr := operation(ctx, providerRequest, emit)
 		if operationErr != nil {
@@ -2672,6 +2973,7 @@ func (server *Server) handleProviderPermissionResponse(response http.ResponseWri
 		writeTaskError(response, err)
 		return
 	}
+	taskCtx := server.providerTaskContext(found.ID)
 	emit := func(kind task.EventKind, payload task.EventPayload) {
 		redacted := task.EventPayload{}
 		for _, key := range []string{"provider", "request_id", "session_id", "provider_turn_id", "mode", "outcome", "permission_request_id", "error_code"} {
@@ -2702,7 +3004,7 @@ func (server *Server) handleProviderPermissionResponse(response http.ResponseWri
 	}
 	go func() {
 		defer server.releaseProviderTaskControl(found.ID)
-		ctx, cancel := context.WithTimeout(server.providerControlCtx, 30*time.Second)
+		ctx, cancel := context.WithTimeout(taskCtx, 30*time.Second)
 		defer cancel()
 		result, operationErr := session.RespondPermission(ctx, runtime.ProviderSessionRequest{
 			RequestID: input.RequestID, PermissionRequestID: permissionID, PermissionDecision: input.Decision,

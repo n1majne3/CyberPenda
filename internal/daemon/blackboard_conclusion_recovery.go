@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -129,6 +130,9 @@ func (server *Server) enqueueRecoveredBlackboardConclusion(receipt task.Blackboa
 }
 
 func (server *Server) requireBlackboardConclusionRecovery(receipt task.BlackboardConclusionReceipt, cause error) {
+	if errors.Is(cause, context.Canceled) && !server.hasLiveProviderTaskContext(receipt.TaskID) {
+		return
+	}
 	_, _, err := server.tasks.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(
 		receipt.ID, time.Now().UTC(), blackboardConclusionRetryCooldown,
 	)

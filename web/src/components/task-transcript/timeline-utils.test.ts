@@ -24,4 +24,5 @@ describe("timeline-utils", () => {
     const item: TimelineItem = { seq: 1, type: "tool_use", tool: "Bash" };
     expect(itemFilterKey(item)).toBe("tool:Bash");
   });
+
 });

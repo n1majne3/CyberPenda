@@ -11,7 +11,7 @@ import (
 	"pentest/internal/task"
 )
 
-var errAssistedConclusionUnsupported = errors.New("assisted_conclusion_unsupported")
+var errAssistedConclusionUnsupported = errors.New("assisted_conclusion_unsupported: Runtime does not expose the complete persistent SendTurn, normalized Tool/Turn event, and closed AttemptResult contract")
 
 // ProviderSessionLaunchRequest is the launch-assembly seam for a persistent
 // provider session. The request is deliberately Task/Continuation scoped;

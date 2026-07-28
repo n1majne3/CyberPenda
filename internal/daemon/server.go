@@ -111,6 +111,10 @@ type Server struct {
 	providerControlCtx     context.Context
 	providerControlCancel  context.CancelFunc
 	providerControlWG      sync.WaitGroup
+	providerTaskContexts   map[string]context.Context
+	providerTaskCancels    map[string]context.CancelFunc
+	activeProviderControls map[string]bool
+	queuedProviderControls map[string]int
 	closing                bool
 	providerSessions       *providerSessionRegistry
 	providerSessionFactory ProviderSessionFactory
@@ -223,6 +227,10 @@ func NewServer(config Config) (*Server, error) {
 		activeControls:         map[string]bool{},
 		providerControlCtx:     providerControlCtx,
 		providerControlCancel:  providerControlCancel,
+		providerTaskContexts:   map[string]context.Context{},
+		providerTaskCancels:    map[string]context.CancelFunc{},
+		activeProviderControls: map[string]bool{},
+		queuedProviderControls: map[string]int{},
 		providerSessions:       newProviderSessionRegistry(),
 		providerSessionFactory: config.ProviderSessionFactory,
 		runtimeRecovery:        map[string]task.RuntimeActivity{},

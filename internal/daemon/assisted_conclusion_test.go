@@ -1488,9 +1488,12 @@ func TestAssistedConclusionSchedulesOnlyAtCompletedWorkTurnBoundary(t *testing.T
 			}); err != nil {
 				t.Fatal(err)
 			}
-			found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateClean)
-			if len(session.LastRequests()) != 1 || found.BlackboardConclusion.SourceTurnID != "" {
-				t.Fatalf("%s Work Turn scheduled conclusion: requests=%d view=%#v", terminalStatus, len(session.LastRequests()), found.BlackboardConclusion)
+			// Non-completed Work Turns with non-Blackboard debt surface durable attention
+			// without dispatching an automatic Conclude Turn.
+			found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
+			if len(session.LastRequests()) != 1 ||
+				found.BlackboardConclusion.ErrorCode != task.BlackboardConclusionErrorRuntimeRecoveryRequired {
+				t.Fatalf("%s Work Turn mis-handled conclusion: requests=%d view=%#v", terminalStatus, len(session.LastRequests()), found.BlackboardConclusion)
 			}
 		})
 	}

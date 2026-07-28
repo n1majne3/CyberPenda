@@ -272,7 +272,7 @@ describe("TaskLaunchPage", () => {
 
     expect(await screen.findByLabelText("Blackboard conclusions")).toHaveValue("interactive");
     expect(screen.getByRole("option", { name: "Assisted" })).toBeDisabled();
-    expect(screen.getByText(/requires a Runtime with assisted conclusion support/i)).toBeInTheDocument();
+    expect(screen.getByText(/does not expose the complete persistent Turn, normalized Tool\/Turn event, and closed AttemptResult contract/i)).toBeInTheDocument();
     await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
     expect(screen.getByRole("button", { name: /launch/i })).toBeEnabled();
   });
