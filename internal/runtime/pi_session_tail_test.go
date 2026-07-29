@@ -21,6 +21,18 @@ func (fakeInnerAdapter) Run(ctx context.Context, goal string, emit func(task.Eve
 	return ctx.Err()
 }
 
+// funcInnerAdapter runs an arbitrary function so a test can simulate a runtime
+// that exits on its own (normal completion) while the run context stays live.
+type funcInnerAdapter struct {
+	name string
+	run  func(ctx context.Context, emit func(task.EventKind, task.EventPayload)) error
+}
+
+func (f funcInnerAdapter) Name() string { return f.name }
+func (f funcInnerAdapter) Run(ctx context.Context, goal string, emit func(task.EventKind, task.EventPayload)) error {
+	return f.run(ctx, emit)
+}
+
 func collectEmits(emit func(task.EventKind, task.EventPayload)) (emitFunc func(task.EventKind, task.EventPayload), get func() []recordedEmit, mu *sync.Mutex) {
 	var recorded []recordedEmit
 	var m sync.Mutex
@@ -162,6 +174,49 @@ func TestPiSessionTailStopsOnContextCancel(t *testing.T) {
 		// adapter returned on cancel, as required
 	case <-time.After(2 * time.Second):
 		t.Fatal("adapter did not return after context cancel")
+	}
+}
+
+// TestPiSessionTailDrainsAndStopsWhenInnerReturns proves the tail goroutine
+// stops (no leak) and drains the remaining session lines when the inner runtime
+// exits normally, even though the harness leaves the run context live on
+// completion. Run must not return until the final drain has been emitted.
+func TestPiSessionTailDrainsAndStopsWhenInnerReturns(t *testing.T) {
+	root := t.TempDir()
+	sessionDir := filepath.Join(root, "sessions", "--task-workdir--")
+	sessionFile := filepath.Join(sessionDir, "2026-06-19T12-11-46-221Z_abc.jsonl")
+
+	inner := funcInnerAdapter{name: "pi", run: func(context.Context, func(task.EventKind, task.EventPayload)) error {
+		// Write a line just before exiting and never touch the context, mirroring
+		// a persistent Pi session that completes on its own.
+		writeSessionLine(t, sessionFile, `{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"final"}]}}`)
+		return nil
+	}}
+	adapter := runtime.NewPiSessionTailAdapter(inner, sessionDir)
+	emitCalls, getEmits, _ := collectEmits(func(task.EventKind, task.EventPayload) {})
+
+	done := make(chan struct{})
+	go func() {
+		_ = adapter.Run(context.Background(), "goal", emitCalls)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("adapter did not return after inner runtime exited with a live context")
+	}
+
+	// Because Run drains before returning, the final line is deterministically
+	// emitted by the time Run returns.
+	got := getEmits()
+	if len(got) == 0 {
+		t.Fatal("expected the final session line to be drained before Run returned")
+	}
+	for _, e := range got {
+		if stream, _ := e.payload["stream"].(string); stream != "pi_session" {
+			t.Fatalf("expected stream pi_session, got %q", stream)
+		}
 	}
 }
 

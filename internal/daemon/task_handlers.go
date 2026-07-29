@@ -256,7 +256,15 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 			}
 			adapter.SetInitialTurnSelection(selection)
 		}
-		plan.Adapter = binding.Adapter
+		// Pi persistent sessions write their turn output to a session jsonl
+		// rather than the bridge RPC channel, so wrap the session adapter with
+		// the tailer that re-emits those lines as runtime_output events. The
+		// legacy one-shot path does the same for sandboxed Pi.
+		providerHome := ""
+		if plan.ValidatedLayout != nil {
+			providerHome = plan.ValidatedLayout.ProviderHome
+		}
+		plan.Adapter = wrapPersistentProviderAdapter(binding.Adapter, plan.ResolvedProfile.Provider, providerHome)
 	}
 	server.logTask(created, "launched", "")
 	go func() {

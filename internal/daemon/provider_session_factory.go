@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"pentest/internal/runtime"
@@ -150,6 +151,20 @@ func supportsPersistentProviderSession(runner task.Runner, provider runtimeprofi
 	default:
 		return false
 	}
+}
+
+// wrapPersistentProviderAdapter re-wraps a persistent provider-session Adapter
+// with the Pi session-file tailer when the provider writes turn output to a
+// session jsonl instead of the bridge RPC channel. Only Pi behaves this way, so
+// Codex and Claude Code adapters (which forward output as bridge events) are
+// returned unchanged. Without this wrapping a persistent Pi session produces an
+// empty transcript because ProviderSessionRunAdapter never tails the jsonl.
+func wrapPersistentProviderAdapter(adapter runtime.Adapter, provider runtimeprofile.Provider, providerHome string) runtime.Adapter {
+	if adapter == nil || provider != runtimeprofile.ProviderPi || strings.TrimSpace(providerHome) == "" {
+		return adapter
+	}
+	sessionDir := filepath.Join(providerHome, "agent", "sessions")
+	return runtime.NewPiSessionTailAdapter(adapter, sessionDir)
 }
 
 func validateProviderSessionBinding(binding ProviderSessionBinding) error {

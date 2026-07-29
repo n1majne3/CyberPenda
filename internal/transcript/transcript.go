@@ -11,6 +11,7 @@ import (
 
 	"pentest/internal/runtimeoutput"
 	"pentest/internal/runtimeplugin"
+	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
 )
 
@@ -28,6 +29,12 @@ const (
 	RoleUser      = "user"
 
 	StatusCollapsed = "collapsed"
+
+	// PiSessionStream marks runtime_output events re-emitted from Pi's session
+	// jsonl by the session-file tailer. Persistent Pi provider sessions run
+	// through an adapter whose name ("provider-session:<id>") resolves to no
+	// plugin parser, so the stream identifies the underlying provider instead.
+	PiSessionStream = "pi_session"
 )
 
 // Entry is one projected transcript row.
@@ -202,7 +209,14 @@ func entriesForEvent(event task.Event, continuation int, adapter string) []Entry
 		if IsIgnorableRuntimeLine(text) {
 			return nil
 		}
-		if parsed := parseRuntimeOutput(event, continuation, adapter, text); len(parsed) > 0 {
+		// Pi session-tail lines are structured provider records but the
+		// persistent-session adapter name resolves to no parser. Select the
+		// parser from the stream so tailed output parses like Pi stdout.
+		parseAdapter := adapter
+		if stream == PiSessionStream {
+			parseAdapter = string(runtimeprofile.ProviderPi)
+		}
+		if parsed := parseRuntimeOutput(event, continuation, parseAdapter, text); len(parsed) > 0 {
 			return parsed
 		}
 		if isIgnorableUnparsedRuntimeLine(text) {

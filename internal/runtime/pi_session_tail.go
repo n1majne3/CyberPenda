@@ -60,19 +60,29 @@ func (a *piSessionTailAdapter) recordRuntimeLineMetadata(line string) {
 }
 
 func (a *piSessionTailAdapter) Run(ctx context.Context, goal string, emit func(task.EventKind, task.EventPayload)) error {
+	// Derive a child context so the tailer is always stopped when the inner
+	// runtime exits, even on normal completion where the harness leaves the
+	// parent context live. Without this the polling goroutine would leak for
+	// the lifetime of the daemon on every finished Pi session.
+	tailCtx, cancelTail := context.WithCancel(ctx)
 	tailDone := make(chan struct{})
 	go func() {
 		defer close(tailDone)
-		tailPiSession(ctx, a.sessionDir, a.recordRuntimeLineMetadata, emit)
+		tailPiSession(tailCtx, a.sessionDir, a.recordRuntimeLineMetadata, emit)
 	}()
-	// The inner Run blocks until the runtime exits; when it does, ctx is
-	// cancelled by the harness and the tail goroutine winds down.
-	return a.inner.Run(ctx, goal, emit)
+	// The inner Run blocks until the runtime exits. Once it returns, stop the
+	// tailer and wait for its final drain so the last session lines are emitted
+	// before Run reports completion.
+	err := a.inner.Run(ctx, goal, emit)
+	cancelTail()
+	<-tailDone
+	return err
 }
 
 // tailPiSession polls sessionDir until a *.jsonl file appears, then follows it
-// line-by-line, emitting each new line as a runtime_output event. It returns
-// when ctx is cancelled.
+// line-by-line, emitting each new line as a runtime_output event. When ctx is
+// cancelled it performs one final read pass so lines written just before the
+// runtime exited are drained rather than dropped, then returns.
 func tailPiSession(ctx context.Context, sessionDir string, observe func(string), emit func(task.EventKind, task.EventPayload)) {
 	currentPath := ""
 	var reader *bufio.Reader
@@ -80,12 +90,10 @@ func tailPiSession(ctx context.Context, sessionDir string, observe func(string),
 	var offset int64
 
 	for {
+		stopping := false
 		select {
 		case <-ctx.Done():
-			if file != nil {
-				_ = file.Close()
-			}
-			return
+			stopping = true
 		case <-time.After(100 * time.Millisecond):
 		}
 
@@ -93,6 +101,12 @@ func tailPiSession(ctx context.Context, sessionDir string, observe func(string),
 		// when the current file has been rotated/replaced.
 		latest, ok := newestSessionFile(sessionDir)
 		if !ok {
+			if stopping {
+				if file != nil {
+					_ = file.Close()
+				}
+				return
+			}
 			continue
 		}
 		if currentPath != latest {
@@ -101,6 +115,9 @@ func tailPiSession(ctx context.Context, sessionDir string, observe func(string),
 			}
 			f, err := os.Open(latest)
 			if err != nil {
+				if stopping {
+					return
+				}
 				continue
 			}
 			file = f
@@ -130,6 +147,14 @@ func tailPiSession(ctx context.Context, sessionDir string, observe func(string),
 			if err != nil {
 				break
 			}
+		}
+
+		// A final drain pass has now emitted the last available lines; stop.
+		if stopping {
+			if file != nil {
+				_ = file.Close()
+			}
+			return
 		}
 
 		// If the file shrank (truncated), reset to its current end next round.

@@ -46,6 +46,31 @@ func TestBuildIncludesGoalContinuationsSteeringAndFallback(t *testing.T) {
 	requireEntry(t, got, "ev-3-steering", "message", "user", "Focus admin")
 }
 
+func TestBuildParsesPiSessionStreamRegardlessOfAdapterName(t *testing.T) {
+	// Persistent Pi provider sessions launch through a ProviderSessionRunAdapter
+	// whose Name() is "provider-session:<id>", which does not resolve to any
+	// runtime plugin parser. The session-file tailer still emits Pi's real
+	// output as runtime_output events carrying stream "pi_session", so the
+	// transcript must select the Pi parser from the stream, not the adapter.
+	subject := task.Task{ID: "task-1", Goal: "Recon", CreatedAt: time.Now().UTC()}
+	events := []task.Event{
+		{ID: "ev-1", Seq: 1, Kind: task.EventKindLifecycle, Payload: task.EventPayload{"phase": "started", "adapter": "provider-session:abc123"}},
+		{ID: "ev-2", Seq: 2, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{
+			"stream": "pi_session",
+			"text":   `{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Enumerated the login endpoint"}]}}`,
+		}},
+	}
+
+	got := transcript.Build(subject, events)
+
+	requireEntry(t, got, "ev-2-message-0", "message", "assistant", "Enumerated the login endpoint")
+	for _, entry := range got {
+		if entry.ID == "ev-2-runtime" {
+			t.Fatalf("pi_session line collapsed to runtime fallback instead of parsing: %#v", entry)
+		}
+	}
+}
+
 func TestBuildProjectsNativeSteerControlsWithoutDuplicatingConversationMessage(t *testing.T) {
 	subject := task.Task{ID: "task-1", Goal: "Inspect target", CreatedAt: time.Now().UTC()}
 	events := []task.Event{
