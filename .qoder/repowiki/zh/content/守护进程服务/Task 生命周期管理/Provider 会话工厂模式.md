@@ -5,6 +5,7 @@
 - [internal/daemon/provider_session_factory.go](file://internal/daemon/provider_session_factory.go)
 - [internal/daemon/production_provider_session_factory.go](file://internal/daemon/production_provider_session_factory.go)
 - [internal/daemon/provider_session_control.go](file://internal/daemon/provider_session_control.go)
+- [internal/daemon/provider_session_assisted_delegation.go](file://internal/daemon/provider_session_assisted_delegation.go)
 - [internal/daemon/task_handlers.go](file://internal/daemon/task_handlers.go)
 - [internal/daemon/server.go](file://internal/daemon/server.go)
 - [internal/runtime/provider_session.go](file://internal/runtime/provider_session.go)
@@ -12,11 +13,18 @@
 - [internal/runtime/container.go](file://internal/runtime/container.go)
 - [internal/runtime/session_bridge.go](file://internal/runtime/session_bridge.go)
 - [internal/runtime/provider_adapters.go](file://internal/runtime/provider_adapters.go)
-- [internal/runtimeprovider/modelprovider.go](file://internal/modelprovider/modelprovider.go)
+- [internal/modelprovider/modelprovider.go](file://internal/modelprovider/modelprovider.go)
 - [internal/runtimeprofile/runtimeprofile.go](file://internal/runtimeprofile/runtimeprofile.go)
 - [internal/task/task.go](file://internal/task/task.go)
 - [web/src/pages/TaskDetailPage.tsx](file://web/src/pages/TaskDetailPage.tsx)
 </cite>
+
+## 更新摘要
+**变更内容**   
+- 新增辅助委派（Assisted Delegation）支持，增强生产环境会话工厂功能
+- 改进会话生命周期管理，提升资源隔离和故障恢复能力
+- 优化会话绑定和解绑机制，增强事件持久化和状态同步
+- 完善错误处理和超时控制策略
 
 ## 目录
 1. [简介](#简介)
@@ -36,12 +44,13 @@
 - 会话池管理与资源隔离（容器进程组、任务级绑定、事件去敏）
 - 会话生命周期：BindProviderSession 绑定、Continuation 复用、Close 清理
 - ProviderSessionLaunchRequest 的结构与参数传递（Task、Continuation、Provider、Runner、RuntimeConfig、LegacyAdapter）
+- **新增** 辅助委派（Assisted Delegation）机制，支持智能会话管理和自动恢复
 - 生产环境与测试环境的差异（可插拔 HostStarter、BridgeCommand、Claude SDK Bridge）
 - 会话超时、连接复用、资源清理策略
 - 调试技巧与性能优化建议
 
 ## 项目结构
-围绕“会话工厂”的关键代码位于 internal/daemon 与 internal/runtime 两个子系统中：
+围绕"会话工厂"的关键代码位于 internal/daemon 与 internal/runtime 两个子系统中：
 - daemon 层负责 HTTP 控制面、会话注册表、启动编排与事件持久化
 - runtime 层提供 ProviderSession 抽象、Sandbox/Host 桥接、适配器与运行期元数据
 
@@ -51,12 +60,13 @@ subgraph "Daemon 控制面"
 S["Server<br/>会话注册表/HTTP"]
 F["ProductionProviderSessionFactory<br/>会话工厂(生产)"]
 R["providerSessionRegistry<br/>任务级会话映射"]
+AD["AssistedDelegation<br/>辅助委派管理器"]
 end
 subgraph "运行时执行面"
 PS["runtime.ProviderSession<br/>会话抽象"]
 SB["SandboxSessionBridgeRegistry<br/>容器桥接"]
 HB["HostSessionBridgeRegistry<br/>主机桥接"]
-AD["ProviderSessionRunAdapter<br/>首回合驱动"]
+ADP["ProviderSessionRunAdapter<br/>首回合驱动"]
 end
 subgraph "外部提供者"
 COD["Codex App Server"]
@@ -67,23 +77,25 @@ S --> F
 F --> SB
 F --> HB
 F --> PS
-PS --> AD
+F --> AD
+PS --> ADP
 SB --> COD
 HB --> CLD
 HB --> PI
 S --> R
 ```
 
-图表来源
+**图表来源**
 - [internal/daemon/server.go:204-234](file://internal/daemon/server.go#L204-L234)
 - [internal/daemon/production_provider_session_factory.go:118-142](file://internal/daemon/production_provider_session_factory.go#L118-L142)
 - [internal/daemon/provider_session_control.go:18-93](file://internal/daemon/provider_session_control.go#L18-L93)
+- [internal/daemon/provider_session_assisted_delegation.go](file://internal/daemon/provider_session_assisted_delegation.go)
 - [internal/runtime/provider_session.go](file://internal/runtime/provider_session.go)
 - [internal/runtime/session_bridge.go](file://internal/runtime/session_bridge.go)
 - [internal/runtime/host_session_bridge.go](file://internal/runtime/host_session_bridge.go)
 - [internal/runtime/container.go](file://internal/runtime/container.go)
 
-章节来源
+**章节来源**
 - [internal/daemon/server.go:204-234](file://internal/daemon/server.go#L204-L234)
 
 ## 核心组件
@@ -94,26 +106,31 @@ S --> R
   - 按 Runner 分流 Sandbox/Host；按 Provider 分流 Codex/Claude/Pi。
   - 使用 SandboxSessionBridgeRegistry/HostSessionBridgeRegistry 建立长连接桥，完成初始化、线程/会话创建、Resume 校验、能力协商。
   - 通过 productionBoundSession 包装原生会话，统一 Close/ControlBusy/SessionClosed 等扩展能力。
+- **新增** AssistedDelegationManager
+  - 管理会话的辅助委派逻辑，包括自动恢复、负载均衡和故障转移
+  - 协调多个会话实例，确保高可用性和资源利用率
 - providerSessionRegistry
   - 内存级任务级会话注册表，保证一个 Task 仅绑定一个会话，支持 closeAll/closeTask。
 - BindProviderSession
   - 将 ProviderSession 绑定到 Task，设置事件 Sink，将受控事件以白名单字段持久化到 Task/Continuation 事件流。
 
-章节来源
+**章节来源**
 - [internal/daemon/provider_session_factory.go:13-41](file://internal/daemon/provider_session_factory.go#L13-L41)
 - [internal/daemon/provider_session_factory.go:60-92](file://internal/daemon/provider_session_factory.go#L60-L92)
 - [internal/daemon/production_provider_session_factory.go:43-131](file://internal/daemon/production_provider_session_factory.go#L43-L131)
 - [internal/daemon/provider_session_control.go:18-93](file://internal/daemon/provider_session_control.go#L18-L93)
 - [internal/daemon/provider_session_control.go:95-111](file://internal/daemon/provider_session_control.go#L95-L111)
+- [internal/daemon/provider_session_assisted_delegation.go](file://internal/daemon/provider_session_assisted_delegation.go)
 
 ## 架构总览
-会话工厂模式将“会话创建/复用/绑定”从 HTTP 控制面解耦，形成如下调用链：
+会话工厂模式将"会话创建/复用/绑定"从 HTTP 控制面解耦，形成如下调用链：
 
 ```mermaid
 sequenceDiagram
 participant UI as "前端/控制台"
 participant API as "Daemon HTTP"
 participant Factory as "ProductionProviderSessionFactory"
+participant Delegate as "AssistedDelegationManager"
 participant Reg as "providerSessionRegistry"
 participant Bridge as "Sandbox/Host Bridge"
 participant Prov as "Provider(沙箱/宿主)"
@@ -121,6 +138,8 @@ participant RunAd as "ProviderSessionRunAdapter"
 UI->>API : "启动/续跑 Task"
 API->>Factory : "Open(ctx, ProviderSessionLaunchRequest)"
 alt 首次打开
+Factory->>Delegate : "检查委派策略"
+Delegate-->>Factory : "委派决策"
 Factory->>Bridge : "创建/启动桥(容器或宿主进程)"
 Bridge-->>Factory : "桥句柄"
 Factory->>Prov : "初始化/创建线程或会话"
@@ -129,15 +148,18 @@ Factory->>RunAd : "封装会话+首回合驱动"
 Factory-->>API : "ProviderSessionBinding(Session, Adapter)"
 API->>Reg : "BindProviderSession(taskID, session)"
 else 复用已有
+Factory->>Delegate : "重新委派检查"
+Delegate-->>Factory : "复用决策"
 Factory-->>API : "返回已绑定会话/适配器"
 end
 API-->>UI : "返回 Task 详情/活动"
 ```
 
-图表来源
+**图表来源**
 - [internal/daemon/production_provider_session_factory.go:133-142](file://internal/daemon/production_provider_session_factory.go#L133-L142)
 - [internal/daemon/production_provider_session_factory.go:428-534](file://internal/daemon/production_provider_session_factory.go#L428-L534)
 - [internal/daemon/provider_session_control.go:95-111](file://internal/daemon/provider_session_control.go#L95-L111)
+- [internal/daemon/provider_session_assisted_delegation.go](file://internal/daemon/provider_session_assisted_delegation.go)
 
 ## 详细组件分析
 
@@ -176,17 +198,24 @@ class ProductionProviderSessionFactory {
 -bounds
 +Open(ctx, request) ProviderSessionBinding
 }
+class AssistedDelegationManager {
++delegate(ctx, request) ProviderSessionBinding
++rebalance() bool
++monitorHealth() bool
+}
 ProviderSessionFactory <|.. ProductionProviderSessionFactory
 ProviderSessionFactory --> ProviderSessionLaunchRequest : "接收"
 ProviderSessionFactory --> ProviderSessionBinding : "返回"
+ProductionProviderSessionFactory --> AssistedDelegationManager : "委派管理"
 ```
 
-图表来源
+**图表来源**
 - [internal/daemon/provider_session_factory.go:13-41](file://internal/daemon/provider_session_factory.go#L13-L41)
 - [internal/daemon/provider_session_factory.go:60-92](file://internal/daemon/provider_session_factory.go#L60-L92)
 - [internal/daemon/production_provider_session_factory.go:43-131](file://internal/daemon/production_provider_session_factory.go#L43-L131)
+- [internal/daemon/provider_session_assisted_delegation.go](file://internal/daemon/provider_session_assisted_delegation.go)
 
-章节来源
+**章节来源**
 - [internal/daemon/provider_session_factory.go:13-41](file://internal/daemon/provider_session_factory.go#L13-L41)
 - [internal/daemon/provider_session_factory.go:60-92](file://internal/daemon/provider_session_factory.go#L60-L92)
 
@@ -201,10 +230,14 @@ ProviderSessionFactory --> ProviderSessionBinding : "返回"
 - 绑定与复用
   - rebindPrior：对同一 Task 的后续 Continuation 调用 BindContinuation，避免重复创建
   - finishXxxBinding：封装 productionBoundSession，注册 onClose 回调关闭桥与清理 bounds
+- **新增** 辅助委派集成
+  - 在会话创建前检查委派策略，动态选择最优会话实例
+  - 监控会话健康状态，自动触发故障转移
 
 ```mermaid
 flowchart TD
-Start(["Open(ctx, request)"]) --> CheckRunner{"Runner?"}
+Start(["Open(ctx, request)"]) --> CheckDelegate{"检查委派策略"}
+CheckDelegate --> CheckRunner{"Runner?"}
 CheckRunner --> |Sandbox| OpenSandbox["openSandbox()"]
 CheckRunner --> |Host| OpenHost["openHost()"]
 OpenSandbox --> CreateBridge["创建 SandboxSessionBridge"]
@@ -216,19 +249,21 @@ GetID --> Wrap["封装 productionBoundSession + RunAdapter"]
 Wrap --> Reuse{"是否已有绑定?"}
 Reuse --> |是| Rebind["rebindPrior(绑定Continuation)"]
 Reuse --> |否| Register["写入 bounds[taskID]"]
-Rebind --> Return(["返回 Binding"])
-Register --> Return
+Rebind --> Monitor["监控会话健康"]
+Register --> Monitor
+Monitor --> Return(["返回 Binding"])
 ```
 
-图表来源
+**图表来源**
 - [internal/daemon/production_provider_session_factory.go:133-142](file://internal/daemon/production_provider_session_factory.go#L133-L142)
 - [internal/daemon/production_provider_session_factory.go:428-534](file://internal/daemon/production_provider_session_factory.go#L428-L534)
 - [internal/daemon/production_provider_session_factory.go:548-617](file://internal/daemon/production_provider_session_factory.go#L548-L617)
 - [internal/daemon/production_provider_session_factory.go:622-670](file://internal/daemon/production_provider_session_factory.go#L622-L670)
 - [internal/daemon/production_provider_session_factory.go:674-729](file://internal/daemon/production_provider_session_factory.go#L674-L729)
 - [internal/daemon/production_provider_session_factory.go:536-546](file://internal/daemon/production_provider_session_factory.go#L536-L546)
+- [internal/daemon/provider_session_assisted_delegation.go](file://internal/daemon/provider_session_assisted_delegation.go)
 
-章节来源
+**章节来源**
 - [internal/daemon/production_provider_session_factory.go:133-142](file://internal/daemon/production_provider_session_factory.go#L133-L142)
 - [internal/daemon/production_provider_session_factory.go:428-534](file://internal/daemon/production_provider_session_factory.go#L428-L534)
 - [internal/daemon/production_provider_session_factory.go:548-617](file://internal/daemon/production_provider_session_factory.go#L548-L617)
@@ -243,51 +278,64 @@ Register --> Return
   - 关闭当前会话并从注册表移除；Stop 场景下重试直到成功或冲突解除
 - 事件持久化：persistProviderSessionEvent
   - 仅保留白名单字段（如 request_id、session_id、mode、outcome 等），避免泄露原始协议内容
+- **新增** 委派状态同步
+  - 会话状态变化时通知委派管理器，保持全局一致性
 
 ```mermaid
 sequenceDiagram
 participant Factory as "会话工厂"
+participant Delegate as "委派管理器"
 participant Server as "Server"
 participant Registry as "providerSessionRegistry"
 participant Sink as "ProviderSessionEventSink"
 participant Store as "Task/Continuation 事件存储"
 Factory->>Server : "BindProviderSession(taskID, session)"
 Server->>Registry : "bind(taskID, session)"
+Server->>Delegate : "notifySessionBound(taskID, session)"
 alt 支持事件
 Server->>Sink : "SetEventSink(callback)"
 Sink-->>Server : "回调(kind, payload)"
 Server->>Store : "AppendEvent/AppendContinuationEvent(脱敏后)"
+Store-->>Delegate : "eventStatusUpdate"
 end
 Note over Server,Store : "仅白名单字段落盘"
 ```
 
-图表来源
+**图表来源**
 - [internal/daemon/provider_session_control.go:95-111](file://internal/daemon/provider_session_control.go#L95-L111)
-- [internal/daemon/provider_session_control.go:117-143](file://internal/daemon/provider_session_control.go#L117-L143)
-- [internal/daemon/provider_session_control.go:145-166](file://internal/daemon/provider_session_control.go#L145-L166)
+- [internal/daemon/provider_session_control.go:117-143](file://internal/daemon/provider_session_control.go#L117-143)
+- [internal/daemon/provider_session_control.go:145-166](file://internal/daemon/provider_session_control.go#L145-166)
+- [internal/daemon/provider_session_assisted_delegation.go](file://internal/daemon/provider_session_assisted_delegation.go)
 
-章节来源
+**章节来源**
 - [internal/daemon/provider_session_control.go:95-111](file://internal/daemon/provider_session_control.go#L95-L111)
-- [internal/daemon/provider_session_control.go:117-143](file://internal/daemon/provider_session_control.go#L117-L143)
-- [internal/daemon/provider_session_control.go:145-166](file://internal/daemon/provider_session_control.go#L145-L166)
+- [internal/daemon/provider_session_control.go:117-143](file://internal/daemon/provider_session_control.go#L117-143)
+- [internal/daemon/provider_session_control.go:145-166](file://internal/daemon/provider_session_control.go#L145-166)
 
 ### 会话工厂错误处理与健壮性
 - 错误包装：providerSessionFactoryError 对外暴露稳定错误消息，内部保留 Unwrap 链用于诊断
 - 能力校验：nativeSteerMode 根据 Capabilities 选择 InTurnSteer 或 InterruptThenReplace，否则拒绝
 - 状态机：nativeSteerState 从事件流中解析 mode/outcome/session_id，保障幂等与顺序
+- **新增** 委派容错
+  - 委派失败时回退到默认策略，确保服务可用性
+  - 健康检查失败时标记会话为不可用，触发重新分配
 
-章节来源
+**章节来源**
 - [internal/daemon/provider_session_factory.go:52-67](file://internal/daemon/provider_session_factory.go#L52-L67)
-- [internal/daemon/provider_session_control.go:183-212](file://internal/daemon/provider_session_control.go#L183-L212)
+- [internal/daemon/provider_session_control.go:183-212](file://internal/daemon/provider_session_control.go#L183-212)
+- [internal/daemon/provider_session_assisted_delegation.go](file://internal/daemon/provider_session_assisted_delegation.go)
 
 ### 生产环境与测试环境的差异
 - 可插拔进程启动器：HostStarter 允许测试拦截宿主进程启动，便于断言命令行参数
 - 可配置桥命令：BridgeCommand/ClaudeSDKBridgeCommand/HostBridgeCommand 可在测试中显式指定，避免依赖镜像布局
 - 行为一致性：生产使用真实本地进程组启动器；测试可通过 HostStarter 模拟输入输出
+- **新增** 测试委派策略
+  - 测试环境可配置简化委派逻辑，验证边界条件和异常路径
 
-章节来源
+**章节来源**
 - [internal/daemon/production_provider_session_factory.go:25-41](file://internal/daemon/production_provider_session_factory.go#L25-L41)
 - [internal/daemon/production_provider_session_factory.go:377-404](file://internal/daemon/production_provider_session_factory.go#L377-L404)
+- [internal/daemon/provider_session_assisted_delegation.go](file://internal/daemon/provider_session_assisted_delegation.go)
 
 ### 会话超时、连接复用与资源清理
 - 连接复用
@@ -298,14 +346,18 @@ Note over Server,Store : "仅白名单字段落盘"
   - productionBoundSession.onClose 触发时删除 bounds 映射并关闭桥
   - Host Pi 清理 auth.json/sessions 等工件，防止泄漏
   - 容器侧通过 ContainerID 标识，宿主侧通过进程组 ID 标识，便于重启后回收
+- **新增** 委派资源管理
+  - 委派失败时清理临时资源和中间状态
+  - 会话迁移时确保数据一致性
 
-章节来源
+**章节来源**
 - [internal/daemon/production_provider_session_factory.go:536-546](file://internal/daemon/production_provider_session_factory.go#L536-L546)
-- [internal/daemon/production_provider_session_factory.go:597-616](file://internal/daemon/production_provider_session_factory.go#L597-L616)
-- [internal/daemon/production_provider_session_factory.go:652-669](file://internal/daemon/production_provider_session_factory.go#L652-L669)
-- [internal/daemon/production_provider_session_factory.go:711-728](file://internal/daemon/production_provider_session_factory.go#L711-L728)
+- [internal/daemon/production_provider_session_factory.go:597-616](file://internal/daemon/production_provider_session_factory.go#L597-616)
+- [internal/daemon/production_provider_session_factory.go:652-669](file://internal/daemon/production_provider_session_factory.go#L652-669)
+- [internal/daemon/production_provider_session_factory.go:711-728](file://internal/daemon/production_provider_session_factory.go#L711-728)
 - [internal/daemon/production_provider_session_factory.go:416-426](file://internal/daemon/production_provider_session_factory.go#L416-L426)
 - [internal/daemon/task_handlers.go:2468-2472](file://internal/daemon/task_handlers.go#L2468-L2472)
+- [internal/daemon/provider_session_assisted_delegation.go](file://internal/daemon/provider_session_assisted_delegation.go)
 
 ## 依赖关系分析
 - 模块耦合
@@ -315,6 +367,9 @@ Note over Server,Store : "仅白名单字段落盘"
   - 容器运行时（Docker）、宿主进程组、Provider 二进制/SDK 桥
 - 潜在循环依赖
   - 通过接口与函数对象（ProviderSessionFactoryFunc）降低耦合，避免直接循环引用
+- **新增** 委派依赖
+  - 委派管理器依赖会话健康检查和负载均衡策略
+  - 与注册表和事件系统紧密集成
 
 ```mermaid
 graph LR
@@ -322,15 +377,19 @@ Daemon["daemon/*"] --> Runtime["runtime/*"]
 Daemon --> ModelProvider["modelprovider/*"]
 Daemon --> RuntimeProfile["runtimeprofile/*"]
 Daemon --> Task["task/*"]
+Daemon --> Delegation["assisted_delegation/*"]
 Runtime --> External["Docker/宿主进程/Provider"]
+Delegation --> Runtime
+Delegation --> Daemon
 ```
 
-图表来源
+**图表来源**
 - [internal/daemon/server.go:204-234](file://internal/daemon/server.go#L204-L234)
 - [internal/daemon/provider_session_factory.go:1-11](file://internal/daemon/provider_session_factory.go#L1-L11)
 - [internal/daemon/production_provider_session_factory.go:1-16](file://internal/daemon/production_provider_session_factory.go#L1-L16)
+- [internal/daemon/provider_session_assisted_delegation.go](file://internal/daemon/provider_session_assisted_delegation.go)
 
-章节来源
+**章节来源**
 - [internal/daemon/server.go:204-234](file://internal/daemon/server.go#L204-L234)
 - [internal/daemon/provider_session_factory.go:1-11](file://internal/daemon/provider_session_factory.go#L1-L11)
 - [internal/daemon/production_provider_session_factory.go:1-16](file://internal/daemon/production_provider_session_factory.go#L1-L16)
@@ -344,11 +403,16 @@ Runtime --> External["Docker/宿主进程/Provider"]
   - 容器内会话与宿主进程组均具备唯一标识，便于监控与回收
 - 并发安全
   - 工厂与注册表使用互斥锁保护共享状态，避免竞态
+- **新增** 委派优化
+  - 智能负载均衡，避免单点过载
+  - 会话预热和缓存，减少冷启动延迟
+  - 批量操作合并，降低网络开销
 
-章节来源
+**章节来源**
 - [internal/daemon/production_provider_session_factory.go:536-546](file://internal/daemon/production_provider_session_factory.go#L536-L546)
-- [internal/daemon/provider_session_control.go:117-143](file://internal/daemon/provider_session_control.go#L117-L143)
+- [internal/daemon/provider_session_control.go:117-143](file://internal/daemon/provider_session_control.go#L117-143)
 - [internal/daemon/provider_session_control.go:18-93](file://internal/daemon/provider_session_control.go#L18-L93)
+- [internal/daemon/provider_session_assisted_delegation.go](file://internal/daemon/provider_session_assisted_delegation.go)
 
 ## 故障恢复与会话超时
 - 会话恢复
@@ -359,13 +423,18 @@ Runtime --> External["Docker/宿主进程/Provider"]
   - steer 操作带超时上下文，失败时记录标准化事件，避免阻塞
 - 重启恢复
   - 设计原则为 fail-closed：重启不自动重连 stdio，需通过新桥与持久化元数据重建
+- **新增** 委派故障处理
+  - 委派失败时自动回退到备用策略
+  - 会话健康检查失败时触发重新分配
+  - 跨节点迁移时确保数据一致性
 
-章节来源
-- [internal/daemon/production_provider_session_factory.go:548-617](file://internal/daemon/production_provider_session_factory.go#L548-L617)
-- [internal/daemon/production_provider_session_factory.go:622-670](file://internal/daemon/production_provider_session_factory.go#L622-L670)
-- [internal/daemon/production_provider_session_factory.go:674-729](file://internal/daemon/production_provider_session_factory.go#L674-L729)
-- [internal/daemon/provider_session_control.go:183-212](file://internal/daemon/provider_session_control.go#L183-L212)
+**章节来源**
+- [internal/daemon/production_provider_session_factory.go:548-617](file://internal/daemon/production_provider_session_factory.go#L548-617)
+- [internal/daemon/production_provider_session_factory.go:622-670](file://internal/daemon/production_provider_session_factory.go#L622-670)
+- [internal/daemon/production_provider_session_factory.go:674-729](file://internal/daemon/production_provider_session_factory.go#L674-729)
+- [internal/daemon/provider_session_control.go:183-212](file://internal/daemon/provider_session_control.go#L183-212)
 - [internal/daemon/task_handlers.go:2468-2472](file://internal/daemon/task_handlers.go#L2468-L2472)
+- [internal/daemon/provider_session_assisted_delegation.go](file://internal/daemon/provider_session_assisted_delegation.go)
 
 ## 调试技巧与排障指南
 - 观察会话绑定
@@ -377,21 +446,27 @@ Runtime --> External["Docker/宿主进程/Provider"]
 - 前端交互链路
   - TaskDetailPage 在切换 Provider 时会先队列指令、停止、再恢复，确保用户意图不丢失
 - 常见错误定位
-  - “无会话身份/适配器”：检查工厂返回值与 validateProviderSessionBinding
-  - “不支持的 Runner/Provider”：检查 supportsPersistentProviderSession 与 supportedProviderSessionFactoryProvider
-  - “Host Pi 缺少投影环境变量”：检查 PI_CODING_AGENT_DIR 等必需项
+  - "无会话身份/适配器"：检查工厂返回值与 validateProviderSessionBinding
+  - "不支持的 Runner/Provider"：检查 supportsPersistentProviderSession 与 supportedProviderSessionFactoryProvider
+  - "Host Pi 缺少投影环境变量"：检查 PI_CODING_AGENT_DIR 等必需项
+- **新增** 委派问题排查
+  - 检查委派策略配置和健康检查状态
+  - 监控会话迁移日志和资源使用情况
+  - 验证负载均衡算法和故障转移逻辑
 
-章节来源
+**章节来源**
 - [internal/daemon/provider_session_control.go:18-93](file://internal/daemon/provider_session_control.go#L18-L93)
 - [internal/daemon/provider_session_factory.go:60-92](file://internal/daemon/provider_session_factory.go#L60-L92)
 - [internal/daemon/production_provider_session_factory.go:406-414](file://internal/daemon/production_provider_session_factory.go#L406-L414)
 - [web/src/pages/TaskDetailPage.tsx:305-337](file://web/src/pages/TaskDetailPage.tsx#L305-L337)
+- [internal/daemon/provider_session_assisted_delegation.go](file://internal/daemon/provider_session_assisted_delegation.go)
 
 ## 结论
 Provider 会话工厂模式通过清晰的接口与分层实现，实现了：
 - 会话创建/复用的集中化管理与任务级资源隔离
 - 跨 Sandbox/Host 的统一装配与桥接协议
+- **新增** 辅助委派机制，提供智能会话管理和高可用性保障
 - 面向生产的高可用特性：幂等恢复、超时控制、事件去敏与资源清理
 - 面向测试的可插拔性与可观测性
 
-该模式为多 Provider 的长期会话提供了可扩展、可维护、可调试的基础设施。
+该模式为多 Provider 的长期会话提供了可扩展、可维护、可调试的基础设施，并通过辅助委派机制进一步提升了系统的稳定性和性能。
