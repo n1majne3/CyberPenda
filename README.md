@@ -66,7 +66,7 @@ Images default to:
 - App: `ghcr.io/n1majne3/cyberpenda:latest`
 - Sandbox: `ghcr.io/n1majne3/cyberpenda-sandbox:latest`
 
-Compose mounts Docker socket so the app container can launch sandbox task containers. Set `PENTEST_AUTH_TOKEN` before starting; non-loopback binds require auth.
+Compose mounts Docker socket so the app container can launch sandbox task containers. Task data uses the named `cyberpenda-data` volume, and child sandboxes mount each task subpath from that same volume. Set `PENTEST_AUTH_TOKEN` before starting; non-loopback binds require auth. Override the volume name with `CYBERPENDA_DATA_VOLUME` when needed.
 
 ### Sandbox image (from source)
 
@@ -118,6 +118,8 @@ Common `pentestd` options (flags or env):
 | `-runtime-root` | `PENTEST_RUNTIME_ROOT` | (empty → daemon default) |
 | `-sandbox-image` | `PENTEST_SANDBOX_IMAGE` | `ghcr.io/n1majne3/cyberpenda-sandbox:latest` |
 | `-container-cli` | `PENTEST_CONTAINER_CLI` | `docker` |
+| `-task-volume` | `PENTEST_TASK_VOLUME` | (empty; Compose sets the named data volume) |
+| `-task-volume-root` | `PENTEST_TASK_VOLUME_ROOT` | `/data` when `-task-volume` is set |
 | `-auth-token` | `PENTEST_AUTH_TOKEN` | (required for non-loopback binds) |
 | `-runtime-plugin-dirs` | `PENTEST_RUNTIME_PLUGIN_DIRS` | trusted plugin dirs |
 | `-runtime-extension-dirs` | `PENTEST_RUNTIME_EXTENSION_DIRS` | trusted extension dirs |

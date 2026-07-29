@@ -85,6 +85,8 @@ type SandboxCommandRequest struct {
 	RuntimeCommand  []string
 	ProcessEnv      map[string]string
 	NetworkMode     SandboxNetworkMode
+	TaskVolume      string
+	TaskVolumeRoot  string
 	// ReadOnlyTaskFiles are task-root-relative mandatory inputs remounted over
 	// the writable task volume with Docker's read-only bind option.
 	ReadOnlyTaskFiles []string
@@ -169,29 +171,79 @@ func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 	}
 	args = append(args,
 		"--add-host=host.docker.internal:host-gateway",
-		"-v",
-		taskRoot+":/task",
+	)
+	taskVolume := strings.TrimSpace(request.TaskVolume)
+	taskVolumeSubpath := ""
+	volumeSubpathOption := namedVolumeSubpathOption(program)
+	if taskVolume == "" {
+		args = append(args, "-v", taskRoot+":/task")
+	} else {
+		if strings.ContainsAny(taskVolume, ",\n\r") {
+			return Command{}, fmt.Errorf("invalid task volume name: %q", taskVolume)
+		}
+		volumeRoot := strings.TrimSpace(request.TaskVolumeRoot)
+		if volumeRoot == "" {
+			volumeRoot = "/data"
+		}
+		volumeRoot, err = filepath.Abs(volumeRoot)
+		if err != nil {
+			return Command{}, fmt.Errorf("resolve task volume root: %w", err)
+		}
+		taskVolumeSubpath, err = filepath.Rel(volumeRoot, taskRoot)
+		if err != nil || taskVolumeSubpath == "." || taskVolumeSubpath == ".." || strings.HasPrefix(taskVolumeSubpath, ".."+string(filepath.Separator)) {
+			return Command{}, fmt.Errorf("task root %q is outside task volume root %q", taskRoot, volumeRoot)
+		}
+		args = append(args, "--mount", "type=volume,src="+taskVolume+",dst=/task,"+volumeSubpathOption+"="+filepath.ToSlash(taskVolumeSubpath))
+	}
+	args = append(args,
 		"-w",
 		"/task/workdir",
 		"-e",
 		"PENTEST_TASK_ROOT=/task",
 	)
-	for _, relativePath := range request.ReadOnlyTaskFiles {
-		clean := filepath.Clean(relativePath)
-		if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-			return Command{}, fmt.Errorf("read-only task file must stay under task root: %q", relativePath)
+	if taskVolume == "" {
+		for _, relativePath := range request.ReadOnlyTaskFiles {
+			clean := filepath.Clean(relativePath)
+			if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+				return Command{}, fmt.Errorf("read-only task file must stay under task root: %q", relativePath)
+			}
+			source := filepath.Join(taskRoot, clean)
+			target := "/task/" + filepath.ToSlash(clean)
+			args = append(args, "--mount", "type=bind,src="+source+",dst="+target+",readonly")
 		}
-		source := filepath.Join(taskRoot, clean)
-		target := "/task/" + filepath.ToSlash(clean)
-		args = append(args, "--mount", "type=bind,src="+source+",dst="+target+",readonly")
-	}
-	for _, relativePath := range request.ReadOnlyTaskDirs {
-		clean, source, err := confinedReadOnlyTaskDir(taskRoot, relativePath)
-		if err != nil {
-			return Command{}, err
+		for _, relativePath := range request.ReadOnlyTaskDirs {
+			clean, source, err := confinedReadOnlyTaskDir(taskRoot, relativePath)
+			if err != nil {
+				return Command{}, err
+			}
+			target := "/task/" + filepath.ToSlash(clean)
+			args = append(args, "--mount", "type=bind,src="+source+",dst="+target+",readonly")
 		}
-		target := "/task/" + filepath.ToSlash(clean)
-		args = append(args, "--mount", "type=bind,src="+source+",dst="+target+",readonly")
+	} else {
+		readonlyDirs := make([]string, 0, len(request.ReadOnlyTaskDirs)+len(request.ReadOnlyTaskFiles))
+		for _, relativePath := range request.ReadOnlyTaskFiles {
+			clean, err := confinedReadOnlyTaskFile(taskRoot, relativePath)
+			if err != nil {
+				return Command{}, err
+			}
+			parent := filepath.Dir(clean)
+			if parent == "." {
+				return Command{}, fmt.Errorf("read-only task file must be inside a task directory: %q", relativePath)
+			}
+			readonlyDirs = appendUniquePath(readonlyDirs, parent)
+		}
+		for _, relativePath := range request.ReadOnlyTaskDirs {
+			readonlyDirs = appendUniquePath(readonlyDirs, relativePath)
+		}
+		for _, relativePath := range readonlyDirs {
+			clean, _, err := confinedReadOnlyTaskDir(taskRoot, relativePath)
+			if err != nil {
+				return Command{}, err
+			}
+			target := "/task/" + filepath.ToSlash(clean)
+			source := filepath.ToSlash(filepath.Join(taskVolumeSubpath, clean))
+			args = append(args, "--mount", "type=volume,src="+taskVolume+",dst="+target+","+volumeSubpathOption+"="+source+",readonly")
+		}
 	}
 	if request.NetworkMode == SandboxNetworkHostProxyOnly {
 		args = append(args,
@@ -214,6 +266,39 @@ func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 	}
 	args = append(args, request.RuntimeCommand...)
 	return Command{Program: program, Args: args}, nil
+}
+
+func namedVolumeSubpathOption(program string) string {
+	if strings.EqualFold(filepath.Base(program), "podman") {
+		return "subpath"
+	}
+	return "volume-subpath"
+}
+
+func confinedReadOnlyTaskFile(taskRoot, relativePath string) (string, error) {
+	clean := filepath.Clean(relativePath)
+	if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || strings.Contains(relativePath, `\`) {
+		return "", fmt.Errorf("read-only task file must stay under task root: %q", relativePath)
+	}
+	current := taskRoot
+	for _, component := range strings.Split(clean, string(filepath.Separator)) {
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if err != nil {
+			return "", fmt.Errorf("inspect read-only task file %q: %w", relativePath, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("read-only task file contains a symbolic link: %q", relativePath)
+		}
+	}
+	info, err := os.Stat(current)
+	if err != nil {
+		return "", fmt.Errorf("inspect read-only task file %q: %w", relativePath, err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("read-only task file is a directory: %q", relativePath)
+	}
+	return clean, nil
 }
 
 func confinedReadOnlyTaskDir(taskRoot, relativePath string) (string, string, error) {
@@ -240,6 +325,16 @@ func confinedReadOnlyTaskDir(taskRoot, relativePath string) (string, string, err
 		return "", "", fmt.Errorf("read-only task directory is not a directory: %q", relativePath)
 	}
 	return clean, current, nil
+}
+
+func appendUniquePath(paths []string, candidate string) []string {
+	clean := filepath.Clean(candidate)
+	for _, existing := range paths {
+		if filepath.Clean(existing) == clean {
+			return paths
+		}
+	}
+	return append(paths, clean)
 }
 
 type sandboxEnvVar struct {

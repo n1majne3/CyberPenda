@@ -854,6 +854,8 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 			RuntimeCommand:    sandboxRuntime,
 			ProcessEnv:        processEnv,
 			NetworkMode:       sandboxNetwork,
+			TaskVolume:        server.taskVolume,
+			TaskVolumeRoot:    server.taskVolumeRoot,
 			ReadOnlyTaskFiles: readOnlyTaskFiles,
 			ReadOnlyTaskDirs:  readOnlyTaskDirs,
 		})

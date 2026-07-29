@@ -68,6 +68,8 @@ func TestDockerComposeRunsPublishedAppImage(t *testing.T) {
 	assertContains(t, compose, "PENTEST_RUNTIME_ROOT: /data/runs")
 	assertContains(t, compose, "PENTEST_SANDBOX_IMAGE: ${PENTEST_SANDBOX_IMAGE:-ghcr.io/n1majne3/cyberpenda-sandbox:latest}")
 	assertContains(t, compose, "PENTEST_CONTAINER_CLI: docker")
+	assertContains(t, compose, "PENTEST_TASK_VOLUME: ${CYBERPENDA_DATA_VOLUME:-cyberpenda_cyberpenda-data}")
+	assertContains(t, compose, "PENTEST_TASK_VOLUME_ROOT: /data")
 	assertContains(t, compose, "cyberpenda-data:/data")
 	assertContains(t, compose, "/var/run/docker.sock:/var/run/docker.sock")
 	assertContains(t, compose, "no-new-privileges:true")

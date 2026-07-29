@@ -18,6 +18,8 @@ services:
       PENTEST_RUNTIME_ROOT: /data/runs
       PENTEST_SANDBOX_IMAGE: ${PENTEST_SANDBOX_IMAGE:-ghcr.io/n1majne3/cyberpenda-sandbox:latest}
       PENTEST_CONTAINER_CLI: docker
+      PENTEST_TASK_VOLUME: ${CYBERPENDA_DATA_VOLUME:-cyberpenda_cyberpenda-data}
+      PENTEST_TASK_VOLUME_ROOT: /data
     volumes:
       - cyberpenda-data:/data
       - /var/run/docker.sock:/var/run/docker.sock
@@ -32,3 +34,4 @@ services:
 
 volumes:
   cyberpenda-data:
+    name: ${CYBERPENDA_DATA_VOLUME:-cyberpenda_cyberpenda-data}

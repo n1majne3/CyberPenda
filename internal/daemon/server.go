@@ -47,6 +47,8 @@ type Config struct {
 	SkillsRoot          string
 	SandboxImage        string
 	ContainerCLI        string
+	TaskVolume          string
+	TaskVolumeRoot      string
 	ListenAddr          string
 	// AuthToken gates every mutating route when non-empty. A non-loopback bind
 	// refuses to start unless this is set, so a daemon exposed to the network
@@ -103,6 +105,8 @@ type Server struct {
 	runtimeRoot            string
 	sandboxImage           string
 	containerCLI           string
+	taskVolume             string
+	taskVolumeRoot         string
 	listenAddr             string
 	authToken              string
 	tempSkillsRoot         string
@@ -125,6 +129,10 @@ type Server struct {
 }
 
 func NewServer(config Config) (*Server, error) {
+	runtimeRoot, taskVolumeRoot, err := resolveRuntimeStorage(config)
+	if err != nil {
+		return nil, err
+	}
 	db, err := store.Open(config.DBPath)
 	if err != nil {
 		return nil, err
@@ -170,10 +178,6 @@ func NewServer(config Config) (*Server, error) {
 	}
 	creds := credential.NewService(db)
 	tasks := task.NewService(db, nil)
-	runtimeRoot := config.RuntimeRoot
-	if runtimeRoot == "" {
-		runtimeRoot = filepath.Join(filepath.Dir(config.DBPath), "runs")
-	}
 	artifactRoot := strings.TrimSpace(config.ArtifactRoot)
 	if artifactRoot == "" {
 		artifactRoot = filepath.Dir(config.DBPath)
@@ -221,6 +225,8 @@ func NewServer(config Config) (*Server, error) {
 		runtimeRoot:            runtimeRoot,
 		sandboxImage:           config.SandboxImage,
 		containerCLI:           config.ContainerCLI,
+		taskVolume:             strings.TrimSpace(config.TaskVolume),
+		taskVolumeRoot:         taskVolumeRoot,
 		listenAddr:             listenAddr,
 		authToken:              authToken,
 		tempSkillsRoot:         tempSkillsRoot,
@@ -261,6 +267,36 @@ func NewServer(config Config) (*Server, error) {
 	server.applyProviderSessionRecoveryLifecycle(recovery.Outcomes)
 
 	return server, nil
+}
+
+func resolveRuntimeStorage(config Config) (string, string, error) {
+	runtimeRoot := strings.TrimSpace(config.RuntimeRoot)
+	if runtimeRoot == "" {
+		runtimeRoot = filepath.Join(filepath.Dir(config.DBPath), "runs")
+	}
+	runtimeRoot = filepath.Clean(runtimeRoot)
+	if strings.TrimSpace(config.TaskVolume) == "" {
+		return runtimeRoot, "", nil
+	}
+
+	taskVolumeRoot := strings.TrimSpace(config.TaskVolumeRoot)
+	if taskVolumeRoot == "" {
+		taskVolumeRoot = "/data"
+	}
+	taskVolumeRoot = filepath.Clean(taskVolumeRoot)
+	absRuntimeRoot, err := filepath.Abs(runtimeRoot)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve runtime root: %w", err)
+	}
+	absTaskVolumeRoot, err := filepath.Abs(taskVolumeRoot)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve task volume root: %w", err)
+	}
+	relativeRuntimeRoot, err := filepath.Rel(absTaskVolumeRoot, absRuntimeRoot)
+	if err != nil || relativeRuntimeRoot == ".." || strings.HasPrefix(relativeRuntimeRoot, ".."+string(filepath.Separator)) {
+		return "", "", fmt.Errorf("runtime root %q is outside task volume root %q", runtimeRoot, taskVolumeRoot)
+	}
+	return runtimeRoot, taskVolumeRoot, nil
 }
 
 // reconcileInterruptedTasks clears ghost tasks left running by a previous

@@ -171,6 +171,83 @@ func TestBuildSandboxCommandConstructsContainerLaunchWithoutExecution(t *testing
 	}
 }
 
+func TestBuildSandboxCommandUsesNamedTaskVolumeSubpaths(t *testing.T) {
+	volumeRoot := filepath.Join(t.TempDir(), "data")
+	runtimeRoot := filepath.Join(volumeRoot, "runs")
+	layout, err := runner.PrepareTaskLayout(runtimeRoot, "task-volume", runtimeprofile.ProviderPi)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(layout.Workdir, ".pentest"), 0o700); err != nil {
+		t.Fatalf("prepare .pentest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(layout.Workdir, ".pentest", "blackboard.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write blackboard: %v", err)
+	}
+
+	command, err := runner.BuildSandboxCommand(runner.SandboxCommandRequest{
+		Layout: layout, Provider: runtimeprofile.ProviderPi, TaskVolume: "cyberpenda-data", TaskVolumeRoot: volumeRoot,
+		ReadOnlyTaskFiles: []string{"workdir/.pentest/blackboard.json"}, RuntimeCommand: []string{"pi", "--mode", "rpc"},
+	})
+	if err != nil {
+		t.Fatalf("build command: %v", err)
+	}
+	joined := strings.Join(command.Args, " ")
+	for _, want := range []string{
+		"type=volume,src=cyberpenda-data,dst=/task,volume-subpath=runs/task-volume",
+		"type=volume,src=cyberpenda-data,dst=/task/workdir/.pentest,volume-subpath=runs/task-volume/workdir/.pentest,readonly",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected %q in named-volume sandbox args, got %v", want, command.Args)
+		}
+	}
+	if strings.Contains(joined, volumeRoot+":/task") {
+		t.Fatalf("named-volume sandbox unexpectedly used a host bind: %v", command.Args)
+	}
+}
+
+func TestBuildSandboxCommandUsesPodmanNamedVolumeSubpathSyntax(t *testing.T) {
+	volumeRoot := filepath.Join(t.TempDir(), "data")
+	layout, err := runner.PrepareTaskLayout(filepath.Join(volumeRoot, "runs"), "task-podman", runtimeprofile.ProviderPi)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+
+	command, err := runner.BuildSandboxCommand(runner.SandboxCommandRequest{
+		Layout: layout, Provider: runtimeprofile.ProviderPi, ContainerCLI: "podman",
+		TaskVolume: "cyberpenda-data", TaskVolumeRoot: volumeRoot, RuntimeCommand: []string{"pi", "--mode", "rpc"},
+	})
+	if err != nil {
+		t.Fatalf("build command: %v", err)
+	}
+	joined := strings.Join(command.Args, " ")
+	if !strings.Contains(joined, "type=volume,src=cyberpenda-data,dst=/task,subpath=runs/task-podman") {
+		t.Fatalf("expected Podman subpath syntax, got %v", command.Args)
+	}
+	if strings.Contains(joined, "volume-subpath=") {
+		t.Fatalf("Podman command contains Docker-only volume-subpath syntax: %v", command.Args)
+	}
+}
+
+func TestBuildSandboxCommandRejectsMissingNamedVolumeReadOnlyFile(t *testing.T) {
+	volumeRoot := filepath.Join(t.TempDir(), "data")
+	layout, err := runner.PrepareTaskLayout(filepath.Join(volumeRoot, "runs"), "task-missing", runtimeprofile.ProviderCodex)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(layout.Workdir, ".pentest"), 0o700); err != nil {
+		t.Fatalf("prepare .pentest: %v", err)
+	}
+
+	_, err = runner.BuildSandboxCommand(runner.SandboxCommandRequest{
+		Layout: layout, Provider: runtimeprofile.ProviderCodex, TaskVolume: "cyberpenda-data", TaskVolumeRoot: volumeRoot,
+		ReadOnlyTaskFiles: []string{"workdir/.pentest/scope.json"}, RuntimeCommand: []string{"codex", "exec"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "inspect read-only task file") {
+		t.Fatalf("expected missing mandatory file error, got %v", err)
+	}
+}
+
 func TestBuildSandboxCommandSetsClaudeHomeToPersistentRuntimeHome(t *testing.T) {
 	root := t.TempDir()
 	layout, err := runner.PrepareTaskLayout(root, "task-claude", runtimeprofile.ProviderClaudeCode)
