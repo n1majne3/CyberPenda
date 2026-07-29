@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -242,6 +243,58 @@ func TestLaunchBoundNativeSteerRebindsHarnessAndFinalizesReplacement(t *testing.
 	}
 	if requests := factory.Requests(); len(requests) != 1 {
 		t.Fatalf("native steer opened %d factory sessions, want 1", len(requests))
+	}
+}
+
+// TestProviderSessionSetupFailureSurfacesRedactedCause proves a fail-closed
+// launch surfaces the real cause to the frontend (HTTP error and persisted
+// lifecycle event) while masking credential values.
+func TestProviderSessionSetupFailureSurfacesRedactedCause(t *testing.T) {
+	factory := &recordingProviderSessionFactory{
+		err: errors.New("create sandbox bridge container: exit status 1: pull access denied for cyberpenda:test token=ghp_ABCDEFGHIJKLMNOP1234567890"),
+	}
+	server, created := newProviderSessionLaunchFixture(t, factory)
+	defer server.Close()
+
+	plan, err := server.buildTaskLaunchPlan(created, created.Goal, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	launchErr := server.launchTaskInBackground(created, plan, created.Goal)
+	if launchErr == nil {
+		t.Fatal("expected fail-closed launch error")
+	}
+	msg := launchErr.Error()
+	if !strings.Contains(msg, "provider session setup failed") {
+		t.Fatalf("error = %v, want stable phase label", launchErr)
+	}
+	if !strings.Contains(msg, "pull access denied") {
+		t.Fatalf("error = %v, want operational cause detail for the frontend", launchErr)
+	}
+	if strings.Contains(msg, "ghp_ABCDEFGHIJKLMNOP1234567890") {
+		t.Fatalf("error leaked a secret token: %v", launchErr)
+	}
+
+	events, err := server.tasks.Events(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, event := range events {
+		if event.Payload["phase"] != "provider_session_setup_failed" {
+			continue
+		}
+		found = true
+		errText, _ := event.Payload["error"].(string)
+		if !strings.Contains(errText, "pull access denied") {
+			t.Fatalf("lifecycle error = %q, want cause detail", errText)
+		}
+		if strings.Contains(errText, "ghp_ABCDEFGHIJKLMNOP1234567890") {
+			t.Fatalf("lifecycle error leaked a secret token: %q", errText)
+		}
+	}
+	if !found {
+		t.Fatal("missing provider_session_setup_failed lifecycle event")
 	}
 }
 

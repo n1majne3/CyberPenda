@@ -235,13 +235,13 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 			factoryErr = validateAssistedConclusionBinding(binding)
 		}
 		if factoryErr != nil {
-			redactedErr := &providerSessionFactoryError{cause: factoryErr}
+			redactedErr := newProviderSessionFactoryError(factoryErr, plan.MaterializedCredentials)
 			server.failProviderSessionLaunch(created.ID, continuation.ID, redactedErr)
 			return redactedErr
 		}
 		if bindErr := server.BindProviderSession(created.ID, binding.Session); bindErr != nil {
 			_ = binding.Session.Close(context.Background())
-			redactedErr := &providerSessionFactoryError{cause: bindErr}
+			redactedErr := newProviderSessionFactoryError(bindErr, plan.MaterializedCredentials)
 			server.failProviderSessionLaunch(created.ID, continuation.ID, redactedErr)
 			return redactedErr
 		}
@@ -250,7 +250,7 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 			if selectionErr != nil {
 				_ = binding.Session.Close(context.Background())
 				server.providerSessions.remove(created.ID)
-				redactedErr := &providerSessionFactoryError{cause: selectionErr}
+				redactedErr := newProviderSessionFactoryError(selectionErr, plan.MaterializedCredentials)
 				server.failProviderSessionLaunch(created.ID, continuation.ID, redactedErr)
 				return redactedErr
 			}
@@ -310,24 +310,46 @@ func (server *Server) failProviderSessionLaunch(taskID, continuationID string, c
 	// The durable Continuation already exists at this point. Marking both
 	// records terminal prevents an unbound pending Continuation from looking
 	// resumable after a factory crash or setup rejection.
-	// HTTP and persisted lifecycle payloads stay redacted; the unwrapped cause
-	// is server-only diagnostics so operators can fix setup failures.
+	// Backend log carries the full unredacted cause chain (server-only
+	// diagnostics) so operators see the real docker/bridge failure; the
+	// persisted lifecycle event and HTTP error carry the redacted detail.
 	if server.logger != nil && cause != nil {
-		root := cause
-		for {
-			unwrapped := errors.Unwrap(root)
-			if unwrapped == nil {
-				break
-			}
-			root = unwrapped
+		underlying := errors.Unwrap(cause)
+		if underlying == nil {
+			underlying = cause
 		}
-		server.logger.Printf("provider session setup failed task=%s continuation=%s cause=%v root=%v", taskID, continuationID, cause, root)
+		server.logger.Printf("provider session setup failed task=%s continuation=%s cause=%v", taskID, continuationID, underlying)
+	}
+	lifecycleError := "provider session setup failed"
+	if cause != nil {
+		lifecycleError = cause.Error()
 	}
 	_, _ = server.tasks.AppendContinuationEvent(taskID, continuationID, task.EventKindLifecycle, task.EventPayload{
-		"phase": "provider_session_setup_failed", "error": "provider session setup failed",
+		"phase": "provider_session_setup_failed", "error": lifecycleError,
 	})
 	_, _ = server.tasks.UpdateContinuationStatus(continuationID, task.StatusFailed)
 	_, _ = server.tasks.UpdateStatus(taskID, task.StatusFailed)
+}
+
+// newProviderSessionFactoryError wraps a setup failure with the stable phase
+// label and a redacted, human-readable detail for the frontend. Credential
+// values from the launch snapshot are masked in addition to shape-based
+// redaction so the cause can be shown without leaking secrets.
+func newProviderSessionFactoryError(cause error, credentials map[string]string) *providerSessionFactoryError {
+	return &providerSessionFactoryError{cause: cause, detail: redactProviderSessionCause(cause, credentials)}
+}
+
+func redactProviderSessionCause(cause error, credentials map[string]string) string {
+	if cause == nil {
+		return ""
+	}
+	secrets := make([]string, 0, len(credentials))
+	for _, value := range credentials {
+		secrets = append(secrets, value)
+	}
+	redacted := adapters.NewRedactor(secrets).Redact(map[string]any{"detail": cause.Error()})
+	detail, _ := redacted["detail"].(string)
+	return strings.TrimSpace(detail)
 }
 
 func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, plan taskLaunchPlan, goal string) (task.TaskContinuation, taskLaunchPlan, error) {

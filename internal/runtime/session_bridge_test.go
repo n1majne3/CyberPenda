@@ -6,6 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -463,5 +467,31 @@ func TestFirstSignalFiresOnEitherClosedOrTerminated(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("FirstSignal did not fire on Terminated")
+	}
+}
+
+// TestDockerCLISandboxBridgeCreateSurfacesStderr proves a failed docker create
+// no longer collapses to a bare "exit status 1": the captured stderr is
+// appended to the returned error while the *exec.ExitError stays unwrappable.
+func TestDockerCLISandboxBridgeCreateSurfacesStderr(t *testing.T) {
+	dir := t.TempDir()
+	docker := filepath.Join(dir, "docker")
+	script := "#!/bin/sh\n" +
+		"echo 'Unable to find image cyberpenda-sandbox:latest locally' 1>&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(docker, []byte(script), 0o700); err != nil {
+		t.Fatalf("write docker stub: %v", err)
+	}
+	transport := runtime.DockerCLISandboxBridgeDocker{ContainerCLI: docker}
+	_, err := transport.Create(context.Background(), []string{"create", "-i", "cyberpenda-sandbox:latest"})
+	if err == nil {
+		t.Fatal("expected docker create failure")
+	}
+	if !strings.Contains(err.Error(), "Unable to find image") {
+		t.Fatalf("error = %v, want captured docker stderr detail", err)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("error = %v, want unwrap to *exec.ExitError", err)
 	}
 }

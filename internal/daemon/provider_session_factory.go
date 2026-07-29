@@ -122,12 +122,21 @@ func (f ProviderSessionFactoryFunc) Open(ctx context.Context, request ProviderSe
 	return f(ctx, request)
 }
 
-// providerSessionFactoryError deliberately keeps provider/transport details
-// out of HTTP errors and persisted lifecycle payloads while retaining an
-// unwrap chain for internal tests and diagnostics.
-type providerSessionFactoryError struct{ cause error }
+// providerSessionFactoryError keeps a stable phase label while surfacing a
+// redacted, human-readable cause so operators (backend log) and the frontend
+// can see why setup failed. The redacted detail masks credential values; the
+// unredacted cause stays in the unwrap chain for server-only diagnostics.
+type providerSessionFactoryError struct {
+	cause  error
+	detail string
+}
 
-func (e *providerSessionFactoryError) Error() string { return "provider session setup failed" }
+func (e *providerSessionFactoryError) Error() string {
+	if strings.TrimSpace(e.detail) != "" {
+		return "provider session setup failed: " + e.detail
+	}
+	return "provider session setup failed"
+}
 func (e *providerSessionFactoryError) Unwrap() error { return e.cause }
 
 func supportedProviderSessionFactoryProvider(provider runtimeprofile.Provider) bool {

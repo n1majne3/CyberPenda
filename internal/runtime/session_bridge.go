@@ -141,9 +141,23 @@ func (d DockerCLISandboxBridgeDocker) cli() string {
 func (d DockerCLISandboxBridgeDocker) Create(ctx context.Context, args []string) (string, error) {
 	out, err := exec.CommandContext(ctx, d.cli(), args...).Output()
 	if err != nil {
-		return "", err
+		return "", dockerExitError(err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// dockerExitError enriches a failed docker CLI error with the captured stderr
+// so the daemon log shows the real reason ("No such image", "network not
+// found", daemon connectivity) instead of a bare "exit status 1". The original
+// *exec.ExitError stays in the unwrap chain for errors.Is/As callers.
+func dockerExitError(err error) error {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if detail := strings.TrimSpace(string(exitErr.Stderr)); detail != "" {
+			return fmt.Errorf("%w: %s", err, detail)
+		}
+	}
+	return err
 }
 
 func (d DockerCLISandboxBridgeDocker) Start(_ context.Context, containerID string) (SandboxBridgeIO, error) {
