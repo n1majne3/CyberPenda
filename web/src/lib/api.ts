@@ -18,9 +18,14 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = requestHeaders(init?.headers);
+  if (init?.body instanceof FormData) {
+    // Let the browser set multipart/form-data together with its boundary.
+    delete headers["Content-Type"];
+  }
   const res = await fetch(base + path, {
     ...init,
-    headers: requestHeaders(init?.headers),
+    headers,
   });
   if (!res.ok) {
     let message = `${res.status} ${res.statusText}`;
@@ -89,6 +94,11 @@ export function apiPost<T>(path: string, body?: unknown, init?: RequestInit) {
     method: "POST",
     body: body ? JSON.stringify(body) : undefined,
   });
+}
+export function apiPostForm<T>(path: string, form: FormData, init?: RequestInit) {
+  // Multipart POST: the browser owns the Content-Type + boundary, so request()
+  // strips the default JSON header when it sees a FormData body.
+  return request<T>(path, { ...init, method: "POST", body: form });
 }
 export function apiPut<T>(path: string, body?: unknown) {
   return request<T>(path, { method: "PUT", body: body ? JSON.stringify(body) : undefined });
