@@ -91,7 +91,17 @@ const (
 	BlackboardConclusionErrorRepairExhausted         BlackboardConclusionErrorCode = "semantic_conclusion_repair_exhausted"
 	BlackboardConclusionErrorVersionConflict         BlackboardConclusionErrorCode = "semantic_conclusion_version_conflict"
 	BlackboardConclusionErrorRuntimeRecoveryRequired BlackboardConclusionErrorCode = "semantic_conclusion_runtime_recovery_required"
-	BlackboardConclusionAutomaticTurnLimit                                         = 2
+	// BlackboardConclusionErrorWorkTurnNeverSettled is a distinct, non-retryable
+	// terminal: a provider work turn never yielded, so the conclusion control
+	// turn could not be delivered within the bounded conflict budget. Retrying
+	// is futile; the operator must Finish the Task.
+	BlackboardConclusionErrorWorkTurnNeverSettled BlackboardConclusionErrorCode = "semantic_conclusion_work_turn_never_settled"
+	BlackboardConclusionAutomaticTurnLimit                                      = 2
+	// BlackboardConclusionWorkTurnConflictLimit bounds how many explicit retries
+	// may re-attempt a conclusion that a non-yielding work turn keeps rejecting.
+	// Once exhausted the receipt becomes the non-retryable never-settled terminal
+	// instead of endlessly re-emitting the recoverable runtime recovery code.
+	BlackboardConclusionWorkTurnConflictLimit = 2
 )
 
 // BlackboardConclusion is the compact Task read view for the latest assisted
@@ -230,6 +240,13 @@ func (receipt BlackboardConclusionReceipt) ViewAt(mode BlackboardConclusionMode,
 	case BlackboardConclusionReceiptActionRequired:
 		view.State = BlackboardConclusionStateActionRequired
 		view.ErrorCode = receipt.ErrorCode
+		if receipt.ErrorCode == BlackboardConclusionErrorWorkTurnNeverSettled {
+			// A never-settled work turn is terminal: retrying cannot win because
+			// the provider never yields the active turn. Surface it as not
+			// retryable so the operator is directed to Finish instead.
+			view.RetryAvailable = false
+			break
+		}
 		if receipt.NextEligibleAt != nil {
 			eligible := receipt.NextEligibleAt.UTC()
 			view.NextEligibleAt = &eligible
@@ -407,6 +424,10 @@ var ErrInvalidBlackboardConclusionMode = errors.New("Blackboard conclusion mode 
 var ErrInvalidBlackboardConclusionReceipt = errors.New("invalid Blackboard conclusion checkpoint receipt")
 
 var ErrBlackboardConclusionRetryCooldown = errors.New("Blackboard conclusion retry is not yet eligible")
+
+// ErrBlackboardConclusionWorkTurnNeverSettled reports a retry against a
+// non-retryable terminal reached when a provider work turn never yielded.
+var ErrBlackboardConclusionWorkTurnNeverSettled = errors.New("Blackboard conclusion work turn never settled")
 
 // ErrContinuationStatusConflict prevents a late lifecycle observer from
 // overwriting a Continuation that already reached a different terminal state.
@@ -1349,6 +1370,75 @@ func (s *Service) MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(rece
 	return receipt, true, nil
 }
 
+// MarkBlackboardConclusionWorkTurnConflict resolves a conclusion dispatch that a
+// non-yielding provider work turn refused (a single-active-call control
+// conflict). Within the bounded conflict budget it stays operator-retryable so a
+// transient work turn can still settle on a later retry; once the budget is
+// exhausted it becomes the distinct, non-retryable never-settled terminal
+// instead of looping on the recoverable runtime recovery code.
+func (s *Service) MarkBlackboardConclusionWorkTurnConflict(dispatchRequestID string, now time.Time, cooldown time.Duration) (BlackboardConclusionReceipt, bool, error) {
+	dispatchRequestID = strings.TrimSpace(dispatchRequestID)
+	if dispatchRequestID == "" || cooldown < 0 {
+		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
+	}
+	now = now.UTC()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return BlackboardConclusionReceipt{}, false, fmt.Errorf("begin Blackboard conclusion work turn conflict: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	receipt, err := scanBlackboardConclusionReceipt(tx.QueryRow(`SELECT `+blackboardConclusionReceiptColumns+` FROM assisted_conclusion_receipts WHERE dispatch_request_id=?`, dispatchRequestID))
+	if err != nil {
+		return BlackboardConclusionReceipt{}, false, blackboardConclusionLookupError(err)
+	}
+	if receipt.InternalState == BlackboardConclusionReceiptActionRequired {
+		return receipt, false, nil
+	}
+	eligible := receipt.InternalState == BlackboardConclusionReceiptDispatchRequested ||
+		receipt.InternalState == BlackboardConclusionReceiptRepairDispatchRequested ||
+		receipt.InternalState == BlackboardConclusionReceiptVersionRegenerationDispatchRequested
+	if !eligible {
+		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
+	}
+	errorCode := BlackboardConclusionErrorRuntimeRecoveryRequired
+	reason := "work_turn_conflict"
+	if receipt.ExplicitRetryCount >= BlackboardConclusionWorkTurnConflictLimit {
+		errorCode = BlackboardConclusionErrorWorkTurnNeverSettled
+		reason = "work_turn_never_settled"
+	}
+	nextEligible := now.Add(cooldown)
+	if receipt.NextEligibleAt != nil {
+		nextEligible = receipt.NextEligibleAt.UTC()
+	}
+	result, err := tx.Exec(`UPDATE assisted_conclusion_receipts
+		SET state=?,error_code=?,next_eligible_at=?,updated_at=? WHERE id=? AND state=?`,
+		string(BlackboardConclusionReceiptActionRequired), string(errorCode), nextEligible.Format(time.RFC3339Nano),
+		now.Format(time.RFC3339Nano), receipt.ID, string(receipt.InternalState))
+	if err != nil {
+		return BlackboardConclusionReceipt{}, false, fmt.Errorf("record Blackboard conclusion work turn conflict: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil || changed != 1 {
+		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
+	}
+	previousState := receipt.InternalState
+	receipt.InternalState = BlackboardConclusionReceiptActionRequired
+	receipt.ErrorCode = errorCode
+	receipt.NextEligibleAt = &nextEligible
+	receipt.UpdatedAt = now
+	if err := appendBlackboardConclusionEventTx(tx, receipt, EventPayload{
+		"phase": "action_required", "receipt_id": receipt.ID, "request_id": receipt.DispatchRequestID,
+		"error_code": string(errorCode), "next_eligible_at": nextEligible.Format(time.RFC3339Nano),
+		"reason": reason, "explicit_retry_count": receipt.ExplicitRetryCount, "from_state": string(previousState),
+	}, now); err != nil {
+		return BlackboardConclusionReceipt{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return BlackboardConclusionReceipt{}, false, err
+	}
+	return receipt, true, nil
+}
+
 // BlackboardConclusionRecoveryCandidates lists durable pre-apply states for an
 // ownership-aware daemon coordinator. It never mutates receipt state.
 func (s *Service) BlackboardConclusionRecoveryCandidates() ([]BlackboardConclusionReceipt, error) {
@@ -1423,7 +1513,8 @@ func validBlackboardConclusionErrorCode(code BlackboardConclusionErrorCode) bool
 		code == BlackboardConclusionErrorToolUseForbidden ||
 		code == BlackboardConclusionErrorRepairExhausted ||
 		code == BlackboardConclusionErrorVersionConflict ||
-		code == BlackboardConclusionErrorRuntimeRecoveryRequired
+		code == BlackboardConclusionErrorRuntimeRecoveryRequired ||
+		code == BlackboardConclusionErrorWorkTurnNeverSettled
 }
 
 // RetryBlackboardConclusion atomically claims one operator-authorized retry.
@@ -1512,6 +1603,12 @@ func retryBlackboardConclusionTx(tx *sql.Tx, receipt BlackboardConclusionReceipt
 	}
 	if receipt.InternalState != BlackboardConclusionReceiptActionRequired {
 		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
+	}
+	if receipt.ErrorCode == BlackboardConclusionErrorWorkTurnNeverSettled {
+		// A never-settled work turn is a non-retryable terminal. Refuse the retry
+		// rather than re-dispatching a control turn that the provider will reject
+		// again while the work turn holds the only active call.
+		return BlackboardConclusionReceipt{}, false, ErrBlackboardConclusionWorkTurnNeverSettled
 	}
 	if receipt.NextEligibleAt == nil || now.Before(*receipt.NextEligibleAt) {
 		return BlackboardConclusionReceipt{}, false, ErrBlackboardConclusionRetryCooldown

@@ -765,6 +765,18 @@ func (server *Server) sendBlackboardConclusionTurn(ctx context.Context, receipt 
 		TurnKind:                 runtime.RuntimeTurnKindControl,
 	}, nil)
 	if err != nil {
+		if errors.Is(err, runtime.ErrProviderSessionControlConflict) {
+			// A non-yielding work turn holds the single active call, so the
+			// control turn cannot be delivered right now. Record the bounded
+			// conflict here (staying operator-retryable until the budget is
+			// exhausted, then becoming the non-retryable never-settled terminal)
+			// and report success so the generic recovery callers do not re-mark
+			// this as the recoverable runtime-recovery code.
+			if _, _, markErr := server.tasks.MarkBlackboardConclusionWorkTurnConflict(receipt.DispatchRequestID, time.Now().UTC(), blackboardConclusionRetryCooldown); markErr != nil {
+				return markErr
+			}
+			return nil
+		}
 		return err
 	}
 	if result.RequestID != receipt.DispatchRequestID || result.SessionID != receipt.SourceSessionID || strings.TrimSpace(result.ProviderTurnID) == "" {
