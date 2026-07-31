@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { BookOpen, Rocket, AlertTriangle, CheckCircle2, XCircle, ChevronRight } from "lucide-react";
+import { BookOpen, Rocket, AlertTriangle, CheckCircle2, XCircle, ChevronRight, Paperclip, UploadCloud, X } from "lucide-react";
 import {
   apiGet,
   apiPost,
+  apiPostForm,
   type ModelProvider,
   type PreflightResult,
   type Project,
@@ -38,6 +39,17 @@ import {
   launchSkillsPreviewDetail,
 } from "@/pages/taskLaunchSkills";
 
+// Attachment limits mirror the daemon's create-task ceilings (ADR 0019).
+const MAX_ATTACHMENT_COUNT = 25;
+const MAX_ATTACHMENT_MB = 100;
+const MAX_ATTACHMENT_BYTES = MAX_ATTACHMENT_MB * 1024 * 1024;
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export function TaskLaunchPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
@@ -64,6 +76,34 @@ export function TaskLaunchPage() {
   const [skillsPreview, setSkillsPreview] = useState<Skill[] | null>(null);
   const [skillsPreviewLoading, setSkillsPreviewLoading] = useState(false);
   const [skillsPreviewError, setSkillsPreviewError] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<File[]>([]);
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  function addFiles(incoming: FileList | File[]) {
+    setError(null);
+    setAttachments((current) => {
+      const next = [...current];
+      for (const file of Array.from(incoming)) {
+        if (file.size > MAX_ATTACHMENT_BYTES) {
+          setError(`${file.name} exceeds the ${MAX_ATTACHMENT_MB} MB limit`);
+          continue;
+        }
+        if (next.length >= MAX_ATTACHMENT_COUNT) {
+          setError(`At most ${MAX_ATTACHMENT_COUNT} attachments per task`);
+          break;
+        }
+        // Ignore an identical re-pick of a file already staged.
+        if (next.some((staged) => staged.name === file.name && staged.size === file.size)) continue;
+        next.push(file);
+      }
+      return next;
+    });
+  }
+
+  function removeFile(index: number) {
+    setAttachments((current) => current.filter((_, position) => position !== index));
+  }
 
   const presetMode = presetId.trim() !== "";
   const matchingLaunchProfile = useMemo(
@@ -252,14 +292,25 @@ export function TaskLaunchPage() {
         setError("preflight failed");
         return;
       }
-      const created = await apiPost<{ id: string }>(`/api/projects/${projectId}/tasks`, {
+      const payload = {
         goal,
         runtime_profile_id: profileId,
         runner: form.runner,
         run_controls: runControls,
         ...launchOverride,
         ...reasoningOverride,
-      });
+      };
+      let created: { id: string };
+      if (attachments.length > 0) {
+        // Multipart: attachments ride alongside the JSON `payload` field so the
+        // daemon can project them into the task workdir (ADR 0019).
+        const body = new FormData();
+        body.append("payload", JSON.stringify(payload));
+        for (const file of attachments) body.append("attachments", file);
+        created = await apiPostForm<{ id: string }>(`/api/projects/${projectId}/tasks`, body);
+      } else {
+        created = await apiPost<{ id: string }>(`/api/projects/${projectId}/tasks`, payload);
+      }
       navigate(`/projects/${projectId}/tasks/${created.id}`);
     } catch (e) {
       setError((e as Error).message);
@@ -300,6 +351,78 @@ export function TaskLaunchPage() {
             placeholder="Enumerate example.com and assess exposure…"
             autoComplete="off"
           />
+        </div>
+        <div>
+          <Label htmlFor="attachments">Attachments</Label>
+          <div
+            data-testid="attachment-dropzone"
+            role="button"
+            tabIndex={0}
+            onClick={() => fileInputRef.current?.click()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                fileInputRef.current?.click();
+              }
+            }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragOver(true);
+            }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragOver(false);
+              if (e.dataTransfer.files.length > 0) addFiles(e.dataTransfer.files);
+            }}
+            className={`mt-1 flex cursor-pointer flex-col items-center justify-center gap-1 rounded-lg border border-dashed p-4 text-sm transition-colors ${
+              dragOver ? "border-primary bg-primary/10" : "border-border bg-background/50"
+            }`}
+          >
+            <UploadCloud className="h-5 w-5 text-muted-foreground" />
+            <span className="text-muted-foreground">
+              Drag &amp; drop files here, or click to browse
+            </span>
+            <span className="text-xs text-muted-foreground">
+              Up to {MAX_ATTACHMENT_COUNT} files, {MAX_ATTACHMENT_MB} MB each. Projected into the task workdir.
+            </span>
+            <input
+              ref={fileInputRef}
+              id="attachments"
+              type="file"
+              name="attachments"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files && e.target.files.length > 0) addFiles(e.target.files);
+                e.target.value = "";
+              }}
+            />
+          </div>
+          {attachments.length > 0 && (
+            <ul className="mt-2 space-y-1">
+              {attachments.map((file, index) => (
+                <li
+                  key={`${file.name}-${file.size}`}
+                  className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/50 px-2 py-1 text-sm"
+                >
+                  <span className="flex min-w-0 items-center gap-2">
+                    <Paperclip className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <span className="truncate">{file.name}</span>
+                    <span className="shrink-0 text-xs text-muted-foreground">{formatBytes(file.size)}</span>
+                  </span>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${file.name}`}
+                    onClick={() => removeFile(index)}
+                    className="shrink-0 text-muted-foreground hover:text-destructive"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div>

@@ -1070,20 +1070,41 @@ function BlackboardConclusionRecovery({
 
 function TranscriptList({ entries, endRef }: { entries: TaskTranscriptEntry[]; endRef: RefObject<HTMLDivElement | null> }) {
   return (
-    <div className="space-y-5">
-      {entries.map((entry) => (
-        <div
-          key={entry.id}
-          data-testid="transcript-row"
-          className="[contain-intrinsic-size:72px] [content-visibility:auto]"
-        >
-          <TranscriptRow entry={entry} />
-        </div>
-      ))}
+    <div>
+      {entries.map((entry, index) => {
+        const previous = index > 0 ? entries[index - 1] : undefined;
+        // Consecutive tool rows read as a single dense activity log, so they sit
+        // tight together; messages keep their generous breathing room.
+        const tight =
+          previous !== undefined &&
+          entryRenderKind(entry) === "compact" &&
+          entryRenderKind(previous) === "compact";
+        const spacing = index === 0 ? "" : tight ? "mt-1" : "mt-5";
+        return (
+          <div
+            key={entry.id}
+            data-testid="transcript-row"
+            className={`[contain-intrinsic-size:72px] [content-visibility:auto] ${spacing}`}
+          >
+            <TranscriptRow entry={entry} />
+          </div>
+        );
+      })}
       {entries.length === 0 && <p className="text-sm text-muted-foreground">No transcript yet.</p>}
       <div ref={endRef} />
     </div>
   );
+}
+
+// entryRenderKind classifies how a transcript entry renders so TranscriptList
+// can pick spacing: dense "compact" tool rows vs roomy "message" bubbles.
+function entryRenderKind(entry: TaskTranscriptEntry): "continuation" | "compact" | "message" {
+  if (entry.kind === "continuation") return "continuation";
+  const projected = projectRuntimeOutput(entry);
+  if (projected) {
+    return projected.every(isCollapsedTranscriptEntry) ? "compact" : "message";
+  }
+  return isCollapsedTranscriptEntry(entry) ? "compact" : "message";
 }
 
 function TranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {

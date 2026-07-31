@@ -1467,4 +1467,88 @@ describe("TaskLaunchPage", () => {
     expect(screen.getByRole("button", { name: /Launch/i })).toBeDisabled();
     expect(screen.getByText(/Select a compatible model provider/i)).toBeInTheDocument();
   });
+
+  it("uploads attachments as multipart form-data on launch", async () => {
+    let createBody: unknown = null;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.includes("/api/runtime-plugins")) {
+        return Promise.resolve(new Response(JSON.stringify({ plugins: [codexPlugin] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }));
+      }
+      if (url.includes("/api/model-providers")) {
+        return Promise.resolve(new Response(JSON.stringify({ providers: [mimoProvider] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }));
+      }
+      if (url.includes("/api/runtime-profiles/resolve-launch") && method === "POST") {
+        return Promise.resolve(new Response(JSON.stringify({
+          profile_id: "resolved-profile",
+          created: true,
+          profile: autoResolvedProfile,
+        }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.includes("/api/runtime-profiles")) {
+        return Promise.resolve(new Response(JSON.stringify({ profiles: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }));
+      }
+      if (url.includes("/api/skills?")) {
+        return Promise.resolve(new Response(JSON.stringify({ skills: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }));
+      }
+      if (url.includes("/api/projects/project-1/preflight") && method === "POST") {
+        return Promise.resolve(new Response(JSON.stringify({ pass: true, checks: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }));
+      }
+      if (url.includes("/api/projects/project-1/tasks") && method === "POST") {
+        createBody = init?.body;
+        return Promise.resolve(new Response(JSON.stringify({ id: "task-1" }), {
+          status: 201,
+          headers: { "Content-Type": "application/json" },
+        }));
+      }
+      if (url.includes("/api/projects/project-1")) {
+        return Promise.resolve(new Response(JSON.stringify({
+          id: "project-1",
+          name: "Acme",
+          description: "",
+          scope: {},
+          defaults: { runner: "sandbox" },
+          created_at: "",
+          updated_at: "",
+        }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+
+    await userEvent.type(await screen.findByLabelText("Task goal"), "Run recon");
+    const file = new File(["secret-notes"], "notes.txt", { type: "text/plain" });
+    await userEvent.upload(screen.getByLabelText("Attachments"), file);
+    expect(screen.getByText("notes.txt")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /launch/i }));
+
+    await waitFor(() => expect(createBody).toBeInstanceOf(FormData));
+    const form = createBody as FormData;
+    const payload = JSON.parse(String(form.get("payload"))) as { goal?: string };
+    expect(payload.goal).toBe("Run recon");
+    const uploaded = form.get("attachments") as File;
+    expect(uploaded.name).toBe("notes.txt");
+  });
 });

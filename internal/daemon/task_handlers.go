@@ -76,17 +76,12 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		return
 	}
 
-	var input struct {
-		Goal             string            `json:"goal"`
-		RuntimeProfileID string            `json:"runtime_profile_id"`
-		ModelOverride    string            `json:"model_override,omitempty"`
-		ReasoningEffort  string            `json:"reasoning_effort,omitempty"`
-		Runner           task.Runner       `json:"runner"`
-		RunControls      task.RunControls  `json:"run_controls"`
-		Extras           map[string]string `json:"extras"`
+	if strings.HasPrefix(request.Header.Get("Content-Type"), "multipart/form-data") {
+		request.Body = http.MaxBytesReader(response, request.Body, maxTotalUploadBytes)
 	}
-	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
-		writeError(response, http.StatusBadRequest, "invalid JSON body")
+	input, attachments, err := parseCreateTaskRequest(request)
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err.Error())
 		return
 	}
 	if input.RunControls.Extras == nil && input.Extras != nil {
@@ -156,15 +151,36 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		return
 	}
 
-	plan, err := server.buildTaskLaunchPlan(created, created.Goal, launchModelOverride, "", launchReasoningEffort)
+	// The stored Task goal stays exactly as typed; only the launch goal handed
+	// to the runtime carries the appended attachment paths.
+	launchGoal, resolvedAttachments, err := launchGoalWithAttachments(created.Goal, created.Runner, server.runtimeRoot, created.ID, attachments)
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	plan, err := server.buildTaskLaunchPlan(created, launchGoal, launchModelOverride, "", launchReasoningEffort)
 	if err != nil {
 		writeTaskAdapterError(response, err)
 		return
 	}
 
+	// Attachments project into the workdir created by buildTaskLaunchPlan, before
+	// the background launch reads the goal that references them.
+	if len(resolvedAttachments) > 0 {
+		if plan.ValidatedLayout == nil {
+			writeTaskLaunchError(response, fmt.Errorf("task layout unavailable for attachments"))
+			return
+		}
+		if err := writeTaskAttachments(plan.ValidatedLayout.Workdir, resolvedAttachments); err != nil {
+			writeTaskLaunchError(response, err)
+			return
+		}
+	}
+
 	server.recordLoopbackRewriteEvent(created)
 
-	if err := server.launchTaskInBackground(created, plan, created.Goal); err != nil {
+	if err := server.launchTaskInBackground(created, plan, launchGoal); err != nil {
 		writeTaskLaunchError(response, err)
 		return
 	}
