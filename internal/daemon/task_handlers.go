@@ -3157,6 +3157,17 @@ func (server *Server) advanceNativeSteerContinuation(currentID string, session r
 			return fmt.Errorf("rebind runtime continuation: %w", err)
 		}
 	}
+	// Carry the Blackboard grant and Working Snapshot ownership to the
+	// replacement before the old Continuation is completed. The in-container MCP
+	// token is immutable, so this rebind keeps the still-running agent's
+	// Blackboard writes alive on the replacement instead of resolving to the
+	// completed old Continuation (closed_continuation).
+	if server.blackboardV2Continuity != nil {
+		if err := server.blackboardV2Continuity.RebindContinuationForNativeSteer(context.Background(), old.ID, next.ID); err != nil {
+			_, _ = server.tasks.UpdateContinuationStatus(next.ID, task.StatusFailed)
+			return fmt.Errorf("rebind Blackboard continuation grant: %w", err)
+		}
+	}
 	if _, err := server.tasks.UpdateContinuationStatus(old.ID, task.StatusCompleted); err != nil {
 		_, _ = server.tasks.UpdateContinuationStatus(next.ID, task.StatusFailed)
 		return fmt.Errorf("settle old continuation: %w", err)

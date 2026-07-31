@@ -879,6 +879,65 @@ func (s *ContinuityService) CreateContinuation(ctx context.Context, req Continua
 	}, nil
 }
 
+// RebindContinuationForNativeSteer carries the Blackboard Continuation grant
+// and Working Snapshot ownership across an interrupt_then_replace native steer.
+// The in-container MCP capability token is minted once at launch and is
+// immutable, so the replacement Continuation cannot receive a freshly minted
+// grant; instead the still-open grant is rebound from the old Continuation to
+// the replacement, and the immutable Launch Pin plus last-acknowledged Working
+// Snapshot are carried so the replacement satisfies AuthorizeContinuationBinding
+// and continuationOwnsCurrentWorkingPath. It runs in one transaction and must be
+// invoked before the old Continuation is marked terminal, otherwise
+// MarkContinuationTerminal would strand the grant on the completed Continuation.
+func (s *ContinuityService) RebindContinuationForNativeSteer(ctx context.Context, oldContinuationID, nextContinuationID string) error {
+	if strings.TrimSpace(oldContinuationID) == "" || strings.TrimSpace(nextContinuationID) == "" {
+		return fmt.Errorf("native steer Blackboard rebind requires both Continuation identities")
+	}
+	if oldContinuationID == nextContinuationID {
+		return fmt.Errorf("native steer Blackboard rebind requires distinct Continuations")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin native steer Blackboard rebind: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	// Carry the immutable Launch Pin so the replacement owns a pinned Snapshot.
+	if _, err := tx.ExecContext(ctx, `
+		INSERT OR IGNORE INTO blackboard_v2_continuation_pins
+		(continuation_id,snapshot_schema,snapshot_revision,snapshot_bytes,integrity_sha256,created_at)
+		SELECT ?,snapshot_schema,snapshot_revision,snapshot_bytes,integrity_sha256,?
+		FROM blackboard_v2_continuation_pins WHERE continuation_id=?`,
+		nextContinuationID, now, oldContinuationID,
+	); err != nil {
+		return fmt.Errorf("carry Launch Blackboard Pin to replacement Continuation: %w", err)
+	}
+	// Carry the last-acknowledged Working Snapshot so reads and writes resolve.
+	if _, err := tx.ExecContext(ctx, `
+		INSERT OR IGNORE INTO blackboard_v2_continuation_state
+		(continuation_id,last_acknowledged_revision,working_snapshot_bytes,updated_at)
+		SELECT ?,last_acknowledged_revision,working_snapshot_bytes,?
+		FROM blackboard_v2_continuation_state WHERE continuation_id=?`,
+		nextContinuationID, now, oldContinuationID,
+	); err != nil {
+		return fmt.Errorf("carry Working Blackboard Snapshot to replacement Continuation: %w", err)
+	}
+	// Rebind the still-open grant from the old Continuation to the replacement,
+	// clearing any terminal timestamp and re-deriving the bound actor identity.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE blackboard_continuation_grants
+		   SET continuation_id=?, actor_id='runtime:' || runtime_plugin_id || ':' || ?, terminal_at=''
+		 WHERE continuation_id=? AND finished_at='' AND revoked_at=''`,
+		nextContinuationID, nextContinuationID, oldContinuationID,
+	); err != nil {
+		return fmt.Errorf("rebind Continuation Interface grant to replacement: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit native steer Blackboard rebind: %w", err)
+	}
+	return nil
+}
+
 func (s *ContinuityService) ReadLaunchPin(ctx context.Context, continuationID string) (LaunchPin, error) {
 	var schema string
 	var revision int

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"pentest/internal/blackboardv2"
 	"pentest/internal/modelprovider"
 	"pentest/internal/project"
 	"pentest/internal/runtime"
@@ -931,5 +932,124 @@ func TestServerCloseDrainsInFlightProviderSteerBeforeClosingDatabase(t *testing.
 	}
 	if _, err := session.SendTurn(context.Background(), runtime.ProviderSessionRequest{RequestID: "after-close", Message: "must fail"}, nil); !errors.Is(err, runtime.ErrProviderSessionClosed) {
 		t.Fatalf("session after close error = %v, want closed", err)
+	}
+}
+
+// TestNativeSteerReplacementCarriesBlackboardGrant proves an
+// interrupt_then_replace native steer keeps the in-container MCP capability
+// token writable: the still-open grant is rebound from the completed old
+// Continuation to the running replacement, so a Blackboard change sent with the
+// ORIGINAL token lands on the replacement instead of failing closed_continuation.
+func TestNativeSteerReplacementCarriesBlackboardGrant(t *testing.T) {
+	root := t.TempDir()
+	server, err := NewServer(Config{
+		Version: "test", DBPath: filepath.Join(root, "pentest.db"),
+		RuntimeRoot: filepath.Join(root, "runs"), DisableBuiltinSkills: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	if server.blackboardV2Continuity == nil || server.projectInterfaceGrants == nil {
+		t.Fatal("blackboard v2 grant surface is not wired")
+	}
+
+	createdProject, err := server.projects.Create("Project", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := createTestRuntimeProfile(t, server)
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatal(err)
+	}
+	launch, err := server.blackboardV2Continuity.CreateContinuation(context.Background(), blackboardv2.ContinuationLaunchRequest{
+		ProjectID: createdProject.ID, TaskID: created.ID, RuntimeProfileID: profile.ID,
+		RuntimeProvider: string(runtimeprofile.ProviderCodex), Runner: task.RunnerSandbox,
+		RuntimeConfig: map[string]any{"provider": "codex", "model": "gpt-test"},
+	})
+	if err != nil {
+		t.Fatalf("launch Continuation: %v", err)
+	}
+	if strings.TrimSpace(launch.Token) == "" {
+		t.Fatal("Continuation launch omitted opaque capability token")
+	}
+	if _, err := server.tasks.UpdateStatus(created.ID, task.StatusRunning); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.tasks.UpdateContinuationStatus(launch.Continuation.ID, task.StatusRunning); err != nil {
+		t.Fatal(err)
+	}
+
+	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "session-1", ActiveTurnID: "turn-1",
+		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptThenReplace: true},
+	})
+	if err := server.BindProviderSession(created.ID, session); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/projects/"+createdProject.ID+"/tasks/"+created.ID+"/steer", bytes.NewBufferString(`{"request_id":"req-1","message":"focus on admin"}`))
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("steer status = %d, body=%s", response.Code, response.Body.String())
+	}
+	waitForTaskEvent(t, server, created.ID, func(events []task.Event) bool {
+		for _, event := range events {
+			if event.Kind == task.EventKindSteering && event.Payload["outcome"] == "started" {
+				return true
+			}
+		}
+		return false
+	})
+
+	replacement, err := server.tasks.ActiveContinuation(created.ID)
+	if err != nil || replacement == nil {
+		t.Fatalf("replacement Continuation = %#v, err=%v", replacement, err)
+	}
+	if replacement.ID == launch.Continuation.ID {
+		t.Fatalf("expected a fresh replacement Continuation, got the original %q", replacement.ID)
+	}
+
+	grant, err := server.projectInterfaceGrants.Resolve(context.Background(), launch.Token)
+	if err != nil {
+		t.Fatalf("resolve original grant after steer: %v", err)
+	}
+	if grant.ContinuationID != replacement.ID {
+		t.Fatalf("original grant Continuation = %q, want replacement %q", grant.ContinuationID, replacement.ID)
+	}
+
+	httpServer := httptest.NewServer(server)
+	t.Cleanup(httpServer.Close)
+	base := httpServer.URL + "/api/v2/projects/" + createdProject.ID
+	workBody := `{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"objective:steer","type":"objective","record":{"status":"open","objective":"post-steer proof"}}]}`
+	writeResult := doV2HTTP(t, http.MethodPost, base+"/blackboard/changes", launch.Token, "", "post-steer-write", workBody)
+	if writeResult.status < 200 || writeResult.status >= 300 {
+		t.Fatalf("post-steer Blackboard write with original token = %d %s", writeResult.status, writeResult.body)
+	}
+	if bytes.Contains(writeResult.body, []byte(`"closed_continuation"`)) {
+		t.Fatalf("post-steer write returned closed_continuation: %s", writeResult.body)
+	}
+	if !bytes.Contains(writeResult.body, []byte(`"schema":"semantic-change-result/v2"`)) {
+		t.Fatalf("post-steer write result = %s", writeResult.body)
+	}
+
+	// Reads and history with the original token also resolve to the replacement.
+	readResult := doV2HTTP(t, http.MethodGet, base+"/blackboard/records/objective:steer", launch.Token, "", "", "")
+	if readResult.status != http.StatusOK || !bytes.Contains(readResult.body, []byte(`"key":"objective:steer"`)) {
+		t.Fatalf("post-steer read = %d %s", readResult.status, readResult.body)
+	}
+	historyResult := doV2HTTP(t, http.MethodGet, base+"/blackboard/records/objective:steer/history?limit=1", launch.Token, "", "", "")
+	if historyResult.status != http.StatusOK || !bytes.Contains(historyResult.body, []byte(`"schema":"semantic-history/v2"`)) {
+		t.Fatalf("post-steer history = %d %s", historyResult.status, historyResult.body)
+	}
+
+	oldAfter, err := server.tasks.Continuation(launch.Continuation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oldAfter.Status != task.StatusCompleted {
+		t.Fatalf("old Continuation status = %q, want completed", oldAfter.Status)
 	}
 }
