@@ -1,5 +1,8 @@
 @CONTEXT.md
+
 Use TDD
+
+Update `CONTEXT.md` when the user explicitly resolves a domain ambiguity.
 
 ## Agent skills
 
