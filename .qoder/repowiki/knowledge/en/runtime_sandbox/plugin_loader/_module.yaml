@@ -1,8 +1,0 @@
-schema_version: 1
-module_path: runtime_sandbox/plugin_loader
-title: plugin_loader
-scope:
-    - internal/runtimeplugin/
-source_files: []
-depends_on: []
-related_to: []

@@ -1,1 +1,0 @@
-Encodes the canonical JSON projection of a project's semantic state and merges duplicate Project Knowledge records by redirecting source keys to a canonical target.

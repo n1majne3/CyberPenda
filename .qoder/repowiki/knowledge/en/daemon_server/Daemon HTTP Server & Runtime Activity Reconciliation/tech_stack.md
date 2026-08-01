@@ -1,1 +1,0 @@
-Standard-library `net/http` with Go 1.22+ path parameters (`mux.HandleFunc("GET /api/projects/{id}", ...)`); authentication uses `crypto/subtle.ConstantTimeCompare` against a configurable token accepted as `Authorization: Bearer` header or `?token=` query param; Docker sandbox management delegated to `internal/runtime`.

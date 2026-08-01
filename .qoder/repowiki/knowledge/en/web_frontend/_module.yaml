@@ -1,8 +1,0 @@
-schema_version: 1
-module_path: web_frontend
-title: web_frontend
-scope:
-    - web/
-source_files: []
-depends_on: []
-related_to: []

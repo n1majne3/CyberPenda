@@ -1,1 +1,0 @@
-Implements the terminal Finish operation that closes a Blackboard v2 Continuation, exposes interrupted-attempt checkpoint summaries for resume, and derives read-only semantic health diagnostics over a Project's current snapshot.

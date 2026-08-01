@@ -1,1 +1,0 @@
-HTTP handlers for the daemon's skill registry (CRUD, import, profile opt-out) and the Blackboard v2 API with Continuation-based authentication, idempotency, and synchronization.

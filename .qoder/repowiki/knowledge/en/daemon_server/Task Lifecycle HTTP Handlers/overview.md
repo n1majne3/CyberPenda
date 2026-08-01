@@ -1,1 +1,0 @@
-HTTP handlers and launch orchestration for the daemon's task lifecycle — creation, steering, resumption, provider-session bridging, and Blackboard v2 continuation.

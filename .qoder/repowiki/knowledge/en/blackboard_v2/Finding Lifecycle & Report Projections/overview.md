@@ -1,1 +1,0 @@
-Implements the Finding record lifecycle (create/patch/transition/supersede with CVSS scoring and support validation) and deterministic Pentest/CTF report projections consumed by Markdown generators.

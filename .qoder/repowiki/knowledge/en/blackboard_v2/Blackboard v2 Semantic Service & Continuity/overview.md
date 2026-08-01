@@ -1,1 +1,0 @@
-Durable semantic store and trusted Continuation lifecycle for Blackboard v2, applying idempotent change batches and synchronizing runtime Working Snapshots to disk.

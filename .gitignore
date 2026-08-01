@@ -28,3 +28,4 @@ __pycache__/
 pentest 2.db-shm
 pentest 2.db-wal
 .playwright-cli/
+.qoder/repowiki

@@ -1,1 +1,0 @@
-Model Context Protocol via `github.com/modelcontextprotocol/go-sdk/mcp` with Streamable HTTP transport (stateless, JSON responses); input schemas validated against frozen definitions from `internal/blackboardv2contract` using `google/jsonschema-go/jsonschema`.
