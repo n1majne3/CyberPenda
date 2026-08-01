@@ -136,6 +136,8 @@ export interface Project {
   name: string;
   description: string;
   kind?: ProjectKind;
+  /** Optional compact activity projection used by the work tree when available. */
+  last_activity_at?: string;
   scope: Scope;
   defaults: ProjectDefaults;
   created_at: string;
@@ -148,6 +150,8 @@ export interface Session {
   id: string;
   title: string;
   lifecycle: SessionLifecycle;
+  /** Runtime Activity is optional until Session Runtime integration projects it. */
+  runtime_activity?: RuntimeActivity;
   created_at: string;
   updated_at: string;
   last_activity_at: string;

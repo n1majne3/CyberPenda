@@ -5,9 +5,9 @@ import { describe, expect, it } from "vitest";
 import { mockApi } from "@/test/mockApi";
 import { SessionHomePage } from "./SessionHomePage";
 
-function renderPage() {
+function renderPage(initialEntries = ["/sessions"]) {
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={initialEntries}>
       <SessionHomePage />
     </MemoryRouter>,
   );
@@ -78,5 +78,16 @@ describe("SessionHomePage", () => {
         expect.objectContaining({ method: "POST", body: JSON.stringify({ input: "Check the exposed service" }) }),
       );
     });
+  });
+
+  it("focuses the creation form when opened from the New session sidebar route", async () => {
+    mockApi({
+      "/api/sessions?lifecycle=archived": { sessions: [] },
+      "/api/sessions": { sessions: [] },
+    });
+
+    renderPage(["/sessions#new-session"]);
+
+    expect(await screen.findByRole("textbox", { name: /initial input/i })).toHaveFocus();
   });
 });

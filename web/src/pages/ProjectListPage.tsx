@@ -1,16 +1,25 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { AlertTriangle, CheckCircle2, FileText, FolderOpen, Globe, Plus, Server, ShieldAlert } from "lucide-react";
 import { apiGet, apiPost, type Project } from "@/lib/api";
 import { Badge, Button, Card, CardDescription, CardTitle, Input, Label } from "@/components/ui";
 import { PageContainer } from "@/components/shared";
 
 export function ProjectListPage() {
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const [projects, setProjects] = useState<Project[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
+  const createRequested = searchParams.get("new") === "1";
+  const showCreateForm = creating || createRequested;
+
+  function dismissCreateForm() {
+    setCreating(false);
+    if (createRequested) navigate("/", { replace: true });
+  }
 
   async function load() {
     setLoading(true);
@@ -38,7 +47,7 @@ export function ProjectListPage() {
     try {
       await apiPost<Project>("/api/projects", { name, scope: {} });
       setName("");
-      setCreating(false);
+      dismissCreateForm();
       load();
     } catch (e) {
       setError((e as Error).message);
@@ -57,13 +66,13 @@ export function ProjectListPage() {
             Bounded security-testing engagements, each with its own scope, tasks, and memory.
           </p>
         </div>
-        <Button onClick={() => setCreating((v) => !v)}>
+        <Button onClick={() => (showCreateForm ? dismissCreateForm() : setCreating(true))}>
           <Plus className="h-4 w-4" /> New project
         </Button>
       </div>
 
-      {creating && (
-        <Card className="grid gap-3 sm:grid-cols-[1fr_auto_auto] sm:items-end">
+      {showCreateForm && (
+        <Card id="new-project" className="grid gap-3 sm:grid-cols-[1fr_auto_auto] sm:items-end">
           <div className="flex-1">
             <Label htmlFor="proj-name">Project name</Label>
             <Input
@@ -79,7 +88,7 @@ export function ProjectListPage() {
           <Button size="sm" onClick={create} disabled={!name.trim()}>
             Create
           </Button>
-          <Button size="sm" variant="ghost" onClick={() => setCreating(false)}>
+          <Button size="sm" variant="ghost" onClick={dismissCreateForm}>
             Cancel
           </Button>
         </Card>
@@ -109,7 +118,7 @@ export function ProjectListPage() {
         </Card>
       )}
 
-      {projects.length === 0 && !error && !creating && !loading && (
+      {projects.length === 0 && !error && !showCreateForm && !loading && (
         <Card
           role="status"
           aria-label="No projects"

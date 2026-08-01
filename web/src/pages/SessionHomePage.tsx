@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { Archive, ArchiveRestore, FilePlus2, MessageSquareText, Pencil, Plus, Trash2 } from "lucide-react";
 import {
   archiveSession,
@@ -15,6 +15,7 @@ import { PageContainer, SettingsAlert } from "@/components/shared";
 import { Badge, Button, Card, CardDescription, CardTitle, Input, Label, Textarea } from "@/components/ui";
 
 export function SessionHomePage() {
+  const { hash } = useLocation();
   const [openSessions, setOpenSessions] = useState<Session[]>([]);
   const [archivedSessions, setArchivedSessions] = useState<Session[]>([]);
   const [draft, setDraft] = useState("");
@@ -47,6 +48,13 @@ export function SessionHomePage() {
     loadSessions();
   }, []);
   /* eslint-enable react-hooks/set-state-in-effect */
+
+  useEffect(() => {
+    if (hash !== "#new-session") return;
+    const creationSurface = document.getElementById("new-session");
+    creationSurface?.scrollIntoView?.({ block: "start" });
+    document.getElementById("session-initial-input")?.focus();
+  }, [hash]);
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -131,7 +139,7 @@ export function SessionHomePage() {
         </p>
       </div>
 
-      <Card as="section" aria-labelledby="new-session-heading" className="gap-5">
+      <Card as="section" id="new-session" aria-labelledby="new-session-heading" className="gap-5">
         <div>
           <CardTitle id="new-session-heading" className="flex items-center gap-2">
             <Plus className="size-4 text-signal" aria-hidden="true" />

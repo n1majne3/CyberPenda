@@ -1,18 +1,7 @@
-import { NavLink, Outlet, useLocation, useRouteError } from "react-router-dom";
+import { Outlet, useRouteError } from "react-router-dom";
 import { createBrowserRouter, RouterProvider } from "react-router-dom";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import {
-  ShieldAlert,
-  FolderKanban,
-  Cpu,
-  KeyRound,
-  BookOpen,
-  Network,
-  ChevronRight,
-  Menu,
-  X,
-  MessageSquareText,
-} from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ShieldAlert, Menu, X } from "lucide-react";
 import { ProjectListPage } from "@/pages/ProjectListPage";
 import { ProjectDashboardPage } from "@/pages/ProjectDashboardPage";
 import { ScopeEditorPage } from "@/pages/ScopeEditorPage";
@@ -32,7 +21,7 @@ import { TasksPage } from "@/pages/TasksPage";
 import { SessionHomePage } from "@/pages/SessionHomePage";
 import { SessionDetailPage } from "@/pages/SessionDetailPage";
 import { Logo } from "@/components/Logo";
-import { ThemeToggle } from "@/components/ThemeProvider";
+import { WorkspaceSidebar } from "@/components/WorkspaceSidebar";
 import { cn } from "@/lib/utils";
 
 export function ShellErrorBoundary() {
@@ -72,12 +61,10 @@ function useIsDesktopMd() {
 }
 
 export function ShellLayout() {
-  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const isDesktop = useIsDesktopMd();
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
-  const advancedState = advancedOpen ? "open" : "closed";
   // On mobile, a closed off-canvas drawer must leave the a11y tree; desktop is always open.
   const sidebarAvailable = isDesktop || mobileNavOpen;
 
@@ -168,7 +155,7 @@ export function ShellLayout() {
           aria-hidden={sidebarAvailable ? undefined : true}
           inert={sidebarAvailable ? undefined : true}
           className={cn(
-            "flex w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground shadow-sm",
+            "flex w-72 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground shadow-sm",
             // Off-canvas below md: out of document flow so main uses full viewport width.
             "fixed inset-y-0 left-0 z-50 transition-transform duration-200 ease-geist md:static md:z-auto md:translate-x-0",
             mobileNavOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0",
@@ -178,79 +165,7 @@ export function ShellLayout() {
             <Logo className="h-5 w-5" spin />
             <h1 className="text-sm font-semibold">CyberPenda</h1>
           </div>
-          <nav aria-label="Primary routes" className="flex-1 space-y-5 overflow-y-auto p-3">
-            <NavSection label="Workspace">
-              <SideLink
-                to="/"
-                icon={<FolderKanban className="size-4" />}
-                onNavigate={() => closeMobileNav({ restoreFocus: false })}
-              >
-                Projects
-              </SideLink>
-              <SideLink
-                to="/sessions"
-                icon={<MessageSquareText className="size-4" />}
-                onNavigate={() => closeMobileNav({ restoreFocus: false })}
-              >
-                Sessions
-              </SideLink>
-            </NavSection>
-            <NavSection label="Settings">
-              <SideLink
-                to="/model-providers"
-                icon={<Network className="size-4" />}
-                onNavigate={() => closeMobileNav({ restoreFocus: false })}
-              >
-                Model providers
-              </SideLink>
-              <SideLink
-                to="/credentials"
-                icon={<KeyRound className="size-4" />}
-                onNavigate={() => closeMobileNav({ restoreFocus: false })}
-              >
-                Credentials
-              </SideLink>
-              <SideLink
-                to="/skills"
-                icon={<BookOpen className="size-4" />}
-                onNavigate={() => closeMobileNav({ restoreFocus: false })}
-              >
-                Skills
-              </SideLink>
-            </NavSection>
-            <div>
-              <button
-                type="button"
-                aria-label={advancedOpen ? "Hide advanced routes" : "Show advanced routes"}
-                aria-controls="advanced-routes"
-                aria-expanded={advancedOpen}
-                data-state={advancedState}
-                onClick={() => setAdvancedOpen((open) => !open)}
-                className="mb-1 flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-xs font-medium text-muted-foreground transition-colors hover:border-sidebar-border hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar data-[state=open]:border-sidebar-border data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
-              >
-                <ChevronRight
-                  aria-hidden="true"
-                  className={`size-3 transition-transform ${advancedOpen ? "rotate-90" : ""}`}
-                />
-                Advanced
-              </button>
-              {advancedOpen && (
-                <div id="advanced-routes" className="space-y-1">
-                  <SideLink
-                    to="/profiles"
-                    icon={<Cpu className="size-4" />}
-                    onNavigate={() => closeMobileNav({ restoreFocus: false })}
-                  >
-                    Runtime profiles
-                  </SideLink>
-                </div>
-              )}
-            </div>
-          </nav>
-          <div className="flex items-center justify-between border-t border-sidebar-border px-3 py-2">
-            <span className="px-1 text-xs text-muted-foreground">Theme</span>
-            <ThemeToggle />
-          </div>
+          <WorkspaceSidebar onNavigate={() => closeMobileNav({ restoreFocus: false })} />
         </aside>
         <main
           id="main-content"
@@ -261,66 +176,6 @@ export function ShellLayout() {
         </main>
       </div>
     </>
-  );
-}
-
-function NavSection({ label, children }: { label: string; children: ReactNode }) {
-  const headingId = `${label.toLowerCase().replace(/\s+/g, "-")}-navigation`;
-
-  return (
-    <section aria-labelledby={headingId}>
-      <p id={headingId} className="mb-1 px-2 text-xs font-medium text-muted-foreground/80">
-        {label}
-      </p>
-      <div className="space-y-1">{children}</div>
-    </section>
-  );
-}
-
-function SideLink({
-  to,
-  icon,
-  children,
-  onNavigate,
-}: {
-  to: string;
-  icon: ReactNode;
-  children: ReactNode;
-  onNavigate?: () => void;
-}) {
-  const { pathname } = useLocation();
-  const isCurrentPath = pathname === to;
-
-  return (
-    <NavLink
-      to={to}
-      end={to === "/"}
-      data-active={isCurrentPath ? "true" : "false"}
-      onClick={onNavigate}
-      className={({ isActive }) =>
-        `group relative flex h-9 items-center gap-2 rounded-md border px-2 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar ${
-          isActive
-            ? "border-sidebar-border bg-sidebar-accent font-semibold text-sidebar-accent-foreground"
-            : "border-transparent text-muted-foreground hover:border-sidebar-border hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground"
-        }`
-      }
-    >
-      {({ isActive }) => (
-        <>
-          <span
-            aria-hidden="true"
-            data-nav-indicator={isActive ? "active" : undefined}
-            className={`absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-signal transition-opacity ${
-              isActive ? "opacity-100" : "opacity-0"
-            }`}
-          />
-          <span aria-hidden="true" className="shrink-0">
-            {icon}
-          </span>
-          <span className="truncate">{children}</span>
-        </>
-      )}
-    </NavLink>
   );
 }
 
