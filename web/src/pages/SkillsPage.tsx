@@ -8,7 +8,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { apiDelete, apiGet, apiPost, apiPut, type RuntimeProfile, type Skill } from "@/lib/api";
+import { apiDelete, apiGet, apiPost, apiPostForm, apiPut, type RuntimeProfile, type Skill } from "@/lib/api";
 import { isLaunchResolvedProfile } from "@/pages/runtimeProfileKind";
 import { Badge, Button, Input, Label, Select, Textarea } from "@/components/ui";
 import {
@@ -56,6 +56,7 @@ export function SkillsPage() {
   const [formMode, setFormMode] = useState<FormMode>("idle");
   const [importPackage, setImportPackage] = useState("");
   const [importRef, setImportRef] = useState("");
+  const [archiveFile, setArchiveFile] = useState<File | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -152,6 +153,23 @@ export function SkillsPage() {
       setImportPackage("");
       setImportRef("");
       setImportOpen(false);
+      await loadSkills();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function importArchive() {
+    if (!archiveFile) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const form = new FormData();
+      form.append("archive", archiveFile);
+      await apiPostForm("/api/skills/import", form);
+      setArchiveFile(null);
       await loadSkills();
     } catch (e) {
       setError((e as Error).message);
@@ -464,6 +482,30 @@ export function SkillsPage() {
                 <p className="mt-1 text-sm text-muted-foreground">
                   Publish a canonical bundle or import a package. Reusing a Skill ID updates it.
                 </p>
+              </div>
+              <div className="space-y-3 rounded-md border border-border bg-muted/20 p-3">
+                <div>
+                  <Label htmlFor="skill-bundle-archive">Skill bundle archive</Label>
+                  <Input
+                    id="skill-bundle-archive"
+                    name="skill_bundle_archive"
+                    type="file"
+                    accept=".zip,.tar,.tar.gz,.tgz,application/zip,application/x-tar,application/gzip"
+                    onChange={(event) => setArchiveFile(event.target.files?.[0] ?? null)}
+                    className="mt-1.5"
+                  />
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Upload one .zip, .tar, .tar.gz, or .tgz bundle containing SKILL.md and optional scripts.
+                  </p>
+                </div>
+                <Button
+                  variant="outline"
+                  onClick={importArchive}
+                  disabled={saving || !archiveFile}
+                  className="w-full"
+                >
+                  <Download className="h-4 w-4" /> Upload archive
+                </Button>
               </div>
               <div className="flex flex-col gap-2">
                 <Button onClick={startCreate} className="w-full justify-start">

@@ -3,7 +3,9 @@ package daemon
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"strings"
 
@@ -109,6 +111,10 @@ func (server *Server) handlePutSkill(response http.ResponseWriter, request *http
 }
 
 func (server *Server) handleImportSkill(response http.ResponseWriter, request *http.Request) {
+	if strings.HasPrefix(request.Header.Get("Content-Type"), "multipart/form-data") {
+		server.handleImportSkillArchive(response, request)
+		return
+	}
 	raw, err := io.ReadAll(io.LimitReader(request.Body, 1<<20))
 	if err != nil {
 		writeError(response, http.StatusBadRequest, "read import body")
@@ -134,6 +140,42 @@ func (server *Server) handleImportSkill(response http.ResponseWriter, request *h
 		return
 	}
 	writeJSON(response, http.StatusCreated, newSkillResponse(imported, true))
+}
+
+func (server *Server) handleImportSkillArchive(response http.ResponseWriter, request *http.Request) {
+	request.Body = http.MaxBytesReader(response, request.Body, 32<<20)
+	if err := request.ParseMultipartForm(8 << 20); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid skill archive upload")
+		return
+	}
+	defer request.MultipartForm.RemoveAll()
+	headers := request.MultipartForm.File["archive"]
+	if len(headers) != 1 {
+		writeError(response, http.StatusBadRequest, "exactly one skill archive is required")
+		return
+	}
+	imported, err := server.importSkillArchive(request, headers[0])
+	if err != nil {
+		writeSkillError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusCreated, newSkillResponse(imported, true))
+}
+
+func (server *Server) importSkillArchive(request *http.Request, header *multipart.FileHeader) (skill.Skill, error) {
+	file, err := header.Open()
+	if err != nil {
+		return skill.Skill{}, fmt.Errorf("%w: open uploaded archive", skill.ErrInvalidSkill)
+	}
+	defer file.Close()
+	raw, err := io.ReadAll(io.LimitReader(file, 32<<20+1))
+	if err != nil {
+		return skill.Skill{}, fmt.Errorf("%w: read uploaded archive", skill.ErrInvalidSkill)
+	}
+	if len(raw) > 32<<20 {
+		return skill.Skill{}, fmt.Errorf("%w: uploaded archive is too large", skill.ErrInvalidSkill)
+	}
+	return server.skills.ImportArchive(request.Context(), header.Filename, raw)
 }
 
 func (server *Server) handleDeleteSkill(response http.ResponseWriter, request *http.Request) {

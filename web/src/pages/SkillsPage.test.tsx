@@ -298,4 +298,40 @@ describe("SkillsPage", () => {
     const formPanel = screen.getByTestId("skills-form-panel");
     expect(within(formPanel).getByRole("button", { name: /publish skill/i })).toBeInTheDocument();
   });
+
+  it("uploads a ZIP or TAR Skill bundle as multipart form data", async () => {
+    const fetchMock = mockApi({
+      "/api/runtime-profiles": {
+        profiles: [
+          {
+            id: "profile-1",
+            name: "Codex Default",
+            provider: "codex",
+            fields: {},
+            created_at: "",
+            updated_at: "",
+          },
+        ],
+      },
+      "/api/skills?runtime_profile_id=profile-1": { skills: [] },
+      "/api/skills/import": {},
+    });
+
+    renderPage();
+
+    await screen.findByRole("heading", { name: "Library actions" });
+    const archive = new File(["archive bytes"], "recon-helper.zip", { type: "application/zip" });
+    await userEvent.upload(screen.getByLabelText("Skill bundle archive"), archive);
+    await userEvent.click(screen.getByRole("button", { name: "Upload archive" }));
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/skills/import",
+      expect.objectContaining({ method: "POST", body: expect.any(FormData) }),
+    );
+    const uploadCall = fetchMock.mock.calls.find(([url, init]) =>
+      url === "/api/skills/import" && init?.body instanceof FormData,
+    );
+    expect(uploadCall).toBeDefined();
+    expect((uploadCall?.[1]?.body as FormData).get("archive")).toBe(archive);
+  });
 });
