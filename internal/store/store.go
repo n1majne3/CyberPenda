@@ -930,6 +930,7 @@ func migrations() []migration {
 		newMigration(43, "assisted_conclusion_version_regeneration", migration43SQL, migration43Up),
 		newMigration(44, "assisted_conclusion_exactly_once_recovery", migration44SQL, migration44Up),
 		newMigration(45, "non_project_sessions", migration45SQL, migration45Up),
+		newMigration(47, "session_blackboard_v2", migration47SQL, migration47Up),
 	}
 }
 
@@ -960,6 +961,153 @@ CREATE INDEX IF NOT EXISTS idx_session_events_session_seq
 
 func migration45Up(tx *sql.Tx) error {
 	return execStatements(tx, migration45SQL)
+}
+
+const migration47SQL = `
+CREATE TABLE IF NOT EXISTS blackboard_v2_session_state (
+	session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+	revision INTEGER NOT NULL CHECK (revision >= 0)
+);
+CREATE TABLE IF NOT EXISTS session_continuations (
+	id TEXT PRIMARY KEY,
+	session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	number INTEGER NOT NULL,
+	runtime_profile_id TEXT NOT NULL DEFAULT '',
+	runtime_provider TEXT NOT NULL DEFAULT '',
+	runner TEXT NOT NULL DEFAULT 'sandbox',
+	status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed', 'stopped', 'interrupted')),
+	container_id TEXT NOT NULL DEFAULT '',
+	native_session_id TEXT NOT NULL DEFAULT '',
+	native_session_path TEXT NOT NULL DEFAULT '',
+	runtime_config_version_id TEXT NOT NULL DEFAULT '',
+	started_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	ended_at TEXT NOT NULL DEFAULT '',
+	UNIQUE (session_id, number)
+);
+CREATE INDEX IF NOT EXISTS idx_session_continuations_session_number
+	ON session_continuations(session_id, number DESC);
+CREATE TABLE IF NOT EXISTS blackboard_v2_session_records (
+	session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	key TEXT NOT NULL,
+	type TEXT NOT NULL CHECK (type IN ('entity', 'objective', 'attempt', 'fact')),
+	version INTEGER NOT NULL CHECK (version >= 1),
+	record_json TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (session_id, key)
+);
+CREATE TABLE IF NOT EXISTS blackboard_v2_session_record_history (
+	session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	key TEXT NOT NULL,
+	version INTEGER NOT NULL CHECK (version >= 1),
+	type TEXT NOT NULL CHECK (type IN ('entity', 'objective', 'attempt', 'fact')),
+	record_json TEXT NOT NULL,
+	recorded_at TEXT NOT NULL,
+	PRIMARY KEY (session_id, key, version)
+);
+CREATE TABLE IF NOT EXISTS blackboard_v2_session_idempotency_receipts (
+	session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	idempotency_key TEXT NOT NULL,
+	continuation_id TEXT NOT NULL DEFAULT '',
+	request_hash TEXT NOT NULL,
+	result_json TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (session_id, idempotency_key)
+);
+CREATE TABLE IF NOT EXISTS blackboard_v2_session_snapshots (
+	session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+	revision INTEGER NOT NULL CHECK (revision >= 0),
+	snapshot_json TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS blackboard_v2_session_continuation_pins (
+	continuation_id TEXT PRIMARY KEY,
+	session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	launch_revision INTEGER NOT NULL CHECK (launch_revision >= 0),
+	launch_snapshot_json TEXT NOT NULL,
+	launch_snapshot_sha256 TEXT NOT NULL,
+	working_revision INTEGER NOT NULL CHECK (working_revision >= 0),
+	working_snapshot_json TEXT NOT NULL,
+	working_snapshot_sha256 TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	UNIQUE (session_id, continuation_id)
+);
+CREATE TABLE IF NOT EXISTS blackboard_v2_session_finish_receipts (
+	session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	continuation_id TEXT NOT NULL,
+	idempotency_key TEXT NOT NULL,
+	request_hash TEXT NOT NULL,
+	result_json TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (session_id, continuation_id, idempotency_key)
+);
+CREATE TABLE IF NOT EXISTS blackboard_v2_session_relationships (
+	session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	from_key TEXT NOT NULL,
+	relation TEXT NOT NULL CHECK (relation IN ('about', 'part_of', 'tests', 'produced', 'evidences', 'supports', 'contradicts', 'derived_from', 'depends_on', 'satisfies', 'supersedes')),
+	to_key TEXT NOT NULL,
+	version INTEGER NOT NULL CHECK (version >= 1),
+	reason TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (session_id, from_key, relation, to_key)
+);
+CREATE TABLE IF NOT EXISTS blackboard_v2_session_relationship_history (
+	session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	from_key TEXT NOT NULL,
+	relation TEXT NOT NULL,
+	to_key TEXT NOT NULL,
+	version INTEGER NOT NULL CHECK (version >= 1),
+	reason TEXT NOT NULL DEFAULT '',
+	recorded_at TEXT NOT NULL,
+	PRIMARY KEY (session_id, from_key, relation, to_key, version)
+);
+CREATE TABLE IF NOT EXISTS blackboard_v2_session_key_redirects (
+	session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	source_key TEXT NOT NULL,
+	canonical_key TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (session_id, source_key),
+	UNIQUE (session_id, canonical_key)
+);
+CREATE TABLE IF NOT EXISTS blackboard_v2_session_attempt_origins (
+	session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	key TEXT NOT NULL,
+	continuation_id TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (session_id, key)
+);
+CREATE INDEX IF NOT EXISTS idx_blackboard_v2_session_history_key
+	ON blackboard_v2_session_record_history(session_id, key, version ASC);
+CREATE INDEX IF NOT EXISTS idx_blackboard_v2_session_relationship_history_key
+	ON blackboard_v2_session_relationship_history(session_id, from_key, relation, to_key, version ASC);
+`
+
+func migration47Up(tx *sql.Tx) error {
+	if err := execStatements(tx, migration47SQL); err != nil {
+		return err
+	}
+	triggers := []string{
+		`CREATE TRIGGER IF NOT EXISTS trg_blackboard_v2_session_delete_continuations
+		 AFTER DELETE ON sessions
+		 BEGIN
+		  DELETE FROM session_continuations WHERE session_id=OLD.id;
+		 END;`,
+		`CREATE TRIGGER IF NOT EXISTS trg_blackboard_v2_session_continuation_pin_launch_immutable
+		 BEFORE UPDATE OF launch_revision, launch_snapshot_json, launch_snapshot_sha256
+		 ON blackboard_v2_session_continuation_pins
+		 BEGIN
+		  SELECT RAISE(ABORT, 'Session launch pin is immutable');
+		 END;`,
+	}
+	for _, trigger := range triggers {
+		if _, err := tx.Exec(trigger); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 const migration44TableSQL = `

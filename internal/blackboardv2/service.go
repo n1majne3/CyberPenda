@@ -579,7 +579,7 @@ type SnapshotEntity struct {
 	Name          string `json:"name"`
 	Locator       string `json:"locator,omitempty"`
 	Description   string `json:"description,omitempty"`
-	ScopeStatus   string `json:"scope_status"`
+	ScopeStatus   string `json:"scope_status,omitempty"`
 	CredentialRef string `json:"credential_ref,omitempty"`
 }
 
@@ -589,7 +589,7 @@ type SnapshotFact struct {
 	Category    string `json:"category"`
 	Summary     string `json:"summary"`
 	Confidence  string `json:"confidence"`
-	ScopeStatus string `json:"scope_status"`
+	ScopeStatus string `json:"scope_status,omitempty"`
 }
 
 // SnapshotFinding is the Runtime Snapshot allowlist for current Findings.
