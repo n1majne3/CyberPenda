@@ -13,6 +13,8 @@ web/dist/
 
 # Local daemon/runtime artifacts
 /dist/
+/bin/
+/projects/
 pentest.db
 pentest.db-shm
 pentest.db-wal
@@ -29,3 +31,14 @@ pentest 2.db-shm
 pentest 2.db-wal
 .playwright-cli/
 .qoder/repowiki
+
+# Local evaluation outputs
+/scripts/*.log
+/scripts/*-report.json
+/scripts/cybergym-report-*.json
+/scripts/cybergym-batches/
+/scripts/cybergym-*-summary.json
+/scripts/cybergym-*-summary.md
+/scripts/cybergym-*-forensics.json
+/scripts/cybergym-*-timeline.json
+/scripts/cybergym-*-investigation.md
