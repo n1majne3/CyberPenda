@@ -40,7 +40,7 @@ const (
 
 var (
 	// ErrProviderSessionControlConflict reports a different control operation
-	// already in progress for this Task-owned session.
+	// already in progress for this owner-bound session.
 	ErrProviderSessionControlConflict = errors.New("provider session control conflict")
 	// ErrProviderSessionClosed reports an operation against a closed session.
 	ErrProviderSessionClosed = errors.New("provider session is closed")
@@ -89,7 +89,7 @@ func (e *ProviderSessionOperationError) Error() string {
 
 func (e *ProviderSessionOperationError) Unwrap() error { return e.Cause }
 
-// ProviderSessionRequest is a Task-bound provider control request. RequestID
+// ProviderSessionRequest is an owner-bound provider control request. RequestID
 // is the idempotency key. Message remains on the control channel and is not
 // copied into provider lifecycle events.
 type ProviderSessionRequest struct {
@@ -130,7 +130,7 @@ func (r ProviderSessionResult) Payload() task.EventPayload {
 	}
 }
 
-// ProviderSessionEmit records a normalized Task/Continuation event. Protocol
+// ProviderSessionEmit records a normalized owner/Continuation event. Protocol
 // wire data and message content are deliberately outside this callback.
 type ProviderSessionEmit func(task.EventKind, task.EventPayload)
 

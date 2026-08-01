@@ -5,14 +5,16 @@ import {
   archiveSession,
   createSession,
   deleteSession,
+  listRuntimeProfiles,
   listSessions,
   renameSession,
   restoreSession,
   type Session,
+  type RuntimeProfile,
 } from "@/lib/api";
 import { formatCompactDateTime } from "@/lib/format";
 import { PageContainer, SettingsAlert } from "@/components/shared";
-import { Badge, Button, Card, CardDescription, CardTitle, Input, Label, Textarea } from "@/components/ui";
+import { Badge, Button, Card, CardDescription, CardTitle, Input, Label, Select, Textarea } from "@/components/ui";
 
 export function SessionHomePage() {
   const { hash } = useLocation();
@@ -20,6 +22,9 @@ export function SessionHomePage() {
   const [archivedSessions, setArchivedSessions] = useState<Session[]>([]);
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<File[]>([]);
+  const [profiles, setProfiles] = useState<RuntimeProfile[]>([]);
+  const [runtimeProfileID, setRuntimeProfileID] = useState("");
+  const [runner, setRunner] = useState("sandbox");
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -50,6 +55,15 @@ export function SessionHomePage() {
   /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
+    listRuntimeProfiles()
+      .then((response) => setProfiles(response.profiles ?? []))
+      .catch(() => {
+        // Session management remains usable when profile discovery is unavailable.
+        setProfiles([]);
+      });
+  }, []);
+
+  useEffect(() => {
     if (hash !== "#new-session") return;
     const creationSurface = document.getElementById("new-session");
     creationSurface?.scrollIntoView?.({ block: "start" });
@@ -61,7 +75,11 @@ export function SessionHomePage() {
     if (!draft.trim()) return;
     setCreating(true);
     try {
-      await createSession(draft, attachments);
+      await createSession(draft, attachments, runtimeProfileID ? {
+        runtime_profile_id: runtimeProfileID,
+        runner,
+        host_activated: runner === "host",
+      } : {});
       setDraft("");
       setAttachments([]);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -174,6 +192,38 @@ export function SessionHomePage() {
               className="mt-1 h-auto py-1.5"
             />
             <p className="mt-1 text-xs text-muted-foreground">Files are copied into the managed Session Workdir.</p>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_180px]">
+            <div>
+              <Label htmlFor="session-runtime-profile">Runtime profile (optional)</Label>
+              <Select
+                id="session-runtime-profile"
+                value={runtimeProfileID}
+                onChange={(event) => setRuntimeProfileID(event.target.value)}
+                className="mt-1"
+              >
+                <option value="">Create without starting a Runtime</option>
+                {profiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.name} · {profile.provider}
+                  </option>
+                ))}
+              </Select>
+              <p className="mt-1 text-xs text-muted-foreground">The selected profile is reused for later conversation turns.</p>
+            </div>
+            <div>
+              <Label htmlFor="session-runner">Runner</Label>
+              <Select
+                id="session-runner"
+                value={runner}
+                onChange={(event) => setRunner(event.target.value)}
+                className="mt-1"
+                disabled={!runtimeProfileID}
+              >
+                <option value="sandbox">Sandbox</option>
+                <option value="host">Host (activated)</option>
+              </Select>
+            </div>
           </div>
           <div className="flex justify-end">
             <Button type="submit" disabled={creating || !draft.trim()}>

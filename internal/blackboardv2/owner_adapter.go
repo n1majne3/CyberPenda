@@ -67,7 +67,7 @@ func (s *Service) ProjectRuntimeSnapshotForOwner(ctx context.Context, contract o
 		return RuntimeSnapshotProjection{}, err
 	}
 	if contract.IsSession() {
-		return s.ProjectSessionRuntimeSnapshot(ctx, contract.SessionID)
+		return s.SessionRuntimeSnapshotProjection(ctx, contract.SessionID)
 	}
 	return s.ProjectRuntimeSnapshot(ctx, contract.ProjectID)
 }

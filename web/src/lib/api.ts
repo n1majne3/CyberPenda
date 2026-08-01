@@ -150,8 +150,10 @@ export interface Session {
   id: string;
   title: string;
   lifecycle: SessionLifecycle;
-  /** Runtime Activity is optional until Session Runtime integration projects it. */
+  runtime_controls?: SessionRuntimeControls;
   runtime_activity?: RuntimeActivity;
+  active_continuation?: SessionContinuation;
+  latest_continuation?: SessionContinuation;
   created_at: string;
   updated_at: string;
   last_activity_at: string;
@@ -168,6 +170,63 @@ export interface SessionEvent {
   created_at: string;
 }
 
+export interface SessionContinuation {
+  id: string;
+  session_id: string;
+  number: number;
+  runtime_profile_id: string;
+  runtime_provider: string;
+  runner: string;
+  status: string;
+  container_id?: string;
+  native_session_id?: string;
+  native_session_path?: string;
+  started_at: string;
+  updated_at: string;
+  ended_at?: string;
+}
+
+export interface SessionRuntimeSelection {
+  model_provider_id?: string;
+  model?: string;
+  reasoning_effort?: string;
+}
+
+export interface SessionPermission {
+  request_id: string;
+  permission_request_id: string;
+  session_id?: string;
+  provider_turn_id?: string;
+  provider?: string;
+  created_at: string;
+}
+
+export interface SessionRuntimeControls {
+  native_resume_available: boolean;
+  native_steer_available: boolean;
+  native_steer_mode?: string;
+  queue_steer_available: boolean;
+  interrupt_steer_available: boolean;
+  native_session_captured: boolean;
+  runtime_provider?: string;
+  turn_selection?: SessionRuntimeSelection;
+  provider_permissions?: SessionPermission[];
+  recovery_state?: string;
+  recovery_reason?: string;
+}
+
+export interface SessionLaunchOptions {
+  runtime_profile_id?: string;
+  provider?: string;
+  runtime_provider?: string;
+  model_provider_id?: string;
+  model?: string;
+  model_override?: string;
+  reasoning_effort?: string;
+  runner?: string;
+  host_activated?: boolean;
+}
+
 export function listSessions(lifecycle?: SessionLifecycle) {
   const suffix = lifecycle ? `?lifecycle=${encodeURIComponent(lifecycle)}` : "";
   return apiGet<{ sessions: Session[] }>(`/api/sessions${suffix}`);
@@ -181,16 +240,61 @@ export function getSessionEvents(sessionId: string) {
   return apiGet<{ events: SessionEvent[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/events`);
 }
 
-export function createSession(input: string, attachments: File[] = []) {
+export function getSessionConversation(sessionId: string) {
+  return apiGet<{ events: SessionEvent[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/conversation`);
+}
+
+export function getSessionTimeline(sessionId: string) {
+  return apiGet<{ events: SessionEvent[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/timeline`);
+}
+
+export function createSession(input: string, attachments: File[] = [], options: SessionLaunchOptions = {}) {
   if (attachments.length === 0) {
-    return apiPost<Session>("/api/sessions", { input });
+    return apiPost<Session>("/api/sessions", { input, ...options });
   }
   const form = new FormData();
-  form.append("payload", JSON.stringify({ input }));
+  form.append("payload", JSON.stringify({ input, ...options }));
   for (const attachment of attachments) {
     form.append("attachments", attachment, attachment.name);
   }
   return apiPostForm<Session>("/api/sessions", form);
+}
+
+export function sendSessionMessage(sessionId: string, message: string, attachments: File[] = []) {
+  const path = `/api/sessions/${encodeURIComponent(sessionId)}/messages`;
+  if (attachments.length === 0) {
+    return apiPost<Session>(path, { message });
+  }
+  const form = new FormData();
+  form.append("payload", JSON.stringify({ message }));
+  for (const attachment of attachments) {
+    form.append("attachments", attachment, attachment.name);
+  }
+  return apiPostForm<Session>(path, form);
+}
+
+export function steerSession(sessionId: string, message: string) {
+  return apiPost<Session>(`/api/sessions/${encodeURIComponent(sessionId)}/steer`, { message });
+}
+
+export function queueSessionSteer(sessionId: string, message: string) {
+  return apiPost<Session>(`/api/sessions/${encodeURIComponent(sessionId)}/steer/queue`, { message });
+}
+
+export function respondSessionPermission(
+  sessionId: string,
+  permissionRequestId: string,
+  decision: "allow" | "deny",
+  requestId?: string,
+) {
+  return apiPost<{ request_id: string; permission_request_id: string; outcome: string }>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(permissionRequestId)}/respond`,
+    { decision, ...(requestId ? { request_id: requestId } : {}) },
+  );
+}
+
+export function stopSession(sessionId: string) {
+  return apiPost<Session>(`/api/sessions/${encodeURIComponent(sessionId)}/stop`);
 }
 
 export function renameSession(sessionId: string, title: string) {
@@ -207,6 +311,10 @@ export function restoreSession(sessionId: string) {
 
 export function deleteSession(sessionId: string) {
   return apiDelete(`/api/sessions/${encodeURIComponent(sessionId)}`);
+}
+
+export function listRuntimeProfiles() {
+  return apiGet<{ profiles: RuntimeProfile[] }>("/api/runtime-profiles");
 }
 
 export interface Dashboard {

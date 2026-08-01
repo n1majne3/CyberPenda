@@ -189,9 +189,9 @@ func (f *ProductionProviderSessionFactory) openHost(ctx context.Context, request
 }
 
 func (f *ProductionProviderSessionFactory) openHostCodex(ctx context.Context, request ProviderSessionLaunchRequest) (ProviderSessionBinding, error) {
-	taskID := strings.TrimSpace(request.Task.ID)
+	taskID := providerSessionOwnerID(request)
 	if taskID == "" || strings.TrimSpace(request.Continuation.ID) == "" {
-		return ProviderSessionBinding{}, fmt.Errorf("provider session bridge requires Task and Continuation identity")
+		return ProviderSessionBinding{}, fmt.Errorf("provider session bridge requires owner and Continuation identity")
 	}
 
 	f.mu.Lock()
@@ -218,7 +218,7 @@ func (f *ProductionProviderSessionFactory) openHostCodex(ctx context.Context, re
 	}
 	workdir := strings.TrimSpace(launch.Workdir)
 	if workdir == "" {
-		return ProviderSessionBinding{}, fmt.Errorf("host provider session bridge requires Task workdir")
+		return ProviderSessionBinding{}, fmt.Errorf("host provider session bridge requires owner workdir")
 	}
 
 	var runAdapter *runtime.ProviderSessionRunAdapter
@@ -257,9 +257,9 @@ func (f *ProductionProviderSessionFactory) openHostCodex(ctx context.Context, re
 }
 
 func (f *ProductionProviderSessionFactory) openHostClaude(ctx context.Context, request ProviderSessionLaunchRequest) (ProviderSessionBinding, error) {
-	taskID := strings.TrimSpace(request.Task.ID)
+	taskID := providerSessionOwnerID(request)
 	if taskID == "" || strings.TrimSpace(request.Continuation.ID) == "" {
-		return ProviderSessionBinding{}, fmt.Errorf("provider session bridge requires Task and Continuation identity")
+		return ProviderSessionBinding{}, fmt.Errorf("provider session bridge requires owner and Continuation identity")
 	}
 
 	f.mu.Lock()
@@ -274,7 +274,7 @@ func (f *ProductionProviderSessionFactory) openHostClaude(ctx context.Context, r
 	}
 	workdir := strings.TrimSpace(launch.Workdir)
 	if workdir == "" {
-		return ProviderSessionBinding{}, fmt.Errorf("host provider session bridge requires Task workdir")
+		return ProviderSessionBinding{}, fmt.Errorf("host provider session bridge requires owner workdir")
 	}
 
 	// Claude's durable process is the version-pinned packaged SDK bridge (one
@@ -321,9 +321,9 @@ func (f *ProductionProviderSessionFactory) openHostClaude(ctx context.Context, r
 }
 
 func (f *ProductionProviderSessionFactory) openHostPi(ctx context.Context, request ProviderSessionLaunchRequest) (ProviderSessionBinding, error) {
-	taskID := strings.TrimSpace(request.Task.ID)
+	taskID := providerSessionOwnerID(request)
 	if taskID == "" || strings.TrimSpace(request.Continuation.ID) == "" {
-		return ProviderSessionBinding{}, fmt.Errorf("provider session bridge requires Task and Continuation identity")
+		return ProviderSessionBinding{}, fmt.Errorf("provider session bridge requires owner and Continuation identity")
 	}
 
 	// HostSessionBridge speaks CyberPenda JSON-RPC; Pi speaks native headless
@@ -350,7 +350,7 @@ func (f *ProductionProviderSessionFactory) openHostPi(ctx context.Context, reque
 	}
 	workdir := strings.TrimSpace(launch.Workdir)
 	if workdir == "" {
-		return ProviderSessionBinding{}, fmt.Errorf("host provider session bridge requires Task workdir")
+		return ProviderSessionBinding{}, fmt.Errorf("host provider session bridge requires owner workdir")
 	}
 	// Preserve projected PI_CODING_AGENT_DIR / session dir and every launch-ready
 	// credential env from Config Projection. Missing agent dir fails clearly.
@@ -447,7 +447,7 @@ func requireHostPiProjectedEnv(env map[string]string) error {
 	return nil
 }
 
-// cleanupHostPiArtifacts removes Task-scoped Pi session files and projected
+// cleanupHostPiArtifacts removes owner-scoped Pi session files and projected
 // credentials after process-group teardown on Stop, failure, and daemon shutdown.
 // models.json (non-secret) is retained for diagnostics until the next projection.
 func cleanupHostPiArtifacts(agentDir string) {
@@ -466,9 +466,9 @@ func (f *ProductionProviderSessionFactory) openSandbox(ctx context.Context, requ
 	if f.config.Docker == nil {
 		return ProviderSessionBinding{}, fmt.Errorf("provider session bridge docker transport is unavailable")
 	}
-	taskID := strings.TrimSpace(request.Task.ID)
+	taskID := providerSessionOwnerID(request)
 	if taskID == "" || strings.TrimSpace(request.Continuation.ID) == "" {
-		return ProviderSessionBinding{}, fmt.Errorf("provider session bridge requires Task and Continuation identity")
+		return ProviderSessionBinding{}, fmt.Errorf("provider session bridge requires owner and Continuation identity")
 	}
 
 	f.mu.Lock()
@@ -512,7 +512,7 @@ func (f *ProductionProviderSessionFactory) openSandbox(ctx context.Context, requ
 		if sessionPath := strings.TrimSpace(request.Continuation.NativeSessionPath); sessionPath != "" {
 			bridgeCommand = append(bridgeCommand, "--session", sessionPath)
 		} else {
-			// Pi creates its durable session lazily. Supplying a stable Task-scoped
+			// Pi creates its durable session lazily. Supplying a stable owner-scoped
 			// id makes the pre-launch get_state handshake deterministic and keeps
 			// later Continuations on the same native session.
 			sessionID := strings.TrimSpace(request.Continuation.NativeSessionID)

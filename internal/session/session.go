@@ -48,9 +48,13 @@ const (
 type EventKind string
 
 const (
-	EventKindConversation EventKind = "conversation"
-	EventKindAttachment   EventKind = "attachment"
-	EventKindLifecycle    EventKind = "lifecycle"
+	EventKindConversation  EventKind = "conversation"
+	EventKindAttachment    EventKind = "attachment"
+	EventKindLifecycle     EventKind = "lifecycle"
+	EventKindRuntimeOutput EventKind = "runtime_output"
+	EventKindSteering      EventKind = "steering"
+	EventKindPermission    EventKind = "permission"
+	EventKindTurn          EventKind = "turn"
 )
 
 // EventPayload is intentionally structured and compact. Raw files remain in
@@ -68,17 +72,122 @@ type Event struct {
 	CreatedAt time.Time    `json:"created_at"`
 }
 
+// Runner identifies the execution boundary for a Session Runtime.
+type Runner string
+
+const (
+	RunnerSandbox Runner = "sandbox"
+	RunnerHost    Runner = "host"
+)
+
+// RuntimeStatus is the lifecycle of one Session-scoped Runtime Continuation.
+// It is deliberately separate from Session Lifecycle and Runtime Activity.
+type RuntimeStatus string
+
+const (
+	RuntimeStatusPending     RuntimeStatus = "pending"
+	RuntimeStatusRunning     RuntimeStatus = "running"
+	RuntimeStatusCompleted   RuntimeStatus = "completed"
+	RuntimeStatusFailed      RuntimeStatus = "failed"
+	RuntimeStatusStopped     RuntimeStatus = "stopped"
+	RuntimeStatusInterrupted RuntimeStatus = "interrupted"
+)
+
+// RuntimeTurnSelection is the per-turn provider, model, and reasoning choice.
+// It never mutates the selected Runtime Profile.
+type RuntimeTurnSelection struct {
+	ModelProviderID string `json:"model_provider_id,omitempty"`
+	Model           string `json:"model,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+}
+
+// RuntimeActivity reports current process/session health independently of
+// whether a Session is open or archived.
+type RuntimeActivity struct {
+	Liveness     string `json:"liveness"`
+	TurnActivity string `json:"turn_activity,omitempty"`
+	Warning      string `json:"warning,omitempty"`
+}
+
+// RuntimeControls is the owner-local control projection exposed to the UI.
+type RuntimeControls struct {
+	NativeResumeAvailable   bool                  `json:"native_resume_available"`
+	NativeSteerAvailable    bool                  `json:"native_steer_available"`
+	NativeSteerMode         string                `json:"native_steer_mode,omitempty"`
+	QueueSteerAvailable     bool                  `json:"queue_steer_available"`
+	InterruptSteerAvailable bool                  `json:"interrupt_steer_available"`
+	NativeSessionCaptured   bool                  `json:"native_session_captured"`
+	RuntimeProvider         string                `json:"runtime_provider,omitempty"`
+	TurnSelection           *RuntimeTurnSelection `json:"turn_selection,omitempty"`
+	ProviderPermissions     []ProviderPermission  `json:"provider_permissions,omitempty"`
+	RecoveryState           string                `json:"recovery_state,omitempty"`
+	RecoveryReason          string                `json:"recovery_reason,omitempty"`
+}
+
+// ProviderPermission is a redacted provider approval request owned by one
+// Session and one active continuation.
+type ProviderPermission struct {
+	RequestID           string    `json:"request_id"`
+	PermissionRequestID string    `json:"permission_request_id"`
+	SessionID           string    `json:"session_id,omitempty"`
+	ProviderTurnID      string    `json:"provider_turn_id,omitempty"`
+	Provider            string    `json:"provider,omitempty"`
+	CreatedAt           time.Time `json:"created_at"`
+}
+
+// RuntimeConfigVersion is durable Session configuration history. Secrets are
+// never stored here; callers persist only the resolved non-secret selection.
+type RuntimeConfigVersion struct {
+	ID               string         `json:"id"`
+	SessionID        string         `json:"session_id"`
+	Version          int            `json:"version"`
+	RuntimeProfileID string         `json:"runtime_profile_id"`
+	Config           map[string]any `json:"config"`
+	CreatedAt        time.Time      `json:"created_at"`
+}
+
+// Continuation is the durable Runtime pin for one Session turn.
+type Continuation struct {
+	ID                string        `json:"id"`
+	SessionID         string        `json:"session_id"`
+	Number            int           `json:"number"`
+	RuntimeProfileID  string        `json:"runtime_profile_id"`
+	RuntimeProvider   string        `json:"runtime_provider"`
+	Runner            Runner        `json:"runner"`
+	Status            RuntimeStatus `json:"status"`
+	ContainerID       string        `json:"container_id,omitempty"`
+	NativeSessionID   string        `json:"native_session_id,omitempty"`
+	NativeSessionPath string        `json:"native_session_path,omitempty"`
+	RuntimeConfigID   string        `json:"runtime_config_version_id,omitempty"`
+	StartedAt         time.Time     `json:"started_at"`
+	UpdatedAt         time.Time     `json:"updated_at"`
+	EndedAt           *time.Time    `json:"ended_at,omitempty"`
+}
+
+// CreateContinuationRequest is the durable part of a Session Runtime launch.
+type CreateContinuationRequest struct {
+	RuntimeProfileID string
+	RuntimeProvider  string
+	Runner           Runner
+	RuntimeConfig    map[string]any
+	RuntimeConfigID  string
+}
+
 // Session is the durable Non-Project Session aggregate. Workdir is kept out of
 // the JSON representation because it is a server-local path, not operator
 // state or a Project artifact reference.
 type Session struct {
-	ID             string    `json:"id"`
-	Title          string    `json:"title"`
-	Lifecycle      Lifecycle `json:"lifecycle"`
-	Workdir        string    `json:"-"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-	LastActivityAt time.Time `json:"last_activity_at"`
+	ID                 string          `json:"id"`
+	Title              string          `json:"title"`
+	Lifecycle          Lifecycle       `json:"lifecycle"`
+	Workdir            string          `json:"-"`
+	RuntimeActivity    RuntimeActivity `json:"runtime_activity"`
+	RuntimeControls    RuntimeControls `json:"runtime_controls"`
+	ActiveContinuation *Continuation   `json:"active_continuation,omitempty"`
+	LatestContinuation *Continuation   `json:"latest_continuation,omitempty"`
+	CreatedAt          time.Time       `json:"created_at"`
+	UpdatedAt          time.Time       `json:"updated_at"`
+	LastActivityAt     time.Time       `json:"last_activity_at"`
 }
 
 // OwnerContract returns the explicit Session capability contract consumed by
@@ -104,15 +213,21 @@ type CreateRequest struct {
 var (
 	// ErrNotFound deliberately has no owner details so cross-owner lookups do
 	// not reveal whether another aggregate exists.
-	ErrNotFound          = errors.New("session not found")
-	ErrMissingInput      = errors.New("session initial input is required")
-	ErrMissingTitle      = errors.New("session title is required")
-	ErrInvalidLifecycle  = errors.New("invalid session lifecycle")
-	ErrAlreadyArchived   = errors.New("session is already archived")
-	ErrNotArchived       = errors.New("session is not archived")
-	ErrOpenSession       = errors.New("open session cannot be deleted")
-	ErrInvalidAttachment = errors.New("invalid session attachment")
-	ErrInvalidWorkdir    = errors.New("session workdir is outside the managed root")
+	ErrNotFound                   = errors.New("session not found")
+	ErrMissingInput               = errors.New("session initial input is required")
+	ErrMissingTitle               = errors.New("session title is required")
+	ErrInvalidLifecycle           = errors.New("invalid session lifecycle")
+	ErrAlreadyArchived            = errors.New("session is already archived")
+	ErrNotArchived                = errors.New("session is not archived")
+	ErrOpenSession                = errors.New("open session cannot be deleted")
+	ErrInvalidAttachment          = errors.New("invalid session attachment")
+	ErrInvalidWorkdir             = errors.New("session workdir is outside the managed root")
+	ErrSessionNotOpen             = errors.New("session is not open")
+	ErrActiveContinuation         = errors.New("session already has an active continuation")
+	ErrInvalidRunner              = errors.New("runner must be sandbox or host")
+	ErrContinuationNotFound       = errors.New("session continuation not found")
+	ErrContinuationStatusConflict = errors.New("session continuation status conflicts with its terminal state")
+	ErrMissingRuntimeProfile      = errors.New("session runtime profile is required")
 )
 
 // Service implements Session persistence and lifecycle rules against SQLite.
@@ -352,6 +467,11 @@ func (s *Service) Delete(id string) error {
 	if found.Lifecycle != LifecycleArchived {
 		return ErrInvalidLifecycle
 	}
+	if active, err := s.ActiveContinuation(id); err != nil {
+		return fmt.Errorf("check Session Runtime before delete: %w", err)
+	} else if active != nil {
+		return ErrActiveContinuation
+	}
 	workdir, err := s.managedWorkdir(id)
 	if err != nil {
 		return err
@@ -388,6 +508,14 @@ func (s *Service) Delete(id string) error {
 	if _, err := tx.Exec(`DELETE FROM session_events WHERE session_id=?`, id); err != nil {
 		restore()
 		return fmt.Errorf("delete Session Events: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM session_continuations WHERE session_id=?`, id); err != nil {
+		restore()
+		return fmt.Errorf("delete Session continuations: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM session_runtime_config_versions WHERE session_id=?`, id); err != nil {
+		restore()
+		return fmt.Errorf("delete Session Runtime configs: %w", err)
 	}
 	result, err := tx.Exec(`DELETE FROM sessions WHERE id=? AND lifecycle=?`, id, string(LifecycleArchived))
 	if err != nil {
@@ -448,6 +576,427 @@ func (s *Service) Events(id string) ([]Event, error) {
 	return events, nil
 }
 
+// AppendEvent records one owner-local timeline event and advances Session
+// activity. Conversation events are deliberately stored in the same durable
+// stream but are projected separately by Conversation and Timeline.
+func (s *Service) AppendEvent(id string, kind EventKind, payload EventPayload) (Event, error) {
+	found, err := s.Get(id)
+	if err != nil {
+		return Event{}, err
+	}
+	if found.Lifecycle != LifecycleOpen {
+		return Event{}, ErrSessionNotOpen
+	}
+	if continuationID, _ := payload["continuation_id"].(string); strings.TrimSpace(continuationID) != "" {
+		continuation, continuationErr := s.Continuation(continuationID)
+		if continuationErr != nil || continuation.SessionID != id {
+			return Event{}, ErrContinuationNotFound
+		}
+	}
+	now := time.Now().UTC()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Event{}, fmt.Errorf("begin Session Event: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	event, err := appendEventTx(tx, id, kind, payload, now)
+	if err != nil {
+		return Event{}, fmt.Errorf("store Session Event: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE sessions SET updated_at=?,last_activity_at=? WHERE id=?`, formatTime(now), formatTime(now), id); err != nil {
+		return Event{}, fmt.Errorf("update Session activity: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Event{}, fmt.Errorf("commit Session Event: %w", err)
+	}
+	return event, nil
+}
+
+// AppendConversationEvent stores one user/runtime conversation entry. It is
+// the only write path for transcript content, preventing synthetic timeline
+// message duplication.
+func (s *Service) AppendConversationEvent(id, continuationID, role, text string) (Event, error) {
+	role = strings.TrimSpace(role)
+	if role == "" || strings.TrimSpace(text) == "" {
+		return Event{}, ErrMissingInput
+	}
+	payload := EventPayload{"role": role, "text": text}
+	if continuationID != "" {
+		continuation, err := s.Continuation(continuationID)
+		if err != nil || continuation.SessionID != id {
+			if err != nil {
+				return Event{}, err
+			}
+			return Event{}, ErrContinuationNotFound
+		}
+	}
+	return s.AppendEvent(id, EventKindConversation, payloadWithContinuation(payload, continuationID))
+}
+
+// AddAttachments stages additional operator files into the existing Session
+// Workdir and records only safe references in the Session event stream.
+// Existing files are never overwritten; attachment names are made unique in
+// the same way as initial Session attachments.
+func (s *Service) AddAttachments(id string, input []Attachment) ([]Event, error) {
+	found, err := s.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	if found.Lifecycle != LifecycleOpen {
+		return nil, ErrSessionNotOpen
+	}
+	if len(input) == 0 {
+		return nil, nil
+	}
+	if len(input) > MaxAttachmentCount {
+		return nil, fmt.Errorf("%w: too many attachments (max %d)", ErrInvalidAttachment, MaxAttachmentCount)
+	}
+	workdir, err := s.managedWorkdir(id)
+	if err != nil {
+		return nil, err
+	}
+	if filepath.Clean(found.Workdir) != filepath.Clean(workdir) {
+		return nil, ErrInvalidWorkdir
+	}
+	copied, err := copyAttachments(workdir, input)
+	if err != nil {
+		return nil, err
+	}
+	cleanup := true
+	defer func() {
+		if !cleanup {
+			return
+		}
+		for _, attachment := range copied {
+			_ = os.Remove(filepath.Join(workdir, attachment.Filename))
+		}
+	}()
+
+	now := time.Now().UTC()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin Session attachment append: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var lifecycle string
+	if err := tx.QueryRow(`SELECT lifecycle FROM sessions WHERE id=?`, id).Scan(&lifecycle); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("read Session lifecycle: %w", err)
+	}
+	if Lifecycle(lifecycle) != LifecycleOpen {
+		return nil, ErrSessionNotOpen
+	}
+	events := make([]Event, 0, len(copied))
+	for _, attachment := range copied {
+		event, err := appendEventTx(tx, id, EventKindAttachment, EventPayload{
+			"filename": attachment.Filename, "relative_path": attachment.Filename,
+			"size": attachment.Size, "sha256": attachment.SHA256,
+		}, now)
+		if err != nil {
+			return nil, fmt.Errorf("store Session attachment Event: %w", err)
+		}
+		events = append(events, event)
+	}
+	if _, err := tx.Exec(`UPDATE sessions SET updated_at=?,last_activity_at=? WHERE id=?`, formatTime(now), formatTime(now), id); err != nil {
+		return nil, fmt.Errorf("update Session activity: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit Session attachments: %w", err)
+	}
+	cleanup = false
+	return events, nil
+}
+
+func payloadWithContinuation(payload EventPayload, continuationID string) EventPayload {
+	if continuationID != "" {
+		payload["continuation_id"] = continuationID
+	}
+	return payload
+}
+
+// Conversation returns only user/runtime conversation entries.
+func (s *Service) Conversation(id string) ([]Event, error) {
+	events, err := s.Events(id)
+	if err != nil {
+		return nil, err
+	}
+	conversation := make([]Event, 0, len(events))
+	for _, event := range events {
+		if event.Kind == EventKindConversation {
+			conversation = append(conversation, event)
+		}
+	}
+	return conversation, nil
+}
+
+// Timeline returns startup, runtime, turn, permission, attachment, and
+// lifecycle markers without synthetic conversation messages.
+func (s *Service) Timeline(id string) ([]Event, error) {
+	events, err := s.Events(id)
+	if err != nil {
+		return nil, err
+	}
+	timeline := make([]Event, 0, len(events))
+	for _, event := range events {
+		if event.Kind != EventKindConversation {
+			timeline = append(timeline, event)
+		}
+	}
+	return timeline, nil
+}
+
+// RecordRuntimeConfig stores the non-secret Runtime Turn Selection history for
+// a Session. Each explicit configuration change creates a new version.
+func (s *Service) RecordRuntimeConfig(sessionID, runtimeProfileID string, config map[string]any) (RuntimeConfigVersion, error) {
+	if _, err := s.Get(sessionID); err != nil {
+		return RuntimeConfigVersion{}, err
+	}
+	if strings.TrimSpace(runtimeProfileID) == "" {
+		return RuntimeConfigVersion{}, ErrMissingRuntimeProfile
+	}
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		return RuntimeConfigVersion{}, fmt.Errorf("encode Session Runtime config: %w", err)
+	}
+	now := time.Now().UTC()
+	version := RuntimeConfigVersion{ID: "session-config-" + strings.TrimPrefix(newIDMust(), "session-"), SessionID: sessionID, RuntimeProfileID: runtimeProfileID, Config: config, CreatedAt: now}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return RuntimeConfigVersion{}, fmt.Errorf("begin Session Runtime config: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var max sql.NullInt64
+	if err := tx.QueryRow(`SELECT MAX(version) FROM session_runtime_config_versions WHERE session_id=?`, sessionID).Scan(&max); err != nil {
+		return RuntimeConfigVersion{}, fmt.Errorf("read Session Runtime config version: %w", err)
+	}
+	version.Version = int(max.Int64) + 1
+	if _, err := tx.Exec(`INSERT INTO session_runtime_config_versions (id,session_id,version,runtime_profile_id,config_json,created_at) VALUES (?,?,?,?,?,?)`, version.ID, sessionID, version.Version, runtimeProfileID, string(encoded), formatTime(now)); err != nil {
+		return RuntimeConfigVersion{}, fmt.Errorf("store Session Runtime config: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return RuntimeConfigVersion{}, fmt.Errorf("commit Session Runtime config: %w", err)
+	}
+	return version, nil
+}
+
+// CreateContinuation persists one Session-scoped Runtime pin. It does not
+// start a provider; the daemon opens the provider only after this succeeds.
+// The optional config keeps the simple Task-equivalent call shape while
+// allowing launch callers to persist a resolved selection.
+func (s *Service) CreateContinuation(sessionID, runtimeProfileID, runtimeProvider string, runner Runner, configs ...map[string]any) (Continuation, error) {
+	req := CreateContinuationRequest{RuntimeProfileID: runtimeProfileID, RuntimeProvider: runtimeProvider, Runner: runner}
+	if len(configs) > 0 {
+		req.RuntimeConfig = configs[0]
+	}
+	return s.createContinuation(sessionID, req, false)
+}
+
+func (s *Service) createContinuation(sessionID string, req CreateContinuationRequest, allowActive bool) (Continuation, error) {
+	if req.Runner != RunnerSandbox && req.Runner != RunnerHost {
+		return Continuation{}, ErrInvalidRunner
+	}
+	if strings.TrimSpace(req.RuntimeProfileID) == "" || strings.TrimSpace(req.RuntimeProvider) == "" {
+		return Continuation{}, ErrMissingRuntimeProfile
+	}
+	encoded, err := json.Marshal(req.RuntimeConfig)
+	if err != nil {
+		return Continuation{}, fmt.Errorf("encode Session launch Runtime config: %w", err)
+	}
+	now := time.Now().UTC()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Continuation{}, fmt.Errorf("begin Session continuation: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var lifecycle string
+	if err := tx.QueryRow(`SELECT lifecycle FROM sessions WHERE id=?`, sessionID).Scan(&lifecycle); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Continuation{}, ErrNotFound
+		}
+		return Continuation{}, fmt.Errorf("read Session lifecycle: %w", err)
+	}
+	if Lifecycle(lifecycle) != LifecycleOpen {
+		return Continuation{}, ErrSessionNotOpen
+	}
+	if !allowActive {
+		var active int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM session_continuations WHERE session_id=? AND status IN (?,?)`, sessionID, string(RuntimeStatusPending), string(RuntimeStatusRunning)).Scan(&active); err != nil {
+			return Continuation{}, fmt.Errorf("check active Session continuation: %w", err)
+		}
+		if active != 0 {
+			return Continuation{}, ErrActiveContinuation
+		}
+	}
+	configID := strings.TrimSpace(req.RuntimeConfigID)
+	if configID == "" {
+		var latestID, latestProfile, latestJSON string
+		latestErr := tx.QueryRow(`SELECT id,runtime_profile_id,config_json FROM session_runtime_config_versions WHERE session_id=? ORDER BY version DESC LIMIT 1`, sessionID).Scan(&latestID, &latestProfile, &latestJSON)
+		if latestErr == nil && latestProfile == req.RuntimeProfileID && latestJSON == string(encoded) {
+			configID = latestID
+		} else if latestErr != nil && !errors.Is(latestErr, sql.ErrNoRows) {
+			return Continuation{}, fmt.Errorf("read Session launch config: %w", latestErr)
+		} else {
+			configID = "session-config-" + strings.TrimPrefix(newIDMust(), "session-")
+			var maxConfig sql.NullInt64
+			if err := tx.QueryRow(`SELECT MAX(version) FROM session_runtime_config_versions WHERE session_id=?`, sessionID).Scan(&maxConfig); err != nil {
+				return Continuation{}, fmt.Errorf("read Session launch config version: %w", err)
+			}
+			if _, err := tx.Exec(`INSERT INTO session_runtime_config_versions (id,session_id,version,runtime_profile_id,config_json,created_at) VALUES (?,?,?,?,?,?)`, configID, sessionID, int(maxConfig.Int64)+1, req.RuntimeProfileID, string(encoded), formatTime(now)); err != nil {
+				return Continuation{}, fmt.Errorf("store Session launch config: %w", err)
+			}
+		}
+	}
+	var maxNumber sql.NullInt64
+	if err := tx.QueryRow(`SELECT MAX(number) FROM session_continuations WHERE session_id=?`, sessionID).Scan(&maxNumber); err != nil {
+		return Continuation{}, fmt.Errorf("read Session continuation number: %w", err)
+	}
+	continuation := Continuation{
+		ID: "session-continuation-" + strings.TrimPrefix(newIDMust(), "session-"), SessionID: sessionID,
+		Number: int(maxNumber.Int64) + 1, RuntimeProfileID: req.RuntimeProfileID, RuntimeProvider: req.RuntimeProvider,
+		Runner: req.Runner, Status: RuntimeStatusPending, RuntimeConfigID: configID, StartedAt: now, UpdatedAt: now,
+	}
+	if _, err := tx.Exec(`INSERT INTO session_continuations (id,session_id,number,runtime_profile_id,runtime_provider,runner,status,container_id,native_session_id,native_session_path,runtime_config_version_id,started_at,updated_at,ended_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, continuation.ID, sessionID, continuation.Number, continuation.RuntimeProfileID, continuation.RuntimeProvider, string(continuation.Runner), string(continuation.Status), "", "", "", continuation.RuntimeConfigID, formatTime(now), formatTime(now), ""); err != nil {
+		return Continuation{}, fmt.Errorf("store Session continuation: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Continuation{}, fmt.Errorf("commit Session continuation: %w", err)
+	}
+	return continuation, nil
+}
+
+// CreateReplacementContinuation starts a fresh turn boundary while retaining
+// provider/container identity for the same persistent Session Runtime.
+func (s *Service) CreateReplacementContinuation(previous Continuation, config map[string]any) (Continuation, error) {
+	next, err := s.createContinuation(previous.SessionID, CreateContinuationRequest{
+		RuntimeProfileID: previous.RuntimeProfileID, RuntimeProvider: previous.RuntimeProvider, Runner: previous.Runner,
+		RuntimeConfig: config,
+	}, true)
+	if err != nil {
+		return Continuation{}, err
+	}
+	return s.UpdateContinuationRuntimeMetadata(next.ID, previous.ContainerID, previous.NativeSessionID, previous.NativeSessionPath)
+}
+
+// ActiveContinuation returns the current pending/running Session Runtime pin.
+func (s *Service) ActiveContinuation(sessionID string) (*Continuation, error) {
+	row := s.db.QueryRow(`SELECT id,session_id,number,runtime_profile_id,runtime_provider,runner,status,container_id,native_session_id,native_session_path,runtime_config_version_id,started_at,updated_at,ended_at FROM session_continuations WHERE session_id=? AND status IN (?,?) ORDER BY number DESC LIMIT 1`, sessionID, string(RuntimeStatusPending), string(RuntimeStatusRunning))
+	found, err := scanContinuation(row)
+	if errors.Is(err, ErrContinuationNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &found, nil
+}
+
+// LatestContinuation returns the latest Session Runtime pin, if one exists.
+func (s *Service) LatestContinuation(sessionID string) (*Continuation, error) {
+	row := s.db.QueryRow(`SELECT id,session_id,number,runtime_profile_id,runtime_provider,runner,status,container_id,native_session_id,native_session_path,runtime_config_version_id,started_at,updated_at,ended_at FROM session_continuations WHERE session_id=? ORDER BY number DESC LIMIT 1`, sessionID)
+	found, err := scanContinuation(row)
+	if errors.Is(err, ErrContinuationNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &found, nil
+}
+
+func (s *Service) Continuation(id string) (Continuation, error) {
+	return scanContinuation(s.db.QueryRow(`SELECT id,session_id,number,runtime_profile_id,runtime_provider,runner,status,container_id,native_session_id,native_session_path,runtime_config_version_id,started_at,updated_at,ended_at FROM session_continuations WHERE id=?`, id))
+}
+
+// UpdateContinuationStatus is idempotent for the same terminal status and
+// rejects a late observer attempting to overwrite a different terminal state.
+func (s *Service) UpdateContinuationStatus(id string, status RuntimeStatus) (Continuation, error) {
+	if !validRuntimeStatus(status) {
+		return Continuation{}, ErrContinuationStatusConflict
+	}
+	found, err := s.Continuation(id)
+	if err != nil {
+		return Continuation{}, err
+	}
+	if isTerminalRuntimeStatus(found.Status) {
+		if found.Status == status {
+			return found, nil
+		}
+		return found, ErrContinuationStatusConflict
+	}
+	now := time.Now().UTC()
+	ended := ""
+	if isTerminalRuntimeStatus(status) {
+		ended = formatTime(now)
+		found.EndedAt = &now
+	}
+	result, err := s.db.Exec(`UPDATE session_continuations SET status=?,updated_at=?,ended_at=? WHERE id=? AND status=?`, string(status), formatTime(now), ended, id, string(found.Status))
+	if err != nil {
+		return Continuation{}, fmt.Errorf("update Session continuation status: %w", err)
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return s.Continuation(id)
+	}
+	found.Status, found.UpdatedAt = status, now
+	return found, nil
+}
+
+// UpdateContinuationRuntimeMetadata stores ownership data without exposing
+// process handles to the API.
+func (s *Service) UpdateContinuationRuntimeMetadata(id, containerID, nativeSessionID, nativeSessionPath string) (Continuation, error) {
+	found, err := s.Continuation(id)
+	if err != nil {
+		return Continuation{}, err
+	}
+	if strings.TrimSpace(containerID) != "" {
+		found.ContainerID = strings.TrimSpace(containerID)
+	}
+	if strings.TrimSpace(nativeSessionID) != "" {
+		found.NativeSessionID = strings.TrimSpace(nativeSessionID)
+	}
+	if strings.TrimSpace(nativeSessionPath) != "" {
+		found.NativeSessionPath = strings.TrimSpace(nativeSessionPath)
+	}
+	found.UpdatedAt = time.Now().UTC()
+	if _, err := s.db.Exec(`UPDATE session_continuations SET container_id=?,native_session_id=?,native_session_path=?,updated_at=? WHERE id=?`, found.ContainerID, found.NativeSessionID, found.NativeSessionPath, formatTime(found.UpdatedAt), id); err != nil {
+		return Continuation{}, fmt.Errorf("update Session Runtime metadata: %w", err)
+	}
+	return found, nil
+}
+
+// RuntimeConfigVersions lists all non-secret Session Runtime configuration
+// versions in order.
+func (s *Service) RuntimeConfigVersions(sessionID string) ([]RuntimeConfigVersion, error) {
+	if _, err := s.Get(sessionID); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(`SELECT id,session_id,version,runtime_profile_id,config_json,created_at FROM session_runtime_config_versions WHERE session_id=? ORDER BY version ASC`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("list Session Runtime configs: %w", err)
+	}
+	defer rows.Close()
+	versions := make([]RuntimeConfigVersion, 0)
+	for rows.Next() {
+		var version RuntimeConfigVersion
+		var encoded, created string
+		if err := rows.Scan(&version.ID, &version.SessionID, &version.Version, &version.RuntimeProfileID, &encoded, &created); err != nil {
+			return nil, fmt.Errorf("scan Session Runtime config: %w", err)
+		}
+		if err := json.Unmarshal([]byte(encoded), &version.Config); err != nil {
+			return nil, fmt.Errorf("decode Session Runtime config: %w", err)
+		}
+		if version.CreatedAt, err = time.Parse(time.RFC3339Nano, created); err != nil {
+			return nil, fmt.Errorf("parse Session Runtime config time: %w", err)
+		}
+		versions = append(versions, version)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list Session Runtime configs: %w", err)
+	}
+	return versions, nil
+}
+
 type copiedAttachment struct {
 	Filename string
 	Size     int64
@@ -455,7 +1004,7 @@ type copiedAttachment struct {
 }
 
 func copyAttachments(workdir string, input []Attachment) ([]copiedAttachment, error) {
-	names, err := resolveAttachmentNames(input)
+	names, err := resolveAttachmentNames(workdir, input)
 	if err != nil {
 		return nil, err
 	}
@@ -522,7 +1071,7 @@ type namedAttachment struct {
 	Filename string
 }
 
-func resolveAttachmentNames(input []Attachment) ([]namedAttachment, error) {
+func resolveAttachmentNames(workdir string, input []Attachment) ([]namedAttachment, error) {
 	result := make([]namedAttachment, 0, len(input))
 	used := make(map[string]struct{}, len(input))
 	for _, attachment := range input {
@@ -535,20 +1084,37 @@ func resolveAttachmentNames(input []Attachment) ([]namedAttachment, error) {
 		}
 		final := name
 		if _, exists := used[attachmentNameCollisionKey(final)]; exists {
-			extension := filepath.Ext(name)
-			stem := strings.TrimSuffix(name, extension)
-			for suffix := 1; ; suffix++ {
-				candidate := fmt.Sprintf("%s-%d%s", stem, suffix, extension)
-				if _, exists := used[attachmentNameCollisionKey(candidate)]; !exists {
-					final = candidate
-					break
-				}
-			}
+			final = uniqueAttachmentName(workdir, final, used)
+		}
+		if _, err := os.Stat(filepath.Join(workdir, final)); err == nil {
+			final = uniqueAttachmentName(workdir, final, used)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("%w: inspect existing filename %q: %v", ErrInvalidAttachment, final, err)
+		}
+		if _, exists := used[attachmentNameCollisionKey(final)]; exists {
+			final = uniqueAttachmentName(workdir, final, used)
+		}
+		if _, exists := used[attachmentNameCollisionKey(final)]; exists {
+			return nil, fmt.Errorf("%w: filename collision for %q", ErrInvalidAttachment, final)
 		}
 		used[attachmentNameCollisionKey(final)] = struct{}{}
 		result = append(result, namedAttachment{Source: attachment, Filename: final})
 	}
 	return result, nil
+}
+
+func uniqueAttachmentName(workdir, name string, used map[string]struct{}) string {
+	extension := filepath.Ext(name)
+	stem := strings.TrimSuffix(name, extension)
+	for suffix := 1; ; suffix++ {
+		candidate := fmt.Sprintf("%s-%d%s", stem, suffix, extension)
+		if _, exists := used[attachmentNameCollisionKey(candidate)]; exists {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(workdir, candidate)); errors.Is(err, os.ErrNotExist) {
+			return candidate
+		}
+	}
 }
 
 func attachmentNameCollisionKey(name string) string {
@@ -631,6 +1197,52 @@ func scanSession(row scanner) (Session, error) {
 	return found, nil
 }
 
+func scanContinuation(row scanner) (Continuation, error) {
+	var found Continuation
+	var runner, status, started, updated, ended string
+	if err := row.Scan(&found.ID, &found.SessionID, &found.Number, &found.RuntimeProfileID, &found.RuntimeProvider, &runner, &status, &found.ContainerID, &found.NativeSessionID, &found.NativeSessionPath, &found.RuntimeConfigID, &started, &updated, &ended); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Continuation{}, ErrContinuationNotFound
+		}
+		return Continuation{}, err
+	}
+	found.Runner = Runner(runner)
+	found.Status = RuntimeStatus(status)
+	var err error
+	if found.StartedAt, err = time.Parse(time.RFC3339Nano, started); err != nil {
+		return Continuation{}, fmt.Errorf("parse Session continuation started_at: %w", err)
+	}
+	if found.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated); err != nil {
+		return Continuation{}, fmt.Errorf("parse Session continuation updated_at: %w", err)
+	}
+	if strings.TrimSpace(ended) != "" {
+		stamp, parseErr := time.Parse(time.RFC3339Nano, ended)
+		if parseErr != nil {
+			return Continuation{}, fmt.Errorf("parse Session continuation ended_at: %w", parseErr)
+		}
+		found.EndedAt = &stamp
+	}
+	return found, nil
+}
+
+func validRuntimeStatus(status RuntimeStatus) bool {
+	switch status {
+	case RuntimeStatusPending, RuntimeStatusRunning, RuntimeStatusCompleted, RuntimeStatusFailed, RuntimeStatusStopped, RuntimeStatusInterrupted:
+		return true
+	default:
+		return false
+	}
+}
+
+func isTerminalRuntimeStatus(status RuntimeStatus) bool {
+	switch status {
+	case RuntimeStatusCompleted, RuntimeStatusFailed, RuntimeStatusStopped, RuntimeStatusInterrupted:
+		return true
+	default:
+		return false
+	}
+}
+
 func appendEventTx(tx *sql.Tx, sessionID string, kind EventKind, payload EventPayload, now time.Time) (Event, error) {
 	if payload == nil {
 		payload = EventPayload{}
@@ -662,4 +1274,12 @@ func newID() (string, error) {
 		return "", err
 	}
 	return "session-" + hex.EncodeToString(bytes[:]), nil
+}
+
+func newIDMust() string {
+	id, err := newID()
+	if err != nil {
+		return fmt.Sprintf("session-%d", time.Now().UnixNano())
+	}
+	return id
 }

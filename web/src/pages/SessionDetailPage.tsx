@@ -1,40 +1,65 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { Archive, ArchiveRestore, ArrowLeft, MessageSquareText, Pencil, Trash2 } from "lucide-react";
+import {
+  Archive,
+  ArchiveRestore,
+  ArrowLeft,
+  LoaderCircle,
+  MessageSquareText,
+  Pencil,
+  Send,
+  Square,
+  Trash2,
+} from "lucide-react";
 import {
   archiveSession,
   deleteSession,
   getSession,
+  getSessionConversation,
   getSessionEvents,
+  getSessionTimeline,
+  queueSessionSteer,
   renameSession,
+  respondSessionPermission,
   restoreSession,
+  sendSessionMessage,
+  steerSession,
+  stopSession,
   type Session,
   type SessionEvent,
 } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import { PageContainer, SettingsAlert } from "@/components/shared";
-import { Badge, Button, Card, CardDescription, CardTitle, Input, Label } from "@/components/ui";
+import { Badge, Button, Card, CardDescription, CardTitle, Input, Label, Textarea } from "@/components/ui";
 
 export function SessionDetailPage() {
   const { sessionId } = useParams<{ sessionId: string }>();
   const navigate = useNavigate();
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [session, setSession] = useState<Session | null>(null);
-  const [events, setEvents] = useState<SessionEvent[]>([]);
+  const [conversation, setConversation] = useState<SessionEvent[]>([]);
+  const [timeline, setTimeline] = useState<SessionEvent[]>([]);
+  const [draft, setDraft] = useState("");
+  const [attachments, setAttachments] = useState<File[]>([]);
   const [renameValue, setRenameValue] = useState("");
   const [editing, setEditing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!sessionId) return;
     let cancelled = false;
-    Promise.all([getSession(sessionId), getSessionEvents(sessionId)])
-      .then(([found, timeline]) => {
+    Promise.all([
+      getSession(sessionId),
+      getSessionEvents(sessionId),
+      getSessionConversation(sessionId),
+      getSessionTimeline(sessionId),
+    ])
+      .then(([found, allEvents, conversationResponse, timelineResponse]) => {
         if (cancelled) return;
-        setSession(found);
-        setEvents(timeline.events ?? []);
-        setRenameValue(found.title);
+        applySessionData(found, allEvents.events ?? [], conversationResponse.events ?? [], timelineResponse.events ?? []);
         setError(null);
       })
       .catch((reason: unknown) => {
@@ -48,12 +73,103 @@ export function SessionDetailPage() {
     };
   }, [sessionId]);
 
+  function applySessionData(
+    found: Session,
+    allEvents: SessionEvent[],
+    conversationEvents: SessionEvent[],
+    timelineEvents: SessionEvent[],
+  ) {
+    setSession(found);
+    setConversation(conversationEvents.length > 0 ? conversationEvents : allEvents.filter((event) => event.kind === "conversation"));
+    setTimeline(timelineEvents.length > 0 ? timelineEvents : allEvents.filter((event) => event.kind !== "conversation"));
+    setRenameValue(found.title);
+  }
+
   async function refresh() {
     if (!sessionId) return;
-    const [found, timeline] = await Promise.all([getSession(sessionId), getSessionEvents(sessionId)]);
-    setSession(found);
-    setEvents(timeline.events ?? []);
-    setRenameValue(found.title);
+    const [found, allEvents, conversationResponse, timelineResponse] = await Promise.all([
+      getSession(sessionId),
+      getSessionEvents(sessionId),
+      getSessionConversation(sessionId),
+      getSessionTimeline(sessionId),
+    ]);
+    applySessionData(found, allEvents.events ?? [], conversationResponse.events ?? [], timelineResponse.events ?? []);
+  }
+
+  async function submitMessage(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session || !draft.trim() || session.lifecycle !== "open") return;
+    setSending(true);
+    try {
+      await sendSessionMessage(session.id, draft.trim(), attachments);
+      setDraft("");
+      setAttachments([]);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      await refresh();
+      setError(null);
+    } catch (reason) {
+      setError((reason as Error).message);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function steer() {
+    if (!session || !draft.trim() || session.lifecycle !== "open") return;
+    setSending(true);
+    try {
+      await steerSession(session.id, draft.trim());
+      setDraft("");
+      await refresh();
+      setError(null);
+    } catch (reason) {
+      setError((reason as Error).message);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function queueSteer() {
+    if (!session || !draft.trim() || session.lifecycle !== "open") return;
+    setSending(true);
+    try {
+      await queueSessionSteer(session.id, draft.trim());
+      setDraft("");
+      await refresh();
+      setError(null);
+    } catch (reason) {
+      setError((reason as Error).message);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function respondPermission(permissionRequestId: string, decision: "allow" | "deny", requestId: string) {
+    if (!session) return;
+    setBusy(true);
+    try {
+      await respondSessionPermission(session.id, permissionRequestId, decision, requestId);
+      await refresh();
+      setError(null);
+    } catch (reason) {
+      setError((reason as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function stop() {
+    if (!session) return;
+    setBusy(true);
+    try {
+      await stopSession(session.id);
+      await refresh();
+      setError(null);
+    } catch (reason) {
+      setError((reason as Error).message);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function changeLifecycle(action: "archive" | "restore") {
@@ -148,6 +264,8 @@ export function SessionDetailPage() {
               )}
               <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
                 <Badge variant={session.lifecycle === "open" ? "success" : "outline"}>{session.lifecycle}</Badge>
+                <RuntimeActivityBadge session={session} />
+                {session.runtime_controls?.runtime_provider && <span>{session.runtime_controls.runtime_provider}</span>}
                 <span>Last activity {formatDateTime(session.last_activity_at)}</span>
               </div>
             </div>
@@ -183,16 +301,118 @@ export function SessionDetailPage() {
 
           {error && <SettingsAlert>{error}</SettingsAlert>}
 
+          <Card as="section" aria-labelledby="session-conversation-heading" className="gap-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <CardTitle id="session-conversation-heading">Conversation</CardTitle>
+                <CardDescription className="mt-1">A durable Session transcript backed by the same Runtime conversation boundary as Tasks.</CardDescription>
+              </div>
+              {session.active_continuation && <Badge variant="info">Turn {session.active_continuation.number} · {session.active_continuation.status}</Badge>}
+            </div>
+            {conversation.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No conversation messages yet.</p>
+            ) : (
+              <ol className="space-y-3" aria-label="Session conversation">
+                {conversation.map((event) => (
+                  <ConversationRow key={event.id} event={event} />
+                ))}
+              </ol>
+            )}
+            {session.lifecycle === "open" && (
+              <form className="border-t border-border pt-4" onSubmit={submitMessage} aria-label="Session message composer">
+                <Label htmlFor="session-message">Continue the conversation</Label>
+                <Textarea
+                  id="session-message"
+                  value={draft}
+                  onChange={(event) => setDraft(event.target.value)}
+                  placeholder="Ask the persistent Runtime to continue…"
+                  className="mt-1"
+                  rows={3}
+                  disabled={sending}
+                />
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      ref={fileInputRef}
+                      id="session-message-attachments"
+                      type="file"
+                      multiple
+                      onChange={(event) => setAttachments(Array.from(event.target.files ?? []))}
+                      className="h-auto max-w-56 py-1.5 text-xs"
+                      aria-label="Attach files to Session message"
+                      disabled={sending}
+                    />
+                    {attachments.length > 0 && <span className="text-xs text-muted-foreground">{attachments.length} attached</span>}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {session.runtime_controls?.native_steer_available && (
+                      <Button type="button" variant="outline" onClick={steer} disabled={sending || !draft.trim()}>
+                        <LoaderCircle className="size-3.5" aria-hidden="true" />
+                        Steer Runtime
+                      </Button>
+                    )}
+                    {session.active_continuation && session.runtime_controls?.queue_steer_available && (
+                      <Button type="button" variant="outline" onClick={queueSteer} disabled={sending || !draft.trim()}>
+                        Queue Turn
+                      </Button>
+                    )}
+                    {session.active_continuation && (
+                      <Button type="button" variant="warning" onClick={stop} disabled={busy || sending}>
+                        <Square className="size-3.5" aria-hidden="true" />
+                        Stop Runtime
+                      </Button>
+                    )}
+                    <Button type="submit" disabled={sending || !draft.trim()}>
+                      <Send className="size-3.5" aria-hidden="true" />
+                      {sending ? "Sending…" : "Send"}
+                    </Button>
+                  </div>
+                </div>
+              </form>
+            )}
+          </Card>
+
           <Card as="section" aria-labelledby="session-events-heading" className="gap-4">
             <div>
               <CardTitle id="session-events-heading">Session Events</CardTitle>
-              <CardDescription className="mt-1">Owner-local activity retained with this Session.</CardDescription>
+              <CardDescription className="mt-1">Runtime Timeline, attachments, lifecycle, permission, and turn events kept separate from the transcript.</CardDescription>
             </div>
-            {events.length === 0 ? (
+            {(session.runtime_controls?.provider_permissions?.length ?? 0) > 0 && (
+              <div className="rounded-lg border border-warning/30 bg-warning/5 p-3" role="region" aria-label="Pending Runtime permissions">
+                <p className="text-sm font-medium">Runtime permission requests</p>
+                <ul className="mt-2 space-y-2">
+                  {session.runtime_controls?.provider_permissions?.map((permission) => (
+                    <li key={permission.permission_request_id} className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                      <span className="font-mono text-xs text-muted-foreground">
+                        {permission.provider ?? "Runtime"} · {permission.permission_request_id}
+                      </span>
+                      <span className="flex gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => respondPermission(permission.permission_request_id, "deny", permission.request_id)}
+                          disabled={busy}
+                        >
+                          Deny
+                        </Button>
+                        <Button
+                          size="sm"
+                          onClick={() => respondPermission(permission.permission_request_id, "allow", permission.request_id)}
+                          disabled={busy}
+                        >
+                          Allow
+                        </Button>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {timeline.length === 0 ? (
               <p className="text-sm text-muted-foreground">No Session Events yet.</p>
             ) : (
               <ol className="space-y-3">
-                {events.map((event) => (
+                {timeline.map((event) => (
                   <EventRow key={event.id} event={event} />
                 ))}
               </ol>
@@ -201,6 +421,29 @@ export function SessionDetailPage() {
         </>
       ) : null}
     </PageContainer>
+  );
+}
+
+function RuntimeActivityBadge({ session }: { session: Session }) {
+  const activity = session.runtime_activity;
+  if (!activity?.liveness) return null;
+  const label = activity.turn_activity ? `runtime ${activity.liveness} · ${activity.turn_activity}` : `runtime ${activity.liveness}`;
+  const variant = activity.liveness === "live" ? "primary" : activity.liveness === "orphaned" || activity.liveness === "unknown" ? "warning" : "outline";
+  return <Badge variant={variant} title={activity.warning || label}>{label}</Badge>;
+}
+
+function ConversationRow({ event }: { event: SessionEvent }) {
+  const payload = event.payload ?? {};
+  const role = typeof payload.role === "string" ? payload.role : "runtime";
+  const text = typeof payload.text === "string" ? payload.text : eventDescription(event);
+  return (
+    <li className={`rounded-lg border px-3 py-2 ${role === "user" ? "border-signal/20 bg-signal/5" : "border-border bg-muted/20"}`}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-mono text-xs uppercase tracking-wide text-muted-foreground">{role}</span>
+        <time dateTime={event.created_at} className="text-xs text-muted-foreground">{formatDateTime(event.created_at)}</time>
+      </div>
+      <p className="mt-1 whitespace-pre-wrap break-words text-sm">{text}</p>
+    </li>
   );
 }
 
@@ -229,6 +472,7 @@ function eventDescription(event: SessionEvent): string {
     const size = typeof payload.size === "number" ? ` (${payload.size} bytes)` : "";
     return `Attached ${filename}${size}`;
   }
-  if (event.kind === "lifecycle" && typeof payload.phase === "string") return payload.phase;
+  if (typeof payload.text === "string") return payload.text;
+  if (typeof payload.phase === "string") return payload.phase;
   return JSON.stringify(payload);
 }

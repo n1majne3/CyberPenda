@@ -8,7 +8,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"pentest/internal/blackboardv2"
 	"pentest/internal/project"
@@ -178,28 +177,20 @@ func TestSessionBlackboardContinuationPinsWorkingSnapshotAndFinishesOnlyContinua
 	if err != nil {
 		t.Fatalf("create Session: %v", err)
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err = db.Exec(`
-		INSERT INTO session_continuations
-		(id, session_id, number, runtime_profile_id, runtime_provider, runner, status,
-		 container_id, native_session_id, native_session_path, runtime_config_version_id,
-		 started_at, updated_at, ended_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		"continuation:session", created.ID, 1, "profile:session", "provider", "sandbox", "pending",
-		"", "", "", "runtime-config:session", now, now, "")
+	continuation, err := sessions.CreateContinuation(created.ID, "profile:session", "provider", session.RunnerSandbox)
 	if err != nil {
-		t.Fatalf("insert Session Continuation: %v", err)
+		t.Fatalf("create Session Continuation: %v", err)
 	}
 	board := blackboardv2.NewService(db)
 
-	launch, err := board.BindSessionContinuation(ctx, created.ID, "continuation:session")
+	launch, err := board.BindSessionContinuation(ctx, created.ID, continuation.ID)
 	if err != nil {
 		t.Fatalf("bind Session Continuation: %v", err)
 	}
 	if launch.Launch.Revision != 0 || launch.Working.Revision != 0 || launch.Launch.SHA256 != launch.Working.SHA256 {
 		t.Fatalf("initial Session Continuation pin = %#v", launch)
 	}
-	if _, err := db.Exec(`UPDATE blackboard_v2_session_continuation_pins SET launch_revision=99 WHERE continuation_id=?`, "continuation:session"); err == nil {
+	if _, err := db.Exec(`UPDATE blackboard_v2_session_continuation_pins SET launch_revision=99 WHERE continuation_id=?`, continuation.ID); err == nil {
 		t.Fatal("Session launch pin accepted an update")
 	}
 	var persistedRevision int
@@ -213,7 +204,7 @@ func TestSessionBlackboardContinuationPinsWorkingSnapshotAndFinishesOnlyContinua
 			Category: "note", Summary: "Pinned Session state", Confidence: "tentative",
 		}}},
 	}
-	authority, err := board.AuthorizeSessionContinuation(ctx, created.ID, "continuation:session")
+	authority, err := board.AuthorizeSessionContinuation(ctx, created.ID, continuation.ID)
 	if err != nil {
 		t.Fatalf("authorize Session Continuation: %v", err)
 	}
@@ -224,7 +215,7 @@ func TestSessionBlackboardContinuationPinsWorkingSnapshotAndFinishesOnlyContinua
 	if accepted.Revision != 1 {
 		t.Fatalf("Session Continuation write revision = %d, want 1", accepted.Revision)
 	}
-	updatedPin, err := board.ReadSessionContinuationPin(ctx, created.ID, "continuation:session")
+	updatedPin, err := board.ReadSessionContinuationPin(ctx, created.ID, continuation.ID)
 	if err != nil {
 		t.Fatalf("read updated Session pin: %v", err)
 	}
@@ -233,7 +224,7 @@ func TestSessionBlackboardContinuationPinsWorkingSnapshotAndFinishesOnlyContinua
 	}
 
 	baseOne := 1
-	second, err := board.ApplyForSessionContinuationAtRevision(ctx, created.ID, "continuation:session", baseOne, blackboardv2.ChangeBatch{
+	second, err := board.ApplyForSessionContinuationAtRevision(ctx, created.ID, continuation.ID, baseOne, blackboardv2.ChangeBatch{
 		Schema: "semantic-change-batch/v2", IdempotencyKey: "continuation-update",
 		Changes: []blackboardv2.Change{{Op: "update", Key: "fact:continuity", Type: "fact", Version: 1, Record: blackboardv2.FactPatch{
 			Summary: stringPtr("Updated pinned Session state"),
@@ -242,7 +233,7 @@ func TestSessionBlackboardContinuationPinsWorkingSnapshotAndFinishesOnlyContinua
 	if err != nil || second.Revision != 2 {
 		t.Fatalf("Session Continuation revisioned write = %#v, %v", second, err)
 	}
-	if _, err := board.ApplyForSessionContinuationAtRevision(ctx, created.ID, "continuation:session", 1, blackboardv2.ChangeBatch{
+	if _, err := board.ApplyForSessionContinuationAtRevision(ctx, created.ID, continuation.ID, 1, blackboardv2.ChangeBatch{
 		Schema: "semantic-change-batch/v2", IdempotencyKey: "continuation-stale",
 		Changes: []blackboardv2.Change{{Op: "update", Key: "fact:continuity", Type: "fact", Version: 2, Record: blackboardv2.FactPatch{
 			Summary: stringPtr("stale"),
@@ -255,14 +246,14 @@ func TestSessionBlackboardContinuationPinsWorkingSnapshotAndFinishesOnlyContinua
 	if err != nil || finished.Revision != 2 {
 		t.Fatalf("finish Session Continuation = %#v, %v", finished, err)
 	}
-	replay, err := board.FinishSessionContinuation(ctx, created.ID, "continuation:session", "continuation-finish")
+	replay, err := board.FinishSessionContinuation(ctx, created.ID, continuation.ID, "continuation-finish")
 	if err != nil || !reflect.DeepEqual(replay, finished) {
 		t.Fatalf("finish replay = %#v, %v; want %#v", replay, err, finished)
 	}
-	if _, err := board.FinishSessionContinuation(ctx, created.ID, "continuation:session", "different-finish"); !isSessionSemanticCode(err, "finish_conflict") {
+	if _, err := board.FinishSessionContinuation(ctx, created.ID, continuation.ID, "different-finish"); !isSessionSemanticCode(err, "finish_conflict") {
 		t.Fatalf("different Session finish retry = %v, want finish_conflict", err)
 	}
-	if _, err := board.ApplyForSessionContinuation(ctx, created.ID, "continuation:session", blackboardv2.ChangeBatch{
+	if _, err := board.ApplyForSessionContinuation(ctx, created.ID, continuation.ID, blackboardv2.ChangeBatch{
 		Schema: "semantic-change-batch/v2", IdempotencyKey: "after-finish",
 		Changes: []blackboardv2.Change{{Op: "update", Key: "fact:continuity", Version: 2, Type: "fact", Record: blackboardv2.FactPatch{
 			Summary: stringPtr("must be rejected"),
@@ -270,25 +261,18 @@ func TestSessionBlackboardContinuationPinsWorkingSnapshotAndFinishesOnlyContinua
 	}); !isSessionSemanticCode(err, "closed_continuation") {
 		t.Fatalf("write after Session Continuation finish = %v, want closed_continuation", err)
 	}
-	_, err = db.Exec(`
-		INSERT INTO session_continuations
-		(id, session_id, number, runtime_profile_id, runtime_provider, runner, status,
-		 container_id, native_session_id, native_session_path, runtime_config_version_id,
-		 started_at, updated_at, ended_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		"continuation:replacement", created.ID, 2, "profile:session", "provider", "sandbox", "pending",
-		"", "", "", "runtime-config:session", now, now, "")
+	replacement, err := sessions.CreateContinuation(created.ID, "profile:session", "provider", session.RunnerSandbox)
 	if err != nil {
-		t.Fatalf("insert replacement Session Continuation: %v", err)
+		t.Fatalf("create replacement Session Continuation: %v", err)
 	}
-	if err := board.RebindSessionContinuation(ctx, created.ID, "continuation:session", "continuation:replacement"); err != nil {
+	if err := board.RebindSessionContinuation(ctx, created.ID, continuation.ID, replacement.ID); err != nil {
 		t.Fatalf("rebind Session Continuation: %v", err)
 	}
-	rebound, err := board.ReadSessionContinuationPin(ctx, created.ID, "continuation:replacement")
+	rebound, err := board.ReadSessionContinuationPin(ctx, created.ID, replacement.ID)
 	if err != nil || rebound.Launch.Revision != 0 || rebound.Working.Revision != 2 || string(rebound.Launch.Bytes) == string(rebound.Working.Bytes) {
 		t.Fatalf("rebound Session pin = %#v, %v", rebound, err)
 	}
-	if _, err := board.ApplyForSessionContinuation(ctx, created.ID, "continuation:replacement", blackboardv2.ChangeBatch{
+	if _, err := board.ApplyForSessionContinuation(ctx, created.ID, replacement.ID, blackboardv2.ChangeBatch{
 		Schema: "semantic-change-batch/v2", IdempotencyKey: "replacement-update",
 		Changes: []blackboardv2.Change{{Op: "update", Key: "fact:continuity", Version: 2, Type: "fact", Record: blackboardv2.FactPatch{
 			Summary: stringPtr("Updated by replacement Continuation"),

@@ -272,14 +272,20 @@ func (s *Service) SessionRuntimeSnapshot(ctx context.Context, sessionID string) 
 	return s.sessionRuntimeSnapshotTx(ctx, tx, sessionID)
 }
 
-// ProjectSessionRuntimeSnapshot returns the canonical bytes and attention
+// SessionRuntimeSnapshotProjection returns the canonical bytes and attention
 // measurement for a Session Working Snapshot.
-func (s *Service) ProjectSessionRuntimeSnapshot(ctx context.Context, sessionID string) (RuntimeSnapshotProjection, error) {
+func (s *Service) SessionRuntimeSnapshotProjection(ctx context.Context, sessionID string) (RuntimeSnapshotProjection, error) {
 	snapshot, err := s.SessionRuntimeSnapshot(ctx, sessionID)
 	if err != nil {
 		return RuntimeSnapshotProjection{}, err
 	}
 	return projectRuntimeSnapshot(snapshot)
+}
+
+// ProjectSessionRuntimeSnapshot is retained as a compatibility alias for
+// callers that used the original owner-neutral projection name.
+func (s *Service) ProjectSessionRuntimeSnapshot(ctx context.Context, sessionID string) (RuntimeSnapshotProjection, error) {
+	return s.SessionRuntimeSnapshotProjection(ctx, sessionID)
 }
 
 // SessionSemanticHealth reuses the v2 health diagnosis while omitting

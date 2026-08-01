@@ -13,8 +13,20 @@ import (
 )
 
 type createSessionInput struct {
-	Input        string `json:"input"`
-	InitialInput string `json:"initial_input"`
+	Input            string         `json:"input"`
+	InitialInput     string         `json:"initial_input"`
+	Message          string         `json:"message"`
+	Directive        string         `json:"directive"`
+	RuntimeProfileID string         `json:"runtime_profile_id"`
+	Provider         string         `json:"provider"`
+	RuntimeProvider  string         `json:"runtime_provider"`
+	ModelProviderID  string         `json:"model_provider_id"`
+	Model            string         `json:"model"`
+	ModelOverride    string         `json:"model_override"`
+	ReasoningEffort  string         `json:"reasoning_effort"`
+	Runner           string         `json:"runner"`
+	HostActivated    bool           `json:"host_activated"`
+	RuntimeConfig    map[string]any `json:"runtime_config"`
 }
 
 var errInvalidSessionBody = errors.New("invalid request body")
@@ -23,7 +35,20 @@ func (input createSessionInput) value() string {
 	if strings.TrimSpace(input.Input) != "" {
 		return input.Input
 	}
+	if strings.TrimSpace(input.Message) != "" {
+		return input.Message
+	}
+	if strings.TrimSpace(input.Directive) != "" {
+		return input.Directive
+	}
 	return input.InitialInput
+}
+
+func (input createSessionInput) selectedModel() string {
+	if model := strings.TrimSpace(input.Model); model != "" {
+		return model
+	}
+	return strings.TrimSpace(input.ModelOverride)
 }
 
 // parseCreateSessionRequest accepts the JSON surface and the established
@@ -52,6 +77,17 @@ func parseMultipartCreateSessionRequest(request *http.Request) (createSessionInp
 	} else {
 		input.Input = request.FormValue("input")
 		input.InitialInput = request.FormValue("initial_input")
+		input.Message = request.FormValue("message")
+		input.Directive = request.FormValue("directive")
+		input.RuntimeProfileID = request.FormValue("runtime_profile_id")
+		input.Provider = request.FormValue("provider")
+		input.RuntimeProvider = request.FormValue("runtime_provider")
+		input.ModelProviderID = request.FormValue("model_provider_id")
+		input.Model = request.FormValue("model")
+		input.ModelOverride = request.FormValue("model_override")
+		input.ReasoningEffort = request.FormValue("reasoning_effort")
+		input.Runner = request.FormValue("runner")
+		input.HostActivated = strings.EqualFold(request.FormValue("host_activated"), "true")
 	}
 	var headers []*multipart.FileHeader
 	if request.MultipartForm != nil {
@@ -95,7 +131,12 @@ func (server *Server) handleCreateSession(response http.ResponseWriter, request 
 		writeSessionError(response, err)
 		return
 	}
-	writeJSON(response, http.StatusCreated, created)
+	if strings.TrimSpace(input.RuntimeProfileID) != "" || strings.TrimSpace(input.RuntimeProvider) != "" || strings.TrimSpace(input.Provider) != "" {
+		if _, launchErr := server.startSessionRuntime(request.Context(), created, input.value(), sessionRuntimeInputFromCreate(input)); launchErr != nil {
+			server.recordSessionLaunchDiagnostic(created.ID, "launch_failed", launchErr)
+		}
+	}
+	server.writeDecoratedSession(response, http.StatusCreated, created.ID)
 }
 
 func (server *Server) handleListSessions(response http.ResponseWriter, request *http.Request) {
@@ -108,9 +149,18 @@ func (server *Server) handleListSessions(response http.ResponseWriter, request *
 		writeSessionError(response, err)
 		return
 	}
+	decorated := make([]session.Session, 0, len(found))
+	for _, item := range found {
+		projected, decorateErr := server.decorateSession(item)
+		if decorateErr != nil {
+			writeSessionError(response, decorateErr)
+			return
+		}
+		decorated = append(decorated, projected)
+	}
 	writeJSON(response, http.StatusOK, struct {
 		Sessions []session.Session `json:"sessions"`
-	}{Sessions: found})
+	}{Sessions: decorated})
 }
 
 func (server *Server) handleGetSession(response http.ResponseWriter, request *http.Request) {
@@ -119,7 +169,12 @@ func (server *Server) handleGetSession(response http.ResponseWriter, request *ht
 		writeSessionError(response, err)
 		return
 	}
-	writeJSON(response, http.StatusOK, found)
+	decorated, err := server.decorateSession(found)
+	if err != nil {
+		writeSessionError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, decorated)
 }
 
 func (server *Server) handleSessionEvents(response http.ResponseWriter, request *http.Request) {
@@ -150,16 +205,30 @@ func (server *Server) handleRenameSession(response http.ResponseWriter, request 
 		writeSessionError(response, err)
 		return
 	}
-	writeJSON(response, http.StatusOK, found)
+	decorated, err := server.decorateSession(found)
+	if err != nil {
+		writeSessionError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, decorated)
 }
 
 func (server *Server) handleArchiveSession(response http.ResponseWriter, request *http.Request) {
+	if err := server.stopSessionRuntime(request.PathValue("id")); err != nil {
+		writeError(response, http.StatusConflict, err.Error())
+		return
+	}
 	found, err := server.sessions.Archive(request.PathValue("id"))
 	if err != nil {
 		writeSessionError(response, err)
 		return
 	}
-	writeJSON(response, http.StatusOK, found)
+	decorated, err := server.decorateSession(found)
+	if err != nil {
+		writeSessionError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, decorated)
 }
 
 func (server *Server) handleRestoreSession(response http.ResponseWriter, request *http.Request) {
@@ -168,10 +237,19 @@ func (server *Server) handleRestoreSession(response http.ResponseWriter, request
 		writeSessionError(response, err)
 		return
 	}
-	writeJSON(response, http.StatusOK, found)
+	decorated, err := server.decorateSession(found)
+	if err != nil {
+		writeSessionError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, decorated)
 }
 
 func (server *Server) handleDeleteSession(response http.ResponseWriter, request *http.Request) {
+	if err := server.stopSessionRuntime(request.PathValue("id")); err != nil && !errors.Is(err, session.ErrNotFound) {
+		writeError(response, http.StatusConflict, err.Error())
+		return
+	}
 	if err := server.sessions.Delete(request.PathValue("id")); err != nil {
 		writeSessionError(response, err)
 		return
@@ -183,9 +261,11 @@ func writeSessionError(response http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, session.ErrNotFound):
 		writeError(response, http.StatusNotFound, session.ErrNotFound.Error())
-	case errors.Is(err, session.ErrMissingInput), errors.Is(err, session.ErrMissingTitle), errors.Is(err, session.ErrInvalidLifecycle), errors.Is(err, session.ErrInvalidAttachment):
+	case errors.Is(err, session.ErrMissingInput), errors.Is(err, session.ErrMissingTitle), errors.Is(err, session.ErrInvalidLifecycle), errors.Is(err, session.ErrInvalidAttachment), errors.Is(err, session.ErrInvalidRunner), errors.Is(err, session.ErrMissingRuntimeProfile):
 		writeError(response, http.StatusBadRequest, err.Error())
-	case errors.Is(err, session.ErrAlreadyArchived), errors.Is(err, session.ErrNotArchived), errors.Is(err, session.ErrOpenSession):
+	case errors.Is(err, session.ErrContinuationNotFound):
+		writeError(response, http.StatusNotFound, err.Error())
+	case errors.Is(err, session.ErrAlreadyArchived), errors.Is(err, session.ErrNotArchived), errors.Is(err, session.ErrOpenSession), errors.Is(err, session.ErrSessionNotOpen), errors.Is(err, session.ErrActiveContinuation), errors.Is(err, session.ErrContinuationStatusConflict):
 		writeError(response, http.StatusConflict, err.Error())
 	default:
 		writeError(response, http.StatusInternalServerError, "session operation failed")

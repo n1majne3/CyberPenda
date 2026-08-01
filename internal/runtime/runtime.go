@@ -43,270 +43,73 @@ type LaunchRequest struct {
 	StopConfirmation StopConfirmation
 }
 
-// Harness owns runtime lifecycle for tasks through adapters. It records
-// normalized events on the task timeline and tracks active runs so they can be
-// stopped.
+// Harness adapts the shared owner-neutral Runtime Harness to the Task service.
 type Harness struct {
-	tasks  *task.Service
-	mu     sync.Mutex
-	active map[string]*activeRun // taskID -> cancel + completion
+	tasks *task.Service
+	core  *OwnerHarness
 }
 
-type activeRun struct {
-	mu               sync.RWMutex
-	cancel           context.CancelFunc
-	done             chan struct{}
-	stopConfirmation StopConfirmation
-	continuationID   string
-	// finishRequested is operator Task Finish intent. Set before provider
-	// resource close; Launch finalizes Continuation (not Task) after Run exits.
-	finishRequested bool
-}
-
-// NewHarness returns a Harness that records events through the task service.
 func NewHarness(tasks *task.Service) *Harness {
-	return &Harness{tasks: tasks, active: map[string]*activeRun{}}
-}
-
-// Launch starts one runtime continuation for a task. It marks the task running,
-// emits a lifecycle-started event, runs the adapter, and emits a lifecycle
-// completion event. It blocks until the continuation finishes or the context is
-// cancelled.
-func (h *Harness) Launch(ctx context.Context, req LaunchRequest) error {
-	if req.Adapter == nil {
-		return fmt.Errorf("launch requires an adapter")
-	}
-	if _, err := h.tasks.Get(req.TaskID); err != nil {
-		return err
-	}
-
-	ctx, cancel := context.WithCancel(ctx)
-	done := make(chan struct{})
-	run := h.register(req.TaskID, cancel, done, req.StopConfirmation, req.ContinuationID)
-	defer func() {
-		close(done)
-		h.unregister(req.TaskID)
-	}()
-
-	emit := func(kind task.EventKind, payload task.EventPayload) {
-		var err error
-		continuationID := run.currentContinuationID()
-		if continuationID != "" {
-			_, err = h.tasks.AppendContinuationEvent(req.TaskID, continuationID, kind, payload)
-		} else {
-			_, err = h.tasks.AppendEvent(req.TaskID, kind, payload)
-		}
-		if err != nil {
-			// Event recording failure must not crash the runtime; it is surfaced
-			// via the returned run error below when relevant.
-			return
-		}
-	}
-
-	emit(task.EventKindLifecycle, task.EventPayload{"phase": "started", "adapter": req.Adapter.Name()})
-	if _, err := h.tasks.UpdateStatus(req.TaskID, task.StatusRunning); err != nil {
-		return fmt.Errorf("mark running: %w", err)
-	}
-	if req.ContinuationID != "" {
-		if _, err := h.tasks.UpdateContinuationStatus(req.ContinuationID, task.StatusRunning); err != nil {
-			return fmt.Errorf("mark continuation running: %w", err)
-		}
-	}
-	if req.ContinuationID != "" {
-		if recorder, ok := req.Adapter.(metadataRecordingAdapter); ok {
-			recorder.SetMetadataRecorder(func(metadata NativeSessionMetadata) error {
-				if metadata.ContainerID == "" && metadata.NativeSessionID == "" && metadata.NativeSessionPath == "" {
-					return nil
-				}
-				continuationID := run.currentContinuationID()
-				if continuationID == "" {
-					return nil
-				}
-				_, err := h.tasks.UpdateContinuationRuntimeMetadata(continuationID, metadata.ContainerID, metadata.NativeSessionID, metadata.NativeSessionPath)
+	h := &Harness{tasks: tasks}
+	h.core = NewOwnerHarness(OwnerHarnessConfig{
+		VerifyOwner: func(ownerID string) error {
+			_, err := tasks.Get(ownerID)
+			return err
+		},
+		AppendEvent: func(ownerID, continuationID string, kind task.EventKind, payload task.EventPayload) error {
+			if continuationID != "" {
+				_, err := tasks.AppendContinuationEvent(ownerID, continuationID, kind, payload)
 				return err
-			})
-		}
-	}
-
-	runErr := req.Adapter.Run(ctx, req.Goal, emit)
-
-	finalContinuationID := run.currentContinuationID()
-	if finalContinuationID != "" && req.Metadata != nil {
-		metadata, err := req.Metadata()
-		if err == nil {
-			if metadata.ContainerID != "" || metadata.NativeSessionID != "" || metadata.NativeSessionPath != "" {
-				if _, err := h.tasks.UpdateContinuationRuntimeMetadata(finalContinuationID, metadata.ContainerID, metadata.NativeSessionID, metadata.NativeSessionPath); err != nil {
-					return fmt.Errorf("record continuation metadata: %w", err)
-				}
 			}
-		}
-	}
-
-	// Operator Finish: single owner of terminal Task/Continuation status is
-	// handleFinishTask. With finish intent set, only release the active run —
-	// never write completed/stopped/failed here (avoids races with StopAndWait).
-	if run.finishWasRequested() {
-		emit(task.EventKindLifecycle, task.EventPayload{"phase": "finish_shutdown", "adapter": req.Adapter.Name()})
-		return nil
-	}
-
-	finalStatus := task.StatusCompleted
-	finalPhase := "completed"
-	if runErr != nil {
-		finalStatus = task.StatusFailed
-		finalPhase = "failed"
-	}
-	if ctx.Err() != nil {
-		finalStatus = task.StatusStopped
-		finalPhase = "stopped"
-	}
-	emit(task.EventKindLifecycle, task.EventPayload{"phase": finalPhase, "adapter": req.Adapter.Name()})
-	// Write terminal status before unregister so StopAndWait observers see the
-	// settled lifecycle. Resume waits for harness inactivity when status is
-	// already terminal, covering the brief completed+IsActive window.
-	if _, err := h.tasks.UpdateStatus(req.TaskID, finalStatus); err != nil {
-		return fmt.Errorf("mark %s: %w", finalStatus, err)
-	}
-	if finalContinuationID != "" {
-		if _, err := h.tasks.UpdateContinuationStatus(finalContinuationID, finalStatus); err != nil {
-			return fmt.Errorf("mark continuation %s: %w", finalStatus, err)
-		}
-	}
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	return runErr
+			_, err := tasks.AppendEvent(ownerID, kind, payload)
+			return err
+		},
+		MarkRunning: func(ownerID, continuationID string) error {
+			if _, err := tasks.UpdateStatus(ownerID, task.StatusRunning); err != nil {
+				return err
+			}
+			if continuationID != "" {
+				_, err := tasks.UpdateContinuationStatus(continuationID, task.StatusRunning)
+				return err
+			}
+			return nil
+		},
+		UpdateContinuationRuntimeMetadata: func(continuationID, containerID, nativeSessionID, nativeSessionPath string) error {
+			_, err := tasks.UpdateContinuationRuntimeMetadata(continuationID, containerID, nativeSessionID, nativeSessionPath)
+			return err
+		},
+		Finalize: func(ownerID, continuationID, status string) error {
+			finalStatus := task.Status(status)
+			if _, err := tasks.UpdateStatus(ownerID, finalStatus); err != nil {
+				return err
+			}
+			if continuationID != "" {
+				_, err := tasks.UpdateContinuationStatus(continuationID, finalStatus)
+				return err
+			}
+			return nil
+		},
+	})
+	return h
 }
 
-// Stop requests the active continuation for a task to stop. It is a no-op if no
-// continuation is active. Stop cancels immediately (interrupt path).
-func (h *Harness) Stop(taskID string) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if run, ok := h.active[taskID]; ok {
-		run.cancel()
-	}
+func (h *Harness) Launch(ctx context.Context, req LaunchRequest) error {
+	return h.core.Launch(ctx, OwnerLaunchRequest{
+		OwnerID: req.TaskID, Goal: req.Goal, Adapter: req.Adapter,
+		ContinuationID: req.ContinuationID, Metadata: req.Metadata, StopConfirmation: req.StopConfirmation,
+	})
 }
 
-// MarkFinishRequested records operator Task Finish intent without cancelling
-// the harness context. While set, Launch exits without writing terminal Task
-// or Continuation status — handleFinishTask is the sole terminal owner.
-// Concurrent visibility is serialized with ClearFinishIntent via activeRun.mu.
-func (h *Harness) MarkFinishRequested(taskID string) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	run, ok := h.active[taskID]
-	if !ok {
-		return
-	}
-	run.mu.Lock()
-	run.finishRequested = true
-	run.mu.Unlock()
-}
-
-// ClearFinishIntent aborts operator Finish intent so a later Stop or abnormal
-// exit may finalize stopped/failed through the normal Launch path. Call when
-// Finish aborts before claiming terminal status.
-func (h *Harness) ClearFinishIntent(taskID string) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	run, ok := h.active[taskID]
-	if !ok {
-		return
-	}
-	run.mu.Lock()
-	run.finishRequested = false
-	run.mu.Unlock()
-}
-
-// FinishIntentActive reports whether operator Finish intent is currently set.
-// Tests and diagnostics use this; production Finish clears on abort paths.
-func (h *Harness) FinishIntentActive(taskID string) bool {
-	h.mu.Lock()
-	run, ok := h.active[taskID]
-	h.mu.Unlock()
-	if !ok {
-		return false
-	}
-	return run.finishWasRequested()
-}
-
-// IsActive reports whether a continuation is currently running for the task.
-func (h *Harness) IsActive(taskID string) bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	_, ok := h.active[taskID]
-	return ok
-}
-
-// StopAndWait requests a stop and waits for the active continuation to exit.
-// It returns true when no continuation is active or the runtime exits before
-// the timeout.
+func (h *Harness) Stop(taskID string)                    { h.core.Stop(taskID) }
+func (h *Harness) MarkFinishRequested(taskID string)     { h.core.MarkFinishRequested(taskID) }
+func (h *Harness) ClearFinishIntent(taskID string)       { h.core.ClearFinishIntent(taskID) }
+func (h *Harness) FinishIntentActive(taskID string) bool { return h.core.FinishIntentActive(taskID) }
+func (h *Harness) IsActive(taskID string) bool           { return h.core.IsActive(taskID) }
 func (h *Harness) StopAndWait(taskID string, timeout time.Duration) bool {
-	h.mu.Lock()
-	run, ok := h.active[taskID]
-	h.mu.Unlock()
-	if !ok {
-		return true
-	}
-	run.cancel()
-	deadline := time.Now().Add(timeout)
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case <-run.done:
-		if run.stopConfirmation == nil {
-			return true
-		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return false
-		}
-		return run.stopConfirmation(remaining) == nil
-	case <-timer.C:
-		return false
-	}
+	return h.core.StopAndWait(taskID, timeout)
 }
-
-// RebindContinuation moves the active run's event/metadata/finalization pin to
-// a replacement provider turn without restarting the Task-owned process.
 func (h *Harness) RebindContinuation(taskID, continuationID string) error {
-	h.mu.Lock()
-	run := h.active[taskID]
-	h.mu.Unlock()
-	if run == nil || continuationID == "" {
-		return fmt.Errorf("active runtime continuation is unavailable")
-	}
-	run.mu.Lock()
-	run.continuationID = continuationID
-	run.mu.Unlock()
-	return nil
-}
-
-func (h *Harness) register(taskID string, cancel context.CancelFunc, done chan struct{}, stopConfirmation StopConfirmation, continuationID string) *activeRun {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	run := &activeRun{cancel: cancel, done: done, stopConfirmation: stopConfirmation, continuationID: continuationID}
-	h.active[taskID] = run
-	return run
-}
-
-func (h *Harness) unregister(taskID string) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	delete(h.active, taskID)
-}
-
-func (r *activeRun) currentContinuationID() string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.continuationID
-}
-
-func (r *activeRun) finishWasRequested() bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.finishRequested
+	return h.core.RebindContinuation(taskID, continuationID)
 }
 
 // fakeGoalKey holds the task id the fake adapter is running, used only to keep

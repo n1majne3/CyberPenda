@@ -930,6 +930,7 @@ func migrations() []migration {
 		newMigration(43, "assisted_conclusion_version_regeneration", migration43SQL, migration43Up),
 		newMigration(44, "assisted_conclusion_exactly_once_recovery", migration44SQL, migration44Up),
 		newMigration(45, "non_project_sessions", migration45SQL, migration45Up),
+		newMigration(46, "session_runtime_continuations", migration46SQL, migration46Up),
 		newMigration(47, "session_blackboard_v2", migration47SQL, migration47Up),
 	}
 }
@@ -963,23 +964,30 @@ func migration45Up(tx *sql.Tx) error {
 	return execStatements(tx, migration45SQL)
 }
 
-const migration47SQL = `
-CREATE TABLE IF NOT EXISTS blackboard_v2_session_state (
-	session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
-	revision INTEGER NOT NULL CHECK (revision >= 0)
+const migration46SQL = `
+CREATE TABLE IF NOT EXISTS session_runtime_config_versions (
+	id TEXT PRIMARY KEY,
+	session_id TEXT NOT NULL,
+	version INTEGER NOT NULL,
+	runtime_profile_id TEXT NOT NULL,
+	config_json TEXT NOT NULL DEFAULT '{}',
+	created_at TEXT NOT NULL,
+	UNIQUE (session_id, version)
 );
+CREATE INDEX IF NOT EXISTS idx_session_runtime_configs_session_version
+	ON session_runtime_config_versions(session_id, version ASC);
 CREATE TABLE IF NOT EXISTS session_continuations (
 	id TEXT PRIMARY KEY,
-	session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	session_id TEXT NOT NULL,
 	number INTEGER NOT NULL,
-	runtime_profile_id TEXT NOT NULL DEFAULT '',
-	runtime_provider TEXT NOT NULL DEFAULT '',
-	runner TEXT NOT NULL DEFAULT 'sandbox',
+	runtime_profile_id TEXT NOT NULL,
+	runtime_provider TEXT NOT NULL,
+	runner TEXT NOT NULL,
 	status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed', 'stopped', 'interrupted')),
 	container_id TEXT NOT NULL DEFAULT '',
 	native_session_id TEXT NOT NULL DEFAULT '',
 	native_session_path TEXT NOT NULL DEFAULT '',
-	runtime_config_version_id TEXT NOT NULL DEFAULT '',
+	runtime_config_version_id TEXT NOT NULL,
 	started_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL,
 	ended_at TEXT NOT NULL DEFAULT '',
@@ -987,6 +995,19 @@ CREATE TABLE IF NOT EXISTS session_continuations (
 );
 CREATE INDEX IF NOT EXISTS idx_session_continuations_session_number
 	ON session_continuations(session_id, number DESC);
+CREATE INDEX IF NOT EXISTS idx_session_continuations_active
+	ON session_continuations(session_id, status);
+`
+
+func migration46Up(tx *sql.Tx) error {
+	return execStatements(tx, migration46SQL)
+}
+
+const migration47SQL = `
+CREATE TABLE IF NOT EXISTS blackboard_v2_session_state (
+	session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+	revision INTEGER NOT NULL CHECK (revision >= 0)
+);
 CREATE TABLE IF NOT EXISTS blackboard_v2_session_records (
 	session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
 	key TEXT NOT NULL,

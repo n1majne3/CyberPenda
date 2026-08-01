@@ -218,3 +218,77 @@ func TestSessionLifecyclePreservesIdentityAndDeletesOnlyAfterArchive(t *testing.
 		t.Fatalf("deleted Session Workdir stat error = %v, want not-exist", err)
 	}
 }
+
+func TestSessionContinuationsRetainRuntimeSelectionAndSeparateConversationFromTimeline(t *testing.T) {
+	dataRoot := t.TempDir()
+	db, err := store.Open(filepath.Join(dataRoot, "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	service := NewService(db, filepath.Join(dataRoot, "sessions"))
+	created, err := service.Create(CreateRequest{Input: "Inspect the attached application"})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	config, err := service.RecordRuntimeConfig(created.ID, "profile-codex", map[string]any{
+		"provider": "codex", "model": "gpt-5", "reasoning_effort": "high",
+	})
+	if err != nil {
+		t.Fatalf("record runtime config: %v", err)
+	}
+	continuation, err := service.CreateContinuation(created.ID, config.RuntimeProfileID, "codex", RunnerSandbox, config.Config)
+	if err != nil {
+		t.Fatalf("create continuation: %v", err)
+	}
+	if continuation.Number != 1 || continuation.Status != RuntimeStatusPending {
+		t.Fatalf("continuation = %#v", continuation)
+	}
+	if _, err := service.UpdateContinuationStatus(continuation.ID, RuntimeStatusRunning); err != nil {
+		t.Fatalf("mark continuation running: %v", err)
+	}
+	if _, err := service.AppendConversationEvent(created.ID, continuation.ID, "assistant", "I will inspect the application now."); err != nil {
+		t.Fatalf("append runtime conversation: %v", err)
+	}
+	if _, err := service.AppendEvent(created.ID, EventKindRuntimeOutput, EventPayload{"stream": "stdout", "text": "bounded output"}); err != nil {
+		t.Fatalf("append runtime timeline event: %v", err)
+	}
+	if _, err := service.UpdateContinuationStatus(continuation.ID, RuntimeStatusCompleted); err != nil {
+		t.Fatalf("complete continuation: %v", err)
+	}
+
+	conversation, err := service.Conversation(created.ID)
+	if err != nil {
+		t.Fatalf("load conversation: %v", err)
+	}
+	if len(conversation) != 2 || conversation[0].Kind != EventKindConversation || conversation[1].Payload["role"] != "assistant" {
+		t.Fatalf("conversation = %#v", conversation)
+	}
+	timeline, err := service.Timeline(created.ID)
+	if err != nil {
+		t.Fatalf("load timeline: %v", err)
+	}
+	for _, event := range timeline {
+		if event.Kind == EventKindConversation {
+			t.Fatalf("timeline duplicated conversation event: %#v", event)
+		}
+	}
+	versions, err := service.RuntimeConfigVersions(created.ID)
+	if err != nil {
+		t.Fatalf("load runtime config history: %v", err)
+	}
+	if len(versions) != 1 || versions[0].Config["reasoning_effort"] != "high" {
+		t.Fatalf("runtime config versions = %#v", versions)
+	}
+}
+
+func TestSessionOwnerContractRemainsProjectFree(t *testing.T) {
+	contract := (Session{ID: "session-1", Workdir: "/tmp/session-1"}).OwnerContract()
+	if err := contract.Validate(); err != nil {
+		t.Fatalf("validate Session owner contract: %v", err)
+	}
+	if contract.ProjectID != "" || contract.TaskID != "" || !contract.IsSession() || contract.Capabilities.ProjectScope || contract.Capabilities.ProjectArtifacts {
+		t.Fatalf("Session owner contract leaked Project capabilities: %#v", contract)
+	}
+}
