@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"pentest/internal/owner"
 	"pentest/internal/project"
 	"pentest/internal/store"
 )
@@ -391,6 +392,13 @@ type Task struct {
 	LatestContinuation   *TaskContinuation    `json:"latest_continuation,omitempty"`
 	CreatedAt            time.Time            `json:"created_at"`
 	UpdatedAt            time.Time            `json:"updated_at"`
+}
+
+// OwnerContract exposes the explicit Project-capable owner binding consumed by
+// owner-neutral Runtime and Blackboard kernels. Task always carries a Project
+// identity; callers cannot construct a projectless Task contract.
+func (t Task) OwnerContract(workdir string) owner.Contract {
+	return owner.NewTaskContract(t.ID, t.ProjectID, workdir)
 }
 
 // CreateRequest is the input to Service.Create.

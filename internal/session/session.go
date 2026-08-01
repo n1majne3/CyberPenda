@@ -1,0 +1,665 @@
+// Package session owns the durable Non-Project Session aggregate. A Session is
+// intentionally separate from Task: it has no Project identity, Scope, or
+// Project artifacts, while its owner-local Events and managed Workdir remain
+// durable for the Session's complete lifetime.
+package session
+
+import (
+	"crypto/rand"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path"
+	"path/filepath"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"pentest/internal/owner"
+	"pentest/internal/store"
+)
+
+// Lifecycle is the only durable Session state. Runtime liveness and turn
+// failures are separate projections and never change this value implicitly.
+type Lifecycle string
+
+const (
+	LifecycleOpen     Lifecycle = "open"
+	LifecycleArchived Lifecycle = "archived"
+)
+
+// MaxTitleRunes bounds the operator-visible Session Title derived from the
+// first non-empty input line.
+const MaxTitleRunes = 80
+
+// MaxAttachmentFileBytes and MaxAttachmentCount keep the domain safe even when
+// callers other than the HTTP multipart adapter create a Session.
+const (
+	MaxAttachmentFileBytes int64 = 100 << 20
+	MaxAttachmentCount           = 25
+)
+
+// EventKind classifies the owner-local Session timeline.
+type EventKind string
+
+const (
+	EventKindConversation EventKind = "conversation"
+	EventKindAttachment   EventKind = "attachment"
+	EventKindLifecycle    EventKind = "lifecycle"
+)
+
+// EventPayload is intentionally structured and compact. Raw files remain in
+// the managed Workdir; an attachment Event stores only its safe reference and
+// digest metadata.
+type EventPayload map[string]any
+
+// Event is one ordered, owner-local Session timeline entry.
+type Event struct {
+	ID        string       `json:"id"`
+	SessionID string       `json:"session_id"`
+	Seq       int          `json:"seq"`
+	Kind      EventKind    `json:"kind"`
+	Payload   EventPayload `json:"payload"`
+	CreatedAt time.Time    `json:"created_at"`
+}
+
+// Session is the durable Non-Project Session aggregate. Workdir is kept out of
+// the JSON representation because it is a server-local path, not operator
+// state or a Project artifact reference.
+type Session struct {
+	ID             string    `json:"id"`
+	Title          string    `json:"title"`
+	Lifecycle      Lifecycle `json:"lifecycle"`
+	Workdir        string    `json:"-"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	LastActivityAt time.Time `json:"last_activity_at"`
+}
+
+// OwnerContract returns the explicit Session capability contract consumed by
+// later Runtime and Blackboard adapters. It cannot carry a Project identity.
+func (s Session) OwnerContract() owner.Contract {
+	return owner.NewSessionContract(s.ID, s.Workdir)
+}
+
+// Attachment is an operator-supplied file staged into a Session Workdir. Open
+// is called exactly once during creation; the service owns closing the stream.
+type Attachment struct {
+	Name string
+	Size int64
+	Open func() (io.ReadCloser, error)
+}
+
+// CreateRequest is the initial Session input and optional initial attachments.
+type CreateRequest struct {
+	Input       string
+	Attachments []Attachment
+}
+
+var (
+	// ErrNotFound deliberately has no owner details so cross-owner lookups do
+	// not reveal whether another aggregate exists.
+	ErrNotFound          = errors.New("session not found")
+	ErrMissingInput      = errors.New("session initial input is required")
+	ErrMissingTitle      = errors.New("session title is required")
+	ErrInvalidLifecycle  = errors.New("invalid session lifecycle")
+	ErrAlreadyArchived   = errors.New("session is already archived")
+	ErrNotArchived       = errors.New("session is not archived")
+	ErrOpenSession       = errors.New("open session cannot be deleted")
+	ErrInvalidAttachment = errors.New("invalid session attachment")
+	ErrInvalidWorkdir    = errors.New("session workdir is outside the managed root")
+)
+
+// Service implements Session persistence and lifecycle rules against SQLite.
+type Service struct {
+	db          *store.DB
+	workdirRoot string
+}
+
+// NewService returns a Session service whose Workdirs are created directly
+// beneath workdirRoot. The root itself is not removed by Session deletion.
+func NewService(db *store.DB, workdirRoot string) *Service {
+	if strings.TrimSpace(workdirRoot) == "" {
+		workdirRoot = "."
+	}
+	if absolute, err := filepath.Abs(workdirRoot); err == nil {
+		workdirRoot = absolute
+	}
+	return &Service{db: db, workdirRoot: filepath.Clean(workdirRoot)}
+}
+
+// DeriveTitle returns the bounded title from the first non-empty input line.
+// It is deterministic and never invokes a model.
+func DeriveTitle(input string) string {
+	input = strings.ReplaceAll(input, "\r\n", "\n")
+	input = strings.ReplaceAll(input, "\r", "\n")
+	for _, line := range strings.Split(input, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		return truncateTitle(line)
+	}
+	return ""
+}
+
+func truncateTitle(value string) string {
+	if utf8.RuneCountInString(value) <= MaxTitleRunes {
+		return value
+	}
+	runes := []rune(value)
+	return string(runes[:MaxTitleRunes-1]) + "…"
+}
+
+// Create atomically persists the Session and its initial owner-local Events.
+// Files are fully copied into the newly-created Workdir before the database
+// transaction commits; any failed step removes the complete Workdir.
+func (s *Service) Create(req CreateRequest) (Session, error) {
+	if strings.TrimSpace(req.Input) == "" {
+		return Session{}, ErrMissingInput
+	}
+	title := DeriveTitle(req.Input)
+	if title == "" {
+		return Session{}, ErrMissingInput
+	}
+	if len(req.Attachments) > MaxAttachmentCount {
+		return Session{}, fmt.Errorf("%w: too many attachments (max %d)", ErrInvalidAttachment, MaxAttachmentCount)
+	}
+
+	if err := s.ensureWorkdirRoot(); err != nil {
+		return Session{}, fmt.Errorf("prepare Session data root: %w", err)
+	}
+	id, err := newID()
+	if err != nil {
+		return Session{}, fmt.Errorf("generate Session id: %w", err)
+	}
+	workdir, err := s.managedWorkdir(id)
+	if err != nil {
+		return Session{}, err
+	}
+	if err := os.Mkdir(workdir, 0o700); err != nil {
+		return Session{}, fmt.Errorf("create Session Workdir: %w", err)
+	}
+	cleanupWorkdir := true
+	defer func() {
+		if cleanupWorkdir {
+			_ = os.RemoveAll(workdir)
+		}
+	}()
+
+	attachments, err := copyAttachments(workdir, req.Attachments)
+	if err != nil {
+		return Session{}, err
+	}
+	now := time.Now().UTC()
+	created := Session{
+		ID: id, Title: title, Lifecycle: LifecycleOpen, Workdir: workdir,
+		CreatedAt: now, UpdatedAt: now, LastActivityAt: now,
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Session{}, fmt.Errorf("begin Session create: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`INSERT INTO sessions (id,title,lifecycle,workdir,created_at,updated_at,last_activity_at) VALUES (?,?,?,?,?,?,?)`,
+		created.ID, created.Title, string(created.Lifecycle), created.Workdir,
+		formatTime(created.CreatedAt), formatTime(created.UpdatedAt), formatTime(created.LastActivityAt)); err != nil {
+		return Session{}, fmt.Errorf("store Session: %w", err)
+	}
+	if _, err := appendEventTx(tx, created.ID, EventKindConversation, EventPayload{
+		"role": "user", "text": req.Input,
+	}, now); err != nil {
+		return Session{}, fmt.Errorf("store initial Session Event: %w", err)
+	}
+	for _, attachment := range attachments {
+		if _, err := appendEventTx(tx, created.ID, EventKindAttachment, EventPayload{
+			"filename":      attachment.Filename,
+			"relative_path": attachment.Filename,
+			"size":          attachment.Size,
+			"sha256":        attachment.SHA256,
+		}, now); err != nil {
+			return Session{}, fmt.Errorf("store Session attachment Event: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return Session{}, fmt.Errorf("commit Session create: %w", err)
+	}
+	cleanupWorkdir = false
+	return created, nil
+}
+
+// Get loads one Session by its own durable identity.
+func (s *Service) Get(id string) (Session, error) {
+	return scanSession(s.db.QueryRow(`SELECT id,title,lifecycle,workdir,created_at,updated_at,last_activity_at FROM sessions WHERE id=?`, id))
+}
+
+// List returns Sessions for one lifecycle in most-recent-activity order.
+func (s *Service) List(lifecycle Lifecycle) ([]Session, error) {
+	lifecycle, err := normalizeLifecycle(lifecycle)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(`SELECT id,title,lifecycle,workdir,created_at,updated_at,last_activity_at FROM sessions WHERE lifecycle=? ORDER BY last_activity_at DESC, created_at DESC, id ASC`, string(lifecycle))
+	if err != nil {
+		return nil, fmt.Errorf("list Sessions: %w", err)
+	}
+	defer rows.Close()
+	result := make([]Session, 0)
+	for rows.Next() {
+		found, err := scanSession(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan Session: %w", err)
+		}
+		result = append(result, found)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list Sessions: %w", err)
+	}
+	return result, nil
+}
+
+// Rename updates only the Session Title and records the owner-local lifecycle
+// Event. Session identity and retained input are unchanged.
+func (s *Service) Rename(id, title string) (Session, error) {
+	title = truncateTitle(strings.TrimSpace(title))
+	if title == "" {
+		return Session{}, ErrMissingTitle
+	}
+	found, err := s.Get(id)
+	if err != nil {
+		return Session{}, err
+	}
+	now := time.Now().UTC()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Session{}, fmt.Errorf("begin Session rename: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`UPDATE sessions SET title=?,updated_at=?,last_activity_at=? WHERE id=?`, title, formatTime(now), formatTime(now), id); err != nil {
+		return Session{}, fmt.Errorf("rename Session: %w", err)
+	}
+	if _, err := appendEventTx(tx, id, EventKindLifecycle, EventPayload{"phase": "renamed", "title": title}, now); err != nil {
+		return Session{}, fmt.Errorf("store Session rename Event: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Session{}, fmt.Errorf("commit Session rename: %w", err)
+	}
+	found.Title, found.UpdatedAt, found.LastActivityAt = title, now, now
+	return found, nil
+}
+
+// Archive closes an open Session's durable lifecycle while retaining all
+// Session-owned Events and its Workdir.
+func (s *Service) Archive(id string) (Session, error) {
+	return s.transition(id, LifecycleOpen, LifecycleArchived, ErrAlreadyArchived, "archived")
+}
+
+// Restore reopens an archived Session with the same identity and state.
+func (s *Service) Restore(id string) (Session, error) {
+	return s.transition(id, LifecycleArchived, LifecycleOpen, ErrNotArchived, "restored")
+}
+
+func (s *Service) transition(id string, from, to Lifecycle, wrongState error, phase string) (Session, error) {
+	found, err := s.Get(id)
+	if err != nil {
+		return Session{}, err
+	}
+	if found.Lifecycle != from {
+		return Session{}, wrongState
+	}
+	now := time.Now().UTC()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Session{}, fmt.Errorf("begin Session transition: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.Exec(`UPDATE sessions SET lifecycle=?,updated_at=?,last_activity_at=? WHERE id=? AND lifecycle=?`, string(to), formatTime(now), formatTime(now), id, string(from))
+	if err != nil {
+		return Session{}, fmt.Errorf("update Session lifecycle: %w", err)
+	}
+	if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+		if err != nil {
+			return Session{}, fmt.Errorf("read Session lifecycle update: %w", err)
+		}
+		return Session{}, wrongState
+	}
+	if _, err := appendEventTx(tx, id, EventKindLifecycle, EventPayload{"phase": phase}, now); err != nil {
+		return Session{}, fmt.Errorf("store Session lifecycle Event: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Session{}, fmt.Errorf("commit Session transition: %w", err)
+	}
+	found.Lifecycle, found.UpdatedAt, found.LastActivityAt = to, now, now
+	return found, nil
+}
+
+// Delete permanently removes an archived Session, its Events, and Workdir.
+// The Workdir is first quarantined under the managed root so a failed database
+// transaction can restore it without ever touching an arbitrary path.
+func (s *Service) Delete(id string) error {
+	found, err := s.Get(id)
+	if err != nil {
+		return err
+	}
+	if found.Lifecycle == LifecycleOpen {
+		return ErrOpenSession
+	}
+	if found.Lifecycle != LifecycleArchived {
+		return ErrInvalidLifecycle
+	}
+	workdir, err := s.managedWorkdir(id)
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(found.Workdir) != filepath.Clean(workdir) {
+		return ErrInvalidWorkdir
+	}
+	quarantine := filepath.Join(s.workdirRoot, ".deleting-"+id)
+	if _, err := os.Stat(quarantine); err == nil {
+		return fmt.Errorf("delete Session: cleanup already in progress")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect Session cleanup path: %w", err)
+	}
+	quarantined := false
+	if _, err := os.Stat(workdir); err == nil {
+		if err := os.Rename(workdir, quarantine); err != nil {
+			return fmt.Errorf("quarantine Session Workdir: %w", err)
+		}
+		quarantined = true
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect Session Workdir: %w", err)
+	}
+	restore := func() {
+		if quarantined {
+			_ = os.Rename(quarantine, workdir)
+		}
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		restore()
+		return fmt.Errorf("begin Session delete: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`DELETE FROM session_events WHERE session_id=?`, id); err != nil {
+		restore()
+		return fmt.Errorf("delete Session Events: %w", err)
+	}
+	result, err := tx.Exec(`DELETE FROM sessions WHERE id=? AND lifecycle=?`, id, string(LifecycleArchived))
+	if err != nil {
+		restore()
+		return fmt.Errorf("delete Session: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		restore()
+		return fmt.Errorf("read Session deletion: %w", err)
+	}
+	if affected != 1 {
+		restore()
+		return ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		restore()
+		return fmt.Errorf("commit Session delete: %w", err)
+	}
+	if quarantined {
+		if err := os.RemoveAll(quarantine); err != nil {
+			return fmt.Errorf("remove Session Workdir: %w", err)
+		}
+	}
+	return nil
+}
+
+// Events returns the ordered owner-local Session timeline.
+func (s *Service) Events(id string) ([]Event, error) {
+	if _, err := s.Get(id); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(`SELECT id,session_id,seq,kind,payload_json,created_at FROM session_events WHERE session_id=? ORDER BY seq ASC`, id)
+	if err != nil {
+		return nil, fmt.Errorf("list Session Events: %w", err)
+	}
+	defer rows.Close()
+	events := make([]Event, 0)
+	for rows.Next() {
+		var event Event
+		var kind, payload, created string
+		if err := rows.Scan(&event.ID, &event.SessionID, &event.Seq, &kind, &payload, &created); err != nil {
+			return nil, fmt.Errorf("scan Session Event: %w", err)
+		}
+		event.Kind = EventKind(kind)
+		if err := json.Unmarshal([]byte(payload), &event.Payload); err != nil {
+			return nil, fmt.Errorf("decode Session Event: %w", err)
+		}
+		var err error
+		if event.CreatedAt, err = time.Parse(time.RFC3339Nano, created); err != nil {
+			return nil, fmt.Errorf("parse Session Event time: %w", err)
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list Session Events: %w", err)
+	}
+	return events, nil
+}
+
+type copiedAttachment struct {
+	Filename string
+	Size     int64
+	SHA256   string
+}
+
+func copyAttachments(workdir string, input []Attachment) ([]copiedAttachment, error) {
+	names, err := resolveAttachmentNames(input)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]copiedAttachment, 0, len(names))
+	created := make([]string, 0, len(names))
+	cleanup := func() {
+		for _, name := range created {
+			_ = os.Remove(name)
+		}
+	}
+	for index, item := range names {
+		if item.Source.Open == nil {
+			cleanup()
+			return nil, fmt.Errorf("%w: %q has no source", ErrInvalidAttachment, item.Filename)
+		}
+		reader, err := item.Source.Open()
+		if err != nil {
+			cleanup()
+			return nil, fmt.Errorf("open Session attachment %q: %w", item.Filename, err)
+		}
+		if item.Source.Size > MaxAttachmentFileBytes {
+			_ = reader.Close()
+			cleanup()
+			return nil, fmt.Errorf("%w: attachment %q exceeds the %d MiB limit", ErrInvalidAttachment, item.Filename, MaxAttachmentFileBytes>>20)
+		}
+		temporary, err := os.CreateTemp(workdir, fmt.Sprintf(".session-attachment-%d-*", index))
+		if err != nil {
+			_ = reader.Close()
+			cleanup()
+			return nil, fmt.Errorf("stage Session attachment %q: %w", item.Filename, err)
+		}
+		_ = temporary.Chmod(0o600)
+		digest := sha256.New()
+		written, copyErr := io.Copy(io.MultiWriter(temporary, digest), io.LimitReader(reader, MaxAttachmentFileBytes+1))
+		closeReaderErr := reader.Close()
+		closeFileErr := temporary.Close()
+		if copyErr != nil || closeReaderErr != nil || closeFileErr != nil || written > MaxAttachmentFileBytes {
+			_ = os.Remove(temporary.Name())
+			cleanup()
+			if written > MaxAttachmentFileBytes {
+				return nil, fmt.Errorf("%w: attachment %q exceeds the %d MiB limit", ErrInvalidAttachment, item.Filename, MaxAttachmentFileBytes>>20)
+			}
+			return nil, fmt.Errorf("write Session attachment %q: %v", item.Filename, firstError(copyErr, closeReaderErr, closeFileErr))
+		}
+		destination := filepath.Join(workdir, item.Filename)
+		if filepath.Dir(destination) != filepath.Clean(workdir) {
+			_ = os.Remove(temporary.Name())
+			cleanup()
+			return nil, fmt.Errorf("%w: %q", ErrInvalidAttachment, item.Filename)
+		}
+		if err := os.Rename(temporary.Name(), destination); err != nil {
+			_ = os.Remove(temporary.Name())
+			cleanup()
+			return nil, fmt.Errorf("publish Session attachment %q: %w", item.Filename, err)
+		}
+		created = append(created, destination)
+		result = append(result, copiedAttachment{Filename: item.Filename, Size: written, SHA256: hex.EncodeToString(digest.Sum(nil))})
+	}
+	return result, nil
+}
+
+type namedAttachment struct {
+	Source   Attachment
+	Filename string
+}
+
+func resolveAttachmentNames(input []Attachment) ([]namedAttachment, error) {
+	result := make([]namedAttachment, 0, len(input))
+	used := make(map[string]struct{}, len(input))
+	for _, attachment := range input {
+		name := sanitizeAttachmentFilename(attachment.Name)
+		if name == "" {
+			return nil, fmt.Errorf("%w: %q has no usable filename", ErrInvalidAttachment, attachment.Name)
+		}
+		if attachment.Size < 0 {
+			return nil, fmt.Errorf("%w: %q has an invalid size", ErrInvalidAttachment, name)
+		}
+		final := name
+		if _, exists := used[attachmentNameCollisionKey(final)]; exists {
+			extension := filepath.Ext(name)
+			stem := strings.TrimSuffix(name, extension)
+			for suffix := 1; ; suffix++ {
+				candidate := fmt.Sprintf("%s-%d%s", stem, suffix, extension)
+				if _, exists := used[attachmentNameCollisionKey(candidate)]; !exists {
+					final = candidate
+					break
+				}
+			}
+		}
+		used[attachmentNameCollisionKey(final)] = struct{}{}
+		result = append(result, namedAttachment{Source: attachment, Filename: final})
+	}
+	return result, nil
+}
+
+func attachmentNameCollisionKey(name string) string {
+	return strings.ToLower(name)
+}
+
+func sanitizeAttachmentFilename(name string) string {
+	name = strings.ReplaceAll(strings.TrimSpace(name), "\\", "/")
+	name = path.Base(name)
+	if name == "" || name == "." || name == ".." {
+		return ""
+	}
+	return name
+}
+
+func firstError(errs ...error) error {
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return errors.New("unknown attachment write error")
+}
+
+func (s *Service) ensureWorkdirRoot() error {
+	if err := os.MkdirAll(s.workdirRoot, 0o700); err != nil {
+		return err
+	}
+	return os.Chmod(s.workdirRoot, 0o700)
+}
+
+func (s *Service) managedWorkdir(id string) (string, error) {
+	if strings.TrimSpace(id) == "" || strings.ContainsAny(id, `/\\`) || id == "." || id == ".." {
+		return "", ErrInvalidWorkdir
+	}
+	root, err := filepath.Abs(s.workdirRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve Session data root: %w", err)
+	}
+	workdir := filepath.Join(root, id)
+	relative, err := filepath.Rel(root, workdir)
+	if err != nil || relative != id || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", ErrInvalidWorkdir
+	}
+	return workdir, nil
+}
+
+func normalizeLifecycle(value Lifecycle) (Lifecycle, error) {
+	if value == "" {
+		return LifecycleOpen, nil
+	}
+	if value != LifecycleOpen && value != LifecycleArchived {
+		return "", ErrInvalidLifecycle
+	}
+	return value, nil
+}
+
+type scanner interface{ Scan(dest ...any) error }
+
+func scanSession(row scanner) (Session, error) {
+	var found Session
+	var lifecycle, created, updated, activity string
+	if err := row.Scan(&found.ID, &found.Title, &lifecycle, &found.Workdir, &created, &updated, &activity); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Session{}, ErrNotFound
+		}
+		return Session{}, err
+	}
+	found.Lifecycle = Lifecycle(lifecycle)
+	var err error
+	if found.CreatedAt, err = time.Parse(time.RFC3339Nano, created); err != nil {
+		return Session{}, fmt.Errorf("parse Session created_at: %w", err)
+	}
+	if found.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated); err != nil {
+		return Session{}, fmt.Errorf("parse Session updated_at: %w", err)
+	}
+	if found.LastActivityAt, err = time.Parse(time.RFC3339Nano, activity); err != nil {
+		return Session{}, fmt.Errorf("parse Session last_activity_at: %w", err)
+	}
+	return found, nil
+}
+
+func appendEventTx(tx *sql.Tx, sessionID string, kind EventKind, payload EventPayload, now time.Time) (Event, error) {
+	if payload == nil {
+		payload = EventPayload{}
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return Event{}, fmt.Errorf("encode Event payload: %w", err)
+	}
+	var max sql.NullInt64
+	if err := tx.QueryRow(`SELECT MAX(seq) FROM session_events WHERE session_id=?`, sessionID).Scan(&max); err != nil {
+		return Event{}, fmt.Errorf("read Session Event sequence: %w", err)
+	}
+	id, err := newID()
+	if err != nil {
+		return Event{}, fmt.Errorf("generate Session Event id: %w", err)
+	}
+	event := Event{ID: id, SessionID: sessionID, Seq: int(max.Int64) + 1, Kind: kind, Payload: payload, CreatedAt: now.UTC()}
+	if _, err := tx.Exec(`INSERT INTO session_events (id,session_id,seq,kind,payload_json,created_at) VALUES (?,?,?,?,?,?)`, event.ID, event.SessionID, event.Seq, string(event.Kind), string(encoded), formatTime(event.CreatedAt)); err != nil {
+		return Event{}, err
+	}
+	return event, nil
+}
+
+func formatTime(value time.Time) string { return value.UTC().Format(time.RFC3339Nano) }
+
+func newID() (string, error) {
+	var bytes [16]byte
+	if _, err := rand.Read(bytes[:]); err != nil {
+		return "", err
+	}
+	return "session-" + hex.EncodeToString(bytes[:]), nil
+}

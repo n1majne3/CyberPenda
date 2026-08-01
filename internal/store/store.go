@@ -929,7 +929,37 @@ func migrations() []migration {
 		newMigration(42, "assisted_conclusion_pre_dispatch_action_required", migration42SQL, migration42Up),
 		newMigration(43, "assisted_conclusion_version_regeneration", migration43SQL, migration43Up),
 		newMigration(44, "assisted_conclusion_exactly_once_recovery", migration44SQL, migration44Up),
+		newMigration(45, "non_project_sessions", migration45SQL, migration45Up),
 	}
+}
+
+const migration45SQL = `
+CREATE TABLE IF NOT EXISTS sessions (
+	id TEXT PRIMARY KEY,
+	title TEXT NOT NULL,
+	lifecycle TEXT NOT NULL CHECK (lifecycle IN ('open', 'archived')),
+	workdir TEXT NOT NULL UNIQUE,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	last_activity_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_lifecycle_activity
+	ON sessions(lifecycle, last_activity_at DESC, created_at DESC);
+CREATE TABLE IF NOT EXISTS session_events (
+	id TEXT PRIMARY KEY,
+	session_id TEXT NOT NULL,
+	seq INTEGER NOT NULL,
+	kind TEXT NOT NULL,
+	payload_json TEXT NOT NULL DEFAULT '{}',
+	created_at TEXT NOT NULL,
+	UNIQUE (session_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_session_events_session_seq
+	ON session_events(session_id, seq ASC);
+`
+
+func migration45Up(tx *sql.Tx) error {
+	return execStatements(tx, migration45SQL)
 }
 
 const migration44TableSQL = `

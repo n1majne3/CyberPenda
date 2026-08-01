@@ -11,6 +11,7 @@ import {
   ChevronRight,
   Menu,
   X,
+  MessageSquareText,
 } from "lucide-react";
 import { ProjectListPage } from "@/pages/ProjectListPage";
 import { ProjectDashboardPage } from "@/pages/ProjectDashboardPage";
@@ -28,6 +29,8 @@ import { EvidencePage } from "@/pages/EvidencePage";
 import { ReportPage } from "@/pages/ReportPage";
 import { SolutionPage } from "@/pages/SolutionPage";
 import { TasksPage } from "@/pages/TasksPage";
+import { SessionHomePage } from "@/pages/SessionHomePage";
+import { SessionDetailPage } from "@/pages/SessionDetailPage";
 import { Logo } from "@/components/Logo";
 import { ThemeToggle } from "@/components/ThemeProvider";
 import { cn } from "@/lib/utils";
@@ -184,6 +187,13 @@ export function ShellLayout() {
               >
                 Projects
               </SideLink>
+              <SideLink
+                to="/sessions"
+                icon={<MessageSquareText className="size-4" />}
+                onNavigate={() => closeMobileNav({ restoreFocus: false })}
+              >
+                Sessions
+              </SideLink>
             </NavSection>
             <NavSection label="Settings">
               <SideLink
@@ -321,6 +331,8 @@ function createAppRouter() {
       errorElement: <ShellErrorBoundary />,
       children: [
         { path: "/", element: <ProjectListPage /> },
+        { path: "/sessions", element: <SessionHomePage /> },
+        { path: "/sessions/:sessionId", element: <SessionDetailPage /> },
         { path: "/profiles", element: <RuntimeProfilesPage /> },
         { path: "/model-providers", element: <ModelProvidersPage /> },
         { path: "/credentials", element: <CredentialBindingsPage /> },

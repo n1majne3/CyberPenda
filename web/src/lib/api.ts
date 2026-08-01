@@ -142,6 +142,69 @@ export interface Project {
   updated_at: string;
 }
 
+export type SessionLifecycle = "open" | "archived";
+
+export interface Session {
+  id: string;
+  title: string;
+  lifecycle: SessionLifecycle;
+  created_at: string;
+  updated_at: string;
+  last_activity_at: string;
+}
+
+export type SessionEventKind = "conversation" | "attachment" | "lifecycle" | string;
+
+export interface SessionEvent {
+  id: string;
+  session_id: string;
+  seq: number;
+  kind: SessionEventKind;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
+export function listSessions(lifecycle?: SessionLifecycle) {
+  const suffix = lifecycle ? `?lifecycle=${encodeURIComponent(lifecycle)}` : "";
+  return apiGet<{ sessions: Session[] }>(`/api/sessions${suffix}`);
+}
+
+export function getSession(sessionId: string) {
+  return apiGet<Session>(`/api/sessions/${encodeURIComponent(sessionId)}`);
+}
+
+export function getSessionEvents(sessionId: string) {
+  return apiGet<{ events: SessionEvent[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/events`);
+}
+
+export function createSession(input: string, attachments: File[] = []) {
+  if (attachments.length === 0) {
+    return apiPost<Session>("/api/sessions", { input });
+  }
+  const form = new FormData();
+  form.append("payload", JSON.stringify({ input }));
+  for (const attachment of attachments) {
+    form.append("attachments", attachment, attachment.name);
+  }
+  return apiPostForm<Session>("/api/sessions", form);
+}
+
+export function renameSession(sessionId: string, title: string) {
+  return apiPatch<Session>(`/api/sessions/${encodeURIComponent(sessionId)}`, { title });
+}
+
+export function archiveSession(sessionId: string) {
+  return apiPost<Session>(`/api/sessions/${encodeURIComponent(sessionId)}/archive`);
+}
+
+export function restoreSession(sessionId: string) {
+  return apiPost<Session>(`/api/sessions/${encodeURIComponent(sessionId)}/restore`);
+}
+
+export function deleteSession(sessionId: string) {
+  return apiDelete(`/api/sessions/${encodeURIComponent(sessionId)}`);
+}
+
 export interface Dashboard {
   project_id: string;
   name: string;

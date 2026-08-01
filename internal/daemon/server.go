@@ -28,6 +28,7 @@ import (
 	"pentest/internal/runtimeextension"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
+	"pentest/internal/session"
 	"pentest/internal/skill"
 	"pentest/internal/store"
 	"pentest/internal/task"
@@ -39,6 +40,9 @@ type Config struct {
 	Version     string
 	DBPath      string
 	RuntimeRoot string
+	// SessionRoot is the managed data root beneath which one Workdir is created
+	// for each Non-Project Session. Empty defaults to RuntimeRoot/sessions.
+	SessionRoot string
 	// ArtifactRoot contains managed Evidence payloads. Empty defaults to the
 	// database directory. EvidenceSourceRoots are the explicit local roots from
 	// which authenticated operators may retain payloads.
@@ -97,12 +101,14 @@ type Server struct {
 	modelRefreshClient     *http.Client
 	preflight              *preflight.Service
 	tasks                  *task.Service
+	sessions               *session.Service
 	harness                *runtime.Harness
 	canonicalStore         string
 	blackboardV2           *blackboardv2.Service
 	blackboardV2Continuity *blackboardv2.ContinuityService
 	projectInterfaceGrants *projectinterface.GrantStore
 	runtimeRoot            string
+	sessionRoot            string
 	sandboxImage           string
 	containerCLI           string
 	taskVolume             string
@@ -220,6 +226,7 @@ func NewServer(config Config) (*Server, error) {
 			WithModelProviders(modelProviders, runtimePlugins).
 			WithRuntimeExtensions(runtimeExtensions),
 		tasks:                  tasks,
+		sessionRoot:            sessionRoot(config, runtimeRoot),
 		harness:                runtime.NewHarness(tasks),
 		canonicalStore:         epoch,
 		runtimeRoot:            runtimeRoot,
@@ -243,6 +250,7 @@ func NewServer(config Config) (*Server, error) {
 		blackboardConclusions:  newBlackboardConclusionTracker(),
 		runtimeStopTimeout:     10 * time.Second,
 	}
+	server.sessions = session.NewService(db, server.sessionRoot)
 	if server.logger == nil {
 		server.logger = log.Default()
 	}
@@ -297,6 +305,13 @@ func resolveRuntimeStorage(config Config) (string, string, error) {
 		return "", "", fmt.Errorf("runtime root %q is outside task volume root %q", runtimeRoot, taskVolumeRoot)
 	}
 	return runtimeRoot, taskVolumeRoot, nil
+}
+
+func sessionRoot(config Config, runtimeRoot string) string {
+	if configured := strings.TrimSpace(config.SessionRoot); configured != "" {
+		return filepath.Clean(configured)
+	}
+	return filepath.Join(runtimeRoot, "sessions")
 }
 
 // reconcileInterruptedTasks clears ghost tasks left running by a previous
@@ -642,6 +657,15 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /api/projects", server.handleCreateProject)
 	server.mux.HandleFunc("GET /api/projects/{id}", server.handleGetProject)
 	server.mux.HandleFunc("PATCH /api/projects/{id}", server.handleUpdateProject)
+	server.mux.HandleFunc("GET /api/sessions", server.handleListSessions)
+	server.mux.HandleFunc("POST /api/sessions", server.handleCreateSession)
+	server.mux.HandleFunc("GET /api/sessions/archived", server.handleListSessions)
+	server.mux.HandleFunc("GET /api/sessions/{id}", server.handleGetSession)
+	server.mux.HandleFunc("GET /api/sessions/{id}/events", server.handleSessionEvents)
+	server.mux.HandleFunc("PATCH /api/sessions/{id}", server.handleRenameSession)
+	server.mux.HandleFunc("POST /api/sessions/{id}/archive", server.handleArchiveSession)
+	server.mux.HandleFunc("POST /api/sessions/{id}/restore", server.handleRestoreSession)
+	server.mux.HandleFunc("DELETE /api/sessions/{id}", server.handleDeleteSession)
 	server.mux.HandleFunc("POST /api/runtime-profiles", server.handleCreateRuntimeProfile)
 	server.mux.HandleFunc("POST /api/runtime-profiles/resolve-launch", server.handleResolveLaunchRuntimeProfile)
 	server.mux.HandleFunc("GET /api/runtime-profiles", server.handleListRuntimeProfiles)
