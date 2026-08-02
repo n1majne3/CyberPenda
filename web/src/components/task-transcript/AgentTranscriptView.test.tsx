@@ -1,27 +1,20 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
-import type { Task } from "@/lib/api";
 import { AgentTranscriptView } from "./AgentTranscriptView";
 
-const task: Task = {
-  id: "task-1",
-  project_id: "project-1",
-  goal: "Inspect timeline",
+const owner = {
   status: "completed",
   runner: "sandbox",
-  runtime_profile_id: "profile-1",
-  run_controls: {},
-  scope_snapshot: {},
-  created_at: "2026-01-01T00:00:00Z",
-  updated_at: "2026-01-01T00:00:05Z",
+  createdAt: "2026-01-01T00:00:00Z",
+  updatedAt: "2026-01-01T00:00:05Z",
 };
 
 describe("AgentTranscriptView", () => {
   it("distinguishes assisted Work, Conclude, retry, and applied revision events", () => {
     render(
       <AgentTranscriptView
-        task={task}
+        owner={owner}
         items={[
           { seq: 1, type: "harness", content: "Blackboard conclusion pending for work Turn work-7" },
           { seq: 2, type: "harness", content: "Blackboard Conclude Turn started" },
@@ -41,7 +34,7 @@ describe("AgentTranscriptView", () => {
   it("renders pending Blackboard conclusion markers as Harness activity", () => {
     render(
       <AgentTranscriptView
-        task={task}
+        owner={owner}
         items={[{
           seq: 1,
           type: "harness",
@@ -58,7 +51,7 @@ describe("AgentTranscriptView", () => {
   it("defaults to newest events first", () => {
     render(
       <AgentTranscriptView
-        task={task}
+        owner={owner}
         items={[
           { seq: 1, type: "text", content: "Older timeline event" },
           { seq: 2, type: "text", content: "Newer timeline event" },
@@ -74,7 +67,7 @@ describe("AgentTranscriptView", () => {
   it("labels timeline segment buttons and gives rows a content-visibility boundary", () => {
     render(
       <AgentTranscriptView
-        task={task}
+        owner={owner}
         items={[
           { seq: 1, type: "tool_use", tool: "shell", input: { command: "ls" } },
           { seq: 2, type: "error", content: "Command failed" },
@@ -90,7 +83,7 @@ describe("AgentTranscriptView", () => {
   it("exposes disclosure state and visible focus styles on transcript controls", () => {
     render(
       <AgentTranscriptView
-        task={task}
+        owner={owner}
         items={[
           { seq: 1, type: "tool_use", tool: "shell", input: { command: "ls" } },
           { seq: 2, type: "tool_result", tool: "shell", output: "ok" },
@@ -111,7 +104,7 @@ describe("AgentTranscriptView", () => {
   it("uses shared Geist radii for transcript chrome and status badges", () => {
     const { container } = render(
       <AgentTranscriptView
-        task={task}
+        owner={owner}
         items={[{ seq: 1, type: "text", content: "Timeline opened" }]}
       />,
     );
@@ -125,7 +118,7 @@ describe("AgentTranscriptView", () => {
     const user = userEvent.setup();
     render(
       <AgentTranscriptView
-        task={task}
+        owner={owner}
         items={[
           { seq: 1, type: "tool_use", tool: "shell", input: { command: "ls" } },
           { seq: 2, type: "tool_result", tool: "shell", output: "ok" },
@@ -143,7 +136,7 @@ describe("AgentTranscriptView", () => {
   it("honors reduced motion classes and typographic ellipses in dynamic states", async () => {
     render(
       <AgentTranscriptView
-        task={{ ...task, status: "running" }}
+        owner={{ ...owner, status: "running" }}
         isLive
         items={[
           { seq: 1, type: "tool_result", tool: "shell", output: "x".repeat(4100) },

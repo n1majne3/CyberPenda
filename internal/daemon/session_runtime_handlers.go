@@ -805,11 +805,7 @@ func (server *Server) handleSessionMessage(response http.ResponseWriter, request
 		return
 	}
 	if len(uploads) > 0 {
-		attachments := make([]session.Attachment, 0, len(uploads))
-		for _, upload := range uploads {
-			attachments = append(attachments, session.Attachment{Name: upload.filename, Size: upload.size, Open: upload.open})
-		}
-		if _, err := server.sessions.AddAttachments(id, attachments); err != nil {
+		if err := server.addSessionUploads(id, uploads); err != nil {
 			writeSessionError(response, err)
 			return
 		}
@@ -1072,19 +1068,33 @@ func (server *Server) advanceSessionRuntimeContinuation(ctx context.Context, ses
 
 func (server *Server) handleSessionSteer(response http.ResponseWriter, request *http.Request) {
 	var input sessionRuntimeInput
-	var envelope struct {
-		Message   string `json:"message"`
-		Directive string `json:"directive"`
-		sessionRuntimeInput
-	}
-	if err := decodeOptionalJSON(request, &envelope); err != nil {
-		writeError(response, http.StatusBadRequest, "invalid JSON body")
-		return
-	}
-	input = envelope.sessionRuntimeInput
-	message := strings.TrimSpace(envelope.Message)
-	if message == "" {
-		message = strings.TrimSpace(envelope.Directive)
+	var message string
+	var uploads []uploadedAttachment
+	if strings.HasPrefix(request.Header.Get("Content-Type"), "multipart/form-data") {
+		request.Body = http.MaxBytesReader(response, request.Body, maxTotalUploadBytes)
+		parsed, foundUploads, err := parseCreateSessionRequest(request)
+		if err != nil {
+			writeError(response, http.StatusBadRequest, err.Error())
+			return
+		}
+		input = sessionRuntimeInputFromCreate(parsed)
+		message = strings.TrimSpace(parsed.value())
+		uploads = foundUploads
+	} else {
+		var envelope struct {
+			Message   string `json:"message"`
+			Directive string `json:"directive"`
+			sessionRuntimeInput
+		}
+		if err := decodeOptionalJSON(request, &envelope); err != nil {
+			writeError(response, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+		input = envelope.sessionRuntimeInput
+		message = strings.TrimSpace(envelope.Message)
+		if message == "" {
+			message = strings.TrimSpace(envelope.Directive)
+		}
 	}
 	if message == "" {
 		writeError(response, http.StatusBadRequest, "steer message is required")
@@ -1103,6 +1113,12 @@ func (server *Server) handleSessionSteer(response http.ResponseWriter, request *
 		}
 		writeError(response, http.StatusConflict, err.Error())
 		return
+	}
+	if len(uploads) > 0 {
+		if err := server.addSessionUploads(id, uploads); err != nil {
+			writeSessionError(response, err)
+			return
+		}
 	}
 	provider, bound := server.sessionProviderSessions.get(id)
 	active, activeErr := server.sessions.ActiveContinuation(id)
@@ -1153,6 +1169,15 @@ func (server *Server) handleSessionSteer(response http.ResponseWriter, request *
 		return
 	}
 	server.writeDecoratedSession(response, http.StatusAccepted, id)
+}
+
+func (server *Server) addSessionUploads(id string, uploads []uploadedAttachment) error {
+	attachments := make([]session.Attachment, 0, len(uploads))
+	for _, upload := range uploads {
+		attachments = append(attachments, session.Attachment{Name: upload.filename, Size: upload.size, Open: upload.open})
+	}
+	_, err := server.sessions.AddAttachments(id, attachments)
+	return err
 }
 
 func requestWithSessionInput(request *http.Request, id, message string, input sessionRuntimeInput) *http.Request {

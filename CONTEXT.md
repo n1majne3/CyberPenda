@@ -24,6 +24,18 @@ _Avoid_: chat home, task-only queue
 A user-goal-driven project run executed by one **Runtime Profile** through one **Runner**.
 _Avoid_: chat message, report section, shell command, plan step
 
+**Non-Project Mode**:
+The product mode for work that has no **Project** and therefore no Project Scope, while retaining the same Runtime interaction capabilities as a **Task**.
+_Avoid_: unrestricted Project, temporary Task, separate chat product
+
+**Session**:
+A durable Non-Project owner of one persistent Runtime conversation, owner-local events, attachments, workdir, and self-contained Blackboard.
+_Avoid_: Project, Task, disposable chat, UI-only conversation
+
+**Runtime Owner Workspace**:
+The shared interactive UI used by both a Project **Task** and a Non-Project **Session** for conversation, timeline, Runtime activity, permissions, Blackboard conclusion state, attachments, and per-turn model selection. Owner-specific lifecycle actions and data adapters may differ without creating a separate workspace UI.
+_Avoid_: Session-specific chat UI, duplicated Task page, shared domain aggregate
+
 **Task Goal**:
 The user's natural-language objective for a **Task**.
 _Avoid_: raw prompt only, plan step
@@ -1101,6 +1113,8 @@ _Avoid_: transcript, export, source of truth
 > **Domain expert:** "Most launches only need Launch Selection: runtime, model provider, and model. The daemon resolves that to a minimal Runtime Profile automatically. If the user expands the advanced preset picker and chooses a saved Runtime Profile Preset, that preset's MCP and skill enablement apply. Runtime and model provider lock to the preset, but the user may still set a Launch Model Override for just that task."
 
 ## Flagged Ambiguities
+
+- A Non-Project **Session** is not presented through a separate chat UI; resolved: **Session** and **Task** reuse the same **Runtime Owner Workspace**, with owner-specific API and lifecycle adapters at the boundary.
 
 - "vulnerability" and **Finding** were used for the same reportable issue concept; resolved: use **Finding** as the product/domain term and reserve "vulnerability" for type names, schemas, or imported source terminology.
 - **Policy Violation** is not an approval state; resolved: it records a workflow breach that may be detected after the fact.
