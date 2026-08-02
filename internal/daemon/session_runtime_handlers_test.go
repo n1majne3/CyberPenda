@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -231,9 +232,28 @@ func TestSessionLaunchUsesProjectFreeOwnerAndPersistentProviderControls(t *testi
 	}
 	waitForProviderRequests(t, providerSession, 1)
 
+	var steerBody bytes.Buffer
+	steerWriter := multipart.NewWriter(&steerBody)
+	payloadField, err := steerWriter.CreateFormField("payload")
+	if err != nil {
+		t.Fatalf("create Session steer payload field: %v", err)
+	}
+	if _, err := payloadField.Write([]byte(`{"message":"interrupt and focus on the login flow"}`)); err != nil {
+		t.Fatalf("write Session steer payload: %v", err)
+	}
+	attachmentField, err := steerWriter.CreateFormFile("attachments", "interrupt-notes.txt")
+	if err != nil {
+		t.Fatalf("create Session steer attachment: %v", err)
+	}
+	if _, err := attachmentField.Write([]byte("interrupt evidence")); err != nil {
+		t.Fatalf("write Session steer attachment: %v", err)
+	}
+	if err := steerWriter.Close(); err != nil {
+		t.Fatalf("close Session steer multipart body: %v", err)
+	}
 	steer := httptest.NewRecorder()
-	steerRequest := httptest.NewRequest(http.MethodPost, "/api/sessions/"+created.ID+"/steer", bytes.NewBufferString(`{"message":"interrupt and focus on the login flow"}`))
-	steerRequest.Header.Set("Content-Type", "application/json")
+	steerRequest := httptest.NewRequest(http.MethodPost, "/api/sessions/"+created.ID+"/steer", &steerBody)
+	steerRequest.Header.Set("Content-Type", steerWriter.FormDataContentType())
 	server.ServeHTTP(steer, steerRequest)
 	if steer.Code != http.StatusAccepted {
 		t.Fatalf("Session steer status = %d, body=%s", steer.Code, steer.Body.String())
@@ -263,14 +283,20 @@ func TestSessionLaunchUsesProjectFreeOwnerAndPersistentProviderControls(t *testi
 	if err != nil {
 		t.Fatalf("read Session replacement events: %v", err)
 	}
-	var sawReplacement bool
+	var sawReplacement, sawAttachment bool
 	for _, event := range events {
 		if event.Payload["continuation_id"] == active.ID {
 			sawReplacement = true
 		}
+		if event.Kind == session.EventKindAttachment && event.Payload["filename"] == "interrupt-notes.txt" {
+			sawAttachment = true
+		}
 	}
 	if !sawReplacement {
 		t.Fatalf("Session replacement emitted no events on continuation %q: %#v", active.ID, events)
+	}
+	if !sawAttachment {
+		t.Fatalf("Session steer did not persist its attachment: %#v", events)
 	}
 
 	timeline := httptest.NewRecorder()

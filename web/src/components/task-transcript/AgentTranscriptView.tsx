@@ -17,7 +17,6 @@ import {
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui";
 import { formatClockTime, formatCompactDateTime, formatDateTime } from "@/lib/format";
-import type { Task } from "@/lib/api";
 import type { TimelineItem, TranscriptSortDirection } from "./types";
 import {
   buildFilterOptions,
@@ -31,13 +30,20 @@ import {
 } from "./timeline-utils";
 
 interface AgentTranscriptViewProps {
-  task: Task;
+  owner: RuntimeTimelineOwner;
   items: TimelineItem[];
   profileName?: string;
   isLive?: boolean;
 }
 
-export function AgentTranscriptView({ task, items, profileName, isLive = false }: AgentTranscriptViewProps) {
+export interface RuntimeTimelineOwner {
+  status: string;
+  runner: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export function AgentTranscriptView({ owner, items, profileName, isLive = false }: AgentTranscriptViewProps) {
   const [selectedSeq, setSelectedSeq] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState("");
   const [copied, setCopied] = useState(false);
@@ -62,12 +68,12 @@ export function AgentTranscriptView({ task, items, profileName, isLive = false }
 
   useEffect(() => {
     if (!isLive) return;
-    const startRef = task.created_at;
+    const startRef = owner.createdAt;
     const update = () => setElapsed(formatElapsedMs(Date.now() - new Date(startRef).getTime()));
     update();
     const interval = setInterval(update, 1000);
     return () => clearInterval(interval);
-  }, [isLive, task.created_at]);
+  }, [isLive, owner.createdAt]);
 
   useEffect(() => {
     if (!filterOpen) return;
@@ -119,8 +125,8 @@ export function AgentTranscriptView({ task, items, profileName, isLive = false }
   const clearFilters = useCallback(() => setSelectedTools(new Set()), []);
 
   const duration =
-    task.updated_at && !isLive && task.status !== "running"
-      ? formatDuration(task.created_at, task.updated_at)
+    owner.updatedAt && !isLive && owner.status !== "running"
+      ? formatDuration(owner.createdAt, owner.updatedAt)
       : isLive
         ? elapsed
         : null;
@@ -132,19 +138,19 @@ export function AgentTranscriptView({ task, items, profileName, isLive = false }
       <Loader2 className="h-3 w-3 animate-spin motion-reduce:animate-none" />
       Running
     </Badge>
-  ) : task.status === "completed" ? (
+  ) : owner.status === "completed" ? (
     <Badge size="sm" variant="success">
       <CheckCircle2 className="h-3 w-3" />
       Completed
     </Badge>
-  ) : task.status === "failed" ? (
+  ) : owner.status === "failed" ? (
     <Badge size="sm" variant="destructive">
       <XCircle className="h-3 w-3" />
       Failed
     </Badge>
   ) : (
     <Badge size="sm" variant="outline" className="capitalize">
-      {task.status}
+      {owner.status}
     </Badge>
   );
 
@@ -223,7 +229,7 @@ export function AgentTranscriptView({ task, items, profileName, isLive = false }
         </div>
 
         <div className="flex flex-wrap items-center gap-2 text-xs">
-          <MetadataChip>runner: {task.runner}</MetadataChip>
+          <MetadataChip>runner: {owner.runner}</MetadataChip>
           {profileName && <MetadataChip>{profileName}</MetadataChip>}
           {duration && (
             <MetadataChip icon={<Clock className="h-3 w-3" />}>
@@ -236,9 +242,9 @@ export function AgentTranscriptView({ task, items, profileName, isLive = false }
               ? `${filteredItems.length} / ${items.length} events`
               : `${items.length} events`}
           </MetadataChip>
-          {task.created_at && (
+          {owner.createdAt && (
             <MetadataChip>
-              {formatCompactDateTime(task.created_at)}
+              {formatCompactDateTime(owner.createdAt)}
             </MetadataChip>
           )}
         </div>

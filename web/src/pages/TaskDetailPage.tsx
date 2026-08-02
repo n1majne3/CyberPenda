@@ -1,9 +1,10 @@
-import { useEffect, useState, useRef, type KeyboardEvent, type RefObject } from "react";
+import { useEffect, useState, useRef, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, ChevronRight, Wrench, User, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2, Maximize2, Minimize2, Flag, RefreshCcw, TriangleAlert } from "lucide-react";
-import { apiDelete, apiGet, apiPost, type ModelProvider, type ProviderPermissionRequest, type RuntimeActivity, type RuntimePlugin, type RuntimeProfile, type Task, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
-import { Button, Badge, Select, Textarea } from "@/components/ui";
+import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, ChevronRight, Wrench, User, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2, Maximize2, Minimize2, Flag, RefreshCcw, TriangleAlert, Archive, ArchiveRestore, Pencil, Paperclip } from "lucide-react";
+import { apiDelete, apiGet, apiPatch, apiPost, apiPostForm, type BlackboardConclusionMode, type BlackboardConclusionView, type ModelProvider, type ProviderPermissionRequest, type RuntimeActivity, type RuntimeControls, type RuntimePlugin, type RuntimeProfile, type Session, type SessionContinuation, type SessionEvent, type Task, type TaskContinuation, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
+import { Button, Badge, Input, Select, Textarea } from "@/components/ui";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
+import { PageContainer } from "@/components/shared";
 import { AgentTranscriptView } from "@/components/task-transcript/AgentTranscriptView";
 import { collapsedTranscriptTitle, toolCallFields } from "./taskDetailView";
 import { displayReasoningEffort, REASONING_EFFORT_VALUES, selectableModelProviders } from "./runtimeProfileForm";
@@ -24,11 +25,59 @@ function newBlackboardRetryID() {
   return `blackboard-retry-${newSteerRequestID()}`;
 }
 
+type RuntimeOwnerKind = "task" | "session";
+
+type RuntimeOwnerCapabilities = {
+  projectChrome: boolean;
+  rename: boolean;
+  archive: boolean;
+  restore: boolean;
+  delete: boolean;
+  finish: boolean;
+  resumeWithoutMessage: boolean;
+  attachments: boolean;
+};
+
+type RuntimeOwnerView = {
+  kind: RuntimeOwnerKind;
+  id: string;
+  title: string;
+  status: string;
+  lifecycle?: Session["lifecycle"];
+  runner: string;
+  runtimeProfileID: string;
+  blackboardConclusionMode?: BlackboardConclusionMode;
+  blackboardConclusion?: BlackboardConclusionView;
+  runtimeControls?: RuntimeControls;
+  runtimeActivity?: RuntimeActivity;
+  activeContinuation?: RuntimeOwnerContinuation;
+  latestContinuation?: RuntimeOwnerContinuation;
+  createdAt: string;
+  updatedAt: string;
+  capabilities: RuntimeOwnerCapabilities;
+};
+
+type RuntimeOwnerContinuation = {
+  id: string;
+  number: number;
+  runtimeProfileID: string;
+  runtimeProvider: string;
+  runner: string;
+  status: string;
+  nativeSessionID?: string;
+};
+
 export function TaskDetailPage() {
-  const { projectId, taskId } = useParams<{ projectId: string; taskId: string }>();
+  return <RuntimeOwnerDetailPage ownerKind="task" />;
+}
+
+export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerKind }) {
+  const { projectId, taskId, sessionId } = useParams<{ projectId: string; taskId: string; sessionId: string }>();
+  const isSession = ownerKind === "session";
+  const ownerID = isSession ? sessionId : taskId;
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [task, setTask] = useState<Task | null>(null);
+  const [owner, setOwner] = useState<RuntimeOwnerView | null>(null);
   const [timeline, setTimeline] = useState<TaskTimelineItem[]>([]);
   const [transcript, setTranscript] = useState<TaskTranscriptEntry[]>([]);
   const [activeView, setActiveView] = useState<"conversation" | "timeline">(
@@ -48,6 +97,10 @@ export function TaskDetailPage() {
   const [runtimePlugins, setRuntimePlugins] = useState<RuntimePlugin[]>([]);
   const [permissionBusy, setPermissionBusy] = useState("");
   const [retryingConclusion, setRetryingConclusion] = useState(false);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const [attachments, setAttachments] = useState<File[]>([]);
+  const attachmentInput = useRef<HTMLInputElement>(null);
   const conversationViewport = useRef<HTMLDivElement>(null);
   const conversationEnd = useRef<HTMLDivElement>(null);
   const autoFollowRef = useRef(true);
@@ -55,26 +108,25 @@ export function TaskDetailPage() {
   const loadGeneration = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
 
-  const base = `/api/projects/${projectId}/tasks/${taskId}`;
+  const base = isSession ? `/api/sessions/${sessionId}` : `/api/projects/${projectId}/tasks/${taskId}`;
 
   async function loadAll() {
-    if (!projectId || !taskId) return;
+    if (!ownerID || (!isSession && !projectId)) return;
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
     const generation = ++loadGeneration.current;
     try {
-      const [t, tl, tr] = await Promise.all([
-        apiGet<Task>(`${base}`, { signal: controller.signal }),
-        apiGet<TaskTimeline>(`${base}/timeline`, { signal: controller.signal }),
-        apiGet<TaskTranscript>(`${base}/transcript`, { signal: controller.signal }),
-      ]);
+      const loaded = isSession
+        ? await loadSessionWorkspace(base, controller.signal)
+        : await loadTaskWorkspace(base, controller.signal);
       if (generation !== loadGeneration.current || controller.signal.aborted) {
         return;
       }
-      setTask(t);
-      setTimeline(tl.items ?? []);
-      setTranscript(tr.entries ?? []);
+      setOwner(loaded.owner);
+      if (loaded.owner.kind === "session") setTitleDraft(loaded.owner.title);
+      setTimeline(loaded.timeline);
+      setTranscript(loaded.transcript);
       setError(null);
     } catch (e) {
       if (controller.signal.aborted || generation !== loadGeneration.current) {
@@ -86,7 +138,7 @@ export function TaskDetailPage() {
 
   /* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
   useEffect(() => {
-    // Initial load on mount/task change. loadAll() is reused by the poll loop
+    // Initial load on mount/owner change. loadAll() is reused by the poll loop
     // and event handlers.
     setTurnSelectionSeeded(false);
     loadAll();
@@ -98,15 +150,15 @@ export function TaskDetailPage() {
     return () => {
       abortRef.current?.abort();
     };
-  }, [projectId, taskId]);
+  }, [isSession, ownerID, projectId]);
   /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
 
   // Seed the composer once from the preceding Runtime Turn Selection. Later
   // submits retain the operator's choice instead of resetting.
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
-    if (turnSelectionSeeded || !task) return;
-    const preceding = task.runtime_controls?.turn_selection;
+    if (turnSelectionSeeded || !owner) return;
+    const preceding = owner.runtimeControls?.turn_selection;
     if (!preceding) {
       setTurnSelectionSeeded(true);
       return;
@@ -115,14 +167,14 @@ export function TaskDetailPage() {
     setContinuationModelOverride(preceding.model?.trim() ?? "");
     setContinuationReasoningEffort(displayReasoningEffort(preceding.reasoning_effort));
     setTurnSelectionSeeded(true);
-  }, [task, turnSelectionSeeded]);
+  }, [owner, turnSelectionSeeded]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   /* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
   useEffect(() => {
-    if (!task || activeView !== "conversation") return;
+    if (!owner || activeView !== "conversation") return;
 
-    // Reset auto-follow when the task changes. This is an intentional
+    // Reset auto-follow when the runtime owner changes. This is an intentional
     // synchronous reset, not a cascading render.
     autoFollowRef.current = true;
     setAutoFollow(true);
@@ -139,30 +191,30 @@ export function TaskDetailPage() {
     return () => {
       container.removeEventListener("scroll", updateAutoFollow);
     };
-  }, [task?.id, activeView]);
+  }, [owner?.id, activeView]);
   /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
 
-  // Poll events while the task is active. Depends on status only so the
-  // interval is not reset every render; loadAll/task are intentionally omitted.
+  // Poll events while the runtime owner is active. Depends on status only so the
+  // interval is not reset every render; loadAll/owner are intentionally omitted.
   /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
-    if (!task || !ACTIVE.has(task.status)) return;
+    if (!owner || !ACTIVE.has(owner.status)) return;
     const id = setInterval(loadAll, 1000);
     return () => clearInterval(id);
-  }, [task?.status]);
+  }, [owner?.status]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
   useEffect(() => {
     if (activeView === "conversation" && autoFollowRef.current) {
-      conversationEnd.current?.scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "end" });
+      conversationEnd.current?.scrollIntoView?.({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "end" });
     }
   }, [activeView, timeline, transcript]);
 
-  const currentProfileRuntimeProvider = profiles.find((profile) => profile.id === task?.runtime_profile_id)?.provider;
+  const currentProfileRuntimeProvider = profiles.find((profile) => profile.id === owner?.runtimeProfileID)?.provider;
   const currentRuntimeProvider =
-    task?.runtime_controls?.runtime_provider ??
-    task?.active_continuation?.runtime_provider ??
-    task?.latest_continuation?.runtime_provider ??
+    owner?.runtimeControls?.runtime_provider ??
+    owner?.activeContinuation?.runtimeProvider ??
+    owner?.latestContinuation?.runtimeProvider ??
     currentProfileRuntimeProvider;
   const runtimePlugin = runtimePlugins.find((plugin) => plugin.id === currentRuntimeProvider);
   const continuationModelProviders = selectableModelProviders(
@@ -209,7 +261,7 @@ export function TaskDetailPage() {
   }
 
   async function stop() {
-    if (!task || !window.confirm(`Stop task ${task.goal}?`)) return;
+    if (!owner || !window.confirm(`Stop ${owner.kind} ${owner.title}?`)) return;
     try {
       await apiPost(`${base}/stop`, {});
       setActionError(null);
@@ -220,7 +272,7 @@ export function TaskDetailPage() {
   }
 
   async function finishTask() {
-    if (!task || !window.confirm(`Finish task ${task.goal}? This marks the Task completed after closing the Runtime.`)) return;
+    if (!owner?.capabilities.finish || !window.confirm(`Finish task ${owner.title}? This marks the Task completed after closing the Runtime.`)) return;
     try {
       await apiPost(`${base}/finish`, {});
       setActionError(null);
@@ -234,10 +286,14 @@ export function TaskDetailPage() {
     if (retryingConclusion) return;
     setRetryingConclusion(true);
     try {
-      const retried = await apiPost<Task>(`${base}/blackboard-conclusion/retry`, {}, {
-        headers: { "Idempotency-Key": newBlackboardRetryID() },
-      });
-      setTask(retried);
+      const retried = owner?.kind === "session"
+        ? sessionAsRuntimeOwner(await apiPost<Session>(`${base}/blackboard-conclusion/retry`, {}, {
+          headers: { "Idempotency-Key": newBlackboardRetryID() },
+        }))
+        : taskAsRuntimeOwner(await apiPost<Task>(`${base}/blackboard-conclusion/retry`, {}, {
+          headers: { "Idempotency-Key": newBlackboardRetryID() },
+        }));
+      setOwner(retried);
       setActionError(null);
     } catch (e) {
       setActionError((e as Error).message);
@@ -247,16 +303,21 @@ export function TaskDetailPage() {
   }
 
   async function deleteTask() {
-    if (!task || !window.confirm(`Delete task ${task.goal}?`)) return;
+    if (!owner?.capabilities.delete) return;
+    const prompt = owner.kind === "session"
+      ? `Delete archived session ${owner.title}? This removes its Session Workdir and Events.`
+      : `Delete task ${owner.title}?`;
+    if (!window.confirm(prompt)) return;
     try {
       await apiDelete(base);
-      navigate(`/projects/${projectId}/tasks`);
+      navigate(owner.kind === "session" ? "/sessions" : `/projects/${projectId}/tasks`);
     } catch (e) {
       setActionError((e as Error).message);
     }
   }
 
   async function resumeNative() {
+    if (!owner?.capabilities.resumeWithoutMessage) return;
     try {
       await apiPost(`${base}/resume`, continuationModelPayload());
       setActionError(null);
@@ -268,13 +329,30 @@ export function TaskDetailPage() {
 
   async function queueSteer() {
     const directive = steering.trim();
-    if (!directive || sending) return;
+    if (!directive || sending || !owner) return;
+    if (
+      owner.kind === "session" &&
+      ACTIVE.has(owner.status) &&
+      continuationModelProvider.trim() !== "" &&
+      continuationModelProvider.trim() !== (owner.runtimeControls?.turn_selection?.model_provider_id?.trim() ?? "")
+    ) {
+      setActionError("Queue cannot switch a Session model provider; use Switch provider and resume.");
+      return;
+    }
     setSending(true);
     try {
-      await apiPost(`${base}/steer/queue`, {
-        directive,
-        ...continuationModelPayload(),
-      });
+      if (owner.kind === "session") {
+        await postSessionRuntimeMessage(
+          `${base}/steer/queue`,
+          directive,
+          continuationModelPayload(),
+          attachments,
+        );
+        setAttachments([]);
+        if (attachmentInput.current) attachmentInput.current.value = "";
+      } else {
+        await apiPost(`${base}/steer/queue`, { directive, ...continuationModelPayload() });
+      }
       setSteering("");
       setActionError(null);
       await loadAll();
@@ -287,12 +365,34 @@ export function TaskDetailPage() {
 
   async function sendConversationMessage() {
     const message = steering.trim();
-    if (!message || sending || !task) return;
+    if (!message || sending || !owner) return;
     setSending(true);
     const requestID = newSteerRequestID();
     try {
-      const runningNow = ACTIVE.has(task.status);
-      const currentControls = task.runtime_controls;
+      if (owner.kind === "session") {
+        const modelPayload = continuationModelPayload();
+        const precedingProvider = owner.runtimeControls?.turn_selection?.model_provider_id?.trim() ?? "";
+        const selectedProvider = continuationModelProvider.trim();
+        const switchingProvider = ACTIVE.has(owner.status) && selectedProvider !== "" && selectedProvider !== precedingProvider;
+        if (switchingProvider) {
+          await apiPost(`${base}/stop`, {});
+          await postSessionRuntimeMessage(`${base}/messages`, message, modelPayload, attachments);
+        } else if (running && (sendMode === "native" || sendMode === "interrupt")) {
+          await postSessionRuntimeMessage(`${base}/steer`, message, modelPayload, attachments);
+        } else if (running && sendMode === "queue") {
+          await postSessionRuntimeMessage(`${base}/steer/queue`, message, modelPayload, attachments);
+        } else {
+          await postSessionRuntimeMessage(`${base}/messages`, message, modelPayload, attachments);
+        }
+        setSteering("");
+        setAttachments([]);
+        if (attachmentInput.current) attachmentInput.current.value = "";
+        setActionError(null);
+        await loadAll();
+        return;
+      }
+      const runningNow = ACTIVE.has(owner.status);
+      const currentControls = owner.runtimeControls;
       const nativeNow = currentControls?.native_steer_available ?? false;
       const interruptNow = currentControls?.interrupt_steer_available ?? false;
       const queueNow = currentControls?.queue_steer_available ?? true;
@@ -302,8 +402,8 @@ export function TaskDetailPage() {
       const selectedProvider = continuationModelProvider.trim();
       const runtimeProvider =
         currentControls?.runtime_provider ??
-        task.active_continuation?.runtime_provider ??
-        task.latest_continuation?.runtime_provider ??
+        owner.activeContinuation?.runtimeProvider ??
+        owner.latestContinuation?.runtimeProvider ??
         "";
       // Pi native cross-provider only when Runtime Config explicitly lists the
       // target in projected_model_provider_ids (fixed-at-launch set). Missing or
@@ -379,6 +479,29 @@ export function TaskDetailPage() {
     }
   }
 
+  async function saveSessionTitle() {
+    if (owner?.kind !== "session" || !titleDraft.trim()) return;
+    try {
+      await apiPatch<Session>(base, { title: titleDraft.trim() });
+      setEditingTitle(false);
+      setActionError(null);
+      await loadAll();
+    } catch (e) {
+      setActionError((e as Error).message);
+    }
+  }
+
+  async function changeSessionLifecycle(action: "archive" | "restore") {
+    if (owner?.kind !== "session") return;
+    try {
+      await apiPost<Session>(`${base}/${action}`, {});
+      setActionError(null);
+      await loadAll();
+    } catch (e) {
+      setActionError((e as Error).message);
+    }
+  }
+
   function continuationModelPayload() {
     const providerID = continuationModelProvider.trim();
     const model = continuationModelOverride.trim();
@@ -427,42 +550,44 @@ export function TaskDetailPage() {
 
   if (error) {
     return (
-      <ProjectPageShell>
+      <RuntimeOwnerShell projectChrome={!isSession}>
         <p className="text-destructive">{error}</p>
-      </ProjectPageShell>
+      </RuntimeOwnerShell>
     );
   }
-  if (!task) {
+  if (!owner) {
     return (
-      <ProjectPageShell>
+      <RuntimeOwnerShell projectChrome={!isSession}>
         <p className="text-muted-foreground">Loading…</p>
-      </ProjectPageShell>
+      </RuntimeOwnerShell>
     );
   }
-  const currentContinuation = task.active_continuation ?? task.latest_continuation;
-  const controls = task.runtime_controls;
-  const nativeResumeAvailable = controls?.native_resume_available ?? Boolean(currentContinuation?.native_session_id);
-  const resumeAvailable = !ACTIVE.has(task.status) || controls?.resume_available === true;
+  const currentContinuation = owner.activeContinuation ?? owner.latestContinuation;
+  const controls = owner.runtimeControls;
+  const nativeResumeAvailable = controls?.native_resume_available ?? Boolean(currentContinuation?.nativeSessionID);
+  const resumeAvailable = !ACTIVE.has(owner.status) || controls?.resume_available === true;
   const queueSteerAvailable = controls?.queue_steer_available ?? true;
   const interruptSteerAvailable = controls?.interrupt_steer_available ?? nativeResumeAvailable;
   const nativeSteerAvailable = controls?.native_steer_available ?? false;
   const nativeSteerMode = controls?.native_steer_mode;
   const providerPermissions = controls?.provider_permissions ?? [];
-  const running = ACTIVE.has(task.status);
+  const running = ACTIVE.has(owner.status);
   // Finish gate trusts server RuntimeControls only (live+idle already applied).
   const finishAvailable = controls?.finish_available === true;
-  const sendMode = resolveConversationSendMode({
-    running,
-    nativeSteerAvailable,
-    interruptSteerAvailable,
-    queueSteerAvailable,
-    resumeAvailable,
-  });
+  const sendMode: ConversationSendMode = owner.kind === "session" && owner.lifecycle !== "open"
+    ? "unavailable"
+    : resolveConversationSendMode({
+      running,
+      nativeSteerAvailable,
+      interruptSteerAvailable,
+      queueSteerAvailable,
+      resumeAvailable,
+    });
   const precedingProviderID = controls?.turn_selection?.model_provider_id?.trim() ?? "";
   const selectedProviderID = continuationModelProvider.trim();
   // Pi native cross-provider only with explicit projected set membership.
   // Codex/Claude and legacy Pi (missing ids) restart; empty preceding is a switch.
-  const piNativeCrossProvider = canPiNativeCrossProvider({
+  const piNativeCrossProvider = owner.kind === "task" && canPiNativeCrossProvider({
     runtimeProvider: currentRuntimeProvider ?? "",
     nativeSteerAvailable: nativeSteerAvailable || interruptSteerAvailable,
     projectedModelProviderIDs: controls?.projected_model_provider_ids,
@@ -473,39 +598,71 @@ export function TaskDetailPage() {
     selectedProviderID !== "" &&
     selectedProviderID !== precedingProviderID &&
     !piNativeCrossProvider;
+  const providerSwitchAvailable = owner.kind === "session" || queueSteerAvailable;
+  const queueActionAvailable = queueSteerAvailable;
   const sendActionLabel = providerSwitchRequested
-    ? queueSteerAvailable ? "Switch provider and resume" : "Provider switch unavailable"
+    ? providerSwitchAvailable ? "Switch provider and resume" : "Provider switch unavailable"
     : conversationSendLabel(sendMode, nativeSteerMode);
   const focusMode = searchParams.get("focus") === "1";
 
   return (
-    <ProjectPageShell
+    <RuntimeOwnerShell
+      projectChrome={owner.capabilities.projectChrome}
       hideChrome={focusMode}
       data-testid="task-detail-shell"
       className={focusMode ? "h-[calc(100dvh-3.5rem)] max-w-none p-0 md:h-dvh lg:p-0" : "flex min-h-full flex-col"}
       bodyClassName={focusMode ? "flex h-full min-h-0 flex-col" : "flex min-h-[32rem] flex-1 flex-col pb-0 lg:min-h-0"}
     >
       <div data-testid="task-session-header" className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-2 sm:px-3">
-        <StatusBadge status={task.status} />
-        <RuntimeActivityBadge activity={task.runtime_activity} />
-        <BlackboardConclusionBadge task={task} />
-        <h1 className="min-w-0 flex-1 truncate text-sm font-medium" title={task.goal}>{task.goal}</h1>
+        <StatusBadge status={owner.status} />
+        <RuntimeActivityBadge activity={owner.runtimeActivity} />
+        <BlackboardConclusionBadge owner={owner} />
+        {owner.capabilities.rename && editingTitle ? (
+          <div className="flex min-w-0 flex-1 items-center gap-1.5">
+            <Input
+              aria-label="Session title"
+              value={titleDraft}
+              onChange={(event) => setTitleDraft(event.target.value)}
+              className="h-8 min-w-0"
+              autoFocus
+            />
+            <Button size="sm" onClick={() => void saveSessionTitle()} disabled={!titleDraft.trim()}>Save</Button>
+            <Button size="sm" variant="ghost" onClick={() => setEditingTitle(false)}>Cancel</Button>
+          </div>
+        ) : (
+          <h1 className="min-w-0 flex-1 truncate text-sm font-medium" title={owner.title}>{owner.title}</h1>
+        )}
         {currentContinuation && (
           <div className="hidden shrink-0 items-center gap-1 font-mono text-xs text-muted-foreground md:flex">
             <span>continuation #{currentContinuation.number}</span>
             <span aria-hidden="true">·</span>
-            <span>runtime: {currentContinuation.runtime_provider}</span>
+            <span>runtime: {currentContinuation.runtimeProvider}</span>
             <span aria-hidden="true">·</span>
-            <span>runner: {task.runner}</span>
+            <span>runner: {owner.runner}</span>
             <span className="hidden xl:inline" aria-hidden="true">·</span>
             <span className="hidden xl:inline">continuation status: {currentContinuation.status}</span>
-            {(controls?.native_session_captured || currentContinuation.native_session_id) && (
+            {(controls?.native_session_captured || currentContinuation.nativeSessionID) && (
               <span className="hidden 2xl:inline">native session: captured</span>
             )}
             {controls?.same_runtime_provider_only && <span className="hidden 2xl:inline">same runtime only</span>}
           </div>
         )}
         <div className="flex shrink-0 items-center gap-1">
+          {owner.capabilities.rename && !editingTitle && (
+            <Button size="icon" variant="ghost" onClick={() => setEditingTitle(true)} aria-label={`Rename ${owner.title}`} title="Rename Session" className="h-8 w-8">
+              <Pencil className="h-4 w-4" />
+            </Button>
+          )}
+          {owner.capabilities.archive && (
+            <Button size="icon" variant="ghost" onClick={() => void changeSessionLifecycle("archive")} aria-label="Archive" title="Archive Session" className="h-8 w-8">
+              <Archive className="h-4 w-4" />
+            </Button>
+          )}
+          {owner.capabilities.restore && (
+            <Button size="icon" variant="ghost" onClick={() => void changeSessionLifecycle("restore")} aria-label="Restore" title="Restore Session" className="h-8 w-8">
+              <ArchiveRestore className="h-4 w-4" />
+            </Button>
+          )}
           {running && finishAvailable && (
             <Button
               size="sm"
@@ -517,13 +674,13 @@ export function TaskDetailPage() {
               <Flag className="h-4 w-4" /> <span className="hidden sm:inline">Finish</span>
             </Button>
           )}
-          {!running && (
+          {owner.capabilities.resumeWithoutMessage && !running && (
             <Button size="sm" variant="ghost" onClick={resumeNative} disabled={!resumeAvailable} title={nativeResumeAvailable ? "Resume native session" : "Start a fresh continuation from the current Task state"}>
               <Play className="h-4 w-4" /> <span className="hidden sm:inline">Resume</span>
             </Button>
           )}
-          {DELETABLE.has(task.status) && (
-            <Button size="icon" variant="ghost" onClick={deleteTask} aria-label="Delete task" title="Delete task" className="h-8 w-8 text-destructive hover:text-destructive">
+          {owner.capabilities.delete && (
+            <Button size="icon" variant="ghost" onClick={deleteTask} aria-label={`Delete ${owner.kind}`} title={`Delete ${owner.kind === "session" ? "Session" : "Task"}`} className="h-8 w-8 text-destructive hover:text-destructive">
               <Trash2 className="h-4 w-4" />
             </Button>
           )}
@@ -540,11 +697,17 @@ export function TaskDetailPage() {
         </div>
       </div>
 
-      {task.blackboard_conclusion?.state === "action_required" && (
+      {owner.kind === "session" && !focusMode && (
+        <div role="note" className="shrink-0 border-b border-info/20 bg-info/5 px-3 py-2 text-xs text-muted-foreground">
+          Non-Project Mode · no Project Scope; Runtime execution is unrestricted by Project Scope.
+        </div>
+      )}
+
+      {owner.blackboardConclusion?.state === "action_required" && (
         <BlackboardConclusionRecovery
-          errorCode={task.blackboard_conclusion.error_code}
-          retryAvailable={task.blackboard_conclusion.retry_available === true}
-          nextEligibleAt={task.blackboard_conclusion.next_eligible_at}
+          errorCode={owner.blackboardConclusion.error_code}
+          retryAvailable={owner.blackboardConclusion.retry_available === true}
+          nextEligibleAt={owner.blackboardConclusion.next_eligible_at}
           retrying={retryingConclusion}
           onRetry={() => void retryBlackboardConclusion()}
         />
@@ -579,10 +742,10 @@ export function TaskDetailPage() {
         {activeView === "timeline" ? (
           <div className="min-h-0 flex-1 overflow-y-auto p-2 pb-44 sm:p-3 md:pb-5">
             <AgentTranscriptView
-              task={task}
+              owner={owner}
               items={timeline}
-              profileName={profiles.find((p) => p.id === task.runtime_profile_id)?.name}
-              isLive={ACTIVE.has(task.status)}
+              profileName={profiles.find((p) => p.id === owner.runtimeProfileID)?.name}
+              isLive={ACTIVE.has(owner.status)}
             />
             {providerPermissions.length > 0 && (
               <ProviderPermissionRequests
@@ -611,7 +774,8 @@ export function TaskDetailPage() {
           </div>
         )}
 
-        <TaskComposer
+        <RuntimeOwnerComposer
+          ownerLabel={owner.kind === "session" ? "Session" : "Task"}
           value={steering}
           onChange={setSteering}
           onKeyDown={handleComposerKeyDown}
@@ -622,8 +786,10 @@ export function TaskDetailPage() {
           finishAvailable={finishAvailable}
           sending={sending}
           running={running}
-          queueAvailable={queueSteerAvailable}
+          queueAvailable={queueActionAvailable}
+          queueDisabled={owner.kind === "session" && providerSwitchRequested}
           providerSwitchRequested={providerSwitchRequested}
+          providerSwitchAvailable={providerSwitchAvailable}
           sendMode={sendMode}
           sendActionLabel={sendActionLabel}
           actionError={actionError}
@@ -635,10 +801,274 @@ export function TaskDetailPage() {
           onSelectProvider={selectContinuationModelProvider}
           onSelectModel={setContinuationModelOverride}
           onSelectReasoningEffort={setContinuationReasoningEffort}
+          attachments={owner.capabilities.attachments ? attachments : undefined}
+          attachmentInputRef={owner.capabilities.attachments ? attachmentInput : undefined}
+          onAttachmentsChange={owner.capabilities.attachments ? setAttachments : undefined}
         />
       </div>
-    </ProjectPageShell>
+    </RuntimeOwnerShell>
   );
+}
+
+type RuntimeOwnerShellProps = {
+  projectChrome: boolean;
+  children: ReactNode;
+  hideChrome?: boolean;
+  className?: string;
+  bodyClassName?: string;
+  "data-testid"?: string;
+};
+
+function RuntimeOwnerShell({ projectChrome, children, bodyClassName, ...props }: RuntimeOwnerShellProps) {
+  if (projectChrome) {
+    return <ProjectPageShell bodyClassName={bodyClassName} {...props}>{children}</ProjectPageShell>;
+  }
+  return (
+    <PageContainer
+      data-testid={props["data-testid"]}
+      className={`mx-auto w-full max-w-6xl ${props.className ?? ""}`}
+    >
+      <div className={bodyClassName}>{children}</div>
+    </PageContainer>
+  );
+}
+
+type RuntimeWorkspaceLoad = {
+  owner: RuntimeOwnerView;
+  timeline: TaskTimelineItem[];
+  transcript: TaskTranscriptEntry[];
+};
+
+async function loadTaskWorkspace(base: string, signal: AbortSignal): Promise<RuntimeWorkspaceLoad> {
+  const [task, timeline, transcript] = await Promise.all([
+    apiGet<Task>(base, { signal }),
+    apiGet<TaskTimeline>(`${base}/timeline`, { signal }),
+    apiGet<TaskTranscript>(`${base}/transcript`, { signal }),
+  ]);
+  return {
+    owner: taskAsRuntimeOwner(task),
+    timeline: timeline.items ?? [],
+    transcript: transcript.entries ?? [],
+  };
+}
+
+async function loadSessionWorkspace(base: string, signal: AbortSignal): Promise<RuntimeWorkspaceLoad> {
+  const [session, all, conversation, timeline] = await Promise.all([
+    apiGet<Session>(base, { signal }),
+    apiGet<{ events: SessionEvent[] }>(`${base}/events`, { signal }),
+    apiGet<{ events: SessionEvent[] }>(`${base}/conversation`, { signal }),
+    apiGet<{ events: SessionEvent[] }>(`${base}/timeline`, { signal }),
+  ]);
+  const allEvents = all.events ?? [];
+  const conversationEvents = conversation.events?.length
+    ? conversation.events
+    : allEvents.filter((event) => event.kind === "conversation");
+  const timelineEvents = timeline.events?.length
+    ? timeline.events
+    : allEvents.filter((event) => event.kind !== "conversation");
+  const transcriptEvents = [...conversationEvents, ...timelineEvents.filter((event) => event.kind === "runtime_output")]
+    .sort((left, right) => left.seq - right.seq);
+  return {
+    owner: sessionAsRuntimeOwner(session),
+    timeline: timelineEvents.map(sessionEventAsTimelineItem),
+    transcript: transcriptEvents.flatMap((event) => sessionEventAsTranscriptEntry(event, session)),
+  };
+}
+
+function taskAsRuntimeOwner(task: Task): RuntimeOwnerView {
+  return {
+    kind: "task",
+    id: task.id,
+    title: task.goal,
+    status: task.status,
+    runner: task.runner,
+    runtimeProfileID: task.runtime_profile_id,
+    blackboardConclusionMode: task.run_controls.blackboard_conclusion_mode,
+    blackboardConclusion: task.blackboard_conclusion,
+    runtimeControls: task.runtime_controls,
+    runtimeActivity: task.runtime_activity,
+    activeContinuation: task.active_continuation ? taskContinuationAsRuntimeOwner(task.active_continuation) : undefined,
+    latestContinuation: task.latest_continuation ? taskContinuationAsRuntimeOwner(task.latest_continuation) : undefined,
+    createdAt: task.created_at,
+    updatedAt: task.updated_at,
+    capabilities: {
+      projectChrome: true,
+      rename: false,
+      archive: false,
+      restore: false,
+      delete: DELETABLE.has(task.status),
+      finish: true,
+      resumeWithoutMessage: true,
+      attachments: false,
+    },
+  };
+}
+
+function taskContinuationAsRuntimeOwner(continuation: TaskContinuation): RuntimeOwnerContinuation {
+  return {
+    id: continuation.id,
+    number: continuation.number,
+    runtimeProfileID: continuation.runtime_profile_id,
+    runtimeProvider: continuation.runtime_provider,
+    runner: continuation.runner,
+    status: continuation.status,
+    nativeSessionID: continuation.native_session_id,
+  };
+}
+
+function sessionAsRuntimeOwner(session: Session): RuntimeOwnerView {
+  const active = session.active_continuation ? sessionContinuationAsRuntimeOwner(session.active_continuation) : undefined;
+  const latest = session.latest_continuation ? sessionContinuationAsRuntimeOwner(session.latest_continuation) : active;
+  const continuation = active ?? latest;
+  const status = session.lifecycle === "archived" ? "archived" : active?.status ?? latest?.status ?? "stopped";
+  const controls = session.runtime_controls;
+  return {
+    kind: "session",
+    id: session.id,
+    title: session.title,
+    status,
+    lifecycle: session.lifecycle,
+    runner: continuation?.runner ?? "host",
+    runtimeProfileID: continuation?.runtimeProfileID ?? "",
+    blackboardConclusionMode: session.run_controls?.blackboard_conclusion_mode,
+    blackboardConclusion: session.blackboard_conclusion,
+    runtimeActivity: session.runtime_activity,
+    activeContinuation: active,
+    latestContinuation: latest,
+    runtimeControls: controls ? {
+      native_resume_available: controls.native_resume_available,
+      resume_available: session.lifecycle === "open",
+      native_steer_available: controls.native_steer_available,
+      native_steer_mode: controls.native_steer_mode,
+      queue_steer_available: controls.queue_steer_available,
+      interrupt_steer_available: controls.interrupt_steer_available,
+      native_session_captured: controls.native_session_captured,
+      same_runtime_provider_only: true,
+      runtime_provider: controls.runtime_provider,
+      turn_selection: controls.turn_selection,
+      provider_permissions: controls.provider_permissions,
+      recovery_state: controls.recovery_state,
+      recovery_reason: controls.recovery_reason,
+      finish_available: false,
+    } : {
+      native_resume_available: false,
+      resume_available: session.lifecycle === "open",
+      queue_steer_available: true,
+      interrupt_steer_available: false,
+      native_session_captured: false,
+      same_runtime_provider_only: true,
+      finish_available: false,
+    },
+    createdAt: session.created_at,
+    updatedAt: session.updated_at,
+    capabilities: {
+      projectChrome: false,
+      rename: true,
+      archive: session.lifecycle === "open",
+      restore: session.lifecycle === "archived",
+      delete: session.lifecycle === "archived",
+      finish: false,
+      resumeWithoutMessage: false,
+      attachments: true,
+    },
+  };
+}
+
+function sessionContinuationAsRuntimeOwner(continuation: SessionContinuation): RuntimeOwnerContinuation {
+  return {
+    id: continuation.id,
+    number: continuation.number,
+    runtimeProfileID: continuation.runtime_profile_id,
+    runtimeProvider: continuation.runtime_provider,
+    runner: continuation.runner,
+    status: continuation.status,
+    nativeSessionID: continuation.native_session_id,
+  };
+}
+
+function sessionEventAsTranscriptEntry(event: SessionEvent, session: Session): TaskTranscriptEntry[] {
+  const payload = event.payload ?? {};
+  const text = typeof payload.text === "string" ? payload.text : "";
+  if (!text.trim()) return [];
+  const continuation = sessionContinuationNumber(payload.continuation_id, session);
+  if (event.kind === "runtime_output") {
+    return [{
+      id: event.id,
+      seq: event.seq,
+      continuation,
+      kind: "runtime_output",
+      role: "runtime",
+      text,
+      stream: typeof payload.stream === "string" ? payload.stream : undefined,
+      details: payload,
+      created_at: event.created_at,
+    }];
+  }
+  return [{
+    id: event.id,
+    seq: event.seq,
+    continuation,
+    kind: "message",
+    role: typeof payload.role === "string" ? payload.role : "runtime",
+    text,
+    details: payload,
+    created_at: event.created_at,
+  }];
+}
+
+function sessionContinuationNumber(value: unknown, session: Session): number {
+  if (typeof value === "string") {
+    if (session.active_continuation?.id === value) return session.active_continuation.number;
+    if (session.latest_continuation?.id === value) return session.latest_continuation.number;
+  }
+  return session.active_continuation?.number ?? session.latest_continuation?.number ?? 1;
+}
+
+function sessionEventAsTimelineItem(event: SessionEvent): TaskTimelineItem {
+  const payload = event.payload ?? {};
+  const failed = payload.outcome === "failed" || payload.status === "failed";
+  const type: TaskTimelineItem["type"] = failed
+    ? "error"
+    : event.kind === "steering"
+      ? "steering"
+      : event.kind === "lifecycle" || event.kind === "attachment"
+        ? "lifecycle"
+        : event.kind === "runtime_output"
+          ? "text"
+          : "harness";
+  return {
+    seq: event.seq,
+    type,
+    content: sessionEventDescription(event),
+    created_at: event.created_at,
+  };
+}
+
+function sessionEventDescription(event: SessionEvent): string {
+  const payload = event.payload ?? {};
+  if (event.kind === "attachment") {
+    const filename = typeof payload.filename === "string" ? payload.filename : "attachment";
+    const size = typeof payload.size === "number" ? ` (${payload.size} bytes)` : "";
+    return `Attached ${filename}${size}`;
+  }
+  if (typeof payload.text === "string") return payload.text;
+  if (typeof payload.phase === "string") return payload.phase;
+  return JSON.stringify(payload);
+}
+
+async function postSessionRuntimeMessage(
+  path: string,
+  message: string,
+  selection: { model_provider_id?: string; model?: string; model_override?: string; reasoning_effort: string },
+  attachments: File[],
+) {
+  if (attachments.length === 0) {
+    return apiPost<Session>(path, { message, ...selection });
+  }
+  const form = new FormData();
+  form.append("payload", JSON.stringify({ message, ...selection }));
+  attachments.forEach((attachment) => form.append("attachments", attachment, attachment.name));
+  return apiPostForm<Session>(path, form);
 }
 
 function tabClass(active: boolean) {
@@ -806,7 +1236,8 @@ function ProviderPermissionRequests({
   );
 }
 
-function TaskComposer({
+function RuntimeOwnerComposer({
+  ownerLabel,
   value,
   onChange,
   onKeyDown,
@@ -818,7 +1249,9 @@ function TaskComposer({
   sending,
   running,
   queueAvailable,
+  queueDisabled,
   providerSwitchRequested,
+  providerSwitchAvailable,
   sendMode,
   sendActionLabel,
   actionError,
@@ -830,7 +1263,11 @@ function TaskComposer({
   onSelectProvider,
   onSelectModel,
   onSelectReasoningEffort,
+  attachments,
+  attachmentInputRef,
+  onAttachmentsChange,
 }: {
+  ownerLabel: "Task" | "Session";
   value: string;
   onChange: (value: string) => void;
   onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
@@ -842,7 +1279,9 @@ function TaskComposer({
   sending: boolean;
   running: boolean;
   queueAvailable: boolean;
+  queueDisabled: boolean;
   providerSwitchRequested: boolean;
+  providerSwitchAvailable: boolean;
   sendMode: ConversationSendMode;
   sendActionLabel: string;
   actionError: string | null;
@@ -854,6 +1293,9 @@ function TaskComposer({
   onSelectProvider: (providerID: string) => void;
   onSelectModel: (model: string) => void;
   onSelectReasoningEffort: (effort: string) => void;
+  attachments?: File[];
+  attachmentInputRef?: RefObject<HTMLInputElement | null>;
+  onAttachmentsChange?: (files: File[]) => void;
 }) {
   return (
     <div data-testid="task-composer" className="fixed inset-x-0 bottom-0 z-30 shrink-0 border-t border-border bg-background/95 px-3 py-2 shadow-[0_-8px_24px_rgba(0,0,0,0.12)] backdrop-blur-sm sm:px-4 md:static md:z-10 md:shadow-none">
@@ -861,7 +1303,7 @@ function TaskComposer({
         {actionError && <p role="alert" className="text-xs text-destructive">{actionError}</p>}
         <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm focus-within:border-ring">
           <Textarea
-            aria-label="Task message"
+            aria-label={`${ownerLabel} message`}
             name="task_message"
             value={value}
             onChange={(event) => onChange(event.target.value)}
@@ -873,6 +1315,20 @@ function TaskComposer({
           />
           <div className="flex flex-wrap items-center gap-1.5 border-t border-border px-2 py-1.5">
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+              {onAttachmentsChange && (
+                <label className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md bg-muted/60 px-2 text-xs text-muted-foreground transition-colors hover:text-foreground">
+                  <Paperclip className="h-3.5 w-3.5" />
+                  <span>{attachments?.length ? `${attachments.length} attached` : "Attach"}</span>
+                  <input
+                    ref={attachmentInputRef}
+                    type="file"
+                    multiple
+                    className="sr-only"
+                    aria-label="Attach files to Session message"
+                    onChange={(event) => onAttachmentsChange(Array.from(event.target.files ?? []))}
+                  />
+                </label>
+              )}
               <Select
                 size="sm"
                 className="h-7 min-w-0 w-auto max-w-full border-0 bg-muted/60 px-2 text-xs shadow-none sm:max-w-[13rem]"
@@ -923,9 +1379,9 @@ function TaskComposer({
                   size="icon-lg"
                   variant="ghost"
                   onClick={onQueue}
-                  disabled={!value.trim() || sending}
+                  disabled={!value.trim() || sending || queueDisabled}
                   aria-label="Queue message"
-                  title="Queue message"
+                  title={queueDisabled ? "Queue cannot switch a Session model provider" : "Queue message"}
                 >
                   <ListPlus className="h-4 w-4" />
                 </Button>
@@ -936,7 +1392,7 @@ function TaskComposer({
                   variant="ghost"
                   onClick={onFinish}
                   disabled={sending}
-                  aria-label="Finish task"
+                  aria-label={`Finish ${ownerLabel.toLowerCase()}`}
                   title="Finish Task: close Runtime and mark completed"
                   data-testid="finish-task-composer"
                 >
@@ -944,14 +1400,14 @@ function TaskComposer({
                 </Button>
               )}
               {running && (
-                <Button size="icon-lg" variant="destructive" onClick={onStop} disabled={sending} aria-label="Stop task" title="Stop task">
+                <Button size="icon-lg" variant="destructive" onClick={onStop} disabled={sending} aria-label={`Stop ${ownerLabel.toLowerCase()}`} title={`Stop ${ownerLabel}`}>
                   <Square className="h-4 w-4" />
                 </Button>
               )}
               <Button
                 size="icon-lg"
                 onClick={onSend}
-                disabled={!value.trim() || sending || sendMode === "unavailable" || (providerSwitchRequested && !queueAvailable)}
+                disabled={!value.trim() || sending || sendMode === "unavailable" || (providerSwitchRequested && !providerSwitchAvailable)}
                 aria-label={sendActionLabel}
                 title={sendActionLabel}
               >
@@ -999,11 +1455,11 @@ function RuntimeActivityBadge({ activity }: { activity?: RuntimeActivity }) {
   );
 }
 
-function BlackboardConclusionBadge({ task }: { task: Task }) {
-  const mode = task.blackboard_conclusion?.mode ?? task.run_controls.blackboard_conclusion_mode ?? "interactive";
-  const state = task.blackboard_conclusion?.state ?? "clean";
-  const sourceTurn = task.blackboard_conclusion?.source_turn_id;
-  const appliedRevision = task.blackboard_conclusion?.applied_revision;
+function BlackboardConclusionBadge({ owner }: { owner: RuntimeOwnerView }) {
+  const mode = owner.blackboardConclusion?.mode ?? owner.blackboardConclusionMode ?? "interactive";
+  const state = owner.blackboardConclusion?.state ?? "clean";
+  const sourceTurn = owner.blackboardConclusion?.source_turn_id;
+  const appliedRevision = owner.blackboardConclusion?.applied_revision;
   const stateLabel = state === "action_required" ? "action required" : state;
   const label = `Blackboard · ${mode} · ${stateLabel}${appliedRevision !== undefined ? ` · applied revision ${appliedRevision}` : ""}`;
   const details = [label];
