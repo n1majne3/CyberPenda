@@ -1355,7 +1355,14 @@ func TestAssistedConclusionIgnoresControlTurnsAndTrustedBlackboardTools(t *testi
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
 	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
 	waitForAssistedProviderRequests(t, session, 1)
-	workRequestID := session.LastRequests()[0].RequestID
+	workRequest := session.LastRequests()[0]
+	// Recording the request precedes completion of the asynchronous launch
+	// dispatch. Replaying the same idempotency key waits for that dispatch, so
+	// the control Turn below cannot race the provider's active control call.
+	if _, err := session.SendTurn(context.Background(), workRequest, nil); err != nil {
+		t.Fatal(err)
+	}
+	workRequestID := workRequest.RequestID
 	controlResult, err := session.SendTurn(context.Background(), runtime.ProviderSessionRequest{
 		RequestID: "control-request-1", Message: "reconcile", TurnKind: runtime.RuntimeTurnKindControl,
 	}, nil)
