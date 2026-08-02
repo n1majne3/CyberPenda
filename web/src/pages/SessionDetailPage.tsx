@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   Archive,
@@ -21,6 +21,7 @@ import {
   queueSessionSteer,
   renameSession,
   respondSessionPermission,
+  retrySessionBlackboardConclusion,
   restoreSession,
   sendSessionMessage,
   steerSession,
@@ -46,7 +47,34 @@ export function SessionDetailPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [sending, setSending] = useState(false);
+  const [retryingConclusion, setRetryingConclusion] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const applySessionData = useCallback(
+    (
+      found: Session,
+      allEvents: SessionEvent[],
+      conversationEvents: SessionEvent[],
+      timelineEvents: SessionEvent[],
+    ) => {
+      setSession(found);
+      setConversation(conversationEvents.length > 0 ? conversationEvents : allEvents.filter((event) => event.kind === "conversation"));
+      setTimeline(timelineEvents.length > 0 ? timelineEvents : allEvents.filter((event) => event.kind !== "conversation"));
+      setRenameValue(found.title);
+    },
+    [],
+  );
+
+  const refresh = useCallback(async () => {
+    if (!sessionId) return;
+    const [found, allEvents, conversationResponse, timelineResponse] = await Promise.all([
+      getSession(sessionId),
+      getSessionEvents(sessionId),
+      getSessionConversation(sessionId),
+      getSessionTimeline(sessionId),
+    ]);
+    applySessionData(found, allEvents.events ?? [], conversationResponse.events ?? [], timelineResponse.events ?? []);
+  }, [applySessionData, sessionId]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -71,30 +99,19 @@ export function SessionDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, [sessionId]);
+  }, [applySessionData, sessionId]);
 
-  function applySessionData(
-    found: Session,
-    allEvents: SessionEvent[],
-    conversationEvents: SessionEvent[],
-    timelineEvents: SessionEvent[],
-  ) {
-    setSession(found);
-    setConversation(conversationEvents.length > 0 ? conversationEvents : allEvents.filter((event) => event.kind === "conversation"));
-    setTimeline(timelineEvents.length > 0 ? timelineEvents : allEvents.filter((event) => event.kind !== "conversation"));
-    setRenameValue(found.title);
-  }
-
-  async function refresh() {
-    if (!sessionId) return;
-    const [found, allEvents, conversationResponse, timelineResponse] = await Promise.all([
-      getSession(sessionId),
-      getSessionEvents(sessionId),
-      getSessionConversation(sessionId),
-      getSessionTimeline(sessionId),
-    ]);
-    applySessionData(found, allEvents.events ?? [], conversationResponse.events ?? [], timelineResponse.events ?? []);
-  }
+  const activeContinuationID = session?.active_continuation?.id;
+  const conclusionState = session?.blackboard_conclusion?.state;
+  useEffect(() => {
+    if (!sessionId || (!activeContinuationID && !["pending", "concluding"].includes(conclusionState ?? ""))) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void refresh().catch((reason: unknown) => setError((reason as Error).message));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [activeContinuationID, conclusionState, refresh, sessionId]);
 
   async function submitMessage(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -169,6 +186,20 @@ export function SessionDetailPage() {
       setError((reason as Error).message);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function retryBlackboardConclusion() {
+    if (!session || retryingConclusion) return;
+    setRetryingConclusion(true);
+    try {
+      const retried = await retrySessionBlackboardConclusion(session.id, newBlackboardRetryID());
+      setSession(retried);
+      setError(null);
+    } catch (reason) {
+      setError((reason as Error).message);
+    } finally {
+      setRetryingConclusion(false);
     }
   }
 
@@ -299,6 +330,12 @@ export function SessionDetailPage() {
             Runtime execution.
           </div>
 
+          <BlackboardConclusionStatus
+            session={session}
+            retrying={retryingConclusion}
+            onRetry={() => void retryBlackboardConclusion()}
+          />
+
           {error && <SettingsAlert>{error}</SettingsAlert>}
 
           <Card as="section" aria-labelledby="session-conversation-heading" className="gap-4">
@@ -421,6 +458,69 @@ export function SessionDetailPage() {
         </>
       ) : null}
     </PageContainer>
+  );
+}
+
+function newBlackboardRetryID() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `blackboard-retry-${crypto.randomUUID()}`;
+  }
+  return `blackboard-retry-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+}
+
+function BlackboardConclusionStatus({
+  session,
+  retrying,
+  onRetry,
+}: {
+  session: Session;
+  retrying: boolean;
+  onRetry: () => void;
+}) {
+  const mode = session.blackboard_conclusion?.mode ?? session.run_controls?.blackboard_conclusion_mode ?? "interactive";
+  const state = session.blackboard_conclusion?.state ?? "clean";
+  const sourceTurn = session.blackboard_conclusion?.source_turn_id;
+  const appliedRevision = session.blackboard_conclusion?.applied_revision;
+  const stateLabel = state === "action_required" ? "action required" : state;
+  const label = `Blackboard · ${mode} · ${stateLabel}${appliedRevision !== undefined ? ` · applied revision ${appliedRevision}` : ""}`;
+  return (
+    <Card as="section" aria-labelledby="session-blackboard-conclusion-heading" className="gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <CardTitle id="session-blackboard-conclusion-heading" className="text-base">Session Blackboard conclusions</CardTitle>
+          <CardDescription className="mt-1">
+            Owner-local semantic persistence status; this state never writes Project Blackboard records.
+          </CardDescription>
+        </div>
+        <Badge
+          variant={state === "action_required" ? "destructive" : state === "pending" || state === "concluding" ? "warning" : "outline"}
+          data-testid="session-blackboard-conclusion-state"
+          title={[label, sourceTurn ? `source Turn ${sourceTurn}` : ""].filter(Boolean).join(" · ")}
+        >
+          {label}
+        </Badge>
+      </div>
+      {state === "action_required" && (
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm">
+          <div>
+            <p className="text-foreground">Session Blackboard conclusion requires attention.</p>
+            {session.blackboard_conclusion?.error_code && (
+              <p className="font-mono text-xs text-muted-foreground">{session.blackboard_conclusion.error_code}</p>
+            )}
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={onRetry}
+            disabled={retrying || session.blackboard_conclusion?.retry_available !== true}
+            aria-label="Retry Session Blackboard conclusion"
+          >
+            {retrying ? "Retrying…" : "Retry conclusion"}
+          </Button>
+        </div>
+      )}
+    </Card>
   );
 }
 

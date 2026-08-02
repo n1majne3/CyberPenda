@@ -116,4 +116,60 @@ describe("SessionDetailPage", () => {
       );
     });
   });
+
+  it("shows Session-local conclusion recovery and retries with an idempotency key", async () => {
+    const fetchMock = mockApi({
+      "/api/sessions/session-retry/events": { events: [] },
+      "/api/sessions/session-retry/conversation": { events: [] },
+      "/api/sessions/session-retry/timeline": { events: [] },
+      "/api/sessions/session-retry": {
+        id: "session-retry",
+        title: "Needs recovery",
+        lifecycle: "open",
+        run_controls: { blackboard_conclusion_mode: "assisted" },
+        blackboard_conclusion: {
+          mode: "assisted",
+          state: "action_required",
+          error_code: "semantic_conclusion_repair_exhausted",
+          retry_available: true,
+        },
+        created_at: "2026-08-01T01:00:00Z",
+        updated_at: "2026-08-01T01:00:00Z",
+        last_activity_at: "2026-08-01T01:00:00Z",
+      },
+      "/api/sessions/session-retry/blackboard-conclusion/retry": {
+        id: "session-retry",
+        title: "Needs recovery",
+        lifecycle: "open",
+        run_controls: { blackboard_conclusion_mode: "assisted" },
+        blackboard_conclusion: { mode: "assisted", state: "pending", retry_available: false },
+        created_at: "2026-08-01T01:00:00Z",
+        updated_at: "2026-08-01T01:00:00Z",
+        last_activity_at: "2026-08-01T01:00:00Z",
+      },
+    });
+    const user = userEvent.setup();
+
+    render(
+      <MemoryRouter initialEntries={["/sessions/session-retry"]}>
+        <Routes>
+          <Route path="/sessions/:sessionId" element={<SessionDetailPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId("session-blackboard-conclusion-state")).toHaveTextContent("assisted");
+    expect(screen.getByRole("alert")).toHaveTextContent("semantic_conclusion_repair_exhausted");
+    await user.click(screen.getByRole("button", { name: /retry session blackboard conclusion/i }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/sessions/session-retry/blackboard-conclusion/retry",
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.objectContaining({ "idempotency-key": expect.stringMatching(/^blackboard-retry-/) }),
+        }),
+      );
+    });
+  });
 });

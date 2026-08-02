@@ -75,7 +75,34 @@ describe("SessionHomePage", () => {
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         "/api/sessions",
-        expect.objectContaining({ method: "POST", body: JSON.stringify({ input: "Check the exposed service" }) }),
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ input: "Check the exposed service", run_controls: { blackboard_conclusion_mode: "interactive" } }),
+        }),
+      );
+    });
+  });
+
+  it("persists assisted Blackboard conclusions from the Session launch controls", async () => {
+    const fetchMock = mockApi({
+      "/api/sessions?lifecycle=archived": { sessions: [] },
+      "/api/sessions": { sessions: [] },
+    });
+    const user = userEvent.setup();
+
+    renderPage();
+
+    await user.type(await screen.findByRole("textbox", { name: /initial input/i }), "Inspect the standalone target");
+    await user.selectOptions(screen.getByRole("combobox", { name: /blackboard conclusions/i }), "assisted");
+    await user.click(screen.getByRole("button", { name: /create session/i }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/sessions",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ input: "Inspect the standalone target", run_controls: { blackboard_conclusion_mode: "assisted" } }),
+        }),
       );
     });
   });

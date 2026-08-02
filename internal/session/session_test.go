@@ -72,6 +72,35 @@ func TestCreateSessionDerivesTitleAndOwnsInitialConversation(t *testing.T) {
 	}
 }
 
+func TestCreateSessionPersistsAssistedBlackboardConclusionRunControl(t *testing.T) {
+	dataRoot := t.TempDir()
+	db, err := store.Open(filepath.Join(dataRoot, "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	service := NewService(db, filepath.Join(dataRoot, "sessions"))
+	created, err := service.Create(CreateRequest{
+		Input:                    "Inspect the standalone target",
+		BlackboardConclusionMode: BlackboardConclusionModeAssisted,
+	})
+	if err != nil {
+		t.Fatalf("create assisted Session: %v", err)
+	}
+	if created.RunControls.BlackboardConclusionMode != BlackboardConclusionModeAssisted {
+		t.Fatalf("created run controls = %#v", created.RunControls)
+	}
+
+	reloaded, err := service.Get(created.ID)
+	if err != nil {
+		t.Fatalf("reload assisted Session: %v", err)
+	}
+	if reloaded.RunControls.BlackboardConclusionMode != BlackboardConclusionModeAssisted {
+		t.Fatalf("reloaded run controls = %#v", reloaded.RunControls)
+	}
+}
+
 func TestCreateSessionSafelyCopiesAttachmentsAndCleansPartialWrites(t *testing.T) {
 	dataRoot := t.TempDir()
 	db, err := store.Open(filepath.Join(dataRoot, "pentest.db"))

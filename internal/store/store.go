@@ -932,7 +932,98 @@ func migrations() []migration {
 		newMigration(45, "non_project_sessions", migration45SQL, migration45Up),
 		newMigration(46, "session_runtime_continuations", migration46SQL, migration46Up),
 		newMigration(47, "session_blackboard_v2", migration47SQL, migration47Up),
+		newMigration(48, "session_assisted_conclusion_receipts", migration48SQL, migration48Up),
 	}
+}
+
+const migration48SQL = `
+CREATE TABLE IF NOT EXISTS session_assisted_conclusion_receipts (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    continuation_id TEXT NOT NULL,
+    source_request_id TEXT NOT NULL CHECK (length(trim(source_request_id)) > 0),
+    source_request_correlation_exact INTEGER NOT NULL CHECK (source_request_correlation_exact IN (0,1)),
+    source_session_id TEXT NOT NULL,
+    source_turn_id TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('clean','pending','dispatch_requested','repair_dispatch_requested','version_sync_requested','version_regeneration_dispatch_requested','awaiting_result','action_required','validated','applied')),
+    source_work_watermark INTEGER NOT NULL CHECK (source_work_watermark >= 0),
+    semantic_persistence_watermark INTEGER NOT NULL CHECK (semantic_persistence_watermark >= 0),
+    dispatch_request_id TEXT UNIQUE,
+    control_turn_id TEXT,
+    base_revision INTEGER CHECK (base_revision >= 0),
+    synchronized_revision INTEGER CHECK (synchronized_revision >= 0),
+    source_model_provider_id TEXT NOT NULL DEFAULT '',
+    source_model TEXT NOT NULL DEFAULT '',
+    source_reasoning_effort TEXT NOT NULL DEFAULT '',
+    canonical_result_json BLOB,
+    canonical_result_sha256 TEXT,
+    apply_idempotency_key TEXT UNIQUE,
+    applied_revision INTEGER CHECK (applied_revision >= 0),
+    automatic_turn_count INTEGER NOT NULL DEFAULT 0 CHECK (automatic_turn_count >= 0),
+    repair_count INTEGER NOT NULL DEFAULT 0 CHECK (repair_count >= 0),
+    version_regeneration_count INTEGER NOT NULL DEFAULT 0 CHECK (version_regeneration_count IN (0,1)),
+    explicit_retry_count INTEGER NOT NULL DEFAULT 0 CHECK (explicit_retry_count >= 0),
+    operator_retry_key TEXT,
+    send_attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (send_attempt_count IN (0,1)),
+    send_started_at TEXT,
+    next_eligible_at TEXT,
+    error_code TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (session_id, continuation_id, source_turn_id),
+    CHECK ((send_attempt_count = 0 AND send_started_at IS NULL) OR (send_attempt_count = 1 AND send_started_at IS NOT NULL)),
+    CHECK ((state = 'clean' AND source_work_watermark = semantic_persistence_watermark) OR (state <> 'clean' AND source_work_watermark > semantic_persistence_watermark)),
+    CHECK (
+        (state IN ('clean','pending') AND dispatch_request_id IS NULL AND control_turn_id IS NULL AND base_revision IS NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NULL AND applied_revision IS NULL) OR
+        (state IN ('dispatch_requested','repair_dispatch_requested','version_regeneration_dispatch_requested') AND dispatch_request_id IS NOT NULL AND control_turn_id IS NULL AND base_revision IS NOT NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+        (state = 'awaiting_result' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+        (state = 'action_required' AND applied_revision IS NULL AND ((dispatch_request_id IS NULL AND control_turn_id IS NULL AND base_revision IS NULL AND apply_idempotency_key IS NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL) OR (dispatch_request_id IS NOT NULL AND base_revision IS NOT NULL AND apply_idempotency_key IS NOT NULL AND ((canonical_result_json IS NULL AND canonical_result_sha256 IS NULL) OR (control_turn_id IS NOT NULL AND canonical_result_json IS NOT NULL AND length(canonical_result_json) > 0 AND canonical_result_sha256 IS NOT NULL AND length(canonical_result_sha256) = 64))))) OR
+        (state IN ('validated','version_sync_requested') AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NOT NULL AND length(canonical_result_json) > 0 AND canonical_result_sha256 IS NOT NULL AND length(canonical_result_sha256) = 64 AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+        (state = 'applied' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NOT NULL AND length(canonical_result_json) > 0 AND canonical_result_sha256 IS NOT NULL AND length(canonical_result_sha256) = 64 AND apply_idempotency_key IS NOT NULL AND applied_revision IS NOT NULL)
+    )
+);
+CREATE INDEX IF NOT EXISTS idx_session_assisted_conclusion_session_created
+    ON session_assisted_conclusion_receipts(session_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS session_assisted_conclusion_retry_keys (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    receipt_id TEXT NOT NULL REFERENCES session_assisted_conclusion_receipts(id) ON DELETE CASCADE,
+    idempotency_key TEXT NOT NULL,
+    dispatch_request_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (session_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_session_assisted_conclusion_dispatch
+    ON session_assisted_conclusion_receipts(dispatch_request_id);
+`
+
+func migration48Up(tx *sql.Tx) error {
+	rows, err := tx.Query(`PRAGMA table_info(sessions)`)
+	if err != nil {
+		return err
+	}
+	hasMode := false
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if name == "blackboard_conclusion_mode" {
+			hasMode = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if !hasMode {
+		if _, err := tx.Exec(`ALTER TABLE sessions ADD COLUMN blackboard_conclusion_mode TEXT NOT NULL DEFAULT 'interactive' CHECK (blackboard_conclusion_mode IN ('interactive', 'assisted'))`); err != nil {
+			return err
+		}
+	}
+	return execStatements(tx, migration48SQL)
 }
 
 const migration45SQL = `

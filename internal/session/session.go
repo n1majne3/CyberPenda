@@ -48,13 +48,14 @@ const (
 type EventKind string
 
 const (
-	EventKindConversation  EventKind = "conversation"
-	EventKindAttachment    EventKind = "attachment"
-	EventKindLifecycle     EventKind = "lifecycle"
-	EventKindRuntimeOutput EventKind = "runtime_output"
-	EventKindSteering      EventKind = "steering"
-	EventKindPermission    EventKind = "permission"
-	EventKindTurn          EventKind = "turn"
+	EventKindConversation         EventKind = "conversation"
+	EventKindAttachment           EventKind = "attachment"
+	EventKindLifecycle            EventKind = "lifecycle"
+	EventKindRuntimeOutput        EventKind = "runtime_output"
+	EventKindSteering             EventKind = "steering"
+	EventKindPermission           EventKind = "permission"
+	EventKindTurn                 EventKind = "turn"
+	EventKindBlackboardConclusion EventKind = "blackboard_conclusion"
 )
 
 // EventPayload is intentionally structured and compact. Raw files remain in
@@ -124,6 +125,75 @@ type RuntimeControls struct {
 	RecoveryReason          string                `json:"recovery_reason,omitempty"`
 }
 
+// RunControls are the owner-local launch controls that remain stable across
+// Session Runtime Continuations. Sessions expose the same conclusion mode
+// vocabulary as Tasks without acquiring a Project identity or Project scope.
+type RunControls struct {
+	BlackboardConclusionMode BlackboardConclusionMode `json:"blackboard_conclusion_mode"`
+}
+
+// BlackboardConclusionMode selects whether the operator alone prompts the
+// Runtime to persist conclusions or the Harness assists at work-Turn bounds.
+type BlackboardConclusionMode string
+
+const (
+	BlackboardConclusionModeInteractive BlackboardConclusionMode = "interactive"
+	BlackboardConclusionModeAssisted    BlackboardConclusionMode = "assisted"
+)
+
+// BlackboardConclusionState is the compact owner-local semantic-debt view.
+type BlackboardConclusionState string
+
+const (
+	BlackboardConclusionStateClean          BlackboardConclusionState = "clean"
+	BlackboardConclusionStatePending        BlackboardConclusionState = "pending"
+	BlackboardConclusionStateConcluding     BlackboardConclusionState = "concluding"
+	BlackboardConclusionStateActionRequired BlackboardConclusionState = "action_required"
+)
+
+type BlackboardConclusionErrorCode = owner.BlackboardConclusionErrorCode
+
+const (
+	BlackboardConclusionErrorInvalidResult           = owner.BlackboardConclusionErrorInvalidResult
+	BlackboardConclusionErrorToolUseForbidden        = owner.BlackboardConclusionErrorToolUseForbidden
+	BlackboardConclusionErrorRepairExhausted         = owner.BlackboardConclusionErrorRepairExhausted
+	BlackboardConclusionErrorVersionConflict         = owner.BlackboardConclusionErrorVersionConflict
+	BlackboardConclusionErrorRuntimeRecoveryRequired = owner.BlackboardConclusionErrorRuntimeRecoveryRequired
+	BlackboardConclusionErrorWorkTurnNeverSettled    = owner.BlackboardConclusionErrorWorkTurnNeverSettled
+	BlackboardConclusionAutomaticTurnLimit           = owner.BlackboardConclusionAutomaticTurnLimit
+	BlackboardConclusionWorkTurnConflictLimit        = owner.BlackboardConclusionWorkTurnConflictLimit
+)
+
+type BlackboardConclusionReceiptState = owner.BlackboardConclusionReceiptState
+
+const (
+	BlackboardConclusionReceiptClean                                = owner.BlackboardConclusionReceiptClean
+	BlackboardConclusionReceiptPending                              = owner.BlackboardConclusionReceiptPending
+	BlackboardConclusionReceiptDispatchRequested                    = owner.BlackboardConclusionReceiptDispatchRequested
+	BlackboardConclusionReceiptAwaitingResult                       = owner.BlackboardConclusionReceiptAwaitingResult
+	BlackboardConclusionReceiptRepairDispatchRequested              = owner.BlackboardConclusionReceiptRepairDispatchRequested
+	BlackboardConclusionReceiptVersionSyncRequested                 = owner.BlackboardConclusionReceiptVersionSyncRequested
+	BlackboardConclusionReceiptVersionRegenerationDispatchRequested = owner.BlackboardConclusionReceiptVersionRegenerationDispatchRequested
+	BlackboardConclusionReceiptActionRequired                       = owner.BlackboardConclusionReceiptActionRequired
+	BlackboardConclusionReceiptValidated                            = owner.BlackboardConclusionReceiptValidated
+	BlackboardConclusionReceiptApplied                              = owner.BlackboardConclusionReceiptApplied
+)
+
+// BlackboardConclusion is the compact Session read view for the latest
+// assisted Work Runtime Turn checkpoint and any conclusion progress it
+// triggered. Result bytes and provider correlation remain private.
+type BlackboardConclusion struct {
+	Mode                         BlackboardConclusionMode      `json:"mode"`
+	State                        BlackboardConclusionState     `json:"state"`
+	SourceTurnID                 string                        `json:"source_turn_id,omitempty"`
+	SourceWorkWatermark          int                           `json:"source_work_watermark"`
+	SemanticPersistenceWatermark int                           `json:"semantic_persistence_watermark"`
+	AppliedRevision              *int                          `json:"applied_revision,omitempty"`
+	ErrorCode                    BlackboardConclusionErrorCode `json:"error_code,omitempty"`
+	RetryAvailable               bool                          `json:"retry_available"`
+	NextEligibleAt               *time.Time                    `json:"next_eligible_at,omitempty"`
+}
+
 // ProviderPermission is a redacted provider approval request owned by one
 // Session and one active continuation.
 type ProviderPermission struct {
@@ -177,17 +247,19 @@ type CreateContinuationRequest struct {
 // the JSON representation because it is a server-local path, not operator
 // state or a Project artifact reference.
 type Session struct {
-	ID                 string          `json:"id"`
-	Title              string          `json:"title"`
-	Lifecycle          Lifecycle       `json:"lifecycle"`
-	Workdir            string          `json:"-"`
-	RuntimeActivity    RuntimeActivity `json:"runtime_activity"`
-	RuntimeControls    RuntimeControls `json:"runtime_controls"`
-	ActiveContinuation *Continuation   `json:"active_continuation,omitempty"`
-	LatestContinuation *Continuation   `json:"latest_continuation,omitempty"`
-	CreatedAt          time.Time       `json:"created_at"`
-	UpdatedAt          time.Time       `json:"updated_at"`
-	LastActivityAt     time.Time       `json:"last_activity_at"`
+	ID                   string               `json:"id"`
+	Title                string               `json:"title"`
+	Lifecycle            Lifecycle            `json:"lifecycle"`
+	Workdir              string               `json:"-"`
+	RunControls          RunControls          `json:"run_controls"`
+	BlackboardConclusion BlackboardConclusion `json:"blackboard_conclusion"`
+	RuntimeActivity      RuntimeActivity      `json:"runtime_activity"`
+	RuntimeControls      RuntimeControls      `json:"runtime_controls"`
+	ActiveContinuation   *Continuation        `json:"active_continuation,omitempty"`
+	LatestContinuation   *Continuation        `json:"latest_continuation,omitempty"`
+	CreatedAt            time.Time            `json:"created_at"`
+	UpdatedAt            time.Time            `json:"updated_at"`
+	LastActivityAt       time.Time            `json:"last_activity_at"`
 }
 
 // OwnerContract returns the explicit Session capability contract consumed by
@@ -206,28 +278,30 @@ type Attachment struct {
 
 // CreateRequest is the initial Session input and optional initial attachments.
 type CreateRequest struct {
-	Input       string
-	Attachments []Attachment
+	Input                    string
+	Attachments              []Attachment
+	BlackboardConclusionMode BlackboardConclusionMode
 }
 
 var (
 	// ErrNotFound deliberately has no owner details so cross-owner lookups do
 	// not reveal whether another aggregate exists.
-	ErrNotFound                   = errors.New("session not found")
-	ErrMissingInput               = errors.New("session initial input is required")
-	ErrMissingTitle               = errors.New("session title is required")
-	ErrInvalidLifecycle           = errors.New("invalid session lifecycle")
-	ErrAlreadyArchived            = errors.New("session is already archived")
-	ErrNotArchived                = errors.New("session is not archived")
-	ErrOpenSession                = errors.New("open session cannot be deleted")
-	ErrInvalidAttachment          = errors.New("invalid session attachment")
-	ErrInvalidWorkdir             = errors.New("session workdir is outside the managed root")
-	ErrSessionNotOpen             = errors.New("session is not open")
-	ErrActiveContinuation         = errors.New("session already has an active continuation")
-	ErrInvalidRunner              = errors.New("runner must be sandbox or host")
-	ErrContinuationNotFound       = errors.New("session continuation not found")
-	ErrContinuationStatusConflict = errors.New("session continuation status conflicts with its terminal state")
-	ErrMissingRuntimeProfile      = errors.New("session runtime profile is required")
+	ErrNotFound                        = errors.New("session not found")
+	ErrMissingInput                    = errors.New("session initial input is required")
+	ErrMissingTitle                    = errors.New("session title is required")
+	ErrInvalidLifecycle                = errors.New("invalid session lifecycle")
+	ErrAlreadyArchived                 = errors.New("session is already archived")
+	ErrNotArchived                     = errors.New("session is not archived")
+	ErrOpenSession                     = errors.New("open session cannot be deleted")
+	ErrInvalidAttachment               = errors.New("invalid session attachment")
+	ErrInvalidWorkdir                  = errors.New("session workdir is outside the managed root")
+	ErrSessionNotOpen                  = errors.New("session is not open")
+	ErrActiveContinuation              = errors.New("session already has an active continuation")
+	ErrInvalidRunner                   = errors.New("runner must be sandbox or host")
+	ErrContinuationNotFound            = errors.New("session continuation not found")
+	ErrContinuationStatusConflict      = errors.New("session continuation status conflicts with its terminal state")
+	ErrMissingRuntimeProfile           = errors.New("session runtime profile is required")
+	ErrInvalidBlackboardConclusionMode = errors.New("invalid Session Blackboard conclusion mode")
 )
 
 // Service implements Session persistence and lifecycle rules against SQLite.
@@ -285,6 +359,10 @@ func (s *Service) Create(req CreateRequest) (Session, error) {
 	if len(req.Attachments) > MaxAttachmentCount {
 		return Session{}, fmt.Errorf("%w: too many attachments (max %d)", ErrInvalidAttachment, MaxAttachmentCount)
 	}
+	mode, err := normalizeBlackboardConclusionMode(req.BlackboardConclusionMode)
+	if err != nil {
+		return Session{}, err
+	}
 
 	if err := s.ensureWorkdirRoot(); err != nil {
 		return Session{}, fmt.Errorf("prepare Session data root: %w", err)
@@ -314,15 +392,18 @@ func (s *Service) Create(req CreateRequest) (Session, error) {
 	now := time.Now().UTC()
 	created := Session{
 		ID: id, Title: title, Lifecycle: LifecycleOpen, Workdir: workdir,
-		CreatedAt: now, UpdatedAt: now, LastActivityAt: now,
+		RunControls:          RunControls{BlackboardConclusionMode: mode},
+		BlackboardConclusion: BlackboardConclusion{Mode: mode, State: BlackboardConclusionStateClean},
+		CreatedAt:            now, UpdatedAt: now, LastActivityAt: now,
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return Session{}, fmt.Errorf("begin Session create: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(`INSERT INTO sessions (id,title,lifecycle,workdir,created_at,updated_at,last_activity_at) VALUES (?,?,?,?,?,?,?)`,
+	if _, err := tx.Exec(`INSERT INTO sessions (id,title,lifecycle,workdir,blackboard_conclusion_mode,created_at,updated_at,last_activity_at) VALUES (?,?,?,?,?,?,?,?)`,
 		created.ID, created.Title, string(created.Lifecycle), created.Workdir,
+		string(created.RunControls.BlackboardConclusionMode),
 		formatTime(created.CreatedAt), formatTime(created.UpdatedAt), formatTime(created.LastActivityAt)); err != nil {
 		return Session{}, fmt.Errorf("store Session: %w", err)
 	}
@@ -350,7 +431,7 @@ func (s *Service) Create(req CreateRequest) (Session, error) {
 
 // Get loads one Session by its own durable identity.
 func (s *Service) Get(id string) (Session, error) {
-	return scanSession(s.db.QueryRow(`SELECT id,title,lifecycle,workdir,created_at,updated_at,last_activity_at FROM sessions WHERE id=?`, id))
+	return scanSession(s.db.QueryRow(`SELECT id,title,lifecycle,workdir,blackboard_conclusion_mode,created_at,updated_at,last_activity_at FROM sessions WHERE id=?`, id))
 }
 
 // List returns Sessions for one lifecycle in most-recent-activity order.
@@ -359,7 +440,7 @@ func (s *Service) List(lifecycle Lifecycle) ([]Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.Query(`SELECT id,title,lifecycle,workdir,created_at,updated_at,last_activity_at FROM sessions WHERE lifecycle=? ORDER BY last_activity_at DESC, created_at DESC, id ASC`, string(lifecycle))
+	rows, err := s.db.Query(`SELECT id,title,lifecycle,workdir,blackboard_conclusion_mode,created_at,updated_at,last_activity_at FROM sessions WHERE lifecycle=? ORDER BY last_activity_at DESC, created_at DESC, id ASC`, string(lifecycle))
 	if err != nil {
 		return nil, fmt.Errorf("list Sessions: %w", err)
 	}
@@ -1172,18 +1253,32 @@ func normalizeLifecycle(value Lifecycle) (Lifecycle, error) {
 	return value, nil
 }
 
+func normalizeBlackboardConclusionMode(value BlackboardConclusionMode) (BlackboardConclusionMode, error) {
+	switch value {
+	case "", BlackboardConclusionModeInteractive:
+		return BlackboardConclusionModeInteractive, nil
+	case BlackboardConclusionModeAssisted:
+		return BlackboardConclusionModeAssisted, nil
+	default:
+		return "", ErrInvalidBlackboardConclusionMode
+	}
+}
+
 type scanner interface{ Scan(dest ...any) error }
 
 func scanSession(row scanner) (Session, error) {
 	var found Session
-	var lifecycle, created, updated, activity string
-	if err := row.Scan(&found.ID, &found.Title, &lifecycle, &found.Workdir, &created, &updated, &activity); err != nil {
+	var lifecycle, mode, created, updated, activity string
+	if err := row.Scan(&found.ID, &found.Title, &lifecycle, &found.Workdir, &mode, &created, &updated, &activity); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Session{}, ErrNotFound
 		}
 		return Session{}, err
 	}
 	found.Lifecycle = Lifecycle(lifecycle)
+	found.RunControls.BlackboardConclusionMode = BlackboardConclusionMode(mode)
+	found.BlackboardConclusion.Mode = found.RunControls.BlackboardConclusionMode
+	found.BlackboardConclusion.State = BlackboardConclusionStateClean
 	var err error
 	if found.CreatedAt, err = time.Parse(time.RFC3339Nano, created); err != nil {
 		return Session{}, fmt.Errorf("parse Session created_at: %w", err)

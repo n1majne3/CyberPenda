@@ -84,25 +84,25 @@ const (
 	BlackboardConclusionStateActionRequired BlackboardConclusionState = "action_required"
 )
 
-type BlackboardConclusionErrorCode string
+type BlackboardConclusionErrorCode = owner.BlackboardConclusionErrorCode
 
 const (
-	BlackboardConclusionErrorInvalidResult           BlackboardConclusionErrorCode = "semantic_conclusion_invalid_result"
-	BlackboardConclusionErrorToolUseForbidden        BlackboardConclusionErrorCode = "conclude_tool_use_forbidden"
-	BlackboardConclusionErrorRepairExhausted         BlackboardConclusionErrorCode = "semantic_conclusion_repair_exhausted"
-	BlackboardConclusionErrorVersionConflict         BlackboardConclusionErrorCode = "semantic_conclusion_version_conflict"
-	BlackboardConclusionErrorRuntimeRecoveryRequired BlackboardConclusionErrorCode = "semantic_conclusion_runtime_recovery_required"
+	BlackboardConclusionErrorInvalidResult           = owner.BlackboardConclusionErrorInvalidResult
+	BlackboardConclusionErrorToolUseForbidden        = owner.BlackboardConclusionErrorToolUseForbidden
+	BlackboardConclusionErrorRepairExhausted         = owner.BlackboardConclusionErrorRepairExhausted
+	BlackboardConclusionErrorVersionConflict         = owner.BlackboardConclusionErrorVersionConflict
+	BlackboardConclusionErrorRuntimeRecoveryRequired = owner.BlackboardConclusionErrorRuntimeRecoveryRequired
 	// BlackboardConclusionErrorWorkTurnNeverSettled is a distinct, non-retryable
 	// terminal: a provider work turn never yielded, so the conclusion control
 	// turn could not be delivered within the bounded conflict budget. Retrying
 	// is futile; the operator must Finish the Task.
-	BlackboardConclusionErrorWorkTurnNeverSettled BlackboardConclusionErrorCode = "semantic_conclusion_work_turn_never_settled"
-	BlackboardConclusionAutomaticTurnLimit                                      = 2
+	BlackboardConclusionErrorWorkTurnNeverSettled = owner.BlackboardConclusionErrorWorkTurnNeverSettled
+	BlackboardConclusionAutomaticTurnLimit        = owner.BlackboardConclusionAutomaticTurnLimit
 	// BlackboardConclusionWorkTurnConflictLimit bounds how many explicit retries
 	// may re-attempt a conclusion that a non-yielding work turn keeps rejecting.
 	// Once exhausted the receipt becomes the non-retryable never-settled terminal
 	// instead of endlessly re-emitting the recoverable runtime recovery code.
-	BlackboardConclusionWorkTurnConflictLimit = 2
+	BlackboardConclusionWorkTurnConflictLimit = owner.BlackboardConclusionWorkTurnConflictLimit
 )
 
 // BlackboardConclusion is the compact Task read view for the latest assisted
@@ -154,31 +154,24 @@ type Event struct {
 
 // BlackboardConclusionReceiptState is the internal durable state machine. It
 // is projected to the smaller operator-facing BlackboardConclusionState.
-type BlackboardConclusionReceiptState string
+type BlackboardConclusionReceiptState = owner.BlackboardConclusionReceiptState
 
 const (
-	BlackboardConclusionReceiptClean                                BlackboardConclusionReceiptState = "clean"
-	BlackboardConclusionReceiptPending                              BlackboardConclusionReceiptState = "pending"
-	BlackboardConclusionReceiptDispatchRequested                    BlackboardConclusionReceiptState = "dispatch_requested"
-	BlackboardConclusionReceiptAwaitingResult                       BlackboardConclusionReceiptState = "awaiting_result"
-	BlackboardConclusionReceiptRepairDispatchRequested              BlackboardConclusionReceiptState = "repair_dispatch_requested"
-	BlackboardConclusionReceiptVersionSyncRequested                 BlackboardConclusionReceiptState = "version_sync_requested"
-	BlackboardConclusionReceiptVersionRegenerationDispatchRequested BlackboardConclusionReceiptState = "version_regeneration_dispatch_requested"
-	BlackboardConclusionReceiptActionRequired                       BlackboardConclusionReceiptState = "action_required"
-	BlackboardConclusionReceiptValidated                            BlackboardConclusionReceiptState = "validated"
-	BlackboardConclusionReceiptApplied                              BlackboardConclusionReceiptState = "applied"
+	BlackboardConclusionReceiptClean                                = owner.BlackboardConclusionReceiptClean
+	BlackboardConclusionReceiptPending                              = owner.BlackboardConclusionReceiptPending
+	BlackboardConclusionReceiptDispatchRequested                    = owner.BlackboardConclusionReceiptDispatchRequested
+	BlackboardConclusionReceiptAwaitingResult                       = owner.BlackboardConclusionReceiptAwaitingResult
+	BlackboardConclusionReceiptRepairDispatchRequested              = owner.BlackboardConclusionReceiptRepairDispatchRequested
+	BlackboardConclusionReceiptVersionSyncRequested                 = owner.BlackboardConclusionReceiptVersionSyncRequested
+	BlackboardConclusionReceiptVersionRegenerationDispatchRequested = owner.BlackboardConclusionReceiptVersionRegenerationDispatchRequested
+	BlackboardConclusionReceiptActionRequired                       = owner.BlackboardConclusionReceiptActionRequired
+	BlackboardConclusionReceiptValidated                            = owner.BlackboardConclusionReceiptValidated
+	BlackboardConclusionReceiptApplied                              = owner.BlackboardConclusionReceiptApplied
 )
 
 // SemanticDebtWatermarks compare terminal Work Tool Results with the latest
 // successful semantic persistence that covers them.
-type SemanticDebtWatermarks struct {
-	SourceWork          int
-	SemanticPersistence int
-}
-
-func (watermarks SemanticDebtWatermarks) valid() bool {
-	return watermarks.SemanticPersistence >= 0 && watermarks.SourceWork >= watermarks.SemanticPersistence
-}
+type SemanticDebtWatermarks = owner.SemanticDebtWatermarks
 
 // BlackboardConclusionReceipt is the durable coordinator record for one
 // completed assisted work Runtime Turn. Structured result bytes remain
@@ -808,7 +801,7 @@ func (s *Service) RecordBlackboardConclusionCheckpoint(taskID, continuationID, s
 	sourceSelection.Model = strings.TrimSpace(sourceSelection.Model)
 	sourceSelection.ReasoningEffort = strings.TrimSpace(sourceSelection.ReasoningEffort)
 	if taskID == "" || continuationID == "" || sourceRequestID == "" || sourceSessionID == "" || sourceTurnID == "" ||
-		sourceSelection.ModelProviderID == "" || sourceSelection.Model == "" || !watermarks.valid() {
+		sourceSelection.ModelProviderID == "" || sourceSelection.Model == "" || !watermarks.Valid() {
 		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
 	}
 	found, err := s.Get(taskID)
@@ -1517,12 +1510,7 @@ func (s *Service) ReconcileStrandedBlackboardConclusionRecoveries(now time.Time,
 }
 
 func validBlackboardConclusionErrorCode(code BlackboardConclusionErrorCode) bool {
-	return code == BlackboardConclusionErrorInvalidResult ||
-		code == BlackboardConclusionErrorToolUseForbidden ||
-		code == BlackboardConclusionErrorRepairExhausted ||
-		code == BlackboardConclusionErrorVersionConflict ||
-		code == BlackboardConclusionErrorRuntimeRecoveryRequired ||
-		code == BlackboardConclusionErrorWorkTurnNeverSettled
+	return owner.ValidBlackboardConclusionErrorCode(code)
 }
 
 // RetryBlackboardConclusion atomically claims one operator-authorized retry.
@@ -1894,12 +1882,7 @@ func (s *Service) advanceBlackboardConclusion(dispatchRequestID string, from, to
 }
 
 func receiptStateAfter(current, target BlackboardConclusionReceiptState) bool {
-	order := map[BlackboardConclusionReceiptState]int{
-		BlackboardConclusionReceiptPending: 0, BlackboardConclusionReceiptDispatchRequested: 1,
-		BlackboardConclusionReceiptAwaitingResult: 2, BlackboardConclusionReceiptValidated: 3,
-		BlackboardConclusionReceiptApplied: 4,
-	}
-	return order[current] > order[target]
+	return owner.BlackboardConclusionReceiptStateAfter(current, target)
 }
 
 func loadBlackboardConclusionReceiptByID(tx *sql.Tx, receiptID string) (BlackboardConclusionReceipt, error) {

@@ -13,20 +13,22 @@ import (
 )
 
 type createSessionInput struct {
-	Input            string         `json:"input"`
-	InitialInput     string         `json:"initial_input"`
-	Message          string         `json:"message"`
-	Directive        string         `json:"directive"`
-	RuntimeProfileID string         `json:"runtime_profile_id"`
-	Provider         string         `json:"provider"`
-	RuntimeProvider  string         `json:"runtime_provider"`
-	ModelProviderID  string         `json:"model_provider_id"`
-	Model            string         `json:"model"`
-	ModelOverride    string         `json:"model_override"`
-	ReasoningEffort  string         `json:"reasoning_effort"`
-	Runner           string         `json:"runner"`
-	HostActivated    bool           `json:"host_activated"`
-	RuntimeConfig    map[string]any `json:"runtime_config"`
+	Input                    string                           `json:"input"`
+	InitialInput             string                           `json:"initial_input"`
+	Message                  string                           `json:"message"`
+	Directive                string                           `json:"directive"`
+	RuntimeProfileID         string                           `json:"runtime_profile_id"`
+	Provider                 string                           `json:"provider"`
+	RuntimeProvider          string                           `json:"runtime_provider"`
+	ModelProviderID          string                           `json:"model_provider_id"`
+	Model                    string                           `json:"model"`
+	ModelOverride            string                           `json:"model_override"`
+	ReasoningEffort          string                           `json:"reasoning_effort"`
+	Runner                   string                           `json:"runner"`
+	HostActivated            bool                             `json:"host_activated"`
+	RuntimeConfig            map[string]any                   `json:"runtime_config"`
+	BlackboardConclusionMode session.BlackboardConclusionMode `json:"blackboard_conclusion_mode"`
+	RunControls              session.RunControls              `json:"run_controls"`
 }
 
 var errInvalidSessionBody = errors.New("invalid request body")
@@ -88,6 +90,7 @@ func parseMultipartCreateSessionRequest(request *http.Request) (createSessionInp
 		input.ReasoningEffort = request.FormValue("reasoning_effort")
 		input.Runner = request.FormValue("runner")
 		input.HostActivated = strings.EqualFold(request.FormValue("host_activated"), "true")
+		input.BlackboardConclusionMode = session.BlackboardConclusionMode(request.FormValue("blackboard_conclusion_mode"))
 	}
 	var headers []*multipart.FileHeader
 	if request.MultipartForm != nil {
@@ -126,7 +129,11 @@ func (server *Server) handleCreateSession(response http.ResponseWriter, request 
 	for _, upload := range uploads {
 		attachments = append(attachments, session.Attachment{Name: upload.filename, Size: upload.size, Open: upload.open})
 	}
-	created, err := server.sessions.Create(session.CreateRequest{Input: input.value(), Attachments: attachments})
+	mode := input.BlackboardConclusionMode
+	if mode == "" {
+		mode = input.RunControls.BlackboardConclusionMode
+	}
+	created, err := server.sessions.Create(session.CreateRequest{Input: input.value(), Attachments: attachments, BlackboardConclusionMode: mode})
 	if err != nil {
 		writeSessionError(response, err)
 		return
@@ -261,7 +268,7 @@ func writeSessionError(response http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, session.ErrNotFound):
 		writeError(response, http.StatusNotFound, session.ErrNotFound.Error())
-	case errors.Is(err, session.ErrMissingInput), errors.Is(err, session.ErrMissingTitle), errors.Is(err, session.ErrInvalidLifecycle), errors.Is(err, session.ErrInvalidAttachment), errors.Is(err, session.ErrInvalidRunner), errors.Is(err, session.ErrMissingRuntimeProfile):
+	case errors.Is(err, session.ErrMissingInput), errors.Is(err, session.ErrMissingTitle), errors.Is(err, session.ErrInvalidLifecycle), errors.Is(err, session.ErrInvalidAttachment), errors.Is(err, session.ErrInvalidRunner), errors.Is(err, session.ErrMissingRuntimeProfile), errors.Is(err, session.ErrInvalidBlackboardConclusionMode):
 		writeError(response, http.StatusBadRequest, err.Error())
 	case errors.Is(err, session.ErrContinuationNotFound):
 		writeError(response, http.StatusNotFound, err.Error())

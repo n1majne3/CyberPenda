@@ -444,6 +444,13 @@ func (server *Server) startSessionRuntime(ctx context.Context, found session.Ses
 		server.recordSessionLaunchDiagnostic(found.ID, "launch_selection_failed", err)
 		return session.Continuation{}, err
 	}
+	if found.RunControls.BlackboardConclusionMode == session.BlackboardConclusionModeAssisted {
+		if server.providerSessionFactory == nil || !server.supportsAssistedConclusion(profile.Provider) {
+			err := errAssistedConclusionUnsupported
+			server.recordSessionLaunchDiagnostic(found.ID, "assisted_conclusion_unsupported", err)
+			return session.Continuation{}, err
+		}
+	}
 	run, err := resolveSessionRunner(input, profile, previous)
 	if err != nil {
 		server.recordSessionLaunchDiagnostic(found.ID, "runner_selection_failed", err)
@@ -472,12 +479,15 @@ func (server *Server) startSessionRuntime(ctx context.Context, found session.Ses
 	if server.providerSessionFactory != nil && supportsPersistentProviderSession(task.Runner(run), profile.Provider) {
 		binding, factoryErr := server.providerSessionFactory.Open(ctx, ProviderSessionLaunchRequest{
 			Owner:        found.OwnerContract(),
-			Continuation: taskContinuationForSession(continuation), Provider: profile.Provider,
+			Continuation: ownerContinuationFromSession(continuation), Provider: profile.Provider,
 			Runner: task.Runner(run), LaunchGoal: goal, RuntimeConfig: plan.RuntimeConfig,
 			LegacyAdapter: plan.Adapter,
 		})
 		if factoryErr == nil {
 			factoryErr = validateProviderSessionBinding(binding)
+		}
+		if factoryErr == nil && found.RunControls.BlackboardConclusionMode == session.BlackboardConclusionModeAssisted {
+			factoryErr = validateAssistedConclusionBinding(binding)
 		}
 		if factoryErr != nil {
 			server.failSessionProviderLaunch(found.ID, continuation.ID, factoryErr)
@@ -517,17 +527,6 @@ func preflightRequestForSession(profile runtimeprofile.Profile, input sessionRun
 	return preflight.Request{
 		RuntimeProfileID: profile.ID, ProjectID: "", Runner: string(run), HostActivated: input.HostActivated,
 		LaunchModelOverride: launchModel,
-	}
-}
-
-func taskContinuationForSession(continuation session.Continuation) task.TaskContinuation {
-	return task.TaskContinuation{
-		ID: continuation.ID, TaskID: "", Number: continuation.Number,
-		RuntimeProfileID: continuation.RuntimeProfileID, RuntimeProvider: continuation.RuntimeProvider,
-		Runner: task.Runner(continuation.Runner), Status: task.Status(continuation.Status),
-		ContainerID: continuation.ContainerID, NativeSessionID: continuation.NativeSessionID,
-		NativeSessionPath: continuation.NativeSessionPath, RuntimeConfigVersionID: continuation.RuntimeConfigID,
-		StartedAt: continuation.StartedAt, UpdatedAt: continuation.UpdatedAt, EndedAt: continuation.EndedAt,
 	}
 }
 
@@ -591,7 +590,33 @@ func (server *Server) stopSessionRuntime(sessionID string) error {
 			return err
 		}
 	}
+	if err := server.markStoppedSessionBlackboardConclusionsRecoveryRequired(sessionID); err != nil {
+		return err
+	}
 	_, _ = server.sessions.AppendEvent(sessionID, session.EventKindLifecycle, session.EventPayload{"phase": "stopped"})
+	return nil
+}
+
+// markStoppedSessionBlackboardConclusionsRecoveryRequired closes the durable
+// semantic coordinator after Stop has canceled every provider control. A
+// later message or retry therefore sees explicit owner-local recovery instead
+// of waiting for a conclusion Turn whose provider session was intentionally
+// closed.
+func (server *Server) markStoppedSessionBlackboardConclusionsRecoveryRequired(sessionID string) error {
+	receipts, err := server.sessions.BlackboardConclusionRecoveryCandidates()
+	if err != nil {
+		return err
+	}
+	for _, receipt := range receipts {
+		if receipt.SessionID != sessionID {
+			continue
+		}
+		if _, _, err := server.sessions.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(
+			receipt.ID, time.Now().UTC(), blackboardConclusionRetryCooldown,
+		); err != nil && !errors.Is(err, session.ErrInvalidBlackboardConclusionReceipt) {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -669,6 +694,11 @@ func (server *Server) decorateSession(found session.Session) (session.Session, e
 	}
 	controls.ProviderPermissions = server.sessionProviderPermissions(found.ID)
 	found.RuntimeControls = controls
+	found.BlackboardConclusion.Mode = found.RunControls.BlackboardConclusionMode
+	found.BlackboardConclusion.State = session.BlackboardConclusionStateClean
+	if receipt, receiptErr := server.sessions.LatestBlackboardConclusion(found.ID); receiptErr == nil && receipt != nil {
+		found.BlackboardConclusion = receipt.View(found.RunControls.BlackboardConclusionMode)
+	}
 	return found, nil
 }
 
@@ -759,6 +789,14 @@ func (server *Server) handleSessionMessage(response http.ResponseWriter, request
 	}
 	if found.Lifecycle != session.LifecycleOpen {
 		writeSessionError(response, session.ErrSessionNotOpen)
+		return
+	}
+	if err := server.waitForSessionAssistedConclusionSettlement(request.Context(), id, false); err != nil {
+		if errors.Is(err, errSemanticConclusionActionRequired) {
+			writeError(response, http.StatusConflict, "semantic_conclusion_action_required")
+			return
+		}
+		writeError(response, http.StatusConflict, err.Error())
 		return
 	}
 	message := strings.TrimSpace(input.value())
@@ -930,7 +968,7 @@ func (server *Server) enqueueSessionProviderTurn(sessionID string, provider runt
 	if mode != runtime.ProviderSessionModeSendTurn {
 		selection.TurnKind = runtime.RuntimeTurnKindControl
 	}
-	return server.enqueueProviderTaskControl(sessionID, func(ctx context.Context) {
+	return server.enqueueProviderTaskControlAfterSettlement(sessionID, server.sessionBlackboardConclusionSettlement(sessionID, false), func(ctx context.Context) {
 		var continuationMu sync.Mutex
 		currentContinuationID := continuationID
 		var transitionErr error
@@ -1058,6 +1096,14 @@ func (server *Server) handleSessionSteer(response http.ResponseWriter, request *
 		writeSessionError(response, err)
 		return
 	}
+	if err := server.waitForSessionAssistedConclusionSettlement(request.Context(), id, false); err != nil {
+		if errors.Is(err, errSemanticConclusionActionRequired) {
+			writeError(response, http.StatusConflict, "semantic_conclusion_action_required")
+			return
+		}
+		writeError(response, http.StatusConflict, err.Error())
+		return
+	}
 	provider, bound := server.sessionProviderSessions.get(id)
 	active, activeErr := server.sessions.ActiveContinuation(id)
 	if activeErr != nil {
@@ -1151,6 +1197,10 @@ func (server *Server) handleSessionProviderPermissionResponse(response http.Resp
 		writeSessionError(response, err)
 		return
 	}
+	if err := server.waitForSessionAssistedConclusionSettlement(request.Context(), id, true); err != nil {
+		writeError(response, http.StatusConflict, err.Error())
+		return
+	}
 	provider, bound := server.sessionProviderSessions.get(id)
 	if !bound || provider == nil {
 		writeError(response, http.StatusConflict, "Session Runtime provider session is unavailable")
@@ -1218,7 +1268,7 @@ func (server *Server) handleSessionProviderPermissionResponse(response http.Resp
 		"permission_decision": input.Decision, "session_id": provider.SessionID(),
 	}
 	server.persistSessionProviderEventForContinuation(id, active.ID, task.EventKindLifecycle, requested)
-	queued := server.enqueueProviderTaskControl(id, func(ctx context.Context) {
+	queued := server.enqueueProviderTaskControlAfterSettlement(id, server.sessionBlackboardConclusionSettlement(id, true), func(ctx context.Context) {
 		operationCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 		emit := func(kind task.EventKind, payload task.EventPayload) {

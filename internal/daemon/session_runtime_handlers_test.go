@@ -201,8 +201,8 @@ func TestSessionLaunchUsesProjectFreeOwnerAndPersistentProviderControls(t *testi
 	if err := launchRequest.Owner.Validate(); err != nil {
 		t.Fatalf("Session owner contract: %v", err)
 	}
-	if launchRequest.Owner.ProjectID != "" || launchRequest.Task.ID != "" || launchRequest.Owner.Capabilities.ProjectScope {
-		t.Fatalf("provider launch crossed Project/Task boundary: owner=%#v task=%#v", launchRequest.Owner, launchRequest.Task)
+	if launchRequest.Owner.ProjectID != "" || launchRequest.Continuation.OwnerID != created.ID || launchRequest.Owner.Capabilities.ProjectScope {
+		t.Fatalf("provider launch crossed Project/Task boundary: owner=%#v continuation=%#v", launchRequest.Owner, launchRequest.Continuation)
 	}
 
 	message := httptest.NewRecorder()

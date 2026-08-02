@@ -19,12 +19,11 @@ var errAssistedConclusionUnsupported = errors.New("assisted_conclusion_unsupport
 // provider session. The request is deliberately owner/Continuation scoped;
 // credentials and raw provider protocol frames never cross this boundary.
 type ProviderSessionLaunchRequest struct {
-	// Owner is the server-derived capability contract. Task remains populated
-	// for compatibility with the existing Task launch tests; Session launches
-	// leave it empty and provide a Project-free Session contract instead.
+	// Owner is the required server-derived capability contract. The provider
+	// boundary receives only this owner-neutral identity and continuation, so a
+	// Session can never be represented as a Task with an absent Project.
 	Owner         owner.Contract
-	Task          task.Task
-	Continuation  task.TaskContinuation
+	Continuation  owner.Continuation
 	Provider      runtimeprofile.Provider
 	Runner        task.Runner
 	LaunchGoal    string
@@ -33,10 +32,21 @@ type ProviderSessionLaunchRequest struct {
 }
 
 func providerSessionOwnerID(request ProviderSessionLaunchRequest) string {
-	if strings.TrimSpace(request.Owner.ID) != "" {
-		return strings.TrimSpace(request.Owner.ID)
+	return strings.TrimSpace(request.Owner.ID)
+}
+
+func validateProviderSessionLaunchRequest(request ProviderSessionLaunchRequest) error {
+	if err := request.Owner.Validate(); err != nil {
+		return fmt.Errorf("provider session owner contract: %w", err)
 	}
-	return strings.TrimSpace(request.Task.ID)
+	if strings.TrimSpace(request.Continuation.ID) == "" ||
+		strings.TrimSpace(request.Continuation.OwnerID) != strings.TrimSpace(request.Owner.ID) {
+		return fmt.Errorf("provider session Continuation is not bound to the owner contract")
+	}
+	if strings.TrimSpace(string(request.Provider)) == "" || strings.TrimSpace(string(request.Runner)) == "" {
+		return fmt.Errorf("provider session launch selection is incomplete")
+	}
+	return nil
 }
 
 // ProviderSessionBinding contains the provider session and the long-running
@@ -130,6 +140,9 @@ type ProviderSessionFactoryFunc func(context.Context, ProviderSessionLaunchReque
 func (f ProviderSessionFactoryFunc) Open(ctx context.Context, request ProviderSessionLaunchRequest) (ProviderSessionBinding, error) {
 	if f == nil {
 		return ProviderSessionBinding{}, fmt.Errorf("provider session factory is unavailable")
+	}
+	if err := validateProviderSessionLaunchRequest(request); err != nil {
+		return ProviderSessionBinding{}, err
 	}
 	return f(ctx, request)
 }

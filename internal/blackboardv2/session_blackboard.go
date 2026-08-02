@@ -288,6 +288,71 @@ func (s *Service) ProjectSessionRuntimeSnapshot(ctx context.Context, sessionID s
 	return s.SessionRuntimeSnapshotProjection(ctx, sessionID)
 }
 
+// SynchronizeSessionContinuation advances a trusted Session Continuation's
+// Working Snapshot to the current Session Blackboard revision after a real
+// optimistic-concurrency race. It shares the owner-neutral synchronization
+// result shape with Project Continuations, but never consults Project tables or
+// materializes a Project file.
+func (s *Service) SynchronizeSessionContinuation(ctx context.Context, sessionID, continuationID string, fromRevision int) (SynchronizationAttachment, error) {
+	if fromRevision < 0 {
+		return SynchronizationAttachment{}, semanticError("semantic_validation", "synchronization revision must not be negative", "from_revision", nil)
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return SynchronizationAttachment{}, fmt.Errorf("begin Session Continuation synchronization: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if lifecycle, err := ensureSessionState(ctx, tx, sessionID); err != nil {
+		return SynchronizationAttachment{}, err
+	} else if lifecycle != "open" {
+		return SynchronizationAttachment{}, semanticError("owner_archived", "archived Session cannot synchronize a Continuation", "", nil)
+	}
+	if err := validateSessionContinuation(ctx, tx, sessionID, continuationID); err != nil {
+		return SynchronizationAttachment{}, err
+	}
+	pin, err := readSessionContinuationPinTx(ctx, tx, sessionID, continuationID)
+	if err != nil {
+		return SynchronizationAttachment{}, err
+	}
+	if pin.ContinuationID == "" {
+		return SynchronizationAttachment{}, semanticError("authority_denied", "Session Continuation has no Blackboard launch pin", "continuation_id", nil)
+	}
+	snapshot, err := s.sessionRuntimeSnapshotTx(ctx, tx, sessionID)
+	if err != nil {
+		return SynchronizationAttachment{}, err
+	}
+	if snapshot.Revision < fromRevision {
+		return SynchronizationAttachment{}, semanticError("version_conflict", "Session Blackboard revision moved backwards", "base_revision", nil)
+	}
+	if snapshot.Revision > pin.Working.Revision {
+		encoded, marshalErr := json.Marshal(snapshot)
+		if marshalErr != nil {
+			return SynchronizationAttachment{}, fmt.Errorf("encode Session Working Snapshot: %w", marshalErr)
+		}
+		digest := sessionSnapshotDigest(encoded)
+		result, updateErr := tx.ExecContext(ctx, `UPDATE blackboard_v2_session_continuation_pins
+            SET working_revision=?,working_snapshot_json=?,working_snapshot_sha256=?,updated_at=?
+            WHERE session_id=? AND continuation_id=? AND working_revision=?`,
+			snapshot.Revision, string(encoded), digest, time.Now().UTC().Format(time.RFC3339Nano), sessionID, continuationID, pin.Working.Revision)
+		if updateErr != nil {
+			return SynchronizationAttachment{}, fmt.Errorf("advance Session Working Snapshot: %w", updateErr)
+		}
+		if changed, rowsErr := result.RowsAffected(); rowsErr != nil {
+			return SynchronizationAttachment{}, rowsErr
+		} else if changed != 1 {
+			return SynchronizationAttachment{}, semanticError("version_conflict", "Session Working Snapshot changed during synchronization", "base_revision", nil)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return SynchronizationAttachment{}, fmt.Errorf("commit Session Continuation synchronization: %w", err)
+	}
+	return SynchronizationAttachment{
+		Reason: "session_blackboard_changed", FromRevision: fromRevision, Revision: snapshot.Revision, Snapshot: snapshot,
+	}, nil
+}
+
 // SessionSemanticHealth reuses the v2 health diagnosis while omitting
 // Project-only records, redirect grants, evidence checks, and proposals.
 func (s *Service) SessionSemanticHealth(ctx context.Context, sessionID string) (SemanticHealth, error) {

@@ -10,6 +10,7 @@ import {
   renameSession,
   restoreSession,
   type Session,
+  type BlackboardConclusionMode,
   type RuntimeProfile,
 } from "@/lib/api";
 import { formatCompactDateTime } from "@/lib/format";
@@ -25,6 +26,7 @@ export function SessionHomePage() {
   const [profiles, setProfiles] = useState<RuntimeProfile[]>([]);
   const [runtimeProfileID, setRuntimeProfileID] = useState("");
   const [runner, setRunner] = useState("sandbox");
+  const [blackboardConclusionMode, setBlackboardConclusionMode] = useState<BlackboardConclusionMode>("interactive");
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -75,11 +77,14 @@ export function SessionHomePage() {
     if (!draft.trim()) return;
     setCreating(true);
     try {
-      await createSession(draft, attachments, runtimeProfileID ? {
-        runtime_profile_id: runtimeProfileID,
-        runner,
-        host_activated: runner === "host",
-      } : {});
+      await createSession(draft, attachments, {
+        ...(runtimeProfileID ? {
+          runtime_profile_id: runtimeProfileID,
+          runner,
+          host_activated: runner === "host",
+        } : {}),
+        run_controls: { blackboard_conclusion_mode: blackboardConclusionMode },
+      });
       setDraft("");
       setAttachments([]);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -193,7 +198,7 @@ export function SessionHomePage() {
             />
             <p className="mt-1 text-xs text-muted-foreground">Files are copied into the managed Session Workdir.</p>
           </div>
-          <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_180px]">
+          <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_180px_minmax(0,1fr)]">
             <div>
               <Label htmlFor="session-runtime-profile">Runtime profile (optional)</Label>
               <Select
@@ -223,6 +228,24 @@ export function SessionHomePage() {
                 <option value="sandbox">Sandbox</option>
                 <option value="host">Host (activated)</option>
               </Select>
+            </div>
+            <div>
+              <Label htmlFor="session-blackboard-conclusions">Blackboard conclusions</Label>
+              <Select
+                id="session-blackboard-conclusions"
+                name="blackboard_conclusion_mode"
+                value={blackboardConclusionMode}
+                onChange={(event) => setBlackboardConclusionMode(event.target.value as BlackboardConclusionMode)}
+                className="mt-1"
+              >
+                <option value="interactive">Interactive</option>
+                <option value="assisted">Assisted</option>
+              </Select>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {blackboardConclusionMode === "assisted"
+                  ? "After tool-producing work, the Runtime gets a bounded Session Blackboard conclusion turn."
+                  : "The operator decides when Runtime work is written to the Session Blackboard."}
+              </p>
             </div>
           </div>
           <div className="flex justify-end">

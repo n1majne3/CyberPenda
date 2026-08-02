@@ -165,6 +165,9 @@ func NewProductionProviderSessionFactory(config ProductionProviderSessionFactory
 }
 
 func (f *ProductionProviderSessionFactory) Open(ctx context.Context, request ProviderSessionLaunchRequest) (ProviderSessionBinding, error) {
+	if err := validateProviderSessionLaunchRequest(request); err != nil {
+		return ProviderSessionBinding{}, err
+	}
 	switch request.Runner {
 	case task.RunnerSandbox:
 		return f.openSandbox(ctx, request)

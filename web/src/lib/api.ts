@@ -150,6 +150,8 @@ export interface Session {
   id: string;
   title: string;
   lifecycle: SessionLifecycle;
+  run_controls?: { blackboard_conclusion_mode?: BlackboardConclusionMode };
+  blackboard_conclusion?: BlackboardConclusionView;
   runtime_controls?: SessionRuntimeControls;
   runtime_activity?: RuntimeActivity;
   active_continuation?: SessionContinuation;
@@ -225,6 +227,8 @@ export interface SessionLaunchOptions {
   reasoning_effort?: string;
   runner?: string;
   host_activated?: boolean;
+  blackboard_conclusion_mode?: BlackboardConclusionMode;
+  run_controls?: { blackboard_conclusion_mode?: BlackboardConclusionMode };
 }
 
 export function listSessions(lifecycle?: SessionLifecycle) {
@@ -295,6 +299,12 @@ export function respondSessionPermission(
 
 export function stopSession(sessionId: string) {
   return apiPost<Session>(`/api/sessions/${encodeURIComponent(sessionId)}/stop`);
+}
+
+export function retrySessionBlackboardConclusion(sessionId: string, idempotencyKey: string) {
+  return apiPost<Session>(`/api/sessions/${encodeURIComponent(sessionId)}/blackboard-conclusion/retry`, {}, {
+    headers: { "Idempotency-Key": idempotencyKey },
+  });
 }
 
 export function renameSession(sessionId: string, title: string) {

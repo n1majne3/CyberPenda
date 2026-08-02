@@ -137,7 +137,7 @@ func TestLaunchAssemblyBindsAndReusesTaskOwnedProviderSessionAcrossContinuations
 		t.Fatalf("factory requests = %d, want 2", len(requests))
 	}
 	for _, request := range requests {
-		if request.Task.ID != created.ID || request.Runner != task.RunnerSandbox || request.Provider != runtimeprofile.ProviderCodex {
+		if request.Owner.ID != created.ID || request.Owner.ProjectID != created.ProjectID || request.Continuation.OwnerID != created.ID || request.Runner != task.RunnerSandbox || request.Provider != runtimeprofile.ProviderCodex {
 			t.Fatalf("factory request lost launch identity: %#v", request)
 		}
 	}
