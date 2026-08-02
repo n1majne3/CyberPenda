@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"pentest/internal/owner"
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
@@ -15,16 +16,37 @@ import (
 var errAssistedConclusionUnsupported = errors.New("assisted_conclusion_unsupported: Runtime does not expose the complete persistent SendTurn, normalized Tool/Turn event, and closed AttemptResult contract")
 
 // ProviderSessionLaunchRequest is the launch-assembly seam for a persistent
-// provider session. The request is deliberately Task/Continuation scoped;
+// provider session. The request is deliberately owner/Continuation scoped;
 // credentials and raw provider protocol frames never cross this boundary.
 type ProviderSessionLaunchRequest struct {
-	Task          task.Task
-	Continuation  task.TaskContinuation
+	// Owner is the required server-derived capability contract. The provider
+	// boundary receives only this owner-neutral identity and continuation, so a
+	// Session can never be represented as a Task with an absent Project.
+	Owner         owner.Contract
+	Continuation  owner.Continuation
 	Provider      runtimeprofile.Provider
 	Runner        task.Runner
 	LaunchGoal    string
 	RuntimeConfig map[string]any
 	LegacyAdapter runtime.Adapter
+}
+
+func providerSessionOwnerID(request ProviderSessionLaunchRequest) string {
+	return strings.TrimSpace(request.Owner.ID)
+}
+
+func validateProviderSessionLaunchRequest(request ProviderSessionLaunchRequest) error {
+	if err := request.Owner.Validate(); err != nil {
+		return fmt.Errorf("provider session owner contract: %w", err)
+	}
+	if strings.TrimSpace(request.Continuation.ID) == "" ||
+		strings.TrimSpace(request.Continuation.OwnerID) != strings.TrimSpace(request.Owner.ID) {
+		return fmt.Errorf("provider session Continuation is not bound to the owner contract")
+	}
+	if strings.TrimSpace(string(request.Provider)) == "" || strings.TrimSpace(string(request.Runner)) == "" {
+		return fmt.Errorf("provider session launch selection is incomplete")
+	}
+	return nil
 }
 
 // ProviderSessionBinding contains the provider session and the long-running
@@ -36,9 +58,9 @@ type ProviderSessionBinding struct {
 	Adapter runtime.Adapter
 }
 
-// ProviderSessionFactory opens or reuses a Task-owned provider session. An
+// ProviderSessionFactory opens or reuses one owner-bound provider session. An
 // implementation must return the same session/adapter identity for later
-// Continuations of the same Task and must bind the supplied Continuation on its
+// Continuations of that owner and must bind the supplied Continuation on its
 // private transport before returning.
 type ProviderSessionFactory interface {
 	Open(context.Context, ProviderSessionLaunchRequest) (ProviderSessionBinding, error)
@@ -57,8 +79,8 @@ const (
 
 // ProviderSessionRecoveryRequest identifies one exact durable Runtime and the
 // control request whose callbacks the daemon needs to recover. Metadata is
-// copied from the supplied Continuation so a factory never needs to query Task
-// storage or infer identity from provider output.
+// copied from the supplied Continuation so a factory never needs to query
+// aggregate storage or infer identity from provider output.
 type ProviderSessionRecoveryRequest struct {
 	Task              task.Task
 	Continuation      task.TaskContinuation
@@ -107,7 +129,7 @@ type ProviderSessionRecoveryReport struct {
 }
 
 // ProviderSessionAssistedConclusionReporter is the additive capability seam
-// used before Task creation. Persistent SendTurn alone is insufficient: the
+// used before Runtime creation. Persistent SendTurn alone is insufficient: the
 // factory must also promise bounded Tool/Turn observations for this provider.
 type ProviderSessionAssistedConclusionReporter interface {
 	SupportsAssistedConclusion(runtimeprofile.Provider) bool
@@ -118,6 +140,9 @@ type ProviderSessionFactoryFunc func(context.Context, ProviderSessionLaunchReque
 func (f ProviderSessionFactoryFunc) Open(ctx context.Context, request ProviderSessionLaunchRequest) (ProviderSessionBinding, error) {
 	if f == nil {
 		return ProviderSessionBinding{}, fmt.Errorf("provider session factory is unavailable")
+	}
+	if err := validateProviderSessionLaunchRequest(request); err != nil {
+		return ProviderSessionBinding{}, err
 	}
 	return f(ctx, request)
 }
@@ -149,7 +174,7 @@ func supportedProviderSessionFactoryProvider(provider runtimeprofile.Provider) b
 }
 
 // supportsPersistentProviderSession reports whether the runner/provider pair
-// uses Task-scoped provider-session assembly. Host supports Codex, Claude Code,
+// uses owner-scoped provider-session assembly. Host supports Codex, Claude Code,
 // and Pi; unsupported plugins retain the legacy one-shot path.
 func supportsPersistentProviderSession(runner task.Runner, provider runtimeprofile.Provider) bool {
 	switch runner {

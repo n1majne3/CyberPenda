@@ -240,7 +240,7 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 		// never fall back to the legacy one-shot Adapter. Production always installs
 		// the factory; unit tests without one still exercise one-shot host paths.
 		binding, factoryErr := server.providerSessionFactory.Open(context.Background(), ProviderSessionLaunchRequest{
-			Task: created, Continuation: continuation, Provider: plan.ResolvedProfile.Provider,
+			Owner: created.OwnerContract(""), Continuation: ownerContinuationFromTask(continuation), Provider: plan.ResolvedProfile.Provider,
 			Runner: created.Runner, LaunchGoal: plan.LaunchGoal, RuntimeConfig: plan.CapturedRuntimeConfig,
 			LegacyAdapter: plan.Adapter,
 		})
@@ -2133,20 +2133,34 @@ func (server *Server) enqueueExistingProviderTaskControl(taskID string, operatio
 }
 
 func (server *Server) enqueueProviderTaskControlWithContext(taskID string, requireExisting bool, operation func(context.Context)) bool {
+	return server.enqueueProviderTaskControlWithSettlement(taskID, requireExisting, nil, operation)
+}
+
+// providerControlSettlement is evaluated before and after a provider-control
+// owner is acquired. The first pass may wait while a durable assisted
+// conclusion settles; the second pass must be non-blocking so a pending
+// conclusion can yield the control boundary to its own coordinator.
+type providerControlSettlement func(context.Context, bool) (bool, error)
+
+func (server *Server) enqueueProviderTaskControlAfterSettlement(ownerID string, settlement providerControlSettlement, operation func(context.Context)) bool {
+	return server.enqueueProviderTaskControlWithSettlement(ownerID, false, settlement, operation)
+}
+
+func (server *Server) enqueueProviderTaskControlWithSettlement(ownerID string, requireExisting bool, settlement providerControlSettlement, operation func(context.Context)) bool {
 	server.controlMu.Lock()
 	if server.closing {
 		server.controlMu.Unlock()
 		return false
 	}
-	taskCtx := server.providerTaskContexts[taskID]
+	taskCtx := server.providerTaskContexts[ownerID]
 	if requireExisting && (taskCtx == nil || taskCtx.Err() != nil) {
 		server.controlMu.Unlock()
 		return false
 	}
 	if taskCtx == nil || taskCtx.Err() != nil {
-		taskCtx = server.providerTaskContextLocked(taskID)
+		taskCtx = server.providerTaskContextLocked(ownerID)
 	}
-	server.queuedProviderControls[taskID]++
+	server.queuedProviderControls[ownerID]++
 	server.providerControlWG.Add(1)
 	server.controlMu.Unlock()
 
@@ -2156,28 +2170,50 @@ func (server *Server) enqueueProviderTaskControlWithContext(taskID string, requi
 		defer func() {
 			server.controlMu.Lock()
 			if queued {
-				server.decrementQueuedProviderControlLocked(taskID)
+				server.decrementQueuedProviderControlLocked(ownerID)
 			}
 			if ownsControl {
-				delete(server.activeControls, taskID)
-				delete(server.activeProviderControls, taskID)
+				delete(server.activeControls, ownerID)
+				delete(server.activeProviderControls, ownerID)
 			}
 			server.controlMu.Unlock()
 			server.providerControlWG.Done()
 		}()
 		for {
+			if settlement != nil {
+				settled, err := settlement(taskCtx, true)
+				if err != nil || !settled {
+					return
+				}
+			}
 			server.controlMu.Lock()
 			if server.closing || taskCtx.Err() != nil {
 				server.controlMu.Unlock()
 				return
 			}
-			if !server.activeControls[taskID] {
-				server.activeControls[taskID] = true
-				server.activeProviderControls[taskID] = true
-				server.decrementQueuedProviderControlLocked(taskID)
+			if !server.activeControls[ownerID] {
+				server.activeControls[ownerID] = true
+				server.activeProviderControls[ownerID] = true
+				server.decrementQueuedProviderControlLocked(ownerID)
 				queued = false
 				ownsControl = true
 				server.controlMu.Unlock()
+				if settlement != nil {
+					settled, err := settlement(taskCtx, false)
+					if err != nil || !settled {
+						server.controlMu.Lock()
+						delete(server.activeControls, ownerID)
+						delete(server.activeProviderControls, ownerID)
+						server.queuedProviderControls[ownerID]++
+						queued = true
+						ownsControl = false
+						server.controlMu.Unlock()
+						if err != nil {
+							return
+						}
+						continue
+					}
+				}
 				break
 			}
 			server.controlMu.Unlock()

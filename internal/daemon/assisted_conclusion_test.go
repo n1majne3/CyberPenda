@@ -1893,13 +1893,8 @@ func TestAssistedConclusionForbiddenSuppressesValidResultBeforeTerminal(t *testi
 	if found.BlackboardConclusion.ErrorCode != task.BlackboardConclusionErrorToolUseForbidden || after.Revision != before.Revision || len(session.LastRequests()) != 2 {
 		t.Fatalf("forbidden/valid arbitration = %#v revisions=%d/%d requests=%d", found.BlackboardConclusion, before.Revision, after.Revision, len(session.LastRequests()))
 	}
-	server.blackboardConclusions.mu.Lock()
-	_, hasResult := server.blackboardConclusions.results[requestID]
-	_, hasFailure := server.blackboardConclusions.failures[requestID]
-	_, hasTerminal := server.blackboardConclusions.terminal[requestID]
-	server.blackboardConclusions.mu.Unlock()
-	if hasResult || hasFailure || hasTerminal {
-		t.Fatalf("resolved callback state retained: result=%t failure=%t terminal=%t", hasResult, hasFailure, hasTerminal)
+	if server.blackboardConclusions.HasRequest(created.ID, requestID) {
+		t.Fatalf("resolved callback state retained for request %s", requestID)
 	}
 }
 
@@ -2315,6 +2310,7 @@ func prepareAssistedConclusionAwaiting(t *testing.T) (*Server, string, task.Task
 		t.Fatal(err)
 	}
 	waitForAssistedProviderRequests(t, session, 2)
+	server.providerControlWG.Wait()
 	return server, projectID, created, session
 }
 

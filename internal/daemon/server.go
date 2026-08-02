@@ -28,6 +28,7 @@ import (
 	"pentest/internal/runtimeextension"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
+	"pentest/internal/session"
 	"pentest/internal/skill"
 	"pentest/internal/store"
 	"pentest/internal/task"
@@ -39,6 +40,9 @@ type Config struct {
 	Version     string
 	DBPath      string
 	RuntimeRoot string
+	// SessionRoot is the managed data root beneath which one Workdir is created
+	// for each Non-Project Session. Empty defaults to RuntimeRoot/sessions.
+	SessionRoot string
 	// ArtifactRoot contains managed Evidence payloads. Empty defaults to the
 	// database directory. EvidenceSourceRoots are the explicit local roots from
 	// which authenticated operators may retain payloads.
@@ -83,49 +87,54 @@ type Config struct {
 }
 
 type Server struct {
-	mux                    *http.ServeMux
-	version                string
-	logger                 *log.Logger
-	db                     *store.DB
-	projects               *project.Service
-	runtimePlugins         *runtimeplugin.Registry
-	runtimeExtensions      *runtimeextension.Registry
-	profiles               *runtimeprofile.Service
-	modelProviders         *modelprovider.Service
-	skills                 *skill.Service
-	creds                  *credential.Service
-	modelRefreshClient     *http.Client
-	preflight              *preflight.Service
-	tasks                  *task.Service
-	harness                *runtime.Harness
-	canonicalStore         string
-	blackboardV2           *blackboardv2.Service
-	blackboardV2Continuity *blackboardv2.ContinuityService
-	projectInterfaceGrants *projectinterface.GrantStore
-	runtimeRoot            string
-	sandboxImage           string
-	containerCLI           string
-	taskVolume             string
-	taskVolumeRoot         string
-	listenAddr             string
-	authToken              string
-	tempSkillsRoot         string
-	controlMu              sync.Mutex
-	activeControls         map[string]bool
-	providerControlCtx     context.Context
-	providerControlCancel  context.CancelFunc
-	providerControlWG      sync.WaitGroup
-	providerTaskContexts   map[string]context.Context
-	providerTaskCancels    map[string]context.CancelFunc
-	activeProviderControls map[string]bool
-	queuedProviderControls map[string]int
-	closing                bool
-	providerSessions       *providerSessionRegistry
-	providerSessionFactory ProviderSessionFactory
-	runtimeRecoveryMu      sync.RWMutex
-	runtimeRecovery        map[string]task.RuntimeActivity
-	blackboardConclusions  *blackboardConclusionTracker
-	runtimeStopTimeout     time.Duration
+	mux                          *http.ServeMux
+	version                      string
+	logger                       *log.Logger
+	db                           *store.DB
+	projects                     *project.Service
+	runtimePlugins               *runtimeplugin.Registry
+	runtimeExtensions            *runtimeextension.Registry
+	profiles                     *runtimeprofile.Service
+	modelProviders               *modelprovider.Service
+	skills                       *skill.Service
+	creds                        *credential.Service
+	modelRefreshClient           *http.Client
+	preflight                    *preflight.Service
+	tasks                        *task.Service
+	sessions                     *session.Service
+	harness                      *runtime.Harness
+	sessionHarness               *runtime.SessionHarness
+	canonicalStore               string
+	blackboardV2                 *blackboardv2.Service
+	blackboardV2Continuity       *blackboardv2.ContinuityService
+	projectInterfaceGrants       *projectinterface.GrantStore
+	runtimeRoot                  string
+	sessionRoot                  string
+	sandboxImage                 string
+	containerCLI                 string
+	taskVolume                   string
+	taskVolumeRoot               string
+	listenAddr                   string
+	authToken                    string
+	tempSkillsRoot               string
+	controlMu                    sync.Mutex
+	activeControls               map[string]bool
+	providerControlCtx           context.Context
+	providerControlCancel        context.CancelFunc
+	providerControlWG            sync.WaitGroup
+	providerTaskContexts         map[string]context.Context
+	providerTaskCancels          map[string]context.CancelFunc
+	activeProviderControls       map[string]bool
+	queuedProviderControls       map[string]int
+	closing                      bool
+	providerSessions             *providerSessionRegistry
+	sessionProviderSessions      *providerSessionRegistry
+	providerSessionFactory       ProviderSessionFactory
+	runtimeRecoveryMu            sync.RWMutex
+	runtimeRecovery              map[string]task.RuntimeActivity
+	blackboardConclusions        *runtime.AssistedConclusionTracker
+	sessionBlackboardConclusions *runtime.AssistedConclusionTracker
+	runtimeStopTimeout           time.Duration
 }
 
 func NewServer(config Config) (*Server, error) {
@@ -219,30 +228,35 @@ func NewServer(config Config) (*Server, error) {
 		preflight: preflight.NewService(profiles, creds, skills).
 			WithModelProviders(modelProviders, runtimePlugins).
 			WithRuntimeExtensions(runtimeExtensions),
-		tasks:                  tasks,
-		harness:                runtime.NewHarness(tasks),
-		canonicalStore:         epoch,
-		runtimeRoot:            runtimeRoot,
-		sandboxImage:           config.SandboxImage,
-		containerCLI:           config.ContainerCLI,
-		taskVolume:             strings.TrimSpace(config.TaskVolume),
-		taskVolumeRoot:         taskVolumeRoot,
-		listenAddr:             listenAddr,
-		authToken:              authToken,
-		tempSkillsRoot:         tempSkillsRoot,
-		activeControls:         map[string]bool{},
-		providerControlCtx:     providerControlCtx,
-		providerControlCancel:  providerControlCancel,
-		providerTaskContexts:   map[string]context.Context{},
-		providerTaskCancels:    map[string]context.CancelFunc{},
-		activeProviderControls: map[string]bool{},
-		queuedProviderControls: map[string]int{},
-		providerSessions:       newProviderSessionRegistry(),
-		providerSessionFactory: config.ProviderSessionFactory,
-		runtimeRecovery:        map[string]task.RuntimeActivity{},
-		blackboardConclusions:  newBlackboardConclusionTracker(),
-		runtimeStopTimeout:     10 * time.Second,
+		tasks:                        tasks,
+		sessionRoot:                  sessionRoot(config, runtimeRoot),
+		harness:                      runtime.NewHarness(tasks),
+		canonicalStore:               epoch,
+		runtimeRoot:                  runtimeRoot,
+		sandboxImage:                 config.SandboxImage,
+		containerCLI:                 config.ContainerCLI,
+		taskVolume:                   strings.TrimSpace(config.TaskVolume),
+		taskVolumeRoot:               taskVolumeRoot,
+		listenAddr:                   listenAddr,
+		authToken:                    authToken,
+		tempSkillsRoot:               tempSkillsRoot,
+		activeControls:               map[string]bool{},
+		providerControlCtx:           providerControlCtx,
+		providerControlCancel:        providerControlCancel,
+		providerTaskContexts:         map[string]context.Context{},
+		providerTaskCancels:          map[string]context.CancelFunc{},
+		activeProviderControls:       map[string]bool{},
+		queuedProviderControls:       map[string]int{},
+		providerSessions:             newProviderSessionRegistry(),
+		sessionProviderSessions:      newProviderSessionRegistry(),
+		providerSessionFactory:       config.ProviderSessionFactory,
+		runtimeRecovery:              map[string]task.RuntimeActivity{},
+		blackboardConclusions:        runtime.NewAssistedConclusionTracker(),
+		sessionBlackboardConclusions: runtime.NewAssistedConclusionTracker(),
+		runtimeStopTimeout:           10 * time.Second,
 	}
+	server.sessions = session.NewService(db, server.sessionRoot)
+	server.sessionHarness = runtime.NewSessionHarness(server.sessions)
 	if server.logger == nil {
 		server.logger = log.Default()
 	}
@@ -265,8 +279,57 @@ func NewServer(config Config) (*Server, error) {
 	recovery := server.recoverBlackboardConclusionReceipts(context.Background())
 	server.reconcileInterruptedTasks(recovery.ReconciliationExcludedTaskIDs)
 	server.applyProviderSessionRecoveryLifecycle(recovery.Outcomes)
+	server.reconcileValidatedSessionBlackboardConclusionApplies()
+	if _, err := server.sessions.ReconcileStrandedBlackboardConclusionRecoveries(time.Now().UTC(), blackboardConclusionRetryCooldown); err != nil {
+		server.logger.Printf("assisted conclusion: reconcile stranded Session receipts: %v", err)
+	}
+	server.reconcileInterruptedSessions()
 
 	return server, nil
+}
+
+// reconcileInterruptedSessions closes the in-memory ownership gap after a
+// daemon restart. Provider bridges are intentionally not reopened implicitly;
+// every durable open Session continuation is marked interrupted and the next
+// user message/resume request creates a fresh continuation while retaining the
+// Session identity and prior native-runtime metadata.
+func (server *Server) reconcileInterruptedSessions() {
+	if server.sessions == nil {
+		return
+	}
+	open, err := server.sessions.List(session.LifecycleOpen)
+	if err != nil {
+		server.logger.Printf("Session reconcile: failed to list open Sessions: %v", err)
+		return
+	}
+	for _, found := range open {
+		active, activeErr := server.sessions.ActiveContinuation(found.ID)
+		if activeErr != nil {
+			server.logger.Printf("Session reconcile: failed to inspect Session %s: %v", found.ID, activeErr)
+			continue
+		}
+		if active == nil {
+			continue
+		}
+		if _, statusErr := server.sessions.UpdateContinuationStatus(active.ID, session.RuntimeStatusInterrupted); statusErr != nil {
+			server.logger.Printf("Session reconcile: failed to interrupt continuation %s: %v", active.ID, statusErr)
+			continue
+		}
+		payload := session.EventPayload{
+			"phase":           "provider_session_recovery_required",
+			"reason":          "daemon_restart",
+			"recovery_state":  "failed_closed",
+			"next_action":     "resume_creates_fresh_continuation",
+			"continuation_id": active.ID,
+		}
+		if active.NativeSessionID != "" {
+			payload["native_session_id"] = active.NativeSessionID
+		}
+		if active.NativeSessionPath != "" {
+			payload["native_session_path"] = active.NativeSessionPath
+		}
+		_, _ = server.sessions.AppendEvent(found.ID, session.EventKindLifecycle, payload)
+	}
 }
 
 func resolveRuntimeStorage(config Config) (string, string, error) {
@@ -297,6 +360,13 @@ func resolveRuntimeStorage(config Config) (string, string, error) {
 		return "", "", fmt.Errorf("runtime root %q is outside task volume root %q", runtimeRoot, taskVolumeRoot)
 	}
 	return runtimeRoot, taskVolumeRoot, nil
+}
+
+func sessionRoot(config Config, runtimeRoot string) string {
+	if configured := strings.TrimSpace(config.SessionRoot); configured != "" {
+		return filepath.Clean(configured)
+	}
+	return filepath.Join(runtimeRoot, "sessions")
 }
 
 // reconcileInterruptedTasks clears ghost tasks left running by a previous
@@ -468,7 +538,29 @@ func (server *Server) Close() error {
 	server.providerControlCancel()
 	server.controlMu.Unlock()
 	server.providerControlWG.Wait()
+	var sessionRuns []session.Session
+	if server.sessions != nil && server.sessionHarness != nil {
+		var listErr error
+		sessionRuns, listErr = server.sessions.List(session.LifecycleOpen)
+		if listErr != nil && !strings.Contains(strings.ToLower(listErr.Error()), "database is closed") {
+			server.logger.Printf("Session Runtime shutdown: failed to list open Sessions: %v", listErr)
+		}
+		for _, found := range sessionRuns {
+			server.sessionHarness.Stop(found.ID)
+		}
+	}
 	err := server.providerSessions.closeAll(context.Background())
+	if sessionErr := server.sessionProviderSessions.closeAll(context.Background()); err == nil {
+		err = sessionErr
+	}
+	if server.sessionHarness != nil {
+		deadline := time.Now().Add(server.runtimeStopTimeout)
+		for _, found := range sessionRuns {
+			if !server.sessionHarness.StopAndWait(found.ID, time.Until(deadline)) && err == nil {
+				err = fmt.Errorf("Session Runtime shutdown timed out for %s", found.ID)
+			}
+		}
+	}
 	if dbErr := server.db.Close(); err == nil {
 		err = dbErr
 	}
@@ -642,6 +734,24 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /api/projects", server.handleCreateProject)
 	server.mux.HandleFunc("GET /api/projects/{id}", server.handleGetProject)
 	server.mux.HandleFunc("PATCH /api/projects/{id}", server.handleUpdateProject)
+	server.mux.HandleFunc("GET /api/sessions", server.handleListSessions)
+	server.mux.HandleFunc("POST /api/sessions", server.handleCreateSession)
+	server.mux.HandleFunc("GET /api/sessions/archived", server.handleListSessions)
+	server.mux.HandleFunc("GET /api/sessions/{id}", server.handleGetSession)
+	server.mux.HandleFunc("GET /api/sessions/{id}/events", server.handleSessionEvents)
+	server.mux.HandleFunc("GET /api/sessions/{id}/conversation", server.handleSessionConversation)
+	server.mux.HandleFunc("GET /api/sessions/{id}/timeline", server.handleSessionTimeline)
+	server.mux.HandleFunc("POST /api/sessions/{id}/messages", server.handleSessionMessage)
+	server.mux.HandleFunc("POST /api/sessions/{id}/resume", server.handleSessionMessage)
+	server.mux.HandleFunc("POST /api/sessions/{id}/steer", server.handleSessionSteer)
+	server.mux.HandleFunc("POST /api/sessions/{id}/steer/queue", server.handleSessionQueueSteer)
+	server.mux.HandleFunc("POST /api/sessions/{id}/permissions/{permission_id}/respond", server.handleSessionProviderPermissionResponse)
+	server.mux.HandleFunc("POST /api/sessions/{id}/blackboard-conclusion/retry", server.handleRetrySessionBlackboardConclusion)
+	server.mux.HandleFunc("POST /api/sessions/{id}/stop", server.handleSessionStop)
+	server.mux.HandleFunc("PATCH /api/sessions/{id}", server.handleRenameSession)
+	server.mux.HandleFunc("POST /api/sessions/{id}/archive", server.handleArchiveSession)
+	server.mux.HandleFunc("POST /api/sessions/{id}/restore", server.handleRestoreSession)
+	server.mux.HandleFunc("DELETE /api/sessions/{id}", server.handleDeleteSession)
 	server.mux.HandleFunc("POST /api/runtime-profiles", server.handleCreateRuntimeProfile)
 	server.mux.HandleFunc("POST /api/runtime-profiles/resolve-launch", server.handleResolveLaunchRuntimeProfile)
 	server.mux.HandleFunc("GET /api/runtime-profiles", server.handleListRuntimeProfiles)

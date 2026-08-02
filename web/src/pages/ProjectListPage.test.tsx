@@ -41,6 +41,19 @@ describe("ProjectListPage", () => {
     expect(await findByText("No projects")).toBeInTheDocument();
   });
 
+  it("opens project creation when the sidebar new-project route is selected", async () => {
+    mockApi({ "/api/projects": { projects: [] } });
+
+    render(
+      <MemoryRouter initialEntries={["/?new=1"]}>
+        <ProjectListPage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByLabelText("Project name")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^create$/i })).toBeInTheDocument();
+  });
+
   it("renders Geist project cards with scan metadata that does not rely on color alone", async () => {
     mockApi({
       "/api/projects": {

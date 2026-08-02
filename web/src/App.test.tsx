@@ -76,8 +76,11 @@ describe("App", () => {
 
     expect(screen.getByRole("link", { name: "Skip to main content" })).toHaveAttribute("href", "#main-content");
     expect(document.querySelector("main")).toHaveAttribute("id", "main-content");
-    expect(await screen.findByRole("link", { name: /projects/i })).toHaveClass("focus-visible:ring-2");
-    expect(screen.getByRole("button", { name: /advanced/i })).toHaveClass("focus-visible:ring-2");
+    const newSessionLink = (await screen.findAllByRole("link", { name: /new session/i })).find((link) =>
+      link.getAttribute("href") === "/sessions#new-session",
+    );
+    expect(newSessionLink).toHaveClass("focus-visible:ring-2");
+    expect(screen.getByRole("button", { name: /collapse non-project/i })).toHaveClass("focus-visible:ring-2");
   });
 
   it("renders Geist-styled shell landmarks with active navigation that is not color-only", async () => {
@@ -100,21 +103,20 @@ describe("App", () => {
       "bg-sidebar",
       "text-sidebar-foreground",
     );
-    expect(screen.getByRole("navigation", { name: /primary routes/i })).toHaveClass("p-3");
+    expect(screen.getByRole("navigation", { name: /primary routes/i })).toHaveClass("px-3");
     expect(screen.getByRole("heading", { name: "CyberPenda" })).toHaveClass("text-sm", "font-semibold");
 
     const skillsLink = screen.getByRole("link", { name: /skills/i });
     expect(skillsLink).toHaveAttribute("aria-current", "page");
-    expect(skillsLink).toHaveAttribute("data-active", "true");
     expect(skillsLink).toHaveClass("border-sidebar-border", "bg-sidebar-accent", "font-semibold");
     expect(skillsLink.querySelector('[data-nav-indicator="active"]')).not.toBeNull();
 
     const projectsLink = screen.getByRole("link", { name: /projects/i });
-    expect(projectsLink).toHaveAttribute("data-active", "false");
+    expect(projectsLink).not.toHaveAttribute("aria-current");
     expect(projectsLink).toHaveClass("hover:border-sidebar-border", "hover:bg-sidebar-accent/70");
   });
 
-  it("communicates the advanced navigation disclosure state accessibly", async () => {
+  it("keeps global settings directly visible and communicates work disclosure state accessibly", async () => {
     const user = userEvent.setup();
     mockApi({
       "/api/projects": { projects: [] },
@@ -128,16 +130,18 @@ describe("App", () => {
       </StrictMode>,
     );
 
-    const advancedButton = screen.getByRole("button", { name: /show advanced routes/i });
-    expect(advancedButton).toHaveAttribute("aria-expanded", "false");
-    expect(advancedButton).toHaveAttribute("data-state", "closed");
-    expect(screen.queryByRole("link", { name: /runtime profiles/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /advanced/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /runtime profiles/i })).toHaveAttribute("href", "/profiles");
+    expect(screen.getByRole("link", { name: /model providers/i })).toHaveAttribute("href", "/model-providers");
+    expect(screen.getByRole("link", { name: /credentials/i })).toHaveAttribute("href", "/credentials");
+    expect(screen.getByRole("link", { name: /skills/i })).toHaveAttribute("href", "/skills");
 
-    await user.click(advancedButton);
-
-    expect(screen.getByRole("button", { name: /hide advanced routes/i })).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("button", { name: /hide advanced routes/i })).toHaveAttribute("data-state", "open");
-    expect(screen.getByRole("link", { name: /runtime profiles/i })).toHaveClass("border-transparent");
+    const nonProjectButton = screen.getByRole("button", { name: /collapse non-project/i });
+    expect(nonProjectButton).toHaveAttribute("aria-expanded", "true");
+    expect(nonProjectButton).toHaveAttribute("aria-controls", "non-project-work");
+    await user.click(nonProjectButton);
+    expect(screen.getByRole("button", { name: /expand non-project/i })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("link", { name: /non-project/i })).toHaveAttribute("href", "/sessions");
   });
 
   it("applies the shell primitive styling to skip link and theme toggle", async () => {
@@ -212,8 +216,8 @@ describe("App", () => {
     // Closed mobile drawer is aria-hidden; still present in the DOM for layout classes.
     const sidebar = document.getElementById("workspace-sidebar");
     expect(sidebar).not.toBeNull();
-    // Off-canvas below md so main can use the full 390px viewport; desktop keeps w-64 in flow.
-    expect(sidebar).toHaveClass("fixed", "inset-y-0", "left-0", "w-64", "md:static");
+    // Off-canvas below md so main can use the full 390px viewport; desktop keeps w-72 in flow.
+    expect(sidebar).toHaveClass("fixed", "inset-y-0", "left-0", "w-72", "md:static");
     expect(sidebar!.className.split(/\s+/)).toEqual(
       expect.arrayContaining(["-translate-x-full", "md:translate-x-0"]),
     );

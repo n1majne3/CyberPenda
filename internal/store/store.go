@@ -929,7 +929,297 @@ func migrations() []migration {
 		newMigration(42, "assisted_conclusion_pre_dispatch_action_required", migration42SQL, migration42Up),
 		newMigration(43, "assisted_conclusion_version_regeneration", migration43SQL, migration43Up),
 		newMigration(44, "assisted_conclusion_exactly_once_recovery", migration44SQL, migration44Up),
+		newMigration(45, "non_project_sessions", migration45SQL, migration45Up),
+		newMigration(46, "session_runtime_continuations", migration46SQL, migration46Up),
+		newMigration(47, "session_blackboard_v2", migration47SQL, migration47Up),
+		newMigration(48, "session_assisted_conclusion_receipts", migration48SQL, migration48Up),
 	}
+}
+
+const migration48SQL = `
+CREATE TABLE IF NOT EXISTS session_assisted_conclusion_receipts (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    continuation_id TEXT NOT NULL,
+    source_request_id TEXT NOT NULL CHECK (length(trim(source_request_id)) > 0),
+    source_request_correlation_exact INTEGER NOT NULL CHECK (source_request_correlation_exact IN (0,1)),
+    source_session_id TEXT NOT NULL,
+    source_turn_id TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('clean','pending','dispatch_requested','repair_dispatch_requested','version_sync_requested','version_regeneration_dispatch_requested','awaiting_result','action_required','validated','applied')),
+    source_work_watermark INTEGER NOT NULL CHECK (source_work_watermark >= 0),
+    semantic_persistence_watermark INTEGER NOT NULL CHECK (semantic_persistence_watermark >= 0),
+    dispatch_request_id TEXT UNIQUE,
+    control_turn_id TEXT,
+    base_revision INTEGER CHECK (base_revision >= 0),
+    synchronized_revision INTEGER CHECK (synchronized_revision >= 0),
+    source_model_provider_id TEXT NOT NULL DEFAULT '',
+    source_model TEXT NOT NULL DEFAULT '',
+    source_reasoning_effort TEXT NOT NULL DEFAULT '',
+    canonical_result_json BLOB,
+    canonical_result_sha256 TEXT,
+    apply_idempotency_key TEXT UNIQUE,
+    applied_revision INTEGER CHECK (applied_revision >= 0),
+    automatic_turn_count INTEGER NOT NULL DEFAULT 0 CHECK (automatic_turn_count >= 0),
+    repair_count INTEGER NOT NULL DEFAULT 0 CHECK (repair_count >= 0),
+    version_regeneration_count INTEGER NOT NULL DEFAULT 0 CHECK (version_regeneration_count IN (0,1)),
+    explicit_retry_count INTEGER NOT NULL DEFAULT 0 CHECK (explicit_retry_count >= 0),
+    operator_retry_key TEXT,
+    send_attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (send_attempt_count IN (0,1)),
+    send_started_at TEXT,
+    next_eligible_at TEXT,
+    error_code TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (session_id, continuation_id, source_turn_id),
+    CHECK ((send_attempt_count = 0 AND send_started_at IS NULL) OR (send_attempt_count = 1 AND send_started_at IS NOT NULL)),
+    CHECK ((state = 'clean' AND source_work_watermark = semantic_persistence_watermark) OR (state <> 'clean' AND source_work_watermark > semantic_persistence_watermark)),
+    CHECK (
+        (state IN ('clean','pending') AND dispatch_request_id IS NULL AND control_turn_id IS NULL AND base_revision IS NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NULL AND applied_revision IS NULL) OR
+        (state IN ('dispatch_requested','repair_dispatch_requested','version_regeneration_dispatch_requested') AND dispatch_request_id IS NOT NULL AND control_turn_id IS NULL AND base_revision IS NOT NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+        (state = 'awaiting_result' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+        (state = 'action_required' AND applied_revision IS NULL AND ((dispatch_request_id IS NULL AND control_turn_id IS NULL AND base_revision IS NULL AND apply_idempotency_key IS NULL AND canonical_result_json IS NULL AND canonical_result_sha256 IS NULL) OR (dispatch_request_id IS NOT NULL AND base_revision IS NOT NULL AND apply_idempotency_key IS NOT NULL AND ((canonical_result_json IS NULL AND canonical_result_sha256 IS NULL) OR (control_turn_id IS NOT NULL AND canonical_result_json IS NOT NULL AND length(canonical_result_json) > 0 AND canonical_result_sha256 IS NOT NULL AND length(canonical_result_sha256) = 64))))) OR
+        (state IN ('validated','version_sync_requested') AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NOT NULL AND length(canonical_result_json) > 0 AND canonical_result_sha256 IS NOT NULL AND length(canonical_result_sha256) = 64 AND apply_idempotency_key IS NOT NULL AND applied_revision IS NULL) OR
+        (state = 'applied' AND dispatch_request_id IS NOT NULL AND control_turn_id IS NOT NULL AND base_revision IS NOT NULL AND canonical_result_json IS NOT NULL AND length(canonical_result_json) > 0 AND canonical_result_sha256 IS NOT NULL AND length(canonical_result_sha256) = 64 AND apply_idempotency_key IS NOT NULL AND applied_revision IS NOT NULL)
+    )
+);
+CREATE INDEX IF NOT EXISTS idx_session_assisted_conclusion_session_created
+    ON session_assisted_conclusion_receipts(session_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS session_assisted_conclusion_retry_keys (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    receipt_id TEXT NOT NULL REFERENCES session_assisted_conclusion_receipts(id) ON DELETE CASCADE,
+    idempotency_key TEXT NOT NULL,
+    dispatch_request_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (session_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_session_assisted_conclusion_dispatch
+    ON session_assisted_conclusion_receipts(dispatch_request_id);
+`
+
+func migration48Up(tx *sql.Tx) error {
+	rows, err := tx.Query(`PRAGMA table_info(sessions)`)
+	if err != nil {
+		return err
+	}
+	hasMode := false
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if name == "blackboard_conclusion_mode" {
+			hasMode = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if !hasMode {
+		if _, err := tx.Exec(`ALTER TABLE sessions ADD COLUMN blackboard_conclusion_mode TEXT NOT NULL DEFAULT 'interactive' CHECK (blackboard_conclusion_mode IN ('interactive', 'assisted'))`); err != nil {
+			return err
+		}
+	}
+	return execStatements(tx, migration48SQL)
+}
+
+const migration45SQL = `
+CREATE TABLE IF NOT EXISTS sessions (
+	id TEXT PRIMARY KEY,
+	title TEXT NOT NULL,
+	lifecycle TEXT NOT NULL CHECK (lifecycle IN ('open', 'archived')),
+	workdir TEXT NOT NULL UNIQUE,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	last_activity_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_lifecycle_activity
+	ON sessions(lifecycle, last_activity_at DESC, created_at DESC);
+CREATE TABLE IF NOT EXISTS session_events (
+	id TEXT PRIMARY KEY,
+	session_id TEXT NOT NULL,
+	seq INTEGER NOT NULL,
+	kind TEXT NOT NULL,
+	payload_json TEXT NOT NULL DEFAULT '{}',
+	created_at TEXT NOT NULL,
+	UNIQUE (session_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_session_events_session_seq
+	ON session_events(session_id, seq ASC);
+`
+
+func migration45Up(tx *sql.Tx) error {
+	return execStatements(tx, migration45SQL)
+}
+
+const migration46SQL = `
+CREATE TABLE IF NOT EXISTS session_runtime_config_versions (
+	id TEXT PRIMARY KEY,
+	session_id TEXT NOT NULL,
+	version INTEGER NOT NULL,
+	runtime_profile_id TEXT NOT NULL,
+	config_json TEXT NOT NULL DEFAULT '{}',
+	created_at TEXT NOT NULL,
+	UNIQUE (session_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_session_runtime_configs_session_version
+	ON session_runtime_config_versions(session_id, version ASC);
+CREATE TABLE IF NOT EXISTS session_continuations (
+	id TEXT PRIMARY KEY,
+	session_id TEXT NOT NULL,
+	number INTEGER NOT NULL,
+	runtime_profile_id TEXT NOT NULL,
+	runtime_provider TEXT NOT NULL,
+	runner TEXT NOT NULL,
+	status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed', 'stopped', 'interrupted')),
+	container_id TEXT NOT NULL DEFAULT '',
+	native_session_id TEXT NOT NULL DEFAULT '',
+	native_session_path TEXT NOT NULL DEFAULT '',
+	runtime_config_version_id TEXT NOT NULL,
+	started_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	ended_at TEXT NOT NULL DEFAULT '',
+	UNIQUE (session_id, number)
+);
+CREATE INDEX IF NOT EXISTS idx_session_continuations_session_number
+	ON session_continuations(session_id, number DESC);
+CREATE INDEX IF NOT EXISTS idx_session_continuations_active
+	ON session_continuations(session_id, status);
+`
+
+func migration46Up(tx *sql.Tx) error {
+	return execStatements(tx, migration46SQL)
+}
+
+const migration47SQL = `
+CREATE TABLE IF NOT EXISTS blackboard_v2_session_state (
+	session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+	revision INTEGER NOT NULL CHECK (revision >= 0)
+);
+CREATE TABLE IF NOT EXISTS blackboard_v2_session_records (
+	session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	key TEXT NOT NULL,
+	type TEXT NOT NULL CHECK (type IN ('entity', 'objective', 'attempt', 'fact')),
+	version INTEGER NOT NULL CHECK (version >= 1),
+	record_json TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (session_id, key)
+);
+CREATE TABLE IF NOT EXISTS blackboard_v2_session_record_history (
+	session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	key TEXT NOT NULL,
+	version INTEGER NOT NULL CHECK (version >= 1),
+	type TEXT NOT NULL CHECK (type IN ('entity', 'objective', 'attempt', 'fact')),
+	record_json TEXT NOT NULL,
+	recorded_at TEXT NOT NULL,
+	PRIMARY KEY (session_id, key, version)
+);
+CREATE TABLE IF NOT EXISTS blackboard_v2_session_idempotency_receipts (
+	session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	idempotency_key TEXT NOT NULL,
+	continuation_id TEXT NOT NULL DEFAULT '',
+	request_hash TEXT NOT NULL,
+	result_json TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (session_id, idempotency_key)
+);
+CREATE TABLE IF NOT EXISTS blackboard_v2_session_snapshots (
+	session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+	revision INTEGER NOT NULL CHECK (revision >= 0),
+	snapshot_json TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS blackboard_v2_session_continuation_pins (
+	continuation_id TEXT PRIMARY KEY,
+	session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	launch_revision INTEGER NOT NULL CHECK (launch_revision >= 0),
+	launch_snapshot_json TEXT NOT NULL,
+	launch_snapshot_sha256 TEXT NOT NULL,
+	working_revision INTEGER NOT NULL CHECK (working_revision >= 0),
+	working_snapshot_json TEXT NOT NULL,
+	working_snapshot_sha256 TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	UNIQUE (session_id, continuation_id)
+);
+CREATE TABLE IF NOT EXISTS blackboard_v2_session_finish_receipts (
+	session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	continuation_id TEXT NOT NULL,
+	idempotency_key TEXT NOT NULL,
+	request_hash TEXT NOT NULL,
+	result_json TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (session_id, continuation_id, idempotency_key)
+);
+CREATE TABLE IF NOT EXISTS blackboard_v2_session_relationships (
+	session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	from_key TEXT NOT NULL,
+	relation TEXT NOT NULL CHECK (relation IN ('about', 'part_of', 'tests', 'produced', 'evidences', 'supports', 'contradicts', 'derived_from', 'depends_on', 'satisfies', 'supersedes')),
+	to_key TEXT NOT NULL,
+	version INTEGER NOT NULL CHECK (version >= 1),
+	reason TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (session_id, from_key, relation, to_key)
+);
+CREATE TABLE IF NOT EXISTS blackboard_v2_session_relationship_history (
+	session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	from_key TEXT NOT NULL,
+	relation TEXT NOT NULL,
+	to_key TEXT NOT NULL,
+	version INTEGER NOT NULL CHECK (version >= 1),
+	reason TEXT NOT NULL DEFAULT '',
+	recorded_at TEXT NOT NULL,
+	PRIMARY KEY (session_id, from_key, relation, to_key, version)
+);
+CREATE TABLE IF NOT EXISTS blackboard_v2_session_key_redirects (
+	session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	source_key TEXT NOT NULL,
+	canonical_key TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (session_id, source_key),
+	UNIQUE (session_id, canonical_key)
+);
+CREATE TABLE IF NOT EXISTS blackboard_v2_session_attempt_origins (
+	session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	key TEXT NOT NULL,
+	continuation_id TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (session_id, key)
+);
+CREATE INDEX IF NOT EXISTS idx_blackboard_v2_session_history_key
+	ON blackboard_v2_session_record_history(session_id, key, version ASC);
+CREATE INDEX IF NOT EXISTS idx_blackboard_v2_session_relationship_history_key
+	ON blackboard_v2_session_relationship_history(session_id, from_key, relation, to_key, version ASC);
+`
+
+func migration47Up(tx *sql.Tx) error {
+	if err := execStatements(tx, migration47SQL); err != nil {
+		return err
+	}
+	triggers := []string{
+		`CREATE TRIGGER IF NOT EXISTS trg_blackboard_v2_session_delete_continuations
+		 AFTER DELETE ON sessions
+		 BEGIN
+		  DELETE FROM session_continuations WHERE session_id=OLD.id;
+		 END;`,
+		`CREATE TRIGGER IF NOT EXISTS trg_blackboard_v2_session_continuation_pin_launch_immutable
+		 BEFORE UPDATE OF launch_revision, launch_snapshot_json, launch_snapshot_sha256
+		 ON blackboard_v2_session_continuation_pins
+		 BEGIN
+		  SELECT RAISE(ABORT, 'Session launch pin is immutable');
+		 END;`,
+	}
+	for _, trigger := range triggers {
+		if _, err := tx.Exec(trigger); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 const migration44TableSQL = `

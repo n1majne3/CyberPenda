@@ -451,6 +451,93 @@ func TestClaudeProviderSessionInterruptThenReplaceMapsSelectionOnSameSession(t *
 	}
 }
 
+// Idle Claude sessions (no active turn) must not call claude/interrupt.
+// After a completed Work or Conclude turn the SDK bridge has activeTurnID="",
+// and interrupt_then_replace should degrade to a plain send on the same Query.
+func TestClaudeProviderSessionInterruptThenReplaceWhenIdleSkipsInterrupt(t *testing.T) {
+	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
+		"claude/input": {Result: json.RawMessage(`{"session_id":"claude-1","turn_id":"turn-followup"}`)},
+	}, send: func(_ context.Context, request SandboxBridgeRequest) (SandboxBridgeResponse, error) {
+		if request.Method == "claude/interrupt" {
+			return SandboxBridgeResponse{}, errors.New("Claude active turn identity mismatch")
+		}
+		if request.Method == "claude/input" {
+			return SandboxBridgeResponse{Result: json.RawMessage(`{"session_id":"claude-1","turn_id":"turn-followup"}`)}, nil
+		}
+		return SandboxBridgeResponse{}, errors.New("unexpected method " + request.Method)
+	}}
+	session := NewClaudeCodeProviderSession(ClaudeCodeProviderSessionConfig{
+		Transport: transport, SessionID: "claude-1", // no ActiveTurnID → idle
+	})
+
+	result, err := session.InterruptThenReplace(context.Background(), ProviderSessionRequest{
+		RequestID: "idle-followup",
+		Message:   "continue after conclusion",
+	}, nil)
+	if err != nil {
+		t.Fatalf("idle replace: %v", err)
+	}
+	if result.SessionID != "claude-1" || result.ProviderTurnID != "turn-followup" || result.Outcome != "started" {
+		t.Fatalf("result = %#v", result)
+	}
+	requests := transport.snapshot()
+	if len(requests) != 1 || requests[0].Method != "claude/input" {
+		t.Fatalf("idle replace must send only; requests=%#v", requests)
+	}
+}
+
+// Completing a turn clears the active turn so a later operator message on a
+// live·idle Runtime uses the idle path instead of interrupting a finished turn.
+func TestClaudeProviderSessionClearsActiveTurnOnCompletionThenIdleReplace(t *testing.T) {
+	transport := &fakeProviderTransport{send: func(_ context.Context, request SandboxBridgeRequest) (SandboxBridgeResponse, error) {
+		switch request.Method {
+		case "claude/input":
+			var params map[string]any
+			_ = json.Unmarshal(request.Params, &params)
+			// First send is the work turn; second is the idle follow-up.
+			if strings.Contains(request.ID, "work") || strings.HasSuffix(request.ID, "work-1") {
+				return SandboxBridgeResponse{Result: json.RawMessage(`{"session_id":"claude-1","turn_id":"work-1"}`)}, nil
+			}
+			return SandboxBridgeResponse{Result: json.RawMessage(`{"session_id":"claude-1","turn_id":"follow-1"}`)}, nil
+		case "claude/interrupt":
+			return SandboxBridgeResponse{}, errors.New("Claude active turn identity mismatch")
+		default:
+			return SandboxBridgeResponse{}, errors.New("unexpected method " + request.Method)
+		}
+	}}
+	session := NewClaudeCodeProviderSession(ClaudeCodeProviderSessionConfig{
+		Transport: transport, SessionID: "claude-1",
+	})
+	if _, err := session.SendTurn(context.Background(), ProviderSessionRequest{
+		RequestID: "work-1", Message: "do work",
+	}, nil); err != nil {
+		t.Fatalf("work turn: %v", err)
+	}
+	session.HandleEvent(SandboxBridgeEvent{
+		Method: "claude/turn/completed",
+		Params: json.RawMessage(`{"request_id":"work-1","session_id":"claude-1","turn_id":"work-1","status":"completed"}`),
+	}, nil)
+
+	result, err := session.InterruptThenReplace(context.Background(), ProviderSessionRequest{
+		RequestID: "follow-1", Message: "next phase",
+	}, nil)
+	if err != nil {
+		t.Fatalf("post-completion replace: %v", err)
+	}
+	if result.ProviderTurnID != "follow-1" {
+		t.Fatalf("result = %#v", result)
+	}
+	var interruptCalls int
+	for _, req := range transport.snapshot() {
+		if req.Method == "claude/interrupt" {
+			interruptCalls++
+		}
+	}
+	if interruptCalls != 0 {
+		t.Fatalf("completed turn left interrupt path active; interrupts=%d requests=%#v", interruptCalls, transport.snapshot())
+	}
+}
+
 func TestClaudeProviderSessionSurfacesUnsupportedEffortWithoutRewriting(t *testing.T) {
 	transport := &fakeProviderTransport{send: func(_ context.Context, request SandboxBridgeRequest) (SandboxBridgeResponse, error) {
 		if request.Method != "claude/input" {

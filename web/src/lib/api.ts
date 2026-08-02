@@ -136,10 +136,195 @@ export interface Project {
   name: string;
   description: string;
   kind?: ProjectKind;
+  /** Optional compact activity projection used by the work tree when available. */
+  last_activity_at?: string;
   scope: Scope;
   defaults: ProjectDefaults;
   created_at: string;
   updated_at: string;
+}
+
+export type SessionLifecycle = "open" | "archived";
+
+export interface Session {
+  id: string;
+  title: string;
+  lifecycle: SessionLifecycle;
+  run_controls?: { blackboard_conclusion_mode?: BlackboardConclusionMode };
+  blackboard_conclusion?: BlackboardConclusionView;
+  runtime_controls?: SessionRuntimeControls;
+  runtime_activity?: RuntimeActivity;
+  active_continuation?: SessionContinuation;
+  latest_continuation?: SessionContinuation;
+  created_at: string;
+  updated_at: string;
+  last_activity_at: string;
+}
+
+export type SessionEventKind = "conversation" | "attachment" | "lifecycle" | string;
+
+export interface SessionEvent {
+  id: string;
+  session_id: string;
+  seq: number;
+  kind: SessionEventKind;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface SessionContinuation {
+  id: string;
+  session_id: string;
+  number: number;
+  runtime_profile_id: string;
+  runtime_provider: string;
+  runner: string;
+  status: string;
+  container_id?: string;
+  native_session_id?: string;
+  native_session_path?: string;
+  started_at: string;
+  updated_at: string;
+  ended_at?: string;
+}
+
+export interface SessionRuntimeSelection {
+  model_provider_id?: string;
+  model?: string;
+  reasoning_effort?: string;
+}
+
+export interface SessionPermission {
+  request_id: string;
+  permission_request_id: string;
+  session_id?: string;
+  provider_turn_id?: string;
+  provider?: string;
+  created_at: string;
+}
+
+export interface SessionRuntimeControls {
+  native_resume_available: boolean;
+  native_steer_available: boolean;
+  native_steer_mode?: string;
+  queue_steer_available: boolean;
+  interrupt_steer_available: boolean;
+  native_session_captured: boolean;
+  runtime_provider?: string;
+  turn_selection?: SessionRuntimeSelection;
+  provider_permissions?: SessionPermission[];
+  recovery_state?: string;
+  recovery_reason?: string;
+}
+
+export interface SessionLaunchOptions {
+  runtime_profile_id?: string;
+  provider?: string;
+  runtime_provider?: string;
+  model_provider_id?: string;
+  model?: string;
+  model_override?: string;
+  reasoning_effort?: string;
+  runner?: string;
+  host_activated?: boolean;
+  blackboard_conclusion_mode?: BlackboardConclusionMode;
+  run_controls?: { blackboard_conclusion_mode?: BlackboardConclusionMode };
+}
+
+export function listSessions(lifecycle?: SessionLifecycle) {
+  const suffix = lifecycle ? `?lifecycle=${encodeURIComponent(lifecycle)}` : "";
+  return apiGet<{ sessions: Session[] }>(`/api/sessions${suffix}`);
+}
+
+export function getSession(sessionId: string) {
+  return apiGet<Session>(`/api/sessions/${encodeURIComponent(sessionId)}`);
+}
+
+export function getSessionEvents(sessionId: string) {
+  return apiGet<{ events: SessionEvent[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/events`);
+}
+
+export function getSessionConversation(sessionId: string) {
+  return apiGet<{ events: SessionEvent[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/conversation`);
+}
+
+export function getSessionTimeline(sessionId: string) {
+  return apiGet<{ events: SessionEvent[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/timeline`);
+}
+
+export function createSession(input: string, attachments: File[] = [], options: SessionLaunchOptions = {}) {
+  if (attachments.length === 0) {
+    return apiPost<Session>("/api/sessions", { input, ...options });
+  }
+  const form = new FormData();
+  form.append("payload", JSON.stringify({ input, ...options }));
+  for (const attachment of attachments) {
+    form.append("attachments", attachment, attachment.name);
+  }
+  return apiPostForm<Session>("/api/sessions", form);
+}
+
+export function sendSessionMessage(sessionId: string, message: string, attachments: File[] = []) {
+  const path = `/api/sessions/${encodeURIComponent(sessionId)}/messages`;
+  if (attachments.length === 0) {
+    return apiPost<Session>(path, { message });
+  }
+  const form = new FormData();
+  form.append("payload", JSON.stringify({ message }));
+  for (const attachment of attachments) {
+    form.append("attachments", attachment, attachment.name);
+  }
+  return apiPostForm<Session>(path, form);
+}
+
+export function steerSession(sessionId: string, message: string) {
+  return apiPost<Session>(`/api/sessions/${encodeURIComponent(sessionId)}/steer`, { message });
+}
+
+export function queueSessionSteer(sessionId: string, message: string) {
+  return apiPost<Session>(`/api/sessions/${encodeURIComponent(sessionId)}/steer/queue`, { message });
+}
+
+export function respondSessionPermission(
+  sessionId: string,
+  permissionRequestId: string,
+  decision: "allow" | "deny",
+  requestId?: string,
+) {
+  return apiPost<{ request_id: string; permission_request_id: string; outcome: string }>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(permissionRequestId)}/respond`,
+    { decision, ...(requestId ? { request_id: requestId } : {}) },
+  );
+}
+
+export function stopSession(sessionId: string) {
+  return apiPost<Session>(`/api/sessions/${encodeURIComponent(sessionId)}/stop`);
+}
+
+export function retrySessionBlackboardConclusion(sessionId: string, idempotencyKey: string) {
+  return apiPost<Session>(`/api/sessions/${encodeURIComponent(sessionId)}/blackboard-conclusion/retry`, {}, {
+    headers: { "Idempotency-Key": idempotencyKey },
+  });
+}
+
+export function renameSession(sessionId: string, title: string) {
+  return apiPatch<Session>(`/api/sessions/${encodeURIComponent(sessionId)}`, { title });
+}
+
+export function archiveSession(sessionId: string) {
+  return apiPost<Session>(`/api/sessions/${encodeURIComponent(sessionId)}/archive`);
+}
+
+export function restoreSession(sessionId: string) {
+  return apiPost<Session>(`/api/sessions/${encodeURIComponent(sessionId)}/restore`);
+}
+
+export function deleteSession(sessionId: string) {
+  return apiDelete(`/api/sessions/${encodeURIComponent(sessionId)}`);
+}
+
+export function listRuntimeProfiles() {
+  return apiGet<{ profiles: RuntimeProfile[] }>("/api/runtime-profiles");
 }
 
 export interface Dashboard {

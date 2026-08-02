@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"pentest/internal/owner"
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
@@ -76,7 +77,7 @@ func TestProductionProviderSessionFactoryOpensCodexAppServerBridgeWithoutPTY(t *
 		}
 	}()
 	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
-		Task: task.Task{ID: "task-1"}, Continuation: task.TaskContinuation{ID: "continuation-1"},
+		Owner: owner.NewTaskContract("task-1", "project-test", ""), Continuation: owner.Continuation{ID: "continuation-1", OwnerID: "task-1"},
 		Provider: runtimeprofile.ProviderCodex, Runner: task.RunnerSandbox, LegacyAdapter: legacy,
 	})
 	if err != nil {
@@ -130,8 +131,8 @@ func TestProductionProviderSessionFactoryResumesDurableCodexThread(t *testing.T)
 		}
 	}()
 	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
-		Task:         task.Task{ID: "task-restart"},
-		Continuation: task.TaskContinuation{ID: "continuation-fresh", NativeSessionID: "thread-durable", NativeSessionPath: "/sessions/thread-durable.jsonl"},
+		Owner:        owner.NewTaskContract("task-restart", "project-test", ""),
+		Continuation: owner.Continuation{ID: "continuation-fresh", OwnerID: "task-restart", NativeSessionID: "thread-durable", NativeSessionPath: "/sessions/thread-durable.jsonl"},
 		Provider:     runtimeprofile.ProviderCodex, Runner: task.RunnerSandbox, LegacyAdapter: legacy,
 	})
 	if err != nil {
@@ -176,8 +177,8 @@ func TestProductionProviderSessionFactoryFailsClosedOnChangedDurableThread(t *te
 		}
 	}()
 	_, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
-		Task:         task.Task{ID: "task-restart-mismatch"},
-		Continuation: task.TaskContinuation{ID: "continuation-fresh", NativeSessionID: "thread-durable"},
+		Owner:        owner.NewTaskContract("task-restart-mismatch", "project-test", ""),
+		Continuation: owner.Continuation{ID: "continuation-fresh", OwnerID: "task-restart-mismatch", NativeSessionID: "thread-durable"},
 		Provider:     runtimeprofile.ProviderCodex, Runner: task.RunnerSandbox, LegacyAdapter: legacy,
 	})
 	if err == nil || !strings.Contains(err.Error(), "resume identity changed") {
@@ -209,7 +210,7 @@ func TestProductionProviderSessionFactoryOpensClaudeAgentSDKBridge(t *testing.T)
 		}
 	}()
 	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
-		Task: task.Task{ID: "task-claude"}, Continuation: task.TaskContinuation{ID: "continuation-claude", NativeSessionID: "claude-durable"},
+		Owner: owner.NewTaskContract("task-claude", "project-test", ""), Continuation: owner.Continuation{ID: "continuation-claude", OwnerID: "task-claude", NativeSessionID: "claude-durable"},
 		Provider: runtimeprofile.ProviderClaudeCode, Runner: task.RunnerSandbox, LegacyAdapter: legacy,
 	})
 	if err != nil {
@@ -316,7 +317,7 @@ func TestProductionProviderSessionFactoryOpensPiRPCBridge(t *testing.T) {
 		}
 	}()
 	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
-		Task: task.Task{ID: "task-pi"}, Continuation: task.TaskContinuation{ID: "continuation-pi"},
+		Owner: owner.NewTaskContract("task-pi", "project-test", ""), Continuation: owner.Continuation{ID: "continuation-pi", OwnerID: "task-pi"},
 		Provider: runtimeprofile.ProviderPi, Runner: task.RunnerSandbox, LegacyAdapter: legacy,
 	})
 	if err != nil {
@@ -423,7 +424,7 @@ func TestProductionProviderSessionFactoryOpensHostCodexAppServer(t *testing.T) {
 		}
 	}()
 	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
-		Task: task.Task{ID: "host-task-1"}, Continuation: task.TaskContinuation{ID: "host-continuation-1"},
+		Owner: owner.NewTaskContract("host-task-1", "project-test", ""), Continuation: owner.Continuation{ID: "host-continuation-1", OwnerID: "host-task-1"},
 		Provider: runtimeprofile.ProviderCodex, Runner: task.RunnerHost, LegacyAdapter: legacy,
 	})
 	if err != nil {
@@ -485,7 +486,7 @@ func TestProductionProviderSessionFactoryOpensHostCodexAppServer(t *testing.T) {
 
 	// Same Task reuses the bound session without starting another process.
 	rebound, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
-		Task: task.Task{ID: "host-task-1"}, Continuation: task.TaskContinuation{ID: "host-continuation-2"},
+		Owner: owner.NewTaskContract("host-task-1", "project-test", ""), Continuation: owner.Continuation{ID: "host-continuation-2", OwnerID: "host-task-1"},
 		Provider: runtimeprofile.ProviderCodex, Runner: task.RunnerHost, LegacyAdapter: legacy,
 	})
 	if err != nil {
@@ -523,7 +524,7 @@ func TestProductionProviderSessionFactoryResumesHostCodexThread(t *testing.T) {
 		}
 	}()
 	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
-		Task: task.Task{ID: "host-resume"}, Continuation: task.TaskContinuation{ID: "c1", NativeSessionID: "host-durable"},
+		Owner: owner.NewTaskContract("host-resume", "project-test", ""), Continuation: owner.Continuation{ID: "c1", OwnerID: "host-resume", NativeSessionID: "host-durable"},
 		Provider: runtimeprofile.ProviderCodex, Runner: task.RunnerHost, LegacyAdapter: legacy,
 	})
 	if err != nil {
@@ -568,7 +569,7 @@ func TestProductionProviderSessionFactoryHostCloseKillsProcessGroup(t *testing.T
 		}
 	}()
 	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
-		Task: task.Task{ID: "host-kill"}, Continuation: task.TaskContinuation{ID: "c1"},
+		Owner: owner.NewTaskContract("host-kill", "project-test", ""), Continuation: owner.Continuation{ID: "c1", OwnerID: "host-kill"},
 		Provider: runtimeprofile.ProviderCodex, Runner: task.RunnerHost, LegacyAdapter: legacy,
 	})
 	if err != nil {
@@ -592,7 +593,7 @@ func TestProductionProviderSessionFactoryRejectsUnsupportedHostProvider(t *testi
 	factory := NewProductionProviderSessionFactory(ProductionProviderSessionFactoryConfig{})
 	legacy := runtime.NewCommandAdapter(runtime.CommandAdapterConfig{Name: "fake", Program: "fake", Args: []string{"goal"}, Workdir: "/work"})
 	_, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
-		Task: task.Task{ID: "t"}, Continuation: task.TaskContinuation{ID: "c"},
+		Owner: owner.NewTaskContract("t", "project-test", ""), Continuation: owner.Continuation{ID: "c", OwnerID: "t"},
 		Provider: runtimeprofile.ProviderFake, Runner: task.RunnerHost, LegacyAdapter: legacy,
 	})
 	if err == nil || !strings.Contains(err.Error(), "codex, claude_code, and pi only") {
@@ -634,7 +635,7 @@ func TestProductionProviderSessionFactoryOpensHostClaudeSDKBridge(t *testing.T) 
 		}
 	}()
 	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
-		Task: task.Task{ID: "host-claude-1"}, Continuation: task.TaskContinuation{ID: "c1"},
+		Owner: owner.NewTaskContract("host-claude-1", "project-test", ""), Continuation: owner.Continuation{ID: "c1", OwnerID: "host-claude-1"},
 		Provider: runtimeprofile.ProviderClaudeCode, Runner: task.RunnerHost, LegacyAdapter: legacy,
 		RuntimeConfig: map[string]any{"launch_model_override": "claude-test"},
 	})
@@ -718,7 +719,7 @@ func TestProductionProviderSessionFactoryOpensHostClaudeSDKBridge(t *testing.T) 
 
 	// Same Task reuses one Query process.
 	rebound, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
-		Task: task.Task{ID: "host-claude-1"}, Continuation: task.TaskContinuation{ID: "c2"},
+		Owner: owner.NewTaskContract("host-claude-1", "project-test", ""), Continuation: owner.Continuation{ID: "c2", OwnerID: "host-claude-1"},
 		Provider: runtimeprofile.ProviderClaudeCode, Runner: task.RunnerHost, LegacyAdapter: legacy,
 	})
 	if err != nil {
@@ -757,8 +758,8 @@ func TestProductionProviderSessionFactoryResumesHostClaudeQuery(t *testing.T) {
 		}
 	}()
 	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
-		Task:         task.Task{ID: "host-claude-resume"},
-		Continuation: task.TaskContinuation{ID: "c1", NativeSessionID: "claude-durable"},
+		Owner:        owner.NewTaskContract("host-claude-resume", "project-test", ""),
+		Continuation: owner.Continuation{ID: "c1", OwnerID: "host-claude-resume", NativeSessionID: "claude-durable"},
 		Provider:     runtimeprofile.ProviderClaudeCode, Runner: task.RunnerHost, LegacyAdapter: legacy,
 	})
 	if err != nil {
@@ -801,7 +802,7 @@ func TestProductionProviderSessionFactoryHostClaudeCloseKillsProcessGroup(t *tes
 		}
 	}()
 	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
-		Task: task.Task{ID: "host-claude-kill"}, Continuation: task.TaskContinuation{ID: "c1"},
+		Owner: owner.NewTaskContract("host-claude-kill", "project-test", ""), Continuation: owner.Continuation{ID: "c1", OwnerID: "host-claude-kill"},
 		Provider: runtimeprofile.ProviderClaudeCode, Runner: task.RunnerHost, LegacyAdapter: legacy,
 	})
 	if err != nil {
@@ -831,7 +832,7 @@ func TestProductionProviderSessionFactoryHostClaudeBridgeUnavailableIsClear(t *t
 		Name: "claude_code", Program: "claude", Args: []string{"-p", "goal"}, Workdir: t.TempDir(),
 	})
 	_, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
-		Task: task.Task{ID: "host-claude-missing"}, Continuation: task.TaskContinuation{ID: "c1"},
+		Owner: owner.NewTaskContract("host-claude-missing", "project-test", ""), Continuation: owner.Continuation{ID: "c1", OwnerID: "host-claude-missing"},
 		Provider: runtimeprofile.ProviderClaudeCode, Runner: task.RunnerHost, LegacyAdapter: legacy,
 	})
 	if err == nil {
@@ -917,7 +918,7 @@ func TestProductionProviderSessionFactoryOpensHostPiRPCViaWireBridge(t *testing.
 		}
 	}()
 	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
-		Task: task.Task{ID: "host-pi-task"}, Continuation: task.TaskContinuation{ID: "host-pi-cont"},
+		Owner: owner.NewTaskContract("host-pi-task", "project-test", ""), Continuation: owner.Continuation{ID: "host-pi-cont", OwnerID: "host-pi-task"},
 		Provider: runtimeprofile.ProviderPi, Runner: task.RunnerHost, LegacyAdapter: legacy,
 	})
 	if err != nil {
@@ -959,7 +960,7 @@ func TestProductionProviderSessionFactoryOpensHostPiRPCViaWireBridge(t *testing.
 
 	// Same Task reuses the bound RPC session without starting another process.
 	rebound, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
-		Task: task.Task{ID: "host-pi-task"}, Continuation: task.TaskContinuation{ID: "host-pi-cont-2"},
+		Owner: owner.NewTaskContract("host-pi-task", "project-test", ""), Continuation: owner.Continuation{ID: "host-pi-cont-2", OwnerID: "host-pi-task"},
 		Provider: runtimeprofile.ProviderPi, Runner: task.RunnerHost, LegacyAdapter: legacy,
 	})
 	if err != nil {
@@ -1015,7 +1016,7 @@ func TestProductionProviderSessionFactoryHostPiCloseCleansProcessGroupAndArtifac
 		}
 	}()
 	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
-		Task: task.Task{ID: "host-pi-clean"}, Continuation: task.TaskContinuation{ID: "c1"},
+		Owner: owner.NewTaskContract("host-pi-clean", "project-test", ""), Continuation: owner.Continuation{ID: "c1", OwnerID: "host-pi-clean"},
 		Provider: runtimeprofile.ProviderPi, Runner: task.RunnerHost, LegacyAdapter: legacy,
 	})
 	if err != nil {
@@ -1087,7 +1088,7 @@ func TestProductionProviderSessionFactoryHostPiFailsWhenBridgeUnavailable(t *tes
 		},
 	})
 	_, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
-		Task: task.Task{ID: "t"}, Continuation: task.TaskContinuation{ID: "c"},
+		Owner: owner.NewTaskContract("t", "project-test", ""), Continuation: owner.Continuation{ID: "c", OwnerID: "t"},
 		Provider: runtimeprofile.ProviderPi, Runner: task.RunnerHost, LegacyAdapter: legacy,
 	})
 	if err == nil || !strings.Contains(err.Error(), "host pi provider bridge is unavailable") {
@@ -1105,7 +1106,7 @@ func TestProductionProviderSessionFactoryHostPiFailsWhenProjectedEnvMissing(t *t
 		Env: map[string]string{}, // missing projected Pi dirs
 	})
 	_, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
-		Task: task.Task{ID: "t"}, Continuation: task.TaskContinuation{ID: "c"},
+		Owner: owner.NewTaskContract("t", "project-test", ""), Continuation: owner.Continuation{ID: "c", OwnerID: "t"},
 		Provider: runtimeprofile.ProviderPi, Runner: task.RunnerHost, LegacyAdapter: legacy,
 	})
 	if err == nil || !strings.Contains(err.Error(), "PI_CODING_AGENT_DIR") {
@@ -1193,7 +1194,7 @@ func TestHostCodexAppServerAssemblyPreservesDashCCustomArgs(t *testing.T) {
 		}
 	}()
 	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
-		Task: task.Task{ID: "host-task-c"}, Continuation: task.TaskContinuation{ID: "c1"},
+		Owner: owner.NewTaskContract("host-task-c", "project-test", ""), Continuation: owner.Continuation{ID: "c1", OwnerID: "host-task-c"},
 		Provider: runtimeprofile.ProviderCodex, Runner: task.RunnerHost, LegacyAdapter: legacy,
 	})
 	if err != nil {

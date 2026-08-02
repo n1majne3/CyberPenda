@@ -224,26 +224,34 @@ func (s *providerSessionAdapter) InterruptThenReplace(ctx context.Context, reque
 	defer s.end(request.RequestID, ProviderSessionModeInterruptThenReplace)
 
 	s.emit(emit, ProviderSessionModeInterruptThenReplace, "requested", request.RequestID, s.currentTurn())
-	settlementSession, settlementTurn, baseline := s.settlementTarget(request)
-	interruptResult, err := s.native(ctx, ProviderSessionModeInterruptThenReplace, request, s.methods.interrupt, request.RequestID+":interrupt")
-	if err != nil {
-		s.storeFailure(request.RequestID, ProviderSessionModeInterruptThenReplace, fingerprint, err)
-		s.emit(emit, ProviderSessionModeInterruptThenReplace, "failed", request.RequestID, s.currentTurn())
-		return ProviderSessionResult{}, err
+	// When the session is idle (no active provider turn), there is nothing to
+	// interrupt. Claude Code completes turns and clears the active turn; a later
+	// operator message must SendTurn on the same Query, not call interrupt with a
+	// stale finished turn id ("Claude active turn identity mismatch").
+	if activeTurn := strings.TrimSpace(s.currentTurn()); activeTurn != "" {
+		settlementSession, settlementTurn, baseline := s.settlementTarget(request)
+		interruptResult, err := s.native(ctx, ProviderSessionModeInterruptThenReplace, request, s.methods.interrupt, request.RequestID+":interrupt")
+		if err != nil {
+			s.storeFailure(request.RequestID, ProviderSessionModeInterruptThenReplace, fingerprint, err)
+			s.emit(emit, ProviderSessionModeInterruptThenReplace, "failed", request.RequestID, s.currentTurn())
+			return ProviderSessionResult{}, err
+		}
+		s.emit(emit, ProviderSessionModeInterruptThenReplace, "acknowledged", request.RequestID, interruptResult.ProviderTurnID)
+		if settlementSession == "" {
+			settlementSession = interruptResult.SessionID
+		}
+		if settlementTurn == "" {
+			settlementTurn = interruptResult.ProviderTurnID
+		}
+		if err := s.waitForSettlement(ctx, ProviderSessionModeInterruptThenReplace, settlementSession, settlementTurn, baseline); err != nil {
+			s.storeFailure(request.RequestID, ProviderSessionModeInterruptThenReplace, fingerprint, err)
+			s.emit(emit, ProviderSessionModeInterruptThenReplace, "failed", request.RequestID, settlementTurn)
+			return ProviderSessionResult{}, err
+		}
+		s.emit(emit, ProviderSessionModeInterruptThenReplace, "settled", request.RequestID, settlementTurn)
+	} else {
+		s.emit(emit, ProviderSessionModeInterruptThenReplace, "settled", request.RequestID, "")
 	}
-	s.emit(emit, ProviderSessionModeInterruptThenReplace, "acknowledged", request.RequestID, interruptResult.ProviderTurnID)
-	if settlementSession == "" {
-		settlementSession = interruptResult.SessionID
-	}
-	if settlementTurn == "" {
-		settlementTurn = interruptResult.ProviderTurnID
-	}
-	if err := s.waitForSettlement(ctx, ProviderSessionModeInterruptThenReplace, settlementSession, settlementTurn, baseline); err != nil {
-		s.storeFailure(request.RequestID, ProviderSessionModeInterruptThenReplace, fingerprint, err)
-		s.emit(emit, ProviderSessionModeInterruptThenReplace, "failed", request.RequestID, settlementTurn)
-		return ProviderSessionResult{}, err
-	}
-	s.emit(emit, ProviderSessionModeInterruptThenReplace, "settled", request.RequestID, settlementTurn)
 
 	replacement, err := s.native(ctx, ProviderSessionModeInterruptThenReplace, request, s.methods.send, request.RequestID+":replace")
 	if err != nil {
@@ -714,10 +722,9 @@ func (s *providerSessionAdapter) HandleEvent(event SandboxBridgeEvent, emit Prov
 	currentTurn := s.activeTurnID
 	if currentSession == "" || currentSession == sessionID {
 		s.sessionID = sessionID
-		if !terminal || currentTurn == "" || currentTurn == turnID {
-			s.activeTurnID = turnID
-		}
 	}
+	// Capture settlement against the pre-clear active turn so interrupt waits
+	// still release when the terminal notification arrives.
 	interruptActive := s.active && (s.activeMode == ProviderSessionModeInterruptTurn || s.activeMode == ProviderSessionModeInterruptThenReplace)
 	matchingSession := currentSession == "" || currentSession == sessionID
 	matchingTurn := currentTurn == "" || currentTurn == turnID
@@ -726,6 +733,18 @@ func (s *providerSessionAdapter) HandleEvent(event SandboxBridgeEvent, emit Prov
 		s.settlements[providerSettlementKey(sessionID, turnID)] = providerSettlement{seq: s.settlementSeq}
 		close(s.settlementChanged)
 		s.settlementChanged = make(chan struct{})
+	}
+	if currentSession == "" || currentSession == sessionID {
+		if terminal {
+			// A finished turn is no longer active. Keeping the completed id made
+			// idle interrupt_then_replace call interrupt with a stale turn and
+			// fail Claude ("active turn identity mismatch").
+			if currentTurn == "" || currentTurn == turnID {
+				s.activeTurnID = ""
+			}
+		} else if strings.TrimSpace(turnID) != "" {
+			s.activeTurnID = turnID
+		}
 	}
 	s.mu.Unlock()
 	requestID := providerJSONValue(params, "request_id", "requestId", "control_id", "controlId")

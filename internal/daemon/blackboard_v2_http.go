@@ -43,10 +43,17 @@ func (server *Server) registerBlackboardV2Routes() {
 	// Operator report/CTF consumers (#120): semantic DTOs only, no v1 envelopes.
 	server.mux.HandleFunc("GET /api/v2/projects/{id}/reports/pentest", server.handleBlackboardV2PentestReport)
 	server.mux.HandleFunc("GET /api/v2/projects/{id}/reports/ctf-solution", server.handleBlackboardV2CTFSolution)
+	server.mux.HandleFunc("POST /api/v2/sessions/{id}/blackboard/changes", server.handleSessionBlackboardV2Change)
+	server.mux.HandleFunc("GET /api/v2/sessions/{id}/blackboard/snapshot", server.handleSessionBlackboardV2Snapshot)
+	server.mux.HandleFunc("GET /api/v2/sessions/{id}/blackboard/health", server.handleSessionBlackboardV2Health)
+	server.mux.HandleFunc("GET /api/v2/sessions/{id}/blackboard/records/{key}", server.handleSessionBlackboardV2Read)
+	server.mux.HandleFunc("GET /api/v2/sessions/{id}/blackboard/records/{key}/history", server.handleSessionBlackboardV2History)
+	server.mux.HandleFunc("POST /api/v2/sessions/{id}/blackboard/attempts/{attempt_action}", server.handleSessionBlackboardV2Checkpoint)
+	server.mux.HandleFunc("POST /api/v2/sessions/{id}/continuation:finish", server.handleSessionBlackboardV2Finish)
 }
 
 func isBlackboardV2HTTPTransport(request *http.Request) bool {
-	return strings.HasPrefix(request.URL.Path, "/api/v2/projects/")
+	return strings.HasPrefix(request.URL.Path, "/api/v2/projects/") || strings.HasPrefix(request.URL.Path, "/api/v2/sessions/")
 }
 
 func (server *Server) authenticateBlackboardV2(request *http.Request, requireContinuation bool) (blackboardV2Principal, *blackboardv2.Error) {
