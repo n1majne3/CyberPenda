@@ -766,80 +766,39 @@ func (s *Service) applySession(ctx context.Context, sessionID, continuationID st
 			"next_action": "synchronize_runtime_blackboard",
 		})
 	}
-	changedRecords := make(map[string]int)
-	changedRelations := make(map[string]RelationVersionTuple)
-	createdThisBatch := make(map[string]bool)
-	terminalAttempts := make(map[string]terminalAttemptValidation)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	for index, change := range batch.Changes {
-		if err := validateSessionChangeCapability(change, index); err != nil {
-			return ChangeResult{}, err
-		}
-		var changed bool
-		switch change.Op {
-		case "create":
-			var key string
-			var version int
-			var next int
-			next, key, version, changed, err = sessionApplyCreate(ctx, tx, sessionID, revision, index, change, now)
-			if err == nil && changed {
-				revision, changedRecords[key] = next, version
-				createdThisBatch[key] = true
-			}
-		case "update":
-			var key string
-			var version int
-			var next int
-			next, key, version, changed, err = sessionApplyUpdate(ctx, tx, sessionID, revision, index, change, now)
-			if err == nil && changed {
-				revision, changedRecords[key] = next, version
-			}
-		case "relate":
-			var tuple RelationVersionTuple
-			var next int
-			next, tuple, changed, err = sessionApplyRelate(ctx, tx, sessionID, revision, index, change, now)
-			if err == nil && changed {
-				revision, changedRelations[relationKey(tuple)] = next, tuple
-			}
-		case "unrelate":
-			var tuple RelationVersionTuple
-			var next int
-			next, tuple, err = sessionApplyUnrelate(ctx, tx, sessionID, revision, index, change, now)
-			if err == nil {
-				revision, changedRelations[relationKey(tuple)] = next, tuple
-				changed = true
-			}
-		case "transition":
-			var key string
-			var version int
-			var next int
-			next, key, version, changed, err = sessionApplyTransition(ctx, tx, sessionID, revision, index, change, now)
-			if err == nil && changed {
-				revision, changedRecords[key] = next, version
-				if isOneOf(change.Status, "succeeded", "failed", "blocked", "inconclusive") {
-					terminalAttempts[key] = terminalAttemptValidation{status: change.Status, path: fmt.Sprintf("changes[%d].status", index)}
-				}
-			}
-		case "supersede":
-			var key string
-			var version int
-			var tuple RelationVersionTuple
-			var next int
-			next, key, version, tuple, changed, err = sessionApplySupersede(ctx, tx, sessionID, revision, index, change, createdThisBatch, now)
-			if err == nil && changed {
-				revision, changedRecords[key], changedRelations[relationKey(tuple)] = next, version, tuple
-			}
-		default:
-			err = semanticError("semantic_validation", "unsupported Session Blackboard operation", fmt.Sprintf("changes[%d].op", index), nil)
-		}
-		if err != nil {
-			return ChangeResult{}, err
-		}
-	}
-	if err := sessionValidateFinalTerminalAttempts(ctx, tx, sessionID, terminalAttempts); err != nil {
+	kernel, err := applySemanticChangeSet(ctx, tx, revision, batch.Changes, now, semanticChangeBackend{
+		prepare: func(_ context.Context, _ *sql.Tx, change Change, index int) (Change, error) {
+			return change, validateSessionChangeCapability(change, index)
+		},
+		create: func(ctx context.Context, tx *sql.Tx, revision, index int, change Change, now string) (int, string, int, bool, error) {
+			return sessionApplyCreate(ctx, tx, sessionID, revision, index, change, now)
+		},
+		update: func(ctx context.Context, tx *sql.Tx, revision, index int, change Change, now string) (int, string, int, bool, error) {
+			return sessionApplyUpdate(ctx, tx, sessionID, revision, index, change, now)
+		},
+		relate: func(ctx context.Context, tx *sql.Tx, revision, index int, change Change, now string) (int, RelationVersionTuple, bool, error) {
+			return sessionApplyRelate(ctx, tx, sessionID, revision, index, change, now)
+		},
+		unrelate: func(ctx context.Context, tx *sql.Tx, revision, index int, change Change, now string) (int, RelationVersionTuple, error) {
+			return sessionApplyUnrelate(ctx, tx, sessionID, revision, index, change, now)
+		},
+		transition: func(ctx context.Context, tx *sql.Tx, revision, index int, change Change, now string) (int, string, int, bool, error) {
+			return sessionApplyTransition(ctx, tx, sessionID, revision, index, change, now)
+		},
+		supersede: func(ctx context.Context, tx *sql.Tx, revision, index int, change Change, created map[string]bool, now string) (int, string, int, RelationVersionTuple, bool, error) {
+			return sessionApplySupersede(ctx, tx, sessionID, revision, index, change, created, now)
+		},
+		unsupported: "unsupported Session Blackboard operation",
+	})
+	if err != nil {
 		return ChangeResult{}, err
 	}
-	result := makeChangeResult(revision, changedRecords, changedRelations)
+	revision = kernel.Revision
+	if err := sessionValidateFinalTerminalAttempts(ctx, tx, sessionID, kernel.TerminalAttempts); err != nil {
+		return ChangeResult{}, err
+	}
+	result := makeChangeResult(revision, kernel.ChangedRecords, kernel.ChangedRelations)
 	if err := s.persistSessionSnapshot(ctx, tx, sessionID, continuationID, now); err != nil {
 		return ChangeResult{}, err
 	}

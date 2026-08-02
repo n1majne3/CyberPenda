@@ -231,8 +231,11 @@ export interface SessionLaunchOptions {
   run_controls?: { blackboard_conclusion_mode?: BlackboardConclusionMode };
 }
 
-export function listSessions(lifecycle?: SessionLifecycle) {
-  const suffix = lifecycle ? `?lifecycle=${encodeURIComponent(lifecycle)}` : "";
+export function listSessions(lifecycle?: SessionLifecycle, limit?: number) {
+  const query = new URLSearchParams();
+  if (lifecycle) query.set("lifecycle", lifecycle);
+  if (limit && limit > 0) query.set("limit", String(limit));
+  const suffix = query.size > 0 ? `?${query.toString()}` : "";
   return apiGet<{ sessions: Session[] }>(`/api/sessions${suffix}`);
 }
 

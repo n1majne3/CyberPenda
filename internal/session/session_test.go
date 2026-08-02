@@ -2,6 +2,7 @@ package session
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -12,6 +13,13 @@ import (
 
 	"pentest/internal/store"
 )
+
+type recordingSessionTerminalMarker struct{ ids []string }
+
+func (marker *recordingSessionTerminalMarker) MarkContinuationTerminal(_ context.Context, id string) error {
+	marker.ids = append(marker.ids, id)
+	return nil
+}
 
 func TestCreateSessionDerivesTitleAndOwnsInitialConversation(t *testing.T) {
 	dataRoot := t.TempDir()
@@ -98,6 +106,32 @@ func TestCreateSessionPersistsAssistedBlackboardConclusionRunControl(t *testing.
 	}
 	if reloaded.RunControls.BlackboardConclusionMode != BlackboardConclusionModeAssisted {
 		t.Fatalf("reloaded run controls = %#v", reloaded.RunControls)
+	}
+}
+
+func TestListSessionsAppliesAnOptionalActivityLimit(t *testing.T) {
+	dataRoot := t.TempDir()
+	db, err := store.Open(filepath.Join(dataRoot, "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	service := NewService(db, filepath.Join(dataRoot, "sessions"))
+	for _, input := range []string{"one", "two", "three"} {
+		if _, err := service.Create(CreateRequest{Input: input}); err != nil {
+			t.Fatalf("create %s: %v", input, err)
+		}
+	}
+
+	limited, err := service.ListLimited(LifecycleOpen, 2)
+	if err != nil {
+		t.Fatalf("list limited Sessions: %v", err)
+	}
+	if len(limited) != 2 {
+		t.Fatalf("limited Sessions = %d, want 2", len(limited))
+	}
+	if _, err := service.ListLimited(LifecycleOpen, -1); !errors.Is(err, ErrInvalidLimit) {
+		t.Fatalf("negative limit error = %v, want ErrInvalidLimit", err)
 	}
 }
 
@@ -245,6 +279,98 @@ func TestSessionLifecyclePreservesIdentityAndDeletesOnlyAfterArchive(t *testing.
 	}
 	if _, err := os.Stat(created.Workdir); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("deleted Session Workdir stat error = %v, want not-exist", err)
+	}
+}
+
+func TestCommittedSessionDeletionLeavesRetryableWorkdirCleanup(t *testing.T) {
+	dataRoot := t.TempDir()
+	db, err := store.Open(filepath.Join(dataRoot, "pentest.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	service := NewService(db, filepath.Join(dataRoot, "sessions"))
+	created, err := service.Create(CreateRequest{Input: "delete me"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Archive(created.ID); err != nil {
+		t.Fatal(err)
+	}
+	cleanupFailure := errors.New("filesystem busy")
+	service.removeAll = func(string) error { return cleanupFailure }
+	if err := service.Delete(created.ID); err != nil {
+		t.Fatalf("committed logical deletion reported failure: %v", err)
+	}
+	if _, err := service.Get(created.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted Session still exists: %v", err)
+	}
+	quarantine := filepath.Join(dataRoot, "sessions", ".deleting-"+created.ID)
+	if _, err := os.Stat(quarantine); err != nil {
+		t.Fatalf("retry marker missing: %v", err)
+	}
+	service.removeAll = os.RemoveAll
+	if err := service.CleanupDeletedWorkdirs(); err != nil {
+		t.Fatalf("retry cleanup: %v", err)
+	}
+	if _, err := os.Stat(quarantine); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("retry marker remains: %v", err)
+	}
+}
+
+func TestCleanupRestoresAQuarantinedWorkdirWhenDeletionDidNotCommit(t *testing.T) {
+	dataRoot := t.TempDir()
+	db, err := store.Open(filepath.Join(dataRoot, "pentest.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	service := NewService(db, filepath.Join(dataRoot, "sessions"))
+	created, err := service.Create(CreateRequest{Input: "survive restart"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Archive(created.ID); err != nil {
+		t.Fatal(err)
+	}
+	quarantine := filepath.Join(dataRoot, "sessions", ".deleting-"+created.ID)
+	if err := os.Rename(created.Workdir, quarantine); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.CleanupDeletedWorkdirs(); err != nil {
+		t.Fatalf("startup recovery: %v", err)
+	}
+	if _, err := service.Get(created.ID); err != nil {
+		t.Fatalf("archived Session lost: %v", err)
+	}
+	if _, err := os.Stat(created.Workdir); err != nil {
+		t.Fatalf("archived Workdir was not restored: %v", err)
+	}
+}
+
+func TestTerminalSessionContinuationClosesItsCapability(t *testing.T) {
+	dataRoot := t.TempDir()
+	db, err := store.Open(filepath.Join(dataRoot, "pentest.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	service := NewService(db, filepath.Join(dataRoot, "sessions"))
+	marker := &recordingSessionTerminalMarker{}
+	service.SetContinuationTerminalMarker(marker)
+	created, err := service.Create(CreateRequest{Input: "finish"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation, err := service.CreateContinuation(created.ID, "profile-1", "fake", RunnerSandbox, map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.UpdateContinuationStatus(continuation.ID, RuntimeStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if len(marker.ids) != 1 || marker.ids[0] != continuation.ID {
+		t.Fatalf("terminal capability notifications = %#v", marker.ids)
 	}
 }
 

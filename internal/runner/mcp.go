@@ -8,16 +8,17 @@ import (
 	"path/filepath"
 	"strings"
 
+	"pentest/internal/owner"
 	"pentest/internal/project"
 	"pentest/internal/runtimeprofile"
 )
 
 const trustedMCPServerName = "pentest"
 
-// TaskContext carries identifiers runtimes need when calling trusted MCP tools.
-type TaskContext struct {
-	ProjectID      string
-	TaskID         string
+// RuntimeOwnerContext carries one validated owner binding into launch
+// projection. Mixed Task/Session identities cannot be represented.
+type RuntimeOwnerContext struct {
+	Owner          owner.Contract
 	MCPURL         string
 	APIURL         string
 	AuthToken      string
@@ -27,15 +28,14 @@ type TaskContext struct {
 	ScopeSnapshot  project.Scope
 }
 
-func taskContextFromProjection(req ProjectionRequest, provider runtimeprofile.Provider, mcpURL string) TaskContext {
-	ctx := TaskContext{
-		ProjectID:      req.ProjectID,
-		TaskID:         req.TaskID,
-		MCPURL:         mcpURL,
-		AuthToken:      req.AuthToken,
-		Provider:       provider,
-		Sandbox:        req.Sandbox,
-		ScopeSnapshot:  req.ScopeSnapshot,
+func taskContextFromProjection(req ProjectionRequest, provider runtimeprofile.Provider, mcpURL string) RuntimeOwnerContext {
+	ctx := RuntimeOwnerContext{
+		Owner:         req.Owner,
+		MCPURL:        mcpURL,
+		AuthToken:     req.AuthToken,
+		Provider:      provider,
+		Sandbox:       req.Sandbox,
+		ScopeSnapshot: req.ScopeSnapshot,
 	}
 	return ctx
 }
@@ -139,8 +139,8 @@ func claudeTrustedMCPAllowedTools(servers []runtimeprofile.MCPServer) []string {
 	return nil
 }
 
-func writeTaskContextFiles(layout Layout, ctx TaskContext) error {
-	if strings.TrimSpace(ctx.ProjectID) == "" && strings.TrimSpace(ctx.TaskID) == "" {
+func writeTaskContextFiles(layout Layout, ctx RuntimeOwnerContext) error {
+	if strings.TrimSpace(ctx.Owner.ID) == "" {
 		return nil
 	}
 	dir := filepath.Join(layout.Workdir, ".pentest")
@@ -148,11 +148,14 @@ func writeTaskContextFiles(layout Layout, ctx TaskContext) error {
 		return fmt.Errorf("prepare task context dir: %w", err)
 	}
 	payload := map[string]string{}
-	if ctx.ProjectID != "" {
-		payload["project_id"] = ctx.ProjectID
+	if ctx.Owner.ProjectID != "" {
+		payload["project_id"] = ctx.Owner.ProjectID
 	}
-	if ctx.TaskID != "" {
-		payload["task_id"] = ctx.TaskID
+	if ctx.Owner.TaskID != "" {
+		payload["task_id"] = ctx.Owner.TaskID
+	}
+	if ctx.Owner.SessionID != "" {
+		payload["session_id"] = ctx.Owner.SessionID
 	}
 	if ctx.MCPURL != "" {
 		payload["mcp_url"] = ctx.MCPURL
@@ -165,8 +168,10 @@ func writeTaskContextFiles(layout Layout, ctx TaskContext) error {
 	if err := writeOwnerOnlyFile(path, raw); err != nil {
 		return fmt.Errorf("write task context: %w", err)
 	}
-	if err := writeTaskScopeFile(dir, ctx.ScopeSnapshot); err != nil {
-		return err
+	if ctx.Owner.IsTask() {
+		if err := writeTaskScopeFile(dir, ctx.ScopeSnapshot); err != nil {
+			return err
+		}
 	}
 	if err := writeRuntimeSmokeInstructions(layout.Workdir, ctx); err != nil {
 		return err
@@ -214,32 +219,44 @@ func writeTaskScopeFile(dir string, scope project.Scope) error {
 	return nil
 }
 
-func writeRuntimeSmokeInstructions(workdir string, ctx TaskContext) error {
-	if strings.TrimSpace(ctx.ProjectID) == "" {
+func writeRuntimeSmokeInstructions(workdir string, ctx RuntimeOwnerContext) error {
+	if strings.TrimSpace(ctx.Owner.ID) == "" {
 		return nil
 	}
 	var b strings.Builder
-	b.WriteString("# Pentest task context\n\n")
-	b.WriteString("Trusted MCP is pre-configured for this task. Use these identifiers on every pentest MCP tool call:\n\n")
-	fmt.Fprintf(&b, "- project_id: `%s`\n", ctx.ProjectID)
-	if ctx.TaskID != "" {
-		fmt.Fprintf(&b, "- task_id: `%s`\n", ctx.TaskID)
+	if ctx.Owner.IsSession() {
+		b.WriteString("# Non-Project Session context\n\n")
+		b.WriteString("Trusted MCP is pre-configured for this Session. Session authority is supplied by the runtime capability; do not invent a Project identity.\n\n")
+		fmt.Fprintf(&b, "- session_id: `%s`\n", ctx.Owner.SessionID)
+	} else {
+		b.WriteString("# Pentest task context\n\n")
+		b.WriteString("Trusted MCP is pre-configured for this task. Use these identifiers on every pentest MCP tool call:\n\n")
+		fmt.Fprintf(&b, "- project_id: `%s`\n", ctx.Owner.ProjectID)
+	}
+	if ctx.Owner.TaskID != "" {
+		fmt.Fprintf(&b, "- task_id: `%s`\n", ctx.Owner.TaskID)
 	}
 	if ctx.MCPURL != "" {
 		fmt.Fprintf(&b, "- mcp_url: `%s`\n", ctx.MCPURL)
 	}
-	b.WriteString("\nRead `.pentest/context.json` or env vars `PENTEST_PROJECT_ID`, `PENTEST_TASK_ID`, `PENTEST_MCP_URL` if needed.\n")
+	b.WriteString("\nRead `.pentest/context.json` or the matching `PENTEST_*` env vars if needed.\n")
 	b.WriteString("\n## Required workflow\n\n")
 	b.WriteString("Use trusted MCP on every blackboard write. Do not rely on chat alone.\n\n")
 	b.WriteString("1. Apply durable semantic milestones with `blackboard_change`; use `blackboard_read` and `blackboard_history` before resolving version conflicts.\n")
-	b.WriteString("2. Retain reproducible proof with `blackboard_retain_evidence`.\n")
+	if ctx.Owner.IsTask() {
+		b.WriteString("2. Retain reproducible proof with `blackboard_retain_evidence`.\n")
+	} else {
+		b.WriteString("2. Keep Session Facts and Attempts self-contained; Project Evidence retention is unavailable.\n")
+	}
 	b.WriteString("3. Checkpoint meaningful Attempt progress with `blackboard_checkpoint_attempt`.\n")
 	b.WriteString("4. Before ending a continuation, call `blackboard_finish` after every Attempt is terminal.\n")
 	b.WriteString("5. For black-box web targets, discover APIs with `curl`/httpx first (including frontend bundles); use `agent-browser` when you need DOM, cookies, or interactive flows.\n")
-	b.WriteString("\n## Authorized scope\n\n")
-	b.WriteString("Read `.pentest/scope.json` for the task scope snapshot captured at launch. ")
-	b.WriteString("Stay within listed domains, URLs, IPs, ports, exclusions, and testing limits. ")
-	b.WriteString("Do not test assets outside this scope until an operator updates the Scope.\n")
+	if ctx.Owner.IsTask() {
+		b.WriteString("\n## Authorized scope\n\n")
+		b.WriteString("Read `.pentest/scope.json` for the task scope snapshot captured at launch. ")
+		b.WriteString("Stay within listed domains, URLs, IPs, ports, exclusions, and testing limits. ")
+		b.WriteString("Do not test assets outside this scope until an operator updates the Scope.\n")
+	}
 	if ctx.Sandbox {
 		b.WriteString("\n## Sandbox skills and browser\n\n")
 		fmt.Fprintf(&b, "Enabled task skills are linked at `%s/` and materialized under the task-local skills root.\n", SkillsWorkdirRelPath(ctx.Provider))

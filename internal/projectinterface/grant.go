@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"pentest/internal/owner"
 	"pentest/internal/store"
 )
 
@@ -116,14 +117,13 @@ func (s GrantStatus) IsReadable() bool { return s != GrantStatusRevoked }
 // Grant is the stored Continuation Interface Grant. It never carries the
 // plaintext bearer token, only its SHA-256 hash.
 type Grant struct {
-	ID                     string `json:"id"`
-	ProjectID              string `json:"project_id"`
-	TaskID                 string `json:"task_id"`
-	ContinuationID         string `json:"continuation_id"`
-	RuntimeConfigVersionID string `json:"runtime_config_version_id"`
-	RuntimeProfileID       string `json:"runtime_profile_id"`
-	RuntimePluginID        string `json:"runtime_plugin_id"`
-	Runner                 string `json:"runner"`
+	ID                     string         `json:"id"`
+	Owner                  owner.Contract `json:"-"`
+	ContinuationID         string         `json:"continuation_id"`
+	RuntimeConfigVersionID string         `json:"runtime_config_version_id"`
+	RuntimeProfileID       string         `json:"runtime_profile_id"`
+	RuntimePluginID        string         `json:"runtime_plugin_id"`
+	Runner                 string         `json:"runner"`
 	// ActorID is server-derived as runtime:<runtime_plugin_id>:<continuation_id>
 	// and is never accepted from a Runtime request.
 	ActorID    string `json:"actor_id"`
@@ -133,6 +133,10 @@ type Grant struct {
 	RevokedAt  string `json:"revoked_at,omitempty"`
 	TerminalAt string `json:"terminal_at,omitempty"`
 }
+
+// IsSession reports whether this capability is bound to a Non-Project
+// Session rather than a Project Task.
+func (g Grant) IsSession() bool { return g.Owner.IsSession() }
 
 // Status derives the grant lifecycle state from its timestamps.
 func (g Grant) Status() GrantStatus {
@@ -155,6 +159,17 @@ func (g Grant) Status() GrantStatus {
 type IssueGrantRequest struct {
 	ProjectID              string
 	TaskID                 string
+	ContinuationID         string
+	RuntimeConfigVersionID string
+	RuntimeProfileID       string
+	RuntimePluginID        string
+	Runner                 string
+}
+
+// IssueSessionGrantRequest carries the server-derived Session launch binding.
+// Session authority never fabricates Project or Task identity.
+type IssueSessionGrantRequest struct {
+	SessionID              string
 	ContinuationID         string
 	RuntimeConfigVersionID string
 	RuntimeProfileID       string
@@ -213,6 +228,45 @@ func (s *GrantStore) Issue(ctx context.Context, req IssueGrantRequest) (string, 
 	return plaintext, grant, nil
 }
 
+// IssueSession creates a capability scoped to exactly one Session
+// Continuation and returns its plaintext bearer token once.
+func (s *GrantStore) IssueSession(ctx context.Context, req IssueSessionGrantRequest) (string, Grant, error) {
+	if err := validateSessionIssueRequest(req); err != nil {
+		return "", Grant{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", Grant{}, fmt.Errorf("begin Session grant issue transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := validateSessionBoundRows(tx, req); err != nil {
+		return "", Grant{}, err
+	}
+	plaintext, err := s.tokens.NewToken()
+	if err != nil {
+		return "", Grant{}, fmt.Errorf("generate Session grant token: %w", err)
+	}
+	grant := Grant{
+		ID: s.ids.NextID(), Owner: owner.NewSessionContract(req.SessionID, ""), ContinuationID: req.ContinuationID,
+		RuntimeConfigVersionID: req.RuntimeConfigVersionID, RuntimeProfileID: req.RuntimeProfileID,
+		RuntimePluginID: req.RuntimePluginID, Runner: req.Runner,
+		ActorID:   runtimeActorID(req.RuntimePluginID, req.ContinuationID),
+		TokenHash: hashToken(plaintext), IssuedAt: s.clock.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO session_continuation_interface_grants
+		(grant_id, token_hash, session_id, continuation_id, runtime_config_version_id,
+		 runtime_profile_id, runtime_plugin_id, runner, actor_id, issued_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		grant.ID, grant.TokenHash, grant.Owner.SessionID, grant.ContinuationID, grant.RuntimeConfigVersionID,
+		grant.RuntimeProfileID, grant.RuntimePluginID, grant.Runner, grant.ActorID, grant.IssuedAt); err != nil {
+		return "", Grant{}, fmt.Errorf("insert Session continuation grant: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", Grant{}, fmt.Errorf("commit Session grant issue: %w", err)
+	}
+	return plaintext, grant, nil
+}
+
 // IssueInTx inserts a Continuation Interface Grant inside an existing
 // transaction so launch/pin/grant authority can commit atomically.
 func (s *GrantStore) IssueInTx(ctx context.Context, tx *sql.Tx, req IssueGrantRequest) (string, Grant, error) {
@@ -231,7 +285,7 @@ func (s *GrantStore) issueTx(ctx context.Context, tx *sql.Tx, req IssueGrantRequ
 		return "", Grant{}, fmt.Errorf("generate grant token: %w", err)
 	}
 	grant := Grant{
-		ID: s.ids.NextID(), ProjectID: req.ProjectID, TaskID: req.TaskID,
+		ID: s.ids.NextID(), Owner: owner.NewTaskContract(req.TaskID, req.ProjectID, ""),
 		ContinuationID: req.ContinuationID, RuntimeConfigVersionID: req.RuntimeConfigVersionID,
 		RuntimeProfileID: req.RuntimeProfileID, RuntimePluginID: req.RuntimePluginID,
 		Runner: req.Runner, ActorID: runtimeActorID(req.RuntimePluginID, req.ContinuationID),
@@ -242,7 +296,7 @@ func (s *GrantStore) issueTx(ctx context.Context, tx *sql.Tx, req IssueGrantRequ
 		 (grant_id, token_hash, project_id, task_id, continuation_id, runtime_config_version_id,
 		  runtime_profile_id, runtime_plugin_id, runner, actor_id, issued_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		grant.ID, grant.TokenHash, grant.ProjectID, grant.TaskID, grant.ContinuationID,
+		grant.ID, grant.TokenHash, grant.Owner.ProjectID, grant.Owner.TaskID, grant.ContinuationID,
 		grant.RuntimeConfigVersionID, grant.RuntimeProfileID, grant.RuntimePluginID,
 		grant.Runner, grant.ActorID, grant.IssuedAt,
 	); err != nil {
@@ -254,7 +308,11 @@ func (s *GrantStore) issueTx(ctx context.Context, tx *sql.Tx, req IssueGrantRequ
 // grantSelectColumns is the canonical column list for reading one grant row. It
 // is shared by Resolve, Get, and setLifecycleTimestamp so the SELECT and
 // scanGrant order cannot drift apart.
-const grantSelectColumns = `grant_id, project_id, task_id, continuation_id, runtime_config_version_id,
+const grantSelectColumns = `grant_id, project_id, task_id, '' AS session_id, continuation_id, runtime_config_version_id,
+runtime_profile_id, runtime_plugin_id, runner, actor_id, token_hash,
+issued_at, finished_at, revoked_at, terminal_at`
+
+const sessionGrantSelectColumns = `grant_id, '' AS project_id, '' AS task_id, session_id, continuation_id, runtime_config_version_id,
 runtime_profile_id, runtime_plugin_id, runner, actor_id, token_hash,
 issued_at, finished_at, revoked_at, terminal_at`
 
@@ -281,6 +339,21 @@ func queryGrant(ctx context.Context, queryer rowQueryer, predicate, value string
 	return grant, nil
 }
 
+func querySessionGrant(ctx context.Context, queryer rowQueryer, predicate, value string) (Grant, error) {
+	row := queryer.QueryRowContext(ctx,
+		"SELECT "+sessionGrantSelectColumns+" FROM session_continuation_interface_grants WHERE "+predicate+" = ?",
+		value,
+	)
+	grant, err := scanGrant(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Grant{}, ErrGrantNotFound
+	}
+	if err != nil {
+		return Grant{}, err
+	}
+	return grant, nil
+}
+
 // Resolve maps a plaintext bearer token to its Grant. It performs a
 // constant-time comparison against the stored hash so timing does not leak
 // token prefixes. An unknown token returns ErrGrantNotFound.
@@ -290,6 +363,9 @@ func (s *GrantStore) Resolve(ctx context.Context, plaintext string) (Grant, erro
 	}
 	hash := hashToken(plaintext)
 	grant, err := queryGrant(ctx, s.db, "token_hash", hash)
+	if errors.Is(err, ErrGrantNotFound) {
+		grant, err = querySessionGrant(ctx, s.db, "token_hash", hash)
+	}
 	if err != nil {
 		return Grant{}, fmt.Errorf("resolve continuation grant: %w", err)
 	}
@@ -309,6 +385,9 @@ func (s *GrantStore) Get(ctx context.Context, grantID string) (Grant, error) {
 		return Grant{}, ErrGrantNotFound
 	}
 	grant, err := queryGrant(ctx, s.db, "grant_id", grantID)
+	if errors.Is(err, ErrGrantNotFound) {
+		grant, err = querySessionGrant(ctx, s.db, "grant_id", grantID)
+	}
 	if err != nil {
 		return Grant{}, fmt.Errorf("read continuation grant: %w", err)
 	}
@@ -347,6 +426,14 @@ func (s *GrantStore) MarkContinuationTerminal(ctx context.Context, continuationI
 	if err != nil {
 		return fmt.Errorf("mark continuation grants terminal: %w", err)
 	}
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE session_continuation_interface_grants
+		    SET terminal_at = CASE WHEN terminal_at = '' AND finished_at = '' AND revoked_at = '' THEN ? ELSE terminal_at END
+		  WHERE continuation_id = ?`,
+		ts, continuationID,
+	); err != nil {
+		return fmt.Errorf("mark Session continuation grants terminal: %w", err)
+	}
 	return nil
 }
 
@@ -361,6 +448,9 @@ func (s *GrantStore) setLifecycleTimestamp(ctx context.Context, grantID, column 
 	defer func() { _ = tx.Rollback() }()
 
 	grant, err := queryGrant(ctx, tx, "grant_id", grantID)
+	if errors.Is(err, ErrGrantNotFound) {
+		grant, err = querySessionGrant(ctx, tx, "grant_id", grantID)
+	}
 	if err != nil {
 		return Grant{}, fmt.Errorf("load continuation grant: %w", err)
 	}
@@ -375,8 +465,12 @@ func (s *GrantStore) setLifecycleTimestamp(ctx context.Context, grantID, column 
 		return grant, already
 	}
 	ts := s.clock.Now().UTC().Format(time.RFC3339Nano)
+	table := "blackboard_continuation_grants"
+	if grant.IsSession() {
+		table = "session_continuation_interface_grants"
+	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE blackboard_continuation_grants SET `+column+`=? WHERE grant_id=?`,
+		`UPDATE `+table+` SET `+column+`=? WHERE grant_id=?`,
 		ts, grantID,
 	); err != nil {
 		return Grant{}, fmt.Errorf("update continuation grant lifecycle: %w", err)
@@ -426,6 +520,32 @@ func validateIssueRequest(req IssueGrantRequest) error {
 	return nil
 }
 
+func validateSessionIssueRequest(req IssueSessionGrantRequest) error {
+	missing := []string{}
+	if req.SessionID == "" {
+		missing = append(missing, "session_id")
+	}
+	if req.ContinuationID == "" {
+		missing = append(missing, "continuation_id")
+	}
+	if req.RuntimeConfigVersionID == "" {
+		missing = append(missing, "runtime_config_version_id")
+	}
+	if req.RuntimeProfileID == "" {
+		missing = append(missing, "runtime_profile_id")
+	}
+	if req.RuntimePluginID == "" {
+		missing = append(missing, "runtime_plugin_id")
+	}
+	if req.Runner == "" {
+		missing = append(missing, "runner")
+	}
+	if len(missing) > 0 {
+		return ValidationError(ErrCodeInvalidRequest, "Session continuation grant is missing bound fields: "+strings.Join(missing, ", "), "context")
+	}
+	return nil
+}
+
 // validateBoundRows verifies the durable Task and Continuation rows agree with
 // the requested bound context so a grant never binds provenance the daemon no
 // longer trusts.
@@ -459,6 +579,28 @@ func validateBoundRows(tx *sql.Tx, req IssueGrantRequest) error {
 	return nil
 }
 
+func validateSessionBoundRows(tx *sql.Tx, req IssueSessionGrantRequest) error {
+	var lifecycle string
+	if err := tx.QueryRow(`SELECT lifecycle FROM sessions WHERE id=?`, req.SessionID).Scan(&lifecycle); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ValidationError(ErrCodeProjectNotFound, "continuation grant Session does not exist", "context.session_id")
+		}
+		return fmt.Errorf("read grant Session: %w", err)
+	}
+	var sessionID, profileID, provider, runner, configVersionID string
+	if err := tx.QueryRow(`SELECT session_id, runtime_profile_id, runtime_provider, runner, runtime_config_version_id FROM session_continuations WHERE id=?`, req.ContinuationID).
+		Scan(&sessionID, &profileID, &provider, &runner, &configVersionID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ValidationError(ErrCodeProjectNotFound, "continuation grant Session Continuation does not exist", "context.continuation_id")
+		}
+		return fmt.Errorf("read Session grant Continuation: %w", err)
+	}
+	if sessionID != req.SessionID || profileID != req.RuntimeProfileID || provider != req.RuntimePluginID || runner != req.Runner || configVersionID != req.RuntimeConfigVersionID {
+		return ValidationError(ErrCodeProvenanceSpoofed, "continuation grant context does not match the durable Session Continuation", "context")
+	}
+	return nil
+}
+
 // runtimeActorID derives the stable Runtime actor identifier.
 func runtimeActorID(pluginID, continuationID string) string {
 	return "runtime:" + pluginID + ":" + continuationID
@@ -470,9 +612,9 @@ type scanner interface {
 
 func scanGrant(row scanner) (Grant, error) {
 	var g Grant
-	var configVersionID string
+	var projectID, taskID, sessionID, configVersionID string
 	err := row.Scan(
-		&g.ID, &g.ProjectID, &g.TaskID, &g.ContinuationID, &configVersionID,
+		&g.ID, &projectID, &taskID, &sessionID, &g.ContinuationID, &configVersionID,
 		&g.RuntimeProfileID, &g.RuntimePluginID, &g.Runner, &g.ActorID, &g.TokenHash,
 		&g.IssuedAt, &g.FinishedAt, &g.RevokedAt, &g.TerminalAt,
 	)
@@ -480,6 +622,14 @@ func scanGrant(row scanner) (Grant, error) {
 		return Grant{}, err
 	}
 	g.RuntimeConfigVersionID = configVersionID
+	if sessionID != "" {
+		g.Owner = owner.NewSessionContract(sessionID, "")
+	} else {
+		g.Owner = owner.NewTaskContract(taskID, projectID, "")
+	}
+	if err := g.Owner.Validate(); err != nil {
+		return Grant{}, fmt.Errorf("decode continuation grant owner: %w", err)
+	}
 	return g, nil
 }
 

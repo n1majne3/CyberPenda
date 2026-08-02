@@ -1355,7 +1355,14 @@ func TestAssistedConclusionIgnoresControlTurnsAndTrustedBlackboardTools(t *testi
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
 	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
 	waitForAssistedProviderRequests(t, session, 1)
-	workRequestID := session.LastRequests()[0].RequestID
+	workRequest := session.LastRequests()[0]
+	// Recording the request precedes completion of the asynchronous launch
+	// dispatch. Replaying the same idempotency key waits for that dispatch, so
+	// the control Turn below cannot race the provider's active control call.
+	if _, err := session.SendTurn(context.Background(), workRequest, nil); err != nil {
+		t.Fatal(err)
+	}
+	workRequestID := workRequest.RequestID
 	controlResult, err := session.SendTurn(context.Background(), runtime.ProviderSessionRequest{
 		RequestID: "control-request-1", Message: "reconcile", TurnKind: runtime.RuntimeTurnKindControl,
 	}, nil)
@@ -2054,12 +2061,9 @@ func TestAssistedConclusionRepairDispatchFailureBecomesActionRequired(t *testing
 	if found.BlackboardConclusion.ErrorCode != task.BlackboardConclusionErrorRuntimeRecoveryRequired || len(session.LastRequests()) != 2 {
 		t.Fatalf("dispatch recovery = %#v requests=%d", found.BlackboardConclusion, len(session.LastRequests()))
 	}
-	recoveryEvents := 0
-	for _, event := range assistedTaskEvents(t, server, projectID, created.ID) {
-		if event.Kind == task.EventKindBlackboardConclusion && event.Payload["phase"] == "action_required" && event.Payload["reason"] == "dispatch_recovery" {
-			recoveryEvents++
-		}
-	}
+	recoveryEvents := waitForAssistedConclusionEventCount(t, server, projectID, created.ID, func(event task.Event) bool {
+		return event.Kind == task.EventKindBlackboardConclusion && event.Payload["phase"] == "action_required" && event.Payload["reason"] == "dispatch_recovery"
+	})
 	if recoveryEvents != 1 || found.Status != task.StatusRunning {
 		t.Fatalf("dispatch recovery events=%d task status=%q", recoveryEvents, found.Status)
 	}
@@ -2433,4 +2437,22 @@ func assistedTaskEvents(t *testing.T, server *Server, projectID, taskID string) 
 		t.Fatalf("decode Task events: %v", err)
 	}
 	return body.Events
+}
+
+func waitForAssistedConclusionEventCount(t *testing.T, server *Server, projectID, taskID string, match func(task.Event) bool) int {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		count := 0
+		for _, event := range assistedTaskEvents(t, server, projectID, taskID) {
+			if match(event) {
+				count++
+			}
+		}
+		if count > 0 {
+			return count
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return 0
 }

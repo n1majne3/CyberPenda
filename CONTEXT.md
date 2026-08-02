@@ -52,6 +52,10 @@ _Avoid_: runtime projection, task adapter build, launch plumbing
 The structured task launch settings that choose **Launch Selection** or an optional **Runtime Profile Preset**, runner, mode, scope preview, and artifact behavior.
 _Avoid_: hidden prompt flags, runtime internals
 
+**Runtime Launch Controls**:
+The shared launch UI and controller used by both Project **Task Launch** and Non-Project **Session** creation for **Launch Selection**, optional **Runtime Profile Preset**, runner, model override, reasoning effort, skills preview, and **Preflight**. Owner-specific input labels, endpoints, and Project Scope behavior are adapters around this shared surface.
+_Avoid_: Session launch form, duplicated launch picker, runtime profile-only Session creation
+
 **Launch Selection**:
 The primary task-launch choice of one **Runtime Plugin** family, one **Model Provider**, and an optional model for that launch.
 _Avoid_: runtime profile picker, MCP preset, profile name

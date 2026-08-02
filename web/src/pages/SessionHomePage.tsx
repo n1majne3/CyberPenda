@@ -1,32 +1,28 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { Archive, ArchiveRestore, FilePlus2, MessageSquareText, Pencil, Plus, Trash2 } from "lucide-react";
+import { RuntimeLaunchControls, useRuntimeLaunchControls } from "@/components/RuntimeLaunchControls";
 import {
   archiveSession,
   createSession,
   deleteSession,
-  listRuntimeProfiles,
   listSessions,
   renameSession,
   restoreSession,
   type Session,
-  type BlackboardConclusionMode,
-  type RuntimeProfile,
 } from "@/lib/api";
 import { formatCompactDateTime } from "@/lib/format";
 import { PageContainer, SettingsAlert } from "@/components/shared";
-import { Badge, Button, Card, CardDescription, CardTitle, Input, Label, Select, Textarea } from "@/components/ui";
+import { Badge, Button, Card, CardDescription, CardTitle, Input, Label, Textarea } from "@/components/ui";
 
-export function SessionHomePage() {
+export function SessionHomePage({ view = "open" }: { view?: "open" | "archived" }) {
+  const archivedView = view === "archived";
   const { hash } = useLocation();
   const [openSessions, setOpenSessions] = useState<Session[]>([]);
   const [archivedSessions, setArchivedSessions] = useState<Session[]>([]);
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<File[]>([]);
-  const [profiles, setProfiles] = useState<RuntimeProfile[]>([]);
-  const [runtimeProfileID, setRuntimeProfileID] = useState("");
-  const [runner, setRunner] = useState("sandbox");
-  const [blackboardConclusionMode, setBlackboardConclusionMode] = useState<BlackboardConclusionMode>("interactive");
+  const launchControls = useRuntimeLaunchControls();
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -35,35 +31,30 @@ export function SessionHomePage() {
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  async function loadSessions() {
+  const loadSessions = useCallback(async () => {
     setLoading(true);
     try {
-      const [open, archived] = await Promise.all([listSessions(), listSessions("archived")]);
-      setOpenSessions(open.sessions ?? []);
-      setArchivedSessions(archived.sessions ?? []);
+      if (archivedView) {
+        const archived = await listSessions("archived");
+        setArchivedSessions(archived.sessions ?? []);
+      } else {
+        const open = await listSessions();
+        setOpenSessions(open.sessions ?? []);
+      }
       setError(null);
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }
+  }, [archivedView]);
 
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     // The initial fetch is intentionally shared with the mutation refresh path.
     loadSessions();
-  }, []);
+  }, [loadSessions]);
   /* eslint-enable react-hooks/set-state-in-effect */
-
-  useEffect(() => {
-    listRuntimeProfiles()
-      .then((response) => setProfiles(response.profiles ?? []))
-      .catch(() => {
-        // Session management remains usable when profile discovery is unavailable.
-        setProfiles([]);
-      });
-  }, []);
 
   useEffect(() => {
     if (hash !== "#new-session") return;
@@ -76,21 +67,21 @@ export function SessionHomePage() {
     event.preventDefault();
     if (!draft.trim()) return;
     setCreating(true);
+    launchControls.setError(null);
     try {
-      await createSession(draft, attachments, {
-        ...(runtimeProfileID ? {
-          runtime_profile_id: runtimeProfileID,
-          runner,
-          host_activated: runner === "host",
-        } : {}),
-        run_controls: { blackboard_conclusion_mode: blackboardConclusionMode },
-      });
+      const profileId = await launchControls.resolveRuntimeProfileId();
+      const checked = await launchControls.runPreflight("/api/sessions/preflight", profileId);
+      if (!checked.pass) {
+        launchControls.setError("preflight failed");
+        return;
+      }
+      await createSession(draft, attachments, launchControls.launchPayload(profileId));
       setDraft("");
       setAttachments([]);
       if (fileInputRef.current) fileInputRef.current.value = "";
       await loadSessions();
-    } catch (e) {
-      setError((e as Error).message);
+    } catch (cause) {
+      launchControls.setError((cause as Error).message);
     } finally {
       setCreating(false);
     }
@@ -147,12 +138,20 @@ export function SessionHomePage() {
         <p className="mb-1 font-mono text-xs uppercase tracking-[0.14em] text-muted-foreground">Workspace</p>
         <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight sm:text-3xl">
           <MessageSquareText className="size-6 text-signal" aria-hidden="true" />
-          Non-Project Sessions
+          {archivedView ? "Archived Sessions" : "Non-Project Sessions"}
         </h1>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">
-          Short-lived or exploratory conversations with their own Events and managed Workdir.
+          Durable exploratory conversations with their own Events and managed Workdir.
         </p>
       </header>
+
+      <Link
+        to={archivedView ? "/sessions" : "/sessions/archived"}
+        className="inline-flex w-fit items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
+      >
+        <Archive className="size-4" aria-hidden="true" />
+        {archivedView ? "Back to open Sessions" : "Archived Sessions"}
+      </Link>
 
       <div role="note" className="rounded-lg border border-info/20 bg-info/5 px-4 py-3 text-sm text-foreground">
         <p className="font-medium">Non-Project Mode</p>
@@ -162,7 +161,7 @@ export function SessionHomePage() {
         </p>
       </div>
 
-      <Card as="section" id="new-session" aria-labelledby="new-session-heading" className="gap-5">
+      {!archivedView && <Card as="section" id="new-session" aria-labelledby="new-session-heading" className="gap-5">
         <div>
           <CardTitle id="new-session-heading" className="flex items-center gap-2">
             <Plus className="size-4 text-signal" aria-hidden="true" />
@@ -198,68 +197,22 @@ export function SessionHomePage() {
             />
             <p className="mt-1 text-xs text-muted-foreground">Files are copied into the managed Session Workdir.</p>
           </div>
-          <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_180px_minmax(0,1fr)]">
-            <div>
-              <Label htmlFor="session-runtime-profile">Runtime profile (optional)</Label>
-              <Select
-                id="session-runtime-profile"
-                value={runtimeProfileID}
-                onChange={(event) => setRuntimeProfileID(event.target.value)}
-                className="mt-1"
-              >
-                <option value="">Create without starting a Runtime</option>
-                {profiles.map((profile) => (
-                  <option key={profile.id} value={profile.id}>
-                    {profile.name} · {profile.provider}
-                  </option>
-                ))}
-              </Select>
-              <p className="mt-1 text-xs text-muted-foreground">The selected profile is reused for later conversation turns.</p>
-            </div>
-            <div>
-              <Label htmlFor="session-runner">Runner</Label>
-              <Select
-                id="session-runner"
-                value={runner}
-                onChange={(event) => setRunner(event.target.value)}
-                className="mt-1"
-                disabled={!runtimeProfileID}
-              >
-                <option value="sandbox">Sandbox</option>
-                <option value="host">Host (activated)</option>
-              </Select>
-            </div>
-            <div>
-              <Label htmlFor="session-blackboard-conclusions">Blackboard conclusions</Label>
-              <Select
-                id="session-blackboard-conclusions"
-                name="blackboard_conclusion_mode"
-                value={blackboardConclusionMode}
-                onChange={(event) => setBlackboardConclusionMode(event.target.value as BlackboardConclusionMode)}
-                className="mt-1"
-              >
-                <option value="interactive">Interactive</option>
-                <option value="assisted">Assisted</option>
-              </Select>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {blackboardConclusionMode === "assisted"
-                  ? "After tool-producing work, the Runtime gets a bounded Session Blackboard conclusion turn."
-                  : "The operator decides when Runtime work is written to the Session Blackboard."}
-              </p>
-            </div>
-          </div>
+          <RuntimeLaunchControls controller={launchControls} ownerLabel="session" initialInput={draft} />
           <div className="flex justify-end">
-            <Button type="submit" disabled={creating || !draft.trim()}>
+            <Button
+              type="submit"
+              disabled={creating || !launchControls.launchReady(draft) || (launchControls.form.runner === "host" && !launchControls.hostActivated)}
+            >
               <FilePlus2 className="size-4" aria-hidden="true" />
               {creating ? "Creating…" : "Create session"}
             </Button>
           </div>
         </form>
-      </Card>
+      </Card>}
 
       {error && <SettingsAlert>{error}</SettingsAlert>}
 
-      <SessionSection
+      {!archivedView && <SessionSection
         id="open-sessions"
         title="Open sessions"
         sessions={openSessions}
@@ -273,8 +226,8 @@ export function SessionHomePage() {
         onCancelRename={() => setRenamingId(null)}
         onSaveRename={saveRename}
         onArchive={(session) => changeLifecycle(session, "archive")}
-      />
-      <SessionSection
+      />}
+      {archivedView && <SessionSection
         id="archived-sessions"
         title="Archived sessions"
         sessions={archivedSessions}
@@ -289,7 +242,7 @@ export function SessionHomePage() {
         onSaveRename={saveRename}
         onRestore={(session) => changeLifecycle(session, "restore")}
         onDelete={remove}
-      />
+      />}
     </PageContainer>
   );
 }

@@ -7,6 +7,8 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 
 	"pentest/internal/session"
@@ -133,15 +135,21 @@ func (server *Server) handleCreateSession(response http.ResponseWriter, request 
 	if mode == "" {
 		mode = input.RunControls.BlackboardConclusionMode
 	}
+	runtimeInput := sessionRuntimeInputFromCreate(input)
+	prepared, err := server.prepareSessionRuntime(request.Context(), mode, runtimeInput, nil)
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err.Error())
+		return
+	}
 	created, err := server.sessions.Create(session.CreateRequest{Input: input.value(), Attachments: attachments, BlackboardConclusionMode: mode})
 	if err != nil {
 		writeSessionError(response, err)
 		return
 	}
-	if strings.TrimSpace(input.RuntimeProfileID) != "" || strings.TrimSpace(input.RuntimeProvider) != "" || strings.TrimSpace(input.Provider) != "" {
-		if _, launchErr := server.startSessionRuntime(request.Context(), created, input.value(), sessionRuntimeInputFromCreate(input)); launchErr != nil {
-			server.recordSessionLaunchDiagnostic(created.ID, "launch_failed", launchErr)
-		}
+	if _, launchErr := server.startPreparedSessionRuntime(request.Context(), created, input.value(), runtimeInput, nil, prepared); launchErr != nil {
+		server.recordSessionLaunchDiagnostic(created.ID, "launch_failed", launchErr)
+		writeSessionError(response, launchErr)
+		return
 	}
 	server.writeDecoratedSession(response, http.StatusCreated, created.ID)
 }
@@ -151,10 +159,38 @@ func (server *Server) handleListSessions(response http.ResponseWriter, request *
 	if request.URL.Path == "/api/sessions/archived" {
 		lifecycle = session.LifecycleArchived
 	}
-	found, err := server.sessions.List(lifecycle)
+	limit := 0
+	if raw := strings.TrimSpace(request.URL.Query().Get("limit")); raw != "" {
+		parsed, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || parsed < 0 {
+			writeError(response, http.StatusBadRequest, session.ErrInvalidLimit.Error())
+			return
+		}
+		limit = parsed
+	}
+	found, err := server.sessions.ListLimited(lifecycle, limit)
 	if err != nil {
 		writeSessionError(response, err)
 		return
+	}
+	if limit > 0 && server.sessionProviderSessions != nil {
+		wantedLifecycle := lifecycle
+		if wantedLifecycle == "" {
+			wantedLifecycle = session.LifecycleOpen
+		}
+		seen := make(map[string]bool, len(found))
+		for _, item := range found {
+			seen[item.ID] = true
+		}
+		for _, id := range server.sessionProviderSessions.busyOwnerIDs() {
+			if seen[id] {
+				continue
+			}
+			item, getErr := server.sessions.Get(id)
+			if getErr == nil && item.Lifecycle == wantedLifecycle {
+				found = append(found, item)
+			}
+		}
 	}
 	decorated := make([]session.Session, 0, len(found))
 	for _, item := range found {
@@ -164,6 +200,22 @@ func (server *Server) handleListSessions(response http.ResponseWriter, request *
 			return
 		}
 		decorated = append(decorated, projected)
+	}
+	if limit > 0 {
+		sort.SliceStable(decorated, func(i, j int) bool {
+			iBusy := decorated[i].RuntimeActivity.TurnActivity == runtimeTurnBusy
+			jBusy := decorated[j].RuntimeActivity.TurnActivity == runtimeTurnBusy
+			if iBusy != jBusy {
+				return iBusy
+			}
+			if !decorated[i].LastActivityAt.Equal(decorated[j].LastActivityAt) {
+				return decorated[i].LastActivityAt.After(decorated[j].LastActivityAt)
+			}
+			return decorated[i].ID < decorated[j].ID
+		})
+		if len(decorated) > limit {
+			decorated = decorated[:limit]
+		}
 	}
 	writeJSON(response, http.StatusOK, struct {
 		Sessions []session.Session `json:"sessions"`

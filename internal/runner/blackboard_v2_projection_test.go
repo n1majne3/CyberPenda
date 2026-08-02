@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"pentest/internal/blackboardv2"
+	"pentest/internal/owner"
 	"pentest/internal/project"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
@@ -254,8 +255,7 @@ func TestNonV2ClaudeStillRejectsCustomMCPServerNamedPentestWhenTrustedInjected(t
 		},
 	}
 	_, err = runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
-		ProjectID:  "project-1",
-		TaskID:     "task-claude-reserved-nonv2",
+		Owner:      owner.NewTaskContract("task-claude-reserved-nonv2", "project-1", layout.Workdir),
 		DaemonAddr: "127.0.0.1:8787",
 	})
 	if err == nil {
@@ -281,8 +281,7 @@ func TestTrustedMCPDisabledStillAllowsCustomServerNamedPentest(t *testing.T) {
 		},
 	}
 	if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
-		ProjectID:  "project-1",
-		TaskID:     "task-claude-disable-trusted",
+		Owner:      owner.NewTaskContract("task-claude-disable-trusted", "project-1", layout.Workdir),
 		DaemonAddr: "127.0.0.1:8787",
 	}); err != nil {
 		t.Fatalf("disabled trusted MCP should allow custom pentest name: %v", err)

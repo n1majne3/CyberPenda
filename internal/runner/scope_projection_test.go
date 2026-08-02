@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"pentest/internal/owner"
 	"pentest/internal/project"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
@@ -30,8 +31,7 @@ func TestProjectRuntimeConfigWritesScopeSnapshot(t *testing.T) {
 		Provider: runtimeprofile.ProviderClaudeCode,
 		Fields:   runtimeprofile.Fields{Model: "claude-sonnet-4"},
 	}, runner.ProjectionRequest{
-		ProjectID:     "project-1",
-		TaskID:        "task-scope",
+		Owner:         owner.NewTaskContract("task-scope", "project-1", layout.Workdir),
 		DaemonAddr:    "127.0.0.1:8787",
 		Sandbox:       true,
 		ScopeSnapshot: snapshot,

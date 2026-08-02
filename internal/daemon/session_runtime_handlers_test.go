@@ -3,10 +3,12 @@ package daemon
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +18,101 @@ import (
 	"pentest/internal/session"
 	"pentest/internal/task"
 )
+
+func TestCreateSessionDoesNotReportSuccessWhenFirstRuntimeTurnCannotLaunch(t *testing.T) {
+	factory := &recordingProviderSessionFactory{err: errors.New("provider bridge unavailable")}
+	server, err := NewServer(Config{
+		Version: "test", DBPath: filepath.Join(t.TempDir(), "pentest.db"), RuntimeRoot: t.TempDir(),
+		DisableBuiltinSkills: true, ProviderSessionFactory: factory,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	profile, err := server.profiles.Create("Session Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		DefaultRunner: "host", BinaryPath: "/bin/sh", Model: "gpt-session",
+	})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/sessions", bytes.NewBufferString(
+		`{"input":"must start","runtime_profile_id":"`+profile.ID+`","runner":"host","host_activated":true}`,
+	))
+	request.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("create Session status = %d, body=%s", response.Code, response.Body.String())
+	}
+	if len(factory.Requests()) != 1 {
+		t.Fatalf("provider launch requests = %d, want 1", len(factory.Requests()))
+	}
+}
+
+func TestSessionRuntimePlanUsesNativeResumeArgvWithoutAProviderBridge(t *testing.T) {
+	server, err := NewServer(Config{
+		Version: "test", DBPath: filepath.Join(t.TempDir(), "pentest.db"), RuntimeRoot: t.TempDir(), DisableBuiltinSkills: true,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	found, err := server.sessions.Create(session.CreateRequest{Input: "resume"})
+	if err != nil {
+		t.Fatalf("create Session: %v", err)
+	}
+	profile, err := server.profiles.Create("Session Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		DefaultRunner: "host", BinaryPath: "codex", Model: "gpt-session",
+	})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	plan, err := server.buildSessionRuntimePlan(found, "continue", sessionRuntimeInput{HostActivated: true}, profile, session.RunnerHost, "token", "native-session-1")
+	if err != nil {
+		t.Fatalf("build Session Runtime plan: %v", err)
+	}
+	launch, ok := runtime.CommandAdapterLaunch(plan.Adapter)
+	if !ok {
+		t.Fatalf("Session host adapter = %T", plan.Adapter)
+	}
+	joined := strings.Join(append([]string{launch.Program}, launch.Args...), " ")
+	if !strings.Contains(joined, "resume") || !strings.Contains(joined, "native-session-1") {
+		t.Fatalf("Session native resume argv = %q", joined)
+	}
+}
+
+func TestSessionPiSandboxUsesTheSharedBootstrapWrapper(t *testing.T) {
+	server, err := NewServer(Config{
+		Version: "test", DBPath: filepath.Join(t.TempDir(), "pentest.db"), RuntimeRoot: t.TempDir(), DisableBuiltinSkills: true,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	found, err := server.sessions.Create(session.CreateRequest{Input: "run pi"})
+	if err != nil {
+		t.Fatalf("create Session: %v", err)
+	}
+	profile, err := server.profiles.Create("Session Pi", runtimeprofile.ProviderPi, runtimeprofile.Fields{
+		DefaultRunner: "sandbox", Model: "pi-model", SandboxImage: "kalilinux/kali-rolling",
+	})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	plan, err := server.buildSessionRuntimePlan(found, "inspect", sessionRuntimeInput{}, profile, session.RunnerSandbox, "token", "")
+	if err != nil {
+		t.Fatalf("build Session Pi plan: %v", err)
+	}
+	args, ok := runtime.DockerSandboxCreateArgs(plan.Adapter)
+	if !ok {
+		t.Fatalf("Session sandbox adapter = %T", plan.Adapter)
+	}
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "command -v pi") {
+		t.Fatalf("Session Pi sandbox argv lacks bootstrap wrapper: %q", joined)
+	}
+}
 
 func TestSessionProviderResultsRemainOnTimelineOutsideConversation(t *testing.T) {
 	kind, payload := sessionProviderEventPayload(task.EventKindConversation, task.EventPayload{
@@ -89,6 +186,56 @@ func TestSessionRuntimeRecoveryFailsClosedAcrossDaemonRestart(t *testing.T) {
 	}
 	if !recoveryEvent {
 		t.Fatalf("restart did not record Session recovery event: %#v", events)
+	}
+}
+
+func TestSessionRestartCarriesNativeProviderIdentityIntoTheNewContinuation(t *testing.T) {
+	providerSession := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID:    "native-session-1",
+		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, ResumeSession: true},
+	})
+	factory := &recordingProviderSessionFactory{session: providerSession, adapter: &persistentTestAdapter{}}
+	server, err := NewServer(Config{
+		Version: "test", DBPath: filepath.Join(t.TempDir(), "pentest.db"), RuntimeRoot: t.TempDir(),
+		DisableBuiltinSkills: true, ProviderSessionFactory: factory,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	created, err := server.sessions.Create(session.CreateRequest{Input: "resume this Session"})
+	if err != nil {
+		t.Fatalf("create Session: %v", err)
+	}
+	profile, err := server.profiles.Create("Session Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		DefaultRunner: "host", BinaryPath: "/bin/sh", Model: "gpt-session",
+	})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	previous, err := server.sessions.CreateContinuation(created.ID, profile.ID, "codex", session.RunnerHost, map[string]any{"provider": "codex"})
+	if err != nil {
+		t.Fatalf("create previous continuation: %v", err)
+	}
+	previous, err = server.sessions.UpdateContinuationRuntimeMetadata(previous.ID, "", "native-session-1", "/sessions/one.jsonl")
+	if err != nil {
+		t.Fatalf("store native identity: %v", err)
+	}
+	if _, err := server.sessions.UpdateContinuationStatus(previous.ID, session.RuntimeStatusStopped); err != nil {
+		t.Fatalf("stop previous continuation: %v", err)
+	}
+
+	if _, err := server.startSessionRuntime(t.Context(), created, "continue", sessionRuntimeInput{
+		RuntimeProfileID: profile.ID, Runner: "host", HostActivated: true,
+	}); err != nil {
+		t.Fatalf("restart Session Runtime: %v", err)
+	}
+	requests := factory.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("factory requests = %d, want 1", len(requests))
+	}
+	if requests[0].Continuation.NativeSessionID != previous.NativeSessionID || requests[0].Continuation.NativeSessionPath != previous.NativeSessionPath {
+		t.Fatalf("restart lost native identity: %#v", requests[0].Continuation)
 	}
 }
 

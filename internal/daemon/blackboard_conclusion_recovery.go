@@ -20,12 +20,12 @@ func (server *Server) recoverBlackboardConclusionReceipts(ctx context.Context) P
 	}
 	requests := server.blackboardConclusionOwnershipRequests(receipts)
 	report := server.recoverProviderSessionOwnership(ctx, requests)
-	live := make(map[string]bool, len(report.LiveTaskIDs))
+	live := make(map[string]bool, len(report.LiveOwnerIDs))
 	selectedReceipt := make(map[string]string, len(requests))
 	for _, request := range requests {
-		selectedReceipt[request.Task.ID] = request.ReceiptID
+		selectedReceipt[request.Owner.ID] = request.ReceiptID
 	}
-	for _, taskID := range report.LiveTaskIDs {
+	for _, taskID := range report.LiveOwnerIDs {
 		live[taskID] = true
 	}
 	for _, receipt := range receipts {
@@ -61,7 +61,7 @@ func (server *Server) blackboardConclusionOwnershipRequests(receipts []task.Blac
 			order = append(order, receipt.TaskID)
 		}
 		byTask[receipt.TaskID] = ProviderSessionRecoveryRequest{
-			Task: found, Continuation: continuation, ReceiptID: receipt.ID,
+			Owner: found.OwnerContract(""), Continuation: ownerContinuationFromTask(continuation), ReceiptID: receipt.ID,
 			SourceSessionID: receipt.SourceSessionID, SourceRequestID: receipt.SourceRequestID,
 			DispatchRequestID: receipt.DispatchRequestID, ContainerID: continuation.ContainerID,
 			NativeSessionID: continuation.NativeSessionID, NativeSessionPath: continuation.NativeSessionPath,
@@ -75,47 +75,43 @@ func (server *Server) blackboardConclusionOwnershipRequests(receipts []task.Blac
 }
 
 func (server *Server) recoverLiveBlackboardConclusionReceipt(ctx context.Context, receipt task.BlackboardConclusionReceipt) {
-	switch receipt.InternalState {
-	case task.BlackboardConclusionReceiptPending:
-		server.enqueueRecoveredBlackboardConclusion(receipt, func(controlCtx context.Context) error {
-			return server.dispatchBlackboardConclusion(controlCtx, receipt)
-		})
-	case task.BlackboardConclusionReceiptDispatchRequested,
-		task.BlackboardConclusionReceiptRepairDispatchRequested,
-		task.BlackboardConclusionReceiptVersionRegenerationDispatchRequested:
-		if receipt.SendAttemptCount != 0 || receipt.SendStartedAt != nil {
-			server.requireBlackboardConclusionRecovery(receipt, nil)
-			return
-		}
-		server.enqueueRecoveredBlackboardConclusion(receipt, func(controlCtx context.Context) error {
-			switch receipt.InternalState {
-			case task.BlackboardConclusionReceiptRepairDispatchRequested:
-				return server.dispatchBlackboardConclusionRepair(controlCtx, receipt)
-			case task.BlackboardConclusionReceiptVersionRegenerationDispatchRequested:
-				return server.dispatchBlackboardConclusionVersionRegeneration(controlCtx, receipt)
-			default:
-				if receipt.BaseRevision == nil {
-					return fmt.Errorf("Blackboard conclusion recovery has no base revision")
+	recoverLiveAssistedConclusion(assistedConclusionRecoveryReceipt{
+		State: string(receipt.InternalState), SendAttemptCount: receipt.SendAttemptCount,
+		SendStarted: receipt.SendStartedAt != nil, BaseRevision: receipt.BaseRevision,
+		ExplicitRetryCount: receipt.ExplicitRetryCount,
+	}, assistedConclusionRecoveryHooks{
+		Pending: func() {
+			server.enqueueRecoveredBlackboardConclusion(receipt, func(controlCtx context.Context) error {
+				return server.dispatchBlackboardConclusion(controlCtx, receipt)
+			})
+		},
+		Dispatch: func(state string, baseRevision int, explicitRetryCount int) {
+			server.enqueueRecoveredBlackboardConclusion(receipt, func(controlCtx context.Context) error {
+				switch task.BlackboardConclusionReceiptState(state) {
+				case task.BlackboardConclusionReceiptRepairDispatchRequested:
+					return server.dispatchBlackboardConclusionRepair(controlCtx, receipt)
+				case task.BlackboardConclusionReceiptVersionRegenerationDispatchRequested:
+					return server.dispatchBlackboardConclusionVersionRegeneration(controlCtx, receipt)
+				default:
+					directive := concludeBlackboardDirective(baseRevision)
+					if explicitRetryCount > 0 {
+						directive = repairBlackboardDirective(baseRevision)
+					}
+					return server.sendBlackboardConclusionTurn(controlCtx, receipt, directive)
 				}
-				directive := concludeBlackboardDirective(*receipt.BaseRevision)
-				if receipt.ExplicitRetryCount > 0 {
-					directive = repairBlackboardDirective(*receipt.BaseRevision)
-				}
-				return server.sendBlackboardConclusionTurn(controlCtx, receipt, directive)
+			})
+		},
+		VersionSync: func() {
+			found, err := server.tasks.Get(receipt.TaskID)
+			if err == nil {
+				err = server.regenerateBlackboardConclusionAfterVersionConflict(ctx, found.ProjectID, receipt)
 			}
-		})
-	case task.BlackboardConclusionReceiptVersionSyncRequested:
-		found, err := server.tasks.Get(receipt.TaskID)
-		if err != nil {
-			server.requireBlackboardConclusionRecovery(receipt, err)
-			return
-		}
-		if err := server.regenerateBlackboardConclusionAfterVersionConflict(ctx, found.ProjectID, receipt); err != nil {
-			server.requireBlackboardConclusionRecovery(receipt, err)
-		}
-	case task.BlackboardConclusionReceiptAwaitingResult:
-		server.requireBlackboardConclusionRecovery(receipt, nil)
-	}
+			if err != nil {
+				server.requireBlackboardConclusionRecovery(receipt, err)
+			}
+		},
+		Require: func() { server.requireBlackboardConclusionRecovery(receipt, nil) },
+	})
 }
 
 func (server *Server) enqueueRecoveredBlackboardConclusion(receipt task.BlackboardConclusionReceipt, operation func(context.Context) error) {

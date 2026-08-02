@@ -11,6 +11,7 @@ import (
 
 	"pentest/internal/credential"
 	"pentest/internal/modelprovider"
+	"pentest/internal/owner"
 	"pentest/internal/project"
 	"pentest/internal/runtimeextension"
 	"pentest/internal/runtimeplugin"
@@ -29,8 +30,7 @@ type GlobalModelProviderSnapshot struct {
 
 // ProjectionRequest supplies task and daemon context for launch projection.
 type ProjectionRequest struct {
-	ProjectID     string
-	TaskID        string
+	Owner         owner.Contract
 	ScopeSnapshot project.Scope
 	Credentials   *credential.Service
 	// MaterializedCredentials is an in-memory launch snapshot. A non-nil map
@@ -55,6 +55,9 @@ type ProjectionRequest struct {
 // ProjectRuntimeConfig writes provider-specific runtime files into the task-local
 // provider home. It never writes back to host runtime config.
 func ProjectRuntimeConfig(layout Layout, profile runtimeprofile.Profile, req ProjectionRequest) (ConfigProjection, error) {
+	if err := validateProjectionOwner(req.Owner); err != nil {
+		return ConfigProjection{}, err
+	}
 	if strings.TrimSpace(layout.ProviderHome) == "" {
 		return ConfigProjection{}, fmt.Errorf("provider home is required")
 	}
@@ -89,7 +92,7 @@ func ProjectRuntimeConfig(layout Layout, profile runtimeprofile.Profile, req Pro
 			Providers:           req.ModelProviders,
 			Plugins:             req.RuntimePlugins,
 			Credentials:         req.Credentials,
-			ProjectID:           req.ProjectID,
+			ProjectID:           req.Owner.ProjectID,
 			CheckEnv:            true,
 			LaunchModelOverride: req.LaunchModelOverride,
 		})
@@ -775,10 +778,10 @@ func resolveMaterializedCredentials(profile runtimeprofile.Profile, req Projecti
 	if len(inline) > 0 {
 		return inline, nil
 	}
-	if req.Credentials == nil || req.ProjectID == "" || len(profile.Fields.CredentialRefs) == 0 {
+	if req.Credentials == nil || req.Owner.ProjectID == "" || len(profile.Fields.CredentialRefs) == 0 {
 		return nil, nil
 	}
-	return req.Credentials.ResolveMaterializedEnv(req.ProjectID, profile.Fields.CredentialRefs)
+	return req.Credentials.ResolveMaterializedEnv(req.Owner.ProjectID, profile.Fields.CredentialRefs)
 }
 
 // MaterializeLaunchCredentials resolves every credential needed by one launch
@@ -787,6 +790,9 @@ func resolveMaterializedCredentials(profile runtimeprofile.Profile, req Projecti
 // For Pi, this includes API keys for every launch-ready global Model Provider
 // so cross-provider turns can authenticate without restart.
 func MaterializeLaunchCredentials(profile runtimeprofile.Profile, req ProjectionRequest) (map[string]string, error) {
+	if err := validateProjectionOwner(req.Owner); err != nil {
+		return nil, err
+	}
 	materialized, err := resolveMaterializedCredentials(profile, req)
 	if err != nil {
 		return nil, err
@@ -805,6 +811,16 @@ func MaterializeLaunchCredentials(profile runtimeprofile.Profile, req Projection
 		return map[string]string{}, nil
 	}
 	return cloneMaterializedCredentials(materialized), nil
+}
+
+func validateProjectionOwner(contract owner.Contract) error {
+	if contract.ID == "" {
+		return nil
+	}
+	if err := contract.Validate(); err != nil {
+		return fmt.Errorf("invalid Runtime owner contract: %w", err)
+	}
+	return nil
 }
 
 func cloneMaterializedCredentials(source map[string]string) map[string]string {
@@ -1029,7 +1045,7 @@ func resolveModelProviderAPIKeyValue(envName string, req ProjectionRequest) (str
 	if req.Credentials == nil {
 		return "", false
 	}
-	resolution, err := req.Credentials.Resolve(envName, req.ProjectID)
+	resolution, err := req.Credentials.Resolve(envName, req.Owner.ProjectID)
 	if err != nil || !resolution.Found || resolution.Disabled || resolution.Source == nil {
 		return "", false
 	}
@@ -1315,11 +1331,11 @@ func LaunchConfigPath(layout Layout, provider runtimeprofile.Provider, hostConfi
 
 // LaunchProcessEnv returns process environment variables for the launch adapter.
 // Claude Code reads settings from CLAUDE_HOME; profile env lives in settings.json.
-func LaunchProcessEnv(layout Layout, profile runtimeprofile.Profile, sandbox bool, ctx TaskContext) map[string]string {
+func LaunchProcessEnv(layout Layout, profile runtimeprofile.Profile, sandbox bool, ctx RuntimeOwnerContext) map[string]string {
 	return launchProcessEnv(layout, profile, sandbox, ctx, nil)
 }
 
-func launchProcessEnv(layout Layout, profile runtimeprofile.Profile, sandbox bool, ctx TaskContext, registry *runtimeplugin.Registry) map[string]string {
+func launchProcessEnv(layout Layout, profile runtimeprofile.Profile, sandbox bool, ctx RuntimeOwnerContext, registry *runtimeplugin.Registry) map[string]string {
 	env := map[string]string{}
 	if sandbox {
 		// Claude Code allows --dangerously-skip-permissions in sandboxed containers
@@ -1327,11 +1343,14 @@ func launchProcessEnv(layout Layout, profile runtimeprofile.Profile, sandbox boo
 		env["IS_SANDBOX"] = "1"
 		env["PENTEST_SKILLS_DIR"] = sandboxSkillsImagePath
 	}
-	if ctx.ProjectID != "" {
-		env["PENTEST_PROJECT_ID"] = ctx.ProjectID
+	if ctx.Owner.ProjectID != "" {
+		env["PENTEST_PROJECT_ID"] = ctx.Owner.ProjectID
 	}
-	if ctx.TaskID != "" {
-		env["PENTEST_TASK_ID"] = ctx.TaskID
+	if ctx.Owner.TaskID != "" {
+		env["PENTEST_TASK_ID"] = ctx.Owner.TaskID
+	}
+	if ctx.Owner.SessionID != "" {
+		env["PENTEST_SESSION_ID"] = ctx.Owner.SessionID
 	}
 	if ctx.MCPURL != "" {
 		env["PENTEST_MCP_URL"] = ctx.MCPURL
@@ -1382,7 +1401,7 @@ func processEnvRenderContext(layout Layout, profile runtimeprofile.Profile, sand
 // LaunchProcessEnvWithCredentials returns process environment variables for a
 // runtime launch, including profile env and resolved API key material needed by
 // runtimes that interpolate env references from their generated config.
-func LaunchProcessEnvWithCredentials(layout Layout, profile runtimeprofile.Profile, sandbox bool, ctx TaskContext, req ProjectionRequest) (map[string]string, error) {
+func LaunchProcessEnvWithCredentials(layout Layout, profile runtimeprofile.Profile, sandbox bool, ctx RuntimeOwnerContext, req ProjectionRequest) (map[string]string, error) {
 	env := launchProcessEnv(layout, profile, sandbox, ctx, req.RuntimePlugins)
 	if sandbox && len(req.SkillBundles) > 0 {
 		env["PENTEST_SKILLS_DIR"] = "/task/skills"
@@ -1423,7 +1442,7 @@ func materializeModelProviderAPIKey(req ProjectionRequest) (string, bool) {
 	if req.Credentials == nil {
 		return "", false
 	}
-	resolution, err := req.Credentials.Resolve(req.ModelSnapshot.APIKeyEnv, req.ProjectID)
+	resolution, err := req.Credentials.Resolve(req.ModelSnapshot.APIKeyEnv, req.Owner.ProjectID)
 	if err != nil || !resolution.Found || resolution.Disabled || resolution.Source == nil {
 		return "", false
 	}

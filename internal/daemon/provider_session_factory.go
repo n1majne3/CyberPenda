@@ -82,8 +82,8 @@ const (
 // copied from the supplied Continuation so a factory never needs to query
 // aggregate storage or infer identity from provider output.
 type ProviderSessionRecoveryRequest struct {
-	Task              task.Task
-	Continuation      task.TaskContinuation
+	Owner             owner.Contract
+	Continuation      owner.Continuation
 	ReceiptID         string
 	SourceSessionID   string
 	SourceRequestID   string
@@ -112,20 +112,21 @@ type ProviderSessionRecoveryFactory interface {
 // ProviderSessionRecoveryOutcome is safe coordinator input. It exposes no raw
 // provider data and distinguishes successful adoption from a liveness probe.
 type ProviderSessionRecoveryOutcome struct {
-	TaskID   string
+	Owner    owner.Contract
+	OwnerID  string
 	Liveness ProviderSessionRecoveryLiveness
 	Adopted  bool
 	Warning  string
 	Activity task.RuntimeActivity
 }
 
-// ProviderSessionRecoveryReport exposes the proven-live exclusion set used by
-// startup lifecycle reconciliation together with every closed probe outcome.
+// ProviderSessionRecoveryReport exposes owner-neutral proven-live and
+// lifecycle exclusion sets used by startup reconciliation.
 type ProviderSessionRecoveryReport struct {
-	LiveTaskIDs                   []string
-	LifecycleProtectedTaskIDs     []string
-	ReconciliationExcludedTaskIDs []string
-	Outcomes                      []ProviderSessionRecoveryOutcome
+	LiveOwnerIDs                   []string
+	LifecycleProtectedOwnerIDs     []string
+	ReconciliationExcludedOwnerIDs []string
+	Outcomes                       []ProviderSessionRecoveryOutcome
 }
 
 // ProviderSessionAssistedConclusionReporter is the additive capability seam

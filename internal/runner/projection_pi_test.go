@@ -10,6 +10,7 @@ import (
 
 	"pentest/internal/credential"
 	"pentest/internal/modelprovider"
+	"pentest/internal/owner"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/store"
@@ -47,7 +48,7 @@ func TestProjectPiConfigWritesModelsAndAuth(t *testing.T) {
 	}
 
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
-		ProjectID:   "project-1",
+		Owner:       owner.NewTaskContract("task-pi", "project-1", layout.Workdir),
 		Credentials: creds,
 	})
 	if err != nil {
@@ -173,7 +174,7 @@ func TestProjectPiConfigWritesCatalogExtensionPackages(t *testing.T) {
 	}
 
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
-		ProjectID: "project-1",
+		Owner: owner.NewTaskContract("task-pi", "project-1", layout.Workdir),
 	})
 	if err != nil {
 		t.Fatalf("project config: %v", err)

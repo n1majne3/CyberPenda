@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"pentest/internal/credential"
+	"pentest/internal/owner"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/store"
@@ -58,7 +59,7 @@ func TestLaunchProcessEnvSetsPiCodingAgentDirInSandbox(t *testing.T) {
 		t.Fatalf("prepare layout: %v", err)
 	}
 
-	env := runner.LaunchProcessEnv(layout, runtimeprofile.Profile{Provider: runtimeprofile.ProviderPi}, true, runner.TaskContext{})
+	env := runner.LaunchProcessEnv(layout, runtimeprofile.Profile{Provider: runtimeprofile.ProviderPi}, true, runner.RuntimeOwnerContext{})
 	if env["PI_CODING_AGENT_DIR"] != "/task/runtime-home/pi/agent" {
 		t.Fatalf("expected pi agent dir in sandbox, got %#v", env["PI_CODING_AGENT_DIR"])
 	}
@@ -89,7 +90,7 @@ func TestLaunchProcessEnvWithCredentialsInjectsPiInlineAPIKey(t *testing.T) {
 		},
 	}
 
-	env, err := runner.LaunchProcessEnvWithCredentials(layout, profile, true, runner.TaskContext{}, runner.ProjectionRequest{})
+	env, err := runner.LaunchProcessEnvWithCredentials(layout, profile, true, runner.RuntimeOwnerContext{}, runner.ProjectionRequest{})
 	if err != nil {
 		t.Fatalf("launch env: %v", err)
 	}
@@ -132,9 +133,9 @@ func TestLaunchProcessEnvWithCredentialsInjectsPiCredentialRefAPIKey(t *testing.
 			},
 		},
 		true,
-		runner.TaskContext{},
+		runner.RuntimeOwnerContext{},
 		runner.ProjectionRequest{
-			ProjectID:   "project-1",
+			Owner:       owner.NewTaskContract("task-pi", "project-1", layout.Workdir),
 			Credentials: creds,
 		},
 	)
