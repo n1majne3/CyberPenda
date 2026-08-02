@@ -736,6 +736,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("PATCH /api/projects/{id}", server.handleUpdateProject)
 	server.mux.HandleFunc("GET /api/sessions", server.handleListSessions)
 	server.mux.HandleFunc("POST /api/sessions", server.handleCreateSession)
+	server.mux.HandleFunc("POST /api/sessions/preflight", server.handleSessionPreflight)
 	server.mux.HandleFunc("GET /api/sessions/archived", server.handleListSessions)
 	server.mux.HandleFunc("GET /api/sessions/{id}", server.handleGetSession)
 	server.mux.HandleFunc("GET /api/sessions/{id}/events", server.handleSessionEvents)

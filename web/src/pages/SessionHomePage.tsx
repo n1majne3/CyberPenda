@@ -1,21 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { Archive, ArchiveRestore, FilePlus2, MessageSquareText, Pencil, Plus, Trash2 } from "lucide-react";
+import { RuntimeLaunchControls, useRuntimeLaunchControls } from "@/components/RuntimeLaunchControls";
 import {
   archiveSession,
   createSession,
   deleteSession,
-  listRuntimeProfiles,
   listSessions,
   renameSession,
   restoreSession,
   type Session,
-  type BlackboardConclusionMode,
-  type RuntimeProfile,
 } from "@/lib/api";
 import { formatCompactDateTime } from "@/lib/format";
 import { PageContainer, SettingsAlert } from "@/components/shared";
-import { Badge, Button, Card, CardDescription, CardTitle, Input, Label, Select, Textarea } from "@/components/ui";
+import { Badge, Button, Card, CardDescription, CardTitle, Input, Label, Textarea } from "@/components/ui";
 
 export function SessionHomePage() {
   const { hash } = useLocation();
@@ -23,10 +21,7 @@ export function SessionHomePage() {
   const [archivedSessions, setArchivedSessions] = useState<Session[]>([]);
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<File[]>([]);
-  const [profiles, setProfiles] = useState<RuntimeProfile[]>([]);
-  const [runtimeProfileID, setRuntimeProfileID] = useState("");
-  const [runner, setRunner] = useState("sandbox");
-  const [blackboardConclusionMode, setBlackboardConclusionMode] = useState<BlackboardConclusionMode>("interactive");
+  const launchControls = useRuntimeLaunchControls();
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -57,15 +52,6 @@ export function SessionHomePage() {
   /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
-    listRuntimeProfiles()
-      .then((response) => setProfiles(response.profiles ?? []))
-      .catch(() => {
-        // Session management remains usable when profile discovery is unavailable.
-        setProfiles([]);
-      });
-  }, []);
-
-  useEffect(() => {
     if (hash !== "#new-session") return;
     const creationSurface = document.getElementById("new-session");
     creationSurface?.scrollIntoView?.({ block: "start" });
@@ -76,21 +62,21 @@ export function SessionHomePage() {
     event.preventDefault();
     if (!draft.trim()) return;
     setCreating(true);
+    launchControls.setError(null);
     try {
-      await createSession(draft, attachments, {
-        ...(runtimeProfileID ? {
-          runtime_profile_id: runtimeProfileID,
-          runner,
-          host_activated: runner === "host",
-        } : {}),
-        run_controls: { blackboard_conclusion_mode: blackboardConclusionMode },
-      });
+      const profileId = await launchControls.resolveRuntimeProfileId();
+      const checked = await launchControls.runPreflight("/api/sessions/preflight", profileId);
+      if (!checked.pass) {
+        launchControls.setError("preflight failed");
+        return;
+      }
+      await createSession(draft, attachments, launchControls.launchPayload(profileId));
       setDraft("");
       setAttachments([]);
       if (fileInputRef.current) fileInputRef.current.value = "";
       await loadSessions();
-    } catch (e) {
-      setError((e as Error).message);
+    } catch (cause) {
+      launchControls.setError((cause as Error).message);
     } finally {
       setCreating(false);
     }
@@ -150,7 +136,7 @@ export function SessionHomePage() {
           Non-Project Sessions
         </h1>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">
-          Short-lived or exploratory conversations with their own Events and managed Workdir.
+          Durable exploratory conversations with their own Events and managed Workdir.
         </p>
       </header>
 
@@ -198,58 +184,12 @@ export function SessionHomePage() {
             />
             <p className="mt-1 text-xs text-muted-foreground">Files are copied into the managed Session Workdir.</p>
           </div>
-          <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_180px_minmax(0,1fr)]">
-            <div>
-              <Label htmlFor="session-runtime-profile">Runtime profile (optional)</Label>
-              <Select
-                id="session-runtime-profile"
-                value={runtimeProfileID}
-                onChange={(event) => setRuntimeProfileID(event.target.value)}
-                className="mt-1"
-              >
-                <option value="">Create without starting a Runtime</option>
-                {profiles.map((profile) => (
-                  <option key={profile.id} value={profile.id}>
-                    {profile.name} · {profile.provider}
-                  </option>
-                ))}
-              </Select>
-              <p className="mt-1 text-xs text-muted-foreground">The selected profile is reused for later conversation turns.</p>
-            </div>
-            <div>
-              <Label htmlFor="session-runner">Runner</Label>
-              <Select
-                id="session-runner"
-                value={runner}
-                onChange={(event) => setRunner(event.target.value)}
-                className="mt-1"
-                disabled={!runtimeProfileID}
-              >
-                <option value="sandbox">Sandbox</option>
-                <option value="host">Host (activated)</option>
-              </Select>
-            </div>
-            <div>
-              <Label htmlFor="session-blackboard-conclusions">Blackboard conclusions</Label>
-              <Select
-                id="session-blackboard-conclusions"
-                name="blackboard_conclusion_mode"
-                value={blackboardConclusionMode}
-                onChange={(event) => setBlackboardConclusionMode(event.target.value as BlackboardConclusionMode)}
-                className="mt-1"
-              >
-                <option value="interactive">Interactive</option>
-                <option value="assisted">Assisted</option>
-              </Select>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {blackboardConclusionMode === "assisted"
-                  ? "After tool-producing work, the Runtime gets a bounded Session Blackboard conclusion turn."
-                  : "The operator decides when Runtime work is written to the Session Blackboard."}
-              </p>
-            </div>
-          </div>
+          <RuntimeLaunchControls controller={launchControls} ownerLabel="session" initialInput={draft} />
           <div className="flex justify-end">
-            <Button type="submit" disabled={creating || !draft.trim()}>
+            <Button
+              type="submit"
+              disabled={creating || !launchControls.launchReady(draft) || (launchControls.form.runner === "host" && !launchControls.hostActivated)}
+            >
               <FilePlus2 className="size-4" aria-hidden="true" />
               {creating ? "Creating…" : "Create session"}
             </Button>

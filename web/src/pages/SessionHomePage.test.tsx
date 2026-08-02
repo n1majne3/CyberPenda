@@ -5,6 +5,58 @@ import { describe, expect, it } from "vitest";
 import { mockApi } from "@/test/mockApi";
 import { SessionHomePage } from "./SessionHomePage";
 
+const codexPlugin = {
+  schema_version: 1,
+  id: "codex",
+  name: "Codex",
+  binary: { default: "codex" },
+  capabilities: {
+    sandbox: true,
+    host: true,
+    mcp_config: true,
+    streaming_transcript: true,
+    resume: true,
+    assisted_conclusion: true,
+  },
+  model_provider: {
+    requirement: "required",
+    supported_protocols: ["openai_responses"],
+    protocol_preference: ["openai_responses"],
+  },
+  profile_schema: { fields: [] },
+  config_projection: { primitive: "codex_home" },
+  launch: { args: ["codex"] },
+  transcript: { parser: "codex_json" },
+};
+
+const mimoProvider = {
+  id: "mimo",
+  name: "MiMo",
+  base_url: "https://api.example.test/v1",
+  protocols: ["openai_responses"],
+  api_key_env: "MIMO_API_KEY",
+  catalog: { manual: ["mimo-v2.5-pro"], default_model: "mimo-v2.5-pro" },
+};
+
+const sessionLaunchRoutes = {
+  "/api/runtime-profiles/resolve-launch": {
+    profile_id: "resolved-profile",
+    created: true,
+    profile: {
+      id: "resolved-profile",
+      name: "Codex · MiMo",
+      provider: "codex",
+      kind: "launch_resolve",
+      fields: { model_provider_id: "mimo", model_override: "mimo-v2.5-pro" },
+    },
+  },
+  "/api/sessions/preflight": { pass: true, checks: [] },
+  "/api/runtime-plugins": { plugins: [codexPlugin] },
+  "/api/model-providers": { providers: [mimoProvider] },
+  "/api/runtime-profiles": { profiles: [] },
+  "/api/skills?": { skills: [] },
+};
+
 function renderPage(initialEntries = ["/sessions"]) {
   return render(
     <MemoryRouter initialEntries={initialEntries}>
@@ -14,6 +66,48 @@ function renderPage(initialEntries = ["/sessions"]) {
 }
 
 describe("SessionHomePage", () => {
+  it("reuses the Task launch selection and preflight flow", async () => {
+    const fetchMock = mockApi({
+      ...sessionLaunchRoutes,
+      "/api/sessions?lifecycle=archived": { sessions: [] },
+      "/api/sessions": { sessions: [] },
+    });
+    const user = userEvent.setup();
+
+    renderPage();
+
+    expect(await screen.findByLabelText("Runtime")).toBeInTheDocument();
+    expect(screen.getByLabelText("Model provider")).toBeInTheDocument();
+    expect(screen.getByLabelText("Model")).toBeInTheDocument();
+    expect(screen.getByLabelText("Reasoning effort")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Runtime profile")).not.toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Initial input"), "Inspect the standalone target");
+    await user.selectOptions(screen.getByLabelText("Reasoning effort"), "xhigh");
+    await user.selectOptions(screen.getByLabelText("Blackboard conclusions"), "assisted");
+    await user.click(screen.getByRole("button", { name: /create session/i }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/sessions/preflight",
+        expect.objectContaining({ method: "POST" }),
+      );
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/sessions",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            input: "Inspect the standalone target",
+            runtime_profile_id: "resolved-profile",
+            runner: "sandbox",
+            reasoning_effort: "xhigh",
+            run_controls: { blackboard_conclusion_mode: "assisted" },
+          }),
+        }),
+      );
+    });
+  });
+
   it("labels Non-Project Mode and separates open and archived sessions", async () => {
     mockApi({
       "/api/sessions?lifecycle=archived": {
@@ -61,6 +155,7 @@ describe("SessionHomePage", () => {
 
   it("creates a session from the accessible initial-input form", async () => {
     const fetchMock = mockApi({
+      ...sessionLaunchRoutes,
       "/api/sessions?lifecycle=archived": { sessions: [] },
       "/api/sessions": { sessions: [] },
     });
@@ -77,7 +172,13 @@ describe("SessionHomePage", () => {
         "/api/sessions",
         expect.objectContaining({
           method: "POST",
-          body: JSON.stringify({ input: "Check the exposed service", run_controls: { blackboard_conclusion_mode: "interactive" } }),
+          body: JSON.stringify({
+            input: "Check the exposed service",
+            runtime_profile_id: "resolved-profile",
+            runner: "sandbox",
+            reasoning_effort: "high",
+            run_controls: { blackboard_conclusion_mode: "interactive" },
+          }),
         }),
       );
     });
@@ -85,6 +186,7 @@ describe("SessionHomePage", () => {
 
   it("persists assisted Blackboard conclusions from the Session launch controls", async () => {
     const fetchMock = mockApi({
+      ...sessionLaunchRoutes,
       "/api/sessions?lifecycle=archived": { sessions: [] },
       "/api/sessions": { sessions: [] },
     });
@@ -101,7 +203,13 @@ describe("SessionHomePage", () => {
         "/api/sessions",
         expect.objectContaining({
           method: "POST",
-          body: JSON.stringify({ input: "Inspect the standalone target", run_controls: { blackboard_conclusion_mode: "assisted" } }),
+          body: JSON.stringify({
+            input: "Inspect the standalone target",
+            runtime_profile_id: "resolved-profile",
+            runner: "sandbox",
+            reasoning_effort: "high",
+            run_controls: { blackboard_conclusion_mode: "assisted" },
+          }),
         }),
       );
     });

@@ -523,6 +523,35 @@ func (server *Server) startSessionRuntime(ctx context.Context, found session.Ses
 	return continuation, nil
 }
 
+func (server *Server) handleSessionPreflight(response http.ResponseWriter, request *http.Request) {
+	var launch createSessionInput
+	if err := json.NewDecoder(request.Body).Decode(&launch); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	input := sessionRuntimeInputFromCreate(launch)
+	if _, err := normalizeLaunchReasoningEffort(input.ReasoningEffort); err != nil {
+		writeError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	profile, err := server.resolveSessionRuntimeProfile(input, nil)
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	run, err := resolveSessionRunner(input, profile, nil)
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	result := server.preflight.Run(
+		request.Context(),
+		preflightRequestForSession(profile, input, run, input.selectedModel()),
+	)
+	server.logPreflightCustomArgConflict(profile.ID, result)
+	writeJSON(response, http.StatusOK, result)
+}
+
 func preflightRequestForSession(profile runtimeprofile.Profile, input sessionRuntimeInput, run session.Runner, launchModel string) preflight.Request {
 	return preflight.Request{
 		RuntimeProfileID: profile.ID, ProjectID: "", Runner: string(run), HostActivated: input.HostActivated,
