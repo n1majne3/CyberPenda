@@ -87,54 +87,53 @@ type Config struct {
 }
 
 type Server struct {
-	mux                          *http.ServeMux
-	version                      string
-	logger                       *log.Logger
-	db                           *store.DB
-	projects                     *project.Service
-	runtimePlugins               *runtimeplugin.Registry
-	runtimeExtensions            *runtimeextension.Registry
-	profiles                     *runtimeprofile.Service
-	modelProviders               *modelprovider.Service
-	skills                       *skill.Service
-	creds                        *credential.Service
-	modelRefreshClient           *http.Client
-	preflight                    *preflight.Service
-	tasks                        *task.Service
-	sessions                     *session.Service
-	harness                      *runtime.Harness
-	sessionHarness               *runtime.SessionHarness
-	canonicalStore               string
-	blackboardV2                 *blackboardv2.Service
-	blackboardV2Continuity       *blackboardv2.ContinuityService
-	projectInterfaceGrants       *projectinterface.GrantStore
-	runtimeRoot                  string
-	sessionRoot                  string
-	sandboxImage                 string
-	containerCLI                 string
-	taskVolume                   string
-	taskVolumeRoot               string
-	listenAddr                   string
-	authToken                    string
-	tempSkillsRoot               string
-	controlMu                    sync.Mutex
-	activeControls               map[string]bool
-	providerControlCtx           context.Context
-	providerControlCancel        context.CancelFunc
-	providerControlWG            sync.WaitGroup
-	providerTaskContexts         map[string]context.Context
-	providerTaskCancels          map[string]context.CancelFunc
-	activeProviderControls       map[string]bool
-	queuedProviderControls       map[string]int
-	closing                      bool
-	providerSessions             *providerSessionRegistry
-	sessionProviderSessions      *providerSessionRegistry
-	providerSessionFactory       ProviderSessionFactory
-	runtimeRecoveryMu            sync.RWMutex
-	runtimeRecovery              map[string]task.RuntimeActivity
-	blackboardConclusions        *runtime.AssistedConclusionTracker
-	sessionBlackboardConclusions *runtime.AssistedConclusionTracker
-	runtimeStopTimeout           time.Duration
+	mux                     *http.ServeMux
+	version                 string
+	logger                  *log.Logger
+	db                      *store.DB
+	projects                *project.Service
+	runtimePlugins          *runtimeplugin.Registry
+	runtimeExtensions       *runtimeextension.Registry
+	profiles                *runtimeprofile.Service
+	modelProviders          *modelprovider.Service
+	skills                  *skill.Service
+	creds                   *credential.Service
+	modelRefreshClient      *http.Client
+	preflight               *preflight.Service
+	tasks                   *task.Service
+	sessions                *session.Service
+	harness                 *runtime.Harness
+	sessionHarness          *runtime.SessionHarness
+	canonicalStore          string
+	blackboardV2            *blackboardv2.Service
+	blackboardV2Continuity  *blackboardv2.ContinuityService
+	projectInterfaceGrants  *projectinterface.GrantStore
+	runtimeRoot             string
+	sessionRoot             string
+	sandboxImage            string
+	containerCLI            string
+	taskVolume              string
+	taskVolumeRoot          string
+	listenAddr              string
+	authToken               string
+	tempSkillsRoot          string
+	controlMu               sync.Mutex
+	activeControls          map[string]bool
+	providerControlCtx      context.Context
+	providerControlCancel   context.CancelFunc
+	providerControlWG       sync.WaitGroup
+	providerTaskContexts    map[string]context.Context
+	providerTaskCancels     map[string]context.CancelFunc
+	activeProviderControls  map[string]bool
+	queuedProviderControls  map[string]int
+	closing                 bool
+	providerSessions        *providerSessionRegistry
+	sessionProviderSessions *providerSessionRegistry
+	providerSessionFactory  ProviderSessionFactory
+	runtimeRecoveryMu       sync.RWMutex
+	runtimeRecovery         map[string]task.RuntimeActivity
+	blackboardConclusions   *runtime.AssistedConclusionTracker
+	runtimeStopTimeout      time.Duration
 }
 
 func NewServer(config Config) (*Server, error) {
@@ -228,37 +227,39 @@ func NewServer(config Config) (*Server, error) {
 		preflight: preflight.NewService(profiles, creds, skills).
 			WithModelProviders(modelProviders, runtimePlugins).
 			WithRuntimeExtensions(runtimeExtensions),
-		tasks:                        tasks,
-		sessionRoot:                  sessionRoot(config, runtimeRoot),
-		harness:                      runtime.NewHarness(tasks),
-		canonicalStore:               epoch,
-		runtimeRoot:                  runtimeRoot,
-		sandboxImage:                 config.SandboxImage,
-		containerCLI:                 config.ContainerCLI,
-		taskVolume:                   strings.TrimSpace(config.TaskVolume),
-		taskVolumeRoot:               taskVolumeRoot,
-		listenAddr:                   listenAddr,
-		authToken:                    authToken,
-		tempSkillsRoot:               tempSkillsRoot,
-		activeControls:               map[string]bool{},
-		providerControlCtx:           providerControlCtx,
-		providerControlCancel:        providerControlCancel,
-		providerTaskContexts:         map[string]context.Context{},
-		providerTaskCancels:          map[string]context.CancelFunc{},
-		activeProviderControls:       map[string]bool{},
-		queuedProviderControls:       map[string]int{},
-		providerSessions:             newProviderSessionRegistry(),
-		sessionProviderSessions:      newProviderSessionRegistry(),
-		providerSessionFactory:       config.ProviderSessionFactory,
-		runtimeRecovery:              map[string]task.RuntimeActivity{},
-		blackboardConclusions:        runtime.NewAssistedConclusionTracker(),
-		sessionBlackboardConclusions: runtime.NewAssistedConclusionTracker(),
-		runtimeStopTimeout:           10 * time.Second,
+		tasks:                   tasks,
+		sessionRoot:             sessionRoot(config, runtimeRoot),
+		harness:                 runtime.NewHarness(tasks),
+		canonicalStore:          epoch,
+		runtimeRoot:             runtimeRoot,
+		sandboxImage:            config.SandboxImage,
+		containerCLI:            config.ContainerCLI,
+		taskVolume:              strings.TrimSpace(config.TaskVolume),
+		taskVolumeRoot:          taskVolumeRoot,
+		listenAddr:              listenAddr,
+		authToken:               authToken,
+		tempSkillsRoot:          tempSkillsRoot,
+		activeControls:          map[string]bool{},
+		providerControlCtx:      providerControlCtx,
+		providerControlCancel:   providerControlCancel,
+		providerTaskContexts:    map[string]context.Context{},
+		providerTaskCancels:     map[string]context.CancelFunc{},
+		activeProviderControls:  map[string]bool{},
+		queuedProviderControls:  map[string]int{},
+		providerSessions:        newProviderSessionRegistry(),
+		sessionProviderSessions: newProviderSessionRegistry(),
+		providerSessionFactory:  config.ProviderSessionFactory,
+		runtimeRecovery:         map[string]task.RuntimeActivity{},
+		blackboardConclusions:   runtime.NewAssistedConclusionTracker(),
+		runtimeStopTimeout:      10 * time.Second,
 	}
 	server.sessions = session.NewService(db, server.sessionRoot)
 	server.sessionHarness = runtime.NewSessionHarness(server.sessions)
 	if server.logger == nil {
 		server.logger = log.Default()
+	}
+	if err := server.sessions.CleanupDeletedWorkdirs(); err != nil {
+		server.logger.Printf("Session cleanup retry: %v", err)
 	}
 	server.tasks.SetProjectService(server.projects)
 	if epoch != store.CanonicalStoreBlackboardV2 {
@@ -267,6 +268,7 @@ func NewServer(config Config) (*Server, error) {
 	}
 	server.projectInterfaceGrants = projectinterface.NewGrantStore(db, projectinterface.SystemClock{}, projectinterface.RandomIDSource{}, projectinterface.RandomTokenSource{})
 	server.tasks.SetContinuationTerminalMarker(server.projectInterfaceGrants)
+	server.sessions.SetContinuationTerminalMarker(server.projectInterfaceGrants)
 	server.blackboardV2 = blackboardv2.NewServiceWithEvidence(db, blackboardv2.EvidenceConfig{ArtifactRoot: artifactRoot, RuntimeRoot: runtimeRoot})
 	server.tasks.SetContinuationReconciler(server.blackboardV2)
 	server.blackboardV2Continuity = blackboardv2.NewContinuityService(db, server.blackboardV2, server.tasks, runtimeRoot)
@@ -277,13 +279,11 @@ func NewServer(config Config) (*Server, error) {
 	server.routes()
 	server.reconcileValidatedBlackboardConclusionApplies()
 	recovery := server.recoverBlackboardConclusionReceipts(context.Background())
-	server.reconcileInterruptedTasks(recovery.ReconciliationExcludedTaskIDs)
+	server.reconcileInterruptedTasks(recovery.ReconciliationExcludedOwnerIDs)
 	server.applyProviderSessionRecoveryLifecycle(recovery.Outcomes)
 	server.reconcileValidatedSessionBlackboardConclusionApplies()
-	if _, err := server.sessions.ReconcileStrandedBlackboardConclusionRecoveries(time.Now().UTC(), blackboardConclusionRetryCooldown); err != nil {
-		server.logger.Printf("assisted conclusion: reconcile stranded Session receipts: %v", err)
-	}
-	server.reconcileInterruptedSessions()
+	sessionRecovery := server.recoverSessionBlackboardConclusionReceipts(context.Background())
+	server.reconcileInterruptedSessions(sessionRecovery.LiveOwnerIDs)
 
 	return server, nil
 }
@@ -293,9 +293,15 @@ func NewServer(config Config) (*Server, error) {
 // every durable open Session continuation is marked interrupted and the next
 // user message/resume request creates a fresh continuation while retaining the
 // Session identity and prior native-runtime metadata.
-func (server *Server) reconcileInterruptedSessions() {
+func (server *Server) reconcileInterruptedSessions(excludedIDs ...[]string) {
 	if server.sessions == nil {
 		return
+	}
+	excluded := map[string]bool{}
+	if len(excludedIDs) > 0 {
+		for _, id := range excludedIDs[0] {
+			excluded[id] = true
+		}
 	}
 	open, err := server.sessions.List(session.LifecycleOpen)
 	if err != nil {
@@ -303,6 +309,9 @@ func (server *Server) reconcileInterruptedSessions() {
 		return
 	}
 	for _, found := range open {
+		if excluded[found.ID] {
+			continue
+		}
 		active, activeErr := server.sessions.ActiveContinuation(found.ID)
 		if activeErr != nil {
 			server.logger.Printf("Session reconcile: failed to inspect Session %s: %v", found.ID, activeErr)

@@ -622,7 +622,7 @@ func (server *Server) prepareBlackboardV2TaskLaunchPlan(created task.Task, goal 
 		return taskLaunchPlan{}, err
 	}
 	materializedCredentials, err := runner.MaterializeLaunchCredentials(profile, runner.ProjectionRequest{
-		ProjectID:                   created.ProjectID,
+		Owner:                       created.OwnerContract(layout.Workdir),
 		Credentials:                 server.creds,
 		ModelProviders:              server.modelProviders,
 		GlobalModelProviderSnapshot: globalSnapshot,
@@ -758,8 +758,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		}
 	}
 	projectionRequest := runner.ProjectionRequest{
-		ProjectID:                   created.ProjectID,
-		TaskID:                      created.ID,
+		Owner:                       created.OwnerContract(layout.Workdir),
 		ScopeSnapshot:               created.ScopeSnapshot,
 		Credentials:                 server.creds,
 		MaterializedCredentials:     materializedCredentials,
@@ -802,29 +801,16 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	if projection.ResolvedProfile.Provider != "" {
 		launchProfile = projection.ResolvedProfile
 	}
-	providerCommand, err := adapters.BuildLaunchArgs(adapters.LaunchArgsRequest{
+	providerCommand, err := adapters.BuildLaunchOrResumeArgs(adapters.LaunchArgsRequest{
 		Provider:      profile.Provider,
 		Profile:       launchProfile,
 		Goal:          launchGoal,
 		ConfigPath:    configPath,
 		MCPConfigPath: mcpConfigPath,
 		Sandbox:       sandbox,
-	})
+	}, nativeResumeSessionID)
 	if err != nil {
 		return taskLaunchPlan{}, err
-	}
-	if nativeResumeSessionID != "" {
-		providerCommand, err = adapters.BuildNativeResumeArgs(adapters.NativeResumeArgsRequest{
-			Provider:        profile.Provider,
-			Profile:         launchProfile,
-			NativeSessionID: nativeResumeSessionID,
-			ResumedMessage:  launchGoal,
-			ConfigPath:      configPath,
-			MCPConfigPath:   mcpConfigPath,
-		})
-		if err != nil {
-			return taskLaunchPlan{}, err
-		}
 	}
 
 	runtimeCommand := append([]string{}, providerCommand...)
@@ -834,10 +820,9 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	containerIDFile := ""
 	sandboxNetwork := runner.SandboxNetworkDefault
 	sandboxImage := ""
-	launchCtx := runner.TaskContext{Sandbox: sandbox}
+	launchCtx := runner.RuntimeOwnerContext{Owner: created.OwnerContract(layout.Workdir), Sandbox: sandbox}
 	processEnv, err := runner.LaunchProcessEnvWithCredentials(layout, launchProfile, sandbox, launchCtx, runner.ProjectionRequest{
-		ProjectID:                   created.ProjectID,
-		TaskID:                      created.ID,
+		Owner:                       created.OwnerContract(layout.Workdir),
 		ScopeSnapshot:               created.ScopeSnapshot,
 		Credentials:                 server.creds,
 		MaterializedCredentials:     materializedCredentials,

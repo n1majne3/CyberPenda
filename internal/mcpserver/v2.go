@@ -58,6 +58,9 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps Deps) {
 		if schemaErr != nil {
 			panic(fmt.Errorf("load MCP input schema for %s: %w", tool.Name, schemaErr))
 		}
+		if deps.ownerIsSession() {
+			schema = sessionToolInputSchema(schema)
+		}
 		schemas[tool.Name] = schema
 	}
 
@@ -73,12 +76,15 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps Deps) {
 				Name: tool.Name, Description: tool.Description, InputSchema: inputSchema,
 			}, func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
 				var args blackboardv2.ChangeBatch
-				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, req.Params.Arguments, &args); decodeErr != nil {
+				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, inputSchema, deps.ownerIsSession(), req.Params.Arguments, &args); decodeErr != nil {
 					return toolBlackboardV2ErrorResult(decodeErr)
 				}
 				// Exact replay remains available after Finish/supersession; response-loss
 				// retries redeliver the same sync attachment via idempotency fingerprint.
 				return deps.callV2WithFingerprint(ctx, false, true, blackboardv2.SynchronizationDeliveryFingerprint("change", args.IdempotencyKey), func(ctx context.Context, projectID, continuationID string) (any, error) {
+					if deps.ownerIsSession() {
+						return deps.BlackboardV2.ApplyForSessionContinuation(ctx, projectID, continuationID, args)
+					}
 					return deps.BlackboardV2.ApplyForContinuation(ctx, projectID, continuationID, args)
 				})
 			})
@@ -87,13 +93,16 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps Deps) {
 				Name: tool.Name, Description: tool.Description, InputSchema: inputSchema,
 			}, func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
 				var args blackboardV2ReadArgs
-				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, req.Params.Arguments, &args); decodeErr != nil {
+				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, inputSchema, deps.ownerIsSession(), req.Params.Arguments, &args); decodeErr != nil {
 					return toolBlackboardV2ErrorResult(decodeErr)
 				}
 				// Live read/current knowledge authority only; closed Continuations
 				// keep exact write/finish replay but not current knowledge reads.
 				// Reads are Pending-only (no durable request fingerprint).
 				return deps.callV2WithFingerprint(ctx, true, true, "", func(ctx context.Context, projectID, _ string) (any, error) {
+					if deps.ownerIsSession() {
+						return deps.BlackboardV2.ReadSessionCurrent(ctx, projectID, args.Key)
+					}
 					return deps.BlackboardV2.ReadCurrent(ctx, projectID, args.Key)
 				})
 			})
@@ -102,10 +111,13 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps Deps) {
 				Name: tool.Name, Description: tool.Description, InputSchema: inputSchema,
 			}, func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
 				var args blackboardV2HistoryArgs
-				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, req.Params.Arguments, &args); decodeErr != nil {
+				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, inputSchema, deps.ownerIsSession(), req.Params.Arguments, &args); decodeErr != nil {
 					return toolBlackboardV2ErrorResult(decodeErr)
 				}
 				return deps.callV2WithFingerprint(ctx, true, true, "", func(ctx context.Context, projectID, _ string) (any, error) {
+					if deps.ownerIsSession() {
+						return deps.BlackboardV2.ReadSessionHistory(ctx, projectID, args.Key, blackboardv2.HistoryOptions{Cursor: args.Cursor, Limit: args.Limit})
+					}
 					return deps.BlackboardV2.ReadHistory(ctx, projectID, args.Key, blackboardv2.HistoryOptions{
 						Cursor: args.Cursor, Limit: args.Limit,
 					})
@@ -116,10 +128,13 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps Deps) {
 				Name: tool.Name, Description: tool.Description, InputSchema: inputSchema,
 			}, func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
 				var args blackboardv2.RetainEvidenceRequest
-				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, req.Params.Arguments, &args); decodeErr != nil {
+				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, inputSchema, deps.ownerIsSession(), req.Params.Arguments, &args); decodeErr != nil {
 					return toolBlackboardV2ErrorResult(decodeErr)
 				}
 				return deps.callV2WithFingerprint(ctx, false, true, blackboardv2.SynchronizationDeliveryFingerprint("evidence", args.IdempotencyKey), func(ctx context.Context, projectID, continuationID string) (any, error) {
+					if deps.ownerIsSession() {
+						return nil, blackboardV2AuthError("authority_denied", "Evidence retention is Project-only", "authorization")
+					}
 					return deps.BlackboardV2.RetainEvidenceForContinuation(ctx, projectID, continuationID, args)
 				})
 			})
@@ -128,10 +143,13 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps Deps) {
 				Name: tool.Name, Description: tool.Description, InputSchema: inputSchema,
 			}, func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
 				var args blackboardv2.CheckpointAttemptRequest
-				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, req.Params.Arguments, &args); decodeErr != nil {
+				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, inputSchema, deps.ownerIsSession(), req.Params.Arguments, &args); decodeErr != nil {
 					return toolBlackboardV2ErrorResult(decodeErr)
 				}
 				return deps.callV2WithFingerprint(ctx, false, true, blackboardv2.SynchronizationDeliveryFingerprint("checkpoint", args.IdempotencyKey), func(ctx context.Context, projectID, continuationID string) (any, error) {
+					if deps.ownerIsSession() {
+						return deps.BlackboardV2.CheckpointSessionAttemptForContinuation(ctx, projectID, continuationID, args)
+					}
 					return deps.BlackboardV2.CheckpointAttemptForContinuation(ctx, projectID, continuationID, args)
 				})
 			})
@@ -140,12 +158,15 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps Deps) {
 				Name: tool.Name, Description: tool.Description, InputSchema: inputSchema,
 			}, func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
 				var args blackboardv2.FinishContinuationRequest
-				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, req.Params.Arguments, &args); decodeErr != nil {
+				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, inputSchema, deps.ownerIsSession(), req.Params.Arguments, &args); decodeErr != nil {
 					return toolBlackboardV2ErrorResult(decodeErr)
 				}
 				// Initial live Finish may carry pending synchronization; exact replay
 				// redelivers via the finish idempotency fingerprint.
 				return deps.callV2WithFingerprint(ctx, false, true, blackboardv2.SynchronizationDeliveryFingerprint("finish", args.IdempotencyKey), func(ctx context.Context, projectID, continuationID string) (any, error) {
+					if deps.ownerIsSession() {
+						return deps.BlackboardV2.FinishSessionContinuation(ctx, projectID, continuationID, args.IdempotencyKey)
+					}
 					return deps.BlackboardV2.FinishContinuation(ctx, projectID, continuationID, args)
 				})
 			})
@@ -168,11 +189,25 @@ type blackboardV2HistoryArgs struct {
 // decodeV2ToolArgs validates raw MCP arguments against the frozen contract
 // schema, then decodes into the closed service DTO. Failures always surface as
 // invalid_schema so transport validation never leaks SDK prose.
-func decodeV2ToolArgs(harness *blackboardv2contract.Harness, schemaName string, raw json.RawMessage, target any) *blackboardv2.Error {
+func decodeV2ToolArgs(harness *blackboardv2contract.Harness, schemaName string, inputSchema *jsonschema.Schema, sessionOwner bool, raw json.RawMessage, target any) *blackboardv2.Error {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		raw = json.RawMessage(`{}`)
 	}
-	if err := harness.Validate(schemaName, raw); err != nil {
+	valid := func() error { return harness.Validate(schemaName, raw) }
+	if sessionOwner {
+		valid = func() error {
+			var instance any
+			if err := json.Unmarshal(raw, &instance); err != nil {
+				return err
+			}
+			resolved, err := inputSchema.Resolve(nil)
+			if err != nil {
+				return err
+			}
+			return resolved.Validate(instance)
+		}
+	}
+	if err := valid(); err != nil {
 		return &blackboardv2.Error{
 			Code:      "invalid_schema",
 			Message:   "tool arguments do not match the closed input schema",
@@ -189,6 +224,61 @@ func decodeV2ToolArgs(harness *blackboardv2contract.Harness, schemaName string, 
 		}
 	}
 	return nil
+}
+
+// sessionToolInputSchema derives the Session-owned view of the same trusted
+// protocol without adding a second hand-maintained schema. Project Scope is
+// removed recursively from records and patches; owner capability validation
+// still rejects Project-only record types, operations, and relationships.
+func sessionToolInputSchema(source *jsonschema.Schema) *jsonschema.Schema {
+	schema := source.CloneSchemas()
+	var strip func(*jsonschema.Schema)
+	strip = func(current *jsonschema.Schema) {
+		if current == nil {
+			return
+		}
+		delete(current.Properties, "scope_status")
+		required := current.Required[:0]
+		for _, name := range current.Required {
+			if name != "scope_status" {
+				required = append(required, name)
+			}
+		}
+		current.Required = required
+		for _, child := range current.Defs {
+			strip(child)
+		}
+		for _, child := range current.Definitions {
+			strip(child)
+		}
+		for _, child := range current.Properties {
+			strip(child)
+		}
+		for _, child := range current.PatternProperties {
+			strip(child)
+		}
+		for _, child := range current.AllOf {
+			strip(child)
+		}
+		for _, child := range current.AnyOf {
+			strip(child)
+		}
+		for _, child := range current.OneOf {
+			strip(child)
+		}
+		for _, child := range current.PrefixItems {
+			strip(child)
+		}
+		strip(current.Items)
+		strip(current.AdditionalItems)
+		strip(current.Contains)
+		strip(current.Not)
+		strip(current.If)
+		strip(current.Then)
+		strip(current.Else)
+	}
+	strip(schema)
+	return schema
 }
 
 func (deps Deps) callV2(ctx context.Context, requireLive, attachSync bool, action func(context.Context, string, string) (any, error)) (*sdkmcp.CallToolResult, error) {
@@ -213,32 +303,44 @@ func (deps Deps) serveV2(ctx context.Context, requireLive, attachSync bool, requ
 	if !grant.Status().IsReadable() {
 		return toolBlackboardV2Error(blackboardV2AuthError("authority_denied", "Continuation Interface capability is revoked", "authorization"), nil)
 	}
+	if grant.IsSession() {
+		if requireLive {
+			if _, err := deps.BlackboardV2.AuthorizeSessionContinuation(ctx, grant.Owner.SessionID, grant.ContinuationID); err != nil {
+				return toolBlackboardV2Error(asBlackboardV2Error(err), nil)
+			}
+		}
+		result, err := action(ctx, grant.Owner.SessionID, grant.ContinuationID)
+		if err != nil {
+			return toolBlackboardV2Error(asBlackboardV2Error(err), nil)
+		}
+		return toolBlackboardV2JSON(result, nil)
+	}
 	// requireLive gates offline read/current knowledge authority. Mutating tools
 	// that support exact replay pass requireLive=false so stored non-mutating
 	// replays reach the service after Finish/supersession; the service still
 	// rejects changed retries and new writes.
-	authority, err := deps.BlackboardV2.AuthorizeContinuationBinding(ctx, grant.ProjectID, grant.TaskID, grant.ContinuationID, requireLive)
+	authority, err := deps.BlackboardV2.AuthorizeContinuationBinding(ctx, grant.Owner.ProjectID, grant.Owner.TaskID, grant.ContinuationID, requireLive)
 	if err != nil {
 		return toolBlackboardV2Error(asBlackboardV2Error(err), nil)
 	}
 	// Reserve the pending notice before the action when a stable fingerprint exists.
 	if attachSync && strings.TrimSpace(requestFingerprint) != "" && authority.Sync.Pending {
-		if _, claimErr := deps.BlackboardV2.ClaimTrustedSynchronization(ctx, grant.ProjectID, grant.TaskID, grant.ContinuationID, requestFingerprint, authority.Sync); claimErr != nil {
+		if _, claimErr := deps.BlackboardV2.ClaimTrustedSynchronization(ctx, grant.Owner.ProjectID, grant.Owner.TaskID, grant.ContinuationID, requestFingerprint, authority.Sync); claimErr != nil {
 			return toolBlackboardV2Error(asBlackboardV2Error(claimErr), nil)
 		}
 	}
-	result, err := action(ctx, grant.ProjectID, grant.ContinuationID)
+	result, err := action(ctx, grant.Owner.ProjectID, grant.ContinuationID)
 	if err != nil {
 		var sync *blackboardv2.SynchronizationAttachment
 		if attachSync {
-			if attachment, syncErr := deps.BlackboardV2.CaptureTrustedSynchronization(ctx, grant.ProjectID, grant.TaskID, grant.ContinuationID, authority.Sync, authority.Live, requestFingerprint); syncErr == nil {
+			if attachment, syncErr := deps.BlackboardV2.CaptureTrustedSynchronization(ctx, grant.Owner.ProjectID, grant.Owner.TaskID, grant.ContinuationID, authority.Sync, authority.Live, requestFingerprint); syncErr == nil {
 				sync = attachment
 			}
 		}
 		return toolBlackboardV2Error(asBlackboardV2Error(err), sync)
 	}
 	if attachSync {
-		attachment, syncErr := deps.BlackboardV2.CaptureTrustedSynchronization(ctx, grant.ProjectID, grant.TaskID, grant.ContinuationID, authority.Sync, authority.Live, requestFingerprint)
+		attachment, syncErr := deps.BlackboardV2.CaptureTrustedSynchronization(ctx, grant.Owner.ProjectID, grant.Owner.TaskID, grant.ContinuationID, authority.Sync, authority.Live, requestFingerprint)
 		if syncErr != nil {
 			return toolBlackboardV2Error(asBlackboardV2Error(syncErr), nil)
 		}
@@ -246,6 +348,8 @@ func (deps Deps) serveV2(ctx context.Context, requireLive, attachSync bool, requ
 	}
 	return toolBlackboardV2JSON(result, nil)
 }
+
+func (deps Deps) ownerIsSession() bool { return deps.Grant != nil && deps.Grant.IsSession() }
 
 func (deps Deps) requireGrant() (projectinterface.Grant, *blackboardv2.Error) {
 	if deps.Grant != nil {

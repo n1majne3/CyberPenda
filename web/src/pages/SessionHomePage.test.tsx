@@ -57,10 +57,10 @@ const sessionLaunchRoutes = {
   "/api/skills?": { skills: [] },
 };
 
-function renderPage(initialEntries = ["/sessions"]) {
+function renderPage(initialEntries = ["/sessions"], view: "open" | "archived" = "open") {
   return render(
     <MemoryRouter initialEntries={initialEntries}>
-      <SessionHomePage />
+      <SessionHomePage view={view} />
     </MemoryRouter>,
   );
 }
@@ -108,7 +108,7 @@ describe("SessionHomePage", () => {
     });
   });
 
-  it("labels Non-Project Mode and separates open and archived sessions", async () => {
+  it("labels Non-Project Mode and keeps archived Sessions on their own page", async () => {
     mockApi({
       "/api/sessions?lifecycle=archived": {
         sessions: [
@@ -144,13 +144,33 @@ describe("SessionHomePage", () => {
       "href",
       "/sessions/session-open",
     );
-    expect(screen.getByRole("link", { name: /open archived notes session/i })).toHaveAttribute(
-      "href",
-      "/sessions/session-archived",
-    );
+    expect(screen.queryByRole("link", { name: /open archived notes session/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /archived sessions/i })).toHaveAttribute("href", "/sessions/archived");
     expect(screen.getByRole("button", { name: /archive investigate a host/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /restore archived notes/i })).not.toBeInTheDocument();
+  });
+
+  it("renders archived Sessions on the dedicated archive page", async () => {
+    mockApi({
+      "/api/sessions?lifecycle=archived": {
+        sessions: [{
+          id: "session-archived",
+          title: "Archived notes",
+          lifecycle: "archived",
+          created_at: "2026-08-01T02:00:00Z",
+          updated_at: "2026-08-01T02:00:00Z",
+          last_activity_at: "2026-08-01T02:00:00Z",
+        }],
+      },
+    });
+
+    renderPage(["/sessions/archived"], "archived");
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Archived Sessions" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /open archived notes session/i })).toHaveAttribute("href", "/sessions/session-archived");
     expect(screen.getByRole("button", { name: /restore archived notes/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /delete archived notes/i })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /new session/i })).not.toBeInTheDocument();
   });
 
   it("creates a session from the accessible initial-input form", async () => {

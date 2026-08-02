@@ -61,66 +61,33 @@ func (server *Server) observeSessionProviderSession(sessionID, continuationID, p
 	if err != nil || found.RunControls.BlackboardConclusionMode != session.BlackboardConclusionModeAssisted {
 		return
 	}
-	if strings.TrimSpace(continuationID) == "" {
-		return
-	}
-	if lineage.Kind == runtime.RuntimeTurnKindControl {
-		switch observation.Kind {
-		case runtime.ProviderSessionObservationToolUse, runtime.ProviderSessionObservationToolResult:
-			server.acceptSessionBlackboardConclusionControlFailure(sessionID, providerID, lineage)
-		case runtime.ProviderSessionObservationTurnCompleted:
-			server.acceptSessionBlackboardConclusionControlTerminal(sessionID, providerID, lineage, observation.Status)
-		}
-		return
-	}
-	if lineage.Kind != runtime.RuntimeTurnKindWork {
-		return
-	}
-	turnID := strings.TrimSpace(observation.ProviderTurnID)
-	if turnID == "" {
-		return
-	}
-	key := runtime.AssistedConclusionTurnKey{OwnerID: sessionID, ContinuationID: continuationID, ProviderSessionID: strings.TrimSpace(providerID), TurnID: turnID}
-	switch observation.Kind {
-	case runtime.ProviderSessionObservationToolResult:
-		toolCallID := strings.TrimSpace(observation.ToolCallID)
-		toolSemantics, trusted := classifyTrustedBlackboardTool(observation.ToolName)
-		server.sessionBlackboardConclusions.RecordToolResult(key, toolCallID, !trusted,
-			trusted && observation.Status == "succeeded" && toolSemantics == blackboardToolSemanticPersistence)
-		return
-	case runtime.ProviderSessionObservationTurnCompleted:
-		// Completion is handled below after taking a stable snapshot.
-	default:
-		return
-	}
-	state, ok := server.sessionBlackboardConclusions.SnapshotTurn(key)
-	if !ok {
-		return
-	}
-
-	if len(state.CompletedToolCalls) == 0 {
-		server.sessionBlackboardConclusions.DeleteTurn(key)
-		return
-	}
-	receipt, inserted, err := server.sessions.RecordBlackboardConclusionCheckpoint(
-		sessionID, continuationID, lineage.RequestID, key.ProviderSessionID, turnID,
-		session.RuntimeTurnSelection{ModelProviderID: lineage.ModelProviderID, Model: lineage.Model, ReasoningEffort: lineage.RequestedReasoningEffort},
-		session.SemanticDebtWatermarks{SourceWork: state.SourceWorkWatermark, SemanticPersistence: state.SemanticPersistenceWatermark},
-	)
-	if err != nil {
-		server.logger.Printf("assisted conclusion: record pending Session %s Turn %s (retained for retry): %v", sessionID, turnID, err)
-		return
-	}
-	server.sessionBlackboardConclusions.DeleteTurn(key)
-	if inserted && receipt.InternalState == session.BlackboardConclusionReceiptPending && observation.Status != "completed" {
-		if _, _, err := server.sessions.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(receipt.ID, time.Now().UTC(), blackboardConclusionRetryCooldown); err != nil {
-			server.logger.Printf("assisted conclusion: mark failed Work attention Session %s Turn %s: %v", sessionID, turnID, err)
-		}
-		return
-	}
-	if inserted && receipt.InternalState == session.BlackboardConclusionReceiptPending {
-		server.scheduleSessionBlackboardConclusionDispatch(receipt)
-	}
+	observeAssistedConclusion(server.blackboardConclusions, sessionID, continuationID, providerID, lineage, observation, assistedConclusionObservationHooks{
+		ControlFailure: func() { server.acceptSessionBlackboardConclusionControlFailure(sessionID, providerID, lineage) },
+		ControlTerminal: func(status string) {
+			server.acceptSessionBlackboardConclusionControlTerminal(sessionID, providerID, lineage, status)
+		},
+		WorkCompleted: func(state runtime.AssistedConclusionObservedTurn, key runtime.AssistedConclusionTurnKey, status string) (bool, error) {
+			receipt, inserted, err := server.sessions.RecordBlackboardConclusionCheckpoint(
+				sessionID, continuationID, lineage.RequestID, key.ProviderSessionID, key.TurnID,
+				session.RuntimeTurnSelection{ModelProviderID: lineage.ModelProviderID, Model: lineage.Model, ReasoningEffort: lineage.RequestedReasoningEffort},
+				session.SemanticDebtWatermarks{SourceWork: state.SourceWorkWatermark, SemanticPersistence: state.SemanticPersistenceWatermark},
+			)
+			if err != nil {
+				return false, err
+			}
+			if inserted && receipt.InternalState == session.BlackboardConclusionReceiptPending && status != "completed" {
+				_, _, err = server.sessions.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(receipt.ID, time.Now().UTC(), blackboardConclusionRetryCooldown)
+				return true, err
+			}
+			if inserted && receipt.InternalState == session.BlackboardConclusionReceiptPending {
+				server.scheduleSessionBlackboardConclusionDispatch(receipt)
+			}
+			return true, nil
+		},
+		OnError: func(err error) {
+			server.logger.Printf("assisted conclusion: record pending Session %s Turn %s (retained for retry): %v", sessionID, observation.ProviderTurnID, err)
+		},
+	})
 }
 
 func (server *Server) scheduleSessionBlackboardConclusionDispatch(receipt session.BlackboardConclusionReceipt) {
@@ -179,7 +146,7 @@ Do not call tools, continue testing, include raw tool output or reasoning, finis
 
 func (server *Server) sessionBlackboardConclusionCoordinator(sessionID string) runtime.AssistedConclusionCoordinator {
 	return runtime.AssistedConclusionCoordinator{
-		OwnerID: sessionID, Tracker: server.sessionBlackboardConclusions,
+		OwnerID: sessionID, Tracker: server.blackboardConclusions,
 		LoadReceipt: func(requestID string) (runtime.AssistedConclusionReceiptView, error) {
 			receipt, err := server.sessions.BlackboardConclusionByDispatchRequestID(requestID)
 			if err != nil {
@@ -279,7 +246,7 @@ func (server *Server) applySessionBlackboardConclusionResult(ctx context.Context
 		return fmt.Errorf("Session Conclude Turn result correlation mismatch")
 	}
 	if result.Validated.Result.BaseRevision != *receipt.BaseRevision {
-		server.sessionBlackboardConclusions.QueueFailure(result.RequestID, runtime.AssistedConclusionQueuedFailure{OwnerID: sessionID, ProviderSessionID: result.SessionID, ProviderTurnID: result.ProviderTurnID, Code: string(session.BlackboardConclusionErrorInvalidResult)})
+		server.blackboardConclusions.QueueFailure(result.RequestID, runtime.AssistedConclusionQueuedFailure{OwnerID: sessionID, ProviderSessionID: result.SessionID, ProviderTurnID: result.ProviderTurnID, Code: string(session.BlackboardConclusionErrorInvalidResult)})
 		server.drainSessionBlackboardConclusionCallbacks(ctx, sessionID, result.RequestID)
 		return nil
 	}
@@ -308,7 +275,7 @@ func (server *Server) applySessionBlackboardConclusionResult(ctx context.Context
 			}
 			_, _, actionErr := server.sessions.MarkBlackboardConclusionApplyActionRequired(receipt.DispatchRequestID, code, time.Now().UTC(), blackboardConclusionRetryCooldown)
 			if actionErr == nil {
-				server.sessionBlackboardConclusions.ClearRequest(receipt.SessionID, receipt.DispatchRequestID)
+				server.blackboardConclusions.ClearRequest(receipt.SessionID, receipt.DispatchRequestID)
 			}
 			return actionErr
 		}
@@ -316,7 +283,7 @@ func (server *Server) applySessionBlackboardConclusionResult(ctx context.Context
 	}
 	_, _, err = server.sessions.MarkBlackboardConclusionApplied(result.RequestID, applied.Revision)
 	if err == nil {
-		server.sessionBlackboardConclusions.ClearRequest(sessionID, result.RequestID)
+		server.blackboardConclusions.ClearRequest(sessionID, result.RequestID)
 	}
 	return err
 }
@@ -335,7 +302,7 @@ func (server *Server) regenerateSessionBlackboardConclusionAfterVersionConflict(
 	attachment, err := server.blackboardV2.SynchronizeSessionContinuation(ctx, syncIntent.SessionID, syncIntent.ContinuationID, *syncIntent.BaseRevision)
 	if err != nil {
 		_, _, actionErr := server.sessions.MarkBlackboardConclusionApplyActionRequired(syncIntent.DispatchRequestID, session.BlackboardConclusionErrorInvalidResult, time.Now().UTC(), blackboardConclusionRetryCooldown)
-		server.sessionBlackboardConclusions.ClearRequest(syncIntent.SessionID, syncIntent.DispatchRequestID)
+		server.blackboardConclusions.ClearRequest(syncIntent.SessionID, syncIntent.DispatchRequestID)
 		if actionErr != nil {
 			return fmt.Errorf("synchronize Session Working Snapshot: %v; require operator action: %w", err, actionErr)
 		}
@@ -345,7 +312,7 @@ func (server *Server) regenerateSessionBlackboardConclusionAfterVersionConflict(
 	if err != nil {
 		return err
 	}
-	server.sessionBlackboardConclusions.ClearRequest(syncIntent.SessionID, syncIntent.DispatchRequestID)
+	server.blackboardConclusions.ClearRequest(syncIntent.SessionID, syncIntent.DispatchRequestID)
 	if !won || regeneration.InternalState != session.BlackboardConclusionReceiptVersionRegenerationDispatchRequested {
 		return nil
 	}
@@ -445,7 +412,7 @@ func (server *Server) reconcileValidatedSessionBlackboardConclusionApply(ctx con
 	if err == nil {
 		_, _, markErr := server.sessions.MarkBlackboardConclusionApplied(receipt.DispatchRequestID, applied.Revision)
 		if markErr == nil {
-			server.sessionBlackboardConclusions.ClearRequest(receipt.SessionID, receipt.DispatchRequestID)
+			server.blackboardConclusions.ClearRequest(receipt.SessionID, receipt.DispatchRequestID)
 		}
 		return markErr
 	}

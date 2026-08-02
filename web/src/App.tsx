@@ -187,6 +187,7 @@ function createAppRouter() {
       children: [
         { path: "/", element: <ProjectListPage /> },
         { path: "/sessions", element: <SessionHomePage /> },
+        { path: "/sessions/archived", element: <SessionHomePage view="archived" /> },
         { path: "/sessions/:sessionId", element: <SessionDetailPage /> },
         { path: "/profiles", element: <RuntimeProfilesPage /> },
         { path: "/model-providers", element: <ModelProvidersPage /> },

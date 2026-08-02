@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"pentest/internal/credential"
+	"pentest/internal/owner"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/store"
@@ -45,7 +46,7 @@ func TestProjectClaudeSettingsWritesEnvAndMaterializedCredentials(t *testing.T) 
 	}
 
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
-		ProjectID:   "project-1",
+		Owner:       owner.NewTaskContract("task-claude", "project-1", layout.Workdir),
 		Credentials: creds,
 	})
 	if err != nil {
@@ -149,7 +150,7 @@ func TestProjectClaudeSettingsWritesCatalogExtensionPlugins(t *testing.T) {
 	}
 
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
-		ProjectID: "project-1",
+		Owner: owner.NewTaskContract("task-claude", "project-1", layout.Workdir),
 	})
 	if err != nil {
 		t.Fatalf("project config: %v", err)

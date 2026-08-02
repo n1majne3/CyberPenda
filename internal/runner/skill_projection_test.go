@@ -117,11 +117,11 @@ func TestProjectRuntimeConfigProjectsBuiltinSkillsWithSourceFreeFolderNames(t *t
 
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
 		SkillBundles: []skill.Bundle{{
-				ID:     "cyberstrikeai-vulnerabilities-xss",
-				Name:   "cyberstrikeai-vulnerabilities-xss",
-				Source: skill.SourceProvenance{Kind: "builtin"},
-				Path:   sourceDir,
-			}},
+			ID:     "cyberstrikeai-vulnerabilities-xss",
+			Name:   "cyberstrikeai-vulnerabilities-xss",
+			Source: skill.SourceProvenance{Kind: "builtin"},
+			Path:   sourceDir,
+		}},
 	})
 	if err != nil {
 		t.Fatalf("project runtime config: %v", err)

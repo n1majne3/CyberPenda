@@ -150,6 +150,21 @@ func TestBuildNativeResumeArgsUsesRuntimePluginContract(t *testing.T) {
 	}
 }
 
+func TestBuildLaunchOrResumeArgsSelectsNativeResumeFromDurableIdentity(t *testing.T) {
+	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderCodex, Fields: runtimeprofile.Fields{BinaryPath: "codex"}}
+	args, err := adapters.BuildLaunchOrResumeArgs(adapters.LaunchArgsRequest{
+		Provider: runtimeprofile.ProviderCodex, Profile: profile, Goal: "continue",
+		ConfigPath: "/runtime/config.toml", MCPConfigPath: "/runtime/mcp.json",
+	}, "native-session-1")
+	if err != nil {
+		t.Fatalf("build launch or resume args: %v", err)
+	}
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "resume") || !strings.Contains(joined, "native-session-1") {
+		t.Fatalf("native resume argv = %#v", args)
+	}
+}
+
 func TestBuildNativeResumeArgsUsesClaudeCodeRuntimePluginContract(t *testing.T) {
 	args, err := adapters.BuildNativeResumeArgs(adapters.NativeResumeArgsRequest{
 		Provider: runtimeprofile.ProviderClaudeCode,

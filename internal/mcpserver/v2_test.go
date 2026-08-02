@@ -17,6 +17,7 @@ import (
 	"pentest/internal/project"
 	"pentest/internal/projectinterface"
 	"pentest/internal/runtimeprofile"
+	"pentest/internal/session"
 	"pentest/internal/store"
 	"pentest/internal/task"
 )
@@ -28,6 +29,60 @@ var wantV2TrustedTools = []string{
 	"blackboard_retain_evidence",
 	"blackboard_checkpoint_attempt",
 	"blackboard_finish",
+}
+
+func TestTrustedMCPUsesTheSameToolsForASessionContinuation(t *testing.T) {
+	fixture := newV2MCPFixture(t)
+	sessions := session.NewService(fixture.db, filepath.Join(fixture.root, "sessions"))
+	created, err := sessions.Create(session.CreateRequest{Input: "explore without a project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation, err := sessions.CreateContinuation(created.ID, fixture.profile.ID, string(fixture.profile.Provider), session.RunnerSandbox, map[string]any{"provider": "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.board.BindSessionContinuation(context.Background(), created.ID, continuation.ID); err != nil {
+		t.Fatal(err)
+	}
+	grants := projectinterface.NewGrantStore(fixture.db, projectinterface.SystemClock{}, projectinterface.RandomIDSource{}, projectinterface.RandomTokenSource{})
+	token, _, err := grants.IssueSession(context.Background(), projectinterface.IssueSessionGrantRequest{
+		SessionID: created.ID, ContinuationID: continuation.ID,
+		RuntimeConfigVersionID: continuation.RuntimeConfigID,
+		RuntimeProfileID:       continuation.RuntimeProfileID,
+		RuntimePluginID:        string(fixture.profile.Provider), Runner: string(continuation.Runner),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := grants.Resolve(context.Background(), token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := fixture.session(t, &grant, nil)
+	listed, err := client.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range listed.Tools {
+		if tool.Name != "blackboard_change" {
+			continue
+		}
+		schema, _ := json.Marshal(tool.InputSchema)
+		if bytes.Contains(schema, []byte(`"scope_status"`)) {
+			t.Fatalf("Session tool schema advertises Project Scope: %s", schema)
+		}
+	}
+	change := blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "session-mcp-create",
+		Changes: []blackboardv2.Change{{Op: "create", Key: "entity:target", Type: "entity", Record: blackboardv2.SessionEntityRecord{Status: "active", Kind: "host", Name: "target"}}},
+	}
+	if result, raw := callV2Tool(t, client, "blackboard_change", change); result.IsError {
+		t.Fatalf("Session blackboard_change failed: %s", raw)
+	}
+	if _, err := fixture.board.ReadSessionCurrent(context.Background(), created.ID, "entity:target"); err != nil {
+		t.Fatalf("read Session record: %v", err)
+	}
 }
 
 type v2MCPFixture struct {

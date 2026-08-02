@@ -23,8 +23,9 @@ func TestSessionHTTPLifecycleAndOwnerIsolation(t *testing.T) {
 		SessionRoot:          sessionRoot,
 		DisableBuiltinSkills: true,
 	})
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 
-	created := postSession(t, server, `{"input":"\n  Check the admin panel\nwith more context"}`)
+	created := postSession(t, server, `{"input":"\n  Check the admin panel\nwith more context","runtime_profile_id":"`+profileID+`","runner":"sandbox"}`)
 	if created.Title != "Check the admin panel" || created.Lifecycle != "open" {
 		t.Fatalf("created Session = %#v", created)
 	}
@@ -95,9 +96,10 @@ func TestCreateSessionMultipartCopiesSafeAttachmentReferencesToEvents(t *testing
 		Version: "test-version", DBPath: filepath.Join(t.TempDir(), "pentest.db"),
 		SessionRoot: sessionRoot, DisableBuiltinSkills: true,
 	})
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	if err := writer.WriteField("payload", `{"input":"Review the attached files"}`); err != nil {
+	if err := writer.WriteField("payload", `{"input":"Review the attached files","runtime_profile_id":"`+profileID+`","runner":"sandbox"}`); err != nil {
 		t.Fatalf("write payload: %v", err)
 	}
 	for _, name := range []string{"../notes.txt", "notes.txt"} {
@@ -126,10 +128,16 @@ func TestCreateSessionMultipartCopiesSafeAttachmentReferencesToEvents(t *testing
 	assertSessionFile(t, filepath.Join(workdir, "notes-1.txt"), "notes.txt")
 
 	events := getSessionEvents(t, server, created.ID)
-	if len(events) != 3 || events[1].Kind != "attachment" || events[2].Kind != "attachment" {
+	attachments := make([]sessionEventJSON, 0, 2)
+	for _, event := range events {
+		if event.Kind == "attachment" {
+			attachments = append(attachments, event)
+		}
+	}
+	if len(attachments) != 2 {
 		t.Fatalf("Session Events = %#v", events)
 	}
-	for _, event := range events[1:] {
+	for _, event := range attachments {
 		if event.Payload["relative_path"] == nil || event.Payload["sha256"] == nil {
 			t.Fatalf("attachment Event lacks safe metadata: %#v", event.Payload)
 		}
@@ -154,6 +162,43 @@ func TestSessionHTTPRequiresTheDaemonAuthenticationBoundary(t *testing.T) {
 	server.ServeHTTP(authorized, request)
 	if authorized.Code != http.StatusOK {
 		t.Fatalf("authorized Session list status = %d, body=%s", authorized.Code, authorized.Body.String())
+	}
+}
+
+func TestSessionListAcceptsLimitAndRejectsInvalidLimit(t *testing.T) {
+	server := newDaemonWithConfig(t, daemon.Config{
+		Version: "test-version", DBPath: filepath.Join(t.TempDir(), "pentest.db"),
+		SessionRoot: filepath.Join(t.TempDir(), "managed-sessions"), DisableBuiltinSkills: true,
+	})
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
+	for _, input := range []string{"one", "two", "three"} {
+		postSession(t, server, `{"input":"`+input+`","runtime_profile_id":"`+profileID+`","runner":"sandbox"}`)
+	}
+
+	if got := getSessions(t, server, "/api/sessions?limit=2"); len(got) != 2 {
+		t.Fatalf("limited Session response = %d, want 2", len(got))
+	}
+	invalid := httptest.NewRecorder()
+	server.ServeHTTP(invalid, httptest.NewRequest(http.MethodGet, "/api/sessions?limit=nope", nil))
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("invalid limit status = %d, body=%s", invalid.Code, invalid.Body.String())
+	}
+}
+
+func TestCreateSessionRejectsMissingLaunchSelectionWithoutPersistingASession(t *testing.T) {
+	server := newDaemonWithConfig(t, daemon.Config{
+		Version: "test-version", DBPath: filepath.Join(t.TempDir(), "pentest.db"),
+		SessionRoot: filepath.Join(t.TempDir(), "managed-sessions"), DisableBuiltinSkills: true,
+	})
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/sessions", bytes.NewBufferString(`{"input":"must launch"}`))
+	request.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("missing launch selection status = %d, body=%s", response.Code, response.Body.String())
+	}
+	if got := getSessions(t, server, "/api/sessions"); len(got) != 0 {
+		t.Fatalf("missing launch selection persisted Sessions: %#v", got)
 	}
 }
 

@@ -64,6 +64,24 @@ func BuildLaunchArgs(req LaunchArgsRequest) ([]string, error) {
 	return runtimeplugin.RenderLaunch(plugin.Launch, launchRenderContext(req, binary))
 }
 
+// BuildLaunchOrResumeArgs is the owner-neutral provider command selector used
+// by both Task and Session Runtime launch adapters. A durable native identity
+// must affect the executable argv, not merely be copied to the next
+// Continuation record.
+func BuildLaunchOrResumeArgs(req LaunchArgsRequest, nativeSessionID string) ([]string, error) {
+	if strings.TrimSpace(nativeSessionID) == "" {
+		return BuildLaunchArgs(req)
+	}
+	return BuildNativeResumeArgs(NativeResumeArgsRequest{
+		Provider:        req.Provider,
+		Profile:         req.Profile,
+		NativeSessionID: nativeSessionID,
+		ResumedMessage:  req.Goal,
+		ConfigPath:      req.ConfigPath,
+		MCPConfigPath:   req.MCPConfigPath,
+	})
+}
+
 func BuildNativeResumeArgs(req NativeResumeArgsRequest) ([]string, error) {
 	registry := runtimeplugin.MustBuiltinRegistry()
 	plugin, ok := registry.Get(string(req.Provider))

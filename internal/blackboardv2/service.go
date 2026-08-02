@@ -924,156 +924,112 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 			"next_action":       "synchronize_runtime_blackboard",
 		})
 	}
-	changedRecords := make(map[string]int)
-	changedRelations := make(map[string]RelationVersionTuple)
-	createdThisBatch := make(map[string]bool)
 	runtimeConfirmedFacts := make(map[string]string)
 	runtimeCreatedAttempts := make(map[string]string)
-	terminalAttempts := make(map[string]terminalAttemptValidation)
 	dependentConfirmedFacts := make(map[string]string)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	for index, change := range batch.Changes {
-		change, err = resolveChangeRedirects(ctx, tx, projectID, change)
-		if err != nil {
-			return ChangeResult{}, err
-		}
-		if change.Op == "transition" && isOneOf(change.Status, "verified", "rejected") {
-			if err := ensureCTFProject(ctx, tx, projectID, fmt.Sprintf("changes[%d].status", index)); err != nil {
-				return ChangeResult{}, err
-			}
-		}
-		if continuationID != "" {
-			if err := validateContinuationChangeOwnership(ctx, tx, projectID, continuationID, change, index); err != nil {
-				return ChangeResult{}, err
-			}
-		}
-		if change.Op == "transition" && change.Status == "missing" {
-			if err := collectEvidenceDependentConfirmedFacts(ctx, tx, projectID, change.Key, fmt.Sprintf("changes[%d].status", index), dependentConfirmedFacts); err != nil {
-				return ChangeResult{}, err
-			}
-		}
-		if change.Op == "transition" && change.Status == "tentative" {
-			if err := collectSupportingFactDependentConfirmedFacts(ctx, tx, projectID, change.Key, fmt.Sprintf("changes[%d].status", index), dependentConfirmedFacts); err != nil {
-				return ChangeResult{}, err
-			}
-		}
-		if change.Op == "supersede" {
-			if err := collectEvidenceDependentConfirmedFacts(ctx, tx, projectID, change.Replaced, fmt.Sprintf("changes[%d].replaced", index), dependentConfirmedFacts); err != nil {
-				return ChangeResult{}, err
-			}
-			if err := collectSupportingFactDependentConfirmedFacts(ctx, tx, projectID, change.Replaced, fmt.Sprintf("changes[%d].replaced", index), dependentConfirmedFacts); err != nil {
-				return ChangeResult{}, err
-			}
-		}
-		if change.Op == "merge" {
-			if err := collectEvidenceDependentConfirmedFacts(ctx, tx, projectID, change.Source, fmt.Sprintf("changes[%d].source", index), dependentConfirmedFacts); err != nil {
-				return ChangeResult{}, err
-			}
-			if err := collectSupportingFactDependentConfirmedFacts(ctx, tx, projectID, change.Source, fmt.Sprintf("changes[%d].source", index), dependentConfirmedFacts); err != nil {
-				return ChangeResult{}, err
-			}
-		}
-		if change.Op == "unrelate" && change.Relation == "evidences" {
-			if err := collectEvidenceDependentConfirmedFacts(ctx, tx, projectID, change.From, fmt.Sprintf("changes[%d].relation", index), dependentConfirmedFacts); err != nil {
-				return ChangeResult{}, err
-			}
-		}
-		if change.Op == "unrelate" && change.Relation == "supports" {
-			if err := collectSupportingFactDependentConfirmedFacts(ctx, tx, projectID, change.From, fmt.Sprintf("changes[%d].relation", index), dependentConfirmedFacts); err != nil {
-				return ChangeResult{}, err
-			}
-		}
-		switch change.Op {
-		case "create":
-			newRevision, key, version, changed, err := applyCreateRecord(ctx, tx, projectID, revision, index, change, now)
+	kernel, err := applySemanticChangeSet(ctx, tx, revision, batch.Changes, now, semanticChangeBackend{
+		prepare: func(ctx context.Context, tx *sql.Tx, change Change, index int) (Change, error) {
+			change, err := resolveChangeRedirects(ctx, tx, projectID, change)
 			if err != nil {
-				return ChangeResult{}, err
+				return Change{}, err
 			}
-			if changed {
-				revision = newRevision
-				changedRecords[key] = version
-				createdThisBatch[key] = true
-				if continuationID != "" && change.Type == "fact" {
-					created, err := loadCurrentRecord(ctx, tx, projectID, key)
-					if err != nil {
-						return ChangeResult{}, err
-					}
-					if created.record.factRecord().Confidence == "confirmed" {
-						runtimeConfirmedFacts[key] = fmt.Sprintf("changes[%d].record.confidence", index)
-					}
-				}
-				if continuationID != "" && change.Type == "attempt" {
-					if err := bindAttemptOrigin(ctx, tx, projectID, key, continuationID, now); err != nil {
-						return ChangeResult{}, err
-					}
-					runtimeCreatedAttempts[key] = fmt.Sprintf("changes[%d]", index)
+			if change.Op == "transition" && isOneOf(change.Status, "verified", "rejected") {
+				if err := ensureCTFProject(ctx, tx, projectID, fmt.Sprintf("changes[%d].status", index)); err != nil {
+					return Change{}, err
 				}
 			}
-		case "update":
-			newRevision, key, version, changed, err := applyUpdateRecord(ctx, tx, projectID, revision, index, change, now)
-			if err != nil {
-				return ChangeResult{}, err
-			}
-			if changed {
-				revision = newRevision
-				changedRecords[key] = version
-			}
-		case "relate":
-			newRevision, tuple, changed, err := applyRelate(ctx, tx, projectID, revision, index, change, now)
-			if err != nil {
-				return ChangeResult{}, err
-			}
-			if changed {
-				revision = newRevision
-				changedRelations[relationKey(tuple)] = tuple
-			}
-		case "unrelate":
-			newRevision, tuple, err := applyUnrelate(ctx, tx, projectID, revision, index, change, now)
-			if err != nil {
-				return ChangeResult{}, err
-			}
-			revision = newRevision
-			changedRelations[relationKey(tuple)] = tuple
-		case "transition":
-			newRevision, key, version, changed, err := applyTransition(ctx, tx, projectID, revision, index, change, now)
-			if err != nil {
-				return ChangeResult{}, err
-			}
-			if changed {
-				revision = newRevision
-				changedRecords[key] = version
-				if isOneOf(change.Status, "succeeded", "failed", "blocked", "inconclusive") {
-					terminalAttempts[key] = terminalAttemptValidation{status: change.Status, path: fmt.Sprintf("changes[%d].status", index)}
-				}
-				if continuationID != "" && change.Status == "confirmed" {
-					runtimeConfirmedFacts[key] = fmt.Sprintf("changes[%d].status", index)
+			if continuationID != "" {
+				if err := validateContinuationChangeOwnership(ctx, tx, projectID, continuationID, change, index); err != nil {
+					return Change{}, err
 				}
 			}
-		case "supersede":
-			newRevision, key, version, tuple, changed, err := applySupersede(ctx, tx, projectID, revision, index, change, createdThisBatch, now)
-			if err != nil {
-				return ChangeResult{}, err
+			if change.Op == "transition" && change.Status == "missing" {
+				if err := collectEvidenceDependentConfirmedFacts(ctx, tx, projectID, change.Key, fmt.Sprintf("changes[%d].status", index), dependentConfirmedFacts); err != nil {
+					return Change{}, err
+				}
 			}
-			if changed {
-				revision = newRevision
-				changedRecords[key] = version
-				changedRelations[relationKey(tuple)] = tuple
+			if change.Op == "transition" && change.Status == "tentative" {
+				if err := collectSupportingFactDependentConfirmedFacts(ctx, tx, projectID, change.Key, fmt.Sprintf("changes[%d].status", index), dependentConfirmedFacts); err != nil {
+					return Change{}, err
+				}
 			}
-		case "merge":
-			newRevision, key, version, tuples, err := applyMerge(ctx, tx, projectID, revision, index, change, now)
-			if err != nil {
-				return ChangeResult{}, err
+			if change.Op == "supersede" || change.Op == "merge" {
+				key, field := change.Replaced, "replaced"
+				if change.Op == "merge" {
+					key, field = change.Source, "source"
+				}
+				if err := collectEvidenceDependentConfirmedFacts(ctx, tx, projectID, key, fmt.Sprintf("changes[%d].%s", index, field), dependentConfirmedFacts); err != nil {
+					return Change{}, err
+				}
+				if err := collectSupportingFactDependentConfirmedFacts(ctx, tx, projectID, key, fmt.Sprintf("changes[%d].%s", index, field), dependentConfirmedFacts); err != nil {
+					return Change{}, err
+				}
 			}
-			revision = newRevision
-			changedRecords[key] = version
-			for _, tuple := range tuples {
-				changedRelations[relationKey(tuple)] = tuple
+			if change.Op == "unrelate" && change.Relation == "evidences" {
+				if err := collectEvidenceDependentConfirmedFacts(ctx, tx, projectID, change.From, fmt.Sprintf("changes[%d].relation", index), dependentConfirmedFacts); err != nil {
+					return Change{}, err
+				}
 			}
-		default:
-			return ChangeResult{}, semanticError("semantic_validation", "unsupported Blackboard v2 operation", fmt.Sprintf("changes[%d].op", index), nil)
-		}
+			if change.Op == "unrelate" && change.Relation == "supports" {
+				if err := collectSupportingFactDependentConfirmedFacts(ctx, tx, projectID, change.From, fmt.Sprintf("changes[%d].relation", index), dependentConfirmedFacts); err != nil {
+					return Change{}, err
+				}
+			}
+			return change, nil
+		},
+		create: func(ctx context.Context, tx *sql.Tx, revision, index int, change Change, now string) (int, string, int, bool, error) {
+			return applyCreateRecord(ctx, tx, projectID, revision, index, change, now)
+		},
+		update: func(ctx context.Context, tx *sql.Tx, revision, index int, change Change, now string) (int, string, int, bool, error) {
+			return applyUpdateRecord(ctx, tx, projectID, revision, index, change, now)
+		},
+		relate: func(ctx context.Context, tx *sql.Tx, revision, index int, change Change, now string) (int, RelationVersionTuple, bool, error) {
+			return applyRelate(ctx, tx, projectID, revision, index, change, now)
+		},
+		unrelate: func(ctx context.Context, tx *sql.Tx, revision, index int, change Change, now string) (int, RelationVersionTuple, error) {
+			return applyUnrelate(ctx, tx, projectID, revision, index, change, now)
+		},
+		transition: func(ctx context.Context, tx *sql.Tx, revision, index int, change Change, now string) (int, string, int, bool, error) {
+			return applyTransition(ctx, tx, projectID, revision, index, change, now)
+		},
+		supersede: func(ctx context.Context, tx *sql.Tx, revision, index int, change Change, created map[string]bool, now string) (int, string, int, RelationVersionTuple, bool, error) {
+			return applySupersede(ctx, tx, projectID, revision, index, change, created, now)
+		},
+		merge: func(ctx context.Context, tx *sql.Tx, revision, index int, change Change, now string) (int, string, int, []RelationVersionTuple, error) {
+			return applyMerge(ctx, tx, projectID, revision, index, change, now)
+		},
+		after: func(ctx context.Context, tx *sql.Tx, index int, change Change, outcome semanticChangeOutcome) error {
+			if !outcome.Changed || continuationID == "" {
+				return nil
+			}
+			if change.Op == "create" && change.Type == "fact" {
+				created, err := loadCurrentRecord(ctx, tx, projectID, outcome.Key)
+				if err != nil {
+					return err
+				}
+				if created.record.factRecord().Confidence == "confirmed" {
+					runtimeConfirmedFacts[outcome.Key] = fmt.Sprintf("changes[%d].record.confidence", index)
+				}
+			}
+			if change.Op == "create" && change.Type == "attempt" {
+				if err := bindAttemptOrigin(ctx, tx, projectID, outcome.Key, continuationID, now); err != nil {
+					return err
+				}
+				runtimeCreatedAttempts[outcome.Key] = fmt.Sprintf("changes[%d]", index)
+			}
+			if change.Op == "transition" && change.Status == "confirmed" {
+				runtimeConfirmedFacts[outcome.Key] = fmt.Sprintf("changes[%d].status", index)
+			}
+			return nil
+		},
+		unsupported: "unsupported Blackboard v2 operation",
+	})
+	if err != nil {
+		return ChangeResult{}, err
 	}
-	if err := validateFinalTerminalAttempts(ctx, tx, projectID, terminalAttempts); err != nil {
+	revision = kernel.Revision
+	if err := validateFinalTerminalAttempts(ctx, tx, projectID, kernel.TerminalAttempts); err != nil {
 		return ChangeResult{}, err
 	}
 	if continuationID != "" {
@@ -1144,7 +1100,7 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 			return ChangeResult{}, err
 		}
 	}
-	result := makeChangeResult(revision, changedRecords, changedRelations)
+	result := makeChangeResult(revision, kernel.ChangedRecords, kernel.ChangedRelations)
 	resultJSON, err := json.Marshal(result)
 	if err != nil {
 		return ChangeResult{}, fmt.Errorf("encode idempotency result: %w", err)

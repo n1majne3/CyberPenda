@@ -933,8 +933,32 @@ func migrations() []migration {
 		newMigration(46, "session_runtime_continuations", migration46SQL, migration46Up),
 		newMigration(47, "session_blackboard_v2", migration47SQL, migration47Up),
 		newMigration(48, "session_assisted_conclusion_receipts", migration48SQL, migration48Up),
+		newMigration(49, "session_continuation_interface_grants", migration49SQL, migration49Up),
 	}
 }
+
+const migration49SQL = `
+CREATE TABLE IF NOT EXISTS session_continuation_interface_grants (
+ grant_id TEXT PRIMARY KEY,
+ token_hash TEXT NOT NULL UNIQUE,
+ session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+ continuation_id TEXT NOT NULL REFERENCES session_continuations(id) ON DELETE CASCADE,
+ runtime_config_version_id TEXT NOT NULL,
+ runtime_profile_id TEXT NOT NULL,
+ runtime_plugin_id TEXT NOT NULL,
+ runner TEXT NOT NULL,
+ actor_id TEXT NOT NULL,
+ issued_at TEXT NOT NULL,
+ finished_at TEXT NOT NULL DEFAULT '',
+ revoked_at TEXT NOT NULL DEFAULT '',
+ terminal_at TEXT NOT NULL DEFAULT '',
+ CHECK (token_hash <> '')
+);
+CREATE INDEX IF NOT EXISTS idx_session_continuation_interface_grants_continuation
+	ON session_continuation_interface_grants (continuation_id);
+`
+
+func migration49Up(tx *sql.Tx) error { return execStatements(tx, migration49SQL) }
 
 const migration48SQL = `
 CREATE TABLE IF NOT EXISTS session_assisted_conclusion_receipts (

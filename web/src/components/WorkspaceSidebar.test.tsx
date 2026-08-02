@@ -53,6 +53,73 @@ afterEach(() => {
 });
 
 describe("WorkspaceSidebar", () => {
+  it("shows durable Runtime failures instead of collapsing them into offline", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/projects") return response({ projects: [project("project-active", "Project", "2026-08-01T00:00:00Z")] });
+        if (url === "/api/projects/project-active/tasks") {
+          return response({
+            tasks: [{ ...task("task-failed", "Failed task", "2026-08-01T00:00:00Z", { liveness: "offline" }), status: "failed" }],
+          });
+        }
+        if (url === "/api/sessions?limit=5") {
+          return response({
+            sessions: [{
+              ...session("session-failed", "Failed session", "2026-08-01T00:00:00Z"),
+              runtime_activity: { liveness: "offline" },
+              latest_continuation: { status: "failed" },
+            }],
+          });
+        }
+        return response({});
+      }),
+    );
+
+    const user = userEvent.setup();
+    render(
+      <ThemeProvider>
+        <MemoryRouter initialEntries={["/sessions"]}>
+          <WorkspaceSidebar />
+        </MemoryRouter>
+      </ThemeProvider>,
+    );
+
+    const nonProject = await screen.findByRole("region", { name: /non-project/i });
+    expect(within(nonProject).getByRole("link", { name: /failed session.*runtime failure/i })).toBeInTheDocument();
+    const projectRegion = screen.getByRole("region", { name: /open project project dashboard/i });
+    await user.click(within(projectRegion).getByRole("button", { name: /expand project/i }));
+    expect(await within(projectRegion).findByRole("link", { name: /failed task.*runtime failure/i })).toBeInTheDocument();
+  });
+
+  it("does not force an archived current Session into the open Non-project tree", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/projects") return response({ projects: [] });
+        if (url === "/api/sessions?limit=5") return response({ sessions: [] });
+        if (url === "/api/sessions/session-archived") {
+          return response({
+            ...session("session-archived", "Archived session", "2026-08-01T00:00:00Z"),
+            lifecycle: "archived",
+          });
+        }
+        return response({});
+      }),
+    );
+    render(
+      <ThemeProvider>
+        <MemoryRouter initialEntries={["/sessions/session-archived"]}>
+          <WorkspaceSidebar />
+        </MemoryRouter>
+      </ThemeProvider>,
+    );
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/sessions/session-archived", expect.anything()));
+    expect(screen.queryByRole("link", { name: /archived session/i })).not.toBeInTheDocument();
+  });
+
   it("shows recent work, promotes busy tasks, and keeps current owners visible", async () => {
     const activeTasks = [
       task("task-busy", "Busy task", "2026-07-20T00:00:00Z", { liveness: "live", turn_activity: "busy" }),
@@ -77,7 +144,7 @@ describe("WorkspaceSidebar", () => {
         const url = String(input);
         if (url === "/api/projects") return response({ projects: [project("project-active", "Active project", "2026-07-01T00:00:00Z")] });
         if (url === "/api/projects/project-active/tasks") return response({ tasks: activeTasks });
-        if (url === "/api/sessions") return response({ sessions });
+        if (url === "/api/sessions?limit=5") return response({ sessions });
         return response({});
       }),
     );
@@ -106,7 +173,6 @@ describe("WorkspaceSidebar", () => {
       "Recent task 1 task conversation",
       "Recent task 2 task conversation",
       "Recent task 3 task conversation",
-      "Recent task 4 task conversation",
       "Current task task conversation",
     ]);
     expect(within(projectRegion).getByRole("link", { name: /current task/i })).toHaveAttribute(
@@ -128,7 +194,7 @@ describe("WorkspaceSidebar", () => {
         const url = String(input);
         if (url === "/api/projects") return response({ projects: [project("project-1", "Project one", "2026-08-01T00:00:00Z")] });
         if (url === "/api/projects/project-1/tasks") return response({ tasks: [] });
-        if (url === "/api/sessions") return response({ sessions: [session("session-1", "Session one", "2026-08-01T00:00:00Z")] });
+        if (url === "/api/sessions?limit=5") return response({ sessions: [session("session-1", "Session one", "2026-08-01T00:00:00Z")] });
         return response({});
       }),
     );
@@ -167,7 +233,7 @@ describe("WorkspaceSidebar", () => {
     expect(within(menu).queryByRole("menuitem", { name: /delete|restore/i })).not.toBeInTheDocument();
   });
 
-  it("promotes busy sessions and force-includes the current session outside the recent five", async () => {
+  it("promotes busy sessions and force-includes the current session within the five-item cap", async () => {
     const sessions = [
       session("session-idle-1", "Idle session 1", "2026-07-31T00:00:00Z"),
       session("session-idle-2", "Idle session 2", "2026-07-30T00:00:00Z"),
@@ -185,7 +251,7 @@ describe("WorkspaceSidebar", () => {
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
         if (url === "/api/projects") return response({ projects: [] });
-        if (url === "/api/sessions") return response({ sessions });
+        if (url === "/api/sessions?limit=5") return response({ sessions });
         return response({});
       }),
     );
@@ -205,7 +271,6 @@ describe("WorkspaceSidebar", () => {
       "Idle session 1 session conversation",
       "Idle session 2 session conversation",
       "Idle session 3 session conversation",
-      "Idle session 4 session conversation",
       "Current session session conversation",
     ]);
     expect(within(nonProject).getByRole("img", { name: "Runtime busy" })).toBeInTheDocument();
@@ -225,7 +290,7 @@ describe("WorkspaceSidebar", () => {
         if (url === "/api/projects") return response({ projects: [newerProjectWithoutRecentTask, olderProjectWithRecentTask] });
         if (url === "/api/projects/project-old/tasks") return response({ tasks: [recentTask] });
         if (url === "/api/projects/project-new/tasks") return response({ tasks: [] });
-        if (url === "/api/sessions") return response({ sessions: [] });
+        if (url === "/api/sessions?limit=5") return response({ sessions: [] });
         return response({});
       }),
     );
@@ -252,7 +317,7 @@ describe("WorkspaceSidebar", () => {
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
         if (url === "/api/projects") return Promise.reject(new Error("projects unavailable"));
-        if (url === "/api/sessions") return response({ sessions: [] });
+        if (url === "/api/sessions?limit=5") return response({ sessions: [] });
         return response({});
       }),
     );

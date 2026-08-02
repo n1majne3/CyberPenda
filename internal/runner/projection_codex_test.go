@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"pentest/internal/credential"
+	"pentest/internal/owner"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/store"
@@ -44,7 +45,7 @@ func TestProjectCodexConfigWritesConfigTomlAndAuth(t *testing.T) {
 	}
 
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
-		ProjectID:   "project-1",
+		Owner:       owner.NewTaskContract("task-codex", "project-1", layout.Workdir),
 		Credentials: creds,
 	})
 	if err != nil {

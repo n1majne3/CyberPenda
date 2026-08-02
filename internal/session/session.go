@@ -5,6 +5,7 @@
 package session
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -290,6 +291,7 @@ var (
 	ErrMissingInput                    = errors.New("session initial input is required")
 	ErrMissingTitle                    = errors.New("session title is required")
 	ErrInvalidLifecycle                = errors.New("invalid session lifecycle")
+	ErrInvalidLimit                    = errors.New("session list limit must not be negative")
 	ErrAlreadyArchived                 = errors.New("session is already archived")
 	ErrNotArchived                     = errors.New("session is not archived")
 	ErrOpenSession                     = errors.New("open session cannot be deleted")
@@ -306,8 +308,16 @@ var (
 
 // Service implements Session persistence and lifecycle rules against SQLite.
 type Service struct {
-	db          *store.DB
-	workdirRoot string
+	db             *store.DB
+	workdirRoot    string
+	removeAll      func(string) error
+	terminalMarker ContinuationTerminalMarker
+}
+
+// ContinuationTerminalMarker closes capabilities bound to a terminal Session
+// Continuation through the same lifecycle projection used by Tasks.
+type ContinuationTerminalMarker interface {
+	MarkContinuationTerminal(context.Context, string) error
 }
 
 // NewService returns a Session service whose Workdirs are created directly
@@ -319,7 +329,61 @@ func NewService(db *store.DB, workdirRoot string) *Service {
 	if absolute, err := filepath.Abs(workdirRoot); err == nil {
 		workdirRoot = absolute
 	}
-	return &Service{db: db, workdirRoot: filepath.Clean(workdirRoot)}
+	return &Service{db: db, workdirRoot: filepath.Clean(workdirRoot), removeAll: os.RemoveAll}
+}
+
+func (s *Service) SetContinuationTerminalMarker(marker ContinuationTerminalMarker) {
+	s.terminalMarker = marker
+}
+
+// CleanupDeletedWorkdirs retries filesystem cleanup for Sessions whose
+// logical deletion already committed. The quarantined directory name is the
+// durable retry marker, so a daemon restart cannot strand an unrecoverable
+// half-deleted Session.
+func (s *Service) CleanupDeletedWorkdirs() error {
+	entries, err := os.ReadDir(s.workdirRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("list Session cleanup markers: %w", err)
+	}
+	var cleanupErr error
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), ".deleting-") {
+			continue
+		}
+		path := filepath.Join(s.workdirRoot, entry.Name())
+		sessionID := strings.TrimPrefix(entry.Name(), ".deleting-")
+		var storedWorkdir string
+		err := s.db.QueryRow(`SELECT workdir FROM sessions WHERE id=?`, sessionID).Scan(&storedWorkdir)
+		if err == nil {
+			restorePath, pathErr := s.managedWorkdir(sessionID)
+			if pathErr != nil || filepath.Clean(storedWorkdir) != filepath.Clean(restorePath) {
+				cleanupErr = errors.Join(cleanupErr, ErrInvalidWorkdir)
+				continue
+			}
+			if _, statErr := os.Stat(restorePath); statErr == nil {
+				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("restore %s: target already exists", entry.Name()))
+				continue
+			} else if !errors.Is(statErr, os.ErrNotExist) {
+				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("inspect restore target %s: %w", entry.Name(), statErr))
+				continue
+			}
+			if renameErr := os.Rename(path, restorePath); renameErr != nil {
+				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("restore %s: %w", entry.Name(), renameErr))
+			}
+			continue
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("resolve %s: %w", entry.Name(), err))
+			continue
+		}
+		if err := s.removeAll(path); err != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("remove %s: %w", entry.Name(), err))
+		}
+	}
+	return cleanupErr
 }
 
 // DeriveTitle returns the bounded title from the first non-empty input line.
@@ -436,11 +500,26 @@ func (s *Service) Get(id string) (Session, error) {
 
 // List returns Sessions for one lifecycle in most-recent-activity order.
 func (s *Service) List(lifecycle Lifecycle) ([]Session, error) {
+	return s.ListLimited(lifecycle, 0)
+}
+
+// ListLimited returns Sessions for one lifecycle in most-recent-activity
+// order. A zero limit keeps the unbounded management-page behavior.
+func (s *Service) ListLimited(lifecycle Lifecycle, limit int) ([]Session, error) {
 	lifecycle, err := normalizeLifecycle(lifecycle)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.Query(`SELECT id,title,lifecycle,workdir,blackboard_conclusion_mode,created_at,updated_at,last_activity_at FROM sessions WHERE lifecycle=? ORDER BY last_activity_at DESC, created_at DESC, id ASC`, string(lifecycle))
+	if limit < 0 {
+		return nil, ErrInvalidLimit
+	}
+	query := `SELECT id,title,lifecycle,workdir,blackboard_conclusion_mode,created_at,updated_at,last_activity_at FROM sessions WHERE lifecycle=? ORDER BY last_activity_at DESC, created_at DESC, id ASC`
+	args := []any{string(lifecycle)}
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list Sessions: %w", err)
 	}
@@ -617,9 +696,10 @@ func (s *Service) Delete(id string) error {
 		return fmt.Errorf("commit Session delete: %w", err)
 	}
 	if quarantined {
-		if err := os.RemoveAll(quarantine); err != nil {
-			return fmt.Errorf("remove Session Workdir: %w", err)
-		}
+		// The database commit is the logical deletion boundary. A filesystem
+		// failure leaves the quarantine path as a durable retry marker and must
+		// not turn the already-committed operation into a false API failure.
+		_ = s.removeAll(quarantine)
 	}
 	return nil
 }
@@ -1002,7 +1082,7 @@ func (s *Service) UpdateContinuationStatus(id string, status RuntimeStatus) (Con
 	}
 	if isTerminalRuntimeStatus(found.Status) {
 		if found.Status == status {
-			return found, nil
+			return s.notifyTerminalContinuation(found)
 		}
 		return found, ErrContinuationStatusConflict
 	}
@@ -1020,6 +1100,18 @@ func (s *Service) UpdateContinuationStatus(id string, status RuntimeStatus) (Con
 		return s.Continuation(id)
 	}
 	found.Status, found.UpdatedAt = status, now
+	if isTerminalRuntimeStatus(status) {
+		return s.notifyTerminalContinuation(found)
+	}
+	return found, nil
+}
+
+func (s *Service) notifyTerminalContinuation(found Continuation) (Continuation, error) {
+	if s.terminalMarker != nil {
+		if err := s.terminalMarker.MarkContinuationTerminal(context.Background(), found.ID); err != nil {
+			return found, fmt.Errorf("mark Session continuation capabilities terminal: %w", err)
+		}
+	}
 	return found, nil
 }
 

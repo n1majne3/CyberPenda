@@ -18,6 +18,7 @@ import {
 import {
   apiGet,
   archiveSession,
+  getSession,
   listSessions,
   renameSession,
   type Project,
@@ -74,15 +75,24 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
   const loadSessions = useCallback(async (showLoading = true) => {
     if (showLoading) setSessionLoading(true);
     try {
-      const data = await listSessions();
-      setSessions(data.sessions ?? []);
+      const data = await listSessions(undefined, 5);
+      const loaded = data.sessions ?? [];
+      if (currentSessionId && !loaded.some((session) => session.id === currentSessionId)) {
+        try {
+          const current = await getSession(currentSessionId);
+          if (current.lifecycle === "open") loaded.push(current);
+        } catch {
+          // A stale/deleted route should not hide the remaining recent Sessions.
+        }
+      }
+      setSessions(loaded);
       setSessionError(null);
     } catch (reason) {
       setSessionError((reason as Error).message);
     } finally {
       if (showLoading) setSessionLoading(false);
     }
-  }, []);
+  }, [currentSessionId]);
 
   const loadTasks = useCallback(async (projectId: string, showLoading = true) => {
     setTaskStates((previous) => ({
@@ -435,13 +445,13 @@ function SessionRow({
       <NavLink
         to={`/sessions/${encodeURIComponent(session.id)}`}
         end
-        aria-label={`Open ${session.title} session conversation. ${runtimeActivityState(session.runtime_activity).label}.`}
+        aria-label={`Open ${session.title} session conversation. ${runtimeActivityState(session.runtime_activity, session.latest_continuation?.status === "failed").label}.`}
         onClick={onNavigate}
         className={({ isActive }) => navItemClasses(isActive, "min-w-0 flex-1")}
       >
         {({ isActive }) => (
           <>
-            <RuntimeActivityIndicator activity={session.runtime_activity} />
+            <RuntimeActivityIndicator activity={session.runtime_activity} failed={session.latest_continuation?.status === "failed"} />
             <span className="truncate">{session.title}</span>
             <span className="sr-only"> session conversation</span>
             <ActiveIndicator active={isActive || current} />
@@ -458,13 +468,13 @@ function TaskRow({ task, current, onNavigate }: { task: Task; current: boolean; 
     <NavLink
       to={`/projects/${encodeURIComponent(task.project_id)}/tasks/${encodeURIComponent(task.id)}`}
       end
-      aria-label={`Open ${task.goal || "Untitled task"} task conversation. ${runtimeActivityState(task.runtime_activity).label}.`}
+      aria-label={`Open ${task.goal || "Untitled task"} task conversation. ${runtimeActivityState(task.runtime_activity, task.status === "failed").label}.`}
       onClick={onNavigate}
       className={({ isActive }) => navItemClasses(isActive || current, "min-w-0 w-full")}
     >
       {({ isActive }) => (
         <>
-          <RuntimeActivityIndicator activity={task.runtime_activity} />
+          <RuntimeActivityIndicator activity={task.runtime_activity} failed={task.status === "failed"} />
           <span className="truncate">{task.goal || "Untitled task"}</span>
           <span className="sr-only"> task conversation</span>
           <ActiveIndicator active={isActive || current} />
@@ -702,8 +712,8 @@ function SidebarEmpty({
   );
 }
 
-function RuntimeActivityIndicator({ activity }: { activity?: RuntimeActivity }) {
-  const state = runtimeActivityState(activity);
+function RuntimeActivityIndicator({ activity, failed = false }: { activity?: RuntimeActivity; failed?: boolean }) {
+  const state = runtimeActivityState(activity, failed);
   const Icon = state.icon;
   return (
     <span role="img" title={state.label} aria-label={state.label} className="inline-flex size-4 shrink-0 items-center justify-center text-muted-foreground">
@@ -712,7 +722,8 @@ function RuntimeActivityIndicator({ activity }: { activity?: RuntimeActivity }) 
   );
 }
 
-function runtimeActivityState(activity?: RuntimeActivity) {
+function runtimeActivityState(activity?: RuntimeActivity, failed = false) {
+  if (failed) return { label: "Runtime failure", icon: CircleAlert, busy: false };
   if (activity?.liveness === "live" && activity.turn_activity === "busy") {
     return { label: "Runtime busy", icon: LoaderCircle, busy: true };
   }
@@ -759,7 +770,10 @@ function takeRecentWithCurrent<T>(
   const visible = ordered.slice(0, 5);
   if (currentId && !visible.some((item) => itemId(item) === currentId)) {
     const current = ordered.find((item) => itemId(item) === currentId);
-    if (current) visible.push(current);
+    if (current) {
+      if (visible.length === 5) visible[visible.length - 1] = current;
+      else visible.push(current);
+    }
   }
   return visible;
 }

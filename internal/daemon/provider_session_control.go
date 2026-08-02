@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -49,6 +50,19 @@ func (r *providerSessionRegistry) get(taskID string) (runtime.ProviderSession, b
 	defer r.mu.RUnlock()
 	session, ok := r.sessions[taskID]
 	return session, ok
+}
+
+func (r *providerSessionRegistry) busyOwnerIDs() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	owners := make([]string, 0)
+	for ownerID, bound := range r.sessions {
+		if sessionBusy(bound) {
+			owners = append(owners, ownerID)
+		}
+	}
+	sort.Strings(owners)
+	return owners
 }
 
 func (r *providerSessionRegistry) remove(taskID string) runtime.ProviderSession {
@@ -304,7 +318,7 @@ func (server *Server) closeProviderSession(taskID string) error {
 func (server *Server) closeSessionProviderSession(sessionID string) error {
 	err := server.sessionProviderSessions.closeTask(context.Background(), sessionID)
 	if err == nil || errors.Is(err, runtime.ErrProviderSessionClosed) {
-		server.sessionBlackboardConclusions.DeleteOwner(sessionID)
+		server.blackboardConclusions.DeleteOwner(sessionID)
 	}
 	return err
 }
@@ -313,7 +327,7 @@ func (server *Server) closeSessionProviderSessionForStop(ctx context.Context, se
 	for {
 		err := server.sessionProviderSessions.closeTask(ctx, sessionID)
 		if err == nil || errors.Is(err, runtime.ErrProviderSessionClosed) {
-			server.sessionBlackboardConclusions.DeleteOwner(sessionID)
+			server.blackboardConclusions.DeleteOwner(sessionID)
 			return nil
 		}
 		if !errors.Is(err, runtime.ErrProviderSessionControlConflict) {

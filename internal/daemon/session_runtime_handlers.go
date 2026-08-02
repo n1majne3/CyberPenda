@@ -18,6 +18,7 @@ import (
 	"pentest/internal/adapters"
 	"pentest/internal/modelprovider"
 	"pentest/internal/preflight"
+	"pentest/internal/projectinterface"
 	"pentest/internal/runner"
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeprofile"
@@ -187,7 +188,7 @@ func stringConfig(config map[string]any, key string) string {
 	return strings.TrimSpace(value)
 }
 
-func (server *Server) buildSessionRuntimePlan(found session.Session, goal string, input sessionRuntimeInput, profile runtimeprofile.Profile, run session.Runner) (sessionRuntimePlan, error) {
+func (server *Server) buildSessionRuntimePlan(found session.Session, goal string, input sessionRuntimeInput, profile runtimeprofile.Profile, run session.Runner, interfaceToken, nativeResumeSessionID string) (sessionRuntimePlan, error) {
 	modelSnapshot, err := server.resolveSessionModelSnapshot(profile, input)
 	if err != nil {
 		return sessionRuntimePlan{}, err
@@ -232,6 +233,7 @@ func (server *Server) buildSessionRuntimePlan(found session.Session, goal string
 		return sessionRuntimePlan{}, err
 	}
 	materialized, err := runner.MaterializeLaunchCredentials(profile, runner.ProjectionRequest{
+		Owner:       found.OwnerContract(),
 		Credentials: server.creds, ModelProviders: server.modelProviders,
 		GlobalModelProviderSnapshot: globalSnapshot, ModelSnapshot: modelSnapshot,
 	})
@@ -245,8 +247,9 @@ func (server *Server) buildSessionRuntimePlan(found session.Session, goal string
 	if err != nil {
 		return sessionRuntimePlan{}, err
 	}
-	launchProfile := sessionProfileWithoutProjectInterface(profile)
+	launchProfile := profile
 	projectionRequest := runner.ProjectionRequest{
+		Owner: found.OwnerContract(), DaemonAddr: server.listenAddr, AuthToken: interfaceToken,
 		Credentials: server.creds, MaterializedCredentials: materialized,
 		ModelProviders: server.modelProviders, GlobalModelProviderSnapshot: globalSnapshot,
 		ModelSnapshot: modelSnapshot, RuntimePlugins: server.runtimePlugins,
@@ -263,14 +266,15 @@ func (server *Server) buildSessionRuntimePlan(found session.Session, goal string
 	}
 	configPath := runner.LaunchConfigPath(layout, launchProfile.Provider, projection.ConfigPath, run == session.RunnerSandbox)
 	mcpConfigPath := runner.LaunchMCPConfigPath(layout, launchProfile.Provider, run == session.RunnerSandbox, projection)
-	providerCommand, err := adapters.BuildLaunchArgs(adapters.LaunchArgsRequest{
+	providerCommand, err := adapters.BuildLaunchOrResumeArgs(adapters.LaunchArgsRequest{
 		Provider: launchProfile.Provider, Profile: launchProfile, Goal: goal,
 		ConfigPath: configPath, MCPConfigPath: mcpConfigPath, Sandbox: run == session.RunnerSandbox,
-	})
+	}, nativeResumeSessionID)
 	if err != nil {
 		return sessionRuntimePlan{}, err
 	}
-	processEnv, err := runner.LaunchProcessEnvWithCredentials(layout, launchProfile, run == session.RunnerSandbox, runner.TaskContext{}, runner.ProjectionRequest{
+	processEnv, err := runner.LaunchProcessEnvWithCredentials(layout, launchProfile, run == session.RunnerSandbox, runner.RuntimeOwnerContext{Owner: found.OwnerContract()}, runner.ProjectionRequest{
+		Owner: found.OwnerContract(), DaemonAddr: server.listenAddr, AuthToken: interfaceToken,
 		Credentials: server.creds, MaterializedCredentials: materialized,
 		ModelProviders: server.modelProviders, GlobalModelProviderSnapshot: globalSnapshot,
 		ModelSnapshot: projection.ModelSnapshot, RuntimePlugins: server.runtimePlugins,
@@ -295,42 +299,38 @@ func (server *Server) buildSessionRuntimePlan(found session.Session, goal string
 		if image == "" {
 			image = "kalilinux/kali-rolling"
 		}
-		containerCLI := strings.TrimSpace(server.containerCLI)
-		if containerCLI == "" {
-			containerCLI = "docker"
-		}
-		containerEnv := make(map[string]string, len(processEnv))
-		for key, value := range processEnv {
-			containerEnv[key] = sessionContainerPath(value, layout)
-		}
-		createArgs := []string{
-			"create", "-i", "--add-host=host.docker.internal:host-gateway",
-			"--cidfile", containerIDFile,
-			"-v", filepath.Clean(found.Workdir) + ":/task/workdir",
-			"-v", filepath.Clean(layout.RuntimeHome) + ":/task/runtime-home",
-			"-w", "/task/workdir",
-		}
-		keys := make([]string, 0, len(containerEnv))
-		for key := range containerEnv {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			if strings.TrimSpace(key) != "" {
-				createArgs = append(createArgs, "-e", key+"="+containerEnv[key])
+		sandboxRuntime := providerCommand
+		if profile.Provider == runtimeprofile.ProviderPi {
+			usePersistentSession := server.providerSessionFactory != nil &&
+				supportsPersistentProviderSession(task.Runner(run), profile.Provider)
+			if !usePersistentSession {
+				sandboxRuntime, err = runner.WrapSandboxPiCommand(providerCommand, launchProfile.Fields.Env)
+				if err != nil {
+					return sessionRuntimePlan{}, err
+				}
 			}
 		}
-		createArgs = append(createArgs, image)
-		createArgs = append(createArgs, providerCommand...)
+		command, err := runner.BuildSandboxCommand(runner.SandboxCommandRequest{
+			Layout: layout, Provider: profile.Provider, Image: image,
+			ContainerCLI: server.containerCLI, ContainerIDFile: containerIDFile,
+			RuntimeCommand: sandboxRuntime, ProcessEnv: processEnv,
+			NetworkMode: runner.SandboxNetworkDefault,
+		})
+		if err != nil {
+			return sessionRuntimePlan{}, err
+		}
 		adapter = runtime.NewDockerSandboxAdapter(runtime.DockerSandboxConfig{
-			Name: string(profile.Provider), ContainerCLI: containerCLI, Image: image,
-			CreateArgs: createArgs, SecretValues: runtime.EnvSecretValues(materialized),
+			Name: string(profile.Provider), ContainerCLI: command.Program, Image: image,
+			CreateArgs: command.Args, SecretValues: runtime.EnvSecretValues(processEnv),
 		})
 	} else {
 		adapter = runtime.NewCommandAdapter(runtime.CommandAdapterConfig{
 			Name: string(profile.Provider), Program: providerCommand[0], Args: providerCommand[1:],
 			Workdir: found.Workdir, Env: processEnv,
 		})
+	}
+	if run == session.RunnerSandbox && profile.Provider == runtimeprofile.ProviderPi {
+		adapter = runtime.NewPiSessionTailAdapter(adapter, filepath.Join(layout.ProviderHome, "agent", "sessions"))
 	}
 
 	var metadata func() (runtime.NativeSessionMetadata, error)
@@ -401,37 +401,40 @@ func (server *Server) resolveSessionModelSnapshot(profile runtimeprofile.Profile
 	return &snapshot, nil
 }
 
-func sessionProfileWithoutProjectInterface(profile runtimeprofile.Profile) runtimeprofile.Profile {
-	profile.Fields.Env = cloneStringMap(profile.Fields.Env)
-	if profile.Fields.Env == nil {
-		profile.Fields.Env = map[string]string{}
-	}
-	profile.Fields.Env["PENTEST_DISABLE_TRUSTED_MCP"] = "true"
-	return profile
+type sessionRuntimePreparation struct {
+	Profile       runtimeprofile.Profile
+	Runner        session.Runner
+	RuntimeConfig map[string]any
 }
 
-func cloneStringMap(source map[string]string) map[string]string {
-	if len(source) == 0 {
-		return nil
+func (server *Server) prepareSessionRuntime(ctx context.Context, mode session.BlackboardConclusionMode, input sessionRuntimeInput, previous *session.Continuation) (sessionRuntimePreparation, error) {
+	profile, err := server.resolveSessionRuntimeProfile(input, previous)
+	if err != nil {
+		return sessionRuntimePreparation{}, err
 	}
-	cloned := make(map[string]string, len(source))
-	for key, value := range source {
-		cloned[key] = value
+	if mode == session.BlackboardConclusionModeAssisted &&
+		(server.providerSessionFactory == nil || !server.supportsAssistedConclusion(profile.Provider)) {
+		return sessionRuntimePreparation{}, errAssistedConclusionUnsupported
 	}
-	return cloned
-}
-
-func sessionContainerPath(value string, layout runner.Layout) string {
-	if value == layout.Workdir {
-		return "/task/workdir"
+	run, err := resolveSessionRunner(input, profile, previous)
+	if err != nil {
+		return sessionRuntimePreparation{}, err
 	}
-	if value == layout.RuntimeHome || strings.HasPrefix(value, layout.RuntimeHome+string(filepath.Separator)) {
-		return "/task/runtime-home" + strings.TrimPrefix(value, layout.RuntimeHome)
+	preflightResult := server.preflight.Run(ctx, preflightRequestForSession(profile, input, run, input.selectedModel()))
+	if !preflightResult.Pass {
+		return sessionRuntimePreparation{}, fmt.Errorf("Session Runtime preflight failed")
 	}
-	if value == layout.ProviderHome || strings.HasPrefix(value, layout.ProviderHome+string(filepath.Separator)) {
-		return "/task/runtime-home" + strings.TrimPrefix(value, layout.RuntimeHome)
+	modelSnapshot, err := server.resolveSessionModelSnapshot(profile, input)
+	if err != nil {
+		return sessionRuntimePreparation{}, err
 	}
-	return value
+	continuationProfile := profile
+	if modelSnapshot != nil {
+		continuationProfile = runner.BlackboardV2ProfileWithModelSnapshot(profile, *modelSnapshot)
+	}
+	return sessionRuntimePreparation{
+		Profile: profile, Runner: run, RuntimeConfig: sessionRuntimeConfig(continuationProfile, run, input),
+	}, nil
 }
 
 func (server *Server) startSessionRuntime(ctx context.Context, found session.Session, goal string, input sessionRuntimeInput) (session.Continuation, error) {
@@ -439,35 +442,26 @@ func (server *Server) startSessionRuntime(ctx context.Context, found session.Ses
 	if err != nil {
 		return session.Continuation{}, err
 	}
-	profile, err := server.resolveSessionRuntimeProfile(input, previous)
+	prepared, err := server.prepareSessionRuntime(ctx, found.RunControls.BlackboardConclusionMode, input, previous)
 	if err != nil {
 		server.recordSessionLaunchDiagnostic(found.ID, "launch_selection_failed", err)
 		return session.Continuation{}, err
 	}
-	if found.RunControls.BlackboardConclusionMode == session.BlackboardConclusionModeAssisted {
-		if server.providerSessionFactory == nil || !server.supportsAssistedConclusion(profile.Provider) {
-			err := errAssistedConclusionUnsupported
-			server.recordSessionLaunchDiagnostic(found.ID, "assisted_conclusion_unsupported", err)
-			return session.Continuation{}, err
-		}
+	return server.startPreparedSessionRuntime(ctx, found, goal, input, previous, prepared)
+}
+
+func (server *Server) startPreparedSessionRuntime(ctx context.Context, found session.Session, goal string, input sessionRuntimeInput, previous *session.Continuation, prepared sessionRuntimePreparation) (session.Continuation, error) {
+	profile, run, runtimeConfig := prepared.Profile, prepared.Runner, prepared.RuntimeConfig
+	var err error
+	var continuation session.Continuation
+	resumeNativeIdentity := previous != nil &&
+		previous.RuntimeProfileID == profile.ID && previous.RuntimeProvider == string(profile.Provider) && previous.Runner == run &&
+		(strings.TrimSpace(previous.NativeSessionID) != "" || strings.TrimSpace(previous.NativeSessionPath) != "")
+	if resumeNativeIdentity {
+		continuation, err = server.sessions.CreateReplacementContinuation(*previous, runtimeConfig)
+	} else {
+		continuation, err = server.sessions.CreateContinuation(found.ID, profile.ID, string(profile.Provider), run, runtimeConfig)
 	}
-	run, err := resolveSessionRunner(input, profile, previous)
-	if err != nil {
-		server.recordSessionLaunchDiagnostic(found.ID, "runner_selection_failed", err)
-		return session.Continuation{}, err
-	}
-	launchModel := input.selectedModel()
-	preflightResult := server.preflight.Run(ctx, preflightRequestForSession(profile, input, run, launchModel))
-	if !preflightResult.Pass {
-		server.recordSessionLaunchDiagnostic(found.ID, "preflight_failed", map[string]any{"checks": preflightResult.Checks})
-		return session.Continuation{}, fmt.Errorf("Session Runtime preflight failed")
-	}
-	plan, err := server.buildSessionRuntimePlan(found, goal, input, profile, run)
-	if err != nil {
-		server.recordSessionLaunchDiagnostic(found.ID, "launch_plan_failed", err)
-		return session.Continuation{}, err
-	}
-	continuation, err := server.sessions.CreateContinuation(found.ID, profile.ID, string(profile.Provider), run, plan.RuntimeConfig)
 	if err != nil {
 		server.recordSessionLaunchDiagnostic(found.ID, "continuation_create_failed", err)
 		return session.Continuation{}, err
@@ -475,6 +469,21 @@ func (server *Server) startSessionRuntime(ctx context.Context, found session.Ses
 	if _, pinErr := server.blackboardV2.BindSessionContinuation(ctx, found.ID, continuation.ID); pinErr != nil {
 		server.failSessionProviderLaunch(found.ID, continuation.ID, pinErr)
 		return continuation, pinErr
+	}
+	interfaceToken, _, grantErr := server.projectInterfaceGrants.IssueSession(ctx, projectinterface.IssueSessionGrantRequest{
+		SessionID: found.ID, ContinuationID: continuation.ID,
+		RuntimeConfigVersionID: continuation.RuntimeConfigID,
+		RuntimeProfileID:       continuation.RuntimeProfileID,
+		RuntimePluginID:        string(profile.Provider), Runner: string(run),
+	})
+	if grantErr != nil {
+		server.failSessionProviderLaunch(found.ID, continuation.ID, grantErr)
+		return continuation, grantErr
+	}
+	plan, err := server.buildSessionRuntimePlan(found, goal, input, profile, run, interfaceToken, continuation.NativeSessionID)
+	if err != nil {
+		server.failSessionProviderLaunch(found.ID, continuation.ID, err)
+		return continuation, err
 	}
 	if server.providerSessionFactory != nil && supportsPersistentProviderSession(task.Runner(run), profile.Provider) {
 		binding, factoryErr := server.providerSessionFactory.Open(ctx, ProviderSessionLaunchRequest{

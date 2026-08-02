@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { Archive, ArchiveRestore, FilePlus2, MessageSquareText, Pencil, Plus, Trash2 } from "lucide-react";
 import { RuntimeLaunchControls, useRuntimeLaunchControls } from "@/components/RuntimeLaunchControls";
@@ -15,7 +15,8 @@ import { formatCompactDateTime } from "@/lib/format";
 import { PageContainer, SettingsAlert } from "@/components/shared";
 import { Badge, Button, Card, CardDescription, CardTitle, Input, Label, Textarea } from "@/components/ui";
 
-export function SessionHomePage() {
+export function SessionHomePage({ view = "open" }: { view?: "open" | "archived" }) {
+  const archivedView = view === "archived";
   const { hash } = useLocation();
   const [openSessions, setOpenSessions] = useState<Session[]>([]);
   const [archivedSessions, setArchivedSessions] = useState<Session[]>([]);
@@ -30,25 +31,29 @@ export function SessionHomePage() {
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  async function loadSessions() {
+  const loadSessions = useCallback(async () => {
     setLoading(true);
     try {
-      const [open, archived] = await Promise.all([listSessions(), listSessions("archived")]);
-      setOpenSessions(open.sessions ?? []);
-      setArchivedSessions(archived.sessions ?? []);
+      if (archivedView) {
+        const archived = await listSessions("archived");
+        setArchivedSessions(archived.sessions ?? []);
+      } else {
+        const open = await listSessions();
+        setOpenSessions(open.sessions ?? []);
+      }
       setError(null);
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }
+  }, [archivedView]);
 
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     // The initial fetch is intentionally shared with the mutation refresh path.
     loadSessions();
-  }, []);
+  }, [loadSessions]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
@@ -133,12 +138,20 @@ export function SessionHomePage() {
         <p className="mb-1 font-mono text-xs uppercase tracking-[0.14em] text-muted-foreground">Workspace</p>
         <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight sm:text-3xl">
           <MessageSquareText className="size-6 text-signal" aria-hidden="true" />
-          Non-Project Sessions
+          {archivedView ? "Archived Sessions" : "Non-Project Sessions"}
         </h1>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">
           Durable exploratory conversations with their own Events and managed Workdir.
         </p>
       </header>
+
+      <Link
+        to={archivedView ? "/sessions" : "/sessions/archived"}
+        className="inline-flex w-fit items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
+      >
+        <Archive className="size-4" aria-hidden="true" />
+        {archivedView ? "Back to open Sessions" : "Archived Sessions"}
+      </Link>
 
       <div role="note" className="rounded-lg border border-info/20 bg-info/5 px-4 py-3 text-sm text-foreground">
         <p className="font-medium">Non-Project Mode</p>
@@ -148,7 +161,7 @@ export function SessionHomePage() {
         </p>
       </div>
 
-      <Card as="section" id="new-session" aria-labelledby="new-session-heading" className="gap-5">
+      {!archivedView && <Card as="section" id="new-session" aria-labelledby="new-session-heading" className="gap-5">
         <div>
           <CardTitle id="new-session-heading" className="flex items-center gap-2">
             <Plus className="size-4 text-signal" aria-hidden="true" />
@@ -195,11 +208,11 @@ export function SessionHomePage() {
             </Button>
           </div>
         </form>
-      </Card>
+      </Card>}
 
       {error && <SettingsAlert>{error}</SettingsAlert>}
 
-      <SessionSection
+      {!archivedView && <SessionSection
         id="open-sessions"
         title="Open sessions"
         sessions={openSessions}
@@ -213,8 +226,8 @@ export function SessionHomePage() {
         onCancelRename={() => setRenamingId(null)}
         onSaveRename={saveRename}
         onArchive={(session) => changeLifecycle(session, "archive")}
-      />
-      <SessionSection
+      />}
+      {archivedView && <SessionSection
         id="archived-sessions"
         title="Archived sessions"
         sessions={archivedSessions}
@@ -229,7 +242,7 @@ export function SessionHomePage() {
         onSaveRename={saveRename}
         onRestore={(session) => changeLifecycle(session, "restore")}
         onDelete={remove}
-      />
+      />}
     </PageContainer>
   );
 }

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"pentest/internal/modelprovider"
+	"pentest/internal/owner"
 	"pentest/internal/runtimeprofile"
 )
 
@@ -179,8 +180,7 @@ func projectCodexV2RuntimeConfig(layout Layout, profile runtimeprofile.Profile, 
 	projectionProfile.Fields.CredentialRefs = nil
 	projectionProfile.Fields.APIKeys = materialized
 	projectionRequest := req
-	projectionRequest.ProjectID = ""
-	projectionRequest.TaskID = ""
+	projectionRequest.Owner = owner.Contract{}
 	projectionRequest.DaemonAddr = ""
 	projectionRequest.AuthToken = ""
 	projectionRequest.Credentials = nil
@@ -209,8 +209,7 @@ func projectClaudeV2RuntimeConfig(layout Layout, profile runtimeprofile.Profile,
 	// Identity stays off model-visible context files. DaemonAddr and grant
 	// AuthToken remain so the trusted MCP allowlist/projection can fire.
 	projectionRequest := req
-	projectionRequest.ProjectID = ""
-	projectionRequest.TaskID = ""
+	projectionRequest.Owner = owner.Contract{}
 	projection, err := projectClaudeSettings(layout, profile, projectionRequest)
 	if err != nil {
 		return ConfigProjection{}, err
@@ -234,8 +233,7 @@ func projectPiV2RuntimeConfig(layout Layout, profile runtimeprofile.Profile, req
 		return ConfigProjection{}, err
 	}
 	projectionRequest := req
-	projectionRequest.ProjectID = ""
-	projectionRequest.TaskID = ""
+	projectionRequest.Owner = owner.Contract{}
 	projection, err := projectPiConfig(layout, profile, projectionRequest)
 	if err != nil {
 		return ConfigProjection{}, err

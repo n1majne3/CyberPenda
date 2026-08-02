@@ -114,11 +114,11 @@ func TestRecoverProviderSessionOwnershipClosedStates(t *testing.T) {
 				t.Fatalf("unknown activity has no warning: %#v", activity)
 			}
 			if test.liveness == ProviderSessionRecoveryUnknown {
-				if len(report.LifecycleProtectedTaskIDs) != 1 || report.LifecycleProtectedTaskIDs[0] != found.ID {
-					t.Fatalf("unknown lifecycle-protected Task IDs = %#v", report.LifecycleProtectedTaskIDs)
+				if len(report.LifecycleProtectedOwnerIDs) != 1 || report.LifecycleProtectedOwnerIDs[0] != found.ID {
+					t.Fatalf("unknown lifecycle-protected Task IDs = %#v", report.LifecycleProtectedOwnerIDs)
 				}
-			} else if len(report.LifecycleProtectedTaskIDs) != 0 {
-				t.Fatalf("terminal recovery protected Task IDs = %#v", report.LifecycleProtectedTaskIDs)
+			} else if len(report.LifecycleProtectedOwnerIDs) != 0 {
+				t.Fatalf("terminal recovery protected Task IDs = %#v", report.LifecycleProtectedOwnerIDs)
 			}
 			assertRecoveryDidNotLaunch(t, server, factory, found.ID)
 		})
@@ -172,11 +172,11 @@ func TestRecoverProviderSessionOwnershipAdoptsOnlyExactHealthyLiveBinding(t *tes
 	if len(outcomes) != 1 || !outcomes[0].Adopted || outcomes[0].Liveness != ProviderSessionRecoveryLive {
 		t.Fatalf("outcomes = %#v", outcomes)
 	}
-	if len(report.LiveTaskIDs) != 1 || report.LiveTaskIDs[0] != found.ID {
-		t.Fatalf("live Task IDs = %#v", report.LiveTaskIDs)
+	if len(report.LiveOwnerIDs) != 1 || report.LiveOwnerIDs[0] != found.ID {
+		t.Fatalf("live Task IDs = %#v", report.LiveOwnerIDs)
 	}
-	if len(report.LifecycleProtectedTaskIDs) != 1 || report.LifecycleProtectedTaskIDs[0] != found.ID {
-		t.Fatalf("lifecycle-protected Task IDs = %#v", report.LifecycleProtectedTaskIDs)
+	if len(report.LifecycleProtectedOwnerIDs) != 1 || report.LifecycleProtectedOwnerIDs[0] != found.ID {
+		t.Fatalf("lifecycle-protected Task IDs = %#v", report.LifecycleProtectedOwnerIDs)
 	}
 	applyRecoveryStartupLifecycle(server, report)
 	bound, ok := server.providerSessions.get(found.ID)
@@ -198,7 +198,7 @@ func TestRecoverProviderSessionOwnershipAdoptsOnlyExactHealthyLiveBinding(t *tes
 	factory.mu.Lock()
 	captured := factory.request
 	factory.mu.Unlock()
-	if captured.Task.ID != found.ID || captured.Continuation.ID != continuation.ID || captured.ReceiptID != "receipt-1" ||
+	if captured.Owner.ID != found.ID || captured.Continuation.ID != continuation.ID || captured.ReceiptID != "receipt-1" ||
 		captured.SourceSessionID != "source-session" || captured.SourceRequestID != "source-work-request" || captured.DispatchRequestID != "" ||
 		captured.ContainerID != "" || captured.NativeSessionID != "source-session" ||
 		captured.NativeSessionPath != "/sessions/source.jsonl" {
@@ -394,7 +394,7 @@ func newRecoveryOwnershipFixture(t *testing.T, factory ProviderSessionFactory) (
 
 func recoveryRequest(found task.Task, continuation task.TaskContinuation) ProviderSessionRecoveryRequest {
 	return ProviderSessionRecoveryRequest{
-		Task: found, Continuation: continuation, ReceiptID: "receipt-1", SourceSessionID: "source-session", SourceRequestID: "source-work-request", DispatchRequestID: "conclude-request",
+		Owner: found.OwnerContract(""), Continuation: ownerContinuationFromTask(continuation), ReceiptID: "receipt-1", SourceSessionID: "source-session", SourceRequestID: "source-work-request", DispatchRequestID: "conclude-request",
 		ContainerID: continuation.ContainerID, NativeSessionID: continuation.NativeSessionID, NativeSessionPath: continuation.NativeSessionPath,
 	}
 }
@@ -412,6 +412,6 @@ func assertRecoveryDidNotLaunch(t *testing.T, server *Server, factory *recoveryS
 }
 
 func applyRecoveryStartupLifecycle(server *Server, report ProviderSessionRecoveryReport) {
-	server.reconcileInterruptedTasks(report.ReconciliationExcludedTaskIDs)
+	server.reconcileInterruptedTasks(report.ReconciliationExcludedOwnerIDs)
 	server.applyProviderSessionRecoveryLifecycle(report.Outcomes)
 }

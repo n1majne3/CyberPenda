@@ -93,11 +93,11 @@ func (server *Server) authenticateBlackboardV2(request *http.Request, requireCon
 	if !grant.Status().IsReadable() {
 		return blackboardV2Principal{}, blackboardV2HTTPError("authority_denied", "Continuation Interface capability is revoked", "authorization")
 	}
-	if grant.ProjectID != projectID {
+	if grant.Owner.ProjectID != projectID {
 		return blackboardV2Principal{}, blackboardV2HTTPError("authority_denied", "declared Project does not match Continuation Interface capability", "path.project_id")
 	}
 	return blackboardV2Principal{
-		projectID: grant.ProjectID, taskID: grant.TaskID, continuationID: grant.ContinuationID, grant: grant,
+		projectID: grant.Owner.ProjectID, taskID: grant.Owner.TaskID, continuationID: grant.ContinuationID, grant: grant,
 	}, nil
 }
 

@@ -21,78 +21,33 @@ func (server *Server) observeProviderSession(taskID, continuationID, sessionID s
 	if err != nil || found.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeAssisted {
 		return
 	}
-	if strings.TrimSpace(continuationID) == "" {
-		return
-	}
-	if lineage.Kind == runtime.RuntimeTurnKindControl {
-		switch observation.Kind {
-		case runtime.ProviderSessionObservationToolUse, runtime.ProviderSessionObservationToolResult:
-			server.acceptBlackboardConclusionControlFailure(taskID, sessionID, lineage)
-		case runtime.ProviderSessionObservationTurnCompleted:
-			server.acceptBlackboardConclusionControlTerminal(taskID, sessionID, lineage, observation.Status)
-		}
-		return
-	}
-	if lineage.Kind != runtime.RuntimeTurnKindWork {
-		return
-	}
-	turnID := strings.TrimSpace(observation.ProviderTurnID)
-	if turnID == "" {
-		return
-	}
-	key := runtime.AssistedConclusionTurnKey{
-		OwnerID: taskID, ContinuationID: continuationID,
-		ProviderSessionID: strings.TrimSpace(sessionID), TurnID: turnID,
-	}
-	switch observation.Kind {
-	case runtime.ProviderSessionObservationToolResult:
-		toolCallID := strings.TrimSpace(observation.ToolCallID)
-		toolSemantics, trusted := classifyTrustedBlackboardTool(observation.ToolName)
-		server.blackboardConclusions.RecordToolResult(key, toolCallID, !trusted,
-			trusted && observation.Status == "succeeded" && toolSemantics == blackboardToolSemanticPersistence)
-		return
-	case runtime.ProviderSessionObservationTurnCompleted:
-		// Completion is handled below after taking a stable snapshot. The
-		// tracker keeps the watermark if the durable checkpoint write retries.
-	default:
-		return
-	}
-	state, ok := server.blackboardConclusions.SnapshotTurn(key)
-	if !ok {
-		return
-	}
-
-	if len(state.CompletedToolCalls) == 0 {
-		server.blackboardConclusions.DeleteTurn(key)
-		return
-	}
-	receipt, inserted, err := server.tasks.RecordBlackboardConclusionCheckpoint(
-		taskID, continuationID, lineage.RequestID, key.ProviderSessionID, turnID, task.TurnSelection{
-			ModelProviderID: lineage.ModelProviderID,
-			Model:           lineage.Model,
-			ReasoningEffort: lineage.RequestedReasoningEffort,
-		}, task.SemanticDebtWatermarks{
-			SourceWork: state.SourceWorkWatermark, SemanticPersistence: state.SemanticPersistenceWatermark,
+	observeAssistedConclusion(server.blackboardConclusions, taskID, continuationID, sessionID, lineage, observation, assistedConclusionObservationHooks{
+		ControlFailure: func() { server.acceptBlackboardConclusionControlFailure(taskID, sessionID, lineage) },
+		ControlTerminal: func(status string) {
+			server.acceptBlackboardConclusionControlTerminal(taskID, sessionID, lineage, status)
 		},
-	)
-	if err != nil {
-		// Retain the bounded watermark so duplicate provider completion delivery
-		// can retry the idempotent durable receipt after a transient Store error.
-		server.logger.Printf("assisted conclusion: record pending Task %s Turn %s (retained for retry): %v", taskID, turnID, err)
-		return
-	}
-	server.blackboardConclusions.DeleteTurn(key)
-	if inserted && receipt.InternalState == task.BlackboardConclusionReceiptPending && observation.Status != "completed" {
-		if _, _, err := server.tasks.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(
-			receipt.ID, time.Now().UTC(), blackboardConclusionRetryCooldown,
-		); err != nil {
-			server.logger.Printf("assisted conclusion: mark failed Work attention Task %s Turn %s: %v", taskID, turnID, err)
-		}
-		return
-	}
-	if inserted && receipt.InternalState == task.BlackboardConclusionReceiptPending {
-		server.scheduleBlackboardConclusionDispatch(receipt)
-	}
+		WorkCompleted: func(state runtime.AssistedConclusionObservedTurn, key runtime.AssistedConclusionTurnKey, status string) (bool, error) {
+			receipt, inserted, err := server.tasks.RecordBlackboardConclusionCheckpoint(
+				taskID, continuationID, lineage.RequestID, key.ProviderSessionID, key.TurnID,
+				task.TurnSelection{ModelProviderID: lineage.ModelProviderID, Model: lineage.Model, ReasoningEffort: lineage.RequestedReasoningEffort},
+				task.SemanticDebtWatermarks{SourceWork: state.SourceWorkWatermark, SemanticPersistence: state.SemanticPersistenceWatermark},
+			)
+			if err != nil {
+				return false, err
+			}
+			if inserted && receipt.InternalState == task.BlackboardConclusionReceiptPending && status != "completed" {
+				_, _, err = server.tasks.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(receipt.ID, time.Now().UTC(), blackboardConclusionRetryCooldown)
+				return true, err
+			}
+			if inserted && receipt.InternalState == task.BlackboardConclusionReceiptPending {
+				server.scheduleBlackboardConclusionDispatch(receipt)
+			}
+			return true, nil
+		},
+		OnError: func(err error) {
+			server.logger.Printf("assisted conclusion: record pending Task %s Turn %s (retained for retry): %v", taskID, observation.ProviderTurnID, err)
+		},
+	})
 }
 
 func (server *Server) scheduleBlackboardConclusionDispatch(receipt task.BlackboardConclusionReceipt) {
