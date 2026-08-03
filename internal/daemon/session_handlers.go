@@ -146,7 +146,7 @@ func (server *Server) handleCreateSession(response http.ResponseWriter, request 
 		writeSessionError(response, err)
 		return
 	}
-	if _, launchErr := server.startPreparedSessionRuntime(request.Context(), created, input.value(), runtimeInput, nil, prepared); launchErr != nil {
+	if _, launchErr := server.startPreparedSessionRuntime(request.Context(), created, input.value(), runtimeInput, nil, prepared, nil); launchErr != nil {
 		server.recordSessionLaunchDiagnostic(created.ID, "launch_failed", launchErr)
 		writeSessionError(response, launchErr)
 		return

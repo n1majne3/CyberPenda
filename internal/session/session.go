@@ -237,11 +237,14 @@ type Continuation struct {
 
 // CreateContinuationRequest is the durable part of a Session Runtime launch.
 type CreateContinuationRequest struct {
-	RuntimeProfileID string
-	RuntimeProvider  string
-	Runner           Runner
-	RuntimeConfig    map[string]any
-	RuntimeConfigID  string
+	RuntimeProfileID  string
+	RuntimeProvider   string
+	Runner            Runner
+	RuntimeConfig     map[string]any
+	RuntimeConfigID   string
+	ContainerID       string
+	NativeSessionID   string
+	NativeSessionPath string
 }
 
 // Session is the durable Non-Project Session aggregate. Workdir is kept out of
@@ -275,6 +278,38 @@ type Attachment struct {
 	Name string
 	Size int64
 	Open func() (io.ReadCloser, error)
+}
+
+// ConversationInput is one operator message and its optional attachments.
+// It can be committed with a new Continuation so recovery never exposes a
+// Continuation without the input that initiated it.
+type ConversationInput struct {
+	Role        string
+	Text        string
+	Attachments []Attachment
+}
+
+// AttachmentReference is the typed, safe Workdir-relative projection stored by
+// an attachment Event. Runtime adapters consume this instead of interpreting
+// the Event payload map themselves.
+type AttachmentReference struct {
+	RelativePath   string
+	ContinuationID string
+}
+
+// AttachmentReference returns the safe attachment projection represented by
+// this Event. Invalid or legacy malformed payloads are not runtime-visible.
+func (event Event) AttachmentReference() (AttachmentReference, bool) {
+	if event.Kind != EventKindAttachment {
+		return AttachmentReference{}, false
+	}
+	relativePath, _ := event.Payload["relative_path"].(string)
+	clean := filepath.Clean(strings.TrimSpace(relativePath))
+	if clean == "." || filepath.IsAbs(clean) || filepath.Base(clean) != clean {
+		return AttachmentReference{}, false
+	}
+	continuationID, _ := event.Payload["continuation_id"].(string)
+	return AttachmentReference{RelativePath: clean, ContinuationID: strings.TrimSpace(continuationID)}, true
 }
 
 // CreateRequest is the initial Session input and optional initial attachments.
@@ -798,30 +833,56 @@ func (s *Service) AppendConversationEvent(id, continuationID, role, text string)
 // Workdir and records only safe references in the Session event stream.
 // Existing files are never overwritten; attachment names are made unique in
 // the same way as initial Session attachments.
-func (s *Service) AddAttachments(id string, input []Attachment) ([]Event, error) {
+func (s *Service) AddAttachments(id, continuationID string, input []Attachment) ([]Event, error) {
+	events, _, err := s.appendConversationInput(id, continuationID, input, "", "")
+	return events, err
+}
+
+// AppendConversationInput atomically records one operator message and all of
+// its attachments. Failed persistence removes newly copied files, so callers
+// never observe an attachment without the input that introduced it.
+func (s *Service) AppendConversationInput(id, continuationID, role, text string, input []Attachment) ([]Event, Event, error) {
+	role = strings.TrimSpace(role)
+	text = strings.TrimSpace(text)
+	if role == "" || text == "" {
+		return nil, Event{}, ErrMissingInput
+	}
+	return s.appendConversationInput(id, continuationID, input, role, text)
+}
+
+func (s *Service) appendConversationInput(id, continuationID string, input []Attachment, role, text string) ([]Event, Event, error) {
 	found, err := s.Get(id)
 	if err != nil {
-		return nil, err
+		return nil, Event{}, err
 	}
 	if found.Lifecycle != LifecycleOpen {
-		return nil, ErrSessionNotOpen
+		return nil, Event{}, ErrSessionNotOpen
 	}
-	if len(input) == 0 {
-		return nil, nil
+	if len(input) == 0 && role == "" {
+		return nil, Event{}, nil
 	}
 	if len(input) > MaxAttachmentCount {
-		return nil, fmt.Errorf("%w: too many attachments (max %d)", ErrInvalidAttachment, MaxAttachmentCount)
+		return nil, Event{}, fmt.Errorf("%w: too many attachments (max %d)", ErrInvalidAttachment, MaxAttachmentCount)
 	}
 	workdir, err := s.managedWorkdir(id)
 	if err != nil {
-		return nil, err
+		return nil, Event{}, err
 	}
 	if filepath.Clean(found.Workdir) != filepath.Clean(workdir) {
-		return nil, ErrInvalidWorkdir
+		return nil, Event{}, ErrInvalidWorkdir
+	}
+	if continuationID != "" {
+		continuation, continuationErr := s.Continuation(continuationID)
+		if continuationErr != nil {
+			return nil, Event{}, continuationErr
+		}
+		if continuation.SessionID != id {
+			return nil, Event{}, ErrContinuationNotFound
+		}
 	}
 	copied, err := copyAttachments(workdir, input)
 	if err != nil {
-		return nil, err
+		return nil, Event{}, err
 	}
 	cleanup := true
 	defer func() {
@@ -836,38 +897,47 @@ func (s *Service) AddAttachments(id string, input []Attachment) ([]Event, error)
 	now := time.Now().UTC()
 	tx, err := s.db.Begin()
 	if err != nil {
-		return nil, fmt.Errorf("begin Session attachment append: %w", err)
+		return nil, Event{}, fmt.Errorf("begin Session conversation input: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	var lifecycle string
 	if err := tx.QueryRow(`SELECT lifecycle FROM sessions WHERE id=?`, id).Scan(&lifecycle); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrNotFound
+			return nil, Event{}, ErrNotFound
 		}
-		return nil, fmt.Errorf("read Session lifecycle: %w", err)
+		return nil, Event{}, fmt.Errorf("read Session lifecycle: %w", err)
 	}
 	if Lifecycle(lifecycle) != LifecycleOpen {
-		return nil, ErrSessionNotOpen
+		return nil, Event{}, ErrSessionNotOpen
 	}
 	events := make([]Event, 0, len(copied))
 	for _, attachment := range copied {
-		event, err := appendEventTx(tx, id, EventKindAttachment, EventPayload{
+		event, err := appendEventTx(tx, id, EventKindAttachment, payloadWithContinuation(EventPayload{
 			"filename": attachment.Filename, "relative_path": attachment.Filename,
 			"size": attachment.Size, "sha256": attachment.SHA256,
-		}, now)
+		}, continuationID), now)
 		if err != nil {
-			return nil, fmt.Errorf("store Session attachment Event: %w", err)
+			return nil, Event{}, fmt.Errorf("store Session attachment Event: %w", err)
 		}
 		events = append(events, event)
 	}
+	var conversation Event
+	if role != "" {
+		conversation, err = appendEventTx(tx, id, EventKindConversation, payloadWithContinuation(EventPayload{
+			"role": role, "text": text,
+		}, continuationID), now)
+		if err != nil {
+			return nil, Event{}, fmt.Errorf("store Session conversation Event: %w", err)
+		}
+	}
 	if _, err := tx.Exec(`UPDATE sessions SET updated_at=?,last_activity_at=? WHERE id=?`, formatTime(now), formatTime(now), id); err != nil {
-		return nil, fmt.Errorf("update Session activity: %w", err)
+		return nil, Event{}, fmt.Errorf("update Session activity: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit Session attachments: %w", err)
+		return nil, Event{}, fmt.Errorf("commit Session conversation input: %w", err)
 	}
 	cleanup = false
-	return events, nil
+	return events, conversation, nil
 }
 
 func payloadWithContinuation(payload EventPayload, continuationID string) EventPayload {
@@ -951,15 +1021,62 @@ func (s *Service) CreateContinuation(sessionID, runtimeProfileID, runtimeProvide
 	if len(configs) > 0 {
 		req.RuntimeConfig = configs[0]
 	}
-	return s.createContinuation(sessionID, req, false)
+	return s.createContinuation(sessionID, req, false, nil)
 }
 
-func (s *Service) createContinuation(sessionID string, req CreateContinuationRequest, allowActive bool) (Continuation, error) {
+// CreateContinuationWithInput atomically persists a new Continuation and the
+// operator input that initiates it.
+func (s *Service) CreateContinuationWithInput(sessionID, runtimeProfileID, runtimeProvider string, runner Runner, config map[string]any, input ConversationInput) (Continuation, error) {
+	return s.createContinuation(sessionID, CreateContinuationRequest{
+		RuntimeProfileID: runtimeProfileID, RuntimeProvider: runtimeProvider, Runner: runner, RuntimeConfig: config,
+	}, false, &input)
+}
+
+func (s *Service) createContinuation(sessionID string, req CreateContinuationRequest, allowActive bool, input *ConversationInput) (Continuation, error) {
 	if req.Runner != RunnerSandbox && req.Runner != RunnerHost {
 		return Continuation{}, ErrInvalidRunner
 	}
 	if strings.TrimSpace(req.RuntimeProfileID) == "" || strings.TrimSpace(req.RuntimeProvider) == "" {
 		return Continuation{}, ErrMissingRuntimeProfile
+	}
+	var copied []copiedAttachment
+	cleanupCopied := false
+	if input != nil {
+		input.Role = strings.TrimSpace(input.Role)
+		input.Text = strings.TrimSpace(input.Text)
+		if input.Role == "" || input.Text == "" {
+			return Continuation{}, ErrMissingInput
+		}
+		if len(input.Attachments) > MaxAttachmentCount {
+			return Continuation{}, fmt.Errorf("%w: too many attachments (max %d)", ErrInvalidAttachment, MaxAttachmentCount)
+		}
+		found, err := s.Get(sessionID)
+		if err != nil {
+			return Continuation{}, err
+		}
+		if found.Lifecycle != LifecycleOpen {
+			return Continuation{}, ErrSessionNotOpen
+		}
+		workdir, err := s.managedWorkdir(sessionID)
+		if err != nil {
+			return Continuation{}, err
+		}
+		if filepath.Clean(found.Workdir) != filepath.Clean(workdir) {
+			return Continuation{}, ErrInvalidWorkdir
+		}
+		copied, err = copyAttachments(workdir, input.Attachments)
+		if err != nil {
+			return Continuation{}, err
+		}
+		cleanupCopied = true
+		defer func() {
+			if !cleanupCopied {
+				return
+			}
+			for _, attachment := range copied {
+				_ = os.Remove(filepath.Join(workdir, attachment.Filename))
+			}
+		}()
 	}
 	encoded, err := json.Marshal(req.RuntimeConfig)
 	if err != nil {
@@ -1017,13 +1134,34 @@ func (s *Service) createContinuation(sessionID string, req CreateContinuationReq
 		ID: "session-continuation-" + strings.TrimPrefix(newIDMust(), "session-"), SessionID: sessionID,
 		Number: int(maxNumber.Int64) + 1, RuntimeProfileID: req.RuntimeProfileID, RuntimeProvider: req.RuntimeProvider,
 		Runner: req.Runner, Status: RuntimeStatusPending, RuntimeConfigID: configID, StartedAt: now, UpdatedAt: now,
+		ContainerID: strings.TrimSpace(req.ContainerID), NativeSessionID: strings.TrimSpace(req.NativeSessionID),
+		NativeSessionPath: strings.TrimSpace(req.NativeSessionPath),
 	}
-	if _, err := tx.Exec(`INSERT INTO session_continuations (id,session_id,number,runtime_profile_id,runtime_provider,runner,status,container_id,native_session_id,native_session_path,runtime_config_version_id,started_at,updated_at,ended_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, continuation.ID, sessionID, continuation.Number, continuation.RuntimeProfileID, continuation.RuntimeProvider, string(continuation.Runner), string(continuation.Status), "", "", "", continuation.RuntimeConfigID, formatTime(now), formatTime(now), ""); err != nil {
+	if _, err := tx.Exec(`INSERT INTO session_continuations (id,session_id,number,runtime_profile_id,runtime_provider,runner,status,container_id,native_session_id,native_session_path,runtime_config_version_id,started_at,updated_at,ended_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, continuation.ID, sessionID, continuation.Number, continuation.RuntimeProfileID, continuation.RuntimeProvider, string(continuation.Runner), string(continuation.Status), continuation.ContainerID, continuation.NativeSessionID, continuation.NativeSessionPath, continuation.RuntimeConfigID, formatTime(now), formatTime(now), ""); err != nil {
 		return Continuation{}, fmt.Errorf("store Session continuation: %w", err)
+	}
+	if input != nil {
+		for _, attachment := range copied {
+			if _, err := appendEventTx(tx, sessionID, EventKindAttachment, payloadWithContinuation(EventPayload{
+				"filename": attachment.Filename, "relative_path": attachment.Filename,
+				"size": attachment.Size, "sha256": attachment.SHA256,
+			}, continuation.ID), now); err != nil {
+				return Continuation{}, fmt.Errorf("store Session attachment Event: %w", err)
+			}
+		}
+		if _, err := appendEventTx(tx, sessionID, EventKindConversation, payloadWithContinuation(EventPayload{
+			"role": input.Role, "text": input.Text,
+		}, continuation.ID), now); err != nil {
+			return Continuation{}, fmt.Errorf("store Session conversation Event: %w", err)
+		}
+		if _, err := tx.Exec(`UPDATE sessions SET updated_at=?,last_activity_at=? WHERE id=?`, formatTime(now), formatTime(now), sessionID); err != nil {
+			return Continuation{}, fmt.Errorf("update Session activity: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return Continuation{}, fmt.Errorf("commit Session continuation: %w", err)
 	}
+	cleanupCopied = false
 	return continuation, nil
 }
 
@@ -1032,12 +1170,28 @@ func (s *Service) createContinuation(sessionID string, req CreateContinuationReq
 func (s *Service) CreateReplacementContinuation(previous Continuation, config map[string]any) (Continuation, error) {
 	next, err := s.createContinuation(previous.SessionID, CreateContinuationRequest{
 		RuntimeProfileID: previous.RuntimeProfileID, RuntimeProvider: previous.RuntimeProvider, Runner: previous.Runner,
-		RuntimeConfig: config,
-	}, true)
+		RuntimeConfig: config, ContainerID: previous.ContainerID,
+		NativeSessionID: previous.NativeSessionID, NativeSessionPath: previous.NativeSessionPath,
+	}, true, nil)
 	if err != nil {
 		return Continuation{}, err
 	}
-	return s.UpdateContinuationRuntimeMetadata(next.ID, previous.ContainerID, previous.NativeSessionID, previous.NativeSessionPath)
+	return next, nil
+}
+
+// CreateReplacementContinuationWithInput atomically persists a replacement
+// Continuation and the operator input that initiates it before carrying forward
+// native provider identity.
+func (s *Service) CreateReplacementContinuationWithInput(previous Continuation, config map[string]any, input ConversationInput) (Continuation, error) {
+	next, err := s.createContinuation(previous.SessionID, CreateContinuationRequest{
+		RuntimeProfileID: previous.RuntimeProfileID, RuntimeProvider: previous.RuntimeProvider, Runner: previous.Runner,
+		RuntimeConfig: config, ContainerID: previous.ContainerID,
+		NativeSessionID: previous.NativeSessionID, NativeSessionPath: previous.NativeSessionPath,
+	}, true, &input)
+	if err != nil {
+		return Continuation{}, err
+	}
+	return next, nil
 }
 
 // ActiveContinuation returns the current pending/running Session Runtime pin.

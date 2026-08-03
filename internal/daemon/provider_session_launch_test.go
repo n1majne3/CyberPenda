@@ -46,11 +46,12 @@ func (a *persistentTestAdapter) Run(ctx context.Context, _ string, _ func(task.E
 }
 
 type recordingProviderSessionFactory struct {
-	mu       sync.Mutex
-	requests []ProviderSessionLaunchRequest
-	session  runtime.ProviderSession
-	adapter  runtime.Adapter
-	err      error
+	mu               sync.Mutex
+	requests         []ProviderSessionLaunchRequest
+	session          runtime.ProviderSession
+	adapter          runtime.Adapter
+	bindContinuation bool
+	err              error
 }
 
 func (f *recordingProviderSessionFactory) Open(_ context.Context, request ProviderSessionLaunchRequest) (ProviderSessionBinding, error) {
@@ -59,6 +60,16 @@ func (f *recordingProviderSessionFactory) Open(_ context.Context, request Provid
 	f.requests = append(f.requests, request)
 	if f.err != nil {
 		return ProviderSessionBinding{}, f.err
+	}
+	if f.bindContinuation {
+		if binder, ok := f.session.(runtime.ProviderSessionContinuationBinder); ok {
+			if err := binder.BindContinuation(request.Continuation.ID); err != nil {
+				return ProviderSessionBinding{}, err
+			}
+		}
+		if adapter, ok := f.adapter.(*runtime.ProviderSessionRunAdapter); ok {
+			adapter.BindContinuation(request.Continuation.ID)
+		}
 	}
 	return ProviderSessionBinding{Session: f.session, Adapter: f.adapter}, nil
 }

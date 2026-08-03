@@ -143,6 +143,7 @@ describe("SessionDetailPage", () => {
 
     expect(await screen.findByRole("heading", { level: 1, name: "Review the service" })).toBeInTheDocument();
     expect(screen.getByText(/non-project mode/i)).toBeInTheDocument();
+    expect(screen.getByText(/attached notes\.txt/i)).toBeInTheDocument();
     await userEvent.setup().click(screen.getByRole("button", { name: "Timeline" }));
     expect(screen.getByText(/attached notes\.txt/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Archive" })).toBeInTheDocument();
