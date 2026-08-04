@@ -12,6 +12,7 @@ import { collapsedTranscriptTitle, toolCallFields } from "./taskDetailView";
 import { displayReasoningEffort, REASONING_EFFORT_VALUES, selectableModelProviders } from "./runtimeProfileForm";
 import { modelsForProvider } from "./taskLaunchForm";
 import { formatDateTime } from "@/lib/format";
+import { useDocumentVisibility } from "@/lib/useDocumentVisibility";
 
 const ACTIVE = new Set(["running", "paused"]);
 const DELETABLE = new Set(["completed", "failed", "stopped", "interrupted"]);
@@ -79,6 +80,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   const ownerID = isSession ? sessionId : taskId;
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const isVisible = useDocumentVisibility();
   const [owner, setOwner] = useState<RuntimeOwnerView | null>(null);
   const [timeline, setTimeline] = useState<TaskTimelineItem[]>([]);
   const [transcript, setTranscript] = useState<TaskTranscriptEntry[]>([]);
@@ -197,14 +199,15 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   }, [owner?.id, activeView]);
   /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
 
-  // Poll events while the runtime owner is active. Depends on status only so the
-  // interval is not reset every render; loadAll/owner are intentionally omitted.
+  // Poll events while the runtime owner is active and the tab is visible.
+  // Depends on status/visibility only so the interval is not reset every render;
+  // loadAll/owner are intentionally omitted.
   /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
-    if (!owner || !ACTIVE.has(owner.status)) return;
+    if (!isVisible || !owner || !ACTIVE.has(owner.status)) return;
     const id = setInterval(loadAll, 1000);
     return () => clearInterval(id);
-  }, [owner?.status]);
+  }, [owner?.status, isVisible]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
   useEffect(() => {

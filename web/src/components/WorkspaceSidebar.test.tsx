@@ -1,9 +1,17 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
 import { ThemeProvider } from "./ThemeProvider";
+
+// jsdom's document.visibilityState is "visible" by default and has no setter;
+// tests that exercise the Page Visibility API override it via defineProperty and
+// dispatch the real event the hook listens to.
+function setDocumentVisibility(value: DocumentVisibilityState) {
+  Object.defineProperty(document, "visibilityState", { value, configurable: true });
+  document.dispatchEvent(new Event("visibilitychange"));
+}
 
 const project = (id: string, name: string, updatedAt: string) => ({
   id,
@@ -50,6 +58,7 @@ function response(body: unknown) {
 afterEach(() => {
   vi.unstubAllGlobals();
   window.sessionStorage.clear();
+  Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
 });
 
 describe("WorkspaceSidebar", () => {
@@ -370,5 +379,107 @@ describe("WorkspaceSidebar", () => {
     const projects = screen.getByRole("region", { name: /projects/i });
     expect(within(projects).getByRole("alert")).toHaveTextContent("projects unavailable");
     expect(within(nonProject).queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  // Polling-gated behavior. These are the only tests in this file that use fake
+  // timers: the gated poll is the feature under test, and advancing the clock is
+  // the clearest way to assert "no fetch happens while idle/hidden". They are
+  // isolated to the `it` scope so the rest of the suite keeps using real timers.
+  // We avoid waitFor here because it polls on real timers, which under fake
+  // timers lets wall-clock time leak and fire the very intervals under test.
+  it("slowly backs off when no work is active and resumes fast polling when work starts", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/projects") return response({ projects: [project("project-1", "Project one", "2026-08-01T00:00:00Z")] });
+        if (url === "/api/projects/project-1/tasks") return response({ tasks: [task("task-idle", "Idle task", "2026-08-01T00:00:00Z")] });
+        if (url === "/api/sessions?limit=5") return response({ sessions: [] });
+        return response({});
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(
+        <ThemeProvider>
+          <MemoryRouter>
+            <WorkspaceSidebar />
+          </MemoryRouter>
+        </ThemeProvider>,
+      );
+
+      // Let the eager mount load resolve (microtasks only, no clock advance).
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(screen.getByRole("region", { name: /project one/i })).toBeInTheDocument();
+      const callsAfterMount = fetchMock.mock.calls.length;
+
+      // Everything is idle (completed task, no busy runtime) → no poll should
+      // land inside the fast 2s window.
+      await act(async () => {
+        vi.advanceTimersByTimeAsync(2500);
+      });
+      expect(fetchMock.mock.calls.length).toBe(callsAfterMount);
+
+      // A poll only fires once the slow backoff interval (~30s) elapses.
+      await act(async () => {
+        vi.advanceTimersByTimeAsync(30000);
+      });
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(callsAfterMount);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("suspends polling entirely while the tab is hidden and resumes when it returns", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/projects") return response({ projects: [project("project-1", "Project one", "2026-08-01T00:00:00Z")] });
+        if (url === "/api/projects/project-1/tasks") {
+          // A busy task would normally drive fast polling; the only thing that
+          // should gate it here is tab visibility.
+          return response({ tasks: [task("task-busy", "Busy task", "2026-08-01T00:00:00Z", { liveness: "live", turn_activity: "busy" })] });
+        }
+        if (url === "/api/sessions?limit=5") return response({ sessions: [] });
+        return response({});
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(
+        <ThemeProvider>
+          <MemoryRouter>
+            <WorkspaceSidebar />
+          </MemoryRouter>
+        </ThemeProvider>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(screen.getByRole("region", { name: /project one/i })).toBeInTheDocument();
+      const callsAfterMount = fetchMock.mock.calls.length;
+
+      await act(async () => {
+        setDocumentVisibility("hidden");
+        await Promise.resolve();
+      });
+
+      // No matter how much time passes while hidden, no poll fires — even though
+      // work is active (which would otherwise poll every 2s).
+      await act(async () => {
+        vi.advanceTimersByTimeAsync(60000);
+      });
+      expect(fetchMock.mock.calls.length).toBe(callsAfterMount);
+
+      act(() => setDocumentVisibility("visible"));
+      await act(async () => {
+        vi.advanceTimersByTimeAsync(2500);
+      });
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(callsAfterMount);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

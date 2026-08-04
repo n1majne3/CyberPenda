@@ -28,6 +28,7 @@ import {
 } from "@/lib/api";
 import { ThemeToggle } from "@/components/ThemeProvider";
 import { PromptDialog } from "@/components/ConfirmDialog";
+import { useDocumentVisibility } from "@/lib/useDocumentVisibility";
 import { cn } from "@/lib/utils";
 
 type TaskState = {
@@ -57,6 +58,16 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
   const [sessionActionId, setSessionActionId] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<Session | null>(null);
   const projectIdsKey = useMemo(() => projects.map((project) => project.id).join("\u0000"), [projects]);
+  const isVisible = useDocumentVisibility();
+  // Whether any tracked owner currently has a live, busy runtime. While true the
+  // sidebar polls fast (2s) to surface runtime progress; once idle it backs off
+  // to a slow cadence so an open-but-unused tab does not hammer the daemon.
+  const hasActive = useMemo(
+    () =>
+      sessions.some(isSessionBusy) ||
+      Object.values(taskStates).some((state) => state.tasks.some(isTaskBusy)),
+    [sessions, taskStates],
+  );
 
   const loadProjects = useCallback(async (showLoading = true) => {
     if (showLoading) setProjectLoading(true);
@@ -120,31 +131,35 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
     }
   }, []);
 
+  // Eager initial loads: fill the sidebar on first mount even when the tab is
+  // already hidden. Projects and sessions load once; task summaries load (and
+  // reload) as the known project set changes. Subsequent refreshes are driven by
+  // the gated poll below.
   useEffect(() => {
     void loadProjects();
-    const refresh = window.setInterval(() => void loadProjects(false), 2000);
-    return () => window.clearInterval(refresh);
   }, [loadProjects]);
 
   useEffect(() => {
     void loadSessions();
-    const refresh = window.setInterval(() => void loadSessions(false), 2000);
-    return () => window.clearInterval(refresh);
   }, [loadSessions]);
 
-  // Task summaries supply the latest Project-or-Task activity used for
-  // ordering. The same summaries also populate an expanded Project row.
   useEffect(() => {
     for (const projectId of projectIdsKey.split("\u0000").filter(Boolean)) void loadTasks(projectId);
   }, [loadTasks, projectIdsKey]);
 
+  // Single gated poll replacing the former fixed 2s intervals. It suspends
+  // entirely while the tab is hidden and backs off from 2s → 30s once no owner
+  // has a live busy runtime. `hasActive` lags by one tick, which is acceptable.
   useEffect(() => {
-    if (!projectIdsKey) return;
+    if (!isVisible) return;
+    const period = hasActive ? 2000 : 30000;
     const refresh = window.setInterval(() => {
+      void loadProjects(false);
+      void loadSessions(false);
       for (const projectId of projectIdsKey.split("\u0000").filter(Boolean)) void loadTasks(projectId, false);
-    }, 2000);
+    }, period);
     return () => window.clearInterval(refresh);
-  }, [loadTasks, projectIdsKey]);
+  }, [isVisible, hasActive, projectIdsKey, loadProjects, loadSessions, loadTasks]);
 
   const sortedProjects = useMemo(
     () =>
