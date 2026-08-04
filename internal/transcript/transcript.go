@@ -1,6 +1,7 @@
-// Package transcript projects retained task events into a readable conversation
-// transcript. It does not persist new state; unknown provider output is kept as
-// collapsed runtime output so historical tasks remain readable.
+// Package transcript projects retained task or session events into a readable
+// conversation transcript. It does not persist new state; unknown provider
+// output is kept as collapsed runtime output so historical owners remain
+// readable. Both owner kinds feed the same builder.
 package transcript
 
 import (
@@ -12,7 +13,6 @@ import (
 	"pentest/internal/runtimeoutput"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
-	"pentest/internal/task"
 )
 
 const (
@@ -53,17 +53,34 @@ type Entry struct {
 	CreatedAt    time.Time      `json:"created_at"`
 }
 
-// Build projects a task goal and its retained events into transcript entries.
-func Build(subject task.Task, events []task.Event) []Entry {
+// Event is the minimal owner-event surface Build consumes. Task and Session
+// event stores both project into this shape so one builder serves both.
+type Event struct {
+	ID        string
+	Seq       int
+	Kind      string
+	Payload   map[string]any
+	CreatedAt time.Time
+}
+
+// Subject is the minimal owner identity Build needs for its first row.
+type Subject struct {
+	ID        string
+	Title     string // task goal or session title
+	CreatedAt time.Time
+}
+
+// Build projects an owner subject and its retained events into transcript entries.
+func Build(subject Subject, events []Event) []Entry {
 	entries := make([]Entry, 0, len(events)+1)
-	if strings.TrimSpace(subject.Goal) != "" {
+	if strings.TrimSpace(subject.Title) != "" {
 		entries = append(entries, Entry{
-			ID:           "task-" + subject.ID + "-goal",
+			ID:           subject.ID + "-goal",
 			Seq:          0,
 			Continuation: 0,
 			Kind:         KindMessage,
 			Role:         RoleUser,
-			Text:         subject.Goal,
+			Text:         subject.Title,
 			CreatedAt:    subject.CreatedAt,
 		})
 	}
@@ -71,7 +88,7 @@ func Build(subject task.Task, events []task.Event) []Entry {
 	continuation := 0
 	adapter := ""
 	for _, event := range events {
-		if event.Kind == task.EventKindLifecycle {
+		if event.Kind == "lifecycle" {
 			next, ok := lifecycleEntry(event, continuation)
 			if ok {
 				if stringValue(event.Payload, "phase") == "started" {
@@ -88,7 +105,7 @@ func Build(subject task.Task, events []task.Event) []Entry {
 	return entries
 }
 
-func lifecycleEntry(event task.Event, continuation int) (Entry, bool) {
+func lifecycleEntry(event Event, continuation int) (Entry, bool) {
 	phase := stringValue(event.Payload, "phase")
 	if phase == "" {
 		return Entry{}, false
@@ -162,9 +179,9 @@ func lifecycleEntry(event task.Event, continuation int) (Entry, bool) {
 	}
 }
 
-func entriesForEvent(event task.Event, continuation int, adapter string) []Entry {
+func entriesForEvent(event Event, continuation int, adapter string) []Entry {
 	switch event.Kind {
-	case task.EventKindSteering:
+	case "steering":
 		if entry, ok := nativeSteeringEntry(event, continuation); ok {
 			return []Entry{entry}
 		}
@@ -182,7 +199,7 @@ func entriesForEvent(event task.Event, continuation int, adapter string) []Entry
 			Details:      compactPayload(event.Payload, "directive"),
 			CreatedAt:    event.CreatedAt,
 		}}
-	case task.EventKindConversation:
+	case "conversation":
 		text := firstText(event.Payload, "text", "content", "message")
 		if text == "" {
 			return nil
@@ -200,7 +217,7 @@ func entriesForEvent(event task.Event, continuation int, adapter string) []Entry
 			Text:         text,
 			CreatedAt:    event.CreatedAt,
 		}}
-	case task.EventKindRuntimeOutput:
+	case "runtime_output":
 		text := stringValue(event.Payload, "text")
 		stream := stringValue(event.Payload, "stream")
 		if text == "" {
@@ -212,9 +229,15 @@ func entriesForEvent(event task.Event, continuation int, adapter string) []Entry
 		// Pi session-tail lines are structured provider records but the
 		// persistent-session adapter name resolves to no parser. Select the
 		// parser from the stream so tailed output parses like Pi stdout.
+		// Session events carry the real provider id on the payload when the
+		// adapter is a synthetic provider-session:<id> handle.
 		parseAdapter := adapter
 		if stream == PiSessionStream {
 			parseAdapter = string(runtimeprofile.ProviderPi)
+		} else if strings.HasPrefix(parseAdapter, "provider-session:") {
+			if provider := stringValue(event.Payload, "provider"); provider != "" {
+				parseAdapter = provider
+			}
 		}
 		if parsed := parseRuntimeOutput(event, continuation, parseAdapter, text); len(parsed) > 0 {
 			return parsed
@@ -228,7 +251,7 @@ func entriesForEvent(event task.Event, continuation int, adapter string) []Entry
 	}
 }
 
-func nativeSteeringEntry(event task.Event, continuation int) (Entry, bool) {
+func nativeSteeringEntry(event Event, continuation int) (Entry, bool) {
 	if strings.TrimSpace(stringValue(event.Payload, "request_id")) == "" {
 		return Entry{}, false
 	}
@@ -262,7 +285,7 @@ func nativeSteeringEntry(event task.Event, continuation int) (Entry, bool) {
 	}, true
 }
 
-func parseRuntimeOutput(event task.Event, continuation int, adapter, text string) []Entry {
+func parseRuntimeOutput(event Event, continuation int, adapter, text string) []Entry {
 	parser := ParserForAdapter(adapter, nil)
 	if parser == "plain_runtime_output" {
 		return nil
@@ -395,7 +418,7 @@ func isIgnorableUnparsedRuntimeLine(text string) bool {
 	return runtimeoutput.IsThinkingOnlyAssistantLine(text)
 }
 
-func runtimeFallback(event task.Event, continuation int, text, stream string) Entry {
+func runtimeFallback(event Event, continuation int, text, stream string) Entry {
 	return Entry{
 		ID:           event.ID + "-runtime",
 		Seq:          event.Seq,
@@ -477,7 +500,7 @@ func sliceValue(record map[string]any, key string) ([]any, bool) {
 	return typed, ok
 }
 
-func compactPayload(payload task.EventPayload, skipKeys ...string) map[string]any {
+func compactPayload(payload map[string]any, skipKeys ...string) map[string]any {
 	if len(payload) == 0 {
 		return nil
 	}

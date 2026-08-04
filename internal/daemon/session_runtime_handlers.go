@@ -23,6 +23,7 @@ import (
 	"pentest/internal/session"
 	"pentest/internal/task"
 	"pentest/internal/timeline"
+	"pentest/internal/transcript"
 )
 
 // sessionRuntimeInput is deliberately smaller than Task launch input. A
@@ -850,13 +851,17 @@ func (server *Server) handleSessionConversation(response http.ResponseWriter, re
 }
 
 func (server *Server) handleSessionTimeline(response http.ResponseWriter, request *http.Request) {
-	timelineEvents, err := server.sessions.Timeline(request.PathValue("id"))
+	sessionID := request.PathValue("id")
+	allEvents, err := server.sessions.Events(sessionID)
 	if err != nil {
 		writeSessionError(response, err)
 		return
 	}
-	events := make([]timeline.Event, 0, len(timelineEvents))
-	for _, event := range timelineEvents {
+	// Feed the shared builder the same full event stream as tasks; kind
+	// routing (conversation excluded, lifecycle/steering parsed) lives in
+	// timeline.Build, not in the session store.
+	events := make([]timeline.Event, 0, len(allEvents))
+	for _, event := range allEvents {
 		events = append(events, timeline.Event{
 			Kind:      string(event.Kind),
 			Payload:   event.Payload,
@@ -871,8 +876,48 @@ func (server *Server) handleSessionTimeline(response http.ResponseWriter, reques
 		SessionID string          `json:"session_id"`
 		Items     []timeline.Item `json:"items"`
 	}{
-		SessionID: request.PathValue("id"),
+		SessionID: sessionID,
 		Items:     items,
+	})
+}
+
+func (server *Server) handleSessionTranscript(response http.ResponseWriter, request *http.Request) {
+	sessionID := request.PathValue("id")
+	found, err := server.sessions.Get(sessionID)
+	if err != nil {
+		writeSessionError(response, err)
+		return
+	}
+	events, err := server.sessions.Events(sessionID)
+	if err != nil {
+		writeSessionError(response, err)
+		return
+	}
+	converted := make([]transcript.Event, 0, len(events))
+	for _, event := range events {
+		converted = append(converted, transcript.Event{
+			ID:        event.ID,
+			Seq:       event.Seq,
+			Kind:      string(event.Kind),
+			Payload:   event.Payload,
+			CreatedAt: event.CreatedAt,
+		})
+	}
+	entries := transcript.Build(transcript.Subject{
+		ID:        found.ID,
+		CreatedAt: found.CreatedAt,
+		// No Title: the Session's initial input is already a conversation
+		// event, so a synthetic goal row would duplicate it.
+	}, converted)
+	if entries == nil {
+		entries = []transcript.Entry{}
+	}
+	writeJSON(response, http.StatusOK, struct {
+		SessionID string             `json:"session_id"`
+		Entries   []transcript.Entry `json:"entries"`
+	}{
+		SessionID: sessionID,
+		Entries:   entries,
 	})
 }
 
@@ -1343,7 +1388,36 @@ func createSessionInputFromRuntime(message string, input sessionRuntimeInput) cr
 }
 
 func (server *Server) handleSessionQueueSteer(response http.ResponseWriter, request *http.Request) {
-	server.handleSessionMessage(response, request)
+	if strings.HasPrefix(request.Header.Get("Content-Type"), "multipart/form-data") {
+		request.Body = http.MaxBytesReader(response, request.Body, maxTotalUploadBytes)
+	}
+	input, uploads, err := parseCreateSessionRequest(request)
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	id := request.PathValue("id")
+	found, err := server.sessions.Get(id)
+	if err != nil {
+		writeSessionError(response, err)
+		return
+	}
+	// Queue-steering a Session is a directive, not a plain message: record the
+	// same steering event tasks emit so the timeline and transcript surface it
+	// identically for both owner kinds. The send below stays the Session queue
+	// path.
+	if directive := strings.TrimSpace(input.value()); directive != "" {
+		payload := session.EventPayload{
+			"directive": directive,
+			"phase":     "steering_requested",
+			"mode":      "queue",
+		}
+		if _, err := server.sessions.AppendEvent(id, session.EventKindSteering, payload); err != nil {
+			writeSessionError(response, err)
+			return
+		}
+	}
+	server.handleSessionMessageInput(response, request, found, input, uploads)
 }
 
 func (server *Server) writeDecoratedSession(response http.ResponseWriter, status int, id string) {
@@ -1405,7 +1479,7 @@ func (server *Server) handleSessionProviderPermissionResponse(response http.Resp
 		writeSessionError(response, err)
 		return
 	}
-	pending, priorOutcome, priorDecision := sessionProviderPermissionStatus(events, permissionID, input.RequestID)
+	pending, priorOutcome, priorDecision := providerPermissionStatus(sessionEventsAsTimeline(events), permissionID, input.RequestID)
 	if priorDecision != "" && priorDecision != input.Decision {
 		writeError(response, http.StatusConflict, "permission request id already belongs to a different decision")
 		return
@@ -1461,7 +1535,7 @@ func (server *Server) handleSessionProviderPermissionResponse(response http.Resp
 			server.persistSessionProviderEventForContinuation(id, active.ID, task.EventKindLifecycle, task.EventPayload{
 				"phase": "provider_permission_response_failed", "outcome": "failed", "request_id": input.RequestID,
 				"permission_request_id": permissionID, "mode": string(runtime.ProviderSessionModePermissionResponse),
-				"error_code": sessionProviderPermissionErrorCode(operationErr),
+				"error_code": permissionResponseErrorCode(operationErr),
 			})
 			return
 		}
@@ -1485,53 +1559,18 @@ func (server *Server) handleSessionProviderPermissionResponse(response http.Resp
 	})
 }
 
-func sessionProviderPermissionStatus(events []session.Event, permissionID, requestID string) (pending bool, outcome, decision string) {
+// sessionEventsAsTimeline projects session events into the neutral event shape
+// shared with timeline.Build and the owner-neutral permission status scanner.
+func sessionEventsAsTimeline(events []session.Event) []timeline.Event {
+	converted := make([]timeline.Event, 0, len(events))
 	for _, event := range events {
-		if value, _ := event.Payload["permission_request_id"].(string); value != permissionID {
-			continue
-		}
-		rid, _ := event.Payload["request_id"].(string)
-		if rid == requestID {
-			if value, ok := event.Payload["permission_decision"].(string); ok && value != "" {
-				decision = normalizePermissionDecision(value)
-			}
-		}
-		phase, _ := event.Payload["phase"].(string)
-		switch phase {
-		case "provider_permission_requested":
-			pending = true
-		case "provider_permission_response_requested", "provider_permission_response_acknowledged":
-			if rid == requestID {
-				outcome = "pending"
-			}
-		case "provider_permission_response_applied":
-			pending = false
-			if rid == requestID {
-				outcome = "applied"
-			}
-		case "provider_permission_response_failed":
-			pending = true
-			if rid == requestID {
-				outcome = "failed"
-			}
-		}
+		converted = append(converted, timeline.Event{
+			Kind:      string(event.Kind),
+			Payload:   event.Payload,
+			CreatedAt: event.CreatedAt,
+		})
 	}
-	return pending, outcome, decision
-}
-
-func sessionProviderPermissionErrorCode(err error) string {
-	switch {
-	case errors.Is(err, context.DeadlineExceeded):
-		return "timeout"
-	case errors.Is(err, context.Canceled):
-		return "server_closing"
-	case errors.Is(err, runtime.ErrProviderSessionClosed):
-		return "session_closed"
-	case errors.Is(err, runtime.ErrProviderSessionControlConflict):
-		return "control_conflict"
-	default:
-		return "provider_rejected"
-	}
+	return converted
 }
 
 func (server *Server) handleSessionStop(response http.ResponseWriter, request *http.Request) {

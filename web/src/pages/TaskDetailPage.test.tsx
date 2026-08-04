@@ -314,13 +314,9 @@ describe("TaskDetailPage", () => {
         id: "runtime-entry",
         seq: 2,
         continuation: 1,
-        kind: "runtime_output",
-        role: "runtime",
-        text: JSON.stringify({
-          type: "assistant",
-          message: { role: "assistant", content: [{ type: "text", text: "Inspecting the scoreboard now." }] },
-        }),
-        stream: "assistant",
+        kind: "message",
+        role: "assistant",
+        text: "Inspecting the scoreboard now.",
         created_at: "2026-01-01T00:00:01Z",
       },
     ]);
@@ -337,38 +333,33 @@ describe("TaskDetailPage", () => {
   it("projects Claude tool calls and results into readable transcript rows", async () => {
     stubTaskDetailApi({}, [
       {
-        id: "assistant-runtime-entry",
+        id: "assistant-message",
         seq: 7,
         continuation: 1,
-        kind: "runtime_output",
-        role: "runtime",
-        text: JSON.stringify({
-          type: "assistant",
-          message: {
-            role: "assistant",
-            content: [
-              { type: "text", text: "I will inspect the target now." },
-              { type: "tool_use", id: "call-1", name: "Bash", input: { command: "curl http://localhost:3000" } },
-            ],
-          },
-        }),
-        stream: "assistant",
+        kind: "message",
+        role: "assistant",
+        text: "I will inspect the target now.",
         created_at: "2026-01-01T00:00:01Z",
       },
       {
-        id: "user-runtime-entry",
+        id: "assistant-tool-call",
+        seq: 7,
+        continuation: 1,
+        kind: "tool_call",
+        role: "assistant",
+        tool_call_id: "call-1",
+        tool_name: "Bash",
+        details: { input: { command: "curl http://localhost:3000" } },
+        created_at: "2026-01-01T00:00:01Z",
+      },
+      {
+        id: "tool-result",
         seq: 8,
         continuation: 1,
-        kind: "runtime_output",
-        role: "runtime",
-        text: JSON.stringify({
-          type: "user",
-          message: {
-            role: "user",
-            content: [{ type: "tool_result", tool_use_id: "call-1", content: "HTTP/1.1 200 OK\\nbody" }],
-          },
-        }),
-        stream: "user",
+        kind: "tool_result",
+        role: "tool",
+        text: "HTTP/1.1 200 OK\nbody",
+        tool_call_id: "call-1",
         created_at: "2026-01-01T00:00:02Z",
       },
     ]);
@@ -403,51 +394,42 @@ describe("TaskDetailPage", () => {
         created_at: "2026-01-01T00:00:00Z",
       },
       {
-        id: "assistant-runtime-entry",
+        id: "assistant-probe",
         seq: 2,
         continuation: 1,
-        kind: "runtime_output",
-        role: "runtime",
-        text: JSON.stringify({
-          type: "assistant",
-          message: {
-            role: "assistant",
-            content: [
-              { type: "text", text: "Running a probe." },
-              { type: "tool_use", id: "call-1", name: "Bash", input: { command: "curl http://localhost:3000" } },
-            ],
-          },
-        }),
-        stream: "assistant",
+        kind: "message",
+        role: "assistant",
+        text: "Running a probe.",
         created_at: "2026-01-01T00:00:01Z",
       },
       {
-        id: "user-runtime-entry",
+        id: "assistant-tool-call",
+        seq: 2,
+        continuation: 1,
+        kind: "tool_call",
+        role: "assistant",
+        tool_call_id: "call-1",
+        tool_name: "Bash",
+        details: { input: { command: "curl http://localhost:3000" } },
+        created_at: "2026-01-01T00:00:01Z",
+      },
+      {
+        id: "tool-result",
         seq: 3,
         continuation: 1,
-        kind: "runtime_output",
-        role: "runtime",
-        text: JSON.stringify({
-          type: "user",
-          message: {
-            role: "user",
-            content: [{ type: "tool_result", tool_use_id: "call-1", content: "HTTP/1.1 200 OK" }],
-          },
-        }),
-        stream: "user",
+        kind: "tool_result",
+        role: "tool",
+        text: "HTTP/1.1 200 OK",
+        tool_call_id: "call-1",
         created_at: "2026-01-01T00:00:02Z",
       },
       {
         id: "assistant-summary",
         seq: 4,
         continuation: 1,
-        kind: "runtime_output",
-        role: "runtime",
-        text: JSON.stringify({
-          type: "assistant",
-          message: { role: "assistant", content: [{ type: "text", text: "The service is up." }] },
-        }),
-        stream: "assistant",
+        kind: "message",
+        role: "assistant",
+        text: "The service is up.",
         created_at: "2026-01-01T00:00:03Z",
       },
       {
@@ -470,29 +452,23 @@ describe("TaskDetailPage", () => {
     expect(rows[0]).not.toHaveClass("mt-1");
     expect(rows[0]).not.toHaveClass("mt-4");
     expect(rows[1]).toHaveClass("mt-1"); // user turn start → agent turn begins tight
-    expect(rows[2]).toHaveClass("mt-1"); // tool result still in the same agent turn
-    expect(rows[3]).toHaveClass("mt-1"); // assistant summary still tight
-    expect(rows[4]).toHaveClass("mt-4"); // new user turn gets breathing room
+    expect(rows[2]).toHaveClass("mt-1"); // tool call still in the same agent turn
+    expect(rows[3]).toHaveClass("mt-1"); // tool result still in the same agent turn
+    expect(rows[4]).toHaveClass("mt-1"); // assistant summary still tight
+    expect(rows[5]).toHaveClass("mt-4"); // new user turn gets breathing room
   });
 
   it("renders tool call arguments as labeled fields rather than a raw JSON envelope", async () => {
     stubTaskDetailApi({}, [
       {
-        id: "assistant-runtime-entry",
+        id: "assistant-tool-call",
         seq: 7,
         continuation: 1,
-        kind: "runtime_output",
-        role: "runtime",
-        text: JSON.stringify({
-          type: "assistant",
-          message: {
-            role: "assistant",
-            content: [
-              { type: "tool_use", id: "call-1", name: "Bash", input: { command: "curl http://localhost:3000", timeout: 30 } },
-            ],
-          },
-        }),
-        stream: "assistant",
+        kind: "tool_call",
+        role: "assistant",
+        tool_call_id: "call-1",
+        tool_name: "Bash",
+        details: { input: { command: "curl http://localhost:3000", timeout: 30 } },
         created_at: "2026-01-01T00:00:01Z",
       },
     ]);

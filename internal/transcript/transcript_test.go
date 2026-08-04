@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"pentest/internal/task"
 	"pentest/internal/transcript"
 )
 
@@ -28,16 +27,16 @@ func TestParserForAdapterUsesRuntimePluginMetadata(t *testing.T) {
 
 func TestBuildIncludesGoalContinuationsSteeringAndFallback(t *testing.T) {
 	createdAt := time.Date(2026, 6, 19, 12, 0, 0, 0, time.UTC)
-	subject := task.Task{ID: "task-1", Goal: "Recon Juice Shop", CreatedAt: createdAt}
-	events := []task.Event{
-		{ID: "ev-1", Seq: 1, Kind: task.EventKindLifecycle, Payload: task.EventPayload{"phase": "started", "adapter": "pi"}, CreatedAt: createdAt.Add(time.Second)},
-		{ID: "ev-2", Seq: 2, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"stream": "stdout", "text": "plain line"}, CreatedAt: createdAt.Add(2 * time.Second)},
-		{ID: "ev-3", Seq: 3, Kind: task.EventKindSteering, Payload: task.EventPayload{"directive": "Focus admin"}, CreatedAt: createdAt.Add(3 * time.Second)},
+	subject := transcript.Subject{ID: "task-1", Title: "Recon Juice Shop", CreatedAt: createdAt}
+	events := []transcript.Event{
+		{ID: "ev-1", Seq: 1, Kind: "lifecycle", Payload: map[string]any{"phase": "started", "adapter": "pi"}, CreatedAt: createdAt.Add(time.Second)},
+		{ID: "ev-2", Seq: 2, Kind: "runtime_output", Payload: map[string]any{"stream": "stdout", "text": "plain line"}, CreatedAt: createdAt.Add(2 * time.Second)},
+		{ID: "ev-3", Seq: 3, Kind: "steering", Payload: map[string]any{"directive": "Focus admin"}, CreatedAt: createdAt.Add(3 * time.Second)},
 	}
 
 	got := transcript.Build(subject, events)
 
-	requireEntry(t, got, "task-task-1-goal", "message", "user", "Recon Juice Shop")
+	requireEntry(t, got, "task-1-goal", "message", "user", "Recon Juice Shop")
 	requireEntry(t, got, "ev-1-continuation", "continuation", "system", "Continuation #1 started with pi")
 	fallback := requireEntry(t, got, "ev-2-runtime", "runtime_output", "runtime", "plain line")
 	if fallback.Stream != "stdout" || fallback.Status != "collapsed" {
@@ -52,10 +51,10 @@ func TestBuildParsesPiSessionStreamRegardlessOfAdapterName(t *testing.T) {
 	// runtime plugin parser. The session-file tailer still emits Pi's real
 	// output as runtime_output events carrying stream "pi_session", so the
 	// transcript must select the Pi parser from the stream, not the adapter.
-	subject := task.Task{ID: "task-1", Goal: "Recon", CreatedAt: time.Now().UTC()}
-	events := []task.Event{
-		{ID: "ev-1", Seq: 1, Kind: task.EventKindLifecycle, Payload: task.EventPayload{"phase": "started", "adapter": "provider-session:abc123"}},
-		{ID: "ev-2", Seq: 2, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{
+	subject := transcript.Subject{ID: "task-1", Title: "Recon", CreatedAt: time.Now().UTC()}
+	events := []transcript.Event{
+		{ID: "ev-1", Seq: 1, Kind: "lifecycle", Payload: map[string]any{"phase": "started", "adapter": "provider-session:abc123"}},
+		{ID: "ev-2", Seq: 2, Kind: "runtime_output", Payload: map[string]any{
 			"stream": "pi_session",
 			"text":   `{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Enumerated the login endpoint"}]}}`,
 		}},
@@ -72,24 +71,24 @@ func TestBuildParsesPiSessionStreamRegardlessOfAdapterName(t *testing.T) {
 }
 
 func TestBuildProjectsNativeSteerControlsWithoutDuplicatingConversationMessage(t *testing.T) {
-	subject := task.Task{ID: "task-1", Goal: "Inspect target", CreatedAt: time.Now().UTC()}
-	events := []task.Event{
-		{ID: "conv-1", Seq: 1, Kind: task.EventKindConversation, Payload: task.EventPayload{
+	subject := transcript.Subject{ID: "task-1", Title: "Inspect target", CreatedAt: time.Now().UTC()}
+	events := []transcript.Event{
+		{ID: "conv-1", Seq: 1, Kind: "conversation", Payload: map[string]any{
 			"role": "user", "text": "focus on admin", "request_id": "req-1", "delivery": "native_steer",
 		}},
-		{ID: "steer-1", Seq: 2, Kind: task.EventKindSteering, Payload: task.EventPayload{
+		{ID: "steer-1", Seq: 2, Kind: "steering", Payload: map[string]any{
 			"request_id": "req-1", "session_id": "session-1", "mode": "interrupt_then_replace", "outcome": "requested",
 		}},
-		{ID: "steer-2", Seq: 3, Kind: task.EventKindSteering, Payload: task.EventPayload{
+		{ID: "steer-2", Seq: 3, Kind: "steering", Payload: map[string]any{
 			"request_id": "req-1", "session_id": "session-1", "mode": "interrupt_then_replace", "outcome": "acknowledged",
 		}},
-		{ID: "steer-3", Seq: 4, Kind: task.EventKindSteering, Payload: task.EventPayload{
+		{ID: "steer-3", Seq: 4, Kind: "steering", Payload: map[string]any{
 			"request_id": "req-1", "session_id": "session-1", "mode": "interrupt_then_replace", "outcome": "settled",
 		}},
-		{ID: "steer-4", Seq: 5, Kind: task.EventKindSteering, Payload: task.EventPayload{
+		{ID: "steer-4", Seq: 5, Kind: "steering", Payload: map[string]any{
 			"request_id": "req-1", "session_id": "session-1", "mode": "interrupt_then_replace", "outcome": "started",
 		}},
-		{ID: "steer-5", Seq: 6, Kind: task.EventKindSteering, Payload: task.EventPayload{
+		{ID: "steer-5", Seq: 6, Kind: "steering", Payload: map[string]any{
 			"request_id": "req-1", "session_id": "session-1", "mode": "interrupt_then_replace", "outcome": "applied", "phase": "steering_applied",
 		}},
 	}
@@ -117,12 +116,12 @@ func TestBuildProjectsNativeSteerControlsWithoutDuplicatingConversationMessage(t
 }
 
 func TestBuildProjectsRedactedProviderPermissionLifecycle(t *testing.T) {
-	subject := task.Task{ID: "task-1", Goal: "Inspect target", CreatedAt: time.Now().UTC()}
-	events := []task.Event{
-		{ID: "perm-1", Seq: 1, Kind: task.EventKindLifecycle, Payload: task.EventPayload{
+	subject := transcript.Subject{ID: "task-1", Title: "Inspect target", CreatedAt: time.Now().UTC()}
+	events := []transcript.Event{
+		{ID: "perm-1", Seq: 1, Kind: "lifecycle", Payload: map[string]any{
 			"phase": "provider_permission_requested", "permission_request_id": "permission-1", "provider": "claude_code",
 		}},
-		{ID: "perm-2", Seq: 2, Kind: task.EventKindLifecycle, Payload: task.EventPayload{
+		{ID: "perm-2", Seq: 2, Kind: "lifecycle", Payload: map[string]any{
 			"phase": "provider_permission_response_applied", "permission_request_id": "permission-1", "outcome": "applied",
 		}},
 	}
@@ -136,11 +135,11 @@ func TestBuildProjectsRedactedProviderPermissionLifecycle(t *testing.T) {
 }
 
 func TestBuildParsesOpenAIToolCallAndResult(t *testing.T) {
-	subject := task.Task{ID: "task-1", Goal: "Do work", CreatedAt: time.Now().UTC()}
-	events := []task.Event{
-		{ID: "ev-1", Seq: 1, Kind: task.EventKindLifecycle, Payload: task.EventPayload{"phase": "started", "adapter": "pi"}},
-		{ID: "ev-2", Seq: 2, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"tool_call","id":"call-1","name":"curl","arguments":{"url":"http://127.0.0.1:3000"}}`}},
-		{ID: "ev-3", Seq: 3, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"tool_result","tool_call_id":"call-1","output":"200 OK"}`}},
+	subject := transcript.Subject{ID: "task-1", Title: "Do work", CreatedAt: time.Now().UTC()}
+	events := []transcript.Event{
+		{ID: "ev-1", Seq: 1, Kind: "lifecycle", Payload: map[string]any{"phase": "started", "adapter": "pi"}},
+		{ID: "ev-2", Seq: 2, Kind: "runtime_output", Payload: map[string]any{"text": `{"type":"tool_call","id":"call-1","name":"curl","arguments":{"url":"http://127.0.0.1:3000"}}`}},
+		{ID: "ev-3", Seq: 3, Kind: "runtime_output", Payload: map[string]any{"text": `{"type":"tool_result","tool_call_id":"call-1","output":"200 OK"}`}},
 	}
 
 	got := transcript.Build(subject, events)
@@ -160,11 +159,11 @@ func TestBuildParsesOpenAIToolCallAndResult(t *testing.T) {
 }
 
 func TestBuildParsesClaudeAssistantTextAndToolUse(t *testing.T) {
-	subject := task.Task{ID: "task-1", Goal: "Do work", CreatedAt: time.Now().UTC()}
-	events := []task.Event{
-		{ID: "ev-1", Seq: 1, Kind: task.EventKindLifecycle, Payload: task.EventPayload{"phase": "started", "adapter": "claude_code"}},
-		{ID: "ev-2", Seq: 2, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"assistant","message":{"content":[{"type":"text","text":"I will inspect the app."},{"type":"tool_use","id":"toolu_1","name":"curl","input":{"url":"http://127.0.0.1:3000"}}]}}`}},
-		{ID: "ev-3", Seq: 3, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"OK"}]}}`}},
+	subject := transcript.Subject{ID: "task-1", Title: "Do work", CreatedAt: time.Now().UTC()}
+	events := []transcript.Event{
+		{ID: "ev-1", Seq: 1, Kind: "lifecycle", Payload: map[string]any{"phase": "started", "adapter": "claude_code"}},
+		{ID: "ev-2", Seq: 2, Kind: "runtime_output", Payload: map[string]any{"text": `{"type":"assistant","message":{"content":[{"type":"text","text":"I will inspect the app."},{"type":"tool_use","id":"toolu_1","name":"curl","input":{"url":"http://127.0.0.1:3000"}}]}}`}},
+		{ID: "ev-3", Seq: 3, Kind: "runtime_output", Payload: map[string]any{"text": `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"OK"}]}}`}},
 	}
 
 	got := transcript.Build(subject, events)
@@ -181,11 +180,11 @@ func TestBuildParsesClaudeAssistantTextAndToolUse(t *testing.T) {
 }
 
 func TestBuildDropsClaudeThinkingTokenNoise(t *testing.T) {
-	subject := task.Task{ID: "task-1", Goal: "Do work", CreatedAt: time.Now().UTC()}
-	events := []task.Event{
-		{ID: "ev-1", Seq: 1, Kind: task.EventKindLifecycle, Payload: task.EventPayload{"phase": "started", "adapter": "claude_code"}},
-		{ID: "ev-2", Seq: 2, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"stream": "stdout", "text": `{"type":"system","subtype":"thinking_tokens","estimated_tokens":13,"uuid":"abc"}`}},
-		{ID: "ev-3", Seq: 3, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"stream": "stdout", "text": `{"type":"assistant","message":{"content":[{"type":"text","text":"Ready."}]}}`}},
+	subject := transcript.Subject{ID: "task-1", Title: "Do work", CreatedAt: time.Now().UTC()}
+	events := []transcript.Event{
+		{ID: "ev-1", Seq: 1, Kind: "lifecycle", Payload: map[string]any{"phase": "started", "adapter": "claude_code"}},
+		{ID: "ev-2", Seq: 2, Kind: "runtime_output", Payload: map[string]any{"stream": "stdout", "text": `{"type":"system","subtype":"thinking_tokens","estimated_tokens":13,"uuid":"abc"}`}},
+		{ID: "ev-3", Seq: 3, Kind: "runtime_output", Payload: map[string]any{"stream": "stdout", "text": `{"type":"assistant","message":{"content":[{"type":"text","text":"Ready."}]}}`}},
 	}
 
 	got := transcript.Build(subject, events)
@@ -227,11 +226,11 @@ func TestIsIgnorableRuntimeLineDetectsTaskStartedAndFailed(t *testing.T) {
 }
 
 func TestBuildDropsTaskProgressNoise(t *testing.T) {
-	subject := task.Task{ID: "task-1", Goal: "Do work", CreatedAt: time.Now().UTC()}
-	events := []task.Event{
-		{ID: "ev-1", Seq: 1, Kind: task.EventKindLifecycle, Payload: task.EventPayload{"phase": "started", "adapter": "claude_code"}},
-		{ID: "ev-2", Seq: 2, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"stream": "stdout", "text": `{"type":"system","subtype":"task_progress","description":"Exploit: privacy-policy","workflow_progress":[{"label":"privacy-policy","phaseTitle":"Exploit"}]}`}},
-		{ID: "ev-3", Seq: 3, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"stream": "stdout", "text": `{"type":"assistant","message":{"content":[{"type":"text","text":"Found the policy hash."}]}}`}},
+	subject := transcript.Subject{ID: "task-1", Title: "Do work", CreatedAt: time.Now().UTC()}
+	events := []transcript.Event{
+		{ID: "ev-1", Seq: 1, Kind: "lifecycle", Payload: map[string]any{"phase": "started", "adapter": "claude_code"}},
+		{ID: "ev-2", Seq: 2, Kind: "runtime_output", Payload: map[string]any{"stream": "stdout", "text": `{"type":"system","subtype":"task_progress","description":"Exploit: privacy-policy","workflow_progress":[{"label":"privacy-policy","phaseTitle":"Exploit"}]}`}},
+		{ID: "ev-3", Seq: 3, Kind: "runtime_output", Payload: map[string]any{"stream": "stdout", "text": `{"type":"assistant","message":{"content":[{"type":"text","text":"Found the policy hash."}]}}`}},
 	}
 
 	got := transcript.Build(subject, events)
@@ -263,14 +262,14 @@ func TestIsIgnorableRuntimeLineDetectsThinkingOnlyAssistant(t *testing.T) {
 }
 
 func TestBuildDropsClaudeInitResultAndThinkingOnlyChunks(t *testing.T) {
-	subject := task.Task{ID: "task-1", Goal: "Do work", CreatedAt: time.Now().UTC()}
-	events := []task.Event{
-		{ID: "ev-1", Seq: 1, Kind: task.EventKindLifecycle, Payload: task.EventPayload{"phase": "started", "adapter": "claude_code"}},
-		{ID: "ev-2", Seq: 2, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"system","subtype":"init","session_id":"abc"}`}},
-		{ID: "ev-3", Seq: 3, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"only thoughts"}]}}`}},
-		{ID: "ev-4", Seq: 4, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"curl example.com"}}]}}`}},
-		{ID: "ev-5", Seq: 5, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"result","subtype":"success","is_error":false}`}},
-		{ID: "ev-6", Seq: 6, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"assistant","message":{"content":[{"type":"text","text":"Done."}]}}`}},
+	subject := transcript.Subject{ID: "task-1", Title: "Do work", CreatedAt: time.Now().UTC()}
+	events := []transcript.Event{
+		{ID: "ev-1", Seq: 1, Kind: "lifecycle", Payload: map[string]any{"phase": "started", "adapter": "claude_code"}},
+		{ID: "ev-2", Seq: 2, Kind: "runtime_output", Payload: map[string]any{"text": `{"type":"system","subtype":"init","session_id":"abc"}`}},
+		{ID: "ev-3", Seq: 3, Kind: "runtime_output", Payload: map[string]any{"text": `{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"only thoughts"}]}}`}},
+		{ID: "ev-4", Seq: 4, Kind: "runtime_output", Payload: map[string]any{"text": `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"curl example.com"}}]}}`}},
+		{ID: "ev-5", Seq: 5, Kind: "runtime_output", Payload: map[string]any{"text": `{"type":"result","subtype":"success","is_error":false}`}},
+		{ID: "ev-6", Seq: 6, Kind: "runtime_output", Payload: map[string]any{"text": `{"type":"assistant","message":{"content":[{"type":"text","text":"Done."}]}}`}},
 	}
 
 	got := transcript.Build(subject, events)
@@ -288,10 +287,10 @@ func TestBuildDropsClaudeInitResultAndThinkingOnlyChunks(t *testing.T) {
 }
 
 func TestBuildFallsBackForUnknownJSONRuntimeOutput(t *testing.T) {
-	subject := task.Task{ID: "task-1", Goal: "Do work", CreatedAt: time.Now().UTC()}
-	events := []task.Event{
-		{ID: "ev-1", Seq: 1, Kind: task.EventKindLifecycle, Payload: task.EventPayload{"phase": "started", "adapter": "pi"}},
-		{ID: "ev-2", Seq: 2, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"stream": "stderr", "text": `{"type":"new.provider.event","text":"keep raw"}`}},
+	subject := transcript.Subject{ID: "task-1", Title: "Do work", CreatedAt: time.Now().UTC()}
+	events := []transcript.Event{
+		{ID: "ev-1", Seq: 1, Kind: "lifecycle", Payload: map[string]any{"phase": "started", "adapter": "pi"}},
+		{ID: "ev-2", Seq: 2, Kind: "runtime_output", Payload: map[string]any{"stream": "stderr", "text": `{"type":"new.provider.event","text":"keep raw"}`}},
 	}
 
 	got := transcript.Build(subject, events)
@@ -406,4 +405,27 @@ func requireEntry(t *testing.T, entries []transcript.Entry, id, kind, role, text
 	}
 	t.Fatalf("missing entry %s in %#v", id, entries)
 	return transcript.Entry{}
+}
+
+func TestBuildParsesProviderSessionAdapterFromPayloadProvider(t *testing.T) {
+	createdAt := time.Now().UTC()
+	subject := transcript.Subject{ID: "session-1", Title: "", CreatedAt: createdAt}
+	events := []transcript.Event{
+		{ID: "ev-1", Seq: 1, Kind: "lifecycle", Payload: map[string]any{"phase": "started", "adapter": "provider-session:abc123"}, CreatedAt: createdAt},
+		{ID: "ev-2", Seq: 2, Kind: "runtime_output", Payload: map[string]any{
+			"provider": "claude_code",
+			"stream":   "assistant",
+			"text":     `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}}]}}`,
+		}, CreatedAt: createdAt.Add(time.Second)},
+	}
+
+	got := transcript.Build(subject, events)
+
+	requireEntry(t, got, "ev-2-tool-call-0", "tool_call", "assistant", "")
+	// Empty Title must not synthesize a goal row.
+	for _, entry := range got {
+		if entry.Kind == "message" && entry.Role == "user" {
+			t.Fatalf("unexpected synthetic goal row for empty title: %#v", entry)
+		}
+	}
 }

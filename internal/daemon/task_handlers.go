@@ -1509,7 +1509,11 @@ func (server *Server) handleTaskTranscript(response http.ResponseWriter, request
 		writeError(response, http.StatusInternalServerError, "list task events")
 		return
 	}
-	entries := transcript.Build(found, events)
+	entries := transcript.Build(transcript.Subject{
+		ID:        found.ID,
+		Title:     found.Goal,
+		CreatedAt: found.CreatedAt,
+	}, eventsToTranscriptEvents(events))
 	if entries == nil {
 		entries = []transcript.Entry{}
 	}
@@ -2989,7 +2993,7 @@ func (server *Server) handleProviderPermissionResponse(response http.ResponseWri
 		writeError(response, http.StatusInternalServerError, "list task events")
 		return
 	}
-	pending, priorOutcome, priorDecision := providerPermissionStatus(events, permissionID, input.RequestID)
+	pending, priorOutcome, priorDecision := providerPermissionStatus(eventsToTimelineEvents(events), permissionID, input.RequestID)
 	if priorDecision != "" && priorDecision != input.Decision {
 		writeError(response, http.StatusConflict, "permission request id already belongs to a different decision")
 		return
@@ -3045,7 +3049,10 @@ func (server *Server) handleProviderPermissionResponse(response http.ResponseWri
 	taskCtx := server.providerTaskContext(found.ID)
 	emit := func(kind task.EventKind, payload task.EventPayload) {
 		redacted := task.EventPayload{}
-		for _, key := range []string{"provider", "request_id", "session_id", "provider_turn_id", "mode", "outcome", "permission_request_id", "error_code"} {
+		// Fixed correlation allowlist shared with the Session provider event
+		// projection (provider_session_control.go): raw protocol payload never
+		// reaches the Task Conversation.
+		for _, key := range []string{"provider", "request_id", "session_id", "provider_turn_id", "mode", "outcome", "permission_request_id", "permission_decision", "error_code", "phase"} {
 			if value, ok := payload[key]; ok {
 				redacted[key] = value
 			}
@@ -3079,18 +3086,7 @@ func (server *Server) handleProviderPermissionResponse(response http.ResponseWri
 			RequestID: input.RequestID, PermissionRequestID: permissionID, PermissionDecision: input.Decision,
 		}, emit)
 		if operationErr != nil {
-			errorCode := "provider_rejected"
-			switch {
-			case errors.Is(operationErr, context.DeadlineExceeded):
-				errorCode = "timeout"
-			case errors.Is(operationErr, context.Canceled):
-				errorCode = "server_closing"
-			case errors.Is(operationErr, runtime.ErrProviderSessionClosed):
-				errorCode = "session_closed"
-			case errors.Is(operationErr, runtime.ErrProviderSessionControlConflict):
-				errorCode = "control_conflict"
-			}
-			emit(task.EventKindLifecycle, task.EventPayload{"outcome": "failed", "phase": "provider_permission_response_failed", "error_code": errorCode})
+			emit(task.EventKindLifecycle, task.EventPayload{"outcome": "failed", "phase": "provider_permission_response_failed", "error_code": permissionResponseErrorCode(operationErr)})
 			return
 		}
 		payload := result.Payload()
@@ -3120,7 +3116,28 @@ func normalizePermissionDecision(decision string) string {
 	}
 }
 
-func providerPermissionStatus(events []task.Event, permissionID, requestID string) (pending bool, outcome, decision string) {
+// permissionResponseErrorCode maps a provider permission-response failure to
+// the stable error_code both owner kinds persist, so task and session
+// permission handling share one classification.
+func permissionResponseErrorCode(operationErr error) string {
+	switch {
+	case errors.Is(operationErr, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(operationErr, context.Canceled):
+		return "server_closing"
+	case errors.Is(operationErr, runtime.ErrProviderSessionClosed):
+		return "session_closed"
+	case errors.Is(operationErr, runtime.ErrProviderSessionControlConflict):
+		return "control_conflict"
+	default:
+		return "provider_rejected"
+	}
+}
+
+// providerPermissionStatus scans either owner's event stream for the state of
+// one provider permission request. It runs over the neutral event shape shared
+// with timeline.Build so task and session permission handling cannot drift.
+func providerPermissionStatus(events []timeline.Event, permissionID, requestID string) (pending bool, outcome, decision string) {
 	for _, event := range events {
 		if event.Payload["permission_request_id"] != permissionID {
 			continue
@@ -3884,6 +3901,22 @@ func eventsToTimelineEvents(events []task.Event) []timeline.Event {
 	converted := make([]timeline.Event, 0, len(events))
 	for _, event := range events {
 		converted = append(converted, timeline.Event{
+			Kind:      string(event.Kind),
+			Payload:   event.Payload,
+			CreatedAt: event.CreatedAt,
+		})
+	}
+	return converted
+}
+
+// eventsToTranscriptEvents projects retained task events into the shared
+// transcript input shape so task and session transcripts run the same builder.
+func eventsToTranscriptEvents(events []task.Event) []transcript.Event {
+	converted := make([]transcript.Event, 0, len(events))
+	for _, event := range events {
+		converted = append(converted, transcript.Event{
+			ID:        event.ID,
+			Seq:       event.Seq,
 			Kind:      string(event.Kind),
 			Payload:   event.Payload,
 			CreatedAt: event.CreatedAt,

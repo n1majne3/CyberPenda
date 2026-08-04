@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, ChevronRight, Wrench, User, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2, Maximize2, Minimize2, Flag, RefreshCcw, TriangleAlert, Archive, ArchiveRestore, Pencil, Paperclip } from "lucide-react";
-import { apiDelete, apiGet, apiPatch, apiPost, apiPostForm, type BlackboardConclusionMode, type BlackboardConclusionView, type ModelProvider, type ProviderPermissionRequest, type RuntimeActivity, type RuntimeControls, type RuntimePlugin, type RuntimeProfile, type Session, type SessionContinuation, type SessionEvent, type Task, type TaskContinuation, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
+import { apiDelete, apiGet, apiPatch, apiPost, apiPostForm, type BlackboardConclusionMode, type BlackboardConclusionView, type ModelProvider, type ProviderPermissionRequest, type RuntimeActivity, type RuntimeControls, type RuntimePlugin, type RuntimeProfile, type Session, type SessionContinuation, type Task, type TaskContinuation, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Badge, Input, Select, Textarea } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
@@ -329,12 +329,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   async function queueSteer() {
     const directive = steering.trim();
     if (!directive || sending || !owner) return;
-    if (
-      owner.kind === "session" &&
-      ACTIVE.has(owner.status) &&
-      continuationModelProvider.trim() !== "" &&
-      continuationModelProvider.trim() !== (owner.runtimeControls?.turn_selection?.model_provider_id?.trim() ?? "")
-    ) {
+    if (conversationQueueUnavailable(owner, continuationModelProvider.trim())) {
       setActionError("Queue cannot switch a Session model provider; use Switch provider and resume.");
       return;
     }
@@ -368,85 +363,31 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     setSending(true);
     const requestID = newSteerRequestID();
     try {
+      const modelPayload = continuationModelPayload();
+      const action = resolveConversationAction(owner, {
+        running: ACTIVE.has(owner.status),
+        nativeSteerAvailable: owner.runtimeControls?.native_steer_available ?? false,
+        interruptSteerAvailable: owner.runtimeControls?.interrupt_steer_available ?? false,
+        queueSteerAvailable: owner.runtimeControls?.queue_steer_available ?? true,
+        resumeAvailable: owner.runtimeControls?.resume_available ?? !ACTIVE.has(owner.status),
+        nativeResumeAvailable: owner.runtimeControls?.native_resume_available ?? false,
+        precedingProviderID: owner.runtimeControls?.turn_selection?.model_provider_id?.trim() ?? "",
+        selectedProviderID: continuationModelProvider.trim(),
+        runtimeProvider: currentRuntimeProvider ?? "",
+        nativeSteerMode: owner.runtimeControls?.native_steer_mode,
+      }, requestID);
+      await action.run(message, modelPayload, {
+        session: (path, payload, files) => postSessionRuntimeMessage(path, payload.text, payload.selection, files),
+        task: (path, payload) => apiPost(path, payload),
+        attachments,
+        base,
+        ownerTitle: owner.title,
+      });
+      setSteering("");
       if (owner.kind === "session") {
-        const modelPayload = continuationModelPayload();
-        const precedingProvider = owner.runtimeControls?.turn_selection?.model_provider_id?.trim() ?? "";
-        const selectedProvider = continuationModelProvider.trim();
-        const switchingProvider = ACTIVE.has(owner.status) && selectedProvider !== "" && selectedProvider !== precedingProvider;
-        if (switchingProvider) {
-          await apiPost(`${base}/stop`, {});
-          await postSessionRuntimeMessage(`${base}/messages`, message, modelPayload, attachments);
-        } else if (running && (sendMode === "native" || sendMode === "interrupt")) {
-          await postSessionRuntimeMessage(`${base}/steer`, message, modelPayload, attachments);
-        } else if (running && sendMode === "queue") {
-          await postSessionRuntimeMessage(`${base}/steer/queue`, message, modelPayload, attachments);
-        } else {
-          await postSessionRuntimeMessage(`${base}/messages`, message, modelPayload, attachments);
-        }
-        setSteering("");
         setAttachments([]);
         if (attachmentInput.current) attachmentInput.current.value = "";
-        setActionError(null);
-        await loadAll();
-        return;
       }
-      const runningNow = ACTIVE.has(owner.status);
-      const currentControls = owner.runtimeControls;
-      const nativeNow = currentControls?.native_steer_available ?? false;
-      const interruptNow = currentControls?.interrupt_steer_available ?? false;
-      const queueNow = currentControls?.queue_steer_available ?? true;
-      const resumeNow = currentControls?.resume_available ?? !runningNow;
-      const modelPayload = continuationModelPayload();
-      const precedingProvider = currentControls?.turn_selection?.model_provider_id?.trim() ?? "";
-      const selectedProvider = continuationModelProvider.trim();
-      const runtimeProvider =
-        currentControls?.runtime_provider ??
-        owner.activeContinuation?.runtimeProvider ??
-        owner.latestContinuation?.runtimeProvider ??
-        "";
-      // Pi native cross-provider only when Runtime Config explicitly lists the
-      // target in projected_model_provider_ids (fixed-at-launch set). Missing or
-      // empty metadata fails closed → queue/reproject/restart (no 409 surprise).
-      const piNativeCrossProvider = canPiNativeCrossProvider({
-        runtimeProvider,
-        nativeSteerAvailable: nativeNow || interruptNow,
-        projectedModelProviderIDs: currentControls?.projected_model_provider_ids,
-        targetProviderID: selectedProvider,
-      });
-      // Model Provider introduction or change requires Config Projection + restart
-      // when not covered by Pi's projected set. An empty preceding provider with a
-      // newly selected provider is a switch (do not send native and get 409).
-      const switchingModelProvider =
-        runningNow &&
-        selectedProvider !== "" &&
-        selectedProvider !== precedingProvider &&
-        !piNativeCrossProvider;
-
-      if (switchingModelProvider) {
-        if (!queueNow) throw new Error("Model provider switching is unavailable for this Task");
-        // A live provider session cannot change its endpoint or credentials.
-        // Persist the message/config first, then restart the Continuation so a
-        // failed stop or resume never drops the operator's request.
-        await apiPost(`${base}/steer/queue`, { directive: message, ...modelPayload });
-        await apiPost(`${base}/stop`, {});
-        await apiPost(`${base}/resume`, {});
-      } else if (runningNow && (nativeNow || interruptNow)) {
-        await apiPost(`${base}/steer`, {
-          ...(nativeNow ? { request_id: requestID, message } : { directive: message }),
-          ...modelPayload,
-        });
-      } else if (runningNow && queueNow) {
-        await apiPost(`${base}/steer/queue`, { directive: message, ...modelPayload });
-      } else if (!runningNow && queueNow && resumeNow) {
-        // Queue first so a failed resume retains the operator's message for the
-        // next successful Continuation instead of silently dropping it.
-        await apiPost(`${base}/steer/queue`, { directive: message, ...modelPayload });
-        await apiPost(`${base}/resume`, {});
-      } else {
-        throw new Error("Task conversation is unavailable for this runtime state");
-      }
-      setSteering("");
-      // Retain Runtime Turn Selection for the next turn.
       setActionError(null);
       await loadAll();
     } catch (e) {
@@ -884,25 +825,17 @@ async function loadTaskWorkspace(base: string, signal: AbortSignal): Promise<Run
 }
 
 async function loadSessionWorkspace(base: string, signal: AbortSignal): Promise<RuntimeWorkspaceLoad> {
-  const [session, all, conversation, timeline] = await Promise.all([
+  const [session, timeline, transcript] = await Promise.all([
     apiGet<Session>(base, { signal }),
-    apiGet<{ events: SessionEvent[] }>(`${base}/events`, { signal }),
-    apiGet<{ events: SessionEvent[] }>(`${base}/conversation`, { signal }),
     apiGet<TaskTimeline>(`${base}/timeline`, { signal }),
+    apiGet<TaskTranscript>(`${base}/transcript`, { signal }),
   ]);
-  const allEvents = all.events ?? [];
-  const conversationEvents = conversation.events?.length
-    ? conversation.events
-    : allEvents.filter((event) => event.kind === "conversation");
-  const timelineEvents = timeline.items ?? [];
-  const transcriptEvents = [...conversationEvents, ...allEvents.filter((event) => event.kind === "runtime_output" || event.kind === "attachment")]
-    .sort((left, right) => left.seq - right.seq);
   return {
     owner: sessionAsRuntimeOwner(session),
-    // Session timelines are built by the same daemon pipeline as task
-    // timelines, so the rendered shapes are identical.
-    timeline: timelineEvents,
-    transcript: transcriptEvents.flatMap((event) => sessionEventAsTranscriptEntry(event, session)),
+    // Session timelines and transcripts are built by the same daemon pipeline
+    // as task ones, so the rendered shapes are identical.
+    timeline: timeline.items ?? [],
+    transcript: transcript.entries ?? [],
   };
 }
 
@@ -1017,57 +950,6 @@ function sessionContinuationAsRuntimeOwner(continuation: SessionContinuation): R
   };
 }
 
-function sessionEventAsTranscriptEntry(event: SessionEvent, session: Session): TaskTranscriptEntry[] {
-  const payload = event.payload ?? {};
-  if (event.kind === "attachment") {
-    const filename = typeof payload.filename === "string" ? payload.filename : "attachment";
-    return [{
-      id: event.id,
-      seq: event.seq,
-      continuation: sessionContinuationNumber(payload.continuation_id, session),
-      kind: "attachment",
-      role: "system",
-      text: `Attached ${filename}`,
-      details: payload,
-      created_at: event.created_at,
-    }];
-  }
-  const text = typeof payload.text === "string" ? payload.text : "";
-  if (!text.trim()) return [];
-  const continuation = sessionContinuationNumber(payload.continuation_id, session);
-  if (event.kind === "runtime_output") {
-    return [{
-      id: event.id,
-      seq: event.seq,
-      continuation,
-      kind: "runtime_output",
-      role: "runtime",
-      text,
-      stream: typeof payload.stream === "string" ? payload.stream : undefined,
-      details: payload,
-      created_at: event.created_at,
-    }];
-  }
-  return [{
-    id: event.id,
-    seq: event.seq,
-    continuation,
-    kind: "message",
-    role: typeof payload.role === "string" ? payload.role : "runtime",
-    text,
-    details: payload,
-    created_at: event.created_at,
-  }];
-}
-
-function sessionContinuationNumber(value: unknown, session: Session): number {
-  if (typeof value === "string") {
-    if (session.active_continuation?.id === value) return session.active_continuation.number;
-    if (session.latest_continuation?.id === value) return session.latest_continuation.number;
-  }
-  return session.active_continuation?.number ?? session.latest_continuation?.number ?? 1;
-}
-
 async function postSessionRuntimeMessage(
   path: string,
   message: string,
@@ -1118,6 +1000,141 @@ function canPiNativeCrossProvider(input: {
     return false;
   }
   return projected.includes(target);
+}
+
+// conversationQueueUnavailable reports whether queueing a Session steer is
+// blocked by a pending model-provider switch that only the restart path can
+// honor. Tasks allow the switch through the queue→stop→resume pipeline.
+function conversationQueueUnavailable(owner: RuntimeOwnerView, selectedProviderID: string): boolean {
+  return (
+    owner.kind === "session" &&
+    ACTIVE.has(owner.status) &&
+    selectedProviderID !== "" &&
+    selectedProviderID !== (owner.runtimeControls?.turn_selection?.model_provider_id?.trim() ?? "")
+  );
+}
+
+type ConversationActionContext = {
+  session: (path: string, payload: { text: string; selection: ConversationSelection }, files: File[]) => Promise<unknown>;
+  task: (path: string, payload: Record<string, unknown>) => Promise<unknown>;
+  attachments: File[];
+  base: string;
+  ownerTitle: string;
+};
+
+type ConversationSelection = {
+  model_provider_id?: string;
+  model?: string;
+  model_override?: string;
+  reasoning_effort: string;
+};
+
+// resolveConversationAction decides, from owner-independent runtime controls,
+// which transport a new operator message takes. Both owner kinds share the
+// decision so steer/queue/restart rules cannot drift between Task and Session.
+function resolveConversationAction(
+  owner: RuntimeOwnerView,
+  state: {
+    running: boolean;
+    nativeSteerAvailable: boolean;
+    interruptSteerAvailable: boolean;
+    queueSteerAvailable: boolean;
+    resumeAvailable: boolean;
+    nativeResumeAvailable: boolean;
+    precedingProviderID: string;
+    selectedProviderID: string;
+    runtimeProvider: string;
+    nativeSteerMode?: string;
+  },
+  requestID: string,
+): { run: (message: string, selection: ConversationSelection, context: ConversationActionContext) => Promise<void> } {
+  const switchingProvider =
+    state.running &&
+    state.selectedProviderID !== "" &&
+    state.selectedProviderID !== state.precedingProviderID &&
+    !canPiNativeCrossProvider({
+      runtimeProvider: state.runtimeProvider,
+      nativeSteerAvailable: state.nativeSteerAvailable || state.interruptSteerAvailable,
+      projectedModelProviderIDs: owner.runtimeControls?.projected_model_provider_ids,
+      targetProviderID: state.selectedProviderID,
+    });
+
+  if (owner.kind === "session") {
+    // Sessions cannot switch a live provider session; the restart path is
+    // stop → message on the fresh continuation.
+    if (switchingProvider) {
+      return {
+        run: async (message, selection, ctx) => {
+          await apiPost(`${ctx.base}/stop`, {});
+          await ctx.session(`${ctx.base}/messages`, { text: message, selection }, ctx.attachments);
+        },
+      };
+    }
+    if (state.running && (state.nativeSteerAvailable || state.interruptSteerAvailable)) {
+      return {
+        run: async (message, selection, ctx) => {
+          await ctx.session(`${ctx.base}/steer`, { text: message, selection }, ctx.attachments);
+        },
+      };
+    }
+    if (state.running && state.queueSteerAvailable) {
+      return {
+        run: async (message, selection, ctx) => {
+          await ctx.session(`${ctx.base}/steer/queue`, { text: message, selection }, ctx.attachments);
+        },
+      };
+    }
+    return {
+      run: async (message, selection, ctx) => {
+        await ctx.session(`${ctx.base}/messages`, { text: message, selection }, ctx.attachments);
+      },
+    };
+  }
+
+  // Task branch.
+  if (switchingProvider) {
+    if (!state.queueSteerAvailable) {
+      throw new Error("Model provider switching is unavailable for this Task");
+    }
+    // A live provider session cannot change its endpoint or credentials.
+    // Persist the message/config first, then restart the Continuation so a
+    // failed stop or resume never drops the operator's request.
+    return {
+      run: async (message, selection, ctx) => {
+        await ctx.task(`${ctx.base}/steer/queue`, { directive: message, ...selection });
+        await ctx.task(`${ctx.base}/stop`, {});
+        await ctx.task(`${ctx.base}/resume`, {});
+      },
+    };
+  }
+  if (state.running && (state.nativeSteerAvailable || state.interruptSteerAvailable)) {
+    return {
+      run: async (message, selection, ctx) => {
+        await ctx.task(`${ctx.base}/steer`, {
+          ...(state.nativeSteerAvailable ? { request_id: requestID, message } : { directive: message }),
+          ...selection,
+        });
+      },
+    };
+  }
+  if (state.running && state.queueSteerAvailable) {
+    return {
+      run: async (message, selection, ctx) => {
+        await ctx.task(`${ctx.base}/steer/queue`, { directive: message, ...selection });
+      },
+    };
+  }
+  if (!state.running && state.queueSteerAvailable && state.resumeAvailable) {
+    return {
+      // Queue first so a failed resume retains the operator's message for the
+      // next successful Continuation instead of silently dropping it.
+      run: async (message, selection, ctx) => {
+        await ctx.task(`${ctx.base}/steer/queue`, { directive: message, ...selection });
+        await ctx.task(`${ctx.base}/resume`, {});
+      },
+    };
+  }
+  throw new Error("Task conversation is unavailable for this runtime state");
 }
 
 function resolveConversationSendMode(input: {
@@ -1574,16 +1591,7 @@ function isUserTurnStart(entry: TaskTranscriptEntry): boolean {
   if (entry.kind === "continuation" || entry.kind === "tool_call" || entry.kind === "tool_result") {
     return false;
   }
-  if (entry.role === "user") return true;
-  if (entry.kind === "runtime_output") {
-    const projected = projectRuntimeOutput(entry);
-    if (projected) {
-      // A projected runtime_output is a user turn only when every projected row
-      // is a user message (e.g. an operator steer echoed back by the runtime).
-      return projected.length > 0 && projected.every((row) => row.role === "user");
-    }
-  }
-  return false;
+  return entry.role === "user";
 }
 
 function TranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
@@ -1602,17 +1610,6 @@ function TranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
     const filename = typeof entry.details?.filename === "string" ? entry.details.filename : "attachment";
     const size = typeof entry.details?.size === "number" ? entry.details.size : undefined;
     return <AttachmentFileRow name={filename} size={size} prefix="Attached" />;
-  }
-
-  const projectedRuntimeEntries = projectRuntimeOutput(entry);
-  if (projectedRuntimeEntries) {
-    return (
-      <div className="space-y-1">
-        {projectedRuntimeEntries.map((projectedEntry) => (
-          <TranscriptRow key={projectedEntry.id} entry={projectedEntry} />
-        ))}
-      </div>
-    );
   }
 
   if (isCollapsedTranscriptEntry(entry)) {
@@ -1651,90 +1648,6 @@ function TranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
       )}
     </div>
   );
-}
-
-function projectRuntimeOutput(entry: TaskTranscriptEntry): TaskTranscriptEntry[] | null {
-  if (entry.kind !== "runtime_output" || !entry.text) return null;
-  try {
-    const record = JSON.parse(entry.text) as {
-      type?: unknown;
-      message?: { content?: unknown };
-    };
-    if ((record.type !== "assistant" && record.type !== "user") || !Array.isArray(record.message?.content)) return null;
-
-    const projected = record.message.content.flatMap((rawBlock, index): TaskTranscriptEntry[] => {
-      if (typeof rawBlock !== "object" || rawBlock === null) return [];
-      const block = rawBlock as Record<string, unknown>;
-      const id = `${entry.id}-${index}`;
-
-      if (block.type === "text" && typeof block.text === "string" && block.text.trim()) {
-        return [{
-          ...entry,
-          id,
-          kind: "message",
-          role: record.type === "assistant" ? "assistant" : "user",
-          text: block.text.trim(),
-          stream: undefined,
-          status: undefined,
-        }];
-      }
-
-      if (record.type === "assistant" && block.type === "tool_use") {
-        const toolCallID = typeof block.id === "string" ? block.id : undefined;
-        const toolName = typeof block.name === "string" ? block.name : undefined;
-        if (!toolCallID && !toolName) return [];
-        return [{
-          ...entry,
-          id,
-          kind: "tool_call",
-          role: "assistant",
-          text: undefined,
-          tool_call_id: toolCallID,
-          tool_name: toolName,
-          details: { input: block.input ?? {} },
-          stream: undefined,
-          status: undefined,
-        }];
-      }
-
-      if (record.type === "user" && block.type === "tool_result") {
-        const toolCallID = typeof block.tool_use_id === "string" ? block.tool_use_id : undefined;
-        if (!toolCallID) return [];
-        return [{
-          ...entry,
-          id,
-          kind: "tool_result",
-          role: "tool",
-          text: runtimeContentText(block.content),
-          tool_call_id: toolCallID,
-          details: typeof block.is_error === "boolean" ? { is_error: block.is_error } : undefined,
-          stream: undefined,
-          status: undefined,
-        }];
-      }
-
-      return [];
-    });
-
-    return projected.length > 0 ? projected : null;
-  } catch {
-    return null;
-  }
-}
-
-function runtimeContentText(content: unknown): string | undefined {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return undefined;
-  const text = content
-    .flatMap((part) => (
-      typeof part === "object" && part !== null &&
-      (part as { type?: unknown }).type === "text" &&
-      typeof (part as { text?: unknown }).text === "string"
-        ? [(part as { text: string }).text]
-        : []
-    ))
-    .join("\n");
-  return text || undefined;
 }
 
 function CollapsedTranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {

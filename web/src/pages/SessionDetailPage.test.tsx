@@ -30,14 +30,16 @@ const codexPlugin = {
 describe("SessionDetailPage", () => {
   it("uses the same runtime workspace surface as Project Tasks", async () => {
     mockApi({
-      "/api/sessions/session-shared-ui/events": {
-        events: [
+      "/api/sessions/session-shared-ui/transcript": {
+        session_id: "session-shared-ui",
+        entries: [
           {
-            id: "event-1",
-            session_id: "session-shared-ui",
+            id: "event-1-message",
             seq: 1,
-            kind: "conversation",
-            payload: { role: "user", text: "Reuse the task workspace" },
+            continuation: 1,
+            kind: "message",
+            role: "user",
+            text: "Reuse the task workspace",
             created_at: "2026-08-01T01:00:00Z",
           },
         ],
@@ -103,22 +105,26 @@ describe("SessionDetailPage", () => {
 
   it("renders owner-local Events without Project Scope semantics", async () => {
     mockApi({
-      "/api/sessions/session-1/events": {
-        events: [
+      "/api/sessions/session-1/transcript": {
+        session_id: "session-1",
+        entries: [
           {
-            id: "event-1",
-            session_id: "session-1",
+            id: "event-1-message",
             seq: 1,
-            kind: "conversation",
-            payload: { role: "user", text: "Review the service" },
+            continuation: 1,
+            kind: "message",
+            role: "user",
+            text: "Review the service",
             created_at: "2026-08-01T01:00:00Z",
           },
           {
-            id: "event-2",
-            session_id: "session-1",
+            id: "event-2-attachment",
             seq: 2,
+            continuation: 1,
             kind: "attachment",
-            payload: { filename: "notes.txt", size: 12 },
+            role: "system",
+            text: "Attached notes.txt",
+            details: { filename: "notes.txt", size: 12 },
             created_at: "2026-08-01T01:01:00Z",
           },
         ],
@@ -162,15 +168,26 @@ describe("SessionDetailPage", () => {
 
   it("keeps the transcript separate and sends follow-up input through the Session Runtime route", async () => {
     const fetchMock = mockApi({
-      "/api/sessions/session-2/conversation": {
-        events: [
+      "/api/sessions/session-2/transcript": {
+        session_id: "session-2",
+        entries: [
           {
-            id: "conversation-1",
-            session_id: "session-2",
+            id: "conversation-1-message",
             seq: 1,
-            kind: "conversation",
-            payload: { role: "user", text: "Start the review" },
+            continuation: 1,
+            kind: "message",
+            role: "user",
+            text: "Start the review",
             created_at: "2026-08-01T01:00:00Z",
+          },
+          {
+            id: "runtime-1-message",
+            seq: 2,
+            continuation: 1,
+            kind: "message",
+            role: "assistant",
+            text: "Runtime ready",
+            created_at: "2026-08-01T01:01:00Z",
           },
         ],
       },
@@ -181,18 +198,6 @@ describe("SessionDetailPage", () => {
             seq: 1,
             type: "text",
             content: "Runtime ready",
-            created_at: "2026-08-01T01:01:00Z",
-          },
-        ],
-      },
-      "/api/sessions/session-2/events": {
-        events: [
-          {
-            id: "runtime-1",
-            session_id: "session-2",
-            seq: 2,
-            kind: "runtime_output",
-            payload: { stream: "stdout", text: "Runtime ready" },
             created_at: "2026-08-01T01:01:00Z",
           },
         ],
@@ -255,9 +260,8 @@ describe("SessionDetailPage", () => {
 
   it("uses the Session steer route for an interrupt-only Runtime", async () => {
     const fetchMock = mockApi({
-      "/api/sessions/session-interrupt/events": { events: [] },
-      "/api/sessions/session-interrupt/conversation": { events: [] },
-      "/api/sessions/session-interrupt/timeline": { events: [] },
+      "/api/sessions/session-interrupt/transcript": { session_id: "session-interrupt", entries: [] },
+      "/api/sessions/session-interrupt/timeline": { session_id: "session-interrupt", items: [] },
       "/api/sessions/session-interrupt": {
         id: "session-interrupt",
         title: "Interrupt the current turn",
@@ -321,9 +325,8 @@ describe("SessionDetailPage", () => {
 
   it("queues Session input with the shared model selection and attachments", async () => {
     const fetchMock = mockApi({
-      "/api/sessions/session-queue/events": { events: [] },
-      "/api/sessions/session-queue/conversation": { events: [] },
-      "/api/sessions/session-queue/timeline": { events: [] },
+      "/api/sessions/session-queue/transcript": { session_id: "session-queue", entries: [] },
+      "/api/sessions/session-queue/timeline": { session_id: "session-queue", items: [] },
       "/api/sessions/session-queue": {
         id: "session-queue",
         title: "Queue the evidence",
@@ -397,9 +400,8 @@ describe("SessionDetailPage", () => {
 
   it("keeps Session attachments inside the shared composer", async () => {
     const fetchMock = mockApi({
-      "/api/sessions/session-attachments/events": { events: [] },
-      "/api/sessions/session-attachments/conversation": { events: [] },
-      "/api/sessions/session-attachments/timeline": { events: [] },
+      "/api/sessions/session-attachments/transcript": { session_id: "session-attachments", entries: [] },
+      "/api/sessions/session-attachments/timeline": { session_id: "session-attachments", items: [] },
       "/api/sessions/session-attachments": {
         id: "session-attachments",
         title: "Attach notes",
@@ -438,9 +440,8 @@ describe("SessionDetailPage", () => {
 
   it("shows Session-local conclusion recovery and retries with an idempotency key", async () => {
     const fetchMock = mockApi({
-      "/api/sessions/session-retry/events": { events: [] },
-      "/api/sessions/session-retry/conversation": { events: [] },
-      "/api/sessions/session-retry/timeline": { events: [] },
+      "/api/sessions/session-retry/transcript": { session_id: "session-retry", entries: [] },
+      "/api/sessions/session-retry/timeline": { session_id: "session-retry", items: [] },
       "/api/sessions/session-retry/blackboard-conclusion/retry": {
         id: "session-retry",
         title: "Needs recovery",

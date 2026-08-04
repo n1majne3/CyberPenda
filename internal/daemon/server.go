@@ -751,6 +751,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/sessions/{id}/events", server.handleSessionEvents)
 	server.mux.HandleFunc("GET /api/sessions/{id}/conversation", server.handleSessionConversation)
 	server.mux.HandleFunc("GET /api/sessions/{id}/timeline", server.handleSessionTimeline)
+	server.mux.HandleFunc("GET /api/sessions/{id}/transcript", server.handleSessionTranscript)
 	server.mux.HandleFunc("POST /api/sessions/{id}/messages", server.handleSessionMessage)
 	server.mux.HandleFunc("POST /api/sessions/{id}/resume", server.handleSessionMessage)
 	server.mux.HandleFunc("POST /api/sessions/{id}/steer", server.handleSessionSteer)

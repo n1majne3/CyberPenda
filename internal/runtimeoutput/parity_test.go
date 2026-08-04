@@ -65,6 +65,20 @@ func assertSemanticParity(t *testing.T, gotTranscript, gotTimeline []semanticSte
 }
 
 
+func toTranscriptEvents(events []task.Event) []transcript.Event {
+	converted := make([]transcript.Event, 0, len(events))
+	for _, event := range events {
+		converted = append(converted, transcript.Event{
+			ID:        event.ID,
+			Seq:       event.Seq,
+			Kind:      string(event.Kind),
+			Payload:   event.Payload,
+			CreatedAt: event.CreatedAt,
+		})
+	}
+	return converted
+}
+
 func toTimelineEvents(events []task.Event) []timeline.Event {
 	converted := make([]timeline.Event, 0, len(events))
 	for _, event := range events {
@@ -89,7 +103,7 @@ func TestTranscriptTimelineParityClaudeAssistantFlow(t *testing.T) {
 		{ID: "ev-6", Seq: 6, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"assistant","message":{"content":[{"type":"text","text":"Done inspecting."}]}}`}, CreatedAt: createdAt.Add(5 * time.Second)},
 	}
 
-	transcriptEntries := transcript.Build(subject, events)
+	transcriptEntries := transcript.Build(transcript.Subject{ID: subject.ID, Title: subject.Goal, CreatedAt: subject.CreatedAt}, toTranscriptEvents(events))
 	timelineItems := timeline.Build(toTimelineEvents(events))
 
 	assertSemanticParity(t, transcriptSteps(transcriptEntries), timelineSteps(timelineItems))
@@ -104,7 +118,7 @@ func TestTranscriptTimelineParityOpenAIToolFlow(t *testing.T) {
 		{ID: "ev-3", Seq: 3, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"tool_result","tool_call_id":"call-1","output":"OK"}`}},
 	}
 
-	transcriptEntries := transcript.Build(subject, events)
+	transcriptEntries := transcript.Build(transcript.Subject{ID: subject.ID, Title: subject.Goal, CreatedAt: subject.CreatedAt}, toTranscriptEvents(events))
 	timelineItems := timeline.Build(toTimelineEvents(events))
 
 	assertSemanticParity(t, transcriptSteps(transcriptEntries), timelineSteps(timelineItems))
@@ -119,7 +133,7 @@ func TestTranscriptTimelineParityDropsSharedNoise(t *testing.T) {
 	}
 
 	subject := task.Task{ID: "task-1", Goal: "Do work", CreatedAt: time.Now().UTC()}
-	transcriptEntries := transcript.Build(subject, events)
+	transcriptEntries := transcript.Build(transcript.Subject{ID: subject.ID, Title: subject.Goal, CreatedAt: subject.CreatedAt}, toTranscriptEvents(events))
 	timelineItems := timeline.Build(toTimelineEvents(events))
 
 	assertSemanticParity(t, transcriptSteps(transcriptEntries), timelineSteps(timelineItems))

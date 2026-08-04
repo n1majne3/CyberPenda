@@ -243,18 +243,6 @@ export function getSession(sessionId: string) {
   return apiGet<Session>(`/api/sessions/${encodeURIComponent(sessionId)}`);
 }
 
-export function getSessionEvents(sessionId: string) {
-  return apiGet<{ events: SessionEvent[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/events`);
-}
-
-export function getSessionConversation(sessionId: string) {
-  return apiGet<{ events: SessionEvent[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/conversation`);
-}
-
-export function getSessionTimeline(sessionId: string) {
-  return apiGet<{ events: SessionEvent[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/timeline`);
-}
-
 export function createSession(input: string, attachments: File[] = [], options: SessionLaunchOptions = {}) {
   if (attachments.length === 0) {
     return apiPost<Session>("/api/sessions", { input, ...options });
