@@ -69,9 +69,9 @@ export function TasksPage() {
   return (
     <ProjectPageShell
       title={
-        <h2 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
+        <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
           <ListChecks className="h-5 w-5 text-signal" /> Tasks
-        </h2>
+        </h1>
       }
       actions={
         <Link to={`${base}/tasks/new`}>

@@ -304,31 +304,33 @@ function SortDirectionToggle({
       <button
         type="button"
         aria-pressed={value === "chronological"}
+        aria-label="Sort oldest first"
         title="Chronological"
         onClick={() => onChange("chronological")}
         className={cn(
-          "flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+          "flex h-8 items-center gap-1 rounded px-2 py-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
           value === "chronological"
             ? "bg-background text-foreground shadow-sm"
             : "text-muted-foreground hover:text-foreground",
         )}
       >
-        <ArrowDownNarrowWide className="h-3 w-3" />
+        <ArrowDownNarrowWide className="h-3.5 w-3.5" />
         <span className="hidden sm:inline">Oldest</span>
       </button>
       <button
         type="button"
         aria-pressed={value === "newest_first"}
+        aria-label="Sort newest first"
         title="Newest first"
         onClick={() => onChange("newest_first")}
         className={cn(
-          "flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+          "flex h-8 items-center gap-1 rounded px-2 py-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
           value === "newest_first"
             ? "bg-background text-foreground shadow-sm"
             : "text-muted-foreground hover:text-foreground",
         )}
       >
-        <ArrowUpNarrowWide className="h-3 w-3" />
+        <ArrowUpNarrowWide className="h-3.5 w-3.5" />
         <span className="hidden sm:inline">Newest</span>
       </button>
     </div>

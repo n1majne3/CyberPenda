@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Ban,
   KeyRound,
+  LoaderCircle,
   Plus,
   RefreshCw,
   Trash2,
@@ -9,6 +10,7 @@ import {
 } from "lucide-react";
 import { apiGet, apiPut, apiDelete, type CredentialBinding, type ModelProvider, type RuntimeProfile } from "@/lib/api";
 import { Badge, Button, Input, Label, Select } from "@/components/ui";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   SettingsAlert,
   SettingsPageHeader,
@@ -49,8 +51,11 @@ export function CredentialBindingsPage() {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
+  const [confirmDelete, setConfirmDelete] = useState<{ id: string; credentialRef: string } | null>(null);
+  const [loading, setLoading] = useState(true);
 
   async function load() {
+    setLoading(true);
     try {
       const [d, p, providers] = await Promise.all([
         apiGet<{ bindings: CredentialBinding[] }>("/api/credential-bindings"),
@@ -63,6 +68,8 @@ export function CredentialBindingsPage() {
       setError(null);
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -102,8 +109,7 @@ export function CredentialBindingsPage() {
     }
   }
 
-  async function remove(id: string, credentialRef: string) {
-    if (!window.confirm(`Delete credential binding ${credentialRef}?`)) return;
+  async function remove(id: string) {
     setError(null);
     try {
       await apiDelete(`/api/credential-bindings/${id}`);
@@ -231,7 +237,12 @@ export function CredentialBindingsPage() {
             </div>
           </SettingsPanel>
 
-          {bindings.length === 0 ? (
+          {loading ? (
+            <SettingsPanel className="items-center justify-center py-12 text-center lg:min-h-0 lg:flex-1 lg:overflow-y-auto" role="status" aria-label="Loading credential bindings">
+              <LoaderCircle className="h-5 w-5 animate-spin text-muted-foreground motion-reduce:animate-none" />
+              <p className="mt-2 text-sm text-muted-foreground">Loading credential bindings…</p>
+            </SettingsPanel>
+          ) : bindings.length === 0 ? (
             <SettingsPanel className="items-center justify-center py-12 text-center lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
               <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
                 <KeyRound className="h-5 w-5 text-muted-foreground" />
@@ -358,7 +369,7 @@ export function CredentialBindingsPage() {
                             variant="ghost"
                             size="icon-sm"
                             aria-label={`Delete ${binding.credential_ref} binding`}
-                            onClick={() => remove(binding.id, binding.credential_ref)}
+                            onClick={() => setConfirmDelete({ id: binding.id, credentialRef: binding.credential_ref })}
                             className="text-muted-foreground hover:text-destructive"
                           >
                             <Trash2 className="h-3.5 w-3.5" />
@@ -495,6 +506,19 @@ export function CredentialBindingsPage() {
           )}
         </SettingsListColumn>
       </SettingsSplitLayout>
+      <ConfirmDialog
+        open={confirmDelete !== null}
+        title={confirmDelete ? `Delete credential binding ${confirmDelete.credentialRef}?` : "Delete credential binding?"}
+        description="Bindings resolve at preflight for runtime profiles and model providers."
+        confirmLabel="Delete"
+        destructive
+        onConfirm={() => {
+          const target = confirmDelete;
+          setConfirmDelete(null);
+          if (target) void remove(target.id);
+        }}
+        onCancel={() => setConfirmDelete(null)}
+      />
     </SettingsPageShell>
   );
 }

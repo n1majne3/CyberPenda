@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode, useEffect } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
@@ -1156,7 +1156,10 @@ describe("TaskDetailPage", () => {
     renderPage();
     await userEvent.click(await screen.findByRole("button", { name: /Stop/i }));
 
-    expect(confirm).toHaveBeenCalledWith("Stop task Inspect task view?");
+    // In-app confirm dialog replaces the native window.confirm; the action is
+    // not posted until the styled confirm is accepted.
+    expect(confirm).not.toHaveBeenCalled();
+    expect(screen.getByRole("alertdialog", { name: /Stop task Inspect task view/ })).toBeInTheDocument();
     expect(
       fetchMock.mock.calls.some(([input, init]) =>
         String(input).includes("/api/projects/project-1/tasks/task-1/stop") && init?.method === "POST",
@@ -1165,13 +1168,14 @@ describe("TaskDetailPage", () => {
   });
 
   it("deletes a terminal task after confirmation and returns to the task list", async () => {
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     const { fetchMock } = stubTaskDetailApi();
 
     renderPage();
     await userEvent.click(await screen.findByRole("button", { name: /Delete/i }));
 
-    expect(confirm).toHaveBeenCalledWith("Delete task Inspect task view?");
+    expect(confirm).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
     expect(
       fetchMock.mock.calls.some(([input, init]) =>
         String(input).includes("/api/projects/project-1/tasks/task-1") && init?.method === "DELETE",
@@ -1315,7 +1319,8 @@ describe("TaskDetailPage", () => {
 
     renderPage();
     await userEvent.click(await screen.findByTestId("finish-task"));
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Finish task"));
+    expect(confirm).not.toHaveBeenCalled();
+    await userEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Finish" }));
     expect(
       fetchMock.mock.calls.some(([input, init]) =>
         String(input).includes("/finish") && init?.method === "POST",

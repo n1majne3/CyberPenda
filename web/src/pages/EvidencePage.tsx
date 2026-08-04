@@ -10,7 +10,7 @@ import {
 } from "@/lib/blackboardv2";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { Badge } from "@/components/ui";
-import { ErrorState, RichEmptyState } from "@/components/shared";
+import { ErrorState, LoadingState, RichEmptyState } from "@/components/shared";
 
 /**
  * Focused Evidence view over the current Blackboard v2 Snapshot.
@@ -20,10 +20,12 @@ export function EvidencePage() {
   const { projectId = "" } = useParams<{ projectId: string }>();
   const [rows, setRows] = useState<SnapshotListEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      setLoading(true);
       try {
         const snapshot = await readSnapshot(projectId);
         if (cancelled) return;
@@ -31,6 +33,8 @@ export function EvidencePage() {
         setError(null);
       } catch (e) {
         if (!cancelled) setError(formatBlackboardV2Error(e));
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     })();
     return () => {
@@ -40,9 +44,10 @@ export function EvidencePage() {
 
   return (
     <ProjectPageShell title="Evidence" bodyClassName="space-y-4">
+      {loading && <LoadingState label="Loading evidence" />}
       {error && <ErrorState error={error} title="Couldn't load evidence" />}
 
-      {rows.length > 0 && !error && (
+      {!loading && rows.length > 0 && !error && (
         <ul className="divide-y divide-border border-y border-border" role="list">
           {rows.map((row) => (
             <li key={row.key}>
@@ -69,7 +74,7 @@ export function EvidencePage() {
         </ul>
       )}
 
-      {rows.length === 0 && !error && (
+      {!loading && rows.length === 0 && !error && (
         <RichEmptyState
           icon={<FolderLock className="h-6 w-6" aria-hidden="true" />}
           title="No evidence attached"

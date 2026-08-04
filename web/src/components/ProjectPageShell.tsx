@@ -59,7 +59,7 @@ export const ProjectPageShell = forwardRef<HTMLDivElement, ProjectPageShellProps
             <div className="min-w-0 flex-1">
               {title != null &&
                 (typeof title === "string" || typeof title === "number" ? (
-                  <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
+                  <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
                 ) : (
                   title
                 ))}

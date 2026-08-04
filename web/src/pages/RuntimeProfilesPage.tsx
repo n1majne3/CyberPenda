@@ -19,6 +19,7 @@ import {
 import { isLaunchResolvedProfile, isManualRuntimeProfile } from "@/pages/runtimeProfileKind";
 import { cn } from "@/lib/utils";
 import { Button, Input, Label, Badge, Textarea, Select } from "@/components/ui";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { SaveActionButton } from "@/components/SaveActionButton";
 import {
   SettingsAlert,
@@ -165,6 +166,7 @@ export function RuntimeProfilesPage() {
   const [savedNotice, setSavedNotice] = useState(false);
   const savedNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [creating, setCreating] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [form, setForm] = useState<ProfileForm>(emptyForm);
   const [draft, setDraft] = useState<ProfileForm | null>(null);
   const [launchResolvedOpen, setLaunchResolvedOpen] = useState<Record<string, boolean>>({});
@@ -289,8 +291,6 @@ export function RuntimeProfilesPage() {
   }
 
   async function remove(id: string) {
-    const profile = profiles.find((item) => item.id === id);
-    if (!window.confirm(`Delete runtime profile ${profile?.name ?? id}?`)) return;
     try {
       await apiDelete(`/api/runtime-profiles/${id}`);
       if (selectedId === id) setSelectedId(null);
@@ -547,7 +547,7 @@ export function RuntimeProfilesPage() {
                     size="icon"
                     variant="ghost"
                     aria-label={`Delete ${selected.name} runtime profile`}
-                    onClick={() => remove(selected.id)}
+                    onClick={() => setConfirmDeleteId(selected.id)}
                     className="text-muted-foreground hover:text-destructive"
                   >
                     <Trash2 className="h-4 w-4" />
@@ -586,6 +586,19 @@ export function RuntimeProfilesPage() {
           />
         )}
       </SettingsSplitLayout>
+      <ConfirmDialog
+        open={confirmDeleteId !== null}
+        title={confirmDeleteId ? `Delete runtime profile ${profiles.find((item) => item.id === confirmDeleteId)?.name ?? confirmDeleteId}?` : "Delete runtime profile?"}
+        description="Removes the profile and its MCP, skills, and extension configuration."
+        confirmLabel="Delete"
+        destructive
+        onConfirm={() => {
+          const id = confirmDeleteId;
+          setConfirmDeleteId(null);
+          if (id) void remove(id);
+        }}
+        onCancel={() => setConfirmDeleteId(null)}
+      />
     </SettingsPageShell>
   );
 }

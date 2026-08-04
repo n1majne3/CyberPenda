@@ -112,7 +112,8 @@ describe("CredentialBindingsPage", () => {
     renderPage();
     await userEvent.click(await screen.findByRole("button", { name: /Delete OPENAI_API_KEY binding/i }));
 
-    expect(confirm).toHaveBeenCalledWith("Delete credential binding OPENAI_API_KEY?");
+    expect(confirm).not.toHaveBeenCalled();
+    expect(screen.getByRole("alertdialog", { name: /Delete credential binding OPENAI_API_KEY/ })).toBeInTheDocument();
     expect(
       fetchMock.mock.calls.some(([input, init]) =>
         String(input).includes("/api/credential-bindings/binding-1") && init?.method === "DELETE",

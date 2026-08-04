@@ -27,6 +27,7 @@ import {
   type Task,
 } from "@/lib/api";
 import { ThemeToggle } from "@/components/ThemeProvider";
+import { PromptDialog } from "@/components/ConfirmDialog";
 import { cn } from "@/lib/utils";
 
 type TaskState = {
@@ -54,6 +55,7 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
   const [sessionLoading, setSessionLoading] = useState(true);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [sessionActionId, setSessionActionId] = useState<string | null>(null);
+  const [renameTarget, setRenameTarget] = useState<Session | null>(null);
   const projectIdsKey = useMemo(() => projects.map((project) => project.id).join("\u0000"), [projects]);
 
   const loadProjects = useCallback(async (showLoading = true) => {
@@ -168,9 +170,8 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
   };
 
   const handleSessionRename = useCallback(
-    async (session: Session) => {
-      const nextTitle = window.prompt("Rename session", session.title);
-      if (!nextTitle?.trim() || nextTitle.trim() === session.title) return;
+    async (session: Session, nextTitle: string) => {
+      if (!nextTitle.trim() || nextTitle.trim() === session.title) return;
       setSessionActionId(session.id);
       try {
         await renameSession(session.id, nextTitle.trim());
@@ -237,7 +238,7 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
                     current={session.id === currentSessionId}
                     busy={sessionActionId === session.id}
                     onNavigate={onNavigate}
-                    onRename={handleSessionRename}
+                    onRename={(session) => setRenameTarget(session)}
                     onArchive={handleSessionArchive}
                   />
                 ))}
@@ -323,6 +324,19 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
           <ThemeToggle />
         </div>
       </aside>
+      <PromptDialog
+        open={renameTarget !== null}
+        title={renameTarget ? `Rename ${renameTarget.title}` : "Rename session"}
+        label="Session title"
+        initialValue={renameTarget?.title ?? ""}
+        confirmLabel="Save"
+        onConfirm={(value) => {
+          const target = renameTarget;
+          setRenameTarget(null);
+          if (target) void handleSessionRename(target, value);
+        }}
+        onCancel={() => setRenameTarget(null)}
+      />
     </>
   );
 }
@@ -420,7 +434,7 @@ function SessionRow({
   current: boolean;
   busy: boolean;
   onNavigate?: () => void;
-  onRename: (session: Session) => Promise<void>;
+  onRename: (session: Session) => void;
   onArchive: (session: Session) => Promise<void>;
 }) {
   return (
@@ -475,7 +489,7 @@ function SessionOverflowMenu({
 }: {
   session: Session;
   busy: boolean;
-  onRename: (session: Session) => Promise<void>;
+  onRename: (session: Session) => void;
   onArchive: (session: Session) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);

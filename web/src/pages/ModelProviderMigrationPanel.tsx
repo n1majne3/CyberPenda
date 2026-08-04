@@ -14,8 +14,7 @@ function normalizePreview(data: ModelProviderMigrationPreview): ModelProviderMig
   return {
     ...data,
     matches: data.matches ?? [],
-    api_key_sources: data.api_key_sources ?? [],
-  };
+    api_key_sources: data.api_key_sources ?? [],  };
 }
 
 export function ModelProviderMigrationPanel({ profileId, profileUpdatedAt, onMigrated, onError }: Props) {
@@ -174,7 +173,7 @@ export function ModelProviderMigrationPanel({ profileId, profileUpdatedAt, onMig
           >
             {(preview.matches ?? []).map((match) => (
               <option key={match.provider.id} value={match.provider.id}>
-                {match.provider.name} ({match.provider.base_url})
+                {match.provider.name} ({providerHost(match.provider.base_url)})
               </option>
             ))}
           </Select>
@@ -193,4 +192,14 @@ export function ModelProviderMigrationPanel({ profileId, profileUpdatedAt, onMig
       </Button>
     </section>
   );
+}
+
+/** Compact host-only label for a provider endpoint so the native select does not overflow on narrow widths. */
+function providerHost(baseUrl?: string): string {
+  if (!baseUrl) return "no base URL";
+  try {
+    return new URL(baseUrl).host;
+  } catch {
+    return baseUrl.length > 40 ? `${baseUrl.slice(0, 37)}…` : baseUrl;
+  }
 }

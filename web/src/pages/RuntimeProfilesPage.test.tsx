@@ -783,10 +783,10 @@ describe("RuntimeProfilesPage", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     renderPage();
-    await userEvent.click(await screen.findByRole("button", { name: /Codex Delete/i }));
     await userEvent.click(await screen.findByRole("button", { name: /Delete Codex Delete runtime profile/i }));
 
-    expect(confirm).toHaveBeenCalledWith("Delete runtime profile Codex Delete?");
+    expect(confirm).not.toHaveBeenCalled();
+    expect(screen.getByRole("alertdialog", { name: /Delete runtime profile Codex Delete/ })).toBeInTheDocument();
     expect(
       fetchMock.mock.calls.some(([input, init]) =>
         String(input).includes("/api/runtime-profiles/profile-1") && init?.method === "DELETE",

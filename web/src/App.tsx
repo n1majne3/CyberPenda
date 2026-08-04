@@ -163,7 +163,7 @@ export function ShellLayout() {
         >
           <div className="flex h-14 items-center gap-2 border-b border-sidebar-border px-4">
             <Logo className="h-5 w-5" spin />
-            <h1 className="text-sm font-semibold">CyberPenda</h1>
+            <h2 className="text-sm font-semibold">CyberPenda</h2>
           </div>
           <WorkspaceSidebar onNavigate={() => closeMobileNav({ restoreFocus: false })} />
         </aside>

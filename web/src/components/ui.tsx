@@ -85,6 +85,7 @@ const buttonVariants = cva(
         icon: "h-8 w-8",
         "icon-sm": "h-7 w-7",
         "icon-lg": "h-9 w-9",
+        "icon-xl": "h-10 w-10",
       },
     },
     defaultVariants: { variant: "default", size: "default" },

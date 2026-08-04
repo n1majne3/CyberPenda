@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   BookOpen,
   Download,
+  LoaderCircle,
   Pencil,
   Plus,
   RefreshCw,
@@ -11,6 +12,7 @@ import {
 import { apiDelete, apiGet, apiPost, apiPostForm, apiPut, type RuntimeProfile, type Skill } from "@/lib/api";
 import { isLaunchResolvedProfile } from "@/pages/runtimeProfileKind";
 import { Badge, Button, Input, Label, Select, Textarea } from "@/components/ui";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   SettingsAlert,
   SettingsPageHeader,
@@ -62,6 +64,8 @@ export function SkillsPage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [confirmDeleteSkill, setConfirmDeleteSkill] = useState<Skill | null>(null);
+  const [skillsLoading, setSkillsLoading] = useState(true);
 
   const selectedProfile = profiles.find((profile) => profile.id === profileId) ?? null;
 
@@ -76,9 +80,14 @@ export function SkillsPage() {
   }
 
   async function loadSkills(nextProfileId = profileId) {
-    const suffix = nextProfileId ? `?runtime_profile_id=${encodeURIComponent(nextProfileId)}` : "";
-    const data = await apiGet<{ skills: Skill[] }>(`/api/skills${suffix}`);
-    setSkills(data.skills ?? []);
+    setSkillsLoading(true);
+    try {
+      const suffix = nextProfileId ? `?runtime_profile_id=${encodeURIComponent(nextProfileId)}` : "";
+      const data = await apiGet<{ skills: Skill[] }>(`/api/skills${suffix}`);
+      setSkills(data.skills ?? []);
+    } finally {
+      setSkillsLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -217,7 +226,6 @@ export function SkillsPage() {
   }
 
   async function deleteSkill(skill: Skill) {
-    if (!window.confirm(`Delete skill ${displaySkillName(skill)}?`)) return;
     setError(null);
     try {
       await apiDelete(`/api/skills/${encodeURIComponent(skill.id)}?force_disable=true`);
@@ -262,7 +270,13 @@ export function SkillsPage() {
         description="Global runtime-agnostic Skill bundles. Skills are default-on unless a profile opts out."
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <Button variant="outline" onClick={() => loadSkills()} aria-label="Refresh skills">
+            <Button
+              variant="outline"
+              onClick={() => {
+                void loadSkills().catch((reason) => setError((reason as Error).message));
+              }}
+              aria-label="Refresh skills"
+            >
               <RefreshCw className="h-4 w-4" /> Refresh
             </Button>
             <Button onClick={startCreate} aria-label="New skill">
@@ -331,7 +345,12 @@ export function SkillsPage() {
             </div>
           </SettingsPanel>
 
-          {skills.length === 0 ? (
+          {skillsLoading ? (
+            <SettingsPanel className="items-center justify-center py-12 text-center lg:min-h-0 lg:flex-1 lg:overflow-y-auto" role="status" aria-label="Loading skills">
+              <LoaderCircle className="h-5 w-5 animate-spin text-muted-foreground motion-reduce:animate-none" />
+              <p className="mt-2 text-sm text-muted-foreground">Loading skills…</p>
+            </SettingsPanel>
+          ) : skills.length === 0 ? (
             <SettingsPanel className="items-center justify-center py-12 text-center lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
               <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
                 <BookOpen className="h-5 w-5 text-muted-foreground" />
@@ -453,7 +472,7 @@ export function SkillsPage() {
                           <Button
                             variant="ghost"
                             size="icon-sm"
-                            onClick={() => deleteSkill(skill)}
+                            onClick={() => setConfirmDeleteSkill(skill)}
                             aria-label={`Delete ${name}`}
                             className="text-muted-foreground hover:text-destructive"
                           >
@@ -666,6 +685,19 @@ export function SkillsPage() {
           )}
         </SettingsListColumn>
       </SettingsSplitLayout>
+      <ConfirmDialog
+        open={confirmDeleteSkill !== null}
+        title={confirmDeleteSkill ? `Delete skill ${displaySkillName(confirmDeleteSkill)}?` : "Delete skill?"}
+        description="The skill is force-disabled and removed from this runtime profile view."
+        confirmLabel="Delete"
+        destructive
+        onConfirm={() => {
+          const skill = confirmDeleteSkill;
+          setConfirmDeleteSkill(null);
+          if (skill) void deleteSkill(skill);
+        }}
+        onCancel={() => setConfirmDeleteSkill(null)}
+      />
     </SettingsPageShell>
   );
 }

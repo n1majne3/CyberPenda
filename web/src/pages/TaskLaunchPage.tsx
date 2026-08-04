@@ -49,9 +49,9 @@ export function TaskLaunchPage() {
   return (
     <ProjectPageShell
       title={
-        <h2 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
+        <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
           <Rocket className="h-5 w-5 text-signal" /> Launch task
-        </h2>
+        </h1>
       }
       description="Define a Task goal, choose a Runtime, and launch a Task-scoped persistent Runtime."
       bodyClassName="w-full max-w-3xl space-y-4"

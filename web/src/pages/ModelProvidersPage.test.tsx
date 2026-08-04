@@ -510,7 +510,8 @@ describe("ModelProvidersPage", () => {
     renderPage();
     await userEvent.click(await screen.findByRole("button", { name: /Delete/i }));
 
-    expect(confirm).toHaveBeenCalledWith("Delete model provider MiMo?");
+    expect(confirm).not.toHaveBeenCalled();
+    expect(screen.getByRole("alertdialog", { name: /Delete model provider MiMo/ })).toBeInTheDocument();
     expect(
       fetchMock.mock.calls.some(([input, init]) =>
         String(input).includes("/api/model-providers/mimo") && init?.method === "DELETE",

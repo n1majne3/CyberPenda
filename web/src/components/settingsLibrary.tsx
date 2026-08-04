@@ -163,7 +163,7 @@ export function SettingsSegmentedFilter<T extends string>({
         >
           {option.label}
           {option.count != null && (
-            <span className="ml-1 tabular-nums opacity-60">{option.count}</span>
+            <span className="ml-1 tabular-nums opacity-60"> {option.count}</span>
           )}
         </button>
       ))}
@@ -208,7 +208,7 @@ export function SettingsChipFilter<T extends string>({
         >
           {option.label}
           {option.count != null && (
-            <span className="ml-1 tabular-nums opacity-60">{option.count}</span>
+            <span className="ml-1 tabular-nums opacity-60"> {option.count}</span>
           )}
         </button>
       ))}

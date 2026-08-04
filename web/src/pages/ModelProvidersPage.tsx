@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { KeyRound, Plus, RefreshCw, Server, Trash2, X } from "lucide-react";
+import { KeyRound, LoaderCircle, Plus, RefreshCw, Server, Trash2, X } from "lucide-react";
 import { apiDelete, apiGet, apiPatch, apiPost, apiPut, type CredentialBinding, type ModelProvider } from "@/lib/api";
 import { Button, Input, Label, Select, Textarea, Badge } from "@/components/ui";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { SaveActionButton } from "@/components/SaveActionButton";
 import {
   SettingsAlert,
@@ -57,6 +58,8 @@ export function ModelProvidersPage() {
   const [selectedId, setSelectedId] = useState("");
   const [form, setForm] = useState<Form>(emptyForm);
   const [creating, setCreating] = useState(true);
+  const [confirmDelete, setConfirmDelete] = useState<ModelProvider | null>(null);
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [savedNotice, setSavedNotice] = useState(false);
@@ -94,6 +97,7 @@ export function ModelProvidersPage() {
       setProviders(loaded);
       setSelectedId((current) => current && loaded.some((p) => p.id === current) ? current : loaded[0]?.id ?? "");
       setCreating(loaded.length === 0);
+      setLoaded(true);
       setError(null);
     } catch (e) {
       setError((e as Error).message);
@@ -210,7 +214,6 @@ export function ModelProvidersPage() {
   }
 
   async function remove(provider: ModelProvider) {
-    if (!window.confirm(`Delete model provider ${provider.name}?`)) return;
     try {
       await apiDelete(`/api/model-providers/${encodeURIComponent(provider.id)}`);
       setSelectedId("");
@@ -254,7 +257,7 @@ export function ModelProvidersPage() {
               </div>
               <div className="shrink-0 text-right tabular-nums">
                 <span className="text-lg font-semibold tracking-tight">{providers.length}</span>
-                <span className="ml-1 text-[11px] text-muted-foreground">total</span>
+                <span className="ml-1 text-[11px] text-muted-foreground"> total</span>
               </div>
             </div>
 
@@ -357,12 +360,14 @@ export function ModelProvidersPage() {
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
                 <h3 className="font-medium">
-                  {creating ? "New provider" : selected ? selected.name : "Provider details"}
+                  {!loaded ? "Loading…" : creating ? "New provider" : selected ? selected.name : "Provider details"}
                 </h3>
                 <p className="mt-0.5 text-sm text-muted-foreground">
-                  {creating
-                    ? "Define endpoints, protocols, and an API key for launches."
-                    : "Update endpoints, catalog, and credential binding."}
+                  {!loaded
+                    ? "Loading providers…"
+                    : creating
+                      ? "Define endpoints, protocols, and an API key for launches."
+                      : "Update endpoints, catalog, and credential binding."}
                 </p>
                 {!creating && selected && (
                   <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -389,29 +394,38 @@ export function ModelProvidersPage() {
             </div>
           }
           footer={
-            <>
-              <SaveActionButton
-                label={creating ? "Create provider" : "Save provider"}
-                pending={saving}
-                saved={savedNotice}
-                disabled={!canSubmit}
-                onClick={() => void (creating ? create() : save())}
-              />
-              {selected && !creating && (
-                <Button variant="outline" onClick={() => refresh(selected)}>
-                  <RefreshCw className="h-4 w-4" /> Refresh models
-                </Button>
-              )}
-              {selected && !creating && (
-                <Button variant="destructive" onClick={() => remove(selected)}>
-                  <Trash2 className="h-4 w-4" /> Delete
-                </Button>
-              )}
-            </>
+            !loaded ? undefined : (
+              <>
+                <SaveActionButton
+                  label={creating ? "Create provider" : "Save provider"}
+                  pending={saving}
+                  saved={savedNotice}
+                  disabled={!canSubmit}
+                  onClick={() => void (creating ? create() : save())}
+                />
+                {selected && !creating && (
+                  <Button variant="outline" onClick={() => refresh(selected)}>
+                    <RefreshCw className="h-4 w-4" /> Refresh models
+                  </Button>
+                )}
+                {selected && !creating && (
+                  <Button variant="destructive" onClick={() => setConfirmDelete(selected)}>
+                    <Trash2 className="h-4 w-4" /> Delete
+                  </Button>
+                )}
+              </>
+            )
           }
         >
-            <section className="space-y-2.5">
-              <SectionLabel>Identity</SectionLabel>
+          {!loaded ? (
+            <div role="status" aria-label="Loading model providers" className="flex items-center justify-center py-12 text-sm text-muted-foreground">
+              <LoaderCircle className="mr-2 h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+              Loading providers…
+            </div>
+          ) : (
+            <>
+              <section className="space-y-2.5">
+                <SectionLabel>Identity</SectionLabel>
               <div className="grid gap-3 md:grid-cols-2">
                 <div>
                   <Label htmlFor="provider-name">Name</Label>
@@ -605,9 +619,24 @@ export function ModelProvidersPage() {
                   )}
                 </div>
               </div>
-            </section>
+              </section>
+            </>
+          )}
         </SettingsDetailPane>
       </SettingsSplitLayout>
+      <ConfirmDialog
+        open={confirmDelete !== null}
+        title={confirmDelete ? `Delete model provider ${confirmDelete.name}?` : "Delete model provider?"}
+        description="This removes the provider and its endpoints. API key env vars stay in the credential library."
+        confirmLabel="Delete"
+        destructive
+        onConfirm={() => {
+          const provider = confirmDelete;
+          setConfirmDelete(null);
+          if (provider) void remove(provider);
+        }}
+        onCancel={() => setConfirmDelete(null)}
+      />
     </SettingsPageShell>
   );
 }

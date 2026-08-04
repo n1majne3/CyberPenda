@@ -14,6 +14,7 @@ import {
 } from "@/lib/api";
 import { formatCompactDateTime } from "@/lib/format";
 import { LoadingState, PageContainer, RichEmptyState, SettingsAlert } from "@/components/shared";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Badge, Button, Card, CardDescription, CardTitle, Input, Label, Textarea } from "@/components/ui";
 
 export function SessionHomePage({ view = "open" }: { view?: "open" | "archived" }) {
@@ -30,6 +31,7 @@ export function SessionHomePage({ view = "open" }: { view?: "open" | "archived" 
   const [busyId, setBusyId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [confirmDeleteSession, setConfirmDeleteSession] = useState<Session | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const loadSessions = useCallback(async () => {
@@ -101,7 +103,6 @@ export function SessionHomePage({ view = "open" }: { view?: "open" | "archived" 
   }
 
   async function remove(session: Session) {
-    if (!window.confirm(`Delete archived session ${session.title}? This removes its Session Workdir and Events.`)) return;
     setBusyId(session.id);
     try {
       await deleteSession(session.id);
@@ -235,8 +236,21 @@ export function SessionHomePage({ view = "open" }: { view?: "open" | "archived" 
         onCancelRename={() => setRenamingId(null)}
         onSaveRename={saveRename}
         onRestore={(session) => changeLifecycle(session, "restore")}
-        onDelete={remove}
+        onDelete={(session) => setConfirmDeleteSession(session)}
       />}
+      <ConfirmDialog
+        open={confirmDeleteSession !== null}
+        title={confirmDeleteSession ? `Delete archived session ${confirmDeleteSession.title}?` : "Delete session?"}
+        description="This removes its Session Workdir and Events."
+        confirmLabel="Delete"
+        destructive
+        onConfirm={() => {
+          const session = confirmDeleteSession;
+          setConfirmDeleteSession(null);
+          if (session) void remove(session);
+        }}
+        onCancel={() => setConfirmDeleteSession(null)}
+      />
     </PageContainer>
   );
 }

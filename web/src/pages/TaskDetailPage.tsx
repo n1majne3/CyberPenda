@@ -3,6 +3,7 @@ import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, ChevronRight, Wrench, User, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2, Maximize2, Minimize2, Flag, RefreshCcw, TriangleAlert, Archive, ArchiveRestore, Pencil, Paperclip } from "lucide-react";
 import { apiDelete, apiGet, apiPatch, apiPost, apiPostForm, type BlackboardConclusionMode, type BlackboardConclusionView, type ModelProvider, type ProviderPermissionRequest, type RuntimeActivity, type RuntimeControls, type RuntimePlugin, type RuntimeProfile, type Session, type SessionContinuation, type SessionEvent, type Task, type TaskContinuation, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Badge, Input, Select, Textarea } from "@/components/ui";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { ErrorState, LoadingState, PageContainer } from "@/components/shared";
 import { AgentTranscriptView } from "@/components/task-transcript/AgentTranscriptView";
@@ -101,6 +102,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [attachments, setAttachments] = useState<File[]>([]);
+  const [confirmAction, setConfirmAction] = useState<"stop" | "finish" | "delete" | null>(null);
   const attachmentInput = useRef<HTMLInputElement>(null);
   const conversationViewport = useRef<HTMLDivElement>(null);
   const conversationEnd = useRef<HTMLDivElement>(null);
@@ -262,7 +264,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   }
 
   async function stop() {
-    if (!owner || !window.confirm(`Stop ${owner.kind} ${owner.title}?`)) return;
+    if (!owner) return;
     try {
       await apiPost(`${base}/stop`, {});
       setActionError(null);
@@ -273,7 +275,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   }
 
   async function finishTask() {
-    if (!owner?.capabilities.finish || !window.confirm(`Finish task ${owner.title}? This marks the Task completed after closing the Runtime.`)) return;
+    if (!owner?.capabilities.finish) return;
     try {
       await apiPost(`${base}/finish`, {});
       setActionError(null);
@@ -305,10 +307,6 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
 
   async function deleteTask() {
     if (!owner?.capabilities.delete) return;
-    const prompt = owner.kind === "session"
-      ? `Delete archived session ${owner.title}? This removes its Session Workdir and Events.`
-      : `Delete task ${owner.title}?`;
-    if (!window.confirm(prompt)) return;
     try {
       await apiDelete(base);
       navigate(owner.kind === "session" ? "/sessions" : `/projects/${projectId}/tasks`);
@@ -672,7 +670,8 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => void finishTask()}
+              onClick={() => setConfirmAction("finish")}
+              aria-label="Finish task"
               title="Finish Task: close Runtime and mark completed"
               data-testid="finish-task"
             >
@@ -680,12 +679,12 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
             </Button>
           )}
           {owner.capabilities.resumeWithoutMessage && !running && (
-            <Button size="sm" variant="ghost" onClick={resumeNative} disabled={!resumeAvailable} title={nativeResumeAvailable ? "Resume native session" : "Start a fresh continuation from the current Task state"}>
+            <Button size="sm" variant="ghost" onClick={resumeNative} disabled={!resumeAvailable} aria-label="Resume" title={nativeResumeAvailable ? "Resume native session" : "Start a fresh continuation from the current Task state"}>
               <Play className="h-4 w-4" /> <span className="hidden sm:inline">Resume</span>
             </Button>
           )}
           {owner.capabilities.delete && (
-            <Button size="icon" variant="ghost" onClick={deleteTask} aria-label={`Delete ${owner.kind}`} title={`Delete ${owner.kind === "session" ? "Session" : "Task"}`} className="h-8 w-8 text-destructive hover:text-destructive">
+            <Button size="icon" variant="ghost" onClick={() => setConfirmAction("delete")} aria-label={`Delete ${owner.kind}`} title={`Delete ${owner.kind === "session" ? "Session" : "Task"}`} className="h-8 w-8 text-destructive hover:text-destructive">
               <Trash2 className="h-4 w-4" />
             </Button>
           )}
@@ -695,7 +694,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
             onClick={() => selectFocus(!focusMode)}
             aria-label={focusMode ? "Exit focus view" : "Enter focus view"}
             title={focusMode ? "Exit focus view" : "Enter focus view"}
-            className="h-8 w-8"
+            className="h-10 w-10"
           >
             {focusMode ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
           </Button>
@@ -786,8 +785,8 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
           onKeyDown={handleComposerKeyDown}
           onSend={() => void sendConversationMessage()}
           onQueue={() => void queueSteer()}
-          onStop={stop}
-          onFinish={() => void finishTask()}
+          onStop={() => setConfirmAction("stop")}
+          onFinish={() => setConfirmAction("finish")}
           finishAvailable={finishAvailable}
           sending={sending}
           running={running}
@@ -811,6 +810,33 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
           onAttachmentsChange={owner.capabilities.attachments ? setAttachments : undefined}
         />
       </div>
+
+      <ConfirmDialog
+        open={confirmAction === "stop"}
+        title={owner ? `Stop ${owner.kind} ${owner.title}?` : "Stop?"}
+        description={owner ? `Stopping ${owner.kind} ${owner.title} closes its Runtime without deleting its work.` : undefined}
+        confirmLabel="Stop"
+        destructive
+        onConfirm={() => { setConfirmAction(null); void stop(); }}
+        onCancel={() => setConfirmAction(null)}
+      />
+      <ConfirmDialog
+        open={confirmAction === "finish"}
+        title={owner ? `Finish task ${owner.title}?` : "Finish task?"}
+        description="This marks the Task completed after closing the Runtime."
+        confirmLabel="Finish"
+        onConfirm={() => { setConfirmAction(null); void finishTask(); }}
+        onCancel={() => setConfirmAction(null)}
+      />
+      <ConfirmDialog
+        open={confirmAction === "delete"}
+        title={owner?.kind === "session" ? `Delete archived session ${owner.title}?` : `Delete task ${owner.title}?`}
+        description={owner?.kind === "session" ? "This removes its Session Workdir and Events." : "This removes the Task and its Workdir."}
+        confirmLabel="Delete"
+        destructive
+        onConfirm={() => { setConfirmAction(null); void deleteTask(); }}
+        onCancel={() => setConfirmAction(null)}
+      />
     </RuntimeOwnerShell>
   );
 }
@@ -1316,7 +1342,7 @@ function RuntimeOwnerComposer({
   onAttachmentsChange?: (files: File[]) => void;
 }) {
   return (
-    <div data-testid="task-composer" className="fixed inset-x-0 bottom-0 z-30 shrink-0 border-t border-border bg-background/95 px-3 py-2 shadow-[0_-8px_24px_rgba(0,0,0,0.12)] backdrop-blur-sm sm:px-4 md:static md:z-10 md:shadow-none">
+    <div data-testid="task-composer" className="fixed inset-x-0 bottom-0 z-30 shrink-0 border-t border-border bg-background/95 px-3 py-2 shadow-[0_-8px_24px] shadow-black/15 backdrop-blur-sm sm:px-4 md:static md:z-10 md:shadow-none">
       <div className="mx-auto max-w-3xl space-y-2">
         {actionError && <p role="alert" className="text-xs text-destructive">{actionError}</p>}
         <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm focus-within:border-ring">
@@ -1394,7 +1420,7 @@ function RuntimeOwnerComposer({
             <div className="ml-auto flex shrink-0 items-center gap-1">
               {running && queueAvailable && sendMode !== "queue" && (
                 <Button
-                  size="icon-lg"
+                  size="icon-xl"
                   variant="ghost"
                   onClick={onQueue}
                   disabled={!value.trim() || sending || queueDisabled}
@@ -1406,7 +1432,7 @@ function RuntimeOwnerComposer({
               )}
               {running && finishAvailable && (
                 <Button
-                  size="icon-lg"
+                  size="icon-xl"
                   variant="ghost"
                   onClick={onFinish}
                   disabled={sending}
@@ -1418,12 +1444,12 @@ function RuntimeOwnerComposer({
                 </Button>
               )}
               {running && (
-                <Button size="icon-lg" variant="destructive" onClick={onStop} disabled={sending} aria-label={`Stop ${ownerLabel.toLowerCase()}`} title={`Stop ${ownerLabel}`}>
+                <Button size="icon-xl" variant="destructive" onClick={onStop} disabled={sending} aria-label={`Stop ${ownerLabel.toLowerCase()}`} title={`Stop ${ownerLabel}`}>
                   <Square className="h-4 w-4" />
                 </Button>
               )}
               <Button
-                size="icon-lg"
+                size="icon-xl"
                 onClick={onSend}
                 disabled={!value.trim() || sending || sendMode === "unavailable" || (providerSwitchRequested && !providerSwitchAvailable)}
                 aria-label={sendActionLabel}

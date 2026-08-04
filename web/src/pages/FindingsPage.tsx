@@ -10,7 +10,7 @@ import {
 import { ShieldAlert } from "lucide-react";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { Badge } from "@/components/ui";
-import { ErrorState, RichEmptyState, SectionHeading } from "@/components/shared";
+import { ErrorState, LoadingState, RichEmptyState, SectionHeading } from "@/components/shared";
 
 const SEVERITY_VARIANT: Record<string, "destructive" | "warning" | "info" | "outline"> = {
   critical: "destructive",
@@ -33,10 +33,12 @@ export function FindingsPage() {
   const { projectId = "" } = useParams<{ projectId: string }>();
   const [rows, setRows] = useState<SnapshotListEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      setLoading(true);
       try {
         const snapshot = await readSnapshot(projectId);
         if (cancelled) return;
@@ -44,6 +46,8 @@ export function FindingsPage() {
         setError(null);
       } catch (e) {
         if (!cancelled) setError(formatBlackboardV2Error(e));
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     })();
     return () => {
@@ -56,8 +60,9 @@ export function FindingsPage() {
 
   return (
     <ProjectPageShell title="Findings" bodyClassName="space-y-4">
+      {loading && <LoadingState label="Loading findings" />}
       {error && <ErrorState error={error} title="Couldn't load findings" />}
-      {rows.length === 0 && !error && (
+      {!loading && rows.length === 0 && !error && (
         <RichEmptyState
           icon={<ShieldAlert className="h-6 w-6" aria-hidden="true" />}
           title="No findings recorded yet"
