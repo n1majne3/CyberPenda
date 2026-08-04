@@ -1345,7 +1345,7 @@ function RuntimeOwnerComposer({
           <div className="flex flex-wrap items-center gap-1.5 border-t border-border px-2 py-1.5">
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
               {onAttachmentsChange && (
-                <label className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md bg-muted/60 px-2 text-xs text-muted-foreground transition-colors hover:text-foreground">
+                <label className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md border-0 bg-transparent px-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                   <Paperclip className="h-3.5 w-3.5" />
                   <span>{attachments?.length ? `${attachments.length} attached` : "Attach"}</span>
                   <input
@@ -1360,7 +1360,7 @@ function RuntimeOwnerComposer({
               )}
               <Select
                 size="sm"
-                className="h-7 min-w-0 w-auto max-w-full border-0 bg-muted/60 px-2 text-xs shadow-none sm:max-w-[13rem]"
+                className="h-7 min-w-0 w-auto max-w-full border-0 bg-transparent px-1.5 text-xs shadow-none focus-visible:ring-2 sm:max-w-[13rem]"
                 name="continuation_model_provider"
                 value={continuationModelProvider}
                 onChange={(event) => onSelectProvider(event.target.value)}
@@ -1373,7 +1373,7 @@ function RuntimeOwnerComposer({
               </Select>
               <Select
                 size="sm"
-                className="h-7 min-w-0 w-auto max-w-full border-0 bg-muted/60 px-2 text-xs shadow-none sm:max-w-[13rem]"
+                className="h-7 min-w-0 w-auto max-w-full border-0 bg-transparent px-1.5 text-xs shadow-none focus-visible:ring-2 sm:max-w-[13rem]"
                 name="continuation_model"
                 value={continuationModelOverride}
                 onChange={(event) => onSelectModel(event.target.value)}
@@ -1388,7 +1388,7 @@ function RuntimeOwnerComposer({
               </Select>
               <Select
                 size="sm"
-                className="h-7 min-w-0 w-auto max-w-full border-0 bg-muted/60 px-2 text-xs shadow-none sm:max-w-[9rem]"
+                className="h-7 min-w-0 w-auto max-w-full border-0 bg-transparent px-1.5 text-xs shadow-none focus-visible:ring-2 sm:max-w-[9rem]"
                 name="continuation_reasoning_effort"
                 value={displayReasoningEffort(continuationReasoningEffort)}
                 onChange={(event) => onSelectReasoningEffort(event.target.value)}
