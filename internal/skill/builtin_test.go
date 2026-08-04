@@ -2,11 +2,13 @@ package skill_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
-	"unicode"
+	"unicode/utf8"
 
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/skill"
@@ -27,6 +29,99 @@ func TestBuiltinBundlesIncludeRequestedProjects(t *testing.T) {
 
 	assertBuiltinBundle(t, byID, "vulnerabilities-xss")
 	assertBuiltinBundle(t, byID, "scoreboard-driven-web-challenge")
+
+	// Vendored reverse-skill router and its methodology sub-skills.
+	for _, id := range []string{
+		"reverse-skill-router",
+		"api-security",
+		"apk-reverse",
+		"attack-chain",
+		"binary-diff",
+		"browser-automation",
+		"browser-extension-reverse",
+		"cloud-k8s",
+		"code-audit",
+		"database-security",
+		"diagram-generator",
+		"digital-forensics",
+		"docs-generator",
+		"dotnet-reverse",
+		"edr-bypass-re",
+		"email-security",
+		"firmware-pentest",
+		"ghidra-reverse",
+		"go-rust-reverse",
+		"hardware-security",
+		"ida-reverse",
+		"identity-federation",
+		"js-reverse",
+		"llm-security",
+		"macos-reverse",
+		"malware-analysis",
+		"mobile-reverse",
+		"ot-ics",
+		"patch-diff-exploit",
+		"pentest-tools",
+		"protocol-reverse",
+		"pwn-chain",
+		"radare2",
+		"radio-sdr",
+		"reverse-engineering",
+		"supply-chain-security",
+		"thick-client",
+		"threat-hunting",
+		"wifi-wireless",
+		"windows-ad",
+	} {
+		assertBuiltinBundle(t, byID, id)
+	}
+
+	// Vendored CTF-Sandbox-Orchestrator sub-skills.
+	for _, id := range []string{
+		"ctf-sandbox-orchestrator",
+		"competition-ad-certificate-abuse",
+		"competition-agent-cloud",
+		"competition-android-hooking",
+		"competition-browser-persistence",
+		"competition-bundle-sourcemap-recovery",
+		"competition-cloud-metadata-path",
+		"competition-container-runtime",
+		"competition-crypto-mobile",
+		"competition-custom-protocol-replay",
+		"competition-dpapi-credential-chain",
+		"competition-file-parser-chain",
+		"competition-firmware-layout",
+		"competition-forensic-timeline",
+		"competition-graphql-rpc-drift",
+		"competition-identity-windows",
+		"competition-ios-runtime",
+		"competition-jwt-claim-confusion",
+		"competition-k8s-control-plane",
+		"competition-kerberos-delegation",
+		"competition-kernel-container-escape",
+		"competition-linux-credential-pivot",
+		"competition-lsass-ticket-material",
+		"competition-mailbox-abuse",
+		"competition-malware-config",
+		"competition-oauth-oidc-chain",
+		"competition-pcap-protocol",
+		"competition-prompt-injection",
+		"competition-queue-worker-drift",
+		"competition-race-condition-state-drift",
+		"competition-relay-coercion-chain",
+		"competition-request-normalization-smuggling",
+		"competition-reverse-pwn",
+		"competition-runtime-routing",
+		"competition-ssrf-metadata-pivot",
+		"competition-stego-media",
+		"competition-supply-chain",
+		"competition-template-render-path",
+		"competition-web-runtime",
+		"competition-websocket-runtime",
+		"competition-windows-pivot",
+	} {
+		assertBuiltinBundle(t, byID, id)
+	}
 
 	for _, prunedID := range []string{
 		"api-security-testing",
@@ -68,16 +163,29 @@ func TestBuiltinBundlesIncludeRequestedProjects(t *testing.T) {
 	}
 }
 
-func TestBuiltinBundlesAreEnglishOnly(t *testing.T) {
+// TestBuiltinBundlesAreValidUTF8Text guards bundle file encodings: every file
+// must be valid UTF-8 (files are read as strings by the daemon) and free of
+// control characters other than the ordinary text whitespace. Bundles are not
+// restricted to English; vendored skills may carry localized content.
+func TestBuiltinBundlesAreValidUTF8Text(t *testing.T) {
 	bundles, err := skill.BuiltinBundles()
 	if err != nil {
 		t.Fatalf("load builtin bundles: %v", err)
 	}
 	for _, bundle := range bundles {
 		for path, content := range bundle.Files {
+			if !utf8.ValidString(content) {
+				t.Fatalf("builtin bundle %q file %q is not valid UTF-8", bundle.Metadata.ID, path)
+			}
 			for _, r := range content {
-				if unicode.Is(unicode.Han, r) {
-					t.Fatalf("builtin bundle %q file %q contains non-English Han character %q", bundle.Metadata.ID, path, r)
+				// Vendored security payloads legitimately embed control bytes
+				// (NUL injection, JPEG/PNG magic bytes, DLE/SUB in crafted
+				// requests), so only reject ASCII control characters that make
+				// a text document unreadable and are never payload content:
+				// BEL, BS, FF, VT, ESC, and DEL.
+				switch r {
+				case '\a', '\b', '\f', '\v', 0x1b, 0x7f:
+					t.Fatalf("builtin bundle %q file %q contains control character U+%04X", bundle.Metadata.ID, path, r)
 				}
 			}
 		}
@@ -345,6 +453,58 @@ func TestInstallBuiltinSkillsRepairsMissingBuiltinBundleFiles(t *testing.T) {
 	}
 	if files["SKILL.md"] == "" {
 		t.Fatalf("expected repaired builtin SKILL.md, got %#v", files)
+	}
+}
+
+func TestBuiltinBundlesHaveValidIDsAndRelativePaths(t *testing.T) {
+	bundles, err := skill.BuiltinBundles()
+	if err != nil {
+		t.Fatalf("load builtin bundles: %v", err)
+	}
+	idPattern := regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`)
+	for _, bundle := range bundles {
+		if !idPattern.MatchString(bundle.Metadata.ID) {
+			t.Fatalf("builtin bundle ID %q does not match the skill ID pattern", bundle.Metadata.ID)
+		}
+		for path := range bundle.Files {
+			if path == "SKILL.md" {
+				continue
+			}
+			if err := validateRelativePathForTest(path); err != nil {
+				t.Fatalf("builtin bundle %q file %q: %v", bundle.Metadata.ID, path, err)
+			}
+		}
+	}
+}
+
+func validateRelativePathForTest(path string) error {
+	if strings.TrimSpace(path) == "" || strings.HasPrefix(path, "/") || strings.Contains(path, "\\") {
+		return fmt.Errorf("path must be relative")
+	}
+	for _, part := range strings.Split(path, "/") {
+		if part == "" || part == "." || part == ".." {
+			return fmt.Errorf("path must not escape root")
+		}
+	}
+	return nil
+}
+
+// TestBuiltinBundleScriptsAreShellOnly keeps vendored bundles Linux-ready:
+// no Windows .ps1 scripts, and any .sh script carries a bash/sh shebang.
+func TestBuiltinBundleScriptsAreShellOnly(t *testing.T) {
+	bundles, err := skill.BuiltinBundles()
+	if err != nil {
+		t.Fatalf("load builtin bundles: %v", err)
+	}
+	for _, bundle := range bundles {
+		for path, content := range bundle.Files {
+			if strings.HasSuffix(path, ".ps1") {
+				t.Fatalf("builtin bundle %q contains Windows-only script %q", bundle.Metadata.ID, path)
+			}
+			if strings.HasSuffix(path, ".sh") && !strings.HasPrefix(strings.TrimSpace(content), "#!/") {
+				t.Fatalf("builtin bundle %q script %q is missing a shebang", bundle.Metadata.ID, path)
+			}
+		}
 	}
 }
 

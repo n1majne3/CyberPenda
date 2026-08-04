@@ -86,10 +86,38 @@ func TestSandboxDockerfileKeepsKaliLinuxHeadlessMetaPackage(t *testing.T) {
 		t.Fatal("sandbox Dockerfile must keep kali-linux-headless for the full Kali baseline")
 	}
 
-	for _, tool := range []string{"nmap", "sqlmap", "nuclei", "subfinder", "naabu", "ffuf", "dirsearch", "gitleaks", "nikto", "netexec"} {
+	for _, tool := range []string{
+		"nmap", "sqlmap", "nuclei", "subfinder", "naabu", "ffuf", "dirsearch", "gitleaks", "nikto", "netexec",
+		// Reverse-engineering toolchain for vendored reverse-skill builtins.
+		"default-jdk", "jadx", "apktool", "ghidra", "frida-tools", "yara",
+		"android-sdk-platform-tools", "seclists", "graphviz", "plantuml",
+	} {
 		if !strings.Contains(dockerfile, tool) {
 			t.Fatalf("sandbox Dockerfile should keep explicit tool %q installed", tool)
 		}
+	}
+}
+
+func TestSandboxDockerfileInstallsPwntoolsViaPip(t *testing.T) {
+	repoRoot := repoRoot(t)
+	dockerfileBytes, err := os.ReadFile(filepath.Join(repoRoot, "docker", "pentest-sandbox", "Dockerfile"))
+	if err != nil {
+		t.Fatalf("read sandbox Dockerfile: %v", err)
+	}
+	dockerfile := string(dockerfileBytes)
+
+	if !strings.Contains(dockerfile, "pip3 install --no-cache-dir pwntools") {
+		t.Fatal("sandbox Dockerfile should install pwntools via pip (no apt package exists)")
+	}
+	// The apt block spans from "apt-get install" to the next RUN; pwntools
+	// must not appear inside any apt-get package list.
+	aptStart := strings.Index(dockerfile, "apt-get install")
+	aptEnd := strings.Index(dockerfile[aptStart:], "\nRUN")
+	if aptEnd == -1 {
+		aptEnd = len(dockerfile) - aptStart
+	}
+	if aptBlock := dockerfile[aptStart : aptStart+aptEnd]; strings.Contains(aptBlock, " pwntools") {
+		t.Fatal("pwntools has no apt package; it must not be installed via apt-get")
 	}
 }
 
