@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { AlertTriangle, CheckCircle2, Circle, ListChecks, Loader2, PauseCircle, Plus, Rocket, Square } from "lucide-react";
 import { apiGet, type Task } from "@/lib/api";
@@ -6,6 +6,7 @@ import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { Badge, Button, Card } from "@/components/ui";
 import { ErrorState, LoadingState, RichEmptyState } from "@/components/shared";
 import { formatDateTime } from "@/lib/format";
+import { useDocumentVisibility } from "@/lib/useDocumentVisibility";
 
 const STATUS_META: Record<
   string,
@@ -23,12 +24,31 @@ const STATUS_META: Record<
   interrupted: { variant: "warning", icon: AlertTriangle },
 };
 
+// Lifecycle states that still drive runtime progress. Mirrors the ACTIVE set in
+// TaskDetailPage so this list polls with the same gating as the detail view.
+const ACTIVE_STATUS = new Set(["running", "paused"]);
+
+// A task needs watching while it is in an active lifecycle state or while its
+// runtime is still live (a live runtime can turn busy at any moment).
+function isTaskActive(task: Task) {
+  return ACTIVE_STATUS.has(task.status) || task.runtime_activity?.liveness === "live";
+}
+
 export function TasksPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const isVisible = useDocumentVisibility();
+  const hasActive = tasks.some(isTaskActive);
 
+  // Ref-backed loader so the poll effect can drive refreshes without re-running
+  // the projectId-scoped loader (which would re-fire its eager mount load).
+  const loadTasksRef = useRef<(() => void) | null>(null);
+
+  // Eager load + abort/generation bookkeeping, scoped to projectId only. Fires
+  // once on mount / project switch regardless of visibility so the page is never
+  // left empty behind a hidden tab.
   useEffect(() => {
     if (!projectId) return;
     let cancelled = false;
@@ -54,15 +74,25 @@ export function TasksPage() {
       }
     }
 
-    loadTasks();
-    // Poll while any task may still have live Runtime Activity.
-    const id = setInterval(loadTasks, 2000);
+    loadTasksRef.current = loadTasks;
+    void loadTasks();
     return () => {
       cancelled = true;
       controller?.abort();
-      clearInterval(id);
+      loadTasksRef.current = null;
     };
   }, [projectId]);
+
+  // Gated poll: fast (2s) while work is active, slow (30s) once idle, and off
+  // entirely while the tab is hidden. Returning to a visible tab eagerly
+  // refreshes before resuming the cadence; the interval restarts when the active
+  // flag flips so the period tracks the latest task data.
+  useEffect(() => {
+    if (!projectId || !isVisible) return;
+    void loadTasksRef.current?.();
+    const id = setInterval(() => void loadTasksRef.current?.(), hasActive ? 2000 : 30000);
+    return () => clearInterval(id);
+  }, [projectId, isVisible, hasActive]);
 
   const base = `/projects/${projectId}`;
 

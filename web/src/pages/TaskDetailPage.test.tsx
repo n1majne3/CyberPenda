@@ -1,10 +1,15 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode, useEffect } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mockApi } from "@/test/mockApi";
 import { TaskDetailPage } from "./TaskDetailPage";
+
+function setDocumentVisibility(value: DocumentVisibilityState) {
+  Object.defineProperty(document, "visibilityState", { value, configurable: true });
+  document.dispatchEvent(new Event("visibilitychange"));
+}
 
 function renderPage(initialEntry = "/projects/project-1/tasks/task-1", onSearch?: (search: string) => void) {
   return render(
@@ -171,6 +176,7 @@ function stubTaskDetailApi(
 describe("TaskDetailPage", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
   });
 
   it("opens on the interactive conversation by default", async () => {
@@ -1426,6 +1432,64 @@ describe("TaskDetailPage", () => {
     } else if (stale !== latest) {
       // Aborted stale request rejects; UI must remain on the latest idle value.
       expect(screen.getByTestId("runtime-activity")).toHaveTextContent(/runtime live · idle/i);
+    }
+  });
+
+  it("suspends polling while the tab is hidden and resumes when it returns", async () => {
+    // Pure fake timers (no shouldAdvanceTime): the running-task poll is the
+    // feature under test, and real-timer leakage via waitFor could fire it
+    // nondeterministically. Flush the initial multi-endpoint load via microtasks.
+    vi.useFakeTimers();
+    try {
+      const { fetchMock } = stubTaskDetailApi({
+        status: "running",
+        runtime_activity: { liveness: "live", turn_activity: "busy" },
+        latest_continuation: {
+          id: "cont-1",
+          task_id: "task-1",
+          number: 1,
+          runtime_profile_id: "profile-1",
+          runtime_provider: "codex",
+          runner: "sandbox",
+          status: "running",
+          native_session_id: "sess-1",
+          started_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:05Z",
+        },
+      });
+
+      renderPage();
+      // The task detail page fires several loads on mount; flush them with
+      // microtask ticks until the runtime-activity badge renders.
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(screen.getByTestId("runtime-activity")).toBeInTheDocument();
+      const callsAfterMount = fetchMock.mock.calls.length;
+
+      // While visible + running, polls land on the 1s cadence.
+      await act(async () => {
+        vi.advanceTimersByTimeAsync(1500);
+      });
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(callsAfterMount);
+      const callsAfterVisiblePoll = fetchMock.mock.calls.length;
+
+      // Hidden: polling must suspend even though the task is still running.
+      act(() => setDocumentVisibility("hidden"));
+      await act(async () => {
+        vi.advanceTimersByTimeAsync(10000);
+      });
+      expect(fetchMock.mock.calls.length).toBe(callsAfterVisiblePoll);
+
+      // Visible again: polling resumes within the 1s cadence.
+      act(() => setDocumentVisibility("visible"));
+      await act(async () => {
+        vi.advanceTimersByTimeAsync(1500);
+      });
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(callsAfterVisiblePoll);
+    } finally {
+      vi.useRealTimers();
     }
   });
 });
