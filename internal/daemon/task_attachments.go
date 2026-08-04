@@ -157,14 +157,18 @@ func resolveAttachmentNames(files []uploadedAttachment) ([]resolvedAttachment, e
 	return resolved, nil
 }
 
-// attachmentWorkdirGoalPath returns the path the runtime uses to open an
-// attachment: the container-relative /task path for the Sandbox runner, or the
-// absolute host workdir path for the Host runner.
-func attachmentWorkdirGoalPath(runner task.Runner, runtimeRoot, taskID, finalName string) string {
+// ownerAttachmentGoalPath returns the path the runtime uses to open an owner
+// Workdir attachment: the container-relative /task path for the Sandbox
+// runner, or the absolute Workdir path for the Host runner.
+func ownerAttachmentGoalPath(runner task.Runner, workdir, finalName string) string {
 	if runner == task.RunnerHost {
-		return filepath.Join(runtimeRoot, taskID, "workdir", finalName)
+		return filepath.Join(workdir, finalName)
 	}
 	return path.Join("/task/workdir", finalName)
+}
+
+func attachmentWorkdirGoalPath(runner task.Runner, runtimeRoot, taskID, finalName string) string {
+	return ownerAttachmentGoalPath(runner, filepath.Join(runtimeRoot, taskID, "workdir"), finalName)
 }
 
 // appendAttachmentPathsToGoal appends a trailing ATTACHED FILES section listing

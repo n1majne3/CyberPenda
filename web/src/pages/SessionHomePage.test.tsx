@@ -204,6 +204,27 @@ describe("SessionHomePage", () => {
     });
   });
 
+  it("reuses the shared attachment picker with validation, preview, and removal", async () => {
+    mockApi({
+      ...sessionLaunchRoutes,
+      "/api/sessions?lifecycle=archived": { sessions: [] },
+      "/api/sessions": { sessions: [] },
+    });
+    const user = userEvent.setup();
+
+    renderPage();
+
+    const dropzone = await screen.findByTestId("attachment-dropzone");
+    expect(dropzone).toHaveTextContent("Drag & drop files here, or click to browse");
+    expect(dropzone).toHaveTextContent("Up to 25 files, 100 MB each");
+
+    await user.upload(screen.getByLabelText("Attachments"), new File(["notes"], "notes.txt", { type: "text/plain" }));
+    expect(screen.getByText("notes.txt")).toBeInTheDocument();
+    expect(screen.getByText("5 B")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Remove notes.txt" }));
+    expect(screen.queryByText("notes.txt")).not.toBeInTheDocument();
+  });
+
   it("persists assisted Blackboard conclusions from the Session launch controls", async () => {
     const fetchMock = mockApi({
       ...sessionLaunchRoutes,

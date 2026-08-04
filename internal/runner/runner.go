@@ -165,6 +165,15 @@ func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 	if err != nil {
 		return Command{}, fmt.Errorf("resolve task root: %w", err)
 	}
+	workdir := strings.TrimSpace(request.Layout.Workdir)
+	if workdir == "" {
+		workdir = filepath.Join(taskRoot, "workdir")
+	}
+	workdir, err = filepath.Abs(workdir)
+	if err != nil {
+		return Command{}, fmt.Errorf("resolve runtime workdir: %w", err)
+	}
+	separateWorkdir := filepath.Clean(workdir) != filepath.Join(taskRoot, "workdir")
 	args := []string{"create"}
 	if strings.TrimSpace(request.ContainerIDFile) != "" {
 		args = append(args, "--cidfile", request.ContainerIDFile)
@@ -174,14 +183,13 @@ func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 	)
 	taskVolume := strings.TrimSpace(request.TaskVolume)
 	taskVolumeSubpath := ""
+	volumeRoot := ""
 	volumeSubpathOption := namedVolumeSubpathOption(program)
-	if taskVolume == "" {
-		args = append(args, "-v", taskRoot+":/task")
-	} else {
+	if taskVolume != "" {
 		if strings.ContainsAny(taskVolume, ",\n\r") {
 			return Command{}, fmt.Errorf("invalid task volume name: %q", taskVolume)
 		}
-		volumeRoot := strings.TrimSpace(request.TaskVolumeRoot)
+		volumeRoot = strings.TrimSpace(request.TaskVolumeRoot)
 		if volumeRoot == "" {
 			volumeRoot = "/data"
 		}
@@ -189,11 +197,26 @@ func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 		if err != nil {
 			return Command{}, fmt.Errorf("resolve task volume root: %w", err)
 		}
-		taskVolumeSubpath, err = filepath.Rel(volumeRoot, taskRoot)
-		if err != nil || taskVolumeSubpath == "." || taskVolumeSubpath == ".." || strings.HasPrefix(taskVolumeSubpath, ".."+string(filepath.Separator)) {
-			return Command{}, fmt.Errorf("task root %q is outside task volume root %q", taskRoot, volumeRoot)
+		var withinVolume bool
+		taskVolumeSubpath, withinVolume = namedVolumeSubpath(volumeRoot, taskRoot)
+		if !withinVolume {
+			taskVolume = ""
 		}
+	}
+	if taskVolume == "" {
+		args = append(args, "-v", taskRoot+":/task")
+		if separateWorkdir {
+			args = append(args, "--mount", "type=bind,src="+workdir+",dst=/task/workdir")
+		}
+	} else {
 		args = append(args, "--mount", "type=volume,src="+taskVolume+",dst=/task,"+volumeSubpathOption+"="+filepath.ToSlash(taskVolumeSubpath))
+		if separateWorkdir {
+			if workdirSubpath, insideVolume := namedVolumeSubpath(volumeRoot, workdir); insideVolume {
+				args = append(args, "--mount", "type=volume,src="+taskVolume+",dst=/task/workdir,"+volumeSubpathOption+"="+filepath.ToSlash(workdirSubpath))
+			} else {
+				args = append(args, "--mount", "type=bind,src="+workdir+",dst=/task/workdir")
+			}
+		}
 	}
 	args = append(args,
 		"-w",
@@ -266,6 +289,14 @@ func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 	}
 	args = append(args, request.RuntimeCommand...)
 	return Command{Program: program, Args: args}, nil
+}
+
+func namedVolumeSubpath(volumeRoot, candidate string) (string, bool) {
+	relative, err := filepath.Rel(volumeRoot, candidate)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return relative, true
 }
 
 func namedVolumeSubpathOption(program string) string {

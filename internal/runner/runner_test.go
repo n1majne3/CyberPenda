@@ -206,6 +206,32 @@ func TestBuildSandboxCommandUsesNamedTaskVolumeSubpaths(t *testing.T) {
 	}
 }
 
+func TestBuildSandboxCommandMountsASeparateOwnerWorkdirFromTheNamedVolume(t *testing.T) {
+	volumeRoot := filepath.Join(t.TempDir(), "data")
+	ownerWorkdir := filepath.Join(volumeRoot, "runs", "sessions", "session-1")
+	layout := runner.Layout{
+		TaskRoot: filepath.Join(ownerWorkdir, ".runtime"),
+		Workdir:  ownerWorkdir,
+	}
+	command, err := runner.BuildSandboxCommand(runner.SandboxCommandRequest{
+		Layout: layout, Provider: runtimeprofile.ProviderCodex,
+		TaskVolume: "cyberpenda-data", TaskVolumeRoot: volumeRoot,
+		RuntimeCommand: []string{"codex", "exec"},
+	})
+	if err != nil {
+		t.Fatalf("build command: %v", err)
+	}
+	joined := strings.Join(command.Args, " ")
+	for _, want := range []string{
+		"type=volume,src=cyberpenda-data,dst=/task,volume-subpath=runs/sessions/session-1/.runtime",
+		"type=volume,src=cyberpenda-data,dst=/task/workdir,volume-subpath=runs/sessions/session-1",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected %q in named-volume sandbox args, got %v", want, command.Args)
+		}
+	}
+}
+
 func TestBuildSandboxCommandUsesPodmanNamedVolumeSubpathSyntax(t *testing.T) {
 	volumeRoot := filepath.Join(t.TempDir(), "data")
 	layout, err := runner.PrepareTaskLayout(filepath.Join(volumeRoot, "runs"), "task-podman", runtimeprofile.ProviderPi)

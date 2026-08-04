@@ -1,12 +1,10 @@
 package daemon
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -62,11 +60,37 @@ type sessionRuntimePlan struct {
 	Adapter          runtime.Adapter
 	Profile          runtimeprofile.Profile
 	Runner           session.Runner
+	LaunchGoal       string
 	RuntimeConfig    map[string]any
 	Selection        runtime.ProviderSessionRequest
 	Metadata         func() (runtime.NativeSessionMetadata, error)
 	StopConfirmation runtime.StopConfirmation
 	ProviderHome     string
+}
+
+func sessionGoalWithAttachmentEvents(goal, workdir string, run session.Runner, events []session.Event) string {
+	paths := make([]string, 0, len(events))
+	for _, event := range events {
+		reference, ok := event.AttachmentReference()
+		if !ok {
+			continue
+		}
+		hostPath := filepath.Join(workdir, reference.RelativePath)
+		info, err := os.Stat(hostPath)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		paths = append(paths, ownerAttachmentGoalPath(task.Runner(run), workdir, reference.RelativePath))
+	}
+	return appendAttachmentPathsToGoal(goal, paths)
+}
+
+func (server *Server) sessionLaunchGoal(found session.Session, goal string, run session.Runner) (string, error) {
+	events, err := server.sessions.Events(found.ID)
+	if err != nil {
+		return "", err
+	}
+	return sessionGoalWithAttachmentEvents(goal, found.Workdir, run, events), nil
 }
 
 func (server *Server) resolveSessionRuntimeProfile(input sessionRuntimeInput, previous *session.Continuation) (runtimeprofile.Profile, error) {
@@ -189,6 +213,10 @@ func stringConfig(config map[string]any, key string) string {
 }
 
 func (server *Server) buildSessionRuntimePlan(found session.Session, goal string, input sessionRuntimeInput, profile runtimeprofile.Profile, run session.Runner, interfaceToken, nativeResumeSessionID string) (sessionRuntimePlan, error) {
+	launchGoal, err := server.sessionLaunchGoal(found, goal, run)
+	if err != nil {
+		return sessionRuntimePlan{}, err
+	}
 	modelSnapshot, err := server.resolveSessionModelSnapshot(profile, input)
 	if err != nil {
 		return sessionRuntimePlan{}, err
@@ -204,7 +232,7 @@ func (server *Server) buildSessionRuntimePlan(found session.Session, goal string
 	if profile.Provider == runtimeprofile.ProviderFake {
 		return sessionRuntimePlan{
 			Adapter: runtime.NewFakeAdapter(), Profile: profile, Runner: run,
-			RuntimeConfig: config, Selection: selection,
+			LaunchGoal: launchGoal, RuntimeConfig: config, Selection: selection,
 		}, nil
 	}
 
@@ -267,7 +295,7 @@ func (server *Server) buildSessionRuntimePlan(found session.Session, goal string
 	configPath := runner.LaunchConfigPath(layout, launchProfile.Provider, projection.ConfigPath, run == session.RunnerSandbox)
 	mcpConfigPath := runner.LaunchMCPConfigPath(layout, launchProfile.Provider, run == session.RunnerSandbox, projection)
 	providerCommand, err := adapters.BuildLaunchOrResumeArgs(adapters.LaunchArgsRequest{
-		Provider: launchProfile.Provider, Profile: launchProfile, Goal: goal,
+		Provider: launchProfile.Provider, Profile: launchProfile, Goal: launchGoal,
 		ConfigPath: configPath, MCPConfigPath: mcpConfigPath, Sandbox: run == session.RunnerSandbox,
 	}, nativeResumeSessionID)
 	if err != nil {
@@ -315,6 +343,7 @@ func (server *Server) buildSessionRuntimePlan(found session.Session, goal string
 			ContainerCLI: server.containerCLI, ContainerIDFile: containerIDFile,
 			RuntimeCommand: sandboxRuntime, ProcessEnv: processEnv,
 			NetworkMode: runner.SandboxNetworkDefault,
+			TaskVolume:  server.taskVolume, TaskVolumeRoot: server.taskVolumeRoot,
 		})
 		if err != nil {
 			return sessionRuntimePlan{}, err
@@ -370,7 +399,7 @@ func (server *Server) buildSessionRuntimePlan(found session.Session, goal string
 		stopConfirmation = runtime.DockerContainerStopConfirmation(containerCLI, containerIDFile)
 	}
 	return sessionRuntimePlan{
-		Adapter: adapter, Profile: launchProfile, Runner: run, RuntimeConfig: config, Selection: selection,
+		Adapter: adapter, Profile: launchProfile, Runner: run, LaunchGoal: launchGoal, RuntimeConfig: config, Selection: selection,
 		Metadata: metadata, StopConfirmation: stopConfirmation, ProviderHome: layout.ProviderHome,
 	}, nil
 }
@@ -438,6 +467,10 @@ func (server *Server) prepareSessionRuntime(ctx context.Context, mode session.Bl
 }
 
 func (server *Server) startSessionRuntime(ctx context.Context, found session.Session, goal string, input sessionRuntimeInput) (session.Continuation, error) {
+	return server.startSessionRuntimeWithConversationInput(ctx, found, goal, input, nil)
+}
+
+func (server *Server) startSessionRuntimeWithConversationInput(ctx context.Context, found session.Session, goal string, input sessionRuntimeInput, conversationInput *session.ConversationInput) (session.Continuation, error) {
 	previous, err := server.sessions.LatestContinuation(found.ID)
 	if err != nil {
 		return session.Continuation{}, err
@@ -447,10 +480,15 @@ func (server *Server) startSessionRuntime(ctx context.Context, found session.Ses
 		server.recordSessionLaunchDiagnostic(found.ID, "launch_selection_failed", err)
 		return session.Continuation{}, err
 	}
-	return server.startPreparedSessionRuntime(ctx, found, goal, input, previous, prepared)
+	return server.startPreparedSessionRuntime(ctx, found, goal, input, previous, prepared, conversationInput)
 }
 
-func (server *Server) startPreparedSessionRuntime(ctx context.Context, found session.Session, goal string, input sessionRuntimeInput, previous *session.Continuation, prepared sessionRuntimePreparation) (session.Continuation, error) {
+type sessionConversationInputCommitError struct{ cause error }
+
+func (err sessionConversationInputCommitError) Error() string { return err.cause.Error() }
+func (err sessionConversationInputCommitError) Unwrap() error { return err.cause }
+
+func (server *Server) startPreparedSessionRuntime(ctx context.Context, found session.Session, goal string, input sessionRuntimeInput, previous *session.Continuation, prepared sessionRuntimePreparation, conversationInput *session.ConversationInput) (session.Continuation, error) {
 	profile, run, runtimeConfig := prepared.Profile, prepared.Runner, prepared.RuntimeConfig
 	var err error
 	var continuation session.Continuation
@@ -458,11 +496,22 @@ func (server *Server) startPreparedSessionRuntime(ctx context.Context, found ses
 		previous.RuntimeProfileID == profile.ID && previous.RuntimeProvider == string(profile.Provider) && previous.Runner == run &&
 		(strings.TrimSpace(previous.NativeSessionID) != "" || strings.TrimSpace(previous.NativeSessionPath) != "")
 	if resumeNativeIdentity {
-		continuation, err = server.sessions.CreateReplacementContinuation(*previous, runtimeConfig)
+		if conversationInput != nil {
+			continuation, err = server.sessions.CreateReplacementContinuationWithInput(*previous, runtimeConfig, *conversationInput)
+		} else {
+			continuation, err = server.sessions.CreateReplacementContinuation(*previous, runtimeConfig)
+		}
 	} else {
-		continuation, err = server.sessions.CreateContinuation(found.ID, profile.ID, string(profile.Provider), run, runtimeConfig)
+		if conversationInput != nil {
+			continuation, err = server.sessions.CreateContinuationWithInput(found.ID, profile.ID, string(profile.Provider), run, runtimeConfig, *conversationInput)
+		} else {
+			continuation, err = server.sessions.CreateContinuation(found.ID, profile.ID, string(profile.Provider), run, runtimeConfig)
+		}
 	}
 	if err != nil {
+		if conversationInput != nil {
+			return session.Continuation{}, sessionConversationInputCommitError{cause: err}
+		}
 		server.recordSessionLaunchDiagnostic(found.ID, "continuation_create_failed", err)
 		return session.Continuation{}, err
 	}
@@ -489,7 +538,7 @@ func (server *Server) startPreparedSessionRuntime(ctx context.Context, found ses
 		binding, factoryErr := server.providerSessionFactory.Open(ctx, ProviderSessionLaunchRequest{
 			Owner:        found.OwnerContract(),
 			Continuation: ownerContinuationFromSession(continuation), Provider: profile.Provider,
-			Runner: task.Runner(run), LaunchGoal: goal, RuntimeConfig: plan.RuntimeConfig,
+			Runner: task.Runner(run), LaunchGoal: plan.LaunchGoal, RuntimeConfig: plan.RuntimeConfig,
 			LegacyAdapter: plan.Adapter,
 		})
 		if factoryErr == nil {
@@ -521,7 +570,7 @@ func (server *Server) startPreparedSessionRuntime(ctx context.Context, found ses
 	}
 	go func() {
 		runErr := server.sessionHarness.Launch(context.Background(), runtime.SessionLaunchRequest{
-			SessionID: found.ID, Goal: goal, Adapter: plan.Adapter, ContinuationID: continuation.ID,
+			SessionID: found.ID, Goal: plan.LaunchGoal, Adapter: plan.Adapter, ContinuationID: continuation.ID,
 			Metadata: plan.Metadata, StopConfirmation: plan.StopConfirmation,
 		})
 		if runErr != nil && !errors.Is(runErr, context.Canceled) {
@@ -825,6 +874,11 @@ func (server *Server) handleSessionMessage(response http.ResponseWriter, request
 		writeSessionError(response, err)
 		return
 	}
+	server.handleSessionMessageInput(response, request, found, input, uploads)
+}
+
+func (server *Server) handleSessionMessageInput(response http.ResponseWriter, request *http.Request, found session.Session, input createSessionInput, uploads []uploadedAttachment) {
+	id := found.ID
 	if found.Lifecycle != session.LifecycleOpen {
 		writeSessionError(response, session.ErrSessionNotOpen)
 		return
@@ -841,12 +895,6 @@ func (server *Server) handleSessionMessage(response http.ResponseWriter, request
 	if message == "" {
 		writeError(response, http.StatusBadRequest, "Session message is required")
 		return
-	}
-	if len(uploads) > 0 {
-		if err := server.addSessionUploads(id, uploads); err != nil {
-			writeSessionError(response, err)
-			return
-		}
 	}
 	active, activeErr := server.sessions.ActiveContinuation(id)
 	if activeErr != nil {
@@ -883,15 +931,20 @@ func (server *Server) handleSessionMessage(response http.ResponseWriter, request
 					return
 				}
 			}
-			if _, err := server.sessions.AppendConversationEvent(id, active.ID, "user", message); err != nil {
-				writeSessionError(response, err)
-				return
-			}
 			requestID := sessionRequestID(request, "message")
-			if !server.enqueueSessionProviderTurn(id, provider, active.ID, requestID, message, selection, runtime.ProviderSessionModeSendTurn) {
+			reservation, reserved := server.reserveSessionProviderTurn(id, provider, active.ID, requestID, runtime.ProviderSessionModeSendTurn)
+			if !reserved {
 				writeError(response, http.StatusConflict, "Session Runtime control operation is unavailable")
 				return
 			}
+			uploadedEvents, _, uploadErr := server.appendSessionConversationInput(id, active.ID, message, uploads)
+			if uploadErr != nil {
+				reservation.cancel()
+				writeSessionError(response, uploadErr)
+				return
+			}
+			runtimeMessage := sessionGoalWithAttachmentEvents(message, found.Workdir, active.Runner, uploadedEvents)
+			reservation.commit(runtimeMessage, selection)
 			server.writeDecoratedSession(response, http.StatusAccepted, id)
 			return
 		}
@@ -900,11 +953,13 @@ func (server *Server) handleSessionMessage(response http.ResponseWriter, request
 			return
 		}
 	}
-	if _, err := server.sessions.AppendConversationEvent(id, "", "user", message); err != nil {
-		writeSessionError(response, err)
+	conversationInput := sessionConversationInput(message, uploads)
+	_, launchErr := server.startSessionRuntimeWithConversationInput(request.Context(), found, message, sessionRuntimeInputFromCreate(input), &conversationInput)
+	var commitErr sessionConversationInputCommitError
+	if errors.As(launchErr, &commitErr) {
+		writeSessionError(response, commitErr.cause)
 		return
 	}
-	_, launchErr := server.startSessionRuntime(request.Context(), found, message, sessionRuntimeInputFromCreate(input))
 	if launchErr != nil {
 		server.writeDecoratedSession(response, http.StatusAccepted, id)
 		return
@@ -990,7 +1045,36 @@ func sessionRequestID(request *http.Request, prefix string) string {
 	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
 }
 
-func (server *Server) enqueueSessionProviderTurn(sessionID string, provider runtime.ProviderSession, continuationID, requestID, message string, selection runtime.ProviderSessionRequest, mode runtime.ProviderSessionMode) bool {
+type sessionProviderTurnPayload struct {
+	Message   string
+	Selection runtime.ProviderSessionRequest
+}
+
+type sessionProviderTurnReservation struct {
+	ready chan sessionProviderTurnPayload
+	once  sync.Once
+}
+
+func (reservation *sessionProviderTurnReservation) commit(message string, selection runtime.ProviderSessionRequest) {
+	reservation.once.Do(func() {
+		reservation.ready <- sessionProviderTurnPayload{Message: message, Selection: selection}
+		close(reservation.ready)
+	})
+}
+
+func (reservation *sessionProviderTurnReservation) cancel() {
+	reservation.once.Do(func() { close(reservation.ready) })
+}
+
+func (server *Server) reserveSessionProviderTurn(sessionID string, provider runtime.ProviderSession, continuationID, requestID string, mode runtime.ProviderSessionMode) (*sessionProviderTurnReservation, bool) {
+	reservation := &sessionProviderTurnReservation{ready: make(chan sessionProviderTurnPayload, 1)}
+	if !server.enqueueSessionProviderTurn(sessionID, provider, continuationID, requestID, mode, reservation.ready) {
+		return nil, false
+	}
+	return reservation, true
+}
+
+func (server *Server) enqueueSessionProviderTurn(sessionID string, provider runtime.ProviderSession, continuationID, requestID string, mode runtime.ProviderSessionMode, turnReady <-chan sessionProviderTurnPayload) bool {
 	operation := provider.SendTurn
 	if mode != runtime.ProviderSessionModeSendTurn {
 		operation = nativeSteerOperation(provider, mode)
@@ -998,11 +1082,22 @@ func (server *Server) enqueueSessionProviderTurn(sessionID string, provider runt
 	if operation == nil {
 		return false
 	}
-	selection.RequestID, selection.Message, selection.TurnKind = requestID, message, runtime.RuntimeTurnKindWork
-	if mode != runtime.ProviderSessionModeSendTurn {
-		selection.TurnKind = runtime.RuntimeTurnKindControl
-	}
 	return server.enqueueProviderTaskControlAfterSettlement(sessionID, server.sessionBlackboardConclusionSettlement(sessionID, false), func(ctx context.Context) {
+		var turn sessionProviderTurnPayload
+		select {
+		case ready, ok := <-turnReady:
+			if !ok {
+				return
+			}
+			turn = ready
+		case <-ctx.Done():
+			return
+		}
+		selection, message := turn.Selection, turn.Message
+		selection.RequestID, selection.Message, selection.TurnKind = requestID, message, runtime.RuntimeTurnKindWork
+		if mode != runtime.ProviderSessionModeSendTurn {
+			selection.TurnKind = runtime.RuntimeTurnKindControl
+		}
 		var continuationMu sync.Mutex
 		currentContinuationID := continuationID
 		var transitionErr error
@@ -1139,7 +1234,7 @@ func (server *Server) handleSessionSteer(response http.ResponseWriter, request *
 		return
 	}
 	id := request.PathValue("id")
-	_, err := server.sessions.Get(id)
+	found, err := server.sessions.Get(id)
 	if err != nil {
 		writeSessionError(response, err)
 		return
@@ -1152,12 +1247,6 @@ func (server *Server) handleSessionSteer(response http.ResponseWriter, request *
 		writeError(response, http.StatusConflict, err.Error())
 		return
 	}
-	if len(uploads) > 0 {
-		if err := server.addSessionUploads(id, uploads); err != nil {
-			writeSessionError(response, err)
-			return
-		}
-	}
 	provider, bound := server.sessionProviderSessions.get(id)
 	active, activeErr := server.sessions.ActiveContinuation(id)
 	if activeErr != nil {
@@ -1165,7 +1254,7 @@ func (server *Server) handleSessionSteer(response http.ResponseWriter, request *
 		return
 	}
 	if !bound || active == nil || !server.sessionHarness.IsActive(id) {
-		server.handleSessionMessage(response, requestWithSessionInput(request, id, message, input))
+		server.handleSessionMessageInput(response, request, found, createSessionInputFromRuntime(message, input), uploads)
 		return
 	}
 	if conflict := sessionContinuationSelectionConflict(*active, input); conflict != "" {
@@ -1197,40 +1286,43 @@ func (server *Server) handleSessionSteer(response http.ResponseWriter, request *
 			return
 		}
 	}
-	if _, err := server.sessions.AppendConversationEvent(id, active.ID, "user", message); err != nil {
-		writeSessionError(response, err)
-		return
-	}
 	requestID := sessionRequestID(request, "steer")
-	if !server.enqueueSessionProviderTurn(id, provider, active.ID, requestID, message, selection, mode) {
+	reservation, reserved := server.reserveSessionProviderTurn(id, provider, active.ID, requestID, mode)
+	if !reserved {
 		writeError(response, http.StatusConflict, "Session Runtime control operation is unavailable")
 		return
 	}
+	uploadedEvents, _, uploadErr := server.appendSessionConversationInput(id, active.ID, message, uploads)
+	if uploadErr != nil {
+		reservation.cancel()
+		writeSessionError(response, uploadErr)
+		return
+	}
+	runtimeMessage := sessionGoalWithAttachmentEvents(message, found.Workdir, active.Runner, uploadedEvents)
+	reservation.commit(runtimeMessage, selection)
 	server.writeDecoratedSession(response, http.StatusAccepted, id)
 }
 
-func (server *Server) addSessionUploads(id string, uploads []uploadedAttachment) error {
+func sessionConversationInput(message string, uploads []uploadedAttachment) session.ConversationInput {
 	attachments := make([]session.Attachment, 0, len(uploads))
 	for _, upload := range uploads {
 		attachments = append(attachments, session.Attachment{Name: upload.filename, Size: upload.size, Open: upload.open})
 	}
-	_, err := server.sessions.AddAttachments(id, attachments)
-	return err
+	return session.ConversationInput{Role: "user", Text: message, Attachments: attachments}
 }
 
-func requestWithSessionInput(request *http.Request, id, message string, input sessionRuntimeInput) *http.Request {
-	body, _ := json.Marshal(map[string]any{
-		"input": message, "runtime_profile_id": input.RuntimeProfileID, "provider": input.Provider,
-		"runtime_provider": input.RuntimeProvider, "model_provider_id": input.ModelProviderID,
-		"model": input.Model, "model_override": input.ModelOverride, "reasoning_effort": input.ReasoningEffort,
-		"runner": input.Runner, "host_activated": input.HostActivated,
-	})
-	clone := request.Clone(request.Context())
-	clone.URL.Path = "/api/sessions/" + id + "/messages"
-	clone.Body = io.NopCloser(bytes.NewReader(body))
-	clone.ContentLength = int64(len(body))
-	clone.Header.Set("Content-Type", "application/json")
-	return clone
+func (server *Server) appendSessionConversationInput(id, continuationID, message string, uploads []uploadedAttachment) ([]session.Event, session.Event, error) {
+	input := sessionConversationInput(message, uploads)
+	return server.sessions.AppendConversationInput(id, continuationID, input.Role, input.Text, input.Attachments)
+}
+
+func createSessionInputFromRuntime(message string, input sessionRuntimeInput) createSessionInput {
+	return createSessionInput{
+		Input: message, RuntimeProfileID: input.RuntimeProfileID, Provider: input.Provider,
+		RuntimeProvider: input.RuntimeProvider, ModelProviderID: input.ModelProviderID,
+		Model: input.Model, ModelOverride: input.ModelOverride, ReasoningEffort: input.ReasoningEffort,
+		Runner: input.Runner, HostActivated: input.HostActivated, RuntimeConfig: input.RuntimeConfig,
+	}
 }
 
 func (server *Server) handleSessionQueueSteer(response http.ResponseWriter, request *http.Request) {

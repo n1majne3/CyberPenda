@@ -6,6 +6,7 @@ import { Button, Badge, Input, Select, Textarea } from "@/components/ui";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { PageContainer } from "@/components/shared";
 import { AgentTranscriptView } from "@/components/task-transcript/AgentTranscriptView";
+import { AttachmentFileRow } from "@/components/AttachmentPicker";
 import { collapsedTranscriptTitle, toolCallFields } from "./taskDetailView";
 import { displayReasoningEffort, REASONING_EFFORT_VALUES, selectableModelProviders } from "./runtimeProfileForm";
 import { modelsForProvider } from "./taskLaunchForm";
@@ -866,7 +867,7 @@ async function loadSessionWorkspace(base: string, signal: AbortSignal): Promise<
   const timelineEvents = timeline.events?.length
     ? timeline.events
     : allEvents.filter((event) => event.kind !== "conversation");
-  const transcriptEvents = [...conversationEvents, ...timelineEvents.filter((event) => event.kind === "runtime_output")]
+  const transcriptEvents = [...conversationEvents, ...timelineEvents.filter((event) => event.kind === "runtime_output" || event.kind === "attachment")]
     .sort((left, right) => left.seq - right.seq);
   return {
     owner: sessionAsRuntimeOwner(session),
@@ -988,6 +989,19 @@ function sessionContinuationAsRuntimeOwner(continuation: SessionContinuation): R
 
 function sessionEventAsTranscriptEntry(event: SessionEvent, session: Session): TaskTranscriptEntry[] {
   const payload = event.payload ?? {};
+  if (event.kind === "attachment") {
+    const filename = typeof payload.filename === "string" ? payload.filename : "attachment";
+    return [{
+      id: event.id,
+      seq: event.seq,
+      continuation: sessionContinuationNumber(payload.continuation_id, session),
+      kind: "attachment",
+      role: "system",
+      text: `Attached ${filename}`,
+      details: payload,
+      created_at: event.created_at,
+    }];
+  }
   const text = typeof payload.text === "string" ? payload.text : "";
   if (!text.trim()) return [];
   const continuation = sessionContinuationNumber(payload.continuation_id, session);
@@ -1573,6 +1587,12 @@ function TranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
         <span className="h-px flex-1 bg-border" />
       </div>
     );
+  }
+
+  if (entry.kind === "attachment") {
+    const filename = typeof entry.details?.filename === "string" ? entry.details.filename : "attachment";
+    const size = typeof entry.details?.size === "number" ? entry.details.size : undefined;
+    return <AttachmentFileRow name={filename} size={size} prefix="Attached" />;
   }
 
   const projectedRuntimeEntries = projectRuntimeOutput(entry);

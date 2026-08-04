@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { Archive, ArchiveRestore, FilePlus2, MessageSquareText, Pencil, Plus, Trash2 } from "lucide-react";
 import { RuntimeLaunchControls, useRuntimeLaunchControls } from "@/components/RuntimeLaunchControls";
+import { AttachmentPicker } from "@/components/AttachmentPicker";
 import {
   archiveSession,
   createSession,
@@ -29,7 +30,6 @@ export function SessionHomePage({ view = "open" }: { view?: "open" | "archived" 
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const loadSessions = useCallback(async () => {
     setLoading(true);
@@ -78,7 +78,6 @@ export function SessionHomePage({ view = "open" }: { view?: "open" | "archived" 
       await createSession(draft, attachments, launchControls.launchPayload(profileId));
       setDraft("");
       setAttachments([]);
-      if (fileInputRef.current) fileInputRef.current.value = "";
       await loadSessions();
     } catch (cause) {
       launchControls.setError((cause as Error).message);
@@ -184,19 +183,13 @@ export function SessionHomePage({ view = "open" }: { view?: "open" | "archived" 
               rows={4}
             />
           </div>
-          <div>
-            <Label htmlFor="session-attachments">Attachments (optional)</Label>
-            <Input
-              ref={fileInputRef}
-              id="session-attachments"
-              name="attachments"
-              type="file"
-              multiple
-              onChange={(event) => setAttachments(Array.from(event.target.files ?? []))}
-              className="mt-1 h-auto py-1.5"
-            />
-            <p className="mt-1 text-xs text-muted-foreground">Files are copied into the managed Session Workdir.</p>
-          </div>
+          <AttachmentPicker
+            id="session-attachments"
+            files={attachments}
+            onFilesChange={setAttachments}
+            onError={launchControls.setError}
+            ownerLabel="Session"
+          />
           <RuntimeLaunchControls controller={launchControls} ownerLabel="session" initialInput={draft} />
           <div className="flex justify-end">
             <Button
