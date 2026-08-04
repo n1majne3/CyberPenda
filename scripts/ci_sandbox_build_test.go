@@ -89,7 +89,7 @@ func TestSandboxDockerfileKeepsKaliLinuxHeadlessMetaPackage(t *testing.T) {
 	for _, tool := range []string{
 		"nmap", "sqlmap", "nuclei", "subfinder", "naabu", "ffuf", "dirsearch", "gitleaks", "nikto", "netexec",
 		// Reverse-engineering toolchain for vendored reverse-skill builtins.
-		"default-jdk", "jadx", "apktool", "ghidra", "frida-tools", "yara",
+		"default-jdk", "jadx", "apktool", "ghidra", "yara",
 		"android-sdk-platform-tools", "seclists", "graphviz", "plantuml",
 	} {
 		if !strings.Contains(dockerfile, tool) {
@@ -98,7 +98,7 @@ func TestSandboxDockerfileKeepsKaliLinuxHeadlessMetaPackage(t *testing.T) {
 	}
 }
 
-func TestSandboxDockerfileInstallsPwntoolsViaPip(t *testing.T) {
+func TestSandboxDockerfileInstallsPipOnlyToolsViaPip(t *testing.T) {
 	repoRoot := repoRoot(t)
 	dockerfileBytes, err := os.ReadFile(filepath.Join(repoRoot, "docker", "pentest-sandbox", "Dockerfile"))
 	if err != nil {
@@ -106,18 +106,23 @@ func TestSandboxDockerfileInstallsPwntoolsViaPip(t *testing.T) {
 	}
 	dockerfile := string(dockerfileBytes)
 
-	if !strings.Contains(dockerfile, "pip3 install --no-cache-dir pwntools") {
-		t.Fatal("sandbox Dockerfile should install pwntools via pip (no apt package exists)")
+	// pwntools and frida-tools have no Kali apt package; they must be pip.
+	pipLine := "pip3 install --no-cache-dir pwntools frida-tools --break-system-packages"
+	if !strings.Contains(dockerfile, pipLine) {
+		t.Fatalf("sandbox Dockerfile should install pip-only tools together: %s", pipLine)
 	}
-	// The apt block spans from "apt-get install" to the next RUN; pwntools
-	// must not appear inside any apt-get package list.
+	// The apt block spans from "apt-get install" to the next RUN; pip-only
+	// tools must not appear inside any apt-get package list.
 	aptStart := strings.Index(dockerfile, "apt-get install")
 	aptEnd := strings.Index(dockerfile[aptStart:], "\nRUN")
 	if aptEnd == -1 {
 		aptEnd = len(dockerfile) - aptStart
 	}
-	if aptBlock := dockerfile[aptStart : aptStart+aptEnd]; strings.Contains(aptBlock, " pwntools") {
-		t.Fatal("pwntools has no apt package; it must not be installed via apt-get")
+	aptBlock := dockerfile[aptStart : aptStart+aptEnd]
+	for _, tool := range []string{"pwntools", "frida-tools"} {
+		if strings.Contains(aptBlock, " "+tool) {
+			t.Fatalf("%s has no apt package; it must not be installed via apt-get", tool)
+		}
 	}
 }
 
