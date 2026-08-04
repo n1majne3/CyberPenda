@@ -22,6 +22,7 @@ import (
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/session"
 	"pentest/internal/task"
+	"pentest/internal/timeline"
 )
 
 // sessionRuntimeInput is deliberately smaller than Task launch input. A
@@ -849,14 +850,30 @@ func (server *Server) handleSessionConversation(response http.ResponseWriter, re
 }
 
 func (server *Server) handleSessionTimeline(response http.ResponseWriter, request *http.Request) {
-	timeline, err := server.sessions.Timeline(request.PathValue("id"))
+	timelineEvents, err := server.sessions.Timeline(request.PathValue("id"))
 	if err != nil {
 		writeSessionError(response, err)
 		return
 	}
+	events := make([]timeline.Event, 0, len(timelineEvents))
+	for _, event := range timelineEvents {
+		events = append(events, timeline.Event{
+			Kind:      string(event.Kind),
+			Payload:   event.Payload,
+			CreatedAt: event.CreatedAt,
+		})
+	}
+	items := timeline.Build(events)
+	if items == nil {
+		items = []timeline.Item{}
+	}
 	writeJSON(response, http.StatusOK, struct {
-		Events []session.Event `json:"events"`
-	}{Events: timeline})
+		SessionID string          `json:"session_id"`
+		Items     []timeline.Item `json:"items"`
+	}{
+		SessionID: request.PathValue("id"),
+		Items:     items,
+	})
 }
 
 func (server *Server) handleSessionMessage(response http.ResponseWriter, request *http.Request) {

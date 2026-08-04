@@ -5,19 +5,23 @@ import (
 	"testing"
 	"time"
 
-	"pentest/internal/task"
 	"pentest/internal/timeline"
 )
 
+// event builds a timeline.Event in the compact form used by both owner kinds.
+func event(kind, text string, at time.Time) timeline.Event {
+	return timeline.Event{Kind: kind, Payload: map[string]any{"text": text}, CreatedAt: at}
+}
+
 func TestBuildParsesThinkingToolUseTextAndResult(t *testing.T) {
 	createdAt := time.Date(2026, 6, 27, 10, 0, 0, 0, time.UTC)
-	events := []task.Event{
-		{ID: "ev-1", Seq: 1, Kind: task.EventKindLifecycle, Payload: task.EventPayload{"phase": "started", "adapter": "claude_code"}, CreatedAt: createdAt},
-		{ID: "ev-2", Seq: 2, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"system","subtype":"init","session_id":"abc"}`}, CreatedAt: createdAt.Add(time.Second)},
-		{ID: "ev-3", Seq: 3, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"plan recon"}]}}`}, CreatedAt: createdAt.Add(2 * time.Second)},
-		{ID: "ev-4", Seq: 4, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"curl example.com"}}]}}`}, CreatedAt: createdAt.Add(3 * time.Second)},
-		{ID: "ev-5", Seq: 5, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"200 OK"}]}}`}, CreatedAt: createdAt.Add(4 * time.Second)},
-		{ID: "ev-6", Seq: 6, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"assistant","message":{"content":[{"type":"text","text":"Done inspecting."}]}}`}, CreatedAt: createdAt.Add(5 * time.Second)},
+	events := []timeline.Event{
+		{Kind: "lifecycle", Payload: map[string]any{"phase": "started", "adapter": "claude_code"}, CreatedAt: createdAt},
+		event("runtime_output", `{"type":"system","subtype":"init","session_id":"abc"}`, createdAt.Add(time.Second)),
+		event("runtime_output", `{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"plan recon"}]}}`, createdAt.Add(2*time.Second)),
+		event("runtime_output", `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"curl example.com"}}]}}`, createdAt.Add(3*time.Second)),
+		event("runtime_output", `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"200 OK"}]}}`, createdAt.Add(4*time.Second)),
+		event("runtime_output", `{"type":"assistant","message":{"content":[{"type":"text","text":"Done inspecting."}]}}`, createdAt.Add(5*time.Second)),
 	}
 
 	got := timeline.Build(events)
@@ -34,9 +38,9 @@ func TestBuildParsesThinkingToolUseTextAndResult(t *testing.T) {
 
 func TestBuildCoalescesAdjacentThinkingFragments(t *testing.T) {
 	createdAt := time.Now().UTC()
-	events := []task.Event{
-		{ID: "ev-1", Seq: 1, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"part one"}]}}`}, CreatedAt: createdAt},
-		{ID: "ev-2", Seq: 2, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"assistant","message":{"content":[{"type":"thinking","thinking":" part two"}]}}`}, CreatedAt: createdAt.Add(time.Second)},
+	events := []timeline.Event{
+		event("runtime_output", `{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"part one"}]}}`, createdAt),
+		event("runtime_output", `{"type":"assistant","message":{"content":[{"type":"thinking","thinking":" part two"}]}}`, createdAt.Add(time.Second)),
 	}
 
 	got := timeline.Build(events)
@@ -50,10 +54,10 @@ func TestBuildCoalescesAdjacentThinkingFragments(t *testing.T) {
 }
 
 func TestBuildDropsTaskProgressAndThinkingTokens(t *testing.T) {
-	events := []task.Event{
-		{ID: "ev-1", Seq: 1, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"system","subtype":"thinking_tokens","estimated_tokens":13}`}},
-		{ID: "ev-2", Seq: 2, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"system","subtype":"task_progress","description":"Exploit"}`}},
-		{ID: "ev-3", Seq: 3, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"assistant","message":{"content":[{"type":"text","text":"Visible."}]}}`}},
+	events := []timeline.Event{
+		event("runtime_output", `{"type":"system","subtype":"thinking_tokens","estimated_tokens":13}`, time.Now()),
+		event("runtime_output", `{"type":"system","subtype":"task_progress","description":"Exploit"}`, time.Now()),
+		event("runtime_output", `{"type":"assistant","message":{"content":[{"type":"text","text":"Visible."}]}}`, time.Now()),
 	}
 
 	got := timeline.Build(events)
@@ -64,9 +68,9 @@ func TestBuildDropsTaskProgressAndThinkingTokens(t *testing.T) {
 }
 
 func TestBuildParsesOpenAIToolCallFormat(t *testing.T) {
-	events := []task.Event{
-		{ID: "ev-1", Seq: 1, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"tool_call","id":"call-1","name":"curl","arguments":{"url":"http://127.0.0.1:3000"}}`}},
-		{ID: "ev-2", Seq: 2, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"tool_result","tool_call_id":"call-1","output":"OK"}`}},
+	events := []timeline.Event{
+		event("runtime_output", `{"type":"tool_call","id":"call-1","name":"curl","arguments":{"url":"http://127.0.0.1:3000"}}`, time.Now()),
+		event("runtime_output", `{"type":"tool_result","tool_call_id":"call-1","output":"OK"}`, time.Now()),
 	}
 
 	got := timeline.Build(events)
@@ -76,11 +80,11 @@ func TestBuildParsesOpenAIToolCallFormat(t *testing.T) {
 }
 
 func TestBuildIncludesSteeringAndNativeResumeLifecycle(t *testing.T) {
-	events := []task.Event{
-		{ID: "ev-1", Seq: 1, Kind: task.EventKindSteering, Payload: task.EventPayload{"phase": "steering_requested", "directive": "focus admin"}},
-		{ID: "ev-2", Seq: 2, Kind: task.EventKindLifecycle, Payload: task.EventPayload{"phase": "interrupting"}},
-		{ID: "ev-3", Seq: 3, Kind: task.EventKindLifecycle, Payload: task.EventPayload{"phase": "resuming_native"}},
-		{ID: "ev-4", Seq: 4, Kind: task.EventKindSteering, Payload: task.EventPayload{"phase": "steering_applied", "directive": "focus admin"}},
+	events := []timeline.Event{
+		{Kind: "steering", Payload: map[string]any{"phase": "steering_requested", "directive": "focus admin"}},
+		{Kind: "lifecycle", Payload: map[string]any{"phase": "interrupting"}},
+		{Kind: "lifecycle", Payload: map[string]any{"phase": "resuming_native"}},
+		{Kind: "steering", Payload: map[string]any{"phase": "steering_applied", "directive": "focus admin"}},
 	}
 
 	got := timeline.Build(events)
@@ -92,10 +96,10 @@ func TestBuildIncludesSteeringAndNativeResumeLifecycle(t *testing.T) {
 }
 
 func TestBuildNamesNativeSteerControlOutcomes(t *testing.T) {
-	events := []task.Event{
-		{ID: "ev-1", Seq: 1, Kind: task.EventKindSteering, Payload: task.EventPayload{"request_id": "req-1", "outcome": "requested", "mode": "interrupt_then_replace"}},
-		{ID: "ev-2", Seq: 2, Kind: task.EventKindSteering, Payload: task.EventPayload{"request_id": "req-1", "outcome": "settled", "mode": "interrupt_then_replace"}},
-		{ID: "ev-3", Seq: 3, Kind: task.EventKindSteering, Payload: task.EventPayload{"request_id": "req-1", "outcome": "failed", "error_code": "timeout"}},
+	events := []timeline.Event{
+		{Kind: "steering", Payload: map[string]any{"request_id": "req-1", "outcome": "requested", "mode": "interrupt_then_replace"}},
+		{Kind: "steering", Payload: map[string]any{"request_id": "req-1", "outcome": "settled", "mode": "interrupt_then_replace"}},
+		{Kind: "steering", Payload: map[string]any{"request_id": "req-1", "outcome": "failed", "error_code": "timeout"}},
 	}
 
 	got := timeline.Build(events)
@@ -105,10 +109,10 @@ func TestBuildNamesNativeSteerControlOutcomes(t *testing.T) {
 }
 
 func TestBuildKeepsControlEventsBetweenRuntimeOutput(t *testing.T) {
-	events := []task.Event{
-		{ID: "ev-1", Seq: 1, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"assistant","message":{"content":[{"type":"text","text":"before"}]}}`}},
-		{ID: "ev-2", Seq: 2, Kind: task.EventKindSteering, Payload: task.EventPayload{"phase": "steering_requested", "directive": "focus admin"}},
-		{ID: "ev-3", Seq: 3, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"assistant","message":{"content":[{"type":"text","text":"after"}]}}`}},
+	events := []timeline.Event{
+		event("runtime_output", `{"type":"assistant","message":{"content":[{"type":"text","text":"before"}]}}`, time.Now()),
+		{Kind: "steering", Payload: map[string]any{"phase": "steering_requested", "directive": "focus admin"}},
+		event("runtime_output", `{"type":"assistant","message":{"content":[{"type":"text","text":"after"}]}}`, time.Now()),
 	}
 
 	got := timeline.Build(events)
@@ -119,18 +123,18 @@ func TestBuildKeepsControlEventsBetweenRuntimeOutput(t *testing.T) {
 }
 
 func TestBuildProjectsAssistedConclusionPhasesWithoutStructuredResult(t *testing.T) {
-	events := []task.Event{
-		{Seq: 1, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{
+	events := []timeline.Event{
+		{Kind: "blackboard_conclusion", Payload: map[string]any{
 			"phase": "pending_detected", "source_turn_id": "work-1",
 			"source_work_watermark": 47, "semantic_persistence_watermark": 23,
 		}},
-		{Seq: 2, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "dispatch_requested", "source_turn_id": "work-1", "request_id": "conclude-secret"}},
-		{Seq: 3, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "awaiting_result", "control_turn_id": "control-1"}},
-		{Seq: 4, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "result_validated", "result_hash": "secret-hash"}},
-		{Seq: 5, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "applied", "applied_revision": 4}},
-		{Seq: 6, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "repair_requested", "request_id": "repair-secret", "error_code": "semantic_conclusion_invalid_result"}},
-		{Seq: 7, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "action_required", "request_id": "failed-secret", "error_code": "conclude_tool_use_forbidden"}},
-		{Seq: 8, Kind: task.EventKindBlackboardConclusion, Payload: task.EventPayload{"phase": "retry_requested", "request_id": "retry-secret"}},
+		{Kind: "blackboard_conclusion", Payload: map[string]any{"phase": "dispatch_requested", "source_turn_id": "work-1", "request_id": "conclude-secret"}},
+		{Kind: "blackboard_conclusion", Payload: map[string]any{"phase": "awaiting_result", "control_turn_id": "control-1"}},
+		{Kind: "blackboard_conclusion", Payload: map[string]any{"phase": "result_validated", "result_hash": "secret-hash"}},
+		{Kind: "blackboard_conclusion", Payload: map[string]any{"phase": "applied", "applied_revision": 4}},
+		{Kind: "blackboard_conclusion", Payload: map[string]any{"phase": "repair_requested", "request_id": "repair-secret", "error_code": "semantic_conclusion_invalid_result"}},
+		{Kind: "blackboard_conclusion", Payload: map[string]any{"phase": "action_required", "request_id": "failed-secret", "error_code": "conclude_tool_use_forbidden"}},
+		{Kind: "blackboard_conclusion", Payload: map[string]any{"phase": "retry_requested", "request_id": "retry-secret"}},
 	}
 
 	got := timeline.Build(events)
@@ -148,6 +152,18 @@ func TestBuildProjectsAssistedConclusionPhasesWithoutStructuredResult(t *testing
 			t.Fatalf("Harness item leaked correlation/result detail: %#v", item)
 		}
 	}
+}
+
+func TestBuildMapsSessionAttachmentsToLifecycleItems(t *testing.T) {
+	events := []timeline.Event{
+		{Kind: "attachment", Payload: map[string]any{"filename": "scan.txt", "size": 512}},
+		event("runtime_output", `{"type":"assistant","message":{"content":[{"type":"text","text":"Analyzed."}]}}`, time.Now()),
+	}
+
+	got := timeline.Build(events)
+
+	requireItem(t, got, 0, "lifecycle", "", "Attached scan.txt (512 bytes)")
+	requireItem(t, got, 1, "text", "", "Analyzed.")
 }
 
 func requireItem(t *testing.T, items []timeline.Item, index int, typ, tool, content string) {

@@ -64,6 +64,19 @@ func assertSemanticParity(t *testing.T, gotTranscript, gotTimeline []semanticSte
 	}
 }
 
+
+func toTimelineEvents(events []task.Event) []timeline.Event {
+	converted := make([]timeline.Event, 0, len(events))
+	for _, event := range events {
+		converted = append(converted, timeline.Event{
+			Kind:      string(event.Kind),
+			Payload:   event.Payload,
+			CreatedAt: event.CreatedAt,
+		})
+	}
+	return converted
+}
+
 func TestTranscriptTimelineParityClaudeAssistantFlow(t *testing.T) {
 	createdAt := time.Date(2026, 6, 27, 10, 0, 0, 0, time.UTC)
 	subject := task.Task{ID: "task-1", Goal: "Recon", CreatedAt: createdAt}
@@ -77,7 +90,7 @@ func TestTranscriptTimelineParityClaudeAssistantFlow(t *testing.T) {
 	}
 
 	transcriptEntries := transcript.Build(subject, events)
-	timelineItems := timeline.Build(events)
+	timelineItems := timeline.Build(toTimelineEvents(events))
 
 	assertSemanticParity(t, transcriptSteps(transcriptEntries), timelineSteps(timelineItems))
 }
@@ -92,7 +105,7 @@ func TestTranscriptTimelineParityOpenAIToolFlow(t *testing.T) {
 	}
 
 	transcriptEntries := transcript.Build(subject, events)
-	timelineItems := timeline.Build(events)
+	timelineItems := timeline.Build(toTimelineEvents(events))
 
 	assertSemanticParity(t, transcriptSteps(transcriptEntries), timelineSteps(timelineItems))
 }
@@ -107,7 +120,7 @@ func TestTranscriptTimelineParityDropsSharedNoise(t *testing.T) {
 
 	subject := task.Task{ID: "task-1", Goal: "Do work", CreatedAt: time.Now().UTC()}
 	transcriptEntries := transcript.Build(subject, events)
-	timelineItems := timeline.Build(events)
+	timelineItems := timeline.Build(toTimelineEvents(events))
 
 	assertSemanticParity(t, transcriptSteps(transcriptEntries), timelineSteps(timelineItems))
 	if len(timelineSteps(timelineItems)) != 1 || timelineSteps(timelineItems)[0].text != "Visible." {

@@ -1,5 +1,8 @@
-// Package timeline projects retained task events into a multica-style agent
-// transcript timeline: thinking, tool calls, tool results, agent text, and errors.
+// Package timeline projects retained task or session events into a
+// multica-style agent transcript timeline: thinking, tool calls, tool results,
+// agent text, and errors. Both owner kinds feed the same normalization chain
+// (runtimeoutput parse + streaming coalesce) so task and session timelines
+// render identically.
 package timeline
 
 import (
@@ -8,7 +11,6 @@ import (
 	"time"
 
 	"pentest/internal/runtimeoutput"
-	"pentest/internal/task"
 )
 
 // Item is one chronologically ordered timeline entry.
@@ -22,13 +24,21 @@ type Item struct {
 	CreatedAt time.Time      `json:"created_at"`
 }
 
+// Event is the minimal owner-event surface Build consumes. Task and Session
+// event stores both project into this shape so one builder serves both.
+type Event struct {
+	Kind      string
+	Payload   map[string]any
+	CreatedAt time.Time
+}
+
 var timelineParseOpts = runtimeoutput.ParseOptions{
 	IncludeThinking: true,
 	IncludeErrors:   true,
 }
 
-// Build projects task events into coalesced timeline items.
-func Build(events []task.Event) []Item {
+// Build projects owner events into coalesced timeline items.
+func Build(events []Event) []Item {
 	items := make([]Item, 0, len(events))
 	nextSeq := 1
 	turns := make([]runtimeoutput.Turn, 0, len(events))
@@ -41,7 +51,8 @@ func Build(events []task.Event) []Item {
 		turns = turns[:0]
 	}
 	for _, event := range events {
-		if event.Kind == task.EventKindBlackboardConclusion {
+		switch event.Kind {
+		case "blackboard_conclusion":
 			flushTurns()
 			if item, ok := blackboardConclusionItem(event); ok {
 				item.Seq = nextSeq
@@ -49,8 +60,7 @@ func Build(events []task.Event) []Item {
 				items = append(items, item)
 			}
 			continue
-		}
-		if event.Kind == task.EventKindLifecycle {
+		case "lifecycle":
 			flushTurns()
 			if item, ok := lifecycleItem(event); ok {
 				item.Seq = nextSeq
@@ -58,8 +68,7 @@ func Build(events []task.Event) []Item {
 				items = append(items, item)
 			}
 			continue
-		}
-		if event.Kind == task.EventKindSteering {
+		case "steering":
 			flushTurns()
 			if item, ok := steeringItem(event); ok {
 				item.Seq = nextSeq
@@ -67,25 +76,31 @@ func Build(events []task.Event) []Item {
 				items = append(items, item)
 			}
 			continue
-		}
-		if event.Kind != task.EventKindRuntimeOutput {
+		case "attachment":
+			flushTurns()
+			if item, ok := attachmentItem(event); ok {
+				item.Seq = nextSeq
+				nextSeq++
+				items = append(items, item)
+			}
 			continue
+		case "runtime_output":
+			text := stringValue(event.Payload, "text")
+			if strings.TrimSpace(text) == "" {
+				continue
+			}
+			if runtimeoutput.ShouldIgnoreForTimeline(text) {
+				continue
+			}
+			lineTurns, _ := runtimeoutput.ParseLine(text, event.CreatedAt, timelineParseOpts)
+			turns = append(turns, lineTurns...)
 		}
-		text := stringValue(event.Payload, "text")
-		if strings.TrimSpace(text) == "" {
-			continue
-		}
-		if runtimeoutput.ShouldIgnoreForTimeline(text) {
-			continue
-		}
-		lineTurns, _ := runtimeoutput.ParseLine(text, event.CreatedAt, timelineParseOpts)
-		turns = append(turns, lineTurns...)
 	}
 	flushTurns()
 	return items
 }
 
-func blackboardConclusionItem(event task.Event) (Item, bool) {
+func blackboardConclusionItem(event Event) (Item, bool) {
 	var content string
 	switch stringValue(event.Payload, "phase") {
 	case "pending_detected":
@@ -134,7 +149,7 @@ func turnsToItems(turns []runtimeoutput.Turn) []Item {
 	return items
 }
 
-func lifecycleItem(event task.Event) (Item, bool) {
+func lifecycleItem(event Event) (Item, bool) {
 	phase := stringValue(event.Payload, "phase")
 	if strings.TrimSpace(phase) == "" {
 		return Item{}, false
@@ -146,7 +161,26 @@ func lifecycleItem(event task.Event) (Item, bool) {
 	}, true
 }
 
-func steeringItem(event task.Event) (Item, bool) {
+func attachmentItem(event Event) (Item, bool) {
+	filename := strings.TrimSpace(stringValue(event.Payload, "filename"))
+	if filename == "" {
+		return Item{}, false
+	}
+	content := "Attached " + filename
+	if size, ok := event.Payload["size"]; ok {
+		switch typed := size.(type) {
+		case float64:
+			content += fmt.Sprintf(" (%.0f bytes)", typed)
+		case int:
+			content += fmt.Sprintf(" (%d bytes)", typed)
+		case int64:
+			content += fmt.Sprintf(" (%d bytes)", typed)
+		}
+	}
+	return Item{Type: "lifecycle", Content: content, CreatedAt: event.CreatedAt}, true
+}
+
+func steeringItem(event Event) (Item, bool) {
 	if requestID := stringValue(event.Payload, "request_id"); strings.TrimSpace(requestID) != "" {
 		outcome := stringValue(event.Payload, "outcome")
 		if outcome == "" {

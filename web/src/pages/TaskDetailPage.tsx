@@ -888,20 +888,20 @@ async function loadSessionWorkspace(base: string, signal: AbortSignal): Promise<
     apiGet<Session>(base, { signal }),
     apiGet<{ events: SessionEvent[] }>(`${base}/events`, { signal }),
     apiGet<{ events: SessionEvent[] }>(`${base}/conversation`, { signal }),
-    apiGet<{ events: SessionEvent[] }>(`${base}/timeline`, { signal }),
+    apiGet<TaskTimeline>(`${base}/timeline`, { signal }),
   ]);
   const allEvents = all.events ?? [];
   const conversationEvents = conversation.events?.length
     ? conversation.events
     : allEvents.filter((event) => event.kind === "conversation");
-  const timelineEvents = timeline.events?.length
-    ? timeline.events
-    : allEvents.filter((event) => event.kind !== "conversation");
-  const transcriptEvents = [...conversationEvents, ...timelineEvents.filter((event) => event.kind === "runtime_output" || event.kind === "attachment")]
+  const timelineEvents = timeline.items ?? [];
+  const transcriptEvents = [...conversationEvents, ...allEvents.filter((event) => event.kind === "runtime_output" || event.kind === "attachment")]
     .sort((left, right) => left.seq - right.seq);
   return {
     owner: sessionAsRuntimeOwner(session),
-    timeline: timelineEvents.map(sessionEventAsTimelineItem),
+    // Session timelines are built by the same daemon pipeline as task
+    // timelines, so the rendered shapes are identical.
+    timeline: timelineEvents,
     transcript: transcriptEvents.flatMap((event) => sessionEventAsTranscriptEntry(event, session)),
   };
 }
@@ -1066,38 +1066,6 @@ function sessionContinuationNumber(value: unknown, session: Session): number {
     if (session.latest_continuation?.id === value) return session.latest_continuation.number;
   }
   return session.active_continuation?.number ?? session.latest_continuation?.number ?? 1;
-}
-
-function sessionEventAsTimelineItem(event: SessionEvent): TaskTimelineItem {
-  const payload = event.payload ?? {};
-  const failed = payload.outcome === "failed" || payload.status === "failed";
-  const type: TaskTimelineItem["type"] = failed
-    ? "error"
-    : event.kind === "steering"
-      ? "steering"
-      : event.kind === "lifecycle" || event.kind === "attachment"
-        ? "lifecycle"
-        : event.kind === "runtime_output"
-          ? "text"
-          : "harness";
-  return {
-    seq: event.seq,
-    type,
-    content: sessionEventDescription(event),
-    created_at: event.created_at,
-  };
-}
-
-function sessionEventDescription(event: SessionEvent): string {
-  const payload = event.payload ?? {};
-  if (event.kind === "attachment") {
-    const filename = typeof payload.filename === "string" ? payload.filename : "attachment";
-    const size = typeof payload.size === "number" ? ` (${payload.size} bytes)` : "";
-    return `Attached ${filename}${size}`;
-  }
-  if (typeof payload.text === "string") return payload.text;
-  if (typeof payload.phase === "string") return payload.phase;
-  return JSON.stringify(payload);
 }
 
 async function postSessionRuntimeMessage(

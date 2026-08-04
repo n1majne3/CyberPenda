@@ -878,17 +878,33 @@ func TestSessionLaunchUsesProjectFreeOwnerAndPersistentProviderControls(t *testi
 		t.Fatalf("timeline status = %d, body=%s", timeline.Code, timeline.Body.String())
 	}
 	var timelinePayload struct {
-		Events []struct {
-			Kind string `json:"kind"`
-		} `json:"events"`
+		SessionID string `json:"session_id"`
+		Items     []struct {
+			Type    string `json:"type"`
+			Content string `json:"content"`
+		} `json:"items"`
 	}
 	if err := json.NewDecoder(timeline.Body).Decode(&timelinePayload); err != nil {
 		t.Fatalf("decode timeline: %v", err)
 	}
-	for _, event := range timelinePayload.Events {
-		if event.Kind == "conversation" {
-			t.Fatalf("timeline duplicated conversation event: %#v", timelinePayload.Events)
+	if timelinePayload.SessionID != created.ID {
+		t.Fatalf("timeline session_id = %q, want %q", timelinePayload.SessionID, created.ID)
+	}
+	for _, item := range timelinePayload.Items {
+		if item.Type == "" {
+			t.Fatalf("timeline item missing type: %#v", timelinePayload.Items)
 		}
+	}
+	// The steer attachment must surface as a lifecycle timeline item rather
+	// than vanishing; conversation events are never part of the timeline.
+	var sawAttachmentInTimeline bool
+	for _, item := range timelinePayload.Items {
+		if item.Type == "lifecycle" && strings.HasPrefix(item.Content, "Attached interrupt-notes.txt") {
+			sawAttachmentInTimeline = true
+		}
+	}
+	if !sawAttachmentInTimeline {
+		t.Fatalf("timeline omitted steer attachment item: %#v", timelinePayload.Items)
 	}
 
 	stop := httptest.NewRecorder()

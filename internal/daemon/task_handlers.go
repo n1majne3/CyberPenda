@@ -1485,7 +1485,7 @@ func (server *Server) handleTaskTimeline(response http.ResponseWriter, request *
 		writeError(response, http.StatusInternalServerError, "list task events")
 		return
 	}
-	items := timeline.Build(events)
+	items := timeline.Build(eventsToTimelineEvents(events))
 	if items == nil {
 		items = []timeline.Item{}
 	}
@@ -3876,4 +3876,18 @@ func writeTaskLaunchError(response http.ResponseWriter, err error) {
 	// Skill/model-provider adapter failures can surface during v2 Continuation
 	// Precommit after plan capture; map them like resume-prepare errors.
 	writeTaskAdapterError(response, err)
+}
+
+// eventsToTimelineEvents projects retained owner events into the shared
+// timeline input shape so task and session timelines run the same builder.
+func eventsToTimelineEvents(events []task.Event) []timeline.Event {
+	converted := make([]timeline.Event, 0, len(events))
+	for _, event := range events {
+		converted = append(converted, timeline.Event{
+			Kind:      string(event.Kind),
+			Payload:   event.Payload,
+			CreatedAt: event.CreatedAt,
+		})
+	}
+	return converted
 }

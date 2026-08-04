@@ -123,6 +123,17 @@ describe("SessionDetailPage", () => {
           },
         ],
       },
+      "/api/sessions/session-1/timeline": {
+        session_id: "session-1",
+        items: [
+          {
+            seq: 1,
+            type: "lifecycle",
+            content: "Attached notes.txt (12 bytes)",
+            created_at: "2026-08-01T01:01:00Z",
+          },
+        ],
+      },
       "/api/sessions/session-1": {
         id: "session-1",
         title: "Review the service",
@@ -164,9 +175,20 @@ describe("SessionDetailPage", () => {
         ],
       },
       "/api/sessions/session-2/timeline": {
+        session_id: "session-2",
+        items: [
+          {
+            seq: 1,
+            type: "text",
+            content: "Runtime ready",
+            created_at: "2026-08-01T01:01:00Z",
+          },
+        ],
+      },
+      "/api/sessions/session-2/events": {
         events: [
           {
-            id: "timeline-1",
+            id: "runtime-1",
             session_id: "session-2",
             seq: 2,
             kind: "runtime_output",
@@ -175,7 +197,6 @@ describe("SessionDetailPage", () => {
           },
         ],
       },
-      "/api/sessions/session-2/events": { events: [] },
       "/api/sessions/session-2": {
         id: "session-2",
         title: "Start the review",
