@@ -487,7 +487,7 @@ function TranscriptEventRow({
 
       {hasDetail && expanded && (
         <div className="px-4 pb-3">
-          <div className="ml-[72px] rounded border bg-muted/40">
+          <div className="ml-[72px] border-l-2 border-border/60">
             <EventDetailContent item={item} />
           </div>
         </div>

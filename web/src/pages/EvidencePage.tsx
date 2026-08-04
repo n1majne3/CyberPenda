@@ -9,7 +9,8 @@ import {
   type SnapshotListEntry,
 } from "@/lib/blackboardv2";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
-import { Badge, Card, CardHeader, CardTitle } from "@/components/ui";
+import { Badge } from "@/components/ui";
+import { ErrorState, RichEmptyState } from "@/components/shared";
 
 /**
  * Focused Evidence view over the current Blackboard v2 Snapshot.
@@ -39,42 +40,41 @@ export function EvidencePage() {
 
   return (
     <ProjectPageShell title="Evidence" bodyClassName="space-y-4">
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      {error && <ErrorState error={error} title="Couldn't load evidence" />}
 
-      <ul className="divide-y divide-border border-y border-border" role="list">
-        {rows.map((row) => (
-          <li key={row.key}>
-            <Link
-              to={recordHref(projectId, row.key)}
-              className="flex w-full flex-col gap-2 border-b border-border bg-transparent p-4 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:flex-row sm:items-center"
-            >
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/5 text-primary">
-                <FolderLock className="h-4 w-4" aria-hidden="true" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium text-foreground">{row.primary}</p>
-                <p className="truncate font-mono text-xs text-muted-foreground">
-                  {row.secondary || row.key}
-                </p>
-              </div>
-              <div className="flex max-w-full flex-wrap gap-1 sm:justify-end">
-                {row.status && <Badge variant="outline">{row.status}</Badge>}
-                <Badge variant="outline">evidence</Badge>
-              </div>
-            </Link>
-          </li>
-        ))}
-      </ul>
+      {rows.length > 0 && !error && (
+        <ul className="divide-y divide-border border-y border-border" role="list">
+          {rows.map((row) => (
+            <li key={row.key}>
+              <Link
+                to={recordHref(projectId, row.key)}
+                className="group flex w-full flex-col gap-2 border-b border-border bg-transparent p-4 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:flex-row sm:items-center"
+              >
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/5 text-primary transition-colors group-hover:bg-signal/10 group-hover:text-signal">
+                  <FolderLock className="h-4 w-4" aria-hidden="true" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium text-foreground">{row.primary}</p>
+                  <p className="truncate font-mono text-xs text-muted-foreground">
+                    {row.secondary || row.key}
+                  </p>
+                </div>
+                <div className="flex max-w-full flex-wrap gap-1 sm:justify-end">
+                  {row.status && <Badge variant="outline">{row.status}</Badge>}
+                  <Badge variant="outline">evidence</Badge>
+                </div>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
 
       {rows.length === 0 && !error && (
-        <Card as="section" variant="flat" className="border-dashed bg-muted/30 text-sm text-muted-foreground">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-sm">
-              <FolderLock className="h-4 w-4" /> No evidence attached.
-            </CardTitle>
-          </CardHeader>
-          Runtime workdir files require explicit attach or retain.
-        </Card>
+        <RichEmptyState
+          icon={<FolderLock className="h-6 w-6" aria-hidden="true" />}
+          title="No evidence attached"
+          description="Runtime workdir files require explicit attach or retain."
+        />
       )}
     </ProjectPageShell>
   );

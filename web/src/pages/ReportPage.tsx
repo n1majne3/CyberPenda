@@ -12,6 +12,19 @@ import {
 } from "@/lib/blackboardv2";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { Badge, Button, Card, CardHeader, CardTitle } from "@/components/ui";
+import { ErrorState, LoadingState, SectionHeading } from "@/components/shared";
+
+const SEVERITY_VARIANT: Record<string, "destructive" | "warning" | "info" | "outline"> = {
+  critical: "destructive",
+  high: "destructive",
+  medium: "warning",
+  low: "info",
+  info: "info",
+};
+
+function severityVariant(severity: string): "destructive" | "warning" | "info" | "outline" {
+  return SEVERITY_VARIANT[severity?.toLowerCase()] ?? "outline";
+}
 
 /**
  * Deterministic Pentest report surface over GET /api/v2/.../reports/pentest.
@@ -83,15 +96,8 @@ export function ReportPage() {
         </div>
       </Card>
 
-      {loading && (
-        <Card
-          role="status"
-          className="min-h-20 items-center justify-center text-sm text-muted-foreground"
-        >
-          Generating report
-        </Card>
-      )}
-      {error && <p className="p-4 text-sm text-destructive">{error}</p>}
+      {loading && <LoadingState label="Generating report" minHeight="min-h-20" />}
+      {error && <ErrorState error={error} title="Couldn't generate report" />}
 
       {report && (
         <Card as="section" className="space-y-4">
@@ -138,12 +144,8 @@ export function ReportPage() {
       ) : (
         !loading &&
         !error && (
-          <Card
-            as="section"
-            variant="flat"
-            className="border-dashed bg-muted/30 text-sm text-muted-foreground"
-          >
-            No report generated yet.
+          <Card as="section" variant="flat" className="border-dashed bg-muted/30 text-sm text-muted-foreground">
+            <p className="px-3 py-2">No report generated yet.</p>
           </Card>
         )
       )}
@@ -164,13 +166,9 @@ function FindingSection({
 }) {
   return (
     <section className="space-y-2">
-      <h3
-        className={`text-sm font-medium tracking-tight ${muted ? "text-muted-foreground" : ""}`}
-      >
-        {title} ({items.length})
-      </h3>
+      <SectionHeading count={items.length} muted={muted}>{title}</SectionHeading>
       {items.length === 0 ? (
-        <p className="text-sm text-muted-foreground">_No records._</p>
+        <p className="text-sm text-muted-foreground">No records.</p>
       ) : (
         <ul className="divide-y divide-border border-y border-border" role="list">
           {items.map((finding) => (
@@ -183,7 +181,7 @@ function FindingSection({
                   {finding.title}
                 </Link>
                 <div className="flex flex-wrap gap-1">
-                  {finding.severity && <Badge variant="outline">{finding.severity}</Badge>}
+                  {finding.severity && <Badge variant={severityVariant(finding.severity)}>{finding.severity}</Badge>}
                   <Badge variant="outline">{finding.status}</Badge>
                 </div>
               </div>
@@ -257,13 +255,9 @@ function FactSection({
 }) {
   return (
     <section className="space-y-2">
-      <h3
-        className={`text-sm font-medium tracking-tight ${muted ? "text-muted-foreground" : ""}`}
-      >
-        {title} ({items.length})
-      </h3>
+      <SectionHeading count={items.length} muted={muted}>{title}</SectionHeading>
       {items.length === 0 ? (
-        <p className="text-sm text-muted-foreground">_No records._</p>
+        <p className="text-sm text-muted-foreground">No records.</p>
       ) : (
         <ul className="divide-y divide-border border-y border-border" role="list">
           {items.map((fact) => (

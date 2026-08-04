@@ -208,14 +208,16 @@ describe("WorkspaceSidebar", () => {
     );
 
     const nonProject = screen.getByRole("region", { name: /non-project/i });
-    const nonProjectDisclosure = within(nonProject).getByRole("button", { name: /collapse non-project/i });
-    expect(nonProjectDisclosure).toHaveAttribute("aria-expanded", "true");
-    await user.click(nonProjectDisclosure);
-    expect(nonProjectDisclosure).toHaveAttribute("aria-expanded", "false");
-    expect(screen.getByRole("link", { name: /non-project/i })).toHaveAttribute("href", "/sessions");
-    await user.click(screen.getByRole("button", { name: /expand non-project/i }));
+    // The Non-project header mirrors Projects: a nav link plus an inline
+    // "+ New session" action, with no section-level collapse control.
+    expect(within(nonProject).queryByRole("button", { name: /collapse non-project/i })).toBeNull();
+    expect(within(nonProject).getByRole("link", { name: /non-project/i })).toHaveAttribute("href", "/sessions");
+    expect(within(nonProject).getByRole("link", { name: /new session/i })).toHaveAttribute(
+      "href",
+      "/sessions#new-session",
+    );
 
-    const projectRegion = screen.getByRole("region", { name: /project one/i });
+    const projectRegion = await screen.findByRole("region", { name: /project one/i });
     const projectDisclosure = within(projectRegion).getByRole("button", { name: /expand project one/i });
     expect(projectDisclosure).toHaveAttribute("aria-controls", "project-tasks-project-1");
     await user.click(projectDisclosure);
@@ -231,6 +233,39 @@ describe("WorkspaceSidebar", () => {
     expect(within(menu).getByRole("menuitem", { name: /rename/i })).toBeInTheDocument();
     expect(within(menu).getByRole("menuitem", { name: /archive/i })).toBeInTheDocument();
     expect(within(menu).queryByRole("menuitem", { name: /delete|restore/i })).not.toBeInTheDocument();
+  });
+
+  it("keeps the Non-project and Projects section headers visually aligned", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/projects") return response({ projects: [] });
+        if (url === "/api/sessions?limit=5") return response({ sessions: [] });
+        return response({});
+      }),
+    );
+
+    render(
+      <ThemeProvider>
+        <MemoryRouter initialEntries={["/sessions"]}>
+          <WorkspaceSidebar />
+        </MemoryRouter>
+      </ThemeProvider>,
+    );
+
+    const nonProjectLink = await screen.findByRole("link", { name: /non-project/i });
+    const projectsLink = screen.getByRole("link", { name: /projects/i });
+    // Both section headers share the same idle color tokens so the sidebar
+    // reads as one system instead of two differently-toned regions.
+    for (const className of [
+      "text-muted-foreground",
+      "hover:text-sidebar-accent-foreground",
+      "hover:bg-sidebar-accent/70",
+    ]) {
+      expect(nonProjectLink).toHaveClass(className);
+      expect(projectsLink).toHaveClass(className);
+    }
   });
 
   it("promotes busy sessions and force-includes the current session within the five-item cap", async () => {

@@ -411,8 +411,10 @@ describe("knowledge and reporting views", () => {
     renderRoute("/projects/ctf-1/solution", <SolutionPage />, "/projects/:projectId/solution");
 
     expect(
-      await screen.findByRole("heading", { name: /Flag CTF — Solved: yes/i }),
+      await screen.findByRole("heading", { name: /Flag CTF/i }),
     ).toBeInTheDocument();
+    // Solved state is rendered as a Badge next to the project title.
+    expect(screen.getByText("Solved")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Parser accepts reversed hex/i })).toHaveAttribute(
       "href",
       "/projects/ctf-1/blackboard/records/fact%3Aparser-clue",

@@ -1,6 +1,6 @@
 import { forwardRef, type HTMLAttributes, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { ArrowLeft } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Card, type CardProps } from "@/components/ui";
 
@@ -147,5 +147,133 @@ export function SettingsAlert({ className, ...props }: HTMLAttributes<HTMLDivEle
       )}
       {...props}
     />
+  );
+}
+
+/**
+ * Rich centered empty state — the gold-standard layout used by ProjectListPage.
+ * Centered dashed Card with an icon avatar, title, optional description, and
+ * optional CTA. Prefer this over bare muted `<p>` placeholders.
+ */
+export function RichEmptyState({
+  icon,
+  title,
+  description,
+  action,
+  className,
+}: {
+  icon?: ReactNode;
+  title: ReactNode;
+  description?: ReactNode;
+  action?: ReactNode;
+  className?: string;
+}) {
+  return (
+    <Card
+      role="status"
+      className={cn(
+        "items-center justify-center border-dashed py-14 text-center",
+        className,
+      )}
+    >
+      {icon && (
+        <div className="flex h-10 w-10 items-center justify-center rounded-md border bg-muted text-muted-foreground">
+          {icon}
+        </div>
+      )}
+      {title && <p className="text-sm font-medium">{title}</p>}
+      {description && (
+        <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+      )}
+      {action && <div className="mt-1">{action}</div>}
+    </Card>
+  );
+}
+
+/**
+ * Rich error state with a destructive-tinted icon avatar, used for load
+ * failures. Mirrors the ProjectListPage error card.
+ */
+export function ErrorState({
+  error,
+  title = "Couldn't load",
+  className,
+}: {
+  error: string | null | undefined;
+  title?: ReactNode;
+  className?: string;
+}) {
+  if (!error) return null;
+  return (
+    <Card role="alert" className={cn("border-destructive/25", className)}>
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-destructive/20 bg-destructive/10 text-destructive">
+          <AlertTriangle className="h-4 w-4" />
+        </div>
+        <div className="min-w-0">
+          <p className="text-sm font-medium">{title}</p>
+          <p className="mt-1 text-sm text-muted-foreground">{error}</p>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+/**
+ * Centered loading state with a spinner. Mirrors the ProjectListPage loading
+ * card, but adds a visible Loader2 spinner so it reads as "working", not frozen.
+ */
+export function LoadingState({
+  label = "Loading",
+  minHeight = "min-h-32",
+  className,
+}: {
+  label?: string;
+  minHeight?: string;
+  className?: string;
+}) {
+  return (
+    <Card
+      role="status"
+      aria-label={label}
+      className={cn(
+        "items-center justify-center gap-2 text-sm text-muted-foreground",
+        minHeight,
+        className,
+      )}
+    >
+      <Loader2 className="size-4 animate-spin text-muted-foreground motion-reduce:animate-none" aria-hidden="true" />
+      {label}
+    </Card>
+  );
+}
+
+/**
+ * Shared section heading for list groupings. Consolidates the divergent h3
+ * styles that were hand-rolled across Blackboard, Findings, Report, and
+ * Solution pages.
+ */
+export function SectionHeading({
+  children,
+  count,
+  muted = false,
+  className,
+}: {
+  children: ReactNode;
+  count?: number;
+  muted?: boolean;
+  className?: string;
+}) {
+  return (
+    <h3
+      className={cn(
+        "text-sm font-semibold tracking-tight",
+        muted && "text-muted-foreground",
+        className,
+      )}
+    >
+      {children}
+      {count !== undefined && ` (${count})`}
+    </h3>
   );
 }

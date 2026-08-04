@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, NavLink, useParams } from "react-router-dom";
-import { Compass, History, Layers3, Library, Radar } from "lucide-react";
+import { Compass, History, Layers3, Library, Loader2, Radar } from "lucide-react";
 import { apiGet, type Project } from "@/lib/api";
 import {
   attentionLabel,
@@ -166,7 +166,8 @@ function BoardPanel({
   if (error) return <ErrorBanner message={error} />;
   if (loading || !snapshot || !health) {
     return (
-      <Card role="status" className="m-4 min-h-24 items-center justify-center text-sm text-muted-foreground">
+      <Card role="status" aria-label="Loading Blackboard" className="m-4 min-h-24 items-center justify-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
         Loading Blackboard
       </Card>
     );
@@ -446,7 +447,7 @@ function WorkSection({
 
   return (
     <section className="min-w-0 border-b border-border p-4" aria-label="Current Work">
-      <SectionHeading title="Current Work" detail={`${entries.length} item(s)`} />
+      <SectionHeading title="Current Work" detail={`${entries.length} ${entries.length === 1 ? "item" : "items"}`} />
       {entries.length === 0 ? (
         <p className="py-4 text-sm text-muted-foreground">No open Objectives or Attempts.</p>
       ) : (
@@ -493,7 +494,7 @@ function KnowledgeSection({
       className={cn("min-w-0 p-4", !compact && "border-b border-border")}
       aria-label="Project Knowledge"
     >
-      <SectionHeading title="Project Knowledge" detail={`${entries.length} item(s)`} />
+      <SectionHeading title="Project Knowledge" detail={`${entries.length} ${entries.length === 1 ? "item" : "items"}`} />
       {entries.length === 0 ? (
         <p className="py-4 text-sm text-muted-foreground">No Project Knowledge records.</p>
       ) : (
@@ -557,7 +558,7 @@ function RecordList({
         <li key={row.key}>
           <Link
             to={recordHref(projectId, row.key)}
-            className="flex w-full flex-col gap-1 bg-transparent p-3 text-left transition-colors hover:bg-background/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:flex-row sm:items-center sm:justify-between"
+            className="flex w-full flex-col gap-1 bg-transparent p-3 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:flex-row sm:items-center sm:justify-between"
           >
             <div className="min-w-0">
               <p className="truncate text-sm font-medium text-foreground">{row.primary}</p>
@@ -599,7 +600,8 @@ function ExplorerPanel({ projectId }: { projectId: string }) {
   if (error) return <ErrorBanner message={error} />;
   if (loading || !snapshot) {
     return (
-      <Card role="status" className="m-4 min-h-24 items-center justify-center text-sm text-muted-foreground">
+      <Card role="status" aria-label="Loading Graph Explorer" className="m-4 min-h-24 items-center justify-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
         Loading Graph Explorer
       </Card>
     );
@@ -658,7 +660,7 @@ function ExplorerPanel({ projectId }: { projectId: string }) {
           </thead>
           <tbody className="divide-y divide-border">
             {graph.nodes.map((node) => (
-              <tr key={node.key} className="hover:bg-background/70">
+              <tr key={node.key} className="hover:bg-accent">
                 <td className="px-3 py-2 font-mono text-xs">
                   <Link
                     to={recordHref(projectId, node.key)}
@@ -698,7 +700,7 @@ function ExplorerPanel({ projectId }: { projectId: string }) {
           </thead>
           <tbody className="divide-y divide-border">
             {graph.edges.map((edge, index) => (
-              <tr key={`${edge.from}-${edge.relation}-${edge.to}-${index}`} className="hover:bg-background/70">
+              <tr key={`${edge.from}-${edge.relation}-${edge.to}-${index}`} className="hover:bg-accent">
                 <td className="px-3 py-2 font-mono text-xs">
                   <Link
                     to={recordHref(projectId, edge.from)}
@@ -805,7 +807,8 @@ function RecordPanel({ projectId, recordKey }: { projectId: string; recordKey: s
   if (error) return <ErrorBanner message={error} />;
   if (!detail) {
     return (
-      <Card role="status" className="m-4 min-h-24 items-center justify-center text-sm text-muted-foreground">
+      <Card role="status" aria-label="Loading record" className="m-4 min-h-24 items-center justify-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
         Loading record
       </Card>
     );
@@ -921,7 +924,7 @@ function RecordPanel({ projectId, recordKey }: { projectId: string; recordKey: s
         )}
         {historyItems && (
           <section aria-label="Semantic History" className="space-y-2">
-            <SectionHeading title="Semantic History" detail={`${historyItems.length} item(s)`} />
+            <SectionHeading title="Semantic History" detail={`${historyItems.length} ${historyItems.length === 1 ? "item" : "items"}`} />
             <ul className="divide-y divide-border border-y border-border">
               {historyItems.map((item, index) => (
                 <li key={`${item.kind}-${item.version}-${index}`} className="px-3 py-2 text-sm">

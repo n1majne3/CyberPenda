@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Archive, ArchiveRestore, FilePlus2, MessageSquareText, Pencil, Plus, Trash2 } from "lucide-react";
 import { RuntimeLaunchControls, useRuntimeLaunchControls } from "@/components/RuntimeLaunchControls";
 import { AttachmentPicker } from "@/components/AttachmentPicker";
@@ -13,12 +13,13 @@ import {
   type Session,
 } from "@/lib/api";
 import { formatCompactDateTime } from "@/lib/format";
-import { PageContainer, SettingsAlert } from "@/components/shared";
+import { LoadingState, PageContainer, RichEmptyState, SettingsAlert } from "@/components/shared";
 import { Badge, Button, Card, CardDescription, CardTitle, Input, Label, Textarea } from "@/components/ui";
 
 export function SessionHomePage({ view = "open" }: { view?: "open" | "archived" }) {
   const archivedView = view === "archived";
   const { hash } = useLocation();
+  const navigate = useNavigate();
   const [openSessions, setOpenSessions] = useState<Session[]>([]);
   const [archivedSessions, setArchivedSessions] = useState<Session[]>([]);
   const [draft, setDraft] = useState("");
@@ -75,10 +76,10 @@ export function SessionHomePage({ view = "open" }: { view?: "open" | "archived" 
         launchControls.setError("preflight failed");
         return;
       }
-      await createSession(draft, attachments, launchControls.launchPayload(profileId));
+      const created = await createSession(draft, attachments, launchControls.launchPayload(profileId));
       setDraft("");
       setAttachments([]);
-      await loadSessions();
+      navigate(`/sessions/${encodeURIComponent(created.id)}`);
     } catch (cause) {
       launchControls.setError((cause as Error).message);
     } finally {
@@ -282,13 +283,17 @@ function SessionSection({
         <Badge variant={lifecycle === "open" ? "success" : "outline"}>{sessions.length}</Badge>
       </div>
       {loading ? (
-        <Card role="status" aria-label={`Loading ${title.toLowerCase()}`} className="py-8 text-center text-sm text-muted-foreground">
-          Loading {title.toLowerCase()}
-        </Card>
+        <LoadingState label={`Loading ${title.toLowerCase()}`} minHeight="min-h-24" />
       ) : sessions.length === 0 ? (
-        <Card className="border-dashed py-8 text-center">
-          <p className="text-sm text-muted-foreground">No {lifecycle} sessions.</p>
-        </Card>
+        <RichEmptyState
+          icon={<MessageSquareText className="h-6 w-6" aria-hidden="true" />}
+          title={`No ${lifecycle} sessions`}
+          description={
+            lifecycle === "open"
+              ? "Start a session above for durable exploratory conversations."
+              : "Archived sessions will appear here."
+          }
+        />
       ) : (
         <div className="grid gap-3">
           {sessions.map((session) => (
@@ -339,7 +344,10 @@ function SessionRow({
   onDelete?: (session: Session) => void;
 }) {
   return (
-    <Card as="article" className="gap-3 sm:flex-row sm:items-center sm:justify-between">
+    <Card
+      as="article"
+      className="gap-3 transition-[border-color,box-shadow,background-color,transform] duration-150 ease-geist hover:-translate-y-0.5 hover:border-signal/40 hover:shadow-md motion-reduce:translate-y-0 motion-reduce:transition-none sm:flex-row sm:items-center sm:justify-between"
+    >
       <div className="min-w-0">
         {renaming ? (
           <div className="flex flex-wrap items-center gap-2">
@@ -364,12 +372,17 @@ function SessionRow({
           <Link
             to={`/sessions/${session.id}`}
             aria-label={`Open ${session.title} session`}
-            className="group inline-flex max-w-full flex-col rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            className="group inline-flex max-w-full items-start gap-3 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           >
-            <span className="truncate font-medium group-hover:text-signal">{session.title}</span>
-            <span className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-              <Badge variant={session.lifecycle === "open" ? "success" : "outline"}>{session.lifecycle}</Badge>
-              <span>Activity {formatCompactDateTime(session.last_activity_at)}</span>
+            <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border bg-muted text-muted-foreground transition-colors group-hover:border-signal/40 group-hover:text-signal">
+              <MessageSquareText className="h-4 w-4" aria-hidden="true" />
+            </span>
+            <span className="min-w-0 flex-col">
+              <span className="block truncate font-medium group-hover:text-signal">{session.title}</span>
+              <span className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                <Badge variant={session.lifecycle === "open" ? "success" : "outline"}>{session.lifecycle}</Badge>
+                <span>Activity {formatCompactDateTime(session.last_activity_at)}</span>
+              </span>
             </span>
           </Link>
         )}
@@ -385,7 +398,7 @@ function SessionRow({
               aria-label={`Archive ${session.title}`}
             >
               <Archive className="size-3.5" aria-hidden="true" />
-              {session.title}
+              <span className="sr-only">Archive {session.title}</span>
             </Button>
           )}
           <Button size="sm" variant="ghost" onClick={() => onBeginRename(session)} disabled={busy} aria-label={`Rename ${session.title}`}>
@@ -401,7 +414,7 @@ function SessionRow({
               aria-label={`Restore ${session.title}`}
             >
               <ArchiveRestore className="size-3.5" aria-hidden="true" />
-              {session.title}
+              <span className="sr-only">Restore {session.title}</span>
             </Button>
           )}
           {session.lifecycle === "archived" && onDelete && (

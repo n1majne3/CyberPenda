@@ -5,6 +5,7 @@ import { apiGet, apiPatch, type Project, type RuntimeProfile, type Scope } from 
 import { isManualRuntimeProfile } from "@/pages/runtimeProfileKind";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { Button, Card, CardTitle, CardHeader, Label, Textarea, Badge, Select } from "@/components/ui";
+import { ErrorState, LoadingState } from "@/components/shared";
 
 // Each list field is edited as newline-separated text.
 type ScopeDraft = {
@@ -104,14 +105,14 @@ export function ScopeEditorPage() {
   if (error) {
     return (
       <ProjectPageShell>
-        <p className="text-destructive">{error}</p>
+        <ErrorState error={error} title="Couldn't load scope" className="max-w-2xl" />
       </ProjectPageShell>
     );
   }
   if (!project || !draft) {
     return (
       <ProjectPageShell>
-        <p className="text-muted-foreground">Loading…</p>
+        <LoadingState label="Loading scope" className="max-w-2xl" />
       </ProjectPageShell>
     );
   }

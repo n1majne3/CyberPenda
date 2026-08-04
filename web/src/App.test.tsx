@@ -80,7 +80,8 @@ describe("App", () => {
       link.getAttribute("href") === "/sessions#new-session",
     );
     expect(newSessionLink).toHaveClass("focus-visible:ring-2");
-    expect(screen.getByRole("button", { name: /collapse non-project/i })).toHaveClass("focus-visible:ring-2");
+    // Sidebar nav links expose a visible focus ring.
+    expect(screen.getByRole("link", { name: /non-project/i })).toHaveClass("focus-visible:ring-2");
   });
 
   it("renders Geist-styled shell landmarks with active navigation that is not color-only", async () => {
@@ -108,16 +109,17 @@ describe("App", () => {
 
     const skillsLink = screen.getByRole("link", { name: /skills/i });
     expect(skillsLink).toHaveAttribute("aria-current", "page");
-    expect(skillsLink).toHaveClass("border-sidebar-border", "bg-sidebar-accent", "font-semibold");
+    // Active state is distinguished by background + weight + the signal
+    // indicator bar — not a per-item outline that reads as a stacked box.
+    expect(skillsLink).toHaveClass("bg-sidebar-accent", "font-semibold");
     expect(skillsLink.querySelector('[data-nav-indicator="active"]')).not.toBeNull();
 
     const projectsLink = screen.getByRole("link", { name: /projects/i });
     expect(projectsLink).not.toHaveAttribute("aria-current");
-    expect(projectsLink).toHaveClass("hover:border-sidebar-border", "hover:bg-sidebar-accent/70");
+    expect(projectsLink).toHaveClass("hover:bg-sidebar-accent/70");
   });
 
   it("keeps global settings directly visible and communicates work disclosure state accessibly", async () => {
-    const user = userEvent.setup();
     mockApi({
       "/api/projects": { projects: [] },
     });
@@ -136,12 +138,11 @@ describe("App", () => {
     expect(screen.getByRole("link", { name: /credentials/i })).toHaveAttribute("href", "/credentials");
     expect(screen.getByRole("link", { name: /skills/i })).toHaveAttribute("href", "/skills");
 
-    const nonProjectButton = screen.getByRole("button", { name: /collapse non-project/i });
-    expect(nonProjectButton).toHaveAttribute("aria-expanded", "true");
-    expect(nonProjectButton).toHaveAttribute("aria-controls", "non-project-work");
-    await user.click(nonProjectButton);
-    expect(screen.getByRole("button", { name: /expand non-project/i })).toHaveAttribute("aria-expanded", "false");
+    // The Non-project section mirrors the Projects header: a nav link plus an
+    // inline "+ New session" action, with no section-level collapse control.
+    expect(screen.queryByRole("button", { name: /collapse non-project/i })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /non-project/i })).toHaveAttribute("href", "/sessions");
+    expect(screen.getByRole("link", { name: /new session/i })).toHaveAttribute("href", "/sessions#new-session");
   });
 
   it("applies the shell primitive styling to skip link and theme toggle", async () => {

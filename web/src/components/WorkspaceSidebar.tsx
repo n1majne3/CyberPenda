@@ -29,8 +29,6 @@ import {
 import { ThemeToggle } from "@/components/ThemeProvider";
 import { cn } from "@/lib/utils";
 
-const nonProjectDisclosureKey = "cyberpenda.sidebar.non-project";
-
 type TaskState = {
   tasks: Task[];
   loading: boolean;
@@ -47,7 +45,6 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
   const currentProjectId = ownerIdFromPath(pathname, "projects");
   const currentTaskId = taskIdFromPath(pathname);
 
-  const [nonProjectOpen, setNonProjectOpen] = useState(() => readDisclosure(nonProjectDisclosureKey, true));
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectLoading, setProjectLoading] = useState(true);
   const [projectError, setProjectError] = useState<string | null>(null);
@@ -162,14 +159,6 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
     [currentSessionId, sessions],
   );
 
-  const toggleNonProject = () => {
-    setNonProjectOpen((previous) => {
-      const next = !previous;
-      writeDisclosure(nonProjectDisclosureKey, next);
-      return next;
-    });
-  };
-
   const toggleProject = (projectId: string, defaultOpen: boolean) => {
     setProjectDisclosure((previous) => {
       const next = !(previous[projectId] ?? defaultOpen);
@@ -212,33 +201,27 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
 
   return (
     <>
-      <div className="shrink-0 px-3 pb-2 pt-3">
-        <NavItem
-          to="/sessions#new-session"
-          icon={<Plus className="size-4" />}
-          onNavigate={onNavigate}
-          className="bg-sidebar-accent font-medium text-sidebar-accent-foreground shadow-sm hover:bg-sidebar-accent/80"
-        >
-          New session
-        </NavItem>
-      </div>
-
       <nav aria-label="Primary routes" className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
         <section aria-labelledby="non-project-navigation" className="border-b border-sidebar-border/70 pb-3">
-          <div className="flex items-center gap-1">
-            <DisclosureButton
-              label="Non-project"
-              open={nonProjectOpen}
-              controls="non-project-work"
-              onClick={toggleNonProject}
-            />
-            <NavItem to="/sessions" onNavigate={onNavigate} className="min-w-0 flex-1">
-              <span id="non-project-navigation" className="truncate">
-                Non-project
-              </span>
-            </NavItem>
+          <div className="mb-1 flex items-center gap-1">
+            <NavLink
+              to="/sessions"
+              onClick={onNavigate}
+              id="non-project-navigation"
+              className="inline-flex h-9 min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+            >
+              Non-project
+            </NavLink>
+            <NavLink
+              to="/sessions#new-session"
+              aria-label="New session"
+              onClick={onNavigate}
+              className="inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-transparent text-muted-foreground transition-colors hover:border-sidebar-border hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+            >
+              <Plus className="size-4" aria-hidden="true" />
+            </NavLink>
           </div>
-          <div id="non-project-work" hidden={!nonProjectOpen} className="mt-1 space-y-1 pl-3">
+          <div id="non-project-work" className="space-y-1">
             {sessionLoading ? (
               <SidebarStatus label="Loading sessions" />
             ) : sessionError ? (
@@ -258,13 +241,13 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
                     onArchive={handleSessionArchive}
                   />
                 ))}
-                <NavItem
+                <NavLink
                   to="/sessions"
-                  onNavigate={onNavigate}
-                  className="h-8 justify-start pl-8 text-xs text-muted-foreground"
+                  onClick={onNavigate}
+                  className="inline-flex h-8 w-full items-center rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
                 >
                   Show more
-                </NavItem>
+                </NavLink>
               </>
             )}
           </div>
@@ -411,13 +394,13 @@ function ProjectRow({
             {visibleTasks.map((task) => (
               <TaskRow key={task.id} task={task} current={task.id === currentTaskId} onNavigate={onNavigate} />
             ))}
-            <NavItem
+            <NavLink
               to={`/projects/${encodeURIComponent(project.id)}/tasks`}
-              onNavigate={onNavigate}
-              className="h-8 justify-start pl-2 text-xs text-muted-foreground"
+              onClick={onNavigate}
+              className="inline-flex h-8 w-full items-center rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
             >
               Show more
-            </NavItem>
+            </NavLink>
           </>
         )}
       </div>
@@ -570,31 +553,6 @@ function SessionOverflowMenu({
   );
 }
 
-function DisclosureButton({
-  label,
-  open,
-  controls,
-  onClick,
-}: {
-  label: string;
-  open: boolean;
-  controls: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      aria-label={`${open ? "Collapse" : "Expand"} ${label}`}
-      aria-controls={controls}
-      aria-expanded={open}
-      onClick={onClick}
-      className="inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-transparent text-muted-foreground transition-colors hover:border-sidebar-border hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
-    >
-      <ChevronRight className={cn("size-3.5 transition-transform", open && "rotate-90")} aria-hidden="true" />
-    </button>
-  );
-}
-
 function SettingsLink({
   to,
   icon,
@@ -659,10 +617,10 @@ function NavItem({
 
 function navItemClasses(isActive: boolean, className?: string) {
   return cn(
-    "group relative inline-flex h-9 items-center gap-2 rounded-md border px-2 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar",
+    "group relative inline-flex h-9 w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar",
     isActive
-      ? "border-sidebar-border bg-sidebar-accent font-semibold text-sidebar-accent-foreground"
-      : "border-transparent text-muted-foreground hover:border-sidebar-border hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
+      ? "bg-sidebar-accent font-semibold text-sidebar-accent-foreground"
+      : "text-muted-foreground hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
     className,
   );
 }

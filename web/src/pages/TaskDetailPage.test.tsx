@@ -391,6 +391,90 @@ describe("TaskDetailPage", () => {
     expect(resultBody?.textContent).not.toContain("tool_call_id: call-1");
   });
 
+  it("keeps agent messages and tool rows tight, only spacing out new user turns", async () => {
+    stubTaskDetailApi({}, [
+      {
+        id: "user-msg",
+        seq: 1,
+        continuation: 1,
+        kind: "message",
+        role: "user",
+        text: "Inspect the target.",
+        created_at: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "assistant-runtime-entry",
+        seq: 2,
+        continuation: 1,
+        kind: "runtime_output",
+        role: "runtime",
+        text: JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "text", text: "Running a probe." },
+              { type: "tool_use", id: "call-1", name: "Bash", input: { command: "curl http://localhost:3000" } },
+            ],
+          },
+        }),
+        stream: "assistant",
+        created_at: "2026-01-01T00:00:01Z",
+      },
+      {
+        id: "user-runtime-entry",
+        seq: 3,
+        continuation: 1,
+        kind: "runtime_output",
+        role: "runtime",
+        text: JSON.stringify({
+          type: "user",
+          message: {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: "call-1", content: "HTTP/1.1 200 OK" }],
+          },
+        }),
+        stream: "user",
+        created_at: "2026-01-01T00:00:02Z",
+      },
+      {
+        id: "assistant-summary",
+        seq: 4,
+        continuation: 1,
+        kind: "runtime_output",
+        role: "runtime",
+        text: JSON.stringify({
+          type: "assistant",
+          message: { role: "assistant", content: [{ type: "text", text: "The service is up." }] },
+        }),
+        stream: "assistant",
+        created_at: "2026-01-01T00:00:03Z",
+      },
+      {
+        id: "next-user-msg",
+        seq: 5,
+        continuation: 1,
+        kind: "message",
+        role: "user",
+        text: "Thanks, stop there.",
+        created_at: "2026-01-01T00:00:04Z",
+      },
+    ]);
+
+    renderPage();
+
+    const rows = await screen.findAllByTestId("transcript-row");
+    // First row has no top spacing; user-turn starts get the roomier mt-4;
+    // everything inside an agent turn (assistant message, tool call, tool
+    // result, follow-up assistant message) stays tight at mt-1.
+    expect(rows[0]).not.toHaveClass("mt-1");
+    expect(rows[0]).not.toHaveClass("mt-4");
+    expect(rows[1]).toHaveClass("mt-1"); // user turn start → agent turn begins tight
+    expect(rows[2]).toHaveClass("mt-1"); // tool result still in the same agent turn
+    expect(rows[3]).toHaveClass("mt-1"); // assistant summary still tight
+    expect(rows[4]).toHaveClass("mt-4"); // new user turn gets breathing room
+  });
+
   it("renders tool call arguments as labeled fields rather than a raw JSON envelope", async () => {
     stubTaskDetailApi({}, [
       {
@@ -474,6 +558,22 @@ describe("TaskDetailPage", () => {
     expect(screen.getByText("continuation status: completed")).toBeInTheDocument();
     expect(screen.getByText("native session: captured")).toBeInTheDocument();
     expect(screen.getByText("same runtime only")).toBeInTheDocument();
+  });
+
+  it("lets the continuation summary shrink instead of overflowing the header", async () => {
+    stubTaskDetailApi();
+
+    renderPage();
+
+    expect(await screen.findByText("continuation #1")).toBeInTheDocument();
+    // The summary must be able to shrink (min-w-0) and clip rather than push
+    // the title to zero width and spill past the header border.
+    const summary = screen.getByTestId("continuation-summary");
+    expect(summary).toHaveClass("min-w-0", "overflow-hidden", "whitespace-nowrap");
+    // Status badges stay intact and are never compressed into wrapping text.
+    const blackboardBadge = screen.getByTestId("blackboard-conclusion-state");
+    expect(blackboardBadge).toHaveClass("min-w-0", "shrink");
+    expect(blackboardBadge.firstElementChild).toHaveClass("truncate", "whitespace-nowrap");
   });
 
   it("shows native resume and queue steering controls", async () => {

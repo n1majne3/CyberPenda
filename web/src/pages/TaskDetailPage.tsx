@@ -4,7 +4,7 @@ import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, Chevr
 import { apiDelete, apiGet, apiPatch, apiPost, apiPostForm, type BlackboardConclusionMode, type BlackboardConclusionView, type ModelProvider, type ProviderPermissionRequest, type RuntimeActivity, type RuntimeControls, type RuntimePlugin, type RuntimeProfile, type Session, type SessionContinuation, type SessionEvent, type Task, type TaskContinuation, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Badge, Input, Select, Textarea } from "@/components/ui";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
-import { PageContainer } from "@/components/shared";
+import { ErrorState, LoadingState, PageContainer } from "@/components/shared";
 import { AgentTranscriptView } from "@/components/task-transcript/AgentTranscriptView";
 import { AttachmentFileRow } from "@/components/AttachmentPicker";
 import { collapsedTranscriptTitle, toolCallFields } from "./taskDetailView";
@@ -552,14 +552,14 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   if (error) {
     return (
       <RuntimeOwnerShell projectChrome={!isSession}>
-        <p className="text-destructive">{error}</p>
+        <ErrorState error={error} title="Couldn't load this conversation" className="m-6 max-w-2xl" />
       </RuntimeOwnerShell>
     );
   }
   if (!owner) {
     return (
       <RuntimeOwnerShell projectChrome={!isSession}>
-        <p className="text-muted-foreground">Loading…</p>
+        <LoadingState label="Loading conversation" className="m-6 max-w-2xl" />
       </RuntimeOwnerShell>
     );
   }
@@ -634,7 +634,11 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
           <h1 className="min-w-0 flex-1 truncate text-sm font-medium" title={owner.title}>{owner.title}</h1>
         )}
         {currentContinuation && (
-          <div className="hidden shrink-0 items-center gap-1 font-mono text-xs text-muted-foreground md:flex">
+          <div
+            data-testid="continuation-summary"
+            title={`continuation #${currentContinuation.number} · runtime: ${currentContinuation.runtimeProvider} · runner: ${owner.runner} · status: ${currentContinuation.status}`}
+            className="hidden min-w-0 flex-1 items-center gap-1 overflow-hidden whitespace-nowrap font-mono text-xs text-muted-foreground lg:flex"
+          >
             <span>continuation #{currentContinuation.number}</span>
             <span aria-hidden="true">·</span>
             <span>runtime: {currentContinuation.runtimeProvider}</span>
@@ -1442,7 +1446,7 @@ function StatusBadge({ status }: { status: string }) {
     status === "failed" ? "destructive" :
     status === "stopped" ? "warning" :
     status === "interrupted" ? "warning" : "outline";
-  return <Badge variant={variant}>{status}</Badge>;
+  return <Badge variant={variant} className="shrink-0 whitespace-nowrap">{status}</Badge>;
 }
 
 function RuntimeActivityBadge({ activity }: { activity?: RuntimeActivity }) {
@@ -1463,6 +1467,7 @@ function RuntimeActivityBadge({ activity }: { activity?: RuntimeActivity }) {
       variant={variant}
       data-testid="runtime-activity"
       title={activity.warning || label}
+      className="shrink-0 whitespace-nowrap"
     >
       {label}
     </Badge>
@@ -1484,8 +1489,9 @@ function BlackboardConclusionBadge({ owner }: { owner: RuntimeOwnerView }) {
       variant={state === "action_required" ? "destructive" : state === "pending" || state === "concluding" ? "warning" : "outline"}
       data-testid="blackboard-conclusion-state"
       title={details.join(" · ")}
+      className="min-w-0 shrink"
     >
-      {label}
+      <span className="truncate whitespace-nowrap">{label}</span>
     </Badge>
   );
 }
@@ -1542,14 +1548,10 @@ function TranscriptList({ entries, endRef }: { entries: TaskTranscriptEntry[]; e
   return (
     <div>
       {entries.map((entry, index) => {
-        const previous = index > 0 ? entries[index - 1] : undefined;
-        // Consecutive tool rows read as a single dense activity log, so they sit
-        // tight together; messages keep their generous breathing room.
-        const tight =
-          previous !== undefined &&
-          entryRenderKind(entry) === "compact" &&
-          entryRenderKind(previous) === "compact";
-        const spacing = index === 0 ? "" : tight ? "mt-1" : "mt-5";
+        // A user message starts a new turn and gets breathing room above it.
+        // Everything inside an agent turn — assistant messages, tool calls,
+        // tool results — stays tight so the agent's reasoning reads as one block.
+        const spacing = index === 0 ? "" : isUserTurnStart(entry) ? "mt-4" : "mt-1";
         return (
           <div
             key={entry.id}
@@ -1560,21 +1562,34 @@ function TranscriptList({ entries, endRef }: { entries: TaskTranscriptEntry[]; e
           </div>
         );
       })}
-      {entries.length === 0 && <p className="text-sm text-muted-foreground">No transcript yet.</p>}
+      {entries.length === 0 && (
+        <div className="flex flex-col items-center justify-center gap-2 py-12 text-center text-sm text-muted-foreground">
+          <MessageSquare className="size-5 opacity-50" aria-hidden="true" />
+          <p>No transcript yet. Send a message below to start.</p>
+        </div>
+      )}
       <div ref={endRef} />
     </div>
   );
 }
 
-// entryRenderKind classifies how a transcript entry renders so TranscriptList
-// can pick spacing: dense "compact" tool rows vs roomy "message" bubbles.
-function entryRenderKind(entry: TaskTranscriptEntry): "continuation" | "compact" | "message" {
-  if (entry.kind === "continuation") return "continuation";
-  const projected = projectRuntimeOutput(entry);
-  if (projected) {
-    return projected.every(isCollapsedTranscriptEntry) ? "compact" : "message";
+// isUserTurnStart identifies a row that begins a new operator turn. Only these
+// get the roomier spacing; agent reasoning (assistant text, tool calls, tool
+// results) stays tight so a single agent turn reads as one cohesive block.
+function isUserTurnStart(entry: TaskTranscriptEntry): boolean {
+  if (entry.kind === "continuation" || entry.kind === "tool_call" || entry.kind === "tool_result") {
+    return false;
   }
-  return isCollapsedTranscriptEntry(entry) ? "compact" : "message";
+  if (entry.role === "user") return true;
+  if (entry.kind === "runtime_output") {
+    const projected = projectRuntimeOutput(entry);
+    if (projected) {
+      // A projected runtime_output is a user turn only when every projected row
+      // is a user message (e.g. an operator steer echoed back by the runtime).
+      return projected.length > 0 && projected.every((row) => row.role === "user");
+    }
+  }
+  return false;
 }
 
 function TranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
@@ -1623,7 +1638,7 @@ function TranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
       )}
       <div
         data-testid="transcript-message-bubble"
-        className={`min-w-0 max-w-[88%] rounded-lg px-3 py-2.5 sm:px-4 sm:py-3 ${isUser ? "border border-info/20 bg-info/10 shadow-sm" : "border border-transparent bg-transparent px-0 shadow-none"}`}
+        className={`min-w-0 max-w-[88%] rounded-lg px-3 py-2 sm:px-3.5 ${isUser ? "bg-primary/10 dark:bg-primary/15" : "bg-transparent px-0"}`}
       >
         {!isAssistant && (
           <div className="mb-1 text-[11px] font-medium text-muted-foreground">
@@ -1636,7 +1651,7 @@ function TranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
         <div className="whitespace-pre-wrap break-words leading-6 text-foreground">{entry.text}</div>
       </div>
       {isUser && (
-        <span className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-info/20 bg-info/10 text-info">
+        <span className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10 text-foreground/70 dark:bg-primary/15">
           <Icon className="h-4 w-4" />
         </span>
       )}
@@ -1763,19 +1778,19 @@ function ToolCallDetails({ entry }: { entry: TaskTranscriptEntry }) {
     return <p className="text-xs text-muted-foreground">No arguments.</p>;
   }
   return (
-    <dl className="space-y-2">
+    <dl className="space-y-1">
       {fields.map((field) => (
         <div
           key={field.label}
-          className={field.block ? "space-y-1" : "flex flex-wrap items-baseline gap-x-2 gap-y-0.5"}
+          className={field.block ? "space-y-0.5" : "flex flex-wrap items-baseline gap-x-2 gap-y-0.5"}
         >
           <dt className="shrink-0 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">{field.label}</dt>
           {field.block ? (
             <dd>
-              <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-muted/50 px-2.5 py-1.5 font-mono text-xs leading-5 text-foreground/90">{field.value}</pre>
+              <pre className="overflow-x-auto whitespace-pre-wrap break-words py-0.5 font-mono text-xs leading-5 text-foreground/85">{field.value}</pre>
             </dd>
           ) : (
-            <dd className="min-w-0 break-words text-xs text-foreground/90">{field.value}</dd>
+            <dd className="min-w-0 break-words font-mono text-xs text-foreground/90">{field.value}</dd>
           )}
         </div>
       ))}

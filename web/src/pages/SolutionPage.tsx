@@ -12,6 +12,7 @@ import {
 } from "@/lib/blackboardv2";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { Badge, Button, Card, CardHeader, CardTitle } from "@/components/ui";
+import { ErrorState, LoadingState, SectionHeading } from "@/components/shared";
 
 /**
  * CTF Solution deliverable over GET /api/v2/.../reports/ctf-solution.
@@ -80,21 +81,17 @@ export function SolutionPage() {
         )}
       </Card>
 
-      {loading && (
-        <Card
-          role="status"
-          className="min-h-20 items-center justify-center text-sm text-muted-foreground"
-        >
-          Loading solution
-        </Card>
-      )}
-      {error && <p className="p-4 text-sm text-destructive">{error}</p>}
+      {loading && <LoadingState label="Loading solution" minHeight="min-h-20" />}
+      {error && <ErrorState error={error} title="Couldn't load solution" />}
 
       {solution && (
         <Card as="section" className="space-y-4">
           <CardHeader>
-            <CardTitle>
-              {solution.project.name} — {solution.solved ? "Solved: yes" : "Solved: no"}
+            <CardTitle className="flex flex-wrap items-center gap-2">
+              {solution.project.name}
+              <Badge variant={solution.solved ? "success" : "outline"}>
+                {solution.solved ? "Solved" : "Unsolved"}
+              </Badge>
             </CardTitle>
           </CardHeader>
           <SolutionSection
@@ -126,11 +123,9 @@ export function SolutionPage() {
             muted
           />
           <section className="space-y-2">
-            <h3 className="text-sm font-medium tracking-tight">
-              Evidence ({solution.evidence.length})
-            </h3>
+            <SectionHeading count={solution.evidence.length}>Evidence</SectionHeading>
             {solution.evidence.length === 0 ? (
-              <p className="text-sm text-muted-foreground">_No records._</p>
+              <p className="text-sm text-muted-foreground">No records.</p>
             ) : (
               <ul className="divide-y divide-border border-y border-border" role="list">
                 {solution.evidence.map((item) => (
@@ -177,13 +172,9 @@ function SolutionSection({
 }) {
   return (
     <section className="space-y-2">
-      <h3
-        className={`text-sm font-medium tracking-tight ${muted ? "text-muted-foreground" : ""}`}
-      >
-        {title} ({items.length})
-      </h3>
+      <SectionHeading count={items.length} muted={muted}>{title}</SectionHeading>
       {items.length === 0 ? (
-        <p className="text-sm text-muted-foreground">_No records._</p>
+        <p className="text-sm text-muted-foreground">No records.</p>
       ) : (
         <ul className="divide-y divide-border border-y border-border" role="list">
           {items.map((item) => (
@@ -225,13 +216,9 @@ function FactSection({
 }) {
   return (
     <section className="space-y-2">
-      <h3
-        className={`text-sm font-medium tracking-tight ${muted ? "text-muted-foreground" : ""}`}
-      >
-        {title} ({items.length})
-      </h3>
+      <SectionHeading count={items.length} muted={muted}>{title}</SectionHeading>
       {items.length === 0 ? (
-        <p className="text-sm text-muted-foreground">_No records._</p>
+        <p className="text-sm text-muted-foreground">No records.</p>
       ) : (
         <ul className="divide-y divide-border border-y border-border" role="list">
           {items.map((fact) => (

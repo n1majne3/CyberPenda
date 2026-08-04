@@ -47,31 +47,39 @@ export function TaskLaunchPage() {
   const hostBlocked = launchControls.form.runner === "host" && !launchControls.hostActivated;
 
   return (
-    <ProjectPageShell title="Launch task" bodyClassName="w-full max-w-3xl space-y-4">
-      <div className="space-y-4">
-        <div>
-          <Label htmlFor="goal">Task goal</Label>
-          <Textarea
-            id="goal"
-            name="task_goal"
-            value={goal}
-            onChange={(event) => setGoal(event.target.value)}
-            placeholder="Enumerate example.com and assess exposure…"
-            autoComplete="off"
-          />
-        </div>
-        <AttachmentPicker
-          id="attachments"
-          files={attachments}
-          onFilesChange={setAttachments}
-          onError={launchControls.setError}
-          ownerLabel="task"
+    <ProjectPageShell
+      title={
+        <h2 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
+          <Rocket className="h-5 w-5 text-signal" /> Launch task
+        </h2>
+      }
+      description="Define a Task goal, choose a Runtime, and launch a Task-scoped persistent Runtime."
+      bodyClassName="w-full max-w-3xl space-y-4"
+    >
+      <div>
+        <Label htmlFor="goal">Task goal</Label>
+        <Textarea
+          id="goal"
+          name="task_goal"
+          value={goal}
+          onChange={(event) => setGoal(event.target.value)}
+          placeholder="Enumerate example.com and assess exposure…"
+          autoComplete="off"
         />
+      </div>
+      <AttachmentPicker
+        id="attachments"
+        files={attachments}
+        onFilesChange={setAttachments}
+        onError={launchControls.setError}
+        ownerLabel="task"
+      />
 
-        <RuntimeLaunchControls controller={launchControls} ownerLabel="task" initialInput={goal} />
+      <RuntimeLaunchControls controller={launchControls} ownerLabel="task" initialInput={goal} />
 
+      <div className="flex justify-end">
         <Button onClick={launchTask} disabled={!launchControls.launchReady(goal) || launching || hostBlocked}>
-          <Rocket className="h-4 w-4 mr-1" /> {launching ? "Launching…" : "Launch"}
+          <Rocket className="h-4 w-4" /> {launching ? "Launching…" : "Launch"}
         </Button>
       </div>
     </ProjectPageShell>

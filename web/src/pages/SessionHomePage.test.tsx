@@ -1,7 +1,8 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { describe, expect, it } from "vitest";
+import { createMemoryRouter, RouterProvider } from "react-router-dom";
+import { describe, expect, it, vi } from "vitest";
 import { mockApi } from "@/test/mockApi";
 import { SessionHomePage } from "./SessionHomePage";
 
@@ -266,4 +267,59 @@ describe("SessionHomePage", () => {
 
     expect(await screen.findByRole("textbox", { name: /initial input/i })).toHaveFocus();
   });
+
+  it("navigates to the created session page after creation", async () => {
+    // Method-aware mock: GET /api/sessions lists nothing, POST /api/sessions
+    // returns the created Session so the page can navigate to its detail route.
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.includes("/api/runtime-profiles/resolve-launch")) {
+        return json(sessionLaunchRoutes["/api/runtime-profiles/resolve-launch"]);
+      }
+      if (url.includes("/api/sessions/preflight")) return json({ pass: true, checks: [] });
+      if (url.includes("/api/runtime-plugins")) return json({ plugins: [codexPlugin] });
+      if (url.includes("/api/model-providers")) return json({ providers: [mimoProvider] });
+      if (url.includes("/api/runtime-profiles")) return json({ profiles: [] });
+      if (url.includes("/api/skills")) return json({ skills: [] });
+      if (url.includes("/api/sessions") && method === "POST") {
+        return json({
+          id: "session-new",
+          title: "Check the exposed service",
+          lifecycle: "open",
+          created_at: "2026-08-04T00:00:00Z",
+          updated_at: "2026-08-04T00:00:00Z",
+          last_activity_at: "2026-08-04T00:00:00Z",
+        });
+      }
+      // GET /api/sessions (list) and archived list default to empty.
+      return json({ sessions: [] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const router = createMemoryRouter(
+      [
+        { path: "/sessions", element: <SessionHomePage /> },
+        { path: "/sessions/:sessionId", element: <div data-testid="session-detail" /> },
+      ],
+      { initialEntries: ["/sessions"] },
+    );
+    const user = userEvent.setup();
+    render(<RouterProvider router={router} />);
+
+    await user.type(await screen.findByRole("textbox", { name: /initial input/i }), "Check the exposed service");
+    await user.click(screen.getByRole("button", { name: /create session/i }));
+
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe("/sessions/session-new");
+    });
+    expect(screen.getByTestId("session-detail")).toBeInTheDocument();
+  });
 });
+
+function json(body: unknown) {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
