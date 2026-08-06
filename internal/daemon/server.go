@@ -739,6 +739,7 @@ func isLoopback(addr string) bool {
 
 func (server *Server) routes() {
 	server.mux.HandleFunc("GET /health", server.handleHealth)
+	server.mux.HandleFunc("GET /api/workspace/navigation", server.handleWorkspaceNavigation)
 	server.mux.HandleFunc("GET /api/projects", server.handleListProjects)
 	server.mux.HandleFunc("POST /api/projects", server.handleCreateProject)
 	server.mux.HandleFunc("GET /api/projects/{id}", server.handleGetProject)

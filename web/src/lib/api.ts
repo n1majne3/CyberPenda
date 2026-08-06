@@ -144,6 +144,24 @@ export interface Project {
   updated_at: string;
 }
 
+/**
+ * WorkspaceProjectSummary is one row of the bounded navigation projection
+ * (#193): a Project with its most recent Tasks inlined and a last_activity_at
+ * that folds in Task activity. Runtime liveness on the Tasks is computed live
+ * by the daemon; it is never derived from durable Task status.
+ */
+export interface WorkspaceProjectSummary extends Project {
+  /** Maximum activity timestamp across the Project and its inlined Tasks. */
+  last_activity_at: string;
+  /** Bounded set of recent/busy Tasks; the Sidebar renders these as-is. */
+  tasks: Task[];
+}
+
+/** WorkspaceNavigation is the single-call Sidebar projection (#193). */
+export interface WorkspaceNavigation {
+  projects: WorkspaceProjectSummary[];
+}
+
 export type SessionLifecycle = "open" | "archived";
 
 export interface Session {

@@ -616,6 +616,43 @@ func (s *Service) ListForProject(projectID string) ([]Task, error) {
 	return tasks, nil
 }
 
+// ListRecentPerProject returns, for each Project that has any non-deleted Task,
+// the `limit` most recently updated Tasks. Ordering is updated_at DESC then
+// created_at DESC so the Sidebar's activity-based selection is reproducible
+// server-side. Grouping by Project happens in Go; this is one round-trip
+// instead of one per Project, which keeps Sidebar refresh bounded as the
+// Project count grows (#193).
+func (s *Service) ListRecentPerProject(limit int) (map[string][]Task, error) {
+	if limit <= 0 {
+		limit = 1
+	}
+	rows, err := s.db.Query(
+		`SELECT id, project_id, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at
+		 FROM tasks WHERE deleted_at = '' ORDER BY updated_at DESC, created_at DESC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list recent tasks: %w", err)
+	}
+	defer rows.Close()
+
+	byProject := make(map[string][]Task)
+	for rows.Next() {
+		found, err := scanTask(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan task: %w", err)
+		}
+		// Rows are globally ordered by recency, so the first `limit` seen per
+		// Project are that Project's most recent Tasks.
+		if group := byProject[found.ProjectID]; len(group) < limit {
+			byProject[found.ProjectID] = append(group, found)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list recent tasks: %w", err)
+	}
+	return byProject, nil
+}
+
 // Delete removes a terminal task from normal Task surfaces while retaining its
 // durable row for Blackboard provenance and historical joins.
 func (s *Service) Delete(id string) error {

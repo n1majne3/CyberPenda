@@ -1208,6 +1208,86 @@ func (server *Server) handleGetTask(response http.ResponseWriter, request *http.
 	writeJSON(response, http.StatusOK, detailed)
 }
 
+// workspaceNavigationTaskLimit bounds the number of Tasks inlined per Project
+// in the Sidebar navigation projection. It mirrors the client-side
+// takeRecentWithCurrent cap so the Sidebar can render the summary as-is.
+const workspaceNavigationTaskLimit = 5
+
+// handleWorkspaceNavigation returns one bounded navigation projection for the
+// Workspace Sidebar: every Project, each with its most recent Tasks inlined
+// (runtime_activity and Blackboard conclusion already attached) and a
+// last_activity_at that folds in Task activity. This replaces the former
+// one-Task-list-request-per-Project fan-out, so a workspace with many Projects
+// makes a constant number of requests on initial load and refresh (#193).
+//
+// Project and Task remain separate domains: the projection only joins them for
+// navigation and does not persist state. Runtime liveness is computed live via
+// attachRuntimeActivity; it is never derived from durable Task status.
+func (server *Server) handleWorkspaceNavigation(response http.ResponseWriter, request *http.Request) {
+	projects, err := server.projects.List()
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "list projects")
+		return
+	}
+	recentByProject, err := server.tasks.ListRecentPerProject(workspaceNavigationTaskLimit)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "load recent tasks")
+		return
+	}
+
+	type summary struct {
+		project.Project
+		LastActivityAt time.Time    `json:"last_activity_at"`
+		Tasks          []task.Task  `json:"tasks"`
+	}
+	summaries := make([]summary, 0, len(projects))
+	for _, current := range projects {
+		recent := recentByProject[current.ID]
+		// Decorate each inlined Task through the same path as the per-Project
+		// Task list so runtime_activity is live and consistent.
+		for index := range recent {
+			recent[index] = server.attachRuntimeActivity(recent[index])
+			recent[index], err = server.attachBlackboardConclusion(recent[index])
+			if err != nil {
+				writeError(response, http.StatusInternalServerError, "load Blackboard conclusion")
+				return
+			}
+		}
+		if recent == nil {
+			recent = []task.Task{}
+		}
+		summaries = append(summaries, summary{
+			Project:        current,
+			LastActivityAt: workspaceProjectActivity(current, recent),
+			Tasks:          recent,
+		})
+	}
+	writeJSON(response, http.StatusOK, struct {
+		Projects []summary `json:"projects"`
+	}{
+		Projects: summaries,
+	})
+}
+
+// workspaceProjectActivity returns the most recent activity timestamp across a
+// Project and its Tasks, mirroring the Sidebar's projectActivity helper so the
+// projection's last_activity_at drives the same ordering with one call.
+func workspaceProjectActivity(projectRecord project.Project, tasks []task.Task) time.Time {
+	latest := projectRecord.UpdatedAt
+	if before := projectRecord.CreatedAt; latest.Before(before) {
+		latest = before
+	}
+	for _, current := range tasks {
+		if candidate := current.UpdatedAt; candidate.After(latest) {
+			latest = candidate
+		}
+		if candidate := current.CreatedAt; candidate.After(latest) {
+			latest = candidate
+		}
+	}
+	return latest
+}
+
 func (server *Server) handleDeleteTask(response http.ResponseWriter, request *http.Request) {
 	found, ok := server.requireProjectTask(response, request)
 	if !ok {

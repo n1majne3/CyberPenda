@@ -25,6 +25,8 @@ import {
   type RuntimeActivity,
   type Session,
   type Task,
+  type WorkspaceNavigation,
+  type WorkspaceProjectSummary,
 } from "@/lib/api";
 import { ThemeToggle } from "@/components/ThemeProvider";
 import { PromptDialog } from "@/components/ConfirmDialog";
@@ -47,17 +49,21 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
   const currentProjectId = ownerIdFromPath(pathname, "projects");
   const currentTaskId = taskIdFromPath(pathname);
 
-  const [projects, setProjects] = useState<Project[]>([]);
+  // One bounded navigation projection replaces the former one-Task-list-fetch-
+  // per-Project fan-out (#193). The daemon returns every Project with its most
+  // recent Tasks inlined and a last_activity_at, so the Sidebar makes a single
+  // constant-size request regardless of how many Projects exist. Expanding a
+  // non-current Project loads its full Task list on demand below.
+  const [navigation, setNavigation] = useState<WorkspaceProjectSummary[]>([]);
   const [projectLoading, setProjectLoading] = useState(true);
   const [projectError, setProjectError] = useState<string | null>(null);
-  const [taskStates, setTaskStates] = useState<Record<string, TaskState>>({});
+  const [expandedTasks, setExpandedTasks] = useState<Record<string, TaskState>>({});
   const [projectDisclosure, setProjectDisclosure] = useState<Record<string, boolean>>({});
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionLoading, setSessionLoading] = useState(true);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [sessionActionId, setSessionActionId] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<Session | null>(null);
-  const projectIdsKey = useMemo(() => projects.map((project) => project.id).join("\u0000"), [projects]);
   const isVisible = useDocumentVisibility();
   // Whether any tracked owner currently has a live, busy runtime. While true the
   // sidebar polls fast (2s) to surface runtime progress; once idle it backs off
@@ -65,15 +71,15 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
   const hasActive = useMemo(
     () =>
       sessions.some(isSessionBusy) ||
-      Object.values(taskStates).some((state) => state.tasks.some(isTaskBusy)),
-    [sessions, taskStates],
+      navigation.some((summary) => summary.tasks.some(isTaskBusy)),
+    [sessions, navigation],
   );
 
-  const loadProjects = useCallback(async (showLoading = true) => {
+  const loadNavigation = useCallback(async (showLoading = true) => {
     if (showLoading) setProjectLoading(true);
     try {
-      const data = await apiGet<{ projects: Project[] }>("/api/projects");
-      setProjects(data.projects ?? []);
+      const data = await apiGet<WorkspaceNavigation>("/api/workspace/navigation");
+      setNavigation(data.projects ?? []);
       setProjectError(null);
     } catch (reason) {
       setProjectError((reason as Error).message);
@@ -104,8 +110,12 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
     }
   }, [currentSessionId]);
 
+  // On-demand full Task list: called only when the operator expands a Project.
+  // The current Project renders its inlined Tasks from the navigation
+  // projection; other Projects fetch their complete list lazily so the Sidebar
+  // never sends one request per Project on mount or refresh.
   const loadTasks = useCallback(async (projectId: string, showLoading = true) => {
-    setTaskStates((previous) => ({
+    setExpandedTasks((previous) => ({
       ...previous,
       [projectId]: {
         tasks: previous[projectId]?.tasks ?? [],
@@ -115,12 +125,12 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
     }));
     try {
       const data = await apiGet<{ tasks: Task[] }>(`/api/projects/${encodeURIComponent(projectId)}/tasks`);
-      setTaskStates((previous) => ({
+      setExpandedTasks((previous) => ({
         ...previous,
         [projectId]: { tasks: data.tasks ?? [], loading: false, error: null },
       }));
     } catch (reason) {
-      setTaskStates((previous) => ({
+      setExpandedTasks((previous) => ({
         ...previous,
         [projectId]: {
           tasks: previous[projectId]?.tasks ?? [],
@@ -132,20 +142,15 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
   }, []);
 
   // Eager initial loads: fill the sidebar on first mount even when the tab is
-  // already hidden. Projects and sessions load once; task summaries load (and
-  // reload) as the known project set changes. Subsequent refreshes are driven by
-  // the gated poll below.
+  // already hidden. Navigation and sessions each load once; subsequent
+  // refreshes are driven by the gated poll below.
   useEffect(() => {
-    void loadProjects();
-  }, [loadProjects]);
+    void loadNavigation();
+  }, [loadNavigation]);
 
   useEffect(() => {
     void loadSessions();
   }, [loadSessions]);
-
-  useEffect(() => {
-    for (const projectId of projectIdsKey.split("\u0000").filter(Boolean)) void loadTasks(projectId);
-  }, [loadTasks, projectIdsKey]);
 
   // Single gated poll replacing the former fixed 2s intervals. It suspends
   // entirely while the tab is hidden and backs off from 2s → 30s once no owner
@@ -154,21 +159,20 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
     if (!isVisible) return;
     const period = hasActive ? 2000 : 30000;
     const refresh = window.setInterval(() => {
-      void loadProjects(false);
+      void loadNavigation(false);
       void loadSessions(false);
-      for (const projectId of projectIdsKey.split("\u0000").filter(Boolean)) void loadTasks(projectId, false);
     }, period);
     return () => window.clearInterval(refresh);
-  }, [isVisible, hasActive, projectIdsKey, loadProjects, loadSessions, loadTasks]);
+  }, [isVisible, hasActive, loadNavigation, loadSessions]);
 
-  const sortedProjects = useMemo(
+  const sortedProjects = useMemo<Project[]>(
     () =>
-      [...projects].sort((a, b) => {
-        const activityDelta = projectActivity(b, taskStates[b.id]?.tasks) - projectActivity(a, taskStates[a.id]?.tasks);
+      [...navigation].sort((a, b) => {
+        const activityDelta = navigationActivity(b) - navigationActivity(a);
         if (activityDelta !== 0) return activityDelta;
         return a.name.localeCompare(b.name);
       }),
-    [projects, taskStates],
+    [navigation],
   );
 
   const visibleSessions = useMemo(
@@ -180,6 +184,11 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
     setProjectDisclosure((previous) => {
       const next = !(previous[projectId] ?? defaultOpen);
       writeDisclosure(projectDisclosureKey(projectId), next);
+      // Expanding a non-current Project loads its full Task list on demand;
+      // collapsing keeps the cached list for the next expansion.
+      if (next && projectId !== currentProjectId) {
+        void loadTasks(projectId);
+      }
       return { ...previous, [projectId]: next };
     });
   };
@@ -295,16 +304,20 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
           ) : (
             <div className="space-y-1">
               {sortedProjects.map((project) => {
+                const summary = navigation.find((entry) => entry.id === project.id);
                 const defaultOpen = project.id === currentProjectId;
                 const open = projectDisclosure[project.id] ?? readDisclosure(projectDisclosureKey(project.id), defaultOpen);
-                const state = taskStates[project.id] ?? { tasks: [], loading: true, error: null };
                 return (
                   <ProjectRow
                     key={project.id}
                     project={project}
-                    tasks={state.tasks}
-                    tasksLoading={state.loading}
-                    tasksError={state.error}
+                    // The current Project renders its inlined Tasks immediately;
+                    // other Projects load their full list on demand when opened.
+                    tasks={summary?.tasks ?? []}
+                    onDemandTasks={expandedTasks[project.id]?.tasks ?? []}
+                    tasksLoading={expandedTasks[project.id]?.loading ?? false}
+                    tasksError={expandedTasks[project.id]?.error ?? null}
+                    useOnDemandTasks={project.id !== currentProjectId && (projectDisclosure[project.id] ?? readDisclosure(projectDisclosureKey(project.id), defaultOpen))}
                     open={open}
                     currentTaskId={currentTaskId}
                     currentProject={project.id === currentProjectId}
@@ -359,8 +372,10 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
 function ProjectRow({
   project,
   tasks,
+  onDemandTasks,
   tasksLoading,
   tasksError,
+  useOnDemandTasks,
   open,
   currentTaskId,
   currentProject,
@@ -369,8 +384,10 @@ function ProjectRow({
 }: {
   project: Project;
   tasks: Task[];
+  onDemandTasks: Task[];
   tasksLoading: boolean;
   tasksError: string | null;
+  useOnDemandTasks: boolean;
   open: boolean;
   currentTaskId: string | null;
   currentProject: boolean;
@@ -378,7 +395,11 @@ function ProjectRow({
   onNavigate?: () => void;
 }) {
   const taskPanelId = `project-tasks-${project.id}`;
-  const visibleTasks = takeRecentWithCurrent(tasks, currentTaskId, isTaskBusy, taskActivity);
+  // The current Project renders its already-bounded inlined Tasks from the
+  // navigation projection; other Projects show their on-demand full list, which
+  // is bounded by takeRecentWithCurrent for display.
+  const sourceTasks = useOnDemandTasks ? onDemandTasks : tasks;
+  const visibleTasks = takeRecentWithCurrent(sourceTasks, currentTaskId, isTaskBusy, taskActivity);
 
   return (
     <section aria-labelledby={`project-name-${project.id}`} aria-current={currentProject ? "location" : undefined}>
@@ -739,8 +760,10 @@ function taskActivity(task: Task) {
   return activityTime(task.updated_at, task.created_at);
 }
 
-function projectActivity(project: Project, tasks: Task[] = []) {
-  return Math.max(activityTime(project.last_activity_at, project.updated_at, project.created_at), ...tasks.map(taskActivity));
+// The navigation projection (#193) carries last_activity_at precomputed by the
+// daemon (max of Project and Task activity), so ordering is a single read.
+function navigationActivity(summary: WorkspaceProjectSummary) {
+  return activityTime(summary.last_activity_at, summary.updated_at, summary.created_at);
 }
 
 function activityTime(...values: (string | undefined)[]) {
