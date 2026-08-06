@@ -297,6 +297,24 @@ func (server *Server) recoverBlackboardConclusionDispatchFailure(receipt task.Bl
 	server.logger.Printf("assisted conclusion: dispatch requires operator action Task %s receipt %s: %v", receipt.TaskID, receipt.ID, cause)
 }
 
+// rebindInFlightAssistedConclusionReceipts carries any in-flight assisted-
+// conclusion Receipt for a Task from an old (now terminal) Continuation to its
+// replacement after an interrupt_then_replace native steer or a writable-
+// continuation recovery (#197). The Receipt's continuation_id and
+// source_session_id are repointed to the live replacement so a later retry
+// delivers the control turn instead of failing on the dead pre-steer session.
+// Errors are logged, not fatal: a rebind failure must not block the steer.
+func (server *Server) rebindInFlightAssistedConclusionReceipts(taskID, oldContinuationID, replacementContinuationID, replacementSessionID string) {
+	rebound, err := server.tasks.RebindInFlightConclusionReceipts(taskID, oldContinuationID, replacementContinuationID, replacementSessionID)
+	if err != nil {
+		server.logger.Printf("assisted conclusion: rebind in-flight receipts Task %s old=%s replacement=%s: %v", taskID, oldContinuationID, replacementContinuationID, err)
+		return
+	}
+	if rebound {
+		server.logger.Printf("assisted conclusion: rebound in-flight receipts Task %s to replacement continuation %s session %s", taskID, replacementContinuationID, replacementSessionID)
+	}
+}
+
 func (server *Server) reconcileValidatedBlackboardConclusionApplies() {
 	receipts, err := server.tasks.ValidatedBlackboardConclusions()
 	if err != nil {

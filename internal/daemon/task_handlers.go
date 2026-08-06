@@ -3510,6 +3510,10 @@ func (server *Server) advanceNativeSteerContinuation(currentID string, session r
 			return fmt.Errorf("rebind Blackboard continuation grant: %w", err)
 		}
 	}
+	// Rebind any in-flight assisted-conclusion Receipt to the replacement so a
+	// later retry delivers its control turn against the live replacement session
+	// instead of looping on the pre-steer (now dead) session (#197).
+	server.rebindInFlightAssistedConclusionReceipts(old.TaskID, old.ID, next.ID, session.SessionID())
 	if _, err := server.tasks.UpdateContinuationStatus(old.ID, task.StatusCompleted); err != nil {
 		_, _ = server.tasks.UpdateContinuationStatus(next.ID, task.StatusFailed)
 		return fmt.Errorf("settle old continuation: %w", err)
@@ -3565,6 +3569,10 @@ func (server *Server) createWritableContinuationForLiveSession(found task.Task, 
 	if err := server.blackboardV2Continuity.RebindContinuationForNativeSteer(context.Background(), previous.ID, next.ID); err != nil {
 		return fail(fmt.Errorf("rebind Blackboard continuation grant: %w", err))
 	}
+	// Rebind any in-flight assisted-conclusion Receipt to the replacement so a
+	// later retry delivers its control turn against the live replacement session
+	// instead of looping on the pre-steer (now dead) session (#197).
+	server.rebindInFlightAssistedConclusionReceipts(found.ID, previous.ID, next.ID, session.SessionID())
 	if _, err := server.tasks.UpdateContinuationStatus(next.ID, task.StatusRunning); err != nil {
 		return fail(fmt.Errorf("start writable continuation: %w", err))
 	}

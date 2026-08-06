@@ -1443,6 +1443,76 @@ func (s *Service) MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(rece
 	return receipt, true, nil
 }
 
+// inFlightBlackboardConclusionReceiptStates are the Receipt states a steer may
+// rebind to a replacement Continuation. Terminal states (clean / applied) are
+// excluded: their conclusion already landed, so repointing them would risk
+// re-applying a stale batch. Validated is also excluded because its canonical
+// result was computed against the old base revision and must be regenerated, not
+// silently moved.
+var inFlightBlackboardConclusionReceiptStates = []string{
+	string(BlackboardConclusionReceiptPending),
+	string(BlackboardConclusionReceiptDispatchRequested),
+	string(BlackboardConclusionReceiptRepairDispatchRequested),
+	string(BlackboardConclusionReceiptVersionSyncRequested),
+	string(BlackboardConclusionReceiptVersionRegenerationDispatchRequested),
+	string(BlackboardConclusionReceiptAwaitingResult),
+	string(BlackboardConclusionReceiptActionRequired),
+}
+
+// RebindInFlightConclusionReceipts repoints every in-flight assisted-conclusion
+// Receipt for a Task from an old Continuation to its replacement after an
+// interrupt_then_replace native steer (#197). The Receipt's continuation_id and
+// source_session_id are moved to the live replacement; terminal Receipts
+// (clean / applied / validated) are left alone so a landed conclusion cannot be
+// re-applied. Returns true when at least one Receipt was rebound.
+//
+// The rebind is a continuation-lifecycle operation only: it does not recompute
+// base_revision (the optimistic-concurrency guard at apply time catches any
+// drift against the current Project revision) and does not persist raw provider
+// output.
+func (s *Service) RebindInFlightConclusionReceipts(taskID, oldContinuationID, replacementContinuationID, replacementSessionID string) (bool, error) {
+	taskID = strings.TrimSpace(taskID)
+	oldContinuationID = strings.TrimSpace(oldContinuationID)
+	replacementContinuationID = strings.TrimSpace(replacementContinuationID)
+	replacementSessionID = strings.TrimSpace(replacementSessionID)
+	if taskID == "" || oldContinuationID == "" || replacementContinuationID == "" || replacementSessionID == "" || oldContinuationID == replacementContinuationID {
+		return false, ErrInvalidBlackboardConclusionReceipt
+	}
+	now := time.Now().UTC()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("begin rebind in-flight Blackboard conclusion receipts: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	placeholders := strings.Repeat("?,", len(inFlightBlackboardConclusionReceiptStates))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]any, 0, len(inFlightBlackboardConclusionReceiptStates)+5)
+	args = append(args, replacementContinuationID, replacementSessionID, now.Format(time.RFC3339Nano), taskID, oldContinuationID)
+	for _, state := range inFlightBlackboardConclusionReceiptStates {
+		args = append(args, state)
+	}
+	// Repoint continuation_id and source_session_id to the replacement. The
+	// scoped WHERE clause honors the UNIQUE (task_id, continuation_id,
+	// source_turn_id) constraint by only matching rows still bound to the old
+	// Continuation, and the in-flight state filter keeps terminal Receipts fixed.
+	result, err := tx.Exec(`UPDATE assisted_conclusion_receipts
+		SET continuation_id=?, source_session_id=?, updated_at=?
+		WHERE task_id=? AND continuation_id=? AND state IN (`+placeholders+`)`,
+		args...)
+	if err != nil {
+		return false, fmt.Errorf("rebind in-flight Blackboard conclusion receipts: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("count rebound Blackboard conclusion receipts: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit rebind in-flight Blackboard conclusion receipts: %w", err)
+	}
+	return changed > 0, nil
+}
+
 // MarkBlackboardConclusionWorkTurnConflict resolves a conclusion dispatch that a
 // non-yielding provider work turn refused (a single-active-call control
 // conflict). Within the bounded conflict budget it stays operator-retryable so a
