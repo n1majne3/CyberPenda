@@ -2847,6 +2847,23 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		writeTaskError(response, err)
 		return
 	}
+	freshContinuation := false
+	if active == nil {
+		// A terminal Runtime Continuation (for example closed by Blackboard
+		// Finish) cannot accept new operator work: its Interface Grant is
+		// closed. Create and bind a fresh writable Continuation before the Turn
+		// is sent so Blackboard writes use the new authority (ADR 0016).
+		fresh, freshErr := server.createWritableContinuationForLiveSession(found, session)
+		if freshErr != nil && !errors.Is(freshErr, errNoContinuationToContinue) {
+			server.releaseProviderTaskControl(found.ID)
+			writeError(response, http.StatusConflict, freshErr.Error())
+			return
+		}
+		if freshErr == nil {
+			active = fresh
+			freshContinuation = true
+		}
+	}
 	conversationPayload := task.EventPayload{
 		"role": "user", "text": input.Message, "request_id": input.RequestID,
 		"delivery": "native_steer", "outcome": "pending", "mode": string(mode),
@@ -2879,7 +2896,7 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		if currentContinuationID != "" {
 			_, _ = server.tasks.AppendContinuationEvent(found.ID, currentContinuationID, kind, payload)
 		}
-		if mode == runtime.ProviderSessionModeInterruptThenReplace && kind == task.EventKindSteering && payload["outcome"] == "settled" && currentContinuationID != "" {
+		if mode == runtime.ProviderSessionModeInterruptThenReplace && kind == task.EventKindSteering && payload["outcome"] == "settled" && currentContinuationID != "" && !freshContinuation {
 			if transitionErr := server.advanceNativeSteerContinuation(currentContinuationID, session, &continuationID); transitionErr != nil {
 				continuationTransitionErr = transitionErr
 				failure := task.EventPayload{
@@ -3228,6 +3245,72 @@ func (server *Server) advanceNativeSteerContinuation(currentID string, session r
 	}
 	*continuationID = next.ID
 	return nil
+}
+
+// errNoContinuationToContinue reports a Task that never had a Runtime
+// Continuation. The legacy one-shot path keeps task-level events in that
+// degenerate state instead of inventing continuation authority.
+var errNoContinuationToContinue = errors.New("no prior continuation to continue after terminal Blackboard state")
+
+// createWritableContinuationForLiveSession detects a terminal Runtime
+// Continuation (for example closed by Blackboard Finish) before new operator
+// work is sent and creates a fresh writable Continuation on the same
+// Task-scoped persistent Runtime. The immutable in-container MCP grant and the
+// Working Blackboard Snapshot are rebound to the replacement so later
+// Blackboard writes use the new authority; the prior terminal Continuation
+// keeps its closed state. Failure is explicit: the turn is never sent against
+// the closed authority.
+func (server *Server) createWritableContinuationForLiveSession(found task.Task, session runtime.ProviderSession) (*task.TaskContinuation, error) {
+	previous, err := server.tasks.LatestContinuation(found.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load terminal continuation: %w", err)
+	}
+	if previous == nil {
+		return nil, errNoContinuationToContinue
+	}
+	next, err := server.tasks.CreateReplacementContinuation(*previous)
+	if err != nil {
+		return nil, fmt.Errorf("create writable continuation: %w", err)
+	}
+	fail := func(cause error) (*task.TaskContinuation, error) {
+		_, _ = server.tasks.UpdateContinuationStatus(next.ID, task.StatusFailed)
+		return nil, cause
+	}
+	binder, ok := session.(runtime.ProviderSessionContinuationBinder)
+	if !ok {
+		return fail(fmt.Errorf("provider session cannot bind the fresh continuation"))
+	}
+	if err := binder.BindContinuation(next.ID); err != nil {
+		return fail(fmt.Errorf("bind provider continuation: %w", err))
+	}
+	// Carry the Blackboard grant and Working Snapshot ownership to the
+	// replacement before any new Turn writes. The in-container MCP token is
+	// immutable, so this rebind keeps Blackboard writes alive on the
+	// replacement instead of resolving to the terminal Continuation
+	// (closed_continuation).
+	if server.blackboardV2Continuity == nil {
+		return fail(fmt.Errorf("Blackboard continuation rebind is unavailable"))
+	}
+	if err := server.blackboardV2Continuity.RebindContinuationForNativeSteer(context.Background(), previous.ID, next.ID); err != nil {
+		return fail(fmt.Errorf("rebind Blackboard continuation grant: %w", err))
+	}
+	if _, err := server.tasks.UpdateContinuationStatus(next.ID, task.StatusRunning); err != nil {
+		return fail(fmt.Errorf("start writable continuation: %w", err))
+	}
+	// Timeline boundary: the prior terminal Continuation stays visible next to
+	// the fresh writable one in the Runtime Owner Workspace.
+	_, _ = server.tasks.AppendContinuationEvent(found.ID, previous.ID, task.EventKindLifecycle, task.EventPayload{
+		"phase": "completed", "reason": "superseded_by_writable_continuation",
+	})
+	_, _ = server.tasks.AppendContinuationEvent(found.ID, next.ID, task.EventKindLifecycle, task.EventPayload{
+		"phase": "started", "adapter": "provider-session", "reason": "writable_after_terminal_continuation",
+	})
+	if server.harness != nil && server.harness.IsActive(found.ID) {
+		if err := server.harness.RebindContinuation(found.ID, next.ID); err != nil {
+			return fail(fmt.Errorf("rebind runtime continuation: %w", err))
+		}
+	}
+	return &next, nil
 }
 
 func (server *Server) recordSelectedRuntimeConfig(response http.ResponseWriter, found task.Task, steeringEventID string, input taskContinuationSelectionInput) (task.RuntimeConfigVersion, bool) {

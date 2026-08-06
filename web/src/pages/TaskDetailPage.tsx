@@ -588,6 +588,16 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
             <span>runner: {owner.runner}</span>
             <span className="hidden xl:inline" aria-hidden="true">·</span>
             <span className="hidden xl:inline">continuation status: {currentContinuation.status}</span>
+            {owner.activeContinuation &&
+              owner.latestContinuation &&
+              owner.latestContinuation.id !== owner.activeContinuation.id && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="hidden 2xl:inline" data-testid="prior-terminal-continuation">
+                    prior terminal: #{owner.latestContinuation.number} ({owner.latestContinuation.status})
+                  </span>
+                </>
+              )}
             {(controls?.native_session_captured || currentContinuation.nativeSessionID) && (
               <span className="hidden 2xl:inline">native session: captured</span>
             )}

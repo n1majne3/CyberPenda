@@ -155,7 +155,11 @@ func (s *forceBusySession) ControlBusy() bool {
 
 func newFinishTaskFixture(t *testing.T, factory ProviderSessionFactory) (*Server, task.Task, modelprovider.Provider) {
 	t.Helper()
-	root := t.TempDir()
+	return newFinishTaskFixtureAt(t, t.TempDir(), factory)
+}
+
+func newFinishTaskFixtureAt(t *testing.T, root string, factory ProviderSessionFactory) (*Server, task.Task, modelprovider.Provider) {
+	t.Helper()
 	server, err := NewServer(Config{
 		DBPath: filepath.Join(root, "pentest.db"), RuntimeRoot: filepath.Join(root, "runs"),
 		DisableBuiltinSkills: true, ProviderSessionFactory: factory,

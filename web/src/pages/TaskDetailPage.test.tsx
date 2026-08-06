@@ -565,6 +565,67 @@ describe("TaskDetailPage", () => {
     expect(screen.getByText("same runtime only")).toBeInTheDocument();
   });
 
+  it("shows the prior terminal continuation next to the current writable one", async () => {
+    stubTaskDetailApi({
+      status: "running",
+      active_continuation: {
+        id: "cont-1",
+        task_id: "task-1",
+        number: 1,
+        runtime_profile_id: "profile-1",
+        runtime_provider: "codex",
+        runner: "sandbox",
+        status: "running",
+      },
+      latest_continuation: {
+        id: "cont-2",
+        task_id: "task-1",
+        number: 2,
+        runtime_profile_id: "profile-1",
+        runtime_provider: "codex",
+        runner: "sandbox",
+        status: "completed",
+      },
+    });
+
+    renderPage();
+
+    expect(await screen.findByText("continuation #1")).toBeInTheDocument();
+    expect(screen.getByText("continuation status: running")).toBeInTheDocument();
+    const prior = screen.getByTestId("prior-terminal-continuation");
+    expect(prior).toHaveTextContent("prior terminal: #2 (completed)");
+  });
+
+  it("does not repeat the same continuation as its own prior terminal", async () => {
+    stubTaskDetailApi({
+      status: "running",
+      active_continuation: {
+        id: "cont-2",
+        task_id: "task-1",
+        number: 2,
+        runtime_profile_id: "profile-1",
+        runtime_provider: "codex",
+        runner: "sandbox",
+        status: "running",
+      },
+      latest_continuation: {
+        id: "cont-2",
+        task_id: "task-1",
+        number: 2,
+        runtime_profile_id: "profile-1",
+        runtime_provider: "codex",
+        runner: "sandbox",
+        status: "running",
+      },
+    });
+
+    renderPage();
+
+    expect(await screen.findByText("continuation #2")).toBeInTheDocument();
+    expect(screen.getByText("continuation status: running")).toBeInTheDocument();
+    expect(screen.queryByTestId("prior-terminal-continuation")).not.toBeInTheDocument();
+  });
+
   it("lets the continuation summary shrink instead of overflowing the header", async () => {
     stubTaskDetailApi();
 
