@@ -2821,18 +2821,21 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		return
 	}
 	if found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeAssisted {
-		if err := server.acquireTaskControlAfterAssistedSettlement(request.Context(), found, true, true); err != nil {
-			writeError(response, http.StatusConflict, err.Error())
-			return
-		}
-	} else if !server.acquireProviderTaskControl(found.ID) {
+		// #194: durably accept the steering before any provider work wait. The
+		// operator message is persisted as pending and the request returns 202
+		// immediately; the accepted steering is applied at the next valid work
+		// boundary (after the Harness control Turn settles) on the writable
+		// Runtime Continuation.
+		server.handleAssistedNativeSteerAcceptance(response, found, session, mode, operation, selection, input)
+		return
+	}
+	if !server.acquireProviderTaskControl(found.ID) {
 		writeError(response, http.StatusConflict, "task control operation already active")
 		return
 	}
-	// Stop may have completed while an assisted steer was waiting for semantic
-	// settlement. Revalidate durable Task and registry ownership only after this
-	// operation owns Task control; never dispatch through the stale session
-	// pointer captured before the wait.
+	// Stop may have completed while this request waited for Task control.
+	// Revalidate durable Task and registry ownership only after this operation
+	// owns Task control; never dispatch through a stale session pointer.
 	currentTask, currentErr := server.tasks.Get(found.ID)
 	currentSession, stillBound := server.providerSessions.get(found.ID)
 	if currentErr != nil || (currentTask.Status != task.StatusRunning && currentTask.Status != task.StatusPaused) || !stillBound || currentSession != session {
@@ -2882,11 +2885,168 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		writeTaskError(response, err)
 		return
 	}
-
 	continuationID := ""
 	if active != nil {
 		continuationID = active.ID
 	}
+	providerRequest := runtime.ProviderSessionRequest{
+		RequestID:                input.RequestID,
+		Message:                  input.Message,
+		ModelProviderID:          selection.ModelProviderID,
+		Model:                    selection.Model,
+		RequestedReasoningEffort: selection.RequestedReasoningEffort,
+	}
+	taskCtx := server.providerTaskContext(found.ID)
+	go func() {
+		defer server.releaseProviderTaskControl(found.ID)
+		ctx, cancel := context.WithTimeout(taskCtx, 30*time.Second)
+		defer cancel()
+		server.executeNativeSteerOperation(ctx, found, session, mode, operation, providerRequest, conversation, continuationID, freshContinuation)
+	}()
+
+	writeJSON(response, http.StatusAccepted, struct {
+		RequestID string                      `json:"request_id"`
+		SessionID string                      `json:"session_id"`
+		Mode      runtime.ProviderSessionMode `json:"mode"`
+		Outcome   string                      `json:"outcome"`
+	}{RequestID: input.RequestID, SessionID: session.SessionID(), Mode: mode, Outcome: "accepted"})
+}
+
+// nativeSteerOperationFunc is one provider session steer operation selected by
+// the session mode (in_turn_steer or interrupt_then_replace).
+type nativeSteerOperationFunc func(context.Context, runtime.ProviderSessionRequest, runtime.ProviderSessionEmit) (runtime.ProviderSessionResult, error)
+
+// handleAssistedNativeSteerAcceptance durably accepts one native steer request
+// before any Harness control Turn completes (#194). The operator message is
+// persisted as a pending conversation event, the request returns 202, and the
+// accepted steering is applied by the provider control queue after the
+// assisted conclusion settles.
+func (server *Server) handleAssistedNativeSteerAcceptance(response http.ResponseWriter, found task.Task, session runtime.ProviderSession, mode runtime.ProviderSessionMode, operation nativeSteerOperationFunc, selection runtime.ProviderSessionRequest, input nativeSteerRequest) {
+	conversationPayload := task.EventPayload{
+		"role": "user", "text": input.Message, "request_id": input.RequestID,
+		"delivery": "native_steer", "outcome": "pending", "mode": string(mode),
+		"session_id":        session.SessionID(),
+		"model_provider_id": selection.ModelProviderID, "model": selection.Model,
+		"requested_reasoning_effort": selection.RequestedReasoningEffort,
+	}
+	conversation, err := server.tasks.AppendEvent(found.ID, task.EventKindConversation, conversationPayload)
+	if err != nil {
+		writeTaskError(response, err)
+		return
+	}
+	providerRequest := runtime.ProviderSessionRequest{
+		RequestID:                input.RequestID,
+		Message:                  input.Message,
+		ModelProviderID:          selection.ModelProviderID,
+		Model:                    selection.Model,
+		RequestedReasoningEffort: selection.RequestedReasoningEffort,
+	}
+	queued := server.enqueueProviderTaskControlWithSettlement(found.ID, false, server.taskConclusionSettlement(found), func(ctx context.Context) {
+		server.applyAcceptedNativeSteer(ctx, found, session, mode, operation, providerRequest, conversation)
+	})
+	if !queued {
+		server.emitSteeringFailedEvent(found.ID, session, mode, providerRequest, "provider_control_unavailable", "provider control queue is closed")
+		writeError(response, http.StatusConflict, "task control is shutting down")
+		return
+	}
+	writeJSON(response, http.StatusAccepted, struct {
+		RequestID string                      `json:"request_id"`
+		SessionID string                      `json:"session_id"`
+		Mode      runtime.ProviderSessionMode `json:"mode"`
+		Outcome   string                      `json:"outcome"`
+	}{RequestID: input.RequestID, SessionID: session.SessionID(), Mode: mode, Outcome: "accepted"})
+}
+
+// taskConclusionSettlement waits for the durable assisted conclusion to settle
+// before an accepted native steer may take the provider control boundary. The
+// second (post-acquisition) pass is non-blocking so a conclusion that becomes
+// pending can yield control to its own coordinator.
+func (server *Server) taskConclusionSettlement(found task.Task) providerControlSettlement {
+	return func(ctx context.Context, wait bool) (bool, error) {
+		for {
+			receipt, err := server.tasks.LatestBlackboardConclusion(found.ID)
+			if err != nil {
+				return false, err
+			}
+			if receipt == nil {
+				return true, nil
+			}
+			switch receipt.View(found.RunControls.BlackboardConclusionMode).State {
+			case task.BlackboardConclusionStateClean:
+				return true, nil
+			case task.BlackboardConclusionStateActionRequired:
+				// The conclusion needs operator action, not Harness work; the
+				// provider control boundary is free for the accepted steering.
+				return true, nil
+			}
+			if !wait {
+				return false, nil
+			}
+			timer := time.NewTimer(5 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return false, ctx.Err()
+			case <-timer.C:
+			}
+		}
+	}
+}
+
+// applyAcceptedNativeSteer runs under the provider control queue after the
+// assisted conclusion settled. It revalidates the durable Task and registry
+// ownership, resolves the writable Runtime Continuation (creating a fresh one
+// after terminal Blackboard state), and executes the accepted Turn. Any
+// failure emits a stable steering_failed event; the operator message stays
+// durably accepted.
+func (server *Server) applyAcceptedNativeSteer(ctx context.Context, found task.Task, session runtime.ProviderSession, mode runtime.ProviderSessionMode, operation nativeSteerOperationFunc, providerRequest runtime.ProviderSessionRequest, conversation task.Event) {
+	currentTask, currentErr := server.tasks.Get(found.ID)
+	currentSession, stillBound := server.providerSessions.get(found.ID)
+	if currentErr != nil || (currentTask.Status != task.StatusRunning && currentTask.Status != task.StatusPaused) || !stillBound || currentSession != session {
+		server.emitSteeringFailedEvent(found.ID, session, mode, providerRequest, "task_state_changed", "native steer requires an active Task-owned provider session")
+		return
+	}
+	active, err := server.tasks.ActiveContinuation(found.ID)
+	if err != nil {
+		server.emitSteeringFailedEvent(found.ID, session, mode, providerRequest, "continuation_unavailable", err.Error())
+		return
+	}
+	freshContinuation := false
+	continuationID := ""
+	if active != nil {
+		continuationID = active.ID
+	} else {
+		fresh, freshErr := server.createWritableContinuationForLiveSession(found, session)
+		if freshErr != nil && !errors.Is(freshErr, errNoContinuationToContinue) {
+			server.emitSteeringFailedEvent(found.ID, session, mode, providerRequest, "continuation_unavailable", freshErr.Error())
+			return
+		}
+		if freshErr == nil {
+			continuationID = fresh.ID
+			freshContinuation = true
+		}
+	}
+	runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	server.executeNativeSteerOperation(runCtx, found, session, mode, operation, providerRequest, conversation, continuationID, freshContinuation)
+}
+
+// emitSteeringFailedEvent projects one stable, redacted steering failure. The
+// accepted conversation event keeps the operator message; raw provider text
+// never crosses this seam.
+func (server *Server) emitSteeringFailedEvent(taskID string, session runtime.ProviderSession, mode runtime.ProviderSessionMode, providerRequest runtime.ProviderSessionRequest, errorCode, errorMessage string) {
+	_, _ = server.tasks.AppendEvent(taskID, task.EventKindSteering, task.EventPayload{
+		"request_id": providerRequest.RequestID, "session_id": session.SessionID(), "mode": string(mode),
+		"outcome": "failed", "phase": "steering_failed", "error_code": errorCode, "error": errorMessage,
+		"model_provider_id": providerRequest.ModelProviderID, "model": providerRequest.Model,
+		"requested_reasoning_effort": providerRequest.RequestedReasoningEffort,
+	})
+}
+
+// executeNativeSteerOperation sends one accepted native steer Turn under Task
+// control and projects applied/failed outcome events on the correct Runtime
+// Continuation. The caller owns Task control for the whole operation.
+func (server *Server) executeNativeSteerOperation(ctx context.Context, found task.Task, session runtime.ProviderSession, mode runtime.ProviderSessionMode, operation nativeSteerOperationFunc, providerRequest runtime.ProviderSessionRequest, conversation task.Event, continuationID string, freshContinuation bool) {
 	var continuationMu sync.Mutex
 	var continuationTransitionErr error
 	emit := func(kind task.EventKind, payload task.EventPayload) {
@@ -2912,56 +3072,36 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 			_, _ = server.tasks.AppendEvent(found.ID, kind, payload)
 		}
 	}
-	providerRequest := runtime.ProviderSessionRequest{
-		RequestID:                input.RequestID,
-		Message:                  input.Message,
-		ModelProviderID:          selection.ModelProviderID,
-		Model:                    selection.Model,
-		RequestedReasoningEffort: selection.RequestedReasoningEffort,
+	result, operationErr := operation(ctx, providerRequest, emit)
+	if operationErr != nil {
+		errorCode, errorMessage := nativeSteerFailurePresentation(operationErr)
+		// Public Task Events carry only redacted, stable failure fields.
+		// Raw provider text stays out of the conversation surface.
+		failure := task.EventPayload{
+			"request_id": providerRequest.RequestID, "session_id": session.SessionID(), "mode": string(mode),
+			"outcome": "failed", "phase": "steering_failed", "error_code": errorCode,
+			"error":             errorMessage,
+			"model_provider_id": providerRequest.ModelProviderID, "model": providerRequest.Model,
+			"requested_reasoning_effort": providerRequest.RequestedReasoningEffort,
+		}
+		emit(task.EventKindSteering, failure)
+		return
 	}
-	taskCtx := server.providerTaskContext(found.ID)
-	go func() {
-		defer server.releaseProviderTaskControl(found.ID)
-		ctx, cancel := context.WithTimeout(taskCtx, 30*time.Second)
-		defer cancel()
-		result, operationErr := operation(ctx, providerRequest, emit)
-		if operationErr != nil {
-			errorCode, errorMessage := nativeSteerFailurePresentation(operationErr)
-			// Public Task Events carry only redacted, stable failure fields.
-			// Raw provider text stays out of the conversation surface.
-			failure := task.EventPayload{
-				"request_id": input.RequestID, "session_id": session.SessionID(), "mode": string(mode),
-				"outcome": "failed", "phase": "steering_failed", "error_code": errorCode,
-				"error":             errorMessage,
-				"model_provider_id": selection.ModelProviderID, "model": selection.Model,
-				"requested_reasoning_effort": selection.RequestedReasoningEffort,
-			}
-			emit(task.EventKindSteering, failure)
-			return
+	continuationMu.Lock()
+	transitionErr := continuationTransitionErr
+	continuationMu.Unlock()
+	if transitionErr != nil {
+		_ = server.closeProviderSession(found.ID)
+		if current, _ := server.tasks.ActiveContinuation(found.ID); current != nil {
+			_, _ = server.tasks.UpdateContinuationStatus(current.ID, task.StatusFailed)
 		}
-		continuationMu.Lock()
-		transitionErr := continuationTransitionErr
-		continuationMu.Unlock()
-		if transitionErr != nil {
-			_ = server.closeProviderSession(found.ID)
-			if current, _ := server.tasks.ActiveContinuation(found.ID); current != nil {
-				_, _ = server.tasks.UpdateContinuationStatus(current.ID, task.StatusFailed)
-			}
-			_, _ = server.tasks.UpdateStatus(found.ID, task.StatusFailed)
-			return
-		}
-		payload := result.Payload()
-		payload["outcome"] = "applied"
-		payload["phase"] = "steering_applied"
-		emit(task.EventKindSteering, payload)
-	}()
-
-	writeJSON(response, http.StatusAccepted, struct {
-		RequestID string                      `json:"request_id"`
-		SessionID string                      `json:"session_id"`
-		Mode      runtime.ProviderSessionMode `json:"mode"`
-		Outcome   string                      `json:"outcome"`
-	}{RequestID: input.RequestID, SessionID: session.SessionID(), Mode: mode, Outcome: "accepted"})
+		_, _ = server.tasks.UpdateStatus(found.ID, task.StatusFailed)
+		return
+	}
+	payload := result.Payload()
+	payload["outcome"] = "applied"
+	payload["phase"] = "steering_applied"
+	emit(task.EventKindSteering, payload)
 }
 
 type providerPermissionResponseRequest struct {

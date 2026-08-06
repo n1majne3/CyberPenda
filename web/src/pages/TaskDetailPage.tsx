@@ -754,6 +754,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
           sendMode={sendMode}
           sendActionLabel={sendActionLabel}
           actionError={actionError}
+          steerState={controls?.native_steer_state}
           continuationModelProviders={continuationModelProviders}
           continuationModelProvider={continuationModelProvider}
           continuationModelOverride={continuationModelOverride}
@@ -1045,6 +1046,18 @@ type ConversationSelection = {
   reasoning_effort: string;
 };
 
+// steerPendingState reports whether an accepted native steer is still waiting
+// for the Runtime to apply or reject it (#194).
+function steerPendingState(state: string | undefined): boolean {
+  return (
+    state === "pending" ||
+    state === "requested" ||
+    state === "acknowledged" ||
+    state === "settled" ||
+    state === "started"
+  );
+}
+
 // resolveConversationAction decides, from owner-independent runtime controls,
 // which transport a new operator message takes. Both owner kinds share the
 // decision so steer/queue/restart rules cannot drift between Task and Session.
@@ -1300,6 +1313,7 @@ function RuntimeOwnerComposer({
   sendMode,
   sendActionLabel,
   actionError,
+  steerState,
   continuationModelProviders,
   continuationModelProvider,
   continuationModelOverride,
@@ -1330,6 +1344,7 @@ function RuntimeOwnerComposer({
   sendMode: ConversationSendMode;
   sendActionLabel: string;
   actionError: string | null;
+  steerState?: string;
   continuationModelProviders: ModelProvider[];
   continuationModelProvider: string;
   continuationModelOverride: string;
@@ -1417,6 +1432,16 @@ function RuntimeOwnerComposer({
               <Badge variant={sendMode === "unavailable" ? "warning" : "outline"} size="sm">
                 {providerSwitchRequested ? "switch provider" : conversationModeText(sendMode)}
               </Badge>
+              {steerPendingState(steerState) && (
+                <Badge variant="warning" size="sm" data-testid="steer-pending-badge">
+                  steering pending…
+                </Badge>
+              )}
+              {steerState === "failed" && (
+                <Badge variant="destructive" size="sm" data-testid="steer-failed-badge">
+                  steering failed
+                </Badge>
+              )}
             </div>
             <div className="ml-auto flex shrink-0 items-center gap-1">
               {running && queueAvailable && sendMode !== "queue" && (

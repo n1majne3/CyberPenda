@@ -626,6 +626,42 @@ describe("TaskDetailPage", () => {
     expect(screen.queryByTestId("prior-terminal-continuation")).not.toBeInTheDocument();
   });
 
+  it("shows pending and failed Harness Steering states in the composer", async () => {
+    stubTaskDetailApi({
+      status: "running",
+      runtime_controls: {
+        native_steer_available: true,
+        native_steer_state: "pending",
+        native_session_captured: true,
+        same_runtime_provider_only: true,
+        runtime_provider: "codex",
+      },
+    });
+
+    renderPage();
+
+    expect(await screen.findByTestId("steer-pending-badge")).toHaveTextContent("steering pending…");
+    expect(screen.queryByTestId("steer-failed-badge")).not.toBeInTheDocument();
+  });
+
+  it("shows a failed Harness Steering state with a stable reason surface", async () => {
+    stubTaskDetailApi({
+      status: "running",
+      runtime_controls: {
+        native_steer_available: true,
+        native_steer_state: "failed",
+        native_session_captured: true,
+        same_runtime_provider_only: true,
+        runtime_provider: "codex",
+      },
+    });
+
+    renderPage();
+
+    expect(await screen.findByTestId("steer-failed-badge")).toHaveTextContent("steering failed");
+    expect(screen.queryByTestId("steer-pending-badge")).not.toBeInTheDocument();
+  });
+
   it("lets the continuation summary shrink instead of overflowing the header", async () => {
     stubTaskDetailApi();
 
