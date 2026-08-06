@@ -172,7 +172,7 @@ func NewServer(config Config) (*Server, error) {
 	}
 	skillImporter := config.SkillImporter
 	if skillImporter == nil {
-		skillImporter = skill.NPXImporter{}
+		skillImporter = skill.NPXSkillsImporter{}
 	}
 	skills := skill.NewService(db, skillsRoot, skillImporter)
 	if !config.DisableBuiltinSkills {

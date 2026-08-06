@@ -57,7 +57,6 @@ export function SkillsPage() {
   const [form, setForm] = useState<SkillForm>(emptySkillForm);
   const [formMode, setFormMode] = useState<FormMode>("idle");
   const [importPackage, setImportPackage] = useState("");
-  const [importRef, setImportRef] = useState("");
   const [archiveFile, setArchiveFile] = useState<File | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -150,17 +149,20 @@ export function SkillsPage() {
   }
 
   async function importSkill() {
-    if (!importPackage.trim()) return;
+    const source = importPackage.trim();
+    if (!source) return;
+    if (!/^https?:\/\//i.test(source) && !/^[\w.-]+\/[\w.-]+(@[\w.-]+)?$/.test(source)) {
+      setError("Enter a skill URL (https://…) or an owner/repo shorthand.");
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
       await apiPost("/api/skills/import", {
-        source_kind: "npm",
-        package: importPackage.trim(),
-        ref: importRef.trim(),
+        source_kind: "auto",
+        source_url: source,
       });
       setImportPackage("");
-      setImportRef("");
       setImportOpen(false);
       await loadSkills();
     } catch (e) {
@@ -536,16 +538,14 @@ export function SkillsPage() {
                   onClick={() => setImportOpen((open) => !open)}
                   aria-expanded={importOpen}
                 >
-                  <Download className="h-4 w-4" /> Import with npx skills
+                  <Download className="h-4 w-4" /> Import skill from URL or repo
                 </Button>
               </div>
               {importOpen && (
                 <ImportForm
                   importPackage={importPackage}
-                  importRef={importRef}
                   saving={saving}
                   onPackageChange={setImportPackage}
-                  onRefChange={setImportRef}
                   onImport={importSkill}
                 />
               )}
@@ -664,9 +664,9 @@ export function SkillsPage() {
                 aria-expanded={importOpen}
               >
                 <div>
-                  <h3 className="font-medium">Import with npx skills</h3>
+                  <h3 className="font-medium">Import skill from URL or repo</h3>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    Structured import only; the daemon never accepts raw shell commands.
+                    Structured import only; the daemon resolves the source itself and never accepts raw shell commands.
                   </p>
                 </div>
                 <Download className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", importOpen && "text-foreground")} />
@@ -674,10 +674,8 @@ export function SkillsPage() {
               {importOpen && (
                 <ImportForm
                   importPackage={importPackage}
-                  importRef={importRef}
                   saving={saving}
                   onPackageChange={setImportPackage}
-                  onRefChange={setImportRef}
                   onImport={importSkill}
                 />
               )}
@@ -704,44 +702,28 @@ export function SkillsPage() {
 
 function ImportForm({
   importPackage,
-  importRef,
   saving,
   onPackageChange,
-  onRefChange,
   onImport,
 }: {
   importPackage: string;
-  importRef: string;
   saving: boolean;
   onPackageChange: (value: string) => void;
-  onRefChange: (value: string) => void;
   onImport: () => void;
 }) {
   return (
     <div className="space-y-3 border-t border-border pt-3">
       <p className="text-xs text-muted-foreground">
-        Structured import only; the daemon never accepts raw shell commands from this form.
+        Structured import only; the daemon resolves the source itself and never accepts raw shell commands from this form.
       </p>
       <div>
-        <Label htmlFor="import-package">Package/ref</Label>
+        <Label htmlFor="import-package">Skill source</Label>
         <Input
           id="import-package"
           name="import_package"
           value={importPackage}
           onChange={(e) => onPackageChange(e.target.value)}
-          placeholder="@acme/recon-skill…"
-          autoComplete="off"
-          spellCheck={false}
-        />
-      </div>
-      <div>
-        <Label htmlFor="import-ref">Version/ref</Label>
-        <Input
-          id="import-ref"
-          name="import_ref"
-          value={importRef}
-          onChange={(e) => onRefChange(e.target.value)}
-          placeholder="latest…"
+          placeholder="https://example.com/skills/@acme/skill  •  owner/repo  •  github.com/owner/repo"
           autoComplete="off"
           spellCheck={false}
         />
