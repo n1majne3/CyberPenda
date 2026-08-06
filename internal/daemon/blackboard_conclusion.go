@@ -545,28 +545,6 @@ func (server *Server) sendBlackboardConclusionTurn(ctx context.Context, receipt 
 	return err
 }
 
-func classifyTrustedBlackboardTool(name string) (blackboardToolSemantics, bool) {
-	semantics, trusted := trustedBlackboardToolSemantics[strings.TrimSpace(name)]
-	return semantics, trusted
-}
-
-type blackboardToolSemantics uint8
-
-const (
-	blackboardToolReadOnly blackboardToolSemantics = iota
-	blackboardToolEvidenceRetention
-	blackboardToolSemanticPersistence
-)
-
-var trustedBlackboardToolSemantics = map[string]blackboardToolSemantics{
-	"blackboard_change":             blackboardToolSemanticPersistence,
-	"blackboard_read":               blackboardToolReadOnly,
-	"blackboard_history":            blackboardToolReadOnly,
-	"blackboard_retain_evidence":    blackboardToolEvidenceRetention,
-	"blackboard_checkpoint_attempt": blackboardToolSemanticPersistence,
-	"blackboard_finish":             blackboardToolSemanticPersistence,
-}
-
 func (server *Server) attachBlackboardConclusion(found task.Task) (task.Task, error) {
 	view := task.BlackboardConclusion{
 		Mode:  found.RunControls.BlackboardConclusionMode,

@@ -94,6 +94,7 @@ func (s *ClaudeCodeProviderSession) handleClaudeAssistedObservation(method strin
 		observation.Kind = ProviderSessionObservationTurnCompleted
 		observation.Status = providerJSONValue(params, "status")
 	}
+	observation.BlackboardOperation, _ = ClassifyTrustedBlackboardTool(observation.ToolName)
 	if observation.Validate() != nil {
 		return
 	}

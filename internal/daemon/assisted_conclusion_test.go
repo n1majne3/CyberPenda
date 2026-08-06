@@ -1311,7 +1311,7 @@ func TestCleanBlackboardConclusionCheckpointSurvivesDaemonRestart(t *testing.T) 
 	requestID := session.LastRequests()[0].RequestID
 	for index, observation := range []runtime.ProviderSessionObservation{
 		{ToolName: "shell", Status: "failed"},
-		{ToolName: "blackboard_change", Status: "succeeded"},
+		{ToolName: "mcp__pentest__blackboard_change", Status: "succeeded", BlackboardOperation: runtime.BlackboardOperationChange},
 	} {
 		observation.Kind = runtime.ProviderSessionObservationToolResult
 		observation.RequestID = requestID
@@ -1372,7 +1372,7 @@ func TestAssistedConclusionIgnoresControlTurnsAndTrustedBlackboardTools(t *testi
 	for _, observation := range []runtime.ProviderSessionObservation{
 		{Kind: runtime.ProviderSessionObservationToolResult, RequestID: "control-request-1", ProviderTurnID: controlResult.ProviderTurnID, ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded"},
 		{Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: "control-request-1", ProviderTurnID: controlResult.ProviderTurnID, Status: "completed"},
-		{Kind: runtime.ProviderSessionObservationToolResult, RequestID: workRequestID, ProviderTurnID: "work-turn-1", ToolCallID: "tool-2", ToolName: "blackboard_change", Status: "succeeded"},
+		{Kind: runtime.ProviderSessionObservationToolResult, RequestID: workRequestID, ProviderTurnID: "work-turn-1", ToolCallID: "tool-2", ToolName: "mcp__pentest__blackboard_change", Status: "succeeded", BlackboardOperation: runtime.BlackboardOperationChange},
 		{Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: workRequestID, ProviderTurnID: "work-turn-1", Status: "completed"},
 	} {
 		if err := session.EmitObservation(observation); err != nil {
@@ -1399,9 +1399,9 @@ func TestAssistedConclusionTracksSemanticPersistenceInToolResultOrder(t *testing
 			name: "successful semantic mutations clear earlier work",
 			results: []runtime.ProviderSessionObservation{
 				{ToolName: "shell", Status: "failed"},
-				{ToolName: "blackboard_change", Status: "succeeded"},
-				{ToolName: "blackboard_checkpoint_attempt", Status: "succeeded"},
-				{ToolName: "blackboard_finish", Status: "succeeded"},
+				{ToolName: "mcp__pentest__blackboard_change", Status: "succeeded", BlackboardOperation: runtime.BlackboardOperationChange},
+				{ToolName: "mcp__pentest__blackboard_checkpoint_attempt", Status: "succeeded", BlackboardOperation: runtime.BlackboardOperationCheckpointAttempt},
+				{ToolName: "mcp__pentest__blackboard_finish", Status: "succeeded", BlackboardOperation: runtime.BlackboardOperationFinish},
 			},
 			wantWork: 1, wantPersist: 1,
 		},
@@ -1409,12 +1409,12 @@ func TestAssistedConclusionTracksSemanticPersistenceInToolResultOrder(t *testing
 			name: "reads evidence retention and failed mutations do not clear work",
 			results: []runtime.ProviderSessionObservation{
 				{ToolName: "shell", Status: "succeeded"},
-				{ToolName: "blackboard_read", Status: "succeeded"},
-				{ToolName: "blackboard_history", Status: "succeeded"},
-				{ToolName: "blackboard_retain_evidence", Status: "succeeded"},
-				{ToolName: "blackboard_change", Status: "failed"},
-				{ToolName: "blackboard_checkpoint_attempt", Status: "failed"},
-				{ToolName: "blackboard_finish", Status: "failed"},
+				{ToolName: "mcp__pentest__blackboard_read", Status: "succeeded", BlackboardOperation: runtime.BlackboardOperationRead},
+				{ToolName: "mcp__pentest__blackboard_history", Status: "succeeded", BlackboardOperation: runtime.BlackboardOperationHistory},
+				{ToolName: "mcp__pentest__blackboard_retain_evidence", Status: "succeeded", BlackboardOperation: runtime.BlackboardOperationRetainEvidence},
+				{ToolName: "mcp__pentest__blackboard_change", Status: "failed", BlackboardOperation: runtime.BlackboardOperationChange},
+				{ToolName: "mcp__pentest__blackboard_checkpoint_attempt", Status: "failed", BlackboardOperation: runtime.BlackboardOperationCheckpointAttempt},
+				{ToolName: "mcp__pentest__blackboard_finish", Status: "failed", BlackboardOperation: runtime.BlackboardOperationFinish},
 			},
 			wantDebt: true, wantWork: 1, wantPersist: 0,
 		},
@@ -1422,10 +1422,19 @@ func TestAssistedConclusionTracksSemanticPersistenceInToolResultOrder(t *testing
 			name: "later failed non Blackboard result restores debt",
 			results: []runtime.ProviderSessionObservation{
 				{ToolName: "http", Status: "succeeded"},
-				{ToolName: "blackboard_change", Status: "succeeded"},
+				{ToolName: "mcp__pentest__blackboard_change", Status: "succeeded", BlackboardOperation: runtime.BlackboardOperationChange},
 				{ToolName: "shell", Status: "failed"},
 			},
 			wantDebt: true, wantWork: 2, wantPersist: 1,
+		},
+		{
+			name: "provider qualified spoofed server name never covers work",
+			results: []runtime.ProviderSessionObservation{
+				{ToolName: "shell", Status: "succeeded"},
+				{ToolName: "mcp__evil__blackboard_change", Status: "succeeded"},
+				{ToolName: "blackboard_finish", Status: "succeeded"},
+			},
+			wantDebt: true, wantWork: 3, wantPersist: 0,
 		},
 	}
 
@@ -1506,20 +1515,31 @@ func TestAssistedConclusionSchedulesOnlyAtCompletedWorkTurnBoundary(t *testing.T
 	}
 }
 
-func TestAssistedConclusionTrustsOnlyTheSixExactBlackboardToolNames(t *testing.T) {
-	trusted := []string{
-		"blackboard_change", "blackboard_read", "blackboard_history", "blackboard_retain_evidence",
-		"blackboard_checkpoint_attempt", "blackboard_finish",
+// #192: only the exact canonical Project Interface tool identity
+// (mcp__pentest__<operation>) is trusted for semantic-debt accounting. A bare
+// display name or a near-match from another server is never trusted.
+func TestAssistedConclusionTrustsOnlyTheCanonicalProjectInterfaceToolIdentity(t *testing.T) {
+	trusted := []struct {
+		name string
+		op   runtime.BlackboardOperation
+	}{
+		{name: "mcp__pentest__blackboard_change", op: runtime.BlackboardOperationChange},
+		{name: "mcp__pentest__blackboard_read", op: runtime.BlackboardOperationRead},
+		{name: "mcp__pentest__blackboard_history", op: runtime.BlackboardOperationHistory},
+		{name: "mcp__pentest__blackboard_retain_evidence", op: runtime.BlackboardOperationRetainEvidence},
+		{name: "mcp__pentest__blackboard_checkpoint_attempt", op: runtime.BlackboardOperationCheckpointAttempt},
+		{name: "mcp__pentest__blackboard_finish", op: runtime.BlackboardOperationFinish},
 	}
-	for _, toolName := range trusted {
-		t.Run(toolName, func(t *testing.T) {
+	for _, tool := range trusted {
+		t.Run(tool.name, func(t *testing.T) {
 			server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
 			created := launchConclusionTask(t, server, projectID, profileID, "assisted")
 			waitForAssistedProviderRequests(t, session, 1)
 			requestID := session.LastRequests()[0].RequestID
 			if err := session.EmitObservation(runtime.ProviderSessionObservation{
 				Kind: runtime.ProviderSessionObservationToolResult, RequestID: requestID,
-				ProviderTurnID: "work-turn-trusted", ToolCallID: "tool-1", ToolName: toolName, Status: "succeeded",
+				ProviderTurnID: "work-turn-trusted", ToolCallID: "tool-1", ToolName: tool.name,
+				Status: "succeeded", BlackboardOperation: tool.op,
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -1532,12 +1552,14 @@ func TestAssistedConclusionTrustsOnlyTheSixExactBlackboardToolNames(t *testing.T
 			found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateClean)
 			if len(session.LastRequests()) != 1 || found.BlackboardConclusion.SourceTurnID != "work-turn-trusted" ||
 				found.BlackboardConclusion.SourceWorkWatermark != 0 || found.BlackboardConclusion.SemanticPersistenceWatermark != 0 {
-				t.Fatalf("trusted tool %q checkpoint = %#v; requests=%d", toolName, found.BlackboardConclusion, len(session.LastRequests()))
+				t.Fatalf("trusted tool %q checkpoint = %#v; requests=%d", tool.name, found.BlackboardConclusion, len(session.LastRequests()))
 			}
 		})
 	}
 
-	for _, toolName := range []string{"blackboard_changes", "mcp__pentest__blackboard_change"} {
+	for _, toolName := range []string{
+		"blackboard_change", "blackboard_changes", "mcp__evil__blackboard_change", "mcp__pentest__blackboard_changes",
+	} {
 		t.Run(toolName, func(t *testing.T) {
 			server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
 			created := launchConclusionTask(t, server, projectID, profileID, "assisted")
@@ -1561,6 +1583,26 @@ func TestAssistedConclusionTrustsOnlyTheSixExactBlackboardToolNames(t *testing.T
 				t.Fatalf("near-match tool %q checkpoint = %#v", toolName, found.BlackboardConclusion)
 			}
 		})
+	}
+}
+
+// A fabricated canonical identity on an unregistered tool name is rejected at
+// the bounded observation boundary and can never advance semantic persistence.
+func TestAssistedConclusionFabricatedCanonicalIdentityIsRejected(t *testing.T) {
+	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
+	launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
+	requestID := session.LastRequests()[0].RequestID
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationToolResult, RequestID: requestID,
+		ProviderTurnID: "work-turn-spoofed", ToolCallID: "tool-1",
+		ToolName: "mcp__evil__blackboard_change", Status: "succeeded",
+		BlackboardOperation: runtime.BlackboardOperationChange,
+	}); !errors.Is(err, runtime.ErrInvalidProviderSessionObservation) {
+		t.Fatalf("fabricated identity observation error = %v", err)
+	}
+	if len(session.LastRequests()) != 1 {
+		t.Fatalf("rejected observation dispatched a request: %d", len(session.LastRequests()))
 	}
 }
 

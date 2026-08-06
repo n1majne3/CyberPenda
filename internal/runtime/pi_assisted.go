@@ -175,6 +175,7 @@ func (s *PiProviderSession) emitPiToolObservation(params map[string]any, kind Pr
 		Kind: kind, RequestID: lineage.RequestID, SessionID: sessionID,
 		ProviderTurnID: turnID, ToolCallID: toolCallID, ToolName: toolName,
 	}
+	observation.BlackboardOperation, _ = ClassifyTrustedBlackboardTool(toolName)
 	if kind == ProviderSessionObservationToolResult {
 		observation.Status = piToolResultStatus(params)
 	}

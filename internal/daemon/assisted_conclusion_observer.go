@@ -83,9 +83,14 @@ func observeAssistedConclusion(tracker *runtime.AssistedConclusionTracker, owner
 		ProviderSessionID: strings.TrimSpace(providerID), TurnID: turnID,
 	}
 	if observation.Kind == runtime.ProviderSessionObservationToolResult {
-		toolSemantics, trusted := classifyTrustedBlackboardTool(observation.ToolName)
+		canonical, trusted := runtime.ClassifyTrustedBlackboardTool(observation.ToolName)
+		if canonical != observation.BlackboardOperation {
+			// Trusted origin is carried by the canonical identity, never by a
+			// display-name match alone. An inconsistent observation is untrusted.
+			trusted = false
+		}
 		tracker.RecordToolResult(key, strings.TrimSpace(observation.ToolCallID), !trusted,
-			trusted && observation.Status == "succeeded" && toolSemantics == blackboardToolSemanticPersistence)
+			trusted && observation.Status == "succeeded" && canonical.CoversSourceWork())
 		return
 	}
 	if observation.Kind != runtime.ProviderSessionObservationTurnCompleted {

@@ -223,6 +223,7 @@ func codexObservation(lineage ProviderSessionTurnLineage, event codexAssistedEve
 		RequestID: lineage.RequestID, SessionID: event.sessionID, ProviderTurnID: event.turnID,
 		ToolCallID: event.callID, ToolName: event.toolName, Status: event.status,
 	}
+	observation.BlackboardOperation, _ = ClassifyTrustedBlackboardTool(observation.ToolName)
 	switch event.kind {
 	case codexAssistedToolUse:
 		observation.Kind = ProviderSessionObservationToolUse

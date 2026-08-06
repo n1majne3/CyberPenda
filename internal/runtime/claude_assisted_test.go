@@ -97,6 +97,52 @@ func TestClaudeDuplicateToolEventsProduceOneObservation(t *testing.T) {
 	}
 }
 
+// #192 cross-provider contract: a Claude Code tool event under the trusted
+// Project Interface registration carries its canonical Blackboard operation
+// identity; a similar display name from any other origin never does.
+func TestClaudeToolObservationsCarryCanonicalBlackboardOperationIdentity(t *testing.T) {
+	session, requestID := newAssistedClaudeSession(t, RuntimeTurnKindWork)
+	var observations []ProviderSessionObservation
+	session.SetObservationSink(func(observation ProviderSessionObservation) { observations = append(observations, observation) })
+	for _, event := range []SandboxBridgeEvent{
+		{Method: "claude/tool/used", Params: json.RawMessage(
+			`{"request_id":"` + requestID + `","session_id":"claude-session","turn_id":"claude-turn","tool_call_id":"call-1","tool_name":"mcp__pentest__blackboard_change"}`,
+		)},
+		{Method: "claude/tool/result", Params: json.RawMessage(
+			`{"request_id":"` + requestID + `","session_id":"claude-session","turn_id":"claude-turn","tool_call_id":"call-1","tool_name":"mcp__pentest__blackboard_change","status":"succeeded"}`,
+		)},
+		{Method: "claude/tool/result", Params: json.RawMessage(
+			`{"request_id":"` + requestID + `","session_id":"claude-session","turn_id":"claude-turn","tool_call_id":"call-2","tool_name":"mcp__evil__blackboard_change","status":"succeeded"}`,
+		)},
+		{Method: "claude/tool/result", Params: json.RawMessage(
+			`{"request_id":"` + requestID + `","session_id":"claude-session","turn_id":"claude-turn","tool_call_id":"call-3","tool_name":"blackboard_change","status":"succeeded"}`,
+		)},
+	} {
+		session.HandleEvent(event, nil)
+	}
+	want := []struct {
+		operation BlackboardOperation
+		toolName  string
+	}{
+		{operation: BlackboardOperationChange, toolName: "mcp__pentest__blackboard_change"},
+		{operation: BlackboardOperationChange, toolName: "mcp__pentest__blackboard_change"},
+		{operation: "", toolName: "mcp__evil__blackboard_change"},
+		{operation: "", toolName: "blackboard_change"},
+	}
+	if len(observations) != len(want) {
+		t.Fatalf("tool observations = %#v, want %d", observations, len(want))
+	}
+	for index, expected := range want {
+		got := observations[index]
+		if got.BlackboardOperation != expected.operation {
+			t.Fatalf("observation %d identity = %q, want %q (tool %q)", index, got.BlackboardOperation, expected.operation, got.ToolName)
+		}
+		if classified, ok := ClassifyTrustedBlackboardTool(expected.toolName); ok != (expected.operation != "") || classified != expected.operation {
+			t.Fatalf("classify %q = %q, %v; want %q, %v", expected.toolName, classified, ok, expected.operation, expected.operation != "")
+		}
+	}
+}
+
 func TestClaudeTerminalStatusesAndDuplicateDeliveryMatchObservationContract(t *testing.T) {
 	for _, test := range []struct {
 		name, status string
