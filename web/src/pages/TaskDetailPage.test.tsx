@@ -46,6 +46,14 @@ function stubTaskDetailApi(
       created_at: "2026-01-01T00:00:00Z",
     },
   ],
+  timelineBody: Record<string, unknown> = {
+    task_id: "task-1",
+    items: [{ seq: 1, type: "text", content: "Timeline opened first", created_at: "2026-01-01T00:00:00Z" }],
+  },
+  transcriptBody: Record<string, unknown> = {
+    task_id: "task-1",
+    entries: transcriptEntries,
+  },
 ) {
   const scrollIntoView = vi.fn();
   Object.defineProperty(Element.prototype, "scrollIntoView", {
@@ -54,14 +62,8 @@ function stubTaskDetailApi(
   });
 
   const fetchMock = mockApi({
-    "/api/projects/project-1/tasks/task-1/timeline": {
-      task_id: "task-1",
-      items: [{ seq: 1, type: "text", content: "Timeline opened first", created_at: "2026-01-01T00:00:00Z" }],
-    },
-    "/api/projects/project-1/tasks/task-1/transcript": {
-      task_id: "task-1",
-      entries: transcriptEntries,
-    },
+    "/api/projects/project-1/tasks/task-1/timeline": timelineBody,
+    "/api/projects/project-1/tasks/task-1/transcript": transcriptBody,
     "/api/projects/project-1/tasks/task-1": {
       id: "task-1",
       project_id: "project-1",
@@ -1608,6 +1610,154 @@ describe("TaskDetailPage", () => {
         vi.advanceTimersByTimeAsync(1500);
       });
       expect(fetchMock.mock.calls.length).toBeGreaterThan(callsAfterVisiblePoll);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("loads the complete Timeline and Transcript without a cursor on the first load", async () => {
+    const { fetchMock } = stubTaskDetailApi();
+
+    renderPage();
+
+    expect(await screen.findByText("Conversation should be hidden by default")).toBeInTheDocument();
+    const calls = fetchMock.mock.calls.map(([input]) => String(input));
+    expect(calls.some((url) => url.includes("/timeline"))).toBe(true);
+    expect(calls.some((url) => url.includes("/transcript"))).toBe(true);
+    for (const url of calls) {
+      expect(url).not.toContain("after=");
+    }
+  });
+
+  it("polls the Timeline and Transcript with the last committed cursor", async () => {
+    vi.useFakeTimers();
+    try {
+      const timelineBody = {
+        task_id: "task-1",
+        items: [{ seq: 1, type: "text", content: "Timeline opened first", created_at: "2026-01-01T00:00:00Z" }],
+        cursor: 1,
+      };
+      const transcriptBody = {
+        task_id: "task-1",
+        entries: [
+          {
+            id: "entry-1",
+            seq: 1,
+            continuation: 1,
+            kind: "message",
+            role: "assistant",
+            text: "Conversation should be hidden by default",
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+        cursor: 1,
+      };
+      const { fetchMock } = stubTaskDetailApi({ status: "running" }, undefined, timelineBody, transcriptBody);
+
+      renderPage();
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(screen.getByText("Conversation should be hidden by default")).toBeInTheDocument();
+
+      // The first poll requests only the events after the committed cursor.
+      await act(async () => {
+        vi.advanceTimersByTimeAsync(1500);
+      });
+      const pollURLs = fetchMock.mock.calls.map(([input]) => String(input));
+      expect(pollURLs.some((url) => url.includes("/timeline?after=1"))).toBe(true);
+      expect(pollURLs.some((url) => url.includes("/transcript?after=1"))).toBe(true);
+
+      // New events arrive; the daemon answers the next poll from cursor 1.
+      timelineBody.items = [
+        { seq: 1, type: "text", content: "Timeline opened first", created_at: "2026-01-01T00:00:00Z" },
+        { seq: 2, type: "text", content: "Timeline item two", created_at: "2026-01-01T00:00:01Z" },
+      ];
+      timelineBody.cursor = 2;
+      transcriptBody.entries = [
+        {
+          id: "entry-1",
+          seq: 1,
+          continuation: 1,
+          kind: "message",
+          role: "assistant",
+          text: "Conversation should be hidden by default",
+          created_at: "2026-01-01T00:00:00Z",
+        },
+        {
+          id: "entry-2",
+          seq: 2,
+          continuation: 1,
+          kind: "message",
+          role: "assistant",
+          text: "Fresh transcript row",
+          created_at: "2026-01-01T00:00:01Z",
+        },
+      ];
+      transcriptBody.cursor = 2;
+
+      await act(async () => {
+        vi.advanceTimersByTimeAsync(1500);
+      });
+      const deltaURLs = fetchMock.mock.calls.map(([input]) => String(input));
+      expect(deltaURLs.some((url) => url.includes("/timeline?after=2"))).toBe(true);
+      expect(deltaURLs.some((url) => url.includes("/transcript?after=2"))).toBe(true);
+      expect(screen.getByText("Fresh transcript row")).toBeInTheDocument();
+      // The merge kernel deduplicates by stable identity: no repeated rows.
+      expect(screen.getAllByText("Conversation should be hidden by default")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the cursor stable when an idle poll returns an empty delta", async () => {
+    vi.useFakeTimers();
+    try {
+      const timelineBody = {
+        task_id: "task-1",
+        items: [{ seq: 1, type: "text", content: "Timeline opened first", created_at: "2026-01-01T00:00:00Z" }],
+        cursor: 1,
+      };
+      const transcriptBody = {
+        task_id: "task-1",
+        entries: [
+          {
+            id: "entry-1",
+            seq: 1,
+            continuation: 1,
+            kind: "message",
+            role: "assistant",
+            text: "Conversation should be hidden by default",
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+        cursor: 1,
+      };
+      const { fetchMock } = stubTaskDetailApi({ status: "running" }, undefined, timelineBody, transcriptBody);
+
+      renderPage();
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        vi.advanceTimersByTimeAsync(1500);
+      });
+
+      // Idle daemon: empty delta, cursor unchanged.
+      timelineBody.items = [];
+      transcriptBody.entries = [];
+
+      await act(async () => {
+        vi.advanceTimersByTimeAsync(1500);
+      });
+      const urls = fetchMock.mock.calls.map(([input]) => String(input));
+      expect(urls.some((url) => url.includes("/timeline?after=1"))).toBe(true);
+      expect(urls.some((url) => url.includes("/transcript?after=1"))).toBe(true);
+      // The cursor never advanced: no poll asked for events after 1.
+      expect(urls.some((url) => url.includes("after=2"))).toBe(false);
+      expect(screen.getAllByText("Conversation should be hidden by default")).toHaveLength(1);
     } finally {
       vi.useRealTimers();
     }

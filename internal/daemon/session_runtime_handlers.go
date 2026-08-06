@@ -872,12 +872,15 @@ func (server *Server) handleSessionTimeline(response http.ResponseWriter, reques
 	if items == nil {
 		items = []timeline.Item{}
 	}
+	delta, cursor := projectionDelta(items, parseProjectionCursor(request), func(item timeline.Item) int { return item.Seq })
 	writeJSON(response, http.StatusOK, struct {
 		SessionID string          `json:"session_id"`
 		Items     []timeline.Item `json:"items"`
+		Cursor    int             `json:"cursor"`
 	}{
 		SessionID: sessionID,
-		Items:     items,
+		Items:     delta,
+		Cursor:    cursor,
 	})
 }
 
@@ -912,12 +915,15 @@ func (server *Server) handleSessionTranscript(response http.ResponseWriter, requ
 	if entries == nil {
 		entries = []transcript.Entry{}
 	}
+	delta, cursor := projectionDelta(entries, parseProjectionCursor(request), func(entry transcript.Entry) int { return entry.Seq })
 	writeJSON(response, http.StatusOK, struct {
 		SessionID string             `json:"session_id"`
 		Entries   []transcript.Entry `json:"entries"`
+		Cursor    int                `json:"cursor"`
 	}{
 		SessionID: sessionID,
-		Entries:   entries,
+		Entries:   delta,
+		Cursor:    cursor,
 	})
 }
 

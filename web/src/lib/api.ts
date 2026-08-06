@@ -657,6 +657,8 @@ export interface TaskTranscriptEntry {
 export interface TaskTranscript {
   task_id: string;
   entries: TaskTranscriptEntry[];
+  /** Maximum entry Seq; the client sends it back as ?after= for the next poll. */
+  cursor?: number;
 }
 
 export interface TaskTimelineItem {
@@ -672,6 +674,8 @@ export interface TaskTimelineItem {
 export interface TaskTimeline {
   task_id: string;
   items: TaskTimelineItem[];
+  /** Maximum item Seq; the client sends it back as ?after= for the next poll. */
+  cursor?: number;
 }
 
 export interface PreflightCheck {

@@ -12,6 +12,7 @@ import { collapsedTranscriptTitle, toolCallFields } from "./taskDetailView";
 import { displayReasoningEffort, REASONING_EFFORT_VALUES, selectableModelProviders } from "./runtimeProfileForm";
 import { modelsForProvider } from "./taskLaunchForm";
 import { formatDateTime } from "@/lib/format";
+import { mergeTimelineItems, mergeTranscriptEntries } from "@/lib/ownerEvents";
 import { useDocumentVisibility } from "@/lib/useDocumentVisibility";
 
 const ACTIVE = new Set(["running", "paused"]);
@@ -112,6 +113,10 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   // Monotonic generation so slower in-flight polls cannot overwrite newer data.
   const loadGeneration = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
+  // Projection cursors: the first load reads the complete Timeline/Transcript;
+  // refresh polls request only the events after the last committed cursor.
+  const timelineCursor = useRef(0);
+  const transcriptCursor = useRef(0);
 
   const base = isSession ? `/api/sessions/${sessionId}` : `/api/projects/${projectId}/tasks/${taskId}`;
 
@@ -123,15 +128,19 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     const generation = ++loadGeneration.current;
     try {
       const loaded = isSession
-        ? await loadSessionWorkspace(base, controller.signal)
-        : await loadTaskWorkspace(base, controller.signal);
+        ? await loadSessionWorkspace(base, controller.signal, timelineCursor.current, transcriptCursor.current)
+        : await loadTaskWorkspace(base, controller.signal, timelineCursor.current, transcriptCursor.current);
       if (generation !== loadGeneration.current || controller.signal.aborted) {
         return;
       }
       setOwner(loaded.owner);
       if (loaded.owner.kind === "session") setTitleDraft(loaded.owner.title);
-      setTimeline(loaded.timeline);
-      setTranscript(loaded.transcript);
+      // Stale responses are dropped by the generation guard above; the merge
+      // reducers additionally deduplicate by stable identity.
+      setTimeline((current) => mergeTimelineItems(current, loaded.timeline));
+      setTranscript((current) => mergeTranscriptEntries(current, loaded.transcript));
+      timelineCursor.current = loaded.timelineCursor;
+      transcriptCursor.current = loaded.transcriptCursor;
       setError(null);
     } catch (e) {
       if (controller.signal.aborted || generation !== loadGeneration.current) {
@@ -146,6 +155,8 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     // Initial load on mount/owner change. loadAll() is reused by the poll loop
     // and event handlers.
     setTurnSelectionSeeded(false);
+    timelineCursor.current = 0;
+    transcriptCursor.current = 0;
     loadAll();
     Promise.all([
       apiGet<{ profiles: RuntimeProfile[] }>("/api/runtime-profiles").then((d) => setProfiles(d.profiles ?? [])),
@@ -826,26 +837,40 @@ type RuntimeWorkspaceLoad = {
   owner: RuntimeOwnerView;
   timeline: TaskTimelineItem[];
   transcript: TaskTranscriptEntry[];
+  timelineCursor: number;
+  transcriptCursor: number;
 };
 
-async function loadTaskWorkspace(base: string, signal: AbortSignal): Promise<RuntimeWorkspaceLoad> {
+async function loadTaskWorkspace(
+  base: string,
+  signal: AbortSignal,
+  timelineAfter: number,
+  transcriptAfter: number,
+): Promise<RuntimeWorkspaceLoad> {
   const [task, timeline, transcript] = await Promise.all([
     apiGet<Task>(base, { signal }),
-    apiGet<TaskTimeline>(`${base}/timeline`, { signal }),
-    apiGet<TaskTranscript>(`${base}/transcript`, { signal }),
+    apiGet<TaskTimeline>(timelineURL(base, timelineAfter), { signal }),
+    apiGet<TaskTranscript>(transcriptURL(base, transcriptAfter), { signal }),
   ]);
   return {
     owner: taskAsRuntimeOwner(task),
     timeline: timeline.items ?? [],
     transcript: transcript.entries ?? [],
+    timelineCursor: timeline.cursor ?? 0,
+    transcriptCursor: transcript.cursor ?? 0,
   };
 }
 
-async function loadSessionWorkspace(base: string, signal: AbortSignal): Promise<RuntimeWorkspaceLoad> {
+async function loadSessionWorkspace(
+  base: string,
+  signal: AbortSignal,
+  timelineAfter: number,
+  transcriptAfter: number,
+): Promise<RuntimeWorkspaceLoad> {
   const [session, timeline, transcript] = await Promise.all([
     apiGet<Session>(base, { signal }),
-    apiGet<TaskTimeline>(`${base}/timeline`, { signal }),
-    apiGet<TaskTranscript>(`${base}/transcript`, { signal }),
+    apiGet<TaskTimeline>(timelineURL(base, timelineAfter), { signal }),
+    apiGet<TaskTranscript>(transcriptURL(base, transcriptAfter), { signal }),
   ]);
   return {
     owner: sessionAsRuntimeOwner(session),
@@ -853,7 +878,19 @@ async function loadSessionWorkspace(base: string, signal: AbortSignal): Promise<
     // as task ones, so the rendered shapes are identical.
     timeline: timeline.items ?? [],
     transcript: transcript.entries ?? [],
+    timelineCursor: timeline.cursor ?? 0,
+    transcriptCursor: transcript.cursor ?? 0,
   };
+}
+
+// The first load reads the complete projection (no `after`); refresh polls
+// request only the events after the last committed cursor.
+function timelineURL(base: string, after: number): string {
+  return after > 0 ? `${base}/timeline?after=${after}` : `${base}/timeline`;
+}
+
+function transcriptURL(base: string, after: number): string {
+  return after > 0 ? `${base}/transcript?after=${after}` : `${base}/transcript`;
 }
 
 function taskAsRuntimeOwner(task: Task): RuntimeOwnerView {

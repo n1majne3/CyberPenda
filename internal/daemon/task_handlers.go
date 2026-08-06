@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1489,12 +1490,15 @@ func (server *Server) handleTaskTimeline(response http.ResponseWriter, request *
 	if items == nil {
 		items = []timeline.Item{}
 	}
+	delta, cursor := projectionDelta(items, parseProjectionCursor(request), func(item timeline.Item) int { return item.Seq })
 	writeJSON(response, http.StatusOK, struct {
 		TaskID string          `json:"task_id"`
 		Items  []timeline.Item `json:"items"`
+		Cursor int             `json:"cursor"`
 	}{
 		TaskID: found.ID,
-		Items:  items,
+		Items:  delta,
+		Cursor: cursor,
 	})
 }
 
@@ -1517,13 +1521,60 @@ func (server *Server) handleTaskTranscript(response http.ResponseWriter, request
 	if entries == nil {
 		entries = []transcript.Entry{}
 	}
+	delta, cursor := projectionDelta(entries, parseProjectionCursor(request), func(entry transcript.Entry) int { return entry.Seq })
 	writeJSON(response, http.StatusOK, struct {
 		TaskID  string             `json:"task_id"`
 		Entries []transcript.Entry `json:"entries"`
+		Cursor  int                `json:"cursor"`
 	}{
 		TaskID:  found.ID,
-		Entries: entries,
+		Entries: delta,
+		Cursor:  cursor,
 	})
+}
+
+// parseProjectionCursor reads the optional after cursor from a Timeline or
+// Transcript request. The cursor is the last Seq the client committed; a
+// missing or invalid value reads the complete projection.
+func parseProjectionCursor(request *http.Request) int {
+	raw := strings.TrimSpace(request.URL.Query().Get("after"))
+	if raw == "" {
+		return 0
+	}
+	cursor, err := strconv.Atoi(raw)
+	if err != nil || cursor < 0 {
+		return 0
+	}
+	return cursor
+}
+
+// projectionDelta returns the ordered projection items strictly after the
+// committed cursor plus the new cursor, which is the maximum Seq of the full
+// projection and never regresses below the committed cursor. The full
+// projection is still built server-side; only the delta is transferred, so an
+// idle poll stays bounded regardless of total history. A missing or zero
+// cursor reads the complete projection, including the synthetic seq-0 goal row.
+func projectionDelta[T any](items []T, after int, seq func(T) int) ([]T, int) {
+	if after <= 0 {
+		cursor := 0
+		for _, item := range items {
+			if itemSeq := seq(item); itemSeq > cursor {
+				cursor = itemSeq
+			}
+		}
+		return items, cursor
+	}
+	cursor := after
+	delta := make([]T, 0, len(items))
+	for _, item := range items {
+		if itemSeq := seq(item); itemSeq > cursor {
+			cursor = itemSeq
+		}
+		if seq(item) > after {
+			delta = append(delta, item)
+		}
+	}
+	return delta, cursor
 }
 
 func (server *Server) handleStopTask(response http.ResponseWriter, request *http.Request) {
