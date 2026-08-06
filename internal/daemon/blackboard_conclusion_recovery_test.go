@@ -286,14 +286,14 @@ func TestAssistedConclusionRestartRecoversUnsentFollowupGenerationOnce(t *testin
 			switch generation {
 			case "repair":
 				followup, won, err := seed.server.tasks.HandleBlackboardConclusionFailure(
-					dispatched.DispatchRequestID, task.BlackboardConclusionErrorInvalidResult, time.Now().UTC(), 0,
+					dispatched.DispatchRequestID, task.BlackboardConclusionErrorInvalidResult, task.ConclusionValidationDetail{}, time.Now().UTC(), 0,
 				)
 				if err != nil || !won {
 					t.Fatalf("claim repair: %#v won=%v err=%v", followup, won, err)
 				}
 			case "retry":
 				if _, _, err := seed.server.tasks.HandleBlackboardConclusionFailure(
-					dispatched.DispatchRequestID, task.BlackboardConclusionErrorToolUseForbidden, time.Now().UTC(), 0,
+					dispatched.DispatchRequestID, task.BlackboardConclusionErrorToolUseForbidden, task.ConclusionValidationDetail{}, time.Now().UTC(), 0,
 				); err != nil {
 					t.Fatal(err)
 				}

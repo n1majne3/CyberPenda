@@ -934,7 +934,58 @@ func migrations() []migration {
 		newMigration(47, "session_blackboard_v2", migration47SQL, migration47Up),
 		newMigration(48, "session_assisted_conclusion_receipts", migration48SQL, migration48Up),
 		newMigration(49, "session_continuation_interface_grants", migration49SQL, migration49Up),
+		newMigration(50, "assisted_conclusion_validation_reason", migration50SQL, migration50Up),
 	}
+}
+
+// migration50SQL is the historical ALTER form of migration 50. The Up function
+// applies each ALTER only when the column is absent so a repaired migration
+// ledger can never duplicate the bounded validation detail columns.
+const migration50SQL = `
+ALTER TABLE assisted_conclusion_receipts ADD COLUMN validation_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE assisted_conclusion_receipts ADD COLUMN validation_field_path TEXT NOT NULL DEFAULT '';
+ALTER TABLE assisted_conclusion_receipts ADD COLUMN validation_expected TEXT NOT NULL DEFAULT '';
+ALTER TABLE session_assisted_conclusion_receipts ADD COLUMN validation_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE session_assisted_conclusion_receipts ADD COLUMN validation_field_path TEXT NOT NULL DEFAULT '';
+ALTER TABLE session_assisted_conclusion_receipts ADD COLUMN validation_expected TEXT NOT NULL DEFAULT '';
+`
+
+func migration50Up(tx *sql.Tx) error {
+	for _, table := range []string{"assisted_conclusion_receipts", "session_assisted_conclusion_receipts"} {
+		for _, column := range []string{"validation_reason", "validation_field_path", "validation_expected"} {
+			present, err := storeTableHasColumn(tx, table, column)
+			if err != nil {
+				return err
+			}
+			if present {
+				continue
+			}
+			if _, err := tx.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` TEXT NOT NULL DEFAULT ''`); err != nil {
+				return fmt.Errorf("add %s.%s: %w", table, column, err)
+			}
+		}
+	}
+	return nil
+}
+
+func storeTableHasColumn(tx *sql.Tx, table, column string) (bool, error) {
+	rows, err := tx.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 const migration49SQL = `
@@ -1338,7 +1389,16 @@ func assistedConclusionExactlyOnceSchemaPresent(tx *sql.Tx) (bool, error) {
 	}
 	expected := strings.Replace(migration44TableSQL, "CREATE TABLE assisted_conclusion_receipts_v44", `CREATE TABLE "assisted_conclusion_receipts"`, 1)
 	expected = strings.TrimSuffix(strings.TrimSpace(expected), ";")
-	return strings.Join(strings.Fields(tableSQL), " ") == strings.Join(strings.Fields(expected), " "), nil
+	normalized := strings.Join(strings.Fields(tableSQL), " ")
+	if normalized == strings.Join(strings.Fields(expected), " ") {
+		return true, nil
+	}
+	// Migration 50 appends the bounded validation detail columns to the same
+	// exactly-once contract. SQLite rewrites the stored CREATE statement for
+	// ALTER TABLE ADD COLUMN, so that shape is current too.
+	withValidation := strings.Replace(strings.Join(strings.Fields(expected), " "), ", UNIQUE (",
+		", validation_reason TEXT NOT NULL DEFAULT '', validation_field_path TEXT NOT NULL DEFAULT '', validation_expected TEXT NOT NULL DEFAULT '', UNIQUE (", 1)
+	return normalized == withValidation, nil
 }
 
 const migration43TableSQL = `

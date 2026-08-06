@@ -325,6 +325,117 @@ func TestAssistedSessionInvalidConclusionUsesOneBoundedRepair(t *testing.T) {
 	}
 }
 
+func TestAssistedSessionRepairDirectiveCarriesBoundedValidationReason(t *testing.T) {
+	server, _, profileID, provider := newAssistedConclusionFixture(t, true)
+	created := createAssistedConclusionSession(t, server, profileID, "Bound invalid Session conclusions")
+	waitForAssistedProviderRequests(t, provider, 1)
+	workRequest := provider.LastRequests()[0]
+	for _, observation := range []runtime.ProviderSessionObservation{
+		{Kind: runtime.ProviderSessionObservationToolResult, RequestID: workRequest.RequestID, ProviderTurnID: "session-reason-work", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded"},
+		{Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: workRequest.RequestID, ProviderTurnID: "session-reason-work", Status: "completed"},
+	} {
+		if err := provider.EmitObservation(observation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForAssistedProviderRequests(t, provider, 2)
+	concludeRequest := provider.LastRequests()[1]
+	invalid := `{
+		"schema":"runtime-attempt-result/v1",
+		"base_revision":0,
+		"attempt":{"key":"attempt/arena-session","create":true,"summary":"Tested the Session surface.","outcome":"inconclusive"},
+		"tested_targets":[{"key":"objective:search","create_objective":{"objective":"Test the Session surface."}}],
+		"produced_targets":[]
+	}`
+	if err := emitSessionAttemptResultAndComplete(provider, invalid); err == nil {
+		t.Fatal("invalid Session Conclude result unexpectedly decoded")
+	}
+	waitForAssistedProviderRequests(t, provider, 3)
+	repairRequest := provider.LastRequests()[2]
+	if repairRequest.RequestID == concludeRequest.RequestID {
+		t.Fatalf("Session repair reused the Conclude request ID %q", repairRequest.RequestID)
+	}
+	for _, required := range []string{"invalid_key_format", "attempt.key", "attempt: prefix", "runtime-attempt-result/v1"} {
+		if !strings.Contains(repairRequest.Message, required) {
+			t.Fatalf("Session repair directive missing %q: %s", required, repairRequest.Message)
+		}
+	}
+	for _, forbidden := range []string{"arena-session", invalid} {
+		if strings.Contains(repairRequest.Message, forbidden) {
+			t.Fatalf("Session repair directive leaked raw result content %q: %s", forbidden, repairRequest.Message)
+		}
+	}
+	found := waitForSessionBlackboardConclusionState(t, server, created.ID, session.BlackboardConclusionStateConcluding)
+	if found.BlackboardConclusion.ValidationReason != "" {
+		t.Fatalf("Session concluding view exposed validation detail too early: %#v", found.BlackboardConclusion)
+	}
+}
+
+func TestAssistedSessionRepeatedInvalidResultExposesBoundedReason(t *testing.T) {
+	server, _, profileID, provider := newAssistedConclusionFixture(t, true)
+	created := createAssistedConclusionSession(t, server, profileID, "Bound invalid Session conclusion budget")
+	waitForAssistedProviderRequests(t, provider, 1)
+	workRequest := provider.LastRequests()[0]
+	for _, observation := range []runtime.ProviderSessionObservation{
+		{Kind: runtime.ProviderSessionObservationToolResult, RequestID: workRequest.RequestID, ProviderTurnID: "session-budget-work", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded"},
+		{Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: workRequest.RequestID, ProviderTurnID: "session-budget-work", Status: "completed"},
+	} {
+		if err := provider.EmitObservation(observation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForAssistedProviderRequests(t, provider, 2)
+	invalid := `{
+		"schema":"runtime-attempt-result/v1",
+		"base_revision":0,
+		"attempt":{"key":"attempt/arena-session","create":true,"summary":"Tested the Session surface.","outcome":"inconclusive"},
+		"tested_targets":[{"key":"objective:search","create_objective":{"objective":"Test the Session surface."}}],
+		"produced_targets":[]
+	}`
+	if err := emitSessionAttemptResultAndComplete(provider, invalid); err == nil {
+		t.Fatal("invalid Session Conclude result unexpectedly decoded")
+	}
+	waitForAssistedProviderRequests(t, provider, 3)
+	if err := emitSessionAttemptResultAndComplete(provider, invalid); err == nil {
+		t.Fatal("invalid Session repair result unexpectedly decoded")
+	}
+	found := waitForSessionBlackboardConclusionState(t, server, created.ID, session.BlackboardConclusionStateActionRequired)
+	conclusion := found.BlackboardConclusion
+	if conclusion.ErrorCode != session.BlackboardConclusionErrorRepairExhausted {
+		t.Fatalf("Session action-required error code = %q", conclusion.ErrorCode)
+	}
+	if conclusion.ValidationReason != "invalid_key_format" || conclusion.ValidationFieldPath != "attempt.key" {
+		t.Fatalf("Session action-required validation detail = %#v", conclusion)
+	}
+	if !strings.Contains(conclusion.ValidationExpected, "attempt: prefix") {
+		t.Fatalf("Session action-required validation expected = %q, want attempt: prefix", conclusion.ValidationExpected)
+	}
+	if len(provider.LastRequests()) != 3 {
+		t.Fatalf("Session automatic provider requests = %d, want work, Conclude, repair", len(provider.LastRequests()))
+	}
+}
+
+func createAssistedConclusionSession(t *testing.T, server *Server, profileID, input string) session.Session {
+	t.Helper()
+	createRequest := httptest.NewRequest(http.MethodPost, "/api/sessions", bytes.NewBufferString(`{
+		"input":"`+input+`",
+		"runtime_profile_id":"`+profileID+`",
+		"runner":"sandbox",
+		"run_controls":{"blackboard_conclusion_mode":"assisted"}
+	}`))
+	createRequest.Header.Set("Content-Type", "application/json")
+	createResponse := httptest.NewRecorder()
+	server.ServeHTTP(createResponse, createRequest)
+	if createResponse.Code != http.StatusCreated {
+		t.Fatalf("create assisted Session status = %d body %s", createResponse.Code, createResponse.Body.String())
+	}
+	var created session.Session
+	if err := json.NewDecoder(createResponse.Body).Decode(&created); err != nil {
+		t.Fatalf("decode created Session: %v", err)
+	}
+	return created
+}
+
 func sessionAttemptHistoryContainsStatus(items []blackboardv2.HistoryItem, status string) bool {
 	for _, item := range items {
 		if item.Record != nil && item.Record.Status == status {

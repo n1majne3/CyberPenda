@@ -87,12 +87,12 @@ func (server *Server) recoverLiveSessionBlackboardConclusionReceipt(ctx context.
 				directive := concludeSessionBlackboardDirective(baseRevision)
 				switch session.BlackboardConclusionReceiptState(state) {
 				case session.BlackboardConclusionReceiptRepairDispatchRequested:
-					directive = repairSessionBlackboardDirective(baseRevision)
+					directive = repairSessionBlackboardDirective(baseRevision, conclusionDetailFromSessionReceipt(receipt))
 				case session.BlackboardConclusionReceiptVersionRegenerationDispatchRequested:
 					directive = regenerateSessionBlackboardDirective(baseRevision)
 				default:
 					if explicitRetryCount > 0 {
-						directive = repairSessionBlackboardDirective(baseRevision)
+						directive = repairSessionBlackboardDirective(baseRevision, conclusionDetailFromSessionReceipt(receipt))
 					}
 				}
 				return server.sendSessionBlackboardConclusionTurn(controlCtx, receipt, directive)

@@ -34,6 +34,9 @@ type AssistedConclusionQueuedFailure struct {
 	ProviderSessionID string
 	ProviderTurnID    string
 	Code              string
+	// Detail is the bounded public reason for a rejected closed result. It
+	// never carries provider bytes, decoder text, or reasoning.
+	Detail owner.ConclusionValidationDetail
 }
 
 type AssistedConclusionQueuedTerminal struct {

@@ -86,6 +86,10 @@ const (
 
 type BlackboardConclusionErrorCode = owner.BlackboardConclusionErrorCode
 
+// ConclusionValidationDetail is the bounded public reason for one rejected
+// closed conclusion result, safe for repair directives and durable state.
+type ConclusionValidationDetail = owner.ConclusionValidationDetail
+
 const (
 	BlackboardConclusionErrorInvalidResult           = owner.BlackboardConclusionErrorInvalidResult
 	BlackboardConclusionErrorToolUseForbidden        = owner.BlackboardConclusionErrorToolUseForbidden
@@ -115,8 +119,14 @@ type BlackboardConclusion struct {
 	SemanticPersistenceWatermark int                           `json:"semantic_persistence_watermark"`
 	AppliedRevision              *int                          `json:"applied_revision,omitempty"`
 	ErrorCode                    BlackboardConclusionErrorCode `json:"error_code,omitempty"`
-	RetryAvailable               bool                          `json:"retry_available"`
-	NextEligibleAt               *time.Time                    `json:"next_eligible_at,omitempty"`
+	// ValidationReason, ValidationFieldPath, and ValidationExpected expose the
+	// bounded public reason for the last rejected closed result. They are
+	// closed tokens only; raw provider output never appears.
+	ValidationReason     string `json:"validation_reason,omitempty"`
+	ValidationFieldPath  string `json:"validation_field_path,omitempty"`
+	ValidationExpected   string `json:"validation_expected,omitempty"`
+	RetryAvailable       bool   `json:"retry_available"`
+	NextEligibleAt       *time.Time `json:"next_eligible_at,omitempty"`
 }
 
 // ScopeSnapshot is an immutable copy of the project scope captured when a task
@@ -205,6 +215,9 @@ type BlackboardConclusionReceipt struct {
 	SendStartedAt                 *time.Time                       `json:"send_started_at,omitempty"`
 	NextEligibleAt                *time.Time                       `json:"next_eligible_at,omitempty"`
 	ErrorCode                     BlackboardConclusionErrorCode    `json:"error_code,omitempty"`
+	ValidationReason              string                           `json:"validation_reason,omitempty"`
+	ValidationFieldPath           string                           `json:"validation_field_path,omitempty"`
+	ValidationExpected            string                           `json:"validation_expected,omitempty"`
 	CreatedAt                     time.Time                        `json:"created_at"`
 	UpdatedAt                     time.Time                        `json:"updated_at"`
 }
@@ -234,6 +247,9 @@ func (receipt BlackboardConclusionReceipt) ViewAt(mode BlackboardConclusionMode,
 	case BlackboardConclusionReceiptActionRequired:
 		view.State = BlackboardConclusionStateActionRequired
 		view.ErrorCode = receipt.ErrorCode
+		view.ValidationReason = receipt.ValidationReason
+		view.ValidationFieldPath = receipt.ValidationFieldPath
+		view.ValidationExpected = receipt.ValidationExpected
 		if receipt.ErrorCode == BlackboardConclusionErrorWorkTurnNeverSettled {
 			// A never-settled work turn is terminal: retrying cannot win because
 			// the provider never yields the active turn. Surface it as not
@@ -1017,10 +1033,15 @@ func (s *Service) MarkBlackboardConclusionAwaiting(dispatchRequestID, controlTur
 // HandleBlackboardConclusionFailure durably resolves a failed control Turn.
 // One invalid initial result may claim a single automatic repair; forbidden
 // tool use and every later invalid result require explicit operator action.
-func (s *Service) HandleBlackboardConclusionFailure(dispatchRequestID string, code BlackboardConclusionErrorCode, now time.Time, cooldown time.Duration) (BlackboardConclusionReceipt, bool, error) {
+// The bounded validation detail is persisted with the transition so the
+// repair directive and the operator-facing action reason stay stable.
+func (s *Service) HandleBlackboardConclusionFailure(dispatchRequestID string, code BlackboardConclusionErrorCode, detail ConclusionValidationDetail, now time.Time, cooldown time.Duration) (BlackboardConclusionReceipt, bool, error) {
 	dispatchRequestID = strings.TrimSpace(dispatchRequestID)
 	if dispatchRequestID == "" || cooldown < 0 ||
 		(code != BlackboardConclusionErrorInvalidResult && code != BlackboardConclusionErrorToolUseForbidden && code != BlackboardConclusionErrorRuntimeRecoveryRequired) {
+		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
+	}
+	if detail.Valid() && code != BlackboardConclusionErrorInvalidResult {
 		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
 	}
 	now = now.UTC()
@@ -1044,8 +1065,10 @@ func (s *Service) HandleBlackboardConclusionFailure(dispatchRequestID string, co
 		requestID := blackboardConclusionAttemptRequestID("repair", receipt.ContinuationID, receipt.SourceTurnID, repairNumber, "")
 		nextEligible := now.Add(cooldown)
 		result, err := tx.Exec(`UPDATE assisted_conclusion_receipts SET state=?,dispatch_request_id=?,control_turn_id=NULL,
-				send_attempt_count=0,send_started_at=NULL,automatic_turn_count=automatic_turn_count+1,repair_count=repair_count+1,error_code=?,next_eligible_at=?,updated_at=? WHERE id=? AND state=?`,
-			string(BlackboardConclusionReceiptRepairDispatchRequested), requestID, string(code), nextEligible.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), receipt.ID, string(BlackboardConclusionReceiptAwaitingResult))
+				send_attempt_count=0,send_started_at=NULL,automatic_turn_count=automatic_turn_count+1,repair_count=repair_count+1,error_code=?,next_eligible_at=?,
+				validation_reason=?,validation_field_path=?,validation_expected=?,updated_at=? WHERE id=? AND state=?`,
+			string(BlackboardConclusionReceiptRepairDispatchRequested), requestID, string(code), nextEligible.Format(time.RFC3339Nano),
+			detail.Reason, detail.FieldPath, detail.Expected, now.Format(time.RFC3339Nano), receipt.ID, string(BlackboardConclusionReceiptAwaitingResult))
 		if err != nil {
 			return BlackboardConclusionReceipt{}, false, fmt.Errorf("claim Blackboard conclusion repair: %w", err)
 		}
@@ -1062,8 +1085,13 @@ func (s *Service) HandleBlackboardConclusionFailure(dispatchRequestID string, co
 		receipt.RepairCount++
 		receipt.ErrorCode = code
 		receipt.NextEligibleAt = &nextEligible
+		receipt.ValidationReason = detail.Reason
+		receipt.ValidationFieldPath = detail.FieldPath
+		receipt.ValidationExpected = detail.Expected
 		receipt.UpdatedAt = now
-		if err := appendBlackboardConclusionEventTx(tx, receipt, EventPayload{"phase": "repair_requested", "receipt_id": receipt.ID, "request_id": requestID, "error_code": string(code), "automatic_turn_count": receipt.AutomaticTurnCount, "repair_count": receipt.RepairCount, "turn_kind": "control"}, now); err != nil {
+		payload := EventPayload{"phase": "repair_requested", "receipt_id": receipt.ID, "request_id": requestID, "error_code": string(code), "automatic_turn_count": receipt.AutomaticTurnCount, "repair_count": receipt.RepairCount, "turn_kind": "control"}
+		owner.AppendConclusionValidationEventPayload(payload, detail)
+		if err := appendBlackboardConclusionEventTx(tx, receipt, payload, now); err != nil {
 			return BlackboardConclusionReceipt{}, false, err
 		}
 		if err := tx.Commit(); err != nil {
@@ -1079,8 +1107,10 @@ func (s *Service) HandleBlackboardConclusionFailure(dispatchRequestID string, co
 	if receipt.NextEligibleAt != nil {
 		nextEligible = receipt.NextEligibleAt.UTC()
 	}
-	result, err := tx.Exec(`UPDATE assisted_conclusion_receipts SET state=?,error_code=?,next_eligible_at=?,updated_at=? WHERE id=? AND state=?`,
-		string(BlackboardConclusionReceiptActionRequired), string(actionCode), nextEligible.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), receipt.ID, string(BlackboardConclusionReceiptAwaitingResult))
+	result, err := tx.Exec(`UPDATE assisted_conclusion_receipts SET state=?,error_code=?,next_eligible_at=?,
+		validation_reason=?,validation_field_path=?,validation_expected=?,updated_at=? WHERE id=? AND state=?`,
+		string(BlackboardConclusionReceiptActionRequired), string(actionCode), nextEligible.Format(time.RFC3339Nano),
+		detail.Reason, detail.FieldPath, detail.Expected, now.Format(time.RFC3339Nano), receipt.ID, string(BlackboardConclusionReceiptAwaitingResult))
 	if err != nil {
 		return BlackboardConclusionReceipt{}, false, fmt.Errorf("require Blackboard conclusion action: %w", err)
 	}
@@ -1091,8 +1121,13 @@ func (s *Service) HandleBlackboardConclusionFailure(dispatchRequestID string, co
 	receipt.InternalState = BlackboardConclusionReceiptActionRequired
 	receipt.ErrorCode = actionCode
 	receipt.NextEligibleAt = &nextEligible
+	receipt.ValidationReason = detail.Reason
+	receipt.ValidationFieldPath = detail.FieldPath
+	receipt.ValidationExpected = detail.Expected
 	receipt.UpdatedAt = now
-	if err := appendBlackboardConclusionEventTx(tx, receipt, EventPayload{"phase": "action_required", "receipt_id": receipt.ID, "request_id": dispatchRequestID, "error_code": string(actionCode), "next_eligible_at": nextEligible.Format(time.RFC3339Nano)}, now); err != nil {
+	payload := EventPayload{"phase": "action_required", "receipt_id": receipt.ID, "request_id": dispatchRequestID, "error_code": string(actionCode), "next_eligible_at": nextEligible.Format(time.RFC3339Nano)}
+	owner.AppendConclusionValidationEventPayload(payload, detail)
+	if err := appendBlackboardConclusionEventTx(tx, receipt, payload, now); err != nil {
 		return BlackboardConclusionReceipt{}, false, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -1792,14 +1827,15 @@ func (s *Service) ValidatedBlackboardConclusions() ([]BlackboardConclusionReceip
 func scanBlackboardConclusionReceipt(row scanner) (BlackboardConclusionReceipt, error) {
 	var receipt BlackboardConclusionReceipt
 	var state, createdAt, updatedAt string
-	var dispatchRequestID, controlTurnID, applyKey, resultHash, operatorRetryKey, sendStartedAt, nextEligibleAt, errorCode sql.NullString
+	var dispatchRequestID, controlTurnID, applyKey, resultHash, operatorRetryKey, sendStartedAt, nextEligibleAt, errorCode, validationReason, validationFieldPath, validationExpected sql.NullString
 	var baseRevision, synchronizedRevision, appliedRevision sql.NullInt64
 	var canonicalResult []byte
 	if err := row.Scan(&receipt.ID, &receipt.TaskID, &receipt.ContinuationID, &receipt.SourceRequestID, &receipt.SourceRequestCorrelationExact, &receipt.SourceSessionID,
 		&receipt.SourceTurnID, &state, &receipt.SourceWorkWatermark, &receipt.SemanticPersistenceWatermark, &dispatchRequestID, &controlTurnID,
 		&baseRevision, &synchronizedRevision, &receipt.SourceSelection.ModelProviderID, &receipt.SourceSelection.Model, &receipt.SourceSelection.ReasoningEffort,
 		&canonicalResult, &resultHash, &applyKey, &appliedRevision, &receipt.AutomaticTurnCount, &receipt.RepairCount, &receipt.VersionRegenerationCount,
-		&receipt.ExplicitRetryCount, &operatorRetryKey, &receipt.SendAttemptCount, &sendStartedAt, &nextEligibleAt, &errorCode, &createdAt, &updatedAt); err != nil {
+		&receipt.ExplicitRetryCount, &operatorRetryKey, &receipt.SendAttemptCount, &sendStartedAt, &nextEligibleAt, &errorCode,
+		&validationReason, &validationFieldPath, &validationExpected, &createdAt, &updatedAt); err != nil {
 		return BlackboardConclusionReceipt{}, err
 	}
 	receipt.InternalState = BlackboardConclusionReceiptState(state)
@@ -1810,6 +1846,9 @@ func scanBlackboardConclusionReceipt(row scanner) (BlackboardConclusionReceipt, 
 	receipt.ApplyIdempotencyKey = applyKey.String
 	receipt.OperatorRetryKey = operatorRetryKey.String
 	receipt.ErrorCode = BlackboardConclusionErrorCode(errorCode.String)
+	receipt.ValidationReason = validationReason.String
+	receipt.ValidationFieldPath = validationFieldPath.String
+	receipt.ValidationExpected = validationExpected.String
 	if baseRevision.Valid {
 		receipt.BaseRevision = intPointer(int(baseRevision.Int64))
 	}
@@ -1846,7 +1885,8 @@ func scanBlackboardConclusionReceipt(row scanner) (BlackboardConclusionReceipt, 
 const blackboardConclusionReceiptColumns = `id,task_id,continuation_id,source_request_id,source_request_correlation_exact,source_session_id,source_turn_id,state,
 	source_work_watermark,semantic_persistence_watermark,dispatch_request_id,control_turn_id,base_revision,synchronized_revision,source_model_provider_id,source_model,
 	source_reasoning_effort,canonical_result_json,canonical_result_sha256,apply_idempotency_key,applied_revision,automatic_turn_count,
-	repair_count,version_regeneration_count,explicit_retry_count,operator_retry_key,send_attempt_count,send_started_at,next_eligible_at,error_code,created_at,updated_at`
+	repair_count,version_regeneration_count,explicit_retry_count,operator_retry_key,send_attempt_count,send_started_at,next_eligible_at,error_code,
+	validation_reason,validation_field_path,validation_expected,created_at,updated_at`
 
 func (s *Service) advanceBlackboardConclusion(dispatchRequestID string, from, to BlackboardConclusionReceiptState,
 	replayMatches func(BlackboardConclusionReceipt) bool,

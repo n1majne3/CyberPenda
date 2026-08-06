@@ -48,6 +48,9 @@ type BlackboardConclusionReceipt struct {
 	SendStartedAt                 *time.Time                       `json:"send_started_at,omitempty"`
 	NextEligibleAt                *time.Time                       `json:"next_eligible_at,omitempty"`
 	ErrorCode                     BlackboardConclusionErrorCode    `json:"error_code,omitempty"`
+	ValidationReason              string                           `json:"validation_reason,omitempty"`
+	ValidationFieldPath           string                           `json:"validation_field_path,omitempty"`
+	ValidationExpected            string                           `json:"validation_expected,omitempty"`
 	CreatedAt                     time.Time                        `json:"created_at"`
 	UpdatedAt                     time.Time                        `json:"updated_at"`
 }
@@ -77,6 +80,9 @@ func (receipt BlackboardConclusionReceipt) ViewAt(mode BlackboardConclusionMode,
 	case BlackboardConclusionReceiptActionRequired:
 		view.State = BlackboardConclusionStateActionRequired
 		view.ErrorCode = receipt.ErrorCode
+		view.ValidationReason = receipt.ValidationReason
+		view.ValidationFieldPath = receipt.ValidationFieldPath
+		view.ValidationExpected = receipt.ValidationExpected
 		if receipt.ErrorCode == BlackboardConclusionErrorWorkTurnNeverSettled {
 			return view
 		}
@@ -100,7 +106,8 @@ var (
 const sessionBlackboardConclusionReceiptColumns = `id,session_id,continuation_id,source_request_id,source_request_correlation_exact,source_session_id,source_turn_id,state,
     source_work_watermark,semantic_persistence_watermark,dispatch_request_id,control_turn_id,base_revision,synchronized_revision,source_model_provider_id,source_model,
     source_reasoning_effort,canonical_result_json,canonical_result_sha256,apply_idempotency_key,applied_revision,automatic_turn_count,
-    repair_count,version_regeneration_count,explicit_retry_count,operator_retry_key,send_attempt_count,send_started_at,next_eligible_at,error_code,created_at,updated_at`
+    repair_count,version_regeneration_count,explicit_retry_count,operator_retry_key,send_attempt_count,send_started_at,next_eligible_at,error_code,
+    validation_reason,validation_field_path,validation_expected,created_at,updated_at`
 
 // RecordBlackboardConclusionCheckpoint creates one idempotent Session-local
 // debt receipt at the completed Work Turn boundary.
@@ -309,11 +316,16 @@ func (s *Service) MarkBlackboardConclusionAwaiting(dispatchRequestID, controlTur
 
 // HandleBlackboardConclusionFailure permits one automatic repair for an
 // invalid result. Forbidden control tools, runtime failures, and later invalid
-// results become stable operator-actionable states without recursion.
-func (s *Service) HandleBlackboardConclusionFailure(dispatchRequestID string, code BlackboardConclusionErrorCode, now time.Time, cooldown time.Duration) (BlackboardConclusionReceipt, bool, error) {
+// results become stable operator-actionable states without recursion. The
+// bounded validation detail is persisted with the transition so the repair
+// directive and the operator-facing action reason stay stable.
+func (s *Service) HandleBlackboardConclusionFailure(dispatchRequestID string, code BlackboardConclusionErrorCode, detail ConclusionValidationDetail, now time.Time, cooldown time.Duration) (BlackboardConclusionReceipt, bool, error) {
 	dispatchRequestID = strings.TrimSpace(dispatchRequestID)
 	if dispatchRequestID == "" || cooldown < 0 ||
 		(code != BlackboardConclusionErrorInvalidResult && code != BlackboardConclusionErrorToolUseForbidden && code != BlackboardConclusionErrorRuntimeRecoveryRequired) {
+		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
+	}
+	if detail.Valid() && code != BlackboardConclusionErrorInvalidResult {
 		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
 	}
 	now = now.UTC()
@@ -336,8 +348,10 @@ func (s *Service) HandleBlackboardConclusionFailure(dispatchRequestID string, co
 		requestID := sessionBlackboardConclusionAttemptRequestID("repair", receipt.ContinuationID, receipt.SourceTurnID, receipt.RepairCount+1, "")
 		nextEligible := now.Add(cooldown)
 		result, err := tx.Exec(`UPDATE session_assisted_conclusion_receipts SET state=?,dispatch_request_id=?,control_turn_id=NULL,
-            send_attempt_count=0,send_started_at=NULL,automatic_turn_count=automatic_turn_count+1,repair_count=repair_count+1,error_code=?,next_eligible_at=?,updated_at=?
-            WHERE id=? AND state=?`, string(BlackboardConclusionReceiptRepairDispatchRequested), requestID, string(code), formatTime(nextEligible), formatTime(now), receipt.ID, string(BlackboardConclusionReceiptAwaitingResult))
+            send_attempt_count=0,send_started_at=NULL,automatic_turn_count=automatic_turn_count+1,repair_count=repair_count+1,error_code=?,next_eligible_at=?,
+            validation_reason=?,validation_field_path=?,validation_expected=?,updated_at=?
+            WHERE id=? AND state=?`, string(BlackboardConclusionReceiptRepairDispatchRequested), requestID, string(code), formatTime(nextEligible),
+			detail.Reason, detail.FieldPath, detail.Expected, formatTime(now), receipt.ID, string(BlackboardConclusionReceiptAwaitingResult))
 		if err != nil {
 			return BlackboardConclusionReceipt{}, false, fmt.Errorf("claim Session Blackboard conclusion repair: %w", err)
 		}
@@ -350,11 +364,14 @@ func (s *Service) HandleBlackboardConclusionFailure(dispatchRequestID string, co
 		receipt.AutomaticTurnCount++
 		receipt.RepairCount++
 		receipt.ErrorCode, receipt.NextEligibleAt, receipt.UpdatedAt = code, &nextEligible, now
-		if err := appendSessionBlackboardConclusionEventTx(tx, receipt, EventPayload{
+		receipt.ValidationReason, receipt.ValidationFieldPath, receipt.ValidationExpected = detail.Reason, detail.FieldPath, detail.Expected
+		payload := EventPayload{
 			"phase": "repair_requested", "receipt_id": receipt.ID, "request_id": requestID,
 			"error_code": string(code), "automatic_turn_count": receipt.AutomaticTurnCount,
 			"repair_count": receipt.RepairCount, "turn_kind": "control",
-		}, now); err != nil {
+		}
+		owner.AppendConclusionValidationEventPayload(payload, detail)
+		if err := appendSessionBlackboardConclusionEventTx(tx, receipt, payload, now); err != nil {
 			return BlackboardConclusionReceipt{}, false, err
 		}
 		if err := tx.Commit(); err != nil {
@@ -370,8 +387,10 @@ func (s *Service) HandleBlackboardConclusionFailure(dispatchRequestID string, co
 	if receipt.NextEligibleAt != nil {
 		nextEligible = receipt.NextEligibleAt.UTC()
 	}
-	result, err := tx.Exec(`UPDATE session_assisted_conclusion_receipts SET state=?,error_code=?,next_eligible_at=?,updated_at=? WHERE id=? AND state=?`,
-		string(BlackboardConclusionReceiptActionRequired), string(actionCode), formatTime(nextEligible), formatTime(now), receipt.ID, string(BlackboardConclusionReceiptAwaitingResult))
+	result, err := tx.Exec(`UPDATE session_assisted_conclusion_receipts SET state=?,error_code=?,next_eligible_at=?,
+		validation_reason=?,validation_field_path=?,validation_expected=?,updated_at=? WHERE id=? AND state=?`,
+		string(BlackboardConclusionReceiptActionRequired), string(actionCode), formatTime(nextEligible),
+		detail.Reason, detail.FieldPath, detail.Expected, formatTime(now), receipt.ID, string(BlackboardConclusionReceiptAwaitingResult))
 	if err != nil {
 		return BlackboardConclusionReceipt{}, false, fmt.Errorf("require Session Blackboard conclusion action: %w", err)
 	}
@@ -380,10 +399,13 @@ func (s *Service) HandleBlackboardConclusionFailure(dispatchRequestID string, co
 		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
 	}
 	receipt.InternalState, receipt.ErrorCode, receipt.NextEligibleAt, receipt.UpdatedAt = BlackboardConclusionReceiptActionRequired, actionCode, &nextEligible, now
-	if err := appendSessionBlackboardConclusionEventTx(tx, receipt, EventPayload{
+	receipt.ValidationReason, receipt.ValidationFieldPath, receipt.ValidationExpected = detail.Reason, detail.FieldPath, detail.Expected
+	payload := EventPayload{
 		"phase": "action_required", "receipt_id": receipt.ID, "request_id": dispatchRequestID,
 		"error_code": string(actionCode), "next_eligible_at": formatTime(nextEligible),
-	}, now); err != nil {
+	}
+	owner.AppendConclusionValidationEventPayload(payload, detail)
+	if err := appendSessionBlackboardConclusionEventTx(tx, receipt, payload, now); err != nil {
 		return BlackboardConclusionReceipt{}, false, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -965,7 +987,7 @@ func (s *Service) ValidatedBlackboardConclusions() ([]BlackboardConclusionReceip
 func scanSessionBlackboardConclusionReceipt(row interface{ Scan(...any) error }) (BlackboardConclusionReceipt, error) {
 	var receipt BlackboardConclusionReceipt
 	var state, createdAt, updatedAt string
-	var dispatchID, controlTurnID, applyKey, resultHash, retryKey, sendStartedAt, nextEligibleAt, errorCode sql.NullString
+	var dispatchID, controlTurnID, applyKey, resultHash, retryKey, sendStartedAt, nextEligibleAt, errorCode, validationReason, validationFieldPath, validationExpected sql.NullString
 	var baseRevision, synchronizedRevision, appliedRevision sql.NullInt64
 	var canonicalResult []byte
 	if err := row.Scan(&receipt.ID, &receipt.SessionID, &receipt.ContinuationID, &receipt.SourceRequestID, &receipt.SourceRequestCorrelationExact,
@@ -973,7 +995,7 @@ func scanSessionBlackboardConclusionReceipt(row interface{ Scan(...any) error })
 		&dispatchID, &controlTurnID, &baseRevision, &synchronizedRevision, &receipt.SourceSelection.ModelProviderID, &receipt.SourceSelection.Model,
 		&receipt.SourceSelection.ReasoningEffort, &canonicalResult, &resultHash, &applyKey, &appliedRevision, &receipt.AutomaticTurnCount,
 		&receipt.RepairCount, &receipt.VersionRegenerationCount, &receipt.ExplicitRetryCount, &retryKey, &receipt.SendAttemptCount,
-		&sendStartedAt, &nextEligibleAt, &errorCode, &createdAt, &updatedAt); err != nil {
+		&sendStartedAt, &nextEligibleAt, &errorCode, &validationReason, &validationFieldPath, &validationExpected, &createdAt, &updatedAt); err != nil {
 		return BlackboardConclusionReceipt{}, err
 	}
 	receipt.InternalState = BlackboardConclusionReceiptState(state)
@@ -981,6 +1003,9 @@ func scanSessionBlackboardConclusionReceipt(row interface{ Scan(...any) error })
 	receipt.CanonicalResultJSON, receipt.CanonicalResultSHA256 = append([]byte(nil), canonicalResult...), resultHash.String
 	receipt.ApplyIdempotencyKey, receipt.OperatorRetryKey = applyKey.String, retryKey.String
 	receipt.ErrorCode = BlackboardConclusionErrorCode(errorCode.String)
+	receipt.ValidationReason = validationReason.String
+	receipt.ValidationFieldPath = validationFieldPath.String
+	receipt.ValidationExpected = validationExpected.String
 	if baseRevision.Valid {
 		receipt.BaseRevision = intPointer(int(baseRevision.Int64))
 	}

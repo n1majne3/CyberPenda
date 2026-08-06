@@ -95,7 +95,7 @@ func (server *Server) recoverLiveBlackboardConclusionReceipt(ctx context.Context
 				default:
 					directive := concludeBlackboardDirective(baseRevision)
 					if explicitRetryCount > 0 {
-						directive = repairBlackboardDirective(baseRevision)
+						directive = repairBlackboardDirective(baseRevision, conclusionDetailFromTaskReceipt(receipt))
 					}
 					return server.sendBlackboardConclusionTurn(controlCtx, receipt, directive)
 				}

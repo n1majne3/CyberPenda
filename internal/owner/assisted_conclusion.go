@@ -1,5 +1,7 @@
 package owner
 
+import "strings"
+
 // BlackboardConclusionReceiptState is the shared durable protocol state for
 // one completed assisted Work Turn. Task and Session persist it in separate
 // owner-local tables, but they must use the same transition vocabulary.
@@ -46,6 +48,36 @@ type SemanticDebtWatermarks struct {
 
 func (watermarks SemanticDebtWatermarks) Valid() bool {
 	return watermarks.SemanticPersistence >= 0 && watermarks.SourceWork >= watermarks.SemanticPersistence
+}
+
+// ConclusionValidationDetail is the bounded public reason for one rejected
+// closed conclusion result. The reason is a closed token and the field path
+// and expected form are static or bounded strings; raw provider output,
+// decoder text, and model reasoning never enter this detail.
+type ConclusionValidationDetail struct {
+	Reason    string
+	FieldPath string
+	Expected  string
+}
+
+// Valid reports whether the detail carries a bounded reason.
+func (detail ConclusionValidationDetail) Valid() bool {
+	return strings.TrimSpace(detail.Reason) != ""
+}
+
+// AppendConclusionValidationEventPayload adds the bounded rejection detail to
+// a Timeline Event payload when present. Raw provider output, decoder text,
+// and reasoning never enter Timeline entries.
+func AppendConclusionValidationEventPayload(payload map[string]any, detail ConclusionValidationDetail) {
+	if detail.Reason != "" {
+		payload["validation_reason"] = detail.Reason
+	}
+	if detail.FieldPath != "" {
+		payload["validation_field_path"] = detail.FieldPath
+	}
+	if detail.Expected != "" {
+		payload["validation_expected"] = detail.Expected
+	}
 }
 
 // BlackboardConclusionReceiptStateAfter reports whether current is a durable

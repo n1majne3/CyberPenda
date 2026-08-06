@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"testing"
 
+	"pentest/internal/blackboardconclusion"
 	"pentest/internal/runtimeplugin"
 )
 
@@ -75,6 +76,7 @@ func TestClaudeInvalidControlResultReportsOneBoundedFailure(t *testing.T) {
 	want := ProviderSessionAttemptResultValidationFailure{
 		RequestID: requestID, SessionID: "claude-session", ProviderTurnID: "claude-turn",
 		ValidationErrorCode: ProviderSessionAttemptResultInvalid,
+		Reason:              blackboardconclusion.ValidationReasonInvalidResult,
 	}
 	if len(failures) != 1 || failures[0] != want {
 		t.Fatalf("validation failures = %#v, want %#v", failures, want)

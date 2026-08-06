@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -482,35 +483,39 @@ func TestBlackboardConclusionInvalidResultRepairsOnceThenRequiresOperatorRetry(t
 	}
 
 	now := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)
+	detail := task.ConclusionValidationDetail{Reason: "invalid_key_format", FieldPath: "attempt.key", Expected: "the key must use the attempt: prefix"}
 	repair, won, err := svc.HandleBlackboardConclusionFailure(initial.DispatchRequestID,
-		task.BlackboardConclusionErrorInvalidResult, now, time.Minute)
+		task.BlackboardConclusionErrorInvalidResult, detail, now, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !won || repair.InternalState != task.BlackboardConclusionReceiptRepairDispatchRequested ||
 		repair.AutomaticTurnCount != task.BlackboardConclusionAutomaticTurnLimit || repair.RepairCount != 1 ||
-		repair.DispatchRequestID == initial.DispatchRequestID || repair.NextEligibleAt == nil || !repair.NextEligibleAt.Equal(now.Add(time.Minute)) {
+		repair.DispatchRequestID == initial.DispatchRequestID || repair.NextEligibleAt == nil || !repair.NextEligibleAt.Equal(now.Add(time.Minute)) ||
+		repair.ValidationReason != "invalid_key_format" || repair.ValidationFieldPath != "attempt.key" || repair.ValidationExpected != "the key must use the attempt: prefix" {
 		t.Fatalf("repair claim = %#v, won=%v", repair, won)
 	}
 	if _, _, replayErr := svc.HandleBlackboardConclusionFailure(initial.DispatchRequestID,
-		task.BlackboardConclusionErrorInvalidResult, now, time.Minute); !errors.Is(replayErr, task.ErrNotFound) {
+		task.BlackboardConclusionErrorInvalidResult, task.ConclusionValidationDetail{}, now, time.Minute); !errors.Is(replayErr, task.ErrNotFound) {
 		t.Fatalf("stale failure did not fail closed: %v", replayErr)
 	}
 	if _, _, err = svc.MarkBlackboardConclusionAwaiting(repair.DispatchRequestID, "control-repair"); err != nil {
 		t.Fatal(err)
 	}
 	action, changed, err := svc.HandleBlackboardConclusionFailure(repair.DispatchRequestID,
-		task.BlackboardConclusionErrorInvalidResult, now, time.Minute)
+		task.BlackboardConclusionErrorInvalidResult, task.ConclusionValidationDetail{Reason: "invalid_key_format", FieldPath: "attempt.key", Expected: "the key must use the attempt: prefix"}, now, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !changed || action.InternalState != task.BlackboardConclusionReceiptActionRequired ||
 		action.ErrorCode != task.BlackboardConclusionErrorRepairExhausted || action.NextEligibleAt == nil ||
-		!action.NextEligibleAt.Equal(now.Add(time.Minute)) {
+		!action.NextEligibleAt.Equal(now.Add(time.Minute)) ||
+		action.ValidationReason != "invalid_key_format" || action.ValidationFieldPath != "attempt.key" {
 		t.Fatalf("action required = %#v, changed=%v", action, changed)
 	}
 	view := action.ViewAt(task.BlackboardConclusionModeAssisted, now)
-	if view.State != task.BlackboardConclusionStateActionRequired || view.ErrorCode != task.BlackboardConclusionErrorRepairExhausted || view.RetryAvailable {
+	if view.State != task.BlackboardConclusionStateActionRequired || view.ErrorCode != task.BlackboardConclusionErrorRepairExhausted || view.RetryAvailable ||
+		view.ValidationReason != "invalid_key_format" || view.ValidationFieldPath != "attempt.key" || !strings.Contains(view.ValidationExpected, "attempt: prefix") {
 		t.Fatalf("cooldown view = %#v", view)
 	}
 	if _, _, err := svc.RetryBlackboardConclusion(receipt.ID, "retry-key-1", now.Add(30*time.Second)); !errors.Is(err, task.ErrBlackboardConclusionRetryCooldown) {
@@ -556,7 +561,7 @@ func TestBlackboardConclusionForbiddenControlToolUseRequiresAction(t *testing.T)
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(dispatched.DispatchRequestID, "control-1")
 	now := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)
 	action, changed, err := svc.HandleBlackboardConclusionFailure(dispatched.DispatchRequestID,
-		task.BlackboardConclusionErrorToolUseForbidden, now, 0)
+		task.BlackboardConclusionErrorToolUseForbidden, task.ConclusionValidationDetail{}, now, 0)
 	if err != nil || !changed || action.InternalState != task.BlackboardConclusionReceiptActionRequired ||
 		action.ErrorCode != task.BlackboardConclusionErrorToolUseForbidden || action.RepairCount != 0 {
 		t.Fatalf("forbidden tool action = %#v, changed=%v, err=%v", action, changed, err)
@@ -695,7 +700,7 @@ func TestBlackboardConclusionVersionRegenerationFailsClosed(t *testing.T) {
 	repairInitial, _, _ := svc.ClaimBlackboardConclusionDispatch(repairReceipt.ID, 20)
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(repairInitial.DispatchRequestID, "control-repair-source")
 	repair, _, _ := svc.HandleBlackboardConclusionFailure(repairInitial.DispatchRequestID,
-		task.BlackboardConclusionErrorInvalidResult, now, 0)
+		task.BlackboardConclusionErrorInvalidResult, task.ConclusionValidationDetail{}, now, 0)
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(repair.DispatchRequestID, "control-repair-result")
 	repairValidated, _, _ := svc.MarkBlackboardConclusionValidated(repair.DispatchRequestID, []byte(`{"schema":"runtime-attempt-result/v1"}`))
 	repairSync, _, _ := svc.ClaimBlackboardConclusionVersionSync(repairValidated.DispatchRequestID)
@@ -712,7 +717,7 @@ func TestBlackboardConclusionVersionRegenerationFailsClosed(t *testing.T) {
 	regeneration, _, _ := svc.HandleBlackboardConclusionVersionConflict(invalidSync.DispatchRequestID, 2, now, 0)
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(regeneration.DispatchRequestID, "control-invalid-regeneration")
 	action, changed, err := svc.HandleBlackboardConclusionFailure(regeneration.DispatchRequestID,
-		task.BlackboardConclusionErrorInvalidResult, now, time.Minute)
+		task.BlackboardConclusionErrorInvalidResult, task.ConclusionValidationDetail{}, now, time.Minute)
 	if err != nil || !changed || action.InternalState != task.BlackboardConclusionReceiptActionRequired ||
 		action.VersionRegenerationCount != 1 || action.ErrorCode != task.BlackboardConclusionErrorInvalidResult {
 		t.Fatalf("invalid regeneration = %#v, changed=%v, err=%v", action, changed, err)
@@ -784,20 +789,20 @@ func TestBlackboardConclusionRetryRemembersEveryOperatorIdempotencyKey(t *testin
 	dispatched, _, _ := svc.ClaimBlackboardConclusionDispatch(receipt.ID, 0)
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(dispatched.DispatchRequestID, "control-1")
 	now := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)
-	_, _, _ = svc.HandleBlackboardConclusionFailure(dispatched.DispatchRequestID, task.BlackboardConclusionErrorToolUseForbidden, now, 0)
+	_, _, _ = svc.HandleBlackboardConclusionFailure(dispatched.DispatchRequestID, task.BlackboardConclusionErrorToolUseForbidden, task.ConclusionValidationDetail{}, now, 0)
 
 	retry1, won, err := svc.RetryBlackboardConclusion(receipt.ID, "retry-key-1", now)
 	if err != nil || !won {
 		t.Fatalf("retry 1 = %#v, won=%v, err=%v", retry1, won, err)
 	}
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(retry1.DispatchRequestID, "control-retry-1")
-	_, _, _ = svc.HandleBlackboardConclusionFailure(retry1.DispatchRequestID, task.BlackboardConclusionErrorInvalidResult, now, 0)
+	_, _, _ = svc.HandleBlackboardConclusionFailure(retry1.DispatchRequestID, task.BlackboardConclusionErrorInvalidResult, task.ConclusionValidationDetail{}, now, 0)
 	retry2, won, err := svc.RetryBlackboardConclusion(receipt.ID, "retry-key-2", now)
 	if err != nil || !won || retry2.ExplicitRetryCount != 2 {
 		t.Fatalf("retry 2 = %#v, won=%v, err=%v", retry2, won, err)
 	}
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(retry2.DispatchRequestID, "control-retry-2")
-	action, _, _ := svc.HandleBlackboardConclusionFailure(retry2.DispatchRequestID, task.BlackboardConclusionErrorInvalidResult, now, 0)
+	action, _, _ := svc.HandleBlackboardConclusionFailure(retry2.DispatchRequestID, task.BlackboardConclusionErrorInvalidResult, task.ConclusionValidationDetail{}, now, 0)
 
 	replayed, replayWon, replayErr := svc.RetryBlackboardConclusion(receipt.ID, "retry-key-1", now)
 	if replayErr != nil || replayWon || replayed.ID != receipt.ID || replayed.ExplicitRetryCount != 2 ||
@@ -827,7 +832,7 @@ func TestRetryLatestBlackboardConclusionIsAtomicAndTaskIdempotentAcrossReceipts(
 		}
 		_, _, _ = svc.MarkBlackboardConclusionAwaiting(dispatched.DispatchRequestID, "control-"+sourceTurnID)
 		action, _, err := svc.HandleBlackboardConclusionFailure(dispatched.DispatchRequestID,
-			task.BlackboardConclusionErrorToolUseForbidden, now, 0)
+			task.BlackboardConclusionErrorToolUseForbidden, task.ConclusionValidationDetail{}, now, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -840,7 +845,7 @@ func TestRetryLatestBlackboardConclusionIsAtomicAndTaskIdempotentAcrossReceipts(
 		t.Fatalf("retry A = %#v, won=%v, err=%v", retryA, won, err)
 	}
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(retryA.DispatchRequestID, "control-retry-a")
-	_, _, _ = svc.HandleBlackboardConclusionFailure(retryA.DispatchRequestID, task.BlackboardConclusionErrorInvalidResult, now, 0)
+	_, _, _ = svc.HandleBlackboardConclusionFailure(retryA.DispatchRequestID, task.BlackboardConclusionErrorInvalidResult, task.ConclusionValidationDetail{}, now, 0)
 	receiptB := makeActionRequired("turn-b")
 
 	replayed, replayWon, replayErr := svc.RetryLatestBlackboardConclusion(created.ID, "task-retry-key", now)
@@ -872,7 +877,7 @@ func TestBlackboardConclusionRecoveryDispatchFailureRequiresActionIdempotently(t
 	initial, _, _ := svc.ClaimBlackboardConclusionDispatch(receipt.ID, 0)
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(initial.DispatchRequestID, "control-initial")
 	repair, _, _ := svc.HandleBlackboardConclusionFailure(initial.DispatchRequestID,
-		task.BlackboardConclusionErrorInvalidResult, now, 5*time.Minute)
+		task.BlackboardConclusionErrorInvalidResult, task.ConclusionValidationDetail{}, now, 5*time.Minute)
 
 	action, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequired(repair.DispatchRequestID, now, time.Minute)
 	if err != nil || !changed || action.InternalState != task.BlackboardConclusionReceiptActionRequired ||
@@ -1020,7 +1025,7 @@ func TestPendingBlackboardConclusionRecoveryProjectsActionRequiredWithoutExtendi
 	_, _, _ = svc.MarkBlackboardConclusionSendStarted(dispatched.DispatchRequestID, now.Add(6*time.Minute))
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(dispatched.DispatchRequestID, "control-after-recovery")
 	exhausted, dispatchedRepair, err := svc.HandleBlackboardConclusionFailure(dispatched.DispatchRequestID,
-		task.BlackboardConclusionErrorInvalidResult, now.Add(7*time.Minute), 0)
+		task.BlackboardConclusionErrorInvalidResult, task.ConclusionValidationDetail{}, now.Add(7*time.Minute), 0)
 	if err != nil || !dispatchedRepair || exhausted.InternalState != task.BlackboardConclusionReceiptActionRequired ||
 		exhausted.AutomaticTurnCount != 1 || exhausted.RepairCount != 0 {
 		t.Fatalf("explicit pending retry reopened automatic repair = %#v, dispatched=%v, err=%v", exhausted, dispatchedRepair, err)
@@ -1048,12 +1053,12 @@ func TestRecoveryCandidatesIncludeInitialDispatchWithoutMutatingIt(t *testing.T)
 
 	repairSource := makePending("turn-repair")
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(repairSource.DispatchRequestID, "control-repair-source")
-	repair, _, _ := svc.HandleBlackboardConclusionFailure(repairSource.DispatchRequestID, task.BlackboardConclusionErrorInvalidResult, now, 0)
+	repair, _, _ := svc.HandleBlackboardConclusionFailure(repairSource.DispatchRequestID, task.BlackboardConclusionErrorInvalidResult, task.ConclusionValidationDetail{}, now, 0)
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(repair.DispatchRequestID, "control-repair")
 
 	retrySource := makePending("turn-retry")
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(retrySource.DispatchRequestID, "control-retry-source")
-	_, _, _ = svc.HandleBlackboardConclusionFailure(retrySource.DispatchRequestID, task.BlackboardConclusionErrorToolUseForbidden, now, 0)
+	_, _, _ = svc.HandleBlackboardConclusionFailure(retrySource.DispatchRequestID, task.BlackboardConclusionErrorToolUseForbidden, task.ConclusionValidationDetail{}, now, 0)
 	retry, _, _ := svc.RetryBlackboardConclusion(retrySource.ID, "retry-key", now)
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(retry.DispatchRequestID, "control-retry")
 

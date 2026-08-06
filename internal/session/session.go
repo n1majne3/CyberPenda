@@ -154,6 +154,10 @@ const (
 
 type BlackboardConclusionErrorCode = owner.BlackboardConclusionErrorCode
 
+// ConclusionValidationDetail is the bounded public reason for one rejected
+// closed conclusion result, safe for repair directives and durable state.
+type ConclusionValidationDetail = owner.ConclusionValidationDetail
+
 const (
 	BlackboardConclusionErrorInvalidResult           = owner.BlackboardConclusionErrorInvalidResult
 	BlackboardConclusionErrorToolUseForbidden        = owner.BlackboardConclusionErrorToolUseForbidden
@@ -191,8 +195,14 @@ type BlackboardConclusion struct {
 	SemanticPersistenceWatermark int                           `json:"semantic_persistence_watermark"`
 	AppliedRevision              *int                          `json:"applied_revision,omitempty"`
 	ErrorCode                    BlackboardConclusionErrorCode `json:"error_code,omitempty"`
-	RetryAvailable               bool                          `json:"retry_available"`
-	NextEligibleAt               *time.Time                    `json:"next_eligible_at,omitempty"`
+	// ValidationReason, ValidationFieldPath, and ValidationExpected expose the
+	// bounded public reason for the last rejected closed result. They are
+	// closed tokens only; raw provider output never appears.
+	ValidationReason    string     `json:"validation_reason,omitempty"`
+	ValidationFieldPath string     `json:"validation_field_path,omitempty"`
+	ValidationExpected  string     `json:"validation_expected,omitempty"`
+	RetryAvailable      bool       `json:"retry_available"`
+	NextEligibleAt      *time.Time `json:"next_eligible_at,omitempty"`
 }
 
 // ProviderPermission is a redacted provider approval request owned by one

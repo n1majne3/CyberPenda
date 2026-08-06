@@ -654,6 +654,9 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
       {owner.blackboardConclusion?.state === "action_required" && (
         <BlackboardConclusionRecovery
           errorCode={owner.blackboardConclusion.error_code}
+          validationReason={owner.blackboardConclusion.validation_reason}
+          validationFieldPath={owner.blackboardConclusion.validation_field_path}
+          validationExpected={owner.blackboardConclusion.validation_expected}
           retryAvailable={owner.blackboardConclusion.retry_available === true}
           nextEligibleAt={owner.blackboardConclusion.next_eligible_at}
           retrying={retryingConclusion}
@@ -1518,12 +1521,18 @@ const blackboardConclusionErrorCopy: Record<string, string> = {
 
 function BlackboardConclusionRecovery({
   errorCode,
+  validationReason,
+  validationFieldPath,
+  validationExpected,
   retryAvailable,
   nextEligibleAt,
   retrying,
   onRetry,
 }: {
   errorCode?: string;
+  validationReason?: string;
+  validationFieldPath?: string;
+  validationExpected?: string;
   retryAvailable: boolean;
   nextEligibleAt?: string;
   retrying: boolean;
@@ -1531,6 +1540,7 @@ function BlackboardConclusionRecovery({
 }) {
   const code = errorCode?.trim() || "conclusion_action_required";
   const message = blackboardConclusionErrorCopy[code] ?? "Blackboard conclusion requires operator attention.";
+  const validationDetail = [validationReason, validationFieldPath, validationExpected].filter(Boolean).join(" · ");
   return (
     <div
       role="alert"
@@ -1541,6 +1551,11 @@ function BlackboardConclusionRecovery({
       <div className="min-w-0 flex-1">
         <p className="text-foreground">{message}</p>
         <p className="break-all font-mono text-xs text-muted-foreground">{code}</p>
+        {validationDetail && (
+          <p data-testid="blackboard-conclusion-validation" className="break-all font-mono text-xs text-muted-foreground">
+            {validationDetail}
+          </p>
+        )}
       </div>
       <Button
         type="button"

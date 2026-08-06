@@ -435,6 +435,9 @@ export interface BlackboardConclusionView {
   source_turn_id?: string;
   applied_revision?: number;
   error_code?: string;
+  validation_reason?: string;
+  validation_field_path?: string;
+  validation_expected?: string;
   retry_available?: boolean;
   next_eligible_at?: string;
 }

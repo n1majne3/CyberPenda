@@ -10,6 +10,7 @@ import (
 
 	"pentest/internal/blackboardconclusion"
 	"pentest/internal/blackboardv2"
+	"pentest/internal/owner"
 	"pentest/internal/runtime"
 	"pentest/internal/task"
 )
@@ -94,14 +95,32 @@ Rules: outcome must be one of succeeded, failed, blocked, or inconclusive. Use i
 Describe one Attempt and at least one tested target. Do not call tools, continue testing, include raw tool output or reasoning, finish the Task, or write the Blackboard directly.`, baseRevision, baseRevision)
 }
 
-func repairBlackboardDirective(baseRevision int) string {
-	return fmt.Sprintf(`Your previous Blackboard conclusion result was invalid.
+func repairBlackboardDirective(baseRevision int, detail owner.ConclusionValidationDetail) string {
+	directive := fmt.Sprintf(`Your previous Blackboard conclusion result was invalid.
 Stop security testing and correct only that semantic result.
 Return exactly one JSON object (no markdown fences, no prose) with schema runtime-attempt-result/v1 and base_revision %d.
 If the board has no existing produced targets, use outcome "inconclusive" (or failed/blocked) with produced_targets [].
 Example:
 {"schema":"runtime-attempt-result/v1","base_revision":%d,"attempt":{"key":"attempt:example","create":true,"summary":"One sentence outcome of the completed work.","outcome":"inconclusive"},"tested_targets":[{"key":"objective:example","create_objective":{"objective":"What was tested."}}],"produced_targets":[]}
 Do not call tools, continue testing, include raw tool output or reasoning, finish the Task, or write the Blackboard directly.`, baseRevision, baseRevision)
+	return conclusionValidationRepairLine(detail) + "\n" + directive
+}
+
+// conclusionValidationRepairLine renders the bounded public reason for one
+// rejected closed result into a repair directive. The tokens are closed
+// vocabulary and static expected forms; raw provider output never appears.
+func conclusionValidationRepairLine(detail owner.ConclusionValidationDetail) string {
+	if !detail.Valid() {
+		return ""
+	}
+	line := "Validation: " + detail.Reason
+	if detail.FieldPath != "" {
+		line += " at " + detail.FieldPath
+	}
+	if detail.Expected != "" {
+		line += ". Expected: " + detail.Expected
+	}
+	return line + "."
 }
 
 func regenerateBlackboardDirective(baseRevision int) string {
@@ -134,8 +153,8 @@ func (server *Server) blackboardConclusionCoordinator(taskID string) runtime.Ass
 		EnqueueExisting: func(run func(context.Context)) bool {
 			return server.enqueueExistingProviderTaskControl(taskID, run)
 		},
-		OnFailure: func(ctx context.Context, requestID, code string) error {
-			return server.handleBlackboardConclusionFailure(taskID, requestID, task.BlackboardConclusionErrorCode(code))
+		OnFailure: func(ctx context.Context, requestID string, failure runtime.AssistedConclusionQueuedFailure) error {
+			return server.handleBlackboardConclusionFailure(taskID, requestID, task.BlackboardConclusionErrorCode(failure.Code), failure.Detail)
 		},
 		OnResult: func(ctx context.Context, result runtime.ProviderSessionAttemptResult) error {
 			return server.applyBlackboardConclusionResult(ctx, taskID, result)
@@ -162,9 +181,9 @@ func (server *Server) drainBlackboardConclusionCallbacks(ctx context.Context, ta
 	_ = server.blackboardConclusionCoordinator(taskID).Drain(ctx, requestID)
 }
 
-func (server *Server) handleBlackboardConclusionFailure(taskID, requestID string, code task.BlackboardConclusionErrorCode) error {
+func (server *Server) handleBlackboardConclusionFailure(taskID, requestID string, code task.BlackboardConclusionErrorCode, detail task.ConclusionValidationDetail) error {
 	receipt, dispatchRepair, err := server.tasks.HandleBlackboardConclusionFailure(
-		requestID, code, time.Now().UTC(), blackboardConclusionRetryCooldown,
+		requestID, code, detail, time.Now().UTC(), blackboardConclusionRetryCooldown,
 	)
 	if err != nil {
 		return err
@@ -186,7 +205,13 @@ func (server *Server) dispatchBlackboardConclusionRepair(ctx context.Context, re
 	if receipt.BaseRevision == nil {
 		return fmt.Errorf("Blackboard conclusion repair has no base revision")
 	}
-	return server.sendBlackboardConclusionTurn(ctx, receipt, repairBlackboardDirective(*receipt.BaseRevision))
+	return server.sendBlackboardConclusionTurn(ctx, receipt, repairBlackboardDirective(*receipt.BaseRevision, conclusionDetailFromTaskReceipt(receipt)))
+}
+
+func conclusionDetailFromTaskReceipt(receipt task.BlackboardConclusionReceipt) owner.ConclusionValidationDetail {
+	return owner.ConclusionValidationDetail{
+		Reason: receipt.ValidationReason, FieldPath: receipt.ValidationFieldPath, Expected: receipt.ValidationExpected,
+	}
 }
 
 func waitForBlackboardConclusionEligibility(ctx context.Context, eligibleAt *time.Time, now func() time.Time) error {
@@ -362,6 +387,10 @@ func (server *Server) applyBlackboardConclusionResult(ctx context.Context, taskI
 		server.blackboardConclusions.QueueFailure(result.RequestID, runtime.AssistedConclusionQueuedFailure{
 			OwnerID: taskID, ProviderSessionID: result.SessionID, ProviderTurnID: result.ProviderTurnID,
 			Code: string(task.BlackboardConclusionErrorInvalidResult),
+			Detail: owner.ConclusionValidationDetail{
+				Reason: string(blackboardconclusion.ValidationReasonBaseRevisionMismatch), FieldPath: "base_revision",
+				Expected: fmt.Sprintf("base_revision must equal the receipt's claimed revision %d", *receipt.BaseRevision),
+			},
 		})
 		server.drainBlackboardConclusionCallbacks(ctx, taskID, result.RequestID)
 		return nil

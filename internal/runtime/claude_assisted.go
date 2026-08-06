@@ -133,20 +133,16 @@ func (s *ClaudeCodeProviderSession) handleClaudeAttemptResult(method string, par
 	}
 	resultSink, invalidSink := s.assisted.result, s.assisted.invalid
 	s.assisted.mu.Unlock()
-	failure := ProviderSessionAttemptResultValidationFailure{
-		RequestID: requestID, SessionID: sessionID, ProviderTurnID: providerTurnID,
-		ValidationErrorCode: ProviderSessionAttemptResultInvalid,
-	}
 	if method == "claude/attempt_result_invalid" {
 		if invalidSink != nil {
-			invalidSink(failure)
+			invalidSink(attemptResultValidationFailure(requestID, sessionID, providerTurnID, nil, blackboardconclusion.ValidationReasonInvalidResult))
 		}
 		return
 	}
 	validated, err := blackboardconclusion.Decode([]byte(providerJSONValue(params, "result")))
 	if err != nil {
 		if invalidSink != nil {
-			invalidSink(failure)
+			invalidSink(attemptResultValidationFailure(requestID, sessionID, providerTurnID, err, blackboardconclusion.ValidationReasonInvalidResult))
 		}
 		return
 	}

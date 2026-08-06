@@ -41,7 +41,7 @@ type AssistedConclusionCoordinator struct {
 	IsCanonical     func(requestID, providerSessionID, providerTurnID string) bool
 	Enqueue         func(func(context.Context)) bool
 	EnqueueExisting func(func(context.Context)) bool
-	OnFailure       func(context.Context, string, string) error
+	OnFailure       func(context.Context, string, AssistedConclusionQueuedFailure) error
 	OnResult        func(context.Context, ProviderSessionAttemptResult) error
 	OnError         func(error)
 }
@@ -59,6 +59,9 @@ func (coordinator AssistedConclusionCoordinator) AcceptValidationFailure(failure
 	coordinator.Tracker.QueueFailure(failure.RequestID, AssistedConclusionQueuedFailure{
 		OwnerID: coordinator.OwnerID, ProviderSessionID: failure.SessionID, ProviderTurnID: failure.ProviderTurnID,
 		Code: string(owner.BlackboardConclusionErrorInvalidResult),
+		Detail: owner.ConclusionValidationDetail{
+			Reason: string(failure.Reason), FieldPath: failure.FieldPath, Expected: failure.Expected,
+		},
 	})
 	coordinator.enqueueDrain(failure.RequestID, false)
 }
@@ -126,7 +129,7 @@ func (coordinator AssistedConclusionCoordinator) Drain(ctx context.Context, requ
 		if coordinator.OnFailure == nil {
 			return nil
 		}
-		if err := coordinator.OnFailure(ctx, requestID, failure.Code); err != nil {
+		if err := coordinator.OnFailure(ctx, requestID, failure); err != nil {
 			return err
 		}
 		coordinator.Tracker.ClearRequest(coordinator.OwnerID, requestID)

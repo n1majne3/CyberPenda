@@ -271,6 +271,29 @@ describe("TaskDetailPage", () => {
     });
   });
 
+  it("surfaces the bounded validation reason when the repair budget is exhausted", async () => {
+    stubTaskDetailApi({
+      status: "running",
+      blackboard_conclusion: {
+        mode: "assisted",
+        state: "action_required",
+        error_code: "semantic_conclusion_repair_exhausted",
+        validation_reason: "invalid_key_format",
+        validation_field_path: "attempt.key",
+        validation_expected: "the key must use the attempt: prefix",
+        retry_available: true,
+      },
+    });
+
+    renderPage();
+
+    const recovery = await screen.findByRole("alert", { name: "Blackboard conclusion requires attention" });
+    expect(recovery).toHaveTextContent("semantic_conclusion_repair_exhausted");
+    expect(screen.getByTestId("blackboard-conclusion-validation")).toHaveTextContent(
+      "invalid_key_format · attempt.key · the key must use the attempt: prefix",
+    );
+  });
+
   it("maps forbidden Conclude tool use to bounded operator copy", async () => {
     stubTaskDetailApi({
       status: "running",
