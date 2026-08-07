@@ -31,15 +31,6 @@ func (state SteeringState) Terminal() bool {
 	return state == SteeringApplied || state == SteeringFailed || state == SteeringActionRequired
 }
 
-// ValidSteeringState reports whether state is a known protocol state.
-func ValidSteeringState(state SteeringState) bool {
-	switch state {
-	case SteeringPending, SteeringDispatchStarted, SteeringApplied, SteeringFailed, SteeringActionRequired:
-		return true
-	default:
-		return false
-	}
-}
 
 // SteeringMode is the provider-native steer operation chosen at acceptance.
 type SteeringMode string

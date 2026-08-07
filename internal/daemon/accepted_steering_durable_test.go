@@ -618,12 +618,12 @@ func newSessionSteerFixture(t *testing.T) (*Server, string, *runtime.FakeProvide
 	}
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, bound := server.sessionProviderSessions.get(created.ID); bound {
+		if _, bound := server.sessionProviderSessions.get(created.ID); bound && server.sessionHarness.IsActive(created.ID) {
 			return server, created.ID, fake
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("Session %s never bound a provider session", created.ID)
+	t.Fatalf("Session %s never bound an active provider session", created.ID)
 	return nil, "", nil
 }
 
@@ -642,9 +642,11 @@ func TestAcceptedSteeringSessionOwnerDispatchesDurably(t *testing.T) {
 		t.Fatalf("Session steer status=%d body=%s", steerResponse.Code, steerResponse.Body.String())
 	}
 	// 202 follows the durable record: the owner-neutral queue owns settlement.
+	// Dispatch is asynchronous, so the record may already have advanced past
+	// pending; the durable existence and owner kind are the contract here.
 	record, err := server.steering.ByRequestID(owner.KindSession, sessionID, "session-steer-1")
-	if err != nil || record.State != owner.SteeringPending {
-		t.Fatalf("Session record = %#v err=%v, want pending", record, err)
+	if err != nil || record == nil {
+		t.Fatalf("Session record = %#v err=%v, want a durable record", record, err)
 	}
 	if record.OwnerKind != owner.KindSession {
 		t.Fatalf("Session record owner kind = %q", record.OwnerKind)
@@ -860,11 +862,114 @@ func newSessionSteerFixtureAt(t *testing.T, root string) (*Server, string, *runt
 	}
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, bound := server.sessionProviderSessions.get(created.ID); bound {
+		if _, bound := server.sessionProviderSessions.get(created.ID); bound && server.sessionHarness.IsActive(created.ID) {
 			return server, created.ID, fake
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("Session %s never bound a provider session", created.ID)
+	t.Fatalf("Session %s never bound an active provider session", created.ID)
 	return nil, "", nil
+}
+
+// TestAcceptedSteeringSessionPostFenceRestartBecomesActionRequiredWithoutReplay
+// proves the Session owner gets the same post-fence restart treatment as the
+// Task owner: a fenced request with no durable outcome becomes action_required
+// and is never replayed.
+func TestAcceptedSteeringSessionPostFenceRestartBecomesActionRequiredWithoutReplay(t *testing.T) {
+	root := t.TempDir()
+	server, sessionID, _ := newSessionSteerFixtureAt(t, root)
+	record, err := server.steering.Accept(context.Background(), owner.KindSession, sessionID, steering.AcceptRequest{
+		RequestID: "session-post-fence", Message: "Crashed after the Session fence.", Mode: owner.SteeringModeInTurnSteer,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Crash window: the durable fence is recorded but the provider delivery
+	// never settles.
+	if _, err := server.steering.MarkDispatchStarted(context.Background(), record.ID, "", record.CreatedAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	server2, err := NewServer(Config{
+		Version: "test", DBPath: filepath.Join(root, "pentest.db"), RuntimeRoot: filepath.Join(root, "runs"),
+		DisableBuiltinSkills: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server2.Close() })
+	recovered, err := server2.steering.ByRequestID(owner.KindSession, sessionID, "session-post-fence")
+	if err != nil || recovered.State != owner.SteeringActionRequired {
+		t.Fatalf("recovered Session record = %#v err=%v, want action_required", recovered, err)
+	}
+	if recovered.ErrorCode != owner.SteeringReasonDeliveryAmbiguous {
+		t.Fatalf("recovered Session reason = %q, want delivery_ambiguous", recovered.ErrorCode)
+	}
+	events, err := server2.sessions.Events(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawActionRequired, sawApplied bool
+	for _, event := range events {
+		if event.Payload["request_id"] != "session-post-fence" {
+			continue
+		}
+		if event.Payload["outcome"] == "action_required" {
+			sawActionRequired = true
+		}
+		if event.Payload["outcome"] == "applied" {
+			sawApplied = true
+		}
+	}
+	if !sawActionRequired || sawApplied {
+		t.Fatalf("Session post-fence projection = action_required:%v applied:%v events=%#v", sawActionRequired, sawApplied, events)
+	}
+}
+
+// TestAcceptedSteeringTaskDeletionSettlesQueuedWithTruthfulOutcome proves Task
+// Deletion settles queued Accepted Steering instead of orphaning it with the
+// deleted owner.
+func TestAcceptedSteeringTaskDeletionSettlesQueuedWithTruthfulOutcome(t *testing.T) {
+	server, err := NewServer(Config{DBPath: filepath.Join(t.TempDir(), "pentest.db"), DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	project, err := server.projects.Create("Delete", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := createTestRuntimeProfile(t, server)
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: "delete steer", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.tasks.UpdateStatus(created.ID, task.StatusRunning); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.steering.Accept(context.Background(), owner.KindTask, created.ID, steering.AcceptRequest{
+		RequestID: "delete-queued-1", Message: "Queued before deletion.", Mode: owner.SteeringModeInTurnSteer,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Task Deletion is legal only for terminal Tasks.
+	if _, err := server.tasks.UpdateStatus(created.ID, task.StatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	del := httptest.NewRequest(http.MethodDelete, "/api/projects/"+project.ID+"/tasks/"+created.ID, nil)
+	delResponse := httptest.NewRecorder()
+	server.ServeHTTP(delResponse, del)
+	if delResponse.Code != http.StatusNoContent {
+		t.Fatalf("delete status=%d body=%s", delResponse.Code, delResponse.Body.String())
+	}
+	settled, err := server.steering.ByRequestID(owner.KindTask, created.ID, "delete-queued-1")
+	if err != nil || settled.State != owner.SteeringFailed {
+		t.Fatalf("settled record = %#v err=%v, want failed", settled, err)
+	}
+	if settled.ErrorCode != owner.SteeringReasonOwnerStateChanged {
+		t.Fatalf("settled reason = %q, want owner_state_changed", settled.ErrorCode)
+	}
 }

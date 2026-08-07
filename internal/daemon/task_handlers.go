@@ -1415,6 +1415,10 @@ func (server *Server) handleDeleteTask(response http.ResponseWriter, request *ht
 	if !ok {
 		return
 	}
+	// Task Deletion is legal only for terminal Tasks, but every queued Accepted
+	// Steering request must still settle with a truthful outcome instead of
+	// being orphaned with the deleted owner.
+	server.settleTaskAcceptedSteering(found.ID, owner.SteeringReasonOwnerStateChanged, "Task deleted with queued accepted steering")
 	if err := server.tasks.Delete(found.ID); err != nil {
 		writeTaskError(response, err)
 		return
@@ -3059,12 +3063,25 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 	if !ok {
 		return
 	}
+	if found.Status != task.StatusRunning && found.Status != task.StatusPaused {
+		writeError(response, http.StatusConflict, "native steer requires an active Task")
+		return
+	}
+	mode, err := nativeSteerMode(session.Capabilities())
+	if err != nil {
+		writeError(response, http.StatusConflict, err.Error())
+		return
+	}
+	if nativeSteerOperation(session, mode) == nil {
+		writeError(response, http.StatusConflict, "provider session does not support native steer")
+		return
+	}
 
 	// Repeated requests with the same request identity return the durable
 	// current outcome and never create a second queue item. Conflicting content
 	// under the same identity returns a conflict.
 	if record, err := server.steering.ByRequestID(owner.KindTask, found.ID, input.RequestID); err == nil {
-		if conflict := steeringConflictMessage(record, input.Message, selection); conflict != "" {
+		if conflict := steeringConflictMessage(record, input.Message, selection, owner.SteeringMode(mode)); conflict != "" {
 			writeError(response, http.StatusConflict, conflict)
 			return
 		}
@@ -3084,20 +3101,6 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		return
 	}
 
-	if found.Status != task.StatusRunning && found.Status != task.StatusPaused {
-		writeError(response, http.StatusConflict, "native steer requires an active Task")
-		return
-	}
-	mode, err := nativeSteerMode(session.Capabilities())
-	if err != nil {
-		writeError(response, http.StatusConflict, err.Error())
-		return
-	}
-	if nativeSteerOperation(session, mode) == nil {
-		writeError(response, http.StatusConflict, "provider session does not support native steer")
-		return
-	}
-
 	// Durable acceptance (#194, #200): the operator message and the dispatch
 	// record commit atomically before the request returns 202. The accepted
 	// steering is dispatched by the owner-neutral FIFO queue at the next valid
@@ -3111,7 +3114,7 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		"requested_reasoning_effort": selection.RequestedReasoningEffort,
 	}
 	adapter := taskSteeringAdapter(server, found.ID, server.taskConclusionSettlementForID(found.ID))
-	_, err = server.acceptAcceptedSteering(request.Context(), adapter, steering.AcceptRequest{
+	_, err = server.acceptSteeringDurably(request.Context(), adapter, steering.AcceptRequest{
 		RequestID:                input.RequestID,
 		Message:                  input.Message,
 		Mode:                     owner.SteeringMode(mode),
@@ -3127,10 +3130,16 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		return event.ID, nil
 	})
 	if errors.Is(err, steering.ErrDuplicateRequest) {
-		// A concurrent duplicate committed first; return its durable outcome.
+		// A concurrent duplicate committed first. The same identity rules
+		// apply: matching content replays the durable outcome, conflicting
+		// content is a conflict.
 		replayed, replayErr := server.steering.ByRequestID(owner.KindTask, found.ID, input.RequestID)
 		if replayErr != nil {
 			writeError(response, http.StatusInternalServerError, "load accepted steering")
+			return
+		}
+		if conflict := steeringConflictMessage(replayed, input.Message, selection, owner.SteeringMode(mode)); conflict != "" {
+			writeError(response, http.StatusConflict, conflict)
 			return
 		}
 		writeJSON(response, http.StatusAccepted, struct {

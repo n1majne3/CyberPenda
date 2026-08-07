@@ -795,6 +795,12 @@ func (s *Service) AppendContinuationEvent(taskID, continuationID string, kind Ev
 // so the event can be committed atomically with another owner-neutral record
 // (for example a durable Accepted Steering request).
 func (s *Service) AppendEventTx(tx *sql.Tx, taskID string, kind EventKind, payload EventPayload) (Event, error) {
+	return appendTaskEventTx(tx, taskID, kind, payload, time.Now().UTC())
+}
+
+// appendTaskEventTx stores one structured task event inside the caller-owned
+// transaction. Seq is assigned monotonically per task within the transaction.
+func appendTaskEventTx(tx *sql.Tx, taskID string, kind EventKind, payload EventPayload, now time.Time) (Event, error) {
 	if payload == nil {
 		payload = EventPayload{}
 	}
@@ -802,7 +808,6 @@ func (s *Service) AppendEventTx(tx *sql.Tx, taskID string, kind EventKind, paylo
 	if err != nil {
 		return Event{}, fmt.Errorf("encode event payload: %w", err)
 	}
-	now := time.Now().UTC()
 	var maxSeq sql.NullInt64
 	if err := tx.QueryRow(`SELECT MAX(seq) FROM task_events WHERE task_id = ?`, taskID).Scan(&maxSeq); err != nil {
 		return Event{}, fmt.Errorf("read max seq: %w", err)

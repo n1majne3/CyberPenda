@@ -285,35 +285,6 @@ func (s *Service) SettleOwner(ctx context.Context, kind owner.Kind, ownerID stri
 	return settled, nil
 }
 
-// SettleOwnerPending settles only pre-fence pending records (used when the
-// owner leaves the active state and every queued request was provably never
-// delivered). Post-fence records are left for their own ambiguous handling.
-func (s *Service) SettleOwnerPending(ctx context.Context, kind owner.Kind, ownerID string, reason owner.SteeringFailureReason, message string) ([]owner.SteeringRecord, error) {
-	if !owner.ValidSteeringFailureReason(reason) {
-		return nil, fmt.Errorf("%w: %q", ErrInvalidReason, reason)
-	}
-	rows, err := s.db.Query(`SELECT `+steeringRecordColumns+`
-		FROM accepted_steering WHERE owner_kind=? AND owner_id=? AND state=? ORDER BY queue_order ASC`,
-		string(kind), ownerID, string(owner.SteeringPending))
-	if err != nil {
-		return nil, fmt.Errorf("list owner pending Accepted Steering: %w", err)
-	}
-	defer rows.Close()
-	settled := make([]owner.SteeringRecord, 0)
-	for rows.Next() {
-		record, scanErr := scanSteeringRecordRows(rows)
-		if scanErr != nil {
-			return nil, fmt.Errorf("scan Accepted Steering: %w", scanErr)
-		}
-		updated, markErr := s.MarkFailed(ctx, record.ID, reason, message)
-		if markErr != nil {
-			return nil, markErr
-		}
-		settled = append(settled, *updated)
-	}
-	return settled, rows.Err()
-}
-
 func (s *Service) ownerNonTerminal(kind owner.Kind, ownerID string) ([]owner.SteeringRecord, error) {
 	rows, err := s.db.Query(`SELECT `+steeringRecordColumns+`
 		FROM accepted_steering WHERE owner_kind=? AND owner_id=? AND state IN (?, ?) ORDER BY queue_order ASC`,

@@ -39,7 +39,6 @@ type steeringAdapter struct {
 	kind       owner.Kind
 	id         string
 	settlement providerControlSettlement
-	session    func() (runtime.ProviderSession, bool)
 	// resolveContinuation revalidates the durable owner and returns the
 	// writable Runtime Continuation for delivery. fresh reports a Continuation
 	// created by this resolution so the executor does not advance it again.
@@ -68,9 +67,6 @@ func taskSteeringAdapter(server *Server, taskID string, settlement providerContr
 		kind:       owner.KindTask,
 		id:         taskID,
 		settlement: settlement,
-		session: func() (runtime.ProviderSession, bool) {
-			return server.providerSessions.get(taskID)
-		},
 		project: func(record owner.SteeringRecord, state owner.SteeringState, reason owner.SteeringFailureReason, message string) {
 			projectTaskSteeringSettlement(server, record, state, reason, message)
 		},
@@ -131,9 +127,6 @@ func sessionSteeringAdapter(server *Server, sessionID string, settlement provide
 		kind:       owner.KindSession,
 		id:         sessionID,
 		settlement: settlement,
-		session: func() (runtime.ProviderSession, bool) {
-			return server.sessionProviderSessions.get(sessionID)
-		},
 		project: func(record owner.SteeringRecord, state owner.SteeringState, reason owner.SteeringFailureReason, message string) {
 			projectSessionSteeringSettlement(server, record, state, reason, message)
 		},
@@ -181,11 +174,16 @@ var (
 	errSteeringContinuationUnavailable = errors.New("accepted steering continuation is unavailable")
 )
 
+// acceptedSteeringDispatchTimeout bounds one provider delivery. A timed-out
+// dispatch is delivery-ambiguous (post-fence, no durable outcome) and settles
+// action_required instead of being replayed.
+const acceptedSteeringDispatchTimeout = 30 * time.Second
+
 // acceptAcceptedSteering durably records one native steer request together with
 // its conversation projection, then enqueues its owner-neutral dispatch. The
 // record is committed before this returns, so a 202 Accepted is returned only
 // after the request and its settlement responsibility are durable.
-func (server *Server) acceptAcceptedSteering(ctx context.Context, adapter *steeringAdapter, input steering.AcceptRequest, project func(tx *sql.Tx) (string, error)) (*owner.SteeringRecord, error) {
+func (server *Server) acceptSteeringDurably(ctx context.Context, adapter *steeringAdapter, input steering.AcceptRequest, project func(tx *sql.Tx) (string, error)) (*owner.SteeringRecord, error) {
 	record, err := server.steering.Accept(ctx, adapter.kind, adapter.id, input, project)
 	if err != nil {
 		return nil, err
@@ -239,7 +237,11 @@ func (server *Server) dispatchAcceptedSteering(ctx context.Context, adapter *ste
 			// A concurrent dispatcher already advanced this record; re-read the queue.
 			continue
 		}
-		execution := adapter.execute(ctx, fenced, continuationID, freshContinuation)
+		// Each provider delivery is bounded so a hung steer operation cannot
+		// leave the owner queue blocked or the record permanently dispatch_started.
+		runCtx, cancel := context.WithTimeout(ctx, acceptedSteeringDispatchTimeout)
+		execution := adapter.execute(runCtx, fenced, continuationID, freshContinuation)
+		cancel()
 		switch execution.state {
 		case owner.SteeringApplied:
 			if _, err := server.steering.MarkApplied(ctx, fenced.ID, execution.result); err != nil && !errors.Is(err, steering.ErrNotFound) {
@@ -265,17 +267,13 @@ func (server *Server) dispatchAcceptedSteering(ctx context.Context, adapter *ste
 // Timeline event. The record state is the source of truth; the event is the
 // projection.
 func (server *Server) settleSteeringRecord(ctx context.Context, adapter *steeringAdapter, record owner.SteeringRecord, state owner.SteeringState, reason owner.SteeringFailureReason, message string) {
-	mark := func() (*owner.SteeringRecord, error) {
-		switch state {
-		case owner.SteeringApplied:
-			return server.steering.MarkApplied(ctx, record.ID, record.Result)
-		case owner.SteeringActionRequired:
-			return server.steering.MarkActionRequired(ctx, record.ID, reason, message)
-		default:
-			return server.steering.MarkFailed(ctx, record.ID, reason, message)
-		}
+	var updated *owner.SteeringRecord
+	var err error
+	if state == owner.SteeringActionRequired {
+		updated, err = server.steering.MarkActionRequired(ctx, record.ID, reason, message)
+	} else {
+		updated, err = server.steering.MarkFailed(ctx, record.ID, reason, message)
 	}
-	updated, err := mark()
 	if err != nil {
 		if !errors.Is(err, steering.ErrNotFound) {
 			server.logger.Printf("Accepted Steering settle %s: %v", state, err)
@@ -368,7 +366,7 @@ func (server *Server) recoverAcceptedSteering(ctx context.Context) {
 func (server *Server) recoverTaskPendingSteering(ctx context.Context, record owner.SteeringRecord) {
 	found, err := server.tasks.Get(record.OwnerID)
 	if err != nil {
-		server.logger.Printf("Accepted Steering recovery Task %s: %v", record.OwnerID, err)
+		server.settleOwnerSteeringRecord(ctx, record, owner.SteeringFailed, owner.SteeringReasonOwnerStateChanged, "Task is no longer available for accepted steering")
 		return
 	}
 	switch {
@@ -393,7 +391,7 @@ func (server *Server) recoverTaskPendingSteering(ctx context.Context, record own
 func (server *Server) recoverSessionPendingSteering(ctx context.Context, record owner.SteeringRecord) {
 	found, err := server.sessions.Get(record.OwnerID)
 	if err != nil {
-		server.logger.Printf("Accepted Steering recovery Session %s: %v", record.OwnerID, err)
+		server.settleOwnerSteeringRecord(ctx, record, owner.SteeringFailed, owner.SteeringReasonOwnerStateChanged, "Session is no longer available for accepted steering")
 		return
 	}
 	switch {
@@ -445,9 +443,12 @@ func (server *Server) steeringAdapterFor(record owner.SteeringRecord) *steeringA
 
 // steeringConflictMessage compares a repeated request against the durable
 // record and returns a conflict message, or "" when the repeat matches.
-func steeringConflictMessage(record *owner.SteeringRecord, message string, selection runtime.ProviderSessionRequest) string {
+func steeringConflictMessage(record *owner.SteeringRecord, message string, selection runtime.ProviderSessionRequest, mode owner.SteeringMode) string {
 	if strings.TrimSpace(record.Message) != strings.TrimSpace(message) {
 		return "steer request id already belongs to a different message"
+	}
+	if record.Mode != mode {
+		return "steer request id already belongs to a different steer mode"
 	}
 	if strings.TrimSpace(record.ModelProviderID) != strings.TrimSpace(selection.ModelProviderID) ||
 		strings.TrimSpace(record.Model) != strings.TrimSpace(selection.Model) ||

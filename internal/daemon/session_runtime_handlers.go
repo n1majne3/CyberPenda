@@ -1515,11 +1515,11 @@ func (server *Server) handleSessionSteer(response http.ResponseWriter, request *
 	// current outcome and never create a second queue item. Conflicting content
 	// under the same identity returns a conflict.
 	if record, err := server.steering.ByRequestID(owner.KindSession, id, requestID); err == nil {
-		if conflict := steeringConflictMessage(record, message, selection); conflict != "" {
+		if conflict := steeringConflictMessage(record, message, selection, owner.SteeringMode(mode)); conflict != "" {
 			writeError(response, http.StatusConflict, conflict)
 			return
 		}
-		server.writeDecoratedSession(response, http.StatusAccepted, id)
+		server.writeDecoratedSessionWithSteeringOutcome(response, http.StatusAccepted, id, steeringOutcomeFromRecord(record))
 		return
 	} else if !errors.Is(err, steering.ErrNotFound) {
 		writeSessionError(response, err)
@@ -1531,7 +1531,7 @@ func (server *Server) handleSessionSteer(response http.ResponseWriter, request *
 	// the owner-neutral FIFO queue after the assisted conclusion settles.
 	adapter := sessionSteeringAdapter(server, id, server.sessionConclusionSettlementForID(id))
 	accept := func(runtimeMessage, conversationID string) error {
-		_, acceptErr := server.acceptAcceptedSteering(request.Context(), adapter, steering.AcceptRequest{
+		_, acceptErr := server.acceptSteeringDurably(request.Context(), adapter, steering.AcceptRequest{
 			RequestID:                requestID,
 			Message:                  runtimeMessage,
 			Mode:                     owner.SteeringMode(mode),
@@ -1581,7 +1581,19 @@ func (server *Server) handleSessionSteer(response http.ResponseWriter, request *
 	}
 	if err := accept(runtimeMessage, ""); err != nil {
 		if errors.Is(err, steering.ErrDuplicateRequest) {
-			server.writeDecoratedSession(response, http.StatusAccepted, id)
+			// A concurrent duplicate committed first; the same identity rules
+			// apply: matching content replays the durable outcome, conflicting
+			// content is a conflict.
+			replayed, replayErr := server.steering.ByRequestID(owner.KindSession, id, requestID)
+			if replayErr != nil {
+				writeSessionError(response, replayErr)
+				return
+			}
+			if conflict := steeringConflictMessage(replayed, message, selection, owner.SteeringMode(mode)); conflict != "" {
+				writeError(response, http.StatusConflict, conflict)
+				return
+			}
+			server.writeDecoratedSessionWithSteeringOutcome(response, http.StatusAccepted, id, steeringOutcomeFromRecord(replayed))
 			return
 		}
 		writeSessionError(response, err)
@@ -1642,6 +1654,25 @@ func (server *Server) handleSessionQueueSteer(response http.ResponseWriter, requ
 		}
 	}
 	server.handleSessionMessageInput(response, request, found, input, uploads)
+}
+
+// writeDecoratedSessionWithSteeringOutcome returns the decorated Session with
+// the durable Accepted Steering outcome of the repeated request identity.
+func (server *Server) writeDecoratedSessionWithSteeringOutcome(response http.ResponseWriter, status int, id, outcome string) {
+	found, err := server.sessions.Get(id)
+	if err != nil {
+		writeSessionError(response, err)
+		return
+	}
+	decorated, err := server.decorateSession(found)
+	if err != nil {
+		writeSessionError(response, err)
+		return
+	}
+	writeJSON(response, status, struct {
+		session.Session
+		AcceptedSteeringOutcome string `json:"accepted_steering_outcome,omitempty"`
+	}{Session: decorated, AcceptedSteeringOutcome: outcome})
 }
 
 func (server *Server) writeDecoratedSession(response http.ResponseWriter, status int, id string) {
