@@ -33,6 +33,8 @@ const (
 	// truncated preview so a pathological payload cannot grow the preview
 	// without bound.
 	historyPreviewMapEntries = 200
+	// historyPreviewKeyChars caps map keys retained in a truncated preview.
+	historyPreviewKeyChars = 512
 )
 
 // historyRequest describes one Timeline or Transcript read. Cursor presence is
@@ -138,8 +140,9 @@ func boundedNewest[T any](items []T, limit int, seqOf func(T) int, bounded func(
 			break
 		}
 		item, size := bounded(items[index])
-		// The newest item always fits (its preview is bounded), so an
-		// oversized tail item can never be silently dropped from the page.
+		// The newest item is never silently dropped from the page: its preview
+		// is per-field bounded, and when the page is still empty the item is
+		// included even if its preview alone fills the whole byte budget.
 		if totalBytes+size > historyWindowMaxBytes && len(selected) > 0 {
 			break
 		}
@@ -246,9 +249,18 @@ func truncateField(text string) string {
 	return text[:historyPreviewChars] + "\n… (truncated)"
 }
 
+// truncateKey caps one payload map key so a pathological key cannot grow the
+// serialized preview without bound.
+func truncateKey(key string) string {
+	if len(key) <= historyPreviewKeyChars {
+		return key
+	}
+	return key[:historyPreviewKeyChars] + "…"
+}
+
 // truncateMap bounds every string value in a payload map, recursively, and
-// caps the number of retained entries so a pathological payload cannot defeat
-// the preview bound.
+// caps the number of retained entries and key lengths so a pathological
+// payload cannot defeat the preview bound.
 func truncateMap(values map[string]any) map[string]any {
 	if len(values) == 0 {
 		return values
@@ -259,16 +271,7 @@ func truncateMap(values map[string]any) map[string]any {
 		if kept >= historyPreviewMapEntries {
 			break
 		}
-		switch typed := value.(type) {
-		case string:
-			out[key] = truncateField(typed)
-		case map[string]any:
-			out[key] = truncateMap(typed)
-		case []any:
-			out[key] = truncateSlice(typed)
-		default:
-			out[key] = typed
-		}
+		out[truncateKey(key)] = truncateValue(value)
 		kept++
 	}
 	return out
@@ -280,16 +283,20 @@ func truncateSlice(values []any) []any {
 		if len(out) >= historyPreviewMapEntries {
 			break
 		}
-		switch typed := value.(type) {
-		case string:
-			out = append(out, truncateField(typed))
-		case map[string]any:
-			out = append(out, truncateMap(typed))
-		case []any:
-			out = append(out, truncateSlice(typed))
-		default:
-			out = append(out, typed)
-		}
+		out = append(out, truncateValue(value))
 	}
 	return out
+}
+
+func truncateValue(value any) any {
+	switch typed := value.(type) {
+	case string:
+		return truncateField(typed)
+	case map[string]any:
+		return truncateMap(typed)
+	case []any:
+		return truncateSlice(typed)
+	default:
+		return typed
+	}
 }

@@ -164,7 +164,29 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
       }
       setOwner(loaded.owner);
       if (loaded.owner.kind === "session") setTitleDraft(loaded.owner.title);
-      applyHistoryDelta(mode, loaded.history, before, loaded.timelineDelta, loaded.transcriptDelta);
+      // Merge into the latest state at commit time, not the pre-request
+      // snapshot, so a backward page (or any other concurrent history
+      // change) committed while this request was in flight is preserved
+      // instead of being wiped by the merge.
+      const latest = historyRef.current;
+      const next: OwnerHistory = {
+        ...latest,
+        timeline: mode === "initial" ? loaded.timeline : mergeTimelineItems(latest.timeline, loaded.timeline),
+        transcript: mode === "initial" ? loaded.transcript : mergeTranscriptEntries(latest.transcript, loaded.transcript),
+        timelineCursor: loaded.timelineCursor,
+        transcriptCursor: loaded.transcriptCursor,
+        ...(mode === "initial" ? {
+          timelineHasOlder: loaded.timelineHasOlder,
+          transcriptHasOlder: loaded.transcriptHasOlder,
+        } : {}),
+      };
+      applyHistoryDelta(
+        mode,
+        next,
+        latest,
+        mode === "poll" ? next.timeline.length - latest.timeline.length : 0,
+        mode === "poll" ? next.transcript.length - latest.transcript.length : 0,
+      );
       setError(null);
     } catch (e) {
       if (controller.signal.aborted || generation !== loadGeneration.current || requestOwner !== ownerIDRef.current) {
@@ -175,13 +197,14 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   }
 
   // Applies one merged history page. Live-tail deltas never move an operator
-  // who is reading older history: at the tail the container shifts by the
-  // appended height, away from the tail an unseen-event count accumulates
-  // instead of forcing scroll.
+  // who is reading older history: at the tail the container follows the new
+  // rows (chronological sort shifts by the appended height; the newest-first
+  // top stays put and the new rows render at the tail), and away from the
+  // tail an unseen-event count accumulates instead of forcing scroll.
   function applyHistoryDelta(
     mode: "initial" | "poll",
     next: OwnerHistory,
-    before: OwnerHistory,
+    latest: OwnerHistory,
     timelineDelta: number,
     transcriptDelta: number,
   ) {
@@ -190,12 +213,14 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
       return;
     }
     if (transcriptDelta > 0 && activeViewRef.current === "conversation" && !autoFollowRef.current) {
-      next = { ...next, transcriptUnseen: before.transcriptUnseen + transcriptDelta };
+      next = { ...next, transcriptUnseen: latest.transcriptUnseen + transcriptDelta };
     }
     if (timelineDelta > 0 && activeViewRef.current === "timeline") {
       if (timelineAtTailRef.current) {
         const container = timelineViewport.current;
-        if (container) {
+        // Newest-first tail: the appended rows render at the top and the
+        // operator stays at the tail without any scroll movement.
+        if (container && timelineSortRef.current === "chronological") {
           // Render the appended rows first, then shift the reading position
           // by the appended height so the previously visible content stays in
           // place and the new tail rows appear.
@@ -203,8 +228,10 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
           container.scrollTop += timelineDelta * TIMELINE_ROW_ESTIMATE;
           return;
         }
+        commitHistory(next);
+        return;
       }
-      next = { ...next, timelineUnseen: before.timelineUnseen + timelineDelta };
+      next = { ...next, timelineUnseen: latest.timelineUnseen + timelineDelta };
     }
     commitHistory(next);
   }
@@ -281,7 +308,14 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   function jumpToTimelineLatest() {
     const container = timelineViewport.current;
     if (container) {
-      container.scrollTo({ top: 0, behavior: prefersReducedMotion() ? "auto" : "smooth" });
+      // The tail is the newest end of the list: the top in the default
+      // newest-first sort, the bottom in chronological sort.
+      const behavior = prefersReducedMotion() ? "auto" : "smooth";
+      if (timelineSortRef.current === "chronological") {
+        container.scrollTo({ top: container.scrollHeight, behavior });
+      } else {
+        container.scrollTo({ top: 0, behavior });
+      }
     }
     if (historyRef.current.timelineUnseen > 0) {
       commitHistory({ ...historyRef.current, timelineUnseen: 0 });
@@ -1090,10 +1124,12 @@ function emptyHistory(): OwnerHistory {
 
 type RuntimeWorkspaceLoad = {
   owner: RuntimeOwnerView;
-  history: OwnerHistory;
-  /** Items appended by a live-tail delta (poll mode only). */
-  timelineDelta: number;
-  transcriptDelta: number;
+  timeline: TaskTimelineItem[];
+  transcript: TaskTranscriptEntry[];
+  timelineCursor: number;
+  transcriptCursor: number;
+  timelineHasOlder: boolean;
+  transcriptHasOlder: boolean;
 };
 
 async function loadTaskWorkspace(
@@ -1107,23 +1143,14 @@ async function loadTaskWorkspace(
     apiGet<TaskTimeline>(timelineURL(base, mode, current.timelineCursor), { signal }),
     apiGet<TaskTranscript>(transcriptURL(base, mode, current.transcriptCursor), { signal }),
   ]);
-  const initial = mode === "initial";
-  const next: OwnerHistory = {
-    ...current,
-    timeline: initial ? (timeline.items ?? []) : mergeTimelineItems(current.timeline, timeline.items ?? []),
-    transcript: initial ? (transcript.entries ?? []) : mergeTranscriptEntries(current.transcript, transcript.entries ?? []),
-    timelineCursor: timeline.cursor ?? current.timelineCursor,
-    transcriptCursor: transcript.cursor ?? current.transcriptCursor,
-    ...(initial ? {
-      timelineHasOlder: timeline.has_older === true,
-      transcriptHasOlder: transcript.has_older === true,
-    } : {}),
-  };
   return {
     owner: taskAsRuntimeOwner(task),
-    history: next,
-    timelineDelta: initial ? 0 : next.timeline.length - current.timeline.length,
-    transcriptDelta: initial ? 0 : next.transcript.length - current.transcript.length,
+    timeline: timeline.items ?? [],
+    transcript: transcript.entries ?? [],
+    timelineCursor: timeline.cursor ?? current.timelineCursor,
+    transcriptCursor: transcript.cursor ?? current.transcriptCursor,
+    timelineHasOlder: timeline.has_older === true,
+    transcriptHasOlder: transcript.has_older === true,
   };
 }
 
@@ -1138,25 +1165,16 @@ async function loadSessionWorkspace(
     apiGet<TaskTimeline>(timelineURL(base, mode, current.timelineCursor), { signal }),
     apiGet<TaskTranscript>(transcriptURL(base, mode, current.transcriptCursor), { signal }),
   ]);
-  const initial = mode === "initial";
-  const next: OwnerHistory = {
-    ...current,
-    // Session timelines and transcripts are built by the same daemon pipeline
-    // as task ones, so the rendered shapes are identical.
-    timeline: initial ? (timeline.items ?? []) : mergeTimelineItems(current.timeline, timeline.items ?? []),
-    transcript: initial ? (transcript.entries ?? []) : mergeTranscriptEntries(current.transcript, transcript.entries ?? []),
-    timelineCursor: timeline.cursor ?? current.timelineCursor,
-    transcriptCursor: transcript.cursor ?? current.transcriptCursor,
-    ...(initial ? {
-      timelineHasOlder: timeline.has_older === true,
-      transcriptHasOlder: transcript.has_older === true,
-    } : {}),
-  };
   return {
     owner: sessionAsRuntimeOwner(session),
-    history: next,
-    timelineDelta: initial ? 0 : next.timeline.length - current.timeline.length,
-    transcriptDelta: initial ? 0 : next.transcript.length - current.transcript.length,
+    // Session timelines and transcripts are built by the same daemon pipeline
+    // as task ones, so the rendered shapes are identical.
+    timeline: timeline.items ?? [],
+    transcript: transcript.entries ?? [],
+    timelineCursor: timeline.cursor ?? current.timelineCursor,
+    transcriptCursor: transcript.cursor ?? current.transcriptCursor,
+    timelineHasOlder: timeline.has_older === true,
+    transcriptHasOlder: transcript.has_older === true,
   };
 }
 
