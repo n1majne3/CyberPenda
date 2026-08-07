@@ -1547,6 +1547,11 @@ func (server *Server) runtimeControlsForTask(found task.Task, latest *task.TaskC
 		SameRuntimeProviderOnly: true,
 		RuntimeProvider:         string(profile.Provider),
 	}
+	if strings.TrimSpace(profile.ID) == "" {
+		// Every Runtime Profile reference is gone: queue steering would record
+		// an empty profile, so the composer must not offer it.
+		controls.QueueSteerAvailable = false
+	}
 	if profile.Provider == runtimeprofile.ProviderPi {
 		// Expose the fixed projected set so Task Conversation UI can fail closed
 		// when metadata is missing (legacy) or the target is outside the set.
@@ -2930,6 +2935,16 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 		writeError(response, http.StatusBadRequest, "steering directive is required")
 		return
 	}
+	if profile, profileErr := server.resolveTaskRuntimeProfile(found); profileErr != nil {
+		writeError(response, http.StatusInternalServerError, "load runtime profile")
+		return
+	} else if strings.TrimSpace(profile.ID) == "" {
+		// The Task's launch and Task Runtime Configuration Version profiles are
+		// both deleted: no future continuation could deliver this directive, so
+		// fail closed instead of recording a pending steering event.
+		writeError(response, http.StatusBadRequest, "runtime profile not found")
+		return
+	}
 
 	activeSteer := found.Status == task.StatusRunning || found.Status == task.StatusPaused
 	if !server.acquireTaskControl(taskID) {
@@ -4052,11 +4067,13 @@ func configString(config map[string]any, key string) string {
 func (server *Server) resolveTaskContinuationRuntimeProfile(response http.ResponseWriter, found task.Task, input taskContinuationSelectionInput) (runtimeprofile.Profile, bool) {
 	currentProfile, err := server.resolveTaskRuntimeProfile(found)
 	if err != nil {
-		if errors.Is(err, runtimeprofile.ErrNotFound) {
-			writeError(response, http.StatusBadRequest, "runtime profile not found")
-			return runtimeprofile.Profile{}, false
-		}
 		writeError(response, http.StatusInternalServerError, "load runtime profile")
+		return runtimeprofile.Profile{}, false
+	}
+	if strings.TrimSpace(currentProfile.ID) == "" {
+		// The Task's launch and config Runtime Profiles are both deleted; no
+		// continuation can be steered onto a resolvable profile.
+		writeError(response, http.StatusBadRequest, "runtime profile not found")
 		return runtimeprofile.Profile{}, false
 	}
 	return server.resolveSelectedRuntimeProfile(response, currentProfile, input)
@@ -4155,7 +4172,38 @@ func (server *Server) resolveTaskRuntimeProfile(found task.Task) (runtimeprofile
 			profileID = latest.RuntimeProfileID
 		}
 	}
-	return server.profiles.Get(profileID)
+	profile, err := server.profiles.Get(profileID)
+	if err == nil {
+		return profile, nil
+	}
+	// A Task's captured Task Runtime Configuration is self-contained, so a
+	// deleted Runtime Profile must not make the Task unreadable. Fall back to
+	// the Task's own launch Runtime Profile; when that is also gone, resolve
+	// to a zero profile so render paths degrade instead of failing the page.
+	return server.profileOrFallback(profileID, found.RuntimeProfileID)
+}
+
+// profileOrFallback resolves id, then fallbackID when id's Runtime Profile was
+// deleted, and finally a zero profile when both are gone. Control paths that
+// require a real profile reject the zero profile explicitly.
+func (server *Server) profileOrFallback(id, fallbackID string) (runtimeprofile.Profile, error) {
+	profile, err := server.profiles.Get(id)
+	if err == nil {
+		return profile, nil
+	}
+	if !errors.Is(err, runtimeprofile.ErrNotFound) {
+		return runtimeprofile.Profile{}, err
+	}
+	if id != fallbackID {
+		profile, fallbackErr := server.profiles.Get(fallbackID)
+		if fallbackErr == nil {
+			return profile, nil
+		}
+		if !errors.Is(fallbackErr, runtimeprofile.ErrNotFound) {
+			return runtimeprofile.Profile{}, fallbackErr
+		}
+	}
+	return runtimeprofile.Profile{}, nil
 }
 
 func (server *Server) discoverNativeResumeSession(found task.Task) (string, error) {

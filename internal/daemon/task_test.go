@@ -170,6 +170,144 @@ func TestGetTaskIncludesLatestContinuation(t *testing.T) {
 	}
 }
 
+// #205: A Task whose latest Task Runtime Configuration references a deleted
+// Runtime Profile must remain readable. The captured configuration is
+// self-contained, so task detail falls back to the Task's own launch profile
+// instead of failing the whole page.
+func TestGetTaskSurvivesDeletedLatestRuntimeProfile(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	profileA := createRuntimeProfile(t, server, `{"name":"Fake A","provider":"fake"}`)
+	profileB := createRuntimeProfile(t, server, `{"name":"Fake B","provider":"fake"}`)
+	taskID := createTask(t, server, projectID, `{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":`+quoteJSON(profileA)+`,
+		"runner":"sandbox"
+	}`)
+	waitForTaskStatus(t, server, projectID, taskID, "completed")
+
+	// Steer onto profile B, which records a second Task Runtime Configuration
+	// Version referencing profile B, then delete profile B so the latest
+	// configuration version points at a missing profile while the Task's own
+	// launch Runtime Profile still exists.
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/steer", bytes.NewReader([]byte(`{
+		"directive":"continue",
+		"runtime_profile_id":`+quoteJSON(profileB)+`,
+		"submitted_by":"operator"
+	}`)))
+	req.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected steer status 200, got %d with body %s", resp.Code, resp.Body.String())
+	}
+
+	del := httptest.NewRecorder()
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/runtime-profiles/"+profileB, nil)
+	server.ServeHTTP(del, delReq)
+	if del.Code != http.StatusNoContent {
+		t.Fatalf("expected delete profile status 204, got %d with body %s", del.Code, del.Body.String())
+	}
+
+	get := httptest.NewRecorder()
+	getReq := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID, nil)
+	server.ServeHTTP(get, getReq)
+	if get.Code != http.StatusOK {
+		t.Fatalf("expected get task status 200 after deleting the latest profile, got %d with body %s", get.Code, get.Body.String())
+	}
+
+	var found struct {
+		RuntimeControls struct {
+			RuntimeProvider string `json:"runtime_provider"`
+		} `json:"runtime_controls"`
+		LatestContinuation *struct {
+			RuntimeProvider string `json:"runtime_provider"`
+		} `json:"latest_continuation"`
+	}
+	if err := json.NewDecoder(get.Body).Decode(&found); err != nil {
+		t.Fatalf("decode task detail: %v", err)
+	}
+	if found.RuntimeControls.RuntimeProvider != "fake" {
+		t.Fatalf("expected fallback to launch profile provider fake, got %q", found.RuntimeControls.RuntimeProvider)
+	}
+	if found.LatestContinuation == nil || found.LatestContinuation.RuntimeProvider != "fake" {
+		t.Fatalf("expected latest continuation from the fake runtime, got %#v", found.LatestContinuation)
+	}
+}
+
+// #205: When both the latest Task Runtime Configuration Version profile and the
+// Task's own launch Runtime Profile are deleted, task detail must still render
+// with degraded controls instead of a 500, so a deep link into a historical
+// Task never dies. Queue steering is explicitly unavailable because no steer
+// could resolve a target profile.
+func TestGetTaskDegradesWhenEveryRuntimeProfileIsDeleted(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
+	taskID := createTask(t, server, projectID, `{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
+		"runner":"sandbox"
+	}`)
+	waitForTaskStatus(t, server, projectID, taskID, "completed")
+
+	del := httptest.NewRecorder()
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/runtime-profiles/"+profileID, nil)
+	server.ServeHTTP(del, delReq)
+	if del.Code != http.StatusNoContent {
+		t.Fatalf("expected delete profile status 204, got %d with body %s", del.Code, del.Body.String())
+	}
+
+	get := httptest.NewRecorder()
+	getReq := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID, nil)
+	server.ServeHTTP(get, getReq)
+	if get.Code != http.StatusOK {
+		t.Fatalf("expected get task status 200 after deleting every profile, got %d with body %s", get.Code, get.Body.String())
+	}
+
+	var found struct {
+		RuntimeControls struct {
+			RuntimeProvider     string `json:"runtime_provider"`
+			NativeResumeReason  string `json:"native_resume_reason"`
+			QueueSteerAvailable bool   `json:"queue_steer_available"`
+		} `json:"runtime_controls"`
+		LatestContinuation *struct {
+			RuntimeProvider string `json:"runtime_provider"`
+		} `json:"latest_continuation"`
+	}
+	if err := json.NewDecoder(get.Body).Decode(&found); err != nil {
+		t.Fatalf("decode task detail: %v", err)
+	}
+	if found.RuntimeControls.RuntimeProvider != "" {
+		t.Fatalf("expected degraded empty runtime provider, got %q", found.RuntimeControls.RuntimeProvider)
+	}
+	if !strings.Contains(found.RuntimeControls.NativeResumeReason, "unsupported") {
+		t.Fatalf("expected degraded native resume reason, got %q", found.RuntimeControls.NativeResumeReason)
+	}
+	if found.RuntimeControls.QueueSteerAvailable {
+		t.Fatal("expected queue steering to be unavailable with no resolvable Runtime Profile")
+	}
+	if found.LatestContinuation == nil || found.LatestContinuation.RuntimeProvider != "fake" {
+		t.Fatalf("expected latest continuation from the fake runtime, got %#v", found.LatestContinuation)
+	}
+
+	// The steer boundary must reject with the closed reason vocabulary instead
+	// of recording a config version with an empty Runtime Profile.
+	steer := httptest.NewRecorder()
+	steerReq := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/steer", bytes.NewReader([]byte(`{
+		"directive":"continue",
+		"submitted_by":"operator"
+	}`)))
+	steerReq.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(steer, steerReq)
+	if steer.Code != http.StatusBadRequest {
+		t.Fatalf("expected steer status 400 with no resolvable profile, got %d with body %s", steer.Code, steer.Body.String())
+	}
+	if !strings.Contains(steer.Body.String(), "runtime profile not found") {
+		t.Fatalf("expected closed reason 'runtime profile not found', got %s", steer.Body.String())
+	}
+}
+
 func TestDeleteCompletedTaskRemovesItFromTaskSurfaces(t *testing.T) {
 	server := newDaemon(t)
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
