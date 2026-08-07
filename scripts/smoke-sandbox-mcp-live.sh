@@ -20,7 +20,7 @@ health="$(curl -sf "${DAEMON_URL}/health")"
 echo "${health}" | python3 -m json.tool
 
 project_id="$(curl -sf -X POST "${DAEMON_URL}/api/projects" \
-  "${auth_args[@]}" \
+  "${auth_args[@]+"${auth_args[@]}"}" \
   -H 'Content-Type: application/json' \
   -d '{"name":"Sandbox MCP Live Smoke","scope":{"domains":["example.com"]}}' \
   | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')"
@@ -38,7 +38,7 @@ mcp_response="$("${CONTAINER_CLI}" run --rm \
   --add-host=host.docker.internal:host-gateway \
   "${IMAGE}" \
   curl -sf -X POST "${mcp_url}" \
-    "${auth_args[@]}" \
+    "${auth_args[@]+"${auth_args[@]}"}" \
     -H 'Content-Type: application/json' \
     -H 'Accept: application/json, text/event-stream' \
     -d "${tools_list_payload}")"
@@ -122,7 +122,7 @@ change_response="$("${CONTAINER_CLI}" run --rm \
   --add-host=host.docker.internal:host-gateway \
   "${IMAGE}" \
   curl -sf -X POST "${v2_base_url}/blackboard/changes" \
-    "${v2_auth_args[@]}" \
+    "${v2_auth_args[@]+"${v2_auth_args[@]}"}" \
     -H 'Content-Type: application/json' \
     -H "Idempotency-Key: ${SEMANTIC_CHANGE_IDEMPOTENCY_KEY}" \
     -d "${semantic_change_payload}")"
@@ -133,7 +133,7 @@ semantic_record_response="$("${CONTAINER_CLI}" run --rm \
   --add-host=host.docker.internal:host-gateway \
   "${IMAGE}" \
   curl -sf -X GET "${v2_base_url}/blackboard/records/${SEMANTIC_RECORD_KEY}" \
-    "${v2_auth_args[@]}")"
+    "${v2_auth_args[@]+"${v2_auth_args[@]}"}")"
 
 SEMANTIC_RECORD_RESPONSE="${semantic_record_response}" \
 SEMANTIC_RECORD_KEY="${SEMANTIC_RECORD_KEY}" \
