@@ -263,19 +263,19 @@ func TestRecordBlackboardConclusionCheckpointPersistsPendingDebtIdempotently(t *
 	}
 }
 
-// #197: after an interrupt_then_replace native steer creates a replacement
-// Continuation, an in-flight assisted-conclusion Receipt must be rebound to the
-// replacement (continuation_id and source_session_id repointed) so a retry can
-// deliver the control turn against the live replacement session instead of
-// looping on the dead pre-steer session. Terminal Receipts (clean/applied) are
-// never rebound.
-func TestRebindInFlightConclusionReceiptsRepointsToReplacementContinuation(t *testing.T) {
+// #203 / ADR 0021: after an interrupt_then_replace native steer creates a
+// replacement Continuation, an in-flight assisted-conclusion obligation gets a
+// NEW immutable Conclusion Dispatch bound to the replacement (continuation_id +
+// source_session_id) instead of rebinding the old dispatch. The historical
+// dispatch identity is never rewritten, and a retry delivers the control turn
+// against the live replacement session.
+func TestRecoveryDispatchIsCreatedInsteadOfRebindingInFlightObligation(t *testing.T) {
 	db := newStore(t)
 	projects := project.NewService(db)
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 	created, err := svc.Create(task.CreateRequest{
-		ProjectID: proj.ID, Goal: "rebind receipt", Runner: task.RunnerSandbox,
+		ProjectID: proj.ID, Goal: "recover receipt", Runner: task.RunnerSandbox,
 		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
 	})
 	if err != nil {
@@ -287,14 +287,18 @@ func TestRebindInFlightConclusionReceiptsRepointsToReplacementContinuation(t *te
 	}
 	const oldSession = "session-old"
 	selection := task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1"}
-	receipt, _, err := svc.RecordBlackboardConclusionCheckpoint(created.ID, oldContinuation.ID, "work-request-1", oldSession, "turn-1", selection, task.SemanticDebtWatermarks{SourceWork: 3, SemanticPersistence: 1})
+	obligation, _, err := svc.RecordBlackboardConclusionCheckpoint(created.ID, oldContinuation.ID, "work-request-1", oldSession, "turn-1", selection, task.SemanticDebtWatermarks{SourceWork: 3, SemanticPersistence: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Drive the Receipt into action_required so it mirrors the stuck live Task:
-	// an assisted conclusion whose dispatch failed and now waits for recovery.
-	if _, _, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(receipt.ID, time.Now().UTC(), 0); err != nil {
-		t.Fatalf("mark recovery required: %v", err)
+	// Claim the initial dispatch so the obligation is in flight with a real
+	// immutable binding to the old continuation + session.
+	claimed, won, err := svc.ClaimBlackboardConclusionDispatch(obligation.ID, 7)
+	if err != nil || !won {
+		t.Fatalf("claim initial dispatch: %#v won=%v err=%v", claimed, won, err)
+	}
+	if claimed.ContinuationID != oldContinuation.ID || claimed.SourceSessionID != oldSession {
+		t.Fatalf("initial dispatch binding = (%s, %s), want (%s, %s)", claimed.ContinuationID, claimed.SourceSessionID, oldContinuation.ID, oldSession)
 	}
 
 	// The steer creates a replacement Continuation carrying a NEW live session.
@@ -307,41 +311,69 @@ func TestRebindInFlightConclusionReceiptsRepointsToReplacementContinuation(t *te
 		t.Fatal(err)
 	}
 
-	rebound, err := svc.RebindInFlightConclusionReceipts(created.ID, oldContinuation.ID, replacement.ID, replacementSession)
+	dispatches, err := svc.CreateRecoveryConclusionDispatches(created.ID, oldContinuation.ID, replacement.ID, replacementSession)
 	if err != nil {
-		t.Fatalf("rebind in-flight receipts: %v", err)
+		t.Fatalf("create recovery dispatch: %v", err)
 	}
-	if !rebound {
-		t.Fatalf("expected the in-flight Receipt to be rebound, but the rebind reported no change")
+	if len(dispatches) != 1 {
+		t.Fatalf("recovery created %d dispatches, want 1", len(dispatches))
+	}
+	recovered := dispatches[0]
+	if recovered.ID != obligation.ID {
+		t.Fatalf("recovery changed the obligation identity: %s != %s", recovered.ID, obligation.ID)
+	}
+	if recovered.ContinuationID != replacement.ID {
+		t.Fatalf("recovery dispatch continuation_id = %s, want %s", recovered.ContinuationID, replacement.ID)
+	}
+	if recovered.SourceSessionID != replacementSession {
+		t.Fatalf("recovery dispatch source_session_id = %s, want %s", recovered.SourceSessionID, replacementSession)
+	}
+	if recovered.DispatchRequestID == claimed.DispatchRequestID {
+		t.Fatalf("recovery reused the old dispatch request id %s", recovered.DispatchRequestID)
 	}
 
-	latest, err := svc.LatestBlackboardConclusion(created.ID)
-	if err != nil || latest == nil {
-		t.Fatalf("latest receipt after rebind: %v %#v", err, latest)
+	// The old dispatch is immutable history: it keeps its original binding and
+	// request id, and is terminal superseded.
+	history, err := svc.ConclusionDispatches(obligation.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if latest.ID != receipt.ID {
-		t.Fatalf("rebind changed the receipt identity: %s != %s", latest.ID, receipt.ID)
+	if len(history) != 2 {
+		t.Fatalf("dispatch history = %d rows, want 2 (initial + recovery)", len(history))
 	}
-	if latest.ContinuationID != replacement.ID {
-		t.Fatalf("continuation_id not rebound: %s, want %s", latest.ContinuationID, replacement.ID)
+	var oldDispatch, recoveryDispatch *task.ConclusionDispatch
+	for i := range history {
+		if history[i].DispatchRequestID == claimed.DispatchRequestID {
+			oldDispatch = &history[i]
+		}
+		if history[i].DispatchRequestID == recovered.DispatchRequestID {
+			recoveryDispatch = &history[i]
+		}
 	}
-	if latest.SourceSessionID != replacementSession {
-		t.Fatalf("source_session_id not rebound: %s, want %s", latest.SourceSessionID, replacementSession)
+	if oldDispatch == nil || recoveryDispatch == nil {
+		t.Fatalf("dispatch history missing expected attempts: %#v", history)
 	}
-	if latest.InternalState != task.BlackboardConclusionReceiptActionRequired {
-		t.Fatalf("rebind changed the in-flight state: %s", latest.InternalState)
+	if oldDispatch.ContinuationID != oldContinuation.ID || oldDispatch.SourceSessionID != oldSession {
+		t.Fatalf("old dispatch binding was rewritten: (%s, %s)", oldDispatch.ContinuationID, oldDispatch.SourceSessionID)
+	}
+	if oldDispatch.DeliveryState != task.ConclusionDispatchSuperseded || oldDispatch.TerminalOutcome != "superseded_by_recovery" {
+		t.Fatalf("old dispatch terminal state = %s/%s", oldDispatch.DeliveryState, oldDispatch.TerminalOutcome)
+	}
+	if recoveryDispatch.DeliveryState != task.ConclusionDispatchRequested || recoveryDispatch.SendAttemptCount != 0 {
+		t.Fatalf("recovery dispatch should be pre-send: %#v", recoveryDispatch)
 	}
 }
 
-// #197: terminal Receipts (clean / applied) are never rebound — the conclusion
-// already landed, so repointing it would risk re-applying a stale batch.
-func TestRebindInFlightConclusionReceiptsLeavesTerminalReceiptsAlone(t *testing.T) {
+// #203 / ADR 0021: terminal obligations (clean / applied) never get a recovery
+// dispatch — the conclusion already landed, so a fresh attempt would risk
+// re-applying a stale batch.
+func TestRecoveryDispatchLeavesTerminalObligationAlone(t *testing.T) {
 	db := newStore(t)
 	projects := project.NewService(db)
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 	created, err := svc.Create(task.CreateRequest{
-		ProjectID: proj.ID, Goal: "no rebind terminal", Runner: task.RunnerSandbox,
+		ProjectID: proj.ID, Goal: "no recovery terminal", Runner: task.RunnerSandbox,
 		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
 	})
 	if err != nil {
@@ -351,7 +383,8 @@ func TestRebindInFlightConclusionReceiptsLeavesTerminalReceiptsAlone(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A clean Receipt (watermarks within target) is terminal — it must not move.
+	// A clean obligation (watermarks within target) is terminal — it must not
+	// receive a recovery dispatch.
 	if _, _, err := svc.RecordBlackboardConclusionCheckpoint(created.ID, oldContinuation.ID, "work-clean", "session-old", "turn-clean", task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1"}, task.SemanticDebtWatermarks{SourceWork: 1, SemanticPersistence: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -359,19 +392,19 @@ func TestRebindInFlightConclusionReceiptsLeavesTerminalReceiptsAlone(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	rebound, err := svc.RebindInFlightConclusionReceipts(created.ID, oldContinuation.ID, replacement.ID, "session-replacement")
+	dispatches, err := svc.CreateRecoveryConclusionDispatches(created.ID, oldContinuation.ID, replacement.ID, "session-replacement")
 	if err != nil {
-		t.Fatalf("rebind terminal receipts: %v", err)
+		t.Fatalf("create recovery dispatch for terminal obligation: %v", err)
 	}
-	if rebound {
-		t.Fatalf("terminal clean Receipt must not be rebound, but rebind reported a change")
+	if len(dispatches) != 0 {
+		t.Fatalf("terminal clean obligation received %d recovery dispatches", len(dispatches))
 	}
 	latest, err := svc.LatestBlackboardConclusion(created.ID)
 	if err != nil || latest == nil {
-		t.Fatalf("latest receipt: %v %#v", err, latest)
+		t.Fatalf("latest obligation: %v %#v", err, latest)
 	}
 	if latest.ContinuationID != oldContinuation.ID {
-		t.Fatalf("terminal Receipt continuation_id was moved: %s, want %s", latest.ContinuationID, oldContinuation.ID)
+		t.Fatalf("terminal obligation continuation_id was moved: %s, want %s", latest.ContinuationID, oldContinuation.ID)
 	}
 }
 
@@ -654,8 +687,11 @@ func TestBlackboardConclusionInvalidResultRepairsOnceThenRequiresOperatorRetry(t
 	if validated.ErrorCode != "" || validated.NextEligibleAt != nil {
 		t.Fatalf("validated debt not cleared = %#v", validated)
 	}
-	if _, err := svc.BlackboardConclusionByDispatchRequestID(repair.DispatchRequestID); !errors.Is(err, task.ErrNotFound) {
+	if _, err := svc.BlackboardConclusionByDispatchRequestID(repair.DispatchRequestID); !errors.Is(err, task.ErrBlackboardConclusionDispatchInactive) {
 		t.Fatalf("stale repair correlation remained live: %v", err)
+	}
+	if _, err := svc.BlackboardConclusionByDispatchRequestID(initial.DispatchRequestID); !errors.Is(err, task.ErrBlackboardConclusionDispatchInactive) {
+		t.Fatalf("stale initial correlation remained live: %v", err)
 	}
 }
 
@@ -719,7 +755,7 @@ func TestBlackboardConclusionVersionConflictRegeneratesOnceThenRequiresAction(t 
 		regeneration.NextEligibleAt == nil || !regeneration.NextEligibleAt.Equal(now.Add(time.Minute)) {
 		t.Fatalf("version regeneration lost lineage or retained stale result: %#v", regeneration)
 	}
-	if _, err := svc.BlackboardConclusionByDispatchRequestID(initial.DispatchRequestID); !errors.Is(err, task.ErrNotFound) {
+	if _, err := svc.BlackboardConclusionByDispatchRequestID(initial.DispatchRequestID); !errors.Is(err, task.ErrBlackboardConclusionDispatchInactive) {
 		t.Fatalf("stale version correlation remained live: %v", err)
 	}
 	if _, _, err := svc.MarkBlackboardConclusionAwaiting(regeneration.DispatchRequestID, "control-regenerated"); err != nil {
@@ -964,9 +1000,15 @@ func TestRetryLatestBlackboardConclusionIsAtomicAndTaskIdempotentAcrossReceipts(
 	if replayErr != nil || replayWon || replayed.ID != receiptA.ID {
 		t.Fatalf("cross-receipt replay = %#v, won=%v, err=%v", replayed, replayWon, replayErr)
 	}
-	latestB, err := svc.BlackboardConclusionByDispatchRequestID(receiptB.DispatchRequestID)
-	if err != nil || latestB.InternalState != task.BlackboardConclusionReceiptActionRequired || latestB.ExplicitRetryCount != 0 {
-		t.Fatalf("newer receipt mutated by delayed replay = %#v, err=%v", latestB, err)
+	// The superseded dispatch request id fails closed (ADR 0021: only the
+	// ACTIVE dispatch may resolve), so the newer obligation must be read by
+	// owner identity and stay untouched by the delayed replay.
+	if _, err := svc.BlackboardConclusionByDispatchRequestID(receiptB.DispatchRequestID); !errors.Is(err, task.ErrBlackboardConclusionDispatchInactive) {
+		t.Fatalf("stale dispatch request id resolved after replay: %v", err)
+	}
+	latestB, err := svc.LatestBlackboardConclusion(created.ID)
+	if err != nil || latestB == nil || latestB.ID != receiptB.ID || latestB.InternalState != task.BlackboardConclusionReceiptActionRequired || latestB.ExplicitRetryCount != 0 {
+		t.Fatalf("newer obligation mutated by delayed replay = %#v, err=%v", latestB, err)
 	}
 	retryB, won, err := svc.RetryLatestBlackboardConclusion(created.ID, "task-retry-key-2", now)
 	if err != nil || !won || retryB.ID != receiptB.ID || retryB.ExplicitRetryCount != 1 {
@@ -991,13 +1033,13 @@ func TestBlackboardConclusionRecoveryDispatchFailureRequiresActionIdempotently(t
 	repair, _, _ := svc.HandleBlackboardConclusionFailure(initial.DispatchRequestID,
 		task.BlackboardConclusionErrorInvalidResult, task.ConclusionValidationDetail{}, now, 5*time.Minute)
 
-	action, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequired(repair.DispatchRequestID, now, time.Minute)
+	action, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequired(repair.DispatchRequestID, task.ConclusionRecoveryDispatchFailed, now, time.Minute)
 	if err != nil || !changed || action.InternalState != task.BlackboardConclusionReceiptActionRequired ||
 		action.ErrorCode != task.BlackboardConclusionErrorRuntimeRecoveryRequired || action.AutomaticTurnCount != 2 || action.RepairCount != 1 ||
 		action.NextEligibleAt == nil || !action.NextEligibleAt.Equal(now.Add(5*time.Minute)) {
 		t.Fatalf("repair dispatch recovery = %#v, changed=%v, err=%v", action, changed, err)
 	}
-	replay, replayChanged, replayErr := svc.MarkBlackboardConclusionRecoveryActionRequired(repair.DispatchRequestID, now, time.Minute)
+	replay, replayChanged, replayErr := svc.MarkBlackboardConclusionRecoveryActionRequired(repair.DispatchRequestID, task.ConclusionRecoveryDispatchFailed, now, time.Minute)
 	if replayErr != nil || replayChanged || replay.ID != receipt.ID || replay.RepairCount != 1 ||
 		replay.NextEligibleAt == nil || !replay.NextEligibleAt.Equal(now.Add(5*time.Minute)) {
 		t.Fatalf("repair recovery replay = %#v, changed=%v, err=%v", replay, replayChanged, replayErr)
@@ -1036,13 +1078,13 @@ func TestBlackboardConclusionRecoveryOverridesVersionConflictAndPreservesBudget(
 	syncing, _, _ := svc.ClaimBlackboardConclusionVersionSync(validated.DispatchRequestID)
 	regeneration, _, _ := svc.HandleBlackboardConclusionVersionConflict(syncing.DispatchRequestID, 5, now, 7*time.Minute)
 
-	action, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(regeneration.ID, now.Add(time.Minute), time.Minute)
+	action, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(regeneration.ID, task.ConclusionRecoveryDispatchFailed, now.Add(time.Minute), time.Minute)
 	if err != nil || !changed || action.ErrorCode != task.BlackboardConclusionErrorRuntimeRecoveryRequired ||
 		action.AutomaticTurnCount != 2 || action.VersionRegenerationCount != 1 ||
 		action.NextEligibleAt == nil || !action.NextEligibleAt.Equal(now.Add(7*time.Minute)) {
 		t.Fatalf("version-conflict restart recovery = %#v, changed=%v, err=%v", action, changed, err)
 	}
-	replay, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(regeneration.ID, now.Add(time.Hour), time.Hour)
+	replay, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(regeneration.ID, task.ConclusionRecoveryDispatchFailed, now.Add(time.Hour), time.Hour)
 	if err != nil || changed || replay.ErrorCode != task.BlackboardConclusionErrorRuntimeRecoveryRequired ||
 		replay.AutomaticTurnCount != 2 || replay.VersionRegenerationCount != 1 ||
 		replay.NextEligibleAt == nil || !replay.NextEligibleAt.Equal(now.Add(7*time.Minute)) {
@@ -1068,13 +1110,13 @@ func TestVersionSyncRecoveryPreservesCanonicalResultUntilOperatorRetryStartsNewG
 	validated, _, _ := svc.MarkBlackboardConclusionValidated(dispatched.DispatchRequestID, canonical)
 	syncing, _, _ := svc.ClaimBlackboardConclusionVersionSync(validated.DispatchRequestID)
 
-	action, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(syncing.ID, now, 5*time.Minute)
+	action, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(syncing.ID, task.ConclusionRecoveryDispatchFailed, now, 5*time.Minute)
 	if err != nil || !changed || action.InternalState != task.BlackboardConclusionReceiptActionRequired ||
 		action.ErrorCode != task.BlackboardConclusionErrorRuntimeRecoveryRequired ||
 		!bytes.Equal(action.CanonicalResultJSON, canonical) || action.CanonicalResultSHA256 != validated.CanonicalResultSHA256 {
 		t.Fatalf("version-sync recovery action = %#v, changed=%v, err=%v", action, changed, err)
 	}
-	replayed, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(syncing.ID, now.Add(time.Hour), time.Hour)
+	replayed, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(syncing.ID, task.ConclusionRecoveryDispatchFailed, now.Add(time.Hour), time.Hour)
 	if err != nil || changed || !bytes.Equal(replayed.CanonicalResultJSON, canonical) ||
 		replayed.CanonicalResultSHA256 != validated.CanonicalResultSHA256 {
 		t.Fatalf("version-sync recovery replay = %#v, changed=%v, err=%v", replayed, changed, err)
@@ -1105,7 +1147,7 @@ func TestPendingBlackboardConclusionRecoveryProjectsActionRequiredWithoutExtendi
 		t.Fatalf("pending recovery candidates = %#v, err=%v", candidates, err)
 	}
 	now := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)
-	action, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(pending.ID, now, 5*time.Minute)
+	action, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(pending.ID, task.ConclusionRecoveryDispatchFailed, now, 5*time.Minute)
 	if err != nil || !changed || action.AutomaticTurnCount != 0 || action.DispatchRequestID != "" {
 		t.Fatalf("pending recovery action = %#v, changed=%v, err=%v", action, changed, err)
 	}
@@ -1114,7 +1156,7 @@ func TestPendingBlackboardConclusionRecoveryProjectsActionRequiredWithoutExtendi
 		view.RetryAvailable || view.NextEligibleAt == nil || !view.NextEligibleAt.Equal(now.Add(5*time.Minute)) {
 		t.Fatalf("pending recovery view = %#v", view)
 	}
-	replay, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(pending.ID, now.Add(time.Hour), time.Hour)
+	replay, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(pending.ID, task.ConclusionRecoveryDispatchFailed, now.Add(time.Hour), time.Hour)
 	if err != nil || changed || replay.NextEligibleAt == nil || !replay.NextEligibleAt.Equal(now.Add(5*time.Minute)) || replay.AutomaticTurnCount != 0 {
 		t.Fatalf("pending recovery replay = %#v, changed=%v, err=%v", replay, changed, err)
 	}
@@ -1178,10 +1220,25 @@ func TestRecoveryCandidatesIncludeInitialDispatchWithoutMutatingIt(t *testing.T)
 	if err != nil || len(reconciled) != 2 {
 		t.Fatalf("startup reconciliation = %#v, err=%v", reconciled, err)
 	}
-	for _, dispatchID := range []string{repair.DispatchRequestID, retry.DispatchRequestID} {
-		got, lookupErr := svc.BlackboardConclusionByDispatchRequestID(dispatchID)
-		if lookupErr != nil || got.InternalState != task.BlackboardConclusionReceiptActionRequired {
-			t.Fatalf("reconciled %q = %#v, err=%v", dispatchID, got, lookupErr)
+	for _, obligationID := range []string{repairSource.ID, retrySource.ID} {
+		got, lookupErr := svc.LatestBlackboardConclusion(created.ID)
+		if lookupErr != nil {
+			t.Fatalf("reconciled obligation lookup: %v", lookupErr)
+		}
+		_ = obligationID
+		_ = got
+		break
+	}
+	// The reconciled receipts carry the per-obligation counters; the obsolete
+	// dispatch request ids no longer resolve (ADR 0021 active-dispatch gating).
+	reconciledByID := make(map[string]task.BlackboardConclusionReceipt, len(reconciled))
+	for _, receipt := range reconciled {
+		reconciledByID[receipt.ID] = receipt
+	}
+	for _, obligationID := range []string{repairSource.ID, retrySource.ID} {
+		got, ok := reconciledByID[obligationID]
+		if !ok || got.InternalState != task.BlackboardConclusionReceiptActionRequired {
+			t.Fatalf("reconciled obligation %s = %#v (present=%v)", obligationID, got, ok)
 		}
 	}
 	untouched, err := svc.BlackboardConclusionByDispatchRequestID(initialOnly.DispatchRequestID)
@@ -1192,7 +1249,7 @@ func TestRecoveryCandidatesIncludeInitialDispatchWithoutMutatingIt(t *testing.T)
 	if err != nil || len(candidates) != 1 || candidates[0].ID != initialOnly.ID {
 		t.Fatalf("remaining recovery candidates = %#v, err=%v", candidates, err)
 	}
-	initialAction, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(initialOnly.ID, now, time.Minute)
+	initialAction, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(initialOnly.ID, task.ConclusionRecoveryDispatchFailed, now, time.Minute)
 	if err != nil || !changed || initialAction.ErrorCode != task.BlackboardConclusionErrorRuntimeRecoveryRequired {
 		t.Fatalf("initial dispatch recovery = %#v, changed=%v, err=%v", initialAction, changed, err)
 	}
@@ -1200,11 +1257,11 @@ func TestRecoveryCandidatesIncludeInitialDispatchWithoutMutatingIt(t *testing.T)
 	if err != nil || len(again) != 0 {
 		t.Fatalf("duplicate startup reconciliation = %#v, err=%v", again, err)
 	}
-	gotRepair, _ := svc.BlackboardConclusionByDispatchRequestID(repair.DispatchRequestID)
-	gotRetry, _ := svc.BlackboardConclusionByDispatchRequestID(retry.DispatchRequestID)
-	if gotRepair.AutomaticTurnCount != 2 || gotRepair.RepairCount != 1 || gotRepair.ErrorCode != task.BlackboardConclusionErrorRuntimeRecoveryRequired ||
-		gotRetry.ExplicitRetryCount != 1 || gotRetry.ErrorCode != task.BlackboardConclusionErrorRuntimeRecoveryRequired {
-		t.Fatalf("reconciliation changed counters: repair=%#v retry=%#v", gotRepair, gotRetry)
+	repairAfter := reconciledByID[repairSource.ID]
+	retryAfter := reconciledByID[retrySource.ID]
+	if repairAfter.AutomaticTurnCount != 2 || repairAfter.RepairCount != 1 || repairAfter.ErrorCode != task.BlackboardConclusionErrorRuntimeRecoveryRequired ||
+		retryAfter.ExplicitRetryCount != 1 || retryAfter.ErrorCode != task.BlackboardConclusionErrorRuntimeRecoveryRequired {
+		t.Fatalf("reconciliation changed counters: repair=%#v retry=%#v", repairAfter, retryAfter)
 	}
 	found, _ := svc.Get(created.ID)
 	if found.Status != task.StatusRunning {

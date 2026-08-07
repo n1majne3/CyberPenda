@@ -184,6 +184,42 @@ const (
 	BlackboardConclusionReceiptApplied                              = owner.BlackboardConclusionReceiptApplied
 )
 
+// ConclusionDispatchKind is the immutable attempt category of one Conclusion
+// Dispatch (ADR 0021). Recovery-created dispatches are kind recovery.
+type ConclusionDispatchKind = owner.ConclusionDispatchKind
+
+const (
+	ConclusionDispatchKindInitial             = owner.ConclusionDispatchKindInitial
+	ConclusionDispatchKindRepair              = owner.ConclusionDispatchKindRepair
+	ConclusionDispatchKindVersionRegeneration = owner.ConclusionDispatchKindVersionRegeneration
+	ConclusionDispatchKindRetry               = owner.ConclusionDispatchKindRetry
+	ConclusionDispatchKindRecovery            = owner.ConclusionDispatchKindRecovery
+)
+
+// ConclusionDispatchState is the delivery lifecycle of one immutable dispatch.
+type ConclusionDispatchState = owner.ConclusionDispatchState
+
+const (
+	ConclusionDispatchRequested      = owner.ConclusionDispatchRequested
+	ConclusionDispatchAwaitingResult = owner.ConclusionDispatchAwaitingResult
+	ConclusionDispatchValidated      = owner.ConclusionDispatchValidated
+	ConclusionDispatchApplied        = owner.ConclusionDispatchApplied
+	ConclusionDispatchActionRequired = owner.ConclusionDispatchActionRequired
+	ConclusionDispatchSuperseded     = owner.ConclusionDispatchSuperseded
+	ConclusionDispatchLateTerminal   = owner.ConclusionDispatchLateTerminal
+)
+
+// ConclusionRecoveryReason is the closed operator-visible fail-closed reason.
+type ConclusionRecoveryReason = owner.ConclusionRecoveryReason
+
+const (
+	ConclusionRecoveryRuntimeOwnershipNotProven      = owner.ConclusionRecoveryRuntimeOwnershipNotProven
+	ConclusionRecoveryWritableReplacementUnavailable = owner.ConclusionRecoveryWritableReplacementUnavailable
+	ConclusionRecoveryAcceptanceAmbiguous            = owner.ConclusionRecoveryAcceptanceAmbiguous
+	ConclusionRecoveryDispatchFailed                 = owner.ConclusionRecoveryDispatchFailed
+	ConclusionRecoveryLegacyCorrelationUnproven      = owner.ConclusionRecoveryLegacyCorrelationUnproven
+)
+
 // BlackboardConclusion is the compact Session read view for the latest
 // assisted Work Runtime Turn checkpoint and any conclusion progress it
 // triggered. Result bytes and provider correlation remain private.
@@ -198,11 +234,14 @@ type BlackboardConclusion struct {
 	// ValidationReason, ValidationFieldPath, and ValidationExpected expose the
 	// bounded public reason for the last rejected closed result. They are
 	// closed tokens only; raw provider output never appears.
-	ValidationReason    string     `json:"validation_reason,omitempty"`
-	ValidationFieldPath string     `json:"validation_field_path,omitempty"`
-	ValidationExpected  string     `json:"validation_expected,omitempty"`
-	RetryAvailable      bool       `json:"retry_available"`
-	NextEligibleAt      *time.Time `json:"next_eligible_at,omitempty"`
+	ValidationReason    string `json:"validation_reason,omitempty"`
+	ValidationFieldPath string `json:"validation_field_path,omitempty"`
+	ValidationExpected  string `json:"validation_expected,omitempty"`
+	// RecoveryReason is the closed operator-visible reason for a fail-closed
+	// action_required obligation (ADR 0021).
+	RecoveryReason string     `json:"recovery_reason,omitempty"`
+	RetryAvailable bool       `json:"retry_available"`
+	NextEligibleAt *time.Time `json:"next_eligible_at,omitempty"`
 }
 
 // ProviderPermission is a redacted provider approval request owned by one

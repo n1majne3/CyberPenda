@@ -77,7 +77,7 @@ func (server *Server) observeSessionProviderSession(sessionID, continuationID, p
 				return false, err
 			}
 			if inserted && receipt.InternalState == session.BlackboardConclusionReceiptPending && status != "completed" {
-				_, _, err = server.sessions.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(receipt.ID, time.Now().UTC(), blackboardConclusionRetryCooldown)
+				_, _, err = server.sessions.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(receipt.ID, session.ConclusionRecoveryDispatchFailed, time.Now().UTC(), blackboardConclusionRetryCooldown)
 				return true, err
 			}
 			if inserted && receipt.InternalState == session.BlackboardConclusionReceiptPending {
@@ -94,12 +94,12 @@ func (server *Server) observeSessionProviderSession(sessionID, continuationID, p
 func (server *Server) scheduleSessionBlackboardConclusionDispatch(receipt session.BlackboardConclusionReceipt) {
 	queued := server.enqueueProviderTaskControl(receipt.SessionID, func(ctx context.Context) {
 		if err := server.dispatchSessionBlackboardConclusion(ctx, receipt); err != nil {
-			server.requireSessionBlackboardConclusionRecovery(receipt, err)
+			server.requireSessionBlackboardConclusionRecovery(receipt, session.ConclusionRecoveryDispatchFailed, err)
 			server.logger.Printf("assisted conclusion: dispatch Session %s receipt %s: %v", receipt.SessionID, receipt.ID, err)
 		}
 	})
 	if !queued {
-		server.requireSessionBlackboardConclusionRecovery(receipt, fmt.Errorf("provider control queue is closed"))
+		server.requireSessionBlackboardConclusionRecovery(receipt, session.ConclusionRecoveryDispatchFailed, fmt.Errorf("provider control queue is closed"))
 	}
 }
 
@@ -205,11 +205,11 @@ func (server *Server) handleSessionBlackboardConclusionFailure(sessionID, reques
 	if dispatchRepair && receipt.InternalState == session.BlackboardConclusionReceiptRepairDispatchRequested {
 		queued := server.enqueueProviderTaskControl(sessionID, func(ctx context.Context) {
 			if err := server.sendSessionBlackboardConclusionTurn(ctx, receipt, repairSessionBlackboardDirective(pointerValue(receipt.BaseRevision), conclusionDetailFromSessionReceipt(receipt))); err != nil {
-				server.requireSessionBlackboardConclusionRecovery(receipt, err)
+				server.requireSessionBlackboardConclusionRecovery(receipt, session.ConclusionRecoveryDispatchFailed, err)
 			}
 		})
 		if !queued {
-			server.requireSessionBlackboardConclusionRecovery(receipt, fmt.Errorf("provider control queue is closed"))
+			server.requireSessionBlackboardConclusionRecovery(receipt, session.ConclusionRecoveryDispatchFailed, fmt.Errorf("provider control queue is closed"))
 		}
 	}
 	return nil
@@ -333,11 +333,11 @@ func (server *Server) regenerateSessionBlackboardConclusionAfterVersionConflict(
 	}
 	queued := server.enqueueProviderTaskControl(regeneration.SessionID, func(dispatchCtx context.Context) {
 		if dispatchErr := server.sendSessionBlackboardConclusionTurn(dispatchCtx, regeneration, regenerateSessionBlackboardDirective(pointerValue(regeneration.BaseRevision))); dispatchErr != nil {
-			server.requireSessionBlackboardConclusionRecovery(regeneration, dispatchErr)
+			server.requireSessionBlackboardConclusionRecovery(regeneration, session.ConclusionRecoveryDispatchFailed, dispatchErr)
 		}
 	})
 	if !queued {
-		server.requireSessionBlackboardConclusionRecovery(regeneration, fmt.Errorf("provider control queue is closed"))
+		server.requireSessionBlackboardConclusionRecovery(regeneration, session.ConclusionRecoveryDispatchFailed, fmt.Errorf("provider control queue is closed"))
 	}
 	return nil
 }
@@ -379,15 +379,6 @@ func (server *Server) sendSessionBlackboardConclusionTurn(ctx context.Context, r
 		server.drainSessionBlackboardConclusionCallbacks(ctx, receipt.SessionID, receipt.DispatchRequestID)
 	}
 	return err
-}
-
-func (server *Server) requireSessionBlackboardConclusionRecovery(receipt session.BlackboardConclusionReceipt, cause error) {
-	if errors.Is(cause, context.Canceled) && !server.hasLiveProviderSessionContext(receipt.SessionID) {
-		return
-	}
-	if _, _, err := server.sessions.MarkBlackboardConclusionRecoveryActionRequired(receipt.DispatchRequestID, time.Now().UTC(), blackboardConclusionRetryCooldown); err != nil {
-		server.logger.Printf("assisted conclusion: Session recovery failed %s receipt %s: %v (dispatch error: %v)", receipt.SessionID, receipt.ID, err, cause)
-	}
 }
 
 func (server *Server) hasLiveProviderSessionContext(sessionID string) bool {
@@ -458,6 +449,17 @@ func (server *Server) handleRetrySessionBlackboardConclusion(response http.Respo
 		writeError(response, http.StatusBadRequest, "Idempotency-Key is required")
 		return
 	}
+	latest, err := server.sessions.LatestBlackboardConclusion(sessionID)
+	if err != nil || latest == nil {
+		writeSessionError(response, err)
+		return
+	}
+	if latest.RecoveryReason == string(session.ConclusionRecoveryAcceptanceAmbiguous) {
+		// An acceptance-ambiguous provider delivery is never resent: a generic
+		// Retry could duplicate a request the provider already accepted.
+		writeError(response, http.StatusConflict, "Session Blackboard conclusion cannot be retried after an acceptance-ambiguous delivery")
+		return
+	}
 	retried, won, err := server.sessions.RetryLatestBlackboardConclusion(sessionID, idempotencyKey, time.Now().UTC())
 	if err != nil {
 		if errors.Is(err, session.ErrBlackboardConclusionRetryCooldown) {
@@ -473,11 +475,11 @@ func (server *Server) handleRetrySessionBlackboardConclusion(response http.Respo
 		} else {
 			queued := server.enqueueProviderTaskControl(sessionID, func(ctx context.Context) {
 				if err := server.sendSessionBlackboardConclusionTurn(ctx, retried, repairSessionBlackboardDirective(pointerValue(retried.BaseRevision), conclusionDetailFromSessionReceipt(retried))); err != nil {
-					server.requireSessionBlackboardConclusionRecovery(retried, err)
+					server.requireSessionBlackboardConclusionRecovery(retried, session.ConclusionRecoveryDispatchFailed, err)
 				}
 			})
 			if !queued {
-				server.requireSessionBlackboardConclusionRecovery(retried, fmt.Errorf("provider control queue is closed"))
+				server.requireSessionBlackboardConclusionRecovery(retried, session.ConclusionRecoveryDispatchFailed, fmt.Errorf("provider control queue is closed"))
 			}
 		}
 	}

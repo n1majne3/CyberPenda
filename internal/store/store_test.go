@@ -1143,3 +1143,92 @@ func TestBlackboardReadCursorSecretIsDatabaseSpecificAndPersistsAcrossReopen(t *
 		t.Fatal("independent databases share the same cursor secret")
 	}
 }
+
+// TestMigration53ConvertsLegacyReceiptsIntoObligationsAndDispatches proves the
+// legacy mutable assisted-conclusion receipt migrates into one durable
+// Pending Blackboard Conclusion obligation plus one immutable Conclusion
+// Dispatch that preserves the binding, correlation, watermarks, counters,
+// errors, cooldowns, canonical result data, and timestamps (ADR 0021).
+func TestMigration53ConvertsLegacyReceiptsIntoObligationsAndDispatches(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pentest.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := strings.Repeat("c", 64)
+	if _, err := db.Exec(`
+		DELETE FROM schema_migrations WHERE version>=53;
+		DROP TABLE IF EXISTS session_conclusion_dispatches;
+		DROP TABLE IF EXISTS session_pending_blackboard_conclusions;
+		DROP TABLE IF EXISTS conclusion_dispatches;
+		DROP TABLE IF EXISTS pending_blackboard_conclusions;
+		INSERT INTO assisted_conclusion_receipts
+			(id,task_id,continuation_id,source_request_id,source_request_correlation_exact,source_session_id,source_turn_id,state,source_work_watermark,
+			 semantic_persistence_watermark,dispatch_request_id,control_turn_id,base_revision,source_model_provider_id,
+			 source_model,source_reasoning_effort,canonical_result_json,canonical_result_sha256,apply_idempotency_key,
+			 automatic_turn_count,repair_count,version_regeneration_count,explicit_retry_count,operator_retry_key,
+			 send_attempt_count,send_started_at,next_eligible_at,error_code,created_at,updated_at)
+			VALUES ('legacy-validated','task-legacy','continuation-legacy','legacy:session-legacy:turn-legacy',0,'session-legacy','turn-legacy','validated',5,2,
+			 'dispatch-legacy','control-legacy',9,'provider-legacy','model-legacy','high',X'7B7D',?,'apply-legacy',
+			 2,1,0,1,'operator-legacy',1,'2026-07-27T12:00:30Z','2026-07-27T12:03:00Z','semantic_conclusion_invalid_result',
+			 '2026-07-27T12:00:00Z','2026-07-27T12:01:00Z');
+	`, hash); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("reopen migrated store: %v", err)
+	}
+	defer reopened.Close()
+
+	var state, sourceRequestID, sourceSessionID, sourceTurnID, provider, model, effort, resultHash, applyKey string
+	var sourceCorrelationExact, work, semantic, automaticTurns, repairCount, versionCount, retryCount int
+	var canonical []byte
+	if err := reopened.QueryRow(`SELECT state,source_request_id,source_request_correlation_exact,source_session_id,source_turn_id,
+		source_model_provider_id,source_model,source_reasoning_effort,canonical_result_json,canonical_result_sha256,
+		apply_idempotency_key,source_work_watermark,semantic_persistence_watermark,automatic_turn_count,repair_count,
+		version_regeneration_count,explicit_retry_count
+		FROM pending_blackboard_conclusions WHERE id='legacy-validated'`).Scan(
+		&state, &sourceRequestID, &sourceCorrelationExact, &sourceSessionID, &sourceTurnID,
+		&provider, &model, &effort, &canonical, &resultHash, &applyKey,
+		&work, &semantic, &automaticTurns, &repairCount, &versionCount, &retryCount); err != nil {
+		t.Fatal(err)
+	}
+	if state != "validated" || sourceRequestID != "legacy:session-legacy:turn-legacy" || sourceCorrelationExact != 0 ||
+		sourceSessionID != "session-legacy" || sourceTurnID != "turn-legacy" || provider != "provider-legacy" ||
+		model != "model-legacy" || effort != "high" || !bytes.Equal(canonical, []byte("{}")) || resultHash != hash ||
+		applyKey != "apply-legacy" || work != 5 || semantic != 2 || automaticTurns != 2 || repairCount != 1 ||
+		versionCount != 0 || retryCount != 1 {
+		t.Fatalf("migrated obligation lost lineage: state=%q source=(%q,%d,%q,%q) selection=(%q,%q,%q) canonical=%q hash=%q apply=%q counts=(%d,%d,%d,%d,%d,%d)",
+			state, sourceRequestID, sourceCorrelationExact, sourceSessionID, sourceTurnID, provider, model, effort,
+			canonical, resultHash, applyKey, work, semantic, automaticTurns, repairCount, versionCount, retryCount)
+	}
+
+	var kind, continuationID, dispatchRequestID, controlTurnID, deliveryState, sendStartedAt, terminalOutcome string
+	var baseRevision int
+	if err := reopened.QueryRow(`SELECT kind,continuation_id,dispatch_request_id,control_turn_id,base_revision,delivery_state,
+		send_started_at,terminal_outcome FROM conclusion_dispatches WHERE obligation_id='legacy-validated'`).Scan(
+		&kind, &continuationID, &dispatchRequestID, &controlTurnID, &baseRevision, &deliveryState,
+		&sendStartedAt, &terminalOutcome); err != nil {
+		t.Fatal(err)
+	}
+	if kind != "retry" || continuationID != "continuation-legacy" || dispatchRequestID != "dispatch-legacy" ||
+		controlTurnID != "control-legacy" || baseRevision != 9 || deliveryState != "validated" ||
+		sendStartedAt != "2026-07-27T12:00:30Z" || terminalOutcome != "" {
+		t.Fatalf("migrated dispatch lost binding: kind=%q continuation=%q request=%q control=%q base=%d state=%q sent=%q outcome=%q",
+			kind, continuationID, dispatchRequestID, controlTurnID, baseRevision, deliveryState, sendStartedAt, terminalOutcome)
+	}
+
+	// The Session retry-keys table now references the obligation table.
+	var obligationFK string
+	if err := reopened.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='session_assisted_conclusion_retry_keys'`).Scan(&obligationFK); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(obligationFK, "session_pending_blackboard_conclusions") {
+		t.Fatalf("session retry keys still reference the legacy receipt table: %s", obligationFK)
+	}
+}

@@ -3,19 +3,20 @@ package daemon
 import (
 	"path/filepath"
 	"testing"
-	"time"
 
 	"pentest/internal/project"
 	"pentest/internal/task"
 )
 
-// #197: the steer path's assisted-conclusion receipt rebind helper must move an
-// in-flight Receipt to the replacement Continuation + live provider session so
-// a later retry delivers its control turn instead of looping on the dead
-// pre-steer session. This exercises the daemon wrapper used by both steer call
-// sites (advanceNativeSteerContinuation and createWritableContinuationForLiveSession).
+// #203 / ADR 0021: the steer path's assisted-conclusion recovery helper must
+// create a NEW Conclusion Dispatch bound to the replacement Continuation +
+// live provider session so a later retry delivers its control turn against the
+// live replacement session instead of looping on the dead pre-steer session.
+// Historical dispatch identity is never rewritten. This exercises the daemon
+// wrapper used by both steer call sites (advanceNativeSteerContinuation and
+// createWritableContinuationForLiveSession).
 
-func newAssistedConclusionRebindServer(t *testing.T) (*Server, task.Task, task.TaskContinuation) {
+func newAssistedConclusionRecoveryServer(t *testing.T) (*Server, task.Task, task.TaskContinuation) {
 	t.Helper()
 	root := t.TempDir()
 	server, err := NewServer(Config{
@@ -26,12 +27,12 @@ func newAssistedConclusionRebindServer(t *testing.T) (*Server, task.Task, task.T
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = server.Close() })
-	projectRecord, err := server.projects.Create("Rebind", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
+	projectRecord, err := server.projects.Create("RecoveryDispatch", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "rebind assisted conclusion", Runner: task.RunnerSandbox,
+		ProjectID: projectRecord.ID, Goal: "recover assisted conclusion", Runner: task.RunnerSandbox,
 		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
 	})
 	if err != nil {
@@ -44,12 +45,12 @@ func newAssistedConclusionRebindServer(t *testing.T) (*Server, task.Task, task.T
 	return server, created, continuation
 }
 
-func TestRebindInFlightAssistedConclusionReceiptsRepointsToReplacement(t *testing.T) {
-	server, created, original := newAssistedConclusionRebindServer(t)
+func TestRecoveryConclusionDispatchBindsReplacementContinuation(t *testing.T) {
+	server, created, original := newAssistedConclusionRecoveryServer(t)
 
-	// Simulate the stuck-live-task condition: an assisted-conclusion Receipt in
-	// action_required against the original continuation + session.
-	receipt, _, err := server.tasks.RecordBlackboardConclusionCheckpoint(
+	// Simulate the stuck-live-task condition: an in-flight obligation with an
+	// active dispatch bound to the original continuation + session.
+	obligation, _, err := server.tasks.RecordBlackboardConclusionCheckpoint(
 		created.ID, original.ID, "work-request-1", "session-original", "turn-1",
 		task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1"},
 		task.SemanticDebtWatermarks{SourceWork: 3, SemanticPersistence: 1},
@@ -57,8 +58,9 @@ func TestRebindInFlightAssistedConclusionReceiptsRepointsToReplacement(t *testin
 	if err != nil {
 		t.Fatalf("record checkpoint: %v", err)
 	}
-	if _, _, err := server.tasks.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(receipt.ID, time.Now().UTC(), 0); err != nil {
-		t.Fatalf("mark recovery required: %v", err)
+	claimed, won, err := server.tasks.ClaimBlackboardConclusionDispatch(obligation.ID, 7)
+	if err != nil || !won {
+		t.Fatalf("claim initial dispatch: %#v won=%v err=%v", claimed, won, err)
 	}
 
 	replacement, err := server.tasks.CreateReplacementContinuation(original)
@@ -68,30 +70,51 @@ func TestRebindInFlightAssistedConclusionReceiptsRepointsToReplacement(t *testin
 	const replacementSessionID = "session-replacement"
 
 	// This is the wrapper invoked by both steer call sites.
-	server.rebindInFlightAssistedConclusionReceipts(created.ID, original.ID, replacement.ID, replacementSessionID)
+	server.recoverConclusionObligationsForReplacedContinuation(created.ID, original.ID, replacement.ID, replacementSessionID)
 
 	latest, err := server.tasks.LatestBlackboardConclusion(created.ID)
 	if err != nil || latest == nil {
-		t.Fatalf("latest receipt after rebind: %v %#v", err, latest)
+		t.Fatalf("latest obligation after recovery: %v %#v", err, latest)
 	}
-	if latest.ID != receipt.ID {
-		t.Fatalf("rebind changed the receipt identity: %s != %s", latest.ID, receipt.ID)
+	if latest.ID != obligation.ID {
+		t.Fatalf("recovery changed the obligation identity: %s != %s", latest.ID, obligation.ID)
 	}
 	if latest.ContinuationID != replacement.ID {
-		t.Fatalf("receipt continuation_id not rebound: %s, want %s", latest.ContinuationID, replacement.ID)
+		t.Fatalf("recovery dispatch continuation_id = %s, want %s", latest.ContinuationID, replacement.ID)
 	}
 	if latest.SourceSessionID != replacementSessionID {
-		t.Fatalf("receipt source_session_id not rebound: %s, want %s", latest.SourceSessionID, replacementSessionID)
+		t.Fatalf("recovery dispatch source_session_id = %s, want %s", latest.SourceSessionID, replacementSessionID)
 	}
-	if latest.InternalState != task.BlackboardConclusionReceiptActionRequired {
-		t.Fatalf("rebind changed the in-flight state: %s", latest.InternalState)
+	if latest.DispatchRequestID == claimed.DispatchRequestID {
+		t.Fatalf("recovery reused the old dispatch request id %s", latest.DispatchRequestID)
+	}
+	if latest.InternalState != task.BlackboardConclusionReceiptDispatchRequested {
+		t.Fatalf("recovery dispatch state = %s, want dispatch_requested (pre-send)", latest.InternalState)
+	}
+
+	history, err := server.tasks.ConclusionDispatches(obligation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("dispatch history = %d rows, want 2 (initial + recovery)", len(history))
+	}
+	for i := range history {
+		if history[i].DispatchRequestID == claimed.DispatchRequestID {
+			if history[i].ContinuationID != original.ID || history[i].SourceSessionID != "session-original" {
+				t.Fatalf("historical dispatch binding was rewritten: %#v", history[i])
+			}
+			if history[i].DeliveryState != task.ConclusionDispatchSuperseded {
+				t.Fatalf("historical dispatch delivery_state = %s, want superseded", history[i].DeliveryState)
+			}
+		}
 	}
 }
 
-func TestRebindInFlightAssistedConclusionReceiptsLeavesTerminalReceiptAlone(t *testing.T) {
-	server, created, original := newAssistedConclusionRebindServer(t)
+func TestRecoveryConclusionDispatchLeavesTerminalObligationAlone(t *testing.T) {
+	server, created, original := newAssistedConclusionRecoveryServer(t)
 
-	// A clean Receipt is terminal; it must not be moved by the rebind.
+	// A clean obligation is terminal; it must not receive a recovery dispatch.
 	if _, _, err := server.tasks.RecordBlackboardConclusionCheckpoint(
 		created.ID, original.ID, "work-clean", "session-original", "turn-clean",
 		task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1"},
@@ -103,13 +126,13 @@ func TestRebindInFlightAssistedConclusionReceiptsLeavesTerminalReceiptAlone(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	server.rebindInFlightAssistedConclusionReceipts(created.ID, original.ID, replacement.ID, "session-replacement")
+	server.recoverConclusionObligationsForReplacedContinuation(created.ID, original.ID, replacement.ID, "session-replacement")
 
 	latest, err := server.tasks.LatestBlackboardConclusion(created.ID)
 	if err != nil || latest == nil {
-		t.Fatalf("latest receipt: %v %#v", err, latest)
+		t.Fatalf("latest obligation: %v %#v", err, latest)
 	}
 	if latest.ContinuationID != original.ID {
-		t.Fatalf("terminal clean Receipt was moved: continuation_id=%s, want %s", latest.ContinuationID, original.ID)
+		t.Fatalf("terminal clean obligation was moved: continuation_id=%s, want %s", latest.ContinuationID, original.ID)
 	}
 }

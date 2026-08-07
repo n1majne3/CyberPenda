@@ -37,7 +37,7 @@ func (server *Server) observeProviderSession(taskID, continuationID, sessionID s
 				return false, err
 			}
 			if inserted && receipt.InternalState == task.BlackboardConclusionReceiptPending && status != "completed" {
-				_, _, err = server.tasks.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(receipt.ID, time.Now().UTC(), blackboardConclusionRetryCooldown)
+				_, _, err = server.tasks.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(receipt.ID, task.ConclusionRecoveryDispatchFailed, time.Now().UTC(), blackboardConclusionRetryCooldown)
 				return true, err
 			}
 			if inserted && receipt.InternalState == task.BlackboardConclusionReceiptPending {
@@ -54,12 +54,12 @@ func (server *Server) observeProviderSession(taskID, continuationID, sessionID s
 func (server *Server) scheduleBlackboardConclusionDispatch(receipt task.BlackboardConclusionReceipt) {
 	queued := server.enqueueProviderTaskControl(receipt.TaskID, func(ctx context.Context) {
 		if err := server.dispatchBlackboardConclusion(ctx, receipt); err != nil {
-			server.requireBlackboardConclusionRecovery(receipt, err)
+			server.requireBlackboardConclusionRecovery(receipt, task.ConclusionRecoveryDispatchFailed, err)
 			server.logger.Printf("assisted conclusion: dispatch Task %s receipt %s: %v", receipt.TaskID, receipt.ID, err)
 		}
 	})
 	if !queued {
-		server.requireBlackboardConclusionRecovery(receipt, fmt.Errorf("provider control queue is closed"))
+		server.requireBlackboardConclusionRecovery(receipt, task.ConclusionRecoveryDispatchFailed, fmt.Errorf("provider control queue is closed"))
 	}
 }
 
@@ -248,6 +248,17 @@ func (server *Server) handleRetryBlackboardConclusion(response http.ResponseWrit
 		writeError(response, http.StatusBadRequest, "Idempotency-Key is required")
 		return
 	}
+	latest, err := server.tasks.LatestBlackboardConclusion(taskID)
+	if err != nil || latest == nil {
+		writeError(response, http.StatusNotFound, "task not found")
+		return
+	}
+	if latest.RecoveryReason == string(task.ConclusionRecoveryAcceptanceAmbiguous) {
+		// An acceptance-ambiguous provider delivery is never resent: a generic
+		// Retry could duplicate a request the provider already accepted.
+		writeError(response, http.StatusConflict, "Blackboard conclusion cannot be retried after an acceptance-ambiguous delivery")
+		return
+	}
 	retried, won, err := server.tasks.RetryLatestBlackboardConclusion(taskID, idempotencyKey, time.Now().UTC())
 	if err != nil {
 		if errors.Is(err, task.ErrBlackboardConclusionRetryCooldown) {
@@ -288,7 +299,7 @@ func (server *Server) recoverBlackboardConclusionDispatchFailure(receipt task.Bl
 		return
 	}
 	_, _, err := server.tasks.MarkBlackboardConclusionRecoveryActionRequired(
-		receipt.DispatchRequestID, time.Now().UTC(), blackboardConclusionRetryCooldown,
+		receipt.DispatchRequestID, task.ConclusionRecoveryDispatchFailed, time.Now().UTC(), blackboardConclusionRetryCooldown,
 	)
 	if err != nil {
 		server.logger.Printf("assisted conclusion: recover failed dispatch Task %s receipt %s: %v (dispatch error: %v)", receipt.TaskID, receipt.ID, err, cause)
@@ -297,22 +308,54 @@ func (server *Server) recoverBlackboardConclusionDispatchFailure(receipt task.Bl
 	server.logger.Printf("assisted conclusion: dispatch requires operator action Task %s receipt %s: %v", receipt.TaskID, receipt.ID, cause)
 }
 
-// rebindInFlightAssistedConclusionReceipts carries any in-flight assisted-
-// conclusion Receipt for a Task from an old (now terminal) Continuation to its
-// replacement after an interrupt_then_replace native steer or a writable-
-// continuation recovery (#197). The Receipt's continuation_id and
-// source_session_id are repointed to the live replacement so a later retry
-// delivers the control turn instead of failing on the dead pre-steer session.
-// Errors are logged, not fatal: a rebind failure must not block the steer.
-func (server *Server) rebindInFlightAssistedConclusionReceipts(taskID, oldContinuationID, replacementContinuationID, replacementSessionID string) {
-	rebound, err := server.tasks.RebindInFlightConclusionReceipts(taskID, oldContinuationID, replacementContinuationID, replacementSessionID)
+// recoverConclusionObligationsForReplacedContinuation creates a NEW Conclusion
+// Dispatch bound to the replacement Continuation + session for every in-flight
+// assisted-conclusion obligation of a Task whose active dispatch is bound to
+// the old (now terminal) Continuation, after an interrupt_then_replace native
+// steer or a writable-continuation recovery (#197). Historical dispatches are
+// superseded, never rewritten: each recovery dispatch keeps its own immutable
+// binding and deterministic request lineage (ADR 0021). Errors are logged, not
+// fatal: a recovery failure must not block the steer.
+func (server *Server) recoverConclusionObligationsForReplacedContinuation(taskID, oldContinuationID, replacementContinuationID, replacementSessionID string) {
+	dispatches, err := server.tasks.CreateRecoveryConclusionDispatches(taskID, oldContinuationID, replacementContinuationID, replacementSessionID)
 	if err != nil {
-		server.logger.Printf("assisted conclusion: rebind in-flight receipts Task %s old=%s replacement=%s: %v", taskID, oldContinuationID, replacementContinuationID, err)
+		server.logger.Printf("assisted conclusion: recover in-flight obligations Task %s old=%s replacement=%s: %v", taskID, oldContinuationID, replacementContinuationID, err)
 		return
 	}
-	if rebound {
-		server.logger.Printf("assisted conclusion: rebound in-flight receipts Task %s to replacement continuation %s session %s", taskID, replacementContinuationID, replacementSessionID)
+	for _, view := range dispatches {
+		server.scheduleRecoveredConclusionDispatch(view)
 	}
+}
+
+// scheduleRecoveredConclusionDispatch enqueues a pre-send recovery Conclusion
+// Dispatch for its owner so the control turn is delivered on the replacement
+// runtime. A recovery dispatch is always pre-send (send fence cleared), so it
+// is safe to send; acceptance-ambiguous post-fence dispatches are never
+// replayed automatically.
+func (server *Server) scheduleRecoveredConclusionDispatch(view task.BlackboardConclusionReceipt) {
+	queued := server.enqueueProviderTaskControl(view.TaskID, func(ctx context.Context) {
+		if err := server.dispatchRecoveredConclusionDispatch(ctx, view); err != nil {
+			server.recoverBlackboardConclusionDispatchFailure(view, err)
+		}
+	})
+	if !queued {
+		server.recoverBlackboardConclusionDispatchFailure(view, fmt.Errorf("provider control queue is closed"))
+	}
+}
+
+func (server *Server) dispatchRecoveredConclusionDispatch(ctx context.Context, view task.BlackboardConclusionReceipt) error {
+	directive := concludeBlackboardDirective(pointerValue(view.BaseRevision))
+	switch view.InternalState {
+	case task.BlackboardConclusionReceiptRepairDispatchRequested:
+		directive = repairBlackboardDirective(pointerValue(view.BaseRevision), conclusionDetailFromTaskReceipt(view))
+	case task.BlackboardConclusionReceiptVersionRegenerationDispatchRequested:
+		directive = regenerateBlackboardDirective(pointerValue(view.BaseRevision))
+	default:
+		if view.ExplicitRetryCount > 0 {
+			directive = repairBlackboardDirective(pointerValue(view.BaseRevision), conclusionDetailFromTaskReceipt(view))
+		}
+	}
+	return server.sendBlackboardConclusionTurn(ctx, view, directive)
 }
 
 func (server *Server) reconcileValidatedBlackboardConclusionApplies() {

@@ -105,3 +105,82 @@ func ValidBlackboardConclusionErrorCode(code BlackboardConclusionErrorCode) bool
 		return false
 	}
 }
+
+// ConclusionDispatchKind is the immutable attempt category of one Conclusion
+// Dispatch. Recovery-created dispatches are always kind recovery; repair,
+// version regeneration, and operator retry dispatches keep their own kind.
+type ConclusionDispatchKind string
+
+const (
+	ConclusionDispatchKindInitial             ConclusionDispatchKind = "initial"
+	ConclusionDispatchKindRepair              ConclusionDispatchKind = "repair"
+	ConclusionDispatchKindVersionRegeneration ConclusionDispatchKind = "version_regeneration"
+	ConclusionDispatchKindRetry               ConclusionDispatchKind = "retry"
+	ConclusionDispatchKindRecovery            ConclusionDispatchKind = "recovery"
+)
+
+// ConclusionDispatchState is the immutable attempt's own delivery lifecycle.
+// Only dispatch_requested, awaiting_result, and validated are active: the
+// storage partial unique index permits at most one active dispatch per
+// obligation. Superseded and late_terminal are terminal delivery outcomes that
+// can never advance the obligation or Blackboard.
+type ConclusionDispatchState string
+
+const (
+	ConclusionDispatchRequested      ConclusionDispatchState = "dispatch_requested"
+	ConclusionDispatchAwaitingResult ConclusionDispatchState = "awaiting_result"
+	ConclusionDispatchValidated      ConclusionDispatchState = "validated"
+	ConclusionDispatchApplied        ConclusionDispatchState = "applied"
+	ConclusionDispatchActionRequired ConclusionDispatchState = "action_required"
+	ConclusionDispatchSuperseded     ConclusionDispatchState = "superseded"
+	ConclusionDispatchLateTerminal   ConclusionDispatchState = "late_terminal"
+)
+
+// ConclusionDispatchActive reports whether a delivery state is the active
+// protocol position for its obligation. Only these states participate in the
+// at-most-one-active storage constraint and may validate or apply results.
+func ConclusionDispatchActive(state ConclusionDispatchState) bool {
+	switch state {
+	case ConclusionDispatchRequested, ConclusionDispatchAwaitingResult, ConclusionDispatchValidated:
+		return true
+	default:
+		return false
+	}
+}
+
+// ConclusionRecoveryReason is the closed operator-visible reason vocabulary for
+// fail-closed conclusion recovery. Raw runtime errors never enter storage; the
+// daemon maps each failed recovery path to exactly one bounded token.
+type ConclusionRecoveryReason string
+
+const (
+	// ConclusionRecoveryRuntimeOwnershipNotProven means the daemon could not
+	// prove live ownership of the current Task-scoped Runtime, so it must not
+	// create a replacement Conclusion Dispatch (ADR 0021).
+	ConclusionRecoveryRuntimeOwnershipNotProven ConclusionRecoveryReason = "runtime_ownership_not_proven"
+	// ConclusionRecoveryWritableReplacementUnavailable means the owner has no
+	// writable replacement Runtime Continuation for a new dispatch.
+	ConclusionRecoveryWritableReplacementUnavailable ConclusionRecoveryReason = "writable_replacement_unavailable"
+	// ConclusionRecoveryAcceptanceAmbiguous means a provider request may have
+	// been accepted; the obligation is never replayed or regenerated
+	// automatically after a durable send-start fence.
+	ConclusionRecoveryAcceptanceAmbiguous ConclusionRecoveryReason = "acceptance_ambiguous"
+	// ConclusionRecoveryDispatchFailed means the active dispatch could not be
+	// delivered and no safe replay exists.
+	ConclusionRecoveryDispatchFailed ConclusionRecoveryReason = "dispatch_failed"
+	// ConclusionRecoveryLegacyCorrelationUnproven means a legacy receipt's
+	// source correlation cannot be proven and no ownership probe may run.
+	ConclusionRecoveryLegacyCorrelationUnproven ConclusionRecoveryReason = "legacy_correlation_unproven"
+)
+
+// ValidConclusionRecoveryReason reports whether a reason is a closed token.
+func ValidConclusionRecoveryReason(reason ConclusionRecoveryReason) bool {
+	switch reason {
+	case ConclusionRecoveryRuntimeOwnershipNotProven, ConclusionRecoveryWritableReplacementUnavailable,
+		ConclusionRecoveryAcceptanceAmbiguous, ConclusionRecoveryDispatchFailed,
+		ConclusionRecoveryLegacyCorrelationUnproven:
+		return true
+	default:
+		return false
+	}
+}

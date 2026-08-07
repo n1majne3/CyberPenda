@@ -937,6 +937,8 @@ func migrations() []migration {
 		newMigration(50, "assisted_conclusion_validation_reason", migration50SQL, migration50Up),
 		newMigration(51, "navigation_task_indexes", migration51SQL, migration51Up),
 		newMigration(52, "owner_neutral_accepted_steering", migration52SQL, migration52Up),
+		newMigration(53, "blackboard_conclusion_obligations", migration53SQL, migration53Up),
+		newMigration(54, "session_conclusion_retry_keys_obligations", migration54SQL, migration54Up),
 	}
 }
 
@@ -1018,6 +1020,337 @@ CREATE INDEX IF NOT EXISTS idx_accepted_steering_state
 `
 
 func migration52Up(tx *sql.Tx) error { return execStatements(tx, migration52SQL) }
+
+// migration53SQL separates the mutable assisted-conclusion receipt into a
+// durable Pending Blackboard Conclusion obligation and an immutable child
+// Conclusion Dispatch history (ADR 0021). Every legacy receipt becomes exactly
+// one obligation plus one historical dispatch that preserves its binding,
+// correlation, watermarks, counters, errors, cooldowns, canonical result data,
+// and timestamps. The legacy tables remain as inert archives; the daemon reads
+// and writes only the new tables after migration 53.
+const migration53SQL = `
+CREATE TABLE IF NOT EXISTS pending_blackboard_conclusions (
+	id TEXT PRIMARY KEY,
+	task_id TEXT NOT NULL,
+	source_request_id TEXT NOT NULL CHECK (length(trim(source_request_id)) > 0),
+	source_request_correlation_exact INTEGER NOT NULL CHECK (source_request_correlation_exact IN (0,1)),
+	source_continuation_id TEXT NOT NULL,
+	source_session_id TEXT NOT NULL,
+	source_turn_id TEXT NOT NULL,
+	state TEXT NOT NULL CHECK (state IN ('clean','pending','dispatch_requested','repair_dispatch_requested','version_sync_requested','version_regeneration_dispatch_requested','awaiting_result','action_required','validated','applied')),
+	source_work_watermark INTEGER NOT NULL CHECK (source_work_watermark >= 0),
+	semantic_persistence_watermark INTEGER NOT NULL CHECK (semantic_persistence_watermark >= 0),
+	source_model_provider_id TEXT NOT NULL DEFAULT '',
+	source_model TEXT NOT NULL DEFAULT '',
+	source_reasoning_effort TEXT NOT NULL DEFAULT '',
+	canonical_result_json BLOB,
+	canonical_result_sha256 TEXT,
+	apply_idempotency_key TEXT UNIQUE,
+	applied_revision INTEGER CHECK (applied_revision >= 0),
+	base_revision INTEGER CHECK (base_revision >= 0),
+	automatic_turn_count INTEGER NOT NULL DEFAULT 0 CHECK (automatic_turn_count >= 0),
+	repair_count INTEGER NOT NULL DEFAULT 0 CHECK (repair_count >= 0),
+	version_regeneration_count INTEGER NOT NULL DEFAULT 0 CHECK (version_regeneration_count IN (0,1)),
+	explicit_retry_count INTEGER NOT NULL DEFAULT 0 CHECK (explicit_retry_count >= 0),
+	operator_retry_key TEXT,
+	next_eligible_at TEXT,
+	error_code TEXT,
+	recovery_reason TEXT NOT NULL DEFAULT '',
+	validation_reason TEXT NOT NULL DEFAULT '',
+	validation_field_path TEXT NOT NULL DEFAULT '',
+	validation_expected TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	UNIQUE (task_id, source_session_id, source_turn_id),
+	CHECK ((state = 'clean' AND source_work_watermark = semantic_persistence_watermark) OR (state <> 'clean' AND source_work_watermark > semantic_persistence_watermark)),
+	CHECK ((state = 'action_required' AND error_code IS NOT NULL AND next_eligible_at IS NOT NULL) OR state <> 'action_required'),
+	CHECK ((state = 'version_regeneration_dispatch_requested' AND version_regeneration_count = 1 AND error_code = 'semantic_conclusion_version_conflict' AND next_eligible_at IS NOT NULL) OR state <> 'version_regeneration_dispatch_requested')
+);
+CREATE INDEX IF NOT EXISTS idx_pending_blackboard_conclusions_task_created
+	ON pending_blackboard_conclusions(task_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS conclusion_dispatches (
+	id TEXT PRIMARY KEY,
+	obligation_id TEXT NOT NULL REFERENCES pending_blackboard_conclusions(id) ON DELETE CASCADE,
+	kind TEXT NOT NULL CHECK (kind IN ('initial','repair','version_regeneration','retry','recovery')),
+	continuation_id TEXT NOT NULL,
+	source_session_id TEXT NOT NULL,
+	dispatch_request_id TEXT UNIQUE,
+	control_turn_id TEXT,
+	base_revision INTEGER CHECK (base_revision >= 0),
+	synchronized_revision INTEGER CHECK (synchronized_revision >= 0),
+	delivery_state TEXT NOT NULL CHECK (delivery_state IN ('dispatch_requested','awaiting_result','validated','applied','action_required','superseded','late_terminal')),
+	send_attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (send_attempt_count IN (0,1)),
+	send_started_at TEXT,
+	terminal_outcome TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	CHECK ((send_attempt_count = 0 AND send_started_at IS NULL) OR (send_attempt_count = 1 AND send_started_at IS NOT NULL)),
+	CHECK (delivery_state IN ('dispatch_requested','awaiting_result','validated') OR terminal_outcome <> ''),
+	CHECK (delivery_state NOT IN ('awaiting_result','validated','applied') OR (control_turn_id IS NOT NULL AND base_revision IS NOT NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conclusion_dispatches_one_active
+	ON conclusion_dispatches(obligation_id)
+	WHERE delivery_state IN ('dispatch_requested','awaiting_result','validated');
+CREATE INDEX IF NOT EXISTS idx_conclusion_dispatches_obligation
+	ON conclusion_dispatches(obligation_id);
+CREATE TABLE IF NOT EXISTS session_pending_blackboard_conclusions (
+	id TEXT PRIMARY KEY,
+	session_id TEXT NOT NULL,
+	source_request_id TEXT NOT NULL CHECK (length(trim(source_request_id)) > 0),
+	source_request_correlation_exact INTEGER NOT NULL CHECK (source_request_correlation_exact IN (0,1)),
+	source_continuation_id TEXT NOT NULL,
+	source_session_id TEXT NOT NULL,
+	source_turn_id TEXT NOT NULL,
+	state TEXT NOT NULL CHECK (state IN ('clean','pending','dispatch_requested','repair_dispatch_requested','version_sync_requested','version_regeneration_dispatch_requested','awaiting_result','action_required','validated','applied')),
+	source_work_watermark INTEGER NOT NULL CHECK (source_work_watermark >= 0),
+	semantic_persistence_watermark INTEGER NOT NULL CHECK (semantic_persistence_watermark >= 0),
+	source_model_provider_id TEXT NOT NULL DEFAULT '',
+	source_model TEXT NOT NULL DEFAULT '',
+	source_reasoning_effort TEXT NOT NULL DEFAULT '',
+	canonical_result_json BLOB,
+	canonical_result_sha256 TEXT,
+	apply_idempotency_key TEXT UNIQUE,
+	applied_revision INTEGER CHECK (applied_revision >= 0),
+	base_revision INTEGER CHECK (base_revision >= 0),
+	automatic_turn_count INTEGER NOT NULL DEFAULT 0 CHECK (automatic_turn_count >= 0),
+	repair_count INTEGER NOT NULL DEFAULT 0 CHECK (repair_count >= 0),
+	version_regeneration_count INTEGER NOT NULL DEFAULT 0 CHECK (version_regeneration_count IN (0,1)),
+	explicit_retry_count INTEGER NOT NULL DEFAULT 0 CHECK (explicit_retry_count >= 0),
+	operator_retry_key TEXT,
+	next_eligible_at TEXT,
+	error_code TEXT,
+	recovery_reason TEXT NOT NULL DEFAULT '',
+	validation_reason TEXT NOT NULL DEFAULT '',
+	validation_field_path TEXT NOT NULL DEFAULT '',
+	validation_expected TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	UNIQUE (session_id, source_session_id, source_turn_id),
+	CHECK ((state = 'clean' AND source_work_watermark = semantic_persistence_watermark) OR (state <> 'clean' AND source_work_watermark > semantic_persistence_watermark)),
+	CHECK ((state = 'action_required' AND error_code IS NOT NULL AND next_eligible_at IS NOT NULL) OR state <> 'action_required'),
+	CHECK ((state = 'version_regeneration_dispatch_requested' AND version_regeneration_count = 1 AND error_code = 'semantic_conclusion_version_conflict' AND next_eligible_at IS NOT NULL) OR state <> 'version_regeneration_dispatch_requested')
+);
+CREATE INDEX IF NOT EXISTS idx_session_pending_blackboard_conclusions_created
+	ON session_pending_blackboard_conclusions(session_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS session_conclusion_dispatches (
+	id TEXT PRIMARY KEY,
+	obligation_id TEXT NOT NULL REFERENCES session_pending_blackboard_conclusions(id) ON DELETE CASCADE,
+	kind TEXT NOT NULL CHECK (kind IN ('initial','repair','version_regeneration','retry','recovery')),
+	continuation_id TEXT NOT NULL,
+	source_session_id TEXT NOT NULL,
+	dispatch_request_id TEXT UNIQUE,
+	control_turn_id TEXT,
+	base_revision INTEGER CHECK (base_revision >= 0),
+	synchronized_revision INTEGER CHECK (synchronized_revision >= 0),
+	delivery_state TEXT NOT NULL CHECK (delivery_state IN ('dispatch_requested','awaiting_result','validated','applied','action_required','superseded','late_terminal')),
+	send_attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (send_attempt_count IN (0,1)),
+	send_started_at TEXT,
+	terminal_outcome TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	CHECK ((send_attempt_count = 0 AND send_started_at IS NULL) OR (send_attempt_count = 1 AND send_started_at IS NOT NULL)),
+	CHECK (delivery_state IN ('dispatch_requested','awaiting_result','validated') OR terminal_outcome <> ''),
+	CHECK (delivery_state NOT IN ('awaiting_result','validated','applied') OR (control_turn_id IS NOT NULL AND base_revision IS NOT NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_session_conclusion_dispatches_one_active
+	ON session_conclusion_dispatches(obligation_id)
+	WHERE delivery_state IN ('dispatch_requested','awaiting_result','validated');
+CREATE INDEX IF NOT EXISTS idx_session_conclusion_dispatches_obligation
+	ON session_conclusion_dispatches(obligation_id);
+INSERT INTO pending_blackboard_conclusions
+	(id,task_id,source_request_id,source_request_correlation_exact,source_continuation_id,source_session_id,source_turn_id,state,
+	 source_work_watermark,semantic_persistence_watermark,source_model_provider_id,source_model,source_reasoning_effort,
+	 canonical_result_json,canonical_result_sha256,apply_idempotency_key,applied_revision,base_revision,
+	 automatic_turn_count,repair_count,version_regeneration_count,explicit_retry_count,operator_retry_key,
+	 next_eligible_at,error_code,recovery_reason,validation_reason,validation_field_path,validation_expected,created_at,updated_at)
+	SELECT id,task_id,source_request_id,source_request_correlation_exact,continuation_id,source_session_id,source_turn_id,state,
+	 source_work_watermark,semantic_persistence_watermark,source_model_provider_id,source_model,source_reasoning_effort,
+	 canonical_result_json,canonical_result_sha256,apply_idempotency_key,applied_revision,base_revision,
+	 automatic_turn_count,repair_count,version_regeneration_count,explicit_retry_count,operator_retry_key,
+	 next_eligible_at,error_code,'',validation_reason,validation_field_path,validation_expected,created_at,updated_at
+	FROM assisted_conclusion_receipts;
+INSERT INTO conclusion_dispatches
+	(id,obligation_id,kind,continuation_id,source_session_id,dispatch_request_id,control_turn_id,base_revision,synchronized_revision,
+	 delivery_state,send_attempt_count,send_started_at,terminal_outcome,created_at,updated_at)
+	SELECT 'dispatch-' || id,id,
+	 CASE WHEN state = 'repair_dispatch_requested' THEN 'repair'
+	      WHEN state = 'version_regeneration_dispatch_requested' THEN 'version_regeneration'
+	      WHEN explicit_retry_count > 0 THEN 'retry'
+	      ELSE 'initial' END,
+	 continuation_id,source_session_id,dispatch_request_id,control_turn_id,base_revision,synchronized_revision,
+	 CASE WHEN state = 'clean' THEN 'superseded'
+	      WHEN state = 'pending' THEN 'superseded'
+	      WHEN state = 'dispatch_requested' THEN 'dispatch_requested'
+	      WHEN state = 'repair_dispatch_requested' THEN 'dispatch_requested'
+	      WHEN state = 'version_regeneration_dispatch_requested' THEN 'dispatch_requested'
+	      WHEN state = 'version_sync_requested' THEN 'validated'
+	      WHEN state = 'awaiting_result' THEN 'awaiting_result'
+	      WHEN state = 'action_required' THEN 'action_required'
+	      WHEN state = 'validated' THEN 'validated'
+	      WHEN state = 'applied' THEN 'applied'
+	      ELSE 'superseded' END,
+	 send_attempt_count,send_started_at,
+	 CASE WHEN state = 'clean' THEN 'legacy_clean'
+	      WHEN state = 'pending' THEN 'legacy_pending'
+	      WHEN state = 'applied' THEN 'applied'
+	      WHEN state = 'action_required' THEN 'action_required'
+	      ELSE '' END,
+	 created_at,updated_at
+	FROM assisted_conclusion_receipts;
+INSERT INTO session_pending_blackboard_conclusions
+	(id,session_id,source_request_id,source_request_correlation_exact,source_continuation_id,source_session_id,source_turn_id,state,
+	 source_work_watermark,semantic_persistence_watermark,source_model_provider_id,source_model,source_reasoning_effort,
+	 canonical_result_json,canonical_result_sha256,apply_idempotency_key,applied_revision,base_revision,
+	 automatic_turn_count,repair_count,version_regeneration_count,explicit_retry_count,operator_retry_key,
+	 next_eligible_at,error_code,recovery_reason,validation_reason,validation_field_path,validation_expected,created_at,updated_at)
+	SELECT id,session_id,source_request_id,source_request_correlation_exact,continuation_id,source_session_id,source_turn_id,state,
+	 source_work_watermark,semantic_persistence_watermark,source_model_provider_id,source_model,source_reasoning_effort,
+	 canonical_result_json,canonical_result_sha256,apply_idempotency_key,applied_revision,base_revision,
+	 automatic_turn_count,repair_count,version_regeneration_count,explicit_retry_count,operator_retry_key,
+	 next_eligible_at,error_code,'',validation_reason,validation_field_path,validation_expected,created_at,updated_at
+	FROM session_assisted_conclusion_receipts;
+INSERT INTO session_conclusion_dispatches
+	(id,obligation_id,kind,continuation_id,source_session_id,dispatch_request_id,control_turn_id,base_revision,synchronized_revision,
+	 delivery_state,send_attempt_count,send_started_at,terminal_outcome,created_at,updated_at)
+	SELECT 'dispatch-' || id,id,
+	 CASE WHEN state = 'repair_dispatch_requested' THEN 'repair'
+	      WHEN state = 'version_regeneration_dispatch_requested' THEN 'version_regeneration'
+	      WHEN explicit_retry_count > 0 THEN 'retry'
+	      ELSE 'initial' END,
+	 continuation_id,source_session_id,dispatch_request_id,control_turn_id,base_revision,synchronized_revision,
+	 CASE WHEN state = 'clean' THEN 'superseded'
+	      WHEN state = 'pending' THEN 'superseded'
+	      WHEN state = 'dispatch_requested' THEN 'dispatch_requested'
+	      WHEN state = 'repair_dispatch_requested' THEN 'dispatch_requested'
+	      WHEN state = 'version_regeneration_dispatch_requested' THEN 'dispatch_requested'
+	      WHEN state = 'version_sync_requested' THEN 'validated'
+	      WHEN state = 'awaiting_result' THEN 'awaiting_result'
+	      WHEN state = 'action_required' THEN 'action_required'
+	      WHEN state = 'validated' THEN 'validated'
+	      WHEN state = 'applied' THEN 'applied'
+	      ELSE 'superseded' END,
+	 send_attempt_count,send_started_at,
+	 CASE WHEN state = 'clean' THEN 'legacy_clean'
+	      WHEN state = 'pending' THEN 'legacy_pending'
+	      WHEN state = 'applied' THEN 'applied'
+	      WHEN state = 'action_required' THEN 'action_required'
+	      ELSE '' END,
+	 created_at,updated_at
+	FROM session_assisted_conclusion_receipts;
+`
+
+func migration53Up(tx *sql.Tx) error {
+	current, err := blackboardConclusionObligationsSchemaPresent(tx)
+	if err != nil || current {
+		return err
+	}
+	return execStatements(tx, migration53SQL)
+}
+
+func blackboardConclusionObligationsSchemaPresent(tx *sql.Tx) (bool, error) {
+	var tableSQL string
+	if err := tx.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='pending_blackboard_conclusions'`).Scan(&tableSQL); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// migration54SQL rebuilds the Session retry idempotency history to reference
+// the durable Pending Blackboard Conclusion obligation instead of the legacy
+// mutable receipt table. The obligation keeps the legacy receipt id, so
+// migrated history rows remain valid; new obligations are no longer rejected by
+// the legacy foreign key.
+const migration54SQL = migration54TableSQL + `
+INSERT INTO session_assisted_conclusion_retry_keys_v54
+	(session_id,obligation_id,idempotency_key,dispatch_request_id,created_at)
+	SELECT session_id,receipt_id,idempotency_key,dispatch_request_id,created_at
+	FROM session_assisted_conclusion_retry_keys;
+DROP TABLE IF EXISTS session_assisted_conclusion_retry_keys;
+ALTER TABLE session_assisted_conclusion_retry_keys_v54 RENAME TO session_assisted_conclusion_retry_keys;
+`
+
+func migration54Up(tx *sql.Tx) error {
+	present, err := sessionConclusionRetryKeysObligationsSchemaPresent(tx)
+	if err != nil || present {
+		return err
+	}
+	// The legacy retry keys table may be absent on fixture databases that only
+	// recreate the receipt table. A missing history table simply has no rows to
+	// migrate, so create the new table directly without the INSERT.
+	exists, err := storeTableExists(tx, "session_assisted_conclusion_retry_keys")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return execStatements(tx, migration54TableSQL+`
+DROP TABLE IF EXISTS session_assisted_conclusion_retry_keys;
+ALTER TABLE session_assisted_conclusion_retry_keys_v54 RENAME TO session_assisted_conclusion_retry_keys;
+`)
+	}
+	return execStatements(tx, migration54SQL)
+}
+
+func storeTableExists(tx *sql.Tx, table string) (bool, error) {
+	var tableSQL string
+	err := tx.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&tableSQL)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func sessionConclusionRetryKeysObligationsSchemaPresent(tx *sql.Tx) (bool, error) {
+	var tableSQL string
+	if err := tx.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='session_assisted_conclusion_retry_keys'`).Scan(&tableSQL); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	// SQLite rewrites the stored CREATE statement on ALTER TABLE RENAME and
+	// quotes the renamed table name; normalize both sides before comparing.
+	normalize := func(value string) string {
+		value = strings.TrimSpace(value)
+		value = strings.TrimSuffix(value, ";")
+		return strings.ReplaceAll(strings.Join(strings.Fields(value), " "), `"`, "")
+	}
+	current := normalize(tableSQL)
+	// The current table is the migration result either under its final name or
+	// its staging name (if a previous attempt failed mid-migration).
+	for _, candidate := range []string{migration54TableSQL, migration54TableSQLFinal} {
+		if current == normalize(candidate) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+const migration54TableSQL = `
+CREATE TABLE session_assisted_conclusion_retry_keys_v54 (
+	session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	obligation_id TEXT NOT NULL REFERENCES session_pending_blackboard_conclusions(id) ON DELETE CASCADE,
+	idempotency_key TEXT NOT NULL,
+	dispatch_request_id TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (session_id, idempotency_key)
+);
+`
+
+// migration54TableSQLFinal is the same table after ALTER TABLE RENAME, which
+// SQLite stores with the final name in sqlite_master.
+const migration54TableSQLFinal = `
+CREATE TABLE session_assisted_conclusion_retry_keys (
+	session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	obligation_id TEXT NOT NULL REFERENCES session_pending_blackboard_conclusions(id) ON DELETE CASCADE,
+	idempotency_key TEXT NOT NULL,
+	dispatch_request_id TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (session_id, idempotency_key)
+);
+`
 
 func storeTableHasColumn(tx *sql.Tx, table, column string) (bool, error) {
 	rows, err := tx.Query(`PRAGMA table_info(` + table + `)`)

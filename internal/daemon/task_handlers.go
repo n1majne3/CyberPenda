@@ -1945,7 +1945,7 @@ func (server *Server) markStoppedBlackboardConclusionsRecoveryRequired(taskID st
 			continue
 		}
 		if _, _, err := server.tasks.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(
-			receipt.ID, time.Now().UTC(), blackboardConclusionRetryCooldown,
+			receipt.ID, task.ConclusionRecoveryRuntimeOwnershipNotProven, time.Now().UTC(), blackboardConclusionRetryCooldown,
 		); err != nil && !errors.Is(err, task.ErrInvalidBlackboardConclusionReceipt) {
 			return err
 		}
@@ -3587,10 +3587,12 @@ func (server *Server) advanceNativeSteerContinuation(currentID string, session r
 			return fmt.Errorf("rebind Blackboard continuation grant: %w", err)
 		}
 	}
-	// Rebind any in-flight assisted-conclusion Receipt to the replacement so a
-	// later retry delivers its control turn against the live replacement session
-	// instead of looping on the pre-steer (now dead) session (#197).
-	server.rebindInFlightAssistedConclusionReceipts(old.TaskID, old.ID, next.ID, session.SessionID())
+	// Recover any in-flight assisted-conclusion obligation with a NEW Conclusion
+	// Dispatch bound to the replacement Continuation + live session so a later
+	// retry delivers its control turn against the live replacement session
+	// instead of looping on the pre-steer (now dead) session. Historical
+	// dispatch identity is never rewritten (ADR 0021).
+	server.recoverConclusionObligationsForReplacedContinuation(old.TaskID, old.ID, next.ID, session.SessionID())
 	if _, err := server.tasks.UpdateContinuationStatus(old.ID, task.StatusCompleted); err != nil {
 		_, _ = server.tasks.UpdateContinuationStatus(next.ID, task.StatusFailed)
 		return fmt.Errorf("settle old continuation: %w", err)
@@ -3646,10 +3648,12 @@ func (server *Server) createWritableContinuationForLiveSession(found task.Task, 
 	if err := server.blackboardV2Continuity.RebindContinuationForNativeSteer(context.Background(), previous.ID, next.ID); err != nil {
 		return fail(fmt.Errorf("rebind Blackboard continuation grant: %w", err))
 	}
-	// Rebind any in-flight assisted-conclusion Receipt to the replacement so a
-	// later retry delivers its control turn against the live replacement session
-	// instead of looping on the pre-steer (now dead) session (#197).
-	server.rebindInFlightAssistedConclusionReceipts(found.ID, previous.ID, next.ID, session.SessionID())
+	// Recover any in-flight assisted-conclusion obligation with a NEW Conclusion
+	// Dispatch bound to the replacement Continuation + live session so a later
+	// retry delivers its control turn against the live replacement session
+	// instead of looping on the pre-steer (now dead) session. Historical
+	// dispatch identity is never rewritten (ADR 0021).
+	server.recoverConclusionObligationsForReplacedContinuation(found.ID, previous.ID, next.ID, session.SessionID())
 	if _, err := server.tasks.UpdateContinuationStatus(next.ID, task.StatusRunning); err != nil {
 		return fail(fmt.Errorf("start writable continuation: %w", err))
 	}

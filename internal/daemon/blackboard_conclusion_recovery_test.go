@@ -95,7 +95,7 @@ func TestAssistedConclusionRestartSendsOnlyDurablePreSendIntentWithProvenOwner(t
 func TestAssistedConclusionRestartRejectsLegacySourceCorrelationBeforeOwnershipProbe(t *testing.T) {
 	root := t.TempDir()
 	seed := seedConclusionRecoveryReceipt(t, root)
-	if _, err := seed.server.db.Exec(`UPDATE assisted_conclusion_receipts
+	if _, err := seed.server.db.Exec(`UPDATE pending_blackboard_conclusions
 		SET source_request_id=?,source_request_correlation_exact=0 WHERE id=?`,
 		"legacy:"+seed.receipt.SourceSessionID+":"+seed.receipt.SourceTurnID, seed.receipt.ID); err != nil {
 		t.Fatal(err)

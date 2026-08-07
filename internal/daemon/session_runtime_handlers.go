@@ -706,7 +706,7 @@ func (server *Server) markStoppedSessionBlackboardConclusionsRecoveryRequired(se
 			continue
 		}
 		if _, _, err := server.sessions.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(
-			receipt.ID, time.Now().UTC(), blackboardConclusionRetryCooldown,
+			receipt.ID, session.ConclusionRecoveryRuntimeOwnershipNotProven, time.Now().UTC(), blackboardConclusionRetryCooldown,
 		); err != nil && !errors.Is(err, session.ErrInvalidBlackboardConclusionReceipt) {
 			return err
 		}
