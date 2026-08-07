@@ -793,6 +793,13 @@ func (server *Server) decorateSession(found session.Session) (session.Session, e
 	if receipt, receiptErr := server.sessions.LatestBlackboardConclusion(found.ID); receiptErr == nil && receipt != nil {
 		found.BlackboardConclusion = receipt.View(found.RunControls.BlackboardConclusionMode)
 	}
+	// A recorded-but-unsettled Blackboard Finish Intent keeps the Session public
+	// conclusion state non-clean (ADR 0022, criterion 4).
+	if found.RunControls.BlackboardConclusionMode == session.BlackboardConclusionModeAssisted &&
+		found.BlackboardConclusion.State == session.BlackboardConclusionStateClean &&
+		server.hasUnsettledSessionFinishIntent(found.ID) {
+		found.BlackboardConclusion.State = session.BlackboardConclusionStatePending
+	}
 	return found, nil
 }
 

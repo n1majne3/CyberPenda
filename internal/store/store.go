@@ -939,6 +939,7 @@ func migrations() []migration {
 		newMigration(52, "owner_neutral_accepted_steering", migration52SQL, migration52Up),
 		newMigration(53, "blackboard_conclusion_obligations", migration53SQL, migration53Up),
 		newMigration(54, "session_conclusion_retry_keys_obligations", migration54SQL, migration54Up),
+		newMigration(55, "blackboard_finish_intents", migration55SQL, migration55Up),
 	}
 }
 
@@ -1291,6 +1292,63 @@ ALTER TABLE session_assisted_conclusion_retry_keys_v54 RENAME TO session_assiste
 `)
 	}
 	return execStatements(tx, migration54SQL)
+}
+
+// migration55SQL adds durable Blackboard Finish Intent storage for both Project
+// and Session owners. A finish intent records a Runtime's request to close the
+// current Continuation's Blackboard write protocol; the close is deferred until
+// the Work Runtime Turn settles (ADR 0022). Later source work in the same Turn
+// invalidates the row instead of closing the Continuation. One valid intent per
+// continuation; replay by idempotency key returns the recorded intent.
+const migration55SQL = `
+CREATE TABLE IF NOT EXISTS blackboard_v2_finish_intents (
+	continuation_id TEXT PRIMARY KEY REFERENCES blackboard_v2_continuation_pins(continuation_id) ON DELETE RESTRICT,
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+	idempotency_key TEXT NOT NULL,
+	request_hash TEXT NOT NULL CHECK (length(request_hash) = 64),
+	source_turn_id TEXT NOT NULL,
+	source_work_watermark INTEGER NOT NULL CHECK (source_work_watermark >= 0),
+	invalidated INTEGER NOT NULL DEFAULT 0 CHECK (invalidated IN (0, 1)),
+	invalidated_at TEXT NOT NULL DEFAULT '',
+	recorded_at TEXT NOT NULL,
+	UNIQUE (project_id, idempotency_key)
+);
+CREATE TABLE IF NOT EXISTS blackboard_v2_session_finish_intents (
+	continuation_id TEXT PRIMARY KEY,
+	session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	idempotency_key TEXT NOT NULL,
+	request_hash TEXT NOT NULL CHECK (length(request_hash) = 64),
+	source_turn_id TEXT NOT NULL,
+	source_work_watermark INTEGER NOT NULL CHECK (source_work_watermark >= 0),
+	invalidated INTEGER NOT NULL DEFAULT 0 CHECK (invalidated IN (0, 1)),
+	invalidated_at TEXT NOT NULL DEFAULT '',
+	recorded_at TEXT NOT NULL,
+	UNIQUE (session_id, idempotency_key)
+);
+`
+
+func migration55Up(tx *sql.Tx) error {
+	if err := execStatements(tx, migration55SQL); err != nil {
+		return err
+	}
+	// A finish intent is mutable only for invalidation and replacement. The
+	// recorded identity of a VALID intent is immutable; only its invalidated
+	// flag may advance from 0 to 1. A new finish call after invalidation
+	// replaces the invalidated row with a fresh intent (DELETE + INSERT), so a
+	// DELETE is permitted only when the row is already invalidated.
+	for _, statement := range []string{
+		`CREATE TRIGGER IF NOT EXISTS blackboard_v2_finish_intents_immutable_identity BEFORE UPDATE ON blackboard_v2_finish_intents WHEN NEW.continuation_id <> OLD.continuation_id OR NEW.project_id <> OLD.project_id OR NEW.idempotency_key <> OLD.idempotency_key OR NEW.request_hash <> OLD.request_hash OR NEW.source_turn_id <> OLD.source_turn_id OR NEW.source_work_watermark <> OLD.source_work_watermark OR NEW.recorded_at <> OLD.recorded_at BEGIN SELECT RAISE(ABORT, 'Blackboard v2 Finish Intent identity is immutable'); END`,
+		`CREATE TRIGGER IF NOT EXISTS blackboard_v2_finish_intents_invalidation_forward BEFORE UPDATE ON blackboard_v2_finish_intents WHEN NEW.invalidated < OLD.invalidated BEGIN SELECT RAISE(ABORT, 'Blackboard v2 Finish Intent invalidation cannot be cleared'); END`,
+		`CREATE TRIGGER IF NOT EXISTS blackboard_v2_finish_intents_no_delete_valid BEFORE DELETE ON blackboard_v2_finish_intents WHEN OLD.invalidated = 0 BEGIN SELECT RAISE(ABORT, 'Blackboard v2 Finish Intent cannot be deleted while valid'); END`,
+		`CREATE TRIGGER IF NOT EXISTS blackboard_v2_session_finish_intents_immutable_identity BEFORE UPDATE ON blackboard_v2_session_finish_intents WHEN NEW.continuation_id <> OLD.continuation_id OR NEW.session_id <> OLD.session_id OR NEW.idempotency_key <> OLD.idempotency_key OR NEW.request_hash <> OLD.request_hash OR NEW.source_turn_id <> OLD.source_turn_id OR NEW.source_work_watermark <> OLD.source_work_watermark OR NEW.recorded_at <> OLD.recorded_at BEGIN SELECT RAISE(ABORT, 'Blackboard v2 Session Finish Intent identity is immutable'); END`,
+		`CREATE TRIGGER IF NOT EXISTS blackboard_v2_session_finish_intents_invalidation_forward BEFORE UPDATE ON blackboard_v2_session_finish_intents WHEN NEW.invalidated < OLD.invalidated BEGIN SELECT RAISE(ABORT, 'Blackboard v2 Session Finish Intent invalidation cannot be cleared'); END`,
+		`CREATE TRIGGER IF NOT EXISTS blackboard_v2_session_finish_intents_no_delete_valid BEFORE DELETE ON blackboard_v2_session_finish_intents WHEN OLD.invalidated = 0 BEGIN SELECT RAISE(ABORT, 'Blackboard v2 Session Finish Intent cannot be deleted while valid'); END`,
+	} {
+		if _, err := tx.Exec(statement); err != nil {
+			return fmt.Errorf("install Blackboard v2 Finish Intent guard: %w", err)
+		}
+	}
+	return nil
 }
 
 func storeTableExists(tx *sql.Tx, table string) (bool, error) {

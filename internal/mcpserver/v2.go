@@ -26,7 +26,28 @@ type Deps struct {
 	// GrantError, when set, is the structured failure from resolving a
 	// presented-but-invalid capability token.
 	GrantError *blackboardv2.Error
+	// FinishIntentPolicy resolves whether a blackboard_finish call must record a
+	// deferred Blackboard Finish Intent (assisted mode) instead of closing the
+	// Continuation immediately. It returns the source Work Turn provenance the
+	// daemon carries from its own observation state, never from caller input. A
+	// nil callback means interactive immediate-close behavior (ADR 0022).
+	FinishIntentPolicy FinishIntentPolicy
 }
+
+// FinishDecision describes how blackboard_finish should treat one call.
+type FinishDecision struct {
+	// RecordIntent is true when the owner runs in assisted mode and the finish
+	// must defer the close until the Work Runtime Turn settles.
+	RecordIntent bool
+	// Provenance is the daemon-owned source Work Turn correlation captured with
+	// the intent. It is ignored when RecordIntent is false.
+	Provenance blackboardv2.FinishIntentProvenance
+}
+
+// FinishIntentPolicy resolves a blackboard_finish decision for one owner and
+// continuation. The daemon implementation reads Run Controls / Session mode and
+// the active Work Turn observation state; it never trusts caller-supplied input.
+type FinishIntentPolicy func(sessionOwner bool, ownerID, continuationID string) (FinishDecision, error)
 
 // New builds an MCP server that registers exactly the six Blackboard v2
 // trusted tools. Input schemas are closed objects generated from the frozen
@@ -164,6 +185,19 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps Deps) {
 				// Initial live Finish may carry pending synchronization; exact replay
 				// redelivers via the finish idempotency fingerprint.
 				return deps.callV2WithFingerprint(ctx, false, true, blackboardv2.SynchronizationDeliveryFingerprint("finish", args.IdempotencyKey), func(ctx context.Context, projectID, continuationID string) (any, error) {
+					decision, decideErr := deps.resolveFinishDecision(continuationID)
+					if decideErr != nil {
+						return nil, decideErr
+					}
+					if decision.RecordIntent {
+						// ADR 0022: assisted mode records a Blackboard Finish Intent and
+						// defers the close until the Work Runtime Turn settles. The tool
+						// reports intent_recorded, not finished.
+						if deps.ownerIsSession() {
+							return deps.BlackboardV2.RecordSessionFinishIntent(ctx, projectID, continuationID, args.IdempotencyKey, decision.Provenance)
+						}
+						return deps.BlackboardV2.RecordFinishIntent(ctx, projectID, continuationID, args, decision.Provenance)
+					}
 					if deps.ownerIsSession() {
 						return deps.BlackboardV2.FinishSessionContinuation(ctx, projectID, continuationID, args.IdempotencyKey)
 					}
@@ -350,6 +384,26 @@ func (deps Deps) serveV2(ctx context.Context, requireLive, attachSync bool, requ
 }
 
 func (deps Deps) ownerIsSession() bool { return deps.Grant != nil && deps.Grant.IsSession() }
+
+// resolveFinishDecision asks the daemon policy whether this finish call must
+// record a deferred Blackboard Finish Intent. Without a policy the behavior is
+// the legacy interactive immediate-close.
+func (deps Deps) resolveFinishDecision(continuationID string) (FinishDecision, error) {
+	if deps.FinishIntentPolicy == nil {
+		return FinishDecision{}, nil
+	}
+	sessionOwner := false
+	ownerID := ""
+	if deps.Grant != nil {
+		sessionOwner = deps.Grant.IsSession()
+		if sessionOwner {
+			ownerID = deps.Grant.Owner.SessionID
+		} else {
+			ownerID = deps.Grant.Owner.TaskID
+		}
+	}
+	return deps.FinishIntentPolicy(sessionOwner, ownerID, continuationID)
+}
 
 func (deps Deps) requireGrant() (projectinterface.Grant, *blackboardv2.Error) {
 	if deps.Grant != nil {

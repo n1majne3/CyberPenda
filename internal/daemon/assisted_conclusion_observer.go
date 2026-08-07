@@ -10,7 +10,12 @@ type assistedConclusionObservationHooks struct {
 	ControlFailure  func()
 	ControlTerminal func(string)
 	WorkCompleted   func(runtime.AssistedConclusionObservedTurn, runtime.AssistedConclusionTurnKey, string) (bool, error)
-	OnError         func(error)
+	// OnLaterSourceWork is invoked when a non-Blackboard source-work Tool Result
+	// advances the Work Turn after a Blackboard Finish Intent may have been
+	// recorded. The owner adapter invalidates any valid intent so the recorded
+	// close can no longer settle until a new finish call (ADR 0022).
+	OnLaterSourceWork func(continuationID string, watermarks runtime.AssistedConclusionObservedTurn)
+	OnError           func(error)
 }
 
 type assistedConclusionRecoveryReceipt struct {
@@ -89,8 +94,14 @@ func observeAssistedConclusion(tracker *runtime.AssistedConclusionTracker, owner
 			// display-name match alone. An inconsistent observation is untrusted.
 			trusted = false
 		}
-		tracker.RecordToolResult(key, strings.TrimSpace(observation.ToolCallID), !trusted,
+		state, advanced := tracker.RecordToolResult(key, strings.TrimSpace(observation.ToolCallID), !trusted,
 			trusted && observation.Status == "succeeded" && canonical.CoversSourceWork())
+		// A non-Blackboard Tool Result advances source work. After a Blackboard
+		// Finish Intent this later source work invalidates the intent so the
+		// recorded close cannot settle while the Turn still produces work.
+		if advanced && !trusted && state.SourceWorkWatermark > 0 && hooks.OnLaterSourceWork != nil {
+			hooks.OnLaterSourceWork(continuationID, state)
+		}
 		return
 	}
 	if observation.Kind != runtime.ProviderSessionObservationTurnCompleted {

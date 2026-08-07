@@ -27,6 +27,9 @@ func (server *Server) observeProviderSession(taskID, continuationID, sessionID s
 		ControlTerminal: func(status string) {
 			server.acceptBlackboardConclusionControlTerminal(taskID, sessionID, lineage, status)
 		},
+		OnLaterSourceWork: func(continuation string, watermarks runtime.AssistedConclusionObservedTurn) {
+			server.invalidateTaskFinishIntentOnLaterSourceWork(found.ProjectID, continuation, taskID)
+		},
 		WorkCompleted: func(state runtime.AssistedConclusionObservedTurn, key runtime.AssistedConclusionTurnKey, status string) (bool, error) {
 			receipt, inserted, err := server.tasks.RecordBlackboardConclusionCheckpoint(
 				taskID, continuationID, lineage.RequestID, key.ProviderSessionID, key.TurnID,
@@ -35,6 +38,15 @@ func (server *Server) observeProviderSession(taskID, continuationID, sessionID s
 			)
 			if err != nil {
 				return false, err
+			}
+			// The Blackboard write protocol closes only when the Work Runtime Turn
+			// has settled AND its Pending Blackboard Conclusion obligations are
+			// terminal. A debt-free Turn is born clean at the checkpoint, so a
+			// valid Finish Intent can settle immediately. A Turn with uncovered
+			// semantic debt is born Pending and settles only after the conclusion
+			// dispatch applies a terminal result (ADR 0022, criterion 3).
+			if receipt.InternalState == task.BlackboardConclusionReceiptClean {
+				server.settleTaskFinishIntentAfterApply(context.Background(), found.ProjectID, continuationID)
 			}
 			if inserted && receipt.InternalState == task.BlackboardConclusionReceiptPending && status != "completed" {
 				_, _, err = server.tasks.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(receipt.ID, task.ConclusionRecoveryDispatchFailed, time.Now().UTC(), blackboardConclusionRetryCooldown)
@@ -395,6 +407,7 @@ func (server *Server) reconcileValidatedBlackboardConclusionApply(ctx context.Co
 		_, _, markErr := server.tasks.MarkBlackboardConclusionApplied(receipt.DispatchRequestID, applied.Revision)
 		if markErr == nil {
 			server.blackboardConclusions.ClearRequest(receipt.TaskID, receipt.DispatchRequestID)
+			server.settleTaskFinishIntentAfterApply(ctx, found.ProjectID, receipt.ContinuationID)
 		}
 		return markErr
 	}
@@ -499,6 +512,11 @@ func (server *Server) applyBlackboardConclusionResult(ctx context.Context, taskI
 	_, _, err = server.tasks.MarkBlackboardConclusionApplied(result.RequestID, applied.Revision)
 	if err == nil {
 		server.blackboardConclusions.ClearRequest(taskID, result.RequestID)
+		// The obligation reached terminal-clean. If a valid Blackboard Finish
+		// Intent exists and the Work Turn settled, close the Blackboard write
+		// protocol now. This path also covers daemon restart recovery, where the
+		// observer does not run (ADR 0022).
+		server.settleTaskFinishIntentAfterApply(ctx, found.ProjectID, receipt.ContinuationID)
 	}
 	return err
 }
@@ -617,6 +635,14 @@ func (server *Server) attachBlackboardConclusion(found task.Task) (task.Task, er
 	}
 	if receipt != nil {
 		view = receipt.View(found.RunControls.BlackboardConclusionMode)
+	}
+	// A recorded-but-unsettled Blackboard Finish Intent keeps the public
+	// conclusion state non-clean: the Continuation has not actually closed while
+	// the Work Runtime Turn can still produce work (ADR 0022, criterion 4).
+	if found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeAssisted && view.State == task.BlackboardConclusionStateClean {
+		if server.hasUnsettledTaskFinishIntent(found.ID) {
+			view.State = task.BlackboardConclusionStatePending
+		}
 	}
 	found.BlackboardConclusion = view
 	return found, nil

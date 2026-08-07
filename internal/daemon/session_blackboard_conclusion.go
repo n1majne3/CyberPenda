@@ -67,6 +67,9 @@ func (server *Server) observeSessionProviderSession(sessionID, continuationID, p
 		ControlTerminal: func(status string) {
 			server.acceptSessionBlackboardConclusionControlTerminal(sessionID, providerID, lineage, status)
 		},
+		OnLaterSourceWork: func(continuation string, watermarks runtime.AssistedConclusionObservedTurn) {
+			server.invalidateSessionFinishIntentOnLaterSourceWork(sessionID, continuation)
+		},
 		WorkCompleted: func(state runtime.AssistedConclusionObservedTurn, key runtime.AssistedConclusionTurnKey, status string) (bool, error) {
 			receipt, inserted, err := server.sessions.RecordBlackboardConclusionCheckpoint(
 				sessionID, continuationID, lineage.RequestID, key.ProviderSessionID, key.TurnID,
@@ -75,6 +78,13 @@ func (server *Server) observeSessionProviderSession(sessionID, continuationID, p
 			)
 			if err != nil {
 				return false, err
+			}
+			// A debt-free Work Turn is born clean at the checkpoint, so a valid
+			// Finish Intent settles immediately. A Turn with uncovered semantic
+			// debt settles only after the conclusion dispatch applies a terminal
+			// result (ADR 0022, criterion 3).
+			if receipt.InternalState == session.BlackboardConclusionReceiptClean {
+				server.settleSessionFinishIntentAfterApply(context.Background(), sessionID, continuationID)
 			}
 			if inserted && receipt.InternalState == session.BlackboardConclusionReceiptPending && status != "completed" {
 				_, _, err = server.sessions.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(receipt.ID, session.ConclusionRecoveryDispatchFailed, time.Now().UTC(), blackboardConclusionRetryCooldown)
@@ -299,6 +309,7 @@ func (server *Server) applySessionBlackboardConclusionResult(ctx context.Context
 	_, _, err = server.sessions.MarkBlackboardConclusionApplied(result.RequestID, applied.Revision)
 	if err == nil {
 		server.blackboardConclusions.ClearRequest(sessionID, result.RequestID)
+		server.settleSessionFinishIntentAfterApply(ctx, sessionID, receipt.ContinuationID)
 	}
 	return err
 }
@@ -419,6 +430,7 @@ func (server *Server) reconcileValidatedSessionBlackboardConclusionApply(ctx con
 		_, _, markErr := server.sessions.MarkBlackboardConclusionApplied(receipt.DispatchRequestID, applied.Revision)
 		if markErr == nil {
 			server.blackboardConclusions.ClearRequest(receipt.SessionID, receipt.DispatchRequestID)
+			server.settleSessionFinishIntentAfterApply(ctx, receipt.SessionID, receipt.ContinuationID)
 		}
 		return markErr
 	}

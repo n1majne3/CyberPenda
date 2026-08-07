@@ -111,6 +111,32 @@ func (tracker *AssistedConclusionTracker) SnapshotTurn(key AssistedConclusionTur
 	return state, ok
 }
 
+// ActiveWorkTurn returns the latest observed Work Turn for one owner and
+// continuation, plus its source-work watermark. The boolean is false when no
+// Work Turn has been observed yet. It is the daemon-owned provenance source for
+// a Blackboard Finish Intent (ADR 0022): the caller never trusts provider input.
+func (tracker *AssistedConclusionTracker) ActiveWorkTurn(ownerID, continuationID string) (AssistedConclusionTurnKey, AssistedConclusionObservedTurn, bool) {
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	var match AssistedConclusionTurnKey
+	var state AssistedConclusionObservedTurn
+	found := false
+	for key, observed := range tracker.turns {
+		if key.OwnerID != ownerID || key.ContinuationID != continuationID {
+			continue
+		}
+		if !found || key.TurnID > match.TurnID {
+			match = key
+			state = observed
+			found = true
+		}
+	}
+	if found {
+		state.CompletedToolCalls = cloneToolCallSet(state.CompletedToolCalls)
+	}
+	return match, state, found
+}
+
 func (tracker *AssistedConclusionTracker) DeleteTurn(key AssistedConclusionTurnKey) {
 	tracker.mu.Lock()
 	delete(tracker.turns, key)
