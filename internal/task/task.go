@@ -621,10 +621,10 @@ func (s *Service) ListForProject(projectID string) ([]Task, error) {
 const taskSelectColumns = `id, project_id, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at`
 
 // recentPerProjectSQL builds the bounded per-Project recent Task query. The
-// exclusion placeholders keep busy and selected Tasks out of the ordinary
-// summary; the navigation index idx_tasks_project_activity serves both the
-// filter and the ordering, so a Project's history beyond the fixed summary is
-// never read (#201).
+// exclusion placeholders keep busy Tasks out of the ordinary summary; the
+// navigation index idx_tasks_project_activity serves both the filter and the
+// ordering, so a Project's history beyond the fixed summary is never read
+// (#201).
 func recentPerProjectSQL(limit, excludeCount int) string {
 	query := `SELECT ` + taskSelectColumns + ` FROM tasks WHERE project_id = ? AND deleted_at = ''`
 	if excludeCount > 0 {
@@ -634,9 +634,10 @@ func recentPerProjectSQL(limit, excludeCount int) string {
 }
 
 // ListRecentPerProject returns, for each requested Project, the `limit` most
-// recently updated non-deleted Tasks, excluding the given Task ids. Busy and
-// selected Tasks are inlined separately by the navigation projection, so the
-// ordinary summary stays exactly `limit` entries (#201).
+// recently updated non-deleted Tasks, excluding the given Task ids. The
+// navigation projection passes the live busy Task ids so the ordinary summary
+// stays exactly `limit` entries; the selected Task stays inside the query and
+// is deduplicated by the caller when recency already included it (#201).
 //
 // Ordering is updated_at DESC then created_at DESC. Each Project is one
 // bounded indexed query with LIMIT, so query work and returned rows never grow

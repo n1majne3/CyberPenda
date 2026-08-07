@@ -1271,7 +1271,7 @@ func (server *Server) handleWorkspaceNavigation(response http.ResponseWriter, re
 		}
 	}
 
-	revision, err := server.navigationRevision(busyIDs, selectedTaskID)
+	revision, err := server.navigationRevision(busyIDs, selected)
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "compute navigation revision")
 		return
@@ -1300,8 +1300,11 @@ func (server *Server) handleWorkspaceNavigation(response http.ResponseWriter, re
 	for _, current := range projects {
 		projectIDs = append(projectIDs, current.ID)
 	}
-	excluded := append(append([]string{}, busyIDs...), selectedTaskID)
-	recentByProject, err := server.tasks.ListRecentPerProject(projectIDs, workspaceNavigationTaskLimit, excluded...)
+	// Busy Tasks are excluded from the ordinary query so the ordinary five are
+	// the most recent non-busy Tasks; the selected Task stays in the query and
+	// is appended only when recency omitted it, so selecting a recent Task
+	// never shifts or duplicates the ordinary summary.
+	recentByProject, err := server.tasks.ListRecentPerProject(projectIDs, workspaceNavigationTaskLimit, busyIDs...)
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "load recent tasks")
 		return
@@ -1315,9 +1318,8 @@ func (server *Server) handleWorkspaceNavigation(response http.ResponseWriter, re
 		}
 		busy := busyByProject[current.ID]
 		// Busy Tasks sort by recency ahead of the ordinary summary; the
-		// selected Task appends last when neither rule already included it.
-		// Excluding busy and selected Tasks from the ordinary query keeps the
-		// five-entry summary stable across selection and activity changes.
+		// selected Task appends last when recency or activity already omitted
+		// it, and is never duplicated.
 		sort.SliceStable(busy, func(i, j int) bool {
 			return workspaceTaskRecency(busy[i], busy[j])
 		})
@@ -1373,11 +1375,17 @@ func taskIDInList(id string, tasks []task.Task) bool {
 // navigationRevision returns the opaque conditional-refresh token for the
 // Project Navigation Projection (#201). It folds the durable Project and Task
 // summary epochs, the live busy-Runtime Task set, and the selected Task
-// identity, so every navigation-visible change yields a new revision while an
-// unchanged refresh can be answered without serializing the projection. All
-// inputs are bounded: the epochs are single indexed reads and the busy set is
-// bounded by the number of active Runtimes.
-func (server *Server) navigationRevision(busyIDs []string, selectedTaskID string) (string, error) {
+// identity, so every change that can alter the navigation rows yields a new
+// revision while an unchanged refresh can be answered without serializing the
+// projection. All inputs are bounded: the epochs are single indexed reads and
+// the busy set is bounded by the number of active Runtimes.
+//
+// The revision covers what the Sidebar renders: Project/Task summary fields,
+// busy membership, and the selected Task. The attached Blackboard conclusion
+// view is not rendered by navigation, so its transitions do not advance the
+// revision; a conclusion change alone is served from the cached projection
+// until the next revision-relevant change.
+func (server *Server) navigationRevision(busyIDs []string, selected *task.Task) (string, error) {
 	projectEpoch, err := server.projects.LatestUpdate()
 	if err != nil {
 		return "", err
@@ -1386,8 +1394,12 @@ func (server *Server) navigationRevision(busyIDs []string, selectedTaskID string
 	if err != nil {
 		return "", err
 	}
+	selectedID := ""
+	if selected != nil {
+		selectedID = selected.ID
+	}
 	sum := sha256.Sum256([]byte("navigation:v1|" + projectEpoch.Format(time.RFC3339Nano) + "|" +
-		taskEpoch.Format(time.RFC3339Nano) + "|" + strings.Join(busyIDs, ",") + "|" + selectedTaskID))
+		taskEpoch.Format(time.RFC3339Nano) + "|" + strings.Join(busyIDs, ",") + "|" + selectedID))
 	return hex.EncodeToString(sum[:]), nil
 }
 

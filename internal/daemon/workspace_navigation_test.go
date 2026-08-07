@@ -407,7 +407,7 @@ func TestWorkspaceNavigationIncludesBusyTaskOutsideRecentSummary(t *testing.T) {
 
 	bindBusyRuntime(t, server, outside)
 
-	revision, changed, projects, _ := getWorkspaceNavigationResponse(t, server, "")
+	_, changed, projects, _ := getWorkspaceNavigationResponse(t, server, "")
 	if !changed {
 		t.Fatalf("busy flip reported changed=false")
 	}
@@ -444,7 +444,6 @@ func TestWorkspaceNavigationIncludesBusyTaskOutsideRecentSummary(t *testing.T) {
 			t.Fatalf("busy Task runtime_activity = %#v, want live/busy", activity)
 		}
 	}
-	_ = revision
 }
 
 func TestWorkspaceNavigationIncludesSelectedTaskOutsideRecentSummary(t *testing.T) {
@@ -504,6 +503,41 @@ func TestWorkspaceNavigationIncludesSelectedTaskOutsideRecentSummary(t *testing.
 	}
 }
 
+func TestWorkspaceNavigationSelectedTaskWithinRecentSummary(t *testing.T) {
+	server, profileID := navigationFixture(t)
+	projectID, created := navigationProjectWithTasks(t, server, profileID, "SelectedRecent", 7)
+	for _, id := range created {
+		waitForTaskTerminal(t, server, projectID, id)
+	}
+
+	_, _, projects, _ := getWorkspaceNavigationResponse(t, server, "")
+	ordinary := navigationTaskIDs(projects[0])
+	// The most recent Task is inside the ordinary summary.
+	recent := ordinary[0]
+
+	// A Task included by recency keeps its recency slot: the ordinary five are
+	// unchanged, nothing is appended, and the Task is never duplicated.
+	revision, changed, projects, _ := getWorkspaceNavigationResponse(t, server, "?selected_task="+recent)
+	if !changed {
+		t.Fatalf("selection reported changed=false")
+	}
+	ids := navigationTaskIDs(projects[0])
+	if len(ids) != 5 {
+		t.Fatalf("inlined tasks = %d, want the unchanged ordinary five: %v", len(ids), ids)
+	}
+	if !reflect.DeepEqual(ids, ordinary) {
+		t.Fatalf("selecting a recent Task changed the summary: before=%v after=%v", ordinary, ids)
+	}
+
+	// Selecting the same Task again keeps the same revision and therefore an
+	// unchanged refresh.
+	_, changed, _, _ = getWorkspaceNavigationResponse(t, server, "?revision="+revision+"&selected_task="+recent)
+	if changed {
+		t.Fatalf("same-selection refresh reported changed=true")
+	}
+	_ = projectID
+}
+
 func TestWorkspaceNavigationResponseStableAcrossIdenticalRefreshes(t *testing.T) {
 	server, profileID := navigationFixture(t)
 	projectID, created := navigationProjectWithTasks(t, server, profileID, "Stable", 6)
@@ -524,7 +558,11 @@ func TestWorkspaceNavigationResponseStableAcrossIdenticalRefreshes(t *testing.T)
 func TestWorkspaceNavigationUnchangedRefreshAndRevisionAdvance(t *testing.T) {
 	server, profileID := navigationFixture(t)
 	projectID := createProject(t, server, `{"name":"Refresh","scope":{"domains":["example.com"]}}`)
-	launchTaskForProject(t, server, profileID, projectID, "task")
+	created := launchTaskForProject(t, server, profileID, projectID, "task")
+	// The Task must be terminal before the revision round-trip: the fake runner
+	// completes asynchronously and its status write advances the task epoch, so
+	// a mid-completion refresh would legitimately report changed=true.
+	waitForTaskTerminal(t, server, projectID, created["id"].(string))
 
 	revision, changed, projects, fullBody := getWorkspaceNavigationResponse(t, server, "")
 	if !changed || len(projects) != 1 || revision == "" {

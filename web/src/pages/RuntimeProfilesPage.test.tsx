@@ -339,6 +339,9 @@ describe("RuntimeProfilesPage", () => {
         if (url.includes("/api/runtime-profiles/profile-1") && method === "PATCH") {
           patchStarted = true;
           return new Promise<Response>((resolve) => {
+            // Keep the pending window long enough that the transient
+            // "Saving…" state cannot vanish before the assertion under a
+            // loaded test runner (was flaky at 40ms).
             setTimeout(() => {
               resolve(
                 new Response(
@@ -353,7 +356,7 @@ describe("RuntimeProfilesPage", () => {
                   { status: 200, headers: { "Content-Type": "application/json" } },
                 ),
               );
-            }, 40);
+            }, 300);
           });
         }
         if (url.includes("/api/runtime-profiles")) {
