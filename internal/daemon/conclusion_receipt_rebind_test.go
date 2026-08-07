@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"pentest/internal/project"
+	"pentest/internal/runtime"
+	"pentest/internal/runtimeplugin"
 	"pentest/internal/task"
 )
 
@@ -69,8 +71,22 @@ func TestRecoveryConclusionDispatchBindsReplacementContinuation(t *testing.T) {
 	}
 	const replacementSessionID = "session-replacement"
 
+	// Bind the live replacement provider session so the recovered pre-send
+	// dispatch is actually delivered against it. Without a bound session the
+	// async delivery fails closed and the test races the control queue.
+	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID:    replacementSessionID,
+		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, AssistedConclusion: true},
+	})
+	if err := server.providerSessions.bind(created.ID, session); err != nil {
+		t.Fatalf("bind replacement session: %v", err)
+	}
+
 	// This is the wrapper invoked by both steer call sites.
 	server.recoverConclusionObligationsForReplacedContinuation(created.ID, original.ID, replacement.ID, replacementSessionID)
+	// Settle the async recovery dispatch before asserting, so the assertions
+	// never race the provider control queue.
+	server.providerControlWG.Wait()
 
 	latest, err := server.tasks.LatestBlackboardConclusion(created.ID)
 	if err != nil || latest == nil {
@@ -88,8 +104,12 @@ func TestRecoveryConclusionDispatchBindsReplacementContinuation(t *testing.T) {
 	if latest.DispatchRequestID == claimed.DispatchRequestID {
 		t.Fatalf("recovery reused the old dispatch request id %s", latest.DispatchRequestID)
 	}
-	if latest.InternalState != task.BlackboardConclusionReceiptDispatchRequested {
-		t.Fatalf("recovery dispatch state = %s, want dispatch_requested (pre-send)", latest.InternalState)
+	if latest.InternalState != task.BlackboardConclusionReceiptAwaitingResult {
+		t.Fatalf("recovery dispatch state = %s, want awaiting_result after delivery on the replacement session", latest.InternalState)
+	}
+	requests := session.LastRequests()
+	if len(requests) != 1 || requests[0].RequestID != latest.DispatchRequestID {
+		t.Fatalf("recovered provider requests = %#v, want one request for %q", requests, latest.DispatchRequestID)
 	}
 
 	history, err := server.tasks.ConclusionDispatches(obligation.ID)

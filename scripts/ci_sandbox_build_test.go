@@ -50,7 +50,7 @@ func TestSandboxMCPLiveSmokeUsesBlackboardV2Boundaries(t *testing.T) {
 	}
 	for _, required := range []string{
 		`"method":"tools/list"`,
-		"curl -sf -X POST \"${mcp_url}\" \\\n    \"${auth_args[@]}\"",
+		"curl -sf -X POST \"${mcp_url}\" \\\n    \"${auth_args[@]+\"${auth_args[@]}\"}\"",
 		"/api/v2/projects/",
 		"/blackboard/changes",
 		"/blackboard/records/",
