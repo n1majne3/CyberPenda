@@ -170,6 +170,25 @@ func (s *Service) List() ([]Project, error) {
 	return projects, nil
 }
 
+// LatestUpdate returns the newest updated_at across every Project, the durable
+// Project half of the Project Navigation Projection revision. Creation and
+// rename both advance updated_at, so one indexed read covers every
+// navigation-visible Project summary change (#201).
+func (s *Service) LatestUpdate() (time.Time, error) {
+	var value string
+	if err := s.db.QueryRow(`SELECT MAX(updated_at) FROM projects`).Scan(&value); err != nil {
+		return time.Time{}, fmt.Errorf("latest project update: %w", err)
+	}
+	if value == "" {
+		return time.Time{}, nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse latest project update: %w", err)
+	}
+	return parsed, nil
+}
+
 // Update applies non-empty fields to an existing project. Empty name fields are
 // rejected; empty scope fields preserve the existing scope so partial updates
 // do not erase configured boundaries.

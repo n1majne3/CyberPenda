@@ -668,6 +668,262 @@ func (s *Service) FinishSessionContinuation(ctx context.Context, sessionID, cont
 	return result, nil
 }
 
+// RecordSessionFinishIntent records a Blackboard Finish Intent for a Session
+// owner without closing the Session Continuation (ADR 0022). Mirrors
+// RecordFinishIntent for the Project owner.
+func (s *Service) RecordSessionFinishIntent(ctx context.Context, sessionID, continuationID, idempotencyKey string, provenance FinishIntentProvenance) (FinishContinuationResult, error) {
+	if strings.TrimSpace(continuationID) == "" {
+		return FinishContinuationResult{}, semanticError("authority_denied", "trusted Continuation identity is required", "", nil)
+	}
+	if strings.TrimSpace(idempotencyKey) == "" {
+		return FinishContinuationResult{}, semanticError("semantic_validation", "idempotency_key is required", "idempotency_key", nil)
+	}
+	if strings.TrimSpace(provenance.SourceTurnID) == "" {
+		return FinishContinuationResult{}, semanticError("semantic_validation", "finish intent requires source Work Turn provenance", "source_turn_id", nil)
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return FinishContinuationResult{}, fmt.Errorf("begin Session Continuation finish intent: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := ensureSessionState(ctx, tx, sessionID); err != nil {
+		return FinishContinuationResult{}, err
+	}
+	requestHash := sessionFinishRequestHash(idempotencyKey)
+	existing, found, err := readSessionFinishIntentRow(ctx, tx, continuationID)
+	if err != nil {
+		return FinishContinuationResult{}, err
+	}
+	if found && existing.Valid {
+		if existing.IdempotencyKey != idempotencyKey || existing.RequestHash != requestHash {
+			return FinishContinuationResult{}, semanticError("finish_conflict", "Continuation already recorded a Finish Intent with different semantics", "idempotency_key", nil)
+		}
+		revision, err := sessionCurrentRevision(ctx, tx, sessionID)
+		if err != nil {
+			return FinishContinuationResult{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return FinishContinuationResult{}, fmt.Errorf("commit Session Continuation finish intent replay: %w", err)
+		}
+		return finishIntentResult(revision), nil
+	}
+	if found && !existing.Valid {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM blackboard_v2_session_finish_intents WHERE continuation_id=? AND invalidated=1`, continuationID); err != nil {
+			return FinishContinuationResult{}, fmt.Errorf("replace invalidated Session Finish Intent: %w", err)
+		}
+	}
+	// A finish receipt already exists (closed). Replay the receipt for the same
+	// key/hash, otherwise report closed authority truthfully.
+	var storedKey, storedHash, raw string
+	err = tx.QueryRowContext(ctx, `
+		SELECT idempotency_key, request_hash, result_json FROM blackboard_v2_session_finish_receipts
+		WHERE session_id=? AND continuation_id=?
+		ORDER BY created_at ASC, idempotency_key ASC LIMIT 1`, sessionID, continuationID).Scan(&storedKey, &storedHash, &raw)
+	if err == nil {
+		if storedKey == idempotencyKey && storedHash == requestHash {
+			var result FinishContinuationResult
+			if err := decodeJSON([]byte(raw), &result); err != nil {
+				return FinishContinuationResult{}, fmt.Errorf("decode Session Continuation finish replay: %w", err)
+			}
+			if err := tx.Commit(); err != nil {
+				return FinishContinuationResult{}, fmt.Errorf("commit Session Continuation finish intent replay: %w", err)
+			}
+			return result, nil
+		}
+		return FinishContinuationResult{}, semanticError("closed_continuation", "trusted Continuation is closed for new Session writes", "", nil)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return FinishContinuationResult{}, fmt.Errorf("read Session Continuation finish receipt: %w", err)
+	}
+	var ownerConflict string
+	err = tx.QueryRowContext(ctx, `SELECT continuation_id FROM blackboard_v2_session_finish_intents WHERE session_id=? AND idempotency_key=?`, sessionID, idempotencyKey).Scan(&ownerConflict)
+	if err == nil && ownerConflict != continuationID {
+		return FinishContinuationResult{}, semanticError("authority_denied", "Finish intent idempotency key belongs to another trusted origin", "idempotency_key", nil)
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return FinishContinuationResult{}, fmt.Errorf("read Session Continuation Finish Intent key owner: %w", err)
+	}
+	if err := validateSessionContinuation(ctx, tx, sessionID, continuationID); err != nil {
+		return FinishContinuationResult{}, err
+	}
+	pin, err := readSessionContinuationPinTx(ctx, tx, sessionID, continuationID)
+	if err != nil {
+		return FinishContinuationResult{}, err
+	}
+	if pin.ContinuationID == "" {
+		return FinishContinuationResult{}, semanticError("authority_denied", "Session Continuation has no Blackboard launch pin", "continuation_id", nil)
+	}
+	_, _, err = sessionContinuationOwnsCurrentPath(ctx, tx, sessionID, continuationID)
+	if err != nil {
+		return FinishContinuationResult{}, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO blackboard_v2_session_finish_intents
+		(continuation_id,session_id,idempotency_key,request_hash,source_turn_id,source_work_watermark,invalidated,invalidated_at,recorded_at)
+		VALUES (?,?,?,?,?, ?,0,'',?)`,
+		continuationID, sessionID, idempotencyKey, requestHash,
+		provenance.SourceTurnID, provenance.SourceWorkWatermark, now,
+	); err != nil {
+		return FinishContinuationResult{}, fmt.Errorf("store Session Continuation Finish Intent: %w", err)
+	}
+	revision, err := sessionCurrentRevision(ctx, tx, sessionID)
+	if err != nil {
+		return FinishContinuationResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return FinishContinuationResult{}, fmt.Errorf("commit Session Continuation Finish Intent: %w", err)
+	}
+	return finishIntentResult(revision), nil
+}
+
+// InvalidateSessionFinishIntent marks the latest valid Session Finish Intent
+// invalidated. Safe no-op when no valid intent exists.
+func (s *Service) InvalidateSessionFinishIntent(ctx context.Context, sessionID, continuationID string) error {
+	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(continuationID) == "" {
+		return nil
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin Session Finish Intent invalidation: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	res, err := tx.ExecContext(ctx, `
+		UPDATE blackboard_v2_session_finish_intents
+		SET invalidated=1, invalidated_at=?
+		WHERE continuation_id=? AND session_id=? AND invalidated=0`, now, continuationID, sessionID)
+	if err != nil {
+		return fmt.Errorf("invalidate Session Finish Intent: %w", err)
+	}
+	if changed, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("count invalidated Session Finish Intent: %w", err)
+	} else if changed == 0 {
+		return tx.Rollback()
+	}
+	return tx.Commit()
+}
+
+// SessionFinishIntentForContinuation returns the latest recorded Session Finish
+// Intent for a Continuation. The boolean is false when no intent exists.
+func (s *Service) SessionFinishIntentForContinuation(ctx context.Context, sessionID, continuationID string) (FinishIntent, bool, error) {
+	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(continuationID) == "" {
+		return FinishIntent{}, false, nil
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return FinishIntent{}, false, fmt.Errorf("begin read Session Finish Intent: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	intent, found, err := readSessionFinishIntentRow(ctx, tx, continuationID)
+	if err != nil {
+		return FinishIntent{}, false, err
+	}
+	return intent, found, nil
+}
+
+// SettleSessionFinishIntent closes the Session Continuation's Blackboard write
+// protocol when the latest Finish Intent is still valid and the Work Turn has
+// settled. Mirrors SettleFinishIntent for the Project owner.
+func (s *Service) SettleSessionFinishIntent(ctx context.Context, sessionID, continuationID string) (bool, error) {
+	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(continuationID) == "" {
+		return false, nil
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin Session Finish Intent settlement: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	intent, found, err := readSessionFinishIntentRow(ctx, tx, continuationID)
+	if err != nil {
+		return false, err
+	}
+	if !found || !intent.Valid {
+		return false, nil
+	}
+	if err := validateSessionContinuation(ctx, tx, sessionID, continuationID); err != nil {
+		return false, err
+	}
+	pin, err := readSessionContinuationPinTx(ctx, tx, sessionID, continuationID)
+	if err != nil {
+		return false, err
+	}
+	if pin.ContinuationID == "" {
+		return false, nil
+	}
+	var openAttempts int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM blackboard_v2_session_records
+		WHERE session_id=? AND type='attempt' AND json_extract(record_json, '$.status')='open'`, sessionID).Scan(&openAttempts); err != nil {
+		return false, fmt.Errorf("check open Session Attempts at settlement: %w", err)
+	}
+	if openAttempts != 0 {
+		return false, semanticError("continuation_open_attempts", "Session Continuation cannot finish while an Attempt is open", "", nil)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := s.persistSessionSnapshot(ctx, tx, sessionID, continuationID, now); err != nil {
+		return false, fmt.Errorf("synchronize Session Working Snapshot for Finish settlement: %w", err)
+	}
+	revision, err := sessionCurrentRevision(ctx, tx, sessionID)
+	if err != nil {
+		return false, err
+	}
+	result := FinishContinuationResult{
+		Schema: finishResultSchema, Status: FinishStatusFinished, Revision: revision,
+		WorkingSnapshot: WorkingSnapshot{Path: workingPath, Revision: revision},
+	}
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		return false, fmt.Errorf("encode Session Continuation finish settlement result: %w", err)
+	}
+	updated, err := tx.ExecContext(ctx, `
+		UPDATE session_continuations SET status='completed', updated_at=?, ended_at=?
+		WHERE id=? AND session_id=? AND status IN ('pending','running')`, now, now, continuationID, sessionID)
+	if err != nil {
+		return false, fmt.Errorf("finish Session Continuation at settlement: %w", err)
+	}
+	if affected, err := updated.RowsAffected(); err != nil {
+		return false, fmt.Errorf("count Session Continuation finish at settlement: %w", err)
+	} else if affected != 1 {
+		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO blackboard_v2_session_finish_receipts
+		(session_id, continuation_id, idempotency_key, request_hash, result_json, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)`, sessionID, continuationID, intent.IdempotencyKey, intent.RequestHash, string(resultJSON), now); err != nil {
+		return false, fmt.Errorf("store Session Continuation finish settlement receipt: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit Session Continuation Finish Intent settlement: %w", err)
+	}
+	return true, nil
+}
+
+func readSessionFinishIntentRow(ctx context.Context, tx *sql.Tx, continuationID string) (FinishIntent, bool, error) {
+	var intent FinishIntent
+	var invalidated int
+	err := tx.QueryRowContext(ctx, `
+		SELECT continuation_id,idempotency_key,request_hash,source_turn_id,source_work_watermark,invalidated,invalidated_at,recorded_at
+		FROM blackboard_v2_session_finish_intents WHERE continuation_id=?`, continuationID,
+	).Scan(&intent.ContinuationID, &intent.IdempotencyKey, &intent.RequestHash,
+		&intent.SourceTurnID, &intent.SourceWorkWatermark, &invalidated,
+		&intent.InvalidatedAt, &intent.RecordedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return FinishIntent{}, false, nil
+	}
+	if err != nil {
+		return FinishIntent{}, false, fmt.Errorf("read Session Finish Intent: %w", err)
+	}
+	intent.Valid = invalidated == 0
+	return intent, true, nil
+}
+
 // CheckpointSessionAttemptForContinuation records a compact owner-local
 // summary for a running Session Attempt using the shared semantic kernel.
 func (s *Service) CheckpointSessionAttemptForContinuation(ctx context.Context, sessionID, continuationID string, request CheckpointAttemptRequest) (ChangeResult, error) {

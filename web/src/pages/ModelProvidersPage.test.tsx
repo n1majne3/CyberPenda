@@ -421,6 +421,23 @@ describe("ModelProvidersPage", () => {
         }),
       ).toBe(true);
     });
+
+    // Saving the provider with an API key must also create the credential
+    // binding with destination_env equal to the generated env var name, so the
+    // key projects under the env var the runtime expects.
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(([input, init]) => {
+          if (!String(input).includes("/api/credential-bindings") || init?.method !== "PUT") return false;
+          const body = JSON.parse(String(init.body));
+          return (
+            body.credential_ref === "HUB_API_KEY" &&
+            body.source.kind === "literal" &&
+            body.source.destination_env === "HUB_API_KEY"
+          );
+        }),
+      ).toBe(true);
+    });
   });
 
   it("creates a draft provider without endpoint records", async () => {

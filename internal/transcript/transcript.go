@@ -37,7 +37,10 @@ const (
 	PiSessionStream = "pi_session"
 )
 
-// Entry is one projected transcript row.
+// Entry is one projected transcript row. Truncated marks a bounded preview of
+// an entry whose full serialized form exceeded the history window byte budget;
+// Detail references the owner-authorized endpoint that returns the complete
+// retained entry.
 type Entry struct {
 	ID           string         `json:"id"`
 	Seq          int            `json:"seq"`
@@ -51,6 +54,8 @@ type Entry struct {
 	Stream       string         `json:"stream,omitempty"`
 	Status       string         `json:"status,omitempty"`
 	CreatedAt    time.Time      `json:"created_at"`
+	Truncated    bool           `json:"truncated,omitempty"`
+	Detail       string         `json:"detail,omitempty"`
 }
 
 // Event is the minimal owner-event surface Build consumes. Task and Session

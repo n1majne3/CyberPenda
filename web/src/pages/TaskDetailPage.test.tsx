@@ -1,10 +1,15 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode, useEffect } from "react";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mockApi } from "@/test/mockApi";
 import { TaskDetailPage } from "./TaskDetailPage";
+
+function InAppNavigationButton({ to, label }: { to: string; label: string }) {
+  const navigate = useNavigate();
+  return <button type="button" onClick={() => navigate(to)}>{label}</button>;
+}
 
 function setDocumentVisibility(value: DocumentVisibilityState) {
   Object.defineProperty(document, "visibilityState", { value, configurable: true });
@@ -46,6 +51,15 @@ function stubTaskDetailApi(
       created_at: "2026-01-01T00:00:00Z",
     },
   ],
+  timelineBody: Record<string, unknown> = {
+    task_id: "task-1",
+    items: [{ seq: 1, type: "text", content: "Timeline opened first", created_at: "2026-01-01T00:00:00Z" }],
+  },
+  transcriptBody: Record<string, unknown> = {
+    task_id: "task-1",
+    entries: transcriptEntries,
+  },
+  extraRoutes: Record<string, unknown> = {},
 ) {
   const scrollIntoView = vi.fn();
   Object.defineProperty(Element.prototype, "scrollIntoView", {
@@ -54,14 +68,10 @@ function stubTaskDetailApi(
   });
 
   const fetchMock = mockApi({
-    "/api/projects/project-1/tasks/task-1/timeline": {
-      task_id: "task-1",
-      items: [{ seq: 1, type: "text", content: "Timeline opened first", created_at: "2026-01-01T00:00:00Z" }],
-    },
-    "/api/projects/project-1/tasks/task-1/transcript": {
-      task_id: "task-1",
-      entries: transcriptEntries,
-    },
+    // Specific query routes first: mockApi matches in insertion order.
+    ...extraRoutes,
+    "/api/projects/project-1/tasks/task-1/timeline": timelineBody,
+    "/api/projects/project-1/tasks/task-1/transcript": transcriptBody,
     "/api/projects/project-1/tasks/task-1": {
       id: "task-1",
       project_id: "project-1",
@@ -269,6 +279,29 @@ describe("TaskDetailPage", () => {
       const headers = new Headers((retryCall?.[1] as RequestInit | undefined)?.headers);
       expect(headers.get("Idempotency-Key")).toMatch(/^blackboard-retry-/);
     });
+  });
+
+  it("surfaces the bounded validation reason when the repair budget is exhausted", async () => {
+    stubTaskDetailApi({
+      status: "running",
+      blackboard_conclusion: {
+        mode: "assisted",
+        state: "action_required",
+        error_code: "semantic_conclusion_repair_exhausted",
+        validation_reason: "invalid_key_format",
+        validation_field_path: "attempt.key",
+        validation_expected: "the key must use the attempt: prefix",
+        retry_available: true,
+      },
+    });
+
+    renderPage();
+
+    const recovery = await screen.findByRole("alert", { name: "Blackboard conclusion requires attention" });
+    expect(recovery).toHaveTextContent("semantic_conclusion_repair_exhausted");
+    expect(screen.getByTestId("blackboard-conclusion-validation")).toHaveTextContent(
+      "invalid_key_format · attempt.key · the key must use the attempt: prefix",
+    );
   });
 
   it("maps forbidden Conclude tool use to bounded operator copy", async () => {
@@ -540,6 +573,103 @@ describe("TaskDetailPage", () => {
     expect(screen.getByText("continuation status: completed")).toBeInTheDocument();
     expect(screen.getByText("native session: captured")).toBeInTheDocument();
     expect(screen.getByText("same runtime only")).toBeInTheDocument();
+  });
+
+  it("shows the prior terminal continuation next to the current writable one", async () => {
+    stubTaskDetailApi({
+      status: "running",
+      active_continuation: {
+        id: "cont-1",
+        task_id: "task-1",
+        number: 1,
+        runtime_profile_id: "profile-1",
+        runtime_provider: "codex",
+        runner: "sandbox",
+        status: "running",
+      },
+      latest_continuation: {
+        id: "cont-2",
+        task_id: "task-1",
+        number: 2,
+        runtime_profile_id: "profile-1",
+        runtime_provider: "codex",
+        runner: "sandbox",
+        status: "completed",
+      },
+    });
+
+    renderPage();
+
+    expect(await screen.findByText("continuation #1")).toBeInTheDocument();
+    expect(screen.getByText("continuation status: running")).toBeInTheDocument();
+    const prior = screen.getByTestId("prior-terminal-continuation");
+    expect(prior).toHaveTextContent("prior terminal: #2 (completed)");
+  });
+
+  it("does not repeat the same continuation as its own prior terminal", async () => {
+    stubTaskDetailApi({
+      status: "running",
+      active_continuation: {
+        id: "cont-2",
+        task_id: "task-1",
+        number: 2,
+        runtime_profile_id: "profile-1",
+        runtime_provider: "codex",
+        runner: "sandbox",
+        status: "running",
+      },
+      latest_continuation: {
+        id: "cont-2",
+        task_id: "task-1",
+        number: 2,
+        runtime_profile_id: "profile-1",
+        runtime_provider: "codex",
+        runner: "sandbox",
+        status: "running",
+      },
+    });
+
+    renderPage();
+
+    expect(await screen.findByText("continuation #2")).toBeInTheDocument();
+    expect(screen.getByText("continuation status: running")).toBeInTheDocument();
+    expect(screen.queryByTestId("prior-terminal-continuation")).not.toBeInTheDocument();
+  });
+
+  it("shows pending and failed Harness Steering states in the composer", async () => {
+    stubTaskDetailApi({
+      status: "running",
+      runtime_controls: {
+        native_steer_available: true,
+        native_steer_state: "pending",
+        native_session_captured: true,
+        same_runtime_provider_only: true,
+        runtime_provider: "codex",
+      },
+    });
+
+    renderPage();
+
+    expect(await screen.findByTestId("steer-pending-badge")).toHaveTextContent("steering pending…");
+    expect(screen.queryByTestId("steer-failed-badge")).not.toBeInTheDocument();
+  });
+
+  it("shows a failed Harness Steering state with a stable reason surface", async () => {
+    stubTaskDetailApi({
+      status: "running",
+      runtime_controls: {
+        native_steer_available: true,
+        native_steer_state: "failed",
+        native_session_captured: true,
+        same_runtime_provider_only: true,
+        runtime_provider: "codex",
+      },
+    });
+
+    renderPage();
+
+    expect(await screen.findByTestId("steer-failed-badge")).toHaveTextContent("steering failed");
+    expect(screen.queryByTestId("steer-pending-badge")).not.toBeInTheDocument();
   });
 
   it("lets the continuation summary shrink instead of overflowing the header", async () => {
@@ -1491,5 +1621,637 @@ describe("TaskDetailPage", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("loads the complete Timeline and Transcript without a cursor on the first load", async () => {
+    const { fetchMock } = stubTaskDetailApi();
+
+    renderPage();
+
+    expect(await screen.findByText("Conversation should be hidden by default")).toBeInTheDocument();
+    const calls = fetchMock.mock.calls.map(([input]) => String(input));
+    expect(calls.some((url) => url.includes("/timeline"))).toBe(true);
+    expect(calls.some((url) => url.includes("/transcript"))).toBe(true);
+    for (const url of calls) {
+      expect(url).not.toContain("after=");
+    }
+  });
+
+  it("polls the Timeline and Transcript with the last committed cursor", async () => {
+    vi.useFakeTimers();
+    try {
+      const timelineBody = {
+        task_id: "task-1",
+        items: [{ seq: 1, type: "text", content: "Timeline opened first", created_at: "2026-01-01T00:00:00Z" }],
+        cursor: 1,
+      };
+      const transcriptBody = {
+        task_id: "task-1",
+        entries: [
+          {
+            id: "entry-1",
+            seq: 1,
+            continuation: 1,
+            kind: "message",
+            role: "assistant",
+            text: "Conversation should be hidden by default",
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+        cursor: 1,
+      };
+      const { fetchMock } = stubTaskDetailApi({ status: "running" }, undefined, timelineBody, transcriptBody);
+
+      renderPage();
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(screen.getByText("Conversation should be hidden by default")).toBeInTheDocument();
+
+      // The first poll requests only the events after the committed cursor.
+      await act(async () => {
+        vi.advanceTimersByTimeAsync(1500);
+      });
+      const pollURLs = fetchMock.mock.calls.map(([input]) => String(input));
+      expect(pollURLs.some((url) => url.includes("/timeline?after=1"))).toBe(true);
+      expect(pollURLs.some((url) => url.includes("/transcript?after=1"))).toBe(true);
+
+      // New events arrive; the daemon answers the next poll from cursor 1.
+      timelineBody.items = [
+        { seq: 1, type: "text", content: "Timeline opened first", created_at: "2026-01-01T00:00:00Z" },
+        { seq: 2, type: "text", content: "Timeline item two", created_at: "2026-01-01T00:00:01Z" },
+      ];
+      timelineBody.cursor = 2;
+      transcriptBody.entries = [
+        {
+          id: "entry-1",
+          seq: 1,
+          continuation: 1,
+          kind: "message",
+          role: "assistant",
+          text: "Conversation should be hidden by default",
+          created_at: "2026-01-01T00:00:00Z",
+        },
+        {
+          id: "entry-2",
+          seq: 2,
+          continuation: 1,
+          kind: "message",
+          role: "assistant",
+          text: "Fresh transcript row",
+          created_at: "2026-01-01T00:00:01Z",
+        },
+      ];
+      transcriptBody.cursor = 2;
+
+      await act(async () => {
+        vi.advanceTimersByTimeAsync(1500);
+      });
+      const deltaURLs = fetchMock.mock.calls.map(([input]) => String(input));
+      expect(deltaURLs.some((url) => url.includes("/timeline?after=2"))).toBe(true);
+      expect(deltaURLs.some((url) => url.includes("/transcript?after=2"))).toBe(true);
+      expect(screen.getByText("Fresh transcript row")).toBeInTheDocument();
+      // The merge kernel deduplicates by stable identity: no repeated rows.
+      expect(screen.getAllByText("Conversation should be hidden by default")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the cursor stable when an idle poll returns an empty delta", async () => {
+    vi.useFakeTimers();
+    try {
+      const timelineBody = {
+        task_id: "task-1",
+        items: [{ seq: 1, type: "text", content: "Timeline opened first", created_at: "2026-01-01T00:00:00Z" }],
+        cursor: 1,
+      };
+      const transcriptBody = {
+        task_id: "task-1",
+        entries: [
+          {
+            id: "entry-1",
+            seq: 1,
+            continuation: 1,
+            kind: "message",
+            role: "assistant",
+            text: "Conversation should be hidden by default",
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+        cursor: 1,
+      };
+      const { fetchMock } = stubTaskDetailApi({ status: "running" }, undefined, timelineBody, transcriptBody);
+
+      renderPage();
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        vi.advanceTimersByTimeAsync(1500);
+      });
+
+      // Idle daemon: empty delta, cursor unchanged.
+      timelineBody.items = [];
+      transcriptBody.entries = [];
+
+      await act(async () => {
+        vi.advanceTimersByTimeAsync(1500);
+      });
+      const urls = fetchMock.mock.calls.map(([input]) => String(input));
+      expect(urls.some((url) => url.includes("/timeline?after=1"))).toBe(true);
+      expect(urls.some((url) => url.includes("/transcript?after=1"))).toBe(true);
+      // The cursor never advanced: no poll asked for events after 1.
+      expect(urls.some((url) => url.includes("after=2"))).toBe(false);
+      expect(screen.getAllByText("Conversation should be hidden by default")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("TaskDetailPage Runtime Owner History Window (#202)", () => {
+  const taskRecord = (id: string, goal: string, status = "completed") => ({
+    id,
+    project_id: "project-1",
+    goal,
+    status,
+    runner: "sandbox",
+    runtime_profile_id: "profile-1",
+    run_controls: {},
+    scope_snapshot: {},
+    runtime_controls: {
+      native_resume_available: true,
+      resume_available: true,
+      queue_steer_available: true,
+      interrupt_steer_available: false,
+      native_session_captured: true,
+      same_runtime_provider_only: true,
+      runtime_provider: "codex",
+    },
+    latest_continuation: {
+      id: `cont-${id}`,
+      task_id: id,
+      number: 1,
+      runtime_profile_id: "profile-1",
+      runtime_provider: "codex",
+      runner: "sandbox",
+      status: "completed",
+      started_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:05Z",
+      ended_at: "2026-01-01T00:00:05Z",
+    },
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:05Z",
+  });
+  const json = (body: unknown) => new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+
+  it("replaces owner-local history before rendering the new owner after in-app navigation", async () => {
+    const user = userEvent.setup();
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(Element.prototype, "scrollIntoView", { value: scrollIntoView, configurable: true });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      // The second owner's history resolves slowly so the old owner's rows
+      // must disappear before the new ones can render.
+      if (url.includes("tasks/task-2/") && (url.includes("/timeline") || url.includes("/transcript"))) {
+        await new Promise((resolve) => setTimeout(resolve, 80));
+      }
+      if (url.includes("tasks/task-1/timeline")) {
+        return json({ task_id: "task-1", items: [{ seq: 1, type: "text", content: "First task timeline", created_at: "2026-01-01T00:00:00Z" }], cursor: 1 });
+      }
+      if (url.includes("tasks/task-1/transcript")) {
+        return json({ task_id: "task-1", entries: [{ id: "one-1", seq: 1, continuation: 1, kind: "message", role: "assistant", text: "First task content", created_at: "2026-01-01T00:00:00Z" }], cursor: 1 });
+      }
+      if (url.includes("tasks/task-2/timeline")) {
+        return json({ task_id: "task-2", items: [], cursor: 0 });
+      }
+      if (url.includes("tasks/task-2/transcript")) {
+        return json({ task_id: "task-2", entries: [{ id: "two-1", seq: 1, continuation: 1, kind: "message", role: "assistant", text: "Second task content", created_at: "2026-01-01T00:00:00Z" }], cursor: 1 });
+      }
+      if (url.includes("tasks/task-1")) return json(taskRecord("task-1", "First task"));
+      if (url.includes("tasks/task-2")) return json(taskRecord("task-2", "Second task"));
+      if (url.includes("/api/runtime-profiles")) return json({ profiles: [] });
+      if (url.includes("/api/model-providers")) return json({ providers: [] });
+      if (url.includes("/api/runtime-plugins")) return json({ plugins: [] });
+      return json({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <StrictMode>
+        <MemoryRouter initialEntries={["/projects/project-1/tasks/task-1"]}>
+          <Routes>
+            <Route path="/projects/:projectId/tasks/:taskId" element={<TaskDetailPage />} />
+            <Route path="/projects/:projectId/tasks" element={<div>Task list</div>} />
+          </Routes>
+          <InAppNavigationButton to="/projects/project-1/tasks/task-2" label="Open second task" />
+        </MemoryRouter>
+      </StrictMode>,
+    );
+
+    expect(await screen.findByText("First task content")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Open second task" }));
+
+    // The old owner's rows disappear before the new owner's history loads.
+    await waitFor(() => {
+      expect(screen.queryByText("First task content")).not.toBeInTheDocument();
+    });
+    expect(screen.queryByText("First task timeline")).not.toBeInTheDocument();
+    expect(screen.queryByText("Second task content")).not.toBeInTheDocument();
+    expect(await screen.findByText("Second task content")).toBeInTheDocument();
+    // Nothing from the first owner leaks into the second owner's workspace.
+    expect(screen.queryByText("First task content")).not.toBeInTheDocument();
+  });
+
+  it("sends an explicit after=0 on idle polls after an empty initial read", async () => {
+    vi.useFakeTimers();
+    try {
+      const { fetchMock } = stubTaskDetailApi(
+        { status: "running" },
+        [],
+        { task_id: "task-1", items: [], cursor: 0 },
+        { task_id: "task-1", entries: [], cursor: 0 },
+      );
+      renderPage();
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        vi.advanceTimersByTimeAsync(1500);
+      });
+      const urls = fetchMock.mock.calls.map(([input]) => String(input));
+      expect(urls.some((url) => url.includes("/timeline?after=0"))).toBe(true);
+      expect(urls.some((url) => url.includes("/transcript?after=0"))).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never resends the synthetic seq-0 goal row on idle polls", async () => {
+    vi.useFakeTimers();
+    try {
+      const { fetchMock } = stubTaskDetailApi(
+        { status: "running" },
+        undefined,
+        { task_id: "task-1", items: [], cursor: 0 },
+        {
+          task_id: "task-1",
+          entries: [{
+            id: "goal-row",
+            seq: 0,
+            continuation: 0,
+            kind: "message",
+            role: "user",
+            text: "Inspect task view",
+            created_at: "2026-01-01T00:00:00Z",
+          }],
+          cursor: 0,
+        },
+      );
+      renderPage();
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(screen.getAllByTestId("transcript-row")).toHaveLength(1);
+      await act(async () => {
+        vi.advanceTimersByTimeAsync(1500);
+      });
+      const urls = fetchMock.mock.calls.map(([input]) => String(input));
+      expect(urls.some((url) => url.includes("/transcript?after=0"))).toBe(true);
+      // The goal row was never re-rendered as a duplicate.
+      expect(screen.getAllByTestId("transcript-row")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("pages older transcript rows with a before cursor and preserves the reading anchor", async () => {
+    const { fetchMock } = stubTaskDetailApi(
+      {},
+      undefined,
+      { task_id: "task-1", items: [], cursor: 0 },
+      {
+        task_id: "task-1",
+        entries: [
+          { id: "entry-51", seq: 51, continuation: 1, kind: "message", role: "assistant", text: "Recent message", created_at: "2026-01-01T00:00:00Z" },
+          { id: "entry-52", seq: 52, continuation: 1, kind: "message", role: "assistant", text: "Newest message", created_at: "2026-01-01T00:00:00Z" },
+        ],
+        cursor: 52,
+        has_older: true,
+      },
+      {
+        "/api/projects/project-1/tasks/task-1/transcript?before=": {
+          task_id: "task-1",
+          entries: [
+            { id: "entry-1", seq: 1, continuation: 1, kind: "message", role: "user", text: "Oldest message", created_at: "2026-01-01T00:00:00Z" },
+            { id: "entry-2", seq: 2, continuation: 1, kind: "message", role: "user", text: "Second message", created_at: "2026-01-01T00:00:00Z" },
+          ],
+          cursor: 52,
+          has_older: false,
+        },
+      },
+    );
+    const user = userEvent.setup();
+    renderPage();
+    expect(await screen.findByText("Recent message")).toBeInTheDocument();
+
+    const viewport = screen.getByTestId("conversation-workspace");
+    Object.defineProperty(viewport, "scrollTop", { value: 720, writable: true, configurable: true });
+
+    await user.click(screen.getByTestId("load-older-transcript"));
+    expect(await screen.findByText("Oldest message")).toBeInTheDocument();
+    const calls = fetchMock.mock.calls.map(([input]) => String(input));
+    expect(calls.some((url) => url.includes("/transcript?before=51"))).toBe(true);
+    // The prepended page pushed the visible rows down by 2 × 72px.
+    expect(viewport.scrollTop).toBe(720 + 2 * 72);
+    // The boundary page reached the beginning: the affordance disappears.
+    expect(screen.queryByTestId("load-older-transcript")).not.toBeInTheDocument();
+    expect(screen.getAllByTestId("transcript-row")).toHaveLength(4);
+  });
+
+  it("merges a backward page with a concurrent live delta without duplicates", async () => {
+    vi.useFakeTimers();
+    try {
+      const transcriptBody: Record<string, unknown> = {
+        task_id: "task-1",
+        entries: [
+          { id: "entry-51", seq: 51, continuation: 1, kind: "message", role: "assistant", text: "Recent message", created_at: "2026-01-01T00:00:00Z" },
+          { id: "entry-52", seq: 52, continuation: 1, kind: "message", role: "assistant", text: "Newest message", created_at: "2026-01-01T00:00:00Z" },
+        ],
+        cursor: 52,
+        has_older: true,
+      };
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        // The backward page resolves slowly, so a live poll lands first.
+        if (url.includes("/transcript?before=")) {
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+          return json({
+            task_id: "task-1",
+            entries: [
+              { id: "entry-1", seq: 1, continuation: 1, kind: "message", role: "user", text: "Oldest message", created_at: "2026-01-01T00:00:00Z" },
+              { id: "entry-2", seq: 2, continuation: 1, kind: "message", role: "user", text: "Second message", created_at: "2026-01-01T00:00:00Z" },
+            ],
+            cursor: 52,
+            has_older: false,
+          });
+        }
+        if (url.includes("/transcript")) return json(transcriptBody);
+        if (url.includes("/timeline")) return json({ task_id: "task-1", items: [], cursor: 0 });
+        if (url.includes("/api/runtime-profiles")) return json({ profiles: [] });
+        if (url.includes("/api/model-providers")) return json({ providers: [] });
+        if (url.includes("/api/runtime-plugins")) return json({ plugins: [] });
+        return json(taskRecord("task-1", "Inspect task view", "running"));
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      Object.defineProperty(Element.prototype, "scrollIntoView", { value: vi.fn(), configurable: true });
+      renderPage();
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(screen.getByText("Newest message")).toBeInTheDocument();
+      await act(async () => {
+        await screen.getByTestId("load-older-transcript").click();
+      });
+
+      // The live poll lands first and appends a fresh row past the cursor.
+      transcriptBody.entries = [
+        ...(transcriptBody.entries as Record<string, unknown>[]),
+        { id: "entry-53", seq: 53, continuation: 1, kind: "message", role: "assistant", text: "Fresh live row", created_at: "2026-01-01T00:00:02Z" },
+      ];
+      transcriptBody.cursor = 53;
+      await act(async () => {
+        vi.advanceTimersByTimeAsync(1500);
+      });
+      expect(screen.getByText("Fresh live row")).toBeInTheDocument();
+
+      // The delayed backward page then lands without duplicating anything.
+      await act(async () => {
+        vi.advanceTimersByTimeAsync(1500);
+      });
+      expect(screen.getByText("Oldest message")).toBeInTheDocument();
+      const rows = screen.getAllByTestId("transcript-row");
+      expect(rows).toHaveLength(5);
+      expect(screen.getAllByText("Newest message")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("preserves a committed backward page when a live poll resolves after it", async () => {
+    vi.useFakeTimers();
+    try {
+      const transcriptBody: Record<string, unknown> = {
+        task_id: "task-1",
+        entries: [
+          { id: "entry-51", seq: 51, continuation: 1, kind: "message", role: "assistant", text: "Recent message", created_at: "2026-01-01T00:00:00Z" },
+          { id: "entry-52", seq: 52, continuation: 1, kind: "message", role: "assistant", text: "Newest message", created_at: "2026-01-01T00:00:00Z" },
+        ],
+        cursor: 52,
+        has_older: true,
+      };
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        // The backward page resolves first (300ms); the live poll starts at
+        // 1000ms and resolves at 1500ms, landing after the page but before
+        // the next poll tick would abort it.
+        if (url.includes("/transcript?before=")) {
+          await new Promise((resolve) => setTimeout(resolve, 300));
+          return json({
+            task_id: "task-1",
+            entries: [
+              { id: "entry-1", seq: 1, continuation: 1, kind: "message", role: "user", text: "Oldest message", created_at: "2026-01-01T00:00:00Z" },
+              { id: "entry-2", seq: 2, continuation: 1, kind: "message", role: "user", text: "Second message", created_at: "2026-01-01T00:00:00Z" },
+            ],
+            cursor: 52,
+            has_older: false,
+          });
+        }
+        if (url.includes("/transcript") && url.includes("after=")) {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        }
+        if (url.includes("/transcript")) return json(transcriptBody);
+        if (url.includes("/timeline")) return json({ task_id: "task-1", items: [], cursor: 0 });
+        if (url.includes("/api/runtime-profiles")) return json({ profiles: [] });
+        if (url.includes("/api/model-providers")) return json({ providers: [] });
+        if (url.includes("/api/runtime-plugins")) return json({ plugins: [] });
+        return json(taskRecord("task-1", "Inspect task view", "running"));
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      renderPage();
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(screen.getByText("Newest message")).toBeInTheDocument();
+      await act(async () => {
+        await screen.getByTestId("load-older-transcript").click();
+      });
+
+      // The backward page commits first (t=300ms).
+      await act(async () => {
+        vi.advanceTimersByTimeAsync(400);
+      });
+      expect(screen.getByText("Oldest message")).toBeInTheDocument();
+
+      // A live delta arrives and the poll resolves last; the committed page
+      // must survive the poll's merge instead of being wiped by it.
+      transcriptBody.entries = [
+        ...(transcriptBody.entries as Record<string, unknown>[]),
+        { id: "entry-53", seq: 53, continuation: 1, kind: "message", role: "assistant", text: "Fresh live row", created_at: "2026-01-01T00:00:02Z" },
+      ];
+      transcriptBody.cursor = 53;
+      // Staged advances so the poll's timer-resolved continuation and the
+      // React render it schedules both flush before the next assertion.
+      await act(async () => {
+        vi.advanceTimersByTimeAsync(600);
+      });
+      await act(async () => {
+        vi.advanceTimersByTimeAsync(900);
+      });
+      expect(screen.getByText("Fresh live row")).toBeInTheDocument();
+      expect(screen.getByText("Oldest message")).toBeInTheDocument();
+      const rows = screen.getAllByTestId("transcript-row");
+      expect(rows).toHaveLength(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows an unseen indicator for live deltas while reading older history", async () => {
+    vi.useFakeTimers();
+    try {
+      const transcriptBody = {
+        task_id: "task-1",
+        entries: [{
+          id: "entry-1",
+          seq: 1,
+          continuation: 1,
+          kind: "message",
+          role: "assistant",
+          text: "Visible row",
+          created_at: "2026-01-01T00:00:00Z",
+        }],
+        cursor: 1,
+      };
+      stubTaskDetailApi(
+        { status: "running" },
+        undefined,
+        { task_id: "task-1", items: [], cursor: 0 },
+        transcriptBody,
+      );
+      const scrollTo = vi.fn();
+      Object.defineProperty(Element.prototype, "scrollTo", { value: scrollTo, configurable: true });
+      renderPage();
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(screen.getByText("Visible row")).toBeInTheDocument();
+
+      // The operator scrolls away from the tail while a live delta arrives.
+      // jsdom has no layout, so the scroll geometry is stubbed: a large
+      // scrollHeight with a small scrollTop means "not near the bottom".
+      const viewport = screen.getByTestId("conversation-workspace");
+      Object.defineProperty(viewport, "scrollTop", { value: 5000, writable: true, configurable: true });
+      Object.defineProperty(viewport, "scrollHeight", { value: 100000, writable: true, configurable: true });
+      viewport.dispatchEvent(new Event("scroll"));
+      transcriptBody.entries = [
+        ...transcriptBody.entries,
+        { id: "entry-2", seq: 2, continuation: 1, kind: "message", role: "assistant", text: "Fresh unseen row", created_at: "2026-01-01T00:00:01Z" },
+      ];
+      transcriptBody.cursor = 2;
+      await act(async () => {
+        vi.advanceTimersByTimeAsync(1500);
+      });
+
+      const pill = screen.getByTestId("unseen-transcript-indicator");
+      expect(pill).toHaveTextContent("1 new message");
+      expect(screen.getByText("Fresh unseen row")).toBeInTheDocument();
+
+      // Clicking the indicator jumps to the tail and dismisses it.
+      await act(async () => {
+        pill.click();
+      });
+      expect(scrollTo).toHaveBeenCalled();
+      expect(screen.queryByTestId("unseen-transcript-indicator")).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the rendered conversation DOM bounded on long histories", async () => {
+    const entries = Array.from({ length: 400 }, (_, index) => ({
+      id: `entry-${index + 1}`,
+      seq: index + 1,
+      continuation: 1,
+      kind: "message" as const,
+      role: "assistant" as const,
+      text: `Row ${index + 1}`,
+      created_at: "2026-01-01T00:00:00Z",
+    }));
+    stubTaskDetailApi(
+      {},
+      undefined,
+      { task_id: "task-1", items: [], cursor: 0 },
+      { task_id: "task-1", entries, cursor: 400 },
+    );
+    renderPage();
+    expect(await screen.findByText("Row 400")).toBeInTheDocument();
+
+    // A measurable viewport activates the virtualized window; jsdom has no
+    // layout, so the measurement is stubbed on the container itself.
+    const viewport = screen.getByTestId("conversation-workspace");
+    Object.defineProperty(viewport, "clientHeight", { value: 600, configurable: true });
+    viewport.dispatchEvent(new Event("scroll"));
+
+    await waitFor(() => {
+      const rows = screen.getAllByTestId("transcript-row");
+      expect(rows.length).toBeLessThan(400);
+      expect(rows.length).toBeGreaterThan(0);
+    });
+    // Rows outside the window are not in the DOM while the loaded history
+    // stays available in state.
+    expect(screen.queryByText("Row 250")).not.toBeInTheDocument();
+  });
+
+  it("pages older timeline rows through the newest-first footer", async () => {
+    const { fetchMock } = stubTaskDetailApi(
+      {},
+      undefined,
+      {
+        task_id: "task-1",
+        items: [{ seq: 51, type: "text", content: "Timeline recent", created_at: "2026-01-01T00:00:00Z" }],
+        cursor: 51,
+        has_older: true,
+      },
+      { task_id: "task-1", entries: [], cursor: 0 },
+      {
+        "/api/projects/project-1/tasks/task-1/timeline?before=": {
+          task_id: "task-1",
+          items: [{ seq: 1, type: "text", content: "Timeline oldest", created_at: "2026-01-01T00:00:00Z" }],
+          cursor: 51,
+          has_older: false,
+        },
+      },
+    );
+    const user = userEvent.setup();
+    renderPage("/projects/project-1/tasks/task-1?view=timeline");
+    expect(await screen.findByText("Timeline recent")).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("load-older-timeline"));
+    expect(await screen.findByText("Timeline oldest")).toBeInTheDocument();
+    const calls = fetchMock.mock.calls.map(([input]) => String(input));
+    expect(calls.some((url) => url.includes("/timeline?before=51"))).toBe(true);
+    expect(screen.queryByTestId("load-older-timeline")).not.toBeInTheDocument();
   });
 });

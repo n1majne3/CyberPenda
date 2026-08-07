@@ -93,13 +93,81 @@ func TestResolveUsesGlobalBindingByDefault(t *testing.T) {
 	}
 }
 
+// TestLegacyLiteralBindingBackfillsDestinationEnv pins the data-migration
+// behavior for bindings created before the UI sent destination_env: a literal
+// (or file/command) source without a destination_env defaults to its
+// credential_ref on load, so preflight and projection do not break for
+// existing *_API_KEY bindings.
+func TestLegacyLiteralBindingBackfillsDestinationEnv(t *testing.T) {
+	service := newTestService(t)
+
+	// Literal binding with NO destination_env — the pre-fix UI shape.
+	if _, err := service.Upsert("HUB_API_KEY", credential.ScopeGlobal, "", credential.Source{Kind: credential.SourceLiteral, Value: "sk-legacy"}, false); err != nil {
+		t.Fatalf("upsert legacy literal: %v", err)
+	}
+
+	globals, err := service.ListGlobal()
+	if err != nil {
+		t.Fatalf("list global: %v", err)
+	}
+	if len(globals) != 1 {
+		t.Fatalf("expected 1 global binding, got %d", len(globals))
+	}
+	if globals[0].Source.DestinationEnv != "HUB_API_KEY" {
+		t.Fatalf("expected legacy literal to backfill destination_env=HUB_API_KEY, got %q", globals[0].Source.DestinationEnv)
+	}
+
+	// The resolution path must see the same backfill.
+	res, err := service.Resolve("HUB_API_KEY", "project-1")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if res.Source == nil || res.Source.DestinationEnv != "HUB_API_KEY" {
+		t.Fatalf("expected resolved source to backfill destination_env, got %#v", res.Source)
+	}
+}
+
+// TestEnvSourceKeepsValueFallbackDestinationEnv confirms env sources still
+// fall back to their host variable name (Value), not the credential_ref, when
+// resolving the runtime env var name. The backfill in scanBinding only touches
+// literal/file/command sources.
+func TestEnvSourceKeepsValueFallbackDestinationEnv(t *testing.T) {
+	t.Setenv("HOST_VAR", "host-secret")
+	service := newTestService(t)
+
+	if _, err := service.Upsert("legacy-ref", credential.ScopeGlobal, "", credential.Source{Kind: credential.SourceEnv, Value: "HOST_VAR"}, false); err != nil {
+		t.Fatalf("upsert env source: %v", err)
+	}
+
+	// The stored binding must NOT have been backfilled to the credential_ref.
+	globals, err := service.ListGlobal()
+	if err != nil {
+		t.Fatalf("list global: %v", err)
+	}
+	if len(globals) != 1 {
+		t.Fatalf("expected 1 global binding, got %d", len(globals))
+	}
+	if globals[0].Source.DestinationEnv != "" {
+		t.Fatalf("expected env source stored destination_env to stay empty, got %q", globals[0].Source.DestinationEnv)
+	}
+
+	// Resolution must still project under HOST_VAR (the Value fallback).
+	envName, _, err := credential.ResolveSourceEnv(globals[0].Source)
+	if err != nil {
+		t.Fatalf("resolve source env: %v", err)
+	}
+	if envName != "HOST_VAR" {
+		t.Fatalf("expected env source to project under HOST_VAR, got %q", envName)
+	}
+}
+
 func TestResolveProjectOverrideWins(t *testing.T) {
 	service := newTestService(t)
 
 	if _, err := service.Upsert("codex-api-key", credential.ScopeGlobal, "", credential.Source{Kind: credential.SourceEnv, Value: "GLOBAL_KEY"}, false); err != nil {
 		t.Fatalf("upsert global: %v", err)
 	}
-	if _, err := service.Upsert("codex-api-key", credential.ScopeProject, "project-1", credential.Source{Kind: credential.SourceFile, Value: "/secrets/project1"}, false); err != nil {
+	if _, err := service.Upsert("codex-api-key", credential.ScopeProject, "project-1", credential.Source{Kind: credential.SourceLiteral, Value: "project-secret", DestinationEnv: "CODEX_API_KEY"}, false); err != nil {
 		t.Fatalf("upsert project: %v", err)
 	}
 
@@ -107,7 +175,7 @@ func TestResolveProjectOverrideWins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if res.Source == nil || res.Source.Kind != credential.SourceFile || res.Source.Value != "/secrets/project1" {
+	if res.Source == nil || res.Source.Kind != credential.SourceLiteral || res.Source.Value != "project-secret" {
 		t.Fatalf("expected project override to win, got %#v", res.Source)
 	}
 
@@ -240,24 +308,20 @@ func TestDeleteRemovesBinding(t *testing.T) {
 	}
 }
 
-// TestUpsertRejectsCommandSourceByDefault pins issue #159: a command credential
-// source runs arbitrary shell on the host, so it is refused unless the operator
-// explicitly opts in.
-func TestUpsertRejectsCommandSourceByDefault(t *testing.T) {
-	t.Setenv("PENTEST_ALLOW_COMMAND_CREDENTIALS", "")
-	service := newTestService(t)
-
-	_, err := service.Upsert("api-key", credential.ScopeGlobal, "", credential.Source{Kind: credential.SourceCommand, Value: "printf secret", DestinationEnv: "API_KEY"}, false)
-	if !errors.Is(err, credential.ErrCommandSourceDisabled) {
-		t.Fatalf("expected ErrCommandSourceDisabled, got %v", err)
-	}
-}
-
-func TestUpsertAllowsCommandSourceWhenOptedIn(t *testing.T) {
+// TestUpsertRejectsCommandAndFileSources pins the source-kind simplification:
+// command (potential host RCE) and file sources are no longer supported kinds
+// and are refused at the upsert boundary.
+func TestUpsertRejectsCommandAndFileSources(t *testing.T) {
 	t.Setenv("PENTEST_ALLOW_COMMAND_CREDENTIALS", "1")
 	service := newTestService(t)
 
-	if _, err := service.Upsert("api-key", credential.ScopeGlobal, "", credential.Source{Kind: credential.SourceCommand, Value: "printf secret", DestinationEnv: "API_KEY"}, false); err != nil {
-		t.Fatalf("expected command source to be accepted when opted in, got %v", err)
+	_, err := service.Upsert("api-key", credential.ScopeGlobal, "", credential.Source{Kind: "command", Value: "printf secret", DestinationEnv: "API_KEY"}, false)
+	if !errors.Is(err, credential.ErrInvalidSourceKind) {
+		t.Fatalf("expected ErrInvalidSourceKind for command source, got %v", err)
+	}
+
+	_, err = service.Upsert("api-key", credential.ScopeGlobal, "", credential.Source{Kind: "file", Value: "/tmp/secret", DestinationEnv: "API_KEY"}, false)
+	if !errors.Is(err, credential.ErrInvalidSourceKind) {
+		t.Fatalf("expected ErrInvalidSourceKind for file source, got %v", err)
 	}
 }

@@ -13,7 +13,10 @@ import (
 
 func (server *Server) registerMCP() {
 	handler := sdkmcp.NewStreamableHTTPHandler(func(request *http.Request) *sdkmcp.Server {
-		deps := mcpserver.Deps{BlackboardV2: server.blackboardV2}
+		deps := mcpserver.Deps{
+			BlackboardV2:       server.blackboardV2,
+			FinishIntentPolicy: server.resolveBlackboardFinishIntentPolicy,
+		}
 		// The endpoint has no path Project; the grant's bound Project is the sole
 		// authority for every trusted v2 tool.
 		if server.projectInterfaceGrants != nil {

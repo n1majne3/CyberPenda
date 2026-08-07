@@ -271,10 +271,7 @@ func (s *FakeProviderSession) EmitAttemptResult(raw []byte) error {
 		sink := s.attemptResultValidationFailureSink
 		s.mu.Unlock()
 		if correlationErr == nil && sink != nil {
-			sink(ProviderSessionAttemptResultValidationFailure{
-				RequestID: requestID, SessionID: s.id, ProviderTurnID: providerTurnID,
-				ValidationErrorCode: ProviderSessionAttemptResultInvalid,
-			})
+			sink(attemptResultValidationFailure(requestID, s.id, providerTurnID, err, blackboardconclusion.ValidationReasonInvalidResult))
 		}
 		return err
 	}

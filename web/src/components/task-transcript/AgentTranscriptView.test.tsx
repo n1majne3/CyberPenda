@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AgentTranscriptView } from "./AgentTranscriptView";
 
 const owner = {
@@ -148,5 +148,68 @@ describe("AgentTranscriptView", () => {
     await screen.getByRole("button", { name: /x+/i }).click();
     expect(screen.getByText(/… \(truncated\)$/)).toBeInTheDocument();
     expect(screen.queryByText(/\.\.\. \(truncated\)$/)).not.toBeInTheDocument();
+  });
+});
+
+describe("AgentTranscriptView history window (#202)", () => {
+  it("shows an unseen pill with the live-event count and jumps to the tail on click", async () => {
+    const onShowLatest = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <AgentTranscriptView
+        owner={owner}
+        items={[
+          { seq: 1, type: "text", content: "Older event" },
+          { seq: 2, type: "text", content: "Newer event" },
+        ]}
+        unseenCount={3}
+        onShowLatest={onShowLatest}
+      />,
+    );
+
+    const pill = screen.getByTestId("unseen-timeline-indicator");
+    expect(pill).toHaveTextContent("3 new events");
+    await user.click(pill);
+    expect(onShowLatest).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders the paging footer at the older end of the list", () => {
+    render(
+      <AgentTranscriptView
+        owner={owner}
+        items={[
+          { seq: 1, type: "text", content: "Older event" },
+          { seq: 2, type: "text", content: "Newer event" },
+        ]}
+        footer={<button type="button">Load older events</button>}
+      />,
+    );
+
+    // Default newest-first sort puts older rows at the bottom, so the footer
+    // renders after the rows inside the scroll container.
+    const rows = screen.getAllByTestId("transcript-event-row");
+    const footer = screen.getByRole("button", { name: "Load older events" });
+    expect(rows[0].compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(rows[1].compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("keeps the rendered DOM bounded while a long history stays available", () => {
+    const items = Array.from({ length: 500 }, (_, index) => ({
+      seq: index + 1,
+      type: "text" as const,
+      content: `event-${index + 1}`,
+    }));
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { get: () => 600, configurable: true });
+    try {
+      render(<AgentTranscriptView owner={owner} items={items} />);
+      const rendered = screen.getAllByTestId("transcript-event-row");
+      expect(rendered.length).toBeLessThan(500);
+      expect(rendered.length).toBeGreaterThan(0);
+      // Rows outside the window are not in the DOM while the loaded history
+      // stays available in state.
+      expect(screen.queryByText("event-250")).not.toBeInTheDocument();
+    } finally {
+      delete (HTMLElement.prototype as unknown as { clientHeight?: number }).clientHeight;
+    }
   });
 });

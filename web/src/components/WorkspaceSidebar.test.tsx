@@ -23,6 +23,17 @@ const project = (id: string, name: string, updatedAt: string) => ({
   updated_at: updatedAt,
 });
 
+// navigationSummary builds one row of GET /api/workspace/navigation (#193):
+// a Project with its inlined Tasks and a last_activity_at. The daemon computes
+// last_activity_at server-side; tests pass it explicitly to drive ordering.
+function navigationSummary(id: string, name: string, updatedAt: string, tasks: object[] = [], lastActivityAt?: string) {
+  return {
+    ...project(id, name, updatedAt),
+    last_activity_at: lastActivityAt ?? updatedAt,
+    tasks,
+  };
+}
+
 const session = (id: string, title: string, lastActivityAt: string) => ({
   id,
   title,
@@ -67,7 +78,15 @@ describe("WorkspaceSidebar", () => {
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
-        if (url === "/api/projects") return response({ projects: [project("project-active", "Project", "2026-08-01T00:00:00Z")] });
+        if (url === "/api/workspace/navigation") {
+          return response({
+            projects: [
+              navigationSummary("project-active", "Project", "2026-08-01T00:00:00Z", [
+                { ...task("task-failed", "Failed task", "2026-08-01T00:00:00Z", { liveness: "offline" }), status: "failed" },
+              ]),
+            ],
+          });
+        }
         if (url === "/api/projects/project-active/tasks") {
           return response({
             tasks: [{ ...task("task-failed", "Failed task", "2026-08-01T00:00:00Z", { liveness: "offline" }), status: "failed" }],
@@ -107,7 +126,7 @@ describe("WorkspaceSidebar", () => {
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
-        if (url === "/api/projects") return response({ projects: [] });
+        if (url === "/api/workspace/navigation") return response({ projects: [] });
         if (url === "/api/sessions?limit=5") return response({ sessions: [] });
         if (url === "/api/sessions/session-archived") {
           return response({
@@ -151,8 +170,11 @@ describe("WorkspaceSidebar", () => {
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
-        if (url === "/api/projects") return response({ projects: [project("project-active", "Active project", "2026-07-01T00:00:00Z")] });
-        if (url === "/api/projects/project-active/tasks") return response({ tasks: activeTasks });
+        if (url.startsWith("/api/workspace/navigation")) {
+          return response({
+            projects: [navigationSummary("project-active", "Active project", "2026-07-01T00:00:00Z", activeTasks)],
+          });
+        }
         if (url === "/api/sessions?limit=5") return response({ sessions });
         return response({});
       }),
@@ -174,14 +196,22 @@ describe("WorkspaceSidebar", () => {
       "href",
       "/projects/project-active",
     );
+    // The first navigation request carries the selected Task context (#201).
+    expect(vi.mocked(fetch).mock.calls[0][0]).toContain("selected_task=task-current");
 
     const projectRegion = screen.getByRole("region", { name: /active project/i });
+    // The current Project renders its daemon-bounded inlined Tasks as-is (#201):
+    // the busy Task first, then the five ordinary recent Tasks, then the old
+    // selected Task — all seven stay visible even though the selected Task is
+    // older than the recent summary.
     const taskLinks = await within(projectRegion).findAllByRole("link", { name: /task conversation/i });
     expect(taskLinks.map((link) => link.textContent?.trim())).toEqual([
       "Busy task task conversation",
       "Recent task 1 task conversation",
       "Recent task 2 task conversation",
       "Recent task 3 task conversation",
+      "Recent task 4 task conversation",
+      "Recent task 5 task conversation",
       "Current task task conversation",
     ]);
     expect(within(projectRegion).getByRole("link", { name: /current task/i })).toHaveAttribute(
@@ -201,7 +231,9 @@ describe("WorkspaceSidebar", () => {
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
-        if (url === "/api/projects") return response({ projects: [project("project-1", "Project one", "2026-08-01T00:00:00Z")] });
+        if (url === "/api/workspace/navigation") {
+          return response({ projects: [navigationSummary("project-1", "Project one", "2026-08-01T00:00:00Z", [])] });
+        }
         if (url === "/api/projects/project-1/tasks") return response({ tasks: [] });
         if (url === "/api/sessions?limit=5") return response({ sessions: [session("session-1", "Session one", "2026-08-01T00:00:00Z")] });
         return response({});
@@ -249,7 +281,7 @@ describe("WorkspaceSidebar", () => {
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
-        if (url === "/api/projects") return response({ projects: [] });
+        if (url === "/api/workspace/navigation") return response({ projects: [] });
         if (url === "/api/sessions?limit=5") return response({ sessions: [] });
         return response({});
       }),
@@ -294,7 +326,7 @@ describe("WorkspaceSidebar", () => {
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
-        if (url === "/api/projects") return response({ projects: [] });
+        if (url === "/api/workspace/navigation") return response({ projects: [] });
         if (url === "/api/sessions?limit=5") return response({ sessions });
         return response({});
       }),
@@ -321,19 +353,20 @@ describe("WorkspaceSidebar", () => {
   });
 
   it("orders projects by the latest project-or-task activity", async () => {
-    const olderProjectWithRecentTask = project("project-old", "Older project", "2026-07-01T00:00:00Z");
-    const newerProjectWithoutRecentTask = project("project-new", "Newer project", "2026-07-31T00:00:00Z");
-    const recentTask = {
-      ...task("task-recent", "Recent task", "2026-08-01T00:00:00Z"),
-      project_id: olderProjectWithRecentTask.id,
-    };
     vi.stubGlobal(
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
-        if (url === "/api/projects") return response({ projects: [newerProjectWithoutRecentTask, olderProjectWithRecentTask] });
-        if (url === "/api/projects/project-old/tasks") return response({ tasks: [recentTask] });
-        if (url === "/api/projects/project-new/tasks") return response({ tasks: [] });
+        if (url === "/api/workspace/navigation") {
+          return response({
+            projects: [
+              // The older Project has the more recent activity (folded from its
+              // Task), so it must rank first even though it was created earlier.
+              navigationSummary("project-old", "Older project", "2026-07-01T00:00:00Z", [], "2026-08-01T00:00:00Z"),
+              navigationSummary("project-new", "Newer project", "2026-07-31T00:00:00Z", [], "2026-07-31T00:00:00Z"),
+            ],
+          });
+        }
         if (url === "/api/sessions?limit=5") return response({ sessions: [] });
         return response({});
       }),
@@ -360,7 +393,7 @@ describe("WorkspaceSidebar", () => {
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
-        if (url === "/api/projects") return Promise.reject(new Error("projects unavailable"));
+        if (url === "/api/workspace/navigation") return Promise.reject(new Error("projects unavailable"));
         if (url === "/api/sessions?limit=5") return response({ sessions: [] });
         return response({});
       }),
@@ -392,8 +425,11 @@ describe("WorkspaceSidebar", () => {
     try {
       const fetchMock = vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
-        if (url === "/api/projects") return response({ projects: [project("project-1", "Project one", "2026-08-01T00:00:00Z")] });
-        if (url === "/api/projects/project-1/tasks") return response({ tasks: [task("task-idle", "Idle task", "2026-08-01T00:00:00Z")] });
+        if (url === "/api/workspace/navigation") {
+          return response({
+            projects: [navigationSummary("project-1", "Project one", "2026-08-01T00:00:00Z", [task("task-idle", "Idle task", "2026-08-01T00:00:00Z")])],
+          });
+        }
         if (url === "/api/sessions?limit=5") return response({ sessions: [] });
         return response({});
       });
@@ -436,11 +472,16 @@ describe("WorkspaceSidebar", () => {
     try {
       const fetchMock = vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
-        if (url === "/api/projects") return response({ projects: [project("project-1", "Project one", "2026-08-01T00:00:00Z")] });
-        if (url === "/api/projects/project-1/tasks") {
-          // A busy task would normally drive fast polling; the only thing that
-          // should gate it here is tab visibility.
-          return response({ tasks: [task("task-busy", "Busy task", "2026-08-01T00:00:00Z", { liveness: "live", turn_activity: "busy" })] });
+        if (url === "/api/workspace/navigation") {
+          return response({
+            projects: [
+              navigationSummary("project-1", "Project one", "2026-08-01T00:00:00Z", [
+                // A busy task would normally drive fast polling; the only thing
+                // that should gate it here is tab visibility.
+                task("task-busy", "Busy task", "2026-08-01T00:00:00Z", { liveness: "live", turn_activity: "busy" }),
+              ]),
+            ],
+          });
         }
         if (url === "/api/sessions?limit=5") return response({ sessions: [] });
         return response({});
@@ -481,5 +522,172 @@ describe("WorkspaceSidebar", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // #193: the Sidebar must not fan out one Task-list request per Project. A
+  // 123-Project workspace makes a constant number of requests on mount and on
+  // each refresh. This is the issue's "browser performance test" delivered as a
+  // Vitest volume test (no new toolchain): it seeds 123 Projects with mixed
+  // Task states and asserts no /api/projects/{id}/tasks URL is ever requested
+  // during initial load or a poll, and that rendered inactive rows are bounded.
+  it("does not fan out per project at 123-project scale", async () => {
+    vi.useFakeTimers();
+    try {
+      const summaries = Array.from({ length: 123 }, (_, index) => {
+        const states = [
+          [task(`busy-${index}`, "Busy task", "2026-08-01T00:00:00Z", { liveness: "live", turn_activity: "busy" })],
+          [task(`idle-${index}`, "Idle task", "2026-08-01T00:00:00Z")],
+          [{ ...task(`failed-${index}`, "Failed task", "2026-08-01T00:00:00Z", { liveness: "offline" }), status: "failed" }],
+          Array.from({ length: 7 }, (_, j) => task(`many-${index}-${j}`, `Task ${j}`, `2026-08-0${(j % 9) + 1}T00:00:00Z`)),
+          [],
+        ];
+        return navigationSummary(`project-${index}`, `Project ${index}`, "2026-08-01T00:00:00Z", states[index % states.length]);
+      });
+      const fetchMock = vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/workspace/navigation") return response({ projects: summaries });
+        if (url === "/api/sessions?limit=5") return response({ sessions: [] });
+        return response({});
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(
+        <ThemeProvider>
+          <MemoryRouter>
+            <WorkspaceSidebar />
+          </MemoryRouter>
+        </ThemeProvider>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+      // Initial load: navigation + sessions only. No per-Project fan-out.
+      const urls = fetchMock.mock.calls.map(([input]) => String(input));
+      expect(urls.filter((url) => url.includes("/tasks")).length).toBe(0);
+
+      // One poll later: still only navigation + sessions.
+      await act(async () => {
+        vi.advanceTimersByTimeAsync(2500);
+      });
+      const urlsAfterPoll = fetchMock.mock.calls.map(([input]) => String(input));
+      expect(urlsAfterPoll.filter((url) => url.includes("/tasks")).length).toBe(0);
+
+      // Bounded inactive rows: every Project region shows at most 5 task links.
+      const projectRegions = screen.getAllByRole("region", { name: /project \d+ project dashboard/i });
+      expect(projectRegions.length).toBe(123);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // #201: an unchanged navigation refresh must not reserialize the projection.
+  // The Sidebar sends back the opaque revision it received, and when the daemon
+  // answers changed=false it keeps the current rows instead of replacing them
+  // with an empty list.
+  it("sends the revision back and keeps the projection on an unchanged refresh", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith("/api/workspace/navigation")) {
+          // The refresh carries the revision from the previous response plus
+          // the current selected Task.
+          if (url.includes("revision=rev-1")) {
+            return response({ revision: "rev-1", changed: false, projects: [] });
+          }
+          return response({
+            revision: "rev-1",
+            changed: true,
+            projects: [
+              navigationSummary("project-1", "Project one", "2026-08-01T00:00:00Z", [
+                task("task-a", "Inline task", "2026-08-01T00:00:00Z"),
+              ]),
+            ],
+          });
+        }
+        if (url === "/api/sessions?limit=5") return response({ sessions: [] });
+        return response({});
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(
+        <ThemeProvider>
+          <MemoryRouter initialEntries={["/projects/project-1/tasks/task-a"]}>
+            <WorkspaceSidebar />
+          </MemoryRouter>
+        </ThemeProvider>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(screen.getByRole("region", { name: /project one/i })).toBeInTheDocument();
+      // The eager load used the current revision-less URL with the selected Task.
+      expect(fetchMock.mock.calls[0][0]).toBe("/api/workspace/navigation?selected_task=task-a");
+
+      // One idle poll later the request carries the stored revision and the
+      // unchanged answer must not wipe the rendered projection.
+      await act(async () => {
+        vi.advanceTimersByTimeAsync(30000);
+      });
+      const pollCalls = fetchMock.mock.calls.filter(([input]) => String(input).startsWith("/api/workspace/navigation"));
+      expect(pollCalls[pollCalls.length - 1][0]).toContain("revision=rev-1");
+      expect(pollCalls[pollCalls.length - 1][0]).toContain("selected_task=task-a");
+      expect(screen.getByRole("region", { name: /project one/i })).toBeInTheDocument();
+      expect(within(screen.getByRole("region", { name: /project one/i })).getByRole("link", { name: /inline task/i })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("loads the full task list only when a non-current project expands", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith("/api/workspace/navigation")) {
+          return response({
+            projects: [
+              navigationSummary("project-current", "Current project", "2026-08-01T00:00:00Z", [task("task-a", "Inline task", "2026-08-01T00:00:00Z")]),
+              navigationSummary("project-other", "Other project", "2026-08-01T00:00:00Z", [task("task-inline-other", "Inline other", "2026-08-01T00:00:00Z")]),
+            ],
+          });
+        }
+        if (url === "/api/projects/project-other/tasks") {
+          return response({
+            tasks: [
+              task("task-full-1", "Full task 1", "2026-08-01T00:00:00Z"),
+              task("task-full-2", "Full task 2", "2026-08-02T00:00:00Z"),
+            ],
+          });
+        }
+        if (url === "/api/sessions?limit=5") return response({ sessions: [] });
+        return response({});
+      }),
+    );
+
+    render(
+      <ThemeProvider>
+        <MemoryRouter initialEntries={["/projects/project-current/tasks/task-a"]}>
+          <WorkspaceSidebar />
+        </MemoryRouter>
+      </ThemeProvider>,
+    );
+
+    // Collapsed: no on-demand fetch has happened yet.
+    await screen.findByRole("region", { name: /current project/i });
+    let taskFetches = vi.mocked(fetch).mock.calls.filter((call) => String(call[0]).includes("/projects/project-other/tasks")).length;
+    expect(taskFetches).toBe(0);
+
+    // Expanding the non-current Project fires exactly one on-demand fetch and
+    // shows its full Task list.
+    const otherRegion = screen.getByRole("region", { name: /other project/i });
+    await user.click(within(otherRegion).getByRole("button", { name: /expand other project/i }));
+    expect(await within(otherRegion).findByRole("link", { name: /full task 1/i })).toBeInTheDocument();
+    expect(within(otherRegion).getByRole("link", { name: /full task 2/i })).toBeInTheDocument();
+    taskFetches = vi.mocked(fetch).mock.calls.filter((call) => String(call[0]).includes("/projects/project-other/tasks")).length;
+    expect(taskFetches).toBe(1);
   });
 });

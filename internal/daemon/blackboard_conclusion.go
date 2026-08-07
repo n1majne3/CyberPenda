@@ -10,6 +10,7 @@ import (
 
 	"pentest/internal/blackboardconclusion"
 	"pentest/internal/blackboardv2"
+	"pentest/internal/owner"
 	"pentest/internal/runtime"
 	"pentest/internal/task"
 )
@@ -26,6 +27,9 @@ func (server *Server) observeProviderSession(taskID, continuationID, sessionID s
 		ControlTerminal: func(status string) {
 			server.acceptBlackboardConclusionControlTerminal(taskID, sessionID, lineage, status)
 		},
+		OnLaterSourceWork: func(continuation string, watermarks runtime.AssistedConclusionObservedTurn) {
+			server.invalidateTaskFinishIntentOnLaterSourceWork(found.ProjectID, continuation, taskID)
+		},
 		WorkCompleted: func(state runtime.AssistedConclusionObservedTurn, key runtime.AssistedConclusionTurnKey, status string) (bool, error) {
 			receipt, inserted, err := server.tasks.RecordBlackboardConclusionCheckpoint(
 				taskID, continuationID, lineage.RequestID, key.ProviderSessionID, key.TurnID,
@@ -35,8 +39,17 @@ func (server *Server) observeProviderSession(taskID, continuationID, sessionID s
 			if err != nil {
 				return false, err
 			}
+			// The Blackboard write protocol closes only when the Work Runtime Turn
+			// has settled AND its Pending Blackboard Conclusion obligations are
+			// terminal. A debt-free Turn is born clean at the checkpoint, so a
+			// valid Finish Intent can settle immediately. A Turn with uncovered
+			// semantic debt is born Pending and settles only after the conclusion
+			// dispatch applies a terminal result (ADR 0022, criterion 3).
+			if receipt.InternalState == task.BlackboardConclusionReceiptClean {
+				server.settleTaskFinishIntentAfterApply(context.Background(), found.ProjectID, continuationID)
+			}
 			if inserted && receipt.InternalState == task.BlackboardConclusionReceiptPending && status != "completed" {
-				_, _, err = server.tasks.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(receipt.ID, time.Now().UTC(), blackboardConclusionRetryCooldown)
+				_, _, err = server.tasks.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(receipt.ID, task.ConclusionRecoveryDispatchFailed, time.Now().UTC(), blackboardConclusionRetryCooldown)
 				return true, err
 			}
 			if inserted && receipt.InternalState == task.BlackboardConclusionReceiptPending {
@@ -53,12 +66,12 @@ func (server *Server) observeProviderSession(taskID, continuationID, sessionID s
 func (server *Server) scheduleBlackboardConclusionDispatch(receipt task.BlackboardConclusionReceipt) {
 	queued := server.enqueueProviderTaskControl(receipt.TaskID, func(ctx context.Context) {
 		if err := server.dispatchBlackboardConclusion(ctx, receipt); err != nil {
-			server.requireBlackboardConclusionRecovery(receipt, err)
+			server.requireBlackboardConclusionRecovery(receipt, task.ConclusionRecoveryDispatchFailed, err)
 			server.logger.Printf("assisted conclusion: dispatch Task %s receipt %s: %v", receipt.TaskID, receipt.ID, err)
 		}
 	})
 	if !queued {
-		server.requireBlackboardConclusionRecovery(receipt, fmt.Errorf("provider control queue is closed"))
+		server.requireBlackboardConclusionRecovery(receipt, task.ConclusionRecoveryDispatchFailed, fmt.Errorf("provider control queue is closed"))
 	}
 }
 
@@ -94,14 +107,32 @@ Rules: outcome must be one of succeeded, failed, blocked, or inconclusive. Use i
 Describe one Attempt and at least one tested target. Do not call tools, continue testing, include raw tool output or reasoning, finish the Task, or write the Blackboard directly.`, baseRevision, baseRevision)
 }
 
-func repairBlackboardDirective(baseRevision int) string {
-	return fmt.Sprintf(`Your previous Blackboard conclusion result was invalid.
+func repairBlackboardDirective(baseRevision int, detail owner.ConclusionValidationDetail) string {
+	directive := fmt.Sprintf(`Your previous Blackboard conclusion result was invalid.
 Stop security testing and correct only that semantic result.
 Return exactly one JSON object (no markdown fences, no prose) with schema runtime-attempt-result/v1 and base_revision %d.
 If the board has no existing produced targets, use outcome "inconclusive" (or failed/blocked) with produced_targets [].
 Example:
 {"schema":"runtime-attempt-result/v1","base_revision":%d,"attempt":{"key":"attempt:example","create":true,"summary":"One sentence outcome of the completed work.","outcome":"inconclusive"},"tested_targets":[{"key":"objective:example","create_objective":{"objective":"What was tested."}}],"produced_targets":[]}
 Do not call tools, continue testing, include raw tool output or reasoning, finish the Task, or write the Blackboard directly.`, baseRevision, baseRevision)
+	return conclusionValidationRepairLine(detail) + "\n" + directive
+}
+
+// conclusionValidationRepairLine renders the bounded public reason for one
+// rejected closed result into a repair directive. The tokens are closed
+// vocabulary and static expected forms; raw provider output never appears.
+func conclusionValidationRepairLine(detail owner.ConclusionValidationDetail) string {
+	if !detail.Valid() {
+		return ""
+	}
+	line := "Validation: " + detail.Reason
+	if detail.FieldPath != "" {
+		line += " at " + detail.FieldPath
+	}
+	if detail.Expected != "" {
+		line += ". Expected: " + detail.Expected
+	}
+	return line + "."
 }
 
 func regenerateBlackboardDirective(baseRevision int) string {
@@ -134,8 +165,8 @@ func (server *Server) blackboardConclusionCoordinator(taskID string) runtime.Ass
 		EnqueueExisting: func(run func(context.Context)) bool {
 			return server.enqueueExistingProviderTaskControl(taskID, run)
 		},
-		OnFailure: func(ctx context.Context, requestID, code string) error {
-			return server.handleBlackboardConclusionFailure(taskID, requestID, task.BlackboardConclusionErrorCode(code))
+		OnFailure: func(ctx context.Context, requestID string, failure runtime.AssistedConclusionQueuedFailure) error {
+			return server.handleBlackboardConclusionFailure(taskID, requestID, task.BlackboardConclusionErrorCode(failure.Code), failure.Detail)
 		},
 		OnResult: func(ctx context.Context, result runtime.ProviderSessionAttemptResult) error {
 			return server.applyBlackboardConclusionResult(ctx, taskID, result)
@@ -162,9 +193,9 @@ func (server *Server) drainBlackboardConclusionCallbacks(ctx context.Context, ta
 	_ = server.blackboardConclusionCoordinator(taskID).Drain(ctx, requestID)
 }
 
-func (server *Server) handleBlackboardConclusionFailure(taskID, requestID string, code task.BlackboardConclusionErrorCode) error {
+func (server *Server) handleBlackboardConclusionFailure(taskID, requestID string, code task.BlackboardConclusionErrorCode, detail task.ConclusionValidationDetail) error {
 	receipt, dispatchRepair, err := server.tasks.HandleBlackboardConclusionFailure(
-		requestID, code, time.Now().UTC(), blackboardConclusionRetryCooldown,
+		requestID, code, detail, time.Now().UTC(), blackboardConclusionRetryCooldown,
 	)
 	if err != nil {
 		return err
@@ -186,7 +217,13 @@ func (server *Server) dispatchBlackboardConclusionRepair(ctx context.Context, re
 	if receipt.BaseRevision == nil {
 		return fmt.Errorf("Blackboard conclusion repair has no base revision")
 	}
-	return server.sendBlackboardConclusionTurn(ctx, receipt, repairBlackboardDirective(*receipt.BaseRevision))
+	return server.sendBlackboardConclusionTurn(ctx, receipt, repairBlackboardDirective(*receipt.BaseRevision, conclusionDetailFromTaskReceipt(receipt)))
+}
+
+func conclusionDetailFromTaskReceipt(receipt task.BlackboardConclusionReceipt) owner.ConclusionValidationDetail {
+	return owner.ConclusionValidationDetail{
+		Reason: receipt.ValidationReason, FieldPath: receipt.ValidationFieldPath, Expected: receipt.ValidationExpected,
+	}
 }
 
 func waitForBlackboardConclusionEligibility(ctx context.Context, eligibleAt *time.Time, now func() time.Time) error {
@@ -221,6 +258,17 @@ func (server *Server) handleRetryBlackboardConclusion(response http.ResponseWrit
 	idempotencyKey := strings.TrimSpace(request.Header.Get("Idempotency-Key"))
 	if idempotencyKey == "" {
 		writeError(response, http.StatusBadRequest, "Idempotency-Key is required")
+		return
+	}
+	latest, err := server.tasks.LatestBlackboardConclusion(taskID)
+	if err != nil || latest == nil {
+		writeError(response, http.StatusNotFound, "task not found")
+		return
+	}
+	if latest.RecoveryReason == string(task.ConclusionRecoveryAcceptanceAmbiguous) {
+		// An acceptance-ambiguous provider delivery is never resent: a generic
+		// Retry could duplicate a request the provider already accepted.
+		writeError(response, http.StatusConflict, "Blackboard conclusion cannot be retried after an acceptance-ambiguous delivery")
 		return
 	}
 	retried, won, err := server.tasks.RetryLatestBlackboardConclusion(taskID, idempotencyKey, time.Now().UTC())
@@ -263,13 +311,63 @@ func (server *Server) recoverBlackboardConclusionDispatchFailure(receipt task.Bl
 		return
 	}
 	_, _, err := server.tasks.MarkBlackboardConclusionRecoveryActionRequired(
-		receipt.DispatchRequestID, time.Now().UTC(), blackboardConclusionRetryCooldown,
+		receipt.DispatchRequestID, task.ConclusionRecoveryDispatchFailed, time.Now().UTC(), blackboardConclusionRetryCooldown,
 	)
 	if err != nil {
 		server.logger.Printf("assisted conclusion: recover failed dispatch Task %s receipt %s: %v (dispatch error: %v)", receipt.TaskID, receipt.ID, err, cause)
 		return
 	}
 	server.logger.Printf("assisted conclusion: dispatch requires operator action Task %s receipt %s: %v", receipt.TaskID, receipt.ID, cause)
+}
+
+// recoverConclusionObligationsForReplacedContinuation creates a NEW Conclusion
+// Dispatch bound to the replacement Continuation + session for every in-flight
+// assisted-conclusion obligation of a Task whose active dispatch is bound to
+// the old (now terminal) Continuation, after an interrupt_then_replace native
+// steer or a writable-continuation recovery (#197). Historical dispatches are
+// superseded, never rewritten: each recovery dispatch keeps its own immutable
+// binding and deterministic request lineage (ADR 0021). Errors are logged, not
+// fatal: a recovery failure must not block the steer.
+func (server *Server) recoverConclusionObligationsForReplacedContinuation(taskID, oldContinuationID, replacementContinuationID, replacementSessionID string) {
+	dispatches, err := server.tasks.CreateRecoveryConclusionDispatches(taskID, oldContinuationID, replacementContinuationID, replacementSessionID)
+	if err != nil {
+		server.logger.Printf("assisted conclusion: recover in-flight obligations Task %s old=%s replacement=%s: %v", taskID, oldContinuationID, replacementContinuationID, err)
+		return
+	}
+	for _, view := range dispatches {
+		server.scheduleRecoveredConclusionDispatch(view)
+	}
+}
+
+// scheduleRecoveredConclusionDispatch enqueues a pre-send recovery Conclusion
+// Dispatch for its owner so the control turn is delivered on the replacement
+// runtime. A recovery dispatch is always pre-send (send fence cleared), so it
+// is safe to send; acceptance-ambiguous post-fence dispatches are never
+// replayed automatically.
+func (server *Server) scheduleRecoveredConclusionDispatch(view task.BlackboardConclusionReceipt) {
+	queued := server.enqueueProviderTaskControl(view.TaskID, func(ctx context.Context) {
+		if err := server.dispatchRecoveredConclusionDispatch(ctx, view); err != nil {
+			server.recoverBlackboardConclusionDispatchFailure(view, err)
+		}
+	})
+	if !queued {
+		server.recoverBlackboardConclusionDispatchFailure(view, fmt.Errorf("provider control queue is closed"))
+	}
+}
+
+func (server *Server) dispatchRecoveredConclusionDispatch(ctx context.Context, view task.BlackboardConclusionReceipt) error {
+	directive := concludeBlackboardDirective(pointerValue(view.BaseRevision))
+	switch view.InternalState {
+	case task.BlackboardConclusionReceiptRepairDispatchRequested:
+		directive = repairBlackboardDirective(pointerValue(view.BaseRevision), conclusionDetailFromTaskReceipt(view))
+	case task.BlackboardConclusionReceiptVersionRegenerationDispatchRequested:
+		directive = regenerateBlackboardDirective(pointerValue(view.BaseRevision))
+	default:
+		if view.ExplicitRetryCount > 0 {
+			directive = repairBlackboardDirective(pointerValue(view.BaseRevision), conclusionDetailFromTaskReceipt(view))
+		}
+	}
+	return server.sendBlackboardConclusionTurn(ctx, view, directive)
 }
 
 func (server *Server) reconcileValidatedBlackboardConclusionApplies() {
@@ -309,6 +407,7 @@ func (server *Server) reconcileValidatedBlackboardConclusionApply(ctx context.Co
 		_, _, markErr := server.tasks.MarkBlackboardConclusionApplied(receipt.DispatchRequestID, applied.Revision)
 		if markErr == nil {
 			server.blackboardConclusions.ClearRequest(receipt.TaskID, receipt.DispatchRequestID)
+			server.settleTaskFinishIntentAfterApply(ctx, found.ProjectID, receipt.ContinuationID)
 		}
 		return markErr
 	}
@@ -362,6 +461,10 @@ func (server *Server) applyBlackboardConclusionResult(ctx context.Context, taskI
 		server.blackboardConclusions.QueueFailure(result.RequestID, runtime.AssistedConclusionQueuedFailure{
 			OwnerID: taskID, ProviderSessionID: result.SessionID, ProviderTurnID: result.ProviderTurnID,
 			Code: string(task.BlackboardConclusionErrorInvalidResult),
+			Detail: owner.ConclusionValidationDetail{
+				Reason: string(blackboardconclusion.ValidationReasonBaseRevisionMismatch), FieldPath: "base_revision",
+				Expected: fmt.Sprintf("base_revision must equal the receipt's claimed revision %d", *receipt.BaseRevision),
+			},
 		})
 		server.drainBlackboardConclusionCallbacks(ctx, taskID, result.RequestID)
 		return nil
@@ -409,6 +512,11 @@ func (server *Server) applyBlackboardConclusionResult(ctx context.Context, taskI
 	_, _, err = server.tasks.MarkBlackboardConclusionApplied(result.RequestID, applied.Revision)
 	if err == nil {
 		server.blackboardConclusions.ClearRequest(taskID, result.RequestID)
+		// The obligation reached terminal-clean. If a valid Blackboard Finish
+		// Intent exists and the Work Turn settled, close the Blackboard write
+		// protocol now. This path also covers daemon restart recovery, where the
+		// observer does not run (ADR 0022).
+		server.settleTaskFinishIntentAfterApply(ctx, found.ProjectID, receipt.ContinuationID)
 	}
 	return err
 }
@@ -516,28 +624,6 @@ func (server *Server) sendBlackboardConclusionTurn(ctx context.Context, receipt 
 	return err
 }
 
-func classifyTrustedBlackboardTool(name string) (blackboardToolSemantics, bool) {
-	semantics, trusted := trustedBlackboardToolSemantics[strings.TrimSpace(name)]
-	return semantics, trusted
-}
-
-type blackboardToolSemantics uint8
-
-const (
-	blackboardToolReadOnly blackboardToolSemantics = iota
-	blackboardToolEvidenceRetention
-	blackboardToolSemanticPersistence
-)
-
-var trustedBlackboardToolSemantics = map[string]blackboardToolSemantics{
-	"blackboard_change":             blackboardToolSemanticPersistence,
-	"blackboard_read":               blackboardToolReadOnly,
-	"blackboard_history":            blackboardToolReadOnly,
-	"blackboard_retain_evidence":    blackboardToolEvidenceRetention,
-	"blackboard_checkpoint_attempt": blackboardToolSemanticPersistence,
-	"blackboard_finish":             blackboardToolSemanticPersistence,
-}
-
 func (server *Server) attachBlackboardConclusion(found task.Task) (task.Task, error) {
 	view := task.BlackboardConclusion{
 		Mode:  found.RunControls.BlackboardConclusionMode,
@@ -549,6 +635,14 @@ func (server *Server) attachBlackboardConclusion(found task.Task) (task.Task, er
 	}
 	if receipt != nil {
 		view = receipt.View(found.RunControls.BlackboardConclusionMode)
+	}
+	// A recorded-but-unsettled Blackboard Finish Intent keeps the public
+	// conclusion state non-clean: the Continuation has not actually closed while
+	// the Work Runtime Turn can still produce work (ADR 0022, criterion 4).
+	if found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeAssisted && view.State == task.BlackboardConclusionStateClean {
+		if server.hasUnsettledTaskFinishIntent(found.ID) {
+			view.State = task.BlackboardConclusionStatePending
+		}
 	}
 	found.BlackboardConclusion = view
 	return found, nil

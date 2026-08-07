@@ -10,10 +10,14 @@ import (
 
 	"pentest/internal/owner"
 	"pentest/internal/project"
+	"pentest/internal/runtime"
 	"pentest/internal/runtimeprofile"
 )
 
-const trustedMCPServerName = "pentest"
+// trustedMCPServerName is the one registered identity of the trusted Blackboard
+// v2 Project Interface (ADR 0014). Runtime observations classify tools against
+// this same registration, so the name must not drift here.
+const trustedMCPServerName = runtime.TrustedProjectInterfaceServerName
 
 // RuntimeOwnerContext carries one validated owner binding into launch
 // projection. Mixed Task/Session identities cannot be represented.
@@ -126,13 +130,9 @@ func claudeTrustedMCPAllowedTools(servers []runtimeprofile.MCPServer) []string {
 		if strings.TrimSpace(server.Name) != trustedMCPServerName || server.Mode != runtimeprofile.MCPServerTrusted {
 			continue
 		}
-		tools := []string{
-			"blackboard_change", "blackboard_read", "blackboard_history",
-			"blackboard_retain_evidence", "blackboard_checkpoint_attempt", "blackboard_finish",
-		}
-		allowed := make([]string, 0, len(tools))
-		for _, name := range tools {
-			allowed = append(allowed, "mcp__"+trustedMCPServerName+"__"+name)
+		allowed := make([]string, 0, len(runtime.TrustedProjectInterfaceOperations()))
+		for _, op := range runtime.TrustedProjectInterfaceOperations() {
+			allowed = append(allowed, runtime.TrustedProjectInterfaceToolName(op))
 		}
 		return allowed
 	}

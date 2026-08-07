@@ -154,6 +154,10 @@ const (
 
 type BlackboardConclusionErrorCode = owner.BlackboardConclusionErrorCode
 
+// ConclusionValidationDetail is the bounded public reason for one rejected
+// closed conclusion result, safe for repair directives and durable state.
+type ConclusionValidationDetail = owner.ConclusionValidationDetail
+
 const (
 	BlackboardConclusionErrorInvalidResult           = owner.BlackboardConclusionErrorInvalidResult
 	BlackboardConclusionErrorToolUseForbidden        = owner.BlackboardConclusionErrorToolUseForbidden
@@ -180,6 +184,42 @@ const (
 	BlackboardConclusionReceiptApplied                              = owner.BlackboardConclusionReceiptApplied
 )
 
+// ConclusionDispatchKind is the immutable attempt category of one Conclusion
+// Dispatch (ADR 0021). Recovery-created dispatches are kind recovery.
+type ConclusionDispatchKind = owner.ConclusionDispatchKind
+
+const (
+	ConclusionDispatchKindInitial             = owner.ConclusionDispatchKindInitial
+	ConclusionDispatchKindRepair              = owner.ConclusionDispatchKindRepair
+	ConclusionDispatchKindVersionRegeneration = owner.ConclusionDispatchKindVersionRegeneration
+	ConclusionDispatchKindRetry               = owner.ConclusionDispatchKindRetry
+	ConclusionDispatchKindRecovery            = owner.ConclusionDispatchKindRecovery
+)
+
+// ConclusionDispatchState is the delivery lifecycle of one immutable dispatch.
+type ConclusionDispatchState = owner.ConclusionDispatchState
+
+const (
+	ConclusionDispatchRequested      = owner.ConclusionDispatchRequested
+	ConclusionDispatchAwaitingResult = owner.ConclusionDispatchAwaitingResult
+	ConclusionDispatchValidated      = owner.ConclusionDispatchValidated
+	ConclusionDispatchApplied        = owner.ConclusionDispatchApplied
+	ConclusionDispatchActionRequired = owner.ConclusionDispatchActionRequired
+	ConclusionDispatchSuperseded     = owner.ConclusionDispatchSuperseded
+	ConclusionDispatchLateTerminal   = owner.ConclusionDispatchLateTerminal
+)
+
+// ConclusionRecoveryReason is the closed operator-visible fail-closed reason.
+type ConclusionRecoveryReason = owner.ConclusionRecoveryReason
+
+const (
+	ConclusionRecoveryRuntimeOwnershipNotProven      = owner.ConclusionRecoveryRuntimeOwnershipNotProven
+	ConclusionRecoveryWritableReplacementUnavailable = owner.ConclusionRecoveryWritableReplacementUnavailable
+	ConclusionRecoveryAcceptanceAmbiguous            = owner.ConclusionRecoveryAcceptanceAmbiguous
+	ConclusionRecoveryDispatchFailed                 = owner.ConclusionRecoveryDispatchFailed
+	ConclusionRecoveryLegacyCorrelationUnproven      = owner.ConclusionRecoveryLegacyCorrelationUnproven
+)
+
 // BlackboardConclusion is the compact Session read view for the latest
 // assisted Work Runtime Turn checkpoint and any conclusion progress it
 // triggered. Result bytes and provider correlation remain private.
@@ -191,8 +231,17 @@ type BlackboardConclusion struct {
 	SemanticPersistenceWatermark int                           `json:"semantic_persistence_watermark"`
 	AppliedRevision              *int                          `json:"applied_revision,omitempty"`
 	ErrorCode                    BlackboardConclusionErrorCode `json:"error_code,omitempty"`
-	RetryAvailable               bool                          `json:"retry_available"`
-	NextEligibleAt               *time.Time                    `json:"next_eligible_at,omitempty"`
+	// ValidationReason, ValidationFieldPath, and ValidationExpected expose the
+	// bounded public reason for the last rejected closed result. They are
+	// closed tokens only; raw provider output never appears.
+	ValidationReason    string `json:"validation_reason,omitempty"`
+	ValidationFieldPath string `json:"validation_field_path,omitempty"`
+	ValidationExpected  string `json:"validation_expected,omitempty"`
+	// RecoveryReason is the closed operator-visible reason for a fail-closed
+	// action_required obligation (ADR 0021).
+	RecoveryReason string     `json:"recovery_reason,omitempty"`
+	RetryAvailable bool       `json:"retry_available"`
+	NextEligibleAt *time.Time `json:"next_eligible_at,omitempty"`
 }
 
 // ProviderPermission is a redacted provider approval request owned by one
@@ -806,6 +855,13 @@ func (s *Service) AppendEvent(id string, kind EventKind, payload EventPayload) (
 		return Event{}, fmt.Errorf("commit Session Event: %w", err)
 	}
 	return event, nil
+}
+
+// AppendEventTx appends a structured session event inside a caller-owned
+// transaction so it can be committed atomically with another owner-neutral
+// record (for example a durable Accepted Steering request).
+func (s *Service) AppendEventTx(tx *sql.Tx, sessionID string, kind EventKind, payload EventPayload) (Event, error) {
+	return appendEventTx(tx, sessionID, kind, payload, time.Now().UTC())
 }
 
 // AppendConversationEvent stores one user/runtime conversation entry. It is

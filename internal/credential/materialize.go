@@ -3,27 +3,8 @@ package credential
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 )
-
-// commandSourceOptInEnv is the environment variable that re-enables the
-// high-privilege "command" credential source.
-const commandSourceOptInEnv = "PENTEST_ALLOW_COMMAND_CREDENTIALS"
-
-// commandSourceEnabled reports whether the "command" credential source is
-// permitted. Materializing a command source runs arbitrary shell on the host
-// (effectively host RCE for anyone who can write a binding), so it is disabled
-// by default. Operators who genuinely need password-store integration re-enable
-// it explicitly by setting PENTEST_ALLOW_COMMAND_CREDENTIALS to a truthy value.
-func commandSourceEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(commandSourceOptInEnv))) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
-	}
-}
 
 // Materialize reads the secret value described by a binding source.
 func Materialize(source Source) (string, error) {
@@ -36,33 +17,6 @@ func Materialize(source Source) (string, error) {
 		value, ok := os.LookupEnv(name)
 		if !ok || strings.TrimSpace(value) == "" {
 			return "", fmt.Errorf("environment variable %q is not set", name)
-		}
-		return value, nil
-	case SourceFile:
-		path := strings.TrimSpace(source.Value)
-		if path == "" {
-			return "", fmt.Errorf("file source path is required")
-		}
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return "", fmt.Errorf("read credential file: %w", err)
-		}
-		return strings.TrimSpace(string(raw)), nil
-	case SourceCommand:
-		if !commandSourceEnabled() {
-			return "", fmt.Errorf("%w; set %s=1 to enable", ErrCommandSourceDisabled, commandSourceOptInEnv)
-		}
-		command := strings.TrimSpace(source.Value)
-		if command == "" {
-			return "", fmt.Errorf("command source is required")
-		}
-		out, err := exec.Command("sh", "-c", command).Output()
-		if err != nil {
-			return "", fmt.Errorf("run credential command: %w", err)
-		}
-		value := strings.TrimSpace(string(out))
-		if value == "" {
-			return "", fmt.Errorf("credential command returned empty output")
 		}
 		return value, nil
 	case SourceLiteral:
@@ -79,11 +33,40 @@ func Materialize(source Source) (string, error) {
 	}
 }
 
+// ResolveGlobalEnv materializes every active global Credential Binding into a
+// runtime env var name -> value map. Each binding projects under its
+// DestinationEnv (or, for env sources, the variable name in Value). Disabled
+// bindings are skipped. A binding that cannot be materialized or that lacks a
+// projectable env var name returns an error naming the credential reference so
+// preflight can block launch.
+//
+// This is the mechanism behind the Global Environment Variable concept: one
+// global binding injects into every Runtime without a per-profile
+// credential_ref.
+func (s *Service) ResolveGlobalEnv() (map[string]string, error) {
+	bindings, err := s.ListGlobal()
+	if err != nil {
+		return nil, fmt.Errorf("list global bindings: %w", err)
+	}
+	out := make(map[string]string, len(bindings))
+	for _, binding := range bindings {
+		if binding.Disabled {
+			continue
+		}
+		envName, value, err := ResolveSourceEnv(binding.Source)
+		if err != nil {
+			return nil, fmt.Errorf("credential %q: %w", binding.CredentialRef, err)
+		}
+		out[envName] = value
+	}
+	return out, nil
+}
+
 // ResolveMaterializedEnv resolves credential references to env var name -> value
 // pairs. The runtime env key is the binding's DestinationEnv when set; for env
-// sources it falls back to Value (so existing bindings behave unchanged). File,
-// command, and literal sources must declare DestinationEnv, otherwise they would
-// project under a path/command/secret-shaped key instead of a real env var.
+// sources it falls back to Value (so existing bindings behave unchanged).
+// Literal sources must declare DestinationEnv, otherwise they would project
+// under a secret-shaped key instead of a real env var.
 func (s *Service) ResolveMaterializedEnv(projectID string, refs []string) (map[string]string, error) {
 	if len(refs) == 0 {
 		return nil, nil
@@ -129,8 +112,8 @@ func ResolveSourceEnv(source Source) (envName, value string, err error) {
 
 // destinationEnv returns the runtime env var name a materialized secret projects
 // under. DestinationEnv wins; otherwise env sources fall back to their Value
-// (the variable name); all other kinds require DestinationEnv because their
-// Value is a path/command/secret, not an env var name.
+// (the variable name). Literal sources must declare DestinationEnv because
+// their Value is a secret, not an env var name.
 func destinationEnv(source Source) (string, error) {
 	if dest := strings.TrimSpace(source.DestinationEnv); dest != "" {
 		return dest, nil

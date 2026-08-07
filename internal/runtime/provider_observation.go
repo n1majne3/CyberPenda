@@ -36,14 +36,18 @@ const (
 // ProviderSessionObservation contains only bounded correlation metadata.
 // Status is empty for Tool Use, succeeded/failed for Tool Result, and
 // completed/failed/interrupted for a completed Turn notification.
+// BlackboardOperation is the canonical trusted Project Interface identity
+// carried for tool observations whose provider-visible ToolName resolves to
+// the trusted registration; it stays empty for every untrusted tool name.
 type ProviderSessionObservation struct {
-	Kind           ProviderSessionObservationKind
-	RequestID      string
-	SessionID      string
-	ProviderTurnID string
-	ToolCallID     string
-	ToolName       string
-	Status         string
+	Kind                ProviderSessionObservationKind
+	RequestID           string
+	SessionID           string
+	ProviderTurnID      string
+	ToolCallID          string
+	ToolName            string
+	Status              string
+	BlackboardOperation BlackboardOperation
 }
 
 // Validate enforces the closed, kind-specific observation shape.
@@ -70,18 +74,41 @@ func (observation ProviderSessionObservation) Validate() error {
 		if toolCallID == "" || toolName == "" || status != "" {
 			return fmt.Errorf("%w: Tool Use requires call and tool identity only", ErrInvalidProviderSessionObservation)
 		}
+		if err := validateCanonicalBlackboardOperation(toolName, observation.BlackboardOperation); err != nil {
+			return err
+		}
 	case ProviderSessionObservationToolResult:
 		if toolCallID == "" || toolName == "" || (status != "succeeded" && status != "failed") {
 			return fmt.Errorf("%w: Tool Result requires terminal bounded metadata", ErrInvalidProviderSessionObservation)
+		}
+		if err := validateCanonicalBlackboardOperation(toolName, observation.BlackboardOperation); err != nil {
+			return err
 		}
 	case ProviderSessionObservationTurnCompleted:
 		if toolCallID != "" || toolName != "" || (status != "completed" && status != "failed" && status != "interrupted") {
 			return fmt.Errorf("%w: Turn completion has invalid fields", ErrInvalidProviderSessionObservation)
 		}
+		if observation.BlackboardOperation != "" {
+			return fmt.Errorf("%w: Turn completion cannot carry a canonical Blackboard operation", ErrInvalidProviderSessionObservation)
+		}
 	default:
 		return fmt.Errorf("%w: unknown observation kind", ErrInvalidProviderSessionObservation)
 	}
 	return nil
+}
+
+// validateCanonicalBlackboardOperation enforces the closed identity contract:
+// a trusted registered tool name must carry exactly its canonical operation,
+// and an untrusted name must carry no canonical operation at all.
+func validateCanonicalBlackboardOperation(toolName string, operation BlackboardOperation) error {
+	canonical, trusted := ClassifyTrustedBlackboardTool(toolName)
+	if operation == canonical {
+		return nil
+	}
+	if trusted {
+		return fmt.Errorf("%w: trusted tool identity requires its canonical Blackboard operation", ErrInvalidProviderSessionObservation)
+	}
+	return fmt.Errorf("%w: canonical Blackboard operation requires the trusted tool identity", ErrInvalidProviderSessionObservation)
 }
 
 // ProviderSessionObserve receives one validated observation.

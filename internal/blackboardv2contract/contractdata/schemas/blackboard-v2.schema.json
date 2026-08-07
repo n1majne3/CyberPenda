@@ -2901,7 +2901,10 @@
           "const": "continuation-finish/v2"
         },
         "status": {
-          "const": "finished"
+          "enum": [
+            "finished",
+            "intent_recorded"
+          ]
         },
         "revision": {
           "$ref": "#/$defs/revision"
