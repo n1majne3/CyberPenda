@@ -30,6 +30,7 @@ import (
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/session"
 	"pentest/internal/skill"
+	"pentest/internal/steering"
 	"pentest/internal/store"
 	"pentest/internal/task"
 
@@ -102,6 +103,7 @@ type Server struct {
 	preflight               *preflight.Service
 	tasks                   *task.Service
 	sessions                *session.Service
+	steering                *steering.Service
 	harness                 *runtime.Harness
 	sessionHarness          *runtime.SessionHarness
 	canonicalStore          string
@@ -228,6 +230,7 @@ func NewServer(config Config) (*Server, error) {
 			WithModelProviders(modelProviders, runtimePlugins).
 			WithRuntimeExtensions(runtimeExtensions),
 		tasks:                   tasks,
+		steering:                steering.NewService(db),
 		sessionRoot:             sessionRoot(config, runtimeRoot),
 		harness:                 runtime.NewHarness(tasks),
 		canonicalStore:          epoch,
@@ -284,6 +287,7 @@ func NewServer(config Config) (*Server, error) {
 	server.reconcileValidatedSessionBlackboardConclusionApplies()
 	sessionRecovery := server.recoverSessionBlackboardConclusionReceipts(context.Background())
 	server.reconcileInterruptedSessions(sessionRecovery.LiveOwnerIDs)
+	server.recoverAcceptedSteering(context.Background())
 
 	return server, nil
 }
@@ -752,7 +756,9 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/sessions/{id}/events", server.handleSessionEvents)
 	server.mux.HandleFunc("GET /api/sessions/{id}/conversation", server.handleSessionConversation)
 	server.mux.HandleFunc("GET /api/sessions/{id}/timeline", server.handleSessionTimeline)
+	server.mux.HandleFunc("GET /api/sessions/{id}/timeline/items/{seq}", server.handleSessionTimelineItem)
 	server.mux.HandleFunc("GET /api/sessions/{id}/transcript", server.handleSessionTranscript)
+	server.mux.HandleFunc("GET /api/sessions/{id}/transcript/entries/{entry_id}", server.handleSessionTranscriptEntry)
 	server.mux.HandleFunc("POST /api/sessions/{id}/messages", server.handleSessionMessage)
 	server.mux.HandleFunc("POST /api/sessions/{id}/resume", server.handleSessionMessage)
 	server.mux.HandleFunc("POST /api/sessions/{id}/steer", server.handleSessionSteer)
@@ -804,7 +810,9 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("DELETE /api/projects/{id}/tasks/{task_id}", server.handleDeleteTask)
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/events", server.handleTaskEvents)
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/transcript", server.handleTaskTranscript)
+	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/transcript/entries/{entry_id}", server.handleTaskTranscriptEntry)
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/timeline", server.handleTaskTimeline)
+	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/timeline/items/{seq}", server.handleTaskTimelineItem)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/stop", server.handleStopTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/finish", server.handleFinishTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/blackboard-conclusion/retry", server.handleRetryBlackboardConclusion)

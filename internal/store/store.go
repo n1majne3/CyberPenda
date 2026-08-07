@@ -935,6 +935,8 @@ func migrations() []migration {
 		newMigration(48, "session_assisted_conclusion_receipts", migration48SQL, migration48Up),
 		newMigration(49, "session_continuation_interface_grants", migration49SQL, migration49Up),
 		newMigration(50, "assisted_conclusion_validation_reason", migration50SQL, migration50Up),
+		newMigration(51, "navigation_task_indexes", migration51SQL, migration51Up),
+		newMigration(52, "owner_neutral_accepted_steering", migration52SQL, migration52Up),
 	}
 }
 
@@ -967,6 +969,55 @@ func migration50Up(tx *sql.Tx) error {
 	}
 	return nil
 }
+
+// migration51SQL adds the navigation indexes for the bounded Project
+// Navigation Projection (#201). idx_tasks_project_activity serves the
+// per-Project recent Task query (filter by project and deletion state, ordered
+// by activity) so a Project's history beyond the fixed summary is never read;
+// idx_tasks_updated_at answers the MAX(updated_at) navigation epoch in one
+// indexed read instead of a full history scan.
+const migration51SQL = `
+CREATE INDEX IF NOT EXISTS idx_tasks_project_activity
+	ON tasks(project_id, deleted_at, updated_at DESC, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tasks_updated_at ON tasks(updated_at);
+`
+
+func migration51Up(tx *sql.Tx) error { return execStatements(tx, migration51SQL) }
+
+// migration52SQL adds the owner-neutral Accepted Steering table. Task and
+// Session owners share one durable dispatch queue; the owner_kind column keeps
+// the state machine identical for both without a cross-owner relationship.
+const migration52SQL = `
+CREATE TABLE IF NOT EXISTS accepted_steering (
+	id TEXT PRIMARY KEY,
+	owner_kind TEXT NOT NULL CHECK (owner_kind IN ('task', 'session')),
+	owner_id TEXT NOT NULL,
+	request_id TEXT NOT NULL,
+	message TEXT NOT NULL,
+	mode TEXT NOT NULL CHECK (mode IN ('in_turn_steer', 'interrupt_then_replace')),
+	model_provider_id TEXT NOT NULL DEFAULT '',
+	model TEXT NOT NULL DEFAULT '',
+	requested_reasoning_effort TEXT NOT NULL DEFAULT '',
+	state TEXT NOT NULL CHECK (state IN ('pending', 'dispatch_started', 'applied', 'failed', 'action_required')),
+	queue_order INTEGER NOT NULL,
+	conversation_event_id TEXT NOT NULL DEFAULT '',
+	continuation_id TEXT NOT NULL DEFAULT '',
+	session_id TEXT NOT NULL DEFAULT '',
+	send_started_at TEXT NOT NULL DEFAULT '',
+	result_json TEXT NOT NULL DEFAULT '{}',
+	error_code TEXT NOT NULL DEFAULT '',
+	error_message TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	UNIQUE (owner_kind, owner_id, request_id)
+);
+CREATE INDEX IF NOT EXISTS idx_accepted_steering_owner_queue
+	ON accepted_steering(owner_kind, owner_id, queue_order ASC);
+CREATE INDEX IF NOT EXISTS idx_accepted_steering_state
+	ON accepted_steering(state ASC);
+`
+
+func migration52Up(tx *sql.Tx) error { return execStatements(tx, migration52SQL) }
 
 func storeTableHasColumn(tx *sql.Tx, table, column string) (bool, error) {
 	rows, err := tx.Query(`PRAGMA table_info(` + table + `)`)

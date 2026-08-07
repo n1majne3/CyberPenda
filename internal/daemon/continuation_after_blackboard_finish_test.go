@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -62,9 +61,11 @@ func TestNewUserMessageAfterBlackboardFinishCreatesWritableContinuation(t *testi
 	if factory.openCount() != 1 {
 		t.Fatalf("post-finish steer opened %d provider sessions, want 1 (same live Runtime)", factory.openCount())
 	}
+	// The operator message stays the durable conversation projection; the
+	// writable Continuation is resolved by the Accepted Steering dispatch.
 	conversation := findConversationEvent(t, server, created.ID, "post-finish-1")
-	if conversation.ContinuationID != next.ID {
-		t.Fatalf("conversation event continuation = %q, want fresh %q", conversation.ContinuationID, next.ID)
+	if conversation.Payload["outcome"] != "pending" || conversation.Payload["delivery"] != "native_steer" {
+		t.Fatalf("post-finish conversation projection = %#v", conversation.Payload)
 	}
 	// Timeline boundary: the prior terminal Continuation and the fresh writable
 	// Continuation are both visible as lifecycle rows.
@@ -131,6 +132,9 @@ func TestPostFinishSteerFailsExplicitlyWhenSessionCannotBindFreshContinuation(t 
 		t.Fatalf("Blackboard Finish: %v", err)
 	}
 
+	// The Accepted Steering contract returns 202 after the request is durable;
+	// the unbindable fresh Continuation settles the dispatch as failed instead
+	// of a synchronous 409.
 	steer := httptest.NewRequest(http.MethodPost, "/api/projects/"+created.ProjectID+"/tasks/"+created.ID+"/steer", bytes.NewBufferString(`{
 		"request_id":"post-finish-unbindable-1",
 		"message":"Continue after Finish without a bindable session."
@@ -138,12 +142,19 @@ func TestPostFinishSteerFailsExplicitlyWhenSessionCannotBindFreshContinuation(t 
 	steer.Header.Set("Content-Type", "application/json")
 	steerResponse := httptest.NewRecorder()
 	server.ServeHTTP(steerResponse, steer)
-	if steerResponse.Code != http.StatusConflict {
+	if steerResponse.Code != http.StatusAccepted {
 		t.Fatalf("unbindable post-finish steer status=%d body=%s", steerResponse.Code, steerResponse.Body.String())
 	}
-	if !strings.Contains(steerResponse.Body.String(), "continuation") {
-		t.Fatalf("unbindable post-finish steer error does not name the continuation: %s", steerResponse.Body.String())
-	}
+	server.providerControlWG.Wait()
+	waitForTaskEvent(t, server, created.ID, func(events []task.Event) bool {
+		for _, event := range events {
+			if event.Kind == task.EventKindSteering && event.Payload["request_id"] == "post-finish-unbindable-1" &&
+				event.Payload["outcome"] == "failed" && event.Payload["error_code"] == "continuation_unavailable" {
+				return true
+			}
+		}
+		return false
+	})
 	if next, err := server.tasks.ActiveContinuation(created.ID); err != nil || next != nil {
 		t.Fatalf("failed bind left a writable continuation behind: %v %#v", err, next)
 	}

@@ -170,7 +170,7 @@ describe("WorkspaceSidebar", () => {
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
-        if (url === "/api/workspace/navigation") {
+        if (url.startsWith("/api/workspace/navigation")) {
           return response({
             projects: [navigationSummary("project-active", "Active project", "2026-07-01T00:00:00Z", activeTasks)],
           });
@@ -196,16 +196,22 @@ describe("WorkspaceSidebar", () => {
       "href",
       "/projects/project-active",
     );
+    // The first navigation request carries the selected Task context (#201).
+    expect(vi.mocked(fetch).mock.calls[0][0]).toContain("selected_task=task-current");
 
     const projectRegion = screen.getByRole("region", { name: /active project/i });
-    // The current Project renders its inlined Tasks immediately; the projection
-    // already bounds the set so takeRecentWithCurrent cap is still honored.
+    // The current Project renders its daemon-bounded inlined Tasks as-is (#201):
+    // the busy Task first, then the five ordinary recent Tasks, then the old
+    // selected Task — all seven stay visible even though the selected Task is
+    // older than the recent summary.
     const taskLinks = await within(projectRegion).findAllByRole("link", { name: /task conversation/i });
     expect(taskLinks.map((link) => link.textContent?.trim())).toEqual([
       "Busy task task conversation",
       "Recent task 1 task conversation",
       "Recent task 2 task conversation",
       "Recent task 3 task conversation",
+      "Recent task 4 task conversation",
+      "Recent task 5 task conversation",
       "Current task task conversation",
     ]);
     expect(within(projectRegion).getByRole("link", { name: /current task/i })).toHaveAttribute(
@@ -575,13 +581,73 @@ describe("WorkspaceSidebar", () => {
     }
   });
 
+  // #201: an unchanged navigation refresh must not reserialize the projection.
+  // The Sidebar sends back the opaque revision it received, and when the daemon
+  // answers changed=false it keeps the current rows instead of replacing them
+  // with an empty list.
+  it("sends the revision back and keeps the projection on an unchanged refresh", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith("/api/workspace/navigation")) {
+          // The refresh carries the revision from the previous response plus
+          // the current selected Task.
+          if (url.includes("revision=rev-1")) {
+            return response({ revision: "rev-1", changed: false, projects: [] });
+          }
+          return response({
+            revision: "rev-1",
+            changed: true,
+            projects: [
+              navigationSummary("project-1", "Project one", "2026-08-01T00:00:00Z", [
+                task("task-a", "Inline task", "2026-08-01T00:00:00Z"),
+              ]),
+            ],
+          });
+        }
+        if (url === "/api/sessions?limit=5") return response({ sessions: [] });
+        return response({});
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(
+        <ThemeProvider>
+          <MemoryRouter initialEntries={["/projects/project-1/tasks/task-a"]}>
+            <WorkspaceSidebar />
+          </MemoryRouter>
+        </ThemeProvider>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(screen.getByRole("region", { name: /project one/i })).toBeInTheDocument();
+      // The eager load used the current revision-less URL with the selected Task.
+      expect(fetchMock.mock.calls[0][0]).toBe("/api/workspace/navigation?selected_task=task-a");
+
+      // One idle poll later the request carries the stored revision and the
+      // unchanged answer must not wipe the rendered projection.
+      await act(async () => {
+        vi.advanceTimersByTimeAsync(30000);
+      });
+      const pollCalls = fetchMock.mock.calls.filter(([input]) => String(input).startsWith("/api/workspace/navigation"));
+      expect(pollCalls[pollCalls.length - 1][0]).toContain("revision=rev-1");
+      expect(pollCalls[pollCalls.length - 1][0]).toContain("selected_task=task-a");
+      expect(screen.getByRole("region", { name: /project one/i })).toBeInTheDocument();
+      expect(within(screen.getByRole("region", { name: /project one/i })).getByRole("link", { name: /inline task/i })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("loads the full task list only when a non-current project expands", async () => {
     const user = userEvent.setup();
     vi.stubGlobal(
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
-        if (url === "/api/workspace/navigation") {
+        if (url.startsWith("/api/workspace/navigation")) {
           return response({
             projects: [
               navigationSummary("project-current", "Current project", "2026-08-01T00:00:00Z", [task("task-a", "Inline task", "2026-08-01T00:00:00Z")]),

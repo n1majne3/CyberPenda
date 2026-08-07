@@ -818,6 +818,13 @@ func (s *Service) AppendEvent(id string, kind EventKind, payload EventPayload) (
 	return event, nil
 }
 
+// AppendEventTx appends a structured session event inside a caller-owned
+// transaction so it can be committed atomically with another owner-neutral
+// record (for example a durable Accepted Steering request).
+func (s *Service) AppendEventTx(tx *sql.Tx, sessionID string, kind EventKind, payload EventPayload) (Event, error) {
+	return appendEventTx(tx, sessionID, kind, payload, time.Now().UTC())
+}
+
 // AppendConversationEvent stores one user/runtime conversation entry. It is
 // the only write path for transcript content, preventing synthetic timeline
 // message duplication.

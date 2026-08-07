@@ -695,7 +695,9 @@ async function saveCredentialSource(provider: ModelProvider, form: Form) {
   if (!value || value === "[configured]") return;
   await apiPut("/api/credential-bindings", {
     credential_ref: provider.api_key_env,
-    source: { kind: "literal", value },
+    // destination_env equals the generated env var name so the binding
+    // projects under the provider key the runtime expects.
+    source: { kind: "literal", value, destination_env: provider.api_key_env },
   });
 }
 

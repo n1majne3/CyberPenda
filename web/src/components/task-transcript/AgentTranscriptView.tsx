@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import {
   AlertCircle,
+  ArrowDown,
   ArrowDownNarrowWide,
   ArrowUpNarrowWide,
   Bot,
@@ -17,6 +18,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui";
 import { formatClockTime, formatCompactDateTime, formatDateTime } from "@/lib/format";
+import { useVirtualWindow } from "@/lib/virtualWindow";
 import type { TimelineItem, TranscriptSortDirection } from "./types";
 import {
   buildFilterOptions,
@@ -29,11 +31,30 @@ import {
   itemFilterKey,
 } from "./timeline-utils";
 
+// Uniform row-height estimate matching the contain-intrinsic-size hint on the
+// rendered rows; the virtualized window uses it to bound DOM size while older
+// pages accumulate (#202).
+const TIMELINE_ROW_ESTIMATE = 48;
+// Distance from the tail (in px) below which the operator is "at the tail".
+const TAIL_THRESHOLD = 48;
+
 interface AgentTranscriptViewProps {
   owner: RuntimeTimelineOwner;
   items: TimelineItem[];
   profileName?: string;
   isLive?: boolean;
+  /** Forwarded scroll container so the page can shift the reading position. */
+  scrollRef?: RefObject<HTMLDivElement | null>;
+  /** Reports whether the operator is at the live tail (sort-aware). */
+  onAtTailChange?: (atTail: boolean) => void;
+  /** Reports the internal sort direction for anchor-preserving paging. */
+  onSortDirectionChange?: (direction: TranscriptSortDirection) => void;
+  /** Unseen live-event count shown as a jump-to-tail pill when away. */
+  unseenCount?: number;
+  /** Jumps to the live tail and dismisses the unseen pill. */
+  onShowLatest?: () => void;
+  /** Rendered at the older end of the list (paging affordance). */
+  footer?: ReactNode;
 }
 
 export interface RuntimeTimelineOwner {
@@ -43,16 +64,23 @@ export interface RuntimeTimelineOwner {
   updatedAt: string;
 }
 
-export function AgentTranscriptView({ owner, items, profileName, isLive = false }: AgentTranscriptViewProps) {
+export function AgentTranscriptView({ owner, items, profileName, isLive = false, scrollRef, onAtTailChange, onSortDirectionChange, unseenCount = 0, onShowLatest, footer }: AgentTranscriptViewProps) {
   const [selectedSeq, setSelectedSeq] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState("");
   const [copied, setCopied] = useState(false);
   const [selectedTools, setSelectedTools] = useState<Set<string>>(new Set());
   const [sortDirection, setSortDirection] = useState<TranscriptSortDirection>("newest_first");
   const [filterOpen, setFilterOpen] = useState(false);
+  const [scrollContainer, setScrollContainer] = useState<HTMLDivElement | null>(null);
   const eventRefs = useRef<Map<number, HTMLDivElement>>(new Map());
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const filterRef = useRef<HTMLDivElement>(null);
+  const atTailRef = useRef(true);
+  const sortRef = useRef<TranscriptSortDirection>("newest_first");
+  const onAtTailChangeRef = useRef(onAtTailChange);
+  // Mirror the latest callback so effect closures never capture a stale one.
+  useEffect(() => {
+    onAtTailChangeRef.current = onAtTailChange;
+  });
 
   const filterOptions = useMemo(() => buildFilterOptions(items), [items]);
 
@@ -65,6 +93,61 @@ export function AgentTranscriptView({ owner, items, profileName, isLive = false 
     () => (sortDirection === "newest_first" ? [...filteredItems].reverse() : filteredItems),
     [filteredItems, sortDirection],
   );
+
+  // Virtualized rendering window: DOM size stays bounded while loaded older
+  // pages accumulate in state (#202). The container element is stored in
+  // state so the scroll listener attaches once the container mounts.
+  const displayWindow = useVirtualWindow({
+    itemCount: displayItems.length,
+    viewport: scrollContainer,
+    estimateHeight: TIMELINE_ROW_ESTIMATE,
+  });
+  const visibleItems = displayWindow.virtualized
+    ? displayItems.slice(displayWindow.startIndex, displayWindow.endIndex)
+    : displayItems;
+
+  // The live tail is the newest end of the list: the top in the default
+  // newest-first sort, the bottom in chronological sort. Report whether the
+  // operator is there so the page can preserve the reading position on live
+  // deltas instead of forcing scroll.
+  const computeAtTail = useCallback((): boolean => {
+    if (!scrollContainer) return true;
+    if (sortRef.current === "newest_first") {
+      return scrollContainer.scrollTop <= TAIL_THRESHOLD;
+    }
+    return scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight <= TAIL_THRESHOLD;
+  }, [scrollContainer]);
+
+  useEffect(() => {
+    if (!scrollContainer) return;
+    const update = () => {
+      const tail = computeAtTail();
+      if (tail !== atTailRef.current) {
+        atTailRef.current = tail;
+        onAtTailChangeRef.current?.(tail);
+      }
+    };
+    update();
+    scrollContainer.addEventListener("scroll", update, { passive: true });
+    return () => scrollContainer.removeEventListener("scroll", update);
+  }, [computeAtTail, scrollContainer]);
+
+  // Content changes can move the tail (appended rows at the tail end), so
+  // recompute the reported state whenever the displayed list changes.
+  useEffect(() => {
+    const tail = computeAtTail();
+    if (tail !== atTailRef.current) {
+      atTailRef.current = tail;
+      onAtTailChangeRef.current?.(tail);
+    }
+  }, [computeAtTail, displayItems.length]);
+
+  // Forward the internal scroll container to the page for anchor shifts.
+  useEffect(() => {
+    if (scrollRef) {
+      scrollRef.current = scrollContainer;
+    }
+  }, [scrollRef, scrollContainer]);
 
   useEffect(() => {
     if (!isLive) return;
@@ -90,18 +173,33 @@ export function AgentTranscriptView({ owner, items, profileName, isLive = false 
     (dir: TranscriptSortDirection) => {
       if (dir === sortDirection) return;
       setSortDirection(dir);
-      scrollContainerRef.current?.scrollTo({ top: 0 });
+      sortRef.current = dir;
+      onSortDirectionChange?.(dir);
+      scrollContainer?.scrollTo({ top: 0 });
     },
-    [sortDirection],
+    [sortDirection, onSortDirectionChange, scrollContainer],
   );
 
   const handleSegmentClick = useCallback((seq: number) => {
     setSelectedSeq(seq);
-    eventRefs.current.get(seq)?.scrollIntoView({
-      behavior: prefersReducedMotion() ? "auto" : "smooth",
-      block: "center",
-    });
-  }, []);
+    const row = eventRefs.current.get(seq);
+    if (row) {
+      row.scrollIntoView({
+        behavior: prefersReducedMotion() ? "auto" : "smooth",
+        block: "center",
+      });
+      return;
+    }
+    // The target row is outside the rendered window: jump to its estimated
+    // position so the virtualized window follows.
+    const index = displayItems.findIndex((item) => item.seq === seq);
+    if (scrollContainer && index >= 0) {
+      scrollContainer.scrollTo({
+        top: Math.max(0, index * TIMELINE_ROW_ESTIMATE - (scrollContainer.clientHeight || 0) / 2),
+        behavior: prefersReducedMotion() ? "auto" : "smooth",
+      });
+    }
+  }, [displayItems, scrollContainer]);
 
   const handleCopyAll = useCallback(() => {
     const text = displayItems
@@ -256,7 +354,10 @@ export function AgentTranscriptView({ owner, items, profileName, isLive = false 
         </div>
       )}
 
-      <div ref={scrollContainerRef} className="min-h-0 flex-1 overflow-y-auto">
+      <div ref={setScrollContainer} className="min-h-0 flex-1 overflow-y-auto">
+        {unseenCount > 0 && sortDirection === "newest_first" && (
+          <UnseenTailPill count={unseenCount} onShowLatest={onShowLatest} className="top-2" />
+        )}
         {displayItems.length === 0 ? (
           <div className="flex h-full min-h-[12rem] items-center justify-center text-sm text-muted-foreground">
             {isLive ? (
@@ -270,7 +371,11 @@ export function AgentTranscriptView({ owner, items, profileName, isLive = false 
           </div>
         ) : (
           <div className="divide-y">
-            {displayItems.map((item) => (
+            {sortDirection === "chronological" && footer}
+            {displayWindow.spacerBefore > 0 && (
+              <div aria-hidden="true" style={{ height: displayWindow.spacerBefore }} />
+            )}
+            {visibleItems.map((item) => (
               <TranscriptEventRow
                 key={item.seq}
                 ref={(el) => {
@@ -281,10 +386,42 @@ export function AgentTranscriptView({ owner, items, profileName, isLive = false 
                 isSelected={selectedSeq === item.seq}
               />
             ))}
+            {displayWindow.spacerAfter > 0 && (
+              <div aria-hidden="true" style={{ height: displayWindow.spacerAfter }} />
+            )}
+            {sortDirection !== "chronological" && footer}
           </div>
+        )}
+        {unseenCount > 0 && sortDirection === "chronological" && (
+          <UnseenTailPill count={unseenCount} onShowLatest={onShowLatest} className="bottom-2" />
         )}
       </div>
     </div>
+  );
+}
+
+function UnseenTailPill({
+  count,
+  onShowLatest,
+  className,
+}: {
+  count: number;
+  onShowLatest?: () => void;
+  className: string;
+}) {
+  return (
+    <button
+      type="button"
+      data-testid="unseen-timeline-indicator"
+      onClick={onShowLatest}
+      className={cn(
+        "sticky z-10 mx-auto flex items-center gap-1.5 rounded-full border border-border bg-background/95 px-3 py-1 text-xs font-medium text-foreground shadow-md transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        className,
+      )}
+    >
+      <ArrowDown className="h-3.5 w-3.5" />
+      {count} new {count === 1 ? "event" : "events"}
+    </button>
   );
 }
 

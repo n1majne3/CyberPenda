@@ -13,7 +13,10 @@ import (
 	"pentest/internal/runtimeoutput"
 )
 
-// Item is one chronologically ordered timeline entry.
+// Item is one chronologically ordered timeline entry. Truncated marks a
+// bounded preview of an item whose full serialized form exceeded the history
+// window byte budget; Detail references the owner-authorized endpoint that
+// returns the complete retained item.
 type Item struct {
 	Seq       int            `json:"seq"`
 	Type      string         `json:"type"`
@@ -22,6 +25,8 @@ type Item struct {
 	Input     map[string]any `json:"input,omitempty"`
 	Output    string         `json:"output,omitempty"`
 	CreatedAt time.Time      `json:"created_at"`
+	Truncated bool           `json:"truncated,omitempty"`
+	Detail    string         `json:"detail,omitempty"`
 }
 
 // Event is the minimal owner-event surface Build consumes. Task and Session

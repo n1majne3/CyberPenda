@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,18 +10,21 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"pentest/internal/adapters"
 	"pentest/internal/modelprovider"
+	"pentest/internal/owner"
 	"pentest/internal/preflight"
 	"pentest/internal/projectinterface"
 	"pentest/internal/runner"
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/session"
+	"pentest/internal/steering"
 	"pentest/internal/task"
 	"pentest/internal/timeline"
 	"pentest/internal/transcript"
@@ -682,6 +686,7 @@ func (server *Server) stopSessionRuntime(sessionID string) error {
 	if err := server.markStoppedSessionBlackboardConclusionsRecoveryRequired(sessionID); err != nil {
 		return err
 	}
+	server.settleSessionAcceptedSteering(sessionID, owner.SteeringReasonOwnerStopped, "Session stopped with queued accepted steering")
 	_, _ = server.sessions.AppendEvent(sessionID, session.EventKindLifecycle, session.EventPayload{"phase": "stopped"})
 	return nil
 }
@@ -872,16 +877,54 @@ func (server *Server) handleSessionTimeline(response http.ResponseWriter, reques
 	if items == nil {
 		items = []timeline.Item{}
 	}
-	delta, cursor := projectionDelta(items, parseProjectionCursor(request), func(item timeline.Item) int { return item.Seq })
+	detailBase := fmt.Sprintf("/api/sessions/%s/timeline/items", sessionID)
+	page := historyResponseFor(items, parseHistoryRequest(request), func(item timeline.Item) int {
+		return item.Seq
+	}, func(item timeline.Item) (timeline.Item, int) {
+		return boundedTimelineItem(item, detailBase)
+	})
 	writeJSON(response, http.StatusOK, struct {
 		SessionID string          `json:"session_id"`
 		Items     []timeline.Item `json:"items"`
 		Cursor    int             `json:"cursor"`
+		HasOlder  bool            `json:"has_older"`
 	}{
 		SessionID: sessionID,
-		Items:     delta,
-		Cursor:    cursor,
+		Items:     page.items,
+		Cursor:    page.cursor,
+		HasOlder:  page.hasOlder,
 	})
+}
+
+// handleSessionTimelineItem returns one complete retained timeline item by
+// Seq, including the full payload that the history window preview truncated.
+func (server *Server) handleSessionTimelineItem(response http.ResponseWriter, request *http.Request) {
+	sessionID := request.PathValue("id")
+	seq, err := strconv.Atoi(request.PathValue("seq"))
+	if err != nil || seq <= 0 {
+		writeError(response, http.StatusNotFound, "timeline item not found")
+		return
+	}
+	allEvents, err := server.sessions.Events(sessionID)
+	if err != nil {
+		writeSessionError(response, err)
+		return
+	}
+	events := make([]timeline.Event, 0, len(allEvents))
+	for _, event := range allEvents {
+		events = append(events, timeline.Event{
+			Kind:      string(event.Kind),
+			Payload:   event.Payload,
+			CreatedAt: event.CreatedAt,
+		})
+	}
+	for _, item := range timeline.Build(events) {
+		if item.Seq == seq {
+			writeJSON(response, http.StatusOK, item)
+			return
+		}
+	}
+	writeError(response, http.StatusNotFound, "timeline item not found")
 }
 
 func (server *Server) handleSessionTranscript(response http.ResponseWriter, request *http.Request) {
@@ -915,16 +958,64 @@ func (server *Server) handleSessionTranscript(response http.ResponseWriter, requ
 	if entries == nil {
 		entries = []transcript.Entry{}
 	}
-	delta, cursor := projectionDelta(entries, parseProjectionCursor(request), func(entry transcript.Entry) int { return entry.Seq })
+	detailBase := fmt.Sprintf("/api/sessions/%s/transcript/entries", sessionID)
+	page := historyResponseFor(entries, parseHistoryRequest(request), func(entry transcript.Entry) int {
+		return entry.Seq
+	}, func(entry transcript.Entry) (transcript.Entry, int) {
+		return boundedTranscriptEntry(entry, detailBase)
+	})
 	writeJSON(response, http.StatusOK, struct {
 		SessionID string             `json:"session_id"`
 		Entries   []transcript.Entry `json:"entries"`
 		Cursor    int                `json:"cursor"`
+		HasOlder  bool               `json:"has_older"`
 	}{
 		SessionID: sessionID,
-		Entries:   delta,
-		Cursor:    cursor,
+		Entries:   page.items,
+		Cursor:    page.cursor,
+		HasOlder:  page.hasOlder,
 	})
+}
+
+// handleSessionTranscriptEntry returns one complete retained transcript entry
+// by ID, including the full payload that the history window preview truncated.
+func (server *Server) handleSessionTranscriptEntry(response http.ResponseWriter, request *http.Request) {
+	sessionID := request.PathValue("id")
+	found, err := server.sessions.Get(sessionID)
+	if err != nil {
+		writeSessionError(response, err)
+		return
+	}
+	entryID := request.PathValue("entry_id")
+	if entryID == "" {
+		writeError(response, http.StatusNotFound, "transcript entry not found")
+		return
+	}
+	events, err := server.sessions.Events(sessionID)
+	if err != nil {
+		writeSessionError(response, err)
+		return
+	}
+	converted := make([]transcript.Event, 0, len(events))
+	for _, event := range events {
+		converted = append(converted, transcript.Event{
+			ID:        event.ID,
+			Seq:       event.Seq,
+			Kind:      string(event.Kind),
+			Payload:   event.Payload,
+			CreatedAt: event.CreatedAt,
+		})
+	}
+	for _, entry := range transcript.Build(transcript.Subject{
+		ID:        found.ID,
+		CreatedAt: found.CreatedAt,
+	}, converted) {
+		if entry.ID == entryID {
+			writeJSON(response, http.StatusOK, entry)
+			return
+		}
+	}
+	writeError(response, http.StatusNotFound, "transcript entry not found")
 }
 
 func (server *Server) handleSessionMessage(response http.ResponseWriter, request *http.Request) {
@@ -1215,6 +1306,74 @@ func (server *Server) enqueueSessionProviderTurn(sessionID string, provider runt
 	})
 }
 
+// executeSessionNativeSteerOperation sends one accepted native steer Turn on a
+// Session-owned provider session and projects applied/failed/action_required
+// outcome events. The caller runs under the Session provider control queue.
+// The returned execution is the durable terminal outcome.
+func (server *Server) executeSessionNativeSteerOperation(ctx context.Context, sessionID string, provider runtime.ProviderSession, mode runtime.ProviderSessionMode, operation nativeSteerOperationFunc, providerRequest runtime.ProviderSessionRequest, continuationID string) steeringExecution {
+	selection := providerRequest
+	selection.TurnKind = runtime.RuntimeTurnKindControl
+	var continuationMu sync.Mutex
+	currentContinuationID := continuationID
+	var transitionErr error
+	currentID := func() string {
+		continuationMu.Lock()
+		defer continuationMu.Unlock()
+		return currentContinuationID
+	}
+	emit := func(kind task.EventKind, payload task.EventPayload) {
+		continuationMu.Lock()
+		current := currentContinuationID
+		server.persistSessionProviderEventForContinuation(sessionID, current, kind, payload)
+		if transitionErr == nil && mode == runtime.ProviderSessionModeInterruptThenReplace && kind == task.EventKindSteering && payloadOutcome(payload) == "settled" && current != "" {
+			transitionErr = server.advanceSessionRuntimeContinuation(ctx, sessionID, provider, current, &currentContinuationID)
+			if transitionErr == nil {
+				server.persistSessionProviderEventForContinuation(sessionID, currentContinuationID, task.EventKindLifecycle, task.EventPayload{
+					"phase": "continuation_replaced", "previous_continuation_id": current,
+				})
+			} else {
+				server.persistSessionProviderEventForContinuation(sessionID, current, task.EventKindLifecycle, task.EventPayload{
+					"phase": "continuation_replace_failed", "outcome": "failed",
+				})
+			}
+		}
+		continuationMu.Unlock()
+	}
+	result, err := operation(ctx, selection, emit)
+	if err != nil || transitionErr != nil {
+		if transitionErr != nil {
+			_ = server.closeSessionProviderSession(sessionID)
+			if current := currentID(); current != "" {
+				_, _ = server.sessions.UpdateContinuationStatus(current, session.RuntimeStatusFailed)
+			}
+			return steeringExecution{state: owner.SteeringFailed, reason: owner.SteeringReasonContinuationUnavailable, message: transitionErr.Error()}
+		}
+		errorCode, errorMessage := nativeSteerFailurePresentation(err)
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			// Post-fence with no provider outcome: delivery is ambiguous. The
+			// request is never replayed automatically.
+			server.persistSessionProviderEventForContinuation(sessionID, currentID(), task.EventKindLifecycle, task.EventPayload{
+				"phase": "provider_turn_failed", "request_id": providerRequest.RequestID, "mode": string(mode),
+				"outcome": "action_required", "error_code": string(owner.SteeringReasonDeliveryAmbiguous), "error": errorMessage,
+			})
+			return steeringExecution{state: owner.SteeringActionRequired, reason: owner.SteeringReasonDeliveryAmbiguous, message: errorMessage}
+		}
+		server.persistSessionProviderEventForContinuation(sessionID, currentID(), task.EventKindLifecycle, task.EventPayload{
+			"phase": "provider_turn_failed", "request_id": providerRequest.RequestID, "mode": string(mode),
+			"outcome": "failed", "error_code": errorCode, "error": errorMessage,
+		})
+		return steeringExecution{state: owner.SteeringFailed, reason: steerReasonFromFailureCode(errorCode), message: errorMessage}
+	}
+	payload := result.Payload()
+	payload["phase"] = "provider_turn_applied"
+	payload["outcome"] = "applied"
+	// The provider result is a structured Runtime turn result, not a
+	// transcript message. Conversation contains only explicit user/runtime
+	// messages; provider control/result data stays on the Session Timeline.
+	server.persistSessionProviderEventForContinuation(sessionID, currentID(), task.EventKindConversation, payload)
+	return steeringExecution{state: owner.SteeringApplied, result: result.Payload()}
+}
+
 func payloadOutcome(payload task.EventPayload) string {
 	value, _ := payload["outcome"].(string)
 	return strings.TrimSpace(value)
@@ -1307,14 +1466,6 @@ func (server *Server) handleSessionSteer(response http.ResponseWriter, request *
 		writeSessionError(response, err)
 		return
 	}
-	if err := server.waitForSessionAssistedConclusionSettlement(request.Context(), id, false); err != nil {
-		if errors.Is(err, errSemanticConclusionActionRequired) {
-			writeError(response, http.StatusConflict, "semantic_conclusion_action_required")
-			return
-		}
-		writeError(response, http.StatusConflict, err.Error())
-		return
-	}
 	provider, bound := server.sessionProviderSessions.get(id)
 	active, activeErr := server.sessions.ActiveContinuation(id)
 	if activeErr != nil {
@@ -1332,6 +1483,10 @@ func (server *Server) handleSessionSteer(response http.ResponseWriter, request *
 	mode, err := nativeSteerMode(provider.Capabilities())
 	if err != nil {
 		writeError(response, http.StatusConflict, err.Error())
+		return
+	}
+	if nativeSteerOperation(provider, mode) == nil {
+		writeError(response, http.StatusConflict, "provider session does not support native steer")
 		return
 	}
 	selection, err := server.sessionCurrentSelection(*active)
@@ -1355,22 +1510,85 @@ func (server *Server) handleSessionSteer(response http.ResponseWriter, request *
 		}
 	}
 	requestID := sessionRequestID(request, "steer")
-	reservation, reserved := server.reserveSessionProviderTurn(id, provider, active.ID, requestID, mode)
-	if !reserved {
-		writeError(response, http.StatusConflict, "Session Runtime control operation is unavailable")
+
+	// Repeated requests with the same request identity return the durable
+	// current outcome and never create a second queue item. Conflicting content
+	// under the same identity returns a conflict.
+	if record, err := server.steering.ByRequestID(owner.KindSession, id, requestID); err == nil {
+		if conflict := steeringConflictMessage(record, message, selection); conflict != "" {
+			writeError(response, http.StatusConflict, conflict)
+			return
+		}
+		server.writeDecoratedSession(response, http.StatusAccepted, id)
+		return
+	} else if !errors.Is(err, steering.ErrNotFound) {
+		writeSessionError(response, err)
 		return
 	}
-	uploadedEvents, _, uploadErr := server.appendSessionConversationInput(id, active.ID, message, uploads)
-	if uploadErr != nil {
-		reservation.cancel()
-		writeSessionError(response, uploadErr)
+
+	// Durable acceptance: the operator message and the dispatch record commit
+	// before the request returns 202. The accepted steering is dispatched by
+	// the owner-neutral FIFO queue after the assisted conclusion settles.
+	adapter := sessionSteeringAdapter(server, id, server.sessionConclusionSettlementForID(id))
+	accept := func(runtimeMessage, conversationID string) error {
+		_, acceptErr := server.acceptAcceptedSteering(request.Context(), adapter, steering.AcceptRequest{
+			RequestID:                requestID,
+			Message:                  runtimeMessage,
+			Mode:                     owner.SteeringMode(mode),
+			ModelProviderID:          selection.ModelProviderID,
+			Model:                    selection.Model,
+			RequestedReasoningEffort: selection.RequestedReasoningEffort,
+			SessionID:                provider.SessionID(),
+		}, func(tx *sql.Tx) (string, error) {
+			if conversationID != "" {
+				return conversationID, nil
+			}
+			payload := session.EventPayload{
+				"role": "user", "text": message, "request_id": requestID,
+				"delivery": "native_steer", "outcome": "pending", "mode": string(mode),
+				"session_id":        provider.SessionID(),
+				"model_provider_id": selection.ModelProviderID, "model": selection.Model,
+				"requested_reasoning_effort": selection.RequestedReasoningEffort,
+			}
+			if active != nil {
+				payload["continuation_id"] = active.ID
+			}
+			event, eventErr := server.sessions.AppendEventTx(tx, id, session.EventKindConversation, payload)
+			if eventErr != nil {
+				return "", eventErr
+			}
+			return event.ID, nil
+		})
+		return acceptErr
+	}
+
+	runtimeMessage := message
+	if len(uploads) > 0 {
+		// Attachments are staged by the existing input path; the conversation
+		// event it produces becomes the projection reference for the record.
+		uploadedEvents, conversation, uploadErr := server.appendSessionConversationInput(id, active.ID, message, uploads)
+		if uploadErr != nil {
+			writeSessionError(response, uploadErr)
+			return
+		}
+		runtimeMessage = sessionGoalWithAttachmentEvents(message, found.Workdir, active.Runner, uploadedEvents)
+		if err := accept(runtimeMessage, conversation.ID); err != nil {
+			writeSessionError(response, err)
+			return
+		}
+		server.writeDecoratedSession(response, http.StatusAccepted, id)
 		return
 	}
-	runtimeMessage := sessionGoalWithAttachmentEvents(message, found.Workdir, active.Runner, uploadedEvents)
-	reservation.commit(runtimeMessage, selection)
+	if err := accept(runtimeMessage, ""); err != nil {
+		if errors.Is(err, steering.ErrDuplicateRequest) {
+			server.writeDecoratedSession(response, http.StatusAccepted, id)
+			return
+		}
+		writeSessionError(response, err)
+		return
+	}
 	server.writeDecoratedSession(response, http.StatusAccepted, id)
 }
-
 func sessionConversationInput(message string, uploads []uploadedAttachment) session.ConversationInput {
 	attachments := make([]session.Attachment, 0, len(uploads))
 	for _, upload := range uploads {

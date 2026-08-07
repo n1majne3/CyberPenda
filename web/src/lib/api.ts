@@ -157,8 +157,16 @@ export interface WorkspaceProjectSummary extends Project {
   tasks: Task[];
 }
 
-/** WorkspaceNavigation is the single-call Sidebar projection (#193). */
+/** WorkspaceNavigation is the single-call Sidebar projection (#193, #201). */
 export interface WorkspaceNavigation {
+  /**
+   * Opaque navigation revision (#201). A refresh that supplies the current
+   * revision receives changed=false and an empty project list instead of a
+   * reserialized projection.
+   */
+  revision?: string;
+  /** False when the supplied revision was current; projects is then empty. */
+  changed?: boolean;
   projects: WorkspaceProjectSummary[];
 }
 
@@ -535,7 +543,7 @@ export interface CredentialBinding {
   credential_ref: string;
   scope: string;
   scope_id?: string;
-  source: { kind: string; value?: string };
+  source: { kind: string; value?: string; destination_env?: string };
   disabled?: boolean;
   created_at: string;
   updated_at: string;
@@ -670,6 +678,10 @@ export interface TaskTranscriptEntry {
   stream?: string;
   status?: string;
   created_at: string;
+  /** True when this row is a bounded preview of an oversized entry. */
+  truncated?: boolean;
+  /** Owner-authorized reference to the complete retained entry. */
+  detail?: string;
 }
 
 export interface TaskTranscript {
@@ -677,6 +689,8 @@ export interface TaskTranscript {
   entries: TaskTranscriptEntry[];
   /** Maximum entry Seq; the client sends it back as ?after= for the next poll. */
   cursor?: number;
+  /** True when older entries are reachable through ?before= paging. */
+  has_older?: boolean;
 }
 
 export interface TaskTimelineItem {
@@ -687,6 +701,10 @@ export interface TaskTimelineItem {
   input?: Record<string, unknown>;
   output?: string;
   created_at?: string;
+  /** True when this item is a bounded preview of an oversized item. */
+  truncated?: boolean;
+  /** Owner-authorized reference to the complete retained item. */
+  detail?: string;
 }
 
 export interface TaskTimeline {
@@ -694,6 +712,8 @@ export interface TaskTimeline {
   items: TaskTimelineItem[];
   /** Maximum item Seq; the client sends it back as ?after= for the next poll. */
   cursor?: number;
+  /** True when older items are reachable through ?before= paging. */
+  has_older?: boolean;
 }
 
 export interface PreflightCheck {

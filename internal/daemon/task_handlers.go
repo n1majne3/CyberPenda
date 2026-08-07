@@ -2,6 +2,9 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +23,7 @@ import (
 	"pentest/internal/blackboardv2"
 
 	"pentest/internal/modelprovider"
+	"pentest/internal/owner"
 	"pentest/internal/preflight"
 	"pentest/internal/project"
 	"pentest/internal/projectinterface"
@@ -26,6 +31,7 @@ import (
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/skill"
+	"pentest/internal/steering"
 	"pentest/internal/store"
 	"pentest/internal/task"
 	"pentest/internal/timeline"
@@ -1208,65 +1214,181 @@ func (server *Server) handleGetTask(response http.ResponseWriter, request *http.
 	writeJSON(response, http.StatusOK, detailed)
 }
 
-// workspaceNavigationTaskLimit bounds the number of Tasks inlined per Project
-// in the Sidebar navigation projection. It mirrors the client-side
-// takeRecentWithCurrent cap so the Sidebar can render the summary as-is.
+// workspaceNavigationTaskLimit bounds the number of ordinary Tasks inlined per
+// Project in the Sidebar navigation projection. Busy-runtime Tasks and the
+// selected Task are inlined on top of this limit, so the per-Project row never
+// needs a full Task history (#201).
 const workspaceNavigationTaskLimit = 5
 
+// workspaceNavigationResponse is the single-call Workspace Sidebar projection.
+// A refresh that supplies the current opaque revision receives changed=false
+// and an empty project list instead of a reserialized projection (#201).
+type workspaceNavigationResponse struct {
+	Revision string                       `json:"revision"`
+	Changed  bool                         `json:"changed"`
+	Projects []workspaceNavigationProject `json:"projects"`
+}
+
+type workspaceNavigationProject struct {
+	project.Project
+	LastActivityAt time.Time   `json:"last_activity_at"`
+	Tasks          []task.Task `json:"tasks"`
+}
+
 // handleWorkspaceNavigation returns one bounded navigation projection for the
-// Workspace Sidebar: every Project, each with its most recent Tasks inlined
-// (runtime_activity and Blackboard conclusion already attached) and a
-// last_activity_at that folds in Task activity. This replaces the former
-// one-Task-list-request-per-Project fan-out, so a workspace with many Projects
-// makes a constant number of requests on initial load and refresh (#193).
+// Workspace Sidebar: every Project, each with the five most recent ordinary
+// Tasks inlined (runtime_activity and Blackboard conclusion already attached),
+// every Task with a live busy Runtime promoted ahead of the ordinary summary,
+// and the selected Task appended when neither rule already included it
+// (#201). Runtime liveness is computed live via attachRuntimeActivity; it is
+// never derived from durable Task status.
 //
-// Project and Task remain separate domains: the projection only joins them for
-// navigation and does not persist state. Runtime liveness is computed live via
-// attachRuntimeActivity; it is never derived from durable Task status.
+// The query work and response size are bounded by Project count × the fixed
+// summary size plus active Runtime count plus the selected Task; total
+// historical Task count never enters either bound. A request that supplies the
+// current opaque revision is answered with an empty unchanged result, so
+// polling never reserializes the projection.
 func (server *Server) handleWorkspaceNavigation(response http.ResponseWriter, request *http.Request) {
+	requestRevision := strings.TrimSpace(request.URL.Query().Get("revision"))
+	selectedTaskID := strings.TrimSpace(request.URL.Query().Get("selected_task"))
+
 	projects, err := server.projects.List()
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "list projects")
 		return
 	}
-	recentByProject, err := server.tasks.ListRecentPerProject(workspaceNavigationTaskLimit)
+
+	// The busy Task set is live and in-memory: a bound provider session that is
+	// currently busy. It is bounded by the number of active Runtimes, so
+	// scanning it never grows with Task history.
+	busyIDs := server.providerSessions.busyOwnerIDs()
+
+	var selected *task.Task
+	if selectedTaskID != "" {
+		found, err := server.tasks.Get(selectedTaskID)
+		if err == nil {
+			selected = &found
+		}
+	}
+
+	revision, err := server.navigationRevision(busyIDs, selectedTaskID)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "compute navigation revision")
+		return
+	}
+	if requestRevision != "" && requestRevision == revision {
+		writeJSON(response, http.StatusOK, workspaceNavigationResponse{
+			Revision: revision,
+			Changed:  false,
+			Projects: []workspaceNavigationProject{},
+		})
+		return
+	}
+
+	// Load the busy Tasks once and group them by Project. Each lookup is a
+	// single primary-key read, bounded by the active Runtime count.
+	busyByProject := make(map[string][]task.Task)
+	for _, taskID := range busyIDs {
+		found, err := server.tasks.Get(taskID)
+		if err != nil {
+			continue
+		}
+		busyByProject[found.ProjectID] = append(busyByProject[found.ProjectID], found)
+	}
+
+	projectIDs := make([]string, 0, len(projects))
+	for _, current := range projects {
+		projectIDs = append(projectIDs, current.ID)
+	}
+	excluded := append(append([]string{}, busyIDs...), selectedTaskID)
+	recentByProject, err := server.tasks.ListRecentPerProject(projectIDs, workspaceNavigationTaskLimit, excluded...)
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "load recent tasks")
 		return
 	}
 
-	type summary struct {
-		project.Project
-		LastActivityAt time.Time    `json:"last_activity_at"`
-		Tasks          []task.Task  `json:"tasks"`
-	}
-	summaries := make([]summary, 0, len(projects))
+	summaries := make([]workspaceNavigationProject, 0, len(projects))
 	for _, current := range projects {
 		recent := recentByProject[current.ID]
+		if recent == nil {
+			recent = []task.Task{}
+		}
+		busy := busyByProject[current.ID]
+		// Busy Tasks sort by recency ahead of the ordinary summary; the
+		// selected Task appends last when neither rule already included it.
+		// Excluding busy and selected Tasks from the ordinary query keeps the
+		// five-entry summary stable across selection and activity changes.
+		sort.SliceStable(busy, func(i, j int) bool {
+			return workspaceTaskRecency(busy[i], busy[j])
+		})
+		inlined := append([]task.Task{}, busy...)
+		inlined = append(inlined, recent...)
+		if selected != nil && selected.ProjectID == current.ID && !taskIDInList(selected.ID, inlined) {
+			inlined = append(inlined, *selected)
+		}
+		if inlined == nil {
+			inlined = []task.Task{}
+		}
 		// Decorate each inlined Task through the same path as the per-Project
 		// Task list so runtime_activity is live and consistent.
-		for index := range recent {
-			recent[index] = server.attachRuntimeActivity(recent[index])
-			recent[index], err = server.attachBlackboardConclusion(recent[index])
+		for index := range inlined {
+			inlined[index] = server.attachRuntimeActivity(inlined[index])
+			inlined[index], err = server.attachBlackboardConclusion(inlined[index])
 			if err != nil {
 				writeError(response, http.StatusInternalServerError, "load Blackboard conclusion")
 				return
 			}
 		}
-		if recent == nil {
-			recent = []task.Task{}
-		}
-		summaries = append(summaries, summary{
+		summaries = append(summaries, workspaceNavigationProject{
 			Project:        current,
-			LastActivityAt: workspaceProjectActivity(current, recent),
-			Tasks:          recent,
+			LastActivityAt: workspaceProjectActivity(current, inlined),
+			Tasks:          inlined,
 		})
 	}
-	writeJSON(response, http.StatusOK, struct {
-		Projects []summary `json:"projects"`
-	}{
+	writeJSON(response, http.StatusOK, workspaceNavigationResponse{
+		Revision: revision,
+		Changed:  true,
 		Projects: summaries,
 	})
+}
+
+// workspaceTaskRecency orders two Tasks by the navigation recency rule:
+// updated_at DESC then created_at DESC.
+func workspaceTaskRecency(a, b task.Task) bool {
+	if !a.UpdatedAt.Equal(b.UpdatedAt) {
+		return a.UpdatedAt.After(b.UpdatedAt)
+	}
+	return a.CreatedAt.After(b.CreatedAt)
+}
+
+func taskIDInList(id string, tasks []task.Task) bool {
+	for _, found := range tasks {
+		if found.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// navigationRevision returns the opaque conditional-refresh token for the
+// Project Navigation Projection (#201). It folds the durable Project and Task
+// summary epochs, the live busy-Runtime Task set, and the selected Task
+// identity, so every navigation-visible change yields a new revision while an
+// unchanged refresh can be answered without serializing the projection. All
+// inputs are bounded: the epochs are single indexed reads and the busy set is
+// bounded by the number of active Runtimes.
+func (server *Server) navigationRevision(busyIDs []string, selectedTaskID string) (string, error) {
+	projectEpoch, err := server.projects.LatestUpdate()
+	if err != nil {
+		return "", err
+	}
+	taskEpoch, err := server.tasks.LatestUpdate()
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte("navigation:v1|" + projectEpoch.Format(time.RFC3339Nano) + "|" +
+		taskEpoch.Format(time.RFC3339Nano) + "|" + strings.Join(busyIDs, ",") + "|" + selectedTaskID))
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // workspaceProjectActivity returns the most recent activity timestamp across a
@@ -1570,16 +1692,49 @@ func (server *Server) handleTaskTimeline(response http.ResponseWriter, request *
 	if items == nil {
 		items = []timeline.Item{}
 	}
-	delta, cursor := projectionDelta(items, parseProjectionCursor(request), func(item timeline.Item) int { return item.Seq })
-	writeJSON(response, http.StatusOK, struct {
-		TaskID string          `json:"task_id"`
-		Items  []timeline.Item `json:"items"`
-		Cursor int             `json:"cursor"`
-	}{
-		TaskID: found.ID,
-		Items:  delta,
-		Cursor: cursor,
+	detailBase := fmt.Sprintf("/api/projects/%s/tasks/%s/timeline/items", found.ProjectID, found.ID)
+	page := historyResponseFor(items, parseHistoryRequest(request), func(item timeline.Item) int {
+		return item.Seq
+	}, func(item timeline.Item) (timeline.Item, int) {
+		return boundedTimelineItem(item, detailBase)
 	})
+	writeJSON(response, http.StatusOK, struct {
+		TaskID   string          `json:"task_id"`
+		Items    []timeline.Item `json:"items"`
+		Cursor   int             `json:"cursor"`
+		HasOlder bool            `json:"has_older"`
+	}{
+		TaskID:   found.ID,
+		Items:    page.items,
+		Cursor:   page.cursor,
+		HasOlder: page.hasOlder,
+	})
+}
+
+// handleTaskTimelineItem returns one complete retained timeline item by Seq,
+// including the full payload that the history window preview truncated.
+func (server *Server) handleTaskTimelineItem(response http.ResponseWriter, request *http.Request) {
+	found, ok := server.requireProjectTask(response, request)
+	if !ok {
+		return
+	}
+	seq, err := strconv.Atoi(request.PathValue("seq"))
+	if err != nil || seq <= 0 {
+		writeError(response, http.StatusNotFound, "timeline item not found")
+		return
+	}
+	events, err := server.tasks.Events(found.ID)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "list task events")
+		return
+	}
+	for _, item := range timeline.Build(eventsToTimelineEvents(events)) {
+		if item.Seq == seq {
+			writeJSON(response, http.StatusOK, item)
+			return
+		}
+	}
+	writeError(response, http.StatusNotFound, "timeline item not found")
 }
 
 func (server *Server) handleTaskTranscript(response http.ResponseWriter, request *http.Request) {
@@ -1601,60 +1756,53 @@ func (server *Server) handleTaskTranscript(response http.ResponseWriter, request
 	if entries == nil {
 		entries = []transcript.Entry{}
 	}
-	delta, cursor := projectionDelta(entries, parseProjectionCursor(request), func(entry transcript.Entry) int { return entry.Seq })
+	detailBase := fmt.Sprintf("/api/projects/%s/tasks/%s/transcript/entries", found.ProjectID, found.ID)
+	page := historyResponseFor(entries, parseHistoryRequest(request), func(entry transcript.Entry) int {
+		return entry.Seq
+	}, func(entry transcript.Entry) (transcript.Entry, int) {
+		return boundedTranscriptEntry(entry, detailBase)
+	})
 	writeJSON(response, http.StatusOK, struct {
-		TaskID  string             `json:"task_id"`
-		Entries []transcript.Entry `json:"entries"`
-		Cursor  int                `json:"cursor"`
+		TaskID   string             `json:"task_id"`
+		Entries  []transcript.Entry `json:"entries"`
+		Cursor   int                `json:"cursor"`
+		HasOlder bool               `json:"has_older"`
 	}{
-		TaskID:  found.ID,
-		Entries: delta,
-		Cursor:  cursor,
+		TaskID:   found.ID,
+		Entries:  page.items,
+		Cursor:   page.cursor,
+		HasOlder: page.hasOlder,
 	})
 }
 
-// parseProjectionCursor reads the optional after cursor from a Timeline or
-// Transcript request. The cursor is the last Seq the client committed; a
-// missing or invalid value reads the complete projection.
-func parseProjectionCursor(request *http.Request) int {
-	raw := strings.TrimSpace(request.URL.Query().Get("after"))
-	if raw == "" {
-		return 0
+// handleTaskTranscriptEntry returns one complete retained transcript entry by
+// ID, including the full payload that the history window preview truncated.
+func (server *Server) handleTaskTranscriptEntry(response http.ResponseWriter, request *http.Request) {
+	found, ok := server.requireProjectTask(response, request)
+	if !ok {
+		return
 	}
-	cursor, err := strconv.Atoi(raw)
-	if err != nil || cursor < 0 {
-		return 0
+	entryID := request.PathValue("entry_id")
+	if entryID == "" {
+		writeError(response, http.StatusNotFound, "transcript entry not found")
+		return
 	}
-	return cursor
-}
-
-// projectionDelta returns the ordered projection items strictly after the
-// committed cursor plus the new cursor, which is the maximum Seq of the full
-// projection and never regresses below the committed cursor. The full
-// projection is still built server-side; only the delta is transferred, so an
-// idle poll stays bounded regardless of total history. A missing or zero
-// cursor reads the complete projection, including the synthetic seq-0 goal row.
-func projectionDelta[T any](items []T, after int, seq func(T) int) ([]T, int) {
-	if after <= 0 {
-		cursor := 0
-		for _, item := range items {
-			if itemSeq := seq(item); itemSeq > cursor {
-				cursor = itemSeq
-			}
-		}
-		return items, cursor
+	events, err := server.tasks.Events(found.ID)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "list task events")
+		return
 	}
-	cursor := after
-	delta := make([]T, 0, len(items))
-	for _, item := range items {
-		if itemSeq := seq(item); itemSeq > cursor {
-			cursor = itemSeq
-		}
-		if seq(item) > after {
-			delta = append(delta, item)
+	for _, entry := range transcript.Build(transcript.Subject{
+		ID:        found.ID,
+		Title:     found.Goal,
+		CreatedAt: found.CreatedAt,
+	}, eventsToTranscriptEvents(events)) {
+		if entry.ID == entryID {
+			writeJSON(response, http.StatusOK, entry)
+			return
 		}
 	}
-	return delta, cursor
+	writeError(response, http.StatusNotFound, "transcript entry not found")
 }
 
 func (server *Server) handleStopTask(response http.ResponseWriter, request *http.Request) {
@@ -1737,6 +1885,7 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 			writeTaskError(response, err)
 			return
 		}
+		server.settleTaskAcceptedSteering(taskID, owner.SteeringReasonOwnerStopped, "Task stopped with queued accepted steering")
 		stopped, err := server.taskDetail(taskID)
 		if err != nil {
 			writeTaskError(response, err)
@@ -1757,6 +1906,7 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 		writeTaskError(response, err)
 		return
 	}
+	server.settleTaskAcceptedSteering(taskID, owner.SteeringReasonOwnerStopped, "Task stopped with queued accepted steering")
 	stopped, err := server.taskDetail(taskID)
 	if err != nil {
 		writeTaskError(response, err)
@@ -1954,6 +2104,7 @@ func (server *Server) handleFinishTask(response http.ResponseWriter, request *ht
 	_, _ = server.tasks.AppendEvent(taskID, task.EventKindLifecycle, task.EventPayload{
 		"phase": "completed", "reason": "operator_finish",
 	})
+	server.settleTaskAcceptedSteering(taskID, owner.SteeringReasonOwnerFinished, "Task finished with queued accepted steering")
 
 	finished, err := server.taskDetail(taskID)
 	if err != nil {
@@ -2090,6 +2241,7 @@ func (server *Server) acquireTaskControlAfterAssistedSettlement(ctx context.Cont
 func (server *Server) finishFailClosed(response http.ResponseWriter, taskID, stage, detail string, status int) {
 	server.finishDiagnostic(taskID, stage, detail)
 	server.settleTaskFailedAfterFinishAbort(taskID)
+	server.settleTaskAcceptedSteering(taskID, owner.SteeringReasonOwnerStateChanged, "Task finish aborted before the accepted steering dispatched")
 	writeError(response, status, "finish failed at "+stage)
 }
 
@@ -2908,23 +3060,15 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		return
 	}
 
-	events, err := server.tasks.Events(found.ID)
-	if err != nil {
-		writeError(response, http.StatusInternalServerError, "list task events")
-		return
-	}
-	for _, event := range events {
-		if event.Kind != task.EventKindConversation || event.Payload["request_id"] != input.RequestID || event.Payload["delivery"] != "native_steer" {
-			continue
-		}
-		if conflict := nativeSteerIdempotencyConflict(event, input.Message, selection); conflict != "" {
+	// Repeated requests with the same request identity return the durable
+	// current outcome and never create a second queue item. Conflicting content
+	// under the same identity returns a conflict.
+	if record, err := server.steering.ByRequestID(owner.KindTask, found.ID, input.RequestID); err == nil {
+		if conflict := steeringConflictMessage(record, input.Message, selection); conflict != "" {
 			writeError(response, http.StatusConflict, conflict)
 			return
 		}
-		mode, outcome, sessionID := nativeSteerState(events, input.RequestID)
-		if outcome == "" {
-			outcome = "pending"
-		}
+		sessionID := record.SessionID
 		if sessionID == "" {
 			sessionID = session.SessionID()
 		}
@@ -2933,7 +3077,10 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 			SessionID string                      `json:"session_id"`
 			Mode      runtime.ProviderSessionMode `json:"mode"`
 			Outcome   string                      `json:"outcome"`
-		}{RequestID: input.RequestID, SessionID: sessionID, Mode: mode, Outcome: outcome})
+		}{RequestID: input.RequestID, SessionID: sessionID, Mode: runtime.ProviderSessionMode(record.Mode), Outcome: steeringOutcomeFromRecord(record)})
+		return
+	} else if !errors.Is(err, steering.ErrNotFound) {
+		writeError(response, http.StatusInternalServerError, "load accepted steering")
 		return
 	}
 
@@ -2946,58 +3093,16 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		writeError(response, http.StatusConflict, err.Error())
 		return
 	}
-	operation := nativeSteerOperation(session, mode)
-	if operation == nil {
+	if nativeSteerOperation(session, mode) == nil {
 		writeError(response, http.StatusConflict, "provider session does not support native steer")
 		return
 	}
-	if found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeAssisted {
-		// #194: durably accept the steering before any provider work wait. The
-		// operator message is persisted as pending and the request returns 202
-		// immediately; the accepted steering is applied at the next valid work
-		// boundary (after the Harness control Turn settles) on the writable
-		// Runtime Continuation.
-		server.handleAssistedNativeSteerAcceptance(response, found, session, mode, operation, selection, input)
-		return
-	}
-	if !server.acquireProviderTaskControl(found.ID) {
-		writeError(response, http.StatusConflict, "task control operation already active")
-		return
-	}
-	// Stop may have completed while this request waited for Task control.
-	// Revalidate durable Task and registry ownership only after this operation
-	// owns Task control; never dispatch through a stale session pointer.
-	currentTask, currentErr := server.tasks.Get(found.ID)
-	currentSession, stillBound := server.providerSessions.get(found.ID)
-	if currentErr != nil || (currentTask.Status != task.StatusRunning && currentTask.Status != task.StatusPaused) || !stillBound || currentSession != session {
-		server.releaseProviderTaskControl(found.ID)
-		writeError(response, http.StatusConflict, "native steer requires an active Task-owned provider session")
-		return
-	}
 
-	active, err := server.tasks.ActiveContinuation(found.ID)
-	if err != nil {
-		server.releaseProviderTaskControl(found.ID)
-		writeTaskError(response, err)
-		return
-	}
-	freshContinuation := false
-	if active == nil {
-		// A terminal Runtime Continuation (for example closed by Blackboard
-		// Finish) cannot accept new operator work: its Interface Grant is
-		// closed. Create and bind a fresh writable Continuation before the Turn
-		// is sent so Blackboard writes use the new authority (ADR 0016).
-		fresh, freshErr := server.createWritableContinuationForLiveSession(found, session)
-		if freshErr != nil && !errors.Is(freshErr, errNoContinuationToContinue) {
-			server.releaseProviderTaskControl(found.ID)
-			writeError(response, http.StatusConflict, freshErr.Error())
-			return
-		}
-		if freshErr == nil {
-			active = fresh
-			freshContinuation = true
-		}
-	}
+	// Durable acceptance (#194, #200): the operator message and the dispatch
+	// record commit atomically before the request returns 202. The accepted
+	// steering is dispatched by the owner-neutral FIFO queue at the next valid
+	// work boundary; the Conversation Event is a projection, not the dispatch
+	// source of truth.
 	conversationPayload := task.EventPayload{
 		"role": "user", "text": input.Message, "request_id": input.RequestID,
 		"delivery": "native_steer", "outcome": "pending", "mode": string(mode),
@@ -3005,36 +3110,41 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		"model_provider_id": selection.ModelProviderID, "model": selection.Model,
 		"requested_reasoning_effort": selection.RequestedReasoningEffort,
 	}
-	var conversation task.Event
-	if active != nil {
-		conversation, err = server.tasks.AppendContinuationEvent(found.ID, active.ID, task.EventKindConversation, conversationPayload)
-	} else {
-		conversation, err = server.tasks.AppendEvent(found.ID, task.EventKindConversation, conversationPayload)
-	}
-	if err != nil {
-		server.releaseProviderTaskControl(found.ID)
-		writeTaskError(response, err)
-		return
-	}
-	continuationID := ""
-	if active != nil {
-		continuationID = active.ID
-	}
-	providerRequest := runtime.ProviderSessionRequest{
+	adapter := taskSteeringAdapter(server, found.ID, server.taskConclusionSettlementForID(found.ID))
+	_, err = server.acceptAcceptedSteering(request.Context(), adapter, steering.AcceptRequest{
 		RequestID:                input.RequestID,
 		Message:                  input.Message,
+		Mode:                     owner.SteeringMode(mode),
 		ModelProviderID:          selection.ModelProviderID,
 		Model:                    selection.Model,
 		RequestedReasoningEffort: selection.RequestedReasoningEffort,
+		SessionID:                session.SessionID(),
+	}, func(tx *sql.Tx) (string, error) {
+		event, eventErr := server.tasks.AppendEventTx(tx, found.ID, task.EventKindConversation, conversationPayload)
+		if eventErr != nil {
+			return "", eventErr
+		}
+		return event.ID, nil
+	})
+	if errors.Is(err, steering.ErrDuplicateRequest) {
+		// A concurrent duplicate committed first; return its durable outcome.
+		replayed, replayErr := server.steering.ByRequestID(owner.KindTask, found.ID, input.RequestID)
+		if replayErr != nil {
+			writeError(response, http.StatusInternalServerError, "load accepted steering")
+			return
+		}
+		writeJSON(response, http.StatusAccepted, struct {
+			RequestID string                      `json:"request_id"`
+			SessionID string                      `json:"session_id"`
+			Mode      runtime.ProviderSessionMode `json:"mode"`
+			Outcome   string                      `json:"outcome"`
+		}{RequestID: input.RequestID, SessionID: replayed.SessionID, Mode: runtime.ProviderSessionMode(replayed.Mode), Outcome: steeringOutcomeFromRecord(replayed)})
+		return
 	}
-	taskCtx := server.providerTaskContext(found.ID)
-	go func() {
-		defer server.releaseProviderTaskControl(found.ID)
-		ctx, cancel := context.WithTimeout(taskCtx, 30*time.Second)
-		defer cancel()
-		server.executeNativeSteerOperation(ctx, found, session, mode, operation, providerRequest, conversation, continuationID, freshContinuation)
-	}()
-
+	if err != nil {
+		writeTaskError(response, err)
+		return
+	}
 	writeJSON(response, http.StatusAccepted, struct {
 		RequestID string                      `json:"request_id"`
 		SessionID string                      `json:"session_id"`
@@ -3046,47 +3156,6 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 // nativeSteerOperationFunc is one provider session steer operation selected by
 // the session mode (in_turn_steer or interrupt_then_replace).
 type nativeSteerOperationFunc func(context.Context, runtime.ProviderSessionRequest, runtime.ProviderSessionEmit) (runtime.ProviderSessionResult, error)
-
-// handleAssistedNativeSteerAcceptance durably accepts one native steer request
-// before any Harness control Turn completes (#194). The operator message is
-// persisted as a pending conversation event, the request returns 202, and the
-// accepted steering is applied by the provider control queue after the
-// assisted conclusion settles.
-func (server *Server) handleAssistedNativeSteerAcceptance(response http.ResponseWriter, found task.Task, session runtime.ProviderSession, mode runtime.ProviderSessionMode, operation nativeSteerOperationFunc, selection runtime.ProviderSessionRequest, input nativeSteerRequest) {
-	conversationPayload := task.EventPayload{
-		"role": "user", "text": input.Message, "request_id": input.RequestID,
-		"delivery": "native_steer", "outcome": "pending", "mode": string(mode),
-		"session_id":        session.SessionID(),
-		"model_provider_id": selection.ModelProviderID, "model": selection.Model,
-		"requested_reasoning_effort": selection.RequestedReasoningEffort,
-	}
-	conversation, err := server.tasks.AppendEvent(found.ID, task.EventKindConversation, conversationPayload)
-	if err != nil {
-		writeTaskError(response, err)
-		return
-	}
-	providerRequest := runtime.ProviderSessionRequest{
-		RequestID:                input.RequestID,
-		Message:                  input.Message,
-		ModelProviderID:          selection.ModelProviderID,
-		Model:                    selection.Model,
-		RequestedReasoningEffort: selection.RequestedReasoningEffort,
-	}
-	queued := server.enqueueProviderTaskControlWithSettlement(found.ID, false, server.taskConclusionSettlement(found), func(ctx context.Context) {
-		server.applyAcceptedNativeSteer(ctx, found, session, mode, operation, providerRequest, conversation)
-	})
-	if !queued {
-		server.emitSteeringFailedEvent(found.ID, session, mode, providerRequest, "provider_control_unavailable", "provider control queue is closed")
-		writeError(response, http.StatusConflict, "task control is shutting down")
-		return
-	}
-	writeJSON(response, http.StatusAccepted, struct {
-		RequestID string                      `json:"request_id"`
-		SessionID string                      `json:"session_id"`
-		Mode      runtime.ProviderSessionMode `json:"mode"`
-		Outcome   string                      `json:"outcome"`
-	}{RequestID: input.RequestID, SessionID: session.SessionID(), Mode: mode, Outcome: "accepted"})
-}
 
 // taskConclusionSettlement waits for the durable assisted conclusion to settle
 // before an accepted native steer may take the provider control boundary. The
@@ -3124,60 +3193,11 @@ func (server *Server) taskConclusionSettlement(found task.Task) providerControlS
 	}
 }
 
-// applyAcceptedNativeSteer runs under the provider control queue after the
-// assisted conclusion settled. It revalidates the durable Task and registry
-// ownership, resolves the writable Runtime Continuation (creating a fresh one
-// after terminal Blackboard state), and executes the accepted Turn. Any
-// failure emits a stable steering_failed event; the operator message stays
-// durably accepted.
-func (server *Server) applyAcceptedNativeSteer(ctx context.Context, found task.Task, session runtime.ProviderSession, mode runtime.ProviderSessionMode, operation nativeSteerOperationFunc, providerRequest runtime.ProviderSessionRequest, conversation task.Event) {
-	currentTask, currentErr := server.tasks.Get(found.ID)
-	currentSession, stillBound := server.providerSessions.get(found.ID)
-	if currentErr != nil || (currentTask.Status != task.StatusRunning && currentTask.Status != task.StatusPaused) || !stillBound || currentSession != session {
-		server.emitSteeringFailedEvent(found.ID, session, mode, providerRequest, "task_state_changed", "native steer requires an active Task-owned provider session")
-		return
-	}
-	active, err := server.tasks.ActiveContinuation(found.ID)
-	if err != nil {
-		server.emitSteeringFailedEvent(found.ID, session, mode, providerRequest, "continuation_unavailable", err.Error())
-		return
-	}
-	freshContinuation := false
-	continuationID := ""
-	if active != nil {
-		continuationID = active.ID
-	} else {
-		fresh, freshErr := server.createWritableContinuationForLiveSession(found, session)
-		if freshErr != nil && !errors.Is(freshErr, errNoContinuationToContinue) {
-			server.emitSteeringFailedEvent(found.ID, session, mode, providerRequest, "continuation_unavailable", freshErr.Error())
-			return
-		}
-		if freshErr == nil {
-			continuationID = fresh.ID
-			freshContinuation = true
-		}
-	}
-	runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	server.executeNativeSteerOperation(runCtx, found, session, mode, operation, providerRequest, conversation, continuationID, freshContinuation)
-}
-
-// emitSteeringFailedEvent projects one stable, redacted steering failure. The
-// accepted conversation event keeps the operator message; raw provider text
-// never crosses this seam.
-func (server *Server) emitSteeringFailedEvent(taskID string, session runtime.ProviderSession, mode runtime.ProviderSessionMode, providerRequest runtime.ProviderSessionRequest, errorCode, errorMessage string) {
-	_, _ = server.tasks.AppendEvent(taskID, task.EventKindSteering, task.EventPayload{
-		"request_id": providerRequest.RequestID, "session_id": session.SessionID(), "mode": string(mode),
-		"outcome": "failed", "phase": "steering_failed", "error_code": errorCode, "error": errorMessage,
-		"model_provider_id": providerRequest.ModelProviderID, "model": providerRequest.Model,
-		"requested_reasoning_effort": providerRequest.RequestedReasoningEffort,
-	})
-}
-
 // executeNativeSteerOperation sends one accepted native steer Turn under Task
-// control and projects applied/failed outcome events on the correct Runtime
-// Continuation. The caller owns Task control for the whole operation.
-func (server *Server) executeNativeSteerOperation(ctx context.Context, found task.Task, session runtime.ProviderSession, mode runtime.ProviderSessionMode, operation nativeSteerOperationFunc, providerRequest runtime.ProviderSessionRequest, conversation task.Event, continuationID string, freshContinuation bool) {
+// control and projects applied/failed/action_required outcome events on the
+// correct Runtime Continuation. The caller owns Task control for the whole
+// operation. The returned execution is the durable terminal outcome.
+func (server *Server) executeNativeSteerOperation(ctx context.Context, found task.Task, session runtime.ProviderSession, mode runtime.ProviderSessionMode, operation nativeSteerOperationFunc, providerRequest runtime.ProviderSessionRequest, conversation task.Event, continuationID string, freshContinuation bool) steeringExecution {
 	var continuationMu sync.Mutex
 	var continuationTransitionErr error
 	emit := func(kind task.EventKind, payload task.EventPayload) {
@@ -3206,6 +3226,20 @@ func (server *Server) executeNativeSteerOperation(ctx context.Context, found tas
 	result, operationErr := operation(ctx, providerRequest, emit)
 	if operationErr != nil {
 		errorCode, errorMessage := nativeSteerFailurePresentation(operationErr)
+		if errors.Is(operationErr, context.Canceled) || errors.Is(operationErr, context.DeadlineExceeded) {
+			// Post-fence with no provider outcome: delivery is ambiguous. The
+			// request is never replayed automatically; it settles
+			// action_required with a reason-specific recovery path.
+			ambiguous := task.EventPayload{
+				"request_id": providerRequest.RequestID, "session_id": session.SessionID(), "mode": string(mode),
+				"outcome": "action_required", "phase": "steering_action_required",
+				"error_code": string(owner.SteeringReasonDeliveryAmbiguous), "error": errorMessage,
+				"model_provider_id": providerRequest.ModelProviderID, "model": providerRequest.Model,
+				"requested_reasoning_effort": providerRequest.RequestedReasoningEffort,
+			}
+			emit(task.EventKindSteering, ambiguous)
+			return steeringExecution{state: owner.SteeringActionRequired, reason: owner.SteeringReasonDeliveryAmbiguous, message: errorMessage}
+		}
 		// Public Task Events carry only redacted, stable failure fields.
 		// Raw provider text stays out of the conversation surface.
 		failure := task.EventPayload{
@@ -3216,7 +3250,7 @@ func (server *Server) executeNativeSteerOperation(ctx context.Context, found tas
 			"requested_reasoning_effort": providerRequest.RequestedReasoningEffort,
 		}
 		emit(task.EventKindSteering, failure)
-		return
+		return steeringExecution{state: owner.SteeringFailed, reason: steerReasonFromFailureCode(errorCode), message: errorMessage}
 	}
 	continuationMu.Lock()
 	transitionErr := continuationTransitionErr
@@ -3227,12 +3261,34 @@ func (server *Server) executeNativeSteerOperation(ctx context.Context, found tas
 			_, _ = server.tasks.UpdateContinuationStatus(current.ID, task.StatusFailed)
 		}
 		_, _ = server.tasks.UpdateStatus(found.ID, task.StatusFailed)
-		return
+		return steeringExecution{state: owner.SteeringFailed, reason: owner.SteeringReasonContinuationUnavailable, message: transitionErr.Error(), failOwner: true}
 	}
 	payload := result.Payload()
 	payload["outcome"] = "applied"
 	payload["phase"] = "steering_applied"
 	emit(task.EventKindSteering, payload)
+	return steeringExecution{state: owner.SteeringApplied, result: result.Payload()}
+}
+
+// steerReasonFromFailureCode maps the redacted provider failure presentation
+// onto the closed Accepted Steering reason vocabulary. The projected event
+// error_code keeps the presentation code; the durable record stores the closed
+// reason.
+func steerReasonFromFailureCode(code string) owner.SteeringFailureReason {
+	switch code {
+	case "session_closed":
+		return owner.SteeringReasonSessionClosed
+	case "control_conflict":
+		return owner.SteeringReasonControlConflict
+	case "unsupported_reasoning_effort":
+		return owner.SteeringReasonUnsupportedReasoningEffort
+	case "provider_rejected":
+		return owner.SteeringReasonProviderRejected
+	case "provider_control_unavailable":
+		return owner.SteeringReasonProviderControlUnavailable
+	default:
+		return owner.SteeringReasonProviderRejected
+	}
 }
 
 type providerPermissionResponseRequest struct {

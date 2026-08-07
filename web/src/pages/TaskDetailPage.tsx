@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, type KeyboardEvent, type ReactNode, type RefObject } from "react";
+import { flushSync } from "react-dom";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, ChevronRight, Wrench, User, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2, Maximize2, Minimize2, Flag, RefreshCcw, TriangleAlert, Archive, ArchiveRestore, Pencil, Paperclip } from "lucide-react";
 import { apiDelete, apiGet, apiPatch, apiPost, apiPostForm, type BlackboardConclusionMode, type BlackboardConclusionView, type ModelProvider, type ProviderPermissionRequest, type RuntimeActivity, type RuntimeControls, type RuntimePlugin, type RuntimeProfile, type Session, type SessionContinuation, type Task, type TaskContinuation, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
@@ -12,11 +13,17 @@ import { collapsedTranscriptTitle, toolCallFields } from "./taskDetailView";
 import { displayReasoningEffort, REASONING_EFFORT_VALUES, selectableModelProviders } from "./runtimeProfileForm";
 import { modelsForProvider } from "./taskLaunchForm";
 import { formatDateTime } from "@/lib/format";
-import { mergeTimelineItems, mergeTranscriptEntries } from "@/lib/ownerEvents";
+import { mergeTimelineItems, mergeTranscriptEntries, prependTimelineItems, prependTranscriptEntries } from "@/lib/ownerEvents";
 import { useDocumentVisibility } from "@/lib/useDocumentVisibility";
+import { useVirtualWindow } from "@/lib/virtualWindow";
 
 const ACTIVE = new Set(["running", "paused"]);
 const DELETABLE = new Set(["completed", "failed", "stopped", "interrupted"]);
+
+// Uniform row-height estimates used by the virtualized Runtime Owner history
+// lists; they match the contain-intrinsic-size hints on the rendered rows.
+const TRANSCRIPT_ROW_ESTIMATE = 72;
+const TIMELINE_ROW_ESTIMATE = 48;
 
 function newSteerRequestID() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -83,8 +90,6 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   const [searchParams, setSearchParams] = useSearchParams();
   const isVisible = useDocumentVisibility();
   const [owner, setOwner] = useState<RuntimeOwnerView | null>(null);
-  const [timeline, setTimeline] = useState<TaskTimelineItem[]>([]);
-  const [transcript, setTranscript] = useState<TaskTranscriptEntry[]>([]);
   const [activeView, setActiveView] = useState<"conversation" | "timeline">(
     () => searchParams.get("view") === "timeline" ? "timeline" : "conversation",
   );
@@ -108,56 +113,193 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   const [confirmAction, setConfirmAction] = useState<"stop" | "finish" | "delete" | null>(null);
   const attachmentInput = useRef<HTMLInputElement>(null);
   const conversationViewport = useRef<HTMLDivElement>(null);
+  const timelineViewport = useRef<HTMLDivElement>(null);
   const conversationEnd = useRef<HTMLDivElement>(null);
   const autoFollowRef = useRef(true);
   // Monotonic generation so slower in-flight polls cannot overwrite newer data.
   const loadGeneration = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
-  // Projection cursors: the first load reads the complete Timeline/Transcript;
-  // refresh polls request only the events after the last committed cursor.
-  const timelineCursor = useRef(0);
-  const transcriptCursor = useRef(0);
+  // Owner identity at request time; a response can merge only when its owner
+  // identity and request generation still match (#202).
+  const ownerIDRef = useRef(ownerID);
+  const activeViewRef = useRef(activeView);
+  const timelineAtTailRef = useRef(true);
+  // Mirror render values into refs after each render so poll and paging
+  // closures read the latest values without stale captures.
+  useEffect(() => {
+    ownerIDRef.current = ownerID;
+    activeViewRef.current = activeView;
+  });
+
+  // Owner-local Runtime Owner History Window state (#202). The whole record is
+  // replaced atomically when the selected owner changes so Timeline and
+  // Transcript content from the prior owner can never merge into the new
+  // route; the ref mirror lets poll closures read the latest cursors.
+  const historyRef = useRef<OwnerHistory>(emptyHistory());
+  const [history, setHistoryState] = useState<OwnerHistory>(emptyHistory());
+  const commitHistory = (next: OwnerHistory) => {
+    historyRef.current = next;
+    setHistoryState(next);
+  };
 
   const base = isSession ? `/api/sessions/${sessionId}` : `/api/projects/${projectId}/tasks/${taskId}`;
 
-  async function loadAll() {
+  async function loadAll(mode: "initial" | "poll") {
     if (!ownerID || (!isSession && !projectId)) return;
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
     const generation = ++loadGeneration.current;
+    const requestOwner = ownerID;
+    const before = historyRef.current;
     try {
       const loaded = isSession
-        ? await loadSessionWorkspace(base, controller.signal, timelineCursor.current, transcriptCursor.current)
-        : await loadTaskWorkspace(base, controller.signal, timelineCursor.current, transcriptCursor.current);
-      if (generation !== loadGeneration.current || controller.signal.aborted) {
+        ? await loadSessionWorkspace(base, controller.signal, mode, before)
+        : await loadTaskWorkspace(base, controller.signal, mode, before);
+      // A response can merge only when its owner identity and request
+      // generation still match; a route change replaces owner-local state
+      // before any merge can run.
+      if (generation !== loadGeneration.current || requestOwner !== ownerIDRef.current || controller.signal.aborted) {
         return;
       }
       setOwner(loaded.owner);
       if (loaded.owner.kind === "session") setTitleDraft(loaded.owner.title);
-      // Stale responses are dropped by the generation guard above; the merge
-      // reducers additionally deduplicate by stable identity.
-      setTimeline((current) => mergeTimelineItems(current, loaded.timeline));
-      setTranscript((current) => mergeTranscriptEntries(current, loaded.transcript));
-      timelineCursor.current = loaded.timelineCursor;
-      transcriptCursor.current = loaded.transcriptCursor;
+      applyHistoryDelta(mode, loaded.history, before, loaded.timelineDelta, loaded.transcriptDelta);
       setError(null);
     } catch (e) {
-      if (controller.signal.aborted || generation !== loadGeneration.current) {
+      if (controller.signal.aborted || generation !== loadGeneration.current || requestOwner !== ownerIDRef.current) {
         return;
       }
       setError((e as Error).message);
     }
   }
 
+  // Applies one merged history page. Live-tail deltas never move an operator
+  // who is reading older history: at the tail the container shifts by the
+  // appended height, away from the tail an unseen-event count accumulates
+  // instead of forcing scroll.
+  function applyHistoryDelta(
+    mode: "initial" | "poll",
+    next: OwnerHistory,
+    before: OwnerHistory,
+    timelineDelta: number,
+    transcriptDelta: number,
+  ) {
+    if (mode === "initial") {
+      commitHistory(next);
+      return;
+    }
+    if (transcriptDelta > 0 && activeViewRef.current === "conversation" && !autoFollowRef.current) {
+      next = { ...next, transcriptUnseen: before.transcriptUnseen + transcriptDelta };
+    }
+    if (timelineDelta > 0 && activeViewRef.current === "timeline") {
+      if (timelineAtTailRef.current) {
+        const container = timelineViewport.current;
+        if (container) {
+          // Render the appended rows first, then shift the reading position
+          // by the appended height so the previously visible content stays in
+          // place and the new tail rows appear.
+          flushSync(() => commitHistory(next));
+          container.scrollTop += timelineDelta * TIMELINE_ROW_ESTIMATE;
+          return;
+        }
+      }
+      next = { ...next, timelineUnseen: before.timelineUnseen + timelineDelta };
+    }
+    commitHistory(next);
+  }
+
+  // loadOlderConversation prepends one backward Transcript page and preserves
+  // the visible anchor by shifting the container by the prepended height.
+  async function loadOlderConversation() {
+    const current = historyRef.current;
+    if (current.loadingOlder !== null || current.transcript.length === 0 || !current.transcriptHasOlder) return;
+    const before = current.transcript[0]!.seq;
+    const anchor = conversationViewport.current?.scrollTop ?? 0;
+    commitHistory({ ...current, loadingOlder: "transcript" });
+    try {
+      const page = await apiGet<TaskTranscript>(`${base}/transcript?before=${before}`);
+      const latest = historyRef.current;
+      const merged = prependTranscriptEntries(latest.transcript, page.entries ?? []);
+      const prepended = merged.length - latest.transcript.length;
+      const next: OwnerHistory = { ...latest, transcript: merged, transcriptHasOlder: page.has_older === true, loadingOlder: null };
+      flushSync(() => commitHistory(next));
+      const viewport = conversationViewport.current;
+      if (viewport && prepended > 0) {
+        viewport.scrollTop = anchor + prepended * TRANSCRIPT_ROW_ESTIMATE;
+      }
+    } catch (e) {
+      commitHistory({ ...historyRef.current, loadingOlder: null });
+      setActionError((e as Error).message);
+    }
+  }
+
+  // loadOlderTimeline prepends one backward Timeline page. In the default
+  // newest-first sort the older rows land at the bottom of the list, so the
+  // visible anchor needs no adjustment; in chronological sort the page lands
+  // above the operator and the container shifts by the prepended height.
+  async function loadOlderTimeline() {
+    const current = historyRef.current;
+    if (current.loadingOlder !== null || current.timeline.length === 0 || !current.timelineHasOlder) return;
+    const before = current.timeline[0]!.seq;
+    const anchor = timelineViewport.current?.scrollTop ?? 0;
+    commitHistory({ ...current, loadingOlder: "timeline" });
+    try {
+      const page = await apiGet<TaskTimeline>(`${base}/timeline?before=${before}`);
+      const latest = historyRef.current;
+      const merged = prependTimelineItems(latest.timeline, page.items ?? []);
+      const prepended = merged.length - latest.timeline.length;
+      const next: OwnerHistory = { ...latest, timeline: merged, timelineHasOlder: page.has_older === true, loadingOlder: null };
+      flushSync(() => commitHistory(next));
+      const viewport = timelineViewport.current;
+      if (viewport && prepended > 0 && timelineSortRef.current === "chronological") {
+        viewport.scrollTop = anchor + prepended * TIMELINE_ROW_ESTIMATE;
+      }
+    } catch (e) {
+      commitHistory({ ...historyRef.current, loadingOlder: null });
+      setActionError((e as Error).message);
+    }
+  }
+
+  // Timeline sort direction, mirrored so the poll and paging closures can read
+  // the latest value without stale captures.
+  const timelineSortRef = useRef<"chronological" | "newest_first">("newest_first");
+  function handleTimelineSortDirection(direction: "chronological" | "newest_first") {
+    timelineSortRef.current = direction;
+  }
+
+  // Timeline tail state: at the tail (newest-first: the top; chronological:
+  // the bottom) live deltas shift the container; away from the tail they
+  // accumulate an unseen count instead.
+  function handleTimelineAtTail(atTail: boolean) {
+    timelineAtTailRef.current = atTail;
+    if (atTail && historyRef.current.timelineUnseen > 0) {
+      commitHistory({ ...historyRef.current, timelineUnseen: 0 });
+    }
+  }
+
+  function jumpToTimelineLatest() {
+    const container = timelineViewport.current;
+    if (container) {
+      container.scrollTo({ top: 0, behavior: prefersReducedMotion() ? "auto" : "smooth" });
+    }
+    if (historyRef.current.timelineUnseen > 0) {
+      commitHistory({ ...historyRef.current, timelineUnseen: 0 });
+    }
+  }
+
   /* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
   useEffect(() => {
-    // Initial load on mount/owner change. loadAll() is reused by the poll loop
-    // and event handlers.
+    // Initial load on mount/owner change. A route change aborts old requests
+    // and atomically replaces owner-local history with an empty record before
+    // any merge, so Timeline and Transcript content from the prior owner can
+    // never appear on the new route (#202).
     setTurnSelectionSeeded(false);
-    timelineCursor.current = 0;
-    transcriptCursor.current = 0;
-    loadAll();
+    autoFollowRef.current = true;
+    setAutoFollow(true);
+    timelineAtTailRef.current = true;
+    commitHistory(emptyHistory());
+    loadAll("initial");
     Promise.all([
       apiGet<{ profiles: RuntimeProfile[] }>("/api/runtime-profiles").then((d) => setProfiles(d.profiles ?? [])),
       apiGet<{ providers: ModelProvider[] }>("/api/model-providers").then((d) => setModelProviders(d.providers ?? [])),
@@ -201,6 +343,10 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
       const pinned = isNearScrollBottom(container!);
       autoFollowRef.current = pinned;
       setAutoFollow((current) => current === pinned ? current : pinned);
+      // Returning to the tail dismisses any accumulated unseen count.
+      if (pinned && historyRef.current.transcriptUnseen > 0) {
+        commitHistory({ ...historyRef.current, transcriptUnseen: 0 });
+      }
     }
 
     container.addEventListener("scroll", updateAutoFollow, { passive: true });
@@ -216,7 +362,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
     if (!isVisible || !owner || !ACTIVE.has(owner.status)) return;
-    const id = setInterval(loadAll, 1000);
+    const id = setInterval(() => void loadAll("poll"), 1000);
     return () => clearInterval(id);
   }, [owner?.status, isVisible]);
   /* eslint-enable react-hooks/exhaustive-deps */
@@ -225,7 +371,22 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     if (activeView === "conversation" && autoFollowRef.current) {
       conversationEnd.current?.scrollIntoView?.({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "end" });
     }
-  }, [activeView, timeline, transcript]);
+  }, [activeView, history.timeline.length, history.transcript.length]);
+
+  // Virtualized rendering window for the conversation transcript (#202): DOM
+  // size stays bounded while older history pages accumulate in state. The
+  // container element is stored in state so the hook attaches its scroll
+  // listener once the workspace renders after the owner loads.
+  const [transcriptViewport, setTranscriptViewport] = useState<HTMLDivElement | null>(null);
+  const transcriptWindow = useVirtualWindow({
+    itemCount: history.transcript.length,
+    viewport: transcriptViewport,
+    estimateHeight: TRANSCRIPT_ROW_ESTIMATE,
+  });
+  const bindTranscriptViewport = (node: HTMLDivElement | null) => {
+    conversationViewport.current = node;
+    setTranscriptViewport(node);
+  };
 
   const currentProfileRuntimeProvider = profiles.find((profile) => profile.id === owner?.runtimeProfileID)?.provider;
   const currentRuntimeProvider =
@@ -267,6 +428,9 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     autoFollowRef.current = true;
     setAutoFollow(true);
     container.scrollTo({ top: container.scrollHeight, behavior: prefersReducedMotion() ? "auto" : "smooth" });
+    if (historyRef.current.transcriptUnseen > 0) {
+      commitHistory({ ...historyRef.current, transcriptUnseen: 0 });
+    }
   }
 
   function scrollToTop() {
@@ -282,7 +446,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     try {
       await apiPost(`${base}/stop`, {});
       setActionError(null);
-      loadAll();
+      loadAll("poll");
     } catch (e) {
       setActionError((e as Error).message);
     }
@@ -293,7 +457,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     try {
       await apiPost(`${base}/finish`, {});
       setActionError(null);
-      loadAll();
+      loadAll("poll");
     } catch (e) {
       setActionError((e as Error).message);
     }
@@ -334,7 +498,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     try {
       await apiPost(`${base}/resume`, continuationModelPayload());
       setActionError(null);
-      loadAll();
+      loadAll("poll");
     } catch (e) {
       setActionError((e as Error).message);
     }
@@ -363,7 +527,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
       }
       setSteering("");
       setActionError(null);
-      await loadAll();
+      await loadAll("poll");
     } catch (e) {
       setActionError((e as Error).message);
     } finally {
@@ -403,7 +567,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
         if (attachmentInput.current) attachmentInput.current.value = "";
       }
       setActionError(null);
-      await loadAll();
+      await loadAll("poll");
     } catch (e) {
       setActionError((e as Error).message);
     } finally {
@@ -425,7 +589,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
         decision,
       });
       setActionError(null);
-      loadAll();
+      loadAll("poll");
     } catch (e) {
       setActionError((e as Error).message);
     } finally {
@@ -439,7 +603,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
       await apiPatch<Session>(base, { title: titleDraft.trim() });
       setEditingTitle(false);
       setActionError(null);
-      await loadAll();
+      await loadAll("poll");
     } catch (e) {
       setActionError((e as Error).message);
     }
@@ -450,7 +614,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     try {
       await apiPost<Session>(`${base}/${action}`, {});
       setActionError(null);
-      await loadAll();
+      await loadAll("poll");
     } catch (e) {
       setActionError((e as Error).message);
     }
@@ -483,6 +647,10 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     const next = new URLSearchParams(searchParams);
     next.set("view", view);
     setSearchParams(next, { replace: true });
+    // Unseen counts belong to the visible view only; switching resets them.
+    if (historyRef.current.timelineUnseen > 0 || historyRef.current.transcriptUnseen > 0) {
+      commitHistory({ ...historyRef.current, timelineUnseen: 0, transcriptUnseen: 0 });
+    }
   }
 
   function selectFocus(focused: boolean) {
@@ -715,9 +883,34 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
           <div className="min-h-0 flex-1 overflow-y-auto p-2 pb-44 sm:p-3 md:pb-5">
             <AgentTranscriptView
               owner={owner}
-              items={timeline}
+              items={history.timeline}
               profileName={profiles.find((p) => p.id === owner.runtimeProfileID)?.name}
               isLive={ACTIVE.has(owner.status)}
+              scrollRef={timelineViewport}
+              onAtTailChange={handleTimelineAtTail}
+              onSortDirectionChange={handleTimelineSortDirection}
+              unseenCount={history.timelineUnseen}
+              onShowLatest={jumpToTimelineLatest}
+              footer={
+                history.timelineHasOlder ? (
+                  <div className="flex justify-center p-3">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      data-testid="load-older-timeline"
+                      onClick={() => void loadOlderTimeline()}
+                      disabled={history.loadingOlder === "timeline"}
+                    >
+                      {history.loadingOlder === "timeline" ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" />
+                      ) : (
+                        <ArrowUp className="h-3.5 w-3.5" />
+                      )}
+                      Load older events
+                    </Button>
+                  </div>
+                ) : undefined
+              }
             />
             {providerPermissions.length > 0 && (
               <ProviderPermissionRequests
@@ -729,12 +922,39 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
           </div>
         ) : (
           <div
-            ref={conversationViewport}
+            ref={bindTranscriptViewport}
             data-testid="conversation-workspace"
-            className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-background px-3 py-5 pb-44 sm:px-6 md:pb-5"
+            className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain bg-background px-3 py-5 pb-44 sm:px-6 md:pb-5"
           >
             <div className="mx-auto max-w-3xl">
-              <TranscriptList entries={transcript} endRef={conversationEnd} />
+              {history.transcriptHasOlder && (
+                <div className="mb-2 flex justify-center">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    data-testid="load-older-transcript"
+                    onClick={() => void loadOlderConversation()}
+                    disabled={history.loadingOlder === "transcript"}
+                  >
+                    {history.loadingOlder === "transcript" ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" />
+                    ) : (
+                      <ArrowUp className="h-3.5 w-3.5" />
+                    )}
+                    Load older messages
+                  </Button>
+                </div>
+              )}
+              {transcriptWindow.spacerBefore > 0 && (
+                <div aria-hidden="true" data-testid="transcript-spacer-before" style={{ height: transcriptWindow.spacerBefore }} />
+              )}
+              <TranscriptList
+                entries={history.transcript.slice(transcriptWindow.startIndex, transcriptWindow.endIndex)}
+                endRef={conversationEnd}
+              />
+              {transcriptWindow.spacerAfter > 0 && (
+                <div aria-hidden="true" data-testid="transcript-spacer-after" style={{ height: transcriptWindow.spacerAfter }} />
+              )}
               {providerPermissions.length > 0 && (
                 <ProviderPermissionRequests
                   permissions={providerPermissions}
@@ -743,6 +963,17 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
                 />
               )}
             </div>
+            {history.transcriptUnseen > 0 && (
+              <button
+                type="button"
+                data-testid="unseen-transcript-indicator"
+                onClick={scrollToLatest}
+                className="absolute bottom-28 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-background/95 px-3 py-1.5 text-xs font-medium text-foreground shadow-md transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <ArrowDown className="h-3.5 w-3.5" />
+                {history.transcriptUnseen} new {history.transcriptUnseen === 1 ? "message" : "messages"}
+              </button>
+            )}
           </div>
         )}
 
@@ -833,64 +1064,111 @@ function RuntimeOwnerShell({ projectChrome, children, bodyClassName, ...props }:
   );
 }
 
-type RuntimeWorkspaceLoad = {
-  owner: RuntimeOwnerView;
+// OwnerHistory is the owner-local Runtime Owner History Window state (#202):
+// the bounded recent window plus backward pages and live-tail deltas, the
+// live-tail cursors, paging availability, unseen counts, and in-flight paging
+// state. A route change replaces the whole record atomically before any merge.
+type OwnerHistory = {
   timeline: TaskTimelineItem[];
   transcript: TaskTranscriptEntry[];
   timelineCursor: number;
   transcriptCursor: number;
+  timelineHasOlder: boolean;
+  transcriptHasOlder: boolean;
+  timelineUnseen: number;
+  transcriptUnseen: number;
+  loadingOlder: "timeline" | "transcript" | null;
+};
+
+function emptyHistory(): OwnerHistory {
+  return {
+    timeline: [], transcript: [], timelineCursor: 0, transcriptCursor: 0,
+    timelineHasOlder: false, transcriptHasOlder: false,
+    timelineUnseen: 0, transcriptUnseen: 0, loadingOlder: null,
+  };
+}
+
+type RuntimeWorkspaceLoad = {
+  owner: RuntimeOwnerView;
+  history: OwnerHistory;
+  /** Items appended by a live-tail delta (poll mode only). */
+  timelineDelta: number;
+  transcriptDelta: number;
 };
 
 async function loadTaskWorkspace(
   base: string,
   signal: AbortSignal,
-  timelineAfter: number,
-  transcriptAfter: number,
+  mode: "initial" | "poll",
+  current: OwnerHistory,
 ): Promise<RuntimeWorkspaceLoad> {
   const [task, timeline, transcript] = await Promise.all([
     apiGet<Task>(base, { signal }),
-    apiGet<TaskTimeline>(timelineURL(base, timelineAfter), { signal }),
-    apiGet<TaskTranscript>(transcriptURL(base, transcriptAfter), { signal }),
+    apiGet<TaskTimeline>(timelineURL(base, mode, current.timelineCursor), { signal }),
+    apiGet<TaskTranscript>(transcriptURL(base, mode, current.transcriptCursor), { signal }),
   ]);
+  const initial = mode === "initial";
+  const next: OwnerHistory = {
+    ...current,
+    timeline: initial ? (timeline.items ?? []) : mergeTimelineItems(current.timeline, timeline.items ?? []),
+    transcript: initial ? (transcript.entries ?? []) : mergeTranscriptEntries(current.transcript, transcript.entries ?? []),
+    timelineCursor: timeline.cursor ?? current.timelineCursor,
+    transcriptCursor: transcript.cursor ?? current.transcriptCursor,
+    ...(initial ? {
+      timelineHasOlder: timeline.has_older === true,
+      transcriptHasOlder: transcript.has_older === true,
+    } : {}),
+  };
   return {
     owner: taskAsRuntimeOwner(task),
-    timeline: timeline.items ?? [],
-    transcript: transcript.entries ?? [],
-    timelineCursor: timeline.cursor ?? 0,
-    transcriptCursor: transcript.cursor ?? 0,
+    history: next,
+    timelineDelta: initial ? 0 : next.timeline.length - current.timeline.length,
+    transcriptDelta: initial ? 0 : next.transcript.length - current.transcript.length,
   };
 }
 
 async function loadSessionWorkspace(
   base: string,
   signal: AbortSignal,
-  timelineAfter: number,
-  transcriptAfter: number,
+  mode: "initial" | "poll",
+  current: OwnerHistory,
 ): Promise<RuntimeWorkspaceLoad> {
   const [session, timeline, transcript] = await Promise.all([
     apiGet<Session>(base, { signal }),
-    apiGet<TaskTimeline>(timelineURL(base, timelineAfter), { signal }),
-    apiGet<TaskTranscript>(transcriptURL(base, transcriptAfter), { signal }),
+    apiGet<TaskTimeline>(timelineURL(base, mode, current.timelineCursor), { signal }),
+    apiGet<TaskTranscript>(transcriptURL(base, mode, current.transcriptCursor), { signal }),
   ]);
-  return {
-    owner: sessionAsRuntimeOwner(session),
+  const initial = mode === "initial";
+  const next: OwnerHistory = {
+    ...current,
     // Session timelines and transcripts are built by the same daemon pipeline
     // as task ones, so the rendered shapes are identical.
-    timeline: timeline.items ?? [],
-    transcript: transcript.entries ?? [],
-    timelineCursor: timeline.cursor ?? 0,
-    transcriptCursor: transcript.cursor ?? 0,
+    timeline: initial ? (timeline.items ?? []) : mergeTimelineItems(current.timeline, timeline.items ?? []),
+    transcript: initial ? (transcript.entries ?? []) : mergeTranscriptEntries(current.transcript, transcript.entries ?? []),
+    timelineCursor: timeline.cursor ?? current.timelineCursor,
+    transcriptCursor: transcript.cursor ?? current.transcriptCursor,
+    ...(initial ? {
+      timelineHasOlder: timeline.has_older === true,
+      transcriptHasOlder: transcript.has_older === true,
+    } : {}),
+  };
+  return {
+    owner: sessionAsRuntimeOwner(session),
+    history: next,
+    timelineDelta: initial ? 0 : next.timeline.length - current.timeline.length,
+    transcriptDelta: initial ? 0 : next.transcript.length - current.transcript.length,
   };
 }
 
-// The first load reads the complete projection (no `after`); refresh polls
-// request only the events after the last committed cursor.
-function timelineURL(base: string, after: number): string {
-  return after > 0 ? `${base}/timeline?after=${after}` : `${base}/timeline`;
+// The first load reads the initial bounded history window (no cursor); refresh
+// polls always send the committed cursor, including an explicit after=0 after
+// an empty initial read so synthetic seq-0 content is never resent.
+function timelineURL(base: string, mode: "initial" | "poll", cursor: number): string {
+  return mode === "initial" ? `${base}/timeline` : `${base}/timeline?after=${cursor}`;
 }
 
-function transcriptURL(base: string, after: number): string {
-  return after > 0 ? `${base}/transcript?after=${after}` : `${base}/transcript`;
+function transcriptURL(base: string, mode: "initial" | "poll", cursor: number): string {
+  return mode === "initial" ? `${base}/transcript` : `${base}/transcript?after=${cursor}`;
 }
 
 function taskAsRuntimeOwner(task: Task): RuntimeOwnerView {

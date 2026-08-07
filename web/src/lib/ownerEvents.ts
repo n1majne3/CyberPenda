@@ -46,3 +46,34 @@ export function mergeTranscriptEntries(existing: TaskTranscriptEntry[], delta: T
   if (appended.length === 0) return existing;
   return [...existing, ...appended];
 }
+
+/**
+ * prependTimelineItems places a backward history page ahead of the loaded
+ * items. The server guarantees the page is strictly older than the loaded
+ * head, so no duplicate Seq can cross the boundary; the filter keeps the
+ * merge safe against any stale overlap anyway.
+ */
+export function prependTimelineItems(existing: TaskTimelineItem[], page: TaskTimelineItem[]): TaskTimelineItem[] {
+  if (page.length === 0) return existing;
+  if (existing.length === 0) return page;
+  const headSeq = existing[0]!.seq;
+  const older = page.filter((item) => item.seq < headSeq);
+  if (older.length === 0) return existing;
+  return [...older, ...existing];
+}
+
+/**
+ * prependTranscriptEntries places a backward history page ahead of the loaded
+ * entries. Transcript entries can share one Seq (several rows projected from
+ * one provider record), so deduplication is by stable ID; the server keeps
+ * same-Seq groups atomic at page boundaries.
+ */
+export function prependTranscriptEntries(existing: TaskTranscriptEntry[], page: TaskTranscriptEntry[]): TaskTranscriptEntry[] {
+  if (page.length === 0) return existing;
+  if (existing.length === 0) return page;
+  const headSeq = existing[0]!.seq;
+  const older = page.filter((entry) => entry.seq < headSeq);
+  if (older.length === 0) return existing;
+  const seen = new Set(existing.map((entry) => entry.id));
+  return [...older.filter((entry) => !seen.has(entry.id)), ...existing];
+}

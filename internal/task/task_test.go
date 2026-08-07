@@ -263,6 +263,118 @@ func TestRecordBlackboardConclusionCheckpointPersistsPendingDebtIdempotently(t *
 	}
 }
 
+// #197: after an interrupt_then_replace native steer creates a replacement
+// Continuation, an in-flight assisted-conclusion Receipt must be rebound to the
+// replacement (continuation_id and source_session_id repointed) so a retry can
+// deliver the control turn against the live replacement session instead of
+// looping on the dead pre-steer session. Terminal Receipts (clean/applied) are
+// never rebound.
+func TestRebindInFlightConclusionReceiptsRepointsToReplacementContinuation(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, err := svc.Create(task.CreateRequest{
+		ProjectID: proj.ID, Goal: "rebind receipt", Runner: task.RunnerSandbox,
+		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldContinuation, err := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const oldSession = "session-old"
+	selection := task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1"}
+	receipt, _, err := svc.RecordBlackboardConclusionCheckpoint(created.ID, oldContinuation.ID, "work-request-1", oldSession, "turn-1", selection, task.SemanticDebtWatermarks{SourceWork: 3, SemanticPersistence: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Drive the Receipt into action_required so it mirrors the stuck live Task:
+	// an assisted conclusion whose dispatch failed and now waits for recovery.
+	if _, _, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(receipt.ID, time.Now().UTC(), 0); err != nil {
+		t.Fatalf("mark recovery required: %v", err)
+	}
+
+	// The steer creates a replacement Continuation carrying a NEW live session.
+	replacement, err := svc.CreateReplacementContinuation(oldContinuation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const replacementSession = "session-replacement"
+	if _, err := svc.UpdateContinuationRuntimeMetadata(replacement.ID, "", replacementSession, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	rebound, err := svc.RebindInFlightConclusionReceipts(created.ID, oldContinuation.ID, replacement.ID, replacementSession)
+	if err != nil {
+		t.Fatalf("rebind in-flight receipts: %v", err)
+	}
+	if !rebound {
+		t.Fatalf("expected the in-flight Receipt to be rebound, but the rebind reported no change")
+	}
+
+	latest, err := svc.LatestBlackboardConclusion(created.ID)
+	if err != nil || latest == nil {
+		t.Fatalf("latest receipt after rebind: %v %#v", err, latest)
+	}
+	if latest.ID != receipt.ID {
+		t.Fatalf("rebind changed the receipt identity: %s != %s", latest.ID, receipt.ID)
+	}
+	if latest.ContinuationID != replacement.ID {
+		t.Fatalf("continuation_id not rebound: %s, want %s", latest.ContinuationID, replacement.ID)
+	}
+	if latest.SourceSessionID != replacementSession {
+		t.Fatalf("source_session_id not rebound: %s, want %s", latest.SourceSessionID, replacementSession)
+	}
+	if latest.InternalState != task.BlackboardConclusionReceiptActionRequired {
+		t.Fatalf("rebind changed the in-flight state: %s", latest.InternalState)
+	}
+}
+
+// #197: terminal Receipts (clean / applied) are never rebound — the conclusion
+// already landed, so repointing it would risk re-applying a stale batch.
+func TestRebindInFlightConclusionReceiptsLeavesTerminalReceiptsAlone(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, err := svc.Create(task.CreateRequest{
+		ProjectID: proj.ID, Goal: "no rebind terminal", Runner: task.RunnerSandbox,
+		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldContinuation, err := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A clean Receipt (watermarks within target) is terminal — it must not move.
+	if _, _, err := svc.RecordBlackboardConclusionCheckpoint(created.ID, oldContinuation.ID, "work-clean", "session-old", "turn-clean", task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1"}, task.SemanticDebtWatermarks{SourceWork: 1, SemanticPersistence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := svc.CreateReplacementContinuation(oldContinuation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rebound, err := svc.RebindInFlightConclusionReceipts(created.ID, oldContinuation.ID, replacement.ID, "session-replacement")
+	if err != nil {
+		t.Fatalf("rebind terminal receipts: %v", err)
+	}
+	if rebound {
+		t.Fatalf("terminal clean Receipt must not be rebound, but rebind reported a change")
+	}
+	latest, err := svc.LatestBlackboardConclusion(created.ID)
+	if err != nil || latest == nil {
+		t.Fatalf("latest receipt: %v %#v", err, latest)
+	}
+	if latest.ContinuationID != oldContinuation.ID {
+		t.Fatalf("terminal Receipt continuation_id was moved: %s, want %s", latest.ContinuationID, oldContinuation.ID)
+	}
+}
+
 func TestRecordBlackboardConclusionCheckpointRejectsInvalidWatermarks(t *testing.T) {
 	db := newStore(t)
 	projects := project.NewService(db)

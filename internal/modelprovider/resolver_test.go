@@ -1,8 +1,6 @@
 package modelprovider_test
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"pentest/internal/credential"
@@ -184,11 +182,7 @@ func TestResolveModelProviderAcceptsGeneratedCredentialBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create provider: %v", err)
 	}
-	secretPath := filepath.Join(t.TempDir(), "api-key")
-	if err := os.WriteFile(secretPath, []byte("sk-file-secret"), 0o600); err != nil {
-		t.Fatalf("write secret: %v", err)
-	}
-	if _, err := creds.Upsert(provider.APIKeyEnv, credential.ScopeGlobal, "", credential.Source{Kind: credential.SourceFile, Value: secretPath}, false); err != nil {
+	if _, err := creds.Upsert(provider.APIKeyEnv, credential.ScopeGlobal, "", credential.Source{Kind: credential.SourceLiteral, Value: "sk-literal-secret", DestinationEnv: provider.APIKeyEnv}, false); err != nil {
 		t.Fatalf("upsert credential binding: %v", err)
 	}
 

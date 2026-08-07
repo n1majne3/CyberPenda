@@ -616,50 +616,98 @@ func (s *Service) ListForProject(projectID string) ([]Task, error) {
 	return tasks, nil
 }
 
-// ListRecentPerProject returns, for each Project that has any non-deleted Task,
-// the `limit` most recently updated Tasks. Ordering is updated_at DESC then
-// created_at DESC so the Sidebar's activity-based selection is reproducible
-// server-side. Grouping by Project happens in Go; this is one round-trip
-// instead of one per Project, which keeps Sidebar refresh bounded as the
-// Project count grows (#193).
-func (s *Service) ListRecentPerProject(limit int) (map[string][]Task, error) {
+// taskSelectColumns lists the columns scanned by the shared Task projections.
+// Keep it in sync with the table columns used by scanTask.
+const taskSelectColumns = `id, project_id, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at`
+
+// recentPerProjectSQL builds the bounded per-Project recent Task query. The
+// exclusion placeholders keep busy and selected Tasks out of the ordinary
+// summary; the navigation index idx_tasks_project_activity serves both the
+// filter and the ordering, so a Project's history beyond the fixed summary is
+// never read (#201).
+func recentPerProjectSQL(limit, excludeCount int) string {
+	query := `SELECT ` + taskSelectColumns + ` FROM tasks WHERE project_id = ? AND deleted_at = ''`
+	if excludeCount > 0 {
+		query += ` AND id NOT IN (` + strings.TrimSuffix(strings.Repeat(`?,`, excludeCount), `,`) + `)`
+	}
+	return query + ` ORDER BY updated_at DESC, created_at DESC LIMIT ?`
+}
+
+// ListRecentPerProject returns, for each requested Project, the `limit` most
+// recently updated non-deleted Tasks, excluding the given Task ids. Busy and
+// selected Tasks are inlined separately by the navigation projection, so the
+// ordinary summary stays exactly `limit` entries (#201).
+//
+// Ordering is updated_at DESC then created_at DESC. Each Project is one
+// bounded indexed query with LIMIT, so query work and returned rows never grow
+// with a Project's total historical Task count.
+func (s *Service) ListRecentPerProject(projectIDs []string, limit int, excludeIDs ...string) (map[string][]Task, error) {
 	if limit <= 0 {
 		limit = 1
 	}
-	rows, err := s.db.Query(
-		`SELECT id, project_id, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at
-		 FROM tasks WHERE deleted_at = '' ORDER BY updated_at DESC, created_at DESC`,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("list recent tasks: %w", err)
-	}
-	defer rows.Close()
-
-	byProject := make(map[string][]Task)
-	for rows.Next() {
-		found, err := scanTask(rows)
+	byProject := make(map[string][]Task, len(projectIDs))
+	for _, projectID := range projectIDs {
+		args := make([]any, 0, len(excludeIDs)+2)
+		args = append(args, projectID)
+		for _, id := range excludeIDs {
+			args = append(args, id)
+		}
+		args = append(args, limit)
+		rows, err := s.db.Query(recentPerProjectSQL(limit, len(excludeIDs)), args...)
 		if err != nil {
-			return nil, fmt.Errorf("scan task: %w", err)
+			return nil, fmt.Errorf("list recent tasks: %w", err)
 		}
-		// Rows are globally ordered by recency, so the first `limit` seen per
-		// Project are that Project's most recent Tasks.
-		if group := byProject[found.ProjectID]; len(group) < limit {
-			byProject[found.ProjectID] = append(group, found)
+		var tasks []Task
+		for rows.Next() {
+			found, err := scanTask(rows)
+			if err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan task: %w", err)
+			}
+			tasks = append(tasks, found)
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list recent tasks: %w", err)
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("list recent tasks: %w", err)
+		}
+		rows.Close()
+		if tasks != nil {
+			byProject[projectID] = tasks
+		}
 	}
 	return byProject, nil
 }
 
+// LatestUpdate returns the newest updated_at across every Task row, including
+// soft-deleted rows so a deletion advances the navigation epoch. The Project
+// Navigation Projection folds it into its opaque revision so an unchanged
+// refresh can be answered without serializing the projection (#201). The
+// idx_tasks_updated_at index answers the MAX in one indexed read.
+func (s *Service) LatestUpdate() (time.Time, error) {
+	var value string
+	if err := s.db.QueryRow(`SELECT MAX(updated_at) FROM tasks`).Scan(&value); err != nil {
+		return time.Time{}, fmt.Errorf("latest task update: %w", err)
+	}
+	if value == "" {
+		return time.Time{}, nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse latest task update: %w", err)
+	}
+	return parsed, nil
+}
+
 // Delete removes a terminal task from normal Task surfaces while retaining its
-// durable row for Blackboard provenance and historical joins.
+// durable row for Blackboard provenance and historical joins. The row's
+// updated_at advances with the deletion so the navigation revision changes and
+// a cached Sidebar projection cannot keep showing a deleted Task (#201).
 func (s *Service) Delete(id string) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 	result, err := s.db.Exec(
-		`UPDATE tasks SET deleted_at = ?
+		`UPDATE tasks SET deleted_at = ?, updated_at = ?
 		 WHERE id = ? AND deleted_at = '' AND status NOT IN (?, ?, ?)`,
-		time.Now().UTC().Format(time.RFC3339Nano), id,
+		now, now, id,
 		string(StatusPending), string(StatusRunning), string(StatusPaused),
 	)
 	if err != nil {
@@ -740,6 +788,35 @@ func (s *Service) AppendEvent(taskID string, kind EventKind, payload EventPayloa
 // The Continuation must belong to the Task.
 func (s *Service) AppendContinuationEvent(taskID, continuationID string, kind EventKind, payload EventPayload) (Event, error) {
 	return s.appendEvent(taskID, continuationID, kind, payload)
+}
+
+// AppendEventTx appends a structured task event inside a caller-owned
+// transaction. Seq is assigned monotonically per task within the transaction
+// so the event can be committed atomically with another owner-neutral record
+// (for example a durable Accepted Steering request).
+func (s *Service) AppendEventTx(tx *sql.Tx, taskID string, kind EventKind, payload EventPayload) (Event, error) {
+	if payload == nil {
+		payload = EventPayload{}
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return Event{}, fmt.Errorf("encode event payload: %w", err)
+	}
+	now := time.Now().UTC()
+	var maxSeq sql.NullInt64
+	if err := tx.QueryRow(`SELECT MAX(seq) FROM task_events WHERE task_id = ?`, taskID).Scan(&maxSeq); err != nil {
+		return Event{}, fmt.Errorf("read max seq: %w", err)
+	}
+	event := Event{
+		ID: newID(), TaskID: taskID, Kind: kind, Payload: payload, Seq: int(maxSeq.Int64) + 1, CreatedAt: now,
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO task_events (id, task_id, continuation_id, seq, kind, payload_json, created_at) VALUES (?, ?, NULLIF(?,''), ?, ?, ?, ?)`,
+		event.ID, event.TaskID, "", event.Seq, string(event.Kind), string(payloadJSON), event.CreatedAt.Format(time.RFC3339Nano),
+	); err != nil {
+		return Event{}, fmt.Errorf("store event: %w", err)
+	}
+	return event, nil
 }
 
 func (s *Service) appendEvent(taskID, continuationID string, kind EventKind, payload EventPayload) (Event, error) {

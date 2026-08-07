@@ -757,31 +757,67 @@ func enabledExtensionInstallRefs(profile runtimeprofile.Profile) []string {
 }
 
 func resolveMaterializedCredentials(profile runtimeprofile.Profile, req ProjectionRequest) (map[string]string, error) {
+	// Global Environment Variables: every active global Credential Binding
+	// projects into every Runtime as a base layer, independent of the
+	// profile's credential_refs. Profile-scoped sources below override these
+	// so explicit references still win.
+	//
+	// Deadlock constraint: this function runs BOTH outside Store transactions
+	// (via MaterializeLaunchCredentials) AND inside them (the
+	// MaterializedCredentials snapshot path). ResolveGlobalEnv queries SQLite,
+	// so it must only run on the pre-transaction path — once global env lands in
+	// the MaterializedCredentials snapshot, the in-transaction path reuses it
+	// and never touches the Service again.
+	env := make(map[string]string)
 	if req.MaterializedCredentials != nil {
-		materialized := cloneMaterializedCredentials(req.MaterializedCredentials)
-		if req.ModelSnapshot != nil && req.ModelSnapshot.APIKeyEnv != "" && strings.TrimSpace(materialized[req.ModelSnapshot.APIKeyEnv]) == "" {
+		// In-transaction path: the snapshot already contains global env vars
+		// (merged by MaterializeLaunchCredentials before the TX began).
+		for key, value := range req.MaterializedCredentials {
+			env[key] = value
+		}
+		if req.ModelSnapshot != nil && req.ModelSnapshot.APIKeyEnv != "" && strings.TrimSpace(env[req.ModelSnapshot.APIKeyEnv]) == "" {
 			return nil, fmt.Errorf("model provider API key env %s is not configured", req.ModelSnapshot.APIKeyEnv)
 		}
-		return materialized, nil
+		return env, nil
+	}
+	if req.Credentials != nil {
+		globalEnv, err := req.Credentials.ResolveGlobalEnv()
+		if err != nil {
+			return nil, err
+		}
+		for key, value := range globalEnv {
+			env[key] = value
+		}
 	}
 	if req.ModelSnapshot != nil && req.ModelSnapshot.APIKeyEnv != "" {
 		if value, ok := materializeModelProviderAPIKey(req); ok {
-			return map[string]string{req.ModelSnapshot.APIKeyEnv: value}, nil
+			env[req.ModelSnapshot.APIKeyEnv] = value
+			return env, nil
 		}
 		value := strings.TrimSpace(os.Getenv(req.ModelSnapshot.APIKeyEnv))
 		if value == "" {
 			return nil, fmt.Errorf("model provider API key env %s is not configured", req.ModelSnapshot.APIKeyEnv)
 		}
-		return map[string]string{req.ModelSnapshot.APIKeyEnv: value}, nil
+		env[req.ModelSnapshot.APIKeyEnv] = value
+		return env, nil
 	}
 	inline := runtimeprofile.MaterializedAPIKeys(profile)
-	if len(inline) > 0 {
-		return inline, nil
+	for key, value := range inline {
+		env[key] = value
 	}
-	if req.Credentials == nil || req.Owner.ProjectID == "" || len(profile.Fields.CredentialRefs) == 0 {
+	if req.Credentials != nil && req.Owner.ProjectID != "" && len(profile.Fields.CredentialRefs) > 0 {
+		referenced, err := req.Credentials.ResolveMaterializedEnv(req.Owner.ProjectID, profile.Fields.CredentialRefs)
+		if err != nil {
+			return nil, err
+		}
+		for key, value := range referenced {
+			env[key] = value
+		}
+	}
+	if len(env) == 0 {
 		return nil, nil
 	}
-	return req.Credentials.ResolveMaterializedEnv(req.Owner.ProjectID, profile.Fields.CredentialRefs)
+	return env, nil
 }
 
 // MaterializeLaunchCredentials resolves every credential needed by one launch

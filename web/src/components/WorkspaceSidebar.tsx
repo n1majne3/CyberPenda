@@ -54,7 +54,15 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
   // recent Tasks inlined and a last_activity_at, so the Sidebar makes a single
   // constant-size request regardless of how many Projects exist. Expanding a
   // non-current Project loads its full Task list on demand below.
+  //
+  // Conditional refresh (#201): every response carries an opaque revision, and
+  // each refresh sends it back plus the selected Task. When the revision is
+  // current the daemon answers changed=false with an empty projection, so
+  // polling never reserializes the Sidebar rows. The revision and the selected
+  // Task live in refs so a response never retriggers the load that produced it.
   const [navigation, setNavigation] = useState<WorkspaceProjectSummary[]>([]);
+  const navigationRevisionRef = useRef<string | undefined>(undefined);
+  const currentTaskIdRef = useRef<string | null>(currentTaskId);
   const [projectLoading, setProjectLoading] = useState(true);
   const [projectError, setProjectError] = useState<string | null>(null);
   const [expandedTasks, setExpandedTasks] = useState<Record<string, TaskState>>({});
@@ -78,9 +86,20 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
   const loadNavigation = useCallback(async (showLoading = true) => {
     if (showLoading) setProjectLoading(true);
     try {
-      const data = await apiGet<WorkspaceNavigation>("/api/workspace/navigation");
-      setNavigation(data.projects ?? []);
-      setProjectError(null);
+      const params = new URLSearchParams();
+      if (navigationRevisionRef.current) params.set("revision", navigationRevisionRef.current);
+      if (currentTaskIdRef.current) params.set("selected_task", currentTaskIdRef.current);
+      const suffix = params.size > 0 ? `?${params.toString()}` : "";
+      const data = await apiGet<WorkspaceNavigation>(`/api/workspace/navigation${suffix}`);
+      navigationRevisionRef.current = data.revision ?? undefined;
+      if (data.changed === false) {
+        // Unchanged refresh: the daemon kept the cached revision, so the
+        // current projection is still current and was not reserialized.
+        setProjectError(null);
+      } else {
+        setNavigation(data.projects ?? []);
+        setProjectError(null);
+      }
     } catch (reason) {
       setProjectError((reason as Error).message);
     } finally {
@@ -151,6 +170,15 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
   useEffect(() => {
     void loadSessions();
   }, [loadSessions]);
+
+  // The navigation projection is keyed to the selected Task, so moving to a
+  // different Task (or leaving a Task route) refetches once with the new
+  // selection context instead of waiting for the next poll (#201).
+  useEffect(() => {
+    if (currentTaskIdRef.current === currentTaskId) return;
+    currentTaskIdRef.current = currentTaskId;
+    void loadNavigation(false);
+  }, [currentTaskId, loadNavigation]);
 
   // Single gated poll replacing the former fixed 2s intervals. It suspends
   // entirely while the tab is hidden and backs off from 2s → 30s once no owner
@@ -395,11 +423,11 @@ function ProjectRow({
   onNavigate?: () => void;
 }) {
   const taskPanelId = `project-tasks-${project.id}`;
-  // The current Project renders its already-bounded inlined Tasks from the
-  // navigation projection; other Projects show their on-demand full list, which
-  // is bounded by takeRecentWithCurrent for display.
-  const sourceTasks = useOnDemandTasks ? onDemandTasks : tasks;
-  const visibleTasks = takeRecentWithCurrent(sourceTasks, currentTaskId, isTaskBusy, taskActivity);
+  // The current Project renders its daemon-bounded inlined Tasks from the
+  // navigation projection as-is: busy Runtimes first, then the five ordinary
+  // recent Tasks, then the selected Task (#201). Other Projects show their
+  // on-demand full list, which is bounded by takeRecentWithCurrent for display.
+  const visibleTasks = useOnDemandTasks ? takeRecentWithCurrent(onDemandTasks, currentTaskId, isTaskBusy, taskActivity) : tasks;
 
   return (
     <section aria-labelledby={`project-name-${project.id}`} aria-current={currentProject ? "location" : undefined}>
