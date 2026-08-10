@@ -343,11 +343,26 @@ func TestWorkspaceNavigationScalesToOneRequestForManyProjects(t *testing.T) {
 	server, profileID := navigationFixture(t)
 	// 123 Projects with mixed Task states must be served by a single call, each
 	// carrying a bounded Task set.
+	type launchedTask struct {
+		projectID string
+		taskID    string
+	}
+	launched := make([]launchedTask, 0, 246)
 	for i := 0; i < 123; i++ {
 		projectID := createProject(t, server, `{"name":"P","scope":{"domains":["example.com"]}}`)
 		for j := 0; j <= i%3; j++ {
-			launchTaskForProject(t, server, profileID, projectID, "task")
+			created := launchTaskForProject(t, server, profileID, projectID, "task")
+			launched = append(launched, launchedTask{
+				projectID: projectID,
+				taskID:    created["id"].(string),
+			})
 		}
+	}
+	// The fake runner completes asynchronously. Wait for the durable Task
+	// states to become stable before testing an unchanged conditional refresh;
+	// a running-to-completed transition must correctly change the revision.
+	for _, current := range launched {
+		waitForTaskTerminal(t, server, current.projectID, current.taskID)
 	}
 
 	revision, changed, projects, fullBody := getWorkspaceNavigationResponse(t, server, "")
