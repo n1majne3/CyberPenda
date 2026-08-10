@@ -22,7 +22,7 @@ echo "${health}" | python3 -m json.tool
 project_id="$(curl -sf -X POST "${DAEMON_URL}/api/projects" \
   "${auth_args[@]+"${auth_args[@]}"}" \
   -H 'Content-Type: application/json' \
-  -d '{"name":"Sandbox MCP Live Smoke","scope":{"domains":["example.com"]}}' \
+  -d '{"name":"Sandbox MCP Live Smoke","kind":"pentest","scope":{"domains":["example.com"]}}' \
   | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')"
 echo "==> created smoke project ${project_id}"
 
@@ -75,6 +75,7 @@ if listed is None:
 names = [tool.get("name") for tool in listed["result"]["tools"]]
 want = {
     "blackboard_change",
+    "blackboard_record_attempt_result",
     "blackboard_read",
     "blackboard_history",
     "blackboard_retain_evidence",
@@ -86,7 +87,7 @@ if len(names) != len(want) or set(names) != want:
 retired_tool = "upsert_" + "project_fact"
 if retired_tool in names:
     raise SystemExit("a retired MCP tool is still advertised")
-print("MCP tools/list contains exactly the six Blackboard v2 tools")
+print("MCP tools/list contains exactly the seven Blackboard v2 tools")
 PY
 
 semantic_change_payload="$(SEMANTIC_RECORD_KEY="${SEMANTIC_RECORD_KEY}" python3 - <<'PY'

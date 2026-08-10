@@ -93,7 +93,21 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Build sandbox image
-        run: make build-sandbox-image
+      - uses: docker/setup-buildx-action@v4
+      - name: Validate full sandbox image build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/pentest-sandbox/Dockerfile
+          target: runtime
+          platforms: linux/amd64
+          push: false
+          load: false
+          tags: cyberpenda-sandbox:ci-validation
+      - name: Build sandbox smoke probe image
+        run: make build-sandbox-smoke-image
       - name: Smoke sandbox MCP (no LLM)
+        env:
+          PENTEST_SANDBOX_IMAGE: cyberpenda-sandbox-smoke:ci
+          SANDBOX_IMAGE: cyberpenda-sandbox-smoke:ci
         run: scripts/with-pentestd-live.sh make smoke-sandbox-mcp

@@ -1,8 +1,9 @@
-.PHONY: dev ensure-web-deps build build-ui check-ui-sync install-git-hooks build-sandbox-image test test-ci test-backend smoke-sandbox-mcp smoke-runtime-tasks clean
+.PHONY: dev ensure-web-deps build build-ui check-ui-sync install-git-hooks build-sandbox-image build-sandbox-smoke-image test test-ci test-backend smoke-sandbox-mcp smoke-runtime-tasks clean
 
 # Run the daemon and the Vite dev server together for local development.
 # The Vite proxy forwards /api and /health to the daemon on :8787.
 SANDBOX_IMAGE ?= ghcr.io/n1majne3/cyberpenda-sandbox:latest
+SANDBOX_SMOKE_IMAGE ?= cyberpenda-sandbox-smoke:ci
 
 # macOS /bin/sh (bash 3.2) has no `wait -n`, so poll: if either child dies,
 # surface the failure instead of silently running the other alone (which hid
@@ -43,6 +44,11 @@ dev: ensure-web-deps
 # Build the self-contained pentest sandbox image (no external base-image dependency).
 build-sandbox-image:
 	docker build -t $(SANDBOX_IMAGE) -f docker/pentest-sandbox/Dockerfile .
+
+# Build the small container-side HTTP probe used by pull-request live smoke.
+# The full Runtime stage is validated by Buildx without loading its large image.
+build-sandbox-smoke-image:
+	docker build --target smoke -t $(SANDBOX_SMOKE_IMAGE) -f docker/pentest-sandbox/Dockerfile .
 
 # Prove the configured sandbox image can reach daemon MCP and write a fact.
 smoke-sandbox-mcp:
@@ -86,7 +92,7 @@ test: test-backend
 test-ci: test-backend
 
 test-backend:
-	go test ./cmd/... ./internal/...
+	go test ./cmd/... ./internal/... ./scripts
 
 # Live smokes (local):
 #   make smoke-sandbox-mcp     — sandbox image + daemon MCP, no LLM
