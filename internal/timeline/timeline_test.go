@@ -36,6 +36,26 @@ func TestBuildParsesThinkingToolUseTextAndResult(t *testing.T) {
 	requireItem(t, got, 4, "text", "", "Done inspecting.")
 }
 
+func TestBuildGivesMultipleItemsFromOneEventStableDistinctIDs(t *testing.T) {
+	createdAt := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
+	items := timeline.Build([]timeline.Event{{
+		ID:        "event-7",
+		Seq:       7,
+		Kind:      "runtime_output",
+		Payload:   map[string]any{"text": `{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"plan"},{"type":"tool_use","id":"call-1","name":"curl","input":{"url":"https://example.com"}}]}}`},
+		CreatedAt: createdAt,
+	}})
+	if len(items) != 2 {
+		t.Fatalf("Timeline items = %#v, want two items from one provider Event", items)
+	}
+	if items[0].Seq != 7 || items[1].Seq != 7 {
+		t.Fatalf("Timeline item seqs = %d/%d, want source Event seq 7", items[0].Seq, items[1].Seq)
+	}
+	if items[0].ID == "" || items[1].ID == "" || items[0].ID == items[1].ID {
+		t.Fatalf("Timeline item IDs = %q/%q, want stable distinct IDs", items[0].ID, items[1].ID)
+	}
+}
+
 func TestBuildCoalescesAdjacentThinkingFragments(t *testing.T) {
 	createdAt := time.Now().UTC()
 	events := []timeline.Event{

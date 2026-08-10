@@ -76,11 +76,11 @@ func TestMCPEndpointInitializesWithNoLegacyV1Tools(t *testing.T) {
 		t.Fatalf("decode tools/list: %v", err)
 	}
 	want := map[string]bool{
-		"blackboard_change": true, "blackboard_read": true, "blackboard_history": true,
+		"blackboard_change": true, "blackboard_record_attempt_result": true, "blackboard_read": true, "blackboard_history": true,
 		"blackboard_retain_evidence": true, "blackboard_checkpoint_attempt": true, "blackboard_finish": true,
 	}
 	if len(listed.Result.Tools) != len(want) {
-		t.Fatalf("blackboard_v2 tools/list = %#v, want exactly the six trusted v2 tools", listed.Result.Tools)
+		t.Fatalf("blackboard_v2 tools/list = %#v, want exactly the seven trusted v2 tools", listed.Result.Tools)
 	}
 	for _, raw := range listed.Result.Tools {
 		var tool struct {

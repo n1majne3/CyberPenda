@@ -40,11 +40,12 @@ type SkillPreview struct {
 }
 
 type RuntimeExtensionPreview struct {
-	ID         string `json:"id"`
-	Name       string `json:"name,omitempty"`
-	Source     string `json:"source"`
-	InstallRef string `json:"install_ref,omitempty"`
-	Registry   string `json:"registry,omitempty"`
+	ID           string                        `json:"id"`
+	Name         string                        `json:"name,omitempty"`
+	Source       string                        `json:"source"`
+	InstallRef   string                        `json:"install_ref,omitempty"`
+	Registry     string                        `json:"registry,omitempty"`
+	Requirements runtimeextension.Requirements `json:"requirements,omitempty"`
 }
 
 type ModelProviderPreview struct {
@@ -85,6 +86,10 @@ type Request struct {
 	HostActivated bool
 	// LaunchModelOverride applies a task-only model choice without editing the profile.
 	LaunchModelOverride string
+	// ProjectKind and ScopeCapabilities are explicit operator-owned state used
+	// only to validate Runtime Extension Requirements.
+	ProjectKind       string
+	ScopeCapabilities []string
 }
 
 // ProfileGetter loads runtime profiles for preflight checks.
@@ -199,7 +204,7 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 	}
 
 	if profileLoaded {
-		s.checkRuntimeExtensions(&result, profile)
+		s.checkRuntimeExtensions(&result, profile, request)
 	}
 
 	if profileLoaded && s.modelProviders != nil && shouldCheckModelProvider(profile, s.runtimePlugins) {
@@ -330,7 +335,7 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 	return result
 }
 
-func (s *Service) checkRuntimeExtensions(result *Result, profile runtimeprofile.Profile) {
+func (s *Service) checkRuntimeExtensions(result *Result, profile runtimeprofile.Profile, request Request) {
 	enabled := enabledRuntimeExtensionRefs(profile.Fields.RuntimeExtensions)
 	if len(enabled) == 0 {
 		result.add(Check{Name: "runtime_extensions", Status: CheckPass, Detail: "no enabled runtime extensions"})
@@ -338,6 +343,7 @@ func (s *Service) checkRuntimeExtensions(result *Result, profile runtimeprofile.
 	}
 
 	var failures []string
+	var requirementFailures []string
 	for _, ref := range enabled {
 		preview, err := resolveRuntimeExtensionPreview(ref, profile.Provider, s.runtimeExtensions)
 		if err != nil {
@@ -345,6 +351,14 @@ func (s *Service) checkRuntimeExtensions(result *Result, profile runtimeprofile.
 			continue
 		}
 		result.RuntimeExtensions = append(result.RuntimeExtensions, preview)
+		if len(preview.Requirements.ProjectKinds) > 0 && !containsString(preview.Requirements.ProjectKinds, request.ProjectKind) {
+			requirementFailures = append(requirementFailures, fmt.Sprintf("runtime extension %q requires Project kind %s", preview.ID, strings.Join(preview.Requirements.ProjectKinds, " or ")))
+		}
+		for _, capability := range preview.Requirements.ScopeCapabilities {
+			if !containsString(request.ScopeCapabilities, capability) {
+				requirementFailures = append(requirementFailures, fmt.Sprintf("runtime extension %q requires Scope capability %q", preview.ID, capability))
+			}
+		}
 	}
 	if len(failures) > 0 {
 		result.add(Check{
@@ -359,6 +373,20 @@ func (s *Service) checkRuntimeExtensions(result *Result, profile runtimeprofile.
 		Status: CheckPass,
 		Detail: fmt.Sprintf("%d enabled runtime extension(s)", len(result.RuntimeExtensions)),
 	})
+	if len(requirementFailures) > 0 {
+		result.add(Check{Name: "runtime_extension_requirements", Status: CheckFail, Detail: strings.Join(requirementFailures, "; ")})
+	} else {
+		result.add(Check{Name: "runtime_extension_requirements", Status: CheckPass})
+	}
+}
+
+func containsString(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func enabledRuntimeExtensionRefs(refs []runtimeprofile.RuntimeExtensionRef) []runtimeprofile.RuntimeExtensionRef {
@@ -386,9 +414,10 @@ func resolveRuntimeExtensionPreview(
 				)
 			}
 			return RuntimeExtensionPreview{
-				ID:     extension.ID,
-				Name:   extension.Name,
-				Source: "registry",
+				ID:           extension.ID,
+				Name:         extension.Name,
+				Source:       "registry",
+				Requirements: extension.Requirements,
 			}, nil
 		}
 	}

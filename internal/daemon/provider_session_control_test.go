@@ -119,7 +119,7 @@ func TestProviderRuntimeOutputPersistsOnlyTranscriptFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: projectRecord.ID, Goal: "inspect target", RuntimeProfileID: "profile", Runner: task.RunnerSandbox})
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "inspect target", RuntimeProfileID: "profile", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestNativeSteerRecordsCanonicalConversationAndOrderedProviderEvents(t *test
 		t.Fatal(err)
 	}
 	profile := createTestRuntimeProfile(t, server)
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Type: task.TypePentest, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +308,7 @@ func TestNativeSteerRejectsModelProviderSelectionInsteadOfIgnoringIt(t *testing.
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: createdProject.ID, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -397,7 +397,7 @@ func TestNativeSteerRejectsUnsupportedSessionWithoutConversation(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile := createTestRuntimeProfile(t, server)
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Type: task.TypePentest, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +432,7 @@ func TestNativeSteerProviderFailureIsAcceptedThenProjectedAsFailed(t *testing.T)
 		t.Fatal(err)
 	}
 	profile := createTestRuntimeProfile(t, server)
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Type: task.TypePentest, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -476,7 +476,7 @@ func TestNativeSteerReplacementContinuationFailureFailsClosedWithoutApplied(t *t
 		t.Fatal(err)
 	}
 	profile := createTestRuntimeProfile(t, server)
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Type: task.TypePentest, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -556,7 +556,7 @@ func TestTaskDetailExposesNativeSteerModeAndIdleState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Type: task.TypePentest, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -591,7 +591,7 @@ func TestStopClosesBoundProviderSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Type: task.TypePentest, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -629,7 +629,7 @@ func TestStopClosesProviderSessionBeforeWaitingForRuntimeResources(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: projectRecord.ID, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -700,7 +700,7 @@ func TestStopWaitsForActiveProviderControlBeforeClosingSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: projectRecord.ID, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -754,7 +754,7 @@ func TestProviderPermissionRequestIsPersistedAndCanBeAnsweredThroughTaskRoute(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: "inspect target", RuntimeProfileID: "profile", Runner: task.RunnerSandbox})
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Type: task.TypePentest, Goal: "inspect target", RuntimeProfileID: "profile", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -830,7 +830,7 @@ func TestRestartMarksProviderSessionRecoveryExplicitlyAndPreservesMetadata(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: "inspect target", RuntimeProfileID: "profile", Runner: task.RunnerSandbox})
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Type: task.TypePentest, Goal: "inspect target", RuntimeProfileID: "profile", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -895,7 +895,7 @@ func TestServerCloseDrainsInFlightProviderSteerBeforeClosingDatabase(t *testing.
 		t.Fatal(err)
 	}
 	profile := createTestRuntimeProfile(t, server)
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Type: task.TypePentest, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
 	if err != nil {
 		_ = server.Close()
 		t.Fatal(err)
@@ -959,7 +959,7 @@ func TestNativeSteerReplacementCarriesBlackboardGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile := createTestRuntimeProfile(t, server)
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatal(err)
 	}

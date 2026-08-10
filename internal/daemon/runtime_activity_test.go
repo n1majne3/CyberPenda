@@ -107,7 +107,8 @@ func newRuntimeActivityFixture(t *testing.T, provider runtimeprofile.Provider, r
 		t.Fatal(err)
 	}
 	createReq := task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "inspect example.com",
+		ProjectID: projectRecord.ID,
+		Type:      task.TypePentest, Goal: "inspect example.com",
 		RuntimeProfileID: profile.ID, Runner: runner,
 	}
 	if runner == task.RunnerHost {
@@ -324,7 +325,7 @@ func TestRuntimeActivityOrphanedInterruptsWithoutStoredSessionAuthority(t *testi
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "orphan case", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "orphan case", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
 		t.Fatal(err)

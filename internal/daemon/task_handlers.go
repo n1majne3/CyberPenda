@@ -21,6 +21,7 @@ import (
 
 	"pentest/internal/adapters"
 	"pentest/internal/blackboardv2"
+	"pentest/internal/finishreadiness"
 
 	"pentest/internal/modelprovider"
 	"pentest/internal/owner"
@@ -94,6 +95,10 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 	if input.RunControls.Extras == nil && input.Extras != nil {
 		input.RunControls.Extras = input.Extras
 	}
+	if input.Type != task.TypePentest && input.Type != task.TypeCTFChallenge {
+		writeTaskError(response, task.ErrInvalidTaskType)
+		return
+	}
 
 	defaulted, err := server.applyTaskLaunchDefaults(projectID, input.RuntimeProfileID, input.Runner)
 	if err != nil {
@@ -126,6 +131,8 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		ProjectID:           projectID,
 		Runner:              string(input.Runner),
 		HostActivated:       input.RunControls.HostActivated,
+		ProjectKind:         defaulted.project.Kind,
+		ScopeCapabilities:   append([]string(nil), defaulted.project.Scope.Capabilities...),
 	})
 	server.logPreflightCustomArgConflict(input.RuntimeProfileID, preflightResult)
 	if !preflightResult.Pass {
@@ -148,6 +155,7 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 
 	created, err := server.tasks.Create(task.CreateRequest{
 		ProjectID:        projectID,
+		Type:             input.Type,
 		Goal:             input.Goal,
 		RuntimeProfileID: input.RuntimeProfileID,
 		Runner:           input.Runner,
@@ -210,6 +218,7 @@ type taskLaunchPlan struct {
 	LaunchModelOverride     string
 	LaunchReasoningEffort   string
 	NativeResumeSessionID   string
+	NativeResumeSessionPath string
 	ResolvedProfile         runtimeprofile.Profile
 	ModelSnapshot           *modelprovider.Snapshot
 	// GlobalModelProviderSnapshot is listed before CreateContinuation so
@@ -413,6 +422,7 @@ func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, p
 		ProjectID: created.ProjectID, TaskID: created.ID, RuntimeProfileID: created.RuntimeProfileID,
 		RuntimeProvider: string(provider), Runner: created.Runner, RuntimeConfig: plan.CapturedRuntimeConfig,
 		SteeringEventIDs: plan.BlackboardV2SteeringEventIDs,
+		NativeSessionID:  plan.NativeResumeSessionID, NativeSessionPath: plan.NativeResumeSessionPath,
 		Precommit: func(projection blackboardv2.ContinuationLaunchProjection) error {
 			launchHeader = blackboardv2.LaunchHeader{
 				Runner: string(created.Runner), ScopePath: ".pentest/scope.json", BlackboardPath: ".pentest/blackboard.json",
@@ -525,6 +535,7 @@ func (server *Server) recoverBlackboardV2ContinuationFiles(ctx context.Context) 
 type taskLaunchDefaults struct {
 	runtimeProfileID string
 	runner           task.Runner
+	project          project.Project
 }
 
 func (server *Server) applyTaskLaunchDefaults(projectID, requestedProfileID string, requestedRunner task.Runner) (taskLaunchDefaults, error) {
@@ -536,6 +547,7 @@ func (server *Server) applyTaskLaunchDefaults(projectID, requestedProfileID stri
 	resolved := taskLaunchDefaults{
 		runtimeProfileID: requestedProfileID,
 		runner:           requestedRunner,
+		project:          found,
 	}
 	if resolved.runtimeProfileID == "" {
 		resolved.runtimeProfileID = found.Defaults.RuntimeProfile
@@ -1704,21 +1716,42 @@ func (server *Server) handleTaskTimeline(response http.ResponseWriter, request *
 		return
 	}
 
-	events, err := server.tasks.Events(found.ID)
+	req := parseHistoryRequest(request)
+	items, window, err := collectTimelineItems(req, func(scan historyRequest) (timelineEventChunk, error) {
+		stored, err := server.tasks.HistoryEventWindow(found.ID, task.EventWindowQuery{
+			Projection: task.EventProjectionTimeline, BeforeSet: scan.beforeSet, Before: scan.before,
+			AfterSet: scan.afterSet, After: scan.after, Limit: historyEventQueryLimit,
+		})
+		if err != nil {
+			return timelineEventChunk{}, err
+		}
+		return timelineEventChunk{
+			events:     eventsToTimelineEvents(stored.Events),
+			cursor:     stored.Cursor,
+			hasOlder:   stored.HasOlder,
+			hasNewer:   stored.HasNewer,
+			scanCursor: stored.ScanCursor,
+		}, nil
+	})
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "list task events")
 		return
 	}
-	items := timeline.Build(eventsToTimelineEvents(events))
 	if items == nil {
 		items = []timeline.Item{}
 	}
 	detailBase := fmt.Sprintf("/api/projects/%s/tasks/%s/timeline/items", found.ProjectID, found.ID)
-	page := historyResponseFor(items, parseHistoryRequest(request), func(item timeline.Item) int {
+	page := historyResponseFor(items, req, func(item timeline.Item) int {
 		return item.Seq
 	}, func(item timeline.Item) (timeline.Item, int) {
 		return boundedTimelineItem(item, detailBase)
 	})
+	page.hasOlder = page.hasOlder || window.hasOlder
+	if req.afterSet && window.hasNewer {
+		page.cursor = window.scanCursor
+	} else {
+		page.cursor = window.cursor
+	}
 	writeJSON(response, http.StatusOK, struct {
 		TaskID   string          `json:"task_id"`
 		Items    []timeline.Item `json:"items"`
@@ -1732,15 +1765,17 @@ func (server *Server) handleTaskTimeline(response http.ResponseWriter, request *
 	})
 }
 
-// handleTaskTimelineItem returns one complete retained timeline item by Seq,
+// handleTaskTimelineItem returns one complete retained timeline item by stable
+// item ID. A numeric Seq remains valid for retained legacy detail links.
 // including the full payload that the history window preview truncated.
 func (server *Server) handleTaskTimelineItem(response http.ResponseWriter, request *http.Request) {
 	found, ok := server.requireProjectTask(response, request)
 	if !ok {
 		return
 	}
-	seq, err := strconv.Atoi(request.PathValue("seq"))
-	if err != nil || seq <= 0 {
+	itemRef := request.PathValue("seq")
+	seq, _ := strconv.Atoi(itemRef)
+	if itemRef == "" {
 		writeError(response, http.StatusNotFound, "timeline item not found")
 		return
 	}
@@ -1750,7 +1785,7 @@ func (server *Server) handleTaskTimelineItem(response http.ResponseWriter, reque
 		return
 	}
 	for _, item := range timeline.Build(eventsToTimelineEvents(events)) {
-		if item.Seq == seq {
+		if item.ID == itemRef || (seq > 0 && item.Seq == seq) {
 			writeJSON(response, http.StatusOK, item)
 			return
 		}
@@ -1764,25 +1799,38 @@ func (server *Server) handleTaskTranscript(response http.ResponseWriter, request
 		return
 	}
 
-	events, err := server.tasks.Events(found.ID)
+	req := parseHistoryRequest(request)
+	window, err := server.tasks.HistoryEventWindow(found.ID, task.EventWindowQuery{
+		Projection: task.EventProjectionTranscript, BeforeSet: req.beforeSet, Before: req.before,
+		AfterSet: req.afterSet, After: req.after, Limit: historyEventQueryLimit,
+	})
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "list task events")
 		return
 	}
-	entries := transcript.Build(transcript.Subject{
+	entries := transcript.BuildWindow(transcript.Subject{
 		ID:        found.ID,
 		Title:     found.Goal,
 		CreatedAt: found.CreatedAt,
-	}, eventsToTranscriptEvents(events))
+	}, eventsToTranscriptEvents(window.Events), transcript.WindowContext{
+		Continuation: window.PriorContinuation,
+		Adapter:      window.PriorTranscriptAdapter,
+	})
 	if entries == nil {
 		entries = []transcript.Entry{}
 	}
 	detailBase := fmt.Sprintf("/api/projects/%s/tasks/%s/transcript/entries", found.ProjectID, found.ID)
-	page := historyResponseFor(entries, parseHistoryRequest(request), func(entry transcript.Entry) int {
+	page := historyResponseFor(entries, req, func(entry transcript.Entry) int {
 		return entry.Seq
 	}, func(entry transcript.Entry) (transcript.Entry, int) {
 		return boundedTranscriptEntry(entry, detailBase)
 	})
+	page.hasOlder = page.hasOlder || window.HasOlder
+	if req.afterSet && window.HasNewer {
+		page.cursor = window.ScanCursor
+	} else {
+		page.cursor = window.Cursor
+	}
 	writeJSON(response, http.StatusOK, struct {
 		TaskID   string             `json:"task_id"`
 		Entries  []transcript.Entry `json:"entries"`
@@ -2028,6 +2076,16 @@ func (server *Server) handleFinishTask(response http.ResponseWriter, request *ht
 	found, err = server.tasks.Get(taskID)
 	if err != nil {
 		writeTaskError(response, err)
+		return
+	}
+	readiness, err := server.finishReadiness.Require(request.Context(), projectID, taskID)
+	if err != nil {
+		var notReady *finishreadiness.NotReadyError
+		if errors.As(err, &notReady) {
+			writeFinishReadinessConflict(response, readiness)
+			return
+		}
+		writeError(response, http.StatusInternalServerError, "evaluate Finish Readiness")
 		return
 	}
 	activity := server.computeRuntimeActivity(found)
@@ -2637,7 +2695,7 @@ func (server *Server) handleResumeTask(response http.ResponseWriter, request *ht
 }
 
 func (server *Server) prepareNativeResumeContinuation(found task.Task, resumedMessage string) (task.Task, string, taskLaunchPlan, error) {
-	found, resumedMessage, nativeResumeSessionID, err := server.prepareNativeResumeRequest(found, resumedMessage)
+	found, resumedMessage, nativeResume, err := server.prepareNativeResumeRequest(found, resumedMessage)
 	if err != nil {
 		return task.Task{}, "", taskLaunchPlan{}, err
 	}
@@ -2649,10 +2707,11 @@ func (server *Server) prepareNativeResumeContinuation(found task.Task, resumedMe
 		}
 	}
 	modelOverride, reasoningEffort := server.resumeTurnSelectionOverrides(found)
-	plan, err := server.buildTaskLaunchPlan(found, resumedMessage, modelOverride, nativeResumeSessionID, reasoningEffort)
+	plan, err := server.buildTaskLaunchPlan(found, resumedMessage, modelOverride, nativeResume.NativeSessionID, reasoningEffort)
 	if err != nil {
 		return task.Task{}, "", taskLaunchPlan{}, err
 	}
+	plan.NativeResumeSessionPath = nativeResume.NativeSessionPath
 	plan.BlackboardV2SteeringEventIDs = steeringEventIDs
 	return found, resumedMessage, plan, nil
 }
@@ -2672,17 +2731,17 @@ func (server *Server) prepareResumeContinuation(found task.Task, resumedMessage 
 	return server.prepareFreshResumeContinuation(found)
 }
 
-func (server *Server) prepareNativeResumeRequest(found task.Task, resumedMessage string) (task.Task, string, string, error) {
+func (server *Server) prepareNativeResumeRequest(found task.Task, resumedMessage string) (task.Task, string, runtime.NativeSessionMetadata, error) {
 	effectiveProfile, err := server.resolveTaskRuntimeProfile(found)
 	if err != nil {
-		return task.Task{}, "", "", err
+		return task.Task{}, "", runtime.NativeSessionMetadata{}, err
 	}
 	found.RuntimeProfileID = effectiveProfile.ID
-	nativeResumeSessionID, err := server.discoverNativeResumeSession(found)
+	nativeResume, err := server.discoverNativeResumeSession(found)
 	if err != nil {
-		return task.Task{}, "", "", err
+		return task.Task{}, "", runtime.NativeSessionMetadata{}, err
 	}
-	return found, resumedMessage, nativeResumeSessionID, nil
+	return found, resumedMessage, nativeResume, nil
 }
 
 func (server *Server) prepareFreshResumeContinuation(found task.Task) (task.Task, string, taskLaunchPlan, error) {
@@ -4206,30 +4265,32 @@ func (server *Server) profileOrFallback(id, fallbackID string) (runtimeprofile.P
 	return runtimeprofile.Profile{}, nil
 }
 
-func (server *Server) discoverNativeResumeSession(found task.Task) (string, error) {
+func (server *Server) discoverNativeResumeSession(found task.Task) (runtime.NativeSessionMetadata, error) {
 	profile, err := server.profiles.Get(found.RuntimeProfileID)
 	if err != nil {
-		return "", err
+		return runtime.NativeSessionMetadata{}, err
 	}
 	plugin, ok := server.runtimePlugins.Get(string(profile.Provider))
 	if !ok || !plugin.NativeResume.Supported {
-		return "", fmt.Errorf("%w for provider %s", errNativeResumeUnavailable, profile.Provider)
+		return runtime.NativeSessionMetadata{}, fmt.Errorf("%w for provider %s", errNativeResumeUnavailable, profile.Provider)
 	}
 	latest, err := server.tasks.LatestContinuation(found.ID)
 	if err != nil {
-		return "", err
+		return runtime.NativeSessionMetadata{}, err
 	}
 	if latest != nil && strings.TrimSpace(latest.NativeSessionID) != "" {
-		return latest.NativeSessionID, nil
+		return runtime.NativeSessionMetadata{
+			NativeSessionID: latest.NativeSessionID, NativeSessionPath: latest.NativeSessionPath,
+		}, nil
 	}
 	metadata, err := server.discoverProviderNativeSession(found.ID, profile.Provider)
 	if err != nil {
-		return "", err
+		return runtime.NativeSessionMetadata{}, err
 	}
 	if strings.TrimSpace(metadata.NativeSessionID) == "" {
-		return "", errNativeSessionUnavailable
+		return runtime.NativeSessionMetadata{}, errNativeSessionUnavailable
 	}
-	return metadata.NativeSessionID, nil
+	return metadata, nil
 }
 
 func (server *Server) discoverProviderNativeSession(taskID string, provider runtimeprofile.Provider) (runtime.NativeSessionMetadata, error) {
@@ -4339,8 +4400,10 @@ func (server *Server) requireProject(response http.ResponseWriter, projectID str
 
 func writeTaskError(response http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, task.ErrMissingGoal), errors.Is(err, task.ErrUnsupportedRunner), errors.Is(err, task.ErrInvalidBlackboardConclusionMode):
+	case errors.Is(err, task.ErrMissingGoal), errors.Is(err, task.ErrUnsupportedRunner), errors.Is(err, task.ErrInvalidTaskType), errors.Is(err, task.ErrInvalidBlackboardConclusionMode), errors.Is(err, task.ErrInvalidTaskPolicy):
 		writeError(response, http.StatusBadRequest, err.Error())
+	case errors.Is(err, task.ErrTaskTypeProjectKindMismatch):
+		writeError(response, http.StatusConflict, err.Error())
 	case errors.Is(err, task.ErrProjectNotFound), errors.Is(err, task.ErrNotFound), errors.Is(err, project.ErrNotFound):
 		writeError(response, http.StatusNotFound, err.Error())
 	case errors.Is(err, task.ErrActiveTask):
@@ -4392,6 +4455,8 @@ func eventsToTimelineEvents(events []task.Event) []timeline.Event {
 	converted := make([]timeline.Event, 0, len(events))
 	for _, event := range events {
 		converted = append(converted, timeline.Event{
+			ID:        event.ID,
+			Seq:       event.Seq,
 			Kind:      string(event.Kind),
 			Payload:   event.Payload,
 			CreatedAt: event.CreatedAt,

@@ -113,6 +113,7 @@ export function apiDelete(path: string) {
 // ---- Domain types ----
 
 export interface Scope {
+	capabilities?: string[];
   domains?: string[];
   ips?: string[];
   cidrs?: string[];
@@ -142,6 +143,30 @@ export interface Project {
   defaults: ProjectDefaults;
   created_at: string;
   updated_at: string;
+}
+
+export interface ChallengeAttempt {
+	project_id: string;
+	task_id: string;
+	platform: string;
+	external_attempt_id: string;
+	challenge_id: string;
+	attempt_key: string;
+	objective_key: string;
+	status: string;
+	wrong_submissions: number;
+	consecutive_failures: number;
+	initial_rating: number;
+	peak_rating: number;
+	current_rating: number;
+	last_progress_at: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface FinishReadiness {
+	ready_to_finish: boolean;
+	blockers: Array<{ code: string; count: number; message: string; links?: string[] }>;
 }
 
 /**
@@ -580,11 +605,12 @@ export interface RuntimeActivity {
 export interface Task {
   id: string;
   project_id: string;
+  type?: ProjectKind;
   goal: string;
   status: string;
   runner: string;
   runtime_profile_id: string;
-  run_controls: { host_activated?: boolean; sandbox_network?: string; blackboard_conclusion_mode?: BlackboardConclusionMode; notes?: string; extras?: Record<string, string> };
+	run_controls: { host_activated?: boolean; sandbox_network?: string; blackboard_conclusion_mode?: BlackboardConclusionMode; notes?: string; extras?: Record<string, string>; policy?: TaskPolicy };
   blackboard_conclusion?: BlackboardConclusionView;
   scope_snapshot: Scope;
   runtime_controls?: RuntimeControls;
@@ -594,6 +620,15 @@ export interface Task {
   latest_continuation?: TaskContinuation;
   created_at: string;
   updated_at: string;
+}
+
+export interface TaskPolicy {
+	max_attempts?: number;
+	max_wrong_submissions?: number;
+	max_wall_time_seconds?: number;
+	max_consecutive_failures?: number;
+	max_rating_drawdown?: number;
+	max_no_progress_seconds?: number;
 }
 
 export interface RuntimeTurnSelection {
@@ -694,6 +729,8 @@ export interface TaskTranscript {
 }
 
 export interface TaskTimelineItem {
+  /** Stable item identity. Several items can share one source Event Seq. */
+  id?: string;
   seq: number;
   type: "tool_use" | "tool_result" | "thinking" | "text" | "error" | "lifecycle" | "steering" | "harness";
   tool?: string;

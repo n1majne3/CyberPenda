@@ -118,7 +118,7 @@ func TestDashboardCountsTasksWithoutReadingLegacyBlackboard(t *testing.T) {
 	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 
 	createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"sandbox"
 	}`)

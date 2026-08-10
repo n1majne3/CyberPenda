@@ -126,7 +126,7 @@ func TestRuntimeMergeRequiresGovernedOperatorApprovalBeforeTargetLookup(t *testi
 		t.Fatalf("create project: %v", err)
 	}
 	tasks := task.NewService(db, projects)
-	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "Attempt unapproved merge", Runner: task.RunnerSandbox})
+	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "Attempt unapproved merge", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -561,7 +561,7 @@ func TestMergeEvidenceAndRetainThroughRedirect(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 	tasks := task.NewService(db, projects)
-	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "Merge duplicate Evidence", Runner: task.RunnerSandbox})
+	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "Merge duplicate Evidence", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}

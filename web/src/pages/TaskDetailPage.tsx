@@ -1,8 +1,8 @@
-import { useEffect, useState, useRef, type KeyboardEvent, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useState, useRef, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { flushSync } from "react-dom";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, ChevronRight, Wrench, User, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2, Maximize2, Minimize2, Flag, RefreshCcw, TriangleAlert, Archive, ArchiveRestore, Pencil, Paperclip } from "lucide-react";
-import { apiDelete, apiGet, apiPatch, apiPost, apiPostForm, type BlackboardConclusionMode, type BlackboardConclusionView, type ModelProvider, type ProviderPermissionRequest, type RuntimeActivity, type RuntimeControls, type RuntimePlugin, type RuntimeProfile, type Session, type SessionContinuation, type Task, type TaskContinuation, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
+import { apiDelete, apiGet, apiPatch, apiPost, apiPostForm, type BlackboardConclusionMode, type BlackboardConclusionView, type FinishReadiness, type ModelProvider, type ProviderPermissionRequest, type RuntimeActivity, type RuntimeControls, type RuntimePlugin, type RuntimeProfile, type Session, type SessionContinuation, type Task, type TaskContinuation, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Badge, Input, Select, Textarea } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
@@ -90,6 +90,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   const [searchParams, setSearchParams] = useSearchParams();
   const isVisible = useDocumentVisibility();
   const [owner, setOwner] = useState<RuntimeOwnerView | null>(null);
+  const [finishReadiness, setFinishReadiness] = useState<FinishReadiness | null>(null);
   const [activeView, setActiveView] = useState<"conversation" | "timeline">(
     () => searchParams.get("view") === "timeline" ? "timeline" : "conversation",
   );
@@ -113,9 +114,11 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   const [confirmAction, setConfirmAction] = useState<"stop" | "finish" | "delete" | null>(null);
   const attachmentInput = useRef<HTMLInputElement>(null);
   const conversationViewport = useRef<HTMLDivElement>(null);
+  const conversationScrollTop = useRef(0);
   const timelineViewport = useRef<HTMLDivElement>(null);
   const conversationEnd = useRef<HTMLDivElement>(null);
   const autoFollowRef = useRef(true);
+  const programmaticAutoFollow = useRef(false);
   // Monotonic generation so slower in-flight polls cannot overwrite newer data.
   const loadGeneration = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
@@ -142,6 +145,19 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     setHistoryState(next);
   };
 
+  const cancelAutoFollowSettlement = useCallback(() => {
+    programmaticAutoFollow.current = false;
+  }, []);
+
+  // Virtual-window replacement can change scrollHeight after the first jump.
+  // Keep programmatic follow distinct from operator scrolling. Later scroll
+  // events repin until explicit operator input ends programmatic follow.
+  const settleConversationBottom = useCallback((container: HTMLDivElement) => {
+    programmaticAutoFollow.current = true;
+    container.scrollTo?.({ top: container.scrollHeight, behavior: "auto" });
+    conversationScrollTop.current = container.scrollTop;
+  }, []);
+
   const base = isSession ? `/api/sessions/${sessionId}` : `/api/projects/${projectId}/tasks/${taskId}`;
 
   async function loadAll(mode: "initial" | "poll") {
@@ -163,6 +179,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
         return;
       }
       setOwner(loaded.owner);
+      setFinishReadiness(loaded.finishReadiness ?? null);
       if (loaded.owner.kind === "session") setTitleDraft(loaded.owner.title);
       // Merge into the latest state at commit time, not the pre-request
       // snapshot, so a backward page (or any other concurrent history
@@ -322,6 +339,21 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     }
   }
 
+  function scrollTimelineToTop() {
+    timelineViewport.current?.scrollTo?.({
+      top: 0,
+      behavior: prefersReducedMotion() ? "auto" : "smooth",
+    });
+  }
+
+  function scrollTimelineToBottom() {
+    const container = timelineViewport.current;
+    container?.scrollTo?.({
+      top: container.scrollHeight,
+      behavior: prefersReducedMotion() ? "auto" : "smooth",
+    });
+  }
+
   /* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
   useEffect(() => {
     // Initial load on mount/owner change. A route change aborts old requests
@@ -331,6 +363,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     setTurnSelectionSeeded(false);
     autoFollowRef.current = true;
     setAutoFollow(true);
+    conversationScrollTop.current = 0;
     timelineAtTailRef.current = true;
     commitHistory(emptyHistory());
     loadAll("initial");
@@ -341,6 +374,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     ]).catch(() => {});
     return () => {
       abortRef.current?.abort();
+      cancelAutoFollowSettlement();
     };
   }, [isSession, ownerID, projectId]);
   /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
@@ -362,19 +396,22 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   }, [owner, turnSelectionSeeded]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  /* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
+  /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
     if (!owner || activeView !== "conversation") return;
-
-    // Reset auto-follow when the runtime owner changes. This is an intentional
-    // synchronous reset, not a cascading render.
-    autoFollowRef.current = true;
-    setAutoFollow(true);
     const container = conversationViewport.current;
     if (!container) return;
 
     function updateAutoFollow() {
+      conversationScrollTop.current = container!.scrollTop;
       const pinned = isNearScrollBottom(container!);
+      if (programmaticAutoFollow.current) {
+        if (!pinned && autoFollowRef.current) {
+          container!.scrollTo?.({ top: container!.scrollHeight, behavior: "auto" });
+          conversationScrollTop.current = container!.scrollTop;
+        }
+        return;
+      }
       autoFollowRef.current = pinned;
       setAutoFollow((current) => current === pinned ? current : pinned);
       // Returning to the tail dismisses any accumulated unseen count.
@@ -383,12 +420,24 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
       }
     }
 
+    const acceptOperatorScroll = () => {
+      programmaticAutoFollow.current = false;
+    };
+
     container.addEventListener("scroll", updateAutoFollow, { passive: true });
+    container.addEventListener("wheel", acceptOperatorScroll, { passive: true });
+    container.addEventListener("touchstart", acceptOperatorScroll, { passive: true });
+    container.addEventListener("pointerdown", acceptOperatorScroll, { passive: true });
+    container.addEventListener("keydown", acceptOperatorScroll);
     return () => {
       container.removeEventListener("scroll", updateAutoFollow);
+      container.removeEventListener("wheel", acceptOperatorScroll);
+      container.removeEventListener("touchstart", acceptOperatorScroll);
+      container.removeEventListener("pointerdown", acceptOperatorScroll);
+      container.removeEventListener("keydown", acceptOperatorScroll);
     };
   }, [owner?.id, activeView]);
-  /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   // Poll events while the runtime owner is active and the tab is visible.
   // Depends on status/visibility only so the interval is not reset every render;
@@ -403,9 +452,10 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
 
   useEffect(() => {
     if (activeView === "conversation" && autoFollowRef.current) {
-      conversationEnd.current?.scrollIntoView?.({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "end" });
+      const container = conversationViewport.current;
+      if (container) settleConversationBottom(container);
     }
-  }, [activeView, history.timeline.length, history.transcript.length]);
+  }, [activeView, history.transcript.length, settleConversationBottom]);
 
   // Virtualized rendering window for the conversation transcript (#202): DOM
   // size stays bounded while older history pages accumulate in state. The
@@ -416,11 +466,15 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     itemCount: history.transcript.length,
     viewport: transcriptViewport,
     estimateHeight: TRANSCRIPT_ROW_ESTIMATE,
+    anchorEnd: autoFollow,
   });
-  const bindTranscriptViewport = (node: HTMLDivElement | null) => {
+  const bindTranscriptViewport = useCallback((node: HTMLDivElement | null) => {
     conversationViewport.current = node;
+    if (node && !autoFollowRef.current) {
+      node.scrollTop = conversationScrollTop.current;
+    }
     setTranscriptViewport(node);
-  };
+  }, []);
 
   const currentProfileRuntimeProvider = profiles.find((profile) => profile.id === owner?.runtimeProfileID)?.provider;
   const currentRuntimeProvider =
@@ -461,7 +515,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     if (!container) return;
     autoFollowRef.current = true;
     setAutoFollow(true);
-    container.scrollTo({ top: container.scrollHeight, behavior: prefersReducedMotion() ? "auto" : "smooth" });
+    settleConversationBottom(container);
     if (historyRef.current.transcriptUnseen > 0) {
       commitHistory({ ...historyRef.current, transcriptUnseen: 0 });
     }
@@ -472,6 +526,8 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     if (!container) return;
     autoFollowRef.current = false;
     setAutoFollow(false);
+    cancelAutoFollowSettlement();
+    conversationScrollTop.current = 0;
     container.scrollTo({ top: 0, behavior: prefersReducedMotion() ? "auto" : "smooth" });
   }
 
@@ -818,6 +874,11 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
           </div>
         )}
         <div className="flex shrink-0 items-center gap-1">
+		  {owner.kind === "task" && projectId && (
+			<Button size="sm" variant="ghost" onClick={() => navigate(`/projects/${projectId}/tasks/${owner.id}/challenges`)} aria-label="Challenge Workflow" title="Open Challenge Workflow">
+			  <Wrench className="h-4 w-4" /> <span className="hidden sm:inline">Challenges</span>
+			</Button>
+		  )}
           {owner.capabilities.rename && !editingTitle && (
             <Button size="icon" variant="ghost" onClick={() => setEditingTitle(true)} aria-label={`Rename ${owner.title}`} title="Rename Session" className="h-8 w-8">
               <Pencil className="h-4 w-4" />
@@ -874,6 +935,31 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
         </div>
       )}
 
+      {owner.kind === "task" && finishReadiness && !finishReadiness.ready_to_finish && (
+        <section
+          aria-label="Finish Readiness"
+          className="shrink-0 space-y-2 border-b border-warning/30 bg-warning/5 px-3 py-2"
+        >
+          <div className="flex items-center gap-2 text-sm font-medium text-warning">
+            <TriangleAlert className="h-4 w-4" />
+            <span>Finish Readiness blockers</span>
+          </div>
+          <div className="grid gap-2 lg:grid-cols-2">
+            {finishReadiness.blockers.map((blocker) => (
+              <div key={blocker.code} className="rounded-md border border-warning/30 bg-background/70 p-2 text-xs">
+                <p className="font-medium text-foreground">{blocker.message}</p>
+                <p className="font-mono text-muted-foreground">{blocker.code} · {blocker.count}</p>
+                {blocker.links?.map((link) => (
+                  <a key={link} href={link} className="mt-1 inline-block font-medium text-signal hover:underline">
+                    Open {blocker.code}
+                  </a>
+                ))}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       {owner.blackboardConclusion?.state === "action_required" && (
         <BlackboardConclusionRecovery
           errorCode={owner.blackboardConclusion.error_code}
@@ -905,7 +991,11 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
           <Activity className="h-4 w-4" /> Timeline
         </button>
         <div className="ml-auto">
-          {activeView === "conversation" && <FloatingScrollControls autoFollow={autoFollow} onTop={scrollToTop} onBottom={scrollToLatest} />}
+          {activeView === "conversation" ? (
+            <FloatingScrollControls autoFollow={autoFollow} onTop={scrollToTop} onBottom={scrollToLatest} />
+          ) : (
+            <TimelineScrollControls onTop={scrollTimelineToTop} onBottom={scrollTimelineToBottom} />
+          )}
         </div>
       </div>
 
@@ -914,7 +1004,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
         className={`flex min-h-[28rem] min-w-0 flex-1 flex-col overflow-visible bg-card/30 md:overflow-hidden lg:min-h-0 ${focusMode ? "border-0" : "rounded-b-lg border-x border-b border-border"}`}
       >
         {activeView === "timeline" ? (
-          <div className="min-h-0 flex-1 overflow-y-auto p-2 pb-44 sm:p-3 md:pb-5">
+          <div className="min-h-0 flex-1 overflow-hidden p-2 pb-44 sm:p-3 md:pb-5">
             <AgentTranscriptView
               owner={owner}
               items={history.timeline}
@@ -1124,6 +1214,7 @@ function emptyHistory(): OwnerHistory {
 
 type RuntimeWorkspaceLoad = {
   owner: RuntimeOwnerView;
+  finishReadiness?: FinishReadiness;
   timeline: TaskTimelineItem[];
   transcript: TaskTranscriptEntry[];
   timelineCursor: number;
@@ -1138,13 +1229,17 @@ async function loadTaskWorkspace(
   mode: "initial" | "poll",
   current: OwnerHistory,
 ): Promise<RuntimeWorkspaceLoad> {
-  const [task, timeline, transcript] = await Promise.all([
+  const [task, timeline, transcript, finishReadiness] = await Promise.all([
     apiGet<Task>(base, { signal }),
     apiGet<TaskTimeline>(timelineURL(base, mode, current.timelineCursor), { signal }),
     apiGet<TaskTranscript>(transcriptURL(base, mode, current.transcriptCursor), { signal }),
+    apiGet<FinishReadiness>(`${base}/finish-readiness`, { signal }),
   ]);
   return {
     owner: taskAsRuntimeOwner(task),
+    finishReadiness: typeof finishReadiness.ready_to_finish === "boolean" && Array.isArray(finishReadiness.blockers)
+      ? finishReadiness
+      : undefined,
     timeline: timeline.items ?? [],
     transcript: transcript.entries ?? [],
     timelineCursor: timeline.cursor ?? current.timelineCursor,
@@ -1560,13 +1655,13 @@ function FloatingScrollControls({
 
   return (
     <div className="flex items-center gap-1">
-      <Button size="sm" variant="outline" className="h-9 w-9 p-0 shadow-md" onClick={onTop} aria-label="Scroll to top" title="Top">
+      <Button size="sm" variant="outline" className="h-10 w-10 p-0 shadow-md transition-transform duration-150 active:scale-[0.96] motion-reduce:transform-none" onClick={onTop} aria-label="Scroll to top" title="Top">
         <ArrowUp className="h-4 w-4" />
       </Button>
       <Button
         size="sm"
         variant={autoFollow ? "secondary" : "outline"}
-        className="relative h-9 w-9 p-0 shadow-md"
+        className="relative h-10 w-10 p-0 shadow-md transition-transform duration-150 active:scale-[0.96] motion-reduce:transform-none"
         onClick={onBottom}
         aria-label={latestLabel}
         title={latestLabel}
@@ -1575,6 +1670,39 @@ function FloatingScrollControls({
         {autoFollow && (
           <CheckCircle2 className="absolute right-0.5 top-0.5 h-3 w-3 text-signal" aria-hidden="true" />
         )}
+      </Button>
+    </div>
+  );
+}
+
+function TimelineScrollControls({
+  onTop,
+  onBottom,
+}: {
+  onTop: () => void;
+  onBottom: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-1">
+      <Button
+        size="sm"
+        variant="outline"
+        className="h-10 w-10 p-0 shadow-md transition-transform duration-150 active:scale-[0.96] motion-reduce:transform-none"
+        onClick={onTop}
+        aria-label="Scroll Timeline to top"
+        title="Timeline top"
+      >
+        <ArrowUp className="h-4 w-4" />
+      </Button>
+      <Button
+        size="sm"
+        variant="outline"
+        className="h-10 w-10 p-0 shadow-md transition-transform duration-150 active:scale-[0.96] motion-reduce:transform-none"
+        onClick={onBottom}
+        aria-label="Scroll Timeline to bottom"
+        title="Timeline bottom"
+      >
+        <ArrowDown className="h-4 w-4" />
       </Button>
     </div>
   );

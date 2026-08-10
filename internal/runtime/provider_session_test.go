@@ -272,7 +272,7 @@ func TestFakeProviderSessionInvalidNotificationCarriesBoundedValidationDetail(t 
 		fieldPath string
 		expected  string
 	}{
-		{name: "invalid attempt key", raw: strings.Replace(valid, `"key":"attempt:search"`, `"key":"attempt/search"`, 1), reason: blackboardconclusion.ValidationReasonInvalidKeyFormat, fieldPath: "attempt.key", expected: "attempt: prefix"},
+		{name: "empty attempt key", raw: strings.Replace(valid, `"key":"attempt:search"`, `"key":""`, 1), reason: blackboardconclusion.ValidationReasonRuleViolation, fieldPath: "attempt.key", expected: "non-empty"},
 		{name: "unknown field", raw: strings.Replace(valid, `"schema":`, `"unexpected":true,"schema":`, 1), reason: blackboardconclusion.ValidationReasonUnknownField, fieldPath: "unexpected"},
 		{name: "invalid enum", raw: strings.Replace(valid, `"outcome":"failed"`, `"outcome":"interrupted"`, 1), reason: blackboardconclusion.ValidationReasonInvalidEnumValue, fieldPath: "attempt.outcome", expected: "succeeded, failed, blocked, or inconclusive"},
 		{name: "oversized result", raw: strings.Repeat("x", (64<<10)+1), reason: blackboardconclusion.ValidationReasonResultTooLarge},

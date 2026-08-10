@@ -70,7 +70,8 @@ func TestCodexNativeSteerSameProviderModelAndEffortUsesExistingSession(t *testin
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "inspect example.com",
+		ProjectID: projectRecord.ID,
+		Type:      task.TypePentest, Goal: "inspect example.com",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
@@ -251,7 +252,8 @@ func TestCodexNativeSteerAlwaysSendsCompleteResolvedSelection(t *testing.T) {
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "inspect example.com",
+		ProjectID: projectRecord.ID,
+		Type:      task.TypePentest, Goal: "inspect example.com",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
@@ -353,7 +355,7 @@ func TestCodexNativeSteerRejectsProviderChangeWithoutRecordingConversation(t *te
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -438,7 +440,7 @@ func TestCodexNativeSteerUnsupportedEffortFailsTurnWithoutDowngrade(t *testing.T
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -534,7 +536,7 @@ func TestCurrentTurnSelectionUsesCapturedSnapshotNotEmptyProfileFields(t *testin
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -627,7 +629,8 @@ func TestQueueSteerModelOnlySelectionCreatesConfigVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerHost,
+		ProjectID: projectRecord.ID,
+		Type:      task.TypePentest, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerHost,
 		RunControls: task.RunControls{HostActivated: true},
 	})
 	if err != nil {
@@ -712,7 +715,8 @@ func TestQueueSteerProviderChangeCreatesConfigVersionAndKeepsMessage(t *testing.
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerHost,
+		ProjectID: projectRecord.ID,
+		Type:      task.TypePentest, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerHost,
 		RunControls: task.RunControls{HostActivated: true},
 	})
 	if err != nil {
@@ -823,7 +827,8 @@ func TestClaudeNativeSteerSameProviderModelAndEffortUsesExistingSession(t *testi
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "inspect example.com",
+		ProjectID: projectRecord.ID,
+		Type:      task.TypePentest, Goal: "inspect example.com",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
@@ -976,7 +981,8 @@ func TestClaudeNativeSteerAlwaysSendsCompleteResolvedSelection(t *testing.T) {
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "inspect example.com",
+		ProjectID: projectRecord.ID,
+		Type:      task.TypePentest, Goal: "inspect example.com",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
@@ -1078,7 +1084,7 @@ func TestClaudeNativeSteerProviderChangeRequiresRestartAndDoesNotTouchLiveSessio
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1163,7 +1169,7 @@ func TestClaudeNativeSteerUnsupportedEffortFailsTurnWithoutDowngrade(t *testing.
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1300,7 +1306,7 @@ func TestPiNativeSteerAcceptsCrossProviderWithoutRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1439,7 +1445,7 @@ func TestPiNativeSteerRejectsProviderOutsideProjectedSet(t *testing.T) {
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1528,7 +1534,7 @@ func TestPiNativeSteerFailsClosedWithoutProjectedSet(t *testing.T) {
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1620,7 +1626,8 @@ func TestPiV2LaunchDoesNotDeadlockListingGlobalProviders(t *testing.T) {
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "inspect example.com",
+		ProjectID: projectRecord.ID,
+		Type:      task.TypePentest, Goal: "inspect example.com",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
@@ -1710,7 +1717,8 @@ func TestResumeReasoningEffortOnlyUpdatesTurnSelection(t *testing.T) {
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerHost,
+		ProjectID: projectRecord.ID,
+		Type:      task.TypePentest, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerHost,
 		RunControls: task.RunControls{HostActivated: true},
 	})
 	if err != nil {
@@ -1823,7 +1831,8 @@ func TestResumeFullSelectionKeepsXHighOverOlderConversation(t *testing.T) {
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerHost,
+		ProjectID: projectRecord.ID,
+		Type:      task.TypePentest, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerHost,
 		RunControls: task.RunControls{HostActivated: true},
 	})
 	if err != nil {

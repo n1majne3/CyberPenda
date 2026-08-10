@@ -65,7 +65,7 @@ func TestCreateTaskSurfacesSkillBundleErrorViaPreflight(t *testing.T) {
 	proj := createAdapterErrorTestProject(t, server)
 
 	body := []byte(`{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":` + quoteJSON(profile.ID) + `,
 		"runner":"sandbox"
 	}`)
@@ -134,8 +134,9 @@ func TestBuildTaskAdapterAppliesHostProxyOnlySandboxNetworkFromRunControls(t *te
 		t.Fatalf("create project: %v", err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID:        proj.ID,
-		Goal:             "test http://localhost:3000",
+		ProjectID: proj.ID,
+
+		Type: task.TypePentest, Goal: "test http://localhost:3000",
 		RuntimeProfileID: profile.ID,
 		Runner:           task.RunnerSandbox,
 		RunControls: task.RunControls{
@@ -204,7 +205,7 @@ func TestSandboxLaunchPlanWiresImagePullProgressToDaemonLogger(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: proj.ID, Goal: "enumerate example.com", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		ProjectID: proj.ID, Type: task.TypePentest, Goal: "enumerate example.com", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
@@ -343,8 +344,9 @@ func createAdapterErrorTestProject(t *testing.T, server *Server) project.Project
 func createAdapterErrorTestTask(t *testing.T, server *Server, projectID, profileID string) task.Task {
 	t.Helper()
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID:        projectID,
-		Goal:             "enumerate example.com",
+		ProjectID: projectID,
+
+		Type: task.TypePentest, Goal: "enumerate example.com",
 		RuntimeProfileID: profileID,
 		Runner:           task.RunnerSandbox,
 	})

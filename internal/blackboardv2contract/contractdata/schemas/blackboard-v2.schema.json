@@ -2874,6 +2874,86 @@
         }
       }
     },
+    "attemptResultRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "idempotency_key",
+        "result"
+      ],
+      "properties": {
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "base_revision",
+            "attempt",
+            "tested_targets",
+            "produced_targets"
+          ],
+          "properties": {
+            "schema": {
+              "const": "runtime-attempt-result/v1"
+            },
+            "base_revision": {
+              "$ref": "#/$defs/revision"
+            },
+            "attempt": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["key", "summary", "outcome"],
+              "properties": {
+                "key": {"$ref": "#/$defs/blackboardKey"},
+                "create": {"const": true},
+                "expected_version": {"$ref": "#/$defs/version"},
+                "summary": {"$ref": "#/$defs/semanticText"},
+                "outcome": {"enum": ["succeeded", "failed", "blocked", "inconclusive"]}
+              }
+            },
+            "tested_targets": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 32,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["key"],
+                "properties": {
+                  "key": {"$ref": "#/$defs/blackboardKey"},
+                  "expected_version": {"$ref": "#/$defs/version"},
+                  "create_objective": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["objective"],
+                    "properties": {
+                      "objective": {"$ref": "#/$defs/semanticText"}
+                    }
+                  }
+                }
+              }
+            },
+            "produced_targets": {
+              "type": "array",
+              "maxItems": 32,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["key", "expected_version"],
+                "properties": {
+                  "key": {"$ref": "#/$defs/blackboardKey"},
+                  "expected_version": {"$ref": "#/$defs/version"}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "finishRequest": {
       "type": "object",
       "additionalProperties": false,

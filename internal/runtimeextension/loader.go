@@ -1,6 +1,7 @@
 package runtimeextension
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -31,7 +32,9 @@ func LoadDirectory(dir string) ([]Extension, []error) {
 			continue
 		}
 		var extension Extension
-		if err := json.Unmarshal(raw, &extension); err != nil {
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&extension); err != nil {
 			errs = append(errs, fmt.Errorf("decode runtime extension manifest %q: %w", path, err))
 			continue
 		}

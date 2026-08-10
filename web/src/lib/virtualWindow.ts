@@ -37,8 +37,10 @@ export function useVirtualWindow(options: {
   /** The scroll container element, passed as a state value. */
   viewport: HTMLElement | null;
   estimateHeight: number;
+  /** Keep the rendered window on the final items while the view follows its live tail. */
+  anchorEnd?: boolean;
 }): VirtualWindow {
-  const { itemCount, viewport, estimateHeight } = options;
+  const { itemCount, viewport, estimateHeight, anchorEnd = false } = options;
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
   const [measured, setMeasured] = useState(false);
@@ -73,6 +75,21 @@ export function useVirtualWindow(options: {
     return { startIndex: 0, endIndex: itemCount, spacerBefore: 0, spacerAfter: 0, virtualized: false };
   }
   const height = viewportHeight > 0 ? viewportHeight : estimateHeight * 10;
+  if (anchorEnd) {
+    // Transcript rows have variable heights. While auto-follow is active, the
+    // real scrollTop can be much larger than the estimated total height. Do
+    // not derive an item index from that unstable ratio. Keep one bounded
+    // window anchored to the final items instead.
+    const windowSize = Math.ceil(height / estimateHeight) + OVERSCAN * 2;
+    const startIndex = Math.max(0, itemCount - windowSize);
+    return {
+      startIndex,
+      endIndex: itemCount,
+      spacerBefore: startIndex * estimateHeight,
+      spacerAfter: 0,
+      virtualized: true,
+    };
+  }
   const startIndex = Math.max(0, Math.floor(scrollTop / estimateHeight) - OVERSCAN);
   const endIndex = Math.min(itemCount, Math.ceil((scrollTop + height) / estimateHeight) + OVERSCAN);
   return {

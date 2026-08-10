@@ -101,10 +101,12 @@ func (server *Server) dispatchBlackboardConclusion(ctx context.Context, pending 
 func concludeBlackboardDirective(baseRevision int) string {
 	return fmt.Sprintf(`Stop security testing and perform only the Harness conclusion below.
 Return exactly one JSON object (no markdown fences, no prose) with this shape and base_revision %d:
-{"schema":"runtime-attempt-result/v1","base_revision":%d,"attempt":{"key":"attempt:example","create":true,"summary":"One sentence outcome of the completed work.","outcome":"inconclusive"},"tested_targets":[{"key":"objective:example","create_objective":{"objective":"What was tested."}}],"produced_targets":[]}
-Replace example keys/summaries with this Turn's real semantic targets.
+{"schema":"runtime-attempt-result/v1","base_revision":%d,"attempt":{"key":"attempt/example","create":true,"summary":"One sentence outcome of the completed work.","outcome":"inconclusive"},"tested_targets":[{"key":"objective/example","create_objective":{"objective":"What was tested."}}],"produced_targets":[]}
+Conclude only the current source Work Turn. Do not restate an older terminal Attempt.
+Use only existing Blackboard Keys and versions already present in the conversation from the completed source Work Turn. Copy them exactly; never change punctuation or switch between ':' and '/'. If an exact existing key and version are not already known, do not guess or look them up. Create a new descriptive slash-style Attempt or Objective key and use an inconclusive, failed, or blocked outcome without produced targets. A new key must not be a punctuation alias of a current or historical key.
+Replace example keys and summaries with this Turn's real semantic targets.
 Rules: outcome must be one of succeeded, failed, blocked, or inconclusive. Use inconclusive/failed/blocked when the Turn did not create durable produced graph targets. succeeded requires at least one produced_targets entry that references an already-existing Blackboard key with expected_version; do not invent produced_targets on an empty board.
-Describe one Attempt and at least one tested target. Do not call tools, continue testing, include raw tool output or reasoning, finish the Task, or write the Blackboard directly.`, baseRevision, baseRevision)
+Describe one Attempt and at least one tested target. Do not read files. Do not call tools, continue testing, include raw tool output or reasoning, finish the Task, or write the Blackboard directly.`, baseRevision, baseRevision)
 }
 
 func repairBlackboardDirective(baseRevision int, detail owner.ConclusionValidationDetail) string {
@@ -113,8 +115,9 @@ Stop security testing and correct only that semantic result.
 Return exactly one JSON object (no markdown fences, no prose) with schema runtime-attempt-result/v1 and base_revision %d.
 If the board has no existing produced targets, use outcome "inconclusive" (or failed/blocked) with produced_targets [].
 Example:
-{"schema":"runtime-attempt-result/v1","base_revision":%d,"attempt":{"key":"attempt:example","create":true,"summary":"One sentence outcome of the completed work.","outcome":"inconclusive"},"tested_targets":[{"key":"objective:example","create_objective":{"objective":"What was tested."}}],"produced_targets":[]}
-Do not call tools, continue testing, include raw tool output or reasoning, finish the Task, or write the Blackboard directly.`, baseRevision, baseRevision)
+{"schema":"runtime-attempt-result/v1","base_revision":%d,"attempt":{"key":"attempt/example","create":true,"summary":"One sentence outcome of the completed work.","outcome":"inconclusive"},"tested_targets":[{"key":"objective/example","create_objective":{"objective":"What was tested."}}],"produced_targets":[]}
+Conclude only the current source Work Turn. Use only existing Blackboard Keys and versions already present in the conversation. Copy them exactly; never change punctuation or switch between ':' and '/'. If an exact existing key and version are not already known, do not guess or look them up. Create a new descriptive slash-style Attempt or Objective key and use an inconclusive, failed, or blocked outcome without produced targets. Do not restate an older terminal Attempt.
+Do not read files. Do not call tools, continue testing, include raw tool output or reasoning, finish the Task, or write the Blackboard directly.`, baseRevision, baseRevision)
 	return conclusionValidationRepairLine(detail) + "\n" + directive
 }
 
@@ -137,9 +140,9 @@ func conclusionValidationRepairLine(detail owner.ConclusionValidationDetail) str
 
 func regenerateBlackboardDirective(baseRevision int) string {
 	return fmt.Sprintf(`The Project Blackboard changed after your previous semantic result was produced.
-Reread the current .pentest/blackboard.json and regenerate the semantic result against base_revision %d.
+Regenerate the semantic result against base_revision %d. Use only exact Blackboard Keys and versions already present in the conversation. If a required current version is not already known, create new descriptive slash-style Attempt and Objective keys and use an inconclusive, failed, or blocked outcome with no produced targets. Do not guess or look up current state.
 Return exactly one JSON object with schema runtime-attempt-result/v1.
-Do not call tools, continue testing, include raw tool output or reasoning, finish the Task, or write the Blackboard directly.`, baseRevision)
+Do not read files. Do not call tools, continue testing, include raw tool output or reasoning, finish the Task, or write the Blackboard directly.`, baseRevision)
 }
 
 func (server *Server) blackboardConclusionCoordinator(taskID string) runtime.AssistedConclusionCoordinator {
@@ -400,6 +403,9 @@ func (server *Server) reconcileValidatedBlackboardConclusionApply(ctx context.Co
 	if err != nil || found.ProjectID == "" {
 		return server.failValidatedBlackboardConclusionApply(receipt, task.BlackboardConclusionErrorInvalidResult)
 	}
+	if err := server.rejectBlackboardConclusionKeyAliases(ctx, found.ProjectID, validated.Result); err != nil {
+		return server.failValidatedBlackboardConclusionApply(receipt, task.BlackboardConclusionErrorInvalidResult)
+	}
 	applied, err := server.blackboardV2.ApplyForContinuationAtRevision(
 		ctx, found.ProjectID, receipt.ContinuationID, *receipt.BaseRevision, batch,
 	)
@@ -485,6 +491,15 @@ func (server *Server) applyBlackboardConclusionResult(ctx context.Context, taskI
 	if err != nil {
 		return err
 	}
+	if err := server.rejectBlackboardConclusionKeyAliases(ctx, found.ProjectID, validated.Result); err != nil {
+		_, _, actionErr := server.tasks.MarkBlackboardConclusionApplyActionRequired(
+			receipt.DispatchRequestID, task.BlackboardConclusionErrorInvalidResult, time.Now().UTC(), blackboardConclusionRetryCooldown,
+		)
+		if actionErr == nil {
+			server.blackboardConclusions.ClearRequest(receipt.TaskID, receipt.DispatchRequestID)
+		}
+		return actionErr
+	}
 	applied, err := server.blackboardV2.ApplyForContinuationAtRevision(ctx, found.ProjectID, receipt.ContinuationID, *receipt.BaseRevision, batch)
 	if err != nil {
 		if isBlackboardConclusionBaseRevisionConflict(err) {
@@ -519,6 +534,44 @@ func (server *Server) applyBlackboardConclusionResult(ctx context.Context, taskI
 		server.settleTaskFinishIntentAfterApply(ctx, found.ProjectID, receipt.ContinuationID)
 	}
 	return err
+}
+
+func (server *Server) rejectBlackboardConclusionKeyAliases(ctx context.Context, projectID string, result blackboardconclusion.RuntimeAttemptResult) error {
+	createdKeys := make([]string, 0, 1+len(result.TestedTargets))
+	if result.Attempt.Create {
+		createdKeys = append(createdKeys, result.Attempt.Key)
+	}
+	for _, target := range result.TestedTargets {
+		if target.CreateObjective != nil {
+			createdKeys = append(createdKeys, target.Key)
+		}
+	}
+	for _, key := range createdKeys {
+		alias := blackboardKeySeparatorAlias(key)
+		if alias == "" {
+			continue
+		}
+		exists, err := server.blackboardV2.HasSemanticKey(ctx, projectID, alias)
+		if err != nil {
+			return err
+		}
+		if exists {
+			return &blackboardv2.Error{Code: "key_conflict", Path: "key", Message: "a separator alias of the proposed Blackboard Key already exists"}
+		}
+	}
+	return nil
+}
+
+func blackboardKeySeparatorAlias(key string) string {
+	for _, prefix := range []string{"attempt", "objective"} {
+		if strings.HasPrefix(key, prefix+":") {
+			return prefix + "/" + strings.TrimPrefix(key, prefix+":")
+		}
+		if strings.HasPrefix(key, prefix+"/") {
+			return prefix + ":" + strings.TrimPrefix(key, prefix+"/")
+		}
+	}
+	return ""
 }
 
 func isBlackboardConclusionBaseRevisionConflict(err error) bool {

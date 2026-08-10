@@ -10,6 +10,12 @@
       "result_schema": "changeResult"
     },
     {
+      "name": "blackboard_record_attempt_result",
+      "description": "Record one complete Attempt result atomically: create or reuse the Attempt and tested targets, add produced links, and apply the terminal outcome in one call.",
+      "input_schema": "attemptResultRequest",
+      "result_schema": "changeResult"
+    },
+    {
       "name": "blackboard_read",
       "description": "Read the current complete semantic record and its current relationships by Blackboard Key.",
       "input_schema": "readRequest",

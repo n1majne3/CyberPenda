@@ -15,6 +15,8 @@ const (
 
 // Turn is one normalized fragment from a provider stdout/stderr JSON line.
 type Turn struct {
+	SourceID     string
+	SourceSeq    int
 	Kind         Kind
 	Role         string
 	Text         string

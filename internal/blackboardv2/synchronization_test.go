@@ -103,7 +103,7 @@ func TestOwnWriteAndForeignProjectDoNotCreatePendingNotice(t *testing.T) {
 		t.Fatalf("create foreign Project: %v", err)
 	}
 	foreignTask, err := fixture.tasks.Create(task.CreateRequest{
-		ProjectID: foreignProject.ID, Goal: "foreign work", RuntimeProfileID: fixture.profile.ID, Runner: task.RunnerSandbox,
+		ProjectID: foreignProject.ID, Type: task.TypePentest, Goal: "foreign work", RuntimeProfileID: fixture.profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
 		t.Fatalf("create foreign Task: %v", err)
@@ -763,7 +763,7 @@ func TestSynchronizeContinuationRejectsForeignProjectAndNegativeFromRevision(t *
 func launchPeerTask(t *testing.T, fixture continuityFixture, goal string) blackboardv2.ContinuationLaunch {
 	t.Helper()
 	peerTask, err := fixture.tasks.Create(task.CreateRequest{
-		ProjectID: fixture.project.ID, Goal: goal, RuntimeProfileID: fixture.profile.ID, Runner: task.RunnerSandbox,
+		ProjectID: fixture.project.ID, Type: task.TypePentest, Goal: goal, RuntimeProfileID: fixture.profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
 		t.Fatalf("create peer Task: %v", err)

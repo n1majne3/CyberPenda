@@ -105,7 +105,7 @@ func TestRuntimeProfileMissingReasoningEffortResolvesToHighOnLaunchCapture(t *te
 
 	// Fake provider launch still captures requested_reasoning_effort=high.
 	body := []byte(`{
-		"goal":"inspect example.com",
+		"type":"pentest","goal":"inspect example.com",
 		"runtime_profile_id":` + quoteJSON(profileID) + `,
 		"runner":"sandbox"
 	}`)
@@ -124,7 +124,7 @@ func TestTaskLaunchHTTPRejectsInvalidReasoningEffortOverride(t *testing.T) {
 	profileID := createRuntimeProfile(t, server, `{"name":"Codex","provider":"codex","fields":{"model":"gpt-test","reasoning_effort":"medium"}}`)
 
 	body := []byte(`{
-		"goal":"inspect example.com",
+		"type":"pentest","goal":"inspect example.com",
 		"runtime_profile_id":` + quoteJSON(profileID) + `,
 		"reasoning_effort":"auto",
 		"runner":"sandbox"

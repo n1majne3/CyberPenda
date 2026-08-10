@@ -49,7 +49,7 @@ func TestRetainEvidenceRejectsUnknownFieldsAndRequiresOwnedOpenAttemptBeforePubl
 		t.Fatalf("create Project: %v", err)
 	}
 	tasks := task.NewService(db, projects)
-	ownerTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "Own Evidence", Runner: task.RunnerSandbox})
+	ownerTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "Own Evidence", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create owner Task: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestRetainEvidenceRejectsUnknownFieldsAndRequiresOwnedOpenAttemptBeforePubl
 	if err != nil {
 		t.Fatalf("create owner Continuation: %v", err)
 	}
-	peerTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "Peer Evidence", Runner: task.RunnerSandbox})
+	peerTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "Peer Evidence", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create peer Task: %v", err)
 	}
@@ -403,7 +403,7 @@ func TestRuntimeRetainsEvidenceFromOwnedOpenAttemptWithCompactSnapshotAndDetaile
 		t.Fatalf("create Project: %v", err)
 	}
 	tasks := task.NewService(db, projects)
-	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "Retain proof", Runner: task.RunnerSandbox})
+	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "Retain proof", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create Task: %v", err)
 	}
@@ -521,7 +521,7 @@ func TestAvailableEvidenceConfirmsProjectFactThroughRuntimeService(t *testing.T)
 		t.Fatalf("create Project: %v", err)
 	}
 	tasks := task.NewService(db, projects)
-	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "Confirm from proof", Runner: task.RunnerSandbox})
+	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "Confirm from proof", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create Task: %v", err)
 	}
@@ -860,7 +860,7 @@ func TestEvidenceDerivedFromIsVersionedAcyclicAndProjectIsolated(t *testing.T) {
 		t.Fatalf("create foreign Project: %v", err)
 	}
 	tasks := task.NewService(fixture.db, projects)
-	foreignTask, err := tasks.Create(task.CreateRequest{ProjectID: foreignProject.ID, Goal: "Foreign Evidence", Runner: task.RunnerSandbox})
+	foreignTask, err := tasks.Create(task.CreateRequest{ProjectID: foreignProject.ID, Type: task.TypePentest, Goal: "Foreign Evidence", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create foreign Task: %v", err)
 	}
@@ -2941,7 +2941,7 @@ func newEvidenceV2Fixture(t *testing.T, name string) evidenceV2Fixture {
 		t.Fatalf("create Project: %v", err)
 	}
 	tasks := task.NewService(db, projects)
-	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: name, Runner: task.RunnerSandbox})
+	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Type: task.TypePentest, Goal: name, Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create Task: %v", err)
 	}

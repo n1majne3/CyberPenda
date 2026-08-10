@@ -118,7 +118,7 @@ func TestTrustedContinuationOwnsAttemptsWithoutLeakingTaskState(t *testing.T) {
 		t.Fatalf("create other project: %v", err)
 	}
 	tasks := task.NewService(db, projects)
-	ownerTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "OWNER TASK GOAL MUST NOT LEAK", RuntimeProfileID: "profile-owner", Runner: task.RunnerSandbox})
+	ownerTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "OWNER TASK GOAL MUST NOT LEAK", RuntimeProfileID: "profile-owner", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create owner Task: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestTrustedContinuationOwnsAttemptsWithoutLeakingTaskState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create owner Continuation: %v", err)
 	}
-	otherTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "OTHER TASK GOAL MUST NOT LEAK", RuntimeProfileID: "profile-other", Runner: task.RunnerSandbox})
+	otherTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "OTHER TASK GOAL MUST NOT LEAK", RuntimeProfileID: "profile-other", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create other Task: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestTrustedContinuationOwnsAttemptsWithoutLeakingTaskState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create other Continuation: %v", err)
 	}
-	foreignTask, err := tasks.Create(task.CreateRequest{ProjectID: otherProject.ID, Goal: "FOREIGN TASK GOAL MUST NOT LEAK", RuntimeProfileID: "profile-foreign", Runner: task.RunnerSandbox})
+	foreignTask, err := tasks.Create(task.CreateRequest{ProjectID: otherProject.ID, Type: task.TypePentest, Goal: "FOREIGN TASK GOAL MUST NOT LEAK", RuntimeProfileID: "profile-foreign", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create foreign Task: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestServerReconcilesOnlyClosedContinuationsOwnedAttempts(t *testing.T) {
 		t.Fatalf("create foreign project: %v", err)
 	}
 	tasks := task.NewService(db, projects)
-	ownerTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "Owner", Runner: task.RunnerSandbox})
+	ownerTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "Owner", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create owner Task: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestServerReconcilesOnlyClosedContinuationsOwnedAttempts(t *testing.T) {
 	if _, err := tasks.UpdateContinuationStatus(owner.ID, task.StatusRunning); err != nil {
 		t.Fatalf("run owner Continuation: %v", err)
 	}
-	peerTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "Peer", Runner: task.RunnerSandbox})
+	peerTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "Peer", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create peer Task: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestServerReconcilesOnlyClosedContinuationsOwnedAttempts(t *testing.T) {
 	if _, err := tasks.UpdateContinuationStatus(peer.ID, task.StatusRunning); err != nil {
 		t.Fatalf("run peer Continuation: %v", err)
 	}
-	foreignTask, err := tasks.Create(task.CreateRequest{ProjectID: foreignProject.ID, Goal: "Foreign", Runner: task.RunnerSandbox})
+	foreignTask, err := tasks.Create(task.CreateRequest{ProjectID: foreignProject.ID, Type: task.TypePentest, Goal: "Foreign", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create foreign Task: %v", err)
 	}
@@ -391,7 +391,7 @@ func TestRuntimeAttemptCreateRequiresCurrentTestsInFinalBatch(t *testing.T) {
 		t.Fatalf("create foreign project: %v", err)
 	}
 	tasks := task.NewService(db, projects)
-	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "Create a tested Attempt", Runner: task.RunnerSandbox})
+	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "Create a tested Attempt", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create Task: %v", err)
 	}
@@ -399,7 +399,7 @@ func TestRuntimeAttemptCreateRequiresCurrentTestsInFinalBatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create Continuation: %v", err)
 	}
-	foreignTask, err := tasks.Create(task.CreateRequest{ProjectID: foreignProject.ID, Goal: "Foreign Attempt", Runner: task.RunnerSandbox})
+	foreignTask, err := tasks.Create(task.CreateRequest{ProjectID: foreignProject.ID, Type: task.TypePentest, Goal: "Foreign Attempt", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create foreign Task: %v", err)
 	}
@@ -484,7 +484,7 @@ func TestReconciliationAcceptsHistoricalTestsAfterTargetTerminalization(t *testi
 		t.Fatalf("create project: %v", err)
 	}
 	tasks := task.NewService(db, projects)
-	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "Reconcile historical tests", Runner: task.RunnerSandbox})
+	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "Reconcile historical tests", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create Task: %v", err)
 	}
@@ -570,7 +570,7 @@ func TestReconciliationReportsNeverLinkedOwnedAttemptsWithoutForeignHistory(t *t
 		t.Fatalf("create foreign project: %v", err)
 	}
 	tasks := task.NewService(db, projects)
-	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "Diagnose invalid Attempt", Runner: task.RunnerSandbox})
+	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "Diagnose invalid Attempt", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create Task: %v", err)
 	}
@@ -649,7 +649,7 @@ func TestTrustedAttemptWritesRejectEveryTerminalContinuationStatus(t *testing.T)
 
 	for _, status := range []task.Status{task.StatusCompleted, task.StatusFailed, task.StatusStopped, task.StatusInterrupted} {
 		t.Run(string(status), func(t *testing.T) {
-			createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "Closed " + string(status), Runner: task.RunnerSandbox})
+			createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "Closed " + string(status), Runner: task.RunnerSandbox})
 			if err != nil {
 				t.Fatalf("create Task: %v", err)
 			}

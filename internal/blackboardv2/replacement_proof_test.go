@@ -122,7 +122,7 @@ func TestBlackboardV2AcceptedContractsAndUserDocsAgree(t *testing.T) {
 	}
 	decodeRepositoryJSON(t, filepath.Join(root, "internal/blackboardv2contract/contractdata/trusted-tools.json"), &tools)
 	wantTools := []string{
-		"blackboard_change", "blackboard_read", "blackboard_history",
+		"blackboard_change", "blackboard_record_attempt_result", "blackboard_read", "blackboard_history",
 		"blackboard_retain_evidence", "blackboard_checkpoint_attempt", "blackboard_finish",
 	}
 	if tools.Schema != "trusted-blackboard-tools/v2" || len(tools.Tools) != len(wantTools) {
@@ -147,8 +147,8 @@ func TestBlackboardV2AcceptedContractsAndUserDocsAgree(t *testing.T) {
 		{"ADR 0014", adr},
 		{"README", readme},
 	} {
-		if !strings.Contains(document.body, "six") && !strings.Contains(document.body, "Exactly six") {
-			t.Errorf("%s does not state the six-tool contract", document.name)
+		if !strings.Contains(document.body, "seven") && !strings.Contains(document.body, "Exactly seven") {
+			t.Errorf("%s does not state the seven-tool contract", document.name)
 		}
 		if strings.Contains(document.body, "/api/v1/") || strings.Contains(document.body, "get_current_graph") {
 			t.Errorf("%s advertises a retired public v1 interface", document.name)

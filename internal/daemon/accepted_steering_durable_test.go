@@ -69,7 +69,7 @@ func newBlockingSteerFixture(t *testing.T) (*Server, string, task.Task, *blockin
 		t.Fatal(err)
 	}
 	profile := createTestRuntimeProfile(t, server)
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Type: task.TypePentest, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestAcceptedSteeringIsOwnerIsolated(t *testing.T) {
 	}
 	profile := createTestRuntimeProfile(t, server)
 	newTask := func(goal string) task.Task {
-		created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: goal, RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
+		created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Type: task.TypePentest, Goal: goal, RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -491,7 +491,7 @@ func TestAcceptedSteeringTaskFinishSettlesQueuedWithTruthfulOutcome(t *testing.T
 		t.Fatal(err)
 	}
 	profile := createTestRuntimeProfile(t, server)
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: "finish steer", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Type: task.TypePentest, Goal: "finish steer", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -556,7 +556,7 @@ func newBlockingSteerFixtureAt(t *testing.T, root string) (*Server, string, task
 		t.Fatal(err)
 	}
 	profile := createTestRuntimeProfile(t, server)
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Type: task.TypePentest, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -943,7 +943,7 @@ func TestAcceptedSteeringTaskDeletionSettlesQueuedWithTruthfulOutcome(t *testing
 		t.Fatal(err)
 	}
 	profile := createTestRuntimeProfile(t, server)
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Goal: "delete steer", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Type: task.TypePentest, Goal: "delete steer", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatal(err)
 	}

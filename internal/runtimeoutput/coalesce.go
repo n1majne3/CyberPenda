@@ -14,6 +14,8 @@ func CoalesceStreaming(turns []Turn) []Turn {
 		prev := out[len(out)-1]
 		if canMergeStreamingText(prev, turn) {
 			out[len(out)-1] = Turn{
+				SourceID:     prev.SourceID,
+				SourceSeq:    turn.SourceSeq,
 				Kind:         prev.Kind,
 				Role:         prev.Role,
 				Text:         prev.Text + turn.Text,

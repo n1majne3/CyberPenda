@@ -19,7 +19,9 @@ import (
 	"time"
 
 	"pentest/internal/blackboardv2"
+	"pentest/internal/challengeworkflow"
 	"pentest/internal/credential"
+	"pentest/internal/finishreadiness"
 	"pentest/internal/modelprovider"
 	"pentest/internal/preflight"
 	"pentest/internal/project"
@@ -85,6 +87,9 @@ type Config struct {
 	// one-shot Adapter path and native session controls remain unavailable until
 	// a real bridge factory is configured.
 	ProviderSessionFactory ProviderSessionFactory
+	// ChallengePlatforms are explicit protocol adapters keyed by the operator-
+	// visible Platform name. An empty map disables Challenge Workflow calls.
+	ChallengePlatforms map[string]challengeworkflow.PlatformAdapter
 }
 
 type Server struct {
@@ -108,6 +113,8 @@ type Server struct {
 	sessionHarness          *runtime.SessionHarness
 	canonicalStore          string
 	blackboardV2            *blackboardv2.Service
+	challengeWorkflow       *challengeworkflow.Service
+	finishReadiness         *finishreadiness.Service
 	blackboardV2Continuity  *blackboardv2.ContinuityService
 	projectInterfaceGrants  *projectinterface.GrantStore
 	runtimeRoot             string
@@ -273,12 +280,19 @@ func NewServer(config Config) (*Server, error) {
 	server.tasks.SetContinuationTerminalMarker(server.projectInterfaceGrants)
 	server.sessions.SetContinuationTerminalMarker(server.projectInterfaceGrants)
 	server.blackboardV2 = blackboardv2.NewServiceWithEvidence(db, blackboardv2.EvidenceConfig{ArtifactRoot: artifactRoot, RuntimeRoot: runtimeRoot})
+	server.challengeWorkflow = challengeworkflow.NewService(db, server.projects, server.tasks, config.ChallengePlatforms, challengeworkflow.NewBlackboardRecorder(server.blackboardV2, server.tasks, runtimeRoot))
+	server.finishReadiness = finishreadiness.NewService(db, server.tasks)
 	server.tasks.SetContinuationReconciler(server.blackboardV2)
 	server.blackboardV2Continuity = blackboardv2.NewContinuityService(db, server.blackboardV2, server.tasks, runtimeRoot)
 	if err := server.recoverBlackboardV2ContinuationFiles(context.Background()); err != nil {
 		_ = server.Close()
 		return nil, err
 	}
+	challengeRecoveryContext, cancelChallengeRecovery := context.WithTimeout(context.Background(), 2*time.Second)
+	for _, failure := range server.challengeWorkflow.Recover(challengeRecoveryContext) {
+		server.logger.Printf("Challenge operation recovery pending: task=%s operation=%s kind=%s error=%s", failure.TaskID, failure.OperationID, failure.Kind, failure.Error)
+	}
+	cancelChallengeRecovery()
 	server.routes()
 	server.reconcileValidatedBlackboardConclusionApplies()
 	recovery := server.recoverBlackboardConclusionReceipts(context.Background())
@@ -748,6 +762,8 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /api/projects", server.handleCreateProject)
 	server.mux.HandleFunc("GET /api/projects/{id}", server.handleGetProject)
 	server.mux.HandleFunc("PATCH /api/projects/{id}", server.handleUpdateProject)
+	server.mux.HandleFunc("POST /api/projects/{id}/kind-conversion/preview", server.handlePreviewProjectKindConversion)
+	server.mux.HandleFunc("POST /api/projects/{id}/kind-conversion", server.handleConvertProjectKind)
 	server.mux.HandleFunc("GET /api/sessions", server.handleListSessions)
 	server.mux.HandleFunc("POST /api/sessions", server.handleCreateSession)
 	server.mux.HandleFunc("POST /api/sessions/preflight", server.handleSessionPreflight)
@@ -815,6 +831,12 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/timeline/items/{seq}", server.handleTaskTimelineItem)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/stop", server.handleStopTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/finish", server.handleFinishTask)
+	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/finish-readiness", server.handleFinishReadiness)
+	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/challenges/claim", server.handleChallengeClaim)
+	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/challenges", server.handleChallengeAttempts)
+	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/challenges/submit", server.handleChallengeSubmit)
+	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/challenges/abandon", server.handleChallengeAbandon)
+	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/challenges/finalize", server.handleChallengeFinalize)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/blackboard-conclusion/retry", server.handleRetryBlackboardConclusion)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/resume", server.handleResumeTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/steer/queue", server.handleQueueSteerTask)
@@ -860,6 +882,7 @@ func (server *Server) handleCreateProject(response http.ResponseWriter, request 
 	var input struct {
 		Name        string           `json:"name"`
 		Description string           `json:"description"`
+		Kind        string           `json:"kind"`
 		Scope       project.Scope    `json:"scope"`
 		Defaults    project.Defaults `json:"defaults"`
 	}
@@ -868,9 +891,9 @@ func (server *Server) handleCreateProject(response http.ResponseWriter, request 
 		return
 	}
 
-	created, err := server.projects.Create(input.Name, input.Description, input.Scope, input.Defaults)
+	created, err := server.projects.CreateWithKind(input.Name, input.Description, input.Kind, input.Scope, input.Defaults)
 	if err != nil {
-		if errors.Is(err, project.ErrMissingName) {
+		if errors.Is(err, project.ErrMissingName) || errors.Is(err, project.ErrInvalidKind) {
 			writeError(response, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -915,6 +938,68 @@ func (server *Server) handleGetProject(response http.ResponseWriter, request *ht
 	}
 
 	writeJSON(response, http.StatusOK, found)
+}
+
+func (server *Server) handlePreviewProjectKindConversion(response http.ResponseWriter, request *http.Request) {
+	var input struct {
+		TargetKind string `json:"target_kind"`
+	}
+	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	preview, err := server.projects.PreviewKindConversion(request.PathValue("id"), input.TargetKind)
+	if errors.Is(err, project.ErrNotFound) {
+		writeError(response, http.StatusNotFound, err.Error())
+		return
+	}
+	if errors.Is(err, project.ErrInvalidKind) {
+		writeError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "preview Project Kind Conversion")
+		return
+	}
+	writeJSON(response, http.StatusOK, preview)
+}
+
+func (server *Server) handleConvertProjectKind(response http.ResponseWriter, request *http.Request) {
+	var input struct {
+		TargetKind string `json:"target_kind"`
+		Confirm    bool   `json:"confirm"`
+	}
+	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if !input.Confirm {
+		writeError(response, http.StatusBadRequest, "Project Kind Conversion requires confirmation")
+		return
+	}
+	converted, err := server.projects.ConvertKind(request.PathValue("id"), input.TargetKind)
+	if errors.Is(err, project.ErrNotFound) {
+		writeError(response, http.StatusNotFound, err.Error())
+		return
+	}
+	if errors.Is(err, project.ErrInvalidKind) {
+		writeError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	if errors.Is(err, project.ErrKindConversionBlocked) {
+		preview, previewErr := server.projects.PreviewKindConversion(request.PathValue("id"), input.TargetKind)
+		if previewErr != nil {
+			writeError(response, http.StatusConflict, err.Error())
+			return
+		}
+		writeJSON(response, http.StatusConflict, preview)
+		return
+	}
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "convert Project Kind")
+		return
+	}
+	writeJSON(response, http.StatusOK, converted)
 }
 
 func (server *Server) handleUpdateProject(response http.ResponseWriter, request *http.Request) {
@@ -1304,6 +1389,8 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 		CredentialRefsToResolve: input.CredentialRefsToResolve,
 		Runner:                  string(defaulted.runner),
 		HostActivated:           hostActivated,
+		ProjectKind:             defaulted.project.Kind,
+		ScopeCapabilities:       append([]string(nil), defaulted.project.Scope.Capabilities...),
 	})
 	server.logPreflightCustomArgConflict(defaulted.runtimeProfileID, result)
 

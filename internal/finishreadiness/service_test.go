@@ -1,0 +1,127 @@
+package finishreadiness_test
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"pentest/internal/blackboardv2"
+	"pentest/internal/challengeworkflow"
+	"pentest/internal/finishreadiness"
+	"pentest/internal/project"
+	"pentest/internal/store"
+	"pentest/internal/task"
+)
+
+type adapter struct{}
+
+func (adapter) Claim(_ context.Context, request challengeworkflow.PlatformClaimRequest) (challengeworkflow.PlatformClaimResponse, error) {
+	return challengeworkflow.PlatformClaimResponse{ExternalAttemptID: "42", ChallengeID: request.ChallengeID, Summary: "claimed"}, nil
+}
+func (adapter) Submit(_ context.Context, request challengeworkflow.PlatformSubmitRequest) (challengeworkflow.PlatformSubmitResponse, error) {
+	return challengeworkflow.PlatformSubmitResponse{Accepted: true, Summary: "accepted"}, nil
+}
+func (adapter) Abandon(context.Context, challengeworkflow.PlatformAbandonRequest) (challengeworkflow.PlatformAbandonResponse, error) {
+	return challengeworkflow.PlatformAbandonResponse{Summary: "abandoned"}, nil
+}
+func (adapter) Finalize(context.Context, challengeworkflow.PlatformFinalizeRequest) (challengeworkflow.PlatformFinalizeResponse, error) {
+	return challengeworkflow.PlatformFinalizeResponse{Summary: "finalized"}, nil
+}
+
+type noOpRecorder struct{}
+
+func (noOpRecorder) RecordClaim(context.Context, challengeworkflow.RecordClaimRequest) error {
+	return nil
+}
+func (noOpRecorder) RecordSubmission(context.Context, challengeworkflow.RecordSubmissionRequest) error {
+	return nil
+}
+func (noOpRecorder) RecordAbandon(context.Context, challengeworkflow.RecordAbandonRequest) error {
+	return nil
+}
+func (noOpRecorder) RecordFinalize(context.Context, challengeworkflow.RecordFinalizeRequest) error {
+	return nil
+}
+
+func fixture(t *testing.T) (*store.DB, *project.Service, *task.Service, project.Project, task.Task, string) {
+	t.Helper()
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "db.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	projects := project.NewService(db)
+	proj, err := projects.CreateWithKind("Arena", "", project.KindCTFChallenge, project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewService(db, projects)
+	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypeCTFChallenge, Goal: "solve", Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.CreateContinuation(created.ID, "profile", "codex", task.RunnerSandbox); err != nil {
+		t.Fatal(err)
+	}
+	return db, projects, tasks, proj, created, root
+}
+
+func TestReadinessReportsOpenWorkflowAndMissingEvidence(t *testing.T) {
+	db, projects, tasks, proj, created, _ := fixture(t)
+	workflow := challengeworkflow.NewService(db, projects, tasks, map[string]challengeworkflow.PlatformAdapter{"arena": adapter{}}, noOpRecorder{})
+	if _, err := workflow.Claim(context.Background(), challengeworkflow.ClaimRequest{ProjectID: proj.ID, TaskID: created.ID, Platform: "arena", OperationID: "claim-1", ChallengeID: "3121"}); err != nil {
+		t.Fatal(err)
+	}
+	readiness, err := finishreadiness.NewService(db, tasks).Evaluate(context.Background(), proj.ID, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readiness.ReadyToFinish {
+		t.Fatalf("expected blockers, got %#v", readiness)
+	}
+	if !hasCode(readiness, finishreadiness.BlockerOpenChallengeAttempts) || !hasCode(readiness, finishreadiness.BlockerMissingChallengeEvidence) {
+		t.Fatalf("blockers = %#v", readiness.Blockers)
+	}
+}
+
+func TestReadinessIsReadyAfterAcceptedWorkflow(t *testing.T) {
+	db, projects, tasks, proj, created, root := fixture(t)
+	runtimeRoot := filepath.Join(root, "runtime")
+	if err := os.MkdirAll(filepath.Join(runtimeRoot, created.ID, "workdir"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	artifactRoot := filepath.Join(root, "artifacts")
+	if err := os.MkdirAll(artifactRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	blackboard := blackboardv2.NewServiceWithEvidence(db, blackboardv2.EvidenceConfig{RuntimeRoot: runtimeRoot, ArtifactRoot: artifactRoot})
+	workflow := challengeworkflow.NewService(db, projects, tasks, map[string]challengeworkflow.PlatformAdapter{"arena": adapter{}}, challengeworkflow.NewBlackboardRecorder(blackboard, tasks, runtimeRoot))
+	claim, err := workflow.Claim(context.Background(), challengeworkflow.ClaimRequest{ProjectID: proj.ID, TaskID: created.ID, Platform: "arena", OperationID: "claim-ready", ChallengeID: "3121"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workflow.Submit(context.Background(), challengeworkflow.SubmitRequest{ProjectID: proj.ID, TaskID: created.ID, Platform: "arena", OperationID: "submit-ready", ExternalAttemptID: claim.ExternalAttemptID, Candidate: "FLAG{ok}"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workflow.Finalize(context.Background(), challengeworkflow.FinalizeRequest{ProjectID: proj.ID, TaskID: created.ID, Platform: "arena", OperationID: "finalize-ready", ExternalAttemptID: claim.ExternalAttemptID}); err != nil {
+		t.Fatal(err)
+	}
+	readiness, err := finishreadiness.NewService(db, tasks).Evaluate(context.Background(), proj.ID, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !readiness.ReadyToFinish {
+		t.Fatalf("unexpected blockers: %#v", readiness.Blockers)
+	}
+}
+
+func hasCode(readiness finishreadiness.Readiness, code string) bool {
+	for _, blocker := range readiness.Blockers {
+		if blocker.Code == code {
+			return true
+		}
+	}
+	return false
+}

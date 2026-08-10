@@ -58,6 +58,41 @@ func TestDecodeAndCompileNewAttemptAgainstCreatedObjective(t *testing.T) {
 	}
 }
 
+func TestDecodeAndCompilePreservesProjectBlackboardKeyStyle(t *testing.T) {
+	raw := []byte(`{
+		"schema":"runtime-attempt-result/v1",
+		"base_revision":12,
+		"attempt":{
+			"key":"attempt/3124",
+			"create":true,
+			"summary":"Recorded the current challenge work without changing its Blackboard Key style.",
+			"outcome":"inconclusive"
+		},
+		"tested_targets":[{
+			"key":"objective/solve-nssctf-arena",
+			"expected_version":3
+		}],
+		"produced_targets":[]
+	}`)
+
+	validated, err := blackboardconclusion.Decode(raw)
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	batch, err := blackboardconclusion.Compile(validated.Result, "assisted-conclusion:preserve-key-style")
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	want := []blackboardv2.Change{
+		{Op: "create", Key: "attempt/3124", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Recorded the current challenge work without changing its Blackboard Key style."}},
+		{Op: "relate", From: "attempt/3124", Relation: "tests", To: "objective/solve-nssctf-arena"},
+		{Op: "transition", Key: "attempt/3124", Version: 1, Status: "inconclusive", Summary: "Recorded the current challenge work without changing its Blackboard Key style."},
+	}
+	if !reflect.DeepEqual(batch.Changes, want) {
+		t.Fatalf("Compile().Changes = %#v, want %#v", batch.Changes, want)
+	}
+}
+
 func TestDecodeRejectsAuthorityLifecycleAndInvalidAttemptFields(t *testing.T) {
 	valid := `{"schema":"runtime-attempt-result/v1","base_revision":2,"attempt":{"key":"attempt:search","expected_version":1,"summary":"Tested the search endpoint.","outcome":"failed"},"tested_targets":[{"key":"entity:search","expected_version":1}],"produced_targets":[]}`
 	for _, field := range []string{"project_id", "task_id", "continuation_id", "trusted_origin", "idempotency_key", "credential_ref", "api_key", "task_status", "finish", "blackboard_finish"} {
@@ -175,7 +210,7 @@ func TestDecodeValidationDetailIsBounded(t *testing.T) {
 	}{
 		{name: "empty result", raw: ``, reason: blackboardconclusion.ValidationReasonEmptyResult},
 		{name: "oversized result", raw: strings.Repeat("x", (64<<10)+1), reason: blackboardconclusion.ValidationReasonResultTooLarge},
-		{name: "attempt key without prefix", raw: strings.Replace(valid, `"key":"attempt:search"`, `"key":"attempt/search"`, 1), reason: blackboardconclusion.ValidationReasonInvalidKeyFormat, fieldPath: "attempt.key", expected: "attempt: prefix"},
+		{name: "empty attempt key", raw: strings.Replace(valid, `"key":"attempt:search"`, `"key":""`, 1), reason: blackboardconclusion.ValidationReasonRuleViolation, fieldPath: "attempt.key", expected: "non-empty"},
 		{name: "unknown top-level field", raw: strings.Replace(valid, `"schema":`, `"surprise":true,"schema":`, 1), reason: blackboardconclusion.ValidationReasonUnknownField, fieldPath: "surprise"},
 		{name: "unknown nested field", raw: strings.Replace(valid, `"summary":`, `"surprise":true,"summary":`, 1), reason: blackboardconclusion.ValidationReasonUnknownField, fieldPath: "surprise"},
 		{name: "invalid enum", raw: strings.Replace(valid, `"outcome":"failed"`, `"outcome":"interrupted"`, 1), reason: blackboardconclusion.ValidationReasonInvalidEnumValue, fieldPath: "attempt.outcome", expected: "succeeded, failed, blocked, or inconclusive"},

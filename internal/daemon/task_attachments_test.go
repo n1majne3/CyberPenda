@@ -138,7 +138,7 @@ func assertFileContents(t *testing.T, path, want string) {
 }
 
 func TestParseCreateTaskRequestJSON(t *testing.T) {
-	body := `{"goal":"enumerate","runner":"host"}`
+	body := `{"type":"pentest","goal":"enumerate","runner":"host"}`
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/p1/tasks", bytes.NewReader([]byte(body)))
 	request.Header.Set("Content-Type", "application/json")
 	input, attachments, err := parseCreateTaskRequest(request)
@@ -156,7 +156,7 @@ func TestParseCreateTaskRequestJSON(t *testing.T) {
 func TestParseCreateTaskRequestMultipart(t *testing.T) {
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
-	if err := writer.WriteField("payload", `{"goal":"scan","runner":"sandbox"}`); err != nil {
+	if err := writer.WriteField("payload", `{"type":"pentest","goal":"scan","runner":"sandbox"}`); err != nil {
 		t.Fatalf("write payload: %v", err)
 	}
 	part, err := writer.CreateFormFile("attachments", "scope.txt")

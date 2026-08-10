@@ -50,6 +50,29 @@ type RunControls struct {
 	Notes                    string                   `json:"notes,omitempty"`
 	Extras                   map[string]string        `json:"extras,omitempty"`
 	BlackboardConclusionMode BlackboardConclusionMode `json:"blackboard_conclusion_mode"`
+	// Policy is the immutable Task Policy Snapshot captured at Task creation.
+	// A zero value disables that limit.
+	Policy TaskPolicy `json:"policy"`
+}
+
+// TaskPolicy defines machine-enforced stop conditions for one Task.
+// Each positive value enables its limit. A zero value means no limit.
+type TaskPolicy struct {
+	MaxAttempts            int `json:"max_attempts,omitempty"`
+	MaxWrongSubmissions    int `json:"max_wrong_submissions,omitempty"`
+	MaxWallTimeSeconds     int `json:"max_wall_time_seconds,omitempty"`
+	MaxConsecutiveFailures int `json:"max_consecutive_failures,omitempty"`
+	MaxRatingDrawdown      int `json:"max_rating_drawdown,omitempty"`
+	MaxNoProgressSeconds   int `json:"max_no_progress_seconds,omitempty"`
+}
+
+func (policy TaskPolicy) validate() error {
+	if policy.MaxAttempts < 0 || policy.MaxWrongSubmissions < 0 ||
+		policy.MaxWallTimeSeconds < 0 || policy.MaxConsecutiveFailures < 0 ||
+		policy.MaxRatingDrawdown < 0 || policy.MaxNoProgressSeconds < 0 {
+		return ErrInvalidTaskPolicy
+	}
+	return nil
 }
 
 // BlackboardConclusionMode selects whether the operator alone prompts the
@@ -439,6 +462,7 @@ type RuntimeActivity struct {
 type Task struct {
 	ID               string          `json:"id"`
 	ProjectID        string          `json:"project_id"`
+	Type             Type            `json:"type"`
 	Goal             string          `json:"goal"`
 	Status           Status          `json:"status"`
 	Runner           Runner          `json:"runner"`
@@ -465,6 +489,7 @@ func (t Task) OwnerContract(workdir string) owner.Contract {
 // CreateRequest is the input to Service.Create.
 type CreateRequest struct {
 	ProjectID        string
+	Type             Type
 	Goal             string
 	RuntimeProfileID string
 	Runner           Runner
@@ -488,7 +513,21 @@ var ErrActiveTask = errors.New("active task cannot be deleted")
 // ErrUnsupportedRunner is returned when the runner is neither sandbox nor host.
 var ErrUnsupportedRunner = errors.New("runner must be sandbox or host")
 
+// Type is the immutable Task semantic classification captured at Task Launch.
+type Type string
+
+const (
+	TypePentest      Type = "pentest"
+	TypeCTFChallenge Type = "ctf_challenge"
+)
+
+var ErrInvalidTaskType = errors.New("Task Type must be pentest or ctf_challenge")
+
+var ErrTaskTypeProjectKindMismatch = errors.New("Task Type must match the current Project Kind")
+
 var ErrInvalidBlackboardConclusionMode = errors.New("Blackboard conclusion mode must be interactive or assisted")
+
+var ErrInvalidTaskPolicy = errors.New("Task Policy limits must be zero or positive")
 
 var ErrInvalidBlackboardConclusionReceipt = errors.New("invalid Blackboard conclusion checkpoint receipt")
 
@@ -581,11 +620,15 @@ func (s *Service) Create(req CreateRequest) (Task, error) {
 		return Task{}, err
 	}
 	req.RunControls.BlackboardConclusionMode = mode
+	if err := req.RunControls.Policy.validate(); err != nil {
+		return Task{}, err
+	}
 
 	// Capture the scope snapshot from the live project. If a project service is
 	// wired, read it; otherwise the snapshot is empty (caller is responsible for
 	// providing scope out-of-band, e.g. the HTTP layer).
 	var snapshot ScopeSnapshot
+	var projectKind string
 	if s.projects != nil {
 		proj, err := s.projects.Get(req.ProjectID)
 		if err != nil {
@@ -595,12 +638,20 @@ func (s *Service) Create(req CreateRequest) (Task, error) {
 			return Task{}, fmt.Errorf("read project scope: %w", err)
 		}
 		snapshot = proj.Scope
+		projectKind = proj.Kind
+	}
+	if req.Type != TypePentest && req.Type != TypeCTFChallenge {
+		return Task{}, ErrInvalidTaskType
+	}
+	if projectKind != "" && string(req.Type) != projectKind {
+		return Task{}, ErrTaskTypeProjectKindMismatch
 	}
 
 	now := time.Now().UTC()
 	created := Task{
 		ID:                   newID(),
 		ProjectID:            req.ProjectID,
+		Type:                 req.Type,
 		Goal:                 req.Goal,
 		Status:               StatusPending,
 		Runner:               req.Runner,
@@ -622,9 +673,9 @@ func (s *Service) Create(req CreateRequest) (Task, error) {
 	}
 
 	_, err = s.db.Exec(
-		`INSERT INTO tasks (id, project_id, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		created.ID, created.ProjectID, created.Goal, string(created.Status), string(created.Runner),
+		`INSERT INTO tasks (id, project_id, task_type, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		created.ID, created.ProjectID, string(created.Type), created.Goal, string(created.Status), string(created.Runner),
 		created.RuntimeProfileID, string(runControlsJSON), string(scopeJSON),
 		created.CreatedAt.Format(time.RFC3339Nano), created.UpdatedAt.Format(time.RFC3339Nano),
 	)
@@ -637,7 +688,7 @@ func (s *Service) Create(req CreateRequest) (Task, error) {
 // Get loads a single task by id.
 func (s *Service) Get(id string) (Task, error) {
 	return scanTask(s.db.QueryRow(
-		`SELECT id, project_id, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at FROM tasks WHERE id = ? AND deleted_at = ''`,
+		`SELECT id, project_id, task_type, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at FROM tasks WHERE id = ? AND deleted_at = ''`,
 		id,
 	))
 }
@@ -645,7 +696,7 @@ func (s *Service) Get(id string) (Task, error) {
 // ListForProject returns tasks for a project ordered by creation time.
 func (s *Service) ListForProject(projectID string) ([]Task, error) {
 	rows, err := s.db.Query(
-		`SELECT id, project_id, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at
+		`SELECT id, project_id, task_type, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at
 		 FROM tasks WHERE project_id = ? AND deleted_at = '' ORDER BY created_at ASC`,
 		projectID,
 	)
@@ -670,7 +721,7 @@ func (s *Service) ListForProject(projectID string) ([]Task, error) {
 
 // taskSelectColumns lists the columns scanned by the shared Task projections.
 // Keep it in sync with the table columns used by scanTask.
-const taskSelectColumns = `id, project_id, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at`
+const taskSelectColumns = `id, project_id, task_type, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at`
 
 // recentPerProjectSQL builds the bounded per-Project recent Task query. The
 // exclusion placeholders keep busy Tasks out of the ordinary summary; the
@@ -801,7 +852,7 @@ func scanTask(row scanner) (Task, error) {
 	var createdAt string
 	var updatedAt string
 
-	err := row.Scan(&found.ID, &found.ProjectID, &found.Goal, &status, &runner, &found.RuntimeProfileID, &runControlsJSON, &scopeJSON, &createdAt, &updatedAt)
+	err := row.Scan(&found.ID, &found.ProjectID, &found.Type, &found.Goal, &status, &runner, &found.RuntimeProfileID, &runControlsJSON, &scopeJSON, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Task{}, ErrNotFound
 	}
@@ -948,6 +999,154 @@ func (s *Service) Events(taskID string) ([]Event, error) {
 	}
 	defer rows.Close()
 
+	return scanEvents(rows)
+}
+
+// EventProjection selects the event kinds needed by one Runtime Owner history
+// projection. This keeps SQL work bounded without loading unrelated history.
+type EventProjection string
+
+const (
+	EventProjectionTimeline   EventProjection = "timeline"
+	EventProjectionTranscript EventProjection = "transcript"
+)
+
+// EventWindowQuery is one bounded keyset read. Before and After are exclusive;
+// zero means the initial recent window.
+type EventWindowQuery struct {
+	Projection EventProjection
+	BeforeSet  bool
+	Before     int
+	AfterSet   bool
+	After      int
+	Limit      int
+}
+
+// EventWindow is an ordered bounded event slice plus projection cursor state.
+type EventWindow struct {
+	Events                 []Event
+	Cursor                 int
+	HasOlder               bool
+	HasNewer               bool
+	ScanCursor             int
+	PriorContinuation      int
+	PriorTranscriptAdapter string
+}
+
+// HistoryEventWindow reads only event kinds used by the selected projection.
+// Query work is bounded by Limit plus one row, independent of full Task history.
+func (s *Service) HistoryEventWindow(taskID string, query EventWindowQuery) (EventWindow, error) {
+	if _, err := s.Get(taskID); err != nil {
+		return EventWindow{}, err
+	}
+	if query.Limit < 1 || query.Before < 0 || query.After < 0 || (query.BeforeSet && query.AfterSet) {
+		return EventWindow{}, fmt.Errorf("invalid Task Event window query")
+	}
+	kinds := "('runtime_output','lifecycle','steering','attachment','blackboard_conclusion')"
+	if query.Projection == EventProjectionTranscript {
+		kinds = "('conversation','runtime_output','lifecycle','steering')"
+	} else if query.Projection != EventProjectionTimeline {
+		return EventWindow{}, fmt.Errorf("invalid Task Event projection")
+	}
+	var cursor int
+	if err := s.db.QueryRow(`SELECT COALESCE(MAX(seq),0) FROM task_events WHERE task_id=? AND kind IN `+kinds, taskID).Scan(&cursor); err != nil {
+		return EventWindow{}, fmt.Errorf("read Task Event projection cursor: %w", err)
+	}
+	order := "DESC"
+	predicate := ""
+	args := []any{taskID}
+	if query.BeforeSet {
+		predicate = " AND seq < ?"
+		args = append(args, query.Before)
+	} else if query.AfterSet {
+		predicate = " AND seq > ?"
+		args = append(args, query.After)
+		order = "ASC"
+	}
+	args = append(args, query.Limit+1)
+	rows, err := s.db.Query(
+		`SELECT id,task_id,continuation_id,attempt_node_id,seq,kind,payload_json,created_at
+		 FROM task_events WHERE task_id=? AND kind IN `+kinds+predicate+` ORDER BY seq `+order+` LIMIT ?`, args...,
+	)
+	if err != nil {
+		return EventWindow{}, fmt.Errorf("list Task Event window: %w", err)
+	}
+	defer rows.Close()
+	events, err := scanEvents(rows)
+	if err != nil {
+		return EventWindow{}, err
+	}
+	hasOlder := false
+	if order == "DESC" {
+		if len(events) > query.Limit {
+			hasOlder = true
+			events = events[:query.Limit]
+		}
+		for left, right := 0, len(events)-1; left < right; left, right = left+1, right-1 {
+			events[left], events[right] = events[right], events[left]
+		}
+	} else if len(events) > query.Limit {
+		events = events[:query.Limit]
+	}
+	hasNewer := order == "ASC" && len(events) == query.Limit && scanCursorLessThanProjectionTail(events, cursor)
+	scanCursor := query.After
+	if len(events) > 0 {
+		scanCursor = events[len(events)-1].Seq
+	}
+	window := EventWindow{Events: events, Cursor: cursor, HasOlder: hasOlder, HasNewer: hasNewer, ScanCursor: scanCursor}
+	if query.Projection == EventProjectionTranscript && len(events) > 0 {
+		if err := s.readTranscriptContextBefore(taskID, events[0].Seq, &window); err != nil {
+			return EventWindow{}, err
+		}
+	}
+	return window, nil
+}
+
+func (s *Service) readTranscriptContextBefore(taskID string, seq int, window *EventWindow) error {
+	var continuationID string
+	err := s.db.QueryRow(`
+		SELECT COALESCE(continuation_id,''),COALESCE(json_extract(payload_json,'$.adapter'),'') FROM task_events
+		WHERE task_id=? AND seq<? AND kind='lifecycle'
+		  AND json_extract(payload_json,'$.phase')='started'
+		ORDER BY seq DESC LIMIT 1`, taskID, seq,
+	).Scan(&continuationID, &window.PriorTranscriptAdapter)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read Task Transcript context: %w", err)
+	}
+	if continuationID != "" {
+		var provider string
+		err = s.db.QueryRow(`SELECT number,runtime_provider FROM task_continuations WHERE id=? AND task_id=?`, continuationID, taskID).
+			Scan(&window.PriorContinuation, &provider)
+		if err == nil {
+			if provider != "" {
+				window.PriorTranscriptAdapter = provider
+			}
+			return nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("read Task Transcript Continuation pin: %w", err)
+		}
+	}
+	// Legacy lifecycle Events can predate durable Continuation pins. Preserve
+	// their historical numbering with the old count only on that fallback path.
+	if err := s.db.QueryRow(`
+		SELECT COUNT(*) FROM task_events
+		WHERE task_id=? AND seq<? AND kind='lifecycle'
+		  AND json_extract(payload_json,'$.phase')='started'`, taskID, seq,
+	).Scan(&window.PriorContinuation); err != nil {
+		return fmt.Errorf("read legacy Task Transcript Continuation context: %w", err)
+	}
+	return nil
+}
+
+func scanCursorLessThanProjectionTail(events []Event, cursor int) bool {
+	return len(events) > 0 && events[len(events)-1].Seq < cursor
+}
+
+func scanEvents(rows *sql.Rows) ([]Event, error) {
 	var events []Event
 	for rows.Next() {
 		var event Event
@@ -965,8 +1164,9 @@ func (s *Service) Events(taskID string) ([]Event, error) {
 		if err := json.Unmarshal([]byte(payloadJSON), &event.Payload); err != nil {
 			return nil, fmt.Errorf("decode event payload: %w", err)
 		}
-		if event.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt); err != nil {
-			return nil, fmt.Errorf("parse created_at: %w", err)
+		var parseErr error
+		if event.CreatedAt, parseErr = time.Parse(time.RFC3339Nano, createdAt); parseErr != nil {
+			return nil, fmt.Errorf("parse created_at: %w", parseErr)
 		}
 		events = append(events, event)
 	}
@@ -1073,6 +1273,10 @@ type ContinuationLaunchRequest struct {
 	Runner           Runner
 	RuntimeConfig    map[string]any
 	SteeringEventIDs []string
+	// Native session metadata may cross a replacement Continuation boundary;
+	// ContainerID may not, because the prior Runtime has already been proven absent.
+	NativeSessionID   string
+	NativeSessionPath string
 }
 
 // CreateContinuationLaunchTx stores the runtime configuration version and its
@@ -1131,6 +1335,7 @@ func (s *Service) CreateContinuationLaunchTx(ctx context.Context, tx *sql.Tx, re
 		RuntimeConfigVersionID: config.ID,
 		ID:                     newID(), TaskID: req.TaskID, RuntimeProfileID: req.RuntimeProfileID,
 		RuntimeProvider: req.RuntimeProvider, Runner: req.Runner,
+		NativeSessionID: strings.TrimSpace(req.NativeSessionID), NativeSessionPath: strings.TrimSpace(req.NativeSessionPath),
 		Status: StatusPending, BlackboardReconciliationStatus: ReconciliationPending,
 		StartedAt: now, UpdatedAt: now,
 	}
@@ -1141,9 +1346,10 @@ func (s *Service) CreateContinuationLaunchTx(ctx context.Context, tx *sql.Tx, re
 	continuation.Number = int(maxContinuationNumber.Int64) + 1
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO task_continuations (id,task_id,number,runtime_profile_id,runtime_provider,runner,status,container_id,native_session_id,native_session_path,started_at,updated_at,ended_at,runtime_config_version_id,blackboard_reconciliation_status)
-		 VALUES (?,?,?,?,?,?,?,'','','',?,?,'',?,?)`,
+		 VALUES (?,?,?,?,?,?,?,'',?,?,?,?,'',?,?)`,
 		continuation.ID, continuation.TaskID, continuation.Number, continuation.RuntimeProfileID,
 		continuation.RuntimeProvider, string(continuation.Runner), string(continuation.Status),
+		continuation.NativeSessionID, continuation.NativeSessionPath,
 		continuation.StartedAt.Format(time.RFC3339Nano), continuation.UpdatedAt.Format(time.RFC3339Nano),
 		continuation.RuntimeConfigVersionID, string(continuation.BlackboardReconciliationStatus),
 	); err != nil {
@@ -1673,7 +1879,7 @@ func (s *Service) ReconcileInterruptedStateExcept(ownedTaskIDs []string) (Reconc
 		}
 	}
 	rows, err := s.db.Query(
-		`SELECT id, project_id, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at
+		`SELECT id, project_id, task_type, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at
 		 FROM tasks WHERE status IN (?, ?, ?)`,
 		string(StatusRunning), string(StatusPending), string(StatusPaused))
 	if err != nil {

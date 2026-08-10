@@ -21,10 +21,11 @@ export function mergeTimelineItems(existing: TaskTimelineItem[], delta: TaskTime
   // Drop stale overlap (Seq <= existing max) and in-delta duplicates alike.
   const maxSeq = Math.max(...existing.map((item) => item.seq));
   const appended: TaskTimelineItem[] = [];
-  const seen = new Set<number>();
+  const seen = new Set(existing.map(timelineItemIdentity));
   for (const item of delta) {
-    if (item.seq <= maxSeq || seen.has(item.seq)) continue;
-    seen.add(item.seq);
+    const identity = timelineItemIdentity(item);
+    if (item.seq <= maxSeq || seen.has(identity)) continue;
+    seen.add(identity);
     appended.push(item);
   }
   if (appended.length === 0) return existing;
@@ -57,9 +58,14 @@ export function prependTimelineItems(existing: TaskTimelineItem[], page: TaskTim
   if (page.length === 0) return existing;
   if (existing.length === 0) return page;
   const headSeq = existing[0]!.seq;
-  const older = page.filter((item) => item.seq < headSeq);
+  const seen = new Set(existing.map(timelineItemIdentity));
+  const older = page.filter((item) => item.seq < headSeq && !seen.has(timelineItemIdentity(item)));
   if (older.length === 0) return existing;
   return [...older, ...existing];
+}
+
+export function timelineItemIdentity(item: TaskTimelineItem): string {
+  return item.id ?? `legacy-seq-${item.seq}`;
 }
 
 /**

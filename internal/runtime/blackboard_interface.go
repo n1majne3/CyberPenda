@@ -15,19 +15,21 @@ const TrustedProjectInterfaceServerName = "pentest"
 type BlackboardOperation string
 
 const (
-	BlackboardOperationChange            BlackboardOperation = "blackboard_change"
-	BlackboardOperationRead              BlackboardOperation = "blackboard_read"
-	BlackboardOperationHistory           BlackboardOperation = "blackboard_history"
-	BlackboardOperationRetainEvidence    BlackboardOperation = "blackboard_retain_evidence"
-	BlackboardOperationCheckpointAttempt BlackboardOperation = "blackboard_checkpoint_attempt"
-	BlackboardOperationFinish            BlackboardOperation = "blackboard_finish"
+	BlackboardOperationChange              BlackboardOperation = "blackboard_change"
+	BlackboardOperationRecordAttemptResult BlackboardOperation = "blackboard_record_attempt_result"
+	BlackboardOperationRead                BlackboardOperation = "blackboard_read"
+	BlackboardOperationHistory             BlackboardOperation = "blackboard_history"
+	BlackboardOperationRetainEvidence      BlackboardOperation = "blackboard_retain_evidence"
+	BlackboardOperationCheckpointAttempt   BlackboardOperation = "blackboard_checkpoint_attempt"
+	BlackboardOperationFinish              BlackboardOperation = "blackboard_finish"
 )
 
-// TrustedProjectInterfaceOperations returns the six canonical Blackboard
+// TrustedProjectInterfaceOperations returns the seven canonical Blackboard
 // operations of the trusted Project Interface in registration order.
 func TrustedProjectInterfaceOperations() []BlackboardOperation {
 	return []BlackboardOperation{
 		BlackboardOperationChange,
+		BlackboardOperationRecordAttemptResult,
 		BlackboardOperationRead,
 		BlackboardOperationHistory,
 		BlackboardOperationRetainEvidence,
@@ -74,7 +76,7 @@ func isRegisteredBlackboardOperation(op BlackboardOperation) bool {
 // non-covering behavior.
 func (op BlackboardOperation) CoversSourceWork() bool {
 	switch op {
-	case BlackboardOperationChange, BlackboardOperationCheckpointAttempt, BlackboardOperationFinish:
+	case BlackboardOperationChange, BlackboardOperationRecordAttemptResult, BlackboardOperationCheckpointAttempt, BlackboardOperationFinish:
 		return true
 	default:
 		return false

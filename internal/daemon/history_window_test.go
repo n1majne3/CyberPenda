@@ -50,7 +50,7 @@ func newHistoryWindowFixture(t *testing.T) (*Server, string, string) {
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "history window", Runner: task.RunnerSandbox,
+		ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "history window", Runner: task.RunnerSandbox,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +174,7 @@ func TestTaskHistoryWindowIsBoundedByItemCount(t *testing.T) {
 	}
 
 	transcriptTask, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectID, Goal: "transcript count", Runner: task.RunnerSandbox,
+		ProjectID: projectID, Type: task.TypePentest, Goal: "transcript count", Runner: task.RunnerSandbox,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -189,6 +189,77 @@ func TestTaskHistoryWindowIsBoundedByItemCount(t *testing.T) {
 	}
 	if transcriptWindow.Cursor != 300 {
 		t.Fatalf("transcript cursor = %d, want full projection max 300", transcriptWindow.Cursor)
+	}
+}
+
+func TestTaskTimelineWindowScansPastInvisibleRecentEventChunk(t *testing.T) {
+	server, projectID, taskID := newHistoryWindowFixture(t)
+	if _, err := server.tasks.AppendEvent(taskID, task.EventKindLifecycle, task.EventPayload{"phase": "visible-old-event"}); err != nil {
+		t.Fatal(err)
+	}
+	ignored := `{"type":"system","subtype":"task_progress","description":"internal"}`
+	for index := 0; index < historyEventQueryLimit+1; index++ {
+		if _, err := server.tasks.AppendEvent(taskID, task.EventKindRuntimeOutput, task.EventPayload{"text": ignored}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	window := getHistoryURL(t, server, "/api/projects/"+projectID+"/tasks/"+taskID+"/timeline")
+	if len(window.Items) != 1 || !strings.Contains(window.Items[0].Content, "visible-old-event") {
+		t.Fatalf("Timeline window = %#v, want the visible item behind an invisible database chunk", window)
+	}
+	if window.HasOlder {
+		t.Fatalf("Timeline window has_older=true after reaching the oldest visible item: %#v", window)
+	}
+}
+
+func TestTaskTranscriptResumeWindowKeepsContinuationContextAndHidesProviderUserText(t *testing.T) {
+	server, projectID, taskID := newHistoryWindowFixture(t)
+	first, err := server.tasks.CreateContinuation(taskID, "profile-1", "claude_code", task.RunnerSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendEvent := func(continuationID string, kind task.EventKind, payload task.EventPayload) {
+		t.Helper()
+		if _, err := server.tasks.AppendContinuationEvent(taskID, continuationID, kind, payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendEvent(first.ID, task.EventKindLifecycle, task.EventPayload{"phase": "started", "adapter": "claude_code"})
+	appendEvent(first.ID, task.EventKindRuntimeOutput, task.EventPayload{
+		"text": `{"type":"assistant","message":{"content":[{"type":"text","text":"First Continuation"}]}}`,
+	})
+	appendEvent(first.ID, task.EventKindLifecycle, task.EventPayload{"phase": "failed"})
+	second, err := server.tasks.CreateReplacementContinuation(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendEvent(second.ID, task.EventKindLifecycle, task.EventPayload{"phase": "started", "adapter": "claude_code"})
+	appendEvent(second.ID, task.EventKindRuntimeOutput, task.EventPayload{
+		"text": `{"type":"user","message":{"content":[{"type":"text","text":"internal resumed Skill prompt"}]}}`,
+	})
+	appendEvent(second.ID, task.EventKindRuntimeOutput, task.EventPayload{
+		"text": `{"type":"assistant","message":{"content":[{"type":"text","text":"Resumed work"}]}}`,
+	})
+
+	base := "/api/projects/" + projectID + "/tasks/" + taskID + "/transcript"
+	boundary := getHistoryURL(t, server, base+"?after=3")
+	if len(boundary.Entries) != 2 {
+		t.Fatalf("resume boundary entries = %#v, want one Continuation row and one assistant message", boundary.Entries)
+	}
+	if got := boundary.Entries[0]; got.Kind != transcript.KindContinuation || got.Continuation != 2 || got.Text != "Continuation #2 started with claude_code" {
+		t.Fatalf("resume boundary = %#v, want absolute Continuation #2", got)
+	}
+	if got := boundary.Entries[1]; got.Kind != transcript.KindMessage || got.Role != transcript.RoleAssistant || got.Continuation != 2 || got.Text != "Resumed work" {
+		t.Fatalf("resumed assistant entry = %#v, want parsed Continuation #2 message", got)
+	}
+
+	inside := getHistoryURL(t, server, base+"?after=4")
+	if len(inside.Entries) != 1 {
+		t.Fatalf("inside-resume entries = %#v, want only the assistant message", inside.Entries)
+	}
+	if got := inside.Entries[0]; got.Kind != transcript.KindMessage || got.Role != transcript.RoleAssistant || got.Continuation != 2 || got.Text != "Resumed work" {
+		t.Fatalf("inside-resume assistant entry = %#v, want parser context from before the page", got)
 	}
 }
 
@@ -482,7 +553,7 @@ func TestHistoryCursorsAreOwnerLocal(t *testing.T) {
 		t.Fatal(err)
 	}
 	otherTask, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: otherProject.ID, Goal: "small", Runner: task.RunnerSandbox,
+		ProjectID: otherProject.ID, Type: task.TypePentest, Goal: "small", Runner: task.RunnerSandbox,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -537,8 +608,11 @@ func TestSessionHistoryWindowAndPaging(t *testing.T) {
 	transcriptBase := "/api/sessions/" + created.ID + "/transcript"
 
 	timelineWindow := getHistoryURL(t, server, timelineBase)
-	if len(timelineWindow.Items) != historyWindowMaxItems || !timelineWindow.HasOlder || timelineWindow.Cursor != 250 {
-		t.Fatalf("session timeline window = %#v, want 200 items, has_older, cursor 250", timelineWindow)
+	if len(timelineWindow.Items) != historyWindowMaxItems || !timelineWindow.HasOlder || timelineWindow.Cursor != 251 {
+		t.Fatalf("session timeline window = %#v, want 200 items, has_older, source Event cursor 251", timelineWindow)
+	}
+	if timelineWindow.Items[0].Seq != 52 || timelineWindow.Items[len(timelineWindow.Items)-1].Seq != 251 {
+		t.Fatalf("session timeline window spans source Event seqs %d..%d, want 52..251", timelineWindow.Items[0].Seq, timelineWindow.Items[len(timelineWindow.Items)-1].Seq)
 	}
 
 	transcriptWindow := getHistoryURL(t, server, transcriptBase)
@@ -570,6 +644,61 @@ func TestSessionHistoryWindowAndPaging(t *testing.T) {
 	delta := getHistoryURL(t, server, transcriptBase+"?after=0")
 	if len(delta.Entries) != 501 || delta.Cursor != 501 {
 		t.Fatalf("session after=0 transcript = %d entries cursor %d, want all 501", len(delta.Entries), delta.Cursor)
+	}
+}
+
+func TestSessionTranscriptResumeWindowKeepsParserContext(t *testing.T) {
+	server, _, _ := newHistoryWindowFixture(t)
+	created, err := server.sessions.Create(session.CreateRequest{Input: "Resume session"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := server.sessions.CreateContinuation(created.ID, "profile-1", "claude_code", session.RunnerSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendEvent := func(continuationID string, kind session.EventKind, payload session.EventPayload) {
+		t.Helper()
+		payload["continuation_id"] = continuationID
+		if _, err := server.sessions.AppendEvent(created.ID, kind, payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendEvent(first.ID, session.EventKindLifecycle, session.EventPayload{"phase": "started", "adapter": "claude_code"})
+	appendEvent(first.ID, session.EventKindRuntimeOutput, session.EventPayload{
+		"text": `{"type":"assistant","message":{"content":[{"type":"text","text":"First Session Continuation"}]}}`,
+	})
+	appendEvent(first.ID, session.EventKindLifecycle, session.EventPayload{"phase": "failed"})
+	second, err := server.sessions.CreateReplacementContinuation(first, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendEvent(second.ID, session.EventKindLifecycle, session.EventPayload{"phase": "started", "adapter": "claude_code"})
+	appendEvent(second.ID, session.EventKindRuntimeOutput, session.EventPayload{
+		"text": `{"type":"user","message":{"content":[{"type":"text","text":"internal Session prompt"}]}}`,
+	})
+	appendEvent(second.ID, session.EventKindRuntimeOutput, session.EventPayload{
+		"text": `{"type":"assistant","message":{"content":[{"type":"text","text":"Resumed Session work"}]}}`,
+	})
+
+	base := "/api/sessions/" + created.ID + "/transcript"
+	boundary := getHistoryURL(t, server, base+"?after=4")
+	if len(boundary.Entries) != 2 {
+		t.Fatalf("Session resume boundary entries = %#v, want one Continuation row and one assistant message", boundary.Entries)
+	}
+	if got := boundary.Entries[0]; got.Kind != transcript.KindContinuation || got.Continuation != 2 || got.Text != "Continuation #2 started with claude_code" {
+		t.Fatalf("Session resume boundary = %#v, want absolute Continuation #2", got)
+	}
+	if got := boundary.Entries[1]; got.Kind != transcript.KindMessage || got.Role != transcript.RoleAssistant || got.Continuation != 2 || got.Text != "Resumed Session work" {
+		t.Fatalf("resumed Session assistant entry = %#v, want parsed Continuation #2 message", got)
+	}
+
+	inside := getHistoryURL(t, server, base+"?after=5")
+	if len(inside.Entries) != 1 {
+		t.Fatalf("inside Session resume entries = %#v, want only the assistant message", inside.Entries)
+	}
+	if got := inside.Entries[0]; got.Kind != transcript.KindMessage || got.Role != transcript.RoleAssistant || got.Continuation != 2 || got.Text != "Resumed Session work" {
+		t.Fatalf("inside Session resume assistant entry = %#v, want parser context from before the page", got)
 	}
 }
 

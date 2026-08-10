@@ -242,7 +242,7 @@ func writeRuntimeSmokeInstructions(workdir string, ctx RuntimeOwnerContext) erro
 	b.WriteString("\nRead `.pentest/context.json` or the matching `PENTEST_*` env vars if needed.\n")
 	b.WriteString("\n## Required workflow\n\n")
 	b.WriteString("Use trusted MCP on every blackboard write. Do not rely on chat alone.\n\n")
-	b.WriteString("1. Apply durable semantic milestones with `blackboard_change`; use `blackboard_read` and `blackboard_history` before resolving version conflicts.\n")
+	b.WriteString("1. Record a completed Attempt in one call with `blackboard_record_attempt_result`. Use `blackboard_change` for other semantic milestones, and use `blackboard_read` or `blackboard_history` before resolving version conflicts.\n")
 	if ctx.Owner.IsTask() {
 		b.WriteString("2. Retain reproducible proof with `blackboard_retain_evidence`.\n")
 	} else {

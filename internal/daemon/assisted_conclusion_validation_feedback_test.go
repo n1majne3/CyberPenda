@@ -9,12 +9,12 @@ import (
 	"pentest/internal/task"
 )
 
-// invalidAttemptKeyResult is structurally complete except that attempt.key
-// uses a slash instead of the closed attempt: prefix.
+// invalidAttemptKeyResult is structurally complete except that attempt.key is
+// empty. Slash and colon separators are both valid Blackboard Key content.
 const invalidAttemptKeyResult = `{
 	"schema":"runtime-attempt-result/v1",
 	"base_revision":0,
-	"attempt":{"key":"attempt/arena-2923","create":true,"summary":"Tested the search surface.","outcome":"inconclusive"},
+	"attempt":{"key":"","create":true,"summary":"Tested the arena-2923 search surface.","outcome":"inconclusive"},
 	"tested_targets":[{"key":"objective:search","create_objective":{"objective":"Test the search surface."}}],
 	"produced_targets":[]
 }`
@@ -65,7 +65,7 @@ func TestAssistedConclusionRepairDirectiveCarriesBoundedValidationReason(t *test
 	if repair.RequestID == conclude.RequestID {
 		t.Fatalf("repair reused the Conclude request ID %q", repair.RequestID)
 	}
-	for _, required := range []string{"invalid_key_format", "attempt.key", "attempt: prefix", "runtime-attempt-result/v1"} {
+	for _, required := range []string{"rule_violation", "attempt.key", "non-empty", "runtime-attempt-result/v1"} {
 		if !strings.Contains(repair.Message, required) {
 			t.Fatalf("repair directive missing %q: %s", required, repair.Message)
 		}
@@ -92,11 +92,11 @@ func TestAssistedConclusionRepeatedInvalidResultExposesBoundedReason(t *testing.
 	if conclusion.ErrorCode != task.BlackboardConclusionErrorRepairExhausted {
 		t.Fatalf("action-required error code = %q", conclusion.ErrorCode)
 	}
-	if conclusion.ValidationReason != "invalid_key_format" || conclusion.ValidationFieldPath != "attempt.key" {
+	if conclusion.ValidationReason != "rule_violation" || conclusion.ValidationFieldPath != "attempt.key" {
 		t.Fatalf("action-required validation detail = %#v", conclusion)
 	}
-	if !strings.Contains(conclusion.ValidationExpected, "attempt: prefix") {
-		t.Fatalf("action-required validation expected = %q, want attempt: prefix", conclusion.ValidationExpected)
+	if !strings.Contains(conclusion.ValidationExpected, "non-empty") {
+		t.Fatalf("action-required validation expected = %q, want non-empty", conclusion.ValidationExpected)
 	}
 	if len(session.LastRequests()) != 3 {
 		t.Fatalf("automatic provider requests = %d, want work, Conclude, repair", len(session.LastRequests()))
@@ -114,7 +114,7 @@ func TestAssistedConclusionRepeatedInvalidResultExposesBoundedReason(t *testing.
 			continue
 		}
 		actionEvents++
-		if event.Payload["validation_reason"] != "invalid_key_format" || event.Payload["validation_field_path"] != "attempt.key" {
+		if event.Payload["validation_reason"] != "rule_violation" || event.Payload["validation_field_path"] != "attempt.key" {
 			t.Fatalf("action-required Event payload = %#v", event.Payload)
 		}
 	}

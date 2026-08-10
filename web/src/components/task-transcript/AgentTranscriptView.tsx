@@ -253,7 +253,11 @@ export function AgentTranscriptView({ owner, items, profileName, isLive = false,
   );
 
   return (
-    <div className="flex min-h-[32rem] flex-col overflow-hidden rounded-lg border border-border bg-card">
+    <div
+      ref={setScrollContainer}
+      data-testid="timeline-workspace"
+      className="flex h-full min-h-0 flex-col overflow-y-auto overscroll-contain rounded-lg border border-border bg-card"
+    >
       <div className="shrink-0 space-y-2 border-b px-4 py-3">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
           <div className="flex items-center gap-2">
@@ -354,7 +358,7 @@ export function AgentTranscriptView({ owner, items, profileName, isLive = false,
         </div>
       )}
 
-      <div ref={setScrollContainer} className="min-h-0 flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1">
         {unseenCount > 0 && sortDirection === "newest_first" && (
           <UnseenTailPill count={unseenCount} onShowLatest={onShowLatest} className="top-2" />
         )}
@@ -375,9 +379,9 @@ export function AgentTranscriptView({ owner, items, profileName, isLive = false,
             {displayWindow.spacerBefore > 0 && (
               <div aria-hidden="true" style={{ height: displayWindow.spacerBefore }} />
             )}
-            {visibleItems.map((item) => (
+            {visibleItems.map((item, visibleIndex) => (
               <TranscriptEventRow
-                key={item.seq}
+                key={item.id ?? `${item.seq}-${visibleIndex}`}
                 ref={(el) => {
                   if (el) eventRefs.current.set(item.seq, el);
                   else eventRefs.current.delete(item.seq);

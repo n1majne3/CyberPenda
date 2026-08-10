@@ -1,0 +1,13 @@
+{
+  "platforms": [
+    {
+      "name": "arena",
+      "base_url": "https://challenge-platform.example",
+      "claim_path": "/api/attempts/claim",
+      "submit_path": "/api/attempts/submit",
+      "abandon_path": "/api/attempts/abandon",
+      "finalize_path": "/api/attempts/finalize",
+      "bearer_token_env": "ARENA_API_TOKEN"
+    }
+  ]
+}

@@ -365,7 +365,7 @@ func validateResult(result RuntimeAttemptResult) error {
 		return validationDetailError("base_revision must not be negative",
 			ValidationDetail{Reason: ValidationReasonRuleViolation, FieldPath: "base_revision", Expected: "base_revision must be a non-negative integer"})
 	}
-	if err := validateTypedKey(result.Attempt.Key, "attempt:", "attempt.key"); err != nil {
+	if err := validateKey(result.Attempt.Key, "attempt.key"); err != nil {
 		return err
 	}
 	if result.Attempt.Create == (result.Attempt.ExpectedVersion > 0) {
@@ -410,10 +410,6 @@ func validateResult(result RuntimeAttemptResult) error {
 				ValidationDetail{Reason: ValidationReasonRuleViolation, FieldPath: path, Expected: "exactly one of create_objective or expected_version"})
 		}
 		if created {
-			if !strings.HasPrefix(target.Key, "objective:") {
-				return validationDetailError(fmt.Sprintf("%s.key must use the objective: prefix", path),
-					ValidationDetail{Reason: ValidationReasonInvalidKeyFormat, FieldPath: path + ".key", Expected: "the key must use the objective: prefix"})
-			}
 			if err := validateText(target.CreateObjective.Objective, 1024, path+".create_objective.objective"); err != nil {
 				return err
 			}
@@ -441,17 +437,6 @@ func validateResult(result RuntimeAttemptResult) error {
 				ValidationDetail{Reason: ValidationReasonRuleViolation, FieldPath: path + ".key", Expected: "the key must be unique across the result"})
 		}
 		seen[target.Key] = true
-	}
-	return nil
-}
-
-func validateTypedKey(key, prefix, path string) error {
-	if err := validateKey(key, path); err != nil {
-		return err
-	}
-	if !strings.HasPrefix(key, prefix) {
-		return validationDetailError(fmt.Sprintf("%s must use the %s prefix", path, prefix),
-			ValidationDetail{Reason: ValidationReasonInvalidKeyFormat, FieldPath: path, Expected: fmt.Sprintf("the key must use the %s prefix", prefix)})
 	}
 	return nil
 }

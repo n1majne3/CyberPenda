@@ -113,7 +113,7 @@ reports / legacy reads  for one Continuation
 | --- | --- | --- |
 | Canonical graph module | `BlackboardGraphService.Apply` | All semantic validation and atomic graph mutation behavior. |
 | Read projection module | `BlackboardReadService.Read` | Current/historical projections, deterministic reports, compatibility reads, and operator views. |
-| Runtime project-interface module | Six closed semantic capabilities | Grant binding, provenance, retained Evidence, Attempt checkpoints, Finish, transport-neutral orchestration. |
+| Runtime project-interface module | Seven closed semantic capabilities | Grant binding, provenance, atomic Attempt results, retained Evidence, Attempt checkpoints, Finish, transport-neutral orchestration. |
 | Migration module | `BlackboardMigrationService.Execute` | Inspect, backup, import, cutover, verify, recovery, and finalization. |
 | Compatibility module | `BlackboardCompatibilityService.Call` | Legacy write translation, honest concurrency/idempotency behavior, deprecation metadata, and response parity. |
 | Existing adapters | HTTP, MCP, CLI, Runtime projection, Web UI | Thin adapters that call the owning module and contain no graph, migration, or compatibility semantics. |

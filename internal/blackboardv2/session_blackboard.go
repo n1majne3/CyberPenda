@@ -144,6 +144,37 @@ func (s *Service) ReadSessionCurrent(ctx context.Context, sessionID, key string)
 	}, nil
 }
 
+// HasSessionSemanticKey reports whether a Session Blackboard Key is current,
+// historical, or retained as a redirect endpoint.
+func (s *Service) HasSessionSemanticKey(ctx context.Context, sessionID, key string) (bool, error) {
+	if err := validateKey(key, "key"); err != nil {
+		return false, err
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return false, fmt.Errorf("begin Session Blackboard key lookup: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := ensureSessionExists(ctx, tx, sessionID); err != nil {
+		return false, err
+	}
+	var exists int
+	err = tx.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM blackboard_v2_session_records WHERE session_id = ? AND key = ?
+			UNION ALL
+			SELECT 1 FROM blackboard_v2_session_record_history WHERE session_id = ? AND key = ?
+			UNION ALL
+			SELECT 1 FROM blackboard_v2_session_key_redirects
+			WHERE session_id = ? AND (source_key = ? OR canonical_key = ?)
+		)`, sessionID, key, sessionID, key, sessionID, key, key,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("read Session Blackboard key existence: %w", err)
+	}
+	return exists == 1, nil
+}
+
 // ReadSessionHistory reads deterministic Session Semantic History using the
 // same signed cursor contract as Project Blackboard. The cursor is bound to
 // the Session owner instead of a Project owner.

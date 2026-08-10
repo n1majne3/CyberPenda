@@ -536,7 +536,7 @@ func TestRuntimeFactConfirmationRequiresAcceptedImplementedBasis(t *testing.T) {
 		t.Fatalf("create beta project: %v", err)
 	}
 	tasks := task.NewService(db, projects)
-	ownerTask, err := tasks.Create(task.CreateRequest{ProjectID: alpha.ID, Goal: "Owner confirmation", Runner: task.RunnerSandbox})
+	ownerTask, err := tasks.Create(task.CreateRequest{ProjectID: alpha.ID, Type: task.TypePentest, Goal: "Owner confirmation", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create owner Task: %v", err)
 	}
@@ -544,7 +544,7 @@ func TestRuntimeFactConfirmationRequiresAcceptedImplementedBasis(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create owner Continuation: %v", err)
 	}
-	peerTask, err := tasks.Create(task.CreateRequest{ProjectID: alpha.ID, Goal: "Peer confirmation", Runner: task.RunnerSandbox})
+	peerTask, err := tasks.Create(task.CreateRequest{ProjectID: alpha.ID, Type: task.TypePentest, Goal: "Peer confirmation", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create peer Task: %v", err)
 	}
@@ -552,7 +552,7 @@ func TestRuntimeFactConfirmationRequiresAcceptedImplementedBasis(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create peer Continuation: %v", err)
 	}
-	foreignTask, err := tasks.Create(task.CreateRequest{ProjectID: beta.ID, Goal: "Foreign confirmation", Runner: task.RunnerSandbox})
+	foreignTask, err := tasks.Create(task.CreateRequest{ProjectID: beta.ID, Type: task.TypePentest, Goal: "Foreign confirmation", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create foreign Task: %v", err)
 	}
@@ -726,7 +726,7 @@ func TestRuntimeConfirmedFactCreateValidatesFinalBatchBasis(t *testing.T) {
 		t.Fatalf("create beta project: %v", err)
 	}
 	tasks := task.NewService(db, projects)
-	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: alpha.ID, Goal: "Create confirmed Facts", Runner: task.RunnerSandbox})
+	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: alpha.ID, Type: task.TypePentest, Goal: "Create confirmed Facts", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create Task: %v", err)
 	}

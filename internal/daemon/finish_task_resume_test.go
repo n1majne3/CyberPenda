@@ -61,10 +61,11 @@ func (c *countingFinishReconciler) callCount() int {
 // Seam: daemon Task HTTP + Runtime Activity gate + Continuation close.
 
 type finishSessionFactory struct {
-	mu      sync.Mutex
-	session runtime.ProviderSession
-	adapter runtime.Adapter
-	opens   int
+	mu       sync.Mutex
+	session  runtime.ProviderSession
+	adapter  runtime.Adapter
+	opens    int
+	requests []ProviderSessionLaunchRequest
 	// newSession builds a fresh session/adapter per Open so resume after Finish
 	// cannot rebind a closed handle (mirrors production factory behavior).
 	newSession func(open int) (runtime.ProviderSession, runtime.Adapter)
@@ -74,6 +75,7 @@ func (f *finishSessionFactory) Open(_ context.Context, request ProviderSessionLa
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.opens++
+	f.requests = append(f.requests, request)
 	session, adapter := f.session, f.adapter
 	if f.newSession != nil {
 		session, adapter = f.newSession(f.opens)
@@ -92,6 +94,12 @@ func (f *finishSessionFactory) openCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.opens
+}
+
+func (f *finishSessionFactory) Requests() []ProviderSessionLaunchRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]ProviderSessionLaunchRequest(nil), f.requests...)
 }
 
 // finishBoundSession mirrors production bridges: session Close signals the run
@@ -195,7 +203,8 @@ func newFinishTaskFixtureAt(t *testing.T, root string, factory ProviderSessionFa
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "inspect example.com",
+		ProjectID: projectRecord.ID,
+		Type:      task.TypePentest, Goal: "inspect example.com",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
@@ -793,6 +802,62 @@ func TestFailedTaskHTTPResumeQueuesOnceAndLaunchesFreshRuntime(t *testing.T) {
 	if !sawEffort {
 		t.Fatal("queued selection effort not retained")
 	}
+}
+
+func TestInterruptedTaskHTTPResumeCarriesNativeSessionIntoReplacementContinuation(t *testing.T) {
+	newSession := func(open int) (runtime.ProviderSession, runtime.Adapter) {
+		return newFinishSessionPair(fmt.Sprintf("native-resume-%d", open))
+	}
+	seed, seedAdapter := newSession(0)
+	factory := &finishSessionFactory{session: seed, adapter: seedAdapter, newSession: newSession}
+	server, created, _ := newFinishTaskFixture(t, factory)
+
+	if _, err := server.tasks.UpdateStatus(created.ID, task.StatusInterrupted); err != nil {
+		t.Fatal(err)
+	}
+	profile, err := server.profiles.Get(created.RuntimeProfileID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous, err := server.tasks.CreateContinuation(created.ID, profile.ID, string(profile.Provider), task.RunnerSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous, err = server.tasks.UpdateContinuationRuntimeMetadata(previous.ID, "stale-container", "native-session-prior", "/sessions/prior.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.tasks.UpdateContinuationStatus(previous.ID, task.StatusInterrupted); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.tasks.MarkContinuationReconciliation(context.Background(), previous.ID, task.ReconciliationCompleted, "test-reconcile", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/projects/"+created.ProjectID+"/tasks/"+created.ID+"/resume", bytes.NewReader([]byte(`{}`)))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("resume status = %d body %s", response.Code, response.Body.String())
+	}
+	waitForHarnessActive(t, server, created.ID, true)
+
+	requests := factory.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("provider session opens = %d, want 1", len(requests))
+	}
+	replacement := requests[0].Continuation
+	if replacement.ID == previous.ID {
+		t.Fatalf("resume reused prior Continuation pin: %#v", replacement)
+	}
+	if replacement.NativeSessionID != "native-session-prior" || replacement.NativeSessionPath != "/sessions/prior.jsonl" {
+		t.Fatalf("replacement Continuation native session = (%q, %q), want prior durable identity", replacement.NativeSessionID, replacement.NativeSessionPath)
+	}
+	if replacement.ContainerID != "" {
+		t.Fatalf("replacement Continuation retained stale container %q", replacement.ContainerID)
+	}
+	server.harness.StopAndWait(created.ID, 2*time.Second)
 }
 
 func TestStopSettlesRunningTaskWhenHarnessAndSessionAlreadyGone(t *testing.T) {

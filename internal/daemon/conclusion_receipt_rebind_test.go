@@ -34,7 +34,8 @@ func newAssistedConclusionRecoveryServer(t *testing.T) (*Server, task.Task, task
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "recover assisted conclusion", Runner: task.RunnerSandbox,
+		ProjectID: projectRecord.ID,
+		Type:      task.TypePentest, Goal: "recover assisted conclusion", Runner: task.RunnerSandbox,
 		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
 	})
 	if err != nil {

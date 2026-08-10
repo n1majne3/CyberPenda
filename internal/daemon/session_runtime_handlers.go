@@ -864,32 +864,45 @@ func (server *Server) handleSessionConversation(response http.ResponseWriter, re
 
 func (server *Server) handleSessionTimeline(response http.ResponseWriter, request *http.Request) {
 	sessionID := request.PathValue("id")
-	allEvents, err := server.sessions.Events(sessionID)
+	req := parseHistoryRequest(request)
+	items, window, err := collectTimelineItems(req, func(scan historyRequest) (timelineEventChunk, error) {
+		stored, err := server.sessions.HistoryEventWindow(sessionID, session.EventWindowQuery{
+			Projection: session.EventProjectionTimeline, BeforeSet: scan.beforeSet, Before: scan.before,
+			AfterSet: scan.afterSet, After: scan.after, Limit: historyEventQueryLimit,
+		})
+		if err != nil {
+			return timelineEventChunk{}, err
+		}
+		events := make([]timeline.Event, 0, len(stored.Events))
+		for _, event := range stored.Events {
+			events = append(events, timeline.Event{
+				ID: event.ID, Seq: event.Seq, Kind: string(event.Kind), Payload: event.Payload, CreatedAt: event.CreatedAt,
+			})
+		}
+		return timelineEventChunk{
+			events: events, cursor: stored.Cursor, hasOlder: stored.HasOlder,
+			hasNewer: stored.HasNewer, scanCursor: stored.ScanCursor,
+		}, nil
+	})
 	if err != nil {
 		writeSessionError(response, err)
 		return
 	}
-	// Feed the shared builder the same full event stream as tasks; kind
-	// routing (conversation excluded, lifecycle/steering parsed) lives in
-	// timeline.Build, not in the session store.
-	events := make([]timeline.Event, 0, len(allEvents))
-	for _, event := range allEvents {
-		events = append(events, timeline.Event{
-			Kind:      string(event.Kind),
-			Payload:   event.Payload,
-			CreatedAt: event.CreatedAt,
-		})
-	}
-	items := timeline.Build(events)
 	if items == nil {
 		items = []timeline.Item{}
 	}
 	detailBase := fmt.Sprintf("/api/sessions/%s/timeline/items", sessionID)
-	page := historyResponseFor(items, parseHistoryRequest(request), func(item timeline.Item) int {
+	page := historyResponseFor(items, req, func(item timeline.Item) int {
 		return item.Seq
 	}, func(item timeline.Item) (timeline.Item, int) {
 		return boundedTimelineItem(item, detailBase)
 	})
+	page.hasOlder = page.hasOlder || window.hasOlder
+	if req.afterSet && window.hasNewer {
+		page.cursor = window.scanCursor
+	} else {
+		page.cursor = window.cursor
+	}
 	writeJSON(response, http.StatusOK, struct {
 		SessionID string          `json:"session_id"`
 		Items     []timeline.Item `json:"items"`
@@ -904,11 +917,12 @@ func (server *Server) handleSessionTimeline(response http.ResponseWriter, reques
 }
 
 // handleSessionTimelineItem returns one complete retained timeline item by
-// Seq, including the full payload that the history window preview truncated.
+// stable item ID. A numeric Seq remains valid for retained legacy detail links.
 func (server *Server) handleSessionTimelineItem(response http.ResponseWriter, request *http.Request) {
 	sessionID := request.PathValue("id")
-	seq, err := strconv.Atoi(request.PathValue("seq"))
-	if err != nil || seq <= 0 {
+	itemRef := request.PathValue("seq")
+	seq, _ := strconv.Atoi(itemRef)
+	if itemRef == "" {
 		writeError(response, http.StatusNotFound, "timeline item not found")
 		return
 	}
@@ -920,13 +934,15 @@ func (server *Server) handleSessionTimelineItem(response http.ResponseWriter, re
 	events := make([]timeline.Event, 0, len(allEvents))
 	for _, event := range allEvents {
 		events = append(events, timeline.Event{
+			ID:        event.ID,
+			Seq:       event.Seq,
 			Kind:      string(event.Kind),
 			Payload:   event.Payload,
 			CreatedAt: event.CreatedAt,
 		})
 	}
 	for _, item := range timeline.Build(events) {
-		if item.Seq == seq {
+		if item.ID == itemRef || (seq > 0 && item.Seq == seq) {
 			writeJSON(response, http.StatusOK, item)
 			return
 		}
@@ -941,13 +957,17 @@ func (server *Server) handleSessionTranscript(response http.ResponseWriter, requ
 		writeSessionError(response, err)
 		return
 	}
-	events, err := server.sessions.Events(sessionID)
+	req := parseHistoryRequest(request)
+	window, err := server.sessions.HistoryEventWindow(sessionID, session.EventWindowQuery{
+		Projection: session.EventProjectionTranscript, BeforeSet: req.beforeSet, Before: req.before,
+		AfterSet: req.afterSet, After: req.after, Limit: historyEventQueryLimit,
+	})
 	if err != nil {
 		writeSessionError(response, err)
 		return
 	}
-	converted := make([]transcript.Event, 0, len(events))
-	for _, event := range events {
+	converted := make([]transcript.Event, 0, len(window.Events))
+	for _, event := range window.Events {
 		converted = append(converted, transcript.Event{
 			ID:        event.ID,
 			Seq:       event.Seq,
@@ -956,21 +976,30 @@ func (server *Server) handleSessionTranscript(response http.ResponseWriter, requ
 			CreatedAt: event.CreatedAt,
 		})
 	}
-	entries := transcript.Build(transcript.Subject{
+	entries := transcript.BuildWindow(transcript.Subject{
 		ID:        found.ID,
 		CreatedAt: found.CreatedAt,
 		// No Title: the Session's initial input is already a conversation
 		// event, so a synthetic goal row would duplicate it.
-	}, converted)
+	}, converted, transcript.WindowContext{
+		Continuation: window.PriorContinuation,
+		Adapter:      window.PriorTranscriptAdapter,
+	})
 	if entries == nil {
 		entries = []transcript.Entry{}
 	}
 	detailBase := fmt.Sprintf("/api/sessions/%s/transcript/entries", sessionID)
-	page := historyResponseFor(entries, parseHistoryRequest(request), func(entry transcript.Entry) int {
+	page := historyResponseFor(entries, req, func(entry transcript.Entry) int {
 		return entry.Seq
 	}, func(entry transcript.Entry) (transcript.Entry, int) {
 		return boundedTranscriptEntry(entry, detailBase)
 	})
+	page.hasOlder = page.hasOlder || window.HasOlder
+	if req.afterSet && window.HasNewer {
+		page.cursor = window.ScanCursor
+	} else {
+		page.cursor = window.Cursor
+	}
 	writeJSON(response, http.StatusOK, struct {
 		SessionID string             `json:"session_id"`
 		Entries   []transcript.Entry `json:"entries"`
@@ -1827,6 +1856,8 @@ func sessionEventsAsTimeline(events []session.Event) []timeline.Event {
 	converted := make([]timeline.Event, 0, len(events))
 	for _, event := range events {
 		converted = append(converted, timeline.Event{
+			ID:        event.ID,
+			Seq:       event.Seq,
 			Kind:      string(event.Kind),
 			Payload:   event.Payload,
 			CreatedAt: event.CreatedAt,

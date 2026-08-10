@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -35,6 +36,9 @@ const (
 	historyPreviewMapEntries = 200
 	// historyPreviewKeyChars caps map keys retained in a truncated preview.
 	historyPreviewKeyChars = 512
+	// historyEventQueryLimit bounds the storage rows read to build one owner
+	// history response. Projection filtering happens in SQL before this limit.
+	historyEventQueryLimit = historyWindowMaxItems * 4
 )
 
 // historyRequest describes one Timeline or Transcript read. Cursor presence is
@@ -73,6 +77,53 @@ type historyPage[T any] struct {
 	items    []T
 	cursor   int
 	hasOlder bool
+}
+
+type timelineEventChunk struct {
+	events     []timeline.Event
+	cursor     int
+	hasOlder   bool
+	hasNewer   bool
+	scanCursor int
+}
+
+// collectTimelineItems reads bounded Event chunks until it has enough visible
+// Timeline items. Provider progress records can be valid retained Events that
+// intentionally project to no Timeline item. Such records must not make an
+// initial or backward page appear empty while older visible history exists.
+func collectTimelineItems(req historyRequest, fetch func(historyRequest) (timelineEventChunk, error)) ([]timeline.Item, timelineEventChunk, error) {
+	scanReq := req
+	items := make([]timeline.Item, 0, historyWindowMaxItems)
+	var result timelineEventChunk
+	for {
+		chunk, err := fetch(scanReq)
+		if err != nil {
+			return nil, timelineEventChunk{}, err
+		}
+		result = chunk
+		projected := timeline.Build(chunk.events)
+		if req.afterSet {
+			items = append(items, projected...)
+		} else {
+			items = append(projected, items...)
+		}
+
+		if req.afterSet {
+			if len(items) > 0 || !chunk.hasNewer || chunk.scanCursor <= scanReq.after {
+				break
+			}
+			scanReq.afterSet = true
+			scanReq.after = chunk.scanCursor
+			continue
+		}
+		if len(items) >= historyWindowMaxItems || !chunk.hasOlder || len(chunk.events) == 0 {
+			break
+		}
+		scanReq.beforeSet = true
+		scanReq.before = chunk.events[0].Seq
+		scanReq.afterSet = false
+	}
+	return items, result, nil
 }
 
 // initialHistoryPage returns the newest bounded recent window of the full
@@ -220,7 +271,11 @@ func boundedTimelineItem(item timeline.Item, detailBase string) (timeline.Item, 
 	preview.Output = truncateField(preview.Output)
 	preview.Input = truncateMap(preview.Input)
 	preview.Truncated = true
-	preview.Detail = fmt.Sprintf("%s/%d", detailBase, item.Seq)
+	detailID := item.ID
+	if detailID == "" {
+		detailID = strconv.Itoa(item.Seq)
+	}
+	preview.Detail = fmt.Sprintf("%s/%s", detailBase, url.PathEscape(detailID))
 	sized, _ := json.Marshal(preview)
 	return preview, len(sized)
 }

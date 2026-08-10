@@ -69,6 +69,7 @@ function stubTaskDetailApi(
 
   const fetchMock = mockApi({
     // Specific query routes first: mockApi matches in insertion order.
+	"/api/projects/project-1/tasks/task-1/finish-readiness": { ready_to_finish: true, blockers: [] },
     ...extraRoutes,
     "/api/projects/project-1/tasks/task-1/timeline": timelineBody,
     "/api/projects/project-1/tasks/task-1/transcript": transcriptBody,
@@ -221,6 +222,36 @@ describe("TaskDetailPage", () => {
     const badge = await screen.findByTestId("blackboard-conclusion-state");
     expect(badge).toHaveTextContent("Blackboard · assisted · pending");
     expect(badge).toHaveAttribute("title", expect.stringContaining("turn-7"));
+  });
+
+  it("shows every Finish Readiness blocker and its related surface on Task Detail", async () => {
+	stubTaskDetailApi({}, undefined, undefined, undefined, {
+	  "/api/projects/project-1/tasks/task-1/finish-readiness": {
+		ready_to_finish: false,
+		blockers: [
+		  {
+			code: "blackboard_conclusion_action_required",
+			count: 1,
+			message: "A Blackboard conclusion needs operator action.",
+			links: ["/projects/project-1/blackboard"],
+		  },
+		  {
+			code: "unfinalized_challenge_attempts",
+			count: 2,
+			message: "Challenge Attempts are not finalized.",
+			links: ["/projects/project-1/tasks/task-1/challenges"],
+		  },
+		],
+	  },
+	});
+
+	renderPage();
+
+	const readiness = await screen.findByRole("region", { name: "Finish Readiness" });
+	expect(within(readiness).getByText("A Blackboard conclusion needs operator action.")).toBeInTheDocument();
+	expect(within(readiness).getByText("Challenge Attempts are not finalized.")).toBeInTheDocument();
+	expect(within(readiness).getByRole("link", { name: "Open blackboard_conclusion_action_required" })).toHaveAttribute("href", "/projects/project-1/blackboard");
+	expect(within(readiness).getByRole("link", { name: "Open unfinalized_challenge_attempts" })).toHaveAttribute("href", "/projects/project-1/tasks/task-1/challenges");
   });
 
   it("shows an assisted Conclude Turn in the Task header", async () => {
@@ -558,9 +589,28 @@ describe("TaskDetailPage", () => {
     expect(screen.getByRole("button", { name: "Conversation" })).toHaveClass("focus-visible:ring-2");
     expect(screen.getByRole("button", { name: "Scroll to top" })).toHaveClass("focus-visible:ring-2");
     expect(screen.getByRole("button", { name: /Scroll to latest \(auto-follow on\)/i })).toHaveClass(
-      "h-9",
-      "w-9",
+      "h-10",
+      "w-10",
     );
+  });
+
+  it("exposes Timeline top and bottom controls that move its scroll viewport", async () => {
+    const user = userEvent.setup();
+    const scrollTo = vi.fn();
+    Object.defineProperty(Element.prototype, "scrollTo", { value: scrollTo, configurable: true });
+    stubTaskDetailApi();
+
+    renderPage("/projects/project-1/tasks/task-1?view=timeline");
+
+    expect(await screen.findByText("Timeline opened first")).toBeInTheDocument();
+    const viewport = screen.getByTestId("timeline-workspace");
+    Object.defineProperty(viewport, "scrollHeight", { value: 9000, configurable: true });
+
+    await user.click(screen.getByRole("button", { name: "Scroll Timeline to top" }));
+    expect(scrollTo).toHaveBeenLastCalledWith(expect.objectContaining({ top: 0 }));
+
+    await user.click(screen.getByRole("button", { name: "Scroll Timeline to bottom" }));
+    expect(scrollTo).toHaveBeenLastCalledWith(expect.objectContaining({ top: 9000 }));
   });
 
   it("shows the latest continuation summary when present", async () => {
@@ -2164,7 +2214,10 @@ describe("TaskDetailPage Runtime Owner History Window (#202)", () => {
       const viewport = screen.getByTestId("conversation-workspace");
       Object.defineProperty(viewport, "scrollTop", { value: 5000, writable: true, configurable: true });
       Object.defineProperty(viewport, "scrollHeight", { value: 100000, writable: true, configurable: true });
-      viewport.dispatchEvent(new Event("scroll"));
+      await act(async () => {
+        viewport.dispatchEvent(new Event("wheel"));
+        viewport.dispatchEvent(new Event("scroll"));
+      });
       transcriptBody.entries = [
         ...transcriptBody.entries,
         { id: "entry-2", seq: 2, continuation: 1, kind: "message", role: "assistant", text: "Fresh unseen row", created_at: "2026-01-01T00:00:01Z" },
@@ -2186,6 +2239,160 @@ describe("TaskDetailPage Runtime Owner History Window (#202)", () => {
       expect(screen.queryByTestId("unseen-transcript-indicator")).not.toBeInTheDocument();
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it("keeps the Conversation reading position and auto-follow state across a Timeline round trip", async () => {
+    const user = userEvent.setup();
+    stubTaskDetailApi();
+    renderPage();
+
+    expect(await screen.findByText("Conversation should be hidden by default")).toBeInTheDocument();
+    const viewport = screen.getByTestId("conversation-workspace");
+    Object.defineProperty(viewport, "scrollTop", { value: 1200, writable: true, configurable: true });
+    Object.defineProperty(viewport, "scrollHeight", { value: 100000, configurable: true });
+    Object.defineProperty(viewport, "clientHeight", { value: 600, configurable: true });
+    await act(async () => {
+      viewport.dispatchEvent(new Event("wheel"));
+      viewport.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(screen.getByRole("button", { name: "Scroll to latest (auto-follow off)" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Timeline" }));
+    await user.click(screen.getByRole("button", { name: "Conversation" }));
+
+    expect(screen.getByRole("button", { name: "Scroll to latest (auto-follow off)" })).toBeInTheDocument();
+    expect(screen.getByTestId("conversation-workspace").scrollTop).toBe(1200);
+  });
+
+  it("pins the initial Conversation to the real scroll-container bottom", async () => {
+    const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+    try {
+      Object.defineProperty(HTMLElement.prototype, "scrollHeight", { get: () => 10000, configurable: true });
+      const scrollTo = vi.fn();
+      Object.defineProperty(Element.prototype, "scrollTo", { value: scrollTo, configurable: true });
+      stubTaskDetailApi();
+      renderPage();
+
+      expect(await screen.findByText("Conversation should be hidden by default")).toBeInTheDocument();
+      expect(scrollTo).toHaveBeenLastCalledWith({ top: 10000, behavior: "auto" });
+      expect(screen.getByRole("button", { name: "Scroll to latest (auto-follow on)" })).toBeInTheDocument();
+    } finally {
+      if (scrollHeight) {
+        Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
+      } else {
+        delete (HTMLElement.prototype as unknown as { scrollHeight?: number }).scrollHeight;
+      }
+    }
+  });
+
+  it("keeps initial auto-follow on when virtual rendering changes the scroll height", async () => {
+    const scrollHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+    const clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+    let scrollHeight = 14400;
+    let grewAfterFirstPin = false;
+    try {
+      Object.defineProperty(HTMLElement.prototype, "scrollHeight", { get: () => scrollHeight, configurable: true });
+      Object.defineProperty(HTMLElement.prototype, "clientHeight", { get: () => 600, configurable: true });
+      Object.defineProperty(Element.prototype, "scrollTo", {
+        configurable: true,
+        value(this: HTMLElement, options: ScrollToOptions) {
+          this.scrollTop = Math.max(0, Math.min(options.top ?? 0, scrollHeight - this.clientHeight));
+          if (!grewAfterFirstPin) {
+            grewAfterFirstPin = true;
+            scrollHeight += 452;
+          }
+          this.dispatchEvent(new Event("scroll"));
+        },
+      });
+      const entries = Array.from({ length: 200 }, (_, index) => ({
+        id: `entry-${index + 1}`,
+        seq: index + 1,
+        continuation: 1,
+        kind: "message",
+        role: "assistant",
+        text: `Conversation row ${index + 1}`,
+        created_at: "2026-01-01T00:00:00Z",
+      }));
+      stubTaskDetailApi({}, entries);
+      renderPage();
+
+      const viewport = await screen.findByTestId("conversation-workspace");
+      await waitFor(() => {
+        expect(scrollHeight - viewport.scrollTop - viewport.clientHeight).toBe(0);
+      });
+      expect(screen.getByRole("button", { name: "Scroll to latest (auto-follow on)" })).toBeInTheDocument();
+    } finally {
+      if (scrollHeightDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeightDescriptor);
+      } else {
+        delete (HTMLElement.prototype as unknown as { scrollHeight?: number }).scrollHeight;
+      }
+      if (clientHeightDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeightDescriptor);
+      } else {
+        delete (HTMLElement.prototype as unknown as { clientHeight?: number }).clientHeight;
+      }
+    }
+  });
+
+  it("keeps the latest Conversation rows mounted when variable-height content moves the bottom", async () => {
+    const scrollHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+    const clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+    let scrollHeight = 14400;
+    try {
+      Object.defineProperty(HTMLElement.prototype, "scrollHeight", { get: () => scrollHeight, configurable: true });
+      Object.defineProperty(HTMLElement.prototype, "clientHeight", { get: () => 600, configurable: true });
+      Object.defineProperty(Element.prototype, "scrollTo", {
+        configurable: true,
+        value(this: HTMLElement, options: ScrollToOptions) {
+          this.scrollTop = Math.max(0, Math.min(options.top ?? 0, scrollHeight - this.clientHeight));
+          this.dispatchEvent(new Event("scroll"));
+        },
+      });
+      const entries = Array.from({ length: 200 }, (_, index) => ({
+        id: `entry-${index + 1}`,
+        seq: index + 1,
+        continuation: 1,
+        kind: "message" as const,
+        role: "assistant" as const,
+        text: `Variable-height Conversation row ${index + 1}`,
+        created_at: "2026-01-01T00:00:00Z",
+      }));
+      stubTaskDetailApi({}, entries);
+      renderPage();
+
+      const viewport = await screen.findByTestId("conversation-workspace");
+      await act(async () => {
+        viewport.scrollTo({ top: scrollHeight, behavior: "auto" });
+        await Promise.resolve();
+      });
+      const latestRow = await screen.findByText("Variable-height Conversation row 200");
+
+      // Expanding tool output can make the real bottom much deeper than the
+      // fixed row estimate. Auto-follow moves to that real bottom.
+      scrollHeight = 22000;
+      await act(async () => {
+        viewport.scrollTo({ top: scrollHeight, behavior: "auto" });
+        await Promise.resolve();
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Variable-height Conversation row 200")).toBe(latestRow);
+      });
+      expect(screen.getByRole("button", { name: "Scroll to latest (auto-follow on)" })).toBeInTheDocument();
+    } finally {
+      if (scrollHeightDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeightDescriptor);
+      } else {
+        delete (HTMLElement.prototype as unknown as { scrollHeight?: number }).scrollHeight;
+      }
+      if (clientHeightDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeightDescriptor);
+      } else {
+        delete (HTMLElement.prototype as unknown as { clientHeight?: number }).clientHeight;
+      }
     }
   });
 

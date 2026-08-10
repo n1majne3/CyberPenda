@@ -70,6 +70,7 @@ func TestProjectCanBeCreatedAndReadWithScope(t *testing.T) {
 	createBody := []byte(`{
 		"name": "Acme External",
 		"description": "External perimeter test",
+		"kind": "ctf_challenge",
 		"scope": {
 			"domains": ["example.com"],
 			"urls": ["https://example.com"],
@@ -92,6 +93,7 @@ func TestProjectCanBeCreatedAndReadWithScope(t *testing.T) {
 		ID          string `json:"id"`
 		Name        string `json:"name"`
 		Description string `json:"description"`
+		Kind        string `json:"kind"`
 		Scope       struct {
 			Domains       []string `json:"domains"`
 			URLs          []string `json:"urls"`
@@ -107,6 +109,9 @@ func TestProjectCanBeCreatedAndReadWithScope(t *testing.T) {
 	}
 	if created.Name != "Acme External" {
 		t.Fatalf("expected project name Acme External, got %q", created.Name)
+	}
+	if created.Kind != project.KindCTFChallenge {
+		t.Fatalf("expected CTF Challenge Project, got %q", created.Kind)
 	}
 	if got := created.Scope.Domains; len(got) != 1 || got[0] != "example.com" {
 		t.Fatalf("expected scope domain example.com, got %#v", got)
@@ -144,6 +149,54 @@ func TestProjectCanBeCreatedAndReadWithScope(t *testing.T) {
 	}
 	if got := fetched.Scope.TestingLimits; len(got) != 1 || got[0] != "no destructive payloads" {
 		t.Fatalf("expected testing limit, got %#v", got)
+	}
+}
+
+func TestCreateProjectRequiresExplicitKind(t *testing.T) {
+	server, err := daemon.NewServer(daemon.Config{Version: "test-version", DBPath: filepath.Join(t.TempDir(), "pentest.db")})
+	if err != nil {
+		t.Fatalf("NewServer returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	for name, body := range map[string]string{
+		"missing": `{"name":"Implicit"}`,
+		"unknown": `{"name":"Unknown","kind":"other"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/api/projects", strings.NewReader(body))
+			response := httptest.NewRecorder()
+			server.ServeHTTP(response, request)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("expected status 400, got %d with body %s", response.Code, response.Body.String())
+			}
+			if !strings.Contains(response.Body.String(), project.ErrInvalidKind.Error()) {
+				t.Fatalf("expected invalid kind error, got %s", response.Body.String())
+			}
+		})
+	}
+}
+
+func TestProjectKindConversionPreviewAndConfirmUseExplicitOperatorFlow(t *testing.T) {
+	server, err := daemon.NewServer(daemon.Config{Version: "test-version", DBPath: filepath.Join(t.TempDir(), "pentest.db")})
+	if err != nil {
+		t.Fatalf("NewServer returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	projectID := createProject(t, server, `{"name":"Arena","kind":"pentest"}`)
+
+	previewRequest := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/kind-conversion/preview", strings.NewReader(`{"target_kind":"ctf_challenge"}`))
+	previewResponse := httptest.NewRecorder()
+	server.ServeHTTP(previewResponse, previewRequest)
+	if previewResponse.Code != http.StatusOK || !strings.Contains(previewResponse.Body.String(), `"ready":true`) {
+		t.Fatalf("unexpected preview response %d: %s", previewResponse.Code, previewResponse.Body.String())
+	}
+
+	confirmRequest := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/kind-conversion", strings.NewReader(`{"target_kind":"ctf_challenge","confirm":true}`))
+	confirmResponse := httptest.NewRecorder()
+	server.ServeHTTP(confirmResponse, confirmRequest)
+	if confirmResponse.Code != http.StatusOK || !strings.Contains(confirmResponse.Body.String(), `"kind":"ctf_challenge"`) {
+		t.Fatalf("unexpected conversion response %d: %s", confirmResponse.Code, confirmResponse.Body.String())
 	}
 }
 
@@ -450,7 +503,7 @@ func TestNewServerReconcilesGhostTasksOnRestart(t *testing.T) {
 	projectID := createProject(t, first, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
 	profileID := createRuntimeProfile(t, first, `{"name":"Fake","provider":"fake"}`)
 	taskID := createTask(t, first, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"sandbox"
 	}`)
@@ -519,8 +572,9 @@ func TestNewServerStopsGhostSandboxContainersOnRestart(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 	created, err := tasks.Create(task.CreateRequest{
-		ProjectID:        proj.ID,
-		Goal:             "ghost sandbox",
+		ProjectID: proj.ID,
+
+		Type: task.TypePentest, Goal: "ghost sandbox",
 		RuntimeProfileID: "profile-1",
 		Runner:           task.RunnerSandbox,
 	})
@@ -565,8 +619,19 @@ func TestNewServerStopsGhostSandboxContainersOnRestart(t *testing.T) {
 
 func createProject(t *testing.T, server *daemon.Server, body string) string {
 	t.Helper()
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		t.Fatalf("decode project fixture: %v", err)
+	}
+	if _, ok := payload["kind"]; !ok {
+		payload["kind"] = project.KindPentest
+	}
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("encode project fixture: %v", err)
+	}
 
-	request := httptest.NewRequest(http.MethodPost, "/api/projects", bytes.NewReader([]byte(body)))
+	request := httptest.NewRequest(http.MethodPost, "/api/projects", bytes.NewReader(bodyBytes))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 

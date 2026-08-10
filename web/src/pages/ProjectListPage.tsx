@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { AlertTriangle, CheckCircle2, FileText, FolderOpen, Globe, Plus, Server, ShieldAlert } from "lucide-react";
-import { apiGet, apiPost, type Project } from "@/lib/api";
-import { Badge, Button, Card, CardDescription, CardTitle, Input, Label } from "@/components/ui";
+import { apiGet, apiPost, type Project, type ProjectKind } from "@/lib/api";
+import { Badge, Button, Card, CardDescription, CardTitle, Input, Label, Select } from "@/components/ui";
 import { PageContainer } from "@/components/shared";
 
 export function ProjectListPage() {
@@ -13,6 +13,7 @@ export function ProjectListPage() {
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
+	const [kind, setKind] = useState<ProjectKind | "">("");
   const createRequested = searchParams.get("new") === "1";
   const showCreateForm = creating || createRequested;
 
@@ -44,9 +45,11 @@ export function ProjectListPage() {
   /* eslint-enable react-hooks/set-state-in-effect */
 
   async function create() {
+	if (!name.trim() || !kind) return;
     try {
-      await apiPost<Project>("/api/projects", { name, scope: {} });
+      await apiPost<Project>("/api/projects", { name, kind, scope: {} });
       setName("");
+	  setKind("");
       dismissCreateForm();
       load();
     } catch (e) {
@@ -72,7 +75,7 @@ export function ProjectListPage() {
       </div>
 
       {showCreateForm && (
-        <Card id="new-project" className="grid gap-3 sm:grid-cols-[1fr_auto_auto] sm:items-end">
+        <Card id="new-project" className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_14rem_auto_auto] sm:items-end">
           <div className="flex-1">
             <Label htmlFor="proj-name">Project name</Label>
             <Input
@@ -85,7 +88,21 @@ export function ProjectListPage() {
               className="mt-1"
             />
           </div>
-          <Button size="sm" onClick={create} disabled={!name.trim()}>
+          <div>
+            <Label htmlFor="proj-kind">Project kind</Label>
+            <Select
+              id="proj-kind"
+              name="project_kind"
+              value={kind}
+              onChange={(event) => setKind(event.target.value as ProjectKind)}
+              className="mt-1"
+            >
+			  <option value="" disabled>Select Project kind</option>
+              <option value="pentest">Pentest</option>
+              <option value="ctf_challenge">CTF Challenge</option>
+            </Select>
+          </div>
+		  <Button size="sm" onClick={create} disabled={!name.trim() || !kind}>
             Create
           </Button>
           <Button size="sm" variant="ghost" onClick={dismissCreateForm}>
@@ -148,6 +165,7 @@ export function ProjectListPage() {
 
 function ProjectCard({ project }: { project: Project }) {
   const scope = projectScopeSummary(project);
+  const kindLabel = project.kind === "ctf_challenge" ? "CTF Challenge" : "Pentest";
 
   return (
     <Link
@@ -177,6 +195,7 @@ function ProjectCard({ project }: { project: Project }) {
         </div>
 
         <div className="flex flex-wrap gap-1.5">
+          <Badge variant="outline">{kindLabel}</Badge>
           {scope.assets.length > 0 ? (
             scope.assets.map((item) => (
               <Badge key={item.label} variant="outline">

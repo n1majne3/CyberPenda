@@ -135,7 +135,7 @@ func TestOrdinaryOpenRefusesUnknownEpochWithoutTouchingSQLiteState(t *testing.T)
 			prepare: func(t *testing.T, path string) func() {
 				return holdStoreEpochUpdateInWAL(t, path, "future_v3")
 			},
-			wantMigrationCount: 55,
+			wantMigrationCount: 58,
 			wantSidecars:       true,
 		},
 	}

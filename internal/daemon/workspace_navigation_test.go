@@ -153,7 +153,7 @@ func navigationFixture(t *testing.T) (*daemon.Server, string) {
 func launchTaskForProject(t *testing.T, server *daemon.Server, profileID, projectID, goal string) map[string]any {
 	t.Helper()
 	resp := httptest.NewRecorder()
-	body := `{"goal":"` + goal + `","runtime_profile_id":` + quoteJSON(profileID) + `,"runner":"sandbox"}`
+	body := `{"type":"pentest","goal":"` + goal + `","runtime_profile_id":` + quoteJSON(profileID) + `,"runner":"sandbox"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	server.ServeHTTP(resp, req)

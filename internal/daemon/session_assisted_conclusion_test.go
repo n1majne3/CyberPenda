@@ -264,7 +264,8 @@ func TestAssistedSessionRegeneratesAfterConcurrentSessionBlackboardAdvance(t *te
 	regenerateRequest := provider.LastRequests()[2]
 	directive := strings.ToLower(regenerateRequest.Message)
 	if regenerateRequest.RequestID == concludeRequest.RequestID || !strings.Contains(regenerateRequest.RequestID, "version") ||
-		!strings.Contains(directive, "session blackboard") || !strings.Contains(directive, "reread") || !strings.Contains(directive, "base_revision 1") || strings.Contains(directive, "project blackboard") {
+		!strings.Contains(directive, "session blackboard") || !strings.Contains(directive, "do not read files") || !strings.Contains(directive, "base_revision 1") ||
+		strings.Contains(directive, "project blackboard") || strings.Contains(directive, "reread") {
 		t.Fatalf("Session regeneration request = %#v", regenerateRequest)
 	}
 	if err := emitSessionAttemptResultAndComplete(provider, `{
@@ -343,7 +344,7 @@ func TestAssistedSessionRepairDirectiveCarriesBoundedValidationReason(t *testing
 	invalid := `{
 		"schema":"runtime-attempt-result/v1",
 		"base_revision":0,
-		"attempt":{"key":"attempt/arena-session","create":true,"summary":"Tested the Session surface.","outcome":"inconclusive"},
+		"attempt":{"key":"","create":true,"summary":"Tested the arena-session surface.","outcome":"inconclusive"},
 		"tested_targets":[{"key":"objective:search","create_objective":{"objective":"Test the Session surface."}}],
 		"produced_targets":[]
 	}`
@@ -355,7 +356,7 @@ func TestAssistedSessionRepairDirectiveCarriesBoundedValidationReason(t *testing
 	if repairRequest.RequestID == concludeRequest.RequestID {
 		t.Fatalf("Session repair reused the Conclude request ID %q", repairRequest.RequestID)
 	}
-	for _, required := range []string{"invalid_key_format", "attempt.key", "attempt: prefix", "runtime-attempt-result/v1"} {
+	for _, required := range []string{"rule_violation", "attempt.key", "non-empty", "runtime-attempt-result/v1"} {
 		if !strings.Contains(repairRequest.Message, required) {
 			t.Fatalf("Session repair directive missing %q: %s", required, repairRequest.Message)
 		}
@@ -388,7 +389,7 @@ func TestAssistedSessionRepeatedInvalidResultExposesBoundedReason(t *testing.T) 
 	invalid := `{
 		"schema":"runtime-attempt-result/v1",
 		"base_revision":0,
-		"attempt":{"key":"attempt/arena-session","create":true,"summary":"Tested the Session surface.","outcome":"inconclusive"},
+		"attempt":{"key":"","create":true,"summary":"Tested the arena-session surface.","outcome":"inconclusive"},
 		"tested_targets":[{"key":"objective:search","create_objective":{"objective":"Test the Session surface."}}],
 		"produced_targets":[]
 	}`
@@ -404,11 +405,11 @@ func TestAssistedSessionRepeatedInvalidResultExposesBoundedReason(t *testing.T) 
 	if conclusion.ErrorCode != session.BlackboardConclusionErrorRepairExhausted {
 		t.Fatalf("Session action-required error code = %q", conclusion.ErrorCode)
 	}
-	if conclusion.ValidationReason != "invalid_key_format" || conclusion.ValidationFieldPath != "attempt.key" {
+	if conclusion.ValidationReason != "rule_violation" || conclusion.ValidationFieldPath != "attempt.key" {
 		t.Fatalf("Session action-required validation detail = %#v", conclusion)
 	}
-	if !strings.Contains(conclusion.ValidationExpected, "attempt: prefix") {
-		t.Fatalf("Session action-required validation expected = %q, want attempt: prefix", conclusion.ValidationExpected)
+	if !strings.Contains(conclusion.ValidationExpected, "non-empty") {
+		t.Fatalf("Session action-required validation expected = %q, want non-empty", conclusion.ValidationExpected)
 	}
 	if len(provider.LastRequests()) != 3 {
 		t.Fatalf("Session automatic provider requests = %d, want work, Conclude, repair", len(provider.LastRequests()))

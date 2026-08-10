@@ -12,9 +12,25 @@ _Avoid_: autonomous hacker, exploit bot
 A bounded security-testing engagement with its own **Scope**, tasks, memory, evidence, and report.
 _Avoid_: workspace, conversation, campaign
 
+**Project Kind**:
+The required Project classification of `pentest` or `ctf_challenge` that selects valid Project Knowledge and reporting semantics. It is chosen explicitly when the Project is created and is not inferred from a Task Goal, Skill, or Runtime output.
+_Avoid_: hidden project default, task mode, runtime capability
+
+**Project Kind Conversion**:
+An explicit operator-confirmed change of one Project Kind after a preview proves that every Task is terminal and no incompatible current Finding or Solution exists. It changes classification only and never infers a cross-type Blackboard record conversion.
+_Avoid_: automatic project repair, fact-to-solution migration, task mode switch
+
 **Project Defaults**:
 Project-level choices for default runner, optional **Default Runtime Profile Preset**, and task policy that do not copy global **Runtime Profiles**.
 _Avoid_: project-local runtime profile, copied profile, launch selection store
+
+**Task Policy**:
+Structured operator-defined limits that the **Runtime Harness** enforces for one Task, such as maximum challenge Attempts, wrong submissions, wall time, consecutive failures, Rating drawdown, or no-progress duration.
+_Avoid_: prompt advice, Skill rule, hidden timeout
+
+**Task Policy Snapshot**:
+The immutable Task-local copy of Task Policy captured by **Task Launch** and used for deterministic enforcement and historical inspection.
+_Avoid_: current project defaults, mutable runtime limit, prompt text
 
 **Project Dashboard**:
 The primary project view that surfaces scope status, task runs, blackboard growth, findings, and evidence health.
@@ -23,6 +39,10 @@ _Avoid_: chat home, task-only queue
 **Task**:
 A user-goal-driven project run executed by one **Runtime Profile** through one **Runner**.
 _Avoid_: chat message, report section, shell command, plan step
+
+**Task Type**:
+The required operator-visible `pentest` or `ctf_challenge` classification selected during **Task Launch** and stored as an immutable Task-local snapshot. It must match the current **Project Kind** at launch. A later Project Kind Conversion does not rewrite an existing Task Type.
+_Avoid_: hidden Project Kind lookup, mutable task mode, prompt label
 
 **Non-Project Mode**:
 The product mode for work that has no **Project** and therefore no Project Scope, while retaining the same Runtime interaction capabilities as a **Task**.
@@ -528,6 +548,10 @@ _Avoid_: host config edit, config sync
 A recorded startup check phase that determines whether a **Task** can launch its **Runtime**.
 _Avoid_: runtime execution, pentest work
 
+**Runtime Extension Requirement**:
+A non-authorizing declaration that a Runtime Extension needs a compatible Project Kind or Scope capability before Task Launch. **Preflight** validates it, but it never changes Project Kind or expands Scope.
+_Avoid_: Skill authorization, automatic Scope Expansion, runtime preference
+
 **Model Preflight Preview**:
 The **Preflight** view of resolved non-secret model provider projection and generated API key environment variable readiness.
 _Avoid_: API key display, LLM connectivity test
@@ -619,6 +643,30 @@ _Avoid_: intent, open relationship, task, attack graph edge
 **Attempt**:
 A durable Blackboard record of one exploration episode that tests an **Exploration Objective**, **Entity**, **Project Fact**, **Finding**, or **Solution** and concludes with a distilled outcome.
 _Avoid_: Task, command, tool call, raw output
+
+**Challenge Platform**:
+An external system that issues challenge Attempts and accepts candidate submissions or abandonment through a platform-specific **Platform Adapter**.
+_Avoid_: Project, Scope authority, Runtime Extension
+
+**Platform Adapter**:
+An implementation behind the internal Challenge Platform seam that maps claim, submit, abandon, and recovery operations to one external platform. Production and in-memory test Adapters satisfy the same interface.
+_Avoid_: generic fetcher, Project Interface, Skill
+
+**Challenge Workflow**:
+The deep module whose small interface claims, submits, abandons, and finalizes challenge Attempts while owning stable identity, Task Policy enforcement, Platform Adapter calls, Evidence retention, Blackboard settlement, and recovery.
+_Avoid_: raw platform client, prompt procedure, collection of Blackboard tool calls
+
+**Challenge Operation**:
+A durable idempotent claim, submit, abandon, or finalize request owned by one Task and one external Attempt. It moves through `pending` and `recording` to `completed`. If automatic daemon-restart recovery fails, it settles as `action_required` and is not retried automatically.
+_Avoid_: tool call, Task Event, remote response only
+
+**Finish Readiness**:
+A read-only Task projection that reports whether **Task Finish** can proceed and lists every typed **Finish Blocker** across reconciliation, Current Work, Finish Intent state, and required challenge Evidence.
+_Avoid_: Task status, Runtime Activity Indicator, automatic completion
+
+**Finish Blocker**:
+A stable typed reason that prevents Task Finish, such as a Pending Blackboard Conclusion, open Attempt, unfinalized challenge Attempt, open Exploration Objective, unsettled reconciliation, invalid Finish Intent, or missing required Evidence.
+_Avoid_: warning text, latest conclusion status, runtime error
 
 **Runtime Blackboard Snapshot**:
 A topology-complete semantic view of the current main **Blackboard** graph at one revision. It includes every current reusable semantic record and relationship in compact form while excluding auxiliary record bodies, **Trusted Origin** data, audit history, and audit-only metadata.
@@ -743,14 +791,22 @@ _Avoid_: transcript, export, source of truth
 ## Relationships
 
 - A **Project** has exactly one current **Scope**.
+- A **Project** has exactly one explicit **Project Kind**.
+- Project creation does not silently select a Project Kind when the caller omits it.
+- A **Project Kind Conversion** requires a blocker-free preview and explicit operator confirmation.
+- **Task Launch** requires an explicit **Task Type** that matches the current **Project Kind** and stores it as an immutable snapshot.
 - **Scope Expansion** is part of **Scope** but retains a distinct internal **Trusted Origin** from human-approved scope.
 - An **Out-of-Scope Fact** does not change **Scope** and does not authorize testing.
 - A **Project** may define **Project Defaults** for new **Tasks**, including an optional **Default Runtime Profile Preset** and default **Runner**.
+- **Task Launch** captures one immutable **Task Policy Snapshot**.
+- The **Challenge Workflow** enforces Task Policy before each governed external operation, independently of prompt compliance.
 - A **Project Defaults** reference to a **Default Runtime Profile Preset** preselects that preset on the task launch page but does not copy the **Runtime Profile**.
 - When no **Default Runtime Profile Preset** is configured, task launch starts from **Launch Selection** and uses **Launch Profile Resolution** to find or create a minimal **Runtime Profile**.
 - A **Project Dashboard** is the primary UI entry point for a **Project**.
 - **Runtime Profiles** are global and reusable across **Projects**.
 - A **Runtime Profile** selects one **Runtime Plugin** by plugin identifier.
+- **Preflight** validates every enabled **Runtime Extension Requirement** before Runtime execution.
+- A **Runtime Extension Requirement** neither changes Project Kind nor expands Scope.
 - **Model Providers** are global and reusable across **Runtime Profiles**.
 - A **Model Provider** has an immutable **Model Provider ID**.
 - A **Model Provider ID** is created through **Model Provider ID Generation**.
@@ -1137,6 +1193,12 @@ _Avoid_: transcript, export, source of truth
 - A **Finding Group** may have aggregate severity without changing the severity of individual **Findings**.
 - A **Finding** may be supported by zero or more **Project Facts** and **Evidence Artifacts**.
 - A **Solution** belongs only to a CTF Challenge Project; verified flag **Solutions** determine current solved state without replacing Task status.
+- A **Challenge Workflow** owns challenge Attempt identity and uses one **Platform Adapter** per configured Challenge Platform.
+- A **Challenge Operation** is replay-safe within one Task and external Attempt.
+- Challenge claim, submit, and abandon responses become **Evidence Artifacts** through system retention, not through Task Event text.
+- A successful or abandoned challenge Attempt remains a **Finish Blocker** until the **Challenge Workflow** finalizes it.
+- **Finish Readiness** does not perform Task Finish and does not collapse Task lifecycle with Runtime activity.
+- **Task Finish** is rejected while any **Finish Blocker** exists.
 - A **Finding** uses a **CVSS Vector** to derive severity.
 - A **CVSS Vector** records its **CVSS Version**.
 - A **Finding** without a complete **CVSS Vector** is **CVSS Pending**.
@@ -1382,3 +1444,8 @@ _Avoid_: transcript, export, source of truth
 - **Runtime Workdir** is not shared memory; resolved: cross-task knowledge flows through **Blackboard** and retained artifacts.
 - **Runtime Workdir** is not cross-runtime handoff state; resolved: runtime-profile switches pass context through the **Working Blackboard Snapshot**, open Attempt checkpoints, and retained artifacts.
 - **Runtime Workdir** is not automatic evidence capture; resolved: files become **Evidence Artifacts** only through explicit attach or retain actions.
+- CTF Challenge Project support is not backend-only or selected by an implicit Pentest default; resolved: Project creation requires an explicit Project Kind and the creation interface exposes both supported kinds.
+- Task classification is not hidden in the owning Project; resolved: Task Launch exposes an explicit **Task Type**, stores the immutable selection, rejects a mismatch with the current Project Kind, and keeps historical Task Type unchanged after Project Kind Conversion.
+- Runtime Extension compatibility is not authorization; resolved: Preflight validates **Runtime Extension Requirements**, while Project Kind and Scope remain explicit operator-owned state.
+- Challenge execution is not a loose sequence of platform and Blackboard tool calls; resolved: the **Challenge Workflow** owns claim, submit, abandon, finalize, Evidence retention, and restart-safe settlement behind one small interface.
+- Task completion readiness is not the latest Blackboard conclusion label; resolved: **Finish Readiness** aggregates every current Finish Blocker and Task Finish enforces that projection.

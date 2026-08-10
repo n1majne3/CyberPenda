@@ -18,6 +18,7 @@ import (
 // window byte budget; Detail references the owner-authorized endpoint that
 // returns the complete retained item.
 type Item struct {
+	ID        string         `json:"id,omitempty"`
 	Seq       int            `json:"seq"`
 	Type      string         `json:"type"`
 	Tool      string         `json:"tool,omitempty"`
@@ -32,6 +33,8 @@ type Item struct {
 // Event is the minimal owner-event surface Build consumes. Task and Session
 // event stores both project into this shape so one builder serves both.
 type Event struct {
+	ID        string
+	Seq       int
 	Kind      string
 	Payload   map[string]any
 	CreatedAt time.Time
@@ -49,7 +52,9 @@ func Build(events []Event) []Item {
 	turns := make([]runtimeoutput.Turn, 0, len(events))
 	flushTurns := func() {
 		for _, item := range turnsToItems(runtimeoutput.CoalesceStreaming(turns)) {
-			item.Seq = nextSeq
+			if item.Seq <= 0 {
+				item.Seq = nextSeq
+			}
 			nextSeq++
 			items = append(items, item)
 		}
@@ -60,7 +65,11 @@ func Build(events []Event) []Item {
 		case "blackboard_conclusion":
 			flushTurns()
 			if item, ok := blackboardConclusionItem(event); ok {
-				item.Seq = nextSeq
+				item.ID = event.ID
+				item.Seq = event.Seq
+				if item.Seq <= 0 {
+					item.Seq = nextSeq
+				}
 				nextSeq++
 				items = append(items, item)
 			}
@@ -68,7 +77,11 @@ func Build(events []Event) []Item {
 		case "lifecycle":
 			flushTurns()
 			if item, ok := lifecycleItem(event); ok {
-				item.Seq = nextSeq
+				item.ID = event.ID
+				item.Seq = event.Seq
+				if item.Seq <= 0 {
+					item.Seq = nextSeq
+				}
 				nextSeq++
 				items = append(items, item)
 			}
@@ -76,7 +89,11 @@ func Build(events []Event) []Item {
 		case "steering":
 			flushTurns()
 			if item, ok := steeringItem(event); ok {
-				item.Seq = nextSeq
+				item.ID = event.ID
+				item.Seq = event.Seq
+				if item.Seq <= 0 {
+					item.Seq = nextSeq
+				}
 				nextSeq++
 				items = append(items, item)
 			}
@@ -84,7 +101,11 @@ func Build(events []Event) []Item {
 		case "attachment":
 			flushTurns()
 			if item, ok := attachmentItem(event); ok {
-				item.Seq = nextSeq
+				item.ID = event.ID
+				item.Seq = event.Seq
+				if item.Seq <= 0 {
+					item.Seq = nextSeq
+				}
 				nextSeq++
 				items = append(items, item)
 			}
@@ -98,6 +119,10 @@ func Build(events []Event) []Item {
 				continue
 			}
 			lineTurns, _ := runtimeoutput.ParseLine(text, event.CreatedAt, timelineParseOpts)
+			for index := range lineTurns {
+				lineTurns[index].SourceID = event.ID
+				lineTurns[index].SourceSeq = event.Seq
+			}
 			turns = append(turns, lineTurns...)
 		}
 	}
@@ -147,7 +172,9 @@ func turnsToItems(turns []runtimeoutput.Turn) []Item {
 		if !ok {
 			continue
 		}
-		item.Seq = nextSeq
+		if item.Seq <= 0 {
+			item.Seq = nextSeq
+		}
 		nextSeq++
 		items = append(items, item)
 	}
@@ -216,17 +243,21 @@ func steeringItem(event Event) (Item, bool) {
 }
 
 func turnToItem(turn runtimeoutput.Turn) (Item, bool) {
+	id := turn.SourceID
+	if id != "" {
+		id = fmt.Sprintf("%s-%s-%d", id, turn.Kind, turn.ContentIndex)
+	}
 	switch turn.Kind {
 	case runtimeoutput.KindThinking:
-		return Item{Type: "thinking", Content: turn.Text, CreatedAt: turn.CreatedAt}, true
+		return Item{ID: id, Seq: turn.SourceSeq, Type: "thinking", Content: turn.Text, CreatedAt: turn.CreatedAt}, true
 	case runtimeoutput.KindText:
-		return Item{Type: "text", Content: turn.Text, CreatedAt: turn.CreatedAt}, true
+		return Item{ID: id, Seq: turn.SourceSeq, Type: "text", Content: turn.Text, CreatedAt: turn.CreatedAt}, true
 	case runtimeoutput.KindToolUse:
-		return Item{Type: "tool_use", Tool: turn.Tool, Input: turn.Input, CreatedAt: turn.CreatedAt}, true
+		return Item{ID: id, Seq: turn.SourceSeq, Type: "tool_use", Tool: turn.Tool, Input: turn.Input, CreatedAt: turn.CreatedAt}, true
 	case runtimeoutput.KindToolResult:
-		return Item{Type: "tool_result", Tool: turn.Tool, Output: turn.Output, CreatedAt: turn.CreatedAt}, true
+		return Item{ID: id, Seq: turn.SourceSeq, Type: "tool_result", Tool: turn.Tool, Output: turn.Output, CreatedAt: turn.CreatedAt}, true
 	case runtimeoutput.KindError:
-		return Item{Type: "error", Content: turn.Text, CreatedAt: turn.CreatedAt}, true
+		return Item{ID: id, Seq: turn.SourceSeq, Type: "error", Content: turn.Text, CreatedAt: turn.CreatedAt}, true
 	default:
 		return Item{}, false
 	}

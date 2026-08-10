@@ -6,6 +6,8 @@
 web/node_modules/
 cmd/pentest-claude-sdk-bridge/node_modules/
 web/dist/
+web/playwright-report/
+web/test-results/
 # Keep the embedded dist in-tree for release builds (committed), so the daemon
 # embeds the latest UI. Regenerate with: make build-ui
 
@@ -22,6 +24,7 @@ pentest.db-shm
 pentest.db-wal
 pentest.db.pre-graph-v1.*.bak
 pentest.db.pre-blackboard-v2.*.bak
+/runtime.db
 /pentestd
 daemon.log
 runs/

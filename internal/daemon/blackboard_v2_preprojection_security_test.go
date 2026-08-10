@@ -105,7 +105,7 @@ func newCodexV2ResumeSecurityFixture(t *testing.T) codexV2ResumeSecurityFixture 
 		t.Fatalf("create Codex profile: %v", err)
 	}
 
-	body := fmt.Sprintf(`{"goal":"inspect security.example","runtime_profile_id":%q,"runner":"host","run_controls":{"host_activated":true}}`, profile.ID)
+	body := fmt.Sprintf(`{"type":"pentest","goal":"inspect security.example","runtime_profile_id":%q,"runner":"host","run_controls":{"host_activated":true}}`, profile.ID)
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/"+createdProject.ID+"/tasks", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+codexV2SymlinkOperatorSecret)

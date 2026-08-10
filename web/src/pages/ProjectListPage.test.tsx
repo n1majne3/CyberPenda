@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, waitFor, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { ProjectListPage } from "./ProjectListPage";
 import { mockApi } from "@/test/mockApi";
@@ -51,7 +52,46 @@ describe("ProjectListPage", () => {
     );
 
     expect(await screen.findByLabelText("Project name")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^create$/i })).toBeInTheDocument();
+	expect(screen.getByLabelText("Project kind")).toHaveValue("");
+	expect(screen.getByRole("button", { name: /^create$/i })).toBeDisabled();
+  });
+
+  it("creates a CTF Challenge Project with an explicit Project kind", async () => {
+    const user = userEvent.setup();
+    const requests: Array<{ url: string; body: unknown }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (init?.method === "POST") {
+          requests.push({ url, body: JSON.parse(String(init.body)) as unknown });
+          return new Response(JSON.stringify({ id: "ctf-1", name: "Arena", kind: "ctf_challenge", scope: {} }), {
+            status: 201,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({ projects: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
+
+    render(
+      <MemoryRouter initialEntries={["/?new=1"]}>
+        <ProjectListPage />
+      </MemoryRouter>,
+    );
+
+    await user.type(await screen.findByLabelText("Project name"), "Arena");
+    await user.selectOptions(screen.getByLabelText("Project kind"), "ctf_challenge");
+    await user.click(screen.getByRole("button", { name: /^create$/i }));
+
+    await waitFor(() => expect(requests).toHaveLength(1));
+    expect(requests[0]).toEqual({
+      url: "/api/projects",
+      body: { name: "Arena", kind: "ctf_challenge", scope: {} },
+    });
   });
 
   it("renders Geist project cards with scan metadata that does not rely on color alone", async () => {
@@ -61,6 +101,7 @@ describe("ProjectListPage", () => {
           {
             id: "p1",
             name: "Acme External",
+            kind: "ctf_challenge",
             description: "web app test",
             scope: {
               domains: ["acme.test"],
@@ -82,6 +123,7 @@ describe("ProjectListPage", () => {
     expect(link).toHaveClass("rounded-lg", "focus-visible:ring-2");
     expect(link.firstElementChild).toHaveClass("rounded-lg", "border", "bg-card", "shadow-sm");
     expect(screen.getByText("Scope ready")).toBeInTheDocument();
+    expect(screen.getByText("CTF Challenge")).toBeInTheDocument();
     expect(screen.getByText("1 domain")).toBeInTheDocument();
     expect(screen.getByText("1 IP")).toBeInTheDocument();
     expect(screen.getByText("2 testing limits")).toBeInTheDocument();

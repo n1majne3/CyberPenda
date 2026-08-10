@@ -239,7 +239,7 @@ func TestFinishContinuationBindsReplayToOwningPrincipal(t *testing.T) {
 		t.Fatalf("Finish owner: %v", err)
 	}
 
-	peerTask, err := fixture.tasks.Create(task.CreateRequest{ProjectID: fixture.project.ID, Goal: "peer", RuntimeProfileID: fixture.profile.ID, Runner: task.RunnerSandbox})
+	peerTask, err := fixture.tasks.Create(task.CreateRequest{ProjectID: fixture.project.ID, Type: task.TypePentest, Goal: "peer", RuntimeProfileID: fixture.profile.ID, Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create peer Task: %v", err)
 	}

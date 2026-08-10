@@ -15,6 +15,7 @@ func TestClassifyTrustedBlackboardToolOnlyTrustsRegisteredProjectInterfaceIdenti
 		op   BlackboardOperation
 	}{
 		{name: "mcp__pentest__blackboard_change", op: BlackboardOperationChange},
+		{name: "mcp__pentest__blackboard_record_attempt_result", op: BlackboardOperationRecordAttemptResult},
 		{name: "mcp__pentest__blackboard_read", op: BlackboardOperationRead},
 		{name: "mcp__pentest__blackboard_history", op: BlackboardOperationHistory},
 		{name: "mcp__pentest__blackboard_retain_evidence", op: BlackboardOperationRetainEvidence},
@@ -30,7 +31,7 @@ func TestClassifyTrustedBlackboardToolOnlyTrustsRegisteredProjectInterfaceIdenti
 
 	for _, name := range []string{
 		// Bare display names are not registered identities.
-		"blackboard_change", "blackboard_read", "blackboard_history",
+		"blackboard_change", "blackboard_record_attempt_result", "blackboard_read", "blackboard_history",
 		"blackboard_retain_evidence", "blackboard_checkpoint_attempt", "blackboard_finish",
 		// Similar names from any other server, near matches, and garbage.
 		"mcp__evil__blackboard_change", "mcp__pentest__blackboard_changes",
@@ -48,7 +49,7 @@ func TestClassifyTrustedBlackboardToolOnlyTrustsRegisteredProjectInterfaceIdenti
 // mutation keep their current non-covering behavior.
 func TestBlackboardOperationCoversSourceWorkContract(t *testing.T) {
 	for _, op := range []BlackboardOperation{
-		BlackboardOperationChange, BlackboardOperationCheckpointAttempt, BlackboardOperationFinish,
+		BlackboardOperationChange, BlackboardOperationRecordAttemptResult, BlackboardOperationCheckpointAttempt, BlackboardOperationFinish,
 	} {
 		if !op.CoversSourceWork() {
 			t.Fatalf("operation %q must cover earlier source work", op)
@@ -68,8 +69,8 @@ func TestBlackboardOperationCoversSourceWorkContract(t *testing.T) {
 
 func TestTrustedProjectInterfaceRegistrationIsClosed(t *testing.T) {
 	operations := TrustedProjectInterfaceOperations()
-	if len(operations) != 6 {
-		t.Fatalf("registered operations = %d, want the six trusted Blackboard v2 operations", len(operations))
+	if len(operations) != 7 {
+		t.Fatalf("registered operations = %d, want the seven trusted Blackboard v2 operations", len(operations))
 	}
 	seen := map[BlackboardOperation]bool{}
 	for _, op := range operations {
@@ -85,7 +86,7 @@ func TestTrustedProjectInterfaceRegistrationIsClosed(t *testing.T) {
 		if !ok || classified != op {
 			t.Fatalf("registered identity %q classifies as %q, %v", name, classified, ok)
 		}
-		if op.CoversSourceWork() && op != BlackboardOperationChange && op != BlackboardOperationCheckpointAttempt && op != BlackboardOperationFinish {
+		if op.CoversSourceWork() && op != BlackboardOperationChange && op != BlackboardOperationRecordAttemptResult && op != BlackboardOperationCheckpointAttempt && op != BlackboardOperationFinish {
 			t.Fatalf("unexpected covering operation %q", op)
 		}
 	}

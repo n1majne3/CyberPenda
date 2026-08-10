@@ -11,6 +11,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"pentest/internal/blackboardconclusion"
 	"pentest/internal/blackboardv2"
 	"pentest/internal/blackboardv2contract"
 	"pentest/internal/projectinterface"
@@ -49,7 +50,7 @@ type FinishDecision struct {
 // the active Work Turn observation state; it never trusts caller-supplied input.
 type FinishIntentPolicy func(sessionOwner bool, ownerID, continuationID string) (FinishDecision, error)
 
-// New builds an MCP server that registers exactly the six Blackboard v2
+// New builds an MCP server that registers exactly the seven Blackboard v2
 // trusted tools. Input schemas are closed objects generated from the frozen
 // v2 contract definitions.
 func New(deps Deps) *sdkmcp.Server {
@@ -107,6 +108,42 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps Deps) {
 						return deps.BlackboardV2.ApplyForSessionContinuation(ctx, projectID, continuationID, args)
 					}
 					return deps.BlackboardV2.ApplyForContinuation(ctx, projectID, continuationID, args)
+				})
+			})
+		case "blackboard_record_attempt_result":
+			server.AddTool(&sdkmcp.Tool{
+				Name: tool.Name, Description: tool.Description, InputSchema: inputSchema,
+			}, func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+				var args blackboardAttemptResultArgs
+				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, inputSchema, deps.ownerIsSession(), req.Params.Arguments, &args); decodeErr != nil {
+					return toolBlackboardV2ErrorResult(decodeErr)
+				}
+				raw, marshalErr := json.Marshal(args.Result)
+				if marshalErr != nil {
+					return nil, marshalErr
+				}
+				validated, validationErr := blackboardconclusion.Decode(raw)
+				if validationErr != nil {
+					detail := blackboardconclusion.DecodeDetailOf(validationErr)
+					return toolBlackboardV2ErrorResult(&blackboardv2.Error{
+						Code: "invalid_schema", Message: "Attempt result violates the closed semantic contract",
+						Path: detail.FieldPath, Retryable: false,
+						Details: map[string]any{"reason": detail.Reason, "expected": detail.Expected},
+					})
+				}
+				batch, compileErr := blackboardconclusion.Compile(validated.Result, args.IdempotencyKey)
+				if compileErr != nil {
+					return toolBlackboardV2ErrorResult(&blackboardv2.Error{Code: "invalid_schema", Message: "Attempt result cannot be compiled", Retryable: false})
+				}
+				fingerprint := blackboardv2.SynchronizationDeliveryFingerprint("attempt-result", args.IdempotencyKey)
+				return deps.callV2WithFingerprint(ctx, false, true, fingerprint, func(ctx context.Context, ownerID, continuationID string) (any, error) {
+					if aliasErr := deps.rejectAttemptResultKeyAliases(ctx, ownerID, validated.Result); aliasErr != nil {
+						return nil, aliasErr
+					}
+					if deps.ownerIsSession() {
+						return deps.BlackboardV2.ApplyForSessionContinuationAtRevision(ctx, ownerID, continuationID, validated.Result.BaseRevision, batch)
+					}
+					return deps.BlackboardV2.ApplyForContinuationAtRevision(ctx, ownerID, continuationID, validated.Result.BaseRevision, batch)
 				})
 			})
 		case "blackboard_read":
@@ -212,6 +249,58 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps Deps) {
 
 type blackboardV2ReadArgs struct {
 	Key string `json:"key"`
+}
+
+type blackboardAttemptResultArgs struct {
+	IdempotencyKey string                                    `json:"idempotency_key"`
+	Result         blackboardconclusion.RuntimeAttemptResult `json:"result"`
+}
+
+func (deps Deps) rejectAttemptResultKeyAliases(ctx context.Context, ownerID string, result blackboardconclusion.RuntimeAttemptResult) error {
+	createdKeys := make([]string, 0, 1+len(result.TestedTargets))
+	if result.Attempt.Create {
+		createdKeys = append(createdKeys, result.Attempt.Key)
+	}
+	for _, target := range result.TestedTargets {
+		if target.CreateObjective != nil {
+			createdKeys = append(createdKeys, target.Key)
+		}
+	}
+	for _, key := range createdKeys {
+		alias := attemptResultKeySeparatorAlias(key)
+		if alias == "" {
+			continue
+		}
+		var exists bool
+		var err error
+		if deps.ownerIsSession() {
+			exists, err = deps.BlackboardV2.HasSessionSemanticKey(ctx, ownerID, alias)
+		} else {
+			exists, err = deps.BlackboardV2.HasSemanticKey(ctx, ownerID, alias)
+		}
+		if err != nil {
+			return err
+		}
+		if exists {
+			return &blackboardv2.Error{
+				Code: "key_conflict", Message: "a punctuation alias of the proposed Blackboard Key already exists",
+				Path: "result", Retryable: false, Details: map[string]any{"key": key, "existing_key": alias},
+			}
+		}
+	}
+	return nil
+}
+
+func attemptResultKeySeparatorAlias(key string) string {
+	for _, prefix := range []string{"attempt", "objective"} {
+		if strings.HasPrefix(key, prefix+":") {
+			return prefix + "/" + strings.TrimPrefix(key, prefix+":")
+		}
+		if strings.HasPrefix(key, prefix+"/") {
+			return prefix + ":" + strings.TrimPrefix(key, prefix+"/")
+		}
+	}
+	return ""
 }
 
 type blackboardV2HistoryArgs struct {

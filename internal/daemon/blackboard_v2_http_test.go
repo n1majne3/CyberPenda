@@ -21,7 +21,7 @@ import (
 	"pentest/internal/task"
 )
 
-func TestBlackboardV2HTTPRoutesServeAllSixCLICommandsWithTrustedContinuation(t *testing.T) {
+func TestBlackboardV2HTTPRoutesServeAllCLICommandsWithTrustedContinuation(t *testing.T) {
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "v2-http.db")
 	runtimeRoot := filepath.Join(root, "runs")
@@ -47,7 +47,7 @@ func TestBlackboardV2HTTPRoutesServeAllSixCLICommandsWithTrustedContinuation(t *
 		t.Fatalf("create profile: %v", err)
 	}
 	createdTask, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: createdProject.ID, Goal: "exercise /api/v2", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "exercise /api/v2", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
 		t.Fatalf("create Task: %v", err)
@@ -226,7 +226,7 @@ func TestBlackboardV2HTTPHealthIsProjectIsolatedDeterministicAndActionable(t *te
 		t.Fatalf("create profile: %v", err)
 	}
 	taskRow, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: alpha.ID, Goal: "health isolation", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		ProjectID: alpha.ID, Type: task.TypePentest, Goal: "health isolation", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
@@ -433,7 +433,7 @@ func TestBlackboardV2HTTPFinishResultIsClosedTypedDTO(t *testing.T) {
 		t.Fatalf("create profile: %v", err)
 	}
 	createdTask, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: createdProject.ID, Goal: "finish dto", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "finish dto", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
 		t.Fatalf("create Task: %v", err)
@@ -512,7 +512,7 @@ func newV2HTTPFixture(t *testing.T) v2HTTPFixture {
 	}
 	createTask := func(projectID, goal string) task.Task {
 		created, err := server.tasks.Create(task.CreateRequest{
-			ProjectID: projectID, Goal: goal, RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+			ProjectID: projectID, Type: task.TypePentest, Goal: goal, RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 		})
 		if err != nil {
 			t.Fatalf("create Task: %v", err)
@@ -1462,7 +1462,7 @@ func TestBlackboardV2HTTPReportAndCTFOmitTrustedContinuationSync(t *testing.T) {
 		t.Fatalf("create CTF Project: %v", err)
 	}
 	ctfTask, err := fixture.server.tasks.Create(task.CreateRequest{
-		ProjectID: ctfProject.ID, Goal: "Solve", RuntimeProfileID: fixture.profile.ID, Runner: task.RunnerSandbox,
+		ProjectID: ctfProject.ID, Type: task.TypeCTFChallenge, Goal: "Solve", RuntimeProfileID: fixture.profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
 		t.Fatalf("create CTF Task: %v", err)

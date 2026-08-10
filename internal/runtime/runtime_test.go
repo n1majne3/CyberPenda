@@ -42,7 +42,7 @@ func newServices(t *testing.T) (*runtime.Harness, *task.Service, *project.Servic
 func TestFakeRuntimeEmitsNormalizedEvents(t *testing.T) {
 	harness, tasks, projects := newServices(t)
 	proj, _ := projects.Create("P", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
-	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "enumerate example.com", RuntimeProfileID: "fake", Runner: task.RunnerSandbox})
+	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "enumerate example.com", RuntimeProfileID: "fake", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestFakeRuntimeEmitsNormalizedEvents(t *testing.T) {
 func TestRuntimeEventsAreBoundToTheLaunchedContinuation(t *testing.T) {
 	harness, tasks, projects := newServices(t)
 	proj, _ := projects.Create("P", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
-	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "enumerate example.com", RuntimeProfileID: "fake", Runner: task.RunnerSandbox})
+	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "enumerate example.com", RuntimeProfileID: "fake", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestRuntimeEventsAreBoundToTheLaunchedContinuation(t *testing.T) {
 func TestHarnessRebindContinuationFinalizesReplacementTurn(t *testing.T) {
 	harness, tasks, projects := newServices(t)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
-	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "long task", RuntimeProfileID: "codex", Runner: task.RunnerSandbox})
+	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "long task", RuntimeProfileID: "codex", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestHarnessRebindContinuationFinalizesReplacementTurn(t *testing.T) {
 func TestCommandRuntimeAdapterExecutesProviderProcessAndStreamsOutput(t *testing.T) {
 	harness, tasks, projects := newServices(t)
 	proj, _ := projects.Create("P", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
-	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "enumerate example.com", RuntimeProfileID: "codex", Runner: task.RunnerHost})
+	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "enumerate example.com", RuntimeProfileID: "codex", Runner: task.RunnerHost})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestCommandRuntimeAdapterExecutesProviderProcessAndStreamsOutput(t *testing
 func TestCommandRuntimeAdapterRecordsNativeSessionFromClaudeInitOutput(t *testing.T) {
 	harness, tasks, projects := newServices(t)
 	proj, _ := projects.Create("P", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
-	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "enumerate example.com", RuntimeProfileID: "claude", Runner: task.RunnerHost})
+	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "enumerate example.com", RuntimeProfileID: "claude", Runner: task.RunnerHost})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestCommandRuntimeAdapterRecordsNativeSessionFromClaudeInitOutput(t *testin
 func TestCommandRuntimeAdapterRecordsNativeSessionFromPiSessionHeader(t *testing.T) {
 	harness, tasks, projects := newServices(t)
 	proj, _ := projects.Create("P", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
-	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "enumerate example.com", RuntimeProfileID: "pi", Runner: task.RunnerHost})
+	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "enumerate example.com", RuntimeProfileID: "pi", Runner: task.RunnerHost})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -322,7 +322,7 @@ func (slowFakeAdapter) Run(ctx context.Context, goal string, emit func(task.Even
 func TestCommandRuntimeAdapterContinuesAfterOversizedStdoutLine(t *testing.T) {
 	harness, tasks, projects := newServices(t)
 	proj, _ := projects.Create("P", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
-	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "enumerate example.com", RuntimeProfileID: "codex", Runner: task.RunnerHost})
+	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "enumerate example.com", RuntimeProfileID: "codex", Runner: task.RunnerHost})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -384,7 +384,7 @@ func TestCommandRuntimeAdapterContinuesAfterOversizedStdoutLine(t *testing.T) {
 func TestHarnessStopEndsActiveRun(t *testing.T) {
 	harness, tasks, projects := newServices(t)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
-	created, _ := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "long task", Runner: task.RunnerSandbox})
+	created, _ := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "long task", Runner: task.RunnerSandbox})
 
 	done := make(chan error, 1)
 	go func() {
@@ -417,7 +417,7 @@ func TestHarnessStopEndsActiveRun(t *testing.T) {
 func TestHarnessStopAndWaitEndsActiveRun(t *testing.T) {
 	harness, tasks, projects := newServices(t)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
-	created, _ := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "long task", Runner: task.RunnerSandbox})
+	created, _ := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "long task", Runner: task.RunnerSandbox})
 
 	done := make(chan error, 1)
 	go func() {
@@ -441,7 +441,7 @@ func TestHarnessStopAndWaitEndsActiveRun(t *testing.T) {
 func TestHarnessFinishIntentDoesNotWriteTerminalStatus(t *testing.T) {
 	harness, tasks, projects := newServices(t)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
-	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "finish owner", Runner: task.RunnerSandbox})
+	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "finish owner", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -503,7 +503,7 @@ func TestHarnessFinishIntentDoesNotWriteTerminalStatus(t *testing.T) {
 func TestHarnessClearFinishIntentThenCancelSettlesStopped(t *testing.T) {
 	harness, tasks, projects := newServices(t)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
-	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "finish clear", Runner: task.RunnerSandbox})
+	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "finish clear", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -547,7 +547,7 @@ func TestHarnessClearFinishIntentThenCancelSettlesStopped(t *testing.T) {
 func TestHarnessStopAndWaitConfirmsRuntimeResourcesExited(t *testing.T) {
 	harness, tasks, projects := newServices(t)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
-	created, _ := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "long task", Runner: task.RunnerSandbox})
+	created, _ := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "long task", Runner: task.RunnerSandbox})
 
 	var confirmed atomic.Bool
 	done := make(chan error, 1)
@@ -577,7 +577,7 @@ func TestHarnessStopAndWaitConfirmsRuntimeResourcesExited(t *testing.T) {
 func TestCommandRuntimeAdapterCancellationReturnsContextCanceled(t *testing.T) {
 	harness, tasks, projects := newServices(t)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
-	created, _ := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "long command", Runner: task.RunnerHost})
+	created, _ := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "long command", Runner: task.RunnerHost})
 
 	binary := filepath.Join(t.TempDir(), "slow-command")
 	if err := os.WriteFile(binary, []byte("#!/bin/sh\necho started\nexec sleep 5\n"), 0o700); err != nil {
@@ -611,7 +611,7 @@ func TestCommandRuntimeAdapterCancellationReturnsContextCanceled(t *testing.T) {
 func TestDockerSandboxAdapterRecordsContainerAndStopsByID(t *testing.T) {
 	harness, tasks, projects := newServices(t)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
-	created, _ := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "sandbox task", Runner: task.RunnerSandbox})
+	created, _ := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "sandbox task", Runner: task.RunnerSandbox})
 	continuation, err := tasks.CreateContinuation(created.ID, "codex-profile", "codex", task.RunnerSandbox)
 	if err != nil {
 		t.Fatalf("create continuation: %v", err)

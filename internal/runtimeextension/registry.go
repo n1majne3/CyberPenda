@@ -51,6 +51,8 @@ func (r *Registry) List() []Extension {
 func cloneExtension(extension Extension) Extension {
 	clone := extension
 	clone.CompatibleRuntimePlugins = append([]string(nil), extension.CompatibleRuntimePlugins...)
+	clone.Requirements.ProjectKinds = append([]string(nil), extension.Requirements.ProjectKinds...)
+	clone.Requirements.ScopeCapabilities = append([]string(nil), extension.Requirements.ScopeCapabilities...)
 	if extension.Config != nil {
 		clone.Config = map[string]string{}
 		for key, value := range extension.Config {

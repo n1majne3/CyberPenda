@@ -35,8 +35,9 @@ func TestBlackboardV2DaemonDoesNotRegisterLegacyBlackboardSurfaces(t *testing.T)
 		t.Fatalf("create project: %v", err)
 	}
 	createdTask, err := task.NewService(db, projects).Create(task.CreateRequest{
-		ProjectID:        createdProject.ID,
-		Goal:             "enumerate example.com",
+		ProjectID: createdProject.ID,
+
+		Type: task.TypePentest, Goal: "enumerate example.com",
 		RuntimeProfileID: "profile-for-boundary-test",
 		Runner:           task.RunnerSandbox,
 	})
@@ -165,7 +166,7 @@ func TestBlackboardV2FreshResumeIgnoresLegacyRows(t *testing.T) {
 	projectID := createProject(t, server, `{"name":"Resume","scope":{"domains":["example.com"]}}`)
 	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"sandbox"
 	}`)
@@ -242,11 +243,11 @@ func assertV2BootstrapMCPHasNoLegacyTools(t *testing.T, server *daemon.Server) {
 		t.Fatalf("list v2 bootstrap MCP tools: %v", err)
 	}
 	wantTools := map[string]bool{
-		"blackboard_change": true, "blackboard_read": true, "blackboard_history": true,
+		"blackboard_change": true, "blackboard_record_attempt_result": true, "blackboard_read": true, "blackboard_history": true,
 		"blackboard_retain_evidence": true, "blackboard_checkpoint_attempt": true, "blackboard_finish": true,
 	}
 	if len(listed.Tools) != len(wantTools) {
-		t.Fatalf("v2 bootstrap MCP tools = %#v, want exactly the six trusted v2 tools", listed.Tools)
+		t.Fatalf("v2 bootstrap MCP tools = %#v, want exactly the seven trusted v2 tools", listed.Tools)
 	}
 	for _, tool := range listed.Tools {
 		if !wantTools[tool.Name] {

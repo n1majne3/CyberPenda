@@ -119,7 +119,7 @@ func TestClaudeAndPiV2LaunchHeaderChecklistAndExactSharedSnapshotBytes(t *testin
 				t.Fatalf("create profile: %v", err)
 			}
 			createdTask, err := server.tasks.Create(task.CreateRequest{
-				ProjectID: createdProject.ID, Goal: "inspect shared.example", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+				ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "inspect shared.example", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 			})
 			if err != nil {
 				t.Fatalf("create Task: %v", err)
@@ -249,7 +249,7 @@ func TestClaudeAndPiV2ResumeUsesFreshPinAndSharedSnapshotBytes(t *testing.T) {
 				t.Fatalf("create profile: %v", err)
 			}
 			createdTask, err := server.tasks.Create(task.CreateRequest{
-				ProjectID: createdProject.ID, Goal: "inspect resume.example", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+				ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "inspect resume.example", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 			})
 			if err != nil {
 				t.Fatalf("create Task: %v", err)
@@ -386,7 +386,8 @@ cat .pentest/blackboard.json
 				t.Fatalf("create profile: %v", err)
 			}
 			createdTask, err := server.tasks.Create(task.CreateRequest{
-				ProjectID: createdProject.ID, Goal: "exercise long " + tc.name + " continuation", RuntimeProfileID: profile.ID,
+				ProjectID: createdProject.ID,
+				Type:      task.TypePentest, Goal: "exercise long " + tc.name + " continuation", RuntimeProfileID: profile.ID,
 				Runner: task.RunnerHost, RunControls: task.RunControls{HostActivated: true},
 			})
 			if err != nil {
@@ -492,7 +493,7 @@ func TestClaudeV2SettingsAllowExactlySixTrustedMCPToolsAndPiProjectsTrustedServe
 			t.Fatalf("create Claude profile: %v", err)
 		}
 		createdTask, err := server.tasks.Create(task.CreateRequest{
-			ProjectID: createdProject.ID, Goal: "use trusted tools", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+			ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "use trusted tools", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 		})
 		if err != nil {
 			t.Fatalf("create Task: %v", err)
@@ -518,12 +519,12 @@ func TestClaudeV2SettingsAllowExactlySixTrustedMCPToolsAndPiProjectsTrustedServe
 			t.Fatalf("decode Claude settings: %v", err)
 		}
 		want := map[string]bool{
-			"mcp__pentest__blackboard_change": true, "mcp__pentest__blackboard_read": true,
+			"mcp__pentest__blackboard_change": true, "mcp__pentest__blackboard_record_attempt_result": true, "mcp__pentest__blackboard_read": true,
 			"mcp__pentest__blackboard_history": true, "mcp__pentest__blackboard_retain_evidence": true,
 			"mcp__pentest__blackboard_checkpoint_attempt": true, "mcp__pentest__blackboard_finish": true,
 		}
-		if len(want) != 6 {
-			t.Fatalf("canonical trusted tools = %d, want 6", len(want))
+		if len(want) != 7 {
+			t.Fatalf("canonical trusted tools = %d, want 7", len(want))
 		}
 		for _, allowed := range settings.Permissions.Allow {
 			if !want[allowed] {
@@ -555,7 +556,7 @@ func TestClaudeV2SettingsAllowExactlySixTrustedMCPToolsAndPiProjectsTrustedServe
 			t.Fatalf("create Pi profile: %v", err)
 		}
 		createdTask, err := server.tasks.Create(task.CreateRequest{
-			ProjectID: createdProject.ID, Goal: "use trusted tools", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+			ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "use trusted tools", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 		})
 		if err != nil {
 			t.Fatalf("create Task: %v", err)

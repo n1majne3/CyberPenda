@@ -86,7 +86,7 @@ test: test-backend
 test-ci: test-backend
 
 test-backend:
-	go test ./...
+	go test ./cmd/... ./internal/...
 
 # Live smokes (local):
 #   make smoke-sandbox-mcp     — sandbox image + daemon MCP, no LLM

@@ -734,6 +734,66 @@ func TestRunPassesRegistryRuntimeExtension(t *testing.T) {
 	}
 }
 
+func TestRunEnforcesRuntimeExtensionProjectAndScopeRequirements(t *testing.T) {
+	svc := newTestServices(t)
+	source := t.TempDir()
+	enabled := true
+	extension := runtimeextension.Extension{
+		SchemaVersion:            runtimeextension.SchemaVersion,
+		ID:                       "ctf_platform",
+		Name:                     "CTF Platform",
+		CompatibleRuntimePlugins: []string{"pi"},
+		Source:                   runtimeextension.Source{Type: "local_dir", Path: source},
+		Projection:               runtimeextension.Projection{Location: "provider_home", Path: "extensions/ctf-platform"},
+		Requirements: runtimeextension.Requirements{
+			ProjectKinds:      []string{"ctf_challenge"},
+			ScopeCapabilities: []string{"challenge_platform"},
+		},
+	}
+	registry, err := runtimeextension.NewRegistry([]runtimeextension.Extension{extension})
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	svc.preflight = svc.preflight.WithRuntimeExtensions(registry)
+	profile, err := svc.profiles.Create("CTF", runtimeprofile.ProviderPi, runtimeprofile.Fields{
+		Model: "claude-sonnet-4", Endpoint: "https://api.example.test/anthropic",
+		APIKeys:           map[string]string{"ANTHROPIC_API_KEY": "sk-test"},
+		RuntimeExtensions: []runtimeprofile.RuntimeExtensionRef{{ID: extension.ID, Enabled: &enabled}},
+	})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+
+	wrongKind := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID:  profile.ID,
+		ProjectID:         "p1",
+		ProjectKind:       "pentest",
+		ScopeCapabilities: []string{"challenge_platform"},
+	})
+	if wrongKind.Pass || !checkFailed(wrongKind, "runtime_extension_requirements") {
+		t.Fatalf("expected Project Kind requirement failure, got %#v", wrongKind.Checks)
+	}
+
+	missingCapability := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+		ProjectKind:      "ctf_challenge",
+	})
+	if missingCapability.Pass || !checkFailed(missingCapability, "runtime_extension_requirements") {
+		t.Fatalf("expected Scope capability requirement failure, got %#v", missingCapability.Checks)
+	}
+
+	ready := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID:  profile.ID,
+		ProjectID:         "p1",
+		ProjectKind:       "ctf_challenge",
+		ScopeCapabilities: []string{"challenge_platform"},
+	})
+	if !ready.Pass {
+		t.Fatalf("expected requirements to pass, got %#v", ready.Checks)
+	}
+}
+
 func newPiExtensionRegistry(t *testing.T, source string) *runtimeextension.Registry {
 	t.Helper()
 	loaded, errs := runtimeextension.LoadDirectory(writePiExtensionManifest(t, source))

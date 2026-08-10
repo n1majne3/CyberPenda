@@ -940,7 +940,153 @@ func migrations() []migration {
 		newMigration(53, "blackboard_conclusion_obligations", migration53SQL, migration53Up),
 		newMigration(54, "session_conclusion_retry_keys_obligations", migration54SQL, migration54Up),
 		newMigration(55, "blackboard_finish_intents", migration55SQL, migration55Up),
+		newMigration(56, "challenge_workflow", migration56SQL, migration56Up),
+		newMigration(57, "task_type_snapshot", migration57SQL, migration57Up),
+		newMigration(58, "challenge_operation_recovery_settlement", migration58SQL, migration58Up),
 	}
+}
+
+const migration58SQL = `
+CREATE TABLE challenge_operations (
+	task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE RESTRICT,
+	operation_id TEXT NOT NULL,
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+	platform TEXT NOT NULL,
+	kind TEXT NOT NULL CHECK (kind IN ('claim','submit','abandon','finalize')),
+	request_hash TEXT NOT NULL CHECK (length(request_hash) = 64),
+	request_json TEXT NOT NULL,
+	state TEXT NOT NULL CHECK (state IN ('pending','recording','completed')),
+	external_attempt_id TEXT NOT NULL DEFAULT '',
+	response_json TEXT NOT NULL DEFAULT '',
+	evidence_key TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (task_id, operation_id)
+);
+CREATE INDEX idx_challenge_operations_recovery
+	ON challenge_operations (state, updated_at);
+`
+
+func migration58Up(tx *sql.Tx) error {
+	var tableSQL string
+	if err := tx.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='challenge_operations'`).Scan(&tableSQL); err != nil {
+		return fmt.Errorf("read challenge_operations schema: %w", err)
+	}
+	if strings.Contains(tableSQL, "'action_required'") {
+		return ensureColumn(tx, "challenge_operations", "recovery_error", "TEXT NOT NULL DEFAULT ''")
+	}
+	hasRecoveryError, err := storeTableHasColumn(tx, "challenge_operations", "recovery_error")
+	if err != nil {
+		return fmt.Errorf("inspect challenge_operations recovery_error: %w", err)
+	}
+	for _, statement := range []string{
+		`ALTER TABLE challenge_operations RENAME TO challenge_operations_v57`,
+		`DROP INDEX IF EXISTS idx_challenge_operations_recovery`,
+		migration58SQL[:strings.Index(migration58SQL, ";")],
+	} {
+		if _, err := tx.Exec(statement); err != nil {
+			return fmt.Errorf("rebuild challenge_operations: %w", err)
+		}
+	}
+	recoveryExpression := "''"
+	if hasRecoveryError {
+		recoveryExpression = "recovery_error"
+	}
+	copySQL := `INSERT INTO challenge_operations (
+		task_id,operation_id,project_id,platform,kind,request_hash,request_json,state,
+		external_attempt_id,response_json,evidence_key,recovery_error,created_at,updated_at
+	) SELECT task_id,operation_id,project_id,platform,kind,request_hash,request_json,state,
+		external_attempt_id,response_json,evidence_key,` + recoveryExpression + `,created_at,updated_at
+		FROM challenge_operations_v57`
+	if _, err := tx.Exec(copySQL); err != nil {
+		return fmt.Errorf("copy challenge_operations: %w", err)
+	}
+	if _, err := tx.Exec(`DROP TABLE challenge_operations_v57`); err != nil {
+		return fmt.Errorf("drop prior challenge_operations: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE INDEX idx_challenge_operations_recovery ON challenge_operations (state, updated_at)`); err != nil {
+		return fmt.Errorf("index challenge_operations recovery: %w", err)
+	}
+	return nil
+}
+
+// migration57SQL adds the immutable Task Type selected at Task Launch. Existing
+// Tasks inherit the current Project Kind once during migration.
+const migration57SQL = `
+ALTER TABLE tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'pentest'
+	CHECK (task_type IN ('pentest','ctf_challenge'));
+UPDATE tasks
+SET task_type = COALESCE(
+	(SELECT projects.kind FROM projects WHERE projects.id = tasks.project_id),
+	'pentest'
+);
+`
+
+func migration57Up(tx *sql.Tx) error {
+	if err := ensureColumn(tx, "tasks", "task_type", "TEXT NOT NULL DEFAULT 'pentest' CHECK (task_type IN ('pentest','ctf_challenge'))"); err != nil {
+		return fmt.Errorf("ensure tasks.task_type: %w", err)
+	}
+	_, err := tx.Exec(`UPDATE tasks
+		SET task_type = COALESCE(
+			(SELECT projects.kind FROM projects WHERE projects.id = tasks.project_id),
+			'pentest'
+		)
+		WHERE task_type = '' OR task_type IS NULL`)
+	if err != nil {
+		return fmt.Errorf("backfill tasks.task_type: %w", err)
+	}
+	return nil
+}
+
+// migration56SQL stores Challenge Workflow operations before they cross the
+// Platform Adapter boundary. The operation identity makes restart replay safe.
+const migration56SQL = `
+CREATE TABLE IF NOT EXISTS challenge_attempts (
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+	task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE RESTRICT,
+	platform TEXT NOT NULL,
+	external_attempt_id TEXT NOT NULL,
+	challenge_id TEXT NOT NULL,
+	attempt_key TEXT NOT NULL,
+	objective_key TEXT NOT NULL,
+	status TEXT NOT NULL CHECK (status IN ('open','succeeded','failed','finalized')),
+	wrong_submissions INTEGER NOT NULL DEFAULT 0 CHECK (wrong_submissions >= 0),
+	consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0),
+	initial_rating INTEGER NOT NULL DEFAULT 0,
+	peak_rating INTEGER NOT NULL DEFAULT 0,
+	current_rating INTEGER NOT NULL DEFAULT 0,
+	last_progress_at TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (project_id, platform, external_attempt_id),
+	UNIQUE (task_id, attempt_key),
+	UNIQUE (task_id, objective_key)
+);
+CREATE INDEX IF NOT EXISTS idx_challenge_attempts_task_status
+	ON challenge_attempts (task_id, status, created_at);
+CREATE TABLE IF NOT EXISTS challenge_operations (
+	task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE RESTRICT,
+	operation_id TEXT NOT NULL,
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+	platform TEXT NOT NULL,
+	kind TEXT NOT NULL CHECK (kind IN ('claim','submit','abandon','finalize')),
+	request_hash TEXT NOT NULL CHECK (length(request_hash) = 64),
+	request_json TEXT NOT NULL,
+	state TEXT NOT NULL CHECK (state IN ('pending','recording','completed','action_required')),
+	external_attempt_id TEXT NOT NULL DEFAULT '',
+	response_json TEXT NOT NULL DEFAULT '',
+	evidence_key TEXT NOT NULL DEFAULT '',
+	recovery_error TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (task_id, operation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_challenge_operations_recovery
+	ON challenge_operations (state, updated_at);
+`
+
+func migration56Up(tx *sql.Tx) error {
+	return execStatements(tx, migration56SQL)
 }
 
 // migration50SQL is the historical ALTER form of migration 50. The Up function

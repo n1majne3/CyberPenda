@@ -53,7 +53,8 @@ func TestCodexLaunchSendsResolvedRequestedReasoningEffort(t *testing.T) {
 	}
 
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "inspect example.com",
+		ProjectID: projectRecord.ID,
+		Type:      task.TypePentest, Goal: "inspect example.com",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
@@ -157,7 +158,8 @@ func TestCodexLaunchDefaultsRequestedReasoningEffortToHighWhenMissing(t *testing
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "inspect example.com",
+		ProjectID: projectRecord.ID,
+		Type:      task.TypePentest, Goal: "inspect example.com",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
@@ -225,7 +227,7 @@ func TestTaskCreateHTTPAcceptsLaunchReasoningEffortOverrideWithoutMutatingProfil
 		t.Fatal(err)
 	}
 
-	body := `{"goal":"inspect example.com","runtime_profile_id":"` + profile.ID + `","reasoning_effort":"xhigh","runner":"sandbox"}`
+	body := `{"type":"pentest","goal":"inspect example.com","runtime_profile_id":"` + profile.ID + `","reasoning_effort":"xhigh","runner":"sandbox"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectRecord.ID+"/tasks", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp := httptest.NewRecorder()

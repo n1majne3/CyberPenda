@@ -1188,6 +1188,38 @@ func (s *Service) ReadCurrent(ctx context.Context, projectID, key string) (Curre
 	}, nil
 }
 
+// HasSemanticKey reports whether a Blackboard Key is current, historical, or
+// retained as a redirect endpoint. It lets trusted adapters reject a new
+// record identity before a semantic batch can create a duplicate.
+func (s *Service) HasSemanticKey(ctx context.Context, projectID, key string) (bool, error) {
+	if err := validateKey(key, "key"); err != nil {
+		return false, err
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return false, fmt.Errorf("begin Blackboard v2 key lookup: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := ensureProjectExists(ctx, tx, projectID); err != nil {
+		return false, err
+	}
+	var exists int
+	err = tx.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM blackboard_v2_records WHERE project_id = ? AND key = ?
+			UNION ALL
+			SELECT 1 FROM blackboard_v2_record_history WHERE project_id = ? AND key = ?
+			UNION ALL
+			SELECT 1 FROM blackboard_v2_key_redirects
+			WHERE project_id = ? AND (source_key = ? OR canonical_key = ?)
+		)`, projectID, key, projectID, key, projectID, key, key,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("read Blackboard v2 key existence: %w", err)
+	}
+	return exists == 1, nil
+}
+
 // ReadHistory reads prior semantic versions by key with cursor pagination.
 func (s *Service) ReadHistory(ctx context.Context, projectID, key string, options HistoryOptions) (SemanticHistory, error) {
 	if err := validateKey(key, "key"); err != nil {

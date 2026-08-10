@@ -20,11 +20,11 @@ import (
 // Transcript on every poll.
 
 type projectionCursorBody struct {
-	TaskID    string            `json:"task_id"`
-	SessionID string            `json:"session_id"`
-	Items     []timeline.Item   `json:"items"`
+	TaskID    string             `json:"task_id"`
+	SessionID string             `json:"session_id"`
+	Items     []timeline.Item    `json:"items"`
 	Entries   []transcript.Entry `json:"entries"`
-	Cursor    int               `json:"cursor"`
+	Cursor    int                `json:"cursor"`
 }
 
 func newProjectionCursorFixture(t *testing.T) (*Server, string, string) {
@@ -43,7 +43,7 @@ func newProjectionCursorFixture(t *testing.T) (*Server, string, string) {
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "cursor timeline", Runner: task.RunnerSandbox,
+		ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "cursor timeline", Runner: task.RunnerSandbox,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -194,7 +194,7 @@ func TestProjectionCursorSurvivesDaemonRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: projectRecord.ID, Goal: "restart cursor", Runner: task.RunnerSandbox})
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "restart cursor", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatal(err)
 	}

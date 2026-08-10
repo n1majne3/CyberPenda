@@ -6,6 +6,10 @@ function timelineItem(seq: number): TaskTimelineItem {
   return { seq, type: "text", content: `item-${seq}` };
 }
 
+function identifiedTimelineItem(id: string, seq: number): TaskTimelineItem {
+  return { id, seq, type: "text", content: id };
+}
+
 function transcriptEntry(id: string, seq: number): TaskTranscriptEntry {
   return { id, seq, continuation: 1, kind: "message", role: "assistant", text: id };
 }
@@ -33,6 +37,13 @@ describe("mergeTimelineItems", () => {
     const delta = [timelineItem(1), timelineItem(2)];
     const merged = mergeTimelineItems(existing, delta);
     expect(merged.map((item) => item.seq)).toEqual([2, 3]);
+  });
+
+  it("keeps distinct Timeline items that share one source Event seq", () => {
+    const existing = [identifiedTimelineItem("event-1-text", 1)];
+    const delta = [identifiedTimelineItem("event-2-thinking", 2), identifiedTimelineItem("event-2-tool", 2)];
+    const merged = mergeTimelineItems(existing, delta);
+    expect(merged.map((item) => item.id)).toEqual(["event-1-text", "event-2-thinking", "event-2-tool"]);
   });
 });
 

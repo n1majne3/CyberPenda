@@ -1,14 +1,22 @@
 package project_test
 
 import (
+	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"pentest/internal/project"
 	"pentest/internal/store"
 )
 
 func newTestService(t *testing.T) *project.Service {
+	service, _ := newTestServiceWithDB(t)
+	return service
+}
+
+func newTestServiceWithDB(t *testing.T) (*project.Service, *store.DB) {
 	t.Helper()
 	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
 	if err != nil {
@@ -19,7 +27,7 @@ func newTestService(t *testing.T) *project.Service {
 			t.Fatalf("close store: %v", err)
 		}
 	})
-	return project.NewService(db)
+	return project.NewService(db), db
 }
 
 func TestCreateRejectsBlankName(t *testing.T) {
@@ -90,6 +98,61 @@ func TestCreateWithKindPersistsCTFAndRejectsUnknownKind(t *testing.T) {
 
 	if _, err := service.CreateWithKind("Unknown", "", "other", project.Scope{}, project.Defaults{}); err != project.ErrInvalidKind {
 		t.Fatalf("expected ErrInvalidKind, got %v", err)
+	}
+}
+
+func TestProjectKindConversionPreviewBlocksActiveTasksAndIncompatibleKnowledge(t *testing.T) {
+	service, db := newTestServiceWithDB(t)
+	created, err := service.CreateWithKind("Engagement", "", project.KindPentest, project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create Project: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(`INSERT INTO tasks(id,project_id,goal,status,runner,runtime_profile_id,run_controls_json,scope_snapshot_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		"task-running", created.ID, "work", "running", "sandbox", "profile", `{}`, `{}`, now, now); err != nil {
+		t.Fatalf("insert active Task: %v", err)
+	}
+	findingJSON, _ := json.Marshal(map[string]any{"status": "confirmed", "title": "Existing Finding"})
+	if _, err := db.Exec(`INSERT INTO blackboard_v2_records(project_id,key,type,version,record_json,created_at,updated_at) VALUES(?,?,'finding',1,?,?,?)`,
+		created.ID, "finding/existing", string(findingJSON), now, now); err != nil {
+		t.Fatalf("insert Finding: %v", err)
+	}
+
+	preview, err := service.PreviewKindConversion(created.ID, project.KindCTFChallenge)
+	if err != nil {
+		t.Fatalf("preview conversion: %v", err)
+	}
+	if preview.Ready {
+		t.Fatal("expected conversion blockers")
+	}
+	if len(preview.Blockers) != 2 || preview.Blockers[0].Code != project.KindConversionBlockerActiveTasks || preview.Blockers[1].Code != project.KindConversionBlockerIncompatibleFindings {
+		t.Fatalf("unexpected blockers: %#v", preview.Blockers)
+	}
+	if _, err := service.ConvertKind(created.ID, project.KindCTFChallenge); !errors.Is(err, project.ErrKindConversionBlocked) {
+		t.Fatalf("expected blocked conversion, got %v", err)
+	}
+}
+
+func TestProjectKindConversionChangesOnlyKindWhenPreviewIsReady(t *testing.T) {
+	service := newTestService(t)
+	created, err := service.CreateWithKind("Challenge", "", project.KindPentest, project.Scope{URLs: []string{"https://arena.test"}}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create Project: %v", err)
+	}
+
+	preview, err := service.PreviewKindConversion(created.ID, project.KindCTFChallenge)
+	if err != nil {
+		t.Fatalf("preview conversion: %v", err)
+	}
+	if !preview.Ready || len(preview.Blockers) != 0 {
+		t.Fatalf("expected ready preview, got %#v", preview)
+	}
+	converted, err := service.ConvertKind(created.ID, project.KindCTFChallenge)
+	if err != nil {
+		t.Fatalf("convert Project: %v", err)
+	}
+	if converted.Kind != project.KindCTFChallenge || len(converted.Scope.URLs) != 1 || converted.Scope.URLs[0] != "https://arena.test" {
+		t.Fatalf("unexpected converted Project: %#v", converted)
 	}
 }
 
