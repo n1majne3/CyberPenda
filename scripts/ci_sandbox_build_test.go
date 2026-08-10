@@ -181,6 +181,7 @@ func TestPullRequestSandboxSmokeDoesNotLoadTheFullKaliImage(t *testing.T) {
 	assertContains(t, workflow, "make build-sandbox-smoke-image")
 	assertContains(t, workflow, "PENTEST_SANDBOX_IMAGE: cyberpenda-sandbox-smoke:ci")
 	assertContains(t, workflow, "\n          SANDBOX_IMAGE: cyberpenda-sandbox-smoke:ci")
+	assertContains(t, workflow, "\n          PENTEST_DAEMON_WAIT_SECONDS: \"120\"")
 }
 
 func TestManualSandboxWorkflowBuildsAndPublishesImagePerPlatform(t *testing.T) {

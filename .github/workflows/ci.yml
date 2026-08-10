@@ -110,4 +110,5 @@ jobs:
         env:
           PENTEST_SANDBOX_IMAGE: cyberpenda-sandbox-smoke:ci
           SANDBOX_IMAGE: cyberpenda-sandbox-smoke:ci
+          PENTEST_DAEMON_WAIT_SECONDS: "120"
         run: scripts/with-pentestd-live.sh make smoke-sandbox-mcp
