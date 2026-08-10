@@ -279,7 +279,12 @@ export interface SessionLaunchOptions {
   runner?: string;
   host_activated?: boolean;
   blackboard_conclusion_mode?: BlackboardConclusionMode;
-  run_controls?: { blackboard_conclusion_mode?: BlackboardConclusionMode };
+  run_controls?: {
+    blackboard_conclusion_mode?: BlackboardConclusionMode;
+    container_cli?: "docker" | "podman" | string;
+    sandbox_network?: string;
+    sandbox_vpn_tun?: boolean;
+  };
 }
 
 export function listSessions(lifecycle?: SessionLifecycle, limit?: number) {

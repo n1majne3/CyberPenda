@@ -131,6 +131,13 @@ type RuntimeControls struct {
 // vocabulary as Tasks without acquiring a Project identity or Project scope.
 type RunControls struct {
 	BlackboardConclusionMode BlackboardConclusionMode `json:"blackboard_conclusion_mode"`
+	// ContainerCLI is docker or podman for Session sandbox launches. Empty
+	// means the daemon default (-container-cli / PENTEST_CONTAINER_CLI).
+	ContainerCLI string `json:"container_cli,omitempty"`
+	// SandboxNetwork mirrors Task sandbox network selection when non-empty.
+	SandboxNetwork string `json:"sandbox_network,omitempty"`
+	// SandboxVPNTun opts into /dev/net/tun + NET_ADMIN for OpenVPN in the container.
+	SandboxVPNTun bool `json:"sandbox_vpn_tun,omitempty"`
 }
 
 // BlackboardConclusionMode selects whether the operator alone prompts the

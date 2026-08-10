@@ -45,6 +45,11 @@ type sessionRuntimeInput struct {
 	Runner           string         `json:"runner"`
 	HostActivated    bool           `json:"host_activated"`
 	RuntimeConfig    map[string]any `json:"runtime_config"`
+	// ContainerCLI / SandboxNetwork / SandboxVPNTun come from run_controls and
+	// select the host container engine for this Session launch.
+	ContainerCLI   string `json:"container_cli,omitempty"`
+	SandboxNetwork string `json:"sandbox_network,omitempty"`
+	SandboxVPNTun  bool   `json:"sandbox_vpn_tun,omitempty"`
 }
 
 func (input sessionRuntimeInput) selectedModel() string {
@@ -344,11 +349,17 @@ func (server *Server) buildSessionRuntimePlan(found session.Session, goal string
 				}
 			}
 		}
+		containerCLI := task.ResolveContainerCLI(input.ContainerCLI, server.containerCLI)
+		networkMode := runner.SandboxNetworkDefault
+		if strings.TrimSpace(input.SandboxNetwork) == string(runner.SandboxNetworkHostProxyOnly) {
+			networkMode = runner.SandboxNetworkHostProxyOnly
+		}
 		command, err := runner.BuildSandboxCommand(runner.SandboxCommandRequest{
 			Layout: layout, Provider: profile.Provider, Image: image,
-			ContainerCLI: server.containerCLI, ContainerIDFile: containerIDFile,
+			ContainerCLI: containerCLI, ContainerIDFile: containerIDFile,
 			RuntimeCommand: sandboxRuntime, ProcessEnv: processEnv,
-			NetworkMode: runner.SandboxNetworkDefault,
+			NetworkMode: networkMode,
+			VPNTun:      input.SandboxVPNTun,
 			TaskVolume:  server.taskVolume, TaskVolumeRoot: server.taskVolumeRoot,
 		})
 		if err != nil {
@@ -623,7 +634,9 @@ func preflightRequestForSession(server *Server, profile runtimeprofile.Profile, 
 		Runner:              string(run),
 		HostActivated:       input.HostActivated,
 		LaunchModelOverride: launchModel,
-		ContainerCLI:        server.containerCLI,
+		ContainerCLI:        task.ResolveContainerCLI(input.ContainerCLI, server.containerCLI),
+		SandboxVPNTun:       input.SandboxVPNTun,
+		SandboxNetwork:      input.SandboxNetwork,
 		RuntimeRoot:         server.runtimeRoot,
 	}
 }
@@ -1172,7 +1185,10 @@ func sessionRuntimeInputFromCreate(input createSessionInput) sessionRuntimeInput
 		RuntimeProfileID: input.RuntimeProfileID, Provider: input.Provider, RuntimeProvider: input.RuntimeProvider,
 		ModelProviderID: input.ModelProviderID, Model: input.Model, ModelOverride: input.ModelOverride,
 		ReasoningEffort: input.ReasoningEffort, Runner: input.Runner, HostActivated: input.HostActivated,
-		RuntimeConfig: input.RuntimeConfig,
+		RuntimeConfig:  input.RuntimeConfig,
+		ContainerCLI:   input.RunControls.ContainerCLI,
+		SandboxNetwork: input.RunControls.SandboxNetwork,
+		SandboxVPNTun:  input.RunControls.SandboxVPNTun,
 	}
 }
 

@@ -1058,7 +1058,7 @@ func TestSandboxResumeRebuildsContainerWithPersistentTaskMountAndRuntimeHome(t *
 		t.Fatalf("read docker log: %v", err)
 	}
 	logText := string(rawLog)
-	taskMount := filepath.Join(runtimeRoot, taskID) + ":/task"
+	taskMount := "type=bind,src=" + filepath.Join(runtimeRoot, taskID) + ",dst=/task"
 	if got := strings.Count(logText, "create --cidfile"); got != 2 {
 		t.Fatalf("expected two sandbox container launches, got %d in log:\n%s", got, logText)
 	}

@@ -880,6 +880,20 @@ func (server *Server) handleHealth(response http.ResponseWriter, request *http.R
 	if info, err := runner.DetectEngine(request.Context(), payload.Runner.ContainerCLI, nil); err == nil {
 		payload.Runner.EngineKind = string(info.Kind)
 		payload.Runner.EngineName = info.Name
+	} else {
+		// If the configured CLI is missing, surface the first available engine so
+		// the launch UI can default to Podman when only Podman is installed.
+		for _, candidate := range []string{"podman", "docker"} {
+			if candidate == payload.Runner.ContainerCLI {
+				continue
+			}
+			if info, err := runner.DetectEngine(request.Context(), candidate, nil); err == nil {
+				payload.Runner.EngineKind = string(info.Kind)
+				payload.Runner.EngineName = info.Name
+				payload.Runner.ContainerCLI = candidate
+				break
+			}
+		}
 	}
 
 	writeJSON(response, http.StatusOK, payload)

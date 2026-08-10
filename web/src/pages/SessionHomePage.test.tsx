@@ -56,6 +56,11 @@ const sessionLaunchRoutes = {
   "/api/model-providers": { providers: [mimoProvider] },
   "/api/runtime-profiles": { profiles: [] },
   "/api/skills?": { skills: [] },
+  "/api/health": {
+    version: "test",
+    database: { status: "ok" },
+    runner: { container_cli: "docker", engine_kind: "docker", engine_name: "Docker" },
+  },
 };
 
 function renderPage(initialEntries = ["/sessions"], view: "open" | "archived" = "open") {
@@ -102,7 +107,7 @@ describe("SessionHomePage", () => {
             runtime_profile_id: "resolved-profile",
             runner: "sandbox",
             reasoning_effort: "xhigh",
-            run_controls: { blackboard_conclusion_mode: "assisted" },
+            run_controls: { container_cli: "docker", blackboard_conclusion_mode: "assisted" },
           }),
         }),
       );
@@ -198,7 +203,7 @@ describe("SessionHomePage", () => {
             runtime_profile_id: "resolved-profile",
             runner: "sandbox",
             reasoning_effort: "high",
-            run_controls: { blackboard_conclusion_mode: "interactive" },
+            run_controls: { container_cli: "docker", blackboard_conclusion_mode: "interactive" },
           }),
         }),
       );
@@ -250,7 +255,7 @@ describe("SessionHomePage", () => {
             runtime_profile_id: "resolved-profile",
             runner: "sandbox",
             reasoning_effort: "high",
-            run_controls: { blackboard_conclusion_mode: "assisted" },
+            run_controls: { container_cli: "docker", blackboard_conclusion_mode: "assisted" },
           }),
         }),
       );

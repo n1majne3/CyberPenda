@@ -4,6 +4,7 @@ import {
   apiGet,
   apiPost,
   type BlackboardConclusionMode,
+  type Health,
   type ModelProvider,
   type PreflightResult,
   type Project,
@@ -73,11 +74,12 @@ export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOpt
     let cancelled = false;
     void (async () => {
       try {
-        const [pluginData, providerData, profileData, project] = await Promise.all([
+        const [pluginData, providerData, profileData, project, health] = await Promise.all([
           apiGet<{ plugins: RuntimePlugin[] }>("/api/runtime-plugins"),
           apiGet<{ providers: ModelProvider[] }>("/api/model-providers"),
           apiGet<{ profiles: RuntimeProfile[] }>("/api/runtime-profiles"),
           projectId ? apiGet<Project>(`/api/projects/${projectId}`) : Promise.resolve(null),
+          apiGet<Health>("/api/health").catch(() => null),
         ]);
         if (cancelled) return;
         const loadedPlugins = pluginData.plugins ?? [];
@@ -99,6 +101,15 @@ export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOpt
         setForm(state.form);
         setPresetId(state.presetId);
         setPresetOpen(state.presetOpen);
+        // Prefer the engine health reports as ready (daemon may rewrite
+        // container_cli when only Podman is installed).
+        const cli = health?.runner?.container_cli?.toLowerCase();
+        const kind = health?.runner?.engine_kind?.toLowerCase();
+        if (cli === "podman" || kind === "podman") {
+          setContainerCLI("podman");
+        } else {
+          setContainerCLI("docker");
+        }
         setError(null);
       } catch (cause) {
         if (!cancelled) setError((cause as Error).message);
