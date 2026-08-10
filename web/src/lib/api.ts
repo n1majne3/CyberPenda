@@ -805,6 +805,14 @@ export interface PreflightResult {
 export interface Health {
   version: string;
   database: { status: string };
+  mcp?: { status: string; path?: string };
+  runner?: {
+    runtime_root?: string;
+    sandbox_image?: string;
+    container_cli?: string;
+    engine_kind?: string;
+    engine_name?: string;
+  };
 }
 
 function isErrorBody(body: unknown): body is { error: string } {

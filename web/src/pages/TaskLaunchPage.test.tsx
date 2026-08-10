@@ -907,6 +907,127 @@ describe("TaskLaunchPage", () => {
     expect(screen.getByText("Install: npm:pi-mcp-adapter")).toBeInTheDocument();
   });
 
+  it("shows container engine and sandbox runtime root in the Sandbox environment preflight section", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const method = init?.method ?? "GET";
+        if (url.includes("/api/runtime-plugins")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ plugins: [codexPlugin] }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+        }
+        if (url.includes("/api/model-providers")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ providers: [mimoProvider] }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+        }
+        if (url.includes("/api/runtime-profiles/resolve-launch") && method === "POST") {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                profile_id: "resolved-profile",
+                created: true,
+                profile: {
+                  id: "resolved-profile",
+                  name: "Codex · MiMo",
+                  provider: "codex",
+                  fields: { model_provider_id: "mimo", model_override: "mimo-v2.5-pro" },
+                  created_at: "",
+                  updated_at: "",
+                },
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url.includes("/api/runtime-profiles")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ profiles: [] }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+        }
+        if (url.includes("/api/projects/project-1/preflight") && method === "POST") {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                pass: true,
+                checks: [
+                  { name: "runtime_profile", status: "pass" },
+                  { name: "runner", status: "pass" },
+                  { name: "container_engine", status: "pass", detail: "OrbStack via docker" },
+                  {
+                    name: "sandbox_runtime_root",
+                    status: "pass",
+                    detail: "writable; sandbox bind source /tmp/runs",
+                  },
+                  {
+                    name: "sandbox_vpn_tun",
+                    status: "pass",
+                    detail: "OrbStack can grant /dev/net/tun and NET_ADMIN at container create",
+                  },
+                ],
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url.includes("/api/projects/project-1/tasks") && method === "POST") {
+          return new Promise<Response>(() => {});
+        }
+        if (url.includes("/api/projects/project-1")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                id: "project-1",
+                name: "Acme",
+                description: "",
+                scope: {},
+                defaults: { runner: "sandbox" },
+                created_at: "",
+                updated_at: "",
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        return Promise.resolve(
+          new Response(JSON.stringify({}), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }),
+    );
+
+    renderPage();
+    await selectPentestTaskType();
+    await userEvent.type(await screen.findByLabelText("Task goal"), "Probe sandbox env");
+    await userEvent.click(screen.getByRole("button", { name: /launch/i }));
+
+    const sandboxSection = await screen.findByText("Sandbox environment");
+    expect(sandboxSection).toBeInTheDocument();
+    const section = document.querySelector('[data-preflight-section="sandbox-environment"]');
+    expect(section).not.toBeNull();
+    expect(section).toHaveTextContent("Container engine");
+    expect(section).toHaveTextContent("OrbStack via docker");
+    expect(section).toHaveTextContent("Sandbox runtime root");
+    expect(section).toHaveTextContent("sandbox bind source /tmp/runs");
+    expect(section).toHaveTextContent("Sandbox VPN TUN");
+    expect(document.querySelector('[data-preflight-check="container_engine"]')).not.toBeNull();
+    expect(document.querySelector('[data-preflight-check="sandbox_runtime_root"]')).not.toBeNull();
+    expect(document.querySelector('[data-preflight-check="sandbox_vpn_tun"]')).not.toBeNull();
+  });
+
   it("resolves launch profile for simple path and shows model provider preview after preflight", async () => {
     vi.stubGlobal(
       "fetch",

@@ -557,17 +557,76 @@ function formatAPIKeyStatus(modelProvider: NonNullable<PreflightResult["model_pr
   return modelProvider.api_key_source || modelProvider.api_key_env || "not configured";
 }
 
-function PreflightCard({ preflight }: { preflight: PreflightResult }) {
+const SANDBOX_PREFLIGHT_CHECKS = new Set([
+  "container_engine",
+  "sandbox_runtime_root",
+  "sandbox_vpn_tun",
+]);
+
+const PREFLIGHT_CHECK_LABELS: Record<string, string> = {
+  runtime_profile: "Runtime profile",
+  custom_args: "Custom args",
+  skills: "Skills",
+  runtime_extensions: "Extension packages",
+  runtime_extension_requirements: "Extension requirements",
+  model_provider: "Model provider",
+  runner: "Runner",
+  host_activation: "Host activation",
+  credentials: "Credentials",
+  container_engine: "Container engine",
+  sandbox_runtime_root: "Sandbox runtime root",
+  sandbox_vpn_tun: "Sandbox VPN TUN",
+};
+
+function preflightCheckLabel(name: string) {
+  return PREFLIGHT_CHECK_LABELS[name] ?? name.replaceAll("_", " ");
+}
+
+function PreflightCheckRow({ check }: { check: PreflightResult["checks"][number] }) {
+  const label = preflightCheckLabel(check.name);
   return (
-    <Card className={preflight.pass ? "border-emerald-500/40 bg-emerald-500/5 p-3" : "border-destructive/40 bg-destructive/5 p-3"}>
+    <div className="flex items-start gap-2 text-sm" data-preflight-check={check.name}>
+      {check.status === "pass" ? (
+        <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" aria-hidden="true" />
+      ) : (
+        <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" aria-hidden="true" />
+      )}
+      <div className="min-w-0">
+        <span className="font-medium">{label}</span>
+        {check.detail && (
+          <span className="text-muted-foreground">
+            : <span className={SANDBOX_PREFLIGHT_CHECKS.has(check.name) ? "break-all font-mono text-xs" : undefined}>{check.detail}</span>
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PreflightCard({ preflight }: { preflight: PreflightResult }) {
+  const sandboxChecks = preflight.checks.filter((check) => SANDBOX_PREFLIGHT_CHECKS.has(check.name));
+  const otherChecks = preflight.checks.filter((check) => !SANDBOX_PREFLIGHT_CHECKS.has(check.name));
+
+  return (
+    <Card
+      className={preflight.pass ? "border-emerald-500/40 bg-emerald-500/5 p-3" : "border-destructive/40 bg-destructive/5 p-3"}
+      aria-label={preflight.pass ? "Preflight passed" : "Preflight failed"}
+    >
       <div className="space-y-2">
-        {preflight.checks.map((check) => (
-          <div key={check.name} className="flex items-start gap-2 text-sm">
-            {check.status === "pass" ? <CheckCircle2 className="mt-0.5 h-4 w-4 text-emerald-400" /> : <XCircle className="mt-0.5 h-4 w-4 text-destructive" />}
-            <div><span className="font-medium">{check.name}</span>{check.detail && <span className="text-muted-foreground">: {check.detail}</span>}</div>
-          </div>
+        {otherChecks.map((check) => (
+          <PreflightCheckRow key={check.name} check={check} />
         ))}
       </div>
+      {sandboxChecks.length > 0 && (
+        <div className="mt-3 border-t border-border/60 pt-3" data-preflight-section="sandbox-environment">
+          <p className="mb-2 text-sm font-medium">Sandbox environment</p>
+          <div className="space-y-2 rounded-lg border border-border/60 bg-background/50 p-2">
+            {sandboxChecks.map((check) => (
+              <PreflightCheckRow key={check.name} check={check} />
+            ))}
+          </div>
+        </div>
+      )}
       {preflight.model_provider && (
         <div className="mt-3 border-t border-border/60 pt-3">
           <p className="mb-2 text-sm font-medium">Model provider</p>
