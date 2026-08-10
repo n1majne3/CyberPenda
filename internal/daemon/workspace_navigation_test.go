@@ -151,20 +151,7 @@ func navigationFixture(t *testing.T) (*daemon.Server, string) {
 // launchTaskForProject creates a Task through the public API and returns its
 // decoded body so callers can read its id and timestamps.
 func launchTaskForProject(t *testing.T, server *daemon.Server, profileID, projectID, goal string) map[string]any {
-	t.Helper()
-	resp := httptest.NewRecorder()
-	body := `{"type":"pentest","goal":"` + goal + `","runtime_profile_id":` + quoteJSON(profileID) + `,"runner":"sandbox"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	server.ServeHTTP(resp, req)
-	if resp.Code != http.StatusCreated {
-		t.Fatalf("create task status=%d body=%s", resp.Code, resp.Body.String())
-	}
-	var created map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
-		t.Fatalf("decode task: %v", err)
-	}
-	return created
+	return launchTaskForProjectWithRunner(t, server, profileID, projectID, goal, "sandbox")
 }
 
 // waitForTaskTerminal polls the Task until it reaches a status that allows
@@ -619,11 +606,14 @@ func TestWorkspaceNavigationResponseSizeIndependentOfTaskHistory(t *testing.T) {
 	// Two identical-shaped workspaces that differ only in total Task history
 	// must serialize to the same bounded size, because the projection inlines
 	// the fixed summary and never scans the rest.
+	//
+	// Use Host Runner so deep history does not pay sandbox create cost 200+
+	// times. That package timeout was burning CI wall time under load.
 	smallServer, smallProfile := navigationFixture(t)
-	navigationProjectWithTasks(t, smallServer, smallProfile, "SizeProject", 5)
+	navigationProjectWithHostTasks(t, smallServer, smallProfile, "SizeProject", 5)
 
 	largeServer, largeProfile := navigationFixture(t)
-	_, created := navigationProjectWithTasks(t, largeServer, largeProfile, "SizeProject", 205)
+	_, created := navigationProjectWithHostTasks(t, largeServer, largeProfile, "SizeProject", 205)
 
 	_, _, smallProjects, smallBody := getWorkspaceNavigationResponse(t, smallServer, "")
 	_, _, largeProjects, largeBody := getWorkspaceNavigationResponse(t, largeServer, "")
@@ -636,4 +626,38 @@ func TestWorkspaceNavigationResponseSizeIndependentOfTaskHistory(t *testing.T) {
 	if diff := len(largeBody) - len(smallBody); diff > 2000 || diff < -2000 {
 		t.Fatalf("navigation response size depends on history: small=%d bytes large=%d bytes (diff=%d)", len(smallBody), len(largeBody), diff)
 	}
+}
+
+// navigationProjectWithHostTasks is the size-test fixture: Host Runner is
+// enough to prove response bounds without sandbox container machinery.
+func navigationProjectWithHostTasks(t *testing.T, server *daemon.Server, profileID, name string, count int) (string, []string) {
+	t.Helper()
+	projectID := createProject(t, server, `{"name":"`+name+`","scope":{"domains":["example.com"]}}`)
+	ids := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		created := launchTaskForProjectWithRunner(t, server, profileID, projectID, "task", "host")
+		ids = append(ids, created["id"].(string))
+	}
+	return projectID, ids
+}
+
+func launchTaskForProjectWithRunner(t *testing.T, server *daemon.Server, profileID, projectID, goal, runner string) map[string]any {
+	t.Helper()
+	resp := httptest.NewRecorder()
+	runControls := `{}`
+	if runner == "host" {
+		runControls = `{"host_activated":true}`
+	}
+	body := `{"type":"pentest","goal":"` + goal + `","runtime_profile_id":` + quoteJSON(profileID) + `,"runner":` + quoteJSON(runner) + `,"run_controls":` + runControls + `}`
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("create task status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var created map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode task: %v", err)
+	}
+	return created
 }
