@@ -133,7 +133,7 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		HostActivated:       input.RunControls.HostActivated,
 		ProjectKind:         defaulted.project.Kind,
 		ScopeCapabilities:   append([]string(nil), defaulted.project.Scope.Capabilities...),
-		ContainerCLI:        server.containerCLI,
+		ContainerCLI:        task.ResolveContainerCLI(input.RunControls.ContainerCLI, server.containerCLI),
 		SandboxVPNTun:       input.RunControls.SandboxVPNTun,
 		SandboxNetwork:      input.RunControls.SandboxNetwork,
 		RuntimeRoot:         server.runtimeRoot,
@@ -899,11 +899,12 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 				readOnlyTaskFiles = []string{"workdir/.pentest/blackboard.json", "workdir/.pentest/scope.json"}
 			}
 		}
+		containerCLI := task.ResolveContainerCLI(created.RunControls.ContainerCLI, server.containerCLI)
 		command, err := runner.BuildSandboxCommand(runner.SandboxCommandRequest{
 			Layout:            layout,
 			Provider:          profile.Provider,
 			Image:             sandboxImage,
-			ContainerCLI:      server.containerCLI,
+			ContainerCLI:      containerCLI,
 			ContainerIDFile:   containerIDFile,
 			RuntimeCommand:    sandboxRuntime,
 			ProcessEnv:        processEnv,
@@ -4405,7 +4406,7 @@ func (server *Server) requireProject(response http.ResponseWriter, projectID str
 
 func writeTaskError(response http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, task.ErrMissingGoal), errors.Is(err, task.ErrUnsupportedRunner), errors.Is(err, task.ErrInvalidTaskType), errors.Is(err, task.ErrInvalidBlackboardConclusionMode), errors.Is(err, task.ErrInvalidTaskPolicy), errors.Is(err, task.ErrSandboxVPNTunHostProxyConflict):
+	case errors.Is(err, task.ErrMissingGoal), errors.Is(err, task.ErrUnsupportedRunner), errors.Is(err, task.ErrInvalidTaskType), errors.Is(err, task.ErrInvalidBlackboardConclusionMode), errors.Is(err, task.ErrInvalidTaskPolicy), errors.Is(err, task.ErrSandboxVPNTunHostProxyConflict), errors.Is(err, task.ErrInvalidContainerCLI):
 		writeError(response, http.StatusBadRequest, err.Error())
 	case errors.Is(err, task.ErrTaskTypeProjectKindMismatch):
 		writeError(response, http.StatusConflict, err.Error())

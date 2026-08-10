@@ -2032,6 +2032,7 @@ func TestCreatePersistsSandboxVPNTunRunControl(t *testing.T) {
 		Runner:           task.RunnerSandbox,
 		RunControls: task.RunControls{
 			SandboxVPNTun: true,
+			ContainerCLI:  "podman",
 		},
 	})
 	if err != nil {
@@ -2040,12 +2041,35 @@ func TestCreatePersistsSandboxVPNTunRunControl(t *testing.T) {
 	if !created.RunControls.SandboxVPNTun {
 		t.Fatal("expected sandbox VPN TUN enabled on create")
 	}
+	if created.RunControls.ContainerCLI != "podman" {
+		t.Fatalf("container_cli = %q, want podman", created.RunControls.ContainerCLI)
+	}
 	fetched, err := svc.Get(created.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
 	if !fetched.RunControls.SandboxVPNTun {
 		t.Fatal("expected sandbox VPN TUN to persist")
+	}
+	if fetched.RunControls.ContainerCLI != "podman" {
+		t.Fatalf("persisted container_cli = %q", fetched.RunControls.ContainerCLI)
+	}
+}
+
+func TestCreateRejectsInvalidContainerCLI(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, err := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	_, err = svc.Create(task.CreateRequest{
+		ProjectID: proj.ID, Type: task.TypePentest, Goal: "g", Runner: task.RunnerSandbox,
+		RunControls: task.RunControls{ContainerCLI: "containerd"},
+	})
+	if !errors.Is(err, task.ErrInvalidContainerCLI) {
+		t.Fatalf("err = %v, want %v", err, task.ErrInvalidContainerCLI)
 	}
 }
 

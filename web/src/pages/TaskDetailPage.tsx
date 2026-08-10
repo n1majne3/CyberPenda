@@ -1300,13 +1300,22 @@ function transcriptURL(base: string, mode: "initial" | "poll", cursor: number): 
   return mode === "initial" ? `${base}/transcript` : `${base}/transcript?after=${cursor}`;
 }
 
+function displayRunnerLabel(runner: string, containerCLI?: string): string {
+  if (runner === "sandbox") {
+    const engine = containerCLI?.trim().toLowerCase();
+    if (engine === "podman" || engine === "docker") return engine;
+    return "docker";
+  }
+  return runner;
+}
+
 function taskAsRuntimeOwner(task: Task): RuntimeOwnerView {
   return {
     kind: "task",
     id: task.id,
     title: task.goal,
     status: task.status,
-    runner: task.runner,
+    runner: displayRunnerLabel(task.runner, task.run_controls?.container_cli),
     runtimeProfileID: task.runtime_profile_id,
     blackboardConclusionMode: task.run_controls.blackboard_conclusion_mode,
     blackboardConclusion: task.blackboard_conclusion,

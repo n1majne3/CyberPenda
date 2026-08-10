@@ -51,7 +51,10 @@ type RunControls struct {
 	// grants CAP_NET_ADMIN so OpenVPN (or other TUN clients) can create tun0.
 	// It cannot combine with host_proxy_only, which drops NET_ADMIN after the
 	// egress firewall is installed.
-	SandboxVPNTun            bool                     `json:"sandbox_vpn_tun,omitempty"`
+	SandboxVPNTun bool `json:"sandbox_vpn_tun,omitempty"`
+	// ContainerCLI selects docker or podman for this Task's sandbox launch.
+	// Empty means the daemon default (-container-cli / PENTEST_CONTAINER_CLI).
+	ContainerCLI             string                   `json:"container_cli,omitempty"`
 	Notes                    string                   `json:"notes,omitempty"`
 	Extras                   map[string]string        `json:"extras,omitempty"`
 	BlackboardConclusionMode BlackboardConclusionMode `json:"blackboard_conclusion_mode"`
@@ -62,6 +65,9 @@ type RunControls struct {
 
 func (controls RunControls) validate() error {
 	if err := controls.Policy.validate(); err != nil {
+		return err
+	}
+	if _, err := NormalizeContainerCLIChoice(controls.ContainerCLI); err != nil {
 		return err
 	}
 	if controls.SandboxVPNTun && strings.TrimSpace(controls.SandboxNetwork) == "host_proxy_only" {
@@ -75,6 +81,28 @@ func (controls RunControls) validate() error {
 		}
 	}
 	return nil
+}
+
+// NormalizeContainerCLIChoice accepts empty (daemon default), docker, or podman.
+func NormalizeContainerCLIChoice(cli string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(cli)) {
+	case "":
+		return "", nil
+	case "docker":
+		return "docker", nil
+	case "podman":
+		return "podman", nil
+	default:
+		return "", ErrInvalidContainerCLI
+	}
+}
+
+// ResolveContainerCLI prefers a Task Run Control choice, then the daemon default.
+func ResolveContainerCLI(taskChoice, daemonDefault string) string {
+	if normalized, err := NormalizeContainerCLIChoice(taskChoice); err == nil && normalized != "" {
+		return normalized
+	}
+	return strings.TrimSpace(daemonDefault)
 }
 
 // TaskPolicy defines machine-enforced stop conditions for one Task.
@@ -554,6 +582,9 @@ var ErrInvalidTaskPolicy = errors.New("Task Policy limits must be zero or positi
 // ErrSandboxVPNTunHostProxyConflict reports that sandbox VPN TUN cannot run
 // with the host_proxy_only network shape.
 var ErrSandboxVPNTunHostProxyConflict = errors.New("sandbox VPN TUN cannot combine with host_proxy_only network")
+
+// ErrInvalidContainerCLI reports an unsupported Task-level container CLI choice.
+var ErrInvalidContainerCLI = errors.New("container CLI must be docker or podman")
 
 var ErrInvalidBlackboardConclusionReceipt = errors.New("invalid Blackboard conclusion checkpoint receipt")
 

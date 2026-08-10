@@ -1398,7 +1398,7 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 		HostActivated:           hostActivated,
 		ProjectKind:             defaulted.project.Kind,
 		ScopeCapabilities:       append([]string(nil), defaulted.project.Scope.Capabilities...),
-		ContainerCLI:            server.containerCLI,
+		ContainerCLI:            task.ResolveContainerCLI(input.RunControls.ContainerCLI, server.containerCLI),
 		SandboxVPNTun:           input.RunControls.SandboxVPNTun,
 		SandboxNetwork:          input.RunControls.SandboxNetwork,
 		RuntimeRoot:             server.runtimeRoot,

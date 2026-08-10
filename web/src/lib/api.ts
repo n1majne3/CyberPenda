@@ -614,6 +614,7 @@ export interface Task {
 		host_activated?: boolean;
 		sandbox_network?: string;
 		sandbox_vpn_tun?: boolean;
+		container_cli?: "docker" | "podman" | string;
 		blackboard_conclusion_mode?: BlackboardConclusionMode;
 		notes?: string;
 		extras?: Record<string, string>;

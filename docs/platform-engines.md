@@ -27,12 +27,32 @@ Opt-in OpenVPN inside the sandbox:
 2. Enable **Sandbox VPN TUN**  
 3. Connect with the task `.ovpn` under `/task/workdir`
 
+## Launch UI
+
+Task / Session launch **Runner** options:
+
+| UI label | Backend `runner` | `run_controls.container_cli` |
+| --- | --- | --- |
+| Docker | `sandbox` | `docker` |
+| Podman | `sandbox` | `podman` |
+| Host | `host` | (omitted) |
+
+Preflight reports:
+
+- **Docker / Podman availability** — probes both CLIs on the host  
+- **Selected engine** — the engine chosen in the UI (or daemon default)  
+- **Runtime root** / **VPN TUN** as before  
+
 ## Podman (Linux / macOS)
+
+Daemon default:
 
 ```sh
 export PENTEST_CONTAINER_CLI=podman
 ./pentestd
 ```
+
+Or keep the daemon on Docker and pick **Podman** per Task in the launch form.
 
 - Named volume subpaths use Podman `subpath=` syntax.
 - Host gateway includes both `host.docker.internal` and `host.containers.internal`.

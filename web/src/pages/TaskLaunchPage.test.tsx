@@ -964,7 +964,12 @@ describe("TaskLaunchPage", () => {
                 checks: [
                   { name: "runtime_profile", status: "pass" },
                   { name: "runner", status: "pass" },
-                  { name: "container_engine", status: "pass", detail: "OrbStack via docker" },
+                  {
+                    name: "container_engines",
+                    status: "pass",
+                    detail: "docker: OrbStack via docker; podman: unavailable",
+                  },
+                  { name: "container_engine", status: "pass", detail: "selected docker — OrbStack via docker" },
                   {
                     name: "sandbox_runtime_root",
                     status: "pass",
@@ -1014,15 +1019,14 @@ describe("TaskLaunchPage", () => {
     await userEvent.type(await screen.findByLabelText("Task goal"), "Probe sandbox env");
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
 
-    const sandboxSection = await screen.findByText("Sandbox environment");
-    expect(sandboxSection).toBeInTheDocument();
+    expect(await screen.findByText("Container environment")).toBeInTheDocument();
     const section = document.querySelector('[data-preflight-section="sandbox-environment"]');
     expect(section).not.toBeNull();
-    expect(section).toHaveTextContent("Container engine");
+    expect(section).toHaveTextContent("Selected engine");
     expect(section).toHaveTextContent("OrbStack via docker");
-    expect(section).toHaveTextContent("Sandbox runtime root");
+    expect(section).toHaveTextContent("Runtime root");
     expect(section).toHaveTextContent("sandbox bind source /tmp/runs");
-    expect(section).toHaveTextContent("Sandbox VPN TUN");
+    expect(section).toHaveTextContent("VPN TUN");
     expect(document.querySelector('[data-preflight-check="container_engine"]')).not.toBeNull();
     expect(document.querySelector('[data-preflight-check="sandbox_runtime_root"]')).not.toBeNull();
     expect(document.querySelector('[data-preflight-check="sandbox_vpn_tun"]')).not.toBeNull();
@@ -1356,7 +1360,7 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
-    await userEvent.selectOptions(await screen.findByLabelText("Sandbox network"), "host_proxy_only");
+    await userEvent.selectOptions(await screen.findByLabelText("Docker network"), "host_proxy_only");
     await selectPentestTaskType();
     await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
@@ -1426,10 +1430,11 @@ describe("TaskLaunchPage", () => {
       }
       if (url.includes("/api/projects/project-1/preflight") && method === "POST") {
         const body = JSON.parse(String(init?.body ?? "{}")) as {
-          run_controls?: { sandbox_vpn_tun?: boolean; sandbox_network?: string };
+          run_controls?: { sandbox_vpn_tun?: boolean; sandbox_network?: string; container_cli?: string };
         };
         expect(body.run_controls?.sandbox_vpn_tun).toBe(true);
         expect(body.run_controls?.sandbox_network).toBeUndefined();
+        expect(body.run_controls?.container_cli).toBe("docker");
         return Promise.resolve(
           new Response(JSON.stringify({ pass: true, checks: [{ name: "runtime_profile", status: "pass" }] }), {
             status: 200,
@@ -1439,10 +1444,11 @@ describe("TaskLaunchPage", () => {
       }
       if (url.includes("/api/projects/project-1/tasks") && method === "POST") {
         const body = JSON.parse(String(init?.body ?? "{}")) as {
-          run_controls?: { sandbox_vpn_tun?: boolean; sandbox_network?: string };
+          run_controls?: { sandbox_vpn_tun?: boolean; sandbox_network?: string; container_cli?: string };
         };
         expect(body.run_controls?.sandbox_vpn_tun).toBe(true);
         expect(body.run_controls?.sandbox_network).toBeUndefined();
+        expect(body.run_controls?.container_cli).toBe("docker");
         return Promise.resolve(
           new Response(JSON.stringify({ id: "task-vpn" }), {
             status: 201,
@@ -1477,7 +1483,7 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
-    await userEvent.click(await screen.findByRole("checkbox", { name: /sandbox vpn tun/i }));
+    await userEvent.click(await screen.findByRole("checkbox", { name: /vpn tun/i }));
     await selectPentestTaskType();
     await userEvent.type(screen.getByLabelText("Task goal"), "Connect OpenVPN");
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
@@ -1487,6 +1493,77 @@ describe("TaskLaunchPage", () => {
         expect.stringContaining("/api/projects/project-1/tasks"),
         expect.objectContaining({ method: "POST" }),
       );
+    });
+  });
+
+  it("sends container_cli podman when Podman runner is selected", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.includes("/api/runtime-plugins")) {
+        return Promise.resolve(new Response(JSON.stringify({ plugins: [codexPlugin] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.includes("/api/model-providers")) {
+        return Promise.resolve(new Response(JSON.stringify({ providers: [mimoProvider] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.includes("/api/runtime-profiles/resolve-launch") && method === "POST") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              profile_id: "resolved-profile",
+              created: true,
+              profile: {
+                id: "resolved-profile",
+                name: "Codex · MiMo",
+                provider: "codex",
+                fields: { model_provider_id: "mimo", model_override: "mimo-v2.5-pro" },
+                created_at: "",
+                updated_at: "",
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      if (url.includes("/api/skills?")) {
+        return Promise.resolve(new Response(JSON.stringify({ skills: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.includes("/api/runtime-profiles")) {
+        return Promise.resolve(new Response(JSON.stringify({ profiles: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.includes("/api/projects/project-1/preflight") && method === "POST") {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { runner?: string; run_controls?: { container_cli?: string } };
+        expect(body.runner).toBe("sandbox");
+        expect(body.run_controls?.container_cli).toBe("podman");
+        return Promise.resolve(new Response(JSON.stringify({ pass: true, checks: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.includes("/api/projects/project-1/tasks") && method === "POST") {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { runner?: string; run_controls?: { container_cli?: string } };
+        expect(body.runner).toBe("sandbox");
+        expect(body.run_controls?.container_cli).toBe("podman");
+        return Promise.resolve(new Response(JSON.stringify({ id: "task-podman" }), { status: 201, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.includes("/api/projects/project-1")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ id: "project-1", name: "Acme", description: "", scope: {}, defaults: { runner: "sandbox" }, created_at: "", updated_at: "" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      return Promise.resolve(new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+    await userEvent.selectOptions(await screen.findByLabelText("Runner"), "podman");
+    expect(screen.getByText(/Container engine/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Podman network")).toBeInTheDocument();
+    await selectPentestTaskType();
+    await userEvent.type(screen.getByLabelText("Task goal"), "Use podman");
+    await userEvent.click(screen.getByRole("button", { name: /launch/i }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/api/projects/project-1/tasks"), expect.objectContaining({ method: "POST" }));
     });
   });
 
@@ -1595,7 +1672,7 @@ describe("TaskLaunchPage", () => {
 
     await userEvent.selectOptions(await screen.findByLabelText("Runner"), "host");
     await userEvent.click(screen.getByLabelText(/explicitly activate the host runner/i));
-    await userEvent.selectOptions(screen.getByLabelText("Runner"), "sandbox");
+    await userEvent.selectOptions(screen.getByLabelText("Runner"), "docker");
     await selectPentestTaskType();
     await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));

@@ -1079,11 +1079,17 @@ func TestSandboxPreflightProbesContainerEngineAndVPNTun(t *testing.T) {
 	if !checkPassed(result, "container_engine") {
 		t.Fatalf("container_engine check missing: %#v", result.Checks)
 	}
+	if !checkPassed(result, "container_engines") {
+		t.Fatalf("container_engines check missing: %#v", result.Checks)
+	}
 	if !checkPassed(result, "sandbox_vpn_tun") {
 		t.Fatalf("sandbox_vpn_tun check missing: %#v", result.Checks)
 	}
 	if !strings.Contains(checkDetail(result, "container_engine"), "OrbStack") {
 		t.Fatalf("detail = %q", checkDetail(result, "container_engine"))
+	}
+	if !strings.Contains(checkDetail(result, "container_engines"), "docker:") {
+		t.Fatalf("availability = %q", checkDetail(result, "container_engines"))
 	}
 }
 

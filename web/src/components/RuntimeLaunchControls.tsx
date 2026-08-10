@@ -58,6 +58,8 @@ export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOpt
   const [presetId, setPresetId] = useState("");
   const [presetOpen, setPresetOpen] = useState(false);
   const [hostActivated, setHostActivated] = useState(false);
+  // Container engine for sandbox launches: docker | podman (shown instead of bare "sandbox").
+  const [containerCLI, setContainerCLI] = useState<"docker" | "podman">("docker");
   const [sandboxNetwork, setSandboxNetwork] = useState("");
   const [sandboxVPNTun, setSandboxVPNTun] = useState(false);
   const [blackboardConclusionMode, setBlackboardConclusionMode] = useState<BlackboardConclusionMode>("interactive");
@@ -218,7 +220,7 @@ export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOpt
       ...(form.runner === "host" ? { host_activated: hostActivated } : {}),
       ...launchModelOverridePayload(presetId, form),
       ...launchReasoningEffortPayload(form),
-      run_controls: launchRunControls(hostActivated, form.runner, sandboxNetwork, sandboxVPNTun, blackboardConclusionMode),
+      run_controls: launchRunControls(hostActivated, form.runner, containerCLI, sandboxNetwork, sandboxVPNTun, blackboardConclusionMode),
     };
   }
 
@@ -255,6 +257,8 @@ export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOpt
     setPresetOpen,
     hostActivated,
     setHostActivated,
+    containerCLI,
+    setContainerCLI,
     sandboxNetwork,
     setSandboxNetwork,
     sandboxVPNTun,
@@ -306,6 +310,8 @@ export function RuntimeLaunchControls({
     setPresetOpen,
     hostActivated,
     setHostActivated,
+    containerCLI,
+    setContainerCLI,
     sandboxNetwork,
     setSandboxNetwork,
     sandboxVPNTun,
@@ -343,6 +349,9 @@ export function RuntimeLaunchControls({
         compatibleProviderCount: compatibleProviders.length,
         hostBlocked,
       });
+  // UI value maps Docker/Podman (container engines) + Host; backend still uses runner=sandbox|host.
+  const runnerSelectValue = form.runner === "host" ? "host" : containerCLI;
+  const engineLabel = form.runner === "host" ? "host" : containerCLI;
 
   return (
     <>
@@ -358,24 +367,35 @@ export function RuntimeLaunchControls({
           <Select
             id="launch-runner"
             name="runner"
-            value={form.runner}
+            value={runnerSelectValue}
             onChange={(event) => {
-              const runner = event.target.value;
-              setForm((current) => ({ ...current, runner }));
-              if (runner !== "host") setHostActivated(false);
+              const value = event.target.value;
+              if (value === "host") {
+                setForm((current) => ({ ...current, runner: "host" }));
+              } else {
+                setForm((current) => ({ ...current, runner: "sandbox" }));
+                setContainerCLI(value === "podman" ? "podman" : "docker");
+                setHostActivated(false);
+              }
               setPreflight(null);
             }}
           >
-            <option value="sandbox">sandbox</option>
-            <option value="host">host</option>
+            <option value="docker">Docker</option>
+            <option value="podman">Podman</option>
+            <option value="host">Host</option>
           </Select>
+          {form.runner === "sandbox" && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Container engine <span className="font-mono">{engineLabel}</span> runs the isolated task workdir.
+            </p>
+          )}
         </div>
       </div>
 
       {form.runner === "sandbox" && (
         <div className="space-y-3">
           <div>
-            <Label htmlFor="launch-sandbox-network">Sandbox network</Label>
+            <Label htmlFor="launch-sandbox-network">{engineLabel === "podman" ? "Podman network" : "Docker network"}</Label>
             <Select
               id="launch-sandbox-network"
               name="sandbox_network"
@@ -384,7 +404,7 @@ export function RuntimeLaunchControls({
                 const next = event.target.value;
                 setSandboxNetwork(next);
                 // host_proxy_only drops NET_ADMIN after the firewall is installed,
-                // so it cannot host an in-sandbox OpenVPN TUN client.
+                // so it cannot host an in-container OpenVPN TUN client.
                 if (next === "host_proxy_only") setSandboxVPNTun(false);
                 setPreflight(null);
               }}
@@ -407,10 +427,11 @@ export function RuntimeLaunchControls({
               className="mt-0.5 h-4 w-4 accent-primary"
             />
             <span>
-              <span className="font-medium">Sandbox VPN TUN</span>
+              <span className="font-medium">VPN TUN</span>
               <span className="mt-0.5 block text-xs text-muted-foreground">
                 Mount <span className="font-mono">/dev/net/tun</span> and grant{" "}
-                <span className="font-mono">NET_ADMIN</span> so OpenVPN can create{" "}
+                <span className="font-mono">NET_ADMIN</span> in the{" "}
+                <span className="font-mono">{engineLabel}</span> container so OpenVPN can create{" "}
                 <span className="font-mono">tun0</span>. Unavailable with host proxy only.
               </span>
             </span>
@@ -538,12 +559,14 @@ function launchUnavailableReason({
 function launchRunControls(
   hostActivated: boolean,
   runner: string,
+  containerCLI: "docker" | "podman",
   sandboxNetwork: string,
   sandboxVPNTun: boolean,
   blackboardConclusionMode: BlackboardConclusionMode,
 ) {
   return {
     ...(runner === "host" ? { host_activated: hostActivated } : {}),
+    ...(runner === "sandbox" ? { container_cli: containerCLI } : {}),
     ...(runner === "sandbox" && sandboxNetwork ? { sandbox_network: sandboxNetwork } : {}),
     ...(runner === "sandbox" && sandboxVPNTun && sandboxNetwork !== "host_proxy_only"
       ? { sandbox_vpn_tun: true }
@@ -558,6 +581,7 @@ function formatAPIKeyStatus(modelProvider: NonNullable<PreflightResult["model_pr
 }
 
 const SANDBOX_PREFLIGHT_CHECKS = new Set([
+  "container_engines",
   "container_engine",
   "sandbox_runtime_root",
   "sandbox_vpn_tun",
@@ -573,9 +597,10 @@ const PREFLIGHT_CHECK_LABELS: Record<string, string> = {
   runner: "Runner",
   host_activation: "Host activation",
   credentials: "Credentials",
-  container_engine: "Container engine",
-  sandbox_runtime_root: "Sandbox runtime root",
-  sandbox_vpn_tun: "Sandbox VPN TUN",
+  container_engines: "Docker / Podman availability",
+  container_engine: "Selected engine",
+  sandbox_runtime_root: "Runtime root",
+  sandbox_vpn_tun: "VPN TUN",
 };
 
 function preflightCheckLabel(name: string) {
@@ -619,7 +644,7 @@ function PreflightCard({ preflight }: { preflight: PreflightResult }) {
       </div>
       {sandboxChecks.length > 0 && (
         <div className="mt-3 border-t border-border/60 pt-3" data-preflight-section="sandbox-environment">
-          <p className="mb-2 text-sm font-medium">Sandbox environment</p>
+          <p className="mb-2 text-sm font-medium">Container environment</p>
           <div className="space-y-2 rounded-lg border border-border/60 bg-background/50 p-2">
             {sandboxChecks.map((check) => (
               <PreflightCheckRow key={check.name} check={check} />

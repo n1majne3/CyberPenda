@@ -559,52 +559,89 @@ func (s *Service) checkSandboxRuntimeRoot(result *Result, request Request) {
 }
 
 func (s *Service) checkContainerEngine(ctx context.Context, result *Result, request Request) {
-	cli := runner.NormalizeContainerCLI(request.ContainerCLI)
+	selected := runner.NormalizeContainerCLI(request.ContainerCLI)
 	if request.SandboxVPNTun && strings.TrimSpace(request.SandboxNetwork) == "host_proxy_only" {
 		result.add(Check{
 			Name:   "sandbox_vpn_tun",
 			Status: CheckFail,
-			Detail: "sandbox VPN TUN cannot combine with host_proxy_only network",
+			Detail: "VPN TUN cannot combine with host_proxy_only network",
 		})
 	}
-	info, err := runner.DetectEngine(ctx, cli, s.containerRunner)
-	if err != nil {
+
+	// Probe both engines so the UI can show which CLIs are ready on this host.
+	availability := make([]string, 0, 2)
+	var selectedInfo runner.EngineInfo
+	var selectedErr error
+	for _, candidate := range []string{"docker", "podman"} {
+		info, err := runner.DetectEngine(ctx, candidate, s.containerRunner)
+		if err != nil {
+			availability = append(availability, candidate+": unavailable")
+			if candidate == selected {
+				selectedErr = err
+			}
+			continue
+		}
+		availability = append(availability, candidate+": "+info.Detail)
+		if candidate == selected {
+			selectedInfo = info
+		}
+	}
+	result.add(Check{
+		Name:   "container_engines",
+		Status: CheckPass,
+		Detail: strings.Join(availability, "; "),
+	})
+
+	if selectedErr != nil {
 		result.add(Check{
 			Name:   "container_engine",
 			Status: CheckFail,
-			Detail: err.Error(),
+			Detail: fmt.Sprintf("selected %s is not ready: %v", selected, selectedErr),
 		})
 		if request.SandboxVPNTun && strings.TrimSpace(request.SandboxNetwork) != "host_proxy_only" {
 			result.add(Check{
 				Name:   "sandbox_vpn_tun",
 				Status: CheckFail,
-				Detail: "sandbox VPN TUN requires a ready container engine",
+				Detail: "VPN TUN requires a ready container engine",
 			})
 		}
 		return
 	}
-	detail := info.Detail
+	// DetectEngine may have used absolute test CLI only for selected path; when
+	// probing bare "docker"/"podman" the selected info is from the loop above.
+	if selectedInfo.CLI == "" {
+		info, err := runner.DetectEngine(ctx, selected, s.containerRunner)
+		if err != nil {
+			result.add(Check{
+				Name:   "container_engine",
+				Status: CheckFail,
+				Detail: err.Error(),
+			})
+			return
+		}
+		selectedInfo = info
+	}
+	detail := selectedInfo.Detail
 	if runtime.GOOS == "windows" {
 		detail += "; Windows host paths use bind mounts into the Desktop Linux VM (ADR 0025)"
 	}
 	result.add(Check{
 		Name:   "container_engine",
 		Status: CheckPass,
-		Detail: detail,
+		Detail: fmt.Sprintf("selected %s — %s", selected, detail),
 	})
 	if !request.SandboxVPNTun {
 		return
 	}
 	if strings.TrimSpace(request.SandboxNetwork) == "host_proxy_only" {
-		// Conflict already recorded above.
 		return
 	}
-	ok, detail := info.SupportsVPNTun()
+	ok, vpnDetail := selectedInfo.SupportsVPNTun()
 	if !ok {
-		result.add(Check{Name: "sandbox_vpn_tun", Status: CheckFail, Detail: detail})
+		result.add(Check{Name: "sandbox_vpn_tun", Status: CheckFail, Detail: vpnDetail})
 		return
 	}
-	result.add(Check{Name: "sandbox_vpn_tun", Status: CheckPass, Detail: detail})
+	result.add(Check{Name: "sandbox_vpn_tun", Status: CheckPass, Detail: vpnDetail})
 }
 
 func (r *Result) add(check Check) {
