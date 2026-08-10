@@ -100,7 +100,7 @@ func TestCheckpointAttemptRejectsClosedShapeBoundsOwnershipAndStaleState(t *test
 	}
 	seedCheckpointAttempt(t, fixture.board, fixture.project.ID, owner.Continuation.ID, "attempt:guarded", "Initial guarded summary")
 
-	peerTask, err := fixture.tasks.Create(task.CreateRequest{ProjectID: fixture.project.ID, Goal: "peer", Runner: task.RunnerSandbox})
+	peerTask, err := fixture.tasks.Create(task.CreateRequest{ProjectID: fixture.project.ID, Type: task.TypePentest, Goal: "peer", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create peer Task: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestCheckpointAttemptRejectsClosedShapeBoundsOwnershipAndStaleState(t *test
 	if err != nil {
 		t.Fatalf("create foreign Project: %v", err)
 	}
-	foreignTask, err := fixture.tasks.Create(task.CreateRequest{ProjectID: foreignProject.ID, Goal: "foreign", Runner: task.RunnerSandbox})
+	foreignTask, err := fixture.tasks.Create(task.CreateRequest{ProjectID: foreignProject.ID, Type: task.TypePentest, Goal: "foreign", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create foreign Task: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestTerminalTaskCallbackAtomicallyReconcilesOnlyUnexpectedOwnedAttempts(t *
 		t.Fatalf("checkpoint before interruption: %v", err)
 	}
 
-	peerTask, err := fixture.tasks.Create(task.CreateRequest{ProjectID: fixture.project.ID, Goal: "peer", Runner: task.RunnerSandbox})
+	peerTask, err := fixture.tasks.Create(task.CreateRequest{ProjectID: fixture.project.ID, Type: task.TypePentest, Goal: "peer", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create peer Task: %v", err)
 	}

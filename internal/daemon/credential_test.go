@@ -142,7 +142,7 @@ func TestProjectNestedCredentialBindingOverrideIsScoped(t *testing.T) {
 
 	putBinding(t, server, "/api/projects/"+projectID+"/credential-bindings", `{
 		"credential_ref": "codex-api-key",
-		"source": {"kind": "file", "value": "/secrets/p1"}
+		"source": {"kind": "literal", "value": "project-secret", "destination_env": "CODEX_API_KEY"}
 	}`)
 
 	// Project-scoped list shows the override.
@@ -157,7 +157,8 @@ func TestProjectNestedCredentialBindingOverrideIsScoped(t *testing.T) {
 			CredentialRef string `json:"credential_ref"`
 			Scope         string `json:"scope"`
 			Source        struct {
-				Value string `json:"value"`
+				Kind           string `json:"kind"`
+				DestinationEnv string `json:"destination_env"`
 			} `json:"source"`
 		} `json:"bindings"`
 	}
@@ -170,8 +171,8 @@ func TestProjectNestedCredentialBindingOverrideIsScoped(t *testing.T) {
 	if projectBindings.Bindings[0].Scope != "project" {
 		t.Fatalf("expected scope project, got %q", projectBindings.Bindings[0].Scope)
 	}
-	if projectBindings.Bindings[0].Source.Value != "/secrets/p1" {
-		t.Fatalf("expected project source, got %q", projectBindings.Bindings[0].Source.Value)
+	if projectBindings.Bindings[0].Source.Kind != "literal" || projectBindings.Bindings[0].Source.DestinationEnv != "CODEX_API_KEY" {
+		t.Fatalf("expected literal project source with destination_env, got %#v", projectBindings.Bindings[0].Source)
 	}
 
 	// The global list must NOT include the project override.
@@ -261,6 +262,45 @@ func TestDeleteCredentialBindingRemovesIt(t *testing.T) {
 		if b.ID == created.ID {
 			t.Fatalf("expected binding %s removed, still present", created.ID)
 		}
+	}
+}
+
+// TestGlobalCredentialBindingPersistsDestinationEnv proves the API persists
+// the destination_env field so a literal/file/command binding projects under a
+// real runtime env var name. This is the server-side half of the fix for the
+// bug where UI-created bindings silently lacked destination_env.
+func TestGlobalCredentialBindingPersistsDestinationEnv(t *testing.T) {
+	server := newDaemon(t)
+
+	putBinding(t, server, "/api/credential-bindings", `{
+		"credential_ref": "NSSCTF_AGENT_TOKEN",
+		"source": {"kind": "literal", "value": "nss_agent_secret", "destination_env": "NSSCTF_AGENT_TOKEN"}
+	}`)
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/credential-bindings", nil)
+	listResp := httptest.NewRecorder()
+	server.ServeHTTP(listResp, listReq)
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("expected list status 200, got %d with body %s", listResp.Code, listResp.Body.String())
+	}
+	var body struct {
+		Bindings []struct {
+			CredentialRef string `json:"credential_ref"`
+			Source        struct {
+				Kind           string `json:"kind"`
+				Value          string `json:"value"`
+				DestinationEnv string `json:"destination_env"`
+			} `json:"source"`
+		} `json:"bindings"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(body.Bindings) != 1 {
+		t.Fatalf("expected 1 global binding, got %d", len(body.Bindings))
+	}
+	if body.Bindings[0].Source.DestinationEnv != "NSSCTF_AGENT_TOKEN" {
+		t.Fatalf("expected destination_env NSSCTF_AGENT_TOKEN, got %q", body.Bindings[0].Source.DestinationEnv)
 	}
 }
 

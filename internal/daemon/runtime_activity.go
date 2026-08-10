@@ -286,6 +286,7 @@ func (server *Server) applyProviderSessionRecoveryLifecycle(outcomes []ProviderS
 		_, _ = server.tasks.AppendEvent(outcome.OwnerID, task.EventKindLifecycle, task.EventPayload{
 			"phase": "failed", "reason": "runtime_offline",
 		})
+		server.settleTaskAcceptedSteering(outcome.OwnerID, owner.SteeringReasonOwnerRuntimeLost, "Task Runtime was lost before the accepted steering dispatched")
 		server.clearRecoveredRuntimeActivity(outcome.OwnerID)
 	}
 }
@@ -442,6 +443,7 @@ func (server *Server) reconcileRuntimeActivity(found task.Task, activity task.Ru
 			_, _ = server.tasks.AppendEvent(found.ID, task.EventKindLifecycle, task.EventPayload{
 				"phase": "failed", "reason": "runtime_offline",
 			})
+			server.settleTaskAcceptedSteering(found.ID, owner.SteeringReasonOwnerRuntimeLost, "Task Runtime was lost before the accepted steering dispatched")
 			refreshed, err = server.tasks.Get(found.ID)
 			if err != nil {
 				return found, activity

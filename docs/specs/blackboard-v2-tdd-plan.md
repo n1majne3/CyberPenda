@@ -83,7 +83,7 @@ The published GitHub Issues below are the normative implementation units and ord
 | [T12 #111 — Checkpoint and reconcile interruption](https://github.com/n1majne3/CyberPenda/issues/111) | T05, T11 | Attempt checkpoints and server-owned interruption reconciliation against the Working Snapshot. |
 | [T13 #112 — Finish and resume without handoff copies](https://github.com/n1majne3/CyberPenda/issues/112) | T09, T11, T12 | Finish and resume from Task Goal, Scope, current semantic state, checkpoints, and Harness Steering without duplicate handoff state. |
 | [T14 #115 — Expose v2 through HTTP](https://github.com/n1majne3/CyberPenda/issues/115) | T10, T13 | Authenticated `/api/v2` semantic reads/writes with stable status mapping, ETags, and pagination where applicable. |
-| [T15 #114 — Expose v2 through trusted MCP](https://github.com/n1majne3/CyberPenda/issues/114) | T10, T13 | Six closed trusted tools backed by the semantic service, with compact v2 schemas and no caller-supplied authority. |
+| [T15 #114 — Expose v2 through trusted MCP](https://github.com/n1majne3/CyberPenda/issues/114) | T10, T13 | Seven closed trusted tools backed by the semantic service, including one atomic `blackboard_record_attempt_result` shortcut, with compact v2 schemas and no caller-supplied authority. |
 | [T16 #113 — Expose v2 through CLI Fallback](https://github.com/n1majne3/CyberPenda/issues/113) | T10, T13 | CLI fallback with semantic-service parity and no transport-specific semantic behavior. |
 | [T17 #116 — Project v2 for Claude and Pi](https://github.com/n1majne3/CyberPenda/issues/116) | T11, T15 | Claude and Pi projection parity while preserving the existing Claude trusted-tool auto-authorization mechanism. |
 | [T18 #117 — Synchronize parallel Tasks](https://github.com/n1majne3/CyberPenda/issues/117) | T11–T16 | Project-isolated coalesced revision notice, next-trusted-response full-Snapshot piggyback with reason, atomic replacement, and acknowledgement. |
@@ -166,4 +166,4 @@ The five pre-existing user changes map to v2 proof as follows:
 | `internal/mcpserver/server_test.go` | The v1 schema test is replaced in place by `TestBlackboardChangeMCPSchemaAdvertisesObjectiveAndAttemptCreateEnvelope`. |
 | `internal/runner/mcp.go` | The reusable trusted-MCP allowlist mechanism remains, with v2 names covered by `TestClaudeV2RuntimeConfigPreservesTrustedMCPAllowlistWithoutIdentityContext`. |
 | `internal/runner/projection.go` | Claude settings projection remains the shared production path exercised by the same allowlist regression. |
-| `internal/runner/projection_mcp_test.go` | Its behavioral intent moved to `internal/runner/blackboard_v2_projection_test.go`, including exact six-tool names and reserved-server isolation. |
+| `internal/runner/projection_mcp_test.go` | Its behavioral intent moved to `internal/runner/blackboard_v2_projection_test.go`, including exact seven-tool names and reserved-server isolation. |

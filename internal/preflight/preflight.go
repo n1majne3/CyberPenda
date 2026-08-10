@@ -40,11 +40,12 @@ type SkillPreview struct {
 }
 
 type RuntimeExtensionPreview struct {
-	ID         string `json:"id"`
-	Name       string `json:"name,omitempty"`
-	Source     string `json:"source"`
-	InstallRef string `json:"install_ref,omitempty"`
-	Registry   string `json:"registry,omitempty"`
+	ID           string                        `json:"id"`
+	Name         string                        `json:"name,omitempty"`
+	Source       string                        `json:"source"`
+	InstallRef   string                        `json:"install_ref,omitempty"`
+	Registry     string                        `json:"registry,omitempty"`
+	Requirements runtimeextension.Requirements `json:"requirements,omitempty"`
 }
 
 type ModelProviderPreview struct {
@@ -85,6 +86,10 @@ type Request struct {
 	HostActivated bool
 	// LaunchModelOverride applies a task-only model choice without editing the profile.
 	LaunchModelOverride string
+	// ProjectKind and ScopeCapabilities are explicit operator-owned state used
+	// only to validate Runtime Extension Requirements.
+	ProjectKind       string
+	ScopeCapabilities []string
 }
 
 // ProfileGetter loads runtime profiles for preflight checks.
@@ -199,7 +204,7 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 	}
 
 	if profileLoaded {
-		s.checkRuntimeExtensions(&result, profile)
+		s.checkRuntimeExtensions(&result, profile, request)
 	}
 
 	if profileLoaded && s.modelProviders != nil && shouldCheckModelProvider(profile, s.runtimePlugins) {
@@ -255,16 +260,33 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 		result.add(Check{Name: "host_activation", Status: CheckPass})
 	}
 
-	// Check 3: inline profile API keys or every credential reference resolves.
+	// Check 3: inline profile API keys, every credential reference, and every
+	// global environment variable resolve. Global bindings inject into every
+	// Runtime independent of credential_refs, so they are validated even when
+	// the profile declares no references.
 	refs := collectRefs(profile, request, runtimeprofile.HasInlineAPIKeys(profile))
 	if runtimeprofile.HasInlineAPIKeys(profile) && len(refs) == 0 {
-		result.add(Check{Name: "credentials", Status: CheckPass, Detail: "inline profile API keys configured"})
+		// Inline keys cover model auth, but global env vars still must resolve.
+		if detail, ok := globalEnvCheckDetail(s.creds); !ok {
+			result.add(Check{Name: "credentials", Status: CheckFail, Detail: detail})
+		} else {
+			result.add(Check{Name: "credentials", Status: CheckPass, Detail: "inline profile API keys configured"})
+		}
 		return result
 	}
+	anyMissing := false
+	var failDetails []string
+	// Global environment variables are validated first so a broken global
+	// binding blocks launch even when the profile has no credential_refs.
+	if detail, ok := globalEnvCheckDetail(s.creds); !ok {
+		anyMissing = true
+		failDetails = append(failDetails, detail)
+	}
 	if len(refs) == 0 {
-		result.add(Check{Name: "credentials", Status: CheckPass, Detail: "no credential references"})
+		if !anyMissing {
+			result.add(Check{Name: "credentials", Status: CheckPass, Detail: "no credential references"})
+		}
 	} else {
-		anyMissing := false
 		for _, ref := range refs {
 			if ctx.Err() != nil {
 				result.add(Check{
@@ -276,29 +298,17 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 			}
 			resolution, err := s.creds.Resolve(ref, request.ProjectID)
 			if err != nil {
-				result.add(Check{
-					Name:   "credentials",
-					Status: CheckFail,
-					Detail: fmt.Sprintf("credential %q: %v", ref, err),
-				})
+				failDetails = append(failDetails, fmt.Sprintf("credential %q: %v", ref, err))
 				anyMissing = true
 				continue
 			}
 			if resolution.Disabled {
-				result.add(Check{
-					Name:   "credentials",
-					Status: CheckFail,
-					Detail: fmt.Sprintf("credential %q is disabled for this project", ref),
-				})
+				failDetails = append(failDetails, fmt.Sprintf("credential %q is disabled for this project", ref))
 				anyMissing = true
 				continue
 			}
 			if !resolution.Found {
-				result.add(Check{
-					Name:   "credentials",
-					Status: CheckFail,
-					Detail: fmt.Sprintf("credential %q has no binding (project or global)", ref),
-				})
+				failDetails = append(failDetails, fmt.Sprintf("credential %q has no binding (project or global)", ref))
 				anyMissing = true
 				continue
 			}
@@ -310,24 +320,22 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 			// every failure mode the task would otherwise hit mid-run.
 			if resolution.Source != nil {
 				if _, _, err := credential.ResolveSourceEnv(*resolution.Source); err != nil {
-					result.add(Check{
-						Name:   "credentials",
-						Status: CheckFail,
-						Detail: fmt.Sprintf("credential %q: %v", ref, err),
-					})
+					failDetails = append(failDetails, fmt.Sprintf("credential %q: %v", ref, err))
 					anyMissing = true
 				}
 			}
 		}
-		if !anyMissing {
-			result.add(Check{Name: "credentials", Status: CheckPass})
-		}
+	}
+	if anyMissing {
+		result.add(Check{Name: "credentials", Status: CheckFail, Detail: strings.Join(failDetails, "; ")})
+	} else if len(refs) > 0 {
+		result.add(Check{Name: "credentials", Status: CheckPass})
 	}
 
 	return result
 }
 
-func (s *Service) checkRuntimeExtensions(result *Result, profile runtimeprofile.Profile) {
+func (s *Service) checkRuntimeExtensions(result *Result, profile runtimeprofile.Profile, request Request) {
 	enabled := enabledRuntimeExtensionRefs(profile.Fields.RuntimeExtensions)
 	if len(enabled) == 0 {
 		result.add(Check{Name: "runtime_extensions", Status: CheckPass, Detail: "no enabled runtime extensions"})
@@ -335,6 +343,7 @@ func (s *Service) checkRuntimeExtensions(result *Result, profile runtimeprofile.
 	}
 
 	var failures []string
+	var requirementFailures []string
 	for _, ref := range enabled {
 		preview, err := resolveRuntimeExtensionPreview(ref, profile.Provider, s.runtimeExtensions)
 		if err != nil {
@@ -342,6 +351,14 @@ func (s *Service) checkRuntimeExtensions(result *Result, profile runtimeprofile.
 			continue
 		}
 		result.RuntimeExtensions = append(result.RuntimeExtensions, preview)
+		if len(preview.Requirements.ProjectKinds) > 0 && !containsString(preview.Requirements.ProjectKinds, request.ProjectKind) {
+			requirementFailures = append(requirementFailures, fmt.Sprintf("runtime extension %q requires Project kind %s", preview.ID, strings.Join(preview.Requirements.ProjectKinds, " or ")))
+		}
+		for _, capability := range preview.Requirements.ScopeCapabilities {
+			if !containsString(request.ScopeCapabilities, capability) {
+				requirementFailures = append(requirementFailures, fmt.Sprintf("runtime extension %q requires Scope capability %q", preview.ID, capability))
+			}
+		}
 	}
 	if len(failures) > 0 {
 		result.add(Check{
@@ -356,6 +373,20 @@ func (s *Service) checkRuntimeExtensions(result *Result, profile runtimeprofile.
 		Status: CheckPass,
 		Detail: fmt.Sprintf("%d enabled runtime extension(s)", len(result.RuntimeExtensions)),
 	})
+	if len(requirementFailures) > 0 {
+		result.add(Check{Name: "runtime_extension_requirements", Status: CheckFail, Detail: strings.Join(requirementFailures, "; ")})
+	} else {
+		result.add(Check{Name: "runtime_extension_requirements", Status: CheckPass})
+	}
+}
+
+func containsString(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func enabledRuntimeExtensionRefs(refs []runtimeprofile.RuntimeExtensionRef) []runtimeprofile.RuntimeExtensionRef {
@@ -383,9 +414,10 @@ func resolveRuntimeExtensionPreview(
 				)
 			}
 			return RuntimeExtensionPreview{
-				ID:     extension.ID,
-				Name:   extension.Name,
-				Source: "registry",
+				ID:           extension.ID,
+				Name:         extension.Name,
+				Source:       "registry",
+				Requirements: extension.Requirements,
 			}, nil
 		}
 	}
@@ -491,4 +523,20 @@ func notFoundOrError(kind, id string, err error) string {
 
 func trim(s string) string {
 	return strings.TrimSpace(s)
+}
+
+// globalEnvCheckDetail validates that every active global Credential Binding
+// (a Global Environment Variable) can be materialized and projects under a real
+// env var name. It returns (detail, true) when all global bindings resolve and
+// (detail, false) when one cannot, with detail naming the offending credential
+// reference so preflight can block launch. Global bindings inject into every
+// Runtime independent of credential_refs, so this check runs unconditionally.
+func globalEnvCheckDetail(creds *credential.Service) (string, bool) {
+	if creds == nil {
+		return "", true
+	}
+	if _, err := creds.ResolveGlobalEnv(); err != nil {
+		return err.Error(), false
+	}
+	return "", true
 }

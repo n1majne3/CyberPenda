@@ -48,6 +48,7 @@ type resolvedAttachment struct {
 // or the JSON "payload" field of a multipart request.
 type createTaskInput struct {
 	Goal             string            `json:"goal"`
+	Type             task.Type         `json:"type"`
 	RuntimeProfileID string            `json:"runtime_profile_id"`
 	ModelOverride    string            `json:"model_override,omitempty"`
 	ReasoningEffort  string            `json:"reasoning_effort,omitempty"`

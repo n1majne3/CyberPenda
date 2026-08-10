@@ -37,7 +37,10 @@ const (
 	PiSessionStream = "pi_session"
 )
 
-// Entry is one projected transcript row.
+// Entry is one projected transcript row. Truncated marks a bounded preview of
+// an entry whose full serialized form exceeded the history window byte budget;
+// Detail references the owner-authorized endpoint that returns the complete
+// retained entry.
 type Entry struct {
 	ID           string         `json:"id"`
 	Seq          int            `json:"seq"`
@@ -51,6 +54,8 @@ type Entry struct {
 	Stream       string         `json:"stream,omitempty"`
 	Status       string         `json:"status,omitempty"`
 	CreatedAt    time.Time      `json:"created_at"`
+	Truncated    bool           `json:"truncated,omitempty"`
+	Detail       string         `json:"detail,omitempty"`
 }
 
 // Event is the minimal owner-event surface Build consumes. Task and Session
@@ -70,8 +75,21 @@ type Subject struct {
 	CreatedAt time.Time
 }
 
+// WindowContext is the Transcript parser state immediately before a bounded
+// Event window. It keeps paging independent of older retained Event loading.
+type WindowContext struct {
+	Continuation int
+	Adapter      string
+}
+
 // Build projects an owner subject and its retained events into transcript entries.
 func Build(subject Subject, events []Event) []Entry {
+	return BuildWindow(subject, events, WindowContext{})
+}
+
+// BuildWindow projects a bounded owner Event window with the parser state that
+// was active immediately before its first Event.
+func BuildWindow(subject Subject, events []Event, context WindowContext) []Entry {
 	entries := make([]Entry, 0, len(events)+1)
 	if strings.TrimSpace(subject.Title) != "" {
 		entries = append(entries, Entry{
@@ -85,8 +103,8 @@ func Build(subject Subject, events []Event) []Entry {
 		})
 	}
 
-	continuation := 0
-	adapter := ""
+	continuation := context.Continuation
+	adapter := context.Adapter
 	for _, event := range events {
 		if event.Kind == "lifecycle" {
 			next, ok := lifecycleEntry(event, continuation)
@@ -239,7 +257,7 @@ func entriesForEvent(event Event, continuation int, adapter string) []Entry {
 				parseAdapter = provider
 			}
 		}
-		if parsed := parseRuntimeOutput(event, continuation, parseAdapter, text); len(parsed) > 0 {
+		if parsed, recognized := parseRuntimeOutput(event, continuation, parseAdapter, text); recognized {
 			return parsed
 		}
 		if isIgnorableUnparsedRuntimeLine(text) {
@@ -285,14 +303,14 @@ func nativeSteeringEntry(event Event, continuation int) (Entry, bool) {
 	}, true
 }
 
-func parseRuntimeOutput(event Event, continuation int, adapter, text string) []Entry {
+func parseRuntimeOutput(event Event, continuation int, adapter, text string) ([]Entry, bool) {
 	parser := ParserForAdapter(adapter, nil)
 	if parser == "plain_runtime_output" {
-		return nil
+		return nil, false
 	}
 	var record map[string]any
 	if err := json.Unmarshal([]byte(text), &record); err != nil {
-		return nil
+		return nil, false
 	}
 	base := Entry{
 		ID:           event.ID,
@@ -300,11 +318,11 @@ func parseRuntimeOutput(event Event, continuation int, adapter, text string) []E
 		Continuation: continuation,
 		CreatedAt:    event.CreatedAt,
 	}
-	entries := ParseRecord(record, base)
-	if len(entries) == 0 {
-		return nil
+	turns := runtimeoutput.ParseRecord(record, runtimeoutput.ParseOptions{}, base.CreatedAt)
+	if len(turns) == 0 {
+		return nil, false
 	}
-	return entries
+	return turnsToEntries(turns, base), true
 }
 
 // ParserForAdapter returns the manifest-selected transcript parser for a runtime
@@ -335,6 +353,11 @@ func turnsToEntries(turns []runtimeoutput.Turn, base Entry) []Entry {
 	for _, turn := range turns {
 		switch turn.Kind {
 		case runtimeoutput.KindText:
+			// Provider user records are internal prompt/session frames. Operator
+			// text is projected only from durable conversation or steering Events.
+			if turn.Role == "user" {
+				continue
+			}
 			entries = append(entries, messageEntry(base, entryID(base.ID, "-message", turn.ContentIndex), mapRuntimeRole(turn.Role), turn.Text))
 		case runtimeoutput.KindToolUse:
 			entries = append(entries, toolCallEntryFromTurn(turn, base, entryID(base.ID, "-tool-call", turn.ContentIndex)))

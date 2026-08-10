@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Accepted. The rule that every retry stays on the same receipt and Runtime
+Continuation is superseded by ADR 0021. The remaining decisions stay accepted.
 
 ## Context
 

@@ -46,6 +46,7 @@ export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOpt
   const [plugins, setPlugins] = useState<RuntimePlugin[]>([]);
   const [modelProviders, setModelProviders] = useState<ModelProvider[]>([]);
   const [profiles, setProfiles] = useState<RuntimeProfile[]>([]);
+  const [project, setProject] = useState<Project | null>(null);
   const [defaultRunner, setDefaultRunner] = useState("sandbox");
   const [form, setForm] = useState<LaunchForm>({
     runtime: "",
@@ -90,6 +91,7 @@ export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOpt
         setPlugins(loadedPlugins);
         setModelProviders(loadedProviders);
         setProfiles(loadedProfiles);
+        setProject(project);
         setDefaultRunner(runner);
         setForm(state.form);
         setPresetId(state.presetId);
@@ -243,6 +245,7 @@ export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOpt
   return {
     plugins,
     profiles,
+    project,
     form,
     setForm,
     presetId,

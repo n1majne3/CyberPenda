@@ -30,7 +30,7 @@ func TestAssistedWorkTurnWithTerminalToolResultBecomesPending(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
 
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks", bytes.NewBufferString(`{
-		"goal":"inspect example.com",
+		"type":"pentest","goal":"inspect example.com",
 		"runtime_profile_id":"`+profileID+`",
 		"runner":"sandbox",
 		"run_controls":{"blackboard_conclusion_mode":"assisted"}
@@ -140,6 +140,69 @@ func TestAssistedWorkTurnWithTerminalToolResultBecomesPending(t *testing.T) {
 	}
 }
 
+func TestAssistedConclusionRejectsSeparatorAliasOfHistoricalAttempt(t *testing.T) {
+	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
+	peer, err := server.tasks.Create(task.CreateRequest{
+		ProjectID: projectID, Type: task.TypePentest, Goal: "record the completed challenge", RuntimeProfileID: profileID, Runner: task.RunnerSandbox,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	launch, err := server.blackboardV2Continuity.CreateContinuation(context.Background(), blackboardv2.ContinuationLaunchRequest{
+		ProjectID: projectID, TaskID: peer.ID, RuntimeProfileID: profileID,
+		RuntimeProvider: string(runtimeprofile.ProviderCodex), Runner: task.RunnerSandbox,
+		RuntimeConfig: map[string]any{"provider": "codex", "model": "gpt-test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = server.blackboardV2.ApplyForContinuation(context.Background(), projectID, launch.Continuation.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "historical-attempt-with-slash-keys",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "objective/solve-nssctf-arena", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Solve the current NSSCTF challenge."}},
+			{Op: "create", Key: "attempt/3121", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Solved challenge 3121."}},
+			{Op: "relate", From: "attempt/3121", Relation: "tests", To: "objective/solve-nssctf-arena"},
+			{Op: "transition", Key: "attempt/3121", Version: 1, Status: "inconclusive", Summary: "Completed challenge 3121 work."},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
+	work := session.LastRequests()[0]
+	for _, observation := range []runtime.ProviderSessionObservation{
+		{Kind: runtime.ProviderSessionObservationToolResult, RequestID: work.RequestID, ProviderTurnID: "work-turn-3124", ToolCallID: "tool-3124", ToolName: "shell", Status: "succeeded"},
+		{Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: work.RequestID, ProviderTurnID: "work-turn-3124", Status: "completed"},
+	} {
+		if err := session.EmitObservation(observation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForAssistedProviderRequests(t, session, 2)
+	receipt, err := server.tasks.LatestBlackboardConclusion(created.ID)
+	if err != nil || receipt == nil || receipt.BaseRevision == nil {
+		t.Fatalf("load awaiting conclusion: receipt=%#v err=%v", receipt, err)
+	}
+	staleAlias := fmt.Sprintf(`{
+		"schema":"runtime-attempt-result/v1","base_revision":%d,
+		"attempt":{"key":"attempt:3121","create":true,"summary":"Solved challenge 3121.","outcome":"inconclusive"},
+		"tested_targets":[{"key":"objective:solve-nssctf-arena","create_objective":{"objective":"Solve the current NSSCTF challenge."}}],
+		"produced_targets":[]
+	}`, *receipt.BaseRevision)
+	if err := emitAttemptResultAndComplete(t, session, []byte(staleAlias)); err != nil {
+		t.Fatal(err)
+	}
+	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
+	if found.BlackboardConclusion.AppliedRevision != nil {
+		t.Fatalf("stale conclusion was applied: %#v", found.BlackboardConclusion)
+	}
+	if _, err := server.blackboardV2.ReadCurrent(context.Background(), projectID, "attempt:3121"); err == nil {
+		t.Fatal("stale conclusion created a separator-alias Attempt")
+	}
+}
+
 func TestAssistedWorkTurnDispatchesControlTurnAndAppliesClosedResult(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
 	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
@@ -174,6 +237,10 @@ func TestAssistedWorkTurnDispatchesControlTurnAndAppliesClosedResult(t *testing.
 	}
 	if !strings.Contains(controlRequest.Message, "runtime-attempt-result/v1") || !strings.Contains(strings.ToLower(controlRequest.Message), "stop") {
 		t.Fatalf("control directive does not require a bounded result: %q", controlRequest.Message)
+	}
+	lowerDirective := strings.ToLower(controlRequest.Message)
+	if !strings.Contains(lowerDirective, "do not read files") || strings.Contains(lowerDirective, ".pentest/blackboard.json") || strings.Contains(lowerDirective, "reread") {
+		t.Fatalf("control directive invites forbidden file access: %q", controlRequest.Message)
 	}
 	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateConcluding)
 	if found.Status != task.StatusRunning || found.RuntimeActivity.Liveness != "live" || found.RuntimeActivity.TurnActivity != "idle" {
@@ -306,10 +373,13 @@ func TestAssistedConclusionRegeneratesOnceAfterConcurrentContinuationAdvancesPro
 		t.Fatalf("regeneration selection = %#v, Conclude selection = %#v", regenerateRequest, concludeRequest)
 	}
 	directive := strings.ToLower(regenerateRequest.Message)
-	for _, required := range []string{".pentest/blackboard.json", "reread", "regenerate", "do not call tools", fmt.Sprintf("base_revision %d", peerRevision)} {
+	for _, required := range []string{"regenerate", "do not read files", "do not call tools", fmt.Sprintf("base_revision %d", peerRevision)} {
 		if !strings.Contains(directive, required) {
 			t.Fatalf("regeneration directive missing %q: %s", required, regenerateRequest.Message)
 		}
+	}
+	if strings.Contains(directive, ".pentest/blackboard.json") || strings.Contains(directive, "reread") {
+		t.Fatalf("regeneration directive invites forbidden file access: %s", regenerateRequest.Message)
 	}
 	continuation, err := server.tasks.LatestContinuation(created.ID)
 	if err != nil {
@@ -1009,7 +1079,7 @@ func TestAssistedLaunchRejectsProviderWithoutConclusionObservations(t *testing.T
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, false)
 
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks", bytes.NewBufferString(`{
-		"goal":"inspect example.com",
+		"type":"pentest","goal":"inspect example.com",
 		"runtime_profile_id":"`+profileID+`",
 		"runner":"sandbox",
 		"run_controls":{"blackboard_conclusion_mode":"assisted"}
@@ -1056,7 +1126,7 @@ func TestRuntimePluginAPIProjectsEffectiveAssistedConclusionCapability(t *testin
 func TestAssistedLaunchRejectsSessionThatCannotEmitConclusionObservations(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixtureWithCapabilities(t, true, false)
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks", bytes.NewBufferString(`{
-		"goal":"inspect example.com",
+		"type":"pentest","goal":"inspect example.com",
 		"runtime_profile_id":"`+profileID+`",
 		"runner":"sandbox",
 		"run_controls":{"blackboard_conclusion_mode":"assisted"}
@@ -1075,7 +1145,7 @@ func TestAssistedLaunchRejectsSessionThatCannotEmitConclusionObservations(t *tes
 func TestTaskLaunchRejectsUnknownBlackboardConclusionMode(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks", bytes.NewBufferString(`{
-		"goal":"inspect example.com",
+		"type":"pentest","goal":"inspect example.com",
 		"runtime_profile_id":"`+profileID+`",
 		"runner":"sandbox",
 		"run_controls":{"blackboard_conclusion_mode":"automatic"}
@@ -1139,7 +1209,7 @@ func TestInteractiveWorkTurnWithToolResultStaysClean(t *testing.T) {
 func TestTaskLaunchWithoutConclusionModeDefaultsToInteractive(t *testing.T) {
 	server, projectID, profileID, _ := newAssistedConclusionFixture(t, false)
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks", bytes.NewBufferString(`{
-		"goal":"inspect example.com",
+		"type":"pentest","goal":"inspect example.com",
 		"runtime_profile_id":"`+profileID+`",
 		"runner":"sandbox"
 	}`))
@@ -1311,7 +1381,7 @@ func TestCleanBlackboardConclusionCheckpointSurvivesDaemonRestart(t *testing.T) 
 	requestID := session.LastRequests()[0].RequestID
 	for index, observation := range []runtime.ProviderSessionObservation{
 		{ToolName: "shell", Status: "failed"},
-		{ToolName: "blackboard_change", Status: "succeeded"},
+		{ToolName: "mcp__pentest__blackboard_change", Status: "succeeded", BlackboardOperation: runtime.BlackboardOperationChange},
 	} {
 		observation.Kind = runtime.ProviderSessionObservationToolResult
 		observation.RequestID = requestID
@@ -1372,7 +1442,7 @@ func TestAssistedConclusionIgnoresControlTurnsAndTrustedBlackboardTools(t *testi
 	for _, observation := range []runtime.ProviderSessionObservation{
 		{Kind: runtime.ProviderSessionObservationToolResult, RequestID: "control-request-1", ProviderTurnID: controlResult.ProviderTurnID, ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded"},
 		{Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: "control-request-1", ProviderTurnID: controlResult.ProviderTurnID, Status: "completed"},
-		{Kind: runtime.ProviderSessionObservationToolResult, RequestID: workRequestID, ProviderTurnID: "work-turn-1", ToolCallID: "tool-2", ToolName: "blackboard_change", Status: "succeeded"},
+		{Kind: runtime.ProviderSessionObservationToolResult, RequestID: workRequestID, ProviderTurnID: "work-turn-1", ToolCallID: "tool-2", ToolName: "mcp__pentest__blackboard_change", Status: "succeeded", BlackboardOperation: runtime.BlackboardOperationChange},
 		{Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: workRequestID, ProviderTurnID: "work-turn-1", Status: "completed"},
 	} {
 		if err := session.EmitObservation(observation); err != nil {
@@ -1399,9 +1469,9 @@ func TestAssistedConclusionTracksSemanticPersistenceInToolResultOrder(t *testing
 			name: "successful semantic mutations clear earlier work",
 			results: []runtime.ProviderSessionObservation{
 				{ToolName: "shell", Status: "failed"},
-				{ToolName: "blackboard_change", Status: "succeeded"},
-				{ToolName: "blackboard_checkpoint_attempt", Status: "succeeded"},
-				{ToolName: "blackboard_finish", Status: "succeeded"},
+				{ToolName: "mcp__pentest__blackboard_change", Status: "succeeded", BlackboardOperation: runtime.BlackboardOperationChange},
+				{ToolName: "mcp__pentest__blackboard_checkpoint_attempt", Status: "succeeded", BlackboardOperation: runtime.BlackboardOperationCheckpointAttempt},
+				{ToolName: "mcp__pentest__blackboard_finish", Status: "succeeded", BlackboardOperation: runtime.BlackboardOperationFinish},
 			},
 			wantWork: 1, wantPersist: 1,
 		},
@@ -1409,12 +1479,12 @@ func TestAssistedConclusionTracksSemanticPersistenceInToolResultOrder(t *testing
 			name: "reads evidence retention and failed mutations do not clear work",
 			results: []runtime.ProviderSessionObservation{
 				{ToolName: "shell", Status: "succeeded"},
-				{ToolName: "blackboard_read", Status: "succeeded"},
-				{ToolName: "blackboard_history", Status: "succeeded"},
-				{ToolName: "blackboard_retain_evidence", Status: "succeeded"},
-				{ToolName: "blackboard_change", Status: "failed"},
-				{ToolName: "blackboard_checkpoint_attempt", Status: "failed"},
-				{ToolName: "blackboard_finish", Status: "failed"},
+				{ToolName: "mcp__pentest__blackboard_read", Status: "succeeded", BlackboardOperation: runtime.BlackboardOperationRead},
+				{ToolName: "mcp__pentest__blackboard_history", Status: "succeeded", BlackboardOperation: runtime.BlackboardOperationHistory},
+				{ToolName: "mcp__pentest__blackboard_retain_evidence", Status: "succeeded", BlackboardOperation: runtime.BlackboardOperationRetainEvidence},
+				{ToolName: "mcp__pentest__blackboard_change", Status: "failed", BlackboardOperation: runtime.BlackboardOperationChange},
+				{ToolName: "mcp__pentest__blackboard_checkpoint_attempt", Status: "failed", BlackboardOperation: runtime.BlackboardOperationCheckpointAttempt},
+				{ToolName: "mcp__pentest__blackboard_finish", Status: "failed", BlackboardOperation: runtime.BlackboardOperationFinish},
 			},
 			wantDebt: true, wantWork: 1, wantPersist: 0,
 		},
@@ -1422,10 +1492,19 @@ func TestAssistedConclusionTracksSemanticPersistenceInToolResultOrder(t *testing
 			name: "later failed non Blackboard result restores debt",
 			results: []runtime.ProviderSessionObservation{
 				{ToolName: "http", Status: "succeeded"},
-				{ToolName: "blackboard_change", Status: "succeeded"},
+				{ToolName: "mcp__pentest__blackboard_change", Status: "succeeded", BlackboardOperation: runtime.BlackboardOperationChange},
 				{ToolName: "shell", Status: "failed"},
 			},
 			wantDebt: true, wantWork: 2, wantPersist: 1,
+		},
+		{
+			name: "provider qualified spoofed server name never covers work",
+			results: []runtime.ProviderSessionObservation{
+				{ToolName: "shell", Status: "succeeded"},
+				{ToolName: "mcp__evil__blackboard_change", Status: "succeeded"},
+				{ToolName: "blackboard_finish", Status: "succeeded"},
+			},
+			wantDebt: true, wantWork: 3, wantPersist: 0,
 		},
 	}
 
@@ -1506,20 +1585,31 @@ func TestAssistedConclusionSchedulesOnlyAtCompletedWorkTurnBoundary(t *testing.T
 	}
 }
 
-func TestAssistedConclusionTrustsOnlyTheSixExactBlackboardToolNames(t *testing.T) {
-	trusted := []string{
-		"blackboard_change", "blackboard_read", "blackboard_history", "blackboard_retain_evidence",
-		"blackboard_checkpoint_attempt", "blackboard_finish",
+// #192: only the exact canonical Project Interface tool identity
+// (mcp__pentest__<operation>) is trusted for semantic-debt accounting. A bare
+// display name or a near-match from another server is never trusted.
+func TestAssistedConclusionTrustsOnlyTheCanonicalProjectInterfaceToolIdentity(t *testing.T) {
+	trusted := []struct {
+		name string
+		op   runtime.BlackboardOperation
+	}{
+		{name: "mcp__pentest__blackboard_change", op: runtime.BlackboardOperationChange},
+		{name: "mcp__pentest__blackboard_read", op: runtime.BlackboardOperationRead},
+		{name: "mcp__pentest__blackboard_history", op: runtime.BlackboardOperationHistory},
+		{name: "mcp__pentest__blackboard_retain_evidence", op: runtime.BlackboardOperationRetainEvidence},
+		{name: "mcp__pentest__blackboard_checkpoint_attempt", op: runtime.BlackboardOperationCheckpointAttempt},
+		{name: "mcp__pentest__blackboard_finish", op: runtime.BlackboardOperationFinish},
 	}
-	for _, toolName := range trusted {
-		t.Run(toolName, func(t *testing.T) {
+	for _, tool := range trusted {
+		t.Run(tool.name, func(t *testing.T) {
 			server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
 			created := launchConclusionTask(t, server, projectID, profileID, "assisted")
 			waitForAssistedProviderRequests(t, session, 1)
 			requestID := session.LastRequests()[0].RequestID
 			if err := session.EmitObservation(runtime.ProviderSessionObservation{
 				Kind: runtime.ProviderSessionObservationToolResult, RequestID: requestID,
-				ProviderTurnID: "work-turn-trusted", ToolCallID: "tool-1", ToolName: toolName, Status: "succeeded",
+				ProviderTurnID: "work-turn-trusted", ToolCallID: "tool-1", ToolName: tool.name,
+				Status: "succeeded", BlackboardOperation: tool.op,
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -1532,12 +1622,14 @@ func TestAssistedConclusionTrustsOnlyTheSixExactBlackboardToolNames(t *testing.T
 			found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateClean)
 			if len(session.LastRequests()) != 1 || found.BlackboardConclusion.SourceTurnID != "work-turn-trusted" ||
 				found.BlackboardConclusion.SourceWorkWatermark != 0 || found.BlackboardConclusion.SemanticPersistenceWatermark != 0 {
-				t.Fatalf("trusted tool %q checkpoint = %#v; requests=%d", toolName, found.BlackboardConclusion, len(session.LastRequests()))
+				t.Fatalf("trusted tool %q checkpoint = %#v; requests=%d", tool.name, found.BlackboardConclusion, len(session.LastRequests()))
 			}
 		})
 	}
 
-	for _, toolName := range []string{"blackboard_changes", "mcp__pentest__blackboard_change"} {
+	for _, toolName := range []string{
+		"blackboard_change", "blackboard_changes", "mcp__evil__blackboard_change", "mcp__pentest__blackboard_changes",
+	} {
 		t.Run(toolName, func(t *testing.T) {
 			server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
 			created := launchConclusionTask(t, server, projectID, profileID, "assisted")
@@ -1561,6 +1653,26 @@ func TestAssistedConclusionTrustsOnlyTheSixExactBlackboardToolNames(t *testing.T
 				t.Fatalf("near-match tool %q checkpoint = %#v", toolName, found.BlackboardConclusion)
 			}
 		})
+	}
+}
+
+// A fabricated canonical identity on an unregistered tool name is rejected at
+// the bounded observation boundary and can never advance semantic persistence.
+func TestAssistedConclusionFabricatedCanonicalIdentityIsRejected(t *testing.T) {
+	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
+	launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
+	requestID := session.LastRequests()[0].RequestID
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationToolResult, RequestID: requestID,
+		ProviderTurnID: "work-turn-spoofed", ToolCallID: "tool-1",
+		ToolName: "mcp__evil__blackboard_change", Status: "succeeded",
+		BlackboardOperation: runtime.BlackboardOperationChange,
+	}); !errors.Is(err, runtime.ErrInvalidProviderSessionObservation) {
+		t.Fatalf("fabricated identity observation error = %v", err)
+	}
+	if len(session.LastRequests()) != 1 {
+		t.Fatalf("rejected observation dispatched a request: %d", len(session.LastRequests()))
 	}
 }
 
@@ -2218,7 +2330,7 @@ func TestBlackboardConclusionRegenerationRecognizesOnlyBaseRevisionConflict(t *t
 func launchConclusionTask(t *testing.T, server *Server, projectID, profileID, mode string) task.Task {
 	t.Helper()
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks", bytes.NewBufferString(`{
-		"goal":"inspect example.com",
+		"type":"pentest","goal":"inspect example.com",
 		"runtime_profile_id":"`+profileID+`",
 		"runner":"sandbox",
 		"run_controls":{"blackboard_conclusion_mode":"`+mode+`"}
@@ -2239,7 +2351,7 @@ func launchConclusionTask(t *testing.T, server *Server, projectID, profileID, mo
 func advanceProjectFromPeerContinuation(t *testing.T, server *Server, projectID, profileID string) int {
 	t.Helper()
 	peer, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectID, Goal: "advance the shared Project Blackboard", RuntimeProfileID: profileID, Runner: task.RunnerSandbox,
+		ProjectID: projectID, Type: task.TypePentest, Goal: "advance the shared Project Blackboard", RuntimeProfileID: profileID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -43,30 +43,23 @@ type Source struct {
 	Value string `json:"value,omitempty"`
 	// DestinationEnv names the environment variable the materialized secret is
 	// projected as at launch. For env sources it defaults to Value (so existing
-	// bindings behave unchanged); file, command, and literal sources must set
-	// it, otherwise the runtime would project under a path/command/secret-shaped
-	// key instead of a real env var name.
+	// bindings behave unchanged); literal sources must set it, otherwise the
+	// runtime would project under a secret-shaped key instead of a real env var
+	// name.
 	DestinationEnv string `json:"destination_env,omitempty"`
 }
 
 // Source kinds the product understands. The value field's meaning depends on kind:
 //
 //   - env:      Value is the environment variable name (e.g. "OPENAI_API_KEY").
-//   - file:     Value is a path to a file containing the secret.
-//   - command:  Value is a command whose stdout is the secret (e.g. an agent of a
-//     password store). Used sparingly.
 //   - literal:  Value is the local secret value. API responses must redact it.
 const (
 	SourceEnv     = "env"
-	SourceFile    = "file"
-	SourceCommand = "command"
 	SourceLiteral = "literal"
 )
 
 var sourceKinds = map[string]bool{
 	SourceEnv:     true,
-	SourceFile:    true,
-	SourceCommand: true,
 	SourceLiteral: true,
 }
 
@@ -105,11 +98,6 @@ var ErrNotFound = errors.New("credential binding not found")
 var (
 	ErrMissingCredentialRef = errors.New("credential_ref is required")
 	ErrInvalidSourceKind    = errors.New("source kind is not supported")
-	// ErrCommandSourceDisabled is returned when a command credential source is
-	// rejected because the operator has not opted in. A command source runs
-	// arbitrary shell on the host (effectively host RCE for anyone who can write
-	// a binding), so it is disabled by default; see commandSourceEnabled.
-	ErrCommandSourceDisabled = errors.New("command credential source is disabled")
 )
 
 // Service implements credential binding business rules against SQLite.
@@ -310,9 +298,6 @@ func validateSource(source Source) error {
 	if !sourceKinds[source.Kind] {
 		return fmt.Errorf("%w: %q", ErrInvalidSourceKind, source.Kind)
 	}
-	if source.Kind == SourceCommand && !commandSourceEnabled() {
-		return fmt.Errorf("%w; set %s=1 to enable", ErrCommandSourceDisabled, commandSourceOptInEnv)
-	}
 	if strings.TrimSpace(source.Value) == "" {
 		return errors.New("source value is required")
 	}
@@ -386,6 +371,14 @@ func scanBinding(row scanner) (Binding, error) {
 	found.Disabled = disabled != 0
 	if err := decode(sourceJSON, &found.Source); err != nil {
 		return Binding{}, fmt.Errorf("decode source: %w", err)
+	}
+	// Legacy bindings created before the UI sent destination_env have no value
+	// for literal sources, which would make preflight and projection fail.
+	// Backfill the credential_ref as the runtime env var name (the established
+	// convention for *_API_KEY refs). Env sources keep their own fallback to
+	// Value.
+	if found.Source.Kind != SourceEnv && strings.TrimSpace(found.Source.DestinationEnv) == "" {
+		found.Source.DestinationEnv = found.CredentialRef
 	}
 	if found.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt); err != nil {
 		return Binding{}, fmt.Errorf("parse created_at: %w", err)

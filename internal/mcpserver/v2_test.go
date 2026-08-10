@@ -24,11 +24,67 @@ import (
 
 var wantV2TrustedTools = []string{
 	"blackboard_change",
+	"blackboard_record_attempt_result",
 	"blackboard_read",
 	"blackboard_history",
 	"blackboard_retain_evidence",
 	"blackboard_checkpoint_attempt",
 	"blackboard_finish",
+}
+
+func TestTrustedMCPRecordsOneAttemptResultAtomically(t *testing.T) {
+	fixture := newV2MCPFixture(t)
+	client := fixture.session(t, &fixture.ownerGrant, nil)
+	result, raw := callV2Tool(t, client, "blackboard_record_attempt_result", map[string]any{
+		"idempotency_key": "record-attempt-result-3124",
+		"result": map[string]any{
+			"schema":        "runtime-attempt-result/v1",
+			"base_revision": 0,
+			"attempt": map[string]any{
+				"key": "attempt/3124", "create": true,
+				"summary": "Recorded challenge 3124 in one trusted call.", "outcome": "inconclusive",
+			},
+			"tested_targets": []any{map[string]any{
+				"key":              "objective/solve-nssctf-arena",
+				"create_objective": map[string]any{"objective": "Solve the current NSSCTF challenge."},
+			}},
+			"produced_targets": []any{},
+		},
+	})
+	if result.IsError {
+		t.Fatalf("blackboard_record_attempt_result failed: %s", raw)
+	}
+	history, err := fixture.board.ReadHistory(context.Background(), fixture.project.ID, "attempt/3124", blackboardv2.HistoryOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := false
+	for _, item := range history.Items {
+		if item.Type == "attempt" && item.Record != nil && item.Record.Status == "inconclusive" {
+			terminal = true
+		}
+	}
+	if !terminal {
+		t.Fatalf("Attempt history = %#v, want terminal inconclusive result", history.Items)
+	}
+	duplicate, duplicateRaw := callV2Tool(t, client, "blackboard_record_attempt_result", map[string]any{
+		"idempotency_key": "record-attempt-result-3124-colon-alias",
+		"result": map[string]any{
+			"schema": "runtime-attempt-result/v1", "base_revision": history.Revision,
+			"attempt": map[string]any{
+				"key": "attempt:3124", "create": true,
+				"summary": "Must not duplicate the completed slash-key Attempt.", "outcome": "inconclusive",
+			},
+			"tested_targets": []any{map[string]any{
+				"key":              "objective:solve-nssctf-arena",
+				"create_objective": map[string]any{"objective": "Must not duplicate the slash-key Objective."},
+			}},
+			"produced_targets": []any{},
+		},
+	})
+	if !duplicate.IsError || !bytes.Contains(duplicateRaw, []byte(`"key_conflict"`)) {
+		t.Fatalf("separator-alias Attempt result = %s, want key_conflict", duplicateRaw)
+	}
 }
 
 func TestTrustedMCPUsesTheSameToolsForASessionContinuation(t *testing.T) {
@@ -130,7 +186,7 @@ func newV2MCPFixture(t *testing.T) v2MCPFixture {
 	tasks := task.NewService(db, projects)
 	createTask := func(projectID, goal string) task.Task {
 		createdTask, err := tasks.Create(task.CreateRequest{
-			ProjectID: projectID, Goal: goal, RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+			ProjectID: projectID, Type: task.TypePentest, Goal: goal, RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 		})
 		if err != nil {
 			t.Fatalf("create Task: %v", err)
@@ -892,8 +948,8 @@ func TestBlackboardV2MCPToolInputSchemasContainOnlyTransitiveRootDefs(t *testing
 	for _, tool := range tools {
 		byName[tool.Name] = tool
 	}
-	if len(listed.Tools) != 6 {
-		t.Fatalf("tools = %d, want 6", len(listed.Tools))
+	if len(listed.Tools) != 7 {
+		t.Fatalf("tools = %d, want 7", len(listed.Tools))
 	}
 	forbiddenSubstrings := []string{
 		"project_id", "task_id", "continuation_id", "actor_id", "actor_type",
@@ -1161,7 +1217,7 @@ func TestBlackboardV2MCPExactReplayAfterFinishAndSupersession(t *testing.T) {
 	// Supersession: a newer Continuation on the same Task closes offline authority
 	// for the previous run, but stored non-mutating replay still works without sync.
 	superTask, err := task.NewService(fixture.db, project.NewService(fixture.db)).Create(task.CreateRequest{
-		ProjectID: fixture.project.ID, Goal: "supersession replay", RuntimeProfileID: fixture.profile.ID, Runner: task.RunnerSandbox,
+		ProjectID: fixture.project.ID, Type: task.TypePentest, Goal: "supersession replay", RuntimeProfileID: fixture.profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
 		t.Fatalf("create supersession Task: %v", err)

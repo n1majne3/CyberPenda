@@ -150,6 +150,7 @@ func (server *Server) BindProviderSession(taskID string, session runtime.Provide
 			server.acceptBlackboardConclusionValidationFailure(taskID, failure)
 		})
 	}
+	server.triggerAcceptedSteeringDispatch(taskSteeringAdapter(server, taskID, server.taskConclusionSettlementForID(taskID)))
 	return nil
 }
 
@@ -200,6 +201,7 @@ func (server *Server) BindSessionProviderSession(sessionID string, providerSessi
 			server.acceptSessionBlackboardConclusionValidationFailure(sessionID, failure)
 		})
 	}
+	server.triggerAcceptedSteeringDispatch(sessionSteeringAdapter(server, sessionID, server.sessionConclusionSettlementForID(sessionID)))
 	return nil
 }
 

@@ -84,10 +84,13 @@ describe("CredentialBindingsPage", () => {
     const newBindingButtons = await screen.findAllByRole("button", { name: /New binding/i });
     await userEvent.click(newBindingButtons[0]!);
 
+    // Default kind is now "literal"; the source value field is "Secret value".
     expect(screen.getByLabelText("Credential reference")).toHaveAttribute("name", "credential_ref");
     expect(screen.getByLabelText("Source kind")).toHaveAttribute("name", "source_kind");
-    expect(screen.getByLabelText("Environment variable name")).toHaveAttribute("name", "source_value");
-    expect(screen.getByLabelText("Environment variable name")).toHaveAttribute("autocomplete", "off");
+    expect(screen.getByLabelText("Secret value")).toHaveAttribute("name", "source_value");
+    expect(screen.getByLabelText("Secret value")).toHaveAttribute("autocomplete", "off");
+    // destination_env is the dedicated runtime env var name field.
+    expect(screen.getByLabelText("Runtime environment variable name")).toHaveAttribute("name", "destination_env");
   });
 
   it("requires confirmation before deleting a credential binding", async () => {
@@ -175,8 +178,11 @@ describe("CredentialBindingsPage", () => {
     expect(await screen.findByTestId("credential-row-binding-1")).toBeInTheDocument();
     expect(screen.getByTestId("credential-row-binding-2")).toBeInTheDocument();
     expect(screen.getByText("Codex Default")).toBeInTheDocument();
-    expect(screen.getByText(/Model provider · OpenAI/i)).toBeInTheDocument();
+    // OPENAI_API_KEY matches a Model Provider's api_key_env → provider key.
+    expect(screen.getByText(/Provider key · OpenAI/i)).toBeInTheDocument();
     expect(screen.getByText("legacy-token")).toBeInTheDocument();
+    // legacy-token matches no provider → global env var classification.
+    expect(screen.getByText("Global env var")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: /disabled/i }));
     expect(screen.queryByTestId("credential-row-binding-1")).not.toBeInTheDocument();
@@ -211,5 +217,37 @@ describe("CredentialBindingsPage", () => {
     expect(await screen.findByText("stored-secret")).toBeInTheDocument();
     expect(screen.getByText("••••••••")).toBeInTheDocument();
     expect(screen.queryByText("sk-super-secret")).not.toBeInTheDocument();
+  });
+
+  // Regression: a literal binding created through the form MUST carry
+  // destination_env, otherwise projection silently fails at launch (the root
+  // cause of NSSCTF_AGENT_TOKEN not reaching the runtime).
+  it("sends destination_env when creating a literal binding", async () => {
+    const fetchMock = mockApi({
+      "/api/credential-bindings": { bindings: [] },
+      "/api/runtime-profiles": { profiles: [] },
+      "/api/model-providers": { providers: [] },
+    });
+
+    renderPage();
+    const newBindingButtons = await screen.findAllByRole("button", { name: /New binding/i });
+    await userEvent.click(newBindingButtons[0]!);
+
+    // Choose literal kind and fill both the secret value and the env var name.
+    await userEvent.selectOptions(screen.getByLabelText("Source kind"), "literal");
+    await userEvent.type(screen.getByLabelText("Credential reference"), "NSSCTF_AGENT_TOKEN");
+    await userEvent.type(screen.getByLabelText("Secret value"), "nss_agent_secret");
+    await userEvent.type(screen.getByLabelText("Runtime environment variable name"), "NSSCTF_AGENT_TOKEN");
+
+    await userEvent.click(screen.getByRole("button", { name: "Create binding" }));
+
+    const putCall = fetchMock.mock.calls.find(
+      ([input, init]) => String(input).includes("/api/credential-bindings") && init?.method === "PUT",
+    );
+    expect(putCall).toBeDefined();
+    const body = JSON.parse((putCall![1]!.body as string) ?? "{}");
+    expect(body.credential_ref).toBe("NSSCTF_AGENT_TOKEN");
+    expect(body.source.destination_env).toBe("NSSCTF_AGENT_TOKEN");
+    expect(body.source.kind).toBe("literal");
   });
 });

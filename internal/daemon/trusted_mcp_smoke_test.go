@@ -51,7 +51,7 @@ func TestTrustedMCPProjectionSmoke(t *testing.T) {
 					t.Fatalf("read Claude settings: %v", err)
 				}
 				for _, tool := range []string{
-					"mcp__pentest__blackboard_change", "mcp__pentest__blackboard_read",
+					"mcp__pentest__blackboard_change", "mcp__pentest__blackboard_record_attempt_result", "mcp__pentest__blackboard_read",
 					"mcp__pentest__blackboard_history", "mcp__pentest__blackboard_retain_evidence",
 					"mcp__pentest__blackboard_checkpoint_attempt", "mcp__pentest__blackboard_finish",
 				} {
@@ -114,7 +114,7 @@ func TestTrustedMCPProjectionSmoke(t *testing.T) {
 			})
 
 			taskID := createTask(t, daemonServer, projectID, `{
-				"goal":"write recon fact via trusted mcp",
+				"type":"pentest","goal":"write recon fact via trusted mcp",
 				"runtime_profile_id":`+quoteJSON(profileID)+`,
 				"runner":"sandbox"
 			}`)
@@ -264,11 +264,11 @@ func assertMCPBootstrapHasNoLegacyTools(t *testing.T, endpoint string) {
 		t.Fatalf("list v2 bootstrap MCP tools: %v", err)
 	}
 	want := map[string]bool{
-		"blackboard_change": true, "blackboard_read": true, "blackboard_history": true,
+		"blackboard_change": true, "blackboard_record_attempt_result": true, "blackboard_read": true, "blackboard_history": true,
 		"blackboard_retain_evidence": true, "blackboard_checkpoint_attempt": true, "blackboard_finish": true,
 	}
 	if len(listed.Tools) != len(want) {
-		t.Fatalf("v2 bootstrap MCP tools = %#v, want exactly the six trusted v2 tools", listed.Tools)
+		t.Fatalf("v2 bootstrap MCP tools = %#v, want exactly the seven trusted v2 tools", listed.Tools)
 	}
 	for _, tool := range listed.Tools {
 		if !want[tool.Name] {

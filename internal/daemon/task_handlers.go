@@ -2,6 +2,9 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,14 +13,18 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"pentest/internal/adapters"
 	"pentest/internal/blackboardv2"
+	"pentest/internal/finishreadiness"
 
 	"pentest/internal/modelprovider"
+	"pentest/internal/owner"
 	"pentest/internal/preflight"
 	"pentest/internal/project"
 	"pentest/internal/projectinterface"
@@ -25,6 +32,7 @@ import (
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/skill"
+	"pentest/internal/steering"
 	"pentest/internal/store"
 	"pentest/internal/task"
 	"pentest/internal/timeline"
@@ -87,6 +95,10 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 	if input.RunControls.Extras == nil && input.Extras != nil {
 		input.RunControls.Extras = input.Extras
 	}
+	if input.Type != task.TypePentest && input.Type != task.TypeCTFChallenge {
+		writeTaskError(response, task.ErrInvalidTaskType)
+		return
+	}
 
 	defaulted, err := server.applyTaskLaunchDefaults(projectID, input.RuntimeProfileID, input.Runner)
 	if err != nil {
@@ -119,6 +131,8 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		ProjectID:           projectID,
 		Runner:              string(input.Runner),
 		HostActivated:       input.RunControls.HostActivated,
+		ProjectKind:         defaulted.project.Kind,
+		ScopeCapabilities:   append([]string(nil), defaulted.project.Scope.Capabilities...),
 	})
 	server.logPreflightCustomArgConflict(input.RuntimeProfileID, preflightResult)
 	if !preflightResult.Pass {
@@ -141,6 +155,7 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 
 	created, err := server.tasks.Create(task.CreateRequest{
 		ProjectID:        projectID,
+		Type:             input.Type,
 		Goal:             input.Goal,
 		RuntimeProfileID: input.RuntimeProfileID,
 		Runner:           input.Runner,
@@ -203,6 +218,7 @@ type taskLaunchPlan struct {
 	LaunchModelOverride     string
 	LaunchReasoningEffort   string
 	NativeResumeSessionID   string
+	NativeResumeSessionPath string
 	ResolvedProfile         runtimeprofile.Profile
 	ModelSnapshot           *modelprovider.Snapshot
 	// GlobalModelProviderSnapshot is listed before CreateContinuation so
@@ -406,6 +422,7 @@ func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, p
 		ProjectID: created.ProjectID, TaskID: created.ID, RuntimeProfileID: created.RuntimeProfileID,
 		RuntimeProvider: string(provider), Runner: created.Runner, RuntimeConfig: plan.CapturedRuntimeConfig,
 		SteeringEventIDs: plan.BlackboardV2SteeringEventIDs,
+		NativeSessionID:  plan.NativeResumeSessionID, NativeSessionPath: plan.NativeResumeSessionPath,
 		Precommit: func(projection blackboardv2.ContinuationLaunchProjection) error {
 			launchHeader = blackboardv2.LaunchHeader{
 				Runner: string(created.Runner), ScopePath: ".pentest/scope.json", BlackboardPath: ".pentest/blackboard.json",
@@ -518,6 +535,7 @@ func (server *Server) recoverBlackboardV2ContinuationFiles(ctx context.Context) 
 type taskLaunchDefaults struct {
 	runtimeProfileID string
 	runner           task.Runner
+	project          project.Project
 }
 
 func (server *Server) applyTaskLaunchDefaults(projectID, requestedProfileID string, requestedRunner task.Runner) (taskLaunchDefaults, error) {
@@ -529,6 +547,7 @@ func (server *Server) applyTaskLaunchDefaults(projectID, requestedProfileID stri
 	resolved := taskLaunchDefaults{
 		runtimeProfileID: requestedProfileID,
 		runner:           requestedRunner,
+		project:          found,
 	}
 	if resolved.runtimeProfileID == "" {
 		resolved.runtimeProfileID = found.Defaults.RuntimeProfile
@@ -1207,11 +1226,223 @@ func (server *Server) handleGetTask(response http.ResponseWriter, request *http.
 	writeJSON(response, http.StatusOK, detailed)
 }
 
+// workspaceNavigationTaskLimit bounds the number of ordinary Tasks inlined per
+// Project in the Sidebar navigation projection. Busy-runtime Tasks and the
+// selected Task are inlined on top of this limit, so the per-Project row never
+// needs a full Task history (#201).
+const workspaceNavigationTaskLimit = 5
+
+// workspaceNavigationResponse is the single-call Workspace Sidebar projection.
+// A refresh that supplies the current opaque revision receives changed=false
+// and an empty project list instead of a reserialized projection (#201).
+type workspaceNavigationResponse struct {
+	Revision string                       `json:"revision"`
+	Changed  bool                         `json:"changed"`
+	Projects []workspaceNavigationProject `json:"projects"`
+}
+
+type workspaceNavigationProject struct {
+	project.Project
+	LastActivityAt time.Time   `json:"last_activity_at"`
+	Tasks          []task.Task `json:"tasks"`
+}
+
+// handleWorkspaceNavigation returns one bounded navigation projection for the
+// Workspace Sidebar: every Project, each with the five most recent ordinary
+// Tasks inlined (runtime_activity and Blackboard conclusion already attached),
+// every Task with a live busy Runtime promoted ahead of the ordinary summary,
+// and the selected Task appended when neither rule already included it
+// (#201). Runtime liveness is computed live via attachRuntimeActivity; it is
+// never derived from durable Task status.
+//
+// The query work and response size are bounded by Project count × the fixed
+// summary size plus active Runtime count plus the selected Task; total
+// historical Task count never enters either bound. A request that supplies the
+// current opaque revision is answered with an empty unchanged result, so
+// polling never reserializes the projection.
+func (server *Server) handleWorkspaceNavigation(response http.ResponseWriter, request *http.Request) {
+	requestRevision := strings.TrimSpace(request.URL.Query().Get("revision"))
+	selectedTaskID := strings.TrimSpace(request.URL.Query().Get("selected_task"))
+
+	projects, err := server.projects.List()
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "list projects")
+		return
+	}
+
+	// The busy Task set is live and in-memory: a bound provider session that is
+	// currently busy. It is bounded by the number of active Runtimes, so
+	// scanning it never grows with Task history.
+	busyIDs := server.providerSessions.busyOwnerIDs()
+
+	var selected *task.Task
+	if selectedTaskID != "" {
+		found, err := server.tasks.Get(selectedTaskID)
+		if err == nil {
+			selected = &found
+		}
+	}
+
+	revision, err := server.navigationRevision(busyIDs, selected)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "compute navigation revision")
+		return
+	}
+	if requestRevision != "" && requestRevision == revision {
+		writeJSON(response, http.StatusOK, workspaceNavigationResponse{
+			Revision: revision,
+			Changed:  false,
+			Projects: []workspaceNavigationProject{},
+		})
+		return
+	}
+
+	// Load the busy Tasks once and group them by Project. Each lookup is a
+	// single primary-key read, bounded by the active Runtime count.
+	busyByProject := make(map[string][]task.Task)
+	for _, taskID := range busyIDs {
+		found, err := server.tasks.Get(taskID)
+		if err != nil {
+			continue
+		}
+		busyByProject[found.ProjectID] = append(busyByProject[found.ProjectID], found)
+	}
+
+	projectIDs := make([]string, 0, len(projects))
+	for _, current := range projects {
+		projectIDs = append(projectIDs, current.ID)
+	}
+	// Busy Tasks are excluded from the ordinary query so the ordinary five are
+	// the most recent non-busy Tasks; the selected Task stays in the query and
+	// is appended only when recency omitted it, so selecting a recent Task
+	// never shifts or duplicates the ordinary summary.
+	recentByProject, err := server.tasks.ListRecentPerProject(projectIDs, workspaceNavigationTaskLimit, busyIDs...)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "load recent tasks")
+		return
+	}
+
+	summaries := make([]workspaceNavigationProject, 0, len(projects))
+	for _, current := range projects {
+		recent := recentByProject[current.ID]
+		if recent == nil {
+			recent = []task.Task{}
+		}
+		busy := busyByProject[current.ID]
+		// Busy Tasks sort by recency ahead of the ordinary summary; the
+		// selected Task appends last when recency or activity already omitted
+		// it, and is never duplicated.
+		sort.SliceStable(busy, func(i, j int) bool {
+			return workspaceTaskRecency(busy[i], busy[j])
+		})
+		inlined := append([]task.Task{}, busy...)
+		inlined = append(inlined, recent...)
+		if selected != nil && selected.ProjectID == current.ID && !taskIDInList(selected.ID, inlined) {
+			inlined = append(inlined, *selected)
+		}
+		if inlined == nil {
+			inlined = []task.Task{}
+		}
+		// Decorate each inlined Task through the same path as the per-Project
+		// Task list so runtime_activity is live and consistent.
+		for index := range inlined {
+			inlined[index] = server.attachRuntimeActivity(inlined[index])
+			inlined[index], err = server.attachBlackboardConclusion(inlined[index])
+			if err != nil {
+				writeError(response, http.StatusInternalServerError, "load Blackboard conclusion")
+				return
+			}
+		}
+		summaries = append(summaries, workspaceNavigationProject{
+			Project:        current,
+			LastActivityAt: workspaceProjectActivity(current, inlined),
+			Tasks:          inlined,
+		})
+	}
+	writeJSON(response, http.StatusOK, workspaceNavigationResponse{
+		Revision: revision,
+		Changed:  true,
+		Projects: summaries,
+	})
+}
+
+// workspaceTaskRecency orders two Tasks by the navigation recency rule:
+// updated_at DESC then created_at DESC.
+func workspaceTaskRecency(a, b task.Task) bool {
+	if !a.UpdatedAt.Equal(b.UpdatedAt) {
+		return a.UpdatedAt.After(b.UpdatedAt)
+	}
+	return a.CreatedAt.After(b.CreatedAt)
+}
+
+func taskIDInList(id string, tasks []task.Task) bool {
+	for _, found := range tasks {
+		if found.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// navigationRevision returns the opaque conditional-refresh token for the
+// Project Navigation Projection (#201). It folds the durable Project and Task
+// summary epochs, the live busy-Runtime Task set, and the selected Task
+// identity, so every change that can alter the navigation rows yields a new
+// revision while an unchanged refresh can be answered without serializing the
+// projection. All inputs are bounded: the epochs are single indexed reads and
+// the busy set is bounded by the number of active Runtimes.
+//
+// The revision covers what the Sidebar renders: Project/Task summary fields,
+// busy membership, and the selected Task. The attached Blackboard conclusion
+// view is not rendered by navigation, so its transitions do not advance the
+// revision; a conclusion change alone is served from the cached projection
+// until the next revision-relevant change.
+func (server *Server) navigationRevision(busyIDs []string, selected *task.Task) (string, error) {
+	projectEpoch, err := server.projects.LatestUpdate()
+	if err != nil {
+		return "", err
+	}
+	taskEpoch, err := server.tasks.LatestUpdate()
+	if err != nil {
+		return "", err
+	}
+	selectedID := ""
+	if selected != nil {
+		selectedID = selected.ID
+	}
+	sum := sha256.Sum256([]byte("navigation:v1|" + projectEpoch.Format(time.RFC3339Nano) + "|" +
+		taskEpoch.Format(time.RFC3339Nano) + "|" + strings.Join(busyIDs, ",") + "|" + selectedID))
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// workspaceProjectActivity returns the most recent activity timestamp across a
+// Project and its Tasks, mirroring the Sidebar's projectActivity helper so the
+// projection's last_activity_at drives the same ordering with one call.
+func workspaceProjectActivity(projectRecord project.Project, tasks []task.Task) time.Time {
+	latest := projectRecord.UpdatedAt
+	if before := projectRecord.CreatedAt; latest.Before(before) {
+		latest = before
+	}
+	for _, current := range tasks {
+		if candidate := current.UpdatedAt; candidate.After(latest) {
+			latest = candidate
+		}
+		if candidate := current.CreatedAt; candidate.After(latest) {
+			latest = candidate
+		}
+	}
+	return latest
+}
+
 func (server *Server) handleDeleteTask(response http.ResponseWriter, request *http.Request) {
 	found, ok := server.requireProjectTask(response, request)
 	if !ok {
 		return
 	}
+	// Task Deletion is legal only for terminal Tasks, but every queued Accepted
+	// Steering request must still settle with a truthful outcome instead of
+	// being orphaned with the deleted owner.
+	server.settleTaskAcceptedSteering(found.ID, owner.SteeringReasonOwnerStateChanged, "Task deleted with queued accepted steering")
 	if err := server.tasks.Delete(found.ID); err != nil {
 		writeTaskError(response, err)
 		return
@@ -1327,6 +1558,11 @@ func (server *Server) runtimeControlsForTask(found task.Task, latest *task.TaskC
 		NativeSessionCaptured:   sessionCaptured,
 		SameRuntimeProviderOnly: true,
 		RuntimeProvider:         string(profile.Provider),
+	}
+	if strings.TrimSpace(profile.ID) == "" {
+		// Every Runtime Profile reference is gone: queue steering would record
+		// an empty profile, so the composer must not offer it.
+		controls.QueueSteerAvailable = false
 	}
 	if profile.Provider == runtimeprofile.ProviderPi {
 		// Expose the fixed projected set so Task Conversation UI can fail closed
@@ -1480,22 +1716,81 @@ func (server *Server) handleTaskTimeline(response http.ResponseWriter, request *
 		return
 	}
 
+	req := parseHistoryRequest(request)
+	items, window, err := collectTimelineItems(req, func(scan historyRequest) (timelineEventChunk, error) {
+		stored, err := server.tasks.HistoryEventWindow(found.ID, task.EventWindowQuery{
+			Projection: task.EventProjectionTimeline, BeforeSet: scan.beforeSet, Before: scan.before,
+			AfterSet: scan.afterSet, After: scan.after, Limit: historyEventQueryLimit,
+		})
+		if err != nil {
+			return timelineEventChunk{}, err
+		}
+		return timelineEventChunk{
+			events:     eventsToTimelineEvents(stored.Events),
+			cursor:     stored.Cursor,
+			hasOlder:   stored.HasOlder,
+			hasNewer:   stored.HasNewer,
+			scanCursor: stored.ScanCursor,
+		}, nil
+	})
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "list task events")
+		return
+	}
+	if items == nil {
+		items = []timeline.Item{}
+	}
+	detailBase := fmt.Sprintf("/api/projects/%s/tasks/%s/timeline/items", found.ProjectID, found.ID)
+	page := historyResponseFor(items, req, func(item timeline.Item) int {
+		return item.Seq
+	}, func(item timeline.Item) (timeline.Item, int) {
+		return boundedTimelineItem(item, detailBase)
+	})
+	page.hasOlder = page.hasOlder || window.hasOlder
+	if req.afterSet && window.hasNewer {
+		page.cursor = window.scanCursor
+	} else {
+		page.cursor = window.cursor
+	}
+	writeJSON(response, http.StatusOK, struct {
+		TaskID   string          `json:"task_id"`
+		Items    []timeline.Item `json:"items"`
+		Cursor   int             `json:"cursor"`
+		HasOlder bool            `json:"has_older"`
+	}{
+		TaskID:   found.ID,
+		Items:    page.items,
+		Cursor:   page.cursor,
+		HasOlder: page.hasOlder,
+	})
+}
+
+// handleTaskTimelineItem returns one complete retained timeline item by stable
+// item ID. A numeric Seq remains valid for retained legacy detail links.
+// including the full payload that the history window preview truncated.
+func (server *Server) handleTaskTimelineItem(response http.ResponseWriter, request *http.Request) {
+	found, ok := server.requireProjectTask(response, request)
+	if !ok {
+		return
+	}
+	itemRef := request.PathValue("seq")
+	seq, _ := strconv.Atoi(itemRef)
+	if itemRef == "" {
+		writeError(response, http.StatusNotFound, "timeline item not found")
+		return
+	}
 	events, err := server.tasks.Events(found.ID)
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "list task events")
 		return
 	}
-	items := timeline.Build(eventsToTimelineEvents(events))
-	if items == nil {
-		items = []timeline.Item{}
+	for _, item := range timeline.Build(eventsToTimelineEvents(events)) {
+		if item.ID == itemRef || (seq > 0 && item.Seq == seq) {
+			writeJSON(response, http.StatusOK, item)
+			return
+		}
 	}
-	writeJSON(response, http.StatusOK, struct {
-		TaskID string          `json:"task_id"`
-		Items  []timeline.Item `json:"items"`
-	}{
-		TaskID: found.ID,
-		Items:  items,
-	})
+	writeError(response, http.StatusNotFound, "timeline item not found")
 }
 
 func (server *Server) handleTaskTranscript(response http.ResponseWriter, request *http.Request) {
@@ -1504,26 +1799,79 @@ func (server *Server) handleTaskTranscript(response http.ResponseWriter, request
 		return
 	}
 
+	req := parseHistoryRequest(request)
+	window, err := server.tasks.HistoryEventWindow(found.ID, task.EventWindowQuery{
+		Projection: task.EventProjectionTranscript, BeforeSet: req.beforeSet, Before: req.before,
+		AfterSet: req.afterSet, After: req.after, Limit: historyEventQueryLimit,
+	})
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "list task events")
+		return
+	}
+	entries := transcript.BuildWindow(transcript.Subject{
+		ID:        found.ID,
+		Title:     found.Goal,
+		CreatedAt: found.CreatedAt,
+	}, eventsToTranscriptEvents(window.Events), transcript.WindowContext{
+		Continuation: window.PriorContinuation,
+		Adapter:      window.PriorTranscriptAdapter,
+	})
+	if entries == nil {
+		entries = []transcript.Entry{}
+	}
+	detailBase := fmt.Sprintf("/api/projects/%s/tasks/%s/transcript/entries", found.ProjectID, found.ID)
+	page := historyResponseFor(entries, req, func(entry transcript.Entry) int {
+		return entry.Seq
+	}, func(entry transcript.Entry) (transcript.Entry, int) {
+		return boundedTranscriptEntry(entry, detailBase)
+	})
+	page.hasOlder = page.hasOlder || window.HasOlder
+	if req.afterSet && window.HasNewer {
+		page.cursor = window.ScanCursor
+	} else {
+		page.cursor = window.Cursor
+	}
+	writeJSON(response, http.StatusOK, struct {
+		TaskID   string             `json:"task_id"`
+		Entries  []transcript.Entry `json:"entries"`
+		Cursor   int                `json:"cursor"`
+		HasOlder bool               `json:"has_older"`
+	}{
+		TaskID:   found.ID,
+		Entries:  page.items,
+		Cursor:   page.cursor,
+		HasOlder: page.hasOlder,
+	})
+}
+
+// handleTaskTranscriptEntry returns one complete retained transcript entry by
+// ID, including the full payload that the history window preview truncated.
+func (server *Server) handleTaskTranscriptEntry(response http.ResponseWriter, request *http.Request) {
+	found, ok := server.requireProjectTask(response, request)
+	if !ok {
+		return
+	}
+	entryID := request.PathValue("entry_id")
+	if entryID == "" {
+		writeError(response, http.StatusNotFound, "transcript entry not found")
+		return
+	}
 	events, err := server.tasks.Events(found.ID)
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "list task events")
 		return
 	}
-	entries := transcript.Build(transcript.Subject{
+	for _, entry := range transcript.Build(transcript.Subject{
 		ID:        found.ID,
 		Title:     found.Goal,
 		CreatedAt: found.CreatedAt,
-	}, eventsToTranscriptEvents(events))
-	if entries == nil {
-		entries = []transcript.Entry{}
+	}, eventsToTranscriptEvents(events)) {
+		if entry.ID == entryID {
+			writeJSON(response, http.StatusOK, entry)
+			return
+		}
 	}
-	writeJSON(response, http.StatusOK, struct {
-		TaskID  string             `json:"task_id"`
-		Entries []transcript.Entry `json:"entries"`
-	}{
-		TaskID:  found.ID,
-		Entries: entries,
-	})
+	writeError(response, http.StatusNotFound, "transcript entry not found")
 }
 
 func (server *Server) handleStopTask(response http.ResponseWriter, request *http.Request) {
@@ -1606,6 +1954,7 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 			writeTaskError(response, err)
 			return
 		}
+		server.settleTaskAcceptedSteering(taskID, owner.SteeringReasonOwnerStopped, "Task stopped with queued accepted steering")
 		stopped, err := server.taskDetail(taskID)
 		if err != nil {
 			writeTaskError(response, err)
@@ -1626,6 +1975,7 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 		writeTaskError(response, err)
 		return
 	}
+	server.settleTaskAcceptedSteering(taskID, owner.SteeringReasonOwnerStopped, "Task stopped with queued accepted steering")
 	stopped, err := server.taskDetail(taskID)
 	if err != nil {
 		writeTaskError(response, err)
@@ -1648,7 +1998,7 @@ func (server *Server) markStoppedBlackboardConclusionsRecoveryRequired(taskID st
 			continue
 		}
 		if _, _, err := server.tasks.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(
-			receipt.ID, time.Now().UTC(), blackboardConclusionRetryCooldown,
+			receipt.ID, task.ConclusionRecoveryRuntimeOwnershipNotProven, time.Now().UTC(), blackboardConclusionRetryCooldown,
 		); err != nil && !errors.Is(err, task.ErrInvalidBlackboardConclusionReceipt) {
 			return err
 		}
@@ -1726,6 +2076,16 @@ func (server *Server) handleFinishTask(response http.ResponseWriter, request *ht
 	found, err = server.tasks.Get(taskID)
 	if err != nil {
 		writeTaskError(response, err)
+		return
+	}
+	readiness, err := server.finishReadiness.Require(request.Context(), projectID, taskID)
+	if err != nil {
+		var notReady *finishreadiness.NotReadyError
+		if errors.As(err, &notReady) {
+			writeFinishReadinessConflict(response, readiness)
+			return
+		}
+		writeError(response, http.StatusInternalServerError, "evaluate Finish Readiness")
 		return
 	}
 	activity := server.computeRuntimeActivity(found)
@@ -1823,6 +2183,7 @@ func (server *Server) handleFinishTask(response http.ResponseWriter, request *ht
 	_, _ = server.tasks.AppendEvent(taskID, task.EventKindLifecycle, task.EventPayload{
 		"phase": "completed", "reason": "operator_finish",
 	})
+	server.settleTaskAcceptedSteering(taskID, owner.SteeringReasonOwnerFinished, "Task finished with queued accepted steering")
 
 	finished, err := server.taskDetail(taskID)
 	if err != nil {
@@ -1959,6 +2320,7 @@ func (server *Server) acquireTaskControlAfterAssistedSettlement(ctx context.Cont
 func (server *Server) finishFailClosed(response http.ResponseWriter, taskID, stage, detail string, status int) {
 	server.finishDiagnostic(taskID, stage, detail)
 	server.settleTaskFailedAfterFinishAbort(taskID)
+	server.settleTaskAcceptedSteering(taskID, owner.SteeringReasonOwnerStateChanged, "Task finish aborted before the accepted steering dispatched")
 	writeError(response, status, "finish failed at "+stage)
 }
 
@@ -2333,7 +2695,7 @@ func (server *Server) handleResumeTask(response http.ResponseWriter, request *ht
 }
 
 func (server *Server) prepareNativeResumeContinuation(found task.Task, resumedMessage string) (task.Task, string, taskLaunchPlan, error) {
-	found, resumedMessage, nativeResumeSessionID, err := server.prepareNativeResumeRequest(found, resumedMessage)
+	found, resumedMessage, nativeResume, err := server.prepareNativeResumeRequest(found, resumedMessage)
 	if err != nil {
 		return task.Task{}, "", taskLaunchPlan{}, err
 	}
@@ -2345,10 +2707,11 @@ func (server *Server) prepareNativeResumeContinuation(found task.Task, resumedMe
 		}
 	}
 	modelOverride, reasoningEffort := server.resumeTurnSelectionOverrides(found)
-	plan, err := server.buildTaskLaunchPlan(found, resumedMessage, modelOverride, nativeResumeSessionID, reasoningEffort)
+	plan, err := server.buildTaskLaunchPlan(found, resumedMessage, modelOverride, nativeResume.NativeSessionID, reasoningEffort)
 	if err != nil {
 		return task.Task{}, "", taskLaunchPlan{}, err
 	}
+	plan.NativeResumeSessionPath = nativeResume.NativeSessionPath
 	plan.BlackboardV2SteeringEventIDs = steeringEventIDs
 	return found, resumedMessage, plan, nil
 }
@@ -2368,17 +2731,17 @@ func (server *Server) prepareResumeContinuation(found task.Task, resumedMessage 
 	return server.prepareFreshResumeContinuation(found)
 }
 
-func (server *Server) prepareNativeResumeRequest(found task.Task, resumedMessage string) (task.Task, string, string, error) {
+func (server *Server) prepareNativeResumeRequest(found task.Task, resumedMessage string) (task.Task, string, runtime.NativeSessionMetadata, error) {
 	effectiveProfile, err := server.resolveTaskRuntimeProfile(found)
 	if err != nil {
-		return task.Task{}, "", "", err
+		return task.Task{}, "", runtime.NativeSessionMetadata{}, err
 	}
 	found.RuntimeProfileID = effectiveProfile.ID
-	nativeResumeSessionID, err := server.discoverNativeResumeSession(found)
+	nativeResume, err := server.discoverNativeResumeSession(found)
 	if err != nil {
-		return task.Task{}, "", "", err
+		return task.Task{}, "", runtime.NativeSessionMetadata{}, err
 	}
-	return found, resumedMessage, nativeResumeSessionID, nil
+	return found, resumedMessage, nativeResume, nil
 }
 
 func (server *Server) prepareFreshResumeContinuation(found task.Task) (task.Task, string, taskLaunchPlan, error) {
@@ -2631,6 +2994,16 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 		writeError(response, http.StatusBadRequest, "steering directive is required")
 		return
 	}
+	if profile, profileErr := server.resolveTaskRuntimeProfile(found); profileErr != nil {
+		writeError(response, http.StatusInternalServerError, "load runtime profile")
+		return
+	} else if strings.TrimSpace(profile.ID) == "" {
+		// The Task's launch and Task Runtime Configuration Version profiles are
+		// both deleted: no future continuation could deliver this directive, so
+		// fail closed instead of recording a pending steering event.
+		writeError(response, http.StatusBadRequest, "runtime profile not found")
+		return
+	}
 
 	activeSteer := found.Status == task.StatusRunning || found.Status == task.StatusPaused
 	if !server.acquireTaskControl(taskID) {
@@ -2776,36 +3149,6 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 	if !ok {
 		return
 	}
-
-	events, err := server.tasks.Events(found.ID)
-	if err != nil {
-		writeError(response, http.StatusInternalServerError, "list task events")
-		return
-	}
-	for _, event := range events {
-		if event.Kind != task.EventKindConversation || event.Payload["request_id"] != input.RequestID || event.Payload["delivery"] != "native_steer" {
-			continue
-		}
-		if conflict := nativeSteerIdempotencyConflict(event, input.Message, selection); conflict != "" {
-			writeError(response, http.StatusConflict, conflict)
-			return
-		}
-		mode, outcome, sessionID := nativeSteerState(events, input.RequestID)
-		if outcome == "" {
-			outcome = "pending"
-		}
-		if sessionID == "" {
-			sessionID = session.SessionID()
-		}
-		writeJSON(response, http.StatusAccepted, struct {
-			RequestID string                      `json:"request_id"`
-			SessionID string                      `json:"session_id"`
-			Mode      runtime.ProviderSessionMode `json:"mode"`
-			Outcome   string                      `json:"outcome"`
-		}{RequestID: input.RequestID, SessionID: sessionID, Mode: mode, Outcome: outcome})
-		return
-	}
-
 	if found.Status != task.StatusRunning && found.Status != task.StatusPaused {
 		writeError(response, http.StatusConflict, "native steer requires an active Task")
 		return
@@ -2815,38 +3158,40 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		writeError(response, http.StatusConflict, err.Error())
 		return
 	}
-	operation := nativeSteerOperation(session, mode)
-	if operation == nil {
+	if nativeSteerOperation(session, mode) == nil {
 		writeError(response, http.StatusConflict, "provider session does not support native steer")
 		return
 	}
-	if found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeAssisted {
-		if err := server.acquireTaskControlAfterAssistedSettlement(request.Context(), found, true, true); err != nil {
-			writeError(response, http.StatusConflict, err.Error())
+
+	// Repeated requests with the same request identity return the durable
+	// current outcome and never create a second queue item. Conflicting content
+	// under the same identity returns a conflict.
+	if record, err := server.steering.ByRequestID(owner.KindTask, found.ID, input.RequestID); err == nil {
+		if conflict := steeringConflictMessage(record, input.Message, selection, owner.SteeringMode(mode)); conflict != "" {
+			writeError(response, http.StatusConflict, conflict)
 			return
 		}
-	} else if !server.acquireProviderTaskControl(found.ID) {
-		writeError(response, http.StatusConflict, "task control operation already active")
+		sessionID := record.SessionID
+		if sessionID == "" {
+			sessionID = session.SessionID()
+		}
+		writeJSON(response, http.StatusAccepted, struct {
+			RequestID string                      `json:"request_id"`
+			SessionID string                      `json:"session_id"`
+			Mode      runtime.ProviderSessionMode `json:"mode"`
+			Outcome   string                      `json:"outcome"`
+		}{RequestID: input.RequestID, SessionID: sessionID, Mode: runtime.ProviderSessionMode(record.Mode), Outcome: steeringOutcomeFromRecord(record)})
 		return
-	}
-	// Stop may have completed while an assisted steer was waiting for semantic
-	// settlement. Revalidate durable Task and registry ownership only after this
-	// operation owns Task control; never dispatch through the stale session
-	// pointer captured before the wait.
-	currentTask, currentErr := server.tasks.Get(found.ID)
-	currentSession, stillBound := server.providerSessions.get(found.ID)
-	if currentErr != nil || (currentTask.Status != task.StatusRunning && currentTask.Status != task.StatusPaused) || !stillBound || currentSession != session {
-		server.releaseProviderTaskControl(found.ID)
-		writeError(response, http.StatusConflict, "native steer requires an active Task-owned provider session")
+	} else if !errors.Is(err, steering.ErrNotFound) {
+		writeError(response, http.StatusInternalServerError, "load accepted steering")
 		return
 	}
 
-	active, err := server.tasks.ActiveContinuation(found.ID)
-	if err != nil {
-		server.releaseProviderTaskControl(found.ID)
-		writeTaskError(response, err)
-		return
-	}
+	// Durable acceptance (#194, #200): the operator message and the dispatch
+	// record commit atomically before the request returns 202. The accepted
+	// steering is dispatched by the owner-neutral FIFO queue at the next valid
+	// work boundary; the Conversation Event is a projection, not the dispatch
+	// source of truth.
 	conversationPayload := task.EventPayload{
 		"role": "user", "text": input.Message, "request_id": input.RequestID,
 		"delivery": "native_steer", "outcome": "pending", "mode": string(mode),
@@ -2854,22 +3199,100 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		"model_provider_id": selection.ModelProviderID, "model": selection.Model,
 		"requested_reasoning_effort": selection.RequestedReasoningEffort,
 	}
-	var conversation task.Event
-	if active != nil {
-		conversation, err = server.tasks.AppendContinuationEvent(found.ID, active.ID, task.EventKindConversation, conversationPayload)
-	} else {
-		conversation, err = server.tasks.AppendEvent(found.ID, task.EventKindConversation, conversationPayload)
+	adapter := taskSteeringAdapter(server, found.ID, server.taskConclusionSettlementForID(found.ID))
+	_, err = server.acceptSteeringDurably(request.Context(), adapter, steering.AcceptRequest{
+		RequestID:                input.RequestID,
+		Message:                  input.Message,
+		Mode:                     owner.SteeringMode(mode),
+		ModelProviderID:          selection.ModelProviderID,
+		Model:                    selection.Model,
+		RequestedReasoningEffort: selection.RequestedReasoningEffort,
+		SessionID:                session.SessionID(),
+	}, func(tx *sql.Tx) (string, error) {
+		event, eventErr := server.tasks.AppendEventTx(tx, found.ID, task.EventKindConversation, conversationPayload)
+		if eventErr != nil {
+			return "", eventErr
+		}
+		return event.ID, nil
+	})
+	if errors.Is(err, steering.ErrDuplicateRequest) {
+		// A concurrent duplicate committed first. The same identity rules
+		// apply: matching content replays the durable outcome, conflicting
+		// content is a conflict.
+		replayed, replayErr := server.steering.ByRequestID(owner.KindTask, found.ID, input.RequestID)
+		if replayErr != nil {
+			writeError(response, http.StatusInternalServerError, "load accepted steering")
+			return
+		}
+		if conflict := steeringConflictMessage(replayed, input.Message, selection, owner.SteeringMode(mode)); conflict != "" {
+			writeError(response, http.StatusConflict, conflict)
+			return
+		}
+		writeJSON(response, http.StatusAccepted, struct {
+			RequestID string                      `json:"request_id"`
+			SessionID string                      `json:"session_id"`
+			Mode      runtime.ProviderSessionMode `json:"mode"`
+			Outcome   string                      `json:"outcome"`
+		}{RequestID: input.RequestID, SessionID: replayed.SessionID, Mode: runtime.ProviderSessionMode(replayed.Mode), Outcome: steeringOutcomeFromRecord(replayed)})
+		return
 	}
 	if err != nil {
-		server.releaseProviderTaskControl(found.ID)
 		writeTaskError(response, err)
 		return
 	}
+	writeJSON(response, http.StatusAccepted, struct {
+		RequestID string                      `json:"request_id"`
+		SessionID string                      `json:"session_id"`
+		Mode      runtime.ProviderSessionMode `json:"mode"`
+		Outcome   string                      `json:"outcome"`
+	}{RequestID: input.RequestID, SessionID: session.SessionID(), Mode: mode, Outcome: "accepted"})
+}
 
-	continuationID := ""
-	if active != nil {
-		continuationID = active.ID
+// nativeSteerOperationFunc is one provider session steer operation selected by
+// the session mode (in_turn_steer or interrupt_then_replace).
+type nativeSteerOperationFunc func(context.Context, runtime.ProviderSessionRequest, runtime.ProviderSessionEmit) (runtime.ProviderSessionResult, error)
+
+// taskConclusionSettlement waits for the durable assisted conclusion to settle
+// before an accepted native steer may take the provider control boundary. The
+// second (post-acquisition) pass is non-blocking so a conclusion that becomes
+// pending can yield control to its own coordinator.
+func (server *Server) taskConclusionSettlement(found task.Task) providerControlSettlement {
+	return func(ctx context.Context, wait bool) (bool, error) {
+		for {
+			receipt, err := server.tasks.LatestBlackboardConclusion(found.ID)
+			if err != nil {
+				return false, err
+			}
+			if receipt == nil {
+				return true, nil
+			}
+			switch receipt.View(found.RunControls.BlackboardConclusionMode).State {
+			case task.BlackboardConclusionStateClean:
+				return true, nil
+			case task.BlackboardConclusionStateActionRequired:
+				// The conclusion needs operator action, not Harness work; the
+				// provider control boundary is free for the accepted steering.
+				return true, nil
+			}
+			if !wait {
+				return false, nil
+			}
+			timer := time.NewTimer(5 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return false, ctx.Err()
+			case <-timer.C:
+			}
+		}
 	}
+}
+
+// executeNativeSteerOperation sends one accepted native steer Turn under Task
+// control and projects applied/failed/action_required outcome events on the
+// correct Runtime Continuation. The caller owns Task control for the whole
+// operation. The returned execution is the durable terminal outcome.
+func (server *Server) executeNativeSteerOperation(ctx context.Context, found task.Task, session runtime.ProviderSession, mode runtime.ProviderSessionMode, operation nativeSteerOperationFunc, providerRequest runtime.ProviderSessionRequest, conversation task.Event, continuationID string, freshContinuation bool) steeringExecution {
 	var continuationMu sync.Mutex
 	var continuationTransitionErr error
 	emit := func(kind task.EventKind, payload task.EventPayload) {
@@ -2879,7 +3302,7 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		if currentContinuationID != "" {
 			_, _ = server.tasks.AppendContinuationEvent(found.ID, currentContinuationID, kind, payload)
 		}
-		if mode == runtime.ProviderSessionModeInterruptThenReplace && kind == task.EventKindSteering && payload["outcome"] == "settled" && currentContinuationID != "" {
+		if mode == runtime.ProviderSessionModeInterruptThenReplace && kind == task.EventKindSteering && payload["outcome"] == "settled" && currentContinuationID != "" && !freshContinuation {
 			if transitionErr := server.advanceNativeSteerContinuation(currentContinuationID, session, &continuationID); transitionErr != nil {
 				continuationTransitionErr = transitionErr
 				failure := task.EventPayload{
@@ -2895,56 +3318,72 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 			_, _ = server.tasks.AppendEvent(found.ID, kind, payload)
 		}
 	}
-	providerRequest := runtime.ProviderSessionRequest{
-		RequestID:                input.RequestID,
-		Message:                  input.Message,
-		ModelProviderID:          selection.ModelProviderID,
-		Model:                    selection.Model,
-		RequestedReasoningEffort: selection.RequestedReasoningEffort,
+	result, operationErr := operation(ctx, providerRequest, emit)
+	if operationErr != nil {
+		errorCode, errorMessage := nativeSteerFailurePresentation(operationErr)
+		if errors.Is(operationErr, context.Canceled) || errors.Is(operationErr, context.DeadlineExceeded) {
+			// Post-fence with no provider outcome: delivery is ambiguous. The
+			// request is never replayed automatically; it settles
+			// action_required with a reason-specific recovery path.
+			ambiguous := task.EventPayload{
+				"request_id": providerRequest.RequestID, "session_id": session.SessionID(), "mode": string(mode),
+				"outcome": "action_required", "phase": "steering_action_required",
+				"error_code": string(owner.SteeringReasonDeliveryAmbiguous), "error": errorMessage,
+				"model_provider_id": providerRequest.ModelProviderID, "model": providerRequest.Model,
+				"requested_reasoning_effort": providerRequest.RequestedReasoningEffort,
+			}
+			emit(task.EventKindSteering, ambiguous)
+			return steeringExecution{state: owner.SteeringActionRequired, reason: owner.SteeringReasonDeliveryAmbiguous, message: errorMessage}
+		}
+		// Public Task Events carry only redacted, stable failure fields.
+		// Raw provider text stays out of the conversation surface.
+		failure := task.EventPayload{
+			"request_id": providerRequest.RequestID, "session_id": session.SessionID(), "mode": string(mode),
+			"outcome": "failed", "phase": "steering_failed", "error_code": errorCode,
+			"error":             errorMessage,
+			"model_provider_id": providerRequest.ModelProviderID, "model": providerRequest.Model,
+			"requested_reasoning_effort": providerRequest.RequestedReasoningEffort,
+		}
+		emit(task.EventKindSteering, failure)
+		return steeringExecution{state: owner.SteeringFailed, reason: steerReasonFromFailureCode(errorCode), message: errorMessage}
 	}
-	taskCtx := server.providerTaskContext(found.ID)
-	go func() {
-		defer server.releaseProviderTaskControl(found.ID)
-		ctx, cancel := context.WithTimeout(taskCtx, 30*time.Second)
-		defer cancel()
-		result, operationErr := operation(ctx, providerRequest, emit)
-		if operationErr != nil {
-			errorCode, errorMessage := nativeSteerFailurePresentation(operationErr)
-			// Public Task Events carry only redacted, stable failure fields.
-			// Raw provider text stays out of the conversation surface.
-			failure := task.EventPayload{
-				"request_id": input.RequestID, "session_id": session.SessionID(), "mode": string(mode),
-				"outcome": "failed", "phase": "steering_failed", "error_code": errorCode,
-				"error":             errorMessage,
-				"model_provider_id": selection.ModelProviderID, "model": selection.Model,
-				"requested_reasoning_effort": selection.RequestedReasoningEffort,
-			}
-			emit(task.EventKindSteering, failure)
-			return
+	continuationMu.Lock()
+	transitionErr := continuationTransitionErr
+	continuationMu.Unlock()
+	if transitionErr != nil {
+		_ = server.closeProviderSession(found.ID)
+		if current, _ := server.tasks.ActiveContinuation(found.ID); current != nil {
+			_, _ = server.tasks.UpdateContinuationStatus(current.ID, task.StatusFailed)
 		}
-		continuationMu.Lock()
-		transitionErr := continuationTransitionErr
-		continuationMu.Unlock()
-		if transitionErr != nil {
-			_ = server.closeProviderSession(found.ID)
-			if current, _ := server.tasks.ActiveContinuation(found.ID); current != nil {
-				_, _ = server.tasks.UpdateContinuationStatus(current.ID, task.StatusFailed)
-			}
-			_, _ = server.tasks.UpdateStatus(found.ID, task.StatusFailed)
-			return
-		}
-		payload := result.Payload()
-		payload["outcome"] = "applied"
-		payload["phase"] = "steering_applied"
-		emit(task.EventKindSteering, payload)
-	}()
+		_, _ = server.tasks.UpdateStatus(found.ID, task.StatusFailed)
+		return steeringExecution{state: owner.SteeringFailed, reason: owner.SteeringReasonContinuationUnavailable, message: transitionErr.Error(), failOwner: true}
+	}
+	payload := result.Payload()
+	payload["outcome"] = "applied"
+	payload["phase"] = "steering_applied"
+	emit(task.EventKindSteering, payload)
+	return steeringExecution{state: owner.SteeringApplied, result: result.Payload()}
+}
 
-	writeJSON(response, http.StatusAccepted, struct {
-		RequestID string                      `json:"request_id"`
-		SessionID string                      `json:"session_id"`
-		Mode      runtime.ProviderSessionMode `json:"mode"`
-		Outcome   string                      `json:"outcome"`
-	}{RequestID: input.RequestID, SessionID: session.SessionID(), Mode: mode, Outcome: "accepted"})
+// steerReasonFromFailureCode maps the redacted provider failure presentation
+// onto the closed Accepted Steering reason vocabulary. The projected event
+// error_code keeps the presentation code; the durable record stores the closed
+// reason.
+func steerReasonFromFailureCode(code string) owner.SteeringFailureReason {
+	switch code {
+	case "session_closed":
+		return owner.SteeringReasonSessionClosed
+	case "control_conflict":
+		return owner.SteeringReasonControlConflict
+	case "unsupported_reasoning_effort":
+		return owner.SteeringReasonUnsupportedReasoningEffort
+	case "provider_rejected":
+		return owner.SteeringReasonProviderRejected
+	case "provider_control_unavailable":
+		return owner.SteeringReasonProviderControlUnavailable
+	default:
+		return owner.SteeringReasonProviderRejected
+	}
 }
 
 type providerPermissionResponseRequest struct {
@@ -3222,12 +3661,90 @@ func (server *Server) advanceNativeSteerContinuation(currentID string, session r
 			return fmt.Errorf("rebind Blackboard continuation grant: %w", err)
 		}
 	}
+	// Recover any in-flight assisted-conclusion obligation with a NEW Conclusion
+	// Dispatch bound to the replacement Continuation + live session so a later
+	// retry delivers its control turn against the live replacement session
+	// instead of looping on the pre-steer (now dead) session. Historical
+	// dispatch identity is never rewritten (ADR 0021).
+	server.recoverConclusionObligationsForReplacedContinuation(old.TaskID, old.ID, next.ID, session.SessionID())
 	if _, err := server.tasks.UpdateContinuationStatus(old.ID, task.StatusCompleted); err != nil {
 		_, _ = server.tasks.UpdateContinuationStatus(next.ID, task.StatusFailed)
 		return fmt.Errorf("settle old continuation: %w", err)
 	}
 	*continuationID = next.ID
 	return nil
+}
+
+// errNoContinuationToContinue reports a Task that never had a Runtime
+// Continuation. The legacy one-shot path keeps task-level events in that
+// degenerate state instead of inventing continuation authority.
+var errNoContinuationToContinue = errors.New("no prior continuation to continue after terminal Blackboard state")
+
+// createWritableContinuationForLiveSession detects a terminal Runtime
+// Continuation (for example closed by Blackboard Finish) before new operator
+// work is sent and creates a fresh writable Continuation on the same
+// Task-scoped persistent Runtime. The immutable in-container MCP grant and the
+// Working Blackboard Snapshot are rebound to the replacement so later
+// Blackboard writes use the new authority; the prior terminal Continuation
+// keeps its closed state. Failure is explicit: the turn is never sent against
+// the closed authority.
+func (server *Server) createWritableContinuationForLiveSession(found task.Task, session runtime.ProviderSession) (*task.TaskContinuation, error) {
+	previous, err := server.tasks.LatestContinuation(found.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load terminal continuation: %w", err)
+	}
+	if previous == nil {
+		return nil, errNoContinuationToContinue
+	}
+	next, err := server.tasks.CreateReplacementContinuation(*previous)
+	if err != nil {
+		return nil, fmt.Errorf("create writable continuation: %w", err)
+	}
+	fail := func(cause error) (*task.TaskContinuation, error) {
+		_, _ = server.tasks.UpdateContinuationStatus(next.ID, task.StatusFailed)
+		return nil, cause
+	}
+	binder, ok := session.(runtime.ProviderSessionContinuationBinder)
+	if !ok {
+		return fail(fmt.Errorf("provider session cannot bind the fresh continuation"))
+	}
+	if err := binder.BindContinuation(next.ID); err != nil {
+		return fail(fmt.Errorf("bind provider continuation: %w", err))
+	}
+	// Carry the Blackboard grant and Working Snapshot ownership to the
+	// replacement before any new Turn writes. The in-container MCP token is
+	// immutable, so this rebind keeps Blackboard writes alive on the
+	// replacement instead of resolving to the terminal Continuation
+	// (closed_continuation).
+	if server.blackboardV2Continuity == nil {
+		return fail(fmt.Errorf("Blackboard continuation rebind is unavailable"))
+	}
+	if err := server.blackboardV2Continuity.RebindContinuationForNativeSteer(context.Background(), previous.ID, next.ID); err != nil {
+		return fail(fmt.Errorf("rebind Blackboard continuation grant: %w", err))
+	}
+	// Recover any in-flight assisted-conclusion obligation with a NEW Conclusion
+	// Dispatch bound to the replacement Continuation + live session so a later
+	// retry delivers its control turn against the live replacement session
+	// instead of looping on the pre-steer (now dead) session. Historical
+	// dispatch identity is never rewritten (ADR 0021).
+	server.recoverConclusionObligationsForReplacedContinuation(found.ID, previous.ID, next.ID, session.SessionID())
+	if _, err := server.tasks.UpdateContinuationStatus(next.ID, task.StatusRunning); err != nil {
+		return fail(fmt.Errorf("start writable continuation: %w", err))
+	}
+	// Timeline boundary: the prior terminal Continuation stays visible next to
+	// the fresh writable one in the Runtime Owner Workspace.
+	_, _ = server.tasks.AppendContinuationEvent(found.ID, previous.ID, task.EventKindLifecycle, task.EventPayload{
+		"phase": "completed", "reason": "superseded_by_writable_continuation",
+	})
+	_, _ = server.tasks.AppendContinuationEvent(found.ID, next.ID, task.EventKindLifecycle, task.EventPayload{
+		"phase": "started", "adapter": "provider-session", "reason": "writable_after_terminal_continuation",
+	})
+	if server.harness != nil && server.harness.IsActive(found.ID) {
+		if err := server.harness.RebindContinuation(found.ID, next.ID); err != nil {
+			return fail(fmt.Errorf("rebind runtime continuation: %w", err))
+		}
+	}
+	return &next, nil
 }
 
 func (server *Server) recordSelectedRuntimeConfig(response http.ResponseWriter, found task.Task, steeringEventID string, input taskContinuationSelectionInput) (task.RuntimeConfigVersion, bool) {
@@ -3609,11 +4126,13 @@ func configString(config map[string]any, key string) string {
 func (server *Server) resolveTaskContinuationRuntimeProfile(response http.ResponseWriter, found task.Task, input taskContinuationSelectionInput) (runtimeprofile.Profile, bool) {
 	currentProfile, err := server.resolveTaskRuntimeProfile(found)
 	if err != nil {
-		if errors.Is(err, runtimeprofile.ErrNotFound) {
-			writeError(response, http.StatusBadRequest, "runtime profile not found")
-			return runtimeprofile.Profile{}, false
-		}
 		writeError(response, http.StatusInternalServerError, "load runtime profile")
+		return runtimeprofile.Profile{}, false
+	}
+	if strings.TrimSpace(currentProfile.ID) == "" {
+		// The Task's launch and config Runtime Profiles are both deleted; no
+		// continuation can be steered onto a resolvable profile.
+		writeError(response, http.StatusBadRequest, "runtime profile not found")
 		return runtimeprofile.Profile{}, false
 	}
 	return server.resolveSelectedRuntimeProfile(response, currentProfile, input)
@@ -3712,33 +4231,66 @@ func (server *Server) resolveTaskRuntimeProfile(found task.Task) (runtimeprofile
 			profileID = latest.RuntimeProfileID
 		}
 	}
-	return server.profiles.Get(profileID)
+	profile, err := server.profiles.Get(profileID)
+	if err == nil {
+		return profile, nil
+	}
+	// A Task's captured Task Runtime Configuration is self-contained, so a
+	// deleted Runtime Profile must not make the Task unreadable. Fall back to
+	// the Task's own launch Runtime Profile; when that is also gone, resolve
+	// to a zero profile so render paths degrade instead of failing the page.
+	return server.profileOrFallback(profileID, found.RuntimeProfileID)
 }
 
-func (server *Server) discoverNativeResumeSession(found task.Task) (string, error) {
+// profileOrFallback resolves id, then fallbackID when id's Runtime Profile was
+// deleted, and finally a zero profile when both are gone. Control paths that
+// require a real profile reject the zero profile explicitly.
+func (server *Server) profileOrFallback(id, fallbackID string) (runtimeprofile.Profile, error) {
+	profile, err := server.profiles.Get(id)
+	if err == nil {
+		return profile, nil
+	}
+	if !errors.Is(err, runtimeprofile.ErrNotFound) {
+		return runtimeprofile.Profile{}, err
+	}
+	if id != fallbackID {
+		profile, fallbackErr := server.profiles.Get(fallbackID)
+		if fallbackErr == nil {
+			return profile, nil
+		}
+		if !errors.Is(fallbackErr, runtimeprofile.ErrNotFound) {
+			return runtimeprofile.Profile{}, fallbackErr
+		}
+	}
+	return runtimeprofile.Profile{}, nil
+}
+
+func (server *Server) discoverNativeResumeSession(found task.Task) (runtime.NativeSessionMetadata, error) {
 	profile, err := server.profiles.Get(found.RuntimeProfileID)
 	if err != nil {
-		return "", err
+		return runtime.NativeSessionMetadata{}, err
 	}
 	plugin, ok := server.runtimePlugins.Get(string(profile.Provider))
 	if !ok || !plugin.NativeResume.Supported {
-		return "", fmt.Errorf("%w for provider %s", errNativeResumeUnavailable, profile.Provider)
+		return runtime.NativeSessionMetadata{}, fmt.Errorf("%w for provider %s", errNativeResumeUnavailable, profile.Provider)
 	}
 	latest, err := server.tasks.LatestContinuation(found.ID)
 	if err != nil {
-		return "", err
+		return runtime.NativeSessionMetadata{}, err
 	}
 	if latest != nil && strings.TrimSpace(latest.NativeSessionID) != "" {
-		return latest.NativeSessionID, nil
+		return runtime.NativeSessionMetadata{
+			NativeSessionID: latest.NativeSessionID, NativeSessionPath: latest.NativeSessionPath,
+		}, nil
 	}
 	metadata, err := server.discoverProviderNativeSession(found.ID, profile.Provider)
 	if err != nil {
-		return "", err
+		return runtime.NativeSessionMetadata{}, err
 	}
 	if strings.TrimSpace(metadata.NativeSessionID) == "" {
-		return "", errNativeSessionUnavailable
+		return runtime.NativeSessionMetadata{}, errNativeSessionUnavailable
 	}
-	return metadata.NativeSessionID, nil
+	return metadata, nil
 }
 
 func (server *Server) discoverProviderNativeSession(taskID string, provider runtimeprofile.Provider) (runtime.NativeSessionMetadata, error) {
@@ -3848,8 +4400,10 @@ func (server *Server) requireProject(response http.ResponseWriter, projectID str
 
 func writeTaskError(response http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, task.ErrMissingGoal), errors.Is(err, task.ErrUnsupportedRunner), errors.Is(err, task.ErrInvalidBlackboardConclusionMode):
+	case errors.Is(err, task.ErrMissingGoal), errors.Is(err, task.ErrUnsupportedRunner), errors.Is(err, task.ErrInvalidTaskType), errors.Is(err, task.ErrInvalidBlackboardConclusionMode), errors.Is(err, task.ErrInvalidTaskPolicy):
 		writeError(response, http.StatusBadRequest, err.Error())
+	case errors.Is(err, task.ErrTaskTypeProjectKindMismatch):
+		writeError(response, http.StatusConflict, err.Error())
 	case errors.Is(err, task.ErrProjectNotFound), errors.Is(err, task.ErrNotFound), errors.Is(err, project.ErrNotFound):
 		writeError(response, http.StatusNotFound, err.Error())
 	case errors.Is(err, task.ErrActiveTask):
@@ -3901,6 +4455,8 @@ func eventsToTimelineEvents(events []task.Event) []timeline.Event {
 	converted := make([]timeline.Event, 0, len(events))
 	for _, event := range events {
 		converted = append(converted, timeline.Event{
+			ID:        event.ID,
+			Seq:       event.Seq,
 			Kind:      string(event.Kind),
 			Payload:   event.Payload,
 			CreatedAt: event.CreatedAt,

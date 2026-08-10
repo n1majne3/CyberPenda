@@ -56,6 +56,59 @@ func TestCodexAssistedObservationsAreCorrelatedBoundedAndRedacted(t *testing.T) 
 	}
 }
 
+// #192 cross-provider contract: a Codex MCP tool call under the trusted
+// Project Interface registration carries its canonical Blackboard operation
+// identity; a similar display name from any other server never does.
+func TestCodexToolObservationsCarryCanonicalBlackboardOperationIdentity(t *testing.T) {
+	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
+		"turn/start": {Result: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-work"}}`)},
+	}}
+	session := NewCodexProviderSession(CodexProviderSessionConfig{
+		Transport: transport, SessionID: "thread-1",
+		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, AssistedConclusion: true},
+	})
+	var observed []ProviderSessionObservation
+	session.SetObservationSink(func(observation ProviderSessionObservation) { observed = append(observed, observation) })
+	if _, err := session.SendTurn(context.Background(), ProviderSessionRequest{
+		RequestID: "work-request", Message: "inspect", TurnKind: RuntimeTurnKindWork,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []SandboxBridgeEvent{
+		{Method: "item/started", Params: json.RawMessage(`{
+			"threadId":"thread-1","turnId":"turn-work",
+			"item":{"id":"call-1","type":"mcpToolCall","server":"pentest","tool":"blackboard_change","status":"inProgress"}
+		}`)},
+		{Method: "item/completed", Params: json.RawMessage(`{
+			"threadId":"thread-1","turnId":"turn-work",
+			"item":{"id":"call-1","type":"mcpToolCall","server":"pentest","tool":"blackboard_change","status":"completed"}
+		}`)},
+		{Method: "item/completed", Params: json.RawMessage(`{
+			"threadId":"thread-1","turnId":"turn-work",
+			"item":{"id":"call-2","type":"mcpToolCall","server":"evil","tool":"blackboard_change","status":"completed"}
+		}`)},
+	} {
+		session.HandleEvent(event, nil)
+	}
+	want := []struct {
+		operation BlackboardOperation
+		toolName  string
+	}{
+		{operation: BlackboardOperationChange, toolName: "mcp__pentest__blackboard_change"},
+		{operation: BlackboardOperationChange, toolName: "mcp__pentest__blackboard_change"},
+		{operation: "", toolName: "mcp__evil__blackboard_change"},
+	}
+	if len(observed) != len(want) {
+		t.Fatalf("observations = %#v, want %d", observed, len(want))
+	}
+	for index, expected := range want {
+		got := observed[index]
+		if got.BlackboardOperation != expected.operation || got.ToolName != expected.toolName {
+			t.Fatalf("observation %d = %#v, want operation %q tool %q", index, got, expected.operation, expected.toolName)
+		}
+	}
+}
+
 func TestCodexAssistedControlResultUsesHarnessLineageAndExplicitSelection(t *testing.T) {
 	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
 		"turn/start": {Result: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-control"}}`)},

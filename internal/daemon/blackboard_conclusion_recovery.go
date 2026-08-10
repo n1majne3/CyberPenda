@@ -9,62 +9,80 @@ import (
 	"pentest/internal/task"
 )
 
-// recoverBlackboardConclusionReceipts resolves every durable pre-apply receipt
-// without opening or launching a Runtime. Only an exact provider session
-// adopted by the ownership recovery seam may receive a deterministic replay.
+// recoverBlackboardConclusionReceipts resolves every durable pre-apply
+// obligation without opening or launching a Runtime. Only an exact provider
+// session adopted by the ownership recovery seam may receive a deterministic
+// replay; a stuck obligation whose active dispatch is bound to a dead
+// continuation gets a NEW Conclusion Dispatch only when live ownership of the
+// current Task-scoped Runtime is proven (ADR 0021). Otherwise the obligation
+// becomes action_required with an operator-visible recovery reason.
 func (server *Server) recoverBlackboardConclusionReceipts(ctx context.Context) ProviderSessionRecoveryReport {
-	receipts, err := server.tasks.BlackboardConclusionRecoveryCandidates()
+	obligations, err := server.tasks.BlackboardConclusionRecoveryCandidates()
 	if err != nil {
 		server.logger.Printf("assisted conclusion: list restart candidates: %v", err)
 		return ProviderSessionRecoveryReport{}
 	}
-	requests := server.blackboardConclusionOwnershipRequests(receipts)
+	requests := server.blackboardConclusionOwnershipRequests(obligations)
 	report := server.recoverProviderSessionOwnership(ctx, requests)
 	live := make(map[string]bool, len(report.LiveOwnerIDs))
-	selectedReceipt := make(map[string]string, len(requests))
+	selectedObligation := make(map[string]string, len(requests))
 	for _, request := range requests {
-		selectedReceipt[request.Owner.ID] = request.ReceiptID
+		selectedObligation[request.Owner.ID] = request.ReceiptID
 	}
 	for _, taskID := range report.LiveOwnerIDs {
 		live[taskID] = true
 	}
-	for _, receipt := range receipts {
-		if !live[receipt.TaskID] || selectedReceipt[receipt.TaskID] != receipt.ID {
-			server.requireBlackboardConclusionRecovery(receipt, nil)
+	for _, obligation := range obligations {
+		if !obligation.SourceRequestCorrelationExact {
+			// A legacy source correlation cannot be proven; no ownership probe
+			// may run for it, so the obligation fails closed with the specific
+			// operator-visible reason.
+			server.requireBlackboardConclusionRecovery(obligation, task.ConclusionRecoveryLegacyCorrelationUnproven, nil)
 			continue
 		}
-		server.recoverLiveBlackboardConclusionReceipt(ctx, receipt)
+		if !live[obligation.TaskID] || selectedObligation[obligation.TaskID] != obligation.ID {
+			server.requireBlackboardConclusionRecovery(obligation, task.ConclusionRecoveryRuntimeOwnershipNotProven, nil)
+			continue
+		}
+		server.recoverLiveBlackboardConclusionObligation(ctx, obligation)
 	}
 	return report
 }
 
-// One ownership probe per Task is sufficient. The newest unresolved receipt is
-// the exact control lineage that a recovered Task-owned session must accept.
-func (server *Server) blackboardConclusionOwnershipRequests(receipts []task.BlackboardConclusionReceipt) []ProviderSessionRecoveryRequest {
+// blackboardConclusionOwnershipRequests builds one ownership probe per Task
+// from the obligation whose ACTIVE dispatch owns the exact control lineage.
+// The probe continuation is the CURRENT ACTIVE continuation of the owner, so a
+// stuck dispatch bound to a dead continuation can still prove ownership of the
+// live Task-scoped Runtime before a new dispatch is created.
+func (server *Server) blackboardConclusionOwnershipRequests(obligations []task.BlackboardConclusionReceipt) []ProviderSessionRecoveryRequest {
 	byTask := make(map[string]ProviderSessionRecoveryRequest)
 	order := make([]string, 0)
-	for _, receipt := range receipts {
-		if !receipt.SourceRequestCorrelationExact {
+	for _, obligation := range obligations {
+		if !obligation.SourceRequestCorrelationExact {
 			continue
 		}
-		found, err := server.tasks.Get(receipt.TaskID)
+		found, err := server.tasks.Get(obligation.TaskID)
 		if err != nil {
-			server.logger.Printf("assisted conclusion: load recovery Task %s: %v", receipt.TaskID, err)
+			server.logger.Printf("assisted conclusion: load recovery Task %s: %v", obligation.TaskID, err)
 			continue
 		}
-		continuation, err := server.tasks.Continuation(receipt.ContinuationID)
-		if err != nil {
-			server.logger.Printf("assisted conclusion: load recovery Continuation %s: %v", receipt.ContinuationID, err)
+		active, err := server.tasks.ActiveContinuation(obligation.TaskID)
+		if err != nil || active == nil {
+			server.logger.Printf("assisted conclusion: load recovery Continuation for Task %s: %v", obligation.TaskID, err)
 			continue
 		}
-		if _, seen := byTask[receipt.TaskID]; !seen {
-			order = append(order, receipt.TaskID)
+		if _, seen := byTask[obligation.TaskID]; !seen {
+			order = append(order, obligation.TaskID)
 		}
-		byTask[receipt.TaskID] = ProviderSessionRecoveryRequest{
-			Owner: found.OwnerContract(""), Continuation: ownerContinuationFromTask(continuation), ReceiptID: receipt.ID,
-			SourceSessionID: receipt.SourceSessionID, SourceRequestID: receipt.SourceRequestID,
-			DispatchRequestID: receipt.DispatchRequestID, ContainerID: continuation.ContainerID,
-			NativeSessionID: continuation.NativeSessionID, NativeSessionPath: continuation.NativeSessionPath,
+		byTask[obligation.TaskID] = ProviderSessionRecoveryRequest{
+			Owner: found.OwnerContract(""), Continuation: ownerContinuationFromTask(*active), ReceiptID: obligation.ID,
+			// The probe targets the CURRENT active continuation of the owner, so
+			// the session identity comes from that continuation's native session
+			// (the exact runtime the factory may adopt), never from a stale
+			// dispatch binding.
+			SourceSessionID: active.NativeSessionID, SourceRequestID: obligation.SourceRequestID,
+			DispatchRequestID: obligation.DispatchRequestID, ContainerID: active.ContainerID,
+			NativeSessionID: active.NativeSessionID, NativeSessionPath: active.NativeSessionPath,
 		}
 	}
 	requests := make([]ProviderSessionRecoveryRequest, 0, len(order))
@@ -74,69 +92,108 @@ func (server *Server) blackboardConclusionOwnershipRequests(receipts []task.Blac
 	return requests
 }
 
-func (server *Server) recoverLiveBlackboardConclusionReceipt(ctx context.Context, receipt task.BlackboardConclusionReceipt) {
+// recoverLiveBlackboardConclusionObligation resumes or re-dispatches one
+// obligation whose Task-scoped Runtime ownership was proven live. A pre-send
+// dispatch bound to the current active continuation resumes with the SAME
+// deterministic request id. A dispatch bound to a dead continuation is
+// superseded and a NEW recovery dispatch is created on the live continuation +
+// session. Post-fence and awaiting-result dispatches fail closed: an
+// acceptance-ambiguous provider delivery is never replayed automatically.
+func (server *Server) recoverLiveBlackboardConclusionObligation(ctx context.Context, obligation task.BlackboardConclusionReceipt) {
+	active, err := server.tasks.ActiveContinuation(obligation.TaskID)
+	if err != nil || active == nil {
+		server.requireBlackboardConclusionRecovery(obligation, task.ConclusionRecoveryWritableReplacementUnavailable, err)
+		return
+	}
+	session, live := server.providerSessions.get(obligation.TaskID)
+	if !live || session == nil {
+		server.requireBlackboardConclusionRecovery(obligation, task.ConclusionRecoveryRuntimeOwnershipNotProven, nil)
+		return
+	}
+	boundToCurrent := obligation.ContinuationID == active.ID && obligation.SourceSessionID == session.SessionID()
+	if !boundToCurrent {
+		// The active dispatch is bound to a dead or foreign continuation (for
+		// example a migrated legacy receipt). Recovery creates a NEW dispatch on
+		// the proven-live continuation + session; the old dispatch is superseded
+		// and its identity is never rewritten.
+		recovered, won, err := server.tasks.CreateRecoveryConclusionDispatch(obligation.ID, active.ID, session.SessionID(), time.Now().UTC())
+		if err != nil || !won {
+			server.requireBlackboardConclusionRecovery(obligation, task.ConclusionRecoveryWritableReplacementUnavailable, err)
+			return
+		}
+		server.scheduleRecoveredConclusionDispatch(recovered)
+		return
+	}
+	server.resumeLiveBlackboardConclusionObligation(ctx, obligation)
+}
+
+// resumeLiveBlackboardConclusionObligation runs the owner-neutral pre-apply
+// state machine for a live-bound obligation.
+func (server *Server) resumeLiveBlackboardConclusionObligation(ctx context.Context, obligation task.BlackboardConclusionReceipt) {
 	recoverLiveAssistedConclusion(assistedConclusionRecoveryReceipt{
-		State: string(receipt.InternalState), SendAttemptCount: receipt.SendAttemptCount,
-		SendStarted: receipt.SendStartedAt != nil, BaseRevision: receipt.BaseRevision,
-		ExplicitRetryCount: receipt.ExplicitRetryCount,
+		State: string(obligation.InternalState), SendAttemptCount: obligation.SendAttemptCount,
+		SendStarted: obligation.SendStartedAt != nil, BaseRevision: obligation.BaseRevision,
+		ExplicitRetryCount: obligation.ExplicitRetryCount,
 	}, assistedConclusionRecoveryHooks{
 		Pending: func() {
-			server.enqueueRecoveredBlackboardConclusion(receipt, func(controlCtx context.Context) error {
-				return server.dispatchBlackboardConclusion(controlCtx, receipt)
+			server.enqueueRecoveredBlackboardConclusion(obligation, func(controlCtx context.Context) error {
+				return server.dispatchBlackboardConclusion(controlCtx, obligation)
 			})
 		},
 		Dispatch: func(state string, baseRevision int, explicitRetryCount int) {
-			server.enqueueRecoveredBlackboardConclusion(receipt, func(controlCtx context.Context) error {
+			server.enqueueRecoveredBlackboardConclusion(obligation, func(controlCtx context.Context) error {
 				switch task.BlackboardConclusionReceiptState(state) {
 				case task.BlackboardConclusionReceiptRepairDispatchRequested:
-					return server.dispatchBlackboardConclusionRepair(controlCtx, receipt)
+					return server.dispatchBlackboardConclusionRepair(controlCtx, obligation)
 				case task.BlackboardConclusionReceiptVersionRegenerationDispatchRequested:
-					return server.dispatchBlackboardConclusionVersionRegeneration(controlCtx, receipt)
+					return server.dispatchBlackboardConclusionVersionRegeneration(controlCtx, obligation)
 				default:
 					directive := concludeBlackboardDirective(baseRevision)
 					if explicitRetryCount > 0 {
-						directive = repairBlackboardDirective(baseRevision)
+						directive = repairBlackboardDirective(baseRevision, conclusionDetailFromTaskReceipt(obligation))
 					}
-					return server.sendBlackboardConclusionTurn(controlCtx, receipt, directive)
+					return server.sendBlackboardConclusionTurn(controlCtx, obligation, directive)
 				}
 			})
 		},
 		VersionSync: func() {
-			found, err := server.tasks.Get(receipt.TaskID)
+			found, err := server.tasks.Get(obligation.TaskID)
 			if err == nil {
-				err = server.regenerateBlackboardConclusionAfterVersionConflict(ctx, found.ProjectID, receipt)
+				err = server.regenerateBlackboardConclusionAfterVersionConflict(ctx, found.ProjectID, obligation)
 			}
 			if err != nil {
-				server.requireBlackboardConclusionRecovery(receipt, err)
+				server.requireBlackboardConclusionRecovery(obligation, task.ConclusionRecoveryDispatchFailed, err)
 			}
 		},
-		Require: func() { server.requireBlackboardConclusionRecovery(receipt, nil) },
+		Require: func() {
+			server.requireBlackboardConclusionRecovery(obligation, task.ConclusionRecoveryAcceptanceAmbiguous, nil)
+		},
 	})
 }
 
-func (server *Server) enqueueRecoveredBlackboardConclusion(receipt task.BlackboardConclusionReceipt, operation func(context.Context) error) {
-	queued := server.enqueueProviderTaskControl(receipt.TaskID, func(ctx context.Context) {
+func (server *Server) enqueueRecoveredBlackboardConclusion(obligation task.BlackboardConclusionReceipt, operation func(context.Context) error) {
+	queued := server.enqueueProviderTaskControl(obligation.TaskID, func(ctx context.Context) {
 		if err := operation(ctx); err != nil {
-			server.requireBlackboardConclusionRecovery(receipt, err)
+			server.requireBlackboardConclusionRecovery(obligation, task.ConclusionRecoveryDispatchFailed, err)
 		}
 	})
 	if !queued {
-		server.requireBlackboardConclusionRecovery(receipt, fmt.Errorf("provider control queue is closed"))
+		server.requireBlackboardConclusionRecovery(obligation, task.ConclusionRecoveryDispatchFailed, fmt.Errorf("provider control queue is closed"))
 	}
 }
 
-func (server *Server) requireBlackboardConclusionRecovery(receipt task.BlackboardConclusionReceipt, cause error) {
-	if errors.Is(cause, context.Canceled) && !server.hasLiveProviderTaskContext(receipt.TaskID) {
+func (server *Server) requireBlackboardConclusionRecovery(obligation task.BlackboardConclusionReceipt, reason task.ConclusionRecoveryReason, cause error) {
+	if errors.Is(cause, context.Canceled) && !server.hasLiveProviderTaskContext(obligation.TaskID) {
 		return
 	}
 	_, _, err := server.tasks.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(
-		receipt.ID, time.Now().UTC(), blackboardConclusionRetryCooldown,
+		obligation.ID, reason, time.Now().UTC(), blackboardConclusionRetryCooldown,
 	)
 	if err != nil {
-		server.logger.Printf("assisted conclusion: mark restart recovery Task %s receipt %s: %v", receipt.TaskID, receipt.ID, err)
+		server.logger.Printf("assisted conclusion: mark restart recovery Task %s obligation %s: %v", obligation.TaskID, obligation.ID, err)
 		return
 	}
 	if cause != nil {
-		server.logger.Printf("assisted conclusion: restart recovery requires operator action Task %s receipt %s: %v", receipt.TaskID, receipt.ID, cause)
+		server.logger.Printf("assisted conclusion: restart recovery requires operator action Task %s obligation %s: %v", obligation.TaskID, obligation.ID, cause)
 	}
 }

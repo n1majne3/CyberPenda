@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"pentest/internal/owner"
 	"pentest/internal/session"
 )
 
@@ -278,6 +279,9 @@ func (server *Server) handleArchiveSession(response http.ResponseWriter, request
 		return
 	}
 	found, err := server.sessions.Archive(request.PathValue("id"))
+	if err == nil {
+		server.settleSessionAcceptedSteering(found.ID, owner.SteeringReasonOwnerArchived, "Session archived with queued accepted steering")
+	}
 	if err != nil {
 		writeSessionError(response, err)
 		return

@@ -438,6 +438,42 @@ func TestSessionContinuationsRetainRuntimeSelectionAndSeparateConversationFromTi
 	}
 }
 
+func TestSessionHistoryEventWindowReadsOnlyTheRequestedProjectionWindow(t *testing.T) {
+	dataRoot := t.TempDir()
+	db, err := store.Open(filepath.Join(dataRoot, "pentest.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	service := NewService(db, filepath.Join(dataRoot, "sessions"))
+	created, err := service.Create(CreateRequest{Input: "history"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 1; index <= 5; index++ {
+		if _, err := service.AppendEvent(created.ID, EventKindLifecycle, EventPayload{"phase": index}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := service.AppendEvent(created.ID, EventKindConversation, EventPayload{"role": "assistant", "text": "irrelevant"}); err != nil {
+		t.Fatal(err)
+	}
+
+	window, err := service.HistoryEventWindow(created.ID, EventWindowQuery{
+		Projection: EventProjectionTimeline,
+		Limit:      3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(window.Events) != 3 || window.Events[0].Seq != 4 || window.Events[2].Seq != 6 {
+		t.Fatalf("initial Session Timeline Event window = %#v, want seqs 4..6", window.Events)
+	}
+	if window.Cursor != 6 || !window.HasOlder {
+		t.Fatalf("initial Session Timeline Event window cursor=%d has_older=%t, want 6/true", window.Cursor, window.HasOlder)
+	}
+}
+
 func TestSessionOwnerContractRemainsProjectFree(t *testing.T) {
 	contract := (Session{ID: "session-1", Workdir: "/tmp/session-1"}).OwnerContract()
 	if err := contract.Validate(); err != nil {

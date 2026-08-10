@@ -192,7 +192,7 @@ func TestRunFailsWhenEnvCredentialNotSet(t *testing.T) {
 	}
 }
 
-func TestRunFailsWhenFileCredentialUnreadable(t *testing.T) {
+func TestRunFailsWhenEnvCredentialUnset(t *testing.T) {
 	svc := newTestServices(t)
 	profile, err := svc.profiles.Create(
 		"codex",
@@ -202,7 +202,7 @@ func TestRunFailsWhenFileCredentialUnreadable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
 	}
-	source := credential.Source{Kind: credential.SourceFile, Value: filepath.Join(t.TempDir(), "does-not-exist.txt"), DestinationEnv: "CODEX_API_KEY"}
+	source := credential.Source{Kind: credential.SourceEnv, Value: "PENTEST_UNSET_PREFLIGHT_KEY"}
 	if _, err := svc.creds.Upsert("codex-api-key", credential.ScopeGlobal, "", source, false); err != nil {
 		t.Fatalf("upsert global binding: %v", err)
 	}
@@ -213,26 +213,28 @@ func TestRunFailsWhenFileCredentialUnreadable(t *testing.T) {
 	})
 
 	if result.Pass {
-		t.Fatal("expected preflight to fail when file credential is unreadable")
+		t.Fatal("expected preflight to fail when env credential is unset")
 	}
 	if !checkFailed(result, "credentials") {
 		t.Fatalf("expected credentials check to fail, got %#v", result.Checks)
 	}
 }
 
-func TestRunFailsWhenCommandCredentialExitsNonZero(t *testing.T) {
-	t.Setenv("PENTEST_ALLOW_COMMAND_CREDENTIALS", "1")
+// TestRunFailsWhenGlobalEnvBindingUnmaterializable verifies that a broken
+// global Credential Binding (one that injects into every Runtime) is caught by
+// preflight even when the profile has no credential_refs at all. Before the
+// Global Environment Variable feature, such a binding was invisible to
+// preflight because the credentials check short-circuited on empty refs.
+func TestRunFailsWhenGlobalEnvBindingUnmaterializable(t *testing.T) {
 	svc := newTestServices(t)
-	profile, err := svc.profiles.Create(
-		"codex",
-		runtimeprofile.ProviderCodex,
-		runtimeprofile.Fields{CredentialRefs: []string{"codex-api-key"}},
-	)
+	// Profile with NO credential_refs — relies entirely on global injection.
+	profile, err := svc.profiles.Create("fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
 	}
-	source := credential.Source{Kind: credential.SourceCommand, Value: "exit 42", DestinationEnv: "CODEX_API_KEY"}
-	if _, err := svc.creds.Upsert("codex-api-key", credential.ScopeGlobal, "", source, false); err != nil {
+	// A global binding pointing at an unset host env var → unmaterializable.
+	broken := credential.Source{Kind: credential.SourceEnv, Value: "PENTEST_UNSET_GLOBAL_VAR", DestinationEnv: "GLOBAL_BROKEN_VAR"}
+	if _, err := svc.creds.Upsert("GLOBAL_BROKEN", credential.ScopeGlobal, "", broken, false); err != nil {
 		t.Fatalf("upsert global binding: %v", err)
 	}
 
@@ -242,10 +244,40 @@ func TestRunFailsWhenCommandCredentialExitsNonZero(t *testing.T) {
 	})
 
 	if result.Pass {
-		t.Fatal("expected preflight to fail when command credential exits non-zero")
+		t.Fatal("expected preflight to fail when a global env binding is unmaterializable")
 	}
-	if !checkFailed(result, "credentials") {
-		t.Fatalf("expected credentials check to fail, got %#v", result.Checks)
+	detail := checkDetail(result, "credentials")
+	if detail == "" {
+		t.Fatalf("expected credentials check to fail with detail, got %#v", result.Checks)
+	}
+	if !strings.Contains(detail, "GLOBAL_BROKEN") {
+		t.Fatalf("expected failure detail to name the global credential reference, got %q", detail)
+	}
+}
+
+// TestRunPassesWithMaterializableGlobalEnvBinding confirms a healthy global
+// binding does not break preflight for a profile without credential_refs.
+func TestRunPassesWithMaterializableGlobalEnvBinding(t *testing.T) {
+	svc := newTestServices(t)
+	profile, err := svc.profiles.Create("fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	good := credential.Source{Kind: credential.SourceLiteral, Value: "ok", DestinationEnv: "GLOBAL_OK_VAR"}
+	if _, err := svc.creds.Upsert("GLOBAL_OK", credential.ScopeGlobal, "", good, false); err != nil {
+		t.Fatalf("upsert global binding: %v", err)
+	}
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+	})
+
+	if !result.Pass {
+		t.Fatalf("expected preflight to pass with a healthy global binding, got %#v", result.Checks)
+	}
+	if !checkPassed(result, "credentials") {
+		t.Fatalf("expected credentials check to pass, got %#v", result.Checks)
 	}
 }
 
@@ -263,12 +295,7 @@ func TestRunPassesWhenAllCredentialsMaterialize(t *testing.T) {
 	if _, err := svc.creds.Upsert("codex-api-key", credential.ScopeGlobal, "", credential.Source{Kind: credential.SourceEnv, Value: "CODEX_API_KEY"}, false); err != nil {
 		t.Fatalf("upsert global binding: %v", err)
 	}
-	tokenPath := filepath.Join(t.TempDir(), "token.txt")
-	if err := os.WriteFile(tokenPath, []byte("file-secret"), 0o600); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
-	fileSource := credential.Source{Kind: credential.SourceFile, Value: tokenPath, DestinationEnv: "EXTRA_TOKEN"}
-	if _, err := svc.creds.Upsert("extra-key", credential.ScopeGlobal, "", fileSource, false); err != nil {
+	if _, err := svc.creds.Upsert("extra-key", credential.ScopeGlobal, "", credential.Source{Kind: credential.SourceLiteral, Value: "extra-secret", DestinationEnv: "EXTRA_TOKEN"}, false); err != nil {
 		t.Fatalf("upsert global binding: %v", err)
 	}
 
@@ -285,10 +312,11 @@ func TestRunPassesWhenAllCredentialsMaterialize(t *testing.T) {
 	}
 }
 
-func TestRunFailsWhenFileCredentialHasNoDestinationEnv(t *testing.T) {
-	// A file source without destination_env materializes fine, but projection
-	// errors because there is no env var name to project under. Preflight must
-	// catch this so the task fails before launch, not during it.
+// TestRunPassesWhenLiteralCredentialBackfillsDestinationEnv proves a literal
+// source without destination_env passes preflight after the scan-time backfill:
+// it projects under its credential_ref instead of failing, so legacy bindings
+// (created before the UI sent destination_env) remain launchable.
+func TestRunPassesWhenLiteralCredentialBackfillsDestinationEnv(t *testing.T) {
 	svc := newTestServices(t)
 	profile, err := svc.profiles.Create(
 		"codex",
@@ -298,13 +326,9 @@ func TestRunFailsWhenFileCredentialHasNoDestinationEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
 	}
-	tokenPath := filepath.Join(t.TempDir(), "token.txt")
-	if err := os.WriteFile(tokenPath, []byte("file-secret"), 0o600); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
-	// File source with a readable file but no DestinationEnv: Materialize would
-	// succeed, but destinationEnv (and thus projection) would fail.
-	source := credential.Source{Kind: credential.SourceFile, Value: tokenPath}
+	// Literal source with no DestinationEnv: the scan-time backfill maps it to
+	// the credential_ref, so projection succeeds.
+	source := credential.Source{Kind: credential.SourceLiteral, Value: "legacy-secret"}
 	if _, err := svc.creds.Upsert("codex-api-key", credential.ScopeGlobal, "", source, false); err != nil {
 		t.Fatalf("upsert global binding: %v", err)
 	}
@@ -314,11 +338,11 @@ func TestRunFailsWhenFileCredentialHasNoDestinationEnv(t *testing.T) {
 		ProjectID:        "p1",
 	})
 
-	if result.Pass {
-		t.Fatal("expected preflight to fail when file source has no destination_env")
+	if !result.Pass {
+		t.Fatalf("expected preflight to pass after backfill, got %#v", result.Checks)
 	}
-	if !checkFailed(result, "credentials") {
-		t.Fatalf("expected credentials check to fail, got %#v", result.Checks)
+	if !checkPassed(result, "credentials") {
+		t.Fatalf("expected credentials check to pass, got %#v", result.Checks)
 	}
 }
 
@@ -707,6 +731,66 @@ func TestRunPassesRegistryRuntimeExtension(t *testing.T) {
 	}
 	if len(result.RuntimeExtensions) != 1 || result.RuntimeExtensions[0].Source != "registry" {
 		t.Fatalf("expected registry extension preview, got %#v", result.RuntimeExtensions)
+	}
+}
+
+func TestRunEnforcesRuntimeExtensionProjectAndScopeRequirements(t *testing.T) {
+	svc := newTestServices(t)
+	source := t.TempDir()
+	enabled := true
+	extension := runtimeextension.Extension{
+		SchemaVersion:            runtimeextension.SchemaVersion,
+		ID:                       "ctf_platform",
+		Name:                     "CTF Platform",
+		CompatibleRuntimePlugins: []string{"pi"},
+		Source:                   runtimeextension.Source{Type: "local_dir", Path: source},
+		Projection:               runtimeextension.Projection{Location: "provider_home", Path: "extensions/ctf-platform"},
+		Requirements: runtimeextension.Requirements{
+			ProjectKinds:      []string{"ctf_challenge"},
+			ScopeCapabilities: []string{"challenge_platform"},
+		},
+	}
+	registry, err := runtimeextension.NewRegistry([]runtimeextension.Extension{extension})
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	svc.preflight = svc.preflight.WithRuntimeExtensions(registry)
+	profile, err := svc.profiles.Create("CTF", runtimeprofile.ProviderPi, runtimeprofile.Fields{
+		Model: "claude-sonnet-4", Endpoint: "https://api.example.test/anthropic",
+		APIKeys:           map[string]string{"ANTHROPIC_API_KEY": "sk-test"},
+		RuntimeExtensions: []runtimeprofile.RuntimeExtensionRef{{ID: extension.ID, Enabled: &enabled}},
+	})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+
+	wrongKind := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID:  profile.ID,
+		ProjectID:         "p1",
+		ProjectKind:       "pentest",
+		ScopeCapabilities: []string{"challenge_platform"},
+	})
+	if wrongKind.Pass || !checkFailed(wrongKind, "runtime_extension_requirements") {
+		t.Fatalf("expected Project Kind requirement failure, got %#v", wrongKind.Checks)
+	}
+
+	missingCapability := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+		ProjectKind:      "ctf_challenge",
+	})
+	if missingCapability.Pass || !checkFailed(missingCapability, "runtime_extension_requirements") {
+		t.Fatalf("expected Scope capability requirement failure, got %#v", missingCapability.Checks)
+	}
+
+	ready := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID:  profile.ID,
+		ProjectID:         "p1",
+		ProjectKind:       "ctf_challenge",
+		ScopeCapabilities: []string{"challenge_platform"},
+	})
+	if !ready.Pass {
+		t.Fatalf("expected requirements to pass, got %#v", ready.Checks)
 	}
 }
 

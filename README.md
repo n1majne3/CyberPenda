@@ -16,7 +16,7 @@ The daemon is the control plane, memory plane, task lifecycle plane, and reporti
 | React dashboard | Project dashboard, launch controls, blackboard, findings, settings |
 | Sandbox runner | Default runner — isolates runtime home, workdir, and process env (Docker/Podman) |
 | Host runner | Explicit opt-in; never an automatic fallback from sandbox |
-| Trusted MCP (`/mcp`) | Exactly six Blackboard v2 semantic tools bound to a trusted Continuation |
+| Trusted MCP (`/mcp`) | Exactly seven Blackboard v2 semantic tools bound to a trusted Continuation |
 | `pentestctl` | CLI access to the same Blackboard v2 semantic operations |
 | Runtime plugins | Declarative adapters (Codex, Claude Code, Pi, fake) |
 | Skills / extensions | Runtime-agnostic skill bundles + runtime-specific extension packs |

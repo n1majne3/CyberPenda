@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -19,6 +20,9 @@ import (
 const (
 	runtimeAttemptResultSchema = "runtime-attempt-result/v1"
 	maxResultBytes             = 64 << 10
+	// maxValidationFieldPathBytes bounds a reported field path so raw provider
+	// field names cannot inflate repair directives or durable state.
+	maxValidationFieldPathBytes = 96
 )
 
 type RuntimeAttemptOutcome string
@@ -29,6 +33,65 @@ const (
 	RuntimeAttemptBlocked      RuntimeAttemptOutcome = "blocked"
 	RuntimeAttemptInconclusive RuntimeAttemptOutcome = "inconclusive"
 )
+
+// ValidationReason is the closed machine vocabulary for one rejected closed
+// semantic result. Decoder text, provider bytes, and model reasoning never
+// become reasons; only these bounded tokens enter repair directives and
+// durable state.
+type ValidationReason string
+
+const (
+	ValidationReasonInvalidResult        ValidationReason = "invalid_result"
+	ValidationReasonEmptyResult          ValidationReason = "empty_result"
+	ValidationReasonResultTooLarge       ValidationReason = "result_too_large"
+	ValidationReasonInvalidUTF8          ValidationReason = "result_not_utf8"
+	ValidationReasonInvalidJSON          ValidationReason = "result_not_json"
+	ValidationReasonDuplicateField       ValidationReason = "duplicate_field"
+	ValidationReasonMissingField         ValidationReason = "missing_field"
+	ValidationReasonUnknownField         ValidationReason = "unknown_field"
+	ValidationReasonInvalidKeyFormat     ValidationReason = "invalid_key_format"
+	ValidationReasonInvalidEnumValue     ValidationReason = "invalid_enum_value"
+	ValidationReasonOversizedValue       ValidationReason = "value_too_large"
+	ValidationReasonRuleViolation        ValidationReason = "rule_violation"
+	ValidationReasonBaseRevisionMismatch ValidationReason = "base_revision_mismatch"
+)
+
+// ValidationDetail is the bounded public rejection detail for one closed
+// semantic result. The reason is a closed token, while the field path and
+// expected form are static or bounded strings from this package; raw provider
+// output and decoder text never appear.
+type ValidationDetail struct {
+	Reason    ValidationReason
+	FieldPath string
+	Expected  string
+}
+
+func (detail ValidationDetail) Error() string {
+	message := string(detail.Reason)
+	if detail.FieldPath != "" {
+		message += " at " + detail.FieldPath
+	}
+	if detail.Expected != "" {
+		message += "; expected " + detail.Expected
+	}
+	return message
+}
+
+// Valid reports whether the detail carries a bounded reason.
+func (detail ValidationDetail) Valid() bool {
+	return detail.Reason != ""
+}
+
+// DecodeDetailOf extracts the bounded rejection detail from a Decode error.
+// Any error without structured detail maps to the generic invalid_result
+// token so callers always receive a closed reason.
+func DecodeDetailOf(err error) ValidationDetail {
+	var detail ValidationDetail
+	if err != nil && errors.As(err, &detail) {
+		return detail
+	}
+	return ValidationDetail{Reason: ValidationReasonInvalidResult}
+}
 
 // RuntimeAttemptResult is the complete closed semantic result for one assisted
 // conclusion. Trusted identity and idempotency deliberately do not appear.
@@ -72,27 +135,33 @@ type ValidatedResult struct {
 // Decode validates and canonicalizes one runtime-attempt-result/v1 document.
 func Decode(raw []byte) (ValidatedResult, error) {
 	if len(raw) == 0 {
-		return ValidatedResult{}, fmt.Errorf("runtime Attempt result is empty")
+		return ValidatedResult{}, validationDetailError("runtime Attempt result is empty",
+			ValidationDetail{Reason: ValidationReasonEmptyResult, Expected: "the result must not be empty"})
 	}
 	if len(raw) > maxResultBytes {
-		return ValidatedResult{}, fmt.Errorf("runtime Attempt result exceeds 64 KiB")
+		return ValidatedResult{}, validationDetailError("runtime Attempt result exceeds 64 KiB",
+			ValidationDetail{Reason: ValidationReasonResultTooLarge, Expected: "the result must be at most 64 KiB"})
 	}
 	if !utf8.Valid(raw) {
-		return ValidatedResult{}, fmt.Errorf("runtime Attempt result must be valid UTF-8")
+		return ValidatedResult{}, validationDetailError("runtime Attempt result must be valid UTF-8",
+			ValidationDetail{Reason: ValidationReasonInvalidUTF8, Expected: "the result must be valid UTF-8"})
 	}
 	if err := rejectDuplicateJSONFields(raw); err != nil {
 		return ValidatedResult{}, err
 	}
 	var topLevel map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &topLevel); err != nil {
-		return ValidatedResult{}, fmt.Errorf("decode runtime Attempt result: %w", err)
+		return ValidatedResult{}, validationDetailError(fmt.Sprintf("decode runtime Attempt result: %v", err),
+			ValidationDetail{Reason: ValidationReasonInvalidJSON, Expected: "the result must be exactly one JSON object"})
 	}
 	if _, ok := topLevel["base_revision"]; !ok {
-		return ValidatedResult{}, fmt.Errorf("base_revision is required")
+		return ValidatedResult{}, validationDetailError("base_revision is required",
+			ValidationDetail{Reason: ValidationReasonMissingField, FieldPath: "base_revision", Expected: "base_revision must be present"})
 	}
 	for _, field := range []string{"tested_targets", "produced_targets"} {
 		if value, ok := topLevel[field]; ok && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
-			return ValidatedResult{}, fmt.Errorf("%s must be an array", field)
+			return ValidatedResult{}, validationDetailError(fmt.Sprintf("%s must be an array", field),
+				ValidationDetail{Reason: ValidationReasonRuleViolation, FieldPath: field, Expected: "must be an array"})
 		}
 	}
 	if rawAttempt, ok := topLevel["attempt"]; ok {
@@ -101,7 +170,8 @@ func Decode(raw []byte) (ValidatedResult, error) {
 			if rawCreate, present := attemptFields["create"]; present {
 				var create bool
 				if err := json.Unmarshal(rawCreate, &create); err == nil && !create {
-					return ValidatedResult{}, fmt.Errorf("attempt.create must be true when present")
+					return ValidatedResult{}, validationDetailError("attempt.create must be true when present",
+						ValidationDetail{Reason: ValidationReasonRuleViolation, FieldPath: "attempt.create", Expected: "must be true when present"})
 				}
 			}
 		}
@@ -110,11 +180,17 @@ func Decode(raw []byte) (ValidatedResult, error) {
 	decoder.DisallowUnknownFields()
 	var result RuntimeAttemptResult
 	if err := decoder.Decode(&result); err != nil {
-		return ValidatedResult{}, fmt.Errorf("decode runtime Attempt result: %w", err)
+		if fieldPath := unknownJSONFieldPath(err); fieldPath != "" {
+			return ValidatedResult{}, validationDetailError(fmt.Sprintf("decode runtime Attempt result: %v", err),
+				ValidationDetail{Reason: ValidationReasonUnknownField, FieldPath: fieldPath, Expected: "the result has no unknown fields"})
+		}
+		return ValidatedResult{}, validationDetailError(fmt.Sprintf("decode runtime Attempt result: %v", err),
+			ValidationDetail{Reason: ValidationReasonInvalidJSON, Expected: "the result must be exactly one JSON object with the closed field types"})
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
-		return ValidatedResult{}, fmt.Errorf("runtime Attempt result has trailing JSON")
+		return ValidatedResult{}, validationDetailError("runtime Attempt result has trailing JSON",
+			ValidationDetail{Reason: ValidationReasonInvalidJSON, Expected: "the result must be exactly one JSON object"})
 	}
 	if err := validateResult(result); err != nil {
 		return ValidatedResult{}, err
@@ -130,21 +206,50 @@ func Decode(raw []byte) (ValidatedResult, error) {
 	return ValidatedResult{Result: result, CanonicalJSON: canonical, SHA256: hex.EncodeToString(digest[:])}, nil
 }
 
+// validationDetailError attaches bounded rejection detail to a human-readable
+// message. The detail remains extractable through errors.As while the message
+// stays transient diagnostic text.
+func validationDetailError(message string, detail ValidationDetail) error {
+	return fmt.Errorf("%s: %w", message, detail)
+}
+
+// unknownJSONFieldPath extracts a bounded field name from the strict decoder's
+// unknown-field error. The name is provider input, so it is truncated before
+// it can enter a repair directive or durable state.
+func unknownJSONFieldPath(err error) string {
+	const marker = "unknown field "
+	text := err.Error()
+	index := strings.Index(text, marker)
+	if index < 0 {
+		return ""
+	}
+	name := strings.Trim(strings.TrimSpace(text[index+len(marker):]), `"`)
+	if len(name) > maxValidationFieldPathBytes {
+		name = name[:maxValidationFieldPathBytes]
+		for len(name) > 0 && !utf8.ValidString(name) {
+			name = name[:len(name)-1]
+		}
+	}
+	return name
+}
+
 func rejectDuplicateJSONFields(raw []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	first, err := decoder.Token()
 	if err != nil {
-		return fmt.Errorf("decode runtime Attempt result: %w", err)
+		return validationDetailError(fmt.Sprintf("decode runtime Attempt result: %v", err),
+			ValidationDetail{Reason: ValidationReasonInvalidJSON, Expected: "the result must be exactly one JSON object"})
 	}
-	if err := walkJSONValue(decoder, first); err != nil {
+	if err := walkJSONValue(decoder, first, ""); err != nil {
 		return err
 	}
 	return nil
 }
 
-func walkJSONValue(decoder *json.Decoder, token json.Token) error {
+func walkJSONValue(decoder *json.Decoder, token json.Token, path string) error {
 	if token == nil {
-		return fmt.Errorf("runtime Attempt result does not accept null values")
+		return validationDetailError("runtime Attempt result does not accept null values",
+			ValidationDetail{Reason: ValidationReasonRuleViolation, FieldPath: path, Expected: "null values are not accepted"})
 	}
 	delim, ok := token.(json.Delim)
 	if !ok {
@@ -156,41 +261,55 @@ func walkJSONValue(decoder *json.Decoder, token json.Token) error {
 		for decoder.More() {
 			fieldToken, err := decoder.Token()
 			if err != nil {
-				return fmt.Errorf("decode runtime Attempt result: %w", err)
+				return validationDetailError(fmt.Sprintf("decode runtime Attempt result: %v", err),
+					ValidationDetail{Reason: ValidationReasonInvalidJSON, Expected: "the result must be exactly one JSON object"})
 			}
 			field, ok := fieldToken.(string)
 			if !ok {
-				return fmt.Errorf("decode runtime Attempt result: object field is not a string")
+				return validationDetailError("decode runtime Attempt result: object field is not a string",
+					ValidationDetail{Reason: ValidationReasonInvalidJSON, Expected: "the result must be exactly one JSON object"})
 			}
 			if _, duplicate := seen[field]; duplicate {
-				return fmt.Errorf("duplicate JSON field %q", field)
+				return validationDetailError(fmt.Sprintf("duplicate JSON field %q", field),
+					ValidationDetail{Reason: ValidationReasonDuplicateField, FieldPath: joinJSONPath(path, field), Expected: "no duplicate JSON fields"})
 			}
 			seen[field] = struct{}{}
 			valueToken, err := decoder.Token()
 			if err != nil {
-				return fmt.Errorf("decode runtime Attempt result: %w", err)
+				return validationDetailError(fmt.Sprintf("decode runtime Attempt result: %v", err),
+					ValidationDetail{Reason: ValidationReasonInvalidJSON, Expected: "the result must be exactly one JSON object"})
 			}
-			if err := walkJSONValue(decoder, valueToken); err != nil {
+			if err := walkJSONValue(decoder, valueToken, joinJSONPath(path, field)); err != nil {
 				return err
 			}
 		}
 	case '[':
-		for decoder.More() {
+		for index := 0; decoder.More(); index++ {
 			valueToken, err := decoder.Token()
 			if err != nil {
-				return fmt.Errorf("decode runtime Attempt result: %w", err)
+				return validationDetailError(fmt.Sprintf("decode runtime Attempt result: %v", err),
+					ValidationDetail{Reason: ValidationReasonInvalidJSON, Expected: "the result must be exactly one JSON object"})
 			}
-			if err := walkJSONValue(decoder, valueToken); err != nil {
+			if err := walkJSONValue(decoder, valueToken, fmt.Sprintf("%s[%d]", path, index)); err != nil {
 				return err
 			}
 		}
 	default:
-		return fmt.Errorf("decode runtime Attempt result: unexpected JSON delimiter %q", delim)
+		return validationDetailError(fmt.Sprintf("decode runtime Attempt result: unexpected JSON delimiter %q", delim),
+			ValidationDetail{Reason: ValidationReasonInvalidJSON, Expected: "the result must be exactly one JSON object"})
 	}
 	if _, err := decoder.Token(); err != nil {
-		return fmt.Errorf("decode runtime Attempt result: %w", err)
+		return validationDetailError(fmt.Sprintf("decode runtime Attempt result: %v", err),
+			ValidationDetail{Reason: ValidationReasonInvalidJSON, Expected: "the result must be exactly one JSON object"})
 	}
 	return nil
+}
+
+func joinJSONPath(parent, field string) string {
+	if parent == "" {
+		return field
+	}
+	return parent + "." + field
 }
 
 // Compile deterministically lowers a validated result to Blackboard v2. The
@@ -239,19 +358,23 @@ func Compile(result RuntimeAttemptResult, idempotencyKey string) (blackboardv2.C
 
 func validateResult(result RuntimeAttemptResult) error {
 	if result.Schema != runtimeAttemptResultSchema {
-		return fmt.Errorf("schema must be %q", runtimeAttemptResultSchema)
+		return validationDetailError(fmt.Sprintf("schema must be %q", runtimeAttemptResultSchema),
+			ValidationDetail{Reason: ValidationReasonRuleViolation, FieldPath: "schema", Expected: fmt.Sprintf("schema must be %q", runtimeAttemptResultSchema)})
 	}
 	if result.BaseRevision < 0 {
-		return fmt.Errorf("base_revision must not be negative")
+		return validationDetailError("base_revision must not be negative",
+			ValidationDetail{Reason: ValidationReasonRuleViolation, FieldPath: "base_revision", Expected: "base_revision must be a non-negative integer"})
 	}
-	if err := validateTypedKey(result.Attempt.Key, "attempt:", "attempt.key"); err != nil {
+	if err := validateKey(result.Attempt.Key, "attempt.key"); err != nil {
 		return err
 	}
 	if result.Attempt.Create == (result.Attempt.ExpectedVersion > 0) {
-		return fmt.Errorf("attempt requires exactly one of create=true or expected_version")
+		return validationDetailError("attempt requires exactly one of create=true or expected_version",
+			ValidationDetail{Reason: ValidationReasonRuleViolation, FieldPath: "attempt", Expected: "exactly one of create=true or expected_version"})
 	}
 	if result.Attempt.ExpectedVersion < 0 {
-		return fmt.Errorf("attempt.expected_version must be positive")
+		return validationDetailError("attempt.expected_version must be positive",
+			ValidationDetail{Reason: ValidationReasonRuleViolation, FieldPath: "attempt.expected_version", Expected: "a positive integer"})
 	}
 	if err := validateText(result.Attempt.Summary, 1024, "attempt.summary"); err != nil {
 		return err
@@ -259,13 +382,16 @@ func validateResult(result RuntimeAttemptResult) error {
 	switch result.Attempt.Outcome {
 	case RuntimeAttemptSucceeded, RuntimeAttemptFailed, RuntimeAttemptBlocked, RuntimeAttemptInconclusive:
 	default:
-		return fmt.Errorf("attempt.outcome must be succeeded, failed, blocked, or inconclusive")
+		return validationDetailError("attempt.outcome must be succeeded, failed, blocked, or inconclusive",
+			ValidationDetail{Reason: ValidationReasonInvalidEnumValue, FieldPath: "attempt.outcome", Expected: "outcome must be one of succeeded, failed, blocked, or inconclusive"})
 	}
 	if len(result.TestedTargets) == 0 {
-		return fmt.Errorf("tested_targets must be a non-empty array")
+		return validationDetailError("tested_targets must be a non-empty array",
+			ValidationDetail{Reason: ValidationReasonRuleViolation, FieldPath: "tested_targets", Expected: "a non-empty array"})
 	}
 	if len(result.TestedTargets) > 32 || len(result.ProducedTargets) > 32 {
-		return fmt.Errorf("runtime Attempt result target count exceeds 32")
+		return validationDetailError("runtime Attempt result target count exceeds 32",
+			ValidationDetail{Reason: ValidationReasonOversizedValue, FieldPath: "tested_targets", Expected: "at most 32 target entries"})
 	}
 	seen := map[string]bool{result.Attempt.Key: true}
 	for index, target := range result.TestedTargets {
@@ -274,27 +400,28 @@ func validateResult(result RuntimeAttemptResult) error {
 			return err
 		}
 		if seen[target.Key] {
-			return fmt.Errorf("%s.key is duplicated", path)
+			return validationDetailError(fmt.Sprintf("%s.key is duplicated", path),
+				ValidationDetail{Reason: ValidationReasonRuleViolation, FieldPath: path + ".key", Expected: "the key must be unique across the result"})
 		}
 		seen[target.Key] = true
 		created := target.CreateObjective != nil
 		if created == (target.ExpectedVersion > 0) || target.ExpectedVersion < 0 {
-			return fmt.Errorf("%s requires exactly one of create_objective or expected_version", path)
+			return validationDetailError(fmt.Sprintf("%s requires exactly one of create_objective or expected_version", path),
+				ValidationDetail{Reason: ValidationReasonRuleViolation, FieldPath: path, Expected: "exactly one of create_objective or expected_version"})
 		}
 		if created {
-			if !strings.HasPrefix(target.Key, "objective:") {
-				return fmt.Errorf("%s.key must use the objective: prefix", path)
-			}
 			if err := validateText(target.CreateObjective.Objective, 1024, path+".create_objective.objective"); err != nil {
 				return err
 			}
 		}
 	}
 	if result.Attempt.Outcome == RuntimeAttemptSucceeded && len(result.ProducedTargets) == 0 {
-		return fmt.Errorf("succeeded Attempt requires at least one produced target")
+		return validationDetailError("succeeded Attempt requires at least one produced target",
+			ValidationDetail{Reason: ValidationReasonRuleViolation, FieldPath: "produced_targets", Expected: "a succeeded Attempt requires at least one produced target"})
 	}
 	if result.Attempt.Outcome != RuntimeAttemptSucceeded && len(result.ProducedTargets) != 0 {
-		return fmt.Errorf("produced_targets are accepted only for a succeeded Attempt")
+		return validationDetailError("produced_targets are accepted only for a succeeded Attempt",
+			ValidationDetail{Reason: ValidationReasonRuleViolation, FieldPath: "produced_targets", Expected: "accepted only for a succeeded Attempt"})
 	}
 	for index, target := range result.ProducedTargets {
 		path := fmt.Sprintf("produced_targets[%d]", index)
@@ -302,41 +429,48 @@ func validateResult(result RuntimeAttemptResult) error {
 			return err
 		}
 		if target.ExpectedVersion < 1 {
-			return fmt.Errorf("%s.expected_version must be positive", path)
+			return validationDetailError(fmt.Sprintf("%s.expected_version must be positive", path),
+				ValidationDetail{Reason: ValidationReasonRuleViolation, FieldPath: path + ".expected_version", Expected: "a positive integer"})
 		}
 		if seen[target.Key] {
-			return fmt.Errorf("%s.key is duplicated", path)
+			return validationDetailError(fmt.Sprintf("%s.key is duplicated", path),
+				ValidationDetail{Reason: ValidationReasonRuleViolation, FieldPath: path + ".key", Expected: "the key must be unique across the result"})
 		}
 		seen[target.Key] = true
 	}
 	return nil
 }
 
-func validateTypedKey(key, prefix, path string) error {
-	if err := validateKey(key, path); err != nil {
-		return err
-	}
-	if !strings.HasPrefix(key, prefix) {
-		return fmt.Errorf("%s must use the %s prefix", path, prefix)
-	}
-	return nil
-}
-
 func validateKey(key, path string) error {
-	if key == "" || len(key) > 96 {
-		return fmt.Errorf("%s must be non-empty and at most 96 ASCII characters", path)
+	if key == "" {
+		return validationDetailError(fmt.Sprintf("%s must be non-empty and at most 96 ASCII characters", path),
+			ValidationDetail{Reason: ValidationReasonRuleViolation, FieldPath: path, Expected: "the key must be non-empty"})
+	}
+	if len(key) > 96 {
+		return validationDetailError(fmt.Sprintf("%s must be non-empty and at most 96 ASCII characters", path),
+			ValidationDetail{Reason: ValidationReasonOversizedValue, FieldPath: path, Expected: "the key must be at most 96 ASCII characters"})
 	}
 	for _, value := range key {
 		if value < 0x20 || value > 0x7e {
-			return fmt.Errorf("%s must be readable ASCII", path)
+			return validationDetailError(fmt.Sprintf("%s must be readable ASCII", path),
+				ValidationDetail{Reason: ValidationReasonRuleViolation, FieldPath: path, Expected: "the key must be readable ASCII"})
 		}
 	}
 	return nil
 }
 
 func validateText(value string, limit int, path string) error {
-	if strings.TrimSpace(value) == "" || !utf8.ValidString(value) || len([]byte(value)) > limit {
-		return fmt.Errorf("%s must be non-empty valid UTF-8 and at most %d bytes", path, limit)
+	if strings.TrimSpace(value) == "" {
+		return validationDetailError(fmt.Sprintf("%s must be non-empty valid UTF-8 and at most %d bytes", path, limit),
+			ValidationDetail{Reason: ValidationReasonRuleViolation, FieldPath: path, Expected: "the text must be non-empty"})
+	}
+	if !utf8.ValidString(value) {
+		return validationDetailError(fmt.Sprintf("%s must be non-empty valid UTF-8 and at most %d bytes", path, limit),
+			ValidationDetail{Reason: ValidationReasonRuleViolation, FieldPath: path, Expected: "the text must be valid UTF-8"})
+	}
+	if len([]byte(value)) > limit {
+		return validationDetailError(fmt.Sprintf("%s must be non-empty valid UTF-8 and at most %d bytes", path, limit),
+			ValidationDetail{Reason: ValidationReasonOversizedValue, FieldPath: path, Expected: fmt.Sprintf("the text must be at most %d bytes", limit)})
 	}
 	return nil
 }

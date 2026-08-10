@@ -51,7 +51,8 @@ func newContinuityFixture(t *testing.T) continuityFixture {
 	}
 	tasks := task.NewService(db, projects)
 	createdTask, err := tasks.Create(task.CreateRequest{
-		ProjectID: createdProject.ID, Goal: "inspect example.test",
+		ProjectID: createdProject.ID,
+		Type:      task.TypePentest, Goal: "inspect example.test",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
@@ -212,7 +213,7 @@ func TestRuntimeAcknowledgedWriteAtomicallyAdvancesOnlyOwningWorkingSnapshot(t *
 	}
 
 	peerTask, err := fixture.tasks.Create(task.CreateRequest{
-		ProjectID: fixture.project.ID, Goal: "peer task", RuntimeProfileID: fixture.profile.ID, Runner: task.RunnerSandbox,
+		ProjectID: fixture.project.ID, Type: task.TypePentest, Goal: "peer task", RuntimeProfileID: fixture.profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
 		t.Fatalf("create peer Task: %v", err)

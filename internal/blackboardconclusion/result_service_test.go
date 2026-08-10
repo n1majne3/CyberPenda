@@ -26,7 +26,7 @@ func TestCompiledRuntimeAttemptResultAppliesForContinuationOnEmptyBlackboard(t *
 		t.Fatalf("create Project: %v", err)
 	}
 	tasks := task.NewService(db, projects)
-	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "GOAL MUST NOT BE COPIED", Runner: task.RunnerSandbox})
+	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "GOAL MUST NOT BE COPIED", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create Task: %v", err)
 	}

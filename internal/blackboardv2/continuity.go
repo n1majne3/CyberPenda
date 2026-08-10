@@ -47,6 +47,10 @@ type ContinuationLaunchRequest struct {
 	Runner           task.Runner
 	RuntimeConfig    map[string]any
 	SteeringEventIDs []string
+	// Native session metadata is durable provider identity for Resume. A stale
+	// container identity is deliberately not part of an atomic replacement launch.
+	NativeSessionID   string
+	NativeSessionPath string
 	// Precommit runs before the launch transaction with staged Snapshot
 	// metadata only (no Continuation grant). Codex uses this for full
 	// projection; Claude/Pi use it for grant-less layout projection.
@@ -797,6 +801,7 @@ func (s *ContinuityService) CreateContinuation(ctx context.Context, req Continua
 		ProjectID: req.ProjectID, TaskID: req.TaskID, RuntimeProfileID: req.RuntimeProfileID,
 		RuntimeProvider: req.RuntimeProvider, Runner: req.Runner, RuntimeConfig: req.RuntimeConfig,
 		SteeringEventIDs: req.SteeringEventIDs,
+		NativeSessionID:  req.NativeSessionID, NativeSessionPath: req.NativeSessionPath,
 	})
 	if err != nil {
 		return ContinuationLaunch{}, err

@@ -76,6 +76,10 @@ function renderPage() {
   );
 }
 
+async function selectPentestTaskType() {
+  await userEvent.selectOptions(await screen.findByLabelText("Task type"), "pentest");
+}
+
 describe("TaskLaunchPage", () => {
   it("launches with an explicit assisted Blackboard conclusion mode", async () => {
     const assistedPlugin = {
@@ -128,9 +132,12 @@ describe("TaskLaunchPage", () => {
       }
       if (url.includes("/api/projects/project-1/tasks") && method === "POST") {
         const body = JSON.parse(String(init?.body ?? "{}")) as {
-          run_controls?: { blackboard_conclusion_mode?: string };
+          type?: string;
+          run_controls?: { blackboard_conclusion_mode?: string; policy?: { max_wrong_submissions?: number; max_rating_drawdown?: number } };
         };
+        expect(body.type).toBe("ctf_challenge");
         expect(body.run_controls?.blackboard_conclusion_mode).toBe("assisted");
+        expect(body.run_controls?.policy).toMatchObject({ max_wrong_submissions: 3, max_rating_drawdown: 50 });
         return Promise.resolve(new Response(JSON.stringify({ id: "task-1" }), {
           status: 201,
           headers: { "Content-Type": "application/json" },
@@ -141,6 +148,7 @@ describe("TaskLaunchPage", () => {
           id: "project-1",
           name: "Acme",
           description: "",
+          kind: "ctf_challenge",
           scope: {},
           defaults: { runner: "sandbox" },
           created_at: "",
@@ -156,11 +164,21 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
+    const taskType = await screen.findByLabelText("Task type");
+    expect(taskType).toHaveValue("");
+    await userEvent.selectOptions(taskType, "pentest");
+    expect(screen.getByText(/must match this Project's kind/i)).toBeInTheDocument();
+    await userEvent.selectOptions(taskType, "ctf_challenge");
+
     const mode = await screen.findByLabelText("Blackboard conclusions");
     expect(mode).toHaveValue("interactive");
     await userEvent.selectOptions(mode, "assisted");
     expect(screen.getByText(/runs a bounded Conclude Turn and applies its validated Attempt result/i)).toBeInTheDocument();
     await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
+    await userEvent.clear(screen.getByLabelText("Maximum wrong submissions"));
+    await userEvent.type(screen.getByLabelText("Maximum wrong submissions"), "3");
+    await userEvent.clear(screen.getByLabelText("Maximum rating drawdown"));
+    await userEvent.type(screen.getByLabelText("Maximum rating drawdown"), "50");
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
@@ -273,6 +291,7 @@ describe("TaskLaunchPage", () => {
     expect(await screen.findByLabelText("Blackboard conclusions")).toHaveValue("interactive");
     expect(screen.getByRole("option", { name: "Assisted" })).toBeDisabled();
     expect(screen.getByText(/does not expose the complete persistent Turn, normalized Tool\/Turn event, and closed AttemptResult contract/i)).toBeInTheDocument();
+    await selectPentestTaskType();
     await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
     expect(screen.getByRole("button", { name: /launch/i })).toBeEnabled();
   });
@@ -680,6 +699,7 @@ describe("TaskLaunchPage", () => {
     expect(screen.getByLabelText("Model provider")).toBeDisabled();
     expect(screen.getByLabelText("Model")).not.toBeDisabled();
 
+    await selectPentestTaskType();
     await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
 
@@ -777,6 +797,7 @@ describe("TaskLaunchPage", () => {
     renderPage();
 
     expect(await screen.findByLabelText("Runtime profile preset")).toHaveValue("legacy-preset");
+    await selectPentestTaskType();
     await userEvent.type(screen.getByLabelText("Task goal"), "Run legacy recon");
 
     const launchButton = screen.getByRole("button", { name: /launch/i });
@@ -877,6 +898,7 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
+    await selectPentestTaskType();
     await userEvent.type(await screen.findByLabelText("Task goal"), "Run with extension");
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
 
@@ -994,6 +1016,7 @@ describe("TaskLaunchPage", () => {
     expect(presetToggle).toHaveAttribute("aria-expanded", "true");
     await userEvent.selectOptions(screen.getByLabelText("Runtime profile preset"), "");
 
+    await selectPentestTaskType();
     await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
 
@@ -1099,6 +1122,7 @@ describe("TaskLaunchPage", () => {
 
     const modelSelect = await screen.findByLabelText("Model");
     await userEvent.selectOptions(modelSelect, "mimo-v2-pro");
+    await selectPentestTaskType();
     await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
 
@@ -1212,6 +1236,7 @@ describe("TaskLaunchPage", () => {
     renderPage();
 
     await userEvent.selectOptions(await screen.findByLabelText("Sandbox network"), "host_proxy_only");
+    await selectPentestTaskType();
     await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
 
@@ -1329,6 +1354,7 @@ describe("TaskLaunchPage", () => {
     await userEvent.selectOptions(await screen.findByLabelText("Runner"), "host");
     await userEvent.click(screen.getByLabelText(/explicitly activate the host runner/i));
     await userEvent.selectOptions(screen.getByLabelText("Runner"), "sandbox");
+    await selectPentestTaskType();
     await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
 
@@ -1537,6 +1563,7 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
+    await selectPentestTaskType();
     await userEvent.type(await screen.findByLabelText("Task goal"), "Run recon");
     const file = new File(["secret-notes"], "notes.txt", { type: "text/plain" });
     await userEvent.upload(screen.getByLabelText("Attachments"), file);

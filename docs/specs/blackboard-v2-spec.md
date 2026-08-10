@@ -256,6 +256,7 @@ Runtime adapters expose exactly these trusted MCP tools:
 | MCP tool | Semantic input/result |
 | --- | --- |
 | `blackboard_change` | the batch and result in sections 8.1–8.2 |
+| `blackboard_record_attempt_result` | one closed `runtime-attempt-result/v1`; atomically creates or reuses tested targets, creates or updates one Attempt, adds `tests` and optional `produced` relationships, and makes the Attempt terminal |
 | `blackboard_read` | one `key`; returns `blackboard-record/v2` current detail |
 | `blackboard_history` | one `key`, optional opaque `cursor`, optional `limit`; returns `semantic-history/v2` |
 | `blackboard_retain_evidence` | confined Evidence request below; returns a semantic change result |
@@ -264,7 +265,9 @@ Runtime adapters expose exactly these trusted MCP tools:
 
 There is no trusted `get_current_graph` or Fact-list tool. The complete Snapshot is the Working Snapshot and is piggybacked on synchronization.
 
-CLI Fallback mirrors the catalog as `blackboard change`, `blackboard read`, `blackboard history`, `blackboard evidence retain`, `blackboard attempt checkpoint`, and `blackboard continuation finish`. Operator CLI calls add Project selection outside the semantic payload; Runtime MCP calls never accept Project, Task, or Continuation identity.
+CLI Fallback exposes `blackboard change`, `blackboard read`, `blackboard history`, `blackboard evidence retain`, `blackboard attempt checkpoint`, and `blackboard continuation finish`. The generic `blackboard change` command can apply the same semantic operations as the specialized Attempt-result tool; there is no separate CLI shortcut. Operator CLI calls add Project selection outside the semantic payload; Runtime MCP calls never accept Project, Task, or Continuation identity.
+
+The Attempt-result request contains `idempotency_key` and one closed `runtime-attempt-result/v1` result. The result carries the exact `base_revision`, one Attempt key, terminal outcome and summary, at least one tested Blackboard Key, and optional produced current keys. It may create the Attempt and missing tested Objectives in the same atomic change. Existing records require exact current versions. The service rejects key separator aliases of current, historical, or redirected keys, so `attempt:3121` cannot create a second identity for `attempt/3121`. It returns the normal semantic change result and participates in synchronization.
 
 The Evidence retain request contains `idempotency_key`, Evidence `key`, optional current Evidence `version`, producing `attempt` key for Runtime calls, confined `source_path`, `artifact_type`, `summary`, optional `media_type`, optional semantic `captured_at`, and optional `links` as `[relation, target_key]` pairs. Links are limited to `evidences` and `about`; the service derives `produced` from the Attempt. Runtime creation requires an open Attempt. An exact replay remains valid after the Attempt becomes terminal. Managed path, digest, size, Project, and origin are server-derived.
 

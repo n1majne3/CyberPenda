@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"pentest/internal/runtimeextension"
@@ -50,5 +51,25 @@ func TestLoadDirectoryReadsTrustedRuntimeExtensionManifests(t *testing.T) {
 	}
 	if runtimeextension.CompatibleWith(found, "claude_code") {
 		t.Fatalf("extension should not be compatible with claude_code: %#v", found)
+	}
+}
+
+func TestLoadDirectoryRejectsUnknownRequirementKeys(t *testing.T) {
+	dir := t.TempDir()
+	raw := []byte(`{
+		"schema_version":1,
+		"id":"ctf_platform",
+		"name":"CTF Platform",
+		"compatible_runtime_plugins":["pi"],
+		"source":{"type":"local_dir","path":"/tmp/ctf"},
+		"projection":{"location":"provider_home","path":"extensions/ctf"},
+		"requirements":{"project_kinds":["ctf_challenge"],"authorizes_scope":true}
+	}`)
+	if err := os.WriteFile(filepath.Join(dir, "ctf.json"), raw, 0o600); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	loaded, errs := runtimeextension.LoadDirectory(dir)
+	if len(loaded) != 0 || len(errs) != 1 || !strings.Contains(errs[0].Error(), "unknown field") {
+		t.Fatalf("expected unknown requirement key rejection, loaded=%#v errors=%v", loaded, errs)
 	}
 }

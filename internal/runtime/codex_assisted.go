@@ -205,10 +205,11 @@ func (s *CodexProviderSession) deliverCodexAssisted(lineage ProviderSessionTurnL
 				})
 			}
 		} else if invalidSink != nil {
-			invalidSink(ProviderSessionAttemptResultValidationFailure{
-				RequestID: lineage.RequestID, SessionID: event.sessionID,
-				ProviderTurnID: event.turnID, ValidationErrorCode: ProviderSessionAttemptResultInvalid,
-			})
+			reason := blackboardconclusion.ValidationReasonInvalidResult
+			if candidate.oversize {
+				reason = blackboardconclusion.ValidationReasonResultTooLarge
+			}
+			invalidSink(attemptResultValidationFailure(lineage.RequestID, event.sessionID, event.turnID, err, reason))
 		}
 	}
 	observation, ok := codexObservation(lineage, event)
@@ -222,6 +223,7 @@ func codexObservation(lineage ProviderSessionTurnLineage, event codexAssistedEve
 		RequestID: lineage.RequestID, SessionID: event.sessionID, ProviderTurnID: event.turnID,
 		ToolCallID: event.callID, ToolName: event.toolName, Status: event.status,
 	}
+	observation.BlackboardOperation, _ = ClassifyTrustedBlackboardTool(observation.ToolName)
 	switch event.kind {
 	case codexAssistedToolUse:
 		observation.Kind = ProviderSessionObservationToolUse

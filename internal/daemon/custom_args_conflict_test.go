@@ -193,7 +193,7 @@ func TestTaskLaunchRejectsConflictingCustomArgsBeforeLaunch(t *testing.T) {
 	// Legacy conflict stored under the profile.
 	forceProfileCustomArgs(t, dbPath, profileID, `{"model":"gpt-test","custom_args":["-c","model_reasoning_effort=high","--json"],"api_keys":{"OPENAI_API_KEY":"sk-test"}}`)
 
-	body := `{"goal":"inspect example.com","runtime_profile_id":"` + profileID + `","runner":"sandbox"}`
+	body := `{"type":"pentest","goal":"inspect example.com","runtime_profile_id":"` + profileID + `","runner":"sandbox"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks", bytes.NewReader([]byte(body)))
 	rec := httptest.NewRecorder()
 	server.ServeHTTP(rec, req)

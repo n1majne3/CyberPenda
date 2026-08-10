@@ -40,6 +40,7 @@ func TestSandboxMCPLiveSmokeUsesBlackboardV2Boundaries(t *testing.T) {
 
 	for _, tool := range []string{
 		"blackboard_change",
+		"blackboard_record_attempt_result",
 		"blackboard_read",
 		"blackboard_history",
 		"blackboard_retain_evidence",
@@ -50,7 +51,8 @@ func TestSandboxMCPLiveSmokeUsesBlackboardV2Boundaries(t *testing.T) {
 	}
 	for _, required := range []string{
 		`"method":"tools/list"`,
-		"curl -sf -X POST \"${mcp_url}\" \\\n    \"${auth_args[@]}\"",
+		`"kind":"pentest"`,
+		"curl -sf -X POST \"${mcp_url}\" \\\n    \"${auth_args[@]+\"${auth_args[@]}\"}\"",
 		"/api/v2/projects/",
 		"/blackboard/changes",
 		"/blackboard/records/",
@@ -146,6 +148,39 @@ func TestSandboxDockerfileKeepsProviderBridgeSourceInLateCacheLayer(t *testing.T
 	if bridgeSource < hostEntrypoint {
 		t.Fatal("Claude bridge source should be copied after heavyweight sandbox layers for cache reuse")
 	}
+}
+
+func TestPullRequestSandboxSmokeDoesNotLoadTheFullKaliImage(t *testing.T) {
+	repoRoot := repoRoot(t)
+	dockerfileBytes, err := os.ReadFile(filepath.Join(repoRoot, "docker", "pentest-sandbox", "Dockerfile"))
+	if err != nil {
+		t.Fatalf("read sandbox Dockerfile: %v", err)
+	}
+	dockerfile := string(dockerfileBytes)
+	assertContains(t, dockerfile, "FROM alpine:3.22 AS smoke")
+	assertContains(t, dockerfile, "FROM kalilinux/kali-rolling:latest AS runtime")
+
+	makefileBytes, err := os.ReadFile(filepath.Join(repoRoot, "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	makefile := string(makefileBytes)
+	assertContains(t, makefile, "SANDBOX_SMOKE_IMAGE ?= cyberpenda-sandbox-smoke:ci")
+	assertContains(t, makefile, "docker build --target smoke -t $(SANDBOX_SMOKE_IMAGE) -f docker/pentest-sandbox/Dockerfile .")
+	assertContains(t, makefile, "go test ./cmd/... ./internal/... ./scripts")
+
+	workflowBytes, err := os.ReadFile(filepath.Join(repoRoot, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("read CI workflow: %v", err)
+	}
+	workflow := string(workflowBytes)
+	assertContains(t, workflow, "Validate full sandbox image build")
+	assertContains(t, workflow, "uses: docker/build-push-action@v7")
+	assertContains(t, workflow, "target: runtime")
+	assertContains(t, workflow, "load: false")
+	assertContains(t, workflow, "make build-sandbox-smoke-image")
+	assertContains(t, workflow, "PENTEST_SANDBOX_IMAGE: cyberpenda-sandbox-smoke:ci")
+	assertContains(t, workflow, "\n          SANDBOX_IMAGE: cyberpenda-sandbox-smoke:ci")
 }
 
 func TestManualSandboxWorkflowBuildsAndPublishesImagePerPlatform(t *testing.T) {

@@ -95,7 +95,7 @@ func TestAssistedConclusionRestartSendsOnlyDurablePreSendIntentWithProvenOwner(t
 func TestAssistedConclusionRestartRejectsLegacySourceCorrelationBeforeOwnershipProbe(t *testing.T) {
 	root := t.TempDir()
 	seed := seedConclusionRecoveryReceipt(t, root)
-	if _, err := seed.server.db.Exec(`UPDATE assisted_conclusion_receipts
+	if _, err := seed.server.db.Exec(`UPDATE pending_blackboard_conclusions
 		SET source_request_id=?,source_request_correlation_exact=0 WHERE id=?`,
 		"legacy:"+seed.receipt.SourceSessionID+":"+seed.receipt.SourceTurnID, seed.receipt.ID); err != nil {
 		t.Fatal(err)
@@ -286,14 +286,14 @@ func TestAssistedConclusionRestartRecoversUnsentFollowupGenerationOnce(t *testin
 			switch generation {
 			case "repair":
 				followup, won, err := seed.server.tasks.HandleBlackboardConclusionFailure(
-					dispatched.DispatchRequestID, task.BlackboardConclusionErrorInvalidResult, time.Now().UTC(), 0,
+					dispatched.DispatchRequestID, task.BlackboardConclusionErrorInvalidResult, task.ConclusionValidationDetail{}, time.Now().UTC(), 0,
 				)
 				if err != nil || !won {
 					t.Fatalf("claim repair: %#v won=%v err=%v", followup, won, err)
 				}
 			case "retry":
 				if _, _, err := seed.server.tasks.HandleBlackboardConclusionFailure(
-					dispatched.DispatchRequestID, task.BlackboardConclusionErrorToolUseForbidden, time.Now().UTC(), 0,
+					dispatched.DispatchRequestID, task.BlackboardConclusionErrorToolUseForbidden, task.ConclusionValidationDetail{}, time.Now().UTC(), 0,
 				); err != nil {
 					t.Fatal(err)
 				}
@@ -367,7 +367,8 @@ func seedConclusionRecoveryReceipt(t *testing.T, root string) conclusionRecovery
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "recover conclusion", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		ProjectID: projectRecord.ID,
+		Type:      task.TypePentest, Goal: "recover conclusion", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
 	})
 	if err != nil {

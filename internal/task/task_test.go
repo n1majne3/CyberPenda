@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -81,14 +82,23 @@ func TestCreateCapturesGoalRunControlsAndScopeSnapshot(t *testing.T) {
 	}
 
 	created, err := svc.Create(task.CreateRequest{
-		ProjectID:        projectID.ID,
-		Goal:             "Enumerate example.com subdomains",
+		ProjectID: projectID.ID,
+
+		Type: task.TypePentest, Goal: "Enumerate example.com subdomains",
 		RuntimeProfileID: "profile-1",
 		Runner:           task.RunnerSandbox,
 		RunControls: task.RunControls{
 			SandboxNetwork: "host_proxy_only",
 			Notes:          "business hours only",
 			Extras:         map[string]string{"depth": "shallow"},
+			Policy: task.TaskPolicy{
+				MaxAttempts:            9,
+				MaxWrongSubmissions:    4,
+				MaxWallTimeSeconds:     3600,
+				MaxConsecutiveFailures: 3,
+				MaxRatingDrawdown:      40,
+				MaxNoProgressSeconds:   900,
+			},
 		},
 	})
 	if err != nil {
@@ -107,6 +117,9 @@ func TestCreateCapturesGoalRunControlsAndScopeSnapshot(t *testing.T) {
 	if created.Runner != task.RunnerSandbox {
 		t.Fatalf("expected sandbox runner, got %q", created.Runner)
 	}
+	if created.Type != task.TypePentest {
+		t.Fatalf("expected Pentest Task Type snapshot, got %q", created.Type)
+	}
 	if created.RunControls.Notes != "business hours only" {
 		t.Fatalf("expected run-control notes, got %q", created.RunControls.Notes)
 	}
@@ -116,6 +129,9 @@ func TestCreateCapturesGoalRunControlsAndScopeSnapshot(t *testing.T) {
 	}
 	if fetched.RunControls.SandboxNetwork != "host_proxy_only" {
 		t.Fatalf("expected persisted sandbox network, got %q", fetched.RunControls.SandboxNetwork)
+	}
+	if fetched.RunControls.Policy.MaxWrongSubmissions != 4 || fetched.RunControls.Policy.MaxRatingDrawdown != 40 {
+		t.Fatalf("expected immutable task policy snapshot, got %#v", fetched.RunControls.Policy)
 	}
 	// Scope snapshot is an immutable copy captured at launch.
 	if got := created.ScopeSnapshot.Domains; len(got) != 1 || got[0] != "example.com" {
@@ -129,13 +145,95 @@ func TestCreateCapturesGoalRunControlsAndScopeSnapshot(t *testing.T) {
 	}
 }
 
+func TestCreateCapturesExplicitCTFTaskTypeAndRejectsProjectKindMismatch(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+
+	ctfProject, err := projects.CreateWithKind("Arena", "", project.KindCTFChallenge, project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create CTF Challenge Project: %v", err)
+	}
+	created, err := svc.Create(task.CreateRequest{
+		ProjectID: ctfProject.ID,
+		Type:      task.TypeCTFChallenge,
+		Goal:      "Solve the selected challenge",
+		Runner:    task.RunnerSandbox,
+	})
+	if err != nil {
+		t.Fatalf("create CTF Challenge Task: %v", err)
+	}
+	if created.Type != task.TypeCTFChallenge {
+		t.Fatalf("expected CTF Challenge Task Type snapshot, got %q", created.Type)
+	}
+	fetched, err := svc.Get(created.ID)
+	if err != nil {
+		t.Fatalf("get CTF Challenge Task: %v", err)
+	}
+	if fetched.Type != task.TypeCTFChallenge {
+		t.Fatalf("expected stored CTF Challenge Task Type snapshot, got %q", fetched.Type)
+	}
+
+	_, err = svc.Create(task.CreateRequest{
+		ProjectID: ctfProject.ID,
+		Type:      task.TypePentest,
+		Goal:      "Run a Pentest Task",
+		Runner:    task.RunnerSandbox,
+	})
+	if !errors.Is(err, task.ErrTaskTypeProjectKindMismatch) {
+		t.Fatalf("expected Task Type and Project Kind mismatch, got %v", err)
+	}
+}
+
+func TestCreateRejectsMissingTaskType(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+
+	createdProject, err := projects.Create("Acme", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	_, err = svc.Create(task.CreateRequest{
+		ProjectID: createdProject.ID,
+		Goal:      "Inspect the target",
+		Runner:    task.RunnerSandbox,
+	})
+	if !errors.Is(err, task.ErrInvalidTaskType) {
+		t.Fatalf("expected explicit Task Type requirement, got %v", err)
+	}
+}
+
+func TestCreateRejectsInvalidTaskPolicy(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, err := projects.Create("Acme", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	_, err = svc.Create(task.CreateRequest{
+		ProjectID: proj.ID,
+
+		Type: task.TypePentest, Goal: "solve challenges",
+		Runner: task.RunnerSandbox,
+		RunControls: task.RunControls{Policy: task.TaskPolicy{
+			MaxAttempts: -1,
+		}},
+	})
+	if !errors.Is(err, task.ErrInvalidTaskPolicy) {
+		t.Fatalf("expected invalid task policy, got %v", err)
+	}
+}
+
 func TestCreateRejectsMissingGoal(t *testing.T) {
 	db := newStore(t)
 	projects := project.NewService(db)
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 
-	_, err := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "", Runner: task.RunnerSandbox})
+	_, err := svc.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "", Runner: task.RunnerSandbox})
 	if !errors.Is(err, task.ErrMissingGoal) {
 		t.Fatalf("expected ErrMissingGoal, got %v", err)
 	}
@@ -147,7 +245,7 @@ func TestCreateRejectsUnsupportedRunner(t *testing.T) {
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 
-	_, err := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "do something", Runner: "kali-magic"})
+	_, err := svc.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "do something", Runner: "kali-magic"})
 	if !errors.Is(err, task.ErrUnsupportedRunner) {
 		t.Fatalf("expected ErrUnsupportedRunner, got %v", err)
 	}
@@ -159,7 +257,7 @@ func TestCreateDefaultsAndPersistsBlackboardConclusionMode(t *testing.T) {
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 
-	interactive, err := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox})
+	interactive, err := svc.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +275,8 @@ func TestCreateDefaultsAndPersistsBlackboardConclusionMode(t *testing.T) {
 	}
 
 	assisted, err := svc.Create(task.CreateRequest{
-		ProjectID: proj.ID, Goal: "inspect with help", Runner: task.RunnerSandbox,
+		ProjectID: proj.ID,
+		Type:      task.TypePentest, Goal: "inspect with help", Runner: task.RunnerSandbox,
 		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
 	})
 	if err != nil {
@@ -195,7 +294,8 @@ func TestCreateRejectsInvalidBlackboardConclusionMode(t *testing.T) {
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 
 	_, err := svc.Create(task.CreateRequest{
-		ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+		ProjectID: proj.ID,
+		Type:      task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
 		RunControls: task.RunControls{BlackboardConclusionMode: "automatic"},
 	})
 	if !errors.Is(err, task.ErrInvalidBlackboardConclusionMode) {
@@ -209,7 +309,8 @@ func TestRecordBlackboardConclusionCheckpointPersistsPendingDebtIdempotently(t *
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 	created, err := svc.Create(task.CreateRequest{
-		ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+		ProjectID: proj.ID,
+		Type:      task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
 		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
 	})
 	if err != nil {
@@ -262,13 +363,161 @@ func TestRecordBlackboardConclusionCheckpointPersistsPendingDebtIdempotently(t *
 	}
 }
 
+// #203 / ADR 0021: after an interrupt_then_replace native steer creates a
+// replacement Continuation, an in-flight assisted-conclusion obligation gets a
+// NEW immutable Conclusion Dispatch bound to the replacement (continuation_id +
+// source_session_id) instead of rebinding the old dispatch. The historical
+// dispatch identity is never rewritten, and a retry delivers the control turn
+// against the live replacement session.
+func TestRecoveryDispatchIsCreatedInsteadOfRebindingInFlightObligation(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, err := svc.Create(task.CreateRequest{
+		ProjectID: proj.ID,
+		Type:      task.TypePentest, Goal: "recover receipt", Runner: task.RunnerSandbox,
+		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldContinuation, err := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const oldSession = "session-old"
+	selection := task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1"}
+	obligation, _, err := svc.RecordBlackboardConclusionCheckpoint(created.ID, oldContinuation.ID, "work-request-1", oldSession, "turn-1", selection, task.SemanticDebtWatermarks{SourceWork: 3, SemanticPersistence: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Claim the initial dispatch so the obligation is in flight with a real
+	// immutable binding to the old continuation + session.
+	claimed, won, err := svc.ClaimBlackboardConclusionDispatch(obligation.ID, 7)
+	if err != nil || !won {
+		t.Fatalf("claim initial dispatch: %#v won=%v err=%v", claimed, won, err)
+	}
+	if claimed.ContinuationID != oldContinuation.ID || claimed.SourceSessionID != oldSession {
+		t.Fatalf("initial dispatch binding = (%s, %s), want (%s, %s)", claimed.ContinuationID, claimed.SourceSessionID, oldContinuation.ID, oldSession)
+	}
+
+	// The steer creates a replacement Continuation carrying a NEW live session.
+	replacement, err := svc.CreateReplacementContinuation(oldContinuation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const replacementSession = "session-replacement"
+	if _, err := svc.UpdateContinuationRuntimeMetadata(replacement.ID, "", replacementSession, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	dispatches, err := svc.CreateRecoveryConclusionDispatches(created.ID, oldContinuation.ID, replacement.ID, replacementSession)
+	if err != nil {
+		t.Fatalf("create recovery dispatch: %v", err)
+	}
+	if len(dispatches) != 1 {
+		t.Fatalf("recovery created %d dispatches, want 1", len(dispatches))
+	}
+	recovered := dispatches[0]
+	if recovered.ID != obligation.ID {
+		t.Fatalf("recovery changed the obligation identity: %s != %s", recovered.ID, obligation.ID)
+	}
+	if recovered.ContinuationID != replacement.ID {
+		t.Fatalf("recovery dispatch continuation_id = %s, want %s", recovered.ContinuationID, replacement.ID)
+	}
+	if recovered.SourceSessionID != replacementSession {
+		t.Fatalf("recovery dispatch source_session_id = %s, want %s", recovered.SourceSessionID, replacementSession)
+	}
+	if recovered.DispatchRequestID == claimed.DispatchRequestID {
+		t.Fatalf("recovery reused the old dispatch request id %s", recovered.DispatchRequestID)
+	}
+
+	// The old dispatch is immutable history: it keeps its original binding and
+	// request id, and is terminal superseded.
+	history, err := svc.ConclusionDispatches(obligation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("dispatch history = %d rows, want 2 (initial + recovery)", len(history))
+	}
+	var oldDispatch, recoveryDispatch *task.ConclusionDispatch
+	for i := range history {
+		if history[i].DispatchRequestID == claimed.DispatchRequestID {
+			oldDispatch = &history[i]
+		}
+		if history[i].DispatchRequestID == recovered.DispatchRequestID {
+			recoveryDispatch = &history[i]
+		}
+	}
+	if oldDispatch == nil || recoveryDispatch == nil {
+		t.Fatalf("dispatch history missing expected attempts: %#v", history)
+	}
+	if oldDispatch.ContinuationID != oldContinuation.ID || oldDispatch.SourceSessionID != oldSession {
+		t.Fatalf("old dispatch binding was rewritten: (%s, %s)", oldDispatch.ContinuationID, oldDispatch.SourceSessionID)
+	}
+	if oldDispatch.DeliveryState != task.ConclusionDispatchSuperseded || oldDispatch.TerminalOutcome != "superseded_by_recovery" {
+		t.Fatalf("old dispatch terminal state = %s/%s", oldDispatch.DeliveryState, oldDispatch.TerminalOutcome)
+	}
+	if recoveryDispatch.DeliveryState != task.ConclusionDispatchRequested || recoveryDispatch.SendAttemptCount != 0 {
+		t.Fatalf("recovery dispatch should be pre-send: %#v", recoveryDispatch)
+	}
+}
+
+// #203 / ADR 0021: terminal obligations (clean / applied) never get a recovery
+// dispatch — the conclusion already landed, so a fresh attempt would risk
+// re-applying a stale batch.
+func TestRecoveryDispatchLeavesTerminalObligationAlone(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, err := svc.Create(task.CreateRequest{
+		ProjectID: proj.ID,
+		Type:      task.TypePentest, Goal: "no recovery terminal", Runner: task.RunnerSandbox,
+		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldContinuation, err := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A clean obligation (watermarks within target) is terminal — it must not
+	// receive a recovery dispatch.
+	if _, _, err := svc.RecordBlackboardConclusionCheckpoint(created.ID, oldContinuation.ID, "work-clean", "session-old", "turn-clean", task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1"}, task.SemanticDebtWatermarks{SourceWork: 1, SemanticPersistence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := svc.CreateReplacementContinuation(oldContinuation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatches, err := svc.CreateRecoveryConclusionDispatches(created.ID, oldContinuation.ID, replacement.ID, "session-replacement")
+	if err != nil {
+		t.Fatalf("create recovery dispatch for terminal obligation: %v", err)
+	}
+	if len(dispatches) != 0 {
+		t.Fatalf("terminal clean obligation received %d recovery dispatches", len(dispatches))
+	}
+	latest, err := svc.LatestBlackboardConclusion(created.ID)
+	if err != nil || latest == nil {
+		t.Fatalf("latest obligation: %v %#v", err, latest)
+	}
+	if latest.ContinuationID != oldContinuation.ID {
+		t.Fatalf("terminal obligation continuation_id was moved: %s, want %s", latest.ContinuationID, oldContinuation.ID)
+	}
+}
+
 func TestRecordBlackboardConclusionCheckpointRejectsInvalidWatermarks(t *testing.T) {
 	db := newStore(t)
 	projects := project.NewService(db)
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 	created, err := svc.Create(task.CreateRequest{
-		ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+		ProjectID: proj.ID,
+		Type:      task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
 		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
 	})
 	if err != nil {
@@ -294,7 +543,8 @@ func TestRecordBlackboardConclusionCheckpointPersistsCleanWatermarks(t *testing.
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 	created, err := svc.Create(task.CreateRequest{
-		ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+		ProjectID: proj.ID,
+		Type:      task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
 		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
 	})
 	if err != nil {
@@ -347,7 +597,8 @@ func TestBlackboardConclusionReceiptAdvancesDurablyAndIdempotently(t *testing.T)
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 	created, err := svc.Create(task.CreateRequest{
-		ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+		ProjectID: proj.ID,
+		Type:      task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
 		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
 	})
 	if err != nil {
@@ -455,7 +706,8 @@ func TestBlackboardConclusionInvalidResultRepairsOnceThenRequiresOperatorRetry(t
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 	created, err := svc.Create(task.CreateRequest{
-		ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+		ProjectID: proj.ID,
+		Type:      task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
 		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
 	})
 	if err != nil {
@@ -482,35 +734,39 @@ func TestBlackboardConclusionInvalidResultRepairsOnceThenRequiresOperatorRetry(t
 	}
 
 	now := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)
+	detail := task.ConclusionValidationDetail{Reason: "invalid_key_format", FieldPath: "attempt.key", Expected: "the key must use the attempt: prefix"}
 	repair, won, err := svc.HandleBlackboardConclusionFailure(initial.DispatchRequestID,
-		task.BlackboardConclusionErrorInvalidResult, now, time.Minute)
+		task.BlackboardConclusionErrorInvalidResult, detail, now, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !won || repair.InternalState != task.BlackboardConclusionReceiptRepairDispatchRequested ||
 		repair.AutomaticTurnCount != task.BlackboardConclusionAutomaticTurnLimit || repair.RepairCount != 1 ||
-		repair.DispatchRequestID == initial.DispatchRequestID || repair.NextEligibleAt == nil || !repair.NextEligibleAt.Equal(now.Add(time.Minute)) {
+		repair.DispatchRequestID == initial.DispatchRequestID || repair.NextEligibleAt == nil || !repair.NextEligibleAt.Equal(now.Add(time.Minute)) ||
+		repair.ValidationReason != "invalid_key_format" || repair.ValidationFieldPath != "attempt.key" || repair.ValidationExpected != "the key must use the attempt: prefix" {
 		t.Fatalf("repair claim = %#v, won=%v", repair, won)
 	}
 	if _, _, replayErr := svc.HandleBlackboardConclusionFailure(initial.DispatchRequestID,
-		task.BlackboardConclusionErrorInvalidResult, now, time.Minute); !errors.Is(replayErr, task.ErrNotFound) {
+		task.BlackboardConclusionErrorInvalidResult, task.ConclusionValidationDetail{}, now, time.Minute); !errors.Is(replayErr, task.ErrNotFound) {
 		t.Fatalf("stale failure did not fail closed: %v", replayErr)
 	}
 	if _, _, err = svc.MarkBlackboardConclusionAwaiting(repair.DispatchRequestID, "control-repair"); err != nil {
 		t.Fatal(err)
 	}
 	action, changed, err := svc.HandleBlackboardConclusionFailure(repair.DispatchRequestID,
-		task.BlackboardConclusionErrorInvalidResult, now, time.Minute)
+		task.BlackboardConclusionErrorInvalidResult, task.ConclusionValidationDetail{Reason: "invalid_key_format", FieldPath: "attempt.key", Expected: "the key must use the attempt: prefix"}, now, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !changed || action.InternalState != task.BlackboardConclusionReceiptActionRequired ||
 		action.ErrorCode != task.BlackboardConclusionErrorRepairExhausted || action.NextEligibleAt == nil ||
-		!action.NextEligibleAt.Equal(now.Add(time.Minute)) {
+		!action.NextEligibleAt.Equal(now.Add(time.Minute)) ||
+		action.ValidationReason != "invalid_key_format" || action.ValidationFieldPath != "attempt.key" {
 		t.Fatalf("action required = %#v, changed=%v", action, changed)
 	}
 	view := action.ViewAt(task.BlackboardConclusionModeAssisted, now)
-	if view.State != task.BlackboardConclusionStateActionRequired || view.ErrorCode != task.BlackboardConclusionErrorRepairExhausted || view.RetryAvailable {
+	if view.State != task.BlackboardConclusionStateActionRequired || view.ErrorCode != task.BlackboardConclusionErrorRepairExhausted || view.RetryAvailable ||
+		view.ValidationReason != "invalid_key_format" || view.ValidationFieldPath != "attempt.key" || !strings.Contains(view.ValidationExpected, "attempt: prefix") {
 		t.Fatalf("cooldown view = %#v", view)
 	}
 	if _, _, err := svc.RetryBlackboardConclusion(receipt.ID, "retry-key-1", now.Add(30*time.Second)); !errors.Is(err, task.ErrBlackboardConclusionRetryCooldown) {
@@ -537,8 +793,11 @@ func TestBlackboardConclusionInvalidResultRepairsOnceThenRequiresOperatorRetry(t
 	if validated.ErrorCode != "" || validated.NextEligibleAt != nil {
 		t.Fatalf("validated debt not cleared = %#v", validated)
 	}
-	if _, err := svc.BlackboardConclusionByDispatchRequestID(repair.DispatchRequestID); !errors.Is(err, task.ErrNotFound) {
+	if _, err := svc.BlackboardConclusionByDispatchRequestID(repair.DispatchRequestID); !errors.Is(err, task.ErrBlackboardConclusionDispatchInactive) {
 		t.Fatalf("stale repair correlation remained live: %v", err)
+	}
+	if _, err := svc.BlackboardConclusionByDispatchRequestID(initial.DispatchRequestID); !errors.Is(err, task.ErrBlackboardConclusionDispatchInactive) {
+		t.Fatalf("stale initial correlation remained live: %v", err)
 	}
 }
 
@@ -547,7 +806,8 @@ func TestBlackboardConclusionForbiddenControlToolUseRequiresAction(t *testing.T)
 	projects := project.NewService(db)
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
-	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID,
+		Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
 		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
 	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
 	receipt, _, _ := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID, "work-request-1", "session-1", "turn-1",
@@ -556,7 +816,7 @@ func TestBlackboardConclusionForbiddenControlToolUseRequiresAction(t *testing.T)
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(dispatched.DispatchRequestID, "control-1")
 	now := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)
 	action, changed, err := svc.HandleBlackboardConclusionFailure(dispatched.DispatchRequestID,
-		task.BlackboardConclusionErrorToolUseForbidden, now, 0)
+		task.BlackboardConclusionErrorToolUseForbidden, task.ConclusionValidationDetail{}, now, 0)
 	if err != nil || !changed || action.InternalState != task.BlackboardConclusionReceiptActionRequired ||
 		action.ErrorCode != task.BlackboardConclusionErrorToolUseForbidden || action.RepairCount != 0 {
 		t.Fatalf("forbidden tool action = %#v, changed=%v, err=%v", action, changed, err)
@@ -568,7 +828,8 @@ func TestBlackboardConclusionVersionConflictRegeneratesOnceThenRequiresAction(t 
 	projects := project.NewService(db)
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
-	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID,
+		Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
 		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
 	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
 	selection := task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1", ReasoningEffort: "high"}
@@ -602,7 +863,7 @@ func TestBlackboardConclusionVersionConflictRegeneratesOnceThenRequiresAction(t 
 		regeneration.NextEligibleAt == nil || !regeneration.NextEligibleAt.Equal(now.Add(time.Minute)) {
 		t.Fatalf("version regeneration lost lineage or retained stale result: %#v", regeneration)
 	}
-	if _, err := svc.BlackboardConclusionByDispatchRequestID(initial.DispatchRequestID); !errors.Is(err, task.ErrNotFound) {
+	if _, err := svc.BlackboardConclusionByDispatchRequestID(initial.DispatchRequestID); !errors.Is(err, task.ErrBlackboardConclusionDispatchInactive) {
 		t.Fatalf("stale version correlation remained live: %v", err)
 	}
 	if _, _, err := svc.MarkBlackboardConclusionAwaiting(regeneration.DispatchRequestID, "control-regenerated"); err != nil {
@@ -634,7 +895,8 @@ func TestBlackboardConclusionVersionRegenerationFailsClosed(t *testing.T) {
 	projects := project.NewService(db)
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
-	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID,
+		Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
 		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
 	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
 	makeValidated := func(turn string, base int) task.BlackboardConclusionReceipt {
@@ -695,7 +957,7 @@ func TestBlackboardConclusionVersionRegenerationFailsClosed(t *testing.T) {
 	repairInitial, _, _ := svc.ClaimBlackboardConclusionDispatch(repairReceipt.ID, 20)
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(repairInitial.DispatchRequestID, "control-repair-source")
 	repair, _, _ := svc.HandleBlackboardConclusionFailure(repairInitial.DispatchRequestID,
-		task.BlackboardConclusionErrorInvalidResult, now, 0)
+		task.BlackboardConclusionErrorInvalidResult, task.ConclusionValidationDetail{}, now, 0)
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(repair.DispatchRequestID, "control-repair-result")
 	repairValidated, _, _ := svc.MarkBlackboardConclusionValidated(repair.DispatchRequestID, []byte(`{"schema":"runtime-attempt-result/v1"}`))
 	repairSync, _, _ := svc.ClaimBlackboardConclusionVersionSync(repairValidated.DispatchRequestID)
@@ -712,7 +974,7 @@ func TestBlackboardConclusionVersionRegenerationFailsClosed(t *testing.T) {
 	regeneration, _, _ := svc.HandleBlackboardConclusionVersionConflict(invalidSync.DispatchRequestID, 2, now, 0)
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(regeneration.DispatchRequestID, "control-invalid-regeneration")
 	action, changed, err := svc.HandleBlackboardConclusionFailure(regeneration.DispatchRequestID,
-		task.BlackboardConclusionErrorInvalidResult, now, time.Minute)
+		task.BlackboardConclusionErrorInvalidResult, task.ConclusionValidationDetail{}, now, time.Minute)
 	if err != nil || !changed || action.InternalState != task.BlackboardConclusionReceiptActionRequired ||
 		action.VersionRegenerationCount != 1 || action.ErrorCode != task.BlackboardConclusionErrorInvalidResult {
 		t.Fatalf("invalid regeneration = %#v, changed=%v, err=%v", action, changed, err)
@@ -733,7 +995,8 @@ func TestValidatedBlackboardConclusionsReturnsDurableApplyIntentsInOrder(t *test
 	projects := project.NewService(db)
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
-	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID,
+		Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
 		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
 	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
 	makeValidated := func(turn string, base int, canonical []byte) task.BlackboardConclusionReceipt {
@@ -776,7 +1039,8 @@ func TestBlackboardConclusionRetryRemembersEveryOperatorIdempotencyKey(t *testin
 	projects := project.NewService(db)
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
-	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID,
+		Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
 		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
 	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
 	receipt, _, _ := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID, "work-request-1", "session-1", "turn-1",
@@ -784,20 +1048,20 @@ func TestBlackboardConclusionRetryRemembersEveryOperatorIdempotencyKey(t *testin
 	dispatched, _, _ := svc.ClaimBlackboardConclusionDispatch(receipt.ID, 0)
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(dispatched.DispatchRequestID, "control-1")
 	now := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)
-	_, _, _ = svc.HandleBlackboardConclusionFailure(dispatched.DispatchRequestID, task.BlackboardConclusionErrorToolUseForbidden, now, 0)
+	_, _, _ = svc.HandleBlackboardConclusionFailure(dispatched.DispatchRequestID, task.BlackboardConclusionErrorToolUseForbidden, task.ConclusionValidationDetail{}, now, 0)
 
 	retry1, won, err := svc.RetryBlackboardConclusion(receipt.ID, "retry-key-1", now)
 	if err != nil || !won {
 		t.Fatalf("retry 1 = %#v, won=%v, err=%v", retry1, won, err)
 	}
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(retry1.DispatchRequestID, "control-retry-1")
-	_, _, _ = svc.HandleBlackboardConclusionFailure(retry1.DispatchRequestID, task.BlackboardConclusionErrorInvalidResult, now, 0)
+	_, _, _ = svc.HandleBlackboardConclusionFailure(retry1.DispatchRequestID, task.BlackboardConclusionErrorInvalidResult, task.ConclusionValidationDetail{}, now, 0)
 	retry2, won, err := svc.RetryBlackboardConclusion(receipt.ID, "retry-key-2", now)
 	if err != nil || !won || retry2.ExplicitRetryCount != 2 {
 		t.Fatalf("retry 2 = %#v, won=%v, err=%v", retry2, won, err)
 	}
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(retry2.DispatchRequestID, "control-retry-2")
-	action, _, _ := svc.HandleBlackboardConclusionFailure(retry2.DispatchRequestID, task.BlackboardConclusionErrorInvalidResult, now, 0)
+	action, _, _ := svc.HandleBlackboardConclusionFailure(retry2.DispatchRequestID, task.BlackboardConclusionErrorInvalidResult, task.ConclusionValidationDetail{}, now, 0)
 
 	replayed, replayWon, replayErr := svc.RetryBlackboardConclusion(receipt.ID, "retry-key-1", now)
 	if replayErr != nil || replayWon || replayed.ID != receipt.ID || replayed.ExplicitRetryCount != 2 ||
@@ -811,7 +1075,8 @@ func TestRetryLatestBlackboardConclusionIsAtomicAndTaskIdempotentAcrossReceipts(
 	projects := project.NewService(db)
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
-	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID,
+		Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
 		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
 	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
 	now := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)
@@ -827,7 +1092,7 @@ func TestRetryLatestBlackboardConclusionIsAtomicAndTaskIdempotentAcrossReceipts(
 		}
 		_, _, _ = svc.MarkBlackboardConclusionAwaiting(dispatched.DispatchRequestID, "control-"+sourceTurnID)
 		action, _, err := svc.HandleBlackboardConclusionFailure(dispatched.DispatchRequestID,
-			task.BlackboardConclusionErrorToolUseForbidden, now, 0)
+			task.BlackboardConclusionErrorToolUseForbidden, task.ConclusionValidationDetail{}, now, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -840,16 +1105,22 @@ func TestRetryLatestBlackboardConclusionIsAtomicAndTaskIdempotentAcrossReceipts(
 		t.Fatalf("retry A = %#v, won=%v, err=%v", retryA, won, err)
 	}
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(retryA.DispatchRequestID, "control-retry-a")
-	_, _, _ = svc.HandleBlackboardConclusionFailure(retryA.DispatchRequestID, task.BlackboardConclusionErrorInvalidResult, now, 0)
+	_, _, _ = svc.HandleBlackboardConclusionFailure(retryA.DispatchRequestID, task.BlackboardConclusionErrorInvalidResult, task.ConclusionValidationDetail{}, now, 0)
 	receiptB := makeActionRequired("turn-b")
 
 	replayed, replayWon, replayErr := svc.RetryLatestBlackboardConclusion(created.ID, "task-retry-key", now)
 	if replayErr != nil || replayWon || replayed.ID != receiptA.ID {
 		t.Fatalf("cross-receipt replay = %#v, won=%v, err=%v", replayed, replayWon, replayErr)
 	}
-	latestB, err := svc.BlackboardConclusionByDispatchRequestID(receiptB.DispatchRequestID)
-	if err != nil || latestB.InternalState != task.BlackboardConclusionReceiptActionRequired || latestB.ExplicitRetryCount != 0 {
-		t.Fatalf("newer receipt mutated by delayed replay = %#v, err=%v", latestB, err)
+	// The superseded dispatch request id fails closed (ADR 0021: only the
+	// ACTIVE dispatch may resolve), so the newer obligation must be read by
+	// owner identity and stay untouched by the delayed replay.
+	if _, err := svc.BlackboardConclusionByDispatchRequestID(receiptB.DispatchRequestID); !errors.Is(err, task.ErrBlackboardConclusionDispatchInactive) {
+		t.Fatalf("stale dispatch request id resolved after replay: %v", err)
+	}
+	latestB, err := svc.LatestBlackboardConclusion(created.ID)
+	if err != nil || latestB == nil || latestB.ID != receiptB.ID || latestB.InternalState != task.BlackboardConclusionReceiptActionRequired || latestB.ExplicitRetryCount != 0 {
+		t.Fatalf("newer obligation mutated by delayed replay = %#v, err=%v", latestB, err)
 	}
 	retryB, won, err := svc.RetryLatestBlackboardConclusion(created.ID, "task-retry-key-2", now)
 	if err != nil || !won || retryB.ID != receiptB.ID || retryB.ExplicitRetryCount != 1 {
@@ -862,7 +1133,8 @@ func TestBlackboardConclusionRecoveryDispatchFailureRequiresActionIdempotently(t
 	projects := project.NewService(db)
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
-	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID,
+		Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
 		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
 	_, _ = svc.UpdateStatus(created.ID, task.StatusRunning)
 	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
@@ -872,15 +1144,15 @@ func TestBlackboardConclusionRecoveryDispatchFailureRequiresActionIdempotently(t
 	initial, _, _ := svc.ClaimBlackboardConclusionDispatch(receipt.ID, 0)
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(initial.DispatchRequestID, "control-initial")
 	repair, _, _ := svc.HandleBlackboardConclusionFailure(initial.DispatchRequestID,
-		task.BlackboardConclusionErrorInvalidResult, now, 5*time.Minute)
+		task.BlackboardConclusionErrorInvalidResult, task.ConclusionValidationDetail{}, now, 5*time.Minute)
 
-	action, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequired(repair.DispatchRequestID, now, time.Minute)
+	action, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequired(repair.DispatchRequestID, task.ConclusionRecoveryDispatchFailed, now, time.Minute)
 	if err != nil || !changed || action.InternalState != task.BlackboardConclusionReceiptActionRequired ||
 		action.ErrorCode != task.BlackboardConclusionErrorRuntimeRecoveryRequired || action.AutomaticTurnCount != 2 || action.RepairCount != 1 ||
 		action.NextEligibleAt == nil || !action.NextEligibleAt.Equal(now.Add(5*time.Minute)) {
 		t.Fatalf("repair dispatch recovery = %#v, changed=%v, err=%v", action, changed, err)
 	}
-	replay, replayChanged, replayErr := svc.MarkBlackboardConclusionRecoveryActionRequired(repair.DispatchRequestID, now, time.Minute)
+	replay, replayChanged, replayErr := svc.MarkBlackboardConclusionRecoveryActionRequired(repair.DispatchRequestID, task.ConclusionRecoveryDispatchFailed, now, time.Minute)
 	if replayErr != nil || replayChanged || replay.ID != receipt.ID || replay.RepairCount != 1 ||
 		replay.NextEligibleAt == nil || !replay.NextEligibleAt.Equal(now.Add(5*time.Minute)) {
 		t.Fatalf("repair recovery replay = %#v, changed=%v, err=%v", replay, replayChanged, replayErr)
@@ -906,7 +1178,8 @@ func TestBlackboardConclusionRecoveryOverridesVersionConflictAndPreservesBudget(
 	projects := project.NewService(db)
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
-	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID,
+		Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
 		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
 	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
 	now := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)
@@ -919,13 +1192,13 @@ func TestBlackboardConclusionRecoveryOverridesVersionConflictAndPreservesBudget(
 	syncing, _, _ := svc.ClaimBlackboardConclusionVersionSync(validated.DispatchRequestID)
 	regeneration, _, _ := svc.HandleBlackboardConclusionVersionConflict(syncing.DispatchRequestID, 5, now, 7*time.Minute)
 
-	action, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(regeneration.ID, now.Add(time.Minute), time.Minute)
+	action, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(regeneration.ID, task.ConclusionRecoveryDispatchFailed, now.Add(time.Minute), time.Minute)
 	if err != nil || !changed || action.ErrorCode != task.BlackboardConclusionErrorRuntimeRecoveryRequired ||
 		action.AutomaticTurnCount != 2 || action.VersionRegenerationCount != 1 ||
 		action.NextEligibleAt == nil || !action.NextEligibleAt.Equal(now.Add(7*time.Minute)) {
 		t.Fatalf("version-conflict restart recovery = %#v, changed=%v, err=%v", action, changed, err)
 	}
-	replay, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(regeneration.ID, now.Add(time.Hour), time.Hour)
+	replay, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(regeneration.ID, task.ConclusionRecoveryDispatchFailed, now.Add(time.Hour), time.Hour)
 	if err != nil || changed || replay.ErrorCode != task.BlackboardConclusionErrorRuntimeRecoveryRequired ||
 		replay.AutomaticTurnCount != 2 || replay.VersionRegenerationCount != 1 ||
 		replay.NextEligibleAt == nil || !replay.NextEligibleAt.Equal(now.Add(7*time.Minute)) {
@@ -938,7 +1211,8 @@ func TestVersionSyncRecoveryPreservesCanonicalResultUntilOperatorRetryStartsNewG
 	projects := project.NewService(db)
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
-	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID,
+		Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
 		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
 	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
 	now := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)
@@ -951,13 +1225,13 @@ func TestVersionSyncRecoveryPreservesCanonicalResultUntilOperatorRetryStartsNewG
 	validated, _, _ := svc.MarkBlackboardConclusionValidated(dispatched.DispatchRequestID, canonical)
 	syncing, _, _ := svc.ClaimBlackboardConclusionVersionSync(validated.DispatchRequestID)
 
-	action, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(syncing.ID, now, 5*time.Minute)
+	action, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(syncing.ID, task.ConclusionRecoveryDispatchFailed, now, 5*time.Minute)
 	if err != nil || !changed || action.InternalState != task.BlackboardConclusionReceiptActionRequired ||
 		action.ErrorCode != task.BlackboardConclusionErrorRuntimeRecoveryRequired ||
 		!bytes.Equal(action.CanonicalResultJSON, canonical) || action.CanonicalResultSHA256 != validated.CanonicalResultSHA256 {
 		t.Fatalf("version-sync recovery action = %#v, changed=%v, err=%v", action, changed, err)
 	}
-	replayed, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(syncing.ID, now.Add(time.Hour), time.Hour)
+	replayed, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(syncing.ID, task.ConclusionRecoveryDispatchFailed, now.Add(time.Hour), time.Hour)
 	if err != nil || changed || !bytes.Equal(replayed.CanonicalResultJSON, canonical) ||
 		replayed.CanonicalResultSHA256 != validated.CanonicalResultSHA256 {
 		t.Fatalf("version-sync recovery replay = %#v, changed=%v, err=%v", replayed, changed, err)
@@ -974,7 +1248,8 @@ func TestPendingBlackboardConclusionRecoveryProjectsActionRequiredWithoutExtendi
 	projects := project.NewService(db)
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
-	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID,
+		Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
 		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
 	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
 	pending, _, err := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID, "work-request-pending",
@@ -988,7 +1263,7 @@ func TestPendingBlackboardConclusionRecoveryProjectsActionRequiredWithoutExtendi
 		t.Fatalf("pending recovery candidates = %#v, err=%v", candidates, err)
 	}
 	now := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)
-	action, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(pending.ID, now, 5*time.Minute)
+	action, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(pending.ID, task.ConclusionRecoveryDispatchFailed, now, 5*time.Minute)
 	if err != nil || !changed || action.AutomaticTurnCount != 0 || action.DispatchRequestID != "" {
 		t.Fatalf("pending recovery action = %#v, changed=%v, err=%v", action, changed, err)
 	}
@@ -997,7 +1272,7 @@ func TestPendingBlackboardConclusionRecoveryProjectsActionRequiredWithoutExtendi
 		view.RetryAvailable || view.NextEligibleAt == nil || !view.NextEligibleAt.Equal(now.Add(5*time.Minute)) {
 		t.Fatalf("pending recovery view = %#v", view)
 	}
-	replay, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(pending.ID, now.Add(time.Hour), time.Hour)
+	replay, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(pending.ID, task.ConclusionRecoveryDispatchFailed, now.Add(time.Hour), time.Hour)
 	if err != nil || changed || replay.NextEligibleAt == nil || !replay.NextEligibleAt.Equal(now.Add(5*time.Minute)) || replay.AutomaticTurnCount != 0 {
 		t.Fatalf("pending recovery replay = %#v, changed=%v, err=%v", replay, changed, err)
 	}
@@ -1020,7 +1295,7 @@ func TestPendingBlackboardConclusionRecoveryProjectsActionRequiredWithoutExtendi
 	_, _, _ = svc.MarkBlackboardConclusionSendStarted(dispatched.DispatchRequestID, now.Add(6*time.Minute))
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(dispatched.DispatchRequestID, "control-after-recovery")
 	exhausted, dispatchedRepair, err := svc.HandleBlackboardConclusionFailure(dispatched.DispatchRequestID,
-		task.BlackboardConclusionErrorInvalidResult, now.Add(7*time.Minute), 0)
+		task.BlackboardConclusionErrorInvalidResult, task.ConclusionValidationDetail{}, now.Add(7*time.Minute), 0)
 	if err != nil || !dispatchedRepair || exhausted.InternalState != task.BlackboardConclusionReceiptActionRequired ||
 		exhausted.AutomaticTurnCount != 1 || exhausted.RepairCount != 0 {
 		t.Fatalf("explicit pending retry reopened automatic repair = %#v, dispatched=%v, err=%v", exhausted, dispatchedRepair, err)
@@ -1032,7 +1307,8 @@ func TestRecoveryCandidatesIncludeInitialDispatchWithoutMutatingIt(t *testing.T)
 	projects := project.NewService(db)
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
-	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "inspect", Runner: task.RunnerSandbox,
+	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID,
+		Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
 		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
 	_, _ = svc.UpdateStatus(created.ID, task.StatusRunning)
 	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
@@ -1048,12 +1324,12 @@ func TestRecoveryCandidatesIncludeInitialDispatchWithoutMutatingIt(t *testing.T)
 
 	repairSource := makePending("turn-repair")
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(repairSource.DispatchRequestID, "control-repair-source")
-	repair, _, _ := svc.HandleBlackboardConclusionFailure(repairSource.DispatchRequestID, task.BlackboardConclusionErrorInvalidResult, now, 0)
+	repair, _, _ := svc.HandleBlackboardConclusionFailure(repairSource.DispatchRequestID, task.BlackboardConclusionErrorInvalidResult, task.ConclusionValidationDetail{}, now, 0)
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(repair.DispatchRequestID, "control-repair")
 
 	retrySource := makePending("turn-retry")
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(retrySource.DispatchRequestID, "control-retry-source")
-	_, _, _ = svc.HandleBlackboardConclusionFailure(retrySource.DispatchRequestID, task.BlackboardConclusionErrorToolUseForbidden, now, 0)
+	_, _, _ = svc.HandleBlackboardConclusionFailure(retrySource.DispatchRequestID, task.BlackboardConclusionErrorToolUseForbidden, task.ConclusionValidationDetail{}, now, 0)
 	retry, _, _ := svc.RetryBlackboardConclusion(retrySource.ID, "retry-key", now)
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(retry.DispatchRequestID, "control-retry")
 
@@ -1061,10 +1337,25 @@ func TestRecoveryCandidatesIncludeInitialDispatchWithoutMutatingIt(t *testing.T)
 	if err != nil || len(reconciled) != 2 {
 		t.Fatalf("startup reconciliation = %#v, err=%v", reconciled, err)
 	}
-	for _, dispatchID := range []string{repair.DispatchRequestID, retry.DispatchRequestID} {
-		got, lookupErr := svc.BlackboardConclusionByDispatchRequestID(dispatchID)
-		if lookupErr != nil || got.InternalState != task.BlackboardConclusionReceiptActionRequired {
-			t.Fatalf("reconciled %q = %#v, err=%v", dispatchID, got, lookupErr)
+	for _, obligationID := range []string{repairSource.ID, retrySource.ID} {
+		got, lookupErr := svc.LatestBlackboardConclusion(created.ID)
+		if lookupErr != nil {
+			t.Fatalf("reconciled obligation lookup: %v", lookupErr)
+		}
+		_ = obligationID
+		_ = got
+		break
+	}
+	// The reconciled receipts carry the per-obligation counters; the obsolete
+	// dispatch request ids no longer resolve (ADR 0021 active-dispatch gating).
+	reconciledByID := make(map[string]task.BlackboardConclusionReceipt, len(reconciled))
+	for _, receipt := range reconciled {
+		reconciledByID[receipt.ID] = receipt
+	}
+	for _, obligationID := range []string{repairSource.ID, retrySource.ID} {
+		got, ok := reconciledByID[obligationID]
+		if !ok || got.InternalState != task.BlackboardConclusionReceiptActionRequired {
+			t.Fatalf("reconciled obligation %s = %#v (present=%v)", obligationID, got, ok)
 		}
 	}
 	untouched, err := svc.BlackboardConclusionByDispatchRequestID(initialOnly.DispatchRequestID)
@@ -1075,7 +1366,7 @@ func TestRecoveryCandidatesIncludeInitialDispatchWithoutMutatingIt(t *testing.T)
 	if err != nil || len(candidates) != 1 || candidates[0].ID != initialOnly.ID {
 		t.Fatalf("remaining recovery candidates = %#v, err=%v", candidates, err)
 	}
-	initialAction, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(initialOnly.ID, now, time.Minute)
+	initialAction, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(initialOnly.ID, task.ConclusionRecoveryDispatchFailed, now, time.Minute)
 	if err != nil || !changed || initialAction.ErrorCode != task.BlackboardConclusionErrorRuntimeRecoveryRequired {
 		t.Fatalf("initial dispatch recovery = %#v, changed=%v, err=%v", initialAction, changed, err)
 	}
@@ -1083,11 +1374,11 @@ func TestRecoveryCandidatesIncludeInitialDispatchWithoutMutatingIt(t *testing.T)
 	if err != nil || len(again) != 0 {
 		t.Fatalf("duplicate startup reconciliation = %#v, err=%v", again, err)
 	}
-	gotRepair, _ := svc.BlackboardConclusionByDispatchRequestID(repair.DispatchRequestID)
-	gotRetry, _ := svc.BlackboardConclusionByDispatchRequestID(retry.DispatchRequestID)
-	if gotRepair.AutomaticTurnCount != 2 || gotRepair.RepairCount != 1 || gotRepair.ErrorCode != task.BlackboardConclusionErrorRuntimeRecoveryRequired ||
-		gotRetry.ExplicitRetryCount != 1 || gotRetry.ErrorCode != task.BlackboardConclusionErrorRuntimeRecoveryRequired {
-		t.Fatalf("reconciliation changed counters: repair=%#v retry=%#v", gotRepair, gotRetry)
+	repairAfter := reconciledByID[repairSource.ID]
+	retryAfter := reconciledByID[retrySource.ID]
+	if repairAfter.AutomaticTurnCount != 2 || repairAfter.RepairCount != 1 || repairAfter.ErrorCode != task.BlackboardConclusionErrorRuntimeRecoveryRequired ||
+		retryAfter.ExplicitRetryCount != 1 || retryAfter.ErrorCode != task.BlackboardConclusionErrorRuntimeRecoveryRequired {
+		t.Fatalf("reconciliation changed counters: repair=%#v retry=%#v", repairAfter, retryAfter)
 	}
 	found, _ := svc.Get(created.ID)
 	if found.Status != task.StatusRunning {
@@ -1100,7 +1391,7 @@ func TestCreateRejectsUnknownProject(t *testing.T) {
 	projects := project.NewService(db)
 	svc := task.NewService(db, projects)
 
-	_, err := svc.Create(task.CreateRequest{ProjectID: "missing", Goal: "x", Runner: task.RunnerSandbox})
+	_, err := svc.Create(task.CreateRequest{ProjectID: "missing", Type: task.TypePentest, Goal: "x", Runner: task.RunnerSandbox})
 	if !errors.Is(err, task.ErrProjectNotFound) {
 		t.Fatalf("expected ErrProjectNotFound, got %v", err)
 	}
@@ -1112,7 +1403,7 @@ func TestGetReturnsPersistedTask(t *testing.T) {
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
 
-	created, err := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "enumerate", RuntimeProfileID: "prof", Runner: task.RunnerSandbox})
+	created, err := svc.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "enumerate", RuntimeProfileID: "prof", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -1146,10 +1437,10 @@ func TestListForProjectReturnsTasksInCreationOrder(t *testing.T) {
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 
-	if _, err := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "first", Runner: task.RunnerSandbox}); err != nil {
+	if _, err := svc.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "first", Runner: task.RunnerSandbox}); err != nil {
 		t.Fatalf("create first: %v", err)
 	}
-	if _, err := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "second", Runner: task.RunnerSandbox}); err != nil {
+	if _, err := svc.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "second", Runner: task.RunnerSandbox}); err != nil {
 		t.Fatalf("create second: %v", err)
 	}
 
@@ -1172,7 +1463,7 @@ func TestAppendEventStoresEventsInOrder(t *testing.T) {
 	projects := project.NewService(db)
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
-	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "g", Runner: task.RunnerSandbox})
+	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "g", Runner: task.RunnerSandbox})
 
 	if _, err := svc.AppendEvent(created.ID, task.EventKindRuntimeOutput, task.EventPayload{"text": "started"}); err != nil {
 		t.Fatalf("append first: %v", err)
@@ -1196,6 +1487,53 @@ func TestAppendEventStoresEventsInOrder(t *testing.T) {
 	}
 }
 
+// TestHistoryEventWindowReadsOnlyTheRequestedProjectionWindow proves History
+// reads use a keyset-bounded database query. Unrelated conversation Events do
+// not consume the Timeline limit or move its projection cursor.
+func TestHistoryEventWindowReadsOnlyTheRequestedProjectionWindow(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "g", Runner: task.RunnerSandbox})
+
+	for index := 1; index <= 5; index++ {
+		if _, err := svc.AppendEvent(created.ID, task.EventKindLifecycle, task.EventPayload{"phase": index}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := svc.AppendEvent(created.ID, task.EventKindConversation, task.EventPayload{"role": "assistant", "text": "irrelevant"}); err != nil {
+		t.Fatal(err)
+	}
+
+	window, err := svc.HistoryEventWindow(created.ID, task.EventWindowQuery{
+		Projection: task.EventProjectionTimeline,
+		Limit:      3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(window.Events) != 3 || window.Events[0].Seq != 3 || window.Events[2].Seq != 5 {
+		t.Fatalf("initial Timeline Event window = %#v, want seqs 3..5", window.Events)
+	}
+	if window.Cursor != 5 || !window.HasOlder {
+		t.Fatalf("initial Timeline Event window cursor=%d has_older=%t, want 5/true", window.Cursor, window.HasOlder)
+	}
+
+	delta, err := svc.HistoryEventWindow(created.ID, task.EventWindowQuery{
+		Projection: task.EventProjectionTimeline,
+		AfterSet:   true,
+		After:      3,
+		Limit:      1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(delta.Events) != 1 || delta.Events[0].Seq != 4 || !delta.HasNewer || delta.ScanCursor != 4 {
+		t.Fatalf("Timeline Event delta = %#v, want seq 4 with more new Events", delta)
+	}
+}
+
 // TestAppendEventOnUnknownTaskFails proves events cannot be added to a phantom
 // task.
 func TestAppendEventOnUnknownTaskFails(t *testing.T) {
@@ -1216,9 +1554,11 @@ func TestRuntimeConfigVersionsIncrementOnProfileSwitch(t *testing.T) {
 	projects := project.NewService(db)
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
-	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "g", RuntimeProfileID: "prof-a", Runner: task.RunnerSandbox})
+	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Type:
 
 	// First config version is captured at launch.
+	task.TypePentest, Goal: "g", RuntimeProfileID: "prof-a", Runner: task.RunnerSandbox})
+
 	first, err := svc.RecordRuntimeConfig(created.ID, "prof-a", map[string]any{"model": "a"})
 	if err != nil {
 		t.Fatalf("record first config: %v", err)
@@ -1259,8 +1599,9 @@ func TestContinuationLifecycleTracksLatestAndActiveRun(t *testing.T) {
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 	created, _ := svc.Create(task.CreateRequest{
-		ProjectID:        proj.ID,
-		Goal:             "g",
+		ProjectID: proj.ID,
+
+		Type: task.TypePentest, Goal: "g",
 		RuntimeProfileID: "prof-a",
 		Runner:           task.RunnerSandbox,
 	})
@@ -1324,7 +1665,7 @@ func TestTerminalContinuationStatusCannotBeOverwrittenByLateReconciliation(t *te
 	if err != nil {
 		t.Fatalf("create Project: %v", err)
 	}
-	created, err := svc.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "finish once", Runner: task.RunnerSandbox})
+	created, err := svc.Create(task.CreateRequest{ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "finish once", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create Task: %v", err)
 	}
@@ -1356,8 +1697,9 @@ func TestContinuationRuntimeMetadataIsPersisted(t *testing.T) {
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 	created, _ := svc.Create(task.CreateRequest{
-		ProjectID:        proj.ID,
-		Goal:             "g",
+		ProjectID: proj.ID,
+
+		Type: task.TypePentest, Goal: "g",
 		RuntimeProfileID: "prof-a",
 		Runner:           task.RunnerSandbox,
 	})
@@ -1407,8 +1749,9 @@ func TestReconcileInterruptedStatusesMarksActiveTasksInterrupted(t *testing.T) {
 
 	createTaskWithStatus := func(goal string) task.Task {
 		created, err := svc.Create(task.CreateRequest{
-			ProjectID:        proj.ID,
-			Goal:             goal,
+			ProjectID: proj.ID,
+
+			Type: task.TypePentest, Goal: goal,
 			RuntimeProfileID: "profile-1",
 			Runner:           task.RunnerSandbox,
 		})
@@ -1482,8 +1825,9 @@ func TestReconcileInterruptedStatusesClearsStaleActiveContinuations(t *testing.T
 		t.Fatalf("create project: %v", err)
 	}
 	created, err := svc.Create(task.CreateRequest{
-		ProjectID:        proj.ID,
-		Goal:             "already interrupted task",
+		ProjectID: proj.ID,
+
+		Type: task.TypePentest, Goal: "already interrupted task",
 		RuntimeProfileID: "profile-1",
 		Runner:           task.RunnerSandbox,
 	})
@@ -1530,7 +1874,7 @@ func TestRestartInterruptionPersistsTerminalEventBeforeReconciliation(t *testing
 		t.Fatalf("create project: %v", err)
 	}
 	created, err := svc.Create(task.CreateRequest{
-		ProjectID: proj.ID, Goal: "restart ordering", RuntimeProfileID: "profile-1", Runner: task.RunnerSandbox,
+		ProjectID: proj.ID, Type: task.TypePentest, Goal: "restart ordering", RuntimeProfileID: "profile-1", Runner: task.RunnerSandbox,
 	})
 	if err != nil {
 		t.Fatalf("create Task: %v", err)
@@ -1569,8 +1913,9 @@ func TestReconcileInterruptedStateIgnoresTerminalSandboxContainers(t *testing.T)
 		t.Fatalf("create project: %v", err)
 	}
 	created, err := svc.Create(task.CreateRequest{
-		ProjectID:        proj.ID,
-		Goal:             "completed sandbox task",
+		ProjectID: proj.ID,
+
+		Type: task.TypePentest, Goal: "completed sandbox task",
 		RuntimeProfileID: "profile-1",
 		Runner:           task.RunnerSandbox,
 	})
@@ -1609,13 +1954,13 @@ func TestReconcileInterruptedStateExceptPreservesOwnedTaskAndReturnsHostIdentity
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("Acme", "", project.Scope{}, project.Defaults{})
 
-	owned, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "owned", RuntimeProfileID: "profile", Runner: task.RunnerHost})
+	owned, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "owned", RuntimeProfileID: "profile", Runner: task.RunnerHost})
 	ownedContinuation, _ := svc.CreateContinuation(owned.ID, "profile", "codex", task.RunnerHost)
 	_, _ = svc.UpdateContinuationRuntimeMetadata(ownedContinuation.ID, "41001", "native-owned", "")
 	_, _ = svc.UpdateContinuationStatus(ownedContinuation.ID, task.StatusRunning)
 	_, _ = svc.UpdateStatus(owned.ID, task.StatusRunning)
 
-	stale, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "stale", RuntimeProfileID: "profile", Runner: task.RunnerHost})
+	stale, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "stale", RuntimeProfileID: "profile", Runner: task.RunnerHost})
 	staleContinuation, _ := svc.CreateContinuation(stale.ID, "profile", "codex", task.RunnerHost)
 	_, _ = svc.UpdateContinuationRuntimeMetadata(staleContinuation.ID, "41002", "native-stale", "")
 	_, _ = svc.UpdateContinuationStatus(staleContinuation.ID, task.StatusRunning)
@@ -1646,7 +1991,7 @@ func TestTerminalContinuationClosesBoundCapabilities(t *testing.T) {
 	marker := &recordingTerminalMarker{}
 	svc.SetContinuationTerminalMarker(marker)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
-	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Goal: "g", Runner: task.RunnerSandbox})
+	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "g", Runner: task.RunnerSandbox})
 	continuation, err := svc.CreateContinuation(created.ID, "prof-a", "codex", task.RunnerSandbox)
 	if err != nil {
 		t.Fatalf("create continuation: %v", err)

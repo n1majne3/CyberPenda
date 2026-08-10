@@ -480,7 +480,7 @@ func TestOpenAPIAndTrustedToolsFreezeTheAcceptedV2Adapters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load trusted-tool schemas: %v", err)
 	}
-	wantTools := []string{"blackboard_change", "blackboard_read", "blackboard_history", "blackboard_retain_evidence", "blackboard_checkpoint_attempt", "blackboard_finish"}
+	wantTools := []string{"blackboard_change", "blackboard_record_attempt_result", "blackboard_read", "blackboard_history", "blackboard_retain_evidence", "blackboard_checkpoint_attempt", "blackboard_finish"}
 	if len(tools) != len(wantTools) {
 		t.Fatalf("trusted tools = %d, want %d", len(tools), len(wantTools))
 	}
@@ -503,8 +503,8 @@ func TestToolInputSchemaIncludesOnlyTransitiveRootDefs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("trusted tools: %v", err)
 	}
-	if len(tools) != 6 {
-		t.Fatalf("trusted tools = %d, want 6", len(tools))
+	if len(tools) != 7 {
+		t.Fatalf("trusted tools = %d, want 7", len(tools))
 	}
 	unrelated := []string{
 		"migrationPlan", "migrationProjectPlan", "migrationDecision", "migrationBlocker",

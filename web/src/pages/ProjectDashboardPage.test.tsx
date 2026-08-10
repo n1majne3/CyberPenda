@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { ProjectDashboardPage } from "./ProjectDashboardPage";
@@ -18,6 +19,7 @@ const project = {
   id: "project-1",
   name: "Acme External",
   description: "External web and API assessment",
+  kind: "pentest",
   scope: {},
   defaults: {},
   created_at: "",
@@ -113,5 +115,36 @@ describe("ProjectDashboardPage", () => {
     expect(screen.getByRole("link", { name: /view 8 facts/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /view 1 finding/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /view 5 evidence items/i })).toBeInTheDocument();
+    expect(screen.getByText("Pentest Project")).toBeInTheDocument();
+  });
+
+  it("previews and confirms a blocker-free Project Kind Conversion", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.endsWith("/dashboard")) return new Response(JSON.stringify(dashboard));
+        if (url.endsWith("/kind-conversion/preview")) {
+          return new Response(JSON.stringify({
+            project_id: "project-1",
+            current_kind: "pentest",
+            target_kind: "ctf_challenge",
+            ready: true,
+            blockers: [],
+          }));
+        }
+        if (url.endsWith("/kind-conversion") && init?.method === "POST") {
+          return new Response(JSON.stringify({ ...project, kind: "ctf_challenge" }));
+        }
+        return new Response(JSON.stringify(project));
+      }),
+    );
+
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /change project kind/i }));
+    expect(await screen.findByText(/conversion is ready/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /confirm conversion/i }));
+    expect(await screen.findByText("CTF Challenge Project")).toBeInTheDocument();
   });
 });

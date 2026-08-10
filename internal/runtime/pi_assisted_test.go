@@ -136,6 +136,41 @@ func TestPiEventsProjectBoundedCorrelatedObservationsWithoutRawPayloads(t *testi
 	}
 }
 
+// #192 cross-provider contract: a Pi tool event under the trusted Project
+// Interface registration carries its canonical Blackboard operation identity;
+// a similar display name from any other origin never does.
+func TestPiToolObservationsCarryCanonicalBlackboardOperationIdentity(t *testing.T) {
+	session, _ := newAssistedPiSession(t, RuntimeTurnKindWork)
+	var got []ProviderSessionObservation
+	session.SetObservationSink(func(observation ProviderSessionObservation) { got = append(got, observation) })
+	for _, event := range []SandboxBridgeEvent{
+		{Method: "pi/tool_execution_start", Params: json.RawMessage(`{"session_id":"pi-session","turn_id":"pi-turn","toolCallId":"call-1","toolName":"mcp__pentest__blackboard_change"}`)},
+		{Method: "pi/tool_execution_end", Params: json.RawMessage(`{"session_id":"pi-session","turn_id":"pi-turn","toolCallId":"call-1","toolName":"mcp__pentest__blackboard_change","isError":false}`)},
+		{Method: "pi/tool_execution_end", Params: json.RawMessage(`{"session_id":"pi-session","turn_id":"pi-turn","toolCallId":"call-2","toolName":"mcp__evil__blackboard_change","isError":false}`)},
+		{Method: "pi/tool_execution_end", Params: json.RawMessage(`{"session_id":"pi-session","turn_id":"pi-turn","toolCallId":"call-3","toolName":"blackboard_change","isError":false}`)},
+	} {
+		session.HandleEvent(event, nil)
+	}
+	want := []struct {
+		operation BlackboardOperation
+		toolName  string
+	}{
+		{operation: BlackboardOperationChange, toolName: "mcp__pentest__blackboard_change"},
+		{operation: BlackboardOperationChange, toolName: "mcp__pentest__blackboard_change"},
+		{operation: "", toolName: "mcp__evil__blackboard_change"},
+		{operation: "", toolName: "blackboard_change"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("observations = %#v, want %d", got, len(want))
+	}
+	for index, expected := range want {
+		observation := got[index]
+		if observation.BlackboardOperation != expected.operation || observation.ToolName != expected.toolName {
+			t.Fatalf("observation %d = %#v, want operation %q tool %q", index, observation, expected.operation, expected.toolName)
+		}
+	}
+}
+
 func TestPiInvalidControlResultReportsOnlyBoundedFailure(t *testing.T) {
 	session, requestID := newAssistedPiSession(t, RuntimeTurnKindControl)
 	var got ProviderSessionAttemptResultValidationFailure

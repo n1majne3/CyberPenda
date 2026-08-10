@@ -12,9 +12,25 @@ _Avoid_: autonomous hacker, exploit bot
 A bounded security-testing engagement with its own **Scope**, tasks, memory, evidence, and report.
 _Avoid_: workspace, conversation, campaign
 
+**Project Kind**:
+The required Project classification of `pentest` or `ctf_challenge` that selects valid Project Knowledge and reporting semantics. It is chosen explicitly when the Project is created and is not inferred from a Task Goal, Skill, or Runtime output.
+_Avoid_: hidden project default, task mode, runtime capability
+
+**Project Kind Conversion**:
+An explicit operator-confirmed change of one Project Kind after a preview proves that every Task is terminal and no incompatible current Finding or Solution exists. It changes classification only and never infers a cross-type Blackboard record conversion.
+_Avoid_: automatic project repair, fact-to-solution migration, task mode switch
+
 **Project Defaults**:
 Project-level choices for default runner, optional **Default Runtime Profile Preset**, and task policy that do not copy global **Runtime Profiles**.
 _Avoid_: project-local runtime profile, copied profile, launch selection store
+
+**Task Policy**:
+Structured operator-defined limits that the **Runtime Harness** enforces for one Task, such as maximum challenge Attempts, wrong submissions, wall time, consecutive failures, Rating drawdown, or no-progress duration.
+_Avoid_: prompt advice, Skill rule, hidden timeout
+
+**Task Policy Snapshot**:
+The immutable Task-local copy of Task Policy captured by **Task Launch** and used for deterministic enforcement and historical inspection.
+_Avoid_: current project defaults, mutable runtime limit, prompt text
 
 **Project Dashboard**:
 The primary project view that surfaces scope status, task runs, blackboard growth, findings, and evidence health.
@@ -23,6 +39,10 @@ _Avoid_: chat home, task-only queue
 **Task**:
 A user-goal-driven project run executed by one **Runtime Profile** through one **Runner**.
 _Avoid_: chat message, report section, shell command, plan step
+
+**Task Type**:
+The required operator-visible `pentest` or `ctf_challenge` classification selected during **Task Launch** and stored as an immutable Task-local snapshot. It must match the current **Project Kind** at launch. A later Project Kind Conversion does not rewrite an existing Task Type.
+_Avoid_: hidden Project Kind lookup, mutable task mode, prompt label
 
 **Non-Project Mode**:
 The product mode for work that has no **Project** and therefore no Project Scope, while retaining the same Runtime interaction capabilities as a **Task**.
@@ -35,6 +55,14 @@ _Avoid_: Project, Task, disposable chat, UI-only conversation
 **Runtime Owner Workspace**:
 The shared interactive UI used by both a Project **Task** and a Non-Project **Session** for conversation, timeline, Runtime activity, permissions, Blackboard conclusion state, attachments, and per-turn model selection. Owner-specific lifecycle actions and data adapters may differ without creating a separate workspace UI.
 _Avoid_: Session-specific chat UI, duplicated Task page, shared domain aggregate
+
+**Runtime Owner History Window**:
+A view of the selected Runtime Owner's recent Timeline and Transcript that is bounded by both item count and serialized size. It keeps older history available on demand.
+_Avoid_: complete initial transcript, cross-owner event cache
+
+**Project Navigation Projection**:
+A bounded navigation view of every **Project**, with a fixed recent **Task** summary plus the selected Task and every Task with a live busy Runtime.
+_Avoid_: full Task inventory, request-count-only optimization
 
 **Task Goal**:
 The user's natural-language objective for a **Task**.
@@ -97,7 +125,7 @@ A **Runtime Turn** initiated by the **Runtime Harness** for a bounded control pu
 _Avoid_: operator message, autonomous task, provider-classified turn
 
 **Conclude Runtime Turn**:
-A **Harness Control Turn** dispatched for one **Pending Blackboard Conclusion** in the same Task-scoped persistent Runtime and **Runtime Continuation**. It reuses the source **Runtime Turn Selection**, forbids further testing, and returns one closed semantic Attempt result for Harness validation and application.
+A **Harness Control Turn** delivered by one **Conclusion Dispatch** for a **Pending Blackboard Conclusion**. It runs on that dispatch's bound **Runtime Continuation**, reuses the source **Runtime Turn Selection**, forbids further testing, and returns one closed semantic Attempt result for Harness validation and application.
 _Avoid_: user message, new continuation, task finish turn, unrestricted agent turn
 
 **Runtime Turn Selection**:
@@ -143,6 +171,10 @@ _Avoid_: pentest tool executor, agent brain, sandbox
 **Harness Steering**:
 A task-local control action that changes how the **Runtime Harness** continues a **Task** without creating a new task.
 _Avoid_: direct tool control, hidden prompt mutation, new task
+
+**Accepted Steering**:
+A durable **Harness Steering** request whose ordered dispatch and settlement responsibility belongs to the **Runtime Harness**. It must reach `applied`, `failed`, or `action_required`, including after daemon restart.
+_Avoid_: saved message, in-memory callback, permanent pending state
 
 **Runtime Continuation**:
 The next unit of runtime progress after launch, user input, checkpoint, interrupt, or resume.
@@ -492,6 +524,14 @@ _Avoid_: embedded secret, copied credential
 A default credential mapping used when a **Project** does not override a **Credential Reference**.
 _Avoid_: hidden credential, project credential
 
+**Global Environment Variable**:
+A non-disabled **Global Credential Binding** that **Config Projection** injects into every **Runtime** as a process environment variable, without a **Runtime Profile** **Credential Reference**. Its name is the binding **Destination Environment Variable**.
+_Avoid_: automatic global mount, profile-local env var, runtime-only env
+
+**Destination Environment Variable**:
+The process environment variable name under which a materialized **Credential Binding** is made available to a **Runtime**. For env sources it defaults to the source variable name; for literal sources it is required.
+_Avoid_: credential reference, source value, inline env var
+
 **Credential Binding Mode**:
 The project setting that chooses whether a **Credential Reference** uses the global default binding or a project override.
 _Avoid_: implicit credential behavior, hidden override
@@ -507,6 +547,10 @@ _Avoid_: host config edit, config sync
 **Preflight**:
 A recorded startup check phase that determines whether a **Task** can launch its **Runtime**.
 _Avoid_: runtime execution, pentest work
+
+**Runtime Extension Requirement**:
+A non-authorizing declaration that a Runtime Extension needs a compatible Project Kind or Scope capability before Task Launch. **Preflight** validates it, but it never changes Project Kind or expands Scope.
+_Avoid_: Skill authorization, automatic Scope Expansion, runtime preference
 
 **Model Preflight Preview**:
 The **Preflight** view of resolved non-secret model provider projection and generated API key environment variable readiness.
@@ -529,8 +573,16 @@ A **Run Controls** choice of `interactive` or `assisted`. Interactive mode leave
 _Avoid_: autonomous Task completion, transcript parsing mode, Blackboard write permission
 
 **Pending Blackboard Conclusion**:
-A durable, idempotent Harness receipt indicating that a completed **Work Runtime Turn** used at least one non-Blackboard tool and needs semantic reconciliation. It owns deterministic Conclude dispatch and Blackboard apply lineage while remaining Task Timeline state, not a **Task Conversation** message, semantic Blackboard record, or authority to perform **Task Finish**.
+A durable semantic reconciliation obligation created when a completed **Work Runtime Turn** has uncovered semantic debt. It may own multiple immutable **Conclusion Dispatches** and remains Runtime Owner Timeline state, not a conversation message, semantic Blackboard record, or authority to perform **Task Finish**.
 _Avoid_: finding, fact, task completion, model lifecycle authority
+
+**Conclusion Dispatch**:
+A durable, idempotent attempt to deliver one **Conclude Runtime Turn** for a **Pending Blackboard Conclusion**. It is bound immutably to one **Runtime Continuation**, source Runtime session, and source **Runtime Turn Selection**; safe recovery creates a new dispatch instead of rewriting an earlier one.
+_Avoid_: semantic obligation, mutable receipt, continuation migration
+
+**Blackboard Finish Intent**:
+A Runtime request within a **Work Runtime Turn** to close the current **Runtime Continuation**'s Blackboard write protocol when that Turn settles. Later source work in the same Turn invalidates the intent.
+_Avoid_: Task Finish, immediate continuation close, coverage of later work
 
 **Semantic Debt Watermarks**:
 The ordered counts persisted for a completed **Work Runtime Turn**: source work advances for each terminal non-Blackboard Tool Result, while semantic persistence advances only when a later successful semantic Blackboard change, Attempt checkpoint, or Blackboard Finish covers the work observed so far. The conclusion is pending only while source work is ahead of semantic persistence.
@@ -591,6 +643,30 @@ _Avoid_: intent, open relationship, task, attack graph edge
 **Attempt**:
 A durable Blackboard record of one exploration episode that tests an **Exploration Objective**, **Entity**, **Project Fact**, **Finding**, or **Solution** and concludes with a distilled outcome.
 _Avoid_: Task, command, tool call, raw output
+
+**Challenge Platform**:
+An external system that issues challenge Attempts and accepts candidate submissions or abandonment through a platform-specific **Platform Adapter**.
+_Avoid_: Project, Scope authority, Runtime Extension
+
+**Platform Adapter**:
+An implementation behind the internal Challenge Platform seam that maps claim, submit, abandon, and recovery operations to one external platform. Production and in-memory test Adapters satisfy the same interface.
+_Avoid_: generic fetcher, Project Interface, Skill
+
+**Challenge Workflow**:
+The deep module whose small interface claims, submits, abandons, and finalizes challenge Attempts while owning stable identity, Task Policy enforcement, Platform Adapter calls, Evidence retention, Blackboard settlement, and recovery.
+_Avoid_: raw platform client, prompt procedure, collection of Blackboard tool calls
+
+**Challenge Operation**:
+A durable idempotent claim, submit, abandon, or finalize request owned by one Task and one external Attempt. It moves through `pending` and `recording` to `completed`. If automatic daemon-restart recovery fails, it settles as `action_required` and is not retried automatically.
+_Avoid_: tool call, Task Event, remote response only
+
+**Finish Readiness**:
+A read-only Task projection that reports whether **Task Finish** can proceed and lists every typed **Finish Blocker** across reconciliation, Current Work, Finish Intent state, and required challenge Evidence.
+_Avoid_: Task status, Runtime Activity Indicator, automatic completion
+
+**Finish Blocker**:
+A stable typed reason that prevents Task Finish, such as a Pending Blackboard Conclusion, open Attempt, unfinalized challenge Attempt, open Exploration Objective, unsettled reconciliation, invalid Finish Intent, or missing required Evidence.
+_Avoid_: warning text, latest conclusion status, runtime error
 
 **Runtime Blackboard Snapshot**:
 A topology-complete semantic view of the current main **Blackboard** graph at one revision. It includes every current reusable semantic record and relationship in compact form while excluding auxiliary record bodies, **Trusted Origin** data, audit history, and audit-only metadata.
@@ -715,14 +791,22 @@ _Avoid_: transcript, export, source of truth
 ## Relationships
 
 - A **Project** has exactly one current **Scope**.
+- A **Project** has exactly one explicit **Project Kind**.
+- Project creation does not silently select a Project Kind when the caller omits it.
+- A **Project Kind Conversion** requires a blocker-free preview and explicit operator confirmation.
+- **Task Launch** requires an explicit **Task Type** that matches the current **Project Kind** and stores it as an immutable snapshot.
 - **Scope Expansion** is part of **Scope** but retains a distinct internal **Trusted Origin** from human-approved scope.
 - An **Out-of-Scope Fact** does not change **Scope** and does not authorize testing.
 - A **Project** may define **Project Defaults** for new **Tasks**, including an optional **Default Runtime Profile Preset** and default **Runner**.
+- **Task Launch** captures one immutable **Task Policy Snapshot**.
+- The **Challenge Workflow** enforces Task Policy before each governed external operation, independently of prompt compliance.
 - A **Project Defaults** reference to a **Default Runtime Profile Preset** preselects that preset on the task launch page but does not copy the **Runtime Profile**.
 - When no **Default Runtime Profile Preset** is configured, task launch starts from **Launch Selection** and uses **Launch Profile Resolution** to find or create a minimal **Runtime Profile**.
 - A **Project Dashboard** is the primary UI entry point for a **Project**.
 - **Runtime Profiles** are global and reusable across **Projects**.
 - A **Runtime Profile** selects one **Runtime Plugin** by plugin identifier.
+- **Preflight** validates every enabled **Runtime Extension Requirement** before Runtime execution.
+- A **Runtime Extension Requirement** neither changes Project Kind nor expands Scope.
 - **Model Providers** are global and reusable across **Runtime Profiles**.
 - A **Model Provider** has an immutable **Model Provider ID**.
 - A **Model Provider ID** is created through **Model Provider ID Generation**.
@@ -851,6 +935,12 @@ _Avoid_: transcript, export, source of truth
 - A started **Task** keeps the **Runtime Extensions** already materialized into its task-local runtime boundary.
 - **Runtime Extension Projection** happens during **Config Projection** and must not mutate host runtime plugin directories.
 - A **Credential Reference** resolves first through **Credential Bindings**, then through **Global Credential Bindings**.
+- A **Global Environment Variable** injects into every **Runtime** during **Config Projection** without a **Runtime Profile** **Credential Reference**.
+- A **Destination Environment Variable** names the process environment variable a materialized **Credential Binding** makes available to a **Runtime**.
+- A **Global Environment Variable** uses a non-disabled **Global Credential Binding** as its source.
+- A **Runtime Profile** **Credential Reference** that resolves to the same **Destination Environment Variable** as a **Global Environment Variable** overrides the global value.
+- **Preflight** validates every **Global Environment Variable**, even when the **Runtime Profile** has no **Credential References**.
+- A literal **Credential Binding** must declare a **Destination Environment Variable** or **Preflight** fails.
 - A **Project** may define **Credential Bindings** that override **Global Credential Bindings** for **Credential References** used by global **Runtime Profiles**.
 - **Credential Binding Mode** defaults to using **Global Credential Bindings** unless the user explicitly chooses a project override.
 - A **Disabled Credential Binding** blocks fallback to **Global Credential Bindings**.
@@ -935,6 +1025,12 @@ _Avoid_: transcript, export, source of truth
 - **Pi Global Model Projection** is resolved when the Runtime starts and does not hot-reload later Model Provider, catalog, or credential changes; the next required projection and Runtime restart refreshes that set.
 - User messages and runtime replies in a **Task Conversation** are represented as **Task Events**.
 - **Harness Steering** actions are represented as **Task Events**.
+- An **Accepted Steering** is durably dispatchable before acceptance is returned and eventually settles as `applied`, `failed`, or `action_required`.
+- Daemon restart does not leave an **Accepted Steering** permanently pending; recovery resumes dispatch or records a terminal operator-actionable result.
+- **Accepted Steering** is dispatched in first-in, first-out order for each Runtime Owner, with at most one active Steering dispatch for that owner.
+- The Runtime Harness records a durable send-start fence before provider Steering. A pre-fence request may be sent after recovery; a post-fence request with no result becomes `action_required` and is not sent again automatically.
+- Stop, **Task Finish**, or permanent Runtime loss settles queued **Accepted Steering** explicitly instead of discarding it.
+- An `action_required` **Accepted Steering** exposes only reason-specific safe actions; an ambiguous post-fence request never offers generic Retry.
 - A **Runtime Continuation** resumes from its **Task Goal**, **Scope**, current **Working Blackboard Snapshot**, open **Attempt** checkpoints, and any unconsumed **Harness Steering** without a separate summary or mechanical handoff packet.
 - A Task conclusion is represented by current semantic outcomes and relationships in the **Blackboard**, not by a duplicate task-level conclusion record.
 - A **Task Event** may summarize runtime output but should not store complete raw output dumps.
@@ -960,7 +1056,10 @@ _Avoid_: transcript, export, source of truth
 - **Task-Scoped Persistent Runtime** does not remove **Host Runner Activation** or weaken the separate Sandbox and Host execution boundaries.
 - A plugin without a usable native session bridge may retain one-shot Runtime execution; normal process exit completes that one-shot **Task**.
 - A **Task-Scoped Persistent Runtime** remains active until the operator invokes **Task Finish** or **Stop**, a required **Config Projection** restart replaces it, it fails, or daemon shutdown closes it.
-- A **Runtime** cannot autonomously complete its **Task** through a **Project Interface**; **Blackboard Finish** closes only the current Continuation's Blackboard write protocol.
+- A **Runtime** cannot autonomously complete its **Task** through a **Project Interface**; a valid **Blackboard Finish Intent** closes only the current Continuation's Blackboard write protocol when its **Work Runtime Turn** settles.
+- Source work after a **Blackboard Finish Intent** invalidates that intent and continues to advance **Semantic Debt Watermarks**.
+- `blackboard_finish` reports that a **Blackboard Finish Intent** was recorded, not that the Runtime Continuation is already closed.
+- Invalidating a **Blackboard Finish Intent** produces a bounded Runtime notice and requires a new finish intent before the Blackboard write protocol can close.
 - A **Runtime Activity Indicator** reflects current Runtime liveness without creating a separate **Task Event**, audit record, or historical status.
 - Runtime liveness has exactly four states: `live`, `offline`, `orphaned`, and `unknown`; a live Runtime separately reports turn activity as `busy` or `idle`.
 - `orphaned` means the durable **Task** appears active but the current daemon cannot prove ownership of a live Runtime; `unknown` means liveness cannot currently be determined.
@@ -974,6 +1073,20 @@ _Avoid_: transcript, export, source of truth
 - An `orphaned` Runtime must be closed or proven absent before a replacement Runtime starts, preventing two live Runtimes from owning one **Task**.
 - **Harness Steering** changes the next runtime continuation, not the **Task** identity.
 - **Harness Steering** affects a **Runtime Continuation**, not an already-running internal reasoning step.
+- A **Pending Blackboard Conclusion** may survive replacement of its source **Runtime Continuation**.
+- Each **Conclusion Dispatch** belongs to exactly one **Pending Blackboard Conclusion** and is bound immutably to exactly one Runtime Continuation and source Runtime session.
+- Replacing a Runtime Continuation never rewrites an earlier **Conclusion Dispatch**; recovery creates a new dispatch and retains the earlier dispatch outcome.
+- Only one **Conclusion Dispatch** for a **Pending Blackboard Conclusion** may be active at a time.
+- A new **Conclusion Dispatch** requires proven ownership of the current Task-scoped Runtime and a writable replacement Runtime Continuation.
+- A recovered **Conclusion Dispatch** reuses the source **Runtime Turn Selection**; if that selection cannot be projected safely, the **Pending Blackboard Conclusion** becomes `action_required`.
+- Automatic conclusion and repair budgets belong to the **Pending Blackboard Conclusion** and do not reset when a new **Conclusion Dispatch** is created.
+- Only the active **Conclusion Dispatch** may validate or apply a result. A late result from an earlier dispatch is retained as a terminal delivery outcome and cannot change Blackboard state.
+- An `action_required` **Pending Blackboard Conclusion** exposes only recovery actions that are safe for its recorded delivery boundary; an acceptance-ambiguous dispatch never offers generic Retry.
+- Legacy conclusion receipts become one **Pending Blackboard Conclusion** and one immutable historical **Conclusion Dispatch**. A new dispatch is created only when current Runtime ownership and writable authority are proven; otherwise the obligation becomes `action_required`.
+- A **Project Navigation Projection** reads a fixed number of ordinary Tasks per Project plus the selected Task and every Task with a live busy Runtime; its Task work does not grow with total historical Task count.
+- An unchanged Project navigation refresh does not resend the complete **Project Navigation Projection**.
+- A **Runtime Owner Workspace** replaces its **Runtime Owner History Window** when the selected owner changes and never merges events from different owners.
+- Initial Runtime Owner history uses a recent window bounded by item count and serialized size. Older Timeline and Transcript content uses backward paging, live tail updates do not move an operator who is reading older history, and rendered history remains bounded.
 - A **Runtime** uses **Project Interfaces** to read or write **Project** state.
 - A **CLI Fallback** has the same project semantics as any other **Project Interface**.
 - Direct storage changes outside **Project Interfaces** require **Reconciliation** before they can affect **Current Truth** or a **Report**.
@@ -1080,6 +1193,12 @@ _Avoid_: transcript, export, source of truth
 - A **Finding Group** may have aggregate severity without changing the severity of individual **Findings**.
 - A **Finding** may be supported by zero or more **Project Facts** and **Evidence Artifacts**.
 - A **Solution** belongs only to a CTF Challenge Project; verified flag **Solutions** determine current solved state without replacing Task status.
+- A **Challenge Workflow** owns challenge Attempt identity and uses one **Platform Adapter** per configured Challenge Platform.
+- A **Challenge Operation** is replay-safe within one Task and external Attempt.
+- Challenge claim, submit, and abandon responses become **Evidence Artifacts** through system retention, not through Task Event text.
+- A successful or abandoned challenge Attempt remains a **Finish Blocker** until the **Challenge Workflow** finalizes it.
+- **Finish Readiness** does not perform Task Finish and does not collapse Task lifecycle with Runtime activity.
+- **Task Finish** is rejected while any **Finish Blocker** exists.
 - A **Finding** uses a **CVSS Vector** to derive severity.
 - A **CVSS Vector** records its **CVSS Version**.
 - A **Finding** without a complete **CVSS Vector** is **CVSS Pending**.
@@ -1118,6 +1237,14 @@ _Avoid_: transcript, export, source of truth
 
 ## Flagged Ambiguities
 
+- A **Pending Blackboard Conclusion** is not one mutable delivery receipt; resolved: it is the stable semantic obligation, while each **Conclusion Dispatch** keeps immutable Runtime Continuation and source-session identity.
+- **Blackboard Finish Intent** is not an immediate close inside a busy **Work Runtime Turn**; resolved: it closes the Blackboard write protocol only at Turn settlement and later source work invalidates it.
+- **Accepted Steering** is not durable message storage alone; resolved: the Runtime Harness owns eventual settlement as `applied`, `failed`, or `action_required`, including after daemon restart.
+- A bounded **Project Navigation Projection** is not request-count-only optimization; resolved: Task query work and response content are bounded per Project independently of total Task history, with current and busy exceptions retained.
+- Initial **Runtime Owner Workspace** history is not the complete Timeline and Transcript; resolved: load and render a bounded recent **Runtime Owner History Window**, with older history available on demand.
+- Runtime replacement is not a new automatic-conclusion budget; resolved: every **Conclusion Dispatch** for one **Pending Blackboard Conclusion** shares the obligation's bounded budget and source **Runtime Turn Selection**.
+- Ambiguous provider Steering is not replayed after restart; resolved: a durable send-start fence separates safe pre-send recovery from post-send `action_required` settlement.
+- Legacy stuck conclusion receipts are not silently rebound or left on the old model; resolved: preserve the historical dispatch and create a safe replacement dispatch only with proven current Runtime ownership.
 - A Non-Project **Session** is not presented through a separate chat UI; resolved: **Session** and **Task** reuse the same **Runtime Owner Workspace**, with owner-specific API and lifecycle adapters at the boundary.
 
 - "vulnerability" and **Finding** were used for the same reportable issue concept; resolved: use **Finding** as the product/domain term and reserve "vulnerability" for type names, schemas, or imported source terminology.
@@ -1317,3 +1444,8 @@ _Avoid_: transcript, export, source of truth
 - **Runtime Workdir** is not shared memory; resolved: cross-task knowledge flows through **Blackboard** and retained artifacts.
 - **Runtime Workdir** is not cross-runtime handoff state; resolved: runtime-profile switches pass context through the **Working Blackboard Snapshot**, open Attempt checkpoints, and retained artifacts.
 - **Runtime Workdir** is not automatic evidence capture; resolved: files become **Evidence Artifacts** only through explicit attach or retain actions.
+- CTF Challenge Project support is not backend-only or selected by an implicit Pentest default; resolved: Project creation requires an explicit Project Kind and the creation interface exposes both supported kinds.
+- Task classification is not hidden in the owning Project; resolved: Task Launch exposes an explicit **Task Type**, stores the immutable selection, rejects a mismatch with the current Project Kind, and keeps historical Task Type unchanged after Project Kind Conversion.
+- Runtime Extension compatibility is not authorization; resolved: Preflight validates **Runtime Extension Requirements**, while Project Kind and Scope remain explicit operator-owned state.
+- Challenge execution is not a loose sequence of platform and Blackboard tool calls; resolved: the **Challenge Workflow** owns claim, submit, abandon, finalize, Evidence retention, and restart-safe settlement behind one small interface.
+- Task completion readiness is not the latest Blackboard conclusion label; resolved: **Finish Readiness** aggregates every current Finish Blocker and Task Finish enforces that projection.

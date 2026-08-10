@@ -9,6 +9,7 @@ import { ErrorState, LoadingState } from "@/components/shared";
 
 // Each list field is edited as newline-separated text.
 type ScopeDraft = {
+	capabilities: string;
   domains: string;
   ips: string;
   cidrs: string;
@@ -22,6 +23,7 @@ type ScopeDraft = {
 function toDraft(scope: Scope): ScopeDraft {
   const j = (a?: string[]) => (a ?? []).join("\n");
   return {
+	capabilities: j(scope.capabilities),
     domains: j(scope.domains),
     ips: j(scope.ips),
     cidrs: j(scope.cidrs),
@@ -40,6 +42,7 @@ function fromDraft(d: ScopeDraft): Scope {
       .map((x) => x.trim())
       .filter(Boolean);
   return {
+	capabilities: split(d.capabilities),
     domains: split(d.domains),
     ips: split(d.ips),
     cidrs: split(d.cidrs),
@@ -183,6 +186,7 @@ export function ScopeEditorPage() {
       </Card>
 
       <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+		{field("capabilities", "Authorized capabilities", "challenge_platform\nnetwork_access")}
         {field("domains", "Domains", "example.com\napi.example.com")}
         {field("ips", "IP addresses", "203.0.113.5")}
         {field("cidrs", "CIDRs", "203.0.113.0/24")}

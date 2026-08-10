@@ -11,6 +11,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"pentest/internal/blackboardconclusion"
 	"pentest/internal/blackboardv2"
 	"pentest/internal/blackboardv2contract"
 	"pentest/internal/projectinterface"
@@ -26,9 +27,30 @@ type Deps struct {
 	// GrantError, when set, is the structured failure from resolving a
 	// presented-but-invalid capability token.
 	GrantError *blackboardv2.Error
+	// FinishIntentPolicy resolves whether a blackboard_finish call must record a
+	// deferred Blackboard Finish Intent (assisted mode) instead of closing the
+	// Continuation immediately. It returns the source Work Turn provenance the
+	// daemon carries from its own observation state, never from caller input. A
+	// nil callback means interactive immediate-close behavior (ADR 0022).
+	FinishIntentPolicy FinishIntentPolicy
 }
 
-// New builds an MCP server that registers exactly the six Blackboard v2
+// FinishDecision describes how blackboard_finish should treat one call.
+type FinishDecision struct {
+	// RecordIntent is true when the owner runs in assisted mode and the finish
+	// must defer the close until the Work Runtime Turn settles.
+	RecordIntent bool
+	// Provenance is the daemon-owned source Work Turn correlation captured with
+	// the intent. It is ignored when RecordIntent is false.
+	Provenance blackboardv2.FinishIntentProvenance
+}
+
+// FinishIntentPolicy resolves a blackboard_finish decision for one owner and
+// continuation. The daemon implementation reads Run Controls / Session mode and
+// the active Work Turn observation state; it never trusts caller-supplied input.
+type FinishIntentPolicy func(sessionOwner bool, ownerID, continuationID string) (FinishDecision, error)
+
+// New builds an MCP server that registers exactly the seven Blackboard v2
 // trusted tools. Input schemas are closed objects generated from the frozen
 // v2 contract definitions.
 func New(deps Deps) *sdkmcp.Server {
@@ -86,6 +108,42 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps Deps) {
 						return deps.BlackboardV2.ApplyForSessionContinuation(ctx, projectID, continuationID, args)
 					}
 					return deps.BlackboardV2.ApplyForContinuation(ctx, projectID, continuationID, args)
+				})
+			})
+		case "blackboard_record_attempt_result":
+			server.AddTool(&sdkmcp.Tool{
+				Name: tool.Name, Description: tool.Description, InputSchema: inputSchema,
+			}, func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+				var args blackboardAttemptResultArgs
+				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, inputSchema, deps.ownerIsSession(), req.Params.Arguments, &args); decodeErr != nil {
+					return toolBlackboardV2ErrorResult(decodeErr)
+				}
+				raw, marshalErr := json.Marshal(args.Result)
+				if marshalErr != nil {
+					return nil, marshalErr
+				}
+				validated, validationErr := blackboardconclusion.Decode(raw)
+				if validationErr != nil {
+					detail := blackboardconclusion.DecodeDetailOf(validationErr)
+					return toolBlackboardV2ErrorResult(&blackboardv2.Error{
+						Code: "invalid_schema", Message: "Attempt result violates the closed semantic contract",
+						Path: detail.FieldPath, Retryable: false,
+						Details: map[string]any{"reason": detail.Reason, "expected": detail.Expected},
+					})
+				}
+				batch, compileErr := blackboardconclusion.Compile(validated.Result, args.IdempotencyKey)
+				if compileErr != nil {
+					return toolBlackboardV2ErrorResult(&blackboardv2.Error{Code: "invalid_schema", Message: "Attempt result cannot be compiled", Retryable: false})
+				}
+				fingerprint := blackboardv2.SynchronizationDeliveryFingerprint("attempt-result", args.IdempotencyKey)
+				return deps.callV2WithFingerprint(ctx, false, true, fingerprint, func(ctx context.Context, ownerID, continuationID string) (any, error) {
+					if aliasErr := deps.rejectAttemptResultKeyAliases(ctx, ownerID, validated.Result); aliasErr != nil {
+						return nil, aliasErr
+					}
+					if deps.ownerIsSession() {
+						return deps.BlackboardV2.ApplyForSessionContinuationAtRevision(ctx, ownerID, continuationID, validated.Result.BaseRevision, batch)
+					}
+					return deps.BlackboardV2.ApplyForContinuationAtRevision(ctx, ownerID, continuationID, validated.Result.BaseRevision, batch)
 				})
 			})
 		case "blackboard_read":
@@ -164,6 +222,19 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps Deps) {
 				// Initial live Finish may carry pending synchronization; exact replay
 				// redelivers via the finish idempotency fingerprint.
 				return deps.callV2WithFingerprint(ctx, false, true, blackboardv2.SynchronizationDeliveryFingerprint("finish", args.IdempotencyKey), func(ctx context.Context, projectID, continuationID string) (any, error) {
+					decision, decideErr := deps.resolveFinishDecision(continuationID)
+					if decideErr != nil {
+						return nil, decideErr
+					}
+					if decision.RecordIntent {
+						// ADR 0022: assisted mode records a Blackboard Finish Intent and
+						// defers the close until the Work Runtime Turn settles. The tool
+						// reports intent_recorded, not finished.
+						if deps.ownerIsSession() {
+							return deps.BlackboardV2.RecordSessionFinishIntent(ctx, projectID, continuationID, args.IdempotencyKey, decision.Provenance)
+						}
+						return deps.BlackboardV2.RecordFinishIntent(ctx, projectID, continuationID, args, decision.Provenance)
+					}
 					if deps.ownerIsSession() {
 						return deps.BlackboardV2.FinishSessionContinuation(ctx, projectID, continuationID, args.IdempotencyKey)
 					}
@@ -178,6 +249,58 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps Deps) {
 
 type blackboardV2ReadArgs struct {
 	Key string `json:"key"`
+}
+
+type blackboardAttemptResultArgs struct {
+	IdempotencyKey string                                    `json:"idempotency_key"`
+	Result         blackboardconclusion.RuntimeAttemptResult `json:"result"`
+}
+
+func (deps Deps) rejectAttemptResultKeyAliases(ctx context.Context, ownerID string, result blackboardconclusion.RuntimeAttemptResult) error {
+	createdKeys := make([]string, 0, 1+len(result.TestedTargets))
+	if result.Attempt.Create {
+		createdKeys = append(createdKeys, result.Attempt.Key)
+	}
+	for _, target := range result.TestedTargets {
+		if target.CreateObjective != nil {
+			createdKeys = append(createdKeys, target.Key)
+		}
+	}
+	for _, key := range createdKeys {
+		alias := attemptResultKeySeparatorAlias(key)
+		if alias == "" {
+			continue
+		}
+		var exists bool
+		var err error
+		if deps.ownerIsSession() {
+			exists, err = deps.BlackboardV2.HasSessionSemanticKey(ctx, ownerID, alias)
+		} else {
+			exists, err = deps.BlackboardV2.HasSemanticKey(ctx, ownerID, alias)
+		}
+		if err != nil {
+			return err
+		}
+		if exists {
+			return &blackboardv2.Error{
+				Code: "key_conflict", Message: "a punctuation alias of the proposed Blackboard Key already exists",
+				Path: "result", Retryable: false, Details: map[string]any{"key": key, "existing_key": alias},
+			}
+		}
+	}
+	return nil
+}
+
+func attemptResultKeySeparatorAlias(key string) string {
+	for _, prefix := range []string{"attempt", "objective"} {
+		if strings.HasPrefix(key, prefix+":") {
+			return prefix + "/" + strings.TrimPrefix(key, prefix+":")
+		}
+		if strings.HasPrefix(key, prefix+"/") {
+			return prefix + ":" + strings.TrimPrefix(key, prefix+"/")
+		}
+	}
+	return ""
 }
 
 type blackboardV2HistoryArgs struct {
@@ -350,6 +473,26 @@ func (deps Deps) serveV2(ctx context.Context, requireLive, attachSync bool, requ
 }
 
 func (deps Deps) ownerIsSession() bool { return deps.Grant != nil && deps.Grant.IsSession() }
+
+// resolveFinishDecision asks the daemon policy whether this finish call must
+// record a deferred Blackboard Finish Intent. Without a policy the behavior is
+// the legacy interactive immediate-close.
+func (deps Deps) resolveFinishDecision(continuationID string) (FinishDecision, error) {
+	if deps.FinishIntentPolicy == nil {
+		return FinishDecision{}, nil
+	}
+	sessionOwner := false
+	ownerID := ""
+	if deps.Grant != nil {
+		sessionOwner = deps.Grant.IsSession()
+		if sessionOwner {
+			ownerID = deps.Grant.Owner.SessionID
+		} else {
+			ownerID = deps.Grant.Owner.TaskID
+		}
+	}
+	return deps.FinishIntentPolicy(sessionOwner, ownerID, continuationID)
+}
 
 func (deps Deps) requireGrant() (projectinterface.Grant, *blackboardv2.Error) {
 	if deps.Grant != nil {

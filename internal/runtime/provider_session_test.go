@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"pentest/internal/blackboardconclusion"
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/task"
@@ -257,6 +258,55 @@ func TestFakeProviderSessionEmitsBoundedInvalidAttemptResultNotification(t *test
 				if forbidden != "" && strings.Contains(bounded, forbidden) {
 					t.Fatalf("invalid notification leaked %q: %s", forbidden, bounded)
 				}
+			}
+		})
+	}
+}
+
+func TestFakeProviderSessionInvalidNotificationCarriesBoundedValidationDetail(t *testing.T) {
+	valid := `{"schema":"runtime-attempt-result/v1","base_revision":0,"attempt":{"key":"attempt:search","create":true,"summary":"Tested search.","outcome":"failed"},"tested_targets":[{"key":"objective:search","create_objective":{"objective":"Test search."}}],"produced_targets":[]}`
+	tests := []struct {
+		name      string
+		raw       string
+		reason    blackboardconclusion.ValidationReason
+		fieldPath string
+		expected  string
+	}{
+		{name: "empty attempt key", raw: strings.Replace(valid, `"key":"attempt:search"`, `"key":""`, 1), reason: blackboardconclusion.ValidationReasonRuleViolation, fieldPath: "attempt.key", expected: "non-empty"},
+		{name: "unknown field", raw: strings.Replace(valid, `"schema":`, `"unexpected":true,"schema":`, 1), reason: blackboardconclusion.ValidationReasonUnknownField, fieldPath: "unexpected"},
+		{name: "invalid enum", raw: strings.Replace(valid, `"outcome":"failed"`, `"outcome":"interrupted"`, 1), reason: blackboardconclusion.ValidationReasonInvalidEnumValue, fieldPath: "attempt.outcome", expected: "succeeded, failed, blocked, or inconclusive"},
+		{name: "oversized result", raw: strings.Repeat("x", (64<<10)+1), reason: blackboardconclusion.ValidationReasonResultTooLarge},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+				SessionID: "session-detail", Capabilities: runtimeplugin.Capabilities{SendTurn: true},
+			})
+			if _, err := session.SendTurn(context.Background(), runtime.ProviderSessionRequest{
+				RequestID: "conclude-detail", Message: "conclude", TurnKind: runtime.RuntimeTurnKindControl,
+			}, nil); err != nil {
+				t.Fatal(err)
+			}
+			var got runtime.ProviderSessionAttemptResultValidationFailure
+			session.SetAttemptResultValidationFailureSink(func(failure runtime.ProviderSessionAttemptResultValidationFailure) { got = failure })
+			if err := session.EmitAttemptResult([]byte(test.raw)); err == nil {
+				t.Fatal("EmitAttemptResult accepted an invalid result")
+			}
+			if got.ValidationErrorCode != runtime.ProviderSessionAttemptResultInvalid {
+				t.Fatalf("validation error code = %q", got.ValidationErrorCode)
+			}
+			if got.Reason != test.reason {
+				t.Fatalf("validation reason = %q, want %q", got.Reason, test.reason)
+			}
+			if got.FieldPath != test.fieldPath {
+				t.Fatalf("validation field path = %q, want %q", got.FieldPath, test.fieldPath)
+			}
+			if test.expected != "" && !strings.Contains(got.Expected, test.expected) {
+				t.Fatalf("validation expected = %q, want it to contain %q", got.Expected, test.expected)
+			}
+			bounded := fmt.Sprintf("%#v", got)
+			if strings.Contains(bounded, test.raw) {
+				t.Fatalf("invalid notification leaked raw result bytes: %s", bounded)
 			}
 		})
 	}

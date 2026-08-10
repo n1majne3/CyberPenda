@@ -249,7 +249,7 @@ func schemaDefRefNames(schema *jsonschema.Schema) []string {
 	return names
 }
 
-// TrustedTools returns the six trusted Runtime tools in canonical order.
+// TrustedTools returns the seven trusted Runtime tools in canonical order.
 func (h *Harness) TrustedTools() ([]TrustedTool, error) {
 	raw, err := contractFiles.ReadFile("contractdata/trusted-tools.json")
 	if err != nil {

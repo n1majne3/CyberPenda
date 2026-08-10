@@ -62,7 +62,8 @@ func TestClaudeAndPiV2PostGrantProjectionFailureRollsBackDurableLaunchAndGrantCo
 				t.Fatalf("create profile: %v", err)
 			}
 			createdTask, err := server.tasks.Create(task.CreateRequest{
-				ProjectID: createdProject.ID, Goal: "inspect atomic.example",
+				ProjectID: createdProject.ID,
+				Type:      task.TypePentest, Goal: "inspect atomic.example",
 				RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 			})
 			if err != nil {
@@ -163,7 +164,8 @@ func TestCodexV2LaunchStillSucceedsWithoutBindGrantSideEffects(t *testing.T) {
 		t.Fatalf("create profile: %v", err)
 	}
 	createdTask, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: createdProject.ID, Goal: "inspect codex.example",
+		ProjectID: createdProject.ID,
+		Type:      task.TypePentest, Goal: "inspect codex.example",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 	})
 	if err != nil {
@@ -237,7 +239,8 @@ func TestClaudeAndPiV2SandboxArgvAndEnvOmitIdentityAndHostTaskRoots(t *testing.T
 				t.Fatalf("create profile: %v", err)
 			}
 			createdTask, err := server.tasks.Create(task.CreateRequest{
-				ProjectID: createdProject.ID, Goal: "inspect sandbox.example",
+				ProjectID: createdProject.ID,
+				Type:      task.TypePentest, Goal: "inspect sandbox.example",
 				RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 			})
 			if err != nil {

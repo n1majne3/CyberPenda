@@ -4,12 +4,16 @@
 # Frontend
 /node_modules/
 web/node_modules/
+cmd/pentest-claude-sdk-bridge/node_modules/
 web/dist/
+web/playwright-report/
+web/test-results/
 # Keep the embedded dist in-tree for release builds (committed), so the daemon
 # embeds the latest UI. Regenerate with: make build-ui
 
 # Local agent/session state
 /.zcode/
+to-questionnaire-*.md
 
 # Local daemon/runtime artifacts
 /dist/
@@ -20,7 +24,9 @@ pentest.db-shm
 pentest.db-wal
 pentest.db.pre-graph-v1.*.bak
 pentest.db.pre-blackboard-v2.*.bak
+/runtime.db
 /pentestd
+daemon.log
 runs/
 __pycache__/
 *.pyc
@@ -29,7 +35,8 @@ __pycache__/
 .DS_Store
 pentest 2.db-shm
 pentest 2.db-wal
-.playwright-cli/
+.playwright-cli/**
+.playwright/
 .qoder/repowiki
 
 # Local evaluation outputs

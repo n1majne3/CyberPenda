@@ -330,7 +330,7 @@ func TestSolutionEvidenceEndpointAndSupersessionControlSolvedState(t *testing.T)
 		t.Fatalf("create CTF Project: %v", err)
 	}
 	tasks := task.NewService(db, projects)
-	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "Verify the flag", Runner: task.RunnerSandbox})
+	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Type: task.TypeCTFChallenge, Goal: "Verify the flag", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create Task: %v", err)
 	}
@@ -620,7 +620,7 @@ func TestPentestSolutionTransitionsReturnProjectKindMismatchBeforeTargetLookup(t
 	}
 
 	tasks := task.NewService(db, projects)
-	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "Exercise trusted runtime guards", Runner: task.RunnerSandbox})
+	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "Exercise trusted runtime guards", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create Task: %v", err)
 	}

@@ -1,7 +1,8 @@
-import { useEffect, useState, useRef, type KeyboardEvent, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useState, useRef, type KeyboardEvent, type ReactNode, type RefObject } from "react";
+import { flushSync } from "react-dom";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, ChevronRight, Wrench, User, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2, Maximize2, Minimize2, Flag, RefreshCcw, TriangleAlert, Archive, ArchiveRestore, Pencil, Paperclip } from "lucide-react";
-import { apiDelete, apiGet, apiPatch, apiPost, apiPostForm, type BlackboardConclusionMode, type BlackboardConclusionView, type ModelProvider, type ProviderPermissionRequest, type RuntimeActivity, type RuntimeControls, type RuntimePlugin, type RuntimeProfile, type Session, type SessionContinuation, type Task, type TaskContinuation, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
+import { apiDelete, apiGet, apiPatch, apiPost, apiPostForm, type BlackboardConclusionMode, type BlackboardConclusionView, type FinishReadiness, type ModelProvider, type ProviderPermissionRequest, type RuntimeActivity, type RuntimeControls, type RuntimePlugin, type RuntimeProfile, type Session, type SessionContinuation, type Task, type TaskContinuation, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Badge, Input, Select, Textarea } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
@@ -12,10 +13,17 @@ import { collapsedTranscriptTitle, toolCallFields } from "./taskDetailView";
 import { displayReasoningEffort, REASONING_EFFORT_VALUES, selectableModelProviders } from "./runtimeProfileForm";
 import { modelsForProvider } from "./taskLaunchForm";
 import { formatDateTime } from "@/lib/format";
+import { mergeTimelineItems, mergeTranscriptEntries, prependTimelineItems, prependTranscriptEntries } from "@/lib/ownerEvents";
 import { useDocumentVisibility } from "@/lib/useDocumentVisibility";
+import { useVirtualWindow } from "@/lib/virtualWindow";
 
 const ACTIVE = new Set(["running", "paused"]);
 const DELETABLE = new Set(["completed", "failed", "stopped", "interrupted"]);
+
+// Uniform row-height estimates used by the virtualized Runtime Owner history
+// lists; they match the contain-intrinsic-size hints on the rendered rows.
+const TRANSCRIPT_ROW_ESTIMATE = 72;
+const TIMELINE_ROW_ESTIMATE = 48;
 
 function newSteerRequestID() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -82,8 +90,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   const [searchParams, setSearchParams] = useSearchParams();
   const isVisible = useDocumentVisibility();
   const [owner, setOwner] = useState<RuntimeOwnerView | null>(null);
-  const [timeline, setTimeline] = useState<TaskTimelineItem[]>([]);
-  const [transcript, setTranscript] = useState<TaskTranscriptEntry[]>([]);
+  const [finishReadiness, setFinishReadiness] = useState<FinishReadiness | null>(null);
   const [activeView, setActiveView] = useState<"conversation" | "timeline">(
     () => searchParams.get("view") === "timeline" ? "timeline" : "conversation",
   );
@@ -107,46 +114,259 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   const [confirmAction, setConfirmAction] = useState<"stop" | "finish" | "delete" | null>(null);
   const attachmentInput = useRef<HTMLInputElement>(null);
   const conversationViewport = useRef<HTMLDivElement>(null);
+  const conversationScrollTop = useRef(0);
+  const timelineViewport = useRef<HTMLDivElement>(null);
   const conversationEnd = useRef<HTMLDivElement>(null);
   const autoFollowRef = useRef(true);
+  const programmaticAutoFollow = useRef(false);
   // Monotonic generation so slower in-flight polls cannot overwrite newer data.
   const loadGeneration = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
+  // Owner identity at request time; a response can merge only when its owner
+  // identity and request generation still match (#202).
+  const ownerIDRef = useRef(ownerID);
+  const activeViewRef = useRef(activeView);
+  const timelineAtTailRef = useRef(true);
+  // Mirror render values into refs after each render so poll and paging
+  // closures read the latest values without stale captures.
+  useEffect(() => {
+    ownerIDRef.current = ownerID;
+    activeViewRef.current = activeView;
+  });
+
+  // Owner-local Runtime Owner History Window state (#202). The whole record is
+  // replaced atomically when the selected owner changes so Timeline and
+  // Transcript content from the prior owner can never merge into the new
+  // route; the ref mirror lets poll closures read the latest cursors.
+  const historyRef = useRef<OwnerHistory>(emptyHistory());
+  const [history, setHistoryState] = useState<OwnerHistory>(emptyHistory());
+  const commitHistory = (next: OwnerHistory) => {
+    historyRef.current = next;
+    setHistoryState(next);
+  };
+
+  const cancelAutoFollowSettlement = useCallback(() => {
+    programmaticAutoFollow.current = false;
+  }, []);
+
+  // Virtual-window replacement can change scrollHeight after the first jump.
+  // Keep programmatic follow distinct from operator scrolling. Later scroll
+  // events repin until explicit operator input ends programmatic follow.
+  const settleConversationBottom = useCallback((container: HTMLDivElement) => {
+    programmaticAutoFollow.current = true;
+    container.scrollTo?.({ top: container.scrollHeight, behavior: "auto" });
+    conversationScrollTop.current = container.scrollTop;
+  }, []);
 
   const base = isSession ? `/api/sessions/${sessionId}` : `/api/projects/${projectId}/tasks/${taskId}`;
 
-  async function loadAll() {
+  async function loadAll(mode: "initial" | "poll") {
     if (!ownerID || (!isSession && !projectId)) return;
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
     const generation = ++loadGeneration.current;
+    const requestOwner = ownerID;
+    const before = historyRef.current;
     try {
       const loaded = isSession
-        ? await loadSessionWorkspace(base, controller.signal)
-        : await loadTaskWorkspace(base, controller.signal);
-      if (generation !== loadGeneration.current || controller.signal.aborted) {
+        ? await loadSessionWorkspace(base, controller.signal, mode, before)
+        : await loadTaskWorkspace(base, controller.signal, mode, before);
+      // A response can merge only when its owner identity and request
+      // generation still match; a route change replaces owner-local state
+      // before any merge can run.
+      if (generation !== loadGeneration.current || requestOwner !== ownerIDRef.current || controller.signal.aborted) {
         return;
       }
       setOwner(loaded.owner);
+      setFinishReadiness(loaded.finishReadiness ?? null);
       if (loaded.owner.kind === "session") setTitleDraft(loaded.owner.title);
-      setTimeline(loaded.timeline);
-      setTranscript(loaded.transcript);
+      // Merge into the latest state at commit time, not the pre-request
+      // snapshot, so a backward page (or any other concurrent history
+      // change) committed while this request was in flight is preserved
+      // instead of being wiped by the merge.
+      const latest = historyRef.current;
+      const next: OwnerHistory = {
+        ...latest,
+        timeline: mode === "initial" ? loaded.timeline : mergeTimelineItems(latest.timeline, loaded.timeline),
+        transcript: mode === "initial" ? loaded.transcript : mergeTranscriptEntries(latest.transcript, loaded.transcript),
+        timelineCursor: loaded.timelineCursor,
+        transcriptCursor: loaded.transcriptCursor,
+        ...(mode === "initial" ? {
+          timelineHasOlder: loaded.timelineHasOlder,
+          transcriptHasOlder: loaded.transcriptHasOlder,
+        } : {}),
+      };
+      applyHistoryDelta(
+        mode,
+        next,
+        latest,
+        mode === "poll" ? next.timeline.length - latest.timeline.length : 0,
+        mode === "poll" ? next.transcript.length - latest.transcript.length : 0,
+      );
       setError(null);
     } catch (e) {
-      if (controller.signal.aborted || generation !== loadGeneration.current) {
+      if (controller.signal.aborted || generation !== loadGeneration.current || requestOwner !== ownerIDRef.current) {
         return;
       }
       setError((e as Error).message);
     }
   }
 
+  // Applies one merged history page. Live-tail deltas never move an operator
+  // who is reading older history: at the tail the container follows the new
+  // rows (chronological sort shifts by the appended height; the newest-first
+  // top stays put and the new rows render at the tail), and away from the
+  // tail an unseen-event count accumulates instead of forcing scroll.
+  function applyHistoryDelta(
+    mode: "initial" | "poll",
+    next: OwnerHistory,
+    latest: OwnerHistory,
+    timelineDelta: number,
+    transcriptDelta: number,
+  ) {
+    if (mode === "initial") {
+      commitHistory(next);
+      return;
+    }
+    if (transcriptDelta > 0 && activeViewRef.current === "conversation" && !autoFollowRef.current) {
+      next = { ...next, transcriptUnseen: latest.transcriptUnseen + transcriptDelta };
+    }
+    if (timelineDelta > 0 && activeViewRef.current === "timeline") {
+      if (timelineAtTailRef.current) {
+        const container = timelineViewport.current;
+        // Newest-first tail: the appended rows render at the top and the
+        // operator stays at the tail without any scroll movement.
+        if (container && timelineSortRef.current === "chronological") {
+          // Render the appended rows first, then shift the reading position
+          // by the appended height so the previously visible content stays in
+          // place and the new tail rows appear.
+          flushSync(() => commitHistory(next));
+          container.scrollTop += timelineDelta * TIMELINE_ROW_ESTIMATE;
+          return;
+        }
+        commitHistory(next);
+        return;
+      }
+      next = { ...next, timelineUnseen: latest.timelineUnseen + timelineDelta };
+    }
+    commitHistory(next);
+  }
+
+  // loadOlderConversation prepends one backward Transcript page and preserves
+  // the visible anchor by shifting the container by the prepended height.
+  async function loadOlderConversation() {
+    const current = historyRef.current;
+    if (current.loadingOlder !== null || current.transcript.length === 0 || !current.transcriptHasOlder) return;
+    const before = current.transcript[0]!.seq;
+    const anchor = conversationViewport.current?.scrollTop ?? 0;
+    commitHistory({ ...current, loadingOlder: "transcript" });
+    try {
+      const page = await apiGet<TaskTranscript>(`${base}/transcript?before=${before}`);
+      const latest = historyRef.current;
+      const merged = prependTranscriptEntries(latest.transcript, page.entries ?? []);
+      const prepended = merged.length - latest.transcript.length;
+      const next: OwnerHistory = { ...latest, transcript: merged, transcriptHasOlder: page.has_older === true, loadingOlder: null };
+      flushSync(() => commitHistory(next));
+      const viewport = conversationViewport.current;
+      if (viewport && prepended > 0) {
+        viewport.scrollTop = anchor + prepended * TRANSCRIPT_ROW_ESTIMATE;
+      }
+    } catch (e) {
+      commitHistory({ ...historyRef.current, loadingOlder: null });
+      setActionError((e as Error).message);
+    }
+  }
+
+  // loadOlderTimeline prepends one backward Timeline page. In the default
+  // newest-first sort the older rows land at the bottom of the list, so the
+  // visible anchor needs no adjustment; in chronological sort the page lands
+  // above the operator and the container shifts by the prepended height.
+  async function loadOlderTimeline() {
+    const current = historyRef.current;
+    if (current.loadingOlder !== null || current.timeline.length === 0 || !current.timelineHasOlder) return;
+    const before = current.timeline[0]!.seq;
+    const anchor = timelineViewport.current?.scrollTop ?? 0;
+    commitHistory({ ...current, loadingOlder: "timeline" });
+    try {
+      const page = await apiGet<TaskTimeline>(`${base}/timeline?before=${before}`);
+      const latest = historyRef.current;
+      const merged = prependTimelineItems(latest.timeline, page.items ?? []);
+      const prepended = merged.length - latest.timeline.length;
+      const next: OwnerHistory = { ...latest, timeline: merged, timelineHasOlder: page.has_older === true, loadingOlder: null };
+      flushSync(() => commitHistory(next));
+      const viewport = timelineViewport.current;
+      if (viewport && prepended > 0 && timelineSortRef.current === "chronological") {
+        viewport.scrollTop = anchor + prepended * TIMELINE_ROW_ESTIMATE;
+      }
+    } catch (e) {
+      commitHistory({ ...historyRef.current, loadingOlder: null });
+      setActionError((e as Error).message);
+    }
+  }
+
+  // Timeline sort direction, mirrored so the poll and paging closures can read
+  // the latest value without stale captures.
+  const timelineSortRef = useRef<"chronological" | "newest_first">("newest_first");
+  function handleTimelineSortDirection(direction: "chronological" | "newest_first") {
+    timelineSortRef.current = direction;
+  }
+
+  // Timeline tail state: at the tail (newest-first: the top; chronological:
+  // the bottom) live deltas shift the container; away from the tail they
+  // accumulate an unseen count instead.
+  function handleTimelineAtTail(atTail: boolean) {
+    timelineAtTailRef.current = atTail;
+    if (atTail && historyRef.current.timelineUnseen > 0) {
+      commitHistory({ ...historyRef.current, timelineUnseen: 0 });
+    }
+  }
+
+  function jumpToTimelineLatest() {
+    const container = timelineViewport.current;
+    if (container) {
+      // The tail is the newest end of the list: the top in the default
+      // newest-first sort, the bottom in chronological sort.
+      const behavior = prefersReducedMotion() ? "auto" : "smooth";
+      if (timelineSortRef.current === "chronological") {
+        container.scrollTo({ top: container.scrollHeight, behavior });
+      } else {
+        container.scrollTo({ top: 0, behavior });
+      }
+    }
+    if (historyRef.current.timelineUnseen > 0) {
+      commitHistory({ ...historyRef.current, timelineUnseen: 0 });
+    }
+  }
+
+  function scrollTimelineToTop() {
+    timelineViewport.current?.scrollTo?.({
+      top: 0,
+      behavior: prefersReducedMotion() ? "auto" : "smooth",
+    });
+  }
+
+  function scrollTimelineToBottom() {
+    const container = timelineViewport.current;
+    container?.scrollTo?.({
+      top: container.scrollHeight,
+      behavior: prefersReducedMotion() ? "auto" : "smooth",
+    });
+  }
+
   /* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
   useEffect(() => {
-    // Initial load on mount/owner change. loadAll() is reused by the poll loop
-    // and event handlers.
+    // Initial load on mount/owner change. A route change aborts old requests
+    // and atomically replaces owner-local history with an empty record before
+    // any merge, so Timeline and Transcript content from the prior owner can
+    // never appear on the new route (#202).
     setTurnSelectionSeeded(false);
-    loadAll();
+    autoFollowRef.current = true;
+    setAutoFollow(true);
+    conversationScrollTop.current = 0;
+    timelineAtTailRef.current = true;
+    commitHistory(emptyHistory());
+    loadAll("initial");
     Promise.all([
       apiGet<{ profiles: RuntimeProfile[] }>("/api/runtime-profiles").then((d) => setProfiles(d.profiles ?? [])),
       apiGet<{ providers: ModelProvider[] }>("/api/model-providers").then((d) => setModelProviders(d.providers ?? [])),
@@ -154,6 +374,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     ]).catch(() => {});
     return () => {
       abortRef.current?.abort();
+      cancelAutoFollowSettlement();
     };
   }, [isSession, ownerID, projectId]);
   /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
@@ -175,29 +396,48 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   }, [owner, turnSelectionSeeded]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  /* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
+  /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
     if (!owner || activeView !== "conversation") return;
-
-    // Reset auto-follow when the runtime owner changes. This is an intentional
-    // synchronous reset, not a cascading render.
-    autoFollowRef.current = true;
-    setAutoFollow(true);
     const container = conversationViewport.current;
     if (!container) return;
 
     function updateAutoFollow() {
+      conversationScrollTop.current = container!.scrollTop;
       const pinned = isNearScrollBottom(container!);
+      if (programmaticAutoFollow.current) {
+        if (!pinned && autoFollowRef.current) {
+          container!.scrollTo?.({ top: container!.scrollHeight, behavior: "auto" });
+          conversationScrollTop.current = container!.scrollTop;
+        }
+        return;
+      }
       autoFollowRef.current = pinned;
       setAutoFollow((current) => current === pinned ? current : pinned);
+      // Returning to the tail dismisses any accumulated unseen count.
+      if (pinned && historyRef.current.transcriptUnseen > 0) {
+        commitHistory({ ...historyRef.current, transcriptUnseen: 0 });
+      }
     }
 
+    const acceptOperatorScroll = () => {
+      programmaticAutoFollow.current = false;
+    };
+
     container.addEventListener("scroll", updateAutoFollow, { passive: true });
+    container.addEventListener("wheel", acceptOperatorScroll, { passive: true });
+    container.addEventListener("touchstart", acceptOperatorScroll, { passive: true });
+    container.addEventListener("pointerdown", acceptOperatorScroll, { passive: true });
+    container.addEventListener("keydown", acceptOperatorScroll);
     return () => {
       container.removeEventListener("scroll", updateAutoFollow);
+      container.removeEventListener("wheel", acceptOperatorScroll);
+      container.removeEventListener("touchstart", acceptOperatorScroll);
+      container.removeEventListener("pointerdown", acceptOperatorScroll);
+      container.removeEventListener("keydown", acceptOperatorScroll);
     };
   }, [owner?.id, activeView]);
-  /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   // Poll events while the runtime owner is active and the tab is visible.
   // Depends on status/visibility only so the interval is not reset every render;
@@ -205,16 +445,36 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
     if (!isVisible || !owner || !ACTIVE.has(owner.status)) return;
-    const id = setInterval(loadAll, 1000);
+    const id = setInterval(() => void loadAll("poll"), 1000);
     return () => clearInterval(id);
   }, [owner?.status, isVisible]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
   useEffect(() => {
     if (activeView === "conversation" && autoFollowRef.current) {
-      conversationEnd.current?.scrollIntoView?.({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "end" });
+      const container = conversationViewport.current;
+      if (container) settleConversationBottom(container);
     }
-  }, [activeView, timeline, transcript]);
+  }, [activeView, history.transcript.length, settleConversationBottom]);
+
+  // Virtualized rendering window for the conversation transcript (#202): DOM
+  // size stays bounded while older history pages accumulate in state. The
+  // container element is stored in state so the hook attaches its scroll
+  // listener once the workspace renders after the owner loads.
+  const [transcriptViewport, setTranscriptViewport] = useState<HTMLDivElement | null>(null);
+  const transcriptWindow = useVirtualWindow({
+    itemCount: history.transcript.length,
+    viewport: transcriptViewport,
+    estimateHeight: TRANSCRIPT_ROW_ESTIMATE,
+    anchorEnd: autoFollow,
+  });
+  const bindTranscriptViewport = useCallback((node: HTMLDivElement | null) => {
+    conversationViewport.current = node;
+    if (node && !autoFollowRef.current) {
+      node.scrollTop = conversationScrollTop.current;
+    }
+    setTranscriptViewport(node);
+  }, []);
 
   const currentProfileRuntimeProvider = profiles.find((profile) => profile.id === owner?.runtimeProfileID)?.provider;
   const currentRuntimeProvider =
@@ -255,7 +515,10 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     if (!container) return;
     autoFollowRef.current = true;
     setAutoFollow(true);
-    container.scrollTo({ top: container.scrollHeight, behavior: prefersReducedMotion() ? "auto" : "smooth" });
+    settleConversationBottom(container);
+    if (historyRef.current.transcriptUnseen > 0) {
+      commitHistory({ ...historyRef.current, transcriptUnseen: 0 });
+    }
   }
 
   function scrollToTop() {
@@ -263,6 +526,8 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     if (!container) return;
     autoFollowRef.current = false;
     setAutoFollow(false);
+    cancelAutoFollowSettlement();
+    conversationScrollTop.current = 0;
     container.scrollTo({ top: 0, behavior: prefersReducedMotion() ? "auto" : "smooth" });
   }
 
@@ -271,7 +536,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     try {
       await apiPost(`${base}/stop`, {});
       setActionError(null);
-      loadAll();
+      loadAll("poll");
     } catch (e) {
       setActionError((e as Error).message);
     }
@@ -282,7 +547,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     try {
       await apiPost(`${base}/finish`, {});
       setActionError(null);
-      loadAll();
+      loadAll("poll");
     } catch (e) {
       setActionError((e as Error).message);
     }
@@ -323,7 +588,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     try {
       await apiPost(`${base}/resume`, continuationModelPayload());
       setActionError(null);
-      loadAll();
+      loadAll("poll");
     } catch (e) {
       setActionError((e as Error).message);
     }
@@ -352,7 +617,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
       }
       setSteering("");
       setActionError(null);
-      await loadAll();
+      await loadAll("poll");
     } catch (e) {
       setActionError((e as Error).message);
     } finally {
@@ -392,7 +657,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
         if (attachmentInput.current) attachmentInput.current.value = "";
       }
       setActionError(null);
-      await loadAll();
+      await loadAll("poll");
     } catch (e) {
       setActionError((e as Error).message);
     } finally {
@@ -414,7 +679,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
         decision,
       });
       setActionError(null);
-      loadAll();
+      loadAll("poll");
     } catch (e) {
       setActionError((e as Error).message);
     } finally {
@@ -428,7 +693,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
       await apiPatch<Session>(base, { title: titleDraft.trim() });
       setEditingTitle(false);
       setActionError(null);
-      await loadAll();
+      await loadAll("poll");
     } catch (e) {
       setActionError((e as Error).message);
     }
@@ -439,7 +704,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     try {
       await apiPost<Session>(`${base}/${action}`, {});
       setActionError(null);
-      await loadAll();
+      await loadAll("poll");
     } catch (e) {
       setActionError((e as Error).message);
     }
@@ -472,6 +737,10 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     const next = new URLSearchParams(searchParams);
     next.set("view", view);
     setSearchParams(next, { replace: true });
+    // Unseen counts belong to the visible view only; switching resets them.
+    if (historyRef.current.timelineUnseen > 0 || historyRef.current.transcriptUnseen > 0) {
+      commitHistory({ ...historyRef.current, timelineUnseen: 0, transcriptUnseen: 0 });
+    }
   }
 
   function selectFocus(focused: boolean) {
@@ -588,6 +857,16 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
             <span>runner: {owner.runner}</span>
             <span className="hidden xl:inline" aria-hidden="true">·</span>
             <span className="hidden xl:inline">continuation status: {currentContinuation.status}</span>
+            {owner.activeContinuation &&
+              owner.latestContinuation &&
+              owner.latestContinuation.id !== owner.activeContinuation.id && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="hidden 2xl:inline" data-testid="prior-terminal-continuation">
+                    prior terminal: #{owner.latestContinuation.number} ({owner.latestContinuation.status})
+                  </span>
+                </>
+              )}
             {(controls?.native_session_captured || currentContinuation.nativeSessionID) && (
               <span className="hidden 2xl:inline">native session: captured</span>
             )}
@@ -595,6 +874,11 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
           </div>
         )}
         <div className="flex shrink-0 items-center gap-1">
+		  {owner.kind === "task" && projectId && (
+			<Button size="sm" variant="ghost" onClick={() => navigate(`/projects/${projectId}/tasks/${owner.id}/challenges`)} aria-label="Challenge Workflow" title="Open Challenge Workflow">
+			  <Wrench className="h-4 w-4" /> <span className="hidden sm:inline">Challenges</span>
+			</Button>
+		  )}
           {owner.capabilities.rename && !editingTitle && (
             <Button size="icon" variant="ghost" onClick={() => setEditingTitle(true)} aria-label={`Rename ${owner.title}`} title="Rename Session" className="h-8 w-8">
               <Pencil className="h-4 w-4" />
@@ -651,9 +935,37 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
         </div>
       )}
 
+      {owner.kind === "task" && finishReadiness && !finishReadiness.ready_to_finish && (
+        <section
+          aria-label="Finish Readiness"
+          className="shrink-0 space-y-2 border-b border-warning/30 bg-warning/5 px-3 py-2"
+        >
+          <div className="flex items-center gap-2 text-sm font-medium text-warning">
+            <TriangleAlert className="h-4 w-4" />
+            <span>Finish Readiness blockers</span>
+          </div>
+          <div className="grid gap-2 lg:grid-cols-2">
+            {finishReadiness.blockers.map((blocker) => (
+              <div key={blocker.code} className="rounded-md border border-warning/30 bg-background/70 p-2 text-xs">
+                <p className="font-medium text-foreground">{blocker.message}</p>
+                <p className="font-mono text-muted-foreground">{blocker.code} · {blocker.count}</p>
+                {blocker.links?.map((link) => (
+                  <a key={link} href={link} className="mt-1 inline-block font-medium text-signal hover:underline">
+                    Open {blocker.code}
+                  </a>
+                ))}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       {owner.blackboardConclusion?.state === "action_required" && (
         <BlackboardConclusionRecovery
           errorCode={owner.blackboardConclusion.error_code}
+          validationReason={owner.blackboardConclusion.validation_reason}
+          validationFieldPath={owner.blackboardConclusion.validation_field_path}
+          validationExpected={owner.blackboardConclusion.validation_expected}
           retryAvailable={owner.blackboardConclusion.retry_available === true}
           nextEligibleAt={owner.blackboardConclusion.next_eligible_at}
           retrying={retryingConclusion}
@@ -679,7 +991,11 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
           <Activity className="h-4 w-4" /> Timeline
         </button>
         <div className="ml-auto">
-          {activeView === "conversation" && <FloatingScrollControls autoFollow={autoFollow} onTop={scrollToTop} onBottom={scrollToLatest} />}
+          {activeView === "conversation" ? (
+            <FloatingScrollControls autoFollow={autoFollow} onTop={scrollToTop} onBottom={scrollToLatest} />
+          ) : (
+            <TimelineScrollControls onTop={scrollTimelineToTop} onBottom={scrollTimelineToBottom} />
+          )}
         </div>
       </div>
 
@@ -688,12 +1004,37 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
         className={`flex min-h-[28rem] min-w-0 flex-1 flex-col overflow-visible bg-card/30 md:overflow-hidden lg:min-h-0 ${focusMode ? "border-0" : "rounded-b-lg border-x border-b border-border"}`}
       >
         {activeView === "timeline" ? (
-          <div className="min-h-0 flex-1 overflow-y-auto p-2 pb-44 sm:p-3 md:pb-5">
+          <div className="min-h-0 flex-1 overflow-hidden p-2 pb-44 sm:p-3 md:pb-5">
             <AgentTranscriptView
               owner={owner}
-              items={timeline}
+              items={history.timeline}
               profileName={profiles.find((p) => p.id === owner.runtimeProfileID)?.name}
               isLive={ACTIVE.has(owner.status)}
+              scrollRef={timelineViewport}
+              onAtTailChange={handleTimelineAtTail}
+              onSortDirectionChange={handleTimelineSortDirection}
+              unseenCount={history.timelineUnseen}
+              onShowLatest={jumpToTimelineLatest}
+              footer={
+                history.timelineHasOlder ? (
+                  <div className="flex justify-center p-3">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      data-testid="load-older-timeline"
+                      onClick={() => void loadOlderTimeline()}
+                      disabled={history.loadingOlder === "timeline"}
+                    >
+                      {history.loadingOlder === "timeline" ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" />
+                      ) : (
+                        <ArrowUp className="h-3.5 w-3.5" />
+                      )}
+                      Load older events
+                    </Button>
+                  </div>
+                ) : undefined
+              }
             />
             {providerPermissions.length > 0 && (
               <ProviderPermissionRequests
@@ -705,12 +1046,39 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
           </div>
         ) : (
           <div
-            ref={conversationViewport}
+            ref={bindTranscriptViewport}
             data-testid="conversation-workspace"
-            className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-background px-3 py-5 pb-44 sm:px-6 md:pb-5"
+            className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain bg-background px-3 py-5 pb-44 sm:px-6 md:pb-5"
           >
             <div className="mx-auto max-w-3xl">
-              <TranscriptList entries={transcript} endRef={conversationEnd} />
+              {history.transcriptHasOlder && (
+                <div className="mb-2 flex justify-center">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    data-testid="load-older-transcript"
+                    onClick={() => void loadOlderConversation()}
+                    disabled={history.loadingOlder === "transcript"}
+                  >
+                    {history.loadingOlder === "transcript" ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" />
+                    ) : (
+                      <ArrowUp className="h-3.5 w-3.5" />
+                    )}
+                    Load older messages
+                  </Button>
+                </div>
+              )}
+              {transcriptWindow.spacerBefore > 0 && (
+                <div aria-hidden="true" data-testid="transcript-spacer-before" style={{ height: transcriptWindow.spacerBefore }} />
+              )}
+              <TranscriptList
+                entries={history.transcript.slice(transcriptWindow.startIndex, transcriptWindow.endIndex)}
+                endRef={conversationEnd}
+              />
+              {transcriptWindow.spacerAfter > 0 && (
+                <div aria-hidden="true" data-testid="transcript-spacer-after" style={{ height: transcriptWindow.spacerAfter }} />
+              )}
               {providerPermissions.length > 0 && (
                 <ProviderPermissionRequests
                   permissions={providerPermissions}
@@ -719,6 +1087,17 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
                 />
               )}
             </div>
+            {history.transcriptUnseen > 0 && (
+              <button
+                type="button"
+                data-testid="unseen-transcript-indicator"
+                onClick={scrollToLatest}
+                className="absolute bottom-28 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-background/95 px-3 py-1.5 text-xs font-medium text-foreground shadow-md transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <ArrowDown className="h-3.5 w-3.5" />
+                {history.transcriptUnseen} new {history.transcriptUnseen === 1 ? "message" : "messages"}
+              </button>
+            )}
           </div>
         )}
 
@@ -741,6 +1120,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
           sendMode={sendMode}
           sendActionLabel={sendActionLabel}
           actionError={actionError}
+          steerState={controls?.native_steer_state}
           continuationModelProviders={continuationModelProviders}
           continuationModelProvider={continuationModelProvider}
           continuationModelOverride={continuationModelOverride}
@@ -808,30 +1188,77 @@ function RuntimeOwnerShell({ projectChrome, children, bodyClassName, ...props }:
   );
 }
 
-type RuntimeWorkspaceLoad = {
-  owner: RuntimeOwnerView;
+// OwnerHistory is the owner-local Runtime Owner History Window state (#202):
+// the bounded recent window plus backward pages and live-tail deltas, the
+// live-tail cursors, paging availability, unseen counts, and in-flight paging
+// state. A route change replaces the whole record atomically before any merge.
+type OwnerHistory = {
   timeline: TaskTimelineItem[];
   transcript: TaskTranscriptEntry[];
+  timelineCursor: number;
+  transcriptCursor: number;
+  timelineHasOlder: boolean;
+  transcriptHasOlder: boolean;
+  timelineUnseen: number;
+  transcriptUnseen: number;
+  loadingOlder: "timeline" | "transcript" | null;
 };
 
-async function loadTaskWorkspace(base: string, signal: AbortSignal): Promise<RuntimeWorkspaceLoad> {
-  const [task, timeline, transcript] = await Promise.all([
-    apiGet<Task>(base, { signal }),
-    apiGet<TaskTimeline>(`${base}/timeline`, { signal }),
-    apiGet<TaskTranscript>(`${base}/transcript`, { signal }),
-  ]);
+function emptyHistory(): OwnerHistory {
   return {
-    owner: taskAsRuntimeOwner(task),
-    timeline: timeline.items ?? [],
-    transcript: transcript.entries ?? [],
+    timeline: [], transcript: [], timelineCursor: 0, transcriptCursor: 0,
+    timelineHasOlder: false, transcriptHasOlder: false,
+    timelineUnseen: 0, transcriptUnseen: 0, loadingOlder: null,
   };
 }
 
-async function loadSessionWorkspace(base: string, signal: AbortSignal): Promise<RuntimeWorkspaceLoad> {
+type RuntimeWorkspaceLoad = {
+  owner: RuntimeOwnerView;
+  finishReadiness?: FinishReadiness;
+  timeline: TaskTimelineItem[];
+  transcript: TaskTranscriptEntry[];
+  timelineCursor: number;
+  transcriptCursor: number;
+  timelineHasOlder: boolean;
+  transcriptHasOlder: boolean;
+};
+
+async function loadTaskWorkspace(
+  base: string,
+  signal: AbortSignal,
+  mode: "initial" | "poll",
+  current: OwnerHistory,
+): Promise<RuntimeWorkspaceLoad> {
+  const [task, timeline, transcript, finishReadiness] = await Promise.all([
+    apiGet<Task>(base, { signal }),
+    apiGet<TaskTimeline>(timelineURL(base, mode, current.timelineCursor), { signal }),
+    apiGet<TaskTranscript>(transcriptURL(base, mode, current.transcriptCursor), { signal }),
+    apiGet<FinishReadiness>(`${base}/finish-readiness`, { signal }),
+  ]);
+  return {
+    owner: taskAsRuntimeOwner(task),
+    finishReadiness: typeof finishReadiness.ready_to_finish === "boolean" && Array.isArray(finishReadiness.blockers)
+      ? finishReadiness
+      : undefined,
+    timeline: timeline.items ?? [],
+    transcript: transcript.entries ?? [],
+    timelineCursor: timeline.cursor ?? current.timelineCursor,
+    transcriptCursor: transcript.cursor ?? current.transcriptCursor,
+    timelineHasOlder: timeline.has_older === true,
+    transcriptHasOlder: transcript.has_older === true,
+  };
+}
+
+async function loadSessionWorkspace(
+  base: string,
+  signal: AbortSignal,
+  mode: "initial" | "poll",
+  current: OwnerHistory,
+): Promise<RuntimeWorkspaceLoad> {
   const [session, timeline, transcript] = await Promise.all([
     apiGet<Session>(base, { signal }),
-    apiGet<TaskTimeline>(`${base}/timeline`, { signal }),
-    apiGet<TaskTranscript>(`${base}/transcript`, { signal }),
+    apiGet<TaskTimeline>(timelineURL(base, mode, current.timelineCursor), { signal }),
+    apiGet<TaskTranscript>(transcriptURL(base, mode, current.transcriptCursor), { signal }),
   ]);
   return {
     owner: sessionAsRuntimeOwner(session),
@@ -839,7 +1266,22 @@ async function loadSessionWorkspace(base: string, signal: AbortSignal): Promise<
     // as task ones, so the rendered shapes are identical.
     timeline: timeline.items ?? [],
     transcript: transcript.entries ?? [],
+    timelineCursor: timeline.cursor ?? current.timelineCursor,
+    transcriptCursor: transcript.cursor ?? current.transcriptCursor,
+    timelineHasOlder: timeline.has_older === true,
+    transcriptHasOlder: transcript.has_older === true,
   };
+}
+
+// The first load reads the initial bounded history window (no cursor); refresh
+// polls always send the committed cursor, including an explicit after=0 after
+// an empty initial read so synthetic seq-0 content is never resent.
+function timelineURL(base: string, mode: "initial" | "poll", cursor: number): string {
+  return mode === "initial" ? `${base}/timeline` : `${base}/timeline?after=${cursor}`;
+}
+
+function transcriptURL(base: string, mode: "initial" | "poll", cursor: number): string {
+  return mode === "initial" ? `${base}/transcript` : `${base}/transcript?after=${cursor}`;
 }
 
 function taskAsRuntimeOwner(task: Task): RuntimeOwnerView {
@@ -1032,6 +1474,18 @@ type ConversationSelection = {
   reasoning_effort: string;
 };
 
+// steerPendingState reports whether an accepted native steer is still waiting
+// for the Runtime to apply or reject it (#194).
+function steerPendingState(state: string | undefined): boolean {
+  return (
+    state === "pending" ||
+    state === "requested" ||
+    state === "acknowledged" ||
+    state === "settled" ||
+    state === "started"
+  );
+}
+
 // resolveConversationAction decides, from owner-independent runtime controls,
 // which transport a new operator message takes. Both owner kinds share the
 // decision so steer/queue/restart rules cannot drift between Task and Session.
@@ -1201,13 +1655,13 @@ function FloatingScrollControls({
 
   return (
     <div className="flex items-center gap-1">
-      <Button size="sm" variant="outline" className="h-9 w-9 p-0 shadow-md" onClick={onTop} aria-label="Scroll to top" title="Top">
+      <Button size="sm" variant="outline" className="h-10 w-10 p-0 shadow-md transition-transform duration-150 active:scale-[0.96] motion-reduce:transform-none" onClick={onTop} aria-label="Scroll to top" title="Top">
         <ArrowUp className="h-4 w-4" />
       </Button>
       <Button
         size="sm"
         variant={autoFollow ? "secondary" : "outline"}
-        className="relative h-9 w-9 p-0 shadow-md"
+        className="relative h-10 w-10 p-0 shadow-md transition-transform duration-150 active:scale-[0.96] motion-reduce:transform-none"
         onClick={onBottom}
         aria-label={latestLabel}
         title={latestLabel}
@@ -1216,6 +1670,39 @@ function FloatingScrollControls({
         {autoFollow && (
           <CheckCircle2 className="absolute right-0.5 top-0.5 h-3 w-3 text-signal" aria-hidden="true" />
         )}
+      </Button>
+    </div>
+  );
+}
+
+function TimelineScrollControls({
+  onTop,
+  onBottom,
+}: {
+  onTop: () => void;
+  onBottom: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-1">
+      <Button
+        size="sm"
+        variant="outline"
+        className="h-10 w-10 p-0 shadow-md transition-transform duration-150 active:scale-[0.96] motion-reduce:transform-none"
+        onClick={onTop}
+        aria-label="Scroll Timeline to top"
+        title="Timeline top"
+      >
+        <ArrowUp className="h-4 w-4" />
+      </Button>
+      <Button
+        size="sm"
+        variant="outline"
+        className="h-10 w-10 p-0 shadow-md transition-transform duration-150 active:scale-[0.96] motion-reduce:transform-none"
+        onClick={onBottom}
+        aria-label="Scroll Timeline to bottom"
+        title="Timeline bottom"
+      >
+        <ArrowDown className="h-4 w-4" />
       </Button>
     </div>
   );
@@ -1287,6 +1774,7 @@ function RuntimeOwnerComposer({
   sendMode,
   sendActionLabel,
   actionError,
+  steerState,
   continuationModelProviders,
   continuationModelProvider,
   continuationModelOverride,
@@ -1317,6 +1805,7 @@ function RuntimeOwnerComposer({
   sendMode: ConversationSendMode;
   sendActionLabel: string;
   actionError: string | null;
+  steerState?: string;
   continuationModelProviders: ModelProvider[];
   continuationModelProvider: string;
   continuationModelOverride: string;
@@ -1404,6 +1893,16 @@ function RuntimeOwnerComposer({
               <Badge variant={sendMode === "unavailable" ? "warning" : "outline"} size="sm">
                 {providerSwitchRequested ? "switch provider" : conversationModeText(sendMode)}
               </Badge>
+              {steerPendingState(steerState) && (
+                <Badge variant="warning" size="sm" data-testid="steer-pending-badge">
+                  steering pending…
+                </Badge>
+              )}
+              {steerState === "failed" && (
+                <Badge variant="destructive" size="sm" data-testid="steer-failed-badge">
+                  steering failed
+                </Badge>
+              )}
             </div>
             <div className="ml-auto flex shrink-0 items-center gap-1">
               {running && queueAvailable && sendMode !== "queue" && (
@@ -1518,12 +2017,18 @@ const blackboardConclusionErrorCopy: Record<string, string> = {
 
 function BlackboardConclusionRecovery({
   errorCode,
+  validationReason,
+  validationFieldPath,
+  validationExpected,
   retryAvailable,
   nextEligibleAt,
   retrying,
   onRetry,
 }: {
   errorCode?: string;
+  validationReason?: string;
+  validationFieldPath?: string;
+  validationExpected?: string;
   retryAvailable: boolean;
   nextEligibleAt?: string;
   retrying: boolean;
@@ -1531,6 +2036,7 @@ function BlackboardConclusionRecovery({
 }) {
   const code = errorCode?.trim() || "conclusion_action_required";
   const message = blackboardConclusionErrorCopy[code] ?? "Blackboard conclusion requires operator attention.";
+  const validationDetail = [validationReason, validationFieldPath, validationExpected].filter(Boolean).join(" · ");
   return (
     <div
       role="alert"
@@ -1541,6 +2047,11 @@ function BlackboardConclusionRecovery({
       <div className="min-w-0 flex-1">
         <p className="text-foreground">{message}</p>
         <p className="break-all font-mono text-xs text-muted-foreground">{code}</p>
+        {validationDetail && (
+          <p data-testid="blackboard-conclusion-validation" className="break-all font-mono text-xs text-muted-foreground">
+            {validationDetail}
+          </p>
+        )}
       </div>
       <Button
         type="button"

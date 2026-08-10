@@ -154,6 +154,10 @@ const (
 
 type BlackboardConclusionErrorCode = owner.BlackboardConclusionErrorCode
 
+// ConclusionValidationDetail is the bounded public reason for one rejected
+// closed conclusion result, safe for repair directives and durable state.
+type ConclusionValidationDetail = owner.ConclusionValidationDetail
+
 const (
 	BlackboardConclusionErrorInvalidResult           = owner.BlackboardConclusionErrorInvalidResult
 	BlackboardConclusionErrorToolUseForbidden        = owner.BlackboardConclusionErrorToolUseForbidden
@@ -180,6 +184,42 @@ const (
 	BlackboardConclusionReceiptApplied                              = owner.BlackboardConclusionReceiptApplied
 )
 
+// ConclusionDispatchKind is the immutable attempt category of one Conclusion
+// Dispatch (ADR 0021). Recovery-created dispatches are kind recovery.
+type ConclusionDispatchKind = owner.ConclusionDispatchKind
+
+const (
+	ConclusionDispatchKindInitial             = owner.ConclusionDispatchKindInitial
+	ConclusionDispatchKindRepair              = owner.ConclusionDispatchKindRepair
+	ConclusionDispatchKindVersionRegeneration = owner.ConclusionDispatchKindVersionRegeneration
+	ConclusionDispatchKindRetry               = owner.ConclusionDispatchKindRetry
+	ConclusionDispatchKindRecovery            = owner.ConclusionDispatchKindRecovery
+)
+
+// ConclusionDispatchState is the delivery lifecycle of one immutable dispatch.
+type ConclusionDispatchState = owner.ConclusionDispatchState
+
+const (
+	ConclusionDispatchRequested      = owner.ConclusionDispatchRequested
+	ConclusionDispatchAwaitingResult = owner.ConclusionDispatchAwaitingResult
+	ConclusionDispatchValidated      = owner.ConclusionDispatchValidated
+	ConclusionDispatchApplied        = owner.ConclusionDispatchApplied
+	ConclusionDispatchActionRequired = owner.ConclusionDispatchActionRequired
+	ConclusionDispatchSuperseded     = owner.ConclusionDispatchSuperseded
+	ConclusionDispatchLateTerminal   = owner.ConclusionDispatchLateTerminal
+)
+
+// ConclusionRecoveryReason is the closed operator-visible fail-closed reason.
+type ConclusionRecoveryReason = owner.ConclusionRecoveryReason
+
+const (
+	ConclusionRecoveryRuntimeOwnershipNotProven      = owner.ConclusionRecoveryRuntimeOwnershipNotProven
+	ConclusionRecoveryWritableReplacementUnavailable = owner.ConclusionRecoveryWritableReplacementUnavailable
+	ConclusionRecoveryAcceptanceAmbiguous            = owner.ConclusionRecoveryAcceptanceAmbiguous
+	ConclusionRecoveryDispatchFailed                 = owner.ConclusionRecoveryDispatchFailed
+	ConclusionRecoveryLegacyCorrelationUnproven      = owner.ConclusionRecoveryLegacyCorrelationUnproven
+)
+
 // BlackboardConclusion is the compact Session read view for the latest
 // assisted Work Runtime Turn checkpoint and any conclusion progress it
 // triggered. Result bytes and provider correlation remain private.
@@ -191,8 +231,17 @@ type BlackboardConclusion struct {
 	SemanticPersistenceWatermark int                           `json:"semantic_persistence_watermark"`
 	AppliedRevision              *int                          `json:"applied_revision,omitempty"`
 	ErrorCode                    BlackboardConclusionErrorCode `json:"error_code,omitempty"`
-	RetryAvailable               bool                          `json:"retry_available"`
-	NextEligibleAt               *time.Time                    `json:"next_eligible_at,omitempty"`
+	// ValidationReason, ValidationFieldPath, and ValidationExpected expose the
+	// bounded public reason for the last rejected closed result. They are
+	// closed tokens only; raw provider output never appears.
+	ValidationReason    string `json:"validation_reason,omitempty"`
+	ValidationFieldPath string `json:"validation_field_path,omitempty"`
+	ValidationExpected  string `json:"validation_expected,omitempty"`
+	// RecoveryReason is the closed operator-visible reason for a fail-closed
+	// action_required obligation (ADR 0021).
+	RecoveryReason string     `json:"recovery_reason,omitempty"`
+	RetryAvailable bool       `json:"retry_available"`
+	NextEligibleAt *time.Time `json:"next_eligible_at,omitempty"`
 }
 
 // ProviderPermission is a redacted provider approval request owned by one
@@ -749,6 +798,147 @@ func (s *Service) Events(id string) ([]Event, error) {
 		return nil, fmt.Errorf("list Session Events: %w", err)
 	}
 	defer rows.Close()
+	return scanEvents(rows)
+}
+
+// EventProjection selects the Session Event kinds needed by one Runtime Owner
+// history projection.
+type EventProjection string
+
+const (
+	EventProjectionTimeline   EventProjection = "timeline"
+	EventProjectionTranscript EventProjection = "transcript"
+)
+
+type EventWindowQuery struct {
+	Projection EventProjection
+	BeforeSet  bool
+	Before     int
+	AfterSet   bool
+	After      int
+	Limit      int
+}
+
+type EventWindow struct {
+	Events                 []Event
+	Cursor                 int
+	HasOlder               bool
+	HasNewer               bool
+	ScanCursor             int
+	PriorContinuation      int
+	PriorTranscriptAdapter string
+}
+
+// HistoryEventWindow reads a fixed-size keyset window independently of the
+// Session's full Event history.
+func (s *Service) HistoryEventWindow(id string, query EventWindowQuery) (EventWindow, error) {
+	if _, err := s.Get(id); err != nil {
+		return EventWindow{}, err
+	}
+	if query.Limit < 1 || query.Before < 0 || query.After < 0 || (query.BeforeSet && query.AfterSet) {
+		return EventWindow{}, fmt.Errorf("invalid Session Event window query")
+	}
+	kinds := "('runtime_output','lifecycle','steering','attachment','blackboard_conclusion')"
+	if query.Projection == EventProjectionTranscript {
+		kinds = "('conversation','runtime_output','lifecycle','steering')"
+	} else if query.Projection != EventProjectionTimeline {
+		return EventWindow{}, fmt.Errorf("invalid Session Event projection")
+	}
+	var cursor int
+	if err := s.db.QueryRow(`SELECT COALESCE(MAX(seq),0) FROM session_events WHERE session_id=? AND kind IN `+kinds, id).Scan(&cursor); err != nil {
+		return EventWindow{}, fmt.Errorf("read Session Event projection cursor: %w", err)
+	}
+	order := "DESC"
+	predicate := ""
+	args := []any{id}
+	if query.BeforeSet {
+		predicate = " AND seq < ?"
+		args = append(args, query.Before)
+	} else if query.AfterSet {
+		predicate = " AND seq > ?"
+		args = append(args, query.After)
+		order = "ASC"
+	}
+	args = append(args, query.Limit+1)
+	rows, err := s.db.Query(
+		`SELECT id,session_id,seq,kind,payload_json,created_at FROM session_events
+		 WHERE session_id=? AND kind IN `+kinds+predicate+` ORDER BY seq `+order+` LIMIT ?`, args...,
+	)
+	if err != nil {
+		return EventWindow{}, fmt.Errorf("list Session Event window: %w", err)
+	}
+	defer rows.Close()
+	events, err := scanEvents(rows)
+	if err != nil {
+		return EventWindow{}, err
+	}
+	hasOlder := false
+	if order == "DESC" {
+		if len(events) > query.Limit {
+			hasOlder = true
+			events = events[:query.Limit]
+		}
+		for left, right := 0, len(events)-1; left < right; left, right = left+1, right-1 {
+			events[left], events[right] = events[right], events[left]
+		}
+	} else if len(events) > query.Limit {
+		events = events[:query.Limit]
+	}
+	hasNewer := order == "ASC" && len(events) == query.Limit && len(events) > 0 && events[len(events)-1].Seq < cursor
+	scanCursor := query.After
+	if len(events) > 0 {
+		scanCursor = events[len(events)-1].Seq
+	}
+	window := EventWindow{Events: events, Cursor: cursor, HasOlder: hasOlder, HasNewer: hasNewer, ScanCursor: scanCursor}
+	if query.Projection == EventProjectionTranscript && len(events) > 0 {
+		if err := s.readTranscriptContextBefore(id, events[0].Seq, &window); err != nil {
+			return EventWindow{}, err
+		}
+	}
+	return window, nil
+}
+
+func (s *Service) readTranscriptContextBefore(sessionID string, seq int, window *EventWindow) error {
+	var continuationID string
+	err := s.db.QueryRow(`
+		SELECT COALESCE(json_extract(payload_json,'$.continuation_id'),''),COALESCE(json_extract(payload_json,'$.adapter'),'') FROM session_events
+		WHERE session_id=? AND seq<? AND kind='lifecycle'
+		  AND json_extract(payload_json,'$.phase')='started'
+		ORDER BY seq DESC LIMIT 1`, sessionID, seq,
+	).Scan(&continuationID, &window.PriorTranscriptAdapter)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read Session Transcript context: %w", err)
+	}
+	if continuationID != "" {
+		var provider string
+		err = s.db.QueryRow(`SELECT number,runtime_provider FROM session_continuations WHERE id=? AND session_id=?`, continuationID, sessionID).
+			Scan(&window.PriorContinuation, &provider)
+		if err == nil {
+			if provider != "" {
+				window.PriorTranscriptAdapter = provider
+			}
+			return nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("read Session Transcript Continuation pin: %w", err)
+		}
+	}
+	// Legacy lifecycle Events can predate durable Continuation pins. Preserve
+	// their historical numbering with the old count only on that fallback path.
+	if err := s.db.QueryRow(`
+		SELECT COUNT(*) FROM session_events
+		WHERE session_id=? AND seq<? AND kind='lifecycle'
+		  AND json_extract(payload_json,'$.phase')='started'`, sessionID, seq,
+	).Scan(&window.PriorContinuation); err != nil {
+		return fmt.Errorf("read legacy Session Transcript Continuation context: %w", err)
+	}
+	return nil
+}
+
+func scanEvents(rows *sql.Rows) ([]Event, error) {
 	events := make([]Event, 0)
 	for rows.Next() {
 		var event Event
@@ -806,6 +996,13 @@ func (s *Service) AppendEvent(id string, kind EventKind, payload EventPayload) (
 		return Event{}, fmt.Errorf("commit Session Event: %w", err)
 	}
 	return event, nil
+}
+
+// AppendEventTx appends a structured session event inside a caller-owned
+// transaction so it can be committed atomically with another owner-neutral
+// record (for example a durable Accepted Steering request).
+func (s *Service) AppendEventTx(tx *sql.Tx, sessionID string, kind EventKind, payload EventPayload) (Event, error) {
+	return appendEventTx(tx, sessionID, kind, payload, time.Now().UTC())
 }
 
 // AppendConversationEvent stores one user/runtime conversation entry. It is

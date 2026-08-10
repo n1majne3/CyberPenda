@@ -29,15 +29,13 @@ import {
 import { cn } from "@/lib/utils";
 
 type StatusFilter = "all" | "active" | "disabled";
-type SourceFilter = "all" | "env" | "literal" | "file" | "command";
+type SourceFilter = "all" | "env" | "literal";
 
-const emptyForm = { credential_ref: "", kind: "env", value: "" };
+const emptyForm = { credential_ref: "", kind: "literal", value: "", destination_env: "" };
 
 const SOURCE_KIND_LABELS: Record<string, string> = {
   env: "Environment variable",
   literal: "Literal secret",
-  file: "File path",
-  command: "Command",
 };
 
 export function CredentialBindingsPage() {
@@ -91,13 +89,20 @@ export function CredentialBindingsPage() {
   }
 
   async function create() {
-    if (!form.credential_ref.trim() || !form.value.trim()) return;
+    // destination_env is the runtime env var name. For env sources it defaults
+    // to the host variable name (value); for literal/file/command it is
+    // required, otherwise projection silently fails at launch.
+    const destinationEnv =
+      form.kind === "env"
+        ? (form.destination_env.trim() || form.value.trim())
+        : form.destination_env.trim();
+    if (!form.credential_ref.trim() || !form.value.trim() || !destinationEnv) return;
     setSaving(true);
     setError(null);
     try {
       await apiPut("/api/credential-bindings", {
         credential_ref: form.credential_ref,
-        source: { kind: form.kind, value: form.value },
+        source: { kind: form.kind, value: form.value, destination_env: destinationEnv },
       });
       setForm(emptyForm);
       setCreating(false);
@@ -158,13 +163,12 @@ export function CredentialBindingsPage() {
   }, [bindings, query, statusFilter, sourceFilter, modelProviders, profiles]);
 
   const sourceValueLabel =
-    form.kind === "env"
-      ? "Environment variable name"
-      : form.kind === "literal"
-        ? "Secret value"
-        : form.kind === "file"
-          ? "File path"
-          : "Command";
+    form.kind === "env" ? "Host environment variable name" : "Secret value";
+
+  // destination_env (the runtime env var name) is required for literal
+  // sources. For env sources it defaults to the host variable name, so the
+  // field is optional.
+  const destinationEnvRequired = form.kind !== "env";
 
   return (
     <SettingsPageShell>
@@ -230,8 +234,6 @@ export function CredentialBindingsPage() {
                   { id: "all", label: "Any source" },
                   { id: "env", label: "env" },
                   { id: "literal", label: "literal" },
-                  { id: "file", label: "file" },
-                  { id: "command", label: "command" },
                 ]}
               />
             </div>
@@ -290,6 +292,9 @@ export function CredentialBindingsPage() {
                 {filteredBindings.map((binding) => {
                   const provider = modelProviderForRef(binding.credential_ref);
                   const usedByProfiles = profilesUsingRef(binding.credential_ref);
+                  const destinationEnv =
+                    binding.source.destination_env ||
+                    (binding.source.kind === "env" ? binding.source.value : "");
                   const sourceDisplay = binding.disabled
                     ? null
                     : formatSourceDisplay(binding.source.kind, binding.source.value);
@@ -331,21 +336,41 @@ export function CredentialBindingsPage() {
                             <span className="text-xs text-muted-foreground">Not resolved</span>
                           ) : (
                             <div className="min-w-0">
-                              <Badge variant="outline" size="sm" className="font-normal">
-                                {binding.source.kind}
-                              </Badge>
-                              {sourceDisplay && (
-                                <p className="mt-1 truncate font-mono text-[11px] text-muted-foreground" title={sourceDisplay}>
-                                  {sourceDisplay}
+                              {destinationEnv && (
+                                <p className="truncate font-mono text-[11px] font-medium" title={destinationEnv}>
+                                  {destinationEnv}
                                 </p>
                               )}
+                              <div className="mt-0.5 flex items-center gap-1">
+                                <Badge variant="outline" size="sm" className="font-normal">
+                                  {binding.source.kind}
+                                </Badge>
+                                {sourceDisplay && (
+                                  <span className="truncate font-mono text-[11px] text-muted-foreground" title={sourceDisplay}>
+                                    {sourceDisplay}
+                                  </span>
+                                )}
+                              </div>
                             </div>
                           )}
                         </div>
 
                         <div className="min-w-0">
-                          {usedByProfiles.length > 0 ? (
-                            <div className="flex flex-wrap gap-1">
+                          {/* Classification first: a binding is either a Model
+                              Provider key (managed on the Model providers page)
+                              or a Global Environment Variable (injected into
+                              every Runtime). Profile references are secondary. */}
+                          {provider ? (
+                            <span className="text-xs font-medium text-muted-foreground">
+                              Provider key · {provider.name}
+                            </span>
+                          ) : (
+                            <span className="text-xs font-medium text-muted-foreground">
+                              Global env var
+                            </span>
+                          )}
+                          {usedByProfiles.length > 0 && (
+                            <div className="mt-1 flex flex-wrap gap-1">
                               {usedByProfiles.slice(0, 3).map((name) => (
                                 <Badge key={name} variant="outline" size="sm" className="max-w-full truncate font-normal">
                                   {name}
@@ -357,10 +382,6 @@ export function CredentialBindingsPage() {
                                 </span>
                               )}
                             </div>
-                          ) : provider ? (
-                            <span className="text-xs text-muted-foreground">Provider key only</span>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">Unused</span>
                           )}
                         </div>
 
@@ -431,7 +452,12 @@ export function CredentialBindingsPage() {
                 <>
                   <Button
                     onClick={create}
-                    disabled={saving || !form.credential_ref.trim() || !form.value.trim()}
+                    disabled={
+                      saving ||
+                      !form.credential_ref.trim() ||
+                      !form.value.trim() ||
+                      (destinationEnvRequired && !form.destination_env.trim())
+                    }
                   >
                     Create binding
                   </Button>
@@ -463,15 +489,13 @@ export function CredentialBindingsPage() {
                   value={form.kind}
                   onChange={(e) => setForm({ ...form, kind: e.target.value, value: "" })}
                 >
-                  <option value="env">env — environment variable</option>
-                  <option value="literal">literal — stored secret</option>
-                  <option value="file">file — path on disk</option>
-                  <option value="command">command — resolve via shell</option>
+                  <option value="literal">literal — stored secret (recommended)</option>
+                  <option value="env">env — read from host environment</option>
                 </Select>
                 <p className="mt-1 text-[11px] text-muted-foreground">
                   {SOURCE_KIND_LABELS[form.kind] ?? form.kind}
-                  {form.kind === "env" && " · preferred for local daemons"}
                   {form.kind === "literal" && " · value is stored by the daemon"}
+                  {form.kind === "env" && " · secret stays out of the daemon"}
                 </p>
               </div>
 
@@ -483,24 +507,36 @@ export function CredentialBindingsPage() {
                   type={form.kind === "literal" ? "password" : "text"}
                   value={form.value}
                   onChange={(e) => setForm({ ...form, value: e.target.value })}
-                  placeholder={
-                    form.kind === "env"
-                      ? "OPENAI_API_KEY…"
-                      : form.kind === "literal"
-                        ? "sk-…"
-                        : form.kind === "file"
-                          ? "/path/to/secret…"
-                          : "op read …"
-                  }
+                  placeholder={form.kind === "env" ? "OPENAI_API_KEY…" : "sk-…"}
                   autoComplete="off"
                   spellCheck={false}
                   className={form.kind === "literal" ? undefined : "font-mono text-xs"}
                 />
                 {form.kind === "env" && (
                   <p className="mt-1 text-[11px] text-muted-foreground">
-                    Use the environment variable name, not the secret.
+                    Use the host environment variable name, not the secret.
                   </p>
                 )}
+              </div>
+
+              <div>
+                <Label htmlFor="credential-destination-env">Runtime environment variable name</Label>
+                <Input
+                  id="credential-destination-env"
+                  name="destination_env"
+                  value={form.destination_env}
+                  onChange={(e) => setForm({ ...form, destination_env: e.target.value })}
+                  placeholder="NSSCTF_AGENT_TOKEN…"
+                  autoComplete="off"
+                  spellCheck={false}
+                  className="font-mono text-xs"
+                />
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  The runtime env var name. Injected into every Runtime.
+                  {destinationEnvRequired
+                    ? " Required."
+                    : " Defaults to the host variable name when empty."}
+                </p>
               </div>
             </SettingsDetailPane>
           )}

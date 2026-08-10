@@ -17,7 +17,7 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
     // Exclude node_modules and the built dist (which the daemon embeds).
-    exclude: ["**/node_modules/**", "**/dist/**"],
+    exclude: ["**/node_modules/**", "**/dist/**", "**/e2e/**"],
     css: {
       // Process Tailwind/CSS so component styles are applied in jsdom.
       include: ["**/*.css"],

@@ -513,7 +513,7 @@ func newProjectionFixture(t *testing.T, kind string) projectionFixture {
 		t.Fatalf("create projection Project: %v", err)
 	}
 	tasks := task.NewService(db, projects)
-	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "Project exact Runtime Snapshot", Runner: task.RunnerSandbox})
+	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Type: task.Type(kind), Goal: "Project exact Runtime Snapshot", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create projection Task: %v", err)
 	}

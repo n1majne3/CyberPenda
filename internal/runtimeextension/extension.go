@@ -25,6 +25,14 @@ type Extension struct {
 	Source                   Source            `json:"source"`
 	Projection               Projection        `json:"projection"`
 	Config                   map[string]string `json:"config,omitempty"`
+	Requirements             Requirements      `json:"requirements,omitempty"`
+}
+
+// Requirements declares launch compatibility. It is validated by Preflight
+// and never grants Project Kind or Scope authority.
+type Requirements struct {
+	ProjectKinds      []string `json:"project_kinds,omitempty"`
+	ScopeCapabilities []string `json:"scope_capabilities,omitempty"`
 }
 
 type Source struct {
@@ -91,6 +99,33 @@ func Validate(extension Extension) error {
 		if secretLikePattern.MatchString(key + "=" + value) {
 			return fmt.Errorf("%w: config value for %q looks like a secret", ErrInvalidExtension, key)
 		}
+	}
+	if err := validateRequirements(extension.Requirements); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateRequirements(requirements Requirements) error {
+	seenKinds := map[string]bool{}
+	for _, kind := range requirements.ProjectKinds {
+		if kind != "pentest" && kind != "ctf_challenge" {
+			return fmt.Errorf("%w: unknown required Project kind %q", ErrInvalidExtension, kind)
+		}
+		if seenKinds[kind] {
+			return fmt.Errorf("%w: duplicate required Project kind %q", ErrInvalidExtension, kind)
+		}
+		seenKinds[kind] = true
+	}
+	seenCapabilities := map[string]bool{}
+	for _, capability := range requirements.ScopeCapabilities {
+		if !idPattern.MatchString(capability) {
+			return fmt.Errorf("%w: invalid required Scope capability %q", ErrInvalidExtension, capability)
+		}
+		if seenCapabilities[capability] {
+			return fmt.Errorf("%w: duplicate required Scope capability %q", ErrInvalidExtension, capability)
+		}
+		seenCapabilities[capability] = true
 	}
 	return nil
 }

@@ -107,7 +107,9 @@ func newHostPiPersistentFixture(t *testing.T, factory ProviderSessionFactory) (*
 		t.Fatal(err)
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: projectRecord.ID, Goal: "inspect example.com",
+		ProjectID: projectRecord.ID,
+
+		Type: task.TypePentest, Goal: "inspect example.com",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerHost,
 		RunControls: task.RunControls{HostActivated: true},
 	})

@@ -1,0 +1,151 @@
+import { expect, test, type Page, type Route } from "@playwright/test";
+
+const projectCount = 123;
+const recentTaskCount = 5;
+
+function task(projectIndex: number, taskIndex: number) {
+  return {
+    id: taskIndex === 0 ? `task-${projectIndex}` : `task-${projectIndex}-${taskIndex}`,
+    project_id: `project-${projectIndex}`,
+    type: "pentest",
+    goal: `Task ${projectIndex}.${taskIndex}`,
+    status: "completed",
+    runner: "sandbox",
+    runtime_profile_id: "profile-1",
+    run_controls: {},
+    scope_snapshot: {},
+    runtime_activity: { liveness: "offline" },
+    created_at: "2026-08-01T00:00:00Z",
+    updated_at: `2026-08-01T00:00:0${taskIndex}Z`,
+  };
+}
+
+function navigationProjects() {
+  return Array.from({ length: projectCount }, (_, projectIndex) => ({
+    id: `project-${projectIndex}`,
+    name: `Project ${projectIndex}`,
+    description: "",
+    kind: "pentest",
+    scope: {},
+    defaults: {},
+    created_at: "2026-08-01T00:00:00Z",
+    updated_at: "2026-08-01T00:00:00Z",
+    last_activity_at: "2026-08-01T00:00:05Z",
+    tasks: Array.from({ length: recentTaskCount }, (_, taskIndex) => task(projectIndex, taskIndex)),
+  }));
+}
+
+function transcriptEntries(count: number) {
+  return Array.from({ length: count }, (_, index) => ({
+    id: `entry-${index + 1}`,
+    seq: index + 1,
+    continuation: 1,
+    kind: "message",
+    role: index % 2 === 0 ? "assistant" : "user",
+    text: `History entry ${index + 1}`,
+    created_at: "2026-08-01T00:00:00Z",
+  }));
+}
+
+async function routeRuntimeOwnerWorkspace(page: Page) {
+  const projects = navigationProjects();
+  const initialNavigation = JSON.stringify({ revision: "revision-1", changed: true, projects });
+  const unchangedNavigation = JSON.stringify({ revision: "revision-1", changed: false, projects: [] });
+  const transcript = JSON.stringify({
+    task_id: "task-0",
+    entries: transcriptEntries(200),
+    cursor: 200,
+    has_older: true,
+  });
+  const requests: string[] = [];
+  const navigationResponses: number[] = [];
+  let navigationReads = 0;
+
+  await page.route("**/api/**", async (route: Route) => {
+    const requestURL = new URL(route.request().url());
+    requests.push(`${requestURL.pathname}${requestURL.search}`);
+    let body: string;
+    if (requestURL.pathname === "/api/workspace/navigation") {
+      body = navigationReads++ === 0 ? initialNavigation : unchangedNavigation;
+      navigationResponses.push(new TextEncoder().encode(body).byteLength);
+    } else if (requestURL.pathname === "/api/sessions") {
+      body = JSON.stringify({ sessions: [] });
+    } else if (requestURL.pathname === "/api/projects/project-0/tasks/task-0") {
+      body = JSON.stringify({
+        ...task(0, 0),
+        goal: "Bounded Runtime Owner history",
+        runtime_controls: {
+          native_resume_available: true,
+          resume_available: true,
+          queue_steer_available: true,
+          finish_available: false,
+          runtime_provider: "codex",
+        },
+        latest_continuation: {
+          id: "continuation-1",
+          task_id: "task-0",
+          number: 1,
+          runtime_profile_id: "profile-1",
+          runtime_provider: "codex",
+          runner: "sandbox",
+          status: "completed",
+          started_at: "2026-08-01T00:00:00Z",
+          updated_at: "2026-08-01T00:00:05Z",
+          ended_at: "2026-08-01T00:00:05Z",
+        },
+      });
+    } else if (requestURL.pathname.endsWith("/timeline")) {
+      body = JSON.stringify({ task_id: "task-0", items: [], cursor: 200, has_older: true });
+    } else if (requestURL.pathname.endsWith("/transcript")) {
+      body = transcript;
+    } else if (requestURL.pathname.endsWith("/finish-readiness")) {
+      body = JSON.stringify({ ready_to_finish: true, blockers: [] });
+    } else if (requestURL.pathname === "/api/runtime-profiles") {
+      body = JSON.stringify({ profiles: [] });
+    } else if (requestURL.pathname === "/api/model-providers") {
+      body = JSON.stringify({ providers: [] });
+    } else if (requestURL.pathname === "/api/runtime-plugins") {
+      body = JSON.stringify({ plugins: [] });
+    } else {
+      body = "{}";
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body });
+  });
+
+  return {
+    requests,
+    navigationResponses,
+    initialNavigationBytes: new TextEncoder().encode(initialNavigation).byteLength,
+    transcriptBytes: new TextEncoder().encode(transcript).byteLength,
+  };
+}
+
+test("123 Projects use one bounded navigation projection and a small unchanged refresh", async ({ page }) => {
+  await page.clock.install();
+  const evidence = await routeRuntimeOwnerWorkspace(page);
+
+  await page.goto("/projects/project-0/tasks/task-0");
+  await expect(page.getByRole("heading", { name: "Bounded Runtime Owner history" })).toBeVisible();
+  await expect(page.locator('section[aria-labelledby^="project-name-"]')).toHaveCount(projectCount);
+  await expect(page.locator('#project-tasks-project-0 a[href^="/projects/project-0/tasks/"]')).toHaveCount(recentTaskCount);
+
+  expect(evidence.requests.filter((path) => /^\/api\/projects\/project-\d+\/tasks(?:\?|$)/.test(path))).toEqual([]);
+  expect(evidence.initialNavigationBytes).toBeLessThan(700_000);
+
+  await page.clock.fastForward(30_500);
+  await expect.poll(() => evidence.navigationResponses.length).toBeGreaterThan(1);
+  expect(evidence.navigationResponses.at(-1)).toBeLessThan(200);
+});
+
+test("long Runtime Owner history keeps DOM rows bounded and older history reachable", async ({ page }) => {
+  const evidence = await routeRuntimeOwnerWorkspace(page);
+
+  await page.goto("/projects/project-0/tasks/task-0");
+  await expect(page.getByText("History entry 200")).toBeVisible();
+  await expect(page.getByTestId("load-older-transcript")).toBeVisible();
+
+  const renderedRows = await page.getByTestId("transcript-row").count();
+  expect(renderedRows).toBeGreaterThan(0);
+  expect(renderedRows).toBeLessThan(80);
+  expect(evidence.transcriptBytes).toBeLessThan(100_000);
+});

@@ -70,7 +70,7 @@ esac
 	})
 
 	taskID := createTask(t, server, projectID, `{
-		"goal":"inspect example.test",
+		"type":"pentest","goal":"inspect example.test",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"sandbox"
 	}`)

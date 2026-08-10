@@ -95,7 +95,7 @@ func TestTaskLifecycleLogsLaunchAndCompletion(t *testing.T) {
 	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 
 	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"sandbox"
 	}`)
@@ -135,7 +135,7 @@ func TestRequestLogSuppressesNoisyPolls(t *testing.T) {
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
 	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"sandbox"
 	}`)

@@ -136,12 +136,13 @@ func TestClaudeV2RuntimeConfigPreservesTrustedMCPAllowlistWithoutIdentityContext
 		t.Fatalf("decode Claude settings: %v", err)
 	}
 	want := map[string]bool{
-		"mcp__pentest__blackboard_change":             true,
-		"mcp__pentest__blackboard_read":               true,
-		"mcp__pentest__blackboard_history":            true,
-		"mcp__pentest__blackboard_retain_evidence":    true,
-		"mcp__pentest__blackboard_checkpoint_attempt": true,
-		"mcp__pentest__blackboard_finish":             true,
+		"mcp__pentest__blackboard_change":                true,
+		"mcp__pentest__blackboard_record_attempt_result": true,
+		"mcp__pentest__blackboard_read":                  true,
+		"mcp__pentest__blackboard_history":               true,
+		"mcp__pentest__blackboard_retain_evidence":       true,
+		"mcp__pentest__blackboard_checkpoint_attempt":    true,
+		"mcp__pentest__blackboard_finish":                true,
 	}
 	for _, allowed := range settings.Permissions.Allow {
 		if !want[allowed] {
@@ -196,7 +197,7 @@ func TestPiV2RuntimeConfigProjectsTrustedMCPWithoutBlackboardSemantics(t *testin
 	}
 }
 
-// P1 #2: Claude v2 automatic six-tool allowlisting must never authorize a
+// P1 #2: Claude v2 automatic seven-tool allowlisting must never authorize a
 // user-provided MCP server that collides with the generated trusted name.
 func TestClaudeV2RejectsCustomMCPServerNamedPentest(t *testing.T) {
 	layout, err := runner.PrepareBlackboardV2TaskLayout(t.TempDir(), "task-claude-reserved-mcp", runtimeprofile.ProviderClaudeCode)
@@ -297,7 +298,7 @@ func TestTrustedMCPDisabledStillAllowsCustomServerNamedPentest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read settings: %v", err)
 	}
-	// Without trusted mode, automatic six-tool allowlist must not fire.
+	// Without trusted mode, automatic seven-tool allowlist must not fire.
 	if strings.Contains(string(settings), "mcp__pentest__blackboard_change") {
 		t.Fatalf("trusted allowlist fired for non-trusted custom pentest server: %s", settings)
 	}

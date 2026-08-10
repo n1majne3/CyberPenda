@@ -11,6 +11,7 @@ import { CredentialBindingsPage } from "@/pages/CredentialBindingsPage";
 import { SkillsPage } from "@/pages/SkillsPage";
 import { TaskLaunchPage } from "@/pages/TaskLaunchPage";
 import { TaskDetailPage } from "@/pages/TaskDetailPage";
+import { ChallengeWorkflowPage } from "@/pages/ChallengeWorkflowPage";
 import { FactsPage } from "@/pages/FactsPage";
 import { BlackboardPage } from "@/pages/BlackboardPage";
 import { FindingsPage } from "@/pages/FindingsPage";
@@ -198,6 +199,7 @@ function createAppRouter() {
         { path: "/projects/:projectId/tasks", element: <TasksPage /> },
         { path: "/projects/:projectId/tasks/new", element: <TaskLaunchPage /> },
         { path: "/projects/:projectId/tasks/:taskId", element: <TaskDetailPage /> },
+		{ path: "/projects/:projectId/tasks/:taskId/challenges", element: <ChallengeWorkflowPage /> },
         // Legacy Facts bookmark → Blackboard Work filtered to ProjectFact.
         { path: "/projects/:projectId/facts", element: <FactsPage /> },
         { path: "/projects/:projectId/blackboard/*", element: <BlackboardPage /> },

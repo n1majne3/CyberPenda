@@ -2,6 +2,7 @@ package blackboardconclusion_test
 
 import (
 	"bytes"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -54,6 +55,41 @@ func TestDecodeAndCompileNewAttemptAgainstCreatedObjective(t *testing.T) {
 	}
 	if !reflect.DeepEqual(batch, want) {
 		t.Fatalf("Compile() = %#v, want %#v", batch, want)
+	}
+}
+
+func TestDecodeAndCompilePreservesProjectBlackboardKeyStyle(t *testing.T) {
+	raw := []byte(`{
+		"schema":"runtime-attempt-result/v1",
+		"base_revision":12,
+		"attempt":{
+			"key":"attempt/3124",
+			"create":true,
+			"summary":"Recorded the current challenge work without changing its Blackboard Key style.",
+			"outcome":"inconclusive"
+		},
+		"tested_targets":[{
+			"key":"objective/solve-nssctf-arena",
+			"expected_version":3
+		}],
+		"produced_targets":[]
+	}`)
+
+	validated, err := blackboardconclusion.Decode(raw)
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	batch, err := blackboardconclusion.Compile(validated.Result, "assisted-conclusion:preserve-key-style")
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	want := []blackboardv2.Change{
+		{Op: "create", Key: "attempt/3124", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Recorded the current challenge work without changing its Blackboard Key style."}},
+		{Op: "relate", From: "attempt/3124", Relation: "tests", To: "objective/solve-nssctf-arena"},
+		{Op: "transition", Key: "attempt/3124", Version: 1, Status: "inconclusive", Summary: "Recorded the current challenge work without changing its Blackboard Key style."},
+	}
+	if !reflect.DeepEqual(batch.Changes, want) {
+		t.Fatalf("Compile().Changes = %#v, want %#v", batch.Changes, want)
 	}
 }
 
@@ -160,5 +196,84 @@ func TestDecodeRejectsNullTargetArrays(t *testing.T) {
 	raw := []byte(`{"schema":"runtime-attempt-result/v1","base_revision":0,"attempt":{"key":"attempt:search","create":true,"summary":"Tested the search endpoint.","outcome":"failed"},"tested_targets":[{"key":"objective:search","create_objective":{"objective":"Test the search endpoint."}}],"produced_targets":null}`)
 	if _, err := blackboardconclusion.Decode(raw); err == nil {
 		t.Fatal("Decode() accepted a null produced_targets array")
+	}
+}
+
+func TestDecodeValidationDetailIsBounded(t *testing.T) {
+	valid := `{"schema":"runtime-attempt-result/v1","base_revision":2,"attempt":{"key":"attempt:search","expected_version":1,"summary":"Tested the search endpoint.","outcome":"failed"},"tested_targets":[{"key":"entity:search","expected_version":1}],"produced_targets":[]}`
+	tests := []struct {
+		name      string
+		raw       string
+		reason    blackboardconclusion.ValidationReason
+		fieldPath string
+		expected  string
+	}{
+		{name: "empty result", raw: ``, reason: blackboardconclusion.ValidationReasonEmptyResult},
+		{name: "oversized result", raw: strings.Repeat("x", (64<<10)+1), reason: blackboardconclusion.ValidationReasonResultTooLarge},
+		{name: "empty attempt key", raw: strings.Replace(valid, `"key":"attempt:search"`, `"key":""`, 1), reason: blackboardconclusion.ValidationReasonRuleViolation, fieldPath: "attempt.key", expected: "non-empty"},
+		{name: "unknown top-level field", raw: strings.Replace(valid, `"schema":`, `"surprise":true,"schema":`, 1), reason: blackboardconclusion.ValidationReasonUnknownField, fieldPath: "surprise"},
+		{name: "unknown nested field", raw: strings.Replace(valid, `"summary":`, `"surprise":true,"summary":`, 1), reason: blackboardconclusion.ValidationReasonUnknownField, fieldPath: "surprise"},
+		{name: "invalid enum", raw: strings.Replace(valid, `"outcome":"failed"`, `"outcome":"interrupted"`, 1), reason: blackboardconclusion.ValidationReasonInvalidEnumValue, fieldPath: "attempt.outcome", expected: "succeeded, failed, blocked, or inconclusive"},
+		{name: "oversized summary", raw: strings.Replace(valid, "Tested the search endpoint.", strings.Repeat("x", 1100), 1), reason: blackboardconclusion.ValidationReasonOversizedValue, fieldPath: "attempt.summary", expected: "1024"},
+		{name: "oversized key", raw: strings.Replace(valid, `"key":"attempt:search"`, `"key":"attempt:`+strings.Repeat("y", 200)+`"`, 1), reason: blackboardconclusion.ValidationReasonOversizedValue, fieldPath: "attempt.key", expected: "96"},
+		{name: "missing base revision", raw: strings.Replace(valid, `"base_revision":2,`, "", 1), reason: blackboardconclusion.ValidationReasonMissingField, fieldPath: "base_revision"},
+		{name: "duplicate field", raw: strings.Replace(valid, `"base_revision":2,`, `"base_revision":2,"base_revision":1,`, 1), reason: blackboardconclusion.ValidationReasonDuplicateField, fieldPath: "base_revision"},
+		{name: "trailing JSON", raw: valid + `{}`, reason: blackboardconclusion.ValidationReasonInvalidJSON, expected: "exactly one JSON object"},
+		{name: "empty tested targets", raw: strings.Replace(valid, `"tested_targets":[{"key":"entity:search","expected_version":1}]`, `"tested_targets":[]`, 1), reason: blackboardconclusion.ValidationReasonRuleViolation, fieldPath: "tested_targets", expected: "non-empty"},
+		{name: "null produced targets", raw: strings.Replace(valid, `"produced_targets":[]`, `"produced_targets":null`, 1), reason: blackboardconclusion.ValidationReasonRuleViolation, fieldPath: "produced_targets", expected: "null"},
+		{name: "succeeded without produced targets", raw: strings.Replace(valid, `"outcome":"failed"`, `"outcome":"succeeded"`, 1), reason: blackboardconclusion.ValidationReasonRuleViolation, fieldPath: "produced_targets", expected: "produced"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := blackboardconclusion.Decode([]byte(test.raw))
+			if err == nil {
+				t.Fatal("Decode() accepted an invalid result")
+			}
+			detail := blackboardconclusion.DecodeDetailOf(err)
+			if detail.Reason != test.reason {
+				t.Fatalf("DecodeDetailOf() reason = %q, want %q (error %v)", detail.Reason, test.reason, err)
+			}
+			if detail.FieldPath != test.fieldPath {
+				t.Fatalf("DecodeDetailOf() field path = %q, want %q", detail.FieldPath, test.fieldPath)
+			}
+			if test.expected != "" && !strings.Contains(detail.Expected, test.expected) {
+				t.Fatalf("DecodeDetailOf() expected = %q, want it to contain %q", detail.Expected, test.expected)
+			}
+			bounded := fmt.Sprintf("%#v", detail)
+			for _, forbidden := range []string{test.raw} {
+				if forbidden != "" && strings.Contains(bounded, forbidden) {
+					t.Fatalf("DecodeDetailOf() leaked raw result %q: %s", forbidden, bounded)
+				}
+			}
+		})
+	}
+}
+
+func TestDecodeValidationDetailBoundsUnknownFieldName(t *testing.T) {
+	longName := "surprise-" + strings.Repeat("z", 512)
+	raw := `{"schema":"runtime-attempt-result/v1","base_revision":0,"` + longName + `":true}`
+	_, err := blackboardconclusion.Decode([]byte(raw))
+	if err == nil {
+		t.Fatal("Decode() accepted an unknown field")
+	}
+	detail := blackboardconclusion.DecodeDetailOf(err)
+	if detail.Reason != blackboardconclusion.ValidationReasonUnknownField {
+		t.Fatalf("DecodeDetailOf() reason = %q, want unknown_field", detail.Reason)
+	}
+	if len(detail.FieldPath) > 96 {
+		t.Fatalf("DecodeDetailOf() unbounded field path of %d bytes: %q", len(detail.FieldPath), detail.FieldPath)
+	}
+	if !strings.HasPrefix(detail.FieldPath, "surprise-") {
+		t.Fatalf("DecodeDetailOf() field path = %q, want bounded surprise- prefix", detail.FieldPath)
+	}
+	if strings.Contains(detail.FieldPath, strings.Repeat("z", 100)) {
+		t.Fatalf("DecodeDetailOf() kept the full raw field name: %q", detail.FieldPath)
+	}
+}
+
+func TestDecodeDetailOfFallsBackToGenericReason(t *testing.T) {
+	detail := blackboardconclusion.DecodeDetailOf(fmt.Errorf("unrelated transport failure"))
+	if detail.Reason != blackboardconclusion.ValidationReasonInvalidResult || detail.FieldPath != "" || detail.Expected != "" {
+		t.Fatalf("DecodeDetailOf() = %#v, want generic invalid_result", detail)
 	}
 }

@@ -28,7 +28,7 @@ func TestLaunchTaskRunsFakeRuntimeAndStreamsEvents(t *testing.T) {
 	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 
 	body := []byte(`{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":` + quoteJSON(profileID) + `,
 		"runner":"sandbox"
 	}`)
@@ -107,12 +107,34 @@ func TestLaunchTaskRunsFakeRuntimeAndStreamsEvents(t *testing.T) {
 	}
 }
 
+func TestLaunchTaskRejectsMissingTaskType(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","kind":"pentest","scope":{"domains":["example.com"]}}`)
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
+	body := []byte(`{
+		"goal":"enumerate example.com",
+		"runtime_profile_id":` + quoteJSON(profileID) + `,
+		"runner":"sandbox"
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("missing Task Type status = %d, want 400; body=%s", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), "Task Type must be pentest or ctf_challenge") {
+		t.Fatalf("missing Task Type error = %s", resp.Body.String())
+	}
+}
+
 func TestGetTaskIncludesLatestContinuation(t *testing.T) {
 	server := newDaemon(t)
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
 	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"sandbox"
 	}`)
@@ -170,12 +192,150 @@ func TestGetTaskIncludesLatestContinuation(t *testing.T) {
 	}
 }
 
+// #205: A Task whose latest Task Runtime Configuration references a deleted
+// Runtime Profile must remain readable. The captured configuration is
+// self-contained, so task detail falls back to the Task's own launch profile
+// instead of failing the whole page.
+func TestGetTaskSurvivesDeletedLatestRuntimeProfile(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	profileA := createRuntimeProfile(t, server, `{"name":"Fake A","provider":"fake"}`)
+	profileB := createRuntimeProfile(t, server, `{"name":"Fake B","provider":"fake"}`)
+	taskID := createTask(t, server, projectID, `{
+		"type":"pentest","goal":"enumerate example.com",
+		"runtime_profile_id":`+quoteJSON(profileA)+`,
+		"runner":"sandbox"
+	}`)
+	waitForTaskStatus(t, server, projectID, taskID, "completed")
+
+	// Steer onto profile B, which records a second Task Runtime Configuration
+	// Version referencing profile B, then delete profile B so the latest
+	// configuration version points at a missing profile while the Task's own
+	// launch Runtime Profile still exists.
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/steer", bytes.NewReader([]byte(`{
+		"directive":"continue",
+		"runtime_profile_id":`+quoteJSON(profileB)+`,
+		"submitted_by":"operator"
+	}`)))
+	req.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected steer status 200, got %d with body %s", resp.Code, resp.Body.String())
+	}
+
+	del := httptest.NewRecorder()
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/runtime-profiles/"+profileB, nil)
+	server.ServeHTTP(del, delReq)
+	if del.Code != http.StatusNoContent {
+		t.Fatalf("expected delete profile status 204, got %d with body %s", del.Code, del.Body.String())
+	}
+
+	get := httptest.NewRecorder()
+	getReq := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID, nil)
+	server.ServeHTTP(get, getReq)
+	if get.Code != http.StatusOK {
+		t.Fatalf("expected get task status 200 after deleting the latest profile, got %d with body %s", get.Code, get.Body.String())
+	}
+
+	var found struct {
+		RuntimeControls struct {
+			RuntimeProvider string `json:"runtime_provider"`
+		} `json:"runtime_controls"`
+		LatestContinuation *struct {
+			RuntimeProvider string `json:"runtime_provider"`
+		} `json:"latest_continuation"`
+	}
+	if err := json.NewDecoder(get.Body).Decode(&found); err != nil {
+		t.Fatalf("decode task detail: %v", err)
+	}
+	if found.RuntimeControls.RuntimeProvider != "fake" {
+		t.Fatalf("expected fallback to launch profile provider fake, got %q", found.RuntimeControls.RuntimeProvider)
+	}
+	if found.LatestContinuation == nil || found.LatestContinuation.RuntimeProvider != "fake" {
+		t.Fatalf("expected latest continuation from the fake runtime, got %#v", found.LatestContinuation)
+	}
+}
+
+// #205: When both the latest Task Runtime Configuration Version profile and the
+// Task's own launch Runtime Profile are deleted, task detail must still render
+// with degraded controls instead of a 500, so a deep link into a historical
+// Task never dies. Queue steering is explicitly unavailable because no steer
+// could resolve a target profile.
+func TestGetTaskDegradesWhenEveryRuntimeProfileIsDeleted(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
+	taskID := createTask(t, server, projectID, `{
+		"type":"pentest","goal":"enumerate example.com",
+		"runtime_profile_id":`+quoteJSON(profileID)+`,
+		"runner":"sandbox"
+	}`)
+	waitForTaskStatus(t, server, projectID, taskID, "completed")
+
+	del := httptest.NewRecorder()
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/runtime-profiles/"+profileID, nil)
+	server.ServeHTTP(del, delReq)
+	if del.Code != http.StatusNoContent {
+		t.Fatalf("expected delete profile status 204, got %d with body %s", del.Code, del.Body.String())
+	}
+
+	get := httptest.NewRecorder()
+	getReq := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID, nil)
+	server.ServeHTTP(get, getReq)
+	if get.Code != http.StatusOK {
+		t.Fatalf("expected get task status 200 after deleting every profile, got %d with body %s", get.Code, get.Body.String())
+	}
+
+	var found struct {
+		RuntimeControls struct {
+			RuntimeProvider     string `json:"runtime_provider"`
+			NativeResumeReason  string `json:"native_resume_reason"`
+			QueueSteerAvailable bool   `json:"queue_steer_available"`
+		} `json:"runtime_controls"`
+		LatestContinuation *struct {
+			RuntimeProvider string `json:"runtime_provider"`
+		} `json:"latest_continuation"`
+	}
+	if err := json.NewDecoder(get.Body).Decode(&found); err != nil {
+		t.Fatalf("decode task detail: %v", err)
+	}
+	if found.RuntimeControls.RuntimeProvider != "" {
+		t.Fatalf("expected degraded empty runtime provider, got %q", found.RuntimeControls.RuntimeProvider)
+	}
+	if !strings.Contains(found.RuntimeControls.NativeResumeReason, "unsupported") {
+		t.Fatalf("expected degraded native resume reason, got %q", found.RuntimeControls.NativeResumeReason)
+	}
+	if found.RuntimeControls.QueueSteerAvailable {
+		t.Fatal("expected queue steering to be unavailable with no resolvable Runtime Profile")
+	}
+	if found.LatestContinuation == nil || found.LatestContinuation.RuntimeProvider != "fake" {
+		t.Fatalf("expected latest continuation from the fake runtime, got %#v", found.LatestContinuation)
+	}
+
+	// The steer boundary must reject with the closed reason vocabulary instead
+	// of recording a config version with an empty Runtime Profile.
+	steer := httptest.NewRecorder()
+	steerReq := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/steer", bytes.NewReader([]byte(`{
+		"directive":"continue",
+		"submitted_by":"operator"
+	}`)))
+	steerReq.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(steer, steerReq)
+	if steer.Code != http.StatusBadRequest {
+		t.Fatalf("expected steer status 400 with no resolvable profile, got %d with body %s", steer.Code, steer.Body.String())
+	}
+	if !strings.Contains(steer.Body.String(), "runtime profile not found") {
+		t.Fatalf("expected closed reason 'runtime profile not found', got %s", steer.Body.String())
+	}
+}
+
 func TestDeleteCompletedTaskRemovesItFromTaskSurfaces(t *testing.T) {
 	server := newDaemon(t)
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
 	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"sandbox"
 	}`)
@@ -248,7 +408,7 @@ func TestDeleteRunningTaskIsRejected(t *testing.T) {
 		Model:      "claude-sonnet-4",
 	})
 	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"host",
 		"run_controls":{"host_activated":true}
@@ -286,7 +446,7 @@ func TestClaudeCodeRunningTaskAllowsInterruptSteer(t *testing.T) {
 		Model:      "claude-sonnet-4",
 	})
 	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"host",
 		"run_controls":{"host_activated":true}
@@ -336,7 +496,7 @@ func TestPiRunningTaskAllowsInterruptSteer(t *testing.T) {
 		Model:      "DeepSeek-V4-Pro",
 	})
 	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"host",
 		"run_controls":{"host_activated":true}
@@ -386,7 +546,7 @@ func TestPiTaskDetailDiscoversPersistedNativeSession(t *testing.T) {
 		Model:      "DeepSeek-V4-Pro",
 	})
 	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"host",
 		"run_controls":{"host_activated":true}
@@ -450,7 +610,7 @@ func TestRunningNativeRuntimeWithoutSessionDisablesInterruptSteer(t *testing.T) 
 		Model:      "gpt-test",
 	})
 	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"host",
 		"run_controls":{"host_activated":true}
@@ -489,7 +649,7 @@ func TestTaskTranscriptEndpointProjectsRetainedEvents(t *testing.T) {
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
 	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 	taskID := createTask(t, server, projectID, `{
-		"goal":"map app",
+		"type":"pentest","goal":"map app",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"sandbox"
 	}`)
@@ -527,7 +687,7 @@ func TestTaskTranscriptEndpointRejectsCrossProjectTask(t *testing.T) {
 	projectB := createProject(t, server, `{"name":"B","scope":{"domains":["b.example"]}}`)
 	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 	taskID := createTask(t, server, projectA, `{
-		"goal":"map app",
+		"type":"pentest","goal":"map app",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"sandbox"
 	}`)
@@ -547,7 +707,7 @@ func TestLaunchTaskFailsPreflightWhenRuntimeProfileMissing(t *testing.T) {
 
 	resp := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks", bytes.NewReader([]byte(`{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":"missing-profile",
 		"runner":"sandbox"
 	}`)))
@@ -608,7 +768,7 @@ func TestLaunchTaskUsesProjectDefaultsWhenRuntimeControlsAreOmitted(t *testing.T
 	}`)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks", bytes.NewReader([]byte(`{
-		"goal":"enumerate example.com"
+		"type":"pentest","goal":"enumerate example.com"
 	}`)))
 	req.Header.Set("Content-Type", "application/json")
 	resp := httptest.NewRecorder()
@@ -653,7 +813,7 @@ func TestLaunchTaskUsesRuntimeProfileProviderAdapter(t *testing.T) {
 	})
 
 	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"host",
 		"run_controls":{"host_activated":true}
@@ -702,7 +862,7 @@ func TestLaunchTaskReturnsBeforeRuntimeProcessCompletes(t *testing.T) {
 
 	start := time.Now()
 	taskID := createTask(t, server, projectID, `{
-		"goal":"run slow provider",
+		"type":"pentest","goal":"run slow provider",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"host",
 		"run_controls":{"host_activated":true}
@@ -758,7 +918,7 @@ func TestLaunchTaskWrapsProviderCommandInSandboxRunner(t *testing.T) {
 	})
 
 	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"sandbox"
 	}`)
@@ -821,7 +981,7 @@ func TestLaunchTaskCreatesHostProxyOnlySandboxNetworkBeforeContainerStart(t *tes
 	})
 
 	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"sandbox",
 		"run_controls":{"sandbox_network":"host_proxy_only"}
@@ -879,7 +1039,7 @@ func TestSandboxResumeRebuildsContainerWithPersistentTaskMountAndRuntimeHome(t *
 	})
 
 	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"sandbox"
 	}`)
@@ -952,7 +1112,7 @@ func TestSteerTaskRecordsDirectiveAndRuntimeProfileSwitch(t *testing.T) {
 	profileA := createRuntimeProfile(t, server, `{"name":"Fake A","provider":"fake"}`)
 	profileB := createRuntimeProfile(t, server, `{"name":"Fake B","provider":"fake"}`)
 	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileA)+`,
 		"runner":"sandbox"
 	}`)
@@ -1027,7 +1187,7 @@ func TestTaskRoutesRejectUnknownProject(t *testing.T) {
 		body   string
 	}{
 		{"list tasks", http.MethodGet, "/api/projects/" + bogus + "/tasks", ""},
-		{"create task", http.MethodPost, "/api/projects/" + bogus + "/tasks", `{"goal":"x","runner":"sandbox"}`},
+		{"create task", http.MethodPost, "/api/projects/" + bogus + "/tasks", `{"type":"pentest","goal":"x","runner":"sandbox"}`},
 		{"get task", http.MethodGet, "/api/projects/" + bogus + "/tasks/anything", ""},
 		{"task events", http.MethodGet, "/api/projects/" + bogus + "/tasks/anything/events", ""},
 		{"stop task", http.MethodPost, "/api/projects/" + bogus + "/tasks/anything/stop", ""},
@@ -1060,7 +1220,7 @@ func TestFreshResumeRejectsCrossProjectTaskWithoutEffect(t *testing.T) {
 	otherProjectID := createProject(t, server, `{"name":"Other","scope":{"domains":["other.example"]}}`)
 	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 	taskID := createTask(t, server, sourceProjectID, `{
-		"goal":"enumerate source.example",
+		"type":"pentest","goal":"enumerate source.example",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"sandbox"
 	}`)
@@ -1290,7 +1450,7 @@ func TestCreateTaskRecordsLoopbackRewriteEvent(t *testing.T) {
 	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 
 	taskID := createTask(t, server, projectID, `{
-		"goal":"recon http://127.0.0.1:3000 and find the score board",
+		"type":"pentest","goal":"recon http://127.0.0.1:3000 and find the score board",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"sandbox"
 	}`)
@@ -1315,7 +1475,7 @@ func TestCreateTaskOmitsRewriteEventForHostRunner(t *testing.T) {
 	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 
 	taskID := createTask(t, server, projectID, `{
-		"goal":"recon http://127.0.0.1:3000",
+		"type":"pentest","goal":"recon http://127.0.0.1:3000",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"host",
 		"run_controls":{"host_activated":true}
@@ -1333,7 +1493,7 @@ func TestCreateTaskOmitsRewriteEventWhenGoalHasNoLoopback(t *testing.T) {
 	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 
 	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com only",
+		"type":"pentest","goal":"enumerate example.com only",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"sandbox"
 	}`)
@@ -1350,7 +1510,7 @@ func TestSteerTaskRejectsRuntimeProviderChange(t *testing.T) {
 	fakeProfileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 	codexProfileID := createRuntimeProfile(t, server, `{"name":"Codex","provider":"codex","fields":{"model":"gpt-test"}}`)
 	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(fakeProfileID)+`,
 		"runner":"sandbox"
 	}`)
@@ -1378,7 +1538,7 @@ func TestResumeTaskUsesSteeredRuntimeProfileWhenProviderMatches(t *testing.T) {
 	profileA := createRuntimeProfile(t, server, `{"name":"Fake A","provider":"fake"}`)
 	profileB := createRuntimeProfile(t, server, `{"name":"Fake B","provider":"fake"}`)
 	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileA)+`,
 		"runner":"sandbox"
 	}`)
@@ -1425,7 +1585,7 @@ func TestQueueSteerRecordsSameProviderRuntimeProfileForNextContinuation(t *testi
 	profileA := createRuntimeProfile(t, server, `{"name":"Fake A","provider":"fake"}`)
 	profileB := createRuntimeProfile(t, server, `{"name":"Fake B","provider":"fake"}`)
 	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileA)+`,
 		"runner":"sandbox"
 	}`)
@@ -1492,7 +1652,7 @@ func TestQueueSteerRecordsSameRuntimeModelSelection(t *testing.T) {
 		Model:      "gpt-test",
 	})
 	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"host",
 		"run_controls":{"host_activated":true}
@@ -1589,7 +1749,7 @@ func TestResumeTaskUsesCodexNativeResumeWhenSessionExists(t *testing.T) {
 	})
 
 	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"host",
 		"run_controls":{"host_activated":true}
@@ -1635,7 +1795,7 @@ func TestResumeTaskUsesContinuationModelSelectionWithoutDroppingRuntimeFields(t 
 		Model:      "gpt-test",
 	})
 	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"host",
 		"run_controls":{"host_activated":true}
@@ -1733,7 +1893,7 @@ func TestResumeTaskFallsBackToFreshContinuationWhenNativeSessionIsMissing(t *tes
 	})
 
 	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"host",
 		"run_controls":{"host_activated":true}
@@ -1785,7 +1945,7 @@ func TestSteerTaskInterruptsActiveRunAndLaunchesResumedContinuation(t *testing.T
 	})
 
 	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"host",
 		"run_controls":{"host_activated":true}
@@ -1843,7 +2003,7 @@ func TestClaudeSteerNativeResumeKeepsSettingsAndMCPArgs(t *testing.T) {
 	})
 
 	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"host",
 		"run_controls":{"host_activated":true}
@@ -1909,7 +2069,7 @@ func TestSteerTaskRejectsActiveRunWithoutNativeSessionBeforeStopping(t *testing.
 	})
 
 	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"host",
 		"run_controls":{"host_activated":true}
@@ -2004,7 +2164,7 @@ func TestSandboxSteerConfirmsContainerExitBeforeNativeResume(t *testing.T) {
 	})
 
 	taskID := createTask(t, server, projectID, `{
-		"goal":"enumerate example.com",
+		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"sandbox"
 	}`)

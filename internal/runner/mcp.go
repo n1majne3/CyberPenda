@@ -10,10 +10,14 @@ import (
 
 	"pentest/internal/owner"
 	"pentest/internal/project"
+	"pentest/internal/runtime"
 	"pentest/internal/runtimeprofile"
 )
 
-const trustedMCPServerName = "pentest"
+// trustedMCPServerName is the one registered identity of the trusted Blackboard
+// v2 Project Interface (ADR 0014). Runtime observations classify tools against
+// this same registration, so the name must not drift here.
+const trustedMCPServerName = runtime.TrustedProjectInterfaceServerName
 
 // RuntimeOwnerContext carries one validated owner binding into launch
 // projection. Mixed Task/Session identities cannot be represented.
@@ -126,13 +130,9 @@ func claudeTrustedMCPAllowedTools(servers []runtimeprofile.MCPServer) []string {
 		if strings.TrimSpace(server.Name) != trustedMCPServerName || server.Mode != runtimeprofile.MCPServerTrusted {
 			continue
 		}
-		tools := []string{
-			"blackboard_change", "blackboard_read", "blackboard_history",
-			"blackboard_retain_evidence", "blackboard_checkpoint_attempt", "blackboard_finish",
-		}
-		allowed := make([]string, 0, len(tools))
-		for _, name := range tools {
-			allowed = append(allowed, "mcp__"+trustedMCPServerName+"__"+name)
+		allowed := make([]string, 0, len(runtime.TrustedProjectInterfaceOperations()))
+		for _, op := range runtime.TrustedProjectInterfaceOperations() {
+			allowed = append(allowed, runtime.TrustedProjectInterfaceToolName(op))
 		}
 		return allowed
 	}
@@ -242,7 +242,7 @@ func writeRuntimeSmokeInstructions(workdir string, ctx RuntimeOwnerContext) erro
 	b.WriteString("\nRead `.pentest/context.json` or the matching `PENTEST_*` env vars if needed.\n")
 	b.WriteString("\n## Required workflow\n\n")
 	b.WriteString("Use trusted MCP on every blackboard write. Do not rely on chat alone.\n\n")
-	b.WriteString("1. Apply durable semantic milestones with `blackboard_change`; use `blackboard_read` and `blackboard_history` before resolving version conflicts.\n")
+	b.WriteString("1. Record a completed Attempt in one call with `blackboard_record_attempt_result`. Use `blackboard_change` for other semantic milestones, and use `blackboard_read` or `blackboard_history` before resolving version conflicts.\n")
 	if ctx.Owner.IsTask() {
 		b.WriteString("2. Retain reproducible proof with `blackboard_retain_evidence`.\n")
 	} else {

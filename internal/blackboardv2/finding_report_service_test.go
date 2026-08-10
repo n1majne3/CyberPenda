@@ -378,7 +378,7 @@ func TestFindingCanBeConfirmedByCurrentEvidenceAndNotByMissingEvidence(t *testin
 		t.Fatalf("create Project: %v", err)
 	}
 	tasks := task.NewService(db, projects)
-	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Goal: "Confirm issue", Runner: task.RunnerSandbox})
+	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "Confirm issue", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create Task: %v", err)
 	}
@@ -589,7 +589,7 @@ func TestReportAndCTFEvidenceIsRelationshipDerived(t *testing.T) {
 		if err != nil {
 			t.Fatalf("seed pentest graph: %v", err)
 		}
-		createdTask, err := tasks.Create(task.CreateRequest{ProjectID: pentestProject.ID, Goal: "Capture proof", Runner: task.RunnerSandbox})
+		createdTask, err := tasks.Create(task.CreateRequest{ProjectID: pentestProject.ID, Type: task.TypePentest, Goal: "Capture proof", Runner: task.RunnerSandbox})
 		if err != nil {
 			t.Fatalf("create pentest Task: %v", err)
 		}
@@ -664,7 +664,7 @@ func TestReportAndCTFEvidenceIsRelationshipDerived(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed CTF graph: %v", err)
 	}
-	createdCTFTask, err := tasks.Create(task.CreateRequest{ProjectID: ctfProject.ID, Goal: "Solve", Runner: task.RunnerSandbox})
+	createdCTFTask, err := tasks.Create(task.CreateRequest{ProjectID: ctfProject.ID, Type: task.TypeCTFChallenge, Goal: "Solve", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatalf("create CTF Task: %v", err)
 	}
