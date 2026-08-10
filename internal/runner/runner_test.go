@@ -145,13 +145,17 @@ func TestBuildSandboxCommandConstructsContainerLaunchWithoutExecution(t *testing
 	if command.Program != "docker" {
 		t.Fatalf("expected docker program, got %q", command.Program)
 	}
+	absTaskRoot, err := filepath.Abs(layout.TaskRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
 	expectedArgs := []string{
 		"create",
 		"--cidfile",
 		filepath.Join(layout.Logs, "container.cid"),
 		"--add-host=host.docker.internal:host-gateway",
-		"-v",
-		layout.TaskRoot + ":/task",
+		"--mount",
+		"type=bind,src=" + runner.FormatContainerHostPath(absTaskRoot) + ",dst=/task",
 		"-w",
 		"/task/workdir",
 		"-e",
@@ -481,16 +485,13 @@ func TestBuildSandboxCommandUsesAbsoluteBindMountForRelativeTaskRoot(t *testing.
 	if err != nil {
 		t.Fatalf("absolute task root: %v", err)
 	}
-	wantMount := absoluteTaskRoot + ":/task"
+	wantMount := "type=bind,src=" + runner.FormatContainerHostPath(absoluteTaskRoot) + ",dst=/task"
 	for i, arg := range command.Args {
-		if arg == "-v" && i+1 < len(command.Args) {
-			if command.Args[i+1] != wantMount {
-				t.Fatalf("expected absolute bind mount %q, got %q", wantMount, command.Args[i+1])
-			}
+		if arg == "--mount" && i+1 < len(command.Args) && command.Args[i+1] == wantMount {
 			return
 		}
 	}
-	t.Fatalf("expected volume mount in docker args: %#v", command.Args)
+	t.Fatalf("expected absolute bind mount %q in docker args: %#v", wantMount, command.Args)
 }
 
 func TestHostRunnerRequiresExplicitActivation(t *testing.T) {

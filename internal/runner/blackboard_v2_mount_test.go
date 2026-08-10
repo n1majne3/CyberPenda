@@ -29,7 +29,8 @@ func TestBuildSandboxCommandMountsPentestDirectoryReadOnlyWithoutSnapshotInodeMo
 		t.Fatalf("build sandbox command: %v", err)
 	}
 	joined := strings.Join(command.Args, " ")
-	if !strings.Contains(joined, "src="+filepath.Join(layout.Workdir, ".pentest")+",dst=/task/workdir/.pentest,readonly") {
+	wantSrc := runner.FormatContainerHostPath(filepath.Join(layout.Workdir, ".pentest"))
+	if !strings.Contains(joined, "src="+wantSrc+",dst=/task/workdir/.pentest,readonly") {
 		t.Fatalf("approved .pentest parent is not mounted read-only: %v", command.Args)
 	}
 	for _, forbidden := range []string{"src=" + filepath.Join(layout.Workdir, ".pentest", "blackboard.json"), "src=" + filepath.Join(layout.Workdir, ".pentest", "scope.json")} {

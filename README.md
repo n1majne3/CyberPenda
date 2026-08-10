@@ -128,7 +128,7 @@ Sandbox network notes:
 
 - Default bridge works with OrbStack, Docker, and rootful Podman.
 - Opt-in **Sandbox VPN TUN** (`run_controls.sandbox_vpn_tun`) mounts `/dev/net/tun` and grants `NET_ADMIN` for OpenVPN. It cannot combine with `host_proxy_only`, and **rootless Podman fails preflight** for that option.
-- On Windows the daemon runs natively; only sandbox containers run in the Desktop WSL/Linux VM.
+- On Windows the daemon runs **natively on Windows**; only sandbox containers run in the Docker/Podman Desktop **WSL/Linux VM**. Task bind mounts use `--mount type=bind` with Windows paths normalized to `C:/...` form so drive letters do not break mount parsing. Share the runtime-root drive in Desktop File Sharing if create fails on mounts.
 | `-task-volume` | `PENTEST_TASK_VOLUME` | (empty; Compose sets the named data volume) |
 | `-task-volume-root` | `PENTEST_TASK_VOLUME_ROOT` | `/data` when `-task-volume` is set |
 | `-auth-token` | `PENTEST_AUTH_TOKEN` | (required for non-loopback binds) |

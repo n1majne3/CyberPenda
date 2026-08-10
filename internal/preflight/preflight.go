@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 
 	"pentest/internal/credential"
@@ -531,10 +532,14 @@ func (s *Service) checkContainerEngine(ctx context.Context, result *Result, requ
 		}
 		return
 	}
+	detail := info.Detail
+	if runtime.GOOS == "windows" {
+		detail += "; Windows host paths use bind mounts into the Desktop Linux VM (ADR 0025)"
+	}
 	result.add(Check{
 		Name:   "container_engine",
 		Status: CheckPass,
-		Detail: info.Detail,
+		Detail: detail,
 	})
 	if !request.SandboxVPNTun {
 		return

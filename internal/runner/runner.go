@@ -212,9 +212,12 @@ func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 		}
 	}
 	if taskVolume == "" {
-		args = append(args, "-v", taskRoot+":/task")
+		// Use --mount (not -v) so Windows drive letters never collide with the
+		// host:container separator when the native Windows daemon bind-mounts
+		// into a Desktop WSL Linux container (ADR 0025).
+		args = append(args, bindMountArgs(taskRoot, "/task", false)...)
 		if separateWorkdir {
-			args = append(args, "--mount", "type=bind,src="+workdir+",dst=/task/workdir")
+			args = append(args, bindMountArgs(workdir, "/task/workdir", false)...)
 		}
 	} else {
 		args = append(args, "--mount", "type=volume,src="+taskVolume+",dst=/task,"+volumeSubpathOption+"="+filepath.ToSlash(taskVolumeSubpath))
@@ -222,7 +225,7 @@ func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 			if workdirSubpath, insideVolume := namedVolumeSubpath(volumeRoot, workdir); insideVolume {
 				args = append(args, "--mount", "type=volume,src="+taskVolume+",dst=/task/workdir,"+volumeSubpathOption+"="+filepath.ToSlash(workdirSubpath))
 			} else {
-				args = append(args, "--mount", "type=bind,src="+workdir+",dst=/task/workdir")
+				args = append(args, bindMountArgs(workdir, "/task/workdir", false)...)
 			}
 		}
 	}
@@ -240,7 +243,7 @@ func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 			}
 			source := filepath.Join(taskRoot, clean)
 			target := "/task/" + filepath.ToSlash(clean)
-			args = append(args, "--mount", "type=bind,src="+source+",dst="+target+",readonly")
+			args = append(args, bindMountArgs(source, target, true)...)
 		}
 		for _, relativePath := range request.ReadOnlyTaskDirs {
 			clean, source, err := confinedReadOnlyTaskDir(taskRoot, relativePath)
@@ -248,7 +251,7 @@ func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 				return Command{}, err
 			}
 			target := "/task/" + filepath.ToSlash(clean)
-			args = append(args, "--mount", "type=bind,src="+source+",dst="+target+",readonly")
+			args = append(args, bindMountArgs(source, target, true)...)
 		}
 	} else {
 		readonlyDirs := make([]string, 0, len(request.ReadOnlyTaskDirs)+len(request.ReadOnlyTaskFiles))
