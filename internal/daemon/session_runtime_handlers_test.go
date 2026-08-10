@@ -852,18 +852,26 @@ func TestSessionLaunchUsesProjectFreeOwnerAndPersistentProviderControls(t *testi
 	if err != nil || active == nil || active.Number != 2 {
 		t.Fatalf("Session replacement continuation = %#v, %v", active, err)
 	}
-	events, err := server.sessions.Events(created.ID)
-	if err != nil {
-		t.Fatalf("read Session replacement events: %v", err)
-	}
+	var events []session.Event
 	var sawReplacement, sawAttachment bool
-	for _, event := range events {
-		if event.Payload["continuation_id"] == active.ID {
-			sawReplacement = true
+	eventDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(eventDeadline) {
+		events, err = server.sessions.Events(created.ID)
+		if err != nil {
+			t.Fatalf("read Session replacement events: %v", err)
 		}
-		if event.Kind == session.EventKindAttachment && event.Payload["filename"] == "interrupt-notes.txt" {
-			sawAttachment = event.Payload["continuation_id"] == launchRequest.Continuation.ID
+		for _, event := range events {
+			if event.Payload["continuation_id"] == active.ID {
+				sawReplacement = true
+			}
+			if event.Kind == session.EventKindAttachment && event.Payload["filename"] == "interrupt-notes.txt" {
+				sawAttachment = event.Payload["continuation_id"] == launchRequest.Continuation.ID
+			}
 		}
+		if sawReplacement {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	if !sawReplacement {
 		t.Fatalf("Session replacement emitted no events on continuation %q: %#v", active.ID, events)
