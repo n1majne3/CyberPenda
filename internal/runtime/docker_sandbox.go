@@ -83,6 +83,24 @@ func DockerSandboxCreateArgs(adapter Adapter) ([]string, bool) {
 	return nil, false
 }
 
+// DockerSandboxContainerCLI returns the container executable configured on a
+// Docker sandbox adapter (docker or podman). Pi session-tail wrappers unwrap.
+// Callers use this so the provider-session bridge matches the launch-selected
+// CLI instead of a daemon-default "docker" hard-code.
+func DockerSandboxContainerCLI(adapter Adapter) (string, bool) {
+	for adapter != nil {
+		switch a := adapter.(type) {
+		case *dockerSandboxAdapter:
+			return strings.TrimSpace(a.config.ContainerCLI), true
+		case *piSessionTailAdapter:
+			adapter = a.inner
+		default:
+			return "", false
+		}
+	}
+	return "", false
+}
+
 func (a *dockerSandboxAdapter) Name() string {
 	if strings.TrimSpace(a.config.Name) != "" {
 		return a.config.Name

@@ -353,3 +353,41 @@ func TestDockerSandboxAdapterCancelsImagePullWithoutCreatingContainer(t *testing
 		t.Fatalf("expected canceled pull lifecycle, got %v", phases)
 	}
 }
+
+func TestDockerSandboxContainerCLIExtractsConfiguredCLI(t *testing.T) {
+	adapter := runtime.NewDockerSandboxAdapter(runtime.DockerSandboxConfig{
+		Name: "claude_code", ContainerCLI: "podman", Image: "sandbox:test",
+		CreateArgs: []string{"create", "-i", "sandbox:test", "claude"},
+	})
+	cli, ok := runtime.DockerSandboxContainerCLI(adapter)
+	if !ok {
+		t.Fatal("expected docker sandbox adapter")
+	}
+	if cli != "podman" {
+		t.Fatalf("ContainerCLI = %q, want podman", cli)
+	}
+}
+
+func TestDockerSandboxContainerCLIUnwrapsPiSessionTail(t *testing.T) {
+	inner := runtime.NewDockerSandboxAdapter(runtime.DockerSandboxConfig{
+		Name: "pi", ContainerCLI: "/usr/bin/podman", Image: "sandbox:test",
+		CreateArgs: []string{"create", "sandbox:test", "pi"},
+	})
+	adapter := runtime.NewPiSessionTailAdapter(inner, t.TempDir())
+	cli, ok := runtime.DockerSandboxContainerCLI(adapter)
+	if !ok {
+		t.Fatal("expected docker sandbox under pi tail wrapper")
+	}
+	if cli != "/usr/bin/podman" {
+		t.Fatalf("ContainerCLI = %q, want /usr/bin/podman", cli)
+	}
+}
+
+func TestDockerSandboxContainerCLIRejectsNonDockerAdapter(t *testing.T) {
+	adapter := runtime.NewCommandAdapter(runtime.CommandAdapterConfig{
+		Name: "host", Program: "echo", Args: []string{"hi"},
+	})
+	if _, ok := runtime.DockerSandboxContainerCLI(adapter); ok {
+		t.Fatal("host command adapter must not report a container CLI")
+	}
+}

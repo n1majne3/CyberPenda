@@ -462,6 +462,24 @@ func cleanupHostPiArtifacts(agentDir string) {
 	_ = os.RemoveAll(filepath.Join(agentDir, "sessions"))
 }
 
+// sandboxBridgeDockerForLaunch prefers the container CLI from the launch
+// Docker sandbox adapter (Task/Session Run Controls) when the factory transport
+// is the production Docker CLI seam. Mock transports stay unchanged so tests
+// keep full control of Create/Start without a real CLI.
+func sandboxBridgeDockerForLaunch(base runtime.SandboxBridgeDocker, adapter runtime.Adapter) runtime.SandboxBridgeDocker {
+	cli, ok := runtime.DockerSandboxContainerCLI(adapter)
+	if !ok || strings.TrimSpace(cli) == "" {
+		return base
+	}
+	switch docker := base.(type) {
+	case runtime.DockerCLISandboxBridgeDocker:
+		docker.ContainerCLI = strings.TrimSpace(cli)
+		return docker
+	default:
+		return base
+	}
+}
+
 func (f *ProductionProviderSessionFactory) openSandbox(ctx context.Context, request ProviderSessionLaunchRequest) (ProviderSessionBinding, error) {
 	if request.Provider != runtimeprofile.ProviderClaudeCode && request.Provider != runtimeprofile.ProviderCodex && request.Provider != runtimeprofile.ProviderPi {
 		return ProviderSessionBinding{}, fmt.Errorf("provider %q is not supported by production provider session factory", request.Provider)
@@ -531,8 +549,9 @@ func (f *ProductionProviderSessionFactory) openSandbox(ctx context.Context, requ
 	}
 	var runAdapter *runtime.ProviderSessionRunAdapter
 	var runAdapterMu sync.RWMutex
+	bridgeDocker := sandboxBridgeDockerForLaunch(f.config.Docker, request.LegacyAdapter)
 	bridge, err := f.bridges.Bind(ctx, taskID, request.Continuation.ID, func() (*runtime.SandboxSessionBridge, error) {
-		bridge, err := runtime.NewSandboxSessionBridge(f.config.Docker, runtime.SandboxBridgeConfig{
+		bridge, err := runtime.NewSandboxSessionBridge(bridgeDocker, runtime.SandboxBridgeConfig{
 			TaskID: taskID, CreateArgs: createArgs, Diagnostics: f.config.Diagnostics,
 			ProtocolEmit: func(event runtime.SandboxBridgeEvent) {
 				runAdapterMu.RLock()

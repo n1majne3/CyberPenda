@@ -409,10 +409,8 @@ func (server *Server) buildSessionRuntimePlan(found session.Session, goal string
 	}
 	var stopConfirmation runtime.StopConfirmation
 	if containerIDFile != "" {
-		containerCLI := strings.TrimSpace(server.containerCLI)
-		if containerCLI == "" {
-			containerCLI = "docker"
-		}
+		// Match the launch-selected CLI (podman/docker), not only the daemon flag.
+		containerCLI := task.ResolveContainerCLI(input.ContainerCLI, server.containerCLI)
 		stopConfirmation = runtime.DockerContainerStopConfirmation(containerCLI, containerIDFile)
 	}
 	return sessionRuntimePlan{

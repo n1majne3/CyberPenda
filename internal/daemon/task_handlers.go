@@ -1036,7 +1036,9 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	}
 	var stopConfirmation runtime.StopConfirmation
 	if containerIDFile != "" {
-		stopConfirmation = runtime.DockerContainerStopConfirmation(server.containerCLI, containerIDFile)
+		// Match the launch-selected CLI (podman/docker), not only the daemon flag.
+		containerCLI := task.ResolveContainerCLI(created.RunControls.ContainerCLI, server.containerCLI)
+		stopConfirmation = runtime.DockerContainerStopConfirmation(containerCLI, containerIDFile)
 	}
 
 	return taskLaunchPlan{

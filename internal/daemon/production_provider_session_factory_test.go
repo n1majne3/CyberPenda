@@ -1235,3 +1235,54 @@ func TestHostCodexReservedConfigOverridesStayRejectedByValidateCustomArgs(t *tes
 		t.Fatalf("ValidateCustomArgs must allow non-conflicting -c foo=bar: %v", err)
 	}
 }
+
+
+// TestProductionProviderSessionFactoryUsesLegacyAdapterContainerCLI proves the
+// sandbox bridge invokes the launch-selected container CLI (podman) rather than
+// the daemon default "docker" on the factory transport.
+func TestProductionProviderSessionFactoryUsesLegacyAdapterContainerCLI(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "cli.log")
+	podman := filepath.Join(dir, "podman")
+	script := "#!/bin/sh\n" +
+		"echo \"$*\" >> " + logPath + "\n" +
+		"echo 'podman create refused for test' 1>&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(podman, []byte(script), 0o700); err != nil {
+		t.Fatalf("write podman stub: %v", err)
+	}
+	// Factory transport defaults to bare "docker" (not on PATH in this test).
+	// A regression that ignores the adapter CLI fails with exec docker not found
+	// instead of reaching the podman stub.
+	factory := NewProductionProviderSessionFactory(ProductionProviderSessionFactoryConfig{
+		Docker: runtime.DockerCLISandboxBridgeDocker{ContainerCLI: "docker"},
+	})
+	legacy := runtime.NewDockerSandboxAdapter(runtime.DockerSandboxConfig{
+		Name: "claude_code", ContainerCLI: podman, Image: "sandbox:test",
+		CreateArgs: []string{"create", "-i", "sandbox:test", "claude", "--print"},
+	})
+	_, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
+		Owner:        owner.NewSessionContract("session-podman-cli", ""),
+		Continuation: owner.Continuation{ID: "continuation-1", OwnerID: "session-podman-cli"},
+		Provider:     runtimeprofile.ProviderClaudeCode, Runner: task.RunnerSandbox, LegacyAdapter: legacy,
+	})
+	if err == nil {
+		t.Fatal("expected create failure from podman stub")
+	}
+	if strings.Contains(err.Error(), `executable file not found`) {
+		t.Fatalf("bridge still invoked missing docker binary: %v", err)
+	}
+	if !strings.Contains(err.Error(), "create sandbox bridge container") {
+		t.Fatalf("error = %v, want create sandbox bridge container failure", err)
+	}
+	raw, readErr := os.ReadFile(logPath)
+	if readErr != nil {
+		t.Fatalf("podman was never invoked: %v", readErr)
+	}
+	if !strings.Contains(string(raw), "create") {
+		t.Fatalf("expected podman create log, got:\n%s", raw)
+	}
+	if !strings.Contains(err.Error(), "podman create refused for test") {
+		t.Fatalf("error = %v, want podman stderr detail", err)
+	}
+}
