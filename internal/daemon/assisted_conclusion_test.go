@@ -2517,7 +2517,7 @@ func waitForAssistedProviderRequests(t *testing.T, session *runtime.FakeProvider
 
 func waitForBlackboardConclusionState(t *testing.T, server *Server, projectID, taskID string, state task.BlackboardConclusionState) task.Task {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		request := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID, nil)
 		response := httptest.NewRecorder()

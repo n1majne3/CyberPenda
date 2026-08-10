@@ -150,7 +150,7 @@ func TestSandboxDockerfileKeepsProviderBridgeSourceInLateCacheLayer(t *testing.T
 	}
 }
 
-func TestPullRequestSandboxSmokeDoesNotLoadTheFullKaliImage(t *testing.T) {
+func TestPullRequestSandboxSmokeSkipsFullKaliImageBuild(t *testing.T) {
 	repoRoot := repoRoot(t)
 	dockerfileBytes, err := os.ReadFile(filepath.Join(repoRoot, "docker", "pentest-sandbox", "Dockerfile"))
 	if err != nil {
@@ -174,13 +174,25 @@ func TestPullRequestSandboxSmokeDoesNotLoadTheFullKaliImage(t *testing.T) {
 		t.Fatalf("read CI workflow: %v", err)
 	}
 	workflow := string(workflowBytes)
-	assertContains(t, workflow, "Validate full sandbox image build")
-	assertContains(t, workflow, "uses: docker/build-push-action@v7")
-	assertContains(t, workflow, "target: runtime")
-	assertContains(t, workflow, "load: false")
-	assertContains(t, workflow, "make build-sandbox-smoke-image")
-	assertContains(t, workflow, "PENTEST_SANDBOX_IMAGE: cyberpenda-sandbox-smoke:ci")
-	assertContains(t, workflow, "\n          SANDBOX_IMAGE: cyberpenda-sandbox-smoke:ci")
+	smokeJobStart := strings.Index(workflow, "  smoke-sandbox-mcp:")
+	if smokeJobStart == -1 {
+		t.Fatal("CI workflow must include the Sandbox MCP smoke job")
+	}
+	smokeJob := workflow[smokeJobStart:]
+	for _, forbidden := range []string{
+		"Validate full sandbox image build",
+		"docker/setup-buildx-action",
+		"docker/build-push-action",
+		"target: runtime",
+	} {
+		if strings.Contains(smokeJob, forbidden) {
+			t.Fatalf("Sandbox MCP smoke job must not build the full Kali image: found %q", forbidden)
+		}
+	}
+	assertContains(t, smokeJob, "make build-sandbox-smoke-image")
+	assertContains(t, smokeJob, "PENTEST_SANDBOX_IMAGE: cyberpenda-sandbox-smoke:ci")
+	assertContains(t, smokeJob, "\n          SANDBOX_IMAGE: cyberpenda-sandbox-smoke:ci")
+	assertContains(t, smokeJob, "\n          PENTEST_DAEMON_WAIT_SECONDS: \"120\"")
 }
 
 func TestManualSandboxWorkflowBuildsAndPublishesImagePerPlatform(t *testing.T) {
