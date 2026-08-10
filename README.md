@@ -34,7 +34,9 @@ Data lives on the machine by default: SQLite (`pentest.db`), task run directorie
   - **Linux:** Docker Engine or Podman
   - **Windows:** native `pentestd` + Docker Desktop / Podman Desktop (Linux containers in the Desktop WSL machine)
 
-See [ADR 0025](docs/adr/0025-container-engine-support-matrix.md) for the engine matrix.
+See [ADR 0025](docs/adr/0025-container-engine-support-matrix.md) and
+[docs/platform-engines.md](docs/platform-engines.md) for the engine matrix
+(OrbStack, Podman, Windows native daemon + Desktop WSL).
 
 ### Local development
 

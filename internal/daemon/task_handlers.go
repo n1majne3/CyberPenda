@@ -136,6 +136,7 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		ContainerCLI:        server.containerCLI,
 		SandboxVPNTun:       input.RunControls.SandboxVPNTun,
 		SandboxNetwork:      input.RunControls.SandboxNetwork,
+		RuntimeRoot:         server.runtimeRoot,
 	})
 	server.logPreflightCustomArgConflict(input.RuntimeProfileID, preflightResult)
 	if !preflightResult.Pass {

@@ -1,6 +1,10 @@
 # Usage:
 #   PENTEST_AUTH_TOKEN="$(openssl rand -hex 24)" docker compose up -d
 # Then open http://127.0.0.1:8787/?token=<that-token>.
+#
+# This compose file targets a Linux Docker host (or Linux VM) with a Unix
+# docker.sock. On Windows, prefer a native Windows pentestd + Docker/Podman
+# Desktop CLI instead (see docs/platform-engines.md and ADR 0025).
 name: cyberpenda
 
 services:

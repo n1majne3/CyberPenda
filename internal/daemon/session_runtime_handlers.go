@@ -624,6 +624,7 @@ func preflightRequestForSession(server *Server, profile runtimeprofile.Profile, 
 		HostActivated:       input.HostActivated,
 		LaunchModelOverride: launchModel,
 		ContainerCLI:        server.containerCLI,
+		RuntimeRoot:         server.runtimeRoot,
 	}
 }
 

@@ -9,6 +9,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -99,6 +101,9 @@ type Request struct {
 	SandboxVPNTun bool
 	// SandboxNetwork is the selected sandbox network mode (for conflict checks).
 	SandboxNetwork string
+	// RuntimeRoot is the host directory for task workdirs and bind mounts.
+	// Empty skips the path readiness check (daemon default is applied later).
+	RuntimeRoot string
 }
 
 // ProfileGetter loads runtime profiles for preflight checks.
@@ -280,6 +285,7 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 
 	if runner == "sandbox" {
 		s.checkContainerEngine(ctx, &result, request)
+		s.checkSandboxRuntimeRoot(&result, request)
 	}
 
 	// Check 3: inline profile API keys, every credential reference, and every
@@ -505,6 +511,51 @@ func validateEnabledSkillBundles(bundles []skill.Bundle) error {
 		}
 	}
 	return nil
+}
+
+func (s *Service) checkSandboxRuntimeRoot(result *Result, request Request) {
+	root := strings.TrimSpace(request.RuntimeRoot)
+	if root == "" {
+		result.add(Check{
+			Name:   "sandbox_runtime_root",
+			Status: CheckPass,
+			Detail: "daemon default runtime root will be used at launch",
+		})
+		return
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		result.add(Check{
+			Name:   "sandbox_runtime_root",
+			Status: CheckFail,
+			Detail: fmt.Sprintf("resolve runtime root %q: %v", root, err),
+		})
+		return
+	}
+	if err := os.MkdirAll(abs, 0o700); err != nil {
+		detail := fmt.Sprintf("cannot create runtime root %q: %v", abs, err)
+		if runtime.GOOS == "windows" || runner.FormatContainerHostPath(abs) != abs {
+			detail += "; on Windows share this drive with Docker/Podman Desktop File Sharing so the Desktop WSL VM can bind-mount task paths"
+		}
+		result.add(Check{Name: "sandbox_runtime_root", Status: CheckFail, Detail: detail})
+		return
+	}
+	probe := filepath.Join(abs, ".pentest-preflight-write")
+	if err := os.WriteFile(probe, []byte("ok"), 0o600); err != nil {
+		detail := fmt.Sprintf("runtime root %q is not writable: %v", abs, err)
+		if runtime.GOOS == "windows" {
+			detail += "; check NTFS permissions and Desktop File Sharing for this path"
+		}
+		result.add(Check{Name: "sandbox_runtime_root", Status: CheckFail, Detail: detail})
+		return
+	}
+	_ = os.Remove(probe)
+	mountSrc := runner.FormatContainerHostPath(abs)
+	detail := fmt.Sprintf("writable; sandbox bind source %s", mountSrc)
+	if mountSrc != abs {
+		detail += " (Windows path normalized for Desktop Linux containers)"
+	}
+	result.add(Check{Name: "sandbox_runtime_root", Status: CheckPass, Detail: detail})
 }
 
 func (s *Service) checkContainerEngine(ctx context.Context, result *Result, request Request) {

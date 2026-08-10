@@ -1401,6 +1401,7 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 		ContainerCLI:            server.containerCLI,
 		SandboxVPNTun:           input.RunControls.SandboxVPNTun,
 		SandboxNetwork:          input.RunControls.SandboxNetwork,
+		RuntimeRoot:             server.runtimeRoot,
 	})
 	server.logPreflightCustomArgConflict(defaulted.runtimeProfileID, result)
 

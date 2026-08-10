@@ -1114,6 +1114,49 @@ func TestSandboxPreflightRejectsRootlessPodmanVPNTun(t *testing.T) {
 	}
 }
 
+func TestSandboxPreflightRuntimeRootMustBeWritable(t *testing.T) {
+	svc := newTestServices(t)
+	profile, err := svc.profiles.Create("codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		Model: "gpt-5",
+	})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	root := t.TempDir()
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		Runner:           "sandbox",
+		ContainerCLI:     "docker",
+		RuntimeRoot:      root,
+	})
+	if !result.Pass {
+		t.Fatalf("expected pass, got %#v", result.Checks)
+	}
+	if !checkPassed(result, "sandbox_runtime_root") {
+		t.Fatalf("sandbox_runtime_root missing: %#v", result.Checks)
+	}
+	if !strings.Contains(checkDetail(result, "sandbox_runtime_root"), "writable") {
+		t.Fatalf("detail = %q", checkDetail(result, "sandbox_runtime_root"))
+	}
+
+	// A file path cannot be a runtime root directory.
+	fileRoot := filepath.Join(root, "not-a-dir")
+	if err := os.WriteFile(fileRoot, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result = svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		Runner:           "sandbox",
+		RuntimeRoot:      fileRoot,
+	})
+	if result.Pass {
+		t.Fatal("expected fail when runtime root is a file")
+	}
+	if !checkFailed(result, "sandbox_runtime_root") {
+		t.Fatalf("expected sandbox_runtime_root fail: %#v", result.Checks)
+	}
+}
+
 func TestSandboxPreflightRejectsVPNTunWithHostProxyOnly(t *testing.T) {
 	svc := newTestServices(t)
 	profile, err := svc.profiles.Create("codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
