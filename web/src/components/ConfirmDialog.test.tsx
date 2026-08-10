@@ -64,6 +64,26 @@ describe("ConfirmDialog", () => {
     );
     expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus();
   });
+
+  it("keeps confirm actions reachable when the title is extremely long", () => {
+    const longTitle = `Stop task ${"x".repeat(400)} with-no-spaces-${"y".repeat(200)}?`;
+    render(
+      <ConfirmDialog
+        open
+        title={longTitle}
+        description={`Stopping “${"goal ".repeat(80)}” closes its Runtime.`}
+        confirmLabel="Stop"
+        onConfirm={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    const dialog = screen.getByRole("alertdialog");
+    expect(dialog).toHaveClass("max-h-[min(32rem,calc(100dvh-2rem))]", "overflow-hidden");
+    expect(screen.getByRole("heading", { name: longTitle })).toHaveClass("break-words");
+    // Actions stay outside the scroll body so they remain clickable.
+    expect(screen.getByRole("button", { name: "Stop" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeVisible();
+  });
 });
 
 describe("PromptDialog", () => {

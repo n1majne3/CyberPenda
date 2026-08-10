@@ -33,6 +33,11 @@ import { PromptDialog } from "@/components/ConfirmDialog";
 import { useDocumentVisibility } from "@/lib/useDocumentVisibility";
 import { cn } from "@/lib/utils";
 
+// Dense sidebar rows: keep a visible focus target without the outer black
+// ring-offset frame that reads as a heavy selection box.
+const sidebarFocusClass =
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-signal/40";
+
 type TaskState = {
   tasks: Task[];
   loading: boolean;
@@ -261,7 +266,10 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
               to="/sessions"
               onClick={onNavigate}
               id="non-project-navigation"
-              className="inline-flex h-9 min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+              className={cn(
+                "inline-flex h-9 min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
+                sidebarFocusClass,
+              )}
             >
               Non-project
             </NavLink>
@@ -269,7 +277,10 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
               to="/sessions#new-session"
               aria-label="New session"
               onClick={onNavigate}
-              className="inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-transparent text-muted-foreground transition-colors hover:border-sidebar-border hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+              className={cn(
+                "inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-transparent text-muted-foreground transition-colors hover:border-sidebar-border hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
+                sidebarFocusClass,
+              )}
             >
               <Plus className="size-4" aria-hidden="true" />
             </NavLink>
@@ -297,7 +308,10 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
                 <NavLink
                   to="/sessions"
                   onClick={onNavigate}
-                  className="inline-flex h-8 w-full items-center rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+                  className={cn(
+                    "inline-flex h-8 w-full items-center rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
+                    sidebarFocusClass,
+                  )}
                 >
                   Show more
                 </NavLink>
@@ -317,7 +331,10 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
               to="/?new=1"
               aria-label="New project"
               onClick={onNavigate}
-              className="inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-transparent text-muted-foreground transition-colors hover:border-sidebar-border hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+              className={cn(
+                "inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-transparent text-muted-foreground transition-colors hover:border-sidebar-border hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
+                sidebarFocusClass,
+              )}
             >
               <Plus className="size-4" aria-hidden="true" />
             </NavLink>
@@ -428,6 +445,10 @@ function ProjectRow({
   // recent Tasks, then the selected Task (#201). Other Projects show their
   // on-demand full list, which is bounded by takeRecentWithCurrent for display.
   const visibleTasks = useOnDemandTasks ? takeRecentWithCurrent(onDemandTasks, currentTaskId, isTaskBusy, taskActivity) : tasks;
+  // Nested Task routes also match /projects/:id as a path prefix. When a Task
+  // is the primary selection, only the Task row keeps the active wash so the
+  // Project header and first Task do not merge into one box.
+  const projectSelected = currentProject && !currentTaskId;
 
   return (
     <section aria-labelledby={`project-name-${project.id}`} aria-current={currentProject ? "location" : undefined}>
@@ -438,7 +459,10 @@ function ProjectRow({
           aria-controls={taskPanelId}
           aria-expanded={open}
           onClick={onToggle}
-          className="inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-transparent text-muted-foreground transition-colors hover:border-sidebar-border hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+          className={cn(
+            "inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-transparent text-muted-foreground transition-colors hover:border-sidebar-border hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
+            sidebarFocusClass,
+          )}
         >
           <ChevronRight className={cn("size-3.5 transition-transform", open && "rotate-90")} aria-hidden="true" />
         </button>
@@ -446,21 +470,20 @@ function ProjectRow({
           id={`project-name-${project.id}`}
           to={`/projects/${encodeURIComponent(project.id)}`}
           aria-label={`Open ${project.name} project dashboard`}
+          // Pass false (not undefined): NavLink defaults missing aria-current to
+          // "page" whenever the path prefix matches, including nested Task routes.
+          aria-current={projectSelected ? "page" : false}
           onClick={onNavigate}
-          className={({ isActive }) => navItemClasses(isActive, "min-w-0 flex-1")}
+          className={navItemClasses(projectSelected, "min-w-0 flex-1")}
         >
-          {({ isActive }) => (
-            <>
-              <FolderKanban className="size-4 shrink-0" aria-hidden="true" />
-              <span className="truncate">{project.name}</span>
-              <span className="sr-only"> project dashboard</span>
-              <ActiveIndicator active={isActive} />
-            </>
-          )}
+          <FolderKanban className="size-4 shrink-0" aria-hidden="true" />
+          <span className="truncate">{project.name}</span>
+          <span className="sr-only"> project dashboard</span>
+          <ActiveIndicator active={projectSelected} />
         </NavLink>
       </div>
 
-      <div id={taskPanelId} hidden={!open} className="ml-4 space-y-1 border-l border-sidebar-border/70 pl-2">
+      <div id={taskPanelId} hidden={!open} className="ml-4 mt-0.5 space-y-0.5 border-l border-sidebar-border/70 pl-2">
         {tasksLoading ? (
           <SidebarStatus label={`Loading tasks for ${project.name}`} />
         ) : tasksError ? (
@@ -475,7 +498,10 @@ function ProjectRow({
             <NavLink
               to={`/projects/${encodeURIComponent(project.id)}/tasks`}
               onClick={onNavigate}
-              className="inline-flex h-8 w-full items-center rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+              className={cn(
+                "inline-flex h-8 w-full items-center rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
+                sidebarFocusClass,
+              )}
             >
               Show more
             </NavLink>
@@ -591,7 +617,10 @@ function SessionOverflowMenu({
         aria-expanded={open}
         disabled={busy}
         onClick={() => setOpen((previous) => !previous)}
-        className="inline-flex size-8 items-center justify-center rounded-md border border-transparent text-muted-foreground transition-colors hover:border-sidebar-border hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+        className={cn(
+          "inline-flex size-8 items-center justify-center rounded-md border border-transparent text-muted-foreground transition-colors hover:border-sidebar-border hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
+          sidebarFocusClass,
+        )}
       >
         <MoreHorizontal className="size-4" aria-hidden="true" />
       </button>
@@ -609,7 +638,10 @@ function SessionOverflowMenu({
               setOpen(false);
               void onRename(session);
             }}
-            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+            className={cn(
+              "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-sidebar-accent",
+              sidebarFocusClass,
+            )}
           >
             Rename
           </button>
@@ -620,7 +652,10 @@ function SessionOverflowMenu({
               setOpen(false);
               void onArchive(session);
             }}
-            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+            className={cn(
+              "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-sidebar-accent",
+              sidebarFocusClass,
+            )}
           >
             <Archive className="size-3.5" aria-hidden="true" />
             Archive
@@ -695,9 +730,10 @@ function NavItem({
 
 function navItemClasses(isActive: boolean, className?: string) {
   return cn(
-    "group relative inline-flex h-9 w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar",
+    "group relative inline-flex h-9 w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
+    sidebarFocusClass,
     isActive
-      ? "bg-sidebar-accent font-semibold text-sidebar-accent-foreground"
+      ? "bg-signal/5 font-semibold text-sidebar-accent-foreground"
       : "text-muted-foreground hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
     className,
   );
@@ -708,7 +744,10 @@ function ActiveIndicator({ active }: { active: boolean }) {
     <span
       aria-hidden="true"
       data-nav-indicator={active ? "active" : undefined}
-      className={cn("absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-signal", active ? "opacity-100" : "opacity-0")}
+      className={cn(
+        "absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-signal",
+        active ? "opacity-100" : "opacity-0",
+      )}
     />
   );
 }

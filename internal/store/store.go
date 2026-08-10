@@ -946,6 +946,9 @@ func migrations() []migration {
 	}
 }
 
+// migration58SQL is the recovery-settlement shape of challenge_operations.
+// Migration 56 created the baseline without action_required or recovery_error;
+// this rebuild adds both so restart recovery can settle failed operations.
 const migration58SQL = `
 CREATE TABLE challenge_operations (
 	task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE RESTRICT,
@@ -955,10 +958,11 @@ CREATE TABLE challenge_operations (
 	kind TEXT NOT NULL CHECK (kind IN ('claim','submit','abandon','finalize')),
 	request_hash TEXT NOT NULL CHECK (length(request_hash) = 64),
 	request_json TEXT NOT NULL,
-	state TEXT NOT NULL CHECK (state IN ('pending','recording','completed')),
+	state TEXT NOT NULL CHECK (state IN ('pending','recording','completed','action_required')),
 	external_attempt_id TEXT NOT NULL DEFAULT '',
 	response_json TEXT NOT NULL DEFAULT '',
 	evidence_key TEXT NOT NULL DEFAULT '',
+	recovery_error TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL,
 	PRIMARY KEY (task_id, operation_id)
@@ -972,6 +976,8 @@ func migration58Up(tx *sql.Tx) error {
 	if err := tx.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='challenge_operations'`).Scan(&tableSQL); err != nil {
 		return fmt.Errorf("read challenge_operations schema: %w", err)
 	}
+	// Already rebuilt or bootstrapped with recovery settlement: only ensure the
+	// recovery_error column exists for partial local shapes.
 	if strings.Contains(tableSQL, "'action_required'") {
 		return ensureColumn(tx, "challenge_operations", "recovery_error", "TEXT NOT NULL DEFAULT ''")
 	}
@@ -1040,6 +1046,9 @@ func migration57Up(tx *sql.Tx) error {
 
 // migration56SQL stores Challenge Workflow operations before they cross the
 // Platform Adapter boundary. The operation identity makes restart replay safe.
+// This body is the historical applied form: recovery settlement (action_required
+// + recovery_error) is added later by migration 58 and must not rewrite this
+// checksum for databases that already applied version 56.
 const migration56SQL = `
 CREATE TABLE IF NOT EXISTS challenge_attempts (
 	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
@@ -1072,11 +1081,10 @@ CREATE TABLE IF NOT EXISTS challenge_operations (
 	kind TEXT NOT NULL CHECK (kind IN ('claim','submit','abandon','finalize')),
 	request_hash TEXT NOT NULL CHECK (length(request_hash) = 64),
 	request_json TEXT NOT NULL,
-	state TEXT NOT NULL CHECK (state IN ('pending','recording','completed','action_required')),
+	state TEXT NOT NULL CHECK (state IN ('pending','recording','completed')),
 	external_attempt_id TEXT NOT NULL DEFAULT '',
 	response_json TEXT NOT NULL DEFAULT '',
 	evidence_key TEXT NOT NULL DEFAULT '',
-	recovery_error TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL,
 	PRIMARY KEY (task_id, operation_id)

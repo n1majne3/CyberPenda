@@ -1321,7 +1321,10 @@ describe("TaskDetailPage", () => {
     // In-app confirm dialog replaces the native window.confirm; the action is
     // not posted until the styled confirm is accepted.
     expect(confirm).not.toHaveBeenCalled();
-    expect(screen.getByRole("alertdialog", { name: /Stop task Inspect task view/ })).toBeInTheDocument();
+    const stopDialog = screen.getByRole("alertdialog", { name: /Stop task/i });
+    expect(stopDialog).toBeInTheDocument();
+    // Long Task Goals belong in the body, not the short dialog title.
+    expect(within(stopDialog).getByText(/Inspect task view/i)).toBeInTheDocument();
     expect(
       fetchMock.mock.calls.some(([input, init]) =>
         String(input).includes("/api/projects/project-1/tasks/task-1/stop") && init?.method === "POST",

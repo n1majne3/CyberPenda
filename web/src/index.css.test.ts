@@ -96,10 +96,18 @@ describe("index.css design tokens", () => {
 
   it("sets global focus, touch, and overflow interaction defaults", () => {
     expect(css).toContain(":focus-visible");
-    expect(css).toContain("outline: 2px solid hsl(var(--ring))");
+    // Soft alpha keeps dense list focus from reading as a solid black box.
+    expect(css).toContain("outline: 2px solid hsl(var(--ring) / 0.7)");
     expect(css).toContain("touch-action: manipulation");
     expect(css).toContain("-webkit-tap-highlight-color");
     expect(css).toContain("overflow-x: hidden");
+  });
+
+  it("uses a soft light-theme focus ring instead of pure black", () => {
+    const light = tokenBlock(":root");
+    expect(light).toMatch(/--ring:\s*0 0% 52%/);
+    expect(light).toMatch(/--sidebar-ring:\s*0 0% 52%/);
+    expect(light).not.toMatch(/--ring:\s*0 0% 9%/);
   });
 
   it("defines the Geist layered elevation scale", () => {

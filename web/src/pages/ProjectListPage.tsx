@@ -171,7 +171,7 @@ function ProjectCard({ project }: { project: Project }) {
     <Link
       to={`/projects/${project.id}`}
       aria-label={`Open ${project.name} project dashboard`}
-      className="group block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+      className="group block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal/40 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
     >
       <Card className="h-full transition-[border-color,box-shadow,background-color,transform] duration-150 ease-geist group-hover:-translate-y-0.5 group-hover:border-signal/40 group-hover:bg-accent/40 group-hover:shadow-md motion-reduce:transition-none motion-reduce:group-hover:translate-y-0">
         <div className="flex items-start justify-between gap-3">

@@ -140,7 +140,7 @@ export function TasksPage() {
               <Link
                 key={task.id}
                 to={`${base}/tasks/${task.id}`}
-                className="group block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                className="group block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal/40 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
               >
                 <Card className="transition-[border-color,box-shadow,background-color,transform] duration-150 ease-geist group-hover:-translate-y-0.5 group-hover:border-signal/40 group-hover:bg-accent/40 group-hover:shadow-md motion-reduce:transition-none motion-reduce:group-hover:translate-y-0">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">

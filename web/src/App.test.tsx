@@ -109,10 +109,12 @@ describe("App", () => {
 
     const skillsLink = screen.getByRole("link", { name: /skills/i });
     expect(skillsLink).toHaveAttribute("aria-current", "page");
-    // Active state is distinguished by background + weight + the signal
-    // indicator bar — not a per-item outline that reads as a stacked box.
-    expect(skillsLink).toHaveClass("bg-sidebar-accent", "font-semibold");
+    // Active state is distinguished by a soft signal wash + weight + the
+    // signal indicator bar — not a per-item outline that reads as a black box.
+    expect(skillsLink).toHaveClass("bg-signal/5", "font-semibold");
     expect(skillsLink.querySelector('[data-nav-indicator="active"]')).not.toBeNull();
+    expect(skillsLink).toHaveClass("focus-visible:ring-inset");
+    expect(skillsLink.className).not.toMatch(/ring-offset-2/);
 
     const projectsLink = screen.getByRole("link", { name: /projects/i });
     expect(projectsLink).not.toHaveAttribute("aria-current");

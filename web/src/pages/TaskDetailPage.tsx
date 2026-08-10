@@ -1137,8 +1137,14 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
 
       <ConfirmDialog
         open={confirmAction === "stop"}
-        title={owner ? `Stop ${owner.kind} ${owner.title}?` : "Stop?"}
-        description={owner ? `Stopping ${owner.kind} ${owner.title} closes its Runtime without deleting its work.` : undefined}
+        // Keep the dialog title short; put the long Task Goal only in the
+        // body so the confirm actions stay on-screen.
+        title={owner ? `Stop ${owner.kind}?` : "Stop?"}
+        description={
+          owner
+            ? `Stopping “${owner.title}” closes its Runtime without deleting its work.`
+            : undefined
+        }
         confirmLabel="Stop"
         destructive
         onConfirm={() => { setConfirmAction(null); void stop(); }}
@@ -1146,16 +1152,26 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
       />
       <ConfirmDialog
         open={confirmAction === "finish"}
-        title={owner ? `Finish task ${owner.title}?` : "Finish task?"}
-        description="This marks the Task completed after closing the Runtime."
+        title="Finish task?"
+        description={
+          owner
+            ? `This marks “${owner.title}” completed after closing the Runtime.`
+            : "This marks the Task completed after closing the Runtime."
+        }
         confirmLabel="Finish"
         onConfirm={() => { setConfirmAction(null); void finishTask(); }}
         onCancel={() => setConfirmAction(null)}
       />
       <ConfirmDialog
         open={confirmAction === "delete"}
-        title={owner?.kind === "session" ? `Delete archived session ${owner.title}?` : `Delete task ${owner.title}?`}
-        description={owner?.kind === "session" ? "This removes its Session Workdir and Events." : "This removes the Task and its Workdir."}
+        title={owner?.kind === "session" ? "Delete archived session?" : "Delete task?"}
+        description={
+          owner?.kind === "session"
+            ? `This removes “${owner.title}” and its Session Workdir and Events.`
+            : owner
+              ? `This removes “${owner.title}” and its Workdir.`
+              : "This removes the Task and its Workdir."
+        }
         confirmLabel="Delete"
         destructive
         onConfirm={() => { setConfirmAction(null); void deleteTask(); }}

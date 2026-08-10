@@ -57,7 +57,7 @@ export function ConfirmDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/50 p-4"
       onClick={(event) => {
         if (event.target === event.currentTarget) onCancel();
       }}
@@ -69,13 +69,21 @@ export function ConfirmDialog({
         aria-describedby={description ? descriptionId : undefined}
         tabIndex={-1}
         size="default"
-        className="w-full max-w-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        // Cap height to the viewport and keep actions pinned so a long Task
+        // Goal cannot push Confirm/Cancel off-screen.
+        className="my-auto flex max-h-[min(32rem,calc(100dvh-2rem))] w-full max-w-sm flex-col overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        <CardTitle id={titleId}>{title}</CardTitle>
-        {description && (
-          <CardDescription id={descriptionId}>{description}</CardDescription>
-        )}
-        <div className="mt-1 flex justify-end gap-2">
+        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto">
+          <CardTitle id={titleId} className="break-words [overflow-wrap:anywhere]">
+            {title}
+          </CardTitle>
+          {description && (
+            <CardDescription id={descriptionId} className="break-words [overflow-wrap:anywhere]">
+              {description}
+            </CardDescription>
+          )}
+        </div>
+        <div className="mt-3 flex shrink-0 justify-end gap-2">
           <Button ref={cancelRef} variant="ghost" onClick={onCancel}>
             {cancelLabel}
           </Button>
@@ -146,7 +154,7 @@ export function PromptDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/50 p-4"
       onClick={(event) => {
         if (event.target === event.currentTarget) onCancel();
       }}
@@ -155,27 +163,31 @@ export function PromptDialog({
         role="alertdialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="w-full max-w-sm"
+        className="my-auto flex max-h-[min(32rem,calc(100dvh-2rem))] w-full max-w-sm flex-col overflow-hidden"
       >
-        <CardTitle id={titleId}>{title}</CardTitle>
-        <div>
-          <label className="sr-only" htmlFor="prompt-dialog-input">
-            {label}
-          </label>
-          <Input
-            ref={inputRef}
-            id="prompt-dialog-input"
-            aria-label={label}
-            defaultValue={initialValue}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                submit();
-              }
-            }}
-          />
+        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto">
+          <CardTitle id={titleId} className="break-words [overflow-wrap:anywhere]">
+            {title}
+          </CardTitle>
+          <div>
+            <label className="sr-only" htmlFor="prompt-dialog-input">
+              {label}
+            </label>
+            <Input
+              ref={inputRef}
+              id="prompt-dialog-input"
+              aria-label={label}
+              defaultValue={initialValue}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  submit();
+                }
+              }}
+            />
+          </div>
         </div>
-        <div className="mt-1 flex justify-end gap-2">
+        <div className="mt-3 flex shrink-0 justify-end gap-2">
           <Button variant="ghost" onClick={onCancel}>
             {cancelLabel}
           </Button>

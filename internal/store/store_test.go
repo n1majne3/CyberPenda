@@ -1232,3 +1232,114 @@ func TestMigration53ConvertsLegacyReceiptsIntoObligationsAndDispatches(t *testin
 		t.Fatalf("session retry keys still reference the legacy receipt table: %s", obligationFK)
 	}
 }
+
+// historicalMigration56Checksum is the checksum recorded when migration 56
+// (challenge_workflow) was first applied. The SQL body for that version is
+// immutable; recovery settlement belongs to migration 58.
+const historicalMigration56Checksum = "31e5eb8fc028154ee187046019ef9f08640fd82eba3c22f71df7ba8a78b00f68"
+
+// TestMigration56ChecksumMatchesHistoricalChallengeWorkflow pins the applied
+// migration 56 SQL so later recovery columns cannot rewrite the ledger.
+func TestMigration56ChecksumMatchesHistoricalChallengeWorkflow(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	var checksum string
+	if err := db.QueryRow(`SELECT checksum FROM schema_migrations WHERE version=56`).Scan(&checksum); err != nil {
+		t.Fatal(err)
+	}
+	if checksum != historicalMigration56Checksum {
+		t.Fatalf("migration 56 checksum = %q, want historical %q (do not rewrite applied migration SQL; put recovery settlement in migration 58)", checksum, historicalMigration56Checksum)
+	}
+}
+
+// TestMigration58AddsChallengeOperationRecoverySettlement upgrades a database
+// that still has the original migration 56 challenge_operations shape (no
+// action_required state and no recovery_error column) into the recovery
+// settlement schema used by Challenge Workflow restart recovery.
+func TestMigration58AddsChallengeOperationRecoverySettlement(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pentest.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Roll back to the applied migration 56 shape: operations without recovery
+	// settlement fields, and no migration 58 ledger row.
+	if _, err := db.Exec(`
+		DELETE FROM schema_migrations WHERE version >= 58;
+		DROP INDEX IF EXISTS idx_challenge_operations_recovery;
+		ALTER TABLE challenge_operations RENAME TO challenge_operations_new;
+		CREATE TABLE challenge_operations (
+			task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE RESTRICT,
+			operation_id TEXT NOT NULL,
+			project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+			platform TEXT NOT NULL,
+			kind TEXT NOT NULL CHECK (kind IN ('claim','submit','abandon','finalize')),
+			request_hash TEXT NOT NULL CHECK (length(request_hash) = 64),
+			request_json TEXT NOT NULL,
+			state TEXT NOT NULL CHECK (state IN ('pending','recording','completed')),
+			external_attempt_id TEXT NOT NULL DEFAULT '',
+			response_json TEXT NOT NULL DEFAULT '',
+			evidence_key TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY (task_id, operation_id)
+		);
+		CREATE INDEX idx_challenge_operations_recovery
+			ON challenge_operations (state, updated_at);
+		INSERT INTO projects (id, name, description, scope_json, defaults_json, created_at, updated_at)
+			VALUES ('proj-challenge','Challenge','','{}','{}','2026-08-09T00:00:00Z','2026-08-09T00:00:00Z');
+		INSERT INTO tasks (
+			id,project_id,goal,status,runner,runtime_profile_id,run_controls_json,scope_snapshot_json,created_at,updated_at,task_type
+		) VALUES (
+			'task-challenge','proj-challenge','solve','pending','sandbox','profile-1','{}','{}','2026-08-09T00:00:00Z','2026-08-09T00:00:00Z','ctf_challenge'
+		);
+		INSERT INTO challenge_operations (
+			task_id,operation_id,project_id,platform,kind,request_hash,request_json,state,
+			external_attempt_id,response_json,evidence_key,created_at,updated_at
+		) VALUES (
+			'task-challenge','op-1','proj-challenge','arena','claim',?,
+			'{}','pending','','','','2026-08-09T00:00:00Z','2026-08-09T00:00:00Z'
+		);
+		DROP TABLE challenge_operations_new;
+	`, strings.Repeat("b", 64)); err != nil {
+		t.Fatalf("seed pre-58 challenge_operations: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("reopen after migration 58: %v", err)
+	}
+	defer reopened.Close()
+
+	var tableSQL string
+	if err := reopened.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='challenge_operations'`).Scan(&tableSQL); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(tableSQL, "'action_required'") {
+		t.Fatalf("migration 58 did not allow action_required state: %s", tableSQL)
+	}
+	if !strings.Contains(tableSQL, "recovery_error") {
+		t.Fatalf("migration 58 did not add recovery_error: %s", tableSQL)
+	}
+
+	var state, recoveryError string
+	if err := reopened.QueryRow(`SELECT state,recovery_error FROM challenge_operations WHERE task_id='task-challenge' AND operation_id='op-1'`).Scan(&state, &recoveryError); err != nil {
+		t.Fatalf("read upgraded operation: %v", err)
+	}
+	if state != "pending" || recoveryError != "" {
+		t.Fatalf("upgraded operation = state=%q recovery_error=%q, want pending with empty recovery_error", state, recoveryError)
+	}
+
+	// Recovery settlement must accept action_required after the upgrade.
+	if _, err := reopened.Exec(`UPDATE challenge_operations SET state='action_required',recovery_error='automatic recovery failed' WHERE task_id='task-challenge' AND operation_id='op-1'`); err != nil {
+		t.Fatalf("set action_required after migration 58: %v", err)
+	}
+}

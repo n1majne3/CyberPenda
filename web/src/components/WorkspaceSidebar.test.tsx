@@ -214,15 +214,59 @@ describe("WorkspaceSidebar", () => {
       "Recent task 5 task conversation",
       "Current task task conversation",
     ]);
-    expect(within(projectRegion).getByRole("link", { name: /current task/i })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
+    const currentTaskLink = within(projectRegion).getByRole("link", { name: /current task/i });
+    expect(currentTaskLink).toHaveAttribute("aria-current", "page");
+    // Nested Task routes still match the Project path as a prefix; the Project
+    // row must not share the active wash with the Task or the two boxes merge.
+    const projectLink = screen.getByRole("link", { name: /active project project dashboard/i });
+    // NavLink may still emit aria-current="false"; the Project must not claim page.
+    expect(projectLink.getAttribute("aria-current")).not.toBe("page");
+    expect(projectLink).not.toHaveClass("bg-signal/5");
+    expect(projectLink.querySelector('[data-nav-indicator="active"]')).toBeNull();
+    expect(currentTaskLink).toHaveClass("bg-signal/5");
+    expect(currentTaskLink.querySelector('[data-nav-indicator="active"]')).not.toBeNull();
     expect(within(projectRegion).getByRole("img", { name: /runtime busy/i })).toBeInTheDocument();
     expect(within(projectRegion).getByRole("link", { name: /show more/i })).toHaveAttribute(
       "href",
       "/projects/project-active/tasks",
     );
+  });
+
+  it("highlights the Project row only when no nested Task is selected", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith("/api/workspace/navigation")) {
+          return response({
+            projects: [
+              navigationSummary("project-active", "Active project", "2026-08-01T00:00:00Z", [
+                task("task-1", "First task", "2026-08-01T00:00:00Z"),
+              ]),
+            ],
+          });
+        }
+        if (url === "/api/sessions?limit=5") return response({ sessions: [] });
+        return response({});
+      }),
+    );
+
+    render(
+      <ThemeProvider>
+        <MemoryRouter initialEntries={["/projects/project-active"]}>
+          <WorkspaceSidebar />
+        </MemoryRouter>
+      </ThemeProvider>,
+    );
+
+    const projectLink = await screen.findByRole("link", { name: /active project project dashboard/i });
+    expect(projectLink).toHaveAttribute("aria-current", "page");
+    expect(projectLink).toHaveClass("bg-signal/5");
+    expect(projectLink.querySelector('[data-nav-indicator="active"]')).not.toBeNull();
+
+    const taskLink = screen.getByRole("link", { name: /first task/i });
+    expect(taskLink).not.toHaveAttribute("aria-current");
+    expect(taskLink).not.toHaveClass("bg-signal/5");
   });
 
   it("keeps disclosure controls separate from navigation and exposes accessible menus", async () => {
