@@ -468,7 +468,21 @@ func (server *Server) prepareSessionRuntime(ctx context.Context, mode session.Bl
 	}
 	preflightResult := server.preflight.Run(ctx, preflightRequestForSession(server, profile, input, run, input.selectedModel()))
 	if !preflightResult.Pass {
-		return sessionRuntimePreparation{}, fmt.Errorf("Session Runtime preflight failed")
+		fails := make([]string, 0, len(preflightResult.Checks))
+		for _, check := range preflightResult.Checks {
+			if check.Status == preflight.CheckFail {
+				detail := strings.TrimSpace(check.Detail)
+				if detail == "" {
+					fails = append(fails, check.Name)
+					continue
+				}
+				fails = append(fails, check.Name+": "+detail)
+			}
+		}
+		if len(fails) == 0 {
+			return sessionRuntimePreparation{}, fmt.Errorf("Session Runtime preflight failed")
+		}
+		return sessionRuntimePreparation{}, fmt.Errorf("Session Runtime preflight failed: %s", strings.Join(fails, "; "))
 	}
 	modelSnapshot, err := server.resolveSessionModelSnapshot(profile, input)
 	if err != nil {

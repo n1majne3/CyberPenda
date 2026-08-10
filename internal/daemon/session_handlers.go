@@ -331,6 +331,24 @@ func writeSessionError(response http.ResponseWriter, err error) {
 	case errors.Is(err, session.ErrAlreadyArchived), errors.Is(err, session.ErrNotArchived), errors.Is(err, session.ErrOpenSession), errors.Is(err, session.ErrSessionNotOpen), errors.Is(err, session.ErrActiveContinuation), errors.Is(err, session.ErrContinuationStatusConflict):
 		writeError(response, http.StatusConflict, err.Error())
 	default:
-		writeError(response, http.StatusInternalServerError, "session operation failed")
+		// Local-first: surface launch/runtime failures (podman create, preflight,
+		// image pull) so the operator can fix Desktop mounts and CLI setup.
+		msg := strings.TrimSpace(err.Error())
+		if msg == "" {
+			msg = "session operation failed"
+		}
+		status := http.StatusInternalServerError
+		lower := strings.ToLower(msg)
+		if strings.Contains(lower, "preflight") ||
+			strings.Contains(lower, "sandbox") ||
+			strings.Contains(lower, "container") ||
+			strings.Contains(lower, "podman") ||
+			strings.Contains(lower, "docker") ||
+			strings.Contains(lower, "image") ||
+			strings.Contains(lower, "mount") ||
+			strings.Contains(lower, "network") {
+			status = http.StatusBadRequest
+		}
+		writeError(response, status, msg)
 	}
 }

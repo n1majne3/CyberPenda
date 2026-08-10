@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -131,11 +132,24 @@ func (a *dockerSandboxAdapter) Run(ctx context.Context, goal string, emit func(t
 	}
 
 	create := exec.CommandContext(ctx, cli, a.config.CreateArgs...)
-	rawID, err := create.Output()
-	if err != nil {
-		return fmt.Errorf("create sandbox container: %w", err)
+	var createStdout, createStderr bytes.Buffer
+	create.Stdout = &createStdout
+	create.Stderr = &createStderr
+	if err := create.Run(); err != nil {
+		detail := strings.TrimSpace(createStderr.String())
+		if detail == "" {
+			detail = strings.TrimSpace(createStdout.String())
+		}
+		if detail == "" {
+			return fmt.Errorf("create sandbox container: %w", err)
+		}
+		return fmt.Errorf("create sandbox container: %w: %s", err, detail)
 	}
-	containerID := strings.TrimSpace(string(rawID))
+	containerID := strings.TrimSpace(createStdout.String())
+	// Some engines print progress on stdout before the ID; keep the last line.
+	if lines := strings.Split(containerID, "\n"); len(lines) > 1 {
+		containerID = strings.TrimSpace(lines[len(lines)-1])
+	}
 	if containerID == "" {
 		return fmt.Errorf("create sandbox container returned empty id")
 	}
