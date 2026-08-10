@@ -26,6 +26,7 @@ import (
 	"pentest/internal/preflight"
 	"pentest/internal/project"
 	"pentest/internal/projectinterface"
+	"pentest/internal/runner"
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeextension"
 	"pentest/internal/runtimeplugin"
@@ -861,6 +862,8 @@ func (server *Server) handleHealth(response http.ResponseWriter, request *http.R
 			RuntimeRoot  string `json:"runtime_root"`
 			SandboxImage string `json:"sandbox_image"`
 			ContainerCLI string `json:"container_cli"`
+			EngineKind   string `json:"engine_kind,omitempty"`
+			EngineName   string `json:"engine_name,omitempty"`
 		} `json:"runner"`
 	}{
 		Version: server.version,
@@ -873,6 +876,10 @@ func (server *Server) handleHealth(response http.ResponseWriter, request *http.R
 	payload.Runner.ContainerCLI = server.containerCLI
 	if payload.Runner.ContainerCLI == "" {
 		payload.Runner.ContainerCLI = "docker"
+	}
+	if info, err := runner.DetectEngine(request.Context(), payload.Runner.ContainerCLI, nil); err == nil {
+		payload.Runner.EngineKind = string(info.Kind)
+		payload.Runner.EngineName = info.Name
 	}
 
 	writeJSON(response, http.StatusOK, payload)
@@ -1391,6 +1398,9 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 		HostActivated:           hostActivated,
 		ProjectKind:             defaulted.project.Kind,
 		ScopeCapabilities:       append([]string(nil), defaulted.project.Scope.Capabilities...),
+		ContainerCLI:            server.containerCLI,
+		SandboxVPNTun:           input.RunControls.SandboxVPNTun,
+		SandboxNetwork:          input.RunControls.SandboxNetwork,
 	})
 	server.logPreflightCustomArgConflict(defaulted.runtimeProfileID, result)
 

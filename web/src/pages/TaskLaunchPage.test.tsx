@@ -1248,6 +1248,127 @@ describe("TaskLaunchPage", () => {
     });
   });
 
+  it("includes sandbox VPN TUN in the launch payload when enabled", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.includes("/api/runtime-plugins")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ plugins: [codexPlugin] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/model-providers")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ providers: [mimoProvider] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/runtime-profiles/resolve-launch") && method === "POST") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              profile_id: "resolved-profile",
+              created: true,
+              profile: {
+                id: "resolved-profile",
+                name: "Codex · MiMo",
+                provider: "codex",
+                fields: { model_provider_id: "mimo", model_override: "mimo-v2.5-pro" },
+                created_at: "",
+                updated_at: "",
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      if (url.includes("/api/skills?runtime_profile_id=resolved-profile")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ skills: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/runtime-profiles")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ profiles: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/projects/project-1/preflight") && method === "POST") {
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          run_controls?: { sandbox_vpn_tun?: boolean; sandbox_network?: string };
+        };
+        expect(body.run_controls?.sandbox_vpn_tun).toBe(true);
+        expect(body.run_controls?.sandbox_network).toBeUndefined();
+        return Promise.resolve(
+          new Response(JSON.stringify({ pass: true, checks: [{ name: "runtime_profile", status: "pass" }] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/projects/project-1/tasks") && method === "POST") {
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          run_controls?: { sandbox_vpn_tun?: boolean; sandbox_network?: string };
+        };
+        expect(body.run_controls?.sandbox_vpn_tun).toBe(true);
+        expect(body.run_controls?.sandbox_network).toBeUndefined();
+        return Promise.resolve(
+          new Response(JSON.stringify({ id: "task-vpn" }), {
+            status: 201,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/projects/project-1")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: "project-1",
+              name: "Acme",
+              description: "",
+              scope: {},
+              defaults: { runner: "sandbox" },
+              created_at: "",
+              updated_at: "",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+
+    await userEvent.click(await screen.findByRole("checkbox", { name: /sandbox vpn tun/i }));
+    await selectPentestTaskType();
+    await userEvent.type(screen.getByLabelText("Task goal"), "Connect OpenVPN");
+    await userEvent.click(screen.getByRole("button", { name: /launch/i }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining("/api/projects/project-1/tasks"),
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+  });
+
   it("omits host activation from sandbox launch after switching back from host", async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();

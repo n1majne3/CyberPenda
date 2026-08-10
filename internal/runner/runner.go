@@ -85,8 +85,12 @@ type SandboxCommandRequest struct {
 	RuntimeCommand  []string
 	ProcessEnv      map[string]string
 	NetworkMode     SandboxNetworkMode
-	TaskVolume      string
-	TaskVolumeRoot  string
+	// VPNTun mounts /dev/net/tun and grants CAP_NET_ADMIN so an in-sandbox
+	// OpenVPN client can create a TUN interface. It is incompatible with
+	// SandboxNetworkHostProxyOnly, which drops NET_ADMIN after firewall setup.
+	VPNTun         bool
+	TaskVolume     string
+	TaskVolumeRoot string
 	// ReadOnlyTaskFiles are task-root-relative mandatory inputs remounted over
 	// the writable task volume with Docker's read-only bind option.
 	ReadOnlyTaskFiles []string
@@ -178,9 +182,13 @@ func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 	if strings.TrimSpace(request.ContainerIDFile) != "" {
 		args = append(args, "--cidfile", request.ContainerIDFile)
 	}
-	args = append(args,
-		"--add-host=host.docker.internal:host-gateway",
-	)
+	// Host gateway aliases let the sandbox reach a daemon on the host. Docker
+	// and OrbStack use host.docker.internal; Podman also gets
+	// host.containers.internal. Detection is basename-based at create time so
+	// offline create still emits compatible flags without probing the engine.
+	for _, host := range HostGatewayAddHosts(kindFromCLIName(program)) {
+		args = append(args, "--add-host="+host)
+	}
 	taskVolume := strings.TrimSpace(request.TaskVolume)
 	taskVolumeSubpath := ""
 	volumeRoot := ""
@@ -268,9 +276,20 @@ func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 			args = append(args, "--mount", "type=volume,src="+taskVolume+",dst="+target+","+volumeSubpathOption+"="+source+",readonly")
 		}
 	}
+	if request.VPNTun && request.NetworkMode == SandboxNetworkHostProxyOnly {
+		return Command{}, fmt.Errorf("sandbox VPN TUN cannot combine with host_proxy_only network")
+	}
 	if request.NetworkMode == SandboxNetworkHostProxyOnly {
 		args = append(args,
 			"--network", HostProxyOnlySandboxNetworkName,
+			"--cap-add", "NET_ADMIN",
+		)
+	}
+	if request.VPNTun {
+		// Device + NET_ADMIN stay for the whole Runtime so OpenVPN can create
+		// and configure tun0. Default sandbox launch does not grant either.
+		args = append(args,
+			"--device", "/dev/net/tun",
 			"--cap-add", "NET_ADMIN",
 		)
 	}

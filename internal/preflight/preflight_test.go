@@ -41,8 +41,16 @@ func newTestServices(t *testing.T) services {
 	creds := credential.NewService(db)
 	providers := modelprovider.NewService(db)
 	plugins := runtimeplugin.MustBuiltinRegistry()
+	// Default sandbox engine probe is fake so unit tests do not require a live
+	// Docker/OrbStack/Podman daemon. Tests that care about engine behaviour
+	// replace this runner.
+	fakeEngine := func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return []byte("Server:\n Name: test-engine\n Operating System: test\n"), nil
+	}
 	return services{
-		preflight:      preflight.NewService(profiles, creds).WithModelProviders(providers, plugins),
+		preflight: preflight.NewService(profiles, creds).
+			WithModelProviders(providers, plugins).
+			WithContainerRunner(fakeEngine),
 		db:             db,
 		profiles:       profiles,
 		creds:          creds,
@@ -1041,6 +1049,97 @@ func insertLegacyProfile(t *testing.T, db *store.DB, name, provider, fieldsJSON 
 		t.Fatalf("insert legacy profile: %v", err)
 	}
 	return id
+}
+
+func TestSandboxPreflightProbesContainerEngineAndVPNTun(t *testing.T) {
+	svc := newTestServices(t)
+	profile, err := svc.profiles.Create("codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		Model: "gpt-5",
+	})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	run := func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if args[0] != "info" {
+			t.Fatalf("unexpected args %v", args)
+		}
+		return []byte("Server:\n Name: OrbStack\n Operating System: OrbStack\n"), nil
+	}
+	svc.preflight = svc.preflight.WithContainerRunner(run)
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		Runner:           "sandbox",
+		ContainerCLI:     "docker",
+		SandboxVPNTun:    true,
+	})
+	if !result.Pass {
+		t.Fatalf("expected pass, got %#v", result.Checks)
+	}
+	if !checkPassed(result, "container_engine") {
+		t.Fatalf("container_engine check missing: %#v", result.Checks)
+	}
+	if !checkPassed(result, "sandbox_vpn_tun") {
+		t.Fatalf("sandbox_vpn_tun check missing: %#v", result.Checks)
+	}
+	if !strings.Contains(checkDetail(result, "container_engine"), "OrbStack") {
+		t.Fatalf("detail = %q", checkDetail(result, "container_engine"))
+	}
+}
+
+func TestSandboxPreflightRejectsRootlessPodmanVPNTun(t *testing.T) {
+	svc := newTestServices(t)
+	profile, err := svc.profiles.Create("codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		Model: "gpt-5",
+	})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	run := func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return []byte("host:\n  security:\n    rootless: true\npodman version\n"), nil
+	}
+	svc.preflight = svc.preflight.WithContainerRunner(run)
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		Runner:           "sandbox",
+		ContainerCLI:     "podman",
+		SandboxVPNTun:    true,
+	})
+	if result.Pass {
+		t.Fatalf("expected fail for rootless VPN TUN, got %#v", result.Checks)
+	}
+	if !checkFailed(result, "sandbox_vpn_tun") {
+		t.Fatalf("expected sandbox_vpn_tun fail: %#v", result.Checks)
+	}
+}
+
+func TestSandboxPreflightRejectsVPNTunWithHostProxyOnly(t *testing.T) {
+	svc := newTestServices(t)
+	profile, err := svc.profiles.Create("codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		Model: "gpt-5",
+	})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	run := func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return []byte("Server:\n Name: OrbStack\n"), nil
+	}
+	svc.preflight = svc.preflight.WithContainerRunner(run)
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		Runner:           "sandbox",
+		ContainerCLI:     "docker",
+		SandboxVPNTun:    true,
+		SandboxNetwork:   "host_proxy_only",
+	})
+	if result.Pass {
+		t.Fatal("expected conflict fail")
+	}
+	if !checkFailed(result, "sandbox_vpn_tun") {
+		t.Fatalf("expected sandbox_vpn_tun fail: %#v", result.Checks)
+	}
 }
 
 func checkDetail(result preflight.Result, name string) string {

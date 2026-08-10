@@ -59,6 +59,7 @@ export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOpt
   const [presetOpen, setPresetOpen] = useState(false);
   const [hostActivated, setHostActivated] = useState(false);
   const [sandboxNetwork, setSandboxNetwork] = useState("");
+  const [sandboxVPNTun, setSandboxVPNTun] = useState(false);
   const [blackboardConclusionMode, setBlackboardConclusionMode] = useState<BlackboardConclusionMode>("interactive");
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [skillsPreview, setSkillsPreview] = useState<Skill[] | null>(null);
@@ -217,7 +218,7 @@ export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOpt
       ...(form.runner === "host" ? { host_activated: hostActivated } : {}),
       ...launchModelOverridePayload(presetId, form),
       ...launchReasoningEffortPayload(form),
-      run_controls: launchRunControls(hostActivated, form.runner, sandboxNetwork, blackboardConclusionMode),
+      run_controls: launchRunControls(hostActivated, form.runner, sandboxNetwork, sandboxVPNTun, blackboardConclusionMode),
     };
   }
 
@@ -256,6 +257,8 @@ export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOpt
     setHostActivated,
     sandboxNetwork,
     setSandboxNetwork,
+    sandboxVPNTun,
+    setSandboxVPNTun,
     blackboardConclusionMode,
     setBlackboardConclusionMode,
     preflight,
@@ -305,6 +308,8 @@ export function RuntimeLaunchControls({
     setHostActivated,
     sandboxNetwork,
     setSandboxNetwork,
+    sandboxVPNTun,
+    setSandboxVPNTun,
     blackboardConclusionMode,
     setBlackboardConclusionMode,
     preflight,
@@ -368,12 +373,48 @@ export function RuntimeLaunchControls({
       </div>
 
       {form.runner === "sandbox" && (
-        <div>
-          <Label htmlFor="launch-sandbox-network">Sandbox network</Label>
-          <Select id="launch-sandbox-network" name="sandbox_network" value={sandboxNetwork} onChange={(event) => { setSandboxNetwork(event.target.value); setPreflight(null); }}>
-            <option value="">Default bridge</option>
-            <option value="host_proxy_only">Host proxy only</option>
-          </Select>
+        <div className="space-y-3">
+          <div>
+            <Label htmlFor="launch-sandbox-network">Sandbox network</Label>
+            <Select
+              id="launch-sandbox-network"
+              name="sandbox_network"
+              value={sandboxNetwork}
+              onChange={(event) => {
+                const next = event.target.value;
+                setSandboxNetwork(next);
+                // host_proxy_only drops NET_ADMIN after the firewall is installed,
+                // so it cannot host an in-sandbox OpenVPN TUN client.
+                if (next === "host_proxy_only") setSandboxVPNTun(false);
+                setPreflight(null);
+              }}
+            >
+              <option value="">Default bridge</option>
+              <option value="host_proxy_only">Host proxy only</option>
+            </Select>
+          </div>
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              id="launch-sandbox-vpn-tun"
+              name="sandbox_vpn_tun"
+              checked={sandboxVPNTun}
+              disabled={sandboxNetwork === "host_proxy_only"}
+              onChange={(event) => {
+                setSandboxVPNTun(event.target.checked);
+                setPreflight(null);
+              }}
+              className="mt-0.5 h-4 w-4 accent-primary"
+            />
+            <span>
+              <span className="font-medium">Sandbox VPN TUN</span>
+              <span className="mt-0.5 block text-xs text-muted-foreground">
+                Mount <span className="font-mono">/dev/net/tun</span> and grant{" "}
+                <span className="font-mono">NET_ADMIN</span> so OpenVPN can create{" "}
+                <span className="font-mono">tun0</span>. Unavailable with host proxy only.
+              </span>
+            </span>
+          </label>
         </div>
       )}
 
@@ -494,10 +535,19 @@ function launchUnavailableReason({
   return null;
 }
 
-function launchRunControls(hostActivated: boolean, runner: string, sandboxNetwork: string, blackboardConclusionMode: BlackboardConclusionMode) {
+function launchRunControls(
+  hostActivated: boolean,
+  runner: string,
+  sandboxNetwork: string,
+  sandboxVPNTun: boolean,
+  blackboardConclusionMode: BlackboardConclusionMode,
+) {
   return {
     ...(runner === "host" ? { host_activated: hostActivated } : {}),
     ...(runner === "sandbox" && sandboxNetwork ? { sandbox_network: sandboxNetwork } : {}),
+    ...(runner === "sandbox" && sandboxVPNTun && sandboxNetwork !== "host_proxy_only"
+      ? { sandbox_vpn_tun: true }
+      : {}),
     blackboard_conclusion_mode: blackboardConclusionMode,
   };
 }

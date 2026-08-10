@@ -130,6 +130,9 @@ func TestCreateCapturesGoalRunControlsAndScopeSnapshot(t *testing.T) {
 	if fetched.RunControls.SandboxNetwork != "host_proxy_only" {
 		t.Fatalf("expected persisted sandbox network, got %q", fetched.RunControls.SandboxNetwork)
 	}
+	if fetched.RunControls.SandboxVPNTun {
+		t.Fatal("expected sandbox VPN TUN off by default")
+	}
 	if fetched.RunControls.Policy.MaxWrongSubmissions != 4 || fetched.RunControls.Policy.MaxRatingDrawdown != 40 {
 		t.Fatalf("expected immutable task policy snapshot, got %#v", fetched.RunControls.Policy)
 	}
@@ -2007,5 +2010,69 @@ func TestTerminalContinuationClosesBoundCapabilities(t *testing.T) {
 	}
 	if len(marker.continuationIDs) != 1 || marker.continuationIDs[0] != continuation.ID {
 		t.Fatalf("terminal marker calls = %v", marker.continuationIDs)
+	}
+}
+
+// TestCreatePersistsSandboxVPNTunRunControl captures the opt-in TUN device
+// capability so CTF OpenVPN clients can create /dev/net/tun inside the sandbox.
+func TestCreatePersistsSandboxVPNTunRunControl(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, err := projects.Create("VPN CTF", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	created, err := svc.Create(task.CreateRequest{
+		ProjectID:        proj.ID,
+		Type:             task.TypePentest,
+		Goal:             "Connect VPN then solve",
+		RuntimeProfileID: "profile-1",
+		Runner:           task.RunnerSandbox,
+		RunControls: task.RunControls{
+			SandboxVPNTun: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if !created.RunControls.SandboxVPNTun {
+		t.Fatal("expected sandbox VPN TUN enabled on create")
+	}
+	fetched, err := svc.Get(created.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if !fetched.RunControls.SandboxVPNTun {
+		t.Fatal("expected sandbox VPN TUN to persist")
+	}
+}
+
+// TestCreateRejectsSandboxVPNTunWithHostProxyOnly proves the two network
+// shapes are mutually exclusive: host_proxy_only drops NET_ADMIN after the
+// firewall is installed, which cannot host an in-sandbox OpenVPN client.
+func TestCreateRejectsSandboxVPNTunWithHostProxyOnly(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, err := projects.Create("VPN CTF", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	_, err = svc.Create(task.CreateRequest{
+		ProjectID:        proj.ID,
+		Type:             task.TypePentest,
+		Goal:             "Connect VPN then solve",
+		RuntimeProfileID: "profile-1",
+		Runner:           task.RunnerSandbox,
+		RunControls: task.RunControls{
+			SandboxNetwork: "host_proxy_only",
+			SandboxVPNTun:  true,
+		},
+	})
+	if !errors.Is(err, task.ErrSandboxVPNTunHostProxyConflict) {
+		t.Fatalf("create error = %v, want %v", err, task.ErrSandboxVPNTunHostProxyConflict)
 	}
 }

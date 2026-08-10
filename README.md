@@ -29,7 +29,12 @@ Data lives on the machine by default: SQLite (`pentest.db`), task run directorie
 
 - Go (see `go.mod`)
 - Node.js 20+ (UI build / `make dev`)
-- Docker or Podman (sandbox runner)
+- A Linux container engine for the **Sandbox Runner**:
+  - **macOS (default here):** [OrbStack](https://orbstack.dev/) with the Docker-compatible CLI
+  - **Linux:** Docker Engine or Podman
+  - **Windows:** native `pentestd` + Docker Desktop / Podman Desktop (Linux containers in the Desktop WSL machine)
+
+See [ADR 0025](docs/adr/0025-container-engine-support-matrix.md) for the engine matrix.
 
 ### Local development
 
@@ -117,7 +122,13 @@ Common `pentestd` options (flags or env):
 | `-db` | `PENTEST_DB` | `pentest.db` |
 | `-runtime-root` | `PENTEST_RUNTIME_ROOT` | (empty → daemon default) |
 | `-sandbox-image` | `PENTEST_SANDBOX_IMAGE` | `ghcr.io/n1majne3/cyberpenda-sandbox:latest` |
-| `-container-cli` | `PENTEST_CONTAINER_CLI` | `docker` |
+| `-container-cli` | `PENTEST_CONTAINER_CLI` | `docker` (or `podman`) |
+
+Sandbox network notes:
+
+- Default bridge works with OrbStack, Docker, and rootful Podman.
+- Opt-in **Sandbox VPN TUN** (`run_controls.sandbox_vpn_tun`) mounts `/dev/net/tun` and grants `NET_ADMIN` for OpenVPN. It cannot combine with `host_proxy_only`, and **rootless Podman fails preflight** for that option.
+- On Windows the daemon runs natively; only sandbox containers run in the Desktop WSL/Linux VM.
 | `-task-volume` | `PENTEST_TASK_VOLUME` | (empty; Compose sets the named data volume) |
 | `-task-volume-root` | `PENTEST_TASK_VOLUME_ROOT` | `/data` when `-task-volume` is set |
 | `-auth-token` | `PENTEST_AUTH_TOKEN` | (required for non-loopback binds) |

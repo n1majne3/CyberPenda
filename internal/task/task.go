@@ -45,14 +45,36 @@ const (
 // RunControls are the structured task launch settings: runner is stored
 // separately because it gates execution boundary visibility.
 type RunControls struct {
-	HostActivated            bool                     `json:"host_activated,omitempty"`
-	SandboxNetwork           string                   `json:"sandbox_network,omitempty"`
+	HostActivated  bool   `json:"host_activated,omitempty"`
+	SandboxNetwork string `json:"sandbox_network,omitempty"`
+	// SandboxVPNTun is an opt-in sandbox capability that mounts /dev/net/tun and
+	// grants CAP_NET_ADMIN so OpenVPN (or other TUN clients) can create tun0.
+	// It cannot combine with host_proxy_only, which drops NET_ADMIN after the
+	// egress firewall is installed.
+	SandboxVPNTun            bool                     `json:"sandbox_vpn_tun,omitempty"`
 	Notes                    string                   `json:"notes,omitempty"`
 	Extras                   map[string]string        `json:"extras,omitempty"`
 	BlackboardConclusionMode BlackboardConclusionMode `json:"blackboard_conclusion_mode"`
 	// Policy is the immutable Task Policy Snapshot captured at Task creation.
 	// A zero value disables that limit.
 	Policy TaskPolicy `json:"policy"`
+}
+
+func (controls RunControls) validate() error {
+	if err := controls.Policy.validate(); err != nil {
+		return err
+	}
+	if controls.SandboxVPNTun && strings.TrimSpace(controls.SandboxNetwork) == "host_proxy_only" {
+		return ErrSandboxVPNTunHostProxyConflict
+	}
+	if controls.SandboxVPNTun {
+		if extras := controls.Extras; extras != nil {
+			if strings.TrimSpace(extras["sandbox_network"]) == "host_proxy_only" {
+				return ErrSandboxVPNTunHostProxyConflict
+			}
+		}
+	}
+	return nil
 }
 
 // TaskPolicy defines machine-enforced stop conditions for one Task.
@@ -529,6 +551,10 @@ var ErrInvalidBlackboardConclusionMode = errors.New("Blackboard conclusion mode 
 
 var ErrInvalidTaskPolicy = errors.New("Task Policy limits must be zero or positive")
 
+// ErrSandboxVPNTunHostProxyConflict reports that sandbox VPN TUN cannot run
+// with the host_proxy_only network shape.
+var ErrSandboxVPNTunHostProxyConflict = errors.New("sandbox VPN TUN cannot combine with host_proxy_only network")
+
 var ErrInvalidBlackboardConclusionReceipt = errors.New("invalid Blackboard conclusion checkpoint receipt")
 
 var ErrBlackboardConclusionRetryCooldown = errors.New("Blackboard conclusion retry is not yet eligible")
@@ -620,7 +646,7 @@ func (s *Service) Create(req CreateRequest) (Task, error) {
 		return Task{}, err
 	}
 	req.RunControls.BlackboardConclusionMode = mode
-	if err := req.RunControls.Policy.validate(); err != nil {
+	if err := req.RunControls.validate(); err != nil {
 		return Task{}, err
 	}
 

@@ -455,7 +455,7 @@ func (server *Server) prepareSessionRuntime(ctx context.Context, mode session.Bl
 	if err != nil {
 		return sessionRuntimePreparation{}, err
 	}
-	preflightResult := server.preflight.Run(ctx, preflightRequestForSession(profile, input, run, input.selectedModel()))
+	preflightResult := server.preflight.Run(ctx, preflightRequestForSession(server, profile, input, run, input.selectedModel()))
 	if !preflightResult.Pass {
 		return sessionRuntimePreparation{}, fmt.Errorf("Session Runtime preflight failed")
 	}
@@ -610,16 +610,20 @@ func (server *Server) handleSessionPreflight(response http.ResponseWriter, reque
 	}
 	result := server.preflight.Run(
 		request.Context(),
-		preflightRequestForSession(profile, input, run, input.selectedModel()),
+		preflightRequestForSession(server, profile, input, run, input.selectedModel()),
 	)
 	server.logPreflightCustomArgConflict(profile.ID, result)
 	writeJSON(response, http.StatusOK, result)
 }
 
-func preflightRequestForSession(profile runtimeprofile.Profile, input sessionRuntimeInput, run session.Runner, launchModel string) preflight.Request {
+func preflightRequestForSession(server *Server, profile runtimeprofile.Profile, input sessionRuntimeInput, run session.Runner, launchModel string) preflight.Request {
 	return preflight.Request{
-		RuntimeProfileID: profile.ID, ProjectID: "", Runner: string(run), HostActivated: input.HostActivated,
+		RuntimeProfileID:    profile.ID,
+		ProjectID:           "",
+		Runner:              string(run),
+		HostActivated:       input.HostActivated,
 		LaunchModelOverride: launchModel,
+		ContainerCLI:        server.containerCLI,
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 
 	"pentest/internal/credential"
 	"pentest/internal/modelprovider"
+	"pentest/internal/runner"
 	"pentest/internal/runtimeextension"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
@@ -90,6 +91,13 @@ type Request struct {
 	// only to validate Runtime Extension Requirements.
 	ProjectKind       string
 	ScopeCapabilities []string
+	// ContainerCLI is the host container executable (docker or podman). Empty
+	// defaults to docker. Used only when Runner is sandbox.
+	ContainerCLI string
+	// SandboxVPNTun requests opt-in TUN device + NET_ADMIN for OpenVPN.
+	SandboxVPNTun bool
+	// SandboxNetwork is the selected sandbox network mode (for conflict checks).
+	SandboxNetwork string
 }
 
 // ProfileGetter loads runtime profiles for preflight checks.
@@ -110,6 +118,8 @@ type Service struct {
 	modelProviders    modelprovider.ProviderGetter
 	runtimePlugins    *runtimeplugin.Registry
 	runtimeExtensions *runtimeextension.Registry
+	// containerRunner probes the host container CLI. Nil uses the real CLI.
+	containerRunner runner.CommandRunner
 }
 
 // NewService returns a preflight Service.
@@ -129,6 +139,13 @@ func (s *Service) WithModelProviders(providers modelprovider.ProviderGetter, plu
 
 func (s *Service) WithRuntimeExtensions(registry *runtimeextension.Registry) *Service {
 	s.runtimeExtensions = registry
+	return s
+}
+
+// WithContainerRunner injects the container CLI probe used for sandbox engine
+// and VPN TUN checks. Tests supply fakes; production leaves this nil.
+func (s *Service) WithContainerRunner(run runner.CommandRunner) *Service {
+	s.containerRunner = run
 	return s
 }
 
@@ -258,6 +275,10 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 		})
 	} else if runner == "host" {
 		result.add(Check{Name: "host_activation", Status: CheckPass})
+	}
+
+	if runner == "sandbox" {
+		s.checkContainerEngine(ctx, &result, request)
 	}
 
 	// Check 3: inline profile API keys, every credential reference, and every
@@ -483,6 +504,51 @@ func validateEnabledSkillBundles(bundles []skill.Bundle) error {
 		}
 	}
 	return nil
+}
+
+func (s *Service) checkContainerEngine(ctx context.Context, result *Result, request Request) {
+	cli := runner.NormalizeContainerCLI(request.ContainerCLI)
+	if request.SandboxVPNTun && strings.TrimSpace(request.SandboxNetwork) == "host_proxy_only" {
+		result.add(Check{
+			Name:   "sandbox_vpn_tun",
+			Status: CheckFail,
+			Detail: "sandbox VPN TUN cannot combine with host_proxy_only network",
+		})
+	}
+	info, err := runner.DetectEngine(ctx, cli, s.containerRunner)
+	if err != nil {
+		result.add(Check{
+			Name:   "container_engine",
+			Status: CheckFail,
+			Detail: err.Error(),
+		})
+		if request.SandboxVPNTun && strings.TrimSpace(request.SandboxNetwork) != "host_proxy_only" {
+			result.add(Check{
+				Name:   "sandbox_vpn_tun",
+				Status: CheckFail,
+				Detail: "sandbox VPN TUN requires a ready container engine",
+			})
+		}
+		return
+	}
+	result.add(Check{
+		Name:   "container_engine",
+		Status: CheckPass,
+		Detail: info.Detail,
+	})
+	if !request.SandboxVPNTun {
+		return
+	}
+	if strings.TrimSpace(request.SandboxNetwork) == "host_proxy_only" {
+		// Conflict already recorded above.
+		return
+	}
+	ok, detail := info.SupportsVPNTun()
+	if !ok {
+		result.add(Check{Name: "sandbox_vpn_tun", Status: CheckFail, Detail: detail})
+		return
+	}
+	result.add(Check{Name: "sandbox_vpn_tun", Status: CheckPass, Detail: detail})
 }
 
 func (r *Result) add(check Check) {

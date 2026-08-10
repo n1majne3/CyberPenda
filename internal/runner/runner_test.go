@@ -253,6 +253,12 @@ func TestBuildSandboxCommandUsesPodmanNamedVolumeSubpathSyntax(t *testing.T) {
 	if strings.Contains(joined, "volume-subpath=") {
 		t.Fatalf("Podman command contains Docker-only volume-subpath syntax: %v", command.Args)
 	}
+	if !strings.Contains(joined, "--add-host=host.docker.internal:host-gateway") {
+		t.Fatalf("expected host.docker.internal gateway, got %v", command.Args)
+	}
+	if !strings.Contains(joined, "--add-host=host.containers.internal:host-gateway") {
+		t.Fatalf("expected host.containers.internal gateway for Podman, got %v", command.Args)
+	}
 }
 
 func TestBuildSandboxCommandRejectsMissingNamedVolumeReadOnlyFile(t *testing.T) {
@@ -350,6 +356,63 @@ func TestBuildSandboxCommandUsesHostProxyOnlyNetworkWhenRequested(t *testing.T) 
 		if !strings.Contains(joined, want) {
 			t.Fatalf("expected sandbox args to contain %q, got %v", want, command.Args)
 		}
+	}
+}
+
+// TestBuildSandboxCommandEnablesVPNTunDevice grants the TUN character device
+// and NET_ADMIN so OpenVPN can ioctl TUNSETIFF inside the sandbox.
+func TestBuildSandboxCommandEnablesVPNTunDevice(t *testing.T) {
+	root := t.TempDir()
+	layout, err := runner.PrepareTaskLayout(root, "task-vpn", runtimeprofile.ProviderCodex)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+
+	command, err := runner.BuildSandboxCommand(runner.SandboxCommandRequest{
+		Layout:         layout,
+		Provider:       runtimeprofile.ProviderCodex,
+		Image:          "pentest-kali:local",
+		RuntimeCommand: []string{"codex", "run", "--json"},
+		VPNTun:         true,
+	})
+	if err != nil {
+		t.Fatalf("build command: %v", err)
+	}
+
+	joined := strings.Join(command.Args, " ")
+	for _, want := range []string{
+		"--device /dev/net/tun",
+		"--cap-add NET_ADMIN",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected sandbox args to contain %q, got %v", want, command.Args)
+		}
+	}
+	if strings.Contains(joined, "pentest-host-proxy-only") {
+		t.Fatalf("VPN TUN default bridge must not select host-proxy-only network: %v", command.Args)
+	}
+}
+
+func TestBuildSandboxCommandRejectsVPNTunWithHostProxyOnly(t *testing.T) {
+	root := t.TempDir()
+	layout, err := runner.PrepareTaskLayout(root, "task-vpn", runtimeprofile.ProviderCodex)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+
+	_, err = runner.BuildSandboxCommand(runner.SandboxCommandRequest{
+		Layout:         layout,
+		Provider:       runtimeprofile.ProviderCodex,
+		Image:          "pentest-kali:local",
+		RuntimeCommand: []string{"codex", "run", "--json"},
+		NetworkMode:    runner.SandboxNetworkHostProxyOnly,
+		VPNTun:         true,
+	})
+	if err == nil {
+		t.Fatal("expected VPN TUN + host_proxy_only to fail closed")
+	}
+	if !strings.Contains(err.Error(), "VPN TUN") {
+		t.Fatalf("error = %v, want VPN TUN conflict detail", err)
 	}
 }
 

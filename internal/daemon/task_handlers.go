@@ -133,6 +133,9 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		HostActivated:       input.RunControls.HostActivated,
 		ProjectKind:         defaulted.project.Kind,
 		ScopeCapabilities:   append([]string(nil), defaulted.project.Scope.Capabilities...),
+		ContainerCLI:        server.containerCLI,
+		SandboxVPNTun:       input.RunControls.SandboxVPNTun,
+		SandboxNetwork:      input.RunControls.SandboxNetwork,
 	})
 	server.logPreflightCustomArgConflict(input.RuntimeProfileID, preflightResult)
 	if !preflightResult.Pass {
@@ -904,6 +907,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 			RuntimeCommand:    sandboxRuntime,
 			ProcessEnv:        processEnv,
 			NetworkMode:       sandboxNetwork,
+			VPNTun:            created.RunControls.SandboxVPNTun,
 			TaskVolume:        server.taskVolume,
 			TaskVolumeRoot:    server.taskVolumeRoot,
 			ReadOnlyTaskFiles: readOnlyTaskFiles,
@@ -4400,7 +4404,7 @@ func (server *Server) requireProject(response http.ResponseWriter, projectID str
 
 func writeTaskError(response http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, task.ErrMissingGoal), errors.Is(err, task.ErrUnsupportedRunner), errors.Is(err, task.ErrInvalidTaskType), errors.Is(err, task.ErrInvalidBlackboardConclusionMode), errors.Is(err, task.ErrInvalidTaskPolicy):
+	case errors.Is(err, task.ErrMissingGoal), errors.Is(err, task.ErrUnsupportedRunner), errors.Is(err, task.ErrInvalidTaskType), errors.Is(err, task.ErrInvalidBlackboardConclusionMode), errors.Is(err, task.ErrInvalidTaskPolicy), errors.Is(err, task.ErrSandboxVPNTunHostProxyConflict):
 		writeError(response, http.StatusBadRequest, err.Error())
 	case errors.Is(err, task.ErrTaskTypeProjectKindMismatch):
 		writeError(response, http.StatusConflict, err.Error())

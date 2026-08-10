@@ -610,7 +610,15 @@ export interface Task {
   status: string;
   runner: string;
   runtime_profile_id: string;
-	run_controls: { host_activated?: boolean; sandbox_network?: string; blackboard_conclusion_mode?: BlackboardConclusionMode; notes?: string; extras?: Record<string, string>; policy?: TaskPolicy };
+	run_controls: {
+		host_activated?: boolean;
+		sandbox_network?: string;
+		sandbox_vpn_tun?: boolean;
+		blackboard_conclusion_mode?: BlackboardConclusionMode;
+		notes?: string;
+		extras?: Record<string, string>;
+		policy?: TaskPolicy;
+	};
   blackboard_conclusion?: BlackboardConclusionView;
   scope_snapshot: Scope;
   runtime_controls?: RuntimeControls;
