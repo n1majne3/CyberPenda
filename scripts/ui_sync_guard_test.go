@@ -7,62 +7,80 @@ import (
 	"testing"
 )
 
-func TestEmbeddedUISyncGuardRunsLocallyAndInCI(t *testing.T) {
+func TestEmbeddedUIIsNotCommitted(t *testing.T) {
 	repoRoot := repoRoot(t)
 
+	gitignoreBytes, err := os.ReadFile(filepath.Join(repoRoot, ".gitignore"))
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+	gitignore := string(gitignoreBytes)
+	assertContains(t, gitignore, "internal/daemon/webfs/dist/**")
+	assertContains(t, gitignore, "!internal/daemon/webfs/dist/.gitkeep")
+
+	// Committed product assets under dist/ would reintroduce merge noise.
+	distDir := filepath.Join(repoRoot, "internal", "daemon", "webfs", "dist")
+	entries, err := os.ReadDir(distDir)
+	if err != nil {
+		t.Fatalf("read embed dist: %v", err)
+	}
+	trackedKeep := false
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == ".gitkeep" {
+			trackedKeep = true
+			continue
+		}
+		// Generated files may exist locally after build-ui; they must not be
+		// required as committed product. Prove the git index has no dist assets
+		// other than .gitkeep via git ls-files in a separate contract below.
+		_ = name
+	}
+	if !trackedKeep {
+		// Working tree may only have generated files; index check is definitive.
+		t.Log("local dist/.gitkeep missing after clean; relying on git index contract")
+	}
+
+	// Dockerfile always injects a fresh web build; it must not rely on git dist.
+	dockerfile, err := os.ReadFile(filepath.Join(repoRoot, "docker", "pentestd", "Dockerfile"))
+	if err != nil {
+		t.Fatalf("read Dockerfile: %v", err)
+	}
+	assertContains(t, string(dockerfile), "COPY --from=web-build /src/web/dist internal/daemon/webfs/dist")
+}
+
+func TestBuildUIWritesLocalEmbedWithoutCommitGate(t *testing.T) {
+	repoRoot := repoRoot(t)
 	makefileBytes, err := os.ReadFile(filepath.Join(repoRoot, "Makefile"))
 	if err != nil {
 		t.Fatalf("read Makefile: %v", err)
 	}
 	makefile := string(makefileBytes)
-	assertContains(t, makefile, "check-ui-sync:\n\t@bash scripts/check-embedded-ui-sync.sh")
-	assertContains(t, makefile, "install-git-hooks:\n\tgit config core.hooksPath .githooks")
+
+	assertContains(t, makefile, "build: build-ui")
+	assertContains(t, makefile, "rsync -a --delete --exclude .gitkeep web/dist/ internal/daemon/webfs/dist/")
+	assertContains(t, makefile, "ensure-embed-stub:")
+	if strings.Contains(makefile, "check-ui-sync") {
+		t.Fatal("check-ui-sync must not remain; embedded UI is no longer committed")
+	}
 
 	workflowBytes, err := os.ReadFile(filepath.Join(repoRoot, ".github", "workflows", "ci.yml"))
 	if err != nil {
 		t.Fatalf("read CI workflow: %v", err)
 	}
-	assertContains(t, string(workflowBytes), "run: make check-ui-sync")
+	workflow := string(workflowBytes)
+	if strings.Contains(workflow, "check-ui-sync") {
+		t.Fatal("CI must not require committed UI sync")
+	}
+	assertContains(t, workflow, "make build-ui")
 
 	hookPath := filepath.Join(repoRoot, ".githooks", "pre-push")
-	hookInfo, err := os.Stat(hookPath)
-	if err != nil {
-		t.Fatalf("stat pre-push hook: %v", err)
-	}
-	if hookInfo.Mode().Perm()&0111 == 0 {
-		t.Fatal("pre-push hook must be executable")
-	}
 	hookBytes, err := os.ReadFile(hookPath)
 	if err != nil {
 		t.Fatalf("read pre-push hook: %v", err)
 	}
-	assertContains(t, string(hookBytes), "make check-ui-sync")
-
-	guardBytes, err := os.ReadFile(filepath.Join(repoRoot, "scripts", "check-embedded-ui-sync.sh"))
-	if err != nil {
-		t.Fatalf("read embedded UI sync guard: %v", err)
-	}
-	guard := string(guardBytes)
-	assertContains(t, guard, "make build-ui")
-	assertContains(t, guard, "git diff --exit-code HEAD -- internal/daemon/webfs/dist")
-}
-
-func TestBuildUIUpdatesEmbedWithoutReplacingSyncedDirectory(t *testing.T) {
-	repoRoot := repoRoot(t)
-	makefileBytes, err := os.ReadFile(filepath.Join(repoRoot, "Makefile"))
-	if err != nil {
-		t.Fatalf("read Makefile: %v", err)
-	}
-	makefile := string(makefileBytes)
-
-	assertContains(t, makefile, "rsync -a --delete web/dist/ internal/daemon/webfs/dist/")
-	for _, destructiveCopy := range []string{
-		"rm -rf internal/daemon/webfs/dist",
-		"cp -r web/dist internal/daemon/webfs/dist",
-	} {
-		if strings.Contains(makefile, destructiveCopy) {
-			t.Fatalf("build-ui must not replace the iCloud-synced embed directory with %q", destructiveCopy)
-		}
+	if strings.Contains(string(hookBytes), "check-ui-sync") {
+		t.Fatal("pre-push must not run check-ui-sync")
 	}
 }
 

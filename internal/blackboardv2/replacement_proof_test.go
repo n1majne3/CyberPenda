@@ -160,7 +160,7 @@ func TestBlackboardV2AcceptedContractsAndUserDocsAgree(t *testing.T) {
 		"go test -race",
 		"npm test",
 		"npm run build",
-		"make check-ui-sync",
+		"make build-ui",
 		"TestBlackboardChangeMCPSchemaAdvertisesObjectiveAndAttemptCreateEnvelope",
 		"TestClaudeV2RuntimeConfigPreservesTrustedMCPAllowlistWithoutIdentityContext",
 	} {

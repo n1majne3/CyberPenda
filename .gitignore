@@ -8,8 +8,10 @@ cmd/pentest-claude-sdk-bridge/node_modules/
 web/dist/
 web/playwright-report/
 web/test-results/
-# Keep the embedded dist in-tree for release builds (committed), so the daemon
-# embeds the latest UI. Regenerate with: make build-ui
+# Generated embed input for pentestd (//go:embed). Build with make build-ui;
+# Docker multi-stage builds UI in-image. Only dist/.gitkeep is tracked.
+internal/daemon/webfs/dist/**
+!internal/daemon/webfs/dist/.gitkeep
 
 # Local agent/session state
 /.zcode/

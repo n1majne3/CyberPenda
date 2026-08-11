@@ -1,4 +1,4 @@
-.PHONY: dev ensure-web-deps build build-ui check-ui-sync install-git-hooks build-sandbox-image build-sandbox-smoke-image test test-ci test-backend smoke-sandbox-mcp smoke-runtime-tasks clean
+.PHONY: dev ensure-web-deps build build-ui ensure-embed-stub install-git-hooks build-sandbox-image build-sandbox-smoke-image test test-ci test-backend smoke-sandbox-mcp smoke-runtime-tasks clean
 
 # Run the daemon and the Vite dev server together for local development.
 # The Vite proxy forwards /api and /health to the daemon on :8787.
@@ -65,20 +65,20 @@ juice-shop-live:
 ensure-web-deps:
 	@bash scripts/ensure-web-deps.sh
 
-# Build the React UI and copy it into the embed location.
+# Build the React UI and copy it into the embed location (local, not committed).
 build-ui: ensure-web-deps
 	cd web && npm run build
-	rm -rf internal/daemon/webfs/dist
 	mkdir -p internal/daemon/webfs/dist
-	cp -a web/dist/. internal/daemon/webfs/dist/
+	rsync -a --delete --exclude .gitkeep web/dist/ internal/daemon/webfs/dist/
+	# Keep the tracked placeholder so clean checkouts still //go:embed.
+	@test -f internal/daemon/webfs/dist/.gitkeep || printf '%s\n' '# Placeholder for //go:embed' > internal/daemon/webfs/dist/.gitkeep
 
-# Rebuild the committed embedded UI and fail when HEAD does not contain it.
-# A failed check leaves the fresh files in place so they can be reviewed and committed.
-check-ui-sync:
-	@bash scripts/check-embedded-ui-sync.sh
+# Ensure dist/ exists for //go:embed when no UI has been built yet.
+ensure-embed-stub:
+	@mkdir -p internal/daemon/webfs/dist
+	@test -f internal/daemon/webfs/dist/.gitkeep || printf '%s\n' '# Placeholder for //go:embed' > internal/daemon/webfs/dist/.gitkeep
 
-# Enable repository-owned hooks for this checkout. The pre-push hook catches
-# stale embedded UI before GitHub Actions has to report it.
+# Enable repository-owned hooks for this checkout.
 install-git-hooks:
 	git config core.hooksPath .githooks
 
@@ -92,7 +92,7 @@ test: test-backend
 # CI default: unit/integration tests only (no Docker, no LLM credentials).
 test-ci: test-backend
 
-test-backend:
+test-backend: ensure-embed-stub
 	go test ./cmd/... ./internal/... ./scripts
 
 # Live smokes (local):
@@ -101,4 +101,7 @@ test-backend:
 # Optional filters: PENTEST_SMOKE_ONLY=codex|claude_code|pi|pi_sandbox
 
 clean:
-	rm -rf web/dist internal/daemon/webfs/dist pentestd
+	rm -rf web/dist pentestd
+	# Drop generated embed assets; restore tracked //go:embed placeholder only.
+	rm -rf internal/daemon/webfs/dist
+	$(MAKE) ensure-embed-stub

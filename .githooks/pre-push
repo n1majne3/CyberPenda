@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
+# Repository pre-push is intentionally empty.
+# Embedded UI is not committed; release binaries use `make build` or Docker.
 set -euo pipefail
-
-repo_root="$(git rev-parse --show-toplevel)"
-cd "$repo_root"
-
-make check-ui-sync
+exit 0

@@ -1,0 +1,2 @@
+# Placeholder so //go:embed all:dist compiles without a Node build.
+# Real UI: make build-ui (or docker/pentestd multi-stage).

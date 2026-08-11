@@ -154,7 +154,7 @@ T30 (#128) closes only after these commands pass together from one worktree stat
 | Deterministic Snapshot, service, transport, launch/resume, synchronization, UI/health/report, and CTF groups | `go test ./internal/blackboardv2contract ./internal/blackboardv2 ./internal/daemon ./internal/mcpserver ./internal/pentestctl ./internal/runner ./internal/report` |
 | Web unit suite | `cd web && npm test` |
 | Production Web build | `cd web && npm run build` |
-| Embedded asset parity | `make check-ui-sync` |
+| Embedded UI build | `make build-ui` (local embed path; not committed) |
 
 The repository retirement test owns the narrow source allowlist: the offline migration package and exact historical migration SQL in `internal/store/store.go`. Normal daemon, Runtime, HTTP, MCP, CLI semantic commands, and Web production paths may not import or advertise a v1 schema, tool, route, epoch, type, relationship, Task Summary, or audit projection.
 

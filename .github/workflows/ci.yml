@@ -40,8 +40,8 @@ jobs:
       - name: Browser tests
         working-directory: web
         run: npm run test:browser
-      - name: Embedded UI is in sync with a fresh build
-        run: make check-ui-sync
+      - name: Build UI (embed path is local-only, not committed)
+        run: make build-ui
 
   app-image:
     runs-on: ubuntu-latest
