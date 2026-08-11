@@ -73,6 +73,13 @@ function dashboardAuthToken(): string {
   if (token) {
     try {
       window.sessionStorage.setItem(authTokenStorageKey, token);
+      const cleanURL = new URL(window.location.href);
+      cleanURL.searchParams.delete(authTokenParam);
+      window.history.replaceState(
+        window.history.state,
+        "",
+        cleanURL.pathname + cleanURL.search + cleanURL.hash,
+      );
     } catch {
       // Session storage may be disabled; the URL token still works for this request.
     }
@@ -113,7 +120,7 @@ export function apiDelete(path: string) {
 // ---- Domain types ----
 
 export interface Scope {
-	capabilities?: string[];
+  capabilities?: string[];
   domains?: string[];
   ips?: string[];
   cidrs?: string[];
@@ -122,6 +129,33 @@ export interface Scope {
   excluded?: string[];
   testing_limits?: string[];
   notes?: string;
+}
+
+export type ApprovalStatus = "proposed" | "approved" | "rejected";
+
+export interface ScopeExpansion {
+  id: string;
+  project_id: string;
+  addition: Scope;
+  discovery_source: string;
+  reason: string;
+  risk: string;
+  status: ApprovalStatus;
+  created_at: string;
+  decided_at?: string;
+}
+
+export interface ReasonTaskProposal {
+  id: string;
+  project_id: string;
+  reason_task_id: string;
+  next_task_goals: string[];
+  exploration_objective_changes: string[];
+  readiness_judgment: string;
+  changes: unknown[];
+  status: ApprovalStatus;
+  created_at: string;
+  decided_at?: string;
 }
 
 export interface ProjectDefaults {

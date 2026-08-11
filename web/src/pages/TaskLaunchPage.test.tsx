@@ -63,10 +63,10 @@ const autoResolvedProfile = {
   updated_at: "",
 };
 
-function renderPage() {
+function renderPage(path = "/projects/project-1/tasks/new") {
   return render(
     <StrictMode>
-      <MemoryRouter initialEntries={["/projects/project-1/tasks/new"]}>
+      <MemoryRouter initialEntries={[path]}>
         <Routes>
           <Route path="/projects/:projectId/tasks/new" element={<TaskLaunchPage />} />
           <Route path="/projects/:projectId/tasks/:taskId" element={<div>Task detail</div>} />
@@ -81,6 +81,55 @@ async function selectPentestTaskType() {
 }
 
 describe("TaskLaunchPage", () => {
+  it("launches a Reason Task with the server-owned planning goal", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.includes("/api/runtime-plugins")) {
+        return Promise.resolve(new Response(JSON.stringify({ plugins: [codexPlugin] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.includes("/api/model-providers")) {
+        return Promise.resolve(new Response(JSON.stringify({ providers: [mimoProvider] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.includes("/api/runtime-profiles")) {
+        return Promise.resolve(new Response(JSON.stringify({ profiles: [codexPreset] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.includes("/api/skills?")) {
+        return Promise.resolve(new Response(JSON.stringify({ skills: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.includes("/api/projects/project-1/preflight") && method === "POST") {
+        return Promise.resolve(new Response(JSON.stringify({ pass: true, checks: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.includes("/api/projects/project-1/reason-tasks") && method === "POST") {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { goal?: string };
+        expect(body.goal).toMatch(/^Read the complete Runtime Blackboard Snapshot/);
+        expect(body.goal).toMatch(/Do not mutate Blackboard records directly\.$/);
+        return Promise.resolve(new Response(JSON.stringify({ id: "reason-task-1" }), { status: 201, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.includes("/api/projects/project-1")) {
+        return Promise.resolve(new Response(JSON.stringify({
+          id: "project-1", name: "Acme", description: "", kind: "pentest", scope: {},
+          defaults: { runner: "sandbox", runtime_profile: "codex-preset" }, created_at: "", updated_at: "",
+        }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage("/projects/project-1/tasks/new?purpose=reason");
+
+    expect(await screen.findByRole("heading", { name: /Launch Reason Task/i })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Task type")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Reason Task goal")).toHaveAttribute("readonly");
+    await userEvent.click(screen.getByRole("button", { name: /Launch Reason Task/i }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/projects/project-1/reason-tasks"),
+      expect.objectContaining({ method: "POST" }),
+    ));
+    expect(await screen.findByText("Task detail")).toBeInTheDocument();
+  });
+
   it("launches with an explicit assisted Blackboard conclusion mode", async () => {
     const assistedPlugin = {
       ...codexPlugin,

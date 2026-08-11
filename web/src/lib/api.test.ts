@@ -9,7 +9,7 @@ afterEach(() => {
 
 describe("api client auth", () => {
   it("sends the dashboard URL token as a bearer token", async () => {
-    window.history.replaceState(null, "", "/?token=secret");
+    window.history.replaceState(null, "", "/?view=tasks&token=secret#activity");
     const fetchMock = vi.fn(async () => {
       return new Response(JSON.stringify({ projects: [] }), {
         status: 200,
@@ -29,5 +29,9 @@ describe("api client auth", () => {
         }),
       }),
     );
+    expect(window.location.pathname + window.location.search + window.location.hash).toBe(
+      "/?view=tasks#activity",
+    );
+    expect(window.sessionStorage.getItem("pentest.authToken")).toBe("secret");
   });
 });

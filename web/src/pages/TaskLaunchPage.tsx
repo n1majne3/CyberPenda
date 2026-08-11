@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Rocket } from "lucide-react";
 import { AttachmentPicker } from "@/components/AttachmentPicker";
 import { RuntimeLaunchControls, useRuntimeLaunchControls } from "@/components/RuntimeLaunchControls";
@@ -7,9 +7,13 @@ import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { Button, Card, CardHeader, CardTitle, Input, Label, Select, Textarea } from "@/components/ui";
 import { apiPost, apiPostForm } from "@/lib/api";
 
+const REASON_TASK_GOAL = "Read the complete Runtime Blackboard Snapshot and prepare an approval-required proposal for next Task Goals, Exploration Objective changes, and a readiness judgment. Do not mutate Blackboard records directly.";
+
 export function TaskLaunchPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const reasonTask = searchParams.get("purpose") === "reason";
   const launchControls = useRuntimeLaunchControls({ projectId });
   const [taskType, setTaskType] = useState("");
   const [goal, setGoal] = useState("");
@@ -23,6 +27,7 @@ export function TaskLaunchPage() {
     maxRatingDrawdown: "0",
     maxNoProgressSeconds: "0",
   });
+  const effectiveGoal = reasonTask ? REASON_TASK_GOAL : goal;
 
   async function launchTask() {
     if (!projectId) return;
@@ -37,8 +42,8 @@ export function TaskLaunchPage() {
       }
       const launch = launchControls.launchPayload(profileId);
       const payload = {
-        type: taskType,
-        goal,
+        type: reasonTask ? projectKind : taskType,
+        goal: effectiveGoal,
         ...launch,
         run_controls: {
           ...launch.run_controls,
@@ -52,14 +57,15 @@ export function TaskLaunchPage() {
           },
         },
       };
+      const taskPath = `/api/projects/${projectId}/${reasonTask ? "reason-tasks" : "tasks"}`;
       let created: { id: string };
       if (attachments.length > 0) {
         const body = new FormData();
         body.append("payload", JSON.stringify(payload));
         for (const file of attachments) body.append("attachments", file);
-        created = await apiPostForm<{ id: string }>(`/api/projects/${projectId}/tasks`, body);
+        created = await apiPostForm<{ id: string }>(taskPath, body);
       } else {
-        created = await apiPost<{ id: string }>(`/api/projects/${projectId}/tasks`, payload);
+        created = await apiPost<{ id: string }>(taskPath, payload);
       }
       navigate(`/projects/${projectId}/tasks/${created.id}`);
     } catch (cause) {
@@ -71,42 +77,48 @@ export function TaskLaunchPage() {
 
   const hostBlocked = launchControls.form.runner === "host" && !launchControls.hostActivated;
   const projectKind = launchControls.project?.kind === "ctf_challenge" ? "ctf_challenge" : "pentest";
-  const taskTypeMatchesProject = taskType !== "" && taskType === projectKind;
+  const taskTypeMatchesProject = reasonTask || (taskType !== "" && taskType === projectKind);
 
   return (
     <ProjectPageShell
       title={
         <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
-          <Rocket className="h-5 w-5 text-signal" /> Launch task
+          <Rocket className="h-5 w-5 text-signal" /> {reasonTask ? "Launch Reason Task" : "Launch task"}
         </h1>
       }
-      description="Define a Task goal, choose a Runtime, and launch a Task-scoped persistent Runtime."
+      description={reasonTask
+        ? "Launch an operator-triggered planning Task. Its Blackboard changes require later approval."
+        : "Define a Task goal, choose a Runtime, and launch a Task-scoped persistent Runtime."}
       bodyClassName="w-full max-w-3xl space-y-4"
     >
+      {!reasonTask && (
+        <div>
+          <Label htmlFor="task-type">Task type</Label>
+          <Select id="task-type" name="task_type" value={taskType} onChange={(event) => setTaskType(event.target.value)}>
+            <option value="" disabled>Select task type…</option>
+            <option value="pentest">Pentest</option>
+            <option value="ctf_challenge">CTF Challenge</option>
+          </Select>
+          <p className="mt-1 text-xs text-muted-foreground">The selected type becomes an immutable Task Type Snapshot.</p>
+          {taskType !== "" && !taskTypeMatchesProject && (
+            <p role="alert" className="mt-2 rounded-md border border-warning/30 bg-warning/10 p-3 text-sm text-warning">
+              Task Type must match this Project&apos;s kind. <Link className="underline underline-offset-2" to={`/projects/${projectId}`}>Convert the Project first.</Link>
+            </p>
+          )}
+        </div>
+      )}
       <div>
-        <Label htmlFor="task-type">Task type</Label>
-        <Select id="task-type" name="task_type" value={taskType} onChange={(event) => setTaskType(event.target.value)}>
-          <option value="" disabled>Select task type…</option>
-          <option value="pentest">Pentest</option>
-          <option value="ctf_challenge">CTF Challenge</option>
-        </Select>
-        <p className="mt-1 text-xs text-muted-foreground">The selected type becomes an immutable Task Type Snapshot.</p>
-        {taskType !== "" && !taskTypeMatchesProject && (
-          <p role="alert" className="mt-2 rounded-md border border-warning/30 bg-warning/10 p-3 text-sm text-warning">
-            Task Type must match this Project&apos;s kind. <Link className="underline underline-offset-2" to={`/projects/${projectId}`}>Convert the Project first.</Link>
-          </p>
-        )}
-      </div>
-      <div>
-        <Label htmlFor="goal">Task goal</Label>
+        <Label htmlFor="goal">{reasonTask ? "Reason Task goal" : "Task goal"}</Label>
         <Textarea
           id="goal"
           name="task_goal"
-          value={goal}
+          value={effectiveGoal}
           onChange={(event) => setGoal(event.target.value)}
           placeholder="Enumerate example.com and assess exposure…"
           autoComplete="off"
+          readOnly={reasonTask}
         />
+        {reasonTask && <p className="mt-1 text-xs text-muted-foreground">The daemon owns this planning goal. The Task can only submit an approval-required proposal.</p>}
       </div>
       <AttachmentPicker
         id="attachments"
@@ -116,7 +128,7 @@ export function TaskLaunchPage() {
         ownerLabel="task"
       />
 
-      <RuntimeLaunchControls controller={launchControls} ownerLabel="task" initialInput={goal} />
+      <RuntimeLaunchControls controller={launchControls} ownerLabel="task" initialInput={effectiveGoal} />
 
       <Card as="section" className="border-border/70 bg-muted/10">
         <CardHeader>
@@ -134,8 +146,8 @@ export function TaskLaunchPage() {
       </Card>
 
       <div className="flex justify-end">
-        <Button onClick={launchTask} disabled={!taskTypeMatchesProject || !launchControls.launchReady(goal) || launching || hostBlocked}>
-          <Rocket className="h-4 w-4" /> {launching ? "Launching…" : "Launch"}
+        <Button onClick={launchTask} disabled={!taskTypeMatchesProject || !launchControls.launchReady(effectiveGoal) || launching || hostBlocked}>
+          <Rocket className="h-4 w-4" /> {launching ? "Launching…" : reasonTask ? "Launch Reason Task" : "Launch"}
         </Button>
       </div>
     </ProjectPageShell>

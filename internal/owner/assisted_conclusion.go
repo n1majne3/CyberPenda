@@ -1,6 +1,12 @@
 package owner
 
-import "strings"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"strings"
+	"time"
+)
 
 // BlackboardConclusionReceiptState is the shared durable protocol state for
 // one completed assisted Work Turn. Task and Session persist it in separate
@@ -48,6 +54,141 @@ type SemanticDebtWatermarks struct {
 
 func (watermarks SemanticDebtWatermarks) Valid() bool {
 	return watermarks.SemanticPersistence >= 0 && watermarks.SourceWork >= watermarks.SemanticPersistence
+}
+
+// ConclusionCheckpointInput is the owner-neutral input for one durable
+// assisted-conclusion checkpoint. Owner adapters prove aggregate and
+// Continuation ownership after this shared normalization step.
+type ConclusionCheckpointInput struct {
+	OwnerID         string
+	ContinuationID  string
+	SourceRequestID string
+	SourceSessionID string
+	SourceTurnID    string
+	ModelProviderID string
+	Model           string
+	ReasoningEffort string
+	Watermarks      SemanticDebtWatermarks
+}
+
+// Normalize removes transport whitespace and validates fields that have the
+// same meaning for Task and Session owners.
+func (input ConclusionCheckpointInput) Normalize() (ConclusionCheckpointInput, bool) {
+	input.OwnerID = strings.TrimSpace(input.OwnerID)
+	input.ContinuationID = strings.TrimSpace(input.ContinuationID)
+	input.SourceRequestID = strings.TrimSpace(input.SourceRequestID)
+	input.SourceSessionID = strings.TrimSpace(input.SourceSessionID)
+	input.SourceTurnID = strings.TrimSpace(input.SourceTurnID)
+	input.ModelProviderID = strings.TrimSpace(input.ModelProviderID)
+	input.Model = strings.TrimSpace(input.Model)
+	input.ReasoningEffort = strings.TrimSpace(input.ReasoningEffort)
+	valid := input.OwnerID != "" && input.ContinuationID != "" && input.SourceRequestID != "" &&
+		input.SourceSessionID != "" && input.SourceTurnID != "" && input.ModelProviderID != "" &&
+		input.Model != "" && input.Watermarks.Valid()
+	return input, valid
+}
+
+// InitialConclusionCheckpoint selects the shared initial obligation state and
+// Timeline phase from semantic-debt watermarks.
+func InitialConclusionCheckpoint(watermarks SemanticDebtWatermarks) (BlackboardConclusionReceiptState, string) {
+	if watermarks.SourceWork <= watermarks.SemanticPersistence {
+		return BlackboardConclusionReceiptClean, "persistence_current"
+	}
+	return BlackboardConclusionReceiptPending, "pending_detected"
+}
+
+// ConclusionRepairAllowed applies the one-repair automatic-turn budget.
+func ConclusionRepairAllowed(code BlackboardConclusionErrorCode, automaticTurns, repairs, versionRegenerations, explicitRetries int) bool {
+	return code == BlackboardConclusionErrorInvalidResult && automaticTurns < BlackboardConclusionAutomaticTurnLimit &&
+		repairs == 0 && versionRegenerations == 0 && explicitRetries == 0
+}
+
+// ConclusionVersionRegenerationAllowed applies the one-regeneration
+// automatic-turn budget.
+func ConclusionVersionRegenerationAllowed(versionRegenerations, automaticTurns, explicitRetries int) bool {
+	return versionRegenerations == 0 && automaticTurns < BlackboardConclusionAutomaticTurnLimit && explicitRetries == 0
+}
+
+// ConclusionRecoveryEligible reports whether a pre-apply obligation can move
+// to action_required during fail-closed recovery.
+func ConclusionRecoveryEligible(state BlackboardConclusionReceiptState) bool {
+	switch state {
+	case BlackboardConclusionReceiptPending, BlackboardConclusionReceiptDispatchRequested,
+		BlackboardConclusionReceiptRepairDispatchRequested, BlackboardConclusionReceiptVersionSyncRequested,
+		BlackboardConclusionReceiptVersionRegenerationDispatchRequested, BlackboardConclusionReceiptAwaitingResult:
+		return true
+	default:
+		return false
+	}
+}
+
+// ConclusionFailureActionCode maps a terminal failed result to its stable
+// operator-visible error code.
+func ConclusionFailureActionCode(code BlackboardConclusionErrorCode, repairs, versionRegenerations int) BlackboardConclusionErrorCode {
+	if code == BlackboardConclusionErrorInvalidResult && repairs > 0 && versionRegenerations == 0 {
+		return BlackboardConclusionErrorRepairExhausted
+	}
+	return code
+}
+
+// ConclusionWorkTurnConflictOutcome maps the shared conflict budget to its
+// stable error code and Timeline reason.
+func ConclusionWorkTurnConflictOutcome(explicitRetries int) (BlackboardConclusionErrorCode, string) {
+	if explicitRetries >= BlackboardConclusionWorkTurnConflictLimit {
+		return BlackboardConclusionErrorWorkTurnNeverSettled, "work_turn_never_settled"
+	}
+	return BlackboardConclusionErrorRuntimeRecoveryRequired, "work_turn_conflict"
+}
+
+// ConclusionRetryDecision is the shared validation result for an
+// operator-authorized conclusion retry.
+type ConclusionRetryDecision string
+
+const (
+	ConclusionRetryAllowed             ConclusionRetryDecision = "allowed"
+	ConclusionRetryInvalidState        ConclusionRetryDecision = "invalid_state"
+	ConclusionRetryNeverSettled        ConclusionRetryDecision = "never_settled"
+	ConclusionRetryAcceptanceAmbiguous ConclusionRetryDecision = "acceptance_ambiguous"
+	ConclusionRetryCooldown            ConclusionRetryDecision = "cooldown"
+)
+
+// ConclusionRetryDecisionFor validates retry state, terminal reasons, and the
+// durable cooldown without owner-specific storage concerns.
+func ConclusionRetryDecisionFor(state BlackboardConclusionReceiptState, code BlackboardConclusionErrorCode, recoveryReason ConclusionRecoveryReason, nextEligibleAt *time.Time, now time.Time) ConclusionRetryDecision {
+	if state != BlackboardConclusionReceiptActionRequired {
+		return ConclusionRetryInvalidState
+	}
+	if code == BlackboardConclusionErrorWorkTurnNeverSettled {
+		return ConclusionRetryNeverSettled
+	}
+	if recoveryReason == ConclusionRecoveryAcceptanceAmbiguous {
+		return ConclusionRetryAcceptanceAmbiguous
+	}
+	if nextEligibleAt == nil || now.Before(*nextEligibleAt) {
+		return ConclusionRetryCooldown
+	}
+	return ConclusionRetryAllowed
+}
+
+// ConclusionRequestLineage derives the initial dispatch and apply keys from
+// length-framed provider correlation values.
+func ConclusionRequestLineage(continuationID, sourceTurnID string) (string, string) {
+	lineage := fmt.Sprintf("%d:%s%d:%s", len(continuationID), continuationID, len(sourceTurnID), sourceTurnID)
+	digest := CanonicalConclusionSHA256([]byte(lineage))
+	return "conclude:v1:" + digest, "assisted-apply:v1:" + digest
+}
+
+// ConclusionAttemptRequestID derives a stable identity for a repair, version,
+// retry, or recovery dispatch.
+func ConclusionAttemptRequestID(kind, continuationID, sourceTurnID string, number int, key string) string {
+	lineage := fmt.Sprintf("%s:%d:%s:%d:%s:%d:%s", kind, len(continuationID), continuationID, len(sourceTurnID), sourceTurnID, number, key)
+	return "conclude-" + kind + ":v1:" + CanonicalConclusionSHA256([]byte(lineage))
+}
+
+// CanonicalConclusionSHA256 returns the shared lower-case content digest.
+func CanonicalConclusionSHA256(value []byte) string {
+	sum := sha256.Sum256(value)
+	return hex.EncodeToString(sum[:])
 }
 
 // ConclusionValidationDetail is the bounded public reason for one rejected

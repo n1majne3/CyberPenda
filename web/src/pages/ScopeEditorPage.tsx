@@ -1,15 +1,15 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { AlertTriangle, Save } from "lucide-react";
-import { apiGet, apiPatch, type Project, type RuntimeProfile, type Scope } from "@/lib/api";
+import { AlertTriangle, Plus, Save } from "lucide-react";
+import { apiGet, apiPatch, apiPost, type Project, type RuntimeProfile, type Scope, type ScopeExpansion } from "@/lib/api";
 import { isManualRuntimeProfile } from "@/pages/runtimeProfileKind";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
-import { Button, Card, CardTitle, CardHeader, Label, Textarea, Badge, Select } from "@/components/ui";
+import { Button, Card, CardTitle, CardHeader, Input, Label, Textarea, Badge, Select } from "@/components/ui";
 import { ErrorState, LoadingState } from "@/components/shared";
 
 // Each list field is edited as newline-separated text.
 type ScopeDraft = {
-	capabilities: string;
+  capabilities: string;
   domains: string;
   ips: string;
   cidrs: string;
@@ -42,7 +42,7 @@ function fromDraft(d: ScopeDraft): Scope {
       .map((x) => x.trim())
       .filter(Boolean);
   return {
-	capabilities: split(d.capabilities),
+    capabilities: split(d.capabilities),
     domains: split(d.domains),
     ips: split(d.ips),
     cidrs: split(d.cidrs),
@@ -64,20 +64,30 @@ export function ScopeEditorPage() {
   const [defaultRunner, setDefaultRunner] = useState("sandbox");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [expansions, setExpansions] = useState<ScopeExpansion[]>([]);
+  const [expansionField, setExpansionField] = useState<Exclude<keyof Scope, "notes">>("domains");
+  const [expansionValue, setExpansionValue] = useState("");
+  const [discoverySource, setDiscoverySource] = useState("");
+  const [expansionReason, setExpansionReason] = useState("");
+  const [expansionRisk, setExpansionRisk] = useState("");
+  const [proposing, setProposing] = useState(false);
+  const [deciding, setDeciding] = useState<string | null>(null);
 
   useEffect(() => {
     if (!projectId) return;
     (async () => {
       try {
-        const [p, profileData] = await Promise.all([
+        const [p, profileData, expansionData] = await Promise.all([
           apiGet<Project>(`/api/projects/${projectId}`),
           apiGet<{ profiles: RuntimeProfile[] }>("/api/runtime-profiles"),
+          apiGet<{ expansions?: ScopeExpansion[] }>(`/api/projects/${projectId}/scope-expansions`),
         ]);
         setProject(p);
         setDraft(toDraft(p.scope));
         setProfiles(profileData.profiles ?? []);
         setDefaultProfile(p.defaults.runtime_profile ?? "");
         setDefaultRunner(p.defaults.runner || "sandbox");
+        setExpansions(expansionData.expansions ?? []);
         setError(null);
       } catch (e) {
         setError((e as Error).message);
@@ -102,6 +112,47 @@ export function ScopeEditorPage() {
       setError((e as Error).message);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function proposeExpansion() {
+    if (!projectId || !expansionValue.trim() || !discoverySource.trim() || !expansionReason.trim() || !expansionRisk.trim()) return;
+    setProposing(true);
+    try {
+      const proposal = await apiPost<ScopeExpansion>(`/api/projects/${projectId}/scope-expansions`, {
+        addition: { [expansionField]: [expansionValue.trim()] },
+        discovery_source: discoverySource.trim(),
+        reason: expansionReason.trim(),
+        risk: expansionRisk.trim(),
+      });
+      setExpansions((current) => [...current, proposal]);
+      setExpansionValue("");
+      setDiscoverySource("");
+      setExpansionReason("");
+      setExpansionRisk("");
+      setError(null);
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setProposing(false);
+    }
+  }
+
+  async function decideExpansion(expansionId: string, decision: "approve" | "reject") {
+    if (!projectId) return;
+    setDeciding(expansionId);
+    try {
+      const result = await apiPost<{ expansion: ScopeExpansion; project: Project }>(
+        `/api/projects/${projectId}/scope-expansions/${expansionId}/${decision}`,
+      );
+      setExpansions((current) => current.map((item) => item.id === expansionId ? result.expansion : item));
+      setProject(result.project);
+      setDraft(toDraft(result.project.scope));
+      setError(null);
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setDeciding(null);
     }
   }
 
@@ -185,8 +236,74 @@ export function ScopeEditorPage() {
         </div>
       </Card>
 
+      <Card as="section" aria-label="Scope Expansion proposals">
+        <CardHeader>
+          <CardTitle>Scope Expansion proposals</CardTitle>
+        </CardHeader>
+        <p className="mb-4 text-sm text-muted-foreground">
+          Propose a discovered addition. It does not become authorized Scope until an operator approves it.
+        </p>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div>
+            <Label htmlFor="expansion-field">Expansion field</Label>
+            <Select id="expansion-field" value={expansionField} onChange={(event) => setExpansionField(event.target.value as Exclude<keyof Scope, "notes">)}>
+              <option value="capabilities">Authorized capabilities</option>
+              <option value="domains">Domains</option>
+              <option value="ips">IP addresses</option>
+              <option value="cidrs">CIDRs</option>
+              <option value="urls">URLs</option>
+              <option value="ports">Ports</option>
+              <option value="excluded">Exclusions</option>
+              <option value="testing_limits">Testing limits</option>
+            </Select>
+          </div>
+          <div>
+            <Label htmlFor="expansion-value">Proposed addition</Label>
+            <Input id="expansion-value" value={expansionValue} onChange={(event) => setExpansionValue(event.target.value)} autoComplete="off" />
+          </div>
+          <div>
+            <Label htmlFor="expansion-source">Discovery source</Label>
+            <Input id="expansion-source" value={discoverySource} onChange={(event) => setDiscoverySource(event.target.value)} autoComplete="off" />
+          </div>
+          <div>
+            <Label htmlFor="expansion-risk">Expansion risk</Label>
+            <Input id="expansion-risk" value={expansionRisk} onChange={(event) => setExpansionRisk(event.target.value)} autoComplete="off" />
+          </div>
+          <div className="sm:col-span-2">
+            <Label htmlFor="expansion-reason">Expansion reason</Label>
+            <Textarea id="expansion-reason" value={expansionReason} onChange={(event) => setExpansionReason(event.target.value)} autoComplete="off" />
+          </div>
+        </div>
+        <div className="mt-3 flex justify-end">
+          <Button onClick={proposeExpansion} disabled={proposing || !expansionValue.trim() || !discoverySource.trim() || !expansionReason.trim() || !expansionRisk.trim()}>
+            <Plus className="mr-1 h-4 w-4" /> {proposing ? "Proposing…" : "Propose Scope Expansion"}
+          </Button>
+        </div>
+        {expansions.length > 0 && (
+          <ul className="mt-4 divide-y divide-border border-y border-border">
+            {expansions.map((expansion) => (
+              <li key={expansion.id} className="space-y-2 py-3">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-medium">{scopeAdditionLabel(expansion.addition)}</p>
+                    <p className="text-xs text-muted-foreground">{expansion.discovery_source} · {expansion.reason} · Risk: {expansion.risk}</p>
+                  </div>
+                  <Badge variant="outline">{expansion.status}</Badge>
+                </div>
+                {expansion.status === "proposed" && (
+                  <div className="flex gap-2">
+                    <Button size="sm" onClick={() => decideExpansion(expansion.id, "approve")} disabled={deciding === expansion.id}>Approve</Button>
+                    <Button size="sm" variant="outline" onClick={() => decideExpansion(expansion.id, "reject")} disabled={deciding === expansion.id}>Reject</Button>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+
       <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-		{field("capabilities", "Authorized capabilities", "challenge_platform\nnetwork_access")}
+        {field("capabilities", "Authorized capabilities", "challenge_platform\nnetwork_access")}
         {field("domains", "Domains", "example.com\napi.example.com")}
         {field("ips", "IP addresses", "203.0.113.5")}
         {field("cidrs", "CIDRs", "203.0.113.0/24")}
@@ -227,4 +344,11 @@ export function ScopeEditorPage() {
       </section>
     </ProjectPageShell>
   );
+}
+
+function scopeAdditionLabel(addition: Scope): string {
+  const values = Object.entries(addition)
+    .filter(([, value]) => Array.isArray(value))
+    .flatMap(([field, value]) => (value as string[]).map((item) => `${field}: ${item}`));
+  return values.join(", ");
 }

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, NavLink, useParams } from "react-router-dom";
 import { Compass, History, Layers3, Library, Loader2, Radar } from "lucide-react";
-import { apiGet, type Project } from "@/lib/api";
+import { apiGet, apiPost, type Project, type ReasonTaskProposal } from "@/lib/api";
 import {
   attentionLabel,
   blackboardHref,
@@ -26,7 +26,7 @@ import {
   type SnapshotListEntry,
 } from "@/lib/blackboardv2";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
-import { Badge, Card, CardDescription, CardTitle } from "@/components/ui";
+import { Badge, Button, Card, CardDescription, CardTitle } from "@/components/ui";
 import { cn } from "@/lib/utils";
 
 type BlackboardTab = "work" | "knowledge" | "explorer" | "record";
@@ -189,6 +189,7 @@ function BoardPanel({
       ) : (
         <HealthPanel projectId={projectId} health={health} />
       )}
+      <ReasonTaskProposalPanel projectId={projectId} />
       {focus === "work" && (
         <>
           <WorkSection projectId={projectId} entries={workEntries} />
@@ -336,7 +337,7 @@ function HealthPanel({
           aria-label="Health proposals"
         >
           {proposals.map((proposal) => (
-            <HealthProposalRow key={`${proposal.code}:${proposal.required}`} proposal={proposal} />
+            <HealthProposalRow key={`${proposal.code}:${proposal.required}`} projectId={projectId} proposal={proposal} />
           ))}
         </ul>
       )}
@@ -354,7 +355,7 @@ function HealthPanel({
   );
 }
 
-function HealthProposalRow({ proposal }: { proposal: HealthProposal }) {
+function HealthProposalRow({ projectId, proposal }: { projectId: string; proposal: HealthProposal }) {
   return (
     <li className="flex min-w-0 flex-col gap-1 p-3 sm:flex-row sm:items-start sm:justify-between">
       <div className="min-w-0 space-y-1">
@@ -372,10 +373,73 @@ function HealthProposalRow({ proposal }: { proposal: HealthProposal }) {
           Blackboard or schedule work.
         </p>
       </div>
-      <Badge variant="outline" className="border-warning/25 bg-warning/10">
-        proposal
-      </Badge>
+      <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
+        <Badge variant="outline" className="border-warning/25 bg-warning/10">proposal</Badge>
+        <Link
+          to={`/projects/${projectId}/tasks/new?purpose=reason`}
+          className="text-sm font-medium text-signal underline-offset-4 hover:underline"
+        >
+          Start Reason Task
+        </Link>
+      </div>
     </li>
+  );
+}
+
+function ReasonTaskProposalPanel({ projectId }: { projectId: string }) {
+  const [proposals, setProposals] = useState<ReasonTaskProposal[]>([]);
+  const [deciding, setDeciding] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiGet<{ proposals?: ReasonTaskProposal[] }>(`/api/projects/${projectId}/reason-task-proposals`)
+      .then((result) => {
+        if (!cancelled) setProposals((result.proposals ?? []).filter((proposal) => proposal.status === "proposed"));
+      })
+      .catch((cause: Error) => {
+        if (!cancelled) setError(cause.message);
+      });
+    return () => { cancelled = true; };
+  }, [projectId]);
+
+  async function decide(proposalId: string, decision: "approve" | "reject") {
+    setDeciding(proposalId);
+    try {
+      await apiPost(`/api/projects/${projectId}/reason-task-proposals/${proposalId}/${decision}`);
+      setProposals((current) => current.filter((proposal) => proposal.id !== proposalId));
+      setError(null);
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setDeciding(null);
+    }
+  }
+
+  if (proposals.length === 0 && !error) return null;
+  return (
+    <section className="space-y-3 border-b border-border p-4" aria-label="Reason Task proposals">
+      <SectionHeading title="Reason Task proposals" detail={`${proposals.length} pending`} />
+      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+      {proposals.map((proposal) => (
+        <Card key={proposal.id} className="space-y-3">
+          <div>
+            <p className="text-sm font-medium">Readiness judgment</p>
+            <p className="text-sm text-muted-foreground">{proposal.readiness_judgment}</p>
+          </div>
+          <div>
+            <p className="text-sm font-medium">Next Task Goals</p>
+            <ul className="list-disc pl-5 text-sm text-muted-foreground">
+              {proposal.next_task_goals.map((goal) => <li key={goal}>{goal}</li>)}
+            </ul>
+          </div>
+          <div className="flex gap-2">
+            <Button size="sm" onClick={() => decide(proposal.id, "approve")} disabled={deciding === proposal.id}>Approve</Button>
+            <Button size="sm" variant="outline" onClick={() => decide(proposal.id, "reject")} disabled={deciding === proposal.id}>Reject</Button>
+          </div>
+        </Card>
+      ))}
+    </section>
   );
 }
 

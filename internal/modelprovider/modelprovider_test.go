@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 
 	"pentest/internal/modelprovider"
@@ -494,6 +496,35 @@ func TestRefreshModelsFailurePreservesCatalog(t *testing.T) {
 	}
 	if !reflect.DeepEqual(after.Catalog, provider.Catalog) {
 		t.Fatalf("catalog changed on failure: %#v", after.Catalog)
+	}
+}
+
+func TestRefreshModelsRejectsOversizedCatalogResponse(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body := `{"data":[{"id":"` + strings.Repeat("x", modelprovider.MaxCatalogResponseBytes) + `"}]}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     http.Header{},
+		}, nil
+	})}
+	svc := modelprovider.NewService(newStore(t))
+	provider, err := svc.Create(modelprovider.CreateRequest{
+		Name: "Bounded", BaseURL: "https://api.example.test/v1",
+		Protocols: []modelprovider.Protocol{modelprovider.ProtocolOpenAIChatCompletions},
+		Catalog:   modelprovider.Catalog{Manual: []string{"manual"}, DefaultModel: "manual"},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	_, err = svc.RefreshModelsWithKey(context.Background(), provider.ID, client, "sk-test")
+	if !errors.Is(err, modelprovider.ErrCatalogResponseTooLarge) {
+		t.Fatalf("oversized catalog error = %v", err)
+	}
+	after, getErr := svc.Get(provider.ID)
+	if getErr != nil || !reflect.DeepEqual(after.Catalog, provider.Catalog) {
+		t.Fatalf("catalog after oversized response = %#v, error=%v", after.Catalog, getErr)
 	}
 }
 

@@ -28,6 +28,7 @@ import (
 	"pentest/internal/preflight"
 	"pentest/internal/project"
 	"pentest/internal/projectinterface"
+	"pentest/internal/reasontask"
 	"pentest/internal/runner"
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeprofile"
@@ -79,6 +80,14 @@ func (input taskContinuationSelectionInput) selectedModel() string {
 }
 
 func (server *Server) handleCreateTask(response http.ResponseWriter, request *http.Request) {
+	server.handleCreateTaskWithPurpose(response, request, false)
+}
+
+func (server *Server) handleCreateReasonTask(response http.ResponseWriter, request *http.Request) {
+	server.handleCreateTaskWithPurpose(response, request, true)
+}
+
+func (server *Server) handleCreateTaskWithPurpose(response http.ResponseWriter, request *http.Request, reasonTask bool) {
 	projectID := request.PathValue("id")
 	if !server.requireProject(response, projectID) {
 		return
@@ -95,7 +104,9 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 	if input.RunControls.Extras == nil && input.Extras != nil {
 		input.RunControls.Extras = input.Extras
 	}
-	if input.Type != task.TypePentest && input.Type != task.TypeCTFChallenge {
+	if reasonTask {
+		input.Goal = reasontask.LaunchGoal
+	} else if input.Type != task.TypePentest && input.Type != task.TypeCTFChallenge {
 		writeTaskError(response, task.ErrInvalidTaskType)
 		return
 	}
@@ -107,6 +118,9 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 	}
 	input.RuntimeProfileID = defaulted.runtimeProfileID
 	input.Runner = defaulted.runner
+	if reasonTask {
+		input.Type = task.Type(defaulted.project.Kind)
+	}
 	if input.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeAssisted {
 		profile, profileErr := server.profiles.Get(input.RuntimeProfileID)
 		if profileErr != nil {
@@ -168,6 +182,12 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 	if err != nil {
 		writeTaskError(response, err)
 		return
+	}
+	if reasonTask {
+		if err := server.reasonTasks.Register(projectID, created.ID); err != nil {
+			writeError(response, http.StatusInternalServerError, "register Reason Task")
+			return
+		}
 	}
 
 	// The stored Task goal stays exactly as typed; only the launch goal handed

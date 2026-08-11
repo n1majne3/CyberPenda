@@ -1,9 +1,7 @@
 package task
 
 import (
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -92,18 +90,18 @@ const conclusionDispatchColumns = `id,obligation_id,kind,continuation_id,source_
 // continuation is retained only as correlation for the initial dispatch.
 // Replay returns the original obligation.
 func (s *Service) RecordBlackboardConclusionCheckpoint(taskID, continuationID, sourceRequestID, sourceSessionID, sourceTurnID string, sourceSelection TurnSelection, watermarks SemanticDebtWatermarks) (BlackboardConclusionReceipt, bool, error) {
-	taskID = strings.TrimSpace(taskID)
-	continuationID = strings.TrimSpace(continuationID)
-	sourceRequestID = strings.TrimSpace(sourceRequestID)
-	sourceSessionID = strings.TrimSpace(sourceSessionID)
-	sourceTurnID = strings.TrimSpace(sourceTurnID)
-	sourceSelection.ModelProviderID = strings.TrimSpace(sourceSelection.ModelProviderID)
-	sourceSelection.Model = strings.TrimSpace(sourceSelection.Model)
-	sourceSelection.ReasoningEffort = strings.TrimSpace(sourceSelection.ReasoningEffort)
-	if taskID == "" || continuationID == "" || sourceRequestID == "" || sourceSessionID == "" || sourceTurnID == "" ||
-		sourceSelection.ModelProviderID == "" || sourceSelection.Model == "" || !watermarks.Valid() {
+	checkpoint, valid := (owner.ConclusionCheckpointInput{
+		OwnerID: taskID, ContinuationID: continuationID, SourceRequestID: sourceRequestID,
+		SourceSessionID: sourceSessionID, SourceTurnID: sourceTurnID,
+		ModelProviderID: sourceSelection.ModelProviderID, Model: sourceSelection.Model,
+		ReasoningEffort: sourceSelection.ReasoningEffort, Watermarks: watermarks,
+	}).Normalize()
+	if !valid {
 		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
 	}
+	taskID, continuationID, sourceRequestID = checkpoint.OwnerID, checkpoint.ContinuationID, checkpoint.SourceRequestID
+	sourceSessionID, sourceTurnID, watermarks = checkpoint.SourceSessionID, checkpoint.SourceTurnID, checkpoint.Watermarks
+	sourceSelection = TurnSelection{ModelProviderID: checkpoint.ModelProviderID, Model: checkpoint.Model, ReasoningEffort: checkpoint.ReasoningEffort}
 	found, err := s.Get(taskID)
 	if err != nil {
 		return BlackboardConclusionReceipt{}, false, err
@@ -117,6 +115,16 @@ func (s *Service) RecordBlackboardConclusionCheckpoint(taskID, continuationID, s
 		return BlackboardConclusionReceipt{}, false, fmt.Errorf("begin Blackboard conclusion obligation: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	var continuationTaskID string
+	if err := tx.QueryRow(`SELECT task_id FROM task_continuations WHERE id=?`, continuationID).Scan(&continuationTaskID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return BlackboardConclusionReceipt{}, false, ErrNotFound
+		}
+		return BlackboardConclusionReceipt{}, false, fmt.Errorf("load Blackboard conclusion Continuation: %w", err)
+	}
+	if continuationTaskID != taskID {
+		return BlackboardConclusionReceipt{}, false, ErrNotFound
+	}
 
 	prior, err := scanPendingBlackboardConclusion(tx.QueryRow(`SELECT `+pendingBlackboardConclusionColumns+`
 		FROM pending_blackboard_conclusions WHERE task_id=? AND source_session_id=? AND source_turn_id=?`, taskID, sourceSessionID, sourceTurnID))
@@ -132,12 +140,7 @@ func (s *Service) RecordBlackboardConclusionCheckpoint(taskID, continuationID, s
 	}
 
 	now := time.Now().UTC()
-	obligationState := BlackboardConclusionReceiptPending
-	phase := "pending_detected"
-	if watermarks.SourceWork <= watermarks.SemanticPersistence {
-		obligationState = BlackboardConclusionReceiptClean
-		phase = "persistence_current"
-	}
+	obligationState, phase := owner.InitialConclusionCheckpoint(watermarks)
 	obligation := PendingBlackboardConclusion{
 		ID: newID(), TaskID: taskID, SourceRequestID: sourceRequestID, SourceRequestCorrelationExact: true,
 		SourceContinuationID: continuationID, SourceSessionID: sourceSessionID, SourceTurnID: sourceTurnID,
@@ -341,8 +344,7 @@ func (s *Service) HandleBlackboardConclusionFailure(dispatchRequestID string, co
 	if obligation.State != BlackboardConclusionReceiptAwaitingResult || dispatch.DeliveryState != ConclusionDispatchAwaitingResult {
 		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
 	}
-	if code == BlackboardConclusionErrorInvalidResult && obligation.AutomaticTurnCount < BlackboardConclusionAutomaticTurnLimit &&
-		obligation.RepairCount == 0 && obligation.VersionRegenerationCount == 0 && obligation.ExplicitRetryCount == 0 {
+	if owner.ConclusionRepairAllowed(code, obligation.AutomaticTurnCount, obligation.RepairCount, obligation.VersionRegenerationCount, obligation.ExplicitRetryCount) {
 		repairNumber := obligation.RepairCount + 1
 		requestID := blackboardConclusionAttemptRequestID("repair", dispatch.ContinuationID, obligation.SourceTurnID, repairNumber, "")
 		nextEligible := now.Add(cooldown)
@@ -392,10 +394,7 @@ func (s *Service) HandleBlackboardConclusionFailure(dispatchRequestID string, co
 		}
 		return view, true, nil
 	}
-	actionCode := code
-	if code == BlackboardConclusionErrorInvalidResult && obligation.RepairCount > 0 && obligation.VersionRegenerationCount == 0 {
-		actionCode = BlackboardConclusionErrorRepairExhausted
-	}
+	actionCode := owner.ConclusionFailureActionCode(code, obligation.RepairCount, obligation.VersionRegenerationCount)
 	nextEligible := now.Add(cooldown)
 	if obligation.NextEligibleAt != nil {
 		nextEligible = obligation.NextEligibleAt.UTC()
@@ -468,7 +467,7 @@ func (s *Service) HandleBlackboardConclusionVersionConflict(dispatchRequestID st
 		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
 	}
 	nextEligible := now.Add(cooldown)
-	if obligation.VersionRegenerationCount == 0 && obligation.AutomaticTurnCount < BlackboardConclusionAutomaticTurnLimit && obligation.ExplicitRetryCount == 0 {
+	if owner.ConclusionVersionRegenerationAllowed(obligation.VersionRegenerationCount, obligation.AutomaticTurnCount, obligation.ExplicitRetryCount) {
 		requestID := blackboardConclusionAttemptRequestID("version", dispatch.ContinuationID, obligation.SourceTurnID, 1, fmt.Sprintf("%d", currentRevision))
 		nowDispatch := ConclusionDispatch{
 			ID: newID(), ObligationID: obligation.ID, Kind: ConclusionDispatchKindVersionRegeneration,
@@ -653,13 +652,7 @@ func (s *Service) markConclusionRecoveryActionRequiredTx(tx *sql.Tx, obligation 
 	if obligation.State == BlackboardConclusionReceiptActionRequired {
 		return blackboardConclusionReceiptFromObligationDispatch(dispatch, obligation), false, nil
 	}
-	eligiblePending := obligation.State == BlackboardConclusionReceiptPending
-	eligibleInitial := obligation.State == BlackboardConclusionReceiptDispatchRequested
-	eligibleRepair := obligation.State == BlackboardConclusionReceiptRepairDispatchRequested
-	eligibleVersionSync := obligation.State == BlackboardConclusionReceiptVersionSyncRequested
-	eligibleVersionRegeneration := obligation.State == BlackboardConclusionReceiptVersionRegenerationDispatchRequested
-	eligibleAwaiting := obligation.State == BlackboardConclusionReceiptAwaitingResult
-	if !eligiblePending && !eligibleInitial && !eligibleRepair && !eligibleVersionSync && !eligibleVersionRegeneration && !eligibleAwaiting {
+	if !owner.ConclusionRecoveryEligible(obligation.State) {
 		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
 	}
 	nextEligible := now.Add(cooldown)
@@ -722,12 +715,7 @@ func (s *Service) MarkBlackboardConclusionWorkTurnConflict(dispatchRequestID str
 	if !eligible {
 		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
 	}
-	errorCode := BlackboardConclusionErrorRuntimeRecoveryRequired
-	reason := "work_turn_conflict"
-	if obligation.ExplicitRetryCount >= BlackboardConclusionWorkTurnConflictLimit {
-		errorCode = BlackboardConclusionErrorWorkTurnNeverSettled
-		reason = "work_turn_never_settled"
-	}
+	errorCode, reason := owner.ConclusionWorkTurnConflictOutcome(obligation.ExplicitRetryCount)
 	nextEligible := now.Add(cooldown)
 	if obligation.NextEligibleAt != nil {
 		nextEligible = obligation.NextEligibleAt.UTC()
@@ -913,18 +901,12 @@ func retryBlackboardConclusionTx(tx *sql.Tx, obligation PendingBlackboardConclus
 	if !errors.Is(err, sql.ErrNoRows) {
 		return BlackboardConclusionReceipt{}, false, fmt.Errorf("read Blackboard conclusion retry idempotency history: %w", err)
 	}
-	if obligation.State != BlackboardConclusionReceiptActionRequired {
+	switch owner.ConclusionRetryDecisionFor(obligation.State, obligation.ErrorCode, obligation.RecoveryReason, obligation.NextEligibleAt, now) {
+	case owner.ConclusionRetryInvalidState:
 		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
-	}
-	if obligation.ErrorCode == BlackboardConclusionErrorWorkTurnNeverSettled {
+	case owner.ConclusionRetryNeverSettled:
 		return BlackboardConclusionReceipt{}, false, ErrBlackboardConclusionWorkTurnNeverSettled
-	}
-	if obligation.RecoveryReason == ConclusionRecoveryAcceptanceAmbiguous {
-		// An acceptance-ambiguous provider delivery is never resent: a generic
-		// Retry could duplicate a request the provider already accepted.
-		return BlackboardConclusionReceipt{}, false, ErrBlackboardConclusionRetryCooldown
-	}
-	if obligation.NextEligibleAt == nil || now.Before(*obligation.NextEligibleAt) {
+	case owner.ConclusionRetryAcceptanceAmbiguous, owner.ConclusionRetryCooldown:
 		return BlackboardConclusionReceipt{}, false, ErrBlackboardConclusionRetryCooldown
 	}
 	dispatch, err := activeConclusionDispatchTx(tx, obligation.ID)
@@ -1082,8 +1064,7 @@ func (s *Service) MarkBlackboardConclusionValidated(dispatchRequestID string, ca
 		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
 	}
 	canonicalResult = append([]byte(nil), canonicalResult...)
-	sum := sha256.Sum256(canonicalResult)
-	hash := hex.EncodeToString(sum[:])
+	hash := owner.CanonicalConclusionSHA256(canonicalResult)
 	return s.advanceObligationStateByDispatchRequest(dispatchRequestID, BlackboardConclusionReceiptAwaitingResult,
 		BlackboardConclusionReceiptValidated,
 		func(tx *sql.Tx, obligation *PendingBlackboardConclusion, now time.Time) error {
@@ -1816,16 +1797,11 @@ func blackboardConclusionLookupError(err error) error {
 }
 
 func blackboardConclusionRequestLineage(continuationID, sourceTurnID string) (string, string) {
-	lineage := fmt.Sprintf("%d:%s%d:%s", len(continuationID), continuationID, len(sourceTurnID), sourceTurnID)
-	sum := sha256.Sum256([]byte(lineage))
-	digest := hex.EncodeToString(sum[:])
-	return "conclude:v1:" + digest, "assisted-apply:v1:" + digest
+	return owner.ConclusionRequestLineage(continuationID, sourceTurnID)
 }
 
 func blackboardConclusionAttemptRequestID(kind, continuationID, sourceTurnID string, number int, key string) string {
-	lineage := fmt.Sprintf("%s:%d:%s:%d:%s:%d:%s", kind, len(continuationID), continuationID, len(sourceTurnID), sourceTurnID, number, key)
-	sum := sha256.Sum256([]byte(lineage))
-	return "conclude-" + kind + ":v1:" + hex.EncodeToString(sum[:])
+	return owner.ConclusionAttemptRequestID(kind, continuationID, sourceTurnID, number, key)
 }
 
 func appendBlackboardConclusionEventTx(tx *sql.Tx, receipt BlackboardConclusionReceipt, payload EventPayload, now time.Time) error {

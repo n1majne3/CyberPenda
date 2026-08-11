@@ -366,6 +366,44 @@ func TestRecordBlackboardConclusionCheckpointPersistsPendingDebtIdempotently(t *
 	}
 }
 
+func TestRecordBlackboardConclusionCheckpointRejectsContinuationOwnedByAnotherTask(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	newAssistedTask := func(goal string) task.Task {
+		t.Helper()
+		created, err := svc.Create(task.CreateRequest{
+			ProjectID: proj.ID,
+			Type:      task.TypePentest, Goal: goal, Runner: task.RunnerSandbox,
+			RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
+		})
+		if err != nil {
+			t.Fatalf("create Task: %v", err)
+		}
+		return created
+	}
+	first := newAssistedTask("first")
+	second := newAssistedTask("second")
+	secondContinuation, err := svc.CreateContinuation(second.ID, "profile", "fake", task.RunnerSandbox)
+	if err != nil {
+		t.Fatalf("create second Task Continuation: %v", err)
+	}
+
+	_, inserted, err := svc.RecordBlackboardConclusionCheckpoint(
+		first.ID, secondContinuation.ID, "work-request-1", "session-1", "turn-1",
+		task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1"},
+		task.SemanticDebtWatermarks{SourceWork: 2, SemanticPersistence: 1},
+	)
+	if !errors.Is(err, task.ErrNotFound) || inserted {
+		t.Fatalf("cross-Task checkpoint inserted=%v, error=%v", inserted, err)
+	}
+	latest, err := svc.LatestBlackboardConclusion(first.ID)
+	if err != nil || latest != nil {
+		t.Fatalf("first Task conclusion = %#v, error=%v", latest, err)
+	}
+}
+
 // #203 / ADR 0021: after an interrupt_then_replace native steer creates a
 // replacement Continuation, an in-flight assisted-conclusion obligation gets a
 // NEW immutable Conclusion Dispatch bound to the replacement (continuation_id +

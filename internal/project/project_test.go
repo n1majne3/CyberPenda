@@ -134,10 +134,15 @@ func TestProjectKindConversionPreviewBlocksActiveTasksAndIncompatibleKnowledge(t
 }
 
 func TestProjectKindConversionChangesOnlyKindWhenPreviewIsReady(t *testing.T) {
-	service := newTestService(t)
+	service, db := newTestServiceWithDB(t)
 	created, err := service.CreateWithKind("Challenge", "", project.KindPentest, project.Scope{URLs: []string{"https://arena.test"}}, project.Defaults{})
 	if err != nil {
 		t.Fatalf("create Project: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(`INSERT INTO tasks(id,project_id,goal,status,runner,runtime_profile_id,run_controls_json,scope_snapshot_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		"task-interrupted", created.ID, "terminal work", "interrupted", "sandbox", "profile", `{}`, `{}`, now, now); err != nil {
+		t.Fatalf("insert interrupted Task: %v", err)
 	}
 
 	preview, err := service.PreviewKindConversion(created.ID, project.KindCTFChallenge)
