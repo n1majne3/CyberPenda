@@ -1,6 +1,7 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { mockApi } from "@/test/mockApi";
 import { BlackboardPage } from "./BlackboardPage";
 import { EvidencePage } from "./EvidencePage";
@@ -50,6 +51,7 @@ describe("knowledge and reporting views", () => {
   it("renders the Scope editor with Geist hierarchy and explicit safety states", async () => {
     mockApi({
       "/api/projects/project-1": project,
+      "/api/projects/project-1/scope-expansions": { expansions: [] },
       "/api/runtime-profiles": { profiles: [] },
     });
 
@@ -70,6 +72,56 @@ describe("knowledge and reporting views", () => {
       "grid-cols-1",
       "sm:grid-cols-2",
     );
+  });
+
+  it("proposes and approves a Scope Expansion before it changes Project Scope", async () => {
+    const pending = {
+      id: "scope-expansion-1",
+      project_id: "project-1",
+      addition: { domains: ["api.acme.test"] },
+      discovery_source: "Runtime discovery",
+      reason: "A related API host responded",
+      risk: "Low",
+      status: "proposed",
+      created_at: "2026-01-03T00:00:00Z",
+    };
+    let expansions: unknown[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.endsWith("/scope-expansions") && method === "POST") {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { addition?: { domains?: string[] } };
+        expect(body.addition?.domains).toEqual(["api.acme.test"]);
+        expansions = [pending];
+        return new Response(JSON.stringify(pending), { status: 201, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.endsWith("/scope-expansions") && method === "GET") {
+        return new Response(JSON.stringify({ expansions }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/scope-expansions/scope-expansion-1/approve") && method === "POST") {
+        expansions = [{ ...pending, status: "approved" }];
+        return new Response(JSON.stringify({ expansion: expansions[0], project: { ...project, scope: { ...project.scope, domains: ["acme.test", "api.acme.test"] } } }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/api/runtime-profiles")) {
+        return new Response(JSON.stringify({ profiles: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify(project), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderRoute("/projects/project-1/scope", <ScopeEditorPage />, "/projects/:projectId/scope");
+
+    await userEvent.selectOptions(await screen.findByLabelText("Expansion field"), "domains");
+    await userEvent.type(screen.getByLabelText("Proposed addition"), "api.acme.test");
+    await userEvent.type(screen.getByLabelText("Discovery source"), "Runtime discovery");
+    await userEvent.type(screen.getByLabelText("Expansion reason"), "A related API host responded");
+    await userEvent.type(screen.getByLabelText("Expansion risk"), "Low");
+    await userEvent.click(screen.getByRole("button", { name: /Propose Scope Expansion/i }));
+
+    const queue = await screen.findByRole("region", { name: /Scope Expansion proposals/i });
+    expect(within(queue).getByText(/domains: api\.acme\.test/i)).toBeInTheDocument();
+    expect((screen.getByLabelText("Domains") as HTMLTextAreaElement).value).not.toContain("api.acme.test");
+    await userEvent.click(within(queue).getByRole("button", { name: /Approve/i }));
+    await waitFor(() => expect((screen.getByLabelText("Domains") as HTMLTextAreaElement).value).toContain("api.acme.test"));
   });
 
   it("redirects legacy Facts bookmarks to Blackboard Knowledge", async () => {

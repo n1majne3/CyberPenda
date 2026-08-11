@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -24,6 +25,14 @@ const (
 	ProtocolOpenAIChatCompletions Protocol = "openai_chat_completions"
 	ProtocolOpenAIResponses       Protocol = "openai_responses"
 	ProtocolAnthropicMessages     Protocol = "anthropic_messages"
+)
+
+const (
+	// MaxCatalogResponseBytes bounds memory used by one Model Catalog Refresh.
+	MaxCatalogResponseBytes = 4 * 1024 * 1024
+	// CatalogRefreshTimeout bounds a production upstream request even when its
+	// caller does not provide an earlier context deadline.
+	CatalogRefreshTimeout = 30 * time.Second
 )
 
 var validProtocols = map[Protocol]bool{
@@ -79,7 +88,14 @@ var (
 	ErrDuplicateEndpointProtocol = errors.New("model provider endpoint protocol is duplicated")
 	ErrInvalidEndpointBaseURL    = errors.New("model provider endpoint base URL is invalid")
 	ErrInUse                     = errors.New("model provider is referenced by a runtime profile")
+	ErrCatalogResponseTooLarge   = errors.New("model catalog response exceeds size limit")
 )
+
+// NewCatalogHTTPClient returns the bounded production client for Model
+// Catalog Refresh. Tests can still inject a client with a controlled transport.
+func NewCatalogHTTPClient() *http.Client {
+	return &http.Client{Timeout: CatalogRefreshTimeout}
+}
 
 type Service struct {
 	db *store.DB
@@ -242,7 +258,7 @@ func (s *Service) RefreshModelsWithKey(ctx context.Context, id string, client *h
 		return Provider{}, fmt.Errorf("model provider API key env %s is not configured", provider.APIKeyEnv)
 	}
 	if client == nil {
-		client = http.DefaultClient
+		client = NewCatalogHTTPClient()
 	}
 	refreshURL, err := CatalogRefreshURL(provider)
 	if err != nil {
@@ -261,12 +277,19 @@ func (s *Service) RefreshModelsWithKey(ctx context.Context, id string, client *h
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return Provider{}, fmt.Errorf("refresh model catalog: upstream status %d", resp.StatusCode)
 	}
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, int64(MaxCatalogResponseBytes)+1))
+	if err != nil {
+		return Provider{}, fmt.Errorf("read model catalog: %w", err)
+	}
+	if len(responseBody) > MaxCatalogResponseBytes {
+		return Provider{}, ErrCatalogResponseTooLarge
+	}
 	var payload struct {
 		Data []struct {
 			ID string `json:"id"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if err := json.Unmarshal(responseBody, &payload); err != nil {
 		return Provider{}, fmt.Errorf("parse model catalog: %w", err)
 	}
 	var ids []string

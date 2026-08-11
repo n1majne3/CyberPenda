@@ -26,11 +26,13 @@ import (
 	"pentest/internal/preflight"
 	"pentest/internal/project"
 	"pentest/internal/projectinterface"
+	"pentest/internal/reasontask"
 	"pentest/internal/runner"
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeextension"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
+	"pentest/internal/scopeexpansion"
 	"pentest/internal/session"
 	"pentest/internal/skill"
 	"pentest/internal/steering"
@@ -80,9 +82,8 @@ type Config struct {
 	// tests that need an empty Skill library; production leaves built-ins on.
 	DisableBuiltinSkills bool
 	// ModelRefreshClient is the HTTP client used to call upstream /v1/models
-	// during Model Catalog Refresh. Nil means http.DefaultClient, which is the
-	// production behavior; tests inject a stubbed transport so the refresh API
-	// can be exercised end to end without real network traffic.
+	// during Model Catalog Refresh. Nil uses a bounded production client; tests
+	// inject a controlled transport.
 	ModelRefreshClient *http.Client
 	// ProviderSessionFactory is optional. When nil, launches retain the legacy
 	// one-shot Adapter path and native session controls remain unavailable until
@@ -99,6 +100,8 @@ type Server struct {
 	logger                  *log.Logger
 	db                      *store.DB
 	projects                *project.Service
+	scopeExpansions         *scopeexpansion.Service
+	reasonTasks             *reasontask.Service
 	runtimePlugins          *runtimeplugin.Registry
 	runtimeExtensions       *runtimeextension.Registry
 	profiles                *runtimeprofile.Service
@@ -195,6 +198,7 @@ func NewServer(config Config) (*Server, error) {
 		}
 	}
 	creds := credential.NewService(db)
+	projects := project.NewService(db)
 	tasks := task.NewService(db, nil)
 	artifactRoot := strings.TrimSpace(config.ArtifactRoot)
 	if artifactRoot == "" {
@@ -221,19 +225,24 @@ func NewServer(config Config) (*Server, error) {
 		return nil, err
 	}
 	providerControlCtx, providerControlCancel := context.WithCancel(context.Background())
+	modelRefreshClient := config.ModelRefreshClient
+	if modelRefreshClient == nil {
+		modelRefreshClient = modelprovider.NewCatalogHTTPClient()
+	}
 	server := &Server{
 		mux:                http.NewServeMux(),
 		version:            config.Version,
 		logger:             config.Logger,
 		db:                 db,
-		projects:           project.NewService(db),
+		projects:           projects,
+		scopeExpansions:    scopeexpansion.NewService(db, projects),
 		runtimePlugins:     runtimePlugins,
 		runtimeExtensions:  runtimeExtensions,
 		profiles:           profiles,
 		modelProviders:     modelProviders,
 		skills:             skills,
 		creds:              creds,
-		modelRefreshClient: config.ModelRefreshClient,
+		modelRefreshClient: modelRefreshClient,
 		preflight: preflight.NewService(profiles, creds, skills).
 			WithModelProviders(modelProviders, runtimePlugins).
 			WithRuntimeExtensions(runtimeExtensions),
@@ -281,6 +290,7 @@ func NewServer(config Config) (*Server, error) {
 	server.tasks.SetContinuationTerminalMarker(server.projectInterfaceGrants)
 	server.sessions.SetContinuationTerminalMarker(server.projectInterfaceGrants)
 	server.blackboardV2 = blackboardv2.NewServiceWithEvidence(db, blackboardv2.EvidenceConfig{ArtifactRoot: artifactRoot, RuntimeRoot: runtimeRoot})
+	server.reasonTasks = reasontask.NewService(db, server.blackboardV2)
 	server.challengeWorkflow = challengeworkflow.NewService(db, server.projects, server.tasks, config.ChallengePlatforms, challengeworkflow.NewBlackboardRecorder(server.blackboardV2, server.tasks, runtimeRoot))
 	server.finishReadiness = finishreadiness.NewService(db, server.tasks)
 	server.tasks.SetContinuationReconciler(server.blackboardV2)
@@ -761,6 +771,15 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/workspace/navigation", server.handleWorkspaceNavigation)
 	server.mux.HandleFunc("GET /api/projects", server.handleListProjects)
 	server.mux.HandleFunc("POST /api/projects", server.handleCreateProject)
+	server.mux.HandleFunc("GET /api/projects/{id}/scope-expansions", server.handleListScopeExpansions)
+	server.mux.HandleFunc("POST /api/projects/{id}/scope-expansions", server.handleProposeScopeExpansion)
+	server.mux.HandleFunc("POST /api/projects/{id}/scope-expansions/{expansion_id}/approve", server.handleApproveScopeExpansion)
+	server.mux.HandleFunc("POST /api/projects/{id}/scope-expansions/{expansion_id}/reject", server.handleRejectScopeExpansion)
+	server.mux.HandleFunc("POST /api/projects/{id}/reason-tasks", server.handleCreateReasonTask)
+	server.mux.HandleFunc("GET /api/projects/{id}/reason-task-proposals", server.handleListReasonTaskProposals)
+	server.mux.HandleFunc("POST /api/projects/{id}/reason-tasks/{task_id}/proposals", server.handleProposeReasonTaskChanges)
+	server.mux.HandleFunc("POST /api/projects/{id}/reason-task-proposals/{proposal_id}/approve", server.handleApproveReasonTaskProposal)
+	server.mux.HandleFunc("POST /api/projects/{id}/reason-task-proposals/{proposal_id}/reject", server.handleRejectReasonTaskProposal)
 	server.mux.HandleFunc("GET /api/projects/{id}", server.handleGetProject)
 	server.mux.HandleFunc("PATCH /api/projects/{id}", server.handleUpdateProject)
 	server.mux.HandleFunc("POST /api/projects/{id}/kind-conversion/preview", server.handlePreviewProjectKindConversion)

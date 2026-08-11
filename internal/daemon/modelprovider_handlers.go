@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -102,10 +101,10 @@ func (server *Server) handleRefreshModelProviderModels(response http.ResponseWri
 	}
 	client := server.modelRefreshClient
 	if client == nil {
-		client = http.DefaultClient
+		client = modelprovider.NewCatalogHTTPClient()
 	}
 	if value, ok := server.materializeModelProviderCredential(provider.APIKeyEnv); ok {
-		updated, err := server.modelProviders.RefreshModelsWithKey(context.Background(), provider.ID, client, value)
+		updated, err := server.modelProviders.RefreshModelsWithKey(request.Context(), provider.ID, client, value)
 		if err != nil {
 			writeModelProviderError(response, err)
 			return
@@ -113,7 +112,7 @@ func (server *Server) handleRefreshModelProviderModels(response http.ResponseWri
 		writeJSON(response, http.StatusOK, updated)
 		return
 	}
-	updated, err := server.modelProviders.RefreshModels(context.Background(), provider.ID, client)
+	updated, err := server.modelProviders.RefreshModels(request.Context(), provider.ID, client)
 	if err != nil {
 		writeModelProviderError(response, err)
 		return

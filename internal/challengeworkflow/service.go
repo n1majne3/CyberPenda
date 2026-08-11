@@ -442,7 +442,7 @@ func (service *Service) Submit(ctx context.Context, request SubmitRequest) (Subm
 
 func (service *Service) Abandon(ctx context.Context, request AbandonRequest) (AbandonResult, error) {
 	var result AbandonResult
-	_, adapter, err := service.prepare(request.ProjectID, request.TaskID, request.Platform, request.OperationID)
+	taskValue, adapter, err := service.prepare(request.ProjectID, request.TaskID, request.Platform, request.OperationID)
 	if err != nil {
 		return result, err
 	}
@@ -450,9 +450,18 @@ func (service *Service) Abandon(ctx context.Context, request AbandonRequest) (Ab
 	if replay, found, err := loadReplay[AbandonResult](service.db, request.TaskID, request.OperationID, hash); err != nil || found {
 		return replay, err
 	}
+	known, err := service.operationKnown(request.TaskID, request.OperationID, hash)
+	if err != nil {
+		return result, err
+	}
 	attempt, err := service.openAttempt(request.ProjectID, request.TaskID, request.Platform, request.ExternalAttemptID)
 	if err != nil {
 		return result, err
+	}
+	if !known {
+		if err := service.checkOperationPolicy(taskValue, attempt); err != nil {
+			return result, err
+		}
 	}
 	if err := service.reserve(request.ProjectID, request.TaskID, request.Platform, request.OperationID, "abandon", hash, request.ExternalAttemptID, request); err != nil {
 		return result, err
@@ -481,7 +490,7 @@ func (service *Service) Abandon(ctx context.Context, request AbandonRequest) (Ab
 
 func (service *Service) Finalize(ctx context.Context, request FinalizeRequest) (FinalizeResult, error) {
 	var result FinalizeResult
-	_, adapter, err := service.prepare(request.ProjectID, request.TaskID, request.Platform, request.OperationID)
+	taskValue, adapter, err := service.prepare(request.ProjectID, request.TaskID, request.Platform, request.OperationID)
 	if err != nil {
 		return result, err
 	}
@@ -489,9 +498,18 @@ func (service *Service) Finalize(ctx context.Context, request FinalizeRequest) (
 	if replay, found, err := loadReplay[FinalizeResult](service.db, request.TaskID, request.OperationID, hash); err != nil || found {
 		return replay, err
 	}
+	known, err := service.operationKnown(request.TaskID, request.OperationID, hash)
+	if err != nil {
+		return result, err
+	}
 	attempt, err := service.attempt(request.ProjectID, request.TaskID, request.Platform, request.ExternalAttemptID)
 	if err != nil {
 		return result, err
+	}
+	if !known {
+		if err := service.checkOperationPolicy(taskValue, attempt); err != nil {
+			return result, err
+		}
 	}
 	if err := service.reserve(request.ProjectID, request.TaskID, request.Platform, request.OperationID, "finalize", hash, request.ExternalAttemptID, request); err != nil {
 		return result, err
@@ -583,13 +601,16 @@ func (service *Service) checkTimePolicy(taskValue task.Task, lastProgress string
 	if policy.MaxWallTimeSeconds > 0 && wall >= policy.MaxWallTimeSeconds {
 		return service.policyBlocked(taskValue.ID, PolicyMaxWallTime, policy.MaxWallTimeSeconds, wall)
 	}
-	if policy.MaxNoProgressSeconds > 0 && lastProgress != "" {
-		stamp, err := time.Parse(time.RFC3339Nano, lastProgress)
-		if err == nil {
-			elapsed := int(now.Sub(stamp).Seconds())
-			if elapsed >= policy.MaxNoProgressSeconds {
-				return service.policyBlocked(taskValue.ID, PolicyMaxNoProgress, policy.MaxNoProgressSeconds, elapsed)
+	if policy.MaxNoProgressSeconds > 0 {
+		progressAt := taskValue.CreatedAt
+		if lastProgress != "" {
+			if stamp, err := time.Parse(time.RFC3339Nano, lastProgress); err == nil {
+				progressAt = stamp
 			}
+		}
+		elapsed := int(now.Sub(progressAt).Seconds())
+		if elapsed >= policy.MaxNoProgressSeconds {
+			return service.policyBlocked(taskValue.ID, PolicyMaxNoProgress, policy.MaxNoProgressSeconds, elapsed)
 		}
 	}
 	return nil

@@ -266,7 +266,7 @@ func previewKindConversionTx(tx *sql.Tx, id, targetKind string) (KindConversionP
 		return preview, nil
 	}
 	var activeTasks int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM tasks WHERE project_id=? AND status NOT IN ('completed','failed','stopped')`, id).Scan(&activeTasks); err != nil {
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM tasks WHERE project_id=? AND status NOT IN ('completed','failed','stopped','interrupted')`, id).Scan(&activeTasks); err != nil {
 		return KindConversionPreview{}, fmt.Errorf("count active Tasks: %w", err)
 	}
 	if activeTasks > 0 {

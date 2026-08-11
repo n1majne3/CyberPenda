@@ -237,31 +237,35 @@ func TestBuildSandboxCommandMountsASeparateOwnerWorkdirFromTheNamedVolume(t *tes
 }
 
 func TestBuildSandboxCommandUsesPodmanNamedVolumeSubpathSyntax(t *testing.T) {
-	volumeRoot := filepath.Join(t.TempDir(), "data")
-	layout, err := runner.PrepareTaskLayout(filepath.Join(volumeRoot, "runs"), "task-podman", runtimeprofile.ProviderPi)
-	if err != nil {
-		t.Fatalf("prepare layout: %v", err)
-	}
+	for _, containerCLI := range []string{"podman", "podman.exe", "podman-remote"} {
+		t.Run(containerCLI, func(t *testing.T) {
+			volumeRoot := filepath.Join(t.TempDir(), "data")
+			layout, err := runner.PrepareTaskLayout(filepath.Join(volumeRoot, "runs"), "task-podman", runtimeprofile.ProviderPi)
+			if err != nil {
+				t.Fatalf("prepare layout: %v", err)
+			}
 
-	command, err := runner.BuildSandboxCommand(runner.SandboxCommandRequest{
-		Layout: layout, Provider: runtimeprofile.ProviderPi, ContainerCLI: "podman",
-		TaskVolume: "cyberpenda-data", TaskVolumeRoot: volumeRoot, RuntimeCommand: []string{"pi", "--mode", "rpc"},
-	})
-	if err != nil {
-		t.Fatalf("build command: %v", err)
-	}
-	joined := strings.Join(command.Args, " ")
-	if !strings.Contains(joined, "type=volume,src=cyberpenda-data,dst=/task,subpath=runs/task-podman") {
-		t.Fatalf("expected Podman subpath syntax, got %v", command.Args)
-	}
-	if strings.Contains(joined, "volume-subpath=") {
-		t.Fatalf("Podman command contains Docker-only volume-subpath syntax: %v", command.Args)
-	}
-	if !strings.Contains(joined, "--add-host=host.docker.internal:host-gateway") {
-		t.Fatalf("expected host.docker.internal gateway, got %v", command.Args)
-	}
-	if !strings.Contains(joined, "--add-host=host.containers.internal:host-gateway") {
-		t.Fatalf("expected host.containers.internal gateway for Podman, got %v", command.Args)
+			command, err := runner.BuildSandboxCommand(runner.SandboxCommandRequest{
+				Layout: layout, Provider: runtimeprofile.ProviderPi, ContainerCLI: containerCLI,
+				TaskVolume: "cyberpenda-data", TaskVolumeRoot: volumeRoot, RuntimeCommand: []string{"pi", "--mode", "rpc"},
+			})
+			if err != nil {
+				t.Fatalf("build command: %v", err)
+			}
+			joined := strings.Join(command.Args, " ")
+			if !strings.Contains(joined, "type=volume,src=cyberpenda-data,dst=/task,subpath=runs/task-podman") {
+				t.Fatalf("expected Podman subpath syntax, got %v", command.Args)
+			}
+			if strings.Contains(joined, "volume-subpath=") {
+				t.Fatalf("Podman command contains Docker-only volume-subpath syntax: %v", command.Args)
+			}
+			if !strings.Contains(joined, "--add-host=host.docker.internal:host-gateway") {
+				t.Fatalf("expected host.docker.internal gateway, got %v", command.Args)
+			}
+			if !strings.Contains(joined, "--add-host=host.containers.internal:host-gateway") {
+				t.Fatalf("expected host.containers.internal gateway for Podman, got %v", command.Args)
+			}
+		})
 	}
 }
 

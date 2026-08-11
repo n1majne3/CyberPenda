@@ -943,8 +943,49 @@ func migrations() []migration {
 		newMigration(56, "challenge_workflow", migration56SQL, migration56Up),
 		newMigration(57, "task_type_snapshot", migration57SQL, migration57Up),
 		newMigration(58, "challenge_operation_recovery_settlement", migration58SQL, migration58Up),
+		newMigration(59, "project_approval_workflows", migration59SQL, migration59Up),
 	}
 }
+
+// migration59SQL stores operator-approved Project workflows. Scope Expansion
+// retains its internal Trusted Origin, and a Reason Task proposal remains
+// separate from Blackboard state until explicit approval.
+const migration59SQL = `
+CREATE TABLE IF NOT EXISTS scope_expansions (
+	id TEXT PRIMARY KEY,
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+	addition_json TEXT NOT NULL,
+	discovery_source TEXT NOT NULL,
+	reason TEXT NOT NULL,
+	risk TEXT NOT NULL,
+	status TEXT NOT NULL CHECK (status IN ('proposed','approved','rejected')),
+	origin_kind TEXT NOT NULL CHECK (origin_kind IN ('operator','runtime')),
+	origin_task_id TEXT REFERENCES tasks(id) ON DELETE RESTRICT,
+	origin_continuation_id TEXT REFERENCES task_continuations(id) ON DELETE RESTRICT,
+	created_at TEXT NOT NULL,
+	decided_at TEXT
+);
+CREATE INDEX IF NOT EXISTS scope_expansions_project_status_idx ON scope_expansions(project_id,status,created_at);
+CREATE TABLE IF NOT EXISTS reason_tasks (
+	task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE RESTRICT,
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+	created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS reason_tasks_project_created_idx ON reason_tasks(project_id,created_at);
+CREATE TABLE IF NOT EXISTS reason_task_proposals (
+	id TEXT PRIMARY KEY,
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+	reason_task_id TEXT NOT NULL REFERENCES reason_tasks(task_id) ON DELETE RESTRICT,
+	proposal_json TEXT NOT NULL,
+	change_batch_json TEXT NOT NULL,
+	status TEXT NOT NULL CHECK (status IN ('proposed','approved','rejected')),
+	created_at TEXT NOT NULL,
+	decided_at TEXT
+);
+CREATE INDEX IF NOT EXISTS reason_task_proposals_project_status_idx ON reason_task_proposals(project_id,status,created_at);
+`
+
+func migration59Up(tx *sql.Tx) error { return execStatements(tx, migration59SQL) }
 
 // migration58SQL is the recovery-settlement shape of challenge_operations.
 // Migration 56 created the baseline without action_required or recovery_error;

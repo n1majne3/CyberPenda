@@ -2,12 +2,15 @@ package daemon_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"pentest/internal/daemon"
 )
@@ -421,5 +424,50 @@ func TestModelProviderAPIRefreshPreservesCatalogOnUpstreamError(t *testing.T) {
 	}
 	if len(fetched.Catalog.Refreshed) != 1 || fetched.Catalog.Refreshed[0] != "prior-refreshed" {
 		t.Fatalf("refreshed catalog changed after upstream failure: %#v", fetched.Catalog.Refreshed)
+	}
+}
+
+func TestModelProviderAPIRefreshCancelsUpstreamWithRequest(t *testing.T) {
+	started := make(chan struct{})
+	cancelled := make(chan struct{})
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		close(started)
+		select {
+		case <-request.Context().Done():
+			close(cancelled)
+			return nil, request.Context().Err()
+		case <-time.After(500 * time.Millisecond):
+			return nil, errors.New("upstream request was not cancelled")
+		}
+	})
+	server := newRefreshServer(t, transport)
+	id, apiKeyEnv := createRefreshProvider(t, server, `{
+		"name":"Cancellation",
+		"base_url":"https://api.example.test/v1",
+		"protocols":["openai_chat_completions"],
+		"catalog":{"manual":["manual"],"default_model":"manual"}
+	}`)
+	t.Setenv(apiKeyEnv, "sk-test")
+
+	requestContext, cancel := context.WithCancel(context.Background())
+	refresh := httptest.NewRequest(http.MethodPost, "/api/model-providers/"+id+"/refresh-models", nil).WithContext(requestContext)
+	done := make(chan struct{})
+	go func() {
+		server.ServeHTTP(httptest.NewRecorder(), refresh)
+		close(done)
+	}()
+	<-started
+	cancel()
+	select {
+	case <-cancelled:
+	case <-done:
+		t.Fatal("refresh handler returned without cancelling its upstream request")
+	case <-time.After(750 * time.Millisecond):
+		t.Fatal("refresh handler did not stop after request cancellation")
+	}
+	select {
+	case <-done:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("refresh handler stayed alive after upstream cancellation")
 	}
 }

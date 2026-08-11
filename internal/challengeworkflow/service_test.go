@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"pentest/internal/blackboardv2"
 	"pentest/internal/challengeworkflow"
@@ -15,8 +16,10 @@ import (
 )
 
 type platformStub struct {
-	claimCalls  int
-	submitCalls int
+	claimCalls    int
+	submitCalls   int
+	abandonCalls  int
+	finalizeCalls int
 }
 
 func TestChallengeWorkflowRequiresCTFChallengeTaskTypeSnapshot(t *testing.T) {
@@ -116,10 +119,12 @@ func (stub *platformStub) Submit(_ context.Context, request challengeworkflow.Pl
 }
 
 func (stub *platformStub) Abandon(context.Context, challengeworkflow.PlatformAbandonRequest) (challengeworkflow.PlatformAbandonResponse, error) {
+	stub.abandonCalls++
 	return challengeworkflow.PlatformAbandonResponse{Summary: "abandoned", Rating: 2090}, nil
 }
 
 func (stub *platformStub) Finalize(context.Context, challengeworkflow.PlatformFinalizeRequest) (challengeworkflow.PlatformFinalizeResponse, error) {
+	stub.finalizeCalls++
 	return challengeworkflow.PlatformFinalizeResponse{Summary: "finalized"}, nil
 }
 
@@ -296,5 +301,68 @@ func TestSubmitEnforcesWrongSubmissionPolicyBeforeExternalCall(t *testing.T) {
 	}
 	if platform.submitCalls != 1 || recorder.submissions != 1 {
 		t.Fatalf("calls = platform %d, recorder %d; want 1 each", platform.submitCalls, recorder.submissions)
+	}
+}
+
+func TestFirstClaimEnforcesNoProgressPolicyFromTaskCreation(t *testing.T) {
+	db, projects, tasks, proj, createdTask := newFixture(t, task.TaskPolicy{MaxNoProgressSeconds: 1})
+	oldCreatedAt := time.Now().UTC().Add(-2 * time.Second).Format(time.RFC3339Nano)
+	if _, err := db.Exec(`UPDATE tasks SET created_at=? WHERE id=?`, oldCreatedAt, createdTask.ID); err != nil {
+		t.Fatalf("age Task: %v", err)
+	}
+	platform := &platformStub{}
+	service := challengeworkflow.NewService(db, projects, tasks, map[string]challengeworkflow.PlatformAdapter{"arena": platform}, &recorderStub{})
+
+	_, err := service.Claim(context.Background(), challengeworkflow.ClaimRequest{
+		ProjectID: proj.ID, TaskID: createdTask.ID, Platform: "arena", OperationID: "claim-after-no-progress", ChallengeID: "3121",
+	})
+	var policyError *challengeworkflow.PolicyError
+	if !errors.As(err, &policyError) || policyError.Code != challengeworkflow.PolicyMaxNoProgress {
+		t.Fatalf("first Claim error = %v", err)
+	}
+	if platform.claimCalls != 0 {
+		t.Fatalf("platform Claim calls = %d, want 0", platform.claimCalls)
+	}
+}
+
+func TestAbandonAndFinalizeEnforceTaskPolicyBeforeExternalCall(t *testing.T) {
+	for _, operation := range []string{"abandon", "finalize"} {
+		t.Run(operation, func(t *testing.T) {
+			db, projects, tasks, proj, createdTask := newFixture(t, task.TaskPolicy{MaxWrongSubmissions: 1})
+			platform := &platformStub{}
+			service := challengeworkflow.NewService(db, projects, tasks, map[string]challengeworkflow.PlatformAdapter{"arena": platform}, &recorderStub{})
+			claim, err := service.Claim(context.Background(), challengeworkflow.ClaimRequest{
+				ProjectID: proj.ID, TaskID: createdTask.ID, Platform: "arena", OperationID: "claim-" + operation, ChallengeID: "3121",
+			})
+			if err != nil {
+				t.Fatalf("Claim: %v", err)
+			}
+			if _, err := service.Submit(context.Background(), challengeworkflow.SubmitRequest{
+				ProjectID: proj.ID, TaskID: createdTask.ID, Platform: "arena", OperationID: "submit-" + operation,
+				ExternalAttemptID: claim.ExternalAttemptID, Candidate: "wrong",
+			}); err != nil {
+				t.Fatalf("Submit: %v", err)
+			}
+
+			switch operation {
+			case "abandon":
+				_, err = service.Abandon(context.Background(), challengeworkflow.AbandonRequest{
+					ProjectID: proj.ID, TaskID: createdTask.ID, Platform: "arena", OperationID: "abandon-blocked",
+					ExternalAttemptID: claim.ExternalAttemptID, Reason: "stop",
+				})
+			case "finalize":
+				_, err = service.Finalize(context.Background(), challengeworkflow.FinalizeRequest{
+					ProjectID: proj.ID, TaskID: createdTask.ID, Platform: "arena", OperationID: "finalize-blocked",
+					ExternalAttemptID: claim.ExternalAttemptID,
+				})
+			}
+			var policyError *challengeworkflow.PolicyError
+			if !errors.As(err, &policyError) || policyError.Code != challengeworkflow.PolicyMaxWrongSubmissions {
+				t.Fatalf("%s error = %v", operation, err)
+			}
+			if platform.abandonCalls != 0 || platform.finalizeCalls != 0 {
+				t.Fatalf("platform calls after blocked %s = abandon %d finalize %d", operation, platform.abandonCalls, platform.finalizeCalls)
+			}
+		})
 	}
 }

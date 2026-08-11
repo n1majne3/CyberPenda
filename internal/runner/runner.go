@@ -322,7 +322,7 @@ func namedVolumeSubpath(volumeRoot, candidate string) (string, bool) {
 }
 
 func namedVolumeSubpathOption(program string) string {
-	if strings.EqualFold(filepath.Base(program), "podman") {
+	if kindFromCLIName(program) == EnginePodman {
 		return "subpath"
 	}
 	return "volume-subpath"

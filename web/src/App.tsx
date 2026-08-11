@@ -1,29 +1,68 @@
 import { Outlet, useRouteError } from "react-router-dom";
 import { createBrowserRouter, RouterProvider } from "react-router-dom";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { ShieldAlert, Menu, X } from "lucide-react";
-import { ProjectListPage } from "@/pages/ProjectListPage";
-import { ProjectDashboardPage } from "@/pages/ProjectDashboardPage";
-import { ScopeEditorPage } from "@/pages/ScopeEditorPage";
-import { RuntimeProfilesPage } from "@/pages/RuntimeProfilesPage";
-import { ModelProvidersPage } from "@/pages/ModelProvidersPage";
-import { CredentialBindingsPage } from "@/pages/CredentialBindingsPage";
-import { SkillsPage } from "@/pages/SkillsPage";
-import { TaskLaunchPage } from "@/pages/TaskLaunchPage";
-import { TaskDetailPage } from "@/pages/TaskDetailPage";
-import { ChallengeWorkflowPage } from "@/pages/ChallengeWorkflowPage";
-import { FactsPage } from "@/pages/FactsPage";
-import { BlackboardPage } from "@/pages/BlackboardPage";
-import { FindingsPage } from "@/pages/FindingsPage";
-import { EvidencePage } from "@/pages/EvidencePage";
-import { ReportPage } from "@/pages/ReportPage";
-import { SolutionPage } from "@/pages/SolutionPage";
-import { TasksPage } from "@/pages/TasksPage";
-import { SessionHomePage } from "@/pages/SessionHomePage";
-import { SessionDetailPage } from "@/pages/SessionDetailPage";
 import { Logo } from "@/components/Logo";
 import { WorkspaceSidebar } from "@/components/WorkspaceSidebar";
 import { cn } from "@/lib/utils";
+
+const ProjectListPage = lazy(() =>
+  import("@/pages/ProjectListPage").then(({ ProjectListPage }) => ({ default: ProjectListPage })),
+);
+const SessionHomePage = lazy(() =>
+  import("@/pages/SessionHomePage").then(({ SessionHomePage }) => ({ default: SessionHomePage })),
+);
+const SessionDetailPage = lazy(() =>
+  import("@/pages/SessionDetailPage").then(({ SessionDetailPage }) => ({ default: SessionDetailPage })),
+);
+const RuntimeProfilesPage = lazy(() =>
+  import("@/pages/RuntimeProfilesPage").then(({ RuntimeProfilesPage }) => ({ default: RuntimeProfilesPage })),
+);
+const ModelProvidersPage = lazy(() =>
+  import("@/pages/ModelProvidersPage").then(({ ModelProvidersPage }) => ({ default: ModelProvidersPage })),
+);
+const CredentialBindingsPage = lazy(() =>
+  import("@/pages/CredentialBindingsPage").then(({ CredentialBindingsPage }) => ({ default: CredentialBindingsPage })),
+);
+const SkillsPage = lazy(() =>
+  import("@/pages/SkillsPage").then(({ SkillsPage }) => ({ default: SkillsPage })),
+);
+const ProjectDashboardPage = lazy(() =>
+  import("@/pages/ProjectDashboardPage").then(({ ProjectDashboardPage }) => ({ default: ProjectDashboardPage })),
+);
+const ScopeEditorPage = lazy(() =>
+  import("@/pages/ScopeEditorPage").then(({ ScopeEditorPage }) => ({ default: ScopeEditorPage })),
+);
+const TasksPage = lazy(() =>
+  import("@/pages/TasksPage").then(({ TasksPage }) => ({ default: TasksPage })),
+);
+const TaskLaunchPage = lazy(() =>
+  import("@/pages/TaskLaunchPage").then(({ TaskLaunchPage }) => ({ default: TaskLaunchPage })),
+);
+const TaskDetailPage = lazy(() =>
+  import("@/pages/TaskDetailPage").then(({ TaskDetailPage }) => ({ default: TaskDetailPage })),
+);
+const ChallengeWorkflowPage = lazy(() =>
+  import("@/pages/ChallengeWorkflowPage").then(({ ChallengeWorkflowPage }) => ({ default: ChallengeWorkflowPage })),
+);
+const FactsPage = lazy(() =>
+  import("@/pages/FactsPage").then(({ FactsPage }) => ({ default: FactsPage })),
+);
+const BlackboardPage = lazy(() =>
+  import("@/pages/BlackboardPage").then(({ BlackboardPage }) => ({ default: BlackboardPage })),
+);
+const FindingsPage = lazy(() =>
+  import("@/pages/FindingsPage").then(({ FindingsPage }) => ({ default: FindingsPage })),
+);
+const EvidencePage = lazy(() =>
+  import("@/pages/EvidencePage").then(({ EvidencePage }) => ({ default: EvidencePage })),
+);
+const ReportPage = lazy(() =>
+  import("@/pages/ReportPage").then(({ ReportPage }) => ({ default: ReportPage })),
+);
+const SolutionPage = lazy(() =>
+  import("@/pages/SolutionPage").then(({ SolutionPage }) => ({ default: SolutionPage })),
+);
 
 export function ShellErrorBoundary() {
   const err = useRouteError() as Error;
@@ -173,7 +212,9 @@ export function ShellLayout() {
           tabIndex={-1}
           className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto bg-background pt-14 md:pt-0"
         >
-          <Outlet />
+          <Suspense fallback={<div role="status" className="p-6 text-sm text-muted-foreground">Loading…</div>}>
+            <Outlet />
+          </Suspense>
         </main>
       </div>
     </>
@@ -199,7 +240,7 @@ function createAppRouter() {
         { path: "/projects/:projectId/tasks", element: <TasksPage /> },
         { path: "/projects/:projectId/tasks/new", element: <TaskLaunchPage /> },
         { path: "/projects/:projectId/tasks/:taskId", element: <TaskDetailPage /> },
-		{ path: "/projects/:projectId/tasks/:taskId/challenges", element: <ChallengeWorkflowPage /> },
+        { path: "/projects/:projectId/tasks/:taskId/challenges", element: <ChallengeWorkflowPage /> },
         // Legacy Facts bookmark → Blackboard Work filtered to ProjectFact.
         { path: "/projects/:projectId/facts", element: <FactsPage /> },
         { path: "/projects/:projectId/blackboard/*", element: <BlackboardPage /> },
