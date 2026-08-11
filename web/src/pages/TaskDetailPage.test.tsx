@@ -208,6 +208,17 @@ describe("TaskDetailPage", () => {
     expect(screen.queryByText("Timeline opened first")).not.toBeInTheDocument();
   });
 
+  it("does not draw an outer frame around the Runtime Owner Workspace", async () => {
+    stubTaskDetailApi();
+
+    renderPage();
+
+    expect(await screen.findByTestId("task-session-header")).not.toHaveClass("border-b");
+    expect(screen.getByRole("button", { name: "Conversation" }).parentElement).not.toHaveClass("border-b");
+    expect(await screen.findByTestId("task-workspace")).not.toHaveClass("border-x", "border-b");
+    expect(screen.getByTestId("task-composer")).not.toHaveClass("border-t");
+  });
+
   it("shows assisted pending Blackboard conclusion state in the Task header", async () => {
     stubTaskDetailApi({
       blackboard_conclusion: {

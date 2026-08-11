@@ -825,7 +825,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
       className={focusMode ? "h-[calc(100dvh-3.5rem)] max-w-none p-0 md:h-dvh lg:p-0" : "flex min-h-full flex-col"}
       bodyClassName={focusMode ? "flex h-full min-h-0 flex-col" : "flex min-h-[32rem] flex-1 flex-col pb-0 lg:min-h-0"}
     >
-      <div data-testid="task-session-header" className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-2 sm:px-3">
+      <div data-testid="task-session-header" className="flex h-12 shrink-0 items-center gap-2 px-2 sm:px-3">
         <StatusBadge status={owner.status} />
         <RuntimeActivityBadge activity={owner.runtimeActivity} />
         <BlackboardConclusionBadge owner={owner} />
@@ -973,7 +973,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
         />
       )}
 
-      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border px-2 sm:px-3">
+      <div className="flex h-10 shrink-0 items-center gap-1 px-2 sm:px-3">
         <button
           type="button"
           className={tabClass(activeView === "conversation")}
@@ -1001,7 +1001,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
 
       <div
         data-testid="task-workspace"
-        className={`flex min-h-[28rem] min-w-0 flex-1 flex-col overflow-visible bg-card/30 md:overflow-hidden lg:min-h-0 ${focusMode ? "border-0" : "rounded-b-lg border-x border-b border-border"}`}
+        className="flex min-h-[28rem] min-w-0 flex-1 flex-col overflow-visible bg-card/30 md:overflow-hidden lg:min-h-0"
       >
         {activeView === "timeline" ? (
           <div className="min-h-0 flex-1 overflow-hidden p-2 pb-44 sm:p-3 md:pb-5">
@@ -1844,7 +1844,7 @@ function RuntimeOwnerComposer({
   onAttachmentsChange?: (files: File[]) => void;
 }) {
   return (
-    <div data-testid="task-composer" className="fixed inset-x-0 bottom-0 z-30 shrink-0 border-t border-border bg-background/95 px-3 py-2 shadow-[0_-8px_24px] shadow-black/15 backdrop-blur-sm sm:px-4 md:static md:z-10 md:shadow-none">
+    <div data-testid="task-composer" className="fixed inset-x-0 bottom-0 z-30 shrink-0 bg-background/95 px-3 py-2 shadow-[0_-8px_24px] shadow-black/15 backdrop-blur-sm sm:px-4 md:static md:z-10 md:shadow-none">
       <div className="mx-auto max-w-3xl space-y-2">
         {actionError && <p role="alert" className="text-xs text-destructive">{actionError}</p>}
         <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm focus-within:border-ring">

@@ -149,7 +149,7 @@ export function TasksPage() {
                         <StatusIcon className={`h-4 w-4 ${task.status === "running" ? "animate-spin motion-reduce:animate-none" : ""}`} aria-hidden="true" />
                       </span>
                       <div className="min-w-0 flex-1">
-                        <p className="break-words font-medium leading-snug group-hover:text-foreground">
+                        <p className="line-clamp-2 break-words font-medium leading-snug group-hover:text-foreground">
                           {task.goal || "(no goal)"}
                         </p>
                         <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-xs text-muted-foreground">
