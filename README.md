@@ -8,6 +8,16 @@ The daemon is the control plane, memory plane, task lifecycle plane, and reporti
 
 > **Use only against systems you are authorized to test.** Scope, approvals, and host-runner activation are first-class product concepts for a reason.
 
+## Live demo
+
+[Open the CyberPenda read-only demo](https://cyberpenda-demo.vercel.app)
+
+The demo uses the real React dashboard, routes, Project pages, Blackboard,
+Findings, Evidence, and Report views from this repository. It uses fixed sample
+Project data through a read-only API adapter. It does not run `pentestd`, a
+Runtime, Docker or Podman, or security-testing tools. Run Controls and data
+changes are disabled.
+
 ## Architecture
 
 | Component | Role |

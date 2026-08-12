@@ -1,6 +1,8 @@
 // Typed API client for the pentest daemon. Response shapes match the Go structs
 // documented in the backend audit.
 
+import { demoApiGet, demoApiWrite } from "@/demo/demoApi";
+
 const base = "";
 const authTokenParam = "token";
 const authTokenStorageKey = "pentest.authToken";
@@ -18,6 +20,10 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  if (import.meta.env.VITE_DEMO_MODE === "true") {
+    const method = init?.method ?? "GET";
+    return (method === "GET" ? demoApiGet(path) : demoApiWrite()) as T;
+  }
   const headers = requestHeaders(init?.headers);
   if (init?.body instanceof FormData) {
     // Let the browser set multipart/form-data together with its boundary.
