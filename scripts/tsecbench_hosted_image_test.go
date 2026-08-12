@@ -20,11 +20,16 @@ func TestTSecBenchHostedDockerfileDefinesTheIsolatedAMD64Image(t *testing.T) {
 	dockerfile := string(contents)
 
 	for _, required := range []string{
+		"FROM --platform=$BUILDPLATFORM node:",
+		"COPY web/package.json web/package-lock.json ./",
+		"RUN --mount=type=cache,target=/root/.npm npm ci",
+		"RUN npm run build",
 		"FROM --platform=$BUILDPLATFORM golang:",
 		"ARG TARGETOS",
 		"ARG TARGETARCH",
 		`test "${TARGETOS}/${TARGETARCH}" = "linux/amd64"`,
-		"mkdir -p internal/daemon/webfs/dist",
+		"COPY --from=web-build /src/web/dist internal/daemon/webfs/dist",
+		"test -s internal/daemon/webfs/dist/index.html",
 		"FROM --platform=$TARGETPLATFORM kalilinux/kali-rolling:latest AS runtime",
 		"USER root",
 		`ENTRYPOINT ["/usr/local/bin/pentest-tsecbench-hosted"]`,
@@ -33,11 +38,16 @@ func TestTSecBenchHostedDockerfileDefinesTheIsolatedAMD64Image(t *testing.T) {
 		"PI_OFFLINE=1",
 		"/opt/cyberpenda/runtime-versions.json",
 		"cyberpenda-hosted-runtime-versions/v1",
+		`require('/opt/pentest/claude-sdk-bridge/node_modules/@anthropic-ai/claude-agent-sdk/package.json').version`,
+		`claude_agent_sdk`,
 	} {
 		assertContains(t, dockerfile, required)
 	}
 	if strings.Contains(strings.ToUpper(dockerfile), "EXPOSE ") {
 		t.Fatal("Hosted Image must not expose the loopback daemon")
+	}
+	if strings.Contains(dockerfile, "Hosted Image has no exposed Web UI") {
+		t.Fatal("Hosted Image must embed the normal Web UI, not a placeholder")
 	}
 }
 
@@ -172,6 +182,10 @@ test -s /opt/cyberpenda/runtime-versions.json
 			Version string `json:"version"`
 			Binary  string `json:"binary"`
 		} `json:"runtimes"`
+		Components map[string]struct {
+			Package string `json:"package"`
+			Version string `json:"version"`
+		} `json:"components"`
 	}
 	if err := json.Unmarshal(output, &inventory); err != nil {
 		t.Fatalf("decode Runtime inventory: %v: %s", err, output)
@@ -184,5 +198,9 @@ test -s /opt/cyberpenda/runtime-versions.json
 		if !ok || entry.Package == "" || entry.Version == "" || entry.Binary == "" {
 			t.Fatalf("Runtime inventory %s = %#v", runtimeName, entry)
 		}
+	}
+	sdk, ok := inventory.Components["claude_agent_sdk"]
+	if !ok || sdk.Package != "@anthropic-ai/claude-agent-sdk" || sdk.Version == "" {
+		t.Fatalf("Runtime inventory claude_agent_sdk = %#v", sdk)
 	}
 }

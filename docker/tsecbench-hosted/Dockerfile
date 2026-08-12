@@ -3,16 +3,23 @@
 # Build the isolated controller and the Pi protocol bridge for one linux/amd64
 # Hosted Evaluation Run. This Dockerfile is separate from normal app and
 # Sandbox images.
+FROM --platform=$BUILDPLATFORM node:20-bookworm-slim AS web-build
+WORKDIR /src/web
+COPY web/package.json web/package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci
+COPY web/ ./
+RUN npm run build
+
 FROM --platform=$BUILDPLATFORM golang:1.25-bookworm AS go-build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
+COPY --from=web-build /src/web/dist internal/daemon/webfs/dist
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 RUN test "${TARGETOS}/${TARGETARCH}" = "linux/amd64"
-RUN mkdir -p internal/daemon/webfs/dist \
-  && printf '%s\n' '# Hosted Image has no exposed Web UI.' > internal/daemon/webfs/dist/.gitkeep
+RUN test -s internal/daemon/webfs/dist/index.html
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
@@ -76,7 +83,8 @@ RUN mkdir -p /root/.agent-browser /opt/cyberpenda /data \
   && PI_VERSION="$(node -p "require('$(npm root -g)/@earendil-works/pi-coding-agent/package.json').version")" \
      CODEX_VERSION="$(node -p "require('$(npm root -g)/@openai/codex/package.json').version")" \
      CLAUDE_VERSION="$(node -p "require('$(npm root -g)/@anthropic-ai/claude-code/package.json').version")" \
-     node -e 'const fs=require("fs"); fs.writeFileSync("/opt/cyberpenda/runtime-versions.json", JSON.stringify({schema:"cyberpenda-hosted-runtime-versions/v1",runtimes:{pi:{package:"@earendil-works/pi-coding-agent",version:process.env.PI_VERSION,binary:"pi"},codex:{package:"@openai/codex",version:process.env.CODEX_VERSION,binary:"codex"},claude_code:{package:"@anthropic-ai/claude-code",version:process.env.CLAUDE_VERSION,binary:"claude"}}},null,2)+"\n")' \
+     CLAUDE_AGENT_SDK_VERSION="$(node -p "require('/opt/pentest/claude-sdk-bridge/node_modules/@anthropic-ai/claude-agent-sdk/package.json').version")" \
+     node -e 'const fs=require("fs"); fs.writeFileSync("/opt/cyberpenda/runtime-versions.json", JSON.stringify({schema:"cyberpenda-hosted-runtime-versions/v1",runtimes:{pi:{package:"@earendil-works/pi-coding-agent",version:process.env.PI_VERSION,binary:"pi"},codex:{package:"@openai/codex",version:process.env.CODEX_VERSION,binary:"codex"},claude_code:{package:"@anthropic-ai/claude-code",version:process.env.CLAUDE_VERSION,binary:"claude"}},components:{claude_agent_sdk:{package:"@anthropic-ai/claude-agent-sdk",version:process.env.CLAUDE_AGENT_SDK_VERSION}}},null,2)+"\n")' \
   && command -v pi \
   && command -v codex \
   && command -v claude \

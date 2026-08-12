@@ -90,7 +90,7 @@ func TestHTTPAppWaitStreamsCompleteMaskedTranscriptAndFinalDrain(t *testing.T) {
 		BaseURL: "http://hosted.test", Client: &http.Client{Transport: transport}, PollPeriod: time.Millisecond,
 	})
 	var stdout bytes.Buffer
-	err := app.Wait(context.Background(), hostedcontroller.RunRef{ProjectID: "project-1", TaskID: "task-1"}, &stdout, []string{benchmarkToken, modelKey})
+	err := app.Wait(context.Background(), hostedcontroller.HostedEvaluationReference{ProjectID: "project-1", TaskID: "task-1"}, &stdout, []string{benchmarkToken, modelKey})
 	if err == nil || !strings.Contains(err.Error(), "hosted Runtime failed") {
 		t.Fatalf("Wait error = %v, want failure after final drain", err)
 	}
@@ -148,7 +148,7 @@ func TestHTTPAppWaitCommitsEmptyTranscriptCursorProgress(t *testing.T) {
 		cancel()
 	})
 	var stdout bytes.Buffer
-	if err := newTranscriptHTTPApp(handler).Wait(ctx, hostedcontroller.RunRef{ProjectID: "project-1", TaskID: "task-1"}, &stdout, nil); err != nil {
+	if err := newTranscriptHTTPApp(handler).Wait(ctx, hostedcontroller.HostedEvaluationReference{ProjectID: "project-1", TaskID: "task-1"}, &stdout, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.Join(cursors, ","); got != "0,5,6" {
@@ -172,7 +172,7 @@ func TestHTTPAppWaitDoesNotEmitPreviewWhenTranscriptDetailFails(t *testing.T) {
 		http.Error(response, "detail unavailable", http.StatusInternalServerError)
 	})
 	var stdout bytes.Buffer
-	err := newTranscriptHTTPApp(handler).Wait(context.Background(), hostedcontroller.RunRef{ProjectID: "project-1", TaskID: "task-1"}, &stdout, nil)
+	err := newTranscriptHTTPApp(handler).Wait(context.Background(), hostedcontroller.HostedEvaluationReference{ProjectID: "project-1", TaskID: "task-1"}, &stdout, nil)
 	if err == nil || !strings.Contains(err.Error(), "detail") || stdout.Len() != 0 {
 		t.Fatalf("error=%v stdout=%q", err, stdout.String())
 	}
@@ -183,7 +183,7 @@ func TestHTTPAppWaitReturnsTranscriptAndStdoutFailures(t *testing.T) {
 		app := newTranscriptHTTPApp(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 			http.Error(response, "broken", http.StatusInternalServerError)
 		}))
-		err := app.Wait(context.Background(), hostedcontroller.RunRef{ProjectID: "project-1", TaskID: "task-1"}, io.Discard, nil)
+		err := app.Wait(context.Background(), hostedcontroller.HostedEvaluationReference{ProjectID: "project-1", TaskID: "task-1"}, io.Discard, nil)
 		if err == nil || !strings.Contains(err.Error(), "Transcript") {
 			t.Fatalf("Wait error = %v", err)
 		}
@@ -194,7 +194,7 @@ func TestHTTPAppWaitReturnsTranscriptAndStdoutFailures(t *testing.T) {
 				writeStreamPage(t, response, 1, false, streamEntry("entry-1", 1, "message", "assistant", "hello", "2026-08-12T00:00:00Z"))
 			}
 		})
-		err := newTranscriptHTTPApp(handler).Wait(context.Background(), hostedcontroller.RunRef{ProjectID: "project-1", TaskID: "task-1"}, streamFailWriter{}, nil)
+		err := newTranscriptHTTPApp(handler).Wait(context.Background(), hostedcontroller.HostedEvaluationReference{ProjectID: "project-1", TaskID: "task-1"}, streamFailWriter{}, nil)
 		if err == nil || !strings.Contains(err.Error(), "stdout") {
 			t.Fatalf("Wait error = %v", err)
 		}
@@ -218,7 +218,7 @@ func TestHTTPAppWaitRejectsInvalidTranscriptDetailReference(t *testing.T) {
 				t.Fatal("invalid detail reference was followed")
 			})
 			var stdout bytes.Buffer
-			err := newTranscriptHTTPApp(handler).Wait(context.Background(), hostedcontroller.RunRef{ProjectID: "project-1", TaskID: "task-1"}, &stdout, nil)
+			err := newTranscriptHTTPApp(handler).Wait(context.Background(), hostedcontroller.HostedEvaluationReference{ProjectID: "project-1", TaskID: "task-1"}, &stdout, nil)
 			if err == nil || !strings.Contains(err.Error(), "invalid detail reference") || stdout.Len() != 0 {
 				t.Fatalf("error=%v stdout=%q", err, stdout.String())
 			}

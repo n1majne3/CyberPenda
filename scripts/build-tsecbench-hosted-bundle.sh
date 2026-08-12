@@ -103,6 +103,11 @@ for name in ("pi", "codex", "claude_code"):
     for field in ("package", "version", "binary"):
         if not str(entry.get(field, "")).strip():
             raise SystemExit(f"Runtime inventory is missing {name}.{field}")
+sdk = inventory.get("components", {}).get("claude_agent_sdk", {})
+if sdk.get("package") != "@anthropic-ai/claude-agent-sdk":
+    raise SystemExit("Runtime inventory is missing claude_agent_sdk.package")
+if not str(sdk.get("version", "")).strip():
+    raise SystemExit("Runtime inventory is missing claude_agent_sdk.version")
 PY
 
 tool_inventory="${staging_root}/tool-versions.txt"

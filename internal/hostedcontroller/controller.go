@@ -17,16 +17,10 @@ import (
 	"time"
 
 	"pentest/internal/daemon"
+	"pentest/internal/runtimeplugin"
 )
 
-const (
-	RuntimePi              = "pi"
-	RuntimeCodex           = "codex"
-	RuntimeClaudeCode      = "claude_code"
-	ProtocolOpenAIChat     = "openai_chat_completions"
-	ProtocolOpenAIResponse = "openai_responses"
-	ProtocolAnthropic      = "anthropic_messages"
-)
+const RuntimePi = "pi"
 
 var ErrInvalidConfig = errors.New("hosted configuration is invalid")
 
@@ -41,8 +35,9 @@ type Config struct {
 	ModelAPIKey      string
 }
 
-// Evaluation is the complete normal-domain bootstrap request for one hosted run.
-type Evaluation struct {
+// HostedEvaluationBootstrap is the complete normal-domain bootstrap request
+// for one Hosted Evaluation Run.
+type HostedEvaluationBootstrap struct {
 	Project struct {
 		Name       string
 		Kind       string
@@ -65,8 +60,9 @@ type Evaluation struct {
 	}
 }
 
-// RunRef identifies the one Project and Task created for a hosted run.
-type RunRef struct {
+// HostedEvaluationReference identifies the one Project and Task created for a
+// Hosted Evaluation Run.
+type HostedEvaluationReference struct {
 	ProjectID string
 	TaskID    string
 }
@@ -74,8 +70,8 @@ type RunRef struct {
 // App is the Hosted Controller's public application boundary. Start performs
 // the one allowed bootstrap. Wait only observes that Task.
 type App interface {
-	Start(context.Context, Evaluation) (RunRef, error)
-	Wait(context.Context, RunRef, io.Writer, []string) error
+	Start(context.Context, HostedEvaluationBootstrap) (HostedEvaluationReference, error)
+	Wait(context.Context, HostedEvaluationReference, io.Writer, []string) error
 }
 
 // ConfigFromEnv validates the complete hosted environment before bootstrap.
@@ -107,7 +103,7 @@ func ConfigFromEnv(env map[string]string) (Config, error) {
 			return Config{}, ErrInvalidConfig
 		}
 	}
-	if !compatibleRuntimeProtocol(config.Runtime, config.ModelProtocol) {
+	if !runtimeplugin.BuiltinSupportsModelProtocol(config.Runtime, config.ModelProtocol) {
 		return Config{}, ErrInvalidConfig
 	}
 	benchmarkURL, err := url.Parse(config.BenchmarkBaseURL)
@@ -117,21 +113,8 @@ func ConfigFromEnv(env map[string]string) (Config, error) {
 	return config, nil
 }
 
-func compatibleRuntimeProtocol(runtimeName, protocol string) bool {
-	switch runtimeName {
-	case RuntimePi:
-		return protocol == ProtocolOpenAIChat || protocol == ProtocolOpenAIResponse || protocol == ProtocolAnthropic
-	case RuntimeCodex:
-		return protocol == ProtocolOpenAIResponse
-	case RuntimeClaudeCode:
-		return protocol == ProtocolAnthropic
-	default:
-		return false
-	}
-}
-
-func evaluationFromConfig(config Config) Evaluation {
-	var evaluation Evaluation
+func evaluationFromConfig(config Config) HostedEvaluationBootstrap {
+	var evaluation HostedEvaluationBootstrap
 	evaluation.Project.Name = "TSecBench Hosted Evaluation"
 	evaluation.Project.Kind = "ctf_challenge"
 	evaluation.Project.ScopeNotes = "Platform-Issued Scope: testing is authorized only for ephemeral target addresses returned by TSecBench for the current BENCHMARK_TOKEN."
@@ -151,7 +134,7 @@ func evaluationFromConfig(config Config) Evaluation {
 
 // EvaluationForConfig returns the normal-domain bootstrap request after Config
 // has passed ConfigFromEnv validation.
-func EvaluationForConfig(config Config) Evaluation {
+func EvaluationForConfig(config Config) HostedEvaluationBootstrap {
 	return evaluationFromConfig(config)
 }
 

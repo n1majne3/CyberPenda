@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,16 +15,16 @@ import (
 )
 
 type hostedApp struct {
-	started []hostedcontroller.Evaluation
-	waited  []hostedcontroller.RunRef
+	started []hostedcontroller.HostedEvaluationBootstrap
+	waited  []hostedcontroller.HostedEvaluationReference
 }
 
-func (app *hostedApp) Start(_ context.Context, evaluation hostedcontroller.Evaluation) (hostedcontroller.RunRef, error) {
+func (app *hostedApp) Start(_ context.Context, evaluation hostedcontroller.HostedEvaluationBootstrap) (hostedcontroller.HostedEvaluationReference, error) {
 	app.started = append(app.started, evaluation)
-	return hostedcontroller.RunRef{ProjectID: "project-1", TaskID: "task-1"}, nil
+	return hostedcontroller.HostedEvaluationReference{ProjectID: "project-1", TaskID: "task-1"}, nil
 }
 
-func (app *hostedApp) Wait(ctx context.Context, run hostedcontroller.RunRef, _ io.Writer, _ []string) error {
+func (app *hostedApp) Wait(ctx context.Context, run hostedcontroller.HostedEvaluationReference, _ io.Writer, _ []string) error {
 	app.waited = append(app.waited, run)
 	<-ctx.Done()
 	return nil
@@ -97,32 +96,6 @@ func TestHostedControllerStartsOnePiEvaluationAndOnlyObservesIt(t *testing.T) {
 	}
 	if !strings.Contains(evaluation.Task.Goal, "TSecBench") {
 		t.Fatalf("Task Goal = %q", evaluation.Task.Goal)
-	}
-}
-
-func TestConfigFromEnvAcceptsTheExactHostedRuntimeProtocolMatrix(t *testing.T) {
-	base := map[string]string{
-		"BENCHMARK_BASE_URL": "http://benchmark.tsecbench.gw/openapi/v1", "BENCHMARK_TOKEN": "token",
-		"CYBERPENDA_MODEL_BASE_URL": "http://model.tsecbench.gw/v1", "CYBERPENDA_MODEL": "model",
-		"CYBERPENDA_MODEL_API_KEY": "key",
-	}
-	tests := []struct {
-		runtime, protocol string
-		valid             bool
-	}{
-		{"pi", "openai_chat_completions", true}, {"pi", "openai_responses", true}, {"pi", "anthropic_messages", true},
-		{"codex", "openai_responses", true}, {"codex", "openai_chat_completions", false},
-		{"claude_code", "anthropic_messages", true}, {"claude_code", "openai_responses", false},
-	}
-	for _, test := range tests {
-		t.Run(test.runtime+"/"+test.protocol, func(t *testing.T) {
-			env := maps.Clone(base)
-			env["CYBERPENDA_RUNTIME"], env["CYBERPENDA_MODEL_PROTOCOL"] = test.runtime, test.protocol
-			_, err := hostedcontroller.ConfigFromEnv(env)
-			if (err == nil) != test.valid {
-				t.Fatalf("ConfigFromEnv error = %v, valid=%v", err, test.valid)
-			}
-		})
 	}
 }
 

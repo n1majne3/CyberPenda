@@ -21,10 +21,10 @@ var hostedChallengeSkillInstruction string
 // HTTPApp uses only the normal daemon HTTP surface for hosted bootstrap and
 // observation. It does not add TSecBench routes to the daemon.
 type HTTPApp struct {
-	baseURL    string
-	client     *http.Client
-	piBinary   string
-	pollPeriod time.Duration
+	baseURL       string
+	client        *http.Client
+	runtimeBinary string
+	pollPeriod    time.Duration
 }
 
 // HTTPAppConfig describes the loopback daemon used by the hosted process.
@@ -44,10 +44,10 @@ func NewHTTPApp(config HTTPAppConfig) *HTTPApp {
 	if period <= 0 {
 		period = 250 * time.Millisecond
 	}
-	return &HTTPApp{baseURL: strings.TrimRight(config.BaseURL, "/"), client: client, piBinary: config.RuntimeBinary, pollPeriod: period}
+	return &HTTPApp{baseURL: strings.TrimRight(config.BaseURL, "/"), client: client, runtimeBinary: config.RuntimeBinary, pollPeriod: period}
 }
 
-func (app *HTTPApp) Start(ctx context.Context, evaluation Evaluation) (RunRef, error) {
+func (app *HTTPApp) Start(ctx context.Context, evaluation HostedEvaluationBootstrap) (HostedEvaluationReference, error) {
 	if err := app.request(ctx, http.MethodPut, "/api/skills/"+hostedChallengeSkillID, map[string]any{
 		"name":        hostedChallengeSkillID,
 		"description": "Completes a TSecBench Hosted Evaluation Run through the injected challenge API. Use only when the Task Goal requires TSecBench hosted evaluation.",
@@ -56,7 +56,7 @@ func (app *HTTPApp) Start(ctx context.Context, evaluation Evaluation) (RunRef, e
 		},
 		"files": map[string]string{"SKILL.md": hostedChallengeSkillInstruction},
 	}, nil); err != nil {
-		return RunRef{}, fmt.Errorf("publish hosted TSecBench Skill: %w", err)
+		return HostedEvaluationReference{}, fmt.Errorf("publish hosted TSecBench Skill: %w", err)
 	}
 
 	var provider struct {
@@ -68,7 +68,7 @@ func (app *HTTPApp) Start(ctx context.Context, evaluation Evaluation) (RunRef, e
 		"endpoints": []map[string]string{{"protocol": evaluation.Runtime.ModelProtocol, "base_url": evaluation.Runtime.ModelBaseURL}},
 		"catalog":   map[string]any{"manual": []string{evaluation.Runtime.Model}, "default_model": evaluation.Runtime.Model},
 	}, &provider); err != nil {
-		return RunRef{}, fmt.Errorf("create hosted Model Provider: %w", err)
+		return HostedEvaluationReference{}, fmt.Errorf("create hosted Model Provider: %w", err)
 	}
 
 	var project struct {
@@ -78,7 +78,7 @@ func (app *HTTPApp) Start(ctx context.Context, evaluation Evaluation) (RunRef, e
 		"name": evaluation.Project.Name, "kind": evaluation.Project.Kind,
 		"scope": map[string]any{"notes": evaluation.Project.ScopeNotes},
 	}, &project); err != nil {
-		return RunRef{}, fmt.Errorf("create hosted Project: %w", err)
+		return HostedEvaluationReference{}, fmt.Errorf("create hosted Project: %w", err)
 	}
 
 	fields := map[string]any{
@@ -91,8 +91,8 @@ func (app *HTTPApp) Start(ctx context.Context, evaluation Evaluation) (RunRef, e
 		// resources. It does not change tool permissions or Project Scope.
 		fields["custom_args"] = []string{"--approve"}
 	}
-	if strings.TrimSpace(app.piBinary) != "" {
-		fields["binary_path"] = app.piBinary
+	if strings.TrimSpace(app.runtimeBinary) != "" {
+		fields["binary_path"] = app.runtimeBinary
 	}
 	var profile struct {
 		ID string `json:"id"`
@@ -100,7 +100,7 @@ func (app *HTTPApp) Start(ctx context.Context, evaluation Evaluation) (RunRef, e
 	if err := app.request(ctx, http.MethodPost, "/api/runtime-profiles", map[string]any{
 		"name": "TSecBench Hosted Runtime", "provider": evaluation.Runtime.Provider, "fields": fields,
 	}, &profile); err != nil {
-		return RunRef{}, fmt.Errorf("create hosted Runtime Profile: %w", err)
+		return HostedEvaluationReference{}, fmt.Errorf("create hosted Runtime Profile: %w", err)
 	}
 
 	bindings := map[string]string{"BENCHMARK_TOKEN": evaluation.Runtime.Credentials["BENCHMARK_TOKEN"], provider.APIKeyEnv: evaluation.Runtime.ModelAPIKey}
@@ -109,7 +109,7 @@ func (app *HTTPApp) Start(ctx context.Context, evaluation Evaluation) (RunRef, e
 			"credential_ref": credentialRef,
 			"source":         map[string]string{"kind": "literal", "value": value, "destination_env": credentialRef},
 		}, nil); err != nil {
-			return RunRef{}, fmt.Errorf("bind hosted credential: %w", err)
+			return HostedEvaluationReference{}, fmt.Errorf("bind hosted credential: %w", err)
 		}
 	}
 
@@ -121,12 +121,12 @@ func (app *HTTPApp) Start(ctx context.Context, evaluation Evaluation) (RunRef, e
 		"runtime_profile_id": profile.ID, "runner": evaluation.Task.Runner,
 		"run_controls": map[string]any{"host_activated": evaluation.Task.HostActivated, "blackboard_conclusion_mode": "interactive"},
 	}, &task); err != nil {
-		return RunRef{}, fmt.Errorf("create hosted Task: %w", err)
+		return HostedEvaluationReference{}, fmt.Errorf("create hosted Task: %w", err)
 	}
-	return RunRef{ProjectID: project.ID, TaskID: task.ID}, nil
+	return HostedEvaluationReference{ProjectID: project.ID, TaskID: task.ID}, nil
 }
 
-func (app *HTTPApp) Wait(ctx context.Context, run RunRef, stdout io.Writer, secrets []string) error {
+func (app *HTTPApp) Wait(ctx context.Context, run HostedEvaluationReference, stdout io.Writer, secrets []string) error {
 	if stdout == nil {
 		return errors.New("hosted Transcript stdout is unavailable")
 	}

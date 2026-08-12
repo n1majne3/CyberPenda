@@ -4,6 +4,11 @@ This Bundle contains one `linux/amd64` TSecBench Hosted Image. Upload only the
 `.tar.gz` Docker archive to the TSecBench Hosted Mode page. You can verify it
 first with `shasum -a 256 -c SHA256SUMS` or `sha256sum -c SHA256SUMS`.
 
+The image retains the normal embedded CyberPenda Web UI resources. It does not
+publish or expose the loopback daemon port. `COMPONENTS.txt` records the exact
+versions of the three Runtime CLIs and the Claude Agent SDK used by the packaged
+Claude bridge.
+
 ## Hosted Mode
 
 Set the five values from `tsecbench.env.example` on the TSecBench page.

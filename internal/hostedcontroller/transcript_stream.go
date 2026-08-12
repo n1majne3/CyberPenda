@@ -27,7 +27,7 @@ type transcriptPage struct {
 // stable snapshot. The initial response cursor is the snapshot boundary.
 // Backward-page cursors are deliberately ignored because live Events can
 // advance them while older pages are being read.
-func (app *HTTPApp) streamInitialTranscript(ctx context.Context, run RunRef, output io.Writer, masker *exactMasker) (int, error) {
+func (app *HTTPApp) streamInitialTranscript(ctx context.Context, run HostedEvaluationReference, output io.Writer, masker *exactMasker) (int, error) {
 	base := taskTranscriptPath(run)
 	var initial transcriptPage
 	if err := app.request(ctx, http.MethodGet, base, nil, &initial); err != nil {
@@ -85,7 +85,7 @@ func (app *HTTPApp) streamInitialTranscript(ctx context.Context, run RunRef, out
 // drainTranscript follows the committed live-tail cursor until one successful
 // page has no entries and cannot advance the cursor. The caller commits a page
 // only after every entry in it reaches stdout.
-func (app *HTTPApp) drainTranscript(ctx context.Context, run RunRef, output io.Writer, masker *exactMasker, cursor int) (int, error) {
+func (app *HTTPApp) drainTranscript(ctx context.Context, run HostedEvaluationReference, output io.Writer, masker *exactMasker, cursor int) (int, error) {
 	base := taskTranscriptPath(run)
 	for {
 		var page transcriptPage
@@ -113,7 +113,7 @@ func (app *HTTPApp) drainTranscript(ctx context.Context, run RunRef, output io.W
 	}
 }
 
-func (app *HTTPApp) emitTranscriptEntries(ctx context.Context, run RunRef, output io.Writer, masker *exactMasker, entries []transcript.Entry) error {
+func (app *HTTPApp) emitTranscriptEntries(ctx context.Context, run HostedEvaluationReference, output io.Writer, masker *exactMasker, entries []transcript.Entry) error {
 	for _, preview := range entries {
 		entry := preview
 		if preview.Truncated {
@@ -139,7 +139,7 @@ func (app *HTTPApp) emitTranscriptEntries(ctx context.Context, run RunRef, outpu
 	return nil
 }
 
-func (app *HTTPApp) transcriptEntryDetail(ctx context.Context, run RunRef, preview transcript.Entry) (transcript.Entry, error) {
+func (app *HTTPApp) transcriptEntryDetail(ctx context.Context, run HostedEvaluationReference, preview transcript.Entry) (transcript.Entry, error) {
 	prefix := taskTranscriptPath(run) + "/entries/"
 	detail := strings.TrimSpace(preview.Detail)
 	parsed, err := url.Parse(detail)
@@ -156,7 +156,7 @@ func (app *HTTPApp) transcriptEntryDetail(ctx context.Context, run RunRef, previ
 	return complete, nil
 }
 
-func taskTranscriptPath(run RunRef) string {
+func taskTranscriptPath(run HostedEvaluationReference) string {
 	return "/api/projects/" + url.PathEscape(run.ProjectID) + "/tasks/" + url.PathEscape(run.TaskID) + "/transcript"
 }
 
