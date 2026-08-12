@@ -20,8 +20,12 @@ import (
 )
 
 const (
-	RuntimePi          = "pi"
-	ProtocolOpenAIChat = "openai_chat_completions"
+	RuntimePi              = "pi"
+	RuntimeCodex           = "codex"
+	RuntimeClaudeCode      = "claude_code"
+	ProtocolOpenAIChat     = "openai_chat_completions"
+	ProtocolOpenAIResponse = "openai_responses"
+	ProtocolAnthropic      = "anthropic_messages"
 )
 
 var ErrInvalidConfig = errors.New("hosted configuration is invalid")
@@ -93,10 +97,11 @@ func ConfigFromEnv(env map[string]string) (Config, error) {
 		return Config{}, ErrInvalidConfig
 	}
 	modelURL, err := url.Parse(config.ModelBaseURL)
-	if err != nil || modelURL.Scheme != "http" || !strings.HasSuffix(strings.ToLower(modelURL.Hostname()), ".tsecbench.gw") {
+	if err != nil || modelURL.Scheme != "http" || modelURL.User != nil || modelURL.RawQuery != "" || modelURL.Fragment != "" ||
+		!strings.HasSuffix(strings.ToLower(modelURL.Hostname()), ".tsecbench.gw") {
 		return Config{}, ErrInvalidConfig
 	}
-	path := strings.TrimSuffix(strings.ToLower(modelURL.Path), "/")
+	path := strings.TrimRight(strings.ToLower(modelURL.Path), "/")
 	for _, suffix := range []string{"/chat/completions", "/responses", "/messages"} {
 		if strings.HasSuffix(path, suffix) {
 			return Config{}, ErrInvalidConfig
@@ -114,12 +119,12 @@ func ConfigFromEnv(env map[string]string) (Config, error) {
 
 func compatibleRuntimeProtocol(runtimeName, protocol string) bool {
 	switch runtimeName {
-	case "pi":
-		return protocol == "openai_chat_completions" || protocol == "openai_responses" || protocol == "anthropic_messages"
-	case "codex":
-		return protocol == "openai_responses"
-	case "claude_code":
-		return protocol == "anthropic_messages"
+	case RuntimePi:
+		return protocol == ProtocolOpenAIChat || protocol == ProtocolOpenAIResponse || protocol == ProtocolAnthropic
+	case RuntimeCodex:
+		return protocol == ProtocolOpenAIResponse
+	case RuntimeClaudeCode:
+		return protocol == ProtocolAnthropic
 	default:
 		return false
 	}

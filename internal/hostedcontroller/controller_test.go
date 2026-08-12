@@ -131,6 +131,8 @@ func TestHTTPAppCreatesOneHostedProjectAndMatchingHostTask(t *testing.T) {
 	handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
 		switch request.Method + " " + request.URL.Path {
+		case "PUT /api/skills/tsecbench-hosted-challenge-loop":
+			_, _ = io.WriteString(response, `{}`)
 		case "POST /api/model-providers":
 			response.WriteHeader(http.StatusCreated)
 			_, _ = io.WriteString(response, `{"id":"hosted-model","api_key_env":"HOSTED_MODEL_API_KEY"}`)

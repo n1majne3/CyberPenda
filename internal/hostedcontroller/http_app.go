@@ -3,6 +3,7 @@ package hostedcontroller
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,11 @@ import (
 	"strings"
 	"time"
 )
+
+const hostedChallengeSkillID = "tsecbench-hosted-challenge-loop"
+
+//go:embed assets/tsecbench-hosted-challenge-loop/SKILL.md
+var hostedChallengeSkillInstruction string
 
 // HTTPApp uses only the normal daemon HTTP surface for hosted bootstrap and
 // observation. It does not add TSecBench routes to the daemon.
@@ -42,6 +48,17 @@ func NewHTTPApp(config HTTPAppConfig) *HTTPApp {
 }
 
 func (app *HTTPApp) Start(ctx context.Context, evaluation Evaluation) (RunRef, error) {
+	if err := app.request(ctx, http.MethodPut, "/api/skills/"+hostedChallengeSkillID, map[string]any{
+		"name":        hostedChallengeSkillID,
+		"description": "Completes a TSecBench Hosted Evaluation Run through the injected challenge API. Use only when the Task Goal requires TSecBench hosted evaluation.",
+		"source_provenance": map[string]string{
+			"kind": "hosted",
+		},
+		"files": map[string]string{"SKILL.md": hostedChallengeSkillInstruction},
+	}, nil); err != nil {
+		return RunRef{}, fmt.Errorf("publish hosted TSecBench Skill: %w", err)
+	}
+
 	var provider struct {
 		ID        string `json:"id"`
 		APIKeyEnv string `json:"api_key_env"`
@@ -68,6 +85,11 @@ func (app *HTTPApp) Start(ctx context.Context, evaluation Evaluation) (RunRef, e
 		"model_provider_id": provider.ID, "model_provider_protocol": evaluation.Runtime.ModelProtocol,
 		"model_override": evaluation.Runtime.Model, "env": evaluation.Runtime.Env,
 		"credential_refs": []string{"BENCHMARK_TOKEN"},
+	}
+	if evaluation.Runtime.Provider == RuntimePi {
+		// Pi's --approve trusts only this run's projected project-local
+		// resources. It does not change tool permissions or Project Scope.
+		fields["custom_args"] = []string{"--approve"}
 	}
 	if strings.TrimSpace(app.piBinary) != "" {
 		fields["binary_path"] = app.piBinary
@@ -104,20 +126,44 @@ func (app *HTTPApp) Start(ctx context.Context, evaluation Evaluation) (RunRef, e
 	return RunRef{ProjectID: project.ID, TaskID: task.ID}, nil
 }
 
-func (app *HTTPApp) Wait(ctx context.Context, run RunRef, _ io.Writer, _ []string) error {
+func (app *HTTPApp) Wait(ctx context.Context, run RunRef, stdout io.Writer, secrets []string) error {
+	if stdout == nil {
+		return errors.New("hosted Transcript stdout is unavailable")
+	}
+	masker := newExactMasker(secrets)
+	cursor, err := app.streamInitialTranscript(ctx, run, stdout, masker)
+	if err != nil {
+		if contextEnded(err) {
+			return nil
+		}
+		return err
+	}
 	ticker := time.NewTicker(app.pollPeriod)
 	defer ticker.Stop()
 	for {
+		cursor, err = app.drainTranscript(ctx, run, stdout, masker, cursor)
+		if err != nil {
+			if contextEnded(err) {
+				return nil
+			}
+			return err
+		}
 		var taskState struct {
 			Status string `json:"status"`
 		}
 		if err := app.request(ctx, http.MethodGet, "/api/projects/"+run.ProjectID+"/tasks/"+run.TaskID, nil, &taskState); err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			if contextEnded(err) {
 				return nil
 			}
 			return fmt.Errorf("observe hosted Task: %w", err)
 		}
 		if taskState.Status == "failed" || taskState.Status == "interrupted" || taskState.Status == "stopped" {
+			if _, err := app.drainTranscript(ctx, run, stdout, masker, cursor); err != nil {
+				if contextEnded(err) {
+					return nil
+				}
+				return fmt.Errorf("final hosted Transcript drain: %w", err)
+			}
 			return errors.New("hosted Runtime failed")
 		}
 		select {
@@ -126,6 +172,10 @@ func (app *HTTPApp) Wait(ctx context.Context, run RunRef, _ io.Writer, _ []strin
 		case <-ticker.C:
 		}
 	}
+}
+
+func contextEnded(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func (app *HTTPApp) request(ctx context.Context, method, path string, input, output any) error {
