@@ -274,7 +274,34 @@ func (server *Server) handleRetryBlackboardConclusion(response http.ResponseWrit
 		writeError(response, http.StatusConflict, "Blackboard conclusion cannot be retried after an acceptance-ambiguous delivery")
 		return
 	}
-	retried, won, err := server.tasks.RetryLatestBlackboardConclusion(taskID, idempotencyKey, time.Now().UTC())
+	// A dispatch_failed obligation can outlive the Runtime Continuation that
+	// owned its last immutable dispatch. When this daemon currently owns a live
+	// provider session and storage confirms the active Continuation carries that
+	// exact native session, bind the NEW retry dispatch to the live replacement.
+	// Other recovery reasons keep their reason-specific fail-closed policy.
+	replacementContinuationID, replacementSessionID := "", ""
+	replacementBaseRevision := -1
+	if latest.RecoveryReason == string(task.ConclusionRecoveryDispatchFailed) {
+		session, live := server.providerSessions.get(taskID)
+		active, activeErr := server.tasks.ActiveContinuation(taskID)
+		if !live || session == nil || activeErr != nil || active == nil ||
+			strings.TrimSpace(active.NativeSessionID) != session.SessionID() {
+			writeError(response, http.StatusConflict, "Blackboard conclusion retry requires a proven live Runtime")
+			return
+		}
+		if latest.DispatchRequestID == "" || latest.ContinuationID != active.ID || latest.SourceSessionID != session.SessionID() {
+			snapshot, snapshotErr := server.blackboardV2.RuntimeSnapshot(request.Context(), found.ProjectID)
+			if snapshotErr != nil {
+				writeError(response, http.StatusConflict, "Blackboard conclusion retry cannot resolve the current Blackboard revision")
+				return
+			}
+			replacementContinuationID, replacementSessionID = active.ID, session.SessionID()
+			replacementBaseRevision = snapshot.Revision
+		}
+	}
+	retried, won, err := server.tasks.RetryLatestBlackboardConclusionForRuntime(
+		taskID, idempotencyKey, replacementContinuationID, replacementSessionID, replacementBaseRevision, time.Now().UTC(),
+	)
 	if err != nil {
 		if errors.Is(err, task.ErrBlackboardConclusionRetryCooldown) {
 			writeError(response, http.StatusConflict, "Blackboard conclusion retry is not yet available")

@@ -845,7 +845,7 @@ func (s *Service) RetryBlackboardConclusion(obligationID, idempotencyKey string,
 	if err != nil {
 		return BlackboardConclusionReceipt{}, false, blackboardConclusionLookupError(err)
 	}
-	receipt, won, err := retryBlackboardConclusionTx(tx, obligation, idempotencyKey, now)
+	receipt, won, err := retryBlackboardConclusionTx(tx, obligation, idempotencyKey, "", "", -1, now)
 	if err != nil || !won {
 		return receipt, won, err
 	}
@@ -858,8 +858,21 @@ func (s *Service) RetryBlackboardConclusion(obligationID, idempotencyKey string,
 // RetryLatestBlackboardConclusion atomically applies a Task-scoped operator
 // retry key to the latest durable conclusion obligation.
 func (s *Service) RetryLatestBlackboardConclusion(taskID, idempotencyKey string, now time.Time) (BlackboardConclusionReceipt, bool, error) {
+	return s.RetryLatestBlackboardConclusionForRuntime(taskID, idempotencyKey, "", "", -1, now)
+}
+
+// RetryLatestBlackboardConclusionForRuntime applies one Task-scoped operator
+// retry and, when the daemon has proven a live replacement Runtime, binds the
+// NEW retry dispatch to that replacement Continuation + session. The prior
+// dispatch remains immutable history. A replacement binding is accepted only
+// for dispatch_failed recovery and only when storage confirms that the
+// Continuation is active, belongs to this Task, and carries the same native
+// session identity.
+func (s *Service) RetryLatestBlackboardConclusionForRuntime(taskID, idempotencyKey, continuationID, sessionID string, baseRevision int, now time.Time) (BlackboardConclusionReceipt, bool, error) {
 	taskID, idempotencyKey = strings.TrimSpace(taskID), strings.TrimSpace(idempotencyKey)
-	if taskID == "" || idempotencyKey == "" {
+	continuationID, sessionID = strings.TrimSpace(continuationID), strings.TrimSpace(sessionID)
+	if taskID == "" || idempotencyKey == "" || (continuationID == "") != (sessionID == "") ||
+		(continuationID == "" && baseRevision != -1) || (continuationID != "" && baseRevision < 0) {
 		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
 	}
 	now = now.UTC()
@@ -873,7 +886,24 @@ func (s *Service) RetryLatestBlackboardConclusion(taskID, idempotencyKey string,
 	if err != nil {
 		return BlackboardConclusionReceipt{}, false, blackboardConclusionLookupError(err)
 	}
-	receipt, won, err := retryBlackboardConclusionTx(tx, obligation, idempotencyKey, now)
+	if continuationID != "" {
+		var activeContinuationID, continuationStatus, nativeSessionID string
+		if err := tx.QueryRow(`SELECT id,status,native_session_id FROM task_continuations
+			WHERE task_id=? AND status IN (?,?,?) ORDER BY number DESC LIMIT 1`, taskID,
+			string(StatusPending), string(StatusRunning), string(StatusPaused)).
+			Scan(&activeContinuationID, &continuationStatus, &nativeSessionID); err != nil {
+			return BlackboardConclusionReceipt{}, false, blackboardConclusionLookupError(err)
+		}
+		if activeContinuationID != continuationID || strings.TrimSpace(nativeSessionID) != sessionID {
+			return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
+		}
+		switch Status(continuationStatus) {
+		case StatusPending, StatusRunning, StatusPaused:
+		default:
+			return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
+		}
+	}
+	receipt, won, err := retryBlackboardConclusionTx(tx, obligation, idempotencyKey, continuationID, sessionID, baseRevision, now)
 	if err != nil || !won {
 		return receipt, won, err
 	}
@@ -883,7 +913,7 @@ func (s *Service) RetryLatestBlackboardConclusion(taskID, idempotencyKey string,
 	return receipt, true, nil
 }
 
-func retryBlackboardConclusionTx(tx *sql.Tx, obligation PendingBlackboardConclusion, idempotencyKey string, now time.Time) (BlackboardConclusionReceipt, bool, error) {
+func retryBlackboardConclusionTx(tx *sql.Tx, obligation PendingBlackboardConclusion, idempotencyKey, replacementContinuationID, replacementSessionID string, replacementBaseRevision int, now time.Time) (BlackboardConclusionReceipt, bool, error) {
 	var priorObligationID string
 	err := tx.QueryRow(`SELECT receipt_id FROM assisted_conclusion_retry_keys
 		WHERE task_id=? AND idempotency_key=?`, obligation.TaskID, idempotencyKey).Scan(&priorObligationID)
@@ -900,6 +930,9 @@ func retryBlackboardConclusionTx(tx *sql.Tx, obligation PendingBlackboardConclus
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return BlackboardConclusionReceipt{}, false, fmt.Errorf("read Blackboard conclusion retry idempotency history: %w", err)
+	}
+	if replacementContinuationID != "" && obligation.RecoveryReason != ConclusionRecoveryDispatchFailed {
+		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
 	}
 	switch owner.ConclusionRetryDecisionFor(obligation.State, obligation.ErrorCode, obligation.RecoveryReason, obligation.NextEligibleAt, now) {
 	case owner.ConclusionRetryInvalidState:
@@ -925,6 +958,49 @@ func retryBlackboardConclusionTx(tx *sql.Tx, obligation PendingBlackboardConclus
 	}
 	retryNumber := obligation.ExplicitRetryCount + 1
 	if dispatch == nil {
+		if replacementContinuationID != "" {
+			requestID := blackboardConclusionAttemptRequestID("retry", replacementContinuationID, obligation.SourceTurnID, retryNumber, idempotencyKey)
+			_, applyKey := blackboardConclusionRequestLineage(obligation.SourceContinuationID, obligation.SourceTurnID)
+			nowDispatch := ConclusionDispatch{
+				ID: newID(), ObligationID: obligation.ID, Kind: ConclusionDispatchKindRetry,
+				ContinuationID: replacementContinuationID, SourceSessionID: replacementSessionID,
+				DispatchRequestID: requestID, BaseRevision: intPointer(replacementBaseRevision),
+				DeliveryState: ConclusionDispatchRequested, CreatedAt: now, UpdatedAt: now,
+			}
+			if _, err := tx.Exec(`INSERT INTO conclusion_dispatches
+				(id,obligation_id,kind,continuation_id,source_session_id,dispatch_request_id,base_revision,delivery_state,created_at,updated_at)
+				VALUES (?,?,?,?,?,?,?,?,?,?)`, nowDispatch.ID, nowDispatch.ObligationID, string(nowDispatch.Kind), nowDispatch.ContinuationID,
+				nowDispatch.SourceSessionID, nowDispatch.DispatchRequestID, replacementBaseRevision, string(nowDispatch.DeliveryState),
+				now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+				return BlackboardConclusionReceipt{}, false, fmt.Errorf("store replacement retry Conclusion Dispatch: %w", err)
+			}
+			obligation.State = BlackboardConclusionReceiptDispatchRequested
+			obligation.ExplicitRetryCount++
+			obligation.OperatorRetryKey = idempotencyKey
+			obligation.ApplyIdempotencyKey = applyKey
+			obligation.BaseRevision = intPointer(replacementBaseRevision)
+			obligation.AutomaticTurnCount++
+			obligation.ErrorCode = ""
+			obligation.RecoveryReason = ""
+			obligation.NextEligibleAt = nil
+			obligation.UpdatedAt = now
+			if err := updateObligationProtocolTx(tx, obligation); err != nil {
+				return BlackboardConclusionReceipt{}, false, err
+			}
+			if _, err := tx.Exec(`INSERT INTO assisted_conclusion_retry_keys
+				(task_id,receipt_id,idempotency_key,dispatch_request_id,created_at) VALUES (?,?,?,?,?)`,
+				obligation.TaskID, obligation.ID, idempotencyKey, requestID, now.Format(time.RFC3339Nano)); err != nil {
+				return BlackboardConclusionReceipt{}, false, fmt.Errorf("store replacement Blackboard conclusion retry history: %w", err)
+			}
+			view := blackboardConclusionReceiptFromObligationDispatch(&nowDispatch, obligation)
+			if err := appendBlackboardConclusionEventTx(tx, view, EventPayload{
+				"phase": "retry_requested", "receipt_id": obligation.ID, "request_id": requestID,
+				"explicit_retry_count": obligation.ExplicitRetryCount, "turn_kind": "control",
+			}, now); err != nil {
+				return BlackboardConclusionReceipt{}, false, err
+			}
+			return view, true, nil
+		}
 		// Never-dispatched obligation: re-arm to pending so the initial claim
 		// runs on the live runtime. The retry history records the deterministic
 		// initial request lineage.
@@ -951,11 +1027,18 @@ func retryBlackboardConclusionTx(tx *sql.Tx, obligation PendingBlackboardConclus
 		}
 		return obligationView(obligation), true, nil
 	}
-	requestID := blackboardConclusionAttemptRequestID("retry", dispatch.ContinuationID, obligation.SourceTurnID, retryNumber, idempotencyKey)
+	dispatchContinuationID, dispatchSessionID := dispatch.ContinuationID, dispatch.SourceSessionID
+	dispatchBaseRevision := dispatch.BaseRevision
+	if replacementContinuationID != "" {
+		dispatchContinuationID = replacementContinuationID
+		dispatchSessionID = replacementSessionID
+		dispatchBaseRevision = intPointer(replacementBaseRevision)
+	}
+	requestID := blackboardConclusionAttemptRequestID("retry", dispatchContinuationID, obligation.SourceTurnID, retryNumber, idempotencyKey)
 	nowDispatch := ConclusionDispatch{
 		ID: newID(), ObligationID: obligation.ID, Kind: ConclusionDispatchKindRetry,
-		ContinuationID: dispatch.ContinuationID, SourceSessionID: dispatch.SourceSessionID,
-		DispatchRequestID: requestID, BaseRevision: dispatch.BaseRevision,
+		ContinuationID: dispatchContinuationID, SourceSessionID: dispatchSessionID,
+		DispatchRequestID: requestID, BaseRevision: dispatchBaseRevision,
 		DeliveryState: ConclusionDispatchRequested, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := supersedeActiveDispatchTx(tx, dispatch, "superseded_by_retry", now); err != nil {
@@ -971,7 +1054,9 @@ func retryBlackboardConclusionTx(tx *sql.Tx, obligation PendingBlackboardConclus
 	obligation.State = BlackboardConclusionReceiptDispatchRequested
 	obligation.ExplicitRetryCount++
 	obligation.OperatorRetryKey = idempotencyKey
+	obligation.BaseRevision = dispatchBaseRevision
 	obligation.ErrorCode = ""
+	obligation.RecoveryReason = ""
 	obligation.NextEligibleAt = nil
 	// The operator retry starts a fresh generation: the previous validated
 	// result and its bounded rejection detail are no longer current.

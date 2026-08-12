@@ -648,6 +648,26 @@ _Avoid_: Task, command, tool call, raw output
 An external system that issues challenge Attempts and accepts candidate submissions or abandonment through a platform-specific **Platform Adapter**.
 _Avoid_: Project, Scope authority, Runtime Extension
 
+**TSecBench Hosted Image**:
+A separate, self-starting distribution of the **Pentest Agent** for one TSecBench hosted evaluation. It preserves the Pentest Agent's Project, Task, Runtime, Skill, Blackboard, and policy semantics without becoming a normal product mode.
+_Avoid_: CyberPenda deployment mode, replacement application image, specialized competition agent
+
+**Hosted Evaluation Run**:
+One automatic, container-bounded execution of the **TSecBench Hosted Image** from configuration validation through all eligible challenge work and final exit.
+_Avoid_: Project, Task, interactive session
+
+**Hosted Evaluation Result**:
+The score and completion state recorded by TSecBench for one **Hosted Evaluation Run**. Internal Project, Blackboard, and Evidence data support execution and diagnosis but are not part of this formal result.
+_Avoid_: CyberPenda report, container database, runtime log
+
+**Benchmark Challenge**:
+One independently started and answered item within a Challenge Platform evaluation set. Multiple Benchmark Challenges may be handled inside one CTF Challenge Project and one Task when the Runtime owns the full evaluation loop.
+_Avoid_: Project, Task, Hosted Evaluation Run
+
+**Hosted Controller**:
+The TSecBench-specific bootstrap process that validates hosted configuration, starts the daemon, creates one CTF Challenge Project and one CTF Challenge Task, waits for that Task, emits a non-sensitive summary, and exits. It does not list, schedule, solve, submit, or close Benchmark Challenges.
+_Avoid_: Runtime, Challenge Workflow, challenge scheduler
+
 **Platform Adapter**:
 An implementation behind the internal Challenge Platform seam that maps claim, submit, abandon, and recovery operations to one external platform. Production and in-memory test Adapters satisfy the same interface.
 _Avoid_: generic fetcher, Project Interface, Skill
@@ -655,6 +675,10 @@ _Avoid_: generic fetcher, Project Interface, Skill
 **Challenge Workflow**:
 The deep module whose small interface claims, submits, abandons, and finalizes challenge Attempts while owning stable identity, Task Policy enforcement, Platform Adapter calls, Evidence retention, Blackboard settlement, and recovery.
 _Avoid_: raw platform client, prompt procedure, collection of Blackboard tool calls
+
+**Runtime-Managed Challenge Execution**:
+A challenge execution path in which the Runtime obtains challenge information and submits candidate answers through a platform interface available inside its execution boundary. It does not depend on the optional **Challenge Workflow** control surface.
+_Avoid_: Challenge Workflow, operator-managed submission, hosted controller solving
 
 **Challenge Operation**:
 A durable idempotent claim, submit, abandon, or finalize request owned by one Task and one external Attempt. It moves through `pending` and `recording` to `completed`. If automatic daemon-restart recovery fails, it settles as `action_required` and is not retried automatically.
@@ -1449,3 +1473,12 @@ _Avoid_: transcript, export, source of truth
 - Runtime Extension compatibility is not authorization; resolved: Preflight validates **Runtime Extension Requirements**, while Project Kind and Scope remain explicit operator-owned state.
 - Challenge execution is not a loose sequence of platform and Blackboard tool calls; resolved: the **Challenge Workflow** owns claim, submit, abandon, finalize, Evidence retention, and restart-safe settlement behind one small interface.
 - Task completion readiness is not the latest Blackboard conclusion label; resolved: **Finish Readiness** aggregates every current Finish Blocker and Task Finish enforces that projection.
+- TSecBench hosted evaluation is not a new CyberPenda product mode or a specialized competition Agent; resolved: the **TSecBench Hosted Image** preserves normal Pentest Agent semantics while keeping all normal product behavior unchanged.
+- A **Hosted Evaluation Run** is not interactive or externally started after container launch; resolved: it validates its environment, performs the complete eligible evaluation, and exits automatically.
+- Hosted model selection is not fixed at build time or discovered opportunistically; resolved: select one of a small set of verified model configurations through runtime environment values and fail before challenge work when it is invalid.
+- Hosted integration code is not forbidden from extending shared packages; resolved: shared additive interfaces are allowed when regression tests prove that existing product entrypoints and default behavior remain unchanged.
+- A container-local Project, Blackboard, Evidence set, database, or report is not the formal **Hosted Evaluation Result**; resolved: TSecBench owns the formal score and completion state.
+- The **Challenge Workflow** is not the mandatory challenge execution path; resolved: existing Runtime agents perform **Runtime-Managed Challenge Execution**, and the **TSecBench Hosted Image** will not enhance or depend on Challenge Workflow.
+- A TSecBench **Benchmark Challenge** is not mapped to its own Project or Task; resolved: one **Hosted Evaluation Run** uses one CTF Challenge Project and one CTF Challenge Task whose Runtime owns the complete evaluation loop.
+- The **Hosted Controller** is not a challenge orchestrator; resolved: it owns bootstrap, Task observation, summary, and process exit while the Runtime directly uses `BENCHMARK_BASE_URL` and `BENCHMARK_TOKEN` for challenge operations.
+- TSecBench integration knowledge is not embedded as one oversized Task Goal or a new MCP server; resolved: the **TSecBench Hosted Image** supplies a hosted-only TSecBench Skill and the Task Goal requires its use.
