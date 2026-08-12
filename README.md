@@ -18,10 +18,6 @@ Project data through a read-only API adapter. It does not run `pentestd`, a
 Runtime, Docker or Podman, or security-testing tools. Run Controls and data
 changes are disabled.
 
-The current deployment uses the free [Vercel Hobby plan](https://vercel.com/docs/plans/hobby).
-Hobby is for non-commercial, personal use and has usage limits. This demo uses
-static hosting and does not use Vercel Functions or a hosted database.
-
 ## Architecture
 
 | Component | Role |
