@@ -3,8 +3,24 @@ import { apiGet } from "./api";
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   window.sessionStorage.clear();
   window.history.replaceState(null, "", "/");
+});
+
+describe("demo API", () => {
+  it("loads the sample Project through the normal API client without a daemon", async () => {
+    vi.stubEnv("VITE_DEMO_MODE", "true");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await apiGet<{ projects: Array<{ id: string; name: string }> }>("/api/projects");
+
+    expect(result.projects).toEqual([
+      expect.objectContaining({ id: "demo-project", name: "Acme External" }),
+    ]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("api client auth", () => {
