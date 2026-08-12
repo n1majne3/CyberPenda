@@ -82,6 +82,7 @@ jobs:
           docker run --rm --network host \
             --entrypoint /acceptance/hostedcontroller.test \
             -e CYBERPENDA_REQUIRE_REAL_PI_ACCEPTANCE=1 \
+            -e CYBERPENDA_REAL_PI_ACCEPTANCE_BRIDGE=/usr/local/bin/pentest-provider-bridge \
             -v "${GITHUB_WORKSPACE}:/src:ro" \
             -v "${GITHUB_WORKSPACE}/dist/tsecbench-hosted-acceptance:/acceptance:ro" \
             -w /src \

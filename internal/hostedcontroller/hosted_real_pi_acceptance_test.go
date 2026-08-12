@@ -236,6 +236,12 @@ func (fixture *realPiHostedAcceptanceFixture) stop(t *testing.T) {
 
 func buildRealPiAcceptanceBridge(t *testing.T) string {
 	t.Helper()
+	if bridge := strings.TrimSpace(os.Getenv("CYBERPENDA_REAL_PI_ACCEPTANCE_BRIDGE")); bridge != "" {
+		if info, err := os.Stat(bridge); err != nil || info.IsDir() {
+			t.Fatalf("real Pi acceptance bridge %q is unavailable", bridge)
+		}
+		return bridge
+	}
 	repository := acceptanceRepositoryRoot(t)
 	bridge := filepath.Join(t.TempDir(), "pentest-provider-bridge")
 	command := exec.Command("go", "build", "-o", bridge, "./cmd/pentest-provider-bridge")

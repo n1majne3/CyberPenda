@@ -37,6 +37,7 @@ func TestTSecBenchHostedWorkflowBuildsAndUploadsTheAMD64Bundle(t *testing.T) {
 		"CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test -c",
 		"--network host",
 		"CYBERPENDA_REQUIRE_REAL_PI_ACCEPTANCE=1",
+		"CYBERPENDA_REAL_PI_ACCEPTANCE_BRIDGE=/usr/local/bin/pentest-provider-bridge",
 		"TestHostedAcceptanceConfigurationRunsTheRealPiRuntimeWithTheProjectedSkill",
 		`scripts/build-tsecbench-hosted-bundle.sh "${BUNDLE_VERSION}" "${TSECBENCH_HOSTED_IMAGE}" dist/tsecbench-hosted`,
 		`test "${archive_bytes}" -lt 3000000000`,
