@@ -101,6 +101,9 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 		"iproute2",
 		"iputils-ping",
 		"openssh-client",
+		"openssl",
+		"ARG RUNTIME_RELEASE_CACHE_BUST",
+		`test -n "${RUNTIME_RELEASE_CACHE_BUST}"`,
 	} {
 		assertContains(t, dockerfile, required)
 	}
@@ -109,7 +112,7 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 		"pi", "codex", "claude", "bash", "git", "curl", "jq", "rg",
 		"python3", "go", "gcc", "g++", "make", "gdb", "radare2", "strace",
 		"ltrace", "patchelf", "checksec", "nmap", "nc", "socat", "dig", "ip",
-		"ss", "ping", "ssh", "chromium", "agent-browser",
+		"ss", "ping", "ssh", "openssl", "chromium", "agent-browser",
 		"pentest-provider-bridge", "pentest-claude-sdk-bridge", "pentest-tsecbench-hosted",
 	} {
 		assertContains(t, dockerfile, `command -v `+executable)
@@ -160,7 +163,7 @@ func TestTSecBenchHostedImageSmokeWhenAnImageIsConfigured(t *testing.T) {
 
 	smoke := `set -eu
 test "$(id -u)" = 0
-for command in pi codex claude bash git curl jq rg python3 go gcc g++ make gdb radare2 strace ltrace patchelf checksec nmap nc socat dig ip ss ping ssh chromium agent-browser pentest-provider-bridge pentest-claude-sdk-bridge pentest-tsecbench-hosted; do
+	for command in pi codex claude bash git curl jq rg python3 go gcc g++ make gdb radare2 strace ltrace patchelf checksec nmap nc socat dig ip ss ping ssh openssl chromium agent-browser pentest-provider-bridge pentest-claude-sdk-bridge pentest-tsecbench-hosted; do
   command -v "$command" >/dev/null
 done
 python3 -c 'import pwn'

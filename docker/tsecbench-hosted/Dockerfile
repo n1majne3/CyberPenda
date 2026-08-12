@@ -43,7 +43,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     bash dash zsh coreutils findutils grep sed gawk procps \
     python3 python3-pip python3-venv \
     golang-go build-essential gdb radare2 strace ltrace patchelf checksec \
-    nmap netcat-openbsd socat dnsutils iproute2 iputils-ping openssh-client \
+    nmap netcat-openbsd socat dnsutils iproute2 iputils-ping openssh-client openssl \
     nodejs npm chromium \
     libnss3 libnspr4 libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
     libdrm2 libatspi2.0-0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
@@ -53,8 +53,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 # Runtime CLIs intentionally resolve current releases when the image is built.
 # The exact resolved versions are captured below for the delivery inventory.
+ARG RUNTIME_RELEASE_CACHE_BUST=local
 RUN --mount=type=cache,target=/root/.npm \
-    npm install -g \
+    test -n "${RUNTIME_RELEASE_CACHE_BUST}" \
+  && npm install -g \
       @earendil-works/pi-coding-agent@latest \
       @openai/codex@latest \
       @anthropic-ai/claude-code@latest \
@@ -112,6 +114,7 @@ RUN mkdir -p /root/.agent-browser /opt/cyberpenda /data \
   && command -v ss \
   && command -v ping \
   && command -v ssh \
+  && command -v openssl \
   && command -v chromium \
   && command -v agent-browser \
   && command -v pentest-provider-bridge \

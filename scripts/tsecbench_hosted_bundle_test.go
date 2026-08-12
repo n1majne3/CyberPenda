@@ -59,7 +59,7 @@ func TestTSecBenchHostedBundleExportsAndVerifiesUploadArchive(t *testing.T) {
 		t.Fatalf("checksum cannot be verified: %v: %s", err, result)
 	}
 	components, _ := os.ReadFile(filepath.Join(bundle, "COMPONENTS.txt"))
-	for _, want := range []string{"cyberpenda-hosted-runtime-versions/v1", `"pi"`, `"codex"`, `"claude_code"`, `"claude_agent_sdk"`, `"@anthropic-ai/claude-agent-sdk"`, "python3=", "chromium="} {
+	for _, want := range []string{"cyberpenda-hosted-runtime-versions/v1", `"pi"`, `"codex"`, `"claude_code"`, `"claude_agent_sdk"`, `"@anthropic-ai/claude-agent-sdk"`, "python3=", "openssl=", "chromium="} {
 		if !strings.Contains(string(components), want) {
 			t.Fatalf("component inventory missing %q:\n%s", want, components)
 		}
@@ -80,6 +80,7 @@ func TestTSecBenchHostedBundleExportsAndVerifiesUploadArchive(t *testing.T) {
 			"README.md": {
 				".tsecbench.gw", "openai_chat_completions", "openai_responses", "anthropic_messages",
 				"does not start a VPN", "no public Internet", "formal score", "--env-file",
+				"Before you upload", "successful Local Mode validation",
 			},
 			"TROUBLESHOOTING.md": {
 				"Bootstrap validation", "Runtime and protocol mismatch", "Runtime fails", "Challenge Platform API",
@@ -195,7 +196,7 @@ case "${1:-} ${2:-}" in
 		printf '%s\n' '{"schema":"cyberpenda-hosted-runtime-versions/v1","runtimes":{"pi":{"package":"pi","version":"1","binary":"pi"},"codex":{"package":"codex","version":"2","binary":"codex"},"claude_code":{"package":"claude","version":"3","binary":"claude"}},"components":{"claude_agent_sdk":{"package":"@anthropic-ai/claude-agent-sdk","version":"0.3.220"}}}'
       fi
     else
-      printf '%s\n' 'kali=rolling' 'python3=3.13' 'go=1.25' 'gcc=14' 'gdb=16' 'binutils=2.45' 'nmap=7.95' 'chromium=140' 'agent_browser=0.1' 'pwntools=4.14'
+      printf '%s\n' 'kali=rolling' 'python3=3.13' 'go=1.25' 'gcc=14' 'gdb=16' 'binutils=2.45' 'nmap=7.95' 'openssl=3.5' 'chromium=140' 'agent_browser=0.1' 'pwntools=4.14'
     fi
     ;;
   save\ *)

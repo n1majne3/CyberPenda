@@ -359,6 +359,9 @@ func newHostedSkillTestServer(t *testing.T, handler http.Handler) *httptest.Serv
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) {
+			if os.Getenv("CYBERPENDA_REQUIRE_REAL_PI_ACCEPTANCE") == "1" {
+				t.Fatalf("real Pi acceptance requires the loopback fake-platform listener: %v", err)
+			}
 			t.Skipf("sandbox does not permit the loopback fake-platform listener: %v", err)
 		}
 		t.Fatalf("listen for fake TSecBench platform: %v", err)

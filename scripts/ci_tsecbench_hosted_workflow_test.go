@@ -30,6 +30,8 @@ func TestTSecBenchHostedWorkflowBuildsAndUploadsTheAMD64Bundle(t *testing.T) {
 		"platforms: linux/amd64",
 		"load: true",
 		"tags: cyberpenda-tsecbench-hosted:ci",
+		"build-args:",
+		"RUNTIME_RELEASE_CACHE_BUST=${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}",
 		"make smoke-tsecbench-hosted-image",
 		"Run real Pi Hosted acceptance inside the image",
 		"CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test -c",

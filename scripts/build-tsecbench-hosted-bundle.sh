@@ -121,6 +121,7 @@ printf "gcc="; first_line gcc --version
 printf "gdb="; first_line gdb --version
 printf "binutils="; first_line ld --version
 printf "nmap="; first_line nmap --version
+printf "openssl="; first_line openssl version
 printf "chromium="; first_line chromium --version
 printf "agent_browser="; first_line agent-browser --version
 printf "pwntools="; python3 -c "import pwnlib; print(getattr(pwnlib, \"__version__\", \"installed\"))"
@@ -128,7 +129,7 @@ printf "pwntools="; python3 -c "import pwnlib; print(getattr(pwnlib, \"__version
   echo "failed to read tool inventory" >&2
   exit 1
 fi
-for component in kali python3 go gcc gdb binutils nmap chromium agent_browser pwntools; do
+for component in kali python3 go gcc gdb binutils nmap openssl chromium agent_browser pwntools; do
   if ! grep -Eq "^${component}=.+" "${tool_inventory}"; then
     echo "component inventory is missing ${component}" >&2
     exit 1

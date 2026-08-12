@@ -62,7 +62,11 @@ Run the `Build TSecBench Hosted Bundle` GitHub Actions workflow. Enter a Bundle
 version such as `v1`. The native `ubuntu-latest` AMD64 runner builds the image,
 runs its no-capability smoke test, exports the complete Bundle, verifies its
 checksum and compressed size, and uploads one workflow artifact. Download that
-artifact and upload its `.tar.gz` Docker archive to the TSecBench page.
+artifact. Before you upload it, use that same image and complete one
+successful Local Mode validation while the host is connected to the TSecBench VPN. Then
+upload its `.tar.gz` Docker archive to the TSecBench page. The GitHub Actions
+workflow cannot do this VPN-backed validation because it has no TSecBench
+credential or VPN access.
 
 Pull requests that change Hosted Image inputs also run this workflow. These
 builds use `pr-<commit>` as the Bundle version. The workflow does not use a

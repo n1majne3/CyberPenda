@@ -47,6 +47,9 @@ func TestHostedAcceptanceConfigurationRunsTheRealPiRuntimeWithTheProjectedSkill(
 	if result.correctFlagCount != 2 {
 		t.Fatalf("real Pi Runtime correct flag count = %d, want 2", result.correctFlagCount)
 	}
+	if !result.runtimeTurnSettled {
+		t.Fatal("real Pi Runtime result returned before the Task reported a live idle turn and retained the final assistant message")
+	}
 	if run.ProjectID == "" || run.TaskID == "" {
 		t.Fatalf("real Hosted Controller run reference = %#v", run)
 	}
@@ -61,10 +64,11 @@ type realPiHostedAcceptanceFixture struct {
 }
 
 type realPiHostedAcceptanceResult struct {
-	hostedSkillRead  bool
-	modelCalled      bool
-	platformRequests []string
-	correctFlagCount int
+	hostedSkillRead    bool
+	modelCalled        bool
+	platformRequests   []string
+	correctFlagCount   int
+	runtimeTurnSettled bool
 }
 
 func newRealPiHostedAcceptanceFixture(t *testing.T) *realPiHostedAcceptanceFixture {
@@ -151,10 +155,14 @@ func (fixture *realPiHostedAcceptanceFixture) await(t *testing.T) realPiHostedAc
 		calls, read, finished := fixture.model.state()
 		requests := fixture.platform.requestsCopy()
 		correct := fixture.platform.correctCount()
+		settled := false
 		if finished && len(requests) == 6 && correct == 2 {
+			settled = fixture.runtimeTurnSettled(t)
+		}
+		if settled {
 			return realPiHostedAcceptanceResult{
 				hostedSkillRead: read, modelCalled: calls > 0,
-				platformRequests: requests, correctFlagCount: correct,
+				platformRequests: requests, correctFlagCount: correct, runtimeTurnSettled: true,
 			}
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -162,6 +170,47 @@ func (fixture *realPiHostedAcceptanceFixture) await(t *testing.T) realPiHostedAc
 	calls, read, _ := fixture.model.state()
 	t.Fatalf("timed out waiting for real Pi Runtime: model_calls=%d skill_read=%v requests=%#v last_model_request=%s", calls, read, fixture.platform.requestsCopy(), fixture.model.lastRequestText())
 	return realPiHostedAcceptanceResult{}
+}
+
+func (fixture *realPiHostedAcceptanceFixture) runtimeTurnSettled(t *testing.T) bool {
+	t.Helper()
+	taskResponse := httptest.NewRecorder()
+	taskPath := "/api/projects/" + fixture.run.ProjectID + "/tasks/" + fixture.run.TaskID
+	fixture.server.ServeHTTP(taskResponse, httptest.NewRequest(http.MethodGet, taskPath, nil))
+	if taskResponse.Code != http.StatusOK {
+		return false
+	}
+	var taskState struct {
+		RuntimeActivity struct {
+			Liveness     string `json:"liveness"`
+			TurnActivity string `json:"turn_activity"`
+		} `json:"runtime_activity"`
+	}
+	if json.Unmarshal(taskResponse.Body.Bytes(), &taskState) != nil ||
+		taskState.RuntimeActivity.Liveness != "live" || taskState.RuntimeActivity.TurnActivity != "idle" {
+		return false
+	}
+
+	transcriptResponse := httptest.NewRecorder()
+	fixture.server.ServeHTTP(transcriptResponse, httptest.NewRequest(http.MethodGet, taskPath+"/transcript", nil))
+	if transcriptResponse.Code != http.StatusOK {
+		return false
+	}
+	var page struct {
+		Entries []struct {
+			Role string `json:"role"`
+			Text string `json:"text"`
+		} `json:"entries"`
+	}
+	if json.Unmarshal(transcriptResponse.Body.Bytes(), &page) != nil {
+		return false
+	}
+	for _, entry := range page.Entries {
+		if entry.Role == "assistant" && strings.Contains(entry.Text, "all challenge flags complete") {
+			return true
+		}
+	}
+	return false
 }
 
 func (fixture *realPiHostedAcceptanceFixture) stop(t *testing.T) {
