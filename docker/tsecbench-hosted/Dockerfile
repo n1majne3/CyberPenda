@@ -67,6 +67,8 @@ RUN printf '%s\n' '#!/bin/sh' 'exec node /opt/pentest/claude-sdk-bridge/main.mjs
 
 COPY --from=go-build /out/pentest-tsecbench-hosted /usr/local/bin/pentest-tsecbench-hosted
 COPY --from=go-build /out/pentest-provider-bridge /usr/local/bin/pentest-provider-bridge
+COPY docker/tsecbench-hosted/tsecbench-local-validate.py /usr/local/bin/tsecbench-local-validate
+RUN chmod 0755 /usr/local/bin/tsecbench-local-validate
 
 # Keep Chromium headless and use no runtime browser download.
 RUN mkdir -p /root/.agent-browser /opt/cyberpenda /data \
@@ -107,6 +109,7 @@ RUN mkdir -p /root/.agent-browser /opt/cyberpenda /data \
   && command -v pentest-provider-bridge \
   && command -v pentest-claude-sdk-bridge \
   && command -v pentest-tsecbench-hosted \
+  && command -v tsecbench-local-validate \
   && python3 -c 'import pwn'
 
 ENV CYBERPENDA_HOSTED_DATA_ROOT=/data \

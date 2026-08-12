@@ -1,4 +1,4 @@
-.PHONY: dev ensure-web-deps build build-ui ensure-embed-stub install-git-hooks build-sandbox-image build-sandbox-smoke-image build-tsecbench-hosted-image smoke-tsecbench-hosted-image tsecbench-hosted-runtime-inventory test test-ci test-backend smoke-sandbox-mcp smoke-runtime-tasks clean
+.PHONY: dev ensure-web-deps build build-ui ensure-embed-stub install-git-hooks build-sandbox-image build-sandbox-smoke-image build-tsecbench-hosted-image smoke-tsecbench-hosted-image tsecbench-hosted-runtime-inventory build-tsecbench-hosted-bundle test test-ci test-backend smoke-sandbox-mcp smoke-runtime-tasks clean
 
 # Run the daemon and the Vite dev server together for local development.
 # The Vite proxy forwards /api and /health to the daemon on :8787.
@@ -62,6 +62,12 @@ smoke-tsecbench-hosted-image:
 # Print the exact current Runtime versions stored in the built image.
 tsecbench-hosted-runtime-inventory:
 	docker run --rm --network none --entrypoint cat $(TSECBENCH_HOSTED_IMAGE) /opt/cyberpenda/runtime-versions.json
+
+# Export and verify the upload-ready TSecBench Hosted Delivery Bundle.
+# Usage: make build-tsecbench-hosted-bundle TSECBENCH_BUNDLE_VERSION=v1
+build-tsecbench-hosted-bundle:
+	@test -n "$(TSECBENCH_BUNDLE_VERSION)" || (echo "TSECBENCH_BUNDLE_VERSION is required" >&2; exit 2)
+	scripts/build-tsecbench-hosted-bundle.sh "$(TSECBENCH_BUNDLE_VERSION)" "$(TSECBENCH_HOSTED_IMAGE)"
 
 # Prove the configured sandbox image can reach daemon MCP and write a fact.
 smoke-sandbox-mcp:
