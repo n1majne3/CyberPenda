@@ -123,6 +123,64 @@ func TestHTTPAppWaitStreamsCompleteMaskedTranscriptAndFinalDrain(t *testing.T) {
 	}
 }
 
+func TestHTTPAppWaitStreamsEveryEntryOnceAcrossThreeBackwardPages(t *testing.T) {
+	createdAt := "2026-08-12T00:00:00Z"
+	var transcriptRequests []string
+	handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(request.URL.Path, "/transcript") {
+			transcriptRequests = append(transcriptRequests, request.URL.RawQuery)
+			switch request.URL.RawQuery {
+			case "":
+				writeStreamPage(t, response, 8, true,
+					streamEntry("entry-7", 7, "message", "assistant", "seven", createdAt),
+					streamEntry("entry-8", 8, "message", "assistant", "eight", createdAt))
+			case "before=7":
+				// BuildWindow includes the synthetic Task Goal on every
+				// backward page. More retained Event history still exists.
+				writeStreamPage(t, response, 8, true,
+					streamEntry("goal", 0, "message", "user", "goal", createdAt),
+					streamEntry("entry-4", 4, "message", "assistant", "four", createdAt),
+					streamEntry("entry-5", 5, "message", "assistant", "five", createdAt),
+					streamEntry("entry-6", 6, "message", "assistant", "six", createdAt))
+			case "before=4":
+				writeStreamPage(t, response, 8, false,
+					streamEntry("goal", 0, "message", "user", "goal", createdAt),
+					streamEntry("entry-1", 1, "message", "assistant", "one", createdAt),
+					streamEntry("entry-2", 2, "message", "assistant", "two", createdAt),
+					streamEntry("entry-3", 3, "message", "assistant", "three", createdAt))
+			case "after=8":
+				writeStreamPage(t, response, 8, false)
+			default:
+				t.Fatalf("unexpected transcript query %q", request.URL.RawQuery)
+			}
+			return
+		}
+		writeStreamJSON(t, response, map[string]any{"status": "failed"})
+	})
+
+	var stdout bytes.Buffer
+	err := newTranscriptHTTPApp(handler).Wait(context.Background(), hostedcontroller.HostedEvaluationReference{
+		ProjectID: "project-1", TaskID: "task-1",
+	}, &stdout, nil)
+	if err == nil || !strings.Contains(err.Error(), "hosted Runtime failed") {
+		t.Fatalf("Wait error = %v, want Runtime failure after Transcript drain", err)
+	}
+	entries := decodeStreamJSONL(t, stdout.Bytes())
+	wantIDs := []string{"goal", "entry-1", "entry-2", "entry-3", "entry-4", "entry-5", "entry-6", "entry-7", "entry-8"}
+	if len(entries) != len(wantIDs) {
+		t.Fatalf("JSONL entries = %d, want %d: %s", len(entries), len(wantIDs), stdout.String())
+	}
+	for index, want := range wantIDs {
+		if entries[index]["id"] != want {
+			t.Fatalf("entry %d id = %v, want %q", index, entries[index]["id"], want)
+		}
+	}
+	if got := strings.Join(transcriptRequests, ","); got != ",before=7,before=4,after=8,after=8" {
+		t.Fatalf("transcript requests = %q", got)
+	}
+}
+
 func TestHTTPAppWaitCommitsEmptyTranscriptCursorProgress(t *testing.T) {
 	var cursors []string
 	ctx, cancel := context.WithCancel(context.Background())

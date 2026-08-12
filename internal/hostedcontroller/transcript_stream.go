@@ -41,7 +41,7 @@ func (app *HTTPApp) streamInitialTranscript(ctx context.Context, run HostedEvalu
 		return 0, errorsInvalidTranscriptPage("initial cursor precedes a returned entry")
 	}
 	seen := transcriptEntryIDs(entries)
-	oldest := oldestTranscriptSeq(entries)
+	oldest := oldestTranscriptEventSeq(entries)
 	hasOlder := initial.HasOlder
 	for hasOlder {
 		if len(entries) == 0 || oldest <= 0 {
@@ -73,9 +73,12 @@ func (app *HTTPApp) streamInitialTranscript(ctx context.Context, run HostedEvalu
 			return 0, errorsInvalidTranscriptPage("older history contained only duplicate entries")
 		}
 		entries = append(older, entries...)
-		oldest = oldestTranscriptSeq(older)
+		oldest = oldestTranscriptEventSeq(older)
 		hasOlder = page.HasOlder
 	}
+	// The synthetic Task Goal has Seq 0 but can first appear on a later
+	// backward page. Restore global sequence order after all pages are joined.
+	sort.SliceStable(entries, func(i, j int) bool { return entries[i].Seq < entries[j].Seq })
 	if err := app.emitTranscriptEntries(ctx, run, output, masker, entries); err != nil {
 		return 0, err
 	}
@@ -187,13 +190,12 @@ func validateTranscriptOrder(entries []transcript.Entry, after int) error {
 	return nil
 }
 
-func oldestTranscriptSeq(entries []transcript.Entry) int {
-	if len(entries) == 0 {
-		return 0
-	}
-	oldest := entries[0].Seq
-	for _, entry := range entries[1:] {
-		if entry.Seq < oldest {
+func oldestTranscriptEventSeq(entries []transcript.Entry) int {
+	oldest := 0
+	for _, entry := range entries {
+		// BuildWindow repeats the synthetic Task Goal at Seq 0 on every
+		// page. Only retained Event sequences are valid backward cursors.
+		if entry.Seq > 0 && (oldest == 0 || entry.Seq < oldest) {
 			oldest = entry.Seq
 		}
 	}

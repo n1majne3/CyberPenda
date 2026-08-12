@@ -55,3 +55,15 @@ and cleanup behavior.
 
 `COMPONENTS.txt` records the exact Runtime and important tool versions resolved
 in this image build.
+
+## Build the Bundle
+
+Run the `Build TSecBench Hosted Bundle` GitHub Actions workflow. Enter a Bundle
+version such as `v1`. The native `ubuntu-latest` AMD64 runner builds the image,
+runs its no-capability smoke test, exports the complete Bundle, verifies its
+checksum and compressed size, and uploads one workflow artifact. Download that
+artifact and upload its `.tar.gz` Docker archive to the TSecBench page.
+
+Pull requests that change Hosted Image inputs also run this workflow. These
+builds use `pr-<commit>` as the Bundle version. The workflow does not use a
+TSecBench token, a model API key, or the TSecBench VPN.

@@ -792,14 +792,13 @@ func resolveMaterializedCredentials(profile runtimeprofile.Profile, req Projecti
 	if req.ModelSnapshot != nil && req.ModelSnapshot.APIKeyEnv != "" {
 		if value, ok := materializeModelProviderAPIKey(req); ok {
 			env[req.ModelSnapshot.APIKeyEnv] = value
-			return env, nil
+		} else {
+			value := strings.TrimSpace(os.Getenv(req.ModelSnapshot.APIKeyEnv))
+			if value == "" {
+				return nil, fmt.Errorf("model provider API key env %s is not configured", req.ModelSnapshot.APIKeyEnv)
+			}
+			env[req.ModelSnapshot.APIKeyEnv] = value
 		}
-		value := strings.TrimSpace(os.Getenv(req.ModelSnapshot.APIKeyEnv))
-		if value == "" {
-			return nil, fmt.Errorf("model provider API key env %s is not configured", req.ModelSnapshot.APIKeyEnv)
-		}
-		env[req.ModelSnapshot.APIKeyEnv] = value
-		return env, nil
 	}
 	inline := runtimeprofile.MaterializedAPIKeys(profile)
 	for key, value := range inline {

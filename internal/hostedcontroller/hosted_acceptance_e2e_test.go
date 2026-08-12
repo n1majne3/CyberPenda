@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -99,6 +100,7 @@ type hostedAcceptanceFixture struct {
 	server  *daemon.Server
 	app     *hostedcontroller.HTTPApp
 	starter *acceptedPiStarter
+	run     hostedcontroller.HostedEvaluationReference
 }
 
 func newHostedAcceptanceFixture(t *testing.T, platform *acceptedPlatform) *hostedAcceptanceFixture {
@@ -116,17 +118,23 @@ func newHostedAcceptanceFixture(t *testing.T, platform *acceptedPlatform) *hoste
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = server.Close() })
 	app := hostedcontroller.NewHTTPApp(hostedcontroller.HTTPAppConfig{
-		BaseURL: "http://accepted-daemon.test",
-		Client:  &http.Client{Transport: hostedSkillRoundTripper{handler: server}},
+		BaseURL:       "http://accepted-daemon.test",
+		Client:        &http.Client{Transport: hostedSkillRoundTripper{handler: server}},
 		RuntimeBinary: "/accepted/fake-pi",
 		PollPeriod:    time.Millisecond,
 	})
-	return &hostedAcceptanceFixture{server: server, app: app, starter: starter}
+	fixture := &hostedAcceptanceFixture{server: server, app: app, starter: starter}
+	t.Cleanup(func() {
+		fixture.stop(t)
+		if err := server.Close(); err != nil {
+			t.Errorf("close real hosted application graph: %v", err)
+		}
+	})
+	return fixture
 }
 
-func (fixture *hostedAcceptanceFixture) start(t *testing.T) hostedcontroller.RunRef {
+func (fixture *hostedAcceptanceFixture) start(t *testing.T) hostedcontroller.HostedEvaluationReference {
 	t.Helper()
 	config := hostedcontroller.Config{
 		BenchmarkBaseURL: "http://accepted-platform.test", BenchmarkToken: acceptedBenchmarkToken,
@@ -138,7 +146,30 @@ func (fixture *hostedAcceptanceFixture) start(t *testing.T) hostedcontroller.Run
 	if err != nil {
 		t.Fatalf("start real hosted application graph: %v", err)
 	}
+	fixture.run = run
 	return run
+}
+
+func (fixture *hostedAcceptanceFixture) stop(t *testing.T) {
+	t.Helper()
+	if fixture.run.ProjectID == "" || fixture.run.TaskID == "" {
+		return
+	}
+	path := "/api/projects/" + fixture.run.ProjectID + "/tasks/" + fixture.run.TaskID + "/stop"
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		request := httptest.NewRequest(http.MethodPost, path, nil)
+		response := httptest.NewRecorder()
+		fixture.server.ServeHTTP(response, request)
+		if response.Code == http.StatusOK || response.Code == http.StatusAccepted {
+			return
+		}
+		if response.Code != http.StatusConflict || time.Now().After(deadline) {
+			t.Errorf("stop real hosted Task: status=%d body=%s", response.Code, response.Body.String())
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func (fixture *hostedAcceptanceFixture) await(t *testing.T) acceptedPiResult {
@@ -199,32 +230,6 @@ func (starter *acceptedPiStarter) serve(spec runtime.HostProcessSpec, input io.R
 		result.hostedSkillProjected = bytes.Contains(instruction, []byte("/openapi/v1/challenges"))
 	}
 
-	modelsRaw, err := os.ReadFile(filepath.Join(spec.Env["PI_CODING_AGENT_DIR"], "models.json"))
-	if err != nil {
-		result.err = fmt.Errorf("read real Pi model projection: %w", err)
-		return
-	}
-	var models struct {
-		Providers map[string]struct {
-			BaseURL string `json:"baseUrl"`
-			API     string `json:"api"`
-			APIKey  string `json:"apiKey"`
-		} `json:"providers"`
-	}
-	if err := json.Unmarshal(modelsRaw, &models); err != nil || len(models.Providers) != 1 {
-		result.err = fmt.Errorf("decode real Pi model projection")
-		return
-	}
-	var projected struct {
-		BaseURL string
-		API     string
-		APIKey  string
-	}
-	for _, provider := range models.Providers {
-		projected.BaseURL, projected.API, projected.APIKey = provider.BaseURL, provider.API, provider.APIKey
-	}
-	result.modelAPI = projected.API
-
 	scanner := bufio.NewScanner(input)
 	for scanner.Scan() {
 		var request runtime.SandboxBridgeRequest
@@ -239,9 +244,60 @@ func (starter *acceptedPiStarter) serve(spec runtime.HostProcessSpec, input io.R
 			responseResult = map[string]any{"session_id": "accepted-pi-session", "turn_id": request.ID, "status": "started"}
 		}
 		writeAcceptedRPCResponse(output, request.ID, responseResult)
+		if request.Method == "pi/get_state" {
+			continue
+		}
 		if request.Method != "pi/prompt" {
 			continue
 		}
+		agentDir := spec.Env["PI_CODING_AGENT_DIR"]
+		if !filepath.IsAbs(agentDir) {
+			agentDir = filepath.Clean(filepath.Join(spec.Workdir, agentDir))
+		}
+		modelsRaw, err := os.ReadFile(filepath.Join(agentDir, "models.json"))
+		if err != nil {
+			result.err = fmt.Errorf("read real Pi model projection: %w", err)
+			writeAcceptedEvent(output, "pi/agent_end", map[string]any{
+				"session_id": "accepted-pi-session", "turn_id": request.ID, "status": "failed",
+			})
+			starter.once.Do(func() { starter.done <- result })
+			continue
+		}
+		var models struct {
+			Providers map[string]struct {
+				BaseURL string `json:"baseUrl"`
+				API     string `json:"api"`
+				APIKey  string `json:"apiKey"`
+			} `json:"providers"`
+		}
+		if err := json.Unmarshal(modelsRaw, &models); err != nil {
+			result.err = fmt.Errorf("decode real Pi model projection")
+			writeAcceptedEvent(output, "pi/agent_end", map[string]any{
+				"session_id": "accepted-pi-session", "turn_id": request.ID, "status": "failed",
+			})
+			starter.once.Do(func() { starter.done <- result })
+			continue
+		}
+		var projected struct {
+			BaseURL string
+			API     string
+			APIKey  string
+		}
+		for _, provider := range models.Providers {
+			if provider.BaseURL == "http://accepted-model.tsecbench.gw/v1" {
+				projected.BaseURL, projected.API, projected.APIKey = provider.BaseURL, provider.API, provider.APIKey
+				break
+			}
+		}
+		if projected.BaseURL == "" {
+			result.err = fmt.Errorf("hosted Model Provider is absent from Pi projection")
+			writeAcceptedEvent(output, "pi/agent_end", map[string]any{
+				"session_id": "accepted-pi-session", "turn_id": request.ID, "status": "failed",
+			})
+			starter.once.Do(func() { starter.done <- result })
+			continue
+		}
+		result.modelAPI = projected.API
 
 		keyEnv := strings.TrimPrefix(projected.APIKey, "$")
 		modelRequest, _ := http.NewRequest(http.MethodPost, projected.BaseURL+"/chat/completions", strings.NewReader(`{"model":"accepted-chat-model","messages":[{"role":"user","content":"execute hosted loop"}]}`))
@@ -262,7 +318,7 @@ func (starter *acceptedPiStarter) serve(spec runtime.HostProcessSpec, input io.R
 		writeAcceptedEvent(output, "pi/agent_end", map[string]any{
 			"session_id": "accepted-pi-session", "turn_id": request.ID, "status": status,
 		})
-		return
+		starter.once.Do(func() { starter.done <- result })
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.ErrClosedPipe) {
 		result.err = err
@@ -318,7 +374,9 @@ func (starter *acceptedPiStarter) runChallengeLoop(env map[string]string) error 
 }
 
 func acceptedHTTPError(status int, body []byte) error {
-	var payload struct{ Code string `json:"code"` }
+	var payload struct {
+		Code string `json:"code"`
+	}
 	_ = json.Unmarshal(body, &payload)
 	return fmt.Errorf("HTTP %d %s", status, payload.Code)
 }
@@ -352,10 +410,10 @@ const (
 )
 
 type acceptedPlatform struct {
-	scenario acceptedPlatformScenario
-	mu       sync.Mutex
-	requests []string
-	correct  int
+	scenario     acceptedPlatformScenario
+	mu           sync.Mutex
+	requests     []string
+	correct      int
 	modelHandler http.Handler
 }
 
@@ -411,7 +469,9 @@ func (platform *acceptedPlatform) serveHTTP(response http.ResponseWriter, reques
 		platform.requests = append(platform.requests, entry)
 		_, _ = io.WriteString(response, `{"hint":"score-costing hint"}`)
 	case "POST /openapi/v1/challenges/submit":
-		var input struct{ Flag string `json:"flag"` }
+		var input struct {
+			Flag string `json:"flag"`
+		}
 		_ = json.NewDecoder(request.Body).Decode(&input)
 		platform.correct++
 		platform.requests = append(platform.requests, entry+" "+input.Flag)
@@ -449,5 +509,7 @@ func httptestResponse(handler http.Handler, request *http.Request) *acceptedReco
 }
 
 func (recorder *acceptedRecorder) Header() http.Header { return recorder.HeaderMap }
-func (recorder *acceptedRecorder) Write(payload []byte) (int, error) { return recorder.Body.Write(payload) }
+func (recorder *acceptedRecorder) Write(payload []byte) (int, error) {
+	return recorder.Body.Write(payload)
+}
 func (recorder *acceptedRecorder) WriteHeader(status int) { recorder.Code = status }
