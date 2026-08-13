@@ -11,8 +11,11 @@ Claude bridge.
 
 ## Hosted Mode
 
-Set the five values from `tsecbench.env.example` on the TSecBench page.
-`CYBERPENDA_RUNTIME` defaults to `pi`. The strict Runtime and protocol matrix is:
+Set the required values from `tsecbench.env.example` on the TSecBench page.
+`CYBERPENDA_RUNTIME` defaults to `pi`. Optional `CYBERPENDA_REASONING_EFFORT`
+is `low`, `medium`, `high`, `xhigh`, or `max`; an omitted value uses `high`.
+Optional `CYBERPENDA_TASK_GOAL_APPENDIX` is appended to the required Task Goal.
+The strict Runtime and protocol matrix is:
 
 - Pi: `openai_chat_completions`, `openai_responses`, or `anthropic_messages`
 - Codex: `openai_responses`

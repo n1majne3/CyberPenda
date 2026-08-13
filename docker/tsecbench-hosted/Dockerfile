@@ -126,6 +126,7 @@ RUN mkdir -p /root/.agent-browser /opt/cyberpenda /data \
 ENV CYBERPENDA_HOSTED_DATA_ROOT=/data \
     CYBERPENDA_PROVIDER_BRIDGE=/usr/local/bin/pentest-provider-bridge \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+    IS_SANDBOX=1 \
     AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium \
     PI_OFFLINE=1
 

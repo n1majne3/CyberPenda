@@ -2,9 +2,12 @@
 
 ## Bootstrap validation fails
 
-Check all required `CYBERPENDA_*` page variables. Secret values must be present
-at deployment time, but they must stay out of templates and command arguments.
-The Controller reports a bounded error before it creates the Project.
+Check all required `CYBERPENDA_*` page variables. Optional
+`CYBERPENDA_REASONING_EFFORT` must be `low`, `medium`, `high`, `xhigh`, or
+`max`. Optional `CYBERPENDA_TASK_GOAL_APPENDIX` is appended to the required
+Task Goal. Secret values must be present at deployment time, but they must stay
+out of templates and command arguments. The Controller reports a bounded error
+before it creates the Project.
 
 ## Runtime and protocol mismatch
 

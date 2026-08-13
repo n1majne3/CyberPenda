@@ -86,6 +86,9 @@ func (app *HTTPApp) Start(ctx context.Context, evaluation HostedEvaluationBootst
 		"model_override": evaluation.Runtime.Model, "env": evaluation.Runtime.Env,
 		"credential_refs": []string{"BENCHMARK_TOKEN"},
 	}
+	if effort := strings.TrimSpace(evaluation.Runtime.ReasoningEffort); effort != "" {
+		fields["reasoning_effort"] = effort
+	}
 	if evaluation.Runtime.Provider == RuntimePi {
 		// Pi's --approve trusts only this run's projected project-local
 		// resources. It does not change tool permissions or Project Scope.

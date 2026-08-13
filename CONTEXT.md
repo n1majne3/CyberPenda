@@ -661,8 +661,12 @@ The bounded set of general-purpose tools preinstalled in the **TSecBench Hosted 
 _Avoid_: full Sandbox image, runtime package installation, per-challenge image
 
 **Hosted Model Configuration**:
-The operator-supplied Runtime family, model protocol, converted gateway base URL, model identifier, and model API key used by one **Hosted Evaluation Run**. These values enter through stable `CYBERPENDA_*` environment names and are translated into normal Model Provider and Credential Binding inputs during bootstrap. Compatibility is strict: Codex accepts only `openai_responses`, Claude Code accepts only `anthropic_messages`, and Pi accepts `openai_chat_completions`, `openai_responses`, or `anthropic_messages`.
+The operator-supplied Runtime family, model protocol, converted gateway base URL, model identifier, model API key, and optional **Reasoning Effort** used by one **Hosted Evaluation Run**. These values enter through stable `CYBERPENDA_*` environment names and are translated into normal Model Provider, Credential Binding, and Runtime Profile inputs during bootstrap. Compatibility is strict: Codex accepts only `openai_responses`, Claude Code accepts only `anthropic_messages`, and Pi accepts `openai_chat_completions`, `openai_responses`, or `anthropic_messages`.
 _Avoid_: vendor-specific environment contract, model discovery, persisted hosted profile
+
+**Hosted Task Goal Appendix**:
+Optional operator-supplied text appended to the required hosted **Task Goal**. It does not replace the required Skill completion sentence and does not change Hosted Controller behavior.
+_Avoid_: replacement Task Goal, Skill rewrite, vendor prompt file
 
 **Hosted Acceptance Configuration**:
 The reference Runtime and model configuration used for hosted bootstrap, model-call, and fake-platform validation: Pi with `openai_chat_completions`, plus the deployer-supplied gateway base URL, model identifier, and dedicated evaluation API key. Real TSecBench local-mode acceptance validates the platform API separately and does not require challenge solving.
@@ -1526,7 +1530,9 @@ _Avoid_: transcript, export, source of truth
 - The **TSecBench Hosted Image** does not depend on launching a nested Sandbox Runner; resolved: selected Runtimes and tools execute through the **Container Host Runner** and the image assumes no Docker Socket, privileged mode, or nested container engine.
 - The hosted daemon does not expose its Web UI to the Challenge Platform network; resolved: retain embedded UI resources but bind the daemon only to container loopback.
 - The **TSecBench Hosted Image** does not copy the existing full Sandbox tool inventory; resolved: build on Kali Rolling with a **Hosted Tool Baseline**, and let the Runtime implement missing challenge-specific capability from the available environment.
-- Hosted model input does not use Runtime-specific or vendor-specific environment contracts; resolved: the TSecBench page supplies `CYBERPENDA_RUNTIME`, `CYBERPENDA_MODEL_PROTOCOL`, `CYBERPENDA_MODEL_BASE_URL`, `CYBERPENDA_MODEL`, and `CYBERPENDA_MODEL_API_KEY` as one **Hosted Model Configuration**.
+- Hosted model input does not use Runtime-specific or vendor-specific environment contracts; resolved: the TSecBench page supplies `CYBERPENDA_RUNTIME`, `CYBERPENDA_MODEL_PROTOCOL`, `CYBERPENDA_MODEL_BASE_URL`, `CYBERPENDA_MODEL`, `CYBERPENDA_MODEL_API_KEY`, optional `CYBERPENDA_REASONING_EFFORT`, and optional `CYBERPENDA_TASK_GOAL_APPENDIX` as the hosted page contract.
+- Hosted **Reasoning Effort** is not read from `CLAUDE_CODE_EFFORT_LEVEL` or Runtime Custom Arguments; resolved: optional `CYBERPENDA_REASONING_EFFORT` becomes the hosted Runtime Profile **Reasoning Effort**, and an omitted value resolves to `high`.
+- A hosted extra prompt is not a replacement Task Goal; resolved: optional `CYBERPENDA_TASK_GOAL_APPENDIX` is appended after the required hosted Task Goal.
 - Hosted image size is not judged from its expanded layer size; resolved: the exported and gzip-compressed Docker archive must remain below 3 GB, and the build fails when it does not.
 - Invalid **Hosted Model Configuration** is not delegated to the Runtime for repair; resolved: bootstrap reports a non-sensitive error and exits nonzero before Project creation or model use.
 - A failed initial hosted Runtime Turn is not retried, replaced, or left running until the platform deadline; resolved: the controller reports a redacted failure and exits the container nonzero.

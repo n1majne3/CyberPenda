@@ -176,6 +176,9 @@ func TestHostedStartProjectsEachRuntimeThroughNormalProviderAndCredentialInputs(
 			if found && !slices.Equal(customArgs.([]any), test.customArgs) {
 				t.Fatalf("Runtime Profile custom arguments = %#v, want %#v", customArgs, test.customArgs)
 			}
+			if fields["reasoning_effort"] != nil {
+				t.Fatalf("Runtime Profile set Reasoning Effort without a hosted value: %#v", fields)
+			}
 			if controls, _ := taskRequest["run_controls"].(map[string]any); controls["yolo"] != nil {
 				t.Fatalf("Task added synthetic YOLO control: %#v", taskRequest)
 			}

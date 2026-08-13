@@ -35,6 +35,7 @@ func TestTSecBenchHostedDockerfileDefinesTheIsolatedAMD64Image(t *testing.T) {
 		`ENTRYPOINT ["/usr/local/bin/pentest-tsecbench-hosted"]`,
 		"CYBERPENDA_PROVIDER_BRIDGE=/usr/local/bin/pentest-provider-bridge",
 		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+		"IS_SANDBOX=1",
 		"PI_OFFLINE=1",
 		"/opt/cyberpenda/runtime-versions.json",
 		"cyberpenda-hosted-runtime-versions/v1",

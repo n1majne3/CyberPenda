@@ -94,9 +94,62 @@ func TestHostedControllerStartsOnePiEvaluationAndOnlyObservesIt(t *testing.T) {
 	if evaluation.Runtime.Credentials["BENCHMARK_TOKEN"] != env["BENCHMARK_TOKEN"] || evaluation.Runtime.ModelAPIKey != env["CYBERPENDA_MODEL_API_KEY"] {
 		t.Fatal("Runtime did not receive direct hosted credentials")
 	}
-	if !strings.Contains(evaluation.Task.Goal, "TSecBench") {
+	if evaluation.Task.Goal != hostedcontroller.HostedTaskGoal {
 		t.Fatalf("Task Goal = %q", evaluation.Task.Goal)
 	}
+	if evaluation.Runtime.ReasoningEffort != "" {
+		t.Fatalf("missing Reasoning Effort should stay empty, got %q", evaluation.Runtime.ReasoningEffort)
+	}
+}
+
+func TestHostedConfigurationAcceptsOptionalReasoningEffortAndTaskGoalAppendix(t *testing.T) {
+	env := validHostedEnv()
+	env["CYBERPENDA_REASONING_EFFORT"] = "max"
+	env["CYBERPENDA_TASK_GOAL_APPENDIX"] = "Prefer easy Benchmark Challenges first."
+
+	config, err := hostedcontroller.ConfigFromEnv(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.ReasoningEffort != "max" {
+		t.Fatalf("Reasoning Effort = %q, want max", config.ReasoningEffort)
+	}
+	if config.TaskGoalAppendix != "Prefer easy Benchmark Challenges first." {
+		t.Fatalf("Task Goal appendix = %q", config.TaskGoalAppendix)
+	}
+
+	evaluation := hostedcontroller.EvaluationForConfig(config)
+	if evaluation.Runtime.ReasoningEffort != "max" {
+		t.Fatalf("bootstrap Reasoning Effort = %q, want max", evaluation.Runtime.ReasoningEffort)
+	}
+	wantGoal := hostedcontroller.HostedTaskGoal + "\n\nPrefer easy Benchmark Challenges first."
+	if evaluation.Task.Goal != wantGoal {
+		t.Fatalf("Task Goal = %q, want required sentence plus appendix", evaluation.Task.Goal)
+	}
+}
+
+func TestHostedConfigurationRejectsInvalidReasoningEffortAndTaskGoalAppendix(t *testing.T) {
+	t.Run("unknown effort", func(t *testing.T) {
+		env := validHostedEnv()
+		env["CYBERPENDA_REASONING_EFFORT"] = "auto"
+		if _, err := hostedcontroller.ConfigFromEnv(env); err == nil {
+			t.Fatal("accepted unknown Reasoning Effort")
+		}
+	})
+	t.Run("nul appendix", func(t *testing.T) {
+		env := validHostedEnv()
+		env["CYBERPENDA_TASK_GOAL_APPENDIX"] = "keep\x00going"
+		if _, err := hostedcontroller.ConfigFromEnv(env); err == nil {
+			t.Fatal("accepted NUL Task Goal appendix")
+		}
+	})
+	t.Run("oversized appendix", func(t *testing.T) {
+		env := validHostedEnv()
+		env["CYBERPENDA_TASK_GOAL_APPENDIX"] = strings.Repeat("a", hostedcontroller.MaxHostedTaskGoalAppendix+1)
+		if _, err := hostedcontroller.ConfigFromEnv(env); err == nil {
+			t.Fatal("accepted oversized Task Goal appendix")
+		}
+	})
 }
 
 func TestHTTPAppCreatesOneHostedProjectAndMatchingHostTask(t *testing.T) {
@@ -154,6 +207,59 @@ func TestHTTPAppCreatesOneHostedProjectAndMatchingHostTask(t *testing.T) {
 	}
 	if run.ProjectID != "project-1" || run.TaskID != "task-1" || projectCreates != 1 || taskCreates != 1 {
 		t.Fatalf("run=%#v Project creates=%d Task creates=%d", run, projectCreates, taskCreates)
+	}
+}
+
+func TestHTTPAppProjectsHostedReasoningEffortAndAppendedTaskGoal(t *testing.T) {
+	var profileRequest, taskRequest map[string]any
+	handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch request.Method + " " + request.URL.Path {
+		case "PUT /api/skills/tsecbench-hosted-challenge-loop":
+			_, _ = io.WriteString(response, `{}`)
+		case "POST /api/model-providers":
+			response.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(response, `{"id":"hosted-model","api_key_env":"HOSTED_MODEL_API_KEY"}`)
+		case "POST /api/projects":
+			response.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(response, `{"id":"project-1"}`)
+		case "POST /api/runtime-profiles":
+			_ = json.NewDecoder(request.Body).Decode(&profileRequest)
+			response.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(response, `{"id":"profile-1"}`)
+		case "PUT /api/projects/project-1/credential-bindings":
+			_, _ = io.WriteString(response, `{}`)
+		case "POST /api/projects/project-1/tasks":
+			_ = json.NewDecoder(request.Body).Decode(&taskRequest)
+			response.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(response, `{"id":"task-1"}`)
+		default:
+			http.Error(response, "unexpected request", http.StatusNotFound)
+		}
+	})
+	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response.Result(), nil
+	})}
+
+	env := validHostedEnv()
+	env["CYBERPENDA_REASONING_EFFORT"] = "xhigh"
+	env["CYBERPENDA_TASK_GOAL_APPENDIX"] = "Close a completed challenge before starting another."
+	config, err := hostedcontroller.ConfigFromEnv(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := hostedcontroller.NewHTTPApp(hostedcontroller.HTTPAppConfig{BaseURL: "http://hosted.test", Client: client})
+	if _, err := app.Start(context.Background(), hostedcontroller.EvaluationForConfig(config)); err != nil {
+		t.Fatal(err)
+	}
+	fields, _ := profileRequest["fields"].(map[string]any)
+	if fields["reasoning_effort"] != "xhigh" {
+		t.Fatalf("Runtime Profile Reasoning Effort = %#v, want xhigh", fields["reasoning_effort"])
+	}
+	if taskRequest["goal"] != hostedcontroller.HostedTaskGoal+"\n\nClose a completed challenge before starting another." {
+		t.Fatalf("Task Goal = %#v", taskRequest["goal"])
 	}
 }
 
