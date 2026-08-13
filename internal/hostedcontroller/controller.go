@@ -221,6 +221,7 @@ func Run(ctx context.Context, dataRoot string, env map[string]string, stdout, di
 	app := NewHTTPApp(HTTPAppConfig{
 		BaseURL:       "http://" + listener.Addr().String(),
 		RuntimeBinary: strings.TrimSpace(env["CYBERPENDA_RUNTIME_BINARY"]),
+		Diagnostics:   diagnostics,
 	})
 	return RunWithApp(ctx, env, app, stdout, diagnostics)
 }

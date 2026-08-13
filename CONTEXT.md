@@ -1536,6 +1536,7 @@ _Avoid_: transcript, export, source of truth
 - Hosted image size is not judged from its expanded layer size; resolved: the exported and gzip-compressed Docker archive must remain below 3 GB, and the build fails when it does not.
 - Invalid **Hosted Model Configuration** is not delegated to the Runtime for repair; resolved: bootstrap reports a non-sensitive error and exits nonzero before Project creation or model use.
 - A failed initial hosted Runtime Turn is not retried, replaced, or left running until the platform deadline; resolved: the controller reports a redacted failure and exits the container nonzero.
+- A live Hosted Evaluation Run is not ended by Transcript drain, stdout write, Task observe, or later Task status errors; resolved: those errors are Hosted Operational Log lines, the Runtime stays live, and the Controller waits for TSecBench to terminate the container.
 - The **Hosted Controller** does not send Task Conversation input or continuation Turns; resolved: it creates only the initial Task, then observes it until Runtime failure or TSecBench termination.
 - Hosted Skill selection is not a benchmark-specific reduction of CyberPenda capability; resolved: load every normally default-enabled built-in Skill and add the hosted-only TSecBench Skill.
 - The initial hosted Work Runtime Turn is not complete after one traversal or a subjective no-progress judgment; resolved: it returns only when the platform reports every Benchmark Challenge complete or the evaluation enters `invalid_state`.

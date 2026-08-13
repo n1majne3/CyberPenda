@@ -25,6 +25,7 @@ type HTTPApp struct {
 	client        *http.Client
 	runtimeBinary string
 	pollPeriod    time.Duration
+	diagnostics   io.Writer
 }
 
 // HTTPAppConfig describes the loopback daemon used by the hosted process.
@@ -33,6 +34,7 @@ type HTTPAppConfig struct {
 	Client        *http.Client
 	RuntimeBinary string
 	PollPeriod    time.Duration
+	Diagnostics   io.Writer
 }
 
 func NewHTTPApp(config HTTPAppConfig) *HTTPApp {
@@ -44,7 +46,11 @@ func NewHTTPApp(config HTTPAppConfig) *HTTPApp {
 	if period <= 0 {
 		period = 250 * time.Millisecond
 	}
-	return &HTTPApp{baseURL: strings.TrimRight(config.BaseURL, "/"), client: client, runtimeBinary: config.RuntimeBinary, pollPeriod: period}
+	diagnostics := config.Diagnostics
+	if diagnostics == nil {
+		diagnostics = io.Discard
+	}
+	return &HTTPApp{baseURL: strings.TrimRight(config.BaseURL, "/"), client: client, runtimeBinary: config.RuntimeBinary, pollPeriod: period, diagnostics: diagnostics}
 }
 
 func (app *HTTPApp) Start(ctx context.Context, evaluation HostedEvaluationBootstrap) (HostedEvaluationReference, error) {
@@ -143,14 +149,8 @@ func (app *HTTPApp) Wait(ctx context.Context, run HostedEvaluationReference, std
 	}
 	ticker := time.NewTicker(app.pollPeriod)
 	defer ticker.Stop()
+	sawRunning := false
 	for {
-		cursor, err = app.drainTranscript(ctx, run, stdout, masker, cursor)
-		if err != nil {
-			if contextEnded(err) {
-				return nil
-			}
-			return err
-		}
 		var taskState struct {
 			Status string `json:"status"`
 		}
@@ -158,16 +158,38 @@ func (app *HTTPApp) Wait(ctx context.Context, run HostedEvaluationReference, std
 			if contextEnded(err) {
 				return nil
 			}
-			return fmt.Errorf("observe hosted Task: %w", err)
+			if !sawRunning {
+				return fmt.Errorf("observe hosted Task: %w", err)
+			}
+			app.logOperational("observe hosted Task: %v", err)
+		} else if taskState.Status == "running" {
+			sawRunning = true
+		}
+		next, drainErr := app.drainTranscript(ctx, run, stdout, masker, cursor)
+		if drainErr != nil {
+			if contextEnded(drainErr) {
+				return nil
+			}
+			if !sawRunning {
+				return drainErr
+			}
+			app.logOperational("hosted Transcript drain: %v", drainErr)
+		} else {
+			cursor = next
 		}
 		if taskState.Status == "failed" || taskState.Status == "interrupted" || taskState.Status == "stopped" {
-			if _, err := app.drainTranscript(ctx, run, stdout, masker, cursor); err != nil {
-				if contextEnded(err) {
-					return nil
+			if !sawRunning {
+				if next, drainErr := app.drainTranscript(ctx, run, stdout, masker, cursor); drainErr != nil {
+					if contextEnded(drainErr) {
+						return nil
+					}
+					return fmt.Errorf("final hosted Transcript drain: %w", drainErr)
+				} else {
+					cursor = next
 				}
-				return fmt.Errorf("final hosted Transcript drain: %w", err)
+				return errors.New("hosted Runtime failed")
 			}
-			return errors.New("hosted Runtime failed")
+			app.logOperational("hosted Runtime is %s; wait for platform termination", taskState.Status)
 		}
 		select {
 		case <-ctx.Done():
@@ -175,6 +197,13 @@ func (app *HTTPApp) Wait(ctx context.Context, run HostedEvaluationReference, std
 		case <-ticker.C:
 		}
 	}
+}
+
+func (app *HTTPApp) logOperational(format string, args ...any) {
+	if app == nil || app.diagnostics == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(app.diagnostics, format+"\n", args...)
 }
 
 func contextEnded(err error) bool {

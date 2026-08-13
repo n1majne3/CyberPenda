@@ -22,10 +22,14 @@ Internet access.
 
 ## Runtime fails
 
-The Controller drains every retained Transcript entry, then exits nonzero. It
-does not retry the initial Runtime, switch Runtime, resume, or perform Task
-Finish. Read standard error for operational diagnostics and standard output for
-the JSONL Hosted Transcript Stream.
+If the initial Runtime never becomes live, the Controller drains retained
+Transcript entries and exits nonzero. It does not retry, switch Runtime,
+resume, or perform Task Finish.
+
+After a live Runtime has started, Transcript, stdout, observe, and later Task
+status errors stay on standard error. The Controller keeps the Runtime until
+TSecBench terminates the container. Read standard error for operational
+diagnostics and standard output for the JSONL Hosted Transcript Stream.
 
 ## Challenge Platform API behavior changes
 

@@ -236,6 +236,89 @@ func TestHTTPAppWaitDoesNotEmitPreviewWhenTranscriptDetailFails(t *testing.T) {
 	}
 }
 
+func TestHTTPAppWaitKeepsALiveRuntimeAfterStdoutAndTaskFailures(t *testing.T) {
+	t.Run("stdout after running", func(t *testing.T) {
+		var writes int
+		var diagnostics bytes.Buffer
+		ctx, cancel := context.WithCancel(context.Background())
+		handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			if strings.HasSuffix(request.URL.Path, "/transcript") {
+				if _, set := request.URL.Query()["after"]; !set {
+					writeStreamPage(t, response, 0, false)
+					return
+				}
+				writeStreamPage(t, response, 1, false, streamEntry("entry-1", 1, "message", "assistant", "live", "2026-08-12T00:00:00Z"))
+				return
+			}
+			writeStreamJSON(t, response, map[string]any{"status": "running"})
+		})
+		writer := &countingFailWriter{failAfter: 1, writes: &writes}
+		done := make(chan error, 1)
+		go func() {
+			done <- newTranscriptHTTPAppWithDiagnostics(handler, &diagnostics).Wait(ctx, hostedcontroller.HostedEvaluationReference{
+				ProjectID: "project-1", TaskID: "task-1",
+			}, writer, nil)
+		}()
+		deadline := time.Now().Add(200 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			if writes >= 1 && strings.Contains(diagnostics.String(), "stdout") {
+				break
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("Wait returned while the Runtime was live: %v", err)
+		default:
+		}
+		cancel()
+		err := <-done
+		if err != nil {
+			t.Fatalf("Wait after platform end = %v", err)
+		}
+		if !strings.Contains(diagnostics.String(), "stdout") {
+			t.Fatalf("diagnostics = %q, want stdout operational error", diagnostics.String())
+		}
+	})
+	t.Run("failed status after running", func(t *testing.T) {
+		var sawFailed int
+		var diagnostics bytes.Buffer
+		ctx, cancel := context.WithCancel(context.Background())
+		handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			if strings.HasSuffix(request.URL.Path, "/transcript") {
+				writeStreamPage(t, response, 0, false)
+				return
+			}
+			if sawFailed == 0 {
+				writeStreamJSON(t, response, map[string]any{"status": "running"})
+				sawFailed = 1
+				return
+			}
+			sawFailed++
+			writeStreamJSON(t, response, map[string]any{"status": "failed"})
+		})
+		done := make(chan error, 1)
+		go func() {
+			done <- newTranscriptHTTPAppWithDiagnostics(handler, &diagnostics).Wait(ctx, hostedcontroller.HostedEvaluationReference{
+				ProjectID: "project-1", TaskID: "task-1",
+			}, io.Discard, nil)
+		}()
+		deadline := time.Now().Add(200 * time.Millisecond)
+		for time.Now().Before(deadline) && sawFailed < 2 {
+			time.Sleep(2 * time.Millisecond)
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("Wait returned after a live Runtime failed: %v", err)
+		default:
+		}
+		cancel()
+		if err := <-done; err != nil {
+			t.Fatalf("Wait after platform end = %v", err)
+		}
+	})
+}
+
 func TestHTTPAppWaitReturnsTranscriptAndStdoutFailures(t *testing.T) {
 	t.Run("Transcript API", func(t *testing.T) {
 		app := newTranscriptHTTPApp(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
@@ -288,9 +371,27 @@ type streamFailWriter struct{}
 
 func (streamFailWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
 
+type countingFailWriter struct {
+	failAfter int
+	writes    *int
+}
+
+func (w *countingFailWriter) Write([]byte) (int, error) {
+	*w.writes++
+	if *w.writes >= w.failAfter {
+		return 0, errors.New("write failed")
+	}
+	return 1, nil
+}
+
 func newTranscriptHTTPApp(handler http.Handler) *hostedcontroller.HTTPApp {
+	return newTranscriptHTTPAppWithDiagnostics(handler, nil)
+}
+
+func newTranscriptHTTPAppWithDiagnostics(handler http.Handler, diagnostics io.Writer) *hostedcontroller.HTTPApp {
 	return hostedcontroller.NewHTTPApp(hostedcontroller.HTTPAppConfig{
 		BaseURL: "http://hosted.test", Client: transcriptHTTPClient(handler), PollPeriod: time.Millisecond,
+		Diagnostics: diagnostics,
 	})
 }
 
