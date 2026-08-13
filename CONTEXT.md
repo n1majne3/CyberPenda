@@ -661,8 +661,20 @@ The bounded set of general-purpose tools preinstalled in the **TSecBench Hosted 
 _Avoid_: full Sandbox image, runtime package installation, per-challenge image
 
 **Hosted Model Configuration**:
-The operator-supplied Runtime family, model protocol, converted gateway base URL, model identifier, model API key, and optional **Reasoning Effort** used by one **Hosted Evaluation Run**. These values enter through stable `CYBERPENDA_*` environment names and are translated into normal Model Provider, Credential Binding, and Runtime Profile inputs during bootstrap. Compatibility is strict: Codex accepts only `openai_responses`, Claude Code accepts only `anthropic_messages`, and Pi accepts `openai_chat_completions`, `openai_responses`, or `anthropic_messages`.
+The operator-supplied Runtime family, model protocol, converted gateway base URL, model identifier, model API key, optional **Reasoning Effort**, optional **Hosted Auto Compact Threshold**, optional **Hosted Auto Compact Window**, and optional **Hosted Max Output Tokens** used by one **Hosted Evaluation Run**. These values enter through stable `CYBERPENDA_*` environment names and are translated into normal Model Provider, Credential Binding, and Runtime Profile inputs during bootstrap. Compatibility is strict: Codex accepts only `openai_responses`, Claude Code accepts only `anthropic_messages`, and Pi accepts `openai_chat_completions`, `openai_responses`, or `anthropic_messages`.
 _Avoid_: vendor-specific environment contract, model discovery, persisted hosted profile
+
+**Hosted Auto Compact Threshold**:
+An optional operator-supplied percent, from 1 to 100, that tells the hosted Claude Code Runtime when to compact conversation context. A lower value starts compact earlier. An omitted value keeps the Claude Code default.
+_Avoid_: Claude-native page variable, context window size, required compact setting
+
+**Hosted Auto Compact Window**:
+An optional operator-supplied absolute token count that tells the hosted Claude Code Runtime the compact window size. DeepSeek documents 786432. With DeepSeek 384K max output, hosted evaluation should use 524288 so the window plus 393216 stays under 1048576. An omitted value keeps the Claude Code default.
+_Avoid_: Claude-native page variable, compact percent, required compact setting
+
+**Hosted Max Output Tokens**:
+An optional operator-supplied maximum completion token reservation for one hosted Claude Code request. DeepSeek hosted evaluation should use 393216 (384K). An omitted value keeps the Claude Code default of 32000.
+_Avoid_: context window size, Claude-native page variable, required output cap
 
 **Hosted Task Goal Appendix**:
 Optional operator-supplied text appended to the required hosted **Task Goal**. It does not replace the required Skill completion sentence and does not change Hosted Controller behavior.
@@ -1530,7 +1542,9 @@ _Avoid_: transcript, export, source of truth
 - The **TSecBench Hosted Image** does not depend on launching a nested Sandbox Runner; resolved: selected Runtimes and tools execute through the **Container Host Runner** and the image assumes no Docker Socket, privileged mode, or nested container engine.
 - The hosted daemon does not expose its Web UI to the Challenge Platform network; resolved: retain embedded UI resources but bind the daemon only to container loopback.
 - The **TSecBench Hosted Image** does not copy the existing full Sandbox tool inventory; resolved: build on Kali Rolling with a **Hosted Tool Baseline**, and let the Runtime implement missing challenge-specific capability from the available environment.
-- Hosted model input does not use Runtime-specific or vendor-specific environment contracts; resolved: the TSecBench page supplies `CYBERPENDA_RUNTIME`, `CYBERPENDA_MODEL_PROTOCOL`, `CYBERPENDA_MODEL_BASE_URL`, `CYBERPENDA_MODEL`, `CYBERPENDA_MODEL_API_KEY`, optional `CYBERPENDA_REASONING_EFFORT`, and optional `CYBERPENDA_TASK_GOAL_APPENDIX` as the hosted page contract.
+- Hosted model input does not use Runtime-specific or vendor-specific environment contracts; resolved: the TSecBench page supplies `CYBERPENDA_RUNTIME`, `CYBERPENDA_MODEL_PROTOCOL`, `CYBERPENDA_MODEL_BASE_URL`, `CYBERPENDA_MODEL`, `CYBERPENDA_MODEL_API_KEY`, optional `CYBERPENDA_REASONING_EFFORT`, optional `CYBERPENDA_TASK_GOAL_APPENDIX`, optional `CYBERPENDA_AUTO_COMPACT_THRESHOLD`, optional `CYBERPENDA_AUTO_COMPACT_WINDOW`, and optional `CYBERPENDA_MAX_OUTPUT_TOKENS` as the hosted page contract.
+- Hosted Claude compact is not missing when a 1M-context request returns HTTP 400; resolved: compact exists, but the default threshold plus the reserved completion can exceed 1048576 after a large tool result. Optional `CYBERPENDA_AUTO_COMPACT_THRESHOLD` (1-100) becomes `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`. Optional `CYBERPENDA_AUTO_COMPACT_WINDOW` becomes `CLAUDE_CODE_AUTO_COMPACT_WINDOW`. DeepSeek documents 786432 for that window.
+- Hosted max completion is not inferred from the model family; resolved: optional `CYBERPENDA_MAX_OUTPUT_TOKENS` becomes `CLAUDE_CODE_MAX_OUTPUT_TOKENS`. DeepSeek hosted runs should set 393216 (384K). 786432 plus 393216 exceeds 1048576, so those runs should set the **Hosted Auto Compact Window** to 524288.
 - Hosted **Reasoning Effort** is not read from `CLAUDE_CODE_EFFORT_LEVEL` or Runtime Custom Arguments; resolved: optional `CYBERPENDA_REASONING_EFFORT` becomes the hosted Runtime Profile **Reasoning Effort**, and an omitted value resolves to `high`.
 - A hosted extra prompt is not a replacement Task Goal; resolved: optional `CYBERPENDA_TASK_GOAL_APPENDIX` is appended after the required hosted Task Goal.
 - Hosted image size is not judged from its expanded layer size; resolved: the exported and gzip-compressed Docker archive must remain below 3 GB, and the build fails when it does not.

@@ -5,14 +5,36 @@
 Check all required `CYBERPENDA_*` page variables. Optional
 `CYBERPENDA_REASONING_EFFORT` must be `low`, `medium`, `high`, `xhigh`, or
 `max`. Optional `CYBERPENDA_TASK_GOAL_APPENDIX` is appended to the required
-Task Goal. Secret values must be present at deployment time, but they must stay
-out of templates and command arguments. The Controller reports a bounded error
-before it creates the Project.
+Task Goal. Optional `CYBERPENDA_AUTO_COMPACT_THRESHOLD` must be an integer
+from 1 to 100. Optional `CYBERPENDA_AUTO_COMPACT_WINDOW` must be an integer
+from 1 to 1048576. Optional `CYBERPENDA_MAX_OUTPUT_TOKENS` must be an integer
+from 1 to 1048576. Secret values must be present at deployment time, but they
+must stay out of templates and command arguments. The Controller reports a
+bounded error before it creates the Project.
 
 ## Runtime and protocol mismatch
 
 Use the strict matrix in `README.md`. Pi supports the three packaged protocols.
 Codex requires `openai_responses`. Claude Code requires `anthropic_messages`.
+
+## Claude request exceeds the 1M context
+
+Compact is already on. The occasional HTTP 400 happens when a large tool
+result jumps past the default compact point, then Claude still reserves
+32000 completion tokens. Messages plus that reservation can exceed 1048576.
+
+Set the compact window and the max output together. A larger max output
+without an earlier compact window makes overflow more likely. DeepSeek max
+output is 384K (393216). DeepSeek documents compact window 786432, but
+786432 plus 393216 exceeds 1048576. For DeepSeek, use:
+
+```
+CYBERPENDA_AUTO_COMPACT_WINDOW=524288
+CYBERPENDA_MAX_OUTPUT_TOKENS=393216
+```
+
+524288 plus 393216 is 917504, which stays under 1048576 and leaves a buffer
+for one large tool result.
 
 ## Model endpoint fails
 

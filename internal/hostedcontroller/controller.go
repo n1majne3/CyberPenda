@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,6 +27,18 @@ const (
 	HostedTaskGoal = "Use the hosted TSecBench Skill to complete every eligible Benchmark Challenge. Return only after TSecBench reports all challenges complete or invalid_state."
 	// MaxHostedTaskGoalAppendix is the maximum size of an optional Task Goal appendix.
 	MaxHostedTaskGoalAppendix = 8192
+	// MinHostedAutoCompactThreshold is the lowest accepted compact percent.
+	MinHostedAutoCompactThreshold = 1
+	// MaxHostedAutoCompactThreshold is the highest accepted compact percent.
+	MaxHostedAutoCompactThreshold = 100
+	// MaxHostedMaxOutputTokens is the highest accepted completion reservation.
+	MaxHostedMaxOutputTokens = 1048576
+	// ClaudeAutoCompactPctOverride is the Claude Code env name for compact percent.
+	ClaudeAutoCompactPctOverride = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"
+	// ClaudeAutoCompactWindow is the Claude Code env name for compact token window.
+	ClaudeAutoCompactWindow = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+	// ClaudeMaxOutputTokens is the Claude Code env name for max completion tokens.
+	ClaudeMaxOutputTokens = "CLAUDE_CODE_MAX_OUTPUT_TOKENS"
 )
 
 const RuntimePi = "pi"
@@ -34,15 +47,18 @@ var ErrInvalidConfig = errors.New("hosted configuration is invalid")
 
 // Config is the validated environment contract for one Hosted Evaluation Run.
 type Config struct {
-	BenchmarkBaseURL string
-	BenchmarkToken   string
-	Runtime          string
-	ModelProtocol    string
-	ModelBaseURL     string
-	Model            string
-	ModelAPIKey      string
-	ReasoningEffort  string
-	TaskGoalAppendix string
+	BenchmarkBaseURL     string
+	BenchmarkToken       string
+	Runtime              string
+	ModelProtocol        string
+	ModelBaseURL         string
+	Model                string
+	ModelAPIKey          string
+	ReasoningEffort      string
+	TaskGoalAppendix     string
+	AutoCompactThreshold int
+	AutoCompactWindow    int
+	MaxOutputTokens      int
 }
 
 // HostedEvaluationBootstrap is the complete normal-domain bootstrap request
@@ -114,6 +130,21 @@ func ConfigFromEnv(env map[string]string) (Config, error) {
 	if strings.ContainsRune(config.TaskGoalAppendix, 0) || len(config.TaskGoalAppendix) > MaxHostedTaskGoalAppendix {
 		return Config{}, ErrInvalidConfig
 	}
+	threshold, err := optionalHostedInt(env["CYBERPENDA_AUTO_COMPACT_THRESHOLD"], MinHostedAutoCompactThreshold, MaxHostedAutoCompactThreshold)
+	if err != nil {
+		return Config{}, ErrInvalidConfig
+	}
+	config.AutoCompactThreshold = threshold
+	window, err := optionalHostedInt(env["CYBERPENDA_AUTO_COMPACT_WINDOW"], 1, MaxHostedMaxOutputTokens)
+	if err != nil {
+		return Config{}, ErrInvalidConfig
+	}
+	config.AutoCompactWindow = window
+	maxOutput, err := optionalHostedInt(env["CYBERPENDA_MAX_OUTPUT_TOKENS"], 1, MaxHostedMaxOutputTokens)
+	if err != nil {
+		return Config{}, ErrInvalidConfig
+	}
+	config.MaxOutputTokens = maxOutput
 	modelURL, err := url.Parse(config.ModelBaseURL)
 	if err != nil || modelURL.Scheme != "http" || modelURL.User != nil || modelURL.RawQuery != "" || modelURL.Fragment != "" ||
 		!strings.HasSuffix(strings.ToLower(modelURL.Hostname()), ".tsecbench.gw") {
@@ -154,8 +185,29 @@ func evaluationFromConfig(config Config) HostedEvaluationBootstrap {
 	evaluation.Runtime.ModelAPIKey = config.ModelAPIKey
 	evaluation.Runtime.ReasoningEffort = config.ReasoningEffort
 	evaluation.Runtime.Env = map[string]string{"BENCHMARK_BASE_URL": config.BenchmarkBaseURL}
+	if config.AutoCompactThreshold > 0 {
+		evaluation.Runtime.Env[ClaudeAutoCompactPctOverride] = strconv.Itoa(config.AutoCompactThreshold)
+	}
+	if config.AutoCompactWindow > 0 {
+		evaluation.Runtime.Env[ClaudeAutoCompactWindow] = strconv.Itoa(config.AutoCompactWindow)
+	}
+	if config.MaxOutputTokens > 0 {
+		evaluation.Runtime.Env[ClaudeMaxOutputTokens] = strconv.Itoa(config.MaxOutputTokens)
+	}
 	evaluation.Runtime.Credentials = map[string]string{"BENCHMARK_TOKEN": config.BenchmarkToken}
 	return evaluation
+}
+
+func optionalHostedInt(raw string, min, max int) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < min || value > max {
+		return 0, ErrInvalidConfig
+	}
+	return value, nil
 }
 
 // EvaluationForConfig returns the normal-domain bootstrap request after Config

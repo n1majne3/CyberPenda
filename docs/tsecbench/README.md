@@ -15,6 +15,11 @@ Set the required values from `tsecbench.env.example` on the TSecBench page.
 `CYBERPENDA_RUNTIME` defaults to `pi`. Optional `CYBERPENDA_REASONING_EFFORT`
 is `low`, `medium`, `high`, `xhigh`, or `max`; an omitted value uses `high`.
 Optional `CYBERPENDA_TASK_GOAL_APPENDIX` is appended to the required Task Goal.
+Optional `CYBERPENDA_AUTO_COMPACT_THRESHOLD` is an integer from 1 to 100.
+Optional `CYBERPENDA_AUTO_COMPACT_WINDOW` is an integer from 1 to 1048576.
+Optional `CYBERPENDA_MAX_OUTPUT_TOKENS` is an integer from 1 to 1048576.
+For DeepSeek on Claude Code, set max output to 393216 (384K) and set the
+compact window to 524288 so messages plus 393216 stay under 1048576.
 The strict Runtime and protocol matrix is:
 
 - Pi: `openai_chat_completions`, `openai_responses`, or `anthropic_messages`

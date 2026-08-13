@@ -128,6 +128,127 @@ func TestHostedConfigurationAcceptsOptionalReasoningEffortAndTaskGoalAppendix(t 
 	}
 }
 
+func TestHostedConfigurationAcceptsOptionalCompactThresholdAndMaxOutputTokens(t *testing.T) {
+	env := validHostedEnv()
+	env["CYBERPENDA_AUTO_COMPACT_THRESHOLD"] = "80"
+	env["CYBERPENDA_AUTO_COMPACT_WINDOW"] = "786432"
+	env["CYBERPENDA_MAX_OUTPUT_TOKENS"] = "393216"
+
+	config, err := hostedcontroller.ConfigFromEnv(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.AutoCompactThreshold != 80 {
+		t.Fatalf("Auto Compact Threshold = %d, want 80", config.AutoCompactThreshold)
+	}
+	if config.AutoCompactWindow != 786432 {
+		t.Fatalf("Auto Compact Window = %d, want 786432", config.AutoCompactWindow)
+	}
+	if config.MaxOutputTokens != 393216 {
+		t.Fatalf("Max Output Tokens = %d, want 393216", config.MaxOutputTokens)
+	}
+
+	evaluation := hostedcontroller.EvaluationForConfig(config)
+	if evaluation.Runtime.Env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] != "80" {
+		t.Fatalf("compact env = %#v, want CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=80", evaluation.Runtime.Env)
+	}
+	if evaluation.Runtime.Env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] != "786432" {
+		t.Fatalf("compact window env = %#v, want CLAUDE_CODE_AUTO_COMPACT_WINDOW=786432", evaluation.Runtime.Env)
+	}
+	if evaluation.Runtime.Env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] != "393216" {
+		t.Fatalf("max output env = %#v, want CLAUDE_CODE_MAX_OUTPUT_TOKENS=393216", evaluation.Runtime.Env)
+	}
+	if evaluation.Runtime.Env["BENCHMARK_BASE_URL"] != env["BENCHMARK_BASE_URL"] {
+		t.Fatalf("BENCHMARK_BASE_URL was dropped: %#v", evaluation.Runtime.Env)
+	}
+}
+
+func TestHostedConfigurationOmitsCompactAndMaxOutputEnvWhenUnset(t *testing.T) {
+	config, err := hostedcontroller.ConfigFromEnv(validHostedEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.AutoCompactThreshold != 0 || config.AutoCompactWindow != 0 || config.MaxOutputTokens != 0 {
+		t.Fatalf("omitted knobs = threshold %d window %d output %d, want 0", config.AutoCompactThreshold, config.AutoCompactWindow, config.MaxOutputTokens)
+	}
+	evaluation := hostedcontroller.EvaluationForConfig(config)
+	if _, ok := evaluation.Runtime.Env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"]; ok {
+		t.Fatalf("unexpected compact env: %#v", evaluation.Runtime.Env)
+	}
+	if _, ok := evaluation.Runtime.Env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"]; ok {
+		t.Fatalf("unexpected compact window env: %#v", evaluation.Runtime.Env)
+	}
+	if _, ok := evaluation.Runtime.Env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"]; ok {
+		t.Fatalf("unexpected max output env: %#v", evaluation.Runtime.Env)
+	}
+}
+
+func TestHostedConfigurationRejectsInvalidCompactThresholdAndMaxOutputTokens(t *testing.T) {
+	t.Run("threshold not integer", func(t *testing.T) {
+		env := validHostedEnv()
+		env["CYBERPENDA_AUTO_COMPACT_THRESHOLD"] = "0.8"
+		if _, err := hostedcontroller.ConfigFromEnv(env); err == nil {
+			t.Fatal("accepted non-integer Auto Compact Threshold")
+		}
+	})
+	t.Run("threshold below one", func(t *testing.T) {
+		env := validHostedEnv()
+		env["CYBERPENDA_AUTO_COMPACT_THRESHOLD"] = "0"
+		if _, err := hostedcontroller.ConfigFromEnv(env); err == nil {
+			t.Fatal("accepted Auto Compact Threshold 0")
+		}
+	})
+	t.Run("threshold above 100", func(t *testing.T) {
+		env := validHostedEnv()
+		env["CYBERPENDA_AUTO_COMPACT_THRESHOLD"] = "101"
+		if _, err := hostedcontroller.ConfigFromEnv(env); err == nil {
+			t.Fatal("accepted Auto Compact Threshold 101")
+		}
+	})
+	t.Run("window not integer", func(t *testing.T) {
+		env := validHostedEnv()
+		env["CYBERPENDA_AUTO_COMPACT_WINDOW"] = "768k"
+		if _, err := hostedcontroller.ConfigFromEnv(env); err == nil {
+			t.Fatal("accepted non-integer Auto Compact Window")
+		}
+	})
+	t.Run("window zero", func(t *testing.T) {
+		env := validHostedEnv()
+		env["CYBERPENDA_AUTO_COMPACT_WINDOW"] = "0"
+		if _, err := hostedcontroller.ConfigFromEnv(env); err == nil {
+			t.Fatal("accepted Auto Compact Window 0")
+		}
+	})
+	t.Run("window above context", func(t *testing.T) {
+		env := validHostedEnv()
+		env["CYBERPENDA_AUTO_COMPACT_WINDOW"] = "1048577"
+		if _, err := hostedcontroller.ConfigFromEnv(env); err == nil {
+			t.Fatal("accepted Auto Compact Window above 1048576")
+		}
+	})
+	t.Run("max output not integer", func(t *testing.T) {
+		env := validHostedEnv()
+		env["CYBERPENDA_MAX_OUTPUT_TOKENS"] = "128k"
+		if _, err := hostedcontroller.ConfigFromEnv(env); err == nil {
+			t.Fatal("accepted non-integer Max Output Tokens")
+		}
+	})
+	t.Run("max output zero", func(t *testing.T) {
+		env := validHostedEnv()
+		env["CYBERPENDA_MAX_OUTPUT_TOKENS"] = "0"
+		if _, err := hostedcontroller.ConfigFromEnv(env); err == nil {
+			t.Fatal("accepted Max Output Tokens 0")
+		}
+	})
+	t.Run("max output above context", func(t *testing.T) {
+		env := validHostedEnv()
+		env["CYBERPENDA_MAX_OUTPUT_TOKENS"] = "1048577"
+		if _, err := hostedcontroller.ConfigFromEnv(env); err == nil {
+			t.Fatal("accepted Max Output Tokens above 1048576")
+		}
+	})
+}
+
 func TestHostedConfigurationRejectsInvalidReasoningEffortAndTaskGoalAppendix(t *testing.T) {
 	t.Run("unknown effort", func(t *testing.T) {
 		env := validHostedEnv()
@@ -260,6 +381,66 @@ func TestHTTPAppProjectsHostedReasoningEffortAndAppendedTaskGoal(t *testing.T) {
 	}
 	if taskRequest["goal"] != hostedcontroller.HostedTaskGoal+"\n\nClose a completed challenge before starting another." {
 		t.Fatalf("Task Goal = %#v", taskRequest["goal"])
+	}
+}
+
+func TestHTTPAppProjectsHostedCompactThresholdAndMaxOutputTokens(t *testing.T) {
+	var profileRequest map[string]any
+	handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch request.Method + " " + request.URL.Path {
+		case "PUT /api/skills/tsecbench-hosted-challenge-loop":
+			_, _ = io.WriteString(response, `{}`)
+		case "POST /api/model-providers":
+			response.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(response, `{"id":"hosted-model","api_key_env":"HOSTED_MODEL_API_KEY"}`)
+		case "POST /api/projects":
+			response.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(response, `{"id":"project-1"}`)
+		case "POST /api/runtime-profiles":
+			_ = json.NewDecoder(request.Body).Decode(&profileRequest)
+			response.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(response, `{"id":"profile-1"}`)
+		case "PUT /api/projects/project-1/credential-bindings":
+			_, _ = io.WriteString(response, `{}`)
+		case "POST /api/projects/project-1/tasks":
+			response.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(response, `{"id":"task-1"}`)
+		default:
+			http.Error(response, "unexpected request", http.StatusNotFound)
+		}
+	})
+	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response.Result(), nil
+	})}
+
+	env := validHostedEnv()
+	env["CYBERPENDA_AUTO_COMPACT_THRESHOLD"] = "80"
+	env["CYBERPENDA_AUTO_COMPACT_WINDOW"] = "786432"
+	env["CYBERPENDA_MAX_OUTPUT_TOKENS"] = "393216"
+	config, err := hostedcontroller.ConfigFromEnv(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := hostedcontroller.NewHTTPApp(hostedcontroller.HTTPAppConfig{BaseURL: "http://hosted.test", Client: client})
+	if _, err := app.Start(context.Background(), hostedcontroller.EvaluationForConfig(config)); err != nil {
+		t.Fatal(err)
+	}
+	fields, _ := profileRequest["fields"].(map[string]any)
+	profileEnv, _ := fields["env"].(map[string]any)
+	if profileEnv["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] != "80" {
+		t.Fatalf("Runtime Profile compact env = %#v, want 80", profileEnv)
+	}
+	if profileEnv["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] != "786432" {
+		t.Fatalf("Runtime Profile compact window env = %#v, want 786432", profileEnv)
+	}
+	if profileEnv["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] != "393216" {
+		t.Fatalf("Runtime Profile max output env = %#v, want 393216", profileEnv)
+	}
+	if profileEnv["BENCHMARK_BASE_URL"] != env["BENCHMARK_BASE_URL"] {
+		t.Fatalf("Runtime Profile dropped BENCHMARK_BASE_URL: %#v", profileEnv)
 	}
 }
 
