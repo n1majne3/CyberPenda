@@ -302,6 +302,27 @@ func TestBuildFallsBackForUnknownJSONRuntimeOutput(t *testing.T) {
 	}
 }
 
+func TestBuildParsesHermesACPRuntimeOutputFromPersistentSessionAdapter(t *testing.T) {
+	createdAt := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	subject := transcript.Subject{ID: "task-hermes", Title: "Inspect target", CreatedAt: createdAt}
+	events := []transcript.Event{
+		{
+			ID: "ev-1", Seq: 1, Kind: "runtime_output",
+			Payload: map[string]any{
+				"provider": "hermes",
+				"stream":   "hermes_acp",
+				"text":     `{"sessionId":"hermes-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Inspecting the app."}}}`,
+			},
+			CreatedAt: createdAt.Add(time.Second),
+		},
+	}
+	got := transcript.Build(subject, events)
+	msg := findEntryByKindRole(t, got, "message", "assistant")
+	if msg.Text != "Inspecting the app." {
+		t.Fatalf("assistant text = %q in %#v", msg.Text, got)
+	}
+}
+
 func TestParseRecordPiSessionLines(t *testing.T) {
 	base := time.Date(2026, 6, 19, 12, 11, 46, 0, time.UTC)
 
@@ -349,6 +370,25 @@ func TestParseRecordPiSessionLines(t *testing.T) {
 				res := findEntryByKind(t, entries, "tool_result")
 				if res.Text != "✓ Done" || res.ToolCallID != "call_00_abc" {
 					t.Fatalf("tool result = %#v", res)
+				}
+			},
+		},
+		{
+			name: "hermes ACP agent message chunk",
+			record: map[string]any{
+				"method": "session/update",
+				"params": map[string]any{
+					"sessionId": "hermes-session",
+					"update": map[string]any{
+						"sessionUpdate": "agent_message_chunk",
+						"content":       map[string]any{"type": "text", "text": "Hermes is working."},
+					},
+				},
+			},
+			check: func(t *testing.T, entries []transcript.Entry) {
+				msg := findEntryByKindRole(t, entries, "message", "assistant")
+				if msg.Text != "Hermes is working." {
+					t.Fatalf("assistant text = %q", msg.Text)
 				}
 			},
 		},

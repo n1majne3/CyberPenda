@@ -28,6 +28,9 @@ func ParseLine(text string, createdAt time.Time, opts ParseOptions) ([]Turn, boo
 
 // ParseRecord projects one provider JSON object into normalized turns.
 func ParseRecord(record map[string]any, opts ParseOptions, createdAt time.Time) []Turn {
+	if turns := parseHermesACPRecord(record, opts, createdAt); len(turns) > 0 || isHermesACPRecord(record) {
+		return turns
+	}
 	if item, ok := mapValue(record, "item"); ok {
 		if turns := ParseRecord(item, opts, createdAt); len(turns) > 0 {
 			return turns
@@ -286,6 +289,82 @@ func nilIfEmpty(values map[string]any) map[string]any {
 		return nil
 	}
 	return values
+}
+
+func isHermesACPRecord(record map[string]any) bool {
+	method := strings.ToLower(strings.TrimSpace(stringValue(record, "method")))
+	if method == "session/update" || strings.HasPrefix(method, "session/") {
+		return true
+	}
+	if update, ok := mapValue(record, "update"); ok && firstText(update, "sessionUpdate", "session_update") != "" {
+		return true
+	}
+	return firstText(record, "sessionUpdate", "session_update") != ""
+}
+
+func parseHermesACPRecord(record map[string]any, opts ParseOptions, createdAt time.Time) []Turn {
+	if !isHermesACPRecord(record) {
+		return nil
+	}
+	update := record
+	if params, ok := mapValue(record, "params"); ok {
+		if nested, ok := mapValue(params, "update"); ok {
+			update = nested
+		} else {
+			update = params
+		}
+	} else if nested, ok := mapValue(record, "update"); ok {
+		update = nested
+	}
+	kind := strings.ToLower(strings.TrimSpace(firstText(update, "sessionUpdate", "session_update")))
+	switch kind {
+	case "agent_message_chunk", "agent_thought_chunk":
+		if kind == "agent_thought_chunk" && !opts.IncludeThinking {
+			return nil
+		}
+		text := firstText(update, "text")
+		if text == "" {
+			if content, ok := mapValue(update, "content"); ok {
+				text = firstText(content, "text", "content")
+			}
+		}
+		if text == "" {
+			return nil
+		}
+		turnKind := KindText
+		if kind == "agent_thought_chunk" {
+			turnKind = KindThinking
+		}
+		return []Turn{{Kind: turnKind, Role: roleAssistant, Text: text, ContentIndex: -1, CreatedAt: createdAt}}
+	case "tool_call":
+		turn := toolUseTurn(update, createdAt)
+		if turn.Tool == "" {
+			turn.Tool = firstText(update, "title")
+		}
+		if turn.ToolCallID == "" {
+			turn.ToolCallID = firstText(update, "toolCallId", "tool_call_id")
+		}
+		if input, ok := mapValue(update, "rawInput"); ok {
+			turn.Input = input
+		} else if input, ok := mapValue(update, "raw_input"); ok {
+			turn.Input = input
+		}
+		return []Turn{turn}
+	case "tool_call_update":
+		turn := toolResultTurn(update, createdAt)
+		if turn.Tool == "" {
+			turn.Tool = firstText(update, "title")
+		}
+		if turn.ToolCallID == "" {
+			turn.ToolCallID = firstText(update, "toolCallId", "tool_call_id")
+		}
+		if turn.Output == "" {
+			turn.Output = firstText(update, "content", "rawOutput", "raw_output")
+		}
+		return []Turn{turn}
+	default:
+		return nil
+	}
 }
 
 func isTruthy(value any) bool {

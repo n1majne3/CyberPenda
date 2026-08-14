@@ -72,12 +72,15 @@ func (s *HermesProviderSession) HandleEvent(event SandboxBridgeEvent, emit Provi
 	switch kind {
 	case "agent_message_chunk":
 		s.captureHermesAttemptCandidate(params, update)
+		s.emitHermesRuntimeOutput(event, params, emit)
 		return
 	case "tool_call":
 		s.emitHermesToolObservation(params, update, ProviderSessionObservationToolUse)
+		s.emitHermesRuntimeOutput(event, params, emit)
 		return
 	case "tool_call_update":
 		s.emitHermesToolObservation(params, update, ProviderSessionObservationToolResult)
+		s.emitHermesRuntimeOutput(event, params, emit)
 		return
 	case "turn_ended":
 		s.projectHermesTerminalLifecycle(event, params, hermesACPStopStatus(update), emit)
@@ -86,6 +89,30 @@ func (s *HermesProviderSession) HandleEvent(event SandboxBridgeEvent, emit Provi
 	default:
 		s.providerSessionAdapter.HandleEvent(event, emit)
 	}
+}
+
+func (s *HermesProviderSession) emitHermesRuntimeOutput(event SandboxBridgeEvent, params map[string]any, emit ProviderSessionEmit) {
+	if emit == nil {
+		s.mu.Lock()
+		emit = s.eventSink
+		s.mu.Unlock()
+	}
+	if emit == nil || len(event.Params) == 0 {
+		return
+	}
+	sessionID := providerJSONValue(params, "sessionId", "session_id")
+	if sessionID == "" {
+		sessionID = s.SessionID()
+	}
+	turnID := providerJSONValue(params, "turn_id", "turnId")
+	if turnID == "" {
+		turnID = s.currentTurn()
+	}
+	emit(task.EventKindRuntimeOutput, task.EventPayload{
+		"provider": s.provider, "provider_event": event.Method,
+		"session_id": sessionID, "provider_turn_id": turnID,
+		"stream": "hermes_acp", "text": string(event.Params),
+	})
 }
 
 func (s *HermesProviderSession) projectHermesTerminalLifecycle(event SandboxBridgeEvent, params map[string]any, outcome string, emit ProviderSessionEmit) {

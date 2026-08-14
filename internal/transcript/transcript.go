@@ -252,6 +252,8 @@ func entriesForEvent(event Event, continuation int, adapter string) []Entry {
 		parseAdapter := adapter
 		if stream == PiSessionStream {
 			parseAdapter = string(runtimeprofile.ProviderPi)
+		} else if stream == "hermes_acp" {
+			parseAdapter = string(runtimeprofile.ProviderHermes)
 		} else if strings.HasPrefix(parseAdapter, "provider-session:") {
 			if provider := stringValue(event.Payload, "provider"); provider != "" {
 				parseAdapter = provider

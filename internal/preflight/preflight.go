@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -126,6 +127,9 @@ type Service struct {
 	runtimeExtensions *runtimeextension.Registry
 	// containerRunner probes the host container CLI. Nil uses the real CLI.
 	containerRunner runner.CommandRunner
+	// hermesACPProbe checks that a host Hermes binary exposes the ACP extra.
+	// Nil uses the default `hermes acp --help` probe.
+	hermesACPProbe func(binary string) error
 }
 
 // NewService returns a preflight Service.
@@ -152,6 +156,13 @@ func (s *Service) WithRuntimeExtensions(registry *runtimeextension.Registry) *Se
 // and VPN TUN checks. Tests supply fakes; production leaves this nil.
 func (s *Service) WithContainerRunner(run runner.CommandRunner) *Service {
 	s.containerRunner = run
+	return s
+}
+
+// WithHermesACPProbe injects the Host Hermes ACP extra check. Tests supply
+// fakes; production leaves this nil and runs `hermes acp --help`.
+func (s *Service) WithHermesACPProbe(probe func(binary string) error) *Service {
+	s.hermesACPProbe = probe
 	return s
 }
 
@@ -281,6 +292,10 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 		})
 	} else if runner == "host" {
 		result.add(Check{Name: "host_activation", Status: CheckPass})
+	}
+
+	if profileLoaded && runner == "host" {
+		s.checkHermesACP(&result, profile)
 	}
 
 	if runner == "sandbox" {
@@ -642,6 +657,50 @@ func (s *Service) checkContainerEngine(ctx context.Context, result *Result, requ
 		return
 	}
 	result.add(Check{Name: "sandbox_vpn_tun", Status: CheckPass, Detail: vpnDetail})
+}
+
+func (s *Service) checkHermesACP(result *Result, profile runtimeprofile.Profile) {
+	if profile.Provider != runtimeprofile.ProviderHermes {
+		return
+	}
+	binary := strings.TrimSpace(profile.Fields.BinaryPath)
+	if binary == "" {
+		binary = "hermes"
+	}
+	probe := s.hermesACPProbe
+	if probe == nil {
+		probe = defaultHermesACPProbe
+	}
+	if err := probe(binary); err != nil {
+		result.add(Check{
+			Name:   "hermes_acp",
+			Status: CheckFail,
+			Detail: err.Error(),
+		})
+		return
+	}
+	result.add(Check{Name: "hermes_acp", Status: CheckPass, Detail: binary + " acp"})
+}
+
+func defaultHermesACPProbe(binary string) error {
+	resolved := binary
+	if !filepath.IsAbs(binary) && !strings.Contains(binary, string(os.PathSeparator)) {
+		found, err := exec.LookPath(binary)
+		if err != nil {
+			return fmt.Errorf("hermes binary %q not found on PATH", binary)
+		}
+		resolved = found
+	}
+	cmd := exec.Command(resolved, "acp", "--help")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		detail := strings.TrimSpace(string(out))
+		if detail == "" {
+			detail = err.Error()
+		}
+		return fmt.Errorf("Hermes ACP extra is not available: %s", detail)
+	}
+	return nil
 }
 
 func (r *Result) add(check Check) {

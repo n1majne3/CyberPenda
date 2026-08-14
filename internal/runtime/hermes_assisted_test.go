@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"pentest/internal/runtimeplugin"
@@ -106,7 +107,12 @@ func TestHermesEventsProjectBoundedCorrelatedObservationsWithoutRawPayloads(t *t
 	var got []ProviderSessionObservation
 	session.SetObservationSink(func(observation ProviderSessionObservation) { got = append(got, observation) })
 	var events []task.EventPayload
-	emit := func(_ task.EventKind, payload task.EventPayload) { events = append(events, payload) }
+	emit := func(kind task.EventKind, payload task.EventPayload) {
+		if kind == task.EventKindRuntimeOutput {
+			return
+		}
+		events = append(events, payload)
+	}
 
 	for _, event := range []SandboxBridgeEvent{
 		{Method: "session/update", Params: json.RawMessage(`{"sessionId":"hermes-session","update":{"sessionUpdate":"tool_call","toolCallId":"call-1","title":"bash","rawInput":{"token":"secret"}}}`)},
@@ -172,6 +178,30 @@ func TestHermesToolObservationsCarryCanonicalBlackboardOperationIdentity(t *test
 		if observation.BlackboardOperation != expected.operation || observation.ToolName != expected.toolName {
 			t.Fatalf("observation %d = %#v, want operation %q tool %q", index, observation, expected.operation, expected.toolName)
 		}
+	}
+}
+
+func TestHermesSessionUpdateEmitsRuntimeOutputForTranscript(t *testing.T) {
+	session, _ := newAssistedHermesSession(t, RuntimeTurnKindWork)
+	var outputs []task.EventPayload
+	emit := func(kind task.EventKind, payload task.EventPayload) {
+		if kind == task.EventKindRuntimeOutput {
+			outputs = append(outputs, payload)
+		}
+	}
+	session.HandleEvent(SandboxBridgeEvent{
+		Method: "session/update",
+		Params: json.RawMessage(`{"sessionId":"hermes-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Inspecting the app."}}}`),
+	}, emit)
+	if len(outputs) != 1 {
+		t.Fatalf("runtime_output events = %#v", outputs)
+	}
+	if outputs[0]["provider"] != "hermes" || outputs[0]["stream"] != "hermes_acp" {
+		t.Fatalf("payload = %#v", outputs[0])
+	}
+	text, _ := outputs[0]["text"].(string)
+	if !strings.Contains(text, "Inspecting the app.") || !strings.Contains(text, "agent_message_chunk") {
+		t.Fatalf("text = %q", text)
 	}
 }
 
