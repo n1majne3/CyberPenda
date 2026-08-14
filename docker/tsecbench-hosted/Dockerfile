@@ -58,6 +58,7 @@ RUN --mount=type=cache,target=/root/.npm \
     test -n "${RUNTIME_RELEASE_CACHE_BUST}" \
   && npm install -g \
       @earendil-works/pi-coding-agent@latest \
+      @tintinweb/pi-subagents@latest \
       @openai/codex@latest \
       @anthropic-ai/claude-code@latest \
       agent-browser@latest
@@ -78,7 +79,8 @@ COPY docker/tsecbench-hosted/tsecbench-local-validate.py /usr/local/bin/tsecbenc
 RUN chmod 0755 /usr/local/bin/tsecbench-local-validate
 
 # Keep Chromium headless and use no runtime browser download.
-RUN mkdir -p /root/.agent-browser /opt/cyberpenda /data \
+RUN mkdir -p /root/.agent-browser /opt/cyberpenda /data /root/.pi/agent \
+  && printf '%s\n' '{"packages":["npm:@tintinweb/pi-subagents","npm:pi-subagents"]}' > /root/.pi/agent/settings.json \
   && printf '%s\n' '{"executablePath":"/usr/bin/chromium"}' > /root/.agent-browser/config.json \
   && PI_VERSION="$(node -p "require('$(npm root -g)/@earendil-works/pi-coding-agent/package.json').version")" \
      CODEX_VERSION="$(node -p "require('$(npm root -g)/@openai/codex/package.json').version")" \

@@ -632,22 +632,20 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 		}
 	}
 
-	// Catalog-sourced runtime extensions (npm: install refs) are installed by
-	// pi on launch when listed in settings.json packages. Project them so a
-	// profile's enabled catalog extensions actually take effect.
-	packages := enabledExtensionInstallRefs(profile)
-	if len(packages) > 0 {
-		settings := map[string]any{"packages": packages}
-		settingsPath := filepath.Join(agentDir, "settings.json")
-		if err := writeJSONConfigFile(settingsPath, settings); err != nil {
-			return ConfigProjection{}, err
-		}
+	// Catalog-sourced runtime extensions (npm: install refs) and host packages
+	// from ~/.pi/agent/settings.json are merged into settings.json packages.
+	packages, err := projectPiSettings(agentDir, profile)
+	if err != nil {
+		return ConfigProjection{}, err
 	}
 
 	preview := map[string]any{
 		"provider":    string(profile.Provider),
 		"models_path": modelsPath,
 		"models_json": modelsDoc,
+	}
+	if len(packages) > 0 {
+		preview["packages"] = packages
 	}
 	if authPath != "" {
 		preview["auth_path"] = authPath
@@ -1299,6 +1297,63 @@ func copyHostPiAuth(agentDir string) (bool, error) {
 		return false, fmt.Errorf("copy host pi auth: %w", err)
 	}
 	return true, nil
+}
+
+func projectPiSettings(agentDir string, profile runtimeprofile.Profile) ([]string, error) {
+	profilePackages := enabledExtensionInstallRefs(profile)
+	home, err := os.UserHomeDir()
+	var hostSettings map[string]any
+	if err == nil {
+		hostPath := filepath.Join(home, ".pi", "agent", "settings.json")
+		if raw, readErr := os.ReadFile(hostPath); readErr == nil {
+			var parsed map[string]any
+			if unmarshalErr := json.Unmarshal(raw, &parsed); unmarshalErr == nil {
+				hostSettings = parsed
+			}
+		}
+	}
+
+	var combinedPackages []string
+	seen := make(map[string]bool)
+	if hostSettings != nil {
+		if rawPkgs, ok := hostSettings["packages"].([]any); ok {
+			for _, item := range rawPkgs {
+				if str, ok := item.(string); ok && strings.TrimSpace(str) != "" {
+					str = strings.TrimSpace(str)
+					if !seen[str] {
+						seen[str] = true
+						combinedPackages = append(combinedPackages, str)
+					}
+				}
+			}
+		}
+	}
+	for _, pkg := range profilePackages {
+		pkg = strings.TrimSpace(pkg)
+		if pkg != "" && !seen[pkg] {
+			seen[pkg] = true
+			combinedPackages = append(combinedPackages, pkg)
+		}
+	}
+
+	if hostSettings == nil && len(combinedPackages) == 0 {
+		return nil, nil
+	}
+
+	settings := make(map[string]any)
+	if hostSettings != nil {
+		for k, v := range hostSettings {
+			settings[k] = v
+		}
+	}
+	if len(combinedPackages) > 0 {
+		settings["packages"] = combinedPackages
+	}
+	settingsPath := filepath.Join(agentDir, "settings.json")
+	if err := writeJSONConfigFile(settingsPath, settings); err != nil {
+		return nil, err
+	}
+	return combinedPackages, nil
 }
 
 // ClaudeProcessEnv returns env vars that must be present on the Claude process.

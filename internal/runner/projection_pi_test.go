@@ -133,6 +133,7 @@ func TestProjectPiConfigWritesModelsAndAuth(t *testing.T) {
 // into the pi agent settings.json packages field, so pi installs them on launch.
 func TestProjectPiConfigWritesCatalogExtensionPackages(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+	t.Setenv("HOME", t.TempDir())
 
 	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
 	if err != nil {
@@ -203,6 +204,88 @@ func TestProjectPiConfigWritesCatalogExtensionPackages(t *testing.T) {
 	}
 	if preview, ok := projection.Config["packages"].([]string); !ok || len(preview) != 2 {
 		t.Fatalf("expected packages preview with 2 entries, got %#v", projection.Config["packages"])
+	}
+}
+
+// TestProjectPiConfigMergesHostSettingsPackages proves that packages configured
+// in host ~/.pi/agent/settings.json are preserved and merged into the task-local
+// settings.json packages list.
+func TestProjectPiConfigMergesHostSettingsPackages(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+	hostHome := t.TempDir()
+	t.Setenv("HOME", hostHome)
+
+	hostPiDir := filepath.Join(hostHome, ".pi", "agent")
+	if err := os.MkdirAll(hostPiDir, 0o700); err != nil {
+		t.Fatalf("mkdir host pi agent dir: %v", err)
+	}
+	hostSettings := `{"theme":"dark","packages":["npm:pi-web-access","npm:pi-subagents"]}`
+	if err := os.WriteFile(filepath.Join(hostPiDir, "settings.json"), []byte(hostSettings), 0o600); err != nil {
+		t.Fatalf("write host settings.json: %v", err)
+	}
+
+	root := t.TempDir()
+	layout, err := runner.PrepareTaskLayout(root, "task-pi-host-settings", runtimeprofile.ProviderPi)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+
+	enabled := true
+	profile := runtimeprofile.Profile{
+		Provider: runtimeprofile.ProviderPi,
+		Fields: runtimeprofile.Fields{
+			Model: "DeepSeek-V4-Pro",
+			RuntimeExtensions: []runtimeprofile.RuntimeExtensionRef{
+				{
+					ID:      "npm:@tintinweb/pi-subagents",
+					Enabled: &enabled,
+					Config: map[string]string{
+						"install_ref": "npm:@tintinweb/pi-subagents",
+					},
+				},
+			},
+		},
+	}
+
+	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		Owner: owner.NewTaskContract("task-pi", "project-1", layout.Workdir),
+	})
+	if err != nil {
+		t.Fatalf("project config: %v", err)
+	}
+
+	settingsPath := filepath.Join(layout.ProviderHome, "agent", "settings.json")
+	raw, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read projected settings.json: %v", err)
+	}
+	var settings struct {
+		Theme    string   `json:"theme"`
+		Packages []string `json:"packages"`
+	}
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		t.Fatalf("decode settings.json: %v", err)
+	}
+	if settings.Theme != "dark" {
+		t.Fatalf("expected theme 'dark' preserved from host, got %q", settings.Theme)
+	}
+
+	want := map[string]bool{
+		"npm:pi-web-access":           true,
+		"npm:pi-subagents":            true,
+		"npm:@tintinweb/pi-subagents": true,
+	}
+	got := map[string]bool{}
+	for _, p := range settings.Packages {
+		got[p] = true
+	}
+	for ref := range want {
+		if !got[ref] {
+			t.Fatalf("expected merged packages to contain %q, got %#v", ref, settings.Packages)
+		}
+	}
+	if preview, ok := projection.Config["packages"].([]string); !ok || len(preview) != 3 {
+		t.Fatalf("expected packages preview with 3 entries, got %#v", projection.Config["packages"])
 	}
 }
 
