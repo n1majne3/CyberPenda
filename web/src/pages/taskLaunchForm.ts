@@ -2,8 +2,7 @@ import type { ModelProvider, RuntimePlugin, RuntimeProfile } from "@/lib/api";
 import { isManualRuntimeProfile } from "@/pages/runtimeProfileKind";
 import { displayReasoningEffort, selectableModelProviders } from "@/pages/runtimeProfileForm";
 
-// hermes stays out until Conclude Runtime Turn works on the ACP process (ADR 0027).
-export const LAUNCH_RUNTIME_IDS = ["codex", "claude_code", "pi"] as const;
+export const LAUNCH_RUNTIME_IDS = ["codex", "claude_code", "pi", "hermes"] as const;
 
 export type LaunchForm = {
   runtime: string;

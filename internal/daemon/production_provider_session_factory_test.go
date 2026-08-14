@@ -276,7 +276,7 @@ func TestClaudeBridgeAssistedCapabilityRequiresCompleteHandshake(t *testing.T) {
 func TestProductionProviderSessionFactoryReportsImplementedAssistedProviders(t *testing.T) {
 	factory := NewProductionProviderSessionFactory(ProductionProviderSessionFactoryConfig{})
 	for _, provider := range []runtimeprofile.Provider{
-		runtimeprofile.ProviderCodex, runtimeprofile.ProviderClaudeCode, runtimeprofile.ProviderPi,
+		runtimeprofile.ProviderCodex, runtimeprofile.ProviderClaudeCode, runtimeprofile.ProviderPi, runtimeprofile.ProviderHermes,
 	} {
 		if !factory.SupportsAssistedConclusion(provider) {
 			t.Fatalf("provider %q did not project assisted support", provider)
@@ -294,7 +294,7 @@ func TestProductionProviderSessionFactoryDoesNotProjectCustomClaudeBridgeAsStati
 	if factory.SupportsAssistedConclusion(runtimeprofile.ProviderClaudeCode) {
 		t.Fatal("custom Claude bridge projected assisted support before its runtime handshake")
 	}
-	for _, provider := range []runtimeprofile.Provider{runtimeprofile.ProviderCodex, runtimeprofile.ProviderPi} {
+	for _, provider := range []runtimeprofile.Provider{runtimeprofile.ProviderCodex, runtimeprofile.ProviderPi, runtimeprofile.ProviderHermes} {
 		if !factory.SupportsAssistedConclusion(provider) {
 			t.Fatalf("provider %q lost static assisted support", provider)
 		}

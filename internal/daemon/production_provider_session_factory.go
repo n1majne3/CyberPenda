@@ -56,7 +56,7 @@ type ProductionProviderSessionFactory struct {
 // handshake below and fails closed if an older/incomplete bridge is active.
 func (f *ProductionProviderSessionFactory) SupportsAssistedConclusion(provider runtimeprofile.Provider) bool {
 	switch provider {
-	case runtimeprofile.ProviderCodex, runtimeprofile.ProviderPi:
+	case runtimeprofile.ProviderCodex, runtimeprofile.ProviderPi, runtimeprofile.ProviderHermes:
 		return true
 	case runtimeprofile.ProviderClaudeCode:
 		return f.claudeAssistedStatic
@@ -934,7 +934,7 @@ func (f *ProductionProviderSessionFactory) finishHermesBinding(
 
 	capabilities := runtimeplugin.Capabilities{
 		PersistentSession: true, SendTurn: true, InterruptTurn: true, InterruptThenReplace: true,
-		PermissionResponse: true, ResumeSession: true,
+		PermissionResponse: true, ResumeSession: true, AssistedConclusion: true,
 	}
 	nativeSession := runtime.NewHermesProviderSession(runtime.HermesProviderSessionConfig{
 		Transport: bridge, SessionID: sessionID, Capabilities: capabilities,
