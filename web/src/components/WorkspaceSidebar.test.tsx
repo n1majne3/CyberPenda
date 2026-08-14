@@ -115,7 +115,7 @@ describe("WorkspaceSidebar", () => {
     );
 
     const nonProject = await screen.findByRole("region", { name: /non-project/i });
-    expect(within(nonProject).getByRole("link", { name: /failed session.*runtime failure/i })).toBeInTheDocument();
+    expect(await within(nonProject).findByRole("link", { name: /failed session.*runtime failure/i })).toBeInTheDocument();
     const projectRegion = screen.getByRole("region", { name: /open project project dashboard/i });
     await user.click(within(projectRegion).getByRole("button", { name: /expand project/i }));
     expect(await within(projectRegion).findByRole("link", { name: /failed task.*runtime failure/i })).toBeInTheDocument();
@@ -192,7 +192,7 @@ describe("WorkspaceSidebar", () => {
     expect(screen.getByRole("link", { name: /non-project/i })).toHaveAttribute("href", "/sessions");
     expect(screen.getByRole("link", { name: /projects/i })).toHaveAttribute("href", "/");
     expect(screen.getByRole("link", { name: /new project/i })).toHaveAttribute("href", "/?new=1");
-    expect(screen.getByRole("link", { name: /active project project dashboard/i })).toHaveAttribute(
+    expect(await screen.findByRole("link", { name: /active project project dashboard/i })).toHaveAttribute(
       "href",
       "/projects/project-active",
     );
@@ -385,7 +385,7 @@ describe("WorkspaceSidebar", () => {
     );
 
     const nonProject = await screen.findByRole("region", { name: /non-project/i });
-    const sessionLinks = within(nonProject).getAllByRole("link", { name: /session conversation/i });
+    const sessionLinks = await within(nonProject).findAllByRole("link", { name: /session conversation/i });
     expect(sessionLinks.map((link) => link.textContent?.trim())).toEqual([
       "Busy session session conversation",
       "Idle session 1 session conversation",
@@ -452,9 +452,9 @@ describe("WorkspaceSidebar", () => {
     );
 
     const nonProject = await screen.findByRole("region", { name: /non-project/i });
-    expect(within(nonProject).getByText(/no open sessions/i)).toBeInTheDocument();
+    expect(await within(nonProject).findByText(/no open sessions/i)).toBeInTheDocument();
     const projects = screen.getByRole("region", { name: /projects/i });
-    expect(within(projects).getByRole("alert")).toHaveTextContent("projects unavailable");
+    expect(await within(projects).findByRole("alert")).toHaveTextContent("projects unavailable");
     expect(within(nonProject).queryByRole("alert")).not.toBeInTheDocument();
   });
 
