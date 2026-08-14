@@ -390,6 +390,13 @@ func (r *Redactor) redactString(s string) string {
 	return s
 }
 
+// RedactString applies the same known-value and secret-shape masking as Redact
+// to a plain string, for non-payload channels such as bridge stderr or docker
+// diagnostics where credentials may appear in free-form text.
+func (r *Redactor) RedactString(s string) string {
+	return r.redactString(s)
+}
+
 // Redact returns a copy of payload with secret-shaped values replaced by a
 // placeholder using the shape-based patterns only. Callers that know the resolved
 // secret values should prefer NewRedactor(...).Redact so opaque tokens without a

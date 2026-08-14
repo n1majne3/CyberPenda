@@ -687,3 +687,25 @@ func TestBuildNativeResumeArgsPreservesNonConflictingCustomArgsOrder(t *testing.
 		t.Fatalf("custom args order not preserved on resume:\nargs=%#v\nwant contiguous %#v", args, custom)
 	}
 }
+
+// TestRedactStringMasksSecretShapesInPlainDiagnostics covers plain-string
+// redaction for non-payload channels such as provider-bridge stderr, where a
+// credential may appear inside free-form diagnostics text.
+func TestRedactStringMasksSecretShapesInPlainDiagnostics(t *testing.T) {
+	redactor := adapters.NewRedactor([]string{"opaque-runtime-token-value"})
+
+	redacted := redactor.RedactString("bridge failed: ANTHROPIC_API_KEY=sk-ant-api03-abcdef123456789012345678 and opaque-runtime-token-value rejected")
+
+	if strings.Contains(redacted, "sk-ant-api03-abcdef123456789012345678") {
+		t.Fatalf("expected API key shape redacted, got %q", redacted)
+	}
+	if strings.Contains(redacted, "opaque-runtime-token-value") {
+		t.Fatalf("expected known opaque secret redacted, got %q", redacted)
+	}
+	if !strings.Contains(redacted, "ANTHROPIC_API_KEY=") {
+		t.Fatalf("expected variable name retained for context, got %q", redacted)
+	}
+	if !strings.Contains(redacted, "bridge failed") {
+		t.Fatalf("expected ordinary diagnostics retained, got %q", redacted)
+	}
+}

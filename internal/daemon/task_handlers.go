@@ -783,16 +783,20 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		return taskLaunchPlan{}, err
 	}
 
-	authToken := server.authToken
+	// The daemon operator token authorizes the full API, including Host Runner
+	// launch. Runtime environments are not trusted with it: only a Continuation
+	// Interface Grant may authenticate Runtime traffic. The legacy non-v2 branch
+	// projects no token at all, so when a daemon token is configured its trusted
+	// MCP calls cannot authenticate — the denial happens at the daemon, never
+	// through leaked authority.
+	authToken := ""
 	projectionProfile := profile
 	if v2 {
 		if profile.Provider == runtimeprofile.ProviderCodex {
 			// Codex v2 stays networkless for Project Interface writes.
 			projectionProfile = codexV2ProjectionProfile(profile)
-			authToken = ""
 		} else if runner.BlackboardV2UsesTrustedMCP(profile.Provider) {
 			// Claude/Pi use the Continuation grant, never the operator token.
-			authToken = ""
 			if binding != nil {
 				authToken = binding.InterfaceToken
 			}

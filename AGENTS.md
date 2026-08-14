@@ -4,7 +4,7 @@ Always read CONTEXT.md, unconditionally.
 Use TDD
 
 Update `CONTEXT.md` when the user explicitly resolves a domain ambiguity.
-Always talk in ASD-STE100 Simplified Technical English. Always read CONTEXT.md files, and use their ubiquitous language.
+Always talk in ASD-STE100 Simplified Technical English(or Chines if user talks in Chinese). Always read CONTEXT.md files, and use their ubiquitous language.
 ## Agent skills
 
 ### Issue tracker

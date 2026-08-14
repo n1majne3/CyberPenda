@@ -25,7 +25,6 @@ type RuntimeOwnerContext struct {
 	Owner          owner.Contract
 	MCPURL         string
 	APIURL         string
-	AuthToken      string
 	InterfaceToken string
 	Provider       runtimeprofile.Provider
 	Sandbox        bool
@@ -36,7 +35,6 @@ func taskContextFromProjection(req ProjectionRequest, provider runtimeprofile.Pr
 	ctx := RuntimeOwnerContext{
 		Owner:         req.Owner,
 		MCPURL:        mcpURL,
-		AuthToken:     req.AuthToken,
 		Provider:      provider,
 		Sandbox:       req.Sandbox,
 		ScopeSnapshot: req.ScopeSnapshot,

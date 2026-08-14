@@ -34,6 +34,9 @@ jobs:
       - name: Lint
         working-directory: web
         run: npm run lint
+      - name: Unit tests
+        working-directory: web
+        run: npm run test
       - name: Install browser
         working-directory: web
         run: npx playwright install --with-deps chromium

@@ -1879,12 +1879,16 @@ describe("TaskDetailPage Runtime Owner History Window (#202)", () => {
     const user = userEvent.setup();
     const scrollIntoView = vi.fn();
     Object.defineProperty(Element.prototype, "scrollIntoView", { value: scrollIntoView, configurable: true });
+    // The second owner's history stays pending until the test releases it, so
+    // the ordering assertion below is deterministic instead of racing a timer.
+    let releaseSecondOwnerHistory!: () => void;
+    const secondOwnerHistory = new Promise<void>((resolve) => {
+      releaseSecondOwnerHistory = resolve;
+    });
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
-      // The second owner's history resolves slowly so the old owner's rows
-      // must disappear before the new ones can render.
       if (url.includes("tasks/task-2/") && (url.includes("/timeline") || url.includes("/transcript"))) {
-        await new Promise((resolve) => setTimeout(resolve, 80));
+        await secondOwnerHistory;
       }
       if (url.includes("tasks/task-1/timeline")) {
         return json({ task_id: "task-1", items: [{ seq: 1, type: "text", content: "First task timeline", created_at: "2026-01-01T00:00:00Z" }], cursor: 1 });
@@ -1928,6 +1932,7 @@ describe("TaskDetailPage Runtime Owner History Window (#202)", () => {
     });
     expect(screen.queryByText("First task timeline")).not.toBeInTheDocument();
     expect(screen.queryByText("Second task content")).not.toBeInTheDocument();
+    releaseSecondOwnerHistory();
     expect(await screen.findByText("Second task content")).toBeInTheDocument();
     // Nothing from the first owner leaks into the second owner's workspace.
     expect(screen.queryByText("First task content")).not.toBeInTheDocument();

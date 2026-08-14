@@ -1452,9 +1452,9 @@ func launchProcessEnv(layout Layout, profile runtimeprofile.Profile, sandbox boo
 	if ctx.MCPURL != "" {
 		env["PENTEST_MCP_URL"] = ctx.MCPURL
 	}
-	if ctx.AuthToken != "" {
-		env["PENTEST_AUTH_TOKEN"] = ctx.AuthToken
-	}
+	// PENTEST_AUTH_TOKEN is deliberately never projected: the daemon operator
+	// token authorizes the full API and must stay outside Runtime boundaries.
+	// Runtime traffic authenticates with the narrower PENTEST_INTERFACE_TOKEN.
 	if ctx.InterfaceToken != "" {
 		env["PENTEST_INTERFACE_TOKEN"] = ctx.InterfaceToken
 	}
