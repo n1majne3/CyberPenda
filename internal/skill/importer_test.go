@@ -228,3 +228,55 @@ func TestImportRejectsSymlinkInBundle(t *testing.T) {
 		t.Fatalf("expected ErrInvalidSkill for symlink in bundle, got %v", err)
 	}
 }
+
+func TestImportRejectsUnsafeSourcesWithoutExecutingNpx(t *testing.T) {
+	for _, source := range []string{
+		"file:///etc/passwd",         // local file exfiltration
+		"http://plain.example/skill", // non-TLS fetch
+		"/etc/passwd",                // absolute local path
+		"../outside",                 // relative path escape shape
+		"-c",                         // option injection into the fixed npx command
+		"--skill",                    // option injection, long form
+		"git@evil:host/repo",         // unsupported remote syntax
+		"owner/repo;rm -rf",          // garbage charset must not reach argv
+		"owner//repo",                // empty path segment
+	} {
+		runner := &fakeRunner{}
+		imp := skill.NPXSkillsImporter{Runner: runner}
+		_, err := imp.ImportSkill(context.Background(), skill.ImportRequest{SourceURL: source})
+		if !errors.Is(err, skill.ErrInvalidSkill) {
+			t.Errorf("source %q: expected ErrInvalidSkill, got %v", source, err)
+		}
+		if len(runner.recorded) != 0 {
+			t.Errorf("source %q: importer must reject before executing npx, ran: %v", source, runner.recorded)
+		}
+	}
+}
+
+func TestImportAcceptsHTTPSSourcesAndShorthandSources(t *testing.T) {
+	for _, tc := range []struct {
+		source    string
+		bundle    string
+		sourceURL string
+	}{
+		{source: "https://github.com/owner/repo", bundle: "repo", sourceURL: "https://github.com/owner/repo"},
+		{source: "owner/repo", bundle: "repo", sourceURL: "owner/repo"},
+		{source: "owner/repo@helper", bundle: "helper", sourceURL: "https://github.com/owner/repo"},
+		{source: "pdf", bundle: "pdf", sourceURL: "pdf"},
+	} {
+		t.Run(tc.source, func(t *testing.T) {
+			runner := &fakeRunner{install: func(dir string) error {
+				installBundle(t, dir, tc.bundle, tc.sourceURL, "github", map[string]string{"SKILL.md": sampleSkillMD})
+				return nil
+			}}
+			imp := skill.NPXSkillsImporter{Runner: runner}
+			bundle, err := imp.ImportSkill(context.Background(), skill.ImportRequest{SourceURL: tc.source})
+			if err != nil {
+				t.Fatalf("expected %q accepted, got %v", tc.source, err)
+			}
+			if bundle.Metadata.ID != tc.bundle {
+				t.Fatalf("expected bundle %q, got %q", tc.bundle, bundle.Metadata.ID)
+			}
+		})
+	}
+}

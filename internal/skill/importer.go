@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -79,6 +80,49 @@ type skillsLockEntry struct {
 // when invoked with --agent amp. Bundles land at <workdir>/.agents/skills/<name>.
 const universalSkillsDir = ".agents/skills"
 
+// importShorthandPattern matches the slash-separated shorthand the skills CLI
+// resolves: a well-known name or owner/repo path. Segments start alphanumeric so
+// local paths, option-shaped strings, and other argv-hostile input cannot pass.
+var importShorthandPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*(/[A-Za-z0-9][A-Za-z0-9_.-]*)*$`)
+
+// importFilterPattern matches the optional @skill filter suffix of a shorthand.
+var importFilterPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+
+// validateImportSource reports whether source is a shape the fixed
+// `npx skills add` command may resolve: an https:// URL, or a shorthand such as
+// owner/repo or a well-known name with an optional @skill filter. Local paths,
+// non-HTTPS schemes, and option-shaped strings are rejected so the importer can
+// never redirect the fixed command shape at local files or inject options.
+func validateImportSource(source string) error {
+	if source == "" {
+		return fmt.Errorf("source_url is required")
+	}
+	if scheme, rest, ok := strings.Cut(source, "://"); ok {
+		if !strings.EqualFold(scheme, "https") {
+			return fmt.Errorf("source scheme %q is not allowed; use https", scheme)
+		}
+		if host := strings.TrimSpace(rest); host == "" || strings.HasPrefix(host, "/") {
+			return fmt.Errorf("https source must include a host")
+		}
+		return nil
+	}
+	if strings.HasPrefix(source, "-") {
+		return fmt.Errorf("source must not start with an option dash")
+	}
+	shorthand := source
+	filter := ""
+	if at := strings.LastIndex(source, "@"); at > 0 {
+		shorthand, filter = source[:at], source[at+1:]
+	}
+	if !importShorthandPattern.MatchString(shorthand) {
+		return fmt.Errorf("source %q is not an https URL or owner/repo shorthand", source)
+	}
+	if filter != "" && !importFilterPattern.MatchString(filter) {
+		return fmt.Errorf("source skill filter %q is invalid", filter)
+	}
+	return nil
+}
+
 // ImportSkill resolves and downloads a skill bundle from the request source.
 // It requires a non-empty SourceURL; Package and Ref are ignored. For sources
 // that contain multiple skills, it publishes the first one (use owner/repo@name
@@ -86,8 +130,8 @@ const universalSkillsDir = ".agents/skills"
 // provenance of the selected skill.
 func (i NPXSkillsImporter) ImportSkill(ctx context.Context, request ImportRequest) (ImportedBundle, error) {
 	sourceURL := strings.TrimSpace(request.SourceURL)
-	if sourceURL == "" {
-		return ImportedBundle{}, fmt.Errorf("%w: source_url is required", ErrInvalidSkill)
+	if err := validateImportSource(sourceURL); err != nil {
+		return ImportedBundle{}, fmt.Errorf("%w: %v", ErrInvalidSkill, err)
 	}
 	workdir, err := os.MkdirTemp("", "skill-import-*")
 	if err != nil {

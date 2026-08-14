@@ -2,6 +2,7 @@ package scripts_test
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -48,42 +49,34 @@ func TestRetiredSandboxImageDefaultsAreAbsent(t *testing.T) {
 	repoRoot := repoRoot(t)
 	retired := []string{"pentest-sandbox:latest", "gemini_kali-gemini-kali:latest"}
 
-	err := filepath.WalkDir(repoRoot, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		rel, err := filepath.Rel(repoRoot, path)
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if rel == ".git" || rel == "web/node_modules" || rel == "web/dist" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if strings.HasSuffix(rel, "_test.go") {
-			return nil
+	// Scan only git-tracked files. Walking the working tree instead breaks on
+	// developer machines: task Runtime homes under runs/ hold downloaded
+	// challenge sources and permission-restricted directories that are local
+	// state, never product source.
+	tracked, err := exec.Command("git", "-C", repoRoot, "ls-files").Output()
+	if err != nil {
+		t.Fatalf("list tracked files: %v", err)
+	}
+	for _, rel := range strings.Split(strings.TrimSpace(string(tracked)), "\n") {
+		if rel == "" || strings.HasSuffix(rel, "_test.go") {
+			continue
 		}
 		switch filepath.Ext(rel) {
 		case ".go", ".html", ".js", ".md", ".py", ".sh", ".ts", ".tsx", ".yaml", ".yml":
 		default:
 			if filepath.Base(rel) != "Makefile" {
-				return nil
+				continue
 			}
 		}
-		contents, err := os.ReadFile(path)
+		contents, err := os.ReadFile(filepath.Join(repoRoot, rel))
 		if err != nil {
-			return err
+			t.Errorf("read %s: %v", rel, err)
+			continue
 		}
 		for _, image := range retired {
 			if strings.Contains(string(contents), image) {
 				t.Errorf("%s must not retain the retired sandbox image default %q", rel, image)
 			}
 		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("scan sandbox image defaults: %v", err)
 	}
 }

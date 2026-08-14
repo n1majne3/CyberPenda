@@ -759,7 +759,7 @@ describe("TaskDetailPage", () => {
     expect(screen.getByRole("button", { name: /Resume and send/ })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Continuation model provider" })).toHaveClass("focus-visible:ring-2");
     expect(screen.getByRole("combobox", { name: "Continuation model" })).toHaveClass("focus-visible:ring-2");
-    expect(screen.getByRole("option", { name: "MiMo" })).toBeInTheDocument();
+    expect(await screen.findByRole("option", { name: "MiMo" })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "Anthropic" })).not.toBeInTheDocument();
     expect(screen.queryByRole("option", { name: /Use Codex/ })).not.toBeInTheDocument();
   });
@@ -823,7 +823,9 @@ describe("TaskDetailPage", () => {
     renderPage();
 
     await screen.findByText("Conversation should be hidden by default");
+    await screen.findByRole("option", { name: "MiMo" });
     await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model provider" }), "mimo");
+    await screen.findByRole("option", { name: "mimo-v2-pro" });
     await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model" }), "mimo-v2-pro");
     await user.selectOptions(screen.getByRole("combobox", { name: "Continuation reasoning effort" }), "xhigh");
     await user.type(screen.getByPlaceholderText("Focus on admin.example.com next…"), "continue with mimo");
@@ -1262,6 +1264,7 @@ describe("TaskDetailPage", () => {
     renderPage();
 
     await screen.findByText("Conversation should be hidden by default");
+    await screen.findByRole("option", { name: "MiMo" });
     await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model provider" }), "mimo");
     await user.type(screen.getByPlaceholderText("Focus on admin.example.com next…"), "outside projected set");
     expect(screen.getByRole("button", { name: "Switch provider and resume" })).toBeEnabled();
@@ -1305,6 +1308,7 @@ describe("TaskDetailPage", () => {
     renderPage();
 
     await screen.findByText("Conversation should be hidden by default");
+    await screen.findByRole("option", { name: "MiMo" });
     await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model provider" }), "mimo");
     await user.type(screen.getByPlaceholderText("Focus on admin.example.com next…"), "bind a provider");
     expect(screen.getByRole("button", { name: "Switch provider and resume" })).toBeEnabled();
@@ -1879,12 +1883,16 @@ describe("TaskDetailPage Runtime Owner History Window (#202)", () => {
     const user = userEvent.setup();
     const scrollIntoView = vi.fn();
     Object.defineProperty(Element.prototype, "scrollIntoView", { value: scrollIntoView, configurable: true });
+    // The second owner's history stays pending until the test releases it, so
+    // the ordering assertion below is deterministic instead of racing a timer.
+    let releaseSecondOwnerHistory!: () => void;
+    const secondOwnerHistory = new Promise<void>((resolve) => {
+      releaseSecondOwnerHistory = resolve;
+    });
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
-      // The second owner's history resolves slowly so the old owner's rows
-      // must disappear before the new ones can render.
       if (url.includes("tasks/task-2/") && (url.includes("/timeline") || url.includes("/transcript"))) {
-        await new Promise((resolve) => setTimeout(resolve, 80));
+        await secondOwnerHistory;
       }
       if (url.includes("tasks/task-1/timeline")) {
         return json({ task_id: "task-1", items: [{ seq: 1, type: "text", content: "First task timeline", created_at: "2026-01-01T00:00:00Z" }], cursor: 1 });
@@ -1928,6 +1936,7 @@ describe("TaskDetailPage Runtime Owner History Window (#202)", () => {
     });
     expect(screen.queryByText("First task timeline")).not.toBeInTheDocument();
     expect(screen.queryByText("Second task content")).not.toBeInTheDocument();
+    releaseSecondOwnerHistory();
     expect(await screen.findByText("Second task content")).toBeInTheDocument();
     // Nothing from the first owner leaks into the second owner's workspace.
     expect(screen.queryByText("First task content")).not.toBeInTheDocument();
