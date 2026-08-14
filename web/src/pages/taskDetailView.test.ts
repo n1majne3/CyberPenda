@@ -17,6 +17,20 @@ describe("collapsedTranscriptTitle", () => {
     expect(collapsedTranscriptTitle(entry)).toBe("Bash · curl http://localhost:3000");
   });
 
+  it("previews a Hermes tool_describe name argument", () => {
+    const entry: TaskTranscriptEntry = {
+      id: "x",
+      seq: 1,
+      continuation: 1,
+      kind: "tool_call",
+      role: "assistant",
+      tool_name: "tool_describe",
+      details: { input: { name: "mcp__pentest__blackboard_change" } },
+      created_at: "",
+    };
+    expect(collapsedTranscriptTitle(entry)).toBe("tool_describe · mcp__pentest__blackboard_change");
+  });
+
   it("summarizes tool results without exposing transport call ids", () => {
     const entry: TaskTranscriptEntry = {
       id: "x",

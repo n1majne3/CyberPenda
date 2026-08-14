@@ -650,6 +650,125 @@ func TestProductionProviderSessionFactoryOpensHostHermesACP(t *testing.T) {
 	}
 }
 
+func TestProductionProviderSessionFactorySendsHermesACPInitializeProtocolVersion(t *testing.T) {
+	starter := newProductionFactoryHostStarter()
+	factory := NewProductionProviderSessionFactory(ProductionProviderSessionFactoryConfig{HostStarter: starter})
+	legacy := runtime.NewCommandAdapter(runtime.CommandAdapterConfig{
+		Name: "hermes", Program: "/opt/hermes",
+		Args:    []string{"--yolo", "acp"},
+		Workdir: "/tmp/task-workdir",
+		Env:     map[string]string{"HERMES_HOME": "/tmp/hermes-home", "HERMES_YOLO_MODE": "1"},
+	})
+	type captured struct {
+		Method string
+		Params map[string]any
+	}
+	seen := make(chan captured, 2)
+	go func() {
+		scanner := bufio.NewScanner(starter.inputR)
+		for scanner.Scan() {
+			var request runtime.SandboxBridgeRequest
+			_ = json.Unmarshal(scanner.Bytes(), &request)
+			params := map[string]any{}
+			_ = json.Unmarshal(request.Params, &params)
+			select {
+			case seen <- captured{Method: request.Method, Params: params}:
+			default:
+			}
+			result := `{"ok":true}`
+			switch request.Method {
+			case "initialize":
+				result = `{"protocolVersion":1}`
+			case "session/new":
+				result = `{"sessionId":"hermes-acp-1"}`
+			}
+			_, _ = io.WriteString(starter.outputW, `{"jsonrpc":"2.0","id":"`+request.ID+`","result":`+result+"}\n")
+		}
+	}()
+	if _, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
+		Owner: owner.NewTaskContract("host-hermes-init", "project-test", ""), Continuation: owner.Continuation{ID: "host-hermes-init-c1", OwnerID: "host-hermes-init"},
+		Provider: runtimeprofile.ProviderHermes, Runner: task.RunnerHost, LegacyAdapter: legacy,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-seen:
+		if got.Method != "initialize" {
+			t.Fatalf("first method = %q", got.Method)
+		}
+		if got.Params["protocolVersion"] != float64(1) {
+			t.Fatalf("initialize params = %#v", got.Params)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initialize")
+	}
+}
+
+func TestProductionProviderSessionFactorySendsHermesACPSessionNewMCPServers(t *testing.T) {
+	starter := newProductionFactoryHostStarter()
+	factory := NewProductionProviderSessionFactory(ProductionProviderSessionFactoryConfig{HostStarter: starter})
+	legacy := runtime.NewCommandAdapter(runtime.CommandAdapterConfig{
+		Name: "hermes", Program: "/opt/hermes",
+		Args:    []string{"--yolo", "acp"},
+		Workdir: "/tmp/task-workdir",
+		Env:     map[string]string{"HERMES_HOME": "/tmp/hermes-home", "HERMES_YOLO_MODE": "1"},
+	})
+	type captured struct {
+		Method string
+		Params map[string]any
+	}
+	seen := make(chan captured, 2)
+	go func() {
+		scanner := bufio.NewScanner(starter.inputR)
+		for scanner.Scan() {
+			var request runtime.SandboxBridgeRequest
+			_ = json.Unmarshal(scanner.Bytes(), &request)
+			params := map[string]any{}
+			_ = json.Unmarshal(request.Params, &params)
+			select {
+			case seen <- captured{Method: request.Method, Params: params}:
+			default:
+			}
+			result := `{"ok":true}`
+			switch request.Method {
+			case "initialize":
+				result = `{"protocolVersion":1}`
+			case "session/new":
+				result = `{"sessionId":"hermes-acp-1"}`
+			}
+			_, _ = io.WriteString(starter.outputW, `{"jsonrpc":"2.0","id":"`+request.ID+`","result":`+result+"}\n")
+		}
+	}()
+	if _, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
+		Owner: owner.NewTaskContract("host-hermes-session", "project-test", ""), Continuation: owner.Continuation{ID: "host-hermes-session-c1", OwnerID: "host-hermes-session"},
+		Provider: runtimeprofile.ProviderHermes, Runner: task.RunnerHost, LegacyAdapter: legacy,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var sessionNew captured
+	deadline := time.After(time.Second)
+	for sessionNew.Method != "session/new" {
+		select {
+		case got := <-seen:
+			if got.Method == "session/new" {
+				sessionNew = got
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for session/new")
+		}
+	}
+	if sessionNew.Params["cwd"] != "/tmp/task-workdir" {
+		t.Fatalf("session/new cwd = %#v", sessionNew.Params["cwd"])
+	}
+	servers, ok := sessionNew.Params["mcpServers"].([]any)
+	if !ok {
+		t.Fatalf("session/new params = %#v", sessionNew.Params)
+	}
+	if len(servers) != 0 {
+		t.Fatalf("session/new mcpServers = %#v", servers)
+	}
+}
+
 func TestProductionProviderSessionFactoryOpensHostClaudeSDKBridge(t *testing.T) {
 	starter := newProductionFactoryHostStarter()
 	factory := NewProductionProviderSessionFactory(ProductionProviderSessionFactoryConfig{
@@ -1284,7 +1403,6 @@ func TestHostCodexReservedConfigOverridesStayRejectedByValidateCustomArgs(t *tes
 		t.Fatalf("ValidateCustomArgs must allow non-conflicting -c foo=bar: %v", err)
 	}
 }
-
 
 // TestProductionProviderSessionFactoryUsesLegacyAdapterContainerCLI proves the
 // sandbox bridge invokes the launch-selected container CLI (podman) rather than

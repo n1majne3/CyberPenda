@@ -1,6 +1,7 @@
 package transcript_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -321,6 +322,137 @@ func TestBuildParsesHermesACPRuntimeOutputFromPersistentSessionAdapter(t *testin
 	if msg.Text != "Inspecting the app." {
 		t.Fatalf("assistant text = %q in %#v", msg.Text, got)
 	}
+}
+
+func TestBuildProjectsHermesACPToolCallRawInput(t *testing.T) {
+	createdAt := time.Date(2026, 8, 14, 13, 45, 0, 0, time.UTC)
+	subject := transcript.Subject{ID: "session-1", Title: "reverse the package", CreatedAt: createdAt}
+	got := transcript.Build(subject, []transcript.Event{{
+		ID: "ev-1", Seq: 1, Kind: "runtime_output",
+		Payload: map[string]any{
+			"provider": "hermes",
+			"stream":   "hermes_acp",
+			"text":     `{"sessionId":"hermes-session","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"tool_describe","kind":"other","rawInput":{"name":"mcp__pentest__blackboard_change"},"locations":[]}}`,
+		},
+		CreatedAt: createdAt,
+	}})
+	call := findEntryByKind(t, got, "tool_call")
+	if call.ToolName != "tool_describe" {
+		t.Fatalf("tool name = %q, want tool_describe", call.ToolName)
+	}
+	input, _ := call.Details["input"].(map[string]any)
+	if input["name"] != "mcp__pentest__blackboard_change" {
+		t.Fatalf("tool_describe details.input = %#v, want name mcp__pentest__blackboard_change", call.Details)
+	}
+}
+
+func TestBuildProjectsHermesACPWriteLocationsAsInput(t *testing.T) {
+	createdAt := time.Date(2026, 8, 14, 13, 45, 0, 0, time.UTC)
+	subject := transcript.Subject{ID: "session-1", Title: "reverse the package", CreatedAt: createdAt}
+	got := transcript.Build(subject, []transcript.Event{{
+		ID: "ev-1", Seq: 1, Kind: "runtime_output",
+		Payload: map[string]any{
+			"provider": "hermes",
+			"stream":   "hermes_acp",
+			"text":     `{"sessionId":"hermes-session","update":{"sessionUpdate":"tool_call","toolCallId":"tc-2","title":"write: /task/workdir/tools/split_fat.py","kind":"edit","locations":[{"path":"/task/workdir/tools/split_fat.py"}]}}`,
+		},
+		CreatedAt: createdAt,
+	}})
+	call := findEntryByKind(t, got, "tool_call")
+	input, _ := call.Details["input"].(map[string]any)
+	if input["path"] != "/task/workdir/tools/split_fat.py" {
+		t.Fatalf("write details.input = %#v, want path /task/workdir/tools/split_fat.py", call.Details)
+	}
+}
+
+func TestBuildProjectsHermesACPTerminalContentAsCommand(t *testing.T) {
+	createdAt := time.Date(2026, 8, 14, 13, 45, 0, 0, time.UTC)
+	subject := transcript.Subject{ID: "session-1", Title: "reverse the package", CreatedAt: createdAt}
+	got := transcript.Build(subject, []transcript.Event{{
+		ID: "ev-1", Seq: 1, Kind: "runtime_output",
+		Payload: map[string]any{
+			"provider": "hermes",
+			"stream":   "hermes_acp",
+			"text":     `{"sessionId":"hermes-session","update":{"sessionUpdate":"tool_call","toolCallId":"tc-3","title":"terminal: ls -la /task/workdir","kind":"execute","content":[{"type":"content","content":{"type":"text","text":"$ ls -la /task/workdir"}}]}}`,
+		},
+		CreatedAt: createdAt,
+	}})
+	call := findEntryByKind(t, got, "tool_call")
+	input, _ := call.Details["input"].(map[string]any)
+	if input["command"] != "ls -la /task/workdir" {
+		t.Fatalf("terminal details.input = %#v, want command ls -la /task/workdir", call.Details)
+	}
+}
+
+func TestBuildCoalescesAdjacentHermesACPMessageChunks(t *testing.T) {
+	createdAt := time.Date(2026, 8, 14, 13, 8, 0, 0, time.UTC)
+	subject := transcript.Subject{ID: "session-1", Title: "just say hi", CreatedAt: createdAt}
+	chunk := func(id string, seq int, text string) transcript.Event {
+		return transcript.Event{
+			ID: id, Seq: seq, Kind: "runtime_output",
+			Payload: map[string]any{
+				"provider": "hermes",
+				"stream":   "hermes_acp",
+				"text":     `{"sessionId":"hermes-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":` + mustJSONString(t, text) + `}}}`,
+			},
+			CreatedAt: createdAt.Add(time.Duration(seq) * time.Second),
+		}
+	}
+	got := transcript.Build(subject, []transcript.Event{
+		{ID: "ev-start", Seq: 1, Kind: "lifecycle", Payload: map[string]any{"phase": "started", "adapter": "provider-session:abc"}, CreatedAt: createdAt},
+		chunk("ev-5", 5, "Hi"),
+		chunk("ev-6", 6, "!"),
+		chunk("ev-7", 7, " "),
+		chunk("ev-8", 8, "👋"),
+	})
+	var assistants []transcript.Entry
+	for _, entry := range got {
+		if entry.Kind == "message" && entry.Role == "assistant" {
+			assistants = append(assistants, entry)
+		}
+	}
+	if len(assistants) != 1 {
+		t.Fatalf("assistant messages = %d, want 1 coalesced sentence: %#v", len(assistants), assistants)
+	}
+	if assistants[0].Text != "Hi! 👋" {
+		t.Fatalf("assistant text = %q, want %q", assistants[0].Text, "Hi! 👋")
+	}
+	if assistants[0].Seq != 8 {
+		t.Fatalf("coalesced seq = %d, want last chunk seq 8", assistants[0].Seq)
+	}
+	if assistants[0].Stream != "hermes_acp" {
+		t.Fatalf("coalesced stream = %q, want hermes_acp", assistants[0].Stream)
+	}
+}
+
+func TestBuildKeepsAdjacentConversationAssistantMessagesSeparate(t *testing.T) {
+	createdAt := time.Date(2026, 8, 14, 13, 20, 0, 0, time.UTC)
+	subject := transcript.Subject{ID: "task-1", Title: "history window", CreatedAt: createdAt}
+	got := transcript.Build(subject, []transcript.Event{
+		{ID: "ev-1", Seq: 1, Kind: "conversation", Payload: map[string]any{"role": "assistant", "text": "Message 1"}, CreatedAt: createdAt.Add(time.Second)},
+		{ID: "ev-2", Seq: 2, Kind: "conversation", Payload: map[string]any{"role": "assistant", "text": "Message 2"}, CreatedAt: createdAt.Add(2 * time.Second)},
+	})
+	var assistants []transcript.Entry
+	for _, entry := range got {
+		if entry.Kind == "message" && entry.Role == "assistant" {
+			assistants = append(assistants, entry)
+		}
+	}
+	if len(assistants) != 2 {
+		t.Fatalf("conversation assistant messages = %#v, want two separate rows", assistants)
+	}
+	if assistants[0].Text != "Message 1" || assistants[1].Text != "Message 2" {
+		t.Fatalf("conversation assistant texts = %#v", assistants)
+	}
+}
+
+func mustJSONString(t *testing.T, text string) string {
+	t.Helper()
+	raw, err := json.Marshal(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
 }
 
 func TestParseRecordPiSessionLines(t *testing.T) {

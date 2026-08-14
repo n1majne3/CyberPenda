@@ -940,32 +940,71 @@ type HermesProviderSession struct{ *providerSessionAdapter }
 
 func NewHermesProviderSession(config HermesProviderSessionConfig) *HermesProviderSession {
 	methods := providerWireMethods{
-		send:      "session/prompt",
-		interrupt: "session/cancel",
-		params:    hermesACPParams,
-		turnID:    func(record map[string]any) string { return providerJSONValue(record, "turn_id", "turnId", "id") },
-		sessionID: identitySession,
+		send:        "session/prompt",
+		interrupt:   "session/cancel",
+		params:      hermesACPParams,
+		prepareSend: hermesPrepareSendSelection,
+		turnID:      func(record map[string]any) string { return providerJSONValue(record, "turn_id", "turnId", "id") },
+		sessionID:   identitySession,
 	}
 	return &HermesProviderSession{newProviderSessionAdapter("hermes", config.Transport, config.SessionID, config.ActiveTurnID, providerCapabilities(config.Capabilities), methods)}
 }
 
 func hermesACPParams(sessionID, turnID string, request ProviderSessionRequest) map[string]any {
-	params := map[string]any{
-		"sessionId": sessionID,
+	return map[string]any{
+		"sessionId":  sessionID,
 		"session_id": sessionID,
-		"turn_id":   turnID,
-		"prompt":    []map[string]any{{"type": "text", "text": request.Message}},
+		"turn_id":    turnID,
+		"prompt":     []map[string]any{{"type": "text", "text": request.Message}},
 	}
-	if model := strings.TrimSpace(request.Model); model != "" {
-		params["model"] = model
+}
+
+// hermesPrepareSendSelection applies Runtime Turn Selection through ACP
+// session/set_model. session/prompt has no model field; extra keys are ignored.
+// Named Model Providers use custom:<id>:<model> so Hermes does not auto-switch
+// to a built-in MiniMax/OpenRouter route.
+func hermesPrepareSendSelection(ctx context.Context, transport ProviderSessionTransport, wireBaseID, sessionID, turnID string, request ProviderSessionRequest) error {
+	if transport == nil {
+		return errors.New("provider session transport is required")
 	}
-	if effort := strings.TrimSpace(request.RequestedReasoningEffort); effort != "" {
-		params["requested_reasoning_effort"] = effort
+	modelID := hermesACPModelID(request.ModelProviderID, request.Model)
+	if modelID == "" {
+		return nil
 	}
-	if providerID := strings.TrimSpace(request.ModelProviderID); providerID != "" {
-		params["model_provider_id"] = providerID
+	params := map[string]any{
+		"sessionId":  sessionID,
+		"session_id": sessionID,
+		"modelId":    modelID,
 	}
-	return params
+	encoded, err := json.Marshal(params)
+	if err != nil {
+		return err
+	}
+	response, err := transport.Send(ctx, SandboxBridgeRequest{
+		ID: wireBaseID + ":set_model", Method: "session/set_model", Params: encoded,
+	})
+	if err != nil {
+		return err
+	}
+	if len(response.Error) > 0 && string(response.Error) != "null" {
+		return &SandboxBridgeRPCError{RequestID: wireBaseID + ":set_model"}
+	}
+	return nil
+}
+
+func hermesACPModelID(providerID, model string) string {
+	providerID = strings.TrimSpace(providerID)
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return ""
+	}
+	if providerID == "" || strings.HasPrefix(model, "custom:") {
+		return model
+	}
+	if strings.HasPrefix(providerID, "custom:") {
+		return providerID + ":" + model
+	}
+	return "custom:" + providerID + ":" + model
 }
 
 func NewPiProviderSession(config PiProviderSessionConfig) *PiProviderSession {

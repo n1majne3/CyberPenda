@@ -892,9 +892,10 @@ func (f *ProductionProviderSessionFactory) finishHermesBinding(
 	closeBridge func(context.Context),
 	processIdentity string,
 ) (ProviderSessionBinding, error) {
+	// Hermes ACP InitializeRequest requires integer protocolVersion.
 	if _, err := bridge.Send(ctx, runtime.SandboxBridgeRequest{
 		ID: "setup:initialize", Method: "initialize",
-		Params: json.RawMessage(`{"clientInfo":{"name":"cyberpenda","version":"1"}}`),
+		Params: json.RawMessage(`{"protocolVersion":1,"clientInfo":{"name":"cyberpenda","version":"1"}}`),
 	}); err != nil {
 		closeBridge(ctx)
 		return ProviderSessionBinding{}, err
@@ -902,14 +903,14 @@ func (f *ProductionProviderSessionFactory) finishHermesBinding(
 
 	sessionID := strings.TrimSpace(request.Continuation.NativeSessionID)
 	method := "session/new"
-	params, err := json.Marshal(map[string]any{"cwd": workdir})
+	params, err := json.Marshal(map[string]any{"cwd": workdir, "mcpServers": []any{}})
 	if err != nil {
 		closeBridge(ctx)
 		return ProviderSessionBinding{}, err
 	}
 	if sessionID != "" {
 		method = "session/load"
-		params, err = json.Marshal(map[string]any{"sessionId": sessionID, "cwd": workdir})
+		params, err = json.Marshal(map[string]any{"sessionId": sessionID, "cwd": workdir, "mcpServers": []any{}})
 		if err != nil {
 			closeBridge(ctx)
 			return ProviderSessionBinding{}, err

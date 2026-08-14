@@ -137,6 +137,22 @@ func TestParseRecordHermesACPSessionUpdates(t *testing.T) {
 			callID: "call-1",
 		},
 		{
+			name: "tool describe rawInput",
+			record: map[string]any{
+				"sessionId": "hermes-session",
+				"update": map[string]any{
+					"sessionUpdate": "tool_call",
+					"toolCallId":    "tc-1",
+					"title":         "tool_describe",
+					"kind":          "other",
+					"rawInput":      map[string]any{"name": "mcp__pentest__blackboard_change"},
+				},
+			},
+			kind:   runtimeoutput.KindToolUse,
+			tool:   "tool_describe",
+			callID: "tc-1",
+		},
+		{
 			name: "update-only tool result",
 			record: map[string]any{
 				"sessionUpdate": "tool_call_update",

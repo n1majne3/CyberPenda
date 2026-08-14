@@ -657,6 +657,37 @@ func TestPiProviderSessionMapsPromptAbortAndReplacement(t *testing.T) {
 	}
 }
 
+func TestHermesProviderSessionAppliesSetModelBeforePrompt(t *testing.T) {
+	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
+		"session/set_model": {Result: json.RawMessage(`{}`)},
+		"session/prompt":    {Result: json.RawMessage(`{"sessionId":"hermes-1","turn_id":"turn-2"}`)},
+	}}
+	session := NewHermesProviderSession(HermesProviderSessionConfig{Transport: transport, SessionID: "hermes-1"})
+	_, err := session.SendTurn(context.Background(), ProviderSessionRequest{
+		RequestID:       "send-selection",
+		Message:         "hi",
+		ModelProviderID: "hub",
+		Model:           "deepseek-v4-flash-free",
+	}, nil)
+	if err != nil {
+		t.Fatalf("send turn: %v", err)
+	}
+	requests := transport.snapshot()
+	if len(requests) < 2 {
+		t.Fatalf("wire requests = %#v", requests)
+	}
+	if requests[0].Method != "session/set_model" || requests[1].Method != "session/prompt" {
+		t.Fatalf("order = %q, %q", requests[0].Method, requests[1].Method)
+	}
+	var setModel map[string]any
+	if err := json.Unmarshal(requests[0].Params, &setModel); err != nil {
+		t.Fatal(err)
+	}
+	if setModel["sessionId"] != "hermes-1" || setModel["modelId"] != "custom:hub:deepseek-v4-flash-free" {
+		t.Fatalf("set_model params = %#v", setModel)
+	}
+}
+
 // TestPiProviderSessionAppliesModelThenEffortThenPrompt proves Pi native
 // controls are issued in mandatory order: set_model → set_thinking_level → prompt.
 func TestPiProviderSessionAppliesModelThenEffortThenPrompt(t *testing.T) {

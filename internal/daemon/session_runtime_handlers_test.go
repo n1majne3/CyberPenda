@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"pentest/internal/modelprovider"
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
@@ -626,6 +627,68 @@ func TestSessionRestartCarriesNativeProviderIdentityIntoTheNewContinuation(t *te
 	}
 	if requests[0].Continuation.NativeSessionID != previous.NativeSessionID || requests[0].Continuation.NativeSessionPath != previous.NativeSessionPath {
 		t.Fatalf("restart lost native identity: %#v", requests[0].Continuation)
+	}
+}
+
+func TestResolveSessionRuntimeProfileHonorsNewModelProviderAfterPreviousContinuation(t *testing.T) {
+	server, err := NewServer(Config{
+		Version: "test", DBPath: filepath.Join(t.TempDir(), "pentest.db"), RuntimeRoot: t.TempDir(), DisableBuiltinSkills: true,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	glm, err := server.modelProviders.Create(modelprovider.CreateRequest{
+		Name: "GLM", BaseURL: "https://glm.example.test/v1",
+		Protocols: []modelprovider.Protocol{modelprovider.ProtocolOpenAIChatCompletions},
+		Catalog:   modelprovider.Catalog{Manual: []string{"glm-5.2"}, DefaultModel: "glm-5.2"},
+	})
+	if err != nil {
+		t.Fatalf("create glm provider: %v", err)
+	}
+	hub, err := server.modelProviders.Create(modelprovider.CreateRequest{
+		Name: "HUB", BaseURL: "https://hub.example.test/v1",
+		Protocols: []modelprovider.Protocol{modelprovider.ProtocolOpenAIChatCompletions},
+		Catalog:   modelprovider.Catalog{Manual: []string{"MiniMax-M3", "deepseek-v4-flash"}, DefaultModel: "deepseek-v4-flash"},
+	})
+	if err != nil {
+		t.Fatalf("create hub provider: %v", err)
+	}
+	t.Setenv(glm.APIKeyEnv, "sk-glm")
+	t.Setenv(hub.APIKeyEnv, "sk-hub")
+
+	glmProfile, err := server.profiles.Create("Hermes · GLM · glm-5.2", runtimeprofile.ProviderHermes, runtimeprofile.Fields{
+		ModelProviderID: glm.ID, ModelOverride: "glm-5.2", DefaultRunner: "sandbox",
+	})
+	if err != nil {
+		t.Fatalf("create glm profile: %v", err)
+	}
+	previous := &session.Continuation{RuntimeProfileID: glmProfile.ID, RuntimeProvider: "hermes", Runner: session.RunnerSandbox}
+
+	resolved, err := server.resolveSessionRuntimeProfile(sessionRuntimeInput{
+		RuntimeProfileID: glmProfile.ID,
+		RuntimeProvider:  "hermes",
+		ModelProviderID:  hub.ID,
+		Model:            "MiniMax-M3",
+	}, previous)
+	if err != nil {
+		t.Fatalf("resolve Session Runtime Profile: %v", err)
+	}
+	if resolved.Fields.ModelProviderID != hub.ID {
+		t.Fatalf("model provider = %q, want %q", resolved.Fields.ModelProviderID, hub.ID)
+	}
+	if resolved.Fields.ModelOverride != "MiniMax-M3" {
+		t.Fatalf("model override = %q, want MiniMax-M3", resolved.Fields.ModelOverride)
+	}
+
+	if _, err := server.prepareSessionRuntime(t.Context(), session.BlackboardConclusionModeInteractive, sessionRuntimeInput{
+		RuntimeProfileID: glmProfile.ID,
+		RuntimeProvider:  "hermes",
+		ModelProviderID:  hub.ID,
+		Model:            "MiniMax-M3",
+	}, previous); err != nil {
+		t.Fatalf("prepare Session Runtime after Model Provider switch: %v", err)
 	}
 }
 
