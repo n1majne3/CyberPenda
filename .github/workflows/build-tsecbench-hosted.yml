@@ -8,23 +8,23 @@ on:
         required: true
         default: manual
         type: string
-  pull_request:
-    branches: [main]
-    paths:
-      - .github/workflows/build-tsecbench-hosted.yml
-      - cmd/pentest-claude-sdk-bridge/**
-      - cmd/pentest-provider-bridge/**
-      - cmd/pentest-tsecbench-hosted/**
-      - docker/tsecbench-hosted/**
-      - docs/tsecbench/**
-      - internal/hostedcontroller/**
-      - internal/runner/**
-      - scripts/build-tsecbench-hosted-bundle.sh
-      - scripts/tsecbench_hosted_*.go
-      - web/**
-      - go.mod
-      - go.sum
-      - Makefile
+  # pull_request:
+  #   branches: [main]
+  #   paths:
+  #     - .github/workflows/build-tsecbench-hosted.yml
+  #     - cmd/pentest-claude-sdk-bridge/**
+  #     - cmd/pentest-provider-bridge/**
+  #     - cmd/pentest-tsecbench-hosted/**
+  #     - docker/tsecbench-hosted/**
+  #     - docs/tsecbench/**
+  #     - internal/hostedcontroller/**
+  #     - internal/runner/**
+  #     - scripts/build-tsecbench-hosted-bundle.sh
+  #     - scripts/tsecbench_hosted_*.go
+  #     - web/**
+  #     - go.mod
+  #     - go.sum
+  #     - Makefile
 
 permissions:
   contents: read
