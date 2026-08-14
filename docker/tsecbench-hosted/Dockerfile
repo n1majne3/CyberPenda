@@ -41,7 +41,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates curl wget git jq ripgrep file binutils unzip xz-utils \
     bash dash zsh coreutils findutils grep sed gawk procps \
-    python3 python3-pip python3-venv \
+    python3 python3-pip python3-venv python3-pwntools \
     golang-go build-essential gdb radare2 strace ltrace patchelf checksec \
     nmap netcat-openbsd socat dnsutils iproute2 iputils-ping openssh-client openssl \
     nodejs npm chromium \
@@ -61,8 +61,6 @@ RUN --mount=type=cache,target=/root/.npm \
       @openai/codex@latest \
       @anthropic-ai/claude-code@latest \
       agent-browser@latest
-
-RUN pip3 install --no-cache-dir --break-system-packages pwntools
 
 # Host Claude uses a persistent public Agent SDK Query. Install from the
 # repository lock so the bridge and its dependency stay compatible.

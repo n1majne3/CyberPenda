@@ -85,7 +85,7 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 		"@openai/codex@latest",
 		"@anthropic-ai/claude-code@latest",
 		"agent-browser@latest",
-		"pwntools",
+		"python3-pwntools",
 		"chromium",
 		"golang-go",
 		"build-essential",
@@ -119,6 +119,9 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 		assertContains(t, dockerfile, `command -v `+executable)
 	}
 	assertContains(t, dockerfile, `python3 -c 'import pwn'`)
+	if strings.Contains(dockerfile, "pip3 install --no-cache-dir --break-system-packages pwntools") {
+		t.Fatal("Hosted Image must use Kali python3-pwntools instead of building unicorn from source on Python 3.14")
+	}
 
 	for _, excluded := range []string{
 		"kali-linux-headless", "ghidra", "jadx", "android-sdk", "seclists",
