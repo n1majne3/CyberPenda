@@ -459,7 +459,7 @@ describe("Blackboard UI v2 workflows", () => {
       expect.stringContaining("/reason-task-proposals/reason-proposal-1/approve"),
       expect.objectContaining({ method: "POST" }),
     ));
-    expect(within(region).queryByRole("button", { name: /Approve/i })).not.toBeInTheDocument();
+    await waitFor(() => expect(within(region).queryByRole("button", { name: /Approve/i })).not.toBeInTheDocument());
   });
 
   it("keeps dangling anomaly links actionable and wraps long keys", async () => {

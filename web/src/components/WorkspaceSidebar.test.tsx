@@ -116,7 +116,7 @@ describe("WorkspaceSidebar", () => {
 
     const nonProject = await screen.findByRole("region", { name: /non-project/i });
     expect(await within(nonProject).findByRole("link", { name: /failed session.*runtime failure/i })).toBeInTheDocument();
-    const projectRegion = screen.getByRole("region", { name: /open project project dashboard/i });
+    const projectRegion = await screen.findByRole("region", { name: /open project project dashboard/i });
     await user.click(within(projectRegion).getByRole("button", { name: /expand project/i }));
     expect(await within(projectRegion).findByRole("link", { name: /failed task.*runtime failure/i })).toBeInTheDocument();
   });
@@ -145,6 +145,11 @@ describe("WorkspaceSidebar", () => {
       </ThemeProvider>,
     );
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/sessions/session-archived", expect.anything()));
+    // Wait until the sessions data has rendered, so the negative assertion
+    // below passes because the archived Session is excluded, not because the
+    // list has not loaded yet.
+    const nonProject = await screen.findByRole("region", { name: /non-project/i });
+    await within(nonProject).findByText(/no open sessions/i);
     expect(screen.queryByRole("link", { name: /archived session/i })).not.toBeInTheDocument();
   });
 
@@ -312,7 +317,7 @@ describe("WorkspaceSidebar", () => {
       "/projects/project-1",
     );
 
-    const sessionActions = within(nonProject).getByRole("button", { name: /more actions for session one/i });
+    const sessionActions = await within(nonProject).findByRole("button", { name: /more actions for session one/i });
     await user.click(sessionActions);
     const menu = within(nonProject).getByRole("menu", { name: /session one actions/i });
     expect(within(menu).getByRole("menuitem", { name: /rename/i })).toBeInTheDocument();

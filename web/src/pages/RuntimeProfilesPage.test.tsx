@@ -320,7 +320,7 @@ describe("RuntimeProfilesPage", () => {
     expect(screen.queryByPlaceholderText("https://api.example.test/v1")).not.toBeInTheDocument();
     expect(screen.getByText("Model override")).toBeInTheDocument();
 
-    const providerSelect = screen.getByDisplayValue("Mimo (MIMO_API_KEY) (incompatible)");
+    const providerSelect = await screen.findByDisplayValue("Mimo (MIMO_API_KEY) (incompatible)");
     expect(providerSelect).toBeInTheDocument();
     for (const option of Array.from(providerSelect.querySelectorAll("option")).map((node) => node.textContent)) {
       expect(option).not.toMatch(/Anthropic \(ANTHROPIC_API_KEY\)$/);
@@ -579,7 +579,7 @@ describe("RuntimeProfilesPage", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Promote to preset" }));
 
     await waitFor(() => expect(promoted).toBe(true));
-    expect(screen.queryByRole("button", { name: "Promote to preset" })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Promote to preset" })).not.toBeInTheDocument());
   });
 
   it("keeps long Codex generated config preview from widening the page", async () => {

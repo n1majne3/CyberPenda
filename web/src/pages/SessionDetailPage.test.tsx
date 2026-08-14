@@ -103,7 +103,7 @@ describe("SessionDetailPage", () => {
     expect(screen.getByTestId("task-composer")).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Session message" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Continuation model provider" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "MiMo" })).toBeInTheDocument();
+    expect(await screen.findByRole("option", { name: "MiMo" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Conversation" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "Timeline" })).toHaveAttribute("aria-pressed", "false");
   });
@@ -239,6 +239,7 @@ describe("SessionDetailPage", () => {
     expect(screen.getAllByTestId("transcript-row")).toHaveLength(2);
     expect(screen.getAllByTestId("transcript-row")[1]).toHaveTextContent("Runtime ready");
     expect(screen.getByRole("button", { name: "Queue message" })).toBeInTheDocument();
+    await screen.findByRole("option", { name: "MiMo" });
     await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model provider" }), "mimo");
     expect(screen.getByRole("combobox", { name: "Continuation model" })).toHaveValue("mimo-v2");
     const composer = screen.getByRole("textbox", { name: "Session message" });

@@ -121,6 +121,7 @@ describe("TaskLaunchPage", () => {
     expect(await screen.findByRole("heading", { name: /Launch Reason Task/i })).toBeInTheDocument();
     expect(screen.queryByLabelText("Task type")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Reason Task goal")).toHaveAttribute("readonly");
+    await waitFor(() => expect(screen.getByRole("button", { name: /Launch Reason Task/i })).toBeEnabled());
     await userEvent.click(screen.getByRole("button", { name: /Launch Reason Task/i }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
@@ -213,6 +214,9 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
+    // The launch form renders before its plugins/providers/profiles/project
+    // batch lands; an option from that batch is the readiness anchor.
+    await screen.findByRole("option", { name: "MiMo" });
     const taskType = await screen.findByLabelText("Task type");
     expect(taskType).toHaveValue("");
     await userEvent.selectOptions(taskType, "pentest");
@@ -296,7 +300,7 @@ describe("TaskLaunchPage", () => {
     expect(screen.getByLabelText("Model provider")).toBeInTheDocument();
     expect(screen.getByLabelText("Model")).toBeInTheDocument();
     expect(screen.queryByLabelText("Runtime profile")).not.toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "MiMo" })).toBeInTheDocument();
+    expect(await screen.findByRole("option", { name: "MiMo" })).toBeInTheDocument();
   });
 
   it("keeps interactive launch available when assisted conclusions are unsupported", async () => {
@@ -342,7 +346,7 @@ describe("TaskLaunchPage", () => {
     expect(screen.getByText(/does not expose the complete persistent Turn, normalized Tool\/Turn event, and closed AttemptResult contract/i)).toBeInTheDocument();
     await selectPentestTaskType();
     await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
-    expect(screen.getByRole("button", { name: /launch/i })).toBeEnabled();
+    await waitFor(() => expect(screen.getByRole("button", { name: /launch/i })).toBeEnabled());
   });
 
   it("shows enabled skills before launch for preset path", async () => {
@@ -949,6 +953,7 @@ describe("TaskLaunchPage", () => {
 
     await selectPentestTaskType();
     await userEvent.type(await screen.findByLabelText("Task goal"), "Run with extension");
+    await waitFor(() => expect(screen.getByRole("button", { name: /launch/i })).toBeEnabled());
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
 
     expect(await screen.findByText("Runtime extensions")).toBeInTheDocument();
@@ -1066,6 +1071,7 @@ describe("TaskLaunchPage", () => {
     renderPage();
     await selectPentestTaskType();
     await userEvent.type(await screen.findByLabelText("Task goal"), "Probe sandbox env");
+    await waitFor(() => expect(screen.getByRole("button", { name: /launch/i })).toBeEnabled());
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
 
     expect(await screen.findByText("Container environment")).toBeInTheDocument();
@@ -1295,6 +1301,7 @@ describe("TaskLaunchPage", () => {
     renderPage();
 
     const modelSelect = await screen.findByLabelText("Model");
+    await screen.findByRole("option", { name: "mimo-v2-pro" });
     await userEvent.selectOptions(modelSelect, "mimo-v2-pro");
     await selectPentestTaskType();
     await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
@@ -1412,6 +1419,7 @@ describe("TaskLaunchPage", () => {
     await userEvent.selectOptions(await screen.findByLabelText("Docker network"), "host_proxy_only");
     await selectPentestTaskType();
     await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
+    await waitFor(() => expect(screen.getByRole("button", { name: /launch/i })).toBeEnabled());
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
 
     await waitFor(() => {
@@ -1535,6 +1543,7 @@ describe("TaskLaunchPage", () => {
     await userEvent.click(await screen.findByRole("checkbox", { name: /vpn tun/i }));
     await selectPentestTaskType();
     await userEvent.type(screen.getByLabelText("Task goal"), "Connect OpenVPN");
+    await waitFor(() => expect(screen.getByRole("button", { name: /launch/i })).toBeEnabled());
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
 
     await waitFor(() => {
@@ -1610,6 +1619,7 @@ describe("TaskLaunchPage", () => {
     expect(screen.getByLabelText("Podman network")).toBeInTheDocument();
     await selectPentestTaskType();
     await userEvent.type(screen.getByLabelText("Task goal"), "Use podman");
+    await waitFor(() => expect(screen.getByRole("button", { name: /launch/i })).toBeEnabled());
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/api/projects/project-1/tasks"), expect.objectContaining({ method: "POST" }));
@@ -1724,6 +1734,7 @@ describe("TaskLaunchPage", () => {
     await userEvent.selectOptions(screen.getByLabelText("Runner"), "docker");
     await selectPentestTaskType();
     await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
+    await waitFor(() => expect(screen.getByRole("button", { name: /launch/i })).toBeEnabled());
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
 
     await waitFor(() => {
@@ -1937,6 +1948,7 @@ describe("TaskLaunchPage", () => {
     await userEvent.upload(screen.getByLabelText("Attachments"), file);
     expect(screen.getByText("notes.txt")).toBeInTheDocument();
 
+    await waitFor(() => expect(screen.getByRole("button", { name: /launch/i })).toBeEnabled());
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
 
     await waitFor(() => expect(createBody).toBeInstanceOf(FormData));

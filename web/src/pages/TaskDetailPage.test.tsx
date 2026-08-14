@@ -759,7 +759,7 @@ describe("TaskDetailPage", () => {
     expect(screen.getByRole("button", { name: /Resume and send/ })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Continuation model provider" })).toHaveClass("focus-visible:ring-2");
     expect(screen.getByRole("combobox", { name: "Continuation model" })).toHaveClass("focus-visible:ring-2");
-    expect(screen.getByRole("option", { name: "MiMo" })).toBeInTheDocument();
+    expect(await screen.findByRole("option", { name: "MiMo" })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "Anthropic" })).not.toBeInTheDocument();
     expect(screen.queryByRole("option", { name: /Use Codex/ })).not.toBeInTheDocument();
   });
@@ -823,7 +823,9 @@ describe("TaskDetailPage", () => {
     renderPage();
 
     await screen.findByText("Conversation should be hidden by default");
+    await screen.findByRole("option", { name: "MiMo" });
     await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model provider" }), "mimo");
+    await screen.findByRole("option", { name: "mimo-v2-pro" });
     await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model" }), "mimo-v2-pro");
     await user.selectOptions(screen.getByRole("combobox", { name: "Continuation reasoning effort" }), "xhigh");
     await user.type(screen.getByPlaceholderText("Focus on admin.example.com next…"), "continue with mimo");
@@ -1262,6 +1264,7 @@ describe("TaskDetailPage", () => {
     renderPage();
 
     await screen.findByText("Conversation should be hidden by default");
+    await screen.findByRole("option", { name: "MiMo" });
     await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model provider" }), "mimo");
     await user.type(screen.getByPlaceholderText("Focus on admin.example.com next…"), "outside projected set");
     expect(screen.getByRole("button", { name: "Switch provider and resume" })).toBeEnabled();
@@ -1305,6 +1308,7 @@ describe("TaskDetailPage", () => {
     renderPage();
 
     await screen.findByText("Conversation should be hidden by default");
+    await screen.findByRole("option", { name: "MiMo" });
     await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model provider" }), "mimo");
     await user.type(screen.getByPlaceholderText("Focus on admin.example.com next…"), "bind a provider");
     expect(screen.getByRole("button", { name: "Switch provider and resume" })).toBeEnabled();

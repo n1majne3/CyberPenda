@@ -82,6 +82,8 @@ describe("SessionHomePage", () => {
 
     renderPage();
 
+    // Launch-controls data lands after first paint; anchor on a fetched option.
+    await screen.findByRole("option", { name: "MiMo" });
     expect(await screen.findByLabelText("Runtime")).toBeInTheDocument();
     expect(screen.getByLabelText("Model provider")).toBeInTheDocument();
     expect(screen.getByLabelText("Model")).toBeInTheDocument();
@@ -173,7 +175,7 @@ describe("SessionHomePage", () => {
     renderPage(["/sessions/archived"], "archived");
 
     expect(await screen.findByRole("heading", { level: 1, name: "Archived Sessions" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /open archived notes session/i })).toHaveAttribute("href", "/sessions/session-archived");
+    expect(await screen.findByRole("link", { name: /open archived notes session/i })).toHaveAttribute("href", "/sessions/session-archived");
     expect(screen.getByRole("button", { name: /restore archived notes/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /delete archived notes/i })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /new session/i })).not.toBeInTheDocument();
@@ -189,6 +191,7 @@ describe("SessionHomePage", () => {
 
     renderPage();
 
+    await screen.findByRole("option", { name: "MiMo" });
     const input = await screen.findByRole("textbox", { name: /initial input/i });
     await user.type(input, "Check the exposed service");
     await user.click(screen.getByRole("button", { name: /create session/i }));
@@ -241,6 +244,7 @@ describe("SessionHomePage", () => {
 
     renderPage();
 
+    await screen.findByRole("option", { name: "MiMo" });
     await user.type(await screen.findByRole("textbox", { name: /initial input/i }), "Inspect the standalone target");
     await user.selectOptions(screen.getByRole("combobox", { name: /blackboard conclusions/i }), "assisted");
     await user.click(screen.getByRole("button", { name: /create session/i }));
@@ -312,6 +316,7 @@ describe("SessionHomePage", () => {
     const user = userEvent.setup();
     render(<RouterProvider router={router} />);
 
+    await screen.findByRole("option", { name: "MiMo" });
     await user.type(await screen.findByRole("textbox", { name: /initial input/i }), "Check the exposed service");
     await user.click(screen.getByRole("button", { name: /create session/i }));
 
