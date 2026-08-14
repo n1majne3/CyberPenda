@@ -1,9 +1,10 @@
-.PHONY: dev ensure-web-deps build build-ui ensure-embed-stub install-git-hooks build-sandbox-image build-sandbox-smoke-image test test-ci test-backend smoke-sandbox-mcp smoke-runtime-tasks clean
+.PHONY: dev ensure-web-deps build build-ui ensure-embed-stub install-git-hooks build-sandbox-image build-sandbox-smoke-image build-tsecbench-hosted-image smoke-tsecbench-hosted-image tsecbench-hosted-runtime-inventory build-tsecbench-hosted-bundle test test-ci test-backend smoke-sandbox-mcp smoke-runtime-tasks clean
 
 # Run the daemon and the Vite dev server together for local development.
 # The Vite proxy forwards /api and /health to the daemon on :8787.
 SANDBOX_IMAGE ?= ghcr.io/n1majne3/cyberpenda-sandbox:latest
 SANDBOX_SMOKE_IMAGE ?= cyberpenda-sandbox-smoke:ci
+TSECBENCH_HOSTED_IMAGE ?= cyberpenda-tsecbench-hosted:local
 
 # macOS /bin/sh (bash 3.2) has no `wait -n`, so poll: if either child dies,
 # surface the failure instead of silently running the other alone (which hid
@@ -49,6 +50,24 @@ build-sandbox-image:
 # The full Runtime stage is validated by Buildx without loading its large image.
 build-sandbox-smoke-image:
 	docker build --target smoke -t $(SANDBOX_SMOKE_IMAGE) -f docker/pentest-sandbox/Dockerfile .
+
+# Build the separate one-use TSecBench Hosted Image for its required platform.
+build-tsecbench-hosted-image:
+	docker buildx build --platform linux/amd64 --load -t $(TSECBENCH_HOSTED_IMAGE) -f docker/tsecbench-hosted/Dockerfile .
+
+# Exercise the built image without added capabilities, networking, or mounts.
+smoke-tsecbench-hosted-image:
+	CYBERPENDA_TSECBENCH_HOSTED_IMAGE=$(TSECBENCH_HOSTED_IMAGE) go test ./scripts -run TestTSecBenchHostedImageSmokeWhenAnImageIsConfigured -count=1
+
+# Print the exact current Runtime versions stored in the built image.
+tsecbench-hosted-runtime-inventory:
+	docker run --rm --network none --entrypoint cat $(TSECBENCH_HOSTED_IMAGE) /opt/cyberpenda/runtime-versions.json
+
+# Export and verify the upload-ready TSecBench Hosted Delivery Bundle.
+# Usage: make build-tsecbench-hosted-bundle TSECBENCH_BUNDLE_VERSION=v1
+build-tsecbench-hosted-bundle:
+	@test -n "$(TSECBENCH_BUNDLE_VERSION)" || (echo "TSECBENCH_BUNDLE_VERSION is required" >&2; exit 2)
+	scripts/build-tsecbench-hosted-bundle.sh "$(TSECBENCH_BUNDLE_VERSION)" "$(TSECBENCH_HOSTED_IMAGE)"
 
 # Prove the configured sandbox image can reach daemon MCP and write a fact.
 smoke-sandbox-mcp:

@@ -121,6 +121,27 @@ func TestBuiltinPluginsDeclareModelProviderProtocols(t *testing.T) {
 	}
 }
 
+func TestBuiltinSupportsModelProtocolReadsBuiltinPluginCapabilities(t *testing.T) {
+	tests := []struct {
+		runtimeID string
+		protocol  string
+		want      bool
+	}{
+		{runtimeID: "pi", protocol: "openai_chat_completions", want: true},
+		{runtimeID: "codex", protocol: "openai_responses", want: true},
+		{runtimeID: "claude_code", protocol: "anthropic_messages", want: true},
+		{runtimeID: "codex", protocol: "anthropic_messages", want: false},
+		{runtimeID: "unknown", protocol: "openai_responses", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.runtimeID+"/"+test.protocol, func(t *testing.T) {
+			if got := runtimeplugin.BuiltinSupportsModelProtocol(test.runtimeID, test.protocol); got != test.want {
+				t.Fatalf("BuiltinSupportsModelProtocol(%q, %q) = %v, want %v", test.runtimeID, test.protocol, got, test.want)
+			}
+		})
+	}
+}
+
 func TestBuiltinPluginsDeclareIndependentProviderSessionCapabilities(t *testing.T) {
 	registry, err := runtimeplugin.BuiltinRegistry()
 	if err != nil {
