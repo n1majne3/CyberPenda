@@ -186,8 +186,10 @@ func (f *ProductionProviderSessionFactory) openHost(ctx context.Context, request
 		return f.openHostClaude(ctx, request)
 	case runtimeprofile.ProviderPi:
 		return f.openHostPi(ctx, request)
+	case runtimeprofile.ProviderHermes:
+		return f.openHostHermes(ctx, request)
 	default:
-		return ProviderSessionBinding{}, fmt.Errorf("host provider session factory supports codex, claude_code, and pi only")
+		return ProviderSessionBinding{}, fmt.Errorf("host provider session factory supports codex, claude_code, pi, and hermes only")
 	}
 }
 
@@ -411,6 +413,68 @@ func (f *ProductionProviderSessionFactory) openHostPi(ctx context.Context, reque
 	}, processIdentity)
 }
 
+func (f *ProductionProviderSessionFactory) openHostHermes(ctx context.Context, request ProviderSessionLaunchRequest) (ProviderSessionBinding, error) {
+	taskID := providerSessionOwnerID(request)
+	if taskID == "" || strings.TrimSpace(request.Continuation.ID) == "" {
+		return ProviderSessionBinding{}, fmt.Errorf("provider session bridge requires owner and Continuation identity")
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if prior, ok := f.bounds[taskID]; ok {
+		return f.rebindPrior(prior, request.Continuation.ID)
+	}
+
+	launch, ok := runtime.CommandAdapterLaunch(request.LegacyAdapter)
+	if !ok {
+		return ProviderSessionBinding{}, fmt.Errorf("host provider session bridge requires host command adapter")
+	}
+	providerBinary := strings.TrimSpace(launch.Program)
+	if providerBinary == "" {
+		providerBinary = "hermes"
+	}
+	workdir := strings.TrimSpace(launch.Workdir)
+	if workdir == "" {
+		return ProviderSessionBinding{}, fmt.Errorf("host provider session bridge requires owner workdir")
+	}
+	if strings.TrimSpace(launch.Env["HERMES_HOME"]) == "" {
+		return ProviderSessionBinding{}, fmt.Errorf("host Hermes Runtime requires projected HERMES_HOME")
+	}
+
+	args := []string{"--yolo", "acp"}
+	var runAdapter *runtime.ProviderSessionRunAdapter
+	var runAdapterMu sync.RWMutex
+	bridge, err := f.hostBridges.Bind(ctx, taskID, request.Continuation.ID, func() (*runtime.HostSessionBridge, error) {
+		bridge, err := runtime.NewHostSessionBridge(runtime.HostSessionBridgeConfig{
+			TaskID: taskID, Program: providerBinary, Args: args, Workdir: workdir, Env: launch.Env,
+			Diagnostics: f.config.Diagnostics, Starter: f.config.HostStarter,
+			ProtocolEmit: func(event runtime.SandboxBridgeEvent) {
+				runAdapterMu.RLock()
+				adapter := runAdapter
+				runAdapterMu.RUnlock()
+				if adapter != nil {
+					adapter.HandleBridgeEvent(event)
+				}
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		if err := bridge.Start(ctx); err != nil {
+			_ = bridge.Close(ctx)
+			return nil, fmt.Errorf("Hermes ACP unavailable at %s: %w", providerBinary, err)
+		}
+		return bridge, nil
+	})
+	if err != nil {
+		return ProviderSessionBinding{}, err
+	}
+	processIdentity := runtime.FormatHostProcessGroupID(bridge.ProcessGroupID())
+	return f.finishHermesBinding(ctx, request, taskID, workdir, bridge, &runAdapter, &runAdapterMu, func(closeCtx context.Context) {
+		_ = f.hostBridges.CloseTask(closeCtx, taskID)
+	}, processIdentity)
+}
+
 // resolveHostBridgeCommand returns the explicit host piWire bridge path and
 // fails clearly when it is missing. Production requires a real executable;
 // HostStarter tests still resolve the path so process specs stay observable.
@@ -481,7 +545,7 @@ func sandboxBridgeDockerForLaunch(base runtime.SandboxBridgeDocker, adapter runt
 }
 
 func (f *ProductionProviderSessionFactory) openSandbox(ctx context.Context, request ProviderSessionLaunchRequest) (ProviderSessionBinding, error) {
-	if request.Provider != runtimeprofile.ProviderClaudeCode && request.Provider != runtimeprofile.ProviderCodex && request.Provider != runtimeprofile.ProviderPi {
+	if request.Provider != runtimeprofile.ProviderClaudeCode && request.Provider != runtimeprofile.ProviderCodex && request.Provider != runtimeprofile.ProviderPi && request.Provider != runtimeprofile.ProviderHermes {
 		return ProviderSessionBinding{}, fmt.Errorf("provider %q is not supported by production provider session factory", request.Provider)
 	}
 	if f.config.Docker == nil {
@@ -521,8 +585,19 @@ func (f *ProductionProviderSessionFactory) openSandbox(ctx context.Context, requ
 			}
 		}
 	}
+	if request.Provider == runtimeprofile.ProviderHermes {
+		providerBinary = "hermes"
+		for _, arg := range legacyArgs {
+			if !strings.Contains(arg, "=") && filepath.Base(arg) == "hermes" {
+				providerBinary = arg
+				break
+			}
+		}
+	}
 	bridgeCommand := []string{f.config.BridgeCommand, "--provider", string(request.Provider), "--", providerBinary}
-	if request.Provider == runtimeprofile.ProviderClaudeCode {
+	if request.Provider == runtimeprofile.ProviderHermes {
+		bridgeCommand = []string{providerBinary, "--yolo", "acp"}
+	} else if request.Provider == runtimeprofile.ProviderClaudeCode {
 		// The SDK bridge is an executable in the sandbox image. It owns the
 		// long-lived Query and does not invoke the Claude CLI's private protocol.
 		bridgeCommand = append([]string{f.config.ClaudeSDKBridgeCommand}, hostClaudeSDKBridgeArgs("/task/workdir", legacyArgs, request)...)
@@ -581,6 +656,11 @@ func (f *ProductionProviderSessionFactory) openSandbox(ctx context.Context, requ
 	}
 	if request.Provider == runtimeprofile.ProviderPi {
 		return f.finishPiBinding(ctx, request, taskID, bridge, &runAdapter, &runAdapterMu, func(closeCtx context.Context) {
+			_ = f.bridges.CloseTask(closeCtx, taskID)
+		}, bridge.ContainerID())
+	}
+	if request.Provider == runtimeprofile.ProviderHermes {
+		return f.finishHermesBinding(ctx, request, taskID, "/task/workdir", bridge, &runAdapter, &runAdapterMu, func(closeCtx context.Context) {
 			_ = f.bridges.CloseTask(closeCtx, taskID)
 		}, bridge.ContainerID())
 	}
@@ -795,6 +875,89 @@ func (f *ProductionProviderSessionFactory) finishPiBinding(
 	(*runAdapter).BindContinuation(request.Continuation.ID)
 	(*runAdapter).SetSessionMetadata(func() runtime.NativeSessionMetadata {
 		return runtime.NativeSessionMetadata{ContainerID: processIdentity, NativeSessionID: sessionID, NativeSessionPath: sessionPath}
+	})
+	binding := ProviderSessionBinding{Session: session, Adapter: *runAdapter}
+	f.bounds[taskID] = binding
+	return binding, nil
+}
+
+func (f *ProductionProviderSessionFactory) finishHermesBinding(
+	ctx context.Context,
+	request ProviderSessionLaunchRequest,
+	taskID string,
+	workdir string,
+	bridge productionBridgeTransport,
+	runAdapter **runtime.ProviderSessionRunAdapter,
+	runAdapterMu *sync.RWMutex,
+	closeBridge func(context.Context),
+	processIdentity string,
+) (ProviderSessionBinding, error) {
+	if _, err := bridge.Send(ctx, runtime.SandboxBridgeRequest{
+		ID: "setup:initialize", Method: "initialize",
+		Params: json.RawMessage(`{"clientInfo":{"name":"cyberpenda","version":"1"}}`),
+	}); err != nil {
+		closeBridge(ctx)
+		return ProviderSessionBinding{}, err
+	}
+
+	sessionID := strings.TrimSpace(request.Continuation.NativeSessionID)
+	method := "session/new"
+	params, err := json.Marshal(map[string]any{"cwd": workdir})
+	if err != nil {
+		closeBridge(ctx)
+		return ProviderSessionBinding{}, err
+	}
+	if sessionID != "" {
+		method = "session/load"
+		params, err = json.Marshal(map[string]any{"sessionId": sessionID, "cwd": workdir})
+		if err != nil {
+			closeBridge(ctx)
+			return ProviderSessionBinding{}, err
+		}
+	}
+	setupResponse, err := bridge.Send(ctx, runtime.SandboxBridgeRequest{ID: "setup:session", Method: method, Params: params})
+	if err != nil {
+		closeBridge(ctx)
+		return ProviderSessionBinding{}, err
+	}
+	var state struct {
+		SessionID string `json:"sessionId"`
+	}
+	_ = json.Unmarshal(setupResponse.Result, &state)
+	if created := strings.TrimSpace(state.SessionID); created != "" {
+		sessionID = created
+	}
+	if sessionID == "" {
+		closeBridge(ctx)
+		return ProviderSessionBinding{}, fmt.Errorf("provider session identity unavailable")
+	}
+
+	capabilities := runtimeplugin.Capabilities{
+		PersistentSession: true, SendTurn: true, InterruptTurn: true, InterruptThenReplace: true,
+		PermissionResponse: true, ResumeSession: true,
+	}
+	nativeSession := runtime.NewHermesProviderSession(runtime.HermesProviderSessionConfig{
+		Transport: bridge, SessionID: sessionID, Capabilities: capabilities,
+	})
+	var session runtime.ProviderSession
+	session, err = newProductionBoundProviderSession(nativeSession, func(closeCtx context.Context) {
+		f.mu.Lock()
+		if current, ok := f.bounds[taskID]; ok && current.Session == session {
+			delete(f.bounds, taskID)
+		}
+		f.mu.Unlock()
+		closeBridge(closeCtx)
+	})
+	if err != nil {
+		closeBridge(ctx)
+		return ProviderSessionBinding{}, err
+	}
+	runAdapterMu.Lock()
+	*runAdapter = runtime.NewProviderSessionRunAdapter(session, runtime.FirstSignal(bridge.Closed(), bridge.Terminated()))
+	runAdapterMu.Unlock()
+	(*runAdapter).BindContinuation(request.Continuation.ID)
+	(*runAdapter).SetSessionMetadata(func() runtime.NativeSessionMetadata {
+		return runtime.NativeSessionMetadata{ContainerID: processIdentity, NativeSessionID: sessionID}
 	})
 	binding := ProviderSessionBinding{Session: session, Adapter: *runAdapter}
 	f.bounds[taskID] = binding

@@ -45,7 +45,7 @@ func TestBuiltinRegistryContainsStableBuiltIns(t *testing.T) {
 		t.Fatalf("builtin registry: %v", err)
 	}
 	got := registry.IDs()
-	want := []string{"claude_code", "codex", "fake", "pi"}
+	want := []string{"claude_code", "codex", "fake", "hermes", "pi"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ids = %#v, want %#v", got, want)
 	}
@@ -61,7 +61,7 @@ func TestBuiltinPluginsExposeRuntimeExtensionProfileField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("builtin registry: %v", err)
 	}
-	for _, id := range []string{"codex", "claude_code", "pi"} {
+	for _, id := range []string{"codex", "claude_code", "hermes", "pi"} {
 		t.Run(id, func(t *testing.T) {
 			plugin, ok := registry.Get(id)
 			if !ok {
@@ -97,6 +97,11 @@ func TestBuiltinPluginsDeclareModelProviderProtocols(t *testing.T) {
 		"codex":       {required: "required", supported: []string{"openai_responses"}, preferred: []string{"openai_responses"}},
 		"claude_code": {required: "required", supported: []string{"anthropic_messages"}, preferred: []string{"anthropic_messages"}},
 		"pi": {
+			required:  "required",
+			supported: []string{"openai_chat_completions", "openai_responses", "anthropic_messages"},
+			preferred: []string{"openai_chat_completions", "openai_responses", "anthropic_messages"},
+		},
+		"hermes": {
 			required:  "required",
 			supported: []string{"openai_chat_completions", "openai_responses", "anthropic_messages"},
 			preferred: []string{"openai_chat_completions", "openai_responses", "anthropic_messages"},
@@ -141,7 +146,7 @@ func TestBuiltinPluginsDeclareIndependentProviderSessionCapabilities(t *testing.
 		t.Fatal("fake must advertise assisted conclusion observations")
 	}
 
-	for _, id := range []string{"claude_code", "codex", "pi"} {
+	for _, id := range []string{"claude_code", "codex", "hermes", "pi"} {
 		t.Run(id, func(t *testing.T) {
 			plugin, ok := registry.Get(id)
 			if !ok {
@@ -238,6 +243,52 @@ func TestCodexBuiltinDeclaresNonInteractiveNativeResume(t *testing.T) {
 	}
 	if !reflect.DeepEqual(plugin.NativeResume.Args, want) {
 		t.Fatalf("native resume args = %#v, want %#v", plugin.NativeResume.Args, want)
+	}
+}
+
+func TestHermesBuiltinDeclaresIsolatedHomeAndACP(t *testing.T) {
+	registry, err := runtimeplugin.BuiltinRegistry()
+	if err != nil {
+		t.Fatalf("builtin registry: %v", err)
+	}
+	plugin, ok := registry.Get("hermes")
+	if !ok {
+		t.Fatal("missing hermes plugin")
+	}
+	if plugin.Binary.Default != "hermes" {
+		t.Fatalf("binary = %q, want hermes", plugin.Binary.Default)
+	}
+	if plugin.ConfigProjection.Primitive != "hermes_home" {
+		t.Fatalf("projection = %q, want hermes_home", plugin.ConfigProjection.Primitive)
+	}
+	if plugin.ConfigProjection.ConfigPath != "runtime-home/hermes/config.yaml" {
+		t.Fatalf("config path = %q", plugin.ConfigProjection.ConfigPath)
+	}
+	if plugin.Transcript.Parser != "hermes_acp" {
+		t.Fatalf("parser = %q, want hermes_acp", plugin.Transcript.Parser)
+	}
+	if plugin.ProcessEnv["HERMES_HOME"] != "{{runtime_home}}/hermes" {
+		t.Fatalf("HERMES_HOME = %q", plugin.ProcessEnv["HERMES_HOME"])
+	}
+	if plugin.ProcessEnv["HERMES_YOLO_MODE"] != "1" {
+		t.Fatalf("HERMES_YOLO_MODE = %q", plugin.ProcessEnv["HERMES_YOLO_MODE"])
+	}
+	if !plugin.Capabilities.Sandbox || !plugin.Capabilities.Host || !plugin.Capabilities.MCPConfig {
+		t.Fatalf("runner capabilities = %#v", plugin.Capabilities)
+	}
+	if !plugin.NativeResume.Supported {
+		t.Fatal("expected hermes native resume support")
+	}
+	if plugin.NativeResume.SessionSource != "hermes_acp" {
+		t.Fatalf("session source = %q, want hermes_acp", plugin.NativeResume.SessionSource)
+	}
+	wantLaunch := []string{"{{binary}}", "--yolo", "acp", "{{custom_args}}"}
+	if !reflect.DeepEqual(plugin.Launch.Args, wantLaunch) {
+		t.Fatalf("launch args = %#v, want %#v", plugin.Launch.Args, wantLaunch)
+	}
+	wantResume := []string{"{{binary}}", "--resume", "{{native_session}}", "acp", "{{custom_args}}"}
+	if !reflect.DeepEqual(plugin.NativeResume.Args, wantResume) {
+		t.Fatalf("native resume args = %#v, want %#v", plugin.NativeResume.Args, wantResume)
 	}
 }
 

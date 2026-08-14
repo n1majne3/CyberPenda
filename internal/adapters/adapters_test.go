@@ -477,6 +477,71 @@ func TestBuildPiLaunchArgsDoesNotDoubleInjectWhenLegacyProviderCustomArgPresent(
 	}
 }
 
+func TestBuildHermesLaunchArgsUsesACPAndYolo(t *testing.T) {
+	args, err := adapters.BuildLaunchArgs(adapters.LaunchArgsRequest{
+		Provider: runtimeprofile.ProviderHermes,
+		Profile: runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderHermes,
+			Fields: runtimeprofile.Fields{
+				BinaryPath: "/usr/local/bin/hermes",
+				CustomArgs: []string{"--quiet"},
+			},
+		},
+		Goal: "enumerate example.com",
+	})
+	if err != nil {
+		t.Fatalf("build args: %v", err)
+	}
+	if args[0] != "/usr/local/bin/hermes" {
+		t.Fatalf("binary = %q", args[0])
+	}
+	joined := strings.Join(args, " ")
+	if strings.Count(joined, "--yolo") != 1 {
+		t.Fatalf("expected one --yolo, got %#v", args)
+	}
+	if !strings.Contains(joined, " acp ") && !strings.HasSuffix(joined, " acp") && !strings.Contains(joined, "acp --") {
+		if !containsArg(args, "acp") {
+			t.Fatalf("expected acp subcommand, got %#v", args)
+		}
+	}
+	if !containsArg(args, "--quiet") {
+		t.Fatalf("expected custom args, got %#v", args)
+	}
+	if strings.Contains(joined, "enumerate example.com") {
+		t.Fatalf("ACP launch must not put the goal on argv: %#v", args)
+	}
+}
+
+func TestBuildHermesNativeResumeArgsUsesACP(t *testing.T) {
+	args, err := adapters.BuildNativeResumeArgs(adapters.NativeResumeArgsRequest{
+		Provider: runtimeprofile.ProviderHermes,
+		Profile: runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderHermes,
+			Fields:   runtimeprofile.Fields{BinaryPath: "/usr/local/bin/hermes"},
+		},
+		NativeSessionID: "20260814_sess",
+		ResumedMessage:  "continue",
+	})
+	if err != nil {
+		t.Fatalf("build resume args: %v", err)
+	}
+	if !containsArg(args, "--resume") || !containsArg(args, "20260814_sess") || !containsArg(args, "acp") {
+		t.Fatalf("resume args = %#v", args)
+	}
+	if strings.Count(strings.Join(args, " "), "--yolo") != 1 {
+		t.Fatalf("expected one --yolo, got %#v", args)
+	}
+}
+
+func containsArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
+}
+
 // TestRedactSecretsFromEventPayload proves adapters redact resolved secret
 // values before they reach task events.
 func TestRedactSecretsFromEventPayload(t *testing.T) {

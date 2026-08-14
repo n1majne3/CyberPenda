@@ -182,6 +182,14 @@ func customArgRulesFor(provider Provider) customArgRules {
 				"--thinking": StructuredFieldReasoningEffort,
 			},
 		}
+	case ProviderHermes:
+		return customArgRules{
+			flags: map[string]string{
+				"--provider":  StructuredFieldModelProvider,
+				"--model":     StructuredFieldModel,
+				"--reasoning": StructuredFieldReasoningEffort,
+			},
+		}
 	default:
 		return customArgRules{}
 	}

@@ -131,6 +131,8 @@ func ProjectBlackboardV2RuntimeConfig(layout Layout, profile runtimeprofile.Prof
 		return projectClaudeV2RuntimeConfig(layout, profile, req)
 	case runtimeprofile.ProviderPi:
 		return projectPiV2RuntimeConfig(layout, profile, req)
+	case runtimeprofile.ProviderHermes:
+		return projectHermesV2RuntimeConfig(layout, profile, req)
 	default:
 		return ConfigProjection{}, fmt.Errorf("Blackboard v2 projection is unsupported for provider %q", profile.Provider)
 	}
@@ -235,6 +237,30 @@ func projectPiV2RuntimeConfig(layout Layout, profile runtimeprofile.Profile, req
 	projectionRequest := req
 	projectionRequest.Owner = owner.Contract{}
 	projection, err := projectPiConfig(layout, profile, projectionRequest)
+	if err != nil {
+		return ConfigProjection{}, err
+	}
+	projection.ResolvedProfile = profile
+	projection.ModelSnapshot = req.ModelSnapshot
+	if err := projectRuntimeExtensions(layout, profile, req, &projection); err != nil {
+		return ConfigProjection{}, err
+	}
+	if len(req.SkillBundles) > 0 {
+		addSkillProjectionPreview(&projection, req.SkillBundles, layout)
+	}
+	return projection, nil
+}
+
+func projectHermesV2RuntimeConfig(layout Layout, profile runtimeprofile.Profile, req ProjectionRequest) (ConfigProjection, error) {
+	if profile.Provider != runtimeprofile.ProviderHermes {
+		return ConfigProjection{}, fmt.Errorf("Hermes v2 projection requires the Hermes provider")
+	}
+	if err := prepareBlackboardV2Skills(layout, profile, req); err != nil {
+		return ConfigProjection{}, err
+	}
+	projectionRequest := req
+	projectionRequest.Owner = owner.Contract{}
+	projection, err := projectHermesHome(layout, profile, projectionRequest)
 	if err != nil {
 		return ConfigProjection{}, err
 	}

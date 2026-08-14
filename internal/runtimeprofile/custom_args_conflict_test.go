@@ -48,6 +48,10 @@ func TestValidateCustomArgsRejectsDocumentedAliases(t *testing.T) {
 		{name: "pi --model=", provider: runtimeprofile.ProviderPi, args: []string{"--model=DeepSeek-V4-Pro"}, wantArg: "--model=DeepSeek-V4-Pro", wantFlag: "--model", wantField: "model"},
 		{name: "pi --thinking", provider: runtimeprofile.ProviderPi, args: []string{"--thinking", "medium"}, wantArg: "--thinking medium", wantFlag: "--thinking", wantField: "reasoning_effort"},
 		{name: "pi --thinking=", provider: runtimeprofile.ProviderPi, args: []string{"--thinking=high"}, wantArg: "--thinking=high", wantFlag: "--thinking", wantField: "reasoning_effort"},
+
+		{name: "hermes --provider", provider: runtimeprofile.ProviderHermes, args: []string{"--provider", "custom"}, wantArg: "--provider custom", wantFlag: "--provider", wantField: "model_provider"},
+		{name: "hermes --model", provider: runtimeprofile.ProviderHermes, args: []string{"--model", "gpt-primary"}, wantArg: "--model gpt-primary", wantFlag: "--model", wantField: "model"},
+		{name: "hermes --reasoning", provider: runtimeprofile.ProviderHermes, args: []string{"--reasoning", "high"}, wantArg: "--reasoning high", wantFlag: "--reasoning", wantField: "reasoning_effort"},
 	}
 
 	for _, tc := range cases {

@@ -105,6 +105,8 @@ func LaunchProfileName(selection LaunchSelection, modelProviderName string) stri
 		runtimeLabel = "Claude Code"
 	case ProviderPi:
 		runtimeLabel = "Pi"
+	case ProviderHermes:
+		runtimeLabel = "Hermes"
 	}
 	providerLabel := strings.TrimSpace(modelProviderName)
 	if providerLabel == "" {

@@ -185,7 +185,7 @@ An operator-visible current-state view with Runtime liveness (`live`, `offline`,
 _Avoid_: Task status, audit record, activity history
 
 **Runtime Non-Interactive Defaults**:
-Provider-native arguments required for a **Runtime** to operate without interactive approval or permission prompts. The **Runtime Harness** adds them to every launch and **Runtime Continuation**: Codex receives `--dangerously-bypass-approvals-and-sandbox`; Claude Code receives `--dangerously-skip-permissions` and `--permission-mode bypassPermissions`. These defaults apply to both **Sandbox Runner** and **Host Runner** execution, and are not duplicated when the **Runtime Profile** already supplies them.
+Provider-native arguments required for a **Runtime** to operate without interactive approval or permission prompts. The **Runtime Harness** adds them to every launch and **Runtime Continuation**: Codex receives `--dangerously-bypass-approvals-and-sandbox`; Claude Code receives `--dangerously-skip-permissions` and `--permission-mode bypassPermissions`; Hermes receives `--yolo` and `HERMES_YOLO_MODE=1`. These defaults apply to both **Sandbox Runner** and **Host Runner** execution, and are not duplicated when the **Runtime Profile** already supplies them.
 _Avoid_: permission grant, Scope authorization, **Host Runner Activation**, **Project Interface** authority, runner policy
 
 **Runtime Profile**:
@@ -320,9 +320,9 @@ _Avoid_: separate credential, runtime profile credential, endpoint secret
 The **Config Projection** step that derives and passes the runtime-specific model URL, protocol, model, and credential to a **Runtime** without proxying model traffic.
 _Avoid_: LLM proxy, gateway request, daemon model call
 
-**Pi Global Model Projection**:
-The Pi-specific **Config Projection** that makes every global **Launch-Ready Model Provider**, its model configuration, and its configured model API credential available to a Pi **Runtime** when the task starts, so later **Runtime Turns** can switch providers natively.
-_Avoid_: selected-provider-only projection, project allowlist, on-demand credential injection
+**Global Model Projection**:
+The **Config Projection** that makes every global **Launch-Ready Model Provider**, its model configuration, and its configured model API credential available to a **Runtime** that can switch providers natively. Pi and Hermes use it. Codex and Claude Code do not.
+_Avoid_: selected-provider-only projection, project allowlist, on-demand credential injection, Pi-only projection
 
 **Model API Key Source**:
 The required single source for the API key used by a **Model Provider**.
@@ -1013,16 +1013,16 @@ _Avoid_: transcript, export, source of truth
 - **Reasoning Effort** has exactly five user-selectable values: `low`, `medium`, `high`, `xhigh`, and `max`; there is no Auto or Runtime Default choice.
 - A missing stored **Reasoning Effort** resolves to `high` without requiring existing **Runtime Profiles** to be rewritten.
 - Every **Runtime Turn** sends its resolved **Requested Reasoning Effort** explicitly instead of inheriting sticky effort state from the **Runtime**.
-- A **Task** keeps one **Runtime Plugin** family; changing from Codex, Claude Code, or Pi requires a different **Task**.
+- A **Task** keeps one **Runtime Plugin** family; changing from Codex, Claude Code, Pi, or Hermes requires a different **Task**.
 - Codex and Claude Code apply model and **Reasoning Effort** changes natively when the **Model Provider** is unchanged.
 - Native **Runtime Turn Selection** changes do not create a **Task Runtime Configuration Version**.
 - A **Task Runtime Configuration Version** is created only when a later turn requires new **Config Projection**, such as a Codex or Claude Code **Model Provider** change.
 - Changing the **Model Provider** for a Codex or Claude Code **Runtime Turn** creates a new **Task Runtime Configuration Version**, re-resolves credentials, repeats **Config Projection**, and restarts the **Runtime** before resuming the **Task Conversation**.
-- Every Pi task uses **Pi Global Model Projection** rather than limiting model configuration or credentials to its initially selected **Model Provider**.
-- A Pi **Runtime Turn** switches **Model Provider**, model, and **Reasoning Effort** through Pi-native controls without restarting the **Runtime**.
-- Every Pi **Runtime** can access every global **Launch-Ready Model Provider** API credential; **Project**, **Task**, and **Runtime Profile** boundaries do not reduce that credential set.
-- **Pi Global Model Projection** excludes Model Provider drafts and other providers that are not launch-ready for Pi; those exclusions do not fail Pi **Preflight** unless the excluded provider is the task's initial selection.
-- **Pi Global Model Projection** is resolved when the Runtime starts and does not hot-reload later Model Provider, catalog, or credential changes; the next required projection and Runtime restart refreshes that set.
+- Every Pi or Hermes task uses **Global Model Projection** rather than limiting model configuration or credentials to its initially selected **Model Provider**.
+- A Pi or Hermes **Runtime Turn** switches **Model Provider**, model, and **Reasoning Effort** through runtime-native controls without restarting the **Runtime** when those controls exist; otherwise the Harness restarts the **Runtime**.
+- Every Pi or Hermes **Runtime** can access every global **Launch-Ready Model Provider** API credential; **Project**, **Task**, and **Runtime Profile** boundaries do not reduce that credential set.
+- **Global Model Projection** excludes Model Provider drafts and other providers that are not launch-ready for that **Runtime Plugin**; those exclusions do not fail **Preflight** unless the excluded provider is the task's initial selection.
+- **Global Model Projection** is resolved when the Runtime starts and does not hot-reload later Model Provider, catalog, or credential changes; the next required projection and Runtime restart refreshes that set.
 - User messages and runtime replies in a **Task Conversation** are represented as **Task Events**.
 - **Harness Steering** actions are represented as **Task Events**.
 - An **Accepted Steering** is durably dispatchable before acceptance is returned and eventually settles as `applied`, `failed`, or `action_required`.
@@ -1040,7 +1040,7 @@ _Avoid_: transcript, export, source of truth
 - A **Runtime Continuation** after a runtime-profile switch does not inherit the prior runtime's **Runtime Workdir** by default.
 - A **Task** may override its **Runtime Profile**'s default **Runner**, and that override is recorded as a task event.
 - A **Task** uses **Config Projection** to prepare runtime configuration without mutating host runtime configuration.
-- Every **Runtime** operates non-interactively; the **Runtime Harness** applies **Runtime Non-Interactive Defaults** to every Codex and Claude Code launch and continuation, regardless of whether the selected **Runner** is a **Sandbox Runner** or **Host Runner**.
+- Every **Runtime** operates non-interactively; the **Runtime Harness** applies **Runtime Non-Interactive Defaults** to every Codex, Claude Code, and Hermes launch and continuation, regardless of whether the selected **Runner** is a **Sandbox Runner** or **Host Runner**.
 - **Runtime Non-Interactive Defaults** control provider CLI interaction only; they do not expand **Scope**, replace **Host Runner Activation**, grant **Project Interface** authority, or bypass **Credential Reference** and **Preflight** checks.
 - A **Config Projection** failure belongs to the affected **Task** unless the **Runtime Profile** itself is explicitly invalid.
 - A **Task** passes **Preflight** before its **Runtime** starts.
@@ -1052,7 +1052,7 @@ _Avoid_: transcript, export, source of truth
 - A **Scope Snapshot** records historical authorization and does not change when current **Scope** later changes.
 - A **Runtime** performs a **Task** but is not the whole **Pentest Agent**.
 - A **Runtime Harness** launches, resumes, steers, and stops a **Runtime** without executing pentest tools itself.
-- Built-in Codex, Claude Code, and Pi **Runtimes** use a **Task-Scoped Persistent Runtime** on both **Sandbox Runner** and **Host Runner** when their native session bridge is available.
+- Built-in Codex, Claude Code, Pi, and Hermes **Runtimes** use a **Task-Scoped Persistent Runtime** on both **Sandbox Runner** and **Host Runner** when their native session bridge is available.
 - **Task-Scoped Persistent Runtime** does not remove **Host Runner Activation** or weaken the separate Sandbox and Host execution boundaries.
 - A plugin without a usable native session bridge may retain one-shot Runtime execution; normal process exit completes that one-shot **Task**.
 - A **Task-Scoped Persistent Runtime** remains active until the operator invokes **Task Finish** or **Stop**, a required **Config Projection** restart replaces it, it fails, or daemon shutdown closes it.

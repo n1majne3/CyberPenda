@@ -167,7 +167,7 @@ func (e *providerSessionFactoryError) Unwrap() error { return e.cause }
 
 func supportedProviderSessionFactoryProvider(provider runtimeprofile.Provider) bool {
 	switch provider {
-	case runtimeprofile.ProviderCodex, runtimeprofile.ProviderClaudeCode, runtimeprofile.ProviderPi:
+	case runtimeprofile.ProviderCodex, runtimeprofile.ProviderClaudeCode, runtimeprofile.ProviderPi, runtimeprofile.ProviderHermes:
 		return true
 	default:
 		return false
@@ -182,7 +182,7 @@ func supportsPersistentProviderSession(runner task.Runner, provider runtimeprofi
 	case task.RunnerSandbox:
 		return supportedProviderSessionFactoryProvider(provider)
 	case task.RunnerHost:
-		return provider == runtimeprofile.ProviderCodex || provider == runtimeprofile.ProviderClaudeCode || provider == runtimeprofile.ProviderPi
+		return provider == runtimeprofile.ProviderCodex || provider == runtimeprofile.ProviderClaudeCode || provider == runtimeprofile.ProviderPi || provider == runtimeprofile.ProviderHermes
 	default:
 		return false
 	}

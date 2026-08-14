@@ -53,6 +53,20 @@ func PrepareSandboxSkills(layout Layout, provider runtimeprofile.Provider, targe
 		if err := symlinkUnlessExists(filepath.Join(layout.ProviderHome, "skills"), target); err != nil {
 			return err
 		}
+	case runtimeprofile.ProviderHermes:
+		agentsDir := filepath.Join(layout.Workdir, ".agents")
+		if err := os.MkdirAll(agentsDir, 0o700); err != nil {
+			return fmt.Errorf("prepare sandbox agents dir: %w", err)
+		}
+		if err := symlinkUnlessExists(filepath.Join(agentsDir, "skills"), target); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(layout.ProviderHome, 0o700); err != nil {
+			return fmt.Errorf("prepare hermes home: %w", err)
+		}
+		if err := symlinkUnlessExists(filepath.Join(layout.ProviderHome, "skills"), target); err != nil {
+			return err
+		}
 	case runtimeprofile.ProviderPi:
 		agentsDir := filepath.Join(layout.Workdir, ".agents")
 		if err := os.MkdirAll(agentsDir, 0o700); err != nil {

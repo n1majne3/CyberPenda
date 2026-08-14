@@ -13,6 +13,7 @@ func TestParserForAdapterUsesRuntimePluginMetadata(t *testing.T) {
 		"claude_code": "claude_stream_json",
 		"codex":       "codex_json",
 		"pi":          "pi_json_session",
+		"hermes":      "hermes_acp",
 		"fake":        "plain_runtime_output",
 		"missing":     "plain_runtime_output",
 	}

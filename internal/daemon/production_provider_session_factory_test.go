@@ -596,8 +596,57 @@ func TestProductionProviderSessionFactoryRejectsUnsupportedHostProvider(t *testi
 		Owner: owner.NewTaskContract("t", "project-test", ""), Continuation: owner.Continuation{ID: "c", OwnerID: "t"},
 		Provider: runtimeprofile.ProviderFake, Runner: task.RunnerHost, LegacyAdapter: legacy,
 	})
-	if err == nil || !strings.Contains(err.Error(), "codex, claude_code, and pi only") {
+	if err == nil || !strings.Contains(err.Error(), "codex, claude_code, pi, and hermes only") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestProductionProviderSessionFactoryOpensHostHermesACP(t *testing.T) {
+	starter := newProductionFactoryHostStarter()
+	factory := NewProductionProviderSessionFactory(ProductionProviderSessionFactoryConfig{HostStarter: starter})
+	legacy := runtime.NewCommandAdapter(runtime.CommandAdapterConfig{
+		Name: "hermes", Program: "/opt/hermes",
+		Args:    []string{"--yolo", "acp"},
+		Workdir: "/tmp/task-workdir",
+		Env:     map[string]string{"HERMES_HOME": "/tmp/hermes-home", "HERMES_YOLO_MODE": "1"},
+	})
+	go func() {
+		scanner := bufio.NewScanner(starter.inputR)
+		for scanner.Scan() {
+			var request runtime.SandboxBridgeRequest
+			_ = json.Unmarshal(scanner.Bytes(), &request)
+			result := `{"ok":true}`
+			switch request.Method {
+			case "initialize":
+				result = `{"protocolVersion":"1"}`
+			case "session/new":
+				result = `{"sessionId":"hermes-acp-1"}`
+			case "session/prompt":
+				result = `{"ok":true}`
+			}
+			_, _ = io.WriteString(starter.outputW, `{"jsonrpc":"2.0","id":"`+request.ID+`","result":`+result+"}\n")
+		}
+	}()
+	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
+		Owner: owner.NewTaskContract("host-hermes-1", "project-test", ""), Continuation: owner.Continuation{ID: "host-hermes-c1", OwnerID: "host-hermes-1"},
+		Provider: runtimeprofile.ProviderHermes, Runner: task.RunnerHost, LegacyAdapter: legacy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := starter.lastSpec()
+	if spec.Program != "/opt/hermes" {
+		t.Fatalf("program = %q", spec.Program)
+	}
+	joined := strings.Join(spec.Args, " ")
+	if !strings.Contains(joined, "--yolo") || !strings.Contains(joined, "acp") {
+		t.Fatalf("args = %#v", spec.Args)
+	}
+	if spec.Env["HERMES_HOME"] != "/tmp/hermes-home" {
+		t.Fatalf("HERMES_HOME = %q", spec.Env["HERMES_HOME"])
+	}
+	if binding.Session == nil || binding.Session.SessionID() != "hermes-acp-1" {
+		t.Fatalf("session = %#v", binding.Session)
 	}
 }
 
