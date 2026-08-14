@@ -3,6 +3,7 @@ package preflight_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -537,6 +538,146 @@ func TestRunFailsWhenRequiredRuntimeLacksModelProvider(t *testing.T) {
 	}
 }
 
+func TestRunFailsWhenHostHermesLacksACPExtra(t *testing.T) {
+	svc := newTestServices(t)
+	provider, err := svc.modelProviders.Create(modelprovider.CreateRequest{
+		Name:      "OpenAI Compatible",
+		BaseURL:   "https://api.example.test/v1",
+		Protocols: []modelprovider.Protocol{modelprovider.ProtocolOpenAIChatCompletions},
+		Catalog:   modelprovider.Catalog{Manual: []string{"gpt-primary"}, DefaultModel: "gpt-primary"},
+	})
+	if err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	t.Setenv(provider.APIKeyEnv, "sk-test")
+	profile, err := svc.profiles.Create("hermes", runtimeprofile.ProviderHermes, runtimeprofile.Fields{
+		ModelProviderID: provider.ID,
+		BinaryPath:      "/opt/hermes",
+	})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	svc.preflight.WithHermesACPProbe(func(binary string) error {
+		if binary != "/opt/hermes" {
+			t.Fatalf("probed binary = %q", binary)
+		}
+		return errors.New("hermes acp: unknown command")
+	})
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+		Runner:           "host",
+		HostActivated:    true,
+	})
+	if result.Pass {
+		t.Fatal("expected Host Hermes preflight to fail without ACP extra")
+	}
+	if !checkFailed(result, "hermes_acp") {
+		t.Fatalf("expected hermes_acp check to fail, got %#v", result.Checks)
+	}
+}
+
+func TestRunPassesWhenHostHermesACPExtraIsPresent(t *testing.T) {
+	svc := newTestServices(t)
+	provider, err := svc.modelProviders.Create(modelprovider.CreateRequest{
+		Name:      "OpenAI Compatible",
+		BaseURL:   "https://api.example.test/v1",
+		Protocols: []modelprovider.Protocol{modelprovider.ProtocolOpenAIChatCompletions},
+		Catalog:   modelprovider.Catalog{Manual: []string{"gpt-primary"}, DefaultModel: "gpt-primary"},
+	})
+	if err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	t.Setenv(provider.APIKeyEnv, "sk-test")
+	profile, err := svc.profiles.Create("hermes", runtimeprofile.ProviderHermes, runtimeprofile.Fields{
+		ModelProviderID: provider.ID,
+	})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	svc.preflight.WithHermesACPProbe(func(binary string) error {
+		if binary != "hermes" {
+			t.Fatalf("probed binary = %q", binary)
+		}
+		return nil
+	})
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+		Runner:           "host",
+		HostActivated:    true,
+	})
+	if !result.Pass {
+		t.Fatalf("expected Host Hermes preflight to pass, got %#v", result.Checks)
+	}
+	if !checkPassed(result, "hermes_acp") {
+		t.Fatalf("expected hermes_acp check to pass, got %#v", result.Checks)
+	}
+}
+
+func TestRunSkipsHermesACPProbeOnSandbox(t *testing.T) {
+	svc := newTestServices(t)
+	provider, err := svc.modelProviders.Create(modelprovider.CreateRequest{
+		Name:      "OpenAI Compatible",
+		BaseURL:   "https://api.example.test/v1",
+		Protocols: []modelprovider.Protocol{modelprovider.ProtocolOpenAIChatCompletions},
+		Catalog:   modelprovider.Catalog{Manual: []string{"gpt-primary"}, DefaultModel: "gpt-primary"},
+	})
+	if err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	t.Setenv(provider.APIKeyEnv, "sk-test")
+	profile, err := svc.profiles.Create("hermes", runtimeprofile.ProviderHermes, runtimeprofile.Fields{
+		ModelProviderID: provider.ID,
+	})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	probed := false
+	svc.preflight.WithHermesACPProbe(func(string) error {
+		probed = true
+		return errors.New("should not probe host hermes for sandbox")
+	})
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+		Runner:           "sandbox",
+	})
+	if probed {
+		t.Fatal("sandbox launch probed host Hermes ACP")
+	}
+	if !result.Pass {
+		t.Fatalf("expected sandbox Hermes preflight to pass, got %#v", result.Checks)
+	}
+	for _, check := range result.Checks {
+		if check.Name == "hermes_acp" {
+			t.Fatalf("sandbox should not emit hermes_acp check, got %#v", result.Checks)
+		}
+	}
+}
+
+func TestRunFailsWhenHermesLacksModelProvider(t *testing.T) {
+	svc := newTestServices(t)
+	profile, err := svc.profiles.Create("hermes", runtimeprofile.ProviderHermes, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+	})
+	if result.Pass {
+		t.Fatal("expected Hermes preflight to fail without a Model Provider")
+	}
+	if !checkFailed(result, "model_provider") {
+		t.Fatalf("expected model_provider check to fail, got %#v", result.Checks)
+	}
+}
+
 func TestRunUsesLaunchModelOverrideWithoutMutatingProfile(t *testing.T) {
 	svc := newTestServices(t)
 	provider, err := svc.modelProviders.Create(modelprovider.CreateRequest{
@@ -613,6 +754,43 @@ func TestRunPassesWhenModelProviderConfigured(t *testing.T) {
 	}
 	if result.ModelProvider == nil || result.ModelProvider.ModelProviderID != provider.ID {
 		t.Fatalf("expected model provider preview, got %#v", result.ModelProvider)
+	}
+}
+
+func TestRunPassesWhenHermesModelProviderConfigured(t *testing.T) {
+	svc := newTestServices(t)
+	provider, err := svc.modelProviders.Create(modelprovider.CreateRequest{
+		Name:      "OpenAI Compatible",
+		BaseURL:   "https://api.example.test/v1",
+		Protocols: []modelprovider.Protocol{modelprovider.ProtocolOpenAIChatCompletions},
+		Catalog:   modelprovider.Catalog{Manual: []string{"gpt-primary"}, DefaultModel: "gpt-primary"},
+	})
+	if err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	t.Setenv(provider.APIKeyEnv, "sk-test")
+	profile, err := svc.profiles.Create("hermes", runtimeprofile.ProviderHermes, runtimeprofile.Fields{
+		ModelProviderID: provider.ID,
+	})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+	})
+	if !result.Pass {
+		t.Fatalf("expected Hermes preflight to pass, got %#v", result.Checks)
+	}
+	if !checkPassed(result, "model_provider") {
+		t.Fatalf("expected model_provider check to pass, got %#v", result.Checks)
+	}
+	if result.ModelProvider == nil || result.ModelProvider.ModelProviderID != provider.ID {
+		t.Fatalf("expected Hermes model provider preview, got %#v", result.ModelProvider)
+	}
+	if result.ModelProvider.ProjectionTarget != "hermes_home" {
+		t.Fatalf("projection target = %q", result.ModelProvider.ProjectionTarget)
 	}
 }
 

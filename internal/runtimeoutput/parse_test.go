@@ -94,3 +94,89 @@ func TestCoalesceMergesAdjacentThinking(t *testing.T) {
 		t.Fatalf("unexpected merged thinking: %#v", got[0])
 	}
 }
+
+func TestParseRecordHermesACPSessionUpdates(t *testing.T) {
+	at := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name   string
+		record map[string]any
+		kind   runtimeoutput.Kind
+		text   string
+		tool   string
+		callID string
+	}{
+		{
+			name: "jsonrpc agent message chunk",
+			record: map[string]any{
+				"jsonrpc": "2.0",
+				"method":  "session/update",
+				"params": map[string]any{
+					"sessionId": "hermes-session",
+					"update": map[string]any{
+						"sessionUpdate": "agent_message_chunk",
+						"content":       map[string]any{"type": "text", "text": "Inspecting the app."},
+					},
+				},
+			},
+			kind: runtimeoutput.KindText,
+			text: "Inspecting the app.",
+		},
+		{
+			name: "params-only tool call",
+			record: map[string]any{
+				"sessionId": "hermes-session",
+				"update": map[string]any{
+					"sessionUpdate": "tool_call",
+					"toolCallId":    "call-1",
+					"title":         "bash",
+					"rawInput":      map[string]any{"command": "ls"},
+				},
+			},
+			kind:   runtimeoutput.KindToolUse,
+			tool:   "bash",
+			callID: "call-1",
+		},
+		{
+			name: "update-only tool result",
+			record: map[string]any{
+				"sessionUpdate": "tool_call_update",
+				"toolCallId":    "call-1",
+				"title":         "bash",
+				"status":        "completed",
+				"content":       "ok",
+			},
+			kind:   runtimeoutput.KindToolResult,
+			tool:   "bash",
+			callID: "call-1",
+			text:   "ok",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			turns := runtimeoutput.ParseRecord(tc.record, runtimeoutput.ParseOptions{}, at)
+			if len(turns) != 1 {
+				t.Fatalf("turns = %#v", turns)
+			}
+			got := turns[0]
+			if got.Kind != tc.kind {
+				t.Fatalf("kind = %q, want %q", got.Kind, tc.kind)
+			}
+			if tc.text != "" && got.Text != tc.text && got.Output != tc.text {
+				t.Fatalf("text/output = %q/%q, want %q", got.Text, got.Output, tc.text)
+			}
+			if tc.tool != "" && got.Tool != tc.tool {
+				t.Fatalf("tool = %q, want %q", got.Tool, tc.tool)
+			}
+			if tc.callID != "" && got.ToolCallID != tc.callID {
+				t.Fatalf("call id = %q, want %q", got.ToolCallID, tc.callID)
+			}
+		})
+	}
+
+	if turns := runtimeoutput.ParseRecord(map[string]any{
+		"method": "session/update",
+		"params": map[string]any{"sessionId": "hermes-session", "update": map[string]any{"sessionUpdate": "turn_ended", "stopReason": "end_turn"}},
+	}, runtimeoutput.ParseOptions{}, at); len(turns) != 0 {
+		t.Fatalf("turn_ended should not become transcript text, got %#v", turns)
+	}
+}

@@ -148,6 +148,10 @@ func appendRuntimeNonInteractiveArgs(provider runtimeprofile.Provider, args []st
 		if !hasCLIOption(args, "--permission-mode") {
 			args = append(args, "--permission-mode", "bypassPermissions")
 		}
+	case runtimeprofile.ProviderHermes:
+		if !hasCLIOption(args, "--yolo") {
+			args = append(args, "--yolo")
+		}
 	}
 	return args
 }

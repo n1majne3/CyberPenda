@@ -140,7 +140,7 @@ func BlackboardV2ProcessEnv(env map[string]string, layout Layout, sandbox bool) 
 // shared Blackboard v2 Launch Pin / Working Snapshot contract.
 func BlackboardV2SupportsProvider(provider runtimeprofile.Provider) bool {
 	switch provider {
-	case runtimeprofile.ProviderFake, runtimeprofile.ProviderCodex, runtimeprofile.ProviderClaudeCode, runtimeprofile.ProviderPi:
+	case runtimeprofile.ProviderFake, runtimeprofile.ProviderCodex, runtimeprofile.ProviderClaudeCode, runtimeprofile.ProviderPi, runtimeprofile.ProviderHermes:
 		return true
 	default:
 		return false
@@ -151,7 +151,7 @@ func BlackboardV2SupportsProvider(provider runtimeprofile.Provider) bool {
 // MCP Project Interface for v2 writes (Claude and Pi). Codex remains networkless.
 func BlackboardV2UsesTrustedMCP(provider runtimeprofile.Provider) bool {
 	switch provider {
-	case runtimeprofile.ProviderClaudeCode, runtimeprofile.ProviderPi:
+	case runtimeprofile.ProviderClaudeCode, runtimeprofile.ProviderPi, runtimeprofile.ProviderHermes:
 		return true
 	default:
 		return false

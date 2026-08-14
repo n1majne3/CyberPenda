@@ -447,6 +447,8 @@ func providerHomeEnv(provider runtimeprofile.Provider) string {
 		return "CLAUDE_HOME"
 	case runtimeprofile.ProviderPi:
 		return "PI_CODING_AGENT_DIR"
+	case runtimeprofile.ProviderHermes:
+		return "HERMES_HOME"
 	default:
 		return "RUNTIME_HOME"
 	}

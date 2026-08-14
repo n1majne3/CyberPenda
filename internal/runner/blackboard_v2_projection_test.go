@@ -77,6 +77,7 @@ func TestClaudeAndPiBlackboardV2ProjectsSharedChecklistOnNativeInstructionChanne
 	}{
 		{runtimeprofile.ProviderClaudeCode, "CLAUDE.md", "AGENTS.md"},
 		{runtimeprofile.ProviderPi, "AGENTS.md", "CLAUDE.md"},
+		{runtimeprofile.ProviderHermes, "AGENTS.md", "CLAUDE.md"},
 	} {
 		t.Run(string(tc.provider), func(t *testing.T) {
 			layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-v2-"+string(tc.provider), tc.provider)

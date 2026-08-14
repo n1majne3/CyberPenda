@@ -211,6 +211,53 @@ func BuiltinPlugins() []Plugin {
 			CredentialEnv: []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY"},
 			Transcript:    Transcript{Parser: "pi_json_session"},
 		},
+		{
+			SchemaVersion: SchemaVersion,
+			ID:            "hermes",
+			Name:          "Hermes",
+			Description:   "Nous Hermes Agent runtime provider.",
+			Binary:        Binary{Default: "hermes", ProfileField: "binary_path"},
+			Capabilities: Capabilities{
+				Sandbox:              true,
+				Host:                 true,
+				MCPConfig:            true,
+				StreamingTranscript:  true,
+				Resume:               true,
+				PersistentSession:    true,
+				SendTurn:             true,
+				InterruptTurn:        true,
+				InterruptThenReplace: true,
+				PermissionResponse:   true,
+				ResumeSession:        true,
+			},
+			ModelProvider: ModelProvider{
+				Requirement:        "required",
+				SupportedProtocols: []string{"openai_chat_completions", "openai_responses", "anthropic_messages"},
+				ProtocolPreference: []string{"openai_chat_completions", "openai_responses", "anthropic_messages"},
+			},
+			ProfileSchema: commonProfileSchema(commonFields),
+			ConfigProjection: ConfigProjection{
+				Primitive:  "hermes_home",
+				ConfigPath: "runtime-home/hermes/config.yaml",
+			},
+			Launch: LaunchTemplate{
+				Args: []string{"{{binary}}", "--yolo", "acp", "{{custom_args}}"},
+				SingletonOptions: []SingletonOption{
+					{Options: []string{"--yolo"}, Arity: 0},
+				},
+			},
+			NativeResume: NativeResume{
+				Supported:     true,
+				SessionSource: "hermes_acp",
+				Args:          []string{"{{binary}}", "--resume", "{{native_session}}", "acp", "{{custom_args}}"},
+			},
+			ProcessEnv: map[string]string{
+				"HERMES_HOME":      "{{runtime_home}}/hermes",
+				"HERMES_YOLO_MODE": "1",
+			},
+			CredentialEnv: []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY"},
+			Transcript:    Transcript{Parser: "hermes_acp"},
+		},
 	}
 }
 

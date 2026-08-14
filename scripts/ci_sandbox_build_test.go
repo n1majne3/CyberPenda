@@ -100,6 +100,56 @@ func TestSandboxDockerfileKeepsKaliLinuxHeadlessMetaPackage(t *testing.T) {
 	}
 }
 
+func TestSandboxDockerfileInstallsHermesWithXZForOfficialInstaller(t *testing.T) {
+	dockerfileBytes, err := os.ReadFile(filepath.Join(repoRoot(t), "docker", "pentest-sandbox", "Dockerfile"))
+	if err != nil {
+		t.Fatalf("read sandbox Dockerfile: %v", err)
+	}
+	dockerfile := string(dockerfileBytes)
+
+	aptStart := strings.Index(dockerfile, "apt-get install")
+	hermesInstall := strings.Index(dockerfile, "hermes-agent.nousresearch.com/install.sh")
+	if aptStart == -1 || hermesInstall == -1 {
+		t.Fatal("sandbox Dockerfile must apt-get install packages and run the Hermes installer")
+	}
+	if hermesInstall < aptStart {
+		t.Fatal("Hermes installer must run after apt-get so xz-utils is present")
+	}
+	aptEnd := strings.Index(dockerfile[aptStart:], "\nRUN")
+	if aptEnd == -1 {
+		aptEnd = hermesInstall - aptStart
+	}
+	aptBlock := dockerfile[aptStart : aptStart+aptEnd]
+	if !strings.Contains(aptBlock, "xz-utils") {
+		t.Fatal("sandbox Dockerfile must install xz-utils before Hermes; install.sh extracts node-*.tar.xz")
+	}
+	if strings.Contains(dockerfile, "/root/.local/bin/hermes") {
+		t.Fatal("root Hermes install uses FHS /usr/local/bin/hermes, not ~/.local/bin")
+	}
+	hermesBlock := dockerfile[hermesInstall:]
+	if next := strings.Index(hermesBlock[1:], "\nRUN"); next != -1 {
+		hermesBlock = hermesBlock[:next+1]
+	}
+	for _, want := range []string{"--stage", "python-deps", "--skip-browser", "--skip-computer-use", "--non-interactive"} {
+		if !strings.Contains(hermesBlock, want) {
+			t.Fatalf("Hermes ACP install must use staged install.sh without node-deps; missing %q", want)
+		}
+	}
+	stageLine := ""
+	for _, line := range strings.Split(hermesBlock, "\n") {
+		if strings.Contains(line, "for stage in") {
+			stageLine = line
+			break
+		}
+	}
+	if stageLine == "" || !strings.Contains(stageLine, "python-deps") {
+		t.Fatal("Hermes ACP install must loop official install.sh stages including python-deps")
+	}
+	if strings.Contains(stageLine, "node-deps") {
+		t.Fatal("Hermes ACP install must not run install.sh --stage node-deps; npm install is fatal on timeout")
+	}
+}
+
 func TestSandboxDockerfileInstallsPipOnlyToolsViaPip(t *testing.T) {
 	repoRoot := repoRoot(t)
 	dockerfileBytes, err := os.ReadFile(filepath.Join(repoRoot, "docker", "pentest-sandbox", "Dockerfile"))
@@ -109,6 +159,11 @@ func TestSandboxDockerfileInstallsPipOnlyToolsViaPip(t *testing.T) {
 	dockerfile := string(dockerfileBytes)
 
 	// pwntools and frida-tools have no Kali apt package; they must be pip.
+	// unicorn (a pwntools dep) builds from source when no wheel matches;
+	// cmake must already be in the apt layer.
+	if !strings.Contains(dockerfile, "cmake") || !strings.Contains(dockerfile, "pkg-config") {
+		t.Fatal("sandbox Dockerfile must install cmake and pkg-config before pip-installing pwntools/unicorn")
+	}
 	pipLine := "pip3 install --no-cache-dir pwntools frida-tools --break-system-packages"
 	if !strings.Contains(dockerfile, pipLine) {
 		t.Fatalf("sandbox Dockerfile should install pip-only tools together: %s", pipLine)

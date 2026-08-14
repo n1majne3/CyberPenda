@@ -304,6 +304,13 @@ func TestResolveModelProviderSelectsEndpointByRuntimePluginPreferenceForAuto(t *
 			wantEndpoint:     "https://api.example.test/api/coding/paas/v4",
 			wantProjectionOn: "pi_agent",
 		},
+		{
+			name:             "hermes prefers openai chat completions",
+			provider:         runtimeprofile.ProviderHermes,
+			wantProtocol:     modelprovider.ProtocolOpenAIChatCompletions,
+			wantEndpoint:     "https://api.example.test/api/coding/paas/v4",
+			wantProjectionOn: "hermes_home",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

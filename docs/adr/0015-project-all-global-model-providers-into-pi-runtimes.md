@@ -1,6 +1,12 @@
+---
+status: superseded by ADR-0026
+---
+
 # Project all global model providers into Pi runtimes
 
 Pi can switch provider, model, and reasoning effort natively when their configuration and credentials are already loaded. Every Pi task will therefore receive all global Model Providers that are launch-ready for Pi, together with their model configuration and configured API credentials, allowing each turn to switch without reprojection or a runtime restart. Draft or otherwise unavailable providers are skipped without blocking unrelated Pi launches. This deliberately accepts global credential exposure inside every Pi runtime instead of using task allowlists or on-demand credential injection; Codex and Claude Code continue to reproject and restart when their Model Provider changes.
+
+Superseded by ADR 0026, which names this policy **Global Model Projection** and applies it to Pi and Hermes.
 
 ## Consequences
 

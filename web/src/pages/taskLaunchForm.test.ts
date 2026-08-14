@@ -44,6 +44,14 @@ const piPlugin: RuntimePlugin = {
   },
 };
 
+const hermesPlugin: RuntimePlugin = {
+  ...codexPlugin,
+  id: "hermes",
+  name: "Hermes",
+  config_projection: { primitive: "hermes_home" },
+  transcript: { parser: "hermes_acp" },
+};
+
 const fakePlugin: RuntimePlugin = {
   ...codexPlugin,
   id: "fake",
@@ -70,8 +78,8 @@ const anthropicProvider: ModelProvider = {
 
 describe("taskLaunchForm", () => {
   it("excludes fake runtime from launch runtimes", () => {
-    const runtimes = launchRuntimes([codexPlugin, piPlugin, fakePlugin]);
-    expect(runtimes.map((plugin) => plugin.id)).toEqual(["codex", "pi"]);
+    const runtimes = launchRuntimes([codexPlugin, piPlugin, hermesPlugin, fakePlugin]);
+    expect(runtimes.map((plugin) => plugin.id)).toEqual(["codex", "pi", "hermes"]);
   });
 
   it("requires goal, runtime, and model provider for auto-resolved launches", () => {

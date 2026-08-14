@@ -44,7 +44,7 @@ func TestListRuntimePluginsReturnsBuiltIns(t *testing.T) {
 			}
 		}
 	}
-	for _, want := range []string{"fake", "codex", "claude_code", "pi"} {
+	for _, want := range []string{"fake", "codex", "claude_code", "pi", "hermes"} {
 		if !ids[want] {
 			t.Fatalf("expected builtin plugin %q in %#v", want, ids)
 		}

@@ -14,6 +14,8 @@ func DefaultAPIKeyEnv(provider Provider) string {
 		return "OPENAI_API_KEY"
 	case ProviderPi:
 		return "ANTHROPIC_API_KEY"
+	case ProviderHermes:
+		return "OPENAI_API_KEY"
 	default:
 		return "API_KEY"
 	}

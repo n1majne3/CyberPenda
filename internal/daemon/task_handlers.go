@@ -1025,7 +1025,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	}
 
 	var metadata func() (runtime.NativeSessionMetadata, error)
-	if sandbox || profile.Provider == runtimeprofile.ProviderCodex || profile.Provider == runtimeprofile.ProviderPi {
+	if sandbox || profile.Provider == runtimeprofile.ProviderCodex || profile.Provider == runtimeprofile.ProviderPi || profile.Provider == runtimeprofile.ProviderHermes {
 		metadata = func() (runtime.NativeSessionMetadata, error) {
 			var collected runtime.NativeSessionMetadata
 			if containerIDFile != "" {

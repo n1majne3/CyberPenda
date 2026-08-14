@@ -380,7 +380,7 @@ func (server *Server) buildSessionRuntimePlan(found session.Session, goal string
 	}
 
 	var metadata func() (runtime.NativeSessionMetadata, error)
-	if run == session.RunnerSandbox || profile.Provider == runtimeprofile.ProviderCodex || profile.Provider == runtimeprofile.ProviderPi {
+	if run == session.RunnerSandbox || profile.Provider == runtimeprofile.ProviderCodex || profile.Provider == runtimeprofile.ProviderPi || profile.Provider == runtimeprofile.ProviderHermes {
 		metadata = func() (runtime.NativeSessionMetadata, error) {
 			collected := runtime.NativeSessionMetadata{}
 			if containerIDFile != "" {

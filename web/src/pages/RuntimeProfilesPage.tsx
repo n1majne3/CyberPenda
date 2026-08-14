@@ -35,7 +35,7 @@ import {
 } from "@/components/settingsLibrary";
 import { settingsListItemClasses } from "@/components/sharedStyles";
 
-const FALLBACK_PROVIDER_IDS = ["codex", "claude_code", "pi", "fake"] as const;
+const FALLBACK_PROVIDER_IDS = ["codex", "claude_code", "pi", "hermes", "fake"] as const;
 // HIDDEN_PROVIDER_IDS are real, registered providers that should not be
 // selectable when creating a profile (e.g. the in-process fake harness used
 // for tests). Profiles already using one are still displayed and editable.

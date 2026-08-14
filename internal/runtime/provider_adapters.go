@@ -928,6 +928,46 @@ type PiProviderSessionConfig struct {
 
 type PiProviderSession struct{ *providerSessionAdapter }
 
+// HermesProviderSessionConfig configures one Task-owned Hermes ACP process.
+type HermesProviderSessionConfig struct {
+	Transport    ProviderSessionTransport
+	SessionID    string
+	ActiveTurnID string
+	Capabilities runtimeplugin.Capabilities
+}
+
+type HermesProviderSession struct{ *providerSessionAdapter }
+
+func NewHermesProviderSession(config HermesProviderSessionConfig) *HermesProviderSession {
+	methods := providerWireMethods{
+		send:      "session/prompt",
+		interrupt: "session/cancel",
+		params:    hermesACPParams,
+		turnID:    func(record map[string]any) string { return providerJSONValue(record, "turn_id", "turnId", "id") },
+		sessionID: identitySession,
+	}
+	return &HermesProviderSession{newProviderSessionAdapter("hermes", config.Transport, config.SessionID, config.ActiveTurnID, providerCapabilities(config.Capabilities), methods)}
+}
+
+func hermesACPParams(sessionID, turnID string, request ProviderSessionRequest) map[string]any {
+	params := map[string]any{
+		"sessionId": sessionID,
+		"session_id": sessionID,
+		"turn_id":   turnID,
+		"prompt":    []map[string]any{{"type": "text", "text": request.Message}},
+	}
+	if model := strings.TrimSpace(request.Model); model != "" {
+		params["model"] = model
+	}
+	if effort := strings.TrimSpace(request.RequestedReasoningEffort); effort != "" {
+		params["requested_reasoning_effort"] = effort
+	}
+	if providerID := strings.TrimSpace(request.ModelProviderID); providerID != "" {
+		params["model_provider_id"] = providerID
+	}
+	return params
+}
+
 func NewPiProviderSession(config PiProviderSessionConfig) *PiProviderSession {
 	methods := providerWireMethods{
 		send: "pi/prompt", interrupt: "pi/abort", steer: "pi/steer", permission: "pi/permission/respond",
