@@ -2,6 +2,7 @@ package runtimeplugin
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 )
 
@@ -36,6 +37,13 @@ func MustBuiltinRegistry() *Registry {
 		panic(err)
 	}
 	return registry
+}
+
+// BuiltinSupportsModelProtocol reports whether a built-in Runtime Plugin
+// declares compatibility with the given Model Provider protocol.
+func BuiltinSupportsModelProtocol(runtimeID, protocol string) bool {
+	plugin, ok := MustBuiltinRegistry().Get(runtimeID)
+	return ok && slices.Contains(plugin.ModelProvider.SupportedProtocols, protocol)
 }
 
 func (r *Registry) Get(id string) (Plugin, bool) {

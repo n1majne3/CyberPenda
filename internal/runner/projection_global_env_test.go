@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"pentest/internal/credential"
+	"pentest/internal/modelprovider"
 	"pentest/internal/owner"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
@@ -21,6 +22,40 @@ func newGlobalEnvTestService(t *testing.T) *credential.Service {
 	}
 	t.Cleanup(func() { _ = storeDB.Close() })
 	return credential.NewService(storeDB)
+}
+
+func TestModelProviderKeyDoesNotSkipProfileCredentialRefs(t *testing.T) {
+	creds := newGlobalEnvTestService(t)
+	t.Setenv("HOSTED_MODEL_API_KEY", "model-secret")
+	if _, err := creds.Upsert("BENCHMARK_TOKEN", credential.ScopeProject, "project-1", credential.Source{
+		Kind: credential.SourceLiteral, Value: "benchmark-secret", DestinationEnv: "BENCHMARK_TOKEN",
+	}, false); err != nil {
+		t.Fatalf("upsert BENCHMARK_TOKEN: %v", err)
+	}
+	if projected, err := creds.ResolveMaterializedEnv("project-1", []string{"BENCHMARK_TOKEN"}); err != nil || projected["BENCHMARK_TOKEN"] != "benchmark-secret" {
+		t.Fatalf("resolve BENCHMARK_TOKEN fixture = %#v, %v", projected, err)
+	}
+	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderPi, Fields: runtimeprofile.Fields{
+		CredentialRefs: []string{"BENCHMARK_TOKEN"},
+	}}
+	layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-hosted-model-and-token", profile.Provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := runner.LaunchProcessEnvWithCredentials(layout, profile, false,
+		runner.RuntimeOwnerContext{Owner: owner.NewTaskContract("task-hosted-model-and-token", "project-1", layout.Workdir)},
+		runner.ProjectionRequest{
+			Owner:         owner.NewTaskContract("task-hosted-model-and-token", "project-1", layout.Workdir),
+			Credentials:   creds,
+			ModelSnapshot: &modelprovider.Snapshot{APIKeyEnv: "HOSTED_MODEL_API_KEY"},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env["HOSTED_MODEL_API_KEY"] != "model-secret" || env["BENCHMARK_TOKEN"] != "benchmark-secret" {
+		t.Fatalf("launch env must contain model key and profile credential ref; got %#v", env)
+	}
 }
 
 // TestGlobalEnvInjectedWithoutCredentialRefs verifies the core Global

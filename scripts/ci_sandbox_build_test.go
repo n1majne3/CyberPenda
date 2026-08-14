@@ -159,6 +159,11 @@ func TestSandboxDockerfileInstallsPipOnlyToolsViaPip(t *testing.T) {
 	dockerfile := string(dockerfileBytes)
 
 	// pwntools and frida-tools have no Kali apt package; they must be pip.
+	// unicorn (a pwntools dep) builds from source when no wheel matches;
+	// cmake must already be in the apt layer.
+	if !strings.Contains(dockerfile, "cmake") {
+		t.Fatal("sandbox Dockerfile must install cmake before pip-installing pwntools/unicorn")
+	}
 	pipLine := "pip3 install --no-cache-dir pwntools frida-tools --break-system-packages"
 	if !strings.Contains(dockerfile, pipLine) {
 		t.Fatalf("sandbox Dockerfile should install pip-only tools together: %s", pipLine)

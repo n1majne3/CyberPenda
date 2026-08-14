@@ -1,0 +1,126 @@
+name: Build TSecBench Hosted Bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundle_version:
+        description: Version stored in the Hosted Delivery Bundle name
+        required: true
+        default: manual
+        type: string
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/build-tsecbench-hosted.yml
+      - cmd/pentest-claude-sdk-bridge/**
+      - cmd/pentest-provider-bridge/**
+      - cmd/pentest-tsecbench-hosted/**
+      - docker/tsecbench-hosted/**
+      - docs/tsecbench/**
+      - internal/hostedcontroller/**
+      - internal/runner/**
+      - scripts/build-tsecbench-hosted-bundle.sh
+      - scripts/tsecbench_hosted_*.go
+      - web/**
+      - go.mod
+      - go.sum
+      - Makefile
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tsecbench-hosted-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-hosted-bundle:
+    # GitHub's ubuntu-latest hosted runner is native Linux AMD64.
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      TSECBENCH_HOSTED_IMAGE: cyberpenda-tsecbench-hosted:ci
+    steps:
+      - uses: actions/checkout@v7
+      - name: Free disk space for Hosted Image
+        run: |
+          df -h
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
+          if [ -n "${AGENT_TOOLSDIRECTORY:-}" ]; then
+            sudo rm -rf "${AGENT_TOOLSDIRECTORY}"
+          fi
+          docker system prune -af || true
+          df -h
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Require native Linux AMD64 runner
+        run: test "$(uname -m)" = x86_64
+      - uses: docker/setup-buildx-action@v4
+      - name: Build native Linux AMD64 Hosted Image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/tsecbench-hosted/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: cyberpenda-tsecbench-hosted:ci
+          build-args: |
+            RUNTIME_RELEASE_CACHE_BUST=${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          cache-from: type=gha,scope=tsecbench-hosted-amd64
+          cache-to: type=gha,mode=max,scope=tsecbench-hosted-amd64
+      - name: Smoke Hosted Image without added capabilities
+        run: make smoke-tsecbench-hosted-image
+      - name: Run real Pi Hosted acceptance inside the image
+        run: |
+          set -euo pipefail
+          mkdir -p dist/tsecbench-hosted-acceptance
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test -c \
+            -o dist/tsecbench-hosted-acceptance/hostedcontroller.test \
+            ./internal/hostedcontroller
+          docker run --rm --network host \
+            --entrypoint /acceptance/hostedcontroller.test \
+            -e CYBERPENDA_REQUIRE_REAL_PI_ACCEPTANCE=1 \
+            -e CYBERPENDA_REAL_PI_ACCEPTANCE_BRIDGE=/usr/local/bin/pentest-provider-bridge \
+            -v "${GITHUB_WORKSPACE}:/src:ro" \
+            -v "${GITHUB_WORKSPACE}/dist/tsecbench-hosted-acceptance:/acceptance:ro" \
+            -w /src \
+            "${TSECBENCH_HOSTED_IMAGE}" \
+            -test.run '^TestHostedAcceptanceConfigurationRunsTheRealPiRuntimeWithTheProjectedSkill$' \
+            -test.timeout 90s \
+            -test.v
+      - id: bundle
+        name: Resolve bundle version
+        run: |
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            version="${INPUT_VERSION}"
+          else
+            version="pr-${GITHUB_SHA:0:12}"
+          fi
+          if ! [[ "${version}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "Invalid bundle version: ${version}" >&2
+            exit 2
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.bundle_version }}
+      - name: Export and validate Hosted Delivery Bundle
+        run: |
+          set -euo pipefail
+          scripts/build-tsecbench-hosted-bundle.sh "${BUNDLE_VERSION}" "${TSECBENCH_HOSTED_IMAGE}" dist/tsecbench-hosted
+          bundle="dist/tsecbench-hosted/cyberpenda-tsecbench-hosted_${BUNDLE_VERSION}_linux_amd64"
+          archive="${bundle}/cyberpenda-tsecbench-hosted_${BUNDLE_VERSION}_linux_amd64.tar.gz"
+          archive_bytes="$(stat -c %s "${archive}")"
+          test "${archive_bytes}" -lt 3000000000
+          (cd "${bundle}" && sha256sum -c SHA256SUMS)
+        env:
+          BUNDLE_VERSION: ${{ steps.bundle.outputs.version }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cyberpenda-tsecbench-hosted_${{ steps.bundle.outputs.version }}_linux_amd64
+          path: dist/tsecbench-hosted/cyberpenda-tsecbench-hosted_${{ steps.bundle.outputs.version }}_linux_amd64
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
