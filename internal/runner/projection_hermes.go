@@ -39,8 +39,8 @@ func projectHermesHome(layout Layout, profile runtimeprofile.Profile, req Projec
 	if err := os.MkdirAll(layout.ProviderHome, 0o700); err != nil {
 		return ConfigProjection{}, fmt.Errorf("prepare hermes home: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Join(layout.ProviderHome, "skills"), 0o700); err != nil {
-		return ConfigProjection{}, fmt.Errorf("prepare hermes skills dir: %w", err)
+	if err := ensureHermesSkillsDir(layout.ProviderHome); err != nil {
+		return ConfigProjection{}, err
 	}
 
 	configPath := filepath.Join(layout.ProviderHome, "config.yaml")
@@ -79,12 +79,39 @@ func projectHermesHome(layout Layout, profile runtimeprofile.Profile, req Projec
 	return ConfigProjection{ConfigPath: configPath, Config: preview}, nil
 }
 
+// ensureHermesSkillsDir leaves a PrepareSandboxSkills symlink in place. MkdirAll
+// follows a broken host-side /task/skills link and then fails with EEXIST.
+func ensureHermesSkillsDir(providerHome string) error {
+	skillsDir := filepath.Join(providerHome, "skills")
+	if _, err := os.Lstat(skillsDir); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("prepare hermes skills dir: %w", err)
+	}
+	if err := os.MkdirAll(skillsDir, 0o700); err != nil {
+		return fmt.Errorf("prepare hermes skills dir: %w", err)
+	}
+	return nil
+}
+
 func buildHermesConfigYAML(profile runtimeprofile.Profile, projected []piProjectedProvider, servers []runtimeprofile.MCPServer) string {
 	var b strings.Builder
 	b.WriteString("approvals:\n")
 	b.WriteString("  mode: off\n")
 	b.WriteString("model:\n")
-	b.WriteString("  provider: custom\n")
+	// Bare provider: custom ignores providers.*.api_key_env and sends
+	// "no-key-required" to non-OpenAI hosts, which returns HTTP 401.
+	providerName := "custom"
+	if selected := hermesSelectedProvider(profile, projected); selected != nil {
+		if id := strings.TrimSpace(selected.Provider.ID); id != "" {
+			if strings.HasPrefix(id, "custom:") {
+				providerName = id
+			} else {
+				providerName = "custom:" + id
+			}
+		}
+	}
+	fmt.Fprintf(&b, "  provider: %s\n", yamlScalar(providerName))
 	if model := strings.TrimSpace(profile.Fields.Model); model != "" {
 		fmt.Fprintf(&b, "  default: %s\n", yamlScalar(model))
 	} else if selected := hermesSelectedProvider(profile, projected); selected != nil && len(selected.Models) > 0 {
@@ -102,7 +129,7 @@ func buildHermesConfigYAML(profile runtimeprofile.Profile, projected []piProject
 			fmt.Fprintf(&b, "  %s:\n", yamlScalar(entry.Provider.ID))
 			fmt.Fprintf(&b, "    base_url: %s\n", yamlScalar(entry.Endpoint.BaseURL))
 			fmt.Fprintf(&b, "    api_mode: %s\n", yamlScalar(hermesAPIMode(entry.Protocol)))
-			fmt.Fprintf(&b, "    api_key_env: %s\n", yamlScalar(entry.Provider.APIKeyEnv))
+			fmt.Fprintf(&b, "    key_env: %s\n", yamlScalar(entry.Provider.APIKeyEnv))
 		}
 	}
 	b.WriteString("terminal:\n")

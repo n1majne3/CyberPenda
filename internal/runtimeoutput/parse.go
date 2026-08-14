@@ -147,7 +147,7 @@ func parseContentBlocks(content []any, opts ParseOptions, role string, createdAt
 func toolUseTurn(record map[string]any, createdAt time.Time) Turn {
 	input := map[string]any{}
 	details := map[string]any{}
-	for _, key := range []string{"input", "arguments", "parameters"} {
+	for _, key := range []string{"input", "arguments", "parameters", "rawInput", "raw_input"} {
 		if value, ok := record[key]; ok {
 			details[key] = value
 			if typed, ok := value.(map[string]any); ok {
@@ -349,6 +349,19 @@ func parseHermesACPRecord(record map[string]any, opts ParseOptions, createdAt ti
 		} else if input, ok := mapValue(update, "raw_input"); ok {
 			turn.Input = input
 		}
+		if len(turn.Input) == 0 {
+			turn.Input = hermesToolInputFallback(update)
+		}
+		if len(turn.Input) > 0 {
+			details := turn.Details
+			if details == nil {
+				details = map[string]any{}
+			}
+			if _, ok := details["input"]; !ok {
+				details["input"] = turn.Input
+			}
+			turn.Details = details
+		}
 		return []Turn{turn}
 	case "tool_call_update":
 		turn := toolResultTurn(update, createdAt)
@@ -365,6 +378,32 @@ func parseHermesACPRecord(record map[string]any, opts ParseOptions, createdAt ti
 	default:
 		return nil
 	}
+}
+
+func hermesToolInputFallback(update map[string]any) map[string]any {
+	if locs, ok := sliceValue(update, "locations"); ok {
+		paths := make([]string, 0, len(locs))
+		for _, loc := range locs {
+			typed, ok := loc.(map[string]any)
+			if !ok {
+				continue
+			}
+			if path := firstText(typed, "path"); path != "" {
+				paths = append(paths, path)
+			}
+		}
+		if len(paths) == 1 {
+			return map[string]any{"path": paths[0]}
+		}
+		if len(paths) > 1 {
+			return map[string]any{"paths": paths}
+		}
+	}
+	text := strings.TrimSpace(firstText(update, "content", "text"))
+	if strings.HasPrefix(text, "$ ") {
+		return map[string]any{"command": strings.TrimPrefix(text, "$ ")}
+	}
+	return nil
 }
 
 func isTruthy(value any) bool {

@@ -10,6 +10,7 @@ import (
 	"pentest/internal/modelprovider"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
+	"pentest/internal/skill"
 	"pentest/internal/store"
 )
 
@@ -119,6 +120,22 @@ func TestProjectHermesHomeIsolatesConfigAndProjectsLaunchReadyProviders(t *testi
 	if !strings.Contains(config, alternate.ID) {
 		t.Fatalf("missing alternate provider in Global Model Projection:\n%s", config)
 	}
+	if !strings.Contains(config, "provider: \"custom:"+primary.ID+"\"\n") {
+		t.Fatalf("expected model.provider custom:%s so Hermes stays on the named endpoint, got:\n%s", primary.ID, config)
+	}
+	if strings.Contains(config, "provider: custom\n") {
+		t.Fatalf("bare custom provider ignores named api_key_env, got:\n%s", config)
+	}
+	foundKeyEnv := false
+	for _, line := range strings.Split(config, "\n") {
+		if strings.TrimSpace(line) == "key_env: "+primary.APIKeyEnv {
+			foundKeyEnv = true
+			break
+		}
+	}
+	if !foundKeyEnv {
+		t.Fatalf("Hermes providers dict reads key_env, not api_key_env, got:\n%s", config)
+	}
 
 	envRaw, err := os.ReadFile(filepath.Join(layout.ProviderHome, ".env"))
 	if err != nil {
@@ -142,5 +159,41 @@ func TestProjectHermesHomeIsolatesConfigAndProjectsLaunchReadyProviders(t *testi
 	if strings.Contains(fmt.Sprint(projection.Config), "sk-primary-secret") ||
 		strings.Contains(fmt.Sprint(projection.Config), "sk-alternate-secret") {
 		t.Fatalf("preview leaked secret: %#v", projection.Config)
+	}
+}
+
+func TestProjectRuntimeConfigKeepsHermesSandboxSkillsLink(t *testing.T) {
+	root := t.TempDir()
+	sourceDir := filepath.Join(root, "skill-source")
+	if err := os.MkdirAll(sourceDir, 0o700); err != nil {
+		t.Fatalf("create skill source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "SKILL.md"), []byte("# Recon"), 0o600); err != nil {
+		t.Fatalf("write skill doc: %v", err)
+	}
+
+	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
+	layout, err := runner.PrepareTaskLayout(root, "task-hermes-sandbox", profile.Provider)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+
+	if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		Sandbox: true,
+		SkillBundles: []skill.Bundle{{
+			ID:   "recon-helper",
+			Name: "Recon Helper",
+			Path: sourceDir,
+		}},
+	}); err != nil {
+		t.Fatalf("project runtime config: %v", err)
+	}
+
+	link := filepath.Join(layout.ProviderHome, "skills")
+	if target, err := os.Readlink(link); err != nil || target != "/task/skills" {
+		t.Fatalf("hermes provider skills link = %q, err = %v", target, err)
+	}
+	if _, err := os.Stat(filepath.Join(layout.ProviderHome, "config.yaml")); err != nil {
+		t.Fatalf("expected hermes config: %v", err)
 	}
 }

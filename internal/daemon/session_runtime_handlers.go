@@ -117,6 +117,27 @@ func (server *Server) resolveSessionRuntimeProfile(input sessionRuntimeInput, pr
 		if provider := input.provider(); provider != "" && provider != profile.Provider {
 			return runtimeprofile.Profile{}, fmt.Errorf("runtime profile provider does not match requested provider")
 		}
+		wantProvider := strings.TrimSpace(input.ModelProviderID)
+		if wantProvider != "" && wantProvider != strings.TrimSpace(profile.Fields.ModelProviderID) {
+			// A later Launch Selection may change Model Provider. Reusing the
+			// previous profile then fails preflight when the new model is not
+			// in that profile's catalog.
+			provider := input.provider()
+			if provider == "" {
+				provider = profile.Provider
+			}
+			providerName := wantProvider
+			if found, getErr := server.modelProviders.Get(wantProvider); getErr == nil {
+				providerName = found.Name
+			}
+			resolution, resolveErr := server.profiles.ResolveLaunchProfile(runtimeprofile.LaunchSelection{
+				Provider: provider, ModelProviderID: wantProvider, ModelOverride: input.selectedModel(),
+			}, providerName)
+			if resolveErr != nil {
+				return runtimeprofile.Profile{}, resolveErr
+			}
+			return resolution.Profile, nil
+		}
 		return profile, nil
 	}
 

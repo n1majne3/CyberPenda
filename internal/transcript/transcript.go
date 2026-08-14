@@ -35,6 +35,11 @@ const (
 	// through an adapter whose name ("provider-session:<id>") resolves to no
 	// plugin parser, so the stream identifies the underlying provider instead.
 	PiSessionStream = "pi_session"
+
+	// HermesACPStream marks runtime_output events from the Hermes ACP session
+	// bridge. Each agent_message_chunk is one token, so the transcript joins
+	// adjacent chunks from the same Continuation into one sentence.
+	HermesACPStream = "hermes_acp"
 )
 
 // Entry is one projected transcript row. Truncated marks a bounded preview of
@@ -118,9 +123,31 @@ func BuildWindow(subject Subject, events []Event, context WindowContext) []Entry
 			}
 			continue
 		}
-		entries = append(entries, entriesForEvent(event, continuation, adapter)...)
+		entries = appendOrCoalesceTranscript(entries, entriesForEvent(event, continuation, adapter))
 	}
 	return entries
+}
+
+// appendOrCoalesceTranscript joins adjacent assistant message chunks from one
+// Continuation so a streamed sentence is one row, not one row per token.
+func appendOrCoalesceTranscript(entries, next []Entry) []Entry {
+	for _, entry := range next {
+		if n := len(entries); n > 0 && canMergeAssistantMessage(entries[n-1], entry) {
+			entries[n-1].Text += entry.Text
+			entries[n-1].Seq = entry.Seq
+			entries[n-1].CreatedAt = entry.CreatedAt
+			continue
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+func canMergeAssistantMessage(prev, next Entry) bool {
+	return prev.Kind == KindMessage && next.Kind == KindMessage &&
+		prev.Role == RoleAssistant && next.Role == RoleAssistant &&
+		prev.Continuation == next.Continuation &&
+		prev.Stream == HermesACPStream && next.Stream == HermesACPStream
 }
 
 func lifecycleEntry(event Event, continuation int) (Entry, bool) {
@@ -252,7 +279,7 @@ func entriesForEvent(event Event, continuation int, adapter string) []Entry {
 		parseAdapter := adapter
 		if stream == PiSessionStream {
 			parseAdapter = string(runtimeprofile.ProviderPi)
-		} else if stream == "hermes_acp" {
+		} else if stream == HermesACPStream {
 			parseAdapter = string(runtimeprofile.ProviderHermes)
 		} else if strings.HasPrefix(parseAdapter, "provider-session:") {
 			if provider := stringValue(event.Payload, "provider"); provider != "" {
@@ -319,6 +346,7 @@ func parseRuntimeOutput(event Event, continuation int, adapter, text string) ([]
 		Seq:          event.Seq,
 		Continuation: continuation,
 		CreatedAt:    event.CreatedAt,
+		Stream:       stringValue(event.Payload, "stream"),
 	}
 	turns := runtimeoutput.ParseRecord(record, runtimeoutput.ParseOptions{}, base.CreatedAt)
 	if len(turns) == 0 {
@@ -398,11 +426,23 @@ func messageEntry(base Entry, id, role, text string) Entry {
 		Kind:         KindMessage,
 		Role:         role,
 		Text:         text,
+		Stream:       base.Stream,
 		CreatedAt:    base.CreatedAt,
 	}
 }
 
 func toolCallEntryFromTurn(turn runtimeoutput.Turn, base Entry, id string) Entry {
+	details := turn.Details
+	if len(turn.Input) > 0 {
+		cloned := make(map[string]any, len(details)+1)
+		for key, value := range details {
+			cloned[key] = value
+		}
+		if _, ok := cloned["input"]; !ok {
+			cloned["input"] = turn.Input
+		}
+		details = cloned
+	}
 	return Entry{
 		ID:           id,
 		Seq:          base.Seq,
@@ -411,7 +451,7 @@ func toolCallEntryFromTurn(turn runtimeoutput.Turn, base Entry, id string) Entry
 		Role:         RoleAssistant,
 		ToolCallID:   turn.ToolCallID,
 		ToolName:     turn.Tool,
-		Details:      turn.Details,
+		Details:      details,
 		Status:       StatusCollapsed,
 		CreatedAt:    base.CreatedAt,
 	}

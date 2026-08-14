@@ -21,7 +21,7 @@ export function collapsedTranscriptTitle(entry: TaskTranscriptEntry): string {
 function toolInputPreview(entry: TaskTranscriptEntry): string {
   const input = asRecord(asRecord(entry.details)?.input);
   if (!input) return "";
-  for (const key of ["command", "file_path", "path", "query", "url", "pattern"]) {
+  for (const key of ["command", "file_path", "path", "query", "url", "pattern", "name"]) {
     const value = stringValue(input[key]);
     if (value) return firstLine(value);
   }

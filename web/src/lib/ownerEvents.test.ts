@@ -49,7 +49,10 @@ describe("mergeTimelineItems", () => {
 
 describe("mergeTranscriptEntries", () => {
   it("returns the delta directly for an empty existing transcript", () => {
-    const delta = [transcriptEntry("a", 1), transcriptEntry("b", 2)];
+    const delta = [
+      { ...transcriptEntry("a", 1), role: "user" as const, text: "hi" },
+      transcriptEntry("b", 2),
+    ];
     expect(mergeTranscriptEntries([], delta)).toEqual(delta);
   });
 
@@ -59,10 +62,32 @@ describe("mergeTranscriptEntries", () => {
   });
 
   it("appends new entries and deduplicates by stable id", () => {
-    const existing = [transcriptEntry("a", 1)];
-    const delta = [transcriptEntry("a", 1), transcriptEntry("b", 2)];
+    const existing = [{ ...transcriptEntry("a", 1), role: "user" as const, text: "hi" }];
+    const delta = [
+      { ...transcriptEntry("a", 1), role: "user" as const, text: "hi" },
+      transcriptEntry("b", 2),
+    ];
     const merged = mergeTranscriptEntries(existing, delta);
     expect(merged.map((entry) => entry.id)).toEqual(["a", "b"]);
+  });
+
+  it("joins later Hermes ACP assistant chunks onto the previous sentence", () => {
+    const existing = [{ ...transcriptEntry("ev-5-message", 5), text: "Hi", stream: "hermes_acp" }];
+    const delta = [
+      { ...transcriptEntry("ev-6-message", 6), text: "!", stream: "hermes_acp" },
+      { ...transcriptEntry("ev-7-message", 7), text: " ", stream: "hermes_acp" },
+      { ...transcriptEntry("ev-8-message", 8), text: "👋", stream: "hermes_acp" },
+    ];
+    const merged = mergeTranscriptEntries(existing, delta);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({ id: "ev-5-message", seq: 8, text: "Hi! 👋" });
+  });
+
+  it("keeps complete adjacent assistant messages as separate rows", () => {
+    const existing = [{ ...transcriptEntry("a", 1), text: "Message 1" }];
+    const delta = [{ ...transcriptEntry("b", 2), text: "Message 2" }];
+    const merged = mergeTranscriptEntries(existing, delta);
+    expect(merged.map((entry) => entry.text)).toEqual(["Message 1", "Message 2"]);
   });
 });
 
