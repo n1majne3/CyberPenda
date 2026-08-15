@@ -1454,8 +1454,20 @@ func (s *Service) UpdateContinuationStatus(id string, status RuntimeStatus) (Con
 	if err != nil {
 		return Continuation{}, fmt.Errorf("update Session continuation status: %w", err)
 	}
-	if changed, _ := result.RowsAffected(); changed != 1 {
-		return s.Continuation(id)
+	// A lost compare-and-swap race must surface the conflict so the caller can
+	// distinguish its own transition from a concurrent observer's write (the
+	// same contract as the Task twin).
+	if changed, err := result.RowsAffected(); err != nil {
+		return Continuation{}, fmt.Errorf("count Session continuation status update: %w", err)
+	} else if changed != 1 {
+		current, readErr := s.Continuation(id)
+		if readErr != nil {
+			return Continuation{}, readErr
+		}
+		if current.Status == status {
+			return current, nil
+		}
+		return current, ErrContinuationStatusConflict
 	}
 	found.Status, found.UpdatedAt = status, now
 	if isTerminalRuntimeStatus(status) {

@@ -117,15 +117,15 @@ func (server *Server) resumeLiveSessionBlackboardConclusionObligation(ctx contex
 		},
 		Dispatch: func(state string, baseRevision int, explicitRetryCount int) {
 			server.enqueueRecoveredSessionBlackboardConclusion(obligation, func(controlCtx context.Context) error {
-				directive := concludeSessionBlackboardDirective(baseRevision)
+				directive := concludeDirective(sessionConclusionDirectiveProfile, baseRevision)
 				switch session.BlackboardConclusionReceiptState(state) {
 				case session.BlackboardConclusionReceiptRepairDispatchRequested:
-					directive = repairSessionBlackboardDirective(baseRevision, conclusionDetailFromSessionReceipt(obligation))
+					directive = repairDirective(sessionConclusionDirectiveProfile, baseRevision, conclusionDetailFromSessionReceipt(obligation))
 				case session.BlackboardConclusionReceiptVersionRegenerationDispatchRequested:
-					directive = regenerateSessionBlackboardDirective(baseRevision)
+					directive = regenerateDirective(sessionConclusionDirectiveProfile, baseRevision)
 				default:
 					if explicitRetryCount > 0 {
-						directive = repairSessionBlackboardDirective(baseRevision, conclusionDetailFromSessionReceipt(obligation))
+						directive = repairDirective(sessionConclusionDirectiveProfile, baseRevision, conclusionDetailFromSessionReceipt(obligation))
 					}
 				}
 				return server.sendSessionBlackboardConclusionTurn(controlCtx, obligation, directive)
@@ -177,15 +177,15 @@ func (server *Server) scheduleRecoveredSessionConclusionDispatch(view session.Bl
 }
 
 func (server *Server) dispatchRecoveredSessionConclusionDispatch(ctx context.Context, view session.BlackboardConclusionReceipt) error {
-	directive := concludeSessionBlackboardDirective(pointerValue(view.BaseRevision))
+	directive := concludeDirective(sessionConclusionDirectiveProfile, pointerValue(view.BaseRevision))
 	switch view.InternalState {
 	case session.BlackboardConclusionReceiptRepairDispatchRequested:
-		directive = repairSessionBlackboardDirective(pointerValue(view.BaseRevision), conclusionDetailFromSessionReceipt(view))
+		directive = repairDirective(sessionConclusionDirectiveProfile, pointerValue(view.BaseRevision), conclusionDetailFromSessionReceipt(view))
 	case session.BlackboardConclusionReceiptVersionRegenerationDispatchRequested:
-		directive = regenerateSessionBlackboardDirective(pointerValue(view.BaseRevision))
+		directive = regenerateDirective(sessionConclusionDirectiveProfile, pointerValue(view.BaseRevision))
 	default:
 		if view.ExplicitRetryCount > 0 {
-			directive = repairSessionBlackboardDirective(pointerValue(view.BaseRevision), conclusionDetailFromSessionReceipt(view))
+			directive = repairDirective(sessionConclusionDirectiveProfile, pointerValue(view.BaseRevision), conclusionDetailFromSessionReceipt(view))
 		}
 	}
 	return server.sendSessionBlackboardConclusionTurn(ctx, view, directive)

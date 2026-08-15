@@ -148,9 +148,9 @@ func (server *Server) resumeLiveBlackboardConclusionObligation(ctx context.Conte
 				case task.BlackboardConclusionReceiptVersionRegenerationDispatchRequested:
 					return server.dispatchBlackboardConclusionVersionRegeneration(controlCtx, obligation)
 				default:
-					directive := concludeBlackboardDirective(baseRevision)
+					directive := concludeDirective(taskConclusionDirectiveProfile, baseRevision)
 					if explicitRetryCount > 0 {
-						directive = repairBlackboardDirective(baseRevision, conclusionDetailFromTaskReceipt(obligation))
+						directive = repairDirective(taskConclusionDirectiveProfile, baseRevision, conclusionDetailFromTaskReceipt(obligation))
 					}
 					return server.sendBlackboardConclusionTurn(controlCtx, obligation, directive)
 				}
