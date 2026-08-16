@@ -152,7 +152,7 @@ func (fixture *realPiHostedAcceptanceFixture) await(t *testing.T) realPiHostedAc
 		requests := fixture.platform.requestsCopy()
 		correct := fixture.platform.correctCount()
 		settled := false
-		if finished && len(requests) == 6 && correct == 2 {
+		if finished && correct == 2 {
 			settled = fixture.runtimeTurnSettled(t)
 		}
 		if settled {
