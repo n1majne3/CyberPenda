@@ -16,7 +16,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"pentest/internal/adapters"
@@ -905,14 +904,9 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		// bridge and therefore needs a bare "pi" token in docker create argv.
 		// Skip the wrapper whenever this launch will open a provider session.
 		if profile.Provider == runtimeprofile.ProviderPi {
-			usePersistentSession := server.providerSessionFactory != nil &&
-				supportsPersistentProviderSession(created.Runner, profile.Provider)
-			if !usePersistentSession {
-				wrapped, err := runner.WrapSandboxPiCommand(runtimeCommand, launchProfile.Fields.Env)
-				if err != nil {
-					return taskLaunchPlan{}, err
-				}
-				sandboxRuntime = wrapped
+			sandboxRuntime, err = server.sandboxPiRuntimeCommand(runtimeCommand, launchProfile, created.Runner)
+			if err != nil {
+				return taskLaunchPlan{}, err
 			}
 		}
 		var readOnlyTaskFiles, readOnlyTaskDirs []string
@@ -1020,50 +1014,13 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	}
 
 	// Pi writes its real-time progress to a session jsonl file instead of
-	// stdout, so a sandboxed Pi task's timeline is empty until it exits. Wrap
-	// the adapter with a session-file tailer that re-emits appended lines as
-	// runtime_output events the transcript parser already understands.
-	if sandbox && profile.Provider == runtimeprofile.ProviderPi {
-		sessionDir := filepath.Join(layout.ProviderHome, "agent", "sessions")
-		adapter = runtime.NewPiSessionTailAdapter(adapter, sessionDir)
-	}
+	// stdout, so a sandboxed Pi task's timeline is empty until it exits. The
+	// shared tailer re-emits appended lines as runtime_output events the
+	// transcript parser already understands.
+	adapter = withPiSessionTail(adapter, sandbox, profile.Provider, layout)
 
-	var metadata func() (runtime.NativeSessionMetadata, error)
-	if sandbox || profile.Provider == runtimeprofile.ProviderCodex || profile.Provider == runtimeprofile.ProviderPi || profile.Provider == runtimeprofile.ProviderHermes {
-		metadata = func() (runtime.NativeSessionMetadata, error) {
-			var collected runtime.NativeSessionMetadata
-			if containerIDFile != "" {
-				containerID, err := runtime.ReadContainerIDFile(containerIDFile)
-				if err != nil && !os.IsNotExist(err) {
-					return runtime.NativeSessionMetadata{}, err
-				}
-				collected.ContainerID = containerID
-			}
-			switch profile.Provider {
-			case runtimeprofile.ProviderCodex:
-				session, err := runtime.DiscoverCodexSession(layout.ProviderHome)
-				if err != nil {
-					return runtime.NativeSessionMetadata{}, err
-				}
-				collected.NativeSessionID = session.NativeSessionID
-				collected.NativeSessionPath = session.NativeSessionPath
-			case runtimeprofile.ProviderPi:
-				session, err := runtime.DiscoverPiSession(layout.ProviderHome)
-				if err != nil {
-					return runtime.NativeSessionMetadata{}, err
-				}
-				collected.NativeSessionID = session.NativeSessionID
-				collected.NativeSessionPath = session.NativeSessionPath
-			}
-			return collected, nil
-		}
-	}
-	var stopConfirmation runtime.StopConfirmation
-	if containerIDFile != "" {
-		// Match the launch-selected CLI (podman/docker), not only the daemon flag.
-		containerCLI := task.ResolveContainerCLI(created.RunControls.ContainerCLI, server.containerCLI)
-		stopConfirmation = runtime.DockerContainerStopConfirmation(containerCLI, containerIDFile)
-	}
+	metadata := providerNativeSessionMetadata(sandbox, profile.Provider, layout, containerIDFile)
+	stopConfirmation := dockerStopConfirmation(created.RunControls.ContainerCLI, server.containerCLI, containerIDFile)
 
 	return taskLaunchPlan{
 		Adapter:                     adapter,
@@ -3325,76 +3282,50 @@ func (server *Server) taskConclusionSettlement(found task.Task) providerControlS
 // correct Runtime Continuation. The caller owns Task control for the whole
 // operation. The returned execution is the durable terminal outcome.
 func (server *Server) executeNativeSteerOperation(ctx context.Context, found task.Task, session runtime.ProviderSession, mode runtime.ProviderSessionMode, operation nativeSteerOperationFunc, providerRequest runtime.ProviderSessionRequest, conversation task.Event, continuationID string, freshContinuation bool) steeringExecution {
-	var continuationMu sync.Mutex
-	var continuationTransitionErr error
-	emit := func(kind task.EventKind, payload task.EventPayload) {
-		payload["conversation_event_id"] = conversation.ID
-		continuationMu.Lock()
-		currentContinuationID := continuationID
-		if currentContinuationID != "" {
-			_, _ = server.tasks.AppendContinuationEvent(found.ID, currentContinuationID, kind, payload)
-		}
-		if mode == runtime.ProviderSessionModeInterruptThenReplace && kind == task.EventKindSteering && payload["outcome"] == "settled" && currentContinuationID != "" && !freshContinuation {
-			if transitionErr := server.advanceNativeSteerContinuation(currentContinuationID, session, &continuationID); transitionErr != nil {
-				continuationTransitionErr = transitionErr
-				failure := task.EventPayload{
-					"request_id": payload["request_id"], "session_id": payload["session_id"],
-					"mode": string(mode), "outcome": "failed", "phase": "replacement_continuation_failed",
-					"error_code": "continuation_transition_failed",
-				}
-				_, _ = server.tasks.AppendContinuationEvent(found.ID, currentContinuationID, task.EventKindSteering, failure)
+	return runNativeSteerTurn(ctx, steerExecutionSpec{
+		operation:             operation,
+		request:               providerRequest,
+		mode:                  mode,
+		providerSessionID:     session.SessionID(),
+		initialContinuationID: continuationID,
+		advanceOnSettled:      !freshContinuation,
+		vocabulary:            taskSteerEventVocabulary,
+		persistEvent: func(current string, kind task.EventKind, payload task.EventPayload) {
+			payload["conversation_event_id"] = conversation.ID
+			if current != "" {
+				_, _ = server.tasks.AppendContinuationEvent(found.ID, current, kind, payload)
 			}
-		}
-		continuationMu.Unlock()
-		if currentContinuationID == "" {
+		},
+		persistOwnerEvent: func(kind task.EventKind, payload task.EventPayload) {
+			payload["conversation_event_id"] = conversation.ID
 			_, _ = server.tasks.AppendEvent(found.ID, kind, payload)
-		}
-	}
-	result, operationErr := operation(ctx, providerRequest, emit)
-	if operationErr != nil {
-		errorCode, errorMessage := nativeSteerFailurePresentation(operationErr)
-		if errors.Is(operationErr, context.Canceled) || errors.Is(operationErr, context.DeadlineExceeded) {
-			// Post-fence with no provider outcome: delivery is ambiguous. The
-			// request is never replayed automatically; it settles
-			// action_required with a reason-specific recovery path.
-			ambiguous := task.EventPayload{
-				"request_id": providerRequest.RequestID, "session_id": session.SessionID(), "mode": string(mode),
-				"outcome": "action_required", "phase": "steering_action_required",
-				"error_code": string(owner.SteeringReasonDeliveryAmbiguous), "error": errorMessage,
-				"model_provider_id": providerRequest.ModelProviderID, "model": providerRequest.Model,
-				"requested_reasoning_effort": providerRequest.RequestedReasoningEffort,
+		},
+		advance: func(current string) (string, error) {
+			next := current
+			if err := server.advanceNativeSteerContinuation(current, session, &next); err != nil {
+				return "", err
 			}
-			emit(task.EventKindSteering, ambiguous)
-			return steeringExecution{state: owner.SteeringActionRequired, reason: owner.SteeringReasonDeliveryAmbiguous, message: errorMessage}
-		}
-		// Public Task Events carry only redacted, stable failure fields.
-		// Raw provider text stays out of the conversation surface.
-		failure := task.EventPayload{
-			"request_id": providerRequest.RequestID, "session_id": session.SessionID(), "mode": string(mode),
-			"outcome": "failed", "phase": "steering_failed", "error_code": errorCode,
-			"error":             errorMessage,
-			"model_provider_id": providerRequest.ModelProviderID, "model": providerRequest.Model,
-			"requested_reasoning_effort": providerRequest.RequestedReasoningEffort,
-		}
-		emit(task.EventKindSteering, failure)
-		return steeringExecution{state: owner.SteeringFailed, reason: steerReasonFromFailureCode(errorCode), message: errorMessage}
-	}
-	continuationMu.Lock()
-	transitionErr := continuationTransitionErr
-	continuationMu.Unlock()
-	if transitionErr != nil {
-		_ = server.closeProviderSession(found.ID)
-		if current, _ := server.tasks.ActiveContinuation(found.ID); current != nil {
-			_, _ = server.tasks.UpdateContinuationStatus(current.ID, task.StatusFailed)
-		}
-		_, _ = server.tasks.UpdateStatus(found.ID, task.StatusFailed)
-		return steeringExecution{state: owner.SteeringFailed, reason: owner.SteeringReasonContinuationUnavailable, message: transitionErr.Error(), failOwner: true}
-	}
-	payload := result.Payload()
-	payload["outcome"] = "applied"
-	payload["phase"] = "steering_applied"
-	emit(task.EventKindSteering, payload)
-	return steeringExecution{state: owner.SteeringApplied, result: result.Payload()}
+			return next, nil
+		},
+		onAdvanceSettled: func(current, _ string, advanceErr error) {
+			if advanceErr == nil {
+				return
+			}
+			_, _ = server.tasks.AppendContinuationEvent(found.ID, current, task.EventKindSteering, task.EventPayload{
+				"request_id": providerRequest.RequestID, "session_id": session.SessionID(),
+				"mode": string(mode), "outcome": "failed", "phase": "replacement_continuation_failed",
+				"error_code": "continuation_transition_failed",
+			})
+		},
+		failClosed: func(string) {
+			_ = server.closeProviderSession(found.ID)
+			if current, _ := server.tasks.ActiveContinuation(found.ID); current != nil {
+				_, _ = server.tasks.UpdateContinuationStatus(current.ID, task.StatusFailed)
+			}
+			_, _ = server.tasks.UpdateStatus(found.ID, task.StatusFailed)
+		},
+		failOwnerExecution: true,
+	})
 }
 
 // steerReasonFromFailureCode maps the redacted provider failure presentation
@@ -3451,13 +3382,7 @@ func (server *Server) handleProviderPermissionResponse(response http.ResponseWri
 		writeError(response, http.StatusBadRequest, "permission decision must be allow or deny")
 		return
 	}
-	input.RequestID = strings.TrimSpace(input.RequestID)
-	if input.RequestID == "" {
-		input.RequestID = strings.TrimSpace(request.Header.Get("Idempotency-Key"))
-	}
-	if input.RequestID == "" {
-		input.RequestID = "permission-" + permissionID + "-" + input.Decision
-	}
+	derivePermissionResponseRequestID(request, &input)
 
 	events, err := server.tasks.Events(found.ID)
 	if err != nil {
@@ -3470,10 +3395,7 @@ func (server *Server) handleProviderPermissionResponse(response http.ResponseWri
 		return
 	}
 	if priorOutcome != "" {
-		writeJSON(response, http.StatusAccepted, map[string]any{
-			"request_id": input.RequestID, "permission_request_id": permissionID,
-			"session_id": session.SessionID(), "decision": input.Decision, "outcome": priorOutcome,
-		})
+		writePermissionResponseAccepted(response, input, permissionID, session.SessionID(), priorOutcome)
 		return
 	}
 	if !pending {
@@ -3502,11 +3424,7 @@ func (server *Server) handleProviderPermissionResponse(response http.ResponseWri
 	if active != nil {
 		continuationID = active.ID
 	}
-	requestedPayload := task.EventPayload{
-		"phase": "provider_permission_response_requested", "mode": string(runtime.ProviderSessionModePermissionResponse),
-		"outcome": "pending", "request_id": input.RequestID, "permission_request_id": permissionID,
-		"permission_decision": input.Decision, "session_id": session.SessionID(),
-	}
+	requestedPayload := permissionResponseRequestedPayload(input, permissionID, session.SessionID())
 	if continuationID != "" {
 		_, err = server.tasks.AppendContinuationEvent(found.ID, continuationID, task.EventKindLifecycle, requestedPayload)
 	} else {
@@ -3518,91 +3436,21 @@ func (server *Server) handleProviderPermissionResponse(response http.ResponseWri
 		return
 	}
 	taskCtx := server.providerTaskContext(found.ID)
-	emit := func(kind task.EventKind, payload task.EventPayload) {
-		redacted := task.EventPayload{}
-		// Fixed correlation allowlist shared with the Session provider event
-		// projection (provider_session_control.go): raw protocol payload never
-		// reaches the Task Conversation.
-		for _, key := range []string{"provider", "request_id", "session_id", "provider_turn_id", "mode", "outcome", "permission_request_id", "permission_decision", "error_code", "phase"} {
-			if value, ok := payload[key]; ok {
-				redacted[key] = value
-			}
-		}
-		if redacted["request_id"] == nil {
-			redacted["request_id"] = input.RequestID
-		}
-		redacted["permission_request_id"] = permissionID
-		if redacted["mode"] == nil {
-			redacted["mode"] = string(runtime.ProviderSessionModePermissionResponse)
-		}
-		switch redacted["outcome"] {
-		case "requested":
-			redacted["phase"] = "provider_permission_response_requested"
-		case "acknowledged":
-			redacted["phase"] = "provider_permission_response_acknowledged"
-		case "failed":
-			redacted["phase"] = "provider_permission_response_failed"
-		}
+	persistLadderEvent := func(kind task.EventKind, payload task.EventPayload) {
 		if continuationID != "" {
-			_, _ = server.tasks.AppendContinuationEvent(found.ID, continuationID, kind, redacted)
+			_, _ = server.tasks.AppendContinuationEvent(found.ID, continuationID, kind, payload)
 		} else {
-			_, _ = server.tasks.AppendEvent(found.ID, kind, redacted)
+			_, _ = server.tasks.AppendEvent(found.ID, kind, payload)
 		}
 	}
+	emit := newPermissionResponseEmit(input, permissionID, persistLadderEvent)
 	go func() {
 		defer server.releaseProviderTaskControl(found.ID)
 		ctx, cancel := context.WithTimeout(taskCtx, 30*time.Second)
 		defer cancel()
-		result, operationErr := session.RespondPermission(ctx, runtime.ProviderSessionRequest{
-			RequestID: input.RequestID, PermissionRequestID: permissionID, PermissionDecision: input.Decision,
-		}, emit)
-		if operationErr != nil {
-			emit(task.EventKindLifecycle, task.EventPayload{"outcome": "failed", "phase": "provider_permission_response_failed", "error_code": permissionResponseErrorCode(operationErr)})
-			return
-		}
-		payload := result.Payload()
-		payload["phase"] = "provider_permission_response_applied"
-		payload["outcome"] = "applied"
-		payload["permission_request_id"] = permissionID
-		if continuationID != "" {
-			_, _ = server.tasks.AppendContinuationEvent(found.ID, continuationID, task.EventKindLifecycle, payload)
-		} else {
-			_, _ = server.tasks.AppendEvent(found.ID, task.EventKindLifecycle, payload)
-		}
+		deliverPermissionResponse(ctx, session, input, permissionID, emit, persistLadderEvent)
 	}()
-	writeJSON(response, http.StatusAccepted, map[string]any{
-		"request_id": input.RequestID, "permission_request_id": permissionID,
-		"session_id": session.SessionID(), "decision": input.Decision, "outcome": "accepted",
-	})
-}
-
-func normalizePermissionDecision(decision string) string {
-	switch strings.ToLower(strings.TrimSpace(decision)) {
-	case "allow", "approve", "approved", "yes":
-		return "allow"
-	case "deny", "reject", "rejected", "no":
-		return "deny"
-	default:
-		return ""
-	}
-}
-
-// permissionResponseErrorCode maps a provider permission-response failure to
-// the stable error_code both owner kinds persist, so task and session
-// permission handling share one classification.
-func permissionResponseErrorCode(operationErr error) string {
-	switch {
-	case errors.Is(operationErr, context.DeadlineExceeded):
-		return "timeout"
-	case errors.Is(operationErr, context.Canceled):
-		return "server_closing"
-	case errors.Is(operationErr, runtime.ErrProviderSessionClosed):
-		return "session_closed"
-	case errors.Is(operationErr, runtime.ErrProviderSessionControlConflict):
-		return "control_conflict"
-	default:
-		return "provider_rejected"
-	}
+	writePermissionResponseAccepted(response, input, permissionID, session.SessionID(), "accepted")
 }
 
 // providerPermissionStatus scans either owner's event stream for the state of

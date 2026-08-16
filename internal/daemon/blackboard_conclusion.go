@@ -95,30 +95,7 @@ func (server *Server) dispatchBlackboardConclusion(ctx context.Context, pending 
 	if !won {
 		return nil
 	}
-	return server.sendBlackboardConclusionTurn(ctx, receipt, concludeBlackboardDirective(snapshot.Revision))
-}
-
-func concludeBlackboardDirective(baseRevision int) string {
-	return fmt.Sprintf(`Stop security testing and perform only the Harness conclusion below.
-Return exactly one JSON object (no markdown fences, no prose) with this shape and base_revision %d:
-{"schema":"runtime-attempt-result/v1","base_revision":%d,"attempt":{"key":"attempt/example","create":true,"summary":"One sentence outcome of the completed work.","outcome":"inconclusive"},"tested_targets":[{"key":"objective/example","create_objective":{"objective":"What was tested."}}],"produced_targets":[]}
-Conclude only the current source Work Turn. Do not restate an older terminal Attempt.
-Use only existing Blackboard Keys and versions already present in the conversation from the completed source Work Turn. Copy them exactly; never change punctuation or switch between ':' and '/'. If an exact existing key and version are not already known, do not guess or look them up. Create a new descriptive slash-style Attempt or Objective key and use an inconclusive, failed, or blocked outcome without produced targets. A new key must not be a punctuation alias of a current or historical key.
-Replace example keys and summaries with this Turn's real semantic targets.
-Rules: outcome must be one of succeeded, failed, blocked, or inconclusive. Use inconclusive/failed/blocked when the Turn did not create durable produced graph targets. succeeded requires at least one produced_targets entry that references an already-existing Blackboard key with expected_version; do not invent produced_targets on an empty board.
-Describe one Attempt and at least one tested target. Do not read files. Do not call tools, continue testing, include raw tool output or reasoning, finish the Task, or write the Blackboard directly.`, baseRevision, baseRevision)
-}
-
-func repairBlackboardDirective(baseRevision int, detail owner.ConclusionValidationDetail) string {
-	directive := fmt.Sprintf(`Your previous Blackboard conclusion result was invalid.
-Stop security testing and correct only that semantic result.
-Return exactly one JSON object (no markdown fences, no prose) with schema runtime-attempt-result/v1 and base_revision %d.
-If the board has no existing produced targets, use outcome "inconclusive" (or failed/blocked) with produced_targets [].
-Example:
-{"schema":"runtime-attempt-result/v1","base_revision":%d,"attempt":{"key":"attempt/example","create":true,"summary":"One sentence outcome of the completed work.","outcome":"inconclusive"},"tested_targets":[{"key":"objective/example","create_objective":{"objective":"What was tested."}}],"produced_targets":[]}
-Conclude only the current source Work Turn. Use only existing Blackboard Keys and versions already present in the conversation. Copy them exactly; never change punctuation or switch between ':' and '/'. If an exact existing key and version are not already known, do not guess or look them up. Create a new descriptive slash-style Attempt or Objective key and use an inconclusive, failed, or blocked outcome without produced targets. Do not restate an older terminal Attempt.
-Do not read files. Do not call tools, continue testing, include raw tool output or reasoning, finish the Task, or write the Blackboard directly.`, baseRevision, baseRevision)
-	return conclusionValidationRepairLine(detail) + "\n" + directive
+	return server.sendBlackboardConclusionTurn(ctx, receipt, concludeDirective(taskConclusionDirectiveProfile, snapshot.Revision))
 }
 
 // conclusionValidationRepairLine renders the bounded public reason for one
@@ -136,13 +113,6 @@ func conclusionValidationRepairLine(detail owner.ConclusionValidationDetail) str
 		line += ". Expected: " + detail.Expected
 	}
 	return line + "."
-}
-
-func regenerateBlackboardDirective(baseRevision int) string {
-	return fmt.Sprintf(`The Project Blackboard changed after your previous semantic result was produced.
-Regenerate the semantic result against base_revision %d. Use only exact Blackboard Keys and versions already present in the conversation. If a required current version is not already known, create new descriptive slash-style Attempt and Objective keys and use an inconclusive, failed, or blocked outcome with no produced targets. Do not guess or look up current state.
-Return exactly one JSON object with schema runtime-attempt-result/v1.
-Do not read files. Do not call tools, continue testing, include raw tool output or reasoning, finish the Task, or write the Blackboard directly.`, baseRevision)
 }
 
 func (server *Server) blackboardConclusionCoordinator(taskID string) runtime.AssistedConclusionCoordinator {
@@ -220,7 +190,7 @@ func (server *Server) dispatchBlackboardConclusionRepair(ctx context.Context, re
 	if receipt.BaseRevision == nil {
 		return fmt.Errorf("Blackboard conclusion repair has no base revision")
 	}
-	return server.sendBlackboardConclusionTurn(ctx, receipt, repairBlackboardDirective(*receipt.BaseRevision, conclusionDetailFromTaskReceipt(receipt)))
+	return server.sendBlackboardConclusionTurn(ctx, receipt, repairDirective(taskConclusionDirectiveProfile, *receipt.BaseRevision, conclusionDetailFromTaskReceipt(receipt)))
 }
 
 func conclusionDetailFromTaskReceipt(receipt task.BlackboardConclusionReceipt) owner.ConclusionValidationDetail {
@@ -258,35 +228,26 @@ func (server *Server) handleRetryBlackboardConclusion(response http.ResponseWrit
 		writeError(response, http.StatusNotFound, "task not found")
 		return
 	}
-	idempotencyKey := strings.TrimSpace(request.Header.Get("Idempotency-Key"))
-	if idempotencyKey == "" {
-		writeError(response, http.StatusBadRequest, "Idempotency-Key is required")
-		return
-	}
-	latest, err := server.tasks.LatestBlackboardConclusion(taskID)
-	if err != nil || latest == nil {
-		writeError(response, http.StatusNotFound, "task not found")
-		return
-	}
-	if latest.RecoveryReason == string(task.ConclusionRecoveryAcceptanceAmbiguous) {
-		// An acceptance-ambiguous provider delivery is never resent: a generic
-		// Retry could duplicate a request the provider already accepted.
-		writeError(response, http.StatusConflict, "Blackboard conclusion cannot be retried after an acceptance-ambiguous delivery")
-		return
-	}
-	retried, won, err := server.tasks.RetryLatestBlackboardConclusion(taskID, idempotencyKey, time.Now().UTC())
-	if err != nil {
-		if errors.Is(err, task.ErrBlackboardConclusionRetryCooldown) {
-			writeError(response, http.StatusConflict, "Blackboard conclusion retry is not yet available")
-			return
-		}
-		writeError(response, http.StatusConflict, "Blackboard conclusion cannot be retried")
-		return
-	}
-	if won {
-		if retried.InternalState == task.BlackboardConclusionReceiptPending {
-			server.scheduleBlackboardConclusionDispatch(retried)
-		} else {
+	var retried task.BlackboardConclusionReceipt
+	server.serveBlackboardConclusionRetry(response, request, conclusionRetrySpec{
+		latest: func() (string, bool, error) {
+			latest, err := server.tasks.LatestBlackboardConclusion(taskID)
+			if err != nil || latest == nil {
+				return "", false, err
+			}
+			return latest.RecoveryReason, true, nil
+		},
+		retry: func(idempotencyKey string) (bool, bool, error) {
+			var won bool
+			var err error
+			retried, won, err = server.tasks.RetryLatestBlackboardConclusion(taskID, idempotencyKey, time.Now().UTC())
+			if err != nil {
+				return false, false, err
+			}
+			return won, retried.InternalState == task.BlackboardConclusionReceiptPending, nil
+		},
+		dispatchPending: func() { server.scheduleBlackboardConclusionDispatch(retried) },
+		dispatchRepair: func() {
 			queued := server.enqueueProviderTaskControl(taskID, func(ctx context.Context) {
 				if err := server.dispatchBlackboardConclusionRepair(ctx, retried); err != nil {
 					server.recoverBlackboardConclusionDispatchFailure(retried, err)
@@ -295,18 +256,12 @@ func (server *Server) handleRetryBlackboardConclusion(response http.ResponseWrit
 			if !queued {
 				server.recoverBlackboardConclusionDispatchFailure(retried, fmt.Errorf("provider control queue is closed"))
 			}
-		}
-	}
-	detailed, err := server.taskDetail(taskID)
-	if err != nil {
-		writeTaskError(response, err)
-		return
-	}
-	status := http.StatusOK
-	if won {
-		status = http.StatusAccepted
-	}
-	writeJSON(response, status, detailed)
+		},
+		detail: func() (any, error) { return server.taskDetail(taskID) },
+		writeOwnerError: func(response http.ResponseWriter, err error) {
+			writeTaskError(response, err)
+		},
+	})
 }
 
 func (server *Server) recoverBlackboardConclusionDispatchFailure(receipt task.BlackboardConclusionReceipt, cause error) {
@@ -359,15 +314,15 @@ func (server *Server) scheduleRecoveredConclusionDispatch(view task.BlackboardCo
 }
 
 func (server *Server) dispatchRecoveredConclusionDispatch(ctx context.Context, view task.BlackboardConclusionReceipt) error {
-	directive := concludeBlackboardDirective(pointerValue(view.BaseRevision))
+	directive := concludeDirective(taskConclusionDirectiveProfile, pointerValue(view.BaseRevision))
 	switch view.InternalState {
 	case task.BlackboardConclusionReceiptRepairDispatchRequested:
-		directive = repairBlackboardDirective(pointerValue(view.BaseRevision), conclusionDetailFromTaskReceipt(view))
+		directive = repairDirective(taskConclusionDirectiveProfile, pointerValue(view.BaseRevision), conclusionDetailFromTaskReceipt(view))
 	case task.BlackboardConclusionReceiptVersionRegenerationDispatchRequested:
-		directive = regenerateBlackboardDirective(pointerValue(view.BaseRevision))
+		directive = regenerateDirective(taskConclusionDirectiveProfile, pointerValue(view.BaseRevision))
 	default:
 		if view.ExplicitRetryCount > 0 {
-			directive = repairBlackboardDirective(pointerValue(view.BaseRevision), conclusionDetailFromTaskReceipt(view))
+			directive = repairDirective(taskConclusionDirectiveProfile, pointerValue(view.BaseRevision), conclusionDetailFromTaskReceipt(view))
 		}
 	}
 	return server.sendBlackboardConclusionTurn(ctx, view, directive)
@@ -624,7 +579,7 @@ func (server *Server) dispatchBlackboardConclusionVersionRegeneration(ctx contex
 	if receipt.BaseRevision == nil {
 		return fmt.Errorf("Blackboard conclusion regeneration has no base revision")
 	}
-	return server.sendBlackboardConclusionTurn(ctx, receipt, regenerateBlackboardDirective(*receipt.BaseRevision))
+	return server.sendBlackboardConclusionTurn(ctx, receipt, regenerateDirective(taskConclusionDirectiveProfile, *receipt.BaseRevision))
 }
 
 func (server *Server) sendBlackboardConclusionTurn(ctx context.Context, receipt task.BlackboardConclusionReceipt, directive string) error {
