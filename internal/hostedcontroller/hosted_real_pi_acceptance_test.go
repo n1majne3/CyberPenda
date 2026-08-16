@@ -240,7 +240,7 @@ func buildRealPiAcceptanceBridge(t *testing.T) string {
 	}
 	repository := acceptanceRepositoryRoot(t)
 	bridge := filepath.Join(t.TempDir(), "pentest-provider-bridge")
-	command := exec.Command("go", "build", "-o", bridge, "./cmd/pentest-provider-bridge")
+	command := exec.Command("go", "build", "-buildvcs=false", "-o", bridge, "./cmd/pentest-provider-bridge")
 	command.Dir = repository
 	command.Env = append(os.Environ(), "GOCACHE="+filepath.Join(t.TempDir(), "go-cache"))
 	if output, err := command.CombinedOutput(); err != nil {
@@ -253,7 +253,7 @@ func buildRealPiAcceptanceClient(t *testing.T) string {
 	t.Helper()
 	repository := acceptanceRepositoryRoot(t)
 	client := filepath.Join(t.TempDir(), "pentest-tsecbench-client")
-	command := exec.Command("go", "build", "-o", client, "./cmd/pentest-tsecbench-client")
+	command := exec.Command("go", "build", "-buildvcs=false", "-o", client, "./cmd/pentest-tsecbench-client")
 	command.Dir = repository
 	command.Env = append(os.Environ(), "GOCACHE="+filepath.Join(t.TempDir(), "go-cache"))
 	if output, err := command.CombinedOutput(); err != nil {
