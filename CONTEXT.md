@@ -712,6 +712,10 @@ _Avoid_: Project, Task, Hosted Evaluation Run
 The TSecBench-specific bootstrap process that validates hosted configuration, starts the daemon, creates one CTF Challenge Project and one CTF Challenge Task, projects the **Hosted Transcript Stream**, and observes the Runtime until TSecBench forcibly terminates the container. It is fail-fast and does not resume an interrupted process. It does not list, schedule, solve, submit, close, formally finish, stop, gracefully terminate, or recover Benchmark Challenges, Tasks, or the Hosted Evaluation Run.
 _Avoid_: Runtime, Challenge Workflow, challenge scheduler
 
+**Hosted Challenge Client**:
+A bounded, one-command process inside the TSecBench Hosted Image that performs one list, start, hint, submit, or guarded close operation for the Runtime. It has no background lifecycle, never controls the Hosted Controller or daemon, and derives safety decisions from current TSecBench state so its failure cannot terminate the host process.
+_Avoid_: Hosted Controller, background sidecar, challenge scheduler, direct curl procedure
+
 **Platform-Issued Scope**:
 An operator authorization statement in Scope notes that permits testing only the ephemeral target addresses returned by the Challenge Platform for the current evaluation credential. It guides the Runtime but is not a structured dynamic target selector.
 _Avoid_: automatic Scope Expansion, structured target list, unrestricted platform network
@@ -872,6 +876,10 @@ _Avoid_: transcript, export, source of truth
 - A **Project** may define **Project Defaults** for new **Tasks**, including an optional **Default Runtime Profile Preset** and default **Runner**.
 - **Task Launch** captures one immutable **Task Policy Snapshot**.
 - The **Challenge Workflow** enforces Task Policy before each governed external operation, independently of prompt compliance.
+- The **Hosted Challenge Client** is process-isolated from the **Hosted Controller**, daemon, and Runtime session; one client command failure affects only that command.
+- The **Hosted Challenge Client** never combines submit, close, and start in one operation.
+- The **Hosted Challenge Client** rejects a normal close unless current TSecBench state proves the Benchmark Challenge complete; explicit abandonment requires a non-empty reason.
+- The Runtime, not the **Hosted Challenge Client**, selects, schedules, solves, hints, submits, or abandons Benchmark Challenges.
 - A **Project Defaults** reference to a **Default Runtime Profile Preset** preselects that preset on the task launch page but does not copy the **Runtime Profile**.
 - When no **Default Runtime Profile Preset** is configured, task launch starts from **Launch Selection** and uses **Launch Profile Resolution** to find or create a minimal **Runtime Profile**.
 - A **Project Dashboard** is the primary UI entry point for a **Project**.
@@ -1526,9 +1534,9 @@ _Avoid_: transcript, export, source of truth
 - Hosted model selection is not fixed at build time or discovered opportunistically; resolved: select one of a small set of verified model configurations through runtime environment values and fail before challenge work when it is invalid.
 - Hosted integration code is not forbidden from extending shared packages; resolved: shared additive interfaces are allowed when regression tests prove that existing product entrypoints and default behavior remain unchanged.
 - A container-local Project, Blackboard, Evidence set, database, or report is not the formal **Hosted Evaluation Result**; resolved: TSecBench owns the formal score and completion state.
-- The **Challenge Workflow** is not the mandatory challenge execution path; resolved: existing Runtime agents perform **Runtime-Managed Challenge Execution**, and the **TSecBench Hosted Image** will not enhance or depend on Challenge Workflow.
+- The **Challenge Workflow** is not the mandatory challenge execution path; resolved: TSecBench keeps **Runtime-Managed Challenge Execution** and may use a Hosted-only structured client without making the Hosted Controller a scheduler or coupling hosted execution to Challenge Workflow.
 - A TSecBench **Benchmark Challenge** is not mapped to its own Project or Task; resolved: one **Hosted Evaluation Run** uses one CTF Challenge Project and one CTF Challenge Task whose Runtime owns the complete evaluation loop.
-- The **Hosted Controller** is not a challenge orchestrator or lifecycle finisher; resolved: it owns bootstrap and Task observation while the Runtime directly uses `BENCHMARK_BASE_URL` and `BENCHMARK_TOKEN` for challenge operations, and TSecBench owns container termination.
+- The **Hosted Controller** is not a challenge orchestrator or lifecycle finisher; resolved: it owns bootstrap and Task observation while the Runtime uses the process-isolated **Hosted Challenge Client** for challenge operations, and TSecBench owns container termination.
 - TSecBench integration knowledge is not embedded as one oversized Task Goal or a new MCP server; resolved: the **TSecBench Hosted Image** supplies a hosted-only TSecBench Skill and the Task Goal requires its use.
 - TSecBench target addresses are not individually approved Scope Expansions or structured dynamic targets; resolved: a **Platform-Issued Scope** statement in Scope notes authorizes only the ephemeral addresses returned for the current evaluation credential.
 - The **TSecBench Hosted Image** is not limited to one Runtime family; resolved: it packages Pi, Codex, and Claude Code.
@@ -1563,12 +1571,12 @@ _Avoid_: transcript, export, source of truth
 - Container root is not permission to require elevated platform capabilities; resolved: the **Container Host Runner** uses only normal default container capabilities, does not request TUN, `NET_ADMIN`, privileged mode, or a Docker Socket, and challenge tools must fall back to normal TCP or HTTP methods when a capability is unavailable.
 - Hosted Runtime and model protocol compatibility is not approximate OpenAI compatibility; resolved: validate the exact built-in matrix of Codex with `openai_responses`, Claude Code with `anthropic_messages`, and Pi with `openai_chat_completions`, `openai_responses`, or `anthropic_messages`.
 - The **Hosted Acceptance Configuration** is not a requirement to solve a real local-mode challenge; resolved: use Pi with `openai_chat_completions` for hosted bootstrap, model-call, and fake-platform validation, while real TSecBench local mode validates only the platform API.
-- TSecBench challenge access does not require a new client binary or structured tool; resolved: the hosted-only TSecBench Skill documents direct `curl` calls for list, start, hint, submit, and close, and the Runtime owns request construction and response handling.
+- TSecBench challenge access is not performed through direct Runtime-built curl chains; resolved: the **Hosted Challenge Client** provides separate structured list, start, hint, submit, and guarded close commands while preserving Runtime-owned scheduling and process isolation from the host lifecycle.
 - An active Benchmark Challenge is not kept open after success or explicit abandonment; resolved: the hosted Skill requires immediate close in those cases, preserves the platform limit of three active challenges, and leaves other scheduling choices to the Runtime.
 - The hosted model API key is not a reusable production credential; resolved: the deployer supplies a dedicated, revocable evaluation key and accepts that persistent Runtime records or complete standard output may disclose it.
 - Hosted standard output is not a bounded operational summary or provider-native stream; resolved: emit every retained Runtime conversation and tool-result Transcript entry as sequence-ordered JSONL, fetch complete detail for truncated entries, and mask exact known evaluation credential values before output. Flags, targets, attack data, and other sensitive content remain visible.
 - A **Model Protocol Base URL** is not a complete model operation URL; resolved: hosted bootstrap rejects URLs ending in known operation paths such as `/chat/completions`, `/responses`, or `/messages`, and the selected Runtime appends its own operation path.
-- TSecBench transient-error recovery is not implemented as a controller or shared client policy; resolved: the Runtime interprets platform errors and decides whether and how to retry through the hosted Skill procedure.
+- TSecBench transient-error recovery is not allowed to endanger the host process; resolved: the **Hosted Challenge Client** returns bounded structured failures without automatic mutation retries, and the Runtime decides whether to retry or switch challenges.
 - A **Hosted Evaluation Run** is not restart-resumable; resolved: Project and Task creation remain non-idempotent, every hosted container process is one fresh run, and any unexpected process exit fails that run without bootstrap recovery.
 - Hosted stdout masking is not persistent Runtime redaction; resolved: the **Hosted Transcript Stream** masks exact `BENCHMARK_TOKEN` and model API key values only when it writes stdout, while internal Task Events, Transcript source records, and diagnostic state retain the accepted disclosure risk.
 - TSecBench container termination is not graceful CyberPenda shutdown; resolved: the hosted PID catches and ignores termination signals, does not stop the Task or close the daemon, and stays alive until the platform forcibly terminates the container.

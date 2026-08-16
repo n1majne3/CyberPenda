@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -39,6 +40,7 @@ func TestHostedAcceptanceConfigurationRunsTheRealPiRuntimeWithTheProjectedSkill(
 		"GET /openapi/v1/challenges/hint?unique_code=multi",
 		"POST /openapi/v1/challenges/submit flag-one",
 		"POST /openapi/v1/challenges/submit flag-two",
+		"GET /openapi/v1/challenges",
 		"POST /openapi/v1/challenges/close?unique_code=multi",
 	}
 	if !equalAcceptedRequests(result.platformRequests, want) {
@@ -80,15 +82,8 @@ func newRealPiHostedAcceptanceFixture(t *testing.T) *realPiHostedAcceptanceFixtu
 		}
 		t.Skip("real Pi acceptance requires pi on PATH")
 	}
-	for _, program := range []string{"curl", "jq"} {
-		if _, err := exec.LookPath(program); err != nil {
-			if os.Getenv("CYBERPENDA_REQUIRE_REAL_PI_ACCEPTANCE") == "1" {
-				t.Fatalf("real Pi acceptance requires %s on PATH", program)
-			}
-			t.Skipf("real Pi acceptance requires %s on PATH", program)
-		}
-	}
 	bridgePath := buildRealPiAcceptanceBridge(t)
+	clientPath := buildRealPiAcceptanceClient(t)
 	platform := newAcceptedPlatform(acceptedPlatformSuccess)
 	platformServer := newHostedSkillTestServer(t, http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.Header.Get("BENCHMARK_TOKEN") != acceptedBenchmarkToken {
@@ -99,6 +94,7 @@ func newRealPiHostedAcceptanceFixture(t *testing.T) *realPiHostedAcceptanceFixtu
 	}))
 	t.Cleanup(platformServer.Close)
 	model := newRealPiControlledModel(t)
+	model.clientPath = clientPath
 
 	root := t.TempDir()
 	server, err := daemon.NewServer(daemon.Config{
@@ -253,6 +249,19 @@ func buildRealPiAcceptanceBridge(t *testing.T) string {
 	return bridge
 }
 
+func buildRealPiAcceptanceClient(t *testing.T) string {
+	t.Helper()
+	repository := acceptanceRepositoryRoot(t)
+	client := filepath.Join(t.TempDir(), "pentest-tsecbench-client")
+	command := exec.Command("go", "build", "-o", client, "./cmd/pentest-tsecbench-client")
+	command.Dir = repository
+	command.Env = append(os.Environ(), "GOCACHE="+filepath.Join(t.TempDir(), "go-cache"))
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("build real TSecBench Client: %v\n%s", err, output)
+	}
+	return client
+}
+
 func acceptanceRepositoryRoot(t *testing.T) string {
 	t.Helper()
 	directory, err := os.Getwd()
@@ -275,6 +284,7 @@ type realPiControlledModel struct {
 	server          *httptest.Server
 	baseURL         string
 	platformBaseURL string
+	clientPath      string
 
 	mu          sync.Mutex
 	calls       int
@@ -301,7 +311,7 @@ func (model *realPiControlledModel) serveHTTP(response http.ResponseWriter, requ
 	model.calls++
 	call := model.calls
 	model.lastRequest = append([]byte(nil), body...)
-	if bytes.Contains(body, []byte("The hosted platform supplies its network")) {
+	if bytes.Contains(body, []byte("Stability boundary")) {
 		model.skillRead = true
 	}
 	model.mu.Unlock()
@@ -314,7 +324,7 @@ func (model *realPiControlledModel) serveHTTP(response http.ResponseWriter, requ
 		})
 	case 2:
 		writeRealPiToolCall(response, "accepted-bash", "bash", map[string]any{
-			"command": realPiChallengeCommand(), "timeout": 10,
+			"command": realPiChallengeCommand(model.clientPath), "timeout": 10,
 		})
 	default:
 		writeRealPiText(response, "TSecBench reports all challenge flags complete.")
@@ -376,19 +386,18 @@ func writeRealPiSSE(response io.Writer, payload any) {
 	_, _ = fmt.Fprintf(response, "data: %s\n\n", raw)
 }
 
-func realPiChallengeCommand() string {
-	return strings.TrimSpace(`
-api_base="${BENCHMARK_BASE_URL%/}/openapi/v1/challenges"
-curl --fail-with-body --silent --show-error --header "BENCHMARK_TOKEN: $BENCHMARK_TOKEN" "$api_base"
+func realPiChallengeCommand(clientPath string) string {
+	client := strconv.Quote(clientPath)
+	return strings.TrimSpace(fmt.Sprintf(`
+%s list
 code=multi
-curl --fail-with-body --silent --show-error --request POST --header "BENCHMARK_TOKEN: $BENCHMARK_TOKEN" --url "$api_base/start" --url-query "unique_code=$code"
-curl --fail-with-body --silent --show-error --get --header "BENCHMARK_TOKEN: $BENCHMARK_TOKEN" --url "$api_base/hint" --url-query "unique_code=$code"
+%s start "$code"
+%s hint "$code"
 for flag in flag-one flag-two; do
-  jq -n --arg code "$code" --arg flag "$flag" '{unique_code: $code, flag: $flag}' |
-  curl --fail-with-body --silent --show-error --request POST --header "BENCHMARK_TOKEN: $BENCHMARK_TOKEN" --header "Content-Type: application/json" --data-binary @- "$api_base/submit"
+  printf '%%s' "$flag" | %s submit "$code"
 done
-curl --fail-with-body --silent --show-error --request POST --header "BENCHMARK_TOKEN: $BENCHMARK_TOKEN" --url "$api_base/close" --url-query "unique_code=$code"
-`)
+%s close "$code"
+`, client, client, client, client, client))
 }
 
 func equalAcceptedRequests(got, want []string) bool {

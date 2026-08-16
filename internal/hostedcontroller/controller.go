@@ -24,7 +24,7 @@ import (
 
 const (
 	// HostedTaskGoal is the required Task Goal for one Hosted Evaluation Run.
-	HostedTaskGoal = "Use the hosted TSecBench Skill to complete every eligible Benchmark Challenge. Return only after TSecBench reports all challenges complete or invalid_state."
+	HostedTaskGoal = "Use the hosted TSecBench Skill and process-isolated Hosted Challenge Client to complete every eligible Benchmark Challenge. A client command failure is local: keep the Runtime alive, refresh platform state, and continue. Return only after TSecBench reports all challenges complete or invalid_state."
 	// MaxHostedTaskGoalAppendix is the maximum size of an optional Task Goal appendix.
 	MaxHostedTaskGoalAppendix = 8192
 	// MinHostedAutoCompactThreshold is the lowest accepted compact percent.

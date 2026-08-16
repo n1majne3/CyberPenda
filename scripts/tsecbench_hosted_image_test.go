@@ -88,6 +88,13 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 		"@anthropic-ai/claude-code@latest",
 		"agent-browser@latest",
 		"python3-pwntools",
+		"python3-pil",
+		"tesseract-ocr",
+		"SYSTEMD_OFFLINE=1",
+		"default-jre-headless",
+		"jadx",
+		"apktool",
+		"bsdextrautils",
 		"chromium",
 		"golang-go",
 		"build-essential",
@@ -115,18 +122,19 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 		"pi", "codex", "claude", "bash", "git", "curl", "jq", "rg",
 		"python3", "go", "gcc", "g++", "make", "gdb", "radare2", "strace",
 		"ltrace", "patchelf", "checksec", "nmap", "nc", "socat", "dig", "ip",
-		"ss", "ping", "ssh", "openssl", "chromium", "agent-browser",
+		"ss", "ping", "ssh", "openssl", "chromium", "agent-browser", "tesseract", "java", "jadx", "apktool", "column",
 		"pentest-provider-bridge", "pentest-claude-sdk-bridge", "pentest-tsecbench-hosted",
+		"pentest-tsecbench-client",
 	} {
 		assertContains(t, dockerfile, `command -v `+executable)
 	}
-	assertContains(t, dockerfile, `python3 -c 'import pwn'`)
+	assertContains(t, dockerfile, `python3 -c 'import pwn; from PIL import Image'`)
 	if strings.Contains(dockerfile, "pip3 install --no-cache-dir --break-system-packages pwntools") {
 		t.Fatal("Hosted Image must use Kali python3-pwntools instead of building unicorn from source on Python 3.14")
 	}
 
 	for _, excluded := range []string{
-		"kali-linux-headless", "ghidra", "jadx", "android-sdk", "seclists",
+		"kali-linux-headless", "ghidra", "android-sdk", "seclists",
 		"docker.io", "docker-ce", "docker-cli", "podman", "openvpn", "wireguard", "tunneling",
 		"/var/run/docker.sock", "--privileged", "--cap-add", "NET_ADMIN", "/dev/net/tun",
 	} {
@@ -169,10 +177,10 @@ func TestTSecBenchHostedImageSmokeWhenAnImageIsConfigured(t *testing.T) {
 
 	smoke := `set -eu
 test "$(id -u)" = 0
-	for command in pi codex claude bash git curl jq rg python3 go gcc g++ make gdb radare2 strace ltrace patchelf checksec nmap nc socat dig ip ss ping ssh openssl chromium agent-browser pentest-provider-bridge pentest-claude-sdk-bridge pentest-tsecbench-hosted; do
+	for command in pi codex claude bash git curl jq rg python3 go gcc g++ make gdb radare2 strace ltrace patchelf checksec nmap nc socat dig ip ss ping ssh openssl chromium agent-browser tesseract java jadx apktool column pentest-provider-bridge pentest-claude-sdk-bridge pentest-tsecbench-hosted pentest-tsecbench-client; do
   command -v "$command" >/dev/null
 done
-python3 -c 'import pwn'
+python3 -c 'import pwn; from PIL import Image'
 test -s /opt/cyberpenda/runtime-versions.json
 `
 	output, err := exec.Command(docker, "run", "--rm", "--network", "none", "--entrypoint", "sh", image, "-c", smoke).CombinedOutput()

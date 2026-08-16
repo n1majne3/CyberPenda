@@ -27,21 +27,25 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       -o /out/pentest-tsecbench-hosted ./cmd/pentest-tsecbench-hosted \
   && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
       -trimpath -ldflags="-s -w" \
-      -o /out/pentest-provider-bridge ./cmd/pentest-provider-bridge
+      -o /out/pentest-provider-bridge ./cmd/pentest-provider-bridge \
+  && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+      -trimpath -ldflags="-s -w" \
+      -o /out/pentest-tsecbench-client ./cmd/pentest-tsecbench-client
 
 FROM --platform=$TARGETPLATFORM kalilinux/kali-rolling:latest AS runtime
 
-# This bounded baseline is deliberately smaller than pentest-sandbox. Do not
-# add kali-linux-* meta-packages or mobile/reverse-engineering suites here.
+# This bounded baseline is deliberately smaller than pentest-sandbox. Keep
+# mobile support limited to static APK inspection; do not add large suites.
 RUN rm -f /etc/apt/apt.conf.d/docker-clean \
   && echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update \
-  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+  && SYSTEMD_OFFLINE=1 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates curl wget git jq ripgrep file binutils unzip xz-utils \
     bash dash zsh coreutils findutils grep sed gawk procps \
-    python3 python3-pip python3-venv python3-pwntools \
+    python3 python3-pip python3-venv python3-pwntools python3-pil tesseract-ocr \
+    default-jre-headless jadx apktool bsdextrautils \
     golang-go build-essential gdb radare2 strace ltrace patchelf checksec \
     nmap netcat-openbsd socat dnsutils iproute2 iputils-ping openssh-client openssl \
     nodejs npm chromium \
@@ -75,6 +79,7 @@ RUN printf '%s\n' '#!/bin/sh' 'exec node /opt/pentest/claude-sdk-bridge/main.mjs
 
 COPY --from=go-build /out/pentest-tsecbench-hosted /usr/local/bin/pentest-tsecbench-hosted
 COPY --from=go-build /out/pentest-provider-bridge /usr/local/bin/pentest-provider-bridge
+COPY --from=go-build /out/pentest-tsecbench-client /usr/local/bin/pentest-tsecbench-client
 COPY docker/tsecbench-hosted/tsecbench-local-validate.py /usr/local/bin/tsecbench-local-validate
 RUN chmod 0755 /usr/local/bin/tsecbench-local-validate
 
@@ -117,11 +122,17 @@ RUN mkdir -p /root/.agent-browser /opt/cyberpenda /data /root/.pi/agent \
   && command -v openssl \
   && command -v chromium \
   && command -v agent-browser \
+  && command -v tesseract \
+  && command -v java \
+  && command -v jadx \
+  && command -v apktool \
+  && command -v column \
   && command -v pentest-provider-bridge \
   && command -v pentest-claude-sdk-bridge \
   && command -v pentest-tsecbench-hosted \
+  && command -v pentest-tsecbench-client \
   && command -v tsecbench-local-validate \
-  && python3 -c 'import pwn'
+  && python3 -c 'import pwn; from PIL import Image'
 
 ENV CYBERPENDA_HOSTED_DATA_ROOT=/data \
     CYBERPENDA_PROVIDER_BRIDGE=/usr/local/bin/pentest-provider-bridge \
