@@ -99,6 +99,21 @@ RUN --mount=type=cache,target=/root/.npm \
       @anthropic-ai/claude-code@latest \
       agent-browser@latest
 
+# Hermes Agent: latest release at image-build time. Root install.sh uses FHS
+# (/usr/local/bin/hermes). Skip node-deps: that stage's `npm install` is fatal
+# on timeout. ACP is a Python extra in python-deps. Hosted Tool Baseline
+# already has Chromium and agent-browser, so skip browser and computer-use.
+# xz-utils is in the apt layer for any later Node *.tar.xz unpack.
+RUN set -eux; \
+    curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o /tmp/hermes-install.sh; \
+    for stage in repository venv python-deps path config; do \
+      bash /tmp/hermes-install.sh --non-interactive --skip-setup --skip-browser --skip-computer-use --stage "$stage"; \
+    done; \
+    rm -f /tmp/hermes-install.sh; \
+    command -v hermes; \
+    hermes --version | tee /opt/hermes-release.txt; \
+    hermes acp --help >/dev/null
+
 # Host Claude uses a persistent public Agent SDK Query. Install from the
 # repository lock so the bridge and its dependency stay compatible.
 WORKDIR /opt/pentest/claude-sdk-bridge
@@ -121,15 +136,19 @@ RUN chmod 0755 /usr/local/bin/tsecbench-local-validate \
 RUN mkdir -p /root/.agent-browser /opt/cyberpenda /data /root/.pi/agent \
   && printf '%s\n' '{"packages":["npm:@tintinweb/pi-subagents","npm:pi-subagents"]}' > /root/.pi/agent/settings.json \
   && printf '%s\n' '{"executablePath":"/usr/bin/chromium"}' > /root/.agent-browser/config.json \
+  && HERMES_VERSION="$(hermes --version 2>/dev/null | sed -n '1p' | awk '{print $NF}')" \
+  && test -n "${HERMES_VERSION}" \
   && PI_VERSION="$(node -p "require('$(npm root -g)/@earendil-works/pi-coding-agent/package.json').version")" \
      CODEX_VERSION="$(node -p "require('$(npm root -g)/@openai/codex/package.json').version")" \
      CLAUDE_VERSION="$(node -p "require('$(npm root -g)/@anthropic-ai/claude-code/package.json').version")" \
      CLAUDE_AGENT_SDK_VERSION="$(node -p "require('/opt/pentest/claude-sdk-bridge/node_modules/@anthropic-ai/claude-agent-sdk/package.json').version")" \
-     node -e 'const fs=require("fs"); fs.writeFileSync("/opt/cyberpenda/runtime-versions.json", JSON.stringify({schema:"cyberpenda-hosted-runtime-versions/v1",runtimes:{pi:{package:"@earendil-works/pi-coding-agent",version:process.env.PI_VERSION,binary:"pi"},codex:{package:"@openai/codex",version:process.env.CODEX_VERSION,binary:"codex"},claude_code:{package:"@anthropic-ai/claude-code",version:process.env.CLAUDE_VERSION,binary:"claude"}},components:{claude_agent_sdk:{package:"@anthropic-ai/claude-agent-sdk",version:process.env.CLAUDE_AGENT_SDK_VERSION}}},null,2)+"\n")' \
+     HERMES_VERSION="${HERMES_VERSION}" \
+     node -e 'const fs=require("fs"); fs.writeFileSync("/opt/cyberpenda/runtime-versions.json", JSON.stringify({schema:"cyberpenda-hosted-runtime-versions/v1",runtimes:{pi:{package:"@earendil-works/pi-coding-agent",version:process.env.PI_VERSION,binary:"pi"},codex:{package:"@openai/codex",version:process.env.CODEX_VERSION,binary:"codex"},claude_code:{package:"@anthropic-ai/claude-code",version:process.env.CLAUDE_VERSION,binary:"claude"},hermes:{package:"hermes-agent",version:process.env.HERMES_VERSION,binary:"hermes"}},components:{claude_agent_sdk:{package:"@anthropic-ai/claude-agent-sdk",version:process.env.CLAUDE_AGENT_SDK_VERSION}}},null,2)+"\n")' \
   && missing_hosted_tool() { echo "missing hosted tool: $1" >&2; exit 1; } \
   && command -v pi || missing_hosted_tool pi \
   && command -v codex || missing_hosted_tool codex \
   && command -v claude || missing_hosted_tool claude \
+  && command -v hermes || missing_hosted_tool hermes \
   && command -v bash || missing_hosted_tool bash \
   && command -v git || missing_hosted_tool git \
   && command -v curl || missing_hosted_tool curl \

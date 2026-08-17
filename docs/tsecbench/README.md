@@ -6,7 +6,7 @@ first with `shasum -a 256 -c SHA256SUMS` or `sha256sum -c SHA256SUMS`.
 
 The image retains the normal embedded CyberPenda Web UI resources. It does not
 publish or expose the loopback daemon port. `COMPONENTS.txt` records the exact
-versions of the three Runtime CLIs and the Claude Agent SDK used by the packaged
+versions of the four Runtime CLIs and the Claude Agent SDK used by the packaged
 Claude bridge.
 
 ## Hosted Mode
@@ -25,6 +25,7 @@ The strict Runtime and protocol matrix is:
 - Pi: `openai_chat_completions`, `openai_responses`, or `anthropic_messages`
 - Codex: `openai_responses`
 - Claude Code: `anthropic_messages`
+- Hermes: `openai_chat_completions`, `openai_responses`, or `anthropic_messages`
 
 Enter the converted HTTP gateway Base URL with the `.tsecbench.gw` host. Enter
 a protocol Base URL. Do not append `/chat/completions`, `/responses`, or

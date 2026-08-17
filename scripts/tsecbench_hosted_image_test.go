@@ -86,6 +86,10 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 		"pi-subagents@latest",
 		"@openai/codex@latest",
 		"@anthropic-ai/claude-code@latest",
+		"hermes-agent.nousresearch.com/install.sh",
+		"--skip-browser",
+		"--skip-computer-use",
+		"python-deps",
 		"agent-browser@latest",
 		"python3-pwntools",
 		"python3-pil",
@@ -136,7 +140,7 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 	}
 
 	for _, executable := range []string{
-		"pi", "codex", "claude", "bash", "git", "curl", "jq", "rg",
+		"pi", "codex", "claude", "hermes", "bash", "git", "curl", "jq", "rg",
 		"python3", "go", "gcc", "g++", "make", "gdb", "radare2", "strace",
 		"ltrace", "patchelf", "checksec", "nmap", "nc", "socat", "dig", "ip",
 		"ss", "ping", "ssh", "openssl", "chromium", "agent-browser", "tesseract", "java", "jadx", "apktool", "column",
@@ -153,6 +157,20 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 	assertContains(t, dockerfile, `python3 -c 'import pwn, capstone, pefile, yara, unicorn, volatility3, xdis, uncompyle6, PyInstaller; from PIL import Image'`)
 	assertContains(t, dockerfile, "/opt/cyberpenda/adapters/")
 	assertContains(t, dockerfile, "pentest-challenge-client")
+	if strings.Contains(dockerfile, "/root/.local/bin/hermes") {
+		t.Fatal("Hosted Image must install Hermes at /usr/local/bin/hermes, not ~/.local/bin")
+	}
+	stageAt := strings.Index(dockerfile, "for stage in")
+	if stageAt == -1 {
+		t.Fatal("Hosted Image must loop official Hermes install.sh stages")
+	}
+	stageLine := dockerfile[stageAt:]
+	if next := strings.Index(stageLine, "\n"); next != -1 {
+		stageLine = stageLine[:next]
+	}
+	if strings.Contains(stageLine, "node-deps") {
+		t.Fatal("Hosted Image must not run Hermes install.sh --stage node-deps")
+	}
 	if strings.Contains(dockerfile, "pip3 install --no-cache-dir --break-system-packages pwntools") {
 		t.Fatal("Hosted Image must use Kali python3-pwntools instead of building unicorn from source on Python 3.14")
 	}
@@ -210,7 +228,7 @@ func TestTSecBenchHostedImageSmokeWhenAnImageIsConfigured(t *testing.T) {
 
 	smoke := `set -eu
 test "$(id -u)" = 0
-	for command in pi codex claude bash git curl jq rg python3 go gcc g++ make gdb radare2 strace ltrace patchelf checksec nmap nc socat dig ip ss ping ssh openssl chromium agent-browser tesseract java jadx apktool column ffuf gobuster sqlmap hydra john smbclient php exiftool binwalk steghide convert tcpdump redis-cli mysql psql 7z gdb-multiarch nasm upx yara foremost xxd qemu-x86_64 qemu-x86_64-static ropper ROPgadget smali vol uncompyle6 pydisasm pyi-archive_viewer pyinstxtractor-ng pentest-provider-bridge pentest-claude-sdk-bridge pentest-tsecbench-hosted pentest-tsecbench-client pentest-challenge-client; do
+	for command in pi codex claude hermes bash git curl jq rg python3 go gcc g++ make gdb radare2 strace ltrace patchelf checksec nmap nc socat dig ip ss ping ssh openssl chromium agent-browser tesseract java jadx apktool column ffuf gobuster sqlmap hydra john smbclient php exiftool binwalk steghide convert tcpdump redis-cli mysql psql 7z gdb-multiarch nasm upx yara foremost xxd qemu-x86_64 qemu-x86_64-static ropper ROPgadget smali vol uncompyle6 pydisasm pyi-archive_viewer pyinstxtractor-ng pentest-provider-bridge pentest-claude-sdk-bridge pentest-tsecbench-hosted pentest-tsecbench-client pentest-challenge-client; do
   command -v "$command" >/dev/null
 done
 python3 -c 'import pwn, capstone, pefile, yara, unicorn, volatility3, xdis, uncompyle6, PyInstaller; from PIL import Image'
@@ -243,7 +261,7 @@ test -s /opt/cyberpenda/runtime-versions.json
 	if inventory.Schema != "cyberpenda-hosted-runtime-versions/v1" {
 		t.Fatalf("Runtime inventory schema = %q", inventory.Schema)
 	}
-	for _, runtimeName := range []string{"pi", "codex", "claude_code"} {
+	for _, runtimeName := range []string{"pi", "codex", "claude_code", "hermes"} {
 		entry, ok := inventory.Runtimes[runtimeName]
 		if !ok || entry.Package == "" || entry.Version == "" || entry.Binary == "" {
 			t.Fatalf("Runtime inventory %s = %#v", runtimeName, entry)
