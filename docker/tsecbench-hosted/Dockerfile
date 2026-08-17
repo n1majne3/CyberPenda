@@ -49,14 +49,14 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     golang-go build-essential gdb gdb-multiarch radare2 strace ltrace patchelf checksec \
     nasm upx-ucl yara foremost xxd qemu-user-static \
     python3-capstone python3-pefile python3-yara python3-unicorn \
-    ropper python3-ropgadget volatility3 \
-    smali baksmali dex2jar \
+    ropper python3-ropgadget \
+    smali dex2jar \
     nmap netcat-openbsd socat dnsutils iproute2 iputils-ping openssh-client openssl \
     ffuf gobuster sqlmap hydra john smbclient ftp php-cli \
     libimage-exiftool-perl binwalk steghide imagemagick tcpdump \
     redis-tools default-mysql-client postgresql-client p7zip-full \
     python3-requests python3-bs4 python3-lxml \
-    python3-uncompyle6 python3-xdis python3-pyinstaller \
+    python3-pyinstaller \
     nodejs npm chromium \
     libnss3 libnspr4 libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
     libdrm2 libatspi2.0-0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
@@ -64,9 +64,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     fonts-unifont fonts-noto-color-emoji \
   && rm -rf /var/lib/apt/lists/*
 
-# Small PyInstaller extractors are not in Kali apt. Do not use this path for unicorn/pwntools.
+# These Python RE tools are not in Kali Rolling apt. Do not use this path for unicorn/pwntools.
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --no-cache-dir --break-system-packages pyinstxtractor-ng
+    pip3 install --no-cache-dir --break-system-packages \
+      volatility3 uncompyle6 xdis pyinstxtractor-ng
 
 # Runtime CLIs intentionally resolve current releases when the image is built.
 # The exact resolved versions are captured below for the delivery inventory.
@@ -167,7 +168,7 @@ RUN mkdir -p /root/.agent-browser /opt/cyberpenda /data /root/.pi/agent \
   && command -v qemu-x86_64-static \
   && command -v ropper \
   && command -v ROPgadget \
-  && command -v baksmali \
+  && command -v smali \
   && command -v vol \
   && command -v uncompyle6 \
   && command -v pydisasm \
