@@ -123,8 +123,11 @@ func (s *Service) Upsert(credentialRef string, scope Scope, scopeID string, sour
 	if scope == ScopeGlobal {
 		scopeID = ""
 	}
-	if !disabled {
-		if source.Kind == SourceLiteral && source.Value == ConfiguredSourceSentinel {
+	// The sentinel means "keep the stored literal" regardless of the disabled
+	// flag; handling it before the disabled branch stops a disabled upsert from
+	// persisting the sentinel string itself as the secret.
+	if !disabled || source.Kind == SourceLiteral {
+		if source.Value == ConfiguredSourceSentinel {
 			existing, err := s.findOptional(credentialRef, scope, scopeID)
 			if err != nil {
 				return Binding{}, err
@@ -134,6 +137,8 @@ func (s *Service) Upsert(credentialRef string, scope Scope, scopeID string, sour
 			}
 			source.Value = existing.Source.Value
 		}
+	}
+	if !disabled {
 		if err := validateSource(source); err != nil {
 			return Binding{}, err
 		}

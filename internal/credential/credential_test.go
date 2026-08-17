@@ -273,6 +273,27 @@ func TestLiteralBindingIsSanitizedAndConfiguredSentinelPreservesSecret(t *testin
 	}
 }
 
+func TestConfiguredSentinelPreservesSecretOnDisabledUpsert(t *testing.T) {
+	service := newTestService(t)
+
+	if _, err := service.Upsert("MIMO_API_KEY", credential.ScopeGlobal, "", credential.Source{Kind: credential.SourceLiteral, Value: "sk-original"}, false); err != nil {
+		t.Fatalf("upsert literal: %v", err)
+	}
+
+	// Editing a disabled binding must not persist the sentinel string as the
+	// stored secret.
+	updated, err := service.Upsert("MIMO_API_KEY", credential.ScopeGlobal, "", credential.Source{Kind: credential.SourceLiteral, Value: credential.ConfiguredSourceSentinel}, true)
+	if err != nil {
+		t.Fatalf("preserve configured literal on disabled upsert: %v", err)
+	}
+	if updated.Disabled != true {
+		t.Fatalf("expected binding to stay disabled")
+	}
+	if updated.Source.Value != "sk-original" {
+		t.Fatalf("expected original secret preserved, got %q", updated.Source.Value)
+	}
+}
+
 func TestListForProjectReturnsOnlyThatProject(t *testing.T) {
 	service := newTestService(t)
 

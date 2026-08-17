@@ -3,6 +3,7 @@ import {
   Ban,
   KeyRound,
   LoaderCircle,
+  Pencil,
   Plus,
   RefreshCw,
   Trash2,
@@ -50,6 +51,7 @@ export function CredentialBindingsPage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
   const [confirmDelete, setConfirmDelete] = useState<{ id: string; credentialRef: string } | null>(null);
+  const [editing, setEditing] = useState<CredentialBinding | null>(null);
   const [loading, setLoading] = useState(true);
 
   async function load() {
@@ -80,12 +82,59 @@ export function CredentialBindingsPage() {
 
   function startCreate() {
     setForm(emptyForm);
+    setEditing(null);
     setCreating(true);
   }
 
   function cancelCreate() {
     setForm(emptyForm);
     setCreating(false);
+  }
+
+  function startEdit(binding: CredentialBinding) {
+    setCreating(false);
+    setEditing(binding);
+    setForm({
+      credential_ref: binding.credential_ref,
+      kind: binding.source.kind,
+      // Literal secrets are redacted to [configured]; leaving the field blank
+      // keeps the stored value instead of echoing the sentinel.
+      value: binding.source.kind === "env" ? (binding.source.value ?? "") : "",
+      destination_env: binding.source.destination_env ?? "",
+    });
+  }
+
+  function cancelEdit() {
+    setEditing(null);
+    setForm(emptyForm);
+  }
+
+  async function saveEdit() {
+    if (!editing) return;
+    const destinationEnv =
+      form.kind === "env"
+        ? (form.destination_env.trim() || form.value.trim())
+        : form.destination_env.trim();
+    const trimmedValue = form.value.trim();
+    const value = form.kind === "literal" && !trimmedValue ? "[configured]" : trimmedValue;
+    setSaving(true);
+    setError(null);
+    try {
+      await apiPut("/api/credential-bindings", {
+        credential_ref: editing.credential_ref,
+        // Preserve the disabled state: an edit changes the source, not whether
+        // the binding resolves.
+        disabled: editing.disabled ?? false,
+        source: { kind: form.kind, value, destination_env: destinationEnv },
+      });
+      setEditing(null);
+      setForm(emptyForm);
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function create() {
@@ -169,6 +218,14 @@ export function CredentialBindingsPage() {
   // sources. For env sources it defaults to the host variable name, so the
   // field is optional.
   const destinationEnvRequired = form.kind !== "env";
+
+  // Editing a literal binding may leave the value blank to keep the stored
+  // secret (sentinel); any other literal save still needs a value.
+  const editingLiteralKeep =
+    editing !== null && form.kind === "literal" && editing.source.kind === "literal";
+  const editValueMissing = !form.value.trim() && !editingLiteralKeep;
+  const editSaveDisabled =
+    !editing || editValueMissing || (destinationEnvRequired && !form.destination_env.trim());
 
   return (
     <SettingsPageShell>
@@ -385,7 +442,16 @@ export function CredentialBindingsPage() {
                           )}
                         </div>
 
-                        <div className="flex justify-end">
+                        <div className="flex justify-end gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            aria-label={`Edit ${binding.credential_ref} binding`}
+                            onClick={() => startEdit(binding)}
+                            className="text-muted-foreground hover:text-foreground"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
                           <Button
                             variant="ghost"
                             size="icon-sm"
@@ -411,7 +477,118 @@ export function CredentialBindingsPage() {
         </SettingsListColumn>
 
         <SettingsListColumn>
-          {!creating ? (
+          {editing ? (
+            <SettingsDetailPane
+              data-testid="credential-binding-edit-panel"
+              className="lg:flex-1"
+              header={
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 className="font-medium">Edit binding</h3>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Change the source for <span className="font-mono">{editing.credential_ref}</span>. References are immutable.
+                    </p>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={cancelEdit}
+                    aria-label="Cancel edit form"
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+              }
+              footer={
+                <>
+                  <Button onClick={saveEdit} disabled={saving || editSaveDisabled}>
+                    Save changes
+                  </Button>
+                  <Button variant="outline" onClick={cancelEdit} disabled={saving}>
+                    Cancel
+                  </Button>
+                </>
+              }
+              bodyClassName="space-y-3"
+            >
+              <div>
+                <Label htmlFor="credential-ref-edit">Credential reference</Label>
+                <Input
+                  id="credential-ref-edit"
+                  name="credential_ref"
+                  value={editing.credential_ref}
+                  disabled
+                  readOnly
+                  className="font-mono text-xs"
+                />
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  The reference identifies the binding; create a new binding to use a different reference.
+                </p>
+              </div>
+
+              <div>
+                <Label htmlFor="credential-source-kind-edit">Source kind</Label>
+                <Select
+                  id="credential-source-kind-edit"
+                  name="source_kind"
+                  value={form.kind}
+                  onChange={(e) =>
+                    setForm({
+                      ...form,
+                      kind: e.target.value,
+                      value: e.target.value === editing.source.kind ? form.value : "",
+                    })
+                  }
+                >
+                  <option value="literal">literal — stored secret (recommended)</option>
+                  <option value="env">env — read from host environment</option>
+                </Select>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  {SOURCE_KIND_LABELS[form.kind] ?? form.kind}
+                  {form.kind === "literal" && " · value is stored by the daemon"}
+                  {form.kind === "env" && " · secret stays out of the daemon"}
+                </p>
+              </div>
+
+              <div>
+                <Label htmlFor="credential-source-value-edit">{sourceValueLabel}</Label>
+                <Input
+                  id="credential-source-value-edit"
+                  name="source_value"
+                  type={form.kind === "literal" ? "password" : "text"}
+                  value={form.value}
+                  onChange={(e) => setForm({ ...form, value: e.target.value })}
+                  placeholder={editingLiteralKeep ? "Leave blank to keep the stored secret" : form.kind === "env" ? "OPENAI_API_KEY…" : "sk-…"}
+                  autoComplete="off"
+                  spellCheck={false}
+                  className={form.kind === "literal" ? undefined : "font-mono text-xs"}
+                />
+                {form.kind === "env" && (
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    Use the host environment variable name, not the secret.
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <Label htmlFor="credential-destination-env-edit">Runtime environment variable name</Label>
+                <Input
+                  id="credential-destination-env-edit"
+                  name="destination_env"
+                  value={form.destination_env}
+                  onChange={(e) => setForm({ ...form, destination_env: e.target.value })}
+                  placeholder="NSSCTF_AGENT_TOKEN…"
+                  autoComplete="off"
+                  spellCheck={false}
+                  className="font-mono text-xs"
+                />
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  The runtime env var name. Injected into every Runtime.
+                  {destinationEnvRequired ? " Required." : " Defaults to the host variable name when empty."}
+                </p>
+              </div>
+            </SettingsDetailPane>
+          ) : !creating ? (
             <SettingsPanel data-testid="credential-binding-create-panel" className="gap-4 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain">
               <div>
                 <h3 className="font-medium">Library actions</h3>

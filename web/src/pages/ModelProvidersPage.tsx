@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { KeyRound, LoaderCircle, Plus, RefreshCw, Server, Trash2, X } from "lucide-react";
-import { apiDelete, apiGet, apiPatch, apiPost, apiPut, type CredentialBinding, type ModelProvider } from "@/lib/api";
+import { apiDelete, apiGet, apiPatch, apiPost, apiPut, ApiError, type CredentialBinding, type ModelProvider } from "@/lib/api";
 import { Button, Input, Label, Select, Textarea, Badge } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { SaveActionButton } from "@/components/SaveActionButton";
@@ -59,6 +59,7 @@ export function ModelProvidersPage() {
   const [form, setForm] = useState<Form>(emptyForm);
   const [creating, setCreating] = useState(true);
   const [confirmDelete, setConfirmDelete] = useState<ModelProvider | null>(null);
+  const [confirmDetach, setConfirmDetach] = useState<{ provider: ModelProvider; profiles: string[] } | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -216,6 +217,27 @@ export function ModelProvidersPage() {
   async function remove(provider: ModelProvider) {
     try {
       await apiDelete(`/api/model-providers/${encodeURIComponent(provider.id)}`);
+      setSelectedId("");
+      setCreating(true);
+      setForm(emptyForm);
+      await load();
+    } catch (e) {
+      const err = e as ApiError;
+      if (err.status === 409) {
+        // The daemon blocks deletion while runtime profiles reference the
+        // provider; offer an explicit detach delete with the profile names.
+        const body = err.body as { profiles?: string[] } | undefined;
+        setConfirmDetach({ provider, profiles: body?.profiles ?? [] });
+        return;
+      }
+      setError(err.message);
+    }
+  }
+
+  async function removeDetaching(provider: ModelProvider) {
+    setError(null);
+    try {
+      await apiDelete(`/api/model-providers/${encodeURIComponent(provider.id)}?detach=true`);
       setSelectedId("");
       setCreating(true);
       setForm(emptyForm);
@@ -637,6 +659,21 @@ export function ModelProvidersPage() {
         }}
         onCancel={() => setConfirmDelete(null)}
       />
+      {confirmDetach && (
+        <ConfirmDialog
+          open
+          title={`Delete model provider ${confirmDetach.provider.name}?`}
+          description={`This provider is referenced by runtime profile${confirmDetach.profiles.length === 1 ? "" : "s"} ${confirmDetach.profiles.join(", ") || "(unknown)"}. Deleting clears the model provider reference from ${confirmDetach.profiles.length === 1 ? "this profile" : "these profiles"}; other profile settings stay unchanged.`}
+          confirmLabel="Clear references and delete"
+          destructive
+          onConfirm={() => {
+            const target = confirmDetach;
+            setConfirmDetach(null);
+            if (target) void removeDetaching(target.provider);
+          }}
+          onCancel={() => setConfirmDetach(null)}
+        />
+      )}
     </SettingsPageShell>
   );
 }

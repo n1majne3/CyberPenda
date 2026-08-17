@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -469,5 +470,79 @@ func TestModelProviderAPIRefreshCancelsUpstreamWithRequest(t *testing.T) {
 	case <-done:
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("refresh handler stayed alive after upstream cancellation")
+	}
+}
+
+func TestDeleteModelProviderInUseListsProfilesUntilDetached(t *testing.T) {
+	server := newDaemon(t)
+
+	providerID, _ := createRefreshProvider(t, server, `{
+		"name":"MiMo",
+		"base_url":"https://api.example.test/v1",
+		"protocols":["openai_chat_completions"]
+	}`)
+
+	profileBody := fmt.Sprintf(`{
+		"name": "Pi Preset",
+		"provider": "pi",
+		"fields": {"model_provider_id": %q, "model_provider_protocol": "openai_chat_completions"}
+	}`, providerID)
+	createProfile := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles", bytes.NewReader([]byte(profileBody)))
+	createProfile.Header.Set("Content-Type", "application/json")
+	profileResp := httptest.NewRecorder()
+	server.ServeHTTP(profileResp, createProfile)
+	if profileResp.Code != http.StatusCreated {
+		t.Fatalf("expected profile create status 201, got %d with body %s", profileResp.Code, profileResp.Body.String())
+	}
+	var profile struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(profileResp.Body).Decode(&profile); err != nil {
+		t.Fatalf("decode profile: %v", err)
+	}
+
+	// Plain delete stays blocked and names the referencing profiles.
+	blocked := httptest.NewRequest(http.MethodDelete, "/api/model-providers/"+providerID, nil)
+	blockedResp := httptest.NewRecorder()
+	server.ServeHTTP(blockedResp, blocked)
+	if blockedResp.Code != http.StatusConflict {
+		t.Fatalf("expected delete status 409, got %d with body %s", blockedResp.Code, blockedResp.Body.String())
+	}
+	var conflict struct {
+		Error    string   `json:"error"`
+		Profiles []string `json:"profiles"`
+	}
+	if err := json.NewDecoder(blockedResp.Body).Decode(&conflict); err != nil {
+		t.Fatalf("decode conflict: %v", err)
+	}
+	if len(conflict.Profiles) != 1 || conflict.Profiles[0] != "Pi Preset" {
+		t.Fatalf("conflict profiles = %#v, want [Pi Preset]", conflict.Profiles)
+	}
+
+	// Explicit detach delete clears the reference and removes the provider.
+	detach := httptest.NewRequest(http.MethodDelete, "/api/model-providers/"+providerID+"?detach=true", nil)
+	detachResp := httptest.NewRecorder()
+	server.ServeHTTP(detachResp, detach)
+	if detachResp.Code != http.StatusNoContent {
+		t.Fatalf("expected detach delete status 204, got %d with body %s", detachResp.Code, detachResp.Body.String())
+	}
+
+	getProfile := httptest.NewRequest(http.MethodGet, "/api/runtime-profiles/"+profile.ID, nil)
+	profileAfter := httptest.NewRecorder()
+	server.ServeHTTP(profileAfter, getProfile)
+	if profileAfter.Code != http.StatusOK {
+		t.Fatalf("expected profile get status 200, got %d", profileAfter.Code)
+	}
+	var survived struct {
+		Fields struct {
+			ModelProviderID       string `json:"model_provider_id"`
+			ModelProviderProtocol string `json:"model_provider_protocol"`
+		} `json:"fields"`
+	}
+	if err := json.NewDecoder(profileAfter.Body).Decode(&survived); err != nil {
+		t.Fatalf("decode survived profile: %v", err)
+	}
+	if survived.Fields.ModelProviderID != "" || survived.Fields.ModelProviderProtocol != "" {
+		t.Fatalf("expected cleared provider reference, got %#v", survived.Fields)
 	}
 }
