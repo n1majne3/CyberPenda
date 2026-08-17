@@ -125,7 +125,13 @@ func TestProductionProviderSessionFactoryResumesDurableCodexThread(t *testing.T)
 			methods <- request.Method
 			result := `{"ok":true}`
 			if request.Method == "thread/resume" {
-				result = `{"thread":{"id":"thread-durable"}}`
+				params := string(request.Params)
+				if !strings.Contains(params, `"approvalPolicy":"never"`) ||
+					!strings.Contains(params, `"sandbox":"danger-full-access"`) {
+					result = `{"error":"non-interactive sandbox missing"}`
+				} else {
+					result = `{"thread":{"id":"thread-durable"}}`
+				}
 			}
 			_, _ = io.WriteString(docker.outputW, `{"jsonrpc":"2.0","id":"`+request.ID+`","result":`+result+"}\n")
 		}
@@ -412,8 +418,11 @@ func TestProductionProviderSessionFactoryOpensHostCodexAppServer(t *testing.T) {
 			result := `{"ok":true}`
 			switch request.Method {
 			case "thread/start":
-				if !strings.Contains(string(request.Params), "/tmp/task-workdir") {
-					result = `{"error":"cwd missing"}`
+				params := string(request.Params)
+				if !strings.Contains(params, "/tmp/task-workdir") ||
+					!strings.Contains(params, `"approvalPolicy":"never"`) ||
+					!strings.Contains(params, `"sandbox":"danger-full-access"`) {
+					result = `{"error":"non-interactive sandbox missing"}`
 				} else {
 					result = `{"thread":{"id":"host-thread-1"}}`
 				}

@@ -69,6 +69,8 @@ func TestProjectCodexConfigWritesConfigTomlAndAuth(t *testing.T) {
 		`wire_api = "responses"`,
 		`requires_openai_auth = true`,
 		`cli_auth_credentials_store = "file"`,
+		`approval_policy = "never"`,
+		`sandbox_mode = "danger-full-access"`,
 	} {
 		if !strings.Contains(config, want) {
 			t.Fatalf("expected config.toml to contain %q, got:\n%s", want, config)

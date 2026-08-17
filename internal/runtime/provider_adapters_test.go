@@ -174,6 +174,35 @@ func TestCodexProviderSessionMapsModelAndRequestedReasoningEffortOnTurnStart(t *
 	}
 }
 
+func TestCodexProviderSessionAppliesNonInteractiveSandboxOnTurnStart(t *testing.T) {
+	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
+		"turn/start": {Result: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-sandbox"}}`)},
+	}}
+	session := NewCodexProviderSession(CodexProviderSessionConfig{Transport: transport, SessionID: "thread-1", ThreadID: "thread-1"})
+	bindFakeProviderEvents(transport, session)
+
+	if _, err := session.SendTurn(context.Background(), ProviderSessionRequest{
+		RequestID: "send-sandbox", Message: "list challenges",
+	}, nil); err != nil {
+		t.Fatalf("send turn: %v", err)
+	}
+	requests := transport.snapshot()
+	if len(requests) != 1 || requests[0].Method != "turn/start" {
+		t.Fatalf("wire requests = %#v", requests)
+	}
+	var startParams map[string]any
+	if err := json.Unmarshal(requests[0].Params, &startParams); err != nil {
+		t.Fatal(err)
+	}
+	if startParams["approvalPolicy"] != "never" {
+		t.Fatalf("approvalPolicy = %#v", startParams["approvalPolicy"])
+	}
+	policy, _ := startParams["sandboxPolicy"].(map[string]any)
+	if policy["type"] != "dangerFullAccess" {
+		t.Fatalf("sandboxPolicy = %#v", startParams["sandboxPolicy"])
+	}
+}
+
 func TestCodexProviderSessionInterruptThenReplaceMapsModelAndEffortOnSameThread(t *testing.T) {
 	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
 		"turn/interrupt": {Result: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-old"}`)},

@@ -871,6 +871,8 @@ func cloneMaterializedCredentials(source map[string]string) map[string]string {
 
 func buildCodexConfigTOML(profile runtimeprofile.Profile, mcpServers []runtimeprofile.MCPServer) string {
 	var b strings.Builder
+	fmt.Fprintf(&b, "approval_policy = %q\n", "never")
+	fmt.Fprintf(&b, "sandbox_mode = %q\n", "danger-full-access")
 	if profile.Fields.Model != "" {
 		fmt.Fprintf(&b, "model = %q\n", profile.Fields.Model)
 	}

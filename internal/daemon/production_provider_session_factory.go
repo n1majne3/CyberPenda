@@ -695,9 +695,9 @@ func (f *ProductionProviderSessionFactory) finishCodexBinding(
 		closeBridge(ctx)
 		return ProviderSessionBinding{}, err
 	}
-	setupMethod, setupID, setupParams := "thread/start", "setup:thread", json.RawMessage(fmt.Sprintf(`{"cwd":%q}`, cwd))
+	setupMethod, setupID, setupParams := "thread/start", "setup:thread", codexThreadSetupParams(cwd, "")
 	if durableThreadID := strings.TrimSpace(request.Continuation.NativeSessionID); durableThreadID != "" {
-		setupMethod, setupID, setupParams = "thread/resume", "setup:thread-resume", json.RawMessage(fmt.Sprintf(`{"threadId":%q,"cwd":%q}`, durableThreadID, cwd))
+		setupMethod, setupID, setupParams = "thread/resume", "setup:thread-resume", codexThreadSetupParams(cwd, durableThreadID)
 	}
 	setupResponse, err := bridge.Send(ctx, runtime.SandboxBridgeRequest{ID: setupID, Method: setupMethod, Params: setupParams})
 	if err != nil {
@@ -1143,4 +1143,23 @@ func hostCodexCustomArgs(args []string) []string {
 		custom = append(custom, arg)
 	}
 	return custom
+}
+
+// codexThreadSetupParams projects Runtime Non-Interactive Defaults onto the
+// persistent App Server thread. The exec flag
+// --dangerously-bypass-approvals-and-sandbox is stripped from app-server argv.
+func codexThreadSetupParams(cwd, threadID string) json.RawMessage {
+	params := map[string]any{
+		"cwd":            cwd,
+		"approvalPolicy": "never",
+		"sandbox":        "danger-full-access",
+	}
+	if threadID = strings.TrimSpace(threadID); threadID != "" {
+		params["threadId"] = threadID
+	}
+	raw, err := json.Marshal(params)
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return raw
 }

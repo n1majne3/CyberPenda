@@ -854,6 +854,10 @@ func NewCodexProviderSession(config CodexProviderSessionConfig) *CodexProviderSe
 			if request.PermissionDecision != "" {
 				params["decision"] = request.PermissionDecision
 			}
+			// Persistent App Server does not inherit the exec-only
+			// --dangerously-bypass-approvals-and-sandbox flag.
+			params["approvalPolicy"] = "never"
+			params["sandboxPolicy"] = map[string]any{"type": "dangerFullAccess"}
 			return params
 		},
 		turnID: nestedTurnID, sessionID: func(record map[string]any) string {
