@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -77,6 +76,7 @@ type sessionRuntimePlan struct {
 	Metadata         func() (runtime.NativeSessionMetadata, error)
 	StopConfirmation runtime.StopConfirmation
 	ProviderHome     string
+	Facts            ProviderSessionLaunchFacts
 }
 
 func sessionGoalWithAttachmentEvents(goal, workdir string, run session.Runner, events []session.Event) string {
@@ -333,6 +333,23 @@ func (server *Server) buildSessionRuntimePlan(found session.Session, goal string
 	if err != nil {
 		return sessionRuntimePlan{}, err
 	}
+	// Structured launch facts for the provider-session factory: family
+	// assemblers consume these instead of re-parsing the rendered one-shot
+	// argv.
+	launchFacts := ProviderSessionLaunchFacts{
+		ProviderBinary: providerCommand[0],
+		CustomArgs:     append([]string(nil), launchProfile.Fields.CustomArgs...),
+		SettingsPath:   configPath,
+		Workdir:        "/task/workdir",
+	}
+	if run != session.RunnerSandbox {
+		launchFacts.Workdir = found.Workdir
+	}
+	if strings.TrimSpace(selection.Model) != "" {
+		launchFacts.Model = strings.TrimSpace(selection.Model)
+	} else {
+		launchFacts.Model = strings.TrimSpace(launchProfile.Fields.Model)
+	}
 	processEnv, err := runner.LaunchProcessEnvWithCredentials(layout, launchProfile, run == session.RunnerSandbox, runner.RuntimeOwnerContext{Owner: found.OwnerContract()}, runner.ProjectionRequest{
 		Owner: found.OwnerContract(), DaemonAddr: server.listenAddr, AuthToken: interfaceToken,
 		Credentials: server.creds, MaterializedCredentials: materialized,
@@ -398,7 +415,7 @@ func (server *Server) buildSessionRuntimePlan(found session.Session, goal string
 	stopConfirmation := dockerStopConfirmation(input.ContainerCLI, server.containerCLI, containerIDFile)
 	return sessionRuntimePlan{
 		Adapter: adapter, Profile: launchProfile, Runner: run, LaunchGoal: launchGoal, RuntimeConfig: config, Selection: selection,
-		Metadata: metadata, StopConfirmation: stopConfirmation, ProviderHome: layout.ProviderHome,
+		Metadata: metadata, StopConfirmation: stopConfirmation, ProviderHome: layout.ProviderHome, Facts: launchFacts,
 	}, nil
 }
 
@@ -551,7 +568,7 @@ func (server *Server) startPreparedSessionRuntime(ctx context.Context, found ses
 			Owner:        found.OwnerContract(),
 			Continuation: ownerContinuationFromSession(continuation), Provider: profile.Provider,
 			Runner: task.Runner(run), LaunchGoal: plan.LaunchGoal, RuntimeConfig: plan.RuntimeConfig,
-			LegacyAdapter: plan.Adapter,
+			LegacyAdapter: plan.Adapter, Facts: plan.Facts,
 		})
 		if factoryErr == nil {
 			factoryErr = validateProviderSessionBinding(binding)
@@ -876,45 +893,15 @@ func (server *Server) handleSessionConversation(response http.ResponseWriter, re
 }
 
 func (server *Server) handleSessionTimeline(response http.ResponseWriter, request *http.Request) {
-	sessionID := request.PathValue("id")
-	req := parseHistoryRequest(request)
-	items, window, err := collectTimelineItems(req, func(scan historyRequest) (timelineEventChunk, error) {
-		stored, err := server.sessions.HistoryEventWindow(sessionID, session.EventWindowQuery{
-			Projection: session.EventProjectionTimeline, BeforeSet: scan.beforeSet, Before: scan.before,
-			AfterSet: scan.afterSet, After: scan.after, Limit: historyEventQueryLimit,
-		})
-		if err != nil {
-			return timelineEventChunk{}, err
-		}
-		events := make([]timeline.Event, 0, len(stored.Events))
-		for _, event := range stored.Events {
-			events = append(events, timeline.Event{
-				ID: event.ID, Seq: event.Seq, Kind: string(event.Kind), Payload: event.Payload, CreatedAt: event.CreatedAt,
-			})
-		}
-		return timelineEventChunk{
-			events: events, cursor: stored.Cursor, hasOlder: stored.HasOlder,
-			hasNewer: stored.HasNewer, scanCursor: stored.ScanCursor,
-		}, nil
-	})
+	found, err := server.sessions.Get(request.PathValue("id"))
 	if err != nil {
 		writeSessionError(response, err)
 		return
 	}
-	if items == nil {
-		items = []timeline.Item{}
-	}
-	detailBase := fmt.Sprintf("/api/sessions/%s/timeline/items", sessionID)
-	page := historyResponseFor(items, req, func(item timeline.Item) int {
-		return item.Seq
-	}, func(item timeline.Item) (timeline.Item, int) {
-		return boundedTimelineItem(item, detailBase)
-	})
-	page.hasOlder = page.hasOlder || window.hasOlder
-	if req.afterSet && window.hasNewer {
-		page.cursor = window.scanCursor
-	} else {
-		page.cursor = window.cursor
+	page, err := server.sessionOwnerHistory(found).TimelinePage(parseHistoryRequest(request))
+	if err != nil {
+		writeSessionError(response, err)
+		return
 	}
 	writeJSON(response, http.StatusOK, struct {
 		SessionID string          `json:"session_id"`
@@ -922,7 +909,7 @@ func (server *Server) handleSessionTimeline(response http.ResponseWriter, reques
 		Cursor    int             `json:"cursor"`
 		HasOlder  bool            `json:"has_older"`
 	}{
-		SessionID: sessionID,
+		SessionID: found.ID,
 		Items:     page.items,
 		Cursor:    page.cursor,
 		HasOlder:  page.hasOlder,
@@ -932,86 +919,33 @@ func (server *Server) handleSessionTimeline(response http.ResponseWriter, reques
 // handleSessionTimelineItem returns one complete retained timeline item by
 // stable item ID. A numeric Seq remains valid for retained legacy detail links.
 func (server *Server) handleSessionTimelineItem(response http.ResponseWriter, request *http.Request) {
-	sessionID := request.PathValue("id")
-	itemRef := request.PathValue("seq")
-	seq, _ := strconv.Atoi(itemRef)
-	if itemRef == "" {
+	found, err := server.sessions.Get(request.PathValue("id"))
+	if err != nil {
+		writeSessionError(response, err)
+		return
+	}
+	item, foundItem, err := server.sessionOwnerHistory(found).TimelineItem(request.PathValue("seq"))
+	if err != nil {
+		writeSessionError(response, err)
+		return
+	}
+	if !foundItem {
 		writeError(response, http.StatusNotFound, "timeline item not found")
 		return
 	}
-	allEvents, err := server.sessions.Events(sessionID)
-	if err != nil {
-		writeSessionError(response, err)
-		return
-	}
-	events := make([]timeline.Event, 0, len(allEvents))
-	for _, event := range allEvents {
-		events = append(events, timeline.Event{
-			ID:        event.ID,
-			Seq:       event.Seq,
-			Kind:      string(event.Kind),
-			Payload:   event.Payload,
-			CreatedAt: event.CreatedAt,
-		})
-	}
-	for _, item := range timeline.Build(events) {
-		if item.ID == itemRef || (seq > 0 && item.Seq == seq) {
-			writeJSON(response, http.StatusOK, item)
-			return
-		}
-	}
-	writeError(response, http.StatusNotFound, "timeline item not found")
+	writeJSON(response, http.StatusOK, item)
 }
 
 func (server *Server) handleSessionTranscript(response http.ResponseWriter, request *http.Request) {
-	sessionID := request.PathValue("id")
-	found, err := server.sessions.Get(sessionID)
+	found, err := server.sessions.Get(request.PathValue("id"))
 	if err != nil {
 		writeSessionError(response, err)
 		return
 	}
-	req := parseHistoryRequest(request)
-	window, err := server.sessions.HistoryEventWindow(sessionID, session.EventWindowQuery{
-		Projection: session.EventProjectionTranscript, BeforeSet: req.beforeSet, Before: req.before,
-		AfterSet: req.afterSet, After: req.after, Limit: historyEventQueryLimit,
-	})
+	page, err := server.sessionOwnerHistory(found).TranscriptPage(parseHistoryRequest(request))
 	if err != nil {
 		writeSessionError(response, err)
 		return
-	}
-	converted := make([]transcript.Event, 0, len(window.Events))
-	for _, event := range window.Events {
-		converted = append(converted, transcript.Event{
-			ID:        event.ID,
-			Seq:       event.Seq,
-			Kind:      string(event.Kind),
-			Payload:   event.Payload,
-			CreatedAt: event.CreatedAt,
-		})
-	}
-	entries := transcript.BuildWindow(transcript.Subject{
-		ID:        found.ID,
-		CreatedAt: found.CreatedAt,
-		// No Title: the Session's initial input is already a conversation
-		// event, so a synthetic goal row would duplicate it.
-	}, converted, transcript.WindowContext{
-		Continuation: window.PriorContinuation,
-		Adapter:      window.PriorTranscriptAdapter,
-	})
-	if entries == nil {
-		entries = []transcript.Entry{}
-	}
-	detailBase := fmt.Sprintf("/api/sessions/%s/transcript/entries", sessionID)
-	page := historyResponseFor(entries, req, func(entry transcript.Entry) int {
-		return entry.Seq
-	}, func(entry transcript.Entry) (transcript.Entry, int) {
-		return boundedTranscriptEntry(entry, detailBase)
-	})
-	page.hasOlder = page.hasOlder || window.HasOlder
-	if req.afterSet && window.HasNewer {
-		page.cursor = window.ScanCursor
-	} else {
-		page.cursor = window.Cursor
 	}
 	writeJSON(response, http.StatusOK, struct {
 		SessionID string             `json:"session_id"`
@@ -1019,7 +953,7 @@ func (server *Server) handleSessionTranscript(response http.ResponseWriter, requ
 		Cursor    int                `json:"cursor"`
 		HasOlder  bool               `json:"has_older"`
 	}{
-		SessionID: sessionID,
+		SessionID: found.ID,
 		Entries:   page.items,
 		Cursor:    page.cursor,
 		HasOlder:  page.hasOlder,
@@ -1029,42 +963,21 @@ func (server *Server) handleSessionTranscript(response http.ResponseWriter, requ
 // handleSessionTranscriptEntry returns one complete retained transcript entry
 // by ID, including the full payload that the history window preview truncated.
 func (server *Server) handleSessionTranscriptEntry(response http.ResponseWriter, request *http.Request) {
-	sessionID := request.PathValue("id")
-	found, err := server.sessions.Get(sessionID)
+	found, err := server.sessions.Get(request.PathValue("id"))
 	if err != nil {
 		writeSessionError(response, err)
 		return
 	}
-	entryID := request.PathValue("entry_id")
-	if entryID == "" {
+	entry, foundEntry, err := server.sessionOwnerHistory(found).TranscriptEntry(request.PathValue("entry_id"))
+	if err != nil {
+		writeSessionError(response, err)
+		return
+	}
+	if !foundEntry {
 		writeError(response, http.StatusNotFound, "transcript entry not found")
 		return
 	}
-	events, err := server.sessions.Events(sessionID)
-	if err != nil {
-		writeSessionError(response, err)
-		return
-	}
-	converted := make([]transcript.Event, 0, len(events))
-	for _, event := range events {
-		converted = append(converted, transcript.Event{
-			ID:        event.ID,
-			Seq:       event.Seq,
-			Kind:      string(event.Kind),
-			Payload:   event.Payload,
-			CreatedAt: event.CreatedAt,
-		})
-	}
-	for _, entry := range transcript.Build(transcript.Subject{
-		ID:        found.ID,
-		CreatedAt: found.CreatedAt,
-	}, converted) {
-		if entry.ID == entryID {
-			writeJSON(response, http.StatusOK, entry)
-			return
-		}
-	}
-	writeError(response, http.StatusNotFound, "transcript entry not found")
+	writeJSON(response, http.StatusOK, entry)
 }
 
 func (server *Server) handleSessionMessage(response http.ResponseWriter, request *http.Request) {

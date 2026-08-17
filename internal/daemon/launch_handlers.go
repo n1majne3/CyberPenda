@@ -43,9 +43,9 @@ func (server *Server) handleResolveLaunchRuntimeProfile(response http.ResponseWr
 	}
 
 	writeJSON(response, http.StatusOK, struct {
-		ProfileID string                    `json:"profile_id"`
-		Profile   runtimeprofile.Profile    `json:"profile"`
-		Created   bool                      `json:"created"`
+		ProfileID string                 `json:"profile_id"`
+		Profile   runtimeprofile.Profile `json:"profile"`
+		Created   bool                   `json:"created"`
 	}{
 		ProfileID: resolution.Profile.ID,
 		Profile:   runtimeprofile.SanitizeProfile(resolution.Profile),
