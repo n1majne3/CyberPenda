@@ -1870,7 +1870,10 @@ describe("TaskLaunchPage", () => {
 
     expect(await screen.findByText("No compatible providers")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Launch/i })).toBeDisabled();
-    expect(screen.getByText(/Select a compatible model provider/i)).toBeInTheDocument();
+    // The provider option renders from the initial empty state, but the
+    // launch-unavailable reason only settles after the runtime field loads,
+    // so await the settled text instead of asserting on the first commit.
+    expect(await screen.findByText(/Select a compatible model provider/i)).toBeInTheDocument();
   });
 
   it("uploads attachments as multipart form-data on launch", async () => {
