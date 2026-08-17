@@ -25,17 +25,22 @@ var (
 )
 
 type Config struct {
-	BaseURL string
-	Token   string
-	Client  *http.Client
-	Timeout time.Duration
+	BaseURL     string
+	Token       string
+	Client      *http.Client
+	Timeout     time.Duration
+	ClockPath   string
+	Now         func() time.Time
+	TokenHeader string
 }
 
 type Client struct {
-	apiBase string
-	token   string
-	client  *http.Client
-	timeout time.Duration
+	apiBase     string
+	token       string
+	client      *http.Client
+	timeout     time.Duration
+	clock       ClockStore
+	tokenHeader string
 }
 
 type Challenge struct {
@@ -49,6 +54,10 @@ type Challenge struct {
 	IsCompleted      bool     `json:"is_completed"`
 	ContainerStatus  string   `json:"container_status,omitempty"`
 	ContainerAddr    []string `json:"container_addr,omitempty"`
+	ElapsedMin       *int     `json:"elapsed_min,omitempty"`
+	BudgetMin        *int     `json:"budget_min,omitempty"`
+	OverBudget       *bool    `json:"over_budget,omitempty"`
+	AttemptN         *int     `json:"attempt_n,omitempty"`
 }
 
 type ListResult struct {
@@ -89,10 +98,12 @@ func New(config Config) (*Client, error) {
 		clientCopy.Timeout = timeout
 	}
 	return &Client{
-		apiBase: strings.TrimRight(base, "/") + "/openapi/v1/challenges",
-		token:   token,
-		client:  &clientCopy,
-		timeout: timeout,
+		apiBase:     strings.TrimRight(base, "/") + "/openapi/v1/challenges",
+		token:       token,
+		client:      &clientCopy,
+		timeout:     timeout,
+		clock:       ClockStore{Path: strings.TrimSpace(config.ClockPath), Now: config.Now},
+		tokenHeader: strings.TrimSpace(config.TokenHeader),
 	}, nil
 }
 
@@ -110,11 +121,17 @@ func (client *Client) List(ctx context.Context) (ListResult, error) {
 			return ListResult{}, errors.New("decode TSecBench challenge list: unique_code is required")
 		}
 	}
+	result.Challenges = client.clock.Annotate(result.Challenges)
 	return result, nil
 }
 
 func (client *Client) Start(ctx context.Context, uniqueCode string) (json.RawMessage, error) {
-	return client.mutateWithCode(ctx, "start", uniqueCode, nil)
+	raw, err := client.mutateWithCode(ctx, "start", uniqueCode, nil)
+	if err != nil {
+		return raw, err
+	}
+	_ = client.clock.RecordStart(uniqueCode, "", 0)
+	return raw, nil
 }
 
 func (client *Client) Hint(ctx context.Context, uniqueCode string) (json.RawMessage, error) {
@@ -173,7 +190,12 @@ func (client *Client) Close(ctx context.Context, request CloseRequest) (json.Raw
 	if !completed && reason == "" {
 		return nil, ErrCloseNotAllowed
 	}
-	return client.mutateWithCode(ctx, "close", code, nil)
+	raw, err := client.mutateWithCode(ctx, "close", code, nil)
+	if err != nil {
+		return raw, err
+	}
+	_ = client.clock.Clear(code)
+	return raw, nil
 }
 
 func (client *Client) mutateWithCode(ctx context.Context, operation, uniqueCode string, body any) (json.RawMessage, error) {
@@ -214,7 +236,11 @@ func (client *Client) call(ctx context.Context, method, endpoint string, body an
 	if err != nil {
 		return nil, errors.New("prepare TSecBench request")
 	}
-	request.Header.Set("BENCHMARK_TOKEN", client.token)
+	header := client.tokenHeader
+	if header == "" {
+		header = "BENCHMARK_TOKEN"
+	}
+	request.Header.Set(header, client.token)
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}

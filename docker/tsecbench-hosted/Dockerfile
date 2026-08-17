@@ -46,14 +46,27 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     bash dash zsh coreutils findutils grep sed gawk procps \
     python3 python3-pip python3-venv python3-pwntools python3-pil tesseract-ocr \
     default-jre-headless jadx apktool bsdextrautils \
-    golang-go build-essential gdb radare2 strace ltrace patchelf checksec \
+    golang-go build-essential gdb gdb-multiarch radare2 strace ltrace patchelf checksec \
+    nasm upx-ucl yara foremost xxd qemu-user-static \
+    python3-capstone python3-pefile python3-yara python3-unicorn \
+    ropper python3-ropgadget volatility3 \
+    smali baksmali dex2jar \
     nmap netcat-openbsd socat dnsutils iproute2 iputils-ping openssh-client openssl \
+    ffuf gobuster sqlmap hydra john smbclient ftp php-cli \
+    libimage-exiftool-perl binwalk steghide imagemagick tcpdump \
+    redis-tools default-mysql-client postgresql-client p7zip-full \
+    python3-requests python3-bs4 python3-lxml \
+    python3-uncompyle6 python3-xdis python3-pyinstaller \
     nodejs npm chromium \
     libnss3 libnspr4 libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
     libdrm2 libatspi2.0-0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
     libgbm1 libxkbcommon0 libpango-1.0-0 libcairo2 libasound2t64 \
     fonts-unifont fonts-noto-color-emoji \
   && rm -rf /var/lib/apt/lists/*
+
+# Small PyInstaller extractors are not in Kali apt. Do not use this path for unicorn/pwntools.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip3 install --no-cache-dir --break-system-packages pyinstxtractor-ng
 
 # Runtime CLIs intentionally resolve current releases when the image is built.
 # The exact resolved versions are captured below for the delivery inventory.
@@ -80,8 +93,10 @@ RUN printf '%s\n' '#!/bin/sh' 'exec node /opt/pentest/claude-sdk-bridge/main.mjs
 COPY --from=go-build /out/pentest-tsecbench-hosted /usr/local/bin/pentest-tsecbench-hosted
 COPY --from=go-build /out/pentest-provider-bridge /usr/local/bin/pentest-provider-bridge
 COPY --from=go-build /out/pentest-tsecbench-client /usr/local/bin/pentest-tsecbench-client
+COPY internal/challengeadapter/adapters/ /opt/cyberpenda/adapters/
 COPY docker/tsecbench-hosted/tsecbench-local-validate.py /usr/local/bin/tsecbench-local-validate
-RUN chmod 0755 /usr/local/bin/tsecbench-local-validate
+RUN chmod 0755 /usr/local/bin/tsecbench-local-validate \
+  && ln -s /usr/local/bin/pentest-tsecbench-client /usr/local/bin/pentest-challenge-client
 
 # Keep Chromium headless and use no runtime browser download.
 RUN mkdir -p /root/.agent-browser /opt/cyberpenda /data /root/.pi/agent \
@@ -127,12 +142,44 @@ RUN mkdir -p /root/.agent-browser /opt/cyberpenda /data /root/.pi/agent \
   && command -v jadx \
   && command -v apktool \
   && command -v column \
+  && command -v ffuf \
+  && command -v gobuster \
+  && command -v sqlmap \
+  && command -v hydra \
+  && command -v john \
+  && command -v smbclient \
+  && command -v php \
+  && command -v exiftool \
+  && command -v binwalk \
+  && command -v steghide \
+  && command -v convert \
+  && command -v tcpdump \
+  && command -v redis-cli \
+  && command -v mysql \
+  && command -v psql \
+  && command -v 7z \
+  && command -v gdb-multiarch \
+  && command -v nasm \
+  && command -v upx \
+  && command -v yara \
+  && command -v foremost \
+  && command -v xxd \
+  && command -v qemu-x86_64-static \
+  && command -v ropper \
+  && command -v ROPgadget \
+  && command -v baksmali \
+  && command -v vol \
+  && command -v uncompyle6 \
+  && command -v pydisasm \
+  && command -v pyi-archive_viewer \
+  && command -v pyinstxtractor-ng \
+  && command -v pentest-challenge-client \
   && command -v pentest-provider-bridge \
   && command -v pentest-claude-sdk-bridge \
   && command -v pentest-tsecbench-hosted \
   && command -v pentest-tsecbench-client \
   && command -v tsecbench-local-validate \
-  && python3 -c 'import pwn; from PIL import Image'
+  && python3 -c 'import pwn, capstone, pefile, yara, unicorn, volatility3, xdis, uncompyle6, PyInstaller; from PIL import Image'
 
 ENV CYBERPENDA_HOSTED_DATA_ROOT=/data \
     CYBERPENDA_PROVIDER_BRIDGE=/usr/local/bin/pentest-provider-bridge \

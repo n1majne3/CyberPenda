@@ -1,0 +1,55 @@
+{
+  "id": "tsecbench",
+  "display_name": "TSecBench",
+  "base_url_env": "BENCHMARK_BASE_URL",
+  "token_env": "BENCHMARK_TOKEN",
+  "token_header": "BENCHMARK_TOKEN",
+  "max_active": 3,
+  "budgets": {
+    "easy": 12,
+    "medium": 25,
+    "hard": 40
+  },
+  "operations": {
+    "list": {
+      "method": "GET",
+      "path": "/openapi/v1/challenges",
+      "result": "challenge_array"
+    },
+    "start": {
+      "method": "POST",
+      "path": "/openapi/v1/challenges/start",
+      "query": {
+        "unique_code": "{{code}}"
+      },
+      "result": "start"
+    },
+    "hint": {
+      "method": "GET",
+      "path": "/openapi/v1/challenges/hint",
+      "query": {
+        "unique_code": "{{code}}"
+      },
+      "result": "hint"
+    },
+    "submit": {
+      "method": "POST",
+      "path": "/openapi/v1/challenges/submit",
+      "json": {
+        "unique_code": "{{code}}",
+        "flag": "{{candidate}}"
+      },
+      "result": "submit"
+    },
+    "close": {
+      "method": "POST",
+      "path": "/openapi/v1/challenges/close",
+      "query": {
+        "unique_code": "{{code}}"
+      },
+      "result": "close"
+    }
+  },
+  "close_requires_complete": true,
+  "abandon_via_close": true
+}

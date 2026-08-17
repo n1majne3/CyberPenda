@@ -99,7 +99,16 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 		"golang-go",
 		"build-essential",
 		"gdb",
+		"gdb-multiarch",
 		"radare2",
+		"nasm",
+		"upx-ucl",
+		"yara",
+		"foremost",
+		"python3-capstone",
+		"python3-pefile",
+		"volatility3",
+		"ropper",
 		"strace",
 		"ltrace",
 		"patchelf",
@@ -112,6 +121,14 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 		"iputils-ping",
 		"openssh-client",
 		"openssl",
+		"ffuf",
+		"gobuster",
+		"sqlmap",
+		"python3-requests",
+		"python3-uncompyle6",
+		"python3-xdis",
+		"python3-pyinstaller",
+		"pyinstxtractor-ng",
 		"ARG RUNTIME_RELEASE_CACHE_BUST",
 		`test -n "${RUNTIME_RELEASE_CACHE_BUST}"`,
 	} {
@@ -123,12 +140,19 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 		"python3", "go", "gcc", "g++", "make", "gdb", "radare2", "strace",
 		"ltrace", "patchelf", "checksec", "nmap", "nc", "socat", "dig", "ip",
 		"ss", "ping", "ssh", "openssl", "chromium", "agent-browser", "tesseract", "java", "jadx", "apktool", "column",
+		"ffuf", "gobuster", "sqlmap", "hydra", "john", "smbclient", "php", "exiftool", "binwalk",
+		"steghide", "convert", "tcpdump", "redis-cli", "mysql", "psql", "7z",
+		"gdb-multiarch", "nasm", "upx", "yara", "foremost", "xxd", "qemu-x86_64-static",
+		"ropper", "ROPgadget", "baksmali", "vol",
+		"uncompyle6", "pydisasm", "pyi-archive_viewer", "pyinstxtractor-ng",
 		"pentest-provider-bridge", "pentest-claude-sdk-bridge", "pentest-tsecbench-hosted",
-		"pentest-tsecbench-client",
+		"pentest-tsecbench-client", "pentest-challenge-client",
 	} {
 		assertContains(t, dockerfile, `command -v `+executable)
 	}
-	assertContains(t, dockerfile, `python3 -c 'import pwn; from PIL import Image'`)
+	assertContains(t, dockerfile, `python3 -c 'import pwn, capstone, pefile, yara, unicorn, volatility3, xdis, uncompyle6, PyInstaller; from PIL import Image'`)
+	assertContains(t, dockerfile, "/opt/cyberpenda/adapters/")
+	assertContains(t, dockerfile, "pentest-challenge-client")
 	if strings.Contains(dockerfile, "pip3 install --no-cache-dir --break-system-packages pwntools") {
 		t.Fatal("Hosted Image must use Kali python3-pwntools instead of building unicorn from source on Python 3.14")
 	}
@@ -177,10 +201,10 @@ func TestTSecBenchHostedImageSmokeWhenAnImageIsConfigured(t *testing.T) {
 
 	smoke := `set -eu
 test "$(id -u)" = 0
-	for command in pi codex claude bash git curl jq rg python3 go gcc g++ make gdb radare2 strace ltrace patchelf checksec nmap nc socat dig ip ss ping ssh openssl chromium agent-browser tesseract java jadx apktool column pentest-provider-bridge pentest-claude-sdk-bridge pentest-tsecbench-hosted pentest-tsecbench-client; do
+	for command in pi codex claude bash git curl jq rg python3 go gcc g++ make gdb radare2 strace ltrace patchelf checksec nmap nc socat dig ip ss ping ssh openssl chromium agent-browser tesseract java jadx apktool column ffuf gobuster sqlmap hydra john smbclient php exiftool binwalk steghide convert tcpdump redis-cli mysql psql 7z gdb-multiarch nasm upx yara foremost xxd qemu-x86_64-static ropper ROPgadget baksmali vol uncompyle6 pydisasm pyi-archive_viewer pyinstxtractor-ng pentest-provider-bridge pentest-claude-sdk-bridge pentest-tsecbench-hosted pentest-tsecbench-client pentest-challenge-client; do
   command -v "$command" >/dev/null
 done
-python3 -c 'import pwn; from PIL import Image'
+python3 -c 'import pwn, capstone, pefile, yara, unicorn, volatility3, xdis, uncompyle6, PyInstaller; from PIL import Image'
 test -s /opt/cyberpenda/runtime-versions.json
 `
 	output, err := exec.Command(docker, "run", "--rm", "--network", "none", "--entrypoint", "sh", image, "-c", smoke).CombinedOutput()

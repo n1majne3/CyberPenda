@@ -78,6 +78,8 @@ func TestHostedEvaluationPublishesOnlyItsTSecBenchSkillAndProjectsBenchmarkEnvir
 		"pentest-tsecbench-client submit", "pentest-tsecbench-client close", "pentest-tsecbench-client abandon",
 		"correct_flag_count", "total_flag_count", "At most three", "hint_cost_radio", "duplicate", "invalid_state",
 		"Never chain", "read-only Working Snapshot", "first pass", "third slot",
+		"over_budget", "elapsed_min", "attempt_n", "challenge-clock.json",
+		"Do not invent a longer budget", "CYBERPENDA_CHALLENGE_ADAPTER", "/data/adapters",
 	} {
 		if !strings.Contains(instruction, required) {
 			t.Errorf("hosted Skill instruction missing %q", required)

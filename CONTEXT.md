@@ -657,7 +657,7 @@ The Host Runner execution of a Runtime as a direct process inside the **TSecBenc
 _Avoid_: Sandbox Runner, physical host access, Docker-in-Docker, privileged container
 
 **Hosted Tool Baseline**:
-The bounded set of general-purpose tools preinstalled in the **TSecBench Hosted Image** on top of Kali Rolling: packaged Runtimes, shell and source utilities, Python/Go/C toolchains, compact binary and network tools, pwntools, Chromium, and agent-browser. The Runtime implements missing challenge-specific capability instead of relying on the full CyberPenda Sandbox tool inventory or large reverse-engineering suites.
+The bounded set of general-purpose tools preinstalled in the **TSecBench Hosted Image** on top of Kali Rolling: packaged Runtimes, shell and source utilities, Python/Go/C toolchains, compact binary and network tools, pwntools, Chromium, agent-browser, ffuf, gobuster, sqlmap, hydra, john, common protocol clients, compact forensic utilities, and compact reverse-engineering tools (gdb-multiarch, radare2, capstone, unicorn, pefile, ropper, ROPgadget, qemu-user, yara, upx, nasm, smali/baksmali, dex2jar, Volatility 3, uncompyle6, xdis, PyInstaller archive viewer, pyinstxtractor-ng). The Runtime implements missing challenge-specific capability instead of relying on the full CyberPenda Sandbox tool inventory or large reverse-engineering suites.
 _Avoid_: full Sandbox image, runtime package installation, per-challenge image
 
 **Hosted Model Configuration**:
@@ -713,8 +713,12 @@ The TSecBench-specific bootstrap process that validates hosted configuration, st
 _Avoid_: Runtime, Challenge Workflow, challenge scheduler
 
 **Hosted Challenge Client**:
-A bounded, one-command process inside the TSecBench Hosted Image that performs one list, start, hint, submit, or guarded close operation for the Runtime. It has no background lifecycle, never controls the Hosted Controller or daemon, and derives safety decisions from current TSecBench state so its failure cannot terminate the host process.
+A bounded, one-command process inside the TSecBench Hosted Image that performs one list, start, hint, submit, or guarded close operation for the Runtime. It has no background lifecycle, never controls the Hosted Controller or daemon, and derives safety decisions from current platform state so its failure cannot terminate the host process. It loads one Challenge Platform adapter by `CYBERPENDA_CHALLENGE_ADAPTER`. Overlay manifests under `/data/adapters` replace baked adapters without rebuilding the image.
 _Avoid_: Hosted Controller, background sidecar, challenge scheduler, direct curl procedure
+
+**Challenge Pass Clock**:
+The Hosted Challenge Client file under the Runtime Workdir that stores each active Benchmark Challenge `started_at`, first-pass `budget_min`, and `attempt_n`. `list` projects `elapsed_min`, `budget_min`, `over_budget`, and `attempt_n` on stdout. It is not Blackboard knowledge and does not abandon a challenge.
+_Avoid_: appendix timer, Lead memory, Blackboard timestamp, Hosted Controller scheduler
 
 **Platform-Issued Scope**:
 An operator authorization statement in Scope notes that permits testing only the ephemeral target addresses returned by the Challenge Platform for the current evaluation credential. It guides the Runtime but is not a structured dynamic target selector.
@@ -877,6 +881,9 @@ _Avoid_: transcript, export, source of truth
 - **Task Launch** captures one immutable **Task Policy Snapshot**.
 - The **Challenge Workflow** enforces Task Policy before each governed external operation, independently of prompt compliance.
 - The **Hosted Challenge Client** is process-isolated from the **Hosted Controller**, daemon, and Runtime session; one client command failure affects only that command.
+- The **Hosted Challenge Client** records the **Challenge Pass Clock** on successful start and clears it on successful close or abandon. `list` annotates `over_budget` from that clock. The Runtime still decides abandon or close.
+- A clock file error does not fail the client command and does not terminate the Hosted Controller.
+- Overlay adapter files under `/data/adapters` replace baked adapters without rebuilding the **TSecBench Hosted Image**.
 - The **Hosted Challenge Client** never combines submit, close, and start in one operation.
 - The **Hosted Challenge Client** rejects a normal close unless current TSecBench state proves the Benchmark Challenge complete; explicit abandonment requires a non-empty reason.
 - The Runtime, not the **Hosted Challenge Client**, selects, schedules, solves, hints, submits, or abandons Benchmark Challenges.
