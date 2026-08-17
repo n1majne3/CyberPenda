@@ -26,13 +26,7 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - name: Build embedded UI
-        run: |
-          cd web
-          npm ci
-          npm run build
-          cd ..
-          rm -rf internal/daemon/webfs/dist
-          cp -r web/dist internal/daemon/webfs/dist
+        run: make build-ui
       - name: Build release binaries
         run: scripts/build-release-binaries.sh "${GITHUB_REF_NAME}" dist/release
       - uses: actions/upload-artifact@v7

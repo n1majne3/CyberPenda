@@ -82,20 +82,15 @@ juice-shop-live:
 # Repair first-checkout, stale-lockfile, and npm optional-native-dependency
 # installs before starting Vite or building the embedded UI.
 ensure-web-deps:
-	@bash scripts/ensure-web-deps.sh
+	@node scripts/web-build-cli.mjs ensure-deps
 
 # Build the React UI and copy it into the embed location (local, not committed).
-build-ui: ensure-web-deps
-	cd web && npm run build
-	mkdir -p internal/daemon/webfs/dist
-	rsync -a --delete --exclude .gitkeep web/dist/ internal/daemon/webfs/dist/
-	# Keep the tracked placeholder so clean checkouts still //go:embed.
-	@test -f internal/daemon/webfs/dist/.gitkeep || printf '%s\n' '# Placeholder for //go:embed' > internal/daemon/webfs/dist/.gitkeep
+build-ui:
+	@node scripts/web-build-cli.mjs build-ui
 
 # Ensure dist/ exists for //go:embed when no UI has been built yet.
 ensure-embed-stub:
-	@mkdir -p internal/daemon/webfs/dist
-	@test -f internal/daemon/webfs/dist/.gitkeep || printf '%s\n' '# Placeholder for //go:embed' > internal/daemon/webfs/dist/.gitkeep
+	@node scripts/web-build-cli.mjs ensure-embed-stub
 
 # Enable repository-owned hooks for this checkout.
 install-git-hooks:
@@ -103,7 +98,7 @@ install-git-hooks:
 
 # Build the daemon binary with the UI embedded.
 build: build-ui
-	go build -o pentestd ./cmd/pentestd
+	go build ./cmd/pentestd
 
 # Run all Go tests.
 test: test-backend
