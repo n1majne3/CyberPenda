@@ -125,6 +125,7 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 		"sqlmap",
 		"python3-requests",
 		"python3-pyinstaller",
+		"python3-pycryptodome",
 		"volatility3",
 		"uncompyle6",
 		"pyinstxtractor-ng",
@@ -141,7 +142,7 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 		"ss", "ping", "ssh", "openssl", "chromium", "agent-browser", "tesseract", "java", "jadx", "apktool", "column",
 		"ffuf", "gobuster", "sqlmap", "hydra", "john", "smbclient", "php", "exiftool", "binwalk",
 		"steghide", "convert", "tcpdump", "redis-cli", "mysql", "psql", "7z",
-		"gdb-multiarch", "nasm", "upx", "yara", "foremost", "xxd", "qemu-x86_64-static",
+		"gdb-multiarch", "nasm", "upx", "yara", "foremost", "xxd", "qemu-x86_64", "qemu-x86_64-static",
 		"ropper", "ROPgadget", "smali", "vol",
 		"uncompyle6", "pydisasm", "pyi-archive_viewer", "pyinstxtractor-ng",
 		"pentest-provider-bridge", "pentest-claude-sdk-bridge", "pentest-tsecbench-hosted",
@@ -155,6 +156,15 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 	if strings.Contains(dockerfile, "pip3 install --no-cache-dir --break-system-packages pwntools") {
 		t.Fatal("Hosted Image must use Kali python3-pwntools instead of building unicorn from source on Python 3.14")
 	}
+	if strings.Contains(dockerfile, "volatility3 uncompyle6 xdis pyinstxtractor-ng") {
+		t.Fatal("Hosted Image must not resolve uncompyle6 and pyinstxtractor-ng against one unbounded xdis")
+	}
+	assertContains(t, dockerfile, `xdis>=6.1.1,<6.2.0`)
+	assertContains(t, dockerfile, "--no-deps")
+	assertContains(t, dockerfile, `ln -s "$base" "/usr/bin/${base}-static"`)
+	assertContains(t, dockerfile, "missing hosted tool")
+	// Kali qemu-user ships qemu-x86_64. Do not treat qemu-x86_64-static as that name.
+	assertContains(t, dockerfile, "command -v qemu-x86_64 ||")
 
 	for _, excluded := range []string{
 		"kali-linux-headless", "ghidra", "android-sdk", "seclists",
@@ -200,7 +210,7 @@ func TestTSecBenchHostedImageSmokeWhenAnImageIsConfigured(t *testing.T) {
 
 	smoke := `set -eu
 test "$(id -u)" = 0
-	for command in pi codex claude bash git curl jq rg python3 go gcc g++ make gdb radare2 strace ltrace patchelf checksec nmap nc socat dig ip ss ping ssh openssl chromium agent-browser tesseract java jadx apktool column ffuf gobuster sqlmap hydra john smbclient php exiftool binwalk steghide convert tcpdump redis-cli mysql psql 7z gdb-multiarch nasm upx yara foremost xxd qemu-x86_64-static ropper ROPgadget smali vol uncompyle6 pydisasm pyi-archive_viewer pyinstxtractor-ng pentest-provider-bridge pentest-claude-sdk-bridge pentest-tsecbench-hosted pentest-tsecbench-client pentest-challenge-client; do
+	for command in pi codex claude bash git curl jq rg python3 go gcc g++ make gdb radare2 strace ltrace patchelf checksec nmap nc socat dig ip ss ping ssh openssl chromium agent-browser tesseract java jadx apktool column ffuf gobuster sqlmap hydra john smbclient php exiftool binwalk steghide convert tcpdump redis-cli mysql psql 7z gdb-multiarch nasm upx yara foremost xxd qemu-x86_64 qemu-x86_64-static ropper ROPgadget smali vol uncompyle6 pydisasm pyi-archive_viewer pyinstxtractor-ng pentest-provider-bridge pentest-claude-sdk-bridge pentest-tsecbench-hosted pentest-tsecbench-client pentest-challenge-client; do
   command -v "$command" >/dev/null
 done
 python3 -c 'import pwn, capstone, pefile, yara, unicorn, volatility3, xdis, uncompyle6, PyInstaller; from PIL import Image'

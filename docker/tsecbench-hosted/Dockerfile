@@ -55,7 +55,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     ffuf gobuster sqlmap hydra john smbclient ftp php-cli \
     libimage-exiftool-perl binwalk steghide imagemagick tcpdump \
     redis-tools default-mysql-client postgresql-client p7zip-full \
-    python3-requests python3-bs4 python3-lxml \
+    python3-requests python3-bs4 python3-lxml python3-pycryptodome \
     python3-pyinstaller \
     nodejs npm chromium \
     libnss3 libnspr4 libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
@@ -64,10 +64,28 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     fonts-unifont fonts-noto-color-emoji \
   && rm -rf /var/lib/apt/lists/*
 
+# Kali qemu-user 11 ships qemu-<arch>, not qemu-<arch>-static.
+RUN for bin in /usr/bin/qemu-*; do \
+      base="${bin##*/}"; \
+      case "$base" in *-static) continue ;; esac; \
+      [ -e "/usr/bin/${base}-static" ] || ln -s "$base" "/usr/bin/${base}-static"; \
+    done
+
 # These Python RE tools are not in Kali Rolling apt. Do not use this path for unicorn/pwntools.
+# uncompyle6 needs xdis<6.2. Latest pyinstxtractor-ng pins xdis==6.3.0, so install it with --no-deps.
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --no-cache-dir --break-system-packages \
-      volatility3 uncompyle6 xdis pyinstxtractor-ng
+      volatility3 \
+      'uncompyle6>=3.9.2' \
+      'xdis>=6.1.1,<6.2.0' \
+ && pip3 install --no-cache-dir --break-system-packages --no-deps \
+      pyinstxtractor-ng \
+ && if ! command -v pyinstxtractor-ng >/dev/null; then \
+      printf '%s\n' '#!/usr/bin/env python3' 'from pyinstxtractor_ng import main' \
+        'raise SystemExit(main())' \
+        > /usr/local/bin/pyinstxtractor-ng \
+      && chmod 0755 /usr/local/bin/pyinstxtractor-ng; \
+    fi
 
 # Runtime CLIs intentionally resolve current releases when the image is built.
 # The exact resolved versions are captured below for the delivery inventory.
@@ -108,78 +126,80 @@ RUN mkdir -p /root/.agent-browser /opt/cyberpenda /data /root/.pi/agent \
      CLAUDE_VERSION="$(node -p "require('$(npm root -g)/@anthropic-ai/claude-code/package.json').version")" \
      CLAUDE_AGENT_SDK_VERSION="$(node -p "require('/opt/pentest/claude-sdk-bridge/node_modules/@anthropic-ai/claude-agent-sdk/package.json').version")" \
      node -e 'const fs=require("fs"); fs.writeFileSync("/opt/cyberpenda/runtime-versions.json", JSON.stringify({schema:"cyberpenda-hosted-runtime-versions/v1",runtimes:{pi:{package:"@earendil-works/pi-coding-agent",version:process.env.PI_VERSION,binary:"pi"},codex:{package:"@openai/codex",version:process.env.CODEX_VERSION,binary:"codex"},claude_code:{package:"@anthropic-ai/claude-code",version:process.env.CLAUDE_VERSION,binary:"claude"}},components:{claude_agent_sdk:{package:"@anthropic-ai/claude-agent-sdk",version:process.env.CLAUDE_AGENT_SDK_VERSION}}},null,2)+"\n")' \
-  && command -v pi \
-  && command -v codex \
-  && command -v claude \
-  && command -v bash \
-  && command -v git \
-  && command -v curl \
-  && command -v jq \
-  && command -v rg \
-  && command -v python3 \
-  && command -v go \
-  && command -v gcc \
-  && command -v g++ \
-  && command -v make \
-  && command -v gdb \
-  && command -v radare2 \
-  && command -v strace \
-  && command -v ltrace \
-  && command -v patchelf \
-  && command -v checksec \
-  && command -v nmap \
-  && command -v nc \
-  && command -v socat \
-  && command -v dig \
-  && command -v ip \
-  && command -v ss \
-  && command -v ping \
-  && command -v ssh \
-  && command -v openssl \
-  && command -v chromium \
-  && command -v agent-browser \
-  && command -v tesseract \
-  && command -v java \
-  && command -v jadx \
-  && command -v apktool \
-  && command -v column \
-  && command -v ffuf \
-  && command -v gobuster \
-  && command -v sqlmap \
-  && command -v hydra \
-  && command -v john \
-  && command -v smbclient \
-  && command -v php \
-  && command -v exiftool \
-  && command -v binwalk \
-  && command -v steghide \
-  && command -v convert \
-  && command -v tcpdump \
-  && command -v redis-cli \
-  && command -v mysql \
-  && command -v psql \
-  && command -v 7z \
-  && command -v gdb-multiarch \
-  && command -v nasm \
-  && command -v upx \
-  && command -v yara \
-  && command -v foremost \
-  && command -v xxd \
-  && command -v qemu-x86_64-static \
-  && command -v ropper \
-  && command -v ROPgadget \
-  && command -v smali \
-  && command -v vol \
-  && command -v uncompyle6 \
-  && command -v pydisasm \
-  && command -v pyi-archive_viewer \
-  && command -v pyinstxtractor-ng \
-  && command -v pentest-challenge-client \
-  && command -v pentest-provider-bridge \
-  && command -v pentest-claude-sdk-bridge \
-  && command -v pentest-tsecbench-hosted \
-  && command -v pentest-tsecbench-client \
-  && command -v tsecbench-local-validate \
+  && missing_hosted_tool() { echo "missing hosted tool: $1" >&2; exit 1; } \
+  && command -v pi || missing_hosted_tool pi \
+  && command -v codex || missing_hosted_tool codex \
+  && command -v claude || missing_hosted_tool claude \
+  && command -v bash || missing_hosted_tool bash \
+  && command -v git || missing_hosted_tool git \
+  && command -v curl || missing_hosted_tool curl \
+  && command -v jq || missing_hosted_tool jq \
+  && command -v rg || missing_hosted_tool rg \
+  && command -v python3 || missing_hosted_tool python3 \
+  && command -v go || missing_hosted_tool go \
+  && command -v gcc || missing_hosted_tool gcc \
+  && command -v g++ || missing_hosted_tool g++ \
+  && command -v make || missing_hosted_tool make \
+  && command -v gdb || missing_hosted_tool gdb \
+  && command -v radare2 || missing_hosted_tool radare2 \
+  && command -v strace || missing_hosted_tool strace \
+  && command -v ltrace || missing_hosted_tool ltrace \
+  && command -v patchelf || missing_hosted_tool patchelf \
+  && command -v checksec || missing_hosted_tool checksec \
+  && command -v nmap || missing_hosted_tool nmap \
+  && command -v nc || missing_hosted_tool nc \
+  && command -v socat || missing_hosted_tool socat \
+  && command -v dig || missing_hosted_tool dig \
+  && command -v ip || missing_hosted_tool ip \
+  && command -v ss || missing_hosted_tool ss \
+  && command -v ping || missing_hosted_tool ping \
+  && command -v ssh || missing_hosted_tool ssh \
+  && command -v openssl || missing_hosted_tool openssl \
+  && command -v chromium || missing_hosted_tool chromium \
+  && command -v agent-browser || missing_hosted_tool agent-browser \
+  && command -v tesseract || missing_hosted_tool tesseract \
+  && command -v java || missing_hosted_tool java \
+  && command -v jadx || missing_hosted_tool jadx \
+  && command -v apktool || missing_hosted_tool apktool \
+  && command -v column || missing_hosted_tool column \
+  && command -v ffuf || missing_hosted_tool ffuf \
+  && command -v gobuster || missing_hosted_tool gobuster \
+  && command -v sqlmap || missing_hosted_tool sqlmap \
+  && command -v hydra || missing_hosted_tool hydra \
+  && command -v john || missing_hosted_tool john \
+  && command -v smbclient || missing_hosted_tool smbclient \
+  && command -v php || missing_hosted_tool php \
+  && command -v exiftool || missing_hosted_tool exiftool \
+  && command -v binwalk || missing_hosted_tool binwalk \
+  && command -v steghide || missing_hosted_tool steghide \
+  && command -v convert || missing_hosted_tool convert \
+  && command -v tcpdump || missing_hosted_tool tcpdump \
+  && command -v redis-cli || missing_hosted_tool redis-cli \
+  && command -v mysql || missing_hosted_tool mysql \
+  && command -v psql || missing_hosted_tool psql \
+  && command -v 7z || missing_hosted_tool 7z \
+  && command -v gdb-multiarch || missing_hosted_tool gdb-multiarch \
+  && command -v nasm || missing_hosted_tool nasm \
+  && command -v upx || missing_hosted_tool upx \
+  && command -v yara || missing_hosted_tool yara \
+  && command -v foremost || missing_hosted_tool foremost \
+  && command -v xxd || missing_hosted_tool xxd \
+  && command -v qemu-x86_64 || missing_hosted_tool qemu-x86_64 \
+  && command -v qemu-x86_64-static || missing_hosted_tool qemu-x86_64-static \
+  && command -v ropper || missing_hosted_tool ropper \
+  && command -v ROPgadget || missing_hosted_tool ROPgadget \
+  && command -v smali || missing_hosted_tool smali \
+  && command -v vol || missing_hosted_tool vol \
+  && command -v uncompyle6 || missing_hosted_tool uncompyle6 \
+  && command -v pydisasm || missing_hosted_tool pydisasm \
+  && command -v pyi-archive_viewer || missing_hosted_tool pyi-archive_viewer \
+  && command -v pyinstxtractor-ng || missing_hosted_tool pyinstxtractor-ng \
+  && command -v pentest-challenge-client || missing_hosted_tool pentest-challenge-client \
+  && command -v pentest-provider-bridge || missing_hosted_tool pentest-provider-bridge \
+  && command -v pentest-claude-sdk-bridge || missing_hosted_tool pentest-claude-sdk-bridge \
+  && command -v pentest-tsecbench-hosted || missing_hosted_tool pentest-tsecbench-hosted \
+  && command -v pentest-tsecbench-client || missing_hosted_tool pentest-tsecbench-client \
+  && command -v tsecbench-local-validate || missing_hosted_tool tsecbench-local-validate \
   && python3 -c 'import pwn, capstone, pefile, yara, unicorn, volatility3, xdis, uncompyle6, PyInstaller; from PIL import Image'
 
 ENV CYBERPENDA_HOSTED_DATA_ROOT=/data \
