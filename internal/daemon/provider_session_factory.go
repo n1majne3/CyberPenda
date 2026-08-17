@@ -15,6 +15,29 @@ import (
 
 var errAssistedConclusionUnsupported = errors.New("assisted_conclusion_unsupported: Runtime does not expose the complete persistent SendTurn, normalized Tool/Turn event, and closed AttemptResult contract")
 
+// ProviderSessionLaunchFacts carries the structured launch inputs a
+// provider-session assembler consumes: the resolved provider binary, the
+// profile's Runtime Custom Arguments, the effective model, the projected
+// settings path, and the bridge-visible owner workdir. Passing facts replaces
+// recovering them by re-parsing the rendered one-shot adapter argv.
+type ProviderSessionLaunchFacts struct {
+	// ProviderBinary is the resolved one-shot binary (profile field or
+	// manifest default). Empty falls back to the family default.
+	ProviderBinary string
+	// CustomArgs are the profile's Runtime Custom Arguments, never mutated by
+	// one-shot launch assembly.
+	CustomArgs []string
+	// Model is the effective launch model: the launch override when present,
+	// else the resolved profile model.
+	Model string
+	// SettingsPath is the projected provider settings path (Claude). Host v2
+	// launches pass the workdir-relative form.
+	SettingsPath string
+	// Workdir is the workdir the durable process and its protocol frames see:
+	// the owner workdir on Host, /task/workdir in the Sandbox.
+	Workdir string
+}
+
 // ProviderSessionLaunchRequest is the launch-assembly seam for a persistent
 // provider session. The request is deliberately owner/Continuation scoped;
 // credentials and raw provider protocol frames never cross this boundary.
@@ -29,6 +52,10 @@ type ProviderSessionLaunchRequest struct {
 	LaunchGoal    string
 	RuntimeConfig map[string]any
 	LegacyAdapter runtime.Adapter
+	// Facts are the structured launch inputs. The one-shot LegacyAdapter
+	// still carries projected env, workdir, and sandbox create args; family
+	// assemblers must not parse its rendered argv.
+	Facts ProviderSessionLaunchFacts
 }
 
 func providerSessionOwnerID(request ProviderSessionLaunchRequest) string {

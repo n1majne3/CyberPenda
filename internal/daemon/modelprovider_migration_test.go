@@ -34,7 +34,7 @@ func TestModelProviderMigrationPreviewAndApply(t *testing.T) {
 		t.Fatalf("preview status %d body %s", previewResp.Code, previewResp.Body.String())
 	}
 	var preview struct {
-		Eligible      bool `json:"eligible"`
+		Eligible      bool  `json:"eligible"`
 		Matches       []any `json:"matches"`
 		APIKeySources []any `json:"api_key_sources"`
 		Proposed      struct {

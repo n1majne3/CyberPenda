@@ -28,6 +28,7 @@ pentest.db.pre-graph-v1.*.bak
 pentest.db.pre-blackboard-v2.*.bak
 /runtime.db
 /pentestd
+/pentestd.exe
 daemon.log
 runs/
 __pycache__/

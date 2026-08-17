@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -252,6 +251,7 @@ type taskLaunchPlan struct {
 	BlackboardV2                 bool
 	ValidatedLayout              *runner.Layout
 	BlackboardV2SteeringEventIDs []string
+	Facts                        ProviderSessionLaunchFacts
 }
 
 type continuationLaunchBinding struct {
@@ -281,7 +281,7 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 		binding, factoryErr := server.providerSessionFactory.Open(context.Background(), ProviderSessionLaunchRequest{
 			Owner: created.OwnerContract(""), Continuation: ownerContinuationFromTask(continuation), Provider: plan.ResolvedProfile.Provider,
 			Runner: created.Runner, LaunchGoal: plan.LaunchGoal, RuntimeConfig: plan.CapturedRuntimeConfig,
-			LegacyAdapter: plan.Adapter,
+			LegacyAdapter: plan.Adapter, Facts: plan.Facts,
 		})
 		if factoryErr == nil {
 			factoryErr = validateProviderSessionBinding(binding)
@@ -863,6 +863,23 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	commandProgram := runtimeCommand[0]
 	commandArgs := runtimeCommand[1:]
 	workdir := layout.Workdir
+	// Structured launch facts for the provider-session factory: family
+	// assemblers consume these instead of re-parsing the rendered one-shot
+	// argv below.
+	launchFacts := ProviderSessionLaunchFacts{
+		ProviderBinary: providerCommand[0],
+		CustomArgs:     append([]string(nil), launchProfile.Fields.CustomArgs...),
+		SettingsPath:   configPath,
+		Workdir:        "/task/workdir",
+	}
+	if !sandbox {
+		launchFacts.Workdir = workdir
+	}
+	if launchModelOverride != "" {
+		launchFacts.Model = launchModelOverride
+	} else {
+		launchFacts.Model = strings.TrimSpace(launchProfile.Fields.Model)
+	}
 	containerIDFile := ""
 	sandboxNetwork := runner.SandboxNetworkDefault
 	sandboxImage := ""
@@ -1039,6 +1056,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		LaunchGoal:                  launchGoal,
 		BlackboardV2:                v2,
 		ValidatedLayout:             &layout,
+		Facts:                       launchFacts,
 	}, nil
 }
 
@@ -1705,41 +1723,10 @@ func (server *Server) handleTaskTimeline(response http.ResponseWriter, request *
 		return
 	}
 
-	req := parseHistoryRequest(request)
-	items, window, err := collectTimelineItems(req, func(scan historyRequest) (timelineEventChunk, error) {
-		stored, err := server.tasks.HistoryEventWindow(found.ID, task.EventWindowQuery{
-			Projection: task.EventProjectionTimeline, BeforeSet: scan.beforeSet, Before: scan.before,
-			AfterSet: scan.afterSet, After: scan.after, Limit: historyEventQueryLimit,
-		})
-		if err != nil {
-			return timelineEventChunk{}, err
-		}
-		return timelineEventChunk{
-			events:     eventsToTimelineEvents(stored.Events),
-			cursor:     stored.Cursor,
-			hasOlder:   stored.HasOlder,
-			hasNewer:   stored.HasNewer,
-			scanCursor: stored.ScanCursor,
-		}, nil
-	})
+	page, err := server.taskOwnerHistory(found).TimelinePage(parseHistoryRequest(request))
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "list task events")
 		return
-	}
-	if items == nil {
-		items = []timeline.Item{}
-	}
-	detailBase := fmt.Sprintf("/api/projects/%s/tasks/%s/timeline/items", found.ProjectID, found.ID)
-	page := historyResponseFor(items, req, func(item timeline.Item) int {
-		return item.Seq
-	}, func(item timeline.Item) (timeline.Item, int) {
-		return boundedTimelineItem(item, detailBase)
-	})
-	page.hasOlder = page.hasOlder || window.hasOlder
-	if req.afterSet && window.hasNewer {
-		page.cursor = window.scanCursor
-	} else {
-		page.cursor = window.cursor
 	}
 	writeJSON(response, http.StatusOK, struct {
 		TaskID   string          `json:"task_id"`
@@ -1762,24 +1749,16 @@ func (server *Server) handleTaskTimelineItem(response http.ResponseWriter, reque
 	if !ok {
 		return
 	}
-	itemRef := request.PathValue("seq")
-	seq, _ := strconv.Atoi(itemRef)
-	if itemRef == "" {
-		writeError(response, http.StatusNotFound, "timeline item not found")
-		return
-	}
-	events, err := server.tasks.Events(found.ID)
+	item, foundItem, err := server.taskOwnerHistory(found).TimelineItem(request.PathValue("seq"))
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "list task events")
 		return
 	}
-	for _, item := range timeline.Build(eventsToTimelineEvents(events)) {
-		if item.ID == itemRef || (seq > 0 && item.Seq == seq) {
-			writeJSON(response, http.StatusOK, item)
-			return
-		}
+	if !foundItem {
+		writeError(response, http.StatusNotFound, "timeline item not found")
+		return
 	}
-	writeError(response, http.StatusNotFound, "timeline item not found")
+	writeJSON(response, http.StatusOK, item)
 }
 
 func (server *Server) handleTaskTranscript(response http.ResponseWriter, request *http.Request) {
@@ -1788,37 +1767,10 @@ func (server *Server) handleTaskTranscript(response http.ResponseWriter, request
 		return
 	}
 
-	req := parseHistoryRequest(request)
-	window, err := server.tasks.HistoryEventWindow(found.ID, task.EventWindowQuery{
-		Projection: task.EventProjectionTranscript, BeforeSet: req.beforeSet, Before: req.before,
-		AfterSet: req.afterSet, After: req.after, Limit: historyEventQueryLimit,
-	})
+	page, err := server.taskOwnerHistory(found).TranscriptPage(parseHistoryRequest(request))
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "list task events")
 		return
-	}
-	entries := transcript.BuildWindow(transcript.Subject{
-		ID:        found.ID,
-		Title:     found.Goal,
-		CreatedAt: found.CreatedAt,
-	}, eventsToTranscriptEvents(window.Events), transcript.WindowContext{
-		Continuation: window.PriorContinuation,
-		Adapter:      window.PriorTranscriptAdapter,
-	})
-	if entries == nil {
-		entries = []transcript.Entry{}
-	}
-	detailBase := fmt.Sprintf("/api/projects/%s/tasks/%s/transcript/entries", found.ProjectID, found.ID)
-	page := historyResponseFor(entries, req, func(entry transcript.Entry) int {
-		return entry.Seq
-	}, func(entry transcript.Entry) (transcript.Entry, int) {
-		return boundedTranscriptEntry(entry, detailBase)
-	})
-	page.hasOlder = page.hasOlder || window.HasOlder
-	if req.afterSet && window.HasNewer {
-		page.cursor = window.ScanCursor
-	} else {
-		page.cursor = window.Cursor
 	}
 	writeJSON(response, http.StatusOK, struct {
 		TaskID   string             `json:"task_id"`
@@ -1840,27 +1792,16 @@ func (server *Server) handleTaskTranscriptEntry(response http.ResponseWriter, re
 	if !ok {
 		return
 	}
-	entryID := request.PathValue("entry_id")
-	if entryID == "" {
-		writeError(response, http.StatusNotFound, "transcript entry not found")
-		return
-	}
-	events, err := server.tasks.Events(found.ID)
+	entry, foundEntry, err := server.taskOwnerHistory(found).TranscriptEntry(request.PathValue("entry_id"))
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "list task events")
 		return
 	}
-	for _, entry := range transcript.Build(transcript.Subject{
-		ID:        found.ID,
-		Title:     found.Goal,
-		CreatedAt: found.CreatedAt,
-	}, eventsToTranscriptEvents(events)) {
-		if entry.ID == entryID {
-			writeJSON(response, http.StatusOK, entry)
-			return
-		}
+	if !foundEntry {
+		writeError(response, http.StatusNotFound, "transcript entry not found")
+		return
 	}
-	writeError(response, http.StatusNotFound, "transcript entry not found")
+	writeJSON(response, http.StatusOK, entry)
 }
 
 func (server *Server) handleStopTask(response http.ResponseWriter, request *http.Request) {
@@ -4335,22 +4276,6 @@ func eventsToTimelineEvents(events []task.Event) []timeline.Event {
 	converted := make([]timeline.Event, 0, len(events))
 	for _, event := range events {
 		converted = append(converted, timeline.Event{
-			ID:        event.ID,
-			Seq:       event.Seq,
-			Kind:      string(event.Kind),
-			Payload:   event.Payload,
-			CreatedAt: event.CreatedAt,
-		})
-	}
-	return converted
-}
-
-// eventsToTranscriptEvents projects retained task events into the shared
-// transcript input shape so task and session transcripts run the same builder.
-func eventsToTranscriptEvents(events []task.Event) []transcript.Event {
-	converted := make([]transcript.Event, 0, len(events))
-	for _, event := range events {
-		converted = append(converted, transcript.Event{
 			ID:        event.ID,
 			Seq:       event.Seq,
 			Kind:      string(event.Kind),
