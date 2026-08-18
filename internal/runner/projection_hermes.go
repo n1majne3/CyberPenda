@@ -47,8 +47,13 @@ func projectHermesHome(layout Layout, profile runtimeprofile.Profile, req Projec
 		return ConfigProjection{}, err
 	}
 
+	effort, err := runtimeprofile.NormalizeReasoningEffort(profile.Fields.ReasoningEffort)
+	if err != nil {
+		return ConfigProjection{}, err
+	}
+
 	configPath := filepath.Join(layout.ProviderHome, "config.yaml")
-	configYAML := buildHermesConfigYAML(profile, projected, mcpServers)
+	configYAML := buildHermesConfigYAML(profile, projected, mcpServers, string(effort))
 	if err := os.WriteFile(configPath, []byte(configYAML), 0o600); err != nil {
 		return ConfigProjection{}, fmt.Errorf("write hermes config: %w", err)
 	}
@@ -108,7 +113,7 @@ func writeHermesIterationBudgetPlugin(providerHome string) error {
 	}
 	manifest := "name: " + hermesIterationBudgetPlugin + "\n" +
 		"version: 1.0.0\n" +
-		"description: Apply projected agent.max_turns to ACP AIAgent sessions\n" +
+		"description: Apply projected agent.max_turns and reasoning_effort to ACP AIAgent sessions\n" +
 		"kind: standalone\n"
 	if err := os.WriteFile(filepath.Join(dir, "plugin.yaml"), []byte(manifest), 0o600); err != nil {
 		return fmt.Errorf("write hermes iteration-budget plugin manifest: %w", err)
@@ -119,7 +124,7 @@ func writeHermesIterationBudgetPlugin(providerHome string) error {
 	return nil
 }
 
-const hermesIterationBudgetPluginPY = `"""Apply projected agent.max_turns to Hermes ACP sessions."""
+const hermesIterationBudgetPluginPY = `"""Apply projected agent.max_turns and reasoning_effort to Hermes ACP sessions."""
 
 from __future__ import annotations
 
@@ -137,6 +142,27 @@ def _max_turns() -> int:
     return value
 
 
+def _reasoning_effort() -> str:
+    from hermes_constants import get_hermes_home
+
+    sidecar = get_hermes_home() / "cyberpenda-requested-reasoning-effort"
+    try:
+        raw = sidecar.read_text(encoding="utf-8").strip()
+        if raw:
+            return raw
+    except OSError:
+        pass
+    from hermes_cli.config import load_config
+
+    raw = (load_config().get("agent") or {}).get("reasoning_effort")
+    if raw is None:
+        return "high"
+    value = str(raw).strip()
+    if not value:
+        return "high"
+    return value
+
+
 def _apply(agent) -> None:
     turns = _max_turns()
     agent.max_iterations = turns
@@ -144,6 +170,14 @@ def _apply(agent) -> None:
         from agent.iteration_budget import IterationBudget
 
         agent.iteration_budget = IterationBudget(turns)
+    except Exception:
+        pass
+    try:
+        from hermes_constants import parse_reasoning_effort
+
+        parsed = parse_reasoning_effort(_reasoning_effort())
+        if parsed is not None:
+            agent.reasoning_config = parsed
     except Exception:
         pass
 
@@ -182,14 +216,16 @@ const (
 	hermesProjectedMaxTurns = 100000
 )
 
-func buildHermesConfigYAML(profile runtimeprofile.Profile, projected []piProjectedProvider, servers []runtimeprofile.MCPServer) string {
+func buildHermesConfigYAML(profile runtimeprofile.Profile, projected []piProjectedProvider, servers []runtimeprofile.MCPServer, reasoningEffort string) string {
 	var b strings.Builder
 	b.WriteString("approvals:\n")
 	b.WriteString("  mode: off\n")
 	b.WriteString("agent:\n")
 	fmt.Fprintf(&b, "  max_turns: %d\n", hermesProjectedMaxTurns)
+	fmt.Fprintf(&b, "  reasoning_effort: %s\n", yamlScalar(reasoningEffort))
 	b.WriteString("delegation:\n")
 	fmt.Fprintf(&b, "  max_iterations: %d\n", hermesProjectedMaxTurns)
+	fmt.Fprintf(&b, "  reasoning_effort: %s\n", yamlScalar(reasoningEffort))
 	b.WriteString("plugins:\n")
 	b.WriteString("  enabled:\n")
 	fmt.Fprintf(&b, "    - %s\n", hermesIterationBudgetPlugin)

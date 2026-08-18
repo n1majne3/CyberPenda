@@ -881,6 +881,14 @@ func (f *ProductionProviderSessionFactory) finishPiBinding(
 	return binding, nil
 }
 
+func hermesHomeFromAdapter(adapter runtime.Adapter) string {
+	launch, ok := runtime.CommandAdapterLaunch(adapter)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(launch.Env["HERMES_HOME"])
+}
+
 func (f *ProductionProviderSessionFactory) finishHermesBinding(
 	ctx context.Context,
 	request ProviderSessionLaunchRequest,
@@ -938,7 +946,10 @@ func (f *ProductionProviderSessionFactory) finishHermesBinding(
 		PermissionResponse: true, ResumeSession: true, AssistedConclusion: true,
 	}
 	nativeSession := runtime.NewHermesProviderSession(runtime.HermesProviderSessionConfig{
-		Transport: bridge, SessionID: sessionID, Capabilities: capabilities,
+		Transport:    bridge,
+		SessionID:    sessionID,
+		Capabilities: capabilities,
+		HermesHome:   hermesHomeFromAdapter(request.LegacyAdapter),
 	})
 	var session runtime.ProviderSession
 	session, err = newProductionBoundProviderSession(nativeSession, func(closeCtx context.Context) {

@@ -237,3 +237,56 @@ func TestProjectHermesHomeRaisesACPIterationBudget(t *testing.T) {
 		t.Fatalf("plugin must apply agent.max_turns onto ACP max_iterations, got:\n%s", body)
 	}
 }
+
+func TestProjectHermesHomeProjectsRequestedReasoningEffort(t *testing.T) {
+	root := t.TempDir()
+	layout, err := runner.PrepareTaskLayout(root, "task-hermes-effort", runtimeprofile.ProviderHermes)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+
+	if _, err := runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{
+		Provider: runtimeprofile.ProviderHermes,
+		Fields:   runtimeprofile.Fields{ReasoningEffort: "max"},
+	}, runner.ProjectionRequest{}); err != nil {
+		t.Fatalf("project runtime config: %v", err)
+	}
+
+	configRaw, err := os.ReadFile(filepath.Join(layout.ProviderHome, "config.yaml"))
+	if err != nil {
+		t.Fatalf("read config.yaml: %v", err)
+	}
+	config := string(configRaw)
+	if !strings.Contains(config, "  reasoning_effort: max\n") {
+		t.Fatalf("expected agent.reasoning_effort max, got:\n%s", config)
+	}
+
+	pluginInit, err := os.ReadFile(filepath.Join(layout.ProviderHome, "plugins", "cyberpenda-iteration-budget", "__init__.py"))
+	if err != nil {
+		t.Fatalf("read plugin: %v", err)
+	}
+	body := string(pluginInit)
+	if !strings.Contains(body, "reasoning_effort") || !strings.Contains(body, "reasoning_config") {
+		t.Fatalf("plugin must apply agent.reasoning_effort onto ACP reasoning_config, got:\n%s", body)
+	}
+}
+
+func TestProjectHermesHomeProjectsDefaultHighReasoningEffort(t *testing.T) {
+	root := t.TempDir()
+	layout, err := runner.PrepareTaskLayout(root, "task-hermes-default-effort", runtimeprofile.ProviderHermes)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+
+	if _, err := runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}, runner.ProjectionRequest{}); err != nil {
+		t.Fatalf("project runtime config: %v", err)
+	}
+
+	configRaw, err := os.ReadFile(filepath.Join(layout.ProviderHome, "config.yaml"))
+	if err != nil {
+		t.Fatalf("read config.yaml: %v", err)
+	}
+	if !strings.Contains(string(configRaw), "  reasoning_effort: high\n") {
+		t.Fatalf("empty Reasoning Effort must project high, got:\n%s", configRaw)
+	}
+}
