@@ -43,6 +43,10 @@ func projectHermesHome(layout Layout, profile runtimeprofile.Profile, req Projec
 		return ConfigProjection{}, err
 	}
 
+	if err := writeHermesIterationBudgetPlugin(layout.ProviderHome); err != nil {
+		return ConfigProjection{}, err
+	}
+
 	configPath := filepath.Join(layout.ProviderHome, "config.yaml")
 	configYAML := buildHermesConfigYAML(profile, projected, mcpServers)
 	if err := os.WriteFile(configPath, []byte(configYAML), 0o600); err != nil {
@@ -94,10 +98,101 @@ func ensureHermesSkillsDir(providerHome string) error {
 	return nil
 }
 
+// writeHermesIterationBudgetPlugin makes ACP honor agent.max_turns. Hermes
+// ACP constructs AIAgent without max_iterations, so the constructor default
+// of 90 still applies even when config.yaml sets agent.max_turns.
+func writeHermesIterationBudgetPlugin(providerHome string) error {
+	dir := filepath.Join(providerHome, "plugins", hermesIterationBudgetPlugin)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("prepare hermes iteration-budget plugin: %w", err)
+	}
+	manifest := "name: " + hermesIterationBudgetPlugin + "\n" +
+		"version: 1.0.0\n" +
+		"description: Apply projected agent.max_turns to ACP AIAgent sessions\n" +
+		"kind: standalone\n"
+	if err := os.WriteFile(filepath.Join(dir, "plugin.yaml"), []byte(manifest), 0o600); err != nil {
+		return fmt.Errorf("write hermes iteration-budget plugin manifest: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "__init__.py"), []byte(hermesIterationBudgetPluginPY), 0o600); err != nil {
+		return fmt.Errorf("write hermes iteration-budget plugin: %w", err)
+	}
+	return nil
+}
+
+const hermesIterationBudgetPluginPY = `"""Apply projected agent.max_turns to Hermes ACP sessions."""
+
+from __future__ import annotations
+
+
+def _max_turns() -> int:
+    from hermes_cli.config import load_config
+
+    raw = (load_config().get("agent") or {}).get("max_turns")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 100000
+    if value <= 0:
+        return 1_000_000_000
+    return value
+
+
+def _apply(agent) -> None:
+    turns = _max_turns()
+    agent.max_iterations = turns
+    try:
+        from agent.iteration_budget import IterationBudget
+
+        agent.iteration_budget = IterationBudget(turns)
+    except Exception:
+        pass
+
+
+def register(ctx) -> None:
+    try:
+        import agent.conversation_loop as conversation_loop
+
+        original = conversation_loop.build_turn_context
+
+        def wrapped(agent, *args, **kwargs):
+            _apply(agent)
+            return original(agent, *args, **kwargs)
+
+        conversation_loop.build_turn_context = wrapped
+    except Exception:
+        pass
+    try:
+        import agent.agent_init as agent_init
+
+        original_init = agent_init.init_agent
+
+        def wrapped_init(agent, *args, **kwargs):
+            original_init(agent, *args, **kwargs)
+            _apply(agent)
+
+        agent_init.init_agent = wrapped_init
+    except Exception:
+        pass
+`
+
+const (
+	hermesIterationBudgetPlugin = "cyberpenda-iteration-budget"
+	// 1000 turns is too small for a 6-hour Hosted Evaluation Run.
+	// Hermes ACP treats 0 as exhausted immediately, so this is a large finite cap.
+	hermesProjectedMaxTurns = 100000
+)
+
 func buildHermesConfigYAML(profile runtimeprofile.Profile, projected []piProjectedProvider, servers []runtimeprofile.MCPServer) string {
 	var b strings.Builder
 	b.WriteString("approvals:\n")
 	b.WriteString("  mode: off\n")
+	b.WriteString("agent:\n")
+	fmt.Fprintf(&b, "  max_turns: %d\n", hermesProjectedMaxTurns)
+	b.WriteString("delegation:\n")
+	fmt.Fprintf(&b, "  max_iterations: %d\n", hermesProjectedMaxTurns)
+	b.WriteString("plugins:\n")
+	b.WriteString("  enabled:\n")
+	fmt.Fprintf(&b, "    - %s\n", hermesIterationBudgetPlugin)
 	b.WriteString("model:\n")
 	// Bare provider: custom ignores providers.*.api_key_env and sends
 	// "no-key-required" to non-OpenAI hosts, which returns HTTP 401.

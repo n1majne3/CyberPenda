@@ -197,3 +197,43 @@ func TestProjectRuntimeConfigKeepsHermesSandboxSkillsLink(t *testing.T) {
 		t.Fatalf("expected hermes config: %v", err)
 	}
 }
+
+func TestProjectHermesHomeRaisesACPIterationBudget(t *testing.T) {
+	root := t.TempDir()
+	layout, err := runner.PrepareTaskLayout(root, "task-hermes-budget", runtimeprofile.ProviderHermes)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+
+	if _, err := runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}, runner.ProjectionRequest{}); err != nil {
+		t.Fatalf("project runtime config: %v", err)
+	}
+
+	configRaw, err := os.ReadFile(filepath.Join(layout.ProviderHome, "config.yaml"))
+	if err != nil {
+		t.Fatalf("read config.yaml: %v", err)
+	}
+	config := string(configRaw)
+	if !strings.Contains(config, "agent:\n  max_turns: 100000\n") {
+		t.Fatalf("expected agent.max_turns 100000 so a 6-hour Hosted Evaluation Run does not exhaust the Hermes ACP constructor default, got:\n%s", config)
+	}
+	if !strings.Contains(config, "delegation:\n  max_iterations: 100000\n") {
+		t.Fatalf("expected delegation.max_iterations 100000, got:\n%s", config)
+	}
+	if !strings.Contains(config, "plugins:\n  enabled:\n    - cyberpenda-iteration-budget\n") {
+		t.Fatalf("expected iteration-budget plugin enabled, got:\n%s", config)
+	}
+
+	pluginYAML := filepath.Join(layout.ProviderHome, "plugins", "cyberpenda-iteration-budget", "plugin.yaml")
+	if _, err := os.Stat(pluginYAML); err != nil {
+		t.Fatalf("expected projected Hermes plugin: %v", err)
+	}
+	pluginInit, err := os.ReadFile(filepath.Join(layout.ProviderHome, "plugins", "cyberpenda-iteration-budget", "__init__.py"))
+	if err != nil {
+		t.Fatalf("read plugin: %v", err)
+	}
+	body := string(pluginInit)
+	if !strings.Contains(body, "max_turns") || !strings.Contains(body, "max_iterations") {
+		t.Fatalf("plugin must apply agent.max_turns onto ACP max_iterations, got:\n%s", body)
+	}
+}
