@@ -41,6 +41,9 @@ func TestTSecBenchHostedDockerfileDefinesTheIsolatedAMD64Image(t *testing.T) {
 		"cyberpenda-hosted-runtime-versions/v1",
 		`require('/opt/pentest/claude-sdk-bridge/node_modules/@anthropic-ai/claude-agent-sdk/package.json').version`,
 		`claude_agent_sdk`,
+		"/usr/local/lib/hermes-agent/venv/bin/pip install",
+		"anthropic==0.87.0",
+		`import anthropic, openai`,
 	} {
 		assertContains(t, dockerfile, required)
 	}

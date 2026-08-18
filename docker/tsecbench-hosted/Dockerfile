@@ -114,6 +114,13 @@ RUN set -eux; \
     hermes --version | tee /opt/hermes-release.txt; \
     hermes acp --help >/dev/null
 
+# Hosted Mode has no public PyPI. Hermes lazy-installs protocol extras on the
+# first session/new (anthropic for anthropic_messages). That hang becomes ACP
+# Internal error after ~80s. Preinstall the extras in the Hermes venv.
+RUN /usr/local/lib/hermes-agent/venv/bin/pip install --no-cache-dir \
+      'anthropic==0.87.0' 'openai' \
+ && /usr/local/lib/hermes-agent/venv/bin/python -c 'import anthropic, openai'
+
 # Host Claude uses a persistent public Agent SDK Query. Install from the
 # repository lock so the bridge and its dependency stay compatible.
 WORKDIR /opt/pentest/claude-sdk-bridge
