@@ -570,6 +570,11 @@ func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Requ
 	server.logRequest(start, request, recorder.status)
 }
 
+// ListenAddr is the bind address used to project Runtime MCP and API URLs.
+func (server *Server) ListenAddr() string {
+	return server.listenAddr
+}
+
 func (server *Server) Close() error {
 	server.controlMu.Lock()
 	server.closing = true
