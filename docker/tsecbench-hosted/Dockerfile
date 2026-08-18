@@ -114,11 +114,12 @@ RUN set -eux; \
     hermes --version | tee /opt/hermes-release.txt; \
     hermes acp --help >/dev/null
 
-# Hosted Mode has no public PyPI. Hermes lazy-installs protocol extras on the
-# first session/new (anthropic for anthropic_messages). That hang becomes ACP
-# Internal error after ~80s. Preinstall the extras in the Hermes venv.
-RUN /usr/local/lib/hermes-agent/venv/bin/pip install --no-cache-dir \
-      'anthropic==0.87.0' 'openai' \
+# Hosted Mode has no public PyPI. Hermes lazy-installs provider.anthropic
+# (anthropic==0.87.0) on the first messages session/new. openai is already
+# in python-deps for responses and chat_completions. The venv has no pip
+# binary; install with the Hermes uv.
+RUN /root/.hermes/bin/uv pip install --python /usr/local/lib/hermes-agent/venv/bin/python \
+      'anthropic==0.87.0' \
  && /usr/local/lib/hermes-agent/venv/bin/python -c 'import anthropic, openai'
 
 # Host Claude uses a persistent public Agent SDK Query. Install from the
