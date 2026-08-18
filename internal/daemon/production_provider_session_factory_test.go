@@ -659,6 +659,62 @@ func TestProductionProviderSessionFactoryOpensHostHermesACP(t *testing.T) {
 	}
 }
 
+func TestProductionProviderSessionFactoryProjectsSandboxHermesReasoningEffort(t *testing.T) {
+	taskRoot := t.TempDir()
+	docker := newProductionFactoryDocker()
+	factory := NewProductionProviderSessionFactory(ProductionProviderSessionFactoryConfig{Docker: docker})
+	legacy := runtime.NewDockerSandboxAdapter(runtime.DockerSandboxConfig{
+		Name:  "hermes",
+		Image: "sandbox:test",
+		CreateArgs: []string{
+			"create",
+			"--mount", "type=bind,src=" + taskRoot + ",dst=/task",
+			"-e", "HERMES_HOME=/task/runtime-home/hermes",
+			"sandbox:test", "hermes", "--yolo", "acp",
+		},
+	})
+	go func() {
+		scanner := bufio.NewScanner(docker.inputR)
+		for scanner.Scan() {
+			var request runtime.SandboxBridgeRequest
+			_ = json.Unmarshal(scanner.Bytes(), &request)
+			result := `{"ok":true}`
+			switch request.Method {
+			case "initialize":
+				result = `{"protocolVersion":"1"}`
+			case "session/new":
+				result = `{"sessionId":"hermes-sandbox-1"}`
+			case "session/prompt":
+				result = `{"sessionId":"hermes-sandbox-1","turn_id":"turn-1"}`
+			}
+			_, _ = io.WriteString(docker.outputW, `{"jsonrpc":"2.0","id":"`+request.ID+`","result":`+result+"}\n")
+		}
+	}()
+	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
+		Owner:        owner.NewTaskContract("sandbox-hermes-effort", "project-test", ""),
+		Continuation: owner.Continuation{ID: "sandbox-hermes-c1", OwnerID: "sandbox-hermes-effort"},
+		Provider:     runtimeprofile.ProviderHermes, Runner: task.RunnerSandbox, LegacyAdapter: legacy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer binding.Session.Close(context.Background())
+	if _, err := binding.Session.SendTurn(context.Background(), runtime.ProviderSessionRequest{
+		RequestID:                "sandbox-effort",
+		Message:                  "hi",
+		RequestedReasoningEffort: "max",
+	}, nil); err != nil {
+		t.Fatalf("send turn: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(taskRoot, "runtime-home", "hermes", "cyberpenda-requested-reasoning-effort"))
+	if err != nil {
+		t.Fatalf("sandbox Hermes did not receive Requested Reasoning Effort: %v", err)
+	}
+	if strings.TrimSpace(string(raw)) != "max" {
+		t.Fatalf("sandbox Reasoning Effort = %q, want max", raw)
+	}
+}
+
 func TestProductionProviderSessionFactorySendsHermesACPInitializeProtocolVersion(t *testing.T) {
 	starter := newProductionFactoryHostStarter()
 	factory := NewProductionProviderSessionFactory(ProductionProviderSessionFactoryConfig{HostStarter: starter})

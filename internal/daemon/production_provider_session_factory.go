@@ -882,11 +882,7 @@ func (f *ProductionProviderSessionFactory) finishPiBinding(
 }
 
 func hermesHomeFromAdapter(adapter runtime.Adapter) string {
-	launch, ok := runtime.CommandAdapterLaunch(adapter)
-	if !ok {
-		return ""
-	}
-	return strings.TrimSpace(launch.Env["HERMES_HOME"])
+	return runtime.ProjectedHermesHome(adapter)
 }
 
 func (f *ProductionProviderSessionFactory) finishHermesBinding(
