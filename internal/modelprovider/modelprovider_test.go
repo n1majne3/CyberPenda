@@ -577,6 +577,79 @@ func TestDeleteProviderBlockedWhenRuntimeProfileReferencesIt(t *testing.T) {
 	}
 }
 
+func TestReferencingProfilesListsProfileNames(t *testing.T) {
+	db := newStore(t)
+	providers := modelprovider.NewService(db)
+	profiles := runtimeprofile.NewService(db)
+	provider, err := providers.Create(modelprovider.CreateRequest{Name: "MiMo", BaseURL: "https://api.example.test/v1"})
+	if err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	if _, err := profiles.Create("Pi", runtimeprofile.ProviderPi, runtimeprofile.Fields{ModelProviderID: provider.ID}); err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	if _, err := profiles.Create("Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{}); err != nil {
+		t.Fatalf("create unreferencing profile: %v", err)
+	}
+
+	names, err := providers.ReferencingProfiles(provider.ID)
+	if err != nil {
+		t.Fatalf("referencing profiles: %v", err)
+	}
+	if !reflect.DeepEqual(names, []string{"Pi"}) {
+		t.Fatalf("referencing profiles = %#v, want [Pi]", names)
+	}
+}
+
+func TestDeleteDetachingClearsRuntimeProfileReferences(t *testing.T) {
+	db := newStore(t)
+	providers := modelprovider.NewService(db)
+	profiles := runtimeprofile.NewService(db)
+	provider, err := providers.Create(modelprovider.CreateRequest{Name: "MiMo", BaseURL: "https://api.example.test/v1"})
+	if err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	created, err := profiles.Create("Pi", runtimeprofile.ProviderPi, runtimeprofile.Fields{
+		ModelProviderID:       provider.ID,
+		ModelProviderProtocol: string(modelprovider.ProtocolOpenAIChatCompletions),
+		ModelOverride:         "mimo-2",
+	})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+
+	if err := providers.DeleteDetaching(provider.ID); err != nil {
+		t.Fatalf("delete detaching: %v", err)
+	}
+	if _, err := providers.Get(provider.ID); !errors.Is(err, modelprovider.ErrNotFound) {
+		t.Fatalf("expected provider to be gone, got %v", err)
+	}
+
+	detached, err := profiles.Get(created.ID)
+	if err != nil {
+		t.Fatalf("load profile after detach: %v", err)
+	}
+	if detached.Fields.ModelProviderID != "" {
+		t.Fatalf("model_provider_id = %q, want cleared", detached.Fields.ModelProviderID)
+	}
+	// The pinned protocol is part of the provider reference; leaving it behind
+	// would fail preflight validation instead of falling back.
+	if detached.Fields.ModelProviderProtocol != "" {
+		t.Fatalf("model_provider_protocol = %q, want cleared", detached.Fields.ModelProviderProtocol)
+	}
+	// Unrelated model settings survive the detach.
+	if detached.Fields.ModelOverride != "mimo-2" {
+		t.Fatalf("model_override = %q, want preserved", detached.Fields.ModelOverride)
+	}
+}
+
+func TestDeleteDetachingUnknownProviderReturnsNotFound(t *testing.T) {
+	providers := modelprovider.NewService(newStore(t))
+	if err := providers.DeleteDetaching("missing"); !errors.Is(err, modelprovider.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
 func newStore(t *testing.T) *store.DB {
 	t.Helper()
 	db, err := store.Open("")

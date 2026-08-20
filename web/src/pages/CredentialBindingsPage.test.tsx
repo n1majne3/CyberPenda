@@ -250,4 +250,90 @@ describe("CredentialBindingsPage", () => {
     expect(body.source.destination_env).toBe("NSSCTF_AGENT_TOKEN");
     expect(body.source.kind).toBe("literal");
   });
+
+  it("edits an existing binding and preserves the stored literal when the value is left blank", async () => {
+    const fetchMock = mockApi({
+      "/api/credential-bindings": {
+        bindings: [
+          {
+            id: "binding-1",
+            credential_ref: "NSSCTF_AGENT_TOKEN",
+            scope: "global",
+            source: { kind: "literal", value: "[configured]", destination_env: "NSSCTF_AGENT_TOKEN" },
+            created_at: "",
+            updated_at: "",
+          },
+        ],
+      },
+      "/api/runtime-profiles": { profiles: [] },
+      "/api/model-providers": { providers: [] },
+    });
+
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: /Edit NSSCTF_AGENT_TOKEN binding/i }));
+
+    expect(screen.getByRole("heading", { name: "Edit binding" })).toBeInTheDocument();
+    // The reference is immutable; it renders disabled.
+    expect(screen.getByLabelText("Credential reference")).toBeDisabled();
+    expect((screen.getByLabelText("Secret value") as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("Runtime environment variable name") as HTMLInputElement).value).toBe(
+      "NSSCTF_AGENT_TOKEN",
+    );
+
+    // Blank secret keeps the stored value: Save stays enabled and sends the
+    // sentinel instead of an empty string.
+    const saveButton = screen.getByRole("button", { name: "Save changes" });
+    expect(saveButton).toBeEnabled();
+    await userEvent.click(saveButton);
+
+    const putCall = fetchMock.mock.calls.find(
+      ([input, init]) => String(input).includes("/api/credential-bindings") && init?.method === "PUT",
+    );
+    expect(putCall).toBeDefined();
+    const body = JSON.parse((putCall![1]!.body as string) ?? "{}");
+    expect(body.credential_ref).toBe("NSSCTF_AGENT_TOKEN");
+    expect(body.source.kind).toBe("literal");
+    expect(body.source.value).toBe("[configured]");
+    expect(body.source.destination_env).toBe("NSSCTF_AGENT_TOKEN");
+  });
+
+  it("sends the new value when editing an env binding", async () => {
+    const fetchMock = mockApi({
+      "/api/credential-bindings": {
+        bindings: [
+          {
+            id: "binding-1",
+            credential_ref: "OPENAI_API_KEY",
+            scope: "global",
+            source: { kind: "env", value: "OPENAI_API_KEY", destination_env: "OPENAI_API_KEY" },
+            created_at: "",
+            updated_at: "",
+          },
+        ],
+      },
+      "/api/runtime-profiles": { profiles: [] },
+      "/api/model-providers": { providers: [] },
+    });
+
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: /Edit OPENAI_API_KEY binding/i }));
+
+    const valueField = await screen.findByLabelText("Host environment variable name");
+    expect((valueField as HTMLInputElement).value).toBe("OPENAI_API_KEY");
+    await userEvent.clear(valueField);
+    await userEvent.type(valueField, "OPENAI_KEY_V2");
+
+    await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    const putCall = fetchMock.mock.calls.find(
+      ([input, init]) => String(input).includes("/api/credential-bindings") && init?.method === "PUT",
+    );
+    expect(putCall).toBeDefined();
+    const body = JSON.parse((putCall![1]!.body as string) ?? "{}");
+    expect(body.credential_ref).toBe("OPENAI_API_KEY");
+    expect(body.source.kind).toBe("env");
+    expect(body.source.value).toBe("OPENAI_KEY_V2");
+    // destination_env is an independent field; it keeps its prefilled value.
+    expect(body.source.destination_env).toBe("OPENAI_API_KEY");
+  });
 });

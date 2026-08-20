@@ -1062,7 +1062,7 @@ _Avoid_: transcript, export, source of truth
 - Structured Profile, launch, and **Runtime Turn Selection** fields are authoritative for **Model Provider**, model, and **Reasoning Effort**.
 - Non-conflicting **Runtime Custom Arguments** continue to apply to both **Sandbox Runner** and **Host Runner** launches, including **Task-Scoped Persistent Runtime** bridges.
 - Editing a **Model Provider** does not change existing **Task Runtime Configurations** or an active **Runtime Continuation**.
-- A **Model Provider** cannot be deleted while any **Runtime Profile** still references it.
+- A **Model Provider** cannot be deleted while any **Runtime Profile** still references it, unless the operator explicitly confirms a deletion that clears the **Model Provider** reference and its pinned **Model Provider Protocol** from every referencing **Runtime Profile**.
 - Historical task views read captured **Task Runtime Configurations** and **Model Provider Snapshots**, not live **Runtime Profiles** or live **Model Providers**.
 - A runtime-profile switch inside a **Task** creates a new **Task Runtime Configuration Version** for the next **Runtime Continuation**.
 - A runtime-profile switch re-resolves the selected **Model Provider** and captures a new **Model Provider Snapshot** for the new **Task Runtime Configuration Version**.
@@ -1446,7 +1446,7 @@ _Avoid_: transcript, export, source of truth
 - Runtime-profile switching does not create a new **Task**; resolved: it creates a new **Runtime Continuation** with a new **Task Runtime Configuration Version**.
 - Runtime-profile switching does not reuse the prior **Model Provider Snapshot**; resolved: each new task runtime configuration version captures its own resolved model provider values.
 - **Model Provider** edits are not live task mutation; resolved: active continuations keep the **Model Provider Snapshot** captured at launch or continuation start.
-- **Model Provider** deletion is not silent profile breakage; resolved: deletion is blocked while any runtime profile references the provider.
+- **Model Provider** deletion is not silent profile breakage; resolved: deletion is blocked by default and names the referencing runtime profiles; an explicit operator-confirmed deletion clears the provider reference and its pinned protocol from every referencing runtime profile in the same action.
 - Historical task inspection does not require live profile or provider records; resolved: task history uses captured runtime configuration snapshots.
 - **Project Defaults** are not copied **Runtime Profiles**; resolved: they select defaults while profiles remain global.
 - **Project Dashboard** is not a chat-first view; resolved: the project home prioritizes scope, task runs, blackboard state, findings, and evidence.
