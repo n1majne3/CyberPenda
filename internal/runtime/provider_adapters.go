@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -854,6 +856,10 @@ func NewCodexProviderSession(config CodexProviderSessionConfig) *CodexProviderSe
 			if request.PermissionDecision != "" {
 				params["decision"] = request.PermissionDecision
 			}
+			// Persistent App Server does not inherit the exec-only
+			// --dangerously-bypass-approvals-and-sandbox flag.
+			params["approvalPolicy"] = "never"
+			params["sandboxPolicy"] = map[string]any{"type": "dangerFullAccess"}
 			return params
 		},
 		turnID: nestedTurnID, sessionID: func(record map[string]any) string {
@@ -933,6 +939,9 @@ type HermesProviderSessionConfig struct {
 	Transport    ProviderSessionTransport
 	SessionID    string
 	ActiveTurnID string
+	// HermesHome is the projected HERMES_HOME. Per-turn Requested Reasoning
+	// Effort is written here so ACP can apply it before session/prompt.
+	HermesHome   string
 	Capabilities runtimeplugin.Capabilities
 }
 
@@ -940,12 +949,14 @@ type HermesProviderSession struct{ *providerSessionAdapter }
 
 func NewHermesProviderSession(config HermesProviderSessionConfig) *HermesProviderSession {
 	methods := providerWireMethods{
-		send:        "session/prompt",
-		interrupt:   "session/cancel",
-		params:      hermesACPParams,
-		prepareSend: hermesPrepareSendSelection,
-		turnID:      func(record map[string]any) string { return providerJSONValue(record, "turn_id", "turnId", "id") },
-		sessionID:   identitySession,
+		send:      "session/prompt",
+		interrupt: "session/cancel",
+		params:    hermesACPParams,
+		prepareSend: func(ctx context.Context, transport ProviderSessionTransport, wireBaseID, sessionID, turnID string, request ProviderSessionRequest) error {
+			return hermesPrepareSendSelection(ctx, transport, wireBaseID, sessionID, turnID, config.HermesHome, request)
+		},
+		turnID:    func(record map[string]any) string { return providerJSONValue(record, "turn_id", "turnId", "id") },
+		sessionID: identitySession,
 	}
 	return &HermesProviderSession{newProviderSessionAdapter("hermes", config.Transport, config.SessionID, config.ActiveTurnID, providerCapabilities(config.Capabilities), methods)}
 }
@@ -963,9 +974,12 @@ func hermesACPParams(sessionID, turnID string, request ProviderSessionRequest) m
 // session/set_model. session/prompt has no model field; extra keys are ignored.
 // Named Model Providers use custom:<id>:<model> so Hermes does not auto-switch
 // to a built-in MiniMax/OpenRouter route.
-func hermesPrepareSendSelection(ctx context.Context, transport ProviderSessionTransport, wireBaseID, sessionID, turnID string, request ProviderSessionRequest) error {
+func hermesPrepareSendSelection(ctx context.Context, transport ProviderSessionTransport, wireBaseID, sessionID, turnID, hermesHome string, request ProviderSessionRequest) error {
 	if transport == nil {
 		return errors.New("provider session transport is required")
+	}
+	if err := writeHermesRequestedReasoningEffort(hermesHome, request.RequestedReasoningEffort); err != nil {
+		return err
 	}
 	modelID := hermesACPModelID(request.ModelProviderID, request.Model)
 	if modelID == "" {
@@ -990,6 +1004,18 @@ func hermesPrepareSendSelection(ctx context.Context, transport ProviderSessionTr
 		return &SandboxBridgeRPCError{RequestID: wireBaseID + ":set_model"}
 	}
 	return nil
+}
+
+func writeHermesRequestedReasoningEffort(hermesHome, effort string) error {
+	home := strings.TrimSpace(hermesHome)
+	effort = strings.TrimSpace(effort)
+	if home == "" || effort == "" {
+		return nil
+	}
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(home, "cyberpenda-requested-reasoning-effort"), []byte(effort+"\n"), 0o600)
 }
 
 func hermesACPModelID(providerID, model string) string {

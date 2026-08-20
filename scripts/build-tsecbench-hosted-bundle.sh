@@ -98,7 +98,7 @@ with open(path, encoding="utf-8") as source:
     inventory = json.load(source)
 if inventory.get("schema") != "cyberpenda-hosted-runtime-versions/v1":
     raise SystemExit("invalid Runtime inventory schema")
-for name in ("pi", "codex", "claude_code"):
+for name in ("pi", "codex", "claude_code", "hermes"):
     entry = inventory.get("runtimes", {}).get(name, {})
     for field in ("package", "version", "binary"):
         if not str(entry.get(field, "")).strip():

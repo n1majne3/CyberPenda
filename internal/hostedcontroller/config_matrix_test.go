@@ -50,6 +50,9 @@ func TestHostedConfigurationAcceptsOnlyTheRuntimeProtocolMatrix(t *testing.T) {
 		{"claude_code", "openai_chat_completions", false},
 		{"claude_code", "openai_responses", false},
 		{"claude_code", "anthropic_messages", true},
+		{"hermes", "openai_chat_completions", true},
+		{"hermes", "openai_responses", true},
+		{"hermes", "anthropic_messages", true},
 		{"unknown", "openai_responses", false},
 	}
 	for _, test := range tests {
@@ -104,6 +107,7 @@ func TestHostedStartProjectsEachRuntimeThroughNormalProviderAndCredentialInputs(
 		{"pi", "openai_chat_completions", "/opt/bin/pi", []any{"--approve"}},
 		{"codex", "openai_responses", "/opt/bin/codex", nil},
 		{"claude_code", "anthropic_messages", "/opt/bin/claude", nil},
+		{"hermes", "openai_chat_completions", "/opt/bin/hermes", nil},
 	}
 	for _, test := range tests {
 		t.Run(test.runtime, func(t *testing.T) {

@@ -1,6 +1,6 @@
 .superpowers/
 .cache/
-
+.env
 # Frontend
 /node_modules/
 web/node_modules/
@@ -52,3 +52,4 @@ pentest 2.db-wal
 /scripts/cybergym-*-forensics.json
 /scripts/cybergym-*-timeline.json
 /scripts/cybergym-*-investigation.md
+.playwright-mcp

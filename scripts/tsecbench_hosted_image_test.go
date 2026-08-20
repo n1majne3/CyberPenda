@@ -41,6 +41,9 @@ func TestTSecBenchHostedDockerfileDefinesTheIsolatedAMD64Image(t *testing.T) {
 		"cyberpenda-hosted-runtime-versions/v1",
 		`require('/opt/pentest/claude-sdk-bridge/node_modules/@anthropic-ai/claude-agent-sdk/package.json').version`,
 		`claude_agent_sdk`,
+		"/root/.hermes/bin/uv pip install",
+		"anthropic==0.87.0",
+		`import anthropic, openai`,
 	} {
 		assertContains(t, dockerfile, required)
 	}
@@ -86,13 +89,32 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 		"pi-subagents@latest",
 		"@openai/codex@latest",
 		"@anthropic-ai/claude-code@latest",
+		"hermes-agent.nousresearch.com/install.sh",
+		"--skip-browser",
+		"--skip-computer-use",
+		"python-deps",
 		"agent-browser@latest",
 		"python3-pwntools",
+		"python3-pil",
+		"tesseract-ocr",
+		"SYSTEMD_OFFLINE=1",
+		"default-jre-headless",
+		"jadx",
+		"apktool",
+		"bsdextrautils",
 		"chromium",
 		"golang-go",
 		"build-essential",
 		"gdb",
+		"gdb-multiarch",
 		"radare2",
+		"nasm",
+		"upx-ucl",
+		"yara",
+		"foremost",
+		"python3-capstone",
+		"python3-pefile",
+		"ropper",
 		"strace",
 		"ltrace",
 		"patchelf",
@@ -105,6 +127,15 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 		"iputils-ping",
 		"openssh-client",
 		"openssl",
+		"ffuf",
+		"gobuster",
+		"sqlmap",
+		"python3-requests",
+		"python3-pyinstaller",
+		"python3-pycryptodome",
+		"volatility3",
+		"uncompyle6",
+		"pyinstxtractor-ng",
 		"ARG RUNTIME_RELEASE_CACHE_BUST",
 		`test -n "${RUNTIME_RELEASE_CACHE_BUST}"`,
 	} {
@@ -112,21 +143,52 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 	}
 
 	for _, executable := range []string{
-		"pi", "codex", "claude", "bash", "git", "curl", "jq", "rg",
+		"pi", "codex", "claude", "hermes", "bash", "git", "curl", "jq", "rg",
 		"python3", "go", "gcc", "g++", "make", "gdb", "radare2", "strace",
 		"ltrace", "patchelf", "checksec", "nmap", "nc", "socat", "dig", "ip",
-		"ss", "ping", "ssh", "openssl", "chromium", "agent-browser",
+		"ss", "ping", "ssh", "openssl", "chromium", "agent-browser", "tesseract", "java", "jadx", "apktool", "column",
+		"ffuf", "gobuster", "sqlmap", "hydra", "john", "smbclient", "php", "exiftool", "binwalk",
+		"steghide", "convert", "tcpdump", "redis-cli", "mysql", "psql", "7z",
+		"gdb-multiarch", "nasm", "upx", "yara", "foremost", "xxd", "qemu-x86_64", "qemu-x86_64-static",
+		"ropper", "ROPgadget", "smali", "vol",
+		"uncompyle6", "pydisasm", "pyi-archive_viewer", "pyinstxtractor-ng",
 		"pentest-provider-bridge", "pentest-claude-sdk-bridge", "pentest-tsecbench-hosted",
+		"pentest-tsecbench-client", "pentest-challenge-client",
 	} {
 		assertContains(t, dockerfile, `command -v `+executable)
 	}
-	assertContains(t, dockerfile, `python3 -c 'import pwn'`)
+	assertContains(t, dockerfile, `python3 -c 'import pwn, capstone, pefile, yara, unicorn, volatility3, xdis, uncompyle6, PyInstaller; from PIL import Image'`)
+	assertContains(t, dockerfile, "/opt/cyberpenda/adapters/")
+	assertContains(t, dockerfile, "pentest-challenge-client")
+	if strings.Contains(dockerfile, "/root/.local/bin/hermes") {
+		t.Fatal("Hosted Image must install Hermes at /usr/local/bin/hermes, not ~/.local/bin")
+	}
+	stageAt := strings.Index(dockerfile, "for stage in")
+	if stageAt == -1 {
+		t.Fatal("Hosted Image must loop official Hermes install.sh stages")
+	}
+	stageLine := dockerfile[stageAt:]
+	if next := strings.Index(stageLine, "\n"); next != -1 {
+		stageLine = stageLine[:next]
+	}
+	if strings.Contains(stageLine, "node-deps") {
+		t.Fatal("Hosted Image must not run Hermes install.sh --stage node-deps")
+	}
 	if strings.Contains(dockerfile, "pip3 install --no-cache-dir --break-system-packages pwntools") {
 		t.Fatal("Hosted Image must use Kali python3-pwntools instead of building unicorn from source on Python 3.14")
 	}
+	if strings.Contains(dockerfile, "volatility3 uncompyle6 xdis pyinstxtractor-ng") {
+		t.Fatal("Hosted Image must not resolve uncompyle6 and pyinstxtractor-ng against one unbounded xdis")
+	}
+	assertContains(t, dockerfile, `xdis>=6.1.1,<6.2.0`)
+	assertContains(t, dockerfile, "--no-deps")
+	assertContains(t, dockerfile, `ln -s "$base" "/usr/bin/${base}-static"`)
+	assertContains(t, dockerfile, "missing hosted tool")
+	// Kali qemu-user ships qemu-x86_64. Do not treat qemu-x86_64-static as that name.
+	assertContains(t, dockerfile, "command -v qemu-x86_64 ||")
 
 	for _, excluded := range []string{
-		"kali-linux-headless", "ghidra", "jadx", "android-sdk", "seclists",
+		"kali-linux-headless", "ghidra", "android-sdk", "seclists",
 		"docker.io", "docker-ce", "docker-cli", "podman", "openvpn", "wireguard", "tunneling",
 		"/var/run/docker.sock", "--privileged", "--cap-add", "NET_ADMIN", "/dev/net/tun",
 	} {
@@ -169,10 +231,10 @@ func TestTSecBenchHostedImageSmokeWhenAnImageIsConfigured(t *testing.T) {
 
 	smoke := `set -eu
 test "$(id -u)" = 0
-	for command in pi codex claude bash git curl jq rg python3 go gcc g++ make gdb radare2 strace ltrace patchelf checksec nmap nc socat dig ip ss ping ssh openssl chromium agent-browser pentest-provider-bridge pentest-claude-sdk-bridge pentest-tsecbench-hosted; do
+	for command in pi codex claude hermes bash git curl jq rg python3 go gcc g++ make gdb radare2 strace ltrace patchelf checksec nmap nc socat dig ip ss ping ssh openssl chromium agent-browser tesseract java jadx apktool column ffuf gobuster sqlmap hydra john smbclient php exiftool binwalk steghide convert tcpdump redis-cli mysql psql 7z gdb-multiarch nasm upx yara foremost xxd qemu-x86_64 qemu-x86_64-static ropper ROPgadget smali vol uncompyle6 pydisasm pyi-archive_viewer pyinstxtractor-ng pentest-provider-bridge pentest-claude-sdk-bridge pentest-tsecbench-hosted pentest-tsecbench-client pentest-challenge-client; do
   command -v "$command" >/dev/null
 done
-python3 -c 'import pwn'
+python3 -c 'import pwn, capstone, pefile, yara, unicorn, volatility3, xdis, uncompyle6, PyInstaller; from PIL import Image'
 test -s /opt/cyberpenda/runtime-versions.json
 `
 	output, err := exec.Command(docker, "run", "--rm", "--network", "none", "--entrypoint", "sh", image, "-c", smoke).CombinedOutput()
@@ -202,7 +264,7 @@ test -s /opt/cyberpenda/runtime-versions.json
 	if inventory.Schema != "cyberpenda-hosted-runtime-versions/v1" {
 		t.Fatalf("Runtime inventory schema = %q", inventory.Schema)
 	}
-	for _, runtimeName := range []string{"pi", "codex", "claude_code"} {
+	for _, runtimeName := range []string{"pi", "codex", "claude_code", "hermes"} {
 		entry, ok := inventory.Runtimes[runtimeName]
 		if !ok || entry.Package == "" || entry.Version == "" || entry.Binary == "" {
 			t.Fatalf("Runtime inventory %s = %#v", runtimeName, entry)

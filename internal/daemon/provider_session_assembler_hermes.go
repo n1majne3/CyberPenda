@@ -81,13 +81,20 @@ func (a hermesAssembler) Setup(ctx context.Context, bridge productionBridgeTrans
 	capabilities.AssistedConclusion = true
 	return providerSessionSetup{
 		Session: runtime.NewHermesProviderSession(runtime.HermesProviderSessionConfig{
-			Transport: bridge, SessionID: sessionID, Capabilities: capabilities,
+			Transport:    bridge,
+			SessionID:    sessionID,
+			Capabilities: capabilities,
+			HermesHome:   hermesHomeFromAdapter(assembly.request.LegacyAdapter),
 		}),
 	}, nil
 }
 
 func (hermesAssembler) HostStartError(program string, err error) error {
 	return fmt.Errorf("Hermes ACP unavailable at %s: %w", program, err)
+}
+
+func hermesHomeFromAdapter(adapter runtime.Adapter) string {
+	return runtime.ProjectedHermesHome(adapter)
 }
 
 func (hermesAssembler) HostTeardown(providerSessionAssembly) func(context.Context) { return nil }

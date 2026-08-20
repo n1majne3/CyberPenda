@@ -14,8 +14,9 @@ bounded error before it creates the Project.
 
 ## Runtime and protocol mismatch
 
-Use the strict matrix in `README.md`. Pi supports the three packaged protocols.
-Codex requires `openai_responses`. Claude Code requires `anthropic_messages`.
+Use the strict matrix in `README.md`. Pi and Hermes support the three packaged
+protocols. Codex requires `openai_responses`. Claude Code requires
+`anthropic_messages`.
 
 ## Claude request exceeds the 1M context
 

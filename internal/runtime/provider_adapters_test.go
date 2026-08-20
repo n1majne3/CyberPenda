@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -171,6 +173,35 @@ func TestCodexProviderSessionMapsModelAndRequestedReasoningEffortOnTurnStart(t *
 	}
 	if startParams["effort"] != "xhigh" {
 		t.Fatalf("effort param = %#v, want xhigh", startParams["effort"])
+	}
+}
+
+func TestCodexProviderSessionAppliesNonInteractiveSandboxOnTurnStart(t *testing.T) {
+	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
+		"turn/start": {Result: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-sandbox"}}`)},
+	}}
+	session := NewCodexProviderSession(CodexProviderSessionConfig{Transport: transport, SessionID: "thread-1", ThreadID: "thread-1"})
+	bindFakeProviderEvents(transport, session)
+
+	if _, err := session.SendTurn(context.Background(), ProviderSessionRequest{
+		RequestID: "send-sandbox", Message: "list challenges",
+	}, nil); err != nil {
+		t.Fatalf("send turn: %v", err)
+	}
+	requests := transport.snapshot()
+	if len(requests) != 1 || requests[0].Method != "turn/start" {
+		t.Fatalf("wire requests = %#v", requests)
+	}
+	var startParams map[string]any
+	if err := json.Unmarshal(requests[0].Params, &startParams); err != nil {
+		t.Fatal(err)
+	}
+	if startParams["approvalPolicy"] != "never" {
+		t.Fatalf("approvalPolicy = %#v", startParams["approvalPolicy"])
+	}
+	policy, _ := startParams["sandboxPolicy"].(map[string]any)
+	if policy["type"] != "dangerFullAccess" {
+		t.Fatalf("sandboxPolicy = %#v", startParams["sandboxPolicy"])
 	}
 }
 
@@ -685,6 +716,33 @@ func TestHermesProviderSessionAppliesSetModelBeforePrompt(t *testing.T) {
 	}
 	if setModel["sessionId"] != "hermes-1" || setModel["modelId"] != "custom:hub:deepseek-v4-flash-free" {
 		t.Fatalf("set_model params = %#v", setModel)
+	}
+}
+
+func TestHermesProviderSessionProjectsRequestedReasoningEffort(t *testing.T) {
+	home := t.TempDir()
+	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
+		"session/set_model": {Result: json.RawMessage(`{}`)},
+		"session/prompt":    {Result: json.RawMessage(`{"sessionId":"hermes-1","turn_id":"turn-2"}`)},
+	}}
+	session := NewHermesProviderSession(HermesProviderSessionConfig{
+		Transport: transport, SessionID: "hermes-1", HermesHome: home,
+	})
+	if _, err := session.SendTurn(context.Background(), ProviderSessionRequest{
+		RequestID:                "send-effort",
+		Message:                  "hi",
+		ModelProviderID:          "hub",
+		Model:                    "deepseek-v4-flash-free",
+		RequestedReasoningEffort: "max",
+	}, nil); err != nil {
+		t.Fatalf("send turn: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, "cyberpenda-requested-reasoning-effort"))
+	if err != nil {
+		t.Fatalf("read projected Reasoning Effort: %v", err)
+	}
+	if strings.TrimSpace(string(raw)) != "max" {
+		t.Fatalf("projected Reasoning Effort = %q, want max", raw)
 	}
 }
 

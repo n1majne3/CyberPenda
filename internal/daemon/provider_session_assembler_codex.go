@@ -42,9 +42,9 @@ func (a codexAssembler) Setup(ctx context.Context, bridge productionBridgeTransp
 		return providerSessionSetup{}, err
 	}
 	cwd := assembly.facts().Workdir
-	setupMethod, setupID, setupParams := "thread/start", "setup:thread", json.RawMessage(fmt.Sprintf(`{"cwd":%q}`, cwd))
+	setupMethod, setupID, setupParams := "thread/start", "setup:thread", codexThreadSetupParams(cwd, "")
 	if durableThreadID := strings.TrimSpace(assembly.request.Continuation.NativeSessionID); durableThreadID != "" {
-		setupMethod, setupID, setupParams = "thread/resume", "setup:thread-resume", json.RawMessage(fmt.Sprintf(`{"threadId":%q,"cwd":%q}`, durableThreadID, cwd))
+		setupMethod, setupID, setupParams = "thread/resume", "setup:thread-resume", codexThreadSetupParams(cwd, durableThreadID)
 	}
 	setupResponse, err := bridge.Send(ctx, runtime.SandboxBridgeRequest{ID: setupID, Method: setupMethod, Params: setupParams})
 	if err != nil {
@@ -88,5 +88,24 @@ func (a codexAssembler) Setup(ctx context.Context, bridge productionBridgeTransp
 func (codexAssembler) HostStartError(_ string, err error) error { return err }
 
 func (codexAssembler) HostTeardown(providerSessionAssembly) func(context.Context) { return nil }
+
+// codexThreadSetupParams projects Runtime Non-Interactive Defaults onto the
+// persistent App Server thread. The exec flag
+// --dangerously-bypass-approvals-and-sandbox is stripped from app-server argv.
+func codexThreadSetupParams(cwd, threadID string) json.RawMessage {
+	params := map[string]any{
+		"cwd":            cwd,
+		"approvalPolicy": "never",
+		"sandbox":        "danger-full-access",
+	}
+	if threadID = strings.TrimSpace(threadID); threadID != "" {
+		params["threadId"] = threadID
+	}
+	raw, err := json.Marshal(params)
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return raw
+}
 
 var _ providerSessionAssembler = codexAssembler{}

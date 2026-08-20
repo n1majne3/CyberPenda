@@ -21,6 +21,7 @@ import (
 	"pentest/internal/daemon"
 	"pentest/internal/hostedcontroller"
 	"pentest/internal/runtime"
+	"pentest/internal/tsecbenchclient"
 )
 
 // This is the accepted Hosted Evaluation Run reference seam. HTTPApp calls a
@@ -51,6 +52,7 @@ func TestHostedAcceptanceConfigurationCompletesTheRuntimeManagedChallengeLoop(t 
 		"GET /openapi/v1/challenges/hint?unique_code=multi",
 		"POST /openapi/v1/challenges/submit flag-one",
 		"POST /openapi/v1/challenges/submit flag-two",
+		"GET /openapi/v1/challenges",
 		"POST /openapi/v1/challenges/close?unique_code=multi",
 	}
 	if !reflect.DeepEqual(result.platformRequests, want) {
@@ -71,10 +73,10 @@ func TestHostedAcceptanceConfigurationMakesPlatformFailuresVisibleToTheRuntime(t
 		want     string
 	}{
 		{name: "malformed response", scenario: acceptedPlatformMalformed, want: "malformed JSON"},
-		{name: "transport failure", scenario: acceptedPlatformTransportFailure, want: "transport error"},
-		{name: "rate limit", scenario: acceptedPlatformRateLimited, want: "HTTP 429 rate_limited"},
-		{name: "other client error", scenario: acceptedPlatformOtherClientError, want: "HTTP 422 invalid_request"},
-		{name: "server error", scenario: acceptedPlatformServerError, want: "HTTP 500 internal_error"},
+		{name: "transport failure", scenario: acceptedPlatformTransportFailure, want: "request failed"},
+		{name: "rate limit", scenario: acceptedPlatformRateLimited, want: "HTTP 429"},
+		{name: "other client error", scenario: acceptedPlatformOtherClientError, want: "HTTP 422"},
+		{name: "server error", scenario: acceptedPlatformServerError, want: "HTTP 500"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -227,7 +229,7 @@ func (starter *acceptedPiStarter) serve(spec runtime.HostProcessSpec, input io.R
 	}
 	skillPath := filepath.Join(filepath.Dir(spec.Workdir), "skills", "tsecbench-hosted-challenge-loop", "SKILL.md")
 	if instruction, err := os.ReadFile(skillPath); err == nil {
-		result.hostedSkillProjected = bytes.Contains(instruction, []byte("/openapi/v1/challenges"))
+		result.hostedSkillProjected = bytes.Contains(instruction, []byte("pentest-tsecbench-client list"))
 	}
 
 	scanner := bufio.NewScanner(input)
@@ -326,59 +328,47 @@ func (starter *acceptedPiStarter) serve(spec runtime.HostProcessSpec, input io.R
 }
 
 func (starter *acceptedPiStarter) runChallengeLoop(env map[string]string) error {
-	base := strings.TrimRight(env["BENCHMARK_BASE_URL"], "/") + "/openapi/v1/challenges"
-	call := func(method, url string, input any) (int, []byte, error) {
-		var body io.Reader
-		if input != nil {
-			raw, _ := json.Marshal(input)
-			body = bytes.NewReader(raw)
-		}
-		request, _ := http.NewRequest(method, url, body)
-		request.Header.Set("BENCHMARK_TOKEN", env["BENCHMARK_TOKEN"])
-		return starter.platform.do(request)
-	}
-	status, body, err := call(http.MethodGet, base, nil)
+	client, err := tsecbenchclient.New(tsecbenchclient.Config{
+		BaseURL: env["BENCHMARK_BASE_URL"], Token: env["BENCHMARK_TOKEN"],
+		Client: &http.Client{Transport: acceptedPlatformTransport{platform: starter.platform}}, Timeout: time.Second,
+	})
 	if err != nil {
-		return fmt.Errorf("transport error")
+		return err
 	}
-	if status != http.StatusOK {
-		return acceptedHTTPError(status, body)
+	state, err := client.List(context.Background())
+	if err != nil {
+		return err
 	}
-	var challenges []map[string]any
-	if json.Unmarshal(body, &challenges) != nil || len(challenges) == 0 {
-		return fmt.Errorf("malformed JSON")
+	if len(state.Challenges) == 0 {
+		return fmt.Errorf("empty challenge list")
 	}
-	code, _ := challenges[0]["unique_code"].(string)
-	for _, operation := range []struct {
-		method, path string
-		body         any
-	}{
-		{http.MethodPost, "/start?unique_code=" + code, nil},
-		{http.MethodGet, "/hint?unique_code=" + code, nil},
-		{http.MethodPost, "/submit", map[string]string{"unique_code": code, "flag": "flag-one"}},
-		{http.MethodPost, "/submit", map[string]string{"unique_code": code, "flag": "flag-two"}},
-		{http.MethodPost, "/close?unique_code=" + code, nil},
-	} {
-		status, body, err = call(operation.method, base+operation.path, operation.body)
-		if err != nil {
-			return fmt.Errorf("transport error")
-		}
-		if status < 200 || status >= 300 {
-			return acceptedHTTPError(status, body)
-		}
-		if !json.Valid(body) {
-			return fmt.Errorf("malformed JSON")
-		}
+	code := state.Challenges[0].UniqueCode
+	if _, err := client.Start(context.Background(), code); err != nil {
+		return err
 	}
-	return nil
+	if _, err := client.Hint(context.Background(), code); err != nil {
+		return err
+	}
+	if _, err := client.Submit(context.Background(), code, "flag-one"); err != nil {
+		return err
+	}
+	if _, err := client.Submit(context.Background(), code, "flag-two"); err != nil {
+		return err
+	}
+	_, err = client.Close(context.Background(), tsecbenchclient.CloseRequest{UniqueCode: code})
+	return err
 }
 
-func acceptedHTTPError(status int, body []byte) error {
-	var payload struct {
-		Code string `json:"code"`
+type acceptedPlatformTransport struct{ platform *acceptedPlatform }
+
+func (transport acceptedPlatformTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	status, body, err := transport.platform.do(request)
+	if err != nil {
+		return nil, err
 	}
-	_ = json.Unmarshal(body, &payload)
-	return fmt.Errorf("HTTP %d %s", status, payload.Code)
+	return &http.Response{
+		StatusCode: status, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body)), Request: request,
+	}, nil
 }
 
 func writeAcceptedRPCResponse(output io.Writer, id string, result any) {
@@ -461,7 +451,8 @@ func (platform *acceptedPlatform) serveHTTP(response http.ResponseWriter, reques
 	switch request.Method + " " + request.URL.Path {
 	case "GET /openapi/v1/challenges":
 		platform.requests = append(platform.requests, entry)
-		_, _ = io.WriteString(response, `[{"unique_code":"multi","is_completed":false,"container_status":"stopped","flag_count":2,"correct_flag_count":0}]`)
+		completed := platform.correct >= 2
+		_, _ = fmt.Fprintf(response, `[{"unique_code":"multi","is_completed":%t,"container_status":"stopped","flag_count":2,"correct_flag_count":%d}]`, completed, platform.correct)
 	case "POST /openapi/v1/challenges/start":
 		platform.requests = append(platform.requests, entry)
 		_, _ = io.WriteString(response, `{"container_addr":["10.0.0.2:31337"]}`)
