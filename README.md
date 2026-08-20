@@ -38,11 +38,14 @@ Data lives on the machine by default: SQLite (`pentest.db`), task run directorie
 ### Prerequisites
 
 - Go (see `go.mod`)
-- Node.js 20+ (UI build / `make dev`)
+- Node.js 20.19+ or 22.12+ (UI build / `make dev`)
+- GNU Make (source builds)
 - A Linux container engine for the **Sandbox Runner**:
   - **macOS (default here):** [OrbStack](https://orbstack.dev/) with the Docker-compatible CLI
   - **Linux:** Docker Engine or Podman
-  - **Windows:** native `pentestd` + Docker Desktop / Podman Desktop (Linux containers in the Desktop WSL machine)
+  - **Windows:** native `pentestd.exe` + Docker Desktop / Podman Desktop (Linux containers in the Desktop WSL machine)
+
+Native Windows `make build` uses Node, npm, GNU Make, and Go. It does not require Git Bash, WSL, `rsync`, or POSIX coreutils. The Desktop Linux machine is only for the Sandbox Runner; it is not part of the application build.
 
 See [ADR 0025](docs/adr/0025-container-engine-support-matrix.md) and
 [docs/platform-engines.md](docs/platform-engines.md) for the engine matrix
@@ -59,9 +62,18 @@ Open the Vite URL printed by the frontend (API and health proxy to `http://127.0
 
 ### Build a self-contained daemon
 
+Linux and macOS:
+
 ```sh
 make build      # builds UI into the local embed path, then pentestd
 ./pentestd
+```
+
+Windows Command Prompt or PowerShell:
+
+```powershell
+make build      # builds UI into the local embed path, then pentestd.exe
+.\pentestd.exe
 ```
 
 The React build under `internal/daemon/webfs/dist` is **not** committed. Docker and `make build` regenerate it. A tracked `dist/.gitkeep` only keeps `//go:embed` valid for bare Go tests.

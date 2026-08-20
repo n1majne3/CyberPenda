@@ -79,6 +79,7 @@ func TestProductionProviderSessionFactoryOpensCodexAppServerBridgeWithoutPTY(t *
 	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
 		Owner: owner.NewTaskContract("task-1", "project-test", ""), Continuation: owner.Continuation{ID: "continuation-1", OwnerID: "task-1"},
 		Provider: runtimeprofile.ProviderCodex, Runner: task.RunnerSandbox, LegacyAdapter: legacy,
+		Facts: ProviderSessionLaunchFacts{Workdir: "/task/workdir"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -140,6 +141,7 @@ func TestProductionProviderSessionFactoryResumesDurableCodexThread(t *testing.T)
 		Owner:        owner.NewTaskContract("task-restart", "project-test", ""),
 		Continuation: owner.Continuation{ID: "continuation-fresh", OwnerID: "task-restart", NativeSessionID: "thread-durable", NativeSessionPath: "/sessions/thread-durable.jsonl"},
 		Provider:     runtimeprofile.ProviderCodex, Runner: task.RunnerSandbox, LegacyAdapter: legacy,
+		Facts: ProviderSessionLaunchFacts{Workdir: "/task/workdir"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -186,6 +188,7 @@ func TestProductionProviderSessionFactoryFailsClosedOnChangedDurableThread(t *te
 		Owner:        owner.NewTaskContract("task-restart-mismatch", "project-test", ""),
 		Continuation: owner.Continuation{ID: "continuation-fresh", OwnerID: "task-restart-mismatch", NativeSessionID: "thread-durable"},
 		Provider:     runtimeprofile.ProviderCodex, Runner: task.RunnerSandbox, LegacyAdapter: legacy,
+		Facts: ProviderSessionLaunchFacts{Workdir: "/task/workdir"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "resume identity changed") {
 		t.Fatalf("resume mismatch error = %v", err)
@@ -218,6 +221,7 @@ func TestProductionProviderSessionFactoryOpensClaudeAgentSDKBridge(t *testing.T)
 	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
 		Owner: owner.NewTaskContract("task-claude", "project-test", ""), Continuation: owner.Continuation{ID: "continuation-claude", OwnerID: "task-claude", NativeSessionID: "claude-durable"},
 		Provider: runtimeprofile.ProviderClaudeCode, Runner: task.RunnerSandbox, LegacyAdapter: legacy,
+		Facts: ProviderSessionLaunchFacts{Workdir: "/task/workdir", Model: "claude-test", SettingsPath: "/task/runtime-home/claude/settings.json"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -325,6 +329,7 @@ func TestProductionProviderSessionFactoryOpensPiRPCBridge(t *testing.T) {
 	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
 		Owner: owner.NewTaskContract("task-pi", "project-test", ""), Continuation: owner.Continuation{ID: "continuation-pi", OwnerID: "task-pi"},
 		Provider: runtimeprofile.ProviderPi, Runner: task.RunnerSandbox, LegacyAdapter: legacy,
+		Facts: ProviderSessionLaunchFacts{Workdir: "/task/workdir"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -435,6 +440,7 @@ func TestProductionProviderSessionFactoryOpensHostCodexAppServer(t *testing.T) {
 	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
 		Owner: owner.NewTaskContract("host-task-1", "project-test", ""), Continuation: owner.Continuation{ID: "host-continuation-1", OwnerID: "host-task-1"},
 		Provider: runtimeprofile.ProviderCodex, Runner: task.RunnerHost, LegacyAdapter: legacy,
+		Facts: ProviderSessionLaunchFacts{ProviderBinary: "/opt/codex", CustomArgs: []string{"--json", "--strict-mode"}, Workdir: "/tmp/task-workdir"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -497,6 +503,7 @@ func TestProductionProviderSessionFactoryOpensHostCodexAppServer(t *testing.T) {
 	rebound, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
 		Owner: owner.NewTaskContract("host-task-1", "project-test", ""), Continuation: owner.Continuation{ID: "host-continuation-2", OwnerID: "host-task-1"},
 		Provider: runtimeprofile.ProviderCodex, Runner: task.RunnerHost, LegacyAdapter: legacy,
+		Facts: ProviderSessionLaunchFacts{Workdir: "/tmp/task-workdir"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -535,6 +542,7 @@ func TestProductionProviderSessionFactoryResumesHostCodexThread(t *testing.T) {
 	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
 		Owner: owner.NewTaskContract("host-resume", "project-test", ""), Continuation: owner.Continuation{ID: "c1", OwnerID: "host-resume", NativeSessionID: "host-durable"},
 		Provider: runtimeprofile.ProviderCodex, Runner: task.RunnerHost, LegacyAdapter: legacy,
+		Facts: ProviderSessionLaunchFacts{Workdir: "/work"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -580,6 +588,7 @@ func TestProductionProviderSessionFactoryHostCloseKillsProcessGroup(t *testing.T
 	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
 		Owner: owner.NewTaskContract("host-kill", "project-test", ""), Continuation: owner.Continuation{ID: "c1", OwnerID: "host-kill"},
 		Provider: runtimeprofile.ProviderCodex, Runner: task.RunnerHost, LegacyAdapter: legacy,
+		Facts: ProviderSessionLaunchFacts{Workdir: "/work"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -639,6 +648,7 @@ func TestProductionProviderSessionFactoryOpensHostHermesACP(t *testing.T) {
 	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
 		Owner: owner.NewTaskContract("host-hermes-1", "project-test", ""), Continuation: owner.Continuation{ID: "host-hermes-c1", OwnerID: "host-hermes-1"},
 		Provider: runtimeprofile.ProviderHermes, Runner: task.RunnerHost, LegacyAdapter: legacy,
+		Facts: ProviderSessionLaunchFacts{ProviderBinary: "/opt/hermes", Workdir: "/tmp/task-workdir"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -753,6 +763,7 @@ func TestProductionProviderSessionFactorySendsHermesACPInitializeProtocolVersion
 	if _, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
 		Owner: owner.NewTaskContract("host-hermes-init", "project-test", ""), Continuation: owner.Continuation{ID: "host-hermes-init-c1", OwnerID: "host-hermes-init"},
 		Provider: runtimeprofile.ProviderHermes, Runner: task.RunnerHost, LegacyAdapter: legacy,
+		Facts: ProviderSessionLaunchFacts{ProviderBinary: "/opt/hermes", Workdir: "/tmp/task-workdir"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -807,6 +818,7 @@ func TestProductionProviderSessionFactorySendsHermesACPSessionNewMCPServers(t *t
 	if _, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
 		Owner: owner.NewTaskContract("host-hermes-session", "project-test", ""), Continuation: owner.Continuation{ID: "host-hermes-session-c1", OwnerID: "host-hermes-session"},
 		Provider: runtimeprofile.ProviderHermes, Runner: task.RunnerHost, LegacyAdapter: legacy,
+		Facts: ProviderSessionLaunchFacts{ProviderBinary: "/opt/hermes", Workdir: "/tmp/task-workdir"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -871,6 +883,7 @@ func TestProductionProviderSessionFactoryOpensHostClaudeSDKBridge(t *testing.T) 
 		Owner: owner.NewTaskContract("host-claude-1", "project-test", ""), Continuation: owner.Continuation{ID: "c1", OwnerID: "host-claude-1"},
 		Provider: runtimeprofile.ProviderClaudeCode, Runner: task.RunnerHost, LegacyAdapter: legacy,
 		RuntimeConfig: map[string]any{"launch_model_override": "claude-test"},
+		Facts:         ProviderSessionLaunchFacts{Workdir: "/tmp/task-workdir", Model: "claude-test", SettingsPath: "/tmp/claude-home/settings.json", CustomArgs: []string{"--add-dir", "/tmp/extra"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -954,6 +967,7 @@ func TestProductionProviderSessionFactoryOpensHostClaudeSDKBridge(t *testing.T) 
 	rebound, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
 		Owner: owner.NewTaskContract("host-claude-1", "project-test", ""), Continuation: owner.Continuation{ID: "c2", OwnerID: "host-claude-1"},
 		Provider: runtimeprofile.ProviderClaudeCode, Runner: task.RunnerHost, LegacyAdapter: legacy,
+		Facts: ProviderSessionLaunchFacts{Workdir: "/tmp/task-workdir"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -994,6 +1008,7 @@ func TestProductionProviderSessionFactoryResumesHostClaudeQuery(t *testing.T) {
 		Owner:        owner.NewTaskContract("host-claude-resume", "project-test", ""),
 		Continuation: owner.Continuation{ID: "c1", OwnerID: "host-claude-resume", NativeSessionID: "claude-durable"},
 		Provider:     runtimeprofile.ProviderClaudeCode, Runner: task.RunnerHost, LegacyAdapter: legacy,
+		Facts: ProviderSessionLaunchFacts{Workdir: "/work", Model: "claude-test", SettingsPath: "/home/settings.json"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1037,6 +1052,7 @@ func TestProductionProviderSessionFactoryHostClaudeCloseKillsProcessGroup(t *tes
 	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
 		Owner: owner.NewTaskContract("host-claude-kill", "project-test", ""), Continuation: owner.Continuation{ID: "c1", OwnerID: "host-claude-kill"},
 		Provider: runtimeprofile.ProviderClaudeCode, Runner: task.RunnerHost, LegacyAdapter: legacy,
+		Facts: ProviderSessionLaunchFacts{Workdir: "/work"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1067,6 +1083,7 @@ func TestProductionProviderSessionFactoryHostClaudeBridgeUnavailableIsClear(t *t
 	_, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
 		Owner: owner.NewTaskContract("host-claude-missing", "project-test", ""), Continuation: owner.Continuation{ID: "c1", OwnerID: "host-claude-missing"},
 		Provider: runtimeprofile.ProviderClaudeCode, Runner: task.RunnerHost, LegacyAdapter: legacy,
+		Facts: ProviderSessionLaunchFacts{Workdir: "/work"},
 	})
 	if err == nil {
 		t.Fatal("expected clear error when packaged Claude SDK bridge is unavailable")
@@ -1079,22 +1096,6 @@ func TestProductionProviderSessionFactoryHostClaudeBridgeUnavailableIsClear(t *t
 	}
 	if _, ok := factory.hostBridges.Get("host-claude-missing"); ok {
 		t.Fatal("failed open retained host bridge ownership")
-	}
-}
-
-func TestHostClaudeCustomArgsPreservesNonConflicting(t *testing.T) {
-	got := hostClaudeCustomArgs([]string{
-		"--model", "claude-test",
-		"--settings", "/tmp/settings.json",
-		"--strict-mcp-config", "--mcp-config", "/tmp/.mcp.json",
-		"-p", "--output-format", "stream-json", "--verbose",
-		"--dangerously-skip-permissions", "--permission-mode", "bypassPermissions",
-		"--add-dir", "/extra", "--debug",
-		"inspect goal",
-	})
-	want := []string{"--add-dir", "/extra", "--debug"}
-	if strings.Join(got, " ") != strings.Join(want, " ") {
-		t.Fatalf("custom args = %#v, want %#v", got, want)
 	}
 }
 
@@ -1153,6 +1154,7 @@ func TestProductionProviderSessionFactoryOpensHostPiRPCViaWireBridge(t *testing.
 	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
 		Owner: owner.NewTaskContract("host-pi-task", "project-test", ""), Continuation: owner.Continuation{ID: "host-pi-cont", OwnerID: "host-pi-task"},
 		Provider: runtimeprofile.ProviderPi, Runner: task.RunnerHost, LegacyAdapter: legacy,
+		Facts: ProviderSessionLaunchFacts{ProviderBinary: "/usr/local/bin/pi", CustomArgs: []string{"--debug"}, Workdir: "/tmp/task-workdir"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1195,6 +1197,7 @@ func TestProductionProviderSessionFactoryOpensHostPiRPCViaWireBridge(t *testing.
 	rebound, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
 		Owner: owner.NewTaskContract("host-pi-task", "project-test", ""), Continuation: owner.Continuation{ID: "host-pi-cont-2", OwnerID: "host-pi-task"},
 		Provider: runtimeprofile.ProviderPi, Runner: task.RunnerHost, LegacyAdapter: legacy,
+		Facts: ProviderSessionLaunchFacts{Workdir: "/tmp/task-workdir"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1251,6 +1254,7 @@ func TestProductionProviderSessionFactoryHostPiCloseCleansProcessGroupAndArtifac
 	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
 		Owner: owner.NewTaskContract("host-pi-clean", "project-test", ""), Continuation: owner.Continuation{ID: "c1", OwnerID: "host-pi-clean"},
 		Provider: runtimeprofile.ProviderPi, Runner: task.RunnerHost, LegacyAdapter: legacy,
+		Facts: ProviderSessionLaunchFacts{Workdir: "/work"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1347,103 +1351,6 @@ func TestProductionProviderSessionFactoryHostPiFailsWhenProjectedEnvMissing(t *t
 	}
 }
 
-func TestHostPiCustomArgsPreservesNonConflicting(t *testing.T) {
-	got := hostPiCustomArgs([]string{
-		"--provider", "primary", "--model", "m1", "--mode", "json",
-		"--debug", "--print-config", "inspect goal",
-	})
-	want := []string{"--debug", "--print-config"}
-	if strings.Join(got, " ") != strings.Join(want, " ") {
-		t.Fatalf("custom args = %#v, want %#v", got, want)
-	}
-}
-
-func TestHostCodexCustomArgsPreservesNonConflicting(t *testing.T) {
-	got := hostCodexCustomArgs([]string{
-		"exec", "--model", "gpt-test", "--dangerously-bypass-approvals-and-sandbox",
-		"--json", "--strict-mode", "--flag=value", "inspect goal",
-	})
-	want := []string{"--json", "--strict-mode", "--flag=value"}
-	if strings.Join(got, " ") != strings.Join(want, " ") {
-		t.Fatalf("custom args = %#v, want %#v", got, want)
-	}
-}
-
-func TestHostCodexCustomArgsPreservesNonConflictingConfigOverrides(t *testing.T) {
-	// One-shot host argv includes structured --model plus user Custom Args.
-	// -c/--config/--config-file/--profile are not harness-owned; non-conflicting
-	// forms must survive app-server assembly. Only one-shot subcommands,
-	// structured model flags, non-interactive defaults, and the goal drop.
-	got := hostCodexCustomArgs([]string{
-		"exec", "--model", "gpt-test",
-		"--dangerously-bypass-approvals-and-sandbox",
-		"--skip-git-repo-check",
-		"-c", "foo=bar",
-		"--config", "features.foo=true",
-		"--config-file", "/tmp/extra.toml",
-		"--profile", "operator-profile",
-		"-c", "sandbox_workspace_write.network_access=true",
-		"--json",
-		"--full-auto",
-		"inspect goal",
-	})
-	want := []string{
-		"-c", "foo=bar",
-		"--config", "features.foo=true",
-		"--config-file", "/tmp/extra.toml",
-		"--profile", "operator-profile",
-		"-c", "sandbox_workspace_write.network_access=true",
-		"--json",
-		"--full-auto",
-	}
-	if strings.Join(got, " ") != strings.Join(want, " ") {
-		t.Fatalf("custom args = %#v, want %#v", got, want)
-	}
-}
-
-func TestHostCodexAppServerAssemblyPreservesDashCCustomArgs(t *testing.T) {
-	starter := newProductionFactoryHostStarter()
-	factory := NewProductionProviderSessionFactory(ProductionProviderSessionFactoryConfig{HostStarter: starter})
-	legacy := runtime.NewCommandAdapter(runtime.CommandAdapterConfig{
-		Name: "codex", Program: "/opt/codex",
-		Args: []string{
-			"exec", "--model", "gpt-test",
-			"--dangerously-bypass-approvals-and-sandbox",
-			"-c", "foo=bar", "--json",
-			"inspect target",
-		},
-		Workdir: "/tmp/task-workdir",
-	})
-	go func() {
-		scanner := bufio.NewScanner(starter.inputR)
-		for scanner.Scan() {
-			var request runtime.SandboxBridgeRequest
-			_ = json.Unmarshal(scanner.Bytes(), &request)
-			result := `{"ok":true}`
-			if request.Method == "thread/start" {
-				result = `{"thread":{"id":"host-thread-c"}}`
-			}
-			_, _ = io.WriteString(starter.outputW, `{"jsonrpc":"2.0","id":"`+request.ID+`","result":`+result+"}\n")
-		}
-	}()
-	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
-		Owner: owner.NewTaskContract("host-task-c", "project-test", ""), Continuation: owner.Continuation{ID: "c1", OwnerID: "host-task-c"},
-		Provider: runtimeprofile.ProviderCodex, Runner: task.RunnerHost, LegacyAdapter: legacy,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer binding.Session.Close(context.Background())
-	spec := starter.lastSpec()
-	joined := strings.Join(append([]string{spec.Program}, spec.Args...), " ")
-	if !strings.Contains(joined, "app-server") || !strings.Contains(joined, "-c foo=bar") {
-		t.Fatalf("host app-server argv lost non-conflicting -c: %q", joined)
-	}
-	if strings.Contains(joined, "gpt-test") || strings.Contains(joined, "inspect target") {
-		t.Fatalf("structured model/goal leaked into app-server argv: %q", joined)
-	}
-}
-
 func TestHostCodexReservedConfigOverridesStayRejectedByValidateCustomArgs(t *testing.T) {
 	// Assembly must not reimplement #148. Reserved model/provider/effort config
 	// forms remain fail-closed at the existing validation seam.
@@ -1497,6 +1404,7 @@ func TestProductionProviderSessionFactoryUsesLegacyAdapterContainerCLI(t *testin
 		Owner:        owner.NewSessionContract("session-podman-cli", ""),
 		Continuation: owner.Continuation{ID: "continuation-1", OwnerID: "session-podman-cli"},
 		Provider:     runtimeprofile.ProviderClaudeCode, Runner: task.RunnerSandbox, LegacyAdapter: legacy,
+		Facts: ProviderSessionLaunchFacts{Workdir: "/task/workdir"},
 	})
 	if err == nil {
 		t.Fatal("expected create failure from podman stub")

@@ -85,12 +85,38 @@ func (server *Server) handleUpdateModelProvider(response http.ResponseWriter, re
 }
 
 func (server *Server) handleDeleteModelProvider(response http.ResponseWriter, request *http.Request) {
-	err := server.modelProviders.Delete(request.PathValue("id"))
+	var err error
+	if request.URL.Query().Get("detach") == "true" {
+		err = server.modelProviders.DeleteDetaching(request.PathValue("id"))
+	} else {
+		err = server.modelProviders.Delete(request.PathValue("id"))
+	}
 	if err != nil {
+		if errors.Is(err, modelprovider.ErrInUse) {
+			server.writeModelProviderInUse(response, request.PathValue("id"))
+			return
+		}
 		writeModelProviderError(response, err)
 		return
 	}
 	response.WriteHeader(http.StatusNoContent)
+}
+
+// writeModelProviderInUse answers a blocked delete with the referencing
+// profile names so the client can offer an explicit detach delete.
+func (server *Server) writeModelProviderInUse(response http.ResponseWriter, id string) {
+	profiles, err := server.modelProviders.ReferencingProfiles(id)
+	if err != nil {
+		writeError(response, http.StatusConflict, modelprovider.ErrInUse.Error())
+		return
+	}
+	writeJSON(response, http.StatusConflict, struct {
+		Error    string   `json:"error"`
+		Profiles []string `json:"profiles"`
+	}{
+		Error:    modelprovider.ErrInUse.Error(),
+		Profiles: profiles,
+	})
 }
 
 func (server *Server) handleRefreshModelProviderModels(response http.ResponseWriter, request *http.Request) {

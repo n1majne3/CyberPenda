@@ -236,6 +236,50 @@ func (s *Service) Delete(id string) error {
 	return nil
 }
 
+// DeleteDetaching removes a provider after clearing its reference from every
+// runtime profile that points at it. The detach also removes the profile's
+// pinned protocol: a pin without its provider would fail launch validation
+// instead of falling back. Other profile fields are preserved.
+func (s *Service) DeleteDetaching(id string) error {
+	id = strings.TrimSpace(id)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := s.db.Exec(
+		`UPDATE runtime_profiles
+		 SET fields_json = json_remove(fields_json, '$.model_provider_id', '$.model_provider_protocol'), updated_at = ?
+		 WHERE json_extract(fields_json, '$.model_provider_id') = ?`,
+		now, id,
+	); err != nil {
+		return fmt.Errorf("detach model provider references: %w", err)
+	}
+	return s.Delete(id)
+}
+
+// ReferencingProfiles returns the names of runtime profiles whose fields still
+// reference the provider, so an operator can review them before an explicit
+// detach delete.
+func (s *Service) ReferencingProfiles(id string) ([]string, error) {
+	rows, err := s.db.Query(
+		`SELECT name FROM runtime_profiles WHERE json_extract(fields_json, '$.model_provider_id') = ? ORDER BY created_at ASC`,
+		strings.TrimSpace(id),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list referencing profiles: %w", err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("scan referencing profile: %w", err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list referencing profiles: %w", err)
+	}
+	return names, nil
+}
+
 func (s *Service) RefreshModels(ctx context.Context, id string, client *http.Client) (Provider, error) {
 	provider, err := s.Get(id)
 	if err != nil {

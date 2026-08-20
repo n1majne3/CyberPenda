@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, useRef, type KeyboardEvent, type Reac
 import { flushSync } from "react-dom";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, ChevronRight, Wrench, User, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2, Maximize2, Minimize2, Flag, RefreshCcw, TriangleAlert, Archive, ArchiveRestore, Pencil, Paperclip } from "lucide-react";
-import { apiDelete, apiGet, apiPatch, apiPost, apiPostForm, type BlackboardConclusionMode, type BlackboardConclusionView, type FinishReadiness, type ModelProvider, type ProviderPermissionRequest, type RuntimeActivity, type RuntimeControls, type RuntimePlugin, type RuntimeProfile, type Session, type SessionContinuation, type Task, type TaskContinuation, type TaskTimeline, type TaskTimelineItem, type TaskTranscript, type TaskTranscriptEntry } from "@/lib/api";
+import { apiGet, type FinishReadiness, type ModelProvider, type ProviderPermissionRequest, type RuntimeActivity, type RuntimePlugin, type RuntimeProfile, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Badge, Input, Select, Textarea } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
@@ -16,67 +16,16 @@ import { formatDateTime } from "@/lib/format";
 import { mergeTimelineItems, mergeTranscriptEntries, prependTimelineItems, prependTranscriptEntries } from "@/lib/ownerEvents";
 import { useDocumentVisibility } from "@/lib/useDocumentVisibility";
 import { useVirtualWindow } from "@/lib/virtualWindow";
+import { taskRuntimeOwnerAdapter, sessionRuntimeOwnerAdapter, type RuntimeOwnerAdapter } from "@/lib/runtimeOwner/adapter";
+import { canPiNativeCrossProvider, conversationModeText, conversationQueueUnavailable, conversationSendLabel, newBlackboardRetryID, newSteerRequestID, resolveConversationAction, resolveConversationSendMode, steerPendingState } from "@/lib/runtimeOwner/conversationKernel";
+import { emptyHistory, type ConversationSendMode, type OwnerHistory, type RuntimeOwnerKind, type RuntimeOwnerView } from "@/lib/runtimeOwner/types";
 
 const ACTIVE = new Set(["running", "paused"]);
-const DELETABLE = new Set(["completed", "failed", "stopped", "interrupted"]);
 
 // Uniform row-height estimates used by the virtualized Runtime Owner history
 // lists; they match the contain-intrinsic-size hints on the rendered rows.
 const TRANSCRIPT_ROW_ESTIMATE = 72;
 const TIMELINE_ROW_ESTIMATE = 48;
-
-function newSteerRequestID() {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `steer-${Math.random().toString(36).slice(2)}-${performance.now().toString(36)}`;
-}
-
-function newBlackboardRetryID() {
-  return `blackboard-retry-${newSteerRequestID()}`;
-}
-
-type RuntimeOwnerKind = "task" | "session";
-
-type RuntimeOwnerCapabilities = {
-  projectChrome: boolean;
-  rename: boolean;
-  archive: boolean;
-  restore: boolean;
-  delete: boolean;
-  finish: boolean;
-  resumeWithoutMessage: boolean;
-  attachments: boolean;
-};
-
-type RuntimeOwnerView = {
-  kind: RuntimeOwnerKind;
-  id: string;
-  title: string;
-  status: string;
-  lifecycle?: Session["lifecycle"];
-  runner: string;
-  runtimeProfileID: string;
-  blackboardConclusionMode?: BlackboardConclusionMode;
-  blackboardConclusion?: BlackboardConclusionView;
-  runtimeControls?: RuntimeControls;
-  runtimeActivity?: RuntimeActivity;
-  activeContinuation?: RuntimeOwnerContinuation;
-  latestContinuation?: RuntimeOwnerContinuation;
-  createdAt: string;
-  updatedAt: string;
-  capabilities: RuntimeOwnerCapabilities;
-};
-
-type RuntimeOwnerContinuation = {
-  id: string;
-  number: number;
-  runtimeProfileID: string;
-  runtimeProvider: string;
-  runner: string;
-  status: string;
-  nativeSessionID?: string;
-};
 
 export function TaskDetailPage() {
   return <RuntimeOwnerDetailPage ownerKind="task" />;
@@ -159,6 +108,9 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   }, []);
 
   const base = isSession ? `/api/sessions/${sessionId}` : `/api/projects/${projectId}/tasks/${taskId}`;
+  // The behavioral owner adapter owns every endpoint and payload shape; the
+  // workspace keeps only rendering and orchestration.
+  const ownerAdapter: RuntimeOwnerAdapter = isSession ? sessionRuntimeOwnerAdapter(base) : taskRuntimeOwnerAdapter(base);
 
   async function loadAll(mode: "initial" | "poll") {
     if (!ownerID || (!isSession && !projectId)) return;
@@ -169,9 +121,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     const requestOwner = ownerID;
     const before = historyRef.current;
     try {
-      const loaded = isSession
-        ? await loadSessionWorkspace(base, controller.signal, mode, before)
-        : await loadTaskWorkspace(base, controller.signal, mode, before);
+      const loaded = await ownerAdapter.loadWorkspace(controller.signal, mode, before);
       // A response can merge only when its owner identity and request
       // generation still match; a route change replaces owner-local state
       // before any merge can run.
@@ -262,7 +212,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     const anchor = conversationViewport.current?.scrollTop ?? 0;
     commitHistory({ ...current, loadingOlder: "transcript" });
     try {
-      const page = await apiGet<TaskTranscript>(`${base}/transcript?before=${before}`);
+      const page = await ownerAdapter.loadOlderTranscript(before);
       const latest = historyRef.current;
       const merged = prependTranscriptEntries(latest.transcript, page.entries ?? []);
       const prepended = merged.length - latest.transcript.length;
@@ -289,7 +239,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     const anchor = timelineViewport.current?.scrollTop ?? 0;
     commitHistory({ ...current, loadingOlder: "timeline" });
     try {
-      const page = await apiGet<TaskTimeline>(`${base}/timeline?before=${before}`);
+      const page = await ownerAdapter.loadOlderTimeline(before);
       const latest = historyRef.current;
       const merged = prependTimelineItems(latest.timeline, page.items ?? []);
       const prepended = merged.length - latest.timeline.length;
@@ -534,7 +484,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   async function stop() {
     if (!owner) return;
     try {
-      await apiPost(`${base}/stop`, {});
+      await ownerAdapter.stop();
       setActionError(null);
       loadAll("poll");
     } catch (e) {
@@ -545,7 +495,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   async function finishTask() {
     if (!owner?.capabilities.finish) return;
     try {
-      await apiPost(`${base}/finish`, {});
+      await ownerAdapter.finish();
       setActionError(null);
       loadAll("poll");
     } catch (e) {
@@ -557,13 +507,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     if (retryingConclusion) return;
     setRetryingConclusion(true);
     try {
-      const retried = owner?.kind === "session"
-        ? sessionAsRuntimeOwner(await apiPost<Session>(`${base}/blackboard-conclusion/retry`, {}, {
-          headers: { "Idempotency-Key": newBlackboardRetryID() },
-        }))
-        : taskAsRuntimeOwner(await apiPost<Task>(`${base}/blackboard-conclusion/retry`, {}, {
-          headers: { "Idempotency-Key": newBlackboardRetryID() },
-        }));
+      const retried = await ownerAdapter.retryConclusion(newBlackboardRetryID());
       setOwner(retried);
       setActionError(null);
     } catch (e) {
@@ -576,7 +520,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   async function deleteTask() {
     if (!owner?.capabilities.delete) return;
     try {
-      await apiDelete(base);
+      await ownerAdapter.remove();
       navigate(owner.kind === "session" ? "/sessions" : `/projects/${projectId}/tasks`);
     } catch (e) {
       setActionError((e as Error).message);
@@ -586,7 +530,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   async function resumeNative() {
     if (!owner?.capabilities.resumeWithoutMessage) return;
     try {
-      await apiPost(`${base}/resume`, continuationModelPayload());
+      await ownerAdapter.resume(continuationModelPayload());
       setActionError(null);
       loadAll("poll");
     } catch (e) {
@@ -603,17 +547,10 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     }
     setSending(true);
     try {
-      if (owner.kind === "session") {
-        await postSessionRuntimeMessage(
-          `${base}/steer/queue`,
-          directive,
-          continuationModelPayload(),
-          attachments,
-        );
+      await ownerAdapter.queueSteer(directive, continuationModelPayload(), owner.capabilities.attachments ? attachments : []);
+      if (owner.capabilities.attachments) {
         setAttachments([]);
         if (attachmentInput.current) attachmentInput.current.value = "";
-      } else {
-        await apiPost(`${base}/steer/queue`, { directive, ...continuationModelPayload() });
       }
       setSteering("");
       setActionError(null);
@@ -644,15 +581,9 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
         runtimeProvider: currentRuntimeProvider ?? "",
         nativeSteerMode: owner.runtimeControls?.native_steer_mode,
       }, requestID);
-      await action.run(message, modelPayload, {
-        session: (path, payload, files) => postSessionRuntimeMessage(path, payload.text, payload.selection, files),
-        task: (path, payload) => apiPost(path, payload),
-        attachments,
-        base,
-        ownerTitle: owner.title,
-      });
+      await action.run(message, modelPayload, ownerAdapter, owner.capabilities.attachments ? attachments : []);
       setSteering("");
-      if (owner.kind === "session") {
+      if (owner.capabilities.attachments) {
         setAttachments([]);
         if (attachmentInput.current) attachmentInput.current.value = "";
       }
@@ -674,10 +605,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   async function respondToPermission(permissionRequestID: string, decision: "allow" | "deny") {
     setPermissionBusy(permissionRequestID);
     try {
-      await apiPost(`${base}/permissions/${encodeURIComponent(permissionRequestID)}/respond`, {
-        request_id: `permission-${newSteerRequestID()}`,
-        decision,
-      });
+      await ownerAdapter.respondPermission(permissionRequestID, decision);
       setActionError(null);
       loadAll("poll");
     } catch (e) {
@@ -690,7 +618,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   async function saveSessionTitle() {
     if (owner?.kind !== "session" || !titleDraft.trim()) return;
     try {
-      await apiPatch<Session>(base, { title: titleDraft.trim() });
+      await ownerAdapter.rename(titleDraft.trim());
       setEditingTitle(false);
       setActionError(null);
       await loadAll("poll");
@@ -702,7 +630,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   async function changeSessionLifecycle(action: "archive" | "restore") {
     if (owner?.kind !== "session") return;
     try {
-      await apiPost<Session>(`${base}/${action}`, {});
+      await ownerAdapter.changeLifecycle(action);
       setActionError(null);
       await loadAll("poll");
     } catch (e) {
@@ -1204,237 +1132,6 @@ function RuntimeOwnerShell({ projectChrome, children, bodyClassName, ...props }:
   );
 }
 
-// OwnerHistory is the owner-local Runtime Owner History Window state (#202):
-// the bounded recent window plus backward pages and live-tail deltas, the
-// live-tail cursors, paging availability, unseen counts, and in-flight paging
-// state. A route change replaces the whole record atomically before any merge.
-type OwnerHistory = {
-  timeline: TaskTimelineItem[];
-  transcript: TaskTranscriptEntry[];
-  timelineCursor: number;
-  transcriptCursor: number;
-  timelineHasOlder: boolean;
-  transcriptHasOlder: boolean;
-  timelineUnseen: number;
-  transcriptUnseen: number;
-  loadingOlder: "timeline" | "transcript" | null;
-};
-
-function emptyHistory(): OwnerHistory {
-  return {
-    timeline: [], transcript: [], timelineCursor: 0, transcriptCursor: 0,
-    timelineHasOlder: false, transcriptHasOlder: false,
-    timelineUnseen: 0, transcriptUnseen: 0, loadingOlder: null,
-  };
-}
-
-type RuntimeWorkspaceLoad = {
-  owner: RuntimeOwnerView;
-  finishReadiness?: FinishReadiness;
-  timeline: TaskTimelineItem[];
-  transcript: TaskTranscriptEntry[];
-  timelineCursor: number;
-  transcriptCursor: number;
-  timelineHasOlder: boolean;
-  transcriptHasOlder: boolean;
-};
-
-async function loadTaskWorkspace(
-  base: string,
-  signal: AbortSignal,
-  mode: "initial" | "poll",
-  current: OwnerHistory,
-): Promise<RuntimeWorkspaceLoad> {
-  const [task, timeline, transcript, finishReadiness] = await Promise.all([
-    apiGet<Task>(base, { signal }),
-    apiGet<TaskTimeline>(timelineURL(base, mode, current.timelineCursor), { signal }),
-    apiGet<TaskTranscript>(transcriptURL(base, mode, current.transcriptCursor), { signal }),
-    apiGet<FinishReadiness>(`${base}/finish-readiness`, { signal }),
-  ]);
-  return {
-    owner: taskAsRuntimeOwner(task),
-    finishReadiness: typeof finishReadiness.ready_to_finish === "boolean" && Array.isArray(finishReadiness.blockers)
-      ? finishReadiness
-      : undefined,
-    timeline: timeline.items ?? [],
-    transcript: transcript.entries ?? [],
-    timelineCursor: timeline.cursor ?? current.timelineCursor,
-    transcriptCursor: transcript.cursor ?? current.transcriptCursor,
-    timelineHasOlder: timeline.has_older === true,
-    transcriptHasOlder: transcript.has_older === true,
-  };
-}
-
-async function loadSessionWorkspace(
-  base: string,
-  signal: AbortSignal,
-  mode: "initial" | "poll",
-  current: OwnerHistory,
-): Promise<RuntimeWorkspaceLoad> {
-  const [session, timeline, transcript] = await Promise.all([
-    apiGet<Session>(base, { signal }),
-    apiGet<TaskTimeline>(timelineURL(base, mode, current.timelineCursor), { signal }),
-    apiGet<TaskTranscript>(transcriptURL(base, mode, current.transcriptCursor), { signal }),
-  ]);
-  return {
-    owner: sessionAsRuntimeOwner(session),
-    // Session timelines and transcripts are built by the same daemon pipeline
-    // as task ones, so the rendered shapes are identical.
-    timeline: timeline.items ?? [],
-    transcript: transcript.entries ?? [],
-    timelineCursor: timeline.cursor ?? current.timelineCursor,
-    transcriptCursor: transcript.cursor ?? current.transcriptCursor,
-    timelineHasOlder: timeline.has_older === true,
-    transcriptHasOlder: transcript.has_older === true,
-  };
-}
-
-// The first load reads the initial bounded history window (no cursor); refresh
-// polls always send the committed cursor, including an explicit after=0 after
-// an empty initial read so synthetic seq-0 content is never resent.
-function timelineURL(base: string, mode: "initial" | "poll", cursor: number): string {
-  return mode === "initial" ? `${base}/timeline` : `${base}/timeline?after=${cursor}`;
-}
-
-function transcriptURL(base: string, mode: "initial" | "poll", cursor: number): string {
-  return mode === "initial" ? `${base}/transcript` : `${base}/transcript?after=${cursor}`;
-}
-
-function displayRunnerLabel(runner: string, containerCLI?: string): string {
-  if (runner === "sandbox") {
-    const engine = containerCLI?.trim().toLowerCase();
-    if (engine === "podman" || engine === "docker") return engine;
-    return "docker";
-  }
-  return runner;
-}
-
-function taskAsRuntimeOwner(task: Task): RuntimeOwnerView {
-  return {
-    kind: "task",
-    id: task.id,
-    title: task.goal,
-    status: task.status,
-    runner: displayRunnerLabel(task.runner, task.run_controls?.container_cli),
-    runtimeProfileID: task.runtime_profile_id,
-    blackboardConclusionMode: task.run_controls.blackboard_conclusion_mode,
-    blackboardConclusion: task.blackboard_conclusion,
-    runtimeControls: task.runtime_controls,
-    runtimeActivity: task.runtime_activity,
-    activeContinuation: task.active_continuation ? taskContinuationAsRuntimeOwner(task.active_continuation) : undefined,
-    latestContinuation: task.latest_continuation ? taskContinuationAsRuntimeOwner(task.latest_continuation) : undefined,
-    createdAt: task.created_at,
-    updatedAt: task.updated_at,
-    capabilities: {
-      projectChrome: true,
-      rename: false,
-      archive: false,
-      restore: false,
-      delete: DELETABLE.has(task.status),
-      finish: true,
-      resumeWithoutMessage: true,
-      attachments: false,
-    },
-  };
-}
-
-function taskContinuationAsRuntimeOwner(continuation: TaskContinuation): RuntimeOwnerContinuation {
-  return {
-    id: continuation.id,
-    number: continuation.number,
-    runtimeProfileID: continuation.runtime_profile_id,
-    runtimeProvider: continuation.runtime_provider,
-    runner: continuation.runner,
-    status: continuation.status,
-    nativeSessionID: continuation.native_session_id,
-  };
-}
-
-function sessionAsRuntimeOwner(session: Session): RuntimeOwnerView {
-  const active = session.active_continuation ? sessionContinuationAsRuntimeOwner(session.active_continuation) : undefined;
-  const latest = session.latest_continuation ? sessionContinuationAsRuntimeOwner(session.latest_continuation) : active;
-  const continuation = active ?? latest;
-  const status = session.lifecycle === "archived" ? "archived" : active?.status ?? latest?.status ?? "stopped";
-  const controls = session.runtime_controls;
-  return {
-    kind: "session",
-    id: session.id,
-    title: session.title,
-    status,
-    lifecycle: session.lifecycle,
-    runner: continuation?.runner ?? "host",
-    runtimeProfileID: continuation?.runtimeProfileID ?? "",
-    blackboardConclusionMode: session.run_controls?.blackboard_conclusion_mode,
-    blackboardConclusion: session.blackboard_conclusion,
-    runtimeActivity: session.runtime_activity,
-    activeContinuation: active,
-    latestContinuation: latest,
-    runtimeControls: controls ? {
-      native_resume_available: controls.native_resume_available,
-      resume_available: session.lifecycle === "open",
-      native_steer_available: controls.native_steer_available,
-      native_steer_mode: controls.native_steer_mode,
-      queue_steer_available: controls.queue_steer_available,
-      interrupt_steer_available: controls.interrupt_steer_available,
-      native_session_captured: controls.native_session_captured,
-      same_runtime_provider_only: true,
-      runtime_provider: controls.runtime_provider,
-      turn_selection: controls.turn_selection,
-      provider_permissions: controls.provider_permissions,
-      recovery_state: controls.recovery_state,
-      recovery_reason: controls.recovery_reason,
-      finish_available: false,
-    } : {
-      native_resume_available: false,
-      resume_available: session.lifecycle === "open",
-      queue_steer_available: true,
-      interrupt_steer_available: false,
-      native_session_captured: false,
-      same_runtime_provider_only: true,
-      finish_available: false,
-    },
-    createdAt: session.created_at,
-    updatedAt: session.updated_at,
-    capabilities: {
-      projectChrome: false,
-      rename: true,
-      archive: session.lifecycle === "open",
-      restore: session.lifecycle === "archived",
-      delete: session.lifecycle === "archived",
-      finish: false,
-      resumeWithoutMessage: false,
-      attachments: true,
-    },
-  };
-}
-
-function sessionContinuationAsRuntimeOwner(continuation: SessionContinuation): RuntimeOwnerContinuation {
-  return {
-    id: continuation.id,
-    number: continuation.number,
-    runtimeProfileID: continuation.runtime_profile_id,
-    runtimeProvider: continuation.runtime_provider,
-    runner: continuation.runner,
-    status: continuation.status,
-    nativeSessionID: continuation.native_session_id,
-  };
-}
-
-async function postSessionRuntimeMessage(
-  path: string,
-  message: string,
-  selection: { model_provider_id?: string; model?: string; model_override?: string; reasoning_effort: string },
-  attachments: File[],
-) {
-  if (attachments.length === 0) {
-    return apiPost<Session>(path, { message, ...selection });
-  }
-  const form = new FormData();
-  form.append("payload", JSON.stringify({ message, ...selection }));
-  attachments.forEach((attachment) => form.append("attachments", attachment, attachment.name));
-  return apiPostForm<Session>(path, form);
-}
-
 function tabClass(active: boolean) {
   return [
     "inline-flex items-center gap-1.5 rounded-t-md border-b-2 px-3 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
@@ -1446,224 +1143,6 @@ function isNearScrollBottom(container: HTMLElement, threshold = 160) {
   return container.scrollHeight - (container.scrollTop + container.clientHeight) <= threshold;
 }
 
-type ConversationSendMode = "native" | "interrupt" | "queue" | "resume" | "unavailable";
-
-/** Pi native cross-provider only when target is in the fixed projected set. */
-function canPiNativeCrossProvider(input: {
-  runtimeProvider: string;
-  nativeSteerAvailable: boolean;
-  projectedModelProviderIDs?: string[] | null;
-  targetProviderID: string;
-}): boolean {
-  if (input.runtimeProvider !== "pi" || !input.nativeSteerAvailable) {
-    return false;
-  }
-  const target = input.targetProviderID.trim();
-  if (!target) {
-    return false;
-  }
-  const projected = (input.projectedModelProviderIDs ?? [])
-    .map((id) => id.trim())
-    .filter(Boolean);
-  // Fail closed: missing/empty projected set requires Config Projection restart.
-  if (projected.length === 0) {
-    return false;
-  }
-  return projected.includes(target);
-}
-
-// conversationQueueUnavailable reports whether queueing a Session steer is
-// blocked by a pending model-provider switch that only the restart path can
-// honor. Tasks allow the switch through the queue→stop→resume pipeline.
-function conversationQueueUnavailable(owner: RuntimeOwnerView, selectedProviderID: string): boolean {
-  return (
-    owner.kind === "session" &&
-    ACTIVE.has(owner.status) &&
-    selectedProviderID !== "" &&
-    selectedProviderID !== (owner.runtimeControls?.turn_selection?.model_provider_id?.trim() ?? "")
-  );
-}
-
-type ConversationActionContext = {
-  session: (path: string, payload: { text: string; selection: ConversationSelection }, files: File[]) => Promise<unknown>;
-  task: (path: string, payload: Record<string, unknown>) => Promise<unknown>;
-  attachments: File[];
-  base: string;
-  ownerTitle: string;
-};
-
-type ConversationSelection = {
-  model_provider_id?: string;
-  model?: string;
-  model_override?: string;
-  reasoning_effort: string;
-};
-
-// steerPendingState reports whether an accepted native steer is still waiting
-// for the Runtime to apply or reject it (#194).
-function steerPendingState(state: string | undefined): boolean {
-  return (
-    state === "pending" ||
-    state === "requested" ||
-    state === "acknowledged" ||
-    state === "settled" ||
-    state === "started"
-  );
-}
-
-// resolveConversationAction decides, from owner-independent runtime controls,
-// which transport a new operator message takes. Both owner kinds share the
-// decision so steer/queue/restart rules cannot drift between Task and Session.
-function resolveConversationAction(
-  owner: RuntimeOwnerView,
-  state: {
-    running: boolean;
-    nativeSteerAvailable: boolean;
-    interruptSteerAvailable: boolean;
-    queueSteerAvailable: boolean;
-    resumeAvailable: boolean;
-    nativeResumeAvailable: boolean;
-    precedingProviderID: string;
-    selectedProviderID: string;
-    runtimeProvider: string;
-    nativeSteerMode?: string;
-  },
-  requestID: string,
-): { run: (message: string, selection: ConversationSelection, context: ConversationActionContext) => Promise<void> } {
-  const switchingProvider =
-    state.running &&
-    state.selectedProviderID !== "" &&
-    state.selectedProviderID !== state.precedingProviderID &&
-    !canPiNativeCrossProvider({
-      runtimeProvider: state.runtimeProvider,
-      nativeSteerAvailable: state.nativeSteerAvailable || state.interruptSteerAvailable,
-      projectedModelProviderIDs: owner.runtimeControls?.projected_model_provider_ids,
-      targetProviderID: state.selectedProviderID,
-    });
-
-  if (owner.kind === "session") {
-    // Sessions cannot switch a live provider session; the restart path is
-    // stop → message on the fresh continuation.
-    if (switchingProvider) {
-      return {
-        run: async (message, selection, ctx) => {
-          await apiPost(`${ctx.base}/stop`, {});
-          await ctx.session(`${ctx.base}/messages`, { text: message, selection }, ctx.attachments);
-        },
-      };
-    }
-    if (state.running && (state.nativeSteerAvailable || state.interruptSteerAvailable)) {
-      return {
-        run: async (message, selection, ctx) => {
-          await ctx.session(`${ctx.base}/steer`, { text: message, selection }, ctx.attachments);
-        },
-      };
-    }
-    if (state.running && state.queueSteerAvailable) {
-      return {
-        run: async (message, selection, ctx) => {
-          await ctx.session(`${ctx.base}/steer/queue`, { text: message, selection }, ctx.attachments);
-        },
-      };
-    }
-    return {
-      run: async (message, selection, ctx) => {
-        await ctx.session(`${ctx.base}/messages`, { text: message, selection }, ctx.attachments);
-      },
-    };
-  }
-
-  // Task branch.
-  if (switchingProvider) {
-    if (!state.queueSteerAvailable) {
-      throw new Error("Model provider switching is unavailable for this Task");
-    }
-    // A live provider session cannot change its endpoint or credentials.
-    // Persist the message/config first, then restart the Continuation so a
-    // failed stop or resume never drops the operator's request.
-    return {
-      run: async (message, selection, ctx) => {
-        await ctx.task(`${ctx.base}/steer/queue`, { directive: message, ...selection });
-        await ctx.task(`${ctx.base}/stop`, {});
-        await ctx.task(`${ctx.base}/resume`, {});
-      },
-    };
-  }
-  if (state.running && (state.nativeSteerAvailable || state.interruptSteerAvailable)) {
-    return {
-      run: async (message, selection, ctx) => {
-        await ctx.task(`${ctx.base}/steer`, {
-          ...(state.nativeSteerAvailable ? { request_id: requestID, message } : { directive: message }),
-          ...selection,
-        });
-      },
-    };
-  }
-  if (state.running && state.queueSteerAvailable) {
-    return {
-      run: async (message, selection, ctx) => {
-        await ctx.task(`${ctx.base}/steer/queue`, { directive: message, ...selection });
-      },
-    };
-  }
-  if (!state.running && state.queueSteerAvailable && state.resumeAvailable) {
-    return {
-      // Queue first so a failed resume retains the operator's message for the
-      // next successful Continuation instead of silently dropping it.
-      run: async (message, selection, ctx) => {
-        await ctx.task(`${ctx.base}/steer/queue`, { directive: message, ...selection });
-        await ctx.task(`${ctx.base}/resume`, {});
-      },
-    };
-  }
-  throw new Error("Task conversation is unavailable for this runtime state");
-}
-
-function resolveConversationSendMode(input: {
-  running: boolean;
-  nativeSteerAvailable: boolean;
-  interruptSteerAvailable: boolean;
-  queueSteerAvailable: boolean;
-  resumeAvailable: boolean;
-}): ConversationSendMode {
-  if (input.running) {
-    if (input.nativeSteerAvailable) return "native";
-    if (input.interruptSteerAvailable) return "interrupt";
-    if (input.queueSteerAvailable) return "queue";
-    return "unavailable";
-  }
-  return input.queueSteerAvailable && input.resumeAvailable ? "resume" : "unavailable";
-}
-
-function conversationSendLabel(mode: ConversationSendMode, nativeSteerMode?: string): string {
-  switch (mode) {
-    case "native":
-      return nativeSteerMode === "in_turn_steer" ? "Send message" : "Native interrupt & send";
-    case "interrupt":
-      return "Interrupt and resume";
-    case "queue":
-      return "Queue message";
-    case "resume":
-      return "Resume and send";
-    default:
-      return "Send unavailable";
-  }
-}
-
-function conversationModeText(mode: ConversationSendMode): string {
-  switch (mode) {
-    case "native":
-      return "direct native";
-    case "interrupt":
-      return "interrupt then replace";
-    case "queue":
-      return "queued";
-    case "resume":
-      return "resume";
-    default:
-      return "unavailable";
-  }
-}
 
 function FloatingScrollControls({
   autoFollow,

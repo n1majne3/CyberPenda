@@ -351,49 +351,6 @@ export function createSession(input: string, attachments: File[] = [], options: 
   return apiPostForm<Session>("/api/sessions", form);
 }
 
-export function sendSessionMessage(sessionId: string, message: string, attachments: File[] = []) {
-  const path = `/api/sessions/${encodeURIComponent(sessionId)}/messages`;
-  if (attachments.length === 0) {
-    return apiPost<Session>(path, { message });
-  }
-  const form = new FormData();
-  form.append("payload", JSON.stringify({ message }));
-  for (const attachment of attachments) {
-    form.append("attachments", attachment, attachment.name);
-  }
-  return apiPostForm<Session>(path, form);
-}
-
-export function steerSession(sessionId: string, message: string) {
-  return apiPost<Session>(`/api/sessions/${encodeURIComponent(sessionId)}/steer`, { message });
-}
-
-export function queueSessionSteer(sessionId: string, message: string) {
-  return apiPost<Session>(`/api/sessions/${encodeURIComponent(sessionId)}/steer/queue`, { message });
-}
-
-export function respondSessionPermission(
-  sessionId: string,
-  permissionRequestId: string,
-  decision: "allow" | "deny",
-  requestId?: string,
-) {
-  return apiPost<{ request_id: string; permission_request_id: string; outcome: string }>(
-    `/api/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(permissionRequestId)}/respond`,
-    { decision, ...(requestId ? { request_id: requestId } : {}) },
-  );
-}
-
-export function stopSession(sessionId: string) {
-  return apiPost<Session>(`/api/sessions/${encodeURIComponent(sessionId)}/stop`);
-}
-
-export function retrySessionBlackboardConclusion(sessionId: string, idempotencyKey: string) {
-  return apiPost<Session>(`/api/sessions/${encodeURIComponent(sessionId)}/blackboard-conclusion/retry`, {}, {
-    headers: { "Idempotency-Key": idempotencyKey },
-  });
-}
-
 export function renameSession(sessionId: string, title: string) {
   return apiPatch<Session>(`/api/sessions/${encodeURIComponent(sessionId)}`, { title });
 }

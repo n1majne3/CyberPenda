@@ -76,7 +76,7 @@ func taskSteeringAdapter(server *Server, taskID string, settlement providerContr
 		if err != nil {
 			return "", false, err
 		}
-		if found.Status != task.StatusRunning && found.Status != task.StatusPaused {
+		if found.Status == task.StatusStopped || found.Status == task.StatusCompleted || found.Status == task.StatusFailed {
 			return "", false, errSteeringOwnerNotActive
 		}
 		boundSession, bound := server.providerSessions.get(taskID)

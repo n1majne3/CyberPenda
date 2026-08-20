@@ -905,6 +905,29 @@ func (s *Service) HistoryEventWindow(id string, query EventWindowQuery) (EventWi
 	return window, nil
 }
 
+// HistoryEventSeqByRef resolves one Runtime Owner history detail reference
+// (a stable timeline item ID or transcript entry ID) to the Seq of the first
+// retained Event whose ID the reference embeds. Projection-derived IDs append
+// suffixes to their source Event ID, so an exact match or an Event-ID prefix
+// followed by a dash both resolve. ok=false means no Event owns the reference.
+func (s *Service) HistoryEventSeqByRef(id string, ref string) (int, bool, error) {
+	if _, err := s.Get(id); err != nil {
+		return 0, false, err
+	}
+	var seq int
+	err := s.db.QueryRow(
+		`SELECT seq FROM session_events WHERE session_id=? AND (id=? OR instr(?, id || '-')=1) ORDER BY seq ASC LIMIT 1`,
+		id, ref, ref,
+	).Scan(&seq)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("resolve Session Event reference: %w", err)
+	}
+	return seq, true, nil
+}
+
 func (s *Service) readTranscriptContextBefore(sessionID string, seq int, window *EventWindow) error {
 	var continuationID string
 	err := s.db.QueryRow(`
@@ -1454,8 +1477,20 @@ func (s *Service) UpdateContinuationStatus(id string, status RuntimeStatus) (Con
 	if err != nil {
 		return Continuation{}, fmt.Errorf("update Session continuation status: %w", err)
 	}
-	if changed, _ := result.RowsAffected(); changed != 1 {
-		return s.Continuation(id)
+	// A lost compare-and-swap race must surface the conflict so the caller can
+	// distinguish its own transition from a concurrent observer's write (the
+	// same contract as the Task twin).
+	if changed, err := result.RowsAffected(); err != nil {
+		return Continuation{}, fmt.Errorf("count Session continuation status update: %w", err)
+	} else if changed != 1 {
+		current, readErr := s.Continuation(id)
+		if readErr != nil {
+			return Continuation{}, readErr
+		}
+		if current.Status == status {
+			return current, nil
+		}
+		return current, ErrContinuationStatusConflict
 	}
 	found.Status, found.UpdatedAt = status, now
 	if isTerminalRuntimeStatus(status) {

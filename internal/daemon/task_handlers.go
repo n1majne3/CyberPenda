@@ -14,9 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"pentest/internal/adapters"
@@ -253,6 +251,7 @@ type taskLaunchPlan struct {
 	BlackboardV2                 bool
 	ValidatedLayout              *runner.Layout
 	BlackboardV2SteeringEventIDs []string
+	Facts                        ProviderSessionLaunchFacts
 }
 
 type continuationLaunchBinding struct {
@@ -282,7 +281,7 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 		binding, factoryErr := server.providerSessionFactory.Open(context.Background(), ProviderSessionLaunchRequest{
 			Owner: created.OwnerContract(""), Continuation: ownerContinuationFromTask(continuation), Provider: plan.ResolvedProfile.Provider,
 			Runner: created.Runner, LaunchGoal: plan.LaunchGoal, RuntimeConfig: plan.CapturedRuntimeConfig,
-			LegacyAdapter: plan.Adapter,
+			LegacyAdapter: plan.Adapter, Facts: plan.Facts,
 		})
 		if factoryErr == nil {
 			factoryErr = validateProviderSessionBinding(binding)
@@ -864,6 +863,23 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	commandProgram := runtimeCommand[0]
 	commandArgs := runtimeCommand[1:]
 	workdir := layout.Workdir
+	// Structured launch facts for the provider-session factory: family
+	// assemblers consume these instead of re-parsing the rendered one-shot
+	// argv below.
+	launchFacts := ProviderSessionLaunchFacts{
+		ProviderBinary: providerCommand[0],
+		CustomArgs:     append([]string(nil), launchProfile.Fields.CustomArgs...),
+		SettingsPath:   configPath,
+		Workdir:        "/task/workdir",
+	}
+	if !sandbox {
+		launchFacts.Workdir = workdir
+	}
+	if launchModelOverride != "" {
+		launchFacts.Model = launchModelOverride
+	} else {
+		launchFacts.Model = strings.TrimSpace(launchProfile.Fields.Model)
+	}
 	containerIDFile := ""
 	sandboxNetwork := runner.SandboxNetworkDefault
 	sandboxImage := ""
@@ -905,14 +921,9 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		// bridge and therefore needs a bare "pi" token in docker create argv.
 		// Skip the wrapper whenever this launch will open a provider session.
 		if profile.Provider == runtimeprofile.ProviderPi {
-			usePersistentSession := server.providerSessionFactory != nil &&
-				supportsPersistentProviderSession(created.Runner, profile.Provider)
-			if !usePersistentSession {
-				wrapped, err := runner.WrapSandboxPiCommand(runtimeCommand, launchProfile.Fields.Env)
-				if err != nil {
-					return taskLaunchPlan{}, err
-				}
-				sandboxRuntime = wrapped
+			sandboxRuntime, err = server.sandboxPiRuntimeCommand(runtimeCommand, launchProfile, created.Runner)
+			if err != nil {
+				return taskLaunchPlan{}, err
 			}
 		}
 		var readOnlyTaskFiles, readOnlyTaskDirs []string
@@ -1020,50 +1031,13 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	}
 
 	// Pi writes its real-time progress to a session jsonl file instead of
-	// stdout, so a sandboxed Pi task's timeline is empty until it exits. Wrap
-	// the adapter with a session-file tailer that re-emits appended lines as
-	// runtime_output events the transcript parser already understands.
-	if sandbox && profile.Provider == runtimeprofile.ProviderPi {
-		sessionDir := filepath.Join(layout.ProviderHome, "agent", "sessions")
-		adapter = runtime.NewPiSessionTailAdapter(adapter, sessionDir)
-	}
+	// stdout, so a sandboxed Pi task's timeline is empty until it exits. The
+	// shared tailer re-emits appended lines as runtime_output events the
+	// transcript parser already understands.
+	adapter = withPiSessionTail(adapter, sandbox, profile.Provider, layout)
 
-	var metadata func() (runtime.NativeSessionMetadata, error)
-	if sandbox || profile.Provider == runtimeprofile.ProviderCodex || profile.Provider == runtimeprofile.ProviderPi || profile.Provider == runtimeprofile.ProviderHermes {
-		metadata = func() (runtime.NativeSessionMetadata, error) {
-			var collected runtime.NativeSessionMetadata
-			if containerIDFile != "" {
-				containerID, err := runtime.ReadContainerIDFile(containerIDFile)
-				if err != nil && !os.IsNotExist(err) {
-					return runtime.NativeSessionMetadata{}, err
-				}
-				collected.ContainerID = containerID
-			}
-			switch profile.Provider {
-			case runtimeprofile.ProviderCodex:
-				session, err := runtime.DiscoverCodexSession(layout.ProviderHome)
-				if err != nil {
-					return runtime.NativeSessionMetadata{}, err
-				}
-				collected.NativeSessionID = session.NativeSessionID
-				collected.NativeSessionPath = session.NativeSessionPath
-			case runtimeprofile.ProviderPi:
-				session, err := runtime.DiscoverPiSession(layout.ProviderHome)
-				if err != nil {
-					return runtime.NativeSessionMetadata{}, err
-				}
-				collected.NativeSessionID = session.NativeSessionID
-				collected.NativeSessionPath = session.NativeSessionPath
-			}
-			return collected, nil
-		}
-	}
-	var stopConfirmation runtime.StopConfirmation
-	if containerIDFile != "" {
-		// Match the launch-selected CLI (podman/docker), not only the daemon flag.
-		containerCLI := task.ResolveContainerCLI(created.RunControls.ContainerCLI, server.containerCLI)
-		stopConfirmation = runtime.DockerContainerStopConfirmation(containerCLI, containerIDFile)
-	}
+	metadata := providerNativeSessionMetadata(sandbox, profile.Provider, layout, containerIDFile)
+	stopConfirmation := dockerStopConfirmation(created.RunControls.ContainerCLI, server.containerCLI, containerIDFile)
 
 	return taskLaunchPlan{
 		Adapter:                     adapter,
@@ -1082,6 +1056,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		LaunchGoal:                  launchGoal,
 		BlackboardV2:                v2,
 		ValidatedLayout:             &layout,
+		Facts:                       launchFacts,
 	}, nil
 }
 
@@ -1748,41 +1723,10 @@ func (server *Server) handleTaskTimeline(response http.ResponseWriter, request *
 		return
 	}
 
-	req := parseHistoryRequest(request)
-	items, window, err := collectTimelineItems(req, func(scan historyRequest) (timelineEventChunk, error) {
-		stored, err := server.tasks.HistoryEventWindow(found.ID, task.EventWindowQuery{
-			Projection: task.EventProjectionTimeline, BeforeSet: scan.beforeSet, Before: scan.before,
-			AfterSet: scan.afterSet, After: scan.after, Limit: historyEventQueryLimit,
-		})
-		if err != nil {
-			return timelineEventChunk{}, err
-		}
-		return timelineEventChunk{
-			events:     eventsToTimelineEvents(stored.Events),
-			cursor:     stored.Cursor,
-			hasOlder:   stored.HasOlder,
-			hasNewer:   stored.HasNewer,
-			scanCursor: stored.ScanCursor,
-		}, nil
-	})
+	page, err := server.taskOwnerHistory(found).TimelinePage(parseHistoryRequest(request))
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "list task events")
 		return
-	}
-	if items == nil {
-		items = []timeline.Item{}
-	}
-	detailBase := fmt.Sprintf("/api/projects/%s/tasks/%s/timeline/items", found.ProjectID, found.ID)
-	page := historyResponseFor(items, req, func(item timeline.Item) int {
-		return item.Seq
-	}, func(item timeline.Item) (timeline.Item, int) {
-		return boundedTimelineItem(item, detailBase)
-	})
-	page.hasOlder = page.hasOlder || window.hasOlder
-	if req.afterSet && window.hasNewer {
-		page.cursor = window.scanCursor
-	} else {
-		page.cursor = window.cursor
 	}
 	writeJSON(response, http.StatusOK, struct {
 		TaskID   string          `json:"task_id"`
@@ -1805,24 +1749,16 @@ func (server *Server) handleTaskTimelineItem(response http.ResponseWriter, reque
 	if !ok {
 		return
 	}
-	itemRef := request.PathValue("seq")
-	seq, _ := strconv.Atoi(itemRef)
-	if itemRef == "" {
-		writeError(response, http.StatusNotFound, "timeline item not found")
-		return
-	}
-	events, err := server.tasks.Events(found.ID)
+	item, foundItem, err := server.taskOwnerHistory(found).TimelineItem(request.PathValue("seq"))
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "list task events")
 		return
 	}
-	for _, item := range timeline.Build(eventsToTimelineEvents(events)) {
-		if item.ID == itemRef || (seq > 0 && item.Seq == seq) {
-			writeJSON(response, http.StatusOK, item)
-			return
-		}
+	if !foundItem {
+		writeError(response, http.StatusNotFound, "timeline item not found")
+		return
 	}
-	writeError(response, http.StatusNotFound, "timeline item not found")
+	writeJSON(response, http.StatusOK, item)
 }
 
 func (server *Server) handleTaskTranscript(response http.ResponseWriter, request *http.Request) {
@@ -1831,37 +1767,10 @@ func (server *Server) handleTaskTranscript(response http.ResponseWriter, request
 		return
 	}
 
-	req := parseHistoryRequest(request)
-	window, err := server.tasks.HistoryEventWindow(found.ID, task.EventWindowQuery{
-		Projection: task.EventProjectionTranscript, BeforeSet: req.beforeSet, Before: req.before,
-		AfterSet: req.afterSet, After: req.after, Limit: historyEventQueryLimit,
-	})
+	page, err := server.taskOwnerHistory(found).TranscriptPage(parseHistoryRequest(request))
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "list task events")
 		return
-	}
-	entries := transcript.BuildWindow(transcript.Subject{
-		ID:        found.ID,
-		Title:     found.Goal,
-		CreatedAt: found.CreatedAt,
-	}, eventsToTranscriptEvents(window.Events), transcript.WindowContext{
-		Continuation: window.PriorContinuation,
-		Adapter:      window.PriorTranscriptAdapter,
-	})
-	if entries == nil {
-		entries = []transcript.Entry{}
-	}
-	detailBase := fmt.Sprintf("/api/projects/%s/tasks/%s/transcript/entries", found.ProjectID, found.ID)
-	page := historyResponseFor(entries, req, func(entry transcript.Entry) int {
-		return entry.Seq
-	}, func(entry transcript.Entry) (transcript.Entry, int) {
-		return boundedTranscriptEntry(entry, detailBase)
-	})
-	page.hasOlder = page.hasOlder || window.HasOlder
-	if req.afterSet && window.HasNewer {
-		page.cursor = window.ScanCursor
-	} else {
-		page.cursor = window.Cursor
 	}
 	writeJSON(response, http.StatusOK, struct {
 		TaskID   string             `json:"task_id"`
@@ -1883,27 +1792,16 @@ func (server *Server) handleTaskTranscriptEntry(response http.ResponseWriter, re
 	if !ok {
 		return
 	}
-	entryID := request.PathValue("entry_id")
-	if entryID == "" {
-		writeError(response, http.StatusNotFound, "transcript entry not found")
-		return
-	}
-	events, err := server.tasks.Events(found.ID)
+	entry, foundEntry, err := server.taskOwnerHistory(found).TranscriptEntry(request.PathValue("entry_id"))
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "list task events")
 		return
 	}
-	for _, entry := range transcript.Build(transcript.Subject{
-		ID:        found.ID,
-		Title:     found.Goal,
-		CreatedAt: found.CreatedAt,
-	}, eventsToTranscriptEvents(events)) {
-		if entry.ID == entryID {
-			writeJSON(response, http.StatusOK, entry)
-			return
-		}
+	if !foundEntry {
+		writeError(response, http.StatusNotFound, "transcript entry not found")
+		return
 	}
-	writeError(response, http.StatusNotFound, "transcript entry not found")
+	writeJSON(response, http.StatusOK, entry)
 }
 
 func (server *Server) handleStopTask(response http.ResponseWriter, request *http.Request) {
@@ -3325,76 +3223,50 @@ func (server *Server) taskConclusionSettlement(found task.Task) providerControlS
 // correct Runtime Continuation. The caller owns Task control for the whole
 // operation. The returned execution is the durable terminal outcome.
 func (server *Server) executeNativeSteerOperation(ctx context.Context, found task.Task, session runtime.ProviderSession, mode runtime.ProviderSessionMode, operation nativeSteerOperationFunc, providerRequest runtime.ProviderSessionRequest, conversation task.Event, continuationID string, freshContinuation bool) steeringExecution {
-	var continuationMu sync.Mutex
-	var continuationTransitionErr error
-	emit := func(kind task.EventKind, payload task.EventPayload) {
-		payload["conversation_event_id"] = conversation.ID
-		continuationMu.Lock()
-		currentContinuationID := continuationID
-		if currentContinuationID != "" {
-			_, _ = server.tasks.AppendContinuationEvent(found.ID, currentContinuationID, kind, payload)
-		}
-		if mode == runtime.ProviderSessionModeInterruptThenReplace && kind == task.EventKindSteering && payload["outcome"] == "settled" && currentContinuationID != "" && !freshContinuation {
-			if transitionErr := server.advanceNativeSteerContinuation(currentContinuationID, session, &continuationID); transitionErr != nil {
-				continuationTransitionErr = transitionErr
-				failure := task.EventPayload{
-					"request_id": payload["request_id"], "session_id": payload["session_id"],
-					"mode": string(mode), "outcome": "failed", "phase": "replacement_continuation_failed",
-					"error_code": "continuation_transition_failed",
-				}
-				_, _ = server.tasks.AppendContinuationEvent(found.ID, currentContinuationID, task.EventKindSteering, failure)
+	return runNativeSteerTurn(ctx, steerExecutionSpec{
+		operation:             operation,
+		request:               providerRequest,
+		mode:                  mode,
+		providerSessionID:     session.SessionID(),
+		initialContinuationID: continuationID,
+		advanceOnSettled:      !freshContinuation,
+		vocabulary:            taskSteerEventVocabulary,
+		persistEvent: func(current string, kind task.EventKind, payload task.EventPayload) {
+			payload["conversation_event_id"] = conversation.ID
+			if current != "" {
+				_, _ = server.tasks.AppendContinuationEvent(found.ID, current, kind, payload)
 			}
-		}
-		continuationMu.Unlock()
-		if currentContinuationID == "" {
+		},
+		persistOwnerEvent: func(kind task.EventKind, payload task.EventPayload) {
+			payload["conversation_event_id"] = conversation.ID
 			_, _ = server.tasks.AppendEvent(found.ID, kind, payload)
-		}
-	}
-	result, operationErr := operation(ctx, providerRequest, emit)
-	if operationErr != nil {
-		errorCode, errorMessage := nativeSteerFailurePresentation(operationErr)
-		if errors.Is(operationErr, context.Canceled) || errors.Is(operationErr, context.DeadlineExceeded) {
-			// Post-fence with no provider outcome: delivery is ambiguous. The
-			// request is never replayed automatically; it settles
-			// action_required with a reason-specific recovery path.
-			ambiguous := task.EventPayload{
-				"request_id": providerRequest.RequestID, "session_id": session.SessionID(), "mode": string(mode),
-				"outcome": "action_required", "phase": "steering_action_required",
-				"error_code": string(owner.SteeringReasonDeliveryAmbiguous), "error": errorMessage,
-				"model_provider_id": providerRequest.ModelProviderID, "model": providerRequest.Model,
-				"requested_reasoning_effort": providerRequest.RequestedReasoningEffort,
+		},
+		advance: func(current string) (string, error) {
+			next := current
+			if err := server.advanceNativeSteerContinuation(current, session, &next); err != nil {
+				return "", err
 			}
-			emit(task.EventKindSteering, ambiguous)
-			return steeringExecution{state: owner.SteeringActionRequired, reason: owner.SteeringReasonDeliveryAmbiguous, message: errorMessage}
-		}
-		// Public Task Events carry only redacted, stable failure fields.
-		// Raw provider text stays out of the conversation surface.
-		failure := task.EventPayload{
-			"request_id": providerRequest.RequestID, "session_id": session.SessionID(), "mode": string(mode),
-			"outcome": "failed", "phase": "steering_failed", "error_code": errorCode,
-			"error":             errorMessage,
-			"model_provider_id": providerRequest.ModelProviderID, "model": providerRequest.Model,
-			"requested_reasoning_effort": providerRequest.RequestedReasoningEffort,
-		}
-		emit(task.EventKindSteering, failure)
-		return steeringExecution{state: owner.SteeringFailed, reason: steerReasonFromFailureCode(errorCode), message: errorMessage}
-	}
-	continuationMu.Lock()
-	transitionErr := continuationTransitionErr
-	continuationMu.Unlock()
-	if transitionErr != nil {
-		_ = server.closeProviderSession(found.ID)
-		if current, _ := server.tasks.ActiveContinuation(found.ID); current != nil {
-			_, _ = server.tasks.UpdateContinuationStatus(current.ID, task.StatusFailed)
-		}
-		_, _ = server.tasks.UpdateStatus(found.ID, task.StatusFailed)
-		return steeringExecution{state: owner.SteeringFailed, reason: owner.SteeringReasonContinuationUnavailable, message: transitionErr.Error(), failOwner: true}
-	}
-	payload := result.Payload()
-	payload["outcome"] = "applied"
-	payload["phase"] = "steering_applied"
-	emit(task.EventKindSteering, payload)
-	return steeringExecution{state: owner.SteeringApplied, result: result.Payload()}
+			return next, nil
+		},
+		onAdvanceSettled: func(current, _ string, advanceErr error) {
+			if advanceErr == nil {
+				return
+			}
+			_, _ = server.tasks.AppendContinuationEvent(found.ID, current, task.EventKindSteering, task.EventPayload{
+				"request_id": providerRequest.RequestID, "session_id": session.SessionID(),
+				"mode": string(mode), "outcome": "failed", "phase": "replacement_continuation_failed",
+				"error_code": "continuation_transition_failed",
+			})
+		},
+		failClosed: func(string) {
+			_ = server.closeProviderSession(found.ID)
+			if current, _ := server.tasks.ActiveContinuation(found.ID); current != nil {
+				_, _ = server.tasks.UpdateContinuationStatus(current.ID, task.StatusFailed)
+			}
+			_, _ = server.tasks.UpdateStatus(found.ID, task.StatusFailed)
+		},
+		failOwnerExecution: true,
+	})
 }
 
 // steerReasonFromFailureCode maps the redacted provider failure presentation
@@ -3451,13 +3323,7 @@ func (server *Server) handleProviderPermissionResponse(response http.ResponseWri
 		writeError(response, http.StatusBadRequest, "permission decision must be allow or deny")
 		return
 	}
-	input.RequestID = strings.TrimSpace(input.RequestID)
-	if input.RequestID == "" {
-		input.RequestID = strings.TrimSpace(request.Header.Get("Idempotency-Key"))
-	}
-	if input.RequestID == "" {
-		input.RequestID = "permission-" + permissionID + "-" + input.Decision
-	}
+	derivePermissionResponseRequestID(request, &input)
 
 	events, err := server.tasks.Events(found.ID)
 	if err != nil {
@@ -3470,10 +3336,7 @@ func (server *Server) handleProviderPermissionResponse(response http.ResponseWri
 		return
 	}
 	if priorOutcome != "" {
-		writeJSON(response, http.StatusAccepted, map[string]any{
-			"request_id": input.RequestID, "permission_request_id": permissionID,
-			"session_id": session.SessionID(), "decision": input.Decision, "outcome": priorOutcome,
-		})
+		writePermissionResponseAccepted(response, input, permissionID, session.SessionID(), priorOutcome)
 		return
 	}
 	if !pending {
@@ -3502,11 +3365,7 @@ func (server *Server) handleProviderPermissionResponse(response http.ResponseWri
 	if active != nil {
 		continuationID = active.ID
 	}
-	requestedPayload := task.EventPayload{
-		"phase": "provider_permission_response_requested", "mode": string(runtime.ProviderSessionModePermissionResponse),
-		"outcome": "pending", "request_id": input.RequestID, "permission_request_id": permissionID,
-		"permission_decision": input.Decision, "session_id": session.SessionID(),
-	}
+	requestedPayload := permissionResponseRequestedPayload(input, permissionID, session.SessionID())
 	if continuationID != "" {
 		_, err = server.tasks.AppendContinuationEvent(found.ID, continuationID, task.EventKindLifecycle, requestedPayload)
 	} else {
@@ -3518,91 +3377,21 @@ func (server *Server) handleProviderPermissionResponse(response http.ResponseWri
 		return
 	}
 	taskCtx := server.providerTaskContext(found.ID)
-	emit := func(kind task.EventKind, payload task.EventPayload) {
-		redacted := task.EventPayload{}
-		// Fixed correlation allowlist shared with the Session provider event
-		// projection (provider_session_control.go): raw protocol payload never
-		// reaches the Task Conversation.
-		for _, key := range []string{"provider", "request_id", "session_id", "provider_turn_id", "mode", "outcome", "permission_request_id", "permission_decision", "error_code", "phase"} {
-			if value, ok := payload[key]; ok {
-				redacted[key] = value
-			}
-		}
-		if redacted["request_id"] == nil {
-			redacted["request_id"] = input.RequestID
-		}
-		redacted["permission_request_id"] = permissionID
-		if redacted["mode"] == nil {
-			redacted["mode"] = string(runtime.ProviderSessionModePermissionResponse)
-		}
-		switch redacted["outcome"] {
-		case "requested":
-			redacted["phase"] = "provider_permission_response_requested"
-		case "acknowledged":
-			redacted["phase"] = "provider_permission_response_acknowledged"
-		case "failed":
-			redacted["phase"] = "provider_permission_response_failed"
-		}
+	persistLadderEvent := func(kind task.EventKind, payload task.EventPayload) {
 		if continuationID != "" {
-			_, _ = server.tasks.AppendContinuationEvent(found.ID, continuationID, kind, redacted)
+			_, _ = server.tasks.AppendContinuationEvent(found.ID, continuationID, kind, payload)
 		} else {
-			_, _ = server.tasks.AppendEvent(found.ID, kind, redacted)
+			_, _ = server.tasks.AppendEvent(found.ID, kind, payload)
 		}
 	}
+	emit := newPermissionResponseEmit(input, permissionID, persistLadderEvent)
 	go func() {
 		defer server.releaseProviderTaskControl(found.ID)
 		ctx, cancel := context.WithTimeout(taskCtx, 30*time.Second)
 		defer cancel()
-		result, operationErr := session.RespondPermission(ctx, runtime.ProviderSessionRequest{
-			RequestID: input.RequestID, PermissionRequestID: permissionID, PermissionDecision: input.Decision,
-		}, emit)
-		if operationErr != nil {
-			emit(task.EventKindLifecycle, task.EventPayload{"outcome": "failed", "phase": "provider_permission_response_failed", "error_code": permissionResponseErrorCode(operationErr)})
-			return
-		}
-		payload := result.Payload()
-		payload["phase"] = "provider_permission_response_applied"
-		payload["outcome"] = "applied"
-		payload["permission_request_id"] = permissionID
-		if continuationID != "" {
-			_, _ = server.tasks.AppendContinuationEvent(found.ID, continuationID, task.EventKindLifecycle, payload)
-		} else {
-			_, _ = server.tasks.AppendEvent(found.ID, task.EventKindLifecycle, payload)
-		}
+		deliverPermissionResponse(ctx, session, input, permissionID, emit, persistLadderEvent)
 	}()
-	writeJSON(response, http.StatusAccepted, map[string]any{
-		"request_id": input.RequestID, "permission_request_id": permissionID,
-		"session_id": session.SessionID(), "decision": input.Decision, "outcome": "accepted",
-	})
-}
-
-func normalizePermissionDecision(decision string) string {
-	switch strings.ToLower(strings.TrimSpace(decision)) {
-	case "allow", "approve", "approved", "yes":
-		return "allow"
-	case "deny", "reject", "rejected", "no":
-		return "deny"
-	default:
-		return ""
-	}
-}
-
-// permissionResponseErrorCode maps a provider permission-response failure to
-// the stable error_code both owner kinds persist, so task and session
-// permission handling share one classification.
-func permissionResponseErrorCode(operationErr error) string {
-	switch {
-	case errors.Is(operationErr, context.DeadlineExceeded):
-		return "timeout"
-	case errors.Is(operationErr, context.Canceled):
-		return "server_closing"
-	case errors.Is(operationErr, runtime.ErrProviderSessionClosed):
-		return "session_closed"
-	case errors.Is(operationErr, runtime.ErrProviderSessionControlConflict):
-		return "control_conflict"
-	default:
-		return "provider_rejected"
-	}
+	writePermissionResponseAccepted(response, input, permissionID, session.SessionID(), "accepted")
 }
 
 // providerPermissionStatus scans either owner's event stream for the state of
@@ -4487,22 +4276,6 @@ func eventsToTimelineEvents(events []task.Event) []timeline.Event {
 	converted := make([]timeline.Event, 0, len(events))
 	for _, event := range events {
 		converted = append(converted, timeline.Event{
-			ID:        event.ID,
-			Seq:       event.Seq,
-			Kind:      string(event.Kind),
-			Payload:   event.Payload,
-			CreatedAt: event.CreatedAt,
-		})
-	}
-	return converted
-}
-
-// eventsToTranscriptEvents projects retained task events into the shared
-// transcript input shape so task and session transcripts run the same builder.
-func eventsToTranscriptEvents(events []task.Event) []transcript.Event {
-	converted := make([]transcript.Event, 0, len(events))
-	for _, event := range events {
-		converted = append(converted, transcript.Event{
 			ID:        event.ID,
 			Seq:       event.Seq,
 			Kind:      string(event.Kind),

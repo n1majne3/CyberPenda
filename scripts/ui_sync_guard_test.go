@@ -49,7 +49,7 @@ func TestEmbeddedUIIsNotCommitted(t *testing.T) {
 	assertContains(t, string(dockerfile), "COPY --from=web-build /src/web/dist internal/daemon/webfs/dist")
 }
 
-func TestBuildUIWritesLocalEmbedWithoutCommitGate(t *testing.T) {
+func TestBuildUIUsesPortableEmbedSynchronizationWithoutCommitGate(t *testing.T) {
 	repoRoot := repoRoot(t)
 	makefileBytes, err := os.ReadFile(filepath.Join(repoRoot, "Makefile"))
 	if err != nil {
@@ -58,8 +58,15 @@ func TestBuildUIWritesLocalEmbedWithoutCommitGate(t *testing.T) {
 	makefile := string(makefileBytes)
 
 	assertContains(t, makefile, "build: build-ui")
-	assertContains(t, makefile, "rsync -a --delete --exclude .gitkeep web/dist/ internal/daemon/webfs/dist/")
-	assertContains(t, makefile, "ensure-embed-stub:")
+	assertContains(t, makefile, "@node scripts/web-build-cli.mjs build-ui")
+	assertContains(t, makefile, "@node scripts/web-build-cli.mjs ensure-embed-stub")
+	assertContains(t, makefile, "\tgo build ./cmd/pentestd")
+	if strings.Contains(makefile, "rsync") || strings.Contains(makefile, "mkdir -p internal/daemon/webfs/dist") {
+		t.Fatal("native build path must not require POSIX file utilities")
+	}
+	if strings.Contains(makefile, "go build -o pentestd") {
+		t.Fatal("Go must select the native executable suffix")
+	}
 	if strings.Contains(makefile, "check-ui-sync") {
 		t.Fatal("check-ui-sync must not remain; embedded UI is no longer committed")
 	}
@@ -73,6 +80,30 @@ func TestBuildUIWritesLocalEmbedWithoutCommitGate(t *testing.T) {
 		t.Fatal("CI must not require committed UI sync")
 	}
 	assertContains(t, workflow, "make build-ui")
+	windowsJobStart := strings.Index(workflow, "  windows-build:")
+	if windowsJobStart < 0 {
+		t.Fatal("CI must define a native Windows build job")
+	}
+	windowsJobEnd := strings.Index(workflow[windowsJobStart+1:], "\n  app-image:")
+	if windowsJobEnd < 0 {
+		t.Fatal("CI Windows build job must precede the app image job")
+	}
+	windowsJob := workflow[windowsJobStart : windowsJobStart+1+windowsJobEnd]
+	assertContains(t, windowsJob, "runs-on: windows-latest")
+	assertContains(t, windowsJob, "shell: cmd")
+	assertContains(t, windowsJob, "node --test scripts/web-build.test.mjs")
+	assertContains(t, windowsJob, "make build")
+	assertContains(t, windowsJob, "pentestd.exe")
+
+	releaseBytes, err := os.ReadFile(filepath.Join(repoRoot, ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatalf("read release workflow: %v", err)
+	}
+	release := string(releaseBytes)
+	assertContains(t, release, "make build-ui")
+	if strings.Contains(release, "rm -rf internal/daemon/webfs/dist") {
+		t.Fatal("release UI synchronization must preserve the embed directory")
+	}
 
 	hookPath := filepath.Join(repoRoot, ".githooks", "pre-push")
 	hookBytes, err := os.ReadFile(hookPath)
@@ -84,7 +115,7 @@ func TestBuildUIWritesLocalEmbedWithoutCommitGate(t *testing.T) {
 	}
 }
 
-func TestDevRepairsMissingOrStaleWebDependencies(t *testing.T) {
+func TestDevRepairsMissingOrStaleWebDependenciesWithoutBash(t *testing.T) {
 	repoRoot := repoRoot(t)
 	makefileBytes, err := os.ReadFile(filepath.Join(repoRoot, "Makefile"))
 	if err != nil {
@@ -93,15 +124,18 @@ func TestDevRepairsMissingOrStaleWebDependencies(t *testing.T) {
 	makefile := string(makefileBytes)
 
 	assertContains(t, makefile, "dev: ensure-web-deps")
-	assertContains(t, makefile, "ensure-web-deps:\n\t@bash scripts/ensure-web-deps.sh")
-
-	guardBytes, err := os.ReadFile(filepath.Join(repoRoot, "scripts", "ensure-web-deps.sh"))
-	if err != nil {
-		t.Fatalf("read web dependency guard: %v", err)
+	assertContains(t, makefile, "@node scripts/web-build-cli.mjs ensure-deps")
+	if strings.Contains(makefile, "ensure-web-deps.sh") {
+		t.Fatal("web dependency repair must not require Bash")
 	}
-	guard := string(guardBytes)
-	assertContains(t, guard, "node_modules/.bin/vite")
-	assertContains(t, guard, "node_modules/.package-lock.json")
-	assertContains(t, guard, "import('rolldown')")
-	assertContains(t, guard, "npm ci")
+
+	helperBytes, err := os.ReadFile(filepath.Join(repoRoot, "scripts", "web-build.mjs"))
+	if err != nil {
+		t.Fatalf("read web build helper: %v", err)
+	}
+	helper := string(helperBytes)
+	assertContains(t, helper, "vite.cmd")
+	assertContains(t, helper, "node_modules")
+	assertContains(t, helper, "import('rolldown')")
+	assertContains(t, helper, "npm.cmd")
 }
