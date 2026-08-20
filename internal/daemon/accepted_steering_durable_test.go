@@ -354,7 +354,8 @@ func TestAcceptedSteeringPreFenceRestartResumesDispatchAfterResume(t *testing.T)
 	factory := &assistedConclusionSessionFactory{session: freshSession, adapter: adapter, support: true}
 	server2, err := NewServer(Config{
 		DBPath: filepath.Join(root, "pentest.db"), RuntimeRoot: filepath.Join(root, "runs"),
-		DisableBuiltinSkills: true, ProviderSessionFactory: factory,
+		SandboxImage: "cyberpenda:test", DisableBuiltinSkills: true, ProviderSessionFactory: factory,
+		ContainerCLI: filepath.Join(root, "fake-docker"),
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -2468,9 +2468,14 @@ func newAssistedConclusionFixtureAtWithDecorator(t *testing.T, root string, repo
 	}
 	adapter := runtime.NewProviderSessionRunAdapter(session, make(chan struct{}))
 	factory := &assistedConclusionSessionFactory{session: session, adapter: adapter, support: reporterSupport}
+	dockerCLI := filepath.Join(root, "fake-docker")
+	if err := writeExecutable(dockerCLI, "#!/bin/sh\necho ok\n"); err != nil {
+		t.Fatal(err)
+	}
 	server, err := NewServer(Config{
 		DBPath: filepath.Join(root, "pentest.db"), RuntimeRoot: filepath.Join(root, "runs"),
 		SandboxImage: "cyberpenda:test", DisableBuiltinSkills: true, ProviderSessionFactory: factory,
+		ContainerCLI: dockerCLI,
 	})
 	if err != nil {
 		t.Fatal(err)
