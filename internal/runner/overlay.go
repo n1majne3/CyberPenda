@@ -113,22 +113,6 @@ func applyConfigOverlay(provider runtimeprofile.Provider, generated map[string]a
 	return deepMergeConfig(generated, overlay), nil
 }
 
-// MergedConfigPreview renders the final merged result the runtime receives:
-// the Generated Runtime Config deep-merged with the profile's Custom Config
-// File overlay (structured fields win conflicts). It backs the generated
-// config preview so operators see exactly what will run.
-func MergedConfigPreview(provider runtimeprofile.Provider, generated map[string]any, overlayRaw string) (map[string]any, error) {
-	merged, err := applyConfigOverlay(provider, generated, overlayRaw)
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[string]any, len(merged))
-	for key, value := range merged {
-		out[key] = value
-	}
-	return out, nil
-}
-
 // ProjectedConfigText renders the provider-native seed the Profile Config
 // editor opens on: a complete, realistic file for the provider, derived from
 // the profile's structured fields only (no credential resolution, no file

@@ -220,27 +220,6 @@ func TestProjectionRejectsMalformedOverlay(t *testing.T) {
 	}
 }
 
-func TestMergedConfigPreviewCombinesStructuredAndOverlay(t *testing.T) {
-	generated := map[string]any{
-		"provider": "claude_code",
-		"env":      map[string]any{"STRUCTURED": "wins"},
-	}
-	merged, err := runner.MergedConfigPreview(runtimeprofile.ProviderClaudeCode, generated, `{"env":{"OVERLAY":"adds"},"enabledPlugins":{"warp@claude-code-warp":true}}`)
-	if err != nil {
-		t.Fatalf("merged preview: %v", err)
-	}
-	env, ok := merged["env"].(map[string]any)
-	if !ok {
-		t.Fatalf("env must be a map, got %#v", merged["env"])
-	}
-	if env["STRUCTURED"] != "wins" || env["OVERLAY"] != "adds" {
-		t.Fatalf("structured must win, overlay must add: %#v", env)
-	}
-	if plugins, ok := merged["enabledPlugins"].(map[string]any); !ok || plugins["warp@claude-code-warp"] != true {
-		t.Fatalf("overlay-only key must be present: %#v", merged["enabledPlugins"])
-	}
-}
-
 func TestProjectedConfigTextRendersProviderNativeSeeds(t *testing.T) {
 	// Story 2: the config editor seeds with a complete, realistic
 	// provider-native file, redacted, never a preview envelope.
