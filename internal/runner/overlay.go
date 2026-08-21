@@ -106,7 +106,8 @@ func scanOverlaySecrets(prefix string, doc map[string]any) error {
 // structured generated document. Object keys merge recursively; on any leaf
 // conflict the structured (generated) value wins, so drifted overlays can add
 // keys the structured fields do not express but never override derived ones.
-// Scalars and arrays land whole — arrays are never element-merged.
+// Scalars land whole. Arrays union by value so a harness-derived list
+// (Hermes plugins.enabled) can coexist with operator-added entries.
 func applyConfigOverlay(provider runtimeprofile.Provider, generated map[string]any, overlayRaw string) (map[string]any, error) {
 	overlay, err := parseOverlayDocument(provider, overlayRaw)
 	if err != nil {
@@ -123,17 +124,23 @@ func applyConfigOverlay(provider runtimeprofile.Provider, generated map[string]a
 
 // ProjectedConfigText renders the provider-native seed the Profile Config
 // editor opens on: a complete, realistic file for the provider, derived from
-// the profile's structured fields only (no credential resolution, no file
-// writes) and redacted so secret values never enter editor text.
+// the same projection builders launch uses (no file writes) and redacted so
+// secret values never enter editor text.
 func ProjectedConfigText(provider runtimeprofile.Provider, profile runtimeprofile.Profile) (string, error) {
-	seed, err := StructuredProjectedConfigText(provider, profile)
+	return ProjectedConfigTextWith(provider, profile, ProjectionRequest{})
+}
+
+// ProjectedConfigTextWith is ProjectedConfigText with launch-equivalent
+// Model Provider resolution and Pi global projection.
+func ProjectedConfigTextWith(provider runtimeprofile.Provider, profile runtimeprofile.Profile, req ProjectionRequest) (string, error) {
+	seed, err := StructuredProjectedConfigTextWith(provider, profile, req)
 	if err != nil {
 		return "", err
 	}
 	if strings.TrimSpace(profile.Fields.CustomConfigFile) == "" {
 		return seed, nil
 	}
-	merged, err := MergedProjectedConfig(provider, profile)
+	merged, err := MergedProjectedConfigWith(provider, profile, req)
 	if err != nil {
 		return "", err
 	}
@@ -141,6 +148,17 @@ func ProjectedConfigText(provider runtimeprofile.Provider, profile runtimeprofil
 }
 
 func StructuredProjectedConfigText(provider runtimeprofile.Provider, profile runtimeprofile.Profile) (string, error) {
+	return StructuredProjectedConfigTextWith(provider, profile, ProjectionRequest{})
+}
+
+// StructuredProjectedConfigTextWith renders the structured projection using
+// the same builders as launch. Credentials stay out of the text.
+func StructuredProjectedConfigTextWith(provider runtimeprofile.Provider, profile runtimeprofile.Profile, req ProjectionRequest) (string, error) {
+	profile = resolvePreviewProfile(profile, req)
+	projected, err := listPiLaunchReadyProviders(profile, req)
+	if err != nil {
+		return "", err
+	}
 	switch provider {
 	case runtimeprofile.ProviderClaudeCode:
 		settings := map[string]any{"env": redactEnvMap(claudeStructuredEnv(profile))}
@@ -166,9 +184,12 @@ func StructuredProjectedConfigText(provider runtimeprofile.Provider, profile run
 		if err != nil {
 			return "", err
 		}
-		return buildHermesConfigYAML(profile, nil, profile.Fields.MCPServers, string(effort)), nil
+		return buildHermesConfigYAML(profile, projected, profile.Fields.MCPServers, string(effort)), nil
 	case runtimeprofile.ProviderPi:
 		models := buildPiModels(profile, nil)
+		if len(projected) > 0 {
+			models = buildPiModelsFromProjected(projected)
+		}
 		raw, err := json.MarshalIndent(models, "", "  ")
 		if err != nil {
 			return "", err
@@ -202,7 +223,11 @@ func claudeStructuredEnv(profile runtimeprofile.Profile) map[string]string {
 // the merged config preview so operators see exactly the file shape that
 // will run.
 func MergedProjectedConfig(provider runtimeprofile.Provider, profile runtimeprofile.Profile) (map[string]any, error) {
-	seed, err := StructuredProjectedConfigText(provider, profile)
+	return MergedProjectedConfigWith(provider, profile, ProjectionRequest{})
+}
+
+func MergedProjectedConfigWith(provider runtimeprofile.Provider, profile runtimeprofile.Profile, req ProjectionRequest) (map[string]any, error) {
+	seed, err := StructuredProjectedConfigTextWith(provider, profile, req)
 	if err != nil {
 		return nil, err
 	}
@@ -244,9 +269,11 @@ func encodeProjectedDocument(provider runtimeprofile.Provider, doc map[string]an
 	}
 }
 
-// deepMergeConfig merges overlay into base. Recursion happens only when both
-// sides hold maps; every other existing base value (scalar, array, type
-// mismatch) is kept — structured fields win conflicts, overlays add the rest.
+// deepMergeConfig merges overlay into base. Recursion happens when both
+// sides hold maps; arrays union by value (base order first) so a
+// harness-derived list can coexist with operator-added entries. Every
+// other existing base value (scalar, type mismatch) is kept — structured
+// fields win conflicts, overlays add the rest.
 func deepMergeConfig(base, overlay map[string]any) map[string]any {
 	merged := make(map[string]any, len(base)+len(overlay))
 	for key, value := range base {
@@ -259,6 +286,12 @@ func deepMergeConfig(base, overlay map[string]any) map[string]any {
 			overlayMap, overlayOK := normalizeConfigMap(overlayValue)
 			if baseOK && overlayOK {
 				merged[key] = deepMergeConfig(baseMap, overlayMap)
+				continue
+			}
+			baseArr, baseArrOK := normalizeConfigArray(baseValue)
+			overlayArr, overlayArrOK := normalizeConfigArray(overlayValue)
+			if baseArrOK && overlayArrOK {
+				merged[key] = unionConfigArrays(baseArr, overlayArr)
 				continue
 			}
 			// Existing structured leaf: it wins.
@@ -301,4 +334,43 @@ func normalizeConfigMap(value any) (map[string]any, bool) {
 	default:
 		return nil, false
 	}
+}
+
+// normalizeConfigArray widens YAML/TOML array shapes into []any.
+func normalizeConfigArray(value any) ([]any, bool) {
+	switch typed := value.(type) {
+	case []any:
+		return typed, true
+	case []string:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = item
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
+// unionConfigArrays keeps base order and appends overlay entries that are
+// not already present. Structured (harness-derived) entries stay first;
+// operator-added entries coexist.
+func unionConfigArrays(base, overlay []any) []any {
+	out := make([]any, 0, len(base)+len(overlay))
+	seen := map[string]bool{}
+	add := func(item any) {
+		key := fmt.Sprintf("%#v", item)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, item)
+	}
+	for _, item := range base {
+		add(item)
+	}
+	for _, item := range overlay {
+		add(item)
+	}
+	return out
 }

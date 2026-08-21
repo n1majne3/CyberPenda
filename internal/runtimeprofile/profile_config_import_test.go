@@ -1,6 +1,7 @@
 package runtimeprofile_test
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -243,10 +244,10 @@ func TestImportProfileConfigAcceptsUnchangedManagedKeys(t *testing.T) {
 	}
 
 	seed := "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n"
+	service.SetImportBaseline(func(runtimeprofile.Profile) (string, error) { return seed, nil })
 	edited := seed + "\n[features]\nweb_search = true\n"
 	result, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{
-		ConfigText:    edited,
-		ProjectedText: seed,
+		ConfigText: edited,
 	})
 	if err != nil {
 		t.Fatalf("unchanged managed keys must import, got %v", err)
@@ -266,11 +267,9 @@ func TestImportProfileConfigRefusesChangedManagedKeyValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	seed := "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n"
 	edited := "approval_policy = \"on-request\"\nsandbox_mode = \"danger-full-access\"\n"
 	_, err = service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{
-		ConfigText:    edited,
-		ProjectedText: seed,
+		ConfigText: edited,
 	})
 	if err == nil {
 		t.Fatal("changed managed key must be refused")
@@ -287,5 +286,184 @@ func TestImportProfileConfigRefusesChangedManagedKeyValue(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected approval_policy change refusal, got %#v", refusal.Errors)
+	}
+}
+
+// A forged client-provided baseline must not bypass Managed Config Key
+// refusal: the service derives the baseline itself, never from the request.
+func TestImportProfileConfigIgnoresClientBaselineForManagedKeys(t *testing.T) {
+	service := newTestService(t)
+	created, err := service.Create("Codex Forged", runtimeprofile.ProviderCodex, runtimeprofile.Fields{ModelProviderID: "mp-1"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// A client can no longer submit a baseline at all: the request shape has
+	// no such field, and the service derives it from the injected projector.
+	_, err = service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{
+		ConfigText: "approval_policy = \"on-request\"\n",
+	})
+	var refusal *runtimeprofile.ImportConfigError
+	if !errors.As(err, &refusal) {
+		t.Fatalf("changed managed key must still be refused, got %v", err)
+	}
+	if refusal.Errors[0].Key != "approval_policy" {
+		t.Fatalf("refusal key = %q, want approval_policy", refusal.Errors[0].Key)
+	}
+}
+
+// Deleting a Managed Config Key from the edited document is a change and
+// must be refused, not silently accepted because the walker never sees it.
+func TestImportProfileConfigRefusesDeletedManagedKey(t *testing.T) {
+	service := newTestService(t)
+	service.SetImportBaseline(func(profile runtimeprofile.Profile) (string, error) {
+		return "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n", nil
+	})
+	created, err := service.Create("Codex Delete", runtimeprofile.ProviderCodex, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	_, err = service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{
+		ConfigText: "sandbox_mode = \"danger-full-access\"\n",
+	})
+	var refusal *runtimeprofile.ImportConfigError
+	if !errors.As(err, &refusal) {
+		t.Fatalf("deleted managed key must be refused, got %v", err)
+	}
+	found := false
+	for _, keyErr := range refusal.Errors {
+		if keyErr.Key == "approval_policy" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("refusal must name the deleted approval_policy, got %+v", refusal.Errors)
+	}
+}
+
+// Structured env round-trips fully: removing a key from the edited env map
+// removes it from the structured field instead of resurrecting it.
+func TestImportProfileConfigEnvDeletionRoundTrips(t *testing.T) {
+	service := newTestService(t)
+	created, err := service.Create("Claude Env", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{
+		Env: map[string]string{"FOO": "1", "BAR": "2"},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	result, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{
+		ConfigText: `{"env":{"FOO":"1"}}`,
+	})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if _, still := result.Profile.Fields.Env["BAR"]; still {
+		t.Fatalf("env deletion must round-trip into the structured field, got %#v", result.Profile.Fields.Env)
+	}
+}
+
+// A known catalog plugin maps back into the structured Runtime Extensions
+// field instead of lingering in the Custom Config File remainder.
+func TestImportProfileConfigMapsKnownPluginToRuntimeExtensions(t *testing.T) {
+	service := newTestService(t)
+	service.SetKnownInstallRefs(func() []string { return []string{"frontend-design@claude-plugins-official"} })
+	created, err := service.Create("Claude Plugin", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	result, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{
+		ConfigText: `{"enabledPlugins":{"frontend-design@claude-plugins-official":true}}`,
+	})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	found := false
+	for _, ref := range result.Profile.Fields.RuntimeExtensions {
+		if ref.Config["install_ref"] == "frontend-design@claude-plugins-official" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("known plugin must map into Runtime Extensions, got %#v remainder %q", result.Profile.Fields.RuntimeExtensions, result.Profile.Fields.CustomConfigFile)
+	}
+	if strings.Contains(result.Profile.Fields.CustomConfigFile, "frontend-design") {
+		t.Fatalf("mapped plugin must not linger in the remainder: %q", result.Profile.Fields.CustomConfigFile)
+	}
+}
+
+// Comments in the operator's provider-native text survive an import that
+// maps keys away: the remainder keeps the operator's lines verbatim.
+func TestImportProfileConfigPreservesCommentsInRemainder(t *testing.T) {
+	service := newTestService(t)
+	created, err := service.Create("Codex Comments", runtimeprofile.ProviderCodex, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	raw := "model = \"gpt-5.2\"\n\n# Please keep this explanation\n[features]\nweb_search = true\n"
+	result, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{ConfigText: raw})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if !strings.Contains(result.Profile.Fields.CustomConfigFile, "# Please keep this explanation") {
+		t.Fatalf("comment must survive import verbatim, got:\n%s", result.Profile.Fields.CustomConfigFile)
+	}
+	if !strings.Contains(result.Profile.Fields.CustomConfigFile, "[features]") {
+		t.Fatalf("features section must stay in the remainder, got:\n%s", result.Profile.Fields.CustomConfigFile)
+	}
+}
+
+// Story 21: a Managed Config Key on a list field locks only the entries the
+// harness itself derives. The Hermes iteration-budget entry stays pinned,
+// while operator-added provider-native plugins join the array freely.
+func TestImportProfileConfigHermesPluginEntryGranularity(t *testing.T) {
+	service := newTestService(t)
+	service.SetManagedKeyDeclarations(map[runtimeprofile.Provider][]runtimeprofile.ManagedKeyDeclaration{
+		runtimeprofile.ProviderHermes: {{
+			Key:   "plugins.enabled",
+			Field: "runtime extensions",
+		}},
+	})
+	baseline := "plugins:\n  enabled:\n    - cyberpenda-iteration-budget\n"
+	service.SetImportBaseline(func(runtimeprofile.Profile) (string, error) { return baseline, nil })
+	created, err := service.Create("Hermes Plugins", runtimeprofile.ProviderHermes, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Operator adds their own plugin entry alongside the managed one.
+	edited := "plugins:\n  enabled:\n    - cyberpenda-iteration-budget\n    - my-custom-plugin\n"
+	result, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{ConfigText: edited})
+	if err != nil {
+		t.Fatalf("operator-added plugin entry must import freely, got %v", err)
+	}
+	if !strings.Contains(result.Profile.Fields.CustomConfigFile, "my-custom-plugin") {
+		t.Fatalf("operator entry must survive in the remainder, got %q", result.Profile.Fields.CustomConfigFile)
+	}
+	if strings.Contains(result.Profile.Fields.CustomConfigFile, "cyberpenda-iteration-budget") {
+		t.Fatalf("managed entry must be stripped from the remainder, got %q", result.Profile.Fields.CustomConfigFile)
+	}
+
+	// Removing the harness-derived entry is a managed change → refused.
+	removed := "plugins:\n  enabled:\n    - my-custom-plugin\n"
+	_, err = service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{ConfigText: removed})
+	if err == nil {
+		t.Fatal("deleting the harness-derived plugin entry must be refused")
+	}
+}
+
+// Structured Codex model round-trips fully: removing the model key from
+// the edited document clears the structured field instead of resurrecting it.
+func TestImportProfileConfigModelDeletionRoundTrips(t *testing.T) {
+	service := newTestService(t)
+	created, err := service.Create("Codex Model Delete", runtimeprofile.ProviderCodex, runtimeprofile.Fields{Model: "gpt-5.2"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	result, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{
+		ConfigText: "[features]\nweb_search = true\n",
+	})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if result.Profile.Fields.Model != "" {
+		t.Fatalf("model deletion must round-trip into the structured field, got %q", result.Profile.Fields.Model)
 	}
 }

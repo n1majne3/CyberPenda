@@ -52,10 +52,9 @@ func TestProfileConfigImportEndToEndJourney(t *testing.T) {
 		t.Fatalf("projected-config: status %d body %s", rec.Code, rec.Body.String())
 	}
 	var seed struct {
-		Provider      string `json:"provider"`
-		Format        string `json:"format"`
-		Text          string `json:"text"`
-		ProjectedText string `json:"projected_text"`
+		Provider string `json:"provider"`
+		Format   string `json:"format"`
+		Text     string `json:"text"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &seed); err != nil {
 		t.Fatalf("parse projected-config: %v", err)
@@ -82,8 +81,7 @@ func TestProfileConfigImportEndToEndJourney(t *testing.T) {
 	}
 	rec = httptest.NewRecorder()
 	importBody, err := json.Marshal(map[string]string{
-		"config_text":    string(editedRaw),
-		"projected_text": seed.ProjectedText,
+		"config_text": string(editedRaw),
 	})
 	if err != nil {
 		t.Fatalf("encode import body: %v", err)

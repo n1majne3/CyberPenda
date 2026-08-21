@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -14,11 +15,11 @@ import (
 )
 
 // ImportConfigRequest carries the edited provider-native config text for a
-// Profile Config Import. ProjectedText is the current structured projection
-// used as the Managed Config Key baseline (unchanged values are not a change).
+// Profile Config Import. The Managed Config Key baseline is derived by the
+// service from the injected projector — never from this request — so a
+// client cannot forge it.
 type ImportConfigRequest struct {
-	ConfigText    string
-	ProjectedText string
+	ConfigText string
 }
 
 // ImportConfigKeyError reports one refused key from a Profile Config Import.
@@ -146,6 +147,29 @@ func (s *Service) SetManagedKeyDeclarations(declarations map[Provider][]ManagedK
 	s.managedKeys = declarations
 }
 
+// SetImportBaseline injects the daemon-side projector that renders the
+// current provider-native config for a profile. ImportConfig derives the
+// Managed Config Key baseline from it, so the baseline is authoritative and
+// never client-supplied.
+func (s *Service) SetImportBaseline(projector func(Profile) (string, error)) {
+	s.importBaseline = projector
+}
+
+// SetKnownInstallRefs injects the resolver that reports the install refs
+// the runtime extension catalog currently offers, so imports map known
+// plugins back into the structured Runtime Extensions field instead of the
+// Custom Config File.
+func (s *Service) SetKnownInstallRefs(resolver func() []string) {
+	s.knownInstallRefs = resolver
+}
+
+func (s *Service) knownInstallRefList() []string {
+	if s == nil || s.knownInstallRefs == nil {
+		return nil
+	}
+	return s.knownInstallRefs()
+}
+
 // importConfigFormat reports the provider-native config format.
 func importConfigFormat(provider Provider) string {
 	switch provider {
@@ -194,15 +218,21 @@ func (s *Service) ImportConfig(id string, request ImportConfigRequest) (ImportCo
 		doc = map[string]any{}
 	}
 
-	baseline, err := parseConfigDocument(format, request.ProjectedText)
+	baseline, err := s.importBaselineText(existing, format)
 	if err != nil {
-		baseline = nil
+		return ImportConfigResult{}, &ImportConfigError{
+			Provider: existing.Provider,
+			Errors: []ImportConfigKeyError{{
+				Key:     "",
+				Message: fmt.Sprintf("derive managed key baseline: %v", err),
+			}},
+		}
 	}
 	if refusal := s.refuseImportProblems(existing, doc, baseline); refusal != nil {
 		return ImportConfigResult{}, refusal
 	}
 
-	fields, remainder, mapped := mapImportConfigDocument(existing, doc, request.ConfigText, s.managedKeys[existing.Provider], baseline)
+	fields, remainder, mapped := s.mapImportConfigDocument(existing, doc, request.ConfigText, s.managedKeys[existing.Provider], baseline)
 	fields.CustomConfigFile = remainder
 	normalized, err := normalizeFields(existing.Provider, fields)
 	if err != nil {
@@ -276,11 +306,65 @@ func (s *Service) refuseImportProblems(profile Profile, doc, baseline map[string
 	}
 	walk("", doc)
 
+	var walkBaseline func(prefix string, node any)
+	// walkBaseline refuses a Managed Config Key that vanished from the
+	// edited document. Non-managed keys may be deleted freely.
+	walkBaseline = func(prefix string, node any) {
+		switch typed := node.(type) {
+		case map[string]any:
+			for key, value := range typed {
+				path := key
+				if prefix != "" {
+					path = prefix + "." + key
+				}
+				declaration, matched := managedKeyForPath(managed, path, resolved)
+				if matched {
+					if _, present := lookupPath(doc, path); !present {
+						problems = append(problems, ImportConfigKeyError{
+							Key:     path,
+							Field:   declaration.Field,
+							Message: "managed key is re-derived at every config projection; deleting it is not allowed",
+						})
+					}
+					continue
+				}
+				walkBaseline(path, value)
+			}
+		case []any:
+			for _, item := range typed {
+				walkBaseline(prefix, item)
+			}
+		}
+	}
+
+	// Deletion check: a Managed Config Key present in the baseline but
+	// missing from the edited document is a change, too.
+	walkBaseline("", baseline)
+
 	if len(problems) == 0 {
 		return nil
 	}
 	sort.Slice(problems, func(i, j int) bool { return problems[i].Key < problems[j].Key })
 	return &ImportConfigError{Provider: profile.Provider, Errors: problems}
+}
+
+// importBaselineText derives the Managed Config Key comparison baseline by
+// rendering the profile's current provider-native config through the
+// injected projector. No projector means no managed keys exist to compare,
+// so an empty baseline is correct.
+func (s *Service) importBaselineText(profile Profile, format string) (map[string]any, error) {
+	if s.importBaseline == nil {
+		return map[string]any{}, nil
+	}
+	projected, err := s.importBaseline(profile)
+	if err != nil {
+		return nil, err
+	}
+	baseline, err := parseConfigDocument(format, projected)
+	if err != nil {
+		return nil, fmt.Errorf("parse projected baseline: %w", err)
+	}
+	return baseline, nil
 }
 
 func parseConfigDocument(format, raw string) (map[string]any, error) {
@@ -336,7 +420,36 @@ func managedValueUnchanged(baseline map[string]any, path string, value any) bool
 	if !ok {
 		return false
 	}
-	return reflect.DeepEqual(normalizeComparable(current), normalizeComparable(value))
+	return valuesMatchBaseline(current, value)
+}
+
+// valuesMatchBaseline compares an edited value against its baseline. Arrays
+// compare by set containment: every baseline entry must survive somewhere in
+// the edited array, and operator-added entries are allowed — a managed array
+// locks only the entries the harness derives, not the whole list. Every other
+// shape compares by deep equality.
+func valuesMatchBaseline(baselineValue, editedValue any) bool {
+	baseArr, baseOK := baselineValue.([]any)
+	editArr, editOK := editedValue.([]any)
+	if baseOK && editOK {
+		for _, base := range baseArr {
+			found := false
+			for _, edited := range editArr {
+				if reflect.DeepEqual(normalizeComparable(base), normalizeComparable(edited)) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return false
+			}
+		}
+		return true
+	}
+	if baseOK != editOK {
+		return false
+	}
+	return reflect.DeepEqual(normalizeComparable(baselineValue), normalizeComparable(editedValue))
 }
 
 func normalizeComparable(value any) any {
@@ -358,8 +471,9 @@ func normalizeComparable(value any) any {
 	}
 }
 
-func stripUnchangedManagedKeys(remaining map[string]any, declarations []managedKeyDeclaration, baseline map[string]any, resolved bool) bool {
+func stripUnchangedManagedKeys(remaining map[string]any, declarations []managedKeyDeclaration, baseline map[string]any, resolved bool) ([]string, bool) {
 	stripped := false
+	var strippedKeys []string
 	var walk func(prefix string, node map[string]any)
 	walk = func(prefix string, node map[string]any) {
 		for key, value := range node {
@@ -369,7 +483,37 @@ func stripUnchangedManagedKeys(remaining map[string]any, declarations []managedK
 			}
 			if _, matched := managedKeyForPath(declarations, path, resolved); matched {
 				if managedValueUnchanged(baseline, path, value) {
+					// Arrays under a managed path keep operator-added
+					// entries in the remainder: only baseline entries are
+					// harness-derived, the rest belong to the operator.
+					if arr, ok := value.([]any); ok {
+						baseArr, _ := lookupPath(baseline, path)
+						if baseList, ok := baseArr.([]any); ok {
+							kept := make([]any, 0, len(arr))
+							for _, entry := range arr {
+								derived := false
+								for _, base := range baseList {
+									if reflect.DeepEqual(normalizeComparable(base), normalizeComparable(entry)) {
+										derived = true
+										break
+									}
+								}
+								if !derived {
+									kept = append(kept, entry)
+								}
+							}
+							if len(kept) == 0 {
+								delete(node, key)
+							} else {
+								node[key] = kept
+							}
+							strippedKeys = append(strippedKeys, path)
+							stripped = true
+							continue
+						}
+					}
 					delete(node, key)
+					strippedKeys = append(strippedKeys, path)
 					stripped = true
 					continue
 				}
@@ -384,7 +528,7 @@ func stripUnchangedManagedKeys(remaining map[string]any, declarations []managedK
 		}
 	}
 	walk("", remaining)
-	return stripped
+	return strippedKeys, stripped
 }
 
 // managedKeyForPath reports whether the dotted path is covered by a managed
@@ -422,7 +566,7 @@ func managedPathCovers(managed, path string) bool {
 
 // mapImportConfigDocument syncs structured-expressible keys into the profile
 // fields and renders the remainder back as provider-native text.
-func mapImportConfigDocument(profile Profile, doc map[string]any, rawText string, declarations []managedKeyDeclaration, baseline map[string]any) (Fields, string, []string) {
+func (s *Service) mapImportConfigDocument(profile Profile, doc map[string]any, rawText string, declarations []managedKeyDeclaration, baseline map[string]any) (Fields, string, []string) {
 	fields := profile.Fields
 	var mapped []string
 
@@ -431,10 +575,11 @@ func mapImportConfigDocument(profile Profile, doc map[string]any, rawText string
 		remaining[key] = value
 	}
 
-	if envNode, ok := remaining["env"].(map[string]any); ok && len(envNode) > 0 && existingEnvMappable(profile.Provider) {
-		if fields.Env == nil {
-			fields.Env = map[string]string{}
-		}
+	if envNode, ok := remaining["env"].(map[string]any); ok && existingEnvMappable(profile.Provider) {
+		// The edited env map replaces the structured env wholesale — Story 6:
+		// keys removed in the editor are removed from the structured field,
+		// so raw edit → import round-trips instead of patching.
+		fields.Env = make(map[string]string, len(envNode))
 		for envKey, envValue := range envNode {
 			if text, ok := envValue.(string); ok {
 				fields.Env[envKey] = text
@@ -446,25 +591,203 @@ func mapImportConfigDocument(profile Profile, doc map[string]any, rawText string
 
 	// A top-level Codex `model` maps into the structured model
 	// field whenever it is not a Managed Config Key (model provider resolved)
-	// — the structured form stays the single source of truth.
+	// — the structured form stays the single source of truth. Absence of
+	// the key in the edited document clears the structured field so
+	// deletion round-trips.
 	if profile.Provider == ProviderCodex && strings.TrimSpace(profile.Fields.ModelProviderID) == "" {
-		if model, ok := remaining["model"].(string); ok && strings.TrimSpace(model) != "" {
+		if model, ok := remaining["model"].(string); ok {
 			fields.Model = strings.TrimSpace(model)
 			mapped = append(mapped, "model")
 			delete(remaining, "model")
+		} else if _, present := remaining["model"]; !present && strings.TrimSpace(fields.Model) != "" {
+			fields.Model = ""
+			mapped = append(mapped, "model")
 		}
 	}
 
+	// Catalog-sourced plugins the editor round-trips through enabledPlugins
+	// map back into the structured Runtime Extensions field; unknown refs
+	// stay in the remainder for the provider to resolve.
+	if plugins, ok := remaining["enabledPlugins"].(map[string]any); ok && len(plugins) > 0 && profile.Provider == ProviderClaudeCode {
+		structured := make([]RuntimeExtensionRef, 0, len(profile.Fields.RuntimeExtensions))
+		structured = append(structured, profile.Fields.RuntimeExtensions...)
+		for ref, value := range plugins {
+			enabled, isBool := value.(bool)
+			if !isBool || !enabled {
+				continue
+			}
+			if !slices.Contains(s.knownInstallRefList(), ref) {
+				continue
+			}
+			if slices.ContainsFunc(structured, func(existing RuntimeExtensionRef) bool {
+				return existing.Config["install_ref"] == ref
+			}) {
+				continue
+			}
+			structured = append(structured, RuntimeExtensionRef{
+				ID:      pluginIDFromInstallRef(ref),
+				Enabled: &enabled,
+				Config:  map[string]string{"install_ref": ref},
+			})
+			delete(plugins, ref)
+			mapped = append(mapped, "enabledPlugins."+ref)
+		}
+		if len(plugins) == 0 {
+			delete(remaining, "enabledPlugins")
+		}
+		fields.RuntimeExtensions = structured
+	}
+
 	resolved := strings.TrimSpace(profile.Fields.ModelProviderID) != ""
-	stripped := stripUnchangedManagedKeys(remaining, declarations, baseline, resolved)
+	strippedKeys, stripped := stripUnchangedManagedKeys(remaining, declarations, baseline, resolved)
 
 	// The operator's raw text is preserved verbatim — comments and
 	// formatting included — whenever nothing mapped or stripped away.
 	if len(mapped) == 0 && !stripped {
 		return fields, rawText, mapped
 	}
-	remainder := renderRemainder(profile.Provider, remaining)
+	// Line surgery drops the lines of mapped and stripped keys; comments
+	// and formatting on the surviving lines stay byte-for-byte.
+	dropped := append([]string{}, mapped...)
+	dropped = append(dropped, strippedKeys...)
+	remainder := s.renderRemainderVerbatim(profile.Provider, remaining, dropped, rawText, baseline)
 	return fields, remainder, mapped
+}
+
+// renderRemainderVerbatim keeps the operator's raw text whenever a
+// line-based edit can express the mapping: lines carrying mapped or
+// stripped top-level keys drop out, everything else (comments, blank
+// lines, formatting) survives untouched. When the shape defeats line
+// surgery, fall back to re-encoding the parsed remainder.
+func (s *Service) renderRemainderVerbatim(provider Provider, remaining map[string]any, dropped []string, rawText string, baseline map[string]any) string {
+	if len(remaining) == 0 {
+		return ""
+	}
+	if len(dropped) == 0 {
+		return rawText
+	}
+	if edited, ok := surgicalRemainder(provider, dropped, rawText, baseline); ok {
+		return edited
+	}
+	return renderRemainder(provider, remaining)
+}
+
+// surgicalRemainder removes the lines of top-level keys that moved into
+// structured fields, and the lines of harness-derived array entries under a
+// managed list. It reports false when the text's shape defeats line-based
+// edits (JSON, or a mapped key whose span cannot be located).
+func surgicalRemainder(provider Provider, dropped []string, rawText string, baseline map[string]any) (string, bool) {
+	if importConfigFormat(provider) != "toml" && importConfigFormat(provider) != "yaml" {
+		return "", false
+	}
+	lines := strings.Split(rawText, "\n")
+	keep := make([]bool, len(lines))
+	for i := range keep {
+		keep[i] = true
+	}
+	// Harness-derived array entries under a managed list path: their lines
+	// drop out while operator entries survive.
+	managedListEntries := map[string][]any{}
+	for _, key := range dropped {
+		if value, ok := lookupPath(baseline, key); ok {
+			if list, ok := value.([]any); ok {
+				managedListEntries[key] = list
+			}
+		}
+	}
+	// Track whether scanned lines sit at the document root or under a
+	// section header: mapped keys ("model", "env") are root-level only, so
+	// same-named keys inside sections must survive. currentList names a
+	// managed list whose "- entry" lines may need dropping; sectionPath is
+	// the dotted YAML section prefix ("plugins" → "plugins.enabled").
+	inSection := false
+	currentList := ""
+	sectionPath := ""
+	managedLists := map[string]bool{}
+	for key := range managedListEntries {
+		managedLists[key] = true
+	}
+	removed := 0
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if importConfigFormat(provider) == "toml" && strings.HasPrefix(trimmed, "[") {
+			inSection = true
+			currentList = ""
+			continue
+		}
+		if importConfigFormat(provider) == "yaml" && !strings.HasPrefix(line, " ") && strings.HasSuffix(trimmed, ":") {
+			inSection = true
+			currentList = ""
+			sectionPath = strings.TrimSuffix(trimmed, ":")
+			continue
+		}
+		if importConfigFormat(provider) == "yaml" && strings.HasPrefix(trimmed, "- ") {
+			if currentList != "" {
+				entry := strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))
+				for _, base := range managedListEntries[currentList] {
+					if baseText, ok := base.(string); ok && baseText == entry {
+						keep[i] = false
+						removed++
+						break
+					}
+				}
+			}
+			continue
+		}
+		// A "key:" line inside a section can open a managed list context
+		// when the section path plus key matches a managed list path.
+		if importConfigFormat(provider) == "yaml" && strings.HasSuffix(trimmed, ":") && !strings.Contains(trimmed, " ") {
+			candidate := strings.TrimSuffix(trimmed, ":")
+			path := candidate
+			if sectionPath != "" {
+				path = sectionPath + "." + candidate
+			}
+			if managedLists[path] {
+				currentList = path
+			} else {
+				currentList = ""
+			}
+			continue
+		}
+		key, _, found := strings.Cut(trimmed, "=")
+		if found && !inSection {
+			candidate := strings.TrimSpace(key)
+			for _, mappedKey := range dropped {
+				if mappedKey == candidate {
+					keep[i] = false
+					removed++
+					continue
+				}
+			}
+		}
+	}
+	if removed == 0 {
+		// Nothing dropped: either nothing mapped at root level or the
+		// mapped keys all lived under sections; the raw text stands.
+		return rawText, true
+	}
+	var b strings.Builder
+	for i, line := range lines {
+		if keep[i] {
+			b.WriteString(line)
+			if i < len(lines)-1 {
+				b.WriteString("\n")
+			}
+		}
+	}
+	return b.String(), true
+}
+
+// pluginIDFromInstallRef derives a stable Runtime Extension ID from a
+// catalog install ref ("plugin@marketplace" → "plugin").
+func pluginIDFromInstallRef(ref string) string {
+	if at := strings.Index(ref, "@"); at > 0 {
+		return ref[:at]
+	}
+	return ref
 }
 
 // existingEnvMappable reports whether the provider's main config carries an

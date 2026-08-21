@@ -324,6 +324,11 @@ func NewServer(config Config) (*Server, error) {
 		server.logger.Printf("Challenge operation recovery pending: task=%s operation=%s kind=%s error=%s", failure.TaskID, failure.OperationID, failure.Kind, failure.Error)
 	}
 	cancelChallengeRecovery()
+	// Import baseline uses the same resolved projection as the editor seed
+	// and merged preview (issue #226: client cannot supply the baseline).
+	profiles.SetImportBaseline(func(profile runtimeprofile.Profile) (string, error) {
+		return runner.StructuredProjectedConfigTextWith(profile.Provider, profile, server.previewProjectionRequest())
+	})
 	server.routes()
 	server.reconcileValidatedBlackboardConclusionApplies()
 	recovery := server.recoverBlackboardConclusionReceipts(context.Background())
@@ -1294,25 +1299,15 @@ func (server *Server) handleImportRuntimeProfileConfig(response http.ResponseWri
 	}
 
 	var input struct {
-		ConfigText    string `json:"config_text"`
-		ProjectedText string `json:"projected_text"`
+		ConfigText string `json:"config_text"`
 	}
 	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
 		writeError(response, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 
-	if strings.TrimSpace(input.ProjectedText) == "" {
-		profile, loadErr := server.profiles.Get(id)
-		if loadErr == nil {
-			if baseline, seedErr := runner.StructuredProjectedConfigText(profile.Provider, profile); seedErr == nil {
-				input.ProjectedText = baseline
-			}
-		}
-	}
 	result, err := server.profiles.ImportConfig(id, runtimeprofile.ImportConfigRequest{
-		ConfigText:    input.ConfigText,
-		ProjectedText: input.ProjectedText,
+		ConfigText: input.ConfigText,
 	})
 	if err != nil {
 		var refusal *runtimeprofile.ImportConfigError
@@ -1337,6 +1332,19 @@ func (server *Server) handleImportRuntimeProfileConfig(response http.ResponseWri
 	})
 }
 
+func (server *Server) previewProjectionRequest() runner.ProjectionRequest {
+	snapshot, err := server.snapshotGlobalModelProviders()
+	if err != nil {
+		snapshot = runner.CloneGlobalModelProviderSnapshot(nil)
+	}
+	return runner.ProjectionRequest{
+		ModelProviders:              server.modelProviders,
+		RuntimePlugins:              server.runtimePlugins,
+		Credentials:                 server.creds,
+		GlobalModelProviderSnapshot: snapshot,
+	}
+}
+
 // handleMergedConfigPreview answers the final merged result the runtime
 // receives: the provider-native projected config deep-merged with the
 // profile's Custom Config File overlay (structured fields win conflicts).
@@ -1355,7 +1363,7 @@ func (server *Server) handleMergedConfigPreview(response http.ResponseWriter, re
 		writeError(response, http.StatusInternalServerError, "load runtime profile")
 		return
 	}
-	merged, err := runner.MergedProjectedConfig(profile.Provider, profile)
+	merged, err := runner.MergedProjectedConfigWith(profile.Provider, profile, server.previewProjectionRequest())
 	if err != nil {
 		writeError(response, http.StatusBadRequest, err.Error())
 		return
@@ -1384,20 +1392,15 @@ func (server *Server) handleProjectedConfig(response http.ResponseWriter, reques
 		writeError(response, http.StatusInternalServerError, "load runtime profile")
 		return
 	}
-	text, err := runner.ProjectedConfigText(profile.Provider, profile)
+	text, err := runner.ProjectedConfigTextWith(profile.Provider, profile, server.previewProjectionRequest())
 	if err != nil {
 		writeError(response, http.StatusBadRequest, err.Error())
 		return
-	}
-	baseline, err := runner.StructuredProjectedConfigText(profile.Provider, profile)
-	if err != nil {
-		baseline = text
 	}
 	writeJSON(response, http.StatusOK, map[string]any{
 		"provider":           string(profile.Provider),
 		"format":             runner.OverlayFormat(profile.Provider),
 		"text":               text,
-		"projected_text":     baseline,
 		"custom_config_file": profile.Fields.CustomConfigFile,
 	})
 }

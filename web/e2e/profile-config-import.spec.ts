@@ -93,7 +93,6 @@ async function routeProfileConfigImport(page: Page) {
               2,
             )
           : projectedSeed,
-        projected_text: projectedSeed,
         custom_config_file: imported ? importedProfile.fields.custom_config_file : "",
       });
     } else if (path === `/api/runtime-profiles/${claudeProfile.id}/merged-config-preview` && requests.filter((p) => p === path).length > 1) {
@@ -162,10 +161,11 @@ test("Profile Config Import maps env and keeps the remainder on the Custom Confi
   expect(requests).toContain(`/api/runtime-profiles/${claudeProfile.id}/import-config`);
   expect(requests).toContain(`/api/runtime-profiles/${claudeProfile.id}/merged-config-preview`);
 
-  // The import carried the structured baseline so unchanged Managed Config
-  // Keys from the seed are accepted instead of refused.
+  // The import carries only the edited text; the daemon derives the
+  // Managed Config Key baseline itself.
   const importPayload = JSON.parse(importBodies[0] ?? "{}");
-  expect(importPayload.projected_text).toBe(projectedText());
+  expect(importPayload.config_text).toContain("OVERLAY_FLAG");
+  expect(importPayload.projected_text).toBeUndefined();
 });
 
 test("re-opening the config editor shows the Custom Config File remainder", async ({ page }) => {

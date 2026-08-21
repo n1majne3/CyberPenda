@@ -279,3 +279,59 @@ func TestProjectedConfigEndpointSeedsProviderNativeText(t *testing.T) {
 		t.Fatalf("unknown id status %d", rec.Code)
 	}
 }
+
+// Story 16: preview equals the runtime-received projected config, including
+// Model Provider resolution. Credentials stay redacted.
+func TestProjectedConfigPreviewIncludesResolvedModelProvider(t *testing.T) {
+	server := newImportTestServer(t)
+	t.Setenv("MIMO_API_KEY", "sk-test-not-a-real-key")
+
+	createProvider := httptest.NewRequest(http.MethodPost, "/api/model-providers", bytes.NewReader([]byte(`{
+		"name":"MiMo",
+		"base_url":"https://api.example.test/v1",
+		"protocols":["openai_responses"],
+		"catalog":{"manual":["mimo-v2-pro"],"default_model":"mimo-v2-pro"}
+	}`)))
+	createProvider.Header.Set("Content-Type", "application/json")
+	providerResp := httptest.NewRecorder()
+	server.ServeHTTP(providerResp, createProvider)
+	if providerResp.Code != http.StatusCreated {
+		t.Fatalf("create provider status %d body %s", providerResp.Code, providerResp.Body.String())
+	}
+	var provider struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(providerResp.Body.Bytes(), &provider); err != nil {
+		t.Fatalf("decode provider: %v", err)
+	}
+
+	body := `{"name":"Codex Resolved","provider":"codex","fields":{"model_provider_id":"` + provider.ID + `"}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles", bytes.NewReader([]byte(body)))
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create profile status %d body %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created: %v", err)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/runtime-profiles/"+created.ID+"/projected-config", nil)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("projected-config status %d body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "model_provider") {
+		t.Fatalf("preview must include the resolved model_provider, got %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "https://api.example.test/v1") {
+		t.Fatalf("preview must include the resolved endpoint, got %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "sk-test-not-a-real-key") {
+		t.Fatalf("preview must redact credentials, got %s", rec.Body.String())
+	}
+}

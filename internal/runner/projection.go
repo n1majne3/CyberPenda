@@ -330,6 +330,30 @@ func runtimePluginForProvider(provider runtimeprofile.Provider, registry *runtim
 	return runtimeplugin.MustBuiltinRegistry().Get(string(provider))
 }
 
+// resolvePreviewProfile applies the same Model Provider snapshot the launch
+// projection uses, without requiring an API key. Preview and import baseline
+// share this so the editor seed matches the runtime-received main config.
+func resolvePreviewProfile(profile runtimeprofile.Profile, req ProjectionRequest) runtimeprofile.Profile {
+	if req.ModelSnapshot != nil {
+		return profileWithModelSnapshot(profile, *req.ModelSnapshot)
+	}
+	if req.ModelProviders == nil || strings.TrimSpace(profile.Fields.ModelProviderID) == "" {
+		return profile
+	}
+	snapshot, err := modelprovider.Resolve(modelprovider.ResolveRequest{
+		Profile:             profile,
+		Providers:           req.ModelProviders,
+		Plugins:             req.RuntimePlugins,
+		Credentials:         req.Credentials,
+		CheckEnv:            false,
+		LaunchModelOverride: req.LaunchModelOverride,
+	})
+	if err != nil || snapshot.ModelProviderID == "" {
+		return profile
+	}
+	return profileWithModelSnapshot(profile, snapshot)
+}
+
 func profileWithModelSnapshot(profile runtimeprofile.Profile, snapshot modelprovider.Snapshot) runtimeprofile.Profile {
 	profile.Fields.Model = snapshot.Model
 	profile.Fields.Endpoint = snapshot.EndpointBaseURL

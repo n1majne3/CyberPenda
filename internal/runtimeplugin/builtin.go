@@ -262,6 +262,9 @@ func BuiltinPlugins() []Plugin {
 					{Key: "delegation.*", Field: "reasoning_effort"},
 					{Key: "model.*", Field: "model_provider_id"},
 					{Key: "providers", Field: "model providers (ADR 0026 global projection)"},
+					// Entry-level: only the harness-derived iteration-budget
+					// entry is managed; operator-added Hermes plugins coexist
+					// freely in the same list (Story 21, finest re-derived key).
 					{Key: "plugins.enabled", Field: "runtime extensions"},
 					{Key: "terminal.backend", Field: "non-interactive defaults"},
 				},

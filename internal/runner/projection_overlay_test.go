@@ -290,3 +290,26 @@ func TestMergedProjectedConfigMergesOverlayIntoNativeShape(t *testing.T) {
 		t.Fatalf("overlay plugin must be present: %#v", merged["enabledPlugins"])
 	}
 }
+
+func TestHermesPluginsEnabledMergesOperatorEntries(t *testing.T) {
+	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
+	profile.Fields.CustomConfigFile = "plugins:\n  enabled:\n    - my-custom-plugin\n"
+	merged, err := runner.MergedProjectedConfig(profile.Provider, profile)
+	if err != nil {
+		t.Fatalf("merged: %v", err)
+	}
+	plugins, _ := merged["plugins"].(map[string]any)
+	enabled, _ := plugins["enabled"].([]any)
+	got := make([]string, 0, len(enabled))
+	for _, item := range enabled {
+		if text, ok := item.(string); ok {
+			got = append(got, text)
+		}
+	}
+	if !strings.Contains(strings.Join(got, ","), "cyberpenda-iteration-budget") {
+		t.Fatalf("harness-derived plugin must survive, got %#v", got)
+	}
+	if !strings.Contains(strings.Join(got, ","), "my-custom-plugin") {
+		t.Fatalf("operator plugin must coexist, got %#v", got)
+	}
+}

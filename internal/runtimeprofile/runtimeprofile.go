@@ -153,9 +153,11 @@ var (
 
 // Service implements runtime profile business rules against SQLite.
 type Service struct {
-	db          *store.DB
-	providers   map[Provider]bool
-	managedKeys map[Provider][]managedKeyDeclaration
+	db               *store.DB
+	providers        map[Provider]bool
+	managedKeys      map[Provider][]managedKeyDeclaration
+	importBaseline   func(Profile) (string, error)
+	knownInstallRefs func() []string
 }
 
 // NewService returns a Service backed by the given database.
